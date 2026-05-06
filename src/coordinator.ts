@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
-import type { Hex } from "viem";
+import { formatEther, type Hex } from "viem";
 import { loadAgents, loadConfig, privateKeyForWalletName, type SimConfig } from "./config.js";
 import { ADDRESSES, WETH_USDC_FEE } from "./constants.js";
 import { AgentProcess } from "./agentProcess.js";
@@ -20,12 +20,29 @@ type AgentRuntime = {
   initial: BalanceSnapshot;
 };
 
+type AgentMetrics = {
+  gasUsed: bigint;
+  gasCostWei: bigint;
+  revertCount: number;
+  submittedTxCount: number;
+  includedTxCount: number;
+};
+
 type SubmittedTx = {
   hash: Hex;
   ownerId: string;
   role: WalletRole;
   priorityFeeWei: bigint;
 };
+
+type ReceiptResult = {
+  tx: SubmittedTx;
+  status: string;
+  gasUsed: bigint;
+  gasCostWei: bigint;
+};
+
+const FLOW_SLIPPAGE_BPS = 100;
 
 export async function runSimulation(): Promise<void> {
   const config = loadConfig();
@@ -41,6 +58,7 @@ export async function runSimulation(): Promise<void> {
     process: new AgentProcess(spec),
     initial: { ethWei: 0n, wethWei: 0n, usdcUnits: 0n }
   }));
+  const agentMetrics = new Map(agentRuntimes.map((agent) => [agent.id, emptyAgentMetrics()]));
   const flowWallets: SimWallet[] = [
     { id: "uninformed-flow", role: "uninformed-flow", privateKey: config.privateKeys.uninformedFlow },
     { id: "informed-flow", role: "informed-flow", privateKey: config.privateKeys.informedFlow }
@@ -98,13 +116,33 @@ export async function runSimulation(): Promise<void> {
       const flowIntents = await buildFlowIntents(publicClient, config, rng, poolPrice, fairPrice);
       const submitted: SubmittedTx[] = [];
       for (const intent of [...flowIntents, ...agentIntents]) {
-        const hash = await submitIntent(publicClient, walletClient, chain, intent);
-        submitted.push({ hash, ownerId: intent.ownerId, role: intent.role, priorityFeeWei: intent.priorityFeeWei });
-        logger.event({ type: "tx_submitted", round, hash, ownerId: intent.ownerId, role: intent.role, priorityFeeWei: intent.priorityFeeWei });
+        try {
+          const hash = await submitIntent(publicClient, walletClient, chain, intent);
+          submitted.push({ hash, ownerId: intent.ownerId, role: intent.role, priorityFeeWei: intent.priorityFeeWei });
+          if (intent.role === "agent") agentMetrics.get(intent.ownerId)!.submittedTxCount++;
+          logger.event({ type: "tx_submitted", round, hash, ownerId: intent.ownerId, role: intent.role, priorityFeeWei: intent.priorityFeeWei });
+        } catch (error) {
+          logger.event({
+            type: "tx_submit_failed",
+            round,
+            ownerId: intent.ownerId,
+            role: intent.role,
+            priorityFeeWei: intent.priorityFeeWei,
+            error: errorMessage(error)
+          });
+        }
       }
 
       await mine(publicClient);
-      await logReceiptsAndOrdering(publicClient, logger, round, submitted);
+      const receiptResults = await logReceiptsAndOrdering(publicClient, logger, round, submitted);
+      for (const result of receiptResults) {
+        if (result.tx.role !== "agent") continue;
+        const metrics = agentMetrics.get(result.tx.ownerId)!;
+        metrics.gasUsed += result.gasUsed;
+        metrics.gasCostWei += result.gasCostWei;
+        metrics.includedTxCount++;
+        if (result.status !== "success") metrics.revertCount++;
+      }
     }
 
     const finalFairPrice = history.at(-1)?.fairPriceUsdcPerWeth ?? fairPrice;
@@ -119,6 +157,7 @@ export async function runSimulation(): Promise<void> {
         initialValueUsdc: valueUsdc(agent.initial, finalFairPrice),
         finalValueUsdc: valueUsdc(final, finalFairPrice),
         netPnlUsdc: valueUsdc(final, finalFairPrice) - valueUsdc(agent.initial, finalFairPrice),
+        ...agentMetricsForSummary(agentMetrics.get(agent.id)!),
         stderrTail: agent.process.getStderr()
       });
     }
@@ -211,7 +250,7 @@ async function buildFlowIntents(
       ownerId: "uninformed-flow",
       role: "uninformed-flow",
       privateKey: config.privateKeys.uninformedFlow,
-      action: { type: "swap", tokenIn: uninformedTokenIn, amountIn: cappedUninformedAmount.toString(), slippageBps: 100 },
+      action: { type: "swap", tokenIn: uninformedTokenIn, amountIn: cappedUninformedAmount.toString(), slippageBps: FLOW_SLIPPAGE_BPS },
       priorityFeeWei: config.defaultPriorityFeeWei + BigInt(rng.int(1, 50)) * 1_000_000n
     });
   }
@@ -221,7 +260,7 @@ async function buildFlowIntents(
       ownerId: "informed-flow",
       role: "informed-flow",
       privateKey: config.privateKeys.informedFlow,
-      action: { type: "swap", tokenIn: informedTokenIn, amountIn: cappedInformedAmount.toString(), slippageBps: 100 },
+      action: { type: "swap", tokenIn: informedTokenIn, amountIn: cappedInformedAmount.toString(), slippageBps: FLOW_SLIPPAGE_BPS },
       priorityFeeWei: config.defaultPriorityFeeWei + BigInt(rng.int(50, 100)) * 1_000_000n
     });
   }
@@ -254,12 +293,20 @@ async function logReceiptsAndOrdering(
   logger: RunLogger,
   round: number,
   submitted: SubmittedTx[]
-): Promise<void> {
+): Promise<ReceiptResult[]> {
   const submittedByHash = new Map(submitted.map((tx) => [tx.hash.toLowerCase(), tx]));
-  const receipts = await Promise.all(
-    submitted.map(async (tx) => ({ tx, receipt: await publicClient.waitForTransactionReceipt({ hash: tx.hash }) }))
-  );
+  const receipts: Array<{ tx: SubmittedTx; receipt: Awaited<ReturnType<typeof publicClient.waitForTransactionReceipt>> }> = [];
+  for (const tx of submitted) {
+    try {
+      receipts.push({ tx, receipt: await publicClient.waitForTransactionReceipt({ hash: tx.hash }) });
+    } catch (error) {
+      logger.event({ type: "tx_receipt_failed", round, hash: tx.hash, ownerId: tx.ownerId, role: tx.role, error: errorMessage(error) });
+    }
+  }
+  const results: ReceiptResult[] = [];
   for (const { tx, receipt } of receipts) {
+    const gasCostWei = receipt.gasUsed * receipt.effectiveGasPrice;
+    results.push({ tx, status: receipt.status, gasUsed: receipt.gasUsed, gasCostWei });
     logger.event({
       type: "tx_receipt",
       round,
@@ -268,11 +315,12 @@ async function logReceiptsAndOrdering(
       role: tx.role,
       status: receipt.status,
       gasUsed: receipt.gasUsed,
-      effectiveGasPrice: receipt.effectiveGasPrice
+      effectiveGasPrice: receipt.effectiveGasPrice,
+      gasCostWei
     });
   }
   const blockNumber = receipts[0]?.receipt.blockNumber;
-  if (blockNumber === undefined) return;
+  if (blockNumber === undefined) return results;
   const block = await publicClient.getBlock({ blockNumber, includeTransactions: true });
   for (let i = 0; i < block.transactions.length; i++) {
     const tx = block.transactions[i];
@@ -292,6 +340,7 @@ async function logReceiptsAndOrdering(
       role: metadata.role
     });
   }
+  return results;
 }
 
 function randomBigInt(rng: Rng, minInclusive: bigint, maxInclusive: bigint): bigint {
@@ -313,4 +362,28 @@ function publicConfig(config: SimConfig) {
     runDirRoot: config.runDirRoot,
     agentTimeoutMs: config.agentTimeoutMs
   };
+}
+
+function emptyAgentMetrics(): AgentMetrics {
+  return {
+    gasUsed: 0n,
+    gasCostWei: 0n,
+    revertCount: 0,
+    submittedTxCount: 0,
+    includedTxCount: 0
+  };
+}
+
+function agentMetricsForSummary(metrics: AgentMetrics) {
+  return {
+    gasUsed: metrics.gasUsed.toString(),
+    gasCostEth: formatEther(metrics.gasCostWei),
+    revertCount: metrics.revertCount,
+    submittedTxCount: metrics.submittedTxCount,
+    includedTxCount: metrics.includedTxCount
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -3,6 +3,8 @@ import type { Hex } from "viem";
 import { DEFAULT_ANVIL_PRIVATE_KEYS } from "./constants.js";
 import type { AgentSpec, AgentsFile } from "./types.js";
 
+const SUPPORTED_AGENT_WALLETS = ["AGENT0_PRIVATE_KEY", "AGENT1_PRIVATE_KEY", "AGENT2_PRIVATE_KEY"] as const;
+
 export type SimConfig = {
   rpcUrl: string;
   chainId: number;
@@ -61,18 +63,9 @@ export function loadConfig(env = process.env): SimConfig {
 }
 
 export function loadAgents(path: string): AgentSpec[] {
-  if (!existsSync(path)) {
-    return [
-      { id: "noop", command: "node", args: ["--import", "tsx", "examples/agents/noop.ts"], wallet: "AGENT0_PRIVATE_KEY" },
-      { id: "random", command: "node", args: ["--import", "tsx", "examples/agents/random.ts"], wallet: "AGENT1_PRIVATE_KEY" },
-      { id: "simple", command: "node", args: ["--import", "tsx", "examples/agents/simple-rule.ts"], wallet: "AGENT2_PRIVATE_KEY" }
-    ];
-  }
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as AgentsFile;
-  if (!Array.isArray(parsed.agents) || parsed.agents.length === 0) {
-    throw new Error(`${path} must contain a non-empty "agents" array`);
-  }
-  return parsed.agents;
+  if (!existsSync(path)) return defaultAgents();
+  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  return validateAgentsFile(parsed, path);
 }
 
 export function privateKeyForWalletName(config: SimConfig, wallet: string): Hex {
@@ -86,6 +79,54 @@ export function privateKeyForWalletName(config: SimConfig, wallet: string): Hex 
     default:
       throw new Error(`Unsupported wallet binding: ${wallet}`);
   }
+}
+
+function defaultAgents(): AgentSpec[] {
+  return validateAgentsFile(
+    {
+      agents: [
+        { id: "noop", command: "node", args: ["--import", "tsx", "examples/agents/noop.ts"], wallet: "AGENT0_PRIVATE_KEY" },
+        { id: "random", command: "node", args: ["--import", "tsx", "examples/agents/random.ts"], wallet: "AGENT1_PRIVATE_KEY" },
+        { id: "simple", command: "node", args: ["--import", "tsx", "examples/agents/simple-rule.ts"], wallet: "AGENT2_PRIVATE_KEY" }
+      ]
+    },
+    "default agents"
+  );
+}
+
+function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`${path} must be a JSON object`);
+  }
+  const file = parsed as AgentsFile;
+  if (!Array.isArray(file.agents) || file.agents.length === 0) {
+    throw new Error(`${path} must contain a non-empty "agents" array`);
+  }
+  const seenIds = new Set<string>();
+  return file.agents.map((agent, index) => {
+    const label = `${path} agents[${index}]`;
+    if (!agent || typeof agent !== "object") throw new Error(`${label} must be an object`);
+    if (typeof agent.id !== "string" || agent.id.trim() === "") throw new Error(`${label}.id must be a non-empty string`);
+    if (seenIds.has(agent.id)) throw new Error(`${path} contains duplicate agent id: ${agent.id}`);
+    seenIds.add(agent.id);
+    if (typeof agent.command !== "string" || agent.command.trim() === "") throw new Error(`${label}.command must be a non-empty string`);
+    if (agent.args !== undefined && (!Array.isArray(agent.args) || !agent.args.every((arg) => typeof arg === "string"))) {
+      throw new Error(`${label}.args must be an array of strings`);
+    }
+    if (!isSupportedAgentWallet(agent.wallet)) {
+      throw new Error(`${label}.wallet must be one of ${SUPPORTED_AGENT_WALLETS.join(", ")}`);
+    }
+    return {
+      id: agent.id,
+      command: agent.command,
+      args: agent.args,
+      wallet: agent.wallet
+    };
+  });
+}
+
+function isSupportedAgentWallet(wallet: unknown): wallet is (typeof SUPPORTED_AGENT_WALLETS)[number] {
+  return typeof wallet === "string" && SUPPORTED_AGENT_WALLETS.includes(wallet as (typeof SUPPORTED_AGENT_WALLETS)[number]);
 }
 
 function intEnv(value: string | undefined, fallback: number): number {
@@ -102,6 +143,6 @@ function bigintEnv(value: string | undefined, fallback: bigint): bigint {
 
 function hexEnv(value: string | undefined, fallback: string): Hex {
   const result = value && value.length > 0 ? value : fallback;
-  if (!result.startsWith("0x")) throw new Error(`Private key must be 0x-prefixed`);
+  if (!/^0x[0-9a-fA-F]{64}$/.test(result)) throw new Error("Private key must be a 0x-prefixed 32-byte hex string");
   return result as Hex;
 }
