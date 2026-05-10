@@ -13,6 +13,7 @@ export class AgentProcess {
     this.child = spawn(spec.command, spec.args ?? [], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
+        ...(spec.env ?? {}),
         PATH: process.env.PATH ?? "",
         NODE_ENV: process.env.NODE_ENV ?? "development",
         ERIS_AGENT_ID: spec.id,

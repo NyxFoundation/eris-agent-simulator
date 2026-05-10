@@ -1,9 +1,18 @@
 import { readFileSync, existsSync } from "node:fs";
-import type { Hex } from "viem";
+import { keccak256, stringToBytes, type Hex } from "viem";
 import { DEFAULT_ANVIL_PRIVATE_KEYS, MAX_BUNDLE_ACTIONS } from "./constants.js";
 import type { AgentSpec, AgentsFile } from "./types.js";
 
-const SUPPORTED_AGENT_WALLETS = ["AGENT0_PRIVATE_KEY", "AGENT1_PRIVATE_KEY", "AGENT2_PRIVATE_KEY"] as const;
+const NAMED_AGENT_WALLETS = [
+  "AGENT0_PRIVATE_KEY",
+  "AGENT1_PRIVATE_KEY",
+  "AGENT2_PRIVATE_KEY",
+  "AGENT3_PRIVATE_KEY",
+  "AGENT4_PRIVATE_KEY",
+  "AGENT5_PRIVATE_KEY",
+  "AGENT6_PRIVATE_KEY"
+] as const;
+const SUPPORTED_AGENT_WALLETS = [...NAMED_AGENT_WALLETS, "AUTO"] as const;
 
 export type SimConfig = {
   rpcUrl: string;
@@ -15,7 +24,7 @@ export type SimConfig = {
   agentsConfigPath: string;
   initialEthWei: bigint;
   initialWethWei: bigint;
-  initialSwapWethWei: bigint;
+  initialUsdcUnits: bigint;
   defaultPriorityFeeWei: bigint;
   maxPriorityFeeWei: bigint;
   maxAgentWethInWei: bigint;
@@ -30,6 +39,10 @@ export type SimConfig = {
     agent0: Hex;
     agent1: Hex;
     agent2: Hex;
+    agent3: Hex;
+    agent4: Hex;
+    agent5: Hex;
+    agent6: Hex;
     uninformedFlow: Hex;
     informedFlow: Hex;
     setup: Hex;
@@ -48,7 +61,7 @@ export function loadConfig(env = process.env): SimConfig {
     agentsConfigPath: env.AGENTS_CONFIG ?? "agents.local.json",
     initialEthWei: bigintEnv(env.INITIAL_ETH_WEI, 100_000_000_000_000_000_000n),
     initialWethWei: bigintEnv(env.INITIAL_WETH_WEI, 10_000_000_000_000_000_000n),
-    initialSwapWethWei: bigintEnv(env.INITIAL_SWAP_WETH_WEI, 5_000_000_000_000_000_000n),
+    initialUsdcUnits: bigintEnv(env.INITIAL_USDC_UNITS, 25_000_000_000n),
     defaultPriorityFeeWei: bigintEnv(env.DEFAULT_PRIORITY_FEE_WEI, 100_000_000n),
     maxPriorityFeeWei: bigintEnv(env.MAX_PRIORITY_FEE_WEI, 5_000_000_000n),
     maxAgentWethInWei: bigintEnv(env.MAX_AGENT_WETH_IN_WEI, 1_000_000_000_000_000_000n),
@@ -63,6 +76,10 @@ export function loadConfig(env = process.env): SimConfig {
       agent0: hexEnv(env.AGENT0_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[0]),
       agent1: hexEnv(env.AGENT1_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[1]),
       agent2: hexEnv(env.AGENT2_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[2]),
+      agent3: hexEnv(env.AGENT3_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[3]),
+      agent4: hexEnv(env.AGENT4_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[4]),
+      agent5: hexEnv(env.AGENT5_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[5]),
+      agent6: hexEnv(env.AGENT6_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[6]),
       uninformedFlow: hexEnv(env.FLOW_UNINFORMED_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[7]),
       informedFlow: hexEnv(env.FLOW_INFORMED_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[8]),
       setup: hexEnv(env.SETUP_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[9])
@@ -76,7 +93,7 @@ export function loadAgents(path: string): AgentSpec[] {
   return validateAgentsFile(parsed, path);
 }
 
-export function privateKeyForWalletName(config: SimConfig, wallet: string): Hex {
+export function privateKeyForWalletName(config: SimConfig, wallet: string, agentId: string): Hex {
   switch (wallet) {
     case "AGENT0_PRIVATE_KEY":
       return config.privateKeys.agent0;
@@ -84,9 +101,23 @@ export function privateKeyForWalletName(config: SimConfig, wallet: string): Hex 
       return config.privateKeys.agent1;
     case "AGENT2_PRIVATE_KEY":
       return config.privateKeys.agent2;
+    case "AGENT3_PRIVATE_KEY":
+      return config.privateKeys.agent3;
+    case "AGENT4_PRIVATE_KEY":
+      return config.privateKeys.agent4;
+    case "AGENT5_PRIVATE_KEY":
+      return config.privateKeys.agent5;
+    case "AGENT6_PRIVATE_KEY":
+      return config.privateKeys.agent6;
+    case "AUTO":
+      return deriveAutoPrivateKey(config.seed, agentId);
     default:
       throw new Error(`Unsupported wallet binding: ${wallet}`);
   }
+}
+
+function deriveAutoPrivateKey(seed: number, agentId: string): Hex {
+  return keccak256(stringToBytes(`auto-wallet:${seed}:${agentId}`));
 }
 
 function defaultAgents(): AgentSpec[] {
@@ -111,6 +142,7 @@ function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
     throw new Error(`${path} must contain a non-empty "agents" array`);
   }
   const seenIds = new Set<string>();
+  const seenNamedWallets = new Set<string>();
   return file.agents.map((agent, index) => {
     const label = `${path} agents[${index}]`;
     if (!agent || typeof agent !== "object") throw new Error(`${label} must be an object`);
@@ -124,15 +156,32 @@ function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
     if (!isSupportedAgentWallet(agent.wallet)) {
       throw new Error(`${label}.wallet must be one of ${SUPPORTED_AGENT_WALLETS.join(", ")}`);
     }
+    if (agent.wallet !== "AUTO") {
+      if (seenNamedWallets.has(agent.wallet)) {
+        throw new Error(`${path} reuses named wallet ${agent.wallet}; use "AUTO" for additional agents`);
+      }
+      seenNamedWallets.add(agent.wallet);
+    }
     if (agent.description !== undefined && typeof agent.description !== "string") {
       throw new Error(`${label}.description must be a string when present`);
+    }
+    if (agent.env !== undefined) {
+      if (!agent.env || typeof agent.env !== "object" || Array.isArray(agent.env)) {
+        throw new Error(`${label}.env must be an object of string key/values`);
+      }
+      for (const [k, v] of Object.entries(agent.env)) {
+        if (typeof k !== "string" || typeof v !== "string") {
+          throw new Error(`${label}.env must contain only string keys and string values (offending key: ${k})`);
+        }
+      }
     }
     return {
       id: agent.id,
       command: agent.command,
       args: agent.args,
       wallet: agent.wallet,
-      description: agent.description
+      description: agent.description,
+      env: agent.env
     };
   });
 }

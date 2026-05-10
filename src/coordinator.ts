@@ -6,7 +6,7 @@ import { loadAgents, loadConfig, privateKeyForWalletName, type SimConfig } from 
 import { ADDRESSES, WETH_USDC_FEE } from "./constants.js";
 import { AgentProcess } from "./agentProcess.js";
 import { validateAction } from "./action.js";
-import { accountAddress, getBalances, makeClients, mine, sendAndMine, setupWallet, snapshotForLog } from "./chain.js";
+import { accountAddress, getBalances, makeClients, mine, resetFork, setupWallet, snapshotForLog } from "./chain.js";
 import { RunLogger, safeStringify } from "./logger.js";
 import { balanceToInventory, positionsValueUsdc, valueUsdc, valueUsdcWithPositions } from "./pnl.js";
 import { nextFairPrice, Rng } from "./rng.js";
@@ -54,9 +54,11 @@ export async function runSimulation(): Promise<void> {
   logger.event({ type: "run_started", runId, config: publicConfig(config) });
 
   const { chain, publicClient, walletClient } = makeClients(config.rpcUrl, config.chainId);
+  await resetFork(publicClient);
+  logger.event({ type: "fork_reset" });
   const agentSpecs = loadAgents(config.agentsConfigPath);
   const agentRuntimes: AgentRuntime[] = agentSpecs.map((spec) => {
-    const privateKey = privateKeyForWalletName(config, spec.wallet);
+    const privateKey = privateKeyForWalletName(config, spec.wallet, spec.id);
     return {
       id: spec.id,
       privateKey,
@@ -77,8 +79,7 @@ export async function runSimulation(): Promise<void> {
     ];
     for (const wallet of setupWallets) {
       logger.event({ type: "wallet_setup_started", id: wallet.id, role: wallet.role, address: accountAddress(wallet.privateKey) });
-      await setupWallet(publicClient, walletClient, chain, wallet.privateKey, config.initialEthWei, config.initialWethWei);
-      await initialUsdcSwap(publicClient, walletClient, chain, wallet.privateKey, config);
+      await setupWallet(publicClient, walletClient, chain, wallet.privateKey, config.initialEthWei, config.initialWethWei, config.initialUsdcUnits);
       logger.event({ type: "wallet_setup_completed", id: wallet.id, balances: snapshotForLog(await getBalances(publicClient, accountAddress(wallet.privateKey))) });
     }
 
@@ -258,23 +259,6 @@ export async function runSimulation(): Promise<void> {
   } finally {
     for (const agent of agentRuntimes) agent.process.close();
   }
-}
-
-async function initialUsdcSwap(
-  publicClient: ReturnType<typeof makeClients>["publicClient"],
-  walletClient: ReturnType<typeof makeClients>["walletClient"],
-  chain: ReturnType<typeof makeClients>["chain"],
-  privateKey: Hex,
-  config: SimConfig
-) {
-  if (config.initialSwapWethWei <= 0n) return;
-  const data = await buildSwapData(publicClient, accountAddress(privateKey), {
-    type: "swap",
-    tokenIn: "WETH",
-    amountIn: config.initialSwapWethWei.toString(),
-    slippageBps: 100
-  }, 100);
-  await sendAndMine(publicClient, walletClient, chain, privateKey, { to: ADDRESSES.swapRouter, data });
 }
 
 function observationFor(

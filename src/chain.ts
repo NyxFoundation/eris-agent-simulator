@@ -1,9 +1,11 @@
 import {
   createPublicClient,
   createWalletClient,
+  encodeAbiParameters,
   encodeFunctionData,
   formatUnits,
   http,
+  keccak256,
   maxUint256,
   type Address,
   type Hex,
@@ -53,10 +55,54 @@ export async function setEthBalance(publicClient: PublicClient, address: Address
   } as Parameters<typeof publicClient.request>[0]);
 }
 
+const WETH_BALANCE_MAPPING_SLOT = 3;
+const USDC_BALANCE_MAPPING_SLOT = 9;
+
+function erc20BalanceStorageSlot(holder: Address, mappingSlot: number): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "address" }, { type: "uint256" }],
+      [holder, BigInt(mappingSlot)]
+    )
+  );
+}
+
+function pad32Hex(value: bigint): Hex {
+  return `0x${value.toString(16).padStart(64, "0")}` as Hex;
+}
+
+export async function setErc20Balance(
+  publicClient: PublicClient,
+  token: Address,
+  holder: Address,
+  amount: bigint,
+  mappingSlot: number
+): Promise<void> {
+  await publicClient.request({
+    method: "anvil_setStorageAt",
+    params: [token, erc20BalanceStorageSlot(holder, mappingSlot), pad32Hex(amount)]
+  } as Parameters<typeof publicClient.request>[0]);
+}
+
+export async function setWethBalance(publicClient: PublicClient, holder: Address, amount: bigint): Promise<void> {
+  await setErc20Balance(publicClient, ADDRESSES.weth, holder, amount, WETH_BALANCE_MAPPING_SLOT);
+}
+
+export async function setUsdcBalance(publicClient: PublicClient, holder: Address, amount: bigint): Promise<void> {
+  await setErc20Balance(publicClient, ADDRESSES.usdc, holder, amount, USDC_BALANCE_MAPPING_SLOT);
+}
+
 export async function mine(publicClient: PublicClient, blocks = 1): Promise<void> {
   await publicClient.request({
     method: "anvil_mine",
     params: [`0x${blocks.toString(16)}`]
+  } as Parameters<typeof publicClient.request>[0]);
+}
+
+export async function resetFork(publicClient: PublicClient): Promise<void> {
+  await publicClient.request({
+    method: "anvil_reset",
+    params: []
   } as Parameters<typeof publicClient.request>[0]);
 }
 
@@ -90,15 +136,13 @@ export async function setupWallet(
   chain: ReturnType<typeof makeChain>,
   privateKey: Hex,
   initialEthWei: bigint,
-  initialWethWei: bigint
+  initialWethWei: bigint,
+  initialUsdcUnits: bigint
 ): Promise<void> {
   const address = accountAddress(privateKey);
   await setEthBalance(publicClient, address, initialEthWei);
-  await sendAndMine(publicClient, walletClient, chain, privateKey, {
-    to: ADDRESSES.weth,
-    data: encodeFunctionData({ abi: wethAbi, functionName: "deposit" }),
-    value: initialWethWei
-  });
+  await setWethBalance(publicClient, address, initialWethWei);
+  await setUsdcBalance(publicClient, address, initialUsdcUnits);
   await sendAndMine(publicClient, walletClient, chain, privateKey, {
     to: ADDRESSES.weth,
     data: encodeFunctionData({ abi: wethAbi, functionName: "approve", args: [ADDRESSES.swapRouter, maxUint256] })

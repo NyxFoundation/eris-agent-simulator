@@ -131,6 +131,7 @@ export type AgentSpec = {
   args?: string[];
   wallet: string;
   description?: string;
+  env?: Record<string, string>;
 };
 
 export type AgentsFile = {
