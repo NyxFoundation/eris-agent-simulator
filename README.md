@@ -1,6 +1,8 @@
 # Eris Competition MVP
 
-Local DEX strategy simulation on an Anvil mainnet fork. Agents do not receive RPC access, private keys, pending transactions, or txpool data. The coordinator gives each agent only confirmed-state observations and converts accepted JSON actions into transactions.
+Local multi-protocol DeFi strategy simulation on an Anvil **Arbitrum One** fork. Agents do not receive RPC access, private keys, pending transactions, or txpool data. The coordinator gives each agent only confirmed-state observations and converts accepted JSON actions into transactions.
+
+Supported protocols are pluggable via a protocol adapter registry (`src/protocols/`). Phase 1 ships Uniswap V3; Balancer v2, Curve, Aave v3, and GMX v2 are added in later phases. Select active protocols per run with `ENABLED_PROTOCOLS` (comma-separated, e.g. `ENABLED_PROTOCOLS=uniswap,aave,gmx`). Aave v3 and GMX v2 prices are driven by controllable mock oracles updated each round.
 
 ## Setup
 
@@ -10,7 +12,7 @@ cp .env.example .env.local
 cp agents.local.example.json agents.local.json
 ```
 
-Fill `MAINNET_RPC_URL` and `FORK_BLOCK_NUMBER` in `.env.local`.
+Fill `ARB_RPC_URL` (an Arbitrum One RPC endpoint) in `.env.local`. `FORK_BLOCK_NUMBER` is optional (defaults to the RPC's latest block).
 Load it before running commands, or export the same variables in your shell.
 
 Recommended local defaults:
@@ -18,10 +20,17 @@ Recommended local defaults:
 ```bash
 ANVIL_PORT=8545
 ANVIL_RPC_URL=http://127.0.0.1:8545
-CHAIN_ID=31337
+CHAIN_ID=42161
 ROUNDS=1
+ENABLED_PROTOCOLS=uniswap
 AGENTS_CONFIG=agents.local.json
 REPORT_DIR=./runs
+```
+
+Build the mock oracle contracts (required once Aave v3 / GMX v2 are enabled; needs Foundry):
+
+```bash
+npm run build:contracts
 ```
 
 Private key variables can be left empty for local Anvil runs; the coordinator falls back to Anvil's default dev keys.
@@ -43,7 +52,7 @@ In another terminal:
 set -a
 source .env.local
 set +a
-export ROUNDS=1
+export ROUNDS=1 ENABLED_PROTOCOLS=uniswap
 npm run sim
 ```
 
