@@ -1,3 +1,4 @@
+import type { Address } from "viem";
 import type {
   AgentAction,
   AgentObservation,
@@ -201,6 +202,18 @@ function validateLeafItems(
     return { ok: false, reason: "priority fee exceeds configured max" };
   }
 
+  // bundle 横断の累積残高/ポジション数を強制する。各 leaf を「これまでの leaf で消費した分を
+  // 差し引いた残高」に対して検証し、複数 leaf が合計でウォレット残高や maxOpenPositions を
+  // 超えるのを防ぐ（単発アクションでは効果なし）。
+  const work: BalanceSnapshot = {
+    ethWei: balances.ethWei,
+    wethWei: balances.wethWei,
+    usdcUnits: balances.usdcUnits,
+    stables: { ...(balances.stables ?? {}) },
+  };
+  const baseLpPositions = observation.protocols.uniswap?.positions.length ?? 0;
+  let newLpPositions = 0;
+
   const intents: ValidatedIntent[] = [];
   for (let i = 0; i < actions.length; i++) {
     const item = actions[i];
@@ -215,8 +228,22 @@ function validateLeafItems(
     }
 
     const adapter = adapterForAction(item);
-    const result = adapter.validate(item, observation, balances);
+    const result = adapter.validate(item, observation, work);
     if (!result.ok) return result;
+
+    if (item.type === "mintLiquidity") {
+      if (
+        baseLpPositions + newLpPositions >=
+        observation.limits.maxOpenPositions
+      ) {
+        return {
+          ok: false,
+          reason: "open LP position count exceeds configured max",
+        };
+      }
+      newLpPositions++;
+    }
+    applyLeafSpend(work, item, adapter.stableToken);
 
     intents.push({
       action: item,
@@ -227,6 +254,57 @@ function validateLeafItems(
     });
   }
   return { ok: true, action: original, intents, rawIntents: [] };
+}
+
+// leaf が消費する WETH / stable を working 残高から差し引く（bundle 累積検証用）。
+function applyLeafSpend(
+  work: BalanceSnapshot,
+  item: LeafAction,
+  stableToken?: Address,
+): void {
+  const stableKey = (stableToken ?? "").toLowerCase();
+  const spendWeth = (amount: bigint) => {
+    work.wethWei = work.wethWei > amount ? work.wethWei - amount : 0n;
+  };
+  const spendStable = (amount: bigint) => {
+    work.usdcUnits = work.usdcUnits > amount ? work.usdcUnits - amount : 0n;
+    if (work.stables && stableKey in work.stables) {
+      const cur = work.stables[stableKey];
+      work.stables[stableKey] = cur > amount ? cur - amount : 0n;
+    }
+  };
+  const currentStable = (): bigint =>
+    work.stables?.[stableKey] ?? work.usdcUnits;
+
+  switch (item.type) {
+    case "swap":
+    case "balancerSwap":
+    case "curveSwap":
+      if (item.tokenIn === "WETH") spendWeth(BigInt(item.amountIn));
+      else spendStable(BigInt(item.amountIn));
+      break;
+    case "mintLiquidity":
+      spendWeth(BigInt(item.amountWethDesired));
+      spendStable(BigInt(item.amountUsdcDesired));
+      break;
+    case "aaveSupply":
+      if (item.asset === "WETH") spendWeth(BigInt(item.amount));
+      else spendStable(BigInt(item.amount));
+      break;
+    case "aaveRepay": {
+      const amt =
+        item.amount === "max"
+          ? item.asset === "WETH"
+            ? work.wethWei
+            : currentStable()
+          : BigInt(item.amount);
+      if (item.asset === "WETH") spendWeth(amt);
+      else spendStable(amt);
+      break;
+    }
+    default:
+      break; // borrow/withdraw/collectFees/removeLiquidity/gmx は入力を消費しない
+  }
 }
 
 function validateRawTxAction(

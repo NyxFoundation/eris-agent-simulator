@@ -43,6 +43,12 @@ const rl = createInterface({ input: process.stdin });
 
 rl.on("line", (line) => {
   const obs = JSON.parse(line) as Observation;
+  if (!obs.protocols?.uniswap?.pool) {
+    process.stdout.write(
+      `${JSON.stringify({ type: "noop", reason: "uniswap disabled" })}\n`,
+    );
+    return;
+  }
   const pool = obs.protocols.uniswap.pool.priceUsdcPerWeth;
   const fair = obs.fairPriceUsdcPerWeth;
   if (

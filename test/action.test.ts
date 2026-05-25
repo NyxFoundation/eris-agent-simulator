@@ -366,6 +366,34 @@ test("validateAction rejects gmx size over configured max", () => {
   });
 });
 
+test("validateAction enforces cumulative balance across a bundle of LP mints", () => {
+  // balances.wethWei = 100。各 mint が 100 WETH を要求する 2 件 bundle は、
+  // 累積で残高を超えるため 2 件目で拒否されるべき（単発なら各々は通る）。
+  const action = parseAction({
+    type: "bundle",
+    actions: [
+      {
+        type: "mintLiquidity",
+        tickLower: -10,
+        tickUpper: 10,
+        amountWethDesired: "100",
+        amountUsdcDesired: "10",
+      },
+      {
+        type: "mintLiquidity",
+        tickLower: -10,
+        tickUpper: 10,
+        amountWethDesired: "100",
+        amountUsdcDesired: "10",
+      },
+    ],
+  });
+  assert.deepEqual(validateAction(action, observation, balances), {
+    ok: false,
+    reason: "LP desired amounts exceed balance",
+  });
+});
+
 test("validateAction routes balancer swap intent with protocol tag", () => {
   const result = validateAction(
     parseAction({ type: "balancerSwap", tokenIn: "WETH", amountIn: "10" }),

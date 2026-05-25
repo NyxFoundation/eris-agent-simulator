@@ -311,5 +311,7 @@ export type RawTxIntent = {
 export type BalanceSnapshot = {
   ethWei: bigint;
   wethWei: bigint;
-  usdcUnits: bigint;
+  usdcUnits: bigint; // active stable の合算（表示/PnL 用）
+  // stable トークンアドレス(小文字) -> 残高。検証は venue ごとの stable をこのマップで個別確認する。
+  stables?: Record<string, bigint>;
 };

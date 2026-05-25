@@ -12,7 +12,7 @@ import {
   type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { GMX, GMX_MARKETS, TOKENS } from "../constants.js";
+import { GMX, GMX_MARKETS, TOKENS, stableBalanceOf } from "../constants.js";
 import {
   accountAddress,
   increaseTime,
@@ -524,10 +524,17 @@ function validate(
     const collateralAmount = BigInt(a.collateralAmount ?? "0");
     if (collateralAmount <= 0n)
       return { ok: false, reason: "collateralAmount must be positive" };
-    const bal = a.collateral === "WETH" ? balances.wethWei : balances.usdcUnits;
-    // WETH 担保は ETH(native)を wrap して送るため ETH 残高も要するが、ここでは概算で WETH/USDC 残高を見る
-    if (a.collateral === "USDC" && collateralAmount > bal)
-      return { ok: false, reason: "collateralAmount exceeds balance" };
+    if (a.collateral === "USDC") {
+      if (collateralAmount > stableBalanceOf(balances, TOKENS.USDC.address))
+        return { ok: false, reason: "collateralAmount exceeds balance" };
+    } else {
+      // WETH 担保は native ETH を sendWnt で wrap して送るため、ETH 残高で担保+実行手数料を確認する
+      if (collateralAmount + EXECUTION_FEE > balances.ethWei)
+        return {
+          ok: false,
+          reason: "collateralAmount + execution fee exceeds ETH balance",
+        };
+    }
   }
   return { ok: true };
 }
@@ -605,8 +612,13 @@ export const gmxAdapter: ProtocolAdapter = {
   async buildFlow(ctx): Promise<FlowOrder[]> {
     if (!ctx.rng.bool()) return []; // 約半数のラウンドは見送り（OI 過剰・実行負荷を抑制）
     const isLong = ctx.rng.bool();
-    const collateralWei = 100_000_000_000_000_000n; // 0.1 WETH
-    const sizeUsd = 400n * 10n ** 30n; // $400 (~2x)
+    // size は gmxFlowMaxSizeUsd の 1/50 を基準（約 2x になるよう担保を size/2x で算出）
+    const sizeUsd = ctx.config.gmxFlowMaxSizeUsd / 50n;
+    // collateral(WETH wei) ≈ (sizeUsd/2) を USD->WETH 換算。oraclePrices は使えないため概算 fairPrice 相当で割る
+    const sizeUsdNum = Number(sizeUsd) / 1e30;
+    const collateralWei = BigInt(
+      Math.max(1, Math.floor(((sizeUsdNum / 2) * 1e18) / 2100)),
+    );
     const fee =
       ctx.config.defaultPriorityFeeWei +
       BigInt(ctx.rng.int(1, 60)) * 1_000_000n;
@@ -664,8 +676,12 @@ export const gmxAdapter: ProtocolAdapter = {
         });
         await mine(ctx.publicClient);
         await ctx.publicClient.waitForTransactionReceipt({ hash });
-      } catch {
+      } catch (error) {
         // 約定失敗（acceptablePrice 等）はスキップ。GMX が自動でキャンセル/返金する。
+        // 全件失敗が常態化（oracle 設定不備等）した場合に気づけるよう stderr に記録する。
+        console.error(
+          `gmx keeper executeOrder failed: key=${key} ${error instanceof Error ? error.message : String(error)}`,
+        );
         await mine(ctx.publicClient);
       }
     }

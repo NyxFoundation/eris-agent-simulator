@@ -41,6 +41,14 @@ export function oppositeToken(symbol: TokenSymbol): TokenSymbol {
   return symbol === "WETH" ? "USDC" : "WETH";
 }
 
+// venue ごとの stable 残高を引く。stables マップが無い場合は合算値にフォールバック。
+export function stableBalanceOf(
+  balances: { usdcUnits: bigint; stables?: Record<string, bigint> },
+  token: Address,
+): bigint {
+  return balances.stables?.[token.toLowerCase()] ?? balances.usdcUnits;
+}
+
 export function symbolForAddress(addr: Address): TokenSymbol | undefined {
   const lower = addr.toLowerCase();
   if (lower === TOKENS.WETH.address.toLowerCase()) return "WETH";

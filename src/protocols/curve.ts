@@ -1,6 +1,6 @@
 import { encodeFunctionData, type PublicClient } from "viem";
 import { curveTricryptoAbi } from "../abis.js";
-import { CURVE, TOKENS } from "../constants.js";
+import { CURVE, TOKENS, stableBalanceOf } from "../constants.js";
 import type {
   AgentObservation,
   BalanceSnapshot,
@@ -108,7 +108,9 @@ function validate(
   if (amountIn > maxAllowed)
     return { ok: false, reason: "amountIn exceeds configured per-round limit" };
   const balance =
-    action.tokenIn === "WETH" ? balances.wethWei : balances.usdcUnits;
+    action.tokenIn === "WETH"
+      ? balances.wethWei
+      : stableBalanceOf(balances, CURVE.usdcToken);
   if (amountIn > balance)
     return { ok: false, reason: "amountIn exceeds balance" };
   return { ok: true };

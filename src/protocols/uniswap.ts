@@ -16,8 +16,13 @@ import {
   swapRouterAbi,
   wethAbi,
 } from "../abis.js";
-import { TOKENS, UNISWAP, tokenAddress, oppositeToken } from "../constants.js";
-import { sendAndMine } from "../chain.js";
+import {
+  TOKENS,
+  UNISWAP,
+  tokenAddress,
+  oppositeToken,
+  stableBalanceOf,
+} from "../constants.js";
 import type {
   AgentObservation,
   BalanceSnapshot,
@@ -480,7 +485,9 @@ function validate(
         reason: "amountIn exceeds configured per-round limit",
       };
     const balance =
-      action.tokenIn === "WETH" ? balances.wethWei : balances.usdcUnits;
+      action.tokenIn === "WETH"
+        ? balances.wethWei
+        : stableBalanceOf(balances, TOKENS.USDC.address);
     if (amountIn > balance)
       return { ok: false, reason: "amountIn exceeds balance" };
     return { ok: true };
@@ -506,7 +513,10 @@ function validate(
         ok: false,
         reason: "LP desired amounts exceed configured LP limits",
       };
-    if (weth > balances.wethWei || usdc > balances.usdcUnits)
+    if (
+      weth > balances.wethWei ||
+      usdc > stableBalanceOf(balances, TOKENS.USDC.address)
+    )
       return { ok: false, reason: "LP desired amounts exceed balance" };
     if (uni.positions.length >= obs.limits.maxOpenPositions)
       return {

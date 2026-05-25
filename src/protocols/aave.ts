@@ -5,7 +5,7 @@ import {
   type Address,
   type PublicClient,
 } from "viem";
-import { AAVE, TOKENS } from "../constants.js";
+import { AAVE, TOKENS, stableBalanceOf } from "../constants.js";
 import { accountAddress, sendAndMine, sendAsImpersonated } from "../chain.js";
 import type {
   AaveObservation,
@@ -133,7 +133,10 @@ function validate(
     const amount = BigInt(a.amount);
     if (amount <= 0n) return { ok: false, reason: "amount must be positive" };
     if (a.type === "aaveSupply") {
-      const bal = a.asset === "WETH" ? balances.wethWei : balances.usdcUnits;
+      const bal =
+        a.asset === "WETH"
+          ? balances.wethWei
+          : stableBalanceOf(balances, AAVE_STABLE);
       if (amount > bal)
         return { ok: false, reason: "supply amount exceeds balance" };
       if (
@@ -143,7 +146,10 @@ function validate(
         return { ok: false, reason: "supply exceeds configured WETH limit" };
     }
     if (a.type === "aaveRepay") {
-      const bal = a.asset === "WETH" ? balances.wethWei : balances.usdcUnits;
+      const bal =
+        a.asset === "WETH"
+          ? balances.wethWei
+          : stableBalanceOf(balances, AAVE_STABLE);
       if (amount > bal)
         return { ok: false, reason: "repay amount exceeds balance" };
     }
@@ -277,6 +283,9 @@ export const aaveAdapter: ProtocolAdapter = {
       ctx.config.defaultPriorityFeeWei +
       BigInt(ctx.rng.int(1, 40)) * 1_000_000n;
 
+    // 状態機械: supply -> (borrow <-> repay を反復) -> 債務0のとき確率で withdraw。
+    //   - withdraw は borrowed===0 のときのみ（債務未返済での withdraw revert を回避）
+    //   - 債務があれば必ず repay max（flow walletは初期USDCも保有するため利息込みで完済でき端数ループを回避）
     let action: LeafAction;
     if (weth.supplied === 0n) {
       const amount = ctx.config.aaveFlowMaxWethWei / 2n;
@@ -285,19 +294,22 @@ export const aaveAdapter: ProtocolAdapter = {
         asset: "WETH",
         amount: amount.toString(),
       } as unknown as LeafAction;
-    } else if (usdc.borrowed < 1_000_000_000n) {
-      action = {
-        type: "aaveBorrow",
-        asset: "USDC",
-        amount: "500000000",
-      } as unknown as LeafAction; // 500 USDC
-    } else if (ctx.rng.bool()) {
+    } else if (usdc.borrowed > 0n) {
       action = {
         type: "aaveRepay",
         asset: "USDC",
         amount: "max",
       } as unknown as LeafAction;
+    } else if (ctx.rng.bool()) {
+      // 債務0 → borrow（maxAaveBorrowUsdcUnits を尊重）
+      const amount = ctx.config.maxAaveBorrowUsdcUnits / 5n;
+      action = {
+        type: "aaveBorrow",
+        asset: "USDC",
+        amount: (amount > 0n ? amount : 100_000_000n).toString(),
+      } as unknown as LeafAction;
     } else {
+      // 債務0 → 担保を引き上げてサイクルを閉じる
       action = {
         type: "aaveWithdraw",
         asset: "WETH",

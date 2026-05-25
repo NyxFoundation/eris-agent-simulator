@@ -9,7 +9,7 @@ import {
   type PublicClient,
 } from "viem";
 import { balancerQueriesAbi, balancerVaultAbi, wethAbi } from "../abis.js";
-import { BALANCER, TOKENS } from "../constants.js";
+import { BALANCER, TOKENS, stableBalanceOf } from "../constants.js";
 import { dealErc20, sendAndMine } from "../chain.js";
 import type {
   AgentObservation,
@@ -149,7 +149,9 @@ function validate(
   if (amountIn > maxAllowed)
     return { ok: false, reason: "amountIn exceeds configured per-round limit" };
   const balance =
-    action.tokenIn === "WETH" ? balances.wethWei : balances.usdcUnits;
+    action.tokenIn === "WETH"
+      ? balances.wethWei
+      : stableBalanceOf(balances, BALANCER.usdcToken);
   if (amountIn > balance)
     return { ok: false, reason: "amountIn exceeds balance" };
   return { ok: true };

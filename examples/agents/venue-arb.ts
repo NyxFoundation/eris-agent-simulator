@@ -37,6 +37,7 @@ rl.on("line", (line) => {
   let best: Venue | undefined;
   let bestGap = 0;
   for (const v of venues) {
+    if (!Number.isFinite(v.price) || v.price <= 0) continue; // 壊れた/未初期化の venue を除外
     const gap = Math.abs(fair / v.price - 1);
     if (gap > bestGap) {
       bestGap = gap;

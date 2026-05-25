@@ -83,11 +83,15 @@ export async function getBalances(
       }),
     ),
   ]);
+  const stables: Record<string, bigint> = {};
+  ACTIVE_STABLES.forEach((token, i) => {
+    stables[token.toLowerCase()] = (stableBalances as bigint[])[i];
+  });
   const usdcUnits = (stableBalances as bigint[]).reduce(
     (sum, b) => sum + b,
     0n,
   );
-  return { ethWei, wethWei, usdcUnits };
+  return { ethWei, wethWei, usdcUnits, stables };
 }
 
 // 単一 stable の残高（adapter が自分の stable 在庫を確認するため）

@@ -30,12 +30,17 @@ export async function deployContract(
 ): Promise<Address> {
   const account = privateKeyToAccount(ctx.adminPk);
   const { abi, bytecode } = artifact(name);
+  // --no-mining 下で fee 見積りが次ブロック baseFee を下回り tx 滞留するのを避け、明示指定する。
+  const block = await ctx.publicClient.getBlock();
+  const baseFee = block.baseFeePerGas ?? 0n;
   const hash = await ctx.walletClient.deployContract({
     abi,
     bytecode,
     args: args as never,
     account,
     chain: ctx.chain,
+    maxFeePerGas: baseFee + 1_000_000_000n,
+    maxPriorityFeePerGas: 1_000_000_000n,
   });
   await mine(ctx.publicClient);
   const receipt = await ctx.publicClient.waitForTransactionReceipt({ hash });
