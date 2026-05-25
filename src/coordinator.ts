@@ -42,6 +42,7 @@ import type {
 } from "./types.js";
 import { enabledAdapters, setEnabledProtocols } from "./protocols/registry.js";
 import type { FlowKind, FlowWallet, SimContext } from "./protocols/types.js";
+import { updateOracles } from "./protocols/oracles.js";
 import { GMX_MARKETS } from "./constants.js";
 
 type AgentRuntime = {
@@ -251,15 +252,9 @@ export async function runSimulation(): Promise<void> {
     for (let round = 1; round <= config.rounds; round++) {
       fairPrice = nextFairPrice(fairPrice, rng);
 
-      // ---- 1) Oracle ブロック（GMX/Aave の mock 価格更新）----
-      let oracleWrote = false;
-      for (const adapter of adapters) {
-        // updateOracles 相当は各 adapter の setupGlobal で確立した handle を使う oracles.ts に集約予定。
-        // Phase 1（uniswap のみ）では何もしない。
-        void adapter;
-      }
-      oracleWrote = await updateOracles(ctx, fairPrice);
-      if (oracleWrote) await mine(publicClient);
+      // ---- 1) Oracle ブロック（GMX/Aave の mock 価格を fairPrice に追従）----
+      // updateOracles は内部で sendAndMine するため追加 mine は不要。
+      await updateOracles(ctx, fairPrice);
 
       // ---- 2) 競争ブロック ----
       const stateById = new Map<ProtocolId, unknown>();
@@ -643,21 +638,6 @@ async function submitRawTxIntent(
     maxFeePerGas: baseFee + intent.priorityFeeWei,
     maxPriorityFeePerGas: intent.priorityFeeWei,
   });
-}
-
-// updateOracles：GMX/Aave の handle がある場合のみ価格更新。Phase 1 では何もしない。
-async function updateOracles(
-  ctx: SimContext,
-  fairPrice: number,
-): Promise<boolean> {
-  void fairPrice;
-  if (
-    !ctx.oracle.gmxProvider &&
-    Object.keys(ctx.oracle.aaveAggregators).length === 0
-  )
-    return false;
-  // Phase 4/5 で oracles.ts に実装を集約する。
-  return false;
 }
 
 async function initialFairPrice(

@@ -14,6 +14,7 @@
     "agent:lp-provider": "tsx examples/agents/lp-provider.ts",
     "check:ordering": "tsx src/cli/checkOrdering.ts",
     "build:contracts": "forge build",
+    "presim": "forge build",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts"
   },
