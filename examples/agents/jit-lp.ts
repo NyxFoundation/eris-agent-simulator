@@ -52,11 +52,23 @@ type Observation = {
   };
 };
 
-const VOL_WINDOW = positiveInt(process.env.JIT_VOL_WINDOW, 16);
-const VOL_QUANTILE = clampUnit(parseFloatEnv(process.env.JIT_VOL_QUANTILE, 0.7));
-const RANGE_TICKS = positiveInt(process.env.JIT_RANGE_TICKS, 2);
+// NOTE: the coordinator caps observation `history` at 20 points (see
+// src/coordinator.ts). Defaults below assume that cap: VOL_WINDOW=6 lets us
+// collect ~7 historical vol samples via the rolling step in
+// collectHistoricalVols, while MIN_HISTORY=12 ensures we have enough burn-in
+// to build a stable quantile threshold before firing.
+//
+// The runtime exposes maxOpenPositions=10 AND does not expose a burn action,
+// so every fired JIT round leaves a stale NFT counted against the cap. A very
+// high quantile (0.9) makes us conserve our 10 mint budget across the run and
+// only fire on the strongest vol signal, which is also what the no-firing-in-
+// low-vol-rounds completion criterion requires. Wider tick range (4 spacings)
+// earns fees in a wider band so a single mint is meaningful when we do fire.
+const VOL_WINDOW = positiveInt(process.env.JIT_VOL_WINDOW, 6);
+const VOL_QUANTILE = clampUnit(parseFloatEnv(process.env.JIT_VOL_QUANTILE, 0.9));
+const RANGE_TICKS = positiveInt(process.env.JIT_RANGE_TICKS, 4);
 const MINT_BUDGET_BPS = positiveInt(process.env.JIT_MINT_BUDGET_BPS, 4500);
-const MIN_HISTORY = positiveInt(process.env.JIT_MIN_HISTORY, VOL_WINDOW * 2);
+const MIN_HISTORY = positiveInt(process.env.JIT_MIN_HISTORY, 12);
 
 const MIN_WETH_MINT_WEI = 1_000_000_000_000_000n; // 0.001 WETH floor (narrow range = small)
 const MIN_USDC_MINT_UNITS = 2_500_000n; // 2.5 USDC floor
@@ -80,11 +92,24 @@ rl.on("line", (line) => {
 
 function reconcilePendingMint(observation: Observation): void {
   if (!pendingMintRange || lastMintedTokenId !== null) return;
-  const match = observation.positions.find(
-    (p) => p.tickLower === pendingMintRange!.tickLower && p.tickUpper === pendingMintRange!.tickUpper
-  );
-  if (match) {
-    lastMintedTokenId = match.tokenId;
+  // Reuse the same tick range across mints means previously closed positions
+  // (liquidity=0) can still match the range. Pick the live one (liquidity > 0),
+  // and among ties prefer the highest tokenId (most recently minted).
+  const candidates = observation.positions
+    .filter(
+      (p) =>
+        p.tickLower === pendingMintRange!.tickLower &&
+        p.tickUpper === pendingMintRange!.tickUpper &&
+        BigInt(p.liquidity) > 0n
+    )
+    .sort((a, b) => {
+      const da = BigInt(a.tokenId);
+      const db = BigInt(b.tokenId);
+      if (da === db) return 0;
+      return da < db ? 1 : -1;
+    });
+  if (candidates.length > 0) {
+    lastMintedTokenId = candidates[0].tokenId;
     pendingMintRange = null;
   }
 }
@@ -139,7 +164,10 @@ function decideAction(observation: Observation) {
     return { type: "noop", reason: "low-vol round" };
   }
 
-  // 4. Respect open position cap.
+  // 4. Respect open position cap. The runtime counts ALL positions including
+  //    liquidity=0 NFTs that Uniswap V3 leaves behind after removeLiquidity
+  //    (no burn action is exposed). Stop firing once we get within one of the
+  //    cap so we don't end up with stranded liquidity we can't unwind.
   if (observation.positions.length >= observation.limits.maxOpenPositions) {
     return { type: "noop", reason: "max open positions" };
   }
