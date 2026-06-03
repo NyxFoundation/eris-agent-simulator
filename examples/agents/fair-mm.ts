@@ -66,7 +66,7 @@ const RANGE_TICK_MULTIPLIER = clampInt(
 );
 const MINT_BUDGET_BPS = clampInt(parseIntEnv("FAIR_MM_MINT_BUDGET_BPS", 3500), 1, 10_000);
 const REMINT_THRESHOLD_BPS = clampInt(
-  parseIntEnv("FAIR_MM_REMINT_THRESHOLD_BPS", 50),
+  parseIntEnv("FAIR_MM_REMINT_THRESHOLD_BPS", 150),
   1,
   10_000
 );
@@ -102,6 +102,7 @@ function decide(observation: Observation) {
   const priorityFee = observation.limits.defaultPriorityFeePerGasWei;
   const spacing = observation.pool.tickSpacing;
   const halfWidthTicks = spacing * RANGE_TICK_MULTIPLIER;
+  const poolTick = observation.pool.tick;
 
   // Refresh managed state from on-chain positions: if the tokenId we remember
   // no longer exists or has zero liquidity, drop it. Otherwise prefer the
@@ -121,31 +122,47 @@ function decide(observation: Observation) {
       ? alignTick(fairTickRaw, spacing)
       : alignTick(priceToTick(observation.fairPriceUsdcPerWeth, spacing), spacing);
 
+  // The mint center is the fair tick, but clamped so the resulting band still
+  // contains the current pool tick. If fair has wandered far from pool, this
+  // prevents minting a dead (out-of-range) position that earns no fees.
+  const centerTick = clampCenterToBracketPoolTick(
+    fairTickAligned,
+    poolTick,
+    halfWidthTicks,
+    spacing
+  );
+
   // No live position → consider minting.
   if (!livePosition) {
-    return tryMint(observation, fairTickAligned, halfWidthTicks, priorityFee);
+    return tryMint(observation, centerTick, halfWidthTicks, priorityFee);
   }
 
   // Live position exists. Decide between (a) rebalance, (b) collect fees, (c) noop.
   const remembered = managed;
   const driftFromCenter =
     remembered === null
-      ? Math.abs(fairTickAligned - midTick(livePosition))
-      : Math.abs(fairTickAligned - remembered.midTick);
+      ? Math.abs(centerTick - midTick(livePosition))
+      : Math.abs(centerTick - remembered.midTick);
 
   // Rebalance thresholds:
-  //  - drift in ticks > half-width (fair moved past the band's midpoint by half)
-  //  - OR drift in price > REMINT_THRESHOLD_BPS (catches large jumps even when
-  //    half-width is small)
-  //  - OR position is fully out of range and earning no fees
+  //  - drift in ticks >= full half-width (fair-derived target moved past the
+  //    band's edge) AND drift in price >= REMINT_THRESHOLD_BPS (guards against
+  //    gas-burning churn on low-volatility seeds where tick math wobbles)
+  //  - OR position is fully out of range AND moving the band would actually
+  //    bracket the pool tick again (so we don't churn while pool is far away)
   const driftBps = computeDriftBpsSinceMint(observation, remembered);
   const driftExceeds =
-    driftFromCenter >= Math.max(1, Math.floor(halfWidthTicks / 2)) ||
+    driftFromCenter >= Math.max(1, halfWidthTicks) &&
     driftBps >= REMINT_THRESHOLD_BPS;
-  const outOfRange =
-    observation.pool.tick < livePosition.tickLower || observation.pool.tick > livePosition.tickUpper;
+  const outOfRange = poolTick < livePosition.tickLower || poolTick > livePosition.tickUpper;
+  const newBandLower = centerTick - halfWidthTicks;
+  const newBandUpper = centerTick + halfWidthTicks;
+  const newBandWouldHelp =
+    poolTick >= newBandLower &&
+    poolTick <= newBandUpper &&
+    (centerTick !== midTick(livePosition) || !outOfRange);
 
-  if (driftExceeds || outOfRange) {
+  if ((driftExceeds && newBandWouldHelp) || (outOfRange && newBandWouldHelp)) {
     // Bundle remove + collect; the next round will mint anew.
     const actions: Array<Record<string, unknown>> = [
       { type: "removeLiquidity", tokenId: livePosition.tokenId, liquidity: livePosition.liquidity }
@@ -171,6 +188,21 @@ function decide(observation: Observation) {
   }
 
   return { type: "noop", reason: "fair-MM range still centered" };
+}
+
+// Clamp the band center so `[center - halfWidth, center + halfWidth]` includes
+// poolTick. The center is always aligned to the spacing grid (so the mint
+// transaction passes validation).
+function clampCenterToBracketPoolTick(
+  fairCenter: number,
+  poolTick: number,
+  halfWidthTicks: number,
+  spacing: number
+): number {
+  const minCenter = poolTick - halfWidthTicks;
+  const maxCenter = poolTick + halfWidthTicks;
+  const clamped = Math.max(minCenter, Math.min(maxCenter, fairCenter));
+  return alignTick(clamped, spacing);
 }
 
 function tryMint(
