@@ -1,4 +1,9 @@
-import { createSdkMcpServer, query, tool, type Options } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createSdkMcpServer,
+  query,
+  tool,
+  type Options,
+} from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { AgentObservation } from "../types.js";
 import type { RoundRecord } from "./history.js";
@@ -8,12 +13,31 @@ import {
   SIM_RULES,
   SYSTEM_PROMPT,
   type Phase,
-  type ReviseReason
+  type ReviseReason,
 } from "./prompts.js";
 import { parseStrategyFromToolInput, type Strategy } from "./strategy.js";
-import type { ClaudeCallMeta, Strategist, StrategyResult } from "./claudeStrategist.js";
+import type {
+  ClaudeCallMeta,
+  Strategist,
+  StrategyResult,
+} from "./claudeStrategist.js";
 
 const DEFAULT_MODEL = "sonnet"; // alias → claude-sonnet-4-6
+
+// SDK query のハード上限。入れ子検出などで無限ハングしても fail-fast し、次サイクルで再試行できる。
+const CALL_TIMEOUT_MS = (() => {
+  const v = Number(process.env.ERIS_LLM_CALL_TIMEOUT_MS);
+  return Number.isFinite(v) && v > 0 ? v : 90_000;
+})();
+
+// 入れ子 Claude Code セッションのマーカー。残ると SDK が spawn する claude バイナリが
+// 「入れ子セッション」を検出して無限ハングする(CLAUDE_CODE_* だけでなく、アンダースコア無しの
+// CLAUDECODE と AI_AGENT も該当)。これらを env から除去すると独立した headless OAuth 呼び出しになる。
+function isNestedSessionMarker(key: string): boolean {
+  return (
+    key.startsWith("CLAUDE_CODE_") || key === "CLAUDECODE" || key === "AI_AGENT"
+  );
+}
 
 /**
  * The set of built-in Claude Code tools we don't want the model to use during
@@ -33,7 +57,7 @@ const DISALLOWED_TOOLS = [
   "TodoWrite",
   "BashOutput",
   "KillShell",
-  "NotebookEdit"
+  "NotebookEdit",
 ];
 
 /**
@@ -75,12 +99,20 @@ export class ClaudeSubscriptionStrategist implements Strategist {
     reason: ReviseReason,
     initialUsd: number,
     currentUsd: number,
-    version: number
+    version: number,
   ): Promise<StrategyResult> {
-    return this.call("revise", buildReviseMessage(prev, history, reason, initialUsd, currentUsd), version);
+    return this.call(
+      "revise",
+      buildReviseMessage(prev, history, reason, initialUsd, currentUsd),
+      version,
+    );
   }
 
-  private async call(phase: Phase, userMessage: string, version: number): Promise<StrategyResult> {
+  private async call(
+    phase: Phase,
+    userMessage: string,
+    version: number,
+  ): Promise<StrategyResult> {
     const started = Date.now();
     let captured: unknown;
     let meta: ClaudeCallMeta | undefined;
@@ -93,25 +125,33 @@ export class ClaudeSubscriptionStrategist implements Strategist {
           "set_strategy",
           "Define or revise the trading strategy for upcoming rounds.",
           {
-            notes: z.string().describe("Markdown rationale: thesis, edge, risks, what would make you revise."),
-            params: z.record(z.string(), z.any()).describe("JSON object of numeric/boolean parameters the executor reads."),
+            notes: z
+              .string()
+              .describe(
+                "Markdown rationale: thesis, edge, risks, what would make you revise.",
+              ),
+            params: z
+              .record(z.string(), z.any())
+              .describe(
+                "JSON object of numeric/boolean parameters the executor reads.",
+              ),
             executor_ts: z
               .string()
               .describe(
-                "TypeScript function body (no signature). Receives (obs, params, helpers) and must return an AgentAction."
-              )
+                "TypeScript function body (no signature). Receives (obs, params, helpers) and must return an AgentAction.",
+              ),
           },
           async (args) => {
             captured = args;
             return { content: [{ type: "text", text: "ok" }] };
-          }
-        )
-      ]
+          },
+        ),
+      ],
     });
 
     const cleanEnv: Record<string, string | undefined> = { ...process.env };
     for (const key of Object.keys(cleanEnv)) {
-      if (key.startsWith("CLAUDE_CODE_")) delete cleanEnv[key];
+      if (isNestedSessionMarker(key)) delete cleanEnv[key];
     }
 
     const options: Options = {
@@ -128,30 +168,53 @@ export class ClaudeSubscriptionStrategist implements Strategist {
       // from disk; loading 70+ user skills per call adds seconds and pollutes
       // the system prompt context budget.
       settingSources: [],
-      ...(process.env.ERIS_CLAUDE_BIN ? { pathToClaudeCodeExecutable: process.env.ERIS_CLAUDE_BIN } : {})
+      ...(process.env.ERIS_CLAUDE_BIN
+        ? { pathToClaudeCodeExecutable: process.env.ERIS_CLAUDE_BIN }
+        : {}),
     };
 
+    let resultSubtype: string | null = null;
     try {
-      for await (const msg of this.sdk.query({ prompt: userMessage, options })) {
-        if (msg.type === "result") {
-          meta = readUsage(phase, started, msg);
-          if (msg.subtype !== "success") {
-            return { ok: false, reason: `claude returned ${msg.subtype}`, meta };
+      await Promise.race([
+        (async () => {
+          for await (const msg of this.sdk.query({
+            prompt: userMessage,
+            options,
+          })) {
+            if (msg.type === "result") {
+              meta = readUsage(phase, started, msg);
+              resultSubtype = msg.subtype;
+            }
           }
-        }
-      }
+        })(),
+        new Promise<never>((_, reject) => {
+          setTimeout(
+            () =>
+              reject(new Error(`query timed out after ${CALL_TIMEOUT_MS}ms`)),
+            CALL_TIMEOUT_MS,
+          ).unref();
+        }),
+      ]);
     } catch (error) {
       return {
         ok: false,
         reason: `claude call failed: ${error instanceof Error ? error.message : String(error)}`,
-        meta
+        meta,
       };
     }
+    if (resultSubtype !== null && resultSubtype !== "success") {
+      return { ok: false, reason: `claude returned ${resultSubtype}`, meta };
+    }
 
-    if (!captured) return { ok: false, reason: "model did not call set_strategy", meta };
+    if (!captured)
+      return { ok: false, reason: "model did not call set_strategy", meta };
     const parsed = parseStrategyFromToolInput(captured, version);
     if (!parsed.ok) return { ok: false, reason: parsed.reason, meta };
-    return { ok: true, strategy: parsed.strategy, meta: meta ?? zeroMeta(phase, started) };
+    return {
+      ok: true,
+      strategy: parsed.strategy,
+      meta: meta ?? zeroMeta(phase, started),
+    };
   }
 }
 
@@ -162,7 +225,7 @@ function zeroMeta(phase: Phase, started: number): ClaudeCallMeta {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadInputTokens: 0,
-    cacheCreationInputTokens: 0
+    cacheCreationInputTokens: 0,
   };
 }
 
@@ -177,7 +240,11 @@ type ResultLike = {
   };
 };
 
-function readUsage(phase: Phase, started: number, msg: ResultLike): ClaudeCallMeta {
+function readUsage(
+  phase: Phase,
+  started: number,
+  msg: ResultLike,
+): ClaudeCallMeta {
   const usage = msg.usage ?? {};
   return {
     phase,
@@ -185,6 +252,6 @@ function readUsage(phase: Phase, started: number, msg: ResultLike): ClaudeCallMe
     inputTokens: usage.input_tokens ?? 0,
     outputTokens: usage.output_tokens ?? 0,
     cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
-    cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0
+    cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
   };
 }
