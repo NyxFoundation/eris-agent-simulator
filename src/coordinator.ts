@@ -511,7 +511,8 @@ export async function runSimulation(): Promise<void> {
       `${safeStringify(history, 2)}\n`,
     );
     logger.event({ type: "run_completed", runId, runDir: logger.runDir });
-    console.log(`simulation completed: ${logger.runDir}`);
+    // status は stderr へ。stdout は evaluate の JSON 専用に保つ（純 JSON を壊さない）。
+    console.error(`simulation completed: ${logger.runDir}`);
   } finally {
     for (const agent of agentRuntimes) agent.process.close();
     flowProcess.close();

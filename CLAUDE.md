@@ -36,6 +36,6 @@ coordinator / オーケストレータ（src/coordinator.ts）
 ## 2 つの自己改善スキル（対象が異なる）
 
 - **`/sim-loop`** — シミュレータの**仕組み**（公平性・ordering・ガスモデル）を 1 課題ずつ改善。ログ: `runs/iterations/`
-- **`/strategy-evolve`** — **トレード戦略**を 1 agent / 1 変更ずつ改善。`agents.evolve.json` の env を主に編集し、**複数 SEED の評価ゲート**（median + 最悪 seed + win-rate）で過学習を排除してから採用。ログ: `runs/strategy-iterations/`
+- **`/strategy-evolve`** — **トレード戦略**を 1 agent / 1 変更ずつ改善。`agents.evolve.json` の env を主に編集し、**複数 SEED の評価ゲート**（median 改善 + paired per-seed 非劣化 + win-rate）で過学習を抑制してから採用。ログ: `runs/strategy-iterations/`
 
 `agents.evolve.json` は strategy-evolve の進化対象ロスター。skill 経由でのみ編集する（手で触らない）。`runs/` は gitignore。

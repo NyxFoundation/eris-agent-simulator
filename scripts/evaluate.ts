@@ -56,6 +56,9 @@ async function main(): Promise<void> {
   }
   const runDirRoot = loadConfig().runDirRoot;
   const byAgent = new Map<string, AgentAcc>();
+  // seed → run の対応。診断で「runs/<latest>(=最後の seed)」に頼らず、median/worst seed の
+  // run を直接開けるようにする。perSeedRuns[i] と各 agent の netPnl.perSeed[i] は同じ seed 順。
+  const perSeedRuns: { seed: number; runId: string; runDir: string }[] = [];
 
   for (const seed of seeds) {
     process.env.SEED = String(seed);
@@ -65,6 +68,7 @@ async function main(): Promise<void> {
     const summary = JSON.parse(
       readFileSync(join(runDir, "summary.json"), "utf8"),
     ) as Summary;
+    perSeedRuns.push({ seed, runId: summary.runId, runDir });
     const values = readPerRoundValues(join(runDir, "events.jsonl"));
     for (const a of summary.agents) {
       const acc = byAgent.get(a.id) ?? {
@@ -111,6 +115,10 @@ async function main(): Promise<void> {
     seeds,
     rounds: Number(process.env.ROUNDS),
     agentsConfig: process.env.AGENTS_CONFIG,
+    // 再現性メタデータ: fork block を固定しないと before/after の市場が動く。
+    forkBlock: process.env.FORK_BLOCK_NUMBER ?? null,
+    enabledProtocols: process.env.ENABLED_PROTOCOLS ?? null,
+    perSeedRuns,
     agents,
   };
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
