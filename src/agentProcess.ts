@@ -16,11 +16,17 @@ export class AgentProcess {
     runDir: string,
   ) {
     const childEnv: NodeJS.ProcessEnv = { ...process.env };
-    // Strip parent Claude Code session vars so SDK-spawned claude
-    // subprocesses authenticate via their own OAuth rather than inheriting
-    // a foreign session id from the surrounding Claude Code harness.
+    // Strip parent Claude Code session markers so SDK-spawned claude subprocesses
+    // authenticate via their own OAuth rather than detecting a nested session and
+    // hanging. CLAUDE_CODE_* alone is not enough — CLAUDECODE(no underscore) and
+    // AI_AGENT also mark the nested session and must be removed.
     for (const k of Object.keys(childEnv)) {
-      if (k.startsWith("CLAUDE_CODE_")) delete childEnv[k];
+      if (
+        k.startsWith("CLAUDE_CODE_") ||
+        k === "CLAUDECODE" ||
+        k === "AI_AGENT"
+      )
+        delete childEnv[k];
     }
     Object.assign(childEnv, spec.env ?? {});
     childEnv.NODE_ENV = process.env.NODE_ENV ?? "development";
