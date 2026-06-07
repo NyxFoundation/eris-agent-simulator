@@ -55,6 +55,7 @@ import {
   VICTIM_ADDRESS,
   victimHealthFactor,
 } from "./liquidationDemo.js";
+import { deployFlashArb, FLASH_ARB_ADDRESS } from "./flashArbDemo.js";
 
 type AgentRuntime = {
   id: string;
@@ -277,6 +278,17 @@ export async function runSimulation(): Promise<void> {
         type: "liquidation_victim_setup",
         address: VICTIM_ADDRESS,
       });
+    }
+
+    // ---- フラッシュ arb デモ(GitHub #3, env gate): FlashArb をデプロイ ----
+    if (
+      config.flashArbDemo &&
+      enabledIds.includes("aave") &&
+      enabledIds.includes("uniswap") &&
+      enabledIds.includes("balancer")
+    ) {
+      await deployFlashArb(ctx);
+      logger.event({ type: "flash_arb_deployed", address: FLASH_ARB_ADDRESS });
     }
 
     let fairPrice = await initialFairPrice(ctx, enabledIds);

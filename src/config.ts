@@ -44,6 +44,9 @@ export type SimConfig = {
   liquidationShockBps: number; // WETH オラクル引き下げ幅(bps, 既定 1500=15%)
   liquidationShockRound: number; // 引き下げを始めるラウンド(既定 3)
   liquidationVictimSupplyWethWei: bigint; // victim が supply する WETH(既定 5)
+  // フラッシュ arb デモ(GitHub #3)。ERIS_FLASH_ARB=1 で coordinator が FlashArb コントラクトを
+  // デプロイし、flash-arb agent が利用できるようにする。uniswap+balancer+aave 有効が前提。既定 off。
+  flashArbDemo: boolean;
   rounds: number;
   roundTimeSeconds: number;
   seed: number;
@@ -111,6 +114,7 @@ export function loadConfig(env = process.env): SimConfig {
       env.ERIS_LIQUIDATION_VICTIM_WETH_WEI,
       5_000_000_000_000_000_000n,
     ),
+    flashArbDemo: env.ERIS_FLASH_ARB === "1",
     rounds: intEnv(env.ROUNDS, 50),
     // 1 ラウンドあたりに進める EVM 時間（秒）。Aave 変動金利の累積や GMX funding
     // を現実的なスケールで発生させるためにラウンドループで evm_increaseTime に渡す。
