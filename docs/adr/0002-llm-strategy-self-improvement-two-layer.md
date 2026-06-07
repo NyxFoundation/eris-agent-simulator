@@ -111,6 +111,15 @@ type StrategyOutput = { notes:string; params:object; executor_ts:string;
 
 A-1（prompts 文言: 反ハルシネ＋ params-only 既定＋ Change Contract）→ A-2（Attribution ブロック）→ A-3（live sanity ゲート）→ B-1（帰属診断＋多候補＋強ゲート昇格）→ B-2（live 版収穫＋ memory 共有でループ閉）。各段は独立に価値を持つ。
 
+### 6. レビューでの決定（2026-06-07）
+
+設計レビューで以下を確定した（実装の指針）:
+
+- **着手順**: A と B を**並行**で進める（最速で全体像を立てる。共有コア=prompts/strategy/multiSeedRun/baseStrategies/memory を先に固定し、A・B の同時改変による乖離を防ぐ）。
+- **live の executor 改変ポリシー**: **params-only を既定**とし、直近ログの具体的失敗を引用した場合のみ executor 改変を許可（条件付き）。
+- **PnL 帰属の粒度**: まず**安価版**（`RoundRecord.inventoryUsd` 差分 × `action.type` 集計）で実装。手数料/スリッページ/反事実への拡張は効果を見てから（「決めていないこと」参照）。
+- **ADR Status**: 当面 **Proposed のまま**で段階実装により検証し、効果確認後に Accepted へ。
+
 ## Consequences
 
 ### Positive
