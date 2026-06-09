@@ -74,6 +74,14 @@ holdout    : 封印。恒久化（baseStrategies へ commit）の直前に一度
 - `action.type` 別の単純差分（`src/llm/attribution.ts`）に加え、主要 action について **counterfactual replay / ablation**（その action を抜いた反実 PnL との差）を導入する。
 - 評価指標を PnL/IR 単独から、**exposure-adjusted alpha・drawdown・未決済ポジション・liquidity impact・他 agent への転嫁**を併記する形へ拡張し、誤帰属と報酬ハックを検知しやすくする。
 
+### 5. レビューでの決定（2026-06-10）
+
+外部レビュー後の議論で以下を確定した（実装の指針）:
+
+- **survivorship 除去の作り込み**: **近似 ablation から開始**する。主要 action のみ ablation で安く水増し（「負けだけ巻き戻す free option」由来）を剥がし、full counterfactual replay は恒久化候補に限定。近似と full の乖離が大きい action だけ full replay へ昇格する。
+- **柱の優先順**: 柱1（holdout/regime 分離）→ 柱2（bundle 公平採点）→ 柱3（survivorship/attribution）。柱3 は上記の近似 ablation スタート。
+- **ADR の位置づけ**: 本 ADR は ADR 0001/0002 を **supersede せず補完**。**0003 → 0004 の順**で段階導入し、効果確認後に Accepted へ。
+
 ## Consequences
 
 ### Positive
@@ -106,8 +114,6 @@ holdout    : 封印。恒久化（baseStrategies へ commit）の直前に一度
 | 均一 call budget の具体値（回数/時間） | バックエンド差の実測が要る | 柱2 実装時の follow-up |
 | holdout の seed/regime 集合とローテーション規則 | holdout 自体の overfitting を避ける運用設計が要る | 柱1 実装時 |
 | regime family の定義（どの drift/vol/flow を「別レジーム」とするか） | 実測しながら決めるべき | 柱1 実装時 |
-| counterfactual replay の実装方式（full replay か近似 ablation か） | コストと精度のトレードオフ評価が未了 | 柱3 実装時 |
-| 本 ADR が ADR 0002 を supersede するか補完か | 段階導入の結果次第 | テーマ A/B 導入完了後にレビュー |
 
 ## Notes
 
