@@ -6,6 +6,7 @@
   "scripts": {
     "anvil": "tsx src/cli/anvil.ts",
     "sim": "tsx src/cli/sim.ts",
+    "sim:realtime": "tsx src/cli/sim-realtime.ts",
     "leaderboard": "tsx scripts/leaderboard.ts",
     "evaluate": "tsx scripts/evaluate.ts",
     "discrimination": "tsx scripts/discrimination.ts",

@@ -165,6 +165,32 @@ export async function mine(
   } as AnvilRequest);
 }
 
+// 実時間ブロック生成：seconds 秒ごとに mempool をまとめて 1 ブロック mine する。
+// setup を高速フラッシュしたあと（no-mining + sendAndMine）、競争フェーズ開始時にこれを呼んで
+// 実 N 秒 cadence へ切り替える。--order fees はこの interval mine 時にも mempool を fee 降順整列する。
+// seconds=0 は interval mining を停止する（teardown 用）。
+export async function setIntervalMining(
+  publicClient: PublicClient,
+  seconds: number,
+): Promise<void> {
+  await publicClient.request({
+    method: "anvil_setIntervalMining",
+    params: [seconds],
+  } as AnvilRequest);
+}
+
+// automine の有効/無効。true にすると tx ごとに即 mine され、ブロック内の fee 競争が成立しなくなる
+// （各 tx が単独ブロック化する）。実時間モードでは false のまま interval mining を使うこと。
+export async function setAutomine(
+  publicClient: PublicClient,
+  enabled: boolean,
+): Promise<void> {
+  await publicClient.request({
+    method: "evm_setAutomine",
+    params: [enabled],
+  } as AnvilRequest);
+}
+
 export type ResetForkOptions = {
   // 上流フォーク RPC（ARB_RPC_URL）。指定時は forking 付き anvil_reset でフォークを
   // 丸ごと作り直し、前 run/seed のローカル変更（Aave ポジション・reserve タイムスタンプ等）を

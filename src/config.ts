@@ -49,6 +49,11 @@ export type SimConfig = {
   flashArbDemo: boolean;
   rounds: number;
   roundTimeSeconds: number;
+  // 実時間モード（src/realtime/coordinator.ts）。interval mining のブロック間隔（秒）と
+  // 実行の終了条件（実時間 or ブロック数）。同期ラウンド方式では未使用。
+  blockTimeSec: number;
+  runSeconds: number;
+  runBlocks: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -119,6 +124,10 @@ export function loadConfig(env = process.env): SimConfig {
     // 1 ラウンドあたりに進める EVM 時間（秒）。Aave 変動金利の累積や GMX funding
     // を現実的なスケールで発生させるためにラウンドループで evm_increaseTime に渡す。
     roundTimeSeconds: intEnv(env.ROUND_TIME_SECONDS, 3600),
+    // 実時間モード（realtime）の設定。
+    blockTimeSec: intEnv(env.ERIS_BLOCK_TIME_SEC, 2),
+    runSeconds: intEnv(env.ERIS_RUN_SECONDS, 20),
+    runBlocks: intEnv(env.ERIS_RUN_BLOCKS, 0),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),

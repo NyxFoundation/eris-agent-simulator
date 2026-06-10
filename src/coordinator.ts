@@ -578,7 +578,7 @@ export async function runSimulation(): Promise<void> {
 // 観測 / flow / submit
 // ---------------------------------------------------------------------------
 
-async function observationFor(
+export async function observationFor(
   ctx: SimContext,
   adapters: ReturnType<typeof enabledAdapters>,
   stateById: Map<ProtocolId, unknown>,
@@ -638,7 +638,7 @@ async function observationFor(
 
 // orderflow bot プロセスに FlowContext を渡して FlowOrder[] を受け取り、TxIntent に変換する。
 // flow ウォレットの選択と tx 提出は coordinator が所有（bot は注文を決めるだけ）。
-async function requestFlowIntents(
+export async function requestFlowIntents(
   ctx: SimContext,
   flowProcess: FlowProcess,
   enabledIds: ProtocolId[],
@@ -702,7 +702,7 @@ async function requestFlowIntents(
   return intents;
 }
 
-async function submitIntent(
+export async function submitIntent(
   ctx: SimContext,
   intent: TxIntent,
   stateById: Map<ProtocolId, unknown>,
@@ -735,7 +735,7 @@ async function submitIntent(
   return hashes;
 }
 
-async function submitRawTxIntent(
+export async function submitRawTxIntent(
   ctx: SimContext,
   intent: RawTxIntent,
 ): Promise<Hex> {
@@ -753,7 +753,7 @@ async function submitRawTxIntent(
   });
 }
 
-async function initialFairPrice(
+export async function initialFairPrice(
   ctx: SimContext,
   enabledIds: ProtocolId[],
 ): Promise<number> {
