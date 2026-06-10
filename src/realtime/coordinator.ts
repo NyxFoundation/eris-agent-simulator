@@ -409,8 +409,27 @@ export async function runRealtimeSimulation(): Promise<void> {
         if (processing || finished) return;
         processing = true;
         try {
-          // 新規に mine されたブロックの tx をログ
-          for (let b = lastLoggedBlock + 1; b <= bn; b++) await logBlock(b);
+          // 新規に mine されたブロックの tx をログし、keeper（GMX 注文実行等）を回す
+          for (let b = lastLoggedBlock + 1; b <= bn; b++) {
+            await logBlock(b);
+            for (const adapter of adapters) {
+              if (!adapter.afterMine) continue;
+              try {
+                await adapter.afterMine(ctx, {
+                  noMine: true,
+                  priorityFeeWei: oracleFee,
+                  blockNumber: BigInt(b),
+                });
+              } catch (error) {
+                logger.event({
+                  type: "keeper_failed",
+                  protocol: adapter.id,
+                  blockNumber: b,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }
+          }
           lastLoggedBlock = Math.max(lastLoggedBlock, bn);
 
           // 市場を1ステップ進めて state を読み直し、observation を全 agent へ push

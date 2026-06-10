@@ -99,7 +99,12 @@ export interface ProtocolAdapter {
   ): Promise<BuiltTx[]>;
 
   // ---- mine 後フック（GMX keeper 実行）----
-  afterMine?(ctx: SimContext): Promise<void>;
+  // 競争ブロック後の keeper 処理（GMX 注文実行など）。
+  // opts.noMine=true で realtime 用に mine せず mempool submit。blockNumber で対象ブロック指定。
+  afterMine?(
+    ctx: SimContext,
+    opts?: { noMine?: boolean; priorityFeeWei?: bigint; blockNumber?: bigint },
+  ): Promise<void>;
 
   // ---- PnL 寄与（USDC）----
   valueUsdc(
