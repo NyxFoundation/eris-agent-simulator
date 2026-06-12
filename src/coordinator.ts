@@ -587,16 +587,21 @@ export async function observationFor(
   config: SimConfig,
   enabledIds: ProtocolId[],
 ): Promise<AgentObservation> {
+  // protocol ごとの観測は独立した読取なので並列に発行する。direct モードの agent クライアント
+  // （batch=true）では同一 tick の読取が Multicall3 1 本に自動集約されるため、並列発行が
+  // そのまま往復回数の削減になる。
   const protocols: ProtocolObservations = {};
-  for (const adapter of adapters) {
-    const obs = await adapter.observe(
-      ctx,
-      stateById.get(adapter.id),
-      agentAddress,
-      fairPrice,
-    );
-    (protocols as Record<string, unknown>)[adapter.id] = obs;
-  }
+  await Promise.all(
+    adapters.map(async (adapter) => {
+      const obs = await adapter.observe(
+        ctx,
+        stateById.get(adapter.id),
+        agentAddress,
+        fairPrice,
+      );
+      (protocols as Record<string, unknown>)[adapter.id] = obs;
+    }),
+  );
   return {
     kind: "observation",
     runId,

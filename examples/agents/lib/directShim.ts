@@ -107,9 +107,12 @@ function startDirectShim(): void {
   const config = loadConfig();
   const adapters = initProtocols(config.enabledProtocols);
   const enabledIds = adapters.map((a) => a.id);
+  // batch=true: 毎ブロック十数本の観測読取を Multicall3 / JSON-RPC batch に自動集約し、
+  // anvil への往復を ~20 本 → 数本に抑える（44 体同時の読みストームで律速になるため）。
   const { chain, publicClient, walletClient } = makeClients(
     rpcUrl,
     config.chainId,
+    { batch: true },
   );
   const account = privateKeyToAccount(privateKey);
   const address = account.address;

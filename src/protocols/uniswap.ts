@@ -230,9 +230,13 @@ export async function getLpPositions(
   publicClient: PublicClient,
   owner: Address,
   fairPriceUsdcPerWeth: number,
+  // 呼び側が readState 済みの tick を渡せば pool の再読取を省く（observe の二重読み防止）
+  knownTick?: number,
 ): Promise<LpPositionObservation[]> {
-  const [{ tick }, balance] = await Promise.all([
-    getPoolState(publicClient),
+  const [tick, balance] = await Promise.all([
+    knownTick !== undefined
+      ? Promise.resolve(knownTick)
+      : getPoolState(publicClient).then((s) => s.tick),
     publicClient.readContract({
       address: UNISWAP.nonfungiblePositionManager,
       abi: nonfungiblePositionManagerAbi,
@@ -241,21 +245,33 @@ export async function getLpPositions(
     }),
   ]);
 
+  // NFT 列挙は直列にせず並列発行する（batch=true クライアントでは multicall に束なる）
+  const indices = Array.from({ length: Number(balance) }, (_, i) => BigInt(i));
+  const tokenIds = await Promise.all(
+    indices.map((i) =>
+      publicClient.readContract({
+        address: UNISWAP.nonfungiblePositionManager,
+        abi: nonfungiblePositionManagerAbi,
+        functionName: "tokenOfOwnerByIndex",
+        args: [owner, i],
+      }),
+    ),
+  );
+  const rawPositions = await Promise.all(
+    tokenIds.map((tokenId) =>
+      publicClient.readContract({
+        address: UNISWAP.nonfungiblePositionManager,
+        abi: nonfungiblePositionManagerAbi,
+        functionName: "positions",
+        args: [tokenId],
+      }),
+    ),
+  );
+
   const w0 = wethIsToken0();
   const positions: LpPositionObservation[] = [];
-  for (let i = 0n; i < balance; i++) {
-    const tokenId = await publicClient.readContract({
-      address: UNISWAP.nonfungiblePositionManager,
-      abi: nonfungiblePositionManagerAbi,
-      functionName: "tokenOfOwnerByIndex",
-      args: [owner, i],
-    });
-    const position = await publicClient.readContract({
-      address: UNISWAP.nonfungiblePositionManager,
-      abi: nonfungiblePositionManagerAbi,
-      functionName: "positions",
-      args: [tokenId],
-    });
+  for (let i = 0; i < tokenIds.length; i++) {
+    const tokenId = tokenIds[i];
     const [
       ,
       ,
@@ -269,7 +285,7 @@ export async function getLpPositions(
       ,
       tokensOwed0,
       tokensOwed1,
-    ] = position;
+    ] = rawPositions[i];
     if (!isWethUsdcPosition(token0, token1, fee)) continue;
     const amounts = liquidityToTokenAmounts({
       liquidity,
@@ -614,7 +630,12 @@ export const uniswapAdapter: ProtocolAdapter = {
 
   async observe(ctx, state, agent, fairPrice): Promise<UniswapObservation> {
     const s = state as UniswapState;
-    const positions = await getLpPositions(ctx.publicClient, agent, fairPrice);
+    const positions = await getLpPositions(
+      ctx.publicClient,
+      agent,
+      fairPrice,
+      s.tick,
+    );
     return {
       pool: {
         pair: "WETH/USDC",

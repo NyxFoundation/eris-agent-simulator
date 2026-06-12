@@ -13,7 +13,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { erc20Abi, wethAbi } from "./abis.js";
-import { TOKENS } from "./constants.js";
+import { MULTICALL3, TOKENS } from "./constants.js";
 import type { BalanceSnapshot } from "./types.js";
 
 export function makeChain(chainId: number) {
@@ -22,16 +22,34 @@ export function makeChain(chainId: number) {
     name: "arbitrum-fork",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: ["http://127.0.0.1:8545"] } },
+    // viem の batch.multicall（同一 tick の readContract を Multicall3 1 本に自動集約）が参照する
+    contracts: { multicall3: { address: MULTICALL3 } },
   } as const;
 }
 
-export function makeClients(rpcUrl: string, chainId: number) {
+export function makeClients(
+  rpcUrl: string,
+  chainId: number,
+  opts: { batch?: boolean } = {},
+) {
   const chain = makeChain(chainId);
-  // Arbitrum フォークは GMX Reader / Aave 読み取りが重いため timeout を広げる
-  const transport = http(rpcUrl, { timeout: 120_000, retryCount: 2 });
+  // Arbitrum フォークは GMX Reader / Aave 読み取りが重いため timeout を広げる。
+  // batch=true で (1) JSON-RPC array batch（同一 tick の要求を 1 HTTP に）と
+  // (2) readContract の Multicall3 自動集約を有効化する。direct モードの agent は
+  // 毎ブロック十数本の読取を発行するため、束ねないと anvil の往復回数が律速になる
+  // （ADR 0006 Risks「anvil 律速」のレバー 1）。
+  const transport = http(rpcUrl, {
+    timeout: 120_000,
+    retryCount: 2,
+    batch: opts.batch ? true : undefined,
+  });
   return {
     chain,
-    publicClient: createPublicClient({ chain, transport }),
+    publicClient: createPublicClient({
+      chain,
+      transport,
+      batch: opts.batch ? { multicall: true } : undefined,
+    }),
     walletClient: createWalletClient({ chain, transport }),
   };
 }
