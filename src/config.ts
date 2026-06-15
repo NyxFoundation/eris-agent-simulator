@@ -58,6 +58,14 @@ export type SimConfig = {
   // チェーンを直接読み書きする（観測 push / 代理提出なし）。既定 on。
   // ERIS_AGENT_DIRECT_TX=0 で旧 relay 方式へロールバック（run 単位で全 agent 一律）。
   agentDirectTx: boolean;
+  // run 開始時の resetFork をスキップする（既定 false）。anvil の fork フェッチキャッシュを
+  // 前 run から温存し、cold フェッチ由来のレイテンシ（mine 中の上流取得）を切り分ける診断用。
+  // 状態は前 run から残留するため評価には使わない（ERIS_SKIP_RESET=1）。
+  skipReset: boolean;
+  // 競争開始前に flow bot だけで N block の市場ループを回し、protocol の working set を
+  // 温める（ADR 0006 Risks の anvil cold フェッチ対策）。競争フェーズの mine が上流フェッチを
+  // 踏まなくなる。0 で無効（ERIS_PREWARM_BLOCKS）。
+  prewarmBlocks: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -133,6 +141,8 @@ export function loadConfig(env = process.env): SimConfig {
     runSeconds: intEnv(env.ERIS_RUN_SECONDS, 20),
     runBlocks: intEnv(env.ERIS_RUN_BLOCKS, 0),
     agentDirectTx: env.ERIS_AGENT_DIRECT_TX !== "0",
+    skipReset: env.ERIS_SKIP_RESET === "1",
+    prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),

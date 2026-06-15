@@ -7,6 +7,7 @@ import {
   fundWallet,
   getBalances,
   makeClients,
+  mine,
   resetFork,
   sendAndMine,
   setEthBalance,
@@ -26,18 +27,24 @@ import type {
   WalletRole,
 } from "../types.js";
 import { initProtocols } from "../protocols/registry.js";
-import type { FlowKind, FlowWallet, SimContext } from "../protocols/types.js";
-import { updateOraclesMempool } from "../protocols/oracles.js";
+import type {
+  FlowKind,
+  FlowWallet,
+  ProtocolAdapter,
+  SimContext,
+} from "../protocols/types.js";
+import { updateOracles, updateOraclesMempool } from "../protocols/oracles.js";
 import { GMX_MARKETS } from "../constants.js";
 import {
   buildFlowContext,
   flowOrdersToIntents,
   initialFairPrice,
   observationFor,
+  requestFlowIntents,
   submitIntent,
   submitRawTxIntent,
 } from "../coordinator.js";
-import type { FlowOrderWire } from "../flowProcess.js";
+import { FlowProcess, type FlowOrderWire } from "../flowProcess.js";
 import { RealtimeAgentProcess } from "./agentProcess.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
 import { deployPriceFeed, updatePriceFeedMempool } from "./priceFeed.js";
@@ -48,6 +55,69 @@ const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH（admi
 // flowWalletMap のキー（`${protocol}:${kind}`）から WalletRole を引く。
 function flowRole(key: string): WalletRole {
   return key.endsWith(":informed") ? "informed-flow" : "uninformed-flow";
+}
+
+// 競争開始前（＝時計の外）に flow bot だけで短い市場ループを回し、protocol の working set
+// （pool tick・reserve・gmx 等）を anvil にフェッチさせて温める。これで競争フェーズの mine が
+// 上流 cold フェッチを踏まなくなる（ADR 0006 Risks の anvil 律速対策）。resetFork はせず市場は
+// ~blocks 分だけ僅かに動く。fair price 本路は別 Rng で消費しない。
+// 注: 競争は RealtimeFlowProcess（push）だが、warmup は interval mining 外なので同期
+// FlowProcess（request/response）を使う。
+async function prewarmWorkingSet(
+  ctx: SimContext,
+  adapters: ProtocolAdapter[],
+  enabledIds: ProtocolId[],
+  blocks: number,
+  startPrice: number,
+  runDir: string,
+): Promise<void> {
+  const warmFlow = new FlowProcess(
+    ctx.config.flowBotCommand,
+    ctx.config.flowBotArgs,
+    ctx.config.flowSeed,
+    runDir,
+  );
+  try {
+    const warmRng = new Rng(ctx.config.seed);
+    let warmPrice = startPrice;
+    for (let i = 1; i <= blocks; i++) {
+      warmPrice = nextFairPrice(warmPrice, warmRng);
+      await updateOracles(ctx, warmPrice);
+      const states = await Promise.all(
+        adapters.map((adapter) => adapter.readState(ctx, warmPrice)),
+      );
+      const stateById = new Map<ProtocolId, unknown>(
+        adapters.map((adapter, idx) => [adapter.id, states[idx]]),
+      );
+      const intents = await requestFlowIntents(
+        ctx,
+        warmFlow,
+        enabledIds,
+        stateById,
+        warmPrice,
+        i,
+        ctx.config.agentTimeoutMs,
+      );
+      for (const intent of intents) {
+        try {
+          await submitIntent(ctx, intent, stateById);
+        } catch {
+          // 温める目的なので個別 tx の失敗は無視
+        }
+      }
+      await mine(ctx.publicClient);
+      for (const adapter of adapters) {
+        if (!adapter.afterMine) continue;
+        try {
+          await adapter.afterMine(ctx);
+        } catch {
+          // keeper 失敗も無視
+        }
+      }
+    }
+  } finally {
+    warmFlow.close();
+  }
 }
 
 type RealtimeAgentRuntime = {
@@ -103,10 +173,15 @@ export async function runRealtimeSimulation(): Promise<void> {
     config.chainId,
     { batch: true },
   );
-  await resetFork(publicClient, {
-    forkUrl: config.forkUrl,
-    forkBlockNumber: config.forkBlockNumber,
-  });
+  if (config.skipReset) {
+    // 診断: fork キャッシュを前 run から温存（cold フェッチ切り分け用。ADR 0006 Risks）。
+    logger.event({ type: "fork_reset_skipped" });
+  } else {
+    await resetFork(publicClient, {
+      forkUrl: config.forkUrl,
+      forkBlockNumber: config.forkBlockNumber,
+    });
+  }
 
   // ---- agent ウォレット（プロセスは setup 完了後に起動する）----
   const agentSpecs = loadAgents(config.agentsConfigPath);
@@ -256,6 +331,21 @@ export async function runRealtimeSimulation(): Promise<void> {
     // ---- fair price のオンチェーン配布経路（ADR 0006 §3）。常設し毎ブロック書き込む ----
     const priceFeedAddress = await deployPriceFeed(ctx, latestFairPrice);
     logger.event({ type: "price_feed_deployed", address: priceFeedAddress });
+
+    // ---- pre-warm（ADR 0006 Risks の anvil cold フェッチ対策。prewarmWorkingSet 参照）----
+    if (config.prewarmBlocks > 0) {
+      await prewarmWorkingSet(
+        ctx,
+        adapters,
+        enabledIds,
+        config.prewarmBlocks,
+        latestFairPrice,
+        logger.runDir,
+      );
+      // 競争の起点に合わせて fair price を読み直す（warmup で動いた pool を反映）。
+      latestFairPrice = await initialFairPrice(ctx, enabledIds);
+      logger.event({ type: "prewarm_completed", blocks: config.prewarmBlocks });
+    }
 
     // ---- agent プロセス起動（direct: 秘密鍵 + 互換シム注入 / relay: 従来どおり）----
     for (const agent of agentRuntimes) {
