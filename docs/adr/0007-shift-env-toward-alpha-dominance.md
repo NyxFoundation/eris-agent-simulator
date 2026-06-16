@@ -114,6 +114,24 @@ const wethEquiv = randomBigInt(rng, maxWethWei / 4n, maxWethWei);
 AFTER は skilled（crossvenue, venue-arb）が両 regime で常に上位・random/noop が常に下位、
 random の方向 β 運が消えて負ける。注入は実働（spread flow ≈ 2 tx/block）。
 
+### 4. LLM 自己改善ロスターでの確認（本丸）
+
+deterministic ロスターの機構実証に続き、**実際の LLM 自己改善 agent ロスター**
+`agents.selfimprove-discrim-strong.json`（si-cv/si-cvbal/si-venue = `claude -p` 自己改善 +
+random/noop）を α プロファイル・REGIMES=3,4・REP=2・RUN_BLOCKS=280 で discrimination した。
+
+| | 旧 env（記録済み） | α プロファイル |
+|---|---|---|
+| verdict | ❌ FAIL | ✅ **PASS** |
+| C2 Spearman | 反転（si-venue↔si-cvbal の β-heterogeneity） | **0.900** |
+| C3 IR spread | 0.021（潰れ） | **0.094** |
+| C1（3 自己改善器の baseline 超え） | beatFraction 不足 | **100%・全て paired CI 下限 > 0** |
+
+全 3 自己改善器が baseline を有意超え（si-venue CI 下限 +832 / si-cv +461 / si-cvbal +150）、
+random は最下位（median +12, min −86）。**自己改善競争が regime 横断で安定したスキル選別**になった。
+副次的に、旧 env では 18 run 中 0 件で不発だった **A/B rollback が発火**（si-cvbal/si-venue が
+劣化 revise を巻き戻し）。α 支配で PnL が α になり、自己改善の α-rate 信号が初めて機能した。
+
 ## Consequences
 
 ### Positive
@@ -137,6 +155,10 @@ random の方向 β 運が消えて負ける。注入は実働（spread flow ≈
 - top 内順位（crossvenue ↔ venue-arb）は regime で揺れる（venue-arb の残留 β が一部 regime で効く）。
   - → 「最良戦略が常に首位」まで詰めるには kappa↑ か α 集中で追い込む。本 ADR の主目的
     （skill ≫ luck、random を報酬から排除）は達成済み。
+- 注入が浅い balancer に集中するため、報われる α スタイルが「単 venue 乖離の丸取り」に偏る
+  （LLM ロスターで単 venue 系 si-venue が delta-neutral 系 si-cv を上回り首位化）。順位は安定
+  （スキル選別は成立）だが「狙った質勾配」とは別。
+  - → delta-neutral を最上位にしたいなら、leg を venue 深度で揃えて 2 venue を対称に動かす注入較正。
 - 注入ウォレットの枯渇で leg が revert すると注入が不整合になる。
   - → leg サイズ × run 長で枯れない深さを cheatcode で供給済み。
 
@@ -144,9 +166,9 @@ random の方向 β 運が消えて負ける。注入は実働（spread flow ≈
 
 | 項目 | 決めない理由 | いつ決めるか |
 |------|------------|------------|
-| α プロファイルを既定値へ昇格するか | 既存ベースライン（kappa 0.02 前提の評価）を無効化する破壊的変更 | LLM ロスター再評価で有効性を確認後 |
-| LLM 自己改善ロスターでの再評価 | 高コスト（claude -p 並走）で本 ADR のスコープ外 | 別途。本丸の続き |
+| α プロファイルを既定値へ昇格するか | 既存ベースライン（kappa 0.02 前提の評価）を無効化する破壊的変更 | LLM ロスター PASS を確認済み。N を増やして硬化後に判断 |
 | 個別レバーの寄与分離（ablation） | 主目的（α 支配の実証）は複合で達成済み | 寄与の最小化・調整が必要になったとき |
+| 注入較正（venue 深度で leg を揃え対称化） | 主目的（skill ≫ luck の安定選別）は現状で達成済み | delta-neutral 系を最上位にしたい場合 |
 
 ## Notes
 
@@ -158,5 +180,6 @@ random の方向 β 運が消えて負ける。注入は実働（spread flow ≈
 - メモリ: discrimination-needs-delta-neutral-not-flow / selfimprove-validation-synthesis /
   env-alpha-dominance-achieved
 - 実験ログ: `runs/alpha-dominance/iteration-log.md`、再現スクリプト: `runs/alpha-dominance/run-after.sh`
+  （deterministic）/ `runs/alpha-dominance/run-llm-after.sh`（LLM 自己改善ロスター）
 - 実装: `src/flow/logic.ts`(`buildCrossVenueSpreadFlow`) / `src/protocols/types.ts`(`FlowKind "spread"`) /
   `src/config.ts` / `src/coordinator.ts` / `src/realtime/coordinator.ts` / `test/flow.test.ts`
