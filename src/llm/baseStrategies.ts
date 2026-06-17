@@ -7,25 +7,30 @@
 // この v1 を磨いていく。offline ゲート(P3)で勝った版をここへ書き戻して恒久化する。
 import type { Strategy } from "./strategy.js";
 
-// arb: Uniswap pool↔fair の gap を取りに行く swap。利益比例で priority fee を入札。
-// (examples/agents/arb-bot.ts の逐語移植。obs だけで完結する純粋判断)
+// arb: uniswap/balancer/curve の各 venue で pool↔fair の gap を見て、最も乖離した venue を fair へ
+// 寄せる swap。利益比例で priority fee を入札。3 venue 対応(最大乖離 venue を選ぶ)。
+// (examples/agents/arb-bot.ts の発展。obs だけで完結する純粋判断)
 const ARB_EXECUTOR = `
-const uni = obs.protocols && obs.protocols.uniswap;
-if (!uni || !uni.pool) return { type: "noop", reason: "uniswap disabled" };
-const pool = uni.pool.priceUsdcPerWeth;
+const p = obs.protocols || {};
 const fair = obs.fairPriceUsdcPerWeth;
-if (!(pool > 0) || !(fair > 0)) return { type: "noop", reason: "invalid prices" };
-const gap = fair / pool - 1;
-if (Math.abs(gap) < params.gapThreshold) return { type: "noop", reason: "gap too small" };
-const tokenIn = gap > 0 ? "USDC" : "WETH";
+if (!(fair > 0)) return { type: "noop", reason: "invalid fair" };
+const venues = [];
+if (p.uniswap && p.uniswap.pool && p.uniswap.pool.priceUsdcPerWeth > 0) venues.push({ swapType: "swap", price: p.uniswap.pool.priceUsdcPerWeth });
+if (p.balancer && p.balancer.priceUsdcPerWeth > 0) venues.push({ swapType: "balancerSwap", price: p.balancer.priceUsdcPerWeth });
+if (p.curve && p.curve.priceUsdcPerWeth > 0) venues.push({ swapType: "curveSwap", price: p.curve.priceUsdcPerWeth });
+if (venues.length === 0) return { type: "noop", reason: "no venue" };
+let best = null; let bestGap = 0;
+for (let i = 0; i < venues.length; i++) { const g = fair / venues[i].price - 1; if (Math.abs(g) > Math.abs(bestGap)) { bestGap = g; best = venues[i]; } }
+if (!best || Math.abs(bestGap) < params.gapThreshold) return { type: "noop", reason: "gap too small" };
+const tokenIn = bestGap > 0 ? "USDC" : "WETH";
 const maxLimit = BigInt(tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits);
 const balance = BigInt(tokenIn === "WETH" ? obs.balances.wethWei : obs.balances.usdcUnits);
 const cap = balance < maxLimit ? balance : maxLimit;
-const sizeBps = Math.min(params.maxSizeBps, Math.max(params.minSizeBps, Math.floor(Math.abs(gap) * params.sizeGain)));
+const sizeBps = Math.min(params.maxSizeBps, Math.max(params.minSizeBps, Math.floor(Math.abs(bestGap) * params.sizeGain)));
 const amountIn = (cap * BigInt(sizeBps)) / 10000n;
 if (amountIn <= 0n) return { type: "noop", reason: "computed size zero" };
 const sizeUsdc = tokenIn === "USDC" ? Number(amountIn) / 1e6 : (Number(amountIn) / 1e18) * fair;
-const profitUsdc = sizeUsdc * Math.abs(gap);
+const profitUsdc = sizeUsdc * Math.abs(bestGap);
 const profitWei = Math.floor((profitUsdc / fair) * 1e9) * 1e9;
 const bidPerGas = Math.floor((profitWei * params.bidProfitFraction) / 180000);
 const minBid = BigInt(obs.limits.defaultPriorityFeePerGasWei);
@@ -33,8 +38,8 @@ const maxBid = BigInt(obs.limits.maxPriorityFeePerGasWei);
 let bid = BigInt(bidPerGas > 0 ? bidPerGas : 0);
 if (bid < minBid) bid = minBid;
 if (bid > maxBid) bid = maxBid;
-helpers.log("gap=" + (gap * 10000).toFixed(1) + "bps size=" + sizeBps + " bid=" + bid.toString());
-return { type: "swap", tokenIn: tokenIn, amountIn: amountIn.toString(), maxPriorityFeePerGasWei: bid.toString(), slippageBps: params.slippageBps };
+helpers.log("venue=" + best.swapType + " gap=" + (bestGap * 10000).toFixed(1) + "bps size=" + sizeBps + " bid=" + bid.toString());
+return { type: best.swapType, tokenIn: tokenIn, amountIn: amountIn.toString(), maxPriorityFeePerGasWei: bid.toString(), slippageBps: params.slippageBps };
 `.trim();
 
 // lp: 現在 tick の周りに集中流動性を供給する素朴な v1。既にポジションがあれば hold。
@@ -113,14 +118,15 @@ if (suppliedWeth > 0n && borrowedUsdc === 0n) {
 return { type: "noop", reason: "position established" };
 `.trim();
 
-// statarb: gap の z-score(obs.history の直近窓から平均/分散を再計算 → 状態を持たない近似)で
-// 閾値超のとき過小評価側へ z 比例サイズで swap。(examples/agents/stat-arb.ts の窓版移植)
+// statarb: uniswap gap の z-score(obs.history の直近窓から平均/分散を再計算 → 状態を持たない近似)で
+// 「動いている regime か」を判定し、超えたら**3 venue のうち最大乖離 venue**を fair へ寄せる z 比例
+// サイズの swap。history は uniswap pool 価格のみなのでボラ推定は uniswap、執行は最大乖離 venue。
+// (examples/agents/stat-arb.ts の窓版を 3 venue 化)
 const STATARB_EXECUTOR = `
-const uni = obs.protocols && obs.protocols.uniswap;
-if (!uni || !uni.pool) return { type: "noop", reason: "uniswap disabled" };
-const pool = uni.pool.priceUsdcPerWeth;
+const p = obs.protocols || {};
+const uni = p.uniswap;
 const fair = obs.fairPriceUsdcPerWeth;
-if (!(pool > 0) || !(fair > 0)) return { type: "noop", reason: "invalid prices" };
+if (!uni || !uni.pool || !(uni.pool.priceUsdcPerWeth > 0) || !(fair > 0)) return { type: "noop", reason: "invalid prices" };
 const hist = obs.history || [];
 const gaps = [];
 for (let i = 0; i < hist.length; i++) {
@@ -132,41 +138,46 @@ let mean = 0; for (let i = 0; i < gaps.length; i++) mean += gaps[i]; mean /= gap
 let vs = 0; for (let i = 0; i < gaps.length; i++) { const d = gaps[i] - mean; vs += d * d; }
 const std = Math.sqrt(vs / Math.max(1, gaps.length - 1));
 if (!(std > 0)) return { type: "noop", reason: "no variance" };
-const gap = fair / pool - 1;
-const z = (gap - mean) / std;
+const venues = [{ swapType: "swap", price: uni.pool.priceUsdcPerWeth }];
+if (p.balancer && p.balancer.priceUsdcPerWeth > 0) venues.push({ swapType: "balancerSwap", price: p.balancer.priceUsdcPerWeth });
+if (p.curve && p.curve.priceUsdcPerWeth > 0) venues.push({ swapType: "curveSwap", price: p.curve.priceUsdcPerWeth });
+let best = venues[0]; let bestGap = fair / venues[0].price - 1;
+for (let i = 1; i < venues.length; i++) { const g = fair / venues[i].price - 1; if (Math.abs(g) > Math.abs(bestGap)) { bestGap = g; best = venues[i]; } }
+const z = (bestGap - mean) / std;
 const absZ = Math.abs(z);
 if (absZ < params.zEnter) return { type: "noop", reason: "|z|=" + absZ.toFixed(2) + " < enter" };
-const tokenIn = gap > 0 ? "USDC" : "WETH";
+const tokenIn = bestGap > 0 ? "USDC" : "WETH";
 const max = BigInt(tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits);
 const span = Math.max(0.0001, params.zAggressive - params.zEnter);
 const t = Math.max(0, Math.min(1, (absZ - params.zEnter) / span));
 const sizeBps = Math.floor(params.minSizeBps + (params.maxSizeBps - params.minSizeBps) * t);
 const amountIn = (max * BigInt(sizeBps)) / 10000n;
 if (amountIn <= 0n) return { type: "noop", reason: "computed size zero" };
-helpers.log("z=" + z.toFixed(2) + " size=" + sizeBps);
-return { type: "swap", tokenIn: tokenIn, amountIn: amountIn.toString(), maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei, slippageBps: params.slippageBps };
+helpers.log("venue=" + best.swapType + " z=" + z.toFixed(2) + " size=" + sizeBps);
+return { type: best.swapType, tokenIn: tokenIn, amountIn: amountIn.toString(), maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei, slippageBps: params.slippageBps };
 `.trim();
 
-// cvbal: Balancer↔Curve の WETH 価格差(スプレッド)を取りに行くペア裁定。割安 venue で買い・
-// 割高 venue で売りの両建てを 1 bundle で。状態を持たず obs の 2 価格だけで判断。
-// (examples/agents/cv-bal-arb.ts の移植)
+// cvbal: uniswap/balancer/curve の最安 venue で買い・最高 venue で売る delta-neutral ペア裁定。
+// 両建てを 1 bundle で。状態を持たず obs の venue 価格だけで判断。3 venue 対応(最大スプレッドのペアを選ぶ)。
+// (examples/agents/cv-bal-arb.ts を 3 venue 化)
 const CVBAL_EXECUTOR = `
 const p = obs.protocols || {};
-const bal = p.balancer && p.balancer.priceUsdcPerWeth;
-const curve = p.curve && p.curve.priceUsdcPerWeth;
 const fee = obs.limits.defaultPriorityFeePerGasWei;
-if (!(bal > 0) || !(curve > 0)) return { type: "noop", reason: "balancer/curve unavailable" };
-const spread = Math.abs(bal / curve - 1);
-if (spread < params.spreadBps / 10000) return { type: "noop", reason: "spread too small" };
-const balCheaper = bal < curve;
-const buyVenue = balCheaper ? "balancerSwap" : "curveSwap";
-const sellVenue = balCheaper ? "curveSwap" : "balancerSwap";
+const venues = [];
+if (p.uniswap && p.uniswap.pool && p.uniswap.pool.priceUsdcPerWeth > 0) venues.push({ swapType: "swap", price: p.uniswap.pool.priceUsdcPerWeth });
+if (p.balancer && p.balancer.priceUsdcPerWeth > 0) venues.push({ swapType: "balancerSwap", price: p.balancer.priceUsdcPerWeth });
+if (p.curve && p.curve.priceUsdcPerWeth > 0) venues.push({ swapType: "curveSwap", price: p.curve.priceUsdcPerWeth });
+if (venues.length < 2) return { type: "noop", reason: "need >=2 venues" };
+let lo = venues[0]; let hi = venues[0];
+for (let i = 0; i < venues.length; i++) { if (venues[i].price < lo.price) lo = venues[i]; if (venues[i].price > hi.price) hi = venues[i]; }
+const spread = hi.price / lo.price - 1;
+if (spread < params.spreadBps / 10000 || lo.swapType === hi.swapType) return { type: "noop", reason: "spread too small" };
 const sizeBps = Math.min(params.maxSizeBps, Math.max(params.minSizeBps, Math.floor(spread * params.sizeGain)));
 const usdcIn = (BigInt(obs.limits.maxUsdcInUnits) * BigInt(sizeBps)) / 10000n;
 const wethIn = (BigInt(obs.limits.maxWethInWei) * BigInt(sizeBps)) / 10000n;
 if (usdcIn <= 0n || wethIn <= 0n) return { type: "noop", reason: "computed size zero" };
-helpers.log("spread=" + (spread * 10000).toFixed(1) + "bps buy=" + buyVenue);
-return { type: "bundle", actions: [ { type: buyVenue, tokenIn: "USDC", amountIn: usdcIn.toString(), slippageBps: params.slippageBps }, { type: sellVenue, tokenIn: "WETH", amountIn: wethIn.toString(), slippageBps: params.slippageBps } ], maxPriorityFeePerGasWei: fee };
+helpers.log("spread=" + (spread * 10000).toFixed(1) + "bps buy=" + lo.swapType + " sell=" + hi.swapType);
+return { type: "bundle", actions: [ { type: lo.swapType, tokenIn: "USDC", amountIn: usdcIn.toString(), slippageBps: params.slippageBps }, { type: hi.swapType, tokenIn: "WETH", amountIn: wethIn.toString(), slippageBps: params.slippageBps } ], maxPriorityFeePerGasWei: fee };
 `.trim();
 
 // dnlp: Uniswap V3 LP を mint し、その WETH エクスポージャを GMX short でヘッジするデルタニュートラル。
@@ -486,7 +497,7 @@ return { type: "noop", reason: "LP + idle parked" };
 const BASE_STRATEGIES: Record<string, Omit<Strategy, "version">> = {
   arb: {
     notes:
-      "Base strategy **arb**: Uniswap pool↔fair の gap が閾値超なら過小評価側へ gap 比例サイズで swap。期待利益の一部を priority fee に入札。revise で gapThreshold / sizeGain / bidProfitFraction を磨く。",
+      "Base strategy **arb**: uniswap/balancer/curve の各 venue で pool↔fair の gap を見て最大乖離 venue を fair へ寄せる swap。期待利益の一部を priority fee に入札。revise で gapThreshold / sizeGain / bidProfitFraction を磨く。",
     params: {
       gapThreshold: 0.0005,
       minSizeBps: 250,
@@ -530,7 +541,7 @@ const BASE_STRATEGIES: Record<string, Omit<Strategy, "version">> = {
   },
   statarb: {
     notes:
-      "Base strategy **statarb**: gap の z-score(obs.history 窓から再計算)が zEnter 超で過小評価側へ z 比例サイズで swap。revise で zEnter / zAggressive / サイズを磨く。",
+      "Base strategy **statarb**: uniswap gap の z-score(obs.history 窓から再計算)で動いている regime を判定し、超えたら 3 venue の最大乖離 venue を fair へ寄せる z 比例 swap。revise で zEnter / zAggressive / サイズを磨く。",
     params: {
       minSamples: 12,
       zEnter: 1.5,
@@ -543,7 +554,7 @@ const BASE_STRATEGIES: Record<string, Omit<Strategy, "version">> = {
   },
   cvbal: {
     notes:
-      "Base strategy **cvbal**: Balancer↔Curve のスプレッドが閾値超なら割安 venue 買い+割高 venue 売りの両建て bundle。revise で spreadBps / サイズを磨く。balancer+curve 有効時のみ。",
+      "Base strategy **cvbal**: uniswap/balancer/curve の最安 venue 買い+最高 venue 売りの delta-neutral 両建て bundle(最大スプレッドのペアを選ぶ)。revise で spreadBps / サイズを磨く。複数 AMM venue 有効時のみ。",
     params: {
       spreadBps: 15,
       minSizeBps: 250,

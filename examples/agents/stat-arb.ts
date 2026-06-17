@@ -112,7 +112,11 @@ const rl = createInterface({ input: process.stdin });
 // 観測はネスト形 (protocols.uniswap.pool)。本戦略はトップレベル pool を前提にした
 // フラット形を使うため、パース後に正規化する。uniswap 無効時は裁定できず noop。
 type RawObservation = Observation & {
-  protocols?: { uniswap?: { pool?: { priceUsdcPerWeth: number } } };
+  protocols?: {
+    uniswap?: { pool?: { priceUsdcPerWeth: number } };
+    balancer?: { priceUsdcPerWeth: number };
+    curve?: { priceUsdcPerWeth: number };
+  };
 };
 
 rl.on("line", (line) => {
@@ -158,7 +162,27 @@ rl.on("line", (line) => {
     return;
   }
 
-  const tokenIn: "WETH" | "USDC" = gap > 0 ? "USDC" : "WETH";
+  // z は uniswap gap = 「動いている regime か」の判定に使い、執行は 3 venue の最大乖離 venue を選ぶ。
+  const venues: Array<{ swapType: string; price: number }> = [
+    { swapType: "swap", price: pool },
+  ];
+  const balP = raw.protocols?.balancer?.priceUsdcPerWeth;
+  if (Number.isFinite(balP) && (balP ?? 0) > 0)
+    venues.push({ swapType: "balancerSwap", price: balP as number });
+  const curveP = raw.protocols?.curve?.priceUsdcPerWeth;
+  if (Number.isFinite(curveP) && (curveP ?? 0) > 0)
+    venues.push({ swapType: "curveSwap", price: curveP as number });
+  let best = venues[0];
+  let bestGap = fair / venues[0].price - 1;
+  for (const v of venues) {
+    const g = fair / v.price - 1;
+    if (Math.abs(g) > Math.abs(bestGap)) {
+      bestGap = g;
+      best = v;
+    }
+  }
+
+  const tokenIn: "WETH" | "USDC" = bestGap > 0 ? "USDC" : "WETH";
   const max = BigInt(
     tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits,
   );
@@ -185,7 +209,7 @@ rl.on("line", (line) => {
     tokenIn === "USDC"
       ? Number(amountIn) / 1e6
       : (Number(amountIn) / 1e18) * fair;
-  const evUsdc = sizeUsdc * Math.abs(gap);
+  const evUsdc = sizeUsdc * Math.abs(bestGap);
   const evGwei = Math.max(0, Math.floor((evUsdc / fair) * 1e9));
   const evWei = BigInt(evGwei) * 1_000_000_000n;
 
@@ -206,7 +230,7 @@ rl.on("line", (line) => {
 
   process.stdout.write(
     `${JSON.stringify({
-      type: "swap",
+      type: best.swapType,
       tokenIn,
       amountIn: amountIn.toString(),
       maxPriorityFeePerGasWei: bid.toString(),

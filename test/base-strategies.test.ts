@@ -263,11 +263,68 @@ test("cvbal ベース: スプレッドが小さければ noop", () => {
   const s = getBaseStrategy("cvbal");
   assert.ok(s);
   const obs = syntheticObs();
+  // 3 venue 化したので uniswap も揃える（さもないと uni 1690 vs bal/curve 1700 で spread が出る）
+  obs.protocols.uniswap!.pool.priceUsdcPerWeth = 1700;
   obs.protocols.balancer = { priceUsdcPerWeth: 1700 };
   obs.protocols.curve = { priceUsdcPerWeth: 1700 };
   const r = runExecutor(s, obs, helpers);
   assert.equal(r.ok, true);
   if (r.ok) assert.equal(r.action.type, "noop");
+});
+
+test("arb ベース(3venue): balancer が最大乖離なら balancerSwap で寄せる", () => {
+  const s = getBaseStrategy("arb");
+  assert.ok(s);
+  const obs = syntheticObs();
+  obs.protocols.uniswap!.pool.priceUsdcPerWeth = 1698; // gap ~12bps
+  obs.protocols.balancer = { priceUsdcPerWeth: 1600 }; // gap ~625bps（最大）
+  obs.protocols.curve = { priceUsdcPerWeth: 1705 }; // gap ~29bps
+  const r = runExecutor(s, obs, helpers);
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.action.type, "balancerSwap"); // balancer が最大乖離
+    if (r.action.type === "balancerSwap") {
+      assert.equal(r.action.tokenIn, "USDC"); // price<fair → WETH 割安 → USDC in
+      assert.ok(BigInt(r.action.maxPriorityFeePerGasWei ?? "0") > 0n);
+    }
+  }
+});
+
+test("statarb ベース(3venue): regime active なら最大乖離 venue を執行", () => {
+  const s = getBaseStrategy("statarb");
+  assert.ok(s);
+  const obs = syntheticObs();
+  obs.history = Array.from({ length: 12 }, (_, i) => ({
+    round: i + 1,
+    poolPriceUsdcPerWeth: i % 2 === 0 ? 1699 : 1701,
+    fairPriceUsdcPerWeth: 1700,
+  }));
+  obs.protocols.uniswap!.pool.priceUsdcPerWeth = 1696; // 小乖離
+  obs.protocols.curve = { priceUsdcPerWeth: 1600 }; // 最大乖離（curve）
+  const r = runExecutor(s, obs, helpers);
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.action.type, "curveSwap");
+    if (r.action.type === "curveSwap") assert.equal(r.action.tokenIn, "USDC");
+  }
+});
+
+test("cvbal ベース(3venue): uniswap 最安・curve 最高なら uni 買い+curve 売り", () => {
+  const s = getBaseStrategy("cvbal");
+  assert.ok(s);
+  const obs = syntheticObs();
+  obs.protocols.uniswap!.pool.priceUsdcPerWeth = 1640; // 最安
+  obs.protocols.balancer = { priceUsdcPerWeth: 1690 };
+  obs.protocols.curve = { priceUsdcPerWeth: 1720 }; // 最高 → spread ~4.9%
+  const r = runExecutor(s, obs, helpers);
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.action.type, "bundle");
+    if (r.action.type === "bundle") {
+      assert.equal(r.action.actions[0].type, "swap"); // uniswap 最安で買い
+      assert.equal(r.action.actions[1].type, "curveSwap"); // curve 最高で売り
+    }
+  }
 });
 
 test("dnlp ベース: LP 無→mint、LP 有/short 無→GMX short ヘッジ", () => {

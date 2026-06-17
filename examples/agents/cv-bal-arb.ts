@@ -1,6 +1,5 @@
-// cv-bal-arb: Balancer と Curve の WETH 価格差(スプレッド)そのものを取りに行くペア裁定。
-// venue-arb.ts は各 venue を個別に fairPrice へ寄せるだけだが、本戦略は 2 venue 間の相対価格差に
-// 着目し、割安 venue で WETH を買い・割高 venue で WETH を売る両建てを 1 つの bundle で実行する。
+// cv-bal-arb: uniswap/balancer/curve の最大スプレッドのペアを取りに行く delta-neutral ペア裁定。
+// 最安 venue で WETH を買い・最高 venue で WETH を売る両建てを 1 つの bundle で実行する（3 venue 対応）。
 //
 // env:
 //   SPREAD_BPS  発注する最小スプレッド (bps, default 15)
@@ -19,36 +18,42 @@ rl.on("line", (line) => {
   const obs = JSON.parse(line);
   const round = obs.round;
   const signals: Record<string, number> = {};
-  const bal = obs.protocols?.balancer?.priceUsdcPerWeth;
-  const curve = obs.protocols?.curve?.priceUsdcPerWeth;
   const fee = obs.limits.defaultPriorityFeePerGasWei;
-  if (
-    !Number.isFinite(bal) ||
-    bal <= 0 ||
-    !Number.isFinite(curve) ||
-    curve <= 0
-  ) {
-    emit(
-      { type: "noop", reason: "balancer/curve unavailable" },
-      { round, signals },
-    );
+  // 3 venue (uniswap/balancer/curve) から最大スプレッドのペアを選ぶ。
+  const venues: Array<{ swapType: string; price: number }> = [];
+  const uni = obs.protocols?.uniswap?.pool?.priceUsdcPerWeth;
+  if (Number.isFinite(uni) && uni > 0)
+    venues.push({ swapType: "swap", price: uni });
+  const bal = obs.protocols?.balancer?.priceUsdcPerWeth;
+  if (Number.isFinite(bal) && bal > 0)
+    venues.push({ swapType: "balancerSwap", price: bal });
+  const curve = obs.protocols?.curve?.priceUsdcPerWeth;
+  if (Number.isFinite(curve) && curve > 0)
+    venues.push({ swapType: "curveSwap", price: curve });
+  if (venues.length < 2) {
+    emit({ type: "noop", reason: "need >=2 venues" }, { round, signals });
     return;
   }
+  let lo = venues[0];
+  let hi = venues[0];
+  for (const v of venues) {
+    if (v.price < lo.price) lo = v;
+    if (v.price > hi.price) hi = v;
+  }
 
-  const spread = Math.abs(bal / curve - 1);
-  signals.bal = bal;
-  signals.curve = curve;
+  const spread = hi.price / lo.price - 1;
+  signals.lo = lo.price;
+  signals.hi = hi.price;
   signals.spread = spread;
   signals.spreadBps = spread * 10_000;
-  if (spread < SPREAD_BPS / 10_000) {
+  if (spread < SPREAD_BPS / 10_000 || lo.swapType === hi.swapType) {
     emit({ type: "noop", reason: "spread too small" }, { round, signals });
     return;
   }
 
-  // 価格が低い venue = WETH が割安 → そこで USDC→WETH 買い。高い venue で WETH→USDC 売り。
-  const balCheaper = bal < curve;
-  const buyVenue = balCheaper ? "balancerSwap" : "curveSwap";
-  const sellVenue = balCheaper ? "curveSwap" : "balancerSwap";
+  // 最安 venue = WETH が割安 → そこで USDC→WETH 買い。最高 venue で WETH→USDC 売り。
+  const buyVenue = lo.swapType;
+  const sellVenue = hi.swapType;
 
   const sizeBps = Math.min(
     SIZE_BPS_MAX,

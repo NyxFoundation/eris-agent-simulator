@@ -18,7 +18,11 @@ import { createEmitter } from "./lib/agentLog.js";
 
 type Observation = {
   round: number;
-  protocols: { uniswap: { pool: { priceUsdcPerWeth: number } } };
+  protocols: {
+    uniswap?: { pool?: { priceUsdcPerWeth: number } };
+    balancer?: { priceUsdcPerWeth: number };
+    curve?: { priceUsdcPerWeth: number };
+  };
   fairPriceUsdcPerWeth: number;
   limits: {
     maxWethInWei: string;
@@ -49,23 +53,36 @@ rl.on("line", (line) => {
   const obs = JSON.parse(line) as Observation;
   const round = obs.round;
   const signals: Record<string, number> = {};
-  if (!obs.protocols?.uniswap?.pool) {
-    emit({ type: "noop", reason: "uniswap disabled" }, { round, signals });
-    return;
-  }
-  const pool = obs.protocols.uniswap.pool.priceUsdcPerWeth;
   const fair = obs.fairPriceUsdcPerWeth;
-  if (
-    !Number.isFinite(pool) ||
-    pool <= 0 ||
-    !Number.isFinite(fair) ||
-    fair <= 0
-  ) {
-    emit({ type: "noop", reason: "invalid prices" }, { round, signals });
+  if (!Number.isFinite(fair) || fair <= 0) {
+    emit({ type: "noop", reason: "invalid fair" }, { round, signals });
     return;
   }
-  const gap = fair / pool - 1;
-  signals.pool = pool;
+  // 3 venue を見て最大乖離 venue を選ぶ
+  const venues: Array<{ swapType: string; price: number }> = [];
+  const uni = obs.protocols?.uniswap?.pool?.priceUsdcPerWeth;
+  if (Number.isFinite(uni) && (uni ?? 0) > 0)
+    venues.push({ swapType: "swap", price: uni as number });
+  const bal = obs.protocols?.balancer?.priceUsdcPerWeth;
+  if (Number.isFinite(bal) && (bal ?? 0) > 0)
+    venues.push({ swapType: "balancerSwap", price: bal as number });
+  const curve = obs.protocols?.curve?.priceUsdcPerWeth;
+  if (Number.isFinite(curve) && (curve ?? 0) > 0)
+    venues.push({ swapType: "curveSwap", price: curve as number });
+  if (venues.length === 0) {
+    emit({ type: "noop", reason: "no venue" }, { round, signals });
+    return;
+  }
+  let best = venues[0];
+  let gap = fair / venues[0].price - 1;
+  for (const v of venues) {
+    const g = fair / v.price - 1;
+    if (Math.abs(g) > Math.abs(gap)) {
+      gap = g;
+      best = v;
+    }
+  }
+  signals.venuePrice = best.price;
   signals.fair = fair;
   signals.gap = gap;
   signals.gapBps = gap * 10_000;
@@ -112,7 +129,7 @@ rl.on("line", (line) => {
   signals.bidGwei = Number(bid / 1_000_000_000n);
   emit(
     {
-      type: "swap",
+      type: best.swapType,
       tokenIn,
       amountIn: amountIn.toString(),
       maxPriorityFeePerGasWei: bid.toString(),
