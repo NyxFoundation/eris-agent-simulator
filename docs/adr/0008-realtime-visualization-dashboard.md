@@ -98,7 +98,8 @@ ADR 0006 の「環境とエージェント実行の分離」を崩さず、**観
 
 **(B) RPC 断面読取（valuePoller）** — ライブ PnL / 順位 / 価格の源泉
 
-- anvil（`ARB_RPC_URL` で起動中の同じ RPC）に `PublicClient` で接続。
+- **anvil 本体の RPC**（`ANVIL_RPC_URL`、既定 `http://127.0.0.1:8545`、`config.ts`）に `PublicClient` で接続する。
+  ※ ここで読むのは anvil 自身であり、フォーク元の上流 Arbitrum RPC（`ARB_RPC_URL` = `config.forkUrl`、resetFork 用）とは別物。
 - **N ブロックごと**（既定 `DASH_POLL_EVERY=2`、調整可）に、**確定ブロック（`latest - 1`）**を断面に取り、
   `reconstruct.ts` の**価値計算ロジックを 1 ブロック断面に対して実行** → 全 agent の総価値（spot + LP + aave + gmx）。
   進行中ブロックの pending/未確定 state を拾わないため `latest` ではなく `latest - 1` を読む。
@@ -145,7 +146,7 @@ src/dashboard/
   push は **SSE**（WebSocket より単純で、ダッシュボードは一方向 push で足りる）。
   フロントは**フレームワークなし**の単一 HTML + ESM。チャートのみ軽量ライブラリ（uPlot 等）を検討。
 - **起動**：`npm run dashboard`（`package.json` に `"dashboard": "tsx src/dashboard/server.ts"`）。
-  env: `DASH_PORT`(既定 4317) / `DASH_POLL_EVERY`(既定 2 ブロック) / `RUNS_DIR`(既定 `runs`) / `RUN_DIR`（対象 run を明示指定。未指定なら起動時点の最新 dir）/ `ARB_RPC_URL`（anvil RPC、未設定なら RPC 読取を無効化しファイル tail のみで動く degrade モード）。
+  env: `DASH_PORT`(既定 4317) / `DASH_POLL_EVERY`(既定 2 ブロック) / `RUNS_DIR`(既定 `runs`) / `RUN_DIR`（対象 run を明示指定。未指定なら起動時点の最新 dir）/ `ANVIL_RPC_URL`（**anvil 本体**の RPC、既定 `http://127.0.0.1:8545`。フォーク元の `ARB_RPC_URL` とは別物。接続不可なら RPC 読取を無効化しファイル tail のみで動く degrade モード）。
 - **対象 run（単一 run 前提）**：`runWatcher` は `RUN_DIR`（明示指定）または起動時点の最新 run dir を対象に固定する。
   `run_completed` を見たら poller を止め、`value_series_reconstructed` 後の確定値に切替表示する。
   **複数 run の連続追従（次 run への自動切替・re-fork 中の poller 退避）はスコープ外**（「決めていないこと」）。
@@ -174,6 +175,7 @@ src/dashboard/
 ### 実装フェーズ（設計時点の見積り。本 ADR では実装しない）
 
 - **P0 基盤**：`readValueSnapshotAtBlock` 抽出（挙動不変）＋ coordinator の `agents_registered` emit。`npm run dashboard` の骨組み。
+  **完了条件**：抽出の前後で同一 run の `events.jsonl` 価値系列が完全一致すること（実 run の前後比較で確認。下記リスク参照）。
 - **P1 データ取り込み**：runWatcher（最新 run 追従 + 3 ファイル tail）＋ valuePoller（RPC 断面）＋ state 集約＋ SSE。
 - **P2 フロント**：index.html + SSE 購読 + 順位レース/価格/tx フィード/活動グリッド。
 - **P3 仕上げ**：run 完了時の確定値切替、LLM revise トラッカー、degrade モード。（複数 run の連続追従はスコープ外）
@@ -195,12 +197,16 @@ src/dashboard/
   実測（279 block で 3.4s ＝ ~12ms/断面）から十分軽い見込みだが、thrash の兆候が出たら `DASH_POLL_EVERY` を
   伸ばす／RPC 読取を無効化（ファイル tail のみの degrade）。検証したい場合は**ダッシュボード ON/OFF で
   `round_timing` を比較**して実害を測れる（任意）。
-- **採点リファクタの慎重さ**：`reconstruct.ts` の関数抽出は採点ロジックに触れる。
-  **計算不変**を厳守し、既存 run の再構成結果と数値一致をテストで担保してからマージ。
+- **採点リファクタの慎重さ**：`reconstruct.ts` の関数抽出は採点ロジックに触れる。**計算不変**を厳守する。
+  ただし reconstruct は anvil への Multicall RPC 依存で、純粋ユニットテストが難しい（`test/` に RPC モック基盤なし、
+  `reconstruct.test.ts` も未整備）。担保は「**同一 run の `events.jsonl` 価値系列が抽出前後で完全一致**」を
+  **実 run の前後比較**で確認する形にする（加えて切り出した関数の呼び出し構造をユニットで固定する）。
 - **LLM reason のライブ欠落**：当面は mempool 行動＋stderr で代替。reason をライブ表示したいなら
   `claude-llm.ts` を `createEmitter` 経由に寄せる別変更が要る（本 ADR スコープ外）。
-- **`ARB_RPC_URL` 前提**：clean な比較評価は `ARB_RPC_URL` 必須（[[env-alpha-dominance-achieved]] /
-  [[anvil-reset-does-not-clear-state]]）。ダッシュボードも同じ RPC を読むため、運用手順に合致。
+- **RPC エンドポイントの区別**：ダッシュボードが読むのは **anvil 本体**（`ANVIL_RPC_URL`、既定
+  `http://127.0.0.1:8545`）。一方 clean な比較評価に必須の `ARB_RPC_URL` は**フォーク元の上流 Arbitrum RPC**
+  （`config.forkUrl`、resetFork 用。[[env-alpha-dominance-achieved]] / [[anvil-reset-does-not-clear-state]]）で
+  **別物**。ダッシュボードは anvil を読むだけで上流 RPC は使わない。
 
 ## 決めていないこと（スコープ外）
 
