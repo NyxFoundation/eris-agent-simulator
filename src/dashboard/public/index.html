@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>eris · live dashboard</title>
+    <style>
+      :root {
+        --bg: #0b0e14;
+        --panel: #131822;
+        --panel-2: #0f141d;
+        --line: #232b39;
+        --ink: #e6edf3;
+        --ink-dim: #93a1b3;
+        --ink-faint: #5b6878;
+        --accent: #4da3ff;
+        --good: #3fb950;
+        --bad: #f85149;
+        --warn: #d29922;
+        --si: #6ea8ff;
+        --frozen: #f0a04b;
+        --baseline: #9aa6b3;
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font: 13px/1.4 var(--mono);
+        -webkit-font-smoothing: antialiased;
+      }
+      a { color: var(--accent); }
+
+      /* ---- header ---- */
+      header {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(180deg, #141a26, #0d1119);
+        flex-wrap: wrap;
+      }
+      header .title { font-weight: 700; letter-spacing: .5px; font-size: 14px; }
+      header .title b { color: var(--accent); }
+      .meta { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; color: var(--ink-dim); }
+      .meta .kv b { color: var(--ink); font-weight: 600; }
+      .chips { display: inline-flex; gap: 5px; }
+      .chip {
+        background: #1b2433; border: 1px solid var(--line); border-radius: 4px;
+        padding: 1px 7px; font-size: 11px; color: var(--ink-dim);
+      }
+      .badge {
+        padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700;
+        border: 1px solid var(--line);
+      }
+      .badge.live { color: #051b0b; background: var(--good); border-color: transparent; }
+      .badge.idle { color: var(--ink-dim); }
+      .badge.completed { color: #051b0b; background: var(--accent); border-color: transparent; }
+      .badge.degraded { color: #2a1c02; background: var(--warn); border-color: transparent; }
+      .badge.finalized { color: #fff; background: #6e40c9; border-color: transparent; }
+      .spacer { flex: 1; }
+      .progress {
+        width: 220px; height: 8px; background: #0a0e15; border: 1px solid var(--line);
+        border-radius: 999px; overflow: hidden;
+      }
+      .progress > div { height: 100%; background: var(--accent); width: 0%; transition: width .4s; }
+
+      /* ---- layout grid ---- */
+      main {
+        display: grid;
+        grid-template-columns: minmax(440px, 1.35fr) minmax(360px, 1fr);
+        grid-template-rows: 1fr auto;
+        gap: 10px;
+        padding: 10px;
+        height: calc(100vh - 49px);
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        display: flex; flex-direction: column;
+        min-height: 0; min-width: 0;
+        overflow: hidden;
+      }
+      .panel > h2 {
+        margin: 0; padding: 8px 12px; font-size: 12px; font-weight: 700;
+        letter-spacing: .4px; color: var(--ink-dim); text-transform: uppercase;
+        border-bottom: 1px solid var(--line);
+        display: flex; align-items: center; gap: 8px;
+      }
+      .panel > h2 .sub { font-weight: 500; text-transform: none; color: var(--ink-faint); letter-spacing: 0; }
+      .panel > .body { flex: 1; min-height: 0; overflow: hidden; position: relative; }
+
+      #race { grid-row: 1 / 3; }
+      .right-col { display: grid; grid-template-rows: 1.1fr 0.8fr 1.1fr; gap: 10px; min-height: 0; }
+      #grid-panel { grid-column: 1 / 3; }
+
+      /* ---- ranking race ---- */
+      #race .body { overflow-y: auto; padding: 6px 10px 10px; }
+      .race-list { position: relative; }
+      .race-row {
+        position: absolute; left: 0; right: 0; height: 22px;
+        display: grid; grid-template-columns: 26px 150px 1fr 84px; align-items: center;
+        gap: 8px; transition: transform .55s cubic-bezier(.22,.61,.36,1);
+        will-change: transform;
+      }
+      .race-row .rk { color: var(--ink-faint); text-align: right; font-size: 11px; }
+      .race-row .nm { display: flex; align-items: center; gap: 6px; overflow: hidden; }
+      .race-row .dot { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+      .race-row .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .race-row .kind { font-size: 9px; padding: 0 4px; border-radius: 3px; color: var(--bg); font-weight: 700; }
+      .race-bar { position: relative; height: 14px; background: #0c1119; border-radius: 3px; overflow: hidden; }
+      .race-bar .zero { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--line); }
+      .race-bar .fill { position: absolute; top: 0; bottom: 0; left: 50%; width: 0; transition: width .5s, left .5s; border-radius: 2px; }
+      .race-row .pnl { text-align: right; font-variant-numeric: tabular-nums; }
+      .pnl.pos { color: var(--good); }
+      .pnl.neg { color: var(--bad); }
+
+      /* ---- charts ---- */
+      canvas { display: block; width: 100%; height: 100%; }
+      .legend { position: absolute; top: 6px; right: 10px; display: flex; gap: 12px; font-size: 11px; color: var(--ink-dim); pointer-events: none; }
+      .legend i { display: inline-block; width: 10px; height: 3px; vertical-align: middle; margin-right: 4px; }
+      .stat-row { position: absolute; left: 10px; top: 6px; font-size: 11px; color: var(--ink-dim); }
+      .stat-row b { color: var(--ink); }
+
+      /* ---- tx feed ---- */
+      #feed .body { overflow-y: auto; }
+      .tx { display: grid; grid-template-columns: 58px 1fr 70px 56px; gap: 8px; padding: 2px 10px; border-bottom: 1px solid #1a212d; font-size: 11.5px; white-space: nowrap; }
+      .tx .who { overflow: hidden; text-overflow: ellipsis; }
+      .tx .at { color: var(--ink-dim); }
+      .tx .fee { text-align: right; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+      .tx .st { text-align: right; font-weight: 700; }
+      .tx .st.submitted { color: var(--accent); }
+      .tx .st.success, .tx .st.mined { color: var(--good); }
+      .tx .st.reverted { color: var(--bad); }
+      .tx .blk { color: var(--ink-faint); }
+
+      /* ---- activity grid ---- */
+      #grid-panel .body { overflow-y: auto; padding: 8px; }
+      .agrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+      .cell {
+        background: var(--panel-2); border: 1px solid var(--line); border-top-width: 2px;
+        border-radius: 6px; padding: 6px 8px; display: flex; flex-direction: column; gap: 3px;
+      }
+      .cell .top { display: flex; align-items: center; gap: 5px; }
+      .cell .top .lbl { font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .cell .adopt { height: 5px; background: #0c1119; border-radius: 999px; overflow: hidden; }
+      .cell .adopt > div { height: 100%; background: var(--good); transition: width .4s; }
+      .cell .nums { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--ink-faint); }
+      .cell .last { font-size: 10.5px; color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 14px; }
+      .cell.cool { opacity: .55; }
+
+      .empty { color: var(--ink-faint); padding: 18px; text-align: center; }
+      ::-webkit-scrollbar { width: 9px; height: 9px; }
+      ::-webkit-scrollbar-thumb { background: #283142; border-radius: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="title">eris <b>·</b> live</div>
+      <div class="meta" id="meta">
+        <span class="kv">run <b id="m-run">—</b></span>
+        <span class="chips" id="m-protocols"></span>
+        <span class="kv">block <b id="m-block">2.0s</b></span>
+      </div>
+      <div class="spacer"></div>
+      <div class="meta">
+        <span class="kv">blk <b id="m-curblock">0</b><span id="m-runblocks"></span></span>
+        <div class="progress"><div id="m-progress"></div></div>
+        <span class="badge idle" id="m-poller">connecting…</span>
+        <span class="badge idle" id="m-phase">idle</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel" id="race">
+        <h2>順位レース <span class="sub" id="race-sub">ライブ PnL（参考値・確定は reconstruct）</span></h2>
+        <div class="body"><div class="race-list" id="race-list"></div>
+          <div class="empty" id="race-empty">run 待機中… anvil + sim:realtime を起動してください</div>
+        </div>
+      </section>
+
+      <div class="right-col">
+        <section class="panel" id="price">
+          <h2>価格 <span class="sub">fair vs pool（裁定機会＝乖離）</span></h2>
+          <div class="body">
+            <div class="legend"><span><i style="background:var(--accent)"></i>fair</span><span><i style="background:var(--good)"></i>pool</span></div>
+            <div class="stat-row" id="price-stat"></div>
+            <canvas id="price-canvas"></canvas>
+          </div>
+        </section>
+
+        <section class="panel" id="latency">
+          <h2>ブロック進行 / レイテンシ <span class="sub">処理 ms（thrash 検知）</span></h2>
+          <div class="body">
+            <div class="stat-row" id="lat-stat"></div>
+            <canvas id="lat-canvas"></canvas>
+          </div>
+        </section>
+
+        <section class="panel" id="feed">
+          <h2>tx フィード <span class="sub">submitted / mined</span></h2>
+          <div class="body" id="feed-body"></div>
+        </section>
+      </div>
+
+      <section class="panel" id="grid-panel">
+        <h2>agent 活動グリッド <span class="sub" id="grid-sub">採用率 = submitted / (submitted + rejected + failed)</span></h2>
+        <div class="body"><div class="agrid" id="agrid"></div></div>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

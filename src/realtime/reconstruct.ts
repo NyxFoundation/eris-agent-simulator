@@ -18,7 +18,10 @@ import {
   gmxAccountPositionsCall,
   gmxEthUsdPositionValueUsd,
 } from "../protocols/gmx.js";
-import { lpPositionValueUsdc } from "../protocols/uniswap.js";
+import {
+  lpPositionValueUsdc,
+  poolPriceUsdcPerWethFromSqrtX96,
+} from "../protocols/uniswap.js";
 import type { ProtocolId } from "../types.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 
@@ -54,6 +57,222 @@ type MulticallContract = {
   args?: readonly unknown[];
 };
 
+// 1 agent あたりの断面 multicall 読取本数（インデックス計算用）。
+function perAgentReads(opts: {
+  activeStables: Address[];
+  hasUniswap: boolean;
+  hasAave: boolean;
+  hasGmx: boolean;
+}): number {
+  return (
+    1 + // ETH
+    1 + // WETH
+    opts.activeStables.length +
+    (opts.hasAave ? 1 : 0) +
+    (opts.hasGmx ? 1 : 0) +
+    (opts.hasUniswap ? 1 : 0) // LP NFT balanceOf
+  );
+}
+
+// 1 ブロック断面の全 agent 総価値（spot + LP + aave + gmx）。
+// run 後再構成（reconstructValueSeries）と dashboard の valuePoller が同じ価値計算を
+// 共有するための単一断面リーダ（ADR 0008 P0）。blockNumber 指定で歴史/現在いずれの
+// 断面も読める。observation の emit はしない（呼び側の責務）。
+export type AgentValueSnapshot = { id: string; valueUsdc: number };
+
+export type ValueSnapshot = {
+  blockNumber: number;
+  fairPriceUsdcPerWeth: number;
+  // Uniswap 有効時のみ pool 価格（slot0 由来）。無効なら null。
+  poolPriceUsdcPerWeth: number | null;
+  failedReads: number;
+  values: AgentValueSnapshot[];
+};
+
+export async function readValueSnapshotAtBlock(opts: {
+  publicClient: PublicClient;
+  agents: ReconstructionAgent[];
+  enabledIds: ProtocolId[];
+  activeStables: Address[];
+  priceFeed: Address;
+  blockNumber: number;
+}): Promise<ValueSnapshot> {
+  const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
+  const hasUniswap = enabledIds.includes("uniswap");
+  const hasAave = enabledIds.includes("aave");
+  const hasGmx = enabledIds.includes("gmx");
+  let failedReads = 0;
+
+  const call = async (
+    contracts: MulticallContract[],
+    blockNumber: bigint,
+  ): Promise<unknown[]> => {
+    const results = (await publicClient.multicall({
+      contracts: contracts as never,
+      blockNumber,
+      multicallAddress: MULTICALL3,
+      allowFailure: true,
+    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+    return results.map((r) => {
+      if (r.status === "failure") {
+        failedReads++;
+        return undefined;
+      }
+      return r.result;
+    });
+  };
+
+  const perAgent = perAgentReads({
+    activeStables,
+    hasUniswap,
+    hasAave,
+    hasGmx,
+  });
+
+  const blockNumber = BigInt(opts.blockNumber);
+  const head: MulticallContract[] = [
+    {
+      address: priceFeed,
+      abi: priceFeedAbi,
+      functionName: "latestAnswer",
+    },
+  ];
+  if (hasUniswap) {
+    head.push({
+      address: UNISWAP.poolWethUsdc500,
+      abi: poolAbi,
+      functionName: "slot0",
+    });
+  }
+  const contracts: MulticallContract[] = [...head];
+  for (const agent of agents) {
+    contracts.push(
+      {
+        address: MULTICALL3,
+        abi: multicall3Abi,
+        functionName: "getEthBalance",
+        args: [agent.address],
+      },
+      {
+        address: TOKENS.WETH.address,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [agent.address],
+      },
+      ...activeStables.map((token) => ({
+        address: token,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [agent.address],
+      })),
+    );
+    if (hasAave) {
+      contracts.push({
+        address: AAVE.Pool,
+        abi: aavePoolAbi,
+        functionName: "getUserAccountData",
+        args: [agent.address],
+      });
+    }
+    if (hasGmx) contracts.push(gmxAccountPositionsCall(agent.address));
+    if (hasUniswap) {
+      contracts.push({
+        address: UNISWAP.nonfungiblePositionManager,
+        abi: npmAbi,
+        functionName: "balanceOf",
+        args: [agent.address],
+      });
+    }
+  }
+
+  const results = await call(contracts, blockNumber);
+  const fairPrice = fromPriceFeedAnswer((results[0] as bigint) ?? 0n);
+  const slot0 = hasUniswap
+    ? (results[1] as readonly [bigint, number] | undefined)
+    : undefined;
+  const tick = slot0 ? Number(slot0[1]) : 0;
+  const poolPriceUsdcPerWeth = slot0
+    ? poolPriceUsdcPerWethFromSqrtX96(slot0[0])
+    : null;
+
+  // LP 列挙（第 2/3 段 multicall）: NFT を持つ agent の tokenId → positions を引く
+  const lpValueByAgent = new Map<string, number>();
+  if (hasUniswap) {
+    const owners: Array<{ agent: ReconstructionAgent; index: bigint }> = [];
+    agents.forEach((agent, i) => {
+      const base = head.length + i * perAgent;
+      const nftCount = (results[base + perAgent - 1] as bigint) ?? 0n;
+      for (let k = 0n; k < nftCount; k++) owners.push({ agent, index: k });
+    });
+    if (owners.length > 0) {
+      const tokenIds = await call(
+        owners.map(({ agent, index }) => ({
+          address: UNISWAP.nonfungiblePositionManager,
+          abi: npmAbi,
+          functionName: "tokenOfOwnerByIndex",
+          args: [agent.address, index],
+        })),
+        blockNumber,
+      );
+      const positions = await call(
+        tokenIds.map((tokenId) => ({
+          address: UNISWAP.nonfungiblePositionManager,
+          abi: npmAbi,
+          functionName: "positions",
+          args: [tokenId ?? 0n],
+        })),
+        blockNumber,
+      );
+      owners.forEach(({ agent }, j) => {
+        const pos = positions[j];
+        if (!pos || tokenIds[j] === undefined) return;
+        const value = lpPositionValueUsdc(
+          pos as Parameters<typeof lpPositionValueUsdc>[0],
+          tick,
+          fairPrice,
+        );
+        lpValueByAgent.set(
+          agent.id,
+          (lpValueByAgent.get(agent.id) ?? 0) + value,
+        );
+      });
+    }
+  }
+
+  const values: AgentValueSnapshot[] = [];
+  for (let i = 0; i < agents.length; i++) {
+    const agent = agents[i];
+    let idx = head.length + i * perAgent;
+    const ethWei = (results[idx++] as bigint) ?? 0n;
+    const wethWei = (results[idx++] as bigint) ?? 0n;
+    let usdcUnits = 0n;
+    for (let s = 0; s < activeStables.length; s++) {
+      usdcUnits += (results[idx++] as bigint) ?? 0n;
+    }
+    let total = valueUsdc({ ethWei, wethWei, usdcUnits }, fairPrice);
+    if (hasAave) {
+      const account = results[idx++] as readonly bigint[] | undefined;
+      if (account) total += Number(account[0] - account[1]) / 1e8;
+    }
+    if (hasGmx) {
+      const positions = results[idx++] as
+        | Parameters<typeof gmxEthUsdPositionValueUsd>[0]
+        | undefined;
+      total += gmxEthUsdPositionValueUsd(positions, fairPrice);
+    }
+    total += lpValueByAgent.get(agent.id) ?? 0;
+    values.push({ id: agent.id, valueUsdc: total });
+  }
+
+  return {
+    blockNumber: opts.blockNumber,
+    fairPriceUsdcPerWeth: fairPrice,
+    poolPriceUsdcPerWeth,
+    failedReads,
+    values,
+  };
+}
+
 export async function reconstructValueSeries(opts: {
   publicClient: PublicClient;
   logger: RunLogger;
@@ -75,9 +294,6 @@ export async function reconstructValueSeries(opts: {
     toBlock,
   } = opts;
   const started = Date.now();
-  const hasUniswap = enabledIds.includes("uniswap");
-  const hasAave = enabledIds.includes("aave");
-  const hasGmx = enabledIds.includes("gmx");
   let failedReads = 0;
 
   if (toBlock - fromBlock > HISTORY_DEPTH_LIMIT) {
@@ -87,174 +303,27 @@ export async function reconstructValueSeries(opts: {
     );
   }
 
-  const call = async (
-    contracts: MulticallContract[],
-    blockNumber: bigint,
-  ): Promise<unknown[]> => {
-    const results = (await publicClient.multicall({
-      contracts: contracts as never,
-      blockNumber,
-      multicallAddress: MULTICALL3,
-      allowFailure: true,
-    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
-    return results.map((r) => {
-      if (r.status === "failure") {
-        failedReads++;
-        return undefined;
-      }
-      return r.result;
-    });
-  };
-
-  // agent ごとの読取数（断面 multicall のインデックス計算用）
-  const perAgent =
-    1 + // ETH
-    1 + // WETH
-    activeStables.length +
-    (hasAave ? 1 : 0) +
-    (hasGmx ? 1 : 0) +
-    (hasUniswap ? 1 : 0); // LP NFT balanceOf
-
   for (let b = fromBlock; b <= toBlock; b++) {
-    const blockNumber = BigInt(b);
-    const head: MulticallContract[] = [
-      {
-        address: priceFeed,
-        abi: priceFeedAbi,
-        functionName: "latestAnswer",
-      },
-    ];
-    if (hasUniswap) {
-      head.push({
-        address: UNISWAP.poolWethUsdc500,
-        abi: poolAbi,
-        functionName: "slot0",
-      });
-    }
-    const contracts: MulticallContract[] = [...head];
-    for (const agent of agents) {
-      contracts.push(
-        {
-          address: MULTICALL3,
-          abi: multicall3Abi,
-          functionName: "getEthBalance",
-          args: [agent.address],
-        },
-        {
-          address: TOKENS.WETH.address,
-          abi: erc20Abi,
-          functionName: "balanceOf",
-          args: [agent.address],
-        },
-        ...activeStables.map((token) => ({
-          address: token,
-          abi: erc20Abi,
-          functionName: "balanceOf",
-          args: [agent.address],
-        })),
-      );
-      if (hasAave) {
-        contracts.push({
-          address: AAVE.Pool,
-          abi: aavePoolAbi,
-          functionName: "getUserAccountData",
-          args: [agent.address],
-        });
-      }
-      if (hasGmx) contracts.push(gmxAccountPositionsCall(agent.address));
-      if (hasUniswap) {
-        contracts.push({
-          address: UNISWAP.nonfungiblePositionManager,
-          abi: npmAbi,
-          functionName: "balanceOf",
-          args: [agent.address],
-        });
-      }
-    }
-
-    const results = await call(contracts, blockNumber);
-    const fairPrice = fromPriceFeedAnswer((results[0] as bigint) ?? 0n);
-    const slot0 = hasUniswap
-      ? (results[1] as readonly [bigint, number] | undefined)
-      : undefined;
-    const tick = slot0 ? Number(slot0[1]) : 0;
-
-    // LP 列挙（第 2/3 段 multicall）: NFT を持つ agent の tokenId → positions を引く
-    const lpValueByAgent = new Map<string, number>();
-    if (hasUniswap) {
-      const owners: Array<{ agent: ReconstructionAgent; index: bigint }> = [];
-      agents.forEach((agent, i) => {
-        const base = head.length + i * perAgent;
-        const nftCount = (results[base + perAgent - 1] as bigint) ?? 0n;
-        for (let k = 0n; k < nftCount; k++) owners.push({ agent, index: k });
-      });
-      if (owners.length > 0) {
-        const tokenIds = await call(
-          owners.map(({ agent, index }) => ({
-            address: UNISWAP.nonfungiblePositionManager,
-            abi: npmAbi,
-            functionName: "tokenOfOwnerByIndex",
-            args: [agent.address, index],
-          })),
-          blockNumber,
-        );
-        const positions = await call(
-          tokenIds.map((tokenId) => ({
-            address: UNISWAP.nonfungiblePositionManager,
-            abi: npmAbi,
-            functionName: "positions",
-            args: [tokenId ?? 0n],
-          })),
-          blockNumber,
-        );
-        owners.forEach(({ agent }, j) => {
-          const pos = positions[j];
-          if (!pos || tokenIds[j] === undefined) return;
-          const value = lpPositionValueUsdc(
-            pos as Parameters<typeof lpPositionValueUsdc>[0],
-            tick,
-            fairPrice,
-          );
-          lpValueByAgent.set(
-            agent.id,
-            (lpValueByAgent.get(agent.id) ?? 0) + value,
-          );
-        });
-      }
-    }
-
-    for (let i = 0; i < agents.length; i++) {
-      const agent = agents[i];
-      let idx = head.length + i * perAgent;
-      const ethWei = (results[idx++] as bigint) ?? 0n;
-      const wethWei = (results[idx++] as bigint) ?? 0n;
-      let usdcUnits = 0n;
-      for (let s = 0; s < activeStables.length; s++) {
-        usdcUnits += (results[idx++] as bigint) ?? 0n;
-      }
-      let total = valueUsdc({ ethWei, wethWei, usdcUnits }, fairPrice);
-      if (hasAave) {
-        const account = results[idx++] as readonly bigint[] | undefined;
-        if (account) total += Number(account[0] - account[1]) / 1e8;
-      }
-      if (hasGmx) {
-        const positions = results[idx++] as
-          | Parameters<typeof gmxEthUsdPositionValueUsd>[0]
-          | undefined;
-        total += gmxEthUsdPositionValueUsd(positions, fairPrice);
-      }
-      total += lpValueByAgent.get(agent.id) ?? 0;
-
+    const snapshot = await readValueSnapshotAtBlock({
+      publicClient,
+      agents,
+      enabledIds,
+      activeStables,
+      priceFeed,
+      blockNumber: b,
+    });
+    failedReads += snapshot.failedReads;
+    for (const { id, valueUsdc: total } of snapshot.values) {
       // readPerRoundValues が読む observation 形（inventory.valueUsdc = 総価値）。
       // protocols は載せない（perRoundValueUsdc の二重加算を避ける）。
       logger.event({
         type: "observation",
-        agentId: agent.id,
+        agentId: id,
         observation: {
           reconstructed: true,
           round: b,
           blockNumber: String(b),
-          fairPriceUsdcPerWeth: fairPrice,
+          fairPriceUsdcPerWeth: snapshot.fairPriceUsdcPerWeth,
           inventory: { valueUsdc: total },
         },
       });

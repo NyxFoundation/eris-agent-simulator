@@ -342,6 +342,19 @@ export async function runRealtimeSimulation(): Promise<void> {
     const priceFeedAddress = await deployPriceFeed(ctx, latestFairPrice);
     logger.event({ type: "price_feed_deployed", address: priceFeedAddress });
 
+    // agent レジストリを 1 行 emit（ADR 0008 P0）。ダッシュボードがファイル tail だけで
+    // 全 agent（id/アドレス/分類ヒント）を即座に把握できる（1 件も行動しない agent や
+    // 起動直後の取りこぼしを塞ぐ）。評価/採点パイプラインへの影響はゼロ（読まれないイベント）。
+    logger.event({
+      type: "agents_registered",
+      agents: agentRuntimes.map((a) => ({
+        id: a.id,
+        address: a.address,
+        baseline: a.spec.baseline ?? false,
+        description: a.spec.description,
+      })),
+    });
+
     // ---- pre-warm（ADR 0006 Risks の anvil cold フェッチ対策。prewarmWorkingSet 参照）----
     if (config.prewarmBlocks > 0) {
       await prewarmWorkingSet(

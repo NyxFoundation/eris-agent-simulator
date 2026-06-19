@@ -2,7 +2,30 @@
 
 ## Status
 
-Proposed（設計のみ。実装は未着手）
+Accepted（実装済み。2026-06-20。`src/dashboard/` + `npm run dashboard`）
+
+### 実装メモ（2026-06-20）
+
+P0–P3 を実装した。設計から確定/変更した点のみ記す。
+
+- **P0**: `reconstruct.ts` から `readValueSnapshotAtBlock`（1 ブロック断面の純粋リーダ）を抽出し、
+  `reconstructValueSeries` はこれを呼ぶだけにした（価値計算は完全不変。pool 価格は
+  `poolPriceUsdcPerWethFromSqrtX96` を uniswap.ts に切り出して共有）。coordinator は
+  `price_feed_deployed` 直後に `agents_registered` を 1 行 emit する。実 run（完了済み）の
+  events.jsonl 価値系列で抽出前後の不変を確認＋ユニットテスト（`test/dashboard.test.ts`）で
+  呼び出し構造と価値計算・分類を固定した。
+- **チャートライブラリ**（「決めていないこと」だった）: **自前 canvas**（`public/charts.js`）に決定。
+  外部依存ゼロ（uPlot 不採用）。系列数が増えたら差し替える。
+- **SSE 契約の微調整**: `block` は `{ blockNumber, timingMs }`（round_timing 由来。価格は持たない）、
+  fair/pool 価格は `values`（poller 由来）に載せた（round_timing に価格が無いため）。
+  併せて `agents`（registry 反映）/ `pollerStatus`（degrade 表示）を追加（いずれも契約への追加）。
+- **確定値切替（P3）**: `value_series_reconstructed` を観測したら、events.jsonl の reconstructed
+  observation（最初/最後の断面）から最終順位（pnl = last − first）を構成して race を上書きする。
+  poller が一度も走らなくても（ダッシュボードを run 後に起動した場合等）確定順位が出る。
+  以降の遅延 poll は finalized ガードで上書きしない（権威は reconstruct）。
+- **realtime の tx フィード**: blocks.csv は run 後一括書込のため run 中はライブで増えない。
+  ライブ tx は events.jsonl `tx_submitted`（flow）と agents/*.jsonl mempool `submitted`（direct agent）を
+  `submitted` フェーズで流し、run 末に blocks.csv の `mined`（確定の着順・status・revert）で補完する。
 
 ## Context
 

@@ -53,6 +53,16 @@ function sortedTokens(): { token0: Address; token1: Address } {
     : { token0: TOKENS.USDC.address, token1: TOKENS.WETH.address };
 }
 
+// slot0 の sqrtPriceX96 → USDC per WETH。pool 価格の単一定義。
+// getPoolState（live）と reconstruct/dashboard の断面読取（slot0 を multicall で
+// まとめて取る経路）が同じ式を共有する（価格の二重定義を避ける）。
+export function poolPriceUsdcPerWethFromSqrtX96(sqrtPriceX96: bigint): number {
+  const ratio = Number(sqrtPriceX96) / 2 ** 96;
+  const rawToken1PerToken0 = ratio * ratio;
+  // raw(token1/token0) -> USDC per WETH
+  return wethIsToken0() ? rawToken1PerToken0 * 1e12 : 1e12 / rawToken1PerToken0;
+}
+
 export async function getPoolState(
   publicClient: PublicClient,
 ): Promise<UniswapState> {
@@ -70,17 +80,9 @@ export async function getPoolState(
       })
       .catch(() => UNISWAP.tickSpacing),
   ]);
-  const sqrtPriceX96 = slot0[0];
-  const tick = slot0[1];
-  const ratio = Number(sqrtPriceX96) / 2 ** 96;
-  const rawToken1PerToken0 = ratio * ratio;
-  // raw(token1/token0) -> USDC per WETH
-  const priceUsdcPerWeth = wethIsToken0()
-    ? rawToken1PerToken0 * 1e12
-    : 1e12 / rawToken1PerToken0;
   return {
-    priceUsdcPerWeth,
-    tick: Number(tick),
+    priceUsdcPerWeth: poolPriceUsdcPerWethFromSqrtX96(slot0[0]),
+    tick: Number(slot0[1]),
     tickSpacing: Number(tickSpacing),
   };
 }
