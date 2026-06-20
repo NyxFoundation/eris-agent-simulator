@@ -9,6 +9,7 @@ import {
   reconstructValueSeries,
 } from "../src/realtime/reconstruct.js";
 import { agentColor, classifyAgent } from "../src/dashboard/labels.js";
+import { DashboardState } from "../src/dashboard/state.js";
 
 // 断面 multicall を決定論で返す fake（uniswap/aave/gmx 無効 → head=latestAnswer のみ、
 // agent あたり ETH + WETH + stable の 3 本）。RPC モック基盤が無い reconstruct を
@@ -150,6 +151,45 @@ test("classifyAgent: mixed30 の命名規約を kind/base/index に分類", () =
   });
   assert.equal(classifyAgent("random", { baseline: true }).kind, "baseline");
   assert.equal(classifyAgent("noop").kind, "baseline");
+});
+
+test("DashboardState: stress scenario / liquidation を SSE + snapshot に載せる（ADR 0009）", () => {
+  const state = new DashboardState();
+  const msgs: Array<{ event: string; data: unknown }> = [];
+  state.on("message", (m) => msgs.push(m));
+
+  state.setScenario({
+    name: "crash",
+    runStartBlock: 100,
+    events: [{ type: "crash", startBlock: 30, endBlock: 47, magnitude: 0.12 }],
+  });
+  state.recordLiquidation({
+    blockNumber: 132,
+    victimId: "victim-0",
+    repaidBaseUsd: 3_310_00000000, // USD 8 桁
+    healthFactor: "955000000000000000",
+    ts: 1000,
+  });
+
+  // SSE: scenario / liquidation が emit される
+  const scenarioMsg = msgs.find((m) => m.event === "scenario");
+  const liqMsg = msgs.find((m) => m.event === "liquidation");
+  assert.ok(scenarioMsg, "scenario message emitted");
+  assert.equal((scenarioMsg!.data as { name: string }).name, "crash");
+  assert.ok(liqMsg, "liquidation message emitted");
+  assert.equal((liqMsg!.data as { victimId: string }).victimId, "victim-0");
+
+  // snapshot にも同梱される（新規接続向けフル状態）
+  const snap = state.snapshot();
+  assert.equal((snap.scenario as { name: string }).name, "crash");
+  assert.equal((snap.scenario as { runStartBlock: number }).runStartBlock, 100);
+  const liqs = snap.liquidations as Array<{ victimId: string; ts: number }>;
+  assert.equal(liqs.length, 1);
+  assert.equal(liqs[0].victimId, "victim-0");
+  assert.equal(liqs[0].ts, 1000);
+
+  // 未注入 run では scenario は null
+  assert.equal(new DashboardState().snapshot().scenario, null);
 });
 
 test("agentColor: kind ごとに色相帯が分かれ、同 id は安定", () => {

@@ -35,7 +35,24 @@ const S = {
   tpsHist: [],
   tps: 0,
   mempool: 0,
+  scenario: null, // 市場ストレスシナリオ {name, runStartBlock, events:[{type,startBlock,endBlock,magnitude}]}
 };
+
+// stress シナリオが今のブロックで注入中か（窓内か）。ADR 0009。
+function isScenarioActive() {
+  const sc = S.scenario;
+  if (!sc || !sc.events?.length || !S.latestBlock) return false;
+  return sc.events.some((e) => {
+    const a = sc.runStartBlock + e.startBlock;
+    const b = sc.runStartBlock + e.endBlock;
+    return S.latestBlock >= a && S.latestBlock < b;
+  });
+}
+// crash を含むシナリオは amber、それ以外（spike のみ等）は cyan。
+function scenarioColor() {
+  const types = (S.scenario?.events ?? []).map((e) => e.type);
+  return types.includes("crash") ? "#ffcf6b" : "#5cc6ff";
+}
 
 // ============================ tx カテゴリ（particle / badge 色）============================
 const TYPE_RGB = {
@@ -165,25 +182,51 @@ function renderHeader() {
   if (S.poller?.degraded) sub += " · RPC tail-only";
   el("live-sub").textContent = sub;
 
-  // phase チップ + finalized バナー
+  // 右上チップ: stress シナリオがあれば SCENARIO + 名前、無ければ run フェーズ（ADR 0009）。
   const dot = el("scenario-dot");
   const nm = el("scenario-name");
-  let color = "#565c68";
-  let label = "idle";
-  if (S.run?.finalized) {
-    color = "#b08cff";
-    label = "finalized";
-  } else if (S.run?.phase === "completed") {
-    color = "#5cc6ff";
-    label = "completed";
-  } else if (S.run?.phase === "started") {
-    color = "#4fe0a8";
-    label = "live";
+  const kEl = el("scenario-k");
+  const active = isScenarioActive();
+  if (S.scenario) {
+    const accent = scenarioColor();
+    const color = active ? accent : "#565c68"; // 窓外は dim
+    kEl.textContent = "SCENARIO";
+    nm.textContent = S.scenario.name + (active ? " · injected" : "");
+    dot.style.background = color;
+    dot.style.boxShadow = active ? `0 0 9px ${color}` : "none";
+  } else {
+    let color = "#565c68";
+    let label = "idle";
+    if (S.run?.finalized) {
+      color = "#b08cff";
+      label = "finalized";
+    } else if (S.run?.phase === "completed") {
+      color = "#5cc6ff";
+      label = "completed";
+    } else if (S.run?.phase === "started") {
+      color = "#4fe0a8";
+      label = "live";
+    }
+    kEl.textContent = "PHASE";
+    dot.style.background = color;
+    dot.style.boxShadow = `0 0 9px ${color}`;
+    nm.textContent = label;
   }
-  dot.style.background = color;
-  dot.style.boxShadow = `0 0 9px ${color}`;
-  nm.textContent = label;
-  el("banner").classList.toggle("show", !!S.run?.finalized);
+
+  // 中央バナー: 注入中は "SCENARIO INJECTED <name>"（amber）、確定後は FINALIZED（violet）。
+  const banner = el("banner");
+  if (active) {
+    el("banner-k").textContent = "SCENARIO INJECTED";
+    el("banner-v").textContent = S.scenario.name;
+    banner.classList.add("injected", "show");
+  } else if (S.run?.finalized) {
+    el("banner-k").textContent = "FINALIZED";
+    el("banner-v").textContent = "reconstruct";
+    banner.classList.remove("injected");
+    banner.classList.add("show");
+  } else {
+    banner.classList.remove("show", "injected");
+  }
 
   const rate = S.run?.blockTimeSec
     ? `≈${S.run.blockTimeSec}s / block`
@@ -339,6 +382,27 @@ function addFeedRow(tx, animate) {
       <span class="act">${tx.actionType || tx.role || "tx"}</span>
     </div>
     <span class="fee">${fmtGwei(tx.priorityFeeWei)}g</span>`;
+  feedEl.prepend(row);
+  while (feedEl.childElementCount > 40) feedEl.lastElementChild.remove();
+}
+
+// 清算イベント（ADR 0009 stress_liquidation）を LIQ 行としてフィードへ。tx 集計には混ぜない。
+function addLiquidationRow(liq, animate) {
+  const rgb = TYPE_RGB.LIQ;
+  const hex = TYPE_HEX.LIQ;
+  const usd = fmtUsd((liq.repaidBaseUsd || 0) / 1e8);
+  const row = document.createElement("div");
+  row.className = "tx-row";
+  if (!animate) row.style.animation = "none";
+  row.innerHTML = `
+    <span class="time">${timeOfDay(liq.ts || Date.now())}</span>
+    <span class="tx-badge" style="background:rgba(${rgb},0.13);color:${hex}">LIQ</span>
+    <div class="mid">
+      <span class="from" title="${liq.victimId}">${liq.victimId}</span>
+      <span class="arrow">→</span>
+      <span class="act">liquidated</span>
+    </div>
+    <span class="fee">${usd}</span>`;
   feedEl.prepend(row);
   while (feedEl.childElementCount > 40) feedEl.lastElementChild.remove();
 }
@@ -512,6 +576,7 @@ function applySnapshot(snap) {
   S.activity = new Map((snap.activity ?? []).map((a) => [a.id, a]));
   S.ranking = snap.ranking ?? [];
   S.blocks = snap.blocks ?? [];
+  S.scenario = snap.scenario ?? null;
 
   // mesh
   mesh.setAgents(S.order.map((id) => ({ id })));
@@ -537,6 +602,9 @@ function applySnapshot(snap) {
   }
   for (const tx of (snap.tx ?? []).slice(-40)) {
     ingestTx(tx, { mesh: false, animate: false, historical: true });
+  }
+  for (const liq of (snap.liquidations ?? []).slice(-10)) {
+    addLiquidationRow(liq, false);
   }
   if (!S.selectedId && S.ranking.length) S.selectedId = S.ranking[0].id;
   mesh.setSelected(S.selectedId);
@@ -583,6 +651,16 @@ function connect() {
   });
   es.addEventListener("values", (e) => applyValues(JSON.parse(e.data)));
   es.addEventListener("tx", (e) => ingestTx(JSON.parse(e.data)));
+  es.addEventListener("scenario", (e) => {
+    S.scenario = JSON.parse(e.data);
+    renderHeader();
+  });
+  es.addEventListener("liquidation", (e) => {
+    const liq = JSON.parse(e.data);
+    addLiquidationRow(liq, true);
+    mesh.spawnTx({ ownerId: liq.victimId, colorRgb: TYPE_RGB.LIQ });
+    renderHeader();
+  });
   es.addEventListener("agentAction", (e) => {
     const a = JSON.parse(e.data);
     const act = ensureActivity(a.agentId);

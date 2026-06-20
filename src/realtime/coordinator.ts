@@ -659,7 +659,12 @@ export async function runRealtimeSimulation(): Promise<void> {
     let lastProcessedBlock = Number(await publicClient.getBlockNumber());
     const runStartBlock = lastProcessedBlock + 1;
     if (schedule.hasEvents()) {
-      logger.event({ type: "stress_schedule", events: schedule.events });
+      // runStartBlock を同梱 → ダッシュボードが窓を絶対ブロックで判定できる（ADR 0008/0009）。
+      logger.event({
+        type: "stress_schedule",
+        runStartBlock,
+        events: schedule.events,
+      });
       // 較正チェック（§2）: 各 crash の realized magnitude が victim を割れるか
       // （m > (HF0−1)/HF0）。割れないなら警告（victim は清算されず stress 軸が空になる）。
       if (minVictimHf0 !== null) {

@@ -440,6 +440,15 @@
       .banner.show {
         display: flex;
       }
+      /* stress シナリオ注入中（ADR 0009）。finalized(violet) と区別する amber アクセント。 */
+      .banner.injected {
+        background: rgba(255, 207, 107, 0.12);
+        border-color: rgba(255, 207, 107, 0.45);
+      }
+      .banner.injected .dot {
+        background: var(--amber, #ffcf6b);
+        box-shadow: 0 0 10px #ffcf6b;
+      }
       .banner .dot {
         width: 7px;
         height: 7px;
@@ -939,7 +948,7 @@
         </div>
 
         <div class="scenario">
-          <span class="k">PHASE</span>
+          <span class="k" id="scenario-k">PHASE</span>
           <span class="dot" id="scenario-dot"></span>
           <span class="name" id="scenario-name">idle</span>
         </div>
@@ -965,7 +974,7 @@
             <canvas id="mesh-canvas"></canvas>
             <div class="mesh-label" id="mesh-label">AGENT MESH</div>
             <div class="banner" id="banner">
-              <span class="dot"></span>
+              <span class="dot" id="banner-dot"></span>
               <span class="k" id="banner-k">FINALIZED</span>
               <span class="v" id="banner-v">reconstruct</span>
             </div>

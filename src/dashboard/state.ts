@@ -77,6 +77,29 @@ export type Activity = {
   lastTs: number | null;
 };
 
+// 市場ストレスシナリオ（ADR 0009）。stress_schedule から組み立てる。窓は blockIndex 基準なので
+// runStartBlock を持ち、フロントが latestBlock と突き合わせて「注入中」を判定する。
+export type ScenarioEvent = {
+  type: string; // "spike" | "crash"
+  startBlock: number; // blockIndex（runStart からの 0 起点）
+  endBlock: number;
+  magnitude: number;
+};
+export type ScenarioMeta = {
+  name: string; // 表示名（例 "crash" / "spike·crash"）
+  runStartBlock: number;
+  events: ScenarioEvent[];
+};
+
+// 清算イベント（victim 債務の減少 = liquidationCall）。tx フィードに LIQ 行として出す。
+export type LiquidationEvent = {
+  blockNumber: number;
+  victimId: string;
+  repaidBaseUsd: number; // USD 8 桁
+  healthFactor: string;
+  ts: number;
+};
+
 export type PollerStatus = {
   connected: boolean;
   degraded: boolean; // RPC 接続不可 → ファイル tail のみ（ADR 0008 degrade）
@@ -117,6 +140,8 @@ export class DashboardState extends EventEmitter {
   priceFeed: string | null = null;
   latestBlock = 0;
   totals = { txCount: 0, revertCount: 0 };
+  // 市場ストレスシナリオ（ADR 0009）。未注入なら null。
+  scenario: ScenarioMeta | null = null;
   poller: PollerStatus = {
     connected: false,
     degraded: false,
@@ -134,6 +159,7 @@ export class DashboardState extends EventEmitter {
   private readonly blocks = new Ring<BlockPoint>(900);
   private readonly prices = new Ring<PricePoint>(900);
   private readonly txs = new Ring<TxRow>(250);
+  private readonly liquidations = new Ring<LiquidationEvent>(50);
   private readonly activity = new Map<string, Activity>();
 
   private send(event: string, data: unknown): void {
@@ -209,6 +235,19 @@ export class DashboardState extends EventEmitter {
 
   setPriceFeed(address: string): void {
     this.priceFeed = address;
+  }
+
+  // 市場ストレスシナリオを登録（ADR 0009 stress_schedule）。
+  setScenario(scenario: ScenarioMeta): void {
+    this.scenario = scenario;
+    this.send("scenario", scenario);
+  }
+
+  // 清算イベントを記録し tx フィードへ流す（ADR 0009 stress_liquidation）。
+  recordLiquidation(liq: Omit<LiquidationEvent, "ts"> & { ts?: number }): void {
+    const row: LiquidationEvent = { ...liq, ts: liq.ts ?? Date.now() };
+    this.liquidations.push(row);
+    this.send("liquidation", row);
   }
 
   registerAgents(
@@ -384,6 +423,8 @@ export class DashboardState extends EventEmitter {
       activity: this.activityList(),
       poller: this.poller,
       totals: this.totals,
+      scenario: this.scenario,
+      liquidations: this.liquidations.items(),
     };
   }
 }

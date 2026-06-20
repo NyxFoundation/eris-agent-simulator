@@ -206,6 +206,33 @@ export function startRunWatcher(
       case "run_completed":
         state.completeRun();
         break;
+      case "stress_schedule": {
+        // 市場ストレスシナリオ（ADR 0009）。窓は blockIndex 基準 → runStartBlock を保持する。
+        const events = Array.isArray(ev.events)
+          ? (ev.events as Array<Record<string, unknown>>).map((e) => ({
+              type: String(e.type ?? ""),
+              startBlock: Number(e.startBlock ?? 0),
+              endBlock: Number(e.endBlock ?? 0),
+              magnitude: Number(e.magnitude ?? 0),
+            }))
+          : [];
+        const types = [...new Set(events.map((e) => e.type))].filter(Boolean);
+        state.setScenario({
+          name: types.join("·") || "stress",
+          runStartBlock: Number(ev.runStartBlock ?? 0),
+          events,
+        });
+        break;
+      }
+      case "stress_liquidation":
+        state.recordLiquidation({
+          blockNumber: Number(ev.blockNumber ?? 0),
+          victimId: String(ev.victimId ?? "?"),
+          repaidBaseUsd: Number(ev.repaidBaseUsd ?? 0),
+          healthFactor: String(ev.healthFactor ?? "0"),
+          ts,
+        });
+        break;
       default:
         break;
     }
