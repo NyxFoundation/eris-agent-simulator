@@ -27,6 +27,34 @@ P0–P3 を実装した。設計から確定/変更した点のみ記す。
   ライブ tx は events.jsonl `tx_submitted`（flow）と agents/*.jsonl mempool `submitted`（direct agent）を
   `submitted` フェーズで流し、run 末に blocks.csv の `mined`（確定の着順・status・revert）で補完する。
 
+### 実装メモ（2026-06-20・フロントエンド刷新: "Agent Mesh" デザイン）
+
+当初のマルチパネル CSS グリッド（後述「フロントエンド・パネル構成」#1–#6）を、デザインモック
+**"Eris Agent Mesh"** に合わせて刷新した。**データ取り込み層（`server` / `state` / `runWatcher` /
+`valuePoller` / `labels` / SSE 契約）は完全に不変**で、変更はフロント（`public/`）の表現のみ。
+
+- **構成**: ヘッダ統計バー / 左 = AGENT STANDINGS（順位・PnL・kind タグ）/ 中央 = Agent Mesh
+  （円環ノードの canvas アニメ + 中央 CURRENT BLOCK + 下部 LATEST BLOCKS ストリップ）/
+  右 = TRANSACTION FEED + AGENT DETAIL（選択ノードの equity / PnL スパークライン / tx 採用統計 / 直近 tx）。
+  ノードはクリック or standings 行クリックで選択し、詳細に連動する。
+- **ファイル**: `public/charts.js`（旧 折れ線/棒 canvas）を削除し、`public/mesh.js`（円環ノード /
+  comet particle / block flush の canvas レンダラ。モックの React/dc-runtime 依存を外して移植）を追加。
+  `index.html` / `app.js` を全面差替（依然フレームワークなしの単一 HTML + ESM、ビルド無し）。
+- **架空項目の読み替え**（モックは合成データ前提のため、実データに無い項目は実メトリクスへ写像し UI でも明示）:
+  - SETTLED VOLUME → **PRICE SPREAD**（pool − fair = 裁定機会）
+  - NETWORK TPS → **TX RATE**（提出 tx/秒のローリング + sparkline）
+  - SCENARIO → run **PHASE**（live / completed / finalized。finalized 時は中央バナー「FINALIZED · reconstruct」）
+  - win rate / trades / avg fill / W·L → tx 採用・採択（**INCLUDED / SUBMITTED / ADOPT% / REVERTED**）
+  - particle 色は actionType をキーワード分類（ARB/BUY/SELL/LIQ/LP）、ノード色と standings の dot は PnL、
+    kind（si/frozen/baseline）は standings のタグへ集約（mesh ノードは PnL 色のため kind は左パネルで保持）。
+- **撤去したパネル**: 独立した「価格 fair vs pool 折れ線」「レイテンシ棒」（#2 / #3）はモックに無いため削除。
+  代替として価格スプレッドは**ヘッダ PRICE SPREAD**、ブロック処理 ms は **LATEST BLOCKS カード**に残す。
+  run 進捗（#6）はヘッダ（block height / phase / protocols）へ統合。
+- **本メモで更新される記述**: 下記「フロントエンド・パネル構成」#1–#6、「src/dashboard/ ツリー」の
+  `charts.js` 行、第 1 実装メモの「チャートライブラリ ＝ 自前 canvas（`public/charts.js`）」は**フロントに関して
+  本メモが上書きする**（バックエンドのデータ層・SSE 契約・観測干渉に関する記述はすべて有効）。
+- **検証**: 実 run（finalized・5 agents）をブラウザで描画し、JS runtime エラー無し（favicon 404 のみ）を確認。
+
 ## Context
 
 mixed30 ロスター（自己改善 codex 18 + frozen 10 + baseline 2、[[mixed30-roster-plan]]）を回す前に、

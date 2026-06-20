@@ -11,7 +11,7 @@ eris-competition-poc は Anvil で Arbitrum をフォークする DeFi トレー
 - `npm run evaluate` — 同一 config を **regime×N 回の実時間 run で反復**（`REGIMES` / `REPLICATIONS` / `ERIS_RUN_BLOCKS`）し、agent ごとの per-run サンプルと集計統計を JSON 出力（unpaired 統計ゲートのサンプル収集。ADR 0005）
 - `npm run gate` — before/after の evaluate JSON を **unpaired 統計**（bootstrap CI / Welch / Mann-Whitney）で比較し受理判定（`GATE_MODE=improve|noninferior`。strategy-evolve の受理ゲート本体。ADR 0005 §3）
 - `npm run discrimination` — 多様な戦略＋ベースラインを **regime×N 反復**で回し**識別力**（C1 実力報酬（bootstrap CI 有意性つき） / C2 順位安定（regime 間） / C3 Sharpe 非潰れ）を判定（`runs/<id>/discrimination.md` + JSON。ADR 0001 P1 / ADR 0005）
-- `npm run dashboard` — **リアルタイム可視化ダッシュボード**（読取専用の独立プロセス。`http://127.0.0.1:4317`）。run 中の順位レース/価格乖離/レイテンシ/tx/活動をライブ観測（ADR 0008）。env: `DASH_PORT` / `DASH_POLL_EVERY`(ブロック) / `RUN_DIR`(明示) or 最新 run を追従 / `ANVIL_RPC_URL`(anvil 本体。接続不可なら tail のみの degrade)。単一 run 前提・tx は送らず採点に干渉しない
+- `npm run dashboard` — **リアルタイム可視化ダッシュボード**（読取専用の独立プロセス。`http://127.0.0.1:4317`）。"Agent Mesh" デザイン（ヘッダ統計 / 左=順位 standings / 中央=円環ノードの canvas mesh + CURRENT BLOCK + LATEST BLOCKS / 右=tx フィード + agent 詳細）で run 中の順位・活動・価格スプレッドをライブ観測（ADR 0008。フロントは 2026-06-20 に Agent Mesh へ刷新、データ層・SSE 契約は不変）。env: `DASH_PORT` / `DASH_POLL_EVERY`(ブロック) / `RUN_DIR`(明示) or 最新 run を追従 / `ANVIL_RPC_URL`(anvil 本体。接続不可なら tail のみの degrade)。単一 run 前提・tx は送らず採点に干渉しない
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 
 実時間化（ADR 0005）後の評価の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。だから評価は「同一 SEED の paired 比較」ではなく **N 回反復 + unpaired 統計**（`src/stats.ts` / `src/multiSeedRun.ts`）で行う。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。
