@@ -197,7 +197,10 @@ function startDirectShim(): void {
   // WETH→ETH unwrap（スリッページ 0）で自動補充し、WETH も尽きたら USDC→WETH swap（uniswap。
   // スリッページ = 現実の treasury 管理コスト）で繋ぐ。得た WETH は次ブロックの unwrap で ETH 化する。
   // headroom を維持するので補充 tx 自身の gas は常に賄える（初手 gas 切れは setup の下限検証で排除）。
-  const GAS_REFILL_TX_HEADROOM = 24n; // 維持する ETH 余力（tx 本数換算）
+  // 維持する ETH 余力（tx 本数換算）。較正で endowment と併せて調整する（ERIS_GAS_REFILL_TX_HEADROOM）。
+  const GAS_REFILL_TX_HEADROOM = BigInt(
+    process.env.ERIS_GAS_REFILL_TX_HEADROOM ?? "24",
+  );
   const GAS_LIMIT_ESTIMATE = 1_500_000n; // 1 tx の gas 上限見積り
   const GAS_REFILL_COOLDOWN_BLOCKS = 3; // 補充 tx が mine され残高へ反映されるまでの待ち
   let lastGasRefillBlock = -GAS_REFILL_COOLDOWN_BLOCKS;
