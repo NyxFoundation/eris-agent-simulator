@@ -624,7 +624,14 @@ export async function observationFor(
       maxWethInWei: config.maxAgentWethInWei.toString(),
       maxUsdcInUnits: config.maxAgentUsdcInUnits.toString(),
       defaultPriorityFeePerGasWei: config.defaultPriorityFeeWei.toString(),
-      maxPriorityFeePerGasWei: config.maxPriorityFeeWei.toString(),
+      // 経済化（ADR 0011 §2）: priority-fee 上限執行を退役するので、agent へ提示する上限も
+      // 実質撤廃する（入札は機会価値で自己制限する = realistic priority gas auction）。validateAction の
+      // 提出前チェックもこの値を見るため、ここを上げないと高入札が黙って弾かれる。10^18 wei/gas は
+      // 事実上無制限の guard（壊れた巨大入札だけ弾く。実 spend は EIP-1559 残高制約で endowment に縛られる）。
+      maxPriorityFeePerGasWei: (config.economicGas
+        ? 1_000_000_000_000_000_000n
+        : config.maxPriorityFeeWei
+      ).toString(),
       defaultSlippageBps: 50,
       maxBundleActions: config.maxBundleActions,
       maxLpWethWei: config.maxLpWethWei.toString(),
