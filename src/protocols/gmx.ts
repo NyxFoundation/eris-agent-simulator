@@ -324,6 +324,15 @@ type Position = {
 };
 
 const ORDER_CREATED_HASH = keccak256(toBytes("OrderCreated"));
+const ORDER_CANCELLED_HASH = keccak256(toBytes("OrderCancelled"));
+// 真因究明用(デバッグ): keeper executeOrder の receipt に現れる GMX イベントを名前で識別する。
+const GMX_DEBUG_EVENT_HASHES: Record<string, string> = {
+  OrderExecuted: keccak256(toBytes("OrderExecuted")),
+  OrderCancelled: keccak256(toBytes("OrderCancelled")),
+  OrderFrozen: keccak256(toBytes("OrderFrozen")),
+  PositionIncrease: keccak256(toBytes("PositionIncrease")),
+  PositionDecrease: keccak256(toBytes("PositionDecrease")),
+};
 
 function gmxCollateral(symbol: TokenSymbol): Address {
   return symbol === "WETH" ? TOKENS.WETH.address : TOKENS.USDC.address;
@@ -334,6 +343,20 @@ function looseAcceptablePrice(isLong: boolean, isIncrease: boolean): bigint {
   // short増加 / long減少: price >= acceptable を満たすため 0
   const wantMax = (isLong && isIncrease) || (!isLong && !isIncrease);
   return wantMax ? maxUint256 : 0n;
+}
+
+// GMX EventEmitter の eventData(hex)から ASCII 可読の reason 文字列を抽出する(デバッグ用)。
+// OrderCancelled の reason は ASCII 文字列(例 "OrderNotFulfillableAtAcceptablePrice")で
+// eventData に乗るため、6 文字以上の可読断片を拾えば真因が読める。
+function asciiReason(data: string): string {
+  const hex = data.startsWith("0x") ? data.slice(2) : data;
+  let s = "";
+  for (let i = 0; i + 2 <= hex.length; i += 2) {
+    const c = parseInt(hex.slice(i, i + 2), 16);
+    s += c >= 32 && c < 127 ? String.fromCharCode(c) : ".";
+  }
+  const words = s.split(/\.+/).filter((w) => w.length >= 6);
+  return words.join(" | ") || "(no ascii reason)";
 }
 
 function buildCreateOrderParams(args: {
@@ -686,7 +709,7 @@ export const gmxAdapter: ProtocolAdapter = {
           //（時間は interval mining が実時間で進める）。
           const block = await ctx.publicClient.getBlock();
           const baseFee = block.baseFeePerGas ?? 0n;
-          await ctx.walletClient.sendTransaction({
+          const dbgHash = await ctx.walletClient.sendTransaction({
             account: keeper,
             chain: ctx.chain,
             to: GMX.OrderHandler,
@@ -699,6 +722,43 @@ export const gmxAdapter: ProtocolAdapter = {
             maxFeePerGas: baseFee + fee,
             maxPriorityFeePerGas: fee,
           });
+          // 真因究明(ERIS_GMX_KEEPER_DEBUG=1): receipt を待ち OrderCancelled の reason を stderr へ。
+          // env gate なので通常 run には影響しない（receipt 待ちのブロッキングもデバッグ時のみ）。
+          if (process.env.ERIS_GMX_KEEPER_DEBUG === "1") {
+            try {
+              const rcpt = await ctx.publicClient.waitForTransactionReceipt({
+                hash: dbgHash,
+                timeout: 10_000,
+              });
+              const gmxEvents = rcpt.logs
+                .filter(
+                  (l) =>
+                    l.address.toLowerCase() === GMX.EventEmitter.toLowerCase(),
+                )
+                .map((l) => {
+                  const h = l.topics[1]?.toLowerCase() ?? "";
+                  for (const [name, hash] of Object.entries(
+                    GMX_DEBUG_EVENT_HASHES,
+                  ))
+                    if (h === hash.toLowerCase()) return name;
+                  return null;
+                })
+                .filter((x): x is string => x !== null);
+              const cancel = rcpt.logs.find(
+                (l) =>
+                  l.address.toLowerCase() === GMX.EventEmitter.toLowerCase() &&
+                  (l.topics[1]?.toLowerCase() ?? "") ===
+                    ORDER_CANCELLED_HASH.toLowerCase(),
+              );
+              process.stderr.write(
+                `[gmx-keeper-debug] key=${key.slice(0, 12)} status=${rcpt.status} events=[${gmxEvents.join(",") || "none"}]${cancel ? " reason=" + asciiReason(cancel.data) : ""}\n`,
+              );
+            } catch (e) {
+              process.stderr.write(
+                `[gmx-keeper-debug] receipt: ${e instanceof Error ? e.message : String(e)}\n`,
+              );
+            }
+          }
           continue;
         }
         await increaseTime(ctx.publicClient, 2);
