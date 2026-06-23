@@ -90,6 +90,7 @@ export type SimConfig = {
   agentTimeoutMs: number;
   agentsConfigPath: string;
   initialEthWei: bigint;
+  flowEthWei: bigint;
   initialWethWei: bigint;
   initialUsdcUnits: bigint;
   defaultPriorityFeeWei: bigint;
@@ -194,6 +195,12 @@ export function loadConfig(env = process.env): SimConfig {
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),
     agentsConfigPath: env.AGENTS_CONFIG ?? "agents.local.json",
     initialEthWei: bigintEnv(env.INITIAL_ETH_WEI, initialEthWeiDefault),
+    // Background orderflow is environment machinery, not a competitor. Give it
+    // ample gas so long runs do not silently lose market flow as wallets run dry.
+    flowEthWei: bigintEnv(
+      env.ERIS_FLOW_ETH_WEI,
+      1_000_000_000_000_000_000_000n,
+    ),
     initialWethWei: bigintEnv(
       env.INITIAL_WETH_WEI,
       10_000_000_000_000_000_000n,

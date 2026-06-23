@@ -1,0 +1,54 @@
+{
+  "_comment": "ローカルデプロイ用の少数・多様 mixed ロスター(7体・全5 venue・AUTO ウォレット)。RAM 逼迫マシン向けに軽量。",
+  "agents": [
+    {
+      "id": "arb",
+      "command": "node",
+      "args": ["--import", "tsx", "examples/agents/arb-bot.ts"],
+      "wallet": "AUTO",
+      "description": "Uniswap/cross-venue 裁定"
+    },
+    {
+      "id": "cv-bal-arb",
+      "command": "node",
+      "args": ["--import", "tsx", "examples/agents/cv-bal-arb.ts"],
+      "wallet": "AUTO",
+      "description": "cross-venue Balancer 裁定"
+    },
+    {
+      "id": "gmx-trend",
+      "command": "node",
+      "args": ["--import", "tsx", "examples/agents/gmx-trend.ts"],
+      "wallet": "AUTO",
+      "description": "GMX トレンドフォロー"
+    },
+    {
+      "id": "dn-lp",
+      "command": "node",
+      "args": ["--import", "tsx", "examples/agents/dn-lp.ts"],
+      "wallet": "AUTO",
+      "description": "delta-neutral LP"
+    },
+    {
+      "id": "stat-arb",
+      "command": "node",
+      "args": ["--import", "tsx", "examples/agents/stat-arb.ts"],
+      "wallet": "AUTO",
+      "description": "統計裁定"
+    },
+    {
+      "id": "aave-arb",
+      "command": "node",
+      "args": ["--import", "tsx", "examples/agents/aave-arb.ts"],
+      "wallet": "AUTO",
+      "description": "Aave 裁定"
+    },
+    {
+      "id": "random",
+      "command": "node",
+      "args": ["--import", "tsx", "examples/agents/random.ts"],
+      "wallet": "AUTO",
+      "description": "ノイズ"
+    }
+  ]
+}

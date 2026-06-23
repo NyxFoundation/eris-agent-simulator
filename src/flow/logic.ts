@@ -34,6 +34,8 @@ export type FlowContextWire = {
   protocols: ProtocolId[];
   poolPrices: Partial<Record<"uniswap" | "balancer" | "curve", number>>;
   aaveReserves?: { wethSupplied: string; usdcBorrowed: string };
+  flowBalances?: Record<string, { wethWei: string; usdcUnits: string }>;
+  usdcOnlyFlow?: boolean;
   limits: {
     uninformedFlowMaxWethWei: string;
     informedFlowMaxWethWei: string;
@@ -50,10 +52,13 @@ export type FlowContextWire = {
 // bot が返す 1 注文（protocol タグ付き。coordinator が flow ウォレットを選ぶのに使う）。
 export type FlowOrderOut = {
   protocol: ProtocolId;
+  walletProtocol?: ProtocolId;
   kind: FlowKind;
   action: LeafAction;
   priorityFeeWei: bigint;
 };
+
+type FlowBalance = { wethWei: bigint; usdcUnits: bigint };
 
 function randomBigInt(
   rng: Rng,
@@ -73,6 +78,24 @@ function wethToUsdcUnits(wethWei: bigint, fairPrice: number): bigint {
   return (wethWei * BigInt(Math.round(fairPrice * 100))) / (100n * 10n ** 12n);
 }
 
+function flowBalance(
+  ctx: FlowContextWire,
+  protocol: ProtocolId,
+  kind: FlowKind,
+): FlowBalance | null {
+  const raw = ctx.flowBalances?.[`${protocol}:${kind}`];
+  if (!raw) return null;
+  return {
+    wethWei: BigInt(raw.wethWei),
+    usdcUnits: BigInt(raw.usdcUnits),
+  };
+}
+
+function capUsdc(amount: bigint, balance: FlowBalance | null): bigint {
+  if (!balance) return amount;
+  return amount > balance.usdcUnits ? balance.usdcUnits : amount;
+}
+
 // AMM (uniswap/balancer/curve) の flow。uninformed ノイズ + informed(価格を fair に寄せる)。
 export function buildAmmFlow(
   rng: Rng,
@@ -82,6 +105,11 @@ export function buildAmmFlow(
   uninformedMaxWethWei: bigint,
   informedMaxWethWei: bigint,
   defaultPriorityFeeWei: bigint,
+  balances?: {
+    uninformed?: FlowBalance | null;
+    informed?: FlowBalance | null;
+  },
+  usdcOnlyFlow = false,
 ): FlowOrder[] {
   const orders: FlowOrder[] = [];
   const swapType =
@@ -93,49 +121,79 @@ export function buildAmmFlow(
 
   // uninformed: pool を fair から押しのけて gap(裁定の餌)を作る。WETH/USDC とも同じ
   // WETH 相当のランダム量にして、uninformedMaxWethWei が両側を一様に制御する（rng 消費は不変）。
-  const uninformedTokenIn: TokenSymbol = rng.bool() ? "WETH" : "USDC";
+  let uninformedTokenIn: TokenSymbol = rng.bool() ? "WETH" : "USDC";
   const uninformedWethEquiv = randomBigInt(
     rng,
     uninformedMaxWethWei / 20n,
     uninformedMaxWethWei,
   );
+  if (
+    uninformedTokenIn === "WETH" &&
+    (usdcOnlyFlow ||
+      (balances?.uninformed &&
+        balances.uninformed.wethWei < uninformedWethEquiv))
+  ) {
+    uninformedTokenIn = "USDC";
+  }
   const uninformedAmount =
     uninformedTokenIn === "WETH"
       ? uninformedWethEquiv
-      : wethToUsdcUnits(uninformedWethEquiv, fairPrice);
-  orders.push({
-    kind: "uninformed",
-    action: {
-      type: swapType,
-      tokenIn: uninformedTokenIn,
-      amountIn: uninformedAmount.toString(),
-      slippageBps: FLOW_SLIPPAGE_BPS,
-    } as LeafAction,
-    priorityFeeWei: defaultPriorityFeeWei + BigInt(rng.int(1, 50)) * 1_000_000n,
-  });
+      : capUsdc(
+          wethToUsdcUnits(uninformedWethEquiv, fairPrice),
+          balances?.uninformed ?? null,
+        );
+  const uninformedFee =
+    defaultPriorityFeeWei + BigInt(rng.int(1, 50)) * 1_000_000n;
+  if (uninformedAmount > 0n) {
+    orders.push({
+      kind: "uninformed",
+      action: {
+        type: swapType,
+        tokenIn: uninformedTokenIn,
+        amountIn: uninformedAmount.toString(),
+        slippageBps: FLOW_SLIPPAGE_BPS,
+      } as LeafAction,
+      priorityFeeWei: uninformedFee,
+    });
+  }
 
   // informed: pool 価格を fairPrice に寄せる（gap を閉じる側＝arb agent と競合する）。
   // 両側を informedMaxWethWei × gap で揃え、USDC 側も WETH 上限で制御する。
   // informedMaxWethWei を下げると flow bot が gap を潰さなくなり、arb の取り分が増える。
-  const informedTokenIn: TokenSymbol = poolPrice < fairPrice ? "USDC" : "WETH";
+  let informedTokenIn: TokenSymbol = poolPrice < fairPrice ? "USDC" : "WETH";
   const gap = Math.min(1, Math.abs(fairPrice / poolPrice - 1) * 20);
   const informedWethEquiv =
     (informedMaxWethWei * BigInt(Math.max(1, Math.floor(gap * 100)))) / 100n;
+  if (
+    informedTokenIn === "WETH" &&
+    (usdcOnlyFlow ||
+      (balances?.informed && balances.informed.wethWei < informedWethEquiv))
+  ) {
+    // USDC-only runs start flow wallets with no WETH. Buy WETH first so a later
+    // sell-side informed flow can use the same wallet instead of reverting.
+    informedTokenIn = "USDC";
+  }
   const informedAmount =
     informedTokenIn === "WETH"
       ? informedWethEquiv
-      : wethToUsdcUnits(informedWethEquiv, fairPrice);
-  orders.push({
-    kind: "informed",
-    action: {
-      type: swapType,
-      tokenIn: informedTokenIn,
-      amountIn: informedAmount.toString(),
-      slippageBps: FLOW_SLIPPAGE_BPS,
-    } as LeafAction,
-    priorityFeeWei:
-      defaultPriorityFeeWei + BigInt(rng.int(50, 100)) * 1_000_000n,
-  });
+      : capUsdc(
+          wethToUsdcUnits(informedWethEquiv, fairPrice),
+          balances?.informed ?? null,
+        );
+  const informedFee =
+    defaultPriorityFeeWei + BigInt(rng.int(50, 100)) * 1_000_000n;
+  if (informedAmount > 0n) {
+    orders.push({
+      kind: "informed",
+      action: {
+        type: swapType,
+        tokenIn: informedTokenIn,
+        amountIn: informedAmount.toString(),
+        slippageBps: FLOW_SLIPPAGE_BPS,
+      } as LeafAction,
+      priorityFeeWei: informedFee,
+    });
+  }
 
   return orders;
 }
@@ -145,7 +203,10 @@ export function buildGmxFlow(
   rng: Rng,
   gmxFlowMaxSizeUsd: bigint,
   defaultPriorityFeeWei: bigint,
-): FlowOrder[] {
+  fairPrice: number,
+  balance?: FlowBalance | null,
+  canPrepareWeth = false,
+): FlowOrderOut[] {
   if (!rng.bool()) return []; // 約半数のラウンドは見送り（OI 過剰・実行負荷を抑制）
   const isLong = rng.bool();
   // size は gmxFlowMaxSizeUsd の 1/50 を基準（約 2x になるよう担保を size/2x で算出）
@@ -156,6 +217,25 @@ export function buildGmxFlow(
     Math.max(1, Math.floor(((sizeUsdNum / 2) * 1e18) / 2100)),
   );
   const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 60)) * 1_000_000n;
+  if (balance && balance.wethWei < collateralWei * (canPrepareWeth ? 2n : 1n)) {
+    if (!canPrepareWeth) return [];
+    const usdcIn = capUsdc(wethToUsdcUnits(collateralWei, fairPrice), balance);
+    if (usdcIn <= 0n) return [];
+    return [
+      {
+        protocol: "uniswap",
+        walletProtocol: "gmx",
+        kind: "uninformed",
+        action: {
+          type: "swap",
+          tokenIn: "USDC",
+          amountIn: usdcIn.toString(),
+          slippageBps: FLOW_SLIPPAGE_BPS,
+        } as LeafAction,
+        priorityFeeWei: fee,
+      },
+    ];
+  }
   const action = {
     type: "gmxIncrease",
     isLong,
@@ -163,7 +243,7 @@ export function buildGmxFlow(
     collateralAmount: collateralWei.toString(),
     sizeDeltaUsd: sizeUsd.toString(),
   } as unknown as LeafAction;
-  return [{ kind: "uninformed", action, priorityFeeWei: fee }];
+  return [{ protocol: "gmx", kind: "uninformed", action, priorityFeeWei: fee }];
 }
 
 // Aave: supply/borrow/repay の churn を生成し HF を動かす。
@@ -175,7 +255,10 @@ export function buildAaveFlow(
   maxAaveBorrowUsdcUnits: bigint,
   defaultPriorityFeeWei: bigint,
   reserves: { wethSupplied: bigint; usdcBorrowed: bigint },
-): FlowOrder[] {
+  fairPrice: number,
+  balance?: FlowBalance | null,
+  canPrepareWeth = false,
+): FlowOrderOut[] {
   const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 40)) * 1_000_000n;
 
   // 状態機械: supply -> (borrow <-> repay を反復) -> 債務0のとき確率で withdraw。
@@ -184,6 +267,25 @@ export function buildAaveFlow(
   let action: LeafAction;
   if (reserves.wethSupplied === 0n) {
     const amount = aaveFlowMaxWethWei / 2n;
+    if (balance && balance.wethWei < amount * (canPrepareWeth ? 2n : 1n)) {
+      if (!canPrepareWeth) return [];
+      const usdcIn = capUsdc(wethToUsdcUnits(amount, fairPrice), balance);
+      if (usdcIn <= 0n) return [];
+      return [
+        {
+          protocol: "uniswap",
+          walletProtocol: "aave",
+          kind: "informed",
+          action: {
+            type: "swap",
+            tokenIn: "USDC",
+            amountIn: usdcIn.toString(),
+            slippageBps: FLOW_SLIPPAGE_BPS,
+          } as LeafAction,
+          priorityFeeWei: fee,
+        },
+      ];
+    }
     action = {
       type: "aaveSupply",
       asset: "WETH",
@@ -211,7 +313,7 @@ export function buildAaveFlow(
       amount: "max",
     } as unknown as LeafAction;
   }
-  return [{ kind: "informed", action, priorityFeeWei: fee }];
+  return [{ protocol: "aave", kind: "informed", action, priorityFeeWei: fee }];
 }
 
 // delta-neutral cross-venue スプレッド注入（α 機会の構造的生成）。
@@ -340,12 +442,16 @@ export function buildFlowOrders(
           uninformedMax,
           informedMax,
           limits.defaultPriorityFeeWei,
+          {
+            uninformed: flowBalance(ctx, protocol, "uninformed"),
+            informed: flowBalance(ctx, protocol, "informed"),
+          },
+          ctx.usdcOnlyFlow === true,
         ),
       );
     } else if (protocol === "aave") {
-      tag(
-        "aave",
-        buildAaveFlow(
+      out.push(
+        ...buildAaveFlow(
           rng,
           limits.aaveFlowMaxWethWei,
           limits.maxAaveBorrowUsdcUnits,
@@ -354,15 +460,20 @@ export function buildFlowOrders(
             wethSupplied: BigInt(ctx.aaveReserves?.wethSupplied ?? "0"),
             usdcBorrowed: BigInt(ctx.aaveReserves?.usdcBorrowed ?? "0"),
           },
+          ctx.fairPriceUsdcPerWeth,
+          flowBalance(ctx, "aave", "informed"),
+          ctx.protocols.includes("uniswap"),
         ),
       );
     } else if (protocol === "gmx") {
-      tag(
-        "gmx",
-        buildGmxFlow(
+      out.push(
+        ...buildGmxFlow(
           rng,
           limits.gmxFlowMaxSizeUsd,
           limits.defaultPriorityFeeWei,
+          ctx.fairPriceUsdcPerWeth,
+          flowBalance(ctx, "gmx", "uninformed"),
+          ctx.protocols.includes("uniswap"),
         ),
       );
     }

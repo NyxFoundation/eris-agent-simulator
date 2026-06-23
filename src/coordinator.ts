@@ -210,6 +210,7 @@ export async function runSimulation(): Promise<void> {
       id: string;
       role: WalletRole;
       privateKey: Hex;
+      flow?: boolean;
     }> = [
       ...agentRuntimes.map((a) => ({
         id: a.id,
@@ -222,6 +223,7 @@ export async function runSimulation(): Promise<void> {
           ? "informed-flow"
           : "uninformed-flow") as WalletRole,
         privateKey: w.privateKey,
+        flow: true,
       })),
     ];
     for (const target of fundTargets) {
@@ -236,7 +238,7 @@ export async function runSimulation(): Promise<void> {
         walletClient,
         chain,
         target.privateKey,
-        config.initialEthWei,
+        target.flow ? config.flowEthWei : config.initialEthWei,
         config.initialWethWei,
         config.initialUsdcUnits,
       );
@@ -674,6 +676,17 @@ export async function buildFlowContext(
       usdcBorrowed: r.usdcBorrowed.toString(),
     };
   }
+  const flowBalances: FlowContextWire["flowBalances"] = {};
+  for (const protocol of enabledIds) {
+    for (const kind of ["informed", "uninformed", "spread"] as FlowKind[]) {
+      const wallet = ctx.flowWallet(protocol, kind);
+      const b = await getBalances(ctx.publicClient, wallet.address);
+      flowBalances[`${protocol}:${kind}`] = {
+        wethWei: b.wethWei.toString(),
+        usdcUnits: b.usdcUnits.toString(),
+      };
+    }
+  }
 
   return {
     round,
@@ -681,6 +694,8 @@ export async function buildFlowContext(
     protocols: enabledIds,
     poolPrices,
     aaveReserves,
+    flowBalances,
+    usdcOnlyFlow: ctx.config.initialWethWei === 0n,
     limits: {
       uninformedFlowMaxWethWei: ctx.config.uninformedFlowMaxWethWei.toString(),
       informedFlowMaxWethWei: ctx.config.informedFlowMaxWethWei.toString(),
@@ -703,7 +718,10 @@ export function flowOrdersToIntents(
 ): TxIntent[] {
   const intents: TxIntent[] = [];
   for (const order of orders) {
-    const wallet = ctx.flowWallet(order.protocol, order.kind);
+    const wallet = ctx.flowWallet(
+      order.walletProtocol ?? order.protocol,
+      order.kind,
+    );
     intents.push({
       ownerId: wallet.id,
       role: order.kind === "informed" ? "informed-flow" : "uninformed-flow",

@@ -359,12 +359,13 @@ export async function runRealtimeSimulation(): Promise<void> {
       // spread 注入ウォレットは毎ブロック片側 leg を出し続けるため在庫が枯れやすい。
       // cheatcode 設定で市場インパクトなく深く積んでおく（leg サイズ × run 長で枯れない）。
       const isSpread = t.key?.endsWith(":spread") ?? false;
+      const isFlow = t.key !== undefined;
       await fundWallet(
         publicClient,
         walletClient,
         chain,
         t.privateKey,
-        config.initialEthWei,
+        isFlow ? config.flowEthWei : config.initialEthWei,
         isSpread
           ? config.initialWethWei + config.crossVenueSpreadFlowMaxWethWei * 500n
           : config.initialWethWei,
