@@ -92,12 +92,22 @@ function main() {
     "gmxV2 ETH/USD market (indexToken==WETH)",
   );
 
-  // Curve: deployer は USDC/DAI (WETH 無し)。poc Curve venue は WETH leg 前提のため
-  // ローカルでは未対応 (ENABLED_PROTOCOLS で curve を除外して使う)。型を満たすためだけに
-  // usdcDaiPool を置き、index は placeholder とする。
-  const curvePool = p.curve?.usdcDaiPool
-    ? getAddress(p.curve.usdcDaiPool)
-    : ("0x0000000000000000000000000000000000000000" as Address);
+  // Curve: deployer が twocrypto-ng の WETH/USDC crypto pool を立てる (uint256 index)。
+  // coin0=USDC(stable)=0, coin1=WETH=1。poc CURVE は WETH<->stable leg を使う。
+  const curveP = p.curve as
+    | (Record<string, string> & {
+        wethUsdcCryptoPool?: string;
+        cryptoWethIndex?: number;
+        cryptoStableIndex?: number;
+      })
+    | undefined;
+  const curve = {
+    pool: ca(curveP?.wethUsdcCryptoPool, "curve.wethUsdcCryptoPool"),
+    wethIndex: Number(need(curveP?.cryptoWethIndex, "curve.cryptoWethIndex")),
+    usdtIndex: Number(
+      need(curveP?.cryptoStableIndex, "curve.cryptoStableIndex"),
+    ),
+  };
 
   const out = render({
     deploymentsPath: path,
@@ -119,7 +129,7 @@ function main() {
       poolId: need(bal.wethUsdcPoolId, "balancerV2.wethUsdcPoolId"),
       tokens: balTokens,
     },
-    curvePool,
+    curve,
     gmx: {
       RoleStore: ca(gmx.RoleStore, "gmxV2.RoleStore"),
       DataStore: ca(gmx.DataStore, "gmxV2.DataStore"),
@@ -157,7 +167,7 @@ function main() {
   console.log(`  WETH=${weth} USDC=${usdc} Multicall3=${multicall3}`);
   console.log(`  ローカル run: ERIS_LOCAL_DEPLOY=1 を設定して使用`);
   console.log(
-    `  注意: Curve は WETH プール未対応 → ENABLED_PROTOCOLS=uniswap,balancer,gmx,aave を推奨`,
+    `  Curve は twocrypto-ng の WETH/USDC crypto pool (${curve.pool}) を使用 (5 venue 全対応)`,
   );
 }
 
@@ -176,7 +186,7 @@ function render(d: {
     poolId: string;
     tokens: Address[];
   };
-  curvePool: Address;
+  curve: { pool: Address; wethIndex: number; usdtIndex: number };
   gmx: Record<string, Address>;
   ethUsdMarket: Address;
   aave: Record<string, Address>;
@@ -262,13 +272,13 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     seedUsdcUnits: 50_000_000_000n,
     seedUsdtUnits: 0n,
   },
-  // 注意: deployer の Curve は USDC/DAI で WETH を含まない。poc Curve venue は
-  // WETH leg 前提のためローカルでは未対応。ENABLED_PROTOCOLS から curve を除外して使う。
+  // Curve: twocrypto-ng の WETH/USDC crypto pool (uint256 index get_dy/exchange)。
+  // coin0=USDC(stable)=${d.curve.usdtIndex}, coin1=WETH=${d.curve.wethIndex}。usdcToken は pool の stable=USDC。
   CURVE: {
-    pool: ${a(d.curvePool)},
-    wethIndex: 0,
-    usdtIndex: 1,
-    usdcToken: ${a(d.usdt)},
+    pool: ${a(d.curve.pool)},
+    wethIndex: ${d.curve.wethIndex},
+    usdtIndex: ${d.curve.usdtIndex},
+    usdcToken: ${a(d.usdc)},
   },
   GMX: {
     RoleStore: ${a(d.gmx.RoleStore)},
