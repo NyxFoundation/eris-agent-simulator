@@ -265,18 +265,27 @@ ERIS_LLM_MOCK=1 npm run sim:realtime -- --config config/claude-llm.yaml
 
 ### チューニング
 
-調整パラメータ（config の agent `env` ブロックで設定する。`agentProcess` が agent プロセスへ渡す。
-シェル env でも渡るが agent の `env` が後勝ち。秘密の API キーのみ `.env.local`）:
+LLM agent の調整は **config の `agents[].env` ブロック**に書く（sim 設定キーとは別。`agentProcess` が
+agent プロセスへ env として渡す）。秘密の API キー（`OLLAMA_API_KEY` / `ANTHROPIC_API_KEY`）だけは
+`.env.local` に置く。例:
 
-| 変数 | 既定 | 効果 |
-|---|---|---|
-| `ERIS_LLM_AUTH` | `auto` | `cli` \| `codex` \| `ollama` \| `subscription` \| `apikey` \| `mock` \| `auto`（上のバックエンド表を参照） |
-| `ERIS_LLM_MODEL` | バックエンド依存 | モデルのエイリアス / id。Ollama の既定は `gpt-oss:120b` |
-| `OLLAMA_API_KEY` / `ERIS_OLLAMA_API_KEY` | 未設定 | `ERIS_LLM_AUTH=ollama` の Bearer トークン |
-| `ERIS_OLLAMA_BASE_URL` | `https://ollama.com/api` | Ollama Cloud API のベース URL |
-| `ERIS_OLLAMA_MAX_RETRIES` | `3` | Ollama の `429` / 一時的な `5xx` に対するリトライ回数 |
-| `ERIS_LLM_REVIEW_EVERY` | `10` | 定期改訂の間隔（ラウンド数） |
-| `ERIS_LLM_DRAWDOWN_RATIO` | `0.05` | 臨時改訂をトリガーする PnL 下落率 |
-| `ERIS_LLM_HISTORY_CAPACITY` | `30` | 改訂プロンプトに含める直近ラウンド数 |
-| `ERIS_LLM_EXECUTOR_TIMEOUT_MS` | `200` | ラウンドあたり executor 実行のハードキャップ |
-| `ERIS_LLM_MOCK` | 未設定 | `1` でオフラインモック戦略を強制（`ERIS_LLM_AUTH=mock` のエイリアス） |
+```yaml
+agents:
+  - id: claude-llm
+    command: node
+    args: [--import, tsx, examples/agents/claude-llm.ts]
+    wallet: AGENT0_PRIVATE_KEY
+    env:
+      ERIS_LLM_AUTH: ollama          # cli | codex | ollama | subscription | apikey | mock | auto
+      ERIS_LLM_MODEL: gpt-oss:120b   # モデルのエイリアス / id（Ollama 既定 gpt-oss:120b）
+      ERIS_OLLAMA_BASE_URL: https://ollama.com/api
+      ERIS_OLLAMA_MAX_RETRIES: "3"   # Ollama の 429 / 一時的な 5xx へのリトライ回数
+      ERIS_LLM_REVIEW_EVERY: "10"    # 定期改訂の間隔（ラウンド数）
+      ERIS_LLM_DRAWDOWN_RATIO: "0.05" # 臨時改訂をトリガーする PnL 下落率
+      ERIS_LLM_HISTORY_CAPACITY: "30" # 改訂プロンプトに含める直近ラウンド数
+      ERIS_LLM_EXECUTOR_TIMEOUT_MS: "200" # ラウンドあたり executor 実行のハードキャップ
+      # ERIS_LLM_MOCK: "1"           # オフラインモック（ERIS_LLM_AUTH=mock のエイリアス）
+```
+
+`config/claude-llm.yaml` がこの形の雛形。`OLLAMA_API_KEY`（または `ERIS_OLLAMA_API_KEY`）は
+`ERIS_LLM_AUTH=ollama` の Bearer トークンで、`.env.local` に置く。
