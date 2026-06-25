@@ -302,6 +302,34 @@ test("strategy + decisions + claude-calls files land under REPORT_DIR/runId/agen
   });
 });
 
+test("decisions.jsonl records noop.reason from a successful executor", async () => {
+  await withTmpReportDir(async () => {
+    const runId = `reason-test-${process.pid}`;
+    const state = createState("reason-agent");
+    const strategist = new StubStrategist(
+      `return { type: "noop", reason: "edge below threshold" };`,
+    );
+    await handleLine(JSON.stringify(makeObs(0, 100, runId)), state, strategist);
+    await state.pending;
+    await handleLine(JSON.stringify(makeObs(1, 100, runId)), state, strategist);
+
+    const decisionsPath = join(
+      process.env.REPORT_DIR!,
+      runId,
+      "agent-reason-agent",
+      "decisions.jsonl",
+    );
+    const rows = readFileSync(decisionsPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const last = rows.at(-1);
+    assert.equal(last.actionType, "noop");
+    assert.equal(last.ok, true);
+    assert.equal(last.reason, "edge below threshold");
+  });
+});
+
 test("シード付き: ベース戦略を v1 にし、改訂で v2 へ磨く(LLM init は呼ばない)", async () => {
   const prev = process.env.ERIS_BASE_STRATEGY;
   process.env.ERIS_BASE_STRATEGY = "arb";

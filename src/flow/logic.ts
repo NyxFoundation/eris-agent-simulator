@@ -11,6 +11,10 @@
 import type { Rng } from "../rng.js";
 import type { LeafAction, ProtocolId, TokenSymbol } from "../types.js";
 import type { FlowKind, FlowOrder } from "../protocols/types.js";
+import { tokenInfo } from "../markets.js";
+
+// 会計上の quote（USDC 相当）の decimals。base→quote 換算の桁差に使う。
+const QUOTE_DECIMALS = tokenInfo("USDC").decimals;
 
 const FLOW_SLIPPAGE_BPS = 100;
 
@@ -36,6 +40,20 @@ export type FlowContextWire = {
   aaveReserves?: { wethSupplied: string; usdcBorrowed: string };
   flowBalances?: Record<string, { wethWei: string; usdcUnits: string }>;
   usdcOnlyFlow?: boolean;
+  // ADR 0013 Phase 8: WETH 以外の base ごとの AMM flow。WETH-only run では未設定（既定 off）で、
+  // この場合 buildFlowOrders は追加 base ループに入らず RNG を一切消費しない（byte 互換）。
+  // coordinator が WBTC 等を有効化したときだけ埋まる。各 base の max が "0" なら early-continue。
+  extraBases?: Array<{
+    base: TokenSymbol;
+    // protocol -> その venue の当該 base/USD pool 価格。揃わない venue は省略。
+    poolPrices: Partial<Record<"uniswap" | "balancer" | "curve", number>>;
+    fairPriceUsd: number;
+    // base 1e(decimals) 単位の AMM flow 上限。"0"/未設定で当該 base の flow は off（RNG 非消費）。
+    uninformedFlowMaxBaseWei?: string;
+    informedFlowMaxBaseWei?: string;
+    balancerFlowMaxBaseWei?: string;
+    curveFlowMaxBaseWei?: string;
+  }>;
   limits: {
     uninformedFlowMaxWethWei: string;
     informedFlowMaxWethWei: string;
@@ -72,10 +90,21 @@ function randomBigInt(
   );
 }
 
-// WETH wei(1e18) を fairPrice(USDC/WETH) で USDC units(1e6) へ換算。
-// flow の WETH 上限を USDC 側の注文サイズにも適用し、両側を同じ強度ノブで制御するため。
+// base amount(base decimals) を price(USDC/base) で quote units(USDC decimals) へ換算。
+// flow の base 上限を quote 側の注文サイズにも適用し、両側を同じ強度ノブで制御するため。
+// WETH 経路は (wethWei * round(price*100)) / (100 * 10^(18-6)) で従来式と byte 一致する。
+function baseToQuoteUnits(
+  baseAmount: bigint,
+  base: TokenSymbol,
+  price: number,
+): bigint {
+  const scale = 10n ** BigInt(tokenInfo(base).decimals - QUOTE_DECIMALS);
+  return (baseAmount * BigInt(Math.round(price * 100))) / (100n * scale);
+}
+
+// 後方互換ラッパ（WETH base 専用）。既存呼び出し箇所の値を変えない。
 function wethToUsdcUnits(wethWei: bigint, fairPrice: number): bigint {
-  return (wethWei * BigInt(Math.round(fairPrice * 100))) / (100n * 10n ** 12n);
+  return baseToQuoteUnits(wethWei, "WETH", fairPrice);
 }
 
 function flowBalance(
@@ -97,6 +126,9 @@ function capUsdc(amount: bigint, balance: FlowBalance | null): bigint {
 }
 
 // AMM (uniswap/balancer/curve) の flow。uninformed ノイズ + informed(価格を fair に寄せる)。
+// base 既定 WETH。base!=="WETH" のとき tokenIn に当該 base シンボルを使い、action.base を付けて
+// adapter が WBTC/USDC market を解決できるようにする。WETH 経路は従来と byte 一致（base 未付与・
+// tokenIn="WETH"・wethToUsdcUnits 同値・RNG 消費列不変）。
 export function buildAmmFlow(
   rng: Rng,
   protocol: "uniswap" | "balancer" | "curve",
@@ -110,6 +142,7 @@ export function buildAmmFlow(
     informed?: FlowBalance | null;
   },
   usdcOnlyFlow = false,
+  base: TokenSymbol = "WETH",
 ): FlowOrder[] {
   const orders: FlowOrder[] = [];
   const swapType =
@@ -118,17 +151,19 @@ export function buildAmmFlow(
       : protocol === "balancer"
         ? "balancerSwap"
         : "curveSwap";
+  // WETH 経路は action.base を付けない（旧出力と同形）。WBTC 等のみ base を付与する。
+  const baseField = base === "WETH" ? {} : { base };
 
-  // uninformed: pool を fair から押しのけて gap(裁定の餌)を作る。WETH/USDC とも同じ
-  // WETH 相当のランダム量にして、uninformedMaxWethWei が両側を一様に制御する（rng 消費は不変）。
-  let uninformedTokenIn: TokenSymbol = rng.bool() ? "WETH" : "USDC";
+  // uninformed: pool を fair から押しのけて gap(裁定の餌)を作る。base/USDC とも同じ
+  // base 相当のランダム量にして、uninformedMaxWethWei が両側を一様に制御する（rng 消費は不変）。
+  let uninformedTokenIn: TokenSymbol = rng.bool() ? base : "USDC";
   const uninformedWethEquiv = randomBigInt(
     rng,
     uninformedMaxWethWei / 20n,
     uninformedMaxWethWei,
   );
   if (
-    uninformedTokenIn === "WETH" &&
+    uninformedTokenIn === base &&
     (usdcOnlyFlow ||
       (balances?.uninformed &&
         balances.uninformed.wethWei < uninformedWethEquiv))
@@ -136,10 +171,10 @@ export function buildAmmFlow(
     uninformedTokenIn = "USDC";
   }
   const uninformedAmount =
-    uninformedTokenIn === "WETH"
+    uninformedTokenIn === base
       ? uninformedWethEquiv
       : capUsdc(
-          wethToUsdcUnits(uninformedWethEquiv, fairPrice),
+          baseToQuoteUnits(uninformedWethEquiv, base, fairPrice),
           balances?.uninformed ?? null,
         );
   const uninformedFee =
@@ -152,32 +187,33 @@ export function buildAmmFlow(
         tokenIn: uninformedTokenIn,
         amountIn: uninformedAmount.toString(),
         slippageBps: FLOW_SLIPPAGE_BPS,
+        ...baseField,
       } as LeafAction,
       priorityFeeWei: uninformedFee,
     });
   }
 
   // informed: pool 価格を fairPrice に寄せる（gap を閉じる側＝arb agent と競合する）。
-  // 両側を informedMaxWethWei × gap で揃え、USDC 側も WETH 上限で制御する。
+  // 両側を informedMaxWethWei × gap で揃え、USDC 側も base 上限で制御する。
   // informedMaxWethWei を下げると flow bot が gap を潰さなくなり、arb の取り分が増える。
-  let informedTokenIn: TokenSymbol = poolPrice < fairPrice ? "USDC" : "WETH";
+  let informedTokenIn: TokenSymbol = poolPrice < fairPrice ? "USDC" : base;
   const gap = Math.min(1, Math.abs(fairPrice / poolPrice - 1) * 20);
   const informedWethEquiv =
     (informedMaxWethWei * BigInt(Math.max(1, Math.floor(gap * 100)))) / 100n;
   if (
-    informedTokenIn === "WETH" &&
+    informedTokenIn === base &&
     (usdcOnlyFlow ||
       (balances?.informed && balances.informed.wethWei < informedWethEquiv))
   ) {
-    // USDC-only runs start flow wallets with no WETH. Buy WETH first so a later
+    // USDC-only runs start flow wallets with no base token. Buy base first so a later
     // sell-side informed flow can use the same wallet instead of reverting.
     informedTokenIn = "USDC";
   }
   const informedAmount =
-    informedTokenIn === "WETH"
+    informedTokenIn === base
       ? informedWethEquiv
       : capUsdc(
-          wethToUsdcUnits(informedWethEquiv, fairPrice),
+          baseToQuoteUnits(informedWethEquiv, base, fairPrice),
           balances?.informed ?? null,
         );
   const informedFee =
@@ -190,6 +226,7 @@ export function buildAmmFlow(
         tokenIn: informedTokenIn,
         amountIn: informedAmount.toString(),
         slippageBps: FLOW_SLIPPAGE_BPS,
+        ...baseField,
       } as LeafAction,
       priorityFeeWei: informedFee,
     });
@@ -474,6 +511,52 @@ export function buildFlowOrders(
           ctx.fairPriceUsdcPerWeth,
           flowBalance(ctx, "gmx", "uninformed"),
           ctx.protocols.includes("uniswap"),
+        ),
+      );
+    }
+  }
+
+  // ADR 0013 Phase 8: WETH 以外の base（WBTC 等）の AMM flow。WETH を上で先に処理し終えた後に
+  // 後置する。ctx.extraBases が未設定（WETH-only run）なら反復ゼロ = RNG 非消費 = byte 互換。
+  // 各 base × venue で max=0/未設定なら early-continue し、その base/venue の RNG を消費しない
+  // （WBTC 既定 off で WETH-only の RNG 消費列・出力が一切変わらない）。
+  for (const extra of ctx.extraBases ?? []) {
+    const extraMax: Record<"uniswap" | "balancer" | "curve", bigint> = {
+      uniswap: BigInt(extra.uninformedFlowMaxBaseWei ?? "0"),
+      balancer: BigInt(extra.balancerFlowMaxBaseWei ?? "0"),
+      curve: BigInt(extra.curveFlowMaxBaseWei ?? "0"),
+    };
+    const informedMax = BigInt(extra.informedFlowMaxBaseWei ?? "0");
+    for (const protocol of ctx.protocols) {
+      if (
+        protocol !== "uniswap" &&
+        protocol !== "balancer" &&
+        protocol !== "curve"
+      )
+        continue;
+      const uninformedMax = extraMax[protocol];
+      // off（uninformed と informed の両上限が 0）なら RNG を一切消費せず skip。
+      const venueInformedMax =
+        protocol === "uniswap" ? informedMax : extraMax[protocol];
+      if (uninformedMax <= 0n && venueInformedMax <= 0n) continue;
+      const poolPrice = extra.poolPrices[protocol];
+      if (poolPrice === undefined || poolPrice <= 0) continue;
+      tag(
+        protocol,
+        buildAmmFlow(
+          rng,
+          protocol,
+          poolPrice,
+          extra.fairPriceUsd,
+          uninformedMax,
+          venueInformedMax,
+          limits.defaultPriorityFeeWei,
+          {
+            uninformed: flowBalance(ctx, protocol, "uninformed"),
+            informed: flowBalance(ctx, protocol, "informed"),
+          },
+          ctx.usdcOnlyFlow === true,
+          extra.base,
         ),
       );
     }

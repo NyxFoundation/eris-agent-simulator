@@ -19,18 +19,49 @@ if (p.uniswap && p.uniswap.pool && p.uniswap.pool.priceUsdcPerWeth > 0) venues.p
 if (p.balancer && p.balancer.priceUsdcPerWeth > 0) venues.push({ swapType: "balancerSwap", price: p.balancer.priceUsdcPerWeth });
 if (p.curve && p.curve.priceUsdcPerWeth > 0) venues.push({ swapType: "curveSwap", price: p.curve.priceUsdcPerWeth });
 if (venues.length === 0) return { type: "noop", reason: "no venue" };
-let best = null; let bestGap = 0;
-for (let i = 0; i < venues.length; i++) { const g = fair / venues[i].price - 1; if (Math.abs(g) > Math.abs(bestGap)) { bestGap = g; best = venues[i]; } }
-if (!best || Math.abs(bestGap) < params.gapThreshold) return { type: "noop", reason: "gap too small" };
-const tokenIn = bestGap > 0 ? "USDC" : "WETH";
-const maxLimit = BigInt(tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits);
-const balance = BigInt(tokenIn === "WETH" ? obs.balances.wethWei : obs.balances.usdcUnits);
-const cap = balance < maxLimit ? balance : maxLimit;
-const sizeBps = Math.min(params.maxSizeBps, Math.max(params.minSizeBps, Math.floor(Math.abs(bestGap) * params.sizeGain)));
-const amountIn = (cap * BigInt(sizeBps)) / 10000n;
-if (amountIn <= 0n) return { type: "noop", reason: "computed size zero" };
-const sizeUsdc = tokenIn === "USDC" ? Number(amountIn) / 1e6 : (Number(amountIn) / 1e18) * fair;
-const profitUsdc = sizeUsdc * Math.abs(bestGap);
+function minBI(a, b) { return a < b ? a : b; }
+const wethBal = BigInt(obs.balances.wethWei || "0");
+const usdcBal = BigInt(obs.balances.usdcUnits || "0");
+const maxWeth = BigInt(obs.limits.maxWethInWei);
+const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
+let best = null;
+let bestRawGapAbs = 0;
+for (let i = 0; i < venues.length; i++) {
+  const v = venues[i];
+  const g = fair / v.price - 1;
+  const gapAbs = Math.abs(g);
+  if (gapAbs > bestRawGapAbs) bestRawGapAbs = gapAbs;
+  if (gapAbs < params.gapThreshold) continue;
+  const tokenIn = g > 0 ? "USDC" : "WETH";
+  const cap = tokenIn === "USDC" ? minBI(usdcBal, maxUsdc) : minBI(wethBal, maxWeth);
+  if (cap <= 0n) continue;
+  const sizeBps = Math.min(params.maxSizeBps, Math.max(params.minSizeBps, Math.floor(gapAbs * params.sizeGain)));
+  const amountIn = (cap * BigInt(sizeBps)) / 10000n;
+  if (amountIn <= 0n) continue;
+  const sizeUsdc = tokenIn === "USDC" ? Number(amountIn) / 1e6 : (Number(amountIn) / 1e18) * fair;
+  const score = sizeUsdc * gapAbs;
+  if (!best || score > best.score) best = { venue: v, gap: g, gapAbs, tokenIn, amountIn, sizeBps, sizeUsdc, score };
+}
+if (!best && params.enableInventorySeed && usdcBal > 0n && wethBal <= 0n) {
+  let cheapest = venues[0];
+  for (let i = 1; i < venues.length; i++) if (venues[i].price < cheapest.price) cheapest = venues[i];
+  const maxPremium = Number(params.maxSeedPremiumBps ?? 0) / 10000;
+  if (cheapest && cheapest.price <= fair * (1 + maxPremium)) {
+    const targetBps = Math.max(0, Math.floor(Number(params.targetWethInventoryBps ?? 0)));
+    const seedBps = Math.max(0, Math.floor(Number(params.seedUsdcBps ?? 0)));
+    const totalUsd = obs.inventory && obs.inventory.valueUsdc > 0 ? obs.inventory.valueUsdc : Number(usdcBal) / 1e6;
+    const targetUnits = BigInt(Math.floor(totalUsd * targetBps / 10000 * 1e6));
+    const byBps = (minBI(usdcBal, maxUsdc) * BigInt(seedBps)) / 10000n;
+    const minSeed = BigInt(Math.floor(Number(params.minSeedUsd ?? 0) * 1e6));
+    let amount = byBps < targetUnits ? byBps : targetUnits;
+    if (amount >= minSeed && amount > 0n) {
+      helpers.log("seed venue=" + cheapest.swapType + " usdc=" + (Number(amount) / 1e6).toFixed(2));
+      return { type: cheapest.swapType, tokenIn: "USDC", amountIn: amount.toString(), maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei, slippageBps: Math.floor(Number(params.seedSlippageBps ?? params.slippageBps ?? 75)) };
+    }
+  }
+}
+if (!best) return { type: "noop", reason: bestRawGapAbs < params.gapThreshold ? "gap too small" : "no funded executable edge" };
+const profitUsdc = best.sizeUsdc * best.gapAbs;
 const profitWei = Math.floor((profitUsdc / fair) * 1e9) * 1e9;
 const bidPerGas = Math.floor((profitWei * params.bidProfitFraction) / 180000);
 const minBid = BigInt(obs.limits.defaultPriorityFeePerGasWei);
@@ -38,8 +69,8 @@ const maxBid = BigInt(obs.limits.maxPriorityFeePerGasWei);
 let bid = BigInt(bidPerGas > 0 ? bidPerGas : 0);
 if (bid < minBid) bid = minBid;
 if (bid > maxBid) bid = maxBid;
-helpers.log("venue=" + best.swapType + " gap=" + (bestGap * 10000).toFixed(1) + "bps size=" + sizeBps + " bid=" + bid.toString());
-return { type: best.swapType, tokenIn: tokenIn, amountIn: amountIn.toString(), maxPriorityFeePerGasWei: bid.toString(), slippageBps: params.slippageBps };
+helpers.log("venue=" + best.venue.swapType + " gap=" + (best.gap * 10000).toFixed(1) + "bps size=" + best.sizeBps + " bid=" + bid.toString());
+return { type: best.venue.swapType, tokenIn: best.tokenIn, amountIn: best.amountIn.toString(), maxPriorityFeePerGasWei: bid.toString(), slippageBps: params.slippageBps };
 `.trim();
 
 // adaptivearb: arb と同じ最大乖離 venue swap だが、入札を「競争シグナル(ADR 0011)で勝てる最小限を
@@ -56,39 +87,73 @@ if (p.uniswap && p.uniswap.pool && p.uniswap.pool.priceUsdcPerWeth > 0) venues.p
 if (p.balancer && p.balancer.priceUsdcPerWeth > 0) venues.push({ swapType: "balancerSwap", price: p.balancer.priceUsdcPerWeth });
 if (p.curve && p.curve.priceUsdcPerWeth > 0) venues.push({ swapType: "curveSwap", price: p.curve.priceUsdcPerWeth });
 if (venues.length === 0) return { type: "noop", reason: "no venue" };
-let best = null; let bestGap = 0;
-for (let i = 0; i < venues.length; i++) { const g = fair / venues[i].price - 1; if (Math.abs(g) > Math.abs(bestGap)) { bestGap = g; best = venues[i]; } }
-if (!best || Math.abs(bestGap) < params.gapThreshold) return { type: "noop", reason: "gap too small" };
-const tokenIn = bestGap > 0 ? "USDC" : "WETH";
-const maxLimit = BigInt(tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits);
-const balance = BigInt(tokenIn === "WETH" ? obs.balances.wethWei : obs.balances.usdcUnits);
-const cap = balance < maxLimit ? balance : maxLimit;
-const sizeBps = Math.min(params.maxSizeBps, Math.max(params.minSizeBps, Math.floor(Math.abs(bestGap) * params.sizeGain)));
-const amountIn = (cap * BigInt(sizeBps)) / 10000n;
-if (amountIn <= 0n) return { type: "noop", reason: "computed size zero" };
 const ONE_GWEI = 1000000000n;
-// 機会価値(per gas)の上限 = profit × ceilFraction / gas。これを超えて積むと net を削る。
-const sizeUsdc = tokenIn === "USDC" ? Number(amountIn) / 1e6 : (Number(amountIn) / 1e18) * fair;
-const profitUsdc = sizeUsdc * Math.abs(bestGap);
-const profitWei = BigInt(Math.max(0, Math.floor((profitUsdc / fair) * 1e9))) * ONE_GWEI;
-const ceilNum = BigInt(Math.max(0, Math.floor(params.ceilFraction * 10000)));
-const gasUnits = BigInt(Math.max(1, Math.floor(params.gasUnitsEstimate)));
-const ceilingPerGas = (profitWei * ceilNum) / 10000n / gasUnits;
-// 競争シグナル: 競合の最高入札を margin% だけ上回る(勝てる最小限)。front-run 多発なら margin↑。
 const comp = obs.competition;
 const competitorMax = BigInt((comp && comp.maxCompetitorPriorityFeeWei) || "0");
 const revertRate = (comp && comp.recentRevertRate) || 0;
 const marginPct = BigInt(Math.floor(revertRate > params.frontrunRevertThreshold ? params.marginPctFrontrun : params.marginPctNormal));
-let margin = (competitorMax * marginPct) / 100n;
-if (margin < ONE_GWEI) margin = ONE_GWEI;
-let bid = competitorMax + margin;
-if (bid > ceilingPerGas) bid = ceilingPerGas;
 const minBid = BigInt(obs.limits.defaultPriorityFeePerGasWei);
 const maxBid = BigInt(obs.limits.maxPriorityFeePerGasWei);
-if (bid < minBid) bid = minBid;
-if (bid > maxBid) bid = maxBid;
-helpers.log("venue=" + best.swapType + " gap=" + (bestGap * 10000).toFixed(1) + "bps size=" + sizeBps + " bid=" + bid.toString() + " comp=" + competitorMax.toString());
-return { type: best.swapType, tokenIn: tokenIn, amountIn: amountIn.toString(), maxPriorityFeePerGasWei: bid.toString(), slippageBps: params.slippageBps };
+function minBI(a, b) { return a < b ? a : b; }
+function bidFor(sizeUsdc, gapAbs) {
+  // 機会価値(per gas)の上限 = profit × ceilFraction / gas。これを超えて積むと net を削る。
+  const profitUsdc = sizeUsdc * gapAbs;
+  const profitWei = BigInt(Math.max(0, Math.floor((profitUsdc / fair) * 1e9))) * ONE_GWEI;
+  const ceilNum = BigInt(Math.max(0, Math.floor(params.ceilFraction * 10000)));
+  const gasUnits = BigInt(Math.max(1, Math.floor(params.gasUnitsEstimate)));
+  const ceilingPerGas = (profitWei * ceilNum) / 10000n / gasUnits;
+  let margin = (competitorMax * marginPct) / 100n;
+  if (margin < ONE_GWEI) margin = ONE_GWEI;
+  let bid = competitorMax + margin;
+  if (bid > ceilingPerGas) bid = ceilingPerGas;
+  if (bid < minBid) bid = minBid;
+  if (bid > maxBid) bid = maxBid;
+  return bid.toString();
+}
+const wethBal = BigInt(obs.balances.wethWei || "0");
+const usdcBal = BigInt(obs.balances.usdcUnits || "0");
+const maxWeth = BigInt(obs.limits.maxWethInWei);
+const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
+let best = null;
+let bestRawGapAbs = 0;
+for (let i = 0; i < venues.length; i++) {
+  const v = venues[i];
+  const g = fair / v.price - 1;
+  const gapAbs = Math.abs(g);
+  if (gapAbs > bestRawGapAbs) bestRawGapAbs = gapAbs;
+  if (gapAbs < params.gapThreshold) continue;
+  const tokenIn = g > 0 ? "USDC" : "WETH";
+  const cap = tokenIn === "USDC" ? minBI(usdcBal, maxUsdc) : minBI(wethBal, maxWeth);
+  if (cap <= 0n) continue;
+  const sizeBps = Math.min(params.maxSizeBps, Math.max(params.minSizeBps, Math.floor(gapAbs * params.sizeGain)));
+  const amountIn = (cap * BigInt(sizeBps)) / 10000n;
+  if (amountIn <= 0n) continue;
+  const sizeUsdc = tokenIn === "USDC" ? Number(amountIn) / 1e6 : (Number(amountIn) / 1e18) * fair;
+  const score = sizeUsdc * gapAbs;
+  const bid = bidFor(sizeUsdc, gapAbs);
+  if (!best || score > best.score) best = { venue: v, gap: g, gapAbs, tokenIn, amountIn, sizeBps, score, bid };
+}
+if (!best && params.enableInventorySeed && usdcBal > 0n && wethBal <= 0n) {
+  let cheapest = venues[0];
+  for (let i = 1; i < venues.length; i++) if (venues[i].price < cheapest.price) cheapest = venues[i];
+  const maxPremium = Number(params.maxSeedPremiumBps ?? 0) / 10000;
+  if (cheapest && cheapest.price <= fair * (1 + maxPremium)) {
+    const targetBps = Math.max(0, Math.floor(Number(params.targetWethInventoryBps ?? 0)));
+    const seedBps = Math.max(0, Math.floor(Number(params.seedUsdcBps ?? 0)));
+    const totalUsd = obs.inventory && obs.inventory.valueUsdc > 0 ? obs.inventory.valueUsdc : Number(usdcBal) / 1e6;
+    const targetUnits = BigInt(Math.floor(totalUsd * targetBps / 10000 * 1e6));
+    const byBps = (minBI(usdcBal, maxUsdc) * BigInt(seedBps)) / 10000n;
+    const minSeed = BigInt(Math.floor(Number(params.minSeedUsd ?? 0) * 1e6));
+    let amount = byBps < targetUnits ? byBps : targetUnits;
+    if (amount >= minSeed && amount > 0n) {
+      helpers.log("seed venue=" + cheapest.swapType + " usdc=" + (Number(amount) / 1e6).toFixed(2));
+      return { type: cheapest.swapType, tokenIn: "USDC", amountIn: amount.toString(), maxPriorityFeePerGasWei: minBid.toString(), slippageBps: Math.floor(Number(params.seedSlippageBps ?? params.slippageBps ?? 75)) };
+    }
+  }
+}
+if (!best) return { type: "noop", reason: bestRawGapAbs < params.gapThreshold ? "gap too small" : "no funded executable edge" };
+helpers.log("venue=" + best.venue.swapType + " gap=" + (best.gap * 10000).toFixed(1) + "bps size=" + best.sizeBps + " bid=" + best.bid + " comp=" + competitorMax.toString());
+return { type: best.venue.swapType, tokenIn: best.tokenIn, amountIn: best.amountIn.toString(), maxPriorityFeePerGasWei: best.bid, slippageBps: params.slippageBps };
 `.trim();
 
 // lp: 現在 tick の周りに集中流動性を供給する素朴な v1。既にポジションがあれば hold。
@@ -224,6 +289,7 @@ if (p.balancer && p.balancer.priceUsdcPerWeth > 0) venues.push({ swapType: "bala
 if (p.curve && p.curve.priceUsdcPerWeth > 0) venues.push({ swapType: "curveSwap", price: p.curve.priceUsdcPerWeth });
 const wethBal = BigInt(obs.balances.wethWei);
 const usdcBal = BigInt(obs.balances.usdcUnits);
+function minBI(a, b) { return a < b ? a : b; }
 let best = null; let bestGap = 0; let bestBalance = 0n;
 for (let i = 0; i < venues.length; i++) {
   const g = fair / venues[i].price - 1;
@@ -232,19 +298,39 @@ for (let i = 0; i < venues.length; i++) {
   if (bal <= 0n) continue;
   if (!best || Math.abs(g) > Math.abs(bestGap)) { bestGap = g; best = venues[i]; bestBalance = bal; }
 }
-if (!best) return { type: "noop", reason: "no funded venue gap" };
+function seedWeth(reason) {
+  if (!params.enableInventorySeed || usdcBal <= 0n || wethBal > 0n) return null;
+  let cheapest = venues[0];
+  for (let i = 1; i < venues.length; i++) if (venues[i].price < cheapest.price) cheapest = venues[i];
+  const maxPremium = Number(params.maxSeedPremiumBps ?? 0) / 10000;
+  if (!cheapest || cheapest.price > fair * (1 + maxPremium)) return null;
+  const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
+  const totalUsd = obs.inventory && obs.inventory.valueUsdc > 0 ? obs.inventory.valueUsdc : Number(usdcBal) / 1e6;
+  const targetUnits = BigInt(Math.floor(totalUsd * Number(params.targetWethInventoryBps ?? 0) / 10000 * 1e6));
+  const byBps = (minBI(usdcBal, maxUsdc) * BigInt(Math.max(0, Math.floor(Number(params.seedUsdcBps ?? 0))))) / 10000n;
+  const minSeed = BigInt(Math.floor(Number(params.minSeedUsd ?? 0) * 1e6));
+  let amount = byBps < targetUnits ? byBps : targetUnits;
+  if (amount < minSeed || amount <= 0n) return null;
+  helpers.log("seed " + reason + " venue=" + cheapest.swapType + " usdc=" + (Number(amount) / 1e6).toFixed(2));
+  return { type: cheapest.swapType, tokenIn: "USDC", amountIn: amount.toString(), maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei, slippageBps: Math.floor(Number(params.seedSlippageBps ?? params.slippageBps ?? 75)) };
+}
+if (!best) return seedWeth("no funded venue") || { type: "noop", reason: "no funded venue gap" };
 const z = (bestGap - mean) / std;
 const absZ = Math.abs(z);
-if (absZ < params.zEnter) return { type: "noop", reason: "|z|=" + absZ.toFixed(2) + " < enter" };
+const fallbackGapThreshold = Number(params.fallbackGapThreshold ?? Infinity);
+if (absZ < params.zEnter && Math.abs(bestGap) < fallbackGapThreshold) {
+  return seedWeth("|z| below enter") || { type: "noop", reason: "|z|=" + absZ.toFixed(2) + " < enter" };
+}
 const tokenIn = bestGap > 0 ? "USDC" : "WETH";
 const max = BigInt(tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits);
 const cap = bestBalance < max ? bestBalance : max;
 const span = Math.max(0.0001, params.zAggressive - params.zEnter);
 const t = Math.max(0, Math.min(1, (absZ - params.zEnter) / span));
-const sizeBps = Math.floor(params.minSizeBps + (params.maxSizeBps - params.minSizeBps) * t);
+const fallbackSizeBps = Math.max(1, Math.floor(Number(params.fallbackSizeBps ?? params.minSizeBps)));
+const sizeBps = absZ < params.zEnter ? fallbackSizeBps : Math.floor(params.minSizeBps + (params.maxSizeBps - params.minSizeBps) * t);
 const amountIn = (cap * BigInt(sizeBps)) / 10000n;
 if (amountIn <= 0n) return { type: "noop", reason: "computed size zero" };
-helpers.log("venue=" + best.swapType + " z=" + z.toFixed(2) + " size=" + sizeBps);
+helpers.log("venue=" + best.swapType + " z=" + z.toFixed(2) + " gap=" + (bestGap * 10000).toFixed(1) + "bps size=" + sizeBps);
 return { type: best.swapType, tokenIn: tokenIn, amountIn: amountIn.toString(), maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei, slippageBps: params.slippageBps };
 `.trim();
 
@@ -690,52 +776,105 @@ return { type: "noop", reason: "LP + idle parked" };
 // (examples/agents/flash-arb.ts + examples/lib/flash.ts の executor 移植。calldata を sandbox 内で構築)
 const FLASH_ARB_EXECUTOR = `
 const p = obs.protocols || {};
-const uni = (p.uniswap && p.uniswap.pool) ? p.uniswap.pool.priceUsdcPerWeth : 0;
+const uniPool = (p.uniswap && p.uniswap.pool) ? p.uniswap.pool : undefined;
+const uni = uniPool ? uniPool.priceUsdcPerWeth : 0;
 const bal = p.balancer ? p.balancer.priceUsdcPerWeth : 0;
-if (!(uni > 0) || !(bal > 0)) return { type: "noop", reason: "need uniswap+balancer prices" };
 const flashAddr = helpers.ADDRESSES.FLASH_ARB;
-if (!flashAddr) return { type: "noop", reason: "FlashArb not deployed (needs ERIS_FLASH_ARB=1)" };
-const spread = Math.abs(uni / bal - 1);
-if (spread < params.spreadThreshold) return { type: "noop", reason: "spread too small" };
-const requestedFlashUsdc = Math.max(0, Math.floor(params.flashUsdc));
-const maxFlashUsdcParam = Number(params.maxFlashUsdc ?? requestedFlashUsdc);
-const maxFlashUsdc = Number.isFinite(maxFlashUsdcParam) ? Math.max(0, Math.floor(maxFlashUsdcParam)) : requestedFlashUsdc;
-let flashUsdc = Math.min(requestedFlashUsdc, maxFlashUsdc);
-const poolUsdcRaw = p.aave && p.aave.poolLiquidity ? p.aave.poolLiquidity.USDC : undefined;
-if (typeof poolUsdcRaw === "string" && /^[0-9]+$/.test(poolUsdcRaw)) {
-  const poolUsdcUnits = BigInt(poolUsdcRaw);
-  const reserveBpsRaw = Number(params.poolLiquidityReserveBps ?? 1000);
-  const reserveBps = Math.max(0, Math.min(10000, Math.floor(Number.isFinite(reserveBpsRaw) ? reserveBpsRaw : 1000)));
-  const usableUnits = (poolUsdcUnits * BigInt(10000 - reserveBps)) / 10000n;
-  const minFlashLiquidityUsdcRaw = Number(params.minFlashLiquidityUsdc ?? 1000);
-  const minFlashLiquidityUsdc = Math.max(0, Math.floor(Number.isFinite(minFlashLiquidityUsdcRaw) ? minFlashLiquidityUsdcRaw : 1000));
-  const minUsableUnits = BigInt(minFlashLiquidityUsdc) * 1000000n;
-  if (usableUnits < minUsableUnits) return { type: "noop", reason: "flash liquidity too low: " + (Number(poolUsdcUnits) / 1e6).toFixed(2) + " USDC" };
-  const requestedUnits = BigInt(flashUsdc) * 1000000n;
-  const cappedUnits = usableUnits < requestedUnits ? usableUnits : requestedUnits;
-  flashUsdc = Number(cappedUnits / 1000000n);
-}
-if (flashUsdc <= 0) return { type: "noop", reason: "flashUsdc zero" };
-const mode = uni < bal ? 0 : 1;
-const uniFeeBps = Number(params.uniFeeBps ?? 30);
-const balancerFeeBps = Number(params.balancerFeeBps ?? 30);
-const flashPremiumBps = Number(params.flashPremiumBps ?? 5);
-const priceImpactBps = Number(params.priceImpactBps ?? 500);
-const minProfitUsdc = Number(params.minProfitUsdc ?? 5);
-const venueRatio = mode === 0 ? bal / uni : uni / bal;
-const feeHaircut = (1 - uniFeeBps / 10000) * (1 - balancerFeeBps / 10000) * (1 - priceImpactBps / 10000);
-const expectedOut = flashUsdc * venueRatio * feeHaircut;
-const owed = flashUsdc * (1 + flashPremiumBps / 10000);
-const expectedProfit = expectedOut - owed;
-if (!(expectedProfit >= minProfitUsdc)) return { type: "noop", reason: "flash edge below costs: " + expectedProfit.toFixed(2) + " USDC" };
-const amount = BigInt(flashUsdc) * 1000000n;
-const paramsType = [{ type: "tuple", components: [ { name: "mode", type: "uint8" }, { name: "wethMinOut", type: "uint256" }, { name: "usdcMinOut", type: "uint256" }, { name: "profitTo", type: "address" } ] }];
-const encoded = helpers.encodeAbiParameters(paramsType, [{ mode: mode, wethMinOut: 0n, usdcMinOut: 0n, profitTo: obs.agentAddress }]);
-const flashAbi = [{ type: "function", name: "flashLoanSimple", stateMutability: "nonpayable", inputs: [ { name: "receiverAddress", type: "address" }, { name: "asset", type: "address" }, { name: "amount", type: "uint256" }, { name: "params", type: "bytes" }, { name: "referralCode", type: "uint16" } ], outputs: [] }];
-const data = helpers.encodeFunctionData({ abi: flashAbi, functionName: "flashLoanSimple", args: [flashAddr, helpers.ADDRESSES.USDC, amount, encoded, 0] });
 const fee = obs.limits.defaultPriorityFeePerGasWei;
-helpers.log("flash mode=" + mode + " spread=" + (spread * 10000).toFixed(1) + "bps usdc=" + flashUsdc);
-return { type: "rawTx", tx: { to: helpers.ADDRESSES.AAVE_POOL, data: data }, maxPriorityFeePerGasWei: fee };
+const flashNotes = [];
+if (flashAddr && uni > 0 && bal > 0) {
+  const spread = Math.abs(uni / bal - 1);
+  if (spread >= params.spreadThreshold) {
+    const requestedFlashUsdc = Math.max(0, Math.floor(params.flashUsdc));
+    const maxFlashUsdcParam = Number(params.maxFlashUsdc ?? requestedFlashUsdc);
+    const maxFlashUsdc = Number.isFinite(maxFlashUsdcParam) ? Math.max(0, Math.floor(maxFlashUsdcParam)) : requestedFlashUsdc;
+    let flashUsdc = Math.min(requestedFlashUsdc, maxFlashUsdc);
+    const poolUsdcRaw = p.aave && p.aave.poolLiquidity ? p.aave.poolLiquidity.USDC : undefined;
+    if (typeof poolUsdcRaw === "string" && /^[0-9]+$/.test(poolUsdcRaw)) {
+      const poolUsdcUnits = BigInt(poolUsdcRaw);
+      const reserveBpsRaw = Number(params.poolLiquidityReserveBps ?? 1000);
+      const reserveBps = Math.max(0, Math.min(10000, Math.floor(Number.isFinite(reserveBpsRaw) ? reserveBpsRaw : 1000)));
+      const usableUnits = (poolUsdcUnits * BigInt(10000 - reserveBps)) / 10000n;
+      const minFlashLiquidityUsdcRaw = Number(params.minFlashLiquidityUsdc ?? 1000);
+      const minFlashLiquidityUsdc = Math.max(0, Math.floor(Number.isFinite(minFlashLiquidityUsdcRaw) ? minFlashLiquidityUsdcRaw : 1000));
+      const minUsableUnits = BigInt(minFlashLiquidityUsdc) * 1000000n;
+      if (usableUnits < minUsableUnits) return { type: "noop", reason: "flash liquidity too low: " + (Number(poolUsdcUnits) / 1e6).toFixed(2) + " USDC" };
+      const requestedUnits = BigInt(flashUsdc) * 1000000n;
+      const cappedUnits = usableUnits < requestedUnits ? usableUnits : requestedUnits;
+      flashUsdc = Number(cappedUnits / 1000000n);
+    }
+    if (flashUsdc > 0) {
+      const mode = uni < bal ? 0 : 1;
+      const uniFeeBps = Number(params.uniFeeBps ?? 30);
+      const balancerFeeBps = Number(params.balancerFeeBps ?? 30);
+      const flashPremiumBps = Number(params.flashPremiumBps ?? 5);
+      const priceImpactBps = Number(params.priceImpactBps ?? 500);
+      const minProfitUsdc = Number(params.minProfitUsdc ?? 5);
+      const venueRatio = mode === 0 ? bal / uni : uni / bal;
+      const feeHaircut = (1 - uniFeeBps / 10000) * (1 - balancerFeeBps / 10000) * (1 - priceImpactBps / 10000);
+      const expectedOut = flashUsdc * venueRatio * feeHaircut;
+      const owed = flashUsdc * (1 + flashPremiumBps / 10000);
+      const expectedProfit = expectedOut - owed;
+      if (expectedProfit >= minProfitUsdc) {
+        const amount = BigInt(flashUsdc) * 1000000n;
+        const paramsType = [{ type: "tuple", components: [ { name: "mode", type: "uint8" }, { name: "wethMinOut", type: "uint256" }, { name: "usdcMinOut", type: "uint256" }, { name: "profitTo", type: "address" } ] }];
+        const encoded = helpers.encodeAbiParameters(paramsType, [{ mode: mode, wethMinOut: 0n, usdcMinOut: 0n, profitTo: obs.agentAddress }]);
+        const flashAbi = [{ type: "function", name: "flashLoanSimple", stateMutability: "nonpayable", inputs: [ { name: "receiverAddress", type: "address" }, { name: "asset", type: "address" }, { name: "amount", type: "uint256" }, { name: "params", type: "bytes" }, { name: "referralCode", type: "uint16" } ], outputs: [] }];
+        const data = helpers.encodeFunctionData({ abi: flashAbi, functionName: "flashLoanSimple", args: [flashAddr, helpers.ADDRESSES.USDC, amount, encoded, 0] });
+        helpers.log("flash mode=" + mode + " spread=" + (spread * 10000).toFixed(1) + "bps usdc=" + flashUsdc);
+        return { type: "rawTx", tx: { to: helpers.ADDRESSES.AAVE_POOL, data: data }, maxPriorityFeePerGasWei: fee };
+      }
+      flashNotes.push("flash edge below costs");
+    } else {
+      flashNotes.push("flashUsdc zero");
+    }
+  } else {
+    flashNotes.push("spread too small");
+  }
+} else {
+  flashNotes.push(flashAddr ? "need uniswap+balancer prices" : "FlashArb not deployed");
+}
+if (uniPool && uni > 0 && obs.fairPriceUsdcPerWeth > 0) {
+  const fair = obs.fairPriceUsdcPerWeth;
+  const gap = fair / uni - 1;
+  const absGapBps = Math.abs(gap) * 10000;
+  const thresholdBps = Number(params.fairGapThresholdBps ?? Infinity);
+  if (absGapBps >= thresholdBps) {
+    const tokenIn = gap > 0 ? "USDC" : "WETH";
+    const balance = BigInt(tokenIn === "WETH" ? obs.balances.wethWei : obs.balances.usdcUnits);
+    const limit = BigInt(tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits);
+    const cap = balance < limit ? balance : limit;
+    if (cap > 0n) {
+      const rawSizeBps = Math.floor(absGapBps * Number(params.fairArbSizeGain ?? 0) / 10000);
+      const sizeBps = Math.max(1, Math.min(Number(params.fairArbMaxSizeBps ?? 1), rawSizeBps));
+      const amountIn = (cap * BigInt(sizeBps)) / 10000n;
+      const notionalUsdc = tokenIn === "USDC" ? Number(amountIn) / 1e6 : Number(amountIn) / 1e18 * uni;
+      const minTrade = Number(params.fairArbMinTradeUsdc ?? 0);
+      if (amountIn > 0n && notionalUsdc >= minTrade) {
+        helpers.log("fairArb tokenIn=" + tokenIn + " gapBps=" + absGapBps.toFixed(1) + " sizeBps=" + sizeBps);
+        return { type: "swap", tokenIn: tokenIn, amountIn: amountIn.toString(), maxPriorityFeePerGasWei: fee, slippageBps: Math.floor(Number(params.fairArbSlippageBps ?? params.slippageBps ?? 75)) };
+      }
+    }
+  }
+  if (params.enableInventorySeed && BigInt(obs.balances.wethWei || "0") <= 0n && BigInt(obs.balances.usdcUnits || "0") > 0n) {
+    const usdcBal = BigInt(obs.balances.usdcUnits);
+    const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
+    const maxPremium = Number(params.maxSeedPremiumBps ?? 0) / 10000;
+    if (uni <= fair * (1 + maxPremium)) {
+      const totalUsd = obs.inventory && obs.inventory.valueUsdc > 0 ? obs.inventory.valueUsdc : Number(usdcBal) / 1e6;
+      const targetUnits = BigInt(Math.floor(totalUsd * Number(params.targetWethInventoryBps ?? 0) / 10000 * 1e6));
+      const cap = usdcBal < maxUsdc ? usdcBal : maxUsdc;
+      const byBps = (cap * BigInt(Math.max(0, Math.floor(Number(params.seedUsdcBps ?? 0))))) / 10000n;
+      const minSeed = BigInt(Math.floor(Number(params.minSeedUsd ?? 0) * 1e6));
+      const amount = byBps < targetUnits ? byBps : targetUnits;
+      if (amount >= minSeed && amount > 0n) {
+        helpers.log("seed flash fallback usdc=" + (Number(amount) / 1e6).toFixed(2));
+        return { type: "swap", tokenIn: "USDC", amountIn: amount.toString(), maxPriorityFeePerGasWei: fee, slippageBps: Math.floor(Number(params.seedSlippageBps ?? params.slippageBps ?? 75)) };
+      }
+    }
+  }
+}
+return { type: "noop", reason: flashNotes.join("; ") + "; no fair fallback" };
 `.trim();
 
 // id → ベース戦略(version を除いた雛形)。
@@ -750,6 +889,12 @@ const BASE_STRATEGIES: Record<string, Omit<Strategy, "version">> = {
       sizeGain: 200000,
       bidProfitFraction: 0.3,
       slippageBps: 75,
+      enableInventorySeed: true,
+      targetWethInventoryBps: 500,
+      seedUsdcBps: 500,
+      seedSlippageBps: 300,
+      maxSeedPremiumBps: 750,
+      minSeedUsd: 50,
     },
     executorTs: ARB_EXECUTOR,
   },
@@ -767,6 +912,12 @@ const BASE_STRATEGIES: Record<string, Omit<Strategy, "version">> = {
       marginPctFrontrun: 60,
       frontrunRevertThreshold: 0.4,
       slippageBps: 75,
+      enableInventorySeed: true,
+      targetWethInventoryBps: 500,
+      seedUsdcBps: 500,
+      seedSlippageBps: 300,
+      maxSeedPremiumBps: 750,
+      minSeedUsd: 50,
     },
     executorTs: ADAPTIVE_ARB_EXECUTOR,
   },
@@ -810,7 +961,15 @@ const BASE_STRATEGIES: Record<string, Omit<Strategy, "version">> = {
       zAggressive: 2.5,
       minSizeBps: 500,
       maxSizeBps: 5000,
+      fallbackGapThreshold: 0.001,
+      fallbackSizeBps: 250,
       slippageBps: 75,
+      enableInventorySeed: true,
+      targetWethInventoryBps: 500,
+      seedUsdcBps: 500,
+      seedSlippageBps: 300,
+      maxSeedPremiumBps: 750,
+      minSeedUsd: 50,
     },
     executorTs: STATARB_EXECUTOR,
   },
@@ -884,7 +1043,7 @@ const BASE_STRATEGIES: Record<string, Omit<Strategy, "version">> = {
       "Base strategy **jitlp**: history 窓の実現ボラが閾値超のときだけ集中レンジを mint する JIT LP。revise で volThreshold / レンジ幅 / 予算を磨く。",
     params: {
       minHistory: 12,
-      volThreshold: 0.003,
+      volThreshold: 0.0025,
       rangeTicks: 4,
       mintBudgetBps: 4500,
       slippageBps: 75,
@@ -950,6 +1109,17 @@ const BASE_STRATEGIES: Record<string, Omit<Strategy, "version">> = {
       flashPremiumBps: 5,
       priceImpactBps: 500,
       minProfitUsdc: 5,
+      fairGapThresholdBps: 80,
+      fairArbMaxSizeBps: 1800,
+      fairArbSizeGain: 30000,
+      fairArbMinTradeUsdc: 75,
+      fairArbSlippageBps: 35,
+      enableInventorySeed: true,
+      targetWethInventoryBps: 500,
+      seedUsdcBps: 500,
+      seedSlippageBps: 300,
+      maxSeedPremiumBps: 750,
+      minSeedUsd: 50,
     },
     executorTs: FLASH_ARB_EXECUTOR,
   },

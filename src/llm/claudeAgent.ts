@@ -361,6 +361,7 @@ function decideAction(state: State, obs: AgentObservation): DecisionResult {
   return {
     action: result.action,
     ok: true,
+    reason: result.action.type === "noop" ? result.action.reason : undefined,
     logs: result.logs,
     strategyVersion: state.strategy.version,
   };
