@@ -188,7 +188,7 @@ Arbitrum を fork せず、隣接 repo `eris-app-deployer` がローカル anvil
 | 指定 | 説明 |
 |---|---|
 | `--local-deploy`（`ERIS_LOCAL_DEPLOY`） | ローカルデプロイ（非fork）モードを有効化。**必須** |
-| `--agents <path>`（`AGENTS_CONFIG`） | エージェントロスター。`agents.local.json`（noop / random / simple）や `agents.multi-asset.json`（noop / venue-arb / multi-arb）。YAML に inline `agents:` でも可 |
+| `--agents <path>`（`AGENTS_CONFIG`） | エージェントロスター。`agents.local.json`（noop / random / simple）や `eris.config.example.yaml`（noop / venue-arb / multi-arb）。YAML に inline `agents:` でも可 |
 | `--seed`（`SEED`） | 市場条件のラベル（価格パス再現用） |
 | `--blocks`（`ERIS_RUN_BLOCKS`） | run 長（ブロック数） |
 | `--seconds`（`ERIS_RUN_SECONDS`） | 実時間の上限（24 ブロック ≒ 48 秒なので 70 程度を確保） |
@@ -196,7 +196,7 @@ Arbitrum を fork せず、隣接 repo `eris-app-deployer` がローカル anvil
 | `INITIAL_WETH_WEI: 0`（YAML） | USDC-only 配布（初期の方向性エクスポージャを排除する） |
 | `FLOW_MAX_WBTC_SATS: 50000000`（YAML） | マルチアセット（WBTC）を取引させる場合に指定。WBTC の AMM flow を有効化して価格乖離＝裁定機会を作る（既定 0 で off） |
 
-> **注**: 括弧内は対応する `eris.config.yaml` のキー。CLI フラグは YAML の値を一回限り上書きする。ローカルデプロイのアカウント 0（account0）は deployer のデプロイアカウントと重なり残留残高で価値が歪むため、ロスターは AGENT1 以降（account1+）を使う（`agents.local.json` / `agents.multi-asset.json` はそうなっている）。
+> **注**: 括弧内は対応する `eris.config.yaml` のキー。CLI フラグは YAML の値を一回限り上書きする。ローカルデプロイのアカウント 0（account0）は deployer のデプロイアカウントと重なり残留残高で価値が歪むため、ロスターは AGENT1 以降（account1+）を使う（`agents.local.json` / `eris.config.example.yaml` はそうなっている）。
 
 ### 出力
 
@@ -243,7 +243,7 @@ run ごとに `runs/<timestamp>/` が生成される:
 set -a
 source .env.local
 set +a
-npm run sim:realtime -- --agents agents.claude-llm.json
+npm run sim:realtime -- --config eris.config.claude-llm.yaml
 ```
 
 `auto` は PATH 上の `claude` バイナリを検出し Claude Agent SDK 経由でルーティングする。stderr に `[claude-llm] strategist=subscription (auto-detected Claude Code OAuth)` が出る。
@@ -252,7 +252,7 @@ npm run sim:realtime -- --agents agents.claude-llm.json
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-ERIS_LLM_AUTH=apikey npm run sim:realtime -- --agents agents.claude-llm.json
+ERIS_LLM_AUTH=apikey npm run sim:realtime -- --config eris.config.claude-llm.yaml
 ```
 
 LLM 呼び出しは非同期で `requestAction` を止めないため、`AGENT_TIMEOUT_MS` は既定 5000ms で実用上問題ない。
@@ -265,7 +265,7 @@ LLM 呼び出しは非同期で `requestAction` を止めないため、`AGENT_T
 export OLLAMA_API_KEY=ollama-...
 ERIS_LLM_AUTH=ollama \
   ERIS_LLM_MODEL=gpt-oss:120b \
-  npm run sim:realtime -- --agents agents.claude-llm.json
+  npm run sim:realtime -- --config eris.config.claude-llm.yaml
 ```
 
 任意の上書き:
@@ -281,7 +281,7 @@ export ERIS_OLLAMA_MAX_RETRIES=3
 `ERIS_LLM_MOCK=1`（または `ERIS_LLM_AUTH=mock`）で LLM を完全にスキップし、固定の noop 戦略を使う。認証もトークン消費も無しでハーネスをスモークテストするのに便利:
 
 ```bash
-ERIS_LLM_MOCK=1 npm run sim:realtime -- --agents agents.claude-llm.json
+ERIS_LLM_MOCK=1 npm run sim:realtime -- --config eris.config.claude-llm.yaml
 ```
 
 ### チューニング
