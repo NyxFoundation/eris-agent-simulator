@@ -51,11 +51,11 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 - **fair price はオンチェーン配布**（`contracts/PriceFeed.sol` + `src/realtime/priceFeed.ts`）。stdin push は廃止。
   書込 tx は次ブロック着弾なので情報は 1 ブロック遅れる（全員等しく作用。仕様）。
 - **採点は run 後再構成**（`src/realtime/reconstruct.ts`）: blockNumber 指定の Multicall3 で全 agent 同一断面の
-  価値系列を events.jsonl に observation 形で書く → `evaluate`/`gate`/`discrimination` は無改修。
+  価値系列を events.jsonl に observation 形で書く（`runs/<id>/summary.json` に集計）。
   resetFork で歴史が消えるため**次 run の前に必ず再構成を終える**（anvil の保持深度 ~1,050 ブロックに注意）。
 - **ルール執行は事後検出**（`src/postRunCheck.ts`）: blocks.csv（fee はチェーン上の tx フィールド由来）から
-  fee 上限超過を検査。違反 run は evaluate が無効化して自動再実行。入口側は `npm run check:strategy`
-  （cheatcode 静的検査）を strategy-evolve のゲートで通す。
+  fee 上限超過を検査し違反 run を `violations` に記録。入口側は `npm run check:strategy`
+  （cheatcode 静的検査）で戦略コードを通す。
 - **orderflow は独立プロセス**（relay のまま = 環境側の市場機構）。生成ロジックは `src/flow/logic.ts`（純粋関数）。
   bot は自前 `Rng(ERIS_FLOW_SEED)` で決定論的に動く。aave flow の reserve は環境が `readAaveFlowReserves` で読んで渡す。
 - protocol アダプタ（`src/protocols/*.ts`）は `readState`/`observe`/`buildTxs`/`valueUsdc` 等を実装。
@@ -67,14 +67,7 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 `runs/<runId>/agents/<agentId>.jsonl` に毎ラウンドの判断（`reason` / `signals` / `state`）を残す。
 direct モードでは互換シムが同じファイルに mempool 活動（`kind:"mempool"`: submitted / submit_failed /
 rejected）を自己申告で追記する（coordinator が submitted を数えられなくなる穴を塞ぐ。ADR 0006 §5）。
-出力先は coordinator が渡す env `ERIS_RUN_DIR` / `ERIS_AGENT_ID` で決まる。strategy-evolve の診断はこれを一次情報にする。
-
-## 2 つの自己改善スキル（対象が異なる）
-
-- **`/sim-loop`** — シミュレータの**仕組み**（公平性・ordering・ガスモデル）を 1 課題ずつ改善。ログ: `runs/iterations/`
-- **`/strategy-evolve`** — **トレード戦略**を 1 agent / 1 変更ずつ改善。ロスター `agents.evolve.json`（`--agents` で渡す）の対象 agent の `env`（= 戦略パラメータ。agent プロセスへ渡す値で sim 設定とは別物）を主に編集し、**複数 SEED の評価ゲート**（median 改善 + paired per-seed 非劣化 + win-rate）で過学習を抑制してから採用。ログ: `runs/strategy-iterations/`
-
-`agents.evolve.json` は strategy-evolve の進化対象ロスター。skill 経由でのみ編集する（手で触らない）。run の反復条件は CLI フラグ（`--regimes` / `--replications` / `--blocks`）で渡す。`runs/` は gitignore。
+出力先は coordinator が渡す env `ERIS_RUN_DIR` / `ERIS_AGENT_ID` で決まる。run 後の診断はこれを一次情報にする。
 
 ## spot EC2 で重い run を回す（ローカル逼迫の回避。`infra/spot/`）
 
