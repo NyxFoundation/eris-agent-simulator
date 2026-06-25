@@ -1,11 +1,12 @@
 # config/all18-mixed.yaml — 36 体 multi-venue ロスター（旧 agents.all18-mixed.json を統合）
 # 使い方: npm run sim:realtime -- --config config/all18-mixed.yaml
 # 秘密情報（RPC/鍵/API キー）は .env.local。各 agent の env は agent プロセスへ渡す戦略パラメータ。
-ENABLED_PROTOCOLS: [uniswap, balancer, curve, gmx, aave]
-ERIS_FLASH_ARB: 1   # FlashArb コントラクトを deploy（flash agent が利用）
-ERIS_RUN_BLOCKS: 60
-ERIS_RUN_SECONDS: 0
-SEED: 1
+run:
+  protocols: [uniswap, balancer, curve, gmx, aave]
+  flashArb: 1 # FlashArb コントラクトを deploy（flash agent が利用）
+  blocks: 60
+  seconds: 0
+  seed: 1
 agents:
   - id: si-codex-arb
     command: node

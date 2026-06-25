@@ -50,13 +50,14 @@ ARB_RPC_URL=https://...        # フォーク元 RPC
 # 秘密鍵 / API キーは必要に応じて
 ```
 
-run の設定値は `config/local.yaml` に書く（雛形 `config/example.yaml`）。例:
+run の設定値は `config/local.yaml` に書く（雛形 `config/example.yaml`）。キーはネスト lowercase。例:
 
 ```yaml
-ERIS_RUN_BLOCKS: 8
-ENABLED_PROTOCOLS: [uniswap]
-REPORT_DIR: ./runs
-# agents: [...]   # ロスター（または AGENTS_CONFIG: agents.local.json）
+run:
+  blocks: 8
+  protocols: [uniswap]
+  reportDir: ./runs
+# agents: [...]   # inline ロスター（または run.agentsConfig: agents.local.json でファイル指定）
 ```
 
 コントラクト（PriceFeed + モックオラクル）をビルドする。`sim:realtime` の前提で、`out/` が無ければ最低 1 回必要（Foundry が要る）:
@@ -112,8 +113,9 @@ npm run check:ordering -- runs/<run_id>
 スモークテストが通ったら、マルチプロトコルのシミュレーションを回す。`config/local.yaml` で全 venue を有効化し、agents に venue を跨ぐ戦略群（cross-venue arb / Aave レバレッジ / GMX long 等）を並べる:
 
 ```yaml
-ERIS_RUN_BLOCKS: 40
-ENABLED_PROTOCOLS: [uniswap, balancer, curve, aave, gmx]
+run:
+  blocks: 40
+  protocols: [uniswap, balancer, curve, aave, gmx]
 agents:
   - { id: arb, command: node, args: [--import, tsx, examples/agents/venue-arb.ts], wallet: AGENT1_PRIVATE_KEY }
   # ...
@@ -131,7 +133,7 @@ run 後は `runs/<id>/summary.json` を読む。agent ごとの `protocolValuesU
 
 ## 設定ファイル（config/local.yaml）
 
-実時間 run（`sim:realtime`）の設定は、env を散らす代わりに 1 つの YAML（`config/local.yaml`）で管理できる。run ノブ（`SEED` / `ERIS_RUN_BLOCKS` / `ENABLED_PROTOCOLS` / `INITIAL_*` / `FLOW_*` / stress / LLM）と agent ロスターを inline で書ける。
+実時間 run（`sim:realtime`）の設定は、env を散らす代わりに 1 つの YAML（`config/local.yaml`）で管理する。run ノブ（`run` / `funding` / `limits` / `flow` / `stress` のネストセクション）と agent ロスター（`agents`）を 1 ファイルに書ける。
 
 ```bash
 cp config/example.yaml config/local.yaml
@@ -139,7 +141,7 @@ npm run sim:realtime                                   # 既定で config/local.
 npm run sim:realtime -- --config config/stress.yaml   # 別ファイルを指定
 ```
 
-- キー名は内部の設定キーと同一で、値は型付きで書ける（真偽値・数値・配列・オブジェクト）。未指定キーは既定値。
+- キーは**ネスト lowercase**（`run.protocols` / `funding.wethWei` / `flow.uninformedMaxWethWei` 等）。値は型付き（真偽値・数値・配列・オブジェクト）。未指定キーは既定値。未知キーは警告。
 - **秘密情報は YAML に書かない**。RPC URL・秘密鍵・API キーは `.env.local` に置く（`ARB_RPC_URL` / `*_PRIVATE_KEY` / `ANTHROPIC_API_KEY` / `OLLAMA_API_KEY`）。`config/local.yaml` は gitignore 対象、`config/example.yaml` がコミット済みの雛形。
 - `config/local.yaml` が無ければ committed の `config/example.yaml` が既定として使われる（env からの設定読取は廃止）。一回限りの上書きは CLI フラグ（`--seed` / `--blocks` / `--protocols` / `--agents` 等）。
 
@@ -183,23 +185,23 @@ Arbitrum を fork せず、隣接 repo `eris-app-deployer` がローカル anvil
      --agents agents.local.json \
      --seed 1 --blocks 24 --seconds 70 \
      --protocols uniswap,balancer,curve
-   # USDC-only 配布（INITIAL_WETH_WEI: 0）やマルチアセット（FLOW_MAX_WBTC_SATS）等は config/local.yaml で
+   # USDC-only 配布（funding.wethWei: "0"）やマルチアセット（flow.baseMax）等は config/local.yaml で
    ```
 
-### 主要な設定（CLI フラグ / config/local.yaml）
+### 主要な設定（CLI フラグ / config/local.yaml のキー）
 
-| 指定 | 説明 |
-|---|---|
-| `--local-deploy`（`ERIS_LOCAL_DEPLOY`） | ローカルデプロイ（非fork）モードを有効化。**必須** |
-| `--agents <path>`（`AGENTS_CONFIG`） | エージェントロスター。`agents.local.json`（noop / random / simple）や `config/example.yaml`（noop / venue-arb / multi-arb）。YAML に inline `agents:` でも可 |
-| `--seed`（`SEED`） | 市場条件のラベル（価格パス再現用） |
-| `--blocks`（`ERIS_RUN_BLOCKS`） | run 長（ブロック数） |
-| `--seconds`（`ERIS_RUN_SECONDS`） | 実時間の上限（24 ブロック ≒ 48 秒なので 70 程度を確保） |
-| `--protocols`（`ENABLED_PROTOCOLS`） | 有効 venue（カンマ区切り。例 `uniswap,balancer,curve`） |
-| `INITIAL_WETH_WEI: 0`（YAML） | USDC-only 配布（初期の方向性エクスポージャを排除する） |
-| `FLOW_MAX_WBTC_SATS: 50000000`（YAML） | マルチアセット（WBTC）を取引させる場合に指定。WBTC の AMM flow を有効化して価格乖離＝裁定機会を作る（既定 0 で off） |
+| CLI フラグ | config キー | 説明 |
+|---|---|---|
+| `--local-deploy` | `run.localDeploy` | ローカルデプロイ（非fork）モードを有効化。**必須** |
+| `--agents <path>` | `run.agentsConfig` | ロスターファイル（`agents.local.json` 等）。config に inline `agents:` でも可 |
+| `--seed` | `run.seed` | 市場条件のラベル（価格パス再現用） |
+| `--blocks` | `run.blocks` | run 長（ブロック数） |
+| `--seconds` | `run.seconds` | 実時間の上限（24 ブロック ≒ 48 秒なので 70 程度を確保） |
+| `--protocols` | `run.protocols` | 有効 venue（CLI はカンマ区切り、YAML は配列） |
+| —（YAML のみ） | `funding.wethWei` | USDC-only 配布（`"0"` で初期の方向性エクスポージャを排除する） |
+| —（YAML のみ） | `flow.baseMax` | マルチアセット（WBTC）を取引させる場合（例 `{ WBTC: "50000000" }`）。WBTC の AMM flow を有効化して価格乖離＝裁定機会を作る（既定 off） |
 
-> **注**: 括弧内は対応する `config/local.yaml` のキー。CLI フラグは YAML の値を一回限り上書きする。ローカルデプロイのアカウント 0（account0）は deployer のデプロイアカウントと重なり残留残高で価値が歪むため、ロスターは AGENT1 以降（account1+）を使う（`agents.local.json` / `config/example.yaml` はそうなっている）。
+> **注**: 「config キー」列は `config/local.yaml` のネストパス。CLI フラグは YAML の値を一回限り上書きする。ローカルデプロイのアカウント 0（account0）は deployer のデプロイアカウントと重なり残留残高で価値が歪むため、ロスターは AGENT1 以降（account1+）を使う（`agents.local.json` / `config/example.yaml` はそうなっている）。
 
 ### 出力
 

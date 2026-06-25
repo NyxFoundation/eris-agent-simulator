@@ -14,9 +14,11 @@ import { parse as parseYaml } from "yaml";
 import {
   loadAgents,
   loadConfig,
+  unitSuffixFor,
   validateAgentsFile,
   type SimConfig,
 } from "./config.js";
+import { tokenInfo } from "./markets.js";
 import type { AgentSpec } from "./types.js";
 
 // .env に残す秘密 / RPC（YAML には入れない）。これらは process.env から source へ持ち込む。
@@ -85,6 +87,121 @@ export type RunConfigResult = {
   source: NodeJS.ProcessEnv;
 };
 
+// ネスト lowercase スキーマ（人が書く形）→ 内部 env 名（loadConfig が読む形）の対応表。
+// 例: `run.protocols` → ENABLED_PROTOCOLS。全大文字 env 名を表に出さないための薄い変換層。
+const SCHEMA: Record<string, string> = {
+  // run
+  "run.seed": "SEED",
+  "run.blocks": "ERIS_RUN_BLOCKS",
+  "run.seconds": "ERIS_RUN_SECONDS",
+  "run.blockTimeSec": "ERIS_BLOCK_TIME_SEC",
+  "run.protocols": "ENABLED_PROTOCOLS",
+  "run.economicGas": "ERIS_ECONOMIC_GAS",
+  "run.localDeploy": "ERIS_LOCAL_DEPLOY",
+  "run.skipReset": "ERIS_SKIP_RESET",
+  "run.prewarmBlocks": "ERIS_PREWARM_BLOCKS",
+  "run.reportDir": "REPORT_DIR",
+  "run.agentDirectTx": "ERIS_AGENT_DIRECT_TX",
+  "run.flashArb": "ERIS_FLASH_ARB",
+  "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",
+  "run.agentTimeoutMs": "AGENT_TIMEOUT_MS",
+  "run.agentsConfig": "AGENTS_CONFIG", // inline agents が無いときのロスターファイルパス
+  // funding
+  "funding.ethWei": "INITIAL_ETH_WEI",
+  "funding.wethWei": "INITIAL_WETH_WEI",
+  "funding.usdcUnits": "INITIAL_USDC_UNITS",
+  "funding.flowEthWei": "ERIS_FLOW_ETH_WEI",
+  // limits
+  "limits.agentWethWei": "MAX_AGENT_WETH_IN_WEI",
+  "limits.agentUsdcUnits": "MAX_AGENT_USDC_IN_UNITS",
+  "limits.lpWethWei": "MAX_LP_WETH_WEI",
+  "limits.lpUsdcUnits": "MAX_LP_USDC_UNITS",
+  "limits.bundleActions": "MAX_BUNDLE_ACTIONS",
+  "limits.openPositions": "MAX_OPEN_POSITIONS",
+  "limits.gmxSizeUsd": "MAX_GMX_SIZE_USD",
+  "limits.aaveSupplyWethWei": "MAX_AAVE_SUPPLY_WETH_WEI",
+  "limits.aaveBorrowUsdcUnits": "MAX_AAVE_BORROW_USDC_UNITS",
+  "limits.priorityFeeWei": "DEFAULT_PRIORITY_FEE_WEI",
+  "limits.maxPriorityFeeWei": "MAX_PRIORITY_FEE_WEI",
+  // flow
+  "flow.uninformedMaxWethWei": "UNINFORMED_FLOW_MAX_WETH_WEI",
+  "flow.informedMaxWethWei": "INFORMED_FLOW_MAX_WETH_WEI",
+  "flow.balancerMaxWethWei": "BALANCER_FLOW_MAX_WETH_WEI",
+  "flow.curveMaxWethWei": "CURVE_FLOW_MAX_WETH_WEI",
+  "flow.gmxMaxSizeUsd": "GMX_FLOW_MAX_SIZE_USD",
+  "flow.aaveMaxWethWei": "AAVE_FLOW_MAX_WETH_WEI",
+  "flow.crossVenueSpreadMaxWethWei": "CROSS_VENUE_SPREAD_FLOW_MAX_WETH_WEI",
+  "flow.seed": "FLOW_SEED",
+  "flow.botCommand": "FLOW_BOT_COMMAND",
+  "flow.botArgs": "FLOW_BOT_ARGS",
+  // stress
+  "stress.events": "ERIS_STRESS_EVENTS",
+  "stress.victimCount": "ERIS_STRESS_VICTIM_COUNT",
+  "stress.victimHf0": "ERIS_STRESS_VICTIM_HF0",
+  "stress.victimWethWei": "ERIS_STRESS_VICTIM_WETH_WEI",
+};
+// per-base マップ（`{WBTC: 値}` → `<prefix>_<SYM>[_<infix>]_<unit>`。unit は decimals 由来）。
+const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
+  "funding.base": { prefix: "INITIAL" },
+  "limits.agentBase": { prefix: "MAX_AGENT", infix: "IN" },
+  "limits.lpBase": { prefix: "MAX_LP" },
+  "limits.aaveSupplyBase": { prefix: "MAX_AAVE_SUPPLY" },
+  "flow.baseMax": { prefix: "FLOW_MAX" },
+};
+const SECTIONS = ["run", "funding", "limits", "flow", "stress"];
+
+function baseEnvName(prefix: string, sym: string, infix?: string): string {
+  const unit = unitSuffixFor(tokenInfo(sym).decimals);
+  return [prefix, sym, infix, unit].filter(Boolean).join("_");
+}
+
+// ネスト doc を内部 env 名 source へ展開する。未知キーは警告（typo 検出）。
+function applyDoc(
+  doc: Record<string, unknown>,
+  source: NodeJS.ProcessEnv,
+): void {
+  const unknown: string[] = [];
+  for (const [k, v] of Object.entries(doc)) {
+    if (k === "agents") continue; // ロスターは別扱い
+    if (
+      SECTIONS.includes(k) &&
+      v &&
+      typeof v === "object" &&
+      !Array.isArray(v)
+    ) {
+      for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
+        const path = `${k}.${sk}`;
+        const baseDef = BASE_SECTIONS[path];
+        if (baseDef) {
+          if (sv && typeof sv === "object" && !Array.isArray(sv))
+            for (const [sym, amt] of Object.entries(
+              sv as Record<string, unknown>,
+            ))
+              source[baseEnvName(baseDef.prefix, sym, baseDef.infix)] =
+                toEnvString(amt);
+        } else if (SCHEMA[path]) {
+          const env = SCHEMA[path];
+          // FLOW_BOT_ARGS だけは空白区切り（config.ts が /\s+/ で split）。
+          source[env] =
+            env === "FLOW_BOT_ARGS" && Array.isArray(sv)
+              ? sv.map((x) => String(x)).join(" ")
+              : toEnvString(sv);
+        } else {
+          unknown.push(path);
+        }
+      }
+    } else if (/^[A-Z]/.test(k)) {
+      source[k] = toEnvString(v); // 後方互換: 大文字キーは env 名としてそのまま通す
+    } else {
+      unknown.push(k);
+    }
+  }
+  if (unknown.length > 0)
+    process.stderr.write(
+      `[config] 警告: 未知の設定キー（無視）: ${unknown.join(", ")}。スキーマは src/runConfig.ts の SCHEMA を参照。\n`,
+    );
+}
+
 // YAML から source map を組む（秘密 env → YAML → overrides の順で重ねる）。
 export function buildSource(
   doc: Record<string, unknown>,
@@ -94,10 +211,8 @@ export function buildSource(
   const source: NodeJS.ProcessEnv = {};
   for (const k of SECRET_ENV_KEYS)
     if (process.env[k] !== undefined) source[k] = process.env[k];
-  for (const [k, v] of Object.entries(doc)) {
-    if (k === "agents") continue; // ロスターは別扱い
-    source[k] = toEnvString(v);
-  }
+  applyDoc(doc, source);
+  // overrides は内部 env 名キー（CLI エイリアスが既に env 名へマップ済み）で最優先。
   for (const [k, v] of Object.entries(overrides)) source[k] = toEnvString(v);
   if (configPath) source.ERIS_CONFIG = configPath;
   return source;
