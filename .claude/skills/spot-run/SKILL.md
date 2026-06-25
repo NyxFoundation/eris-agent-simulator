@@ -1,7 +1,7 @@
 ---
 name: spot-run
 description: |
-  重い run（discrimination / evaluate / sim:realtime）を golden AMI の spot EC2 に投げ、結果を SSH で手元に回収する。
+  重い realtime run（sim:realtime）を golden AMI の spot EC2 に投げ、結果を SSH で手元に回収する。
   ローカルの CPU/メモリ逼迫を避けるための日常ドライバ。install/deploy なしで起動 ~3 分・全 5 venue + LLM 対応。
   使用: ユーザーが「spot で回して」「EC2 で回して」「リモートで run」「spot run」「クラウドで回して」「重いから spot に投げて」と言ったとき。
 allowed-tools:
