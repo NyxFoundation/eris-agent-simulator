@@ -436,6 +436,8 @@ function startDirectShim(): void {
           await sendBuiltTx(tx, intent.priorityFeeWei, {
             actionType: intent.action.type,
             protocol: intent.protocol,
+            // ADR 0013: WBTC 等の market を取引したことをログに残す（WETH は undefined で従来どおり省略）。
+            base: (intent.action as { base?: string }).base,
             bundleId: intent.bundleId,
             bundleIndex: intent.bundleIndex,
             blockSeen,
