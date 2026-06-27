@@ -227,6 +227,12 @@ export async function buildFlowContext(
       informedFlowMaxBaseWei: maxStr,
       balancerFlowMaxBaseWei: maxStr,
       curveFlowMaxBaseWei: maxStr,
+      crossVenueSpreadMaxBaseWei: (
+        ctx.config.crossVenueSpreadBaseMax?.[t.symbol] ?? 0n
+      ).toString(),
+      crossVenueSpreadMinBaseWei: (
+        ctx.config.crossVenueSpreadBaseMin?.[t.symbol] ?? 0n
+      ).toString(),
     });
   }
 
@@ -241,6 +247,7 @@ export async function buildFlowContext(
     ...(extraBases.length > 0 ? { extraBases } : {}),
     limits: {
       uninformedFlowMaxWethWei: ctx.config.uninformedFlowMaxWethWei.toString(),
+      uninformedFlowCountPerBlock: String(ctx.config.uninformedFlowCount),
       informedFlowMaxWethWei: ctx.config.informedFlowMaxWethWei.toString(),
       balancerFlowMaxWethWei: ctx.config.balancerFlowMaxWethWei.toString(),
       curveFlowMaxWethWei: ctx.config.curveFlowMaxWethWei.toString(),
@@ -249,6 +256,9 @@ export async function buildFlowContext(
       maxAaveBorrowUsdcUnits: ctx.config.maxAaveBorrowUsdcUnits.toString(),
       crossVenueSpreadFlowMaxWethWei:
         ctx.config.crossVenueSpreadFlowMaxWethWei.toString(),
+      crossVenueSpreadFlowMinWethWei:
+        ctx.config.crossVenueSpreadFlowMinWethWei.toString(),
+      crossVenueSpreadFlowCount: String(ctx.config.crossVenueSpreadFlowCount),
       defaultPriorityFeeWei: ctx.config.defaultPriorityFeeWei.toString(),
     },
   };

@@ -21,6 +21,9 @@ const FLOW_SLIPPAGE_BPS = 100;
 // coordinator が文字列で渡す flow 関連の上限値（bigint 復元後の形）。
 export type FlowLimits = {
   uninformedFlowMaxWethWei: bigint;
+  // 1 ブロック・1 venue あたりの uninformed flow 本数（既定 1）。>1 で複数の独立した
+  // ランダムプッシュを各 venue へ流し、venue 間のズレを「自然発生」させる（ハイブリッド α）。
+  uninformedFlowCountPerBlock: number;
   informedFlowMaxWethWei: bigint;
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
@@ -28,6 +31,12 @@ export type FlowLimits = {
   aaveFlowMaxWethWei: bigint;
   maxAaveBorrowUsdcUnits: bigint;
   crossVenueSpreadFlowMaxWethWei: bigint;
+  // cross-venue spread 1 脚の最小サイズ（毎ブロック [min, max] の一様乱択）。
+  // 0/未設定なら従来どおり max/4 を下限に使う（byte 互換）。
+  crossVenueSpreadFlowMinWethWei: bigint;
+  // 1 ブロックあたりの cross-venue spread 注入回数（既定 1）。>1 で毎ブロック複数ペアへ
+  // それぞれ独立に [min, max] 乱択サイズの spread を開く（α を太く・多様に）。
+  crossVenueSpreadFlowCount: number;
   defaultPriorityFeeWei: bigint;
 };
 
@@ -53,9 +62,13 @@ export type FlowContextWire = {
     informedFlowMaxBaseWei?: string;
     balancerFlowMaxBaseWei?: string;
     curveFlowMaxBaseWei?: string;
+    // この base への cross-venue spread 注入の 1 脚サイズ上限/下限（base units）。"0"/未設定で off。
+    crossVenueSpreadMaxBaseWei?: string;
+    crossVenueSpreadMinBaseWei?: string;
   }>;
   limits: {
     uninformedFlowMaxWethWei: string;
+    uninformedFlowCountPerBlock?: string;
     informedFlowMaxWethWei: string;
     balancerFlowMaxWethWei: string;
     curveFlowMaxWethWei: string;
@@ -63,6 +76,8 @@ export type FlowContextWire = {
     aaveFlowMaxWethWei: string;
     maxAaveBorrowUsdcUnits: string;
     crossVenueSpreadFlowMaxWethWei: string;
+    crossVenueSpreadFlowMinWethWei?: string;
+    crossVenueSpreadFlowCount?: string;
     defaultPriorityFeeWei: string;
   };
 };
@@ -143,6 +158,7 @@ export function buildAmmFlow(
   },
   usdcOnlyFlow = false,
   base: TokenSymbol = "WETH",
+  uninformedCount = 1,
 ): FlowOrder[] {
   const orders: FlowOrder[] = [];
   const swapType =
@@ -155,42 +171,47 @@ export function buildAmmFlow(
   const baseField = base === "WETH" ? {} : { base };
 
   // uninformed: pool を fair から押しのけて gap(裁定の餌)を作る。base/USDC とも同じ
-  // base 相当のランダム量にして、uninformedMaxWethWei が両側を一様に制御する（rng 消費は不変）。
-  let uninformedTokenIn: TokenSymbol = rng.bool() ? base : "USDC";
-  const uninformedWethEquiv = randomBigInt(
-    rng,
-    uninformedMaxWethWei / 20n,
-    uninformedMaxWethWei,
-  );
-  if (
-    uninformedTokenIn === base &&
-    (usdcOnlyFlow ||
-      (balances?.uninformed &&
-        balances.uninformed.wethWei < uninformedWethEquiv))
-  ) {
-    uninformedTokenIn = "USDC";
-  }
-  const uninformedAmount =
-    uninformedTokenIn === base
-      ? uninformedWethEquiv
-      : capUsdc(
-          baseToQuoteUnits(uninformedWethEquiv, base, fairPrice),
-          balances?.uninformed ?? null,
-        );
-  const uninformedFee =
-    defaultPriorityFeeWei + BigInt(rng.int(1, 50)) * 1_000_000n;
-  if (uninformedAmount > 0n) {
-    orders.push({
-      kind: "uninformed",
-      action: {
-        type: swapType,
-        tokenIn: uninformedTokenIn,
-        amountIn: uninformedAmount.toString(),
-        slippageBps: FLOW_SLIPPAGE_BPS,
-        ...baseField,
-      } as LeafAction,
-      priorityFeeWei: uninformedFee,
-    });
+  // base 相当のランダム量にして、uninformedMaxWethWei が両側を一様に制御する。
+  // uninformedCount>1 のときは独立した複数プッシュ（向き/サイズ別）を流し、venue ごとに
+  // 押し具合が変わる → cross-venue のズレが「自然発生」する（ハイブリッド α）。
+  // count=1 では RNG 消費・出力が従来と byte 一致（後方互換）。
+  for (let u = 0; u < Math.max(1, uninformedCount); u++) {
+    let uninformedTokenIn: TokenSymbol = rng.bool() ? base : "USDC";
+    const uninformedWethEquiv = randomBigInt(
+      rng,
+      uninformedMaxWethWei / 20n,
+      uninformedMaxWethWei,
+    );
+    if (
+      uninformedTokenIn === base &&
+      (usdcOnlyFlow ||
+        (balances?.uninformed &&
+          balances.uninformed.wethWei < uninformedWethEquiv))
+    ) {
+      uninformedTokenIn = "USDC";
+    }
+    const uninformedAmount =
+      uninformedTokenIn === base
+        ? uninformedWethEquiv
+        : capUsdc(
+            baseToQuoteUnits(uninformedWethEquiv, base, fairPrice),
+            balances?.uninformed ?? null,
+          );
+    const uninformedFee =
+      defaultPriorityFeeWei + BigInt(rng.int(1, 50)) * 1_000_000n;
+    if (uninformedAmount > 0n) {
+      orders.push({
+        kind: "uninformed",
+        action: {
+          type: swapType,
+          tokenIn: uninformedTokenIn,
+          amountIn: uninformedAmount.toString(),
+          slippageBps: FLOW_SLIPPAGE_BPS,
+          ...baseField,
+        } as LeafAction,
+        priorityFeeWei: uninformedFee,
+      });
+    }
   }
 
   // informed: pool 価格を fairPrice に寄せる（gap を閉じる側＝arb agent と競合する）。
@@ -372,8 +393,12 @@ export function buildCrossVenueSpreadFlow(
   fairPrice: number,
   maxWethWei: bigint,
   defaultPriorityFeeWei: bigint,
+  minWethWei: bigint = 0n,
+  base: TokenSymbol = "WETH",
 ): FlowOrderOut[] {
   if (maxWethWei <= 0n) return [];
+  // WETH 経路は action.base を付けない（旧出力と byte 一致）。WBTC 等のみ base を付与する。
+  const baseField = base === "WETH" ? {} : { base };
   const swapTypeOf: Record<
     "uniswap" | "balancer" | "curve",
     "swap" | "balancerSwap" | "curveSwap"
@@ -390,8 +415,11 @@ export function buildCrossVenueSpreadFlow(
   const upVenue = venues[iUp];
   const downVenue = venues[iDown];
 
-  // 両 leg を同じ WETH 相当にして delta-neutral に保つ（市場全体への方向インパクト ≈ 0）。
-  const wethEquiv = randomBigInt(rng, maxWethWei / 4n, maxWethWei);
+  // 両 leg を同じ base 相当にして delta-neutral に保つ（市場全体への方向インパクト ≈ 0）。
+  // サイズ(base units)は毎ブロック [min, max] の一様乱択。min 未設定(0)/不正(>=max)なら max/4 を下限に。
+  const lo =
+    minWethWei > 0n && minWethWei < maxWethWei ? minWethWei : maxWethWei / 4n;
+  const baseEquiv = randomBigInt(rng, lo, maxWethWei);
   // 低 fee: agent が翌ブロックで spread を取りに来られるよう、informed より控えめに置く。
   const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 30)) * 1_000_000n;
   // 注入は意図的に価格を動かす（spread を開く）ので slippage を広く取り revert を避ける。
@@ -399,26 +427,28 @@ export function buildCrossVenueSpreadFlow(
 
   return [
     {
-      // up leg: USDC→WETH（買い）→ upVenue の価格を押し上げる
+      // up leg: USDC→base（買い）→ upVenue の価格を押し上げる
       protocol: upVenue,
       kind: "spread",
       action: {
         type: swapTypeOf[upVenue],
         tokenIn: "USDC",
-        amountIn: wethToUsdcUnits(wethEquiv, fairPrice).toString(),
+        amountIn: baseToQuoteUnits(baseEquiv, base, fairPrice).toString(),
         slippageBps: SPREAD_SLIPPAGE_BPS,
+        ...baseField,
       } as LeafAction,
       priorityFeeWei: fee,
     },
     {
-      // down leg: WETH→USDC（売り）→ downVenue の価格を押し下げる
+      // down leg: base→USDC（売り）→ downVenue の価格を押し下げる
       protocol: downVenue,
       kind: "spread",
       action: {
         type: swapTypeOf[downVenue],
-        tokenIn: "WETH",
-        amountIn: wethEquiv.toString(),
+        tokenIn: base,
+        amountIn: baseEquiv.toString(),
         slippageBps: SPREAD_SLIPPAGE_BPS,
+        ...baseField,
       } as LeafAction,
       priorityFeeWei: fee,
     },
@@ -429,6 +459,10 @@ export function buildCrossVenueSpreadFlow(
 export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
   return {
     uninformedFlowMaxWethWei: BigInt(wire.uninformedFlowMaxWethWei),
+    uninformedFlowCountPerBlock: Math.max(
+      1,
+      Number(wire.uninformedFlowCountPerBlock ?? "1"),
+    ),
     informedFlowMaxWethWei: BigInt(wire.informedFlowMaxWethWei),
     balancerFlowMaxWethWei: BigInt(wire.balancerFlowMaxWethWei),
     curveFlowMaxWethWei: BigInt(wire.curveFlowMaxWethWei),
@@ -437,6 +471,13 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
     maxAaveBorrowUsdcUnits: BigInt(wire.maxAaveBorrowUsdcUnits),
     crossVenueSpreadFlowMaxWethWei: BigInt(
       wire.crossVenueSpreadFlowMaxWethWei ?? "0",
+    ),
+    crossVenueSpreadFlowMinWethWei: BigInt(
+      wire.crossVenueSpreadFlowMinWethWei ?? "0",
+    ),
+    crossVenueSpreadFlowCount: Math.max(
+      1,
+      Number(wire.crossVenueSpreadFlowCount ?? "1"),
     ),
     defaultPriorityFeeWei: BigInt(wire.defaultPriorityFeeWei),
   };
@@ -484,6 +525,8 @@ export function buildFlowOrders(
             informed: flowBalance(ctx, protocol, "informed"),
           },
           ctx.usdcOnlyFlow === true,
+          "WETH",
+          limits.uninformedFlowCountPerBlock,
         ),
       );
     } else if (protocol === "aave") {
@@ -557,6 +600,7 @@ export function buildFlowOrders(
           },
           ctx.usdcOnlyFlow === true,
           extra.base,
+          limits.uninformedFlowCountPerBlock,
         ),
       );
     }
@@ -564,15 +608,42 @@ export function buildFlowOrders(
 
   // 最後に cross-venue スプレッド注入（α 機会）。per-protocol ループの後に置くことで、
   // 無効時(max=0)は rng を一切消費せず既存 flow と byte 互換を保つ。
-  out.push(
-    ...buildCrossVenueSpreadFlow(
-      rng,
-      ctx.protocols,
-      ctx.poolPrices,
-      ctx.fairPriceUsdcPerWeth,
-      limits.crossVenueSpreadFlowMaxWethWei,
-      limits.defaultPriorityFeeWei,
-    ),
-  );
+  // count>1 なら毎ブロック複数回注入（各回 独立に venue ペア + [min,max] サイズを乱択）。
+  // count=1 は従来と byte 一致。max=0 は各回 rng 非消費で空返し＝完全 byte 互換。
+  for (let i = 0; i < Math.max(1, limits.crossVenueSpreadFlowCount); i++) {
+    out.push(
+      ...buildCrossVenueSpreadFlow(
+        rng,
+        ctx.protocols,
+        ctx.poolPrices,
+        ctx.fairPriceUsdcPerWeth,
+        limits.crossVenueSpreadFlowMaxWethWei,
+        limits.defaultPriorityFeeWei,
+        limits.crossVenueSpreadFlowMinWethWei,
+      ),
+    );
+  }
+
+  // 追加 base（WBTC 等）への cross-venue spread 注入。base ごとの max が "0"/未設定なら
+  // 各回 maxWethWei<=0 で rng 非消費・空返し＝byte 互換（WETH-only run に影響なし）。
+  for (const extra of ctx.extraBases ?? []) {
+    const spreadMax = BigInt(extra.crossVenueSpreadMaxBaseWei ?? "0");
+    if (spreadMax <= 0n) continue;
+    const spreadMin = BigInt(extra.crossVenueSpreadMinBaseWei ?? "0");
+    for (let i = 0; i < Math.max(1, limits.crossVenueSpreadFlowCount); i++) {
+      out.push(
+        ...buildCrossVenueSpreadFlow(
+          rng,
+          ctx.protocols,
+          extra.poolPrices,
+          extra.fairPriceUsd,
+          spreadMax,
+          limits.defaultPriorityFeeWei,
+          spreadMin,
+          extra.base,
+        ),
+      );
+    }
+  }
   return out;
 }

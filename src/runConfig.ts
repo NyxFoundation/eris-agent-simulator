@@ -125,12 +125,15 @@ const SCHEMA: Record<string, string> = {
   "limits.maxPriorityFeeWei": "MAX_PRIORITY_FEE_WEI",
   // flow
   "flow.uninformedMaxWethWei": "UNINFORMED_FLOW_MAX_WETH_WEI",
+  "flow.uninformedCount": "UNINFORMED_FLOW_COUNT",
   "flow.informedMaxWethWei": "INFORMED_FLOW_MAX_WETH_WEI",
   "flow.balancerMaxWethWei": "BALANCER_FLOW_MAX_WETH_WEI",
   "flow.curveMaxWethWei": "CURVE_FLOW_MAX_WETH_WEI",
   "flow.gmxMaxSizeUsd": "GMX_FLOW_MAX_SIZE_USD",
   "flow.aaveMaxWethWei": "AAVE_FLOW_MAX_WETH_WEI",
   "flow.crossVenueSpreadMaxWethWei": "CROSS_VENUE_SPREAD_FLOW_MAX_WETH_WEI",
+  "flow.crossVenueSpreadMinWethWei": "CROSS_VENUE_SPREAD_FLOW_MIN_WETH_WEI",
+  "flow.crossVenueSpreadCount": "CROSS_VENUE_SPREAD_FLOW_COUNT",
   "flow.seed": "FLOW_SEED",
   "flow.botCommand": "FLOW_BOT_COMMAND",
   "flow.botArgs": "FLOW_BOT_ARGS",
@@ -147,6 +150,8 @@ const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
   "limits.lpBase": { prefix: "MAX_LP" },
   "limits.aaveSupplyBase": { prefix: "MAX_AAVE_SUPPLY" },
   "flow.baseMax": { prefix: "FLOW_MAX" },
+  "flow.crossVenueSpreadBaseMax": { prefix: "CROSS_VENUE_SPREAD_BASE_MAX" },
+  "flow.crossVenueSpreadBaseMin": { prefix: "CROSS_VENUE_SPREAD_BASE_MIN" },
 };
 const SECTIONS = ["run", "funding", "limits", "flow", "stress"];
 
