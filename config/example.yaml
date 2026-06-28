@@ -37,7 +37,10 @@ flow:
   informedMaxWethWei: "2000000000000000000"
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
-  crossVenueSpreadMaxWethWei: "0"
+  # gmx/aave flow を出すブロック確率（0..1、既定 0.5）。毎ブロック rng で判定し散発的に送る。
+  # 1=毎ブロック / 下げるほど間欠的にまばらになる。
+  # gmxActivityProb: "0.5"
+  # aaveActivityProb: "0.5"
   # マルチアセット(WBTC)を取引させるなら WBTC flow を有効化（価格乖離=裁定機会を作る）:
   # baseMax: { WBTC: "50000000" }
 

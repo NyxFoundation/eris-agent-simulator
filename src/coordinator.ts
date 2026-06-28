@@ -178,7 +178,7 @@ export async function buildFlowContext(
   }
   const flowBalances: FlowContextWire["flowBalances"] = {};
   for (const protocol of enabledIds) {
-    for (const kind of ["informed", "uninformed", "spread"] as FlowKind[]) {
+    for (const kind of ["informed", "uninformed"] as FlowKind[]) {
       const wallet = ctx.flowWallet(protocol, kind);
       const b = await getBalances(ctx.publicClient, wallet.address);
       flowBalances[`${protocol}:${kind}`] = {
@@ -227,12 +227,6 @@ export async function buildFlowContext(
       informedFlowMaxBaseWei: maxStr,
       balancerFlowMaxBaseWei: maxStr,
       curveFlowMaxBaseWei: maxStr,
-      crossVenueSpreadMaxBaseWei: (
-        ctx.config.crossVenueSpreadBaseMax?.[t.symbol] ?? 0n
-      ).toString(),
-      crossVenueSpreadMinBaseWei: (
-        ctx.config.crossVenueSpreadBaseMin?.[t.symbol] ?? 0n
-      ).toString(),
     });
   }
 
@@ -243,22 +237,25 @@ export async function buildFlowContext(
     poolPrices,
     aaveReserves,
     flowBalances,
-    usdcOnlyFlow: ctx.config.initialWethWei === 0n,
+    // flow が base 在庫を持つ（flowWethWei>0）なら売りを許可する（残高で gate）。
+    // agent の USDC-only（initialWethWei=0）とは独立。両方 0 のときだけ強制 USDC。
+    usdcOnlyFlow:
+      ctx.config.initialWethWei === 0n && ctx.config.flowWethWei === 0n,
     ...(extraBases.length > 0 ? { extraBases } : {}),
     limits: {
       uninformedFlowMaxWethWei: ctx.config.uninformedFlowMaxWethWei.toString(),
       uninformedFlowCountPerBlock: String(ctx.config.uninformedFlowCount),
+      uninformedFlowPersistBlocks: String(
+        ctx.config.uninformedFlowPersistBlocks,
+      ),
       informedFlowMaxWethWei: ctx.config.informedFlowMaxWethWei.toString(),
       balancerFlowMaxWethWei: ctx.config.balancerFlowMaxWethWei.toString(),
       curveFlowMaxWethWei: ctx.config.curveFlowMaxWethWei.toString(),
       gmxFlowMaxSizeUsd: ctx.config.gmxFlowMaxSizeUsd.toString(),
+      gmxFlowActivityProb: String(ctx.config.gmxFlowActivityProb),
       aaveFlowMaxWethWei: ctx.config.aaveFlowMaxWethWei.toString(),
       maxAaveBorrowUsdcUnits: ctx.config.maxAaveBorrowUsdcUnits.toString(),
-      crossVenueSpreadFlowMaxWethWei:
-        ctx.config.crossVenueSpreadFlowMaxWethWei.toString(),
-      crossVenueSpreadFlowMinWethWei:
-        ctx.config.crossVenueSpreadFlowMinWethWei.toString(),
-      crossVenueSpreadFlowCount: String(ctx.config.crossVenueSpreadFlowCount),
+      aaveFlowActivityProb: String(ctx.config.aaveFlowActivityProb),
       defaultPriorityFeeWei: ctx.config.defaultPriorityFeeWei.toString(),
     },
   };

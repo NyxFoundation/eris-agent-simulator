@@ -93,6 +93,11 @@ export type SimConfig = {
   agentsConfigPath: string;
   initialEthWei: bigint;
   flowEthWei: bigint;
+  // flow ウォレット（非 spread）の初期 base 在庫。USDC-only でも flow が「売り」（価格↓）を
+  // 出せるようにする＝両方向ドリフトを成立させる。agent には配らない（agent の USDC-only/β 無しは不変）。
+  // 既定 0 = 従来どおり（flow も base 無し）。
+  flowWethWei: bigint;
+  flowBaseAmounts: Record<string, bigint>;
   initialWethWei: bigint;
   // ADR 0013: base シンボル -> 初期配布量（token units）。WETH は initialWethWei と同値で
   // 互換維持。追加 base は INITIAL_<SYM>_<UNIT>（例 INITIAL_WBTC_SATS）で読み、未指定は 0
@@ -123,6 +128,8 @@ export type SimConfig = {
   uninformedFlowMaxWethWei: bigint;
   // 1 ブロック・1 venue あたりの uninformed flow 本数（既定 1）。>1 でハイブリッド α。
   uninformedFlowCount: number;
+  // uninformed 方向の持続ブロック数（既定 1）。>1 で order-flow imbalance を模し spread を自然発生。
+  uninformedFlowPersistBlocks: number;
   informedFlowMaxWethWei: bigint;
   enabledProtocols: ProtocolId[];
   maxGmxSizeUsd: bigint;
@@ -134,20 +141,13 @@ export type SimConfig = {
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
   gmxFlowMaxSizeUsd: bigint;
+  // gmx flow を出すブロック確率（0..1、既定 0.5）。散発的に送る。
+  gmxFlowActivityProb: number;
   aaveFlowMaxWethWei: bigint;
-  // delta-neutral cross-venue スプレッド注入の 1 leg あたり最大 WETH 相当（既定 0 = 無効）。
-  // 毎ブロック 2 venue を対称に押し開いて「2-leg 裁定(α)だけが取れる」機会を構造的に作る。
-  // 方向 β を注入せず α を増やすレバー（env を α 支配へ寄せる。discrimination-needs-delta-neutral）。
-  crossVenueSpreadFlowMaxWethWei: bigint;
-  // cross-venue spread 1 脚の最小サイズ（毎ブロック [min, max] 乱択）。0=従来の max/4 下限。
-  crossVenueSpreadFlowMinWethWei: bigint;
-  // 1 ブロックあたりの cross-venue spread 注入回数（既定 1）。
-  crossVenueSpreadFlowCount: number;
+  // aave flow を出すブロック確率（0..1、既定 0.5）。1 で毎ブロック churn、<1 で間欠的。
+  aaveFlowActivityProb: number;
   // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。既定空/0 = WBTC flow off。
   baseFlowMax: Record<string, bigint>;
-  // base ごとの cross-venue spread 注入 1 脚サイズ（base units）。空/0 で当該 base の spread off。
-  crossVenueSpreadBaseMax: Record<string, bigint>;
-  crossVenueSpreadBaseMin: Record<string, bigint>;
   // orderflow bot（独立プロセス）の起動コマンドと決定論シード。
   flowBotCommand: string;
   flowBotArgs: string[];
@@ -245,6 +245,8 @@ export function loadConfig(env = process.env): SimConfig {
       env.ERIS_FLOW_ETH_WEI,
       1_000_000_000_000_000_000_000n,
     ),
+    flowWethWei: bigintEnv(env.FLOW_WETH_WEI, 0n),
+    flowBaseAmounts: readBaseAmounts(env, "FLOW_BASE", {}),
     initialWethWei,
     initialBaseAmounts: readBaseAmounts(env, "INITIAL", {
       WETH: initialWethWei,
@@ -275,6 +277,7 @@ export function loadConfig(env = process.env): SimConfig {
       1_000_000_000_000_000_000n,
     ),
     uninformedFlowCount: intEnv(env.UNINFORMED_FLOW_COUNT, 1),
+    uninformedFlowPersistBlocks: intEnv(env.UNINFORMED_FLOW_PERSIST_BLOCKS, 1),
     informedFlowMaxWethWei: bigintEnv(
       env.INFORMED_FLOW_MAX_WETH_WEI,
       2_000_000_000_000_000_000n,
@@ -301,35 +304,18 @@ export function loadConfig(env = process.env): SimConfig {
       env.GMX_FLOW_MAX_SIZE_USD,
       20_000n * 10n ** 30n,
     ),
+    // gmx flow を出すブロック確率（既定 0.5）。毎ブロック rng で判定し散発的に送る。
+    gmxFlowActivityProb: floatEnv(env.GMX_FLOW_ACTIVITY_PROB, 0.5),
     aaveFlowMaxWethWei: bigintEnv(
       env.AAVE_FLOW_MAX_WETH_WEI,
       2_000_000_000_000_000_000n,
     ),
-    // 既定 0 = 無効（既存 run の flow と byte 互換を保つ）。α 支配 env プロファイルで > 0 にする。
-    crossVenueSpreadFlowMaxWethWei: bigintEnv(
-      env.CROSS_VENUE_SPREAD_FLOW_MAX_WETH_WEI,
-      0n,
-    ),
-    // 0 = 下限を max/4 にフォールバック（従来挙動）。>0 で [min, max] を明示指定。
-    crossVenueSpreadFlowMinWethWei: bigintEnv(
-      env.CROSS_VENUE_SPREAD_FLOW_MIN_WETH_WEI,
-      0n,
-    ),
-    crossVenueSpreadFlowCount: intEnv(env.CROSS_VENUE_SPREAD_FLOW_COUNT, 1),
+    // aave flow を出すブロック確率（既定 0.5）。1 で毎ブロック churn、<1 で間欠的。
+    aaveFlowActivityProb: floatEnv(env.AAVE_FLOW_ACTIVITY_PROB, 0.5),
     // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。env FLOW_MAX_<SYM>_<UNIT>
     // （例 FLOW_MAX_WBTC_SATS）。既定 0 = WBTC 等の flow off → extraBases が RNG 非消費 = byte 互換。
     // WETH flow は uninformed/balancer/curve FlowMaxWethWei を使い続ける（ここには載せない）。
     baseFlowMax: readBaseAmounts(env, "FLOW_MAX", { WETH: 0n }),
-    crossVenueSpreadBaseMax: readBaseAmounts(
-      env,
-      "CROSS_VENUE_SPREAD_BASE_MAX",
-      {},
-    ),
-    crossVenueSpreadBaseMin: readBaseAmounts(
-      env,
-      "CROSS_VENUE_SPREAD_BASE_MIN",
-      {},
-    ),
     flowBotCommand: env.FLOW_BOT_COMMAND ?? "node",
     flowBotArgs:
       env.FLOW_BOT_ARGS && env.FLOW_BOT_ARGS.trim() !== ""

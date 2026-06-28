@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Rng } from "../src/rng.js";
 import { buildFlowOrders, type FlowContextWire } from "../src/flow/logic.js";
 
-function ctx(round: number, spreadMaxWethWei = "0"): FlowContextWire {
+function ctx(round: number): FlowContextWire {
   return {
     round,
     fairPriceUsdcPerWeth: 2000,
@@ -18,9 +18,11 @@ function ctx(round: number, spreadMaxWethWei = "0"): FlowContextWire {
       balancerFlowMaxWethWei: "1000000000000000000",
       curveFlowMaxWethWei: "1000000000000000000",
       gmxFlowMaxSizeUsd: (20_000n * 10n ** 30n).toString(),
+      // 既存の構造アサーションを決定論に保つため毎ブロック発火（prob=1）。gate 自体は別テスト。
+      gmxFlowActivityProb: "1",
       aaveFlowMaxWethWei: "2000000000000000000",
       maxAaveBorrowUsdcUnits: "5000000000",
-      crossVenueSpreadFlowMaxWethWei: spreadMaxWethWei,
+      aaveFlowActivityProb: "1",
       defaultPriorityFeeWei: "100000000",
     },
   };
@@ -30,7 +32,7 @@ function usdcOnlyCtx(round: number): FlowContextWire {
   const base = ctx(round);
   const flowBalances: FlowContextWire["flowBalances"] = {};
   for (const protocol of base.protocols) {
-    for (const kind of ["informed", "uninformed", "spread"] as const) {
+    for (const kind of ["informed", "uninformed"] as const) {
       flowBalances[`${protocol}:${kind}`] = {
         wethWei: "0",
         usdcUnits: "25000000000",
@@ -106,10 +108,9 @@ test("USDC-only flow: WETH-in AMM flow は USDC-in に倒して残高不足 reve
   const orders = buildFlowOrders(new Rng(7), usdcOnlyCtx(1));
   for (const order of orders.filter(
     (o) =>
-      (o.protocol === "uniswap" ||
-        o.protocol === "balancer" ||
-        o.protocol === "curve") &&
-      o.kind !== "spread",
+      o.protocol === "uniswap" ||
+      o.protocol === "balancer" ||
+      o.protocol === "curve",
   )) {
     assert.equal((order.action as { tokenIn: string }).tokenIn, "USDC");
   }
@@ -124,55 +125,70 @@ test("異なる seed は異なる flow を生む", () => {
   );
 });
 
-test("cross-venue spread 注入は max=0(既定)で rng を消費せず既存 flow と byte 互換", () => {
-  // max=0 のとき spread builder は何も出さず rng も消費しない → spread leg を除いた
-  // 既存 flow（AMM/gmx/aave）は spread 有効時と同一でなければならない（後方互換）。
-  for (let round = 1; round <= 5; round++) {
-    const off = buildFlowOrders(new Rng(123), ctx(round, "0"));
+// gmx/aave の送信頻度を prob で上書きした ctx。
+function probCtx(round: number, gmxProb: string, aaveProb: string) {
+  const base = ctx(round);
+  return {
+    ...base,
+    limits: {
+      ...base.limits,
+      gmxFlowActivityProb: gmxProb,
+      aaveFlowActivityProb: aaveProb,
+    },
+  };
+}
+
+test("gmx/aave activity prob=0 は当該 flow を一切出さない", () => {
+  for (let round = 1; round <= 20; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 7),
+      probCtx(round, "0", "0"),
+    );
     assert.equal(
-      off.filter((o) => o.kind === "spread").length,
+      orders.filter((o) => o.protocol === "gmx").length,
       0,
-      "max=0 では spread leg は出ない",
+      "gmx prob=0 では gmx flow なし",
+    );
+    assert.equal(
+      orders.filter((o) => o.protocol === "aave").length,
+      0,
+      "aave prob=0 では aave flow なし",
     );
   }
 });
 
-test("cross-venue spread 注入: 2 venue を対称に押し開く delta-neutral な 2 leg", () => {
-  const max = 4_000_000_000_000_000_000n; // 4 WETH
-  const orders = buildFlowOrders(new Rng(5), ctx(1, max.toString()));
-  const spread = orders.filter((o) => o.kind === "spread");
-  assert.equal(spread.length, 2, "spread leg は 2 本");
-
-  // 2 leg は異なる venue（protocol）に出る。
-  assert.notEqual(spread[0].protocol, spread[1].protocol);
-
-  // up leg = USDC→WETH(買い・価格↑), down leg = WETH→USDC(売り・価格↓) が 1 本ずつ。
-  const up = spread.find(
-    (o) => (o.action as { tokenIn: string }).tokenIn === "USDC",
+test("gmx/aave activity prob はブロックごとにランダムに発火する（毎回ではない）", () => {
+  // prob=0.5 で多数ブロックを回すと、出るブロックと出ないブロックが混在する（規則的でない）。
+  let gmxBlocks = 0;
+  let aaveBlocks = 0;
+  const N = 200;
+  for (let round = 1; round <= N; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 31 + 5),
+      probCtx(round, "0.5", "0.5"),
+    );
+    if (orders.some((o) => o.protocol === "gmx")) gmxBlocks++;
+    if (orders.some((o) => o.protocol === "aave")) aaveBlocks++;
+  }
+  // 毎ブロックでも 0 でもなく、おおむね半分前後（規則的な毎ブロック churn ではない）。
+  assert.ok(gmxBlocks > 0 && gmxBlocks < N, `gmx は間欠的: ${gmxBlocks}/${N}`);
+  assert.ok(
+    aaveBlocks > 0 && aaveBlocks < N,
+    `aave は間欠的: ${aaveBlocks}/${N}`,
   );
-  const down = spread.find(
-    (o) => (o.action as { tokenIn: string }).tokenIn === "WETH",
-  );
-  assert.ok(up && down, "USDC-in と WETH-in が 1 本ずつ");
-
-  // delta-neutral: 両 leg は同じ WETH 相当（up の USDC 名目 ≈ down の WETH × fair）。
-  const wethWei = BigInt((down!.action as { amountIn: string }).amountIn);
-  const usdcUnits = BigInt((up!.action as { amountIn: string }).amountIn);
-  // wethToUsdcUnits(wethWei, 2000) = wethWei * 200000 / (100 * 1e12)
-  const expectedUsdc =
-    (wethWei * BigInt(Math.round(2000 * 100))) / (100n * 10n ** 12n);
-  assert.equal(
-    usdcUnits,
-    expectedUsdc,
-    "両 leg は同 WETH 相当 = delta-neutral",
-  );
-
-  // サイズは max/4..max の範囲。
-  assert.ok(wethWei >= max / 4n && wethWei <= max);
 });
 
-test("cross-venue spread 注入は固定 seed で再現する", () => {
-  const a = buildFlowOrders(new Rng(77), ctx(1, "4000000000000000000"));
-  const b = buildFlowOrders(new Rng(77), ctx(1, "4000000000000000000"));
-  assert.deepEqual(a, b);
+test("gmx/aave activity prob=1 は毎ブロック発火する（gmx は約定可能なラウンド全て）", () => {
+  // aave は状態機械が必ず 1 ステップ進むため prob=1 で毎ブロック 1 件出る。
+  for (let round = 1; round <= 20; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 13),
+      probCtx(round, "1", "1"),
+    );
+    assert.equal(
+      orders.filter((o) => o.protocol === "aave").length,
+      1,
+      "aave prob=1 では毎ブロック 1 件",
+    );
+  }
 });

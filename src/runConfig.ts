@@ -111,6 +111,7 @@ const SCHEMA: Record<string, string> = {
   "funding.wethWei": "INITIAL_WETH_WEI",
   "funding.usdcUnits": "INITIAL_USDC_UNITS",
   "funding.flowEthWei": "ERIS_FLOW_ETH_WEI",
+  "funding.flowWethWei": "FLOW_WETH_WEI",
   // limits
   "limits.agentWethWei": "MAX_AGENT_WETH_IN_WEI",
   "limits.agentUsdcUnits": "MAX_AGENT_USDC_IN_UNITS",
@@ -126,14 +127,14 @@ const SCHEMA: Record<string, string> = {
   // flow
   "flow.uninformedMaxWethWei": "UNINFORMED_FLOW_MAX_WETH_WEI",
   "flow.uninformedCount": "UNINFORMED_FLOW_COUNT",
+  "flow.uninformedPersistBlocks": "UNINFORMED_FLOW_PERSIST_BLOCKS",
   "flow.informedMaxWethWei": "INFORMED_FLOW_MAX_WETH_WEI",
   "flow.balancerMaxWethWei": "BALANCER_FLOW_MAX_WETH_WEI",
   "flow.curveMaxWethWei": "CURVE_FLOW_MAX_WETH_WEI",
   "flow.gmxMaxSizeUsd": "GMX_FLOW_MAX_SIZE_USD",
+  "flow.gmxActivityProb": "GMX_FLOW_ACTIVITY_PROB",
   "flow.aaveMaxWethWei": "AAVE_FLOW_MAX_WETH_WEI",
-  "flow.crossVenueSpreadMaxWethWei": "CROSS_VENUE_SPREAD_FLOW_MAX_WETH_WEI",
-  "flow.crossVenueSpreadMinWethWei": "CROSS_VENUE_SPREAD_FLOW_MIN_WETH_WEI",
-  "flow.crossVenueSpreadCount": "CROSS_VENUE_SPREAD_FLOW_COUNT",
+  "flow.aaveActivityProb": "AAVE_FLOW_ACTIVITY_PROB",
   "flow.seed": "FLOW_SEED",
   "flow.botCommand": "FLOW_BOT_COMMAND",
   "flow.botArgs": "FLOW_BOT_ARGS",
@@ -146,12 +147,11 @@ const SCHEMA: Record<string, string> = {
 // per-base マップ（`{WBTC: 値}` → `<prefix>_<SYM>[_<infix>]_<unit>`。unit は decimals 由来）。
 const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
   "funding.base": { prefix: "INITIAL" },
+  "funding.flowBase": { prefix: "FLOW_BASE" },
   "limits.agentBase": { prefix: "MAX_AGENT", infix: "IN" },
   "limits.lpBase": { prefix: "MAX_LP" },
   "limits.aaveSupplyBase": { prefix: "MAX_AAVE_SUPPLY" },
   "flow.baseMax": { prefix: "FLOW_MAX" },
-  "flow.crossVenueSpreadBaseMax": { prefix: "CROSS_VENUE_SPREAD_BASE_MAX" },
-  "flow.crossVenueSpreadBaseMin": { prefix: "CROSS_VENUE_SPREAD_BASE_MIN" },
 };
 const SECTIONS = ["run", "funding", "limits", "flow", "stress"];
 

@@ -288,7 +288,7 @@ export async function runRealtimeSimulation(
   // ---- flow ウォレット（protocol/kind ごと。submitIntent / ctx が選択に使う）----
   const flowWalletMap = new Map<string, FlowWallet>();
   for (const id of enabledIds) {
-    for (const kind of ["informed", "uninformed", "spread"] as FlowKind[]) {
+    for (const kind of ["informed", "uninformed"] as FlowKind[]) {
       const key = `${id}:${kind}`;
       const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
       flowWalletMap.set(key, {
@@ -376,23 +376,22 @@ export async function runRealtimeSimulation(
       })),
     ];
     for (const t of fundTargets) {
-      // spread 注入ウォレットは毎ブロック片側 leg を出し続けるため在庫が枯れやすい。
-      // cheatcode 設定で市場インパクトなく深く積んでおく（leg サイズ × run 長で枯れない）。
-      const isSpread = t.key?.endsWith(":spread") ?? false;
       const isFlow = t.key !== undefined;
+      // flow ウォレットは flowWethWei / flowBaseAmounts の base 在庫を持たせ、
+      // USDC-only でも「売り」を出せるようにする（agent は initial* のまま＝USDC-only/β 無し不変）。
+      const wethWei = isFlow ? config.flowWethWei : config.initialWethWei;
+      const baseAmounts = isFlow
+        ? config.flowBaseAmounts
+        : config.initialBaseAmounts;
       await fundWallet(
         publicClient,
         walletClient,
         chain,
         t.privateKey,
         isFlow ? config.flowEthWei : config.initialEthWei,
-        isSpread
-          ? config.initialWethWei + config.crossVenueSpreadFlowMaxWethWei * 500n
-          : config.initialWethWei,
-        isSpread ? config.initialUsdcUnits * 200n : config.initialUsdcUnits,
-        // ADR 0013: WETH 以外の base の初期在庫（INITIAL_<SYM>_<UNIT>。既定 0 = 配らない＝byte 互換）。
-        // USDC-only 評価方針では 0 のままで、agent/flow は USDC から base を買って建てる。
-        config.initialBaseAmounts,
+        wethWei,
+        config.initialUsdcUnits,
+        baseAmounts,
       );
       for (const adapter of adapters) {
         if (!adapter.setupWallet) continue;
@@ -984,8 +983,7 @@ export async function runRealtimeSimulation(
             );
             latestStateById = stateById;
             const uni = stateById.get("uniswap") as
-              | { priceUsdcPerWeth?: number }
-              | undefined;
+              { priceUsdcPerWeth?: number } | undefined;
             latestHistory.push({
               round: bn,
               poolPriceUsdcPerWeth: uni?.priceUsdcPerWeth ?? latestFairPrice,
