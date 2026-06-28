@@ -12,7 +12,9 @@
 import { createInterface } from "node:readline";
 import { marketViews, type MarketView } from "./lib/markets.js";
 
-const SAFETY_MARGIN_BPS = 60; // 2-leg ラウンドトリップの採算マージン（手数料+price impact 見込み）
+// 2-leg ラウンドトリップの採算マージン（手数料 + price impact + 逆行見込み）。
+// env ERIS_ARB_SAFETY_BPS で上書き可（持続ドリフト env では大きくして逆選択を避ける検証用）。
+const SAFETY_MARGIN_BPS = Number(process.env.ERIS_ARB_SAFETY_BPS ?? "60");
 const MIN_SIZE_BPS = 250;
 const MAX_SIZE_BPS = 2500;
 const SPREAD_GAIN = 200_000; // net edge → サイズの線形ゲイン
