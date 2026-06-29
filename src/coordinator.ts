@@ -335,12 +335,29 @@ export async function submitIntent(
   const baseFee = block.baseFeePerGas ?? 0n;
   const hashes: Hex[] = [];
   for (const tx of txs) {
+    // 実時間 mining では「submit 時の状態」で見積もった gas と「実行時の状態」がズレる。
+    // eth_estimateGas は成功する最小 gas を返すため、Aave の利息 index 更新等で実 gas が
+    // 最小見積りを少し上回ると out-of-gas revert する（flow tx 失敗の主因）。2x のバッファを
+    // 明示指定して防ぐ（gas コストは使用量課金で上限は着弾保証。block gas 上限内に十分収まる）。
+    let gas: bigint;
+    try {
+      const est = await ctx.publicClient.estimateGas({
+        account,
+        to: tx.to,
+        data: tx.data,
+        value: tx.value ?? 0n,
+      });
+      gas = est * 2n;
+    } catch {
+      gas = 2_000_000n;
+    }
     const hash = await ctx.walletClient.sendTransaction({
       account,
       chain: ctx.chain,
       to: tx.to,
       data: tx.data,
       value: tx.value ?? 0n,
+      gas,
       maxFeePerGas: baseFee + intent.priorityFeeWei,
       maxPriorityFeePerGas: intent.priorityFeeWei,
     });
