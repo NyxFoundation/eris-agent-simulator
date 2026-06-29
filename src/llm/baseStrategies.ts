@@ -412,8 +412,15 @@ for (let i = 0; i < venues.length; i++) { if (venues[i].price < lo.price) lo = v
 const spread = hi.price / lo.price - 1;
 if (spread < params.spreadBps / 10000 || lo.swapType === hi.swapType) return { type: "noop", reason: "spread too small" };
 const sizeBps = Math.min(params.maxSizeBps, Math.max(params.minSizeBps, Math.floor(spread * params.sizeGain)));
-const usdcIn = (BigInt(obs.limits.maxUsdcInUnits) * BigInt(sizeBps)) / 10000n;
-const wethIn = (BigInt(obs.limits.maxWethInWei) * BigInt(sizeBps)) / 10000n;
+// デルタニュートラル化: 売れる WETH 上限を買うのに要る USDC で買い脚を頭打ちし、買った分の 98% を売る(net≈0)。
+const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
+const maxWeth = BigInt(obs.limits.maxWethInWei);
+const priceScaled = BigInt(Math.max(1, Math.round(lo.price * 100)));
+const usdcForWethCap = (maxWeth * priceScaled) / 100000000000000n;
+const usdcCap = maxUsdc < usdcForWethCap ? maxUsdc : usdcForWethCap;
+const usdcIn = (usdcCap * BigInt(sizeBps)) / 10000n;
+const boughtWethWei = (usdcIn * 100000000000000n) / priceScaled;
+const wethIn = (boughtWethWei * 98n) / 100n;
 if (usdcIn <= 0n || wethIn <= 0n) return { type: "noop", reason: "computed size zero" };
 helpers.log("spread=" + (spread * 10000).toFixed(1) + "bps buy=" + lo.swapType + " sell=" + hi.swapType);
 return { type: "bundle", actions: [ { type: lo.swapType, tokenIn: "USDC", amountIn: usdcIn.toString(), slippageBps: params.slippageBps }, { type: hi.swapType, tokenIn: "WETH", amountIn: wethIn.toString(), slippageBps: params.slippageBps } ], maxPriorityFeePerGasWei: fee };
@@ -770,8 +777,16 @@ for (let i = 0; i < venues.length; i++) { if (venues[i].price < lo.price) lo = v
 const spread = hi.price / lo.price - 1;
 if (spread < params.spreadThreshold || lo.swapType === hi.swapType) return { type: "noop", reason: "spread too small" };
 const sizeBps = Math.min(params.maxSizeBps, Math.max(params.minSizeBps, Math.floor(spread * params.sizeGain)));
-const usdcIn = (BigInt(obs.limits.maxUsdcInUnits) * BigInt(sizeBps)) / 10000n;
-const wethIn = (BigInt(obs.limits.maxWethInWei) * BigInt(sizeBps)) / 10000n;
+// デルタニュートラル化: 買い脚(USDC上限)と売り脚(WETH上限)を独立に切ると WETH 量が不一致で残ポジが
+// 積み上がる。売れる WETH 上限を買うのに要る USDC で買い脚を頭打ちし、買った分の 98% を売る(net≈0)。
+const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
+const maxWeth = BigInt(obs.limits.maxWethInWei);
+const priceScaled = BigInt(Math.max(1, Math.round(lo.price * 100)));
+const usdcForWethCap = (maxWeth * priceScaled) / 100000000000000n;
+const usdcCap = maxUsdc < usdcForWethCap ? maxUsdc : usdcForWethCap;
+const usdcIn = (usdcCap * BigInt(sizeBps)) / 10000n;
+const boughtWethWei = (usdcIn * 100000000000000n) / priceScaled;
+const wethIn = (boughtWethWei * 98n) / 100n;
 if (usdcIn <= 0n || wethIn <= 0n) return { type: "noop", reason: "computed size zero" };
 helpers.log("crossvenue spread=" + (spread * 10000).toFixed(1) + "bps buy=" + lo.swapType + " sell=" + hi.swapType);
 return { type: "bundle", actions: [

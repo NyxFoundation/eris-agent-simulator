@@ -48,10 +48,20 @@ rl.on("line", (line) => {
       SIZE_BPS_MAX,
       Math.max(SIZE_BPS_MIN, Math.floor(spread * 200_000)),
     );
-    const usdcIn =
-      (BigInt(obs.limits.maxUsdcInUnits) * BigInt(sizeBps)) / 10_000n;
-    const wethIn =
-      (BigInt(obs.limits.maxWethInWei) * BigInt(sizeBps)) / 10_000n;
+    // デルタニュートラル化: 買い脚と売り脚を独立した USDC/WETH 上限で切ると WETH 量が一致せず
+    // 残ポジ(方向性)が毎回積み上がる。代わりに「売れる WETH 上限を買うのに必要な USDC」で買い脚を
+    // 頭打ちし、買った WETH をそのまま売る（買い==売りで net delta≈0）。
+    const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
+    const maxWeth = BigInt(obs.limits.maxWethInWei);
+    const priceScaled = BigInt(Math.max(1, Math.round(lo.price * 100))); // USDC*100/WETH
+    // maxWeth(wei) を lo.price で買うのに要る USDC(1e6) = maxWeth * priceScaled / (100 * 1e12)
+    const usdcForWethCap = (maxWeth * priceScaled) / (100n * 10n ** 12n);
+    const usdcCap = maxUsdc < usdcForWethCap ? maxUsdc : usdcForWethCap;
+    const usdcIn = (usdcCap * BigInt(sizeBps)) / 10_000n;
+    // 買い脚で取得する WETH(wei) = usdcIn(1e6) * 1e18 / (lo.price * 1e6) = usdcIn * 1e12 * 100 / priceScaled
+    const boughtWethWei = (usdcIn * 10n ** 12n * 100n) / priceScaled;
+    // スリッページで受領が目減りするため 98% を売る（裸ショート/残高超過を避けつつデルタマッチ）。
+    const wethIn = (boughtWethWei * 98n) / 100n;
     if (usdcIn <= 0n || wethIn <= 0n) {
       out({ type: "noop", reason: "computed size zero" });
       return;
