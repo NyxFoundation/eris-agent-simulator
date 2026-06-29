@@ -67,6 +67,8 @@ export interface SimContext {
   ) => Promise<void>;
   // protocol/kind ごとの flow ウォレット
   flowWallet(protocol: ProtocolId, kind: FlowKind): FlowWallet;
+  // 任意鍵で flow ウォレットを引く（aave 借り手プールの "aave:actor0" 等。未登録は例外）。
+  flowWalletByKey(key: string): FlowWallet;
 }
 
 export interface ProtocolAdapter {

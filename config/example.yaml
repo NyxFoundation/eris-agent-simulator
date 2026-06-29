@@ -37,10 +37,14 @@ flow:
   informedMaxWethWei: "2000000000000000000"
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
-  # gmx/aave flow を出すブロック確率（0..1、既定 0.5）。毎ブロック rng で判定し散発的に送る。
-  # 1=毎ブロック / 下げるほど間欠的にまばらになる。
+  # gmx flow を出すブロック確率（0..1、既定 0.5）。発火時は 1〜gmxMaxBurst 件をランダムに建てる。
   # gmxActivityProb: "0.5"
+  # gmxMaxBurst: "2"        # 発火ブロックで出す gmx 本数の上限（1=常に単発）
+  # aave 借り手プール: aaveActorCount 個の独立アクター（別アドレス・持続ポジション）。各アクターは
+  # 毎ブロック aaveActivityProb の確率で借入/返済/担保/引出を 1 つ行い、借りた債務は翌ブロックも残る。
+  # 1 ブロックの同時 borrow 数は最大 aaveActorCount（別アクターから自然発生）。
   # aaveActivityProb: "0.5"
+  # aaveActorCount: "4"
   # マルチアセット(WBTC)を取引させるなら WBTC flow を有効化（価格乖離=裁定機会を作る）:
   # baseMax: { WBTC: "50000000" }
 

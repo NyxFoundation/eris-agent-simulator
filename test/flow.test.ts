@@ -178,8 +178,8 @@ test("gmx/aave activity prob はブロックごとにランダムに発火する
   );
 });
 
-test("gmx/aave activity prob=1 は毎ブロック発火する（gmx は約定可能なラウンド全て）", () => {
-  // aave は状態機械が必ず 1 ステップ進むため prob=1 で毎ブロック 1 件出る。
+test("gmx/aave activity prob=1・maxBurst 既定(1) は毎ブロック 1 件", () => {
+  // probCtx は maxBurst を渡さない → decode 既定 1 → 状態機械は 1 ステップ＝1 件。
   for (let round = 1; round <= 20; round++) {
     const orders = buildFlowOrders(
       new Rng(round * 13),
@@ -188,7 +188,122 @@ test("gmx/aave activity prob=1 は毎ブロック発火する（gmx は約定可
     assert.equal(
       orders.filter((o) => o.protocol === "aave").length,
       1,
-      "aave prob=1 では毎ブロック 1 件",
+      "aave prob=1・burst=1 では毎ブロック 1 件",
     );
   }
+});
+
+// gmx の maxBurst を上書きした ctx（prob=1 で必ず発火させてバーストを観測）。
+function gmxBurstCtx(round: number, gmxBurst: string) {
+  const base = ctx(round);
+  return {
+    ...base,
+    limits: {
+      ...base.limits,
+      gmxFlowActivityProb: "1",
+      gmxFlowMaxBurst: gmxBurst,
+    },
+  };
+}
+
+test("gmx maxBurst>1 は 1 ブロックに複数の建玉を出しうる（1〜N でばらつく）", () => {
+  let gmxMax = 0;
+  let gmxMultiBlocks = 0;
+  const N = 200;
+  for (let round = 1; round <= N; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 17 + 3),
+      gmxBurstCtx(round, "4"),
+    );
+    const g = orders.filter((o) => o.protocol === "gmx").length;
+    gmxMax = Math.max(gmxMax, g);
+    if (g > 1) gmxMultiBlocks++;
+  }
+  assert.ok(gmxMultiBlocks > 0, "gmx は複数件のブロックが存在する");
+  assert.ok(gmxMax > 1 && gmxMax <= 4, `gmx burst は 1〜4: max=${gmxMax}`);
+});
+
+// aave 借り手プール: N アクターを与えた ctx。各アクターは別アドレス・持続ポジション。
+function aaveActorsCtx(
+  round: number,
+  actors: Array<{
+    key: string;
+    wethSupplied: string;
+    usdcBorrowed: string;
+    wethWei: string;
+    usdcUnits: string;
+  }>,
+) {
+  const base = ctx(round);
+  return {
+    ...base,
+    aaveActors: actors,
+    limits: { ...base.limits, aaveFlowActivityProb: "1" },
+  };
+}
+
+test("aave 借り手プール: 担保済みアクターが複数いると 1 ブロックに複数 borrow が出る", () => {
+  // 4 アクター全員 担保あり・無借金。HF 余力ありなので borrow を選びうる。
+  const actors = [0, 1, 2, 3].map((i) => ({
+    key: `aave:actor${i}`,
+    wethSupplied: "2000000000000000000", // 2 WETH 担保 → 借入余力あり
+    usdcBorrowed: "0",
+    wethWei: "5000000000000000000",
+    usdcUnits: "25000000000",
+  }));
+  let maxBorrowsInBlock = 0;
+  let multiBorrowBlocks = 0;
+  const N = 200;
+  for (let round = 1; round <= N; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 29 + 7),
+      aaveActorsCtx(round, actors),
+    );
+    const borrows = orders.filter(
+      (o) => (o.action as { type?: string }).type === "aaveBorrow",
+    );
+    // borrow は別アクター（別ウォレット鍵）から出る。
+    const keys = new Set(borrows.map((o) => o.walletKey));
+    maxBorrowsInBlock = Math.max(maxBorrowsInBlock, borrows.length);
+    if (borrows.length > 1) {
+      multiBorrowBlocks++;
+      assert.equal(
+        keys.size,
+        borrows.length,
+        "各 borrow は別アクター（別アドレス）から",
+      );
+    }
+  }
+  assert.ok(multiBorrowBlocks > 0, "1 ブロックに複数 borrow が実在する");
+  assert.ok(
+    maxBorrowsInBlock >= 3,
+    `3 件以上同時 borrow が起きる: max=${maxBorrowsInBlock}`,
+  );
+});
+
+test("aave 借り手プール: borrow 後に強制 repay されず債務は持続する（actor 状態を引き継ぐ）", () => {
+  // 借金ありアクターを 1 体与え、多ブロック回しても全ブロックが repay にはならない
+  // （borrow/supply など債務を残す行動も選ばれる）＝強制 repay 往復ではない。
+  // 担保確立済・少額債務（目標 30% LTV=1200 USDC を十分下回る）→ borrow が選ばれうる状態。
+  const actor = {
+    key: "aave:actor0",
+    wethSupplied: "2000000000000000000", // 2 WETH 担保（目標到達済→ supply しない）
+    usdcBorrowed: "200000000", // 200 USDC の既存債務（目標まで余裕＝借り増し可）
+    wethWei: "5000000000000000000",
+    usdcUnits: "25000000000",
+  };
+  const actionTypes = new Set<string>();
+  for (let round = 1; round <= 100; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 41 + 11),
+      aaveActorsCtx(round, [actor]),
+    );
+    for (const o of orders.filter((x) => x.protocol === "aave"))
+      actionTypes.add((o.action as { type: string }).type);
+  }
+  // borrow が観測される（債務を積み増す＝「borrow→強制 repay」往復ではない）。
+  assert.ok(
+    actionTypes.has("aaveBorrow"),
+    `借り増しが起きる: ${[...actionTypes].join(",")}`,
+  );
 });

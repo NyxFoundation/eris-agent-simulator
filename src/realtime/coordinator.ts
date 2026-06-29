@@ -298,6 +298,19 @@ export async function runRealtimeSimulation(
       });
     }
   }
+  // aave 借り手プール: 独立アクターを別アドレスで用意する（持続ポジション × N）。
+  // flowWalletMap に載せるので資金供給・blocks.csv 帰属は他 flow ウォレットと同じ経路で通る。
+  if (enabledIds.includes("aave")) {
+    for (let i = 0; i < config.aaveFlowActorCount; i++) {
+      const key = `aave:actor${i}`;
+      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      flowWalletMap.set(key, {
+        id: `flow-${key}`,
+        address: accountAddress(privateKey),
+        privateKey,
+      });
+    }
+  }
 
   const adminPk = config.privateKeys.admin;
   const keeperPk = config.privateKeys.keeper;
@@ -316,6 +329,11 @@ export async function runRealtimeSimulation(
     flowWallet(protocol: ProtocolId, kind: FlowKind): FlowWallet {
       const w = flowWalletMap.get(`${protocol}:${kind}`);
       if (!w) throw new Error(`flow wallet not found: ${protocol}:${kind}`);
+      return w;
+    },
+    flowWalletByKey(key: string): FlowWallet {
+      const w = flowWalletMap.get(key);
+      if (!w) throw new Error(`flow wallet not found: ${key}`);
       return w;
     },
   };
@@ -377,9 +395,17 @@ export async function runRealtimeSimulation(
     ];
     for (const t of fundTargets) {
       const isFlow = t.key !== undefined;
+      // aave 借り手アクターは担保用 WETH を直接 endow する（USDC→WETH の prep swap はスリッページで
+      // 失敗しやすく、アクターが担保確保に手間取って借入に到達しないため）。担保は Aave に supply され
+      // 採点対象外の flow ウォレットに留まる＝agent の β には一切影響しない。複数 supply 分を厚めに持たせる。
+      const isAaveActor = t.key?.startsWith("aave:actor") ?? false;
       // flow ウォレットは flowWethWei / flowBaseAmounts の base 在庫を持たせ、
       // USDC-only でも「売り」を出せるようにする（agent は initial* のまま＝USDC-only/β 無し不変）。
-      const wethWei = isFlow ? config.flowWethWei : config.initialWethWei;
+      const wethWei = isAaveActor
+        ? config.aaveFlowMaxWethWei * 6n
+        : isFlow
+          ? config.flowWethWei
+          : config.initialWethWei;
       const baseAmounts = isFlow
         ? config.flowBaseAmounts
         : config.initialBaseAmounts;

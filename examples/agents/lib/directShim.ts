@@ -103,8 +103,7 @@ function startDirectShim(): void {
       idx = pendingOut.indexOf("\n");
     }
     const cb = rest.find((a) => typeof a === "function") as
-      | (() => void)
-      | undefined;
+      (() => void) | undefined;
     cb?.();
     return true;
   }) as typeof process.stdout.write;
@@ -146,6 +145,9 @@ function startDirectShim(): void {
     gmx: { market: GMX_MARKETS.ETH_USD },
     pendingGmxOrders: [],
     flowWallet(): FlowWallet {
+      throw new Error("flow wallet is environment-only");
+    },
+    flowWalletByKey(): FlowWallet {
       throw new Error("flow wallet is environment-only");
     },
   };
@@ -500,8 +502,7 @@ function startDirectShim(): void {
         adapters.map((adapter, i) => [adapter.id, states[i]]),
       );
       const uni = stateById.get("uniswap") as
-        | { priceUsdcPerWeth?: number }
-        | undefined;
+        { priceUsdcPerWeth?: number } | undefined;
       history.push({
         round: bn,
         poolPriceUsdcPerWeth: uni?.priceUsdcPerWeth ?? fairPrice,

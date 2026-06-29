@@ -143,9 +143,14 @@ export type SimConfig = {
   gmxFlowMaxSizeUsd: bigint;
   // gmx flow を出すブロック確率（0..1、既定 0.5）。散発的に送る。
   gmxFlowActivityProb: number;
+  // 発火ブロックで出す gmx 注文の最大本数（>=1、既定 2）。>1 で 1〜N 件をランダムにバースト。
+  gmxFlowMaxBurst: number;
   aaveFlowMaxWethWei: bigint;
-  // aave flow を出すブロック確率（0..1、既定 0.5）。1 で毎ブロック churn、<1 で間欠的。
+  // aave flow の各アクターが毎ブロック行動する確率（0..1、既定 0.5）。<1 で間欠的。
   aaveFlowActivityProb: number;
+  // aave 借り手プールの独立アクター数（>=1、既定 4）。1 ブロックの最大同時 borrow 数 = この値。
+  // 各アクターは別アドレスで持続ポジションを保ち、債務は翌ブロック以降も残る。
+  aaveFlowActorCount: number;
   // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。既定空/0 = WBTC flow off。
   baseFlowMax: Record<string, bigint>;
   // orderflow bot（独立プロセス）の起動コマンドと決定論シード。
@@ -306,12 +311,16 @@ export function loadConfig(env = process.env): SimConfig {
     ),
     // gmx flow を出すブロック確率（既定 0.5）。毎ブロック rng で判定し散発的に送る。
     gmxFlowActivityProb: floatEnv(env.GMX_FLOW_ACTIVITY_PROB, 0.5),
+    // 発火ブロックで出す gmx 注文の最大本数（既定 2）。1〜N 件をランダムにバースト。
+    gmxFlowMaxBurst: intEnv(env.GMX_FLOW_MAX_BURST, 2),
     aaveFlowMaxWethWei: bigintEnv(
       env.AAVE_FLOW_MAX_WETH_WEI,
       2_000_000_000_000_000_000n,
     ),
-    // aave flow を出すブロック確率（既定 0.5）。1 で毎ブロック churn、<1 で間欠的。
+    // aave flow の各アクターが毎ブロック行動する確率（既定 0.5）。<1 で間欠的。
     aaveFlowActivityProb: floatEnv(env.AAVE_FLOW_ACTIVITY_PROB, 0.5),
+    // aave 借り手プールの独立アクター数（既定 4）。1 ブロックの最大同時 borrow 数 = この値。
+    aaveFlowActorCount: Math.max(1, intEnv(env.AAVE_FLOW_ACTOR_COUNT, 4)),
     // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。env FLOW_MAX_<SYM>_<UNIT>
     // （例 FLOW_MAX_WBTC_SATS）。既定 0 = WBTC 等の flow off → extraBases が RNG 非消費 = byte 互換。
     // WETH flow は uninformed/balancer/curve FlowMaxWethWei を使い続ける（ここには載せない）。
