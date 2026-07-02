@@ -12,6 +12,10 @@ import {
   parseStressEvents,
   type StressEventConfig,
 } from "./realtime/events.js";
+import {
+  parseVulnEvents,
+  type VulnEventConfig,
+} from "./realtime/vulnEvents.js";
 
 const ALL_PROTOCOLS: ProtocolId[] = [
   "uniswap",
@@ -58,6 +62,19 @@ export type SimConfig = {
   stressVictimCount: number; // ERIS_STRESS_VICTIM_COUNT
   stressVictimHf0: number; // ERIS_STRESS_VICTIM_HF0(目標初期 HF。既定 1.10。LT/(0.97·LTV)≈1.08 超が必要)
   stressVictimSupplyWethWei: bigint; // ERIS_STRESS_VICTIM_WETH_WEI(victim 1 体あたり supply。既定 5)
+  // 脆弱性発生イベント(ADR 0014)。SEED 由来で N 個の新規プール(正直/rigged 混在)を run 中に
+  // deploy・資金供給する。ERIS_VULN_EVENTS の JSON 配列(レンジ指定)。空(既定)なら従来 run と一致。
+  vulnEvents: VulnEventConfig[];
+  // 各 vuln プールに積む片側の目安流動性(USDC 建て units)。深いほど agent の trade で価格が
+  // 動かず bait が実現益になる。ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS(既定 2,000,000 USDC)。
+  vulnPoolLiquidityUsdcUnits: bigint;
+  // vuln プールの取引手数料(bps)。honest プールの bait が手数料で相殺されない程度に小さく。
+  // ERIS_VULN_POOL_FEE_BPS(既定 30 = 0.3%)。
+  vulnPoolFeeBps: number;
+  // 取引前 LLM ソース監査(ADR 0014 §4-2)の有効化。"0"(既定 off)/"1"(実 LLM)/"mock"(source
+  // キーワード走査のスタブ)。coordinator が discovery-arb-verify に ERIS_VULN_LLM で配布する。
+  // 採点は環境 ground-truth なので LLM は補助(verdict は参考ログ)。dry-run が一次検証。
+  vulnLlm: string;
   // フラッシュ arb デモ(GitHub #3)。ERIS_FLASH_ARB=1 で coordinator が FlashArb コントラクトを
   // デプロイし、flash-arb agent が利用できるようにする。uniswap+balancer+aave 有効が前提。既定 off。
   flashArbDemo: boolean;
@@ -225,6 +242,13 @@ export function loadConfig(env = process.env): SimConfig {
       env.ERIS_STRESS_VICTIM_WETH_WEI,
       5_000_000_000_000_000_000n,
     ),
+    vulnEvents: parseVulnEvents(env.ERIS_VULN_EVENTS),
+    vulnPoolLiquidityUsdcUnits: bigintEnv(
+      env.ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS,
+      2_000_000_000_000n,
+    ),
+    vulnPoolFeeBps: intEnv(env.ERIS_VULN_POOL_FEE_BPS, 30),
+    vulnLlm: env.ERIS_VULN_LLM ?? "0",
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
     rounds: intEnv(env.ROUNDS, 50),
     // 1 ラウンドあたりに進める EVM 時間（秒）。Aave 変動金利の累積や GMX funding

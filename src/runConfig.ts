@@ -145,6 +145,11 @@ const SCHEMA: Record<string, string> = {
   "stress.victimCount": "ERIS_STRESS_VICTIM_COUNT",
   "stress.victimHf0": "ERIS_STRESS_VICTIM_HF0",
   "stress.victimWethWei": "ERIS_STRESS_VICTIM_WETH_WEI",
+  // vuln（ADR 0014: 脆弱性発生イベント）
+  "vuln.events": "ERIS_VULN_EVENTS",
+  "vuln.poolLiquidityUsdcUnits": "ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS",
+  "vuln.poolFeeBps": "ERIS_VULN_POOL_FEE_BPS",
+  "vuln.llm": "ERIS_VULN_LLM",
 };
 // per-base マップ（`{WBTC: 値}` → `<prefix>_<SYM>[_<infix>]_<unit>`。unit は decimals 由来）。
 const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
@@ -155,7 +160,7 @@ const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
   "limits.aaveSupplyBase": { prefix: "MAX_AAVE_SUPPLY" },
   "flow.baseMax": { prefix: "FLOW_MAX" },
 };
-const SECTIONS = ["run", "funding", "limits", "flow", "stress"];
+const SECTIONS = ["run", "funding", "limits", "flow", "stress", "vuln"];
 
 function baseEnvName(prefix: string, sym: string, infix?: string): string {
   const unit = unitSuffixFor(tokenInfo(sym).decimals);
