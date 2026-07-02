@@ -10,9 +10,7 @@ import type {
   ProtocolId,
 } from "../types.js";
 
-// "spread" = delta-neutral cross-venue スプレッド注入（α 機会の構造的生成。flow/logic.ts）。
-// 専用ウォレットを使い、同一 venue の uninformed/informed leg と nonce/fee 順序で干渉しない。
-export type FlowKind = "informed" | "uninformed" | "spread";
+export type FlowKind = "informed" | "uninformed";
 
 export interface FlowWallet {
   id: string;
@@ -69,6 +67,8 @@ export interface SimContext {
   ) => Promise<void>;
   // protocol/kind ごとの flow ウォレット
   flowWallet(protocol: ProtocolId, kind: FlowKind): FlowWallet;
+  // 任意鍵で flow ウォレットを引く（aave 借り手プールの "aave:actor0" 等。未登録は例外）。
+  flowWalletByKey(key: string): FlowWallet;
 }
 
 export interface ProtocolAdapter {

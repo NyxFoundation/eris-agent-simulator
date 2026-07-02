@@ -21,13 +21,23 @@ const FLOW_SLIPPAGE_BPS = 100;
 // coordinator が文字列で渡す flow 関連の上限値（bigint 復元後の形）。
 export type FlowLimits = {
   uninformedFlowMaxWethWei: bigint;
+  // 1 ブロック・1 venue あたりの uninformed flow 本数（既定 1）。>1 で複数の独立した
+  // ランダムプッシュを各 venue へ流し、venue 間のズレを「自然発生」させる（ハイブリッド α）。
+  uninformedFlowCountPerBlock: number;
+  // uninformed 方向の持続ブロック数（既定 1）。>1 で venue 別 trend が cross-venue ズレを自然発生。
+  uninformedFlowPersistBlocks: number;
   informedFlowMaxWethWei: bigint;
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
   gmxFlowMaxSizeUsd: bigint;
+  // gmx flow を出すブロック確率（0..1、既定 0.5）。毎ブロック rng で判定し散発的に送る。
+  gmxFlowActivityProb: number;
+  // 発火ブロックで出す gmx 注文の最大本数（>=1、既定 1）。>1 で 1〜N 件をランダムにバースト。
+  gmxFlowMaxBurst: number;
   aaveFlowMaxWethWei: bigint;
   maxAaveBorrowUsdcUnits: bigint;
-  crossVenueSpreadFlowMaxWethWei: bigint;
+  // aave flow を出すブロック確率（0..1、既定 0.5）。actor プールでは各 actor の毎ブロック行動確率。
+  aaveFlowActivityProb: number;
   defaultPriorityFeeWei: bigint;
 };
 
@@ -38,6 +48,15 @@ export type FlowContextWire = {
   protocols: ProtocolId[];
   poolPrices: Partial<Record<"uniswap" | "balancer" | "curve", number>>;
   aaveReserves?: { wethSupplied: string; usdcBorrowed: string };
+  // 複数アクターの aave 借り手プール（実時間の本路）。coordinator が各 actor ウォレットの reserve と
+  // 残高を読んで渡す。指定時は buildAaveActorsFlow を使い、未指定なら単一の buildAaveFlow へフォールバック。
+  aaveActors?: Array<{
+    key: string;
+    wethSupplied: string;
+    usdcBorrowed: string;
+    wethWei: string;
+    usdcUnits: string;
+  }>;
   flowBalances?: Record<string, { wethWei: string; usdcUnits: string }>;
   usdcOnlyFlow?: boolean;
   // ADR 0013 Phase 8: WETH 以外の base ごとの AMM flow。WETH-only run では未設定（既定 off）で、
@@ -56,13 +75,17 @@ export type FlowContextWire = {
   }>;
   limits: {
     uninformedFlowMaxWethWei: string;
+    uninformedFlowCountPerBlock?: string;
+    uninformedFlowPersistBlocks?: string;
     informedFlowMaxWethWei: string;
     balancerFlowMaxWethWei: string;
     curveFlowMaxWethWei: string;
     gmxFlowMaxSizeUsd: string;
+    gmxFlowActivityProb?: string;
+    gmxFlowMaxBurst?: string;
     aaveFlowMaxWethWei: string;
     maxAaveBorrowUsdcUnits: string;
-    crossVenueSpreadFlowMaxWethWei: string;
+    aaveFlowActivityProb?: string;
     defaultPriorityFeeWei: string;
   };
 };
@@ -71,12 +94,27 @@ export type FlowContextWire = {
 export type FlowOrderOut = {
   protocol: ProtocolId;
   walletProtocol?: ProtocolId;
+  // 明示的な flow ウォレット鍵（例 "aave:actor0"）。指定時は protocol/kind ではなくこの鍵で
+  // ウォレットを選ぶ（複数アクターの aave 借り手プール用。flowOrdersToIntents が解決）。
+  walletKey?: string;
   kind: FlowKind;
   action: LeafAction;
   priorityFeeWei: bigint;
 };
 
+function minBI(a: bigint, b: bigint): bigint {
+  return a < b ? a : b;
+}
+
 type FlowBalance = { wethWei: bigint; usdcUnits: bigint };
+
+// 確率文字列を [0,1] に丸める（未設定/非数は fallback）。activity gate に使う。
+function clampProb(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(1, Math.max(0, n));
+}
 
 function randomBigInt(
   rng: Rng,
@@ -143,6 +181,9 @@ export function buildAmmFlow(
   },
   usdcOnlyFlow = false,
   base: TokenSymbol = "WETH",
+  uninformedCount = 1,
+  round = 0,
+  persistBlocks = 1,
 ): FlowOrder[] {
   const orders: FlowOrder[] = [];
   const swapType =
@@ -155,42 +196,61 @@ export function buildAmmFlow(
   const baseField = base === "WETH" ? {} : { base };
 
   // uninformed: pool を fair から押しのけて gap(裁定の餌)を作る。base/USDC とも同じ
-  // base 相当のランダム量にして、uninformedMaxWethWei が両側を一様に制御する（rng 消費は不変）。
-  let uninformedTokenIn: TokenSymbol = rng.bool() ? base : "USDC";
-  const uninformedWethEquiv = randomBigInt(
-    rng,
-    uninformedMaxWethWei / 20n,
-    uninformedMaxWethWei,
-  );
-  if (
-    uninformedTokenIn === base &&
-    (usdcOnlyFlow ||
-      (balances?.uninformed &&
-        balances.uninformed.wethWei < uninformedWethEquiv))
-  ) {
-    uninformedTokenIn = "USDC";
+  // base 相当のランダム量にして、uninformedMaxWethWei が両側を一様に制御する。
+  // uninformedCount>1 のときは独立した複数プッシュ（向き/サイズ別）を流し、venue ごとに
+  // 押し具合が変わる → cross-venue のズレが「自然発生」する（ハイブリッド α）。
+  // count=1 では RNG 消費・出力が従来と byte 一致（後方互換）。
+  // persistBlocks>1: venue ごとの uninformed 方向を persistBlocks ブロック持続させる
+  // （round/persistBlocks を window とした決定論 trend）。連続同方向の偏り＝order-flow imbalance を
+  // 模し、venue ごとに別 trend でズレが「自然発生」する（人工的な spread 注入なしの現実的 α）。
+  // persistBlocks<=1 は rng.bool() を消費する従来挙動＝byte 互換。
+  let trendTokenIn: TokenSymbol | null = null;
+  if (persistBlocks > 1) {
+    const window = Math.floor(round / persistBlocks);
+    let h = ((window + 1) * 0x9e3779b1) >>> 0;
+    for (let c = 0; c < protocol.length; c++)
+      h = ((h ^ protocol.charCodeAt(c)) * 0x01000193) >>> 0;
+    // USDC in=買い(価格↑) / base in=売り(価格↓)。venue×window で up/down が分かれ spread を作る。
+    trendTokenIn = h % 2 === 0 ? "USDC" : base;
   }
-  const uninformedAmount =
-    uninformedTokenIn === base
-      ? uninformedWethEquiv
-      : capUsdc(
-          baseToQuoteUnits(uninformedWethEquiv, base, fairPrice),
-          balances?.uninformed ?? null,
-        );
-  const uninformedFee =
-    defaultPriorityFeeWei + BigInt(rng.int(1, 50)) * 1_000_000n;
-  if (uninformedAmount > 0n) {
-    orders.push({
-      kind: "uninformed",
-      action: {
-        type: swapType,
-        tokenIn: uninformedTokenIn,
-        amountIn: uninformedAmount.toString(),
-        slippageBps: FLOW_SLIPPAGE_BPS,
-        ...baseField,
-      } as LeafAction,
-      priorityFeeWei: uninformedFee,
-    });
+  for (let u = 0; u < Math.max(1, uninformedCount); u++) {
+    let uninformedTokenIn: TokenSymbol =
+      trendTokenIn ?? (rng.bool() ? base : "USDC");
+    const uninformedWethEquiv = randomBigInt(
+      rng,
+      uninformedMaxWethWei / 20n,
+      uninformedMaxWethWei,
+    );
+    if (
+      uninformedTokenIn === base &&
+      (usdcOnlyFlow ||
+        (balances?.uninformed &&
+          balances.uninformed.wethWei < uninformedWethEquiv))
+    ) {
+      uninformedTokenIn = "USDC";
+    }
+    const uninformedAmount =
+      uninformedTokenIn === base
+        ? uninformedWethEquiv
+        : capUsdc(
+            baseToQuoteUnits(uninformedWethEquiv, base, fairPrice),
+            balances?.uninformed ?? null,
+          );
+    const uninformedFee =
+      defaultPriorityFeeWei + BigInt(rng.int(1, 50)) * 1_000_000n;
+    if (uninformedAmount > 0n) {
+      orders.push({
+        kind: "uninformed",
+        action: {
+          type: swapType,
+          tokenIn: uninformedTokenIn,
+          amountIn: uninformedAmount.toString(),
+          slippageBps: FLOW_SLIPPAGE_BPS,
+          ...baseField,
+        } as LeafAction,
+        priorityFeeWei: uninformedFee,
+      });
+    }
   }
 
   // informed: pool 価格を fairPrice に寄せる（gap を閉じる側＝arb agent と競合する）。
@@ -243,23 +303,41 @@ export function buildGmxFlow(
   fairPrice: number,
   balance?: FlowBalance | null,
   canPrepareWeth = false,
+  activityProb = 0.5,
+  maxBurst = 1,
 ): FlowOrderOut[] {
-  if (!rng.bool()) return []; // 約半数のラウンドは見送り（OI 過剰・実行負荷を抑制）
-  const isLong = rng.bool();
-  // size は gmxFlowMaxSizeUsd の 1/50 を基準（約 2x になるよう担保を size/2x で算出）
-  const sizeUsd = gmxFlowMaxSizeUsd / 50n;
-  // collateral(WETH wei) ≈ (sizeUsd/2) を USD->WETH 換算。oraclePrices は使えないため概算 fairPrice 相当で割る
-  const sizeUsdNum = Number(sizeUsd) / 1e30;
-  const collateralWei = BigInt(
-    Math.max(1, Math.floor(((sizeUsdNum / 2) * 1e18) / 2100)),
-  );
-  const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 60)) * 1_000_000n;
-  if (balance && balance.wethWei < collateralWei * (canPrepareWeth ? 2n : 1n)) {
-    if (!canPrepareWeth) return [];
-    const usdcIn = capUsdc(wethToUsdcUnits(collateralWei, fairPrice), balance);
-    if (usdcIn <= 0n) return [];
-    return [
-      {
+  // activityProb の確率でのみこのブロックに送信（既定 0.5。config で散発度を調整）。
+  if (rng.next() >= activityProb) return [];
+  // 発火したブロックは 1〜maxBurst 件をランダムに出す（同一ウォレットの連番 nonce で同ブロック着弾）。
+  // maxBurst<=1 は rng を追加消費せず従来の単発挙動と byte 一致。
+  const burst = maxBurst <= 1 ? 1 : rng.int(1, maxBurst + 1);
+  const orders: FlowOrderOut[] = [];
+  for (let i = 0; i < burst; i++) {
+    const isLong = rng.bool();
+    // size は gmxFlowMaxSizeUsd の 1/100〜1/25 をランダム（基準 1/50。約 2x になるよう担保を size/2x）。
+    const sizeUsd = randomBigInt(
+      rng,
+      gmxFlowMaxSizeUsd / 100n,
+      gmxFlowMaxSizeUsd / 25n,
+    );
+    // collateral(WETH wei) ≈ (sizeUsd/2) を USD->WETH 換算。oraclePrices は使えないため概算 fairPrice 相当で割る
+    const sizeUsdNum = Number(sizeUsd) / 1e30;
+    const collateralWei = BigInt(
+      Math.max(1, Math.floor(((sizeUsdNum / 2) * 1e18) / 2100)),
+    );
+    const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 60)) * 1_000_000n;
+    if (
+      balance &&
+      balance.wethWei < collateralWei * (canPrepareWeth ? 2n : 1n)
+    ) {
+      if (!canPrepareWeth) break;
+      const usdcIn = capUsdc(
+        wethToUsdcUnits(collateralWei, fairPrice),
+        balance,
+      );
+      if (usdcIn <= 0n) break;
+      // WETH 在庫が無いブロックは担保用 USDC→WETH を 1 本だけ用意して打ち止め（次ブロックで建てる）。
+      orders.push({
         protocol: "uniswap",
         walletProtocol: "gmx",
         kind: "uninformed",
@@ -270,22 +348,29 @@ export function buildGmxFlow(
           slippageBps: FLOW_SLIPPAGE_BPS,
         } as LeafAction,
         priorityFeeWei: fee,
-      },
-    ];
+      });
+      break;
+    }
+    const action = {
+      type: "gmxIncrease",
+      isLong,
+      collateral: "WETH",
+      collateralAmount: collateralWei.toString(),
+      sizeDeltaUsd: sizeUsd.toString(),
+    } as unknown as LeafAction;
+    orders.push({
+      protocol: "gmx",
+      kind: "uninformed",
+      action,
+      priorityFeeWei: fee,
+    });
   }
-  const action = {
-    type: "gmxIncrease",
-    isLong,
-    collateral: "WETH",
-    collateralAmount: collateralWei.toString(),
-    sizeDeltaUsd: sizeUsd.toString(),
-  } as unknown as LeafAction;
-  return [{ protocol: "gmx", kind: "uninformed", action, priorityFeeWei: fee }];
+  return orders;
 }
 
-// Aave: supply/borrow/repay の churn を生成し HF を動かす。
-// 旧実装は flow ウォレットの reserve を RPC で読んでいたが、その読取は coordinator 側に移し、
-// 結果を reserves 引数で受け取ることで純粋化した。
+// Aave（単一ウォレットの簡易 churn。後方互換／aaveActors 未指定時のフォールバック）。
+// 状態機械を 1 ステップ進める: supply -> (borrow <-> repay を反復) -> 債務0のとき確率で withdraw。
+// 実時間の本路は buildAaveActorsFlow（複数アクターの持続ポジション）を使う。
 export function buildAaveFlow(
   rng: Rng,
   aaveFlowMaxWethWei: bigint,
@@ -295,15 +380,19 @@ export function buildAaveFlow(
   fairPrice: number,
   balance?: FlowBalance | null,
   canPrepareWeth = false,
+  activityProb = 0.5,
 ): FlowOrderOut[] {
+  // activityProb の確率でのみこのブロックに送信（既定 0.5。1 で毎ブロック churn、<1 で間欠的）。
+  if (rng.next() >= activityProb) return [];
   const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 40)) * 1_000_000n;
-
-  // 状態機械: supply -> (borrow <-> repay を反復) -> 債務0のとき確率で withdraw。
-  //   - withdraw は borrowed===0 のときのみ（債務未返済での withdraw revert を回避）
-  //   - 債務があれば必ず repay max（flow walletは初期USDCも保有するため利息込みで完済でき端数ループを回避）
   let action: LeafAction;
   if (reserves.wethSupplied === 0n) {
-    const amount = aaveFlowMaxWethWei / 2n;
+    // supply 額は max の 1/4〜3/4 をランダム（基準 1/2）。
+    const amount = randomBigInt(
+      rng,
+      aaveFlowMaxWethWei / 4n,
+      (aaveFlowMaxWethWei * 3n) / 4n,
+    );
     if (balance && balance.wethWei < amount * (canPrepareWeth ? 2n : 1n)) {
       if (!canPrepareWeth) return [];
       const usdcIn = capUsdc(wethToUsdcUnits(amount, fairPrice), balance);
@@ -335,15 +424,17 @@ export function buildAaveFlow(
       amount: "max",
     } as unknown as LeafAction;
   } else if (rng.bool()) {
-    // 債務0 → borrow（maxAaveBorrowUsdcUnits を尊重）
-    const amount = maxAaveBorrowUsdcUnits / 5n;
+    const amount = randomBigInt(
+      rng,
+      maxAaveBorrowUsdcUnits / 10n,
+      (maxAaveBorrowUsdcUnits * 3n) / 10n,
+    );
     action = {
       type: "aaveBorrow",
       asset: "USDC",
       amount: (amount > 0n ? amount : 100_000_000n).toString(),
     } as unknown as LeafAction;
   } else {
-    // 債務0 → 担保を引き上げてサイクルを閉じる
     action = {
       type: "aaveWithdraw",
       asset: "WETH",
@@ -353,91 +444,127 @@ export function buildAaveFlow(
   return [{ protocol: "aave", kind: "informed", action, priorityFeeWei: fee }];
 }
 
-// delta-neutral cross-venue スプレッド注入（α 機会の構造的生成）。
-//
-// 動機（discrimination-needs-delta-neutral / selfimprove-validation-synthesis）:
-// この市場の支配的利益源は α(裁定)でなく β(方向)で、優劣が「市場スタイル適合(β)」で決まり
-// 真のスキル選別ができない。原因は (1) 方向 β が大きい、(2) 取れる α(cross-venue スプレッド)が薄い。
-// この注入は (2) を構造的に増やす: 毎ブロック有効 AMM venue から 2 つを選び、一方で WETH を
-// 買い上げ(価格↑)・他方で同 WETH 相当を売り下げる(価格↓)。fair price 周りに対称な spread を開けるので:
-//   - 方向シグナル(β)も fair 乖離も注入しない（2 leg の市場インパクトが相殺 = delta-neutral）
-//   - その spread は「安い venue で買い・高い venue で売る」2-leg 裁定(α)だけが取れる。
-//     単発 swap の random は片側しか取れず逆 leg の戻りで損になり得る → α を運で拾えない。
-//   - 単 venue β-carrier も各 venue が fair から半分しかズレない上、2 venue が逆方向なので取り分小。
-// rng 消費は「2 venue 選択 + サイズ + fee」の固定回数。maxWethWei<=0 / venue<2 の時のみ消費せず空返し。
-export function buildCrossVenueSpreadFlow(
+// 1 アクターの持続ポジション状態（coordinator が各 actor ウォレットから読んで渡す）。
+export type AaveActorState = {
+  key: string; // flow ウォレット鍵（例 "aave:actor0"）
+  wethSupplied: bigint; // 当該 actor が Aave に supply 済みの WETH
+  usdcBorrowed: bigint; // 当該 actor の USDC 債務（持続。翌ブロックも残る）
+  wethWei: bigint; // ウォレットの WETH 残高（担保補充の原資）
+  usdcUnits: bigint; // ウォレットの USDC 残高（borrow で増え、repay の原資）
+};
+
+// Aave 借り手プール（実市場寄せ）。N 個の独立アクターが各自の持続ポジションを保ち、毎ブロック
+// それぞれ独立に確率判定して borrow/repay/supply/withdraw を 1 つだけ実行する。borrow の後に強制
+// repay しないので債務は翌ブロック以降も残る。1 ブロックの複数 borrow は別アクターから自然発生する
+// （最大 = アクター数）。各 borrow は HF 余力（担保 × LTV × 安全率）内に収め revert を避ける。
+export function buildAaveActorsFlow(
   rng: Rng,
-  protocols: ProtocolId[],
-  poolPrices: Partial<Record<"uniswap" | "balancer" | "curve", number>>,
-  fairPrice: number,
-  maxWethWei: bigint,
+  actors: AaveActorState[],
+  aaveFlowMaxWethWei: bigint,
+  maxAaveBorrowUsdcUnits: bigint,
   defaultPriorityFeeWei: bigint,
+  fairPrice: number,
+  activityProb: number,
 ): FlowOrderOut[] {
-  if (maxWethWei <= 0n) return [];
-  const swapTypeOf: Record<
-    "uniswap" | "balancer" | "curve",
-    "swap" | "balancerSwap" | "curveSwap"
-  > = { uniswap: "swap", balancer: "balancerSwap", curve: "curveSwap" };
-  const venues = (["uniswap", "balancer", "curve"] as const).filter(
-    (v) => protocols.includes(v) && (poolPrices[v] ?? 0) > 0,
-  );
-  if (venues.length < 2) return [];
+  // 目標レバレッジ方式（staleness 由来の revert を抑える）。flow bot は 1〜2 ブロック遅れの actor 状態で
+  // 判断する（非同期パイプライン）ため、HF/残高に大きな余裕を持たせて「少し古い状態でも安全」に倒す:
+  //   - 担保は目標まで一度だけ積み、以降は supply しない（supply cap の thrash を避ける）。
+  //   - 債務は担保価値の 30%（LT 0.84 に大余裕）を目標に、2 ステップ分の余白を残してのみ小口 borrow
+  //     （stale な二重借入が来ても HF を割らない）。達したら一部 repay。
+  const targetCollateralWei = aaveFlowMaxWethWei; // 目標担保（≈ aaveFlowMaxWethWei）
+  const TARGET_LTV_NUM = 30n;
+  const TARGET_LTV_DEN = 100n;
+  const minStep = maxAaveBorrowUsdcUnits / 25n; // これ未満の差は動かさない（端数ループ回避）
+  const orders: FlowOrderOut[] = [];
+  for (const actor of actors) {
+    // 各 actor が独立に「今ブロック動くか」を判定（間欠的）。
+    if (rng.next() >= activityProb) continue;
+    const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 40)) * 1_000_000n;
+    const pushAave = (action: LeafAction): void => {
+      orders.push({
+        protocol: "aave",
+        walletKey: actor.key,
+        kind: "informed",
+        action,
+        priorityFeeWei: fee,
+      });
+    };
 
-  // 2 venue を決定論的に選ぶ（up=買い上げる venue、down=売り下げる venue）。
-  const iUp = rng.int(0, venues.length);
-  let iDown = rng.int(0, venues.length - 1);
-  if (iDown >= iUp) iDown += 1; // iUp を除いた残りから一様に選ぶ
-  const upVenue = venues[iUp];
-  const downVenue = venues[iDown];
+    // 1) 担保を目標まで一度だけ積む（80% 到達で確立とみなし以降は supply しない）。
+    if (actor.wethSupplied < (targetCollateralWei * 8n) / 10n) {
+      const want = targetCollateralWei - actor.wethSupplied;
+      // 残高ステイルに備え、ウォレット WETH の 70% までに抑える。
+      const amount = minBI(want, (actor.wethWei * 7n) / 10n);
+      if (amount > 0n)
+        pushAave({
+          type: "aaveSupply",
+          asset: "WETH",
+          amount: amount.toString(),
+        } as unknown as LeafAction);
+      continue;
+    }
 
-  // 両 leg を同じ WETH 相当にして delta-neutral に保つ（市場全体への方向インパクト ≈ 0）。
-  const wethEquiv = randomBigInt(rng, maxWethWei / 4n, maxWethWei);
-  // 低 fee: agent が翌ブロックで spread を取りに来られるよう、informed より控えめに置く。
-  const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 30)) * 1_000_000n;
-  // 注入は意図的に価格を動かす（spread を開く）ので slippage を広く取り revert を避ける。
-  const SPREAD_SLIPPAGE_BPS = 1000;
+    // 2) 担保確立後は借入/返済のみ（持続債務。supply はもうしない）。
+    const collateralValueUsdc = wethToUsdcUnits(actor.wethSupplied, fairPrice);
+    const targetDebt = (collateralValueUsdc * TARGET_LTV_NUM) / TARGET_LTV_DEN;
+    const r = rng.next();
 
-  return [
-    {
-      // up leg: USDC→WETH（買い）→ upVenue の価格を押し上げる
-      protocol: upVenue,
-      kind: "spread",
-      action: {
-        type: swapTypeOf[upVenue],
-        tokenIn: "USDC",
-        amountIn: wethToUsdcUnits(wethEquiv, fairPrice).toString(),
-        slippageBps: SPREAD_SLIPPAGE_BPS,
-      } as LeafAction,
-      priorityFeeWei: fee,
-    },
-    {
-      // down leg: WETH→USDC（売り）→ downVenue の価格を押し下げる
-      protocol: downVenue,
-      kind: "spread",
-      action: {
-        type: swapTypeOf[downVenue],
-        tokenIn: "WETH",
-        amountIn: wethEquiv.toString(),
-        slippageBps: SPREAD_SLIPPAGE_BPS,
-      } as LeafAction,
-      priorityFeeWei: fee,
-    },
-  ];
+    if (actor.usdcBorrowed + 2n * minStep < targetDebt && r < 0.55) {
+      // 目標債務へ向け小口で借り増し（2 ステップ分の余白を残す＝stale 二重借入でも HF 安全）。
+      const room = targetDebt - actor.usdcBorrowed;
+      const want = randomBigInt(
+        rng,
+        maxAaveBorrowUsdcUnits / 20n,
+        maxAaveBorrowUsdcUnits / 10n,
+      );
+      const amount = minBI(want, room);
+      if (amount > 0n)
+        pushAave({
+          type: "aaveBorrow",
+          asset: "USDC",
+          amount: amount.toString(),
+        } as unknown as LeafAction);
+    } else if (actor.usdcBorrowed > minStep && r < 0.9) {
+      // 一部返済（max ではなく部分額 → 債務は残る）。返済はウォレット USDC 残高と債務の小さい方まで。
+      const want = randomBigInt(
+        rng,
+        actor.usdcBorrowed / 4n,
+        actor.usdcBorrowed / 2n,
+      );
+      const amount = minBI(want, actor.usdcUnits);
+      if (amount > 0n)
+        pushAave({
+          type: "aaveRepay",
+          asset: "USDC",
+          amount: amount.toString(),
+        } as unknown as LeafAction);
+    }
+    // それ以外は no-op（担保確立済・債務目標付近では何もしないブロックもある＝自然）。
+  }
+  return orders;
 }
 
 // wire の文字列 limits を bigint へ復元。
 export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
   return {
     uninformedFlowMaxWethWei: BigInt(wire.uninformedFlowMaxWethWei),
+    uninformedFlowCountPerBlock: Math.max(
+      1,
+      Number(wire.uninformedFlowCountPerBlock ?? "1"),
+    ),
+    uninformedFlowPersistBlocks: Math.max(
+      1,
+      Number(wire.uninformedFlowPersistBlocks ?? "1"),
+    ),
     informedFlowMaxWethWei: BigInt(wire.informedFlowMaxWethWei),
     balancerFlowMaxWethWei: BigInt(wire.balancerFlowMaxWethWei),
     curveFlowMaxWethWei: BigInt(wire.curveFlowMaxWethWei),
     gmxFlowMaxSizeUsd: BigInt(wire.gmxFlowMaxSizeUsd),
+    gmxFlowActivityProb: clampProb(wire.gmxFlowActivityProb, 0.5),
+    gmxFlowMaxBurst: Math.max(1, Number(wire.gmxFlowMaxBurst ?? "1")),
     aaveFlowMaxWethWei: BigInt(wire.aaveFlowMaxWethWei),
     maxAaveBorrowUsdcUnits: BigInt(wire.maxAaveBorrowUsdcUnits),
-    crossVenueSpreadFlowMaxWethWei: BigInt(
-      wire.crossVenueSpreadFlowMaxWethWei ?? "0",
-    ),
+    aaveFlowActivityProb: clampProb(wire.aaveFlowActivityProb, 0.5),
     defaultPriorityFeeWei: BigInt(wire.defaultPriorityFeeWei),
   };
 }
@@ -484,24 +611,51 @@ export function buildFlowOrders(
             informed: flowBalance(ctx, protocol, "informed"),
           },
           ctx.usdcOnlyFlow === true,
+          "WETH",
+          limits.uninformedFlowCountPerBlock,
+          ctx.round,
+          limits.uninformedFlowPersistBlocks,
         ),
       );
     } else if (protocol === "aave") {
-      out.push(
-        ...buildAaveFlow(
-          rng,
-          limits.aaveFlowMaxWethWei,
-          limits.maxAaveBorrowUsdcUnits,
-          limits.defaultPriorityFeeWei,
-          {
-            wethSupplied: BigInt(ctx.aaveReserves?.wethSupplied ?? "0"),
-            usdcBorrowed: BigInt(ctx.aaveReserves?.usdcBorrowed ?? "0"),
-          },
-          ctx.fairPriceUsdcPerWeth,
-          flowBalance(ctx, "aave", "informed"),
-          ctx.protocols.includes("uniswap"),
-        ),
-      );
+      if (ctx.aaveActors && ctx.aaveActors.length > 0) {
+        // 実時間の本路: 複数アクターの持続ポジション借り手プール。
+        out.push(
+          ...buildAaveActorsFlow(
+            rng,
+            ctx.aaveActors.map((a) => ({
+              key: a.key,
+              wethSupplied: BigInt(a.wethSupplied),
+              usdcBorrowed: BigInt(a.usdcBorrowed),
+              wethWei: BigInt(a.wethWei),
+              usdcUnits: BigInt(a.usdcUnits),
+            })),
+            limits.aaveFlowMaxWethWei,
+            limits.maxAaveBorrowUsdcUnits,
+            limits.defaultPriorityFeeWei,
+            ctx.fairPriceUsdcPerWeth,
+            limits.aaveFlowActivityProb,
+          ),
+        );
+      } else {
+        // 後方互換: 単一ウォレットの簡易 churn。
+        out.push(
+          ...buildAaveFlow(
+            rng,
+            limits.aaveFlowMaxWethWei,
+            limits.maxAaveBorrowUsdcUnits,
+            limits.defaultPriorityFeeWei,
+            {
+              wethSupplied: BigInt(ctx.aaveReserves?.wethSupplied ?? "0"),
+              usdcBorrowed: BigInt(ctx.aaveReserves?.usdcBorrowed ?? "0"),
+            },
+            ctx.fairPriceUsdcPerWeth,
+            flowBalance(ctx, "aave", "informed"),
+            ctx.protocols.includes("uniswap"),
+            limits.aaveFlowActivityProb,
+          ),
+        );
+      }
     } else if (protocol === "gmx") {
       out.push(
         ...buildGmxFlow(
@@ -511,6 +665,8 @@ export function buildFlowOrders(
           ctx.fairPriceUsdcPerWeth,
           flowBalance(ctx, "gmx", "uninformed"),
           ctx.protocols.includes("uniswap"),
+          limits.gmxFlowActivityProb,
+          limits.gmxFlowMaxBurst,
         ),
       );
     }
@@ -557,22 +713,13 @@ export function buildFlowOrders(
           },
           ctx.usdcOnlyFlow === true,
           extra.base,
+          limits.uninformedFlowCountPerBlock,
+          ctx.round,
+          limits.uninformedFlowPersistBlocks,
         ),
       );
     }
   }
 
-  // 最後に cross-venue スプレッド注入（α 機会）。per-protocol ループの後に置くことで、
-  // 無効時(max=0)は rng を一切消費せず既存 flow と byte 互換を保つ。
-  out.push(
-    ...buildCrossVenueSpreadFlow(
-      rng,
-      ctx.protocols,
-      ctx.poolPrices,
-      ctx.fairPriceUsdcPerWeth,
-      limits.crossVenueSpreadFlowMaxWethWei,
-      limits.defaultPriorityFeeWei,
-    ),
-  );
   return out;
 }

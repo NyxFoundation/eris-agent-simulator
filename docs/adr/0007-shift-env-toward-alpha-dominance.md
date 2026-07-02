@@ -2,7 +2,19 @@
 
 ## Status
 
-Proposed
+Withdrawn（2026-06-28）
+
+## 撤回（2026-06-28）
+
+**本 ADR の §2「delta-neutral cross-venue スプレッド構造注入」（`FlowKind "spread"` /
+`buildCrossVenueSpreadFlow` / `crossVenueSpread*` config）は実装ごと撤去した。**
+理由: 構造注入は「毎ブロック 2 venue を対称に押し開いて 2-leg 裁定だけが取れる機会」を作るが、
+これは**実市場に対応物のない人工的な補助金**（誰かが恒常的に損して spread を供給し続ける主体は現実に
+いない）であり、env のリアリズムを毀損する。env のリアルな α は OU base price + venue 別 trend を持つ
+**uninformed flow の自然な venue 間乖離**から出る（薄いが現実的）。§1 の β 抑制（USDC-only funding）は
+有効なので方針として残すが、α 増幅レバーとしての構造注入は不採用とする。
+
+以下は撤回前の記録（歴史的経緯として保存）。
 
 ## 訂正（2026-06-17、重要）
 

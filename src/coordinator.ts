@@ -166,19 +166,28 @@ export async function buildFlowContext(
       poolPrices[id] = s.priceUsdcPerWeth;
   }
 
-  // aave flow は flow ウォレットの reserve に依存する。RPC 読取は coordinator 側で行い渡す。
-  let aaveReserves: FlowContextWire["aaveReserves"];
+  // aave 借り手プールは各 actor ウォレットの reserve + 残高に依存する。RPC 読取は coordinator 側で
+  // 行い渡す（bot は RPC に触れない原則）。actor ごとに持続ポジション（supply/borrow）と残高を読む。
+  let aaveActors: FlowContextWire["aaveActors"];
   if (enabledIds.includes("aave")) {
-    const wallet = ctx.flowWallet("aave", "informed");
-    const r = await readAaveFlowReserves(ctx.publicClient, wallet.address);
-    aaveReserves = {
-      wethSupplied: r.wethSupplied.toString(),
-      usdcBorrowed: r.usdcBorrowed.toString(),
-    };
+    aaveActors = [];
+    for (let i = 0; i < ctx.config.aaveFlowActorCount; i++) {
+      const key = `aave:actor${i}`;
+      const wallet = ctx.flowWalletByKey(key);
+      const r = await readAaveFlowReserves(ctx.publicClient, wallet.address);
+      const b = await getBalances(ctx.publicClient, wallet.address);
+      aaveActors.push({
+        key,
+        wethSupplied: r.wethSupplied.toString(),
+        usdcBorrowed: r.usdcBorrowed.toString(),
+        wethWei: b.wethWei.toString(),
+        usdcUnits: b.usdcUnits.toString(),
+      });
+    }
   }
   const flowBalances: FlowContextWire["flowBalances"] = {};
   for (const protocol of enabledIds) {
-    for (const kind of ["informed", "uninformed", "spread"] as FlowKind[]) {
+    for (const kind of ["informed", "uninformed"] as FlowKind[]) {
       const wallet = ctx.flowWallet(protocol, kind);
       const b = await getBalances(ctx.publicClient, wallet.address);
       flowBalances[`${protocol}:${kind}`] = {
@@ -235,20 +244,28 @@ export async function buildFlowContext(
     fairPriceUsdcPerWeth: fairPrice,
     protocols: enabledIds,
     poolPrices,
-    aaveReserves,
+    ...(aaveActors ? { aaveActors } : {}),
     flowBalances,
-    usdcOnlyFlow: ctx.config.initialWethWei === 0n,
+    // flow が base 在庫を持つ（flowWethWei>0）なら売りを許可する（残高で gate）。
+    // agent の USDC-only（initialWethWei=0）とは独立。両方 0 のときだけ強制 USDC。
+    usdcOnlyFlow:
+      ctx.config.initialWethWei === 0n && ctx.config.flowWethWei === 0n,
     ...(extraBases.length > 0 ? { extraBases } : {}),
     limits: {
       uninformedFlowMaxWethWei: ctx.config.uninformedFlowMaxWethWei.toString(),
+      uninformedFlowCountPerBlock: String(ctx.config.uninformedFlowCount),
+      uninformedFlowPersistBlocks: String(
+        ctx.config.uninformedFlowPersistBlocks,
+      ),
       informedFlowMaxWethWei: ctx.config.informedFlowMaxWethWei.toString(),
       balancerFlowMaxWethWei: ctx.config.balancerFlowMaxWethWei.toString(),
       curveFlowMaxWethWei: ctx.config.curveFlowMaxWethWei.toString(),
       gmxFlowMaxSizeUsd: ctx.config.gmxFlowMaxSizeUsd.toString(),
+      gmxFlowActivityProb: String(ctx.config.gmxFlowActivityProb),
+      gmxFlowMaxBurst: String(ctx.config.gmxFlowMaxBurst),
       aaveFlowMaxWethWei: ctx.config.aaveFlowMaxWethWei.toString(),
       maxAaveBorrowUsdcUnits: ctx.config.maxAaveBorrowUsdcUnits.toString(),
-      crossVenueSpreadFlowMaxWethWei:
-        ctx.config.crossVenueSpreadFlowMaxWethWei.toString(),
+      aaveFlowActivityProb: String(ctx.config.aaveFlowActivityProb),
       defaultPriorityFeeWei: ctx.config.defaultPriorityFeeWei.toString(),
     },
   };
@@ -261,10 +278,9 @@ export function flowOrdersToIntents(
 ): TxIntent[] {
   const intents: TxIntent[] = [];
   for (const order of orders) {
-    const wallet = ctx.flowWallet(
-      order.walletProtocol ?? order.protocol,
-      order.kind,
-    );
+    const wallet = order.walletKey
+      ? ctx.flowWalletByKey(order.walletKey)
+      : ctx.flowWallet(order.walletProtocol ?? order.protocol, order.kind);
     intents.push({
       ownerId: wallet.id,
       role: order.kind === "informed" ? "informed-flow" : "uninformed-flow",
@@ -319,12 +335,29 @@ export async function submitIntent(
   const baseFee = block.baseFeePerGas ?? 0n;
   const hashes: Hex[] = [];
   for (const tx of txs) {
+    // 実時間 mining では「submit 時の状態」で見積もった gas と「実行時の状態」がズレる。
+    // eth_estimateGas は成功する最小 gas を返すため、Aave の利息 index 更新等で実 gas が
+    // 最小見積りを少し上回ると out-of-gas revert する（flow tx 失敗の主因）。2x のバッファを
+    // 明示指定して防ぐ（gas コストは使用量課金で上限は着弾保証。block gas 上限内に十分収まる）。
+    let gas: bigint;
+    try {
+      const est = await ctx.publicClient.estimateGas({
+        account,
+        to: tx.to,
+        data: tx.data,
+        value: tx.value ?? 0n,
+      });
+      gas = est * 2n;
+    } catch {
+      gas = 2_000_000n;
+    }
     const hash = await ctx.walletClient.sendTransaction({
       account,
       chain: ctx.chain,
       to: tx.to,
       data: tx.data,
       value: tx.value ?? 0n,
+      gas,
       maxFeePerGas: baseFee + intent.priorityFeeWei,
       maxPriorityFeePerGas: intent.priorityFeeWei,
     });

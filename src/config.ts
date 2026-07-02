@@ -12,6 +12,10 @@ import {
   parseStressEvents,
   type StressEventConfig,
 } from "./realtime/events.js";
+import {
+  parseVulnEvents,
+  type VulnEventConfig,
+} from "./realtime/vulnEvents.js";
 
 const ALL_PROTOCOLS: ProtocolId[] = [
   "uniswap",
@@ -58,6 +62,19 @@ export type SimConfig = {
   stressVictimCount: number; // ERIS_STRESS_VICTIM_COUNT
   stressVictimHf0: number; // ERIS_STRESS_VICTIM_HF0(目標初期 HF。既定 1.10。LT/(0.97·LTV)≈1.08 超が必要)
   stressVictimSupplyWethWei: bigint; // ERIS_STRESS_VICTIM_WETH_WEI(victim 1 体あたり supply。既定 5)
+  // 脆弱性発生イベント(ADR 0014)。SEED 由来で N 個の新規プール(正直/rigged 混在)を run 中に
+  // deploy・資金供給する。ERIS_VULN_EVENTS の JSON 配列(レンジ指定)。空(既定)なら従来 run と一致。
+  vulnEvents: VulnEventConfig[];
+  // 各 vuln プールに積む片側の目安流動性(USDC 建て units)。深いほど agent の trade で価格が
+  // 動かず bait が実現益になる。ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS(既定 2,000,000 USDC)。
+  vulnPoolLiquidityUsdcUnits: bigint;
+  // vuln プールの取引手数料(bps)。honest プールの bait が手数料で相殺されない程度に小さく。
+  // ERIS_VULN_POOL_FEE_BPS(既定 30 = 0.3%)。
+  vulnPoolFeeBps: number;
+  // 取引前 LLM ソース監査(ADR 0014 §4-2)の有効化。"0"(既定 off)/"1"(実 LLM)/"mock"(source
+  // キーワード走査のスタブ)。coordinator が discovery-arb-verify に ERIS_VULN_LLM で配布する。
+  // 採点は環境 ground-truth なので LLM は補助(verdict は参考ログ)。dry-run が一次検証。
+  vulnLlm: string;
   // フラッシュ arb デモ(GitHub #3)。ERIS_FLASH_ARB=1 で coordinator が FlashArb コントラクトを
   // デプロイし、flash-arb agent が利用できるようにする。uniswap+balancer+aave 有効が前提。既定 off。
   flashArbDemo: boolean;
@@ -93,6 +110,11 @@ export type SimConfig = {
   agentsConfigPath: string;
   initialEthWei: bigint;
   flowEthWei: bigint;
+  // flow ウォレット（非 spread）の初期 base 在庫。USDC-only でも flow が「売り」（価格↓）を
+  // 出せるようにする＝両方向ドリフトを成立させる。agent には配らない（agent の USDC-only/β 無しは不変）。
+  // 既定 0 = 従来どおり（flow も base 無し）。
+  flowWethWei: bigint;
+  flowBaseAmounts: Record<string, bigint>;
   initialWethWei: bigint;
   // ADR 0013: base シンボル -> 初期配布量（token units）。WETH は initialWethWei と同値で
   // 互換維持。追加 base は INITIAL_<SYM>_<UNIT>（例 INITIAL_WBTC_SATS）で読み、未指定は 0
@@ -121,6 +143,10 @@ export type SimConfig = {
   maxLpBase: Record<string, bigint>;
   maxOpenPositions: number;
   uninformedFlowMaxWethWei: bigint;
+  // 1 ブロック・1 venue あたりの uninformed flow 本数（既定 1）。>1 でハイブリッド α。
+  uninformedFlowCount: number;
+  // uninformed 方向の持続ブロック数（既定 1）。>1 で order-flow imbalance を模し spread を自然発生。
+  uninformedFlowPersistBlocks: number;
   informedFlowMaxWethWei: bigint;
   enabledProtocols: ProtocolId[];
   maxGmxSizeUsd: bigint;
@@ -132,11 +158,16 @@ export type SimConfig = {
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
   gmxFlowMaxSizeUsd: bigint;
+  // gmx flow を出すブロック確率（0..1、既定 0.5）。散発的に送る。
+  gmxFlowActivityProb: number;
+  // 発火ブロックで出す gmx 注文の最大本数（>=1、既定 2）。>1 で 1〜N 件をランダムにバースト。
+  gmxFlowMaxBurst: number;
   aaveFlowMaxWethWei: bigint;
-  // delta-neutral cross-venue スプレッド注入の 1 leg あたり最大 WETH 相当（既定 0 = 無効）。
-  // 毎ブロック 2 venue を対称に押し開いて「2-leg 裁定(α)だけが取れる」機会を構造的に作る。
-  // 方向 β を注入せず α を増やすレバー（env を α 支配へ寄せる。discrimination-needs-delta-neutral）。
-  crossVenueSpreadFlowMaxWethWei: bigint;
+  // aave flow の各アクターが毎ブロック行動する確率（0..1、既定 0.5）。<1 で間欠的。
+  aaveFlowActivityProb: number;
+  // aave 借り手プールの独立アクター数（>=1、既定 4）。1 ブロックの最大同時 borrow 数 = この値。
+  // 各アクターは別アドレスで持続ポジションを保ち、債務は翌ブロック以降も残る。
+  aaveFlowActorCount: number;
   // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。既定空/0 = WBTC flow off。
   baseFlowMax: Record<string, bigint>;
   // orderflow bot（独立プロセス）の起動コマンドと決定論シード。
@@ -211,6 +242,13 @@ export function loadConfig(env = process.env): SimConfig {
       env.ERIS_STRESS_VICTIM_WETH_WEI,
       5_000_000_000_000_000_000n,
     ),
+    vulnEvents: parseVulnEvents(env.ERIS_VULN_EVENTS),
+    vulnPoolLiquidityUsdcUnits: bigintEnv(
+      env.ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS,
+      2_000_000_000_000n,
+    ),
+    vulnPoolFeeBps: intEnv(env.ERIS_VULN_POOL_FEE_BPS, 30),
+    vulnLlm: env.ERIS_VULN_LLM ?? "0",
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
     rounds: intEnv(env.ROUNDS, 50),
     // 1 ラウンドあたりに進める EVM 時間（秒）。Aave 変動金利の累積や GMX funding
@@ -236,6 +274,8 @@ export function loadConfig(env = process.env): SimConfig {
       env.ERIS_FLOW_ETH_WEI,
       1_000_000_000_000_000_000_000n,
     ),
+    flowWethWei: bigintEnv(env.FLOW_WETH_WEI, 0n),
+    flowBaseAmounts: readBaseAmounts(env, "FLOW_BASE", {}),
     initialWethWei,
     initialBaseAmounts: readBaseAmounts(env, "INITIAL", {
       WETH: initialWethWei,
@@ -265,6 +305,8 @@ export function loadConfig(env = process.env): SimConfig {
       env.UNINFORMED_FLOW_MAX_WETH_WEI,
       1_000_000_000_000_000_000n,
     ),
+    uninformedFlowCount: intEnv(env.UNINFORMED_FLOW_COUNT, 1),
+    uninformedFlowPersistBlocks: intEnv(env.UNINFORMED_FLOW_PERSIST_BLOCKS, 1),
     informedFlowMaxWethWei: bigintEnv(
       env.INFORMED_FLOW_MAX_WETH_WEI,
       2_000_000_000_000_000_000n,
@@ -291,15 +333,18 @@ export function loadConfig(env = process.env): SimConfig {
       env.GMX_FLOW_MAX_SIZE_USD,
       20_000n * 10n ** 30n,
     ),
+    // gmx flow を出すブロック確率（既定 0.5）。毎ブロック rng で判定し散発的に送る。
+    gmxFlowActivityProb: floatEnv(env.GMX_FLOW_ACTIVITY_PROB, 0.5),
+    // 発火ブロックで出す gmx 注文の最大本数（既定 2）。1〜N 件をランダムにバースト。
+    gmxFlowMaxBurst: intEnv(env.GMX_FLOW_MAX_BURST, 2),
     aaveFlowMaxWethWei: bigintEnv(
       env.AAVE_FLOW_MAX_WETH_WEI,
       2_000_000_000_000_000_000n,
     ),
-    // 既定 0 = 無効（既存 run の flow と byte 互換を保つ）。α 支配 env プロファイルで > 0 にする。
-    crossVenueSpreadFlowMaxWethWei: bigintEnv(
-      env.CROSS_VENUE_SPREAD_FLOW_MAX_WETH_WEI,
-      0n,
-    ),
+    // aave flow の各アクターが毎ブロック行動する確率（既定 0.5）。<1 で間欠的。
+    aaveFlowActivityProb: floatEnv(env.AAVE_FLOW_ACTIVITY_PROB, 0.5),
+    // aave 借り手プールの独立アクター数（既定 4）。1 ブロックの最大同時 borrow 数 = この値。
+    aaveFlowActorCount: Math.max(1, intEnv(env.AAVE_FLOW_ACTOR_COUNT, 4)),
     // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。env FLOW_MAX_<SYM>_<UNIT>
     // （例 FLOW_MAX_WBTC_SATS）。既定 0 = WBTC 等の flow off → extraBases が RNG 非消費 = byte 互換。
     // WETH flow は uninformed/balancer/curve FlowMaxWethWei を使い続ける（ここには載せない）。

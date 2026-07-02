@@ -9,6 +9,8 @@ import { safeStringify } from "./logger.js";
 export type FlowOrderWire = {
   protocol: ProtocolId;
   walletProtocol?: ProtocolId;
+  // 明示的な flow ウォレット鍵（aave 借り手プールの "aave:actor0" 等）。指定時はこの鍵で解決。
+  walletKey?: string;
   kind: FlowKind;
   action: LeafAction;
   priorityFeeWei: string;

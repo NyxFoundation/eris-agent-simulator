@@ -70,6 +70,13 @@ import {
 } from "./priceFeed.js";
 import { reconstructValueSeries } from "./reconstruct.js";
 import { EventSchedule } from "./events.js";
+import { VulnSchedule } from "./vulnEvents.js";
+import {
+  deployVulnPools,
+  fundVulnPoolsAt,
+  watchVulnSwaps,
+  type VulnRuntime,
+} from "./vulnPools.js";
 import {
   deriveStressVictims,
   openStressVictimPositions,
@@ -288,8 +295,21 @@ export async function runRealtimeSimulation(
   // ---- flow ウォレット（protocol/kind ごと。submitIntent / ctx が選択に使う）----
   const flowWalletMap = new Map<string, FlowWallet>();
   for (const id of enabledIds) {
-    for (const kind of ["informed", "uninformed", "spread"] as FlowKind[]) {
+    for (const kind of ["informed", "uninformed"] as FlowKind[]) {
       const key = `${id}:${kind}`;
+      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      flowWalletMap.set(key, {
+        id: `flow-${key}`,
+        address: accountAddress(privateKey),
+        privateKey,
+      });
+    }
+  }
+  // aave 借り手プール: 独立アクターを別アドレスで用意する（持続ポジション × N）。
+  // flowWalletMap に載せるので資金供給・blocks.csv 帰属は他 flow ウォレットと同じ経路で通る。
+  if (enabledIds.includes("aave")) {
+    for (let i = 0; i < config.aaveFlowActorCount; i++) {
+      const key = `aave:actor${i}`;
       const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
       flowWalletMap.set(key, {
         id: `flow-${key}`,
@@ -316,6 +336,11 @@ export async function runRealtimeSimulation(
     flowWallet(protocol: ProtocolId, kind: FlowKind): FlowWallet {
       const w = flowWalletMap.get(`${protocol}:${kind}`);
       if (!w) throw new Error(`flow wallet not found: ${protocol}:${kind}`);
+      return w;
+    },
+    flowWalletByKey(key: string): FlowWallet {
+      const w = flowWalletMap.get(key);
+      if (!w) throw new Error(`flow wallet not found: ${key}`);
       return w;
     },
   };
@@ -376,23 +401,30 @@ export async function runRealtimeSimulation(
       })),
     ];
     for (const t of fundTargets) {
-      // spread 注入ウォレットは毎ブロック片側 leg を出し続けるため在庫が枯れやすい。
-      // cheatcode 設定で市場インパクトなく深く積んでおく（leg サイズ × run 長で枯れない）。
-      const isSpread = t.key?.endsWith(":spread") ?? false;
       const isFlow = t.key !== undefined;
+      // aave 借り手アクターは担保用 WETH を直接 endow する（USDC→WETH の prep swap はスリッページで
+      // 失敗しやすく、アクターが担保確保に手間取って借入に到達しないため）。担保は Aave に supply され
+      // 採点対象外の flow ウォレットに留まる＝agent の β には一切影響しない。複数 supply 分を厚めに持たせる。
+      const isAaveActor = t.key?.startsWith("aave:actor") ?? false;
+      // flow ウォレットは flowWethWei / flowBaseAmounts の base 在庫を持たせ、
+      // USDC-only でも「売り」を出せるようにする（agent は initial* のまま＝USDC-only/β 無し不変）。
+      const wethWei = isAaveActor
+        ? config.aaveFlowMaxWethWei * 6n
+        : isFlow
+          ? config.flowWethWei
+          : config.initialWethWei;
+      const baseAmounts = isFlow
+        ? config.flowBaseAmounts
+        : config.initialBaseAmounts;
       await fundWallet(
         publicClient,
         walletClient,
         chain,
         t.privateKey,
         isFlow ? config.flowEthWei : config.initialEthWei,
-        isSpread
-          ? config.initialWethWei + config.crossVenueSpreadFlowMaxWethWei * 500n
-          : config.initialWethWei,
-        isSpread ? config.initialUsdcUnits * 200n : config.initialUsdcUnits,
-        // ADR 0013: WETH 以外の base の初期在庫（INITIAL_<SYM>_<UNIT>。既定 0 = 配らない＝byte 互換）。
-        // USDC-only 評価方針では 0 のままで、agent/flow は USDC から base を買って建てる。
-        config.initialBaseAmounts,
+        wethWei,
+        config.initialUsdcUnits,
+        baseAmounts,
       );
       for (const adapter of adapters) {
         if (!adapter.setupWallet) continue;
@@ -486,6 +518,31 @@ export async function runRealtimeSimulation(
       logger.event({ type: "flash_arb_deployed", address: FLASH_ARB_ADDRESS });
     }
 
+    // ---- 脆弱性発生イベント（ADR 0014）: factory + 全プール（正直/rigged 混在）を setup で deploy し
+    // disclosures を発行する。資金供給（appearance）は各プールの window で行う（後述の mining ループ）。
+    // schedule は SEED 由来・純関数。プールは agentRuntimes に含めない＝採点対象外（被弾者/検証者の外側）。
+    const vulnSchedule = new VulnSchedule(
+      config.vulnEvents,
+      config.seed,
+      config.runBlocks,
+      baseTokens().map((t) => t.symbol),
+    );
+    let vulnRuntime: VulnRuntime | null = null;
+    let vulnEnv: Record<string, string> | undefined;
+    if (vulnSchedule.hasEvents()) {
+      vulnRuntime = await deployVulnPools(ctx, vulnSchedule, config, logger);
+      // agent は factory を購読しプールグラフを作る（§3）。fromBlock で getLogs 範囲を絞る
+      // （fork の巨大ブロック番号でも factory 以降だけ走査）。disclosures は ERIS_RUN_DIR で参照。
+      vulnEnv = {
+        ERIS_VULN_FACTORY: vulnRuntime.factory,
+        ERIS_VULN_FROM_BLOCK: vulnRuntime.factoryDeployBlock.toString(),
+        ERIS_VULN_LLM: config.vulnLlm,
+      };
+    }
+    // stress victim env（ADR 0009）と vuln env（ADR 0014）を 1 つの extra env に合流させて配布する。
+    const agentExtraEnv =
+      victimEnv || vulnEnv ? { ...victimEnv, ...vulnEnv } : undefined;
+
     // agent レジストリを 1 行 emit（ADR 0008 P0）。ダッシュボードがファイル tail だけで
     // 全 agent（id/アドレス/分類ヒント）を即座に把握できる（1 件も行動しない agent や
     // 起動直後の取りこぼしを塞ぐ）。評価/採点パイプラインへの影響はゼロ（読まれないイベント）。
@@ -524,7 +581,7 @@ export async function runRealtimeSimulation(
         directTx
           ? { privateKey: agent.privateKey, priceFeedAddress, runId }
           : undefined,
-        victimEnv,
+        agentExtraEnv,
       );
     }
 
@@ -804,9 +861,12 @@ export async function runRealtimeSimulation(
     // 起きない（victim は受動）→ 減少を清算シグナルとして stress_liquidation を emit する。
     const victimLastDebt = new Map<string, bigint>();
 
-    // stress run（イベントあり）は EventSchedule が runBlocks>0 を要求するため、ブロック数で
-    // 終了させる（時間制限 ERIS_RUN_SECONDS が先に切れて crash 窓へ到達しない footgun を回避。§4）。
-    const stressRun = schedule.hasEvents() || stressVictims.length > 0;
+    // stress/vuln run はブロック数で終了させる（時間制限 ERIS_RUN_SECONDS が先に切れて crash 窓
+    // / vuln window に到達しない footgun を回避。ADR 0009 §4 / ADR 0014）。
+    const stressRun =
+      schedule.hasEvents() ||
+      stressVictims.length > 0 ||
+      vulnSchedule.hasEvents();
     const effectiveRunSeconds =
       stressRun && config.runBlocks > 0 ? 0 : config.runSeconds;
     if (
@@ -863,6 +923,29 @@ export async function runRealtimeSimulation(
             fairPrices[b] = extraBaseFair[b] * (overlay.baseMults[b] ?? 1);
           }
           ctx.fairPrices = fairPrices;
+
+          // 脆弱性プールの資金供給（ADR 0014）: window に入ったプールに reserve を焼き込み
+          // （cheatcode。mine 不要）、bait 込みの機会をこのブロックで出現させる。fair を反映した
+          // reserve 比にするため fairPrices 確定後・他タスク前に同期で行う（窓ブロックのみの稀な処理）。
+          if (vulnRuntime) {
+            try {
+              await fundVulnPoolsAt(
+                ctx,
+                vulnRuntime,
+                blockIndex,
+                bn,
+                fairPrices,
+                config,
+                logger,
+              );
+            } catch (error) {
+              logger.event({
+                type: "vuln_fund_failed",
+                blockIndex,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
 
           // keeper / oracle 書込 / state+flow は相互に独立（ウォレットも別）なので並列に走らせる。
           // tx の記録（blocks.csv）はループから外し、run 後に一括走査する（logBlock 参照）。
@@ -984,8 +1067,7 @@ export async function runRealtimeSimulation(
             );
             latestStateById = stateById;
             const uni = stateById.get("uniswap") as
-              | { priceUsdcPerWeth?: number }
-              | undefined;
+              { priceUsdcPerWeth?: number } | undefined;
             latestHistory.push({
               round: bn,
               poolPriceUsdcPerWeth: uni?.priceUsdcPerWeth ?? latestFairPrice,
@@ -1075,6 +1157,22 @@ export async function runRealtimeSimulation(
             }
           };
 
+          // 脆弱性プールの被弾/約定検知（ADR 0014 §6）: 資金供給済みプールの Swap ログを
+          // ground-truth で走査し vulnerability_exploited / safe_pool_captured を emit する。
+          // vuln run のときだけ走らせる（既定 run に毎ブロックの getLogs を足さない）。
+          const vulnTask = async (): Promise<void> => {
+            if (!vulnRuntime) return;
+            try {
+              await watchVulnSwaps(ctx, vulnRuntime, fromBlock, bn, logger);
+            } catch (error) {
+              logger.event({
+                type: "vuln_watch_failed",
+                blockNumber: bn,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          };
+
           // 各タスクの所要時間を残す（環境ループの律速診断用。ADR 0006「判定指標」の実測元）
           const timed = async (task: () => Promise<void>): Promise<number> => {
             const t0 = Date.now();
@@ -1082,16 +1180,20 @@ export async function runRealtimeSimulation(
             return Date.now() - t0;
           };
           const roundStart = Date.now();
-          // victim 観測は stress run でのみ走らせる（既定の no-stress run に毎ブロックの
-          // タスク/Promise を足さない）。stress run のみ round_timing に victimMs が載る。
+          // victim/vuln 観測は該当 run でのみ走らせる（既定 run に毎ブロックのタスク/Promise を足さない）。
           const tasks = [
             timed(keeperTask),
             timed(oracleTask),
             timed(stateAndFlowTask),
           ];
           if (stressVictims.length > 0) tasks.push(timed(victimTask));
-          const [keeperMs, oracleMs, stateFlowMs, victimMs] =
-            await Promise.all(tasks);
+          if (vulnRuntime) tasks.push(timed(vulnTask));
+          const results = await Promise.all(tasks);
+          const [keeperMs, oracleMs, stateFlowMs] = results;
+          let taskIdx = 3;
+          const victimMs =
+            stressVictims.length > 0 ? results[taskIdx++] : undefined;
+          const vulnMs = vulnRuntime ? results[taskIdx++] : undefined;
           logger.event({
             type: "round_timing",
             blockNumber: bn,
@@ -1100,6 +1202,7 @@ export async function runRealtimeSimulation(
             oracleMs,
             stateFlowMs,
             ...(victimMs !== undefined ? { victimMs } : {}),
+            ...(vulnMs !== undefined ? { vulnMs } : {}),
             totalMs: Date.now() - roundStart,
           });
 

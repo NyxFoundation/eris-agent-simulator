@@ -111,6 +111,7 @@ const SCHEMA: Record<string, string> = {
   "funding.wethWei": "INITIAL_WETH_WEI",
   "funding.usdcUnits": "INITIAL_USDC_UNITS",
   "funding.flowEthWei": "ERIS_FLOW_ETH_WEI",
+  "funding.flowWethWei": "FLOW_WETH_WEI",
   // limits
   "limits.agentWethWei": "MAX_AGENT_WETH_IN_WEI",
   "limits.agentUsdcUnits": "MAX_AGENT_USDC_IN_UNITS",
@@ -125,12 +126,17 @@ const SCHEMA: Record<string, string> = {
   "limits.maxPriorityFeeWei": "MAX_PRIORITY_FEE_WEI",
   // flow
   "flow.uninformedMaxWethWei": "UNINFORMED_FLOW_MAX_WETH_WEI",
+  "flow.uninformedCount": "UNINFORMED_FLOW_COUNT",
+  "flow.uninformedPersistBlocks": "UNINFORMED_FLOW_PERSIST_BLOCKS",
   "flow.informedMaxWethWei": "INFORMED_FLOW_MAX_WETH_WEI",
   "flow.balancerMaxWethWei": "BALANCER_FLOW_MAX_WETH_WEI",
   "flow.curveMaxWethWei": "CURVE_FLOW_MAX_WETH_WEI",
   "flow.gmxMaxSizeUsd": "GMX_FLOW_MAX_SIZE_USD",
+  "flow.gmxActivityProb": "GMX_FLOW_ACTIVITY_PROB",
+  "flow.gmxMaxBurst": "GMX_FLOW_MAX_BURST",
   "flow.aaveMaxWethWei": "AAVE_FLOW_MAX_WETH_WEI",
-  "flow.crossVenueSpreadMaxWethWei": "CROSS_VENUE_SPREAD_FLOW_MAX_WETH_WEI",
+  "flow.aaveActivityProb": "AAVE_FLOW_ACTIVITY_PROB",
+  "flow.aaveActorCount": "AAVE_FLOW_ACTOR_COUNT",
   "flow.seed": "FLOW_SEED",
   "flow.botCommand": "FLOW_BOT_COMMAND",
   "flow.botArgs": "FLOW_BOT_ARGS",
@@ -139,16 +145,22 @@ const SCHEMA: Record<string, string> = {
   "stress.victimCount": "ERIS_STRESS_VICTIM_COUNT",
   "stress.victimHf0": "ERIS_STRESS_VICTIM_HF0",
   "stress.victimWethWei": "ERIS_STRESS_VICTIM_WETH_WEI",
+  // vuln（ADR 0014: 脆弱性発生イベント）
+  "vuln.events": "ERIS_VULN_EVENTS",
+  "vuln.poolLiquidityUsdcUnits": "ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS",
+  "vuln.poolFeeBps": "ERIS_VULN_POOL_FEE_BPS",
+  "vuln.llm": "ERIS_VULN_LLM",
 };
 // per-base マップ（`{WBTC: 値}` → `<prefix>_<SYM>[_<infix>]_<unit>`。unit は decimals 由来）。
 const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
   "funding.base": { prefix: "INITIAL" },
+  "funding.flowBase": { prefix: "FLOW_BASE" },
   "limits.agentBase": { prefix: "MAX_AGENT", infix: "IN" },
   "limits.lpBase": { prefix: "MAX_LP" },
   "limits.aaveSupplyBase": { prefix: "MAX_AAVE_SUPPLY" },
   "flow.baseMax": { prefix: "FLOW_MAX" },
 };
-const SECTIONS = ["run", "funding", "limits", "flow", "stress"];
+const SECTIONS = ["run", "funding", "limits", "flow", "stress", "vuln"];
 
 function baseEnvName(prefix: string, sym: string, infix?: string): string {
   const unit = unitSuffixFor(tokenInfo(sym).decimals);

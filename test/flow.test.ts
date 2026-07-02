@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Rng } from "../src/rng.js";
 import { buildFlowOrders, type FlowContextWire } from "../src/flow/logic.js";
 
-function ctx(round: number, spreadMaxWethWei = "0"): FlowContextWire {
+function ctx(round: number): FlowContextWire {
   return {
     round,
     fairPriceUsdcPerWeth: 2000,
@@ -18,9 +18,11 @@ function ctx(round: number, spreadMaxWethWei = "0"): FlowContextWire {
       balancerFlowMaxWethWei: "1000000000000000000",
       curveFlowMaxWethWei: "1000000000000000000",
       gmxFlowMaxSizeUsd: (20_000n * 10n ** 30n).toString(),
+      // 既存の構造アサーションを決定論に保つため毎ブロック発火（prob=1）。gate 自体は別テスト。
+      gmxFlowActivityProb: "1",
       aaveFlowMaxWethWei: "2000000000000000000",
       maxAaveBorrowUsdcUnits: "5000000000",
-      crossVenueSpreadFlowMaxWethWei: spreadMaxWethWei,
+      aaveFlowActivityProb: "1",
       defaultPriorityFeeWei: "100000000",
     },
   };
@@ -30,7 +32,7 @@ function usdcOnlyCtx(round: number): FlowContextWire {
   const base = ctx(round);
   const flowBalances: FlowContextWire["flowBalances"] = {};
   for (const protocol of base.protocols) {
-    for (const kind of ["informed", "uninformed", "spread"] as const) {
+    for (const kind of ["informed", "uninformed"] as const) {
       flowBalances[`${protocol}:${kind}`] = {
         wethWei: "0",
         usdcUnits: "25000000000",
@@ -106,10 +108,9 @@ test("USDC-only flow: WETH-in AMM flow は USDC-in に倒して残高不足 reve
   const orders = buildFlowOrders(new Rng(7), usdcOnlyCtx(1));
   for (const order of orders.filter(
     (o) =>
-      (o.protocol === "uniswap" ||
-        o.protocol === "balancer" ||
-        o.protocol === "curve") &&
-      o.kind !== "spread",
+      o.protocol === "uniswap" ||
+      o.protocol === "balancer" ||
+      o.protocol === "curve",
   )) {
     assert.equal((order.action as { tokenIn: string }).tokenIn, "USDC");
   }
@@ -124,55 +125,185 @@ test("異なる seed は異なる flow を生む", () => {
   );
 });
 
-test("cross-venue spread 注入は max=0(既定)で rng を消費せず既存 flow と byte 互換", () => {
-  // max=0 のとき spread builder は何も出さず rng も消費しない → spread leg を除いた
-  // 既存 flow（AMM/gmx/aave）は spread 有効時と同一でなければならない（後方互換）。
-  for (let round = 1; round <= 5; round++) {
-    const off = buildFlowOrders(new Rng(123), ctx(round, "0"));
+// gmx/aave の送信頻度を prob で上書きした ctx。
+function probCtx(round: number, gmxProb: string, aaveProb: string) {
+  const base = ctx(round);
+  return {
+    ...base,
+    limits: {
+      ...base.limits,
+      gmxFlowActivityProb: gmxProb,
+      aaveFlowActivityProb: aaveProb,
+    },
+  };
+}
+
+test("gmx/aave activity prob=0 は当該 flow を一切出さない", () => {
+  for (let round = 1; round <= 20; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 7),
+      probCtx(round, "0", "0"),
+    );
     assert.equal(
-      off.filter((o) => o.kind === "spread").length,
+      orders.filter((o) => o.protocol === "gmx").length,
       0,
-      "max=0 では spread leg は出ない",
+      "gmx prob=0 では gmx flow なし",
+    );
+    assert.equal(
+      orders.filter((o) => o.protocol === "aave").length,
+      0,
+      "aave prob=0 では aave flow なし",
     );
   }
 });
 
-test("cross-venue spread 注入: 2 venue を対称に押し開く delta-neutral な 2 leg", () => {
-  const max = 4_000_000_000_000_000_000n; // 4 WETH
-  const orders = buildFlowOrders(new Rng(5), ctx(1, max.toString()));
-  const spread = orders.filter((o) => o.kind === "spread");
-  assert.equal(spread.length, 2, "spread leg は 2 本");
-
-  // 2 leg は異なる venue（protocol）に出る。
-  assert.notEqual(spread[0].protocol, spread[1].protocol);
-
-  // up leg = USDC→WETH(買い・価格↑), down leg = WETH→USDC(売り・価格↓) が 1 本ずつ。
-  const up = spread.find(
-    (o) => (o.action as { tokenIn: string }).tokenIn === "USDC",
+test("gmx/aave activity prob はブロックごとにランダムに発火する（毎回ではない）", () => {
+  // prob=0.5 で多数ブロックを回すと、出るブロックと出ないブロックが混在する（規則的でない）。
+  let gmxBlocks = 0;
+  let aaveBlocks = 0;
+  const N = 200;
+  for (let round = 1; round <= N; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 31 + 5),
+      probCtx(round, "0.5", "0.5"),
+    );
+    if (orders.some((o) => o.protocol === "gmx")) gmxBlocks++;
+    if (orders.some((o) => o.protocol === "aave")) aaveBlocks++;
+  }
+  // 毎ブロックでも 0 でもなく、おおむね半分前後（規則的な毎ブロック churn ではない）。
+  assert.ok(gmxBlocks > 0 && gmxBlocks < N, `gmx は間欠的: ${gmxBlocks}/${N}`);
+  assert.ok(
+    aaveBlocks > 0 && aaveBlocks < N,
+    `aave は間欠的: ${aaveBlocks}/${N}`,
   );
-  const down = spread.find(
-    (o) => (o.action as { tokenIn: string }).tokenIn === "WETH",
-  );
-  assert.ok(up && down, "USDC-in と WETH-in が 1 本ずつ");
-
-  // delta-neutral: 両 leg は同じ WETH 相当（up の USDC 名目 ≈ down の WETH × fair）。
-  const wethWei = BigInt((down!.action as { amountIn: string }).amountIn);
-  const usdcUnits = BigInt((up!.action as { amountIn: string }).amountIn);
-  // wethToUsdcUnits(wethWei, 2000) = wethWei * 200000 / (100 * 1e12)
-  const expectedUsdc =
-    (wethWei * BigInt(Math.round(2000 * 100))) / (100n * 10n ** 12n);
-  assert.equal(
-    usdcUnits,
-    expectedUsdc,
-    "両 leg は同 WETH 相当 = delta-neutral",
-  );
-
-  // サイズは max/4..max の範囲。
-  assert.ok(wethWei >= max / 4n && wethWei <= max);
 });
 
-test("cross-venue spread 注入は固定 seed で再現する", () => {
-  const a = buildFlowOrders(new Rng(77), ctx(1, "4000000000000000000"));
-  const b = buildFlowOrders(new Rng(77), ctx(1, "4000000000000000000"));
-  assert.deepEqual(a, b);
+test("gmx/aave activity prob=1・maxBurst 既定(1) は毎ブロック 1 件", () => {
+  // probCtx は maxBurst を渡さない → decode 既定 1 → 状態機械は 1 ステップ＝1 件。
+  for (let round = 1; round <= 20; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 13),
+      probCtx(round, "1", "1"),
+    );
+    assert.equal(
+      orders.filter((o) => o.protocol === "aave").length,
+      1,
+      "aave prob=1・burst=1 では毎ブロック 1 件",
+    );
+  }
+});
+
+// gmx の maxBurst を上書きした ctx（prob=1 で必ず発火させてバーストを観測）。
+function gmxBurstCtx(round: number, gmxBurst: string) {
+  const base = ctx(round);
+  return {
+    ...base,
+    limits: {
+      ...base.limits,
+      gmxFlowActivityProb: "1",
+      gmxFlowMaxBurst: gmxBurst,
+    },
+  };
+}
+
+test("gmx maxBurst>1 は 1 ブロックに複数の建玉を出しうる（1〜N でばらつく）", () => {
+  let gmxMax = 0;
+  let gmxMultiBlocks = 0;
+  const N = 200;
+  for (let round = 1; round <= N; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 17 + 3),
+      gmxBurstCtx(round, "4"),
+    );
+    const g = orders.filter((o) => o.protocol === "gmx").length;
+    gmxMax = Math.max(gmxMax, g);
+    if (g > 1) gmxMultiBlocks++;
+  }
+  assert.ok(gmxMultiBlocks > 0, "gmx は複数件のブロックが存在する");
+  assert.ok(gmxMax > 1 && gmxMax <= 4, `gmx burst は 1〜4: max=${gmxMax}`);
+});
+
+// aave 借り手プール: N アクターを与えた ctx。各アクターは別アドレス・持続ポジション。
+function aaveActorsCtx(
+  round: number,
+  actors: Array<{
+    key: string;
+    wethSupplied: string;
+    usdcBorrowed: string;
+    wethWei: string;
+    usdcUnits: string;
+  }>,
+) {
+  const base = ctx(round);
+  return {
+    ...base,
+    aaveActors: actors,
+    limits: { ...base.limits, aaveFlowActivityProb: "1" },
+  };
+}
+
+test("aave 借り手プール: 担保済みアクターが複数いると 1 ブロックに複数 borrow が出る", () => {
+  // 4 アクター全員 担保あり・無借金。HF 余力ありなので borrow を選びうる。
+  const actors = [0, 1, 2, 3].map((i) => ({
+    key: `aave:actor${i}`,
+    wethSupplied: "2000000000000000000", // 2 WETH 担保 → 借入余力あり
+    usdcBorrowed: "0",
+    wethWei: "5000000000000000000",
+    usdcUnits: "25000000000",
+  }));
+  let maxBorrowsInBlock = 0;
+  let multiBorrowBlocks = 0;
+  const N = 200;
+  for (let round = 1; round <= N; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 29 + 7),
+      aaveActorsCtx(round, actors),
+    );
+    const borrows = orders.filter(
+      (o) => (o.action as { type?: string }).type === "aaveBorrow",
+    );
+    // borrow は別アクター（別ウォレット鍵）から出る。
+    const keys = new Set(borrows.map((o) => o.walletKey));
+    maxBorrowsInBlock = Math.max(maxBorrowsInBlock, borrows.length);
+    if (borrows.length > 1) {
+      multiBorrowBlocks++;
+      assert.equal(
+        keys.size,
+        borrows.length,
+        "各 borrow は別アクター（別アドレス）から",
+      );
+    }
+  }
+  assert.ok(multiBorrowBlocks > 0, "1 ブロックに複数 borrow が実在する");
+  assert.ok(
+    maxBorrowsInBlock >= 3,
+    `3 件以上同時 borrow が起きる: max=${maxBorrowsInBlock}`,
+  );
+});
+
+test("aave 借り手プール: borrow 後に強制 repay されず債務は持続する（actor 状態を引き継ぐ）", () => {
+  // 借金ありアクターを 1 体与え、多ブロック回しても全ブロックが repay にはならない
+  // （borrow/supply など債務を残す行動も選ばれる）＝強制 repay 往復ではない。
+  // 担保確立済・少額債務（目標 30% LTV=1200 USDC を十分下回る）→ borrow が選ばれうる状態。
+  const actor = {
+    key: "aave:actor0",
+    wethSupplied: "2000000000000000000", // 2 WETH 担保（目標到達済→ supply しない）
+    usdcBorrowed: "200000000", // 200 USDC の既存債務（目標まで余裕＝借り増し可）
+    wethWei: "5000000000000000000",
+    usdcUnits: "25000000000",
+  };
+  const actionTypes = new Set<string>();
+  for (let round = 1; round <= 100; round++) {
+    const orders = buildFlowOrders(
+      new Rng(round * 41 + 11),
+      aaveActorsCtx(round, [actor]),
+    );
+    for (const o of orders.filter((x) => x.protocol === "aave"))
+      actionTypes.add((o.action as { type: string }).type);
+  }
+  // borrow が観測される（債務を積み増す＝「borrow→強制 repay」往復ではない）。
+  assert.ok(
+    actionTypes.has("aaveBorrow"),
+    `借り増しが起きる: ${[...actionTypes].join(",")}`,
+  );
 });

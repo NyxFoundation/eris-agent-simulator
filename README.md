@@ -83,6 +83,8 @@ npm run sim:realtime -- --local-deploy --agents agents.local.json \
   --seed 1 --blocks 24 --seconds 70 --protocols uniswap,balancer,curve
 ```
 
+> `--local-deploy` フラグ（または config の `run.localDeploy: true`）でローカルデプロイモードになる。CLI エントリが起動時にこれを検出して内部で `ERIS_LOCAL_DEPLOY=1` を立て、`src/constants.ts` がローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay する（env を手で渡す必要はない）。
+
 出力は `runs/<run_id>/` 下に書かれる（`summary.json` / `events.jsonl` / `blocks.csv` / `agents/<id>.jsonl`）。確認できること:
 
 - 全 agent と flow ウォレットのセットアップが完了する。

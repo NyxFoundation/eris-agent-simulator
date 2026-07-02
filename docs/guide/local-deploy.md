@@ -57,6 +57,8 @@ cd ..
    # USDC-only 配布（funding.wethWei: "0"）やマルチアセット（flow.baseMax）等は config/local.yaml で
    ```
 
+   > **`--local-deploy` フラグ（または config の `run.localDeploy: true`）だけで効く**。`src/constants.ts` は import 時に `process.env.ERIS_LOCAL_DEPLOY` を読んでローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay するが、CLI エントリ（`src/cli/sim-realtime.ts`）が coordinator を読み込む前にフラグ/config を覗いて `ERIS_LOCAL_DEPLOY=1` を内部で立てるため、env を手で渡す必要はない（子の agent / flow プロセスも `process.env` を継承する）。
+
 ## 主要な設定（CLI フラグ / config/local.yaml のキー）
 
 | CLI フラグ | config キー | 説明 |
