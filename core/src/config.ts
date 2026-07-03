@@ -124,6 +124,12 @@ export function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
     if (seenIds.has(agent.id))
       throw new Error(`${path} contains duplicate agent id: ${agent.id}`);
     seenIds.add(agent.id);
+    // ADR 0015 §6: dir は実体ディレクトリ名の override（同一戦略の複数体運用）。省略時は id。
+    if (
+      agent.dir !== undefined &&
+      (typeof agent.dir !== "string" || agent.dir.trim() === "")
+    )
+      throw new Error(`${label}.dir must be a non-empty string when present`);
     // ADR 0015 §6: command/args は省略可（規約解決 = <agentsDir>/<id>/ を runtime/bot.ts が駆動）。
     // 明示 command は完全自前 agent（他言語等）の override として残す。
     if (
@@ -183,6 +189,7 @@ export function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
     }
     return {
       id: agent.id,
+      dir: agent.dir,
       command: agent.command,
       args: agent.args,
       wallet: agent.wallet,

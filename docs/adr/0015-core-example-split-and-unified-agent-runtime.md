@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted（2026-07-03 実装。feat/adr-0015-core-example-split）
 
 ## Context
 

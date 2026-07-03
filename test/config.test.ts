@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadAgents, loadConfig, privateKeyForWalletName } from "../core/src/config.js";
+import {
+  loadAgents,
+  loadConfig,
+  privateKeyForWalletName,
+} from "../core/src/config.js";
 
 test("loadConfig falls back to valid Anvil private keys for empty env values", () => {
   const config = loadConfig({
@@ -12,7 +16,7 @@ test("loadConfig falls back to valid Anvil private keys for empty env values", (
     AGENT2_PRIVATE_KEY: "",
     FLOW_UNINFORMED_PRIVATE_KEY: "",
     FLOW_INFORMED_PRIVATE_KEY: "",
-    SETUP_PRIVATE_KEY: ""
+    SETUP_PRIVATE_KEY: "",
   });
   assert.match(config.privateKeys.agent0, /^0x[0-9a-f]{64}$/i);
   assert.match(config.privateKeys.agent1, /^0x[0-9a-f]{64}$/i);
@@ -23,15 +27,17 @@ test("loadAgents rejects duplicate ids", () => {
   const path = writeAgentsFile({
     agents: [
       { id: "same", command: "node", wallet: "AGENT0_PRIVATE_KEY" },
-      { id: "same", command: "node", wallet: "AGENT1_PRIVATE_KEY" }
-    ]
+      { id: "same", command: "node", wallet: "AGENT1_PRIVATE_KEY" },
+    ],
   });
   assert.throws(() => loadAgents(path), /duplicate agent id/);
 });
 
 test("loadAgents rejects unsupported wallet bindings", () => {
   const path = writeAgentsFile({
-    agents: [{ id: "bad", command: "node", wallet: "FLOW_INFORMED_PRIVATE_KEY" }]
+    agents: [
+      { id: "bad", command: "node", wallet: "FLOW_INFORMED_PRIVATE_KEY" },
+    ],
   });
   assert.throws(() => loadAgents(path), /wallet must be one of/);
 });
@@ -42,8 +48,8 @@ test("loadAgents accepts AGENT3..AGENT6 named wallets", () => {
       { id: "a3", command: "node", wallet: "AGENT3_PRIVATE_KEY" },
       { id: "a4", command: "node", wallet: "AGENT4_PRIVATE_KEY" },
       { id: "a5", command: "node", wallet: "AGENT5_PRIVATE_KEY" },
-      { id: "a6", command: "node", wallet: "AGENT6_PRIVATE_KEY" }
-    ]
+      { id: "a6", command: "node", wallet: "AGENT6_PRIVATE_KEY" },
+    ],
   });
   const agents = loadAgents(path);
   assert.equal(agents.length, 4);
@@ -58,8 +64,8 @@ test("loadAgents rejects reused named wallets", () => {
   const path = writeAgentsFile({
     agents: [
       { id: "first", command: "node", wallet: "AGENT0_PRIVATE_KEY" },
-      { id: "second", command: "node", wallet: "AGENT0_PRIVATE_KEY" }
-    ]
+      { id: "second", command: "node", wallet: "AGENT0_PRIVATE_KEY" },
+    ],
   });
   assert.throws(() => loadAgents(path), /reuses named wallet/);
 });
@@ -82,8 +88,8 @@ test("loadAgents allows multiple AUTO agents with distinct ids", () => {
     agents: [
       { id: "auto-1", command: "node", wallet: "AUTO" },
       { id: "auto-2", command: "node", wallet: "AUTO" },
-      { id: "auto-3", command: "node", wallet: "AUTO" }
-    ]
+      { id: "auto-3", command: "node", wallet: "AUTO" },
+    ],
   });
   const agents = loadAgents(path);
   assert.equal(agents.length, 3);
@@ -96,9 +102,9 @@ test("loadAgents validates and forwards env field", () => {
         id: "with-env",
         command: "node",
         wallet: "AGENT0_PRIVATE_KEY",
-        env: { BID_PROFIT_FRACTION: "0.5", FOO: "bar" }
-      }
-    ]
+        env: { BID_PROFIT_FRACTION: "0.5", FOO: "bar" },
+      },
+    ],
   });
   const agents = loadAgents(path);
   assert.deepEqual(agents[0].env, { BID_PROFIT_FRACTION: "0.5", FOO: "bar" });
@@ -111,11 +117,31 @@ test("loadAgents rejects non-string env values", () => {
         id: "bad-env",
         command: "node",
         wallet: "AGENT0_PRIVATE_KEY",
-        env: { COUNT: 3 }
-      }
-    ]
+        env: { COUNT: 3 },
+      },
+    ],
   });
   assert.throws(() => loadAgents(path), /env must contain only string/);
+});
+
+test("ADR 0015 §6: command 省略のロスターは規約解決前提でそのまま通る", () => {
+  const path = writeAgentsFile({
+    agents: [
+      { id: "arb-bot", wallet: "AGENT1_PRIVATE_KEY" },
+      { id: "my-arb", wallet: "AUTO", description: "prompt agent" },
+    ],
+  });
+  const agents = loadAgents(path);
+  assert.equal(agents.length, 2);
+  assert.equal(agents[0].command, undefined);
+  assert.equal(agents[0].args, undefined);
+});
+
+test("ADR 0015 §6: args だけの指定（command 無し）は拒否する", () => {
+  const path = writeAgentsFile({
+    agents: [{ id: "bad", args: ["x.ts"], wallet: "AGENT1_PRIVATE_KEY" }],
+  });
+  assert.throws(() => loadAgents(path), /args requires an explicit command/);
 });
 
 function writeAgentsFile(value: unknown): string {

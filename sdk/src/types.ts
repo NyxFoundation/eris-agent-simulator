@@ -359,8 +359,11 @@ export type AgentObservation = {
 
 export type AgentSpec = {
   id: string;
-  // ADR 0015 §6: 省略時はディレクトリ規約で解決される（<agentsDir>/<id>/ を runtime/bot.ts が駆動）。
-  // 明示 command/args は完全自前 agent（他言語等）の override。
+  // ADR 0015 §6: 実体ディレクトリ名（省略時は id）。同じ戦略を別 id + 別 env で複数体
+  // 走らせるとき（例 clean-arb-wide → dir: clean-arb）に使う。
+  dir?: string;
+  // ADR 0015 §6: 省略時はディレクトリ規約で解決される（<agentsDir>/<dir ?? id>/ を
+  // runtime/bot.ts が駆動）。明示 command/args は完全自前 agent（他言語等）の override。
   command?: string;
   args?: string[];
   wallet: string;

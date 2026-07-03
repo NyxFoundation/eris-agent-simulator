@@ -63,13 +63,13 @@ export class RealtimeAgentProcess {
       command = spec.command;
       args = spec.args ?? [];
     } else {
-      // 規約解決（ADR 0015 §6）: id が <agentsDir>/<id>/ を指し、bot.ts がその中身
-      // （agent.ts の decide/run、または prompt.md）を駆動する。
-      const agentDir = resolve(agentsDir, spec.id);
+      // 規約解決（ADR 0015 §6）: id（または dir override）が <agentsDir>/<dir>/ を指し、
+      // bot.ts がその中身（agent.ts の decide/run、または prompt.md）を駆動する。
+      const agentDir = resolve(agentsDir, spec.dir ?? spec.id);
       if (!existsSync(agentDir)) {
         throw new Error(
           `agent directory not found for id "${spec.id}": ${agentDir} ` +
-            `(ロスターの id は ${agentsDir}/ 直下のディレクトリ名。別実装は command/args で明示する)`,
+            `(ロスターの id は ${agentsDir}/ 直下のディレクトリ名。別名は dir、別実装は command/args で明示する)`,
         );
       }
       childEnv.ERIS_AGENT_DIR = agentDir;

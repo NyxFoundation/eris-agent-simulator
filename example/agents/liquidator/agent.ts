@@ -1,0 +1,104 @@
+// liquidator (GitHub #1): Aave V3 の liquidationCall で清算する bot。
+// 観測には victim は含まれない原則なので、env(ERIS_LIQUIDATION_VICTIMS, カンマ区切り)で
+// 監視対象アドレスを受け取り、RPC で getUserAccountData を直読みする。HF<1 の victim を見つけたら
+// liquidationCall を rawTx で送る(USDC で債務を返済し WETH 担保+ボーナスを受領)。
+// 受領した WETH は次の観測で semantic swap により USDC へ戻して PnL を確定する。
+//
+// RPC を observation の外で直接叩き自分のタイミングで動くため run(ctx) 契約（ADR 0015 §3）。
+// 署名・送信・nonce・ログは runtime のもの（ctx.submit / ctx.log）を使う。
+import { maxUint256, parseAbi } from "viem";
+import type { AgentContext } from "@eris/sdk";
+import { AAVE, TOKENS } from "@eris/sdk/constants.js";
+import { VICTIM_ADDRESS } from "@eris/sdk/wellKnown.js";
+import { buildLiquidationCall } from "../lib/aave-liquidation.js";
+
+const poolAbi = parseAbi([
+  "function getUserAccountData(address) view returns (uint256,uint256,uint256,uint256,uint256,uint256)",
+]);
+
+const HF_ONE = 10n ** 18n;
+// 清算で受領した WETH を判別するための下限(初期残高に紛れない程度)。初期 10 WETH より十分大きく
+// した上で「増えた分」を売るのは難しいため、ここでは閾値超の WETH を一定サイズで USDC 化する。
+const WETH_REALIZE_THRESHOLD_WEI = 10_500_000_000_000_000_000n; // 10.5 WETH
+
+export async function run(ctx: AgentContext): Promise<void> {
+  const victims = (process.env.ERIS_LIQUIDATION_VICTIMS ?? VICTIM_ADDRESS)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  let busy = false;
+  ctx.onObservation((obs) => {
+    if (busy) return;
+    busy = true;
+    void (async () => {
+      try {
+        const fee = obs.limits.defaultPriorityFeePerGasWei;
+
+        // 1) HF<1 の victim があれば清算(USDC で返済 → WETH 担保受領)
+        for (const victim of victims) {
+          const acc = (await ctx.publicClient.readContract({
+            address: AAVE.Pool,
+            abi: poolAbi,
+            functionName: "getUserAccountData",
+            args: [victim as `0x${string}`],
+          })) as readonly bigint[];
+          const totalDebt = acc[1];
+          const hf = acc[5];
+          if (totalDebt > 0n && hf < HF_ONE) {
+            const tx = buildLiquidationCall(
+              TOKENS.WETH.address,
+              TOKENS.USDC.address,
+              victim,
+              maxUint256, // close factor で上限クランプ
+              false,
+            );
+            const action = {
+              type: "rawTx",
+              tx,
+              maxPriorityFeePerGasWei: fee,
+            };
+            ctx.log({
+              round: obs.round,
+              action,
+              reason: `liquidate ${victim} (hf<1)`,
+            });
+            ctx.submit(action);
+            return;
+          }
+        }
+
+        // 2) 清算で増えた WETH を USDC に戻して確定(初期 WETH を超えた分の目安で売る)
+        const wethWei = BigInt(obs.balances.wethWei);
+        if (wethWei > WETH_REALIZE_THRESHOLD_WEI) {
+          const maxIn = BigInt(obs.limits.maxWethInWei);
+          const excess = wethWei - 10_000_000_000_000_000_000n; // 初期 10 WETH 超過分
+          const amountIn = excess < maxIn ? excess : maxIn;
+          if (amountIn > 0n) {
+            const action = {
+              type: "swap",
+              tokenIn: "WETH",
+              amountIn: amountIn.toString(),
+              slippageBps: 100,
+              maxPriorityFeePerGasWei: fee,
+            };
+            ctx.log({
+              round: obs.round,
+              action,
+              reason: "realize seized WETH",
+            });
+            ctx.submit(action);
+            return;
+          }
+        }
+      } catch (error) {
+        ctx.log({
+          round: obs.round,
+          reason: `liquidator error: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      } finally {
+        busy = false;
+      }
+    })();
+  });
+}

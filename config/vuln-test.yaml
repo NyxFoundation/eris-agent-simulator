@@ -41,18 +41,12 @@ vuln:
 
 agents:
   - id: noop
-    command: node
-    args: [--import, tsx, examples/agents/noop.ts]
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
     description: 何もしない (基準ライン)
   - id: discovery-arb
-    command: node
-    args: [--import, tsx, examples/agents/discovery-arb.ts]
     wallet: AGENT2_PRIVATE_KEY
     description: 発見 + 即実行（naive。検証せず rigged で被弾する対照）
   - id: discovery-arb-verify
-    command: node
-    args: [--import, tsx, examples/agents/discovery-arb-verify.ts]
     wallet: AGENT3_PRIVATE_KEY
     description: 発見 + 取引前検証（careful。rigged を弾き安全な新規プールで利益化）
