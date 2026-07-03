@@ -4,6 +4,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  buildRevisionSystem,
+  buildRevisionUser,
   buildSystemPrompt,
   buildUserMessage,
   loadPromptAgent,
@@ -84,4 +86,45 @@ test("buildUserMessage: observation と直近の行動を埋める", () => {
   assert.match(msg, /"fairPriceUsdcPerWeth":3000/);
   assert.match(msg, /round=11/);
   assert.match(msg, /skipped/);
+});
+
+test("buildRevisionSystem/User: 自己改善プロンプトが規律・証拠・現行本文を含む", () => {
+  const dir = writePrompt(
+    ["---", "name: rev-t", "description: d", "---", "OLD_BODY_MARKER", ""].join(
+      "\n",
+    ),
+  );
+  const agent = loadPromptAgent(dir);
+  const system = buildRevisionSystem(agent);
+  assert.match(system, /rev-t/);
+  assert.match(system, /Revision discipline/);
+  assert.match(system, /Output ONLY the new prompt body/);
+
+  const user = buildRevisionUser(
+    agent.body,
+    [{ round: 5, action: { type: "noop" }, note: "skipped" }],
+    {
+      cycles: 12,
+      initialValueUsdc: 1000,
+      currentValueUsdc: 990.5,
+      recentRevertRate: 0.25,
+      recentSampleSize: 8,
+    },
+  );
+  assert.match(user, /OLD_BODY_MARKER/);
+  assert.match(user, /12 decision cycles/);
+  assert.match(user, /1000\.00 -> 990\.50 USDC/);
+  assert.match(user, /25% over last 8 txs/);
+  assert.match(user, /round=5/);
+});
+
+test("buildRevisionUser: 観測前・約定前は placeholder を出す", () => {
+  const user = buildRevisionUser("BODY", [], {
+    cycles: 0,
+    initialValueUsdc: null,
+    currentValueUsdc: null,
+  });
+  assert.match(user, /\(not yet observed\)/);
+  assert.match(user, /\(no included txs yet\)/);
+  assert.match(user, /\(none\)/);
 });

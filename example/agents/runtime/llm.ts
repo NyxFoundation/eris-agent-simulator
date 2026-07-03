@@ -19,6 +19,8 @@ export type LlmRequest = {
   messages: LlmMessage[];
   // claude 系 tool use に渡す action の JSON Schema（ollama 系では未使用 = <schema> が担う）。
   jsonSchema?: Record<string, unknown>;
+  // false で自由テキスト応答（prompt 改訂など）。既定 true = JSON mode。
+  json?: boolean;
 };
 
 const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/api";
@@ -47,7 +49,7 @@ async function callOllama(req: LlmRequest): Promise<string> {
     body: JSON.stringify({
       model: req.model,
       stream: false,
-      format: "json",
+      ...(req.json === false ? {} : { format: "json" }),
       messages: [{ role: "system", content: req.system }, ...req.messages],
     }),
   });

@@ -7,11 +7,19 @@
  *   - agent.ts が decide() を export     → ルール戦略: read→decide→send のループで駆動
  *   - prompt.md のみ                     → プロンプト型: 毎判断 LLM に action を出させる
  *
+ * agent.ts と prompt.md が併置された agent は両方の動かし方を提供する（ADR 0015 §2 の
+ * 「両方置かれた場合は agent.ts 優先」が既定）。ロスターの env で切り替える:
+ *   ERIS_AGENT_MODE=prompt          agent.ts があっても prompt.md（LLM 駆動）で動かす
+ *   ERIS_PROMPT_REVISE_EVERY=<N>    prompt モードで N 判断サイクルごとに LLM が prompt 本文を
+ *                                   自己改訂する（既定 0 = off。改訂版は runs/<id>/agents/
+ *                                   <agentId>.prompt.v<K>.md に保存し、以後のサイクルで使用）
+ *   ERIS_PROMPT_REVISE_PERSIST=1    改訂を agent ディレクトリの prompt.md にも書き戻す
+ *
  * 環境変数（環境が渡す。ADR 0006 の契約は不変）:
  *   ERIS_AGENT_ID / ERIS_AGENT_DIR / ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL /
  *   ERIS_PRICE_FEED_ADDRESS / ERIS_RUN_ID / ERIS_RUN_DIR / ERIS_CONFIG
  */
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Address, Hex } from "viem";
@@ -36,10 +44,13 @@ import type {
 import { createAgentLog } from "./agentLog.js";
 import { callLlm, type LlmMessage } from "./llm.js";
 import {
+  buildRevisionSystem,
+  buildRevisionUser,
   buildSystemPrompt,
   buildUserMessage,
   DEFAULT_PROMPT_INTERVAL_MS,
   DEFAULT_PROMPT_MODEL,
+  DEFAULT_PROMPT_REVISE_EVERY,
   loadPromptAgent,
   type RecentAction,
 } from "./prompt.js";
@@ -116,11 +127,27 @@ async function main(): Promise<void> {
     extraBaseSymbols,
   });
 
-  // ---- agent モジュールの解決（1 agent = 1 ディレクトリ。agent.ts 優先、無ければ prompt.md）----
+  // ---- agent モジュールの解決（1 agent = 1 ディレクトリ）----
+  // 既定は agent.ts 優先（ADR 0015 §2）。併置 agent は ERIS_AGENT_MODE=prompt で
+  // LLM 駆動（prompt.md）に切り替えられる（両方の動かし方を常に提供する）。
   const agentTsPath = join(agentDir, "agent.ts");
+  const hasAgentTs = existsSync(agentTsPath);
+  const hasPrompt = existsSync(join(agentDir, "prompt.md"));
+  const forcedMode = process.env.ERIS_AGENT_MODE;
+  if (
+    forcedMode !== undefined &&
+    forcedMode !== "agent" &&
+    forcedMode !== "prompt"
+  ) {
+    process.stderr.write(
+      `[bot] ERIS_AGENT_MODE は "agent" か "prompt"（指定値: ${forcedMode}）\n`,
+    );
+    process.exit(1);
+    return;
+  }
   let mode: "run" | "decide" | "prompt";
   let agentModule: AgentModule | null = null;
-  if (existsSync(agentTsPath)) {
+  if (forcedMode === "prompt" ? false : hasAgentTs) {
     agentModule = (await import(
       pathToFileURL(agentTsPath).href
     )) as AgentModule;
@@ -133,11 +160,20 @@ async function main(): Promise<void> {
       process.exit(1);
       return;
     }
-  } else if (existsSync(join(agentDir, "prompt.md"))) {
+  } else if (hasPrompt) {
     mode = "prompt";
   } else {
     process.stderr.write(
-      `[bot] ${agentDir} に agent.ts も prompt.md もありません（ADR 0015 §2）\n`,
+      forcedMode === "prompt"
+        ? `[bot] ERIS_AGENT_MODE=prompt ですが ${agentDir} に prompt.md がありません\n`
+        : `[bot] ${agentDir} に agent.ts も prompt.md もありません（ADR 0015 §2）\n`,
+    );
+    process.exit(1);
+    return;
+  }
+  if (forcedMode === "agent" && !hasAgentTs) {
+    process.stderr.write(
+      `[bot] ERIS_AGENT_MODE=agent ですが ${agentDir} に agent.ts がありません\n`,
     );
     process.exit(1);
     return;
@@ -264,32 +300,109 @@ async function main(): Promise<void> {
   }
 
   // ---- プロンプト型: 毎判断 LLM（Hermes JSON mode + validate 再試行。ADR 0015 §4）----
+  // ERIS_PROMPT_REVISE_EVERY > 0 なら N 判断サイクルごとに prompt 本文を LLM が自己改訂する
+  // （自己改善。改訂版は runs/<id>/agents/<agentId>.prompt.v<K>.md に保存し以後のサイクルで使用。
+  //  ERIS_PROMPT_REVISE_PERSIST=1 で agent ディレクトリの prompt.md にも書き戻す）。
   async function runPromptLoop(): Promise<void> {
     const promptAgent = loadPromptAgent(agentDir);
     const model =
       promptAgent.model ?? process.env.ERIS_LLM_MODEL ?? DEFAULT_PROMPT_MODEL;
     const schema = agentActionSchemaFor(config.enabledProtocols);
     const jsonSchema = actionJsonSchema(config.enabledProtocols);
-    const system = buildSystemPrompt(
-      promptAgent,
-      config.enabledProtocols,
-      jsonSchema,
+    let body = promptAgent.body;
+    const rebuildSystem = (): string =>
+      buildSystemPrompt(
+        { ...promptAgent, body },
+        config.enabledProtocols,
+        jsonSchema,
+      );
+    let system = rebuildSystem();
+    const reviseEveryRaw = Number(
+      process.env.ERIS_PROMPT_REVISE_EVERY ?? DEFAULT_PROMPT_REVISE_EVERY,
     );
+    const reviseEvery =
+      Number.isFinite(reviseEveryRaw) && reviseEveryRaw > 0
+        ? Math.floor(reviseEveryRaw)
+        : 0;
+    const revisePersist = process.env.ERIS_PROMPT_REVISE_PERSIST === "1";
     const recent: RecentAction[] = [];
     const interval = promptAgent.intervalMs ?? DEFAULT_PROMPT_INTERVAL_MS;
     let cycling = false;
     let lastDecidedRound = -1;
+    let decidedCycles = 0;
+    let revision = 0;
+    let initialValueUsdc: number | null = null;
+
+    // prompt 改訂（自己改善）。判断サイクルと同じ cycling ロック内で走らせ、判断と競合させない。
+    const revisePrompt = async (obs: AgentObservation): Promise<void> => {
+      try {
+        const text = await callLlm({
+          model,
+          system: buildRevisionSystem(promptAgent),
+          messages: [
+            {
+              role: "user",
+              content: buildRevisionUser(body, recent.slice(-16), {
+                cycles: decidedCycles,
+                initialValueUsdc,
+                currentValueUsdc: obs.inventory.valueUsdc,
+                recentRevertRate: obs.competition?.recentRevertRate,
+                recentSampleSize: obs.competition?.recentSampleSize,
+              }),
+            },
+          ],
+          json: false, // 改訂は自由テキスト（markdown 本文）
+        });
+        const next = stripFences(text).trim();
+        // 壊れた改訂（空・極端な長さ）は捨てて現行 prompt を維持する（fail-closed）。
+        if (next.length < 40 || next.length > 20_000)
+          throw new Error(`revised body rejected (length=${next.length})`);
+        revision++;
+        body = next;
+        system = rebuildSystem();
+        agentLog({
+          round: obs.round,
+          reason: `prompt revised v${revision}`,
+          state: {
+            kind: "prompt_revision",
+            revision,
+            cycles: decidedCycles,
+            valueUsdc: obs.inventory.valueUsdc,
+          },
+        });
+        // 改訂履歴を run ディレクトリに版付きで残す（run 後の診断・比較の一次情報）。
+        if (runDir) {
+          const dir = join(runDir, "agents");
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, `${agentId}.prompt.v${revision}.md`), body);
+        }
+        // 任意: agent ディレクトリの prompt.md に書き戻す（frontmatter は元のまま維持）。
+        if (revisePersist) {
+          const path = join(agentDir, "prompt.md");
+          const raw = readFileSync(path, "utf8");
+          const m = raw.match(/^(---\n[\s\S]*?\n---\n)/);
+          if (m) writeFileSync(path, `${m[1]}${body}\n`);
+        }
+      } catch (error) {
+        agentLog({
+          round: obs.round,
+          reason: `prompt revision failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    };
 
     const cycle = async (): Promise<void> => {
       const obs = latestObservation;
       if (cycling || !obs || obs.round === lastDecidedRound) return;
       cycling = true;
       lastDecidedRound = obs.round;
+      initialValueUsdc ??= obs.inventory.valueUsdc;
       try {
         const messages: LlmMessage[] = [
           { role: "user", content: buildUserMessage(obs, recent.slice(-8)) },
         ];
         let lastError = "";
+        let decided = false;
         for (let attempt = 1; attempt <= LLM_MAX_ATTEMPTS; attempt++) {
           let text: string;
           try {
@@ -328,20 +441,27 @@ async function main(): Promise<void> {
           recent.push({ round: obs.round, action });
           if (recent.length > 16) recent.shift();
           ctx.submit(action);
-          return;
+          decided = true;
+          break;
         }
-        // fail-closed: 上限超過はこのサイクルを見送り（noop）として記録。不正 action はチェーンに出ない。
-        agentLog({
-          round: obs.round,
-          action: { type: "noop" },
-          reason: `llm cycle skipped: ${lastError}`,
-        });
-        recent.push({
-          round: obs.round,
-          action: { type: "noop" },
-          note: `skipped (${lastError.slice(0, 120)})`,
-        });
-        if (recent.length > 16) recent.shift();
+        if (!decided) {
+          // fail-closed: 上限超過はこのサイクルを見送り（noop）として記録。不正 action はチェーンに出ない。
+          agentLog({
+            round: obs.round,
+            action: { type: "noop" },
+            reason: `llm cycle skipped: ${lastError}`,
+          });
+          recent.push({
+            round: obs.round,
+            action: { type: "noop" },
+            note: `skipped (${lastError.slice(0, 120)})`,
+          });
+          if (recent.length > 16) recent.shift();
+        }
+        // ---- 自己改善: N 判断サイクルごとに prompt 本文を改訂する（同一ロック内 = 判断と直列）----
+        decidedCycles++;
+        if (reviseEvery > 0 && decidedCycles % reviseEvery === 0)
+          await revisePrompt(obs);
       } finally {
         cycling = false;
       }

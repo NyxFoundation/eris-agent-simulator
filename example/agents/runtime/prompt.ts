@@ -29,6 +29,8 @@ export type PromptAgent = {
 
 export const DEFAULT_PROMPT_INTERVAL_MS = 5000;
 export const DEFAULT_PROMPT_MODEL = "gpt-oss:120b";
+// 自己改善（prompt 改訂）の既定 = off。ロスターの env ERIS_PROMPT_REVISE_EVERY（判断サイクル数）で有効化。
+export const DEFAULT_PROMPT_REVISE_EVERY = 0;
 
 // prompt.md を読み frontmatter を検証する。name/description は必須（ロスター表示・ログヘッダ）。
 export function loadPromptAgent(agentDir: string): PromptAgent {
@@ -127,6 +129,73 @@ export type RecentAction = {
   action?: unknown;
   note?: string;
 };
+
+// ---------------------------------------------------------------------------
+// 自己改善（prompt 改訂）: N 判断サイクルごとに、直近の行動・結果を添えて LLM に
+// prompt 本文そのものを書き直させる（改善対象 = プロンプト。ADR 0015 の提出単位と一致）。
+// 改訂の規律は旧自己改善機構（_archive/llm/prompts.ts）の教訓を凝縮したもの。
+// ---------------------------------------------------------------------------
+
+export type RevisionStats = {
+  cycles: number;
+  initialValueUsdc: number | null;
+  currentValueUsdc: number | null;
+  recentRevertRate?: number;
+  recentSampleSize?: number;
+};
+
+// 改訂用 system prompt。出力は「新しい prompt 本文の markdown だけ」（frontmatter/fence 不要）。
+export function buildRevisionSystem(agent: PromptAgent): string {
+  return `You are improving the strategy prompt of the trading agent "${agent.name}" (${agent.description}).
+You will receive the current strategy prompt body and the agent's recent decisions and results.
+Rewrite the strategy prompt body to make the agent measurably better.
+
+Revision discipline:
+- Preserve the strategy class and proven profitable behavior; improve the measured weakness.
+- Ground every change in the evidence given (recent actions, skips, reverts, value trajectory).
+  Never invent a bug or an opportunity the data does not show.
+- Reverts, fees and churn are direct costs. If results show over-trading, prefer higher
+  thresholds / cooldowns over more aggression.
+- Keep the prompt concrete: numeric thresholds, sizing rules, bidding rules, explicit noop rules.
+- Total value moves are dominated by price drift (beta); judge changes by trade edge, not equity.
+
+Output ONLY the new prompt body as plain markdown. No frontmatter, no code fences, no commentary.`;
+}
+
+// 改訂用 user message（現行本文 + 直近の行動と結果 + 価値推移）。
+export function buildRevisionUser(
+  body: string,
+  recent: RecentAction[],
+  stats: RevisionStats,
+): string {
+  const recentText =
+    recent.length === 0
+      ? "(none)"
+      : recent
+          .map(
+            (r) =>
+              `- round=${r.round ?? "?"} action=${safeStringify(r.action ?? null)}${r.note ? ` note=${r.note}` : ""}`,
+          )
+          .join("\n");
+  const value =
+    stats.initialValueUsdc !== null && stats.currentValueUsdc !== null
+      ? `${stats.initialValueUsdc.toFixed(2)} -> ${stats.currentValueUsdc.toFixed(2)} USDC (includes price drift beta you do NOT control)`
+      : "(not yet observed)";
+  const revert =
+    stats.recentSampleSize !== undefined && stats.recentSampleSize > 0
+      ? `${((stats.recentRevertRate ?? 0) * 100).toFixed(0)}% over last ${stats.recentSampleSize} txs`
+      : "(no included txs yet)";
+  return `## Current strategy prompt body
+${body}
+
+## Evidence (${stats.cycles} decision cycles so far)
+- Portfolio value: ${value}
+- Recent revert rate: ${revert}
+- Recent decisions (most recent last):
+${recentText}
+
+Rewrite the strategy prompt body now. Output only the new body.`;
+}
 
 // user message: 最新 observation + 直近の自分の行動と結果。
 export function buildUserMessage(
