@@ -26,16 +26,17 @@ export type { AgentLogEntry };
 
 export type AgentLog = (entry: AgentLogEntry) => void;
 
-export function createAgentLog(): AgentLog {
-  const runDir = process.env.ERIS_RUN_DIR;
-  const agentId = process.env.ERIS_AGENT_ID ?? "unknown";
+// runs/<runDir>/agents/<agentId>.jsonl への低レベル追記。
+// 行動ログ（createAgentLog）と mempool 自己申告（send.ts）が同じファイルに書くための共用実装。
+export function createJsonlAppender(
+  runDir: string | undefined,
+  agentId: string,
+): (record: Record<string, unknown>) => void {
   if (!runDir) return () => {}; // coordinator 配下でなければ何もしない
-
   const dir = join(runDir, "agents");
   const path = join(dir, `${agentId}.jsonl`);
   let ready = false;
-
-  return (entry: AgentLogEntry): void => {
+  return (record) => {
     try {
       if (!ready) {
         mkdirSync(dir, { recursive: true });
@@ -44,11 +45,19 @@ export function createAgentLog(): AgentLog {
       const line = safeStringify({
         ts: new Date().toISOString(),
         agentId,
-        ...entry,
+        ...record,
       });
       appendFileSync(path, `${line}\n`);
     } catch {
       // ログ失敗は戦略実行に影響させない
     }
   };
+}
+
+export function createAgentLog(): AgentLog {
+  const append = createJsonlAppender(
+    process.env.ERIS_RUN_DIR,
+    process.env.ERIS_AGENT_ID ?? "unknown",
+  );
+  return (entry: AgentLogEntry): void => append({ ...entry });
 }

@@ -24,12 +24,10 @@ import {
   Rng,
 } from "@eris/sdk/rng.js";
 import type {
-  AgentAction,
   AgentObservation,
   AgentSpec,
   BalanceSnapshot,
   ProtocolId,
-  TxIntent,
   WalletRole,
 } from "@eris/sdk/types.js";
 import { initProtocols } from "@eris/sdk/protocols/registry.js";
@@ -45,7 +43,11 @@ import {
   writeAaveOraclesStorage,
 } from "@eris/sdk/protocols/oracles.js";
 import { GMX_MARKETS } from "@eris/sdk/constants.js";
-import { baseTokens, gmxMarketAddresses, tokenInfo } from "@eris/sdk/markets.js";
+import {
+  baseTokens,
+  gmxMarketAddresses,
+  tokenInfo,
+} from "@eris/sdk/markets.js";
 import {
   buildFlowContext,
   flowOrdersToIntents,
@@ -53,7 +55,6 @@ import {
   initialFairPriceFor,
   requestFlowIntents,
   submitIntent,
-  submitRawTxIntent,
 } from "../coordinator.js";
 import { FlowProcess, type FlowOrderWire } from "../flowProcess.js";
 import { deployFlashArb, FLASH_ARB_ADDRESS } from "../flashArbDemo.js";

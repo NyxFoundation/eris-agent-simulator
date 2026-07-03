@@ -195,9 +195,12 @@ async function main(): Promise<void> {
     if (processing || bn <= lastBlock) return;
     processing = true;
     try {
-      const snap = await reader.snapshot(bn);
-      // 競争シグナル（ADR 0011）を直近ブロックから導出して観測に載せる。
-      snap.observation.competition = await sender.computeCompetition(bn);
+      // 観測再構成と競争シグナル（ADR 0011）は独立した読取なので並列に発行する（2 秒ブロックの hot path）。
+      const [snap, competition] = await Promise.all([
+        reader.snapshot(bn),
+        sender.computeCompetition(bn),
+      ]);
+      snap.observation.competition = competition;
       latestObservation = snap.observation;
       latestBalances = snap.balances;
       latestStateById = snap.stateById;

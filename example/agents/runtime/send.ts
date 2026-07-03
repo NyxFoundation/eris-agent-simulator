@@ -8,14 +8,12 @@
  * - gas マネージャ（ADR 0011 §4。economicGas のみ）: ETH 残が閾値を割ったら WETH unwrap /
  *   USDC→WETH swap で自動補充する
  */
-import { appendFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { wethAbi } from "@eris/sdk/abis.js";
 import { parseAction, validateAction } from "@eris/sdk/action.js";
 import { TOKENS } from "@eris/sdk/constants.js";
-import { safeStringify } from "@eris/sdk/logger.js";
+import { createJsonlAppender } from "./agentLog.js";
 import type { ProtocolAdapter, SimContext } from "@eris/sdk/protocols/types.js";
 import type {
   AgentAction,
@@ -26,24 +24,13 @@ import type {
 
 export type MempoolLog = (entry: Record<string, unknown>) => void;
 
-// mempool 活動の自己申告ログ（runs/<id>/agents/<id>.jsonl）。
+// mempool 活動の自己申告ログ（runs/<id>/agents/<id>.jsonl。行動ログと同じファイルへ追記）。
 export function createMempoolLog(
   runDir: string | undefined,
   agentId: string,
 ): MempoolLog {
-  return (entry) => {
-    if (!runDir) return;
-    try {
-      const dir = join(runDir, "agents");
-      mkdirSync(dir, { recursive: true });
-      appendFileSync(
-        join(dir, `${agentId}.jsonl`),
-        `${safeStringify({ ts: new Date().toISOString(), agentId, kind: "mempool", ...entry })}\n`,
-      );
-    } catch {
-      // ログ失敗は戦略実行に影響させない
-    }
-  };
+  const append = createJsonlAppender(runDir, agentId);
+  return (entry) => append({ kind: "mempool", ...entry });
 }
 
 type OwnTx = {

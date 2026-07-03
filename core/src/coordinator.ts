@@ -3,7 +3,6 @@
 // 利用する）。observationFor は sdk（@eris/sdk/observation.js）へ移設済み（ADR 0015）。
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";
-import type { SimConfig } from "@eris/sdk/config.js";
 import { accountAddress, getBalances } from "@eris/sdk/chain.js";
 import type {
   ProtocolId,
@@ -17,7 +16,6 @@ import { FlowProcess, type FlowOrderWire } from "./flowProcess.js";
 import type { FlowContextWire } from "./flow/logic.js";
 import { readAaveFlowReserves } from "@eris/sdk/protocols/aave.js";
 
-export { observationFor } from "@eris/sdk/observation.js";
 
 // ---------------------------------------------------------------------------
 // 観測 / flow / submit

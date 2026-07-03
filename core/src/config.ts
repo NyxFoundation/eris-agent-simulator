@@ -7,14 +7,8 @@ import { parse as parseYaml } from "yaml";
 import { keccak256, stringToBytes, type Hex } from "viem";
 import { loadConfig, unitSuffixFor, type SimConfig } from "@eris/sdk/config.js";
 import type { AgentSpec, AgentsFile } from "@eris/sdk/types.js";
-import {
-  parseStressEvents,
-  type StressEventConfig,
-} from "./realtime/events.js";
-import {
-  parseVulnEvents,
-  type VulnEventConfig,
-} from "./realtime/vulnEvents.js";
+import type { StressEventConfig } from "./realtime/events.js";
+import type { VulnEventConfig } from "./realtime/vulnEvents.js";
 
 export { loadConfig, unitSuffixFor };
 export type { SimConfig };
@@ -29,14 +23,6 @@ export type RealtimeConfig = SimConfig & {
   // deploy・資金供給する。ERIS_VULN_EVENTS の JSON 配列(レンジ指定)。空(既定)なら従来 run と一致。
   vulnEvents: VulnEventConfig[];
 };
-
-export function loadRealtimeConfig(env = process.env): RealtimeConfig {
-  return {
-    ...loadConfig(env),
-    stressEvents: parseStressEvents(env.ERIS_STRESS_EVENTS),
-    vulnEvents: parseVulnEvents(env.ERIS_VULN_EVENTS),
-  };
-}
 
 const NAMED_AGENT_WALLETS = [
   "AGENT0_PRIVATE_KEY",

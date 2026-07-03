@@ -6,7 +6,6 @@ import {
   encodeFunctionData,
   keccak256,
   stringToBytes,
-  toBytes,
   type Address,
   type Hex,
 } from "viem";
