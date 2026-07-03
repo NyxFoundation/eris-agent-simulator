@@ -91,9 +91,10 @@ function main() {
 
   const uni = need(p.uniswapV3, "protocols.uniswapV3");
   const bal = need(p.balancerV2, "protocols.balancerV2");
-  const gmx = need(p.gmxV2, "protocols.gmxV2") as Record<string, string> & {
-    markets?: GmxMarketList;
-  };
+  // gmx は任意（`deploy --only uniswap,balancer,curve,aave` の部分デプロイを許す）。
+  // 未デプロイならゼロアドレスで埋める（gmx venue を有効化した run は当然動かない）。
+  const gmx = p.gmxV2 as
+    (Record<string, string> & { markets?: GmxMarketList }) | undefined;
   const aave = need(p.aaveV3, "protocols.aaveV3") as Record<string, string>;
   const multicall3 = ca(p.common?.multicall3, "protocols.common.multicall3");
 
@@ -102,15 +103,17 @@ function main() {
     weth.toLowerCase() < usdc.toLowerCase() ? [weth, usdc] : [usdc, weth]
   ) as Address[];
 
-  // GMX ETH/USD マーケット = indexToken==WETH のもの。
-  const markets = need(gmx.markets, "gmxV2.markets");
+  // GMX ETH/USD マーケット = indexToken==WETH のもの（gmx 未デプロイならゼロ）。
+  const ZERO = "0x0000000000000000000000000000000000000000" as Address;
+  const markets = gmx ? need(gmx.markets, "gmxV2.markets") : [];
   const ethMarket = markets.find(
     (m) => m.indexToken.toLowerCase() === weth.toLowerCase(),
   );
-  const ethUsdMarket = ca(
-    ethMarket?.marketToken,
-    "gmxV2 ETH/USD market (indexToken==WETH)",
-  );
+  const ethUsdMarket = gmx
+    ? ca(ethMarket?.marketToken, "gmxV2 ETH/USD market (indexToken==WETH)")
+    : ZERO;
+  const gmxAddr = (key: string): Address =>
+    gmx ? ca(gmx[key], `gmxV2.${key}`) : ZERO;
 
   // Curve: deployer が twocrypto-ng の WETH/USDC crypto pool を立てる (uint256 index)。
   // coin0=USDC(stable)=0, coin1=WETH=1。poc CURVE は WETH<->stable leg を使う。
@@ -187,20 +190,17 @@ function main() {
     },
     curve,
     gmx: {
-      RoleStore: ca(gmx.RoleStore, "gmxV2.RoleStore"),
-      DataStore: ca(gmx.DataStore, "gmxV2.DataStore"),
-      Oracle: ca(gmx.Oracle, "gmxV2.Oracle"),
-      EventEmitter: ca(gmx.EventEmitter, "gmxV2.EventEmitter"),
-      Router: ca(gmx.Router, "gmxV2.Router"),
-      ExchangeRouter: ca(gmx.ExchangeRouter, "gmxV2.ExchangeRouter"),
-      OrderHandler: ca(gmx.OrderHandler, "gmxV2.OrderHandler"),
-      OrderVault: ca(gmx.OrderVault, "gmxV2.OrderVault"),
-      LiquidationHandler: ca(
-        gmx.LiquidationHandler,
-        "gmxV2.LiquidationHandler",
-      ),
-      Reader: ca(gmx.Reader, "gmxV2.Reader"),
-      Config: ca(gmx.Config, "gmxV2.Config"),
+      RoleStore: gmxAddr("RoleStore"),
+      DataStore: gmxAddr("DataStore"),
+      Oracle: gmxAddr("Oracle"),
+      EventEmitter: gmxAddr("EventEmitter"),
+      Router: gmxAddr("Router"),
+      ExchangeRouter: gmxAddr("ExchangeRouter"),
+      OrderHandler: gmxAddr("OrderHandler"),
+      OrderVault: gmxAddr("OrderVault"),
+      LiquidationHandler: gmxAddr("LiquidationHandler"),
+      Reader: gmxAddr("Reader"),
+      Config: gmxAddr("Config"),
     },
     ethUsdMarket,
     aave: {

@@ -3,14 +3,13 @@
 // 帰着する）。naive は美味しい見積りに即飛びつき rigged で被弾する。careful は取引前に
 // verifyContract（dry-run + codehash + 任意 LLM）で監査し、rigged を弾き安全な新規プールで利益化する。
 //
-// 直読み agent（liquidator/raw-swap と同型）: 自前 publicClient でチェーンを読み、action は stdout に
-// 書いて directShim に署名送信させる。新規プールは adapter registry に無いため rawBundle/rawTx で叩く。
-import { createInterface } from "node:readline";
-import { createPublicClient, encodeFunctionData, http, maxUint256 } from "viem";
-import { mainnet } from "viem/chains";
+// 直読み run(ctx) agent（liquidator と同型。ADR 0015 §3）: ctx.publicClient でチェーンを読み、
+// factory ログから新規プールを発見して、action は ctx.submit で送る（署名・nonce・自己申告ログは
+// runtime が担う）。新規プールは adapter registry に無いため rawBundle/rawTx で叩く。
+import { encodeFunctionData, maxUint256 } from "viem";
 import type { Address } from "viem";
+import type { AgentContext } from "@eris/sdk";
 import { baseTokens, tokenInfo } from "@eris/sdk/markets.js";
-import { createAgentLog, createEmitter } from "./agentLog.js";
 import { PoolDiscovery, type BaseInfo } from "./poolDiscovery.js";
 import { verifyContract } from "./verifyContract.js";
 import { erc20ApproveAbi, vulnAmmAbi } from "./vulnAbi.js";
@@ -24,11 +23,11 @@ const MAX_NEW_ACTIONS_PER_BLOCK = 2;
 // "approving" のまま無限に滞留するのを避ける retry 上限。超えたら安全側に倒して avoid する。
 const MAX_VERIFY_RETRIES = 4;
 
-export async function runDiscoveryAgent(opts: {
-  verify: boolean;
-}): Promise<void> {
-  const rpcUrl = process.env.ERIS_RPC_URL ?? "";
-  const self = (process.env.ERIS_AGENT_ADDRESS ?? "") as Address;
+export async function runDiscoveryAgent(
+  ctx: AgentContext,
+  opts: { verify: boolean },
+): Promise<void> {
+  const self = ctx.address;
   const factory = process.env.ERIS_VULN_FACTORY as Address | undefined;
   const runDir = process.env.ERIS_RUN_DIR;
   const llmMode = process.env.ERIS_VULN_LLM ?? "0";
@@ -36,29 +35,25 @@ export async function runDiscoveryAgent(opts: {
   // NaN だと poolDiscovery の `gapBps < threshold` が常に false になり全プールが「機会」化する
   // （fail-open）。不正値は既定 100bps にフォールバックする。
   const gapThresholdBps = Number.isFinite(gapEnv) ? gapEnv : 100;
-  if (!rpcUrl || !self) {
-    process.stderr.write("ERIS_RPC_URL and ERIS_AGENT_ADDRESS are required\n");
-    process.exit(1);
-  }
 
-  const emit = createEmitter();
-  const log = createAgentLog();
-  const rl = createInterface({ input: process.stdin });
+  // 行動ログ + action 送信を旧 emit と同じ意味論で束ねる（createEmitter 相当）:
+  // ログに action と reason を残しつつ ctx.submit で mempool へ流す。
+  const emit = (
+    action: Record<string, unknown>,
+    meta: { round: number; signals: Record<string, number | undefined> },
+  ): void => {
+    ctx.log({ action, reason: reasonOf(action), ...meta });
+    ctx.submit(action);
+  };
 
-  // vuln pool が無い run（factory 未配布）では発見対象なし → 毎ブロック noop で待機。
+  // vuln pool が無い run（factory 未配布）では発見対象なし → idle（runtime の block 購読が
+  // プロセスを生かし続ける）。旧 stdin/stdout の毎行 noop 応答は run(ctx) では不要。
   if (!factory) {
-    rl.on("line", () => {
-      process.stdout.write(
-        `${JSON.stringify({ type: "noop", reason: "no vuln factory" })}\n`,
-      );
-    });
+    ctx.log({ reason: "discovery idle: no vuln factory" });
     return;
   }
 
-  const publicClient = createPublicClient({
-    chain: mainnet,
-    transport: http(rpcUrl),
-  });
+  const publicClient = ctx.publicClient;
   const usdc = tokenInfo("USDC");
   const bases: BaseInfo[] = baseTokens().map((t) => ({
     symbol: t.symbol,
@@ -78,112 +73,127 @@ export async function runDiscoveryAgent(opts: {
   const verifyRetries = new Map<string, number>();
   let busy = false;
 
-  rl.on("line", async (line) => {
+  ctx.onObservation((obs) => {
     if (busy) return; // 前ブロックの発見/検証が未完なら取りこぼしを避けて 1 回に絞る
     busy = true;
-    try {
-      const obs = JSON.parse(line);
-      const bn = BigInt(obs.round ?? 0);
-      const fee = obs.limits?.defaultPriorityFeePerGasWei;
-      const amountIn = BigInt(obs.limits?.maxUsdcInUnits ?? "0");
-      if (amountIn <= 0n) return;
-      const fairByBase: Record<string, number> = {
-        WETH: obs.fairPriceUsdcPerWeth,
-        ...(obs.fairPricesUsd ?? {}),
-      };
-
-      await discovery.refresh(bn);
-      const opportunities = await discovery.findOpportunities(
-        fairByBase,
-        amountIn,
-        gapThresholdBps,
-      );
-
-      let acted = 0;
-      for (const opp of opportunities) {
-        if (acted >= MAX_NEW_ACTIONS_PER_BLOCK) break;
-        const key = opp.pool.address.toLowerCase();
-        const st = state.get(key) ?? "new";
-        if (st === "traded" || st === "avoided") continue;
-
-        const signals = {
-          gapBps: opp.gapBps,
-          fair: opp.fair,
-          implied: opp.impliedPrice,
+    void (async () => {
+      try {
+        const bn = BigInt(obs.round ?? 0);
+        const fee = obs.limits?.defaultPriorityFeePerGasWei;
+        const amountIn = BigInt(obs.limits?.maxUsdcInUnits ?? "0");
+        if (amountIn <= 0n) return;
+        const fairByBase: Record<string, number> = {
+          WETH: obs.fairPriceUsdcPerWeth,
+          ...(obs.fairPricesUsd ?? {}),
         };
 
-        if (!opts.verify) {
-          // naive: 即 approve+swap（minOut=0 で trust）。rigged なら skim で被弾する。
-          log({
-            round: Number(bn),
-            reason: `opportunity_detected pool=${opp.pool.address} gapBps=${opp.gapBps.toFixed(0)}`,
-            signals,
-            state: { kind: "opportunity_detected", pool: opp.pool.address },
-          });
-          emit(
-            buildSwapBundle(
-              opp.pool.address,
-              opp.usdcAddr,
-              amountIn,
-              0n,
-              self,
-              fee,
-            ),
-            { round: Number(bn), signals },
-          );
-          state.set(key, "traded");
-          acted++;
-          continue;
-        }
-
-        // careful: 検証ゲート。approve → 次ブロックで dry-run 監査 → 安全なら swap / 危険なら回避。
-        if (st === "new") {
-          log({
-            round: Number(bn),
-            reason: `opportunity_detected pool=${opp.pool.address} gapBps=${opp.gapBps.toFixed(0)}`,
-            signals,
-            state: { kind: "opportunity_detected", pool: opp.pool.address },
-          });
-          emit(
-            {
-              type: "rawTx",
-              tx: {
-                to: opp.usdcAddr,
-                data: encodeFunctionData({
-                  abi: erc20ApproveAbi,
-                  functionName: "approve",
-                  args: [opp.pool.address, maxUint256],
-                }),
-              },
-              reason: "approve-before-verify",
-              maxPriorityFeePerGasWei: fee,
-            },
-            { round: Number(bn), signals },
-          );
-          state.set(key, "approving");
-          acted++;
-          continue;
-        }
-
-        // st === "approving": allowance 着弾後の想定。dry-run 監査する。
-        const verdict = await verifyContract({
-          publicClient,
-          pool: opp.pool.address,
-          tokenIn: opp.usdcAddr,
+        await discovery.refresh(bn);
+        const opportunities = await discovery.findOpportunities(
+          fairByBase,
           amountIn,
-          trader: self,
-          runDir,
-          llmMode,
-        });
-        if (verdict.status === "unknown") {
-          // approval 未着など。次ブロックで再試行（state は approving のまま）。ただし retry 上限を
-          // 超えたら安全側に倒して avoid する（壊れた/罠 dry-run で永久滞留するのを防ぐ）。
-          const n = (verifyRetries.get(key) ?? 0) + 1;
-          verifyRetries.set(key, n);
-          if (n > MAX_VERIFY_RETRIES) {
-            log({
+          gapThresholdBps,
+        );
+
+        let acted = 0;
+        for (const opp of opportunities) {
+          if (acted >= MAX_NEW_ACTIONS_PER_BLOCK) break;
+          const key = opp.pool.address.toLowerCase();
+          const st = state.get(key) ?? "new";
+          if (st === "traded" || st === "avoided") continue;
+
+          const signals = {
+            gapBps: opp.gapBps,
+            fair: opp.fair,
+            implied: opp.impliedPrice,
+          };
+
+          if (!opts.verify) {
+            // naive: 即 approve+swap（minOut=0 で trust）。rigged なら skim で被弾する。
+            ctx.log({
               round: Number(bn),
-              reason: `vulnerability_avoided pool=${opp.pool.address}: verify inconclusive after ${n} tries`,
+              reason: `opportunity_detected pool=${opp.pool.address} gapBps=${opp.gapBps.toFixed(0)}`,
+              signals,
+              state: { kind: "opportunity_detected", pool: opp.pool.address },
+            });
+            emit(
+              buildSwapBundle(
+                opp.pool.address,
+                opp.usdcAddr,
+                amountIn,
+                0n,
+                self,
+                fee,
+              ),
+              { round: Number(bn), signals },
+            );
+            state.set(key, "traded");
+            acted++;
+            continue;
+          }
+
+          // careful: 検証ゲート。approve → 次ブロックで dry-run 監査 → 安全なら swap / 危険なら回避。
+          if (st === "new") {
+            ctx.log({
+              round: Number(bn),
+              reason: `opportunity_detected pool=${opp.pool.address} gapBps=${opp.gapBps.toFixed(0)}`,
+              signals,
+              state: { kind: "opportunity_detected", pool: opp.pool.address },
+            });
+            emit(
+              {
+                type: "rawTx",
+                tx: {
+                  to: opp.usdcAddr,
+                  data: encodeFunctionData({
+                    abi: erc20ApproveAbi,
+                    functionName: "approve",
+                    args: [opp.pool.address, maxUint256],
+                  }),
+                },
+                reason: "approve-before-verify",
+                maxPriorityFeePerGasWei: fee,
+              },
+              { round: Number(bn), signals },
+            );
+            state.set(key, "approving");
+            acted++;
+            continue;
+          }
+
+          // st === "approving": allowance 着弾後の想定。dry-run 監査する。
+          const verdict = await verifyContract({
+            publicClient,
+            pool: opp.pool.address,
+            tokenIn: opp.usdcAddr,
+            amountIn,
+            trader: self,
+            runDir,
+            llmMode,
+          });
+          if (verdict.status === "unknown") {
+            // approval 未着など。次ブロックで再試行（state は approving のまま）。ただし retry 上限を
+            // 超えたら安全側に倒して avoid する（壊れた/罠 dry-run で永久滞留するのを防ぐ）。
+            const n = (verifyRetries.get(key) ?? 0) + 1;
+            verifyRetries.set(key, n);
+            if (n > MAX_VERIFY_RETRIES) {
+              ctx.log({
+                round: Number(bn),
+                reason: `vulnerability_avoided pool=${opp.pool.address}: verify inconclusive after ${n} tries`,
+                signals,
+                state: {
+                  kind: "vulnerability_avoided",
+                  pool: opp.pool.address,
+                  checks: verdict.checks,
+                },
+              });
+              state.set(key, "avoided");
+            }
+            continue; // tx を出さないので予算(acted)は消費しない
+          }
+          if (verdict.status === "unsafe") {
+            ctx.log({
+              round: Number(bn),
+              reason: `vulnerability_avoided pool=${opp.pool.address}: ${verdict.reason}`,
               signals,
               state: {
                 kind: "vulnerability_avoided",
@@ -192,69 +202,57 @@ export async function runDiscoveryAgent(opts: {
               },
             });
             state.set(key, "avoided");
+            continue; // tx を出さないので予算(acted)は消費しない
           }
-          continue; // tx を出さないので予算(acted)は消費しない
-        }
-        if (verdict.status === "unsafe") {
-          log({
+          // safe: honest 見積りに沿った保護的 minOut で約定（安全な新規プールで利益化）。
+          const quoted = BigInt(verdict.checks.quotedOut ?? "0");
+          const minOut = (quoted * 99n) / 100n;
+          ctx.log({
             round: Number(bn),
-            reason: `vulnerability_avoided pool=${opp.pool.address}: ${verdict.reason}`,
+            reason: `safe_pool_captured pool=${opp.pool.address} verified`,
             signals,
             state: {
-              kind: "vulnerability_avoided",
+              kind: "safe_pool_captured",
               pool: opp.pool.address,
               checks: verdict.checks,
             },
           });
-          state.set(key, "avoided");
-          continue; // tx を出さないので予算(acted)は消費しない
-        }
-        // safe: honest 見積りに沿った保護的 minOut で約定（安全な新規プールで利益化）。
-        const quoted = BigInt(verdict.checks.quotedOut ?? "0");
-        const minOut = (quoted * 99n) / 100n;
-        log({
-          round: Number(bn),
-          reason: `safe_pool_captured pool=${opp.pool.address} verified`,
-          signals,
-          state: {
-            kind: "safe_pool_captured",
-            pool: opp.pool.address,
-            checks: verdict.checks,
-          },
-        });
-        emit(
-          {
-            type: "rawTx",
-            tx: {
-              to: opp.pool.address,
-              data: encodeFunctionData({
-                abi: vulnAmmAbi,
-                functionName: "swap",
-                args: [amountIn, minOut, opp.usdcAddr, self],
-              }),
+          emit(
+            {
+              type: "rawTx",
+              tx: {
+                to: opp.pool.address,
+                data: encodeFunctionData({
+                  abi: vulnAmmAbi,
+                  functionName: "swap",
+                  args: [amountIn, minOut, opp.usdcAddr, self],
+                }),
+              },
+              reason: "verified-safe-swap",
+              maxPriorityFeePerGasWei: fee,
             },
-            reason: "verified-safe-swap",
-            maxPriorityFeePerGasWei: fee,
-          },
-          { round: Number(bn), signals },
-        );
-        state.set(key, "traded");
-        acted++;
+            { round: Number(bn), signals },
+          );
+          state.set(key, "traded");
+          acted++;
+        }
+      } catch (error) {
+        ctx.log({
+          round: obs.round,
+          reason: `discovery error: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      } finally {
+        busy = false;
       }
-
-      if (acted === 0) {
-        process.stdout.write(
-          `${JSON.stringify({ type: "noop", reason: "no fresh opportunity" })}\n`,
-        );
-      }
-    } catch (error) {
-      process.stdout.write(
-        `${JSON.stringify({ type: "noop", reason: `error: ${error}` })}\n`,
-      );
-    } finally {
-      busy = false;
-    }
+    })();
   });
+}
+
+// action.reason を取り出す（旧 createEmitter の reasonOf と同じ意味論。ログの reason 欄に載せる）。
+function reasonOf(action: unknown): string | undefined {
+  return action && typeof action === "object" && "reason" in action
+    ? String((action as { reason?: unknown }).reason ?? "")
+    : undefined;
 }
 
 // approve(USDC→pool) + swap(USDC→base) を 1 bundle に。approve が nonce n、swap が n+1 で
@@ -266,7 +264,7 @@ function buildSwapBundle(
   minOut: bigint,
   to: Address,
   fee: unknown,
-): unknown {
+): Record<string, unknown> {
   return {
     type: "rawBundle",
     txs: [

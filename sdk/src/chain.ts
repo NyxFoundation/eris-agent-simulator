@@ -289,12 +289,21 @@ export async function resetFork(
     //
     // cross-process: snapshot ID をファイル永続化し、別プロセスの run も前プロセスが残した
     // クリーン snapshot へ revert して始める（逐次起動を想定）。優先順: プロセス内メモリ >
-    // 永続ファイル。stale id（anvil 再起動）は evm_revert が false を返すので現状態を base にする
-    // (self-healing。前提 = freshly deployed anvil なら現状態はクリーン)。
+    // 永続ファイル。
+    //
+    // 永続 ID は「どの anvil インスタンスのものか」を genesis block hash で識別する
+    // （形式 `<genesisHash>:<snapshotId>`）。anvil 再起動後の stale ID は evm_revert が
+    // false を返すから安全 — という旧前提は、別ツール（例: aave の hardhat-deploy）が同じ
+    // 番号の snapshot（0x0 等）を作っていると ID が衝突して**別の断面へ本当に revert して
+    // しまう**ため成り立たない（デプロイ済み venue が部分的に消える実害を確認済み）。
+    // インスタンス不一致の永続 ID は無視して現状態を base にする（self-healing）。
+    const genesisHash = (await publicClient.getBlock({ blockNumber: 0n })).hash;
     let revertTo = localSnapshotId;
     if (!revertTo && localSnapshotFile && existsSync(localSnapshotFile)) {
       const persisted = readFileSync(localSnapshotFile, "utf8").trim();
-      if (persisted) revertTo = persisted as Hex;
+      const [hash, id] = persisted.split(":");
+      // 旧形式（bare ID。インスタンス識別なし）は stale とみなして無視する。
+      if (hash && id && hash === genesisHash) revertTo = id as Hex;
     }
     if (revertTo) {
       await publicClient
@@ -309,7 +318,7 @@ export async function resetFork(
     } as AnvilRequest)) as Hex;
     if (localSnapshotFile) {
       try {
-        writeFileSync(localSnapshotFile, localSnapshotId);
+        writeFileSync(localSnapshotFile, `${genesisHash}:${localSnapshotId}`);
       } catch {
         /* 永続化に失敗してもプロセス内は動く */
       }
