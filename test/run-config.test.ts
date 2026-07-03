@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../src/config.js";
-import { buildSource, loadRunConfig, toEnvString } from "../src/runConfig.js";
+import { loadConfig } from "../core/src/config.js";
+import { buildSource, loadRunConfig, toEnvString } from "../core/src/runConfig.js";
 
 test("toEnvString: 型ごとに loadConfig が読める文字列へ正規化する", () => {
   assert.equal(toEnvString(true), "1");

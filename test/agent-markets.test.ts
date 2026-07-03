@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { marketViews } from "../examples/agents/lib/markets.js";
-import type { AgentObservation } from "../src/types.js";
+import { marketViews } from "../example/agents/lib/markets.js";
+import type { AgentObservation } from "@eris/sdk/types.js";
 
 // marketViews は registry に依存しない純粋関数なので、observation を手で組んで全 base 経路を検証できる。
 function baseObs(): AgentObservation {

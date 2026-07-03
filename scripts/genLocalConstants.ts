@@ -217,7 +217,7 @@ function main() {
     wbtc: wbtcInfo,
   });
 
-  const target = resolve(ROOT, "src", "constants.local.ts");
+  const target = resolve(ROOT, "sdk", "src", "constants.local.ts");
   writeFileSync(target, out);
   console.log(`✓ 生成: ${target}`);
   console.log(`  入力: ${path} (chainId=${data.chainId})`);

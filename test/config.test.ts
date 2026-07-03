@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadAgents, loadConfig, privateKeyForWalletName } from "../src/config.js";
+import { loadAgents, loadConfig, privateKeyForWalletName } from "../core/src/config.js";
 
 test("loadConfig falls back to valid Anvil private keys for empty env values", () => {
   const config = loadConfig({

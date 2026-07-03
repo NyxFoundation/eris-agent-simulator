@@ -22,8 +22,8 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { vulnAmmAbi } from "../examples/agents/lib/vulnAbi.js";
-import { verifyContract } from "../examples/agents/lib/verifyContract.js";
+import { vulnAmmAbi } from "../example/agents/lib/vulnAbi.js";
+import { verifyContract } from "../example/agents/lib/verifyContract.js";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const PORT = 8577; // 通常の 8545 と衝突しない検証専用ポート

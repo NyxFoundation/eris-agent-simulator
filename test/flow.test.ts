@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Rng } from "../src/rng.js";
-import { buildFlowOrders, type FlowContextWire } from "../src/flow/logic.js";
+import { Rng } from "@eris/sdk/rng.js";
+import { buildFlowOrders, type FlowContextWire } from "../core/src/flow/logic.js";
 
 function ctx(round: number): FlowContextWire {
   return {

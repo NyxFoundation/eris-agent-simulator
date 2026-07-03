@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { bigintToStorageWord } from "../src/chain.js";
-import { toPriceFeedAnswer } from "../src/realtime/priceFeed.js";
-import { loadConfig } from "../src/config.js";
+import { bigintToStorageWord } from "@eris/sdk/chain.js";
+import { toPriceFeedAnswer } from "../core/src/realtime/priceFeed.js";
+import { loadConfig } from "../core/src/config.js";
 
 // ADR 0011 §1: env の価格確定を mempool tx から storage 直書きへ移す際の 32-byte ワード
 // エンコード。slot 値の正しさ（int256 の two's complement・幅）はオンチェーンに出さず単体で固める。

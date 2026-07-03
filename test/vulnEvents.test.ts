@@ -4,7 +4,7 @@ import {
   VulnSchedule,
   parseVulnEvents,
   type VulnEventConfig,
-} from "../src/realtime/vulnEvents.js";
+} from "../core/src/realtime/vulnEvents.js";
 
 // 固定レンジ（min==max）で seed に依らずプール数/rigged 数/窓が確定する 1 event。
 const FIXED: VulnEventConfig = {

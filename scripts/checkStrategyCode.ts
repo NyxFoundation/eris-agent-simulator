@@ -10,7 +10,7 @@ import { join } from "node:path";
 import {
   findCheatcodeUsage,
   type StaticCheckFinding,
-} from "../src/strategyStaticCheck.js";
+} from "../core/src/strategyStaticCheck.js";
 
 function defaultTargets(): string[] {
   const dir = "examples/agents";

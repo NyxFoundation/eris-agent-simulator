@@ -8,7 +8,18 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "paths": {
+      "@eris/sdk": ["./sdk/src/index.ts"],
+      "@eris/sdk/*": ["./sdk/src/*"]
+    }
   },
-  "include": ["src/**/*.ts", "examples/**/*.ts", "test/**/*.ts"]
+  "include": [
+    "sdk/src/**/*.ts",
+    "core/src/**/*.ts",
+    "example/agents/**/*.ts",
+    "test/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": ["_archive", "deployer", "node_modules", "dist"]
 }
