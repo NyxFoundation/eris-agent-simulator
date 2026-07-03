@@ -15,13 +15,12 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Address, Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import type { AgentContext, AgentModule } from "@eris/sdk/agent.js";
 import {
   actionJsonSchema,
   agentActionSchemaFor,
 } from "@eris/sdk/actionSchema.js";
-import { makeClients } from "@eris/sdk/chain.js";
+import { accountAddress, makeClients } from "@eris/sdk/chain.js";
 import { loadConfig } from "@eris/sdk/config.js";
 import { GMX_MARKETS } from "@eris/sdk/constants.js";
 import { baseTokens, gmxMarketAddresses } from "@eris/sdk/markets.js";
@@ -82,8 +81,7 @@ async function main(): Promise<void> {
     config.chainId,
     { batch: true },
   );
-  const account = privateKeyToAccount(privateKey);
-  const address = account.address;
+  const address = accountAddress(privateKey);
 
   // adapter の readState/observe/buildTxs は ctx の clients/config しか使わない。
   // admin/keeper/flow は環境専用のため、agent 側 ctx ではダミー（自鍵）/例外にする。
@@ -270,9 +268,13 @@ async function main(): Promise<void> {
     const promptAgent = loadPromptAgent(agentDir);
     const model =
       promptAgent.model ?? process.env.ERIS_LLM_MODEL ?? DEFAULT_PROMPT_MODEL;
-    const system = buildSystemPrompt(promptAgent, config.enabledProtocols);
     const schema = agentActionSchemaFor(config.enabledProtocols);
     const jsonSchema = actionJsonSchema(config.enabledProtocols);
+    const system = buildSystemPrompt(
+      promptAgent,
+      config.enabledProtocols,
+      jsonSchema,
+    );
     const recent: RecentAction[] = [];
     const interval = promptAgent.intervalMs ?? DEFAULT_PROMPT_INTERVAL_MS;
     let cycling = false;

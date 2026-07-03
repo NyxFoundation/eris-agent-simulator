@@ -3,38 +3,12 @@
  *
  * venue のデプロイは環境の仕事（deployer/）。ここは flash-arb executor のような
  * 「参加者が自分の鍵で自分のコントラクトを立てる」ためのヘルパ。forge artifact
- * （out/<Name>.sol/<Name>.json）を読み、自分のウォレットでデプロイする。
- * artifact の場所は既定で repo ルートの out/（ERIS_FORGE_OUT で上書き可）。
+ * （out/<Name>.sol/<Name>.json）は sdk の readForgeArtifact で読む（既定 repo ルートの
+ * out/、提出 bundle 等レイアウトが違う場合は ERIS_FORGE_OUT で上書き）。
  */
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import type {
-  Abi,
-  Address,
-  Chain,
-  Hex,
-  PublicClient,
-  WalletClient,
-} from "viem";
+import type { Address, Chain, Hex, PublicClient, WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-
-const here = dirname(fileURLToPath(import.meta.url));
-
-function artifact(name: string): { abi: Abi; bytecode: Hex } {
-  const outDir = process.env.ERIS_FORGE_OUT ?? resolve(here, "../../../out");
-  const p = resolve(outDir, `${name}.sol/${name}.json`);
-  if (!existsSync(p)) {
-    throw new Error(
-      `forge artifact missing: ${p}. Run \`npm run build:contracts\` (または ERIS_FORGE_OUT を指定).`,
-    );
-  }
-  const a = JSON.parse(readFileSync(p, "utf8"));
-  return {
-    abi: a.abi as Abi,
-    bytecode: (a.bytecode?.object ?? a.bytecode) as Hex,
-  };
-}
+import { readForgeArtifact } from "@eris/sdk/forge.js";
 
 // 自分の鍵でコントラクトをデプロイし、デプロイ先アドレスを返す（receipt 待ち）。
 export async function deployArtifact(opts: {
@@ -47,7 +21,7 @@ export async function deployArtifact(opts: {
   priorityFeeWei?: bigint;
 }): Promise<Address> {
   const account = privateKeyToAccount(opts.privateKey);
-  const { abi, bytecode } = artifact(opts.name);
+  const { abi, bytecode } = readForgeArtifact(opts.name);
   const block = await opts.publicClient.getBlock();
   const baseFee = block.baseFeePerGas ?? 0n;
   const tip = opts.priorityFeeWei ?? 1_000_000_000n;

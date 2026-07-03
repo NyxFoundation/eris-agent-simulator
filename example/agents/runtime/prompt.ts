@@ -98,11 +98,15 @@ listed in observation.enabledProtocols are live this run).
   ~2x total costs is usually not worth taking.`;
 
 // Hermes JSON mode の system prompt（<schema> + ルール + prompt.md 本文）。
+// jsonSchema を渡すと再生成しない（bot.ts が LLM tool use 用に作った同じものを共有する）。
 export function buildSystemPrompt(
   agent: PromptAgent,
   enabledProtocols?: ProtocolId[],
+  jsonSchema?: Record<string, unknown>,
 ): string {
-  const schema = safeStringify(actionJsonSchema(enabledProtocols));
+  const schema = safeStringify(
+    jsonSchema ?? actionJsonSchema(enabledProtocols),
+  );
   return `You are "${agent.name}" — ${agent.description}.
 You are a function-calling trading agent. For each decision cycle, respond with a single
 JSON object that conforms to the JSON schema below. Do not output anything else: no prose,

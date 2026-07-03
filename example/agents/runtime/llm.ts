@@ -61,10 +61,18 @@ async function callOllama(req: LlmRequest): Promise<string> {
   return content;
 }
 
+// Anthropic client は memo 化（validate 再試行で 1 サイクル最大 4 回呼ぶため）。
+let anthropicClient: InstanceType<
+  (typeof import("@anthropic-ai/sdk"))["default"]
+> | null = null;
+
 async function callClaude(req: LlmRequest): Promise<string> {
   // Anthropic SDK は optional 依存（ollama 系だけ使う環境でロードさせない）。
-  const { default: Anthropic } = await import("@anthropic-ai/sdk");
-  const client = new Anthropic();
+  if (!anthropicClient) {
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
+    anthropicClient = new Anthropic();
+  }
+  const client = anthropicClient;
   const useTool = req.jsonSchema !== undefined;
   const response = await client.messages.create(
     {
