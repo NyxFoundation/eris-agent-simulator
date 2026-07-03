@@ -46,9 +46,17 @@ flow:
   informedArbFeeBps: 30
   uninformedArrivalRate: "0.9"
   uninformedSizeSigma: "1.0"
-  # gmx flow を出すブロック確率（0..1、既定 0.5）。発火時は 1〜gmxMaxBurst 件をランダムに建てる。
+  # 同じ現実的フローを GMX / Aave にも展開（既定で有効。ADR 0015 Notes / amm-challenge）。
+  #   gmxArrivalRate: GMX 建玉本数を Poisson(λ)、サイズを lognormal に（既定 0.75）。0 で従来の
+  #     Bernoulli(gmxActivityProb)+一様バースト+一様サイズに戻す。gmxSizeSigma は lognormal の σ（既定 1.0）。
+  #   aaveActorSizeSigma: Aave 各アクターの目標担保を lognormal で不均質化（whale/minnow の混在。既定 1.0）。
+  #     borrow は各自の担保の 30% LTV に追従するので HF 安全は不変。0 で全アクター一律。
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+  # gmx flow を出すブロック確率（gmxArrivalRate=0 の従来モードでのみ使用。0..1、既定 0.5）。
   # gmxActivityProb: "0.5"
-  # gmxMaxBurst: "2"        # 発火ブロックで出す gmx 本数の上限（1=常に単発）
+  # gmxMaxBurst: "2"        # 従来モードで発火ブロックが出す gmx 本数の上限（1=常に単発）
   # aave 借り手プール: aaveActorCount 個の独立アクター（別アドレス・持続ポジション）。各アクターは
   # 毎ブロック aaveActivityProb の確率で借入/返済/担保/引出を 1 つ行い、借りた債務は翌ブロックも残る。
   # 1 ブロックの同時 borrow 数は最大 aaveActorCount（別アクターから自然発生）。

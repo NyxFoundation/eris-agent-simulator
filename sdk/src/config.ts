@@ -156,6 +156,13 @@ export type SimConfig = {
   // 注: 分散が増えるため run 比較は複数 seed の集計で読む。
   uninformedFlowArrivalRate: number;
   uninformedFlowSizeSigma: number;
+  // ADR 0015 Notes / amm-challenge の retail を GMX/Aave へ展開。
+  // gmxFlowArrivalRate: >0 で GMX 建玉本数を Poisson(λ)、サイズを lognormal に（既定 0.75=on）。0 で従来。
+  // gmxFlowSizeSigma: GMX lognormal サイズの σ（既定 1.0）。
+  // aaveFlowActorSizeSigma: >0 で Aave 各アクターの目標担保を lognormal で不均質化（whale/minnow。既定 1.0）。
+  gmxFlowArrivalRate: number;
+  gmxFlowSizeSigma: number;
+  aaveFlowActorSizeSigma: number;
   // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。既定空/0 = WBTC flow off。
   baseFlowMax: Record<string, bigint>;
   // orderflow bot（独立プロセス）の起動コマンドと決定論シード。
@@ -343,6 +350,13 @@ export function loadConfig(env = process.env): SimConfig {
     uninformedFlowSizeSigma: Math.max(
       0,
       floatEnv(env.ERIS_UNINFORMED_SIZE_SIGMA, 1),
+    ),
+    // amm-challenge の retail を GMX/Aave へ（既定 on。0 で従来挙動へ戻せる）。
+    gmxFlowArrivalRate: Math.max(0, floatEnv(env.ERIS_GMX_ARRIVAL_RATE, 0.75)),
+    gmxFlowSizeSigma: Math.max(0, floatEnv(env.ERIS_GMX_SIZE_SIGMA, 1)),
+    aaveFlowActorSizeSigma: Math.max(
+      0,
+      floatEnv(env.ERIS_AAVE_ACTOR_SIZE_SIGMA, 1),
     ),
     // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。env FLOW_MAX_<SYM>_<UNIT>
     // （例 FLOW_MAX_WBTC_SATS）。既定 0 = WBTC 等の flow off → extraBases が RNG 非消費 = byte 互換。

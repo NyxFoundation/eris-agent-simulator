@@ -8,7 +8,7 @@
 // protocols 順（= enabledAdapters 順。既定は config.ALL_PROTOCOLS の
 // uniswap, balancer, curve, gmx, aave で gmx が aave より前）で呼ぶ。
 // 元の buildFlowIntents と RNG 消費順序を一致させるため、ロジックは旧 adapter から逐語移設している。
-import type { Rng } from "@eris/sdk/rng.js";
+import { Rng } from "@eris/sdk/rng.js";
 import type { LeafAction, ProtocolId, TokenSymbol } from "@eris/sdk/types.js";
 import type { FlowKind, FlowOrder } from "@eris/sdk/protocols/types.js";
 import { tokenInfo } from "@eris/sdk/markets.js";
@@ -44,6 +44,10 @@ export type FlowLimits = {
   // λ=0=off（固定本数 + 一様）。
   uninformedArrivalRate: number;
   uninformedSizeSigma: number;
+  // ADR 0015 Notes: 上記を GMX/Aave へ展開。gmxArrivalRate=0 / aaveActorSizeSigma=0 で従来。
+  gmxArrivalRate: number;
+  gmxSizeSigma: number;
+  aaveActorSizeSigma: number;
   defaultPriorityFeeWei: bigint;
 };
 
@@ -97,6 +101,10 @@ export type FlowContextWire = {
     // ADR 0015 Notes / amm-challenge の retail: uninformed 到着 Poisson(λ) / lognormal σ。未設定/"0"=off。
     uninformedArrivalRate?: string;
     uninformedSizeSigma?: string;
+    // ADR 0015 Notes: GMX/Aave 展開。未設定/"0"=off（従来挙動）。
+    gmxArrivalRate?: string;
+    gmxSizeSigma?: string;
+    aaveActorSizeSigma?: string;
     defaultPriorityFeeWei: string;
   };
 };
@@ -144,6 +152,17 @@ function randomBigInt(
 function scaleFraction(cap: bigint, fraction: number): bigint {
   const ppm = BigInt(Math.max(0, Math.round(fraction * 1_000_000)));
   return (cap * ppm) / 1_000_000n;
+}
+
+// アクター key から安定な Rng を作る（同じ key → 同じ乱数列。ブロックを跨いで不変な
+// per-actor サイズ抽出に使う。共有 flow rng を消費しないので他フローの決定列に影響しない）。
+function actorRng(key: string): Rng {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return new Rng(h >>> 0);
 }
 
 // base amount(base decimals) を price(USDC/base) で quote units(USDC decimals) へ換算。
@@ -349,6 +368,9 @@ export function buildAmmFlow(
 }
 
 // GMX perp orderflow: 小口のロング/ショートを開いて約定ボリュームを作る（keeper が約定）。
+// ADR 0015 Notes / amm-challenge の retail: arrivalRate>0 で 1 ブロックの本数を Poisson(λ)、
+// サイズを lognormal（裾が重い＝時々大口の建玉）にする（現実の perp フロー）。
+// arrivalRate=0 で従来の Bernoulli(activityProb)+一様バースト+一様サイズ（byte 互換）。
 export function buildGmxFlow(
   rng: Rng,
   gmxFlowMaxSizeUsd: bigint,
@@ -358,21 +380,31 @@ export function buildGmxFlow(
   canPrepareWeth = false,
   activityProb = 0.5,
   maxBurst = 1,
+  arrivalRate = 0,
+  sizeSigma = 1,
 ): FlowOrderOut[] {
-  // activityProb の確率でのみこのブロックに送信（既定 0.5。config で散発度を調整）。
-  if (rng.next() >= activityProb) return [];
-  // 発火したブロックは 1〜maxBurst 件をランダムに出す（同一ウォレットの連番 nonce で同ブロック着弾）。
-  // maxBurst<=1 は rng を追加消費せず従来の単発挙動と byte 一致。
-  const burst = maxBurst <= 1 ? 1 : rng.int(1, maxBurst + 1);
+  // 本数: Poisson モード（arrivalRate>0）は poisson(λ)（0 件ブロックも自然に出る）。
+  // 従来モードは Bernoulli(activityProb) ゲート → 1〜maxBurst の一様バースト（byte 互換）。
+  let burst: number;
+  if (arrivalRate > 0) {
+    burst = rng.poisson(arrivalRate);
+    if (burst <= 0) return [];
+  } else {
+    if (rng.next() >= activityProb) return [];
+    burst = maxBurst <= 1 ? 1 : rng.int(1, maxBurst + 1);
+  }
   const orders: FlowOrderOut[] = [];
   for (let i = 0; i < burst; i++) {
     const isLong = rng.bool();
-    // size は gmxFlowMaxSizeUsd の 1/100〜1/25 をランダム（基準 1/50。約 2x になるよう担保を size/2x）。
-    const sizeUsd = randomBigInt(
-      rng,
-      gmxFlowMaxSizeUsd / 100n,
-      gmxFlowMaxSizeUsd / 25n,
-    );
+    // size: Poisson モードは lognormal（平均 = gmxMax×0.025 = 従来一様の中央値。[0.5%, 10%] にクランプ）。
+    // 従来モードは gmxMax の 1/100〜1/25 一様（基準 1/50。約 2x レバのため担保 = size/2x）。
+    const sizeUsd =
+      arrivalRate > 0
+        ? scaleFraction(
+            gmxFlowMaxSizeUsd,
+            Math.min(0.1, Math.max(0.005, rng.lognormal(0.025, sizeSigma))),
+          )
+        : randomBigInt(rng, gmxFlowMaxSizeUsd / 100n, gmxFlowMaxSizeUsd / 25n);
     // collateral(WETH wei) ≈ (sizeUsd/2) を USD->WETH 換算。oraclePrices は使えないため概算 fairPrice 相当で割る
     const sizeUsdNum = Number(sizeUsd) / 1e30;
     const collateralWei = BigInt(
@@ -518,13 +550,16 @@ export function buildAaveActorsFlow(
   defaultPriorityFeeWei: bigint,
   fairPrice: number,
   activityProb: number,
+  // ADR 0015 Notes / amm-challenge の retail: >0 で各アクターの目標担保を lognormal で不均質化
+  // （whale/minnow の混在）。0 で全アクター一律 = aaveFlowMaxWethWei（従来）。
+  // borrow は各アクターの担保の 30% LTV に追従するので HF 安全は不変（サイズだけ裾が重くなる）。
+  actorSizeSigma = 0,
 ): FlowOrderOut[] {
   // 目標レバレッジ方式（staleness 由来の revert を抑える）。flow bot は 1〜2 ブロック遅れの actor 状態で
   // 判断する（非同期パイプライン）ため、HF/残高に大きな余裕を持たせて「少し古い状態でも安全」に倒す:
   //   - 担保は目標まで一度だけ積み、以降は supply しない（supply cap の thrash を避ける）。
   //   - 債務は担保価値の 30%（LT 0.84 に大余裕）を目標に、2 ステップ分の余白を残してのみ小口 borrow
   //     （stale な二重借入が来ても HF を割らない）。達したら一部 repay。
-  const targetCollateralWei = aaveFlowMaxWethWei; // 目標担保（≈ aaveFlowMaxWethWei）
   const TARGET_LTV_NUM = 30n;
   const TARGET_LTV_DEN = 100n;
   const minStep = maxAaveBorrowUsdcUnits / 25n; // これ未満の差は動かさない（端数ループ回避）
@@ -532,6 +567,18 @@ export function buildAaveActorsFlow(
   for (const actor of actors) {
     // 各 actor が独立に「今ブロック動くか」を判定（間欠的）。
     if (rng.next() >= activityProb) continue;
+    // 目標担保: actorSizeSigma>0 なら key 由来の lognormal でアクターごとに不均質化（whale/minnow）。
+    // key シードなのでブロックを跨いで安定（供給の thrash を起こさない）。0 なら一律 = aaveFlowMaxWethWei。
+    const targetCollateralWei =
+      actorSizeSigma > 0
+        ? scaleFraction(
+            aaveFlowMaxWethWei,
+            Math.min(
+              3,
+              Math.max(0.1, actorRng(actor.key).lognormal(1, actorSizeSigma)),
+            ),
+          )
+        : aaveFlowMaxWethWei;
     const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 40)) * 1_000_000n;
     const pushAave = (action: LeafAction): void => {
       orders.push({
@@ -624,6 +671,9 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
       Number(wire.uninformedArrivalRate ?? "0"),
     ),
     uninformedSizeSigma: Math.max(0, Number(wire.uninformedSizeSigma ?? "1")),
+    gmxArrivalRate: Math.max(0, Number(wire.gmxArrivalRate ?? "0")),
+    gmxSizeSigma: Math.max(0, Number(wire.gmxSizeSigma ?? "1")),
+    aaveActorSizeSigma: Math.max(0, Number(wire.aaveActorSizeSigma ?? "0")),
     defaultPriorityFeeWei: BigInt(wire.defaultPriorityFeeWei),
   };
 }
@@ -697,6 +747,7 @@ export function buildFlowOrders(
             limits.defaultPriorityFeeWei,
             ctx.fairPriceUsdcPerWeth,
             limits.aaveFlowActivityProb,
+            limits.aaveActorSizeSigma,
           ),
         );
       } else {
@@ -729,6 +780,8 @@ export function buildFlowOrders(
           ctx.protocols.includes("uniswap"),
           limits.gmxFlowActivityProb,
           limits.gmxFlowMaxBurst,
+          limits.gmxArrivalRate,
+          limits.gmxSizeSigma,
         ),
       );
     }

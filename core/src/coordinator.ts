@@ -138,6 +138,9 @@ export async function buildFlowContext(
       informedArbFeeBps: String(ctx.config.informedArbFeeBps),
       uninformedArrivalRate: String(ctx.config.uninformedFlowArrivalRate),
       uninformedSizeSigma: String(ctx.config.uninformedFlowSizeSigma),
+      gmxArrivalRate: String(ctx.config.gmxFlowArrivalRate),
+      gmxSizeSigma: String(ctx.config.gmxFlowSizeSigma),
+      aaveActorSizeSigma: String(ctx.config.aaveFlowActorSizeSigma),
       defaultPriorityFeeWei: ctx.config.defaultPriorityFeeWei.toString(),
     },
   };
