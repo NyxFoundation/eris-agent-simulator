@@ -38,6 +38,8 @@ export type FlowLimits = {
   maxAaveBorrowUsdcUnits: bigint;
   // aave flow を出すブロック確率（0..1、既定 0.5）。actor プールでは各 actor の毎ブロック行動確率。
   aaveFlowActivityProb: number;
+  // ADR 0015 Notes / amm-challenge: informed flow の fee 境界（bps）。0=off（gap 線形）。
+  informedArbFeeBps: number;
   defaultPriorityFeeWei: bigint;
 };
 
@@ -86,6 +88,8 @@ export type FlowContextWire = {
     aaveFlowMaxWethWei: string;
     maxAaveBorrowUsdcUnits: string;
     aaveFlowActivityProb?: string;
+    // ADR 0015 Notes / amm-challenge: informed flow の fee 境界（bps）。未設定/"0"=off（byte 互換）。
+    informedArbFeeBps?: string;
     defaultPriorityFeeWei: string;
   };
 };
@@ -184,6 +188,13 @@ export function buildAmmFlow(
   uninformedCount = 1,
   round = 0,
   persistBlocks = 1,
+  // ADR 0015 Notes / amm-challenge: informed（裁定）flow を「fee バンドを超えた gap だけ」約定させる。
+  // 0（既定）= 従来の gap 線形（無効。byte 互換）。>0 で fee-aware:
+  //   - |gap| <= feeBps は no-arb 帯として見送り（arb が儲からないので market を過剰に締めない）
+  //   - それ以上は fee バンドを超えた超過分だけを閉じる（残差 = fee。現実の裁定と同じ）
+  // 私たちの venue は Uniswap v3 / weighted / crypto で純 CPMM ではないため、閉形式係数でなく
+  // 「fee 境界の経済」だけを移植する（depth は既存の informedMax を代理に使う）。
+  informedArbFeeBps = 0,
 ): FlowOrder[] {
   const orders: FlowOrder[] = [];
   const swapType =
@@ -256,8 +267,18 @@ export function buildAmmFlow(
   // informed: pool 価格を fairPrice に寄せる（gap を閉じる側＝arb agent と競合する）。
   // 両側を informedMaxWethWei × gap で揃え、USDC 側も base 上限で制御する。
   // informedMaxWethWei を下げると flow bot が gap を潰さなくなり、arb の取り分が増える。
+  // fee-aware（informedArbFeeBps>0）: |gap| が fee バンド以下なら裁定は無利なので informed を出さず、
+  // 超えた分は fee バンドを超えた超過だけを閉じる（残差 = fee。amm-challenge の arb と同じ経済）。
+  const rawDeviation = Math.abs(fairPrice / poolPrice - 1);
+  if (informedArbFeeBps > 0 && rawDeviation * 10_000 <= informedArbFeeBps) {
+    return orders; // no-arb 帯: market を過剰に締めない（arb agent の取り分を残す）
+  }
+  const effectiveDeviation =
+    informedArbFeeBps > 0
+      ? Math.max(0, rawDeviation - informedArbFeeBps / 10_000)
+      : rawDeviation;
   let informedTokenIn: TokenSymbol = poolPrice < fairPrice ? "USDC" : base;
-  const gap = Math.min(1, Math.abs(fairPrice / poolPrice - 1) * 20);
+  const gap = Math.min(1, effectiveDeviation * 20);
   const informedWethEquiv =
     (informedMaxWethWei * BigInt(Math.max(1, Math.floor(gap * 100)))) / 100n;
   if (
@@ -565,6 +586,7 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
     aaveFlowMaxWethWei: BigInt(wire.aaveFlowMaxWethWei),
     maxAaveBorrowUsdcUnits: BigInt(wire.maxAaveBorrowUsdcUnits),
     aaveFlowActivityProb: clampProb(wire.aaveFlowActivityProb, 0.5),
+    informedArbFeeBps: Math.max(0, Number(wire.informedArbFeeBps ?? "0")),
     defaultPriorityFeeWei: BigInt(wire.defaultPriorityFeeWei),
   };
 }
@@ -615,6 +637,7 @@ export function buildFlowOrders(
           limits.uninformedFlowCountPerBlock,
           ctx.round,
           limits.uninformedFlowPersistBlocks,
+          limits.informedArbFeeBps,
         ),
       );
     } else if (protocol === "aave") {
@@ -716,6 +739,7 @@ export function buildFlowOrders(
           limits.uninformedFlowCountPerBlock,
           ctx.round,
           limits.uninformedFlowPersistBlocks,
+          limits.informedArbFeeBps,
         ),
       );
     }

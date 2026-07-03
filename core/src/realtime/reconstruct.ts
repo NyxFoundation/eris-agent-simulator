@@ -421,6 +421,10 @@ export async function reconstructValueSeries(opts: {
           round: b,
           blockNumber: String(b),
           fairPriceUsdcPerWeth: snapshot.fairPriceUsdcPerWeth,
+          // pool 価格を併記（uniswap 有効時。fair 追従＝残差 gap の run 後解析に使う）。
+          ...(snapshot.poolPriceUsdcPerWeth !== null
+            ? { poolPriceUsdcPerWeth: snapshot.poolPriceUsdcPerWeth }
+            : {}),
           inventory: { valueUsdc: total, alphaValueUsdc },
         },
       });

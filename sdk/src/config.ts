@@ -146,6 +146,10 @@ export type SimConfig = {
   // aave 借り手プールの独立アクター数（>=1、既定 4）。1 ブロックの最大同時 borrow 数 = この値。
   // 各アクターは別アドレスで持続ポジションを保ち、債務は翌ブロック以降も残る。
   aaveFlowActorCount: number;
+  // ADR 0015 Notes / amm-challenge: informed（裁定）flow を fee-aware にする閾値（bps）。
+  // 0（既定）= 従来の gap 線形（byte 互換）。>0 で「gap が fee バンドを超えたときだけ、超過分だけ」
+  // informed flow を出す（残差 = fee。市場を過剰に締めず arb agent の取り分を残す）。
+  informedArbFeeBps: number;
   // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。既定空/0 = WBTC flow off。
   baseFlowMax: Record<string, bigint>;
   // orderflow bot（独立プロセス）の起動コマンドと決定論シード。
@@ -321,6 +325,8 @@ export function loadConfig(env = process.env): SimConfig {
     aaveFlowActivityProb: floatEnv(env.AAVE_FLOW_ACTIVITY_PROB, 0.5),
     // aave 借り手プールの独立アクター数（既定 4）。1 ブロックの最大同時 borrow 数 = この値。
     aaveFlowActorCount: Math.max(1, intEnv(env.AAVE_FLOW_ACTOR_COUNT, 4)),
+    // amm-challenge の裁定 fee 境界（既定 0 = off）。>0 で informed flow が fee-aware になる。
+    informedArbFeeBps: Math.max(0, intEnv(env.ERIS_INFORMED_ARB_FEE_BPS, 0)),
     // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。env FLOW_MAX_<SYM>_<UNIT>
     // （例 FLOW_MAX_WBTC_SATS）。既定 0 = WBTC 等の flow off → extraBases が RNG 非消費 = byte 互換。
     // WETH flow は uninformed/balancer/curve FlowMaxWethWei を使い続ける（ここには載せない）。

@@ -4,18 +4,13 @@
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";
 import { accountAddress, getBalances } from "@eris/sdk/chain.js";
-import type {
-  ProtocolId,
-  RawTxIntent,
-  TxIntent,
-} from "@eris/sdk/types.js";
+import type { ProtocolId, RawTxIntent, TxIntent } from "@eris/sdk/types.js";
 import { baseTokens } from "@eris/sdk/markets.js";
 import { enabledAdapters } from "@eris/sdk/protocols/registry.js";
 import type { FlowKind, SimContext } from "@eris/sdk/protocols/types.js";
 import { FlowProcess, type FlowOrderWire } from "./flowProcess.js";
 import type { FlowContextWire } from "./flow/logic.js";
 import { readAaveFlowReserves } from "@eris/sdk/protocols/aave.js";
-
 
 // ---------------------------------------------------------------------------
 // 観測 / flow / submit
@@ -140,6 +135,7 @@ export async function buildFlowContext(
       aaveFlowMaxWethWei: ctx.config.aaveFlowMaxWethWei.toString(),
       maxAaveBorrowUsdcUnits: ctx.config.maxAaveBorrowUsdcUnits.toString(),
       aaveFlowActivityProb: String(ctx.config.aaveFlowActivityProb),
+      informedArbFeeBps: String(ctx.config.informedArbFeeBps),
       defaultPriorityFeeWei: ctx.config.defaultPriorityFeeWei.toString(),
     },
   };
@@ -263,7 +259,8 @@ export async function initialFairPrice(
   enabledIds: ProtocolId[],
 ): Promise<number> {
   if (enabledIds.includes("uniswap")) {
-    const { getPoolPriceUsdcPerWeth } = await import("@eris/sdk/protocols/uniswap.js");
+    const { getPoolPriceUsdcPerWeth } =
+      await import("@eris/sdk/protocols/uniswap.js");
     return getPoolPriceUsdcPerWeth(ctx.publicClient);
   }
   return 3000;
