@@ -37,6 +37,15 @@ flow:
   informedMaxWethWei: "2000000000000000000"
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
+  # 現実的フロー（ADR 0015 Notes / amm-challenge 由来）。以下は既定値で、書かなくても効く。
+  #   informedArbFeeBps: 環境の裁定(informed flow)を fee-aware に。gap が fee バンド(既定 30bps)を
+  #     超えたときだけ超過分を閉じ、残差=fee を残す（毎ブロック全力で fair を締めない）。0 で従来挙動。
+  #   uninformedArrivalRate: 無情報フローを Poisson 到着に（λ、既定 0.9）。0 で固定本数に戻す。
+  #   uninformedSizeSigma: 無情報フローのサイズを lognormal 化（σ、既定 1.0。裾が重い＝時々大口）。
+  # 注: Poisson/lognormal は分散を増やすので run 比較は複数 seed の集計で読むこと。無効化は 0 に。
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
   # gmx flow を出すブロック確率（0..1、既定 0.5）。発火時は 1〜gmxMaxBurst 件をランダムに建てる。
   # gmxActivityProb: "0.5"
   # gmxMaxBurst: "2"        # 発火ブロックで出す gmx 本数の上限（1=常に単発）

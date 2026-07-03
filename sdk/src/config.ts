@@ -147,12 +147,13 @@ export type SimConfig = {
   // 各アクターは別アドレスで持続ポジションを保ち、債務は翌ブロック以降も残る。
   aaveFlowActorCount: number;
   // ADR 0015 Notes / amm-challenge: informed（裁定）flow を fee-aware にする閾値（bps）。
-  // 0（既定）= 従来の gap 線形（byte 互換）。>0 で「gap が fee バンドを超えたときだけ、超過分だけ」
-  // informed flow を出す（残差 = fee。市場を過剰に締めず arb agent の取り分を残す）。
+  // 既定 30bps = on（gap が fee バンドを超えたときだけ、超過分だけ informed flow を出す。残差 = fee。
+  // 現実の裁定と同じ経済で市場を過剰に締めない）。0 で従来の gap 線形 informed flow に戻す。
   informedArbFeeBps: number;
   // ADR 0015 Notes / amm-challenge の retail: uninformed 到着を Poisson(λ)・サイズを lognormal に。
-  // λ=0（既定）= 従来の固定本数 + 一様サイズ（byte 互換）。>0 で 1 ブロックの本数を Poisson(λ)、
-  // 各サイズを lognormal（平均 = uninformedMax×0.5、σ=uninformedFlowSizeSigma）にする（裾が重い＝時々大口）。
+  // 既定 λ=0.9 = on（1 ブロックの本数を Poisson(λ)、各サイズを lognormal（平均 = uninformedMax×0.5、
+  // σ=uninformedFlowSizeSigma）＝バースト的で裾が重い現実的フロー）。0 で従来の固定本数+一様に戻す。
+  // 注: 分散が増えるため run 比較は複数 seed の集計で読む。
   uninformedFlowArrivalRate: number;
   uninformedFlowSizeSigma: number;
   // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。既定空/0 = WBTC flow off。
@@ -330,12 +331,14 @@ export function loadConfig(env = process.env): SimConfig {
     aaveFlowActivityProb: floatEnv(env.AAVE_FLOW_ACTIVITY_PROB, 0.5),
     // aave 借り手プールの独立アクター数（既定 4）。1 ブロックの最大同時 borrow 数 = この値。
     aaveFlowActorCount: Math.max(1, intEnv(env.AAVE_FLOW_ACTOR_COUNT, 4)),
-    // amm-challenge の裁定 fee 境界（既定 0 = off）。>0 で informed flow が fee-aware になる。
-    informedArbFeeBps: Math.max(0, intEnv(env.ERIS_INFORMED_ARB_FEE_BPS, 0)),
-    // amm-challenge の retail 到着（既定 λ=0 = off）。>0 で Poisson 到着 + lognormal サイズ。
+    // amm-challenge の裁定 fee 境界（既定 30bps = on。現実の裁定が fee 未満の gap を取らない挙動。
+    // venue 手数料 ~30bps に合わせる）。0 で無効化＝従来の gap 線形 informed flow に戻せる。
+    informedArbFeeBps: Math.max(0, intEnv(env.ERIS_INFORMED_ARB_FEE_BPS, 30)),
+    // amm-challenge の retail 到着（既定 λ=0.9 = on。Poisson 到着 + lognormal サイズ＝バースト的で
+    // 裾が重い現実的フロー。旧・固定本数のほぼ同水準の平均に較正）。0 で無効化＝固定本数+一様に戻せる。
     uninformedFlowArrivalRate: Math.max(
       0,
-      floatEnv(env.ERIS_UNINFORMED_ARRIVAL_RATE, 0),
+      floatEnv(env.ERIS_UNINFORMED_ARRIVAL_RATE, 0.9),
     ),
     uninformedFlowSizeSigma: Math.max(
       0,
