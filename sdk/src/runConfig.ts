@@ -112,6 +112,8 @@ const SCHEMA: Record<string, string> = {
   "flow.aaveActivityProb": "AAVE_FLOW_ACTIVITY_PROB",
   "flow.aaveActorCount": "AAVE_FLOW_ACTOR_COUNT",
   "flow.informedArbFeeBps": "ERIS_INFORMED_ARB_FEE_BPS",
+  "flow.uninformedArrivalRate": "ERIS_UNINFORMED_ARRIVAL_RATE",
+  "flow.uninformedSizeSigma": "ERIS_UNINFORMED_SIZE_SIGMA",
   "flow.seed": "FLOW_SEED",
   "flow.botCommand": "FLOW_BOT_COMMAND",
   "flow.botArgs": "FLOW_BOT_ARGS",

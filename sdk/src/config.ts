@@ -150,6 +150,11 @@ export type SimConfig = {
   // 0（既定）= 従来の gap 線形（byte 互換）。>0 で「gap が fee バンドを超えたときだけ、超過分だけ」
   // informed flow を出す（残差 = fee。市場を過剰に締めず arb agent の取り分を残す）。
   informedArbFeeBps: number;
+  // ADR 0015 Notes / amm-challenge の retail: uninformed 到着を Poisson(λ)・サイズを lognormal に。
+  // λ=0（既定）= 従来の固定本数 + 一様サイズ（byte 互換）。>0 で 1 ブロックの本数を Poisson(λ)、
+  // 各サイズを lognormal（平均 = uninformedMax×0.5、σ=uninformedFlowSizeSigma）にする（裾が重い＝時々大口）。
+  uninformedFlowArrivalRate: number;
+  uninformedFlowSizeSigma: number;
   // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。既定空/0 = WBTC flow off。
   baseFlowMax: Record<string, bigint>;
   // orderflow bot（独立プロセス）の起動コマンドと決定論シード。
@@ -327,6 +332,15 @@ export function loadConfig(env = process.env): SimConfig {
     aaveFlowActorCount: Math.max(1, intEnv(env.AAVE_FLOW_ACTOR_COUNT, 4)),
     // amm-challenge の裁定 fee 境界（既定 0 = off）。>0 で informed flow が fee-aware になる。
     informedArbFeeBps: Math.max(0, intEnv(env.ERIS_INFORMED_ARB_FEE_BPS, 0)),
+    // amm-challenge の retail 到着（既定 λ=0 = off）。>0 で Poisson 到着 + lognormal サイズ。
+    uninformedFlowArrivalRate: Math.max(
+      0,
+      floatEnv(env.ERIS_UNINFORMED_ARRIVAL_RATE, 0),
+    ),
+    uninformedFlowSizeSigma: Math.max(
+      0,
+      floatEnv(env.ERIS_UNINFORMED_SIZE_SIGMA, 1),
+    ),
     // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。env FLOW_MAX_<SYM>_<UNIT>
     // （例 FLOW_MAX_WBTC_SATS）。既定 0 = WBTC 等の flow off → extraBases が RNG 非消費 = byte 互換。
     // WETH flow は uninformed/balancer/curve FlowMaxWethWei を使い続ける（ここには載せない）。

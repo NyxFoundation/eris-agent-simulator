@@ -19,6 +19,35 @@ export class Rng {
   bool(): boolean {
     return this.next() >= 0.5;
   }
+
+  // 標準正規（Box-Muller）。lognormal サイズや連続ノイズに使う。
+  gaussian(): number {
+    // next() は [0,1)。u1=0 での log(0) を避けるため下限を入れる。
+    const u1 = Math.max(this.next(), 1e-12);
+    const u2 = this.next();
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  }
+
+  // 平均 mean・σ の lognormal サンプル（正の値。裾が重い注文サイズに使う。amm-challenge の retail）。
+  // mu = ln(mean) − σ²/2 とすることで期待値が mean になる。
+  lognormal(mean: number, sigma: number): number {
+    if (!(mean > 0)) return 0;
+    const mu = Math.log(mean) - 0.5 * sigma * sigma;
+    return Math.exp(mu + sigma * this.gaussian());
+  }
+
+  // 平均 lambda の Poisson サンプル（到着数。Knuth 法。lambda が小さい前提の flow 用途）。
+  poisson(lambda: number): number {
+    if (!(lambda > 0)) return 0;
+    const l = Math.exp(-lambda);
+    let k = 0;
+    let p = 1;
+    do {
+      k++;
+      p *= this.next();
+    } while (p > l);
+    return k - 1;
+  }
 }
 
 function floatEnv(value: string | undefined, fallback: number): number {

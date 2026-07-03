@@ -136,6 +136,8 @@ export async function buildFlowContext(
       maxAaveBorrowUsdcUnits: ctx.config.maxAaveBorrowUsdcUnits.toString(),
       aaveFlowActivityProb: String(ctx.config.aaveFlowActivityProb),
       informedArbFeeBps: String(ctx.config.informedArbFeeBps),
+      uninformedArrivalRate: String(ctx.config.uninformedFlowArrivalRate),
+      uninformedSizeSigma: String(ctx.config.uninformedFlowSizeSigma),
       defaultPriorityFeeWei: ctx.config.defaultPriorityFeeWei.toString(),
     },
   };

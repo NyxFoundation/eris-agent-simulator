@@ -40,6 +40,10 @@ export type FlowLimits = {
   aaveFlowActivityProb: number;
   // ADR 0015 Notes / amm-challenge: informed flow の fee 境界（bps）。0=off（gap 線形）。
   informedArbFeeBps: number;
+  // ADR 0015 Notes / amm-challenge の retail: uninformed 到着 Poisson(λ) / サイズ lognormal σ。
+  // λ=0=off（固定本数 + 一様）。
+  uninformedArrivalRate: number;
+  uninformedSizeSigma: number;
   defaultPriorityFeeWei: bigint;
 };
 
@@ -90,6 +94,9 @@ export type FlowContextWire = {
     aaveFlowActivityProb?: string;
     // ADR 0015 Notes / amm-challenge: informed flow の fee 境界（bps）。未設定/"0"=off（byte 互換）。
     informedArbFeeBps?: string;
+    // ADR 0015 Notes / amm-challenge の retail: uninformed 到着 Poisson(λ) / lognormal σ。未設定/"0"=off。
+    uninformedArrivalRate?: string;
+    uninformedSizeSigma?: string;
     defaultPriorityFeeWei: string;
   };
 };
@@ -130,6 +137,13 @@ function randomBigInt(
     minInclusive +
     (BigInt(Math.floor(rng.next() * 1_000_000)) * span) / 1_000_000n
   );
+}
+
+// bigint 上限を float の割合で縮尺する（ppm 精度）。lognormal サイズを wei へ落とすのに使う
+// （uninformedMax が Number 安全整数を超えるため float×bigint は割合経由で計算する）。
+function scaleFraction(cap: bigint, fraction: number): bigint {
+  const ppm = BigInt(Math.max(0, Math.round(fraction * 1_000_000)));
+  return (cap * ppm) / 1_000_000n;
 }
 
 // base amount(base decimals) を price(USDC/base) で quote units(USDC decimals) へ換算。
@@ -195,6 +209,11 @@ export function buildAmmFlow(
   // 私たちの venue は Uniswap v3 / weighted / crypto で純 CPMM ではないため、閉形式係数でなく
   // 「fee 境界の経済」だけを移植する（depth は既存の informedMax を代理に使う）。
   informedArbFeeBps = 0,
+  // ADR 0015 Notes / amm-challenge の retail: uninformed 到着を Poisson(λ)・サイズを lognormal に。
+  // arrivalRate=0（既定）= 従来の固定本数（uninformedCount）＋一様サイズ（byte 互換）。
+  // >0 で 1 ブロックの本数を Poisson(λ)、各サイズを lognormal（平均 = uninformedMax×0.5、σ=sizeSigma）に。
+  uninformedArrivalRate = 0,
+  uninformedSizeSigma = 1,
 ): FlowOrder[] {
   const orders: FlowOrder[] = [];
   const swapType =
@@ -224,14 +243,27 @@ export function buildAmmFlow(
     // USDC in=買い(価格↑) / base in=売り(価格↓)。venue×window で up/down が分かれ spread を作る。
     trendTokenIn = h % 2 === 0 ? "USDC" : base;
   }
-  for (let u = 0; u < Math.max(1, uninformedCount); u++) {
+  // Poisson モード（arrivalRate>0）: 1 ブロックの到着数を Poisson(λ) で引く（0 件のブロックも自然に出る）。
+  // 従来モード（arrivalRate=0）: 固定本数 max(1, uninformedCount)。RNG 消費も従来どおり（byte 互換）。
+  const arrivals =
+    uninformedArrivalRate > 0
+      ? rng.poisson(uninformedArrivalRate)
+      : Math.max(1, uninformedCount);
+  for (let u = 0; u < arrivals; u++) {
     let uninformedTokenIn: TokenSymbol =
       trendTokenIn ?? (rng.bool() ? base : "USDC");
-    const uninformedWethEquiv = randomBigInt(
-      rng,
-      uninformedMaxWethWei / 20n,
-      uninformedMaxWethWei,
-    );
+    // Poisson モードはサイズを lognormal（裾が重い＝時々大口）。平均 = uninformedMax×0.5 で
+    // 従来の一様（平均 ~52.5%）とほぼ同水準。外れ値は [2%, 300%] にクランプしてプールを壊さない。
+    const uninformedWethEquiv =
+      uninformedArrivalRate > 0
+        ? scaleFraction(
+            uninformedMaxWethWei,
+            Math.min(
+              3,
+              Math.max(0.02, rng.lognormal(0.5, uninformedSizeSigma)),
+            ),
+          )
+        : randomBigInt(rng, uninformedMaxWethWei / 20n, uninformedMaxWethWei);
     if (
       uninformedTokenIn === base &&
       (usdcOnlyFlow ||
@@ -587,6 +619,11 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
     maxAaveBorrowUsdcUnits: BigInt(wire.maxAaveBorrowUsdcUnits),
     aaveFlowActivityProb: clampProb(wire.aaveFlowActivityProb, 0.5),
     informedArbFeeBps: Math.max(0, Number(wire.informedArbFeeBps ?? "0")),
+    uninformedArrivalRate: Math.max(
+      0,
+      Number(wire.uninformedArrivalRate ?? "0"),
+    ),
+    uninformedSizeSigma: Math.max(0, Number(wire.uninformedSizeSigma ?? "1")),
     defaultPriorityFeeWei: BigInt(wire.defaultPriorityFeeWei),
   };
 }
@@ -638,6 +675,8 @@ export function buildFlowOrders(
           ctx.round,
           limits.uninformedFlowPersistBlocks,
           limits.informedArbFeeBps,
+          limits.uninformedArrivalRate,
+          limits.uninformedSizeSigma,
         ),
       );
     } else if (protocol === "aave") {
@@ -740,6 +779,8 @@ export function buildFlowOrders(
           ctx.round,
           limits.uninformedFlowPersistBlocks,
           limits.informedArbFeeBps,
+          limits.uninformedArrivalRate,
+          limits.uninformedSizeSigma,
         ),
       );
     }
