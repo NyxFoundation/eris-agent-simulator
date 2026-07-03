@@ -21,5 +21,3 @@ probe_tmp.mts
 # ローカルデプロイモードの snapshot ID
 .local-snapshot
 
-# spot runner のローカル run 出力（run-spot がカレントに作る）
-runs-spot-*/
