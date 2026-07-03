@@ -51,6 +51,10 @@ export type ReconstructionMeta = {
   blocks: number;
   failedReads: number;
   elapsedMs: number;
+  // α 評価に使った固定参照 fair（USDC/WETH。run 末の fair）。
+  alphaRefFairUsdcPerWeth: number;
+  // agent -> α（= 固定参照 fair での価値の toBlock − fromBlock。β 除去したトレード由来 PnL）。
+  alphaByAgent: Record<string, number>;
 };
 
 type MulticallContract = {
@@ -84,7 +88,18 @@ function perAgentReads(opts: {
 // run 後再構成（reconstructValueSeries）と dashboard の valuePoller が同じ価値計算を
 // 共有するための単一断面リーダ（ADR 0008 P0）。blockNumber 指定で歴史/現在いずれの
 // 断面も読める。observation の emit はしない（呼び側の責務）。
-export type AgentValueSnapshot = { id: string; valueUsdc: number };
+// valueUsdc = live fair での総価値（β 込みの mark-to-market）。
+// alphaValueUsdc = free 在庫（eth/weth/追加 base）を「run 内で固定した参照 fair」で評価した
+//   価値（+ protocol position は live fair の mark。ADR 0002 系 attribution と同じ近似）。
+//   固定参照で評価するため保有在庫への価格ドリフト（β）が両断面で相殺され、トレードが
+//   「fair に対して有利/不利な価格で約定した分」＝α だけが残る（amm-challenge の
+//   fair-price-at-execution edge に相当。ADR 0015 Notes）。refFairByBase 未指定なら
+//   alphaValueUsdc = valueUsdc（後方互換）。
+export type AgentValueSnapshot = {
+  id: string;
+  valueUsdc: number;
+  alphaValueUsdc: number;
+};
 
 export type ValueSnapshot = {
   blockNumber: number;
@@ -102,6 +117,8 @@ export async function readValueSnapshotAtBlock(opts: {
   activeStables: Address[];
   priceFeed: Address;
   blockNumber: number;
+  // α 評価用の固定参照 fair（base シンボル -> USD）。未指定なら α = 総価値。
+  refFairByBase?: Record<string, number>;
 }): Promise<ValueSnapshot> {
   const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
   const hasUniswap = enabledIds.includes("uniswap");
@@ -279,6 +296,8 @@ export async function readValueSnapshotAtBlock(opts: {
     }
   }
 
+  // α 評価は free base 在庫を固定参照 fair で評価する（未指定なら live fair と同一 = α=総価値）。
+  const refFairByBase = opts.refFairByBase ?? fairByBase;
   const values: AgentValueSnapshot[] = [];
   for (let i = 0; i < agents.length; i++) {
     const agent = agents[i];
@@ -291,19 +310,28 @@ export async function readValueSnapshotAtBlock(opts: {
     for (let s = 0; s < activeStables.length; s++) {
       usdcUnits += (results[idx++] as bigint) ?? 0n;
     }
-    let total = valueUsdc({ ethWei, wethWei, usdcUnits, bases }, fairByBase);
+    const balance = { ethWei, wethWei, usdcUnits, bases };
+    // free 在庫を live fair（β 込み）と固定参照 fair（β 除去）の 2 通りで評価する。
+    let total = valueUsdc(balance, fairByBase);
+    let alphaTotal = valueUsdc(balance, refFairByBase);
     if (hasAave) {
       const account = results[idx++] as readonly bigint[] | undefined;
-      if (account) total += Number(account[0] - account[1]) / 1e8;
+      // aave 担保−負債は USD 8 桁。position は両評価とも live mark（β 除去は free 在庫のみ）。
+      const aaveUsd = account ? Number(account[0] - account[1]) / 1e8 : 0;
+      total += aaveUsd;
+      alphaTotal += aaveUsd;
     }
     if (hasGmx) {
       const positions = results[idx++] as
-        | Parameters<typeof gmxEthUsdPositionValueUsd>[0]
-        | undefined;
-      total += gmxEthUsdPositionValueUsd(positions, fairPrice);
+        Parameters<typeof gmxEthUsdPositionValueUsd>[0] | undefined;
+      const gmxUsd = gmxEthUsdPositionValueUsd(positions, fairPrice);
+      total += gmxUsd;
+      alphaTotal += gmxUsd;
     }
-    total += lpValueByAgent.get(agent.id) ?? 0;
-    values.push({ id: agent.id, valueUsdc: total });
+    const lpUsd = lpValueByAgent.get(agent.id) ?? 0;
+    total += lpUsd;
+    alphaTotal += lpUsd;
+    values.push({ id: agent.id, valueUsdc: total, alphaValueUsdc: alphaTotal });
   }
 
   return {
@@ -345,6 +373,29 @@ export async function reconstructValueSeries(opts: {
     );
   }
 
+  // α の固定参照 fair は run 末（toBlock）の fair を全 base で使う。まず toBlock を読み、
+  // その fairByBase を参照に据えてから fromBlock..toBlock を評価する（β を run 全域で除去）。
+  const refSnapshot = await readValueSnapshotAtBlock({
+    publicClient,
+    agents,
+    enabledIds,
+    activeStables,
+    priceFeed,
+    blockNumber: toBlock,
+  });
+  failedReads += refSnapshot.failedReads;
+  const refFairByBase: Record<string, number> = { WETH: 0 };
+  for (const b of baseTokens().map((t) => t.symbol)) {
+    refFairByBase[b] = await readFairForRef(
+      publicClient,
+      priceFeed,
+      b,
+      toBlock,
+    );
+  }
+
+  const alphaFirst = new Map<string, number>();
+  const alphaLast = new Map<string, number>();
   for (let b = fromBlock; b <= toBlock; b++) {
     const snapshot = await readValueSnapshotAtBlock({
       publicClient,
@@ -353,11 +404,15 @@ export async function reconstructValueSeries(opts: {
       activeStables,
       priceFeed,
       blockNumber: b,
+      refFairByBase,
     });
     failedReads += snapshot.failedReads;
-    for (const { id, valueUsdc: total } of snapshot.values) {
+    for (const { id, valueUsdc: total, alphaValueUsdc } of snapshot.values) {
+      if (!alphaFirst.has(id)) alphaFirst.set(id, alphaValueUsdc);
+      alphaLast.set(id, alphaValueUsdc);
       // readPerRoundValues が読む observation 形（inventory.valueUsdc = 総価値）。
-      // protocols は載せない（perRoundValueUsdc の二重加算を避ける）。
+      // protocols は載せない（perRoundValueUsdc の二重加算を避ける）。alphaValueUsdc は
+      // 固定参照 fair 評価（β 除去）で、per-round の α 系列としても読める。
       logger.event({
         type: "observation",
         agentId: id,
@@ -366,11 +421,15 @@ export async function reconstructValueSeries(opts: {
           round: b,
           blockNumber: String(b),
           fairPriceUsdcPerWeth: snapshot.fairPriceUsdcPerWeth,
-          inventory: { valueUsdc: total },
+          inventory: { valueUsdc: total, alphaValueUsdc },
         },
       });
     }
   }
+
+  const alphaByAgent: Record<string, number> = {};
+  for (const { id } of agents)
+    alphaByAgent[id] = (alphaLast.get(id) ?? 0) - (alphaFirst.get(id) ?? 0);
 
   return {
     source: "post-run-reconstruction",
@@ -380,5 +439,39 @@ export async function reconstructValueSeries(opts: {
     blocks: toBlock - fromBlock + 1,
     failedReads,
     elapsedMs: Date.now() - started,
+    alphaRefFairUsdcPerWeth: refFairByBase.WETH,
+    alphaByAgent,
   };
+}
+
+// 固定参照 fair 用に 1 base の fair を読む（WETH=latestAnswer / 追加 base=answerOf）。
+async function readFairForRef(
+  publicClient: PublicClient,
+  priceFeed: Address,
+  base: string,
+  blockNumber: number,
+): Promise<number> {
+  try {
+    if (base === "WETH") {
+      return fromPriceFeedAnswer(
+        (await publicClient.readContract({
+          address: priceFeed,
+          abi: priceFeedAbi,
+          functionName: "latestAnswer",
+          blockNumber: BigInt(blockNumber),
+        })) as bigint,
+      );
+    }
+    return fromPriceFeedAnswer(
+      (await publicClient.readContract({
+        address: priceFeed,
+        abi: priceFeedAbi,
+        functionName: "answerOf",
+        args: [tokenInfo(base).address],
+        blockNumber: BigInt(blockNumber),
+      })) as bigint,
+    );
+  } catch {
+    return 0;
+  }
 }

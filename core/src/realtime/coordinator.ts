@@ -1101,6 +1101,8 @@ export async function runRealtimeSimulation(
       source: "live-observation",
       granularityBlocks: 1,
     };
+    // agent -> α（約定時 fair 基準の β 除去 PnL。ADR 0015 Notes / amm-challenge の edge 相当）。
+    let alphaByAgent: Record<string, number> = {};
     if (finalBlock >= runStartBlock) {
       const meta = await reconstructValueSeries({
         publicClient,
@@ -1113,6 +1115,7 @@ export async function runRealtimeSimulation(
         toBlock: finalBlock,
       });
       valueSeries = meta;
+      alphaByAgent = meta.alphaByAgent;
       logger.event({ type: "value_series_reconstructed", ...meta });
     }
 
@@ -1155,6 +1158,12 @@ export async function runRealtimeSimulation(
         initialValueUsdc: initialValue,
         finalValueUsdc: finalValue,
         netPnlUsdc: finalValue - initialValue,
+        // alphaUsdc: 約定時 fair 基準の β 除去 PnL（トレードの取り分。amm-challenge の edge 相当。
+        // ADR 0015 Notes）。netPnlUsdc は価格ドリフト β を含む総額なので、実力比較はこちらを見る。
+        // 再構成が走らなかった（finalBlock<runStartBlock）ときは undefined。
+        ...(agent.id in alphaByAgent
+          ? { alphaUsdc: alphaByAgent[agent.id] }
+          : {}),
         // 提出数は agent の自己申告ログ（agents/<id>.jsonl）が一次情報（ADR 0006 §5）
         includedTxCount: agent.included,
         revertCount: agent.reverted,
