@@ -168,8 +168,10 @@ describe("missingVenues", () => {
     );
   });
 
-  it("未知の protocol 名は検査対象外（coordinator 側の検証に任せる）", () => {
-    assert.deepEqual(missingVenues(["unknown-venue"], deployments), []);
+  it("マッピングに無い protocol 名は fail-closed で missing 扱い（新 venue の更新漏れ対策）", () => {
+    assert.deepEqual(missingVenues(["unknown-venue"], deployments), [
+      "unknown-venue",
+    ]);
   });
 });
 

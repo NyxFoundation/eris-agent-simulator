@@ -12,23 +12,21 @@
 // sim-realtime.ts と同じ理由で dependency-light: sdk/constants を import する前に
 // ERIS_LOCAL_DEPLOY=1 を立て、constants.local.ts の fingerprint 同期を済ませる必要がある。
 // coordinator は最後に動的 import する。
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import {
-  existsSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
+  gitHead,
+  isAnvilUp,
   missingVenues,
+  parseFlags,
   readConstantsFingerprint,
   readStateManifest,
   resolveRegimePath,
+  rpc,
   STATE_DIR_DEFAULT,
+  waitUntilAnvilUp,
 } from "../backtest/shared.js";
 
 const ROOT = process.cwd(); // npm scripts は repo root で走る
@@ -43,86 +41,7 @@ const USAGE = `usage: npm run backtest -- --regime <name|path> [options]
   --seed/--blocks/--seconds/--protocols/--economic-gas
                          regime 値の一回限り上書き（スモーク用。成績を読む run は regime 既定で）`;
 
-function parseFlags(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 2; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a.startsWith("--")) continue;
-    const body = a.slice(2);
-    const eq = body.indexOf("=");
-    if (eq >= 0) out[body.slice(0, eq)] = body.slice(eq + 1);
-    else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith("--"))
-      out[body] = argv[++i];
-    else out[body] = "1";
-  }
-  return out;
-}
-
-async function rpc<T = unknown>(
-  url: string,
-  method: string,
-  params: unknown[] = [],
-): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const body = (await res.json()) as {
-    result?: T;
-    error?: { message?: string };
-  };
-  if (body.error)
-    throw new Error(`${method} failed: ${body.error.message ?? "unknown"}`);
-  return body.result as T;
-}
-
-async function isUp(url: string): Promise<boolean> {
-  try {
-    await rpc(url, "web3_clientVersion");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitUntilUp(url: string, timeoutMs = 30_000): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (await isUp(url)) return;
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  throw new Error(`anvil が ${url} で起動しませんでした`);
-}
-
-// run 完了後に runDirRoot から「この iteration 中に作られた」最新 run ディレクトリを引く
-// （coordinator は runId を返さないため。runId は ISO 時刻由来なので名前順 = 時刻順）。
-function newestRunDirSince(
-  runDirRoot: string,
-  sinceMs: number,
-): string | undefined {
-  if (!existsSync(runDirRoot)) return undefined;
-  const dirs = readdirSync(runDirRoot)
-    .map((name) => join(runDirRoot, name))
-    .filter((p) => {
-      try {
-        const st = statSync(p);
-        return st.isDirectory() && st.birthtimeMs >= sinceMs - 1000;
-      } catch {
-        return false;
-      }
-    })
-    .sort();
-  return dirs.at(-1);
-}
-
-type AgentSummary = {
-  id: string;
-  alphaUsdc?: number;
-  netPnlUsdc?: number;
-  includedTxCount?: number;
-  revertCount?: number;
-};
+type AgentSummary = { id: string; alphaUsdc?: number; netPnlUsdc?: number };
 type RunSummary = {
   runDir: string;
   blocksProcessed?: number;
@@ -144,13 +63,13 @@ function readRunSummary(runDir: string): RunSummary | undefined {
 }
 
 // constants.local.ts を state manifest の同梱 deployments と同期する（ADR 0016 §2）。
-// 不一致なら manifest から deployments を抽出して gen:local-constants を回す。再生成しても
-// 一致しない場合は state dump と repo バージョンの組合せ違い → fail-fast。
-function syncConstants(
+// 不一致なら manifest から deployments を抽出して再生成し、それでも一致しない場合は
+// state dump と repo バージョンの組合せ違い → fail-fast。
+async function syncConstants(
   manifestFingerprint: string,
   deployments: Record<string, unknown>,
   stateDirAbs: string,
-): void {
+): Promise<void> {
   const constantsPath = resolve(ROOT, "sdk", "src", "constants.local.ts");
   const current = readConstantsFingerprint(constantsPath);
   if (current === manifestFingerprint) return;
@@ -160,17 +79,15 @@ function syncConstants(
   );
   const extracted = join(stateDirAbs, "deployments.extracted.json");
   writeFileSync(extracted, `${JSON.stringify(deployments, null, 2)}\n`);
-  const r = spawnSync("npm", ["run", "gen:local-constants"], {
-    cwd: ROOT,
-    stdio: ["ignore", "inherit", "inherit"],
-    env: { ...process.env, DEPLOYMENTS_JSON: extracted },
-  });
-  if (r.status !== 0) throw new Error("gen:local-constants failed");
-  const after = readConstantsFingerprint(constantsPath);
-  if (after !== manifestFingerprint)
+  // genLocalConstants は node builtins + viem + backtest/shared にしか依存しない
+  // （sdk/constants を評価しない）ので、coordinator より先に import してよい。
+  const { generateLocalConstants } =
+    await import("../../../scripts/genLocalConstants.js");
+  const { fingerprint } = generateLocalConstants(extracted);
+  if (fingerprint !== manifestFingerprint)
     throw new Error(
       `constants.local.ts を再生成しても fingerprint が一致しません ` +
-        `(${after ?? "(none)"} != ${manifestFingerprint})。state dump と repo の ` +
+        `(${fingerprint} != ${manifestFingerprint})。state dump と repo の ` +
         `バージョンの組合せを確認してください（ADR 0016 §2 fail-fast）`,
     );
 }
@@ -199,15 +116,7 @@ async function main(): Promise<void> {
 
   // ---- state manifest の検証 + constants 同期（coordinator import 前に済ませる）----
   const { manifest, statePath } = readStateManifest(stateDirAbs);
-  const head = (() => {
-    try {
-      return spawnSync("git", ["rev-parse", "HEAD"], { cwd: ROOT })
-        .stdout.toString()
-        .trim();
-    } catch {
-      return undefined;
-    }
-  })();
+  const head = gitHead(ROOT);
   if (
     head &&
     manifest.sourceCommit !== "unknown" &&
@@ -218,7 +127,7 @@ async function main(): Promise<void> {
         `現在の HEAD (${head.slice(0, 12)}) が異なります。deployer/constants を変えた場合は ` +
         `npm run gen:state-dump で焼き直してください`,
     );
-  syncConstants(
+  await syncConstants(
     manifest.deploymentsFingerprint,
     manifest.deployments,
     stateDirAbs,
@@ -228,16 +137,16 @@ async function main(): Promise<void> {
   // run の override（--protocols 等）は coordinator の cliOverrides だけでは足りない: agent
   // プロセスは ERIS_CONFIG の YAML を直接読むため、override をマージした「実効 regime YAML」を
   // 書き出して coordinator と agent が同一設定を読むようにする（そうしないと agent が state に
-  // 無い venue を観測しようとしてゼロアドレス read で死ぬ）。
+  // 無い venue を観測しようとしてゼロアドレス read で死ぬ）。--agents の roster も同じ理由で
+  // 実効 YAML の inline agents に焼き込む（core のロスター解決に優先順位の分岐を足さない）。
   type RegimeDoc = {
     run?: Record<string, unknown> & {
-      reportDir?: string;
       seed?: number;
       protocols?: string[];
     };
+    agents?: unknown;
   } & Record<string, unknown>;
   const regimeDoc = parseYaml(readFileSync(regimePath, "utf8")) as RegimeDoc;
-  const runDirRoot = resolve(ROOT, regimeDoc?.run?.reportDir ?? "./runs");
 
   const runOverrides: Record<string, unknown> = {};
   if (flags.protocols)
@@ -248,14 +157,28 @@ async function main(): Promise<void> {
   if (flags["economic-gas"] !== undefined)
     runOverrides.economicGas =
       flags["economic-gas"] === "1" || flags["economic-gas"] === "true";
-  if (flags.agents !== undefined)
-    runOverrides.agentsConfig = resolve(ROOT, flags.agents);
+
+  let rosterAgents: unknown;
+  if (flags.agents !== undefined) {
+    const rosterPath = resolve(ROOT, flags.agents);
+    if (!existsSync(rosterPath))
+      throw new Error(`agents roster not found: ${rosterPath} (--agents)`);
+    // JSON は YAML 1.2 のサブセットなので .json ロスターも parseYaml で読める。
+    // 中身の検証は coordinator の validateAgentsFile に任せる。
+    const roster = parseYaml(readFileSync(rosterPath, "utf8")) as {
+      agents?: unknown;
+    };
+    if (!roster || !Array.isArray(roster.agents))
+      throw new Error(`${rosterPath} must contain an "agents" array`);
+    rosterAgents = roster.agents;
+  }
 
   let effectiveRegimePath = regimePath;
-  if (Object.keys(runOverrides).length > 0) {
+  if (Object.keys(runOverrides).length > 0 || rosterAgents !== undefined) {
     const effective: RegimeDoc = {
       ...regimeDoc,
       run: { ...(regimeDoc.run ?? {}), ...runOverrides },
+      ...(rosterAgents !== undefined ? { agents: rosterAgents } : {}),
     };
     effectiveRegimePath = join(stateDirAbs, `.effective-${regimeName}.yaml`);
     writeFileSync(
@@ -263,8 +186,12 @@ async function main(): Promise<void> {
       `# AUTO-GENERATED by backtest CLI — ${regimePath} + CLI overrides。手で編集しない。\n` +
         stringifyYaml(effective),
     );
+    const overridden = [
+      ...Object.keys(runOverrides),
+      ...(rosterAgents !== undefined ? ["agents"] : []),
+    ];
     console.error(
-      `[backtest] override あり（${Object.keys(runOverrides).join(", ")}）→ 実効 regime を ${effectiveRegimePath} に書き出しました。` +
+      `[backtest] override あり（${overridden.join(", ")}）→ 実効 regime を ${effectiveRegimePath} に書き出しました。` +
         `成績を読む run は regime 既定値で回すこと（ADR 0016 §3）`,
     );
   }
@@ -284,7 +211,7 @@ async function main(): Promise<void> {
     );
 
   // ---- backtest 専用 anvil（--load-state）----
-  if (await isUp(rpcUrl))
+  if (await isAnvilUp(rpcUrl))
     throw new Error(
       `port ${port} は使用中です（deployer anvil 等を巻き込まないため fail-fast）。` +
         `--port で別ポートを指定してください`,
@@ -297,7 +224,9 @@ async function main(): Promise<void> {
     [
       "--port",
       String(port),
-      // deployer の anvil と同じ較正（code-size/base-fee/gas-limit）+ 本番と同じ order fees
+      // deployer の anvil（deployer/src/anvil.ts startAnvil）と同じ較正
+      // （code-size/base-fee/gas-limit）。あちらを変えるときはここも合わせる。
+      // --order fees だけは本番 realtime と揃える意図的な追加。
       "--code-size-limit",
       "50000",
       "--base-fee",
@@ -325,7 +254,7 @@ async function main(): Promise<void> {
   });
 
   try {
-    await waitUntilUp(rpcUrl);
+    await waitUntilAnvilUp(rpcUrl);
     // state の取り違え検出: genesis hash が manifest の生成元と一致するか（ADR 0016 §2）
     const genesis = await rpc<{ hash: string }>(
       rpcUrl,
@@ -356,19 +285,18 @@ async function main(): Promise<void> {
       console.error(
         `[backtest] run ${i + 1}/${repeat} (regime=${regimeName}, seed=${runOverrides.seed ?? regimeDoc?.run?.seed ?? "?"})`,
       );
-      const before = Date.now();
-      await runRealtimeSimulation({
+      const { runDir } = await runRealtimeSimulation({
         ANVIL_RPC_URL: rpcUrl,
+        // 任意の regime ファイル（run.localDeploy を書き忘れたもの）でも config.localDeploy を保証する。
         ERIS_LOCAL_DEPLOY: "1",
         ERIS_LOCAL_SNAPSHOT_FILE: snapshotFile,
         ERIS_RUN_MODE: "backtest",
       });
-      const runDir = newestRunDirSince(runDirRoot, before);
-      const summary = runDir ? readRunSummary(runDir) : undefined;
+      const summary = readRunSummary(runDir);
       if (summary) summaries.push(summary);
       else
         console.error(
-          `[backtest] 警告: run ${i + 1} の summary.json が見つかりません（${runDirRoot}）`,
+          `[backtest] 警告: run ${i + 1} の summary.json が見つかりません（${runDir}）`,
         );
     }
 

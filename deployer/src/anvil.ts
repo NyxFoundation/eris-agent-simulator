@@ -35,6 +35,9 @@ async function waitUntilUp(timeoutMs = 30_000) {
  * - --code-size-limit: Uniswap V3 等の大型コントラクト対策で必須
  * - --base-fee 0: gas 計算を単純化
  * - --gas-limit: GMX のような重い tx に備え大きめ
+ *
+ * 注: poc の backtest CLI（core/src/cli/backtest.ts）が state dump の再生用 anvil を
+ * ここと同じ較正で起動する。フラグを変えるときはあちらも合わせること（ADR 0016）。
  */
 export async function startAnvil(): Promise<void> {
   if (await isUp()) {

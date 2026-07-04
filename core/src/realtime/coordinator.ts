@@ -186,7 +186,8 @@ const MIN_ECONOMIC_GAS_ETH_WEI = 500_000_000_000_000_000n; // 0.5 ETH
 export async function runRealtimeSimulation(
   // 評価ツールが per-regime SEED 等をプログラム的に差し込む（env を mutate しない）。
   overrides: Record<string, string | number | boolean> = {},
-): Promise<void> {
+  // 戻り値は run の所在（backtest CLI 等の呼び側が runs/ をスキャンせずに結果を読むため）。
+): Promise<{ runId: string; runDir: string }> {
   // ADR 0013: 設定は YAML（config/local.yaml / --config）を単一ソースに解決する。YAML が無ければ
   // 旧来の env 駆動にフォールバックする（移行期）。configPath は子プロセスへ伝播し、direct モードの
   // agent（directShim）が同じ YAML から config を再構築できるようにする。
@@ -425,8 +426,18 @@ export async function runRealtimeSimulation(
       }
     }
 
-    // 初期 fair price はここで確定する（victim setup が oracle 較正に使うため、victim より前）。
+    // 初期 fair price はここで確定する（下のローカル oracle 較正と victim setup が使う）。
     latestFairPrice = await initialFairPrice(ctx, enabledIds);
+
+    // 【較正】ローカルデプロイは Aave オラクルを run の初期 fair price に合わせる。fork は
+    // 「オラクル ≈ 実勢 ≈ fair0」で暗黙に成立するが、ローカルは deployer の seed 価格と fair0 が
+    // 乖離し得る（victim の HF0 が run 開始時点で崩れ crash 窓の前に清算可能になる誤較正を実測。
+    // victim 無しでも最初の oracle 更新 tx が載るまでの初期観測に同じ乖離が出る）。storage 直書きは
+    // setup フェーズなので front-run 面の影響は無い。aggregator 未デプロイ（aave 無効）なら no-op
+    // （ADR 0016 Phase 0）。
+    if (config.localDeploy) {
+      await writeAaveOraclesStorage(ctx, latestFairPrice);
+    }
 
     // ---- stress victim 群（ADR 0009 §4）: 清算を成立させる seed 由来の被害者を建てる ----
     // victim は agentRuntimes に含めない＝採点対象外（liquidator agent の利益源）。
@@ -455,12 +466,6 @@ export async function runRealtimeSimulation(
             "and do not set ERIS_SKIP_RESET (ADR 0009 §4 / ADR 0016 §2)",
         );
       }
-      // 【較正】victim を建てる前に Aave オラクルを run の初期 fair price に合わせる。
-      // fork は「オラクル ≈ 実勢 ≈ fair0」で暗黙に成立していたが、ローカルデプロイは deployer の
-      // seed 価格と fair0 が乖離し得る（乖離したまま建てると HF0 が run 開始時点で崩れ、crash 窓の
-      // 前に清算可能になる誤較正を実測）。storage 直書きは setup フェーズなので front-run 面の
-      // 影響は無い（ADR 0016 Phase 0）。
-      await writeAaveOraclesStorage(ctx, latestFairPrice);
       await setupStressVictims(ctx, stressVictims);
       await openStressVictimPositions(
         ctx,
@@ -1208,4 +1213,5 @@ export async function runRealtimeSimulation(
     for (const agent of agentRuntimes) agent.process?.close();
     flowProcess.close();
   }
+  return { runId, runDir: logger.runDir };
 }

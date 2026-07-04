@@ -7,9 +7,9 @@
  * canonical fingerprint）を書き出す。constants.local.ts も同じ deployments から再生成し、
  * repo と配布物の fingerprint を一致させる。
  *
- * dump は「クリーン断面」を保証するため、.local-snapshot が現 anvil のものなら revert してから
- * 取る（revert 後に snapshot を取り直して .local-snapshot を更新するので、稼働中 anvil の
- * 以後の run 運用は壊さない）。
+ * dump の「クリーン断面」保証は resetFork（sdk/src/chain.ts のローカルモード = .local-snapshot
+ * への revert → 再 snapshot → 永続化）に委譲する。snapshot ファイルの形式・stale ID の
+ * self-healing はあちらが単一の持ち主（ここで再実装しない）。
  *
  * 前提: deployer の anvil が稼働している（cd deployer && npm run deploy -- --keep-fresh）。
  *
@@ -17,61 +17,25 @@
  *   npm run gen:state-dump
  *   npm run gen:state-dump -- --rpc http://127.0.0.1:8545 --out backtest/state
  */
-import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import {
   deploymentsFingerprint,
+  gitHead,
   MANIFEST_FILE_NAME,
+  parseFlags,
+  rpc,
   STATE_DIR_DEFAULT,
   STATE_FILE_NAME,
   type StateManifest,
 } from "../core/src/backtest/shared.js";
+import { makeClients, resetFork } from "../sdk/src/chain.js";
 import { generateLocalConstants } from "./genLocalConstants.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
-
-function parseFlags(argv: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 2; i < argv.length; i++) {
-    const a = argv[i];
-    if (!a.startsWith("--")) continue;
-    const body = a.slice(2);
-    const eq = body.indexOf("=");
-    if (eq >= 0) out[body.slice(0, eq)] = body.slice(eq + 1);
-    else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith("--"))
-      out[body] = argv[++i];
-    else out[body] = "1";
-  }
-  return out;
-}
-
-async function rpc<T = unknown>(
-  url: string,
-  method: string,
-  params: unknown[] = [],
-): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const body = (await res.json()) as {
-    result?: T;
-    error?: { message?: string };
-  };
-  if (body.error)
-    throw new Error(`${method} failed: ${body.error.message ?? "unknown"}`);
-  return body.result as T;
-}
-
-async function codeLen(url: string, address: string): Promise<number> {
-  const code = await rpc<string>(url, "eth_getCode", [address, "latest"]);
-  return (code ?? "0x").length;
-}
 
 async function main(): Promise<void> {
   const flags = parseFlags(process.argv);
@@ -105,61 +69,57 @@ async function main(): Promise<void> {
       aaveV3?: { pool?: string };
     };
   };
+  // 必須はトークン/Multicall3 のみ（venue は部分デプロイを許す = missingVenues が backtest 側で
+  // 検査する）。存在する venue の代表として aave pool があれば併せて確認する。
   const mustHaveCode: Array<[string, string | undefined]> = [
     ["tokens.WETH", deployments.tokens?.WETH],
     ["common.multicall3", deployments.protocols?.common?.multicall3],
-    ["aaveV3.pool", deployments.protocols?.aaveV3?.pool],
   ];
-  for (const [what, address] of mustHaveCode) {
-    if (!address) throw new Error(`deployments.json に ${what} がありません`);
-    if ((await codeLen(rpcUrl, address)) <= 2)
-      throw new Error(
-        `${what} (${address}) にバイトコードがありません。anvil (${rpcUrl}) は ` +
-          `deployments.json のデプロイ先と別インスタンスの可能性があります`,
-      );
-  }
+  if (deployments.protocols?.aaveV3?.pool)
+    mustHaveCode.push(["aaveV3.pool", deployments.protocols.aaveV3.pool]);
+  await Promise.all(
+    mustHaveCode.map(async ([what, address]) => {
+      if (!address) throw new Error(`deployments.json に ${what} がありません`);
+      const code = await rpc<string>(rpcUrl, "eth_getCode", [
+        address,
+        "latest",
+      ]);
+      if ((code ?? "0x").length <= 2)
+        throw new Error(
+          `${what} (${address}) にバイトコードがありません。anvil (${rpcUrl}) は ` +
+            `deployments.json のデプロイ先と別インスタンスの可能性があります`,
+        );
+    }),
+  );
 
-  // ---- クリーン断面へ revert（.local-snapshot が現 anvil のものなら）----
-  const genesis = await rpc<{ hash: string }>(rpcUrl, "eth_getBlockByNumber", [
-    "0x0",
-    false,
-  ]);
-  let reverted = false;
-  if (existsSync(snapshotFile)) {
-    const [hash, id] = readFileSync(snapshotFile, "utf8").trim().split(":");
-    if (hash === genesis.hash && id) {
-      reverted = await rpc<boolean>(rpcUrl, "evm_revert", [id]).catch(
-        () => false,
-      );
-    }
-  }
-  if (reverted) {
-    console.log(
-      "✓ .local-snapshot のクリーン断面へ revert してから dump します",
-    );
-  } else {
+  // ---- クリーン断面へ revert（resetFork のローカルモードに委譲）----
+  if (!existsSync(snapshotFile))
     console.warn(
-      "! クリーン断面 snapshot が見つからない（またはこの anvil のものでない）ため、" +
-        "現在の状態をそのまま dump します。デプロイ直後の anvil なら問題ありません",
+      "! クリーン断面 snapshot（.local-snapshot）が無いため、現在の状態を pristine と" +
+        "みなして dump します。デプロイ直後の anvil なら問題ありません",
     );
-  }
+  const { publicClient } = makeClients(rpcUrl, deployments.chainId);
+  await resetFork(publicClient, {
+    localDeploy: true,
+    localSnapshotFile: snapshotFile,
+  });
 
   // ---- dump（hex-gzip → plain JSON。--load-state は plain JSON のみ受け付ける）----
   const hex = await rpc<string>(rpcUrl, "anvil_dumpState");
   const stateJson = gunzipSync(Buffer.from(hex.slice(2), "hex"));
-  const state = JSON.parse(stateJson.toString()) as {
-    accounts?: Record<string, unknown>;
-  };
-  const accounts = new Set(
-    Object.keys(state.accounts ?? {}).map((a) => a.toLowerCase()),
-  );
-  if (!accounts.has(deployments.tokens.WETH.toLowerCase()))
-    throw new Error("dump に WETH アカウントが含まれていません（dump 不整合）");
-
-  // ---- revert で消費した snapshot を取り直し、.local-snapshot を更新（運用を壊さない）----
-  if (reverted) {
-    const newId = await rpc<string>(rpcUrl, "evm_snapshot");
-    writeFileSync(snapshotFile, `${genesis.hash}:${newId}`);
+  {
+    // 整合検査だけしてパース結果は破棄する（dump は数 MB〜。木を保持しない）。
+    const state = JSON.parse(stateJson.toString()) as {
+      accounts?: Record<string, unknown>;
+    };
+    const wethLower = deployments.tokens.WETH.toLowerCase();
+    const hasWeth = Object.keys(state.accounts ?? {}).some(
+      (a) => a.toLowerCase() === wethLower,
+    );
+    if (!hasWeth)
+      throw new Error(
+        "dump に WETH アカウントが含まれていません（dump 不整合）",
+      );
   }
 
   // ---- 書き出し: state + manifest ----
@@ -167,20 +127,16 @@ async function main(): Promise<void> {
   const statePath = join(outDir, STATE_FILE_NAME);
   writeFileSync(statePath, stateJson);
 
-  const sourceCommit = (() => {
-    try {
-      return execSync("git rev-parse HEAD", { cwd: ROOT }).toString().trim();
-    } catch {
-      return "unknown";
-    }
-  })();
-  const chainIdHex = await rpc<string>(rpcUrl, "eth_chainId");
+  const genesis = await rpc<{ hash: string }>(rpcUrl, "eth_getBlockByNumber", [
+    "0x0",
+    false,
+  ]);
   const manifest: StateManifest = {
     schema: 1,
     createdAt: new Date().toISOString(),
-    sourceCommit,
+    sourceCommit: gitHead(ROOT) ?? "unknown",
     anvilVersion,
-    chainId: Number(chainIdHex),
+    chainId: deployments.chainId,
     genesisHash: genesis.hash,
     stateFile: STATE_FILE_NAME,
     deploymentsFingerprint: deploymentsFingerprint(deployments),
@@ -200,7 +156,7 @@ async function main(): Promise<void> {
   console.log(`✓ state dump: ${statePath} (${mb(stateJson.length)})`);
   console.log(`✓ manifest:   ${manifestPath}`);
   console.log(
-    `  commit=${sourceCommit.slice(0, 12)} chainId=${manifest.chainId} genesis=${genesis.hash.slice(0, 12)}…`,
+    `  commit=${manifest.sourceCommit.slice(0, 12)} chainId=${manifest.chainId} genesis=${genesis.hash.slice(0, 12)}…`,
   );
   console.log(`  fingerprint=${manifest.deploymentsFingerprint.slice(0, 20)}…`);
   console.log(`  実行: npm run backtest -- --regime calm-01`);
