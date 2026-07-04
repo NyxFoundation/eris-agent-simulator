@@ -11,7 +11,9 @@
   "scripts": {
     "anvil": "tsx core/src/cli/anvil.ts",
     "sim:realtime": "tsx core/src/cli/sim-realtime.ts",
+    "backtest": "tsx core/src/cli/backtest.ts",
     "gen:local-constants": "tsx scripts/genLocalConstants.ts",
+    "gen:state-dump": "tsx scripts/genStateDump.ts",
     "flow:market-maker": "tsx core/src/flow/market-maker.ts",
     "check:ordering": "tsx core/src/cli/checkOrdering.ts",
     "check:strategy": "tsx scripts/checkStrategyCode.ts",

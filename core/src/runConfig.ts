@@ -61,10 +61,22 @@ export function loadRunConfig(
     stressEvents: parseStressEvents(source.ERIS_STRESS_EVENTS),
     vulnEvents: parseVulnEvents(source.ERIS_VULN_EVENTS),
   };
-  // ロスター: inline `agents:` があればそれを、無ければ AGENTS_CONFIG のファイルを読む。
-  const agents = Array.isArray(doc.agents)
-    ? validateAgentsFile({ agents: doc.agents }, path)
-    : loadAgents(realtimeConfig.agentsConfigPath);
+  // ロスター: 明示指定（--agents / run.agentsConfig / overrides 由来の AGENTS_CONFIG）が
+  // あればそのファイルを読み、無ければ inline `agents:`、どちらも無ければ既定ファイル。
+  // source.AGENTS_CONFIG は明示されたときだけ入る（loadConfig の既定値はここに現れない）ので、
+  // 「CLI フラグは YAML の inline より強い」を成立させる（backtest の --agents 差し替え。ADR 0016）。
+  if (source.AGENTS_CONFIG && !existsSync(realtimeConfig.agentsConfigPath)) {
+    // 明示ロスターの typo がサイレントに既定 agents へ落ちる事故を防ぐ（loadAgents は
+    // ファイル欠如時に defaultAgents へフォールバックする仕様のため、ここで先に検査）。
+    throw new Error(
+      `agents roster not found: ${realtimeConfig.agentsConfigPath} (--agents / run.agentsConfig)`,
+    );
+  }
+  const agents = source.AGENTS_CONFIG
+    ? loadAgents(realtimeConfig.agentsConfigPath)
+    : Array.isArray(doc.agents)
+      ? validateAgentsFile({ agents: doc.agents }, path)
+      : loadAgents(realtimeConfig.agentsConfigPath);
   return { config: realtimeConfig, agents, configPath, source };
 }
 

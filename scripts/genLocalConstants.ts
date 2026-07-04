@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAddress, type Address } from "viem";
+import { deploymentsFingerprint } from "../core/src/backtest/shared.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -49,8 +50,12 @@ type GmxMarketList = NonNullable<
   NonNullable<Deployments["protocols"]["gmxV2"]>["markets"]
 >;
 
-function loadDeployments(): { path: string; data: Deployments } {
+function loadDeployments(explicitPath?: string): {
+  path: string;
+  data: Deployments;
+} {
   const path =
+    explicitPath ??
     process.env.DEPLOYMENTS_JSON ??
     resolve(ROOT, "deployer", "deployments", "deployments.json");
   const data = JSON.parse(readFileSync(path, "utf8")) as Deployments;
@@ -80,8 +85,15 @@ type WbtcInfo = {
   gmxMarket?: Address;
 };
 
-function main() {
-  const { path, data } = loadDeployments();
+// deployments.json → sdk/src/constants.local.ts を生成する（CLI 本体からも backtest 系の
+// ツールからも呼べるよう関数化。ADR 0016）。戻り値の fingerprint は state dump manifest の
+// deploymentsFingerprint と同じ計算（core/src/backtest/shared.ts）。
+export function generateLocalConstants(deploymentsPath?: string): {
+  target: string;
+  deploymentsPath: string;
+  fingerprint: string;
+} {
+  const { path, data } = loadDeployments(deploymentsPath);
   const t = data.tokens;
   const p = data.protocols;
 
@@ -168,8 +180,10 @@ function main() {
     };
   }
 
+  const fingerprint = deploymentsFingerprint(data);
   const out = render({
     deploymentsPath: path,
+    fingerprint,
     chainId: data.chainId,
     weth,
     usdc,
@@ -221,6 +235,7 @@ function main() {
   writeFileSync(target, out);
   console.log(`✓ 生成: ${target}`);
   console.log(`  入力: ${path} (chainId=${data.chainId})`);
+  console.log(`  fingerprint: ${fingerprint}`);
   console.log(`  WETH=${weth} USDC=${usdc} Multicall3=${multicall3}`);
   if (wbtcInfo) {
     console.log(
@@ -230,10 +245,12 @@ function main() {
     console.log(`  WBTC: なし（WETH のみ。MARKET_LEGS は WETH 単一）`);
   }
   console.log(`  ローカル run: ERIS_LOCAL_DEPLOY=1 を設定して使用`);
+  return { target, deploymentsPath: path, fingerprint };
 }
 
 function render(d: {
   deploymentsPath: string;
+  fingerprint: string;
   chainId: number;
   weth: Address;
   usdc: Address;
@@ -305,6 +322,10 @@ function render(d: {
 // constants.ts が ERIS_LOCAL_DEPLOY=1 のときだけ overlay する。
 import type { Address } from "viem";
 import type { MarketLegs } from "./types.js";
+
+// 生成元 deployments.json の canonical fingerprint（ADR 0016 §2）。backtest CLI が
+// state dump manifest と照合し、不一致なら manifest 同梱の deployments から再生成する。
+export const DEPLOYMENTS_FINGERPRINT = "${d.fingerprint}";
 
 export type LocalDeployment = {
   CHAIN_ID: number;
@@ -417,4 +438,11 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
 `;
 }
 
-main();
+// 直接実行（npm run gen:local-constants）のときだけ生成を走らせる。
+// genStateDump 等から import された場合は呼び側が generateLocalConstants を呼ぶ。
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  generateLocalConstants();
+}

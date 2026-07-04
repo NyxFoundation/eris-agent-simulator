@@ -64,6 +64,8 @@ agents:
 - `npm run sim:realtime` — 実時間 run を 1 回実行（設定は `config/local.yaml`。`--config <path>` で別ファイル、`--seed`/`--blocks`/`--protocols`/`--agents` 等で一回上書き）
 - `npm run build:contracts` — モックオラクル + PriceFeed を forge build（sim:realtime の前提。`out/` 未生成なら最低 1 回）
 - `npm run gen:local-constants` — deployments.json → `sdk/src/constants.local.ts` 生成（同梱 `deployer/` のローカルデプロイ出力を読む）
+- `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
+- `npm run backtest -- --regime <name>` — 参加者バックテスト（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml`（+seed）を再生する。`--repeat N`（snapshot/revert 反復・run 毎に採点再構成）/ `--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
@@ -79,7 +81,7 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 
 - `stress.events` — イベント配列（**値でなくレンジ**を与え過学習を抑制）。YAML 配列で書ける（例: `- { type: crash, magnitudeRange: [0.12, 0.16], windowFrac: [0.3, 0.7], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }`）。`spike`/`crash` の台形（ramp→hold→decay）。要 `run.blocks>0`
 - `stress.victimCount`(既定 0=無効) / `stress.victimHf0`(既定 1.10) / `stress.victimWethWei`(victim 1 体の supply)。**較正の連動**: 建てるには `HF0 ≳ LT/(0.97·LTV)`（実測 Arbitrum WETH の LT=0.84/LTV=0.80 で ≈1.08。これ未満は borrow が LTV 縁に張り付くため fail-fast）。割るには crash magnitude `m > (HF0−1)/HF0`（HF0=1.10 なら m>9.1% → 例の [0.12,0.16] で確実に割れる）。breach 不能な設定は `stress_calibration_warning` を emit。borrow がサイレント revert したら setup で fail-fast(debt 検証)
-- **victim を建てるには full re-fork 必須**（`ARB_RPC_URL` 設定 + `ERIS_SKIP_RESET` 不可。未満は fail-fast。soft-reset だと前 run の victim ポジが残留して HF が壊れる）
+- **victim を建てるには fresh state 必須**（soft-reset だと前 run の victim ポジが残留して HF が壊れる。未満は fail-fast）: fork は full re-fork（`ARB_RPC_URL` 設定 + `ERIS_SKIP_RESET` 不可）、ローカルデプロイは resetFork の snapshot/revert クリーン断面で満たす（ADR 0016。backtest で実証済み）。ローカルでは victim を建てる前に Aave オラクルを初期 fair price へ較正する（fork の「オラクル≈実勢≈fair0」が成立しないため。coordinator が自動実行）
 - stress run（events かつ `ERIS_RUN_BLOCKS>0`）は**時間制限を自動無効化**しブロック数で終了する（`ERIS_RUN_SECONDS` が先に切れて crash 窓へ到達しない事故を回避。override は `stress_run_time_limit_disabled` で記録）
 - coordinator は `stress_schedule` / `stress_victim_hf` / `stress_liquidation` を events.jsonl へ emit する。liquidator agent には victim アドレスを `ERIS_LIQUIDATION_VICTIMS` で配布する。清算の帰属は agent ログの `liquidationCall`(rawTx) を一次情報にする（events.jsonl を直接読んで解析する。旧 stress-report ツールは撤去済み）
 

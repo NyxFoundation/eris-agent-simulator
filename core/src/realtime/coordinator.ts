@@ -425,6 +425,9 @@ export async function runRealtimeSimulation(
       }
     }
 
+    // 初期 fair price はここで確定する（victim setup が oracle 較正に使うため、victim より前）。
+    latestFairPrice = await initialFairPrice(ctx, enabledIds);
+
     // ---- stress victim 群（ADR 0009 §4）: 清算を成立させる seed 由来の被害者を建てる ----
     // victim は agentRuntimes に含めない＝採点対象外（liquidator agent の利益源）。
     const stressVictims: StressVictim[] = deriveStressVictims(
@@ -440,13 +443,24 @@ export async function runRealtimeSimulation(
           "ERIS_STRESS_VICTIM_COUNT > 0 requires the aave protocol enabled (ADR 0009 §4)",
         );
       }
-      // 【ハード要件】full re-fork。soft-reset だと前 run の victim ポジが残留し HF 計算が壊れる
+      // 【ハード要件】fresh state。soft-reset だと前 run の victim ポジが残留し HF 計算が壊れる
       // （anvil-reset-does-not-clear-state、ADR 0007 訂正の原因）→ fail-fast。
-      if (!config.forkUrl || config.skipReset) {
+      // fork は full re-fork（ARB_RPC_URL）で、ローカルデプロイは resetFork の snapshot/revert が
+      // 「load-state / revert 直後のクリーン断面」を保証することで満たす（ADR 0016 §2）。
+      const victimFreshState =
+        !config.skipReset && (config.localDeploy || Boolean(config.forkUrl));
+      if (!victimFreshState) {
         throw new Error(
-          "stress victims require a full re-fork: set ARB_RPC_URL and do not set ERIS_SKIP_RESET (ADR 0009 §4)",
+          "stress victims require a fresh state: full re-fork (set ARB_RPC_URL) or local deploy mode, " +
+            "and do not set ERIS_SKIP_RESET (ADR 0009 §4 / ADR 0016 §2)",
         );
       }
+      // 【較正】victim を建てる前に Aave オラクルを run の初期 fair price に合わせる。
+      // fork は「オラクル ≈ 実勢 ≈ fair0」で暗黙に成立していたが、ローカルデプロイは deployer の
+      // seed 価格と fair0 が乖離し得る（乖離したまま建てると HF0 が run 開始時点で崩れ、crash 窓の
+      // 前に清算可能になる誤較正を実測）。storage 直書きは setup フェーズなので front-run 面の
+      // 影響は無い（ADR 0016 Phase 0）。
+      await writeAaveOraclesStorage(ctx, latestFairPrice);
       await setupStressVictims(ctx, stressVictims);
       await openStressVictimPositions(
         ctx,
@@ -478,7 +492,6 @@ export async function runRealtimeSimulation(
       };
     }
 
-    latestFairPrice = await initialFairPrice(ctx, enabledIds);
     for (const agent of agentRuntimes) {
       agent.initial = await getBalances(publicClient, agent.address);
     }
@@ -1172,7 +1185,8 @@ export async function runRealtimeSimulation(
     }
     logger.summary({
       runId,
-      mode: "realtime",
+      // backtest CLI（ADR 0016）は ERIS_RUN_MODE=backtest を差し込む。それ以外は realtime。
+      mode: config.runMode,
       blockTimeSec: config.blockTimeSec,
       blocksProcessed: processedBlocks,
       elapsedMs,

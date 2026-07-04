@@ -1,0 +1,71 @@
+# config/regimes/crash-01.yaml — 公式 regime: crash（台形 crash + Aave 清算機会）。ADR 0016 §2
+#
+# calm-01 と同じ市場条件の上に、seed 由来でランダム化される crash オーバーレイ（ADR 0009）と
+# 清算対象の victim 群（採点対象外）を重ねる。liquidator agent には victim アドレスが
+# ERIS_LIQUIDATION_VICTIMS で配布される。
+# 実行: npm run backtest -- --regime crash-01 [--agents <roster>] [--repeat N]
+#
+# 較正の連動（ADR 0009 §4 / CLAUDE.md）:
+#   - victim を建てる条件: HF0 ≳ LT/(0.97·LTV)（reserve の実測値でチェーン上検証・fail-fast）
+#   - HF を割る条件: crash magnitude m > (HF0−1)/HF0。HF0=1.10 なら m > 9.1% →
+#     magnitudeRange [0.12, 0.16] は下限でも確実に breach する
+# blockTimeSec は regime の一部（ADR 0016 §3）。成績を読む run はこの既定値で回すこと。
+
+run:
+  seed: 202
+  blocks: 60
+  seconds: 600 # stress run は時間制限が自動無効化されブロック数で終わる（ADR 0009）
+  blockTimeSec: 2 # regime に固定（ADR 0016 §2）
+  protocols: [uniswap, balancer, curve, gmx, aave]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+
+funding:
+  wethWei: "0" # USDC-only 配布（初期の方向性エクスポージャを排除）
+  usdcUnits: "25000000000"
+
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+
+stress:
+  # 値でなくレンジを与える（seed がサンプル）= 特定パスへの過学習を抑制（ADR 0009）
+  events:
+    - {
+        type: crash,
+        magnitudeRange: [0.12, 0.16],
+        windowFrac: [0.3, 0.7],
+        rampBlocks: 3,
+        holdBlocks: 6,
+        decayBlocks: 8,
+      }
+  victimCount: 2
+  victimHf0: 1.10
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: 何もしない (基準ライン)
+  - id: venue-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: WETH 専用 cross-venue 裁定
+  - id: multi-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: base 非依存 cross-venue 裁定（全 active base × 全 venue）
+  - id: liquidator
+    wallet: AGENT4_PRIVATE_KEY
+    description: Aave 清算 bot（victim アドレスは ERIS_LIQUIDATION_VICTIMS で受領）

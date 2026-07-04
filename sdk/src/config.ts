@@ -75,6 +75,9 @@ export type SimConfig = {
   localDeploy: boolean;
   // ローカルモードの snapshot ID 永続化ファイル（cross-process でクリーン断面を共有）。
   localSnapshotFile: string;
+  // run の実行モード（summary.json の mode に刻まれるラベル。ADR 0016 §6）。backtest CLI が
+  // ERIS_RUN_MODE=backtest を差し込む。採点・挙動には影響しない。
+  runMode: "realtime" | "backtest";
   // 競争開始前に flow bot だけで N block の市場ループを回し、protocol の working set を
   // 温める（ADR 0006 Risks の anvil cold フェッチ対策）。競争フェーズの mine が上流フェッチを
   // 踏まなくなる。0 で無効（ERIS_PREWARM_BLOCKS）。
@@ -254,6 +257,7 @@ export function loadConfig(env = process.env): SimConfig {
     skipReset: env.ERIS_SKIP_RESET === "1",
     localDeploy: env.ERIS_LOCAL_DEPLOY === "1",
     localSnapshotFile: env.ERIS_LOCAL_SNAPSHOT_FILE ?? ".local-snapshot",
+    runMode: env.ERIS_RUN_MODE === "backtest" ? "backtest" : "realtime",
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",

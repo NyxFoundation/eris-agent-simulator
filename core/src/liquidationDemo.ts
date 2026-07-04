@@ -9,7 +9,12 @@ import {
   type Address,
   type Hex,
 } from "viem";
-import { accountAddress, fundWallet, mine, sendAndMine } from "@eris/sdk/chain.js";
+import {
+  accountAddress,
+  fundWallet,
+  mine,
+  sendAndMine,
+} from "@eris/sdk/chain.js";
 import { AAVE, TOKENS } from "@eris/sdk/constants.js";
 import {
   aavePoolAbi,
@@ -131,9 +136,10 @@ export async function victimHealthFactor(ctx: SimContext): Promise<bigint> {
 // victim の HF は自然に割れる（採点・PriceFeed と整合）。ここでは victim 群を setup フェーズで
 // 建てるだけ（HF≈H0）。victim は採点対象外（liquidator agent の利益源）。
 //
-// 【ハード要件】full re-fork が必須: victim を毎 run 建てるため、soft-reset（anvil_reset []）だと
-// 前 run の victim ポジが残留・スタックして HF 計算が壊れる（呼び側 coordinator が ARB_RPC_URL を
-// 検査して fail-fast する）。
+// 【ハード要件】fresh state が必須: victim を毎 run 建てるため、soft-reset（anvil_reset []）だと
+// 前 run の victim ポジが残留・スタックして HF 計算が壊れる。fork は full re-fork（ARB_RPC_URL）、
+// ローカルデプロイは resetFork の snapshot/revert クリーン断面で満たす（呼び側 coordinator が
+// fail-fast で検査する。ADR 0009 §4 / ADR 0016 §2）。
 // ---------------------------------------------------------------------------
 
 export type StressVictim = { id: string; privateKey: Hex; address: Address };

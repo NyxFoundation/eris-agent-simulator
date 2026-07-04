@@ -21,3 +21,7 @@ probe_tmp.mts
 # ローカルデプロイモードの snapshot ID
 .local-snapshot
 
+# participant backtest の state dump（gen:state-dump 生成物。配布チャネルは未決 = ADR 0016）
+# ルート限定（core/src/backtest を巻き込まない）
+/backtest/
+

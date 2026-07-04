@@ -5,6 +5,10 @@
 import type { Address } from "viem";
 import type { MarketLegs } from "./types.js";
 
+// 生成元 deployments.json の canonical fingerprint（ADR 0016 §2）。backtest CLI が
+// state dump manifest と照合し、不一致なら manifest 同梱の deployments から再生成する。
+export const DEPLOYMENTS_FINGERPRINT = "sha256:a976bebfea9742eb8042648b639fd66ea4a1aff76f8fb80f3b4dfe7ae681a109";
+
 export type LocalDeployment = {
   CHAIN_ID: number;
   TOKENS: {
