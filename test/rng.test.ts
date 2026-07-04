@@ -5,7 +5,7 @@ import {
   nextFairPrice,
   nextFairPrices,
   priceRngForAsset,
-} from "../src/rng.js";
+} from "@eris/sdk/rng.js";
 
 test("rng and fair price are reproducible for a fixed seed", () => {
   const a = new Rng(42);

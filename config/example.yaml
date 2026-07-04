@@ -37,9 +37,26 @@ flow:
   informedMaxWethWei: "2000000000000000000"
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
-  # gmx flow を出すブロック確率（0..1、既定 0.5）。発火時は 1〜gmxMaxBurst 件をランダムに建てる。
+  # 現実的フロー（ADR 0015 Notes / amm-challenge 由来）。以下は既定値で、書かなくても効く。
+  #   informedArbFeeBps: 環境の裁定(informed flow)を fee-aware に。gap が fee バンド(既定 30bps)を
+  #     超えたときだけ超過分を閉じ、残差=fee を残す（毎ブロック全力で fair を締めない）。0 で従来挙動。
+  #   uninformedArrivalRate: 無情報フローを Poisson 到着に（λ、既定 0.9）。0 で固定本数に戻す。
+  #   uninformedSizeSigma: 無情報フローのサイズを lognormal 化（σ、既定 1.0。裾が重い＝時々大口）。
+  # 注: Poisson/lognormal は分散を増やすので run 比較は複数 seed の集計で読むこと。無効化は 0 に。
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  # 同じ現実的フローを GMX / Aave にも展開（既定で有効。ADR 0015 Notes / amm-challenge）。
+  #   gmxArrivalRate: GMX 建玉本数を Poisson(λ)、サイズを lognormal に（既定 0.75）。0 で従来の
+  #     Bernoulli(gmxActivityProb)+一様バースト+一様サイズに戻す。gmxSizeSigma は lognormal の σ（既定 1.0）。
+  #   aaveActorSizeSigma: Aave 各アクターの目標担保を lognormal で不均質化（whale/minnow の混在。既定 1.0）。
+  #     borrow は各自の担保の 30% LTV に追従するので HF 安全は不変。0 で全アクター一律。
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+  # gmx flow を出すブロック確率（gmxArrivalRate=0 の従来モードでのみ使用。0..1、既定 0.5）。
   # gmxActivityProb: "0.5"
-  # gmxMaxBurst: "2"        # 発火ブロックで出す gmx 本数の上限（1=常に単発）
+  # gmxMaxBurst: "2"        # 従来モードで発火ブロックが出す gmx 本数の上限（1=常に単発）
   # aave 借り手プール: aaveActorCount 個の独立アクター（別アドレス・持続ポジション）。各アクターは
   # 毎ブロック aaveActivityProb の確率で借入/返済/担保/引出を 1 つ行い、借りた債務は翌ブロックも残る。
   # 1 ブロックの同時 borrow 数は最大 aaveActorCount（別アクターから自然発生）。
@@ -59,18 +76,12 @@ flow:
 # その agent プロセスへ渡す戦略パラメータ（sim 設定とは別物）。
 agents:
   - id: noop
-    command: node
-    args: [--import, tsx, examples/agents/noop.ts]
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
     description: 何もしない (基準ライン)
   - id: venue-arb
-    command: node
-    args: [--import, tsx, examples/agents/venue-arb.ts]
     wallet: AGENT2_PRIVATE_KEY
     description: WETH 専用 cross-venue 裁定
   - id: multi-arb
-    command: node
-    args: [--import, tsx, examples/agents/multi-arb.ts]
     wallet: AGENT3_PRIVATE_KEY
     description: base 非依存 cross-venue 裁定（全 active base × 全 venue）

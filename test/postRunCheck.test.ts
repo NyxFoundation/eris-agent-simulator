@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkFeeViolations } from "../src/postRunCheck.js";
+import { checkFeeViolations } from "../core/src/postRunCheck.js";
 
 const HEADER =
   "round,blockNumber,txIndex,hash,from,priorityFeeWei,status,ownerId,role,actionType,bundleId,bundleIndex";

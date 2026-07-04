@@ -1,0 +1,14 @@
+{
+  "name": "eris-example-agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "参加者テンプレート（ADR 0015）。agents/ がコピー・提出の単位。sdk へのみ依存する（core への import は禁止）。",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
+    "@eris/sdk": "*",
+    "viem": "^2.39.3",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  }
+}

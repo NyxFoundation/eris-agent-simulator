@@ -4,7 +4,7 @@ import {
   EventSchedule,
   parseStressEvents,
   type StressEventConfig,
-} from "../src/realtime/events.js";
+} from "../core/src/realtime/events.js";
 
 // 固定 magnitude/window（min==max）で seed に依らず台形が確定する単一 crash。
 const FIXED_CRASH: StressEventConfig = {

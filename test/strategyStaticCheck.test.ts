@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findCheatcodeUsage } from "../src/strategyStaticCheck.js";
+import { findCheatcodeUsage } from "../core/src/strategyStaticCheck.js";
 
 test("findCheatcodeUsage: cheatcode RPC を行番号つきで検出する", () => {
   const source = [

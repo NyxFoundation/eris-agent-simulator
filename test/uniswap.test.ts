@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { liquidityToTokenAmounts } from "../src/uniswap.js";
+import { liquidityToTokenAmounts } from "@eris/sdk/protocols/uniswap.js";
 
 test("liquidityToTokenAmounts returns token0 below range", () => {
   const result = liquidityToTokenAmounts({ liquidity: 1_000_000n, tick: -20, tickLower: -10, tickUpper: 10 });

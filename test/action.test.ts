@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseAction, validateAction } from "../src/action.js";
-import type { AgentObservation, BalanceSnapshot } from "../src/types.js";
+import { parseAction, validateAction } from "@eris/sdk/action.js";
+import type { AgentObservation, BalanceSnapshot } from "@eris/sdk/types.js";
 
 const observation: AgentObservation = {
   kind: "observation",

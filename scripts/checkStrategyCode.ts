@@ -2,7 +2,7 @@
 // /strategy-evolve がコード編集を伴う変更を受理する前に必ず通す入口ゲート。
 //
 // 使い方:
-//   tsx scripts/checkStrategyCode.ts [files...]   # 省略時は examples/agents/ 直下の全戦略
+//   tsx scripts/checkStrategyCode.ts [files...]   # 省略時は example/agents/*/ の全戦略コード
 //
 // 出力: 検出結果 JSON を stdout、人間向けサマリを stderr。exit code: PASS=0 / 検出=2 / エラー=1。
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -10,13 +10,23 @@ import { join } from "node:path";
 import {
   findCheatcodeUsage,
   type StaticCheckFinding,
-} from "../src/strategyStaticCheck.js";
+} from "../core/src/strategyStaticCheck.js";
 
+// ADR 0015 §2: 1 agent = 1 ディレクトリ。runtime/ は予約名（参加者コードでないため対象外）、
+// lib/ は共有戦略ヘルパなので対象に含める。
 function defaultTargets(): string[] {
-  const dir = "examples/agents";
-  return readdirSync(dir)
-    .map((name) => join(dir, name))
-    .filter((p) => statSync(p).isFile() && p.endsWith(".ts"));
+  const root = "example/agents";
+  const targets: string[] = [];
+  for (const name of readdirSync(root)) {
+    if (name === "runtime") continue;
+    const dir = join(root, name);
+    if (!statSync(dir).isDirectory()) continue;
+    for (const file of readdirSync(dir)) {
+      const p = join(dir, file);
+      if (statSync(p).isFile() && p.endsWith(".ts")) targets.push(p);
+    }
+  }
+  return targets;
 }
 
 function main(): void {

@@ -38,7 +38,7 @@
 
 ## これは何か
 
-- **マルチプロトコル DeFi 環境** — Uniswap V3 / Balancer v2 / Curve / Aave v3 / GMX v2 を 1 つの Anvil 上に揃え、プロトコルアダプタレジストリ（`src/protocols/`）でプラガブルに有効化する。
+- **マルチプロトコル DeFi 環境** — Uniswap V3 / Balancer v2 / Curve / Aave v3 / GMX v2 を 1 つの Anvil 上に揃え、プロトコルアダプタレジストリ（`sdk/src/protocols/`）でプラガブルに有効化する。
 - **多エージェント競争** — エージェントは完全独立プロセスとして自分のペースでブロックを購読し、自分で署名して直接送信する。ブロック内順序は anvil `--order fees`（priority fee 降順）で決まる。
 - **制御可能な fair price** — コーディネータが SEED 由来の決定論的な fair price を毎ブロック生成し、オンチェーンの `PriceFeed` とモックオラクルへ書き込む。Aave のヘルスファクタや GMX のマーク価格がこれに追従する。
 - **市場ストレス & 清算** — 価格スパイク／クラッシュを注入し、Aave 清算経路を誘発できる。
@@ -83,7 +83,7 @@ npm run sim:realtime -- --local-deploy --agents agents.local.json \
   --seed 1 --blocks 24 --seconds 70 --protocols uniswap,balancer,curve
 ```
 
-> `--local-deploy` フラグ（または config の `run.localDeploy: true`）でローカルデプロイモードになる。CLI エントリが起動時にこれを検出して内部で `ERIS_LOCAL_DEPLOY=1` を立て、`src/constants.ts` がローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay する（env を手で渡す必要はない）。
+> `--local-deploy` フラグ（または config の `run.localDeploy: true`）でローカルデプロイモードになる。CLI エントリが起動時にこれを検出して内部で `ERIS_LOCAL_DEPLOY=1` を立て、`sdk/src/constants.ts` がローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay する（env を手で渡す必要はない）。
 
 出力は `runs/<run_id>/` 下に書かれる（`summary.json` / `events.jsonl` / `blocks.csv` / `agents/<id>.jsonl`）。確認できること:
 
