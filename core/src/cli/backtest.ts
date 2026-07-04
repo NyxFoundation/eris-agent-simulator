@@ -327,11 +327,13 @@ async function main(): Promise<void> {
       }
     }
   } finally {
-    if (keepAnvil)
+    if (keepAnvil) {
+      // child ハンドルがイベントループを保持して CLI が終了しなくなるため切り離す。
+      anvil.unref();
       console.error(
         `[backtest] --keep-anvil: anvil は ${rpcUrl} で稼働したままです（手動で停止してください）`,
       );
-    else stopAnvil();
+    } else stopAnvil();
   }
 }
 

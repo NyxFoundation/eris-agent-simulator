@@ -322,16 +322,21 @@ export const balancerAdapter: ProtocolAdapter = {
     const s = state as BalancerState;
     const weth =
       s.markets.find((m) => m.market.base === "WETH") ?? s.markets[0];
+    // 観測はプールの実勢（querySwap 見積り）を報告する。fairPrices は state が読めなかった
+    // ときの最後のフォールバックにすぎない。逆順（fairPrices 優先）にすると agent の観測から
+    // プール価格が消えて fair に固定され、cross-venue 戦略が実在しないスプレッドを永遠に
+    // 追いかける（ADR 0013 の 2da82e6 で混入。calm regime 60blk で −1,700 USDC/体の系統損と
+    // して顕在化した実バグ）。
     const obs: AmmObservation = {
       priceUsdcPerWeth:
-        ctx.fairPrices?.["WETH"] ?? weth?.priceUsdcPerWeth ?? fairPrice,
+        weth?.priceUsdcPerWeth ?? ctx.fairPrices?.["WETH"] ?? fairPrice,
     };
     const extra: NonNullable<AmmObservation["markets"]> = {};
     for (const ms of s.markets) {
       if (ms.market.base === "WETH") continue;
       extra[ms.market.key] = {
         priceUsdcPerWeth:
-          ctx.fairPrices?.[ms.market.base] ?? ms.priceUsdcPerWeth,
+          ms.priceUsdcPerWeth ?? ctx.fairPrices?.[ms.market.base],
       };
     }
     if (Object.keys(extra).length > 0) obs.markets = extra;

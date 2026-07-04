@@ -17,7 +17,9 @@ export type AgentProtocol = "uniswap" | "balancer" | "curve";
 export type AgentVenue = {
   protocol: AgentProtocol;
   swapType: "swap" | "balancerSwap" | "curveSwap";
-  price: number; // quote(USDC) per base
+  // quote(USDC) per base。venue 間で比較可能な mid 相当に正規化済み（balancer/curve の
+  // fee 込み見積りは fee 分を戻してある。marketViews 内のコメント参照）。
+  price: number;
   // 取引手数料（bps）。cross-venue 裁定のラウンドトリップ採算判定に使う。uniswap は pool fee
   // （3000 pips = 30bps）を読む。balancer/curve は observation に fee が無いため既定 30bps。
   feeBps: number;
@@ -87,13 +89,24 @@ export function marketViews(obs: AgentObservation): MarketView[] {
     const venues: AgentVenue[] = [];
     for (const protocol of ["uniswap", "balancer", "curve"] as const) {
       const price = venuePrice(obs, base, protocol);
-      if (typeof price === "number" && price > 0)
+      if (typeof price === "number" && price > 0) {
+        const feeBps = venueFeeBps(obs, base, protocol);
+        // 観測価格の規約を mid に統一する。uniswap は slot0 の mid だが、balancer/curve の
+        // 観測 price は「fee 込みの売り見積り」（quoter/query に probe を投げた executable
+        // price）で、fee 分だけ系統的に安く見える（全プール均衡状態の実測: uniswap 3000.00 /
+        // balancer 2990.97 / curve 2992.20）。この段差を放置すると (1) cheap/rich 判定が
+        // 常に balancer/curve 側へ歪む、(2) 採算計算で fee を二重計上する（quoted に fee が
+        // 織り込み済みなのに閾値でも fee を足す）— 見かけの spread を追って fee 負けする
+        // 系統損の原因になる。fee 分を戻して mid 相当に正規化して比較する。
+        const mid =
+          protocol === "uniswap" ? price : price / (1 - feeBps / 10000);
         venues.push({
           protocol,
           swapType: SWAP_TYPE[protocol],
-          price,
-          feeBps: venueFeeBps(obs, base, protocol),
+          price: mid,
+          feeBps,
         });
+      }
     }
     if (venues.length === 0) continue;
     const baseBalanceWei =

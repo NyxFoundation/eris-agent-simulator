@@ -16,11 +16,11 @@
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { marketViews, type MarketView } from "../lib/markets.js";
 
-// 2-leg のラウンドトリップ採算マージン（bps）。spread が「両 venue 手数料 + これ」を超えるときだけ
-// 2-leg を出す。これが無い（spread < コスト）と手数料負けして系統的に損を垂れ流す（実走で −1490 USDC
-// を確認 → コスト無視は設計バグ）。slippage/price-impact の見込みも兼ねる安全マージン。
+// 採算マージン（bps）。2-leg は spread が「両 venue 手数料 + これ」、single-leg は fair gap が
+// 「当該 venue 手数料 + これ」を超えるときだけ出す。これが無い（gap < コスト）と手数料負けして
+// 系統的に損を垂れ流す（2-leg で −1490 USDC、single-leg でも calm regime 60blk で −1650 USDC を
+// 実走で確認 → コスト無視は設計バグ）。slippage/price-impact の見込みも兼ねる安全マージン。
 const SAFETY_MARGIN_BPS = 50;
-const GAP_THRESHOLD = 0.001; // single-leg: fair gap 10bps 未満は見送り
 const MIN_SIZE_BPS = 250;
 const MAX_SIZE_BPS = 2500;
 const SPREAD_GAIN = 200_000; // spread → サイズの線形ゲイン
@@ -133,7 +133,12 @@ export function decide(
     for (const venue of view.venues) {
       const gap = view.fair / venue.price - 1;
       const gapAbs = Math.abs(gap);
-      if (gapAbs < GAP_THRESHOLD) continue;
+      // 採算ライン: fair へ寄せる 1 swap は当該 venue の手数料を払うので、gap が
+      // 「手数料 + 安全マージン」を超えるときだけ撃つ（2-leg と同じ思想）。fee-aware な
+      // informed flow は乖離を手数料バンド内に保つため、閾値が手数料未満だとバンド内の
+      // 乖離を毎ブロック撃って fee 負けし続ける。
+      const singleLegCost = (venue.feeBps + SAFETY_MARGIN_BPS) / 10000;
+      if (gapAbs <= singleLegCost) continue;
       const buyBase = gap > 0;
       const tokenIn = buyBase ? "USDC" : view.base;
       let cap: bigint;
