@@ -44,27 +44,27 @@ cd ..
    npm run gen:local-constants
    ```
 
-   `deployer/deployments/deployments.json` を読んで `src/constants.local.ts` を生成する（`DEPLOYMENTS_JSON` env でパス上書き可）。deploy は決定論アドレスなので、再生成しても差分は出ないことが多い。
+   `deployer/deployments/deployments.json` を読んで `sdk/src/constants.local.ts` を生成する（`DEPLOYMENTS_JSON` env でパス上書き可）。deploy は決定論アドレスなので、再生成しても差分は出ないことが多い。
 
 3. **リアルタイム run を実行**（ローカルデプロイモードで `127.0.0.1:8545` に接続）:
 
    ```bash
    npm run sim:realtime -- \
      --local-deploy \
-     --agents agents.local.json \
      --seed 1 --blocks 24 --seconds 70 \
      --protocols uniswap,balancer,curve
-   # USDC-only 配布（funding.wethWei: "0"）やマルチアセット（flow.baseMax）等は config/local.yaml で
+   # ロスターは config/local.yaml の inline agents（--agents <roster.yaml|json> で差し替え可）
+   # USDC-only 配布（funding.wethWei: "0"）やマルチアセット（flow.baseMax）等も config/local.yaml で
    ```
 
-   > **`--local-deploy` フラグ（または config の `run.localDeploy: true`）だけで効く**。`src/constants.ts` は import 時に `process.env.ERIS_LOCAL_DEPLOY` を読んでローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay するが、CLI エントリ（`src/cli/sim-realtime.ts`）が coordinator を読み込む前にフラグ/config を覗いて `ERIS_LOCAL_DEPLOY=1` を内部で立てるため、env を手で渡す必要はない（子の agent / flow プロセスも `process.env` を継承する）。
+   > **`--local-deploy` フラグ（または config の `run.localDeploy: true`）だけで効く**。`sdk/src/constants.ts` は import 時に `process.env.ERIS_LOCAL_DEPLOY` を読んでローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay するが、CLI エントリ（`core/src/cli/sim-realtime.ts`）が coordinator を読み込む前にフラグ/config を覗いて `ERIS_LOCAL_DEPLOY=1` を内部で立てるため、env を手で渡す必要はない（子の agent / flow プロセスも `process.env` を継承する）。
 
 ## 主要な設定（CLI フラグ / config/local.yaml のキー）
 
 | CLI フラグ | config キー | 説明 |
 |---|---|---|
 | `--local-deploy` | `run.localDeploy` | ローカルデプロイ（非fork）モードを有効化。**必須** |
-| `--agents <path>` | `run.agentsConfig` | ロスターファイル（`agents.local.json` 等）。config に inline `agents:` でも可 |
+| `--agents <path>` | `run.agentsConfig` | ロスターファイル（YAML/JSON）。config に inline `agents:` でも可 |
 | `--seed` | `run.seed` | 市場条件のラベル（価格パス再現用） |
 | `--blocks` | `run.blocks` | run 長（ブロック数） |
 | `--seconds` | `run.seconds` | 実時間の上限（24 ブロック ≒ 48 秒なので 70 程度を確保） |
@@ -72,7 +72,7 @@ cd ..
 | —（YAML のみ） | `funding.wethWei` | USDC-only 配布（`"0"` で初期の方向性エクスポージャを排除する） |
 | —（YAML のみ） | `flow.baseMax` | マルチアセット（WBTC）を取引させる場合（例 `{ WBTC: "50000000" }`）。WBTC の AMM flow を有効化して価格乖離＝裁定機会を作る（既定 off） |
 
-> **注**: 「config キー」列は `config/local.yaml` のネストパス。CLI フラグは YAML の値を一回限り上書きする。ローカルデプロイのアカウント 0（account0）は deployer のデプロイアカウントと重なり残留残高で価値が歪むため、ロスターは AGENT1 以降（account1+）を使う（`agents.local.json` / `config/example.yaml` はそうなっている）。
+> **注**: 「config キー」列は `config/local.yaml` のネストパス。CLI フラグは YAML の値を一回限り上書きする。ローカルデプロイのアカウント 0（account0）は deployer のデプロイアカウントと重なり残留残高で価値が歪むため、ロスターは AGENT1 以降（account1+）を使う（`config/example.yaml` はそうなっている）。
 
 ## トラブルシュート
 
@@ -82,6 +82,7 @@ cd ..
 
 ## Tips
 
+- **run を繰り返すなら backtest が便利**: デプロイ済み anvil から `npm run gen:state-dump` で state dump を焼けば、以後は deployer を起動せず `npm run backtest -- --regime <name> --repeat N` で反復検証できる（regime 再生 + snapshot/revert。詳細は [バックテスト](backtest.md)）。
 - **一部 venue だけ deploy（高速化）**: `npm run deploy -- --only uniswap,balancer`（GMX/Aave の重い hardhat-deploy を回避）。poc 側の `--protocols` も合わせる。
 - **マルチアセット（WBTC）**: `config/local.yaml` の `flow.baseMax: { WBTC: "50000000" }` で WBTC の AMM flow を有効化すると価格乖離＝裁定機会ができる（既定 off）。`funding.base` / `limits.agentBase` で初期在庫・per-round 上限も指定できる。
 - **逐次 run の断面**: ローカルは fork が無いので resetFork は `evm_snapshot` / `evm_revert` に分岐する。snapshot ID は `.local-snapshot` に永続化され、run 間でクリーン断面から始まる（並行 run は非対応）。

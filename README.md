@@ -42,8 +42,9 @@
 - **多エージェント競争** — エージェントは完全独立プロセスとして自分のペースでブロックを購読し、自分で署名して直接送信する。ブロック内順序は anvil `--order fees`（priority fee 降順）で決まる。
 - **制御可能な fair price** — コーディネータが SEED 由来の決定論的な fair price を毎ブロック生成し、オンチェーンの `PriceFeed` とモックオラクルへ書き込む。Aave のヘルスファクタや GMX のマーク価格がこれに追従する。
 - **市場ストレス & 清算** — 価格スパイク／クラッシュを注入し、Aave 清算経路を誘発できる。
-- **LLM 駆動の自律エージェント** — 戦略を実行時に LLM が生成・改訂する（手書きのトレードロジック無し）。
+- **LLM 駆動の自律エージェント** — `prompt.md` 1 枚が戦略そのもの。毎判断 LLM がアクションを出し、プロンプトの自己改訂もできる（手書きのトレードロジック無し）。
 - **fork 無しのローカルデプロイモード** — fork backend への cold state RPC 往復（fork RPC レイテンシ）を避け、マルチアセット（WETH/WBTC）も動く。
+- **バックテスト** — 配布 state dump + 公式 regime（市場シナリオ）で、同じ環境・同じ採点のまま戦略を何度でも反復検証できる（`--repeat` で分布を読む）。
 
 アーキテクチャ（環境とエージェント実行の分離）の詳細は [アーキテクチャ](docs/guide/architecture.md) を参照。
 
@@ -79,8 +80,9 @@ cd deployer && npm run deploy -- --keep-fresh
 
 # poc 側（リポジトリルート）: deploy アドレスを取り込み、ローカルデプロイモードで run
 npm run gen:local-constants
-npm run sim:realtime -- --local-deploy --agents agents.local.json \
+npm run sim:realtime -- --local-deploy \
   --seed 1 --blocks 24 --seconds 70 --protocols uniswap,balancer,curve
+# ロスターは config/local.yaml の inline agents（--agents <roster.yaml> で差し替え可）
 ```
 
 > `--local-deploy` フラグ（または config の `run.localDeploy: true`）でローカルデプロイモードになる。CLI エントリが起動時にこれを検出して内部で `ERIS_LOCAL_DEPLOY=1` を立て、`sdk/src/constants.ts` がローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay する（env を手で渡す必要はない）。
@@ -90,6 +92,18 @@ npm run sim:realtime -- --local-deploy --agents agents.local.json \
 - 全 agent と flow ウォレットのセットアップが完了する。
 - 各ブロックで flow トランザクションと有効な agent トランザクションが提出される。
 - `summary.json` の `valueSeries.failedReads` が `0`。
+
+### バックテスト（戦略の反復検証）
+
+デプロイ済み anvil から state dump を一度焼けば、以後は deployer を起動せず**公式 regime（市場シナリオ）を何度でも再生**できる。市場条件は seed 決定論で毎回同一、採点も realtime と同一:
+
+```bash
+npm run gen:state-dump                                # 稼働中の deployer anvil から一度だけ焼く
+npm run backtest -- --regime calm-01 --repeat 5       # 平常市場を 5 回（mean alphaUsdc を表示）
+npm run backtest -- --regime crash-01                 # crash + Aave 清算シナリオ
+```
+
+詳細は [バックテスト](docs/guide/backtest.md)。
 
 ---
 
@@ -101,7 +115,8 @@ npm run sim:realtime -- --local-deploy --agents agents.local.json \
 | [プロトコルとアクション](docs/guide/protocols-and-actions.md) | 各 venue のアクション・ステーブルコイン会計・オラクル制御・GMX 非同期実行 |
 | [設定（config/local.yaml）](docs/guide/configuration.md) | YAML 単一ソースの設定・セクション・ロスターの書き方 |
 | [ローカルリアルタイムシミュレーション](docs/guide/local-deploy.md) | 非fork のローカルデプロイモードの前提・手順・主要設定・トラブルシュート |
-| [LLM 駆動の自律エージェント](docs/guide/llm-agents.md) | 実行時に戦略を生成・改訂する LLM エージェント（2 層構成・バックエンド・チューニング） |
+| [バックテスト](docs/guide/backtest.md) | state dump + 公式 regime の再生・`--repeat` での反復・スパーリング・測れる/測れない |
+| [LLM 駆動の自律エージェント](docs/guide/llm-agents.md) | prompt.md 型エージェント（毎判断 LLM・自己改訂・バックエンド） |
 | [市場ストレスイベント](docs/guide/stress-events.md) | 価格スパイク／クラッシュの注入と Aave 清算の誘発 |
 | [リポジトリ構成](docs/guide/repository-layout.md) | ディレクトリ構成の早見表 |
 | [run 出力と解析](docs/guide/run-output.md) | `runs/<id>/` の出力ファイルと run 後の解析方法 |

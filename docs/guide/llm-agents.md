@@ -1,62 +1,74 @@
 [← README](../../README.md)
 
-# LLM 駆動の自律エージェント
+# LLM 駆動の自律エージェント（prompt.md 型）
 
-`examples/agents/claude-llm.ts` は、戦略を実行時に LLM が生成・改訂するエージェント。手書きのトレードロジックは無く、モデルが自然言語のプランと、毎ラウンド `vm.Script` サンドボックスで動く TypeScript の executor 関数の両方を書く。
+`example/agents/<id>/` に **`prompt.md` 1 枚**を置くと、その agent はプロンプト型になる:
+`runtime/bot.ts` が毎判断サイクルで observation を添えて LLM を呼び、JSON アクションを出させる。
+手書きのトレードロジックは無く、**prompt.md が戦略そのもの**（提出物）になる。同梱サンプルは
+`example/agents/my-arb/prompt.md`。
 
-## アーキテクチャ
+```markdown
+---
+name: my-arb                      # 必須
+description: cross-venue arb; push toward fair above 30bps   # 必須
+intervalMs: 5000                  # 判断サイクル間隔（省略可）
+model: gpt-oss:120b               # 使用モデル（省略可。"claude..." なら Anthropic）
+---
+# Mission
+（自然言語の戦略。観測の読み方・発注条件・サイズ・リスク制約を書く）
+```
 
-- **遅い層（LLM API/CLI）**: 起動時に 1 度呼んで初期戦略を設計し、その後 `ERIS_LLM_REVIEW_EVERY` ラウンドごと（既定 10）、または実現 PnL が開始時 USD の `1 - ERIS_LLM_DRAWDOWN_RATIO`（既定 5%）を下回ったときに再度呼ぶ。呼び出しはバックグラウンドで走り、ラウンド応答をブロックしない。
-- **速い層（vm.Script）**: 毎ラウンド、現在の executor 本体を観測に対して 200ms タイムアウトで評価する。戦略が未準備や executor が throw / 無効アクションを返した場合、そのラウンドは `noop` を出して継続する。
-- 戦略は `runs/<run_id>/agent-<id>/strategy-vN.{md,params.json,executor.ts}` に書き出され、モデルの判断を読める。テレメトリは同ディレクトリの `decisions.jsonl` / `claude-calls.jsonl` に残る。
+## 動き方（runtime/bot.ts + runtime/llm.ts）
 
-## バックエンド
+- 毎サイクル、bot.ts が観測（JSON）と **action の `<schema>`**（`sdk/src/actionSchema.ts` の zod
+  スキーマから生成）を system prompt に載せて LLM を 1 回呼ぶ。
+- 応答は zod で validate し、**失敗はエラー内容を会話に追記して再試行**（上限超過はそのサイクル
+  `noop` = fail-closed）。
+- 判断とアクションは `runs/<run_id>/agents/<id>.jsonl` に残る（[run 出力と解析](run-output.md)）。
+- agent.ts と prompt.md を**併置**した場合の既定は agent.ts（ルール戦略）。ロスターの
+  `env: { ERIS_AGENT_MODE: "prompt" }` で prompt.md 駆動へ切り替える。
 
-`ERIS_LLM_AUTH` で利用するトランスポートを選ぶ。`auto`（既定）は利用可能な最良を選び、認証情報が無くてもクラッシュしない。
+## 自己改訂（任意）
 
-| モード | 認証 | 使う場面 |
+`ERIS_PROMPT_REVISE_EVERY=<N>` で、N 判断サイクルごとに LLM が **prompt 本文を自己改訂**する
+（既定 0 = off）。改訂版は `runs/<run_id>/agents/<id>.prompt.v<K>.md` に版付き保存され以後の
+サイクルで使われる。`ERIS_PROMPT_REVISE_PERSIST=1` で agent ディレクトリの prompt.md にも書き戻す。
+
+## バックエンド（runtime/llm.ts）
+
+プロバイダは frontmatter の `model` 名で切り替わる:
+
+| model | プロバイダ | 認証 |
 |---|---|---|
-| `cli` | Claude Pro/Max OAuth（`claude -p`） | ローカルのサブスクリプション run |
-| `codex` | Codex CLI 認証（`codex exec`） | 別 API プールでの並列実行 |
-| `ollama` | `OLLAMA_API_KEY` または `ERIS_OLLAMA_API_KEY` | Ollama Cloud API（`https://ollama.com/api/chat`）を直接呼ぶ |
-| `subscription` | Claude Pro/Max OAuth（Claude Code CLI 経由） | `claude` をインストール済み・ログイン済み |
-| `apikey` | `ANTHROPIC_API_KEY` | CI / 並列 sim run / 課金を明示したいとき |
-| `mock` | なし | オフラインのスモークテスト（常に noop 戦略を返す） |
-| `auto` *(既定)* | `cli` → `apikey` → `ollama` → `mock` を順に試す | 利用可能な認証が状況で変わるローカル開発 |
+| `gpt-oss:120b` 等（既定） | Ollama（既定 Ollama Cloud `https://ollama.com/api`。`ERIS_OLLAMA_BASE_URL` でローカル `http://127.0.0.1:11434/api` へ） | `OLLAMA_API_KEY` / `ERIS_OLLAMA_API_KEY`（ローカル ollama は不要） |
+| `claude...` で始まる | Anthropic SDK（tool use で structured output） | `ANTHROPIC_API_KEY` |
 
-## 実行
+1 呼び出しのタイムアウトは `ERIS_LLM_CALL_TIMEOUT_MS`（既定 60000）。秘密の API キーは
+`.env.local` に置く（[設定](configuration.md)）。
 
-バックエンド（`ERIS_LLM_AUTH`）とモデルは **config の agent `env` ブロックで設定する**。`config/claude-llm.yaml` は既定で Ollama Cloud（`ERIS_LLM_AUTH: ollama` / `ERIS_LLM_MODEL: gpt-oss:120b`）。秘密の API キーだけは `.env.local`（親シェル）に置く:
+## 実行例
+
+```yaml
+# config/local.yaml のロスター
+agents:
+  - id: my-arb                       # example/agents/my-arb/（prompt.md のみ → prompt 型）
+    wallet: AGENT1_PRIVATE_KEY
+  - id: venue-arb                    # agent.ts 併置 agent を prompt.md で動かす場合
+    wallet: AGENT2_PRIVATE_KEY
+    env:
+      ERIS_AGENT_MODE: "prompt"
+      ERIS_PROMPT_REVISE_EVERY: "10" # 10 サイクルごとに prompt を自己改訂
+```
 
 ```bash
 set -a; source .env.local; set +a   # OLLAMA_API_KEY 等の秘密のみ
-npm run sim:realtime -- --config config/claude-llm.yaml
+npm run sim:realtime                 # または npm run backtest -- --regime calm-01
 ```
 
-別バックエンドへの切替は **config の agent `env` で `ERIS_LLM_AUTH` を変える**（`agentProcess` は agent の `env` をシェル env より後勝ちで適用する）。認証もトークン消費も無しでハーネスだけスモークするには mock:
+> prompt 型はブロック時間の壁時計待ちに加えて LLM レイテンシが律速になる。バックテストでも
+> LLM 呼び出し自体は残る（[バックテスト](backtest.md)）。
 
-```bash
-ERIS_LLM_MOCK=1 npm run sim:realtime -- --config config/claude-llm.yaml
-```
+## 旧機構について
 
-## チューニング
-
-LLM agent の調整は **config の `agents[].env` ブロック**に書く（sim 設定キーとは別）。秘密の API キー（`OLLAMA_API_KEY` / `ANTHROPIC_API_KEY`）だけは `.env.local` に置く。例:
-
-```yaml
-agents:
-  - id: claude-llm
-    command: node
-    args: [--import, tsx, examples/agents/claude-llm.ts]
-    wallet: AGENT1_PRIVATE_KEY
-    env:
-      ERIS_LLM_AUTH: ollama          # cli | codex | ollama | subscription | apikey | mock | auto
-      ERIS_LLM_MODEL: gpt-oss:120b   # モデルのエイリアス / id（Ollama 既定 gpt-oss:120b）
-      ERIS_OLLAMA_BASE_URL: https://ollama.com/api
-      ERIS_LLM_REVIEW_EVERY: "10"    # 定期改訂の間隔（ラウンド数）
-      ERIS_LLM_DRAWDOWN_RATIO: "0.05" # 臨時改訂をトリガーする PnL 下落率
-      ERIS_LLM_HISTORY_CAPACITY: "30" # 改訂プロンプトに含める直近ラウンド数
-      ERIS_LLM_EXECUTOR_TIMEOUT_MS: "200" # ラウンドあたり executor 実行のハードキャップ
-```
-
-`config/claude-llm.yaml` がこの形の雛形。
+実行時に TypeScript の executor を生成・改訂する旧 LLM 自己改善機構（`claude-llm.ts` / `src/llm/`）は
+ADR 0015 で退役し、`_archive/` に温存されている。現行の LLM 経路は本ページの prompt.md 型のみ。

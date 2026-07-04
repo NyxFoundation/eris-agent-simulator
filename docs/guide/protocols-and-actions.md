@@ -2,13 +2,13 @@
 
 # プロトコルとアクション
 
-各アダプタ（`src/protocols/<name>.ts`）は parse / validation・calldata 構築・観測・orderflow・PnL を実装する。有効プロトコルは config の `run.protocols`（YAML 配列）か CLI フラグ `--protocols uniswap,balancer,curve,aave,gmx` で run ごとに選ぶ。エージェントの JSON アクション:
+各アダプタ（`sdk/src/protocols/<name>.ts`）は parse / validation・calldata 構築・観測・orderflow・PnL を実装する。有効プロトコルは config の `run.protocols`（YAML 配列）か CLI フラグ `--protocols uniswap,balancer,curve,aave,gmx` で run ごとに選ぶ。エージェントの JSON アクション:
 
-| プロトコル | アクション | venue (Arbitrum) |
+| プロトコル | アクション | venue（fork = Arbitrum / local = deployer デプロイ） |
 |---|---|---|
-| Uniswap V3 | `swap`, `mintLiquidity`, `removeLiquidity`, `collectFees` | WETH/USDC 0.05% プール |
-| Balancer v2 | `balancerSwap` | 33/33/34 WETH/USDC/USDT weighted プール（フォーク時に seed） |
-| Curve | `curveSwap` | tricrypto WETH↔USDT |
+| Uniswap V3 | `swap`, `mintLiquidity`, `removeLiquidity`, `collectFees` | fork: WETH/USDC 0.05% プール / local: WETH/USDC 0.3% プール |
+| Balancer v2 | `balancerSwap` | fork: 33/33/34 WETH/USDC/USDT weighted（フォーク時に seed）/ local: 50/50 WETH/USDC |
+| Curve | `curveSwap` | fork: tricrypto WETH↔USDT / local: twocrypto-ng WETH/USDC |
 | Aave v3 | `aaveSupply`, `aaveWithdraw`, `aaveBorrow`, `aaveRepay` | native USDC / WETH リザーブ |
 | GMX v2 | `gmxIncrease`, `gmxDecrease` | ETH/USD perp market |
 
@@ -18,11 +18,11 @@
 
 ## ステーブルコイン会計
 
-Arbitrum の深い WETH/stable 流動性は USDC.e / USDT プールにあるため、native USDC・USDC.e・USDT はすべて `$1`・6 桁の **USDC 相当**として残高・PnL を合算する（`src/chain.ts` の `setActiveStables` / `getBalances`）。Uniswap / Aave / GMX は native USDC、Balancer は native USDC（プールをフォーク時に seed）、Curve は USDT を使う。
+Arbitrum の深い WETH/stable 流動性は USDC.e / USDT プールにあるため、native USDC・USDC.e・USDT はすべて `$1`・6 桁の **USDC 相当**として残高・PnL を合算する（`sdk/src/chain.ts` の `setActiveStables` / `getBalances`）。Uniswap / Aave / GMX は native USDC、Balancer は native USDC（プールをフォーク時に seed）、Curve は fork では USDT・local では USDC を使う。
 
 ## オラクル制御（Aave v3 / GMX v2）
 
-モックオラクル（`contracts/MockAggregator.sol` / `contracts/MockOracleProvider.sol`）を setup でフォークにデプロイする。Aave はコーディネータが ACL admin を impersonate して `AaveOracle` をモックに向け、GMX は `ROLE_ADMIN` を impersonate して keeper / controller ロールを付与し `DataStore` にモックプロバイダを登録する。毎ラウンド `updateOracles` が fair price を両モックへ書き込み、貸借のヘルスファクタと perp のマーク価格が動く。
+モックオラクル（`contracts/MockAggregator.sol` / `contracts/MockOracleProvider.sol`）を setup でデプロイする（ローカルデプロイでは deployer の venue に同様に接続する）。Aave はコーディネータが ACL admin を impersonate して `AaveOracle` をモックに向け、GMX は `ROLE_ADMIN` を impersonate して keeper / controller ロールを付与し `DataStore` にモックプロバイダを登録する。毎ラウンド `updateOracles` が fair price を両モックへ書き込み、貸借のヘルスファクタと perp のマーク価格が動く。ローカルデプロイで stress victim を建てる run は、victim setup の前に Aave オラクルを初期 fair price へ較正する（[市場ストレスイベント](stress-events.md)）。
 
 ## GMX の非同期実行
 
