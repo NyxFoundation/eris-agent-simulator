@@ -67,8 +67,3 @@ npm run sim:realtime                 # または npm run backtest -- --regime ca
 
 > prompt 型はブロック時間の壁時計待ちに加えて LLM レイテンシが律速になる。バックテストでも
 > LLM 呼び出し自体は残る（[バックテスト](backtest.md)）。
-
-## 旧機構について
-
-実行時に TypeScript の executor を生成・改訂する旧 LLM 自己改善機構（`claude-llm.ts` / `src/llm/`）は
-ADR 0015 で退役し、`_archive/` に温存されている。現行の LLM 経路は本ページの prompt.md 型のみ。

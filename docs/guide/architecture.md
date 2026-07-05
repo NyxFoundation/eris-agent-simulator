@@ -54,7 +54,6 @@ spawn は一律 `runtime/bot.ts` が担う:
 
 runtime/send.ts は mempool 活動（`kind:"mempool"`: submitted / submit_failed / rejected）を
 `runs/<id>/agents/<id>.jsonl` に自己申告で追記する（coordinator が提出数を数えられなくなる穴を塞ぐ）。
-旧 directShim / relay / stdin-stdout プロトコルは廃止済み（ADR 0015）。
 
 ## 実行モード
 
