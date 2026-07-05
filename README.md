@@ -34,6 +34,17 @@
 
 A strategy simulator that runs on a multi-protocol DeFi environment with every protocol deployed on a local anvil. Multiple autonomous agents compete against each other in the same mempool, a coordinator drives the market, and after the run the value series is reconstructed and scored. Agents are never given RPC, private keys, pending transactions, or the txpool — only **observations of finalized state**.
 
+```mermaid
+flowchart LR
+  COORD["Coordinator<br/>(environment daemon + scorer)<br/>fair price · flow orders · GMX keeper · post-run scoring"]
+  ANVIL[("local anvil<br/>Uniswap · Balancer · Curve · Aave · GMX<br/>one shared mempool, --order fees")]
+  AG["Agent processes × N<br/>observe finalized state → decide → sign & send"]
+  COORD -- "PriceFeed / flow / keeper txs" --> ANVIL
+  AG -- "agent txs" --> ANVIL
+  ANVIL -- "finalized blocks (observations)" --> AG
+  ANVIL -- "historical blocks (scoring)" --> COORD
+```
+
 ---
 
 ## What is this

@@ -45,6 +45,16 @@ The deployer starts and maintains anvil itself (`MANAGE_ANVIL=true`).
 npm run deploy -- --keep-fresh
 ```
 
+```mermaid
+flowchart LR
+  V["./scripts/setup-vendors.sh<br/>(once: clone + patch vendors)"] --> D["npm run deploy -- --keep-fresh"]
+  D --> A[("anvil :8545<br/>kept running")]
+  D --> T["shared tokens + Multicall3"]
+  T --> P["Uniswap V3 · Balancer V2 · Aave V3 · Curve · GMX V2<br/>pools/markets seeded with initial liquidity"]
+  P --> R["deployments/deployments.json"]
+  R --> E["E2E: MANAGE_ANVIL=false npm run test:e2e"]
+```
+
 Main flags:
 
 - `--only uniswap,balancer` — limit to the target protocols (e.g. `--only gmx`)

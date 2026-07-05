@@ -45,6 +45,16 @@ That is the entire contract:
   opportunity is the right answer)
 - Throwing does not crash the run (that round is skipped and `decide error:` is left in the log)
 
+```mermaid
+flowchart LR
+  READ["runtime/read.ts<br/>observation of finalized state"] --> DECIDE["decide(obs, ctx)"]
+  DECIDE -->|"action"| VALIDATE{"zod validate<br/>+ limits check"}
+  DECIDE -->|"null / undefined"| SKIP["skip this round"]
+  DECIDE -->|"throws"| ERR["round skipped,<br/>'decide error:' logged"]
+  VALIDATE -->|"ok"| SEND["runtime/send.ts<br/>sign & send → submitted"]
+  VALIDATE -->|"invalid"| REJ["rejected in agents/&lt;id&gt;.jsonl<br/>(fail-closed, never reaches the chain)"]
+```
+
 ## Step 2: Read the observation (AgentObservation)
 
 `obs` is a "snapshot of confirmed state" that the runtime reconstructs each block. You don't need to hit RPC directly

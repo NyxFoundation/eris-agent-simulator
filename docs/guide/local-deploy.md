@@ -26,6 +26,15 @@ cd ..
 
 ## Steps
 
+```mermaid
+flowchart LR
+  D["1. cd deployer<br/>npm run deploy -- --keep-fresh"] --> A[("anvil :8545<br/>5 venues + shared tokens<br/>(kept running)")]
+  D --> J["deployer/deployments/deployments.json"]
+  J -->|"2. npm run gen:local-constants"| C["sdk/src/constants.local.ts"]
+  C --> S["3. npm run sim:realtime -- --local-deploy"]
+  S --> A
+```
+
 1. **Start anvil + deploy all venues with the deployer** (a separate terminal is recommended):
 
    ```bash

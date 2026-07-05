@@ -17,6 +17,17 @@ model: gpt-oss:120b               # model to use (optional; "claude..." means An
 
 ## How it runs (runtime/bot.ts + runtime/llm.ts)
 
+```mermaid
+flowchart TB
+  OBS["observation (JSON) + &lt;schema&gt;<br/>generated from sdk/src/actionSchema.ts"] --> CALL["LLM call<br/>(one per decision cycle)"]
+  CALL --> V{"zod validate"}
+  V -->|"ok"| ACT["action → sign & send"]
+  V -->|"fail"| FB["append the validation error<br/>to the conversation"]
+  FB -->|"retry ≤ limit"| CALL
+  FB -->|"limit exceeded"| NOOP["noop (fail-closed)"]
+  REV["every N cycles (ERIS_PROMPT_REVISE_EVERY):<br/>LLM revises the prompt body →<br/>agents/&lt;id&gt;.prompt.v&lt;K&gt;.md"] -.-> CALL
+```
+
 - Each cycle, bot.ts puts the observation (JSON) and the action's **`<schema>`** (generated from the zod schema in `sdk/src/actionSchema.ts`) into the system prompt and calls the LLM once.
 - The response is validated with zod, and **on failure the error is appended to the conversation and retried** (on exceeding the retry limit that cycle is `noop` = fail-closed).
 - The decisions and actions are recorded in `runs/<run_id>/agents/<id>.jsonl` ([Run output and analysis](run-output.md)).

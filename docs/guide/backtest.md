@@ -11,6 +11,16 @@ npm run backtest -- --regime calm-01 --repeat 5            # 5× the same regime
 npm run backtest -- --regime calm-01 --agents my-roster.yaml   # swap the roster
 ```
 
+```mermaid
+flowchart LR
+  DEP["deployer anvil :8545<br/>all venues deployed"] -->|"npm run gen:state-dump<br/>(revert to the .local-snapshot clean cross-section)"| STATE["backtest/state/<br/>venues-state.json + manifest<br/>(source commit · genesis hash · deployments · fingerprint)"]
+  REGIME["config/regimes/&lt;name&gt;.yaml + seed"] --> RUN
+  STATE -->|"npm run backtest -- --regime &lt;name&gt;"| BT[("dedicated anvil :8547<br/>--load-state")]
+  BT --> RUN["coordinator replays the regime<br/>(scoring identical to realtime)"]
+  RUN -->|"--repeat N: evm_snapshot / evm_revert"| BT
+  RUN --> OUT["runs/&lt;id&gt;/ summary.json<br/>mean alphaUsdc over the repeats"]
+```
+
 ## Prerequisites
 
 | thing | how to get it |

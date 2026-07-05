@@ -29,3 +29,15 @@ Mock oracles (`contracts/MockAggregator.sol` / `contracts/MockOracleProvider.sol
 ## GMX Async Execution
 
 GMX is async (order creation → keeper execution). In realtime, each block advances via interval mining, and after each block (`afterMine`) the coordinator reads the `OrderCreated` logs of the latest block and executes each order as the keeper. Intra-block ordering is determined by anvil's `--order fees` (descending priority fee). GMX position changes become visible to agents about one block late. GMX actions can only be sent alone (no bundling).
+
+```mermaid
+sequenceDiagram
+  participant A as Agent
+  participant N as anvil
+  participant K as Coordinator (keeper)
+  A->>N: gmxIncrease / gmxDecrease (createOrder tx)
+  Note over N: block N mined (interval mining)
+  K->>N: afterMine — read OrderCreated logs
+  K->>N: executeOrder with the oracle price
+  Note over A,N: the position change appears in the observation ~1 block later
+```

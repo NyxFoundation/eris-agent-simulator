@@ -11,14 +11,36 @@ The package is split into 3 workspaces + a bundled deployer (ADR 0015). The only
 | `example/` | Participant template — `example/agents/<id>/` is the unit of copy and submission. `runtime/` (generic driver) and `lib/` (shared strategy helpers) are reserved names |
 | `deployer/` | Venue deployment (self-contained subpackage outside the workspace) |
 
+```mermaid
+graph LR
+  example["example/<br/>participant template"] --> sdk["sdk/<br/>contract layer"]
+  core["core/<br/>environment + scoring"] --> sdk
 ```
-Environment process (core/src/realtime/coordinator.ts = environment daemon + scorer)   agent processes × N (fully independent)
-  - anvil lifecycle (fork / local setup, interval mining)              - spawn is always example/agents/runtime/bot.ts
-  - fair price generation (Rng(seed)) → update PriceFeed/oracle every block   (agent directory comes from env ERIS_AGENT_DIR)
-  - send flow bot orders (move the market)                            - received via env: RPC URL / own private key /
-  - GMX keeper (order execution)                                        PriceFeed address / runId, log output dir
-  - scoring: after the run, reconstruct the whole value series by reading historical blocks   - runtime/read.ts reconstructs the observation every block
-         └──────────── same mempool. In-block ordering is anvil --order fees   - runtime/send.ts signs and sends directly (manages its own nonce)
+
+The environment and the agents are separate OS processes that only meet on-chain:
+
+```mermaid
+flowchart TB
+  subgraph ENV["Environment process — core/src/realtime/coordinator.ts (daemon + scorer)"]
+    direction TB
+    E1["anvil lifecycle (fork / local setup, interval mining)"]
+    E2["fair price Rng(seed) → PriceFeed / oracle update tx every block"]
+    E3["flow bot orders (move the market)"]
+    E4["GMX keeper (order execution)"]
+    E5["scoring: post-run value-series reconstruction from historical blocks"]
+  end
+  subgraph AGENTS["Agent processes × N (fully independent)"]
+    direction TB
+    A1["spawned uniformly as example/agents/runtime/bot.ts (agent dir via env ERIS_AGENT_DIR)"]
+    A2["received via env: RPC URL / own private key / PriceFeed address / runId, log dir"]
+    A3["runtime/read.ts — reconstructs the observation every block"]
+    A4["runtime/send.ts — signs and sends directly (manages its own nonce)"]
+  end
+  CHAIN[("anvil — one shared mempool<br/>in-block ordering: --order fees")]
+  ENV -- "PriceFeed / flow / keeper txs" --> CHAIN
+  AGENTS -- "signed agent txs" --> CHAIN
+  CHAIN -- "finalized blocks (observations)" --> AGENTS
+  CHAIN -- "historical blocks (scoring)" --> ENV
 ```
 
 - **Fair price is distributed on-chain** (`contracts/PriceFeed.sol`; read via `sdk/src/priceFeed.ts`, write via `core/src/realtime/priceFeed.ts`). The write tx lands in the next block, so the information is delayed by 1 block for everyone equally (by design).
