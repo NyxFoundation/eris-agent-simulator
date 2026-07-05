@@ -1,11 +1,13 @@
-// discovery-arb / discovery-arb-verify の共通コア（ADR 0014 §6）。
-// 発見レイヤ（PoolDiscovery）は共通で、**検証ゲートの有無だけ**が違う（discrimination が「検証」に
-// 帰着する）。naive は美味しい見積りに即飛びつき rigged で被弾する。careful は取引前に
-// verifyContract（dry-run + codehash + 任意 LLM）で監査し、rigged を弾き安全な新規プールで利益化する。
+// Shared core of discovery-arb / discovery-arb-verify (ADR 0014 §6).
+// The discovery layer (PoolDiscovery) is shared, and *only the presence of the verification gate*
+// differs (discrimination reduces to "verification"). naive jumps straight at a tasty quote and gets
+// hit by a rigged pool. careful audits before trading with verifyContract (dry-run + codehash +
+// optional LLM), rejects the rigged one, and profits from safe new pools.
 //
-// 直読み run(ctx) agent（liquidator と同型。ADR 0015 §3）: ctx.publicClient でチェーンを読み、
-// factory ログから新規プールを発見して、action は ctx.submit で送る（署名・nonce・自己申告ログは
-// runtime が担う）。新規プールは adapter registry に無いため rawBundle/rawTx で叩く。
+// A direct-read run(ctx) agent (same shape as the liquidator; ADR 0015 §3): read the chain via
+// ctx.publicClient, discover new pools from factory logs, and send actions via ctx.submit (signing,
+// nonce, and self-report logging are handled by the runtime). New pools aren't in the adapter
+// registry, so hit them with rawBundle/rawTx.
 import { encodeFunctionData, maxUint256 } from "viem";
 import type { Address } from "viem";
 import type { AgentContext } from "@eris/sdk";
@@ -16,11 +18,12 @@ import { erc20ApproveAbi, vulnAmmAbi } from "./vulnAbi.js";
 
 type PoolState = "new" | "approving" | "traded" | "avoided";
 
-// 1 ブロックで新規に送出する tx 数の上限（USDC 枯渇 / nonce 輻輳を避ける。残りは次ブロック以降）。
-// tx を出さない判定（avoided）はこの予算を消費しない。
+// Cap on the number of new txs emitted per block (avoid USDC exhaustion / nonce congestion; the rest go to later blocks).
+// A no-tx decision (avoided) does not consume this budget.
 const MAX_NEW_ACTIONS_PER_BLOCK = 2;
-// careful: approve 後に dry-run が revert し続ける（approval 未着でなく壊れた/罠 dry-run）相手で
-// "approving" のまま無限に滞留するのを避ける retry 上限。超えたら安全側に倒して avoid する。
+// careful: retry cap to avoid getting stuck in "approving" forever against a pool whose dry-run keeps
+// reverting after approve (not because the approval hasn't landed, but a broken/booby-trapped dry-run).
+// Once exceeded, fall to the safe side and avoid.
 const MAX_VERIFY_RETRIES = 4;
 
 export async function runDiscoveryAgent(
@@ -32,12 +35,12 @@ export async function runDiscoveryAgent(
   const runDir = process.env.ERIS_RUN_DIR;
   const llmMode = process.env.ERIS_VULN_LLM ?? "0";
   const gapEnv = Number(process.env.ERIS_DISCOVERY_GAP_BPS ?? "100");
-  // NaN だと poolDiscovery の `gapBps < threshold` が常に false になり全プールが「機会」化する
-  // （fail-open）。不正値は既定 100bps にフォールバックする。
+  // With NaN, poolDiscovery's `gapBps < threshold` is always false, turning every pool into an
+  // "opportunity" (fail-open). Fall back to the default 100bps on an invalid value.
   const gapThresholdBps = Number.isFinite(gapEnv) ? gapEnv : 100;
 
-  // 行動ログ + action 送信を旧 emit と同じ意味論で束ねる（createEmitter 相当）:
-  // ログに action と reason を残しつつ ctx.submit で mempool へ流す。
+  // Bundle action logging + action submission with the same semantics as the old emit (equivalent to
+  // createEmitter): record the action and reason in the log while streaming it to the mempool via ctx.submit.
   const emit = (
     action: Record<string, unknown>,
     meta: { round: number; signals: Record<string, number | undefined> },
@@ -46,8 +49,8 @@ export async function runDiscoveryAgent(
     ctx.submit(action);
   };
 
-  // vuln pool が無い run（factory 未配布）では発見対象なし → idle（runtime の block 購読が
-  // プロセスを生かし続ける）。旧 stdin/stdout の毎行 noop 応答は run(ctx) では不要。
+  // In a run with no vuln pool (factory not distributed) there is nothing to discover -> idle (the
+  // runtime's block subscription keeps the process alive). The old stdin/stdout per-line noop response is unnecessary in run(ctx).
   if (!factory) {
     ctx.log({ reason: "discovery idle: no vuln factory" });
     return;
@@ -74,7 +77,7 @@ export async function runDiscoveryAgent(
   let busy = false;
 
   ctx.onObservation((obs) => {
-    if (busy) return; // 前ブロックの発見/検証が未完なら取りこぼしを避けて 1 回に絞る
+    if (busy) return; // if the previous block's discovery/verification isn't done, limit to one to avoid drops
     busy = true;
     void (async () => {
       try {
@@ -108,7 +111,7 @@ export async function runDiscoveryAgent(
           };
 
           if (!opts.verify) {
-            // naive: 即 approve+swap（minOut=0 で trust）。rigged なら skim で被弾する。
+            // naive: immediate approve+swap (trust with minOut=0). If rigged, it gets skimmed.
             ctx.log({
               round: Number(bn),
               reason: `opportunity_detected pool=${opp.pool.address} gapBps=${opp.gapBps.toFixed(0)}`,
@@ -131,7 +134,7 @@ export async function runDiscoveryAgent(
             continue;
           }
 
-          // careful: 検証ゲート。approve → 次ブロックで dry-run 監査 → 安全なら swap / 危険なら回避。
+          // careful: verification gate. approve -> dry-run audit next block -> swap if safe / avoid if dangerous.
           if (st === "new") {
             ctx.log({
               round: Number(bn),
@@ -160,7 +163,7 @@ export async function runDiscoveryAgent(
             continue;
           }
 
-          // st === "approving": allowance 着弾後の想定。dry-run 監査する。
+          // st === "approving": assume the allowance has landed. Run the dry-run audit.
           const verdict = await verifyContract({
             publicClient,
             pool: opp.pool.address,
@@ -171,8 +174,8 @@ export async function runDiscoveryAgent(
             llmMode,
           });
           if (verdict.status === "unknown") {
-            // approval 未着など。次ブロックで再試行（state は approving のまま）。ただし retry 上限を
-            // 超えたら安全側に倒して avoid する（壊れた/罠 dry-run で永久滞留するのを防ぐ）。
+            // e.g. approval not yet landed. Retry next block (state stays approving). But once the retry
+            // cap is exceeded, fall to the safe side and avoid (prevents forever-stuck on a broken/booby-trapped dry-run).
             const n = (verifyRetries.get(key) ?? 0) + 1;
             verifyRetries.set(key, n);
             if (n > MAX_VERIFY_RETRIES) {
@@ -188,7 +191,7 @@ export async function runDiscoveryAgent(
               });
               state.set(key, "avoided");
             }
-            continue; // tx を出さないので予算(acted)は消費しない
+            continue; // no tx emitted, so the budget (acted) is not consumed
           }
           if (verdict.status === "unsafe") {
             ctx.log({
@@ -202,9 +205,9 @@ export async function runDiscoveryAgent(
               },
             });
             state.set(key, "avoided");
-            continue; // tx を出さないので予算(acted)は消費しない
+            continue; // no tx emitted, so the budget (acted) is not consumed
           }
-          // safe: honest 見積りに沿った保護的 minOut で約定（安全な新規プールで利益化）。
+          // safe: execute with a protective minOut aligned to the honest quote (profit from a safe new pool).
           const quoted = BigInt(verdict.checks.quotedOut ?? "0");
           const minOut = (quoted * 99n) / 100n;
           ctx.log({
@@ -248,15 +251,15 @@ export async function runDiscoveryAgent(
   });
 }
 
-// action.reason を取り出す（旧 createEmitter の reasonOf と同じ意味論。ログの reason 欄に載せる）。
+// Extract action.reason (same semantics as the old createEmitter's reasonOf; goes in the log's reason field).
 function reasonOf(action: unknown): string | undefined {
   return action && typeof action === "object" && "reason" in action
     ? String((action as { reason?: unknown }).reason ?? "")
     : undefined;
 }
 
-// approve(USDC→pool) + swap(USDC→base) を 1 bundle に。approve が nonce n、swap が n+1 で
-// 同ブロックに載り、allowance 設定後に swap が実行される。
+// approve(USDC->pool) + swap(USDC->base) in one bundle. approve is nonce n and swap is n+1, so they
+// land in the same block and the swap executes after the allowance is set.
 function buildSwapBundle(
   pool: Address,
   usdc: Address,

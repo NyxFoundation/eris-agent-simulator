@@ -1,13 +1,13 @@
 import { spawn } from "node:child_process";
 
-// ローカル(非fork)デプロイモードでは poc 側で anvil を起動しない。同梱の deployer/ が
-// 全 protocol をデプロイした anvil をそのまま使う（その anvil を `npm run deploy` で起動し、
-// poc は ERIS_LOCAL_DEPLOY=1 で接続する）。
+// In local (non-fork) deploy mode, poc does not start anvil. It reuses the anvil that the
+// bundled deployer/ has deployed all protocols on (start that anvil with `npm run deploy`,
+// and connect poc to it with ERIS_LOCAL_DEPLOY=1).
 if (process.env.ERIS_LOCAL_DEPLOY === "1") {
   console.error(
-    "ERIS_LOCAL_DEPLOY=1: poc 側の anvil は不要です。\n" +
-      "  同梱の deployer/ で `npm run deploy`（anvil 起動＋全 protocol デプロイ）を実行し、\n" +
-      "  その anvil(127.0.0.1:8545)に対して poc を ERIS_LOCAL_DEPLOY=1 で起動してください。",
+    "ERIS_LOCAL_DEPLOY=1: poc's own anvil is not needed.\n" +
+      "  Run `npm run deploy` in the bundled deployer/ (starts anvil + deploys all protocols),\n" +
+      "  then start poc against that anvil (127.0.0.1:8545) with ERIS_LOCAL_DEPLOY=1.",
   );
   process.exit(1);
 }
@@ -39,12 +39,12 @@ if (process.env.FORK_BLOCK_NUMBER) {
   args.splice(2, 0, "--fork-block-number", process.env.FORK_BLOCK_NUMBER);
 }
 
-// eth_getAccountInfo(Alchemy Arbitrum 非対応)の失敗リトライ待ちを削る。既定 1000ms の
-// バックオフが cold state フェッチごとに累積して oracleMs を膨らませるため、0 で即フォールバックさせる。
+// Cut the retry wait on eth_getAccountInfo failures (unsupported on Alchemy Arbitrum). The default
+// 1000ms backoff accumulates on every cold state fetch and inflates oracleMs, so use 0 to fall back immediately.
 if (process.env.FORK_RETRY_BACKOFF !== undefined) {
   args.push("--fork-retry-backoff", process.env.FORK_RETRY_BACKOFF);
 }
-// Alchemy 共有プランのレート制限(CUPS 推定)で頭打ちにしない。
+// Don't get capped by Alchemy shared-plan rate limits (estimated CUPS).
 if (process.env.ANVIL_NO_RATE_LIMIT === "1") {
   args.push("--no-rate-limit");
 }

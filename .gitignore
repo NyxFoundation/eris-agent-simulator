@@ -3,7 +3,7 @@
 .env.local
 .env.keys
 agents.local.json
-# run 設定は config/ で管理。ローカルの実ファイルは無視、雛形・シナリオ config はコミット
+# Run settings are managed in config/. Ignore the local live files; commit the templates and scenario configs
 config/*.yaml
 !config/example.yaml
 !config/all18-mixed.yaml
@@ -18,10 +18,10 @@ probe_tmp.mts
 .serena/
 .playwright-cli/
 
-# ローカルデプロイモードの snapshot ID
+# snapshot ID for local deploy mode
 .local-snapshot
 
-# participant backtest の state dump（gen:state-dump 生成物。配布チャネルは未決 = ADR 0016）
-# ルート限定（core/src/backtest を巻き込まない）
+# state dump for participant backtest (gen:state-dump output. distribution channel TBD = ADR 0016)
+# root-only (does not pull in core/src/backtest)
 /backtest/
 

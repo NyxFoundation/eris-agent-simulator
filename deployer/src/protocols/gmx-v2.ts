@@ -24,7 +24,7 @@ function dep(name: string): { address: Address; abi: Abi } {
   return { address: j.address as Address, abi: j.abi as Abi };
 }
 
-// registry に取り込む主要コントラクト
+// Main contracts to import into the registry
 const CORE = [
   "DataStore",
   "RoleStore",
@@ -45,20 +45,20 @@ const CORE = [
 ];
 const GMX_TOKENS = ["WETH", "GMX", "USDC", "WBTC", "USDT"];
 
-// GMX と共有 mock を揃えるトークン (GMX 独自の GMX/ESGMX/SOL は除く)。
-// WETH は WETH9 (wrappedNative)、それ以外は MockERC20。
+// Tokens shared between GMX and the shared mocks (excludes GMX's own GMX/ESGMX/SOL).
+// WETH is WETH9 (wrappedNative), the rest are MockERC20.
 const SHARED_TOKEN_KEYS = ["WETH", "USDC", "USDT", "WBTC"] as const;
 
 /**
- * hardhat-deploy の deployments/localhost/<symbol>.json を**先置き**し、
- * deployTestTokens.ts の getOrNull 再利用パス (token を新規デプロイせず既存を流用) に乗せて
- * GMX が共有 mock トークンを採用するよう仕向ける。
- * rmSync 直後・hardhat deploy 実行前に呼ぶこと。
+ * **Pre-place** hardhat-deploy's deployments/localhost/<symbol>.json so that deployTestTokens.ts's
+ * getOrNull reuse path (reuse an existing token instead of deploying a new one) makes GMX adopt the
+ * shared mock tokens.
+ * Call this right after rmSync and before running hardhat deploy.
  */
 function seedSharedTokenArtifacts() {
   const reg = getRegistry();
   mkdirSync(DEPLOYMENTS, { recursive: true });
-  // hardhat-deploy はネットワークフォルダの .chainId を要求する
+  // hardhat-deploy requires a .chainId in the network folder
   writeFileSync(resolve(DEPLOYMENTS, ".chainId"), "31337");
 
   const weth9 = loadForgeArtifact("WETH9", "WETH9");
@@ -67,26 +67,28 @@ function seedSharedTokenArtifacts() {
   const shared: string[] = [];
   for (const key of SHARED_TOKEN_KEYS) {
     const raw = reg.tokens[key];
-    if (!raw) continue; // 共有トークン未デプロイ (--only gmx 等) はスキップ
-    // EIP-55 チェックサム必須: gmx.getTokens() はメモ化され、reused トークンの
-    // address は checksum ループを通らないまま config に焼き付く。小文字のままだと
-    // Reader.getMarkets が返す checksum 済アドレスと marketKey 文字列が不一致になり
-    // deployAndConfigureMarkets が落ちる。
+    if (!raw) continue; // skip if the shared token is not deployed (e.g. --only gmx)
+    // EIP-55 checksum required: gmx.getTokens() is memoized, and a reused token's address gets
+    // baked into config without passing through the checksum loop. Left lowercase, the marketKey
+    // string mismatches the checksummed address returned by Reader.getMarkets, and
+    // deployAndConfigureMarkets fails.
     const addr = getAddress(raw);
     const abi = key === "WETH" ? weth9.abi : erc20.abi;
-    // hardhat-deploy の Deployment は最低限 {address, abi} で getOrNull が解決する。
-    // bytecode は載せない (バイトコード一致検証を避ける)。
+    // A hardhat-deploy Deployment resolves via getOrNull with just {address, abi} at minimum.
+    // Do not include bytecode (avoids bytecode-match verification).
     writeFileSync(
       resolve(DEPLOYMENTS, `${key}.json`),
       JSON.stringify({ address: addr, abi }, null, 2),
     );
     shared.push(`${key}=${addr}`);
   }
-  if (shared.length) ok("GMX 共有トークン先置き", shared.join(", "));
+  if (shared.length) ok("GMX shared token pre-placement", shared.join(", "));
 }
 
 export async function deployGmxV2({ seed }: { seed: boolean }) {
-  info("GMX V2 フルシステムを hardhat-deploy でデプロイ (重い: 数分かかる)");
+  info(
+    "Deploying the full GMX V2 system via hardhat-deploy (heavy: takes several minutes)",
+  );
 
   rmSync(DEPLOYMENTS, { recursive: true, force: true });
   seedSharedTokenArtifacts();
@@ -101,11 +103,11 @@ export async function deployGmxV2({ seed }: { seed: boolean }) {
     },
   );
   if (res.status !== 0) {
-    throw new Error(`gmx hardhat deploy が失敗しました (exit ${res.status})`);
+    throw new Error(`gmx hardhat deploy failed (exit ${res.status})`);
   }
   assert(
     existsSync(DEPLOYMENTS),
-    "gmx deployments/localhost が生成されていない",
+    "gmx deployments/localhost was not generated",
   );
 
   const core: Record<string, Address> = {};
@@ -120,8 +122,8 @@ export async function deployGmxV2({ seed }: { seed: boolean }) {
   }
 
   setProtocol("gmxV2", { ...core, tokens });
-  ok("GMX V2 デプロイ", `DataStore=${core.DataStore}`);
-  ok("GMX トークン", Object.keys(tokens).join(", "));
+  ok("GMX V2 deploy", `DataStore=${core.DataStore}`);
+  ok("GMX tokens", Object.keys(tokens).join(", "));
 
   if (seed) {
     const markets = await recordMarkets();
@@ -130,9 +132,9 @@ export async function deployGmxV2({ seed }: { seed: boolean }) {
 }
 
 /**
- * 各 index market の GM プールへ流動性を投入する。空プールだと poc の GMX 取引 agent が
- * position を開けないため、deploy seed で deposit しておく。
- * ADR 0013: WETH(ETH/USD) に加え WBTC(BTC/USD) market も seed する。
+ * Seed liquidity into each index market's GM pool. With an empty pool, the poc GMX trading agents
+ * cannot open positions, so deposit during the deploy seed.
+ * ADR 0013: seed the WBTC(BTC/USD) market in addition to WETH(ETH/USD).
  */
 async function seedGmMarket(
   core: Record<string, Address>,
@@ -153,14 +155,14 @@ async function seedGmMarket(
     DepositHandler: core.DepositHandler,
   };
 
-  // WETH/USDC: $3000/WETH で 200 WETH + 600k USDC を投入 ($1.2M, AMM venue と整合)
+  // WETH/USDC: at $3000/WETH, seed 200 WETH + 600k USDC ($1.2M, consistent with the AMM venue)
   const wethMarket = markets.find(
     (m) =>
       m.longToken.toLowerCase() === weth.toLowerCase() &&
       m.shortToken.toLowerCase() === usdc.toLowerCase(),
   );
   if (!wethMarket) {
-    info("GM 流動性: WETH/USDC マーケットが無いためスキップ");
+    info("GM liquidity: skipping (no WETH/USDC market)");
   } else {
     await seedGmLiquidity(
       depositCore,
@@ -178,8 +180,8 @@ async function seedGmMarket(
     );
   }
 
-  // WBTC/USDC (BTC/USD market。ADR 0013)。index=WBTC で探す（long=WBTC, short=USDC）。
-  // 無音 skip を防ぐため、WBTC トークンがあるのに market が見つからなければ throw。
+  // WBTC/USDC (BTC/USD market, ADR 0013). Search by index=WBTC (long=WBTC, short=USDC).
+  // To avoid a silent skip, throw if the WBTC token exists but no market is found.
   if (wbtc) {
     const wbtcMarket = markets.find(
       (m) =>
@@ -189,11 +191,11 @@ async function seedGmMarket(
     );
     if (!wbtcMarket) {
       throw new Error(
-        "GM 流動性: WBTC/USDC マーケットが見つからない (markets.ts localhost 配列に WBTC market が無い、または再 deploy 未実施)",
+        "GM liquidity: WBTC/USDC market not found (no WBTC market in the markets.ts localhost array, or redeploy not performed)",
       );
     }
-    // $60000/WBTC で 50 WBTC(decimals:8) + 3M USDC を投入。
-    // 価格は toGmxPrice(60000, 8) 相当（WBTC decimals:8 を明示。18 のままだと 10^10 倍ずれて破綻）。
+    // At $60000/WBTC, seed 50 WBTC(decimals:8) + 3M USDC.
+    // Price is equivalent to toGmxPrice(60000, 8) (WBTC decimals:8 is explicit; left at 18 it would be off by 10^10 and break).
     await seedGmLiquidity(
       depositCore,
       {
@@ -218,9 +220,9 @@ type GmMarketRecord = {
   shortToken: Address;
 };
 
-/** Reader.getMarkets でデプロイ済みマーケットを読み取り registry に記録し、配列を返す */
+/** Read the deployed markets via Reader.getMarkets, record them in the registry, and return the array */
 async function recordMarkets(): Promise<GmMarketRecord[]> {
-  info("GMX V2: 作成済みマーケットを読み取り");
+  info("GMX V2: reading the created markets");
   const reader = dep("Reader");
   const dataStore = dep("DataStore").address;
 
@@ -236,8 +238,8 @@ async function recordMarkets(): Promise<GmMarketRecord[]> {
     shortToken: Address;
   }[];
 
-  assert(markets.length > 0, "マーケットが作成されていない");
-  ok("マーケット数", String(markets.length));
+  assert(markets.length > 0, "no markets were created");
+  ok("market count", String(markets.length));
 
   const recorded = markets.slice(0, 20).map((m) => ({
     marketToken: m.marketToken,
@@ -246,7 +248,7 @@ async function recordMarkets(): Promise<GmMarketRecord[]> {
     shortToken: m.shortToken,
   }));
   setProtocol("gmxV2", { marketCount: markets.length, markets: recorded });
-  // 代表として最初のマーケットを表示
-  ok("先頭マーケット", recorded[0].marketToken);
+  // Show the first market as a representative
+  ok("first market", recorded[0].marketToken);
   return recorded;
 }

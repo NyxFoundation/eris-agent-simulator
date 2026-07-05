@@ -1,8 +1,8 @@
-// forge artifact（out/<Name>.sol/<Name>.json）の共有リーダー。
-// 環境の mock deploy（sdk/protocols/deploy.ts）・FlashArb デモ（core）・参加者コントラクト
-// deploy（example/agents/runtime/deploy.ts）が同じ読み方をするため 1 本化する。
-// 既定の out/ は repo ルート（このファイルから ../../out）。ERIS_FORGE_OUT で上書き可
-// （提出 bundle のようにレイアウトが変わる場合用）。
+// Shared reader for forge artifacts (out/<Name>.sol/<Name>.json).
+// Unified so the environment's mock deploy (sdk/protocols/deploy.ts), the FlashArb demo (core), and
+// participant contract deploy (example/agents/runtime/deploy.ts) all read the same way.
+// The default out/ is the repo root (../../out from this file). Overridable via ERIS_FORGE_OUT
+// (for cases where the layout changes, such as a submission bundle).
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +19,7 @@ export function readForgeArtifact(
   const p = resolve(dir, `${name}.sol/${name}.json`);
   if (!existsSync(p)) {
     throw new Error(
-      `forge artifact missing: ${p}. Run \`npm run build:contracts\` (または ERIS_FORGE_OUT を指定).`,
+      `forge artifact missing: ${p}. Run \`npm run build:contracts\` (or set ERIS_FORGE_OUT).`,
     );
   }
   const a = JSON.parse(readFileSync(p, "utf8"));

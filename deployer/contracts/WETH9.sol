@@ -2,7 +2,7 @@
 pragma solidity 0.8.20;
 
 /// @title WETH9
-/// @notice 正典 WETH9 を Solidity 0.8.20 へ移植したもの。deposit/withdraw/ERC20 を提供する。
+/// @notice The canonical WETH9 ported to Solidity 0.8.20. Provides deposit/withdraw/ERC20.
 contract WETH9 {
     string public name = "Wrapped Ether";
     string public symbol = "WETH";

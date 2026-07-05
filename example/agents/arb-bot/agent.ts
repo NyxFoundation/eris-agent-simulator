@@ -1,16 +1,16 @@
 /**
- * arb-bot: gap 駆動 swap で priority fee 入札に参加するクローン可能エージェント。
+ * arb-bot: a cloneable agent that participates in priority-fee bidding via gap-driven swaps.
  *
- * 環境変数:
- *   BID_PROFIT_FRACTION  期待利益のうち priority fee に振る割合 (default 0.3)
+ * Env vars:
+ *   BID_PROFIT_FRACTION  fraction of expected profit routed to the priority fee (default 0.3)
  *
- * 戦略:
+ * Strategy:
  *   1. gap = fair / pool - 1
- *   2. |gap| < GAP_THRESHOLD なら noop
- *   3. swap 方向: gap>0 → USDC→WETH, gap<0 → WETH→USDC
- *   4. swap サイズ: simple-rule と同じ size-bps 比例 (上限を 50% に拡張)
- *   5. 期待利益 (USDC) ≈ size_usdc * |gap|
- *   6. priority fee = 利益(wei) * PROFIT_FRACTION / 推定ガス
+ *   2. noop if |gap| < GAP_THRESHOLD
+ *   3. swap direction: gap>0 -> USDC->WETH, gap<0 -> WETH->USDC
+ *   4. swap size: size-bps proportional like simple-rule (cap extended to 50%)
+ *   5. expected profit (USDC) ~= size_usdc * |gap|
+ *   6. priority fee = profit(wei) * PROFIT_FRACTION / estimated gas
  *   7. clamp(bid, defaultPriorityFee, maxPriorityFee)
  */
 import type { AgentAction, AgentContext, AgentObservation } from "@eris/sdk";
@@ -41,7 +41,7 @@ export function decide(
   };
   const fair = obs.fairPriceUsdcPerWeth;
   if (!Number.isFinite(fair) || fair <= 0) return noop("invalid fair");
-  // 3 venue を見て最大乖離 venue を選ぶ
+  // Look at the 3 venues and pick the one with the largest deviation
   const venues: Array<{
     swapType: "swap" | "balancerSwap" | "curveSwap";
     price: number;

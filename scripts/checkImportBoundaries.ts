@@ -1,6 +1,6 @@
-// checkImportBoundaries: workspace 依存方向の検査（ADR 0015 §1）。
-// 許すのは `example → sdk ← core` のみ。core⇔example の直接参照と sdk→core/example を禁止する。
-// CI / pre-merge で `npm run check:boundaries` として回す。exit code: PASS=0 / 違反=2。
+// checkImportBoundaries: check the workspace dependency direction (ADR 0015 §1).
+// Only `example → sdk ← core` is allowed. Direct core<->example references and sdk->core/example are forbidden.
+// Run as `npm run check:boundaries` in CI / pre-merge. Exit code: PASS=0 / violation=2.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -14,17 +14,18 @@ const RULES: Array<{
   {
     root: "core/src",
     forbidden: [/^@eris\/example/, /\/example\/agents\//, /^\.\..*\/example\//],
-    reason: "core は example を参照できない（依存方向は example → sdk ← core）",
+    reason:
+      "core cannot reference example (dependency direction is example → sdk ← core)",
   },
   {
     root: "example/agents",
     forbidden: [/^@eris\/core/, /\/core\/src\//, /^\.\..*\/core\//],
-    reason: "example は core を参照できない（sdk のみに依存する）",
+    reason: "example cannot reference core (it depends on sdk only)",
   },
   {
     root: "sdk/src",
     forbidden: [/^@eris\/core/, /^@eris\/example/, /^\.\..*\/(core|example)\//],
-    reason: "sdk は core / example を参照できない（契約レイヤ）",
+    reason: "sdk cannot reference core / example (it is the contract layer)",
   },
 ];
 

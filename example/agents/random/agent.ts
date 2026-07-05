@@ -1,5 +1,5 @@
-// ベースライン「でたらめ売買」。識別力判定の物差しなので決定論にする:
-// 市場(SEED)と agent id から乱数源を導出 → 同一 SEED = 同一物差し（before/after が再現可能）。
+// Baseline "random trading". Kept deterministic since it serves as a yardstick for discrimination:
+// the RNG source is derived from the market (SEED) and agent id -> same SEED = same yardstick (before/after is reproducible).
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { Rng } from "@eris/sdk/rng.js";
 

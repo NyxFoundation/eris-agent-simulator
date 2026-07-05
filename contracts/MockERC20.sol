@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-// テスト用の最小 mintable ERC20（誰でも mint 可）。ADR 0014 の vuln プール契約
-// （SimpleAMM/RiggedAMM）を bare anvil 上で検証する fixture として使う。実行系（fork /
-// local-deploy）では実トークン or deployer の mock を使うため本 contract は本番デプロイされない。
+// Minimal mintable ERC20 for tests (anyone can mint). Used as a fixture to verify the
+// ADR 0014 vuln pool contracts (SimpleAMM/RiggedAMM) on a bare anvil. This contract is not
+// deployed in production, since the execution paths (fork / local-deploy) use real tokens or
+// the deployer's mocks.
 contract MockERC20 {
     string public name;
     string public symbol;

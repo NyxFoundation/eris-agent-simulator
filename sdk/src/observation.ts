@@ -1,7 +1,7 @@
-// observation の再構成（ADR 0006 / ADR 0015）。
-// direct モードでは agent ランタイム（example/agents/runtime/read.ts）が毎ブロック自分で
-// チェーンから AgentObservation を組み立てる。環境(core)の採点・診断も同じ形を使うため、
-// 「チェーン状態 + config → AgentObservation」の変換は契約として sdk に置く。
+// Observation reconstruction (ADR 0006 / ADR 0015).
+// In direct mode the agent runtime (example/agents/runtime/read.ts) assembles the AgentObservation
+// from the chain itself every block. The environment's (core) scoring/diagnostics use the same shape,
+// so the "chain state + config → AgentObservation" conversion lives in the sdk as a contract.
 import type { Address } from "viem";
 import type { SimConfig } from "./config.js";
 import { balanceToInventory } from "./pnl.js";
@@ -28,8 +28,8 @@ export async function observationFor(
   config: SimConfig,
   enabledIds: ProtocolId[],
 ): Promise<AgentObservation> {
-  // protocol ごとの観測は独立した読取なので並列に発行する。agent クライアント（batch=true）では
-  // 同一 tick の読取が Multicall3 1 本に自動集約されるため、並列発行がそのまま往復回数の削減になる。
+  // Per-protocol observations are independent reads, so issue them in parallel. With the agent client
+  // (batch=true), same-tick reads are auto-aggregated into a single Multicall3, so parallel issuance directly reduces round-trip count.
   const protocols: ProtocolObservations = {};
   await Promise.all(
     adapters.map(async (adapter) => {
@@ -50,8 +50,8 @@ export async function observationFor(
     agentAddress,
     fairPriceUsdcPerWeth: fairPrice,
     oraclePrices: { wethUsd: fairPrice, usdcUsd: 1 },
-    // ADR 0013: 全 base の USD 価格・残高。WETH のみのとき fairPricesUsd={WETH:fairPrice} で
-    // 既存フィールドと一致（後方互換）。WBTC を見る戦略だけ参照する。
+    // ADR 0013: USD prices/balances of all bases. With WETH only, fairPricesUsd={WETH:fairPrice}
+    // matches the existing field (backward compatible). Only strategies that look at WBTC reference it.
     fairPricesUsd: ctx.fairPrices ?? { WETH: fairPrice },
     ...(balances.bases
       ? {
@@ -60,7 +60,7 @@ export async function observationFor(
           ),
         }
       : {}),
-    // ADR 0013: 各 base の decimals。プロセス分離 agent の base 量換算用（WETH のみなら {WETH:18}）。
+    // ADR 0013: decimals of each base. For unit conversion of base amounts in a process-separated agent (with WETH only, {WETH:18}).
     baseDecimals: Object.fromEntries(
       Object.keys(ctx.fairPrices ?? { WETH: fairPrice }).map((b) => [
         b,
@@ -79,10 +79,11 @@ export async function observationFor(
       maxWethInWei: config.maxAgentWethInWei.toString(),
       maxUsdcInUnits: config.maxAgentUsdcInUnits.toString(),
       defaultPriorityFeePerGasWei: config.defaultPriorityFeeWei.toString(),
-      // 経済化（ADR 0011 §2）: priority-fee 上限執行を退役するので、agent へ提示する上限も
-      // 実質撤廃する（入札は機会価値で自己制限する = realistic priority gas auction）。validateAction の
-      // 提出前チェックもこの値を見るため、ここを上げないと高入札が黙って弾かれる。10^18 wei/gas は
-      // 事実上無制限の guard（壊れた巨大入札だけ弾く。実 spend は EIP-1559 残高制約で endowment に縛られる）。
+      // Economization (ADR 0011 §2): since priority-fee cap enforcement is retired, effectively drop
+      // the cap presented to the agent too (bids self-limit by opportunity value = realistic priority
+      // gas auction). validateAction's pre-submit check also reads this value, so if we do not raise it
+      // here high bids get silently rejected. 10^18 wei/gas is an effectively unlimited guard (only
+      // rejects broken huge bids; actual spend is bound to the endowment by the EIP-1559 balance constraint).
       maxPriorityFeePerGasWei: (config.economicGas
         ? 1_000_000_000_000_000_000n
         : config.maxPriorityFeeWei
@@ -95,15 +96,15 @@ export async function observationFor(
       maxGmxSizeUsd: config.maxGmxSizeUsd.toString(),
       maxAaveSupplyWethWei: config.maxAaveSupplyWethWei.toString(),
       maxAaveBorrowUsdcUnits: config.maxAaveBorrowUsdcUnits.toString(),
-      // ADR 0013: per-base 上限を露出。WETH は既存値、追加 base は config の per-base マップ（既定 0）。
+      // ADR 0013: expose per-base caps. WETH is the existing value; additional bases come from config's per-base map (default 0).
       baseLimits: buildBaseLimits(config),
     },
     protocols,
   };
 }
 
-// ADR 0013: base シンボル -> per-round 上限のマップを config から組む。WETH は既存の WETH 専用
-// 上限を流用し（byte 互換）、追加 base は MAX_AGENT/MAX_LP/MAX_AAVE_SUPPLY の per-base 値（既定 0）。
+// ADR 0013: build the base symbol -> per-round cap map from config. WETH reuses the existing
+// WETH-specific caps (byte-compatible); additional bases use the per-base values of MAX_AGENT/MAX_LP/MAX_AAVE_SUPPLY (default 0).
 function buildBaseLimits(
   config: SimConfig,
 ): NonNullable<AgentObservation["limits"]["baseLimits"]> {

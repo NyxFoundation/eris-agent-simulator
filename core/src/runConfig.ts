@@ -1,7 +1,7 @@
-// 環境(core)側の run config 入口（ADR 0013 / ADR 0015）。
-// YAML→SimConfig の共有部は sdk/src/runConfig.ts（agent プロセスも同じものを使う）。ここは
-// 環境専用の解決を重ねる: ロスター（inline agents / AGENTS_CONFIG）、stress/vuln イベント拡張、
-// CLI フラグ（--seed 等の一回限り上書き）、退役 env の警告。
+// Environment (core) side run config entry point (ADR 0013 / ADR 0015).
+// The shared YAML->SimConfig part lives in sdk/src/runConfig.ts (the agent process uses the same one).
+// Here we layer on environment-only resolution: the roster (inline agents / AGENTS_CONFIG), the
+// stress/vuln event extensions, CLI flags (one-off overrides like --seed), and warnings for retired env.
 import { existsSync, readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import {
@@ -29,8 +29,8 @@ export {
   toEnvString,
 };
 
-// 設定ファイルの解決順: --config > ERIS_CONFIG > config/local.yaml > config/example.yaml。
-// 最初に存在するものを返す（無ければ undefined）。
+// Config file resolution order: --config > ERIS_CONFIG > config/local.yaml > config/example.yaml.
+// Returns the first one that exists (undefined if none).
 function resolveConfigPathOrUndefined(argv: string[]): string | undefined {
   const i = argv.indexOf("--config");
   const explicit = i >= 0 && argv[i + 1] ? argv[i + 1] : undefined;
@@ -50,7 +50,7 @@ export type RunConfigResult = {
   source: NodeJS.ProcessEnv;
 };
 
-// YAML 設定ファイルを読み、RealtimeConfig + ロスターへ解決する。
+// Read the YAML config file and resolve it into a RealtimeConfig + roster.
 export function loadRunConfig(
   path = DEFAULT_CONFIG_PATH,
   overrides: Record<string, string | number | boolean> = {},
@@ -61,24 +61,24 @@ export function loadRunConfig(
     stressEvents: parseStressEvents(source.ERIS_STRESS_EVENTS),
     vulnEvents: parseVulnEvents(source.ERIS_VULN_EVENTS),
   };
-  // ロスター: inline `agents:` があればそれを、無ければ AGENTS_CONFIG のファイルを読む。
-  // （backtest の --agents 差し替えは、backtest CLI が roster を実効 regime YAML の inline
-  // agents へ焼き込むことで実現する = ここに優先順位の分岐を足さない。ADR 0016）
+  // Roster: use inline `agents:` if present, otherwise read the AGENTS_CONFIG file.
+  // (backtest's --agents replacement is realized by the backtest CLI baking the roster into the
+  // effective regime YAML's inline agents = don't add a priority branch here. ADR 0016)
   const agents = Array.isArray(doc.agents)
     ? validateAgentsFile({ agents: doc.agents }, path)
     : loadAgents(realtimeConfig.agentsConfigPath);
   return { config: realtimeConfig, agents, configPath, source };
 }
 
-// 解決される設定ファイルパス（存在すれば）。--config > ERIS_CONFIG > config/local.yaml >
-// config/example.yaml の順。
+// The resolved config file path (if it exists). Order: --config > ERIS_CONFIG > config/local.yaml >
+// config/example.yaml.
 export function currentConfigPath(
   argv: string[] = process.argv,
 ): string | undefined {
   return resolveConfigPathOrUndefined(argv);
 }
 
-// ツールが自分のセクションを読むための raw YAML doc。YAML が無ければ空オブジェクト。
+// The raw YAML doc, for tools to read their own section. Empty object if there's no YAML.
 export function loadConfigDoc(
   argv: string[] = process.argv,
 ): Record<string, unknown> {
@@ -90,7 +90,7 @@ export function loadConfigDoc(
     : {};
 }
 
-// `--key value` / `--key=value` / `--flag` を拾う軽量パーサ（env の代わりに一回限りの上書きに使う）。
+// Lightweight parser for `--key value` / `--key=value` / `--flag` (used for one-off overrides in place of env).
 export function parseCliFlags(
   argv: string[] = process.argv,
 ): Record<string, string> {
@@ -108,8 +108,8 @@ export function parseCliFlags(
   return out;
 }
 
-// 退役した代表的な「設定 env」が残っていたら警告する（silent に既定動作へ落ちる事故を防ぐ）。
-// これらはもう読まれない。設定は YAML（config/local.yaml / --config）へ、ツール params は CLI フラグへ。
+// Warn if a representative retired "config env" is still set (prevents silently falling back to default behavior).
+// These are no longer read. Config goes in YAML (config/local.yaml / --config), tool params in CLI flags.
 const RETIRED_CONFIG_ENV = [
   "ENABLED_PROTOCOLS",
   "AGENTS_CONFIG",
@@ -122,7 +122,7 @@ const RETIRED_CONFIG_ENV = [
   "ROUNDS",
   "GATE_MODE",
   "INITIAL_WETH_WEI",
-  // relay モードは撤去済み（ADR 0015 §5）。設定してもロールバックにはならない。
+  // relay mode has been removed (ADR 0015 §5). Setting it does not roll anything back.
   "ERIS_AGENT_DIRECT_TX",
 ] as const;
 let warnedRetired = false;
@@ -132,13 +132,13 @@ function warnRetiredConfigEnv(): void {
   if (found.length === 0) return;
   warnedRetired = true;
   process.stderr.write(
-    `[config] 警告: 設定 env は退役しました（無視されます）: ${found.join(", ")}。` +
-      ` 設定は config/local.yaml / --config、ツール params は CLI フラグ（--seed 等）で指定してください。\n`,
+    `[config] warning: config env is retired (ignored): ${found.join(", ")}.` +
+      ` Specify config via config/local.yaml / --config, and tool params via CLI flags (--seed, etc.).\n`,
   );
 }
 
-// 一回限りの上書き用 CLI エイリアス（env の代替）。`--seed 1 --protocols uniswap,balancer` のように使う。
-// 値は YAML と同じ設定キーへマップして overrides に積む（YAML を編集せず run ごとに変えられる）。
+// CLI aliases for one-off overrides (a replacement for env). Used like `--seed 1 --protocols uniswap,balancer`.
+// Values map to the same config keys as YAML and are pushed onto overrides (changeable per run without editing YAML).
 const CLI_ALIAS: Record<string, string> = {
   seed: "SEED",
   blocks: "ERIS_RUN_BLOCKS",
@@ -156,10 +156,10 @@ function cliOverrides(argv: string[]): Record<string, string> {
   return out;
 }
 
-// CLI/coordinator 用の入口。設定は YAML 一本化（env config 読取は廃止）。解決順は
-// --config > ERIS_CONFIG > config/local.yaml > config/example.yaml。いずれも無ければ
-// 明示エラー（env へはフォールバックしない）。CLI エイリアス（--seed 等）と programmatic
-// overrides を YAML の上に重ねる（overrides が最優先）。
+// Entry point for CLI/coordinator. Config is unified in YAML (reading config from env is dropped).
+// Resolution order: --config > ERIS_CONFIG > config/local.yaml > config/example.yaml. If none exist,
+// an explicit error (no fallback to env). CLI aliases (--seed, etc.) and programmatic overrides are
+// layered on top of the YAML (overrides take highest priority).
 export function resolveRunInputs(
   argv: string[] = process.argv,
   overrides: Record<string, string | number | boolean> = {},
@@ -173,7 +173,7 @@ export function resolveRunInputs(
   if (!path)
     throw new Error(
       `no config file found. cp ${EXAMPLE_CONFIG_PATH} ${DEFAULT_CONFIG_PATH} ` +
-        `(または --config <path> を指定)。設定は YAML 一本化済み（env からの設定読取は廃止）。`,
+        `(or pass --config <path>). Config is unified in YAML (reading config from env is dropped).`,
     );
   const merged = { ...cliOverrides(argv), ...overrides };
   const r = loadRunConfig(path, merged);

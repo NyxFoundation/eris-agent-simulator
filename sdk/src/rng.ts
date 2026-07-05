@@ -20,23 +20,23 @@ export class Rng {
     return this.next() >= 0.5;
   }
 
-  // 標準正規（Box-Muller）。lognormal サイズや連続ノイズに使う。
+  // Standard normal (Box-Muller). Used for lognormal sizes and continuous noise.
   gaussian(): number {
-    // next() は [0,1)。u1=0 での log(0) を避けるため下限を入れる。
+    // next() is [0,1). Add a lower bound to avoid log(0) at u1=0.
     const u1 = Math.max(this.next(), 1e-12);
     const u2 = this.next();
     return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   }
 
-  // 平均 mean・σ の lognormal サンプル（正の値。裾が重い注文サイズに使う。amm-challenge の retail）。
-  // mu = ln(mean) − σ²/2 とすることで期待値が mean になる。
+  // Lognormal sample with mean `mean` and σ `sigma` (positive values. Used for heavy-tailed order sizes. amm-challenge retail).
+  // Setting mu = ln(mean) − σ²/2 makes the expected value equal to mean.
   lognormal(mean: number, sigma: number): number {
     if (!(mean > 0)) return 0;
     const mu = Math.log(mean) - 0.5 * sigma * sigma;
     return Math.exp(mu + sigma * this.gaussian());
   }
 
-  // 平均 lambda の Poisson サンプル（到着数。Knuth 法。lambda が小さい前提の flow 用途）。
+  // Poisson sample with mean lambda (arrival count. Knuth's method. For flow use assuming small lambda).
   poisson(lambda: number): number {
     if (!(lambda > 0)) return 0;
     const l = Math.exp(-lambda);
@@ -56,19 +56,20 @@ function floatEnv(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// 価格モデル（ADR 0003 識別力。sim-loop 課題: 方向 β の除去）。
-// 旧モデルはドリフト付き幾何ランダムウォーク → seed ごとにトレンドが付き、その累積方向
-// エクスポージャ(β)が PnL を支配して「でたらめ売買 ≒ 賢い裁定」になり優劣が出なかった。
-// 平均回帰(OU 型)にして anchor へ引き戻すと、run 終了時の価格が始点付近に戻る → 方向で
-// 儲からなくなり、pool と fair の乖離(gap)を当てる裁定スキル(α)だけが残る。env で調整可。
+// Price model (ADR 0003 discrimination. sim-loop problem: removing directional β).
+// The old model was a geometric random walk with drift → each seed picks up a trend, and that
+// cumulative directional exposure (β) dominates PnL, making "random trading ≈ smart arbitrage" so no
+// skill difference emerged. Making it mean-reverting (OU type) and pulling back to the anchor returns
+// the price near its start by run end → no money from direction, leaving only the arbitrage skill (α)
+// of predicting the gap between pool and fair. Tunable via env.
 const PRICE_VOLATILITY = floatEnv(process.env.ERIS_PRICE_VOLATILITY, 0.004);
 const PRICE_REVERT_KAPPA = floatEnv(process.env.ERIS_PRICE_REVERT_KAPPA, 0.02);
 const PRICE_DRIFT = floatEnv(process.env.ERIS_PRICE_DRIFT, 0);
 
-// 1 asset ぶんの OU パラメータ（ADR 0013）。
+// OU parameters for a single asset (ADR 0013).
 export type OuParams = { volatility: number; kappa: number; drift: number };
 
-// グローバル既定（後方互換: 旧 nextFairPrice と同一挙動）。
+// Global default (backward compatible: same behavior as the old nextFairPrice).
 export function globalOuParams(): OuParams {
   return {
     volatility: PRICE_VOLATILITY,
@@ -77,8 +78,8 @@ export function globalOuParams(): OuParams {
   };
 }
 
-// per-asset の OU パラメータ。env suffix（例 ERIS_PRICE_VOLATILITY_WBTC）で個別指定し、
-// 無指定はグローバル値にフォールバック。symbol 単位で vol/kappa/drift を分けられる。
+// Per-asset OU parameters. Set individually via env suffix (e.g. ERIS_PRICE_VOLATILITY_WBTC),
+// falling back to the global value when unset. vol/kappa/drift can be split per symbol.
 export function ouParamsForSymbol(symbol: string): OuParams {
   const sfx = symbol.toUpperCase();
   return {
@@ -94,8 +95,8 @@ export function ouParamsForSymbol(symbol: string): OuParams {
   };
 }
 
-// anchor は run の基準価格(通常は初期 pool 価格)。current が anchor から離れるほど強く戻す。
-// params 省略時はグローバル既定（旧挙動と byte 一致）。
+// anchor is the run's reference price (usually the initial pool price). The further current is from
+// anchor, the stronger the pull back. If params is omitted, use the global default (byte-identical to the old behavior).
 export function nextFairPrice(
   current: number,
   rng: Rng,
@@ -108,10 +109,11 @@ export function nextFairPrice(
   return Math.max(100, current * (1 + p.drift + revert + shock));
 }
 
-// asset ごとの価格 RNG を分離する salt（ADR 0013）。WETH は salt 0 = Rng(seed) そのもの
-// （既存 run の WETH 価格パスと byte 一致）。他 base は symbol 由来の決定論 salt で独立パスを得る。
-// 各 asset 独立 Rng = 資産間相関 0（v1）。相関を入れるなら共通 Rng へ寄せるが、それは WETH の
-// 消費列を変える（後方互換を壊す）ため既定では行わない。
+// Salt that separates the price RNG per asset (ADR 0013). WETH is salt 0 = Rng(seed) itself
+// (byte-identical to the existing run's WETH price path). Other bases get an independent path from a
+// deterministic symbol-derived salt. An independent Rng per asset = 0 inter-asset correlation (v1). To
+// add correlation you would consolidate onto a shared Rng, but that changes WETH's consumption
+// sequence (breaking backward compatibility), so it is not done by default.
 function assetPriceSalt(symbol: string): number {
   if (symbol === "WETH") return 0;
   let h = 0x9e_37_79_b9;
@@ -121,15 +123,16 @@ function assetPriceSalt(symbol: string): number {
   return h >>> 0;
 }
 
-// base シンボルの価格専用 Rng。WETH は Rng(seed)（従来同一）。他 base は派生 seed で独立。
+// Price-only Rng for a base symbol. WETH is Rng(seed) (same as before). Other bases are independent via a derived seed.
 export function priceRngForAsset(seed: number, symbol: string): Rng {
   return new Rng((seed ^ assetPriceSalt(symbol)) >>> 0);
 }
 
 export type MultiAssetPriceState = Record<string, number>;
 
-// 複数 base の OU を asset ごとの独立 Rng で進める（ADR 0013）。order は登録順（WETH 先頭）で
-// 出力の決定性を保つだけ。各 asset は独立 Rng なので、base を増やしても WETH の価格パスは不変。
+// Advance the OU of multiple bases with an independent Rng per asset (ADR 0013). order is the
+// registration order (WETH first) and only preserves output determinism. Each asset has an
+// independent Rng, so adding bases leaves WETH's price path unchanged.
 export function nextFairPrices(
   current: MultiAssetPriceState,
   rngBy: Record<string, Rng>,

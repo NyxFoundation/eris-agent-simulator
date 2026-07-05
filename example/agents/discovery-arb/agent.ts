@@ -1,9 +1,9 @@
-// discovery-arb（ADR 0014 §6）: 発見 + 即実行（naive）。
-// factory の PoolCreated を購読して新規プールを発見し、fair より割安な base を見つけたら
-// **検証せず**即 approve+swap（minOut=0 で trust）する。rigged プールなら skim で被弾する
-// （＝取引前検証をしない者の失敗モードの対照）。
+// discovery-arb (ADR 0014 §6): discovery + immediate execution (naive).
+// Subscribes to the factory's PoolCreated to discover new pools, and when it finds a base cheaper than
+// fair it immediately approves+swaps **without verification** (trusts it with minOut=0). It gets skimmed
+// by rigged pools (the contrasting failure mode of not doing pre-trade verification).
 //
-// 自前で block 購読して action を出す run(ctx) 契約（ADR 0015 §3）。共通コアへ委譲する。
+// Subscribes to blocks and emits actions itself: the run(ctx) contract (ADR 0015 §3). Delegates to the shared core.
 import type { AgentContext } from "@eris/sdk";
 import { runDiscoveryAgent } from "../lib/discoveryAgent.js";
 

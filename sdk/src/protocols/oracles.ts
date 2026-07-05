@@ -10,9 +10,9 @@ import {
 import type { SimContext } from "./types.js";
 import { mockAggregatorAbi, toAavePrice } from "./aave.js";
 
-// ADR 0013: WETH/USDC 以外の追加 base のうち、Aave mock aggregator が登録済みのものを列挙する。
-// fork 既定では ctx.fairPrices が未設定 or WETH のみ → 空配列で従来と byte 一致。
-// aggregator が無い base / fair price が非有限の base はスキップ（aave に 0 を書かない防御）。
+// ADR 0013: enumerate additional bases beyond WETH/USDC that have an Aave mock aggregator registered.
+// On the default fork ctx.fairPrices is unset or WETH-only, so this returns an empty array, byte-identical to before.
+// Skip bases with no aggregator / a non-finite fair price (guard against writing 0 to aave).
 function extraAaveAggregators(
   ctx: SimContext,
 ): Array<{ aggregator: Address; aavePrice: bigint }> {
@@ -20,25 +20,25 @@ function extraAaveAggregators(
   if (!fairPrices) return [];
   const out: Array<{ aggregator: Address; aavePrice: bigint }> = [];
   for (const [base, price] of Object.entries(fairPrices)) {
-    if (base === "WETH" || base === "USDC") continue; // 既存経路で処理
+    if (base === "WETH" || base === "USDC") continue; // handled by the existing path
     if (!Number.isFinite(price) || price <= 0) continue;
     const addr = tokenInfo(base).address.toLowerCase();
     const aggregator = ctx.oracle.aaveAggregators[addr];
-    if (!aggregator) continue; // 当該 base の aave reserve 無し
+    if (!aggregator) continue; // no aave reserve for this base
     out.push({ aggregator, aavePrice: toAavePrice(price) });
   }
   return out;
 }
 
-// 毎ラウンド先頭で GMX/Aave の mock 価格を fairPrice に追従させる。
-// 価格更新は coordinator 特権 tx（競争ブロックとは別ブロック）で行う。
+// At the start of each round, make the GMX/Aave mock prices track fairPrice.
+// Price updates are done with coordinator-privileged txs (in a separate block from the competition block).
 export async function updateOracles(
   ctx: SimContext,
   fairPrice: number,
 ): Promise<boolean> {
   let wrote = false;
 
-  // Aave: MockAggregator.setAnswer（USD 8 桁）
+  // Aave: MockAggregator.setAnswer (USD, 8 decimals)
   const wethAgg = ctx.oracle.aaveAggregators[TOKENS.WETH.address.toLowerCase()];
   const usdcAgg = ctx.oracle.aaveAggregators[TOKENS.USDC.address.toLowerCase()];
   if (wethAgg) {
@@ -76,7 +76,7 @@ export async function updateOracles(
     wrote = true;
   }
 
-  // ADR 0013: 追加 base（WBTC 等）の Aave aggregator も追従。fork 既定では空ループ。
+  // ADR 0013: also track additional bases' (WBTC etc.) Aave aggregators. Empty loop on the default fork.
   for (const { aggregator, aavePrice } of extraAaveAggregators(ctx)) {
     await sendAndMine(
       ctx.publicClient,
@@ -95,7 +95,7 @@ export async function updateOracles(
     wrote = true;
   }
 
-  // GMX: MockOracleProvider.setPrice（Phase 5 で gmx モジュールが拡張）
+  // GMX: MockOracleProvider.setPrice (extended by the gmx module in Phase 5)
   if (ctx.oracle.gmxProvider && ctx.updateGmxOracle) {
     await ctx.updateGmxOracle(ctx, fairPrice);
     wrote = true;
@@ -104,12 +104,12 @@ export async function updateOracles(
   return wrote;
 }
 
-// 単純な setter の固定 gas。明示して estimateGas（EVM 実行待ち）を省く。
+// Fixed gas for a simple setter. Set it explicitly to skip estimateGas (which waits on EVM execution).
 const SETTER_GAS = 300_000n;
 
-// 実時間モード用：oracle 更新を mine せず mempool へ submit する。interval mining 下で
-// 次ブロックに取り込まれる。priorityFeeWei は agent 上限超を渡し、--order fees により
-// oracle 更新が agent より前（txIndex 0 付近）に来るようにする。提出した tx hash を返す。
+// For realtime mode: submit oracle updates to the mempool without mining. Under interval mining they
+// are included in the next block. Pass a priorityFeeWei above the agent cap so that, via --order fees,
+// the oracle update comes before the agents (near txIndex 0). Returns the submitted tx hashes.
 export async function updateOraclesMempool(
   ctx: SimContext,
   fairPrice: number,
@@ -158,7 +158,7 @@ export async function updateOraclesMempool(
       ),
     );
   }
-  // ADR 0013: 追加 base（WBTC 等）の Aave aggregator も mempool 更新。fork 既定では空ループ。
+  // ADR 0013: also update additional bases' (WBTC etc.) Aave aggregators via the mempool. Empty loop on the default fork.
   for (const { aggregator, aavePrice } of extraAaveAggregators(ctx)) {
     hashes.push(
       await sendNoMine(
@@ -180,20 +180,20 @@ export async function updateOraclesMempool(
     );
   }
   if (ctx.oracle.gmxProvider && ctx.updateGmxOracle) {
-    // GMX は内部で2本（WETH/USDC）submit する。hash は追えないが mempool には載る。
+    // GMX submits two txs internally (WETH/USDC). The hashes can't be tracked but they land in the mempool.
     await ctx.updateGmxOracle(ctx, fairPrice, { noMine: true, priorityFeeWei });
   }
   return hashes;
 }
 
-// MockAggregator.sol のストレージ slot。`int256 private _answer` = slot 0
-// （`uint8 public constant decimals` は slot を消費せず、_roundId/_updatedAt は slot1/2 だが
-// AaveOracle.getAssetPrice は latestAnswer() のみ参照するため answer 直書きで十分）。
+// MockAggregator.sol's storage slot. `int256 private _answer` = slot 0
+// (`uint8 public constant decimals` consumes no slot, and _roundId/_updatedAt are slots 1/2, but
+// AaveOracle.getAssetPrice only reads latestAnswer(), so writing the answer directly is enough).
 const AGG_ANSWER_SLOT = `0x${"0".repeat(64)}` as Hex;
 
-// ADR 0011 §1: Aave WETH/USDC オラクル価格を mempool tx でなく storage 直書きで確定する。
-// PriceFeed と同じく block 境界で在るため front-run 対象が消え、priority-fee 上限に依存しない。
-// 経済化プロファイル（economicGas）でのみ使う。aggregator 未デプロイ（aave 無効）なら no-op。
+// ADR 0011 §1: finalize the Aave WETH/USDC oracle prices by writing storage directly instead of via a mempool tx.
+// Like PriceFeed, it exists at the block boundary, so there is nothing to front-run and it does not depend on the priority-fee cap.
+// Used only in the economic profile (economicGas). No-op if the aggregator is not deployed (aave disabled).
 export async function writeAaveOraclesStorage(
   ctx: SimContext,
   fairPrice: number,
@@ -216,7 +216,7 @@ export async function writeAaveOraclesStorage(
       bigintToStorageWord(toAavePrice(1)),
     );
   }
-  // ADR 0013: 追加 base（WBTC 等）の Aave aggregator も storage 直書き。fork 既定では空ループ。
+  // ADR 0013: also write additional bases' (WBTC etc.) Aave aggregators to storage directly. Empty loop on the default fork.
   for (const { aggregator, aavePrice } of extraAaveAggregators(ctx)) {
     await setStorageAt(
       ctx.publicClient,

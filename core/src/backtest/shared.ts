@@ -1,8 +1,8 @@
-// participant backtest（ADR 0016）の共有ヘルパ: state dump manifest / fingerprint / regime 解決。
+// Shared helpers for participant backtest (ADR 0016): state dump manifest / fingerprint / regime resolution.
 //
-// backtest CLI は sdk/constants を import する前（ERIS_LOCAL_DEPLOY を立てる前・constants.local.ts の
-// 同期前）に評価されるため、このモジュールは node built-in にしか依存しない
-// （sdk への transitive import を持たせない）。
+// The backtest CLI is evaluated before importing sdk/constants (before setting ERIS_LOCAL_DEPLOY,
+// before syncing constants.local.ts), so this module depends only on node built-ins
+// (it carries no transitive import into sdk).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -13,9 +13,9 @@ export const STATE_FILE_NAME = "venues-state.json";
 export const MANIFEST_FILE_NAME = "manifest.json";
 export const REGIMES_DIR = "config/regimes";
 
-// `--key value` / `--key=value` / `--flag` の軽量パーサ。core/src/runConfig.ts の parseCliFlags と
-// 同じセマンティクス（あちらは sdk/constants を transitive import するため、env セット前に評価される
-// backtest 系ツールはこちらを使う）。
+// Lightweight parser for `--key value` / `--key=value` / `--flag`. Same semantics as parseCliFlags in
+// core/src/runConfig.ts (that one transitively imports sdk/constants, so backtest tools evaluated before
+// the env is set use this one).
 export function parseFlags(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 2; i < argv.length; i++) {
@@ -31,7 +31,7 @@ export function parseFlags(argv: string[]): Record<string, string> {
   return out;
 }
 
-// 素の JSON-RPC 呼び出し（viem を使わない: env セット前に評価されるため）。
+// A bare JSON-RPC call (no viem: this is evaluated before the env is set).
 export async function rpc<T = unknown>(
   url: string,
   method: string,
@@ -69,10 +69,10 @@ export async function waitUntilAnvilUp(
     if (await isAnvilUp(url)) return;
     await new Promise((r) => setTimeout(r, 300));
   }
-  throw new Error(`anvil が ${url} で起動しませんでした`);
+  throw new Error(`anvil did not come up at ${url}`);
 }
 
-// 現在の git HEAD（manifest の sourceCommit の生成・照合を同じ実装に揃える）。
+// The current git HEAD (keeps generating and checking the manifest's sourceCommit on the same implementation).
 export function gitHead(cwd: string): string | undefined {
   try {
     return execFileSync("git", ["rev-parse", "HEAD"], { cwd })
@@ -83,28 +83,28 @@ export function gitHead(cwd: string): string | undefined {
   }
 }
 
-// state dump の manifest（配布物の一部。ADR 0016 §2）。
-// deployments を丸ごと同梱する = 参加者側で constants.local.ts を再生成できる
-// （gen:local-constants の実行を参加者に要求しない）。
+// The state dump manifest (part of the distributed artifact. ADR 0016 §2).
+// Bundling deployments in full = the participant can regenerate constants.local.ts
+// (we don't require participants to run gen:local-constants).
 export type StateManifest = {
   schema: 1;
   createdAt: string;
-  // 生成元の poc コミット（ドリフト検出。不一致は警告）。
+  // The generating poc commit (drift detection; a mismatch warns).
   sourceCommit: string;
   anvilVersion: string;
   chainId: number;
-  // 生成元 anvil の genesis block hash。--load-state 後に照合し、別 state との
-  // 取り違えを fail-fast で検出する。
+  // The generating anvil's genesis block hash. Checked after --load-state to fail-fast
+  // on a mix-up with a different state.
   genesisHash: string;
-  // state 本体のファイル名（manifest からの相対）。
+  // Filename of the state body (relative to the manifest).
   stateFile: string;
-  // deployments の canonical fingerprint。constants.local.ts に刻まれた値と照合する。
+  // Canonical fingerprint of deployments. Checked against the value stamped in constants.local.ts.
   deploymentsFingerprint: string;
-  // deployer/deployments/deployments.json の丸ごと埋め込み。
+  // The full deployer/deployments/deployments.json embedded.
   deployments: Record<string, unknown>;
 };
 
-// 鍵順に依存しない canonical JSON（fingerprint の入力を安定化する）。
+// Canonical JSON independent of key order (stabilizes the fingerprint input).
 export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -161,9 +161,9 @@ export function readStateManifest(stateDir: string): {
   const manifestPath = join(stateDir, MANIFEST_FILE_NAME);
   if (!existsSync(manifestPath))
     throw new Error(
-      `state manifest not found: ${manifestPath}。先に \`npm run gen:state-dump\` で ` +
-        `state dump を生成する（要: deployer でデプロイ済みの稼働中 anvil）か、` +
-        `配布された state ディレクトリを --state で指定してください（ADR 0016 §2）`,
+      `state manifest not found: ${manifestPath}. First generate a state dump with ` +
+        `\`npm run gen:state-dump\` (requires a running anvil already deployed by the deployer), ` +
+        `or point --state at a distributed state directory (ADR 0016 §2)`,
     );
   const manifest = validateStateManifest(
     JSON.parse(readFileSync(manifestPath, "utf8")),
@@ -172,13 +172,14 @@ export function readStateManifest(stateDir: string): {
   const statePath = join(stateDir, manifest.stateFile);
   if (!existsSync(statePath))
     throw new Error(
-      `state file not found: ${statePath}（manifest はあるが state 本体が無い）`,
+      `state file not found: ${statePath} (manifest exists but the state body is missing)`,
     );
   return { manifest, statePath };
 }
 
-// constants.local.ts に刻まれた fingerprint をテキストで読む。import で読むと module cache に
-// stale な constants が残り、再生成後の値がプロセス内に反映されないため正規表現で抜く。
+// Read the fingerprint stamped in constants.local.ts as text. Reading it via import would leave
+// stale constants in the module cache so the regenerated value wouldn't be reflected in-process,
+// hence a regex extraction.
 export function readConstantsFingerprint(
   constantsPath: string,
 ): string | undefined {
@@ -188,7 +189,7 @@ export function readConstantsFingerprint(
   return m?.[1];
 }
 
-// regime の protocols → deployments.json の protocols キーの対応。
+// Mapping from a regime's protocols to the protocols keys in deployments.json.
 const VENUE_TO_DEPLOYMENT_KEY: Record<string, string> = {
   uniswap: "uniswapV3",
   balancer: "balancerV2",
@@ -197,11 +198,11 @@ const VENUE_TO_DEPLOYMENT_KEY: Record<string, string> = {
   aave: "aaveV3",
 };
 
-// regime が要求する venue が state dump（manifest 同梱 deployments）に揃っているか。
-// 欠けている venue 名の配列を返す（空 = OK）。ゼロアドレス call の意味不明なエラーで落ちる前に
-// fail-fast するための事前検査（ADR 0016 §2）。
-// マッピングに無い protocol 名も fail-closed で missing 扱いにする（新 venue 追加時に
-// この対応表の更新漏れが「検査素通り → ゼロアドレス read」に化けるのを防ぐ）。
+// Whether the venues the regime requires are all present in the state dump (deployments bundled in
+// the manifest). Returns an array of missing venue names (empty = OK). A pre-check to fail-fast before
+// dying on a cryptic zero-address call error (ADR 0016 §2).
+// A protocol name absent from the mapping is also treated as missing, fail-closed (prevents a missed
+// update to this table when adding a new venue from turning into "check passes -> zero-address read").
 export function missingVenues(
   protocols: string[],
   deployments: Record<string, unknown>,
@@ -213,8 +214,8 @@ export function missingVenues(
   });
 }
 
-// --regime の解決: パス表記（/ を含む or .yaml/.yml で終わる）はそのまま、
-// 名前は config/regimes/<name>.yaml を引く。見つからなければ利用可能な regime 一覧付きで fail。
+// Resolve --regime: a path form (contains / or ends in .yaml/.yml) is used as-is, a name looks up
+// config/regimes/<name>.yaml. If not found, fail with a list of available regimes.
 export function resolveRegimePath(root: string, regime: string): string {
   const isPath =
     regime.includes("/") || regime.endsWith(".yaml") || regime.endsWith(".yml");
@@ -230,6 +231,6 @@ export function resolveRegimePath(root: string, regime: string): string {
         .join(", ") || "(empty)"
     : "(none)";
   throw new Error(
-    `regime not found: ${regime} (${candidate})。available: ${available}`,
+    `regime not found: ${regime} (${candidate}). available: ${available}`,
   );
 }

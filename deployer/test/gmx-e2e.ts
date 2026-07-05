@@ -24,13 +24,13 @@ import { waitTx, loadForgeArtifact } from "../src/util.js";
 import { gmxDeployment } from "./support.js";
 
 // ---------------------------------------------------------------------------
-// 定数
+// Constants
 // ---------------------------------------------------------------------------
 
 export const ORDER_TYPE_MARKET_INCREASE = 2;
-export const EXECUTION_FEE = 30_000_000_000_000_000n; // 0.03 ETH (base-fee 0 なので余裕)
+export const EXECUTION_FEE = 30_000_000_000_000_000n; // 0.03 ETH (plenty since base-fee is 0)
 
-// hashString(s) = keccak256(abi.encode(string)) — GMX Keys.sol と同じ
+// hashString(s) = keccak256(abi.encode(string)) — same as GMX Keys.sol
 function hashString(s: string): Hex {
   return keccak256(encodeAbiParameters(parseAbiParameters("string"), [s]));
 }
@@ -62,7 +62,7 @@ export const KEYS = {
   MAX_ORACLE_REF_PRICE_DEVIATION_FACTOR,
 };
 
-/** USD 価格を GMX スケール (price * 10^(30 - tokenDecimals)) に変換 */
+/** Convert a USD price to GMX scale (price * 10^(30 - tokenDecimals)) */
 export function toGmxPrice(usd: number, tokenDecimals: number): bigint {
   const PRECISION = 1_000_000n;
   const usdScaled = BigInt(Math.round(usd * Number(PRECISION)));
@@ -352,7 +352,7 @@ export const mintableTokenAbi = [
 ] as const satisfies Abi;
 
 // ---------------------------------------------------------------------------
-// 型
+// Types
 // ---------------------------------------------------------------------------
 
 export type GmxRegistry = {
@@ -382,12 +382,12 @@ export type Position = {
 };
 
 // ---------------------------------------------------------------------------
-// セットアップ
+// Setup
 // ---------------------------------------------------------------------------
 
 const dep = accounts.deployer;
 
-/** MockOracleProvider を deploy */
+/** Deploy MockOracleProvider */
 export async function deployMockOracleProvider(): Promise<Address> {
   const art = loadForgeArtifact("MockOracleProvider", "MockOracleProvider");
   const hash = await deployerWallet.deployContract({
@@ -401,9 +401,9 @@ export async function deployMockOracleProvider(): Promise<Address> {
 }
 
 /**
- * keeper を execute 実行者として確定する。
- * deployer が ROLE_ADMIN を持てば keeper に ORDER_KEEPER を付与して keeper を返す。
- * 持たなければ deployer 自身が ORDER_KEEPER のため deployer にフォールバックする。
+ * Determine the account that will run execute.
+ * If deployer holds ROLE_ADMIN, grant ORDER_KEEPER to keeper and return keeper.
+ * Otherwise fall back to deployer, which itself holds ORDER_KEEPER.
  */
 export async function resolveKeeper(g: GmxRegistry): Promise<{
   account: typeof accounts.keeper;
@@ -435,11 +435,11 @@ export async function resolveKeeper(g: GmxRegistry): Promise<{
     await waitTx(h);
     return { account: accounts.keeper, wallet: keeperWallet };
   }
-  // フォールバック: deployer は localhost ロールで ORDER_KEEPER を持つ
+  // Fallback: deployer holds ORDER_KEEPER via the localhost role
   return { account: dep, wallet: deployerWallet };
 }
 
-/** DataStore に mock provider を登録し、価格を設定する (deployer = CONTROLLER) */
+/** Register the mock provider in DataStore and set prices (deployer = CONTROLLER) */
 export async function setupOracle(
   g: GmxRegistry,
   mock: Address,
@@ -496,8 +496,8 @@ export async function setupOracle(
   }
 }
 
-/** GMX テストトークンを mint し Router に approve (deployer が mint、receiver が approve) */
-// 共有 WETH9 (wrappedNative) は mint を持たないため、receiver が ETH を wrap する。
+/** Mint a GMX test token and approve the Router (deployer mints, receiver approves) */
+// The shared WETH9 (wrappedNative) has no mint, so the receiver wraps ETH instead.
 const wethDepositAbi = [
   {
     type: "function",
@@ -517,7 +517,7 @@ export async function mintAndApprove(
   opts?: { wrap?: boolean },
 ): Promise<void> {
   if (opts?.wrap) {
-    // 共有 WETH9: receiver 自身が ETH を deposit して WETH を得る (mint 不可)。
+    // Shared WETH9: the receiver deposits ETH itself to get WETH (mint not available).
     const depHash = await receiverWallet.writeContract({
       address: token,
       abi: wethDepositAbi,
@@ -550,7 +550,7 @@ export async function mintAndApprove(
 }
 
 // ---------------------------------------------------------------------------
-// multicall (create) — simulate で key を取得しつつ送信
+// multicall (create) — simulate to grab the key, then send
 // ---------------------------------------------------------------------------
 
 function encExchange(
@@ -565,7 +565,7 @@ function encExchange(
   });
 }
 
-/** trader が ExchangeRouter.multicall を実行し、最後の戻り値 (bytes32 key) を返す */
+/** trader runs ExchangeRouter.multicall and returns the last return value (bytes32 key) */
 async function submitMulticall(
   exchangeRouter: Address,
   calls: Hex[],
@@ -590,7 +590,7 @@ async function submitMulticall(
   return key;
 }
 
-/** GM 流動性 deposit を作成し deposit key を返す */
+/** Create a GM liquidity deposit and return the deposit key */
 export async function createDeposit(
   g: GmxRegistry,
   market: GmxRegistry["markets"][number],
@@ -623,7 +623,7 @@ export async function createDeposit(
   return submitMulticall(g.ExchangeRouter, calls, EXECUTION_FEE);
 }
 
-/** openPosition (MarketIncrease long) を作成し order key を返す */
+/** Create an openPosition (MarketIncrease long) and return the order key */
 export async function createIncreaseOrder(
   g: GmxRegistry,
   market: GmxRegistry["markets"][number],
@@ -646,7 +646,7 @@ export async function createIncreaseOrder(
       sizeDeltaUsd,
       initialCollateralDeltaAmount: collateralAmount,
       triggerPrice: 0n,
-      acceptablePrice: isLong ? maxUint256 : 0n, // long increase は上限なし
+      acceptablePrice: isLong ? maxUint256 : 0n, // no upper bound for a long increase
       executionFee: EXECUTION_FEE,
       callbackGasLimit: 0n,
       minOutputAmount: 0n,
@@ -684,7 +684,7 @@ function oracleParams(mock: Address, tokens: Address[]) {
   };
 }
 
-/** keeper が executeDeposit / executeOrder を実行する */
+/** keeper runs executeDeposit / executeOrder */
 export async function keeperExecute(
   kind: "deposit" | "order",
   exec: { account: typeof accounts.keeper; wallet: typeof keeperWallet },
@@ -693,7 +693,7 @@ export async function keeperExecute(
   mock: Address,
   tokens: Address[],
 ): Promise<void> {
-  await advance(2); // 注文 timestamp より後の oracle timestamp を保証
+  await advance(2); // ensure the oracle timestamp is after the order timestamp
   const abi = kind === "deposit" ? depositHandlerAbi : orderHandlerAbi;
   const fn = kind === "deposit" ? "executeDeposit" : "executeOrder";
   const hash = await exec.wallet.writeContract({
@@ -707,10 +707,10 @@ export async function keeperExecute(
   });
   const rc = await waitTx(hash);
   if (rc.status !== "success")
-    throw new Error(`keeper ${fn} の tx が revert しました: ${hash}`);
+    throw new Error(`keeper ${fn} tx reverted: ${hash}`);
 }
 
-/** trader の対象 market の long ポジションを取得 */
+/** Fetch the trader's long position for the target market */
 export async function getLongPosition(
   g: GmxRegistry,
   marketToken: Address,
@@ -728,7 +728,7 @@ export async function getLongPosition(
   );
 }
 
-/** Reader ABI は registry から取得済みのものを使う (getMarkets 用に再利用) */
+/** Use the Reader ABI already fetched from the registry (reused for getMarkets) */
 export function readerAbi(): Abi {
   return gmxDeployment("Reader").abi;
 }

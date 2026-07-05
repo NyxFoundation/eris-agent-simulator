@@ -9,7 +9,7 @@ import { aaveAdapter } from "./aave.js";
 import { gmxAdapter } from "./gmx.js";
 import { activeBaseSymbols, tokenInfo } from "../markets.js";
 
-// 全 adapter（実装済みのみ登録）。フェーズ進行に伴い追加する。
+// All adapters (only implemented ones are registered). Added as phases progress.
 const ALL_ADAPTERS: ProtocolAdapter[] = [
   uniswapAdapter,
   balancerAdapter,
@@ -30,7 +30,7 @@ export const ALL_PROTOCOL_IDS: ProtocolId[] = [
   "aave",
 ];
 
-// coordinator が起動時に設定。未設定時は実装済み全 adapter を有効とみなす。
+// Set by the coordinator at startup. When unset, all implemented adapters are treated as enabled.
 let enabledIds: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id);
 
 export function setEnabledProtocols(ids: ProtocolId[]): void {
@@ -42,16 +42,16 @@ export function enabledAdapters(): ProtocolAdapter[] {
   return enabledIds.map((id) => ALL_BY_ID.get(id)!).filter(Boolean);
 }
 
-// 有効 protocol の設定 + stable 統一会計（active stable）の登録をまとめた標準初期化。
-// 環境（coordinator）と direct モードの agent シムが同じ手順を共有する。
+// Standard initialization that bundles configuring enabled protocols and registering the unified stable accounting (active stable).
+// The environment (coordinator) and the direct-mode agent shim share the same procedure.
 export function initProtocols(ids: ProtocolId[]): ProtocolAdapter[] {
   setEnabledProtocols(ids);
   const adapters = enabledAdapters();
   setActiveStables(
     adapters.map((a) => a.stableToken).filter((t): t is Address => Boolean(t)),
   );
-  // ADR 0013: 有効 protocol の base（WETH + 追加 base）を ACTIVE_BASES に登録。getBalances が
-  // 全 base 残高を読み、観測(baseBalances)・採点に入る。fork 既定は [WETH]（従来と一致）。
+  // ADR 0013: register the enabled protocols' bases (WETH + additional bases) into ACTIVE_BASES. getBalances
+  // reads all base balances and feeds observation (baseBalances) and scoring. [WETH] on the default fork (matches prior behavior).
   setActiveBases(
     activeBaseSymbols(enabledIds).map((s) => tokenInfo(s).address),
   );
@@ -68,8 +68,8 @@ export function hasAdapter(id: ProtocolId): boolean {
   return ALL_BY_ID.has(id);
 }
 
-// leaf アクションの type からそれを所有する adapter / protocol を解決する。
-// 各 adapter の parse を試し、最初に非 null を返したものを採用。
+// Resolve the adapter / protocol that owns a leaf action from its type.
+// Try each adapter's parse and take the first that returns non-null.
 export function adapterForAction(action: LeafAction): ProtocolAdapter {
   for (const adapter of enabledAdapters()) {
     const parsed = adapter.parse({ ...action });

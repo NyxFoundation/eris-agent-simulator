@@ -33,7 +33,7 @@ export interface FlowOrder {
 
 export type ValidationResult = { ok: true } | { ok: false; reason: string };
 
-// GMX / Aave のオラクル制御ハンドル（setupGlobal で確定）
+// Oracle control handles for GMX / Aave (finalized in setupGlobal)
 export interface OracleHandles {
   gmxProvider?: Address;
   aaveAggregators: Record<string, Address>; // token address(lower) -> MockAggregator
@@ -50,38 +50,38 @@ export interface SimContext {
   oracle: OracleHandles;
   gmx: {
     mockProvider?: Address;
-    market: Address; // WETH(ETH/USD) market。後方互換で残す（= markets["WETH"]）。
-    markets?: Record<string, Address>; // ADR 0013: base -> GMX market（WBTC 等）
+    market: Address; // WETH (ETH/USD) market. Kept for backward compatibility (= markets["WETH"]).
+    markets?: Record<string, Address>; // ADR 0013: base -> GMX market (WBTC etc.)
   };
-  // ADR 0013: 全 base の fair price（USD）。未設定または WETH のみのとき adapter は単一 fairPrice に
-  // フォールバックする。WBTC market を扱う adapter は ctx.fairPrices?.[base] を使う。
+  // ADR 0013: fair price (USD) for all bases. When unset or WETH-only, adapters fall back to the single
+  // fairPrice. Adapters that handle the WBTC market use ctx.fairPrices?.[base].
   fairPrices?: Record<string, number>;
-  // 競争ブロックで作成された GMX 注文キー（keeper ブロックで実行）
+  // GMX order keys created during the competition block (executed in the keeper block)
   pendingGmxOrders: Hex[];
-  // GMX mock オラクル更新（gmx.setupGlobal が設定。oracles.updateOracles から呼ぶ）
-  // opts.noMine=true で realtime 用に mine せず mempool submit（priorityFeeWei で入札）。
+  // GMX mock oracle update (set by gmx.setupGlobal; called from oracles.updateOracles)
+  // opts.noMine=true submits to the mempool without mining for realtime (bids via priorityFeeWei).
   updateGmxOracle?: (
     ctx: SimContext,
     fairPrice: number,
     opts?: { noMine?: boolean; priorityFeeWei?: bigint },
   ) => Promise<void>;
-  // protocol/kind ごとの flow ウォレット
+  // Flow wallet per protocol/kind
   flowWallet(protocol: ProtocolId, kind: FlowKind): FlowWallet;
-  // 任意鍵で flow ウォレットを引く（aave 借り手プールの "aave:actor0" 等。未登録は例外）。
+  // Look up a flow wallet by an arbitrary key (e.g. "aave:actor0" of the aave borrower pool; throws if unregistered).
   flowWalletByKey(key: string): FlowWallet;
 }
 
 export interface ProtocolAdapter {
   id: ProtocolId;
 
-  // この protocol が「USDC」として扱う stable トークン（stable 統一会計用）。
-  // 未指定なら native USDC とみなす。
+  // The stable token this protocol treats as "USDC" (for unified stable accounting).
+  // If unspecified, native USDC is assumed.
   stableToken?: Address;
 
-  // ---- アクション parse/validate（純粋関数。clients 不要）----
-  // 自分の type でなければ null
+  // ---- Action parse/validate (pure functions; no clients needed) ----
+  // null if not this adapter's type
   parse(obj: Record<string, unknown>): LeafAction | null;
-  // bundle 内で許可されるか（GMX は false）
+  // Whether it is allowed inside a bundle (false for GMX)
   bundleable(action: LeafAction): boolean;
   validate(
     action: LeafAction,
@@ -89,10 +89,10 @@ export interface ProtocolAdapter {
     balances: BalanceSnapshot,
   ): ValidationResult;
 
-  // ---- ラウンド毎の状態読取 ----
+  // ---- Per-round state read ----
   readState(ctx: SimContext, fairPrice: number): Promise<unknown>;
 
-  // ---- 観測寄与（obs.protocols[id] に入る）----
+  // ---- Observation contribution (goes into obs.protocols[id]) ----
   observe(
     ctx: SimContext,
     state: unknown,
@@ -100,7 +100,7 @@ export interface ProtocolAdapter {
     fairPrice: number,
   ): Promise<unknown>;
 
-  // ---- intent -> オンチェーン tx ----
+  // ---- intent -> on-chain tx ----
   buildTxs(
     ctx: SimContext,
     owner: Address,
@@ -108,11 +108,11 @@ export interface ProtocolAdapter {
     state: unknown,
   ): Promise<BuiltTx[]>;
 
-  // ---- mine 後フック（GMX keeper 実行）----
-  // 競争ブロック後の keeper 処理（GMX 注文実行など）。
-  // opts.noMine=true で realtime 用に mine せず mempool submit。
-  // 対象ブロックは fromBlock..toBlock の範囲指定（realtime の追いつき分を 1 回の getLogs で
-  // 走査するため）。blockNumber は単一ブロック指定の旧形（同期 coordinator 用に残す）。
+  // ---- Post-mine hook (GMX keeper execution) ----
+  // Keeper processing after the competition block (e.g. executing GMX orders).
+  // opts.noMine=true submits to the mempool without mining for realtime.
+  // The target blocks are given as the range fromBlock..toBlock (to scan the realtime catch-up in one
+  // getLogs). blockNumber is the old form for a single block (kept for the synchronous coordinator).
   afterMine?(
     ctx: SimContext,
     opts?: {
@@ -124,7 +124,7 @@ export interface ProtocolAdapter {
     },
   ): Promise<void>;
 
-  // ---- PnL 寄与（USDC）----
+  // ---- PnL contribution (USDC) ----
   valueUsdc(
     ctx: SimContext,
     agent: Address,
@@ -132,12 +132,12 @@ export interface ProtocolAdapter {
     fairPrice: number,
   ): Promise<number>;
 
-  // ---- wallet 毎 setup（approve 等の tx を返す。coordinator が owner 鍵で送信）----
+  // ---- Per-wallet setup (returns txs such as approvals; the coordinator sends them with the owner key) ----
   setupWallet?(ctx: SimContext, owner: Address): Promise<BuiltTx[]>;
 
-  // ---- 全体 setup（mock deploy / role 付与 / oracle source 差替）----
+  // ---- Global setup (mock deploy / role granting / swapping the oracle source) ----
   setupGlobal?(ctx: SimContext): Promise<void>;
 }
 
-// bundle leaf を LeafAction に widening するヘルパ型
+// Helper type that widens a bundle leaf to a LeafAction
 export type { BundleActionItem };

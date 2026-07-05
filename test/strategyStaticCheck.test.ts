@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { findCheatcodeUsage } from "../core/src/strategyStaticCheck.js";
 
-test("findCheatcodeUsage: cheatcode RPC を行番号つきで検出する", () => {
+test("findCheatcodeUsage: detects cheatcode RPC with line numbers", () => {
   const source = [
     "const obs = JSON.parse(line);",
     'await client.request({ method: "anvil_setBalance", params: [me, cap] });',
@@ -19,19 +19,22 @@ test("findCheatcodeUsage: cheatcode RPC を行番号つきで検出する", () =
   );
 });
 
-test("findCheatcodeUsage: 環境専用の特権ヘルパ import も検出する", () => {
+test("findCheatcodeUsage: also detects imports of environment-only privileged helpers", () => {
   const findings = findCheatcodeUsage(
     'import { dealErc20, setEthBalance } from "../../src/chain.js";',
   );
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].rule, "chain.ts の特権ヘルパ（環境専用）");
+  assert.equal(
+    findings[0].rule,
+    "privileged chain.ts helper (environment-only)",
+  );
 });
 
-test("findCheatcodeUsage: 健全な戦略コードは素通しする", () => {
+test("findCheatcodeUsage: passes healthy strategy code through untouched", () => {
   const source = [
     "const gap = fair / pool - 1;",
     'emit({ type: "swap", tokenIn: "WETH", amountIn: amountIn.toString() });',
-    "const evmCompatible = true; // evm という語単体は検出しない",
+    "const evmCompatible = true; // the bare word evm is not detected",
   ].join("\n");
   assert.deepEqual(findCheatcodeUsage(source), []);
 });

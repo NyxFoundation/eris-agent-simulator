@@ -2,8 +2,8 @@
 pragma solidity 0.8.20;
 
 /// @title MockERC20
-/// @notice decimals を任意設定でき、誰でも mint できるテスト用 ERC20。
-///         USDC(6) / WBTC(8) / DAI(18) などの代用に使う。
+/// @notice A test ERC20 with configurable decimals that anyone can mint.
+///         Used as a stand-in for USDC(6) / WBTC(8) / DAI(18) and similar.
 contract MockERC20 {
     string public name;
     string public symbol;

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-// ADR 0014 §1: 正直な定数積 AMM（デコイ = 本物の arb 機会）。
-// 見積り（getAmountOut）と実行（swap）が完全に一致し skim しない。実 fair からの gap を
-// 残した reserve 比で deploy されるため、careful も naive も利益化できる。「検証が本物まで
-// 避ける過剰反応」にならないことの対照プール。
-// 実行系はすべて TypeScript + viem 側。このコントラクトのみ Foundry でコンパイルする。
+// ADR 0014 §1: honest constant-product AMM (the decoy = a genuine arb opportunity).
+// The quote (getAmountOut) and the execution (swap) match exactly and never skim. Deployed with a
+// reserve ratio that leaves a gap from the real fair price, so both careful and naive agents can
+// profit. The counterpart pool that shows verification does not overreact into avoiding even the genuine ones.
+// All execution logic lives on the TypeScript + viem side. Only this contract is compiled with Foundry.
 
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
@@ -18,12 +18,13 @@ interface IERC20 {
 }
 
 /// @title SimpleAMM
-/// @notice reserve は自身の token 残高（Uniswap V2 流儀）。定数積で見積り、swap も同一式で
-///         そのまま渡す。悪意ある挙動は一切無い（RiggedAMM との対照）。
+/// @notice Reserves are the contract's own token balances (Uniswap V2 style). Quotes use the
+///         constant product, and swap delivers with the same formula as-is. No malicious behavior
+///         whatsoever (the counterpart to RiggedAMM).
 contract SimpleAMM {
     address public immutable token0;
     address public immutable token1;
-    uint24 public immutable feeBps; // 取引手数料（bps）
+    uint24 public immutable feeBps; // trading fee (bps)
 
     event Swap(
         address indexed to,
@@ -39,7 +40,7 @@ contract SimpleAMM {
         feeBps = _feeBps;
     }
 
-    // reserve = 自身の token 残高。deploy 直後（資金供給前）は 0 なので機会に見えない。
+    // reserve = own token balance. Right after deploy (before funding) it is 0, so it doesn't look like an opportunity.
     function getReserves() public view returns (uint256 r0, uint256 r1) {
         r0 = IERC20(token0).balanceOf(address(this));
         r1 = IERC20(token1).balanceOf(address(this));
@@ -58,7 +59,7 @@ contract SimpleAMM {
         return (rOut * inAfterFee) / (rIn + inAfterFee);
     }
 
-    // 見積り（view）。dry-run/gap 検出はこれを参照する。
+    // Quote (view). dry-run/gap detection references this.
     function getAmountOut(
         uint256 amountIn,
         address tokenIn
@@ -66,7 +67,7 @@ contract SimpleAMM {
         return _amountOut(amountIn, tokenIn);
     }
 
-    // amountIn を transferFrom で受け取り、out を to へ渡す。skim しない（正直）。
+    // Receives amountIn via transferFrom and delivers out to `to`. Never skims (honest).
     function swap(
         uint256 amountIn,
         uint256 minOut,

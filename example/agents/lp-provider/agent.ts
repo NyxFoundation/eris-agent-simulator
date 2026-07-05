@@ -1,7 +1,7 @@
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 
-// 既存ロジックが前提とする正規化済みフラット形（トップレベル pool / positions）。
-// AgentObservation はネスト形（protocols.uniswap.pool / .positions）なので decide 内で射影する。
+// The normalized flat shape the existing logic assumes (top-level pool / positions).
+// AgentObservation is nested (protocols.uniswap.pool / .positions), so we project it inside decide.
 type Observation = {
   pool: {
     priceUsdcPerWeth: number;
@@ -36,7 +36,7 @@ const MIN_WETH_MINT_WEI = 10_000_000_000_000_000n;
 const MIN_USDC_MINT_UNITS = 25_000_000n;
 
 export function decide(obs: AgentObservation): AgentAction | null {
-  // 新スキーマ(protocols.uniswap)を旧フラット形へ正規化して既存ロジックを再利用
+  // Normalize the new schema (protocols.uniswap) into the old flat shape to reuse the existing logic
   const uni = obs.protocols.uniswap;
   if (!uni) return { type: "noop", reason: "uniswap unavailable" };
   const observation = {

@@ -6,7 +6,7 @@ import {
   type StressEventConfig,
 } from "../core/src/realtime/events.js";
 
-// 固定 magnitude/window（min==max）で seed に依らず台形が確定する単一 crash。
+// A single crash whose trapezoid is fixed regardless of seed via fixed magnitude/window (min==max).
 const FIXED_CRASH: StressEventConfig = {
   type: "crash",
   magnitudeRange: [0.1, 0.1],
@@ -16,34 +16,34 @@ const FIXED_CRASH: StressEventConfig = {
   decayBlocks: 2,
 };
 
-test("crash overlay は台形（窓外=1, hold で最大乖離 1−m）", () => {
+test("crash overlay is a trapezoid (1 outside the window, max deviation 1-m during hold)", () => {
   const s = new EventSchedule([FIXED_CRASH], 1, 20);
   assert.equal(s.events.length, 1);
   const ev = s.events[0];
   assert.equal(ev.startBlock, 10); // round(0.5*20)
   assert.equal(ev.endBlock, 16); // start + ramp+hold+decay(6)
 
-  // 窓外（β 中立。ADR 0007 を毀損しない）: effective === base
+  // outside the window (β-neutral, does not break ADR 0007): effective === base
   assert.equal(s.at(9).wethMult, 1);
   assert.equal(s.at(16).wethMult, 1);
   assert.equal(s.at(100).wethMult, 1);
 
-  // hold 区間は最大乖離 1−m=0.9
+  // the hold interval has max deviation 1-m=0.9
   assert.ok(Math.abs(s.at(11).wethMult - 0.9) < 1e-9, `${s.at(11).wethMult}`);
   assert.ok(Math.abs(s.at(12).wethMult - 0.9) < 1e-9, `${s.at(12).wethMult}`);
-  // ramp 立ち上がり（t=0 → e=0.5 → 0.95）
+  // ramp rise (t=0 -> e=0.5 -> 0.95)
   assert.ok(Math.abs(s.at(10).wethMult - 0.95) < 1e-9, `${s.at(10).wethMult}`);
-  // usdcPx は v1 常に 1
+  // usdcPx is always 1 in v1
   assert.equal(s.at(12).usdcPx, 1);
 });
 
-test("spike overlay は上方向（hold で 1+m）", () => {
+test("spike overlay is upward (1+m during hold)", () => {
   const s = new EventSchedule([{ ...FIXED_CRASH, type: "spike" }], 1, 20);
   assert.ok(Math.abs(s.at(12).wethMult - 1.1) < 1e-9, `${s.at(12).wethMult}`);
   assert.ok(s.at(12).wethMult > 1);
 });
 
-test("activeEventAt は窓内のみ true（endBlock は排他）", () => {
+test("activeEventAt is true only within the window (endBlock is exclusive)", () => {
   const s = new EventSchedule([FIXED_CRASH], 1, 20);
   assert.equal(s.activeEventAt(9), null);
   assert.ok(s.activeEventAt(10));
@@ -51,7 +51,7 @@ test("activeEventAt は窓内のみ true（endBlock は排他）", () => {
   assert.equal(s.activeEventAt(16), null);
 });
 
-test("同一 SEED は同一スケジュール（再現性）", () => {
+test("the same SEED yields the same schedule (reproducibility)", () => {
   const cfg: StressEventConfig = {
     type: "crash",
     magnitudeRange: [0.05, 0.15],
@@ -63,14 +63,14 @@ test("同一 SEED は同一スケジュール（再現性）", () => {
   const a = new EventSchedule([cfg], 42, 60);
   const b = new EventSchedule([cfg], 42, 60);
   assert.deepEqual(a.events, b.events);
-  // magnitude/start はレンジ内
+  // magnitude/start are within range
   const ev = a.events[0];
   assert.ok(ev.magnitude >= 0.05 && ev.magnitude <= 0.15);
   assert.ok(ev.startBlock >= 0 && ev.endBlock <= 60);
 });
 
-test("窓は run 窓に収まるよう startBlock がクランプされる", () => {
-  // windowFrac 末尾寄りでも endBlock <= runBlocks
+test("startBlock is clamped so the window fits inside the run window", () => {
+  // endBlock <= runBlocks even with windowFrac near the end
   const cfg: StressEventConfig = {
     type: "crash",
     magnitudeRange: [0.1, 0.1],
@@ -84,22 +84,22 @@ test("窓は run 窓に収まるよう startBlock がクランプされる", () 
   assert.equal(s.events[0].startBlock, 8); // maxStart = 20-12
 });
 
-test("イベント無しは常に wethMult=1（従来 run と一致）", () => {
+test("no events always yields wethMult=1 (matches a legacy run)", () => {
   const s = new EventSchedule([], 1, 20);
   assert.equal(s.hasEvents(), false);
   assert.equal(s.at(0).wethMult, 1);
   assert.equal(s.at(10).wethMult, 1);
 });
 
-test("イベントありで runBlocks<=0 は fail-fast", () => {
+test("events with runBlocks<=0 fail-fast", () => {
   assert.throws(
     () => new EventSchedule([FIXED_CRASH], 1, 0),
     /ERIS_RUN_BLOCKS/,
   );
 });
 
-test("複数イベント重なりは倍率を乗算合成", () => {
-  // 同じ窓に crash と spike を重ねる → hold で (1-0.1)*(1+0.1)=0.99
+test("overlapping events compose multiplicatively", () => {
+  // overlap a crash and a spike in the same window -> (1-0.1)*(1+0.1)=0.99 during hold
   const s = new EventSchedule(
     [FIXED_CRASH, { ...FIXED_CRASH, type: "spike" }],
     1,
@@ -110,13 +110,13 @@ test("複数イベント重なりは倍率を乗算合成", () => {
 
 // ---- parseStressEvents ----
 
-test("parseStressEvents: 未設定/空は []", () => {
+test("parseStressEvents: unset/empty is []", () => {
   assert.deepEqual(parseStressEvents(undefined), []);
   assert.deepEqual(parseStressEvents(""), []);
   assert.deepEqual(parseStressEvents("   "), []);
 });
 
-test("parseStressEvents: 正常 JSON をパース", () => {
+test("parseStressEvents: parses valid JSON", () => {
   const json =
     '[{"type":"crash","magnitudeRange":[0.06,0.10],"windowFrac":[0.3,0.7],"rampBlocks":3,"holdBlocks":6,"decayBlocks":8}]';
   const parsed = parseStressEvents(json);
@@ -125,7 +125,7 @@ test("parseStressEvents: 正常 JSON をパース", () => {
   assert.deepEqual(parsed[0].magnitudeRange, [0.06, 0.1]);
 });
 
-test("parseStressEvents: 不正入力は throw", () => {
+test("parseStressEvents: invalid input throws", () => {
   assert.throws(() => parseStressEvents("not json"), /valid JSON/);
   assert.throws(() => parseStressEvents("{}"), /must be a JSON array/);
   assert.throws(

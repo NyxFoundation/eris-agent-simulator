@@ -1,21 +1,21 @@
 [← README](../../README.md)
 
-# 戦略の書き方（agent 作成チュートリアル）
+# Writing a Strategy (agent authoring tutorial)
 
-新しい戦略は **`example/agents/<id>/` に 1 ディレクトリ**を作り、ロスターに id を足すだけで動く
-（ADR 0015。spawn・観測・署名・送信・検証は `runtime/bot.ts` が全部やる）。この文書は
-「最小 agent → 観測を読む → action を返す → ログを残す → backtest で回す → 提出」の一本道。
+A new strategy runs by creating **one directory at `example/agents/<id>/`** and adding the id to a roster
+(ADR 0015; `runtime/bot.ts` does all the spawning, observation, signing, sending, and validation). This document
+is a single straight line: "minimal agent → read observations → return an action → keep a log → run in backtest → submit."
 
-型は 3 つ（詳細は[アーキテクチャ](architecture.md)）。本ページは最も基本のルール戦略
-（`decide()`）を軸に進める:
+There are 3 types (details in [Architecture](architecture.md)). This page follows the most basic one, the rule strategy
+(`decide()`):
 
-| 型 | 置くもの | 向く用途 |
+| Type | What you place | Suited for |
 |---|---|---|
-| ルール戦略 | `agent.ts`（`decide(obs, ctx)`） | 大半の戦略。毎ブロック観測→判断 |
-| 自走型 | `agent.ts`（`run(ctx)`） | 独自ループ・イベント駆動（例: liquidator） |
-| プロンプト型 | `prompt.md` | LLM に毎判断させる（[LLM エージェント](llm-agents.md)） |
+| rule strategy | `agent.ts` (`decide(obs, ctx)`) | most strategies; observe → decide each block |
+| self-driven | `agent.ts` (`run(ctx)`) | custom loops / event-driven (e.g. liquidator) |
+| prompt | `prompt.md` | let an LLM decide each time (see [LLM Agents](llm-agents.md)) |
 
-## Step 1: 最小の agent
+## Step 1: The minimal agent
 
 ```bash
 mkdir example/agents/my-strategy
@@ -30,31 +30,32 @@ export function decide(
   obs: AgentObservation,
   ctx: AgentContext,
 ): AgentAction | Record<string, unknown> | null {
-  return { type: "noop", reason: "まだ何もしない" };
+  return { type: "noop", reason: "doing nothing yet" };
 }
 
-// 省略時は「新ブロックごとに 1 回」呼ばれる。間隔を変えるなら:
+// If omitted, it is called "once per new block". To change the interval:
 // export const config = { intervalMs: 5000 };
 ```
 
-契約はこれだけ:
+That is the entire contract:
 
-- 戻り値が action なら runtime が **validate してから**署名・送信する（不正 action はチェーンに
-  出ず、`agents/<id>.jsonl` に `rejected` が残る = fail-closed）
-- `null` / `undefined` を返せば見送り。**noop は立派な選択肢**（機会が無い市場で取引しないのが正解）
-- throw しても run は落ちない（そのラウンドはスキップされ `decide error:` がログに残る）
+- If the return value is an action, the runtime **validates it before** signing and sending (invalid actions never
+  reach the chain, and a `rejected` entry is left in `agents/<id>.jsonl` = fail-closed)
+- Returning `null` / `undefined` means skipping. **noop is a perfectly good choice** (not trading in a market with no
+  opportunity is the right answer)
+- Throwing does not crash the run (that round is skipped and `decide error:` is left in the log)
 
-## Step 2: 観測（AgentObservation）を読む
+## Step 2: Read the observation (AgentObservation)
 
-`obs` は runtime が毎ブロック再構成する「確定済み状態のスナップショット」。RPC を直接叩く必要は
-ない（叩けるが、観測にあるものは観測から読むのが速くて安全）。実 run のサンプル（抜粋）:
+`obs` is a "snapshot of confirmed state" that the runtime reconstructs each block. You don't need to hit RPC directly
+(you can, but reading from the observation what is already in it is faster and safer). A sample from a real run (excerpt):
 
 ```jsonc
 {
   "round": 610,
   "blockNumber": "610",
-  "fairPriceUsdcPerWeth": 2993.27,          // 環境が配布する fair price（1 ブロック遅れ = 仕様）
-  "fairPricesUsd": { "WETH": 2993.27, "WBTC": 60065.96 },  // マルチアセット時の base 別 fair
+  "fairPriceUsdcPerWeth": 2993.27,          // fair price distributed by the environment (1 block late = by design)
+  "fairPricesUsd": { "WETH": 2993.27, "WBTC": 60065.96 },  // per-base fair when multi-asset
   "balances": { "ethWei": "…", "wethWei": "0", "usdcUnits": "25000000000" },
   "inventory": { "valueUsdc": 339290.8, "weth": 0, "usdc": 25000, "eth": 105.0 },
   "history": [ { "round": 608, "poolPriceUsdcPerWeth": 3000.0, "fairPriceUsdcPerWeth": 3000 }, … ],
@@ -66,115 +67,115 @@ export function decide(
 }
 ```
 
-読むときの注意:
+Things to watch when reading:
 
-- **トークン量は decimal 文字列**（`wethWei` は 18 桁 wei、`usdcUnits` は 6 桁）。`BigInt(...)` で
-  扱う。`inventory` は人間可読の数値換算（概算）
-- `history` は直近 ~20 ブロックの pool/fair 系列（モメンタムや乖離の持続を見る用）
-- `limits` は per-round の取引上限と fee の既定/上限。**サイズはここで頭打ちにする**（超過 action
-  は validate で弾かれる）
-- `protocols.<venue>` の形は venue ごとに違う。**直読みせず、共有ヘルパで正規化するのが安全**
-  （Step 4）。過去に `obs.pool` 直読みの TypeError → 全ラウンド noop という事故が頻発している
+- **Token amounts are decimal strings** (`wethWei` is 18-decimal wei, `usdcUnits` is 6-decimal). Handle them with
+  `BigInt(...)`. `inventory` is a human-readable numeric conversion (approximate)
+- `history` is the pool/fair series for the last ~20 blocks (for gauging momentum and the persistence of a gap)
+- `limits` holds the per-round trade limits and the default/max fees. **Cap your size here** (actions over the limit
+  are rejected by validation)
+- The shape of `protocols.<venue>` differs per venue. **It's safest not to read it directly, but to normalize it with a
+  shared helper** (Step 4). Reading `obs.pool` directly has repeatedly caused a TypeError → noop for every round
 
-## Step 3: action を返す
+## Step 3: Return an action
 
-action は JSON（zod スキーマ `sdk/src/actionSchema.ts` が正）。一覧は
-[プロトコルとアクション](protocols-and-actions.md)。最小の swap:
+Actions are JSON (the zod schema `sdk/src/actionSchema.ts` is authoritative). The full list is in
+[Protocols and Actions](protocols-and-actions.md). A minimal swap:
 
 ```ts
-// fair よりプールが 50bps 以上安ければ USDC で WETH を買う
+// buy WETH with USDC if the pool is 50bps or more below fair
 const pool = obs.protocols.uniswap?.pool?.priceUsdcPerWeth;
 if (!pool) return null;
 const gapBps = (obs.fairPriceUsdcPerWeth / pool - 1) * 10000;
 if (gapBps > 50) {
   return {
-    type: "swap",                 // uniswap の WETH/USDC swap
+    type: "swap",                 // uniswap WETH/USDC swap
     tokenIn: "USDC",
-    amountIn: "500000000",        // 500 USDC（6 桁 units の decimal 文字列）
+    amountIn: "500000000",        // 500 USDC (6-decimal units, as a decimal string)
     slippageBps: 75,
     maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei,
   };
 }
 return null;
-// 判断理由は action でなく ctx.log に載せる（Step 4。noop だけは reason フィールドを持つ）
+// put the reasoning in ctx.log, not in the action (Step 4; only noop carries a reason field)
 ```
 
-複数 leg を 1 tx にするなら `type: "bundle"`（`actions: [...]`。GMX は非同期のため bundle 不可）。
+To put multiple legs in a single tx, use `type: "bundle"` (`actions: [...]`; GMX is async so it cannot be bundled).
 
-## Step 4: 判断ログを最初から入れる
+## Step 4: Add a decision log from the start
 
-**これを省くと run 後のデバッグが桁違いに苦しくなる**（判断ログの無い戦略の損失調査は、チェーンの
-receipt 精算まで降りることになる）。`ctx.log` で毎ラウンドの判断根拠を
-`runs/<run_id>/agents/<id>.jsonl` に残す:
+**Skipping this makes post-run debugging dramatically harder** (investigating losses in a strategy with no decision log
+means descending all the way to on-chain receipt reconciliation). Use `ctx.log` to leave each round's reasoning in
+`runs/<run_id>/agents/<id>.jsonl`:
 
 ```ts
 export function decide(obs: AgentObservation, ctx: AgentContext) {
   const signals = { fair: obs.fairPriceUsdcPerWeth, pool, gapBps };
-  const action = pickAction(obs);   // あなたの判断ロジック
+  const action = pickAction(obs);   // your decision logic
   ctx.log({ round: obs.round, action: action ?? { type: "noop" }, signals,
             reason: action ? "gap over threshold" : "no edge" });
   return action;
 }
 ```
 
-mempool 活動（submitted / rejected / submit_failed）は runtime が同じファイルに自動で残す。
-読み方は [run 出力と解析](run-output.md)。
+Mempool activity (submitted / rejected / submit_failed) is left automatically by the runtime in the same file.
+For how to read it, see [Run Output and Analysis](run-output.md).
 
-## Step 5: ロスターに登録して backtest で回す
+## Step 5: Register in a roster and run in backtest
 
 ```yaml
-# my-roster.yaml（スパーリング相手と一緒に）
+# my-roster.yaml (together with sparring partners)
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
-  - id: my-strategy          # ← ディレクトリ名がそのまま id
+  - id: my-strategy          # ← the directory name is the id directly
     wallet: AGENT2_PRIVATE_KEY
-  - id: multi-arb            # 同梱のライバル戦略
+  - id: multi-arb            # a bundled rival strategy
     wallet: AGENT3_PRIVATE_KEY
 ```
 
 ```bash
 npm run backtest -- --regime calm-01 --agents my-roster.yaml --repeat 5
-npm run backtest -- --regime crash-01 --agents my-roster.yaml   # 別 regime でも見る
+npm run backtest -- --regime crash-01 --agents my-roster.yaml   # also look at another regime
 ```
 
-- 成績は `mean alphaUsdc`（β 除去 PnL）で読む。単発の netPnl は価格ドリフトに汚染される
-- `--repeat` の分布で判断する（同一 regime でも tx 着順で僅かにぶれる。[バックテスト](backtest.md)）
-- regime を跨いで確認する: calm で撃ちすぎない・crash で機会を取れる、の両立が実力
+- Read results by `mean alphaUsdc` (β-removed PnL). A single netPnl is contaminated by price drift
+- Judge by the distribution of `--repeat` (even in the same regime it varies slightly with tx ordering; see [Backtest](backtest.md))
+- Verify across regimes: not overfiring in calm and capturing opportunity in crash — doing both is skill
 
-## 共有ヘルパ（example/agents/lib/）
+## Shared helpers (example/agents/lib/)
 
-venue 横断の戦略は `lib/markets.ts` の `marketViews(obs)` を使う。observation を
-「base ごとの `{ fair, venues: [{protocol, price, feeBps, swapType}] }`」に正規化してくれる
-（venue ごとの観測形の差・fee 込み見積りのミッド補正を吸収済み）:
+Cross-venue strategies use `marketViews(obs)` from `lib/markets.ts`. It normalizes the observation into
+"per-base `{ fair, venues: [{protocol, price, feeBps, swapType}] }`"
+(absorbing the differences in per-venue observation shapes and applying the fee-inclusive mid correction to estimates):
 
 ```ts
 import { marketViews } from "../lib/markets.js";
 
 for (const view of marketViews(obs)) {
-  // view.base ("WETH" | "WBTC" | …), view.fair, view.venues（価格は mid 相当に正規化済み）
+  // view.base ("WETH" | "WBTC" | …), view.fair, view.venues (prices normalized to mid-equivalent)
 }
 ```
 
-## 落とし穴（実 run で確認済みのもの）
+## Pitfalls (confirmed in real runs)
 
-1. **手数料を無視した裁定は構造的に負ける**。fee-aware な informed flow が乖離を手数料バンド内
-   （~30bps）に保つため、「gap > 当該 venue の fee + 安全マージン」を満たすときだけ撃つこと。
-   閾値 10bps で毎ブロック撃った同梱戦略が 60 ブロックで −1,650 USDC を垂れ流した実測がある
-2. **fair price は 1 ブロック遅れる**（オンチェーン配布の仕様。全員等しく遅れる）。fair が毎ブロック
-   大きく動く窓では、古い fair 基準の執行が逆を踏む。乖離の「持続」を `history` で確認してから
-   動くと安全
-3. **初期資金は USDC のみが既定**（`funding.wethWei: "0"`）。WETH 売りから始める戦略は最初の
-   ラウンドでは在庫が無い。`obs.balances` を見てから方向を決める
-4. **サイズと fee は `obs.limits` に従う**。超過は validate で弾かれ、そのラウンドが無駄になる
+1. **Arbitrage that ignores fees structurally loses**. Because fee-aware informed flow keeps gaps within the fee band
+   (~30bps), only fire when "gap > that venue's fee + safety margin" holds. A bundled strategy that fired every block at
+   a 10bps threshold was measured bleeding −1,650 USDC over 60 blocks
+2. **The fair price is 1 block late** (a property of on-chain distribution; everyone is delayed equally). In windows
+   where fair moves a lot each block, execution based on a stale fair steps the wrong way. It's safer to confirm the
+   "persistence" of the gap with `history` before moving
+3. **Initial funding is USDC-only by default** (`funding.wethWei: "0"`). A strategy that starts by selling WETH has no
+   inventory in the first round. Decide direction after checking `obs.balances`
+4. **Follow `obs.limits` for size and fee**. Overruns are rejected by validation, wasting that round
 
-## 提出
+## Submission
 
 ```bash
-npm run check:strategy        # cheatcode 静的検査（入口ゲート）
-npm run bundle:agent my-strategy   # 提出用 zip（runtime + sdk + lib + 対象 agent）
+npm run check:strategy        # static cheatcode check (entry gate)
+npm run bundle:agent my-strategy   # submission zip (runtime + sdk + lib + target agent)
 ```
 
-`example/agents/` の同梱戦略（noop = 最小形 / arb-bot = 判断ログ付きの手本 / multi-arb =
-マルチアセット venue 横断 / liquidator = 自走型）はすべて読める実例として使える。
+The bundled strategies in `example/agents/` (noop = minimal form / arb-bot = a model with a decision log / multi-arb =
+multi-asset cross-venue / liquidator = self-driven) are all usable as readable working examples.

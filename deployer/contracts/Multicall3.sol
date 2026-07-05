@@ -2,10 +2,10 @@
 pragma solidity ^0.8.20;
 
 /// @title Multicall3
-/// @notice canonical Multicall3 (0xcA11bde0...) と機能互換の最小実装。
-/// poc の採点 reconstruct (viem multicall = aggregate3) と getEthBalance を満たす。
-/// 本家はガス最適化のため assembly を使うが、ここでは可読性優先の plain Solidity で
-/// 同じ戻り値 (Result[] = {success, returnData}) を返す。
+/// @notice A minimal implementation functionally compatible with the canonical Multicall3 (0xcA11bde0...).
+/// Satisfies the poc scoring reconstruct (viem multicall = aggregate3) and getEthBalance.
+/// The original uses assembly for gas optimization; here we favor readability with plain Solidity
+/// while returning the same values (Result[] = {success, returnData}).
 contract Multicall3 {
     struct Call {
         address target;

@@ -11,8 +11,8 @@
 
 <p align="center">
   <a href="https://erisnet.xyz/">erisnet.xyz</a> &nbsp;·&nbsp;
-  <a href="#クイックスタート">クイックスタート</a> &nbsp;·&nbsp;
-  <a href="#ドキュメント">ドキュメント</a>
+  <a href="#quick-start">Quick Start</a> &nbsp;·&nbsp;
+  <a href="#documentation">Documentation</a>
 </p>
 
 <p align="center">
@@ -22,119 +22,119 @@
   <img alt="foundry" src="https://img.shields.io/badge/contracts-Foundry-black">
 </p>
 
-<!-- GitHub README は iframe を描画しないため、YouTube サムネ画像をリンクにする（クリックで再生）。 -->
+<!-- GitHub README does not render iframes, so link the YouTube thumbnail image (click to play). -->
 
 <p align="center">
   <a href="https://youtu.be/7ulkvodT-bA">
-    <img src="https://img.youtube.com/vi/7ulkvodT-bA/maxresdefault.jpg" alt="Eris デモ動画" width="640">
+    <img src="https://img.youtube.com/vi/7ulkvodT-bA/maxresdefault.jpg" alt="Eris demo video" width="640">
   </a>
 </p>
 
-> **Markets ship behavior（市場は挙動として現れる）.** プロトコルの本当の弱点は、監査レポートのチェック項目を眺めるだけでは見つけきれない。多数の自律エージェント（取引 bot）を実際に市場で競わせて初めて、AMM の価格のゆがみ・清算の連鎖・オラクル更新の遅れといった弱点が「現実の挙動」として表に出てくる。Eris はそれをローカルで再現する競争シミュレータの MVP（実証版）。[erisnet.xyz](https://erisnet.xyz/) が掲げる *Agentic Financial Simulation Layer*（自律エージェントが金融プロトコルを継続的にストレステストする環境）のローカル版にあたる。
+> **Markets ship behavior.** The real weaknesses of a protocol cannot be fully found just by scanning the checklist of an audit report. Only when many autonomous agents (trading bots) actually compete in a live market do weaknesses such as AMM price distortion, liquidation cascades, and oracle update lag surface as "real-world behavior." Eris is an MVP (proof-of-concept) competition simulator that reproduces this locally. It is the local edition of the *Agentic Financial Simulation Layer* championed by [erisnet.xyz](https://erisnet.xyz/) — an environment where autonomous agents continuously stress-test financial protocols.
 
-ローカル anvil 上に全 protocol を deploy したマルチプロトコル DeFi 環境で動く戦略シミュレータ。複数の自律エージェントが同じ mempool で互いに競い、コーディネータが市場を駆動して run 後に価値系列を再構成・採点する。エージェントには RPC・秘密鍵・pending トランザクション・txpool を一切渡さず、**確定済み状態の観測のみ**を与える。
-
----
-
-## これは何か
-
-- **マルチプロトコル DeFi 環境** — Uniswap V3 / Balancer v2 / Curve / Aave v3 / GMX v2 を 1 つの Anvil 上に揃え、プロトコルアダプタレジストリ（`sdk/src/protocols/`）でプラガブルに有効化する。
-- **多エージェント競争** — エージェントは完全独立プロセスとして自分のペースでブロックを購読し、自分で署名して直接送信する。ブロック内順序は anvil `--order fees`（priority fee 降順）で決まる。
-- **制御可能な fair price** — コーディネータが SEED 由来の決定論的な fair price を毎ブロック生成し、オンチェーンの `PriceFeed` とモックオラクルへ書き込む。Aave のヘルスファクタや GMX のマーク価格がこれに追従する。
-- **市場ストレス & 清算** — 価格スパイク／クラッシュを注入し、Aave 清算経路を誘発できる。
-- **LLM 駆動の自律エージェント** — `prompt.md` 1 枚が戦略そのもの。毎判断 LLM がアクションを出し、プロンプトの自己改訂もできる（手書きのトレードロジック無し）。
-- **fork 無しのローカルデプロイモード** — fork backend への cold state RPC 往復（fork RPC レイテンシ）を避け、マルチアセット（WETH/WBTC）も動く。
-- **バックテスト** — 配布 state dump + 公式 regime（市場シナリオ）で、同じ環境・同じ採点のまま戦略を何度でも反復検証できる（`--repeat` で分布を読む）。
-
-アーキテクチャ（環境とエージェント実行の分離）の詳細は [アーキテクチャ](docs/guide/architecture.md) を参照。
+A strategy simulator that runs on a multi-protocol DeFi environment with every protocol deployed on a local anvil. Multiple autonomous agents compete against each other in the same mempool, a coordinator drives the market, and after the run the value series is reconstructed and scored. Agents are never given RPC, private keys, pending transactions, or the txpool — only **observations of finalized state**.
 
 ---
 
-## クイックスタート
+## What is this
 
-Arbitrum を fork せず、本 repo 同梱の [`deployer/`](deployer/) がローカル anvil 上に全 protocol を deploy したものに接続する。fork RPC レイテンシを避けられ、マルチアセット（WETH/WBTC）も動く。詳細は [ローカルリアルタイムシミュレーション](docs/guide/local-deploy.md)。
+- **Multi-protocol DeFi environment** — Uniswap V3 / Balancer v2 / Curve / Aave v3 / GMX v2 are all provisioned on a single Anvil, and enabled pluggably through the protocol adapter registry (`sdk/src/protocols/`).
+- **Multi-agent competition** — agents run as fully independent processes, subscribe to blocks at their own pace, and sign and send directly themselves. In-block ordering is determined by anvil `--order fees` (descending priority fee).
+- **Controllable fair price** — the coordinator generates a SEED-derived deterministic fair price every block and writes it to the on-chain `PriceFeed` and mock oracles. Aave health factors and GMX mark prices follow it.
+- **Market stress & liquidation** — price spikes/crashes can be injected to trigger the Aave liquidation path.
+- **LLM-driven autonomous agents** — a single `prompt.md` is the strategy itself. The LLM emits an action on every decision and can even self-revise the prompt (no hand-written trading logic).
+- **Fork-free local deploy mode** — avoids cold-state RPC round trips to the fork backend (fork RPC latency), and multi-asset (WETH/WBTC) works too.
+- **Backtesting** — with a distributed state dump plus official regimes (market scenarios), a strategy can be verified over and over under the same environment and the same scoring (`--repeat` to read the distribution).
 
-### セットアップ
+For details on the architecture (separation of the environment and agent execution), see [Architecture](docs/guide/architecture.md).
+
+---
+
+## Quick Start
+
+Instead of forking Arbitrum, connect to a local anvil where the bundled [`deployer/`](deployer/) has deployed every protocol. This avoids fork RPC latency, and multi-asset (WETH/WBTC) works too. For details, see [Local Realtime Simulation](docs/guide/local-deploy.md).
+
+### Setup
 
 ```bash
-# poc（リポジトリルート）
+# poc (repository root)
 npm install
-cp config/example.yaml config/local.yaml   # run 設定 + エージェントロスター
-cp .env.example .env.local                  # 秘密情報のみ（ローカルは Anvil の dev キーで動くため任意）
-npm run build:contracts                     # PriceFeed + モックオラクルを forge build（out/ が無ければ初回 1 回）
+cp config/example.yaml config/local.yaml   # run config + agent roster
+cp .env.example .env.local                  # secrets only (optional locally, since Anvil dev keys work)
+npm run build:contracts                     # forge build PriceFeed + mock oracles (once, if out/ is missing)
 
-# 同梱 deployer/（初回のみ。GMX クローン取得 + Aave 依存 install で数分）
+# bundled deployer/ (first time only; takes a few minutes to fetch the GMX clone + install Aave deps)
 cd deployer
 npm install
-forge build                  # 共有 mock トークンをコンパイル
+forge build                  # compile shared mock tokens
 cp .env.example .env
-./scripts/setup-vendors.sh   # 外部 repo(GMX) を clone+パッチ、Aave deps を install
+./scripts/setup-vendors.sh   # clone+patch external repos (GMX), install Aave deps
 cd ..
 ```
 
-### 実行
+### Run
 
 ```bash
-# 別ターミナル: deployer で anvil 起動 + 全 venue deploy（--exit は付けない）
+# Separate terminal: start anvil + deploy all venues via deployer (do not pass --exit)
 cd deployer && npm run deploy -- --keep-fresh
 
-# poc 側（リポジトリルート）: deploy アドレスを取り込み、ローカルデプロイモードで run
+# poc side (repository root): import the deploy addresses and run in local deploy mode
 npm run gen:local-constants
 npm run sim:realtime -- --local-deploy \
   --seed 1 --blocks 24 --seconds 70 --protocols uniswap,balancer,curve
-# ロスターは config/local.yaml の inline agents（差し替えは YAML を編集する。
-# backtest は --agents <roster.yaml> での差し替えに対応）
+# The roster is the inline agents in config/local.yaml (edit the YAML to swap it out.
+# backtest supports swapping via --agents <roster.yaml>)
 ```
 
-> `--local-deploy` フラグ（または config の `run.localDeploy: true`）でローカルデプロイモードになる。CLI エントリが起動時にこれを検出して内部で `ERIS_LOCAL_DEPLOY=1` を立て、`sdk/src/constants.ts` がローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay する（env を手で渡す必要はない）。
+> The `--local-deploy` flag (or config `run.localDeploy: true`) switches to local deploy mode. The CLI entry point detects this at startup, sets `ERIS_LOCAL_DEPLOY=1` internally, and `sdk/src/constants.ts` overlays the locally-deployed addresses (WETH/USDC/WBTC, etc.) — no need to pass the env by hand.
 
-出力は `runs/<run_id>/` 下に書かれる（`summary.json` / `events.jsonl` / `blocks.csv` / `agents/<id>.jsonl`）。確認できること:
+Output is written under `runs/<run_id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `agents/<id>.jsonl`). What to check:
 
-- 全 agent と flow ウォレットのセットアップが完了する。
-- 各ブロックで flow トランザクションと有効な agent トランザクションが提出される。
-- `summary.json` の `valueSeries.failedReads` が `0`。
+- Setup completes for all agents and the flow wallet.
+- Flow transactions and valid agent transactions are submitted in each block.
+- `valueSeries.failedReads` in `summary.json` is `0`.
 
-### バックテスト（戦略の反復検証）
+### Backtesting (iterative strategy verification)
 
-デプロイ済み anvil から state dump を一度焼けば、以後は deployer を起動せず**公式 regime（市場シナリオ）を何度でも再生**できる。市場条件は seed 決定論で毎回同一、採点も realtime と同一:
+Once you bake a state dump from a deployed anvil, you can **replay official regimes (market scenarios) as many times as you like** without launching the deployer. Market conditions are identical every time by seed determinism, and scoring is identical to realtime:
 
 ```bash
-npm run gen:state-dump                                # 稼働中の deployer anvil から一度だけ焼く
-npm run backtest -- --regime calm-01 --repeat 5       # 平常市場を 5 回（mean alphaUsdc を表示）
-npm run backtest -- --regime crash-01                 # crash + Aave 清算シナリオ
+npm run gen:state-dump                                # bake once from the running deployer anvil
+npm run backtest -- --regime calm-01 --repeat 5       # calm market, 5 times (prints mean alphaUsdc)
+npm run backtest -- --regime crash-01                 # crash + Aave liquidation scenario
 ```
 
-詳細は [バックテスト](docs/guide/backtest.md)。
+For details, see [Backtesting](docs/guide/backtest.md).
 
 ---
 
-## ドキュメント
+## Documentation
 
-**戦略を書く（参加者向け）** — 読む順:
+**Writing strategies (for participants)** — reading order:
 
-| ドキュメント | 内容 |
+| Document | Contents |
 |---|---|
-| [ローカルリアルタイムシミュレーション](docs/guide/local-deploy.md) | セットアップ: 非fork のローカルデプロイモードの前提・手順・トラブルシュート |
-| [戦略の書き方](docs/guide/writing-agents.md) | agent 作成チュートリアル: 最小 agent → 観測の読み方 → action → ログ → 検証 → 提出 |
-| [バックテスト](docs/guide/backtest.md) | state dump + 公式 regime の再生・`--repeat` での反復・スパーリング・測れる/測れない |
-| [run 出力と解析](docs/guide/run-output.md) | `runs/<id>/` の出力ファイルと run 後の解析方法 |
-| [プロトコルとアクション](docs/guide/protocols-and-actions.md) | リファレンス: 各 venue のアクション・ステーブルコイン会計・オラクル制御 |
-| [LLM 駆動の自律エージェント](docs/guide/llm-agents.md) | prompt.md 型エージェント（毎判断 LLM・自己改訂・対話ログ） |
+| [Local Realtime Simulation](docs/guide/local-deploy.md) | Setup: prerequisites, steps, and troubleshooting for non-fork local deploy mode |
+| [Writing Agents](docs/guide/writing-agents.md) | Agent authoring tutorial: minimal agent → reading observations → actions → logging → verification → submission |
+| [Backtesting](docs/guide/backtest.md) | Replaying state dump + official regimes, iterating with `--repeat`, sparring, what is and isn't measurable |
+| [Run Output and Analysis](docs/guide/run-output.md) | The output files under `runs/<id>/` and how to analyze a run afterwards |
+| [Protocols and Actions](docs/guide/protocols-and-actions.md) | Reference: actions per venue, stablecoin accounting, oracle control |
+| [LLM-driven Autonomous Agents](docs/guide/llm-agents.md) | prompt.md-type agents (per-decision LLM, self-revision, conversation log) |
 
-**環境の仕組み・運用**:
+**How the environment works / operations**:
 
-| ドキュメント | 内容 |
+| Document | Contents |
 |---|---|
-| [アーキテクチャ](docs/guide/architecture.md) | 環境（市場機構＋採点者）とエージェント実行の分離・fair price 配布・採点の再構成 |
-| [設定（config/local.yaml）](docs/guide/configuration.md) | YAML 単一ソースの設定・セクション・ロスターの書き方 |
-| [市場ストレスイベント](docs/guide/stress-events.md) | 価格スパイク／クラッシュの注入と Aave 清算の誘発 |
-| [リポジトリ構成](docs/guide/repository-layout.md) | ディレクトリ構成の早見表 |
+| [Architecture](docs/guide/architecture.md) | Separation of the environment (market mechanism + scorer) from agent execution, fair price distribution, scoring reconstruction |
+| [Configuration (config/local.yaml)](docs/guide/configuration.md) | The single-source YAML config, its sections, and how to write the roster |
+| [Market Stress Events](docs/guide/stress-events.md) | Injecting price spikes/crashes and triggering Aave liquidation |
+| [Repository Layout](docs/guide/repository-layout.md) | Quick reference for the directory layout |
 
 ---
 
-## 免責
+## Disclaimer
 
-これは研究・実験用の **MVP / Proof of Concept** であり、本番運用を意図しない。Aave / GMX のオラクルはコーディネータが制御するモックで、fair price は決定論的に生成される合成パスである。シミュレーションの結果（PnL・順位・識別力）は環境の構成・SEED・サンプル数に依存し、実市場のパフォーマンスを保証しない。
+This is an **MVP / Proof of Concept** for research and experimentation, not intended for production use. The Aave / GMX oracles are mocks controlled by the coordinator, and the fair price is a synthetic path generated deterministically. Simulation results (PnL, ranking, discrimination) depend on the environment configuration, SEED, and sample count, and do not guarantee real-market performance.
 
 <p align="center">
   <sub>Built by <a href="https://erisnet.xyz/">Nyx Foundation</a> · <em>Let your contracts face the swarm.</em></sub>

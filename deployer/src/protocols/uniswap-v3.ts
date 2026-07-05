@@ -47,7 +47,7 @@ const A = {
     ),
 };
 
-/** linkReferences のプレースホルダ __$..$__ をデプロイ済みライブラリアドレスで埋める */
+/** Fill the linkReferences placeholder __$..$__ with the deployed library address */
 function linkLibrary(bytecode: Hex, libAddress: Address): Hex {
   const addr = libAddress.toLowerCase().replace("0x", "");
   return bytecode.replace(/__\$[0-9a-fA-F]+\$__/g, addr) as Hex;
@@ -73,7 +73,7 @@ async function deploy(
 }
 
 export async function deployUniswapV3({ seed }: { seed: boolean }) {
-  info("Uniswap V3 コア/ペリフェリをデプロイ");
+  info("Deploying Uniswap V3 core/periphery");
   const weth = token("WETH");
 
   const factory = await deploy(
@@ -91,7 +91,7 @@ export async function deployUniswapV3({ seed }: { seed: boolean }) {
   );
 
   const posDescArt = A.posDescriptor();
-  // nativeCurrencyLabel "ETH" を bytes32 (右詰め) に
+  // nativeCurrencyLabel "ETH" into bytes32 (right-padded)
   const labelBytes = pad(stringToHex("ETH"), { dir: "right", size: 32 });
   const posDescriptor = await deploy(
     "NonfungibleTokenPositionDescriptor",
@@ -139,7 +139,7 @@ export async function deployUniswapV3({ seed }: { seed: boolean }) {
   });
 
   if (seed) {
-    // WETH/USDC（既存。1000 WETH / 3M USDC = $3000）
+    // WETH/USDC (existing. 1000 WETH / 3M USDC = $3000)
     await seedV3Pool({
       posManager,
       tokenAKey: "WETH",
@@ -149,8 +149,8 @@ export async function deployUniswapV3({ seed }: { seed: boolean }) {
       registryKey: "wethUsdcPool",
       label: "1000 WETH / 3M USDC (full range, $3000)",
     });
-    // WBTC/USDC（ADR 0013。50 WBTC / 3M USDC = $60k anchor。WBTC は 8 decimals）。
-    // POC quoter がペア別 fee を持たないため fee=3000 で WETH/USDC と統一する。
+    // WBTC/USDC (ADR 0013. 50 WBTC / 3M USDC = $60k anchor. WBTC has 8 decimals).
+    // The POC quoter has no per-pair fee, so use fee=3000 to unify with WETH/USDC.
     await seedV3Pool({
       posManager,
       tokenAKey: "WBTC",
@@ -165,14 +165,14 @@ export async function deployUniswapV3({ seed }: { seed: boolean }) {
 
 const FEE = 3000;
 const TICK_SPACING = 60;
-const MIN_TICK = -887220; // -887272 を tickSpacing(60) に丸めた値
+const MIN_TICK = -887220; // -887272 rounded to tickSpacing(60)
 const MAX_TICK = 887220;
 
 /**
- * base/quote プールを作成し、フルレンジ流動性を投入する汎用版。
- * token0 < token1 昇順ソート / encodeSqrtRatioX96(raw amount 比。decimals 内包) /
- * full-range mint / getPool 検証は WETH/USDC と共通。tokenAKey/amount を引数化し、
- * WETH/USDC・WBTC/USDC を同じ経路で seed する（ADR 0013）。
+ * Generic version that creates a base/quote pool and seeds full-range liquidity.
+ * token0 < token1 ascending sort / encodeSqrtRatioX96 (raw amount ratio, decimals included) /
+ * full-range mint / getPool verification are shared with WETH/USDC. Parameterize tokenAKey/amount
+ * to seed WETH/USDC and WBTC/USDC through the same path (ADR 0013).
  */
 async function seedV3Pool({
   posManager,
@@ -191,23 +191,25 @@ async function seedV3Pool({
   registryKey: string;
   label: string;
 }) {
-  info(`Uniswap V3: ${tokenAKey}/${tokenBKey} プールを作成し流動性投入`);
+  info(
+    `Uniswap V3: creating ${tokenAKey}/${tokenBKey} pool and seeding liquidity`,
+  );
   const tokenA = token(tokenAKey);
   const tokenB = token(tokenBKey);
 
-  // token0 < token1 (アドレス昇順)
+  // token0 < token1 (ascending address order)
   const aIsToken0 = tokenA.toLowerCase() < tokenB.toLowerCase();
   const token0 = aIsToken0 ? tokenA : tokenB;
   const token1 = aIsToken0 ? tokenB : tokenA;
   const amount0Desired = aIsToken0 ? amountA : amountB;
   const amount1Desired = aIsToken0 ? amountB : amountA;
 
-  // encodeSqrtRatioX96 は raw amount 比なので decimals は raw に内包され無改修で正しい。
+  // encodeSqrtRatioX96 uses a raw amount ratio, so decimals are included in the raw values and it is correct without changes.
   const sqrtPriceX96 = encodeSqrtRatioX96(amount1Desired, amount0Desired);
 
   const npmAbi = A.posManager().abi;
 
-  // pool 作成 + 初期化
+  // create + initialize the pool
   const h1 = await deployerWallet.writeContract({
     address: posManager,
     abi: npmAbi,
@@ -217,7 +219,7 @@ async function seedV3Pool({
     chain: anvilChain,
   });
   await waitTx(h1);
-  ok("pool 作成+初期化", `${tokenAKey}/${tokenBKey} fee=${FEE}`);
+  ok("pool create+init", `${tokenAKey}/${tokenBKey} fee=${FEE}`);
 
   // approve
   await approve(tokenA, posManager, amountA);
@@ -247,9 +249,9 @@ async function seedV3Pool({
     chain: anvilChain,
   });
   await waitTx(h2);
-  ok("流動性 mint", label);
+  ok("liquidity mint", label);
 
-  // 健全性: プールが factory に登録されているか
+  // Sanity: is the pool registered in the factory
   const { factory } = (await import("../registry.js")).getRegistry().protocols
     .uniswapV3 as { factory: Address };
   const pool = (await publicClient.readContract({
@@ -260,8 +262,8 @@ async function seedV3Pool({
   })) as Address;
   assert(
     pool !== "0x0000000000000000000000000000000000000000",
-    `${tokenAKey}/${tokenBKey} pool が作成されていない`,
+    `${tokenAKey}/${tokenBKey} pool was not created`,
   );
   setProtocol("uniswapV3", { [registryKey]: pool });
-  ok("pool アドレス", `${registryKey}=${pool}`);
+  ok("pool address", `${registryKey}=${pool}`);
 }

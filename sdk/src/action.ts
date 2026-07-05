@@ -69,7 +69,7 @@ export function parseAction(raw: unknown): AgentAction {
   return parseLeafAction(obj);
 }
 
-// 各 adapter の parse を順に試し、最初に非 null を返したものを採用。
+// Try each adapter's parse in order and take the first non-null result.
 function parseLeafAction(obj: Record<string, unknown>): LeafAction {
   for (const adapter of enabledAdapters()) {
     const parsed = adapter.parse(obj);
@@ -203,17 +203,18 @@ function validateLeafItems(
     return { ok: false, reason: "priority fee exceeds configured max" };
   }
 
-  // bundle 横断の累積残高/ポジション数を強制する。各 leaf を「これまでの leaf で消費した分を
-  // 差し引いた残高」に対して検証し、複数 leaf が合計でウォレット残高や maxOpenPositions を
-  // 超えるのを防ぐ（単発アクションでは効果なし）。
+  // Enforce cumulative balances/position counts across the bundle. Validate each leaf against
+  // "the balance minus what earlier leaves already consumed", preventing multiple leaves from
+  // collectively exceeding the wallet balance or maxOpenPositions (no effect on single actions).
   const work: BalanceSnapshot = {
     ethWei: balances.ethWei,
     wethWei: balances.wethWei,
     usdcUnits: balances.usdcUnits,
     stables: { ...(balances.stables ?? {}) },
-    // ADR 0013: base 残高（WETH/WBTC…）も bundle 横断で累積する。これが無いと adapter.validate の
-    // base 残高チェックが work.wethWei にフォールバックし、WBTC swap を WETH 残高で誤判定する。
-    // WETH-only run でも bases={WETH:wethWei} なので spendBase 経由で wethWei と同期し byte 互換。
+    // ADR 0013: accumulate base balances (WETH/WBTC…) across the bundle too. Without this the
+    // base-balance check in adapter.validate falls back to work.wethWei and misjudges a WBTC swap
+    // against the WETH balance. Even in a WETH-only run bases={WETH:wethWei}, so spendBase keeps
+    // it in sync with wethWei and stays byte-compatible.
     ...(balances.bases ? { bases: { ...balances.bases } } : {}),
   };
   const baseLpPositions = observation.protocols.uniswap?.positions.length ?? 0;
@@ -261,9 +262,10 @@ function validateLeafItems(
   return { ok: true, action: original, intents, rawIntents: [] };
 }
 
-// swap leg が執行される venue の価格（USDC per base）。bundle 内のスワップ出力見積りに使う。
-// ADR 0013: base!=="WETH" のとき WETH pool 価格でなく当該 base/USDC market 価格を引く
-// （WETH 経路は従来どおり pool 価格 → byte 互換）。market 未収録なら fairPricesUsd → fair に縮退。
+// Price (USDC per base) of the venue where the swap leg executes. Used to estimate swap output
+// inside a bundle. ADR 0013: when base!=="WETH", read that base/USDC market price rather than the
+// WETH pool price (the WETH path keeps using the pool price → byte-compatible). If the market is
+// not present, degrade to fairPricesUsd → fair.
 function swapVenuePrice(obs: AgentObservation, item: LeafAction): number {
   const base = (item as { base?: string }).base ?? "WETH";
   const fallback = obs.fairPricesUsd?.[base] ?? obs.fairPriceUsdcPerWeth;
@@ -291,10 +293,12 @@ function swapVenuePrice(obs: AgentObservation, item: LeafAction): number {
   return fallback;
 }
 
-// leaf が消費する WETH / stable を working 残高から差し引き、スワップは出力トークンを見積って戻す
-// （bundle 累積検証用）。出力 credit が無いと「USDC→WETH 買い → WETH→USDC 売り」の 2-leg 裁定が
-// 売り leg で WETH 残高 0 と判定され reject される（USDC-only 配布で純 α を測る前提を壊す）。
-// 見積りは venue 価格ベース。実際の slippage はオンチェーンで検査される（validator は粗い over-spend だけ防ぐ）。
+// Deduct the WETH / stable a leaf consumes from the working balance, and for swaps credit back the
+// estimated output token (for cumulative bundle validation). Without the output credit, a 2-leg
+// "buy USDC→WETH → sell WETH→USDC" arbitrage would be judged to have 0 WETH balance on the sell leg
+// and get rejected (breaking the premise of measuring pure alpha under USDC-only funding).
+// Estimates are venue-price based; actual slippage is checked on-chain (the validator only prevents
+// coarse over-spend).
 function applyLeafSpend(
   work: BalanceSnapshot,
   item: LeafAction,
@@ -302,8 +306,8 @@ function applyLeafSpend(
   stableToken?: Address,
 ): void {
   const stableKey = (stableToken ?? "").toLowerCase();
-  // ADR 0013: base 残高を base シンボル単位で増減する。WETH は wethWei と bases["WETH"] を同時に
-  // 動かして同期を保つ（adapter.validate が bases["WETH"] を、旧経路が wethWei を見るため）。
+  // ADR 0013: adjust base balances per base symbol. For WETH, move wethWei and bases["WETH"]
+  // together to stay in sync (adapter.validate reads bases["WETH"] while the legacy path reads wethWei).
   const spendBase = (base: string, amount: bigint) => {
     if (base === "WETH")
       work.wethWei = work.wethWei > amount ? work.wethWei - amount : 0n;
@@ -341,14 +345,14 @@ function applyLeafSpend(
       const price = swapVenuePrice(observation, item); // quote(USDC) per base
       if (item.tokenIn === base) {
         spendBase(base, amt);
-        // base→stable: 出力 stable ≈ amountBase × price
+        // base→stable: output stable ≈ amountBase × price
         if (price > 0)
           creditStable(
             BigInt(Math.floor((Number(amt) / baseScale) * price * 1e6)),
           );
       } else {
         spendStable(amt);
-        // stable→base: 出力 base ≈ amountStable / price
+        // stable→base: output base ≈ amountStable / price
         if (price > 0)
           creditBase(
             base,
@@ -382,7 +386,7 @@ function applyLeafSpend(
       break;
     }
     default:
-      break; // borrow/withdraw/collectFees/removeLiquidity/gmx は入力を消費しない
+      break; // borrow/withdraw/collectFees/removeLiquidity/gmx do not consume input
   }
 }
 
@@ -458,5 +462,5 @@ function hashAction(action: AgentAction): string {
   return hash.toString(16);
 }
 
-// getAdapter re-export（coordinator から buildTxs 用に使う場合に備え）
+// getAdapter re-export (in case the coordinator needs it for buildTxs)
 export { getAdapter };

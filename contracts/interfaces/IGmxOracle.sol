@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-// GMX v2 (gmx-synthetics) のオラクル関連型の最小ローカル定義。
-// struct のフィールド順・型、および関数セレクタを本番コントラクトと一致させる必要がある。
-// 参照: gmx-io/gmx-synthetics contracts/oracle/OracleUtils.sol, IOracleProvider.sol
+// Minimal local definitions of the oracle-related types for GMX v2 (gmx-synthetics).
+// The struct field order/types and the function selectors must match the production contracts.
+// Reference: gmx-io/gmx-synthetics contracts/oracle/OracleUtils.sol, IOracleProvider.sol
 
 library OracleUtils {
     struct ValidatedPrice {

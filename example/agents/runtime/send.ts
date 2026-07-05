@@ -1,12 +1,12 @@
 /**
- * send.ts: 署名・送信・nonce 管理・mempool 自己申告（ADR 0015 runtime。旧 directShim の送信側）。
+ * send.ts: signing, sending, nonce management, and mempool self-reporting (ADR 0015 runtime; the send side of the old directShim).
  *
- * - action を parse/validate → adapter.buildTxs → 自分の秘密鍵で署名し直接送信（nonce 自己管理）
- * - mempool 活動（submitted / submit_failed / rejected）を runs/<id>/agents/<id>.jsonl に
- *   自己申告で記録する（ADR 0006 §5。coordinator が submitted を数えられない穴を塞ぐ）
- * - 競争シグナル（ADR 0011）: 自分の直近 tx の着順/成否と、直近ブロックの競合最高入札を自己導出
- * - gas マネージャ（ADR 0011 §4。economicGas のみ）: ETH 残が閾値を割ったら WETH unwrap /
- *   USDC→WETH swap で自動補充する
+ * - parse/validate the action -> adapter.buildTxs -> sign with your own private key and send directly (self-managed nonce)
+ * - self-report mempool activity (submitted / submit_failed / rejected) to runs/<id>/agents/<id>.jsonl
+ *   (ADR 0006 §5; closes the gap where the coordinator can't count submitted)
+ * - competition signal (ADR 0011): self-derive your recent tx's ordering/outcome and the highest competitor bid in the latest block
+ * - gas manager (ADR 0011 §4; economicGas only): when the ETH balance drops below the threshold, auto-refill via WETH unwrap /
+ *   USDC->WETH swap
  */
 import { encodeFunctionData, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -24,7 +24,7 @@ import type {
 
 export type MempoolLog = (entry: Record<string, unknown>) => void;
 
-// mempool 活動の自己申告ログ（runs/<id>/agents/<id>.jsonl。行動ログと同じファイルへ追記）。
+// Self-report log of mempool activity (runs/<id>/agents/<id>.jsonl; appended to the same file as the action log).
 export function createMempoolLog(
   runDir: string | undefined,
   agentId: string,
@@ -40,12 +40,12 @@ type OwnTx = {
   txIndex?: number;
 };
 
-// 維持する ETH 余力（tx 本数換算）。較正で endowment と併せて調整する（ERIS_GAS_REFILL_TX_HEADROOM）。
+// ETH headroom to maintain (in tx count). Tune alongside the endowment during calibration (ERIS_GAS_REFILL_TX_HEADROOM).
 const GAS_REFILL_TX_HEADROOM = BigInt(
   process.env.ERIS_GAS_REFILL_TX_HEADROOM ?? "24",
 );
-const GAS_LIMIT_ESTIMATE = 1_500_000n; // 1 tx の gas 上限見積り
-const GAS_REFILL_COOLDOWN_BLOCKS = 3; // 補充 tx が mine され残高へ反映されるまでの待ち
+const GAS_LIMIT_ESTIMATE = 1_500_000n; // gas cap estimate for one tx
+const GAS_REFILL_COOLDOWN_BLOCKS = 3; // wait for the refill tx to be mined and reflected in the balance
 
 export class Sender {
   private readonly ctx: SimContext;
@@ -54,11 +54,11 @@ export class Sender {
   readonly address: Address;
   private readonly logMempool: MempoolLog;
 
-  // ---- nonce 自己管理 + 送信の直列化 ----
+  // ---- self-managed nonce + serialized sending ----
   private nextNonce: number | null = null;
   private sendQueue: Promise<void> = Promise.resolve();
 
-  // ---- 競争シグナル（ADR 0011）: 直近の自分の tx（ring buffer）----
+  // ---- competition signal (ADR 0011): your recent txs (ring buffer) ----
   private readonly ownTxs: OwnTx[] = [];
 
   private lastGasRefillBlock = -GAS_REFILL_COOLDOWN_BLOCKS;
@@ -133,7 +133,7 @@ export class Sender {
         value: tx.value ?? 0n,
         gas,
         nonce,
-        // baseFee 揺らぎ耐性のため headroom を持たせる（実効 tip は maxPriorityFeePerGas のまま）
+        // give headroom to tolerate baseFee fluctuation (the effective tip stays maxPriorityFeePerGas)
         maxFeePerGas: baseFee * 2n + priorityFeeWei,
         maxPriorityFeePerGas: priorityFeeWei,
       });
@@ -147,12 +147,12 @@ export class Sender {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/nonce/i.test(message)) this.nextNonce = null; // 次回 pending から再同期
+      if (/nonce/i.test(message)) this.nextNonce = null; // resync from pending next time
       this.logMempool({ event: "submit_failed", error: message, ...meta });
     }
   }
 
-  // action を検証して mempool へ送る（旧 relay handleAgentAction と同じ検証 → 直接送信）。
+  // Validate the action and send it to the mempool (same validation as the old relay handleAgentAction -> direct send).
   submit(
     raw: AgentAction | Record<string, unknown>,
     observation: AgentObservation | null,
@@ -210,7 +210,7 @@ export class Sender {
           await this.sendBuiltTx(tx, intent.priorityFeeWei, {
             actionType: intent.action.type,
             protocol: intent.protocol,
-            // ADR 0013: WBTC 等の market を取引したことをログに残す（WETH は undefined で省略）。
+            // ADR 0013: record in the log which market (e.g. WBTC) was traded (WETH is undefined and omitted).
             base: (intent.action as { base?: string }).base,
             bundleId: intent.bundleId,
             bundleIndex: intent.bundleIndex,
@@ -234,10 +234,11 @@ export class Sender {
     }
   }
 
-  // ---- gas マネージャ（ADR 0011 §4。economicGas プロファイルのみ）----
-  // endowment を絞ると naive 戦略がサイレント gas 切れする。ETH 残が「最低 N tx 分」を割ったら
-  // WETH→ETH unwrap（スリッページ 0）で自動補充し、WETH も尽きたら USDC→WETH swap（uniswap。
-  // スリッページ = 現実の treasury 管理コスト）で繋ぐ。得た WETH は次ブロックの unwrap で ETH 化する。
+  // ---- gas manager (ADR 0011 §4; economicGas profile only) ----
+  // A tight endowment makes naive strategies silently run out of gas. When the ETH balance drops below
+  // "at least N txs' worth", auto-refill via WETH->ETH unwrap (zero slippage), and when WETH is also
+  // exhausted, bridge with a USDC->WETH swap (uniswap; slippage = the real-world treasury management
+  // cost). The WETH obtained is converted to ETH by next block's unwrap.
   async maybeRefillGas(
     bn: number,
     balances: BalanceSnapshot,
@@ -260,7 +261,7 @@ export class Sender {
     const deficit = target - balances.ethWei;
 
     if (balances.wethWei > 0n) {
-      // WETH→ETH unwrap（1:1、スリッページ 0）。不足分まで（在庫上限で頭打ち）。
+      // WETH->ETH unwrap (1:1, zero slippage). Up to the deficit (capped by the inventory).
       const amount = deficit < balances.wethWei ? deficit : balances.wethWei;
       this.lastGasRefillBlock = bn;
       this.enqueueSend(() =>
@@ -281,10 +282,10 @@ export class Sender {
     }
 
     if (balances.usdcUnits > 0n && fairPrice > 0) {
-      // USDC→WETH swap（uniswap）。得た WETH は次回 unwrap で ETH 化する。
+      // USDC->WETH swap (uniswap). The WETH obtained is converted to ETH by the next unwrap.
       const adapter = this.adapters.find((a) => a.id === "uniswap");
       if (!adapter) return;
-      // deficit(ETH wei) 相当の USDC を概算 + slippage バッファ 1.3x（USDC は 6 桁）。
+      // approximate the USDC equivalent to the deficit (ETH wei) + a 1.3x slippage buffer (USDC has 6 decimals).
       const deficitWeth = Number(deficit) / 1e18;
       const usdcNeeded = BigInt(Math.ceil(deficitWeth * fairPrice * 1.3 * 1e6));
       const amountIn =
@@ -315,14 +316,14 @@ export class Sender {
     }
   }
 
-  // ---- 競争シグナルを直近ブロックから導出（ADR 0011）----
-  // env 特権でなく agent が公開チェーンから自己導出する（現実の MEV searcher が直近ブロックを
-  // 見るのと同じ）。
+  // ---- derive the competition signal from the latest block (ADR 0011) ----
+  // Not an env privilege; the agent self-derives it from the public chain (the same way a real MEV
+  // searcher looks at the latest block).
   async computeCompetition(
     bn: number,
   ): Promise<NonNullable<AgentObservation["competition"]>> {
     const { publicClient } = this.ctx;
-    // 1. 自分の直近 tx の receipt を解決（txIndex + status）。未 mine はスキップ。
+    // 1. Resolve the receipts of your recent txs (txIndex + status). Skip unmined ones.
     await Promise.all(
       this.ownTxs
         .filter((t) => t.status === undefined)
@@ -334,11 +335,11 @@ export class Sender {
             t.status = r.status === "success" ? "success" : "reverted";
             t.txIndex = r.transactionIndex;
           } catch {
-            // まだ mine されていない
+            // not yet mined
           }
         }),
     );
-    // 取引 tx のみで revert 率・着順を測る（gas 補充の unwrap/swap は競争分析から除外）。
+    // Measure revert rate / ordering using trading txs only (exclude gas-refill unwrap/swap from the competition analysis).
     const resolved = this.ownTxs.filter(
       (t) =>
         t.status !== undefined &&
@@ -351,7 +352,7 @@ export class Sender {
       .reverse()
       .find((t) => t.txIndex !== undefined);
     const lastTxIndex = lastWithIdx?.txIndex ?? null;
-    // 2. 直近ブロックの競合最高入札（自分以外の最高 maxPriorityFeePerGas）。
+    // 2. The highest competitor bid in the latest block (the highest maxPriorityFeePerGas other than your own).
     let maxComp = 0n;
     let maxAll = 0n;
     try {
@@ -370,7 +371,7 @@ export class Sender {
           maxComp = fee;
       }
     } catch {
-      // block 取得失敗は signal 無しで継続
+      // if fetching the block fails, continue without the signal
     }
     return {
       maxCompetitorPriorityFeeWei: maxComp.toString(),

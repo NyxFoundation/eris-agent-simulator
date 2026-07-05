@@ -1,17 +1,18 @@
-// action スキーマの zod 化（ADR 0015 §4/§8）。
-// プロンプト型 agent の system prompt に埋める `<schema>`（JSON Schema）と、LLM 出力の
-// 構造検証（エラー内容を会話に追記して再試行するため message が要る）をここから導出する。
-// 「LLM が教わるルール」と「実行時に強制されるルール」を同じ sdk パッケージに併置し、
-// action の形が変わる PR で必ず同時更新する（ADR 0015 Risks）。
-// 残高・limits 等の意味的検証は従来どおり validateAction（action.ts + adapter.validate）が担う。
+// zod version of the action schema (ADR 0015 §4/§8).
+// The `<schema>` (JSON Schema) embedded in a prompt agent's system prompt and the structural
+// validation of LLM output (which needs a message so errors can be appended to the conversation and
+// retried) are both derived here. Colocating "the rules the LLM is taught" and "the rules enforced at
+// runtime" in the same sdk package ensures a PR that changes the action shape updates both at once
+// (ADR 0015 Risks). Semantic validation of balances/limits etc. is still handled by validateAction
+// (action.ts + adapter.validate) as before.
 import { z } from "zod";
 import type { ProtocolId } from "./types.js";
 
-// 10 進整数文字列（wei / units。JS number の精度落ちを避けるため文字列で受ける）。
+// Decimal integer string (wei / units; taken as a string to avoid JS number precision loss).
 const decimalString = z
   .string()
   .regex(/^[0-9]+$/, "must be a decimal integer string");
-// 10 進整数 or "max"（aaveWithdraw / aaveRepay）。
+// Decimal integer or "max" (aaveWithdraw / aaveRepay).
 const decimalOrMax = z.union([decimalString, z.literal("max")]);
 const hexString = z.string().regex(/^0x[0-9a-fA-F]*$/, "must be a hex string");
 const tokenSymbol = z.string().min(1);
@@ -150,8 +151,8 @@ export const rawBundleActionSchema = z.object({
   ...priorityFee,
 });
 
-// protocol → その protocol が受け付ける leaf action スキーマ。
-// enabledProtocols に応じてプロンプトの <schema> から無効 venue の action を落とすのに使う。
+// protocol → the leaf action schemas that protocol accepts.
+// Used to drop actions for disabled venues from the prompt's <schema> based on enabledProtocols.
 const LEAF_SCHEMAS_BY_PROTOCOL: Record<ProtocolId, z.ZodTypeAny[]> = {
   uniswap: [
     swapSchema,
@@ -170,7 +171,7 @@ const LEAF_SCHEMAS_BY_PROTOCOL: Record<ProtocolId, z.ZodTypeAny[]> = {
   gmx: [gmxIncreaseSchema, gmxDecreaseSchema],
 };
 
-// GMX は keeper 実行が要るため bundle 不可（action.ts の bundleable と同じ規則）。
+// GMX cannot be bundled because it requires keeper execution (same rule as bundleable in action.ts).
 const BUNDLEABLE_PROTOCOLS: ProtocolId[] = [
   "uniswap",
   "balancer",
@@ -178,7 +179,7 @@ const BUNDLEABLE_PROTOCOLS: ProtocolId[] = [
   "aave",
 ];
 
-// enabled venue に絞った AgentAction スキーマ（既定は全 venue）。
+// AgentAction schema restricted to enabled venues (default is all venues).
 export function agentActionSchemaFor(
   enabled: ProtocolId[] = ["uniswap", "balancer", "curve", "gmx", "aave"],
 ): z.ZodTypeAny {
@@ -202,10 +203,10 @@ export function agentActionSchemaFor(
   return z.union(members as [z.ZodTypeAny, z.ZodTypeAny]);
 }
 
-// 全 venue の AgentAction スキーマ（構造のみ。意味的検証は validateAction）。
+// AgentAction schema for all venues (structure only; semantic validation is validateAction).
 export const agentActionSchema = agentActionSchemaFor();
 
-// プロンプト型 agent の system prompt に埋める JSON Schema（Hermes JSON mode の <schema> 形式）。
+// JSON Schema embedded in a prompt agent's system prompt (Hermes JSON mode <schema> form).
 export function actionJsonSchema(
   enabled?: ProtocolId[],
 ): Record<string, unknown> {

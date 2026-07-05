@@ -1,24 +1,25 @@
 /**
- * bot.ts: 全 agent 型の唯一のエントリポイント（ADR 0015 §2/§3/§4）。
+ * bot.ts: the single entry point for every agent type (ADR 0015 §2/§3/§4).
  *
- * coordinator は agent を一律 `node --import tsx example/agents/runtime/bot.ts` で spawn し、
- * agent ディレクトリを env ERIS_AGENT_DIR で渡す。bot.ts はその中身で動き方を決める:
- *   - agent.ts が run(ctx) を export     → 自走型: ctx を渡して委譲（ループしない）
- *   - agent.ts が decide() を export     → ルール戦略: read→decide→send のループで駆動
- *   - prompt.md のみ                     → プロンプト型: 毎判断 LLM に action を出させる
+ * The coordinator spawns every agent uniformly with
+ * `node --import tsx example/agents/runtime/bot.ts` and passes the agent directory via
+ * env ERIS_AGENT_DIR. bot.ts decides how to run from that directory's contents:
+ *   - agent.ts exports run(ctx)   -> self-driven: pass ctx and delegate (no loop)
+ *   - agent.ts exports decide()   -> rule strategy: drive a read->decide->send loop
+ *   - prompt.md only              -> prompt type: have the LLM emit an action every decision
  *
- * agent.ts と prompt.md が併置された agent は両方の動かし方を提供する（ADR 0015 §2 の
- * 「両方置かれた場合は agent.ts 優先」が既定）。ロスターの env で切り替える:
- *   ERIS_AGENT_MODE=prompt          agent.ts があっても prompt.md（LLM 駆動）で動かす
- *   ERIS_PROMPT_REVISE_EVERY=<N>    prompt モードで N 判断サイクルごとに LLM が prompt 本文を
- *                                   自己改訂する（既定 0 = off。改訂版は runs/<id>/agents/
- *                                   <agentId>.prompt.v<K>.md に保存し、以後のサイクルで使用）
- *   ERIS_PROMPT_REVISE_PERSIST=1    改訂を agent ディレクトリの prompt.md にも書き戻す
- *   ERIS_PROMPT_LOG_CALLS=1         LLM との生の対話（system / 送信 messages / 生応答 / エラー）を
- *                                   runs/<id>/agents/<agentId>.llm.jsonl に残す（プロンプト調整用の
- *                                   opt-in デバッグログ）
+ * An agent that ships both agent.ts and prompt.md provides both ways of running (ADR 0015 §2's
+ * "agent.ts takes precedence when both are present" is the default). Switch it via the roster env:
+ *   ERIS_AGENT_MODE=prompt          run via prompt.md (LLM-driven) even when agent.ts exists
+ *   ERIS_PROMPT_REVISE_EVERY=<N>    in prompt mode, every N decision cycles the LLM self-revises
+ *                                   the prompt body (default 0 = off; revised versions are saved to
+ *                                   runs/<id>/agents/<agentId>.prompt.v<K>.md and used by later cycles)
+ *   ERIS_PROMPT_REVISE_PERSIST=1    also write the revision back to the agent directory's prompt.md
+ *   ERIS_PROMPT_LOG_CALLS=1         record the raw LLM conversation (system / sent messages /
+ *                                   raw response / errors) to runs/<id>/agents/<agentId>.llm.jsonl
+ *                                   (opt-in debug log for prompt tuning)
  *
- * 環境変数（環境が渡す。ADR 0006 の契約は不変）:
+ * Environment variables (passed by the environment; the ADR 0006 contract is unchanged):
  *   ERIS_AGENT_ID / ERIS_AGENT_DIR / ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL /
  *   ERIS_PRICE_FEED_ADDRESS / ERIS_RUN_ID / ERIS_RUN_DIR / ERIS_CONFIG
  */
@@ -60,7 +61,7 @@ import {
 import { createMempoolLog, Sender } from "./send.js";
 import { Reader } from "./read.js";
 
-const LLM_MAX_ATTEMPTS = 4; // validate 失敗時の再試行上限（エラー内容を会話に追記。ADR 0015 §4）
+const LLM_MAX_ATTEMPTS = 4; // retry cap on validation failure (append the error to the conversation; ADR 0015 §4)
 
 async function main(): Promise<void> {
   const privateKey = process.env.ERIS_AGENT_PRIVATE_KEY as Hex | undefined;
@@ -79,17 +80,17 @@ async function main(): Promise<void> {
   const runId =
     process.env.ERIS_RUN_ID ?? (runDir ? runDir.split("/").at(-1)! : "direct");
 
-  // ADR 0013: coordinator が YAML 設定パスを ERIS_CONFIG で渡す。同じ YAML から config を
-  // 再構築する（設定の単一ソース）。無ければ env から読む（スタンドアロン起動）。
+  // ADR 0013: the coordinator passes the YAML config path via ERIS_CONFIG. Rebuild config from
+  // the same YAML (single source of config). If absent, read from env (standalone launch).
   const config = process.env.ERIS_CONFIG
     ? loadYamlConfig(process.env.ERIS_CONFIG).config
     : loadConfig();
   const adapters = initProtocols(config.enabledProtocols);
-  // ADR 0013: WETH 以外の base（WBTC 等）。fork 既定では空 = 完全に従来挙動。
+  // ADR 0013: bases other than WETH (WBTC etc.). Empty under the fork default = fully legacy behavior.
   const extraBaseSymbols = baseTokens()
     .map((t) => t.symbol)
     .filter((s) => s !== "WETH");
-  // batch=true: 毎ブロック十数本の観測読取を Multicall3 / JSON-RPC batch に自動集約する。
+  // batch=true: automatically aggregates the dozen-odd observation reads per block into Multicall3 / JSON-RPC batches.
   const { chain, publicClient, walletClient } = makeClients(
     rpcUrl,
     config.chainId,
@@ -97,8 +98,8 @@ async function main(): Promise<void> {
   );
   const address = accountAddress(privateKey);
 
-  // adapter の readState/observe/buildTxs は ctx の clients/config しか使わない。
-  // admin/keeper/flow は環境専用のため、agent 側 ctx ではダミー（自鍵）/例外にする。
+  // The adapter's readState/observe/buildTxs only use ctx's clients/config.
+  // admin/keeper/flow are environment-only, so on the agent side ctx they are dummies (own key) / throw.
   const simCtx: SimContext = {
     publicClient,
     walletClient,
@@ -130,9 +131,9 @@ async function main(): Promise<void> {
     extraBaseSymbols,
   });
 
-  // ---- agent モジュールの解決（1 agent = 1 ディレクトリ）----
-  // 既定は agent.ts 優先（ADR 0015 §2）。併置 agent は ERIS_AGENT_MODE=prompt で
-  // LLM 駆動（prompt.md）に切り替えられる（両方の動かし方を常に提供する）。
+  // ---- resolve the agent module (1 agent = 1 directory) ----
+  // Default is agent.ts precedence (ADR 0015 §2). A co-located agent can be switched to
+  // LLM-driven (prompt.md) via ERIS_AGENT_MODE=prompt (both ways of running are always provided).
   const agentTsPath = join(agentDir, "agent.ts");
   const hasAgentTs = existsSync(agentTsPath);
   const hasPrompt = existsSync(join(agentDir, "prompt.md"));
@@ -143,7 +144,7 @@ async function main(): Promise<void> {
     forcedMode !== "prompt"
   ) {
     process.stderr.write(
-      `[bot] ERIS_AGENT_MODE は "agent" か "prompt"（指定値: ${forcedMode}）\n`,
+      `[bot] ERIS_AGENT_MODE must be "agent" or "prompt" (got: ${forcedMode})\n`,
     );
     process.exit(1);
     return;
@@ -158,7 +159,7 @@ async function main(): Promise<void> {
     else if (typeof agentModule.decide === "function") mode = "decide";
     else {
       process.stderr.write(
-        `[bot] ${agentTsPath} は decide() か run(ctx) を export する必要があります\n`,
+        `[bot] ${agentTsPath} must export decide() or run(ctx)\n`,
       );
       process.exit(1);
       return;
@@ -168,21 +169,21 @@ async function main(): Promise<void> {
   } else {
     process.stderr.write(
       forcedMode === "prompt"
-        ? `[bot] ERIS_AGENT_MODE=prompt ですが ${agentDir} に prompt.md がありません\n`
-        : `[bot] ${agentDir} に agent.ts も prompt.md もありません（ADR 0015 §2）\n`,
+        ? `[bot] ERIS_AGENT_MODE=prompt but ${agentDir} has no prompt.md\n`
+        : `[bot] ${agentDir} has neither agent.ts nor prompt.md (ADR 0015 §2)\n`,
     );
     process.exit(1);
     return;
   }
   if (forcedMode === "agent" && !hasAgentTs) {
     process.stderr.write(
-      `[bot] ERIS_AGENT_MODE=agent ですが ${agentDir} に agent.ts がありません\n`,
+      `[bot] ERIS_AGENT_MODE=agent but ${agentDir} has no agent.ts\n`,
     );
     process.exit(1);
     return;
   }
 
-  // ---- 最新状態（read ループが更新し、decide/submit が参照する）----
+  // ---- latest state (updated by the read loop, referenced by decide/submit) ----
   let latestObservation: AgentObservation | null = null;
   let latestBalances: BalanceSnapshot | null = null;
   let latestStateById = new Map<ProtocolId, unknown>();
@@ -205,7 +206,7 @@ async function main(): Promise<void> {
     log: agentLog,
   };
 
-  // ---- decide の駆動（ルール戦略）----
+  // ---- driving decide (rule strategy) ----
   let deciding = false;
   const invokeDecide = async (obs: AgentObservation): Promise<void> => {
     if (!agentModule?.decide || deciding) return;
@@ -223,7 +224,7 @@ async function main(): Promise<void> {
     }
   };
 
-  // ---- 自走の観測ループ: 新ブロックごとにチェーンから observation を再構成する ----
+  // ---- self-driven observation loop: reconstruct the observation from the chain each new block ----
   const intervalMs = agentModule?.config?.intervalMs;
   const offsetMs = agentModule?.config?.offsetMs ?? 0;
   let processing = false;
@@ -232,7 +233,7 @@ async function main(): Promise<void> {
     if (processing || bn <= lastBlock) return;
     processing = true;
     try {
-      // 観測再構成と競争シグナル（ADR 0011）は独立した読取なので並列に発行する（2 秒ブロックの hot path）。
+      // Observation reconstruction and the competition signal (ADR 0011) are independent reads, so issue them in parallel (2-second block hot path).
       const [snap, competition] = await Promise.all([
         reader.snapshot(bn),
         sender.computeCompetition(bn),
@@ -242,7 +243,7 @@ async function main(): Promise<void> {
       latestBalances = snap.balances;
       latestStateById = snap.stateById;
       lastBlock = bn;
-      // gas マネージャ: 観測確定後に ETH 残を点検し、低ければ補充 tx を enqueue（economicGas のみ）。
+      // gas manager: after the observation is settled, check the ETH balance and if low enqueue a refill tx (economicGas only).
       void sender.maybeRefillGas(
         bn,
         snap.balances,
@@ -253,10 +254,10 @@ async function main(): Promise<void> {
         try {
           cb(snap.observation);
         } catch {
-          // subscriber の失敗は観測ループに影響させない
+          // a subscriber failure must not affect the observation loop
         }
       }
-      // intervalMs 未指定の decide 型は「新ブロックごとに 1 回」（旧 shim + readline と同じ頻度）。
+      // A decide type without intervalMs runs "once per new block" (same cadence as the old shim + readline).
       if (mode === "decide" && intervalMs === undefined)
         void invokeDecide(snap.observation);
     } catch (error) {
@@ -279,15 +280,15 @@ async function main(): Promise<void> {
 
   logMempool({ event: "runtime_start", mode, address, agentDir, rpcUrl });
 
-  // ---- 型別の駆動 ----
+  // ---- drive per type ----
   if (mode === "run") {
-    // 自走型: ctx を渡して委譲（read/send/log は runtime のものを使わせる）。
+    // Self-driven: pass ctx and delegate (let it use runtime's read/send/log).
     await agentModule!.run!(ctx);
     return;
   }
 
   if (mode === "decide" && intervalMs !== undefined) {
-    // タイマー駆動（旧 runRealtimeAgent の間隔/位相）。最新 observation に対して decide する。
+    // Timer-driven (the old runRealtimeAgent's interval/phase). Decide against the latest observation.
     setTimeout(() => {
       const tick = (): void => {
         if (latestObservation) void invokeDecide(latestObservation);
@@ -302,10 +303,10 @@ async function main(): Promise<void> {
     await runPromptLoop();
   }
 
-  // ---- プロンプト型: 毎判断 LLM（Hermes JSON mode + validate 再試行。ADR 0015 §4）----
-  // ERIS_PROMPT_REVISE_EVERY > 0 なら N 判断サイクルごとに prompt 本文を LLM が自己改訂する
-  // （自己改善。改訂版は runs/<id>/agents/<agentId>.prompt.v<K>.md に保存し以後のサイクルで使用。
-  //  ERIS_PROMPT_REVISE_PERSIST=1 で agent ディレクトリの prompt.md にも書き戻す）。
+  // ---- prompt type: LLM every decision (Hermes JSON mode + validation retry; ADR 0015 §4) ----
+  // When ERIS_PROMPT_REVISE_EVERY > 0, every N decision cycles the LLM self-revises the prompt body
+  // (self-improvement; revised versions are saved to runs/<id>/agents/<agentId>.prompt.v<K>.md and
+  //  used by later cycles. ERIS_PROMPT_REVISE_PERSIST=1 also writes back to the agent directory's prompt.md).
   async function runPromptLoop(): Promise<void> {
     const promptAgent = loadPromptAgent(agentDir);
     const model =
@@ -336,11 +337,12 @@ async function main(): Promise<void> {
     let revision = 0;
     let initialValueUsdc: number | null = null;
 
-    // ---- LLM 対話ログ（ERIS_PROMPT_LOG_CALLS=1 の opt-in。ADR 0015 §4 の診断補助）----
-    // 「LLM が観測のどこをどう読んで何を返したか」を run 後に追えるよう、生の対話を
-    // runs/<id>/agents/<agentId>.llm.jsonl に残す。system は大きく判断間で同一なので、
-    // 初回と自己改訂の直後だけ kind:"llm_system" で全文を書き、毎呼び出しの kind:"llm_call"
-    // は revision 番号で参照する（validate 再試行のやり取りは messages に含まれて残る）。
+    // ---- LLM conversation log (opt-in via ERIS_PROMPT_LOG_CALLS=1; diagnostic aid for ADR 0015 §4) ----
+    // So that "what part of the observation the LLM read and what it returned" can be traced after
+    // the run, record the raw conversation to runs/<id>/agents/<agentId>.llm.jsonl. The system prompt
+    // is large and identical across decisions, so write its full text only on the first call and right
+    // after each self-revision as kind:"llm_system", and have each per-call kind:"llm_call" reference
+    // it by revision number (the validation-retry exchanges are kept inside messages).
     const llmCallLog =
       process.env.ERIS_PROMPT_LOG_CALLS === "1"
         ? createJsonlAppender(runDir, agentId, ".llm")
@@ -377,12 +379,12 @@ async function main(): Promise<void> {
     };
     logSystem();
 
-    // prompt 改訂（自己改善）。判断サイクルと同じ cycling ロック内で走らせ、判断と競合させない。
+    // Prompt revision (self-improvement). Run inside the same cycling lock as the decision cycle so it never races the decision.
     const revisePrompt = async (obs: AgentObservation): Promise<void> => {
       try {
         const reviseSystem = buildRevisionSystem(promptAgent);
         const text = await loggedCallLlm(
-          // 改訂の system は判断用と別物なのでレコードに直接含める。
+          // The revision system prompt differs from the decision one, so include it directly in the record.
           { purpose: "revise", round: obs.round, system: reviseSystem },
           {
             model,
@@ -399,17 +401,17 @@ async function main(): Promise<void> {
                 }),
               },
             ],
-            json: false, // 改訂は自由テキスト（markdown 本文）
+            json: false, // revision is free text (markdown body)
           },
         );
         const next = stripFences(text).trim();
-        // 壊れた改訂（空・極端な長さ）は捨てて現行 prompt を維持する（fail-closed）。
+        // Discard a broken revision (empty / extreme length) and keep the current prompt (fail-closed).
         if (next.length < 40 || next.length > 20_000)
           throw new Error(`revised body rejected (length=${next.length})`);
         revision++;
         body = next;
         system = rebuildSystem();
-        logSystem(); // 改訂後の system 全文を対話ログにも版付きで残す
+        logSystem(); // record the full revised system prompt in the conversation log too, versioned
         agentLog({
           round: obs.round,
           reason: `prompt revised v${revision}`,
@@ -420,13 +422,13 @@ async function main(): Promise<void> {
             valueUsdc: obs.inventory.valueUsdc,
           },
         });
-        // 改訂履歴を run ディレクトリに版付きで残す（run 後の診断・比較の一次情報）。
+        // Keep the revision history in the run directory, versioned (primary source for post-run diagnostics/comparison).
         if (runDir) {
           const dir = join(runDir, "agents");
           mkdirSync(dir, { recursive: true });
           writeFileSync(join(dir, `${agentId}.prompt.v${revision}.md`), body);
         }
-        // 任意: agent ディレクトリの prompt.md に書き戻す（frontmatter は元のまま維持）。
+        // Optional: write back to the agent directory's prompt.md (keep the frontmatter unchanged).
         if (revisePersist) {
           const path = join(agentDir, "prompt.md");
           const raw = readFileSync(path, "utf8");
@@ -462,7 +464,7 @@ async function main(): Promise<void> {
             );
           } catch (error) {
             lastError = error instanceof Error ? error.message : String(error);
-            break; // 呼び出し自体の失敗は再試行せずこのサイクルを見送る
+            break; // a failure of the call itself is not retried; skip this cycle
           }
           let parsed: unknown;
           try {
@@ -478,7 +480,7 @@ async function main(): Promise<void> {
           }
           const check = schema.safeParse(parsed);
           if (!check.success) {
-            // エラー内容（何がスキーマ違反か）を会話に追記して再試行（Hermes パターン）。
+            // Append the error (what violated the schema) to the conversation and retry (Hermes pattern).
             lastError = check.error.issues
               .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
               .join("; ");
@@ -498,7 +500,7 @@ async function main(): Promise<void> {
           break;
         }
         if (!decided) {
-          // fail-closed: 上限超過はこのサイクルを見送り（noop）として記録。不正 action はチェーンに出ない。
+          // fail-closed: exceeding the cap records this cycle as skipped (noop). An invalid action never reaches the chain.
           agentLog({
             round: obs.round,
             action: { type: "noop" },
@@ -511,7 +513,7 @@ async function main(): Promise<void> {
           });
           if (recent.length > 16) recent.shift();
         }
-        // ---- 自己改善: N 判断サイクルごとに prompt 本文を改訂する（同一ロック内 = 判断と直列）----
+        // ---- self-improvement: revise the prompt body every N decision cycles (within the same lock = serial with the decision) ----
         decidedCycles++;
         if (reviseEvery > 0 && decidedCycles % reviseEvery === 0)
           await revisePrompt(obs);

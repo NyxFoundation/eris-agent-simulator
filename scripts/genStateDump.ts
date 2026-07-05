@@ -1,19 +1,19 @@
 /**
- * 配布用 anvil state dump の生成（ADR 0016 Phase 0）。
+ * Generate a distributable anvil state dump (ADR 0016 Phase 0).
  *
- * deployer で全 venue デプロイ済みの稼働中 anvil から anvil_dumpState で state を取り、
- * `anvil --load-state` に直接渡せる plain JSON（venues-state.json）と、生成元を識別する
- * manifest（生成元コミット・anvil バージョン・genesis hash・deployments.json 丸ごと同梱 +
- * canonical fingerprint）を書き出す。constants.local.ts も同じ deployments から再生成し、
- * repo と配布物の fingerprint を一致させる。
+ * Take state via anvil_dumpState from a running anvil that has all venues deployed by the deployer,
+ * and write out plain JSON (venues-state.json) that can be passed directly to `anvil --load-state`,
+ * plus a manifest identifying the source (source commit, anvil version, genesis hash, the entire
+ * deployments.json bundled + canonical fingerprint). constants.local.ts is also regenerated from the
+ * same deployments so the repo and the distributable share the same fingerprint.
  *
- * dump の「クリーン断面」保証は resetFork（sdk/src/chain.ts のローカルモード = .local-snapshot
- * への revert → 再 snapshot → 永続化）に委譲する。snapshot ファイルの形式・stale ID の
- * self-healing はあちらが単一の持ち主（ここで再実装しない）。
+ * The "clean snapshot" guarantee for the dump is delegated to resetFork (sdk/src/chain.ts's local mode
+ * = revert to .local-snapshot -> re-snapshot -> persist). The snapshot file format and stale-ID
+ * self-healing have their single owner there (not reimplemented here).
  *
- * 前提: deployer の anvil が稼働している（cd deployer && npm run deploy -- --keep-fresh）。
+ * Prerequisite: the deployer's anvil is running (cd deployer && npm run deploy -- --keep-fresh).
  *
- * 使い方:
+ * Usage:
  *   npm run gen:state-dump
  *   npm run gen:state-dump -- --rpc http://127.0.0.1:8545 --out backtest/state
  */
@@ -50,11 +50,11 @@ async function main(): Promise<void> {
     flags["snapshot-file"] ?? ".local-snapshot",
   );
 
-  // ---- 前提検査: anvil 稼働 + deployments.json + 代表アドレスのバイトコード ----
+  // ---- Prerequisite checks: anvil running + deployments.json + bytecode at representative addresses ----
   const anvilVersion = await rpc<string>(rpcUrl, "web3_clientVersion").catch(
     () => {
       throw new Error(
-        `anvil not reachable at ${rpcUrl}。deployer の anvil を起動してください ` +
+        `anvil not reachable at ${rpcUrl}. Start the deployer's anvil ` +
           `(cd deployer && npm run deploy -- --keep-fresh)`,
       );
     },
@@ -69,8 +69,8 @@ async function main(): Promise<void> {
       aaveV3?: { pool?: string };
     };
   };
-  // 必須はトークン/Multicall3 のみ（venue は部分デプロイを許す = missingVenues が backtest 側で
-  // 検査する）。存在する venue の代表として aave pool があれば併せて確認する。
+  // Only tokens/Multicall3 are required (venues may be partially deployed = missingVenues is checked on
+  // the backtest side). If an aave pool exists as a representative of a present venue, verify it too.
   const mustHaveCode: Array<[string, string | undefined]> = [
     ["tokens.WETH", deployments.tokens?.WETH],
     ["common.multicall3", deployments.protocols?.common?.multicall3],
@@ -79,24 +79,24 @@ async function main(): Promise<void> {
     mustHaveCode.push(["aaveV3.pool", deployments.protocols.aaveV3.pool]);
   await Promise.all(
     mustHaveCode.map(async ([what, address]) => {
-      if (!address) throw new Error(`deployments.json に ${what} がありません`);
+      if (!address) throw new Error(`deployments.json is missing ${what}`);
       const code = await rpc<string>(rpcUrl, "eth_getCode", [
         address,
         "latest",
       ]);
       if ((code ?? "0x").length <= 2)
         throw new Error(
-          `${what} (${address}) にバイトコードがありません。anvil (${rpcUrl}) は ` +
-            `deployments.json のデプロイ先と別インスタンスの可能性があります`,
+          `${what} (${address}) has no bytecode. anvil (${rpcUrl}) may be a different ` +
+            `instance than where deployments.json was deployed`,
         );
     }),
   );
 
-  // ---- クリーン断面へ revert（resetFork のローカルモードに委譲）----
+  // ---- Revert to the clean snapshot (delegated to resetFork's local mode) ----
   if (!existsSync(snapshotFile))
     console.warn(
-      "! クリーン断面 snapshot（.local-snapshot）が無いため、現在の状態を pristine と" +
-        "みなして dump します。デプロイ直後の anvil なら問題ありません",
+      "! No clean snapshot (.local-snapshot), so the current state is treated as pristine " +
+        "and dumped. That is fine for an anvil right after deploy",
     );
   const { publicClient } = makeClients(rpcUrl, deployments.chainId);
   await resetFork(publicClient, {
@@ -104,11 +104,11 @@ async function main(): Promise<void> {
     localSnapshotFile: snapshotFile,
   });
 
-  // ---- dump（hex-gzip → plain JSON。--load-state は plain JSON のみ受け付ける）----
+  // ---- dump (hex-gzip -> plain JSON. --load-state only accepts plain JSON) ----
   const hex = await rpc<string>(rpcUrl, "anvil_dumpState");
   const stateJson = gunzipSync(Buffer.from(hex.slice(2), "hex"));
   {
-    // 整合検査だけしてパース結果は破棄する（dump は数 MB〜。木を保持しない）。
+    // Only run the consistency check and discard the parsed result (the dump is several MB+; do not keep the tree).
     const state = JSON.parse(stateJson.toString()) as {
       accounts?: Record<string, unknown>;
     };
@@ -118,11 +118,11 @@ async function main(): Promise<void> {
     );
     if (!hasWeth)
       throw new Error(
-        "dump に WETH アカウントが含まれていません（dump 不整合）",
+        "the dump does not contain a WETH account (dump inconsistency)",
       );
   }
 
-  // ---- 書き出し: state + manifest ----
+  // ---- Write: state + manifest ----
   mkdirSync(outDir, { recursive: true });
   const statePath = join(outDir, STATE_FILE_NAME);
   writeFileSync(statePath, stateJson);
@@ -145,7 +145,7 @@ async function main(): Promise<void> {
   const manifestPath = join(outDir, MANIFEST_FILE_NAME);
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-  // ---- constants.local.ts を同じ deployments から再生成（repo と配布物の fingerprint を揃える）----
+  // ---- Regenerate constants.local.ts from the same deployments (align the repo and distributable fingerprints) ----
   const gen = generateLocalConstants(deploymentsPath);
   if (gen.fingerprint !== manifest.deploymentsFingerprint)
     throw new Error(
@@ -159,7 +159,7 @@ async function main(): Promise<void> {
     `  commit=${manifest.sourceCommit.slice(0, 12)} chainId=${manifest.chainId} genesis=${genesis.hash.slice(0, 12)}…`,
   );
   console.log(`  fingerprint=${manifest.deploymentsFingerprint.slice(0, 20)}…`);
-  console.log(`  実行: npm run backtest -- --regime calm-01`);
+  console.log(`  run: npm run backtest -- --regime calm-01`);
 }
 
 main().catch((error) => {

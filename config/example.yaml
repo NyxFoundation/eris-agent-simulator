@@ -1,16 +1,16 @@
 # config/example.yaml
 #
-# シミュレーションのユーザー設定の単一ソース。`config/local.yaml` にコピーして使う:
+# Single source for user simulation settings. Copy to `config/local.yaml` to use:
 #   cp config/example.yaml config/local.yaml
-#   npm run sim:realtime                              # 既定で config/local.yaml を読む
-#   npm run sim:realtime -- --config config/stress.yaml   # 別ファイルを指定
+#   npm run sim:realtime                              # reads config/local.yaml by default
+#   npm run sim:realtime -- --config config/stress.yaml   # specify a different file
 #
-# キーはネスト（run / funding / limits / flow / stress + agents）。値は型付きで書ける（真偽値・数値・
-# 配列・オブジェクト）。未指定キーは既定値。一回限りの上書きは CLI フラグ（--seed / --blocks / --protocols 等）。
+# Keys are nested (run / funding / limits / flow / stress + agents). Values can be typed (booleans,
+# numbers, arrays, objects). Unspecified keys use defaults. One-off overrides via CLI flags (--seed / --blocks / --protocols etc.).
 #
-# 秘密情報はここに書かない（このファイルはコミットされうる）。RPC URL・秘密鍵・API キーは
-# `.env.local` に置く（ARB_RPC_URL / *_PRIVATE_KEY / ANTHROPIC_API_KEY / OLLAMA_API_KEY）。
-# ローカル Anvil の dev キーは未指定でも既定で使われる。
+# Do not put secrets here (this file may be committed). Put RPC URLs, private keys, and API keys in
+# `.env.local` (ARB_RPC_URL / *_PRIVATE_KEY / ANTHROPIC_API_KEY / OLLAMA_API_KEY).
+# The local Anvil dev keys are used by default even when unspecified.
 
 run:
   seed: 1
@@ -23,65 +23,66 @@ run:
   reportDir: ./runs
 
 funding:
-  wethWei: "0" # USDC-only 配布（初期の方向性エクスポージャを排除）
+  wethWei: "0" # USDC-only distribution (removes initial directional exposure)
   usdcUnits: "25000000000"
-  # base: { WBTC: "0" }   # 追加 base の初期在庫（既定 0）
+  # base: { WBTC: "0" }   # initial inventory of additional bases (default 0)
 
 limits:
   agentWethWei: "1000000000000000000"
   agentUsdcUnits: "5000000000"
-  # agentBase: { WBTC: "0" }   # 追加 base の per-round 上限
+  # agentBase: { WBTC: "0" }   # per-round cap for additional bases
 
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
-  # 現実的フロー（ADR 0015 Notes / amm-challenge 由来）。以下は既定値で、書かなくても効く。
-  #   informedArbFeeBps: 環境の裁定(informed flow)を fee-aware に。gap が fee バンド(既定 30bps)を
-  #     超えたときだけ超過分を閉じ、残差=fee を残す（毎ブロック全力で fair を締めない）。0 で従来挙動。
-  #   uninformedArrivalRate: 無情報フローを Poisson 到着に（λ、既定 0.9）。0 で固定本数に戻す。
-  #   uninformedSizeSigma: 無情報フローのサイズを lognormal 化（σ、既定 1.0。裾が重い＝時々大口）。
-  # 注: Poisson/lognormal は分散を増やすので run 比較は複数 seed の集計で読むこと。無効化は 0 に。
+  # Realistic flow (from ADR 0015 Notes / amm-challenge). The following are defaults and take effect even if omitted.
+  #   informedArbFeeBps: makes the environment's arbitrage (informed flow) fee-aware. Closes the
+  #     excess only when the gap exceeds the fee band (default 30bps), leaving a residual = fee (does
+  #     not fully close to fair every block). 0 for the legacy behavior.
+  #   uninformedArrivalRate: makes uninformed flow Poisson-arriving (lambda, default 0.9). 0 reverts to a fixed count.
+  #   uninformedSizeSigma: makes uninformed flow size lognormal (sigma, default 1.0. heavy tail = occasional large orders).
+  # Note: Poisson/lognormal increase variance, so read run comparisons as aggregates over multiple seeds. Disable with 0.
   informedArbFeeBps: 30
   uninformedArrivalRate: "0.9"
   uninformedSizeSigma: "1.0"
-  # 同じ現実的フローを GMX / Aave にも展開（既定で有効。ADR 0015 Notes / amm-challenge）。
-  #   gmxArrivalRate: GMX 建玉本数を Poisson(λ)、サイズを lognormal に（既定 0.75）。0 で従来の
-  #     Bernoulli(gmxActivityProb)+一様バースト+一様サイズに戻す。gmxSizeSigma は lognormal の σ（既定 1.0）。
-  #   aaveActorSizeSigma: Aave 各アクターの目標担保を lognormal で不均質化（whale/minnow の混在。既定 1.0）。
-  #     borrow は各自の担保の 30% LTV に追従するので HF 安全は不変。0 で全アクター一律。
+  # Extend the same realistic flow to GMX / Aave (enabled by default. ADR 0015 Notes / amm-challenge).
+  #   gmxArrivalRate: makes GMX position count Poisson(lambda) and size lognormal (default 0.75). 0
+  #     reverts to the legacy Bernoulli(gmxActivityProb)+uniform burst+uniform size. gmxSizeSigma is the lognormal sigma (default 1.0).
+  #   aaveActorSizeSigma: makes each Aave actor's target collateral heterogeneous via lognormal (whale/minnow mix. default 1.0).
+  #     borrow tracks each one's 30% LTV of collateral, so HF safety is unchanged. 0 for uniform actors.
   gmxArrivalRate: "0.75"
   gmxSizeSigma: "1.0"
   aaveActorSizeSigma: "1.0"
-  # gmx flow を出すブロック確率（gmxArrivalRate=0 の従来モードでのみ使用。0..1、既定 0.5）。
+  # Per-block probability of emitting gmx flow (used only in the legacy gmxArrivalRate=0 mode. 0..1, default 0.5).
   # gmxActivityProb: "0.5"
-  # gmxMaxBurst: "2"        # 従来モードで発火ブロックが出す gmx 本数の上限（1=常に単発）
-  # aave 借り手プール: aaveActorCount 個の独立アクター（別アドレス・持続ポジション）。各アクターは
-  # 毎ブロック aaveActivityProb の確率で借入/返済/担保/引出を 1 つ行い、借りた債務は翌ブロックも残る。
-  # 1 ブロックの同時 borrow 数は最大 aaveActorCount（別アクターから自然発生）。
+  # gmxMaxBurst: "2"        # cap on gmx count per firing block in legacy mode (1 = always single)
+  # aave borrower pool: aaveActorCount independent actors (distinct addresses, persistent positions). Each actor
+  # performs one borrow/repay/collateral/withdraw with probability aaveActivityProb every block, and borrowed debt persists to the next block.
+  # The number of simultaneous borrows in one block is at most aaveActorCount (arising naturally from separate actors).
   # aaveActivityProb: "0.5"
   # aaveActorCount: "4"
-  # マルチアセット(WBTC)を取引させるなら WBTC flow を有効化（価格乖離=裁定機会を作る）:
+  # To trade multi-asset (WBTC), enable WBTC flow (creates price divergence = arbitrage opportunities):
   # baseMax: { WBTC: "50000000" }
 
-# stress（市場ストレスイベント。既定 off）:
+# stress (market stress events. default off):
 # stress:
 #   events:
 #     - { type: crash, magnitudeRange: [0.12, 0.16], windowFrac: [0.3, 0.7], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
 #   victimCount: 0
 
-# agents（ロスター。旧 agents.*.json の置き換え。inline で書く）
-# 注: account0 は deployer と重なるため、ローカルでは AGENT1 以降を使う。各 agent の env は
-# その agent プロセスへ渡す戦略パラメータ（sim 設定とは別物）。
+# agents (roster. replaces the old agents.*.json. written inline)
+# Note: account0 overlaps with the deployer, so locally use AGENT1 onward. Each agent's env is a
+# strategy parameter passed to that agent's process (distinct from the sim settings).
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
-    description: 何もしない (基準ライン)
+    description: does nothing (baseline)
   - id: venue-arb
     wallet: AGENT2_PRIVATE_KEY
-    description: WETH 専用 cross-venue 裁定
+    description: WETH-only cross-venue arbitrage
   - id: multi-arb
     wallet: AGENT3_PRIVATE_KEY
-    description: base 非依存 cross-venue 裁定（全 active base × 全 venue）
+    description: base-agnostic cross-venue arbitrage (all active bases x all venues)

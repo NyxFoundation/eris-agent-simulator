@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-// FlashArb (GitHub #3): Aave V3 flashLoanSimple の receiver。
-// 借りた USDC で「割安 venue で WETH 買い → 割高 venue で WETH 売り」の cross-venue 裁定を
-// 1 tx で実行し、amount+premium を返済して残り(利益)を initiator(=トリガした agent)へ送る。
-// 自己資金上限を超えるサイズで pool↔frozen-venue の乖離を取りに行く(#4 の flash 版)。
+// FlashArb (GitHub #3): receiver for Aave V3 flashLoanSimple.
+// Executes a cross-venue arbitrage ("buy WETH on the cheap venue -> sell WETH on the
+// expensive venue") in a single tx using the borrowed USDC, repays amount+premium, and
+// sends the remainder (profit) to the initiator (= the agent that triggered it).
+// Targets the pool <-> frozen-venue divergence at a size beyond the self-funded cap
+// (the flash version of #4).
 //
-// 実行系はすべて TypeScript + viem 側。このコントラクトのみ Foundry でコンパイルする。
+// All execution logic lives on the TypeScript + viem side. Only this contract is compiled with Foundry.
 
 interface IERC20 {
     function approve(address spender, uint256 amount) external returns (bool);
@@ -99,16 +101,16 @@ contract FlashArb {
         uniFee = _uniFee;
     }
 
-    // mode 0: Uniswap で USDC->WETH 買い → Balancer で WETH->USDC 売り
-    // mode 1: Balancer で USDC->WETH 買い → Uniswap で WETH->USDC 売り
+    // mode 0: buy USDC->WETH on Uniswap -> sell WETH->USDC on Balancer
+    // mode 1: buy USDC->WETH on Balancer -> sell WETH->USDC on Uniswap
     struct Params {
         uint8 mode;
-        uint256 wethMinOut; // 買いレグの WETH 最小受領
-        uint256 usdcMinOut; // 売りレグの USDC 最小受領
-        address profitTo; // 利益送付先(トリガした agent)
+        uint256 wethMinOut; // minimum WETH received on the buy leg
+        uint256 usdcMinOut; // minimum USDC received on the sell leg
+        address profitTo; // profit recipient (the agent that triggered it)
     }
 
-    // agent が Pool.flashLoanSimple(receiver=this, asset=USDC, amount, params) を呼ぶ。
+    // The agent calls Pool.flashLoanSimple(receiver=this, asset=USDC, amount, params).
     function executeOperation(
         address asset,
         uint256 amount,
@@ -129,7 +131,7 @@ contract FlashArb {
         }
 
         uint256 owed = amount + premium;
-        IERC20(asset).approve(pool, owed); // Pool が transferFrom で回収
+        IERC20(asset).approve(pool, owed); // Pool collects via transferFrom
         uint256 bal = IERC20(asset).balanceOf(address(this));
         if (bal > owed && p.profitTo != address(0)) {
             IERC20(asset).transfer(p.profitTo, bal - owed);

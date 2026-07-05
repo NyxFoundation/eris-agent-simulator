@@ -1,81 +1,68 @@
 [← README](../../README.md)
 
-# LLM 駆動の自律エージェント（prompt.md 型）
+# LLM-driven autonomous agents (prompt.md type)
 
-`example/agents/<id>/` に **`prompt.md` 1 枚**を置くと、その agent はプロンプト型になる:
-`runtime/bot.ts` が毎判断サイクルで observation を添えて LLM を呼び、JSON アクションを出させる。
-手書きのトレードロジックは無く、**prompt.md が戦略そのもの**（提出物）になる。同梱サンプルは
-`example/agents/my-arb/prompt.md`。
+Drop **a single `prompt.md`** into `example/agents/<id>/` and that agent becomes a prompt type: on every decision cycle, `runtime/bot.ts` calls the LLM with the observation attached and has it emit a JSON action. There is no hand-written trading logic — **the prompt.md is the strategy itself** (the submission). The bundled sample is `example/agents/my-arb/prompt.md`.
 
 ```markdown
 ---
-name: my-arb                      # 必須
-description: cross-venue arb; push toward fair above 30bps   # 必須
-intervalMs: 5000                  # 判断サイクル間隔（省略可）
-model: gpt-oss:120b               # 使用モデル（省略可。"claude..." なら Anthropic）
+name: my-arb                      # required
+description: cross-venue arb; push toward fair above 30bps   # required
+intervalMs: 5000                  # decision cycle interval (optional)
+model: gpt-oss:120b               # model to use (optional; "claude..." means Anthropic)
 ---
 # Mission
-（自然言語の戦略。観測の読み方・発注条件・サイズ・リスク制約を書く）
+(the strategy in natural language: how to read the observation, order conditions, sizing, risk constraints)
 ```
 
-## 動き方（runtime/bot.ts + runtime/llm.ts）
+## How it runs (runtime/bot.ts + runtime/llm.ts)
 
-- 毎サイクル、bot.ts が観測（JSON）と **action の `<schema>`**（`sdk/src/actionSchema.ts` の zod
-  スキーマから生成）を system prompt に載せて LLM を 1 回呼ぶ。
-- 応答は zod で validate し、**失敗はエラー内容を会話に追記して再試行**（上限超過はそのサイクル
-  `noop` = fail-closed）。
-- 判断とアクションは `runs/<run_id>/agents/<id>.jsonl` に残る（[run 出力と解析](run-output.md)）。
-- agent.ts と prompt.md を**併置**した場合の既定は agent.ts（ルール戦略）。ロスターの
-  `env: { ERIS_AGENT_MODE: "prompt" }` で prompt.md 駆動へ切り替える。
+- Each cycle, bot.ts puts the observation (JSON) and the action's **`<schema>`** (generated from the zod schema in `sdk/src/actionSchema.ts`) into the system prompt and calls the LLM once.
+- The response is validated with zod, and **on failure the error is appended to the conversation and retried** (on exceeding the retry limit that cycle is `noop` = fail-closed).
+- The decisions and actions are recorded in `runs/<run_id>/agents/<id>.jsonl` ([Run output and analysis](run-output.md)).
+- When agent.ts and prompt.md are **co-located**, the default is agent.ts (rule strategy). Switch to prompt.md driving with the roster's `env: { ERIS_AGENT_MODE: "prompt" }`.
 
-## 自己改訂（任意）
+## Self-revision (optional)
 
-`ERIS_PROMPT_REVISE_EVERY=<N>` で、N 判断サイクルごとに LLM が **prompt 本文を自己改訂**する
-（既定 0 = off）。改訂版は `runs/<run_id>/agents/<id>.prompt.v<K>.md` に版付き保存され以後の
-サイクルで使われる。`ERIS_PROMPT_REVISE_PERSIST=1` で agent ディレクトリの prompt.md にも書き戻す。
+With `ERIS_PROMPT_REVISE_EVERY=<N>`, the LLM **self-revises the prompt body** every N decision cycles (default 0 = off). The revised version is saved with a version tag at `runs/<run_id>/agents/<id>.prompt.v<K>.md` and used in subsequent cycles. With `ERIS_PROMPT_REVISE_PERSIST=1` it is also written back to the prompt.md in the agent directory.
 
-## LLM 対話ログ（任意。プロンプト調整のデバッグ用）
+## LLM conversation log (optional; for debugging prompt tuning)
 
-`ERIS_PROMPT_LOG_CALLS=1` で、LLM との**生の対話**を `runs/<run_id>/agents/<id>.llm.jsonl` に残す:
+With `ERIS_PROMPT_LOG_CALLS=1`, the **raw conversation** with the LLM is recorded in `runs/<run_id>/agents/<id>.llm.jsonl`:
 
-- `kind: "llm_system"` — system prompt 全文（初回と自己改訂の直後のみ。`revision` で版を識別）
-- `kind: "llm_call"` — 毎呼び出しの記録。`purpose`（decision / revise）・`round`・`attempt`・
-  送信 `messages`（observation と validate 失敗時の再試行フィードバックを含む）・生 `response`
-  （呼び出し失敗時は `error`）
+- `kind: "llm_system"` — the full system prompt (only on the first call and right after each self-revision; the version is identified by `revision`)
+- `kind: "llm_call"` — a record of every call: `purpose` (decision / revise), `round`, `attempt`, the sent `messages` (including the observation and the retry feedback on validate failures), and the raw `response` (or `error` if the call failed)
 
-「LLM が観測のどこを誤読したか」「validate に何回落ちたか」を判断単位で追えるので、prompt の
-改善サイクルはこのログを一次情報にするとよい。通常 run では off（ログは判断ごとに数 KB 育つ）。
+Because you can trace "where in the observation the LLM misread" and "how many times it failed validate" per decision, use this log as the primary source for the prompt-improvement cycle. Keep it off for normal runs (the log grows by a few KB per decision).
 
-## バックエンド（runtime/llm.ts）
+## Backends (runtime/llm.ts)
 
-プロバイダは frontmatter の `model` 名で切り替わる:
+The provider is selected by the frontmatter `model` name:
 
-| model | プロバイダ | 認証 |
+| model | provider | auth |
 |---|---|---|
-| `gpt-oss:120b` 等（既定） | Ollama（既定 Ollama Cloud `https://ollama.com/api`。`ERIS_OLLAMA_BASE_URL` でローカル `http://127.0.0.1:11434/api` へ） | `OLLAMA_API_KEY` / `ERIS_OLLAMA_API_KEY`（ローカル ollama は不要） |
-| `claude...` で始まる | Anthropic SDK（tool use で structured output） | `ANTHROPIC_API_KEY` |
+| `gpt-oss:120b` etc. (default) | Ollama (default Ollama Cloud `https://ollama.com/api`; point at local `http://127.0.0.1:11434/api` via `ERIS_OLLAMA_BASE_URL`) | `OLLAMA_API_KEY` / `ERIS_OLLAMA_API_KEY` (not needed for local ollama) |
+| starts with `claude...` | Anthropic SDK (structured output via tool use) | `ANTHROPIC_API_KEY` |
 
-1 呼び出しのタイムアウトは `ERIS_LLM_CALL_TIMEOUT_MS`（既定 60000）。秘密の API キーは
-`.env.local` に置く（[設定](configuration.md)）。
+The per-call timeout is `ERIS_LLM_CALL_TIMEOUT_MS` (default 60000). Put the secret API keys in `.env.local` ([Configuration](configuration.md)).
 
-## 実行例
+## Run example
 
 ```yaml
-# config/local.yaml のロスター
+# roster in config/local.yaml
 agents:
-  - id: my-arb                       # example/agents/my-arb/（prompt.md のみ → prompt 型）
+  - id: my-arb                       # example/agents/my-arb/ (prompt.md only → prompt type)
     wallet: AGENT1_PRIVATE_KEY
-  - id: venue-arb                    # agent.ts 併置 agent を prompt.md で動かす場合
+  - id: venue-arb                    # to run an agent.ts co-located agent via prompt.md
     wallet: AGENT2_PRIVATE_KEY
     env:
       ERIS_AGENT_MODE: "prompt"
-      ERIS_PROMPT_REVISE_EVERY: "10" # 10 サイクルごとに prompt を自己改訂
+      ERIS_PROMPT_REVISE_EVERY: "10" # self-revise the prompt every 10 cycles
 ```
 
 ```bash
-set -a; source .env.local; set +a   # OLLAMA_API_KEY 等の秘密のみ
-npm run sim:realtime                 # または npm run backtest -- --regime calm-01
+set -a; source .env.local; set +a   # only secrets like OLLAMA_API_KEY
+npm run sim:realtime                 # or npm run backtest -- --regime calm-01
 ```
 
-> prompt 型はブロック時間の壁時計待ちに加えて LLM レイテンシが律速になる。バックテストでも
-> LLM 呼び出し自体は残る（[バックテスト](backtest.md)）。
+> The prompt type is bottlenecked by LLM latency on top of the wall-clock wait for block time. The LLM calls remain even in a backtest ([Backtest](backtest.md)).

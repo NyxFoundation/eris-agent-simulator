@@ -1,14 +1,14 @@
-# ADR 0014 動作確認: 脆弱性発生イベント（悪意あるプール）+ 新規プール発見 + 取引前検証。
-# ローカルデプロイ前提。run 中に SEED 由来で N 個の新規プール（正直/rigged 混在）が「湧き」、
-# discovery-arb（naive）は美味しい見積りに飛びついて rigged で被弾し、discovery-arb-verify
-# （careful）は取引前に dry-run + codehash + 任意 LLM 監査で rigged を弾き安全な新規プールで利益化する。
+# ADR 0014 verification: vulnerability events (malicious pools) + new-pool discovery + pre-trade verification.
+# Assumes local deploy. During the run, N new pools (a mix of honest/rigged) "spring up" from the SEED;
+# discovery-arb (naive) jumps at the attractive quote and takes the hit on rigged, while discovery-arb-verify
+# (careful) rejects rigged via a pre-trade dry-run + codehash + optional LLM audit and profits from the safe new pools.
 #
-# 実行: npm run sim:realtime -- --config config/vuln-test.yaml
-# 解析: runs/<id>/events.jsonl の pool_created / vulnerability_disclosed / vulnerability_exploited /
-#        safe_pool_captured と runs/<id>/agents/<id>.jsonl の opportunity_detected / vulnerability_avoided。
+# Run: npm run sim:realtime -- --config config/vuln-test.yaml
+# Analysis: pool_created / vulnerability_disclosed / vulnerability_exploited / safe_pool_captured in
+#        runs/<id>/events.jsonl, and opportunity_detected / vulnerability_avoided in runs/<id>/agents/<id>.jsonl.
 run:
   seed: 1
-  blocks: 30 # 窓は run 長比。vuln は blocks>0 必須（時間制限は自動無効化）
+  blocks: 30 # window is relative to run length. vuln requires blocks>0 (time limit is auto-disabled)
   seconds: 150
   blockTimeSec: 2
   protocols: [uniswap, balancer, curve]
@@ -16,37 +16,37 @@ run:
   reportDir: ./runs
 
 funding:
-  wethWei: "0" # USDC-only 配布（初期の方向性エクスポージャを排除）
-  usdcUnits: "25000000000" # 25,000 USDC（複数プールを取引できる程度）
+  wethWei: "0" # USDC-only distribution (removes initial directional exposure)
+  usdcUnits: "25000000000" # 25,000 USDC (enough to trade several pools)
   base: { WBTC: "0" }
 
 limits:
   agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000" # per-round 5,000 USDC（rug 閾値 = frac × これ）
+  agentUsdcUnits: "5000000000" # per-round 5,000 USDC (rug threshold = frac x this)
   agentBase: { WBTC: "5000000" }
 
-# 脆弱性発生イベント（値でなくレンジ。SEED で確定 → 過学習抑制）。
+# Vulnerability events (ranges, not values. fixed by SEED -> suppresses overfitting).
 vuln:
-  poolLiquidityUsdcUnits: "2000000000000" # 各プール片側 ~$2M（深い＝bait が実現益になる）
-  poolFeeBps: 30 # 0.3%（honest プールの bait を相殺しない程度）
-  llm: "mock" # "0"=off / "mock"=source 静的走査 / "1"=実 LLM(ollama)
+  poolLiquidityUsdcUnits: "2000000000000" # ~$2M per side of each pool (deep = bait becomes realized profit)
+  poolFeeBps: 30 # 0.3% (small enough not to offset the honest pool's bait)
+  llm: "mock" # "0"=off / "mock"=static source scan / "1"=real LLM (ollama)
   events:
     - type: rigged-pool
-      windowFrac: [0.35, 0.5] # run の 35〜50% 地点で出現
-      poolCount: [4, 6] # 同時に出す新規プール数
-      riggedFrac: [0.5, 0.7] # うち rigged の割合（残りは安全な本物 arb）
-      baitBps: [300, 600] # fair 比で 3〜6% 割安に見せる（誘い込み）
-      rugBps: [3000, 6000] # rigged が skim する割合（30〜60%）
-      rugThresholdFrac: [0.2, 0.4] # per-round 上限比の skim 閾値（超えると skim）
+      windowFrac: [0.35, 0.5] # appears at the 35-50% point of the run
+      poolCount: [4, 6] # number of new pools spawned simultaneously
+      riggedFrac: [0.5, 0.7] # fraction that is rigged (the rest are safe genuine arb)
+      baitBps: [300, 600] # shown 3-6% cheaper than fair (the lure)
+      rugBps: [3000, 6000] # fraction the rigged pool skims (30-60%)
+      rugThresholdFrac: [0.2, 0.4] # skim threshold relative to per-round cap (skims above it)
 
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
-    description: 何もしない (基準ライン)
+    description: does nothing (baseline)
   - id: discovery-arb
     wallet: AGENT2_PRIVATE_KEY
-    description: 発見 + 即実行（naive。検証せず rigged で被弾する対照）
+    description: discover + execute immediately (naive. the counterpart that skips verification and takes the hit on rigged)
   - id: discovery-arb-verify
     wallet: AGENT3_PRIVATE_KEY
-    description: 発見 + 取引前検証（careful。rigged を弾き安全な新規プールで利益化）
+    description: discover + pre-trade verification (careful. rejects rigged and profits from safe new pools)

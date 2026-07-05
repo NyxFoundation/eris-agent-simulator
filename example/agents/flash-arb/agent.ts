@@ -1,10 +1,12 @@
-// flash-arb (GitHub #3): フラッシュローンで自己資金上限を超えるサイズの cross-venue 裁定を行う。
-// uniswap(動的)と balancer(凍結参照価格)の乖離を見て、割安 venue で WETH 買い・割高 venue で
-// 売る 2-leg を FlashArb コントラクト内で 1 tx 実行する。agent は方向とサイズを決め、Aave
-// flashLoanSimple を rawTx で起動するだけ(FlashArb のアドレスは決定論的に計算)。
+// flash-arb (GitHub #3): uses a flash loan to do cross-venue arbitrage at a size beyond its own capital limit.
+// Looks at the deviation between uniswap (dynamic) and balancer (frozen reference price), and executes a
+// 2-leg trade (buy WETH on the cheap venue, sell on the expensive venue) in 1 tx inside the FlashArb
+// contract. The agent only decides direction and size, then triggers Aave flashLoanSimple via rawTx
+// (the FlashArb address is computed deterministically).
 //
-// 注: フラッシュローン受取コントラクト + rawTx 依存のため sandbox executor 化(LLM 自己改善)不可。
-// 利益が出ない場合は返済段で revert(アトミックなので資金損失はなく、gas のみ)。
+// Note: because it depends on a flash-loan receiver contract + rawTx, it cannot be turned into a sandbox
+// executor (LLM self-improvement). If it isn't profitable it reverts at the repayment step (atomic, so no
+// capital loss, only gas).
 import { encodeAbiParameters } from "viem";
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { TOKENS } from "@eris/sdk/constants.js";
@@ -13,7 +15,7 @@ import { buildFlashLoanSimple } from "../lib/flash.js";
 
 const agentAddress = process.env.ERIS_AGENT_ADDRESS ?? "";
 const SPREAD_THRESHOLD = floatEnv("FLASH_ARB_SPREAD", 0.003); // 30 bps
-const FLASH_USDC = intEnv("FLASH_ARB_USDC", 15000); // フラッシュ借入 USDC(自己資金上限超)
+const FLASH_USDC = intEnv("FLASH_ARB_USDC", 15000); // flash-borrowed USDC (beyond own capital limit)
 const MAX_FLASH_USDC = intEnv("FLASH_ARB_MAX_USDC", FLASH_USDC);
 const MIN_FLASH_LIQUIDITY_USDC = intEnv("FLASH_ARB_MIN_LIQUIDITY_USDC", 1000);
 const POOL_LIQUIDITY_RESERVE_BPS = intEnv(
@@ -76,7 +78,7 @@ export function decide(obs: AgentObservation): AgentAction | null {
     if (flashUsdc <= 0) {
       return { type: "noop", reason: "flashUsdc zero" };
     }
-    // WETH が割安な venue で買う。uni < bal → uniswap 買い(mode 0)。else balancer 買い(mode 1)。
+    // Buy on the venue where WETH is cheap. uni < bal -> buy on uniswap (mode 0), else buy on balancer (mode 1).
     const mode = uni < bal ? 0 : 1;
     const amount = BigInt(flashUsdc) * 1_000_000n;
     const venueRatio = mode === 0 ? bal / uni : uni / bal;
@@ -93,7 +95,7 @@ export function decide(obs: AgentObservation): AgentAction | null {
         reason: `flash edge below costs: ${expectedProfit.toFixed(2)} USDC`,
       };
     }
-    // min-out は 0(返済段で利益不足なら atomic revert。sim 内に同 tx の敵対者はいない)。
+    // min-out is 0 (atomic revert at the repayment step if profit is insufficient; there is no same-tx adversary in the sim).
     const params = encodeAbiParameters(paramsType, [
       {
         mode,

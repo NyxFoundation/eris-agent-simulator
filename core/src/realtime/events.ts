@@ -1,90 +1,92 @@
-// 市場ストレスイベント・オーバーレイ（ADR 0009 §1-3）。
+// Market stress event overlay (ADR 0009 §1-3).
 //
-// OU 価格パス（base）はそのまま進め、その上に SEED 由来でランダム化した決定論イベント・
-// オーバーレイを重ねて effective price を導出する純関数群。窓外では従来通り β≈0 を保ち
-// （base を汚さない）、窓内だけ鋭い乖離（spike/crash）が生まれる。effective は PriceFeed・
-// Aave WETH オラクル・GMX・採点へ一貫伝播する（base/effective 分離。ADR 0007 を毀損しない）。
+// Pure functions that advance the OU price path (base) as-is and derive the effective price by layering a
+// SEED-randomized deterministic event overlay on top. Outside the window it keeps β≈0 as before
+// (not polluting base); only inside the window does a sharp deviation (spike/crash) arise. The effective
+// price propagates consistently to the PriceFeed, the Aave WETH oracle, GMX, and scoring (base/effective
+// separation; does not compromise ADR 0007).
 //
-// 設計（ADR 0009 の中心論点）:
-//   - イベントは WETH 倍率（wethMult）で表現する台形（ramp→hold→decay）。瞬間ジャンプは
-//     オラクル更新の 1 ブロック遅延と相性が悪いため、全員が等しく 1 ブロック遅れで反応できる
-//     余地を残す（公平性）。
-//   - config は固定値ではなくレンジを与え、実タイミング/magnitude は SEED から決定論派生する
-//     （定数の暗記を防ぎ汎化を測る。ADR 0004）。price 本路・flow と独立した Rng を使い、
-//     price RNG の消費列を乱さない（再現性は SEED で維持）。
-//   - depeg 用の usdcPx も返せる形にしておく（v1 は常に 1。phase 2 で可変化）。
+// Design (the central argument of ADR 0009):
+//   - Events are trapezoids (ramp->hold->decay) expressed as a WETH multiplier (wethMult). Because an
+//     instantaneous jump interacts poorly with the 1-block delay of oracle updates, we leave room for
+//     everyone to react equally with a 1-block lag (fairness).
+//   - config gives ranges rather than fixed values, and the actual timing/magnitude are deterministically
+//     derived from SEED (prevents memorizing constants and measures generalization; ADR 0004). It uses an
+//     Rng independent of the price main path and flow, so the price RNG consumption sequence is not
+//     disturbed (reproducibility is maintained via SEED).
+//   - It also keeps usdcPx returnable for depeg (v1 is always 1; made variable in phase 2).
 import { Rng } from "@eris/sdk/rng.js";
 import type { TokenSymbol } from "@eris/sdk/types.js";
 
 export type StressEventType = "spike" | "crash";
 
-// env（ERIS_STRESS_EVENTS）で与えるイベント仕様。値ではなくレンジを与える。
+// Event spec given via env (ERIS_STRESS_EVENTS). Ranges are given, not values.
 export type StressEventConfig = {
   type: StressEventType;
-  // ADR 0013: イベント対象の base（既定 WETH）。WBTC 等に crash/spike を効かせられる。
+  // ADR 0013: the base the event targets (default WETH). Lets crash/spike apply to WBTC etc.
   base?: TokenSymbol;
-  // 価格倍率の乖離幅。spike は +、crash は − に効く。[min,max] から seed が選ぶ。
+  // Deviation width of the price multiplier. spike acts as +, crash as −. The seed picks from [min,max].
   magnitudeRange: [number, number];
-  // イベント開始位置の run 長に対する割合 [min,max]。seed が選ぶ。
+  // Fraction of run length for the event start position [min,max]. The seed picks.
   windowFrac: [number, number];
-  // 台形の各区間長（ブロック数。固定）。
+  // Length of each trapezoid segment (block count; fixed).
   rampBlocks: number;
   holdBlocks: number;
   decayBlocks: number;
 };
 
-// seed で確定したイベント（blockIndex は runStart からの 0 起点）。
+// Event resolved by the seed (blockIndex is 0-based from runStart).
 export type ResolvedStressEvent = {
   type: StressEventType;
-  base: string; // 対象 base（既定 WETH）
+  base: string; // target base (default WETH)
   magnitude: number;
   startBlock: number;
   rampBlocks: number;
   holdBlocks: number;
   decayBlocks: number;
-  endBlock: number; // startBlock + ramp + hold + decay（この値は窓に含まれない）
+  endBlock: number; // startBlock + ramp + hold + decay (this value is not included in the window)
 };
 
-// at(blockIndex) が返すオーバーレイ。effective[base] = baseFair[base] * baseMults[base]。
-// wethMult は後方互換（= baseMults["WETH"]）。usdcPx は v1 未使用。
+// The overlay returned by at(blockIndex). effective[base] = baseFair[base] * baseMults[base].
+// wethMult is for backward compatibility (= baseMults["WETH"]). usdcPx is unused in v1.
 export type OverlayState = {
   wethMult: number;
   usdcPx: number;
   baseMults: Record<string, number>;
 };
 
-// price 本路 Rng（seed）・flow Rng（flowSeed）と衝突しない派生 seed のための salt。
+// Salt for a derived seed that does not collide with the price main-path Rng (seed) or flow Rng (flowSeed).
 const STRESS_SEED_SALT = 0x53_54_52_53; // "STRS"
 
-// 台形エンベロープ e(blockIndex) ∈ [0,1]:
-//   ramp:  0 → 1（rampBlocks かけて立ち上がる）
-//   hold:  1（holdBlocks）
-//   decay: 1 → 0（decayBlocks かけて戻る）
-//   窓外:  0
-// spike は wethMult = 1 + m·e、crash は 1 − m·e。e=1 のとき乖離は最大 ±m。
+// Trapezoid envelope e(blockIndex) ∈ [0,1]:
+//   ramp:  0 → 1 (rises over rampBlocks)
+//   hold:  1 (holdBlocks)
+//   decay: 1 → 0 (returns over decayBlocks)
+//   outside window: 0
+// spike is wethMult = 1 + m·e, crash is 1 − m·e. At e=1 the deviation is at most ±m.
 function envelope(ev: ResolvedStressEvent, blockIndex: number): number {
   const t = blockIndex - ev.startBlock;
   if (t < 0) return 0;
   const { rampBlocks: r, holdBlocks: h, decayBlocks: d } = ev;
-  if (t < r) return r === 0 ? 1 : (t + 1) / r; // 立ち上がり（最初の窓ブロックから効く）
+  if (t < r) return r === 0 ? 1 : (t + 1) / r; // rise (takes effect from the first window block)
   if (t < r + h) return 1; // hold
-  if (t < r + h + d) return d === 0 ? 1 : 1 - (t - (r + h) + 1) / d; // 減衰
-  return 0; // 窓外（endBlock 以降）
+  if (t < r + h + d) return d === 0 ? 1 : 1 - (t - (r + h) + 1) / d; // decay
+  return 0; // outside window (from endBlock onward)
 }
 
-// 純関数の決定論スケジュール（config + seed + runBlocks → at(blockIndex)）。
-// ユニットテスト対象。チェーンや I/O には一切触れない。
+// Pure-function deterministic schedule (config + seed + runBlocks → at(blockIndex)).
+// Unit-tested. Never touches the chain or I/O.
 export class EventSchedule {
   readonly events: ResolvedStressEvent[];
 
   constructor(configs: StressEventConfig[], seed: number, runBlocks: number) {
     if (configs.length > 0 && runBlocks <= 0) {
-      // 窓は run 長の割合で決まるため、ブロック長固定 run（ERIS_RUN_BLOCKS>0）が前提。
+      // The window is determined by a fraction of run length, so a fixed-length run (ERIS_RUN_BLOCKS>0) is required.
       throw new Error(
         "ERIS_STRESS_EVENTS requires a fixed-length run: set ERIS_RUN_BLOCKS > 0 (ADR 0009)",
       );
     }
-    // price 本路・flow と独立した Rng。同じ SEED から決定論的に同一スケジュールを得る。
+    // An Rng independent of the price main path and flow. The same SEED deterministically yields the same schedule.
     const rng = new Rng((seed ^ STRESS_SEED_SALT) >>> 0);
     this.events = configs.map((c) => {
       const magnitude = lerp(
@@ -94,7 +96,7 @@ export class EventSchedule {
       );
       const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], rng.next());
       const span = c.rampBlocks + c.holdBlocks + c.decayBlocks;
-      // 窓が run 窓に収まるよう startBlock をクランプ（採点の歴史深度・event 窓⊂run 窓）。
+      // Clamp startBlock so the window fits inside the run window (scoring history depth; event window ⊂ run window).
       const maxStart = Math.max(0, runBlocks - span);
       const startBlock = Math.max(
         0,
@@ -117,7 +119,7 @@ export class EventSchedule {
     return this.events.length > 0;
   }
 
-  // 当該 blockIndex の窓内イベント（複数重なれば最初の 1 件）。可視化/ログ用。
+  // The in-window event at this blockIndex (if several overlap, the first one). For visualization/logging.
   activeEventAt(blockIndex: number): ResolvedStressEvent | null {
     for (const ev of this.events) {
       if (blockIndex >= ev.startBlock && blockIndex < ev.endBlock) return ev;
@@ -125,8 +127,8 @@ export class EventSchedule {
     return null;
   }
 
-  // 当該 blockIndex のオーバーレイ。重なるイベントは倍率を乗算合成する
-  // （非重複なら各イベントがそのまま現れる）。
+  // The overlay at this blockIndex. Overlapping events compose their multipliers multiplicatively
+  // (if non-overlapping, each event appears as-is).
   at(blockIndex: number): OverlayState {
     const baseMults: Record<string, number> = {};
     for (const ev of this.events) {
@@ -145,8 +147,8 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-// ERIS_STRESS_EVENTS（JSON 配列）をパースして検証する。空/未設定なら []。
-// 値ではなくレンジを与える仕様を厳格に検査し、誤設定は run 開始前に fail-fast させる。
+// Parse and validate ERIS_STRESS_EVENTS (a JSON array). Empty/unset yields [].
+// Strictly checks the "give ranges, not values" spec, and misconfiguration fails fast before the run starts.
 export function parseStressEvents(
   json: string | undefined,
 ): StressEventConfig[] {

@@ -24,8 +24,8 @@ test("rng and fair price are reproducible for a fixed seed", () => {
 });
 
 test("fair price mean-reverts toward the anchor", () => {
-  // anchor より十分高い current は引き戻され(下降寄り)、十分低い current は引き上げられる。
-  // 多数ステップの平均ドリフト方向が anchor 方向を向くことを確認する（ショックは平均0）。
+  // a current well above the anchor is pulled back (downward), a current well below is pulled up.
+  // Confirm the mean drift direction over many steps points toward the anchor (shocks average 0).
   const anchor = 3000;
   const stepsFrom = (start: number): number => {
     const rng = new Rng(7);
@@ -33,15 +33,15 @@ test("fair price mean-reverts toward the anchor", () => {
     for (let i = 0; i < 200; i++) p = nextFairPrice(p, rng, anchor);
     return p;
   };
-  const fromHigh = stepsFrom(3600); // anchor より +20%
-  const fromLow = stepsFrom(2400); // anchor より −20%
-  // どちらも anchor 近傍(±10%)へ回帰している
+  const fromHigh = stepsFrom(3600); // +20% above anchor
+  const fromLow = stepsFrom(2400); // -20% below anchor
+  // both regress toward the anchor neighborhood (within ±10%)
   assert.ok(Math.abs(fromHigh - anchor) < anchor * 0.1, `fromHigh=${fromHigh}`);
   assert.ok(Math.abs(fromLow - anchor) < anchor * 0.1, `fromLow=${fromLow}`);
 });
 
 test("priceRngForAsset(seed,'WETH') equals Rng(seed) — WETH byte compatibility", () => {
-  // WETH の価格 Rng は派生 salt 0 なので Rng(seed) と完全一致（既存 run のパスを保つ）。
+  // WETH's price Rng uses derived salt 0, so it exactly matches Rng(seed) (preserves existing run paths).
   const seed = 12345;
   const direct = new Rng(seed);
   const viaWeth = priceRngForAsset(seed, "WETH");
@@ -50,7 +50,7 @@ test("priceRngForAsset(seed,'WETH') equals Rng(seed) — WETH byte compatibility
 
 test("adding WBTC leaves the WETH price path byte-identical (independent per-asset Rng)", () => {
   const seed = 99;
-  // 従来: WETH 単独を Rng(seed) で 4 ステップ進める。
+  // legacy: advance WETH alone by 4 steps with Rng(seed).
   const solo = new Rng(seed);
   const wethSolo: number[] = [];
   let p = 3000;
@@ -58,7 +58,7 @@ test("adding WBTC leaves the WETH price path byte-identical (independent per-ass
     p = nextFairPrice(p, solo, 3000);
     wethSolo.push(p);
   }
-  // 複数: WETH+WBTC を asset ごとの独立 Rng で 4 ステップ進める。
+  // multi: advance WETH+WBTC by 4 steps with an independent per-asset Rng.
   const rngBy = {
     WETH: priceRngForAsset(seed, "WETH"),
     WBTC: priceRngForAsset(seed, "WBTC"),
@@ -70,8 +70,8 @@ test("adding WBTC leaves the WETH price path byte-identical (independent per-ass
     cur = nextFairPrices(cur, rngBy, anchors, ["WETH", "WBTC"]);
     wethMulti.push(cur.WETH);
   }
-  // WBTC を足しても WETH の価格列は単独版と完全一致（独立 Rng の効果）。
+  // adding WBTC keeps the WETH price series exactly equal to the solo version (effect of independent Rng).
   assert.deepEqual(wethMulti, wethSolo);
-  // WBTC は独立に進む。
+  // WBTC advances independently.
   assert.notEqual(cur.WBTC, 60000);
 });

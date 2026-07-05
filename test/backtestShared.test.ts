@@ -1,4 +1,4 @@
-// core/src/backtest/shared.ts（ADR 0016 backtest の純粋ヘルパ）のユニットテスト。
+// Unit tests for core/src/backtest/shared.ts (pure helpers for ADR 0016 backtest).
 import { strict as assert } from "node:assert";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,39 +36,39 @@ function validManifest(): StateManifest {
 }
 
 describe("canonicalJson / deploymentsFingerprint", () => {
-  it("鍵順に依存しない（同値の deployments は同じ fingerprint）", () => {
+  it("does not depend on key order (equivalent deployments yield the same fingerprint)", () => {
     const a = { b: 1, a: { y: [1, 2], x: "s" } };
     const b = { a: { x: "s", y: [1, 2] }, b: 1 };
     assert.equal(canonicalJson(a), canonicalJson(b));
     assert.equal(deploymentsFingerprint(a), deploymentsFingerprint(b));
   });
 
-  it("値の差は fingerprint に現れる", () => {
+  it("a value difference shows up in the fingerprint", () => {
     assert.notEqual(
       deploymentsFingerprint({ a: 1 }),
       deploymentsFingerprint({ a: 2 }),
     );
   });
 
-  it("undefined の値は無視される（JSON.stringify と同じ同値性）", () => {
+  it("undefined values are ignored (same equivalence as JSON.stringify)", () => {
     assert.equal(
       canonicalJson({ a: 1, b: undefined }),
       canonicalJson({ a: 1 }),
     );
   });
 
-  it("fingerprint は sha256: プレフィクス付き", () => {
+  it("the fingerprint carries a sha256: prefix", () => {
     assert.match(deploymentsFingerprint({}), /^sha256:[0-9a-f]{64}$/);
   });
 });
 
 describe("validateStateManifest", () => {
-  it("正しい manifest を通す", () => {
+  it("passes a valid manifest", () => {
     const m = validManifest();
     assert.deepEqual(validateStateManifest(m, "test"), m);
   });
 
-  it("schema 不一致 / 欠落フィールド / fingerprint 改竄を落とす", () => {
+  it("rejects schema mismatch / missing fields / fingerprint tampering", () => {
     assert.throws(
       () => validateStateManifest({ ...validManifest(), schema: 2 }, "t"),
       /unsupported schema/,
@@ -89,11 +89,11 @@ describe("validateStateManifest", () => {
 });
 
 describe("readStateManifest", () => {
-  it("manifest 無しは gen:state-dump への誘導付きで fail", () => {
+  it("fails with a pointer to gen:state-dump when the manifest is missing", () => {
     assert.throws(() => readStateManifest(join(tmp, "nope")), /gen:state-dump/);
   });
 
-  it("manifest + state 本体が揃えばパスを返す", () => {
+  it("returns the path when both the manifest and state body are present", () => {
     const dir = join(tmp, "state-ok");
     mkdirSync(dir, { recursive: true });
     writeFileSync(
@@ -106,7 +106,7 @@ describe("readStateManifest", () => {
     assert.equal(statePath, join(dir, STATE_FILE_NAME));
   });
 
-  it("manifest だけで state 本体が無いのは fail", () => {
+  it("fails when only the manifest is present without the state body", () => {
     const dir = join(tmp, "state-missing-body");
     mkdirSync(dir, { recursive: true });
     writeFileSync(
@@ -118,7 +118,7 @@ describe("readStateManifest", () => {
 });
 
 describe("readConstantsFingerprint", () => {
-  it("生成ファイルの刻印を読む（無ければ undefined）", () => {
+  it("reads the stamp from a generated file (undefined if absent)", () => {
     const path = join(tmp, "constants.local.ts");
     writeFileSync(
       path,
@@ -133,7 +133,7 @@ describe("readConstantsFingerprint", () => {
     );
   });
 
-  it("刻印の無い旧世代ファイルは undefined（= 再生成の対象）", () => {
+  it("an old-generation file without a stamp is undefined (= a regeneration target)", () => {
     const path = join(tmp, "constants.old.ts");
     writeFileSync(path, `export const LOCAL_DEPLOYMENT = null;\n`);
     assert.equal(readConstantsFingerprint(path), undefined);
@@ -151,7 +151,7 @@ describe("missingVenues", () => {
     },
   };
 
-  it("state dump に無い venue を列挙する（gmx 欠落）", () => {
+  it("lists venues absent from the state dump (gmx missing)", () => {
     assert.deepEqual(
       missingVenues(
         ["uniswap", "balancer", "curve", "gmx", "aave"],
@@ -161,14 +161,14 @@ describe("missingVenues", () => {
     );
   });
 
-  it("全て揃っていれば空", () => {
+  it("empty when everything is present", () => {
     assert.deepEqual(
       missingVenues(["uniswap", "balancer", "curve", "aave"], deployments),
       [],
     );
   });
 
-  it("マッピングに無い protocol 名は fail-closed で missing 扱い（新 venue の更新漏れ対策）", () => {
+  it("a protocol name absent from the mapping is treated as missing, fail-closed (guards against forgetting to update for a new venue)", () => {
     assert.deepEqual(missingVenues(["unknown-venue"], deployments), [
       "unknown-venue",
     ]);
@@ -176,7 +176,7 @@ describe("missingVenues", () => {
 });
 
 describe("resolveRegimePath", () => {
-  it("名前は config/regimes/<name>.yaml を引き、パス表記はそのまま解決する", () => {
+  it("a name resolves to config/regimes/<name>.yaml, a path spec resolves as-is", () => {
     const root = join(tmp, "root");
     mkdirSync(join(root, "config", "regimes"), { recursive: true });
     writeFileSync(join(root, "config", "regimes", "calm-01.yaml"), "run: {}\n");
@@ -190,7 +190,7 @@ describe("resolveRegimePath", () => {
     );
   });
 
-  it("見つからなければ利用可能な regime 一覧付きで fail", () => {
+  it("fails with a list of available regimes when not found", () => {
     const root = join(tmp, "root");
     assert.throws(
       () => resolveRegimePath(root, "spike-99"),

@@ -1,38 +1,38 @@
 /**
- * multi-arb: base 非依存の cross-venue 裁定 agent（ADR 0013）。
+ * multi-arb: a base-agnostic cross-venue arbitrage agent (ADR 0013).
  *
- * 全 active base（WETH / WBTC / …）× 全 AMM venue（uniswap / balancer / curve）を横断し、毎ラウンド:
- *   1) 2-leg delta-neutral 裁定を優先 — ある base で venue 間スプレッド（最安 venue と最高 venue の
- *      価格差）が閾値超なら、最安 venue で USDC→base 買い + 最高 venue で base→USDC 売りを 1 bundle で
- *      出す。買い leg の出力 base を売り leg が使う（action.ts が bundle 内で base をクレジットする）。
- *      方向 β を持たず venue 間スプレッド（α）だけを抜く。
- *   2) 2-leg 機会が無ければ single-leg にフォールバック — fair から最も乖離した (base, venue) で価格を
- *      fair に寄せる向きに 1 swap（USDC-only 起動でも buy 側で base を建てられる）。
+ * Scans across all active bases (WETH / WBTC / ...) x all AMM venues (uniswap / balancer / curve), and each round:
+ *   1) Prefers 2-leg delta-neutral arbitrage — when the cross-venue spread for some base (price gap between the
+ *      cheapest and most expensive venue) exceeds the threshold, it issues USDC->base buy on the cheapest venue +
+ *      base->USDC sell on the most expensive venue as one bundle. The sell leg uses the base output of the buy leg
+ *      (action.ts credits the base inside the bundle). Carries no directional beta and extracts only the cross-venue spread (alpha).
+ *   2) Falls back to single-leg when there is no 2-leg opportunity — 1 swap that pulls the price of the (base, venue)
+ *      most deviated from fair back toward fair (even on USDC-only startup it can build a base on the buy side).
  *
- * 個別資産ごとに別 agent を書くのではなく、observation の market view を一様に走査して任意の資産集合へ
- * 自動対応する（複数資産対応の設計）。base!=="WETH" のときだけ action に base を付与（WETH は base 無し
- * = 従来出力と byte 互換）。
+ * Rather than writing a separate agent per asset, it scans the observation's market view uniformly and auto-adapts
+ * to any asset set (multi-asset design). It attaches base to the action only when base!=="WETH" (WETH has no base
+ * = byte-compatible with the legacy output).
  */
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { marketViews, type MarketView } from "../lib/markets.js";
 
-// 採算マージン（bps）。2-leg は spread が「両 venue 手数料 + これ」、single-leg は fair gap が
-// 「当該 venue 手数料 + これ」を超えるときだけ出す。これが無い（gap < コスト）と手数料負けして
-// 系統的に損を垂れ流す（2-leg で −1490 USDC、single-leg でも calm regime 60blk で −1650 USDC を
-// 実走で確認 → コスト無視は設計バグ）。slippage/price-impact の見込みも兼ねる安全マージン。
+// Profitability margin (bps). 2-leg trades only when spread exceeds "both venue fees + this", and single-leg
+// only when the fair gap exceeds "that venue's fee + this". Without it (gap < cost) it loses to fees and
+// bleeds systematically (measured -1490 USDC on 2-leg and -1650 USDC on single-leg in a 60-block calm regime
+// -> ignoring cost is a design bug). Also serves as a safety margin for expected slippage/price-impact.
 const SAFETY_MARGIN_BPS = 50;
 const MIN_SIZE_BPS = 250;
 const MAX_SIZE_BPS = 2500;
-const SPREAD_GAIN = 200_000; // spread → サイズの線形ゲイン
+const SPREAD_GAIN = 200_000; // linear gain from spread -> size
 const GAP_GAIN = 200_000;
-const LEG_SLIPPAGE_BPS = 120; // 2-leg は cross-venue 移動を見込みやや緩め
+const LEG_SLIPPAGE_BPS = 120; // slightly loose for 2-leg to account for cross-venue movement
 const SINGLE_SLIPPAGE_BPS = 75;
 
 function minBI(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
 }
 
-// base 量(base units) を decimals で割って数値化（USD 換算用。概算で十分）。
+// Convert a base amount (base units) to a number by dividing by decimals (for USD conversion; an estimate is enough).
 function baseToFloat(amountBaseWei: bigint, decimals: number): number {
   return Number(amountBaseWei) / 10 ** decimals;
 }
@@ -66,7 +66,7 @@ export function decide(
   const maxWeth = BigInt(obs.limits.maxWethInWei);
   const fee = obs.limits.defaultPriorityFeePerGasWei;
 
-  // ---- 1) 2-leg cross-venue 裁定（venue 間スプレッド最大の base を選ぶ）----
+  // ---- 1) 2-leg cross-venue arbitrage (pick the base with the largest cross-venue spread) ----
   let bestTwo: TwoLeg | null = null;
   for (const view of views) {
     if (view.venues.length < 2) continue;
@@ -78,11 +78,11 @@ export function decide(
     }
     if (cheap.price <= 0 || rich.price <= 0) continue;
     const spread = rich.price / cheap.price - 1;
-    // ラウンドトリップ採算: spread が買い venue 手数料 + 売り venue 手数料 + 安全マージンを超えるときだけ。
+    // Round-trip profitability: only when spread exceeds buy-venue fee + sell-venue fee + safety margin.
     const roundtripCost =
       (cheap.feeBps + rich.feeBps + SAFETY_MARGIN_BPS) / 10000;
     if (spread <= roundtripCost) continue;
-    // 買い leg の USDC サイズ（net edge = spread − コストに比例。限界的スプレッドでは小さく張る）。
+    // USDC size of the buy leg (proportional to net edge = spread - cost; bet small on marginal spreads).
     const usdcCap = minBI(usdcBal, maxUsdc);
     if (usdcCap <= 0n) continue;
     const netEdge = spread - roundtripCost;
@@ -92,10 +92,10 @@ export function decide(
     );
     const usdcIn = (usdcCap * BigInt(sizeBps)) / 10000n;
     if (usdcIn <= 0n) continue;
-    // 買い出力 base 概算 = (USDCin / cheapPrice)。売り leg はその 98%（floor/slippage マージン）。
+    // Approx. buy-output base = (USDCin / cheapPrice). The sell leg is 98% of that (floor/slippage margin).
     const boughtBase = baseToFloat(usdcIn, 6) / cheap.price;
     let baseSell = floatToBase(boughtBase * 0.98, view.baseDecimals);
-    // per-base 上限（"0"=上限なし）で頭打ち。
+    // Cap by the per-base limit ("0" = no limit).
     const maxBaseIn = BigInt(view.maxSwapInBaseWei || "0");
     if (maxBaseIn > 0n) baseSell = minBI(baseSell, maxBaseIn);
     if (baseSell <= 0n) continue;
@@ -127,16 +127,15 @@ export function decide(
     return bundle;
   }
 
-  // ---- 2) single-leg フォールバック（fair から最も乖離した (base, venue) を fair へ寄せる）----
+  // ---- 2) single-leg fallback (pull the (base, venue) most deviated from fair back toward fair) ----
   let bestOne: SingleLeg | null = null;
   for (const view of views) {
     for (const venue of view.venues) {
       const gap = view.fair / venue.price - 1;
       const gapAbs = Math.abs(gap);
-      // 採算ライン: fair へ寄せる 1 swap は当該 venue の手数料を払うので、gap が
-      // 「手数料 + 安全マージン」を超えるときだけ撃つ（2-leg と同じ思想）。fee-aware な
-      // informed flow は乖離を手数料バンド内に保つため、閾値が手数料未満だとバンド内の
-      // 乖離を毎ブロック撃って fee 負けし続ける。
+      // Profitability line: a single swap toward fair pays that venue's fee, so only fire when gap exceeds
+      // "fee + safety margin" (same idea as 2-leg). Fee-aware informed flow keeps deviations within the fee
+      // band, so if the threshold is below the fee it keeps firing on in-band deviations every block and losing to fees.
       const singleLegCost = (venue.feeBps + SAFETY_MARGIN_BPS) / 10000;
       if (gapAbs <= singleLegCost) continue;
       const buyBase = gap > 0;

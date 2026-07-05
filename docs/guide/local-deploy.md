@@ -1,89 +1,89 @@
 [← README](../../README.md)
 
-# ローカルリアルタイムシミュレーション（非fork）
+# Local realtime simulation (non-fork)
 
-Arbitrum を fork せず、本 repo 同梱の `deployer/` がローカル anvil 上に全 protocol を deploy したものに poc が接続して realtime run を回すモード。fork backend への cold state RPC 往復（fork RPC レイテンシ）を避けられ、マルチアセット（WETH/WBTC）も動く。
+A mode where, instead of forking Arbitrum, this repo's bundled `deployer/` deploys all protocols onto a local anvil and the poc connects to it to run realtime. It avoids the cold-state RPC round trips to the fork backend (fork RPC latency) and also works multi-asset (WETH/WBTC).
 
-## 前提
+## Prerequisites
 
-- `deployer/` は本 repo に同梱されたサブパッケージ（自己完結の package.json / foundry.toml を持つ。全 venue のローカルデプロイに対応）。
-- poc 側は anvil を起動しない（deployer が anvil を所有する）。`ERIS_LOCAL_DEPLOY=1` のとき `npm run anvil` は fail-fast する。
+- `deployer/` is a subpackage bundled in this repo (it has a self-contained package.json / foundry.toml and supports local deployment of every venue).
+- The poc side does not start anvil (the deployer owns anvil). When `ERIS_LOCAL_DEPLOY=1`, `npm run anvil` fails fast.
 
-## 初回セットアップ（deployer サブパッケージ）
+## First-time setup (deployer subpackage)
 
-`deployer/` は独立したビルド/依存を持つため、初回のみ次を実行する（数分）:
+Because `deployer/` has its own build/dependencies, run the following once (a few minutes):
 
 ```bash
 cd deployer
 npm install
-forge build                  # 共有 mock トークンをコンパイル
+forge build                  # compile the shared mock tokens
 cp .env.example .env
-./scripts/setup-vendors.sh   # 外部 repo(GMX) を clone+パッチ、Aave deps を install
+./scripts/setup-vendors.sh   # clone+patch external repos (GMX), install Aave deps
 cd ..
 ```
 
-> `vendor/` の重いクローン（`gmx-src` / `curve-src` / `twocrypto-src`）は git 管理外で、`setup-vendors.sh` が固定コミットで再現する。`vendor/curve` の prebuilt bytecode と `gmx-localhost.patch` のみ同梱済み。
+> The heavy clones under `vendor/` (`gmx-src` / `curve-src` / `twocrypto-src`) are outside git, and `setup-vendors.sh` reproduces them at pinned commits. Only the `vendor/curve` prebuilt bytecode and `gmx-localhost.patch` are bundled.
 
-## 手順
+## Steps
 
-1. **deployer で anvil 起動 + 全 venue deploy**（別ターミナル推奨）:
+1. **Start anvil + deploy all venues with the deployer** (a separate terminal is recommended):
 
    ```bash
    cd deployer
    npm run deploy -- --keep-fresh
    ```
 
-   - `--keep-fresh` は `deployments.json` を初期化してから deploy する。
-   - `--exit` を**付けない**こと。付けると deploy 後に anvil を停止してしまう。付けなければ anvil は起動したまま `127.0.0.1:8545` で待機する。
-   - 全 5 venue（Uniswap V3 / Balancer V2 / Aave V3 / Curve / GMX V2）＋共有トークン（WETH/USDC/USDT/DAI/WBTC）＋ Multicall3 を deploy する。完了まで数分（GMX が最も重い）。
-   - 完了すると `deployer/deployments/deployments.json` が出力され、「anvil は起動したままです」と表示される。
+   - `--keep-fresh` resets `deployments.json` before deploying.
+   - **Do not** pass `--exit`. Passing it stops anvil after the deploy. Without it, anvil stays up and waits on `127.0.0.1:8545`.
+   - Deploys all 5 venues (Uniswap V3 / Balancer V2 / Aave V3 / Curve / GMX V2) + shared tokens (WETH/USDC/USDT/DAI/WBTC) + Multicall3. A few minutes to finish (GMX is the heaviest).
+   - When done, `deployer/deployments/deployments.json` is written and it prints "anvil is still running."
 
-2. **poc で `constants.local` を生成**（deploy アドレスを poc に取り込む）。リポジトリルートで:
+2. **Generate `constants.local` in the poc** (import the deploy addresses into the poc). From the repository root:
 
    ```bash
    npm run gen:local-constants
    ```
 
-   `deployer/deployments/deployments.json` を読んで `sdk/src/constants.local.ts` を生成する（`DEPLOYMENTS_JSON` env でパス上書き可）。deploy は決定論アドレスなので、再生成しても差分は出ないことが多い。
+   Reads `deployer/deployments/deployments.json` and generates `sdk/src/constants.local.ts` (the path can be overridden with the `DEPLOYMENTS_JSON` env). Because deploys are deterministic addresses, regenerating often produces no diff.
 
-3. **リアルタイム run を実行**（ローカルデプロイモードで `127.0.0.1:8545` に接続）:
+3. **Run realtime** (connects to `127.0.0.1:8545` in local-deploy mode):
 
    ```bash
    npm run sim:realtime -- \
      --local-deploy \
      --seed 1 --blocks 24 --seconds 70 \
      --protocols uniswap,balancer,curve
-   # ロスターは config/local.yaml の inline agents（差し替えは YAML を編集。inline agents が
-   # ある設定では --agents は効かない = inline 優先。backtest の --agents は常に有効）
-   # USDC-only 配布（funding.wethWei: "0"）やマルチアセット（flow.baseMax）等も config/local.yaml で
+   # The roster is the inline agents in config/local.yaml (to swap, edit the YAML; in a config with
+   # inline agents, --agents has no effect = inline wins. backtest's --agents is always effective)
+   # USDC-only distribution (funding.wethWei: "0"), multi-asset (flow.baseMax), etc. are also in config/local.yaml
    ```
 
-   > **`--local-deploy` フラグ（または config の `run.localDeploy: true`）だけで効く**。`sdk/src/constants.ts` は import 時に `process.env.ERIS_LOCAL_DEPLOY` を読んでローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay するが、CLI エントリ（`core/src/cli/sim-realtime.ts`）が coordinator を読み込む前にフラグ/config を覗いて `ERIS_LOCAL_DEPLOY=1` を内部で立てるため、env を手で渡す必要はない（子の agent / flow プロセスも `process.env` を継承する）。
+   > **The `--local-deploy` flag alone (or config `run.localDeploy: true`) is enough.** `sdk/src/constants.ts` reads `process.env.ERIS_LOCAL_DEPLOY` at import time to overlay the locally-deployed addresses (WETH/USDC/WBTC etc.), but the CLI entry (`core/src/cli/sim-realtime.ts`) peeks at the flag/config before loading the coordinator and sets `ERIS_LOCAL_DEPLOY=1` internally, so there is no need to pass the env by hand (the child agent / flow processes inherit `process.env`).
 
-## 主要な設定（CLI フラグ / config/local.yaml のキー）
+## Key settings (CLI flags / config/local.yaml keys)
 
-| CLI フラグ | config キー | 説明 |
+| CLI flag | config key | description |
 |---|---|---|
-| `--local-deploy` | `run.localDeploy` | ローカルデプロイ（非fork）モードを有効化。**必須** |
-| `--agents <path>` | `run.agentsConfig` | ロスターファイル（YAML/JSON）。**config に inline `agents:` があるとそちらが優先**され、このフラグは効かない |
-| `--seed` | `run.seed` | 市場条件のラベル（価格パス再現用） |
-| `--blocks` | `run.blocks` | run 長（ブロック数） |
-| `--seconds` | `run.seconds` | 実時間の上限（24 ブロック ≒ 48 秒なので 70 程度を確保） |
-| `--protocols` | `run.protocols` | 有効 venue（CLI はカンマ区切り、YAML は配列） |
-| —（YAML のみ） | `funding.wethWei` | USDC-only 配布（`"0"` で初期の方向性エクスポージャを排除する） |
-| —（YAML のみ） | `flow.baseMax` | マルチアセット（WBTC）を取引させる場合（例 `{ WBTC: "50000000" }`）。WBTC の AMM flow を有効化して価格乖離＝裁定機会を作る（既定 off） |
+| `--local-deploy` | `run.localDeploy` | Enable local-deploy (non-fork) mode. **Required** |
+| `--agents <path>` | `run.agentsConfig` | Roster file (YAML/JSON). **If the config has an inline `agents:`, that takes priority** and this flag has no effect |
+| `--seed` | `run.seed` | Label for market conditions (for reproducing the price path) |
+| `--blocks` | `run.blocks` | Run length (block count) |
+| `--seconds` | `run.seconds` | Realtime cap (24 blocks ≒ 48 seconds, so allow around 70) |
+| `--protocols` | `run.protocols` | Enabled venues (comma-separated on the CLI, an array in YAML) |
+| — (YAML only) | `funding.wethWei` | USDC-only distribution (`"0"` eliminates initial directional exposure) |
+| — (YAML only) | `flow.baseMax` | When trading multi-asset (WBTC) (e.g. `{ WBTC: "50000000" }`). Enables WBTC AMM flow to create price dislocations = arbitrage opportunities (default off) |
 
-> **注**: 「config キー」列は `config/local.yaml` のネストパス。CLI フラグは YAML の値を一回限り上書きする。ローカルデプロイのアカウント 0（account0）は deployer のデプロイアカウントと重なり残留残高で価値が歪むため、ロスターは AGENT1 以降（account1+）を使う（`config/example.yaml` はそうなっている）。
+> **Note**: The "config key" column is the nested path in `config/local.yaml`. CLI flags override the YAML values for one run only. Local-deploy account 0 (account0) overlaps the deployer's deployment account and distorts value with leftover balance, so the roster uses AGENT1 onward (account1+) (`config/example.yaml` already does this).
 
-## トラブルシュート
+## Troubleshooting
 
-- **接続できない**: deployer の `npm run deploy -- --keep-fresh` が起動中か（`--exit` を付けていないか）確認する。
-- **アドレス不一致 / コントラクトが無い**: deploy 後に `npm run gen:local-constants` を再実行したか確認する。
-- **run が価格窓に到達せず早期終了する**: `--seconds`（`run.seconds`）を十分大きくする。
+- **Cannot connect**: Check that the deployer's `npm run deploy -- --keep-fresh` is running (and that you did not pass `--exit`).
+- **Address mismatch / contract missing**: Check that you re-ran `npm run gen:local-constants` after deploying.
+- **The run exits early before reaching the price window**: Make `--seconds` (`run.seconds`) large enough.
 
 ## Tips
 
-- **run を繰り返すなら backtest が便利**: デプロイ済み anvil から `npm run gen:state-dump` で state dump を焼けば、以後は deployer を起動せず `npm run backtest -- --regime <name> --repeat N` で反復検証できる（regime 再生 + snapshot/revert。詳細は [バックテスト](backtest.md)）。
-- **一部 venue だけ deploy（高速化）**: `npm run deploy -- --only uniswap,balancer`（GMX/Aave の重い hardhat-deploy を回避）。poc 側の `--protocols` も合わせる。
-- **マルチアセット（WBTC）**: `config/local.yaml` の `flow.baseMax: { WBTC: "50000000" }` で WBTC の AMM flow を有効化すると価格乖離＝裁定機会ができる（既定 off）。`funding.base` / `limits.agentBase` で初期在庫・per-round 上限も指定できる。
-- **逐次 run の断面**: ローカルは fork が無いので resetFork は `evm_snapshot` / `evm_revert` に分岐する。snapshot ID は `.local-snapshot` に永続化され、run 間でクリーン断面から始まる（並行 run は非対応）。
+- **If you repeat runs, backtest is handy**: Bake a state dump from the deployed anvil with `npm run gen:state-dump`, and thereafter you can iterate without starting the deployer via `npm run backtest -- --regime <name> --repeat N` (regime replay + snapshot/revert; see [Backtest](backtest.md) for details).
+- **Deploy only some venues (speedup)**: `npm run deploy -- --only uniswap,balancer` (avoids the heavy hardhat-deploy of GMX/Aave). Match the poc side's `--protocols` accordingly.
+- **Multi-asset (WBTC)**: Enabling WBTC AMM flow with `flow.baseMax: { WBTC: "50000000" }` in `config/local.yaml` creates price dislocations = arbitrage opportunities (default off). You can also specify initial inventory and per-round caps with `funding.base` / `limits.agentBase`.
+- **Sequential-run cross-section**: Since there is no fork locally, resetFork branches to `evm_snapshot` / `evm_revert`. The snapshot ID is persisted to `.local-snapshot`, and runs start from a clean cross-section between runs (parallel runs are not supported).

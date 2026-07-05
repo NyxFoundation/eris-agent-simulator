@@ -6,7 +6,7 @@ import {
   agentActionSchemaFor,
 } from "../sdk/src/actionSchema.js";
 
-test("agentActionSchema: 正常な swap を受理する", () => {
+test("agentActionSchema: accepts a valid swap", () => {
   const r = agentActionSchema.safeParse({
     type: "swap",
     tokenIn: "USDC",
@@ -17,7 +17,7 @@ test("agentActionSchema: 正常な swap を受理する", () => {
   assert.equal(r.success, true);
 });
 
-test("agentActionSchema: noop / rawTx / bundle を受理する", () => {
+test("agentActionSchema: accepts noop / rawTx / bundle", () => {
   assert.equal(
     agentActionSchema.safeParse({ type: "noop", reason: "x" }).success,
     true,
@@ -41,7 +41,7 @@ test("agentActionSchema: noop / rawTx / bundle を受理する", () => {
   );
 });
 
-test("agentActionSchema: 小数の amountIn は拒否（decimal string 契約）", () => {
+test("agentActionSchema: rejects a fractional amountIn (decimal string contract)", () => {
   const r = agentActionSchema.safeParse({
     type: "swap",
     tokenIn: "USDC",
@@ -50,7 +50,7 @@ test("agentActionSchema: 小数の amountIn は拒否（decimal string 契約）
   assert.equal(r.success, false);
 });
 
-test("agentActionSchemaFor: 無効 venue の action は落ちる", () => {
+test("agentActionSchemaFor: actions for a disabled venue are dropped", () => {
   const uniOnly = agentActionSchemaFor(["uniswap"]);
   assert.equal(
     uniOnly.safeParse({ type: "swap", tokenIn: "USDC", amountIn: "1" }).success,
@@ -64,7 +64,7 @@ test("agentActionSchemaFor: 無効 venue の action は落ちる", () => {
   assert.equal(uniOnly.safeParse({ type: "gmxIncrease" }).success, false);
 });
 
-test("aaveWithdraw/aaveRepay は 'max' を受理する", () => {
+test("aaveWithdraw/aaveRepay accept 'max'", () => {
   assert.equal(
     agentActionSchema.safeParse({
       type: "aaveWithdraw",
@@ -80,11 +80,11 @@ test("aaveWithdraw/aaveRepay は 'max' を受理する", () => {
       amount: "max",
     }).success,
     false,
-    "borrow は max 不可",
+    "borrow cannot use max",
   );
 });
 
-test("actionJsonSchema: <schema> 用の JSON Schema を生成できる", () => {
+test("actionJsonSchema: generates the JSON Schema for <schema>", () => {
   const schema = actionJsonSchema(["uniswap", "aave"]);
   const text = JSON.stringify(schema);
   assert.equal(typeof schema, "object");

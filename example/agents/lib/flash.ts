@@ -1,5 +1,5 @@
-// フラッシュローン helper(GitHub #2)。Aave V3 Pool.flashLoanSimple の raw tx builder。
-// receiver(FlashArb)が executeOperation で arb を実行し amount+premium を返済する。
+// Flash-loan helper (GitHub #2). Raw tx builder for Aave V3 Pool.flashLoanSimple.
+// The receiver (FlashArb) runs the arb in executeOperation and repays amount+premium.
 import { encodeFunctionData } from "viem";
 import { AAVE } from "@eris/sdk/constants.js";
 

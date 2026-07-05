@@ -1,18 +1,18 @@
 /**
- * deployments.json (同梱 deployer/ のローカルデプロイ出力) → src/constants.local.ts 生成。
+ * Generate src/constants.local.ts from deployments.json (the bundled deployer/'s local-deploy output).
  *
- * ローカル(非fork)anvil に全 protocol をデプロイした際の決定論アドレスを poc の
- * 定数へ橋渡しする。生成された LOCAL_DEPLOYMENT を constants.ts が ERIS_LOCAL_DEPLOY=1 の
- * ときだけ overlay する (fork 時は Arbitrum 既定を使う)。
+ * Bridges the deterministic addresses from deploying all protocols to a local (non-fork) anvil into the
+ * poc constants. constants.ts overlays the generated LOCAL_DEPLOYMENT only when ERIS_LOCAL_DEPLOY=1
+ * (on a fork it uses the Arbitrum defaults).
  *
- * 使い方:
+ * Usage:
  *   DEPLOYMENTS_JSON=/path/to/deployments.json \
  *     npm run gen:local-constants
  *
- * 既定の DEPLOYMENTS_JSON は本 repo 同梱の deployer/deployments/deployments.json。
+ * The default DEPLOYMENTS_JSON is this repo's bundled deployer/deployments/deployments.json.
  *
- * ADR 0013: deployments.json に WBTC（tokens.WBTC + 各 venue の wbtcUsdc* / gmx WBTC market）が
- * あれば TOKENS.WBTC と MARKET_LEGS の WBTC leg を生成する。無ければ WETH のみ（後方互換）。
+ * ADR 0013: if deployments.json has WBTC (tokens.WBTC + each venue's wbtcUsdc* / gmx WBTC market),
+ * generate TOKENS.WBTC and the WBTC leg of MARKET_LEGS. Otherwise WETH only (backward compatible).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -23,7 +23,7 @@ import { deploymentsFingerprint } from "../core/src/backtest/shared.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 
-// anvil 既定 mnemonic の index0 = deployer。Aave の ACL admin = deployer。
+// index0 of anvil's default mnemonic = deployer. Aave's ACL admin = deployer.
 const DEPLOYER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as Address;
 
 type Deployments = {
@@ -64,7 +64,7 @@ function loadDeployments(explicitPath?: string): {
 
 function need<T>(v: T | undefined | null, what: string): T {
   if (v === undefined || v === null)
-    throw new Error(`deployments.json に ${what} がありません`);
+    throw new Error(`deployments.json is missing ${what}`);
   return v;
 }
 
@@ -72,7 +72,7 @@ function ca(v: string | undefined, what: string): Address {
   return getAddress(need(v, what));
 }
 
-// ADR 0013: WBTC market 群（deployments.json に WBTC があれば構築。無ければ undefined）。
+// ADR 0013: WBTC markets (built if deployments.json has WBTC; undefined otherwise).
 type WbtcInfo = {
   token: Address;
   uniPool?: Address;
@@ -85,9 +85,9 @@ type WbtcInfo = {
   gmxMarket?: Address;
 };
 
-// deployments.json → sdk/src/constants.local.ts を生成する（CLI 本体からも backtest 系の
-// ツールからも呼べるよう関数化。ADR 0016）。戻り値の fingerprint は state dump manifest の
-// deploymentsFingerprint と同じ計算（core/src/backtest/shared.ts）。
+// Generate sdk/src/constants.local.ts from deployments.json (factored into a function so it can be
+// called both from the CLI itself and from the backtest tooling; ADR 0016). The returned fingerprint
+// uses the same computation as the state dump manifest's deploymentsFingerprint (core/src/backtest/shared.ts).
 export function generateLocalConstants(deploymentsPath?: string): {
   target: string;
   deploymentsPath: string;
@@ -103,19 +103,19 @@ export function generateLocalConstants(deploymentsPath?: string): {
 
   const uni = need(p.uniswapV3, "protocols.uniswapV3");
   const bal = need(p.balancerV2, "protocols.balancerV2");
-  // gmx は任意（`deploy --only uniswap,balancer,curve,aave` の部分デプロイを許す）。
-  // 未デプロイならゼロアドレスで埋める（gmx venue を有効化した run は当然動かない）。
+  // gmx is optional (allows partial deploys like `deploy --only uniswap,balancer,curve,aave`).
+  // If not deployed, fill with the zero address (a run that enables the gmx venue naturally won't work).
   const gmx = p.gmxV2 as
     (Record<string, string> & { markets?: GmxMarketList }) | undefined;
   const aave = need(p.aaveV3, "protocols.aaveV3") as Record<string, string>;
   const multicall3 = ca(p.common?.multicall3, "protocols.common.multicall3");
 
-  // Balancer は昇順登録。deployer プールは [WETH, USDC] (80/20)。
+  // Balancer registers in ascending order. The deployer pool is [WETH, USDC] (80/20).
   const balTokens = (
     weth.toLowerCase() < usdc.toLowerCase() ? [weth, usdc] : [usdc, weth]
   ) as Address[];
 
-  // GMX ETH/USD マーケット = indexToken==WETH のもの（gmx 未デプロイならゼロ）。
+  // GMX ETH/USD market = the one with indexToken==WETH (zero if gmx not deployed).
   const ZERO = "0x0000000000000000000000000000000000000000" as Address;
   const markets = gmx ? need(gmx.markets, "gmxV2.markets") : [];
   const ethMarket = markets.find(
@@ -127,8 +127,8 @@ export function generateLocalConstants(deploymentsPath?: string): {
   const gmxAddr = (key: string): Address =>
     gmx ? ca(gmx[key], `gmxV2.${key}`) : ZERO;
 
-  // Curve: deployer が twocrypto-ng の WETH/USDC crypto pool を立てる (uint256 index)。
-  // coin0=USDC(stable)=0, coin1=WETH=1。poc CURVE は WETH<->stable leg を使う。
+  // Curve: the deployer stands up a twocrypto-ng WETH/USDC crypto pool (uint256 index).
+  // coin0=USDC(stable)=0, coin1=WETH=1. poc CURVE uses the WETH<->stable leg.
   const curveP = p.curve as
     | (Record<string, string | number> & {
         wethUsdcCryptoPool?: string;
@@ -147,7 +147,7 @@ export function generateLocalConstants(deploymentsPath?: string): {
     ),
   };
 
-  // ---- ADR 0013: WBTC（あれば各 venue の leg を集める。無ければ WETH のみ）----
+  // ---- ADR 0013: WBTC (if present, collect each venue's leg; otherwise WETH only) ----
   const wbtc = t.WBTC ? getAddress(t.WBTC) : undefined;
   let wbtcInfo: WbtcInfo | undefined;
   if (wbtc) {
@@ -233,8 +233,8 @@ export function generateLocalConstants(deploymentsPath?: string): {
 
   const target = resolve(ROOT, "sdk", "src", "constants.local.ts");
   writeFileSync(target, out);
-  console.log(`✓ 生成: ${target}`);
-  console.log(`  入力: ${path} (chainId=${data.chainId})`);
+  console.log(`✓ generated: ${target}`);
+  console.log(`  input: ${path} (chainId=${data.chainId})`);
   console.log(`  fingerprint: ${fingerprint}`);
   console.log(`  WETH=${weth} USDC=${usdc} Multicall3=${multicall3}`);
   if (wbtcInfo) {
@@ -242,9 +242,9 @@ export function generateLocalConstants(deploymentsPath?: string): {
       `  WBTC=${wbtcInfo.token} (uni=${wbtcInfo.uniPool ?? "-"} bal=${wbtcInfo.balPool ?? "-"} curve=${wbtcInfo.curvePool ?? "-"} gmx=${wbtcInfo.gmxMarket ?? "-"})`,
     );
   } else {
-    console.log(`  WBTC: なし（WETH のみ。MARKET_LEGS は WETH 単一）`);
+    console.log(`  WBTC: none (WETH only. MARKET_LEGS is WETH-only)`);
   }
-  console.log(`  ローカル run: ERIS_LOCAL_DEPLOY=1 を設定して使用`);
+  console.log(`  local run: set ERIS_LOCAL_DEPLOY=1 to use`);
   return { target, deploymentsPath: path, fingerprint };
 }
 
@@ -273,12 +273,12 @@ function render(d: {
   const a = (x: string) => `"${x}" as Address`;
   const w = d.wbtc;
 
-  // ---- TOKENS の WBTC エントリ（あれば）----
+  // ---- TOKENS' WBTC entry (if any) ----
   const tokensWbtc = w
     ? `\n    WBTC: { address: ${a(w.token)}, decimals: 8 },`
     : "";
 
-  // ---- MARKET_LEGS（WETH + WBTC leg。WBTC leg は当該 venue のアドレスが揃っているものだけ）----
+  // ---- MARKET_LEGS (WETH + WBTC leg. The WBTC leg is included only for venues whose addresses are all present) ----
   const uniWbtc = w?.uniPool
     ? `\n      WBTC: { pool: ${a(w.uniPool)}, fee: 3000, tickSpacing: 60 },`
     : "";
@@ -316,15 +316,15 @@ function render(d: {
     },
   },`;
 
-  return `// AUTO-GENERATED by scripts/genLocalConstants.ts — 手で編集しない。
-// 入力: ${d.deploymentsPath}
-// ローカル(非fork)anvil に全 protocol をデプロイした際の決定論アドレス。
-// constants.ts が ERIS_LOCAL_DEPLOY=1 のときだけ overlay する。
+  return `// AUTO-GENERATED by scripts/genLocalConstants.ts — do not edit by hand.
+// Input: ${d.deploymentsPath}
+// Deterministic addresses from deploying all protocols to a local (non-fork) anvil.
+// constants.ts overlays these only when ERIS_LOCAL_DEPLOY=1.
 import type { Address } from "viem";
 import type { MarketLegs } from "./types.js";
 
-// 生成元 deployments.json の canonical fingerprint（ADR 0016 §2）。backtest CLI が
-// state dump manifest と照合し、不一致なら manifest 同梱の deployments から再生成する。
+// Canonical fingerprint of the source deployments.json (ADR 0016 §2). The backtest CLI
+// compares it against the state dump manifest and, on mismatch, regenerates from the manifest's bundled deployments.
 export const DEPLOYMENTS_FINGERPRINT = "${d.fingerprint}";
 
 export type LocalDeployment = {
@@ -366,7 +366,7 @@ export type LocalDeployment = {
     PoolAddressesProvider: Address; Pool: Address; AaveOracle: Address;
     AclAdmin: Address; AclManager: Address; PoolDataProvider: Address;
   };
-  // ADR 0013: マルチアセット market leg（WBTC 等）。WBTC が deployments.json にあれば WBTC leg を含む。
+  // ADR 0013: multi-asset market legs (WBTC etc.). Includes the WBTC leg if WBTC is in deployments.json.
   MARKET_LEGS?: MarketLegs;
 };
 
@@ -376,7 +376,7 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     WETH: { address: ${a(d.weth)}, decimals: 18 },
     USDC: { address: ${a(d.usdc)}, decimals: 6 },${tokensWbtc}
   },
-  // ローカルは単一 USDC/USDT。native/bridged は同一 USDC、usdt は USDT に対応。
+  // Local uses a single USDC/USDT. native/bridged are the same USDC; usdt maps to USDT.
   USDC_VARIANTS: {
     native: ${a(d.usdc)},
     bridged: ${a(d.usdc)},
@@ -387,7 +387,7 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     swapRouter: ${a(d.uni.swapRouter)},
     nonfungiblePositionManager: ${a(d.uni.npm)},
     quoterV2: ${a(d.uni.quoterV2)},
-    // deployer の WETH/USDC プールは fee=3000(0.3%) / tickSpacing=60。
+    // The deployer's WETH/USDC pool is fee=3000 (0.3%) / tickSpacing=60.
     fee: 3000,
     tickSpacing: 60,
   },
@@ -397,15 +397,15 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     queries: ${a(d.bal.queries)},
     pool: ${a(d.bal.pool)},
     poolId: "${d.bal.poolId}" as \`0x\${string}\`,
-    // deployer プールは [WETH, USDC] の 2 トークン (80/20)。USDT leg は無い。
+    // The deployer pool is 2 tokens [WETH, USDC] (80/20). There is no USDT leg.
     tokens: [${d.bal.tokens.map((x) => a(x)).join(", ")}],
     usdcToken: ${a(d.usdc)},
     seedWethWei: 100_000_000_000_000_000_000n,
     seedUsdcUnits: 50_000_000_000n,
     seedUsdtUnits: 0n,
   },
-  // Curve: twocrypto-ng の WETH/USDC crypto pool (uint256 index get_dy/exchange)。
-  // coin0=USDC(stable)=${d.curve.usdtIndex}, coin1=WETH=${d.curve.wethIndex}。usdcToken は pool の stable=USDC。
+  // Curve: twocrypto-ng's WETH/USDC crypto pool (uint256 index get_dy/exchange).
+  // coin0=USDC(stable)=${d.curve.usdtIndex}, coin1=WETH=${d.curve.wethIndex}. usdcToken is the pool's stable=USDC.
   CURVE: {
     pool: ${a(d.curve.pool)},
     wethIndex: ${d.curve.wethIndex},
@@ -438,8 +438,8 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
 `;
 }
 
-// 直接実行（npm run gen:local-constants）のときだけ生成を走らせる。
-// genStateDump 等から import された場合は呼び側が generateLocalConstants を呼ぶ。
+// Run generation only when executed directly (npm run gen:local-constants).
+// When imported from genStateDump etc., the caller invokes generateLocalConstants.
 if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)

@@ -4,7 +4,7 @@ import { safeStringify } from "@eris/sdk/logger.js";
 
 export { safeStringify };
 
-// blocks.csv の列スキーマ（単一の真実）。読む側（postRunCheck 等）はこのインデックスを使う。
+// Column schema for blocks.csv (single source of truth). Readers (postRunCheck, etc.) use this index.
 export const BLOCKS_CSV_COLUMNS = [
   "round",
   "blockNumber",

@@ -1,5 +1,5 @@
-// ADR 0014: 脆弱性プール（SimpleAMM / RiggedAMM）と factory の共有 ABI（agent 側）。
-// poolDiscovery（発見）と verifyContract（検証）が使う最小定義。
+// ADR 0014: shared ABI (agent side) for the vulnerable pools (SimpleAMM / RiggedAMM) and the factory.
+// The minimal definitions used by poolDiscovery (discovery) and verifyContract (verification).
 import type { Abi } from "viem";
 
 export const vulnFactoryAbi = [
@@ -15,8 +15,8 @@ export const vulnFactoryAbi = [
   },
 ] as const satisfies Abi;
 
-// SimpleAMM / RiggedAMM 共通の read/exec 面。getAmountOut は「餌」の honest 見積り（RiggedAMM も
-// view は正直）。実挙動は swap を dry-run（eth_call）して初めて分かる（ADR 0014 §4）。
+// The read/exec surface common to SimpleAMM / RiggedAMM. getAmountOut is the honest "bait" quote
+// (RiggedAMM's view is honest too). The real behavior is only revealed by dry-running swap (eth_call) (ADR 0014 §4).
 export const vulnAmmAbi = [
   {
     type: "function",

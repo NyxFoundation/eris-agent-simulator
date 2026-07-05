@@ -4,7 +4,7 @@ import { mine } from "../chain.js";
 import { readForgeArtifact } from "../forge.js";
 import type { SimContext } from "./types.js";
 
-// forge アーティファクトを admin 鍵でデプロイ（--no-mining 対応で mine を挟む）。
+// Deploy a forge artifact with the admin key (mines in between to support --no-mining).
 export async function deployContract(
   ctx: SimContext,
   name: string,
@@ -12,7 +12,7 @@ export async function deployContract(
 ): Promise<Address> {
   const account = privateKeyToAccount(ctx.adminPk);
   const { abi, bytecode } = readForgeArtifact(name);
-  // --no-mining 下で fee 見積りが次ブロック baseFee を下回り tx 滞留するのを避け、明示指定する。
+  // Set fees explicitly to avoid the fee estimate falling below the next block's baseFee and stalling the tx under --no-mining.
   const block = await ctx.publicClient.getBlock();
   const baseFee = block.baseFeePerGas ?? 0n;
   const hash = await ctx.walletClient.deployContract({

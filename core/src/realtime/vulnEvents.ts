@@ -1,50 +1,52 @@
-// 脆弱性発生イベント（悪意あるプール）のスケジュール（ADR 0014 §2）。
+// Schedule of vulnerability-appearance events (malicious pools) (ADR 0014 §2).
 //
-// ADR 0009 の EventSchedule と同思想: config には固定値ではなく **レンジ** を与え、発生窓・
-// プール数・rigged 比率・誘い込み強度（bait）・skim 割合（rug）・dry-run 回避閾値を
-// **SEED から決定論派生** させる（定数の暗記を防ぎ汎化を測る。ADR 0004）。price 本路・flow・
-// stress と衝突しない独立 Rng（VULN_SEED_SALT）を使うので、既存 run の消費列を壊さず再現性は
-// SEED で維持される。チェーンや I/O には一切触れない純関数クラス（test/vulnEvents.test.ts 対象）。
+// Same philosophy as ADR 0009's EventSchedule: config is given **ranges** rather than fixed values, and the
+// appearance window, pool count, rigged fraction, bait strength (bait), skim fraction (rug), and dry-run
+// evasion threshold are **deterministically derived from SEED** (prevents memorizing constants and measures
+// generalization; ADR 0004). It uses an independent Rng (VULN_SEED_SALT) that does not collide with the price
+// main path, flow, or stress, so it does not break the consumption sequence of existing runs and reproducibility
+// is maintained via SEED. A pure-function class that never touches the chain or I/O (target of test/vulnEvents.test.ts).
 //
-// 設計:
-//   - プールは event の startBlock（＝run 長に対する割合で SEED 決定）で「湧く」。coordinator は
-//     この blockIndex で pool へ資金供給し、fair からの gap（機会）を出現させる（§3 の発見の餌）。
-//   - 各 event は N プールを混在生成する。riggedFrac ぶんが RiggedAMM（罠）、残りが SimpleAMM
-//     （安全な本物 arb）。「66個の偽プール」を SEED 由来 N プール混在で一般化する。
-//   - 罠はトークンでなくプール契約側にある（実トークン WETH/WBTC/USDC を扱う）。よって既知
-//     トークンだけ取引しても回避できず、契約を監査するしかない（ADR 0014 §1）。
+// Design:
+//   - Pools "spring up" at the event's startBlock (= determined by SEED as a fraction of run length). The
+//     coordinator funds the pool at this blockIndex, making a gap from fair (opportunity) appear (the discovery
+//     bait of §3).
+//   - Each event generates a mix of N pools. The riggedFrac share are RiggedAMM (traps), the rest are SimpleAMM
+//     (safe genuine arb). This generalizes the "66 fake pools" as a SEED-derived mix of N pools.
+//   - The trap is on the pool contract side, not the token (they trade real tokens WETH/WBTC/USDC). So trading
+//     only known tokens cannot avoid it; the only recourse is to audit the contract (ADR 0014 §1).
 import { Rng } from "@eris/sdk/rng.js";
 
 export type VulnEventType = "rigged-pool";
 
-// config（ERIS_VULN_EVENTS）で与える 1 event 仕様。値ではなくレンジを与える。
+// One event spec given via config (ERIS_VULN_EVENTS). Ranges are given, not values.
 export type VulnEventConfig = {
   type: VulnEventType;
-  // 発生位置の run 長に対する割合 [min,max]。seed が選ぶ。
+  // Fraction of run length for the appearance position [min,max]. The seed picks.
   windowFrac: [number, number];
-  // 同時に出す新規プール数 [min,max]（"66" を一般化）。整数。
+  // Number of new pools to emit at once [min,max] (generalizes "66"). Integer.
   poolCount: [number, number];
-  // うち rigged の割合 [min,max]（残りは安全な本物 arb）。
+  // Of those, the rigged fraction [min,max] (the rest are safe genuine arb).
   riggedFrac: [number, number];
-  // fair 比で何 bps 美味しく見せるか（誘い込み）[min,max]。
+  // How many bps more attractive to make it look vs fair (the lure) [min,max].
   baitBps: [number, number];
-  // rigged が skim する割合 bps [min,max]。
+  // The fraction the rigged pool skims, in bps [min,max].
   rugBps: [number, number];
-  // dry-run 回避の閾値（per-round 上限比 [min,max]）。この比率 × per-round 上限を超える
-  // amountIn だけ skim する（小さな probe は通る）。
+  // Dry-run evasion threshold (per-round cap ratio [min,max]). It skims only amountIn exceeding
+  // this ratio × the per-round cap (small probes pass through).
   rugThresholdFrac: [number, number];
 };
 
-// seed で確定した 1 プール（deploy 順に poolIndex 一意。blockIndex は runStart 相対 0 起点）。
+// One pool resolved by the seed (poolIndex unique in deploy order; blockIndex is 0-based relative to runStart).
 export type ResolvedVulnPool = {
-  poolIndex: number; // グローバル一意（deploy 順・アドレス発行順に対応）
+  poolIndex: number; // globally unique (corresponds to deploy order / address issuance order)
   eventIndex: number;
-  base: string; // 取引 base（WETH / WBTC 等）。quote は USDC 相当。
-  rigged: boolean; // ground-truth（採点用。on-chain / agent には暴露しない）
-  baitBps: number; // fair 比の割安幅（base をこれだけ安く見せる）
-  rugBps: number; // skim 割合（bps。整数）
-  rugThresholdFrac: number; // per-round 上限比の skim 閾値
-  startBlock: number; // 資金供給（appearance）ブロック index
+  base: string; // trading base (WETH / WBTC etc.). The quote is USDC-equivalent.
+  rigged: boolean; // ground-truth (for scoring; not exposed on-chain / to agents)
+  baitBps: number; // discount width vs fair (makes base look this much cheaper)
+  rugBps: number; // skim fraction (bps; integer)
+  rugThresholdFrac: number; // skim threshold as a per-round cap ratio
+  startBlock: number; // funding (appearance) block index
 };
 
 export type ResolvedVulnEvent = {
@@ -56,10 +58,10 @@ export type ResolvedVulnEvent = {
   pools: ResolvedVulnPool[];
 };
 
-// price 本路 Rng(seed) / flow Rng / stress Rng(0x53545253) と衝突しない派生 seed の salt。
+// Salt for a derived seed that does not collide with the price main-path Rng(seed) / flow Rng / stress Rng(0x53545253).
 const VULN_SEED_SALT = 0x56_55_4c_4e; // "VULN"
 
-// 純関数の決定論スケジュール（config + seed + runBlocks + baseSymbols → 解決済みプール群）。
+// Pure-function deterministic schedule (config + seed + runBlocks + baseSymbols → resolved pools).
 export class VulnSchedule {
   readonly events: ResolvedVulnEvent[];
 
@@ -67,29 +69,29 @@ export class VulnSchedule {
     configs: VulnEventConfig[],
     seed: number,
     runBlocks: number,
-    // 取引対象 base の候補（coordinator が active base を渡す。test は既定 ["WETH"]）。
+    // Candidate trading bases (the coordinator passes the active bases; tests default to ["WETH"]).
     baseSymbols: string[] = ["WETH"],
   ) {
     if (configs.length > 0 && runBlocks <= 0) {
-      // 窓は run 長の割合で決まるため、ブロック長固定 run（run.blocks>0）が前提。
+      // The window is determined by a fraction of run length, so a fixed-length run (run.blocks>0) is required.
       throw new Error(
         "ERIS_VULN_EVENTS requires a fixed-length run: set run.blocks > 0 (ADR 0014)",
       );
     }
     const bases = baseSymbols.length > 0 ? baseSymbols : ["WETH"];
-    // price 本路・flow・stress と独立した Rng。同じ SEED から決定論的に同一スケジュールを得る。
+    // An Rng independent of the price main path, flow, and stress. The same SEED deterministically yields the same schedule.
     const rng = new Rng((seed ^ VULN_SEED_SALT) >>> 0);
     let poolIndex = 0;
     this.events = configs.map((c, eventIndex) => {
-      // 消費順（決定論の要）: poolCount → startFrac → riggedFrac →（プールごと）base →
-      //   baitBps → rugBps → rugThresholdFrac。
+      // Consumption order (the crux of determinism): poolCount → startFrac → riggedFrac → (per pool) base →
+      //   baitBps → rugBps → rugThresholdFrac.
       const poolCount = Math.max(
         1,
         Math.round(lerp(c.poolCount[0], c.poolCount[1], rng.next())),
       );
       const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], rng.next());
-      // startBlock は run 窓内に収める（採点の歴史深度・窓⊂run 窓）。最終ブロックは資金供給が
-      // 効かない可能性があるため runBlocks-1 でクランプ。
+      // Keep startBlock inside the run window (scoring history depth; window ⊂ run window). Clamp at runBlocks-1
+      // because funding may not take effect on the final block.
       const maxStart = Math.max(0, runBlocks - 1);
       const startBlock = Math.max(
         0,
@@ -100,9 +102,9 @@ export class VulnSchedule {
         0,
         Math.min(poolCount, Math.round(poolCount * riggedFracVal)),
       );
-      // rigged/safe を**位置に依存させない**ため、riggedCount 個の true を Fisher–Yates で
-      // シャッフルして各スロットへ割り当てる（deploy 順・allPools 順から classification を
-      // 推測できる side-channel を潰す。決定論は seed で維持）。
+      // To make rigged/safe **position-independent**, Fisher–Yates shuffle riggedCount true values and assign
+      // them to each slot (kills the side-channel that could infer classification from deploy order / allPools
+      // order; determinism is maintained via seed).
       const riggedFlags = Array.from(
         { length: poolCount },
         (_, i) => i < riggedCount,
@@ -151,12 +153,12 @@ export class VulnSchedule {
     return this.events.length > 0;
   }
 
-  // 全プールを deploy 順（poolIndex 昇順）でフラットに返す。
+  // Returns all pools flattened in deploy order (ascending poolIndex).
   pools(): ResolvedVulnPool[] {
     return this.events.flatMap((e) => e.pools);
   }
 
-  // 当該 blockIndex で「湧く」（資金供給される）プール群。coordinator が毎ブロック呼ぶ。
+  // The pools that "spring up" (get funded) at this blockIndex. The coordinator calls this every block.
   poolsStartingAt(blockIndex: number): ResolvedVulnPool[] {
     return this.pools().filter((p) => p.startBlock === blockIndex);
   }
@@ -166,8 +168,8 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-// ERIS_VULN_EVENTS（JSON 配列）をパースして検証する。空/未設定なら []。
-// レンジ指定を厳格に検査し、誤設定は run 開始前に fail-fast させる（parseStressEvents と同型）。
+// Parse and validate ERIS_VULN_EVENTS (a JSON array). Empty/unset yields [].
+// Strictly checks the range spec, and misconfiguration fails fast before the run starts (same shape as parseStressEvents).
 export function parseVulnEvents(json: string | undefined): VulnEventConfig[] {
   if (json === undefined || json.trim() === "") return [];
   let parsed: unknown;
@@ -199,15 +201,15 @@ function parseOne(raw: unknown, i: number): VulnEventConfig {
   });
   const poolCount = parseRange(o.poolCount, `${label}.poolCount`, {
     min: 1,
-    max: 64, // 大きすぎる値は setup の逐次 deploy を無音でハングさせるため fail-fast
+    max: 64, // fail-fast because too large a value silently hangs setup's sequential deploy
     integer: true,
   });
   const riggedFrac = parseRange(o.riggedFrac, `${label}.riggedFrac`, {
     min: 0,
     max: 1,
   });
-  // baitBps は fair 比の割安幅。>=10000 だと poolPrice=fair·(1−bait)<=0 になり reserve 計算が
-  // 壊れる（負の bigint → 資金供給クラッシュ）ため上限を課す。
+  // baitBps is the discount width vs fair. At >=10000, poolPrice=fair·(1−bait)<=0 breaks the reserve
+  // computation (negative bigint → funding crash), so cap it.
   const baitBps = parseRange(o.baitBps, `${label}.baitBps`, {
     min: 0,
     max: 9_000,
@@ -217,9 +219,9 @@ function parseOne(raw: unknown, i: number): VulnEventConfig {
     exclusiveMin: true,
     max: 10_000,
   });
-  // rugThresholdFrac は skim 閾値（per-round 上限比）。0 だと閾値 0 = 無条件 rig になり「小さな
-  // probe は通る」という条件付き rig の設計意図（LLM 監査を load-bearing にする根拠）が崩れるため
-  // 0 超を要求する。
+  // rugThresholdFrac is the skim threshold (per-round cap ratio). At 0 the threshold is 0 = unconditional rig,
+  // which breaks the design intent of a conditional rig where "small probes pass through" (the rationale that
+  // makes LLM auditing load-bearing), so require greater than 0.
   const rugThresholdFrac = parseRange(
     o.rugThresholdFrac,
     `${label}.rugThresholdFrac`,

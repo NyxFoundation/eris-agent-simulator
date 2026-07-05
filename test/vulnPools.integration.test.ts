@@ -1,13 +1,13 @@
-// ADR 0014 の load-bearing 機構を bare anvil 上で検証する統合テスト。
-// 純関数テスト（vulnEvents.test.ts）では Solidity の実行（skim / honest / dry-run 検出）を
-// 覆えないため、実チェーンで契約挙動を確かめる。foundry(anvil) が無い環境では自動 skip し、
-// `npm test` を green に保つ（他テストは pure なので anvil 非依存）。
+// Integration test verifying ADR 0014's load-bearing mechanism on bare anvil.
+// The pure-function tests (vulnEvents.test.ts) cannot cover Solidity execution (skim / honest / dry-run
+// detection), so we check contract behavior on a real chain. It auto-skips where foundry(anvil) is absent,
+// keeping `npm test` green (the other tests are pure and anvil-independent).
 //
-// 検証項目:
-//   1. SimpleAMM: getAmountOut == swap 実出力（honest）。
-//   2. RiggedAMM: getAmountOut は honest（餌）だが、swap は amountIn>rugThreshold で skim する。
-//   3. RiggedAMM: amountIn<rugThreshold の小さな probe は skim されず通る（＝full-size dry-run が要る理由）。
-//   4. verifyContract: 実サイズ dry-run で rigged=unsafe / safe=safe を決定論的に判定する。
+// Checks:
+//   1. SimpleAMM: getAmountOut == actual swap output (honest).
+//   2. RiggedAMM: getAmountOut is honest (bait), but swap skims when amountIn>rugThreshold.
+//   3. RiggedAMM: a small probe with amountIn<rugThreshold passes without skimming (= why a full-size dry-run is needed).
+//   4. verifyContract: deterministically judges rigged=unsafe / safe=safe with a full-size dry-run.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -26,7 +26,7 @@ import { vulnAmmAbi } from "../example/agents/lib/vulnAbi.js";
 import { verifyContract } from "../example/agents/lib/verifyContract.js";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const PORT = 8577; // 通常の 8545 と衝突しない検証専用ポート
+const PORT = 8577; // verification-only port that does not collide with the usual 8545
 const RPC = `http://127.0.0.1:${PORT}`;
 // anvil default account 0
 const PK =
@@ -79,7 +79,7 @@ async function startAnvil(): Promise<ChildProcess | null> {
   return null;
 }
 
-test("ADR 0014 vuln pools: skim / honest / dry-run 検出（要 anvil）", async (t) => {
+test("ADR 0014 vuln pools: skim / honest / dry-run detection (requires anvil)", async (t) => {
   if (
     !existsSync(resolve(ROOT, "out/VulnPoolFactory.sol/VulnPoolFactory.json"))
   ) {
@@ -88,7 +88,7 @@ test("ADR 0014 vuln pools: skim / honest / dry-run 検出（要 anvil）", async
   }
   const anvil = await startAnvil();
   if (!anvil) {
-    t.skip("anvil unavailable (foundry 未インストール等)");
+    t.skip("anvil unavailable (foundry not installed, etc.)");
     return;
   }
   try {
@@ -131,10 +131,10 @@ test("ADR 0014 vuln pools: skim / honest / dry-run 検出（要 anvil）", async
     const factoryAbi = artifact("VulnPoolFactory").abi;
 
     const feeBps = 30;
-    const rugThreshold = 1_000_000_000n; // 1,000 USDC（6 桁）
+    const rugThreshold = 1_000_000_000n; // 1,000 USDC (6 decimals)
     const rugBps = 5000; // 50% skim
 
-    // createSimplePool / createRiggedPool（PoolCreated から pool アドレスを取得）
+    // createSimplePool / createRiggedPool (obtain the pool address from PoolCreated)
     const createPool = async (
       fn: string,
       args: unknown[],
@@ -162,7 +162,7 @@ test("ADR 0014 vuln pools: skim / honest / dry-run 検出（要 anvil）", async
       rugBps,
     ]);
 
-    // 両プールに同一 reserve を積む（price 3000。deep なのでスリッページ極小）。
+    // load identical reserves into both pools (price 3000; deep, so slippage is minimal).
     const reserveBase = 1000n * 10n ** 18n; // 1000 WETH
     const reserveUsdc = 3_000_000n * 10n ** 6n; // 3,000,000 USDC
     for (const pool of [simple, rigged]) {
@@ -170,15 +170,15 @@ test("ADR 0014 vuln pools: skim / honest / dry-run 検出（要 anvil）", async
       await send(usdc, erc20, "mint", [pool, reserveUsdc]);
     }
 
-    // trader（= account）に USDC を配り、両プールへ approve。
+    // give the trader (= account) USDC and approve both pools.
     const trader = account.address;
     await send(usdc, erc20, "mint", [trader, 100_000n * 10n ** 6n]);
     for (const pool of [simple, rigged]) {
       await send(usdc, erc20, "approve", [pool, 2n ** 255n]);
     }
 
-    const bigIn = 5_000_000_000n; // 5,000 USDC（> rugThreshold）
-    const smallIn = 500_000_000n; // 500 USDC（< rugThreshold）
+    const bigIn = 5_000_000_000n; // 5,000 USDC (> rugThreshold)
+    const smallIn = 500_000_000n; // 500 USDC (< rugThreshold)
 
     const quote = async (pool: Address, amountIn: bigint): Promise<bigint> =>
       (await pub.readContract({
@@ -201,28 +201,28 @@ test("ADR 0014 vuln pools: skim / honest / dry-run 検出（要 anvil）", async
       return result as bigint;
     };
 
-    // 1) getAmountOut は両プールで一致（RiggedAMM の view は honest = 餌）。
+    // 1) getAmountOut matches for both pools (RiggedAMM's view is honest = bait).
     const qSimpleBig = await quote(simple, bigIn);
     const qRiggedBig = await quote(rigged, bigIn);
     assert.equal(qRiggedBig, qSimpleBig, "rigged getAmountOut must be honest");
     assert.ok(qSimpleBig > 0n);
 
-    // 2) SimpleAMM: swap 実出力 == 見積り（honest）。
+    // 2) SimpleAMM: actual swap output == quote (honest).
     const simpleSim = await simSwap(simple, bigIn);
     assert.equal(simpleSim, qSimpleBig, "simple swap must match quote");
 
-    // 3) RiggedAMM: 実サイズ（>閾値）swap は skim され見積りを大きく下回る。
+    // 3) RiggedAMM: a full-size (>threshold) swap is skimmed and falls well below the quote.
     const riggedSimBig = await simSwap(rigged, bigIn);
     assert.ok(
       riggedSimBig < (qRiggedBig * 6000n) / 10000n,
       `rigged big swap must skim: sim=${riggedSimBig} quote=${qRiggedBig}`,
     );
-    // 概ね (1-rugBps) 倍
+    // roughly (1-rugBps) times
     assert.ok(
       riggedSimBig <= (qRiggedBig * (10000n - BigInt(rugBps))) / 10000n + 2n,
     );
 
-    // 4) RiggedAMM: 小さな probe（<閾値）は skim されず通る（full-size dry-run が要る理由）。
+    // 4) RiggedAMM: a small probe (<threshold) passes without skimming (why a full-size dry-run is needed).
     const qRiggedSmall = await quote(rigged, smallIn);
     const riggedSimSmall = await simSwap(rigged, smallIn);
     assert.equal(
@@ -231,7 +231,7 @@ test("ADR 0014 vuln pools: skim / honest / dry-run 検出（要 anvil）", async
       "small probe under threshold must not skim",
     );
 
-    // 5) verifyContract: 実サイズ dry-run で rigged=unsafe / safe=safe を判定（disclosure 無し=unverified）。
+    // 5) verifyContract: judges rigged=unsafe / safe=safe with a full-size dry-run (no disclosure = unverified).
     const vSimple = await verifyContract({
       publicClient: pub,
       pool: simple,

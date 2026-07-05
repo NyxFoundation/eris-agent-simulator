@@ -8,10 +8,10 @@ import { getRegistry } from "../src/registry.js";
 export const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 
 // ---------------------------------------------------------------------------
-// ABI ローダ (各 deploy ファイルと同じ取得元から読む)
+// ABI loaders (read from the same sources as each deploy file)
 // ---------------------------------------------------------------------------
 
-/** node_modules 内の {abi, bytecode} 形式 artifact (Uniswap) */
+/** {abi, bytecode}-shaped artifact inside node_modules (Uniswap) */
 export function nmArtifact(pkgRelPath: string): { abi: Abi } {
   const json = JSON.parse(
     readFileSync(resolve(ROOT, "node_modules", pkgRelPath), "utf8"),
@@ -35,7 +35,7 @@ export const uniAbi = (k: keyof typeof UNI): Abi => nmArtifact(UNI[k]).abi;
 
 const BAL = "node_modules/@balancer-labs/v2-deployments/dist/tasks";
 
-/** Balancer の結合 artifact (Vault 等) */
+/** Balancer combined artifact (Vault etc.) */
 export function balCombined(task: string, name: string): Abi {
   const j = JSON.parse(
     readFileSync(resolve(ROOT, BAL, task, "artifact", `${name}.json`), "utf8"),
@@ -43,7 +43,7 @@ export function balCombined(task: string, name: string): Abi {
   return j.abi as Abi;
 }
 
-/** Balancer の abi/ 分離 artifact (WeightedPool 等) */
+/** Balancer split abi/ artifact (WeightedPool etc.) */
 export function balSplit(task: string, name: string): Abi {
   return JSON.parse(
     readFileSync(resolve(ROOT, BAL, task, "abi", `${name}.json`), "utf8"),
@@ -54,7 +54,7 @@ export const vaultAbi = (): Abi => balCombined("20210418-vault", "Vault");
 export const weightedPoolAbi = (): Abi =>
   balSplit("20210418-weighted-pool", "WeightedPool");
 
-/** vendor/curve の vyper artifact */
+/** vendor/curve vyper artifact */
 export function curveAbi(name: string): Abi {
   const j = JSON.parse(
     readFileSync(resolve(ROOT, "vendor", "curve", `${name}.json`), "utf8"),
@@ -62,7 +62,7 @@ export function curveAbi(name: string): Abi {
   return j.abi as Abi;
 }
 
-/** vendor/<sub>/deployments/localhost の hardhat-deploy artifact */
+/** vendor/<sub>/deployments/localhost hardhat-deploy artifact */
 function deploymentArtifact(
   sub: string,
   name: string,
@@ -82,7 +82,7 @@ export const gmxDeployment = (name: string) =>
   deploymentArtifact("gmx-src", name);
 
 // ---------------------------------------------------------------------------
-// registry アクセス (未デプロイなら undefined → describe.skip 判定に使う)
+// registry access (undefined if not deployed -> used to decide describe.skip)
 // ---------------------------------------------------------------------------
 
 export function getProto<T extends Record<string, unknown>>(
@@ -96,10 +96,10 @@ export function tokenAddr(key: string): Address {
 }
 
 // ---------------------------------------------------------------------------
-// アサーションヘルパ
+// Assertion helpers
 // ---------------------------------------------------------------------------
 
-/** actual が expected の ±bps 以内かを判定 (bps = ベーシスポイント, 100 = 1%) */
+/** Check whether actual is within +/-bps of expected (bps = basis points, 100 = 1%) */
 export function expectApprox(
   actual: bigint,
   expected: bigint,
@@ -114,12 +114,12 @@ export function expectApprox(
   ).toBe(true);
 }
 
-/** simulateContract / read の Promise が revert (reject) することを確認 */
+/** Assert that a simulateContract / read Promise reverts (rejects) */
 export async function expectRevert(p: Promise<unknown>, label = "call") {
-  await expect(p, `${label} は revert すべき`).rejects.toThrow();
+  await expect(p, `${label} should revert`).rejects.toThrow();
 }
 
-/** アドレス比較 (チェックサム差を無視) */
+/** Address comparison (ignoring checksum differences) */
 export function sameAddr(a?: string, b?: string): boolean {
   return !!a && !!b && a.toLowerCase() === b.toLowerCase();
 }
@@ -127,7 +127,7 @@ export function sameAddr(a?: string, b?: string): boolean {
 export const isAddress = (v: unknown): v is Address =>
   typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v);
 
-/** 1 時間後の deadline (秒) */
+/** Deadline one hour from now (seconds) */
 export const deadline = (): bigint =>
   BigInt(Math.floor(Date.now() / 1000) + 3600);
 

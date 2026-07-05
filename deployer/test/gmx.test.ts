@@ -32,7 +32,7 @@ const g = getProto<{
 describe.skipIf(!g)("GMX V2 (read-only)", () => {
   const readerAbi = () => gmxDeployment("Reader").abi;
 
-  it("Reader.getMarkets が registry の marketCount と一致", async () => {
+  it("Reader.getMarkets matches the registry marketCount", async () => {
     const markets = (await publicClient.readContract({
       address: g!.Reader,
       abi: readerAbi(),
@@ -42,11 +42,11 @@ describe.skipIf(!g)("GMX V2 (read-only)", () => {
     expect(markets.length).toBeGreaterThan(0);
     if (typeof g!.marketCount === "number")
       expect(markets.length).toBe(g!.marketCount);
-    // 全マーケットの marketToken は非ゼロ
+    // Every market's marketToken is non-zero
     for (const m of markets) expect(m.marketToken).not.toBe(ZERO);
   });
 
-  it("記録済み market が Reader.getMarket と整合", async () => {
+  it("recorded market is consistent with Reader.getMarket", async () => {
     if (!g!.markets?.length) return;
     const sample = g!.markets[0];
     const m = (await publicClient.readContract({
@@ -62,13 +62,13 @@ describe.skipIf(!g)("GMX V2 (read-only)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 完全 E2E: GM 流動性 deposit → keeper 実行 → openPosition → keeper 実行
-// trader (index 2) が create、keeper (index 1) が execute、価格は MockOracleProvider 制御。
+// Full E2E: GM liquidity deposit -> keeper execute -> openPosition -> keeper execute
+// trader (index 2) creates, keeper (index 1) executes, prices controlled by MockOracleProvider.
 // ---------------------------------------------------------------------------
 
 const gx = getProto<GmxRegistry>("gmxV2");
 
-// long==WETH / short==USDC の完全担保マーケットを選ぶ
+// Pick a fully collateralized market where long==WETH / short==USDC
 function pickWethUsdcMarket(reg: GmxRegistry | undefined): {
   market: GmxRegistry["markets"][number];
   weth: Address;
@@ -88,11 +88,11 @@ function pickWethUsdcMarket(reg: GmxRegistry | undefined): {
 
 const picked = pickWethUsdcMarket(gx);
 
-describe.skipIf(!picked)("GMX V2 完全 E2E (deposit → openPosition)", () => {
+describe.skipIf(!picked)("GMX V2 full E2E (deposit -> openPosition)", () => {
   const reg = gx!;
   const { market, weth, usdc } = picked!;
 
-  // GMX テストトークン: WETH=18d, USDC=6d
+  // GMX test tokens: WETH=18d, USDC=6d
   const LONG_DEPOSIT = 50n * 10n ** 18n; // 50 WETH
   const SHORT_DEPOSIT = 150_000n * 10n ** 6n; // 150,000 USDC
   const COLLATERAL = 1n * 10n ** 18n; // 1 WETH
@@ -108,8 +108,8 @@ describe.skipIf(!picked)("GMX V2 完全 E2E (deposit → openPosition)", () => {
       [weth]: { usd: 3000, decimals: 18 },
       [usdc]: { usd: 1, decimals: 6 },
     });
-    // trader へ deposit 用 + 担保用トークンを供給 + Router approve。
-    // 共有 WETH9 は mint を持たないため wrap で供給する。
+    // Fund the trader with deposit + collateral tokens and approve the Router.
+    // The shared WETH9 has no mint, so fund it via wrap.
     await mintAndApprove(
       weth,
       accounts.trader,
@@ -127,7 +127,7 @@ describe.skipIf(!picked)("GMX V2 完全 E2E (deposit → openPosition)", () => {
     );
   });
 
-  it("GM 流動性 deposit → keeper 実行で GM トークンが発行される", async () => {
+  it("GM liquidity deposit -> keeper execute mints GM tokens", async () => {
     const before = await balanceOf(market.marketToken, accounts.trader.address);
     const key = await createDeposit(reg, market, LONG_DEPOSIT, SHORT_DEPOSIT);
     await keeperExecute("deposit", keeper, reg.DepositHandler, key, mock, [
@@ -135,10 +135,10 @@ describe.skipIf(!picked)("GMX V2 完全 E2E (deposit → openPosition)", () => {
       usdc,
     ]);
     const after = await balanceOf(market.marketToken, accounts.trader.address);
-    expect(after).toBeGreaterThan(before); // GM トークン発行 = 流動性投入成功
+    expect(after).toBeGreaterThan(before); // GM tokens minted = liquidity provision succeeded
   });
 
-  it("openPosition (long) → keeper 実行でポジションが生成される", async () => {
+  it("openPosition (long) -> keeper execute creates a position", async () => {
     const key = await createIncreaseOrder(
       reg,
       market,
@@ -152,7 +152,7 @@ describe.skipIf(!picked)("GMX V2 完全 E2E (deposit → openPosition)", () => {
       usdc,
     ]);
     const pos = await getLongPosition(reg, market.marketToken);
-    expect(pos, "long ポジションが存在しない").toBeDefined();
+    expect(pos, "long position does not exist").toBeDefined();
     expect(pos!.numbers.sizeInUsd).toBeGreaterThan(0n);
     expect(pos!.numbers.collateralAmount).toBeGreaterThan(0n);
   });

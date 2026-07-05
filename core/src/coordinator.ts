@@ -1,6 +1,6 @@
-// 同期ラウンド方式（runSimulation）は ADR 0006 で退役済み。本ファイルは flow/submit の
-// 環境側共有関数のみ（buildFlowContext / submit* / initialFairPrice* 等。realtime coordinator が
-// 利用する）。observationFor は sdk（@eris/sdk/observation.js）へ移設済み（ADR 0015）。
+// The synchronous-round approach (runSimulation) was retired in ADR 0006. This file holds only the
+// environment-side shared functions for flow/submit (buildFlowContext / submit* / initialFairPrice*,
+// etc., used by the realtime coordinator). observationFor has moved to sdk (@eris/sdk/observation.js) (ADR 0015).
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";
 import { accountAddress, getBalances } from "@eris/sdk/chain.js";
@@ -13,12 +13,12 @@ import type { FlowContextWire } from "./flow/logic.js";
 import { readAaveFlowReserves } from "@eris/sdk/protocols/aave.js";
 
 // ---------------------------------------------------------------------------
-// 観測 / flow / submit
+// observation / flow / submit
 // ---------------------------------------------------------------------------
 
-// orderflow bot プロセスに FlowContext を渡して FlowOrder[] を受け取り、TxIntent に変換する。
-// flow ウォレットの選択と tx 提出は coordinator が所有（bot は注文を決めるだけ）。
-// FlowContext を組み立てる（poolPrices / aave reserves / limits）。realtime でも毎ブロック再利用する。
+// Pass a FlowContext to the orderflow bot process, receive FlowOrder[], and convert to TxIntent.
+// The coordinator owns flow wallet selection and tx submission (the bot only decides orders).
+// Assemble the FlowContext (poolPrices / aave reserves / limits). Reused every block in realtime too.
 export async function buildFlowContext(
   ctx: SimContext,
   enabledIds: ProtocolId[],
@@ -35,8 +35,9 @@ export async function buildFlowContext(
       poolPrices[id] = s.priceUsdcPerWeth;
   }
 
-  // aave 借り手プールは各 actor ウォレットの reserve + 残高に依存する。RPC 読取は coordinator 側で
-  // 行い渡す（bot は RPC に触れない原則）。actor ごとに持続ポジション（supply/borrow）と残高を読む。
+  // The aave borrower pool depends on each actor wallet's reserve + balance. The coordinator does the
+  // RPC reads and passes them in (the bot never touches the RPC). Read each actor's persistent position
+  // (supply/borrow) and balance.
   let aaveActors: FlowContextWire["aaveActors"];
   if (enabledIds.includes("aave")) {
     aaveActors = [];
@@ -66,8 +67,9 @@ export async function buildFlowContext(
     }
   }
 
-  // ADR 0013 Phase 8: WETH 以外の base の AMM flow context。flow max>0 かつ価格が揃う base のみ
-  // 載せる（max=0/未設定なら省略 → buildFlowOrders が当該 base を反復せず RNG 非消費 = byte 互換）。
+  // ADR 0013 Phase 8: AMM flow context for non-WETH bases. Only include bases whose flow max > 0 and
+  // whose price is available (omit when max=0/unset -> buildFlowOrders doesn't iterate that base and
+  // consumes no RNG = byte-compatible).
   const extraBases: NonNullable<FlowContextWire["extraBases"]> = [];
   for (const t of baseTokens()) {
     if (t.symbol === "WETH") continue;
@@ -115,8 +117,8 @@ export async function buildFlowContext(
     poolPrices,
     ...(aaveActors ? { aaveActors } : {}),
     flowBalances,
-    // flow が base 在庫を持つ（flowWethWei>0）なら売りを許可する（残高で gate）。
-    // agent の USDC-only（initialWethWei=0）とは独立。両方 0 のときだけ強制 USDC。
+    // If flow holds base inventory (flowWethWei>0), allow selling (gated by balance).
+    // Independent of the agent's USDC-only (initialWethWei=0). Force USDC only when both are 0.
     usdcOnlyFlow:
       ctx.config.initialWethWei === 0n && ctx.config.flowWethWei === 0n,
     ...(extraBases.length > 0 ? { extraBases } : {}),
@@ -146,7 +148,7 @@ export async function buildFlowContext(
   };
 }
 
-// bot が返した FlowOrder[] を flow ウォレット紐付けの TxIntent[] に変換する。
+// Convert the FlowOrder[] returned by the bot into TxIntent[] bound to flow wallets.
 export function flowOrdersToIntents(
   ctx: SimContext,
   orders: FlowOrderWire[],
@@ -169,8 +171,8 @@ export function flowOrdersToIntents(
   return intents;
 }
 
-// orderflow bot プロセスに FlowContext を渡して FlowOrder[] を受け取り、TxIntent に変換する。
-// flow ウォレットの選択と tx 提出は coordinator が所有（bot は注文を決めるだけ）。
+// Pass a FlowContext to the orderflow bot process, receive FlowOrder[], and convert to TxIntent.
+// The coordinator owns flow wallet selection and tx submission (the bot only decides orders).
 export async function requestFlowIntents(
   ctx: SimContext,
   flowProcess: FlowProcess,
@@ -210,10 +212,11 @@ export async function submitIntent(
   const baseFee = block.baseFeePerGas ?? 0n;
   const hashes: Hex[] = [];
   for (const tx of txs) {
-    // 実時間 mining では「submit 時の状態」で見積もった gas と「実行時の状態」がズレる。
-    // eth_estimateGas は成功する最小 gas を返すため、Aave の利息 index 更新等で実 gas が
-    // 最小見積りを少し上回ると out-of-gas revert する（flow tx 失敗の主因）。2x のバッファを
-    // 明示指定して防ぐ（gas コストは使用量課金で上限は着弾保証。block gas 上限内に十分収まる）。
+    // Under realtime mining, gas estimated at "submit-time state" diverges from "execution-time state".
+    // eth_estimateGas returns the minimum gas that succeeds, so when actual gas slightly exceeds the
+    // minimum estimate (e.g. Aave interest index updates), it reverts out-of-gas (the main cause of flow
+    // tx failures). Prevent this by explicitly specifying a 2x buffer (gas is charged by usage and the cap
+    // guarantees landing; it fits comfortably within the block gas limit).
     let gas: bigint;
     try {
       const est = await ctx.publicClient.estimateGas({
@@ -271,8 +274,8 @@ export async function initialFairPrice(
   return 3000;
 }
 
-// ADR 0013: 追加 base（WBTC 等）の初期 fair price。uniswap の当該 market pool 価格を採用し、
-// 無ければ既定（WBTC=60000）。WETH は従来の initialFairPrice にフォールバック。
+// ADR 0013: initial fair price for an additional base (WBTC, etc.). Uses that base's uniswap market
+// pool price, or the default (WBTC=60000) if unavailable. WETH falls back to the usual initialFairPrice.
 export async function initialFairPriceFor(
   ctx: SimContext,
   base: string,

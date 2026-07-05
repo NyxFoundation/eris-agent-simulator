@@ -4,13 +4,14 @@ pragma solidity ^0.8.20;
 import {IOracleProvider, OracleUtils} from "./interfaces/IGmxOracle.sol";
 
 /// @title MockOracleProvider
-/// @notice GMX v2 の IOracleProvider 実装。価格をオンチェーンに保持し、検証者が任意の値に
-///         書き換えられる「制御可能オラクル」。fork 上で DataStore に登録して使う。
-/// @dev    getOraclePrice は data 引数を無視し、setPrice で保存された値を返す。
-///         timestamp は block.timestamp を返すため鮮度チェックは常に通過する。
+/// @notice IOracleProvider implementation for GMX v2. A "controllable oracle" that holds
+///         prices on-chain and lets the verifier overwrite them with any value. Registered
+///         in the DataStore on a fork.
+/// @dev    getOraclePrice ignores the data argument and returns the value stored by setPrice.
+///         timestamp returns block.timestamp, so the freshness check always passes.
 contract MockOracleProvider is IOracleProvider {
     struct Price {
-        uint256 min; // GMX スケール: 実価格(USD) * 10^(30 - tokenDecimals)
+        uint256 min; // GMX scale: real price (USD) * 10^(30 - tokenDecimals)
         uint256 max;
         bool set;
     }

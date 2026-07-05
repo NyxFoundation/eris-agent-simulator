@@ -1,10 +1,10 @@
-// checkStrategyCode: 戦略コードの cheatcode 静的検査 CLI（ADR 0006 §5）。
-// /strategy-evolve がコード編集を伴う変更を受理する前に必ず通す入口ゲート。
+// checkStrategyCode: CLI for static cheatcode checking of strategy code (ADR 0006 §5).
+// The entry gate that must pass before /strategy-evolve accepts a change involving code edits.
 //
-// 使い方:
-//   tsx scripts/checkStrategyCode.ts [files...]   # 省略時は example/agents/*/ の全戦略コード
+// Usage:
+//   tsx scripts/checkStrategyCode.ts [files...]   # when omitted, all strategy code under example/agents/*/
 //
-// 出力: 検出結果 JSON を stdout、人間向けサマリを stderr。exit code: PASS=0 / 検出=2 / エラー=1。
+// Output: findings JSON to stdout, a human-readable summary to stderr. Exit code: PASS=0 / findings=2 / error=1.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -12,8 +12,8 @@ import {
   type StaticCheckFinding,
 } from "../core/src/strategyStaticCheck.js";
 
-// ADR 0015 §2: 1 agent = 1 ディレクトリ。runtime/ は予約名（参加者コードでないため対象外）、
-// lib/ は共有戦略ヘルパなので対象に含める。
+// ADR 0015 §2: 1 agent = 1 directory. runtime/ is a reserved name (not participant code, so excluded);
+// lib/ holds shared strategy helpers, so it is included.
 function defaultTargets(): string[] {
   const root = "example/agents";
   const targets: string[] = [];
@@ -53,7 +53,7 @@ function main(): void {
     }
   }
   console.error(
-    "[static-check] FAIL — cheatcode/特権ヘルパの使用を検出。戦略コードから除去すること(ADR 0006 §5)。",
+    "[static-check] FAIL — detected use of a cheatcode/privileged helper. Remove it from the strategy code (ADR 0006 §5).",
   );
   process.exitCode = 2;
 }

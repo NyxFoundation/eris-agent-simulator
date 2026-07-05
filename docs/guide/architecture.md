@@ -1,64 +1,51 @@
 [← README](../../README.md)
 
-# アーキテクチャ（環境とエージェント実行の分離）
+# Architecture (separating the environment from agent execution)
 
-パッケージは 3 workspace + 同梱 deployer（ADR 0015）。依存方向は **`example → sdk ← core`** のみ
-（`npm run check:boundaries` が検査）:
+The package is split into 3 workspaces + a bundled deployer (ADR 0015). The only allowed dependency direction is **`example → sdk ← core`** (enforced by `npm run check:boundaries`):
 
-| workspace | 役割 |
+| workspace | role |
 |---|---|
-| `sdk/` | 契約レイヤ — types / action スキーマ(zod) / chain / markets / protocols / observation / SimConfig |
-| `core/` | 環境デーモン + 採点 — realtime coordinator / anvil / flow / stress / vuln / backtest / cli。参加者は触らない |
-| `example/` | 参加者テンプレート — `example/agents/<id>/` がコピー・提出の単位。`runtime/`（汎用駆動）と `lib/`（共有戦略ヘルパ）は予約名 |
-| `deployer/` | venue デプロイ（workspace 外の自己完結サブパッケージ） |
+| `sdk/` | Contract layer — types / action schema (zod) / chain / markets / protocols / observation / SimConfig |
+| `core/` | Environment daemon + scoring — realtime coordinator / anvil / flow / stress / vuln / backtest / cli. Participants do not touch this |
+| `example/` | Participant template — `example/agents/<id>/` is the unit of copy and submission. `runtime/` (generic driver) and `lib/` (shared strategy helpers) are reserved names |
+| `deployer/` | Venue deployment (self-contained subpackage outside the workspace) |
 
 ```
-環境プロセス（core/src/realtime/coordinator.ts = 環境デーモン + 採点者）   agent プロセス × N（完全独立）
-  ・anvil ライフサイクル（fork/ローカル setup・interval mining）        ・spawn は一律 example/agents/runtime/bot.ts
-  ・fair price 生成(Rng(seed)) → PriceFeed/oracle を毎ブロック更新         （agent ディレクトリは env ERIS_AGENT_DIR）
-  ・flow bot 注文の送信（市場を動かす）                                ・env で受領: RPC URL / 自分の秘密鍵 /
-  ・GMX keeper（注文執行）                                               PriceFeed アドレス / runId・ログ出力先
-  ・採点: run 後に歴史ブロック読取で価値系列を一括再構成               ・runtime/read.ts が毎ブロック観測を再構成
-         └──────────── 同じ mempool。ブロック内順序は anvil --order fees ・runtime/send.ts が署名・直接送信（nonce 自己管理）
+Environment process (core/src/realtime/coordinator.ts = environment daemon + scorer)   agent processes × N (fully independent)
+  - anvil lifecycle (fork / local setup, interval mining)              - spawn is always example/agents/runtime/bot.ts
+  - fair price generation (Rng(seed)) → update PriceFeed/oracle every block   (agent directory comes from env ERIS_AGENT_DIR)
+  - send flow bot orders (move the market)                            - received via env: RPC URL / own private key /
+  - GMX keeper (order execution)                                        PriceFeed address / runId, log output dir
+  - scoring: after the run, reconstruct the whole value series by reading historical blocks   - runtime/read.ts reconstructs the observation every block
+         └──────────── same mempool. In-block ordering is anvil --order fees   - runtime/send.ts signs and sends directly (manages its own nonce)
 ```
 
-- **fair price はオンチェーン配布**（`contracts/PriceFeed.sol`。読取 `sdk/src/priceFeed.ts` / 書込
-  `core/src/realtime/priceFeed.ts`）。書込 tx は次ブロック着弾なので情報は全員等しく 1 ブロック遅れる（仕様）。
-- **採点は run 後再構成**（`core/src/realtime/reconstruct.ts`）— blockNumber 指定の Multicall3 で全 agent
-  同一断面の価値系列を `events.jsonl` に書き、`runs/<id>/summary.json` に集計する。
-- **ルール執行は事後検出**（`core/src/postRunCheck.ts`）— `blocks.csv` から fee 上限超過等を検査し違反 run を
-  `violations` に記録する。入口側は `npm run check:strategy`（cheatcode 静的検査）。
-- **orderflow は独立プロセス** — 生成ロジックは `core/src/flow/logic.ts`（純粋関数）、bot 本体は
-  `core/src/flow/market-maker.ts`。coordinator と stdin/stdout の同期プロトコルで毎ラウンド駆動され、
-  自前 `Rng(ERIS_FLOW_SEED)` で決定論的に動く。
-- protocol アダプタ（`sdk/src/protocols/*.ts`）は `readState`/`observe`/`buildTxs`/`valueUsdc` 等を実装し、
-  環境の採点と agent の観測再構成が**同じアダプタ・同じ `observationFor`** を使う。
+- **Fair price is distributed on-chain** (`contracts/PriceFeed.sol`; read via `sdk/src/priceFeed.ts`, write via `core/src/realtime/priceFeed.ts`). The write tx lands in the next block, so the information is delayed by 1 block for everyone equally (by design).
+- **Scoring is reconstructed after the run** (`core/src/realtime/reconstruct.ts`) — a Multicall3 keyed on blockNumber writes each agent's value series at the same cross-section into `events.jsonl`, aggregated into `runs/<id>/summary.json`.
+- **Rule enforcement is post-hoc detection** (`core/src/postRunCheck.ts`) — it inspects `blocks.csv` for fee cap overruns and records violating runs in `violations`. The entry-side gate is `npm run check:strategy` (static cheatcode inspection).
+- **Orderflow is an independent process** — the generation logic is `core/src/flow/logic.ts` (pure functions) and the bot itself is `core/src/flow/market-maker.ts`. It is driven every round by a stdin/stdout synchronous protocol with the coordinator, and runs deterministically off its own `Rng(ERIS_FLOW_SEED)`.
+- Protocol adapters (`sdk/src/protocols/*.ts`) implement `readState` / `observe` / `buildTxs` / `valueUsdc` etc., and the environment's scoring and the agent's observation reconstruction use **the same adapter and the same `observationFor`**.
 
-## なぜ分離するか
+## Why separate them
 
-エージェントには RPC・他者の秘密鍵・pending トランザクション・txpool を渡さず、**確定済み状態の観測**
-だけを与える。これにより mempool の覗き見によるフロントランを構造的に封じ、全員が同じ情報・同じ
-mempool で競う公平な土俵を作る。市場を動かすのは環境側の flow bot で、エージェントはその結果生まれた
-価格乖離＝裁定機会に反応する。
+Agents are never handed an RPC, other participants' private keys, pending transactions, or the txpool — only **observations of finalized state**. This structurally prevents front-running by peeking at the mempool, and creates a fair arena where everyone competes on the same information and the same mempool. The market is moved by the environment's flow bot, and agents react to the resulting price dislocations = arbitrage opportunities.
 
-## agent の書き方（1 agent = 1 ディレクトリ。ADR 0015）
+## How to write an agent (1 agent = 1 directory, ADR 0015)
 
-`example/agents/<id>/` に次のいずれか 1 枚を置き、ロスターに id を足すだけで agent が増える。
-spawn は一律 `runtime/bot.ts` が担う（手順つきのチュートリアルは[戦略の書き方](writing-agents.md)）:
+Drop exactly one of the following into `example/agents/<id>/` and add the id to the roster — that is all it takes to add an agent. Spawning is always handled by `runtime/bot.ts` (for a step-by-step tutorial see [Writing strategies](writing-agents.md)):
 
-| 中身 | 種別 | 動き方 |
+| content | kind | how it runs |
 |---|---|---|
-| `agent.ts`（`decide(obs, ctx)` export） | ルール戦略 | bot.ts が read→decide→send のループで駆動（`export const config = { intervalMs }` で間隔指定可） |
-| `agent.ts`（`run(ctx)` export） | 自走型 | bot.ts はループせず ctx（clients / latestObservation / onObservation / submit / log）を渡して委譲（例: liquidator） |
-| `prompt.md`（frontmatter: name/description 必須） | プロンプト型 | bot.ts が observation を添えて毎判断 LLM に action を出させる（[LLM エージェント](llm-agents.md)） |
+| `agent.ts` (exports `decide(obs, ctx)`) | rule strategy | bot.ts drives a read→decide→send loop (interval can be set via `export const config = { intervalMs }`) |
+| `agent.ts` (exports `run(ctx)`) | self-driven | bot.ts does not loop; it delegates by passing ctx (clients / latestObservation / onObservation / submit / log) (e.g. liquidator) |
+| `prompt.md` (frontmatter: name/description required) | prompt type | bot.ts attaches the observation and has the LLM emit an action on every decision ([LLM agents](llm-agents.md)) |
 
-runtime/send.ts は mempool 活動（`kind:"mempool"`: submitted / submit_failed / rejected）を
-`runs/<id>/agents/<id>.jsonl` に自己申告で追記する（coordinator が提出数を数えられなくなる穴を塞ぐ）。
+runtime/send.ts appends mempool activity (`kind:"mempool"`: submitted / submit_failed / rejected) to `runs/<id>/agents/<id>.jsonl` as a self-report (closing the gap where the coordinator can no longer count submissions).
 
-## 実行モード
+## Execution modes
 
-同じ coordinator を 2 つの入口から使う:
+The same coordinator is used from two entry points:
 
-- **`npm run sim:realtime`** — 通常の実時間 run。fork（`ARB_RPC_URL`）または[ローカルデプロイ](local-deploy.md)。
-- **`npm run backtest -- --regime <name>`** — 参加者バックテスト（ADR 0016）。配布 state dump をロードした
-  専用 anvil の上で公式 regime を再生し、`--repeat` で反復する。詳細は [バックテスト](backtest.md)。
+- **`npm run sim:realtime`** — a normal realtime run, either fork (`ARB_RPC_URL`) or [local deploy](local-deploy.md).
+- **`npm run backtest -- --regime <name>`** — participant backtest (ADR 0016). It replays an official regime on top of a dedicated anvil loaded with the distributed state dump, repeated via `--repeat`. See [Backtest](backtest.md) for details.

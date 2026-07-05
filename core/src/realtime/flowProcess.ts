@@ -6,9 +6,9 @@ import { safeStringify } from "../logger.js";
 
 export type FlowOrdersHandler = (orders: FlowOrderWire[]) => void;
 
-// 実時間モードの flow-bot プロセス。RealtimeAgentProcess と同じ push/stream モデル。
-// coordinator → 子: 新ブロック毎に FlowContext を push。子 → coordinator: stdout の各行を
-// FlowOrder[] として逐次ハンドラへ渡す（即 mempool relay 用）。bot は RPC に触れない。
+// flow-bot process in realtime mode. Same push/stream model as RealtimeAgentProcess.
+// coordinator -> child: push a FlowContext on every new block. child -> coordinator: each stdout line is
+// passed to the handler as FlowOrder[] (for immediate mempool relay). The bot never touches RPC.
 export class RealtimeFlowProcess {
   private child: ChildProcessWithoutNullStreams;
   private stderr = "";

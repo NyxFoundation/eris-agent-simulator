@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "空の anvil チェーンへ Uniswap V3 / Balancer V2 / Aave V3 / Curve / GMX V2 をゼロからデプロイするオーケストレーター",
+  "description": "Orchestrator that deploys Uniswap V3 / Balancer V2 / Aave V3 / Curve / GMX V2 from scratch onto an empty anvil chain",
   "scripts": {
     "anvil": "anvil --code-size-limit 50000 --base-fee 0 --gas-limit 3000000000 --port 8545 --accounts 10 --balance 1000000",
     "build:contracts": "forge build",

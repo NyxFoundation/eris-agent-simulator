@@ -45,7 +45,7 @@ const ORDER_TYPE = { MarketIncrease: 2, MarketDecrease: 4 } as const;
 const DECREASE_SWAP_NO_SWAP = 0;
 const FLOAT_PRECISION = 10n ** 30n;
 
-// ---- ロール/キー（keccak256(abi.encode(string))）----
+// ---- Roles/keys (keccak256(abi.encode(string))) ----
 function hashString(s: string): Hex {
   return keccak256(encodeAbiParameters(parseAbiParameters("string"), [s]));
 }
@@ -87,7 +87,7 @@ export function toGmxPrice(usd: number, tokenDecimals: number): bigint {
   return (usdScaled * 10n ** BigInt(30 - tokenDecimals)) / P;
 }
 
-// ---- ABIs（参照 bot/src/abis.ts より）----
+// ---- ABIs (from reference bot/src/abis.ts) ----
 const roleStoreAbi = [
   {
     type: "function",
@@ -328,7 +328,7 @@ type Position = {
 
 const ORDER_CREATED_HASH = keccak256(toBytes("OrderCreated"));
 const ORDER_CANCELLED_HASH = keccak256(toBytes("OrderCancelled"));
-// 真因究明用(デバッグ): keeper executeOrder の receipt に現れる GMX イベントを名前で識別する。
+// For root-cause investigation (debug): identify the GMX events in the keeper executeOrder receipt by name.
 const GMX_DEBUG_EVENT_HASHES: Record<string, string> = {
   OrderExecuted: keccak256(toBytes("OrderExecuted")),
   OrderCancelled: keccak256(toBytes("OrderCancelled")),
@@ -341,9 +341,9 @@ function gmxCollateral(symbol: TokenSymbol): Address {
   return symbol === "WETH" ? TOKENS.WETH.address : TOKENS.USDC.address;
 }
 
-// action の base（既定 WETH）から index market アドレスを解決する。
-// fork 既定（ctx.gmx.markets 未設定・WETH 1 market）では常に ctx.gmx.market を返し、
-// 従来挙動と byte 一致する。WBTC 等は ctx.gmx.markets / MARKET_LEGS から解決。
+// Resolve the index market address from the action's base (default WETH).
+// On the default fork (ctx.gmx.markets unset, single WETH market) this always returns ctx.gmx.market
+// and is byte-identical to prior behavior. WBTC etc. resolve from ctx.gmx.markets / MARKET_LEGS.
 function resolveGmxMarket(ctx: SimContext, base: TokenSymbol): Address {
   if (base === "WETH") return ctx.gmx.markets?.WETH ?? ctx.gmx.market;
   return (
@@ -353,8 +353,8 @@ function resolveGmxMarket(ctx: SimContext, base: TokenSymbol): Address {
   );
 }
 
-// 全 gmx market の (base, market アドレス) を列挙する。fork 既定では WETH 1 件。
-// ctx.gmx.markets が設定済みならそれを優先（base -> market）、無ければ MARKET_LEGS から導出。
+// Enumerate (base, market address) for all gmx markets. Single WETH entry on the default fork.
+// Prefer ctx.gmx.markets if set (base -> market); otherwise derive from MARKET_LEGS.
 function gmxMarketEntries(
   ctx: SimContext,
 ): Array<{ base: TokenSymbol; market: Address }> {
@@ -367,22 +367,22 @@ function gmxMarketEntries(
   const entries = marketsFor("gmx")
     .filter((m) => m.gmx)
     .map((m) => ({ base: m.base, market: m.gmx!.market }));
-  // WETH market は ctx.gmx.market（setupGlobal が確定したアドレス）を一次情報にして互換維持。
+  // For the WETH market, treat ctx.gmx.market (the address finalized by setupGlobal) as the source of truth to preserve compatibility.
   return entries.map((e) =>
     e.base === "WETH" ? { base: e.base, market: ctx.gmx.market } : e,
   );
 }
 
 function looseAcceptablePrice(isLong: boolean, isIncrease: boolean): bigint {
-  // long増加 / short減少: price <= acceptable を満たすため max
-  // short増加 / long減少: price >= acceptable を満たすため 0
+  // long increase / short decrease: max, to satisfy price <= acceptable
+  // short increase / long decrease: 0, to satisfy price >= acceptable
   const wantMax = (isLong && isIncrease) || (!isLong && !isIncrease);
   return wantMax ? maxUint256 : 0n;
 }
 
-// GMX EventEmitter の eventData(hex)から ASCII 可読の reason 文字列を抽出する(デバッグ用)。
-// OrderCancelled の reason は ASCII 文字列(例 "OrderNotFulfillableAtAcceptablePrice")で
-// eventData に乗るため、6 文字以上の可読断片を拾えば真因が読める。
+// Extract an ASCII-readable reason string from GMX EventEmitter eventData (hex) (for debugging).
+// The OrderCancelled reason rides in eventData as an ASCII string (e.g. "OrderNotFulfillableAtAcceptablePrice"),
+// so picking up readable fragments of 6+ chars reveals the root cause.
 function asciiReason(data: string): string {
   const hex = data.startsWith("0x") ? data.slice(2) : data;
   let s = "";
@@ -532,7 +532,7 @@ function parse(obj: Record<string, unknown>): LeafAction | null {
   if (obj.collateral !== "WETH" && obj.collateral !== "USDC")
     throw new Error("collateral must be WETH or USDC");
   requireDecimalString(obj.sizeDeltaUsd, "sizeDeltaUsd");
-  // index market の base（既定 WETH = ETH/USD。ADR 0013）。WETH 以外は market が必要。
+  // Base of the index market (default WETH = ETH/USD; ADR 0013). Non-WETH bases require a market.
   const base = typeof obj.base === "string" ? obj.base : "WETH";
   if (base !== "WETH" && !marketFor("gmx", base)?.gmx)
     throw new Error(`gmx: no market for base "${base}"`);
@@ -591,7 +591,7 @@ function validate(
       if (collateralAmount > stableBalanceOf(balances, TOKENS.USDC.address))
         return { ok: false, reason: "collateralAmount exceeds balance" };
     } else {
-      // WETH 担保は native ETH を sendWnt で wrap して送るため、ETH 残高で担保+実行手数料を確認する
+      // WETH collateral is sent by wrapping native ETH via sendWnt, so check collateral + execution fee against the ETH balance
       if (collateralAmount + EXECUTION_FEE > balances.ethWei)
         return {
           ok: false,
@@ -602,7 +602,7 @@ function validate(
   return { ok: true };
 }
 
-// account の全 position を 1 回読む（market 走査の元データ）。
+// Read all of the account's positions in one call (source data for scanning markets).
 async function getAccountPositions(
   publicClient: PublicClient,
   account: Address,
@@ -615,8 +615,8 @@ async function getAccountPositions(
   })) as unknown as Position[];
 }
 
-// 指定 market アドレスの「建っている」position を取り出す（sizeInUsd>0）。
-// sizeInUsd===0 は実質ポジション無しとして undefined を返す（従来の observe/value 挙動と一致）。
+// Pick out the "open" position for the given market address (sizeInUsd>0).
+// sizeInUsd===0 is treated as effectively no position and returns undefined (matches prior observe/value behavior).
 function positionForMarket(
   positions: readonly Position[],
   market: Address,
@@ -627,7 +627,7 @@ function positionForMarket(
   return p && p.numbers.sizeInUsd !== 0n ? p : undefined;
 }
 
-// base の index トークン decimals（sizeInTokens のスケール）。既定 WETH=18 で従来と一致。
+// The base's index token decimals (the scale of sizeInTokens). Default WETH=18 matches prior behavior.
 function baseDecimals(base: TokenSymbol): number {
   return tokenInfo(base).decimals;
 }
@@ -646,10 +646,10 @@ function positionPnlUsd(
 }
 const FLOAT_PRECISION_NUM = 1e30;
 
-// position の USD 評価（担保 + PnL）。markPrice は index base の価格、wethPrice は WETH 担保
-// 評価用の WETH 価格（WETH market では markPrice と同値）。collateral が WETH なら WETH 価格、
-// USDC なら $1 換算。fork 既定（WETH market・WETH 担保・1e18）では従来式と byte 一致する
-// （markPrice===wethPrice なので (collateralAmount/1e18)*markPrice と一致）。
+// USD valuation of a position (collateral + PnL). markPrice is the index base's price; wethPrice is the
+// WETH price used to value WETH collateral (equal to markPrice on the WETH market). Collateral is valued
+// at the WETH price if WETH, or $1 if USDC. On the default fork (WETH market, WETH collateral, 1e18) this
+// is byte-identical to the prior formula (since markPrice===wethPrice, it matches (collateralAmount/1e18)*markPrice).
 function positionValueUsd(
   p: Position,
   markPrice: number,
@@ -665,8 +665,8 @@ function positionValueUsd(
   return collateralUsd + positionPnlUsd(p, markPrice, base);
 }
 
-// Position -> GmxPositionObservation。entryPrice / pnl は base decimals で一般化。
-// 既定 WETH（18 decimals）では従来式と byte 一致する。
+// Position -> GmxPositionObservation. entryPrice / pnl are generalized over base decimals.
+// Byte-identical to the prior formula for the default WETH (18 decimals).
 function gmxPositionObservation(
   p: Position,
   markPrice: number,
@@ -694,8 +694,8 @@ function gmxPositionObservation(
 }
 
 // ---------------------------------------------------------------------------
-// 歴史ブロック再構成（ADR 0006 §4）: blockNumber 指定 multicall で使う読取記述子と、
-// その結果から valueUsdc と同じ式でポジション価値を出す純粋関数。
+// Historical-block reconstruction (ADR 0006 §4): the read descriptor used by the blockNumber-pinned
+// multicall, plus a pure function that derives position value from its result using the same formula as valueUsdc.
 // ---------------------------------------------------------------------------
 
 export function gmxAccountPositionsCall(account: Address) {
@@ -707,8 +707,8 @@ export function gmxAccountPositionsCall(account: Address) {
   } as const;
 }
 
-// 後方互換シグネチャ（reconstruct が import）。WETH(ETH/USD) market のみ markPrice で評価する。
-// WBTC 等の市場は reconstruct が WETH 価格しか渡せないため当面評価対象外（後続 Phase で対応）。
+// Backward-compatible signature (imported by reconstruct). Values only the WETH (ETH/USD) market at markPrice.
+// Markets like WBTC are out of scope for now since reconstruct can only pass the WETH price (handled in a later Phase).
 export function gmxEthUsdPositionValueUsd(
   positions: readonly Position[] | undefined,
   markPrice: number,
@@ -724,7 +724,7 @@ export const gmxAdapter: ProtocolAdapter = {
   id: "gmx",
   stableToken: TOKENS.USDC.address,
   parse,
-  bundleable: () => false, // keeper 実行が必要なため単独のみ
+  bundleable: () => false, // standalone only, since it needs keeper execution
   validate,
 
   async readState() {
@@ -733,7 +733,7 @@ export const gmxAdapter: ProtocolAdapter = {
 
   async observe(ctx, _state, agent, fairPrice): Promise<GmxObservation> {
     const positions = await getAccountPositions(ctx.publicClient, agent);
-    // WETH(ETH/USD) market は従来どおりトップレベルに載せる（byte 互換）。
+    // Keep the WETH (ETH/USD) market at the top level as before (byte-compatible).
     const wethMarketAddr = resolveGmxMarket(ctx, "WETH");
     const wethPos = positionForMarket(positions, wethMarketAddr);
     const obs: GmxObservation = {
@@ -743,7 +743,7 @@ export const gmxAdapter: ProtocolAdapter = {
         : {}),
     };
 
-    // WETH 以外の index market（WBTC 等）を markets に追加。fork 既定では空。
+    // Add non-WETH index markets (WBTC etc.) to markets. Empty on the default fork.
     const extra: Record<
       string,
       { marketPriceUsd: number; position?: GmxPositionObservation }
@@ -767,7 +767,7 @@ export const gmxAdapter: ProtocolAdapter = {
     return [buildOrderTx(owner, resolveGmxMarket(ctx, base), action)];
   },
 
-  // 競争ブロックで作成された注文を keeper が約定する
+  // The keeper fills orders created during the competition block
   async afterMine(
     ctx: SimContext,
     opts?: {
@@ -779,8 +779,8 @@ export const gmxAdapter: ProtocolAdapter = {
     },
   ): Promise<void> {
     if (!ctx.gmx.mockProvider) return;
-    // 範囲指定なら 1 回の getLogs でまとめて走査（realtime の追いつき分をブロックごとに
-    // 呼ぶより RPC が 1/N になる）。単一 blockNumber は旧形互換。
+    // With a range, scan it all in one getLogs (RPC is 1/N versus calling per block for the realtime
+    // catch-up). A single blockNumber keeps the old-form compatibility.
     const toBlock =
       opts?.toBlock ??
       opts?.blockNumber ??
@@ -810,8 +810,8 @@ export const gmxAdapter: ProtocolAdapter = {
     for (const key of keys) {
       try {
         if (opts?.noMine) {
-          // realtime: mine も increaseTime もしない。次ブロックに載せるだけ
-          //（時間は interval mining が実時間で進める）。
+          // realtime: neither mine nor increaseTime. Just place it in the next block
+          // (time is advanced in real time by interval mining).
           const block = await ctx.publicClient.getBlock();
           const baseFee = block.baseFeePerGas ?? 0n;
           const dbgHash = await ctx.walletClient.sendTransaction({
@@ -827,8 +827,8 @@ export const gmxAdapter: ProtocolAdapter = {
             maxFeePerGas: baseFee + fee,
             maxPriorityFeePerGas: fee,
           });
-          // 真因究明(ERIS_GMX_KEEPER_DEBUG=1): receipt を待ち OrderCancelled の reason を stderr へ。
-          // env gate なので通常 run には影響しない（receipt 待ちのブロッキングもデバッグ時のみ）。
+          // Root-cause investigation (ERIS_GMX_KEEPER_DEBUG=1): wait for the receipt and write the OrderCancelled reason to stderr.
+          // env-gated, so it does not affect normal runs (the blocking receipt wait is debug-only too).
           if (process.env.ERIS_GMX_KEEPER_DEBUG === "1") {
             try {
               const rcpt = await ctx.publicClient.waitForTransactionReceipt({
@@ -885,8 +885,8 @@ export const gmxAdapter: ProtocolAdapter = {
         await mine(ctx.publicClient);
         await ctx.publicClient.waitForTransactionReceipt({ hash });
       } catch (error) {
-        // 約定失敗（acceptablePrice 等）はスキップ。GMX が自動でキャンセル/返金する。
-        // 全件失敗が常態化（oracle 設定不備等）した場合に気づけるよう stderr に記録する。
+        // Skip fill failures (acceptablePrice etc.). GMX auto-cancels/refunds them.
+        // Log to stderr so a persistent all-failures state (e.g. misconfigured oracle) is noticeable.
         console.error(
           `gmx keeper executeOrder failed: key=${key} ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -898,8 +898,8 @@ export const gmxAdapter: ProtocolAdapter = {
   async valueUsdc(ctx, agent, _state, fairPrice): Promise<number> {
     const positions = await getAccountPositions(ctx.publicClient, agent);
     const wethPrice = baseFairPrice(ctx, "WETH", fairPrice);
-    // 全 gmx market の position 価値を当該 base の fair price で合算する。
-    // fork 既定（WETH 1 market）では従来式と byte 一致（markPrice=wethPrice=fairPrice）。
+    // Sum position values across all gmx markets, each at its base's fair price.
+    // On the default fork (single WETH market) this is byte-identical to the prior formula (markPrice=wethPrice=fairPrice).
     let total = 0;
     for (const { base, market } of gmxMarketEntries(ctx)) {
       const pos = positionForMarket(positions, market);
@@ -912,7 +912,7 @@ export const gmxAdapter: ProtocolAdapter = {
   },
 
   async setupWallet(): Promise<BuiltTx[]> {
-    // USDC 担保用に Router を approve（WETH 担保は sendWnt で native 送付のため不要）
+    // Approve the Router for USDC collateral (not needed for WETH collateral, which is sent natively via sendWnt)
     return [
       {
         to: TOKENS.USDC.address,
@@ -941,7 +941,7 @@ export const gmxAdapter: ProtocolAdapter = {
     const keeper = accountAddress(ctx.keeperPk);
     const mock = await deployContract(ctx, "MockOracleProvider", []);
 
-    // ROLE_ADMIN を取得してロール付与
+    // Get ROLE_ADMIN and grant roles
     const admins = (await ctx.publicClient.readContract({
       address: GMX.RoleStore,
       abi: roleStoreAbi,
@@ -981,7 +981,7 @@ export const gmxAdapter: ProtocolAdapter = {
       );
     }
 
-    // DataStore: mock provider 有効化 + トークン割当 + 乖離チェック無効化（admin = CONTROLLER）
+    // DataStore: enable the mock provider + assign tokens + disable the deviation check (admin = CONTROLLER)
     await sendAndMine(
       ctx.publicClient,
       ctx.walletClient,
@@ -1037,7 +1037,7 @@ export const gmxAdapter: ProtocolAdapter = {
               c.walletClient,
               c.chain,
               c.adminPk,
-              // gas を明示して estimateGas（anvil の実行キュー待ち）を省く
+              // Set gas explicitly to skip estimateGas (which waits on anvil's execution queue)
               { ...tx, gas: 300_000n },
               opts.priorityFeeWei ?? 1_000_000_000n,
             )
@@ -1062,11 +1062,11 @@ export const gmxAdapter: ProtocolAdapter = {
           args: [TOKENS.USDC.address, toGmxPrice(1, 6), toGmxPrice(1, 6)],
         }),
       });
-      // ADR 0013: 追加 base（WBTC 等）の index token も更新する。fork 既定では
-      // ctx.gmx.markets が未設定 or WETH のみ → このループは空で従来と byte 一致。
-      // 価格は ctx.fairPrices[base]、無ければ fairPrice（WETH 価格）へフォールバック。
+      // ADR 0013: also update the index token of additional bases (WBTC etc.). On the default fork,
+      // ctx.gmx.markets is unset or WETH-only, so this loop is empty and byte-identical to before.
+      // Price is ctx.fairPrices[base], falling back to fairPrice (WETH price) if absent.
       for (const { base } of gmxMarketEntries(c)) {
-        if (base === "WETH") continue; // 上で更新済み
+        if (base === "WETH") continue; // already updated above
         const info = tokenInfo(base);
         await send({
           to: mock,

@@ -1,5 +1,5 @@
-// @aave/deploy-v3 の prebuilt artifact + deploy スクリプトを
-// 稼働中の anvil (localhost:8545) へ流し込むための最小 hardhat 設定。
+// Minimal hardhat config that runs the @aave/deploy-v3 prebuilt artifacts + deploy
+// scripts against a running anvil (localhost:8545).
 require("hardhat-deploy");
 require("@nomiclabs/hardhat-ethers");
 
@@ -13,17 +13,17 @@ module.exports = {
     settings: { optimizer: { enabled: true, runs: 100000 } },
   },
   networks: {
-    // anvil。saveDeployments で deployments/localhost/*.json にアドレスが書き出される。
+    // anvil. saveDeployments writes addresses out to deployments/localhost/*.json.
     localhost: {
       url: process.env.RPC_URL || "http://127.0.0.1:8545",
       chainId: 31337,
       live: false,
       saveDeployments: true,
-      // anvil のアンロック済みアカウントを使う (node 側で署名)
+      // Use anvil's unlocked accounts (signing happens on the node side)
     },
   },
   namedAccounts: { ...DEFAULT_NAMED_ACCOUNTS },
-  // prebuilt artifact と deploy スクリプトを外部パッケージから読み込む (再コンパイル不要)
+  // Load prebuilt artifacts and deploy scripts from the external package (no recompile)
   external: {
     contracts: [
       {

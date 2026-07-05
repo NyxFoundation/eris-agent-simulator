@@ -7,7 +7,7 @@ import { publicClient } from "./clients.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const ROOT = resolve(__dirname, "..");
 
-/** forge の out/<File>.sol/<Contract>.json から abi + bytecode を読む */
+/** Read abi + bytecode from forge's out/<File>.sol/<Contract>.json */
 export function loadForgeArtifact(
   file: string,
   contract: string,
@@ -20,7 +20,7 @@ export function loadForgeArtifact(
   return { abi: json.abi as Abi, bytecode: json.bytecode.object as Hex };
 }
 
-/** 任意の {abi, bytecode} 形式 JSON (vendor 配下のartifact) を読む */
+/** Read any {abi, bytecode} JSON (an artifact under vendor/) */
 export function loadJsonArtifact(absPath: string): { abi: Abi; bytecode: Hex } {
   const json = JSON.parse(readFileSync(absPath, "utf8"));
   const bytecode =
@@ -32,8 +32,8 @@ export function loadJsonArtifact(absPath: string): { abi: Abi; bytecode: Hex } {
 
 export async function waitTx(hash: Hex) {
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
-  // viem は revert でも receipt を返す（throw しない）。silent revert を見逃すと
-  // 「デプロイ成功したのにプールが空」等の沈黙バグになるため status を必ず検査する。
+  // viem returns a receipt even on revert (it does not throw). Missing a silent revert
+  // leads to quiet bugs like "deploy succeeded but the pool is empty", so always check status.
   if (receipt.status !== "success") {
     throw new Error(`tx reverted: ${hash} (block ${receipt.blockNumber})`);
   }
@@ -57,7 +57,7 @@ export function assert(cond: boolean, msg: string) {
   if (!cond) throw new Error(`assertion failed: ${msg}`);
 }
 
-/** Uniswap V3 の sqrtPriceX96 を「token1 / token0」価格から算出 */
+/** Compute Uniswap V3 sqrtPriceX96 from a "token1 / token0" price */
 export function encodeSqrtRatioX96(amount1: bigint, amount0: bigint): bigint {
   const numerator = amount1 << 192n;
   const ratioX192 = numerator / amount0;

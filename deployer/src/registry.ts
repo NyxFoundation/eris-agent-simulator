@@ -32,7 +32,7 @@ function load(): Deployments {
     try {
       return JSON.parse(readFileSync(OUT_FILE, "utf8")) as Deployments;
     } catch {
-      /* 壊れていれば作り直す */
+      /* rebuild if corrupted */
     }
   }
   return empty();
@@ -64,7 +64,7 @@ export function flush() {
   writeFileSync(OUT_FILE, JSON.stringify(state, null, 2));
 }
 
-/** 全消し (フレッシュデプロイ開始時) */
+/** Wipe everything (at the start of a fresh deploy) */
 export function reset() {
   state = empty();
   flush();

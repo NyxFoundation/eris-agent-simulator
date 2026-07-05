@@ -5,13 +5,13 @@ import { loadForgeArtifact, waitTx, ok, info } from "./util.js";
 import { setTokens, setProtocol } from "./registry.js";
 
 /**
- * 共有 mock トークンをデプロイする。
- * - WETH (key=WETH) は WETH9 をデプロイ (deposit/withdraw 可能)
- * - それ以外は MockERC20 をデプロイし deployer へ初期 mint
- * 戻り値はトークン key -> address のマップ。
+ * Deploy the shared mock tokens.
+ * - WETH (key=WETH) deploys WETH9 (supports deposit/withdraw)
+ * - The rest deploy MockERC20 and mint an initial balance to the deployer
+ * Returns a map of token key -> address.
  */
 export async function deployTokens(): Promise<Record<string, Address>> {
-  info("共有 mock トークンをデプロイ");
+  info("Deploying the shared mock tokens");
   const weth9 = loadForgeArtifact("WETH9", "WETH9");
   const erc20 = loadForgeArtifact("MockERC20", "MockERC20");
   const result: Record<string, Address> = {};
@@ -58,19 +58,19 @@ export async function deployTokens(): Promise<Record<string, Address>> {
     ok(`${spec.symbol} (${spec.decimals}d)`, addr);
   }
 
-  // deployer の WETH を確保: ETH を一部 wrap しておく
+  // Ensure the deployer has WETH: wrap some ETH
   await wrapWeth(result.WETH, parseUnits("10000", 18));
 
   setTokens(result);
 
-  // Multicall3 を配置する。fork では canonical 0xcA11.. が既存だが、空 anvil には
-  // 無いため自前デプロイし registry に記録する (poc の採点 reconstruct / viem multicall 用)。
+  // Place Multicall3. On a fork the canonical 0xcA11.. already exists, but an empty anvil
+  // does not have it, so deploy our own and record it in the registry (for poc scoring reconstruct / viem multicall).
   await deployMulticall3();
 
   return result;
 }
 
-/** Multicall3 をデプロイし registry.common.multicall3 に記録 */
+/** Deploy Multicall3 and record it in registry.common.multicall3 */
 async function deployMulticall3() {
   const mc = loadForgeArtifact("Multicall3", "Multicall3");
   const hash = await deployerWallet.deployContract({
@@ -86,7 +86,7 @@ async function deployMulticall3() {
   ok("Multicall3", addr);
 }
 
-/** deployer の ETH を WETH9 に deposit する */
+/** Deposit the deployer's ETH into WETH9 */
 export async function wrapWeth(weth: Address, amount: bigint) {
   const weth9 = loadForgeArtifact("WETH9", "WETH9");
   const hash = await deployerWallet.writeContract({

@@ -37,19 +37,19 @@ import { accountAddress } from "../chain.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
 const KIND_GIVEN_IN = 0;
-// 価格プローブ量（base 単位）。decimals を一般化して base ごとに 0.1 単位を投げる。
+// Price probe amount (in base units). Generalizes over decimals, sending 0.1 unit per base.
 const PROBE_BASE_FRACTION = 0.1;
 const NO_USERDATA = "0x" as Hex;
 
 type BalancerMarketState = {
   market: MarketConfig;
-  priceUsdcPerWeth: number; // base/USD（命名は WETH 互換。値は当該 base の price）
+  priceUsdcPerWeth: number; // base/USD (name kept WETH-compatible; value is this base's price)
 };
 
 type BalancerState = {
-  // WETH market（後方互換でトップレベル維持）。
+  // WETH market (kept at top level for backward compatibility).
   priceUsdcPerWeth: number;
-  // 全 balancer market（WETH 含む）。fork 既定では WETH のみ。
+  // All balancer markets (including WETH). WETH only on the default fork.
   markets: BalancerMarketState[];
 };
 
@@ -65,7 +65,7 @@ function legOf(market: MarketConfig) {
   return market.balancer;
 }
 
-// swap の tokenIn(base|quote シンボル) -> in/out アドレス（market の base / leg.stable）。
+// swap tokenIn (base|quote symbol) -> in/out addresses (market's base / leg.stable).
 function swapLeg(
   market: MarketConfig,
   tokenIn: TokenSymbol,
@@ -112,8 +112,8 @@ async function querySwapOut(
   }) as bigint;
 }
 
-// 当該 market の base/USD を querySwap で導出（base→stable の out を probe 量で割る）。
-// decimals 一般化: probe = 0.1 base、price = out/quoteScale / (probe/baseScale)。
+// Derive this market's base/USD via querySwap (divide the base->stable out by the probe amount).
+// Decimals generalized: probe = 0.1 base, price = out/quoteScale / (probe/baseScale).
 export async function getBalancerPriceFor(
   publicClient: PublicClient,
   market: MarketConfig,
@@ -132,7 +132,7 @@ export async function getBalancerPriceFor(
   return outQuote / PROBE_BASE_FRACTION;
 }
 
-// 後方互換: WETH market の USDC per WETH。
+// Backward compatible: WETH market's USDC per WETH.
 export async function getBalancerPrice(
   publicClient: PublicClient,
 ): Promise<number> {
@@ -159,8 +159,8 @@ export async function getBalancerState(
 function applySlippage(amount: bigint, slippageBps: number): bigint {
   return (amount * BigInt(10_000 - slippageBps)) / 10_000n;
 }
-// Date.now() ベースだと evm_increaseTime で EVM time が wall clock を追い越した時に
-// "Transaction too old" になる。実害のない MEV 保護用フィールドなので遠未来定数を使う。
+// A Date.now()-based value causes "Transaction too old" once evm_increaseTime pushes EVM time
+// past the wall clock. This is a harmless MEV-protection field, so use a far-future constant.
 function deadline(): bigint {
   return BigInt(2 ** 32 - 1); // ~ year 2106
 }
@@ -172,7 +172,7 @@ function requireDecimalString(
     throw new Error(`${name} must be a decimal integer string`);
 }
 
-// action.base（既定 WETH）を読み、当該 market を解決する（parse 用）。
+// Read action.base (default WETH) and resolve the corresponding market (for parse).
 function parseBase(obj: Record<string, unknown>): {
   base: string;
   market: MarketConfig;
@@ -229,8 +229,8 @@ function validate(
   const market = marketFor("balancer", base);
   if (!market) return { ok: false, reason: `no balancer market for ${base}` };
   const inIsBase = action.tokenIn === market.base;
-  // ADR 0013: per-round 上限を全 base で適用。base 側は per-base 上限（WETH=maxWethInWei、追加 base は
-  // limits.baseLimits[base]。"0"=上限なし）。quote 側は共有 maxUsdcInUnits。WETH は byte 互換。
+  // ADR 0013: apply the per-round limit to every base. The base side uses per-base limits (WETH=maxWethInWei;
+  // additional bases use limits.baseLimits[base]; "0"=no limit). The quote side uses the shared maxUsdcInUnits. WETH is byte-compatible.
   if (inIsBase) {
     const maxBaseIn =
       base === "WETH"
@@ -322,11 +322,11 @@ export const balancerAdapter: ProtocolAdapter = {
     const s = state as BalancerState;
     const weth =
       s.markets.find((m) => m.market.base === "WETH") ?? s.markets[0];
-    // 観測はプールの実勢（querySwap 見積り）を報告する。fairPrices は state が読めなかった
-    // ときの最後のフォールバックにすぎない。逆順（fairPrices 優先）にすると agent の観測から
-    // プール価格が消えて fair に固定され、cross-venue 戦略が実在しないスプレッドを永遠に
-    // 追いかける（ADR 0013 の 2da82e6 で混入。calm regime 60blk で −1,700 USDC/体の系統損と
-    // して顕在化した実バグ）。
+    // The observation reports the pool's live price (querySwap estimate). fairPrices is only the
+    // last fallback for when state could not be read. Reversing the order (fairPrices first) makes
+    // the pool price disappear from the agent's observation and pins it to fair, so cross-venue
+    // strategies chase a spread that does not exist forever (introduced in ADR 0013's 2da82e6; a real
+    // bug that surfaced as a systematic loss of -1,700 USDC/agent over a 60blk calm regime).
     const obs: AmmObservation = {
       priceUsdcPerWeth:
         weth?.priceUsdcPerWeth ?? ctx.fairPrices?.["WETH"] ?? fairPrice,
@@ -370,16 +370,16 @@ export const balancerAdapter: ProtocolAdapter = {
     return txs;
   },
 
-  // フォーク時点で枯渇しているため admin が join して seed する。
-  // seed は WETH market のみ（WBTC プールの seed は deployer 側の別作業）。
+  // The pool is empty at the fork point, so admin joins and seeds it.
+  // Only the WETH market is seeded here (seeding the WBTC pool is separate work on the deployer side).
   async setupGlobal(ctx: SimContext): Promise<void> {
-    // ローカルデプロイでは同梱 deployer/ が既に WETH/USDC プールを seed 済み
-    // (2 トークン 80/20)。poc 側の 3 トークン INIT join は不要かつ構成不一致で壊れるためスキップ。
+    // On local deploy the bundled deployer/ has already seeded the WETH/USDC pool
+    // (2 tokens, 80/20). The poc-side 3-token INIT join is unnecessary and breaks on the config mismatch, so skip it.
     if (ctx.config.localDeploy) {
       return;
     }
     const admin = accountAddress(ctx.adminPk);
-    // admin に seed トークンを用意（WETH は wrap、stable は deal）
+    // Prepare seed tokens for admin (wrap for WETH, deal for the stables)
     await sendAndMine(
       ctx.publicClient,
       ctx.walletClient,

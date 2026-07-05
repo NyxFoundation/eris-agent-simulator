@@ -1,15 +1,15 @@
 /**
- * llm.ts: 素の LLM 呼び出し 1 関数（ADR 0015 §4。プロバイダ切替のみ）。
+ * llm.ts: a single bare LLM-call function (ADR 0015 §4; provider switching only).
  *
- * - ollama 系（既定）: JSON mode（format:"json"）。system prompt の <schema> と併用する
- *   Hermes JSON mode パターン（NousResearch/Hermes-Function-Calling）
- * - claude 系（model が "claude" で始まる）: Anthropic SDK の tool use で structured output
+ * - ollama family (default): JSON mode (format:"json"). The Hermes JSON mode pattern used
+ *   together with the system prompt's <schema> (NousResearch/Hermes-Function-Calling)
+ * - claude family (model starts with "claude"): structured output via the Anthropic SDK's tool use
  *
- * 環境変数（旧 ollamaStrategist と同じ慣習）:
- *   ERIS_OLLAMA_BASE_URL  既定 https://ollama.com/api（ローカルは http://127.0.0.1:11434/api）
- *   ERIS_OLLAMA_API_KEY / OLLAMA_API_KEY  Ollama Cloud の Bearer トークン（ローカルは不要）
- *   ANTHROPIC_API_KEY     claude 系のとき必須
- *   ERIS_LLM_CALL_TIMEOUT_MS  1 呼び出しのタイムアウト（既定 60000）
+ * Environment variables (same conventions as the old ollamaStrategist):
+ *   ERIS_OLLAMA_BASE_URL  default https://ollama.com/api (local is http://127.0.0.1:11434/api)
+ *   ERIS_OLLAMA_API_KEY / OLLAMA_API_KEY  Ollama Cloud Bearer token (not needed locally)
+ *   ANTHROPIC_API_KEY     required for the claude family
+ *   ERIS_LLM_CALL_TIMEOUT_MS  timeout for one call (default 60000)
  */
 export type LlmMessage = { role: "user" | "assistant"; content: string };
 
@@ -17,16 +17,16 @@ export type LlmRequest = {
   model: string;
   system: string;
   messages: LlmMessage[];
-  // claude 系 tool use に渡す action の JSON Schema（ollama 系では未使用 = <schema> が担う）。
+  // JSON Schema of the action passed to claude-family tool use (unused for the ollama family = <schema> handles it).
   jsonSchema?: Record<string, unknown>;
-  // false で自由テキスト応答（prompt 改訂など）。既定 true = JSON mode。
+  // false for a free-text response (e.g. prompt revision). Default true = JSON mode.
   json?: boolean;
 };
 
 const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/api";
 const CALL_TIMEOUT_MS = Number(process.env.ERIS_LLM_CALL_TIMEOUT_MS ?? "60000");
 
-// 1 回の LLM 呼び出し。応答テキスト（JSON 文字列を期待）を返す。パース/検証は呼び側（bot.ts）。
+// A single LLM call. Returns the response text (a JSON string is expected). Parsing/validation is the caller's job (bot.ts).
 export async function callLlm(req: LlmRequest): Promise<string> {
   if (req.model.startsWith("claude")) return callClaude(req);
   return callOllama(req);
@@ -63,13 +63,13 @@ async function callOllama(req: LlmRequest): Promise<string> {
   return content;
 }
 
-// Anthropic client は memo 化（validate 再試行で 1 サイクル最大 4 回呼ぶため）。
+// Memoize the Anthropic client (validation retries call it up to 4 times per cycle).
 let anthropicClient: InstanceType<
   (typeof import("@anthropic-ai/sdk"))["default"]
 > | null = null;
 
 async function callClaude(req: LlmRequest): Promise<string> {
-  // Anthropic SDK は optional 依存（ollama 系だけ使う環境でロードさせない）。
+  // The Anthropic SDK is an optional dependency (don't load it in an environment that only uses the ollama family).
   if (!anthropicClient) {
     const { default: Anthropic } = await import("@anthropic-ai/sdk");
     anthropicClient = new Anthropic();

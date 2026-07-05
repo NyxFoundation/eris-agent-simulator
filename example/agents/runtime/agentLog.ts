@@ -1,21 +1,22 @@
 /**
- * agentLog: エージェントが「自分の行動ログ」を残すための共有ヘルパー（ADR 0015 runtime）。
+ * agentLog: shared helper for an agent to record its own action log (ADR 0015 runtime).
  *
- * coordinator が渡す環境変数から出力先を決め、各ラウンドの判断を
- * runs/<runId>/agents/<agentId>.jsonl に 1 行ずつ追記する。run 後の診断・戦略改善は
- * このログを一次情報として読む（判断理由・シグナル・内部状態）。
+ * The output location is derived from the environment variables the coordinator passes,
+ * and each round's decision is appended one line at a time to
+ * runs/<runId>/agents/<agentId>.jsonl. Post-run diagnostics and strategy improvement read
+ * this log as their primary source (decision reason / signals / internal state).
  *
- * 使い方: bot.ts が ctx.log として agent へ渡す。直接使う場合は
+ * Usage: bot.ts passes it to the agent as ctx.log. To use it directly:
  *   import { createAgentLog } from "../runtime/agentLog.js";
  *   const log = createAgentLog();
  *   log({ round, action, reason, signals, state });
  *
- * 環境変数:
- *   ERIS_RUN_DIR   出力先 run ディレクトリ（coordinator が渡す）
- *   ERIS_AGENT_ID  エージェント識別子
+ * Environment variables:
+ *   ERIS_RUN_DIR   output run directory (passed by the coordinator)
+ *   ERIS_AGENT_ID  agent identifier
  *
- * 注: coordinator 配下でない（ERIS_RUN_DIR 未設定の）場合はログは no-op。
- *     ログ書込の失敗は戦略実行を止めない（握りつぶす）。
+ * Note: when not running under the coordinator (ERIS_RUN_DIR unset) the log is a no-op.
+ *       A log write failure never stops strategy execution (it is swallowed).
  */
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -26,15 +27,16 @@ export type { AgentLogEntry };
 
 export type AgentLog = (entry: AgentLogEntry) => void;
 
-// runs/<runDir>/agents/<agentId><suffix>.jsonl への低レベル追記。
-// 行動ログ（createAgentLog）と mempool 自己申告（send.ts）が同じファイル（suffix なし）に書き、
-// LLM 対話ログ（bot.ts の ERIS_PROMPT_LOG_CALLS）が別ファイル（suffix ".llm"）に書くための共用実装。
+// Low-level append to runs/<runDir>/agents/<agentId><suffix>.jsonl.
+// Shared implementation so the action log (createAgentLog) and mempool self-reports (send.ts)
+// write to the same file (no suffix), while the LLM conversation log (bot.ts's
+// ERIS_PROMPT_LOG_CALLS) writes to a separate file (suffix ".llm").
 export function createJsonlAppender(
   runDir: string | undefined,
   agentId: string,
   suffix = "",
 ): (record: Record<string, unknown>) => void {
-  if (!runDir) return () => {}; // coordinator 配下でなければ何もしない
+  if (!runDir) return () => {}; // do nothing when not running under the coordinator
   const dir = join(runDir, "agents");
   const path = join(dir, `${agentId}${suffix}.jsonl`);
   let ready = false;
@@ -51,7 +53,7 @@ export function createJsonlAppender(
       });
       appendFileSync(path, `${line}\n`);
     } catch {
-      // ログ失敗は戦略実行に影響させない
+      // a log failure must not affect strategy execution
     }
   };
 }

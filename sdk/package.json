@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "eris-competition の契約レイヤ（ADR 0015）。環境(core)と参加者(example)の両方が依存する型・action スキーマ・チェーン IO・protocol アダプタ。",
+  "description": "Contract layer for eris-competition (ADR 0015). Types, action schema, chain IO, and protocol adapters that both the environment (core) and participants (example) depend on.",
   "exports": {
     ".": "./src/index.ts",
     "./*.js": "./src/*.ts",

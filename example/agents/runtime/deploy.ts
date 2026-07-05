@@ -1,16 +1,16 @@
 /**
- * deploy.ts: 参加者コントラクトのデプロイヘルパ（ADR 0015 §1）。
+ * deploy.ts: helper to deploy participant contracts (ADR 0015 §1).
  *
- * venue のデプロイは環境の仕事（deployer/）。ここは flash-arb executor のような
- * 「参加者が自分の鍵で自分のコントラクトを立てる」ためのヘルパ。forge artifact
- * （out/<Name>.sol/<Name>.json）は sdk の readForgeArtifact で読む（既定 repo ルートの
- * out/、提出 bundle 等レイアウトが違う場合は ERIS_FORGE_OUT で上書き）。
+ * Deploying venues is the environment's job (deployer/). This is a helper for a participant
+ * to stand up their own contract with their own key, like the flash-arb executor. The forge
+ * artifact (out/<Name>.sol/<Name>.json) is read via sdk's readForgeArtifact (default out/ at the
+ * repo root; override with ERIS_FORGE_OUT when the layout differs, e.g. a submission bundle).
  */
 import type { Address, Chain, Hex, PublicClient, WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { readForgeArtifact } from "@eris/sdk/forge.js";
 
-// 自分の鍵でコントラクトをデプロイし、デプロイ先アドレスを返す（receipt 待ち）。
+// Deploy a contract with your own key and return the deployed address (waits for the receipt).
 export async function deployArtifact(opts: {
   publicClient: PublicClient;
   walletClient: WalletClient;

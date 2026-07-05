@@ -1,7 +1,7 @@
-// 清算デモ(GitHub #1)。ERIS_LIQUIDATION_DEMO=1 のときだけ coordinator から使う。
-// victim ウォレットに過剰レバレッジの Aave ポジションを開かせ、shockRound 以降に Aave WETH
-// オラクルを引き下げて HF<1 にし、liquidator agent が liquidationCall で清算できる状況を作る。
-// 既定 off なので通常の run/テストには一切影響しない。
+// Liquidation demo (GitHub #1). Used by the coordinator only when ERIS_LIQUIDATION_DEMO=1.
+// Has a victim wallet open an over-leveraged Aave position, then from shockRound onward lowers the Aave
+// WETH oracle to make HF<1, creating a situation where the liquidator agent can liquidate via liquidationCall.
+// Off by default, so it has no effect on normal runs/tests.
 import {
   encodeFunctionData,
   keccak256,
@@ -27,12 +27,12 @@ import type { SimContext } from "@eris/sdk/protocols/types.js";
 const AAVE_STABLE = TOKENS.USDC.address;
 const VARIABLE_RATE = 2n;
 
-// デモ用の固定鍵（正本は sdk/src/wellKnown.ts。agent と共有する契約）。
+// Fixed keys for the demo (canonically defined in sdk/src/wellKnown.ts. contract shared with agents).
 import { VICTIM_ADDRESS, VICTIM_PRIVATE_KEY } from "@eris/sdk/wellKnown.js";
 
 export { VICTIM_ADDRESS, VICTIM_PRIVATE_KEY };
 
-// victim に資金を入れ Aave Pool へ approve(setup フェーズで 1 回)。
+// Fund the victim and approve the Aave Pool (once, during the setup phase).
 export async function setupVictim(ctx: SimContext): Promise<void> {
   const { publicClient, walletClient, chain, config } = ctx;
   await fundWallet(
@@ -42,7 +42,7 @@ export async function setupVictim(ctx: SimContext): Promise<void> {
     VICTIM_PRIVATE_KEY,
     1_000_000_000_000_000_000n, // 1 ETH (gas)
     config.liquidationVictimSupplyWethWei + 1_000_000_000_000_000_000n, // supply + buffer
-    1_000_000n, // 1 USDC(端数)
+    1_000_000n, // 1 USDC (dust)
   );
   for (const tx of [
     approveTx(TOKENS.WETH.address, AAVE.Pool),
@@ -55,7 +55,7 @@ export async function setupVictim(ctx: SimContext): Promise<void> {
   }
 }
 
-// victim が WETH を supply → 借入余力ほぼ満額の USDC を borrow(HF を 1 付近に置く)。
+// The victim supplies WETH -> borrows USDC at nearly the full borrow capacity (puts HF near 1).
 export async function openVictimPosition(ctx: SimContext): Promise<void> {
   const { publicClient, walletClient, chain, config } = ctx;
   await sendAndMine(publicClient, walletClient, chain, VICTIM_PRIVATE_KEY, {
@@ -77,7 +77,7 @@ export async function openVictimPosition(ctx: SimContext): Promise<void> {
     functionName: "getUserAccountData",
     args: [VICTIM_ADDRESS],
   })) as readonly bigint[];
-  // availableBorrowsBase は USD 8 桁。USDC(6 桁)へ: /1e2。安全側に 99%。
+  // availableBorrowsBase is USD 8-digit. To USDC (6-digit): /1e2. 99% to stay on the safe side.
   const borrowUsdc = (acc[2] * 99n) / 10_000n;
   if (borrowUsdc > 0n) {
     await sendAndMine(publicClient, walletClient, chain, VICTIM_PRIVATE_KEY, {
@@ -91,8 +91,8 @@ export async function openVictimPosition(ctx: SimContext): Promise<void> {
   }
 }
 
-// Aave WETH オラクルを fairPrice から shockBps 分だけ引き下げて victim を HF<1 にする。
-// updateOracles が毎ラウンド fairPrice に戻すため、その直後に上書きする。
+// Lower the Aave WETH oracle from fairPrice by shockBps to bring the victim to HF<1.
+// updateOracles resets it to fairPrice each round, so overwrite it immediately afterward.
 export async function applyOracleShock(
   ctx: SimContext,
   fairPrice: number,
@@ -117,7 +117,7 @@ export async function applyOracleShock(
   await mine(ctx.publicClient);
 }
 
-// victim の現在 HF(1e18 = 1.0)。可視化用。
+// The victim's current HF (1e18 = 1.0). For visualization.
 export async function victimHealthFactor(ctx: SimContext): Promise<bigint> {
   const acc = (await ctx.publicClient.readContract({
     address: AAVE.Pool,
@@ -129,22 +129,23 @@ export async function victimHealthFactor(ctx: SimContext): Promise<bigint> {
 }
 
 // ---------------------------------------------------------------------------
-// realtime 一般化（ADR 0009 §4）: 清算を成立させる seed 由来 victim 群
+// realtime generalization (ADR 0009 §4): a seed-derived victim cohort that makes liquidation happen
 //
-// realtime（src/realtime/coordinator.ts）では同期 sim の applyOracleShock 後上書きは使わない。
-// crash は effective price（base × wethMult）が Aave WETH オラクルへ mempool 経由で焼かれるため、
-// victim の HF は自然に割れる（採点・PriceFeed と整合）。ここでは victim 群を setup フェーズで
-// 建てるだけ（HF≈H0）。victim は採点対象外（liquidator agent の利益源）。
+// In realtime (src/realtime/coordinator.ts) the synchronous sim's post-applyOracleShock overwrite is
+// not used. Because a crash bakes the effective price (base × wethMult) into the Aave WETH oracle via
+// the mempool, the victims' HF breaks naturally (consistent with scoring and PriceFeed). Here we only
+// build the victim cohort in the setup phase (HF≈H0). Victims are excluded from scoring (a profit source
+// for the liquidator agent).
 //
-// 【ハード要件】fresh state が必須: victim を毎 run 建てるため、soft-reset（anvil_reset []）だと
-// 前 run の victim ポジが残留・スタックして HF 計算が壊れる。fork は full re-fork（ARB_RPC_URL）、
-// ローカルデプロイは resetFork の snapshot/revert クリーン断面で満たす（呼び側 coordinator が
-// fail-fast で検査する。ADR 0009 §4 / ADR 0016 §2）。
+// [HARD REQUIREMENT] fresh state is required: since victims are built every run, with a soft-reset
+// (anvil_reset []) the previous run's victim positions linger/stick and the HF calculation breaks.
+// A fork satisfies this via a full re-fork (ARB_RPC_URL); a local deploy via resetFork's snapshot/revert
+// clean slice (the calling coordinator fail-fast checks this. ADR 0009 §4 / ADR 0016 §2).
 // ---------------------------------------------------------------------------
 
 export type StressVictim = { id: string; privateKey: Hex; address: Address };
 
-// seed 由来鍵の victim 群を導出（regime ごとに決定論再現。アドレスは seed で確定）。
+// Derive the victim cohort from seed-derived keys (deterministically reproducible per regime. addresses are fixed by seed).
 export function deriveStressVictims(
   seed: number,
   count: number,
@@ -163,7 +164,7 @@ export function deriveStressVictims(
   return victims;
 }
 
-// 各 victim に資金を入れ Aave Pool へ approve（setup フェーズで 1 回。interval mining 前）。
+// Fund each victim and approve the Aave Pool (once, during the setup phase. before interval mining).
 export async function setupStressVictims(
   ctx: SimContext,
   victims: StressVictim[],
@@ -175,9 +176,9 @@ export async function setupStressVictims(
       walletClient,
       chain,
       v.privateKey,
-      1_000_000_000_000_000_000n, // 1 ETH(gas)
+      1_000_000_000_000_000_000n, // 1 ETH (gas)
       config.stressVictimSupplyWethWei + 1_000_000_000_000_000_000n, // supply + buffer
-      1_000_000n, // 1 USDC（端数。victim は USDC を借りるので初期在庫は不要）
+      1_000_000n, // 1 USDC (dust. victims borrow USDC, so no initial inventory is needed)
     );
     for (const tx of [
       approveTx(TOKENS.WETH.address, AAVE.Pool),
@@ -191,13 +192,13 @@ export async function setupStressVictims(
   }
 }
 
-// borrow を LTV 縁から離す余裕（read→execute 間の僅かな状態変化で revert しないように）。
-// availableBorrowsBase の 97% を上限とする。これ未満に targetUsdc が収まらない HF0 は LTV 縁に
-// 張り付くので feasibility エラーにする（旧コードは 99% にサイレントにクランプし、3 体目以降が
-// margin で revert → debt=0 のまま競争に入る不具合があった。ADR 0009 §4 訂正）。
+// Headroom to keep the borrow off the LTV edge (so a tiny state change between read->execute doesn't
+// revert). Cap at 97% of availableBorrowsBase. An HF0 where targetUsdc doesn't fit under this clings to
+// the LTV edge, so raise a feasibility error (the old code silently clamped to 99%, so from the 3rd victim
+// on the borrow reverted at the margin -> entered the competition with debt=0. ADR 0009 §4 fix).
 const VICTIM_LTV_HEADROOM_BPS = 9_700n;
 
-// 1 victim 分の口座データ（getUserAccountData）。
+// Account data for one victim (getUserAccountData).
 async function victimAccountData(
   ctx: SimContext,
   address: Address,
@@ -210,9 +211,10 @@ async function victimAccountData(
   })) as readonly bigint[];
 }
 
-// tx を送って効果がチェーンに載ったかを検証し、未反映なら 1 回リトライする。
-// full re-fork setup 下では sendAndMine が稀に取りこぼす（毎回別 victim が落ちる transient な
-// mining race を実測）。sendAndMine は tx status を見ないため、効果を再読取で確認するのが確実。
+// Send a tx and verify the effect landed on chain, retrying once if not reflected.
+// Under full re-fork setup, sendAndMine occasionally drops it (a transient mining race was observed
+// where a different victim fails each time). sendAndMine doesn't check tx status, so re-reading to
+// confirm the effect is the reliable approach.
 async function sendVerified(
   ctx: SimContext,
   victim: StressVictim,
@@ -232,13 +234,13 @@ async function sendVerified(
   throw new Error(`stress victim ${victim.id}: ${failMessage}`);
 }
 
-// 各 victim が WETH を supply → 目標 HF（hf0）になるよう USDC を borrow する。
-// 較正（ADR 0009 §4。自由パラメータではない）:
-//   WETH 担保・USDC 債務の victim は HF = (W·P·LT)/D。目標債務 D* = C·LT/HF0 で建てると HF≈HF0。
-//   crash 後の HF は HF0·(1−m) なので m > (HF0−1)/HF0 で清算。
-//   ただし HF0 は LTV 上限（D ≤ C·LTV）を満たす必要があり、余裕込みで
-//   HF0 ≳ LT/(0.97·LTV)（実測 Arbitrum WETH の LT=0.84/LTV=0.80 では ≈1.08）でないと建てられない。
-//   この境界を割ると借入が LTV 縁に張り付いて revert するため、満たせない HF0 は fail-fast する。
+// Each victim supplies WETH -> borrows USDC to reach the target HF (hf0).
+// Calibration (ADR 0009 §4. not a free parameter):
+//   For a victim with WETH collateral and USDC debt, HF = (W·P·LT)/D. Building at target debt
+//   D* = C·LT/HF0 gives HF≈HF0. Post-crash HF is HF0·(1−m), so liquidation at m > (HF0−1)/HF0.
+//   However HF0 must satisfy the LTV cap (D ≤ C·LTV), and with headroom it can only be built if
+//   HF0 ≳ LT/(0.97·LTV) (with measured Arbitrum WETH LT=0.84/LTV=0.80, ≈1.08).
+//   Below this boundary the borrow clings to the LTV edge and reverts, so an unsatisfiable HF0 fail-fasts.
 export async function openStressVictimPositions(
   ctx: SimContext,
   victims: StressVictim[],
@@ -247,7 +249,7 @@ export async function openStressVictimPositions(
   const { config } = ctx;
   const h0Bps = BigInt(Math.round(hf0 * 10_000));
   for (const v of victims) {
-    // supply（担保が載ったかを検証し、transient 取りこぼしは 1 回リトライ）
+    // supply (verify the collateral landed, retrying once on a transient drop)
     const supplyData = encodeFunctionData({
       abi: aavePoolAbi,
       functionName: "supply",
@@ -267,14 +269,14 @@ export async function openStressVictimPositions(
         "Likely a transient setup mining race or a reverted supply (check reserve caps/flags). ADR 0009 §4",
     );
     // acc: [totalCollateralBase, totalDebtBase, availableBorrowsBase,
-    //       currentLiquidationThreshold(bps), ltv(bps), healthFactor(1e18)]（USD は 8 桁）
+    //       currentLiquidationThreshold(bps), ltv(bps), healthFactor(1e18)] (USD is 8-digit)
     const collateralUsd8 = acc[0];
     const availUsd8 = acc[2];
     const ltBps = acc[3];
     const ltvBps = acc[4];
-    // 目標債務(USD8) = C·LT/HF0 → USDC(6桁)へ /1e2
+    // target debt (USD8) = C·LT/HF0 -> to USDC (6-digit) with /1e2
     const targetUsdc = (collateralUsd8 * ltBps) / h0Bps / 100n;
-    // LTV 上限を VICTIM_LTV_HEADROOM_BPS まで（縁から離す）。
+    // Cap the LTV limit at VICTIM_LTV_HEADROOM_BPS (keep it off the edge).
     const maxUsdc = (availUsd8 * VICTIM_LTV_HEADROOM_BPS) / 10_000n / 100n;
     if (targetUsdc <= 0n || targetUsdc > maxUsdc) {
       const ltOverLtv =
@@ -285,7 +287,7 @@ export async function openStressVictimPositions(
           "Raise ERIS_STRESS_VICTIM_HF0 (and crash magnitude so m > (HF0−1)/HF0). ADR 0009 §4",
       );
     }
-    // borrow（債務が載ったかを検証し、transient 取りこぼしは 1 回リトライ）
+    // borrow (verify the debt landed, retrying once on a transient drop)
     const borrowData = encodeFunctionData({
       abi: aavePoolAbi,
       functionName: "borrow",
@@ -307,16 +309,16 @@ export type VictimAccount = {
   id: string;
   address: Address;
   healthFactor: bigint; // 1e18 = 1.0
-  totalCollateralBase: bigint; // USD 8 桁
-  totalDebtBase: bigint; // USD 8 桁
+  totalCollateralBase: bigint; // USD 8-digit
+  totalDebtBase: bigint; // USD 8-digit
 };
 
-// victim 群の口座状態を一括読取（HF / 担保 / 債務）。可視化・清算検知・stress 指標用。
+// Bulk-read the victim cohort's account state (HF / collateral / debt). For visualization, liquidation detection, and stress metrics.
 export async function readVictimsAccount(
   ctx: SimContext,
   victims: StressVictim[],
 ): Promise<VictimAccount[]> {
-  // 独立読取は batch transport が Multicall3/JSON-RPC batch に束ねる。
+  // The batch transport bundles independent reads into a Multicall3 / JSON-RPC batch.
   const accounts = await Promise.all(
     victims.map(
       (v) =>

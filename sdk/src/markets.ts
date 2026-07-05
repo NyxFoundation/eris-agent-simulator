@@ -1,9 +1,9 @@
-// トークンレジストリ + market config 駆動の中核（ADR 0013）。
+// Core of the token registry + market-config drive (ADR 0013).
 //
-// 旧来 WETH/USDC を名前で埋め込んでいた箇所を「base トークンを quote(USDC 相当)で売買する
-// 1 market」へ一般化する純粋層。constants の TOKENS / MARKET_LEGS（生アドレス・venue leg）を
-// 受けて、adapter が回せる MarketConfig を組み立てる。新トークンは TOKENS と MARKET_LEGS に
-// 定数を 1 つ足すだけで market が増える（型・分岐の改造は不要）。
+// A pure layer that generalizes the places that used to hardcode WETH/USDC by name into
+// "one market that trades a base token against a quote (USDC-equivalent)". It takes constants'
+// TOKENS / MARKET_LEGS (raw addresses, venue legs) and assembles a MarketConfig the adapters can
+// drive. New tokens add a market by adding one constant each to TOKENS and MARKET_LEGS (no type/branch changes needed).
 import { MARKET_LEGS, TOKENS } from "./constants.js";
 import type {
   AaveLeg,
@@ -24,12 +24,13 @@ export type TokenInfo = {
   kind: TokenKind;
 };
 
-// 会計上の決済通貨シンボル。venue 実 stable（native USDC / USDC.e / USDT）は leg.stable に持ち、
-// 残高・PnL は「USDC 相当」で合算する（stable 統一会計。constants の USDC_VARIANTS と整合）。
+// The accounting settlement-currency symbol. The venue's actual stable (native USDC / USDC.e / USDT)
+// is held in leg.stable, while balances and PnL are summed as "USDC-equivalent" (unified stable
+// accounting; consistent with constants' USDC_VARIANTS).
 const QUOTE_SYMBOL: TokenSymbol = "USDC";
 
-// stable とみなすシンボル。これ以外は base（USD 価格を持つ取引対象）。
-// 新しい stable を足すときだけここに加える。base は何もしなくても base 扱い。
+// Symbols treated as stable. Everything else is base (a tradable with a USD price).
+// Add here only when adding a new stable. A base is treated as a base without doing anything.
 const STABLE_SYMBOLS = new Set<TokenSymbol>(["USDC", "USDT", "DAI", "USDC.e"]);
 
 export function kindOf(symbol: TokenSymbol): TokenKind {
@@ -61,9 +62,9 @@ export function stableTokens(): TokenInfo[] {
   return Object.values(tokenRegistry()).filter((t) => t.kind === "stable");
 }
 
-// venue ごとの取引ペア。base を quote(USDC 相当)で売買する 1 market。
+// Per-venue trading pair. One market that trades a base against a quote (USDC-equivalent).
 export type MarketConfig = {
-  key: string; // "WETH/USDC" 等。observation の pair / marketKey に使う
+  key: string; // "WETH/USDC" etc. Used for the observation's pair / marketKey
   protocol: ProtocolId;
   base: TokenSymbol;
   quote: TokenSymbol;
@@ -99,8 +100,8 @@ function attachLeg(
   return market;
 }
 
-// protocol の有効 market を MARKET_LEGS から組み立てる。base の登録順を保つ
-// （WETH 先頭 → RNG/採点の決定論順序の前提。ADR 0013 後方互換）。
+// Assemble the protocol's enabled markets from MARKET_LEGS. Preserves the base registration order
+// (WETH first → the deterministic-order premise for RNG/scoring. ADR 0013 backward compatibility).
 export function marketsFor(protocol: ProtocolId): MarketConfig[] {
   const legs = MARKET_LEGS[protocol];
   const out: MarketConfig[] = [];
@@ -123,7 +124,7 @@ export function marketFor(
   return marketsFor(protocol).find((m) => m.base === base);
 }
 
-// 後方互換の既定 base。WETH があれば WETH、無ければ先頭。
+// Backward-compatible default base. WETH if present, otherwise the first one.
 export function defaultBaseFor(protocol: ProtocolId): TokenSymbol {
   const markets = marketsFor(protocol);
   return (
@@ -131,20 +132,20 @@ export function defaultBaseFor(protocol: ProtocolId): TokenSymbol {
   );
 }
 
-// gmx の base -> market アドレス（SimContext.gmx.markets 設定用）。fork 既定は {WETH: ETH_USD}。
+// gmx base -> market address (for setting SimContext.gmx.markets). The fork default is {WETH: ETH_USD}.
 export function gmxMarketAddresses(): Record<TokenSymbol, Address> {
   const out: Record<TokenSymbol, Address> = {};
   for (const m of marketsFor("gmx")) if (m.gmx) out[m.base] = m.gmx.market;
   return out;
 }
 
-// 全 protocol を横断した有効 base の集合（chain.ts の ACTIVE_BASES 導出等に使う）。
+// Set of enabled bases across all protocols (used e.g. to derive ACTIVE_BASES in chain.ts).
 export function activeBaseSymbols(protocols: ProtocolId[]): TokenSymbol[] {
   const seen = new Set<TokenSymbol>();
   for (const p of protocols) {
     for (const m of marketsFor(p)) seen.add(m.base);
   }
-  // WETH を先頭に固定（決定論順序）。
+  // Pin WETH first (deterministic order).
   const ordered = [...seen];
   ordered.sort((a, b) => (a === "WETH" ? -1 : b === "WETH" ? 1 : 0));
   return ordered;

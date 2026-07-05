@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "参加者テンプレート（ADR 0015）。agents/ がコピー・提出の単位。sdk へのみ依存する（core への import は禁止）。",
+  "description": "Participant template (ADR 0015). agents/ is the unit of copy/submission. Depends only on sdk (importing core is forbidden).",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",
     "@eris/sdk": "*",

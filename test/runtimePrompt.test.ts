@@ -18,41 +18,41 @@ function writePrompt(content: string): string {
   return dir;
 }
 
-test("loadPromptAgent: frontmatter（name/description 必須 + 任意フィールド）を読む", () => {
+test("loadPromptAgent: reads frontmatter (name/description required + optional fields)", () => {
   const dir = writePrompt(
     [
       "---",
       "name: my-arb",
-      "description: cross-venue 裁定",
+      "description: cross-venue arbitrage",
       "intervalMs: 4000",
       "model: gpt-oss:120b",
-      "unknownField: ignored", // 前方互換: 未知フィールドは無視
+      "unknownField: ignored", // forward compat: unknown fields are ignored
       "---",
-      "あなたは裁定 bot。",
+      "You are an arbitrage bot.",
       "",
     ].join("\n"),
   );
   const agent = loadPromptAgent(dir);
   assert.equal(agent.name, "my-arb");
-  assert.equal(agent.description, "cross-venue 裁定");
+  assert.equal(agent.description, "cross-venue arbitrage");
   assert.equal(agent.intervalMs, 4000);
   assert.equal(agent.model, "gpt-oss:120b");
-  assert.equal(agent.body, "あなたは裁定 bot。");
+  assert.equal(agent.body, "You are an arbitrage bot.");
 });
 
-test("loadPromptAgent: name 欠落は明示エラー", () => {
+test("loadPromptAgent: a missing name is an explicit error", () => {
   const dir = writePrompt(
     ["---", "description: x", "---", "body", ""].join("\n"),
   );
-  assert.throws(() => loadPromptAgent(dir), /"name" は必須/);
+  assert.throws(() => loadPromptAgent(dir), /"name" is required/);
 });
 
-test("loadPromptAgent: frontmatter 無しは明示エラー", () => {
+test("loadPromptAgent: missing frontmatter is an explicit error", () => {
   const dir = writePrompt("body only\n");
   assert.throws(() => loadPromptAgent(dir), /frontmatter/);
 });
 
-test("buildSystemPrompt: <schema> + 環境ルール + prompt.md 本文を合成する（Hermes 形式）", () => {
+test("buildSystemPrompt: composes <schema> + environment rules + prompt.md body (Hermes format)", () => {
   const dir = writePrompt(
     [
       "---",
@@ -69,11 +69,11 @@ test("buildSystemPrompt: <schema> + 環境ルール + prompt.md 本文を合成�
   assert.match(system, /<\/schema>/);
   assert.match(system, /Environment rules/);
   assert.match(system, /STRATEGY_BODY_MARKER/);
-  // enabled venue 絞り込みが <schema> に反映される
+  // the enabled-venue narrowing is reflected in <schema>
   assert.doesNotMatch(system, /balancerSwap/);
 });
 
-test("buildUserMessage: observation と直近の行動を埋める", () => {
+test("buildUserMessage: fills in the observation and recent actions", () => {
   const obs = {
     kind: "observation",
     round: 12,
@@ -88,7 +88,7 @@ test("buildUserMessage: observation と直近の行動を埋める", () => {
   assert.match(msg, /skipped/);
 });
 
-test("buildRevisionSystem/User: 自己改善プロンプトが規律・証拠・現行本文を含む", () => {
+test("buildRevisionSystem/User: the self-improvement prompt includes discipline, evidence, and the current body", () => {
   const dir = writePrompt(
     ["---", "name: rev-t", "description: d", "---", "OLD_BODY_MARKER", ""].join(
       "\n",
@@ -118,7 +118,7 @@ test("buildRevisionSystem/User: 自己改善プロンプトが規律・証拠・
   assert.match(user, /round=5/);
 });
 
-test("buildRevisionUser: 観測前・約定前は placeholder を出す", () => {
+test("buildRevisionUser: emits placeholders before any observation or fill", () => {
   const user = buildRevisionUser("BODY", [], {
     cycles: 0,
     initialValueUsdc: null,

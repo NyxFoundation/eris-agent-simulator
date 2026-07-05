@@ -17,7 +17,7 @@ import { setProtocol, token } from "../registry.js";
 const dep = accounts.deployer;
 const BAL = "node_modules/@balancer-labs/v2-deployments/dist/tasks";
 
-/** authorizer / vault のような結合 artifact (_format hardhat) */
+/** Combined artifacts like authorizer / vault (_format hardhat) */
 function combined(task: string, name: string): { abi: Abi; bytecode: Hex } {
   const j = JSON.parse(
     readFileSync(resolve(ROOT, BAL, task, "artifact", `${name}.json`), "utf8"),
@@ -25,7 +25,7 @@ function combined(task: string, name: string): { abi: Abi; bytecode: Hex } {
   return { abi: j.abi as Abi, bytecode: j.bytecode as Hex };
 }
 
-/** weighted-pool のような abi/ と bytecode/ が分離された task */
+/** Tasks like weighted-pool where abi/ and bytecode/ are split */
 function split(task: string, name: string): { abi: Abi; bytecode: Hex } {
   const abi = JSON.parse(
     readFileSync(resolve(ROOT, BAL, task, "abi", `${name}.json`), "utf8"),
@@ -55,12 +55,13 @@ async function deploy(
 }
 
 const SWAP_FEE = 3_000_000_000_000_000n; // 0.3%
-// WETH/USDC を 50/50 で組む。WETH↔USDC 裁定の主要 venue として両側に深い流動性を置き、
-// poc の fair price (~$3000) と価格を揃える（80/20 だと USDC 側が浅く swap が limit 割れする）。
+// Build WETH/USDC 50/50. As the primary venue for WETH<->USDC arbitrage, place deep liquidity on
+// both sides and align the price with the poc fair price (~$3000) (with 80/20 the USDC side is
+// shallow and swaps fall below the limit).
 const W50 = 500_000_000_000_000_000n;
 
 export async function deployBalancerV2({ seed }: { seed: boolean }) {
-  info("Balancer V2 (Authorizer / Vault / WeightedPoolFactory) をデプロイ");
+  info("Deploying Balancer V2 (Authorizer / Vault / WeightedPoolFactory)");
   const weth = token("WETH");
 
   const authorizerArt = combined("20210418-authorizer", "Authorizer");
@@ -71,7 +72,7 @@ export async function deployBalancerV2({ seed }: { seed: boolean }) {
     [dep.address],
   );
 
-  // pauseWindow / bufferPeriod は 0 で可 (テスト用)
+  // pauseWindow / bufferPeriod can be 0 (for testing)
   const vaultArt = combined("20210418-vault", "Vault");
   const vault = await deploy("Vault", vaultArt.abi, vaultArt.bytecode, [
     authorizer,
@@ -88,7 +89,7 @@ export async function deployBalancerV2({ seed }: { seed: boolean }) {
     [vault],
   );
 
-  // BalancerQueries: poc の balancer adapter が queryBatchSwap で見積りに使う。
+  // BalancerQueries: the poc balancer adapter uses it for quotes via queryBatchSwap.
   const queriesArt = combined("20220721-balancer-queries", "BalancerQueries");
   const queries = await deploy(
     "BalancerQueries",
@@ -105,13 +106,13 @@ export async function deployBalancerV2({ seed }: { seed: boolean }) {
   });
 
   if (seed) {
-    // WETH/USDC（既存。byte 互換のため引数・量は従来どおり）。
+    // WETH/USDC (existing; keep args and amounts as before for byte compatibility).
     await seedWeightedPool({
       vault,
       weightedPoolFactory,
       tokenAKey: "WETH",
       tokenBKey: "USDC",
-      // 1000 WETH / 3,000,000 USDC = $3000/WETH (50/50・深い)。
+      // 1000 WETH / 3,000,000 USDC = $3000/WETH (50/50, deep).
       amountA: 1000n * 10n ** 18n,
       amountB: 3_000_000n * 10n ** 6n,
       name: "Eris WETH/USDC 50/50",
@@ -120,13 +121,13 @@ export async function deployBalancerV2({ seed }: { seed: boolean }) {
       poolIdKey: "wethUsdcPoolId",
       summary: "1000 WETH / 3M USDC (50/50, $3000)",
     });
-    // WBTC/USDC（ADR 0013 マルチアセット）。WBTC は 8 decimals。
+    // WBTC/USDC (ADR 0013 multi-asset). WBTC has 8 decimals.
     await seedWeightedPool({
       vault,
       weightedPoolFactory,
       tokenAKey: "WBTC",
       tokenBKey: "USDC",
-      // 50 WBTC / 3,000,000 USDC = $60k/WBTC (50/50・深い)。
+      // 50 WBTC / 3,000,000 USDC = $60k/WBTC (50/50, deep).
       amountA: 50n * 10n ** 8n,
       amountB: 3_000_000n * 10n ** 6n,
       name: "Eris WBTC/USDC 50/50",
@@ -139,9 +140,9 @@ export async function deployBalancerV2({ seed }: { seed: boolean }) {
 }
 
 /**
- * 50/50 加重プールを作成し初期流動性を投入する汎用 seed。
- * create → PoolCreated ログ抽出 → getPoolId → joinPool INIT の流れは共通。
- * Vault は scaling factor で 18 decimals に正規化するため raw 量をそのまま渡せば spot 正。
+ * Generic seed that creates a 50/50 weighted pool and seeds initial liquidity.
+ * The flow create -> extract PoolCreated log -> getPoolId -> joinPool INIT is shared.
+ * The Vault normalizes to 18 decimals via a scaling factor, so passing raw amounts gives a correct spot.
  */
 async function seedWeightedPool({
   vault,
@@ -168,11 +169,13 @@ async function seedWeightedPool({
   poolIdKey: string;
   summary: string;
 }) {
-  info(`Balancer V2: 50/50 ${tokenAKey}/${tokenBKey} プールを作成し流動性投入`);
+  info(
+    `Balancer V2: creating 50/50 ${tokenAKey}/${tokenBKey} pool and seeding liquidity`,
+  );
   const tokenA = token(tokenAKey);
   const tokenB = token(tokenBKey);
 
-  // Balancer はトークンを昇順登録する必要がある。
+  // Balancer requires tokens to be registered in ascending order.
   const aFirst = tokenA.toLowerCase() < tokenB.toLowerCase();
   const tokens = (aFirst ? [tokenA, tokenB] : [tokenB, tokenA]) as Address[];
   const weights = [W50, W50]; // 50/50
@@ -189,7 +192,7 @@ async function seedWeightedPool({
   });
   const createRc = await waitTx(createHash);
 
-  // PoolCreated イベントから pool アドレスを取得
+  // Get the pool address from the PoolCreated event
   let pool: Address | undefined;
   for (const log of createRc.logs) {
     try {
@@ -199,13 +202,13 @@ async function seedWeightedPool({
         break;
       }
     } catch {
-      /* 別コントラクトの log */
+      /* log from another contract */
     }
   }
-  assert(!!pool, "PoolCreated が取得できない");
-  ok("WeightedPool 作成", pool!);
+  assert(!!pool, "could not obtain PoolCreated");
+  ok("WeightedPool created", pool!);
 
-  // poolId 取得
+  // Get poolId
   const poolAbi = split("20210418-weighted-pool", "WeightedPool").abi;
   const poolId = (await publicClient.readContract({
     address: pool!,
@@ -244,7 +247,7 @@ async function seedWeightedPool({
     chain: anvilChain,
   });
   await waitTx(joinHash);
-  ok("初期流動性 join", summary);
+  ok("initial liquidity join", summary);
 
   setProtocol("balancerV2", { [poolKey]: pool, [poolIdKey]: poolId });
 }

@@ -1,22 +1,23 @@
-// YAML を設定の単一ソースにする run config ローダの共有部（ADR 0013 / ADR 0015）。
+// Shared part of the run-config loader that makes YAML the single source of config (ADR 0013 / ADR 0015).
 //
-// 方針:
-//   - ユーザー設定値（run ノブ / funding / limits / flow / stress / vuln）を 1 つの YAML
-//     （既定 `config/local.yaml`）で管理する。YAML のキーは既存の env 名と同一にし、
-//     型変換（bool→"1"/"0"、文字列/数値配列→CSV、object→JSON）して loadConfig が読む source map に
-//     流し込む。これで loadConfig の全パーサ（bigintEnv/intEnv 等）を無改修で再利用できる。
-//   - **秘密情報のみ env(.env) のまま**（コミットされる YAML に秘密を入れない。外部 SDK が env を
-//     直読みするため）。SECRET_ENV_KEYS だけ process.env から source へ持ち込む。
-//   - agent サブプロセスへの IPC（ERIS_AGENT_* 等）は coordinator が別途 env で渡す（YAML 対象外）。
-//     子は設定ファイルパス ERIS_CONFIG を受け取り、この loadYamlConfig で同じ YAML から config を
-//     再構築する（環境と agent が同一の設定断面を共有する = 本ファイルが sdk に在る理由）。
-//   - ロスター解決・CLI フラグは環境の仕事なので core/src/runConfig.ts 側にある。
+// Policy:
+//   - Manage user config values (run knobs / funding / limits / flow / stress / vuln) in a single YAML
+//     (default `config/local.yaml`). YAML keys match the existing env names; convert types
+//     (bool→"1"/"0", string/number array→CSV, object→JSON) and feed the source map that loadConfig
+//     reads. This reuses all of loadConfig's parsers (bigintEnv/intEnv, etc.) unchanged.
+//   - **Only secrets stay in env (.env)** (do not put secrets in committed YAML, because external SDKs
+//     read env directly). Only SECRET_ENV_KEYS are brought from process.env into source.
+//   - IPC to the agent subprocess (ERIS_AGENT_* etc.) is passed separately via env by the coordinator
+//     (not covered by YAML). The child receives the config file path ERIS_CONFIG and rebuilds config
+//     from the same YAML via this loadYamlConfig (environment and agent share the same config
+//     cross-section = the reason this file lives in the sdk).
+//   - Roster resolution and CLI flags are the environment's job, so they live in core/src/runConfig.ts.
 import { existsSync, readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { loadConfig, unitSuffixFor, type SimConfig } from "./config.js";
 import { tokenInfo } from "./markets.js";
 
-// .env に残す秘密 / RPC（YAML には入れない）。これらは process.env から source へ持ち込む。
+// Secrets / RPC that stay in .env (not put in YAML). These are brought from process.env into source.
 export const SECRET_ENV_KEYS = [
   "ARB_RPC_URL",
   "FORK_BLOCK_NUMBER",
@@ -38,17 +39,17 @@ export const SECRET_ENV_KEYS = [
   "AGENT6_PRIVATE_KEY",
 ] as const;
 
-// 設定は config/ ディレクトリで管理する。ローカルの実ファイルは config/local.yaml（gitignore）、
-// コミット済みの雛形・シナリオは config/example.yaml 等。
+// Config is managed under the config/ directory. The local real file is config/local.yaml (gitignored),
+// and committed templates/scenarios are config/example.yaml etc.
 export const DEFAULT_CONFIG_PATH = "config/local.yaml";
-// config/local.yaml が無いときの zero-config 既定（env config 読取は廃止したため env ではなくこれへ）。
+// The zero-config default when config/local.yaml is absent (env config reading was retired, so this instead of env).
 export const EXAMPLE_CONFIG_PATH = "config/example.yaml";
 
-// YAML 値 → env 文字列。loadConfig の各パーサが受け取る形へ正規化する。
-//   boolean        → "1" / "0"（loadConfig は `=== "1"` で真偽判定）
-//   string/num 配列 → CSV（ENABLED_PROTOCOLS / FLOW_BOT_ARGS 等）
-//   object / object配列 → JSON（ERIS_STRESS_EVENTS 等）
-//   その他         → String(v)
+// YAML value → env string. Normalizes into the shape each loadConfig parser expects.
+//   boolean          → "1" / "0" (loadConfig decides truth via `=== "1"`)
+//   string/num array → CSV (ENABLED_PROTOCOLS / FLOW_BOT_ARGS, etc.)
+//   object / object array → JSON (ERIS_STRESS_EVENTS, etc.)
+//   otherwise        → String(v)
 export function toEnvString(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "boolean") return value ? "1" : "0";
@@ -61,8 +62,8 @@ export function toEnvString(value: unknown): string {
   return String(value);
 }
 
-// ネスト lowercase スキーマ（人が書く形）→ 内部 env 名（loadConfig が読む形）の対応表。
-// 例: `run.protocols` → ENABLED_PROTOCOLS。全大文字 env 名を表に出さないための薄い変換層。
+// Mapping from the nested lowercase schema (the human-authored form) to the internal env names (the
+// form loadConfig reads). E.g. `run.protocols` → ENABLED_PROTOCOLS. A thin translation layer that keeps the all-caps env names out of sight.
 const SCHEMA: Record<string, string> = {
   // run
   "run.seed": "SEED",
@@ -78,8 +79,8 @@ const SCHEMA: Record<string, string> = {
   "run.flashArb": "ERIS_FLASH_ARB",
   "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",
   "run.agentTimeoutMs": "AGENT_TIMEOUT_MS",
-  "run.agentsConfig": "AGENTS_CONFIG", // inline agents が無いときのロスターファイルパス
-  "run.agentsDir": "ERIS_AGENTS_DIR", // agent ディレクトリ規約のルート（ADR 0015 §6）
+  "run.agentsConfig": "AGENTS_CONFIG", // roster file path when there are no inline agents
+  "run.agentsDir": "ERIS_AGENTS_DIR", // root of the agent directory convention (ADR 0015 §6)
   // funding
   "funding.ethWei": "INITIAL_ETH_WEI",
   "funding.wethWei": "INITIAL_WETH_WEI",
@@ -125,13 +126,13 @@ const SCHEMA: Record<string, string> = {
   "stress.victimCount": "ERIS_STRESS_VICTIM_COUNT",
   "stress.victimHf0": "ERIS_STRESS_VICTIM_HF0",
   "stress.victimWethWei": "ERIS_STRESS_VICTIM_WETH_WEI",
-  // vuln（ADR 0014: 脆弱性発生イベント）
+  // vuln (ADR 0014: vulnerability-occurrence events)
   "vuln.events": "ERIS_VULN_EVENTS",
   "vuln.poolLiquidityUsdcUnits": "ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS",
   "vuln.poolFeeBps": "ERIS_VULN_POOL_FEE_BPS",
   "vuln.llm": "ERIS_VULN_LLM",
 };
-// per-base マップ（`{WBTC: 値}` → `<prefix>_<SYM>[_<infix>]_<unit>`。unit は decimals 由来）。
+// per-base map (`{WBTC: value}` → `<prefix>_<SYM>[_<infix>]_<unit>`. unit is derived from decimals).
 const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
   "funding.base": { prefix: "INITIAL" },
   "funding.flowBase": { prefix: "FLOW_BASE" },
@@ -147,14 +148,14 @@ function baseEnvName(prefix: string, sym: string, infix?: string): string {
   return [prefix, sym, infix, unit].filter(Boolean).join("_");
 }
 
-// ネスト doc を内部 env 名 source へ展開する。未知キーは警告（typo 検出）。
+// Expand the nested doc into the internal env-name source. Unknown keys are warned about (typo detection).
 function applyDoc(
   doc: Record<string, unknown>,
   source: NodeJS.ProcessEnv,
 ): void {
   const unknown: string[] = [];
   for (const [k, v] of Object.entries(doc)) {
-    if (k === "agents") continue; // ロスターは環境側（core/src/runConfig.ts）が扱う
+    if (k === "agents") continue; // the roster is handled on the environment side (core/src/runConfig.ts)
     if (
       SECTIONS.includes(k) &&
       v &&
@@ -173,7 +174,7 @@ function applyDoc(
                 toEnvString(amt);
         } else if (SCHEMA[path]) {
           const env = SCHEMA[path];
-          // FLOW_BOT_ARGS だけは空白区切り（config.ts が /\s+/ で split）。
+          // FLOW_BOT_ARGS is the only one that is space-separated (config.ts splits on /\s+/).
           source[env] =
             env === "FLOW_BOT_ARGS" && Array.isArray(sv)
               ? sv.map((x) => String(x)).join(" ")
@@ -183,18 +184,18 @@ function applyDoc(
         }
       }
     } else if (/^[A-Z]/.test(k)) {
-      source[k] = toEnvString(v); // 後方互換: 大文字キーは env 名としてそのまま通す
+      source[k] = toEnvString(v); // backward compatible: pass uppercase keys through as-is as env names
     } else {
       unknown.push(k);
     }
   }
   if (unknown.length > 0)
     process.stderr.write(
-      `[config] 警告: 未知の設定キー（無視）: ${unknown.join(", ")}。スキーマは sdk/src/runConfig.ts の SCHEMA を参照。\n`,
+      `[config] warning: unknown config keys (ignored): ${unknown.join(", ")}. See SCHEMA in sdk/src/runConfig.ts for the schema.\n`,
     );
 }
 
-// YAML から source map を組む（秘密 env → YAML → overrides の順で重ねる）。
+// Build the source map from YAML (layered in order: secret env → YAML → overrides).
 export function buildSource(
   doc: Record<string, unknown>,
   overrides: Record<string, string | number | boolean> = {},
@@ -204,7 +205,7 @@ export function buildSource(
   for (const k of SECRET_ENV_KEYS)
     if (process.env[k] !== undefined) source[k] = process.env[k];
   applyDoc(doc, source);
-  // overrides は内部 env 名キー（CLI エイリアスが既に env 名へマップ済み）で最優先。
+  // overrides use internal env-name keys (CLI aliases are already mapped to env names) and take top priority.
   for (const [k, v] of Object.entries(overrides)) source[k] = toEnvString(v);
   if (configPath) source.ERIS_CONFIG = configPath;
   return source;
@@ -217,8 +218,8 @@ export type YamlConfigResult = {
   source: NodeJS.ProcessEnv;
 };
 
-// YAML 設定ファイルを読み、SimConfig へ解決する（ロスターは含まない = agent プロセスからも安全に
-// 呼べる）。環境側は core/src/runConfig.ts の loadRunConfig（ロスター + stress/vuln 拡張）を使う。
+// Read a YAML config file and resolve it into a SimConfig (roster not included = safe to call from
+// the agent process too). The environment side uses loadRunConfig in core/src/runConfig.ts (roster + stress/vuln extensions).
 export function loadYamlConfig(
   path = DEFAULT_CONFIG_PATH,
   overrides: Record<string, string | number | boolean> = {},

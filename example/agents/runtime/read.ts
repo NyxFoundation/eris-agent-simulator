@@ -1,9 +1,10 @@
 /**
- * read.ts: オンチェーン読取による observation 再構成（ADR 0015 runtime。旧 directShim の読取側）。
+ * read.ts: observation reconstruction via on-chain reads (ADR 0015 runtime; the read side of the old directShim).
  *
- * 毎ブロック、PriceFeed の fair price・各 venue の状態・自分の残高を読み、環境と同じ形の
- * AgentObservation を組み立てる（組み立ては sdk の observationFor = 環境の採点再構成と同一契約）。
- * fair price はオンチェーン配布（ADR 0006 §3）なので情報は 1 ブロック遅れる（全員等しく作用。仕様）。
+ * Each block, read the PriceFeed's fair price, each venue's state, and your own balances, and
+ * assemble an AgentObservation of the same shape as the environment's (the assembly uses sdk's
+ * observationFor = the same contract as the environment's scoring reconstruction). Fair price is
+ * distributed on-chain (ADR 0006 §3), so the information is one block behind (applies to everyone equally; by design).
  */
 import type { Address } from "viem";
 import { getBalances } from "@eris/sdk/chain.js";
@@ -51,18 +52,18 @@ export class Reader {
     this.extraBaseSymbols = opts.extraBaseSymbols;
   }
 
-  // 当該ブロックのチェーン断面から observation を再構成する。
+  // Reconstruct the observation from this block's chain snapshot.
   async snapshot(bn: number): Promise<ChainSnapshot> {
     const { publicClient } = this.ctx;
-    // 独立な読取は並列化する（2 秒ブロックの hot path。fairPrice → readState の依存だけ保つ）
+    // Parallelize independent reads (2-second block hot path; only keep the fairPrice -> readState dependency)
     const [fairPrice, balances] = await Promise.all([
       readFairPrice(publicClient, this.priceFeed),
       getBalances(publicClient, this.address),
     ]);
-    // ADR 0013: 追加 base の fair price を PriceFeed から読み ctx.fairPrices へ。これで
-    // observationFor が observation.fairPricesUsd を全 base 分埋める（agent が WBTC を観測できる）。
-    // adapter.observe は ctx.fairPrices?.[base] を見るため observationFor 前に必ず設定する。
-    // extraBaseSymbols=[]（fork 既定）なら fairPrices={WETH} で従来と byte 一致。
+    // ADR 0013: read the extra bases' fair prices from the PriceFeed into ctx.fairPrices. This lets
+    // observationFor fill observation.fairPricesUsd for all bases (so the agent can observe WBTC).
+    // adapter.observe looks at ctx.fairPrices?.[base], so it must be set before observationFor.
+    // With extraBaseSymbols=[] (the fork default), fairPrices={WETH} is byte-identical to the legacy path.
     const fairPrices: Record<string, number> = { WETH: fairPrice };
     if (this.extraBaseSymbols.length > 0) {
       const extra = await Promise.all(

@@ -24,7 +24,7 @@ export function makeChain(chainId: number) {
     name: "arbitrum-fork",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: ["http://127.0.0.1:8545"] } },
-    // viem の batch.multicall（同一 tick の readContract を Multicall3 1 本に自動集約）が参照する
+    // Referenced by viem's batch.multicall (auto-aggregates same-tick readContract calls into a single Multicall3)
     contracts: { multicall3: { address: MULTICALL3 } },
   } as const;
 }
@@ -35,11 +35,11 @@ export function makeClients(
   opts: { batch?: boolean } = {},
 ) {
   const chain = makeChain(chainId);
-  // Arbitrum フォークは GMX Reader / Aave 読み取りが重いため timeout を広げる。
-  // batch=true で (1) JSON-RPC array batch（同一 tick の要求を 1 HTTP に）と
-  // (2) readContract の Multicall3 自動集約を有効化する。direct モードの agent は
-  // 毎ブロック十数本の読取を発行するため、束ねないと anvil の往復回数が律速になる
-  // （ADR 0006 Risks「anvil 律速」のレバー 1）。
+  // Widen the timeout because on an Arbitrum fork the GMX Reader / Aave reads are heavy.
+  // batch=true enables (1) JSON-RPC array batching (same-tick requests into one HTTP) and
+  // (2) Multicall3 auto-aggregation of readContract. A direct-mode agent issues a dozen-plus reads
+  // per block, so without batching anvil's round-trip count becomes the bottleneck
+  // (ADR 0006 Risks "anvil bottleneck", lever 1).
   const transport = http(rpcUrl, {
     timeout: 120_000,
     retryCount: 2,
@@ -61,8 +61,8 @@ export function accountAddress(privateKey: Hex): Address {
 }
 
 // ---------------------------------------------------------------------------
-// stable 統一会計：usdcUnits は active な stable(native USDC / USDC.e / USDT) の合算。
-// すべて 6 桁・$1 とみなす。coordinator が有効 adapter から active 集合を設定する。
+// Unified stable accounting: usdcUnits is the sum of the active stables (native USDC / USDC.e / USDT).
+// All are treated as 6-decimal and worth $1. The coordinator sets the active set from the enabled adapters.
 // ---------------------------------------------------------------------------
 let ACTIVE_STABLES: Address[] = [TOKENS.USDC.address];
 
@@ -83,9 +83,9 @@ export function activeStables(): Address[] {
 }
 
 // ---------------------------------------------------------------------------
-// マルチアセット会計（ADR 0013）：bases は base トークン（WETH/WBTC…）の在庫マップ。
-// ACTIVE_STABLES と同型で、coordinator が有効 market から active 集合を設定する。
-// 既定 [WETH] のとき getBalances/fundWallet は従来と完全一致（WETH byte 互換）。
+// Multi-asset accounting (ADR 0013): bases is the inventory map of base tokens (WETH/WBTC…).
+// Same shape as ACTIVE_STABLES; the coordinator sets the active set from the enabled markets.
+// With the default [WETH], getBalances/fundWallet match the old behavior exactly (WETH byte-compatible).
 // ---------------------------------------------------------------------------
 let ACTIVE_BASES: Address[] = [TOKENS.WETH.address];
 
@@ -105,7 +105,7 @@ export function activeBases(): Address[] {
   return ACTIVE_BASES;
 }
 
-// base アドレス(lower) -> シンボル。registry の base トークンから逆引き（WETH は常に "WETH"）。
+// base address (lower) -> symbol. Reverse lookup from the registry's base tokens (WETH is always "WETH").
 function baseSymbolFor(address: Address): TokenSymbol {
   const lower = address.toLowerCase();
   if (lower === TOKENS.WETH.address.toLowerCase()) return "WETH";
@@ -125,7 +125,7 @@ export async function getBalances(
       functionName: "balanceOf",
       args: [address],
     }),
-    // base 残高（WETH を含む。WETH は wethWei と同じ読取だが bases キーを揃えるため再度読む）。
+    // base balances (including WETH; WETH is the same read as wethWei but is read again to line up the bases keys).
     ...ACTIVE_BASES.map((token) =>
       publicClient.readContract({
         address: token,
@@ -147,7 +147,7 @@ export async function getBalances(
   const stableBalances = (rest as bigint[]).slice(ACTIVE_BASES.length);
   const bases: Record<string, bigint> = {};
   ACTIVE_BASES.forEach((token, i) => {
-    // WETH は wethWei を正とし、bases["WETH"] と一致させる（byte 互換）。
+    // Treat wethWei as authoritative for WETH and make bases["WETH"] match it (byte-compatible).
     const lower = token.toLowerCase();
     bases[baseSymbolFor(token)] =
       lower === TOKENS.WETH.address.toLowerCase() ? wethWei : baseBalances[i];
@@ -160,7 +160,7 @@ export async function getBalances(
   return { ethWei, wethWei, usdcUnits, bases, stables };
 }
 
-// 単一 stable の残高（adapter が自分の stable 在庫を確認するため）
+// Balance of a single stable (so an adapter can check its own stable inventory)
 export async function tokenBalance(
   publicClient: PublicClient,
   token: Address,
@@ -231,10 +231,10 @@ export async function mine(
   } as AnvilRequest);
 }
 
-// 実時間ブロック生成：seconds 秒ごとに mempool をまとめて 1 ブロック mine する。
-// setup を高速フラッシュしたあと（no-mining + sendAndMine）、競争フェーズ開始時にこれを呼んで
-// 実 N 秒 cadence へ切り替える。--order fees はこの interval mine 時にも mempool を fee 降順整列する。
-// seconds=0 は interval mining を停止する（teardown 用）。
+// Real-time block production: every `seconds` seconds, mine the mempool into a single block.
+// After flushing setup fast (no-mining + sendAndMine), call this at the start of the competition
+// phase to switch to a real N-second cadence. --order fees also sorts the mempool by descending fee
+// on these interval mines. seconds=0 stops interval mining (for teardown).
 export async function setIntervalMining(
   publicClient: PublicClient,
   seconds: number,
@@ -245,8 +245,8 @@ export async function setIntervalMining(
   } as AnvilRequest);
 }
 
-// automine の有効/無効。true にすると tx ごとに即 mine され、ブロック内の fee 競争が成立しなくなる
-// （各 tx が単独ブロック化する）。実時間モードでは false のまま interval mining を使うこと。
+// Enable/disable automine. When true, each tx is mined immediately and in-block fee competition
+// stops working (each tx becomes its own block). In real-time mode keep it false and use interval mining.
 export async function setAutomine(
   publicClient: PublicClient,
   enabled: boolean,
@@ -258,23 +258,23 @@ export async function setAutomine(
 }
 
 export type ResetForkOptions = {
-  // 上流フォーク RPC（ARB_RPC_URL）。指定時は forking 付き anvil_reset でフォークを
-  // 丸ごと作り直し、前 run/seed のローカル変更（Aave ポジション・reserve タイムスタンプ等）を
-  // 完全に破棄する。未指定なら anvil_reset [] にフォールバック（状態が残留する点に注意）。
+  // Upstream fork RPC (ARB_RPC_URL). When set, anvil_reset with forking rebuilds the fork from
+  // scratch, fully discarding the previous run/seed's local changes (Aave positions, reserve
+  // timestamps, etc.). If unset, falls back to anvil_reset [] (note: state persists).
   forkUrl?: string;
-  // 再フォーク先ブロック（FORK_BLOCK_NUMBER）。固定すると再実行が完全再現可能。
+  // Re-fork target block (FORK_BLOCK_NUMBER). Pinning it makes reruns fully reproducible.
   forkBlockNumber?: number;
-  // ローカル(非fork)デプロイモード。fork し直さず evm_snapshot/evm_revert でリセットする。
+  // Local (non-fork) deploy mode. Reset via evm_snapshot/evm_revert instead of re-forking.
   localDeploy?: boolean;
-  // ローカルモードの snapshot ID 永続化ファイル。別プロセスの run 間でクリーン断面を共有する。
+  // Persistence file for the local-mode snapshot ID. Shares the clean cross-section across runs in separate processes.
   localSnapshotFile?: string;
 };
 
-// 同一プロセス内で一度捕捉した再フォーク先ブロック。multiSeedRun は 1 プロセスで全 SEED を
-// 回すため、ここで固定して全 seed が同一フォークブロック（=同一の DeFi 流動性基準）を共有する。
+// Re-fork target block captured once within the same process. multiSeedRun runs all SEEDs in a
+// single process, so pin it here to make every seed share the same fork block (= the same DeFi liquidity baseline).
 let capturedForkBlock: number | undefined;
 
-// ローカルデプロイモードの snapshot ID（プロセス内で run 間に revert→再 snapshot する）。
+// Snapshot ID for local deploy mode (revert→re-snapshot between runs within the process).
 let localSnapshotId: Hex | undefined;
 
 export async function resetFork(
@@ -283,33 +283,34 @@ export async function resetFork(
 ): Promise<void> {
   const { forkUrl, forkBlockNumber, localDeploy, localSnapshotFile } = options;
   if (localDeploy) {
-    // 非fork: 上流が無いため anvil_reset でフォークし直せない。代わりに evm_snapshot/
-    // evm_revert で「デプロイ直後のクリーン断面」へ戻す。snapshot は revert 直後に取り直すので
-    // 必ずクリーン断面を指す。
+    // Non-fork: with no upstream, anvil_reset cannot re-fork. Instead, revert to the "clean
+    // cross-section right after deploy" via evm_snapshot/evm_revert. The snapshot is re-taken right
+    // after the revert, so it always points at a clean cross-section.
     //
-    // cross-process: snapshot ID をファイル永続化し、別プロセスの run も前プロセスが残した
-    // クリーン snapshot へ revert して始める（逐次起動を想定）。優先順: プロセス内メモリ >
-    // 永続ファイル。
+    // cross-process: persist the snapshot ID to a file so runs in other processes also revert to the
+    // clean snapshot left by the previous process (assumes sequential startup). Precedence:
+    // in-process memory > persisted file.
     //
-    // 永続 ID は「どの anvil インスタンスのものか」を genesis block hash で識別する
-    // （形式 `<genesisHash>:<snapshotId>`）。anvil 再起動後の stale ID は evm_revert が
-    // false を返すから安全 — という旧前提は、別ツール（例: aave の hardhat-deploy）が同じ
-    // 番号の snapshot（0x0 等）を作っていると ID が衝突して**別の断面へ本当に revert して
-    // しまう**ため成り立たない（デプロイ済み venue が部分的に消える実害を確認済み）。
-    // インスタンス不一致の永続 ID は無視して現状態を base にする（self-healing）。
+    // The persisted ID identifies "which anvil instance it belongs to" by the genesis block hash
+    // (format `<genesisHash>:<snapshotId>`). The old assumption was that a stale ID after an anvil
+    // restart is safe because evm_revert returns false — but that does not hold: if another tool
+    // (e.g. aave's hardhat-deploy) creates a snapshot with the same number (0x0 etc.), the IDs
+    // collide and it **actually reverts to a different cross-section** (confirmed real damage:
+    // deployed venues partially disappear). Ignore a persisted ID from a mismatched instance and
+    // use the current state as the base (self-healing).
     const genesisHash = (await publicClient.getBlock({ blockNumber: 0n })).hash;
     let revertTo = localSnapshotId;
     if (!revertTo && localSnapshotFile && existsSync(localSnapshotFile)) {
       const persisted = readFileSync(localSnapshotFile, "utf8").trim();
       const [hash, id] = persisted.split(":");
-      // 旧形式（bare ID。インスタンス識別なし）は stale とみなして無視する。
+      // Treat the old format (bare ID, no instance identification) as stale and ignore it.
       if (hash && id && hash === genesisHash) revertTo = id as Hex;
     }
     if (revertTo) {
       await publicClient
         .request({ method: "evm_revert", params: [revertTo] } as AnvilRequest)
         .catch(() => {
-          /* stale id: 現状態を base にする */
+          /* stale id: use the current state as the base */
         });
     }
     localSnapshotId = (await publicClient.request({
@@ -320,21 +321,21 @@ export async function resetFork(
       try {
         writeFileSync(localSnapshotFile, `${genesisHash}:${localSnapshotId}`);
       } catch {
-        /* 永続化に失敗してもプロセス内は動く */
+        /* even if persistence fails, in-process still works */
       }
     }
     return;
   }
   if (!forkUrl) {
-    // 上流 RPC 不明 → soft reset。状態が完全にはクリアされないため、複数 run/seed を
-    // 同一 anvil で回す場合は anvil を都度再起動するか forkUrl を設定すること。
+    // Upstream RPC unknown → soft reset. State is not fully cleared, so when running multiple
+    // runs/seeds on the same anvil, restart anvil each time or set forkUrl.
     await publicClient.request({
       method: "anvil_reset",
       params: [],
     } as AnvilRequest);
     return;
   }
-  // 再現性のためブロックを固定。優先順: 明示指定 > プロセス内で捕捉済み > これから捕捉。
+  // Pin the block for reproducibility. Precedence: explicit > already captured in-process > capture now.
   const blockNumber = forkBlockNumber ?? capturedForkBlock;
   await publicClient.request({
     method: "anvil_reset",
@@ -348,7 +349,7 @@ export async function resetFork(
     ],
   } as AnvilRequest);
   if (blockNumber === undefined) {
-    // latest を捕捉し、以降の resetFork で再利用（同プロセス内の決定論を確保）。
+    // Capture latest and reuse it in subsequent resetFork calls (ensures determinism within the same process).
     capturedForkBlock = Number((await publicClient.getBlock()).number);
   }
 }
@@ -365,8 +366,8 @@ export async function setStorageAt(
   } as AnvilRequest);
 }
 
-// bigint を 32-byte ストレージワードへエンコード（int256 の負値は two's complement）。
-// anvil_setStorageAt 用。env の価格 state-write（ADR 0011 §1）が利用する。
+// Encode a bigint into a 32-byte storage word (negative int256 values as two's complement).
+// For anvil_setStorageAt. Used by the environment's price state-write (ADR 0011 §1).
 export function bigintToStorageWord(value: bigint): Hex {
   const masked = value < 0n ? (1n << 256n) + value : value;
   return pad32(masked);
@@ -384,11 +385,11 @@ function pad32(value: bigint): Hex {
   return `0x${value.toString(16).padStart(64, "0")}` as Hex;
 }
 
-// ERC20 残高をストレージ書換で付与。balanceOf の mapping slot を 0..MAX で自動探索する
-// （native USDC は slot 9 等。proxy でも balances は proxy 側ストレージにあるため動作）。
+// Grant an ERC20 balance via storage overwrite. Auto-probe balanceOf's mapping slot over 0..MAX
+// (native USDC is slot 9, etc.; works even for proxies since balances live in the proxy's own storage).
 const PROBE_SENTINEL = 0x1234567890abcdef1234567890abcdefn;
 
-// balanceOf の mapping slot 候補（よくある順）。proxy(OZ upgradeable) は gap で 51 付近のことが多い。
+// Candidate mapping slots for balanceOf (most common first). A proxy (OZ upgradeable) often lands near 51 due to the gap.
 function candidateSlots(): number[] {
   const priority = [9, 0, 2, 3, 1, 51, 52, 53, 4, 5, 6, 7, 8, 10, 11];
   const seen = new Set(priority);
@@ -426,7 +427,7 @@ export async function dealErc20(
 }
 
 // ---------------------------------------------------------------------------
-// tx 送信ヘルパ（--no-mining 前提：送信→mine→receipt）
+// tx send helper (assumes --no-mining: send→mine→receipt)
 // ---------------------------------------------------------------------------
 
 export async function sendAndMine(
@@ -453,11 +454,12 @@ export async function sendAndMine(
   return hash;
 }
 
-// 実時間モード用：tx を mempool に投げるだけ（mine しない・receipt も待たない）。
-// priorityFee を指定でき、interval mining 下で次ブロックに --order fees で取り込ませる。
-// oracle 更新を agent より前(txIndex 0)に置きたいので、呼び側で agent 上限超の fee を渡す。
-// tx.gas を明示すると viem の eth_estimateGas（= EVM 実行）が省かれる。oracle 書込のような
-// 毎ブロックの定型 tx は明示し、agent 負荷で anvil の実行キューが詰まっても待たされないようにする。
+// For real-time mode: just drop the tx into the mempool (no mine, no receipt wait).
+// You can specify priorityFee so --order fees includes it in the next block under interval mining.
+// Since we want the oracle update ahead of the agents (txIndex 0), the caller passes a fee above the
+// agent cap. Setting tx.gas explicitly skips viem's eth_estimateGas (= EVM execution). Set it for
+// routine per-block txs like oracle writes so they are not held up when anvil's execution queue backs
+// up under agent load.
 export async function sendNoMine(
   publicClient: PublicClient,
   walletClient: WalletClient,
@@ -481,7 +483,7 @@ export async function sendNoMine(
   });
 }
 
-// impersonated アドレスから送信（role-admin / acl-admin など）
+// Send from an impersonated address (role-admin / acl-admin, etc.)
 export async function sendAsImpersonated(
   publicClient: PublicClient,
   walletClient: WalletClient,
@@ -509,7 +511,7 @@ export async function sendAsImpersonated(
 }
 
 // ---------------------------------------------------------------------------
-// 資金調達（Arbitrum）：ETH=setBalance / WETH=deposit / stable=dealErc20
+// Funding (Arbitrum): ETH=setBalance / WETH=deposit / stable=dealErc20
 // ---------------------------------------------------------------------------
 
 const GAS_BUFFER_WEI = 5_000_000_000_000_000_000n; // 5 ETH
@@ -522,8 +524,8 @@ export async function fundWallet(
   ethWei: bigint,
   wethWei: bigint,
   usdcUnits: bigint,
-  // ADR 0013: WETH 以外の base 在庫（シンボル -> 量）。既定は配らない（WBTC 初期 0 が方針）。
-  // WETH はここに入れても無視する（上の deposit 経路が正）。
+  // ADR 0013: base inventory other than WETH (symbol -> amount). Default is to grant none (WBTC starts at 0 by policy).
+  // WETH here is ignored (the deposit path above is authoritative).
   baseAmounts?: Record<string, bigint>,
 ): Promise<void> {
   const address = accountAddress(privateKey);
@@ -540,14 +542,14 @@ export async function fundWallet(
     });
   }
   if (usdcUnits > 0n) {
-    // active な各 stable に usdcUnits を付与（cross-venue で各 stable 在庫を持たせる）
+    // Grant usdcUnits to each active stable (so each stable has inventory cross-venue)
     for (const token of ACTIVE_STABLES) {
       await dealErc20(publicClient, token, address, usdcUnits);
     }
   }
   if (baseAmounts) {
     for (const [symbol, amount] of Object.entries(baseAmounts)) {
-      // WETH は deposit 経路で扱う。0 は配らない。
+      // WETH is handled via the deposit path. Do not grant 0.
       if (symbol === "WETH" || amount <= 0n) continue;
       await dealErc20(publicClient, tokenInfo(symbol).address, address, amount);
     }

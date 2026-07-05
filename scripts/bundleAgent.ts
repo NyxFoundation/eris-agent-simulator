@@ -1,9 +1,9 @@
-// bundleAgent: 提出用 zip の生成（ADR 0015 §7）。
+// bundleAgent: generate the submission zip (ADR 0015 §7).
 //   npm run bundle:agent <id> [-- --out <path>]
-// runtime（汎用スクリプト）+ sdk + 共有 lib + 対象 agent ディレクトリを自己完結の zip に固める。
-// コピー先では `npm install` → `node --import tsx agents/runtime/bot.ts`（env は環境が渡す）で動く。
-// zip 内容の詳細（sdk の同梱範囲等）は本番コンペの提出仕様待ち（ADR 0015「決めていないこと」）。
-// 現状は「そのまま実行可能な最小自己完結」= sdk 全体 + runtime + lib + agent 1 体を入れる。
+// Packs the runtime (generic scripts) + sdk + shared lib + target agent directory into a self-contained zip.
+// At the destination it runs via `npm install` -> `node --import tsx agents/runtime/bot.ts` (the environment passes the env).
+// The exact zip contents (how much of the sdk to bundle, etc.) await the production competition's submission spec (ADR 0015 "open questions").
+// For now it is the "minimal self-contained, directly runnable" set = the entire sdk + runtime + lib + one agent.
 import { execFileSync } from "node:child_process";
 import {
   cpSync,
@@ -39,7 +39,7 @@ function main(): void {
 
   const stage = mkdtempSync(join(tmpdir(), `eris-bundle-${id}-`));
   try {
-    // agents/（runtime + lib + 対象 agent）と sdk/ を同梱する。
+    // Bundle agents/ (runtime + lib + target agent) and sdk/.
     cpSync(join(AGENTS_DIR, "runtime"), join(stage, "agents", "runtime"), {
       recursive: true,
     });
@@ -54,7 +54,7 @@ function main(): void {
       force: true,
     });
 
-    // 自己完結の package.json（@eris/sdk は同梱ディレクトリを file: 参照）。
+    // Self-contained package.json (@eris/sdk references the bundled directory via file:).
     writeFileSync(
       join(stage, "package.json"),
       `${JSON.stringify(
@@ -62,7 +62,7 @@ function main(): void {
           name: `eris-agent-${id}`,
           private: true,
           type: "module",
-          description: `eris-competition 提出 bundle: ${id}（ADR 0015 §7）`,
+          description: `eris-competition submission bundle: ${id} (ADR 0015 §7)`,
           dependencies: {
             "@anthropic-ai/sdk": "^0.98.0",
             "@eris/sdk": "file:./sdk",
@@ -85,7 +85,7 @@ function main(): void {
       [
         `# eris agent bundle: ${id}`,
         "",
-        "実行方法（環境が env — ERIS_RPC_URL / ERIS_AGENT_PRIVATE_KEY / ERIS_PRICE_FEED_ADDRESS 等 — を渡す）:",
+        "How to run (the environment passes the env — ERIS_RPC_URL / ERIS_AGENT_PRIVATE_KEY / ERIS_PRICE_FEED_ADDRESS, etc.):",
         "",
         "```sh",
         "npm install",

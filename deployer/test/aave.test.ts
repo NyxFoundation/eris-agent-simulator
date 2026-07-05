@@ -26,7 +26,7 @@ describe.skipIf(!a)("Aave V3", () => {
   const poolAbi = (): Abi => aaveDeployment("Pool-Implementation").abi;
   const pool = () => a!.pool;
 
-  // テスト用の量 (faucet 上限内・seed と独立)
+  // Test amounts (within faucet limits, independent of seed)
   const DAI = () => a!.tokens.DAI;
   const WBTC = () => a!.tokens.WBTC;
   const DAI_LIQ = 9_000n * 10n ** 18n;
@@ -82,18 +82,18 @@ describe.skipIf(!a)("Aave V3", () => {
     daiDebtToken = res[2]; // variableDebtToken
   });
 
-  // A: supply で aToken が供給量だけ増える ---------------------------------
-  it("supply で aToken 残高が供給量とほぼ一致", async () => {
+  // A: supply increases aToken balance by the supplied amount ---------------
+  it("supply makes aToken balance roughly match the supplied amount", async () => {
     await supply(DAI(), DAI_LIQ);
     await supply(WBTC(), WBTC_COL);
     const aDai = await balanceOf(a!.aTokens.DAI, dep.address);
     const aWbtc = await balanceOf(a!.aTokens.WBTC, dep.address);
-    expectApprox(aDai, DAI_LIQ, 50, "aDAI 残高");
-    expectApprox(aWbtc, WBTC_COL, 50, "aWBTC 残高");
+    expectApprox(aDai, DAI_LIQ, 50, "aDAI balance");
+    expectApprox(aWbtc, WBTC_COL, 50, "aWBTC balance");
   });
 
-  // A: borrow で variableDebt が借入量だけ増える + HF が健全 ----------------
-  it("borrow で variableDebt が借入量とほぼ一致し HF > 1", async () => {
+  // A: borrow increases variableDebt by the borrowed amount + HF stays healthy
+  it("borrow makes variableDebt roughly match the borrowed amount and HF > 1", async () => {
     const debtBefore = await balanceOf(daiDebtToken, dep.address);
     const h = await deployerWallet.writeContract({
       address: pool(),
@@ -106,15 +106,15 @@ describe.skipIf(!a)("Aave V3", () => {
     await waitTx(h);
     const debtGained =
       (await balanceOf(daiDebtToken, dep.address)) - debtBefore;
-    expectApprox(debtGained, DAI_BORROW, 50, "DAI variableDebt 増分");
+    expectApprox(debtGained, DAI_BORROW, 50, "DAI variableDebt delta");
 
     const acct = await accountData();
     expect(acct[1]).toBeGreaterThan(0n); // totalDebtBase
     expect(acct[5]).toBeGreaterThan(10n ** 18n); // healthFactor > 1.0
   });
 
-  // C: ネガティブ (担保を超える borrow は revert) ---------------------------
-  it("担保を大幅に超える borrow は revert する", async () => {
+  // C: negative (borrowing beyond collateral reverts) -----------------------
+  it("borrowing far beyond collateral reverts", async () => {
     await expectRevert(
       publicClient.simulateContract({
         address: pool(),
@@ -123,13 +123,13 @@ describe.skipIf(!a)("Aave V3", () => {
         args: [DAI(), 100_000_000n * 10n ** 18n, VARIABLE, 0, dep.address],
         account: dep,
       }),
-      "borrow(過大)",
+      "borrow(oversized)",
     );
   });
 
-  // B: ライフサイクル (repay → withdraw) -----------------------------------
-  it("repay で DAI 債務がほぼ 0、withdraw で WBTC 担保が戻る", async () => {
-    // 返済原資を補充して全額返済
+  // B: lifecycle (repay -> withdraw) ----------------------------------------
+  it("repay brings DAI debt to ~0 and withdraw returns WBTC collateral", async () => {
+    // Top up repayment funds and repay in full
     await faucetMint(DAI(), DAI_BORROW * 2n);
     await approve(DAI(), pool(), maxUint256);
     const repay = await deployerWallet.writeContract({
@@ -142,7 +142,7 @@ describe.skipIf(!a)("Aave V3", () => {
     });
     await waitTx(repay);
     const daiDebt = await balanceOf(daiDebtToken, dep.address);
-    expect(daiDebt).toBeLessThan(10n ** 15n); // ≈ 0 (0.001 DAI 未満)
+    expect(daiDebt).toBeLessThan(10n ** 15n); // ~= 0 (less than 0.001 DAI)
 
     const wbtcBefore = await balanceOf(WBTC(), dep.address);
     const withdraw = await deployerWallet.writeContract({
@@ -159,8 +159,8 @@ describe.skipIf(!a)("Aave V3", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 共有 mock トークン (WETH/USDC) の reserve。cross-protocol で跨げる共有トークンを
-// Aave の reserve として後付け登録したもの (registerSharedReserves)。
+// Reserves for the shared mock tokens (WETH/USDC). Shared tokens that can span
+// protocols, registered into Aave as reserves after the fact (registerSharedReserves).
 // ---------------------------------------------------------------------------
 const sr = getProto<{
   pool: Address;
@@ -173,12 +173,12 @@ const sr = getProto<{
   };
 }>("aaveV3");
 
-describe.skipIf(!sr?.sharedReserves)("Aave V3 共有 reserve", () => {
+describe.skipIf(!sr?.sharedReserves)("Aave V3 shared reserves", () => {
   const shared = sr!.sharedReserves!;
   const pdpAbi = (): Abi => aaveDeployment("PoolDataProvider-Aave").abi;
   const oracleAbi = (): Abi => aaveDeployment("AaveOracle-Aave").abi;
 
-  it("共有 WETH/USDC が collateral + borrowing 有効な reserve として登録済み", async () => {
+  it("shared WETH/USDC registered as reserves with collateral + borrowing enabled", async () => {
     for (const key of ["WETH", "USDC"] as const) {
       const asset = shared.tokens[key];
       const cfg = (await publicClient.readContract({
@@ -207,7 +207,7 @@ describe.skipIf(!sr?.sharedReserves)("Aave V3 共有 reserve", () => {
     }
   });
 
-  it("共有 reserve の aToken/variableDebtToken が registry と一致", async () => {
+  it("shared reserve aToken/variableDebtToken match the registry", async () => {
     for (const key of ["WETH", "USDC"] as const) {
       const toks = (await publicClient.readContract({
         address: sr!.poolDataProvider,
@@ -223,7 +223,7 @@ describe.skipIf(!sr?.sharedReserves)("Aave V3 共有 reserve", () => {
     }
   });
 
-  it("AaveOracle が共有 WETH/USDC に正の価格を返す", async () => {
+  it("AaveOracle returns a positive price for shared WETH/USDC", async () => {
     for (const key of ["WETH", "USDC"] as const) {
       const price = (await publicClient.readContract({
         address: sr!.aaveOracle,

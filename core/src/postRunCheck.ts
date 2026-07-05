@@ -1,7 +1,8 @@
-// 事後ルール検査（ADR 0006 §5）。direct モードでは validateAction の事前検査を agent が
-// 素通りできるため、ルール執行は「チェーンに残った事実（blocks.csv）」の機械検査へ移す。
-// fee 上限超過は --order fees の順序に影響する market-distorting 違反なので、検出時は
-// 違反 agent のフラグに加えて当該 run を無効化する（evaluate が再実行する）。
+// Post-run rule checking (ADR 0006 §5). In direct mode the agent can bypass the
+// pre-flight validateAction check, so rule enforcement moves to a mechanical check
+// of the facts left on chain (blocks.csv). A priority fee over the cap is a
+// market-distorting violation affecting --order fees ordering, so on detection we
+// flag the offending agent and also invalidate that run (evaluate re-runs it).
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BLOCKS_CSV_INDEX } from "./logger.js";
@@ -14,8 +15,8 @@ export type FeeViolation = {
   maxPriorityFeeWei: string;
 };
 
-// blocks.csv の agent 行から priority fee 上限超過を検出する純粋関数。
-// fee はチェーン上の tx フィールド由来（自己申告ではない）なので改竄できない。
+// Pure function detecting priority fee cap violations from the agent rows of blocks.csv.
+// The fee comes from the on-chain tx field (not self-reported), so it cannot be tampered with.
 export function checkFeeViolations(
   blocksCsv: string,
   maxPriorityFeeWei: bigint,

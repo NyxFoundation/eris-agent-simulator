@@ -1,83 +1,77 @@
 [← README](../../README.md)
 
-# 設定（config/local.yaml）
+# Configuration (config/local.yaml)
 
-実時間 run（`sim:realtime`）の設定は、env を散らす代わりに 1 つの YAML（`config/local.yaml`）で管理する。run ノブ（`run` / `funding` / `limits` / `flow` / `stress` / `vuln` のネストセクション）と agent ロスター（`agents`）を 1 ファイルに書ける。解決順は `--config <path>` > `ERIS_CONFIG` > `config/local.yaml` > `config/example.yaml`（committed 雛形 = zero-config 既定）。
+The settings for a realtime run (`sim:realtime`) are managed in a single YAML (`config/local.yaml`) instead of being scattered across env vars. Run knobs (the nested `run` / `funding` / `limits` / `flow` / `stress` / `vuln` sections) and the agent roster (`agents`) can all be written in one file. The resolution order is `--config <path>` > `ERIS_CONFIG` > `config/local.yaml` > `config/example.yaml` (the committed template = zero-config default).
 
 ```bash
 cp config/example.yaml config/local.yaml
-npm run sim:realtime                                   # 既定で config/local.yaml を読む
-npm run sim:realtime -- --config config/vuln-test.yaml    # 別ファイルを指定
+npm run sim:realtime                                   # reads config/local.yaml by default
+npm run sim:realtime -- --config config/vuln-test.yaml    # specify a different file
 ```
 
-- キーは**ネスト lowercase**（`run.protocols` / `funding.wethWei` / `flow.uninformedMaxWethWei` 等）。値は型付き（真偽値・数値・配列・オブジェクト）。未指定キーは既定値。未知キーは警告。
-- **秘密情報は YAML に書かない**。RPC URL・秘密鍵・API キーは `.env.local` に置く（`ARB_RPC_URL` / `*_PRIVATE_KEY` / `ANTHROPIC_API_KEY` / `OLLAMA_API_KEY`）。`config/local.yaml` は gitignore 対象、`config/example.yaml` がコミット済みの雛形。
-- 一回限りの上書きは CLI フラグ（`--seed` / `--blocks` / `--protocols` 等）。各 agent の `env` は agent プロセスへ渡す戦略パラメータで `agents[].env` に書く。
+- Keys are **nested lowercase** (`run.protocols` / `funding.wethWei` / `flow.uninformedMaxWethWei` etc.). Values are typed (boolean, number, array, object). Unspecified keys take their defaults. Unknown keys warn.
+- **Do not write secrets into the YAML.** Put RPC URLs, private keys, and API keys in `.env.local` (`ARB_RPC_URL` / `*_PRIVATE_KEY` / `ANTHROPIC_API_KEY` / `OLLAMA_API_KEY`). `config/local.yaml` is gitignored; `config/example.yaml` is the committed template.
+- One-shot overrides go via CLI flags (`--seed` / `--blocks` / `--protocols` etc.). Each agent's `env` is a strategy parameter passed to the agent process and is written under `agents[].env`.
 
-`config/` の committed 雛形: `example.yaml`（最小ロスター）/ `vuln-test.yaml`（脆弱性イベント）/ `regimes/`（公式 regime = [バックテスト](backtest.md)用の市場シナリオ。この YAML も同じスキーマ）。
+Committed templates in `config/`: `example.yaml` (minimal roster) / `vuln-test.yaml` (vulnerability events) / `regimes/` (official regimes = market scenarios for [Backtest](backtest.md); this YAML follows the same schema).
 
-## 主なセクション
+## Main sections
 
-| セクション | 役割 | 例 |
+| section | role | example |
 |---|---|---|
-| `run` | run ノブ（SEED・ブロック数・実時間上限・有効 venue・モード） | `protocols: [uniswap, balancer, curve]` |
-| `funding` | 初期配布（USDC-only 配布で初期の方向性エクスポージャを排除できる） | `wethWei: "0"` |
-| `limits` | agent の per-round 上限 | `agentWethWei: "1000000000000000000"` |
-| `flow` | orderflow bot の強度（市場を動かす量） | `uninformedMaxWethWei: "1000000000000000000"` |
-| `stress` | 市場ストレスイベント（既定 off） | [stress-events.md](stress-events.md) |
-| `vuln` | 脆弱性発生イベント（既定 off） | `config/vuln-test.yaml` |
-| `agents` | エージェントロスター（inline で書く） | 下記 |
+| `run` | run knobs (SEED, block count, realtime cap, enabled venues, mode) | `protocols: [uniswap, balancer, curve]` |
+| `funding` | initial distribution (a USDC-only distribution can eliminate initial directional exposure) | `wethWei: "0"` |
+| `limits` | per-round caps for agents | `agentWethWei: "1000000000000000000"` |
+| `flow` | orderflow bot intensity (how much it moves the market) | `uninformedMaxWethWei: "1000000000000000000"` |
+| `stress` | market stress events (default off) | [stress-events.md](stress-events.md) |
+| `vuln` | vulnerability-injection events (default off) | `config/vuln-test.yaml` |
+| `agents` | agent roster (written inline) | see below |
 
-## ロスター（規約解決。ADR 0015）
+## Roster (convention-based resolution, ADR 0015)
 
-ロスターの `id` は `example/agents/<id>/` ディレクトリを指し、spawn は一律 `runtime/bot.ts` が担う。
-基本形は `{ id, wallet }` の 2 行:
+A roster `id` points at the `example/agents/<id>/` directory, and spawning is always handled by `runtime/bot.ts`. The basic form is the 2 lines `{ id, wallet }`:
 
 ```yaml
 agents:
-  - id: venue-arb              # example/agents/venue-arb/ を runtime/bot.ts が駆動
+  - id: venue-arb              # runtime/bot.ts drives example/agents/venue-arb/
     wallet: AGENT2_PRIVATE_KEY
-    description: WETH 専用 cross-venue 裁定
-  - id: multi-arb-wide         # 同一戦略の複数体は dir で実体ディレクトリを指す
+    description: WETH-only cross-venue arbitrage
+  - id: multi-arb-wide         # multiple instances of the same strategy point at the real directory via dir
     dir: multi-arb
-    wallet: AUTO               # AUTO は seed 由来で導出（名前付き枠の上限なし）
-    env: { ERIS_ARB_SAFETY_BPS: "150" }   # agent プロセスへ渡す戦略パラメータ
+    wallet: AUTO               # AUTO is derived from the seed (no cap on named slots)
+    env: { ERIS_ARB_SAFETY_BPS: "150" }   # strategy parameter passed to the agent process
 ```
 
-> ローカルデプロイのアカウント 0（account0）は deployer のデプロイアカウントと重なり残留残高で価値が歪むため、ロスターは AGENT1 以降（account1+）を使う。
+> Local-deploy account 0 (account0) overlaps the deployer's deployment account and distorts value with leftover balance, so the roster uses AGENT1 onward (account1+).
 
-### agents[] の項目
+### Fields of agents[]
 
-| キー | 必須 | 説明 |
+| key | required | description |
 |---|---|---|
-| `id` | ✓ | agent の識別子。`example/agents/<id>/` を指す（ログ出力先 `runs/<run_id>/agents/<id>.jsonl`） |
-| `wallet` | ✓ | `AGENT0_PRIVATE_KEY`〜`AGENT6_PRIVATE_KEY`（秘密鍵を渡す env 変数名。`.env.local` に置く。ローカルは未設定でも Anvil dev キーにフォールバック）または `AUTO`（seed 由来で導出）。名前付き wallet は同一ロスター内で重複不可 |
-| `dir` | | 実体ディレクトリの override（同一戦略を別 id で複数体並べるとき） |
-| `baseline` | | `true` で実力ゼロの基準ライン（noop / random）として扱う |
-| `description` | | 人間用の説明 |
-| `env` | | agent プロセスへ渡す戦略パラメータ（`ERIS_AGENT_MODE` / `ERIS_LLM_*` 等。sim 設定キーとは別物） |
-| `command` / `args` | | 完全自前 agent（他言語等。read/send/validate 全部自前 = サポート外）の override。通常は書かない |
+| `id` | ✓ | The agent's identifier. Points at `example/agents/<id>/` (log output goes to `runs/<run_id>/agents/<id>.jsonl`) |
+| `wallet` | ✓ | `AGENT0_PRIVATE_KEY`–`AGENT6_PRIVATE_KEY` (the name of the env var carrying the private key; put it in `.env.local`; locally it falls back to an Anvil dev key even if unset) or `AUTO` (derived from the seed). A named wallet cannot be duplicated within the same roster |
+| `dir` | | Override for the real directory (when lining up multiple instances of the same strategy under different ids) |
+| `baseline` | | `true` treats it as a zero-skill baseline (noop / random) |
+| `description` | | Human-readable description |
+| `env` | | Strategy parameters passed to the agent process (`ERIS_AGENT_MODE` / `ERIS_LLM_*` etc.; distinct from the sim config keys) |
+| `command` / `args` | | Override for a fully custom agent (other languages etc.; read/send/validate all self-provided = unsupported). Normally omitted |
 
-## CLI での一回上書き（sim:realtime）
+## One-shot CLI overrides (sim:realtime)
 
-YAML を編集せず、run ごとに値を上書きできる（CLI フラグが最優先。`--key value` / `--key=value` 両対応。
-例外: `--config` は `--config <path>` 形式のみ、`--local-deploy` は bare flag で使う — この 2 つは
-設定読込より前の解決に使われるため `=` 形式が効かない）:
+Without editing the YAML, you can override values per run (CLI flags take highest priority; both `--key value` and `--key=value` are supported. Exceptions: `--config` accepts only the `--config <path>` form and `--local-deploy` is used as a bare flag — these two are resolved before the config is loaded, so the `=` form does not work):
 
-| フラグ | config キー | 例 |
+| flag | config key | example |
 |---|---|---|
-| `--config <path>` | （設定ファイル選択） | `--config config/vuln-test.yaml` |
+| `--config <path>` | (config file selection) | `--config config/vuln-test.yaml` |
 | `--seed` | `run.seed` | `--seed 7` |
 | `--blocks` | `run.blocks` | `--blocks 40` |
 | `--seconds` | `run.seconds` | `--seconds 120` |
 | `--protocols` | `run.protocols` | `--protocols uniswap,balancer,curve` |
-| `--agents` | `run.agentsConfig` | `--agents my-roster.yaml`（ロスターファイル。**設定ファイルに inline `agents:` があると無視される** = inline 優先。下記注） |
+| `--agents` | `run.agentsConfig` | `--agents my-roster.yaml` (roster file. **Ignored if the config file has an inline `agents:`** = inline wins. See note below) |
 | `--local-deploy` | `run.localDeploy` | `--local-deploy` |
 | `--economic-gas` | `run.economicGas` | `--economic-gas` |
 
-> **`--agents` の効き方**: `sim:realtime` のロスター解決は「inline `agents:` > `run.agentsConfig` /
-> `--agents` > 既定」の順で、`config/local.yaml` のように inline ロスターを持つ設定では `--agents` は
-> 効かない（YAML の `agents:` を編集する）。`npm run backtest` の `--agents` はロスターを実効 regime
-> YAML へ焼き込む別機構のため、regime に inline ロスターがあっても常に差し替えられる（[バックテスト](backtest.md)）。
+> **How `--agents` behaves**: `sim:realtime` resolves the roster in the order "inline `agents:` > `run.agentsConfig` / `--agents` > default," so in a config with an inline roster (like `config/local.yaml`) `--agents` has no effect (edit the YAML's `agents:` instead). `npm run backtest`'s `--agents` is a separate mechanism that bakes the roster into the effective regime YAML, so it always replaces the roster even if the regime has an inline one ([Backtest](backtest.md)).
 
-> `npm run backtest` は別の入口で、`--regime` / `--repeat` / `--state` / `--port` 等の専用フラグを持つ（override は「実効 regime YAML」として agent プロセスにも伝播する）。[バックテスト](backtest.md)を参照。
+> `npm run backtest` is a separate entry point with its own dedicated flags `--regime` / `--repeat` / `--state` / `--port` etc. (overrides propagate to the agent processes too, as the "effective regime YAML"). See [Backtest](backtest.md).

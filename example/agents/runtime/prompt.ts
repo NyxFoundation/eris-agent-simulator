@@ -1,16 +1,16 @@
 /**
- * prompt.ts: プロンプト型 agent（prompt.md 1 枚）の合成（ADR 0015 §4）。
+ * prompt.ts: composing a prompt-type agent (a single prompt.md) (ADR 0015 §4).
  *
- * system = JSON mode 指示 + <schema>{action の JSON Schema}</schema> + 環境ルール（固定文）
- *          + prompt.md 本文
- * user   = 最新 observation + agentLog 由来の直近の行動と結果
+ * system = JSON mode instructions + <schema>{action JSON Schema}</schema> + environment rules
+ *          (fixed text) + prompt.md body
+ * user   = latest observation + recent actions and results from agentLog
  *
- * <schema> 形式は ollama 系オープンモデルの学習分布（Hermes JSON mode。
- * NousResearch/Hermes-Function-Calling）に合わせたもの。<schema> と実行時検証
- * （validateAction）は sdk の同一 action スキーマ（actionSchema.ts）から導出する。
+ * The <schema> format matches the training distribution of ollama-family open models (Hermes JSON
+ * mode; NousResearch/Hermes-Function-Calling). <schema> and runtime validation (validateAction) are
+ * derived from sdk's single action schema (actionSchema.ts).
  *
- * frontmatter は Agent Skills 標準（agentskills.io）と同じ形: name / description 必須、
- * intervalMs / model は任意、未知フィールドは無視（前方互換）。
+ * frontmatter has the same shape as the Agent Skills standard (agentskills.io): name / description
+ * required, intervalMs / model optional, unknown fields ignored (forward compatible).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -29,10 +29,10 @@ export type PromptAgent = {
 
 export const DEFAULT_PROMPT_INTERVAL_MS = 5000;
 export const DEFAULT_PROMPT_MODEL = "gpt-oss:120b";
-// 自己改善（prompt 改訂）の既定 = off。ロスターの env ERIS_PROMPT_REVISE_EVERY（判断サイクル数）で有効化。
+// Self-improvement (prompt revision) default = off. Enable via the roster env ERIS_PROMPT_REVISE_EVERY (number of decision cycles).
 export const DEFAULT_PROMPT_REVISE_EVERY = 0;
 
-// prompt.md を読み frontmatter を検証する。name/description は必須（ロスター表示・ログヘッダ）。
+// Read prompt.md and validate its frontmatter. name/description are required (roster display / log header).
 export function loadPromptAgent(agentDir: string): PromptAgent {
   const path = join(agentDir, "prompt.md");
   if (!existsSync(path)) throw new Error(`prompt.md not found in ${agentDir}`);
@@ -40,16 +40,16 @@ export function loadPromptAgent(agentDir: string): PromptAgent {
   const m = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!m) {
     throw new Error(
-      `${path}: frontmatter (---) が必要です（name / description は必須。agentskills.io 互換）`,
+      `${path}: frontmatter (---) is required (name / description mandatory; agentskills.io compatible)`,
     );
   }
   const fm = parseYaml(m[1]) as Record<string, unknown> | null;
   if (!fm || typeof fm !== "object")
     throw new Error(`${path}: frontmatter must be a YAML mapping`);
   if (typeof fm.name !== "string" || fm.name.trim() === "")
-    throw new Error(`${path}: frontmatter "name" は必須です`);
+    throw new Error(`${path}: frontmatter "name" is required`);
   if (typeof fm.description !== "string" || fm.description.trim() === "")
-    throw new Error(`${path}: frontmatter "description" は必須です`);
+    throw new Error(`${path}: frontmatter "description" is required`);
   const intervalMs =
     fm.intervalMs === undefined ? undefined : Number(fm.intervalMs);
   if (
@@ -66,9 +66,10 @@ export function loadPromptAgent(agentDir: string): PromptAgent {
   };
 }
 
-// 環境ルールの固定文。action の**形式**は <schema>（sdk actionSchema 由来）が正なので、
-// ここには自然言語でしか言えない環境の意味論だけを書く（observation の読み方・制約・費用）。
-// observation / limits の形が変わる PR ではここも同時更新する（ADR 0015 Risks）。
+// Fixed text of the environment rules. The action *format* is owned by <schema> (derived from sdk
+// actionSchema), so this only states environment semantics that can only be expressed in natural
+// language (how to read the observation, constraints, costs). A PR that changes the shape of
+// observation / limits must update this at the same time (ADR 0015 Risks).
 const ENV_RULES = `# Environment rules
 
 You are one trading agent among several competing on a simulated DeFi market
@@ -99,8 +100,8 @@ listed in observation.enabledProtocols are live this run).
 - Fees/slippage: venue swap fees and slippage come out of your PnL. A gap smaller than
   ~2x total costs is usually not worth taking.`;
 
-// Hermes JSON mode の system prompt（<schema> + ルール + prompt.md 本文）。
-// jsonSchema を渡すと再生成しない（bot.ts が LLM tool use 用に作った同じものを共有する）。
+// Hermes JSON mode system prompt (<schema> + rules + prompt.md body).
+// If jsonSchema is passed it is not regenerated (shares the same one bot.ts built for LLM tool use).
 export function buildSystemPrompt(
   agent: PromptAgent,
   enabledProtocols?: ProtocolId[],
@@ -123,7 +124,7 @@ ${ENV_RULES}
 ${agent.body}`;
 }
 
-// 直近の行動履歴 1 行（agentLog から要約して user message に添える）。
+// One line of recent action history (summarized from agentLog and attached to the user message).
 export type RecentAction = {
   round?: number;
   action?: unknown;
@@ -131,9 +132,10 @@ export type RecentAction = {
 };
 
 // ---------------------------------------------------------------------------
-// 自己改善（prompt 改訂）: N 判断サイクルごとに、直近の行動・結果を添えて LLM に
-// prompt 本文そのものを書き直させる（改善対象 = プロンプト。ADR 0015 の提出単位と一致）。
-// 改訂の規律は旧自己改善機構（_archive/llm/prompts.ts）の教訓を凝縮したもの。
+// Self-improvement (prompt revision): every N decision cycles, attach recent actions/results and
+// have the LLM rewrite the prompt body itself (the improvement target = the prompt, matching ADR
+// 0015's unit of submission). The revision discipline distills the lessons of the old
+// self-improvement mechanism (_archive/llm/prompts.ts).
 // ---------------------------------------------------------------------------
 
 export type RevisionStats = {
@@ -144,7 +146,7 @@ export type RevisionStats = {
   recentSampleSize?: number;
 };
 
-// 改訂用 system prompt。出力は「新しい prompt 本文の markdown だけ」（frontmatter/fence 不要）。
+// System prompt for revision. The output is "only the markdown of the new prompt body" (no frontmatter/fences).
 export function buildRevisionSystem(agent: PromptAgent): string {
   return `You are improving the strategy prompt of the trading agent "${agent.name}" (${agent.description}).
 You will receive the current strategy prompt body and the agent's recent decisions and results.
@@ -162,7 +164,7 @@ Revision discipline:
 Output ONLY the new prompt body as plain markdown. No frontmatter, no code fences, no commentary.`;
 }
 
-// 改訂用 user message（現行本文 + 直近の行動と結果 + 価値推移）。
+// User message for revision (current body + recent actions and results + value trajectory).
 export function buildRevisionUser(
   body: string,
   recent: RecentAction[],
@@ -197,7 +199,7 @@ ${recentText}
 Rewrite the strategy prompt body now. Output only the new body.`;
 }
 
-// user message: 最新 observation + 直近の自分の行動と結果。
+// user message: latest observation + your own recent actions and results.
 export function buildUserMessage(
   obs: AgentObservation,
   recent: RecentAction[],

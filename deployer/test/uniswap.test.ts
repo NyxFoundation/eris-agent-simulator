@@ -48,13 +48,13 @@ describe.skipIf(!u)("Uniswap V3", () => {
     quotedOut = (result as readonly unknown[])[0] as bigint;
   });
 
-  // A: 定量 ----------------------------------------------------------------
-  it("見積りが妥当な価格帯 (1 WETH ≈ 2700〜3000 USDC)", () => {
+  // A: quantitative --------------------------------------------------------
+  it("quote is in a reasonable price band (1 WETH ~= 2700-3000 USDC)", () => {
     expect(quotedOut).toBeGreaterThan(2_700n * 10n ** 6n);
     expect(quotedOut).toBeLessThanOrEqual(3_000n * 10n ** 6n);
   });
 
-  it("実 swap 出力が見積りと ±0.5% 一致 (WETH→USDC)", async () => {
+  it("actual swap output matches the quote within +/-0.5% (WETH->USDC)", async () => {
     await approve(weth(), u!.swapRouter, ONE_WETH);
     const before = await balanceOf(usdc(), dep.address);
     const h = await deployerWallet.writeContract({
@@ -79,11 +79,11 @@ describe.skipIf(!u)("Uniswap V3", () => {
     await waitTx(h);
     const gained = (await balanceOf(usdc(), dep.address)) - before;
     expect(gained).toBeGreaterThan(0n);
-    expectApprox(gained, quotedOut, 50, "swap 出力 vs 見積り");
+    expectApprox(gained, quotedOut, 50, "swap output vs quote");
   });
 
-  // C: ネガティブ ----------------------------------------------------------
-  it("過大な amountOutMinimum の swap は revert する", async () => {
+  // C: negative ------------------------------------------------------------
+  it("swap with an oversized amountOutMinimum reverts", async () => {
     await expectRevert(
       publicClient.simulateContract({
         address: u!.swapRouter,
@@ -97,18 +97,18 @@ describe.skipIf(!u)("Uniswap V3", () => {
             recipient: dep.address,
             deadline: deadline(),
             amountIn: ONE_WETH,
-            amountOutMinimum: quotedOut * 2n, // 達成不可能
+            amountOutMinimum: quotedOut * 2n, // unreachable
             sqrtPriceLimitX96: 0n,
           },
         ],
         account: dep,
       }),
-      "exactInputSingle(過大 minOut)",
+      "exactInputSingle(oversized minOut)",
     );
   });
 
-  // B: 往復 ----------------------------------------------------------------
-  it("逆方向 swap (USDC→WETH) で WETH が増える", async () => {
+  // B: round trip ----------------------------------------------------------
+  it("reverse swap (USDC->WETH) increases WETH", async () => {
     const amountIn = 1_000n * 10n ** 6n; // 1000 USDC
     await approve(usdc(), u!.swapRouter, amountIn);
     const before = await balanceOf(weth(), dep.address);
@@ -136,8 +136,8 @@ describe.skipIf(!u)("Uniswap V3", () => {
     expect(gained).toBeGreaterThan(0n);
   });
 
-  // B: ライフサイクル (流動性ポジションの引き出し) --------------------------
-  it("position の decreaseLiquidity + collect でトークンが戻る", async () => {
+  // B: lifecycle (withdraw a liquidity position) ---------------------------
+  it("decreaseLiquidity + collect on a position returns tokens", async () => {
     const pmAbi = uniAbi("posManager");
     const tokenId = (await publicClient.readContract({
       address: u!.positionManager,
@@ -152,7 +152,7 @@ describe.skipIf(!u)("Uniswap V3", () => {
       functionName: "positions",
       args: [tokenId],
     })) as readonly unknown[];
-    const liquidity = pos[7] as bigint; // positions struct の liquidity
+    const liquidity = pos[7] as bigint; // liquidity in the positions struct
     expect(liquidity).toBeGreaterThan(0n);
 
     const beforeW = await balanceOf(weth(), dep.address);
@@ -196,7 +196,7 @@ describe.skipIf(!u)("Uniswap V3", () => {
 
     const afterW = await balanceOf(weth(), dep.address);
     const afterU = await balanceOf(usdc(), dep.address);
-    // 引き出した元本で WETH/USDC のいずれか (通常は両方) が増える
+    // The withdrawn principal increases WETH and/or USDC (usually both)
     expect(afterW > beforeW || afterU > beforeU).toBe(true);
   });
 });

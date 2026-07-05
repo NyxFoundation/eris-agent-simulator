@@ -14,13 +14,14 @@ import { anvilChain } from "../config.js";
 import { loadForgeArtifact, waitTx, ok, info } from "../util.js";
 
 // ---------------------------------------------------------------------------
-// GMX V2 GM プール流動性 seed。
-// deployer は localhost ロールで CONTROLLER / ORDER_KEEPER を持つため、deposit の作成と
-// keeper 実行を deployer 単独で行える。test/gmx-e2e.ts の deposit 機構を seed 用に最小移植。
+// GMX V2 GM pool liquidity seed.
+// The deployer holds CONTROLLER / ORDER_KEEPER via the localhost roles, so it can both create
+// the deposit and run the keeper execution by itself. Minimal port of the deposit mechanism from
+// test/gmx-e2e.ts for seeding.
 // ---------------------------------------------------------------------------
 
 const dep = accounts.deployer;
-const EXECUTION_FEE = 30_000_000_000_000_000n; // 0.03 ETH (base-fee 0 なので余裕)
+const EXECUTION_FEE = 30_000_000_000_000_000n; // 0.03 ETH (ample since base-fee is 0)
 
 function hashString(s: string): Hex {
   return keccak256(encodeAbiParameters(parseAbiParameters("string"), [s]));
@@ -49,7 +50,7 @@ const KEYS = {
     ),
 };
 
-/** USD 価格を GMX スケール (price * 10^(30 - tokenDecimals)) に変換 */
+/** Convert a USD price to GMX scale (price * 10^(30 - tokenDecimals)) */
 function toGmxPrice(usd: number, tokenDecimals: number): bigint {
   const P = 1_000_000n;
   const usdScaled = BigInt(Math.round(usd * Number(P)));
@@ -216,7 +217,7 @@ export type GmMarket = {
   shortToken: Address;
 };
 
-/** DataStore に mock provider を登録し価格を設定する (deployer = CONTROLLER) */
+/** Register the mock provider in the DataStore and set prices (deployer = CONTROLLER) */
 async function setupOracle(
   core: GmDepositCore,
   mock: Address,
@@ -270,8 +271,8 @@ function encExchange(
 }
 
 /**
- * GM プールに流動性を deposit する。deployer が depositor 兼 keeper executor。
- * longAmount=long token(WETH) / shortAmount=short token(USDC)。
+ * Deposit liquidity into a GM pool. The deployer is both depositor and keeper executor.
+ * longAmount=long token(WETH) / shortAmount=short token(USDC).
  */
 export async function seedGmLiquidity(
   core: GmDepositCore,
@@ -280,7 +281,7 @@ export async function seedGmLiquidity(
   shortAmount: bigint,
   prices: { token: Address; usd: number; decimals: number }[],
 ): Promise<void> {
-  info("GMX V2: GM プールへ流動性を deposit");
+  info("GMX V2: depositing liquidity into the GM pool");
   const mockArt = loadForgeArtifact("MockOracleProvider", "MockOracleProvider");
   const mockHash = await deployerWallet.deployContract({
     abi: mockArt.abi,
@@ -291,7 +292,7 @@ export async function seedGmLiquidity(
   const mock = (await waitTx(mockHash)).contractAddress as Address;
   await setupOracle(core, mock, prices);
 
-  // deployer が long/short token を Router に approve (sendTokens は Router 経由で transferFrom)
+  // deployer approves the long/short tokens to the Router (sendTokens does transferFrom via the Router)
   for (const [token, amount] of [
     [market.longToken, longAmount],
     [market.shortToken, shortAmount],
@@ -307,7 +308,7 @@ export async function seedGmLiquidity(
     await waitTx(h);
   }
 
-  // createDeposit (multicall: 実行fee + long + short + createDeposit)
+  // createDeposit (multicall: execution fee + long + short + createDeposit)
   const params = {
     addresses: {
       receiver: dep.address,
@@ -355,7 +356,7 @@ export async function seedGmLiquidity(
   const submitHash = await deployerWallet.writeContract(request as never);
   await waitTx(submitHash);
 
-  // keeper 実行 (deployer = ORDER_KEEPER)。oracle timestamp を注文より後にするため advance。
+  // keeper execution (deployer = ORDER_KEEPER). advance so the oracle timestamp is after the order.
   await advance(2);
   const execHash = await deployerWallet.writeContract({
     address: core.DepositHandler,
@@ -374,5 +375,5 @@ export async function seedGmLiquidity(
     gas: 20_000_000n,
   });
   await waitTx(execHash);
-  ok("GM 流動性 deposit", `${market.marketToken} (long+short)`);
+  ok("GM liquidity deposit", `${market.marketToken} (long+short)`);
 }

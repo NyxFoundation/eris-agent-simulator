@@ -1,28 +1,28 @@
-# config/regimes/crash-01.yaml — 公式 regime: crash（台形 crash + Aave 清算機会）。ADR 0016 §2
+# config/regimes/crash-01.yaml — official regime: crash (trapezoidal crash + Aave liquidation opportunities). ADR 0016 §2
 #
-# calm-01 と同じ市場条件の上に、seed 由来でランダム化される crash オーバーレイ（ADR 0009）と
-# 清算対象の victim 群（採点対象外）を重ねる。liquidator agent には victim アドレスが
-# ERIS_LIQUIDATION_VICTIMS で配布される。
-# 実行: npm run backtest -- --regime crash-01 [--agents <roster>] [--repeat N]
+# On top of the same market conditions as calm-01, overlays a seed-randomized crash (ADR 0009) and
+# a group of liquidation-target victims (excluded from scoring). The liquidator agent receives the
+# victim addresses via ERIS_LIQUIDATION_VICTIMS.
+# Run: npm run backtest -- --regime crash-01 [--agents <roster>] [--repeat N]
 #
-# 較正の連動（ADR 0009 §4 / CLAUDE.md）:
-#   - victim を建てる条件: HF0 ≳ LT/(0.97·LTV)（reserve の実測値でチェーン上検証・fail-fast）
-#   - HF を割る条件: crash magnitude m > (HF0−1)/HF0。HF0=1.10 なら m > 9.1% →
-#     magnitudeRange [0.12, 0.16] は下限でも確実に breach する
-# blockTimeSec は regime の一部（ADR 0016 §3）。成績を読む run はこの既定値で回すこと。
+# Calibration coupling (ADR 0009 §4 / CLAUDE.md):
+#   - Condition to open victims: HF0 >= LT/(0.97*LTV) (verified on-chain against measured reserve values, fail-fast)
+#   - Condition to breach HF: crash magnitude m > (HF0-1)/HF0. For HF0=1.10, m > 9.1% ->
+#     magnitudeRange [0.12, 0.16] breaches reliably even at the lower bound
+# blockTimeSec is part of the regime (ADR 0016 §3). Runs whose scores you read must use this default.
 
 run:
   seed: 202
   blocks: 60
-  seconds: 600 # stress run は時間制限が自動無効化されブロック数で終わる（ADR 0009）
-  blockTimeSec: 2 # regime に固定（ADR 0016 §2）
+  seconds: 600 # a stress run auto-disables the time limit and ends by block count (ADR 0009)
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
   protocols: [uniswap, balancer, curve, gmx, aave]
   economicGas: false
   localDeploy: true
   reportDir: ./runs
 
 funding:
-  wethWei: "0" # USDC-only 配布（初期の方向性エクスポージャを排除）
+  wethWei: "0" # USDC-only distribution (removes initial directional exposure)
   usdcUnits: "25000000000"
 
 limits:
@@ -42,7 +42,7 @@ flow:
   aaveActorSizeSigma: "1.0"
 
 stress:
-  # 値でなくレンジを与える（seed がサンプル）= 特定パスへの過学習を抑制（ADR 0009）
+  # Give ranges, not values (the seed samples them) = suppresses overfitting to a specific path (ADR 0009)
   events:
     - {
         type: crash,
@@ -59,13 +59,13 @@ agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
-    description: 何もしない (基準ライン)
+    description: does nothing (baseline)
   - id: venue-arb
     wallet: AGENT2_PRIVATE_KEY
-    description: WETH 専用 cross-venue 裁定
+    description: WETH-only cross-venue arbitrage
   - id: multi-arb
     wallet: AGENT3_PRIVATE_KEY
-    description: base 非依存 cross-venue 裁定（全 active base × 全 venue）
+    description: base-agnostic cross-venue arbitrage (all active bases x all venues)
   - id: liquidator
     wallet: AGENT4_PRIVATE_KEY
-    description: Aave 清算 bot（victim アドレスは ERIS_LIQUIDATION_VICTIMS で受領）
+    description: Aave liquidation bot (receives victim addresses via ERIS_LIQUIDATION_VICTIMS)

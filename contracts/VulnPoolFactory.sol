@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-// ADR 0014 §1: 脆弱性発生イベントの新規プールを生成する factory。
-// 環境（coordinator）が run 中に SimpleAMM（正直）/ RiggedAMM（悪意）を混在生成し、
-// PoolCreated を on-chain emit する。agent は factory イベント購読でプールグラフを作る（§3）。
+// ADR 0014 §1: factory that spawns the new pools for vulnerability events.
+// During a run the environment (coordinator) spawns a mix of SimpleAMM (honest) / RiggedAMM
+// (malicious) and emits PoolCreated on-chain. Agents build the pool graph by subscribing to factory
+// events (§3).
 //
-// 重要: PoolCreated は rigged フラグを暴露しない（token/fee のみ）。暴露すると「契約の
-// 安全性でしか区別できない」という設計が崩れて検証が trivialize する（ADR 0014 §1）。
-// rigged の ground-truth は環境が events.jsonl に別途持つ（採点用）。
-// 実行系はすべて TypeScript + viem 側。このコントラクトのみ Foundry でコンパイルする。
+// Important: PoolCreated does not expose the rigged flag (token/fee only). Exposing it would break
+// the design where pools can only be told apart by contract safety, trivializing verification
+// (ADR 0014 §1). The rigged ground-truth is held separately by the environment in events.jsonl (for scoring).
+// All execution logic lives on the TypeScript + viem side. Only this contract is compiled with Foundry.
 
 import {SimpleAMM} from "./SimpleAMM.sol";
 import {RiggedAMM} from "./RiggedAMM.sol";
 
 /// @title VulnPoolFactory
-/// @notice owner（環境の admin）のみがプールを生成できる。生成順に allPools へ追記。
+/// @notice Only the owner (the environment's admin) can create pools. Appends to allPools in creation order.
 contract VulnPoolFactory {
     address public immutable owner;
     address[] public allPools;
 
-    // rigged は暴露しない。tokens / fee のみ（本番 explorer の by-address 照会に対応）。
+    // Does not expose rigged. tokens / fee only (matches a production explorer's by-address lookup).
     event PoolCreated(
         address indexed pool,
         address indexed token0,

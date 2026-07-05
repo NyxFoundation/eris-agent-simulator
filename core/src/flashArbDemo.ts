@@ -1,6 +1,6 @@
-// フラッシュ arb デモ(GitHub #3)。ERIS_FLASH_ARB=1 のときだけ coordinator から使う。
-// 固定 deployer の nonce-0 デプロイで FlashArb のアドレスを決定論化し、agent 側でも
-// getContractAddress で同じ値を計算できる(env 注入不要)。既定 off。
+// Flash arb demo (GitHub #3). Used by the coordinator only when ERIS_FLASH_ARB=1.
+// The nonce-0 deploy from a fixed deployer makes the FlashArb address deterministic,
+// so the agent can compute the same value with getContractAddress (no env injection). Off by default.
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address } from "viem";
 import { mine, setEthBalance } from "@eris/sdk/chain.js";
@@ -13,10 +13,10 @@ import {
   FLASH_DEPLOYER_KEY,
 } from "@eris/sdk/wellKnown.js";
 
-// 決定論アドレス（agent と共有する契約）は sdk/src/wellKnown.ts が正本。
+// The deterministic addresses (contract shared with agents) are canonically defined in sdk/src/wellKnown.ts.
 export { FLASH_ARB_ADDRESS, FLASH_DEPLOYER_ADDRESS, FLASH_DEPLOYER_KEY };
 
-// FlashArb を固定 deployer から(nonce 0 で)デプロイ。setup フェーズで 1 回。
+// Deploy FlashArb from the fixed deployer (at nonce 0). Once, during the setup phase.
 export async function deployFlashArb(ctx: SimContext): Promise<Address> {
   const account = privateKeyToAccount(FLASH_DEPLOYER_KEY);
   await setEthBalance(

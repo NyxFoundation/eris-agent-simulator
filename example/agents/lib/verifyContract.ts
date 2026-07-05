@@ -1,15 +1,18 @@
-// 取引前のコントラクト検証（ADR 0014 §4,5）。二段構え:
-//   1. dry-run（決定論・安価）: 実行予定 swap を eth_call で空打ちし、実出力 vs honest 見積り
-//      （getAmountOut）を比較。乖離があれば rigged（サイズ閾値付き rig も実サイズで空打ちすれば捕捉）。
-//   2. LLM ソース監査（条件付き/隠蔽 rig 用・任意）: dry-run が通っても、配布 verified source
-//      （codehash 照合済み）＋挙動証拠を LLM に渡し、probe をすり抜ける条件付き rig / backdoor を
-//      読み取らせる。verdict は参考ログ（採点は環境 ground-truth。ADR 0014 §6）。
+// Pre-trade contract verification (ADR 0014 §4,5). Two stages:
+//   1. dry-run (deterministic, cheap): dry-fire the swap you intend to execute via eth_call and
+//      compare actual output vs the honest quote (getAmountOut). A discrepancy means rigged (a
+//      size-threshold rig is also caught by dry-firing at the actual size).
+//   2. LLM source audit (for conditional/hidden rigs; optional): even if the dry-run passes, hand the
+//      distributed verified source (codehash-matched) plus the behavioral evidence to an LLM to read
+//      out a conditional rig / backdoor that slips past the probe. The verdict is a reference log
+//      (scoring is the environment's ground truth; ADR 0014 §6).
 //
-// ソース入手（§5）: シミュレーションでは環境が runs/<id>/disclosures/<addr>.json を配布する。
-// agent は eth_getCode(address) の codehash を配布レコードと照合し「source == 実 bytecode」を確かめる。
-// 本番では explorer API に差し替えるだけ（source 取得を IF 化。competition bundle 互換）。
+// Obtaining source (§5): in simulation the environment distributes runs/<id>/disclosures/<addr>.json.
+// The agent matches the codehash from eth_getCode(address) against the distributed record to confirm
+// "source == actual bytecode". In production just swap in an explorer API (source fetching behind an
+// interface; competition-bundle compatible).
 //
-// verdict は address 単位でキャッシュ（コントラクトは immutable なので run 中不変）。
+// The verdict is cached per address (contracts are immutable, so it's fixed during the run).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { keccak256, type Address, type Hex, type PublicClient } from "viem";
@@ -29,7 +32,7 @@ export type VerifyResult = {
   reason: string;
   checks: {
     disclosureFound: boolean;
-    codehashMatch: boolean | null; // null = 配布レコード無し（unverified）
+    codehashMatch: boolean | null; // null = no distributed record (unverified)
     dryRun: "ok" | "skim" | "revert" | "skipped";
     quotedOut?: string;
     simOut?: string;
@@ -45,7 +48,7 @@ type Disclosure = {
   codehash: string;
 };
 
-// 最終判定（safe/unsafe）のみキャッシュ。unknown（approval 未着で dry-run revert）はキャッシュしない。
+// Cache only final verdicts (safe/unsafe). Do not cache unknown (dry-run revert because the approval hasn't landed).
 const cache = new Map<string, VerifyResult>();
 
 function readDisclosure(
@@ -57,17 +60,17 @@ function readDisclosure(
     const path = join(runDir, "disclosures", `${address.toLowerCase()}.json`);
     return JSON.parse(readFileSync(path, "utf8")) as Disclosure;
   } catch {
-    return null; // 未配布（本番 explorer なら unverified）
+    return null; // not distributed (unverified under a production explorer)
   }
 }
 
 export type VerifyOptions = {
   publicClient: PublicClient;
   pool: Address;
-  tokenIn: Address; // = USDC（base を買う）
-  amountIn: bigint; // 実際に取引予定のサイズ（サイズ閾値 rig を実サイズで捕捉するため）
-  trader: Address; // 自分（dry-run の msg.sender）
-  runDir?: string; // ERIS_RUN_DIR（disclosures の基点）
+  tokenIn: Address; // = USDC (buy the base)
+  amountIn: bigint; // the size you actually intend to trade (to catch a size-threshold rig at the actual size)
+  trader: Address; // yourself (the dry-run's msg.sender)
+  runDir?: string; // ERIS_RUN_DIR (base of disclosures)
   llmMode?: string; // ERIS_VULN_LLM: "0"|"1"|"mock"
 };
 
@@ -85,7 +88,7 @@ export async function verifyContract(
     llm: null,
   };
 
-  // 1) codehash 照合（配布 source が実 bytecode と一致するか）。
+  // 1) codehash match (does the distributed source match the actual bytecode?).
   const disclosure = readDisclosure(opts.runDir, opts.pool);
   const code =
     (await opts.publicClient.getCode({ address: opts.pool })) ?? "0x";
@@ -95,7 +98,7 @@ export async function verifyContract(
     checks.codehashMatch =
       disclosure.codehash.toLowerCase() === onchainHash.toLowerCase();
     if (!checks.codehashMatch) {
-      // source が嘘（red flag）。取引しない。
+      // the source is lying (red flag). Do not trade.
       return final(key, {
         status: "unsafe",
         reason: "codehash mismatch: disclosed source != on-chain bytecode",
@@ -104,7 +107,7 @@ export async function verifyContract(
     }
   }
 
-  // 2) dry-run: 実サイズで swap を eth_call し、honest 見積りとの乖離（skim）を捕捉。
+  // 2) dry-run: eth_call the swap at the actual size and catch the discrepancy (skim) vs the honest quote.
   let quotedOut: bigint | undefined;
   try {
     quotedOut = (await opts.publicClient.readContract({
@@ -117,8 +120,8 @@ export async function verifyContract(
   } catch {
     quotedOut = undefined;
   }
-  // honest 見積りが読めないと skim 比較ができない = 検証不能。safe と誤って minOut=0 で取引する
-  // fail-open を避けるため unknown を返す（agent 側で再試行させる）。
+  // If the honest quote can't be read, the skim comparison is impossible = not verifiable. Return
+  // unknown to avoid a fail-open where it's wrongly deemed safe and traded with minOut=0 (let the agent retry).
   if (quotedOut === undefined) {
     return {
       status: "unknown",
@@ -137,7 +140,7 @@ export async function verifyContract(
     const simOut = result as bigint;
     checks.simOut = simOut.toString();
     if (quotedOut > 0n) {
-      // honest なら simOut == quotedOut。skim があれば simOut < quotedOut。
+      // if honest, simOut == quotedOut. If there's a skim, simOut < quotedOut.
       if (simOut * 10_000n < quotedOut * 9_950n) {
         checks.dryRun = "skim";
         return final(key, {
@@ -149,8 +152,8 @@ export async function verifyContract(
     }
     checks.dryRun = "ok";
   } catch (error) {
-    // approval 未着 / 資金不足などで transferFrom が revert すると dry-run できない。
-    // 断定できないので unknown（agent 側で approve 後に再試行させる）。
+    // If transferFrom reverts (approval not landed / insufficient funds etc.), the dry-run isn't possible.
+    // Can't conclude, so unknown (let the agent retry after approve).
     checks.dryRun = "revert";
     return {
       status: "unknown",
@@ -159,7 +162,7 @@ export async function verifyContract(
     };
   }
 
-  // 3) LLM ソース監査（任意・defense in depth）。dry-run が通っても source を読ませる。
+  // 3) LLM source audit (optional, defense in depth). Have it read the source even if the dry-run passed.
   if (disclosure && opts.llmMode && opts.llmMode !== "0") {
     const verdict = await auditContractWithLlm(
       disclosure.sourceCode,
@@ -194,9 +197,9 @@ function final(key: string, r: VerifyResult): VerifyResult {
   return r;
 }
 
-// -------- LLM 監査（ADR 0014 §4-2。src/llm の env 慣習を流用。既定 off） --------
-//   "mock": source を静的走査するスタブ（テスト/デモ用・決定論）。
-//   "1"   : ollama HTTP（ERIS_OLLAMA_* / ERIS_LLM_MODEL）で JSON verdict を得る。
+// -------- LLM audit (ADR 0014 §4-2; reuses src/llm's env conventions; default off) --------
+//   "mock": a stub that statically scans the source (for tests/demos, deterministic).
+//   "1"   : get a JSON verdict via ollama HTTP (ERIS_OLLAMA_* / ERIS_LLM_MODEL).
 export async function auditContractWithLlm(
   source: string,
   probe: { quotedOut: string; simOut: string; amountIn: string },
@@ -204,9 +207,10 @@ export async function auditContractWithLlm(
 ): Promise<LlmVerdict | null> {
   if (!mode || mode === "0") return null;
   if (mode === "mock") {
-    // 条件付き skim の**構造**を静的に探す: 「amountIn 閾値超で out を減算する条件分岐」。
-    // コメント/変数名でなくロジック（`if (amountIn > …)` かつ `out = out * …`）に依存させる
-    // （honest 側の "skim しない" 等のコメントで誤検知しない。配布 source はコメント除去済みだが二重防御）。
+    // Statically look for the *structure* of a conditional skim: "a conditional branch that subtracts
+    // from out above an amountIn threshold". Depend on the logic (`if (amountIn > …)` and `out = out * …`),
+    // not comments/variable names (so an honest-side comment like "no skim" won't false-positive; the
+    // distributed source has comments stripped, but this is a second layer of defense).
     const rigged =
       /if\s*\(\s*amountIn\s*>/.test(source) &&
       /out\s*=\s*\(?\s*out\s*\*/.test(source);
@@ -214,20 +218,20 @@ export async function auditContractWithLlm(
       ? {
           safe: false,
           reason:
-            "swap に amountIn 閾値超で out を減らす条件付き分岐がある（getAmountOut には無い）",
+            "swap has a conditional branch that reduces out above an amountIn threshold (not present in getAmountOut)",
           confidence: 0.9,
         }
       : {
           safe: true,
-          reason: "conditional skim 分岐は見つからない",
+          reason: "no conditional skim branch found",
           confidence: 0.8,
         };
   }
-  // mode === "1"（実 LLM: ollama）
+  // mode === "1" (real LLM: ollama)
   try {
     return await ollamaAudit(source, probe);
   } catch (error) {
-    // LLM は補助。失敗しても dry-run が一次検証なのでブロックしない。
+    // The LLM is auxiliary. Even on failure, don't block, since the dry-run is the primary verification.
     return {
       safe: true,
       reason: "llm unavailable",
@@ -249,12 +253,12 @@ async function ollamaAudit(
     process.env.ERIS_LLM_MODEL ??
     "gpt-oss:120b";
   const system =
-    "あなたはスマートコントラクト監査 AI。与えられた AMM プールの Solidity ソースと dry-run 証拠から、" +
-    "swap が見積り(getAmountOut)より少なくしか渡さない条件付き rug / backdoor があるか判定する。" +
-    'JSON のみで {"safe": bool, "reason": string, "confidence": number(0..1)} を返す。';
+    "You are a smart-contract auditing AI. From the given AMM pool's Solidity source and dry-run evidence, " +
+    "judge whether there is a conditional rug / backdoor where swap delivers less than the quote (getAmountOut). " +
+    'Return only JSON: {"safe": bool, "reason": string, "confidence": number(0..1)}.';
   const user =
     `SOURCE:\n${source}\n\nPROBE: quotedOut=${probe.quotedOut} simOut=${probe.simOut} amountIn=${probe.amountIn}\n` +
-    "この swap を実行して安全か？条件付き skim 分岐があれば safe=false。";
+    "Is it safe to execute this swap? If there is a conditional skim branch, safe=false.";
   const res = await fetch(`${baseUrl}/chat`, {
     method: "POST",
     headers: {

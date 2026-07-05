@@ -1,10 +1,11 @@
-// cross-venue-arb (GitHub #4): uniswap/balancer/curve のうち最安 venue で買い・最高 venue で
-// 売る 2-leg 裁定。cv-bal-arb.ts(bal↔curve 限定)を 3 venue の最大乖離ペアへ一般化したもの。
-// 注: 別 fee-tier / Uniswap v2 は観測に含まれないため対象外(uni 0.05% + balancer + curve のみ)。
-// RPC 不要・semantic action のみ。
+// cross-venue-arb (GitHub #4): 2-leg arbitrage that buys on the cheapest venue and sells on the most
+// expensive among uniswap/balancer/curve. Generalizes cv-bal-arb.ts (limited to bal<->curve) to the
+// max-deviation pair across all 3 venues.
+// Note: other fee tiers / Uniswap v2 are not in the observation, so they are out of scope (uni 0.05% + balancer + curve only).
+// No RPC needed; semantic actions only.
 //
 // env:
-//   CROSS_VENUE_SPREAD_BPS  発注する最小スプレッド(bps, default 10)
+//   CROSS_VENUE_SPREAD_BPS  minimum spread to trade (bps, default 10)
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 
 const SPREAD_BPS = intEnv("CROSS_VENUE_SPREAD_BPS", 10);
@@ -45,19 +46,19 @@ export function decide(
       SIZE_BPS_MAX,
       Math.max(SIZE_BPS_MIN, Math.floor(spread * 200_000)),
     );
-    // デルタニュートラル化: 買い脚と売り脚を独立した USDC/WETH 上限で切ると WETH 量が一致せず
-    // 残ポジ(方向性)が毎回積み上がる。代わりに「売れる WETH 上限を買うのに必要な USDC」で買い脚を
-    // 頭打ちし、買った WETH をそのまま売る（買い==売りで net delta≈0）。
+    // Delta neutralization: capping the buy leg and sell leg with independent USDC/WETH limits leaves the
+    // WETH amounts mismatched, so a residual (directional) position accumulates every round. Instead, cap the
+    // buy leg by "the USDC needed to buy the sellable WETH limit" and sell exactly the WETH bought (buy==sell so net delta~0).
     const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
     const maxWeth = BigInt(obs.limits.maxWethInWei);
     const priceScaled = BigInt(Math.max(1, Math.round(lo.price * 100))); // USDC*100/WETH
-    // maxWeth(wei) を lo.price で買うのに要る USDC(1e6) = maxWeth * priceScaled / (100 * 1e12)
+    // USDC (1e6) needed to buy maxWeth (wei) at lo.price = maxWeth * priceScaled / (100 * 1e12)
     const usdcForWethCap = (maxWeth * priceScaled) / (100n * 10n ** 12n);
     const usdcCap = maxUsdc < usdcForWethCap ? maxUsdc : usdcForWethCap;
     const usdcIn = (usdcCap * BigInt(sizeBps)) / 10_000n;
-    // 買い脚で取得する WETH(wei) = usdcIn(1e6) * 1e18 / (lo.price * 1e6) = usdcIn * 1e12 * 100 / priceScaled
+    // WETH (wei) acquired by the buy leg = usdcIn (1e6) * 1e18 / (lo.price * 1e6) = usdcIn * 1e12 * 100 / priceScaled
     const boughtWethWei = (usdcIn * 10n ** 12n * 100n) / priceScaled;
-    // スリッページで受領が目減りするため 98% を売る（裸ショート/残高超過を避けつつデルタマッチ）。
+    // Sell 98% since slippage shrinks the received amount (matches delta while avoiding a naked short / exceeding balance).
     const wethIn = (boughtWethWei * 98n) / 100n;
     if (usdcIn <= 0n || wethIn <= 0n) {
       return { type: "noop", reason: "computed size zero" };

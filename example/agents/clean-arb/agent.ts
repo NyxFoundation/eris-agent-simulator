@@ -1,23 +1,23 @@
 /**
- * clean-arb: 規律的な 2-leg cross-venue 裁定のみを行う agent（全 active base × 全 AMM venue）。
+ * clean-arb: an agent that only does disciplined 2-leg cross-venue arbitrage (all active bases x all AMM venues).
  *
- * multi-arb との違い: multi-arb の step1（cost-aware な 2-leg delta-neutral 裁定）だけを残し、
- * **single-leg フォールバックを撤廃**した。single-leg は「fair から乖離した venue を fair へ寄せる」
- * 1 swap をコスト無視・方向リスクありで出すため、WBTC 注入が作る大きな乖離を追って手数料/方向で
- * 系統的に損する（multi-arb が WBTC で大赤字の主因）。
+ * Difference from multi-arb: keeps only multi-arb's step 1 (cost-aware 2-leg delta-neutral arbitrage) and
+ * **removes the single-leg fallback**. The single-leg path issues 1 swap to "pull a venue that deviated from
+ * fair back toward fair", ignoring cost and carrying directional risk, so it chases the large deviations that
+ * WBTC injection creates and loses systematically on fees/direction (the main reason multi-arb ran a big loss on WBTC).
  *
- * clean-arb は「spread > 両 venue 手数料 + 安全マージン」のときだけ 2-leg を出し、無ければ noop。
- * 方向 β を持たず venue 間スプレッド(α)だけを、コストを上回るときだけ抜く＝規律的な裁定者。
+ * clean-arb only issues a 2-leg trade when "spread > both venue fees + safety margin", otherwise noop.
+ * It carries no directional beta and extracts only the cross-venue spread (alpha), and only when it beats cost = a disciplined arbitrageur.
  */
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { marketViews, type MarketView } from "../lib/markets.js";
 
-// 2-leg ラウンドトリップの採算マージン（手数料 + price impact + 逆行見込み）。
-// env ERIS_ARB_SAFETY_BPS で上書き可（持続ドリフト env では大きくして逆選択を避ける検証用）。
+// Profitability margin for the 2-leg round trip (fees + price impact + expected adverse move).
+// Overridable via env ERIS_ARB_SAFETY_BPS (raise it in persistent-drift envs to avoid adverse selection, for testing).
 const SAFETY_MARGIN_BPS = Number(process.env.ERIS_ARB_SAFETY_BPS ?? "60");
 const MIN_SIZE_BPS = 250;
 const MAX_SIZE_BPS = 2500;
-const SPREAD_GAIN = 200_000; // net edge → サイズの線形ゲイン
+const SPREAD_GAIN = 200_000; // linear gain from net edge -> size
 const LEG_SLIPPAGE_BPS = 120;
 
 function minBI(a: bigint, b: bigint): bigint {
@@ -47,7 +47,7 @@ export function decide(
   const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
   const fee = obs.limits.defaultPriorityFeePerGasWei;
 
-  // 全 base × venue を走査し、最も大きい採算 2-leg を選ぶ。
+  // Scan all bases x venues and pick the largest profitable 2-leg.
   let bestTwo: TwoLeg | null = null;
   for (const view of views) {
     if (view.venues.length < 2) continue;
@@ -61,7 +61,7 @@ export function decide(
     const spread = rich.price / cheap.price - 1;
     const roundtripCost =
       (cheap.feeBps + rich.feeBps + SAFETY_MARGIN_BPS) / 10000;
-    if (spread <= roundtripCost) continue; // コスト超のときだけ
+    if (spread <= roundtripCost) continue; // only when it beats cost
     const usdcCap = minBI(usdcBal, maxUsdc);
     if (usdcCap <= 0n) continue;
     const netEdge = spread - roundtripCost;

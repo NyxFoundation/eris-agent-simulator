@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "eris-competition の環境デーモン + 採点（ADR 0015）。参加者は触らない。example への import は禁止（scripts/checkImportBoundaries.ts が検査）。",
+  "description": "eris-competition environment daemon + scoring (ADR 0015). Off-limits to participants. Importing from example is forbidden (checked by scripts/checkImportBoundaries.ts).",
   "dependencies": {
     "@eris/sdk": "*",
     "viem": "^2.39.3",

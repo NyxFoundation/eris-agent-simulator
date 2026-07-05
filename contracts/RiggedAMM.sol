@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-// ADR 0014 §1: 悪意あるプール（条件付き rigged swap）。
-// 見積り（getAmountOut）は正直に美味しく見せて arb 機会に見せかけ、実行（swap）だけ
-// amountIn > rugThreshold のとき rugBps だけ skim して見積りより少なくしか渡さない。
-// 小さな dry-run probe（< rugThreshold）は通るため、無条件 rig と違い 1 回の probe では
-// 見抜けない。ソースを読むと skim 分岐の条件が見える → LLM ソース監査を load-bearing にする
-// （ADR 0014 §4）。実トークンなので skim 分は valueUsdc がネイティブに損として捕捉する。
-// 実行系はすべて TypeScript + viem 側。このコントラクトのみ Foundry でコンパイルする。
+// ADR 0014 §1: malicious pool (conditional rigged swap).
+// The quote (getAmountOut) is honestly attractive to look like an arb opportunity, but the
+// execution (swap) skims rugBps and delivers less than quoted only when amountIn > rugThreshold.
+// A small dry-run probe (< rugThreshold) passes, so unlike an unconditional rig it cannot be
+// caught with a single probe. Reading the source reveals the skim branch's condition, which makes
+// LLM source auditing load-bearing (ADR 0014 §4). Since these are real tokens, the skimmed amount
+// is natively captured as a loss by valueUsdc.
+// All execution logic lives on the TypeScript + viem side. Only this contract is compiled with Foundry.
 
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
@@ -20,17 +21,17 @@ interface IERC20 {
 }
 
 /// @title RiggedAMM
-/// @notice SimpleAMM と同一インタフェースだが swap にサイズ閾値付きの skim を隠す。
-///         getReserves / getAmountOut は正直（餌）。差は swap の 1 分岐のみ。
+/// @notice Same interface as SimpleAMM, but hides a size-threshold skim in swap.
+///         getReserves / getAmountOut are honest (the bait). The only difference is one branch in swap.
 contract RiggedAMM {
     address public immutable token0;
     address public immutable token1;
     uint24 public immutable feeBps;
-    // 隠れた罠のパラメータは internal（public getter を出さない）。on-chain から直接読めると
-    // 「rugThreshold() が成功するか＝rigged か」を 1-call で判別できてしまい、ソース監査を迂回する
-    // ショートカットになるため。ground-truth は環境が別途保持する（vulnPools.ts）。
-    uint256 internal immutable rugThreshold; // tokenIn 建て。これ超の amountIn だけ skim
-    uint24 internal immutable rugBps; // skim 割合（bps）
+    // The hidden trap parameters are internal (no public getter). If they were readable on-chain,
+    // "does rugThreshold() succeed = is it rigged" could be decided in one call, a shortcut that
+    // bypasses source auditing. The ground-truth is held separately by the environment (vulnPools.ts).
+    uint256 internal immutable rugThreshold; // denominated in tokenIn. skims only amountIn above this
+    uint24 internal immutable rugBps; // skim fraction (bps)
 
     event Swap(
         address indexed to,
@@ -73,7 +74,7 @@ contract RiggedAMM {
         return (rOut * inAfterFee) / (rIn + inAfterFee);
     }
 
-    // 餌: arb 機会に見える正直な見積り（skim を含まない）。
+    // Bait: an honest quote that looks like an arb opportunity (no skim included).
     function getAmountOut(
         uint256 amountIn,
         address tokenIn
@@ -90,12 +91,13 @@ contract RiggedAMM {
         require(tokenIn == token0 || tokenIn == token1, "bad tokenIn");
         address tokenOut = tokenIn == token0 ? token1 : token0;
         out = _honestOut(amountIn, tokenIn);
-        // Bad(隠れた罠): 本番サイズ超だけ skim。小さな dry-run probe は通り、ソースを読むと
-        // 条件が見える。差分（out の減少分）はプール = 攻撃者の利益として残る。
+        // Bad (hidden trap): skims only above production size. A small dry-run probe passes, and
+        // reading the source reveals the condition. The difference (the reduction in out) stays in
+        // the pool as the attacker's profit.
         if (amountIn > rugThreshold) {
             out = (out * (10_000 - rugBps)) / 10_000;
         }
-        // minOut は honest 見積り基準。naive が minOut=0 で trust すれば skim が通り被弾する。
+        // minOut is measured against the honest quote. If a naive caller trusts it with minOut=0, the skim goes through and it takes the hit.
         require(out >= minOut, "slippage");
         require(
             IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn),

@@ -2,13 +2,13 @@
  * Aave V3 raw transaction builders.
  *
  * Builds unsigned tx objects ({ to, data }) for supply, withdraw,
- * and ERC-20 approval. Pool/トークンアドレスは src/constants.ts(Arbitrum)を参照。
+ * and ERC-20 approval. Pool/token addresses are referenced from src/constants.ts (Arbitrum).
  */
 import { encodeFunctionData } from "viem";
 import { AAVE, TOKENS as ARB_TOKENS } from "@eris/sdk/constants.js";
 
-// sim は Arbitrum フォーク。Pool/トークンは src/constants.ts の Arbitrum 値を使う
-// （mainnet ハードコードだとフォーク上の存在しないコントラクトに当たり機能しない）。
+// The sim is an Arbitrum fork. Use the Arbitrum Pool/token values from src/constants.ts
+// (hardcoding mainnet would hit non-existent contracts on the fork and fail).
 const AAVE_V3_POOL: `0x${string}` = AAVE.Pool;
 
 const TOKENS: Record<string, { address: `0x${string}`; decimals: number }> = {

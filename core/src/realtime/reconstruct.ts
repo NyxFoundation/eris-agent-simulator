@@ -1,15 +1,16 @@
-// run 後の per-agent 価値系列再構成（ADR 0006 §4）。
+// Post-run per-agent value series reconstruction (ADR 0006 §4).
 //
-// 実時間ループから採点読取を消した代わりに、run 終了直後（resetFork で歴史が消える前）に
-// anvil が保持する歴史ブロック state を blockNumber 指定の Multicall3 一括読取で遡り、
-// 各ブロック断面の「全 agent の総価値（spot + protocol ポジション）」を再構成する。
-//   - 全 agent が同一ブロック断面で読まれるため IR の点対応が濁らない
-//   - スナップショット位相に同期する指標ハックが原理上不可能
-// 出力は events.jsonl への observation 形イベント（inventory.valueUsdc = 総価値）。
-// readPerRoundValues（evaluate / gate / discrimination）が無改修で読める。
+// In place of scoring reads removed from the realtime loop, right after the run ends (before resetFork
+// erases history) it walks back over the historical block state anvil retains via blockNumber-specified
+// Multicall3 batch reads, and reconstructs "each agent's total value (spot + protocol positions)" at each
+// block cross-section.
+//   - Because all agents are read at the same block cross-section, the IR point correspondence is not muddied
+//   - A metric hack synced to the snapshot phase is impossible in principle
+// The output is observation-shaped events into events.jsonl (inventory.valueUsdc = total value).
+// readPerRoundValues (evaluate / gate / discrimination) can read it without modification.
 //
-// ADR 0013: 追加 base（WBTC 等）の spot 残高・LP も採点する。fork 既定（base=WETH のみ）では
-// 追加読取が無く従来と完全一致（byte 互換）。
+// ADR 0013: also scores extra bases' (WBTC etc.) spot balances and LP. Under the fork default (base=WETH
+// only), there are no extra reads and it matches the prior behavior exactly (byte-compatible).
 import type { Address, PublicClient } from "viem";
 import { parseAbi } from "viem";
 import { erc20Abi, poolAbi } from "@eris/sdk/abis.js";
@@ -29,7 +30,7 @@ import {
 import type { ProtocolId } from "@eris/sdk/types.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 
-// anvil の歴史 state 保持深度の実測上限（~1,050。ADR 0006 Risks）。超えそうなら警告する。
+// Measured upper bound of anvil's historical state retention depth (~1,050; ADR 0006 Risks). Warn if likely to exceed it.
 const HISTORY_DEPTH_LIMIT = 1000;
 
 const multicall3Abi = parseAbi([
@@ -51,21 +52,21 @@ export type ReconstructionMeta = {
   blocks: number;
   failedReads: number;
   elapsedMs: number;
-  // α 評価に使った固定参照 fair（USDC/WETH。run 末の fair）。
+  // The fixed reference fair used for α evaluation (USDC/WETH; the fair at run end).
   alphaRefFairUsdcPerWeth: number;
-  // agent -> α（= 固定参照 fair での価値の toBlock − fromBlock。β 除去したトレード由来 PnL）。
+  // agent -> α (= value at the fixed reference fair, toBlock − fromBlock; β-removed trade-derived PnL).
   alphaByAgent: Record<string, number>;
 };
 
 type MulticallContract = {
   address: Address;
-  // biome-ignore lint/suspicious/noExplicitAny: 異種 ABI を 1 つの multicall に混載する
+  // biome-ignore lint/suspicious/noExplicitAny: mixing heterogeneous ABIs into a single multicall
   abi: any;
   functionName: string;
   args?: readonly unknown[];
 };
 
-// 1 agent あたりの断面 multicall 読取本数（インデックス計算用）。
+// Number of cross-section multicall reads per agent (for index computation).
 function perAgentReads(opts: {
   extraBaseCount: number;
   activeStables: Address[];
@@ -76,7 +77,7 @@ function perAgentReads(opts: {
   return (
     1 + // ETH
     1 + // WETH
-    opts.extraBaseCount + // 追加 base 残高（WBTC 等）
+    opts.extraBaseCount + // extra base balances (WBTC etc.)
     opts.activeStables.length +
     (opts.hasAave ? 1 : 0) +
     (opts.hasGmx ? 1 : 0) +
@@ -84,17 +85,17 @@ function perAgentReads(opts: {
   );
 }
 
-// 1 ブロック断面の全 agent 総価値（spot + LP + aave + gmx）。
-// run 後再構成（reconstructValueSeries）と dashboard の valuePoller が同じ価値計算を
-// 共有するための単一断面リーダ（ADR 0008 P0）。blockNumber 指定で歴史/現在いずれの
-// 断面も読める。observation の emit はしない（呼び側の責務）。
-// valueUsdc = live fair での総価値（β 込みの mark-to-market）。
-// alphaValueUsdc = free 在庫（eth/weth/追加 base）を「run 内で固定した参照 fair」で評価した
-//   価値（+ protocol position は live fair の mark。ADR 0002 系 attribution と同じ近似）。
-//   固定参照で評価するため保有在庫への価格ドリフト（β）が両断面で相殺され、トレードが
-//   「fair に対して有利/不利な価格で約定した分」＝α だけが残る（amm-challenge の
-//   fair-price-at-execution edge に相当。ADR 0015 Notes）。refFairByBase 未指定なら
-//   alphaValueUsdc = valueUsdc（後方互換）。
+// Total value of all agents at one block cross-section (spot + LP + aave + gmx).
+// A single cross-section reader so that post-run reconstruction (reconstructValueSeries) and the dashboard's
+// valuePoller share the same value computation (ADR 0008 P0). With blockNumber it can read either a historical
+// or current cross-section. It does not emit observations (that is the caller's responsibility).
+// valueUsdc = total value at live fair (β-inclusive mark-to-market).
+// alphaValueUsdc = value of free inventory (eth/weth/extra base) evaluated at "the reference fair fixed within
+//   the run" (+ protocol positions are marked at live fair; the same approximation as ADR 0002-family
+//   attribution). Because it evaluates at the fixed reference, price drift (β) on held inventory cancels between
+//   the two cross-sections, and only the portion where a trade "executed at a favorable/unfavorable price versus
+//   fair" = α remains (equivalent to the amm-challenge fair-price-at-execution edge; ADR 0015 Notes). If
+//   refFairByBase is unspecified, alphaValueUsdc = valueUsdc (backward compatible).
 export type AgentValueSnapshot = {
   id: string;
   valueUsdc: number;
@@ -104,7 +105,7 @@ export type AgentValueSnapshot = {
 export type ValueSnapshot = {
   blockNumber: number;
   fairPriceUsdcPerWeth: number;
-  // Uniswap 有効時のみ pool 価格（slot0 由来）。無効なら null。
+  // Pool price (from slot0) only when Uniswap is enabled. null if disabled.
   poolPriceUsdcPerWeth: number | null;
   failedReads: number;
   values: AgentValueSnapshot[];
@@ -117,7 +118,7 @@ export async function readValueSnapshotAtBlock(opts: {
   activeStables: Address[];
   priceFeed: Address;
   blockNumber: number;
-  // α 評価用の固定参照 fair（base シンボル -> USD）。未指定なら α = 総価値。
+  // Fixed reference fair for α evaluation (base symbol -> USD). If unspecified, α = total value.
   refFairByBase?: Record<string, number>;
 }): Promise<ValueSnapshot> {
   const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
@@ -145,7 +146,7 @@ export async function readValueSnapshotAtBlock(opts: {
     });
   };
 
-  // ADR 0013: 追加 base（WETH 以外）と uniswap の全 market。fork 既定では空 / WETH のみ。
+  // ADR 0013: extra bases (other than WETH) and all uniswap markets. Under the fork default, empty / WETH only.
   const extraBases = baseTokens()
     .map((t) => t.symbol)
     .filter((s) => s !== "WETH");
@@ -160,7 +161,7 @@ export async function readValueSnapshotAtBlock(opts: {
   });
 
   const blockNumber = BigInt(opts.blockNumber);
-  // head: [WETH 価格(latestAnswer), 追加 base 価格(answerOf)…, uniswap 各 market slot0…]
+  // head: [WETH price (latestAnswer), extra base prices (answerOf)…, uniswap per-market slot0…]
   const head: MulticallContract[] = [
     {
       address: priceFeed,
@@ -176,7 +177,7 @@ export async function readValueSnapshotAtBlock(opts: {
       args: [tokenInfo(b).address],
     });
   }
-  const uniHeadBase = head.length; // uniswap slot0 群の開始 index
+  const uniHeadBase = head.length; // start index of the uniswap slot0 group
   for (const m of uniMarkets) {
     head.push({
       address: m.uniswap!.pool,
@@ -234,13 +235,13 @@ export async function readValueSnapshotAtBlock(opts: {
 
   const results = await call(contracts, blockNumber);
   const fairPrice = fromPriceFeedAnswer((results[0] as bigint) ?? 0n);
-  // 全 base の USD 価格（WETH=latestAnswer, 追加 base=answerOf）。
+  // USD prices of all bases (WETH=latestAnswer, extra base=answerOf).
   const fairByBase: Record<string, number> = { WETH: fairPrice };
   extraBases.forEach((b, i) => {
     fairByBase[b] = fromPriceFeedAnswer((results[1 + i] as bigint) ?? 0n);
   });
 
-  // uniswap 各 market の tick（LP 採点用）。WETH market の slot0 から後方互換の poolPrice。
+  // tick of each uniswap market (for LP scoring). Backward-compatible poolPrice from the WETH market's slot0.
   const tickByPool: Record<string, number> = {};
   let poolPriceUsdcPerWeth: number | null = null;
   uniMarkets.forEach((m, i) => {
@@ -252,7 +253,7 @@ export async function readValueSnapshotAtBlock(opts: {
     }
   });
 
-  // LP 列挙（第 2/3 段 multicall）: NFT を持つ agent の tokenId → positions を引く
+  // LP enumeration (2nd/3rd stage multicall): for agents holding an NFT, look up tokenId → positions
   const lpValueByAgent = new Map<string, number>();
   if (hasUniswap) {
     const owners: Array<{ agent: ReconstructionAgent; index: bigint }> = [];
@@ -296,7 +297,7 @@ export async function readValueSnapshotAtBlock(opts: {
     }
   }
 
-  // α 評価は free base 在庫を固定参照 fair で評価する（未指定なら live fair と同一 = α=総価値）。
+  // α evaluation values free base inventory at the fixed reference fair (if unspecified, same as live fair = α=total value).
   const refFairByBase = opts.refFairByBase ?? fairByBase;
   const values: AgentValueSnapshot[] = [];
   for (let i = 0; i < agents.length; i++) {
@@ -311,12 +312,12 @@ export async function readValueSnapshotAtBlock(opts: {
       usdcUnits += (results[idx++] as bigint) ?? 0n;
     }
     const balance = { ethWei, wethWei, usdcUnits, bases };
-    // free 在庫を live fair（β 込み）と固定参照 fair（β 除去）の 2 通りで評価する。
+    // Evaluate free inventory two ways: at live fair (β-inclusive) and at the fixed reference fair (β-removed).
     let total = valueUsdc(balance, fairByBase);
     let alphaTotal = valueUsdc(balance, refFairByBase);
     if (hasAave) {
       const account = results[idx++] as readonly bigint[] | undefined;
-      // aave 担保−負債は USD 8 桁。position は両評価とも live mark（β 除去は free 在庫のみ）。
+      // aave collateral − debt is USD 8-decimals. The position is a live mark in both evaluations (β removal applies to free inventory only).
       const aaveUsd = account ? Number(account[0] - account[1]) / 1e8 : 0;
       total += aaveUsd;
       alphaTotal += aaveUsd;
@@ -369,12 +370,12 @@ export async function reconstructValueSeries(opts: {
   if (toBlock - fromBlock > HISTORY_DEPTH_LIMIT) {
     console.warn(
       `[reconstruct] run window ${toBlock - fromBlock} blocks exceeds anvil history depth ~${HISTORY_DEPTH_LIMIT}; ` +
-        "古いブロックの読取が欠落する可能性があります（長 run はチャンク再構成へ切り替えること。ADR 0006 §4）",
+        "reads of old blocks may be missing (switch long runs to chunked reconstruction; ADR 0006 §4)",
     );
   }
 
-  // α の固定参照 fair は run 末（toBlock）の fair を全 base で使う。まず toBlock を読み、
-  // その fairByBase を参照に据えてから fromBlock..toBlock を評価する（β を run 全域で除去）。
+  // The fixed reference fair for α uses the fair at run end (toBlock) across all bases. Read toBlock first,
+  // set that fairByBase as the reference, then evaluate fromBlock..toBlock (removing β across the whole run).
   const refSnapshot = await readValueSnapshotAtBlock({
     publicClient,
     agents,
@@ -410,9 +411,9 @@ export async function reconstructValueSeries(opts: {
     for (const { id, valueUsdc: total, alphaValueUsdc } of snapshot.values) {
       if (!alphaFirst.has(id)) alphaFirst.set(id, alphaValueUsdc);
       alphaLast.set(id, alphaValueUsdc);
-      // readPerRoundValues が読む observation 形（inventory.valueUsdc = 総価値）。
-      // protocols は載せない（perRoundValueUsdc の二重加算を避ける）。alphaValueUsdc は
-      // 固定参照 fair 評価（β 除去）で、per-round の α 系列としても読める。
+      // The observation shape readPerRoundValues reads (inventory.valueUsdc = total value).
+      // Do not include protocols (avoids double-counting perRoundValueUsdc). alphaValueUsdc is
+      // the fixed-reference fair evaluation (β-removed) and can also be read as a per-round α series.
       logger.event({
         type: "observation",
         agentId: id,
@@ -421,7 +422,7 @@ export async function reconstructValueSeries(opts: {
           round: b,
           blockNumber: String(b),
           fairPriceUsdcPerWeth: snapshot.fairPriceUsdcPerWeth,
-          // pool 価格を併記（uniswap 有効時。fair 追従＝残差 gap の run 後解析に使う）。
+          // Also record the pool price (when uniswap is enabled; used for post-run analysis of fair tracking = residual gap).
           ...(snapshot.poolPriceUsdcPerWeth !== null
             ? { poolPriceUsdcPerWeth: snapshot.poolPriceUsdcPerWeth }
             : {}),
@@ -448,7 +449,7 @@ export async function reconstructValueSeries(opts: {
   };
 }
 
-// 固定参照 fair 用に 1 base の fair を読む（WETH=latestAnswer / 追加 base=answerOf）。
+// Read one base's fair for the fixed reference fair (WETH=latestAnswer / extra base=answerOf).
 async function readFairForRef(
   publicClient: PublicClient,
   priceFeed: Address,

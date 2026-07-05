@@ -5,7 +5,7 @@ import { reset, flush, getRegistry } from "./registry.js";
 import { deployTokens } from "./tokens.js";
 import { info, ok } from "./util.js";
 
-// 各プロトコルのデプロイ関数 (順次追加)
+// Per-protocol deploy functions (added incrementally)
 import { deployUniswapV3 } from "./protocols/uniswap-v3.js";
 import { deployBalancerV2 } from "./protocols/balancer-v2.js";
 import { deployAaveV3 } from "./protocols/aave-v3.js";
@@ -14,7 +14,7 @@ import { deployGmxV2 } from "./protocols/gmx-v2.js";
 
 type ProtocolName = "uniswap" | "balancer" | "aave" | "gmx" | "curve";
 
-// gmx は hardhat-deploy で数分かかるため ALL の最後に置く
+// gmx takes several minutes via hardhat-deploy, so put it last in ALL
 const ALL: ProtocolName[] = ["uniswap", "balancer", "aave", "curve", "gmx"];
 
 const DEPLOYERS: Record<
@@ -31,10 +31,10 @@ const DEPLOYERS: Record<
 async function main() {
   const program = new Command();
   program
-    .option("--only <list>", "デプロイ対象を絞る (例: uniswap,balancer)")
-    .option("--no-seed", "プール作成・流動性投入をスキップ")
-    .option("--keep-fresh", "deployments.json を初期化してから開始")
-    .option("--exit", "完了後 anvil を停止してプロセスを終了 (CI 向け)")
+    .option("--only <list>", "narrow deploy targets (e.g. uniswap,balancer)")
+    .option("--no-seed", "skip pool creation and liquidity seeding")
+    .option("--keep-fresh", "reset deployments.json before starting")
+    .option("--exit", "stop anvil and exit the process when done (for CI)")
     .parse(process.argv);
   const opts = program.opts();
 
@@ -53,15 +53,15 @@ async function main() {
     await deployTokens();
 
     for (const name of targets) {
-      info(`プロトコル: ${name}`);
+      info(`protocol: ${name}`);
       await DEPLOYERS[name]({ seed });
     }
 
     flush();
-    info("完了");
+    info("done");
     const reg = getRegistry();
     ok(
-      "deployments.json 出力",
+      "deployments.json written",
       `protocols: ${Object.keys(reg.protocols).join(", ")}`,
     );
   } catch (e) {
@@ -75,10 +75,10 @@ async function main() {
     process.exit(0);
   }
 
-  // 既定では anvil を起動したまま保持 (デプロイ済みチェーンを使い続けられる)
+  // By default keep anvil running (so the deployed chain stays usable)
   if (MANAGE_ANVIL && anvilManagedHere()) {
-    console.log("\nanvil は起動したままです。停止するには Ctrl-C。");
-    await new Promise<never>(() => {}); // プロセスを生かし続ける
+    console.log("\nanvil is still running. Press Ctrl-C to stop.");
+    await new Promise<never>(() => {}); // keep the process alive
   }
 }
 

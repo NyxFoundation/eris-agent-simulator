@@ -84,19 +84,19 @@ import {
   type StressVictim,
 } from "../liquidationDemo.js";
 
-const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH（admin/keeper のガス）
+const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH (gas for admin/keeper)
 
-// flowWalletMap のキー（`${protocol}:${kind}`）から WalletRole を引く。
+// Look up the WalletRole from a flowWalletMap key (`${protocol}:${kind}`).
 function flowRole(key: string): WalletRole {
   return key.endsWith(":informed") ? "informed-flow" : "uninformed-flow";
 }
 
-// 競争開始前（＝時計の外）に flow bot だけで短い市場ループを回し、protocol の working set
-// （pool tick・reserve・gmx 等）を anvil にフェッチさせて温める。これで競争フェーズの mine が
-// 上流 cold フェッチを踏まなくなる（ADR 0006 Risks の anvil 律速対策）。resetFork はせず市場は
-// ~blocks 分だけ僅かに動く。fair price 本路は別 Rng で消費しない。
-// 注: 競争は RealtimeFlowProcess（push）だが、warmup は interval mining 外なので同期
-// FlowProcess（request/response）を使う。
+// Before the competition starts (= off the clock), run a short market loop with only the flow bot to make anvil
+// fetch and warm the protocols' working set (pool ticks, reserves, gmx, etc.). This keeps the competition
+// phase's mining from hitting upstream cold fetches (the anvil bottleneck mitigation of ADR 0006 Risks). It does
+// not resetFork, and the market moves only slightly (~blocks). The price main path is not consumed (a separate Rng).
+// Note: the competition uses RealtimeFlowProcess (push), but warmup is outside interval mining so it uses the
+// synchronous FlowProcess (request/response).
 async function prewarmWorkingSet(
   ctx: SimContext,
   adapters: ProtocolAdapter[],
@@ -136,7 +136,7 @@ async function prewarmWorkingSet(
         try {
           await submitIntent(ctx, intent, stateById);
         } catch {
-          // 温める目的なので個別 tx の失敗は無視
+          // the purpose is warming, so ignore individual tx failures
         }
       }
       await mine(ctx.publicClient);
@@ -145,7 +145,7 @@ async function prewarmWorkingSet(
         try {
           await adapter.afterMine(ctx);
         } catch {
-          // keeper 失敗も無視
+          // ignore keeper failures too
         }
       }
     }
@@ -159,10 +159,10 @@ type RealtimeAgentRuntime = {
   spec: AgentSpec;
   privateKey: Hex;
   address: Address;
-  process: RealtimeAgentProcess | null; // setup 完了後に spawn する
+  process: RealtimeAgentProcess | null; // spawned after setup completes
   initial: BalanceSnapshot;
-  included: number; // ブロックに取り込まれた tx 数（集計が読む）
-  reverted: number; // うち revert した tx 数
+  included: number; // number of txs included in a block (read by aggregation)
+  reverted: number; // of those, the number that reverted
 };
 
 type SubmittedMeta = {
@@ -172,25 +172,25 @@ type SubmittedMeta = {
   actionType: string;
 };
 
-// 実時間モードのオーケストレータ（ADR 0006 で「環境デーモン + 採点者」へ縮小）。
+// The realtime-mode orchestrator (reduced to "environment daemon + scorer" in ADR 0006).
 //
-// 環境はチェーンへの書き込みだけで世界を動かす:
-//   anvil ライフサイクル / fair price 生成 → PriceFeed・oracle 更新 tx / flow 注文 / GMX keeper。
-// agent はチェーンの読み書きだけで知覚・行動する（direct 一本化。ADR 0015 §5 で relay 撤去済み）。
-// ブロック内順序は anvil --order fees が fee 降順で決める。
-// 採点（per-agent 価値系列）は run 終了直後に歴史ブロック読取で一括再構成する（§4）。
-// 経済化（ADR 0011）の endowment 下限。1 tx ~1.5M gas、控えめな tip でも初手で gas 切れさせない
-// ための floor（~数十 tx ぶん）。最終的な endowment 値は較正実測で決める（ADR「決めていないこと」）。
+// The environment moves the world only by writing to the chain:
+//   anvil lifecycle / fair price generation → PriceFeed & oracle update txs / flow orders / GMX keeper.
+// Agents perceive and act only by reading/writing the chain (unified on direct; relay was removed in ADR 0015 §5).
+// In-block ordering is decided by anvil --order fees in descending fee order.
+// Scoring (per-agent value series) is batch-reconstructed by reading historical blocks right after the run ends (§4).
+// The economic-gas (ADR 0011) endowment floor. 1 tx ~1.5M gas; a floor (~tens of txs) so even a modest tip does
+// not run out of gas on the first move. The final endowment value is decided by calibration measurement (ADR "undecided").
 const MIN_ECONOMIC_GAS_ETH_WEI = 500_000_000_000_000_000n; // 0.5 ETH
 
 export async function runRealtimeSimulation(
-  // 評価ツールが per-regime SEED 等をプログラム的に差し込む（env を mutate しない）。
+  // Evaluation tools inject per-regime SEED etc. programmatically (without mutating env).
   overrides: Record<string, string | number | boolean> = {},
-  // 戻り値は run の所在（backtest CLI 等の呼び側が runs/ をスキャンせずに結果を読むため）。
+  // The return value is the run's location (so callers like the backtest CLI can read results without scanning runs/).
 ): Promise<{ runId: string; runDir: string }> {
-  // ADR 0013: 設定は YAML（config/local.yaml / --config）を単一ソースに解決する。YAML が無ければ
-  // 旧来の env 駆動にフォールバックする（移行期）。configPath は子プロセスへ伝播し、direct モードの
-  // agent（directShim）が同じ YAML から config を再構築できるようにする。
+  // ADR 0013: config resolves from YAML (config/local.yaml / --config) as the single source. If there is no YAML,
+  // it falls back to the legacy env-driven path (transitional). configPath propagates to child processes so that
+  // a direct-mode agent (directShim) can rebuild config from the same YAML.
   const {
     config,
     agents: agentSpecs,
@@ -200,15 +200,15 @@ export async function runRealtimeSimulation(
   const adapters = initProtocols(config.enabledProtocols);
   const enabledIds = adapters.map((a) => a.id);
 
-  // 経済化（ADR 0011）の前提検証（fail-fast）。
+  // Precondition validation for economic gas (ADR 0011) (fail-fast).
   if (config.economicGas) {
-    // endowment が「最低限の gas 余力」を割っていないか（過小だと初手で gas 切れ → run 空転。
-    // ADR 0011 Risks）。1 tx ~1.5M gas、控えめな tip でも数十 tx ぶんの ETH は要る。
+    // Whether the endowment falls below the "minimum gas headroom" (too little runs out of gas on the first move
+    // → the run idles; ADR 0011 Risks). 1 tx ~1.5M gas; even a modest tip needs tens of txs' worth of ETH.
     const minGasEthWei = MIN_ECONOMIC_GAS_ETH_WEI;
     if (config.initialEthWei < minGasEthWei) {
       throw new Error(
         `ERIS_ECONOMIC_GAS=1: initialEthWei=${config.initialEthWei} is below the minimum ` +
-          `gas headroom (${minGasEthWei}); INITIAL_ETH_WEI を引き上げてください（ADR 0011 Risks）`,
+          `gas headroom (${minGasEthWei}); please raise INITIAL_ETH_WEI (ADR 0011 Risks)`,
       );
     }
   }
@@ -224,15 +224,15 @@ export async function runRealtimeSimulation(
     runBlocks: config.runBlocks,
   });
 
-  // batch=true: 同一 tick の読取（receipt 並列取得・readState 等）を JSON-RPC array batch /
-  // Multicall3 に自動集約し、環境ループの往復回数を抑える。
+  // batch=true: automatically aggregate same-tick reads (parallel receipt fetches, readState, etc.) into
+  // JSON-RPC array batches / Multicall3, cutting the environment loop's round-trip count.
   const { chain, publicClient, walletClient } = makeClients(
     config.rpcUrl,
     config.chainId,
     { batch: true },
   );
   if (config.skipReset) {
-    // 診断: fork キャッシュを前 run から温存（cold フェッチ切り分け用。ADR 0006 Risks）。
+    // Diagnostic: keep the fork cache from the previous run (to isolate cold fetches; ADR 0006 Risks).
     logger.event({ type: "fork_reset_skipped" });
   } else {
     await resetFork(publicClient, {
@@ -243,15 +243,15 @@ export async function runRealtimeSimulation(
     });
   }
 
-  // ローカルモードの mining 整合: deployer anvil は auto-mine 起動だが、別プロセスの run は
-  // 前 run の teardown(setIntervalMining 0)後の状態を継承し setup tx が mine されずハングする。
-  // setup フェーズは auto-mine を明示 ON にして全 setup tx を確実に mine する（fork は --no-mining
-  // 起動なので不要。competition 開始時に OFF へ戻して fee 競争を成立させる = 後述）。
+  // Mining consistency in local mode: the deployer anvil starts with auto-mine, but a run in a separate process
+  // inherits the state after the previous run's teardown (setIntervalMining 0), so setup txs are not mined and it
+  // hangs. Explicitly turn auto-mine ON in the setup phase to reliably mine all setup txs (not needed for fork,
+  // which starts with --no-mining; turn it back OFF at competition start to make the fee competition work = see below).
   if (config.localDeploy) {
     await setAutomine(publicClient, true);
   }
 
-  // ---- agent ウォレット（プロセスは setup 完了後に起動する。agentSpecs は YAML/env から解決済み）----
+  // ---- agent wallets (processes start after setup completes; agentSpecs is already resolved from YAML/env) ----
   const agentRuntimes: RealtimeAgentRuntime[] = agentSpecs.map((spec) => {
     const privateKey = privateKeyForWalletName(config, spec.wallet, spec.id);
     return {
@@ -267,8 +267,8 @@ export async function runRealtimeSimulation(
   });
   const agentById = new Map(agentRuntimes.map((a) => [a.id, a]));
 
-  // ---- flow-bot プロセス（realtime）。毎ブロック context を push し market を動かす ----
-  // flow は環境側の市場機構なので relay のまま（ADR 0006「決めていないこと」）。
+  // ---- flow-bot process (realtime). Pushes context every block to move the market ----
+  // flow is the environment-side market mechanism, so it stays as relay (ADR 0006 "undecided").
   const flowProcess = new RealtimeFlowProcess(
     config.flowBotCommand,
     config.flowBotArgs,
@@ -276,7 +276,7 @@ export async function runRealtimeSimulation(
     logger.runDir,
   );
 
-  // ---- flow ウォレット（protocol/kind ごと。submitIntent / ctx が選択に使う）----
+  // ---- flow wallets (per protocol/kind; used by submitIntent / ctx for selection) ----
   const flowWalletMap = new Map<string, FlowWallet>();
   for (const id of enabledIds) {
     for (const kind of ["informed", "uninformed"] as FlowKind[]) {
@@ -289,8 +289,8 @@ export async function runRealtimeSimulation(
       });
     }
   }
-  // aave 借り手プール: 独立アクターを別アドレスで用意する（持続ポジション × N）。
-  // flowWalletMap に載せるので資金供給・blocks.csv 帰属は他 flow ウォレットと同じ経路で通る。
+  // aave borrower pool: provide independent actors at separate addresses (persistent positions × N).
+  // Since they go on flowWalletMap, funding and blocks.csv attribution flow through the same path as other flow wallets.
   if (enabledIds.includes("aave")) {
     for (let i = 0; i < config.aaveFlowActorCount; i++) {
       const key = `aave:actor${i}`;
@@ -329,8 +329,8 @@ export async function runRealtimeSimulation(
     },
   };
 
-  // tx の帰属は from アドレス引きが基本（ADR 0006 §4。direct 送信でも blocks.csv を維持）。
-  // submittedByHash は環境/relay が自分で提出した tx の actionType・fee の補足にのみ使う。
+  // tx attribution is primarily by from-address lookup (ADR 0006 §4; keeps blocks.csv even for direct sends).
+  // submittedByHash is used only to supplement actionType/fee for txs the environment/relay submitted itself.
   const ownerByAddress = new Map<
     string,
     { ownerId: string; role: WalletRole | "system" }
@@ -357,13 +357,13 @@ export async function runRealtimeSimulation(
   });
   const submittedByHash = new Map<string, SubmittedMeta>();
 
-  // 実時間の共有最新状態（relay の非同期 action ハンドラと flow context が参照する）
+  // Realtime shared latest state (referenced by the relay's async action handler and flow context)
   let latestStateById = new Map<ProtocolId, unknown>();
   let latestFairPrice = 0;
   const latestHistory: AgentObservation["history"] = [];
 
   try {
-    // ---- setup（高速フラッシュ：no-mining + sendAndMine）----
+    // ---- setup (fast flush: no-mining + sendAndMine) ----
     await setEthBalance(publicClient, accountAddress(adminPk), GAS_ONLY_WEI);
     await setEthBalance(publicClient, accountAddress(keeperPk), GAS_ONLY_WEI);
     for (const adapter of adapters) {
@@ -386,12 +386,13 @@ export async function runRealtimeSimulation(
     ];
     for (const t of fundTargets) {
       const isFlow = t.key !== undefined;
-      // aave 借り手アクターは担保用 WETH を直接 endow する（USDC→WETH の prep swap はスリッページで
-      // 失敗しやすく、アクターが担保確保に手間取って借入に到達しないため）。担保は Aave に supply され
-      // 採点対象外の flow ウォレットに留まる＝agent の β には一切影響しない。複数 supply 分を厚めに持たせる。
+      // aave borrower actors are endowed with collateral WETH directly (a USDC→WETH prep swap tends to fail on
+      // slippage, and the actor struggles to secure collateral and never reaches borrowing). The collateral is
+      // supplied to Aave and stays in a non-scored flow wallet = it never affects the agent's β. Give it a thick
+      // buffer for multiple supplies.
       const isAaveActor = t.key?.startsWith("aave:actor") ?? false;
-      // flow ウォレットは flowWethWei / flowBaseAmounts の base 在庫を持たせ、
-      // USDC-only でも「売り」を出せるようにする（agent は initial* のまま＝USDC-only/β 無し不変）。
+      // Give flow wallets base inventory of flowWethWei / flowBaseAmounts so they can also "sell" under USDC-only
+      // (agents stay at initial* = USDC-only/no-β unchanged).
       const wethWei = isAaveActor
         ? config.aaveFlowMaxWethWei * 6n
         : isFlow
@@ -426,27 +427,27 @@ export async function runRealtimeSimulation(
       }
     }
 
-    // 初期 fair price はここで確定する（下のローカル oracle 較正と victim setup が使う）。
+    // The initial fair price is finalized here (used by the local oracle calibration and victim setup below).
     latestFairPrice = await initialFairPrice(ctx, enabledIds);
 
-    // 【較正】ローカルデプロイは Aave オラクルを run の初期 fair price に合わせる。fork は
-    // 「オラクル ≈ 実勢 ≈ fair0」で暗黙に成立するが、ローカルは deployer の seed 価格と fair0 が
-    // 乖離し得る（victim の HF0 が run 開始時点で崩れ crash 窓の前に清算可能になる誤較正を実測。
-    // victim 無しでも最初の oracle 更新 tx が載るまでの初期観測に同じ乖離が出る）。storage 直書きは
-    // setup フェーズなので front-run 面の影響は無い。aggregator 未デプロイ（aave 無効）なら no-op
-    // （ADR 0016 Phase 0）。
+    // [Calibration] Local deploy aligns the Aave oracle to the run's initial fair price. On a fork,
+    // "oracle ≈ spot ≈ fair0" holds implicitly, but locally the deployer's seed price and fair0 can diverge (a
+    // miscalibration measured where a victim's HF0 breaks at run start and it becomes liquidatable before the
+    // crash window; even without victims, the same divergence appears in the initial observation until the first
+    // oracle update tx lands). The direct storage write is in the setup phase, so there is no front-run-side
+    // impact. If the aggregator is not deployed (aave disabled) it is a no-op (ADR 0016 Phase 0).
     if (config.localDeploy) {
       await writeAaveOraclesStorage(ctx, latestFairPrice);
     }
 
-    // ---- stress victim 群（ADR 0009 §4）: 清算を成立させる seed 由来の被害者を建てる ----
-    // victim は agentRuntimes に含めない＝採点対象外（liquidator agent の利益源）。
+    // ---- stress victims (ADR 0009 §4): build seed-derived victims that make liquidation possible ----
+    // Victims are not included in agentRuntimes = not scored (a profit source for the liquidator agent).
     const stressVictims: StressVictim[] = deriveStressVictims(
       config.seed,
       config.stressVictimCount,
     );
     let victimEnv: Record<string, string> | undefined;
-    // setup 直後の最小 victim HF（無債務 sentinel は除外）。crash 較正の警告に使う（§2）。
+    // Minimum victim HF right after setup (excluding the debt-free sentinel). Used for the crash calibration warning (§2).
     let minVictimHf0: number | null = null;
     if (stressVictims.length > 0) {
       if (!enabledIds.includes("aave")) {
@@ -454,10 +455,10 @@ export async function runRealtimeSimulation(
           "ERIS_STRESS_VICTIM_COUNT > 0 requires the aave protocol enabled (ADR 0009 §4)",
         );
       }
-      // 【ハード要件】fresh state。soft-reset だと前 run の victim ポジが残留し HF 計算が壊れる
-      // （anvil-reset-does-not-clear-state、ADR 0007 訂正の原因）→ fail-fast。
-      // fork は full re-fork（ARB_RPC_URL）で、ローカルデプロイは resetFork の snapshot/revert が
-      // 「load-state / revert 直後のクリーン断面」を保証することで満たす（ADR 0016 §2）。
+      // [Hard requirement] fresh state. With a soft-reset, the previous run's victim positions persist and the HF
+      // computation breaks (anvil-reset-does-not-clear-state, the cause of the ADR 0007 correction) → fail-fast.
+      // A fork satisfies this via a full re-fork (ARB_RPC_URL); local deploy satisfies it because resetFork's
+      // snapshot/revert guarantees a "clean cross-section right after load-state / revert" (ADR 0016 §2).
       const victimFreshState =
         !config.skipReset && (config.localDeploy || Boolean(config.forkUrl));
       if (!victimFreshState) {
@@ -475,7 +476,7 @@ export async function runRealtimeSimulation(
       const accounts = await readVictimsAccount(ctx, stressVictims);
       for (const a of accounts) {
         const hf = Number(a.healthFactor) / 1e18;
-        // 無債務（HF が uint256 max sentinel ≈ 1e59）は較正の対象外。
+        // Debt-free (HF is the uint256 max sentinel ≈ 1e59) is out of scope for calibration.
         if (hf < 1e6 && (minVictimHf0 === null || hf < minVictimHf0))
           minVictimHf0 = hf;
       }
@@ -490,8 +491,8 @@ export async function runRealtimeSimulation(
           totalDebtBase: a.totalDebtBase.toString(),
         })),
       });
-      // liquidator agent に監視対象 victim を渡す（detection スキルの前提は維持: HF は agent が
-      // 毎ブロック走査する。アドレスはオンチェーン公開情報で、配布しても入札ゲームを増やさない）。
+      // Pass the victims to monitor to the liquidator agent (the detection-skill premise is preserved: the agent
+      // scans HF every block. Addresses are public on-chain info, and distributing them does not add a bidding game).
       victimEnv = {
         ERIS_LIQUIDATION_VICTIMS: stressVictims.map((v) => v.address).join(","),
       };
@@ -501,14 +502,14 @@ export async function runRealtimeSimulation(
       agent.initial = await getBalances(publicClient, agent.address);
     }
 
-    // ---- fair price のオンチェーン配布経路（ADR 0006 §3）。常設し毎ブロック書き込む ----
+    // ---- On-chain distribution path for the fair price (ADR 0006 §3). Kept permanent and written every block ----
     const priceFeedAddress = await deployPriceFeed(ctx, latestFairPrice);
     logger.event({ type: "price_feed_deployed", address: priceFeedAddress });
 
-    // ---- フラッシュ arb デモ(GitHub #3, env gate): FlashArb をデプロイ（同期 coordinator と同じ gate）----
-    // flasharb base(ADR 0012)が rawTx で起動する FlashArb をここでデプロイする。setup フェーズの 1 回
-    // きりのデプロイで interval mining / mempool 順序には影響しない（deployPriceFeed と同性質）。未デプロイ
-    // だと receiver にコードが無く flashLoanSimple が revert する（realtime に欠けていたのを実走で発覚）。
+    // ---- flash arb demo (GitHub #3, env gate): deploy FlashArb (same gate as the synchronous coordinator) ----
+    // Deploy the FlashArb that the flasharb base (ADR 0012) invokes via rawTx here. A one-time setup-phase deploy
+    // that does not affect interval mining / mempool ordering (same nature as deployPriceFeed). Without deploying,
+    // the receiver has no code and flashLoanSimple reverts (discovered in a live run to be missing from realtime).
     if (
       config.flashArbDemo &&
       enabledIds.includes("aave") &&
@@ -519,9 +520,10 @@ export async function runRealtimeSimulation(
       logger.event({ type: "flash_arb_deployed", address: FLASH_ARB_ADDRESS });
     }
 
-    // ---- 脆弱性発生イベント（ADR 0014）: factory + 全プール（正直/rigged 混在）を setup で deploy し
-    // disclosures を発行する。資金供給（appearance）は各プールの window で行う（後述の mining ループ）。
-    // schedule は SEED 由来・純関数。プールは agentRuntimes に含めない＝採点対象外（被弾者/検証者の外側）。
+    // ---- vulnerability-appearance events (ADR 0014): deploy the factory + all pools (a mix of honest/rigged) in
+    // setup and issue disclosures. Funding (appearance) happens at each pool's window (the mining loop below).
+    // The schedule is SEED-derived and pure. Pools are not included in agentRuntimes = not scored (outside the
+    // victims/verifiers).
     const vulnSchedule = new VulnSchedule(
       config.vulnEvents,
       config.seed,
@@ -532,21 +534,21 @@ export async function runRealtimeSimulation(
     let vulnEnv: Record<string, string> | undefined;
     if (vulnSchedule.hasEvents()) {
       vulnRuntime = await deployVulnPools(ctx, vulnSchedule, config, logger);
-      // agent は factory を購読しプールグラフを作る（§3）。fromBlock で getLogs 範囲を絞る
-      // （fork の巨大ブロック番号でも factory 以降だけ走査）。disclosures は ERIS_RUN_DIR で参照。
+      // The agent subscribes to the factory and builds a pool graph (§3). fromBlock narrows the getLogs range
+      // (scans only from the factory onward even with the fork's huge block numbers). disclosures are referenced via ERIS_RUN_DIR.
       vulnEnv = {
         ERIS_VULN_FACTORY: vulnRuntime.factory,
         ERIS_VULN_FROM_BLOCK: vulnRuntime.factoryDeployBlock.toString(),
         ERIS_VULN_LLM: config.vulnLlm,
       };
     }
-    // stress victim env（ADR 0009）と vuln env（ADR 0014）を 1 つの extra env に合流させて配布する。
+    // Merge the stress victim env (ADR 0009) and vuln env (ADR 0014) into a single extra env for distribution.
     const agentExtraEnv =
       victimEnv || vulnEnv ? { ...victimEnv, ...vulnEnv } : undefined;
 
-    // agent レジストリを 1 行 emit（ADR 0008 P0）。ダッシュボードがファイル tail だけで
-    // 全 agent（id/アドレス/分類ヒント）を即座に把握できる（1 件も行動しない agent や
-    // 起動直後の取りこぼしを塞ぐ）。評価/採点パイプラインへの影響はゼロ（読まれないイベント）。
+    // Emit the agent registry in one line (ADR 0008 P0). The dashboard can grasp all agents (id/address/
+    // classification hint) immediately from a file tail alone (closes the gap for agents that never act or are
+    // missed right after startup). Zero impact on the evaluation/scoring pipeline (an event that is not read).
     logger.event({
       type: "agents_registered",
       agents: agentRuntimes.map((a) => ({
@@ -557,7 +559,7 @@ export async function runRealtimeSimulation(
       })),
     });
 
-    // ---- pre-warm（ADR 0006 Risks の anvil cold フェッチ対策。prewarmWorkingSet 参照）----
+    // ---- pre-warm (anvil cold fetch mitigation of ADR 0006 Risks; see prewarmWorkingSet) ----
     if (config.prewarmBlocks > 0) {
       await prewarmWorkingSet(
         ctx,
@@ -567,12 +569,12 @@ export async function runRealtimeSimulation(
         latestFairPrice,
         logger.runDir,
       );
-      // 競争の起点に合わせて fair price を読み直す（warmup で動いた pool を反映）。
+      // Re-read the fair price to match the competition's starting point (reflects pools moved during warmup).
       latestFairPrice = await initialFairPrice(ctx, enabledIds);
       logger.event({ type: "prewarm_completed", blocks: config.prewarmBlocks });
     }
 
-    // ---- agent プロセス起動（ADR 0015 §5: 一律 runtime/bot.ts。秘密鍵と PriceFeed を env で渡す）----
+    // ---- launch agent processes (ADR 0015 §5: uniformly runtime/bot.ts; pass the private key and PriceFeed via env) ----
     for (const agent of agentRuntimes) {
       agent.process = new RealtimeAgentProcess(
         agent.spec,
@@ -585,7 +587,7 @@ export async function runRealtimeSimulation(
       );
     }
 
-    // ---- flow order ハンドラ：bot の注文を flow ウォレットで mempool へ relay ----
+    // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<void> => {
       const intents = flowOrdersToIntents(ctx, orders);
       for (const intent of intents) {
@@ -620,10 +622,10 @@ export async function runRealtimeSimulation(
     };
     flowProcess.onOrders((orders) => void handleFlowOrders(orders));
 
-    // ---- mined block の tx を blocks.csv へ（帰属は from アドレス引き。ADR 0006 §4）----
-    // 実時間ループからは外し、run 終了後に全ブロックを一括走査する（採点の歴史再構成と
-    // 同じ「クリティカルパス外」化）。元データは全部チェーンに残っているため後追いで足りる。
-    // 帰結: run が途中クラッシュすると blocks.csv は空になる（診断は events.jsonl で行う）。
+    // ---- write mined-block txs to blocks.csv (attribution by from-address lookup; ADR 0006 §4) ----
+    // Removed from the realtime loop and scanned in bulk over all blocks after the run ends (the same "off the
+    // critical path" move as scoring's history reconstruction). All source data remains on the chain, so a
+    // follow-up pass suffices. Consequence: if the run crashes midway, blocks.csv is empty (diagnose via events.jsonl).
     const logBlock = async (b: number): Promise<void> => {
       const block = await publicClient.getBlock({
         blockNumber: BigInt(b),
@@ -632,9 +634,8 @@ export async function runRealtimeSimulation(
       const txs = block.transactions.filter(
         (tx): tx is Exclude<typeof tx, string> => typeof tx !== "string",
       );
-      // 注: eth_getBlockReceipts での一括取得は anvil の Arbitrum フォークで
-      // "Failed to decode receipt" になるため使えない。per-tx 取得を並列発行する
-      // （batch transport が 1 HTTP に束ねる）。
+      // Note: bulk fetch via eth_getBlockReceipts cannot be used because it hits "Failed to decode receipt" on
+      // anvil's Arbitrum fork. Issue per-tx fetches in parallel (the batch transport bundles them into one HTTP).
       const statuses = await Promise.all(
         txs.map(async (tx) => {
           try {
@@ -643,14 +644,14 @@ export async function runRealtimeSimulation(
             });
             return receipt.status as string;
           } catch {
-            return "mined"; // receipt 取得失敗時のフォールバック
+            return "mined"; // fallback when receipt fetch fails
           }
         }),
       );
       txs.forEach((tx, i) => {
         const meta = submittedByHash.get(tx.hash.toLowerCase());
         const owner = meta ?? ownerByAddress.get(tx.from.toLowerCase());
-        if (!owner) return; // run 外の tx（想定外の外部送信者）
+        if (!owner) return; // tx outside the run (an unexpected external sender)
         const status = statuses[i];
         if (owner.role === "agent") {
           const runtime = agentById.get(owner.ownerId);
@@ -665,7 +666,7 @@ export async function runRealtimeSimulation(
           txIndex: tx.transactionIndex,
           hash: tx.hash,
           from: tx.from,
-          // fee はチェーン上の tx フィールドが正（事後検査の根拠。自己申告に依らない）
+          // the fee's authority is the on-chain tx field (the basis for post-run checks; not self-reported)
           priorityFeeWei: tx.maxPriorityFeePerGas ?? meta?.priorityFeeWei ?? 0n,
           status,
           ownerId: owner.ownerId,
@@ -676,12 +677,13 @@ export async function runRealtimeSimulation(
       });
     };
 
-    // ADR 0010 プロファイル: oracle/PriceFeed 更新の fee は agent 上限超にして --order fees で
-    // txIndex 0 に置く。keeper はその僅か下に置き、同一ブロック内で「oracle 更新 → 注文約定」の順を
-    // 固定する（並列提出しても到着順に依らず fee で順序が決まる）。
-    // ADR 0011 経済化プロファイル（economicGas）: 価格確定は storage 直書きへ移り（front-run 対象が
-    // 機構的に消える）env の fee 順序保証は不要。keeper は agent 注文配置の後に走ればよく最前列固定も
-    // 不要なので、env tx は通常 fee（defaultPriorityFeeWei）で出す。
+    // ADR 0010 profile: set the oracle/PriceFeed update fee above the agent cap so --order fees places it at
+    // txIndex 0. Place the keeper just below it, fixing the "oracle update → order execution" order within the
+    // same block (even with parallel submission, fee decides ordering regardless of arrival order).
+    // ADR 0011 economic-gas profile (economicGas): price finalization moves to a direct storage write (the
+    // front-run target mechanically disappears), so the env fee ordering guarantee is unnecessary. The keeper only
+    // needs to run after agent order placement and does not need front-row fixing, so env txs go out at the normal
+    // fee (defaultPriorityFeeWei).
     const economicGas = config.economicGas;
     const oracleFee = economicGas
       ? config.defaultPriorityFeeWei
@@ -692,15 +694,15 @@ export async function runRealtimeSimulation(
     if (economicGas) {
       logger.event({
         type: "economic_gas_enabled",
-        note: "ADR 0011: priority-fee 上限執行を退役・価格確定を state-write 化",
+        note: "ADR 0011: retire priority-fee cap enforcement, make price finalization a state-write",
         oracleFeeWei: oracleFee.toString(),
         keeperFeeWei: keeperFee.toString(),
       });
     }
 
-    // ---- 競争フェーズ開始：実 N 秒ごとの interval mining へ ----
-    // ローカルモードは setup 用に auto-mine を ON にしたので、ここで OFF に戻す。
-    // auto-mine が残ると tx ごとに単独ブロック化して fee 競争が壊れる（fork は元から OFF）。
+    // ---- start the competition phase: switch to interval mining every N real seconds ----
+    // Local mode turned auto-mine ON for setup, so turn it back OFF here.
+    // If auto-mine remains, each tx becomes its own block and the fee competition breaks (fork is OFF from the start).
     if (config.localDeploy) {
       await setAutomine(publicClient, false);
     }
@@ -710,13 +712,13 @@ export async function runRealtimeSimulation(
       blockTimeSec: config.blockTimeSec,
     });
     const startTime = Date.now();
-    // base/effective 分離（ADR 0009 §1）: OU の状態は base 系列で進め、stress イベントは
-    // 分離可能な歪みとして effective を導出する。窓外では従来通り β≈0（ADR 0007 を維持）。
-    let baseFair = latestFairPrice; // OU 状態。イベントで触らない。
-    // 平均回帰価格モデルの中心（競争開始時の base fair price）。run を通して固定。
+    // base/effective separation (ADR 0009 §1): advance the OU state as the base series, and derive the effective
+    // price from stress events as a separable distortion. Outside the window, β≈0 as before (maintains ADR 0007).
+    let baseFair = latestFairPrice; // OU state. Not touched by events.
+    // Center of the mean-reverting price model (the base fair price at competition start). Fixed throughout the run.
     const fairAnchor = baseFair;
-    // ADR 0013: 追加 base（WBTC 等）の独立 OU 価格。各 base は専用 Rng で進むため WETH の価格
-    // パスは不変（fork 既定では extraBaseSymbols=[] → 完全に従来と一致＝byte 互換）。
+    // ADR 0013: independent OU prices for extra bases (WBTC etc.). Each base advances with its own Rng, so the
+    // WETH price path is unchanged (under the fork default, extraBaseSymbols=[] → exactly matches prior = byte-compatible).
     const extraBaseSymbols = baseTokens()
       .map((t) => t.symbol)
       .filter((s) => s !== "WETH");
@@ -739,14 +741,14 @@ export async function runRealtimeSimulation(
     let lastProcessedBlock = Number(await publicClient.getBlockNumber());
     const runStartBlock = lastProcessedBlock + 1;
     if (schedule.hasEvents()) {
-      // runStartBlock を同梱 → ダッシュボードが窓を絶対ブロックで判定できる（ADR 0008/0009）。
+      // Include runStartBlock → the dashboard can judge the window in absolute blocks (ADR 0008/0009).
       logger.event({
         type: "stress_schedule",
         runStartBlock,
         events: schedule.events,
       });
-      // 較正チェック（§2）: 各 crash の realized magnitude が victim を割れるか
-      // （m > (HF0−1)/HF0）。割れないなら警告（victim は清算されず stress 軸が空になる）。
+      // Calibration check (§2): whether each crash's realized magnitude can breach a victim
+      // (m > (HF0−1)/HF0). If not, warn (victims are not liquidated and the stress axis is empty).
       if (minVictimHf0 !== null) {
         const breachThreshold = (minVictimHf0 - 1) / minVictimHf0;
         for (const ev of schedule.events) {
@@ -762,12 +764,12 @@ export async function runRealtimeSimulation(
         }
       }
     }
-    // 清算検知用に victim ごとの直近債務（USD 8 桁）を持つ。債務の減少は liquidationCall でしか
-    // 起きない（victim は受動）→ 減少を清算シグナルとして stress_liquidation を emit する。
+    // Keep each victim's latest debt (USD 8-decimals) for liquidation detection. Debt decreases only via a
+    // liquidationCall (victims are passive) → emit stress_liquidation with the decrease as a liquidation signal.
     const victimLastDebt = new Map<string, bigint>();
 
-    // stress/vuln run はブロック数で終了させる（時間制限 ERIS_RUN_SECONDS が先に切れて crash 窓
-    // / vuln window に到達しない footgun を回避。ADR 0009 §4 / ADR 0014）。
+    // End stress/vuln runs by block count (avoids the footgun where the time limit ERIS_RUN_SECONDS expires first
+    // and the crash window / vuln window is never reached; ADR 0009 §4 / ADR 0014).
     const stressRun =
       schedule.hasEvents() ||
       stressVictims.length > 0 ||
@@ -809,14 +811,14 @@ export async function runRealtimeSimulation(
           const fromBlock = lastProcessedBlock + 1;
           lastProcessedBlock = Math.max(lastProcessedBlock, bn);
 
-          // 市場を1ステップ進める（RNG の更新は 1 周に 1 回。以降の並列タスクは値だけ共有）。
-          // base は OU でだけ進め、stress オーバーレイ（決定論）を掛けて effective を導出する。
-          // effective が PriceFeed / Aave WETH オラクル / GMX / 採点へ一貫伝播する（ADR 0009 §1）。
+          // Advance the market one step (RNG updates once per iteration; later parallel tasks share only the values).
+          // Advance base by OU only, and apply the (deterministic) stress overlay to derive the effective price.
+          // The effective price propagates consistently to PriceFeed / Aave WETH oracle / GMX / scoring (ADR 0009 §1).
           const blockIndex = bn - runStartBlock;
           baseFair = nextFairPrice(baseFair, rng, fairAnchor);
           const overlay = schedule.at(blockIndex);
           latestFairPrice = baseFair * overlay.wethMult;
-          // ADR 0013: 追加 base を独立 Rng で進め、effective を ctx.fairPrices に配布する。
+          // ADR 0013: advance extra bases with independent Rngs and distribute the effective prices into ctx.fairPrices.
           const fairPrices: Record<string, number> = { WETH: latestFairPrice };
           for (const b of extraBaseSymbols) {
             extraBaseFair[b] = nextFairPrice(
@@ -829,9 +831,9 @@ export async function runRealtimeSimulation(
           }
           ctx.fairPrices = fairPrices;
 
-          // 脆弱性プールの資金供給（ADR 0014）: window に入ったプールに reserve を焼き込み
-          // （cheatcode。mine 不要）、bait 込みの機会をこのブロックで出現させる。fair を反映した
-          // reserve 比にするため fairPrices 確定後・他タスク前に同期で行う（窓ブロックのみの稀な処理）。
+          // Fund vulnerability pools (ADR 0014): burn reserve into the pools that entered their window (cheatcode;
+          // no mine needed), making the bait-laden opportunity appear on this block. Done synchronously after
+          // fairPrices is finalized and before other tasks so the reserve ratio reflects fair (rare processing, window blocks only).
           if (vulnRuntime) {
             try {
               await fundVulnPoolsAt(
@@ -852,10 +854,10 @@ export async function runRealtimeSimulation(
             }
           }
 
-          // keeper / oracle 書込 / state+flow は相互に独立（ウォレットも別）なので並列に走らせる。
-          // tx の記録（blocks.csv）はループから外し、run 後に一括走査する（logBlock 参照）。
+          // keeper / oracle write / state+flow are mutually independent (separate wallets too), so run them in
+          // parallel. tx recording (blocks.csv) is removed from the loop and scanned in bulk after the run (see logBlock).
 
-          // keeper（GMX 注文実行等）。追いついた範囲をまとめて 1 回の getLogs で走査する。
+          // keeper (GMX order execution etc.). Scan the caught-up range in one getLogs.
           const keeperTask = async (): Promise<void> => {
             if (fromBlock > bn) return;
             for (const adapter of adapters) {
@@ -879,11 +881,11 @@ export async function runRealtimeSimulation(
             }
           };
 
-          // fair price をオンチェーン配布（PriceFeed）+ oracle 更新（aave/gmx）。
-          // 経済化（ADR 0011）: PriceFeed と Aave オラクルは storage 直書きで block 境界に確定する
-          //   （tx 無し → front-run 対象なし）。GMX は realtime で keeper が執行しないため front-run 面で
-          //   なく、mapping storage の直書きを避け通常 fee の mempool tx のままにする（決めていないこと）。
-          // 0010: PriceFeed/oracle を fee 先頭の mempool tx で次ブロックへ載せる。
+          // On-chain distribution of the fair price (PriceFeed) + oracle updates (aave/gmx).
+          // Economic gas (ADR 0011): the PriceFeed and Aave oracle are finalized at the block boundary via a direct
+          //   storage write (no tx → no front-run target). GMX is not front-run-relevant because the keeper does not
+          //   execute in realtime, so avoid direct mapping-storage writes and keep it a normal-fee mempool tx (undecided).
+          // 0010: put PriceFeed/oracle on the next block as fee-topping mempool txs.
           const oracleTask = async (): Promise<void> => {
             try {
               if (economicGas) {
@@ -959,8 +961,8 @@ export async function runRealtimeSimulation(
             }
           };
 
-          // state 読取（flow context と relay の観測用。agent 数に依存しない固定コスト）→
-          // relay の観測 push → flow-bot への context push。
+          // state reads (for flow context and relay observation; a fixed cost independent of agent count) →
+          // relay observation push → context push to the flow-bot.
           const stateAndFlowTask = async (): Promise<void> => {
             const states = await Promise.all(
               adapters.map((adapter) =>
@@ -979,7 +981,7 @@ export async function runRealtimeSimulation(
               fairPriceUsdcPerWeth: latestFairPrice,
             });
 
-            // flow-bot に context を push（market を動かして arb 機会を作る）
+            // push context to the flow-bot (move the market to create arb opportunities)
             if (flowProcess.isAlive()) {
               const flowContext = await buildFlowContext(
                 ctx,
@@ -992,9 +994,9 @@ export async function runRealtimeSimulation(
             }
           };
 
-          // victim HF 観測（ADR 0009 §4,7）: stress イベント窓内/窓近傍だけ HF・債務を読み、
-          // events.jsonl へ emit（dashboard が帯で表示する元データ。SSE 契約は不変）。債務の減少を
-          // 清算として検知する。窓外（overlay=1）は読まずログ肥大・RPC 負荷を避ける。
+          // victim HF observation (ADR 0009 §4,7): read HF and debt only inside/near the stress event window and
+          // emit to events.jsonl (source data the dashboard shows as a band; the SSE contract is unchanged). Detect
+          // a debt decrease as a liquidation. Outside the window (overlay=1) it does not read, avoiding log bloat / RPC load.
           const victimTask = async (): Promise<void> => {
             if (stressVictims.length === 0) return;
             const active = schedule.activeEventAt(blockIndex);
@@ -1029,9 +1031,9 @@ export async function runRealtimeSimulation(
             }
           };
 
-          // 脆弱性プールの被弾/約定検知（ADR 0014 §6）: 資金供給済みプールの Swap ログを
-          // ground-truth で走査し vulnerability_exploited / safe_pool_captured を emit する。
-          // vuln run のときだけ走らせる（既定 run に毎ブロックの getLogs を足さない）。
+          // vulnerability pool hit/execution detection (ADR 0014 §6): scan funded pools' Swap logs as ground-truth
+          // and emit vulnerability_exploited / safe_pool_captured.
+          // Run only during a vuln run (do not add a per-block getLogs to the default run).
           const vulnTask = async (): Promise<void> => {
             if (!vulnRuntime) return;
             try {
@@ -1045,14 +1047,14 @@ export async function runRealtimeSimulation(
             }
           };
 
-          // 各タスクの所要時間を残す（環境ループの律速診断用。ADR 0006「判定指標」の実測元）
+          // Record each task's duration (for diagnosing the environment loop's bottleneck; the measurement source for ADR 0006 "judgment metrics").
           const timed = async (task: () => Promise<void>): Promise<number> => {
             const t0 = Date.now();
             await task();
             return Date.now() - t0;
           };
           const roundStart = Date.now();
-          // victim/vuln 観測は該当 run でのみ走らせる（既定 run に毎ブロックのタスク/Promise を足さない）。
+          // Run victim/vuln observation only in the relevant run (do not add per-block tasks/Promises to the default run).
           const tasks = [
             timed(keeperTask),
             timed(oracleTask),
@@ -1104,22 +1106,22 @@ export async function runRealtimeSimulation(
 
     const elapsedMs = Date.now() - startTime;
 
-    // ---- 競争終了: agent を止めてから採点する（direct agent は止めない限り発注し続ける）----
+    // ---- competition end: stop the agents before scoring (a direct agent keeps placing orders unless stopped) ----
     for (const agent of agentRuntimes) agent.process?.close();
     flowProcess.close();
     await setIntervalMining(publicClient, 0);
 
-    // ---- blocks.csv の一括記録: 実時間ループから外した分を run 全ブロックぶん走査する ----
-    // （resetFork で歴史が消える前・違反検査と summary の前に終える）
+    // ---- bulk recording of blocks.csv: scan all run blocks for what was removed from the realtime loop ----
+    // (finish before resetFork erases history, and before the violation check and summary)
     const finalBlock = Number(await publicClient.getBlockNumber());
     for (let b = runStartBlock; b <= finalBlock; b++) await logBlock(b);
 
-    // ---- 採点: per-agent 価値系列を歴史ブロックから一括再構成（ADR 0006 §4）----
+    // ---- scoring: batch-reconstruct the per-agent value series from historical blocks (ADR 0006 §4) ----
     let valueSeries: Record<string, unknown> = {
       source: "live-observation",
       granularityBlocks: 1,
     };
-    // agent -> α（約定時 fair 基準の β 除去 PnL。ADR 0015 Notes / amm-challenge の edge 相当）。
+    // agent -> α (β-removed PnL versus fair at execution; ADR 0015 Notes / equivalent to the amm-challenge edge).
     let alphaByAgent: Record<string, number> = {};
     if (finalBlock >= runStartBlock) {
       const meta = await reconstructValueSeries({
@@ -1137,22 +1139,22 @@ export async function runRealtimeSimulation(
       logger.event({ type: "value_series_reconstructed", ...meta });
     }
 
-    // ---- 事後ルール検査（ADR 0006 §5）: fee 上限超過は run 無効化の根拠になる ----
-    // 経済化（ADR 0011 §2）では priority-fee 上限執行を退役する（agent は機会評価に応じ自由に
-    // 入札し、高く評価した者が先に約定する = realistic priority gas auction）→ 違反は空配列。
+    // ---- post-run rule check (ADR 0006 §5): exceeding the fee cap is grounds for invalidating a run ----
+    // Under economic gas (ADR 0011 §2), priority-fee cap enforcement is retired (agents bid freely per their
+    // opportunity valuation, and whoever values it higher executes first = realistic priority gas auction) → violations is empty.
     const violations = config.economicGas
       ? []
       : checkRunFeeViolations(logger.runDir, config.maxPriorityFeeWei);
     if (config.economicGas) {
       logger.event({
         type: "fee_cap_enforcement_disabled",
-        note: "ADR 0011 §2: economic gas プロファイルでは priority-fee 上限を執行しない",
+        note: "ADR 0011 §2: the economic gas profile does not enforce a priority-fee cap",
       });
     } else if (violations.length > 0) {
       logger.event({ type: "rule_violations_detected", violations });
     }
 
-    // ---- 最終 PnL ----
+    // ---- final PnL ----
     const finalFairPrice = latestFairPrice;
     const agentsSummary = [];
     for (const agent of agentRuntimes) {
@@ -1176,13 +1178,13 @@ export async function runRealtimeSimulation(
         initialValueUsdc: initialValue,
         finalValueUsdc: finalValue,
         netPnlUsdc: finalValue - initialValue,
-        // alphaUsdc: 約定時 fair 基準の β 除去 PnL（トレードの取り分。amm-challenge の edge 相当。
-        // ADR 0015 Notes）。netPnlUsdc は価格ドリフト β を含む総額なので、実力比較はこちらを見る。
-        // 再構成が走らなかった（finalBlock<runStartBlock）ときは undefined。
+        // alphaUsdc: β-removed PnL versus fair at execution (the trade's take; equivalent to the amm-challenge
+        // edge; ADR 0015 Notes). netPnlUsdc is the gross total including price drift β, so look at this for skill
+        // comparison. undefined when reconstruction did not run (finalBlock<runStartBlock).
         ...(agent.id in alphaByAgent
           ? { alphaUsdc: alphaByAgent[agent.id] }
           : {}),
-        // 提出数は agent の自己申告ログ（agents/<id>.jsonl）が一次情報（ADR 0006 §5）
+        // submission count's primary source is the agent's self-reported log (agents/<id>.jsonl) (ADR 0006 §5)
         includedTxCount: agent.included,
         revertCount: agent.reverted,
         stderrTail: agent.process?.getStderr() ?? "",
@@ -1190,7 +1192,7 @@ export async function runRealtimeSimulation(
     }
     logger.summary({
       runId,
-      // backtest CLI（ADR 0016）は ERIS_RUN_MODE=backtest を差し込む。それ以外は realtime。
+      // the backtest CLI (ADR 0016) injects ERIS_RUN_MODE=backtest. Otherwise realtime.
       mode: config.runMode,
       blockTimeSec: config.blockTimeSec,
       blocksProcessed: processedBlocks,
@@ -1208,7 +1210,7 @@ export async function runRealtimeSimulation(
     try {
       await setIntervalMining(publicClient, 0);
     } catch {
-      // teardown 中のエラーは無視
+      // ignore errors during teardown
     }
     for (const agent of agentRuntimes) agent.process?.close();
     flowProcess.close();

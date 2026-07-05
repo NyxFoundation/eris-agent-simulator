@@ -5,20 +5,20 @@ import type { LeafAction, ProtocolId } from "@eris/sdk/types.js";
 import type { FlowContextWire } from "./flow/logic.js";
 import { safeStringify } from "./logger.js";
 
-// bot から返る 1 注文の wire 形（JSON 経由なので priorityFeeWei は文字列）。
+// Wire form of a single order returned by the bot (priorityFeeWei is a string since it goes through JSON).
 export type FlowOrderWire = {
   protocol: ProtocolId;
   walletProtocol?: ProtocolId;
-  // 明示的な flow ウォレット鍵（aave 借り手プールの "aave:actor0" 等）。指定時はこの鍵で解決。
+  // Explicit flow wallet key (e.g. "aave:actor0" for the aave borrower pool). When set, resolve by this key.
   walletKey?: string;
   kind: FlowKind;
   action: LeafAction;
   priorityFeeWei: string;
 };
 
-// orderflow bot を独立プロセスとして起動し、毎ラウンド FlowContext を渡して
-// FlowOrder[] を受け取る。AgentProcess と同じ行 JSON プロトコル。
-// bot は RPC に触れず（agent と同じ分離原則）、注文を決めるだけ。
+// Launch the orderflow bot as an independent process, pass it a FlowContext each round,
+// and receive FlowOrder[] back. Same line-JSON protocol as AgentProcess.
+// The bot never touches the RPC (same separation principle as agents); it only decides orders.
 export class FlowProcess {
   private child: ChildProcessWithoutNullStreams;
   private pending: Array<(line: string) => void> = [];
@@ -51,7 +51,7 @@ export class FlowProcess {
       this.stderr += data.toString();
       if (this.stderr.length > 20_000) this.stderr = this.stderr.slice(-20_000);
     });
-    // spawn 失敗・プロセス終了・stdin pipe error で sim をクラッシュさせず、以後は空注文で継続する。
+    // Don't crash the sim on spawn failure, process exit, or stdin pipe error; continue with empty orders afterward.
     this.child.on("error", (err) => {
       this.alive = false;
       this.stderr += `flow bot process error: ${err.message}\n`;
@@ -74,7 +74,7 @@ export class FlowProcess {
       const linePromise = new Promise<string>((resolve) =>
         this.pending.push(resolve),
       );
-      // write は同期 throw（EPIPE 等）し得るため try 内に置く。
+      // write can throw synchronously (EPIPE, etc.), so keep it inside the try.
       this.child.stdin.write(`${safeStringify(context)}\n`);
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(
@@ -87,10 +87,10 @@ export class FlowProcess {
       const parsed = JSON.parse(line);
       return Array.isArray(parsed) ? (parsed as FlowOrderWire[]) : [];
     } catch {
-      // bot 不調時は「市場注文なし」で安全に継続（sim は止めない）。
+      // When the bot misbehaves, continue safely with "no market orders" (don't stop the sim).
       return [];
     } finally {
-      // 成功時に未発火の timeout を残さない（round 数に比例したタイマー滞留を防ぐ）。
+      // Don't leave an unfired timeout on success (prevents timer buildup proportional to round count).
       if (timer) clearTimeout(timer);
     }
   }

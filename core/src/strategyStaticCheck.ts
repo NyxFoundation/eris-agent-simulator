@@ -1,11 +1,12 @@
-// 戦略コードの静的検査（ADR 0006 §5）。
-// direct モードでは agent が anvil RPC に直接触れるため、無認証 cheatcode
-// （anvil_setBalance / evm_mine / anvil_impersonateAccount 等）で原理上チートできる。
-// LLM が戦略コードを書く運用では「自作 agent = 信頼前提」が成り立たないので、
-// /strategy-evolve のゲートに「生成・編集された戦略コードに cheatcode 呼び出しが
-// 含まれないことの機械検査」を入口側の防御として置く（事後監査と対）。
+// Static analysis of strategy code (ADR 0006 §5).
+// In direct mode the agent touches the anvil RPC directly, so it can in principle
+// cheat via unauthenticated cheatcodes (anvil_setBalance / evm_mine /
+// anvil_impersonateAccount, etc.). When an LLM authors strategy code, "self-written
+// agent = trusted" no longer holds, so the /strategy-evolve gate includes a
+// mechanical check that generated/edited strategy code contains no cheatcode calls,
+// as an entry-side defense (paired with post-run auditing).
 export type StaticCheckFinding = {
-  line: number; // 1 始まり
+  line: number; // 1-based
   match: string;
   rule: string;
 };
@@ -15,7 +16,7 @@ const CHEAT_PATTERNS: Array<{ rule: string; regex: RegExp }> = [
   { rule: "evm cheatcode RPC", regex: /\bevm_[a-zA-Z]+/ },
   { rule: "hardhat cheatcode RPC", regex: /\bhardhat_[a-zA-Z]+/ },
   {
-    rule: "chain.ts の特権ヘルパ（環境専用）",
+    rule: "privileged chain.ts helper (environment-only)",
     regex:
       /\b(setEthBalance|dealErc20|impersonate|stopImpersonate|sendAsImpersonated|setIntervalMining|setAutomine|resetFork)\b/,
   },

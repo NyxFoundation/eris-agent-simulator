@@ -1,22 +1,22 @@
-// 脆弱性発生イベント（悪意あるプール）の環境側ライフサイクル（ADR 0014 §1,2,5,6）。
+// Environment-side lifecycle of vulnerability-appearance events (malicious pools) (ADR 0014 §1,2,5,6).
 //
-// coordinator から呼ばれる環境デーモン側の責務をここに閉じ込める（agent 側の発見/検証は
-// examples/agents/lib/poolDiscovery.ts / verifyContract.ts に分離）:
-//   1. deployVulnPools  : setup フェーズで factory + 全プール（正直/rigged 混在）を deploy し、
-//                         disclosures/<addr>.json（source+codehash）を発行する。
-//   2. fundVulnPoolsAt  : 各プールの window（startBlock）で cheatcode 資金供給（reserve に bait を
-//                         焼き込む）し、pool_created / vulnerability_disclosed を events.jsonl へ emit。
-//   3. watchVulnSwaps   : 毎ブロック各プールの Swap ログを走査し、rigged 被弾（vulnerability_exploited）
-//                         / 安全プール約定（safe_pool_captured）を ground-truth で emit する。
+// Encapsulates the responsibilities of the environment daemon called from the coordinator (the agent-side
+// discovery/verification is separated into examples/agents/lib/poolDiscovery.ts / verifyContract.ts):
+//   1. deployVulnPools  : in the setup phase, deploy the factory + all pools (a mix of honest/rigged) and
+//                         issue disclosures/<addr>.json (source+codehash).
+//   2. fundVulnPoolsAt  : at each pool's window (startBlock), fund via cheatcode (burn bait into the reserve)
+//                         and emit pool_created / vulnerability_disclosed into events.jsonl.
+//   3. watchVulnSwaps   : every block, scan each pool's Swap logs and emit, as ground-truth, rigged hits
+//                         (vulnerability_exploited) / safe pool executions (safe_pool_captured).
 //
-// 設計判断:
-//   - deploy は setup（interval mining 前・auto-mine/sendAndMine）で robust に行い、資金供給だけを
-//     window の cheatcode で「湧かせる」。deploy 自体を interval mining 中に差し込むと mine と競合
-//     するため（keeper/oracle と違い CREATE は receipt 確定が要る）。プールは資金供給前は reserve=0
-//     で機会に見えないので、agent から見た「出現」は window の funding と一致する。
-//   - codehash は immutable 値が焼かれた実行時 bytecode に依存するため artifact からは算出できない。
-//     deploy 後に eth_getCode(address) → keccak256 で per-instance に確定させる（agent 側も同じ計算で
-//     照合する。ADR 0014 §5）。
+// Design decisions:
+//   - Do the deploy robustly in setup (before interval mining; auto-mine/sendAndMine) and only "spring up" the
+//     funding via a window cheatcode. Injecting the deploy itself during interval mining would race with mining
+//     (unlike keeper/oracle, a CREATE requires receipt finalization). Before funding, a pool has reserve=0 and
+//     does not look like an opportunity, so the "appearance" as seen by agents coincides with the window funding.
+//   - The codehash depends on the runtime bytecode with immutable values baked in, so it cannot be computed from
+//     the artifact. After deploy, finalize it per-instance via eth_getCode(address) → keccak256 (the agent side
+//     matches it with the same computation; ADR 0014 §5).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,7 +38,7 @@ import type { ResolvedVulnPool, VulnSchedule } from "./vulnEvents.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-// factory の呼び出し / PoolCreated 復号に使う最小 ABI。
+// Minimal ABI used to call the factory / decode PoolCreated.
 export const vulnFactoryAbi = [
   {
     type: "function",
@@ -76,7 +76,7 @@ export const vulnFactoryAbi = [
   },
 ] as const satisfies Abi;
 
-// AMM の Swap イベント（被弾検知に使う。SimpleAMM/RiggedAMM 共通）。
+// The AMM's Swap event (used for hit detection; common to SimpleAMM/RiggedAMM).
 export const vulnAmmSwapAbi = [
   {
     type: "event",
@@ -94,8 +94,8 @@ export type VulnPoolRuntime = {
   pool: Address;
   meta: ResolvedVulnPool;
   token0: Address; // base
-  token1: Address; // USDC（quote）
-  rugThresholdUnits: bigint; // rigged の skim 閾値（tokenIn=USDC 建て。safe は 0）
+  token1: Address; // USDC (quote)
+  rugThresholdUnits: bigint; // rigged skim threshold (denominated in tokenIn=USDC; 0 for safe)
   codehash: Hex;
   funded: boolean;
 };
@@ -107,31 +107,32 @@ export type VulnRuntime = {
   pools: VulnPoolRuntime[];
 };
 
-// disclosure に載せる source は「本番 explorer が配る verified source」相当。設計意図を明かす
-// コメント（"悪意あるプール"/"skim" 等）や契約名（RiggedAMM/SimpleAMM）をそのまま配ると、
-// agent が swap ロジックを読まずにコメント grep / contractName で classification できてしまい、
-// LLM ソース監査が load-bearing でなくなる（ADR 0014 §4 の趣旨に反する）。よってコメントを除去し
-// 契約名を中立化してから配布する（codehash は実 bytecode から別途算出するので整合は保たれる）。
+// The source put in a disclosure is equivalent to "verified source a production explorer serves". Distributing
+// comments that reveal design intent ("malicious pool"/"skim" etc.) or the contract names (RiggedAMM/SimpleAMM)
+// as-is would let an agent classify via comment grep / contractName without reading the swap logic, making the
+// LLM source audit no longer load-bearing (contrary to the intent of ADR 0014 §4). So strip comments and
+// neutralize the contract name before distributing (the codehash is computed separately from the real bytecode,
+// so consistency is preserved).
 function sanitizedSource(name: string): string {
   const raw = readFileSync(
     resolve(here, `../../../contracts/${name}.sol`),
     "utf8",
   );
   return raw
-    .replace(/\/\*[\s\S]*?\*\//g, "") // ブロックコメント
-    .replace(/\/\/[^\n]*/g, "") // 行コメント
-    .replace(/\b(RiggedAMM|SimpleAMM)\b/g, "LiquidityPool") // 契約名を中立化
+    .replace(/\/\*[\s\S]*?\*\//g, "") // block comments
+    .replace(/\/\/[^\n]*/g, "") // line comments
+    .replace(/\b(RiggedAMM|SimpleAMM)\b/g, "LiquidityPool") // neutralize the contract name
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
-// per-round USDC 上限 × frac で rigged の skim 閾値（tokenIn=USDC 建て）を算出。
+// Compute the rigged skim threshold (denominated in tokenIn=USDC) as per-round USDC cap × frac.
 function rugThresholdUnits(config: SimConfig, frac: number): bigint {
   const scaled = BigInt(Math.round(frac * 1_000_000));
   return (config.maxAgentUsdcInUnits * scaled) / 1_000_000n;
 }
 
-// setup: factory + 全プールを deploy し、disclosures を発行する（資金供給は window で行う）。
+// setup: deploy the factory + all pools and issue disclosures (funding is done at the window).
 export async function deployVulnPools(
   ctx: SimContext,
   schedule: VulnSchedule,
@@ -178,13 +179,13 @@ export async function deployVulnPools(
     const pool = extractPoolAddress(receipt.logs, factory);
     if (!pool) throw new Error(`vuln pool #${meta.poolIndex} deploy failed`);
 
-    // per-instance codehash（immutable 焼込後の実行時 bytecode。ADR 0014 §5）。
+    // per-instance codehash (runtime bytecode after immutables are baked in; ADR 0014 §5).
     const code = (await publicClient.getCode({ address: pool })) ?? "0x";
     const codehash = keccak256(code as Hex);
 
-    // disclosure レコード（本番 explorer 相当。agent は eth_getCode で codehash 照合する）。
-    // source は中立化済み（コメント除去・契約名を LiquidityPool に統一）＝rigged/safe は swap の
-    // ロジックを読まないと分からない。ground-truth（rigged）は events.jsonl 側だけが持つ。
+    // disclosure record (equivalent to a production explorer; the agent matches the codehash via eth_getCode).
+    // The source is neutralized (comments stripped, contract name unified to LiquidityPool) = rigged/safe cannot
+    // be told apart without reading the swap logic. The ground-truth (rigged) is held only on the events.jsonl side.
     const disclosure = {
       address: pool,
       sourceCode: sanitizedSource(meta.rigged ? "RiggedAMM" : "SimpleAMM"),
@@ -227,14 +228,14 @@ function extractPoolAddress(
         return (decoded.args as { pool: Address }).pool;
       }
     } catch {
-      // 非 PoolCreated ログは無視
+      // ignore non-PoolCreated logs
     }
   }
   return undefined;
 }
 
-// window: 当該 blockIndex で「湧く」プールに reserve を焼き込み（cheatcode）、bait 込みの機会を
-// 出現させる。fair は base ごと（fairByBase）。pool_created / vulnerability_disclosed を emit。
+// window: burn reserve into the pools that "spring up" at this blockIndex (cheatcode), making the bait-laden
+// opportunity appear. fair is per-base (fairByBase). Emits pool_created / vulnerability_disclosed.
 export async function fundVulnPoolsAt(
   ctx: SimContext,
   runtime: VulnRuntime,
@@ -246,16 +247,16 @@ export async function fundVulnPoolsAt(
 ): Promise<void> {
   const { publicClient } = ctx;
   for (const p of runtime.pools) {
-    // startBlock 以降の最初の処理ブロックで一度だけ供給する（funded ラッチ）。厳密一致でなく
-    // 「>=」にするのは、coordinator の onBlock が processing 中に到来したブロックを取りこぼすと
-    // 窓ブロックの blockIndex が飛ぶことがあるため（そのプールが永久に未供給になるのを防ぐ）。
+    // Fund exactly once at the first processed block at or after startBlock (funded latch). It uses ">=" rather
+    // than an exact match because if the coordinator's onBlock drops a block that arrived while processing, the
+    // window block's blockIndex can be skipped (prevents that pool from being funded forever).
     if (p.funded || p.meta.startBlock > blockIndex) continue;
-    // プール単位で例外を隔離する（1 プールの dealErc20 失敗が同じ blockIndex の他プールの供給を
-    // 巻き添えにしないため）。startBlock は event 内で共有され複数プールが同一ブロックに集中する。
+    // Isolate exceptions per pool (so one pool's dealErc20 failure does not drag down other pools' funding at the
+    // same blockIndex). startBlock is shared within an event, so multiple pools cluster on the same block.
     try {
       const fair = fairByBase[p.meta.base];
       if (!fair || fair <= 0) {
-        // 実運用では fairPrices は全 base を含むため踏まないが、静かな消滅を避け診断を残す。
+        // In practice fairPrices includes all bases so this is not hit, but avoid a silent disappearance and leave a diagnostic.
         logger.event({
           type: "vuln_fund_skipped",
           pool: p.pool,
@@ -263,15 +264,16 @@ export async function fundVulnPoolsAt(
           reason: "fair price missing or non-positive",
           blockIndex,
         });
-        p.funded = true; // 再試行しても fair は同一ブロック内で不変。永久ループを避けラッチする。
+        p.funded = true; // fair is unchanged within the same block even on retry. Latch to avoid an infinite loop.
         continue;
       }
       const baseDec = tokenInfo(p.meta.base).decimals;
       const baseUnit = 10n ** BigInt(baseDec);
-      // reserve: base 側は liquidity（USDC 建て）相当を積む。quote 側は base を fair より baitBps
-      // 割安に見せる比率（poolPrice = fair·(1−bait)）で積む → agent は「割安な base」を買える。
+      // reserve: on the base side, stack liquidity-equivalent (denominated in USDC). On the quote side, stack at
+      // the ratio that makes base look baitBps cheaper than fair (poolPrice = fair·(1−bait)) → the agent can buy
+      // "cheap base".
       const priceScaled = BigInt(Math.round(fair * 1_000_000));
-      // baitBps は parse で <=9000 に制限済みだが、二重防御で baitFactor>0 を確認する。
+      // baitBps is already limited to <=9000 at parse time, but double-guard by confirming baitFactor>0.
       const baitFactor = Math.max(0.01, 1 - p.meta.baitBps / 10_000);
       const poolPriceScaled = BigInt(Math.round(fair * baitFactor * 1_000_000));
       if (priceScaled <= 0n || poolPriceScaled <= 0n) {
@@ -287,7 +289,7 @@ export async function fundVulnPoolsAt(
       p.funded = true;
 
       const impliedPrice = fair * baitFactor;
-      // ground-truth（採点用）: rigged / rug パラメータを含む。
+      // ground-truth (for scoring): includes rigged / rug parameters.
       logger.event({
         type: "pool_created",
         pool: p.pool,
@@ -302,7 +304,7 @@ export async function fundVulnPoolsAt(
         blockNumber,
         blockIndex,
       });
-      // 開示（agent は disclosures/<addr>.json を on-demand lookup。ここは appearance の記録）。
+      // Disclosure (the agent does an on-demand lookup of disclosures/<addr>.json; this is the appearance record).
       logger.event({
         type: "vulnerability_disclosed",
         pool: p.pool,
@@ -328,8 +330,8 @@ export async function fundVulnPoolsAt(
   }
 }
 
-// 毎ブロック: 資金供給済みプールの Swap ログを [fromBlock,toBlock] で走査し、被弾/約定を
-// ground-truth で emit する（ADR 0014 §6。LLM verdict でなく実挙動で判定）。
+// Every block: scan funded pools' Swap logs over [fromBlock,toBlock] and emit hits/executions as ground-truth
+// (ADR 0014 §6; judged by actual behavior, not an LLM verdict).
 export async function watchVulnSwaps(
   ctx: SimContext,
   runtime: VulnRuntime,
@@ -362,9 +364,10 @@ export async function watchVulnSwaps(
     const buyBase =
       (args.tokenIn ?? "").toLowerCase() === p.token1.toLowerCase();
     if (p.meta.rigged) {
-      // skim 条件は RiggedAMM.swap と厳密一致させる: 方向に依らず amountIn>rugThreshold で発火。
-      // （buyBase ゲートを付けると base 売り方向で実際に skim された取引を skimmed:false と誤報告する。
-      // 閾値は USDC 建てなので base 売り〔wei スケール〕は事実上常に閾値超で skim される点も反映される）。
+      // Match the skim condition exactly with RiggedAMM.swap: fires when amountIn>rugThreshold regardless of
+      // direction. (Adding a buyBase gate would misreport a trade actually skimmed in the base-sell direction as
+      // skimmed:false. Since the threshold is denominated in USDC, this also reflects that base sells [wei scale]
+      // are effectively always above the threshold and get skimmed.)
       const skimmed = amountIn > p.rugThresholdUnits;
       logger.event({
         type: "vulnerability_exploited",

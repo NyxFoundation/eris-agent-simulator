@@ -1,5 +1,5 @@
-// venue-arb: 有効な AMM venue (uniswap/balancer/curve) のうち fairPrice から最も乖離した
-// プールで、価格を fair に寄せる向きに swap する cross-venue 裁定エージェント。
+// venue-arb: a cross-venue arbitrage agent that swaps toward fair on the pool most deviated from
+// fairPrice among the active AMM venues (uniswap/balancer/curve).
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 
 type Venue = {
@@ -34,7 +34,7 @@ export function decide(obs: AgentObservation): AgentAction | null {
   let best: Venue | undefined;
   let bestGap = 0;
   for (const v of venues) {
-    if (!Number.isFinite(v.price) || v.price <= 0) continue; // 壊れた/未初期化の venue を除外
+    if (!Number.isFinite(v.price) || v.price <= 0) continue; // exclude broken/uninitialized venues
     const gap = Math.abs(fair / v.price - 1);
     if (gap > bestGap) {
       bestGap = gap;
@@ -46,7 +46,7 @@ export function decide(obs: AgentObservation): AgentAction | null {
     return { type: "noop", reason: "no venue gap" };
   }
 
-  // pool 価格 < fair なら WETH が割安 → USDC で WETH を買う（USDC in）
+  // If pool price < fair, WETH is cheap -> buy WETH with USDC (USDC in)
   const tokenIn = best.price < fair ? "USDC" : "WETH";
   const max = BigInt(
     tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits,

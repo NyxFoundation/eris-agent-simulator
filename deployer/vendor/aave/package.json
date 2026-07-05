@@ -2,7 +2,7 @@
   "name": "eris-aave-v3-deployer",
   "version": "0.1.0",
   "private": true,
-  "description": "@aave/deploy-v3 の prebuilt artifact/deploy スクリプトを空の anvil へ流し込む最小 hardhat プロジェクト",
+  "description": "Minimal hardhat project that runs the @aave/deploy-v3 prebuilt artifacts/deploy scripts against an empty anvil",
   "scripts": {
     "deploy": "hardhat deploy --network localhost"
   },

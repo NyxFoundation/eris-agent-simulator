@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  # 型チェック・コントラクトのコンパイル・Solidity フォーマット確認 (anvil 不要・高速)
+  # Typecheck, contract compilation, and Solidity format check (no anvil needed; fast)
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -33,7 +33,7 @@ jobs:
       - name: Check Solidity formatting
         run: forge fmt --check
 
-  # 空の anvil へ全 DeFi プロトコルをデプロイし、vitest で E2E 検証する
+  # Deploy every DeFi protocol onto an empty anvil and run E2E verification with vitest
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -58,28 +58,28 @@ jobs:
       - name: Prepare environment
         run: cp .env.example .env
 
-      # 外部 vendor を準備: GMX を固定 SHA で clone+patch+yarn install、Aave を npm install。
-      # yarn (classic) は GitHub-hosted runner にプリインストール済み。
+      # Prepare external vendors: clone+patch+yarn install GMX at a pinned SHA, npm install Aave.
+      # yarn (classic) is preinstalled on GitHub-hosted runners.
       - name: Set up vendors (GMX / Aave)
         run: ./scripts/setup-vendors.sh
 
-      # anvil をバックグラウンド起動し、cast で起動完了を待つ。
-      # 以降の deploy / test は MANAGE_ANVIL=false でこの外部 anvil に接続する。
+      # Start anvil in the background and wait for it to be ready using cast.
+      # The later deploy / test steps connect to this external anvil with MANAGE_ANVIL=false.
       - name: Start anvil
         run: |
           npm run anvil &
           until cast block-number --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; do sleep 1; done
 
-      # 全プロトコルをデプロイ + seed。deployments.json を出力 (--exit は付けない)。
+      # Deploy + seed every protocol. Writes deployments.json (do not pass --exit).
       - name: Deploy all protocols
         run: MANAGE_ANVIL=false npm run deploy -- --keep-fresh
 
-      # 起動済み anvil + deployments.json に対して vitest で検証 (A/B/C/E)。
-      # 失敗時はどのプロトコルのどの検証が落ちたか per-test で分かる。
+      # Verify with vitest against the running anvil + deployments.json (A/B/C/E).
+      # On failure, the per-test output shows which check of which protocol failed.
       - name: E2E verification (vitest)
         run: MANAGE_ANVIL=false npm run test:e2e
 
-      # 失敗調査用にデプロイ結果を保存 (成功・失敗どちらでも)
+      # Save the deployment result for failure investigation (on both success and failure)
       - name: Upload deployments.json
         if: always()
         uses: actions/upload-artifact@v4

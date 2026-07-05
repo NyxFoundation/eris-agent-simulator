@@ -1,9 +1,9 @@
-// run 設定の契約レイヤ（ADR 0015）。SimConfig 型と env→SimConfig の loadConfig を sdk に置き、
-// 環境(core)と agent ランタイム(example/agents/runtime)の両プロセスが同じ YAML（ERIS_CONFIG）から
-// 同一の config を再構築できるようにする。
+// Contract layer for run config (ADR 0015). Placing the SimConfig type and the env→SimConfig
+// loadConfig in the sdk lets both the environment (core) and the agent runtime
+// (example/agents/runtime) rebuild identical config from the same YAML (ERIS_CONFIG).
 //
-// 環境専用の設定（stress/vuln イベントのスケジュール定義・agent ロスター）は core 側
-// （core/src/config.ts の RealtimeConfig / validateAgentsFile）が拡張する。
+// Environment-only config (stress/vuln event schedule definitions, the agent roster) is extended on
+// the core side (RealtimeConfig / validateAgentsFile in core/src/config.ts).
 import { keccak256, stringToBytes, type Hex } from "viem";
 import {
   CHAIN_ID,
@@ -24,151 +24,153 @@ const ALL_PROTOCOLS: ProtocolId[] = [
 export type SimConfig = {
   rpcUrl: string;
   chainId: number;
-  // フォーク元の上流 RPC（ARB_RPC_URL）。設定時は resetFork が anvil_reset を
-  // forking 設定付きで呼び、フォーク状態を毎回クリーンに再構築する（run/seed 間で
-  // Aave 等のポジションが残留する anvil_reset [] の問題を回避）。未設定なら従来の
-  // anvil_reset [] にフォールバック。
+  // Upstream RPC to fork from (ARB_RPC_URL). When set, resetFork calls anvil_reset with a forking
+  // config to rebuild the fork state clean each time (avoiding the anvil_reset [] problem where
+  // positions such as Aave persist across runs/seeds). If unset, falls back to the legacy
+  // anvil_reset [].
   forkUrl?: string;
-  // 再フォーク先ブロック（FORK_BLOCK_NUMBER）。固定すると再実行が完全再現可能になる。
-  // 未設定なら最初の resetFork で latest を捕捉し、以降のリセットで再利用する。
+  // Re-fork target block (FORK_BLOCK_NUMBER). Pinning it makes reruns fully reproducible.
+  // If unset, the first resetFork captures latest and reuses it for subsequent resets.
   forkBlockNumber?: number;
-  // 清算デモ(GitHub #1)。ERIS_LIQUIDATION_DEMO=1 のとき、coordinator が victim ウォレットに
-  // 過剰レバレッジの Aave ポジションを開かせ、shockRound 以降に Aave WETH オラクルを引き下げて
-  // HF<1 にし、liquidator agent が清算できる状況を作る。既定 off(既存 run/テストは不変)。
+  // Liquidation demo (GitHub #1). When ERIS_LIQUIDATION_DEMO=1, the coordinator has a victim wallet
+  // open an over-leveraged Aave position, then from shockRound onward lowers the Aave WETH oracle to
+  // push HF<1 and create a situation the liquidator agent can liquidate. Default off (existing runs/tests unchanged).
   liquidationDemo: boolean;
-  liquidationShockBps: number; // WETH オラクル引き下げ幅(bps, 既定 1500=15%)
-  liquidationShockRound: number; // 引き下げを始めるラウンド(既定 3)
-  liquidationVictimSupplyWethWei: bigint; // victim が supply する WETH(既定 5)
-  // 清算を成立させる seed 由来 victim 群(WETH supply + USDC borrow, HF≈H0)。採点対象外。
-  // count=0(既定)で無効。>0 のときは aave 有効 + full re-fork(ARB_RPC_URL 必須)が前提(ADR 0009 §4)。
+  liquidationShockBps: number; // WETH oracle drop amount (bps, default 1500=15%)
+  liquidationShockRound: number; // round at which the drop begins (default 3)
+  liquidationVictimSupplyWethWei: bigint; // WETH the victim supplies (default 5)
+  // Seed-derived victim cohort that makes liquidations possible (WETH supply + USDC borrow, HF≈H0). Not scored.
+  // count=0 (default) disables it. When >0, aave enabled + full re-fork (ARB_RPC_URL required) is a precondition (ADR 0009 §4).
   stressVictimCount: number; // ERIS_STRESS_VICTIM_COUNT
-  stressVictimHf0: number; // ERIS_STRESS_VICTIM_HF0(目標初期 HF。既定 1.10。LT/(0.97·LTV)≈1.08 超が必要)
-  stressVictimSupplyWethWei: bigint; // ERIS_STRESS_VICTIM_WETH_WEI(victim 1 体あたり supply。既定 5)
-  // 各 vuln プールに積む片側の目安流動性(USDC 建て units)。深いほど agent の trade で価格が
-  // 動かず bait が実現益になる。ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS(既定 2,000,000 USDC)。
+  stressVictimHf0: number; // ERIS_STRESS_VICTIM_HF0 (target initial HF. default 1.10. must exceed LT/(0.97·LTV)≈1.08)
+  stressVictimSupplyWethWei: bigint; // ERIS_STRESS_VICTIM_WETH_WEI (supply per victim. default 5)
+  // Approximate one-sided liquidity to seed each vuln pool with (in USDC-denominated units). The deeper it is,
+  // the less an agent's trade moves the price, so the bait becomes realized profit. ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS (default 2,000,000 USDC).
   vulnPoolLiquidityUsdcUnits: bigint;
-  // vuln プールの取引手数料(bps)。honest プールの bait が手数料で相殺されない程度に小さく。
-  // ERIS_VULN_POOL_FEE_BPS(既定 30 = 0.3%)。
+  // Trading fee of the vuln pool (bps). Small enough that fees do not cancel out an honest pool's bait.
+  // ERIS_VULN_POOL_FEE_BPS (default 30 = 0.3%).
   vulnPoolFeeBps: number;
-  // 取引前 LLM ソース監査(ADR 0014 §4-2)の有効化。"0"(既定 off)/"1"(実 LLM)/"mock"(source
-  // キーワード走査のスタブ)。coordinator が discovery-arb-verify に ERIS_VULN_LLM で配布する。
-  // 採点は環境 ground-truth なので LLM は補助(verdict は参考ログ)。dry-run が一次検証。
+  // Enables the pre-trade LLM source audit (ADR 0014 §4-2). "0" (default off) / "1" (real LLM) / "mock"
+  // (a stub that scans source for keywords). The coordinator distributes it to discovery-arb-verify via ERIS_VULN_LLM.
+  // Scoring uses the environment's ground truth, so the LLM is auxiliary (its verdict is a reference log). The dry-run is the primary check.
   vulnLlm: string;
-  // フラッシュ arb デモ(GitHub #3)。ERIS_FLASH_ARB=1 で coordinator が FlashArb コントラクトを
-  // デプロイし、flash-arb agent が利用できるようにする。uniswap+balancer+aave 有効が前提。既定 off。
+  // Flash arb demo (GitHub #3). With ERIS_FLASH_ARB=1 the coordinator deploys the FlashArb contract
+  // and makes it available to the flash-arb agent. Requires uniswap+balancer+aave enabled. Default off.
   flashArbDemo: boolean;
   rounds: number;
   roundTimeSeconds: number;
-  // 実時間モード（core/src/realtime/coordinator.ts）。interval mining のブロック間隔（秒）と
-  // 実行の終了条件（実時間 or ブロック数）。
+  // Real-time mode (core/src/realtime/coordinator.ts). The interval-mining block interval (seconds)
+  // and the run's stop condition (wall-clock time or block count).
   blockTimeSec: number;
   runSeconds: number;
   runBlocks: number;
-  // run 開始時の resetFork をスキップする（既定 false）。anvil の fork フェッチキャッシュを
-  // 前 run から温存し、cold フェッチ由来のレイテンシ（mine 中の上流取得）を切り分ける診断用。
-  // 状態は前 run から残留するため評価には使わない（ERIS_SKIP_RESET=1）。
+  // Skip the resetFork at run start (default false). Preserves anvil's fork fetch cache from the
+  // previous run for diagnostics that isolate cold-fetch latency (upstream fetches during mining).
+  // State persists from the previous run, so do not use for evaluation (ERIS_SKIP_RESET=1).
   skipReset: boolean;
-  // ローカル(非fork)デプロイ済み anvil を使うモード（ERIS_LOCAL_DEPLOY=1）。fork が無いため
-  // run 間リセットは anvil_reset でなく evm_snapshot/evm_revert を使う。アドレスは
-  // constants.local.ts（gen:local-constants 生成）を overlay。fork 上流が無いので
-  // FORK_BLOCK_NUMBER 固定・whale 等は不要。
+  // Mode that uses a locally (non-fork) deployed anvil (ERIS_LOCAL_DEPLOY=1). With no fork, inter-run
+  // reset uses evm_snapshot/evm_revert instead of anvil_reset. Addresses overlay
+  // constants.local.ts (generated by gen:local-constants). With no fork upstream, pinning
+  // FORK_BLOCK_NUMBER, whales, etc. are unnecessary.
   localDeploy: boolean;
-  // ローカルモードの snapshot ID 永続化ファイル（cross-process でクリーン断面を共有）。
+  // Persistence file for the local-mode snapshot ID (shares the clean cross-section cross-process).
   localSnapshotFile: string;
-  // run の実行モード（summary.json の mode に刻まれるラベル。ADR 0016 §6）。backtest CLI が
-  // ERIS_RUN_MODE=backtest を差し込む。採点・挙動には影響しない。
+  // The run's execution mode (a label stamped into summary.json's mode. ADR 0016 §6). The backtest CLI
+  // injects ERIS_RUN_MODE=backtest. Does not affect scoring or behavior.
   runMode: "realtime" | "backtest";
-  // 競争開始前に flow bot だけで N block の市場ループを回し、protocol の working set を
-  // 温める（ADR 0006 Risks の anvil cold フェッチ対策）。競争フェーズの mine が上流フェッチを
-  // 踏まなくなる。0 で無効（ERIS_PREWARM_BLOCKS）。
+  // Before the competition starts, run a market loop of N blocks with only the flow bot to warm the
+  // protocols' working set (ADR 0006 Risks anvil cold-fetch mitigation). The competition-phase mine
+  // then avoids hitting upstream fetches. 0 disables it (ERIS_PREWARM_BLOCKS).
   prewarmBlocks: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
   agentsConfigPath: string;
-  // agent ディレクトリ規約（ADR 0015 §2/§6）のルート。ロスターの id はこの直下のディレクトリ名に
-  // 対応し、spawn は一律 <agentsDir>/runtime/bot.ts になる（明示 command は override）。
+  // Root of the agent directory convention (ADR 0015 §2/§6). A roster id corresponds to a directory
+  // name directly under this, and spawn is always <agentsDir>/runtime/bot.ts (explicit command overrides).
   agentsDir: string;
   initialEthWei: bigint;
   flowEthWei: bigint;
-  // flow ウォレット（非 spread）の初期 base 在庫。USDC-only でも flow が「売り」（価格↓）を
-  // 出せるようにする＝両方向ドリフトを成立させる。agent には配らない（agent の USDC-only/β 無しは不変）。
-  // 既定 0 = 従来どおり（flow も base 無し）。
+  // Initial base inventory for the flow wallet (non-spread). Lets flow post "sells" (price down)
+  // even under USDC-only = enables two-way drift. Not granted to agents (agents stay USDC-only/no-beta).
+  // Default 0 = as before (flow also has no base).
   flowWethWei: bigint;
   flowBaseAmounts: Record<string, bigint>;
   initialWethWei: bigint;
-  // ADR 0013: base シンボル -> 初期配布量（token units）。WETH は initialWethWei と同値で
-  // 互換維持。追加 base は INITIAL_<SYM>_<UNIT>（例 INITIAL_WBTC_SATS）で読み、未指定は 0
-  // （USDC-only 方針 = 追加 base は既定で配らない）。fork 既定（WETH のみ）では {WETH:...} の 1 件。
+  // ADR 0013: base symbol -> initial distribution amount (token units). WETH equals initialWethWei
+  // for compatibility. Additional bases are read from INITIAL_<SYM>_<UNIT> (e.g. INITIAL_WBTC_SATS),
+  // defaulting to 0 (USDC-only policy = additional bases granted none by default). Under the fork default (WETH only) it is the single entry {WETH:...}.
   initialBaseAmounts: Record<string, bigint>;
   initialUsdcUnits: bigint;
   defaultPriorityFeeWei: bigint;
   maxPriorityFeeWei: bigint;
-  // gas 経済コスト化（ADR 0011。ADR 0010 を Supersede）。true で priority-fee 上限執行を退役し、
-  // env の価格確定を mempool tx（cap+premium ordering）から PriceFeed/Aave オラクルの storage 直書き
-  // （cheatcode）へ移して上限非依存にする。agent は機会評価に応じ自由に priority fee を積み、高く
-  // 評価した者が先に約定する（realistic priority gas auction）。既定 false で ADR 0010 プロファイルを
-  // 完全再現する（ロールバック先）。run 単位スイッチ（ERIS_ECONOMIC_GAS）。
+  // Turn gas into an economic cost (ADR 0011, supersedes ADR 0010). When true, retire priority-fee
+  // cap enforcement and move the environment's price finalization from mempool txs (cap+premium
+  // ordering) to a direct storage write of the PriceFeed/Aave oracles (cheatcode), making it
+  // cap-independent. Agents freely stack priority fee per their opportunity assessment, and whoever
+  // values it highest fills first (realistic priority gas auction). Default false fully reproduces
+  // the ADR 0010 profile (the rollback target). Per-run switch (ERIS_ECONOMIC_GAS).
   economicGas: boolean;
   maxAgentWethInWei: bigint;
   maxAgentUsdcInUnits: bigint;
-  // ADR 0013: base シンボル -> per-round swap 上限（token units）。WETH は maxAgentWethInWei と
-  // 同値で互換維持。追加 base は MAX_AGENT_<SYM>_<UNIT>（例 MAX_AGENT_WBTC_IN_SATS）。未指定は
-  // 0（= 当該 base の per-round 上限を課さない。limits 整備は Phase 8 範囲外）。
+  // ADR 0013: base symbol -> per-round swap cap (token units). WETH equals maxAgentWethInWei for
+  // compatibility. Additional bases are MAX_AGENT_<SYM>_<UNIT> (e.g. MAX_AGENT_WBTC_IN_SATS).
+  // Unset is 0 (= no per-round cap on that base; limits work is out of scope for Phase 8).
   maxAgentBaseIn: Record<string, bigint>;
   maxBundleActions: number;
   maxLpWethWei: bigint;
   maxLpUsdcUnits: bigint;
-  // ADR 0013: base シンボル -> LP mint 上限。WETH は maxLpWethWei と同値で互換維持。
-  // 追加 base は MAX_LP_<SYM>_<UNIT>（例 MAX_LP_WBTC_SATS）。未指定は 0。
+  // ADR 0013: base symbol -> LP mint cap. WETH equals maxLpWethWei for compatibility.
+  // Additional bases are MAX_LP_<SYM>_<UNIT> (e.g. MAX_LP_WBTC_SATS). Unset is 0.
   maxLpBase: Record<string, bigint>;
   maxOpenPositions: number;
   uninformedFlowMaxWethWei: bigint;
-  // 1 ブロック・1 venue あたりの uninformed flow 本数（既定 1）。>1 でハイブリッド α。
+  // Uninformed flow count per block per venue (default 1). >1 gives hybrid alpha.
   uninformedFlowCount: number;
-  // uninformed 方向の持続ブロック数（既定 1）。>1 で order-flow imbalance を模し spread を自然発生。
+  // How many blocks the uninformed direction persists (default 1). >1 mimics order-flow imbalance and naturally produces a spread.
   uninformedFlowPersistBlocks: number;
   informedFlowMaxWethWei: bigint;
   enabledProtocols: ProtocolId[];
   maxGmxSizeUsd: bigint;
   maxAaveSupplyWethWei: bigint;
-  // ADR 0013: base シンボル -> Aave supply 上限。WETH は maxAaveSupplyWethWei と同値で互換維持。
-  // 追加 base は MAX_AAVE_SUPPLY_<SYM>_<UNIT>（例 MAX_AAVE_SUPPLY_WBTC_SATS）。未指定は 0。
+  // ADR 0013: base symbol -> Aave supply cap. WETH equals maxAaveSupplyWethWei for compatibility.
+  // Additional bases are MAX_AAVE_SUPPLY_<SYM>_<UNIT> (e.g. MAX_AAVE_SUPPLY_WBTC_SATS). Unset is 0.
   maxAaveSupplyBase: Record<string, bigint>;
   maxAaveBorrowUsdcUnits: bigint;
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
   gmxFlowMaxSizeUsd: bigint;
-  // gmx flow を出すブロック確率（0..1、既定 0.5）。散発的に送る。
+  // Per-block probability of emitting gmx flow (0..1, default 0.5). Sent sporadically.
   gmxFlowActivityProb: number;
-  // 発火ブロックで出す gmx 注文の最大本数（>=1、既定 2）。>1 で 1〜N 件をランダムにバースト。
+  // Max number of gmx orders emitted on a firing block (>=1, default 2). >1 bursts 1..N randomly.
   gmxFlowMaxBurst: number;
   aaveFlowMaxWethWei: bigint;
-  // aave flow の各アクターが毎ブロック行動する確率（0..1、既定 0.5）。<1 で間欠的。
+  // Per-block probability each aave flow actor acts (0..1, default 0.5). <1 makes it intermittent.
   aaveFlowActivityProb: number;
-  // aave 借り手プールの独立アクター数（>=1、既定 4）。1 ブロックの最大同時 borrow 数 = この値。
-  // 各アクターは別アドレスで持続ポジションを保ち、債務は翌ブロック以降も残る。
+  // Number of independent actors in the aave borrower pool (>=1, default 4). Max simultaneous borrows per block = this value.
+  // Each actor keeps a persistent position at its own address, and debt remains into subsequent blocks.
   aaveFlowActorCount: number;
-  // ADR 0015 Notes / amm-challenge: informed（裁定）flow を fee-aware にする閾値（bps）。
-  // 既定 30bps = on（gap が fee バンドを超えたときだけ、超過分だけ informed flow を出す。残差 = fee。
-  // 現実の裁定と同じ経済で市場を過剰に締めない）。0 で従来の gap 線形 informed flow に戻す。
+  // ADR 0015 Notes / amm-challenge: threshold (bps) that makes informed (arbitrage) flow fee-aware.
+  // Default 30bps = on (emit informed flow only when the gap exceeds the fee band, and only for the
+  // excess; the remainder = fee. Same economics as real arbitrage, so the market is not over-tightened).
+  // 0 reverts to the legacy gap-linear informed flow.
   informedArbFeeBps: number;
-  // ADR 0015 Notes / amm-challenge の retail: uninformed 到着を Poisson(λ)・サイズを lognormal に。
-  // 既定 λ=0.9 = on（1 ブロックの本数を Poisson(λ)、各サイズを lognormal（平均 = uninformedMax×0.5、
-  // σ=uninformedFlowSizeSigma）＝バースト的で裾が重い現実的フロー）。0 で従来の固定本数+一様に戻す。
-  // 注: 分散が増えるため run 比較は複数 seed の集計で読む。
+  // ADR 0015 Notes / amm-challenge retail: Poisson(λ) uninformed arrivals with lognormal sizes.
+  // Default λ=0.9 = on (count per block is Poisson(λ), each size is lognormal (mean = uninformedMax×0.5,
+  // σ=uninformedFlowSizeSigma) = bursty, heavy-tailed realistic flow). 0 reverts to the legacy fixed count + uniform.
+  // Note: variance rises, so read run comparisons as an aggregate over multiple seeds.
   uninformedFlowArrivalRate: number;
   uninformedFlowSizeSigma: number;
-  // ADR 0015 Notes / amm-challenge の retail を GMX/Aave へ展開。
-  // gmxFlowArrivalRate: >0 で GMX 建玉本数を Poisson(λ)、サイズを lognormal に（既定 0.75=on）。0 で従来。
-  // gmxFlowSizeSigma: GMX lognormal サイズの σ（既定 1.0）。
-  // aaveFlowActorSizeSigma: >0 で Aave 各アクターの目標担保を lognormal で不均質化（whale/minnow。既定 1.0）。
+  // Extends amm-challenge retail to GMX/Aave.
+  // gmxFlowArrivalRate: >0 makes GMX open counts Poisson(λ) and sizes lognormal (default 0.75=on). 0 = legacy.
+  // gmxFlowSizeSigma: σ of the GMX lognormal size (default 1.0).
+  // aaveFlowActorSizeSigma: >0 makes each Aave actor's target collateral lognormal-heterogeneous (whale/minnow. default 1.0).
   gmxFlowArrivalRate: number;
   gmxFlowSizeSigma: number;
   aaveFlowActorSizeSigma: number;
-  // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。既定空/0 = WBTC flow off。
+  // ADR 0013: per-leg AMM flow cap for non-WETH bases (base units). Empty/0 default = WBTC flow off.
   baseFlowMax: Record<string, bigint>;
-  // orderflow bot（独立プロセス）の起動コマンドと決定論シード。
+  // Launch command and deterministic seed for the orderflow bot (a separate process).
   flowBotCommand: string;
   flowBotArgs: string[];
   flowSeed: number;
@@ -190,15 +192,16 @@ export type SimConfig = {
 
 export function loadConfig(env = process.env): SimConfig {
   const anvilPort = env.ANVIL_PORT ?? "8545";
-  // 経済化（ADR 0011）では endowment を絞って gas を実コスト化する。INITIAL_ETH_WEI 未指定なら
-  // 控えめな placeholder（3 ETH）を既定にする（gas を機会価値に対し意味あるコストにしつつ、
-  // runtime の gas マネージャ + 下限検証で gas 切れを防ぐ）。最終値は較正実測で決める
-  // （ADR「決めていないこと」）。既定 0010 プロファイル（economicGas=false）は 100 ETH のまま不変。
+  // Under economization (ADR 0011), squeeze the endowment to make gas a real cost. If INITIAL_ETH_WEI
+  // is unset, default to a modest placeholder (3 ETH) (makes gas a meaningful cost against opportunity
+  // value while the runtime gas manager + lower-bound validation prevent running out of gas). The final
+  // value is decided by calibration measurement (ADR "not yet decided"). The default 0010 profile
+  // (economicGas=false) stays at 100 ETH unchanged.
   const economicGas = env.ERIS_ECONOMIC_GAS === "1";
   const initialEthWeiDefault = economicGas
     ? 3_000_000_000_000_000_000n
     : 100_000_000_000_000_000_000n;
-  // WETH の既存 env 値（互換のためここで一度だけ読み、per-base マップの WETH エントリにも流用する）。
+  // Existing WETH env value (read once here for compatibility and reused for the per-base map's WETH entry).
   const initialWethWei = bigintEnv(
     env.INITIAL_WETH_WEI,
     10_000_000_000_000_000_000n,
@@ -247,10 +250,10 @@ export function loadConfig(env = process.env): SimConfig {
     vulnLlm: env.ERIS_VULN_LLM ?? "0",
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
     rounds: intEnv(env.ROUNDS, 50),
-    // 1 ラウンドあたりに進める EVM 時間（秒）。Aave 変動金利の累積や GMX funding
-    // を現実的なスケールで発生させるためにラウンドループで evm_increaseTime に渡す。
+    // EVM time to advance per round (seconds). Passed to evm_increaseTime in the round loop so that
+    // Aave variable-rate accrual and GMX funding occur at a realistic scale.
     roundTimeSeconds: intEnv(env.ROUND_TIME_SECONDS, 3600),
-    // 実時間モード（realtime）の設定。
+    // Real-time mode settings.
     blockTimeSec: intEnv(env.ERIS_BLOCK_TIME_SEC, 2),
     runSeconds: intEnv(env.ERIS_RUN_SECONDS, 20),
     runBlocks: intEnv(env.ERIS_RUN_BLOCKS, 0),
@@ -286,7 +289,7 @@ export function loadConfig(env = process.env): SimConfig {
     economicGas,
     maxAgentWethInWei,
     maxAgentUsdcInUnits: bigintEnv(env.MAX_AGENT_USDC_IN_UNITS, 5_000_000_000n),
-    // 追加 base の per-round swap 上限は MAX_AGENT_<SYM>_IN_<UNIT>（WETH は WEI 既存値を流用）。
+    // The per-round swap cap for additional bases is MAX_AGENT_<SYM>_IN_<UNIT> (WETH reuses the existing WEI value).
     maxAgentBaseIn: readBaseAmounts(
       env,
       "MAX_AGENT",
@@ -330,23 +333,23 @@ export function loadConfig(env = process.env): SimConfig {
       env.GMX_FLOW_MAX_SIZE_USD,
       20_000n * 10n ** 30n,
     ),
-    // gmx flow を出すブロック確率（既定 0.5）。毎ブロック rng で判定し散発的に送る。
+    // Per-block probability of emitting gmx flow (default 0.5). Decided each block via rng, sent sporadically.
     gmxFlowActivityProb: floatEnv(env.GMX_FLOW_ACTIVITY_PROB, 0.5),
-    // 発火ブロックで出す gmx 注文の最大本数（既定 2）。1〜N 件をランダムにバースト。
+    // Max number of gmx orders emitted on a firing block (default 2). Bursts 1..N randomly.
     gmxFlowMaxBurst: intEnv(env.GMX_FLOW_MAX_BURST, 2),
     aaveFlowMaxWethWei: bigintEnv(
       env.AAVE_FLOW_MAX_WETH_WEI,
       2_000_000_000_000_000_000n,
     ),
-    // aave flow の各アクターが毎ブロック行動する確率（既定 0.5）。<1 で間欠的。
+    // Per-block probability each aave flow actor acts (default 0.5). <1 makes it intermittent.
     aaveFlowActivityProb: floatEnv(env.AAVE_FLOW_ACTIVITY_PROB, 0.5),
-    // aave 借り手プールの独立アクター数（既定 4）。1 ブロックの最大同時 borrow 数 = この値。
+    // Number of independent actors in the aave borrower pool (default 4). Max simultaneous borrows per block = this value.
     aaveFlowActorCount: Math.max(1, intEnv(env.AAVE_FLOW_ACTOR_COUNT, 4)),
-    // amm-challenge の裁定 fee 境界（既定 30bps = on。現実の裁定が fee 未満の gap を取らない挙動。
-    // venue 手数料 ~30bps に合わせる）。0 で無効化＝従来の gap 線形 informed flow に戻せる。
+    // amm-challenge arbitrage fee boundary (default 30bps = on. Real arbitrage does not take a gap
+    // below the fee; matched to the venue fee ~30bps). 0 disables it = revert to the legacy gap-linear informed flow.
     informedArbFeeBps: Math.max(0, intEnv(env.ERIS_INFORMED_ARB_FEE_BPS, 30)),
-    // amm-challenge の retail 到着（既定 λ=0.9 = on。Poisson 到着 + lognormal サイズ＝バースト的で
-    // 裾が重い現実的フロー。旧・固定本数のほぼ同水準の平均に較正）。0 で無効化＝固定本数+一様に戻せる。
+    // amm-challenge retail arrivals (default λ=0.9 = on. Poisson arrivals + lognormal sizes = bursty,
+    // heavy-tailed realistic flow. Calibrated to roughly the same mean as the legacy fixed count). 0 disables it = revert to fixed count + uniform.
     uninformedFlowArrivalRate: Math.max(
       0,
       floatEnv(env.ERIS_UNINFORMED_ARRIVAL_RATE, 0.9),
@@ -355,23 +358,23 @@ export function loadConfig(env = process.env): SimConfig {
       0,
       floatEnv(env.ERIS_UNINFORMED_SIZE_SIGMA, 1),
     ),
-    // amm-challenge の retail を GMX/Aave へ（既定 on。0 で従来挙動へ戻せる）。
+    // Extends amm-challenge retail to GMX/Aave (default on. 0 reverts to legacy behavior).
     gmxFlowArrivalRate: Math.max(0, floatEnv(env.ERIS_GMX_ARRIVAL_RATE, 0.75)),
     gmxFlowSizeSigma: Math.max(0, floatEnv(env.ERIS_GMX_SIZE_SIGMA, 1)),
     aaveFlowActorSizeSigma: Math.max(
       0,
       floatEnv(env.ERIS_AAVE_ACTOR_SIZE_SIGMA, 1),
     ),
-    // ADR 0013: WETH 以外の base の AMM flow 1 leg 上限（base units）。env FLOW_MAX_<SYM>_<UNIT>
-    // （例 FLOW_MAX_WBTC_SATS）。既定 0 = WBTC 等の flow off → extraBases が RNG 非消費 = byte 互換。
-    // WETH flow は uninformed/balancer/curve FlowMaxWethWei を使い続ける（ここには載せない）。
+    // ADR 0013: per-leg AMM flow cap for non-WETH bases (base units). env FLOW_MAX_<SYM>_<UNIT>
+    // (e.g. FLOW_MAX_WBTC_SATS). Default 0 = flow off for WBTC etc. → extraBases do not consume RNG = byte-compatible.
+    // WETH flow keeps using uninformed/balancer/curve FlowMaxWethWei (not listed here).
     baseFlowMax: readBaseAmounts(env, "FLOW_MAX", { WETH: 0n }),
     flowBotCommand: env.FLOW_BOT_COMMAND ?? "node",
     flowBotArgs:
       env.FLOW_BOT_ARGS && env.FLOW_BOT_ARGS.trim() !== ""
         ? env.FLOW_BOT_ARGS.trim().split(/\s+/)
         : ["--import", "tsx", "core/src/flow/market-maker.ts"],
-    // flow bot のシード。未指定なら SEED と同じにして単一 SEED が run 全体を決定する。
+    // Seed for the flow bot. If unset, use the same as SEED so a single SEED determines the whole run.
     flowSeed: intEnv(env.FLOW_SEED, intEnv(env.SEED, 1)),
     privateKeys: {
       agent0: hexEnv(env.AGENT0_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[0]),
@@ -435,20 +438,20 @@ function bigintEnv(value: string | undefined, fallback: bigint): bigint {
   return BigInt(value);
 }
 
-// ADR 0013: base シンボルの「金額 env」の単位サフィックス（decimals 由来）。
-// WETH(18)=WEI / WBTC(8)=SATS / それ以外=UNITS。新トークンは桁数で自動的に決まる。
+// ADR 0013: unit suffix (derived from decimals) for a base symbol's "amount env".
+// WETH(18)=WEI / WBTC(8)=SATS / otherwise=UNITS. New tokens are determined automatically by their decimals.
 export function unitSuffixFor(decimals: number): string {
   if (decimals === 18) return "WEI";
   if (decimals === 8) return "SATS";
   return "UNITS";
 }
 
-// ADR 0013: base シンボル -> 金額の Record を env から組む（per-base 配布量 / per-base limits 用）。
-// WETH は wethSeed の値をそのまま使い env を読まない（既存 WETH env は呼び出し側で 1 度だけ
-// 読み済み = byte 互換を保つ）。追加 base は env キー
-//   <prefix>[_<SYM>]<_INFIX?>_<UNIT>   例 INITIAL_WBTC_SATS / MAX_AGENT_WBTC_IN_SATS
-// を読み、未指定は 0n（USDC-only 方針 = 追加 base は既定で配らない / 上限を課さない）。
-// fork 既定（WETH のみ）では {WETH: wethSeed.WETH} の 1 件のみで従来と完全一致。
+// ADR 0013: build a base symbol -> amount Record from env (for per-base distribution / per-base limits).
+// WETH uses wethSeed's value directly and does not read env (the existing WETH env is already read once
+// on the caller side = keeps byte compatibility). Additional bases are read from the env key
+//   <prefix>[_<SYM>]<_INFIX?>_<UNIT>   e.g. INITIAL_WBTC_SATS / MAX_AGENT_WBTC_IN_SATS
+// defaulting to 0n (USDC-only policy = additional bases granted none / capped none by default).
+// Under the fork default (WETH only) it is the single entry {WETH: wethSeed.WETH}, matching the old behavior exactly.
 function readBaseAmounts(
   env: NodeJS.ProcessEnv,
   prefix: string,

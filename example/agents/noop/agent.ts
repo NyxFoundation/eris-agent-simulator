@@ -1,4 +1,4 @@
-// noop: 何もしないベースライン。
+// noop: a do-nothing baseline.
 import type { AgentAction } from "@eris/sdk";
 
 export function decide(): AgentAction {

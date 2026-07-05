@@ -91,8 +91,8 @@ function noop(reason: string): AgentAction {
 }
 
 export function decide(obs: AgentObservation): AgentAction | null {
-  // 観測はネスト形 (protocols.uniswap.pool)。本戦略はトップレベル pool を前提にした
-  // フラット形を使うため、uniswap 無効時は裁定できず noop。
+  // The observation is nested (protocols.uniswap.pool). This strategy uses a flat shape that assumes a
+  // top-level pool, so when uniswap is unavailable it cannot arbitrage and returns noop.
   const uniPool = obs.protocols?.uniswap?.pool;
   if (!uniPool) return noop("uniswap pool unavailable");
 
@@ -119,7 +119,7 @@ export function decide(obs: AgentObservation): AgentAction | null {
     return noop(`|z|=${absZ.toFixed(2)} < ${Z_ENTER}`);
   }
 
-  // z は uniswap gap = 「動いている regime か」の判定に使い、執行は 3 venue の最大乖離 venue を選ぶ。
+  // Use z (uniswap gap) to judge "is this a moving regime", but execute on the max-deviation venue among the 3 venues.
   const venues: Array<{
     swapType: "swap" | "balancerSwap" | "curveSwap";
     price: number;

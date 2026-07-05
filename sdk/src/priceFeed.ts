@@ -1,8 +1,8 @@
-// fair price のオンチェーン配布（ADR 0006 §3）の**読取側**契約。
-// 環境が PriceFeed コントラクトをデプロイし毎ブロック fair price を書き込む（書込側は
-// core/src/realtime/priceFeed.ts）。agent は ERIS_PRICE_FEED_ADDRESS を受け取り、この
-// readFairPrice / readFairPriceFor で読む（書込 tx は次ブロック着弾なので情報は 1 ブロック
-// 遅れる。全 agent に等しく作用するため公平性は保たれる — ADR 0006 §3 に明記済みの仕様）。
+// The **read-side** contract for on-chain distribution of the fair price (ADR 0006 §3).
+// The environment deploys the PriceFeed contract and writes the fair price every block (the write
+// side is core/src/realtime/priceFeed.ts). Agents receive ERIS_PRICE_FEED_ADDRESS and read via this
+// readFairPrice / readFairPriceFor (the write tx lands in the next block, so the information is one
+// block late; it affects all agents equally, so fairness is preserved — a spec documented in ADR 0006 §3).
 import type { Address, PublicClient } from "viem";
 
 export const priceFeedAbi = [
@@ -20,7 +20,7 @@ export const priceFeedAbi = [
     inputs: [],
     outputs: [{ type: "int256" }],
   },
-  // ADR 0013: 追加 base（WBTC 等）の per-asset 価格。WETH は上の setPrice/latestAnswer を使う。
+  // ADR 0013: per-asset price for additional bases (WBTC etc.). WETH uses setPrice/latestAnswer above.
   {
     type: "function",
     name: "setPriceFor",
@@ -40,7 +40,7 @@ export const priceFeedAbi = [
   },
 ] as const;
 
-const PRICE_DECIMALS = 1e8; // USD 8 桁固定小数（Chainlink/Aave と同じ慣習）
+const PRICE_DECIMALS = 1e8; // USD 8-decimal fixed point (same convention as Chainlink/Aave)
 
 export function toPriceFeedAnswer(price: number): bigint {
   return BigInt(Math.round(price * PRICE_DECIMALS));
@@ -50,7 +50,7 @@ export function fromPriceFeedAnswer(answer: bigint): number {
   return Number(answer) / PRICE_DECIMALS;
 }
 
-// agent / 再構成が読む fair price。blockNumber 指定で歴史ブロック断面も読める（ADR 0006 §4）。
+// Fair price read by the agent / reconstruction. With a blockNumber, a historical block cross-section can also be read (ADR 0006 §4).
 export async function readFairPrice(
   publicClient: PublicClient,
   address: Address,
@@ -65,7 +65,7 @@ export async function readFairPrice(
   return fromPriceFeedAnswer(answer);
 }
 
-// 追加 base の fair price を読む（answerOf）。WETH は readFairPrice(latestAnswer)。
+// Read the fair price of an additional base (answerOf). WETH uses readFairPrice(latestAnswer).
 export async function readFairPriceFor(
   publicClient: PublicClient,
   address: Address,

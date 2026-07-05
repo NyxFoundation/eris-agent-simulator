@@ -1,65 +1,67 @@
-// orderflow 生成の純粋ロジック。
+// Pure logic for orderflow generation.
 //
-// 以前は各 ProtocolAdapter.buildFlow に分散していたが、orderflow を独立プロセス
-// (examples/flow/market-maker.ts) に切り出すため、RPC に触れない純粋関数として集約した。
-// coordinator は flow ウォレットと tx 提出を引き続き所有し、bot は「どの注文を出すか」だけ決める。
+// This used to be spread across each ProtocolAdapter.buildFlow, but to carve orderflow out into an
+// independent process (examples/flow/market-maker.ts) it was consolidated into pure functions that
+// never touch the RPC. The coordinator still owns flow wallets and tx submission; the bot only decides
+// "which orders to place".
 //
-// 決定論: bot は自前の Rng(flowSeed) を持ち、ここの関数を coordinator が渡す
-// protocols 順（= enabledAdapters 順。既定は config.ALL_PROTOCOLS の
-// uniswap, balancer, curve, gmx, aave で gmx が aave より前）で呼ぶ。
-// 元の buildFlowIntents と RNG 消費順序を一致させるため、ロジックは旧 adapter から逐語移設している。
+// Determinism: the bot has its own Rng(flowSeed) and calls the functions here in the protocols order
+// the coordinator passes (= enabledAdapters order; the default is config.ALL_PROTOCOLS's
+// uniswap, balancer, curve, gmx, aave, with gmx before aave).
+// To keep the RNG consumption order identical to the original buildFlowIntents, the logic is ported
+// verbatim from the old adapters.
 import { Rng } from "@eris/sdk/rng.js";
 import type { LeafAction, ProtocolId, TokenSymbol } from "@eris/sdk/types.js";
 import type { FlowKind, FlowOrder } from "@eris/sdk/protocols/types.js";
 import { tokenInfo } from "@eris/sdk/markets.js";
 
-// 会計上の quote（USDC 相当）の decimals。base→quote 換算の桁差に使う。
+// Decimals of the accounting quote (USDC-equivalent). Used for the digit gap in base->quote conversion.
 const QUOTE_DECIMALS = tokenInfo("USDC").decimals;
 
 const FLOW_SLIPPAGE_BPS = 100;
 
-// coordinator が文字列で渡す flow 関連の上限値（bigint 復元後の形）。
+// Flow-related caps passed by the coordinator as strings (form after bigint restoration).
 export type FlowLimits = {
   uninformedFlowMaxWethWei: bigint;
-  // 1 ブロック・1 venue あたりの uninformed flow 本数（既定 1）。>1 で複数の独立した
-  // ランダムプッシュを各 venue へ流し、venue 間のズレを「自然発生」させる（ハイブリッド α）。
+  // Number of uninformed flow orders per block per venue (default 1). >1 sends multiple independent
+  // random pushes to each venue, making cross-venue divergence "emerge naturally" (hybrid α).
   uninformedFlowCountPerBlock: number;
-  // uninformed 方向の持続ブロック数（既定 1）。>1 で venue 別 trend が cross-venue ズレを自然発生。
+  // Persistence in blocks of the uninformed direction (default 1). >1 makes per-venue trends produce cross-venue divergence naturally.
   uninformedFlowPersistBlocks: number;
   informedFlowMaxWethWei: bigint;
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
   gmxFlowMaxSizeUsd: bigint;
-  // gmx flow を出すブロック確率（0..1、既定 0.5）。毎ブロック rng で判定し散発的に送る。
+  // Per-block probability of emitting gmx flow (0..1, default 0.5). Decided by rng each block and sent sporadically.
   gmxFlowActivityProb: number;
-  // 発火ブロックで出す gmx 注文の最大本数（>=1、既定 1）。>1 で 1〜N 件をランダムにバースト。
+  // Max number of gmx orders emitted in a firing block (>=1, default 1). >1 bursts 1..N randomly.
   gmxFlowMaxBurst: number;
   aaveFlowMaxWethWei: bigint;
   maxAaveBorrowUsdcUnits: bigint;
-  // aave flow を出すブロック確率（0..1、既定 0.5）。actor プールでは各 actor の毎ブロック行動確率。
+  // Per-block probability of emitting aave flow (0..1, default 0.5). In the actor pool, each actor's per-block action probability.
   aaveFlowActivityProb: number;
-  // ADR 0015 Notes / amm-challenge: informed flow の fee 境界（bps）。0=off（gap 線形）。
+  // ADR 0015 Notes / amm-challenge: informed flow's fee boundary (bps). 0=off (linear gap).
   informedArbFeeBps: number;
-  // ADR 0015 Notes / amm-challenge の retail: uninformed 到着 Poisson(λ) / サイズ lognormal σ。
-  // λ=0=off（固定本数 + 一様）。
+  // ADR 0015 Notes / amm-challenge retail: uninformed arrivals Poisson(λ) / size lognormal σ.
+  // λ=0=off (fixed count + uniform).
   uninformedArrivalRate: number;
   uninformedSizeSigma: number;
-  // ADR 0015 Notes: 上記を GMX/Aave へ展開。gmxArrivalRate=0 / aaveActorSizeSigma=0 で従来。
+  // ADR 0015 Notes: extend the above to GMX/Aave. gmxArrivalRate=0 / aaveActorSizeSigma=0 is the legacy behavior.
   gmxArrivalRate: number;
   gmxSizeSigma: number;
   aaveActorSizeSigma: number;
   defaultPriorityFeeWei: bigint;
 };
 
-// FlowContext の wire 形（JSON。bigint は文字列）。
+// Wire form of FlowContext (JSON. bigints are strings).
 export type FlowContextWire = {
   round: number;
   fairPriceUsdcPerWeth: number;
   protocols: ProtocolId[];
   poolPrices: Partial<Record<"uniswap" | "balancer" | "curve", number>>;
   aaveReserves?: { wethSupplied: string; usdcBorrowed: string };
-  // 複数アクターの aave 借り手プール（実時間の本路）。coordinator が各 actor ウォレットの reserve と
-  // 残高を読んで渡す。指定時は buildAaveActorsFlow を使い、未指定なら単一の buildAaveFlow へフォールバック。
+  // Multi-actor aave borrower pool (the realtime main path). The coordinator reads each actor wallet's
+  // reserve and balance and passes them in. When set, use buildAaveActorsFlow; when unset, fall back to the single buildAaveFlow.
   aaveActors?: Array<{
     key: string;
     wethSupplied: string;
@@ -69,15 +71,15 @@ export type FlowContextWire = {
   }>;
   flowBalances?: Record<string, { wethWei: string; usdcUnits: string }>;
   usdcOnlyFlow?: boolean;
-  // ADR 0013 Phase 8: WETH 以外の base ごとの AMM flow。WETH-only run では未設定（既定 off）で、
-  // この場合 buildFlowOrders は追加 base ループに入らず RNG を一切消費しない（byte 互換）。
-  // coordinator が WBTC 等を有効化したときだけ埋まる。各 base の max が "0" なら early-continue。
+  // ADR 0013 Phase 8: AMM flow per non-WETH base. Unset in a WETH-only run (off by default), in which
+  // case buildFlowOrders doesn't enter the extra-base loop and consumes no RNG at all (byte-compatible).
+  // Filled only when the coordinator enables WBTC, etc. If a base's max is "0", early-continue.
   extraBases?: Array<{
     base: TokenSymbol;
-    // protocol -> その venue の当該 base/USD pool 価格。揃わない venue は省略。
+    // protocol -> that venue's base/USD pool price for the base. Venues that aren't available are omitted.
     poolPrices: Partial<Record<"uniswap" | "balancer" | "curve", number>>;
     fairPriceUsd: number;
-    // base 1e(decimals) 単位の AMM flow 上限。"0"/未設定で当該 base の flow は off（RNG 非消費）。
+    // AMM flow cap in base 1e(decimals) units. "0"/unset turns off flow for that base (no RNG consumed).
     uninformedFlowMaxBaseWei?: string;
     informedFlowMaxBaseWei?: string;
     balancerFlowMaxBaseWei?: string;
@@ -96,12 +98,12 @@ export type FlowContextWire = {
     aaveFlowMaxWethWei: string;
     maxAaveBorrowUsdcUnits: string;
     aaveFlowActivityProb?: string;
-    // ADR 0015 Notes / amm-challenge: informed flow の fee 境界（bps）。未設定/"0"=off（byte 互換）。
+    // ADR 0015 Notes / amm-challenge: informed flow's fee boundary (bps). unset/"0"=off (byte-compatible).
     informedArbFeeBps?: string;
-    // ADR 0015 Notes / amm-challenge の retail: uninformed 到着 Poisson(λ) / lognormal σ。未設定/"0"=off。
+    // ADR 0015 Notes / amm-challenge retail: uninformed arrivals Poisson(λ) / lognormal σ. unset/"0"=off.
     uninformedArrivalRate?: string;
     uninformedSizeSigma?: string;
-    // ADR 0015 Notes: GMX/Aave 展開。未設定/"0"=off（従来挙動）。
+    // ADR 0015 Notes: GMX/Aave extension. unset/"0"=off (legacy behavior).
     gmxArrivalRate?: string;
     gmxSizeSigma?: string;
     aaveActorSizeSigma?: string;
@@ -109,12 +111,12 @@ export type FlowContextWire = {
   };
 };
 
-// bot が返す 1 注文（protocol タグ付き。coordinator が flow ウォレットを選ぶのに使う）。
+// A single order the bot returns (protocol-tagged. Used by the coordinator to pick a flow wallet).
 export type FlowOrderOut = {
   protocol: ProtocolId;
   walletProtocol?: ProtocolId;
-  // 明示的な flow ウォレット鍵（例 "aave:actor0"）。指定時は protocol/kind ではなくこの鍵で
-  // ウォレットを選ぶ（複数アクターの aave 借り手プール用。flowOrdersToIntents が解決）。
+  // Explicit flow wallet key (e.g. "aave:actor0"). When set, pick the wallet by this key rather than
+  // protocol/kind (for the multi-actor aave borrower pool. Resolved by flowOrdersToIntents).
   walletKey?: string;
   kind: FlowKind;
   action: LeafAction;
@@ -127,7 +129,7 @@ function minBI(a: bigint, b: bigint): bigint {
 
 type FlowBalance = { wethWei: bigint; usdcUnits: bigint };
 
-// 確率文字列を [0,1] に丸める（未設定/非数は fallback）。activity gate に使う。
+// Clamp a probability string to [0,1] (unset/non-numeric fall back). Used for the activity gate.
 function clampProb(value: string | undefined, fallback: number): number {
   if (value === undefined || value.trim() === "") return fallback;
   const n = Number(value);
@@ -147,15 +149,16 @@ function randomBigInt(
   );
 }
 
-// bigint 上限を float の割合で縮尺する（ppm 精度）。lognormal サイズを wei へ落とすのに使う
-// （uninformedMax が Number 安全整数を超えるため float×bigint は割合経由で計算する）。
+// Scale a bigint cap by a float fraction (ppm precision). Used to reduce a lognormal size to wei
+// (since uninformedMax can exceed the Number safe integer, float×bigint is computed via a fraction).
 function scaleFraction(cap: bigint, fraction: number): bigint {
   const ppm = BigInt(Math.max(0, Math.round(fraction * 1_000_000)));
   return (cap * ppm) / 1_000_000n;
 }
 
-// アクター key から安定な Rng を作る（同じ key → 同じ乱数列。ブロックを跨いで不変な
-// per-actor サイズ抽出に使う。共有 flow rng を消費しないので他フローの決定列に影響しない）。
+// Build a stable Rng from an actor key (same key -> same random sequence. Used for per-actor size
+// draws that are invariant across blocks. It doesn't consume the shared flow rng, so it doesn't affect
+// other flows' deterministic sequences).
 function actorRng(key: string): Rng {
   let h = 2166136261;
   for (let i = 0; i < key.length; i++) {
@@ -165,9 +168,9 @@ function actorRng(key: string): Rng {
   return new Rng(h >>> 0);
 }
 
-// base amount(base decimals) を price(USDC/base) で quote units(USDC decimals) へ換算。
-// flow の base 上限を quote 側の注文サイズにも適用し、両側を同じ強度ノブで制御するため。
-// WETH 経路は (wethWei * round(price*100)) / (100 * 10^(18-6)) で従来式と byte 一致する。
+// Convert a base amount (base decimals) into quote units (USDC decimals) at price (USDC/base).
+// This applies flow's base cap to the quote-side order size too, controlling both sides with the same
+// intensity knob. The WETH path is (wethWei * round(price*100)) / (100 * 10^(18-6)), byte-identical to the old formula.
 function baseToQuoteUnits(
   baseAmount: bigint,
   base: TokenSymbol,
@@ -177,7 +180,7 @@ function baseToQuoteUnits(
   return (baseAmount * BigInt(Math.round(price * 100))) / (100n * scale);
 }
 
-// 後方互換ラッパ（WETH base 専用）。既存呼び出し箇所の値を変えない。
+// Backward-compatible wrapper (WETH base only). Doesn't change the values at existing call sites.
 function wethToUsdcUnits(wethWei: bigint, fairPrice: number): bigint {
   return baseToQuoteUnits(wethWei, "WETH", fairPrice);
 }
@@ -200,10 +203,10 @@ function capUsdc(amount: bigint, balance: FlowBalance | null): bigint {
   return amount > balance.usdcUnits ? balance.usdcUnits : amount;
 }
 
-// AMM (uniswap/balancer/curve) の flow。uninformed ノイズ + informed(価格を fair に寄せる)。
-// base 既定 WETH。base!=="WETH" のとき tokenIn に当該 base シンボルを使い、action.base を付けて
-// adapter が WBTC/USDC market を解決できるようにする。WETH 経路は従来と byte 一致（base 未付与・
-// tokenIn="WETH"・wethToUsdcUnits 同値・RNG 消費列不変）。
+// AMM (uniswap/balancer/curve) flow. uninformed noise + informed (pull price toward fair).
+// base defaults to WETH. When base!=="WETH", use that base symbol for tokenIn and attach action.base
+// so the adapter can resolve the WBTC/USDC market. The WETH path is byte-identical to before (no base
+// attached, tokenIn="WETH", same wethToUsdcUnits value, unchanged RNG consumption sequence).
 export function buildAmmFlow(
   rng: Rng,
   protocol: "uniswap" | "balancer" | "curve",
@@ -221,16 +224,16 @@ export function buildAmmFlow(
   uninformedCount = 1,
   round = 0,
   persistBlocks = 1,
-  // ADR 0015 Notes / amm-challenge: informed（裁定）flow を「fee バンドを超えた gap だけ」約定させる。
-  // 0（既定）= 従来の gap 線形（無効。byte 互換）。>0 で fee-aware:
-  //   - |gap| <= feeBps は no-arb 帯として見送り（arb が儲からないので market を過剰に締めない）
-  //   - それ以上は fee バンドを超えた超過分だけを閉じる（残差 = fee。現実の裁定と同じ）
-  // 私たちの venue は Uniswap v3 / weighted / crypto で純 CPMM ではないため、閉形式係数でなく
-  // 「fee 境界の経済」だけを移植する（depth は既存の informedMax を代理に使う）。
+  // ADR 0015 Notes / amm-challenge: have informed (arbitrage) flow fill "only the gap beyond the fee band".
+  // 0 (default) = the old linear gap (disabled. byte-compatible). >0 is fee-aware:
+  //   - |gap| <= feeBps is a no-arb band and is skipped (arb isn't profitable, so don't over-tighten the market)
+  //   - beyond that, close only the excess past the fee band (residual = fee. same as real arbitrage)
+  // Our venues are Uniswap v3 / weighted / crypto, not pure CPMM, so we port only the "fee-boundary
+  // economics" rather than closed-form coefficients (depth uses the existing informedMax as a proxy).
   informedArbFeeBps = 0,
-  // ADR 0015 Notes / amm-challenge の retail: uninformed 到着を Poisson(λ)・サイズを lognormal に。
-  // arrivalRate=0（既定）= 従来の固定本数（uninformedCount）＋一様サイズ（byte 互換）。
-  // >0 で 1 ブロックの本数を Poisson(λ)、各サイズを lognormal（平均 = uninformedMax×0.5、σ=sizeSigma）に。
+  // ADR 0015 Notes / amm-challenge retail: make uninformed arrivals Poisson(λ) and sizes lognormal.
+  // arrivalRate=0 (default) = the old fixed count (uninformedCount) + uniform size (byte-compatible).
+  // >0 makes the per-block count Poisson(λ) and each size lognormal (mean = uninformedMax×0.5, σ=sizeSigma).
   uninformedArrivalRate = 0,
   uninformedSizeSigma = 1,
 ): FlowOrder[] {
@@ -241,29 +244,30 @@ export function buildAmmFlow(
       : protocol === "balancer"
         ? "balancerSwap"
         : "curveSwap";
-  // WETH 経路は action.base を付けない（旧出力と同形）。WBTC 等のみ base を付与する。
+  // The WETH path doesn't attach action.base (same shape as the old output). Only WBTC, etc. attach base.
   const baseField = base === "WETH" ? {} : { base };
 
-  // uninformed: pool を fair から押しのけて gap(裁定の餌)を作る。base/USDC とも同じ
-  // base 相当のランダム量にして、uninformedMaxWethWei が両側を一様に制御する。
-  // uninformedCount>1 のときは独立した複数プッシュ（向き/サイズ別）を流し、venue ごとに
-  // 押し具合が変わる → cross-venue のズレが「自然発生」する（ハイブリッド α）。
-  // count=1 では RNG 消費・出力が従来と byte 一致（後方互換）。
-  // persistBlocks>1: venue ごとの uninformed 方向を persistBlocks ブロック持続させる
-  // （round/persistBlocks を window とした決定論 trend）。連続同方向の偏り＝order-flow imbalance を
-  // 模し、venue ごとに別 trend でズレが「自然発生」する（人工的な spread 注入なしの現実的 α）。
-  // persistBlocks<=1 は rng.bool() を消費する従来挙動＝byte 互換。
+  // uninformed: push the pool away from fair to create a gap (bait for arbitrage). Use a random amount
+  // equivalent to the same base for both base/USDC, so uninformedMaxWethWei controls both sides uniformly.
+  // When uninformedCount>1, send multiple independent pushes (differing direction/size), so how hard each
+  // venue is pushed varies -> cross-venue divergence "emerges naturally" (hybrid α).
+  // At count=1, RNG consumption and output are byte-identical to before (backward-compatible).
+  // persistBlocks>1: persist each venue's uninformed direction for persistBlocks blocks
+  // (a deterministic trend windowed by round/persistBlocks). This mimics a run of same-direction bias =
+  // order-flow imbalance, and with a different trend per venue divergence "emerges naturally" (realistic α
+  // without artificial spread injection).
+  // persistBlocks<=1 is the old behavior that consumes rng.bool() = byte-compatible.
   let trendTokenIn: TokenSymbol | null = null;
   if (persistBlocks > 1) {
     const window = Math.floor(round / persistBlocks);
     let h = ((window + 1) * 0x9e3779b1) >>> 0;
     for (let c = 0; c < protocol.length; c++)
       h = ((h ^ protocol.charCodeAt(c)) * 0x01000193) >>> 0;
-    // USDC in=買い(価格↑) / base in=売り(価格↓)。venue×window で up/down が分かれ spread を作る。
+    // USDC in=buy (price up) / base in=sell (price down). venue×window splits up/down and creates a spread.
     trendTokenIn = h % 2 === 0 ? "USDC" : base;
   }
-  // Poisson モード（arrivalRate>0）: 1 ブロックの到着数を Poisson(λ) で引く（0 件のブロックも自然に出る）。
-  // 従来モード（arrivalRate=0）: 固定本数 max(1, uninformedCount)。RNG 消費も従来どおり（byte 互換）。
+  // Poisson mode (arrivalRate>0): draw the per-block arrival count as Poisson(λ) (0-count blocks arise naturally).
+  // Legacy mode (arrivalRate=0): fixed count max(1, uninformedCount). RNG consumption is as before (byte-compatible).
   const arrivals =
     uninformedArrivalRate > 0
       ? rng.poisson(uninformedArrivalRate)
@@ -271,8 +275,8 @@ export function buildAmmFlow(
   for (let u = 0; u < arrivals; u++) {
     let uninformedTokenIn: TokenSymbol =
       trendTokenIn ?? (rng.bool() ? base : "USDC");
-    // Poisson モードはサイズを lognormal（裾が重い＝時々大口）。平均 = uninformedMax×0.5 で
-    // 従来の一様（平均 ~52.5%）とほぼ同水準。外れ値は [2%, 300%] にクランプしてプールを壊さない。
+    // Poisson mode makes size lognormal (heavy-tailed = occasionally large). Mean = uninformedMax×0.5,
+    // about the same level as the old uniform (mean ~52.5%). Outliers are clamped to [2%, 300%] so the pool isn't broken.
     const uninformedWethEquiv =
       uninformedArrivalRate > 0
         ? scaleFraction(
@@ -315,14 +319,14 @@ export function buildAmmFlow(
     }
   }
 
-  // informed: pool 価格を fairPrice に寄せる（gap を閉じる側＝arb agent と競合する）。
-  // 両側を informedMaxWethWei × gap で揃え、USDC 側も base 上限で制御する。
-  // informedMaxWethWei を下げると flow bot が gap を潰さなくなり、arb の取り分が増える。
-  // fee-aware（informedArbFeeBps>0）: |gap| が fee バンド以下なら裁定は無利なので informed を出さず、
-  // 超えた分は fee バンドを超えた超過だけを閉じる（残差 = fee。amm-challenge の arb と同じ経済）。
+  // informed: pull the pool price toward fairPrice (the gap-closing side = competes with arb agents).
+  // Align both sides at informedMaxWethWei × gap, and control the USDC side by the base cap too.
+  // Lowering informedMaxWethWei makes the flow bot close the gap less, increasing the arb's take.
+  // fee-aware (informedArbFeeBps>0): if |gap| is within the fee band, arbitrage is unprofitable so don't
+  // emit informed; beyond it, close only the excess past the fee band (residual = fee. same economics as amm-challenge arb).
   const rawDeviation = Math.abs(fairPrice / poolPrice - 1);
   if (informedArbFeeBps > 0 && rawDeviation * 10_000 <= informedArbFeeBps) {
-    return orders; // no-arb 帯: market を過剰に締めない（arb agent の取り分を残す）
+    return orders; // no-arb band: don't over-tighten the market (leave the arb agent's take)
   }
   const effectiveDeviation =
     informedArbFeeBps > 0
@@ -367,10 +371,10 @@ export function buildAmmFlow(
   return orders;
 }
 
-// GMX perp orderflow: 小口のロング/ショートを開いて約定ボリュームを作る（keeper が約定）。
-// ADR 0015 Notes / amm-challenge の retail: arrivalRate>0 で 1 ブロックの本数を Poisson(λ)、
-// サイズを lognormal（裾が重い＝時々大口の建玉）にする（現実の perp フロー）。
-// arrivalRate=0 で従来の Bernoulli(activityProb)+一様バースト+一様サイズ（byte 互換）。
+// GMX perp orderflow: open small longs/shorts to create fill volume (executed by the keeper).
+// ADR 0015 Notes / amm-challenge retail: with arrivalRate>0, make the per-block count Poisson(λ) and
+// size lognormal (heavy-tailed = occasionally large positions) (realistic perp flow).
+// arrivalRate=0 is the old Bernoulli(activityProb) + uniform burst + uniform size (byte-compatible).
 export function buildGmxFlow(
   rng: Rng,
   gmxFlowMaxSizeUsd: bigint,
@@ -383,8 +387,8 @@ export function buildGmxFlow(
   arrivalRate = 0,
   sizeSigma = 1,
 ): FlowOrderOut[] {
-  // 本数: Poisson モード（arrivalRate>0）は poisson(λ)（0 件ブロックも自然に出る）。
-  // 従来モードは Bernoulli(activityProb) ゲート → 1〜maxBurst の一様バースト（byte 互換）。
+  // Count: Poisson mode (arrivalRate>0) uses poisson(λ) (0-count blocks arise naturally).
+  // Legacy mode is a Bernoulli(activityProb) gate -> a uniform burst of 1..maxBurst (byte-compatible).
   let burst: number;
   if (arrivalRate > 0) {
     burst = rng.poisson(arrivalRate);
@@ -396,8 +400,8 @@ export function buildGmxFlow(
   const orders: FlowOrderOut[] = [];
   for (let i = 0; i < burst; i++) {
     const isLong = rng.bool();
-    // size: Poisson モードは lognormal（平均 = gmxMax×0.025 = 従来一様の中央値。[0.5%, 10%] にクランプ）。
-    // 従来モードは gmxMax の 1/100〜1/25 一様（基準 1/50。約 2x レバのため担保 = size/2x）。
+    // size: Poisson mode is lognormal (mean = gmxMax×0.025 = the median of the old uniform. clamped to [0.5%, 10%]).
+    // Legacy mode is uniform over gmxMax's 1/100..1/25 (baseline 1/50. about 2x leverage, so collateral = size/2x).
     const sizeUsd =
       arrivalRate > 0
         ? scaleFraction(
@@ -405,7 +409,7 @@ export function buildGmxFlow(
             Math.min(0.1, Math.max(0.005, rng.lognormal(0.025, sizeSigma))),
           )
         : randomBigInt(rng, gmxFlowMaxSizeUsd / 100n, gmxFlowMaxSizeUsd / 25n);
-    // collateral(WETH wei) ≈ (sizeUsd/2) を USD->WETH 換算。oraclePrices は使えないため概算 fairPrice 相当で割る
+    // collateral (WETH wei) ≈ (sizeUsd/2) converted USD->WETH. oraclePrices aren't available, so divide by an approximate fairPrice-equivalent
     const sizeUsdNum = Number(sizeUsd) / 1e30;
     const collateralWei = BigInt(
       Math.max(1, Math.floor(((sizeUsdNum / 2) * 1e18) / 2100)),
@@ -421,7 +425,7 @@ export function buildGmxFlow(
         balance,
       );
       if (usdcIn <= 0n) break;
-      // WETH 在庫が無いブロックは担保用 USDC→WETH を 1 本だけ用意して打ち止め（次ブロックで建てる）。
+      // On a block with no WETH inventory, prepare just one USDC->WETH for collateral and stop (open next block).
       orders.push({
         protocol: "uniswap",
         walletProtocol: "gmx",
@@ -453,9 +457,9 @@ export function buildGmxFlow(
   return orders;
 }
 
-// Aave（単一ウォレットの簡易 churn。後方互換／aaveActors 未指定時のフォールバック）。
-// 状態機械を 1 ステップ進める: supply -> (borrow <-> repay を反復) -> 債務0のとき確率で withdraw。
-// 実時間の本路は buildAaveActorsFlow（複数アクターの持続ポジション）を使う。
+// Aave (single-wallet simple churn. Backward-compatible / fallback when aaveActors is unset).
+// Advance the state machine one step: supply -> (repeat borrow <-> repay) -> when debt is 0, withdraw with some probability.
+// The realtime main path uses buildAaveActorsFlow (multi-actor persistent positions).
 export function buildAaveFlow(
   rng: Rng,
   aaveFlowMaxWethWei: bigint,
@@ -467,12 +471,12 @@ export function buildAaveFlow(
   canPrepareWeth = false,
   activityProb = 0.5,
 ): FlowOrderOut[] {
-  // activityProb の確率でのみこのブロックに送信（既定 0.5。1 で毎ブロック churn、<1 で間欠的）。
+  // Send in this block only with probability activityProb (default 0.5. 1 = churn every block, <1 = intermittent).
   if (rng.next() >= activityProb) return [];
   const fee = defaultPriorityFeeWei + BigInt(rng.int(1, 40)) * 1_000_000n;
   let action: LeafAction;
   if (reserves.wethSupplied === 0n) {
-    // supply 額は max の 1/4〜3/4 をランダム（基準 1/2）。
+    // supply amount is random over max's 1/4..3/4 (baseline 1/2).
     const amount = randomBigInt(
       rng,
       aaveFlowMaxWethWei / 4n,
@@ -529,19 +533,20 @@ export function buildAaveFlow(
   return [{ protocol: "aave", kind: "informed", action, priorityFeeWei: fee }];
 }
 
-// 1 アクターの持続ポジション状態（coordinator が各 actor ウォレットから読んで渡す）。
+// One actor's persistent position state (the coordinator reads it from each actor wallet and passes it in).
 export type AaveActorState = {
-  key: string; // flow ウォレット鍵（例 "aave:actor0"）
-  wethSupplied: bigint; // 当該 actor が Aave に supply 済みの WETH
-  usdcBorrowed: bigint; // 当該 actor の USDC 債務（持続。翌ブロックも残る）
-  wethWei: bigint; // ウォレットの WETH 残高（担保補充の原資）
-  usdcUnits: bigint; // ウォレットの USDC 残高（borrow で増え、repay の原資）
+  key: string; // flow wallet key (e.g. "aave:actor0")
+  wethSupplied: bigint; // WETH this actor has supplied to Aave
+  usdcBorrowed: bigint; // this actor's USDC debt (persistent. remains into the next block)
+  wethWei: bigint; // the wallet's WETH balance (source for topping up collateral)
+  usdcUnits: bigint; // the wallet's USDC balance (grows via borrow, source for repay)
 };
 
-// Aave 借り手プール（実市場寄せ）。N 個の独立アクターが各自の持続ポジションを保ち、毎ブロック
-// それぞれ独立に確率判定して borrow/repay/supply/withdraw を 1 つだけ実行する。borrow の後に強制
-// repay しないので債務は翌ブロック以降も残る。1 ブロックの複数 borrow は別アクターから自然発生する
-// （最大 = アクター数）。各 borrow は HF 余力（担保 × LTV × 安全率）内に収め revert を避ける。
+// Aave borrower pool (closer to a real market). N independent actors each keep their own persistent
+// position and, each block, independently decide by probability to execute exactly one of
+// borrow/repay/supply/withdraw. There's no forced repay after a borrow, so debt persists into later
+// blocks. Multiple borrows in one block arise naturally from different actors (max = actor count).
+// Each borrow stays within HF headroom (collateral × LTV × safety factor) to avoid revert.
 export function buildAaveActorsFlow(
   rng: Rng,
   actors: AaveActorState[],
@@ -550,25 +555,25 @@ export function buildAaveActorsFlow(
   defaultPriorityFeeWei: bigint,
   fairPrice: number,
   activityProb: number,
-  // ADR 0015 Notes / amm-challenge の retail: >0 で各アクターの目標担保を lognormal で不均質化
-  // （whale/minnow の混在）。0 で全アクター一律 = aaveFlowMaxWethWei（従来）。
-  // borrow は各アクターの担保の 30% LTV に追従するので HF 安全は不変（サイズだけ裾が重くなる）。
+  // ADR 0015 Notes / amm-challenge retail: >0 makes each actor's target collateral heterogeneous via
+  // lognormal (a mix of whales/minnows). 0 makes all actors uniform = aaveFlowMaxWethWei (legacy).
+  // Borrows track 30% LTV of each actor's collateral, so HF safety is unchanged (only size gets heavy-tailed).
   actorSizeSigma = 0,
 ): FlowOrderOut[] {
-  // 目標レバレッジ方式（staleness 由来の revert を抑える）。flow bot は 1〜2 ブロック遅れの actor 状態で
-  // 判断する（非同期パイプライン）ため、HF/残高に大きな余裕を持たせて「少し古い状態でも安全」に倒す:
-  //   - 担保は目標まで一度だけ積み、以降は supply しない（supply cap の thrash を避ける）。
-  //   - 債務は担保価値の 30%（LT 0.84 に大余裕）を目標に、2 ステップ分の余白を残してのみ小口 borrow
-  //     （stale な二重借入が来ても HF を割らない）。達したら一部 repay。
+  // Target-leverage approach (suppresses staleness-driven reverts). The flow bot decides on actor state
+  // 1-2 blocks stale (async pipeline), so give large HF/balance headroom to stay "safe even on slightly old state":
+  //   - Build collateral up to target only once, then don't supply again (avoids thrashing the supply cap).
+  //   - Target debt at 30% of collateral value (large headroom to LT 0.84), and borrow small amounts only
+  //     while leaving room for 2 steps (a stale double-borrow won't breach HF). Once reached, repay part.
   const TARGET_LTV_NUM = 30n;
   const TARGET_LTV_DEN = 100n;
-  const minStep = maxAaveBorrowUsdcUnits / 25n; // これ未満の差は動かさない（端数ループ回避）
+  const minStep = maxAaveBorrowUsdcUnits / 25n; // don't move a difference below this (avoids fractional loops)
   const orders: FlowOrderOut[] = [];
   for (const actor of actors) {
-    // 各 actor が独立に「今ブロック動くか」を判定（間欠的）。
+    // Each actor independently decides "act this block?" (intermittent).
     if (rng.next() >= activityProb) continue;
-    // 目標担保: actorSizeSigma>0 なら key 由来の lognormal でアクターごとに不均質化（whale/minnow）。
-    // key シードなのでブロックを跨いで安定（供給の thrash を起こさない）。0 なら一律 = aaveFlowMaxWethWei。
+    // Target collateral: if actorSizeSigma>0, make it heterogeneous per actor via a key-derived lognormal (whale/minnow).
+    // Seeded by key, so stable across blocks (doesn't thrash supply). If 0, uniform = aaveFlowMaxWethWei.
     const targetCollateralWei =
       actorSizeSigma > 0
         ? scaleFraction(
@@ -590,10 +595,10 @@ export function buildAaveActorsFlow(
       });
     };
 
-    // 1) 担保を目標まで一度だけ積む（80% 到達で確立とみなし以降は supply しない）。
+    // 1) Build collateral up to target only once (treat reaching 80% as established and stop supplying).
     if (actor.wethSupplied < (targetCollateralWei * 8n) / 10n) {
       const want = targetCollateralWei - actor.wethSupplied;
-      // 残高ステイルに備え、ウォレット WETH の 70% までに抑える。
+      // Guard against stale balances by capping at 70% of wallet WETH.
       const amount = minBI(want, (actor.wethWei * 7n) / 10n);
       if (amount > 0n)
         pushAave({
@@ -604,13 +609,13 @@ export function buildAaveActorsFlow(
       continue;
     }
 
-    // 2) 担保確立後は借入/返済のみ（持続債務。supply はもうしない）。
+    // 2) After collateral is established, only borrow/repay (persistent debt. no more supply).
     const collateralValueUsdc = wethToUsdcUnits(actor.wethSupplied, fairPrice);
     const targetDebt = (collateralValueUsdc * TARGET_LTV_NUM) / TARGET_LTV_DEN;
     const r = rng.next();
 
     if (actor.usdcBorrowed + 2n * minStep < targetDebt && r < 0.55) {
-      // 目標債務へ向け小口で借り増し（2 ステップ分の余白を残す＝stale 二重借入でも HF 安全）。
+      // Borrow a bit more toward the target debt (leave room for 2 steps = HF-safe even on a stale double-borrow).
       const room = targetDebt - actor.usdcBorrowed;
       const want = randomBigInt(
         rng,
@@ -625,7 +630,7 @@ export function buildAaveActorsFlow(
           amount: amount.toString(),
         } as unknown as LeafAction);
     } else if (actor.usdcBorrowed > minStep && r < 0.9) {
-      // 一部返済（max ではなく部分額 → 債務は残る）。返済はウォレット USDC 残高と債務の小さい方まで。
+      // Partial repay (a partial amount, not max -> debt remains). Repay up to the smaller of wallet USDC balance and debt.
       const want = randomBigInt(
         rng,
         actor.usdcBorrowed / 4n,
@@ -639,12 +644,12 @@ export function buildAaveActorsFlow(
           amount: amount.toString(),
         } as unknown as LeafAction);
     }
-    // それ以外は no-op（担保確立済・債務目標付近では何もしないブロックもある＝自然）。
+    // Otherwise no-op (with collateral established and debt near target, some blocks do nothing = natural).
   }
   return orders;
 }
 
-// wire の文字列 limits を bigint へ復元。
+// Restore the wire's string limits into bigint.
 export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
   return {
     uninformedFlowMaxWethWei: BigInt(wire.uninformedFlowMaxWethWei),
@@ -678,8 +683,8 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
   };
 }
 
-// FlowContext から 1 ラウンド分の全注文を生成する。
-// protocols は coordinator が渡す順（既定 uniswap, balancer, curve, gmx, aave）で反復し、その順で RNG を消費する。
+// Generate all orders for one round from the FlowContext.
+// Iterate protocols in the order the coordinator passes (default uniswap, balancer, curve, gmx, aave), consuming RNG in that order.
 export function buildFlowOrders(
   rng: Rng,
   ctx: FlowContextWire,
@@ -690,8 +695,8 @@ export function buildFlowOrders(
     for (const o of orders) out.push({ protocol, ...o });
   };
 
-  // AMM (uniswap/balancer/curve) ごとの [uninformedMax, informedMax]。
-  // balancer/curve は単一上限を両方に使う。
+  // [uninformedMax, informedMax] per AMM (uniswap/balancer/curve).
+  // balancer/curve use a single cap for both.
   const ammMax: Record<"uniswap" | "balancer" | "curve", [bigint, bigint]> = {
     uniswap: [limits.uninformedFlowMaxWethWei, limits.informedFlowMaxWethWei],
     balancer: [limits.balancerFlowMaxWethWei, limits.balancerFlowMaxWethWei],
@@ -731,7 +736,7 @@ export function buildFlowOrders(
       );
     } else if (protocol === "aave") {
       if (ctx.aaveActors && ctx.aaveActors.length > 0) {
-        // 実時間の本路: 複数アクターの持続ポジション借り手プール。
+        // Realtime main path: multi-actor persistent-position borrower pool.
         out.push(
           ...buildAaveActorsFlow(
             rng,
@@ -751,7 +756,7 @@ export function buildFlowOrders(
           ),
         );
       } else {
-        // 後方互換: 単一ウォレットの簡易 churn。
+        // Backward-compatible: single-wallet simple churn.
         out.push(
           ...buildAaveFlow(
             rng,
@@ -787,10 +792,10 @@ export function buildFlowOrders(
     }
   }
 
-  // ADR 0013 Phase 8: WETH 以外の base（WBTC 等）の AMM flow。WETH を上で先に処理し終えた後に
-  // 後置する。ctx.extraBases が未設定（WETH-only run）なら反復ゼロ = RNG 非消費 = byte 互換。
-  // 各 base × venue で max=0/未設定なら early-continue し、その base/venue の RNG を消費しない
-  // （WBTC 既定 off で WETH-only の RNG 消費列・出力が一切変わらない）。
+  // ADR 0013 Phase 8: AMM flow for non-WETH bases (WBTC, etc.). Placed after WETH is fully processed
+  // above. If ctx.extraBases is unset (WETH-only run), zero iterations = no RNG consumed = byte-compatible.
+  // For each base × venue, early-continue if max=0/unset and consume no RNG for that base/venue
+  // (with WBTC off by default, the WETH-only RNG consumption sequence and output are unchanged).
   for (const extra of ctx.extraBases ?? []) {
     const extraMax: Record<"uniswap" | "balancer" | "curve", bigint> = {
       uniswap: BigInt(extra.uninformedFlowMaxBaseWei ?? "0"),
@@ -806,7 +811,7 @@ export function buildFlowOrders(
       )
         continue;
       const uninformedMax = extraMax[protocol];
-      // off（uninformed と informed の両上限が 0）なら RNG を一切消費せず skip。
+      // If off (both uninformed and informed caps are 0), skip without consuming any RNG.
       const venueInformedMax =
         protocol === "uniswap" ? informedMax : extraMax[protocol];
       if (uninformedMax <= 0n && venueInformedMax <= 0n) continue;

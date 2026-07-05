@@ -403,7 +403,7 @@ index 8ca5e8c..c106955 100644
        chainId: Number(process.env.FORK_ID) || 42161, // default to Arbitrum One
      },
      localhost: {
-+      chainId: 31337, // anvil default。合成トークンアドレス計算で chainId が必須
++      chainId: 31337, // anvil default; chainId is required for synthetic token address computation
        saveDeployments: true,
      },
      arbitrum: {
@@ -452,10 +452,10 @@ index 0000000..ec10fe7
 --- /dev/null
 +++ b/utils/setBalanceCompat.ts
 @@ -0,0 +1,11 @@
-+// anvil 互換の setBalance。
-+// @nomicfoundation/hardhat-network-helpers の setBalance は接続先が
-+// Hardhat Network でないと拒否するため、anvil でも使える生 RPC
-+// (hardhat_setBalance / anvil_setBalance のエイリアス) を直接叩く。
++// anvil-compatible setBalance.
++// @nomicfoundation/hardhat-network-helpers' setBalance rejects any target that is
++// not a Hardhat Network, so call the raw RPC that also works on anvil directly
++// (an alias of hardhat_setBalance / anvil_setBalance).
 +import { network } from "hardhat";
 +import { BigNumberish } from "ethers";
 +import { hexValue } from "ethers/lib/utils";

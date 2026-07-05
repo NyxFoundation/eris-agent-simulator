@@ -28,13 +28,13 @@ const DECIMAL_INTEGER = /^[0-9]+$/;
 
 type CurveMarketState = {
   market: MarketConfig;
-  priceUsdcPerWeth: number; // base/USD（命名は WETH 互換。値は当該 base の price）
+  priceUsdcPerWeth: number; // base/USD (name kept WETH-compatible; value is this base's price)
 };
 
 type CurveState = {
-  // WETH market（後方互換でトップレベル維持）。
+  // WETH market (kept at top level for backward compatibility).
   priceUsdcPerWeth: number;
-  // 全 curve market（WETH 含む）。fork 既定では WETH のみ。
+  // All curve markets (including WETH). WETH only on the default fork.
   markets: CurveMarketState[];
 };
 
@@ -49,7 +49,7 @@ function legOf(market: MarketConfig): CurveLeg {
   return market.curve;
 }
 
-// base 0.1 単位を probe に使う（量は小さくして slippage 影響を抑える。価格は出力/probe で割戻す）。
+// Use 0.1 base unit as the probe (small amount to limit slippage impact; price is recovered as output/probe).
 function probeBaseAmount(market: MarketConfig): bigint {
   return 10n ** BigInt(tokenInfo(market.base).decimals) / 10n;
 }
@@ -73,7 +73,7 @@ async function getMarketPrice(
   publicClient: PublicClient,
   market: MarketConfig,
 ): Promise<number> {
-  // base の probe 量 -> quote。1 base あたりの quote(=USDC 相当) 価格へ換算（decimals 一般化）。
+  // base probe amount -> quote. Convert to the quote (=USDC-equivalent) price per 1 base (decimals generalized).
   const leg = legOf(market);
   const dx = probeBaseAmount(market);
   const out = await getDy(publicClient, leg, leg.baseIndex, leg.quoteIndex, dx);
@@ -100,7 +100,7 @@ export async function getCurveState(
   };
 }
 
-// 後方互換: WETH/USDC の curve price（USDC per WETH）。dashboard/reconstruct が共有する。
+// Backward compatible: WETH/USDC curve price (USDC per WETH). Shared by dashboard/reconstruct.
 export async function getCurvePrice(
   publicClient: PublicClient,
 ): Promise<number> {
@@ -119,7 +119,7 @@ function requireDecimalString(
     throw new Error(`${name} must be a decimal integer string`);
 }
 
-// action.base（既定 WETH）を読み、当該 market を解決する（parse 用）。
+// Read action.base (default WETH) and resolve the corresponding market (for parse).
 function parseBase(obj: Record<string, unknown>): {
   base: string;
   market: MarketConfig;
@@ -176,8 +176,8 @@ function validate(
   const market = marketFor("curve", base);
   if (!market) return { ok: false, reason: `no curve market for ${base}` };
   const inIsBase = action.tokenIn === market.base;
-  // ADR 0013: per-round 上限を全 base で適用。base 側は per-base 上限（WETH=maxWethInWei、追加 base は
-  // limits.baseLimits[base]。"0"=上限なし）。quote 側は共有 maxUsdcInUnits。WETH は byte 互換。
+  // ADR 0013: apply the per-round limit to every base. The base side uses per-base limits (WETH=maxWethInWei;
+  // additional bases use limits.baseLimits[base]; "0"=no limit). The quote side uses the shared maxUsdcInUnits. WETH is byte-compatible.
   if (inIsBase) {
     const maxBaseIn =
       base === "WETH"
@@ -267,7 +267,7 @@ export const curveAdapter: ProtocolAdapter = {
   },
 
   async valueUsdc(): Promise<number> {
-    return 0; // swap のみ。残高は wallet 側 (stable 合算) に計上済み
+    return 0; // swap only. Balance is already counted on the wallet side (stable aggregate)
   },
 
   async setupWallet(): Promise<BuiltTx[]> {

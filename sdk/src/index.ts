@@ -1,6 +1,6 @@
-// @eris/sdk の公開面（ADR 0015）。
-// 参加者（example/agents）はまずここから import する。深い個別モジュール
-// （@eris/sdk/protocols/uniswap.js 等）へのサブパス import も可能（package exports 参照）。
+// Public surface of @eris/sdk (ADR 0015).
+// Participants (example/agents) import from here first. Subpath imports to deeper individual modules
+// (@eris/sdk/protocols/uniswap.js, etc.) are also possible (see package exports).
 export * from "./types.js";
 export type {
   AgentContext,

@@ -40,8 +40,8 @@ describe.skipIf(!b)("Balancer V2", () => {
     toInternalBalance: false,
   });
 
-  // A: 定量 (queryBatchSwap の見積り vs 実 swap) -----------------------------
-  it("queryBatchSwap の見積りと実 swap が ±0.5% 一致 (WETH→USDC)", async () => {
+  // A: quantitative (queryBatchSwap estimate vs actual swap) -----------------
+  it("queryBatchSwap estimate matches actual swap within +/-0.5% (WETH->USDC)", async () => {
     const assets = [weth(), usdc()] as Address[];
     const { result } = await publicClient.simulateContract({
       address: vault(),
@@ -64,7 +64,7 @@ describe.skipIf(!b)("Balancer V2", () => {
       account: dep,
     });
     const deltas = result as readonly bigint[];
-    // deltas[1] は vault から出る量なので負。期待 USDC 出力 = -deltas[1]
+    // deltas[1] is the amount leaving the vault, so it is negative. Expected USDC out = -deltas[1]
     const expectedOut = -deltas[1];
     expect(expectedOut).toBeGreaterThan(0n);
 
@@ -93,11 +93,11 @@ describe.skipIf(!b)("Balancer V2", () => {
     await waitTx(h);
     const gained = (await balanceOf(usdc(), dep.address)) - before;
     expect(gained).toBeGreaterThan(0n);
-    expectApprox(gained, expectedOut, 50, "swap 出力 vs queryBatchSwap");
+    expectApprox(gained, expectedOut, 50, "swap output vs queryBatchSwap");
   });
 
-  // C: ネガティブ ----------------------------------------------------------
-  it("過大な limit(minOut) の swap は revert する", async () => {
+  // C: negative ------------------------------------------------------------
+  it("swap with an oversized limit (minOut) reverts", async () => {
     await expectRevert(
       publicClient.simulateContract({
         address: vault(),
@@ -113,18 +113,18 @@ describe.skipIf(!b)("Balancer V2", () => {
             userData: "0x" as Hex,
           },
           funds(),
-          1_000_000n * 10n ** 6n, // 達成不可能な minOut
+          1_000_000n * 10n ** 6n, // unreachable minOut
           deadline(),
         ],
         account: dep,
       }),
-      "swap(過大 limit)",
+      "swap(oversized limit)",
     );
   });
 
-  // B: ライフサイクル (exitPool で流動性を引き出す) ------------------------
-  it("exitPool で BPT が減りトークンが戻る", async () => {
-    // 登録順 (昇順) の assets を vault から取得
+  // B: lifecycle (withdraw liquidity via exitPool) -------------------------
+  it("exitPool reduces BPT and returns tokens", async () => {
+    // Fetch the assets in registration order (ascending) from the vault
     const pt = (await publicClient.readContract({
       address: vault(),
       abi: vaultAbi(),

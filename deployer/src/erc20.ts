@@ -3,7 +3,7 @@ import { accounts, deployerWallet, publicClient } from "./clients.js";
 import { anvilChain } from "./config.js";
 import { waitTx } from "./util.js";
 
-// 最小 ERC20 ABI (mock トークン・各プロトコルのトークン双方で使える)
+// Minimal ERC20 ABI (works for both mock tokens and each protocol's tokens)
 export const ERC20_ABI = [
   {
     type: "function",

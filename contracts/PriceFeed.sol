@@ -2,20 +2,21 @@
 pragma solidity ^0.8.20;
 
 /// @title PriceFeed
-/// @notice 環境（coordinator）が毎ブロック fair price を書き込む専用配布コントラクト（ADR 0006 §3）。
-///         observation の stdin push を廃止した後、agent はこれを読んで fair price を知る。
-///         uniswap pool 価格との乖離が裁定シグナル、という構図は不変。
-///         書込は owner（環境の admin ウォレット）のみ。agent による改竄を防ぐ。
+/// @notice Dedicated distribution contract where the environment (coordinator) writes the fair
+///         price every block (ADR 0006 §3). After the observation stdin push was removed, agents
+///         read this to learn the fair price. The setup — divergence from the uniswap pool price
+///         is the arbitrage signal — is unchanged.
+///         Only the owner (the environment's admin wallet) can write, preventing agent tampering.
 ///
-///         ADR 0013（マルチアセット化）: WETH 価格は従来どおり _answer(slot 0) に置き、
-///         latestAnswer/setPrice/updatedAtBlock の互換 API・storage slot を維持する。追加 base
-///         （WBTC 等）は _answers マッピング(slot 2)に置き、setPriceFor/answerOf で読み書きする。
-///         storage 直書き(ADR 0011)の slot 0/1 は不変なので economic-gas 経路も無改修。
+///         ADR 0013 (multi-asset): the WETH price stays in _answer (slot 0) as before, preserving
+///         the compatible latestAnswer/setPrice/updatedAtBlock API and storage slots. Additional
+///         bases (WBTC, etc.) go in the _answers mapping (slot 2), read/written via setPriceFor/answerOf.
+///         Slots 0/1 for the direct storage write (ADR 0011) are unchanged, so the economic-gas path needs no changes.
 contract PriceFeed {
     address public immutable owner;
-    int256 private _answer; // WETH。USDC per WETH（8 桁固定小数。例: $3000 -> 3000_00000000）。slot 0
+    int256 private _answer; // WETH. USDC per WETH (8-decimal fixed point. e.g. $3000 -> 3000_00000000). slot 0
     uint256 private _updatedAtBlock; // slot 1
-    mapping(address => int256) private _answers; // ADR 0013: 追加 base の USD 価格。slot 2
+    mapping(address => int256) private _answers; // ADR 0013: USD price of additional bases. slot 2
     mapping(address => uint256) private _answerUpdatedAtBlock; // slot 3
 
     uint8 public constant decimals = 8;
@@ -33,7 +34,7 @@ contract PriceFeed {
         _updatedAtBlock = block.number;
     }
 
-    // ---- WETH（後方互換 API。slot 0/1）----
+    // ---- WETH (backward-compatible API. slot 0/1) ----
     function setPrice(int256 answer) external {
         require(msg.sender == owner, "PriceFeed: not owner");
         _answer = answer;
@@ -49,7 +50,7 @@ contract PriceFeed {
         return _updatedAtBlock;
     }
 
-    // ---- 追加 base（ADR 0013。slot 2 マッピング）----
+    // ---- additional bases (ADR 0013. slot 2 mapping) ----
     function setPriceFor(address token, int256 answer) external {
         require(msg.sender == owner, "PriceFeed: not owner");
         _answers[token] = answer;

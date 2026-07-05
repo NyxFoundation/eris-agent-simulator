@@ -2,9 +2,9 @@
 pragma solidity ^0.8.20;
 
 /// @title MockAggregator
-/// @notice Aave V3 の AaveOracle が呼ぶ Chainlink 互換アグリゲータのモック。
-///         AaveOracle.getAssetPrice は source.latestAnswer() を呼ぶだけなので、
-///         setAnswer で任意の USD 価格（8 桁）を注入できる「制御可能オラクル」。
+/// @notice Mock of the Chainlink-compatible aggregator that Aave V3's AaveOracle calls.
+///         AaveOracle.getAssetPrice simply calls source.latestAnswer(), so this is a
+///         "controllable oracle" that lets setAnswer inject any USD price (8 decimals).
 contract MockAggregator {
     int256 private _answer;
     uint8 public constant decimals = 8;
@@ -17,7 +17,7 @@ contract MockAggregator {
         _set(initialAnswer);
     }
 
-    /// @notice 価格を設定（USD・8 桁。例: $3000 -> 3000_00000000）。
+    /// @notice Set the price (USD, 8 decimals. e.g. $3000 -> 3000_00000000).
     function setAnswer(int256 answer) external {
         _set(answer);
     }

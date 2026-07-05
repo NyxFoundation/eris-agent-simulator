@@ -1,13 +1,14 @@
-// 新規プールの動的発見レイヤ（ADR 0014 §3。チャネル(2): オンチェーン factory + reserve インデックス）。
+// Dynamic discovery layer for new pools (ADR 0014 §3; channel (2): on-chain factory + reserve index).
 //
-// coordinator が curate した観測（obs.protocols[id]）は既知 venue しか映さない。実際の arb/MEV bot は
-// factory の PoolCreated を購読してプールグラフを作り、reserve から含意価格を出して fair との gap で
-// 機会を拾う。ここはその最小実装:
-//   - refresh(): factory.PoolCreated を getLogs（ERIS_VULN_FROM_BLOCK 以降）でインデックス。
-//   - findOpportunities(): 各プールの reserve を読み、base の含意価格 vs fair の gap を機会として返す。
+// The observation the coordinator curates (obs.protocols[id]) only reflects known venues. A real
+// arb/MEV bot subscribes to the factory's PoolCreated to build a pool graph, derives the implied
+// price from reserves, and picks up opportunities from the gap vs fair. This is a minimal implementation:
+//   - refresh(): index factory.PoolCreated via getLogs (from ERIS_VULN_FROM_BLOCK onward).
+//   - findOpportunities(): read each pool's reserves and return the base's implied price vs fair gap as an opportunity.
 //
-// 罠は契約側にあるので発見だけでは安全性は分からない（検証は verifyContract.ts）。発見レイヤは
-// discovery-arb / discovery-arb-verify で共通、検証ゲートの有無だけが違う（ADR 0014 §6）。
+// The trap lives on the contract side, so discovery alone can't tell safety (verification is in
+// verifyContract.ts). The discovery layer is shared by discovery-arb / discovery-arb-verify; only the
+// presence of the verification gate differs (ADR 0014 §6).
 import type { Address, PublicClient } from "viem";
 import { erc20ApproveAbi, vulnFactoryAbi } from "./vulnAbi.js";
 
@@ -20,18 +21,18 @@ export type DiscoveredPool = {
 
 export type PoolOpportunity = {
   pool: DiscoveredPool;
-  base: string; // base シンボル
+  base: string; // base symbol
   baseAddr: Address;
-  usdcAddr: Address; // = tokenIn（base を USDC で買う）
+  usdcAddr: Address; // = tokenIn (buy the base with USDC)
   reserveBase: bigint;
   reserveUsdc: bigint;
-  impliedPrice: number; // reserve 由来の USDC/base
+  impliedPrice: number; // USDC/base derived from reserves
   fair: number;
-  gapBps: number; // (fair/implied - 1)*1e4。正 = base が fair より割安（買い機会）
-  amountInUnits: bigint; // 投じる USDC
+  gapBps: number; // (fair/implied - 1)*1e4. Positive = base is cheaper than fair (buy opportunity)
+  amountInUnits: bigint; // USDC to put in
 };
 
-// symbol/address/decimals の最小情報（agent が constants から渡す）。
+// Minimal symbol/address/decimals info (the agent passes it from constants).
 export type BaseInfo = { symbol: string; address: Address; decimals: number };
 
 export class PoolDiscovery {
@@ -40,9 +41,9 @@ export class PoolDiscovery {
   private readonly fromBlock: bigint;
   private readonly usdcAddr: Address;
   private readonly usdcDecimals: number;
-  // base アドレス（lowercase）→ BaseInfo。
+  // base address (lowercase) -> BaseInfo.
   private readonly baseByAddr: Map<string, BaseInfo>;
-  // 発見済みプール（address lowercase → DiscoveredPool）。immutable なので上書きしない。
+  // Discovered pools (address lowercase -> DiscoveredPool). Immutable, so never overwritten.
   private readonly pools = new Map<string, DiscoveredPool>();
   private lastScanned: bigint;
 
@@ -69,7 +70,7 @@ export class PoolDiscovery {
     return this.pools.size;
   }
 
-  // factory.PoolCreated を追跡インデックスする（新規ぶんだけ getLogs）。
+  // Track and index factory.PoolCreated (getLogs only for the new range).
   async refresh(latestBlock: bigint): Promise<void> {
     const from = this.lastScanned + 1n;
     if (from > latestBlock) return;
@@ -99,8 +100,8 @@ export class PoolDiscovery {
     this.lastScanned = latestBlock;
   }
 
-  // 各プールの reserve を読み、fair との gap が閾値を超える買い機会を返す。
-  // fairByBase: base シンボル → fair(USD)。gapThresholdBps 超だけ機会とみなす。
+  // Read each pool's reserves and return buy opportunities whose gap vs fair exceeds the threshold.
+  // fairByBase: base symbol -> fair(USD). Only treat gaps above gapThresholdBps as opportunities.
   async findOpportunities(
     fairByBase: Record<string, number>,
     amountInUnits: bigint,
@@ -108,7 +109,7 @@ export class PoolDiscovery {
   ): Promise<PoolOpportunity[]> {
     const out: PoolOpportunity[] = [];
     for (const pool of this.pools.values()) {
-      // base 側を判定（token0/token1 のうち USDC でない方）。両方 USDC/未知はスキップ。
+      // Determine the base side (whichever of token0/token1 is not USDC). Skip if both are USDC/unknown.
       const t0 = pool.token0.toLowerCase();
       const t1 = pool.token1.toLowerCase();
       const usdc = this.usdcAddr.toLowerCase();
@@ -123,7 +124,7 @@ export class PoolDiscovery {
         pool.address,
         baseInfo.address,
       );
-      if (reserveBase <= 0n || reserveUsdc <= 0n) continue; // 未供給（0）は機会でない
+      if (reserveBase <= 0n || reserveUsdc <= 0n) continue; // unsupplied (0) is not an opportunity
 
       const impliedPrice = this.impliedPrice(
         reserveBase,
@@ -132,7 +133,7 @@ export class PoolDiscovery {
       );
       if (impliedPrice <= 0) continue;
       const gapBps = (fair / impliedPrice - 1) * 10_000;
-      if (gapBps < gapThresholdBps) continue; // base が fair より割安なときだけ買う
+      if (gapBps < gapThresholdBps) continue; // only buy when the base is cheaper than fair
 
       out.push({
         pool,
@@ -147,7 +148,7 @@ export class PoolDiscovery {
         amountInUnits,
       });
     }
-    // gap の大きい機会から返す。
+    // Return opportunities largest-gap first.
     out.sort((a, b) => b.gapBps - a.gapBps);
     return out;
   }
@@ -177,7 +178,7 @@ export class PoolDiscovery {
     reserveUsdc: bigint,
     baseDecimals: number,
   ): number {
-    // USDC/base = (reserveUsdc/10^usdcDec) / (reserveBase/10^baseDec)。
+    // USDC/base = (reserveUsdc/10^usdcDec) / (reserveBase/10^baseDec).
     const usdcHuman = Number(reserveUsdc) / 10 ** this.usdcDecimals;
     const baseHuman = Number(reserveBase) / 10 ** baseDecimals;
     if (baseHuman === 0) return 0;

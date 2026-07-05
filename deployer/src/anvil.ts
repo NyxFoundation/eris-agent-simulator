@@ -27,24 +27,24 @@ async function waitUntilUp(timeoutMs = 30_000) {
     if (await isUp()) return;
     await new Promise((r) => setTimeout(r, 300));
   }
-  throw new Error(`anvil が ${RPC_URL} で起動しませんでした`);
+  throw new Error(`anvil did not start at ${RPC_URL}`);
 }
 
 /**
- * anvil を起動する。既に稼働中ならそれを使う。
- * - --code-size-limit: Uniswap V3 等の大型コントラクト対策で必須
- * - --base-fee 0: gas 計算を単純化
- * - --gas-limit: GMX のような重い tx に備え大きめ
+ * Start anvil. If one is already running, reuse it.
+ * - --code-size-limit: required for large contracts like Uniswap V3
+ * - --base-fee 0: simplifies gas accounting
+ * - --gas-limit: large, to accommodate heavy txs like GMX
  *
- * 注: poc の backtest CLI（core/src/cli/backtest.ts）が state dump の再生用 anvil を
- * ここと同じ較正で起動する。フラグを変えるときはあちらも合わせること（ADR 0016）。
+ * Note: the poc backtest CLI (core/src/cli/backtest.ts) starts a state-dump replay
+ * anvil with the same calibration as here. When changing flags, keep that in sync (ADR 0016).
  */
 export async function startAnvil(): Promise<void> {
   if (await isUp()) {
-    console.log(`anvil は既に起動済み (${RPC_URL}) — そのまま利用します`);
+    console.log(`anvil is already running (${RPC_URL}) — reusing it`);
     return;
   }
-  console.log(`anvil を起動します (port ${RPC_PORT})...`);
+  console.log(`Starting anvil (port ${RPC_PORT})...`);
   proc = spawn(
     "anvil",
     [
@@ -64,11 +64,10 @@ export async function startAnvil(): Promise<void> {
     { stdio: ["ignore", "ignore", "inherit"] },
   );
   proc.on("exit", (code) => {
-    if (code && code !== 0)
-      console.error(`anvil が終了しました (code ${code})`);
+    if (code && code !== 0) console.error(`anvil exited (code ${code})`);
   });
   await waitUntilUp();
-  console.log("anvil 起動完了");
+  console.log("anvil started");
 }
 
 export function stopAnvil() {

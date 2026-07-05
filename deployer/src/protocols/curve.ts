@@ -10,7 +10,7 @@ import { setProtocol, token } from "../registry.js";
 const dep = accounts.deployer;
 const CURVE = resolve(ROOT, "vendor", "curve");
 
-// vyper -f abi / -f bytecode|blueprint_bytecode で事前ビルドした artifact
+// Artifacts prebuilt with vyper -f abi / -f bytecode|blueprint_bytecode
 function art(name: string): { abi: Abi; bytecode: Hex } {
   const j = JSON.parse(readFileSync(resolve(CURVE, `${name}.json`), "utf8"));
   return {
@@ -37,7 +37,7 @@ async function deploy(
   return rc.contractAddress as Address;
 }
 
-// deploy_plain_pool の安全なパラメータ (repo の tests/fixtures/pools.py 準拠)
+// Safe parameters for deploy_plain_pool (per the repo's tests/fixtures/pools.py)
 const A = 2000n;
 const FEE = 1_000_000n; // 0.01%
 const OFFPEG = 20_000_000_000n;
@@ -45,11 +45,11 @@ const MA_EXP_TIME = 866n;
 const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 
 export async function deployCurve({ seed }: { seed: boolean }) {
-  info("Curve Stableswap-NG (factory + 実装群) をデプロイ");
+  info("Deploying Curve Stableswap-NG (factory + implementations)");
 
-  // 実装コントラクト
-  const math = await deploy("Math 実装", "CurveStableSwapNGMath", []);
-  const views = await deploy("Views 実装", "CurveStableSwapNGViews", []);
+  // Implementation contracts
+  const math = await deploy("Math impl", "CurveStableSwapNGMath", []);
+  const views = await deploy("Views impl", "CurveStableSwapNGViews", []);
   const poolBlueprint = await deploy("Pool blueprint", "CurveStableSwapNG", []);
 
   // factory(__init__: fee_receiver, owner)
@@ -60,7 +60,7 @@ export async function deployCurve({ seed }: { seed: boolean }) {
   );
   const factoryAbi = art("CurveStableSwapFactoryNG").abi;
 
-  // 実装を factory に配線
+  // Wire the implementations into the factory
   for (const [fn, arg] of [
     ["set_math_implementation", math],
     ["set_views_implementation", views],
@@ -84,7 +84,7 @@ export async function deployCurve({ seed }: { seed: boolean }) {
     chain: anvilChain,
   });
   await waitTx(h);
-  ok("実装配線", "math / views / pool[0]");
+  ok("implementation wiring", "math / views / pool[0]");
 
   setProtocol("curve", { factory, math, views, poolBlueprint });
 
@@ -92,12 +92,12 @@ export async function deployCurve({ seed }: { seed: boolean }) {
     await seedPool(factory);
   }
 
-  // poc の Curve venue は WETH<->stable の crypto pool (uint256 index get_dy/exchange) 前提。
-  // stableswap(USDC/DAI)とは別に twocrypto-ng の WETH/USDC crypto pool を立てる。
+  // The poc Curve venue assumes a WETH<->stable crypto pool (uint256 index get_dy/exchange).
+  // Separately from stableswap (USDC/DAI), stand up a twocrypto-ng WETH/USDC crypto pool.
   await deployTwocrypto({ seed });
 }
 
-// twocrypto-ng (lite-0.3.10) 標準パラメータ (tests/profiling/conftest.py 準拠)
+// twocrypto-ng (lite-0.3.10) standard parameters (per tests/profiling/conftest.py)
 const TC = {
   A: 400000n,
   gamma: 145000000000000n,
@@ -109,16 +109,16 @@ const TC = {
   maExpTime: 866n,
 } as const;
 
-/** twocrypto-ng (WETH/USDC crypto pool) をデプロイし add_liquidity で seed */
+/** Deploy twocrypto-ng (WETH/USDC crypto pool) and seed via add_liquidity */
 async function deployTwocrypto({ seed }: { seed: boolean }) {
-  info("Curve Twocrypto-NG (crypto factory + 実装群) をデプロイ");
+  info("Deploying Curve Twocrypto-NG (crypto factory + implementations)");
   const math = await deploy("Twocrypto Math", "CurveTwocryptoMath", []);
   const views = await deploy("Twocrypto Views", "CurveTwocryptoViews", []);
   const amm = await deploy("Twocrypto AMM blueprint", "CurveTwocrypto", []);
   const factory = await deploy("TwocryptoFactory", "CurveTwocryptoFactory", []);
   const factoryAbi = art("CurveTwocryptoFactory").abi;
 
-  // __init__ は deployer(tx.origin) 記録のみ。所有権を初期化する。
+  // __init__ only records the deployer (tx.origin). Initialize ownership.
   for (const [fn, args] of [
     ["initialise_ownership", [dep.address, dep.address]],
     ["set_math_implementation", [math]],
@@ -135,7 +135,7 @@ async function deployTwocrypto({ seed }: { seed: boolean }) {
     });
     await waitTx(h);
   }
-  ok("twocrypto 配線", "ownership / math / views / pool[0]");
+  ok("twocrypto wiring", "ownership / math / views / pool[0]");
 
   setProtocol("curve", {
     twocryptoFactory: factory,
@@ -150,13 +150,13 @@ async function deployTwocrypto({ seed }: { seed: boolean }) {
   }
 }
 
-/** WETH/USDC crypto pool を作成し add_liquidity ($3000/WETH・balanced) */
+/** Create a WETH/USDC crypto pool and add_liquidity ($3000/WETH, balanced) */
 async function seedTwocrypto(factory: Address) {
-  info("Curve: WETH/USDC crypto pool を作成し流動性投入");
+  info("Curve: creating WETH/USDC crypto pool and seeding liquidity");
   const factoryAbi = art("CurveTwocryptoFactory").abi;
   const usdc = token("USDC");
   const weth = token("WETH");
-  // coin0 = USDC (numeraire), coin1 = WETH。initial_price = WETH の USDC 建て価格 (1e18 正規化)。
+  // coin0 = USDC (numeraire), coin1 = WETH. initial_price = WETH price in USDC (1e18 normalized).
   const coins = [usdc, weth] as [Address, Address];
   const initialPrice = 3000n * 10n ** 18n;
 
@@ -196,13 +196,14 @@ async function seedTwocrypto(factory: Address) {
     functionName: "pool_list",
     args: [count - 1n],
   })) as Address;
-  assert(pool !== ZERO, "crypto pool が作成されていない");
-  ok("crypto pool 作成", pool);
+  assert(pool !== ZERO, "crypto pool was not created");
+  ok("crypto pool created", pool);
 
   const poolAbi = art("CurveTwocrypto").abi;
-  // balanced 初期流動性: 3M USDC + 1000 WETH (=$3M each @ $3000)。Uniswap/Balancer と同じ深さ。
-  // crypto pool は price impact が非線形に大きく、浅いと flow の swap(最大 1 WETH)が
-  // get_dy 見積り→実行間の価格移動で min_dy(slippage 1%)を割って revert する。深くして抑える。
+  // Balanced initial liquidity: 3M USDC + 1000 WETH (=$3M each @ $3000). Same depth as Uniswap/Balancer.
+  // Crypto pools have nonlinear, large price impact; when shallow, a flow swap (up to 1 WETH) can
+  // fall below min_dy (1% slippage) due to price movement between the get_dy quote and execution,
+  // reverting. Make it deep to suppress this.
   const usdcAmt = parseUnits("3000000", 6);
   const wethAmt = parseUnits("1000", 18);
   await approve(usdc, pool, usdcAmt);
@@ -218,7 +219,7 @@ async function seedTwocrypto(factory: Address) {
   await waitTx(addHash);
   ok("add_liquidity", "3M USDC / 1000 WETH ($3000)");
 
-  // poc 用 index: coin0=USDC(stable)=0, coin1=WETH=1
+  // poc indices: coin0=USDC(stable)=0, coin1=WETH=1
   setProtocol("curve", {
     wethUsdcCryptoPool: pool,
     cryptoWethIndex: 1,
@@ -227,15 +228,15 @@ async function seedTwocrypto(factory: Address) {
 }
 
 /**
- * WBTC/USDC crypto pool を作成し add_liquidity ($60000/WBTC・balanced)。
- * factory は再デプロイ不要 (seedTwocrypto と同一 factory で deploy_pool をもう 1 回呼ぶ)。
+ * Create a WBTC/USDC crypto pool and add_liquidity ($60000/WBTC, balanced).
+ * No factory redeploy needed (call deploy_pool once more on the same factory as seedTwocrypto).
  */
 async function seedTwocryptoWbtc(factory: Address) {
-  info("Curve: WBTC/USDC crypto pool を作成し流動性投入");
+  info("Curve: creating WBTC/USDC crypto pool and seeding liquidity");
   const factoryAbi = art("CurveTwocryptoFactory").abi;
   const usdc = token("USDC");
   const wbtc = token("WBTC");
-  // coin0 = USDC (numeraire), coin1 = WBTC。initial_price = WBTC の USDC 建て価格 (1e18 正規化)。
+  // coin0 = USDC (numeraire), coin1 = WBTC. initial_price = WBTC price in USDC (1e18 normalized).
   const coins = [usdc, wbtc] as [Address, Address];
   const initialPrice = 60000n * 10n ** 18n;
 
@@ -275,13 +276,13 @@ async function seedTwocryptoWbtc(factory: Address) {
     functionName: "pool_list",
     args: [count - 1n],
   })) as Address;
-  assert(pool !== ZERO, "WBTC crypto pool が作成されていない");
-  ok("WBTC crypto pool 作成", pool);
+  assert(pool !== ZERO, "WBTC crypto pool was not created");
+  ok("WBTC crypto pool created", pool);
 
   const poolAbi = art("CurveTwocrypto").abi;
-  // balanced 初期流動性: 3M USDC + 50 WBTC (=$3M each @ $60000)。
-  // 正規化後の量比 3,000,000 : 50 = 60000 = initial_price と一致させる
-  // (乖離すると add_liquidity が revert する)。WBTC は 8 decimals。
+  // Balanced initial liquidity: 3M USDC + 50 WBTC (=$3M each @ $60000).
+  // Make the normalized amount ratio 3,000,000 : 50 = 60000 match initial_price
+  // (add_liquidity reverts if they diverge). WBTC has 8 decimals.
   const usdcAmt = parseUnits("3000000", 6);
   const wbtcAmt = parseUnits("50", 8);
   await approve(usdc, pool, usdcAmt);
@@ -297,7 +298,7 @@ async function seedTwocryptoWbtc(factory: Address) {
   await waitTx(addHash);
   ok("add_liquidity", "3M USDC / 50 WBTC ($60000)");
 
-  // poc 用 index: coin0=USDC(stable)=0, coin1=WBTC=1
+  // poc indices: coin0=USDC(stable)=0, coin1=WBTC=1
   setProtocol("curve", {
     wbtcUsdcCryptoPool: pool,
     cryptoWbtcIndex: 1,
@@ -305,9 +306,9 @@ async function seedTwocryptoWbtc(factory: Address) {
   });
 }
 
-/** USDC/DAI の plain pool を作成し add_liquidity → exchange を検証 */
+/** Create a USDC/DAI plain pool and verify add_liquidity -> exchange */
 async function seedPool(factory: Address) {
-  info("Curve: USDC/DAI plain pool を作成し流動性投入");
+  info("Curve: creating USDC/DAI plain pool and seeding liquidity");
   const factoryAbi = art("CurveStableSwapFactoryNG").abi;
   const usdc = token("USDC");
   const dai = token("DAI");
@@ -335,7 +336,7 @@ async function seedPool(factory: Address) {
   });
   await waitTx(deployHash);
 
-  // pool アドレスは factory.pool_list(pool_count-1) から取得
+  // Get the pool address from factory.pool_list(pool_count-1)
   const count = (await publicClient.readContract({
     address: factory,
     abi: factoryAbi,
@@ -348,12 +349,12 @@ async function seedPool(factory: Address) {
     functionName: "pool_list",
     args: [count - 1n],
   })) as Address;
-  assert(pool !== ZERO, "pool が作成されていない");
-  ok("plain pool 作成", pool);
+  assert(pool !== ZERO, "pool was not created");
+  ok("plain pool created", pool);
 
   const poolAbi = art("CurveStableSwapNG").abi;
 
-  // 初期流動性: 各 100,000 (デシマル考慮)
+  // Initial liquidity: 100,000 each (decimals-adjusted)
   const usdcAmt = parseUnits("100000", 6);
   const daiAmt = parseUnits("100000", 18);
   await approve(usdc, pool, usdcAmt);

@@ -19,13 +19,13 @@ function readDeployment(name: string): { address: Address; abi: Abi } {
   return { address: j.address as Address, abi: j.abi as Abi };
 }
 
-// 対象トークン (Aave のテストトークンキー)
+// Target tokens (Aave test token keys)
 const TOKEN_KEYS = ["WETH", "USDC", "WBTC", "USDT", "DAI"] as const;
 
 export async function deployAaveV3({ seed }: { seed: boolean }) {
-  info("Aave V3 フルマーケットを hardhat-deploy でデプロイ");
+  info("Deploying the full Aave V3 market via hardhat-deploy");
 
-  // フレッシュな anvil に対応するため、前回の deployments を消す
+  // Remove the previous deployments to support a fresh anvil
   rmSync(DEPLOYMENTS, { recursive: true, force: true });
 
   const res = spawnSync(
@@ -45,14 +45,14 @@ export async function deployAaveV3({ seed }: { seed: boolean }) {
     },
   );
   if (res.status !== 0) {
-    throw new Error(`aave hardhat deploy が失敗しました (exit ${res.status})`);
+    throw new Error(`aave hardhat deploy failed (exit ${res.status})`);
   }
   assert(
     existsSync(DEPLOYMENTS),
-    "aave deployments/localhost が生成されていない",
+    "aave deployments/localhost was not generated",
   );
 
-  // 主要コントラクトのアドレスを取り込む
+  // Import the addresses of the main contracts
   const core = {
     pool: readDeployment("Pool-Proxy-Aave").address,
     poolAddressesProvider: readDeployment("PoolAddressesProvider-Aave").address,
@@ -63,7 +63,7 @@ export async function deployAaveV3({ seed }: { seed: boolean }) {
     faucet: readDeployment("Faucet-Aave").address,
   };
 
-  // テストトークン + aToken アドレス
+  // test token + aToken addresses
   const tokens: Record<string, Address> = {};
   const aTokens: Record<string, Address> = {};
   const files = readdirSync(DEPLOYMENTS);
@@ -77,12 +77,12 @@ export async function deployAaveV3({ seed }: { seed: boolean }) {
   }
 
   setProtocol("aaveV3", { ...core, tokens, aTokens });
-  ok("Aave V3 デプロイ", `pool=${core.pool}`);
-  ok("テストトークン", Object.keys(tokens).join(", "));
+  ok("Aave V3 deploy", `pool=${core.pool}`);
+  ok("test tokens", Object.keys(tokens).join(", "));
 
-  // 共有 mock トークン (WETH/USDC) を reserve として追加登録する。
-  // Aave deploy-v3 は自前テストトークンで reserve を作るため、cross-protocol で
-  // 跨げる共有トークンの reserve を post-deploy で別途立てる。
+  // Additionally register the shared mock tokens (WETH/USDC) as reserves.
+  // Aave deploy-v3 creates reserves with its own test tokens, so post-deploy we
+  // separately stand up reserves for the shared tokens usable across protocols.
   await registerSharedReserves();
 
   if (seed) {
@@ -90,15 +90,15 @@ export async function deployAaveV3({ seed }: { seed: boolean }) {
   }
 }
 
-// 共有トークンに reserve を追加する対象 (Aave 自前 reserve から設定を複製する)。
-// WBTC は Aave 自前 reserve (LTV=7000/LT=7500/aggregator $60k) から設定を実測複製する。
+// Tokens to add reserves for on the shared tokens (config cloned from Aave's own reserve).
+// For WBTC, clone the config measured from Aave's own reserve (LTV=7000/LT=7500/aggregator $60k).
 const SHARED_RESERVE_KEYS = ["WETH", "USDC", "WBTC"] as const;
 
 /**
- * deployer の共有 mock トークン (WETH=WETH9 / USDC=MockERC20) を Aave の reserve として
- * 後付け登録する。Aave 自前の同名 reserve から金利戦略・LTV/LT 等の設定を実測して複製し、
- * price source は Aave がデプロイ済みの MockAggregator (更新可能) を流用する。
- * deployer は POOL_ADMIN なので PoolConfigurator / AaveOracle を直接叩ける。
+ * Retroactively register the deployer's shared mock tokens (WETH=WETH9 / USDC=MockERC20)
+ * as Aave reserves. Measure and clone the interest rate strategy, LTV/LT, etc. from Aave's
+ * own same-named reserve, and reuse Aave's already-deployed MockAggregator (updatable) as the
+ * price source. The deployer is POOL_ADMIN, so it can call PoolConfigurator / AaveOracle directly.
  */
 async function registerSharedReserves() {
   const reg = getRegistry();
@@ -132,10 +132,10 @@ async function registerSharedReserves() {
     const shared = reg.tokens[key];
     const aaveOwn = aave().tokens?.[key];
     if (!shared || !aaveOwn) {
-      info(`共有 reserve ${key}: アドレス未解決のためスキップ`);
+      info(`shared reserve ${key}: skipping (address unresolved)`);
       continue;
     }
-    // 既に reserve 化済みなら何もしない (再実行耐性)
+    // Do nothing if it is already a reserve (idempotent on re-run)
     const existing = (await publicClient.readContract({
       address: pool,
       abi: poolAbi,
@@ -143,11 +143,11 @@ async function registerSharedReserves() {
       args: [shared],
     })) as { aTokenAddress: Address };
     if (existing.aTokenAddress && existing.aTokenAddress !== ZERO_ADDRESS) {
-      ok(`共有 reserve ${key}`, "既存のためスキップ");
+      ok(`shared reserve ${key}`, "skipping (already exists)");
       continue;
     }
 
-    // Aave 自前 reserve から設定を実測複製する (magic number を避ける)
+    // Measure and clone the config from Aave's own reserve (avoids magic numbers)
     const rd = (await publicClient.readContract({
       address: pool,
       abi: poolAbi,
@@ -191,9 +191,9 @@ async function registerSharedReserves() {
   }
 
   if (inputs.length === 0) return;
-  info("Aave V3: 共有トークンの reserve を登録");
+  info("Aave V3: registering reserves for the shared tokens");
 
-  // 1. price source を AaveOracle に設定 (既存 MockAggregator を流用)
+  // 1. set the price source on AaveOracle (reuse the existing MockAggregator)
   let h = await deployerWallet.writeContract({
     address: oracle.address,
     abi: oracle.abi,
@@ -204,7 +204,7 @@ async function registerSharedReserves() {
   });
   await waitTx(h);
 
-  // 2. initReserves で reserve を作成
+  // 2. create the reserves via initReserves
   h = await deployerWallet.writeContract({
     address: configuratorAddr,
     abi: configuratorAbi,
@@ -215,7 +215,7 @@ async function registerSharedReserves() {
   });
   await waitTx(h);
 
-  // 3. 担保有効化 + 借入有効化 + reserveFactor 設定 (Aave 自前 reserve と同値)
+  // 3. enable as collateral + enable borrowing + set reserveFactor (same values as Aave's own reserve)
   const sharedATokens: Record<string, Address> = {};
   const sharedDebtTokens: Record<string, Address> = {};
   for (const c of configs) {
@@ -248,7 +248,7 @@ async function registerSharedReserves() {
     await waitTx(h);
   }
 
-  // aToken / variableDebtToken アドレスを registry に記録 (poc / test 用)
+  // Record aToken / variableDebtToken addresses in the registry (for poc / test)
   for (const key of SHARED_RESERVE_KEYS) {
     const shared = reg.tokens[key];
     if (!shared) continue;
@@ -271,12 +271,12 @@ async function registerSharedReserves() {
     },
   });
   ok(
-    "共有 reserve 登録",
+    "shared reserve registration",
     SHARED_RESERVE_KEYS.filter((k) => reg.tokens[k]).join(", "),
   );
 }
 
-/** Faucet 経由でテストトークンを deployer に mint */
+/** Mint test tokens to the deployer via the Faucet */
 async function faucetMint(token: Address, amount: bigint) {
   const faucet = readDeployment("Faucet-Aave");
   const h = await deployerWallet.writeContract({
@@ -318,7 +318,7 @@ function aave(): { pool: Address; tokens: Record<string, Address> } {
   };
 }
 
-/** faucet で mint → approve → Pool.supply。token は Aave テストトークン。 */
+/** mint via faucet -> approve -> Pool.supply. token is an Aave test token. */
 async function supplyAsset(token: Address, amount: bigint, label: string) {
   const { pool } = aave();
   const poolAbi = poolImplAbi();
@@ -369,23 +369,27 @@ async function accountData(): Promise<readonly bigint[]> {
 }
 
 /**
- * WETH を担保に、USDC を供給(=借入可能な流動性)し、USDC を借りる E2E。
- * 借入対象資産は事前に流動性が必要(aToken の裏付け)。faucet 上限(1万)内に収める。
+ * E2E: supply USDC (= borrowable liquidity) with WETH as collateral, then borrow USDC.
+ * The borrowed asset needs liquidity beforehand (aToken backing). Keep within the faucet cap (10k).
  */
 async function seedSupplyBorrow() {
-  info("Aave V3: USDC/WETH 供給 → USDC 借入");
+  info("Aave V3: supply USDC/WETH -> borrow USDC");
   const { tokens } = aave();
-  await supplyAsset(tokens.USDC, 9000n * 10n ** 6n, "9000 USDC (流動性+担保)");
-  await supplyAsset(tokens.WETH, 10n * 10n ** 18n, "10 WETH (担保)");
+  await supplyAsset(
+    tokens.USDC,
+    9000n * 10n ** 6n,
+    "9000 USDC (liquidity+collateral)",
+  );
+  await supplyAsset(tokens.WETH, 10n * 10n ** 18n, "10 WETH (collateral)");
   await borrowAsset(tokens.USDC, 1000n * 10n ** 6n, "1000 USDC");
 
   const acct = await accountData(); // [collateralBase, debtBase, availableBorrowsBase, ...]
-  assert(acct[0] > 0n, "担保が計上されていない");
-  assert(acct[1] > 0n, "借入が計上されていない");
+  assert(acct[0] > 0n, "collateral was not recorded");
+  assert(acct[1] > 0n, "borrow was not recorded");
   ok("account data", `collateral=${acct[0]} debt=${acct[1]} (base units)`);
 }
 
-/** approve → Pool.supply。共有トークンは deployer が既に残高を持つため faucet 不要。 */
+/** approve -> Pool.supply. No faucet needed since the deployer already holds the shared tokens. */
 async function supplySharedAsset(
   token: Address,
   amount: bigint,
@@ -414,24 +418,28 @@ async function supplySharedAsset(
 }
 
 /**
- * 共有 mock トークン (WETH/USDC) の reserve で supply → borrow を 1 往復し動作確認。
- * deployer は deployTokens で WETH(wrap)・USDC(mint) の残高を持つため faucet 不要。
+ * Sanity-check the shared mock token (WETH/USDC) reserves with one supply -> borrow round trip.
+ * No faucet needed: the deployer holds WETH (wrap) and USDC (mint) balances from deployTokens.
  */
 async function seedSharedSupplyBorrow() {
   const reg = getRegistry();
   const weth = reg.tokens.WETH;
   const usdc = reg.tokens.USDC;
   if (!weth || !usdc) {
-    info("共有 seed: WETH/USDC 未デプロイのためスキップ");
+    info("shared seed: skipping (WETH/USDC not deployed)");
     return;
   }
-  info("Aave V3: 共有 USDC/WETH 供給 → 共有 USDC 借入");
-  await supplySharedAsset(usdc, 9000n * 10n ** 6n, "9000 USDC (流動性+担保)");
-  await supplySharedAsset(weth, 10n * 10n ** 18n, "10 WETH (担保)");
+  info("Aave V3: supply shared USDC/WETH -> borrow shared USDC");
+  await supplySharedAsset(
+    usdc,
+    9000n * 10n ** 6n,
+    "9000 USDC (liquidity+collateral)",
+  );
+  await supplySharedAsset(weth, 10n * 10n ** 18n, "10 WETH (collateral)");
   await borrowAsset(usdc, 1000n * 10n ** 6n, "1000 USDC");
 
   const acct = await accountData();
-  assert(acct[0] > 0n, "共有担保が計上されていない");
-  assert(acct[1] > 0n, "共有借入が計上されていない");
+  assert(acct[0] > 0n, "shared collateral was not recorded");
+  assert(acct[1] > 0n, "shared borrow was not recorded");
   ok("account data (shared)", `collateral=${acct[0]} debt=${acct[1]}`);
 }

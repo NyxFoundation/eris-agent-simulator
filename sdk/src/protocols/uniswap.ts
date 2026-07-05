@@ -45,17 +45,17 @@ const DECIMAL_INTEGER = /^[0-9]+$/;
 
 type UniswapMarketState = {
   market: MarketConfig;
-  priceUsdcPerWeth: number; // base/USD（命名は WETH 互換。値は当該 base の price）
+  priceUsdcPerWeth: number; // base/USD (name kept WETH-compatible; value is this base's price)
   tick: number;
   tickSpacing: number;
 };
 
 type UniswapState = {
-  // WETH market（後方互換でトップレベル維持）。
+  // WETH market (kept at top level for backward compatibility).
   priceUsdcPerWeth: number;
   tick: number;
   tickSpacing: number;
-  // 全 uniswap market（WETH 含む）。fork 既定では WETH のみ。
+  // All uniswap markets (including WETH). WETH only on the default fork.
   markets: UniswapMarketState[];
 };
 
@@ -71,7 +71,7 @@ function legOf(market: MarketConfig) {
   return market.uniswap;
 }
 
-// market の base/quote とソート（token0/token1 はアドレス昇順）。
+// The market's base/quote and their sort (token0/token1 in ascending address order).
 function sortedTokensFor(market: MarketConfig): {
   token0: Address;
   token1: Address;
@@ -85,7 +85,7 @@ function sortedTokensFor(market: MarketConfig): {
     : { token0: quoteAddr, token1: baseAddr, baseIsToken0 };
 }
 
-// swap の tokenIn(base|quote シンボル) -> in/out アドレス。
+// swap tokenIn (base|quote symbol) -> in/out addresses.
 function swapLeg(
   market: MarketConfig,
   tokenIn: TokenSymbol,
@@ -97,7 +97,7 @@ function swapLeg(
     : { assetIn: quoteAddr, assetOut: baseAddr };
 }
 
-// slot0 の sqrtPriceX96 -> quote per base（decimals 一般化。base/quote の桁差を吸収）。
+// slot0's sqrtPriceX96 -> quote per base (decimals generalized; absorbs the base/quote decimal difference).
 export function poolPriceFromSqrtX96(
   sqrtPriceX96: bigint,
   market: MarketConfig,
@@ -112,7 +112,7 @@ export function poolPriceFromSqrtX96(
   return baseIsToken0 ? rawToken1PerToken0 * scale : scale / rawToken1PerToken0;
 }
 
-// 後方互換: WETH/USDC の sqrtPriceX96 -> USDC per WETH。reconstruct/dashboard が共有する。
+// Backward compatible: WETH/USDC sqrtPriceX96 -> USDC per WETH. Shared by reconstruct/dashboard.
 export function poolPriceUsdcPerWethFromSqrtX96(sqrtPriceX96: bigint): number {
   return poolPriceFromSqrtX96(sqrtPriceX96, wethMarket());
 }
@@ -239,7 +239,7 @@ async function buildLpActionData(
   const { token0, token1, baseIsToken0 } = sortedTokensFor(market);
   const fee = legOf(market).fee;
   if (action.type === "mintLiquidity") {
-    // base 指定時は amountBase/QuoteDesired、未指定（WETH 既定）は amountWeth/UsdcDesired。
+    // When base is specified use amountBase/QuoteDesired; when unspecified (default WETH) use amountWeth/UsdcDesired.
     const amountBase = BigInt(
       action.amountBaseDesired ?? action.amountWethDesired,
     );
@@ -317,7 +317,7 @@ async function buildLpActionData(
   throw new Error(`Unsupported LP action: ${action.type}`);
 }
 
-// position の (token0,token1,fee) が属する uniswap market を解決。WETH/USDC 以外も対応。
+// Resolve the uniswap market that a position's (token0,token1,fee) belongs to. Handles non-WETH/USDC too.
 function positionMarketOf(
   token0: Address,
   token1: Address,
@@ -340,13 +340,13 @@ function positionMarketOf(
 export async function getLpPositions(
   publicClient: PublicClient,
   owner: Address,
-  // base シンボル -> fair price(USD)。WETH のみのとき従来と一致。
+  // base symbol -> fair price (USD). Matches prior behavior when WETH-only.
   fairPriceByBase: Record<string, number>,
-  // pool アドレス(lower) -> tick。observe が readState 済みの tick を渡せば再読取を省く。
+  // pool address (lower) -> tick. If observe passes the already-read tick, the re-read is skipped.
   knownTickByPool?: Record<string, number>,
 ): Promise<LpPositionObservation[]> {
   const markets = marketsFor("uniswap");
-  // 各 market の tick（未提供なら読む）。
+  // Each market's tick (read it if not provided).
   const tickByPool: Record<string, number> = { ...(knownTickByPool ?? {}) };
   await Promise.all(
     markets.map(async (m) => {
@@ -475,14 +475,14 @@ function applySlippage(amount: bigint, slippageBps: number): bigint {
   return (amount * BigInt(10_000 - slippageBps)) / 10_000n;
 }
 
-// Date.now() ベースだと evm_increaseTime で EVM time が wall clock を追い越した時に
-// "Transaction too old" になる。実害のない MEV 保護用フィールドなので遠未来定数を使う。
+// A Date.now()-based value causes "Transaction too old" once evm_increaseTime pushes EVM time
+// past the wall clock. This is a harmless MEV-protection field, so use a far-future constant.
 function deadline(): bigint {
   return DEADLINE_FAR_FUTURE;
 }
 const DEADLINE_FAR_FUTURE = BigInt(2 ** 32 - 1); // ~ year 2106
 
-// base/quote 量 + owed を当該 base の USD 価格で評価（quote は $1）。
+// Value base/quote amounts + owed at the base's USD price (quote is $1).
 function valuePositionUsdc(
   amountBaseWei: bigint,
   amountQuoteUnits: bigint,
@@ -500,9 +500,9 @@ function valuePositionUsdc(
   return quote + base * basePriceUsd;
 }
 
-// 歴史ブロック再構成（ADR 0006 §4）: positions(tokenId) の生 tuple から LP 価値を出す純粋関数。
-// reconstruct は WETH 価格を渡すため、当面 WETH/USDC market のみ評価する（WBTC 等は Phase 7 で
-// fairByBase を渡せるようになるまで 0）。WETH 既定の採点は従来と byte 一致。
+// Historical-block reconstruction (ADR 0006 §4): a pure function that derives LP value from the raw
+// positions(tokenId) tuple. Since reconstruct passes the WETH price, only the WETH/USDC market is valued
+// for now (WBTC etc. are 0 until Phase 7 can pass fairByBase). Default-WETH scoring is byte-identical to before.
 export function lpPositionValueUsdc(
   position: readonly [
     bigint,
@@ -537,7 +537,7 @@ export function lpPositionValueUsdc(
   ] = position;
   const markets = marketsFor("uniswap");
   const market = positionMarketOf(token0, token1, fee, markets);
-  // 後方互換: reconstruct が単一 WETH 価格を渡すため、WETH market 以外は当面 0（Phase 7 で対応）。
+  // Backward compatible: since reconstruct passes a single WETH price, non-WETH markets are 0 for now (handled in Phase 7).
   if (!market || market.base !== "WETH") return 0;
   const { baseIsToken0 } = sortedTokensFor(market);
   const amounts = liquidityToTokenAmounts({
@@ -556,8 +556,8 @@ export function lpPositionValueUsdc(
   );
 }
 
-// reconstruct（採点）用: position の market を解決し、tickByPool と fairByBase で全 base 対応の
-// LP 価値を出す（WBTC/USDC 等）。fork 既定（WETH のみ）では lpPositionValueUsdc と一致。
+// For reconstruct (scoring): resolve the position's market and derive an all-base LP value (WBTC/USDC etc.)
+// using tickByPool and fairByBase. On the default fork (WETH only) this matches lpPositionValueUsdc.
 export function lpPositionValueUsdcMulti(
   position: Parameters<typeof lpPositionValueUsdc>[0],
   tickByPool: Record<string, number>,
@@ -632,7 +632,7 @@ function addSlippage(
   action.slippageBps = slippageBps;
 }
 
-// action.base（既定 WETH）を読み、当該 market を解決する（parse 用）。
+// Read action.base (default WETH) and resolve the corresponding market (for parse).
 function parseBase(obj: Record<string, unknown>): {
   base: string;
   market: MarketConfig;
@@ -667,7 +667,7 @@ function parse(obj: Record<string, unknown>): LeafAction | null {
       type: "mintLiquidity",
       tickLower,
       tickUpper,
-      // 後方互換: WETH 既定は amountWeth/UsdcDesired を必須。base 指定は amountBase/QuoteDesired。
+      // Backward compatible: the default WETH requires amountWeth/UsdcDesired; a specified base uses amountBase/QuoteDesired.
       amountWethDesired: "0",
       amountUsdcDesired: "0",
     };
@@ -734,9 +734,9 @@ function validate(
     const market = marketFor("uniswap", base);
     if (!market) return { ok: false, reason: `no uniswap market for ${base}` };
     const inIsBase = action.tokenIn === market.base;
-    // ADR 0013: per-round 上限を全 base で適用。base-input 側は per-base 上限（WETH=maxWethInWei、
-    // 追加 base は limits.baseLimits[base]。"0"=上限なし=balance bound）。quote-input 側は共有の
-    // maxUsdcInUnits。WETH は maxWethInWei が常に >0 なので従来と同一挙動（byte 互換）。
+    // ADR 0013: apply the per-round limit to every base. The base-input side uses per-base limits (WETH=maxWethInWei;
+    // additional bases use limits.baseLimits[base]; "0"=no limit=balance bound). The quote-input side uses the shared
+    // maxUsdcInUnits. WETH behaves identically to before since maxWethInWei is always >0 (byte-compatible).
     if (inIsBase) {
       const maxBaseIn =
         base === "WETH"
@@ -778,8 +778,8 @@ function validate(
     ) {
       return { ok: false, reason: "ticks must align to pool tick spacing" };
     }
-    // ADR 0013: LP 上限を全 base で適用。base 側は per-base 上限（WETH=maxLpWethWei、追加 base は
-    // limits.baseLimits[base]。"0"=上限なし）。quote 側は共有の maxLpUsdcUnits。WETH は byte 互換。
+    // ADR 0013: apply the LP limit to every base. The base side uses per-base limits (WETH=maxLpWethWei;
+    // additional bases use limits.baseLimits[base]; "0"=no limit). The quote side uses the shared maxLpUsdcUnits. WETH is byte-compatible.
     const maxLpBase =
       base === "WETH"
         ? BigInt(obs.limits.maxLpWethWei)
@@ -927,7 +927,7 @@ export const uniswapAdapter: ProtocolAdapter = {
   },
 };
 
-// approve 1 件分の BuiltTx を組む（balancer/curve/aave/gmx の setupWallet でも再利用）
+// Build a single approve BuiltTx (reused by balancer/curve/aave/gmx setupWallet too)
 export function approveTx(token: Address, spender: Address): BuiltTx {
   return {
     to: token,

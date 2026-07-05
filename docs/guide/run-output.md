@@ -1,38 +1,38 @@
 [← README](../../README.md)
 
-# run 出力と解析
+# Run Output and Analysis
 
-run ごとに `runs/<run_id>/` が生成される。評価・採点・可視化系の専用コマンドは撤去済みで、解析は出力ファイルを直接読む。
+Each run generates a `runs/<run_id>/` directory. The dedicated evaluation, scoring, and visualization commands have been removed; analysis reads the output files directly.
 
-| ファイル | 内容 |
+| File | Contents |
 |---|---|
-| `summary.json` | agent ごとの initial / final value・netPnl・alpha・included/revert tx 数、`valueSeries.failedReads`、`violations` |
-| `events.jsonl` | イベント列（observation・stress・liquidation 等）。採点の一次情報 |
-| `blocks.csv` | ブロックごとの tx 記録（fee はチェーン上の tx フィールド由来） |
-| `agents/<id>.jsonl` | 各 agent の自己申告ログ（判断 `reason` / `signals` / `state`、runtime/send.ts が追記する mempool 活動 `kind:"mempool"`: submitted / submit_failed / rejected） |
-| `agents/<id>.prompt.v<K>.md` | prompt 型の自己改訂履歴（`ERIS_PROMPT_REVISE_EVERY` 有効時。版付き全文） |
-| `agents/<id>.llm.jsonl` | prompt 型の LLM 対話ログ（`ERIS_PROMPT_LOG_CALLS=1` の opt-in。system 全文・送信 messages・生応答・エラー。[LLM エージェント](llm-agents.md)） |
+| `summary.json` | per-agent initial / final value, netPnl, alpha, included/revert tx counts, `valueSeries.failedReads`, `violations` |
+| `events.jsonl` | event stream (observation, stress, liquidation, etc.); the primary source for scoring |
+| `blocks.csv` | per-block tx records (fee comes from the on-chain tx field) |
+| `agents/<id>.jsonl` | each agent's self-reported log (decision `reason` / `signals` / `state`, plus mempool activity appended by runtime/send.ts as `kind:"mempool"`: submitted / submit_failed / rejected) |
+| `agents/<id>.prompt.v<K>.md` | prompt-agent self-revision history (when `ERIS_PROMPT_REVISE_EVERY` is enabled; full text, versioned) |
+| `agents/<id>.llm.jsonl` | prompt-agent LLM conversation log (opt-in via `ERIS_PROMPT_LOG_CALLS=1`; full system prompt, sent messages, raw responses, errors; see [LLM Agents](llm-agents.md)) |
 
 ```bash
-npm run check:ordering -- runs/<run_id>   # Anvil の fee 順序を検査
-npm run check:strategy -- <file>          # 戦略コードの cheatcode 静的検査（入口側）
+npm run check:ordering -- runs/<run_id>   # inspect Anvil's fee ordering
+npm run check:strategy -- <file>          # static cheatcode check of strategy code (entry side)
 ```
 
-> run の入口は `sim:realtime` と `backtest`（出力形式は同一で、`summary.json` の `mode` が `"realtime"` / `"backtest"`）。**SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run の比較が要るときはサンプルを貯めて集計する — [バックテスト](backtest.md)の `--repeat N` が反復と mean alphaUsdc の表示まで面倒を見る。
+> The entry points for a run are `sim:realtime` and `backtest` (identical output format, with `summary.json`'s `mode` being `"realtime"` / `"backtest"`). **SEED (= regime) is a label for the market conditions** — the price path is reproducible, but tx timing/ordering is non-deterministic, so results vary even within the same regime. When you need to compare runs, accumulate samples and aggregate — [Backtest](backtest.md)'s `--repeat N` handles the iteration and the display of mean alphaUsdc for you.
 
-## summary.json の主なフィールド
+## Key fields in summary.json
 
-| フィールド | 意味 |
+| Field | Meaning |
 |---|---|
-| `mode` | `"realtime"` / `"backtest"`（どの入口の run か） |
-| `agents[].initialValueUsdc` / `finalValueUsdc` | run 開始・終了時の総価値（USDC 相当。venue ポジションの評価額込み） |
-| `agents[].alphaUsdc` | 約定時 fair 基準の β 除去 PnL（実力比較はこちらを見る） |
+| `mode` | `"realtime"` / `"backtest"` (which entry point the run came from) |
+| `agents[].initialValueUsdc` / `finalValueUsdc` | total value at run start / end (USDC-equivalent, including the valuation of venue positions) |
+| `agents[].alphaUsdc` | β-removed PnL relative to the fair price at fill time (look here for skill comparison) |
 | `agents[].netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
-| `agents[].includedTxCount` / `revertCount` | included / revert した tx 数 |
-| `agents[].stderrTail` | agent プロセスの stderr 末尾（クラッシュ診断用） |
-| `valueSeries.failedReads` | 価値再構成で読めなかった断面数（健全なら `0`） |
-| `violations` | 事後ルール検査（fee 上限超過等）の違反 |
+| `agents[].includedTxCount` / `revertCount` | number of included / reverted txs |
+| `agents[].stderrTail` | tail of the agent process's stderr (for crash diagnosis) |
+| `valueSeries.failedReads` | number of cross-sections that could not be read during value reconstruction (`0` if healthy) |
+| `violations` | violations from the post-run rule checks (fee limit overruns, etc.) |
 
-## 清算の帰属（stress run）
+## Liquidation Attribution (stress runs)
 
-清算の帰属は専用ツールではなく、`events.jsonl` の `stress_liquidation` と各 agent の `agents/<id>.jsonl` の `liquidationCall`(rawTx) を突き合わせて解析する（jsonl を直接読む）。詳細は [市場ストレスイベント](stress-events.md)。
+Liquidation attribution is not done by a dedicated tool; instead, cross-reference `stress_liquidation` in `events.jsonl` with each agent's `liquidationCall` (rawTx) in `agents/<id>.jsonl` (read the jsonl directly). See [Market Stress Events](stress-events.md) for details.

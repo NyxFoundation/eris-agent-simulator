@@ -14,7 +14,7 @@ import { anvilChain, MNEMONIC, RPC_URL, ACCOUNT_INDEX } from "./config.js";
 
 export const transport = http(RPC_URL, { timeout: 120_000, retryCount: 2 });
 
-// mnemonic から各ロールのアカウントを導出
+// Derive an account for each role from the mnemonic
 export const accounts = {
   deployer: mnemonicToAccount(MNEMONIC, {
     addressIndex: ACCOUNT_INDEX.deployer,
@@ -28,7 +28,7 @@ export const publicClient: PublicClient = createPublicClient({
   transport,
 });
 
-// anvil チートコード (impersonate / setBalance / mine / snapshot ...)
+// anvil cheatcodes (impersonate / setBalance / mine / snapshot ...)
 export const testClient = createTestClient({
   chain: anvilChain,
   mode: "anvil",

@@ -1,5 +1,5 @@
-// Aave V3 liquidationCall の raw tx builder(GitHub #1)。
-// Pool/トークンは src/constants.ts(Arbitrum)を参照。
+// Raw tx builder for Aave V3 liquidationCall (GitHub #1).
+// Pool/tokens are referenced from src/constants.ts (Arbitrum).
 import { encodeFunctionData } from "viem";
 import { AAVE } from "@eris/sdk/constants.js";
 
@@ -22,9 +22,9 @@ const liquidationAbi = [
 ] as const;
 
 /**
- * liquidationCall を 1 tx 分組み立てる。
- * debtToCover に uint256.max を渡すと Aave 側が close factor(最大 50% など)で上限クランプする。
- * receiveAToken=false で原資産(WETH)を受け取り、別途 swap で USDC 化できる。
+ * Build one tx for liquidationCall.
+ * Passing uint256.max as debtToCover makes Aave clamp it to the close factor (e.g. up to 50%).
+ * With receiveAToken=false you receive the underlying asset (WETH), which you can later swap to USDC.
  */
 export function buildLiquidationCall(
   collateralAsset: string,

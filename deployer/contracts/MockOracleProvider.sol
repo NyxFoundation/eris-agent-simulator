@@ -4,13 +4,13 @@ pragma solidity ^0.8.20;
 import {IOracleProvider, OracleUtils} from "./interfaces/IGmxOracle.sol";
 
 /// @title MockOracleProvider
-/// @notice GMX v2 の IOracleProvider 実装。価格をオンチェーンに保持し、検証者が任意の値に
-///         書き換えられる「制御可能オラクル」。anvil 上で DataStore に登録して使う。
-/// @dev    getOraclePrice は data 引数を無視し、setPrice で保存された値を返す。
-///         timestamp は block.timestamp を返すため鮮度チェックは常に通過する。
+/// @notice A GMX v2 IOracleProvider implementation. A "controllable oracle" that holds prices
+///         on-chain, which the verifier can rewrite to any value. Registered in DataStore on anvil.
+/// @dev    getOraclePrice ignores the data argument and returns the value stored via setPrice.
+///         timestamp returns block.timestamp, so the freshness check always passes.
 contract MockOracleProvider is IOracleProvider {
     struct Price {
-        uint256 min; // GMX スケール: 実価格(USD) * 10^(30 - tokenDecimals)
+        uint256 min; // GMX scale: real price(USD) * 10^(30 - tokenDecimals)
         uint256 max;
         bool set;
     }
@@ -19,14 +19,14 @@ contract MockOracleProvider is IOracleProvider {
 
     event PriceSet(address indexed token, uint256 min, uint256 max);
 
-    /// @notice トークン価格を設定 (min == max でスプレッド無し)。
+    /// @notice Set a token price (min == max means no spread).
     function setPrice(address token, uint256 min, uint256 max) external {
         require(min <= max, "min>max");
         prices[token] = Price({min: min, max: max, set: true});
         emit PriceSet(token, min, max);
     }
 
-    /// @notice 単一価格を設定するショートカット (min == max)。
+    /// @notice Shortcut to set a single price (min == max).
     function setPrice(address token, uint256 price) external {
         prices[token] = Price({min: price, max: price, set: true});
         emit PriceSet(token, price, price);

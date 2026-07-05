@@ -1,7 +1,7 @@
-// 環境(core)側の設定レイヤ（ADR 0015）。
-//   - SimConfig / loadConfig は sdk（両プロセス共有の契約）から re-export
-//   - stress/vuln イベントのスケジュール定義は環境専用なので RealtimeConfig として拡張する
-//   - agent ロスター（AgentSpec の検証・wallet 解決）は環境の仕事なのでここに置く
+// Environment (core) side config layer (ADR 0015).
+//   - SimConfig / loadConfig are re-exported from sdk (the contract shared by both processes)
+//   - stress/vuln event schedule definitions are environment-only, so extend them as RealtimeConfig
+//   - the agent roster (AgentSpec validation, wallet resolution) is the environment's job, so it lives here
 import { readFileSync, existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { keccak256, stringToBytes, type Hex } from "viem";
@@ -13,14 +13,14 @@ import type { VulnEventConfig } from "./realtime/vulnEvents.js";
 export { loadConfig, unitSuffixFor };
 export type { SimConfig };
 
-// 環境デーモンだけが読む設定（stress/vuln イベント定義）を SimConfig に重ねた型。
-// SimContext.config は SimConfig のままなので adapter / agent ランタイムへは露出しない。
+// A type layering config read only by the environment daemon (stress/vuln event definitions) onto SimConfig.
+// SimContext.config stays SimConfig, so this is not exposed to the adapters / agent runtime.
 export type RealtimeConfig = SimConfig & {
-  // 市場ストレスイベント(ADR 0009)。OU の base price に重ねる決定論オーバーレイ。
-  // ERIS_STRESS_EVENTS の JSON 配列(レンジ指定)で spike/crash を与える。空(既定)なら従来 run と一致。
+  // Market stress events (ADR 0009). A deterministic overlay applied on top of the OU base price.
+  // A JSON array (range spec) in ERIS_STRESS_EVENTS supplies spike/crash. Empty (default) matches a normal run.
   stressEvents: StressEventConfig[];
-  // 脆弱性発生イベント(ADR 0014)。SEED 由来で N 個の新規プール(正直/rigged 混在)を run 中に
-  // deploy・資金供給する。ERIS_VULN_EVENTS の JSON 配列(レンジ指定)。空(既定)なら従来 run と一致。
+  // Vulnerability injection events (ADR 0014). Deploys and funds N new pools (mix of honest/rigged)
+  // during the run, derived from SEED. A JSON array (range spec) in ERIS_VULN_EVENTS. Empty (default) matches a normal run.
   vulnEvents: VulnEventConfig[];
 };
 
@@ -38,7 +38,7 @@ const SUPPORTED_AGENT_WALLETS = [...NAMED_AGENT_WALLETS, "AUTO"] as const;
 export function loadAgents(path: string): AgentSpec[] {
   if (!existsSync(path)) return defaultAgents();
   const text = readFileSync(path, "utf8");
-  // ADR 0013: ロスターは JSON / YAML どちらも可（拡張子で判定）。
+  // ADR 0013: the roster can be either JSON or YAML (decided by extension).
   const parsed =
     path.endsWith(".yaml") || path.endsWith(".yml")
       ? parseYaml(text)
@@ -77,7 +77,7 @@ function deriveAutoPrivateKey(seed: number, agentId: string): Hex {
   return keccak256(stringToBytes(`auto-wallet:${seed}:${agentId}`));
 }
 
-// ディレクトリ規約（ADR 0015 §6）: command 省略時は id が <agentsDir>/<id>/ を指す。
+// Directory convention (ADR 0015 §6): when command is omitted, id points to <agentsDir>/<id>/.
 function defaultAgents(): AgentSpec[] {
   return validateAgentsFile(
     {
@@ -110,14 +110,14 @@ export function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
     if (seenIds.has(agent.id))
       throw new Error(`${path} contains duplicate agent id: ${agent.id}`);
     seenIds.add(agent.id);
-    // ADR 0015 §6: dir は実体ディレクトリ名の override（同一戦略の複数体運用）。省略時は id。
+    // ADR 0015 §6: dir overrides the actual directory name (running multiple instances of one strategy). Defaults to id when omitted.
     if (
       agent.dir !== undefined &&
       (typeof agent.dir !== "string" || agent.dir.trim() === "")
     )
       throw new Error(`${label}.dir must be a non-empty string when present`);
-    // ADR 0015 §6: command/args は省略可（規約解決 = <agentsDir>/<id>/ を runtime/bot.ts が駆動）。
-    // 明示 command は完全自前 agent（他言語等）の override として残す。
+    // ADR 0015 §6: command/args are optional (convention resolution = runtime/bot.ts drives <agentsDir>/<id>/).
+    // An explicit command remains as an override for a fully self-contained agent (other languages, etc.).
     if (
       agent.command !== undefined &&
       (typeof agent.command !== "string" || agent.command.trim() === "")

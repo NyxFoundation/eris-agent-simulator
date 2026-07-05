@@ -15,7 +15,7 @@ import {
 const dep = accounts.deployer;
 const c = getProto<{ usdcDaiPool: Address }>("curve");
 
-// seed の coins 順: index0 = USDC(6d), index1 = DAI(18d)
+// Seed coin order: index0 = USDC(6d), index1 = DAI(18d)
 describe.skipIf(!c)("Curve StableSwap-NG", () => {
   const pool = () => c!.usdcDaiPool;
   const poolAbi = curveAbi("CurveStableSwapNG");
@@ -24,8 +24,8 @@ describe.skipIf(!c)("Curve StableSwap-NG", () => {
 
   const DX = 1_000n * 10n ** 6n; // 1000 USDC
 
-  // A: 定量 ----------------------------------------------------------------
-  it("get_dy が ~1:1 帯 (1000 USDC → 990〜1000 DAI)", async () => {
+  // A: quantitative --------------------------------------------------------
+  it("get_dy stays in the ~1:1 band (1000 USDC -> 990-1000 DAI)", async () => {
     const dy = (await publicClient.readContract({
       address: pool(),
       abi: poolAbi,
@@ -36,7 +36,7 @@ describe.skipIf(!c)("Curve StableSwap-NG", () => {
     expect(dy).toBeLessThanOrEqual(1_000n * 10n ** 18n);
   });
 
-  it("実 exchange 出力が get_dy と ±0.1% 一致", async () => {
+  it("actual exchange output matches get_dy within +/-0.1%", async () => {
     const dy = (await publicClient.readContract({
       address: pool(),
       abi: poolAbi,
@@ -56,25 +56,25 @@ describe.skipIf(!c)("Curve StableSwap-NG", () => {
     await waitTx(h);
     const gained = (await balanceOf(dai(), dep.address)) - before;
     expect(gained).toBeGreaterThan(0n);
-    expectApprox(gained, dy, 10, "exchange 出力 vs get_dy");
+    expectApprox(gained, dy, 10, "exchange output vs get_dy");
   });
 
-  // C: ネガティブ ----------------------------------------------------------
-  it("過大な min_dy の exchange は revert する", async () => {
+  // C: negative ------------------------------------------------------------
+  it("exchange with an oversized min_dy reverts", async () => {
     await expectRevert(
       publicClient.simulateContract({
         address: pool(),
         abi: poolAbi,
         functionName: "exchange",
-        args: [0n, 1n, DX, 10_000n * 10n ** 18n, dep.address], // 達成不可能
+        args: [0n, 1n, DX, 10_000n * 10n ** 18n, dep.address], // unreachable
         account: dep,
       }),
-      "exchange(過大 min_dy)",
+      "exchange(oversized min_dy)",
     );
   });
 
-  // B: ライフサイクル (add → remove) --------------------------------------
-  it("add_liquidity で LP 増、remove_liquidity_one_coin で USDC 戻る", async () => {
+  // B: lifecycle (add -> remove) -------------------------------------------
+  it("add_liquidity mints LP and remove_liquidity_one_coin returns USDC", async () => {
     const usdcAmt = 10_000n * 10n ** 6n;
     const daiAmt = 10_000n * 10n ** 18n;
     await approve(usdc(), pool(), usdcAmt);
@@ -107,7 +107,7 @@ describe.skipIf(!c)("Curve StableSwap-NG", () => {
     expect(await balanceOf(usdc(), dep.address)).toBeGreaterThan(usdcBefore);
   });
 
-  it("get_virtual_price が ~1e18", async () => {
+  it("get_virtual_price is ~1e18", async () => {
     const vp = (await publicClient.readContract({
       address: pool(),
       abi: poolAbi,

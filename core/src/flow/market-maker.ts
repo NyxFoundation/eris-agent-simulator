@@ -1,18 +1,19 @@
 /**
- * market-maker: 既定の orderflow bot（独立プロセス）。
+ * market-maker: the default orderflow bot (independent process).
  *
- * coordinator から毎ラウンド FlowContext(JSON 1 行)を stdin で受け取り、
- * 自前の seeded RNG で uninformed ノイズ + informed(価格を fair に寄せる)注文を生成し、
- * FlowOrder[] を stdout に 1 行で返す。
+ * Receives a FlowContext (one JSON line) from the coordinator each round on stdin,
+ * generates uninformed noise + informed (pull price toward fair) orders with its own
+ * seeded RNG, and returns FlowOrder[] as one line on stdout.
  *
- * 環境変数:
- *   ERIS_FLOW_SEED  決定論 RNG のシード（coordinator が seed 由来で渡す）
+ * Environment variables:
+ *   ERIS_FLOW_SEED  seed for the deterministic RNG (coordinator derives it from the run seed)
  *
- * 設計:
- *   - RPC には触れない（agent と同じ分離原則）。必要な市場状態はすべて FlowContext で渡される。
- *   - Rng は起動時に 1 度だけ生成し、ラウンドが届くたびに決定論的に消費する。
- *     同一 seed → 同一 flow（strategy-evolve のマルチシード評価が依存する固定市場）。
- *   - 生成順序は coordinator が渡す protocols 配列の順（= enabledAdapters 順）に従う。
+ * Design:
+ *   - Never touches the RPC (same separation principle as agents). All needed market state
+ *     is passed in via the FlowContext.
+ *   - The Rng is created once at startup and consumed deterministically as each round arrives.
+ *     Same seed -> same flow (the fixed market that strategy-evolve's multi-seed evaluation relies on).
+ *   - Generation order follows the protocols array passed by the coordinator (= enabledAdapters order).
  */
 import { createInterface } from "node:readline";
 import { Rng } from "@eris/sdk/rng.js";
@@ -39,7 +40,7 @@ rl.on("line", (line) => {
     process.stderr.write(
       `flow bot error: ${error instanceof Error ? error.message : String(error)}\n`,
     );
-    // パース失敗時も RNG ストリームを崩さないよう、空注文だけ返して継続。
+    // Even on parse failure, return just empty orders and continue so the RNG stream isn't disturbed.
     process.stdout.write("[]\n");
   }
 });

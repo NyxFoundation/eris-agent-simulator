@@ -1,15 +1,15 @@
 /**
- * adaptive-arb: 競争シグナル（ADR 0011）で「勝てる最小限を、機会価値を超えない範囲で」入札する arb。
+ * adaptive-arb: an arb that uses competition signals (ADR 0011) to bid "the minimum needed to win, without exceeding the opportunity value".
  *
- * arb-bot との違い: arb-bot は利益の固定割合(BID_PROFIT_FRACTION)を機械的に積む（過剰/過少になりうる）。
- * adaptive-arb は obs.competition を見て:
- *   - 競合の最高入札(maxCompetitorPriorityFeeWei)を僅かに上回るだけ積む（勝てる最小限）
- *   - ただし機会価値の上限(profit×CEIL_FRACTION/gas)を超えない（過剰入札を罰せられないようにする）
- *   - 直近で front-run されている(recentRevertRate 高)なら margin を上げる
- * これにより「積まなすぎ→先約定され revert」も「積みすぎ→fee 浪費」も避ける（執行スキル）。
+ * Difference from arb-bot: arb-bot mechanically stacks a fixed fraction of profit (BID_PROFIT_FRACTION), which can be too much or too little.
+ * adaptive-arb looks at obs.competition and:
+ *   - bids just slightly above the top competitor bid (maxCompetitorPriorityFeeWei) — the minimum needed to win
+ *   - but never exceeds the opportunity-value ceiling (profit * CEIL_FRACTION / gas), so it can't be punished for overbidding
+ *   - raises the margin when it has been front-run recently (high recentRevertRate)
+ * This avoids both "bid too little -> get filled ahead of and revert" and "bid too much -> waste fees" (execution skill).
  *
- * 環境変数:
- *   ADAPT_CEIL_FRACTION  機会価値のうち入札上限に充てる割合 (default 0.8。残りを net 利益に残す)
+ * Env vars:
+ *   ADAPT_CEIL_FRACTION  fraction of the opportunity value allocated to the bid ceiling (default 0.8; the rest is kept as net profit)
  */
 import type { AgentAction, AgentContext, AgentObservation } from "@eris/sdk";
 
@@ -40,7 +40,7 @@ export function decide(
   };
   const fair = obs.fairPriceUsdcPerWeth;
   if (!Number.isFinite(fair) || fair <= 0) return noop("invalid fair");
-  // 3 venue から最大乖離 venue を選ぶ（arb-bot と同じ機会選択）。
+  // Pick the venue with the largest deviation among the 3 venues (same opportunity selection as arb-bot).
   const venues: Array<{
     swapType: "swap" | "balancerSwap" | "curveSwap";
     price: number;
@@ -77,7 +77,7 @@ export function decide(
   );
   const amountIn = (max * BigInt(sizeBps)) / 10_000n;
 
-  // 機会価値（per gas）の上限 = profit × CEIL_FRACTION / gas。これを超えて積むと net を削る。
+  // Opportunity value ceiling (per gas) = profit * CEIL_FRACTION / gas. Bidding above this eats into net.
   const sizeUsdc =
     tokenIn === "USDC"
       ? Number(amountIn) / 1e6
@@ -88,23 +88,23 @@ export function decide(
   const ceilNum = BigInt(Math.max(0, Math.floor(CEIL_FRACTION * 10_000)));
   const ceilingPerGas = (profitWei * ceilNum) / 10_000n / GAS_UNITS_ESTIMATE;
 
-  // 競争シグナル: 競合の最高入札を僅かに上回る（勝てる最小限）。front-run されているなら margin↑。
+  // Competition signal: bid just slightly above the top competitor (the minimum needed to win). Raise margin if being front-run.
   const comp = obs.competition;
   const competitorMax = BigInt(comp?.maxCompetitorPriorityFeeWei ?? "0");
   const revertRate = comp?.recentRevertRate ?? 0;
   signals.competitorMaxGwei = Number(competitorMax / ONE_GWEI);
   signals.revertRate = revertRate;
   signals.lastTxIndex = comp?.lastTxIndex ?? -1;
-  // margin: 平常 20%、先約定が多い(revert>0.4)なら 60% 上乗せして確実に前へ。最低 1 gwei。
+  // margin: 20% normally, 60% when front-running is frequent (revert>0.4) to reliably get ahead. Minimum 1 gwei.
   const marginFrac = revertRate > 0.4 ? 60n : 20n;
   const margin =
     (competitorMax * marginFrac) / 100n > ONE_GWEI
       ? (competitorMax * marginFrac) / 100n
       : ONE_GWEI;
   let bid = competitorMax + margin;
-  // 機会価値の上限で頭打ち（過剰入札を避ける）。
+  // Cap at the opportunity-value ceiling (avoid overbidding).
   if (bid > ceilingPerGas) bid = ceilingPerGas;
-  // floor/上限 clamp。
+  // clamp to floor/ceiling.
   const minBid = BigInt(obs.limits.defaultPriorityFeePerGasWei);
   const maxBid = BigInt(obs.limits.maxPriorityFeePerGasWei);
   if (bid < minBid) bid = minBid;
