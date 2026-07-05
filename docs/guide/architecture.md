@@ -44,7 +44,7 @@ mempool で競う公平な土俵を作る。市場を動かすのは環境側の
 ## agent の書き方（1 agent = 1 ディレクトリ。ADR 0015）
 
 `example/agents/<id>/` に次のいずれか 1 枚を置き、ロスターに id を足すだけで agent が増える。
-spawn は一律 `runtime/bot.ts` が担う:
+spawn は一律 `runtime/bot.ts` が担う（手順つきのチュートリアルは[戦略の書き方](writing-agents.md)）:
 
 | 中身 | 種別 | 動き方 |
 |---|---|---|
