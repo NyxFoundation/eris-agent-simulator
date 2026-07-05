@@ -53,7 +53,8 @@ cd ..
      --local-deploy \
      --seed 1 --blocks 24 --seconds 70 \
      --protocols uniswap,balancer,curve
-   # ロスターは config/local.yaml の inline agents（--agents <roster.yaml|json> で差し替え可）
+   # ロスターは config/local.yaml の inline agents（差し替えは YAML を編集。inline agents が
+   # ある設定では --agents は効かない = inline 優先。backtest の --agents は常に有効）
    # USDC-only 配布（funding.wethWei: "0"）やマルチアセット（flow.baseMax）等も config/local.yaml で
    ```
 
@@ -64,7 +65,7 @@ cd ..
 | CLI フラグ | config キー | 説明 |
 |---|---|---|
 | `--local-deploy` | `run.localDeploy` | ローカルデプロイ（非fork）モードを有効化。**必須** |
-| `--agents <path>` | `run.agentsConfig` | ロスターファイル（YAML/JSON）。config に inline `agents:` でも可 |
+| `--agents <path>` | `run.agentsConfig` | ロスターファイル（YAML/JSON）。**config に inline `agents:` があるとそちらが優先**され、このフラグは効かない |
 | `--seed` | `run.seed` | 市場条件のラベル（価格パス再現用） |
 | `--blocks` | `run.blocks` | run 長（ブロック数） |
 | `--seconds` | `run.seconds` | 実時間の上限（24 ブロック ≒ 48 秒なので 70 程度を確保） |
@@ -78,7 +79,7 @@ cd ..
 
 - **接続できない**: deployer の `npm run deploy -- --keep-fresh` が起動中か（`--exit` を付けていないか）確認する。
 - **アドレス不一致 / コントラクトが無い**: deploy 後に `npm run gen:local-constants` を再実行したか確認する。
-- **run が価格窓に到達せず早期終了する**: `--seconds`（`ERIS_RUN_SECONDS`）を十分大きくする。
+- **run が価格窓に到達せず早期終了する**: `--seconds`（`run.seconds`）を十分大きくする。
 
 ## Tips
 

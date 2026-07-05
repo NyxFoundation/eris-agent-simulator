@@ -49,7 +49,7 @@ spawn は一律 `runtime/bot.ts` が担う:
 | 中身 | 種別 | 動き方 |
 |---|---|---|
 | `agent.ts`（`decide(obs, ctx)` export） | ルール戦略 | bot.ts が read→decide→send のループで駆動（`export const config = { intervalMs }` で間隔指定可） |
-| `agent.ts`（`run(ctx)` export） | 自走型 | bot.ts はループせず ctx（clients/observe/submit/log）を渡して委譲（例: liquidator） |
+| `agent.ts`（`run(ctx)` export） | 自走型 | bot.ts はループせず ctx（clients / latestObservation / onObservation / submit / log）を渡して委譲（例: liquidator） |
 | `prompt.md`（frontmatter: name/description 必須） | プロンプト型 | bot.ts が observation を添えて毎判断 LLM に action を出させる（[LLM エージェント](llm-agents.md)） |
 
 runtime/send.ts は mempool 活動（`kind:"mempool"`: submitted / submit_failed / rejected）を

@@ -2,7 +2,7 @@
 
 # プロトコルとアクション
 
-各アダプタ（`sdk/src/protocols/<name>.ts`）は parse / validation・calldata 構築・観測・orderflow・PnL を実装する。有効プロトコルは config の `run.protocols`（YAML 配列）か CLI フラグ `--protocols uniswap,balancer,curve,aave,gmx` で run ごとに選ぶ。エージェントの JSON アクション:
+各アダプタ（`sdk/src/protocols/<name>.ts`）は parse / validate・calldata 構築（buildTxs）・観測（readState / observe）・PnL 評価（valueUsdc）・setup フックを実装する（orderflow の生成は環境側 `core/src/flow/` の仕事）。有効プロトコルは config の `run.protocols`（YAML 配列）か CLI フラグ `--protocols uniswap,balancer,curve,aave,gmx` で run ごとに選ぶ。エージェントの JSON アクション:
 
 | プロトコル | アクション | venue（fork = Arbitrum / local = deployer デプロイ） |
 |---|---|---|
@@ -12,9 +12,11 @@
 | Aave v3 | `aaveSupply`, `aaveWithdraw`, `aaveBorrow`, `aaveRepay` | native USDC / WETH リザーブ |
 | GMX v2 | `gmxIncrease`, `gmxDecrease` | ETH/USD perp market |
 
+表は WETH 既定の market。ローカルデプロイで WBTC leg（`MARKET_LEGS`）がデプロイされていれば、同じアクションに `base: "WBTC"` を付与して WBTC/USDC spot・GMX WBTC market・Aave WBTC reserve も扱える（マルチアセット。ADR 0013）。
+
 加えてプロトコル非依存の `noop` / `bundle`（複数の bundle 可能な leaf を 1 tx に）/ `rawTx` / `rawBundle` がある。
 
-> アクションは JSON で表現する。`bundle` は bundle 可能な leaf をまとめて 1 tx で送る（GMX は非同期のため単独のみ）。`rawTx` / `rawBundle` で生 calldata も送れる。1 ラウンドあたりの取引量は config の `limits`（`agentWethWei` / `agentUsdcUnits` / `agentBase`）で上限が掛かる。
+> アクションは JSON で表現する。`bundle` は bundle 可能な leaf をまとめて 1 tx で送る（GMX は非同期のため単独のみ）。`rawTx` / `rawBundle` で生 calldata も送れる。1 ラウンドあたりの取引量上限（config の `limits`: `agentWethWei` / `agentUsdcUnits` / `agentBase`）は **semantic action の事前検証**として掛かる — `rawTx` / `rawBundle` は calldata を解釈しないため金額上限の対象外（priority fee と bundle 件数のみ検証し、fee 違反は事後検出 = `postRunCheck` で `violations` に記録）。
 
 ## ステーブルコイン会計
 

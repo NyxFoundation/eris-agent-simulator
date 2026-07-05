@@ -82,7 +82,8 @@ cd deployer && npm run deploy -- --keep-fresh
 npm run gen:local-constants
 npm run sim:realtime -- --local-deploy \
   --seed 1 --blocks 24 --seconds 70 --protocols uniswap,balancer,curve
-# ロスターは config/local.yaml の inline agents（--agents <roster.yaml> で差し替え可）
+# ロスターは config/local.yaml の inline agents（差し替えは YAML を編集する。
+# backtest は --agents <roster.yaml> での差し替えに対応）
 ```
 
 > `--local-deploy` フラグ（または config の `run.localDeploy: true`）でローカルデプロイモードになる。CLI エントリが起動時にこれを検出して内部で `ERIS_LOCAL_DEPLOY=1` を立て、`sdk/src/constants.ts` がローカルデプロイ済アドレス（WETH/USDC/WBTC 等）を overlay する（env を手で渡す必要はない）。
