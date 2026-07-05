@@ -120,6 +120,8 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 runtime/send.ts が同じファイルに mempool 活動（`kind:"mempool"`: submitted / submit_failed /
 rejected）を自己申告で追記する（coordinator が submitted を数えられなくなる穴を塞ぐ。ADR 0006 §5）。
 出力先は coordinator が渡す env `ERIS_RUN_DIR` / `ERIS_AGENT_ID` で決まる。run 後の診断はこれを一次情報にする。
+prompt 型は `ERIS_PROMPT_LOG_CALLS: "1"`（ロスターの env）で LLM との生の対話（system 全文・送信
+messages・生応答・エラー）を `agents/<agentId>.llm.jsonl` に残せる（opt-in。プロンプト調整の一次情報）。
 
 ## spot EC2 で重い run を回す（ローカル逼迫の回避。spot skills）
 

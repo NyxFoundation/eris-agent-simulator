@@ -26,15 +26,17 @@ export type { AgentLogEntry };
 
 export type AgentLog = (entry: AgentLogEntry) => void;
 
-// runs/<runDir>/agents/<agentId>.jsonl への低レベル追記。
-// 行動ログ（createAgentLog）と mempool 自己申告（send.ts）が同じファイルに書くための共用実装。
+// runs/<runDir>/agents/<agentId><suffix>.jsonl への低レベル追記。
+// 行動ログ（createAgentLog）と mempool 自己申告（send.ts）が同じファイル（suffix なし）に書き、
+// LLM 対話ログ（bot.ts の ERIS_PROMPT_LOG_CALLS）が別ファイル（suffix ".llm"）に書くための共用実装。
 export function createJsonlAppender(
   runDir: string | undefined,
   agentId: string,
+  suffix = "",
 ): (record: Record<string, unknown>) => void {
   if (!runDir) return () => {}; // coordinator 配下でなければ何もしない
   const dir = join(runDir, "agents");
-  const path = join(dir, `${agentId}.jsonl`);
+  const path = join(dir, `${agentId}${suffix}.jsonl`);
   let ready = false;
   return (record) => {
     try {

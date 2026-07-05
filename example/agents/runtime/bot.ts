@@ -14,6 +14,9 @@
  *                                   自己改訂する（既定 0 = off。改訂版は runs/<id>/agents/
  *                                   <agentId>.prompt.v<K>.md に保存し、以後のサイクルで使用）
  *   ERIS_PROMPT_REVISE_PERSIST=1    改訂を agent ディレクトリの prompt.md にも書き戻す
+ *   ERIS_PROMPT_LOG_CALLS=1         LLM との生の対話（system / 送信 messages / 生応答 / エラー）を
+ *                                   runs/<id>/agents/<agentId>.llm.jsonl に残す（プロンプト調整用の
+ *                                   opt-in デバッグログ）
  *
  * 環境変数（環境が渡す。ADR 0006 の契約は不変）:
  *   ERIS_AGENT_ID / ERIS_AGENT_DIR / ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL /
@@ -41,7 +44,7 @@ import type {
   BalanceSnapshot,
   ProtocolId,
 } from "@eris/sdk/types.js";
-import { createAgentLog } from "./agentLog.js";
+import { createAgentLog, createJsonlAppender } from "./agentLog.js";
 import { callLlm, type LlmMessage } from "./llm.js";
 import {
   buildRevisionSystem,
@@ -333,26 +336,72 @@ async function main(): Promise<void> {
     let revision = 0;
     let initialValueUsdc: number | null = null;
 
+    // ---- LLM 対話ログ（ERIS_PROMPT_LOG_CALLS=1 の opt-in。ADR 0015 §4 の診断補助）----
+    // 「LLM が観測のどこをどう読んで何を返したか」を run 後に追えるよう、生の対話を
+    // runs/<id>/agents/<agentId>.llm.jsonl に残す。system は大きく判断間で同一なので、
+    // 初回と自己改訂の直後だけ kind:"llm_system" で全文を書き、毎呼び出しの kind:"llm_call"
+    // は revision 番号で参照する（validate 再試行のやり取りは messages に含まれて残る）。
+    const llmCallLog =
+      process.env.ERIS_PROMPT_LOG_CALLS === "1"
+        ? createJsonlAppender(runDir, agentId, ".llm")
+        : null;
+    const logSystem = (): void =>
+      llmCallLog?.({ kind: "llm_system", revision, system });
+    const loggedCallLlm = async (
+      meta: Record<string, unknown>,
+      req: Parameters<typeof callLlm>[0],
+    ): Promise<string> => {
+      if (!llmCallLog) return callLlm(req);
+      try {
+        const response = await callLlm(req);
+        llmCallLog({
+          kind: "llm_call",
+          ...meta,
+          revision,
+          model: req.model,
+          messages: req.messages,
+          response,
+        });
+        return response;
+      } catch (error) {
+        llmCallLog({
+          kind: "llm_call",
+          ...meta,
+          revision,
+          model: req.model,
+          messages: req.messages,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    };
+    logSystem();
+
     // prompt 改訂（自己改善）。判断サイクルと同じ cycling ロック内で走らせ、判断と競合させない。
     const revisePrompt = async (obs: AgentObservation): Promise<void> => {
       try {
-        const text = await callLlm({
-          model,
-          system: buildRevisionSystem(promptAgent),
-          messages: [
-            {
-              role: "user",
-              content: buildRevisionUser(body, recent.slice(-16), {
-                cycles: decidedCycles,
-                initialValueUsdc,
-                currentValueUsdc: obs.inventory.valueUsdc,
-                recentRevertRate: obs.competition?.recentRevertRate,
-                recentSampleSize: obs.competition?.recentSampleSize,
-              }),
-            },
-          ],
-          json: false, // 改訂は自由テキスト（markdown 本文）
-        });
+        const reviseSystem = buildRevisionSystem(promptAgent);
+        const text = await loggedCallLlm(
+          // 改訂の system は判断用と別物なのでレコードに直接含める。
+          { purpose: "revise", round: obs.round, system: reviseSystem },
+          {
+            model,
+            system: reviseSystem,
+            messages: [
+              {
+                role: "user",
+                content: buildRevisionUser(body, recent.slice(-16), {
+                  cycles: decidedCycles,
+                  initialValueUsdc,
+                  currentValueUsdc: obs.inventory.valueUsdc,
+                  recentRevertRate: obs.competition?.recentRevertRate,
+                  recentSampleSize: obs.competition?.recentSampleSize,
+                }),
+              },
+            ],
+            json: false, // 改訂は自由テキスト（markdown 本文）
+          },
+        );
         const next = stripFences(text).trim();
         // 壊れた改訂（空・極端な長さ）は捨てて現行 prompt を維持する（fail-closed）。
         if (next.length < 40 || next.length > 20_000)
@@ -360,6 +409,7 @@ async function main(): Promise<void> {
         revision++;
         body = next;
         system = rebuildSystem();
+        logSystem(); // 改訂後の system 全文を対話ログにも版付きで残す
         agentLog({
           round: obs.round,
           reason: `prompt revised v${revision}`,
@@ -406,7 +456,10 @@ async function main(): Promise<void> {
         for (let attempt = 1; attempt <= LLM_MAX_ATTEMPTS; attempt++) {
           let text: string;
           try {
-            text = await callLlm({ model, system, messages, jsonSchema });
+            text = await loggedCallLlm(
+              { purpose: "decision", round: obs.round, attempt },
+              { model, system, messages, jsonSchema },
+            );
           } catch (error) {
             lastError = error instanceof Error ? error.message : String(error);
             break; // 呼び出し自体の失敗は再試行せずこのサイクルを見送る
