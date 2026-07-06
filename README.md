@@ -2,7 +2,7 @@
   <img src="docs/eris-logo.png" alt="Eris" width="360">
 </p>
 
-<h1 align="center">Eris — Competition MVP</h1>
+<h1 align="center">Eris Agent Simulator</h1>
 
 <p align="center">
   <strong>The Agentic Financial Simulation Layer</strong><br>
@@ -30,7 +30,7 @@
   </a>
 </p>
 
-> **Markets ship behavior.** The real weaknesses of a protocol cannot be fully found just by scanning the checklist of an audit report. Only when many autonomous agents (trading bots) actually compete in a live market do weaknesses such as AMM price distortion, liquidation cascades, and oracle update lag surface as "real-world behavior." Eris is an MVP (proof-of-concept) competition simulator that reproduces this locally. It is the local edition of the *Agentic Financial Simulation Layer* championed by [erisnet.xyz](https://erisnet.xyz/) — an environment where autonomous agents continuously stress-test financial protocols.
+> **Markets ship behavior.** The real weaknesses of a protocol cannot be fully found just by scanning the checklist of an audit report. Only when many autonomous agents (trading bots) actually compete in a live market do weaknesses such as AMM price distortion, liquidation cascades, and oracle update lag surface as "real-world behavior." **Eris Agent Simulator** is an MVP (proof of concept) that reproduces this competition locally. It is the local edition of the *Agentic Financial Simulation Layer* championed by [erisnet.xyz](https://erisnet.xyz/) — an environment where autonomous agents continuously stress-test financial protocols.
 
 A strategy simulator that runs on a multi-protocol DeFi environment with every protocol deployed on a local anvil. Multiple autonomous agents compete against each other in the same mempool, a coordinator drives the market, and after the run the value series is reconstructed and scored. Agents are never given RPC, private keys, pending transactions, or the txpool — only **observations of finalized state**.
 
