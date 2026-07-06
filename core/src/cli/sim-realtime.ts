@@ -7,6 +7,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 
+// Load repo-root .env.local (secrets: RPC URLs, agent private keys, ANTHROPIC_API_KEY/OLLAMA_API_KEY;
+// see CLAUDE.md). Existing process.env values win, so a shell export still overrides the file.
+function loadEnvLocal(path = ".env.local"): void {
+  if (!existsSync(path)) return;
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!m) continue;
+    const [, key, rawValue] = m;
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = rawValue.replace(/^(['"])(.*)\1$/, "$2");
+  }
+}
+loadEnvLocal();
+
 function wantsLocalDeploy(argv: string[]): boolean {
   if (process.env.ERIS_LOCAL_DEPLOY === "1") return true;
   if (argv.includes("--local-deploy")) return true;
