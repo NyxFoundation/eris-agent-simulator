@@ -179,7 +179,8 @@ LLM 判断サイクルは Nous Research の Hermes 実装（Hermes-Function-Call
 `<schema>` と `validateAction` は sdk の action スキーマ（zod 化。§8 参照）という同一オブジェクトから
 導出するため、「LLM が教わったルール」と「実行時に強制されるルール」は構造的に一致する。
 レイテンシ/コストは `intervalMs` で調整する割り切り。旧 `src/llm/*` は新 runtime から依存せず、
-`agents/claude-llm/` 配下に引き取るか `_archive/` へ移す。
+`agents/claude-llm/` 配下に引き取るか `_archive/` へ移す
+（注: `_archive/` は 2026-07-06 に削除。内容は git 履歴のコミット `4a65a8f` までに温存）。
 
 ### 5. directShim / relay の廃止（ADR 0006 の一部改訂）
 
@@ -250,6 +251,7 @@ zod 化する（現行 `action.ts` は手書き検証。zod 4 の `z.toJSONSchem
     coordinator 側と spot AMI への影響はパス更新に限定される
 - 旧 `src/llm/*`（自己改善機構）が新 runtime から切り離される
   - → 破棄はせず `agents/claude-llm/` 配下または `_archive/` に温存。自己改善の再開時に再接続を判断する
+    （注: `_archive/` は 2026-07-06 に削除。復元は `git checkout 4a65a8f -- _archive`）
 
 ### Risks
 

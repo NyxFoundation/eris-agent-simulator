@@ -135,7 +135,7 @@ export type RecentAction = {
 // Self-improvement (prompt revision): every N decision cycles, attach recent actions/results and
 // have the LLM rewrite the prompt body itself (the improvement target = the prompt, matching ADR
 // 0015's unit of submission). The revision discipline distills the lessons of the old
-// self-improvement mechanism (_archive/llm/prompts.ts).
+// self-improvement mechanism (formerly _archive/llm/prompts.ts; removed, see git history).
 // ---------------------------------------------------------------------------
 
 export type RevisionStats = {
