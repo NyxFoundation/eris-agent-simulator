@@ -68,6 +68,12 @@ import {
   writePriceFeedStorageFor,
 } from "./priceFeed.js";
 import { reconstructValueSeries } from "./reconstruct.js";
+import {
+  NoArbMonitor,
+  noArbFindings,
+  STARTUP_FAIL_BPS,
+  STARTUP_WARN_BPS,
+} from "./noArb.js";
 import { EventSchedule } from "./events.js";
 import { VulnSchedule } from "./vulnEvents.js";
 import {
@@ -574,6 +580,35 @@ export async function runRealtimeSimulation(
       logger.event({ type: "prewarm_completed", blocks: config.prewarmBlocks });
     }
 
+    // ---- cross-venue no-arbitrage check at startup (phantom-spread guard; see noArb.ts) ----
+    // Calibrated pools must not offer a positive *executable* cross-venue round trip. Fail fast on
+    // gross breakage (mis-deploy) before agent processes launch; smaller positives are warned and
+    // left to the per-block persistent monitor.
+    {
+      const states = await Promise.all(
+        adapters.map((adapter) => adapter.readState(ctx, latestFairPrice)),
+      );
+      const stateById = new Map<ProtocolId, unknown>(
+        adapters.map((adapter, i) => [adapter.id, states[i]]),
+      );
+      const findings = noArbFindings(stateById, enabledIds);
+      logger.event({
+        type: "no_arb_startup",
+        warnBps: STARTUP_WARN_BPS,
+        failBps: STARTUP_FAIL_BPS,
+        findings,
+        warned: findings.filter((f) => f.profitBps > STARTUP_WARN_BPS),
+      });
+      const worst = findings[0];
+      if (worst && worst.profitBps > STARTUP_FAIL_BPS) {
+        throw new Error(
+          `no-arbitrage check failed at startup: executable ${worst.profitBps.toFixed(1)}bps ` +
+            `arb on ${worst.base} (buy ${worst.buyVenue} / sell ${worst.sellVenue}) exceeds ` +
+            `${STARTUP_FAIL_BPS}bps — venue calibration or pricing is broken (check deploy order/constants)`,
+        );
+      }
+    }
+
     // ---- launch agent processes (ADR 0015 §5: uniformly runtime/bot.ts; pass the private key and PriceFeed via env) ----
     for (const agent of agentRuntimes) {
       agent.process = new RealtimeAgentProcess(
@@ -767,6 +802,9 @@ export async function runRealtimeSimulation(
     // Keep each victim's latest debt (USD 8-decimals) for liquidation detection. Debt decreases only via a
     // liquidationCall (victims are passive) → emit stress_liquidation with the decrease as a liquidation signal.
     const victimLastDebt = new Map<string, bigint>();
+    // Cross-venue no-arbitrage monitor (phantom-spread guard; see noArb.ts). Persistent executable
+    // arb = structural pricing breakage; transient arb is the alpha agents are meant to capture.
+    const noArbMonitor = new NoArbMonitor();
 
     // End stress/vuln runs by block count (avoids the footgun where the time limit ERIS_RUN_SECONDS expires first
     // and the crash window / vuln window is never reached; ADR 0009 §4 / ADR 0014).
@@ -973,6 +1011,19 @@ export async function runRealtimeSimulation(
               adapters.map((adapter, i) => [adapter.id, states[i]]),
             );
             latestStateById = stateById;
+            for (const w of noArbMonitor.check(
+              noArbFindings(stateById, enabledIds),
+            )) {
+              logger.event({
+                type: "no_arb_persistent_warning",
+                blockNumber: bn,
+                base: w.base,
+                buyVenue: w.buyVenue,
+                sellVenue: w.sellVenue,
+                profitBps: w.profitBps,
+                consecutiveBlocks: w.consecutiveBlocks,
+              });
+            }
             const uni = stateById.get("uniswap") as
               { priceUsdcPerWeth?: number } | undefined;
             latestHistory.push({

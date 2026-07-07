@@ -232,13 +232,31 @@ export type UniswapObservation = {
   markets?: Record<string, UniswapMarketObservation>;
 };
 
-export type AmmObservation = {
+// Two-sided executable quote fields (balancer/curve). When set, priceUsdcPerWeth is the executable
+// mid = sqrt(sell*buy) from probing both directions, not the one-sided fee-inclusive sell quote.
+// A one-sided probe diverges from the executable mid when reserves are imbalanced (twocrypto's
+// dynamic fee widened the real bid-ask to ~128bps while a flat 30bps correction saw a phantom
+// cross-venue spread — the root cause of the WBTC all-agent bleed), so the effective per-side
+// cost is measured on-chain and carried in the observation.
+export type TwoSidedQuoteFields = {
+  // Executable base->quote price for a small probe (fee/impact included).
+  sellPriceUsdcPerWeth?: number;
+  // Executable quote->base price for the same notional (fee/impact included).
+  buyPriceUsdcPerWeth?: number;
+  // Effective per-side cost vs mid in bps (= sqrt(buy/sell)-1). Round-trip cost = 2x this.
+  effectiveHalfSpreadBps?: number;
+};
+
+export type AmmObservation = TwoSidedQuoteFields & {
   priceUsdcPerWeth: number;
   reserves?: { weth: string; usdc: string };
   // ADR 0013: non-WETH markets (priceUsdcPerWeth is that base/USD).
   markets?: Record<
     string,
-    { priceUsdcPerWeth: number; reserves?: { weth: string; usdc: string } }
+    TwoSidedQuoteFields & {
+      priceUsdcPerWeth: number;
+      reserves?: { weth: string; usdc: string };
+    }
   >;
 };
 

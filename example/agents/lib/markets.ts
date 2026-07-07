@@ -17,12 +17,21 @@ export type AgentProtocol = "uniswap" | "balancer" | "curve";
 export type AgentVenue = {
   protocol: AgentProtocol;
   swapType: "swap" | "balancerSwap" | "curveSwap";
-  // quote(USDC) per base. Normalized to a cross-venue-comparable mid (for balancer/curve the
-  // fee-inclusive quote has the fee added back; see the comment inside marketViews).
+  // quote(USDC) per base. Normalized to a cross-venue-comparable mid. balancer/curve carry a
+  // two-sided executable quote in the observation, whose mid is used directly; when the two-sided
+  // fields are absent (old observations) the fee-inclusive sell quote has 30bps added back (legacy).
   price: number;
-  // Trading fee (bps). Used for the round-trip profitability check of cross-venue arb. uniswap reads
-  // the pool fee (3000 pips = 30bps). balancer/curve have no fee in the observation, so default 30bps.
+  // Effective per-side cost vs mid (bps). Used for the round-trip profitability check of cross-venue
+  // arb (cost of a 2-leg trade = cheap.feeBps + rich.feeBps). uniswap reads the pool fee (3000 pips =
+  // 30bps). balancer/curve use the measured effectiveHalfSpreadBps (fee + impact at probe size; e.g.
+  // twocrypto's dynamic fee under imbalance), falling back to 30bps when absent. A flat 30bps here
+  // under-priced curve's real cost and made phantom spreads look profitable (WBTC all-agent bleed).
   feeBps: number;
+  // Executable one-sided prices (fee/impact included; two-sided venues only). sellPrice = what you
+  // get selling base; buyPrice = what you pay buying base. For precise edge math prefer
+  // sell/buy over mid±feeBps.
+  sellPrice?: number;
+  buyPrice?: number;
 };
 
 export type MarketView = {
@@ -45,23 +54,40 @@ const SWAP_TYPE: Record<AgentProtocol, AgentVenue["swapType"]> = {
   curve: "curveSwap",
 };
 
-function venuePrice(
+type VenueQuoteObs = {
+  price: number;
+  sellPrice?: number;
+  buyPrice?: number;
+  effectiveHalfSpreadBps?: number;
+};
+
+function venueQuote(
   obs: AgentObservation,
   base: string,
   protocol: AgentProtocol,
-): number | undefined {
+): VenueQuoteObs | undefined {
   const p = obs.protocols ?? {};
   if (protocol === "uniswap") {
-    if (base === "WETH") return p.uniswap?.pool?.priceUsdcPerWeth;
-    return p.uniswap?.markets?.[`${base}/${QUOTE}`]?.priceUsdcPerWeth;
+    const pool =
+      base === "WETH"
+        ? p.uniswap?.pool
+        : p.uniswap?.markets?.[`${base}/${QUOTE}`];
+    return pool ? { price: pool.priceUsdcPerWeth } : undefined;
   }
   const amm = protocol === "balancer" ? p.balancer : p.curve;
-  if (base === "WETH") return amm?.priceUsdcPerWeth;
-  return amm?.markets?.[`${base}/${QUOTE}`]?.priceUsdcPerWeth;
+  const slice = base === "WETH" ? amm : amm?.markets?.[`${base}/${QUOTE}`];
+  if (!slice) return undefined;
+  return {
+    price: slice.priceUsdcPerWeth,
+    sellPrice: slice.sellPriceUsdcPerWeth,
+    buyPrice: slice.buyPriceUsdcPerWeth,
+    effectiveHalfSpreadBps: slice.effectiveHalfSpreadBps,
+  };
 }
 
 // Venue trading fee (bps). uniswap: pool fee (pips, 3000=0.3%) -> /100 gives bps.
-// balancer/curve have no fee in the observation, so default 30bps (conservative).
+// balancer/curve: legacy fallback of 30bps, used only when the observation carries no
+// two-sided quote (the measured effectiveHalfSpreadBps takes precedence in marketViews).
 function venueFeeBps(
   obs: AgentObservation,
   base: string,
@@ -88,26 +114,37 @@ export function marketViews(obs: AgentObservation): MarketView[] {
     if (!(fair > 0)) continue;
     const venues: AgentVenue[] = [];
     for (const protocol of ["uniswap", "balancer", "curve"] as const) {
-      const price = venuePrice(obs, base, protocol);
-      if (typeof price === "number" && price > 0) {
-        const feeBps = venueFeeBps(obs, base, protocol);
-        // Unify the observed-price convention to mid. uniswap is the slot0 mid, but balancer/curve's
-        // observed price is a "fee-inclusive sell quote" (the executable price from probing the
-        // quoter/query), so it systematically looks cheaper by the fee (measured at full-pool
-        // equilibrium: uniswap 3000.00 / balancer 2990.97 / curve 2992.20). Leaving this step in place
-        // causes (1) the cheap/rich decision to always skew toward the balancer/curve side, and (2) the
-        // fee to be double-counted in the profitability math (the fee is already baked into quoted, yet
-        // the fee is also added at the threshold) — a source of systematic loss where you chase an
-        // apparent spread and lose to fees. Add the fee back to normalize to a mid before comparing.
-        const mid =
-          protocol === "uniswap" ? price : price / (1 - feeBps / 10000);
-        venues.push({
-          protocol,
-          swapType: SWAP_TYPE[protocol],
-          price: mid,
-          feeBps,
-        });
-      }
+      const q = venueQuote(obs, base, protocol);
+      if (!q || !(q.price > 0)) continue;
+      // Unify the observed-price convention to mid. uniswap is the slot0 mid. balancer/curve now
+      // carry a two-sided executable quote: price is already the executable mid and
+      // effectiveHalfSpreadBps is the measured per-side cost (fee + impact; e.g. twocrypto's
+      // dynamic fee under imbalance), so use both directly. Old observations without the
+      // two-sided fields report a "fee-inclusive sell quote" that systematically looks cheaper by
+      // the fee (measured at full-pool equilibrium: uniswap 3000.00 / balancer 2990.97 / curve
+      // 2992.20); for those, add a flat 30bps back to approximate a mid (legacy fallback). The
+      // flat correction under-prices the real cost under imbalance — the phantom-spread source —
+      // which is why the measured half-spread takes precedence whenever present.
+      const twoSided =
+        protocol !== "uniswap" &&
+        typeof q.effectiveHalfSpreadBps === "number" &&
+        q.effectiveHalfSpreadBps >= 0 &&
+        typeof q.sellPrice === "number" &&
+        typeof q.buyPrice === "number";
+      const feeBps = twoSided
+        ? q.effectiveHalfSpreadBps!
+        : venueFeeBps(obs, base, protocol);
+      const mid =
+        protocol === "uniswap" || twoSided
+          ? q.price
+          : q.price / (1 - feeBps / 10000);
+      venues.push({
+        protocol,
+        swapType: SWAP_TYPE[protocol],
+        price: mid,
+        feeBps,
+        ...(twoSided ? { sellPrice: q.sellPrice, buyPrice: q.buyPrice } : {}),
+      });
     }
     if (venues.length === 0) continue;
     const baseBalanceWei =

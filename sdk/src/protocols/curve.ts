@@ -7,7 +7,11 @@ import {
   tokenInfo,
   type MarketConfig,
 } from "../markets.js";
-import { baseFairPrice, resolveMarket } from "./marketHelpers.js";
+import {
+  resolveMarket,
+  twoSidedFields,
+  twoSidedQuote,
+} from "./marketHelpers.js";
 import type {
   AgentObservation,
   AmmObservation,
@@ -28,7 +32,13 @@ const DECIMAL_INTEGER = /^[0-9]+$/;
 
 type CurveMarketState = {
   market: MarketConfig;
-  priceUsdcPerWeth: number; // base/USD (name kept WETH-compatible; value is this base's price)
+  // base/USD (name kept WETH-compatible; value is this base's price). With a two-sided probe this is
+  // the executable mid = sqrt(sell*buy); if only the sell probe succeeded it is the legacy sell quote.
+  priceUsdcPerWeth: number;
+  // Two-sided executable quotes (unset when the buy probe failed -> consumers fall back to legacy).
+  sellPriceUsdcPerWeth?: number;
+  buyPriceUsdcPerWeth?: number;
+  effectiveHalfSpreadBps?: number;
 };
 
 type CurveState = {
@@ -69,18 +79,43 @@ async function getDy(
   }) as Promise<bigint>;
 }
 
-async function getMarketPrice(
+async function getMarketQuote(
   publicClient: PublicClient,
   market: MarketConfig,
-): Promise<number> {
-  // base probe amount -> quote. Convert to the quote (=USDC-equivalent) price per 1 base (decimals generalized).
+): Promise<Omit<CurveMarketState, "market">> {
+  // Sell probe: base probe amount -> quote (fee/impact-inclusive executable sell price).
   const leg = legOf(market);
   const dx = probeBaseAmount(market);
-  const out = await getDy(publicClient, leg, leg.baseIndex, leg.quoteIndex, dx);
   const baseDec = tokenInfo(market.base).decimals;
   const quoteDec = tokenInfo(market.quote).decimals;
-  // (out / 10^quoteDec) / (dx / 10^baseDec) = quote per base
-  return Number(out) / 10 ** quoteDec / (Number(dx) / 10 ** baseDec);
+  const sellOut = await getDy(
+    publicClient,
+    leg,
+    leg.baseIndex,
+    leg.quoteIndex,
+    dx,
+  );
+  const baseFloat = Number(dx) / 10 ** baseDec;
+  const sellQuoteFloat = Number(sellOut) / 10 ** quoteDec;
+  const sellPx = sellQuoteFloat / baseFloat;
+  if (!(sellPx > 0)) return { priceUsdcPerWeth: 0 };
+  // Buy probe: the same notional back (quote -> base) quoted on the same state. Both directions
+  // together recover the executable mid and the effective per-side cost.
+  try {
+    const buyOut = await getDy(
+      publicClient,
+      leg,
+      leg.quoteIndex,
+      leg.baseIndex,
+      sellOut,
+    );
+    const buyBaseFloat = Number(buyOut) / 10 ** baseDec;
+    if (!(buyBaseFloat > 0)) return { priceUsdcPerWeth: sellPx };
+    return twoSidedQuote(sellPx, sellQuoteFloat / buyBaseFloat);
+  } catch {
+    // Never fail readState harder than the legacy one-sided probe did.
+    return { priceUsdcPerWeth: sellPx };
+  }
 }
 
 export async function getCurveState(
@@ -90,7 +125,7 @@ export async function getCurveState(
   const states = await Promise.all(
     markets.map(async (m) => ({
       market: m,
-      priceUsdcPerWeth: await getMarketPrice(publicClient, m),
+      ...(await getMarketQuote(publicClient, m)),
     })),
   );
   const weth = states.find((s) => s.market.base === "WETH") ?? states[0];
@@ -104,7 +139,8 @@ export async function getCurveState(
 export async function getCurvePrice(
   publicClient: PublicClient,
 ): Promise<number> {
-  return getMarketPrice(publicClient, wethMarket());
+  const quote = await getMarketQuote(publicClient, wethMarket());
+  return quote.priceUsdcPerWeth;
 }
 
 function applySlippage(amount: bigint, slippageBps: number): bigint {
@@ -243,16 +279,21 @@ export const curveAdapter: ProtocolAdapter = {
       s.markets.find((m) => m.market.base === "WETH") ?? s.markets[0];
     const obs: AmmObservation = {
       priceUsdcPerWeth: weth?.priceUsdcPerWeth ?? s.priceUsdcPerWeth,
+      ...twoSidedFields(weth),
     };
     const extra: NonNullable<AmmObservation["markets"]> = {};
     for (const ms of s.markets) {
       if (ms.market.base === "WETH") continue;
+      // The observation reports the pool's live price; fairPrices is only the last fallback for when
+      // the probe returned nothing. The old fair-first order (baseFairPrice) pinned the observed
+      // curve price to fair, so agents chased a phantom spread between the real curve price and the
+      // other venues (the same bug class fixed in balancer's observe; part of the WBTC all-agent bleed).
       extra[ms.market.key] = {
-        priceUsdcPerWeth: baseFairPrice(
-          ctx,
-          ms.market.base,
-          ms.priceUsdcPerWeth,
-        ),
+        priceUsdcPerWeth:
+          ms.priceUsdcPerWeth > 0
+            ? ms.priceUsdcPerWeth
+            : (ctx.fairPrices?.[ms.market.base] ?? ms.priceUsdcPerWeth),
+        ...twoSidedFields(ms),
       };
     }
     if (Object.keys(extra).length > 0) obs.markets = extra;

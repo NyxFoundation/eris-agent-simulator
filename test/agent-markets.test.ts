@@ -111,3 +111,52 @@ test("marketViews: excludes a base with no venue price", () => {
     ["WETH"],
   );
 });
+
+test("marketViews: a two-sided quote uses the executable mid + measured halfSpread (no 30bps add-back)", () => {
+  const obs = baseObs();
+  // curve carries the two-sided executable quote; balancer stays legacy in the same observation.
+  obs.protocols.curve = {
+    priceUsdcPerWeth: 3000, // executable mid (already fee-free)
+    sellPriceUsdcPerWeth: 2985,
+    buyPriceUsdcPerWeth: 3015,
+    effectiveHalfSpreadBps: 50,
+  };
+  const views = marketViews(obs);
+  const curve = views[0].venues.find((v) => v.protocol === "curve")!;
+  assert.equal(curve.price, 3000); // mid as-is, not 3000/(1-30bps)
+  assert.equal(curve.feeBps, 50); // measured per-side cost, not the flat 30
+  assert.equal(curve.sellPrice, 2985);
+  assert.equal(curve.buyPrice, 3015);
+  const balancer = views[0].venues.find((v) => v.protocol === "balancer")!;
+  assert.equal(balancer.price, 3010 / (1 - 30 / 10000)); // legacy fallback unchanged
+  assert.equal(balancer.feeBps, 30);
+  assert.equal(balancer.sellPrice, undefined);
+});
+
+test("marketViews: two-sided fields on a non-WETH market flow through markets[key]", () => {
+  const obs = baseObs();
+  obs.fairPricesUsd = { WETH: 3000, WBTC: 60000 };
+  obs.baseBalances = { WETH: "5", WBTC: "100000000" };
+  obs.protocols.uniswap!.markets = {
+    "WBTC/USDC": {
+      pair: "WBTC/USDC",
+      fee: 3000,
+      priceUsdcPerWeth: 59800,
+      tick: 0,
+      tickSpacing: 60,
+    },
+  };
+  obs.protocols.curve!.markets = {
+    "WBTC/USDC": {
+      priceUsdcPerWeth: 60000,
+      sellPriceUsdcPerWeth: 59616,
+      buyPriceUsdcPerWeth: 60386,
+      effectiveHalfSpreadBps: 64,
+    },
+  };
+  const wbtc = marketViews(obs).find((v) => v.base === "WBTC")!;
+  const curve = wbtc.venues.find((v) => v.protocol === "curve")!;
+  assert.equal(curve.price, 60000);
+  assert.equal(curve.feeBps, 64);
+  assert.equal(curve.buyPrice, 60386);
+});

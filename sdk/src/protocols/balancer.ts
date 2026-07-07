@@ -16,7 +16,11 @@ import {
   tokenInfo,
   type MarketConfig,
 } from "../markets.js";
-import { resolveMarket } from "./marketHelpers.js";
+import {
+  resolveMarket,
+  twoSidedFields,
+  twoSidedQuote,
+} from "./marketHelpers.js";
 import { dealErc20, sendAndMine } from "../chain.js";
 import type {
   AgentObservation,
@@ -43,7 +47,13 @@ const NO_USERDATA = "0x" as Hex;
 
 type BalancerMarketState = {
   market: MarketConfig;
-  priceUsdcPerWeth: number; // base/USD (name kept WETH-compatible; value is this base's price)
+  // base/USD (name kept WETH-compatible; value is this base's price). With a two-sided probe this is
+  // the executable mid = sqrt(sell*buy); if only the sell probe succeeded it is the legacy sell quote.
+  priceUsdcPerWeth: number;
+  // Two-sided executable quotes (unset when the buy probe failed -> consumers fall back to legacy).
+  sellPriceUsdcPerWeth?: number;
+  buyPriceUsdcPerWeth?: number;
+  effectiveHalfSpreadBps?: number;
 };
 
 type BalancerState = {
@@ -112,24 +122,53 @@ async function querySwapOut(
   }) as bigint;
 }
 
-// Derive this market's base/USD via querySwap (divide the base->stable out by the probe amount).
-// Decimals generalized: probe = 0.1 base, price = out/quoteScale / (probe/baseScale).
+// Derive this market's two-sided quote via querySwap. Sell probe: 0.1 base -> quote (fee-inclusive
+// executable sell). Buy probe: the same notional back (quote -> base) on the same state. Together
+// they recover the executable mid and the effective per-side cost (see twoSidedQuote). Decimals
+// generalized: price = out/quoteScale / (probe/baseScale).
+async function getMarketQuote(
+  publicClient: PublicClient,
+  market: MarketConfig,
+): Promise<Omit<BalancerMarketState, "market">> {
+  const baseDec = tokenInfo(market.base).decimals;
+  const quoteDec = tokenInfo(market.quote).decimals;
+  const baseAddr = tokenInfo(market.base).address;
+  const stable = legOf(market).stable;
+  const probe = BigInt(Math.round(PROBE_BASE_FRACTION * 10 ** baseDec));
+  const sellOut = await querySwapOut(
+    publicClient,
+    market,
+    baseAddr,
+    stable,
+    probe,
+  );
+  const sellQuoteFloat = Number(sellOut) / 10 ** quoteDec;
+  const sellPx = sellQuoteFloat / PROBE_BASE_FRACTION;
+  if (!(sellPx > 0)) return { priceUsdcPerWeth: 0 };
+  try {
+    const buyOut = await querySwapOut(
+      publicClient,
+      market,
+      stable,
+      baseAddr,
+      sellOut,
+    );
+    const buyBaseFloat = Number(buyOut) / 10 ** baseDec;
+    if (!(buyBaseFloat > 0)) return { priceUsdcPerWeth: sellPx };
+    return twoSidedQuote(sellPx, sellQuoteFloat / buyBaseFloat);
+  } catch {
+    // Never fail readState harder than the legacy one-sided probe did.
+    return { priceUsdcPerWeth: sellPx };
+  }
+}
+
+// Backward-compatible price helper (executable mid when both probes succeed).
 export async function getBalancerPriceFor(
   publicClient: PublicClient,
   market: MarketConfig,
 ): Promise<number> {
-  const baseDec = tokenInfo(market.base).decimals;
-  const quoteDec = tokenInfo(market.quote).decimals;
-  const probe = BigInt(Math.round(PROBE_BASE_FRACTION * 10 ** baseDec));
-  const out = await querySwapOut(
-    publicClient,
-    market,
-    tokenInfo(market.base).address,
-    legOf(market).stable,
-    probe,
-  );
-  const outQuote = Number(out) / 10 ** quoteDec;
-  return outQuote / PROBE_BASE_FRACTION;
+  const quote = await getMarketQuote(publicClient, market);
+  return quote.priceUsdcPerWeth;
 }
 
 // Backward compatible: WETH market's USDC per WETH.
@@ -146,7 +185,7 @@ export async function getBalancerState(
   const states = await Promise.all(
     markets.map(async (m) => ({
       market: m,
-      priceUsdcPerWeth: await getBalancerPriceFor(publicClient, m),
+      ...(await getMarketQuote(publicClient, m)),
     })),
   );
   const weth = states.find((s) => s.market.base === "WETH") ?? states[0];
@@ -330,6 +369,7 @@ export const balancerAdapter: ProtocolAdapter = {
     const obs: AmmObservation = {
       priceUsdcPerWeth:
         weth?.priceUsdcPerWeth ?? ctx.fairPrices?.["WETH"] ?? fairPrice,
+      ...twoSidedFields(weth),
     };
     const extra: NonNullable<AmmObservation["markets"]> = {};
     for (const ms of s.markets) {
@@ -337,6 +377,7 @@ export const balancerAdapter: ProtocolAdapter = {
       extra[ms.market.key] = {
         priceUsdcPerWeth:
           ms.priceUsdcPerWeth ?? ctx.fairPrices?.[ms.market.base],
+        ...twoSidedFields(ms),
       };
     }
     if (Object.keys(extra).length > 0) obs.markets = extra;
