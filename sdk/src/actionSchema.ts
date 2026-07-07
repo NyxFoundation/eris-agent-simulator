@@ -15,11 +15,32 @@ const decimalString = z
 // Decimal integer or "max" (aaveWithdraw / aaveRepay).
 const decimalOrMax = z.union([decimalString, z.literal("max")]);
 const hexString = z.string().regex(/^0x[0-9a-fA-F]*$/, "must be a hex string");
-const tokenSymbol = z.string().min(1);
+// Token symbols are uppercase (WETH / USDC / WBTC ...). The adapters' parse layer is
+// case-sensitive, so reject wrong casing here: prompt-mode validation then feeds the error back to
+// the LLM for a retry (observed failure: an LLM emitted tokenIn "usdc" which passed a plain
+// z.string() and died at send time with no feedback). The regex also lands in the generated
+// <schema> as a pattern, so the constraint is visible to the LLM before its first attempt.
+const tokenSymbol = z
+  .string()
+  .min(1)
+  .regex(/^[A-Z0-9]+$/, "token symbols are uppercase (e.g. WETH, USDC, WBTC)");
 
 const priorityFee = {
   maxPriorityFeePerGasWei: decimalString.optional(),
 };
+
+// The `base` of a swap selects the market (base/USDC pair), it is NOT the token being sent.
+// Omit it for the default WETH/USDC market; set it to the base symbol (e.g. "WBTC") only when
+// trading another market. The description lands in the generated <schema>, because an LLM
+// otherwise plausibly fills base with the sell-side token ("USDC") and the send-time market
+// resolution fails with no retry feedback (observed live).
+const marketBase = tokenSymbol
+  .optional()
+  .describe(
+    'market selector: the base asset of the base/USDC market to trade (e.g. "WBTC"). ' +
+      "Omit for the default WETH/USDC market. NOT the input token — use tokenIn for that " +
+      '(tokenIn is the base symbol to sell, or "USDC" to buy).',
+  );
 
 export const noopSchema = z.object({
   type: z.literal("noop"),
@@ -29,7 +50,7 @@ export const noopSchema = z.object({
 export const swapSchema = z.object({
   type: z.literal("swap"),
   tokenIn: tokenSymbol,
-  base: tokenSymbol.optional(),
+  base: marketBase,
   amountIn: decimalString,
   slippageBps: z.number().int().nonnegative().optional(),
   ...priorityFee,
@@ -37,7 +58,7 @@ export const swapSchema = z.object({
 
 export const mintLiquiditySchema = z.object({
   type: z.literal("mintLiquidity"),
-  base: tokenSymbol.optional(),
+  base: marketBase,
   tickLower: z.number().int(),
   tickUpper: z.number().int(),
   amountWethDesired: decimalString,
@@ -50,7 +71,7 @@ export const mintLiquiditySchema = z.object({
 
 export const removeLiquiditySchema = z.object({
   type: z.literal("removeLiquidity"),
-  base: tokenSymbol.optional(),
+  base: marketBase,
   tokenId: decimalString,
   liquidity: decimalString,
   amountWethMin: decimalString.optional(),
@@ -60,7 +81,7 @@ export const removeLiquiditySchema = z.object({
 
 export const collectFeesSchema = z.object({
   type: z.literal("collectFees"),
-  base: tokenSymbol.optional(),
+  base: marketBase,
   tokenId: decimalString,
   ...priorityFee,
 });
@@ -68,7 +89,7 @@ export const collectFeesSchema = z.object({
 export const balancerSwapSchema = z.object({
   type: z.literal("balancerSwap"),
   tokenIn: tokenSymbol,
-  base: tokenSymbol.optional(),
+  base: marketBase,
   amountIn: decimalString,
   slippageBps: z.number().int().nonnegative().optional(),
   ...priorityFee,
@@ -77,7 +98,7 @@ export const balancerSwapSchema = z.object({
 export const curveSwapSchema = z.object({
   type: z.literal("curveSwap"),
   tokenIn: tokenSymbol,
-  base: tokenSymbol.optional(),
+  base: marketBase,
   amountIn: decimalString,
   slippageBps: z.number().int().nonnegative().optional(),
   ...priorityFee,
@@ -114,7 +135,7 @@ export const aaveRepaySchema = z.object({
 export const gmxIncreaseSchema = z.object({
   type: z.literal("gmxIncrease"),
   isLong: z.boolean(),
-  base: tokenSymbol.optional(),
+  base: marketBase,
   collateral: tokenSymbol,
   collateralAmount: decimalString,
   sizeDeltaUsd: decimalString,
@@ -125,7 +146,7 @@ export const gmxIncreaseSchema = z.object({
 export const gmxDecreaseSchema = z.object({
   type: z.literal("gmxDecrease"),
   isLong: z.boolean(),
-  base: tokenSymbol.optional(),
+  base: marketBase,
   collateral: tokenSymbol,
   collateralDeltaAmount: decimalString,
   sizeDeltaUsd: decimalString,

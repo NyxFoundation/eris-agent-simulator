@@ -21,11 +21,23 @@ costs, or you will "chase big gaps into big losses".
    - WETH: top-level price in protocols.<venue>
    - extra bases: protocols.<venue>.markets["<BASE>/USDC"].priceUsdcPerWeth
 2. **step1 (preferred, 2-leg)**: per base pick cheapest lo / richest hi;
-   net edge = spread - (lo fee + hi fee + 50bps safety margin).
+   net edge = spread - (lo cost + hi cost + 50bps safety margin).
+   - Per-side venue cost: uniswap = pool fee (fee/100 in bps); balancer/curve =
+     effectiveHalfSpreadBps from the observation when present (measured
+     fee+impact), else assume 30bps
    Choose the single best pair with net edge > 0; send a bundle buying on lo
    and selling on hi simultaneously
+   - Action type per venue: uniswap = "swap" / balancer = "balancerSwap" /
+     curve = "curveSwap". The two legs MUST be on two different venues (buy
+     leg on lo's venue, sell leg on hi's venue) — a same-venue roundtrip just
+     pays the fee twice
    - Size: sizeBps = clamp(netEdge x 200000, 250, 2500); extra-base amounts
      capped by limits.baseLimits[base].maxSwapInBaseWei and baseBalances[base]
+   - **Sell-leg sizing**: inside a bundle the buy leg's output is credited to
+     the sell leg, but you must not sell more than it produces. Size the sell
+     amountIn at ~98% of (buy amountIn / hi price) converted to base units
+     (integer string, baseDecimals[base]). Oversizing gets the whole bundle
+     rejected with "amountIn exceeds balance" on a USDC-only wallet.
    - slippage 120bps per leg (cross-venue simultaneous fills drift)
    - Always include "base":"WBTC" on extra-base actions
 3. **step2 (fallback, single-leg)**: only when step1 found nothing, push the

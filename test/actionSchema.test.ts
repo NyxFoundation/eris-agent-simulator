@@ -92,3 +92,21 @@ test("actionJsonSchema: generates the JSON Schema for <schema>", () => {
   assert.match(text, /aaveSupply/);
   assert.doesNotMatch(text, /balancerSwap/);
 });
+
+test("tokenSymbol: lowercase symbols are rejected with a casing hint (LLM retry feedback)", () => {
+  const r = agentActionSchema.safeParse({
+    type: "swap",
+    tokenIn: "usdc",
+    amountIn: "1000000",
+  });
+  assert.equal(r.success, false);
+  assert.match(JSON.stringify(r.error?.issues ?? []), /uppercase/);
+  assert.equal(
+    agentActionSchema.safeParse({
+      type: "swap",
+      tokenIn: "USDC",
+      amountIn: "1000000",
+    }).success,
+    true,
+  );
+});
