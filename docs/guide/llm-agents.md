@@ -31,7 +31,8 @@ flowchart TB
 - Each cycle, bot.ts puts the observation (JSON) and the action's **`<schema>`** (generated from the zod schema in `sdk/src/actionSchema.ts`) into the system prompt and calls the LLM once.
 - The response is validated with zod, and **on failure the error is appended to the conversation and retried** (on exceeding the retry limit that cycle is `noop` = fail-closed).
 - The decisions and actions are recorded in `runs/<run_id>/agents/<id>.jsonl` ([Run output and analysis](run-output.md)).
-- When agent.ts and prompt.md are **co-located**, the default is agent.ts (rule strategy). Switch to prompt.md driving with the roster's `env: { ERIS_AGENT_MODE: "prompt" }`.
+- When agent.ts and prompt.md are **co-located**, the runtime default is agent.ts (rule strategy). Switch to prompt.md driving with the roster's `env: { ERIS_AGENT_MODE: "prompt" }`.
+- Note that the **shipped `config/example.yaml` roster opts the trading agents into prompt mode** (the Quick Start default is LLM-driven; it needs an LLM endpoint — see "Backends" below). Remove the `env:` line from an agent to run it rule-based.
 
 ## Self-revision (optional)
 

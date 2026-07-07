@@ -11,11 +11,19 @@
 # Do not put secrets here (this file may be committed). Put RPC URLs, private keys, and API keys in
 # `.env.local` (ARB_RPC_URL / *_PRIVATE_KEY / ANTHROPIC_API_KEY / OLLAMA_API_KEY).
 # The local Anvil dev keys are used by default even when unspecified.
+#
+# LLM-driven by default: the trading agents below run in prompt mode (prompt.md, one LLM call per
+# decision; ERIS_AGENT_MODE: "prompt"). This requires an LLM endpoint — set OLLAMA_API_KEY in
+# `.env.local` (default: Ollama Cloud, model gpt-oss:120b), or point at a local ollama with
+# ERIS_OLLAMA_BASE_URL=http://127.0.0.1:11434/api (no key needed). To run the same strategies
+# rule-based (agent.ts, no LLM), remove the `env:` line from each agent. See docs/guide/llm-agents.md.
 
 run:
   seed: 1
-  blocks: 24
-  seconds: 70
+  # LLM decisions take ~10s each over Ollama Cloud, so give the run enough blocks/wall-clock for
+  # prompt-mode agents to act (rule-based runs are fine with fewer, e.g. 24 blocks / 70s).
+  blocks: 100
+  seconds: 300
   blockTimeSec: 2
   protocols: [uniswap, balancer, curve]
   economicGas: false
@@ -79,10 +87,12 @@ agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
-    description: does nothing (baseline)
+    description: does nothing (baseline; rule-based on purpose)
   - id: venue-arb
     wallet: AGENT2_PRIVATE_KEY
-    description: WETH-only cross-venue arbitrage
+    description: WETH-only cross-venue arbitrage (LLM-driven via prompt.md)
+    env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
   - id: multi-arb
     wallet: AGENT3_PRIVATE_KEY
-    description: base-agnostic cross-venue arbitrage (all active bases x all venues)
+    description: base-agnostic cross-venue arbitrage (all active bases x all venues; LLM-driven via prompt.md)
+    env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }

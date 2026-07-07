@@ -92,12 +92,14 @@ cd deployer && npm run deploy -- --keep-fresh
 # poc side (repository root): import the deploy addresses and run in local deploy mode
 npm run gen:local-constants
 npm run sim:realtime -- --local-deploy \
-  --seed 1 --blocks 24 --seconds 70 --protocols uniswap,balancer,curve
+  --seed 1 --blocks 100 --seconds 300 --protocols uniswap,balancer,curve
 # The roster is the inline agents in config/local.yaml (edit the YAML to swap it out.
 # backtest supports swapping via --agents <roster.yaml>)
 ```
 
 > The `--local-deploy` flag (or config `run.localDeploy: true`) switches to local deploy mode. The CLI entry point detects this at startup, sets `ERIS_LOCAL_DEPLOY=1` internally, and `sdk/src/constants.ts` overlays the locally-deployed addresses (WETH/USDC/WBTC, etc.) — no need to pass the env by hand.
+
+> **The default roster is LLM-driven.** The trading agents in `config/example.yaml` run in prompt mode (`prompt.md`, one LLM call per decision). Put `OLLAMA_API_KEY` in `.env.local` (default endpoint: Ollama Cloud, model `gpt-oss:120b`), or point at a local ollama with `ERIS_OLLAMA_BASE_URL=http://127.0.0.1:11434/api` (no key needed). Without an endpoint the agents fail closed to `noop` and the run trades nothing. LLM decisions take ~10s each, hence the 100-block / 300s run above (rule-based runs are fine with 24 blocks / 70s). To run the same strategies rule-based instead, remove the `env:` line from each agent in the roster. Details: [LLM Agents](docs/guide/llm-agents.md).
 
 Output is written under `runs/<run_id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `agents/<id>.jsonl`). What to check:
 
