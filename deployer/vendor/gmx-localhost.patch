@@ -297,9 +297,19 @@ index 9d9306d..4970d4e 100644
  };
  
 diff --git a/deploy/deployMockTimelockV1.ts b/deploy/deployMockTimelockV1.ts
-index a911fb0..8077028 100644
+index a911fb0..4b39ab3 100644
 --- a/deploy/deployMockTimelockV1.ts
 +++ b/deploy/deployMockTimelockV1.ts
+@@ -16,7 +16,7 @@ const func = createDeployFunction({
+     const mockTimelockV1 = await ethers.getContractAt("MockTimelockV1", deployedContract.address);
+ 
+     console.log(`Transferring ReferralStorage gov to MockTimelockV1...`);
+-    await referralStorageContract.transferOwnership(deployedContract.address);
+-    await mockTimelockV1.acceptGov(referralStorage.address);
++    await (await referralStorageContract.transferOwnership(deployedContract.address)).wait();
++    await (await mockTimelockV1.acceptGov(referralStorage.address)).wait();
+     console.log(`MockTimelockV1 is now gov of ReferralStorage`);
+   },
 @@ -23,7 +23,7 @@ const func = createDeployFunction({
  });
  
