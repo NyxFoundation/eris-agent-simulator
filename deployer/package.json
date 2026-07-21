@@ -7,6 +7,7 @@
   "scripts": {
     "anvil": "anvil --code-size-limit 50000 --base-fee 0 --gas-limit 3000000000 --port 8545 --accounts 10 --balance 1000000",
     "build:contracts": "forge build",
+    "clean:vendors": "./scripts/clean-vendors.sh",
     "deploy": "tsx src/index.ts",
     "test:e2e": "vitest run",
     "typecheck": "tsc --noEmit"

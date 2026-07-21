@@ -22,9 +22,13 @@ echo "  apply $PATCH"
 # Do nothing if already applied
 if git -C "$GMX_DIR" apply --reverse --check "../../$PATCH" 2>/dev/null; then
   echo "  (patch already applied)"
-else
+elif git -C "$GMX_DIR" apply --check "../../$PATCH" 2>/dev/null; then
   git -C "$GMX_DIR" apply "../../$PATCH"
   echo "  patch applied"
+else
+  echo "  ERROR: $PATCH does not apply cleanly — the vendor tree likely has an older version of the patch applied." >&2
+  echo "  Reset it with: npm run clean:vendors   (then re-run this script)" >&2
+  exit 1
 fi
 echo "  yarn install (this takes a while)"
 (cd "$GMX_DIR" && yarn install)

@@ -30,6 +30,8 @@ cp .env.example .env
 >   `vendor/gmx-localhost.patch` to GMX. The patch = changes needed to get
 >   hardhat-deploy through on `localhost` (anvil): `hardhat`/`localhost` detection, `chainId`,
 >   `localhost` keys in each config, making `setBalance` anvil-compatible, etc. (see `docs/adr` for details).
+>   When `vendor/gmx-localhost.patch` is updated (e.g. after `git pull`), reset the vendor tree with
+>   `npm run clean:vendors`, then re-run `./scripts/setup-vendors.sh` to apply the new patch.
 > - `vendor/curve` **commits** the `{abi, bytecode/blueprintBytecode}` JSON built from
 >   `curvefi/stableswap-ng` with Vyper 0.3.10 (Docker). Vyper is not needed at runtime.
 >   Only to rebuild, clone `vendor/curve-src` and use
