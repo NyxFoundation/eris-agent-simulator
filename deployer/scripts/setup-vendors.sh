@@ -14,7 +14,14 @@ PATCH="vendor/gmx-localhost.patch"
 echo "==> Setting up GMX (gmx-synthetics)"
 if [ ! -d "$GMX_DIR/.git" ]; then
   echo "  clone $GMX_REPO"
-  git clone "$GMX_REPO" "$GMX_DIR"
+  if [ -d "$GMX_DIR" ] && [ -n "$(ls -A "$GMX_DIR" 2>/dev/null)" ]; then
+    # dir exists without .git (leftover deployments/ etc.) — `git clone` refuses
+    # non-empty targets, so clone in place via init + fetch instead
+    git -C "$GMX_DIR" init -q
+    git -C "$GMX_DIR" remote add origin "$GMX_REPO"
+  else
+    git clone "$GMX_REPO" "$GMX_DIR"
+  fi
 fi
 git -C "$GMX_DIR" fetch --depth 1 origin "$GMX_SHA" 2>/dev/null || git -C "$GMX_DIR" fetch origin
 git -C "$GMX_DIR" checkout -q "$GMX_SHA"

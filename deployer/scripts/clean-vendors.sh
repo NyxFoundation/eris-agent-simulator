@@ -14,5 +14,10 @@ if [ ! -d "$GMX_DIR/.git" ]; then
 fi
 
 git -C "$GMX_DIR" checkout -q -- .
+# checkout only restores tracked files; the patch also CREATES files (e.g.
+# utils/setBalanceCompat.ts) which stay behind as untracked and make the next
+# `git apply --check` fail with "already exists". -fd respects .gitignore, so
+# node_modules/ and deployments/localhost/ survive.
+git -C "$GMX_DIR" clean -qfd
 echo "==> $GMX_DIR reset to pristine upstream (patch discarded)"
 echo "    Re-apply with: ./scripts/setup-vendors.sh"
