@@ -9,7 +9,7 @@ Drop **a single `prompt.md`** into `example/agents/<id>/` and that agent becomes
 name: my-arb                      # required
 description: cross-venue arb; push toward fair above 30bps   # required
 intervalMs: 5000                  # decision cycle interval (optional)
-model: gpt-oss:120b               # model to use (optional; "claude..." means Anthropic)
+model: gpt-oss:120b               # model to use (optional; "claude..." = Anthropic API, "codex[:m]" / "claude-cli[:m]" = subscription CLIs)
 ---
 # Mission
 (the strategy in natural language: how to read the observation, order conditions, sizing, risk constraints)
@@ -55,8 +55,31 @@ The provider is selected by the frontmatter `model` name:
 |---|---|---|
 | `gpt-oss:120b` etc. (default) | Ollama (default Ollama Cloud `https://ollama.com/api`; point at local `http://127.0.0.1:11434/api` via `ERIS_OLLAMA_BASE_URL`) | `OLLAMA_API_KEY` / `ERIS_OLLAMA_API_KEY` (not needed for local ollama) |
 | starts with `claude...` | Anthropic SDK (structured output via tool use) | `ANTHROPIC_API_KEY` |
+| `codex` / `codex:<model>` | Codex CLI (spawns `codex exec` in a read-only sandbox) | ChatGPT subscription (`codex login`; **no API key**) |
+| `claude-cli` / `claude-cli:<model>` | Claude Code CLI (spawns `claude -p` with all built-in tools disallowed) | Claude subscription (Claude Code OAuth login; **no API key**) |
 
-The per-call timeout is `ERIS_LLM_CALL_TIMEOUT_MS` (default 60000). Put the secret API keys in `.env.local` ([Configuration](configuration.md)).
+The per-call timeout is `ERIS_LLM_CALL_TIMEOUT_MS` (default 60000; the CLI providers default to 120000 because each call pays process startup). Put the secret API keys in `.env.local` ([Configuration](configuration.md)).
+
+## Running on a Codex / Claude Code subscription (no API key)
+
+If you have a ChatGPT (Codex) or Claude (Claude Code) subscription, prompt agents can run on it directly — set the frontmatter `model` (or the roster env `ERIS_LLM_MODEL`) to a CLI provider and make sure the CLI is logged in on the machine:
+
+```markdown
+---
+name: my-arb
+description: cross-venue arb
+model: claude-cli:haiku    # or "codex" (empty model = the CLI's own configured default)
+intervalMs: 15000          # CLI calls are slower than HTTP; widen the decision cycle
+---
+```
+
+Notes:
+
+- **Latency**: one decision costs a CLI process spawn + a subscription model call (measured: `claude-cli:haiku` ~6s, `codex` default model ~12s). Set `intervalMs` accordingly; cycles are locked so a slow call never overlaps the next one.
+- **Quota**: every decision cycle consumes subscription quota (a 100-block run ≈ 20-60 calls per agent depending on `intervalMs`). Keep rosters small; codex and claude draw on separate pools, so mixing providers raises the parallel ceiling.
+- **Auth isolation**: the `claude-cli` provider strips `ANTHROPIC_API_KEY` from the spawned CLI's env so the call always bills the subscription OAuth login, and strips the enclosing Claude Code session markers so it can be launched from inside a Claude Code session without the CLI's nested-session hang.
+- **Binary override**: `ERIS_CLAUDE_BIN` / `ERIS_CODEX_BIN` point at a non-PATH binary if needed.
+- The JSON contract is unchanged: the CLI's output goes through the same zod validation + retry loop, and any provider failure fails closed to `noop`.
 
 ## Run example
 
