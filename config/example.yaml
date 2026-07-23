@@ -13,10 +13,14 @@
 # The local Anvil dev keys are used by default even when unspecified.
 #
 # LLM-driven by default: the trading agents below run in prompt mode (prompt.md, one LLM call per
-# decision; ERIS_AGENT_MODE: "prompt"). This requires an LLM endpoint — set OLLAMA_API_KEY in
-# `.env.local` (default: Ollama Cloud, model gpt-oss:120b), or point at a local ollama with
-# ERIS_OLLAMA_BASE_URL=http://127.0.0.1:11434/api (no key needed). To run the same strategies
-# rule-based (agent.ts, no LLM), remove the `env:` line from each agent. See docs/guide/llm-agents.md.
+# decision; ERIS_AGENT_MODE: "prompt") and need an LLM backend. Pick one:
+#   - Ollama Cloud (default; model gpt-oss:120b): set OLLAMA_API_KEY in `.env.local`
+#   - local ollama (no key): ERIS_OLLAMA_BASE_URL=http://127.0.0.1:11434/api in `.env.local`
+#   - Claude Code / Codex subscription (no API key; spawns the logged-in CLI): swap each agent's
+#     env for the commented ERIS_LLM_MODEL variant below ("claude-cli:haiku" / "codex")
+# Without a backend the run completes but the trading agents fail closed to noop (no trades).
+# To run the same strategies rule-based (agent.ts, no LLM), remove the `env:` line from each agent.
+# See docs/guide/llm-agents.md.
 
 run:
   seed: 1
@@ -92,7 +96,10 @@ agents:
     wallet: AGENT2_PRIVATE_KEY
     description: WETH-only cross-venue arbitrage (LLM-driven via prompt.md)
     env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
+    # Claude Code / Codex subscription instead of Ollama (no API key) — use this env line instead:
+    # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
   - id: multi-arb
     wallet: AGENT3_PRIVATE_KEY
     description: base-agnostic cross-venue arbitrage (all active bases x all venues; LLM-driven via prompt.md)
     env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
+    # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }

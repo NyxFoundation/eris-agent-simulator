@@ -2,7 +2,7 @@
   <img src="docs/eris-logo.png" alt="Eris" width="360">
 </p>
 
-<h1 align="center">Eris Agent Simulator</h1>
+<h1 align="center">Eris: Agent Simulator</h1>
 
 <p align="center">
   <strong>The Agentic Financial Simulation Layer</strong><br>
@@ -71,7 +71,7 @@ Instead of forking Arbitrum, connect to a local anvil where the bundled [`deploy
 # poc (repository root)
 npm install
 cp config/example.yaml config/local.yaml   # run config + agent roster
-cp .env.example .env.local                  # secrets only (optional locally, since Anvil dev keys work)
+cp .env.example .env.local                  # secrets (Anvil dev keys work locally; LLM backend choice next)
 npm run build:contracts                     # forge build PriceFeed + mock oracles (once, if out/ is missing)
 
 # bundled deployer/ (first time only; takes a few minutes to fetch the GMX clone + install Aave deps)
@@ -82,6 +82,18 @@ cp .env.example .env
 ./scripts/setup-vendors.sh   # clone+patch external repos (GMX), install Aave deps
 cd ..
 ```
+
+### Choose an LLM backend
+
+**The default roster is LLM-driven**: the trading agents run in prompt mode (`prompt.md`, one LLM call per decision), so they need an LLM backend to trade. Pick one — without it the run still completes, but the trading agents fail closed to `noop` and trade nothing:
+
+| backend | setup |
+|---|---|
+| **Ollama Cloud** (default; model `gpt-oss:120b`) | put `OLLAMA_API_KEY=...` in `.env.local` |
+| **Local ollama** (no key) | `ERIS_OLLAMA_BASE_URL=http://127.0.0.1:11434/api` in `.env.local`, and set a locally-pulled model via the roster env `ERIS_LLM_MODEL` |
+| **Claude Code / Codex subscription** (no API key; spawns the logged-in CLI) | in `config/local.yaml`, swap each prompt agent's `env:` for the commented variant with `ERIS_LLM_MODEL: "claude-cli:haiku"` (or `"codex"`) |
+
+To skip LLMs entirely and run the same strategies rule-based (`agent.ts`), remove the `env:` line from each agent in the roster. Details: [LLM Agents](docs/guide/llm-agents.md).
 
 ### Run
 
@@ -99,7 +111,7 @@ npm run sim:realtime -- --local-deploy \
 
 > The `--local-deploy` flag (or config `run.localDeploy: true`) switches to local deploy mode. The CLI entry point detects this at startup, sets `ERIS_LOCAL_DEPLOY=1` internally, and `sdk/src/constants.ts` overlays the locally-deployed addresses (WETH/USDC/WBTC, etc.) — no need to pass the env by hand.
 
-> **The default roster is LLM-driven.** The trading agents in `config/example.yaml` run in prompt mode (`prompt.md`, one LLM call per decision). Put `OLLAMA_API_KEY` in `.env.local` (default endpoint: Ollama Cloud, model `gpt-oss:120b`), point at a local ollama with `ERIS_OLLAMA_BASE_URL=http://127.0.0.1:11434/api` (no key needed), or run on a **Codex / Claude Code subscription** with `model: codex` / `model: claude-cli` in the prompt frontmatter (spawns the logged-in CLI; no API key). Without an endpoint the agents fail closed to `noop` and the run trades nothing. LLM decisions take ~10s each, hence the 100-block / 300s run above (rule-based runs are fine with 24 blocks / 70s). To run the same strategies rule-based instead, remove the `env:` line from each agent in the roster. Details: [LLM Agents](docs/guide/llm-agents.md).
+> LLM decisions take ~10s each, hence the 100-block / 300s run above (rule-based runs are fine with 24 blocks / 70s). If the trading agents only emit `noop`, you probably skipped [Choose an LLM backend](#choose-an-llm-backend) — check `runs/<run_id>/agents/<id>.jsonl` for `llm cycle skipped`.
 
 Output is written under `runs/<run_id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `agents/<id>.jsonl`). What to check:
 
