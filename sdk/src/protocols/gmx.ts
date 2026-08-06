@@ -12,8 +12,14 @@ import {
   type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { erc20Abi } from "../abis.js";
 import { GMX, GMX_MARKETS, TOKENS, stableBalanceOf } from "../constants.js";
-import { marketFor, marketsFor, tokenInfo } from "../markets.js";
+import {
+  marketFor,
+  marketsFor,
+  tokenInfo,
+  tokenInfoByAddress,
+} from "../markets.js";
 import { baseFairPrice } from "./marketHelpers.js";
 import {
   accountAddress,
@@ -36,6 +42,7 @@ import type {
   BuiltTx,
   ProtocolAdapter,
   SimContext,
+  UnpricedHoldingDetail,
   ValidationResult,
 } from "./types.js";
 import { deployContract } from "./deploy.js";
@@ -302,7 +309,82 @@ const positionPropsComponents = [
     components: [{ name: "isLong", type: "bool" }],
   },
 ] as const;
+// GM (market token) valuation (issue #41). Market.Props / Price.Props / MarketPoolValueInfo.Props
+// mirror gmx-synthetics; the reader prices a GM token in USD with 30 decimals.
+const marketPropsComponents = [
+  { name: "marketToken", type: "address" },
+  { name: "indexToken", type: "address" },
+  { name: "longToken", type: "address" },
+  { name: "shortToken", type: "address" },
+] as const;
+
+const pricePropsComponents = [
+  { name: "min", type: "uint256" },
+  { name: "max", type: "uint256" },
+] as const;
+
+const marketPoolValueInfoComponents = [
+  { name: "poolValue", type: "int256" },
+  { name: "longPnl", type: "int256" },
+  { name: "shortPnl", type: "int256" },
+  { name: "netPnl", type: "int256" },
+  { name: "longTokenAmount", type: "uint256" },
+  { name: "shortTokenAmount", type: "uint256" },
+  { name: "longTokenUsd", type: "uint256" },
+  { name: "shortTokenUsd", type: "uint256" },
+  { name: "totalBorrowingFees", type: "uint256" },
+  { name: "borrowingFeePoolFactor", type: "uint256" },
+  { name: "impactPoolAmount", type: "uint256" },
+  { name: "lentImpactPoolAmount", type: "uint256" },
+] as const;
+
+// Keys.MAX_PNL_FACTOR_FOR_WITHDRAWALS. Withdrawals (not deposits) is the right cap for marking a
+// holding: it is the factor an exit would actually be subject to.
+const MAX_PNL_FACTOR_FOR_WITHDRAWALS = hashString(
+  "MAX_PNL_FACTOR_FOR_WITHDRAWALS",
+);
+
 const readerAbi = [
+  {
+    type: "function",
+    name: "getMarket",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "key", type: "address" },
+    ],
+    outputs: [{ type: "tuple", components: marketPropsComponents }],
+  },
+  {
+    type: "function",
+    name: "getMarketTokenPrice",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "market", type: "tuple", components: marketPropsComponents },
+      {
+        name: "indexTokenPrice",
+        type: "tuple",
+        components: pricePropsComponents,
+      },
+      {
+        name: "longTokenPrice",
+        type: "tuple",
+        components: pricePropsComponents,
+      },
+      {
+        name: "shortTokenPrice",
+        type: "tuple",
+        components: pricePropsComponents,
+      },
+      { name: "pnlFactorType", type: "bytes32" },
+      { name: "maximize", type: "bool" },
+    ],
+    outputs: [
+      { type: "int256" },
+      { type: "tuple", components: marketPoolValueInfoComponents },
+    ],
+  },
   {
     type: "function",
     name: "getAccountPositions",
@@ -721,6 +803,38 @@ export function gmxEthUsdPositionValueUsd(
   return positionValueUsd(pos, markPrice, "WETH", markPrice);
 }
 
+type MarketProps = {
+  marketToken: Address;
+  indexToken: Address;
+  longToken: Address;
+  shortToken: Address;
+};
+
+// The GM token of every configured gmx market (in gmx-synthetics the market key is its market token).
+function gmxMarketTokens(): Address[] {
+  const out: Address[] = [];
+  for (const m of marketsFor("gmx")) {
+    const market = m.gmx?.market;
+    if (!market || market === zeroAddress) continue;
+    if (!out.includes(market)) out.push(market);
+  }
+  return out;
+}
+
+// Price.Props for a token, from the token registry. Undefined for a token we cannot price, which
+// leaves the whole market unpriced rather than marked at a guess.
+function gmxTokenPrice(
+  token: Address,
+  fairByBase: Record<string, number>,
+): { min: bigint; max: bigint } | undefined {
+  const info = tokenInfoByAddress(token);
+  if (!info) return undefined;
+  const usd = info.kind === "stable" ? 1 : fairByBase[info.symbol];
+  if (usd === undefined) return undefined;
+  const price = toGmxPrice(usd, info.decimals);
+  return { min: price, max: price };
+}
+
 export const gmxAdapter: ProtocolAdapter = {
   id: "gmx",
   stableToken: TOKENS.USDC.address,
@@ -912,23 +1026,118 @@ export const gmxAdapter: ProtocolAdapter = {
     return total;
   },
 
-  // Perp positions only. GM market-token (liquidity) holdings are still unvalued -- see #41.
+  // Perp positions plus GM (market token) liquidity holdings (issue #41). Stage 1 reads positions,
+  // market definitions and GM balances together; stage 2 prices the GM tokens and only runs when
+  // somebody actually holds one.
   async *valueAtBlock(ctx) {
-    const results = yield ctx.agents.map((a) =>
-      gmxAccountPositionsCall(a.address),
+    const markets = gmxMarketTokens();
+    const stage1 = yield [
+      ...ctx.agents.map((a) => gmxAccountPositionsCall(a.address)),
+      ...markets.map((marketToken) => ({
+        address: GMX.Reader,
+        abi: readerAbi,
+        functionName: "getMarket",
+        args: [GMX.DataStore, marketToken],
+      })),
+      ...ctx.agents.flatMap((a) =>
+        markets.map((marketToken) => ({
+          address: marketToken,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [a.address],
+        })),
+      ),
+    ];
+    const marketBase = ctx.agents.length;
+    const balanceBase = marketBase + markets.length;
+    const fairByBase = ctx.fairByBase();
+
+    const gmBalance = (agentIndex: number, marketIndex: number): bigint => {
+      const raw = stage1[balanceBase + agentIndex * markets.length + marketIndex];
+      return typeof raw === "bigint" ? raw : 0n;
+    };
+    const anyHolder = ctx.agents.some((_, a) =>
+      markets.some((_m, i) => gmBalance(a, i) > 0n),
     );
-    const fairPrice = ctx.fairByBase().WETH ?? 0;
+
+    // USD per whole GM token, by market index. Absent means the market could not be priced.
+    const gmUsd: Array<number | undefined> = markets.map(() => undefined);
+    if (anyHolder) {
+      const layout: number[] = [];
+      const reads: Array<{
+        address: Address;
+        abi: unknown;
+        functionName: string;
+        args: readonly unknown[];
+      }> = [];
+      markets.forEach((_marketToken, i) => {
+        const props = stage1[marketBase + i] as MarketProps | undefined;
+        if (!props) return;
+        const index = gmxTokenPrice(props.indexToken, fairByBase);
+        const long = gmxTokenPrice(props.longToken, fairByBase);
+        const short = gmxTokenPrice(props.shortToken, fairByBase);
+        if (!index || !long || !short) return;
+        layout.push(i);
+        reads.push({
+          address: GMX.Reader,
+          abi: readerAbi,
+          functionName: "getMarketTokenPrice",
+          args: [
+            GMX.DataStore,
+            props,
+            index,
+            long,
+            short,
+            MAX_PNL_FACTOR_FOR_WITHDRAWALS,
+            // Mark at the minimum price: this is what an exit would realize.
+            false,
+          ],
+        });
+      });
+      if (reads.length > 0) {
+        const priced = yield reads as never;
+        layout.forEach((marketIndex, k) => {
+          const result = priced[k] as readonly [bigint, unknown] | undefined;
+          if (!result) return;
+          // int256 USD per GM token with 30 decimals. A non-positive price means the pool is
+          // underwater; the holding is worth nothing rather than negative.
+          gmUsd[marketIndex] = Math.max(0, Number(result[0]) / 1e30);
+        });
+      }
+    }
+
+    const fairPrice = fairByBase.WETH ?? 0;
     const out: Record<string, AgentProtocolValue> = {};
-    ctx.agents.forEach((agent, i) => {
-      const positions = results[i] as readonly Position[] | undefined;
-      const usd = gmxEthUsdPositionValueUsd(positions, fairPrice);
+    ctx.agents.forEach((agent, a) => {
+      const positions = stage1[a] as readonly Position[] | undefined;
+      let valueUsdc = gmxEthUsdPositionValueUsd(positions, fairPrice);
+      const unpriced: UnpricedHoldingDetail[] = [];
+      markets.forEach((marketToken, i) => {
+        const balance = gmBalance(a, i);
+        if (balance <= 0n) return;
+        const usdPerToken = gmUsd[i];
+        if (usdPerToken === undefined) {
+          unpriced.push({
+            token: marketToken,
+            amountRaw: balance.toString(),
+            source: "gmx-gm",
+          });
+          return;
+        }
+        // GM tokens are 18-decimal ERC-20s.
+        valueUsdc += (Number(balance) / 1e18) * usdPerToken;
+      });
       out[agent.id] = {
-        valueUsdc: usd,
-        liquidatableValueUsdc: usd,
-        unpriced: [],
+        valueUsdc,
+        liquidatableValueUsdc: valueUsdc,
+        unpriced,
       };
     });
     return out;
+  },
+
+  async accountedTokens(): Promise<Address[]> {
+    return gmxMarketTokens();
   },
 
   async setupWallet(): Promise<BuiltTx[]> {
