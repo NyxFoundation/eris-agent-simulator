@@ -46,6 +46,8 @@ const observation: AgentObservation = {
           liquidity: "100",
           tokensOwedWethWei: "0",
           tokensOwedUsdcUnits: "0",
+          uncollectedFeesWethWei: "0",
+          uncollectedFeesUsdcUnits: "0",
           amountWethWei: "0",
           amountUsdcUnits: "0",
           valueUsdc: 0,

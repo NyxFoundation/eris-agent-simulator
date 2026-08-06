@@ -12,9 +12,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { Address } from "viem";
 import {
+  feeGrowthInsideX128,
   liquidityToTokenAmounts,
   lpPositionValueUsdc,
   lpPositionValueUsdcMulti,
+  tickFeeGrowthEntry,
+  uncollectedFees,
 } from "@eris/sdk/protocols/uniswap.js";
 import { TOKENS, UNISWAP } from "@eris/sdk/constants.js";
 
@@ -145,14 +148,184 @@ test("PINS CURRENT BUG (#41): a position in an unregistered pool is valued at ex
   assert.equal(unknownPair, 0);
 });
 
-test("PINS CURRENT BUG (#21): feeGrowthInside checkpoints in the position tuple are ignored", () => {
-  // A position that has accrued fees since its last checkpoint carries a non-zero
-  // feeGrowthInside*LastX128 but zero tokensOwed until poke/collect. Uncollected fees are invisible.
-  const accrued = lpPositionValueUsdcMulti(
-    position({
-      feeGrowthInside0LastX128: 12_345_678_901_234_567_890n,
-      feeGrowthInside1LastX128: 98_765_432_109_876_543_210n,
+// ---------------------------------------------------------------------------
+// Uncollected fees (#21)
+// ---------------------------------------------------------------------------
+
+const Q128 = 1n << 128n;
+const U256 = 1n << 256n;
+// Independent restatement of the pool's unchecked subtraction, so the expectations below do not
+// borrow the implementation's own helper.
+const wrapSub = (a: bigint, b: bigint) => (((a - b) % U256) + U256) % U256;
+
+test("feeGrowthInsideX128 subtracts both sides when the tick is inside the range", () => {
+  const inside = feeGrowthInsideX128({
+    tickCurrent: TICK_IN_RANGE,
+    tickLower: TICK_LOWER,
+    tickUpper: TICK_UPPER,
+    feeGrowthGlobalX128: 1000n,
+    feeGrowthOutsideLowerX128: 100n,
+    feeGrowthOutsideUpperX128: 250n,
+  });
+  assert.equal(inside, 650n);
+});
+
+test("feeGrowthInsideX128 flips the below/above terms when the tick leaves the range", () => {
+  const shared = {
+    tickLower: TICK_LOWER,
+    tickUpper: TICK_UPPER,
+    feeGrowthGlobalX128: 1000n,
+    feeGrowthOutsideLowerX128: 100n,
+    feeGrowthOutsideUpperX128: 250n,
+  };
+  // Below the range: below = global - outsideLower, above = outsideUpper.
+  assert.equal(
+    feeGrowthInsideX128({ ...shared, tickCurrent: TICK_LOWER - 1 }),
+    wrapSub(1000n - (1000n - 100n), 250n),
+  );
+  // At/above the upper tick: below = outsideLower, above = global - outsideUpper.
+  assert.equal(
+    feeGrowthInsideX128({ ...shared, tickCurrent: TICK_UPPER }),
+    wrapSub(1000n - 100n, 1000n - 250n),
+  );
+});
+
+test("feeGrowthInsideX128 wraps like the pool's unchecked arithmetic", () => {
+  // Fee growth accumulators are allowed to overflow; the wrapped difference is the true delta.
+  const inside = feeGrowthInsideX128({
+    tickCurrent: TICK_IN_RANGE,
+    tickLower: TICK_LOWER,
+    tickUpper: TICK_UPPER,
+    feeGrowthGlobalX128: 10n,
+    feeGrowthOutsideLowerX128: 40n,
+    feeGrowthOutsideUpperX128: 0n,
+  });
+  assert.equal(inside, U256 - 30n);
+});
+
+test("uncollectedFees marks fees earned since the position's checkpoint (#21)", () => {
+  // Target 0.05 WETH (token0) and 30 USDC (token1) of accrued fees.
+  const delta0 = (5n * 10n ** 16n * Q128) / LIQUIDITY;
+  const delta1 = (30_000_000n * Q128) / LIQUIDITY;
+  const fees = uncollectedFees({
+    liquidity: LIQUIDITY,
+    tick: TICK_IN_RANGE,
+    tickLower: TICK_LOWER,
+    tickUpper: TICK_UPPER,
+    feeGrowthInside0LastX128: 0n,
+    feeGrowthInside1LastX128: 0n,
+    pool: {
+      feeGrowthGlobal0X128: delta0,
+      feeGrowthGlobal1X128: delta1,
+      outsideByTick: { [TICK_LOWER]: [0n, 0n], [TICK_UPPER]: [0n, 0n] },
+    },
+  });
+  // Integer division loses at most one wei/unit per side.
+  assert.ok(
+    fees.fees0 <= 5n * 10n ** 16n && fees.fees0 > 49_999_999_000_000_000n,
+  );
+  assert.ok(fees.fees1 <= 30_000_000n && fees.fees1 > 29_999_990n);
+});
+
+test("uncollectedFees returns zero when it cannot know the answer", () => {
+  const pool = {
+    feeGrowthGlobal0X128: 10n ** 30n,
+    feeGrowthGlobal1X128: 10n ** 30n,
+    outsideByTick: { [TICK_LOWER]: [0n, 0n] as const },
+  };
+  const args = {
+    liquidity: LIQUIDITY,
+    tick: TICK_IN_RANGE,
+    tickLower: TICK_LOWER,
+    tickUpper: TICK_UPPER,
+    feeGrowthInside0LastX128: 0n,
+    feeGrowthInside1LastX128: 0n,
+  };
+  // No pool snapshot at all.
+  assert.deepEqual(uncollectedFees({ ...args, pool: undefined }), {
+    fees0: 0n,
+    fees1: 0n,
+  });
+  // Upper boundary missing (an uninitialised tick reads as all zeros and would otherwise make
+  // feeGrowthInside read as the whole global growth).
+  assert.deepEqual(uncollectedFees({ ...args, pool }), {
+    fees0: 0n,
+    fees1: 0n,
+  });
+  // No liquidity means nothing accrues.
+  assert.deepEqual(
+    uncollectedFees({
+      ...args,
+      liquidity: 0n,
+      pool: {
+        ...pool,
+        outsideByTick: { [TICK_LOWER]: [0n, 0n], [TICK_UPPER]: [0n, 0n] },
+      },
     }),
+    { fees0: 0n, fees1: 0n },
+  );
+});
+
+test("tickFeeGrowthEntry rejects uninitialised ticks", () => {
+  const initialized = [0n, 0n, 7n, 9n, 0n, 0n, 0, true] as const;
+  const uninitialized = [0n, 0n, 0n, 0n, 0n, 0n, 0, false] as const;
+  assert.deepEqual(tickFeeGrowthEntry(initialized), [7n, 9n]);
+  assert.equal(tickFeeGrowthEntry(uninitialized), undefined);
+  assert.equal(tickFeeGrowthEntry(undefined), undefined);
+});
+
+test("lpPositionValueUsdcMulti includes uncollected fees when pool fee growth is supplied (#21)", () => {
+  const delta0 = (5n * 10n ** 16n * Q128) / LIQUIDITY; // 0.05 WETH
+  const delta1 = (30_000_000n * Q128) / LIQUIDITY; // 30 USDC
+  const withFees = lpPositionValueUsdcMulti(
+    position({}),
+    tickByPool,
+    fairByBase,
+    {
+      [POOL]: {
+        feeGrowthGlobal0X128: delta0,
+        feeGrowthGlobal1X128: delta1,
+        outsideByTick: { [TICK_LOWER]: [0n, 0n], [TICK_UPPER]: [0n, 0n] },
+      },
+    },
+  );
+  const bare = lpPositionValueUsdcMulti(position({}), tickByPool, fairByBase);
+  assert.ok(Math.abs(withFees - bare - (0.05 * FAIR_WETH + 30)) < 1e-3);
+});
+
+test("lpPositionValueUsdcMulti nets out the position's own fee checkpoint (#21)", () => {
+  // A position that already collected up to half the pool's growth only owns the remainder.
+  const delta = (10n ** 17n * Q128) / LIQUIDITY; // 0.1 WETH of total growth
+  const feeGrowth = {
+    [POOL]: {
+      feeGrowthGlobal0X128: delta,
+      feeGrowthGlobal1X128: 0n,
+      outsideByTick: {
+        [TICK_LOWER]: [0n, 0n] as const,
+        [TICK_UPPER]: [0n, 0n] as const,
+      },
+    },
+  };
+  const fresh = lpPositionValueUsdcMulti(
+    position({}),
+    tickByPool,
+    fairByBase,
+    feeGrowth,
+  );
+  const halfCollected = lpPositionValueUsdcMulti(
+    position({ feeGrowthInside0LastX128: delta / 2n }),
+    tickByPool,
+    fairByBase,
+    feeGrowth,
+  );
+  assert.ok(Math.abs(fresh - halfCollected - 0.05 * FAIR_WETH) < 1e-3);
+});
+
+test("lpPositionValueUsdcMulti leaves fees unmarked when no pool fee growth is supplied", () => {
+  // Documented fallback: without a pool snapshot the value stays at liquidity + tokensOwed rather
+  // than guessing, so callers that cannot batch the extra reads degrade to the pre-#21 number.
+  const accrued = lpPositionValueUsdcMulti(
+    position({ feeGrowthInside0LastX128: 12_345_678_901_234_567_890n }),
     tickByPool,
     fairByBase,
   );

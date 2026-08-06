@@ -24,8 +24,11 @@ import {
   gmxEthUsdPositionValueUsd,
 } from "@eris/sdk/protocols/gmx.js";
 import {
+  type PoolFeeGrowth,
   lpPositionValueUsdcMulti,
   poolPriceUsdcPerWethFromSqrtX96,
+  registeredPoolFor,
+  tickFeeGrowthEntry,
 } from "@eris/sdk/protocols/uniswap.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
@@ -281,6 +284,14 @@ export async function readValueSnapshotAtBlock(opts: {
         })),
         blockNumber,
       );
+      // Issue #21: fees earned since a position's last checkpoint stay in the pool until
+      // poke/collect, so valuing liquidity + tokensOwed alone hides fee income. One extra
+      // cross-section read per block covers every boundary the owned positions touch.
+      const feeGrowthByPool = await readFeeGrowthForPositions(
+        positions,
+        call,
+        blockNumber,
+      );
       owners.forEach(({ agent }, j) => {
         const pos = positions[j];
         if (!pos || tokenIds[j] === undefined) return;
@@ -288,6 +299,7 @@ export async function readValueSnapshotAtBlock(opts: {
           pos as Parameters<typeof lpPositionValueUsdcMulti>[0],
           tickByPool,
           fairByBase,
+          feeGrowthByPool,
         );
         lpValueByAgent.set(
           agent.id,
@@ -342,6 +354,73 @@ export async function readValueSnapshotAtBlock(opts: {
     failedReads,
     values,
   };
+}
+
+type PositionTuple = Parameters<typeof lpPositionValueUsdcMulti>[0];
+
+// Fee-growth cross-section for the pools the given positions sit in (issue #21). Batched into a
+// single extra multicall: two globals per pool plus one ticks() per distinct boundary. Pools whose
+// reads fail are simply absent, which suppresses their fee term instead of marking a wrong number.
+async function readFeeGrowthForPositions(
+  positions: unknown[],
+  call: (
+    contracts: MulticallContract[],
+    blockNumber: bigint,
+  ) => Promise<unknown[]>,
+  blockNumber: bigint,
+): Promise<Record<string, PoolFeeGrowth>> {
+  const pools = new Map<string, { address: Address; ticks: number[] }>();
+  for (const raw of positions) {
+    if (!raw) continue;
+    const [, , token0, token1, fee, tickLower, tickUpper, liquidity] =
+      raw as PositionTuple;
+    if (liquidity <= 0n) continue;
+    const pool = registeredPoolFor(token0, token1, fee);
+    if (!pool) continue;
+    const key = pool.toLowerCase();
+    const entry = pools.get(key) ?? { address: pool, ticks: [] };
+    for (const t of [tickLower, tickUpper])
+      if (!entry.ticks.includes(t)) entry.ticks.push(t);
+    pools.set(key, entry);
+  }
+  if (pools.size === 0) return {};
+
+  const contracts: MulticallContract[] = [];
+  const layout: Array<{ key: string; ticks: number[]; base: number }> = [];
+  for (const [key, { address, ticks }] of pools) {
+    layout.push({ key, ticks, base: contracts.length });
+    contracts.push(
+      { address, abi: poolAbi, functionName: "feeGrowthGlobal0X128" },
+      { address, abi: poolAbi, functionName: "feeGrowthGlobal1X128" },
+      ...ticks.map((t) => ({
+        address,
+        abi: poolAbi,
+        functionName: "ticks",
+        args: [t],
+      })),
+    );
+  }
+  const results = await call(contracts, blockNumber);
+
+  const out: Record<string, PoolFeeGrowth> = {};
+  for (const { key, ticks, base } of layout) {
+    const global0 = results[base] as bigint | undefined;
+    const global1 = results[base + 1] as bigint | undefined;
+    if (global0 === undefined || global1 === undefined) continue;
+    const outsideByTick: Record<number, readonly [bigint, bigint]> = {};
+    ticks.forEach((t, i) => {
+      const entry = tickFeeGrowthEntry(
+        results[base + 2 + i] as Parameters<typeof tickFeeGrowthEntry>[0],
+      );
+      if (entry) outsideByTick[t] = entry;
+    });
+    out[key] = {
+      feeGrowthGlobal0X128: global0,
+      feeGrowthGlobal1X128: global1,
+      outsideByTick,
+    };
+  }
+  return out;
 }
 
 export async function reconstructValueSeries(opts: {
