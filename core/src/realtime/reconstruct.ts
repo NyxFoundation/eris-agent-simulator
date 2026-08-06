@@ -12,7 +12,7 @@
 // ADR 0013: also scores extra bases' (WBTC etc.) spot balances and LP. Under the fork default (base=WETH
 // only), there are no extra reads and it matches the prior behavior exactly (byte-compatible).
 import type { Address, PublicClient } from "viem";
-import { parseAbi } from "viem";
+import { parseAbi, parseAbiItem } from "viem";
 import {
   balancerVaultAbi,
   curveTricryptoAbi,
@@ -27,7 +27,12 @@ import {
   TOKENS,
   UNISWAP,
 } from "@eris/sdk/constants.js";
-import { baseTokens, marketsFor, tokenInfo } from "@eris/sdk/markets.js";
+import {
+  baseTokens,
+  marketsFor,
+  tokenInfo,
+  tokenRegistry,
+} from "@eris/sdk/markets.js";
 import type { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
 import { type PoolReserves, poolShareValueUsdc } from "@eris/sdk/valuation.js";
@@ -127,12 +132,12 @@ export type AgentValueSnapshot = {
   alphaValueUsdc: number;
 };
 
-// A holding excluded from an agent's value because it could not be priced (issue #41). Scoring an
-// unpriceable asset at zero is indistinguishable from a trading loss in summary.json, so the
-// exclusion is reported instead of being applied silently.
+// A holding excluded from an agent's value (issue #41), either because the scorer cannot price it or
+// because nothing sums it. Either way a zero in summary.json is indistinguishable from a trading
+// loss, so the exclusion is reported instead of being applied silently.
 export type UnpricedHolding = {
   agentId: string;
-  // Where the holding came from, e.g. "uniswap-lp:<tokenId>".
+  // Where the holding came from, e.g. "uniswap-lp:<tokenId>" / "balancer-bpt" / "erc20-unaccounted".
   source: string;
   token: Address;
   // Raw token amount, or "" when even the amount could not be derived.
@@ -535,6 +540,125 @@ async function lpTokenVenues(
   return venues;
 }
 
+const transferEvent = parseAbiItem(
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+);
+
+const aaveDataProviderAbi = parseAbi([
+  "function getReserveTokensAddresses(address asset) view returns (address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress)",
+]);
+
+// a/stableDebt/variableDebt token addresses for every registry asset. Cached: they are immutable for
+// a deployment. Reserves that are not listed simply fail their read and are skipped.
+let aaveReserveTokenCache: Address[] | undefined;
+async function aaveReserveTokens(
+  publicClient: PublicClient,
+): Promise<Address[]> {
+  if (aaveReserveTokenCache) return aaveReserveTokenCache;
+  const assets = Object.values(tokenRegistry()).map((t) => t.address);
+  const results = (await publicClient.multicall({
+    contracts: assets.map((asset) => ({
+      address: AAVE.PoolDataProvider,
+      abi: aaveDataProviderAbi,
+      functionName: "getReserveTokensAddresses",
+      args: [asset],
+    })) as never,
+    multicallAddress: MULTICALL3,
+    allowFailure: true,
+  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+  const out: Address[] = [];
+  for (const r of results) {
+    if (r.status !== "success") continue;
+    for (const token of r.result as readonly Address[]) out.push(token);
+  }
+  aaveReserveTokenCache = out;
+  return out;
+}
+
+// Tokens an agent received during the run that nothing in the value computation sums (issue #41).
+//
+// ERC-20 balances cannot be enumerated, so discovery goes through Transfer logs over the run window
+// -- once per agent, not per block. Holdings acquired before fromBlock are out of scope, which is
+// safe because setup funding only ever uses registry tokens. Reporting is deliberately all this
+// does: pricing an arbitrary token would mean extending the registry, and scoring it at zero is the
+// bug being fixed.
+export async function findUnaccountedTokens(opts: {
+  publicClient: PublicClient;
+  agents: ReconstructionAgent[];
+  enabledIds: ProtocolId[];
+  activeStables: Address[];
+  fromBlock: number;
+  toBlock: number;
+}): Promise<UnpricedHolding[]> {
+  const { publicClient, agents, fromBlock, toBlock } = opts;
+  const accounted = new Set<string>();
+  for (const t of baseTokens()) accounted.add(t.address.toLowerCase());
+  for (const s of opts.activeStables) accounted.add(s.toLowerCase());
+  for (const v of await lpTokenVenues(publicClient, opts.enabledIds))
+    accounted.add(v.lpToken.toLowerCase());
+  // ERC-721; already valued through the position enumeration.
+  accounted.add(UNISWAP.nonfungiblePositionManager.toLowerCase());
+  // Aave a/debt tokens are minted to the agent on supply/borrow but their value already arrives
+  // through getUserAccountData's aggregate. Flagging them would be a false positive.
+  if (opts.enabledIds.includes("aave")) {
+    for (const t of await aaveReserveTokens(publicClient))
+      accounted.add(t.toLowerCase());
+  }
+
+  const pairs: Array<{ agent: ReconstructionAgent; token: Address }> = [];
+  for (const agent of agents) {
+    let logs: Awaited<ReturnType<typeof publicClient.getLogs>>;
+    try {
+      logs = await publicClient.getLogs({
+        event: transferEvent,
+        args: { to: agent.address },
+        fromBlock: BigInt(fromBlock),
+        toBlock: BigInt(toBlock),
+        strict: false,
+      });
+    } catch {
+      continue; // discovery is best-effort; never fail a run's scoring over it
+    }
+    const seen = new Set<string>();
+    for (const log of logs) {
+      // ERC-721 shares this topic0 but indexes tokenId as well, giving four topics.
+      if (log.topics.length !== 3) continue;
+      const token = log.address.toLowerCase();
+      if (accounted.has(token) || seen.has(token)) continue;
+      seen.add(token);
+      pairs.push({ agent, token: log.address });
+    }
+  }
+  if (pairs.length === 0) return [];
+
+  const balances = (await publicClient.multicall({
+    contracts: pairs.map(({ agent, token }) => ({
+      address: token,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [agent.address],
+    })) as never,
+    blockNumber: BigInt(toBlock),
+    multicallAddress: MULTICALL3,
+    allowFailure: true,
+  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+
+  const out: UnpricedHolding[] = [];
+  pairs.forEach(({ agent, token }, i) => {
+    const balance = balances[i];
+    if (balance.status !== "success") return;
+    const amount = balance.result as bigint;
+    if (amount <= 0n) return;
+    out.push({
+      agentId: agent.id,
+      source: "erc20-unaccounted",
+      token,
+      amountRaw: amount.toString(),
+    });
+  });
+  return out;
+}
+
 type PositionTuple = Parameters<typeof lpPositionValueUsdcMulti>[0];
 type MulticallFn = (
   contracts: MulticallContract[],
@@ -773,6 +897,22 @@ export async function reconstructValueSeries(opts: {
   const alphaByAgent: Record<string, number> = {};
   for (const { id } of agents)
     alphaByAgent[id] = (alphaLast.get(id) ?? 0) - (alphaFirst.get(id) ?? 0);
+
+  // Issue #41: tokens outside the accounted set are invisible to the per-block cross-section (they
+  // cannot be enumerated), so they are discovered once from the run window's Transfer logs.
+  for (const holding of await findUnaccountedTokens({
+    publicClient,
+    agents,
+    enabledIds,
+    activeStables,
+    fromBlock,
+    toBlock,
+  })) {
+    unpriced.set(
+      `${holding.agentId}|${holding.source}|${holding.token.toLowerCase()}`,
+      holding,
+    );
+  }
 
   const unpricedHoldings = [...unpriced.values()];
   if (unpricedHoldings.length > 0) {
