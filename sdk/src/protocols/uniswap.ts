@@ -21,9 +21,9 @@ import {
   marketFor,
   marketsFor,
   tokenInfo,
-  tokenInfoByAddress,
   type MarketConfig,
 } from "../markets.js";
+import { tokenAmountUsd, type UnpricedAmount } from "../valuation.js";
 import { resolveMarket } from "./marketHelpers.js";
 import type {
   AgentObservation,
@@ -811,21 +811,8 @@ export type LpPositionValuation = {
   valueUsdc: number;
   // Holdings excluded from valueUsdc because they could not be priced. amountRaw is "" when even the
   // amounts are unknown (the pool, and therefore the tick, could not be resolved).
-  unpriced: Array<{ token: Address; amountRaw: string }>;
+  unpriced: UnpricedAmount[];
 };
-
-// USD value of a raw token amount, or undefined when the token is outside the registry (unpriceable).
-function tokenAmountUsd(
-  token: Address,
-  amount: bigint,
-  fairByBase: Record<string, number>,
-): number | undefined {
-  const info = tokenInfoByAddress(token);
-  if (!info) return undefined;
-  const price = info.kind === "stable" ? 1 : fairByBase[info.symbol];
-  if (price === undefined) return undefined;
-  return Number(formatUnits(amount, info.decimals)) * price;
-}
 
 // Value one LP position from the raw positions(tokenId) tuple, in any pool.
 export function lpPositionValuation(

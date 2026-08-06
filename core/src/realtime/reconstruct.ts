@@ -13,12 +13,27 @@
 // only), there are no extra reads and it matches the prior behavior exactly (byte-compatible).
 import type { Address, PublicClient } from "viem";
 import { parseAbi } from "viem";
-import { erc20Abi, poolAbi, uniswapV3FactoryAbi } from "@eris/sdk/abis.js";
-import { AAVE, MULTICALL3, TOKENS, UNISWAP } from "@eris/sdk/constants.js";
+import {
+  balancerVaultAbi,
+  curveTricryptoAbi,
+  erc20Abi,
+  poolAbi,
+  uniswapV3FactoryAbi,
+} from "@eris/sdk/abis.js";
+import {
+  AAVE,
+  BALANCER,
+  MULTICALL3,
+  TOKENS,
+  UNISWAP,
+} from "@eris/sdk/constants.js";
 import { baseTokens, marketsFor, tokenInfo } from "@eris/sdk/markets.js";
 import type { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
+import { type PoolReserves, poolShareValueUsdc } from "@eris/sdk/valuation.js";
 import { aavePoolAbi } from "@eris/sdk/protocols/aave.js";
+import { balancerPools } from "@eris/sdk/protocols/balancer.js";
+import { resolveCurvePools } from "@eris/sdk/protocols/curve.js";
 import {
   gmxAccountPositionsCall,
   gmxEthUsdPositionValueUsd,
@@ -78,6 +93,7 @@ type MulticallContract = {
 function perAgentReads(opts: {
   extraBaseCount: number;
   activeStables: Address[];
+  lpTokenCount: number;
   hasUniswap: boolean;
   hasAave: boolean;
   hasGmx: boolean;
@@ -87,6 +103,7 @@ function perAgentReads(opts: {
     1 + // WETH
     opts.extraBaseCount + // extra base balances (WBTC etc.)
     opts.activeStables.length +
+    opts.lpTokenCount + // balancer BPT / curve LP balances (issue #41)
     (opts.hasAave ? 1 : 0) +
     (opts.hasGmx ? 1 : 0) +
     (opts.hasUniswap ? 1 : 0) // LP NFT balanceOf
@@ -172,10 +189,14 @@ export async function readValueSnapshotAtBlock(opts: {
     .map((t) => t.symbol)
     .filter((s) => s !== "WETH");
   const uniMarkets = hasUniswap ? marketsFor("uniswap") : [];
+  // Issue #41: balancer BPT / curve LP holdings. Reserves and supply are shared reads (head), the
+  // per-agent balance rides in the existing per-agent group, so no extra round trip is added.
+  const lpVenues = await lpTokenVenues(publicClient, enabledIds);
 
   const perAgent = perAgentReads({
     extraBaseCount: extraBases.length,
     activeStables,
+    lpTokenCount: lpVenues.length,
     hasUniswap,
     hasAave,
     hasGmx,
@@ -206,6 +227,8 @@ export async function readValueSnapshotAtBlock(opts: {
       functionName: "slot0",
     });
   }
+  const lpHeadBase = head.length; // start index of the LP-token reserve group
+  for (const venue of lpVenues) head.push(...venue.reserveReads);
 
   const contracts: MulticallContract[] = [...head];
   for (const agent of agents) {
@@ -230,6 +253,12 @@ export async function readValueSnapshotAtBlock(opts: {
       })),
       ...activeStables.map((token) => ({
         address: token,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [agent.address],
+      })),
+      ...lpVenues.map((venue) => ({
+        address: venue.lpToken,
         abi: erc20Abi,
         functionName: "balanceOf",
         args: [agent.address],
@@ -272,6 +301,15 @@ export async function readValueSnapshotAtBlock(opts: {
     if (m.base === "WETH") {
       poolPriceUsdcPerWeth = poolPriceUsdcPerWethFromSqrtX96(s[0]);
     }
+  });
+
+  // Reserves behind each balancer/curve LP token (issue #41). A venue whose reserves could not be
+  // read decodes to undefined, which makes any holding of it reported rather than valued.
+  let lpCursor = lpHeadBase;
+  const lpReserves = lpVenues.map((venue) => {
+    const slice = results.slice(lpCursor, lpCursor + venue.reserveReads.length);
+    lpCursor += venue.reserveReads.length;
+    return venue.decode(slice);
   });
 
   // LP enumeration (2nd/3rd stage multicall): for agents holding an NFT, look up tokenId → positions
@@ -361,10 +399,32 @@ export async function readValueSnapshotAtBlock(opts: {
     for (let s = 0; s < activeStables.length; s++) {
       usdcUnits += (results[idx++] as bigint) ?? 0n;
     }
+    // Issue #41: balancer BPT / curve LP holdings, valued as the proportional share of the pool's
+    // reserves. Marked live in both evaluations, like the other protocol positions.
+    let lpTokenUsd = 0;
+    lpVenues.forEach((venue, v) => {
+      const lpBalance = (results[idx++] as bigint) ?? 0n;
+      if (lpBalance <= 0n) return;
+      const reserves = lpReserves[v];
+      if (!reserves) {
+        unpriced.push({
+          agentId: agent.id,
+          source: venue.source,
+          token: venue.lpToken,
+          amountRaw: lpBalance.toString(),
+        });
+        return;
+      }
+      const share = poolShareValueUsdc(reserves, lpBalance, fairByBase);
+      lpTokenUsd += share.valueUsdc;
+      for (const holding of share.unpriced) {
+        unpriced.push({ agentId: agent.id, source: venue.source, ...holding });
+      }
+    });
     const balance = { ethWei, wethWei, usdcUnits, bases };
     // Evaluate free inventory two ways: at live fair (β-inclusive) and at the fixed reference fair (β-removed).
-    let total = valueUsdc(balance, fairByBase);
-    let alphaTotal = valueUsdc(balance, refFairByBase);
+    let total = valueUsdc(balance, fairByBase) + lpTokenUsd;
+    let alphaTotal = valueUsdc(balance, refFairByBase) + lpTokenUsd;
     if (hasAave) {
       const account = results[idx++] as readonly bigint[] | undefined;
       // aave collateral − debt is USD 8-decimals. The position is a live mark in both evaluations (β removal applies to free inventory only).
@@ -393,6 +453,86 @@ export async function readValueSnapshotAtBlock(opts: {
     values,
     unpriced,
   };
+}
+
+// An LP token an agent can hold (balancer BPT / curve LP). reserveReads go into the shared head of
+// the cross-section multicall and decode() turns that slice into the pool's reserves, so valuing the
+// holding costs one extra entry per agent and no extra round trip.
+type LpTokenVenue = {
+  lpToken: Address;
+  // Recorded on unpriced holdings, e.g. "balancer-bpt" / "curve-lp".
+  source: string;
+  reserveReads: MulticallContract[];
+  decode: (slice: unknown[]) => PoolReserves | undefined;
+};
+
+async function lpTokenVenues(
+  publicClient: PublicClient,
+  enabledIds: ProtocolId[],
+): Promise<LpTokenVenue[]> {
+  const venues: LpTokenVenue[] = [];
+  if (enabledIds.includes("balancer")) {
+    for (const { poolId, bpt } of balancerPools()) {
+      venues.push({
+        lpToken: bpt,
+        source: "balancer-bpt",
+        reserveReads: [
+          {
+            address: BALANCER.vault,
+            abi: balancerVaultAbi,
+            functionName: "getPoolTokens",
+            args: [poolId],
+          },
+          { address: bpt, abi: erc20Abi, functionName: "totalSupply" },
+        ],
+        decode: ([poolTokens, totalSupply]) => {
+          const pt = poolTokens as
+            | readonly [readonly Address[], readonly bigint[], bigint]
+            | undefined;
+          if (!pt || typeof totalSupply !== "bigint") return undefined;
+          return {
+            tokens: [...pt[0]],
+            balances: [...pt[1]],
+            totalSupply,
+          };
+        },
+      });
+    }
+  }
+  if (enabledIds.includes("curve")) {
+    for (const shape of await resolveCurvePools(publicClient)) {
+      const coinCount = shape.coins.length;
+      venues.push({
+        lpToken: shape.lpToken,
+        source: "curve-lp",
+        reserveReads: [
+          ...shape.coins.map((_, i) => ({
+            address: shape.pool,
+            abi: curveTricryptoAbi,
+            functionName: "balances",
+            args: [BigInt(i)],
+          })),
+          {
+            address: shape.lpToken,
+            abi: erc20Abi,
+            functionName: "totalSupply",
+          },
+        ],
+        decode: (slice) => {
+          const totalSupply = slice[coinCount];
+          if (typeof totalSupply !== "bigint") return undefined;
+          const balances = slice.slice(0, coinCount);
+          if (balances.some((b) => typeof b !== "bigint")) return undefined;
+          return {
+            tokens: shape.coins,
+            balances: balances as bigint[],
+            totalSupply,
+          };
+        },
+      });
+    }
+  }
+  return venues;
 }
 
 type PositionTuple = Parameters<typeof lpPositionValueUsdcMulti>[0];

@@ -195,6 +195,28 @@ export async function getBalancerState(
   };
 }
 
+// ---------------------------------------------------------------------------
+// BPT holdings (issue #41)
+//
+// joinPool is reachable through rawTx, and a BPT balance used to contribute nothing to an agent's
+// value — providing liquidity here read as losing the stake outright. The BPT is the pool contract
+// itself, whose address is the leading 20 bytes of the poolId.
+// ---------------------------------------------------------------------------
+
+export function bptAddressOf(poolId: Hex): Address {
+  return `0x${poolId.slice(2, 42)}` as Address;
+}
+
+// Distinct pools an agent could hold BPT for, across the configured balancer markets.
+export function balancerPools(): Array<{ poolId: Hex; bpt: Address }> {
+  const out = new Map<string, { poolId: Hex; bpt: Address }>();
+  for (const m of marketsFor("balancer")) {
+    const { poolId } = legOf(m);
+    out.set(poolId.toLowerCase(), { poolId, bpt: bptAddressOf(poolId) });
+  }
+  return [...out.values()];
+}
+
 function applySlippage(amount: bigint, slippageBps: number): bigint {
   return (amount * BigInt(10_000 - slippageBps)) / 10_000n;
 }

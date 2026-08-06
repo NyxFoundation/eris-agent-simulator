@@ -5,6 +5,8 @@ export const erc20Abi = parseAbi([
   "function approve(address spender, uint256 amount) returns (bool)",
   "function transfer(address to, uint256 amount) returns (bool)",
   "function allowance(address owner, address spender) view returns (uint256)",
+  // LP-token share valuation (issue #41).
+  "function totalSupply() view returns (uint256)",
 ]);
 
 export const wethAbi = parseAbi([
@@ -63,4 +65,7 @@ export const curveTricryptoAbi = parseAbi([
   "function exchange(uint256 i, uint256 j, uint256 dx, uint256 min_dy)",
   "function coins(uint256 i) view returns (address)",
   "function balances(uint256 i) view returns (uint256)",
+  // LP-token share valuation (issue #41). Older tricrypto pools mint a separate LP token; the
+  // twocrypto-ng pools used locally are their own ERC-20, where token() does not exist.
+  "function token() view returns (address)",
 ]);

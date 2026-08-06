@@ -1,4 +1,4 @@
-import { encodeFunctionData, type PublicClient } from "viem";
+import { encodeFunctionData, type Address, type PublicClient } from "viem";
 import { curveTricryptoAbi } from "../abis.js";
 import { CURVE, TOKENS, stableBalanceOf } from "../constants.js";
 import {
@@ -57,6 +57,76 @@ function wethMarket(): MarketConfig {
 function legOf(market: MarketConfig): CurveLeg {
   if (!market.curve) throw new Error(`curve: market ${market.key} has no leg`);
   return market.curve;
+}
+
+// ---------------------------------------------------------------------------
+// LP-token holdings (issue #41)
+//
+// add_liquidity is reachable through rawTx, and an LP-token balance used to contribute nothing to an
+// agent's value. Pricing the share needs the pool's coin list and its LP token, both immutable for a
+// deployment — so they are resolved once and cached rather than re-read for every block reconstruct
+// walks back over.
+// ---------------------------------------------------------------------------
+
+export type CurvePoolShape = {
+  pool: Address;
+  lpToken: Address;
+  coins: Address[];
+};
+
+// Highest coin count probed. Curve pools in this sim are 2 (twocrypto-ng) or 3 (tricrypto) coins.
+const MAX_CURVE_COINS = 4;
+
+const shapeCache = new Map<string, CurvePoolShape>();
+
+async function resolveCurvePool(
+  publicClient: PublicClient,
+  pool: Address,
+): Promise<CurvePoolShape | undefined> {
+  const cached = shapeCache.get(pool.toLowerCase());
+  if (cached) return cached;
+  const coins: Address[] = [];
+  for (let i = 0; i < MAX_CURVE_COINS; i++) {
+    try {
+      coins.push(
+        (await publicClient.readContract({
+          address: pool,
+          abi: curveTricryptoAbi,
+          functionName: "coins",
+          args: [BigInt(i)],
+        })) as Address,
+      );
+    } catch {
+      break; // coins(i) reverts past the last coin
+    }
+  }
+  if (coins.length === 0) return undefined;
+  // Older tricrypto pools mint a separate LP token; twocrypto-ng pools are their own ERC-20.
+  const lpToken = await publicClient
+    .readContract({
+      address: pool,
+      abi: curveTricryptoAbi,
+      functionName: "token",
+    })
+    .then((t) => t as Address)
+    .catch(() => pool);
+  const shape = { pool, lpToken, coins };
+  shapeCache.set(pool.toLowerCase(), shape);
+  return shape;
+}
+
+// Shapes of every distinct pool across the configured curve markets. Pools that cannot be read are
+// omitted, so their holdings are reported as unpriced instead of being marked wrong.
+export async function resolveCurvePools(
+  publicClient: PublicClient,
+): Promise<CurvePoolShape[]> {
+  const pools = new Map<string, Address>();
+  for (const m of marketsFor("curve"))
+    pools.set(legOf(m).pool.toLowerCase(), legOf(m).pool);
+  const shapes = await Promise.all(
+    [...pools.values()].map((p) => resolveCurvePool(publicClient, p)),
+  );
+  return shapes.filter((s): s is CurvePoolShape => s !== undefined);
 }
 
 // Use 0.1 base unit as the probe (small amount to limit slippage impact; price is recovered as output/probe).
