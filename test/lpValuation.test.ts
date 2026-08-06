@@ -14,8 +14,10 @@ import type { Address } from "viem";
 import {
   feeGrowthInsideX128,
   liquidityToTokenAmounts,
+  lpPositionValuation,
   lpPositionValueUsdc,
   lpPositionValueUsdcMulti,
+  positionPoolKey,
   tickFeeGrowthEntry,
   uncollectedFees,
 } from "@eris/sdk/protocols/uniswap.js";
@@ -118,34 +120,70 @@ test("lpPositionValueUsdcMulti values an out-of-range position on one side only"
   assert.ok(Math.abs(below - expectedPrincipalUsdc(TICK_LOWER - 500)) < 1e-6);
 });
 
-test("lpPositionValueUsdcMulti falls back to tick 0 when the pool tick is unknown", () => {
-  // tick 0 is far above the WETH/USDC range, so the position reads as all-USDC. This is a latent
-  // trap (a missing tick silently mis-values rather than failing) but is pinned as current behaviour.
-  const value = lpPositionValueUsdcMulti(position({}), {}, fairByBase);
-  assert.ok(Math.abs(value - expectedPrincipalUsdc(0)) < 1e-6);
+test("lpPositionValuation reports a position whose pool tick is unknown rather than marking it", () => {
+  // tick 0 is far above the WETH/USDC range, so a tick-0 fallback would read as all-USDC — a silent
+  // mis-mark. Without a tick the amounts are unknowable, so the position is reported instead.
+  const valuation = lpPositionValuation(position({}), {
+    tickByPool: {},
+    fairByBase,
+  });
+  assert.equal(valuation.valueUsdc, 0);
+  assert.deepEqual(
+    valuation.unpriced.map((u) => u.token),
+    [WETH, USDC],
+  );
+  assert.ok(valuation.unpriced.every((u) => u.amountRaw === ""));
 });
 
-test("PINS CURRENT BUG (#41): a position in an unregistered pool is valued at exactly zero", () => {
-  // Same token pair, different fee tier -> not in MARKET_LEGS -> scored as a total loss.
-  const otherFeeTier = lpPositionValueUsdcMulti(
-    position({ fee: 3000 }),
-    {
-      ...tickByPool,
-      "0x0000000000000000000000000000000000000dead": TICK_IN_RANGE,
-    },
+test("lpPositionValuation values a position in an unregistered pool (#41)", () => {
+  // Same token pair, different fee tier: not in MARKET_LEGS, but the caller resolved the pool
+  // through the factory. It must be worth the same as the registered-market position.
+  const otherPool = "0x00000000000000000000000000000000000dead01" as Address;
+  const valuation = lpPositionValuation(position({ fee: 3000 }), {
+    tickByPool: { [otherPool.toLowerCase()]: TICK_IN_RANGE },
     fairByBase,
+    poolByKey: { [positionPoolKey(WETH, USDC, 3000)]: otherPool },
+  });
+  assert.deepEqual(valuation.unpriced, []);
+  assert.ok(
+    Math.abs(valuation.valueUsdc - expectedPrincipalUsdc(TICK_IN_RANGE)) < 1e-6,
   );
-  assert.equal(otherFeeTier, 0);
+});
 
-  // Unregistered token pair likewise.
-  const unknownPair = lpPositionValueUsdcMulti(
-    position({
-      token1: "0x0000000000000000000000000000000000000001" as Address,
-    }),
-    tickByPool,
-    fairByBase,
+test("lpPositionValuation prices the known side and reports the unknown one (#41)", () => {
+  // A pool of WETH against a token outside the registry: the WETH leg still counts, and the
+  // unpriceable leg is reported rather than silently valued at zero.
+  const unknownToken = "0x00000000000000000000000000000000000000ff" as Address;
+  const pool = "0x00000000000000000000000000000000000dead02" as Address;
+  const valuation = lpPositionValuation(
+    position({ token1: unknownToken, fee: 3000 }),
+    {
+      tickByPool: { [pool.toLowerCase()]: TICK_IN_RANGE },
+      fairByBase,
+      poolByKey: { [positionPoolKey(WETH, unknownToken, 3000)]: pool },
+    },
   );
-  assert.equal(unknownPair, 0);
+  const { amount0, amount1 } = liquidityToTokenAmounts({
+    liquidity: LIQUIDITY,
+    tick: TICK_IN_RANGE,
+    tickLower: TICK_LOWER,
+    tickUpper: TICK_UPPER,
+  });
+  assert.ok(
+    Math.abs(valuation.valueUsdc - (Number(amount0) / 1e18) * FAIR_WETH) < 1e-6,
+  );
+  assert.deepEqual(valuation.unpriced, [
+    { token: unknownToken, amountRaw: amount1.toString() },
+  ]);
+});
+
+test("lpPositionValueUsdcMulti still returns zero for a pool it cannot resolve", () => {
+  // The registered-market wrapper has no factory lookup, so an unregistered pool has no tick and
+  // values to zero. Only reconstruct (which resolves pools) sees the #41 fix.
+  assert.equal(
+    lpPositionValueUsdcMulti(position({ fee: 3000 }), tickByPool, fairByBase),
+    0,
+  );
 });
 
 // ---------------------------------------------------------------------------

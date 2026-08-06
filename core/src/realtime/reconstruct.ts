@@ -13,7 +13,7 @@
 // only), there are no extra reads and it matches the prior behavior exactly (byte-compatible).
 import type { Address, PublicClient } from "viem";
 import { parseAbi } from "viem";
-import { erc20Abi, poolAbi } from "@eris/sdk/abis.js";
+import { erc20Abi, poolAbi, uniswapV3FactoryAbi } from "@eris/sdk/abis.js";
 import { AAVE, MULTICALL3, TOKENS, UNISWAP } from "@eris/sdk/constants.js";
 import { baseTokens, marketsFor, tokenInfo } from "@eris/sdk/markets.js";
 import type { RunLogger } from "../logger.js";
@@ -25,10 +25,13 @@ import {
 } from "@eris/sdk/protocols/gmx.js";
 import {
   type PoolFeeGrowth,
+  lpPositionValuation,
   lpPositionValueUsdcMulti,
   poolPriceUsdcPerWethFromSqrtX96,
+  positionPoolKey,
   registeredPoolFor,
   tickFeeGrowthEntry,
+  uniswapFactory,
 } from "@eris/sdk/protocols/uniswap.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
@@ -59,6 +62,8 @@ export type ReconstructionMeta = {
   alphaRefFairUsdcPerWeth: number;
   // agent -> α (= value at the fixed reference fair, toBlock − fromBlock; β-removed trade-derived PnL).
   alphaByAgent: Record<string, number>;
+  // Holdings excluded from the value series because they could not be priced (issue #41).
+  unpricedHoldings: UnpricedHolding[];
 };
 
 type MulticallContract = {
@@ -105,6 +110,18 @@ export type AgentValueSnapshot = {
   alphaValueUsdc: number;
 };
 
+// A holding excluded from an agent's value because it could not be priced (issue #41). Scoring an
+// unpriceable asset at zero is indistinguishable from a trading loss in summary.json, so the
+// exclusion is reported instead of being applied silently.
+export type UnpricedHolding = {
+  agentId: string;
+  // Where the holding came from, e.g. "uniswap-lp:<tokenId>".
+  source: string;
+  token: Address;
+  // Raw token amount, or "" when even the amount could not be derived.
+  amountRaw: string;
+};
+
 export type ValueSnapshot = {
   blockNumber: number;
   fairPriceUsdcPerWeth: number;
@@ -112,6 +129,7 @@ export type ValueSnapshot = {
   poolPriceUsdcPerWeth: number | null;
   failedReads: number;
   values: AgentValueSnapshot[];
+  unpriced: UnpricedHolding[];
 };
 
 export async function readValueSnapshotAtBlock(opts: {
@@ -258,6 +276,7 @@ export async function readValueSnapshotAtBlock(opts: {
 
   // LP enumeration (2nd/3rd stage multicall): for agents holding an NFT, look up tokenId → positions
   const lpValueByAgent = new Map<string, number>();
+  const unpriced: UnpricedHolding[] = [];
   if (hasUniswap) {
     const owners: Array<{ agent: ReconstructionAgent; index: bigint }> = [];
     agents.forEach((agent, i) => {
@@ -284,26 +303,45 @@ export async function readValueSnapshotAtBlock(opts: {
         })),
         blockNumber,
       );
+      // Issue #41: a position may sit in a pool outside MARKET_LEGS (another fee tier, an
+      // unregistered pair). Resolve those through the factory and read their tick, so they are
+      // valued rather than scored as a total loss. No extra reads when there are none.
+      const poolByKey = await resolveUnregisteredPools({
+        publicClient,
+        positions,
+        call,
+        blockNumber,
+        tickByPool,
+      });
       // Issue #21: fees earned since a position's last checkpoint stay in the pool until
       // poke/collect, so valuing liquidity + tokensOwed alone hides fee income. One extra
       // cross-section read per block covers every boundary the owned positions touch.
       const feeGrowthByPool = await readFeeGrowthForPositions(
         positions,
+        poolByKey,
         call,
         blockNumber,
       );
       owners.forEach(({ agent }, j) => {
         const pos = positions[j];
         if (!pos || tokenIds[j] === undefined) return;
-        const value = lpPositionValueUsdcMulti(
-          pos as Parameters<typeof lpPositionValueUsdcMulti>[0],
+        const valuation = lpPositionValuation(pos as PositionTuple, {
           tickByPool,
           fairByBase,
+          poolByKey,
           feeGrowthByPool,
-        );
+        });
+        for (const holding of valuation.unpriced) {
+          unpriced.push({
+            agentId: agent.id,
+            source: `uniswap-lp:${tokenIds[j]}`,
+            token: holding.token,
+            amountRaw: holding.amountRaw,
+          });
+        }
         lpValueByAgent.set(
           agent.id,
-          (lpValueByAgent.get(agent.id) ?? 0) + value,
+          (lpValueByAgent.get(agent.id) ?? 0) + valuation.valueUsdc,
         );
       });
     }
@@ -353,20 +391,92 @@ export async function readValueSnapshotAtBlock(opts: {
     poolPriceUsdcPerWeth,
     failedReads,
     values,
+    unpriced,
   };
 }
 
 type PositionTuple = Parameters<typeof lpPositionValueUsdcMulti>[0];
+type MulticallFn = (
+  contracts: MulticallContract[],
+  blockNumber: bigint,
+) => Promise<unknown[]>;
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+// Resolve the pools of positions that are not in MARKET_LEGS (issue #41) and record their ticks in
+// tickByPool, so the scorer values them instead of returning zero. Costs two extra round trips only
+// when such a position exists; a run where every position is in a registered market pays nothing.
+async function resolveUnregisteredPools(opts: {
+  publicClient: PublicClient;
+  positions: unknown[];
+  call: MulticallFn;
+  blockNumber: bigint;
+  tickByPool: Record<string, number>;
+}): Promise<Record<string, Address>> {
+  const wanted = new Map<
+    string,
+    { token0: Address; token1: Address; fee: number }
+  >();
+  for (const raw of opts.positions) {
+    if (!raw) continue;
+    const [, , token0, token1, fee] = raw as PositionTuple;
+    if (registeredPoolFor(token0, token1, fee)) continue;
+    wanted.set(positionPoolKey(token0, token1, fee), { token0, token1, fee });
+  }
+  if (wanted.size === 0) return {};
+  const factory = await uniswapFactory(opts.publicClient);
+  if (!factory) return {};
+
+  const keys = [...wanted.keys()];
+  const addresses = await opts.call(
+    keys.map((k) => {
+      const { token0, token1, fee } = wanted.get(k) as {
+        token0: Address;
+        token1: Address;
+        fee: number;
+      };
+      return {
+        address: factory,
+        abi: uniswapV3FactoryAbi,
+        functionName: "getPool",
+        args: [token0, token1, fee],
+      };
+    }),
+    opts.blockNumber,
+  );
+
+  const poolByKey: Record<string, Address> = {};
+  const discovered: Address[] = [];
+  keys.forEach((k, i) => {
+    const pool = addresses[i] as Address | undefined;
+    if (!pool || pool.toLowerCase() === ZERO_ADDRESS) return;
+    poolByKey[k] = pool;
+    discovered.push(pool);
+  });
+  if (discovered.length === 0) return poolByKey;
+
+  const slots = await opts.call(
+    discovered.map((pool) => ({
+      address: pool,
+      abi: poolAbi,
+      functionName: "slot0",
+    })),
+    opts.blockNumber,
+  );
+  discovered.forEach((pool, i) => {
+    const slot0 = slots[i] as readonly [bigint, number] | undefined;
+    if (slot0) opts.tickByPool[pool.toLowerCase()] = Number(slot0[1]);
+  });
+  return poolByKey;
+}
 
 // Fee-growth cross-section for the pools the given positions sit in (issue #21). Batched into a
 // single extra multicall: two globals per pool plus one ticks() per distinct boundary. Pools whose
 // reads fail are simply absent, which suppresses their fee term instead of marking a wrong number.
 async function readFeeGrowthForPositions(
   positions: unknown[],
-  call: (
-    contracts: MulticallContract[],
-    blockNumber: bigint,
-  ) => Promise<unknown[]>,
+  poolByKey: Record<string, Address>,
+  call: MulticallFn,
   blockNumber: bigint,
 ): Promise<Record<string, PoolFeeGrowth>> {
   const pools = new Map<string, { address: Address; ticks: number[] }>();
@@ -375,7 +485,9 @@ async function readFeeGrowthForPositions(
     const [, , token0, token1, fee, tickLower, tickUpper, liquidity] =
       raw as PositionTuple;
     if (liquidity <= 0n) continue;
-    const pool = registeredPoolFor(token0, token1, fee);
+    const pool =
+      registeredPoolFor(token0, token1, fee) ??
+      poolByKey[positionPoolKey(token0, token1, fee)];
     if (!pool) continue;
     const key = pool.toLowerCase();
     const entry = pools.get(key) ?? { address: pool, ticks: [] };
@@ -476,6 +588,10 @@ export async function reconstructValueSeries(opts: {
 
   const alphaFirst = new Map<string, number>();
   const alphaLast = new Map<string, number>();
+  // Issue #41: holdings the scorer could not price. Deduplicated across the run window (they persist
+  // block to block) and emitted once at the end, so a zero in summary.json is never mistaken for a
+  // trading loss. Keyed by agent + source + token; amountRaw is the last one seen.
+  const unpriced = new Map<string, UnpricedHolding>();
   for (let b = fromBlock; b <= toBlock; b++) {
     const snapshot = await readValueSnapshotAtBlock({
       publicClient,
@@ -487,6 +603,9 @@ export async function reconstructValueSeries(opts: {
       refFairByBase,
     });
     failedReads += snapshot.failedReads;
+    for (const h of snapshot.unpriced) {
+      unpriced.set(`${h.agentId}|${h.source}|${h.token.toLowerCase()}`, h);
+    }
     for (const { id, valueUsdc: total, alphaValueUsdc } of snapshot.values) {
       if (!alphaFirst.has(id)) alphaFirst.set(id, alphaValueUsdc);
       alphaLast.set(id, alphaValueUsdc);
@@ -515,6 +634,18 @@ export async function reconstructValueSeries(opts: {
   for (const { id } of agents)
     alphaByAgent[id] = (alphaLast.get(id) ?? 0) - (alphaFirst.get(id) ?? 0);
 
+  const unpricedHoldings = [...unpriced.values()];
+  if (unpricedHoldings.length > 0) {
+    logger.event({
+      type: "scoring_unpriced_holdings",
+      holdings: unpricedHoldings,
+    });
+    console.warn(
+      `[reconstruct] ${unpricedHoldings.length} holding(s) could not be priced and are excluded ` +
+        "from agent value (see scoring_unpriced_holdings in events.jsonl); a zero here is not a trading loss",
+    );
+  }
+
   return {
     source: "post-run-reconstruction",
     granularityBlocks: 1,
@@ -525,6 +656,7 @@ export async function reconstructValueSeries(opts: {
     elapsedMs: Date.now() - started,
     alphaRefFairUsdcPerWeth: refFairByBase.WETH,
     alphaByAgent,
+    unpricedHoldings,
   };
 }
 

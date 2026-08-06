@@ -21,6 +21,7 @@ import {
   marketFor,
   marketsFor,
   tokenInfo,
+  tokenInfoByAddress,
   type MarketConfig,
 } from "../markets.js";
 import { resolveMarket } from "./marketHelpers.js";
@@ -656,6 +657,30 @@ export async function readPoolFeeGrowth(
   return out;
 }
 
+// The V3 factory backing the position manager, used to resolve pools outside the registered market
+// set (issue #41). Cached per NPM address: it is immutable for a given deployment, and reconstruct
+// would otherwise re-read it once per block of the run window.
+const factoryByNpm = new Map<string, Address>();
+
+export async function uniswapFactory(
+  publicClient: PublicClient,
+): Promise<Address | undefined> {
+  const npm = UNISWAP.nonfungiblePositionManager.toLowerCase();
+  const cached = factoryByNpm.get(npm);
+  if (cached) return cached;
+  try {
+    const factory = (await publicClient.readContract({
+      address: UNISWAP.nonfungiblePositionManager,
+      abi: nonfungiblePositionManagerAbi,
+      functionName: "factory",
+    })) as Address;
+    factoryByNpm.set(npm, factory);
+    return factory;
+  } catch {
+    return undefined;
+  }
+}
+
 // The pool a position's (token0, token1, fee) trades in, when that pool is a registered market.
 export function registeredPoolFor(
   token0: Address,
@@ -751,16 +776,62 @@ export function lpPositionValueUsdc(
   );
 }
 
-// For reconstruct (scoring): resolve the position's market and derive an all-base LP value (WBTC/USDC etc.)
-// using tickByPool and fairByBase. On the default fork (WETH only) this matches lpPositionValueUsdc.
-export function lpPositionValueUsdcMulti(
-  position: Parameters<typeof lpPositionValueUsdc>[0],
-  tickByPool: Record<string, number>,
+// ---------------------------------------------------------------------------
+// General LP valuation (issue #41)
+//
+// The scorer used to value only positions whose (token0, token1, fee) matched a registered market
+// and return 0 for everything else, so an agent that provided liquidity in another fee tier or pair
+// read as having lost the entire stake. Valuation is now driven by the position's own tokens: any
+// pool the agent holds an NFT for is valued, and only genuinely unpriceable tokens are excluded --
+// and those are reported rather than silently zeroed.
+// ---------------------------------------------------------------------------
+
+// Identifies a Uniswap V3 pool by the tuple the NPM stores, for callers that must resolve pools they
+// do not have in MARKET_LEGS (via the factory).
+export function positionPoolKey(
+  token0: Address,
+  token1: Address,
+  fee: number,
+): string {
+  return `${token0.toLowerCase()}-${token1.toLowerCase()}-${fee}`;
+}
+
+export type LpValuationContext = {
+  // lowercased pool address -> current tick.
+  tickByPool: Record<string, number>;
+  // base symbol -> USD price. Stables are $1 and do not appear here.
+  fairByBase: Record<string, number>;
+  // positionPoolKey -> pool address, for pools outside the registered market set.
+  poolByKey?: Record<string, Address>;
+  // Issue #21: pool fee growth keyed by lowercased pool address. Omitted -> fees are not marked.
+  feeGrowthByPool?: Record<string, PoolFeeGrowth>;
+};
+
+export type LpPositionValuation = {
+  valueUsdc: number;
+  // Holdings excluded from valueUsdc because they could not be priced. amountRaw is "" when even the
+  // amounts are unknown (the pool, and therefore the tick, could not be resolved).
+  unpriced: Array<{ token: Address; amountRaw: string }>;
+};
+
+// USD value of a raw token amount, or undefined when the token is outside the registry (unpriceable).
+function tokenAmountUsd(
+  token: Address,
+  amount: bigint,
   fairByBase: Record<string, number>,
-  // Issue #21: pool fee growth keyed by lowercased pool address. Omitted -> uncollected fees are
-  // not marked (the position values at liquidity + tokensOwed, as before).
-  feeGrowthByPool?: Record<string, PoolFeeGrowth>,
-): number {
+): number | undefined {
+  const info = tokenInfoByAddress(token);
+  if (!info) return undefined;
+  const price = info.kind === "stable" ? 1 : fairByBase[info.symbol];
+  if (price === undefined) return undefined;
+  return Number(formatUnits(amount, info.decimals)) * price;
+}
+
+// Value one LP position from the raw positions(tokenId) tuple, in any pool.
+export function lpPositionValuation(
+  position: Parameters<typeof lpPositionValueUsdc>[0],
+  ctx: LpValuationContext,
+): LpPositionValuation {
   const [
     ,
     ,
@@ -775,11 +846,23 @@ export function lpPositionValueUsdcMulti(
     tokensOwed0,
     tokensOwed1,
   ] = position;
-  const market = positionMarketOf(token0, token1, fee, marketsFor("uniswap"));
-  if (!market) return 0;
-  const { baseIsToken0 } = sortedTokensFor(market);
-  const pool = legOf(market).pool.toLowerCase();
-  const tick = tickByPool[pool] ?? 0;
+  const pool =
+    registeredPoolFor(token0, token1, fee) ??
+    ctx.poolByKey?.[positionPoolKey(token0, token1, fee)];
+  const key = pool?.toLowerCase();
+  const tick = key === undefined ? undefined : ctx.tickByPool[key];
+  // Without a tick the liquidity cannot be split into token amounts. Falling back to tick 0 would
+  // silently mis-value the position (it reads as entirely one-sided), so report it instead.
+  if (tick === undefined) {
+    return {
+      valueUsdc: 0,
+      unpriced: [
+        { token: token0, amountRaw: "" },
+        { token: token1, amountRaw: "" },
+      ],
+    };
+  }
+
   const amounts = liquidityToTokenAmounts({
     liquidity,
     tick,
@@ -793,18 +876,39 @@ export function lpPositionValueUsdcMulti(
     tickUpper,
     feeGrowthInside0LastX128,
     feeGrowthInside1LastX128,
-    pool: feeGrowthByPool?.[pool],
+    pool: key === undefined ? undefined : ctx.feeGrowthByPool?.[key],
   });
-  const owed0 = tokensOwed0 + fees.fees0;
-  const owed1 = tokensOwed1 + fees.fees1;
-  return valuePositionUsdc(
-    baseIsToken0 ? amounts.amount0 : amounts.amount1,
-    baseIsToken0 ? amounts.amount1 : amounts.amount0,
-    baseIsToken0 ? owed0 : owed1,
-    baseIsToken0 ? owed1 : owed0,
-    market,
-    fairByBase[market.base] ?? 0,
-  );
+  const totals = [
+    [token0, amounts.amount0 + tokensOwed0 + fees.fees0],
+    [token1, amounts.amount1 + tokensOwed1 + fees.fees1],
+  ] as const;
+
+  let valueUsdc = 0;
+  const unpriced: LpPositionValuation["unpriced"] = [];
+  for (const [token, amount] of totals) {
+    const usd = tokenAmountUsd(token, amount, ctx.fairByBase);
+    if (usd === undefined) {
+      if (amount > 0n) unpriced.push({ token, amountRaw: amount.toString() });
+      continue;
+    }
+    valueUsdc += usd;
+  }
+  return { valueUsdc, unpriced };
+}
+
+// For reconstruct (scoring): resolve the position's market and derive an all-base LP value (WBTC/USDC etc.)
+// using tickByPool and fairByBase. Registered markets only; lpPositionValuation covers the rest.
+export function lpPositionValueUsdcMulti(
+  position: Parameters<typeof lpPositionValueUsdc>[0],
+  tickByPool: Record<string, number>,
+  fairByBase: Record<string, number>,
+  feeGrowthByPool?: Record<string, PoolFeeGrowth>,
+): number {
+  return lpPositionValuation(position, {
+    tickByPool,
+    fairByBase,
+    feeGrowthByPool,
+  }).valueUsdc;
 }
 
 // ---------------------------------------------------------------------------

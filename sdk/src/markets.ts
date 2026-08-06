@@ -48,6 +48,17 @@ export function tokenInfo(symbol: TokenSymbol): TokenInfo {
   };
 }
 
+// Reverse lookup by raw address. Undefined for a token the registry does not know, which is the
+// signal that a holding cannot be priced (issue #41) rather than that it is worthless.
+export function tokenInfoByAddress(address: Address): TokenInfo | undefined {
+  const target = address.toLowerCase();
+  for (const symbol of Object.keys(TOKENS)) {
+    if (TOKENS[symbol].address.toLowerCase() === target)
+      return tokenInfo(symbol);
+  }
+  return undefined;
+}
+
 export function tokenRegistry(): Record<TokenSymbol, TokenInfo> {
   const out: Record<TokenSymbol, TokenInfo> = {};
   for (const symbol of Object.keys(TOKENS)) out[symbol] = tokenInfo(symbol);
