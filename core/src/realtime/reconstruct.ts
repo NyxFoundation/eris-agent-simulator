@@ -9,50 +9,25 @@
 // The output is observation-shaped events into events.jsonl (inventory.valueUsdc = total value).
 // readPerRoundValues (evaluate / gate / discrimination) can read it without modification.
 //
-// ADR 0013: also scores extra bases' (WBTC etc.) spot balances and LP. Under the fork default (base=WETH
-// only), there are no extra reads and it matches the prior behavior exactly (byte-compatible).
+// ADR 0013: also scores extra bases' (WBTC etc.) spot balances and LP.
+//
+// Issue #41: this file no longer knows which venues exist. It reads prices and free inventory and
+// drives each enabled adapter's staged valuation; adding a venue means registering an adapter.
 import type { Address, PublicClient } from "viem";
 import { parseAbi, parseAbiItem } from "viem";
-import {
-  balancerVaultAbi,
-  curveTricryptoAbi,
-  erc20Abi,
-  poolAbi,
-  uniswapV3FactoryAbi,
-} from "@eris/sdk/abis.js";
-import {
-  AAVE,
-  BALANCER,
-  MULTICALL3,
-  TOKENS,
-  UNISWAP,
-} from "@eris/sdk/constants.js";
-import {
-  baseTokens,
-  marketsFor,
-  tokenInfo,
-  tokenRegistry,
-} from "@eris/sdk/markets.js";
+import { erc20Abi, poolAbi } from "@eris/sdk/abis.js";
+import { MULTICALL3, TOKENS } from "@eris/sdk/constants.js";
+import { baseTokens, marketsFor, tokenInfo } from "@eris/sdk/markets.js";
 import type { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
-import { type PoolReserves, poolShareValueUsdc } from "@eris/sdk/valuation.js";
-import { aavePoolAbi } from "@eris/sdk/protocols/aave.js";
-import { balancerPools } from "@eris/sdk/protocols/balancer.js";
-import { resolveCurvePools } from "@eris/sdk/protocols/curve.js";
-import {
-  gmxAccountPositionsCall,
-  gmxEthUsdPositionValueUsd,
-} from "@eris/sdk/protocols/gmx.js";
-import {
-  type PoolFeeGrowth,
-  lpPositionValuation,
-  lpPositionValueUsdcMulti,
-  poolPriceUsdcPerWethFromSqrtX96,
-  positionPoolKey,
-  registeredPoolFor,
-  tickFeeGrowthEntry,
-  uniswapFactory,
-} from "@eris/sdk/protocols/uniswap.js";
+import { poolPriceUsdcPerWethFromSqrtX96 } from "@eris/sdk/protocols/uniswap.js";
+import { getAdapter, hasAdapter } from "@eris/sdk/protocols/registry.js";
+import type {
+  AgentProtocolValue,
+  ProtocolAdapter,
+  ValuationContext,
+  ValuationRun,
+} from "@eris/sdk/protocols/types.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 
@@ -61,11 +36,6 @@ const HISTORY_DEPTH_LIMIT = 1000;
 
 const multicall3Abi = parseAbi([
   "function getEthBalance(address addr) view returns (uint256)",
-]);
-const npmAbi = parseAbi([
-  "function balanceOf(address owner) view returns (uint256)",
-  "function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)",
-  "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)",
 ]);
 
 export type ReconstructionAgent = { id: string; address: Address };
@@ -154,6 +124,63 @@ export type ValueSnapshot = {
   unpriced: UnpricedHolding[];
 };
 
+// The adapters behind the run's enabled protocol ids. Adding a venue means registering an adapter,
+// not editing this file (issue #41).
+function adaptersForIds(ids: ProtocolId[]): ProtocolAdapter[] {
+  return ids.filter(hasAdapter).map(getAdapter);
+}
+
+// Drive every enabled adapter's staged valuation, merging each stage's reads across adapters into a
+// single multicall (issue #41). The scorer no longer knows which venues exist: it reads prices and
+// free inventory, and the adapters contribute everything else.
+//
+// Stage 0 also carries the scorer's own reads, so an adapter's first stage costs no extra round trip.
+// ctx.fairByBase() is only populated once stage 0 returns -- an adapter that returns before its first
+// yield must not depend on it.
+async function runValuations(opts: {
+  runs: Array<{ id: ProtocolId; gen: ValuationRun }>;
+  scorerReads: MulticallContract[];
+  call: MulticallFn;
+  blockNumber: bigint;
+  onStageZero: (results: unknown[]) => void;
+}): Promise<Map<ProtocolId, Record<string, AgentProtocolValue>>> {
+  const pending = opts.runs.map((r) => ({
+    ...r,
+    done: false,
+    input: undefined as unknown[] | undefined,
+  }));
+  const values = new Map<ProtocolId, Record<string, AgentProtocolValue>>();
+  let stage = 0;
+  while (true) {
+    const spans: Array<{ index: number; start: number; length: number }> = [];
+    const batch: MulticallContract[] = stage === 0 ? [...opts.scorerReads] : [];
+    for (let i = 0; i < pending.length; i++) {
+      const run = pending[i];
+      if (run.done) continue;
+      const step = await run.gen.next(run.input as never);
+      if (step.done) {
+        run.done = true;
+        values.set(run.id, step.value);
+        continue;
+      }
+      spans.push({ index: i, start: batch.length, length: step.value.length });
+      batch.push(...(step.value as MulticallContract[]));
+    }
+    if (batch.length === 0) break;
+    const results = await opts.call(batch, opts.blockNumber);
+    if (stage === 0) opts.onStageZero(results);
+    for (const span of spans) {
+      pending[span.index].input = results.slice(
+        span.start,
+        span.start + span.length,
+      );
+    }
+    stage++;
+    if (spans.length === 0) break;
+  }
+  return values;
+}
+
 export async function readValueSnapshotAtBlock(opts: {
   publicClient: PublicClient;
   agents: ReconstructionAgent[];
@@ -165,15 +192,10 @@ export async function readValueSnapshotAtBlock(opts: {
   refFairByBase?: Record<string, number>;
 }): Promise<ValueSnapshot> {
   const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
-  const hasUniswap = enabledIds.includes("uniswap");
-  const hasAave = enabledIds.includes("aave");
-  const hasGmx = enabledIds.includes("gmx");
   let failedReads = 0;
 
-  const call = async (
-    contracts: MulticallContract[],
-    blockNumber: bigint,
-  ): Promise<unknown[]> => {
+  const call: MulticallFn = async (contracts, blockNumber) => {
+    if (contracts.length === 0) return [];
     const results = (await publicClient.multicall({
       contracts: contracts as never,
       blockNumber,
@@ -189,55 +211,34 @@ export async function readValueSnapshotAtBlock(opts: {
     });
   };
 
-  // ADR 0013: extra bases (other than WETH) and all uniswap markets. Under the fork default, empty / WETH only.
+  // ADR 0013: extra bases (other than WETH). Under the fork default this is empty.
   const extraBases = baseTokens()
     .map((t) => t.symbol)
     .filter((s) => s !== "WETH");
-  const uniMarkets = hasUniswap ? marketsFor("uniswap") : [];
-  // Issue #41: balancer BPT / curve LP holdings. Reserves and supply are shared reads (head), the
-  // per-agent balance rides in the existing per-agent group, so no extra round trip is added.
-  const lpVenues = await lpTokenVenues(publicClient, enabledIds);
 
-  const perAgent = perAgentReads({
-    extraBaseCount: extraBases.length,
-    activeStables,
-    lpTokenCount: lpVenues.length,
-    hasUniswap,
-    hasAave,
-    hasGmx,
-  });
-
-  const blockNumber = BigInt(opts.blockNumber);
-  // head: [WETH price (latestAnswer), extra base prices (answerOf)…, uniswap per-market slot0…]
+  // ---- the scorer's own reads: prices and free inventory ----
   const head: MulticallContract[] = [
-    {
-      address: priceFeed,
-      abi: priceFeedAbi,
-      functionName: "latestAnswer",
-    },
-  ];
-  for (const b of extraBases) {
-    head.push({
+    { address: priceFeed, abi: priceFeedAbi, functionName: "latestAnswer" },
+    ...extraBases.map((b) => ({
       address: priceFeed,
       abi: priceFeedAbi,
       functionName: "answerOf",
       args: [tokenInfo(b).address],
-    });
-  }
-  const uniHeadBase = head.length; // start index of the uniswap slot0 group
-  for (const m of uniMarkets) {
-    head.push({
-      address: m.uniswap!.pool,
-      abi: poolAbi,
-      functionName: "slot0",
-    });
-  }
-  const lpHeadBase = head.length; // start index of the LP-token reserve group
-  for (const venue of lpVenues) head.push(...venue.reserveReads);
+    })),
+  ];
+  // Diagnostic only (post-run analysis of how well the pool tracked fair); it is not part of any
+  // agent's value, which is why the scorer reads it rather than the adapter.
+  const wethPool = enabledIds.includes("uniswap")
+    ? marketsFor("uniswap").find((m) => m.base === "WETH")?.uniswap?.pool
+    : undefined;
+  const poolPriceIndex = wethPool ? head.length : -1;
+  if (wethPool)
+    head.push({ address: wethPool, abi: poolAbi, functionName: "slot0" });
 
-  const contracts: MulticallContract[] = [...head];
+  const spotBase = head.length;
+  const spotPerAgent = 2 + extraBases.length + activeStables.length;
   for (const agent of agents) {
-    contracts.push(
+    head.push(
       {
         address: MULTICALL3,
         abi: multicall3Abi,
@@ -262,193 +263,82 @@ export async function readValueSnapshotAtBlock(opts: {
         functionName: "balanceOf",
         args: [agent.address],
       })),
-      ...lpVenues.map((venue) => ({
-        address: venue.lpToken,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [agent.address],
-      })),
     );
-    if (hasAave) {
-      contracts.push({
-        address: AAVE.Pool,
-        abi: aavePoolAbi,
-        functionName: "getUserAccountData",
-        args: [agent.address],
-      });
-    }
-    if (hasGmx) contracts.push(gmxAccountPositionsCall(agent.address));
-    if (hasUniswap) {
-      contracts.push({
-        address: UNISWAP.nonfungiblePositionManager,
-        abi: npmAbi,
-        functionName: "balanceOf",
-        args: [agent.address],
-      });
-    }
   }
 
-  const results = await call(contracts, blockNumber);
-  const fairPrice = fromPriceFeedAnswer((results[0] as bigint) ?? 0n);
-  // USD prices of all bases (WETH=latestAnswer, extra base=answerOf).
-  const fairByBase: Record<string, number> = { WETH: fairPrice };
-  extraBases.forEach((b, i) => {
-    fairByBase[b] = fromPriceFeedAnswer((results[1 + i] as bigint) ?? 0n);
+  const blockNumber = BigInt(opts.blockNumber);
+  let headResults: unknown[] = [];
+  let fairByBase: Record<string, number> = {};
+  const ctx: ValuationContext = {
+    publicClient,
+    blockNumber: opts.blockNumber,
+    agents,
+    activeStables,
+    fairByBase: () => fairByBase,
+  };
+  const protocolValues = await runValuations({
+    runs: adaptersForIds(enabledIds)
+      .filter((a) => a.valueAtBlock)
+      .map((a) => ({
+        id: a.id,
+        gen: (a.valueAtBlock as (c: ValuationContext) => ValuationRun)(ctx),
+      })),
+    scorerReads: head,
+    call,
+    blockNumber,
+    onStageZero: (results) => {
+      headResults = results;
+      const fairPrice = fromPriceFeedAnswer((results[0] as bigint) ?? 0n);
+      fairByBase = { WETH: fairPrice };
+      extraBases.forEach((b, i) => {
+        fairByBase[b] = fromPriceFeedAnswer((results[1 + i] as bigint) ?? 0n);
+      });
+    },
   });
 
-  // tick of each uniswap market (for LP scoring). Backward-compatible poolPrice from the WETH market's slot0.
-  const tickByPool: Record<string, number> = {};
+  const fairPrice = fairByBase.WETH ?? 0;
   let poolPriceUsdcPerWeth: number | null = null;
-  uniMarkets.forEach((m, i) => {
-    const s = results[uniHeadBase + i] as readonly [bigint, number] | undefined;
-    if (!s) return;
-    tickByPool[m.uniswap!.pool.toLowerCase()] = Number(s[1]);
-    if (m.base === "WETH") {
-      poolPriceUsdcPerWeth = poolPriceUsdcPerWethFromSqrtX96(s[0]);
-    }
-  });
-
-  // Reserves behind each balancer/curve LP token (issue #41). A venue whose reserves could not be
-  // read decodes to undefined, which makes any holding of it reported rather than valued.
-  let lpCursor = lpHeadBase;
-  const lpReserves = lpVenues.map((venue) => {
-    const slice = results.slice(lpCursor, lpCursor + venue.reserveReads.length);
-    lpCursor += venue.reserveReads.length;
-    return venue.decode(slice);
-  });
-
-  // LP enumeration (2nd/3rd stage multicall): for agents holding an NFT, look up tokenId → positions
-  const lpValueByAgent = new Map<string, number>();
-  const unpriced: UnpricedHolding[] = [];
-  if (hasUniswap) {
-    const owners: Array<{ agent: ReconstructionAgent; index: bigint }> = [];
-    agents.forEach((agent, i) => {
-      const base = head.length + i * perAgent;
-      const nftCount = (results[base + perAgent - 1] as bigint) ?? 0n;
-      for (let k = 0n; k < nftCount; k++) owners.push({ agent, index: k });
-    });
-    if (owners.length > 0) {
-      const tokenIds = await call(
-        owners.map(({ agent, index }) => ({
-          address: UNISWAP.nonfungiblePositionManager,
-          abi: npmAbi,
-          functionName: "tokenOfOwnerByIndex",
-          args: [agent.address, index],
-        })),
-        blockNumber,
-      );
-      const positions = await call(
-        tokenIds.map((tokenId) => ({
-          address: UNISWAP.nonfungiblePositionManager,
-          abi: npmAbi,
-          functionName: "positions",
-          args: [tokenId ?? 0n],
-        })),
-        blockNumber,
-      );
-      // Issue #41: a position may sit in a pool outside MARKET_LEGS (another fee tier, an
-      // unregistered pair). Resolve those through the factory and read their tick, so they are
-      // valued rather than scored as a total loss. No extra reads when there are none.
-      const poolByKey = await resolveUnregisteredPools({
-        publicClient,
-        positions,
-        call,
-        blockNumber,
-        tickByPool,
-      });
-      // Issue #21: fees earned since a position's last checkpoint stay in the pool until
-      // poke/collect, so valuing liquidity + tokensOwed alone hides fee income. One extra
-      // cross-section read per block covers every boundary the owned positions touch.
-      const feeGrowthByPool = await readFeeGrowthForPositions(
-        positions,
-        poolByKey,
-        call,
-        blockNumber,
-      );
-      owners.forEach(({ agent }, j) => {
-        const pos = positions[j];
-        if (!pos || tokenIds[j] === undefined) return;
-        const valuation = lpPositionValuation(pos as PositionTuple, {
-          tickByPool,
-          fairByBase,
-          poolByKey,
-          feeGrowthByPool,
-        });
-        for (const holding of valuation.unpriced) {
-          unpriced.push({
-            agentId: agent.id,
-            source: `uniswap-lp:${tokenIds[j]}`,
-            token: holding.token,
-            amountRaw: holding.amountRaw,
-          });
-        }
-        lpValueByAgent.set(
-          agent.id,
-          (lpValueByAgent.get(agent.id) ?? 0) + valuation.valueUsdc,
-        );
-      });
-    }
+  if (poolPriceIndex >= 0) {
+    const slot0 = headResults[poolPriceIndex] as
+      readonly [bigint, number] | undefined;
+    if (slot0) poolPriceUsdcPerWeth = poolPriceUsdcPerWethFromSqrtX96(slot0[0]);
   }
 
   // α evaluation values free base inventory at the fixed reference fair (if unspecified, same as live fair = α=total value).
   const refFairByBase = opts.refFairByBase ?? fairByBase;
   const values: AgentValueSnapshot[] = [];
-  for (let i = 0; i < agents.length; i++) {
-    const agent = agents[i];
-    let idx = head.length + i * perAgent;
-    const ethWei = (results[idx++] as bigint) ?? 0n;
-    const wethWei = (results[idx++] as bigint) ?? 0n;
+  const unpriced: UnpricedHolding[] = [];
+  agents.forEach((agent, i) => {
+    let idx = spotBase + i * spotPerAgent;
+    const ethWei = (headResults[idx++] as bigint) ?? 0n;
+    const wethWei = (headResults[idx++] as bigint) ?? 0n;
     const bases: Record<string, bigint> = { WETH: wethWei };
-    for (const b of extraBases) bases[b] = (results[idx++] as bigint) ?? 0n;
+    for (const b of extraBases) bases[b] = (headResults[idx++] as bigint) ?? 0n;
     let usdcUnits = 0n;
     for (let s = 0; s < activeStables.length; s++) {
-      usdcUnits += (results[idx++] as bigint) ?? 0n;
+      usdcUnits += (headResults[idx++] as bigint) ?? 0n;
     }
-    // Issue #41: balancer BPT / curve LP holdings, valued as the proportional share of the pool's
-    // reserves. Marked live in both evaluations, like the other protocol positions.
-    let lpTokenUsd = 0;
-    lpVenues.forEach((venue, v) => {
-      const lpBalance = (results[idx++] as bigint) ?? 0n;
-      if (lpBalance <= 0n) return;
-      const reserves = lpReserves[v];
-      if (!reserves) {
-        unpriced.push({
-          agentId: agent.id,
-          source: venue.source,
-          token: venue.lpToken,
-          amountRaw: lpBalance.toString(),
-        });
-        return;
-      }
-      const share = poolShareValueUsdc(reserves, lpBalance, fairByBase);
-      lpTokenUsd += share.valueUsdc;
-      for (const holding of share.unpriced) {
-        unpriced.push({ agentId: agent.id, source: venue.source, ...holding });
-      }
-    });
     const balance = { ethWei, wethWei, usdcUnits, bases };
     // Evaluate free inventory two ways: at live fair (β-inclusive) and at the fixed reference fair (β-removed).
-    let total = valueUsdc(balance, fairByBase) + lpTokenUsd;
-    let alphaTotal = valueUsdc(balance, refFairByBase) + lpTokenUsd;
-    if (hasAave) {
-      const account = results[idx++] as readonly bigint[] | undefined;
-      // aave collateral − debt is USD 8-decimals. The position is a live mark in both evaluations (β removal applies to free inventory only).
-      const aaveUsd = account ? Number(account[0] - account[1]) / 1e8 : 0;
-      total += aaveUsd;
-      alphaTotal += aaveUsd;
+    let total = valueUsdc(balance, fairByBase);
+    let alphaTotal = valueUsdc(balance, refFairByBase);
+    // Protocol positions are a live mark in both evaluations (β removal applies to free inventory only).
+    for (const [id, byAgent] of protocolValues) {
+      const value = byAgent[agent.id];
+      if (!value) continue;
+      total += value.valueUsdc;
+      alphaTotal += value.valueUsdc;
+      for (const holding of value.unpriced) {
+        unpriced.push({
+          agentId: agent.id,
+          source: holding.source || id,
+          token: holding.token,
+          amountRaw: holding.amountRaw,
+        });
+      }
     }
-    if (hasGmx) {
-      const positions = results[idx++] as
-        Parameters<typeof gmxEthUsdPositionValueUsd>[0] | undefined;
-      const gmxUsd = gmxEthUsdPositionValueUsd(positions, fairPrice);
-      total += gmxUsd;
-      alphaTotal += gmxUsd;
-    }
-    const lpUsd = lpValueByAgent.get(agent.id) ?? 0;
-    total += lpUsd;
-    alphaTotal += lpUsd;
     values.push({ id: agent.id, valueUsdc: total, alphaValueUsdc: alphaTotal });
-  }
+  });
 
   return {
     blockNumber: opts.blockNumber,
@@ -460,128 +350,10 @@ export async function readValueSnapshotAtBlock(opts: {
   };
 }
 
-// An LP token an agent can hold (balancer BPT / curve LP). reserveReads go into the shared head of
-// the cross-section multicall and decode() turns that slice into the pool's reserves, so valuing the
-// holding costs one extra entry per agent and no extra round trip.
-type LpTokenVenue = {
-  lpToken: Address;
-  // Recorded on unpriced holdings, e.g. "balancer-bpt" / "curve-lp".
-  source: string;
-  reserveReads: MulticallContract[];
-  decode: (slice: unknown[]) => PoolReserves | undefined;
-};
-
-async function lpTokenVenues(
-  publicClient: PublicClient,
-  enabledIds: ProtocolId[],
-): Promise<LpTokenVenue[]> {
-  const venues: LpTokenVenue[] = [];
-  if (enabledIds.includes("balancer")) {
-    for (const { poolId, bpt } of balancerPools()) {
-      venues.push({
-        lpToken: bpt,
-        source: "balancer-bpt",
-        reserveReads: [
-          {
-            address: BALANCER.vault,
-            abi: balancerVaultAbi,
-            functionName: "getPoolTokens",
-            args: [poolId],
-          },
-          { address: bpt, abi: erc20Abi, functionName: "totalSupply" },
-        ],
-        decode: ([poolTokens, totalSupply]) => {
-          const pt = poolTokens as
-            | readonly [readonly Address[], readonly bigint[], bigint]
-            | undefined;
-          if (!pt || typeof totalSupply !== "bigint") return undefined;
-          return {
-            tokens: [...pt[0]],
-            balances: [...pt[1]],
-            totalSupply,
-          };
-        },
-      });
-    }
-  }
-  if (enabledIds.includes("curve")) {
-    for (const shape of await resolveCurvePools(publicClient)) {
-      const coinCount = shape.coins.length;
-      venues.push({
-        lpToken: shape.lpToken,
-        source: "curve-lp",
-        reserveReads: [
-          ...shape.coins.map((_, i) => ({
-            address: shape.pool,
-            abi: curveTricryptoAbi,
-            functionName: "balances",
-            args: [BigInt(i)],
-          })),
-          {
-            address: shape.lpToken,
-            abi: erc20Abi,
-            functionName: "totalSupply",
-          },
-        ],
-        decode: (slice) => {
-          const totalSupply = slice[coinCount];
-          if (typeof totalSupply !== "bigint") return undefined;
-          const balances = slice.slice(0, coinCount);
-          if (balances.some((b) => typeof b !== "bigint")) return undefined;
-          return {
-            tokens: shape.coins,
-            balances: balances as bigint[],
-            totalSupply,
-          };
-        },
-      });
-    }
-  }
-  return venues;
-}
-
 const transferEvent = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 );
 
-const aaveDataProviderAbi = parseAbi([
-  "function getReserveTokensAddresses(address asset) view returns (address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress)",
-]);
-
-// a/stableDebt/variableDebt token addresses for every registry asset. Cached: they are immutable for
-// a deployment. Reserves that are not listed simply fail their read and are skipped.
-let aaveReserveTokenCache: Address[] | undefined;
-async function aaveReserveTokens(
-  publicClient: PublicClient,
-): Promise<Address[]> {
-  if (aaveReserveTokenCache) return aaveReserveTokenCache;
-  const assets = Object.values(tokenRegistry()).map((t) => t.address);
-  const results = (await publicClient.multicall({
-    contracts: assets.map((asset) => ({
-      address: AAVE.PoolDataProvider,
-      abi: aaveDataProviderAbi,
-      functionName: "getReserveTokensAddresses",
-      args: [asset],
-    })) as never,
-    multicallAddress: MULTICALL3,
-    allowFailure: true,
-  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
-  const out: Address[] = [];
-  for (const r of results) {
-    if (r.status !== "success") continue;
-    for (const token of r.result as readonly Address[]) out.push(token);
-  }
-  aaveReserveTokenCache = out;
-  return out;
-}
-
-// Tokens an agent received during the run that nothing in the value computation sums (issue #41).
-//
-// ERC-20 balances cannot be enumerated, so discovery goes through Transfer logs over the run window
-// -- once per agent, not per block. Holdings acquired before fromBlock are out of scope, which is
-// safe because setup funding only ever uses registry tokens. Reporting is deliberately all this
-// does: pricing an arbitrary token would mean extending the registry, and scoring it at zero is the
-// bug being fixed.
 export async function findUnaccountedTokens(opts: {
   publicClient: PublicClient;
   agents: ReconstructionAgent[];
@@ -592,17 +364,19 @@ export async function findUnaccountedTokens(opts: {
 }): Promise<UnpricedHolding[]> {
   const { publicClient, agents, fromBlock, toBlock } = opts;
   const accounted = new Set<string>();
+  // Free inventory the scorer itself sums.
   for (const t of baseTokens()) accounted.add(t.address.toLowerCase());
   for (const s of opts.activeStables) accounted.add(s.toLowerCase());
-  for (const v of await lpTokenVenues(publicClient, opts.enabledIds))
-    accounted.add(v.lpToken.toLowerCase());
-  // ERC-721; already valued through the position enumeration.
-  accounted.add(UNISWAP.nonfungiblePositionManager.toLowerCase());
-  // Aave a/debt tokens are minted to the agent on supply/borrow but their value already arrives
-  // through getUserAccountData's aggregate. Flagging them would be a false positive.
-  if (opts.enabledIds.includes("aave")) {
-    for (const t of await aaveReserveTokens(publicClient))
-      accounted.add(t.toLowerCase());
+  // Everything else is the adapters' knowledge: a venue that issues a token it does not value leaves
+  // it out here, so the hole stays visible instead of being silently excused.
+  for (const adapter of adaptersForIds(opts.enabledIds)) {
+    if (!adapter.accountedTokens) continue;
+    try {
+      for (const t of await adapter.accountedTokens(publicClient))
+        accounted.add(t.toLowerCase());
+    } catch {
+      // A venue we cannot interrogate only costs us false positives, never false negatives.
+    }
   }
 
   const pairs: Array<{ agent: ReconstructionAgent; token: Address }> = [];
@@ -659,145 +433,10 @@ export async function findUnaccountedTokens(opts: {
   return out;
 }
 
-type PositionTuple = Parameters<typeof lpPositionValueUsdcMulti>[0];
 type MulticallFn = (
   contracts: MulticallContract[],
   blockNumber: bigint,
 ) => Promise<unknown[]>;
-
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-
-// Resolve the pools of positions that are not in MARKET_LEGS (issue #41) and record their ticks in
-// tickByPool, so the scorer values them instead of returning zero. Costs two extra round trips only
-// when such a position exists; a run where every position is in a registered market pays nothing.
-async function resolveUnregisteredPools(opts: {
-  publicClient: PublicClient;
-  positions: unknown[];
-  call: MulticallFn;
-  blockNumber: bigint;
-  tickByPool: Record<string, number>;
-}): Promise<Record<string, Address>> {
-  const wanted = new Map<
-    string,
-    { token0: Address; token1: Address; fee: number }
-  >();
-  for (const raw of opts.positions) {
-    if (!raw) continue;
-    const [, , token0, token1, fee] = raw as PositionTuple;
-    if (registeredPoolFor(token0, token1, fee)) continue;
-    wanted.set(positionPoolKey(token0, token1, fee), { token0, token1, fee });
-  }
-  if (wanted.size === 0) return {};
-  const factory = await uniswapFactory(opts.publicClient);
-  if (!factory) return {};
-
-  const keys = [...wanted.keys()];
-  const addresses = await opts.call(
-    keys.map((k) => {
-      const { token0, token1, fee } = wanted.get(k) as {
-        token0: Address;
-        token1: Address;
-        fee: number;
-      };
-      return {
-        address: factory,
-        abi: uniswapV3FactoryAbi,
-        functionName: "getPool",
-        args: [token0, token1, fee],
-      };
-    }),
-    opts.blockNumber,
-  );
-
-  const poolByKey: Record<string, Address> = {};
-  const discovered: Address[] = [];
-  keys.forEach((k, i) => {
-    const pool = addresses[i] as Address | undefined;
-    if (!pool || pool.toLowerCase() === ZERO_ADDRESS) return;
-    poolByKey[k] = pool;
-    discovered.push(pool);
-  });
-  if (discovered.length === 0) return poolByKey;
-
-  const slots = await opts.call(
-    discovered.map((pool) => ({
-      address: pool,
-      abi: poolAbi,
-      functionName: "slot0",
-    })),
-    opts.blockNumber,
-  );
-  discovered.forEach((pool, i) => {
-    const slot0 = slots[i] as readonly [bigint, number] | undefined;
-    if (slot0) opts.tickByPool[pool.toLowerCase()] = Number(slot0[1]);
-  });
-  return poolByKey;
-}
-
-// Fee-growth cross-section for the pools the given positions sit in (issue #21). Batched into a
-// single extra multicall: two globals per pool plus one ticks() per distinct boundary. Pools whose
-// reads fail are simply absent, which suppresses their fee term instead of marking a wrong number.
-async function readFeeGrowthForPositions(
-  positions: unknown[],
-  poolByKey: Record<string, Address>,
-  call: MulticallFn,
-  blockNumber: bigint,
-): Promise<Record<string, PoolFeeGrowth>> {
-  const pools = new Map<string, { address: Address; ticks: number[] }>();
-  for (const raw of positions) {
-    if (!raw) continue;
-    const [, , token0, token1, fee, tickLower, tickUpper, liquidity] =
-      raw as PositionTuple;
-    if (liquidity <= 0n) continue;
-    const pool =
-      registeredPoolFor(token0, token1, fee) ??
-      poolByKey[positionPoolKey(token0, token1, fee)];
-    if (!pool) continue;
-    const key = pool.toLowerCase();
-    const entry = pools.get(key) ?? { address: pool, ticks: [] };
-    for (const t of [tickLower, tickUpper])
-      if (!entry.ticks.includes(t)) entry.ticks.push(t);
-    pools.set(key, entry);
-  }
-  if (pools.size === 0) return {};
-
-  const contracts: MulticallContract[] = [];
-  const layout: Array<{ key: string; ticks: number[]; base: number }> = [];
-  for (const [key, { address, ticks }] of pools) {
-    layout.push({ key, ticks, base: contracts.length });
-    contracts.push(
-      { address, abi: poolAbi, functionName: "feeGrowthGlobal0X128" },
-      { address, abi: poolAbi, functionName: "feeGrowthGlobal1X128" },
-      ...ticks.map((t) => ({
-        address,
-        abi: poolAbi,
-        functionName: "ticks",
-        args: [t],
-      })),
-    );
-  }
-  const results = await call(contracts, blockNumber);
-
-  const out: Record<string, PoolFeeGrowth> = {};
-  for (const { key, ticks, base } of layout) {
-    const global0 = results[base] as bigint | undefined;
-    const global1 = results[base + 1] as bigint | undefined;
-    if (global0 === undefined || global1 === undefined) continue;
-    const outsideByTick: Record<number, readonly [bigint, bigint]> = {};
-    ticks.forEach((t, i) => {
-      const entry = tickFeeGrowthEntry(
-        results[base + 2 + i] as Parameters<typeof tickFeeGrowthEntry>[0],
-      );
-      if (entry) outsideByTick[t] = entry;
-    });
-    out[key] = {
-      feeGrowthGlobal0X128: global0,
-      feeGrowthGlobal1X128: global1,
-      outsideByTick,
-    };
-  }
-  return out;
-}
 
 export async function reconstructValueSeries(opts: {
   publicClient: PublicClient;

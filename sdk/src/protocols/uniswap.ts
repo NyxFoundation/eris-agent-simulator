@@ -14,6 +14,7 @@ import {
   poolAbi,
   quoterV2Abi,
   swapRouterAbi,
+  uniswapV3FactoryAbi,
   wethAbi,
 } from "../abis.js";
 import { TOKENS, UNISWAP, stableBalanceOf } from "../constants.js";
@@ -36,6 +37,7 @@ import type {
   UniswapObservation,
 } from "../types.js";
 import type {
+  AgentProtocolValue,
   BuiltTx,
   ProtocolAdapter,
   SimContext,
@@ -786,6 +788,12 @@ export function lpPositionValueUsdc(
 // and those are reported rather than silently zeroed.
 // ---------------------------------------------------------------------------
 
+// The raw positions(tokenId) tuple the NPM returns.
+export type PositionTuple = Parameters<typeof lpPositionValueUsdc>[0];
+
+// UniswapV3Factory.getPool returns this for a pair/fee that has no pool.
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
 // Identifies a Uniswap V3 pool by the tuple the NPM stores, for callers that must resolve pools they
 // do not have in MARKET_LEGS (via the factory).
 export function positionPoolKey(
@@ -1206,6 +1214,187 @@ export const uniswapAdapter: ProtocolAdapter = {
     const fairByBase = ctx.fairPrices ?? { WETH: fairPrice };
     const positions = await getLpPositions(ctx.publicClient, agent, fairByBase);
     return positions.reduce((sum, p) => sum + p.valueUsdc, 0);
+  },
+
+  // Historical LP valuation, staged so the scorer can batch each stage across every adapter and
+  // agent (issue #41). Stages: registered ticks + NFT counts -> tokenIds -> positions -> pools for
+  // positions outside MARKET_LEGS -> their ticks -> fee growth. Stages after the first are skipped
+  // entirely when nothing needs them.
+  async *valueAtBlock(ctx) {
+    const zero = (): Record<string, AgentProtocolValue> => {
+      const out: Record<string, AgentProtocolValue> = {};
+      for (const a of ctx.agents)
+        out[a.id] = { valueUsdc: 0, liquidatableValueUsdc: 0, unpriced: [] };
+      return out;
+    };
+
+    const markets = marketsFor("uniswap");
+    const stage1 = yield [
+      ...markets.map((m) => ({
+        address: legOf(m).pool,
+        abi: poolAbi,
+        functionName: "slot0",
+      })),
+      ...ctx.agents.map((a) => ({
+        address: UNISWAP.nonfungiblePositionManager,
+        abi: nonfungiblePositionManagerAbi,
+        functionName: "balanceOf",
+        args: [a.address],
+      })),
+    ];
+
+    const tickByPool: Record<string, number> = {};
+    markets.forEach((m, i) => {
+      const slot0 = stage1[i] as readonly [bigint, number] | undefined;
+      if (slot0) tickByPool[legOf(m).pool.toLowerCase()] = Number(slot0[1]);
+    });
+    const owners: Array<{ agentId: string; owner: Address; index: bigint }> =
+      [];
+    ctx.agents.forEach((agent, i) => {
+      const count = (stage1[markets.length + i] as bigint) ?? 0n;
+      for (let k = 0n; k < count; k++)
+        owners.push({ agentId: agent.id, owner: agent.address, index: k });
+    });
+    if (owners.length === 0) return zero();
+
+    const tokenIds = yield owners.map(({ owner, index }) => ({
+      address: UNISWAP.nonfungiblePositionManager,
+      abi: nonfungiblePositionManagerAbi,
+      functionName: "tokenOfOwnerByIndex",
+      args: [owner, index],
+    }));
+    const positions = yield tokenIds.map((tokenId) => ({
+      address: UNISWAP.nonfungiblePositionManager,
+      abi: nonfungiblePositionManagerAbi,
+      functionName: "positions",
+      args: [tokenId ?? 0n],
+    }));
+
+    // Pools outside MARKET_LEGS: resolve through the factory, then read their ticks.
+    const poolByKey: Record<string, Address> = {};
+    const wanted = new Map<string, [Address, Address, number]>();
+    for (const raw of positions) {
+      if (!raw) continue;
+      const [, , token0, token1, fee] = raw as PositionTuple;
+      if (registeredPoolFor(token0, token1, fee)) continue;
+      wanted.set(positionPoolKey(token0, token1, fee), [token0, token1, fee]);
+    }
+    if (wanted.size > 0) {
+      const factory = await uniswapFactory(ctx.publicClient);
+      if (factory) {
+        const keys = [...wanted.keys()];
+        const addresses = yield keys.map((k) => ({
+          address: factory,
+          abi: uniswapV3FactoryAbi,
+          functionName: "getPool",
+          args: wanted.get(k) as [Address, Address, number],
+        }));
+        const discovered: Address[] = [];
+        keys.forEach((k, i) => {
+          const pool = addresses[i] as Address | undefined;
+          if (!pool || pool.toLowerCase() === ZERO_ADDRESS) return;
+          poolByKey[k] = pool;
+          discovered.push(pool);
+        });
+        if (discovered.length > 0) {
+          const slots = yield discovered.map((pool) => ({
+            address: pool,
+            abi: poolAbi,
+            functionName: "slot0",
+          }));
+          discovered.forEach((pool, i) => {
+            const slot0 = slots[i] as readonly [bigint, number] | undefined;
+            if (slot0) tickByPool[pool.toLowerCase()] = Number(slot0[1]);
+          });
+        }
+      }
+    }
+
+    // Fee growth for every boundary an owned position touches (issue #21).
+    const feePools = new Map<string, { address: Address; ticks: number[] }>();
+    for (const raw of positions) {
+      if (!raw) continue;
+      const [, , token0, token1, fee, tickLower, tickUpper, liquidity] =
+        raw as PositionTuple;
+      if (liquidity <= 0n) continue;
+      const pool =
+        registeredPoolFor(token0, token1, fee) ??
+        poolByKey[positionPoolKey(token0, token1, fee)];
+      if (!pool) continue;
+      const key = pool.toLowerCase();
+      const entry = feePools.get(key) ?? { address: pool, ticks: [] };
+      for (const t of [tickLower, tickUpper])
+        if (!entry.ticks.includes(t)) entry.ticks.push(t);
+      feePools.set(key, entry);
+    }
+    const feeGrowthByPool: Record<string, PoolFeeGrowth> = {};
+    if (feePools.size > 0) {
+      const layout: Array<{ key: string; ticks: number[]; base: number }> = [];
+      const reads: Array<{
+        address: Address;
+        abi: unknown;
+        functionName: string;
+        args?: readonly unknown[];
+      }> = [];
+      for (const [key, { address, ticks }] of feePools) {
+        layout.push({ key, ticks, base: reads.length });
+        reads.push(
+          { address, abi: poolAbi, functionName: "feeGrowthGlobal0X128" },
+          { address, abi: poolAbi, functionName: "feeGrowthGlobal1X128" },
+          ...ticks.map((t) => ({
+            address,
+            abi: poolAbi,
+            functionName: "ticks",
+            args: [t],
+          })),
+        );
+      }
+      const results = yield reads as never;
+      for (const { key, ticks, base } of layout) {
+        const global0 = results[base];
+        const global1 = results[base + 1];
+        if (typeof global0 !== "bigint" || typeof global1 !== "bigint")
+          continue;
+        const outsideByTick: Record<number, readonly [bigint, bigint]> = {};
+        ticks.forEach((t, i) => {
+          const entry = tickFeeGrowthEntry(
+            results[base + 2 + i] as Parameters<typeof tickFeeGrowthEntry>[0],
+          );
+          if (entry) outsideByTick[t] = entry;
+        });
+        feeGrowthByPool[key] = {
+          feeGrowthGlobal0X128: global0,
+          feeGrowthGlobal1X128: global1,
+          outsideByTick,
+        };
+      }
+    }
+
+    const fairByBase = ctx.fairByBase();
+    const out = zero();
+    owners.forEach(({ agentId }, j) => {
+      const raw = positions[j];
+      if (!raw || tokenIds[j] === undefined) return;
+      const valuation = lpPositionValuation(raw as PositionTuple, {
+        tickByPool,
+        fairByBase,
+        poolByKey,
+        feeGrowthByPool,
+      });
+      const agent = out[agentId];
+      agent.valueUsdc += valuation.valueUsdc;
+      // Burning liquidity returns the position's tokens plus its fees at no cost, so the mark is
+      // already what an exit realizes.
+      agent.liquidatableValueUsdc += valuation.valueUsdc;
+      for (const h of valuation.unpriced)
+        agent.unpriced.push({ ...h, source: `uniswap-lp:${tokenIds[j]}` });
+    });
+    return out;
+  },
+
+  // The position manager is an ERC-721 and its positions are valued by valueAtBlock.
+  async accountedTokens(): Promise<Address[]> {
+    return [UNISWAP.nonfungiblePositionManager];
   },
 
   async setupWallet(): Promise<BuiltTx[]> {

@@ -6,7 +6,7 @@ import {
   type PublicClient,
 } from "viem";
 import { AAVE, TOKENS, stableBalanceOf } from "../constants.js";
-import { marketsFor, tokenInfo } from "../markets.js";
+import { marketsFor, tokenInfo, tokenRegistry } from "../markets.js";
 import {
   accountAddress,
   fundWallet,
@@ -24,6 +24,7 @@ import type {
   TokenSymbol,
 } from "../types.js";
 import type {
+  AgentProtocolValue,
   BuiltTx,
   ProtocolAdapter,
   SimContext,
@@ -40,6 +41,12 @@ export function toAavePrice(usd: number): bigint {
   const P = 1_000_000n;
   return (BigInt(Math.round(usd * Number(P))) * AAVE_PRICE_UNIT) / P;
 }
+
+const poolDataProviderAbi = parseAbi([
+  "function getReserveTokensAddresses(address asset) view returns (address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress)",
+]);
+
+let reserveTokenCache: Address[] | undefined;
 
 export const aavePoolAbi = parseAbi([
   "function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode)",
@@ -476,6 +483,54 @@ export const aaveAdapter: ProtocolAdapter = {
     // Collateral (aToken) is outside the wallet and borrows (USDC) are already counted inside it, so net cancels double-counting.
     const net = account[0] - account[1];
     return Number(net) / 1e8;
+  },
+
+  // Aave needs no per-venue wiring in the scorer: getUserAccountData is an aggregate that already
+  // covers every supplied asset, which is why this venue never had the #41 hole.
+  async *valueAtBlock(ctx) {
+    const results = yield ctx.agents.map((a) => ({
+      address: AAVE.Pool,
+      abi: aavePoolAbi,
+      functionName: "getUserAccountData",
+      args: [a.address],
+    }));
+    const out: Record<string, AgentProtocolValue> = {};
+    ctx.agents.forEach((agent, i) => {
+      const account = results[i] as readonly bigint[] | undefined;
+      // USD with 8 decimals. Collateral sits outside the wallet and borrows are already counted
+      // inside it, so the net cancels the double count.
+      const usd = account ? Number(account[0] - account[1]) / 1e8 : 0;
+      out[agent.id] = {
+        valueUsdc: usd,
+        liquidatableValueUsdc: usd,
+        unpriced: [],
+      };
+    });
+    return out;
+  },
+
+  // a/stableDebt/variableDebt tokens are minted to the agent on supply/borrow, but their value
+  // already arrives through getUserAccountData's aggregate -- reporting them would be a false
+  // positive. Immutable for a deployment, so resolved once.
+  async accountedTokens(publicClient): Promise<Address[]> {
+    if (reserveTokenCache) return reserveTokenCache;
+    const assets = Object.values(tokenRegistry()).map((t) => t.address);
+    const results = (await publicClient.multicall({
+      contracts: assets.map((asset) => ({
+        address: AAVE.PoolDataProvider,
+        abi: poolDataProviderAbi,
+        functionName: "getReserveTokensAddresses",
+        args: [asset],
+      })) as never,
+      allowFailure: true,
+    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+    const out: Address[] = [];
+    for (const r of results) {
+      if (r.status !== "success") continue; // unlisted reserve
+      for (const token of r.result as readonly Address[]) out.push(token);
+    }
+    reserveTokenCache = out;
+    return out;
   },
 
   async setupWallet(): Promise<BuiltTx[]> {

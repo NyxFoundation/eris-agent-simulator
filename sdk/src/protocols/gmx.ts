@@ -32,6 +32,7 @@ import type {
   TokenSymbol,
 } from "../types.js";
 import type {
+  AgentProtocolValue,
   BuiltTx,
   ProtocolAdapter,
   SimContext,
@@ -909,6 +910,25 @@ export const gmxAdapter: ProtocolAdapter = {
       total += positionValueUsd(pos, markPrice, base, wethPrice);
     }
     return total;
+  },
+
+  // Perp positions only. GM market-token (liquidity) holdings are still unvalued -- see #41.
+  async *valueAtBlock(ctx) {
+    const results = yield ctx.agents.map((a) =>
+      gmxAccountPositionsCall(a.address),
+    );
+    const fairPrice = ctx.fairByBase().WETH ?? 0;
+    const out: Record<string, AgentProtocolValue> = {};
+    ctx.agents.forEach((agent, i) => {
+      const positions = results[i] as readonly Position[] | undefined;
+      const usd = gmxEthUsdPositionValueUsd(positions, fairPrice);
+      out[agent.id] = {
+        valueUsdc: usd,
+        liquidatableValueUsdc: usd,
+        unpriced: [],
+      };
+    });
+    return out;
   },
 
   async setupWallet(): Promise<BuiltTx[]> {

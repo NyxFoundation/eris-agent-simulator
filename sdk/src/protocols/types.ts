@@ -71,6 +71,69 @@ export interface SimContext {
   flowWalletByKey(key: string): FlowWallet;
 }
 
+// ---------------------------------------------------------------------------
+// Historical valuation for scoring (issue #41)
+//
+// The scorer used to hand-assemble a multicall per protocol behind hasUniswap / hasAave / hasGmx
+// flags, which fixed the set of valuable things at the scorer: anything not wired in was worth zero
+// rather than unsupported. These types move that knowledge into the adapters.
+//
+// The shape is a *staged generator* rather than the obvious `valueAtBlock(agent, block)`: a per-agent
+// async call would issue one round trip per agent per protocol, dissolving ADR 0006 §4's "one
+// multicall per block cross-section" batching (a 30-agent / 300-block run goes from ~1,500 multicalls
+// to ~45,000 RPC calls). Yielding the reads instead lets the scorer merge every adapter's stage-N
+// reads into a single multicall, so the round-trip count tracks the number of stages, not agents.
+// ---------------------------------------------------------------------------
+
+// One contract read inside a batched cross-section multicall.
+export type ValuationRead = {
+  address: Address;
+  // biome-ignore lint/suspicious/noExplicitAny: heterogeneous ABIs share a single multicall
+  abi: any;
+  functionName: string;
+  args?: readonly unknown[];
+};
+
+export type ValuationAgent = { id: string; address: Address };
+
+export type ValuationContext = {
+  publicClient: PublicClient;
+  blockNumber: number;
+  agents: readonly ValuationAgent[];
+  // The stables the run already sums as USDC-equivalent spot.
+  activeStables: readonly Address[];
+  // USD price per base symbol. The prices are themselves read in the first stage, so this is only
+  // populated once that stage returns: call it when computing values, never when choosing reads.
+  fairByBase(): Record<string, number>;
+};
+
+// A holding the adapter could not fold into its value. Reported rather than silently zeroed.
+export type UnpricedHoldingDetail = {
+  token: Address;
+  // Raw token amount, or "" when even the amount could not be derived.
+  amountRaw: string;
+  // Where it came from, e.g. "uniswap-lp:<tokenId>" / "balancer-bpt".
+  source: string;
+};
+
+export type AgentProtocolValue = {
+  valueUsdc: number;
+  // What the position would actually realize on exit. Equal to valueUsdc for venues that exit at
+  // par; #38 (queued LST withdrawal), #39 (depegged eUSD) and #40 (self-issued token in a thin pool)
+  // are the cases that will diverge. Existing venues are deliberately not re-marked -- that would
+  // invalidate comparison with every past run.
+  liquidatableValueUsdc: number;
+  unpriced: UnpricedHoldingDetail[];
+};
+
+// Yields the reads it wants for a stage, receives that stage's results, and finally returns each
+// agent's value. Returning early is fine; the scorer just stops advancing it.
+export type ValuationRun = AsyncGenerator<
+  ValuationRead[],
+  Record<string, AgentProtocolValue>,
+  unknown[]
+>;
+
 export interface ProtocolAdapter {
   id: ProtocolId;
 
@@ -131,6 +194,16 @@ export interface ProtocolAdapter {
     state: unknown,
     fairPrice: number,
   ): Promise<number>;
+
+  // ---- Historical valuation for post-run scoring (ADR 0006 §4) ----
+  // Adapters without one contribute nothing to an agent's value at a block cross-section.
+  valueAtBlock?(ctx: ValuationContext): ValuationRun;
+
+  // ---- Tokens this adapter already accounts for ----
+  // The scorer reports ERC-20 holdings that nothing sums (issue #41). A token listed here is either
+  // valued by valueAtBlock or covered by an aggregate it reads, so reporting it would be a false
+  // positive. Tokens a venue issues but does not yet value must be left out, so they stay visible.
+  accountedTokens?(publicClient: PublicClient): Promise<Address[]>;
 
   // ---- Per-wallet setup (returns txs such as approvals; the coordinator sends them with the owner key) ----
   setupWallet?(ctx: SimContext, owner: Address): Promise<BuiltTx[]>;
