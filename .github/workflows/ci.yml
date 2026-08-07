@@ -1,0 +1,50 @@
+# Gate for the checks that were previously only run by whoever remembered to.
+#
+# Deliberately excluded: the deployer's tests (they need multi-GB vendor clones), anything requiring
+# ARB_RPC_URL, and simulation runs (ADR 0005 makes those non-deterministic, so they cannot pass or
+# fail a PR meaningfully).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # test/vulnPools.integration.test.ts checks ADR 0014's load-bearing mechanism against a real
+      # chain and skips itself when anvil is absent -- a skipped test looks green while guarding
+      # nothing, so foundry is installed rather than letting it opt out.
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      # The mock oracles and PriceFeed the integration test deploys.
+      - run: npm run build:contracts
+
+      - run: npm run typecheck
+
+      # example -> sdk <- core (ADR 0015). A violation here is invisible until a bundle breaks.
+      - run: npm run check:boundaries
+
+      # Entry gate for strategy code (cheatcode static check).
+      - run: npm run check:strategy
+
+      - run: npm test
