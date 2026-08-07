@@ -1,0 +1,116 @@
+# Full-chain check: deploy every venue to a bare anvil, dump the state, and prove a backtest runs
+# against that dump.
+#
+# This is the only thing that would have caught the GMX localhost market bug (#42's `1502616`), where
+# `npm run deploy` had been dying at GM seeding -- nothing in the fast CI touches the deployer, and
+# the state dump is gitignored, so no per-PR job can exercise this path.
+#
+# ~25-40 minutes, dominated by the gmx-synthetics clone + yarn install and the hardhat deploy, so it
+# only runs when something it actually covers changes.
+name: deploy + backtest
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "deployer/**"
+      - "scripts/genStateDump.ts"
+      - "scripts/genLocalConstants.ts"
+      - "core/src/cli/backtest.ts"
+      - "core/src/backtest/**"
+      - "sdk/src/constants.ts"
+      - "sdk/src/constants.local.ts"
+      - "config/regimes/**"
+      - ".github/workflows/deploy-backtest.yml"
+
+concurrency:
+  group: deploy-backtest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-and-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - run: npm ci
+
+      - name: Set up the deployer
+        working-directory: deployer
+        run: |
+          npm install
+          forge build
+          cp .env.example .env
+          # anvil is started by this workflow, not by the deployer, so gen:state-dump can talk to the
+          # same chain after the deploy process has exited.
+          sed -i 's/^MANAGE_ANVIL=.*/MANAGE_ANVIL=false/' .env
+          ./scripts/setup-vendors.sh
+
+      - name: Start anvil
+        working-directory: deployer
+        run: |
+          npm run anvil > "$RUNNER_TEMP/anvil.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            cast block-number --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "anvil did not come up"; cat "$RUNNER_TEMP/anvil.log"; exit 1
+
+      - name: Deploy all venues
+        working-directory: deployer
+        run: npm run deploy -- --keep-fresh
+
+      - name: Generate constants and the state dump
+        run: |
+          npm run gen:local-constants
+          npm run gen:state-dump
+
+      - name: Backtest against the dump
+        run: npm run backtest -- --regime calm-01 --blocks 12
+
+      # The backtest exits 0 even when the scorer quietly read nothing, which is the failure mode
+      # this whole job exists to catch, so assert on the run's own output.
+      - name: Check the run is healthy
+        run: |
+          node -e '
+            const { readdirSync, readFileSync } = require("node:fs");
+            const runs = readdirSync("runs").filter((d) => /^\d{4}-/.test(d)).sort();
+            const id = runs.at(-1);
+            if (!id) throw new Error("no run directory was produced");
+            const s = JSON.parse(readFileSync(`runs/${id}/summary.json`, "utf8"));
+            const problems = [];
+            if (s.valueSeries?.failedReads !== 0)
+              problems.push(`failedReads=${s.valueSeries?.failedReads}`);
+            if ((s.violations ?? []).length) problems.push(`violations=${JSON.stringify(s.violations)}`);
+            if (!s.agents?.length) problems.push("no agents were scored");
+            for (const a of s.agents ?? []) {
+              if (!Number.isFinite(a.finalValueUsdc) || a.finalValueUsdc <= 0)
+                problems.push(`${a.id} finalValueUsdc=${a.finalValueUsdc}`);
+            }
+            const unpriced = s.valueSeries?.unpricedHoldings ?? [];
+            if (unpriced.length) console.log(`note: ${unpriced.length} unpriced holding(s):`, JSON.stringify(unpriced));
+            if (problems.length) throw new Error(`unhealthy run ${id}: ${problems.join(", ")}`);
+            console.log(`run ${id} ok: ${s.agents.length} agents, ${s.blocksProcessed} blocks, failedReads 0`);
+          '
+
+      - name: Upload the run and deploy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-backtest-output
+          path: |
+            runs/
+            deployer/deployments/deployments.json
+            ${{ runner.temp }}/anvil.log
+          retention-days: 7
