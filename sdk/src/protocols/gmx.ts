@@ -803,6 +803,40 @@ export function gmxEthUsdPositionValueUsd(
   return positionValueUsd(pos, markPrice, "WETH", markPrice);
 }
 
+// Sum an account's perp positions across every configured gmx market, each at its own base's fair
+// price. The scorer used to value the WETH market alone -- a constraint of the old reconstruct, which
+// could pass a single price -- so a WBTC/USD perp scored zero. Positions in a market the run does not
+// configure, or whose base has no fair price, are reported rather than dropped.
+function perpValueUsd(
+  positions: readonly Position[] | undefined,
+  fairByBase: Record<string, number>,
+  wethPrice: number,
+): { valueUsdc: number; unpriced: UnpricedHoldingDetail[] } {
+  const unpriced: UnpricedHoldingDetail[] = [];
+  if (!positions || positions.length === 0) return { valueUsdc: 0, unpriced };
+  const baseByMarket = new Map<string, TokenSymbol>();
+  for (const m of marketsFor("gmx")) {
+    if (m.gmx) baseByMarket.set(m.gmx.market.toLowerCase(), m.base);
+  }
+  let valueUsdc = 0;
+  for (const position of positions) {
+    if (position.numbers.sizeInUsd === 0n) continue;
+    const market = position.addresses.market;
+    const base = baseByMarket.get(market.toLowerCase());
+    const markPrice = base === undefined ? undefined : fairByBase[base];
+    if (base === undefined || markPrice === undefined) {
+      unpriced.push({
+        token: market,
+        amountRaw: position.numbers.sizeInUsd.toString(),
+        source: "gmx-position",
+      });
+      continue;
+    }
+    valueUsdc += positionValueUsd(position, markPrice, base, wethPrice);
+  }
+  return { valueUsdc, unpriced };
+}
+
 type MarketProps = {
   marketToken: Address;
   indexToken: Address;
@@ -1106,12 +1140,13 @@ export const gmxAdapter: ProtocolAdapter = {
       }
     }
 
-    const fairPrice = fairByBase.WETH ?? 0;
+    const wethPrice = fairByBase.WETH ?? 0;
     const out: Record<string, AgentProtocolValue> = {};
     ctx.agents.forEach((agent, a) => {
       const positions = stage1[a] as readonly Position[] | undefined;
-      let valueUsdc = gmxEthUsdPositionValueUsd(positions, fairPrice);
-      const unpriced: UnpricedHoldingDetail[] = [];
+      const perp = perpValueUsd(positions, fairByBase, wethPrice);
+      let valueUsdc = perp.valueUsdc;
+      const unpriced: UnpricedHoldingDetail[] = [...perp.unpriced];
       markets.forEach((marketToken, i) => {
         const balance = gmBalance(a, i);
         if (balance <= 0n) return;

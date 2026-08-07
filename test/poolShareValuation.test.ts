@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import type { Address } from "viem";
 import { poolShareValueUsdc, tokenAmountUsd } from "@eris/sdk/valuation.js";
 import { bptAddressOf } from "@eris/sdk/protocols/balancer.js";
-import { TOKENS } from "@eris/sdk/constants.js";
+import { TOKENS, USDC_VARIANTS } from "@eris/sdk/constants.js";
 
 const WETH = TOKENS.WETH.address;
 const USDC = TOKENS.USDC.address;
@@ -76,4 +76,25 @@ test("bptAddressOf takes the pool address from the leading 20 bytes of the poolI
     ),
     "0x3b106b7ae88c3f8869b5221d2bbae398afc26737",
   );
+});
+
+// The Arbitrum fork's registry is WETH/USDC only, but the deep Balancer and Curve pools hold USDC.e
+// and USDT. Leaving them unpriced cost a BPT holder roughly a third of their value.
+test("tokenAmountUsd prices stable variants the registry does not name", () => {
+  for (const variant of [USDC_VARIANTS.bridged, USDC_VARIANTS.usdt]) {
+    assert.equal(tokenAmountUsd(variant, 250_000_000n, FAIR), 250);
+  }
+});
+
+test("poolShareValueUsdc counts a stable-variant reserve leg", () => {
+  // A 33/33/34-style pool: WETH + native USDC + USDT. The USDT leg must not go missing.
+  const reserves = {
+    tokens: [WETH, USDC, USDC_VARIANTS.usdt],
+    balances: [100n * 10n ** 18n, 200_000n * 10n ** 6n, 200_000n * 10n ** 6n],
+    totalSupply: 1000n * 10n ** 18n,
+  };
+  const share = poolShareValueUsdc(reserves, 10n * 10n ** 18n, FAIR);
+  // 1% of 100 WETH at $2,000 + 1% of 200k USDC + 1% of 200k USDT.
+  assert.ok(Math.abs(share.valueUsdc - (2000 + 2000 + 2000)) < 1e-9);
+  assert.deepEqual(share.unpriced, []);
 });

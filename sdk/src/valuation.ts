@@ -5,7 +5,23 @@
 // holding from the token registry instead, and make "cannot price this" a reportable outcome rather
 // than a silent zero.
 import { formatUnits, type Address } from "viem";
+import { USDC_VARIANTS } from "./constants.js";
 import { tokenInfoByAddress } from "./markets.js";
+
+// Stables the run settles in but the token registry does not name. On the Arbitrum fork the registry
+// is WETH/USDC only, while the deep Balancer and Curve pools hold USDC.e and USDT -- so a BPT holder
+// lost roughly a third of their value and a Curve LP lost its whole stable leg. Spot accounting
+// already treats all three as 6-decimal USDC-equivalent worth $1 (constants' USDC_VARIANTS); pool
+// shares have to use the same convention or the two disagree about the same token.
+const STABLE_VARIANT_DECIMALS = 6;
+
+function stableVariantDecimals(token: Address): number | undefined {
+  const target = token.toLowerCase();
+  for (const address of Object.values(USDC_VARIANTS)) {
+    if (address.toLowerCase() === target) return STABLE_VARIANT_DECIMALS;
+  }
+  return undefined;
+}
 
 // A holding that could not be priced. amountRaw is the raw token amount excluded from the value
 // ("" when even the amount is unknown).
@@ -19,10 +35,14 @@ export function tokenAmountUsd(
   fairByBase: Record<string, number>,
 ): number | undefined {
   const info = tokenInfoByAddress(token);
-  if (!info) return undefined;
-  const price = info.kind === "stable" ? 1 : fairByBase[info.symbol];
-  if (price === undefined) return undefined;
-  return Number(formatUnits(amount, info.decimals)) * price;
+  if (info) {
+    const price = info.kind === "stable" ? 1 : fairByBase[info.symbol];
+    if (price === undefined) return undefined;
+    return Number(formatUnits(amount, info.decimals)) * price;
+  }
+  const stableDecimals = stableVariantDecimals(token);
+  if (stableDecimals === undefined) return undefined;
+  return Number(formatUnits(amount, stableDecimals));
 }
 
 export type PoolReserves = {

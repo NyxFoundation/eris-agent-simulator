@@ -135,3 +135,88 @@ test("gmx accounts for its market tokens so they are not double-reported", async
     [MARKET.toLowerCase()],
   );
 });
+
+// ---------------------------------------------------------------------------
+// Perp positions across markets (#41)
+//
+// The scorer valued the WETH market alone -- a constraint of the old reconstruct, which could pass a
+// single price -- so a perp on any other market scored zero.
+// ---------------------------------------------------------------------------
+
+const FLOAT = 10n ** 30n;
+function perp(market: Address, sizeUsd: bigint, sizeTokens: bigint, collateral: bigint) {
+  return {
+    addresses: {
+      account: AGENTS[0].address,
+      market,
+      collateralToken: TOKENS.USDC.address,
+    },
+    numbers: {
+      sizeInUsd: sizeUsd,
+      sizeInTokens: sizeTokens,
+      collateralAmount: collateral,
+    },
+    flags: { isLong: true },
+  };
+}
+
+test("a perp in a configured market is valued at its base's fair price", () => {
+  // 1 WETH long entered at $3,000 with 1,000 USDC collateral, marked at $3,000: PnL 0.
+  const position = perp(MARKET, 3000n * FLOAT, 10n ** 18n, 1000n * 10n ** 6n);
+  return drive([() => [[position], undefined, marketProps, 0n, 0n]]).then(
+    ({ values }) => {
+      assert.ok(Math.abs(values.holder.valueUsdc - 1000) < 1e-6);
+      assert.deepEqual(values.holder.unpriced, []);
+    },
+  );
+});
+
+test("a perp in an unconfigured market is reported, not scored at zero (#41)", async () => {
+  // Before the fix this whole position -- collateral included -- silently vanished.
+  const other = "0x000000000000000000000000000000000000be7f" as Address;
+  const position = perp(other, 5000n * FLOAT, 10n ** 18n, 2000n * 10n ** 6n);
+  const { values } = await drive([
+    () => [[position], undefined, marketProps, 0n, 0n],
+  ]);
+  assert.equal(values.holder.valueUsdc, 0);
+  assert.deepEqual(values.holder.unpriced, [
+    {
+      token: other,
+      amountRaw: (5000n * FLOAT).toString(),
+      source: "gmx-position",
+    },
+  ]);
+});
+
+test("a perp whose base has no fair price is reported, not scored at zero", async () => {
+  const position = perp(MARKET, 3000n * FLOAT, 10n ** 18n, 1000n * 10n ** 6n);
+  const run = gmxAdapter.valueAtBlock!({
+    publicClient: undefined as never,
+    blockNumber: 1,
+    agents: AGENTS,
+    activeStables: [TOKENS.USDC.address as Address],
+    fairByBase: () => ({}), // price feed read failed for every base
+  });
+  const first = await run.next();
+  const done = await run.next([
+    [position],
+    undefined,
+    marketProps,
+    0n,
+    0n,
+  ] as never);
+  assert.equal(first.done, false);
+  assert.equal(done.done, true);
+  const values = done.value as never as Record<
+    string,
+    { valueUsdc: number; unpriced: unknown[] }
+  >;
+  assert.equal(values.holder.valueUsdc, 0);
+  assert.deepEqual(values.holder.unpriced, [
+    {
+      token: MARKET,
+      amountRaw: (3000n * FLOAT).toString(),
+      source: "gmx-position",
+    },
+  ]);
+});
