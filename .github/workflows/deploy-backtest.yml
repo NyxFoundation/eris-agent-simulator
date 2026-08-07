@@ -46,6 +46,10 @@ jobs:
 
       - run: npm ci
 
+      # The mock oracles and PriceFeed the run deploys at setup. The deployer's own `forge build`
+      # writes to deployer/out and does not cover these.
+      - run: npm run build:contracts
+
       - name: Set up the deployer
         working-directory: deployer
         run: |
@@ -112,5 +116,6 @@ jobs:
           path: |
             runs/
             deployer/deployments/deployments.json
+            backtest/state/manifest.json
             ${{ runner.temp }}/anvil.log
           retention-days: 7
