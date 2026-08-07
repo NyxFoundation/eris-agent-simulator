@@ -352,8 +352,6 @@ export type LocalDeployment = {
     tokens: Address[];
     usdcToken: Address;
     seedWethWei: bigint;
-    seedUsdcUnits: bigint;
-    seedUsdtUnits: bigint;
   };
   CURVE: { pool: Address; wethIndex: number; usdtIndex: number; usdcToken: Address };
   GMX: {
@@ -401,8 +399,6 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     tokens: [${d.bal.tokens.map((x) => a(x)).join(", ")}],
     usdcToken: ${a(d.usdc)},
     seedWethWei: 100_000_000_000_000_000_000n,
-    seedUsdcUnits: 50_000_000_000n,
-    seedUsdtUnits: 0n,
   },
   // Curve: twocrypto-ng's WETH/USDC crypto pool (uint256 index get_dy/exchange).
   // coin0=USDC(stable)=${d.curve.usdtIndex}, coin1=WETH=${d.curve.wethIndex}. usdcToken is the pool's stable=USDC.

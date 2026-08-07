@@ -113,10 +113,10 @@ export const BALANCER = L?.BALANCER ?? {
     "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", // USDT
   ] as Address[],
   usdcToken: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" as Address,
-  // Seed amounts (admin joins). Roughly balanced at 33/33/34 assuming ETH~$2100.
+  // Depth of the admin join, on the WETH leg only. The stable legs used to be constants too, which
+  // pinned the seeded pool at ETH~$2100 and made every fork run fail the startup no-arb check as
+  // spot drifted away from it (issue #43); they are now derived from the live price at setup.
   seedWethWei: 200_000_000_000_000_000_000n, // 200 WETH
-  seedUsdcUnits: 420_000_000_000n, // 420,000 USDC
-  seedUsdtUnits: 420_000_000_000n, // 420,000 USDT
 };
 
 // ---------------------------------------------------------------------------

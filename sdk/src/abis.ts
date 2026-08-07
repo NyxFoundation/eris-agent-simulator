@@ -7,6 +7,9 @@ export const erc20Abi = parseAbi([
   "function allowance(address owner, address spender) view returns (uint256)",
   // LP-token share valuation (issue #41).
   "function totalSupply() view returns (uint256)",
+  // Balancer seeding (issue #43) sizes legs in USD, so it needs the scale of tokens the registry
+  // does not carry (the fork pool's USD₮0 leg).
+  "function decimals() view returns (uint8)",
 ]);
 
 export const wethAbi = parseAbi([
@@ -53,6 +56,12 @@ export const balancerVaultAbi = parseAbi([
   "function getPoolTokens(bytes32 poolId) view returns (address[] tokens, uint256[] balances, uint256 lastChangeBlock)",
   "function swap((bytes32 poolId, uint8 kind, address assetIn, address assetOut, uint256 amount, bytes userData) singleSwap, (address sender, bool fromInternalBalance, address recipient, bool toInternalBalance) funds, uint256 limit, uint256 deadline) payable returns (uint256 amountCalculated)",
   "function joinPool(bytes32 poolId, address sender, address recipient, (address[] assets, uint256[] maxAmountsIn, bytes userData, bool fromInternalBalance) request) payable",
+]);
+
+// Balancer v2 WeightedPool. The spot price of a weighted pool is set by the balance/weight ratios,
+// so seeding it at the live price needs the weights (issue #43).
+export const balancerWeightedPoolAbi = parseAbi([
+  "function getNormalizedWeights() view returns (uint256[])",
 ]);
 
 export const balancerQueriesAbi = parseAbi([
