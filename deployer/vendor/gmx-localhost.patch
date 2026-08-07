@@ -36,10 +36,22 @@ index 3d0be7c..ebefff4 100644
        endpoint: "0x1a44076050125825900e736c501f859c50fE728c",
      },
 diff --git a/config/markets.ts b/config/markets.ts
-index 8fad779..74f5797 100644
+index 8fad779..30a4634 100644
 --- a/config/markets.ts
 +++ b/config/markets.ts
-@@ -5072,7 +5072,7 @@ function fillLongShortValues(market, key, longKey, shortKey) {
+@@ -5046,6 +5046,11 @@ const config: {
+     {
+       tokens: { indexToken: "WETH", longToken: "WETH", shortToken: "USDC" },
+     },
++    {
++      // BTC/USD. Upstream's localhost list has no BTC market, but this patch already adds a WBTC
++      // token (config/tokens.ts) and the deployer seeds a BTC GM pool, so the market has to exist.
++      tokens: { indexToken: "WBTC", longToken: "WBTC", shortToken: "USDC" },
++    },
+     {
+       tokens: { indexToken: "GMX", longToken: "GMX", shortToken: "USDC" },
+     },
+@@ -5072,7 +5077,7 @@ function fillLongShortValues(market, key, longKey, shortKey) {
  export default async function (hre: HardhatRuntimeEnvironment) {
    const markets = config[hre.network.name];
    const tokens = await hre.gmx.getTokens();
@@ -300,7 +312,7 @@ diff --git a/deploy/deployMockTimelockV1.ts b/deploy/deployMockTimelockV1.ts
 index a911fb0..4b39ab3 100644
 --- a/deploy/deployMockTimelockV1.ts
 +++ b/deploy/deployMockTimelockV1.ts
-@@ -16,7 +16,7 @@ const func = createDeployFunction({
+@@ -16,14 +16,14 @@ const func = createDeployFunction({
      const mockTimelockV1 = await ethers.getContractAt("MockTimelockV1", deployedContract.address);
  
      console.log(`Transferring ReferralStorage gov to MockTimelockV1...`);
@@ -310,7 +322,6 @@ index a911fb0..4b39ab3 100644
 +    await (await mockTimelockV1.acceptGov(referralStorage.address)).wait();
      console.log(`MockTimelockV1 is now gov of ReferralStorage`);
    },
-@@ -23,7 +23,7 @@ const func = createDeployFunction({
  });
  
  func.skip = async ({ network }: HardhatRuntimeEnvironment) => {
@@ -406,7 +417,7 @@ index a4ac8b4..baff5d8 100644
  
  const func = async ({ getNamedAccounts, deployments }: HardhatRuntimeEnvironment) => {
 diff --git a/hardhat.config.ts b/hardhat.config.ts
-index 8ca5e8c..c106955 100644
+index 8ca5e8c..8d1e66c 100644
 --- a/hardhat.config.ts
 +++ b/hardhat.config.ts
 @@ -200,6 +200,7 @@ const config: HardhatUserConfig = {
@@ -458,7 +469,7 @@ index b16bd7b..61ef57a 100644
      const shouldSkip = process.env.SKIP_AUTO_HANDLER_REDEPLOYMENT == "true" ? true : false;
 diff --git a/utils/setBalanceCompat.ts b/utils/setBalanceCompat.ts
 new file mode 100644
-index 0000000..ec10fe7
+index 0000000..976ce60
 --- /dev/null
 +++ b/utils/setBalanceCompat.ts
 @@ -0,0 +1,11 @@

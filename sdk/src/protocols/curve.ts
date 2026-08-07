@@ -1,6 +1,7 @@
-import { encodeFunctionData, type PublicClient } from "viem";
-import { curveTricryptoAbi } from "../abis.js";
+import { encodeFunctionData, type Address, type PublicClient } from "viem";
+import { curveTricryptoAbi, erc20Abi } from "../abis.js";
 import { CURVE, TOKENS, stableBalanceOf } from "../constants.js";
+import { poolShareValueUsdc } from "../valuation.js";
 import {
   marketFor,
   marketsFor,
@@ -21,9 +22,11 @@ import type {
   LeafAction,
 } from "../types.js";
 import type {
+  AgentProtocolValue,
   BuiltTx,
   ProtocolAdapter,
   SimContext,
+  UnpricedHoldingDetail,
   ValidationResult,
 } from "./types.js";
 import { approveTx } from "./uniswap.js";
@@ -57,6 +60,76 @@ function wethMarket(): MarketConfig {
 function legOf(market: MarketConfig): CurveLeg {
   if (!market.curve) throw new Error(`curve: market ${market.key} has no leg`);
   return market.curve;
+}
+
+// ---------------------------------------------------------------------------
+// LP-token holdings (issue #41)
+//
+// add_liquidity is reachable through rawTx, and an LP-token balance used to contribute nothing to an
+// agent's value. Pricing the share needs the pool's coin list and its LP token, both immutable for a
+// deployment — so they are resolved once and cached rather than re-read for every block reconstruct
+// walks back over.
+// ---------------------------------------------------------------------------
+
+export type CurvePoolShape = {
+  pool: Address;
+  lpToken: Address;
+  coins: Address[];
+};
+
+// Highest coin count probed. Curve pools in this sim are 2 (twocrypto-ng) or 3 (tricrypto) coins.
+const MAX_CURVE_COINS = 4;
+
+const shapeCache = new Map<string, CurvePoolShape>();
+
+async function resolveCurvePool(
+  publicClient: PublicClient,
+  pool: Address,
+): Promise<CurvePoolShape | undefined> {
+  const cached = shapeCache.get(pool.toLowerCase());
+  if (cached) return cached;
+  const coins: Address[] = [];
+  for (let i = 0; i < MAX_CURVE_COINS; i++) {
+    try {
+      coins.push(
+        (await publicClient.readContract({
+          address: pool,
+          abi: curveTricryptoAbi,
+          functionName: "coins",
+          args: [BigInt(i)],
+        })) as Address,
+      );
+    } catch {
+      break; // coins(i) reverts past the last coin
+    }
+  }
+  if (coins.length === 0) return undefined;
+  // Older tricrypto pools mint a separate LP token; twocrypto-ng pools are their own ERC-20.
+  const lpToken = await publicClient
+    .readContract({
+      address: pool,
+      abi: curveTricryptoAbi,
+      functionName: "token",
+    })
+    .then((t) => t as Address)
+    .catch(() => pool);
+  const shape = { pool, lpToken, coins };
+  shapeCache.set(pool.toLowerCase(), shape);
+  return shape;
+}
+
+// Shapes of every distinct pool across the configured curve markets. Pools that cannot be read are
+// omitted, so their holdings are reported as unpriced instead of being marked wrong.
+export async function resolveCurvePools(
+  publicClient: PublicClient,
+): Promise<CurvePoolShape[]> {
+  const pools = new Map<string, Address>();
+  for (const m of marketsFor("curve"))
+    pools.set(legOf(m).pool.toLowerCase(), legOf(m).pool);
+  const shapes = await Promise.all(
+    [...pools.values()].map((p) => resolveCurvePool(publicClient, p)),
+  );
+  return shapes.filter((s): s is CurvePoolShape => s !== undefined);
 }
 
 // Use 0.1 base unit as the probe (small amount to limit slippage impact; price is recovered as output/probe).
@@ -309,6 +382,86 @@ export const curveAdapter: ProtocolAdapter = {
 
   async valueUsdc(): Promise<number> {
     return 0; // swap only. Balance is already counted on the wallet side (stable aggregate)
+  },
+
+  // Issue #41: an LP-token balance used to contribute nothing. Coin lists and LP tokens are
+  // immutable, so they are resolved once outside the batched stage.
+  async *valueAtBlock(ctx) {
+    const empty: Record<string, AgentProtocolValue> = {};
+    for (const a of ctx.agents)
+      empty[a.id] = { valueUsdc: 0, liquidatableValueUsdc: 0, unpriced: [] };
+    const shapes = await resolveCurvePools(ctx.publicClient);
+    if (shapes.length === 0) return empty;
+
+    const reserveReads = shapes.flatMap((shape) => [
+      ...shape.coins.map((_, i) => ({
+        address: shape.pool,
+        abi: curveTricryptoAbi,
+        functionName: "balances",
+        args: [BigInt(i)],
+      })),
+      { address: shape.lpToken, abi: erc20Abi, functionName: "totalSupply" },
+    ]);
+    const results = yield [
+      ...reserveReads,
+      ...ctx.agents.flatMap((a) =>
+        shapes.map((shape) => ({
+          address: shape.lpToken,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [a.address],
+        })),
+      ),
+    ];
+
+    let cursor = 0;
+    const reserves = shapes.map((shape) => {
+      const balances = results.slice(cursor, cursor + shape.coins.length);
+      const totalSupply = results[cursor + shape.coins.length];
+      cursor += shape.coins.length + 1;
+      if (typeof totalSupply !== "bigint") return undefined;
+      if (balances.some((b) => typeof b !== "bigint")) return undefined;
+      return {
+        tokens: shape.coins,
+        balances: balances as bigint[],
+        totalSupply,
+      };
+    });
+
+    const fairByBase = ctx.fairByBase();
+    const out: Record<string, AgentProtocolValue> = {};
+    ctx.agents.forEach((agent, a) => {
+      let valueUsdc = 0;
+      const unpriced: UnpricedHoldingDetail[] = [];
+      shapes.forEach((shape, s) => {
+        const balance = results[cursor + a * shapes.length + s];
+        if (typeof balance !== "bigint" || balance <= 0n) return;
+        const pool = reserves[s];
+        if (!pool) {
+          unpriced.push({
+            token: shape.lpToken,
+            amountRaw: balance.toString(),
+            source: "curve-lp",
+          });
+          return;
+        }
+        const share = poolShareValueUsdc(pool, balance, fairByBase);
+        valueUsdc += share.valueUsdc;
+        for (const h of share.unpriced)
+          unpriced.push({ ...h, source: "curve-lp" });
+      });
+      out[agent.id] = {
+        valueUsdc,
+        // remove_liquidity exits at the pool ratio without a fee, so the share is already realizable.
+        liquidatableValueUsdc: valueUsdc,
+        unpriced,
+      };
+    });
+    return out;
+  },
+
+  async accountedTokens(publicClient): Promise<Address[]> {
+    return (await resolveCurvePools(publicClient)).map((s) => s.lpToken);
   },
 
   async setupWallet(): Promise<BuiltTx[]> {

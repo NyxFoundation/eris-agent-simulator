@@ -8,7 +8,13 @@ import {
   type Hex,
   type PublicClient,
 } from "viem";
-import { balancerQueriesAbi, balancerVaultAbi, wethAbi } from "../abis.js";
+import {
+  balancerQueriesAbi,
+  balancerVaultAbi,
+  erc20Abi,
+  wethAbi,
+} from "../abis.js";
+import { poolShareValueUsdc } from "../valuation.js";
 import { BALANCER, TOKENS, stableBalanceOf } from "../constants.js";
 import {
   marketFor,
@@ -31,9 +37,11 @@ import type {
   TokenSymbol,
 } from "../types.js";
 import type {
+  AgentProtocolValue,
   BuiltTx,
   ProtocolAdapter,
   SimContext,
+  UnpricedHoldingDetail,
   ValidationResult,
 } from "./types.js";
 import { approveTx } from "./uniswap.js";
@@ -193,6 +201,28 @@ export async function getBalancerState(
     priceUsdcPerWeth: weth.priceUsdcPerWeth,
     markets: states,
   };
+}
+
+// ---------------------------------------------------------------------------
+// BPT holdings (issue #41)
+//
+// joinPool is reachable through rawTx, and a BPT balance used to contribute nothing to an agent's
+// value — providing liquidity here read as losing the stake outright. The BPT is the pool contract
+// itself, whose address is the leading 20 bytes of the poolId.
+// ---------------------------------------------------------------------------
+
+export function bptAddressOf(poolId: Hex): Address {
+  return `0x${poolId.slice(2, 42)}` as Address;
+}
+
+// Distinct pools an agent could hold BPT for, across the configured balancer markets.
+export function balancerPools(): Array<{ poolId: Hex; bpt: Address }> {
+  const out = new Map<string, { poolId: Hex; bpt: Address }>();
+  for (const m of marketsFor("balancer")) {
+    const { poolId } = legOf(m);
+    out.set(poolId.toLowerCase(), { poolId, bpt: bptAddressOf(poolId) });
+  }
+  return [...out.values()];
 }
 
 function applySlippage(amount: bigint, slippageBps: number): bigint {
@@ -393,6 +423,86 @@ export const balancerAdapter: ProtocolAdapter = {
 
   async valueUsdc(): Promise<number> {
     return 0;
+  },
+
+  // Issue #41: a BPT balance used to contribute nothing. Reserves and supply are shared across
+  // agents, the balance is per agent, and all of it fits in one stage.
+  async *valueAtBlock(ctx) {
+    const pools = balancerPools();
+    const empty: Record<string, AgentProtocolValue> = {};
+    for (const a of ctx.agents)
+      empty[a.id] = { valueUsdc: 0, liquidatableValueUsdc: 0, unpriced: [] };
+    if (pools.length === 0) return empty;
+
+    const results = yield [
+      ...pools.flatMap(({ poolId, bpt }) => [
+        {
+          address: BALANCER.vault,
+          abi: balancerVaultAbi,
+          functionName: "getPoolTokens",
+          args: [poolId],
+        },
+        { address: bpt, abi: erc20Abi, functionName: "totalSupply" },
+      ]),
+      ...ctx.agents.flatMap((a) =>
+        pools.map(({ bpt }) => ({
+          address: bpt,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [a.address],
+        })),
+      ),
+    ];
+
+    // A pool whose reserves could not be read decodes to undefined, which reports any holding of it
+    // rather than marking a wrong number.
+    const reserves = pools.map((_, i) => {
+      const poolTokens = results[i * 2] as
+        readonly [readonly Address[], readonly bigint[], bigint] | undefined;
+      const totalSupply = results[i * 2 + 1];
+      if (!poolTokens || typeof totalSupply !== "bigint") return undefined;
+      return {
+        tokens: [...poolTokens[0]],
+        balances: [...poolTokens[1]],
+        totalSupply,
+      };
+    });
+
+    const fairByBase = ctx.fairByBase();
+    const balancesBase = pools.length * 2;
+    const out: Record<string, AgentProtocolValue> = {};
+    ctx.agents.forEach((agent, a) => {
+      let valueUsdc = 0;
+      const unpriced: UnpricedHoldingDetail[] = [];
+      pools.forEach(({ bpt }, p) => {
+        const balance = results[balancesBase + a * pools.length + p];
+        if (typeof balance !== "bigint" || balance <= 0n) return;
+        const pool = reserves[p];
+        if (!pool) {
+          unpriced.push({
+            token: bpt,
+            amountRaw: balance.toString(),
+            source: "balancer-bpt",
+          });
+          return;
+        }
+        const share = poolShareValueUsdc(pool, balance, fairByBase);
+        valueUsdc += share.valueUsdc;
+        for (const h of share.unpriced)
+          unpriced.push({ ...h, source: "balancer-bpt" });
+      });
+      out[agent.id] = {
+        valueUsdc,
+        // Proportional exit is fee-free on a weighted pool, so the share is already realizable.
+        liquidatableValueUsdc: valueUsdc,
+        unpriced,
+      };
+    });
+    return out;
+  },
+
+  async accountedTokens(): Promise<Address[]> {
+    return balancerPools().map((p) => p.bpt);
   },
 
   async setupWallet(): Promise<BuiltTx[]> {

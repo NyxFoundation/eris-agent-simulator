@@ -204,6 +204,10 @@ export type LpPositionObservation = {
   // The naming stays WETH/USDC-compatible. For a WBTC-market position, base=WBTC amount and quote=USDC amount go here.
   tokensOwedWethWei: string;
   tokensOwedUsdcUnits: string;
+  // Issue #21: fees earned since the position's last checkpoint. They live in the pool until
+  // poke/collect writes them into tokensOwed, but are already included in valueUsdc.
+  uncollectedFeesWethWei: string;
+  uncollectedFeesUsdcUnits: string;
   amountWethWei: string;
   amountUsdcUnits: string;
   valueUsdc: number;
