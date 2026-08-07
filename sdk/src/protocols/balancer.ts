@@ -11,15 +11,17 @@ import {
 import {
   balancerQueriesAbi,
   balancerVaultAbi,
+  balancerWeightedPoolAbi,
   erc20Abi,
   wethAbi,
 } from "../abis.js";
 import { poolShareValueUsdc } from "../valuation.js";
-import { BALANCER, TOKENS, stableBalanceOf } from "../constants.js";
+import { BALANCER, stableBalanceOf } from "../constants.js";
 import {
   marketFor,
   marketsFor,
   tokenInfo,
+  tokenInfoByAddress,
   type MarketConfig,
 } from "../markets.js";
 import {
@@ -44,7 +46,7 @@ import type {
   UnpricedHoldingDetail,
   ValidationResult,
 } from "./types.js";
-import { approveTx } from "./uniswap.js";
+import { approveTx, getPoolPriceUsdcPerWeth } from "./uniswap.js";
 import { accountAddress } from "../chain.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
@@ -376,6 +378,134 @@ function encodeExactTokensInJoin(amountsIn: bigint[], minBpt: bigint): Hex {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Admin seed of the fork pool (issue #43)
+//
+// The Arbitrum pool is depleted at the fork block, so setupGlobal admin-joins it to make it
+// tradeable. A weighted pool's spot price is set by its balance/weight ratios, so joining at fixed
+// notionals pins the pool at whatever price those notionals imply: the old seed constants meant
+// ETH~$2,100, and once spot left that level every fork run died on the startup no-arb check. The
+// stable legs are therefore sized from the live price instead — each leg lands on its weight share
+// of one total USD value, which is the state at which the pool quotes exactly that price.
+// ---------------------------------------------------------------------------
+
+export type SeedLeg = {
+  token: Address;
+  decimals: number;
+  // USD per whole token ($1 for the pool's stable legs).
+  priceUsd: number;
+  // Normalized weight as the pool reports it (1e18 = 100%).
+  weight: bigint;
+  // What the pool already holds (raw units). The join adds on top of it.
+  balance: bigint;
+};
+
+// Amounts to join so the pool ends up quoting each leg at its priceUsd, holding anchorAmount of the
+// anchor leg (the base; its notional is the pool's depth knob).
+export function seedAmountsIn(
+  legs: SeedLeg[],
+  anchorIndex: number,
+  anchorAmount: bigint,
+): bigint[] {
+  const anchor = legs[anchorIndex];
+  if (!anchor) throw new Error("balancer seed: anchor leg out of range");
+  const weightTotal = legs.reduce((sum, l) => sum + Number(l.weight), 0);
+  if (!(weightTotal > 0))
+    throw new Error("balancer seed: pool reported no normalized weights");
+  for (const l of legs) {
+    if (!(l.priceUsd > 0))
+      throw new Error(`balancer seed: no USD price for leg ${l.token}`);
+  }
+  const share = (l: SeedLeg) => Number(l.weight) / weightTotal;
+  // Total pool value implied by holding anchorAmount of the anchor at its weight share.
+  const totalUsd =
+    ((Number(anchorAmount) / 10 ** anchor.decimals) * anchor.priceUsd) /
+    share(anchor);
+  const target = legs.map((l, i) =>
+    i === anchorIndex
+      ? anchorAmount
+      : BigInt(
+          Math.round(((share(l) * totalUsd) / l.priceUsd) * 10 ** l.decimals),
+        ),
+  );
+  // A join cannot drain a leg that already holds more than its target, and joining the other legs
+  // anyway would seed the pool off-price. Scale every target up instead: the ratios (and so the
+  // price) are preserved and the pool only comes out deeper than asked for.
+  let scale = 1;
+  legs.forEach((l, i) => {
+    if (target[i] > 0n && l.balance > target[i])
+      scale = Math.max(scale, Number(l.balance) / Number(target[i]));
+  });
+  return legs.map((l, i) => {
+    const t =
+      scale > 1 ? BigInt(Math.round(Number(target[i]) * scale)) : target[i];
+    return t > l.balance ? t - l.balance : 0n;
+  });
+}
+
+// Read the pool's registered tokens, weights and residual balances, and price each leg: the base at
+// the live market price (the same Uniswap pool the run takes its initial fair price from), the rest
+// at $1. The stable legs are the pool's dollar tokens (native USDC / USD₮0), and USD₮0 is not in the
+// token registry, so "not a registered base" is what identifies them.
+async function readSeedLegs(
+  ctx: SimContext,
+): Promise<{ assets: Address[]; legs: SeedLeg[]; anchorIndex: number }> {
+  const client = ctx.publicClient;
+  const [tokens, balances] = (await client.readContract({
+    address: BALANCER.vault,
+    abi: balancerVaultAbi,
+    functionName: "getPoolTokens",
+    args: [BALANCER.poolId],
+  })) as readonly [readonly Address[], readonly bigint[], bigint];
+  const [weights, decimals, basePriceUsd] = await Promise.all([
+    client.readContract({
+      address: bptAddressOf(BALANCER.poolId),
+      abi: balancerWeightedPoolAbi,
+      functionName: "getNormalizedWeights",
+    }) as Promise<readonly bigint[]>,
+    Promise.all(
+      tokens.map(
+        (token) =>
+          client.readContract({
+            address: token,
+            abi: erc20Abi,
+            functionName: "decimals",
+          }) as Promise<number>,
+      ),
+    ),
+    getPoolPriceUsdcPerWeth(client),
+  ]);
+  if (weights.length !== tokens.length)
+    throw new Error(
+      `balancer seed: pool reports ${weights.length} weights for ${tokens.length} tokens`,
+    );
+
+  const baseToken = tokenInfo(wethMarket().base).address.toLowerCase();
+  let anchorIndex = -1;
+  const legs = tokens.map((token, i) => {
+    const isAnchor = token.toLowerCase() === baseToken;
+    if (isAnchor) anchorIndex = i;
+    // Another base in the pool would need its own live price; seeding it at $1 would silently
+    // mis-seed the pool, so refuse instead.
+    if (!isAnchor && tokenInfoByAddress(token)?.kind === "base")
+      throw new Error(
+        `balancer seed: pool leg ${token} is a second base token; seeding needs its price`,
+      );
+    return {
+      token,
+      decimals: decimals[i],
+      priceUsd: isAnchor ? basePriceUsd : 1,
+      weight: weights[i],
+      balance: balances[i],
+    };
+  });
+  if (anchorIndex < 0)
+    throw new Error(
+      `balancer seed: pool ${BALANCER.pool} does not hold the market base ${baseToken}`,
+    );
+  return { assets: [...tokens], legs, anchorIndex };
+}
+
 export const balancerAdapter: ProtocolAdapter = {
   id: "balancer",
   stableToken: BALANCER.usdcToken,
@@ -521,7 +651,8 @@ export const balancerAdapter: ProtocolAdapter = {
     return txs;
   },
 
-  // The pool is empty at the fork point, so admin joins and seeds it.
+  // The pool is empty at the fork point, so admin joins and seeds it — at the live price, not at a
+  // constant (issue #43; see seedAmountsIn).
   // Only the WETH market is seeded here (seeding the WBTC pool is separate work on the deployer side).
   async setupGlobal(ctx: SimContext): Promise<void> {
     // On local deploy the bundled deployer/ has already seeded the WETH/USDC pool
@@ -530,36 +661,34 @@ export const balancerAdapter: ProtocolAdapter = {
       return;
     }
     const admin = accountAddress(ctx.adminPk);
-    // Prepare seed tokens for admin (wrap for WETH, deal for the stables)
-    await sendAndMine(
-      ctx.publicClient,
-      ctx.walletClient,
-      ctx.chain,
-      ctx.adminPk,
-      {
-        to: TOKENS.WETH.address,
-        data: encodeFunctionData({
-          abi: wethAbi,
-          functionName: "deposit",
-          args: [],
-        }),
-        value: BALANCER.seedWethWei,
-      },
-    );
-    await dealErc20(
-      ctx.publicClient,
-      BALANCER.tokens[1],
-      admin,
-      BALANCER.seedUsdcUnits,
-    );
-    await dealErc20(
-      ctx.publicClient,
-      BALANCER.tokens[2],
-      admin,
-      BALANCER.seedUsdtUnits,
-    );
+    const { assets, legs, anchorIndex } = await readSeedLegs(ctx);
+    const amountsIn = seedAmountsIn(legs, anchorIndex, BALANCER.seedWethWei);
 
-    for (const token of BALANCER.tokens) {
+    // Prepare seed tokens for admin (wrap for WETH, deal for the stables)
+    for (const [i, leg] of legs.entries()) {
+      if (amountsIn[i] <= 0n) continue;
+      if (i === anchorIndex) {
+        await sendAndMine(
+          ctx.publicClient,
+          ctx.walletClient,
+          ctx.chain,
+          ctx.adminPk,
+          {
+            to: leg.token,
+            data: encodeFunctionData({
+              abi: wethAbi,
+              functionName: "deposit",
+              args: [],
+            }),
+            value: amountsIn[i],
+          },
+        );
+      } else {
+        await dealErc20(ctx.publicClient, leg.token, admin, amountsIn[i]);
+      }
+    }
+
+    for (const token of assets) {
       const approve = approveTx(token, BALANCER.vault);
       await sendAndMine(
         ctx.publicClient,
@@ -570,11 +699,6 @@ export const balancerAdapter: ProtocolAdapter = {
       );
     }
 
-    const amountsIn = [
-      BALANCER.seedWethWei,
-      BALANCER.seedUsdcUnits,
-      BALANCER.seedUsdtUnits,
-    ];
     const userData = encodeExactTokensInJoin(amountsIn, 0n);
     const joinData = encodeFunctionData({
       abi: balancerVaultAbi,
@@ -584,7 +708,7 @@ export const balancerAdapter: ProtocolAdapter = {
         admin,
         admin,
         {
-          assets: BALANCER.tokens,
+          assets,
           maxAmountsIn: amountsIn,
           userData,
           fromInternalBalance: false,
