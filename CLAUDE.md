@@ -68,7 +68,8 @@ agents:
 - `npm run sim:realtime` — 実時間 run を 1 回実行（設定は `config/local.yaml`。`--config <path>` で別ファイル、`--seed`/`--blocks`/`--protocols`/`--agents` 等で一回上書き）
 - `npm run build:contracts` — モックオラクル + PriceFeed を forge build（sim:realtime の前提。`out/` 未生成なら最低 1 回）
 - `npm run gen:local-constants` — deployments.json → `sdk/src/constants.local.ts` 生成（同梱 `deployer/` のローカルデプロイ出力を読む）
-- `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
+- `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）。**state 本体は git 管理外**（数十 MB を再生成のたび全入れ替えするため）で GitHub Release アセットとして配布し、`manifest.json` のみコミットする（fingerprint / genesisHash / deployments を含む契約かつ、どの Release を取りに行くかを決める。生成時に `gh release create` のコマンドを出力する）
+- `npm run fetch:state-dump` — コミット済み manifest が指す Release から state 本体を取得・展開（`--force` で再取得、`--repo owner/name` で取得元指定）。tag は manifest の生成元コミット由来なので、古いコミットを checkout すればそのコミット向けの dump が落ちてくる。sha256 と byte 数を manifest と照合してから書き込む
 - `npm run backtest -- --regime <name>` — 参加者バックテスト（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml`（+seed）を再生する。`--repeat N`（snapshot/revert 反復・run 毎に採点再構成）/ `--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）

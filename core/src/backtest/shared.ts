@@ -102,7 +102,17 @@ export type StateManifest = {
   deploymentsFingerprint: string;
   // The full deployer/deployments/deployments.json embedded.
   deployments: Record<string, unknown>;
+  // Integrity of the state body, so a fetched dump can be checked before it is trusted. Optional:
+  // manifests generated before the distribution channel existed do not carry them.
+  stateSha256?: string;
+  stateBytes?: number;
 };
+
+// The release the manifest's state body is published under. Derived from the generating commit so
+// that a checked-in manifest names exactly one asset -- there is no "latest" to drift against.
+export function releaseTagFor(manifest: StateManifest): string {
+  return `state-${manifest.sourceCommit.slice(0, 12)}`;
+}
 
 // Canonical JSON independent of key order (stabilizes the fingerprint input).
 export function canonicalJson(value: unknown): string {
@@ -144,6 +154,10 @@ export function validateStateManifest(
       fail(`missing ${key}`);
   }
   if (typeof m.chainId !== "number") fail("missing chainId");
+  if (m.stateSha256 !== undefined && typeof m.stateSha256 !== "string")
+    fail("stateSha256 must be a string");
+  if (m.stateBytes !== undefined && typeof m.stateBytes !== "number")
+    fail("stateBytes must be a number");
   if (!m.deployments || typeof m.deployments !== "object")
     fail("missing deployments");
   const fp = deploymentsFingerprint(m.deployments);
@@ -172,7 +186,10 @@ export function readStateManifest(stateDir: string): {
   const statePath = join(stateDir, manifest.stateFile);
   if (!existsSync(statePath))
     throw new Error(
-      `state file not found: ${statePath} (manifest exists but the state body is missing)`,
+      `state file not found: ${statePath} (manifest exists but the state body is missing). ` +
+        `The state body is distributed separately from the repository because of its size: ` +
+        `fetch it with \`npm run fetch:state-dump\`, or regenerate it locally with ` +
+        `\`npm run gen:state-dump\` against a deployed anvil (ADR 0016 §2)`,
     );
   return { manifest, statePath };
 }

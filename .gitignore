@@ -21,7 +21,15 @@ probe_tmp.mts
 # snapshot ID for local deploy mode
 .local-snapshot
 
-# state dump for participant backtest (gen:state-dump output. distribution channel TBD = ADR 0016)
-# root-only (does not pull in core/src/backtest)
-/backtest/
+# State dump for participant backtest (gen:state-dump output. ADR 0016).
+# Root-only (does not pull in core/src/backtest). The manifest IS tracked: it is small, it is the
+# contract (fingerprint / genesis hash / bundled deployments), and it names the release the state
+# body is published under. The body itself is tens of MB and is rewritten wholesale on every
+# regeneration, so it ships as a release asset -- fetch it with `npm run fetch:state-dump`.
+/backtest/state/venues-state.json
+/backtest/state/venues-state.json.gz
+/backtest/state/deployments.extracted.json
+/backtest/state/.effective-*.yaml
+/backtest/state/.snapshot-*
+/backtest/state/.local-snapshot
 

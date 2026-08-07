@@ -18,11 +18,14 @@
  *   npm run gen:state-dump -- --rpc http://127.0.0.1:8545 --out backtest/state
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import {
   deploymentsFingerprint,
+  releaseTagFor,
   gitHead,
   MANIFEST_FILE_NAME,
   parseFlags,
@@ -131,6 +134,13 @@ async function main(): Promise<void> {
     "0x0",
     false,
   ]);
+  // The state body is too large for git (tens of MB) and is republished wholesale on every
+  // regeneration, so it ships as a release asset instead. gzip because anvil --load-state only
+  // accepts plain JSON: the compressed copy is what gets uploaded, the plain one is what runs.
+  const stateGz = gzipSync(stateJson);
+  const gzPath = `${statePath}.gz`;
+  writeFileSync(gzPath, stateGz);
+
   const manifest: StateManifest = {
     schema: 1,
     createdAt: new Date().toISOString(),
@@ -141,6 +151,9 @@ async function main(): Promise<void> {
     stateFile: STATE_FILE_NAME,
     deploymentsFingerprint: deploymentsFingerprint(deployments),
     deployments: deployments as unknown as Record<string, unknown>,
+    // Lets a fetched dump be verified before it is trusted.
+    stateSha256: createHash("sha256").update(stateJson).digest("hex"),
+    stateBytes: Buffer.byteLength(stateJson),
   };
   const manifestPath = join(outDir, MANIFEST_FILE_NAME);
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -159,7 +172,13 @@ async function main(): Promise<void> {
     `  commit=${manifest.sourceCommit.slice(0, 12)} chainId=${manifest.chainId} genesis=${genesis.hash.slice(0, 12)}…`,
   );
   console.log(`  fingerprint=${manifest.deploymentsFingerprint.slice(0, 20)}…`);
+  console.log(`✓ compressed: ${gzPath} (${mb(stateGz.length)})`);
   console.log(`  run: npm run backtest -- --regime calm-01`);
+  console.log(
+    `\n  publish (the manifest names this tag, so commit the manifest in the same change):\n` +
+      `    gh release create ${releaseTagFor(manifest)} ${gzPath} \\\n` +
+      `      --title "state dump ${manifest.sourceCommit.slice(0, 12)}" --notes "anvil ${anvilVersion}, chainId ${manifest.chainId}"`,
+  );
 }
 
 main().catch((error) => {
