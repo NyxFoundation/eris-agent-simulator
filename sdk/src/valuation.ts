@@ -23,9 +23,25 @@ function stableVariantDecimals(token: Address): number | undefined {
   return undefined;
 }
 
-// A holding that could not be priced. amountRaw is the raw token amount excluded from the value
-// ("" when even the amount is unknown).
-export type UnpricedAmount = { token: Address; amountRaw: string };
+// Why a holding is missing from a value. "unpriced" means the amount is known but has no USD price;
+// "read-failed" means the read that would have revealed the holding failed, so the holding is
+// *unknown* rather than zero (issue #44). Both are excluded from the value and both are reported —
+// a zero in summary.json must never be mistaken for a trading loss.
+export type ScoringExclusionReason = "unpriced" | "read-failed";
+
+// A holding left out of a value, and why.
+export type UnpricedAmount = {
+  // The token, when the exclusion is token-shaped. Absent when a whole position could not be read
+  // (an Aave account, say, is not one token).
+  token?: Address;
+  // The raw token amount excluded from the value ("" when even the amount is unknown).
+  amountRaw: string;
+  // Defaults to "unpriced" when unset, which is what every issue #41 site reports.
+  reason?: ScoringExclusionReason;
+  // For "read-failed": what could not be read, e.g. "AavePool.getUserAccountData". Prose rather than
+  // a taxonomy — it is read by a human diagnosing a value series, not by code.
+  read?: string;
+};
 
 // USD value of a raw token amount. Stables are $1; bases use the run's fair price. Undefined means
 // the token is outside the registry, i.e. unpriceable — not worthless.

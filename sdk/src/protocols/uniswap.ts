@@ -567,6 +567,21 @@ export function feeGrowthInsideX128(args: {
   return wrapSub(wrapSub(args.feeGrowthGlobalX128, below), above);
 }
 
+// Whether both of a position's boundaries have a fee-growth snapshot, i.e. whether uncollectedFees
+// can answer at all. Callers use it to report a suppressed fee term instead of silently marking the
+// position as having earned nothing (issue #44).
+export function feeGrowthKnown(
+  pool: PoolFeeGrowth | undefined,
+  tickLower: number,
+  tickUpper: number,
+): boolean {
+  return (
+    pool !== undefined &&
+    pool.outsideByTick[tickLower] !== undefined &&
+    pool.outsideByTick[tickUpper] !== undefined
+  );
+}
+
 // Fees earned since the position's last checkpoint — what collect() would credit before transferring.
 // Returns zero when liquidity is zero (nothing accrues) or when a boundary's fee growth is unknown.
 export function uncollectedFees(args: {
@@ -864,6 +879,8 @@ export function lpPositionValuation(
     tickLower,
     tickUpper,
   });
+  const poolFeeGrowth =
+    key === undefined ? undefined : ctx.feeGrowthByPool?.[key];
   const fees = uncollectedFees({
     liquidity,
     tick,
@@ -871,7 +888,7 @@ export function lpPositionValuation(
     tickUpper,
     feeGrowthInside0LastX128,
     feeGrowthInside1LastX128,
-    pool: key === undefined ? undefined : ctx.feeGrowthByPool?.[key],
+    pool: poolFeeGrowth,
   });
   const totals = [
     [token0, amounts.amount0 + tokensOwed0 + fees.fees0],
@@ -880,6 +897,21 @@ export function lpPositionValuation(
 
   let valueUsdc = 0;
   const unpriced: LpPositionValuation["unpriced"] = [];
+  // Suppressing the fee term when a boundary read failed is deliberate (guessing would mis-mark the
+  // position), but it still removes value from the mark, so it says so rather than only returning
+  // zero fees. The principal above is unaffected and stays valued (issue #44). Only a caller that
+  // asked for fees at all (it passed a feeGrowthByPool) can have a read go missing.
+  if (
+    liquidity > 0n &&
+    ctx.feeGrowthByPool !== undefined &&
+    !feeGrowthKnown(poolFeeGrowth, tickLower, tickUpper)
+  ) {
+    unpriced.push({
+      amountRaw: "",
+      reason: "read-failed",
+      read: "UniswapV3Pool.ticks (uncollected fees only; principal still valued)",
+    });
+  }
   for (const [token, amount] of totals) {
     const usd = tokenAmountUsd(token, amount, ctx.fairByBase);
     if (usd === undefined) {
@@ -1250,12 +1282,30 @@ export const uniswapAdapter: ProtocolAdapter = {
     });
     const owners: Array<{ agentId: string; owner: Address; index: bigint }> =
       [];
+    // An unreadable NFT count makes every position the agent holds disappear at once, which reads
+    // exactly like having closed them all — report it rather than treating it as "holds none" (#44).
+    const countFailed: string[] = [];
     ctx.agents.forEach((agent, i) => {
-      const count = (stage1[markets.length + i] as bigint) ?? 0n;
-      for (let k = 0n; k < count; k++)
+      const raw = stage1[markets.length + i];
+      if (typeof raw !== "bigint") {
+        countFailed.push(agent.id);
+        return;
+      }
+      for (let k = 0n; k < raw; k++)
         owners.push({ agentId: agent.id, owner: agent.address, index: k });
     });
-    if (owners.length === 0) return zero();
+    const unreadableCount = (out: Record<string, AgentProtocolValue>) => {
+      for (const agentId of countFailed) {
+        out[agentId].unpriced.push({
+          source: "uniswap-lp",
+          amountRaw: "",
+          reason: "read-failed",
+          read: "NonfungiblePositionManager.balanceOf",
+        });
+      }
+      return out;
+    };
+    if (owners.length === 0) return unreadableCount(zero());
 
     const tokenIds = yield owners.map(({ owner, index }) => ({
       address: UNISWAP.nonfungiblePositionManager,
@@ -1371,10 +1421,23 @@ export const uniswapAdapter: ProtocolAdapter = {
     }
 
     const fairByBase = ctx.fairByBase();
-    const out = zero();
-    owners.forEach(({ agentId }, j) => {
+    const out = unreadableCount(zero());
+    owners.forEach(({ agentId, index }, j) => {
       const raw = positions[j];
-      if (!raw || tokenIds[j] === undefined) return;
+      if (!raw || tokenIds[j] === undefined) {
+        // The position is known to exist (it was counted) but could not be read, so its value is
+        // unknown rather than zero (issue #44).
+        out[agentId].unpriced.push({
+          source: `uniswap-lp#${index}`,
+          amountRaw: "",
+          reason: "read-failed",
+          read:
+            tokenIds[j] === undefined
+              ? "NonfungiblePositionManager.tokenOfOwnerByIndex"
+              : "NonfungiblePositionManager.positions",
+        });
+        return;
+      }
       const valuation = lpPositionValuation(raw as PositionTuple, {
         tickByPool,
         fairByBase,

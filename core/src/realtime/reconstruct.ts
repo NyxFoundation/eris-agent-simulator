@@ -25,6 +25,7 @@ import { getAdapter, hasAdapter } from "@eris/sdk/protocols/registry.js";
 import type {
   AgentProtocolValue,
   ProtocolAdapter,
+  UnpricedHoldingDetail,
   ValuationContext,
   ValuationRun,
 } from "@eris/sdk/protocols/types.js";
@@ -47,14 +48,37 @@ export type ReconstructionMeta = {
   toBlock: number;
   blocks: number;
   failedReads: number;
+  // Which contract/function the failed reads were, so a value that dropped can be traced back to the
+  // read that hid it. The bare counter above said something went wrong but never what (issue #44).
+  failedReadTargets: FailedReadTarget[];
   elapsedMs: number;
   // The fixed reference fair used for α evaluation (USDC/WETH; the fair at run end).
   alphaRefFairUsdcPerWeth: number;
   // agent -> α (= value at the fixed reference fair, toBlock − fromBlock; β-removed trade-derived PnL).
   alphaByAgent: Record<string, number>;
-  // Holdings excluded from the value series because they could not be priced (issue #41).
+  // Holdings excluded from the value series because they could not be priced (issue #41) or could not
+  // be read (issue #44).
   unpricedHoldings: UnpricedHolding[];
 };
+
+// A contract/function whose reads failed during the reconstruction, and how often.
+export type FailedReadTarget = {
+  address: Address;
+  functionName: string;
+  count: number;
+};
+
+function mergeFailedReads(
+  into: Map<string, FailedReadTarget>,
+  from: Iterable<FailedReadTarget>,
+): void {
+  for (const t of from) {
+    const key = `${t.address.toLowerCase()}|${t.functionName}`;
+    const existing = into.get(key);
+    if (existing) existing.count += t.count;
+    else into.set(key, { ...t });
+  }
+}
 
 type MulticallContract = {
   address: Address;
@@ -102,17 +126,10 @@ export type AgentValueSnapshot = {
   alphaValueUsdc: number;
 };
 
-// A holding excluded from an agent's value (issue #41), either because the scorer cannot price it or
-// because nothing sums it. Either way a zero in summary.json is indistinguishable from a trading
-// loss, so the exclusion is reported instead of being applied silently.
-export type UnpricedHolding = {
-  agentId: string;
-  // Where the holding came from, e.g. "uniswap-lp:<tokenId>" / "balancer-bpt" / "erc20-unaccounted".
-  source: string;
-  token: Address;
-  // Raw token amount, or "" when even the amount could not be derived.
-  amountRaw: string;
-};
+// A holding excluded from an agent's value: the scorer cannot price it, nothing sums it (issue #41),
+// or the read that would have revealed it failed (issue #44). Either way a zero in summary.json is
+// indistinguishable from a trading loss, so the exclusion is reported instead of being applied silently.
+export type UnpricedHolding = UnpricedHoldingDetail & { agentId: string };
 
 export type ValueSnapshot = {
   blockNumber: number;
@@ -120,6 +137,7 @@ export type ValueSnapshot = {
   // Pool price (from slot0) only when Uniswap is enabled. null if disabled.
   poolPriceUsdcPerWeth: number | null;
   failedReads: number;
+  failedReadTargets: FailedReadTarget[];
   values: AgentValueSnapshot[];
   unpriced: UnpricedHolding[];
 };
@@ -193,6 +211,7 @@ export async function readValueSnapshotAtBlock(opts: {
 }): Promise<ValueSnapshot> {
   const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
   let failedReads = 0;
+  const failedReadTargets = new Map<string, FailedReadTarget>();
 
   const call: MulticallFn = async (contracts, blockNumber) => {
     if (contracts.length === 0) return [];
@@ -202,9 +221,18 @@ export async function readValueSnapshotAtBlock(opts: {
       multicallAddress: MULTICALL3,
       allowFailure: true,
     })) as Array<{ status: "success" | "failure"; result?: unknown }>;
-    return results.map((r) => {
+    return results.map((r, i) => {
       if (r.status === "failure") {
         failedReads++;
+        // Name the read, not just the fact that one failed: the whole point of #44 is being able to
+        // say which holding went missing.
+        mergeFailedReads(failedReadTargets, [
+          {
+            address: contracts[i].address,
+            functionName: contracts[i].functionName,
+            count: 1,
+          },
+        ]);
         return undefined;
       }
       return r.result;
@@ -235,34 +263,36 @@ export async function readValueSnapshotAtBlock(opts: {
   if (wethPool)
     head.push({ address: wethPool, abi: poolAbi, functionName: "slot0" });
 
+  // Per-agent spot reads, described once so that both the request and the decode below work off the
+  // same list. A failed read can then name the holding it hid instead of decoding to zero (issue #44).
+  const spotLayout: SpotRead[] = [
+    { kind: "eth" },
+    { kind: "base", symbol: "WETH", token: TOKENS.WETH.address },
+    ...extraBases.map((symbol) => ({
+      kind: "base" as const,
+      symbol,
+      token: tokenInfo(symbol).address,
+    })),
+    ...activeStables.map((token) => ({ kind: "stable" as const, token })),
+  ];
   const spotBase = head.length;
-  const spotPerAgent = 2 + extraBases.length + activeStables.length;
   for (const agent of agents) {
     head.push(
-      {
-        address: MULTICALL3,
-        abi: multicall3Abi,
-        functionName: "getEthBalance",
-        args: [agent.address],
-      },
-      {
-        address: TOKENS.WETH.address,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [agent.address],
-      },
-      ...extraBases.map((b) => ({
-        address: tokenInfo(b).address,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [agent.address],
-      })),
-      ...activeStables.map((token) => ({
-        address: token,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [agent.address],
-      })),
+      ...spotLayout.map((read) =>
+        read.kind === "eth"
+          ? {
+              address: MULTICALL3,
+              abi: multicall3Abi,
+              functionName: "getEthBalance",
+              args: [agent.address],
+            }
+          : {
+              address: read.token,
+              abi: erc20Abi,
+              functionName: "balanceOf",
+              args: [agent.address],
+            },
+      ),
     );
   }
 
@@ -288,8 +318,19 @@ export async function readValueSnapshotAtBlock(opts: {
     blockNumber,
     onStageZero: (results) => {
       headResults = results;
-      const fairPrice = fromPriceFeedAnswer((results[0] as bigint) ?? 0n);
+      // A zero WETH fair prices every base-denominated holding — spot, LP and perp alike — at
+      // nothing, so the whole cross-section reads as a cliff in the value series. There is no
+      // reading of the chain under which that is the right answer, so refuse the block rather than
+      // score it (issue #44).
+      const answer = results[0];
+      if (typeof answer !== "bigint")
+        throw new Error(fairPriceFailure(opts.blockNumber, "read failed"));
+      const fairPrice = fromPriceFeedAnswer(answer);
+      if (!(fairPrice > 0))
+        throw new Error(fairPriceFailure(opts.blockNumber, "returned 0"));
       fairByBase = { WETH: fairPrice };
+      // Extra bases are different: answerOf returns 0 for a base the run never priced, which is a
+      // real "no entry" rather than a broken read. Holdings of it are reported as unpriced below.
       extraBases.forEach((b, i) => {
         fairByBase[b] = fromPriceFeedAnswer((results[1 + i] as bigint) ?? 0n);
       });
@@ -309,14 +350,47 @@ export async function readValueSnapshotAtBlock(opts: {
   const values: AgentValueSnapshot[] = [];
   const unpriced: UnpricedHolding[] = [];
   agents.forEach((agent, i) => {
-    let idx = spotBase + i * spotPerAgent;
-    const ethWei = (headResults[idx++] as bigint) ?? 0n;
-    const wethWei = (headResults[idx++] as bigint) ?? 0n;
-    const bases: Record<string, bigint> = { WETH: wethWei };
-    for (const b of extraBases) bases[b] = (headResults[idx++] as bigint) ?? 0n;
+    const spotStart = spotBase + i * spotLayout.length;
+    let ethWei = 0n;
     let usdcUnits = 0n;
-    for (let s = 0; s < activeStables.length; s++) {
-      usdcUnits += (headResults[idx++] as bigint) ?? 0n;
+    const bases: Record<string, bigint> = {};
+    spotLayout.forEach((read, k) => {
+      const raw = headResults[spotStart + k];
+      if (typeof raw !== "bigint") {
+        // The balance is unknown, not zero. Keep the zero (there is nothing better to sum) but say
+        // so, otherwise the agent's inventory silently evaporates for this block (issue #44).
+        unpriced.push({
+          agentId: agent.id,
+          source: spotSource(read),
+          ...(read.kind === "eth" ? {} : { token: read.token }),
+          amountRaw: "",
+          reason: "read-failed",
+          read:
+            read.kind === "eth"
+              ? "Multicall3.getEthBalance"
+              : "ERC20.balanceOf",
+        });
+        if (read.kind === "base") bases[read.symbol] = 0n;
+        return;
+      }
+      if (read.kind === "eth") ethWei = raw;
+      else if (read.kind === "base") bases[read.symbol] = raw;
+      else usdcUnits += raw;
+    });
+    const wethWei = bases.WETH ?? 0n;
+    // A base the run never wrote a price for values at zero the same way an unreadable balance does,
+    // so a holding of one is reported rather than quietly counted as nothing (WETH cannot land here:
+    // a missing WETH fair already failed the block above).
+    for (const [symbol, wei] of Object.entries(bases)) {
+      if (wei > 0n && !(fairByBase[symbol] > 0)) {
+        unpriced.push({
+          agentId: agent.id,
+          source: `spot-${symbol}`,
+          token: tokenInfo(symbol).address,
+          amountRaw: wei.toString(),
+          reason: "unpriced",
+        });
+      }
     }
     const balance = { ethWei, wethWei, usdcUnits, bases };
     // Evaluate free inventory two ways: at live fair (β-inclusive) and at the fixed reference fair (β-removed).
@@ -330,10 +404,9 @@ export async function readValueSnapshotAtBlock(opts: {
       alphaTotal += value.valueUsdc;
       for (const holding of value.unpriced) {
         unpriced.push({
+          ...holding,
           agentId: agent.id,
           source: holding.source || id,
-          token: holding.token,
-          amountRaw: holding.amountRaw,
         });
       }
     }
@@ -345,9 +418,31 @@ export async function readValueSnapshotAtBlock(opts: {
     fairPriceUsdcPerWeth: fairPrice,
     poolPriceUsdcPerWeth,
     failedReads,
+    failedReadTargets: [...failedReadTargets.values()],
     values,
     unpriced,
   };
+}
+
+// Per-agent spot read, described so the decode can name what a failed read hid.
+type SpotRead =
+  | { kind: "eth" }
+  | { kind: "base"; symbol: string; token: Address }
+  | { kind: "stable"; token: Address };
+
+function spotSource(read: SpotRead): string {
+  if (read.kind === "eth") return "spot-eth";
+  if (read.kind === "base") return `spot-${read.symbol}`;
+  return "spot-stable";
+}
+
+function fairPriceFailure(blockNumber: number, what: string): string {
+  return (
+    `[reconstruct] fair price unusable at block ${blockNumber} (PriceFeed.latestAnswer ${what}); ` +
+    "refusing to score a cross-section where every base-denominated holding would read as zero. " +
+    `anvil retains only ~${HISTORY_DEPTH_LIMIT} blocks of history, so this usually means the run ` +
+    "window outran it (ADR 0006 §4)"
+  );
 }
 
 const transferEvent = parseAbiItem(
@@ -460,6 +555,7 @@ export async function reconstructValueSeries(opts: {
   } = opts;
   const started = Date.now();
   let failedReads = 0;
+  const failedReadTargets = new Map<string, FailedReadTarget>();
 
   if (toBlock - fromBlock > HISTORY_DEPTH_LIMIT) {
     console.warn(
@@ -479,6 +575,7 @@ export async function reconstructValueSeries(opts: {
     blockNumber: toBlock,
   });
   failedReads += refSnapshot.failedReads;
+  mergeFailedReads(failedReadTargets, refSnapshot.failedReadTargets);
   const refFairByBase: Record<string, number> = { WETH: 0 };
   for (const b of baseTokens().map((t) => t.symbol)) {
     refFairByBase[b] = await readFairForRef(
@@ -491,10 +588,14 @@ export async function reconstructValueSeries(opts: {
 
   const alphaFirst = new Map<string, number>();
   const alphaLast = new Map<string, number>();
-  // Issue #41: holdings the scorer could not price. Deduplicated across the run window (they persist
-  // block to block) and emitted once at the end, so a zero in summary.json is never mistaken for a
-  // trading loss. Keyed by agent + source + token; amountRaw is the last one seen.
+  // Holdings the scorer could not price (issue #41) or could not read (issue #44). Deduplicated
+  // across the run window (they persist block to block) and emitted once at the end, so a zero in
+  // summary.json is never mistaken for a trading loss. amountRaw is the last one seen.
   const unpriced = new Map<string, UnpricedHolding>();
+  // The reason is part of the key: the same holding can be unreadable at one block and unpriceable
+  // at another, and collapsing those into one entry would hide half the story.
+  const unpricedKey = (h: UnpricedHolding) =>
+    `${h.agentId}|${h.source}|${h.token?.toLowerCase() ?? ""}|${h.reason ?? "unpriced"}`;
   for (let b = fromBlock; b <= toBlock; b++) {
     const snapshot = await readValueSnapshotAtBlock({
       publicClient,
@@ -506,9 +607,8 @@ export async function reconstructValueSeries(opts: {
       refFairByBase,
     });
     failedReads += snapshot.failedReads;
-    for (const h of snapshot.unpriced) {
-      unpriced.set(`${h.agentId}|${h.source}|${h.token.toLowerCase()}`, h);
-    }
+    mergeFailedReads(failedReadTargets, snapshot.failedReadTargets);
+    for (const h of snapshot.unpriced) unpriced.set(unpricedKey(h), h);
     for (const { id, valueUsdc: total, alphaValueUsdc } of snapshot.values) {
       if (!alphaFirst.has(id)) alphaFirst.set(id, alphaValueUsdc);
       alphaLast.set(id, alphaValueUsdc);
@@ -547,21 +647,28 @@ export async function reconstructValueSeries(opts: {
     fromBlock,
     toBlock,
   })) {
-    unpriced.set(
-      `${holding.agentId}|${holding.source}|${holding.token.toLowerCase()}`,
-      holding,
-    );
+    unpriced.set(unpricedKey(holding), holding);
   }
 
-  const unpricedHoldings = [...unpriced.values()];
+  // Default the reason once, here, so every site upstream can leave it off when it only ever reports
+  // unpriceable holdings while the emitted event still always says which kind it is.
+  const unpricedHoldings = [...unpriced.values()].map((h) => ({
+    ...h,
+    reason: h.reason ?? ("unpriced" as const),
+  }));
   if (unpricedHoldings.length > 0) {
     logger.event({
       type: "scoring_unpriced_holdings",
       holdings: unpricedHoldings,
+      failedReadTargets: [...failedReadTargets.values()],
     });
+    const unreadable = unpricedHoldings.filter(
+      (h) => h.reason === "read-failed",
+    ).length;
     console.warn(
-      `[reconstruct] ${unpricedHoldings.length} holding(s) could not be priced and are excluded ` +
-        "from agent value (see scoring_unpriced_holdings in events.jsonl); a zero here is not a trading loss",
+      `[reconstruct] ${unpricedHoldings.length} holding(s) excluded from agent value ` +
+        `(${unpricedHoldings.length - unreadable} unpriceable, ${unreadable} unreadable; ` +
+        "see scoring_unpriced_holdings in events.jsonl); a zero here is not a trading loss",
     );
   }
 
@@ -572,6 +679,7 @@ export async function reconstructValueSeries(opts: {
     toBlock,
     blocks: toBlock - fromBlock + 1,
     failedReads,
+    failedReadTargets: [...failedReadTargets.values()],
     elapsedMs: Date.now() - started,
     alphaRefFairUsdcPerWeth: refFairByBase.WETH,
     alphaByAgent,
@@ -588,7 +696,7 @@ async function readFairForRef(
 ): Promise<number> {
   try {
     if (base === "WETH") {
-      return fromPriceFeedAnswer(
+      const weth = fromPriceFeedAnswer(
         (await publicClient.readContract({
           address: priceFeed,
           abi: priceFeedAbi,
@@ -596,6 +704,10 @@ async function readFairForRef(
           blockNumber: BigInt(blockNumber),
         })) as bigint,
       );
+      // This one number is the reference every α in the run is measured against, so swallowing a
+      // failure here would zero the entire α series at once rather than one block of it (issue #44).
+      if (!(weth > 0)) throw new Error("latestAnswer returned 0");
+      return weth;
     }
     return fromPriceFeedAnswer(
       (await publicClient.readContract({
@@ -606,7 +718,12 @@ async function readFairForRef(
         blockNumber: BigInt(blockNumber),
       })) as bigint,
     );
-  } catch {
+  } catch (err) {
+    if (base === "WETH")
+      throw new Error(
+        `[reconstruct] reference fair price unusable at block ${blockNumber}: ${err instanceof Error ? err.message : err}`,
+      );
+    // A base the run never priced is a real "no entry", and holdings of it are reported per block.
     return 0;
   }
 }

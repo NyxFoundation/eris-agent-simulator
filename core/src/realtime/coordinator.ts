@@ -1175,19 +1175,34 @@ export async function runRealtimeSimulation(
     // agent -> α (β-removed PnL versus fair at execution; ADR 0015 Notes / equivalent to the amm-challenge edge).
     let alphaByAgent: Record<string, number> = {};
     if (finalBlock >= runStartBlock) {
-      const meta = await reconstructValueSeries({
-        publicClient,
-        logger,
-        agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
-        enabledIds,
-        activeStables: activeStables(),
-        priceFeed: priceFeedAddress,
-        fromBlock: runStartBlock,
-        toBlock: finalBlock,
-      });
-      valueSeries = meta;
-      alphaByAgent = meta.alphaByAgent;
-      logger.event({ type: "value_series_reconstructed", ...meta });
+      try {
+        const meta = await reconstructValueSeries({
+          publicClient,
+          logger,
+          agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+          enabledIds,
+          activeStables: activeStables(),
+          priceFeed: priceFeedAddress,
+          fromBlock: runStartBlock,
+          toBlock: finalBlock,
+        });
+        valueSeries = meta;
+        alphaByAgent = meta.alphaByAgent;
+        logger.event({ type: "value_series_reconstructed", ...meta });
+      } catch (err) {
+        // The reconstruction refuses a cross-section it cannot read rather than emitting a cliff in
+        // the value series (issue #44). Losing the series is bad; publishing a wrong one is worse —
+        // so keep the run's other artifacts and make the gap explicit instead of letting
+        // summary.json read as if the series were complete.
+        const error = err instanceof Error ? err.message : String(err);
+        valueSeries = {
+          source: "post-run-reconstruction",
+          failed: true,
+          error,
+        };
+        logger.event({ type: "value_series_reconstruction_failed", error });
+        console.error(`[reconstruct] value series unavailable: ${error}`);
+      }
     }
 
     // ---- post-run rule check (ADR 0006 §5): exceeding the fee cap is grounds for invalidating a run ----

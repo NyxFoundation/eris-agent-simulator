@@ -1086,12 +1086,17 @@ export const gmxAdapter: ProtocolAdapter = {
     const balanceBase = marketBase + markets.length;
     const fairByBase = ctx.fairByBase();
 
-    const gmBalance = (agentIndex: number, marketIndex: number): bigint => {
-      const raw = stage1[balanceBase + agentIndex * markets.length + marketIndex];
-      return typeof raw === "bigint" ? raw : 0n;
+    // undefined = the balance read failed, which is not the same as holding none (issue #44).
+    const gmBalance = (
+      agentIndex: number,
+      marketIndex: number,
+    ): bigint | undefined => {
+      const raw =
+        stage1[balanceBase + agentIndex * markets.length + marketIndex];
+      return typeof raw === "bigint" ? raw : undefined;
     };
     const anyHolder = ctx.agents.some((_, a) =>
-      markets.some((_m, i) => gmBalance(a, i) > 0n),
+      markets.some((_m, i) => (gmBalance(a, i) ?? 0n) > 0n),
     );
 
     // USD per whole GM token, by market index. Absent means the market could not be priced.
@@ -1147,8 +1152,27 @@ export const gmxAdapter: ProtocolAdapter = {
       const perp = perpValueUsd(positions, fairByBase, wethPrice);
       let valueUsdc = perp.valueUsdc;
       const unpriced: UnpricedHoldingDetail[] = [...perp.unpriced];
+      // An account with no perps decodes to an empty array, so undefined means the read failed.
+      // Both value at zero, which is why the two have to be told apart (issue #44).
+      if (!positions)
+        unpriced.push({
+          source: "gmx-position",
+          amountRaw: "",
+          reason: "read-failed",
+          read: "GmxReader.getAccountPositions",
+        });
       markets.forEach((marketToken, i) => {
         const balance = gmBalance(a, i);
+        if (balance === undefined) {
+          unpriced.push({
+            token: marketToken,
+            amountRaw: "",
+            source: "gmx-gm",
+            reason: "read-failed",
+            read: "ERC20.balanceOf",
+          });
+          return;
+        }
         if (balance <= 0n) return;
         const usdPerToken = gmUsd[i];
         if (usdPerToken === undefined) {
