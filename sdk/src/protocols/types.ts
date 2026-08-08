@@ -2,6 +2,7 @@ import type { Address, Hex, PublicClient, WalletClient } from "viem";
 import type { makeChain } from "../chain.js";
 import type { SimConfig } from "../config.js";
 import type { Rng } from "../rng.js";
+import type { UnpricedAmount } from "../valuation.js";
 import type {
   AgentObservation,
   BalanceSnapshot,
@@ -107,11 +108,9 @@ export type ValuationContext = {
   fairByBase(): Record<string, number>;
 };
 
-// A holding the adapter could not fold into its value. Reported rather than silently zeroed.
-export type UnpricedHoldingDetail = {
-  token: Address;
-  // Raw token amount, or "" when even the amount could not be derived.
-  amountRaw: string;
+// A holding the adapter could not fold into its value, either because it cannot be priced (#41) or
+// because the read that would have revealed it failed (#44). Reported rather than silently zeroed.
+export type UnpricedHoldingDetail = UnpricedAmount & {
   // Where it came from, e.g. "uniswap-lp:<tokenId>" / "balancer-bpt".
   source: string;
 };

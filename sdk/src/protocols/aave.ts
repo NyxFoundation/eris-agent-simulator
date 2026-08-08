@@ -499,11 +499,22 @@ export const aaveAdapter: ProtocolAdapter = {
       const account = results[i] as readonly bigint[] | undefined;
       // USD with 8 decimals. Collateral sits outside the wallet and borrows are already counted
       // inside it, so the net cancels the double count.
+      // A failed read is the whole position going missing, and a zero there is indistinguishable
+      // from having been liquidated — report it instead (issue #44).
       const usd = account ? Number(account[0] - account[1]) / 1e8 : 0;
       out[agent.id] = {
         valueUsdc: usd,
         liquidatableValueUsdc: usd,
-        unpriced: [],
+        unpriced: account
+          ? []
+          : [
+              {
+                source: "aave-account",
+                amountRaw: "",
+                reason: "read-failed",
+                read: "AavePool.getUserAccountData",
+              },
+            ],
       };
     });
     return out;
