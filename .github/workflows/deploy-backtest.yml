@@ -22,6 +22,13 @@ on:
       - "sdk/src/constants.ts"
       - "sdk/src/constants.local.ts"
       - "config/regimes/**"
+      # Scoring. A run's value series cannot be regression-tested any other way: tx timing and
+      # ordering are non-deterministic (ADR 0005), so a golden run does not exist and unit tests can
+      # only pin individual functions. This job is the only thing that puts the scorer in front of
+      # real venue state across all five venues. #44 changed the scorer and skipped this job.
+      - "core/src/realtime/reconstruct.ts"
+      - "sdk/src/valuation.ts"
+      - "sdk/src/protocols/**"
       - ".github/workflows/deploy-backtest.yml"
 
 concurrency:
