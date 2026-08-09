@@ -11,6 +11,14 @@ Each adapter (`sdk/src/protocols/<name>.ts`) implements parse/validate, calldata
 | Curve | `curveSwap` | fork: tricrypto WETH↔USDT / local: twocrypto-ng WETH/USDC |
 | Aave v3 | `aaveSupply`, `aaveWithdraw`, `aaveBorrow`, `aaveRepay` | native USDC / WETH reserves |
 | GMX v2 | `gmxIncrease`, `gmxDecrease` | ETH/USD perp market |
+| LST | `lstDeposit`, `lstSwap`, `lstRequestWithdraw`, `lstClaimWithdraw` | **local only**: a wstETH-style vault plus its LST/WETH stableswap-ng market |
+
+The LST venue (issue #38) is the one venue with no fork counterpart — the vault is deployed by
+`deployer/`, so a fork run that lists `lst` fails fast at startup. It is also the one venue where an
+asset has two prices at once: `protocols.lst` reports the vault's `redemptionRateWeth` (reachable
+only through a withdrawal queue that takes `withdrawalDelayBlocks`) and the pool's
+`marketPriceWeth` (instant, at whatever discount it trades) separately, and scoring marks the
+position at whichever exit it could actually realize before the run ends.
 
 The table shows the default WETH markets. If a WBTC leg (`MARKET_LEGS`) is deployed in the local deploy, add `base: "WBTC"` to the same actions to also trade the WBTC/USDC spot, GMX WBTC market, and Aave WBTC reserve (multi-asset; ADR 0013).
 

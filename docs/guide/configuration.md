@@ -14,7 +14,9 @@ npm run sim:realtime -- --config config/vuln-test.yaml    # specify a different 
 - **Do not write secrets into the YAML.** Put RPC URLs, private keys, and API keys in `.env.local` (`ARB_RPC_URL` / `*_PRIVATE_KEY` / `ANTHROPIC_API_KEY` / `OLLAMA_API_KEY`). `config/local.yaml` is gitignored; `config/example.yaml` is the committed template.
 - One-shot overrides go via CLI flags (`--seed` / `--blocks` / `--protocols` etc.). Each agent's `env` is a strategy parameter passed to the agent process and is written under `agents[].env`.
 
-Committed templates in `config/`: `example.yaml` (minimal roster) / `vuln-test.yaml` (vulnerability events) / `regimes/` (official regimes = market scenarios for [Backtest](backtest.md); this YAML follows the same schema).
+- `example.yaml` ships with **`run.localDeploy: true`**, matching the README Quick Start and the official regimes: every venue is deployed onto a bare anvil by the bundled `deployer/`, so no fork RPC is involved and `npm run sim:realtime` needs no flags. To use an Arbitrum fork, set `localDeploy: false`, drop `lst` from `run.protocols` (its vault is ours and has no Arbitrum counterpart), and start `npm run anvil` with `ARB_RPC_URL` set.
+
+Committed templates in `config/`: `example.yaml` (the default roster) / `lst.yaml` (the liquid-staking venue on its own) / `vuln-test.yaml` (vulnerability events) / `regimes/` (official regimes = market scenarios for [Backtest](backtest.md); this YAML follows the same schema).
 
 ## Main sections
 

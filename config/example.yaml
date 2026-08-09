@@ -12,6 +12,13 @@
 # `.env.local` (ARB_RPC_URL / *_PRIVATE_KEY / ANTHROPIC_API_KEY / OLLAMA_API_KEY).
 # The local Anvil dev keys are used by default even when unspecified.
 #
+# Local deploy by default (run.localDeploy: true), matching the README Quick Start and the official
+# backtest regimes: every venue is deployed onto a bare anvil by the bundled deployer/, so no fork
+# RPC is involved. Start it with `cd deployer && npm run deploy -- --keep-fresh`, then
+# `npm run gen:local-constants` to import the addresses. To run against an Arbitrum fork instead,
+# set localDeploy: false, drop `lst` from run.protocols (its vault has no Arbitrum counterpart) and
+# start `npm run anvil` in another terminal with ARB_RPC_URL set.
+#
 # LLM-driven by default: the trading agents below run in prompt mode (prompt.md, one LLM call per
 # decision; ERIS_AGENT_MODE: "prompt") and need an LLM backend. Pick one:
 #   - Ollama Cloud (default; model gpt-oss:120b): set OLLAMA_API_KEY in `.env.local`
@@ -29,13 +36,20 @@ run:
   blocks: 100
   seconds: 300
   blockTimeSec: 2
-  protocols: [uniswap, balancer, curve]
+  # gmx and aave are left out because they are the slow half of the deploy; add them once
+  # `deployer` has run with them. `lst` is local-only (issue #38) and fails fast on a fork.
+  protocols: [uniswap, balancer, curve, lst]
   economicGas: false
-  localDeploy: false
+  localDeploy: true
   reportDir: ./runs
 
 funding:
-  wethWei: "0" # USDC-only distribution (removes initial directional exposure)
+  # WETH is handed out because the LST venue is WETH-denominated and cannot be traded without it.
+  # That reintroduces price drift (beta) into netPnlUsdc, which is fine for a template you run to
+  # see the thing work — read alphaUsdc for skill. The official regimes under config/regimes/ stay
+  # USDC-only (wethWei: "0") so evaluation runs keep their clean alpha; drop this to "0" too if you
+  # are measuring rather than exploring, and take `lst` out of run.protocols with it.
+  wethWei: "20000000000000000000" # 20 WETH
   usdcUnits: "25000000000"
   # base: { WBTC: "0" }   # initial inventory of additional bases (default 0)
 
@@ -103,18 +117,10 @@ agents:
     description: base-agnostic cross-venue arbitrage (all active bases x all venues; LLM-driven via prompt.md)
     env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
     # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
-  # The LST venue (issue #38) is left out of this file's roster on purpose: the vault has no
-  # Arbitrum counterpart, so it exists only under local deploy, and enabling it here would break
-  # the fork Quick Start above. To trade it, use the ready-made config instead:
-  #
-  #   cd deployer && npm run deploy -- --keep-fresh && cd ..
-  #   npm run gen:local-constants
-  #   npm run sim:realtime -- --config config/lst.yaml
-  #
-  # That config adds `lst` to run.protocols, funds WETH (the venue is WETH-denominated) and runs
-  # example/agents/lst-carry/. To add it here instead, set run.localDeploy: true, add `lst` to
-  # run.protocols, set funding.wethWei above zero, and uncomment:
-  # - id: lst-carry
-  #   wallet: AGENT4_PRIVATE_KEY
-  #   description: liquid staking — stake for yield, or trade the redemption/market gap
-  #   env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
+  - id: lst-carry
+    wallet: AGENT4_PRIVATE_KEY
+    description: liquid staking — stake for yield, or trade the LST redemption/market gap (LLM-driven via prompt.md)
+    env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
+    # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
+  # config/lst.yaml is the same venue with a second competing participant and the calibration knobs
+  # spelled out, if you want to look at the LST market on its own.

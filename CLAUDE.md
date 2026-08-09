@@ -44,6 +44,9 @@ validate 失敗はエラー内容を会話に追記して再試行（上限超�
 
 run の設定値とエージェントロスターは **`config/local.yaml` 一本**で管理する（env からの設定読取は廃止）。
 解決順は `--config <path>` > `ERIS_CONFIG` > `config/local.yaml` > `config/example.yaml`（committed 雛形 = zero-config 既定）。
+**雛形は `run.localDeploy: true` 既定**（README Quick Start と config/regimes/* に揃えた。fork 用フラグは不要になり
+`npm run sim:realtime` だけで走る）。fork に戻すには `localDeploy: false` + `run.protocols` から `lst` を外す
+（LST の vault は自作で Arbitrum に対応物が無い）+ `ARB_RPC_URL` + 別端末で `npm run anvil`。
 キーは**ネスト lowercase**（`run` / `funding` / `limits` / `flow` / `stress` / `vuln` + `agents`）で
 `sdk/src/runConfig.ts` の `SCHEMA` が内部キーへ写す。ロスターは規約解決（ADR 0015 §6）:
 
@@ -98,8 +101,9 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 `yieldPerBlockBps` / キュー長 / 自分サイズでの `instantExitWethWei` / pending を別々に出す。
 
 - **Arbitrum に対応物が無い**（vault は自作）ので fork では使えない。`run.protocols` に `lst` を入れて
-  ローカルデプロイでないと起動時 fail-fast。有効化済みの雛形が `config/lst.yaml`
-  （`cd deployer && npm run deploy -- --keep-fresh` → `npm run gen:local-constants` → `sim:realtime -- --config config/lst.yaml`）
+  ローカルデプロイでないと起動時 fail-fast。**`config/example.yaml` の既定ロスターに入っている**
+  （`cd deployer && npm run deploy -- --keep-fresh` → `npm run gen:local-constants` → `npm run sim:realtime`）。
+  LST 単独で見たいときは競合参加者と較正ノブを明示した `config/lst.yaml`
 - **利回りは EVM 時間でなく経済クロック**（`lst.simulatedSecondsPerBlock` / `lst.apyBps`。既定 1 block=1h・3%/yr
   = Aave WETH supply と同オーダー。速すぎると他 venue が無意味になる）。原資は事前投入 reward reserve に上限され、
   `accrueRewards()` は permissionless（額はブロック数の純関数なので誰が叩いても同じ）。coordinator は毎ブロック
@@ -111,8 +115,10 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   `reason:"unrealizable"` で `scoring_unpriced_holdings` に報告する（黙って 0 にしない）。#41 の staged-read
   インターフェース（`valueAtBlock` / `liquidatableValueUsdc` / `ValuationContext.horizonBlock`）の最初の消費者
 - Phase 2（seed 由来の APY 変動・キュー混雑・サイズ依存 depeg・`slash` の stress overlay 化）は未実装。
-  そのため Phase 1 では市場が自然に discount を作らない = 参照 agent `lst-carry` は stake しかしない。
+  そのため Phase 1 では市場が自然に discount を作らない = at-par の断面から始めると `lst-carry` は stake しかしない。
   carry/queue/claim 経路を実走で見るには `config/lst.yaml` のコメント手順でプールを off-peg にする
+  （実証済み: 38bps の discount から prompt 駆動の LLM が carry→queue→claim を完走し唯一の黒字。
+  期限切れは `blocksRemaining <= withdrawalDelayBlocks+4` を理由に自分で noop した）
 
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 

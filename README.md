@@ -41,7 +41,7 @@ flowchart LR
 
 ## What is this
 
-- **Multi-protocol DeFi environment** — Uniswap V3 / Balancer v2 / Curve / Aave v3 / GMX v2 are all provisioned on a single Anvil, and enabled pluggably through the protocol adapter registry (`sdk/src/protocols/`).
+- **Multi-protocol DeFi environment** — Uniswap V3 / Balancer v2 / Curve / Aave v3 / GMX v2, plus a liquid-staking venue (a wstETH-style vault and its LST/WETH market), are all provisioned on a single Anvil and enabled pluggably through the protocol adapter registry (`sdk/src/protocols/`).
 - **Multi-agent competition** — agents run as fully independent processes, subscribe to blocks at their own pace, and sign and send directly themselves. In-block ordering is determined by anvil `--order fees` (descending priority fee).
 - **Controllable fair price** — the coordinator generates a SEED-derived deterministic fair price every block and writes it to the on-chain `PriceFeed` and mock oracles. Aave health factors and GMX mark prices follow it.
 - **Market stress & liquidation** — price spikes/crashes can be injected to trigger the Aave liquidation path.
@@ -93,15 +93,17 @@ To skip LLMs entirely and run the same strategies rule-based (`agent.ts`), remov
 # Separate terminal: start anvil + deploy all venues via deployer (do not pass --exit)
 cd deployer && npm run deploy -- --keep-fresh
 
-# poc side (repository root): import the deploy addresses and run in local deploy mode
+# poc side (repository root): import the deploy addresses and run
 npm run gen:local-constants
-npm run sim:realtime -- --local-deploy \
-  --seed 1 --blocks 100 --seconds 300 --protocols uniswap,balancer,curve
-# The roster is the inline agents in config/local.yaml (edit the YAML to swap it out.
-# backtest supports swapping via --agents <roster.yaml>)
+npm run sim:realtime
+# The roster and every run knob come from config/local.yaml (edit the YAML to swap them out;
+# backtest supports swapping the roster via --agents <roster.yaml>). One-off overrides are CLI
+# flags: npm run sim:realtime -- --seed 2 --blocks 40
 ```
 
-> The `--local-deploy` flag (or config `run.localDeploy: true`) switches to local deploy mode. The CLI entry point detects this at startup, sets `ERIS_LOCAL_DEPLOY=1` internally, and `sdk/src/constants.ts` overlays the locally-deployed addresses (WETH/USDC/WBTC, etc.) — no need to pass the env by hand.
+> `config/example.yaml` ships with `run.localDeploy: true`, so no flag is needed. The CLI entry point detects it at startup, sets `ERIS_LOCAL_DEPLOY=1` internally, and `sdk/src/constants.ts` overlays the locally-deployed addresses (WETH/USDC/WBTC, etc.) — no need to pass the env by hand. `--local-deploy` still works as a one-off override for a config that does not set it.
+
+> To run against an Arbitrum fork instead, set `run.localDeploy: false` in `config/local.yaml`, remove `lst` from `run.protocols` (its vault is deployed by us and has no Arbitrum counterpart), put `ARB_RPC_URL` in `.env.local`, and start `npm run anvil` in another terminal.
 
 > LLM decisions take ~10s each, hence the 100-block / 300s run above (rule-based runs are fine with 24 blocks / 70s). If the trading agents only emit `noop`, you probably skipped [Choose an LLM backend](#choose-an-llm-backend) — check `runs/<run_id>/agents/<id>.jsonl` for `llm cycle skipped`.
 
