@@ -122,6 +122,12 @@ const RETIRED_CONFIG_ENV = [
   "ROUNDS",
   "GATE_MODE",
   "INITIAL_WETH_WEI",
+  // The fair-price OU parameters moved to the YAML `market.*` section (ADR 0017 regime 1). They used
+  // to be read straight from process.env by sdk/src/rng.ts, and the coordinator now reads config.ou
+  // instead -- so leaving these set is a silent no-op rather than the calibration the author intended.
+  "ERIS_PRICE_VOLATILITY",
+  "ERIS_PRICE_REVERT_KAPPA",
+  "ERIS_PRICE_DRIFT",
   // relay mode has been removed (ADR 0015 §5). Setting it does not roll anything back.
   "ERIS_AGENT_DIRECT_TX",
 ] as const;

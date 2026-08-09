@@ -43,10 +43,16 @@ export type ReconstructionAgent = { id: string; address: Address };
 
 export type ReconstructionMeta = {
   source: "post-run-reconstruction";
-  granularityBlocks: 1;
+  // Block stride between value cross-sections (config.scoreEvery). 1 = every block. Anything larger
+  // means the series in events.jsonl is thinned, and a reader reconstructing a per-block return or
+  // drawdown series from `blocks` alone would mis-scale by this factor.
+  granularityBlocks: number;
   fromBlock: number;
   toBlock: number;
+  // Number of cross-sections actually read, not the width of the window. With granularityBlocks > 1
+  // the two differ; windowBlocks keeps the width available.
   blocks: number;
+  windowBlocks: number;
   failedReads: number;
   // Which contract/function the failed reads were, so a value that dropped can be traced back to the
   // read that hid it. The bare counter above said something went wrong but never what (issue #44).
@@ -761,10 +767,11 @@ export async function reconstructValueSeries(opts: {
 
   return {
     source: "post-run-reconstruction",
-    granularityBlocks: 1,
+    granularityBlocks: scoreEvery,
     fromBlock,
     toBlock,
-    blocks: toBlock - fromBlock + 1,
+    blocks: blocks.length,
+    windowBlocks: toBlock - fromBlock + 1,
     failedReads,
     failedReadTargets: [...failedReadTargets.values()],
     elapsedMs: Date.now() - started,

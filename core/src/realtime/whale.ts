@@ -17,11 +17,15 @@ import { tokenInfo } from "@eris/sdk/markets.js";
 // actually contains a whale, so ordinary runs are unaffected.
 export const WHALE_WALLET_KEY = "whale:uninformed";
 
-// How much more than the largest scheduled order to endow the whale wallet with. Swaps quote at the
-// pool price rather than at fair, and a buy has to cover slippage on the way in, so funding exactly
-// the notional would make the largest whale of a run fail on balance -- silently turning the regime
-// into `calm` for that seed.
-const WHALE_FUNDING_HEADROOM = 3n;
+// Multiplier over the *cumulative* same-side notional. Swaps quote at the pool price rather than at
+// fair, and a buy has to cover slippage on the way in, so funding exactly the notional would make a
+// whale fail on balance -- silently turning the regime into `calm` for the rest of that seed.
+//
+// Cumulative, not the largest single order: sizing on the max looks sufficient only because buys and
+// sells replenish each other, and a seed that draws every whale on the same side (p ~ 1/8 for the
+// four in config/regimes/whale.yaml) spends more than any single order. That is exactly the tail the
+// headroom is supposed to cover.
+const WHALE_FUNDING_HEADROOM = 2n;
 
 const SWAP_TYPE = {
   uniswap: "swap",
@@ -30,27 +34,46 @@ const SWAP_TYPE = {
 } as const;
 
 // Inventory the whale wallet needs so every scheduled order can actually be placed.
-// `sell` orders spend the base, `buy` orders spend USDC, and which one a seed drew is already
-// resolved, but funding both sides is simpler than reasoning about it and costs nothing on a mock
-// chain.
+//
+// `sell` spends the base, `buy` spends USDC. Both sides are funded for their own cumulative total
+// rather than netted, because the schedule's order matters: three sells followed by a buy needs the
+// full three sells' worth of base up front, no matter what the buy would have replenished later.
+//
+// Per base, because an event may target one (`{ type: whale, base: WBTC }`), and a WBTC whale funded
+// in WETH is a whale that silently never happens. `prices` is the coordinator's per-base fair map.
 export function whaleFunding(
   events: ResolvedStressEvent[],
-  fairPriceUsdcPerBase: number,
-  baseSymbol = "WETH",
-): { baseWei: bigint; usdcUnits: bigint } {
-  const largest = events
-    .filter((e) => e.type === "whale")
-    .reduce((max, e) => Math.max(max, e.magnitude), 0);
-  if (largest <= 0) return { baseWei: 0n, usdcUnits: 0n };
-  const decimals = tokenInfo(baseSymbol).decimals;
-  const baseWei =
-    parseUnits(largest.toFixed(decimals), decimals) * WHALE_FUNDING_HEADROOM;
-  const usdcUnits =
-    parseUnits(
-      (largest * fairPriceUsdcPerBase).toFixed(tokenInfo("USDC").decimals),
-      tokenInfo("USDC").decimals,
-    ) * WHALE_FUNDING_HEADROOM;
-  return { baseWei, usdcUnits };
+  prices: Record<string, number>,
+): { baseWei: Record<string, bigint>; usdcUnits: bigint } {
+  const baseWei: Record<string, bigint> = {};
+  let usdcTotal = 0;
+  for (const event of events) {
+    if (event.type !== "whale" || event.magnitude <= 0) continue;
+    const base = event.base;
+    const price = prices[base];
+    if (!price || !Number.isFinite(price))
+      throw new Error(
+        `whale event targets ${base} but no fair price is available for it ` +
+          `(known: ${Object.keys(prices).join(", ") || "none"})`,
+      );
+    if (event.side === "buy") {
+      usdcTotal += event.magnitude * price;
+    } else {
+      const decimals = tokenInfo(base).decimals;
+      baseWei[base] =
+        (baseWei[base] ?? 0n) +
+        parseUnits(event.magnitude.toFixed(decimals), decimals);
+    }
+  }
+  for (const base of Object.keys(baseWei))
+    baseWei[base] *= WHALE_FUNDING_HEADROOM;
+  const usdcDecimals = tokenInfo("USDC").decimals;
+  return {
+    baseWei,
+    usdcUnits:
+      parseUnits(usdcTotal.toFixed(usdcDecimals), usdcDecimals) *
+      WHALE_FUNDING_HEADROOM,
+  };
 }
 
 // The order a whale event places. Pure: the caller submits it through the ordinary flow relay, so

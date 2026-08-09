@@ -16,11 +16,19 @@
 #                                   rather than its own. At the default 0 the per-venue hash
 #                                   deliberately splits the venues up/down to manufacture a
 #                                   cross-venue spread, which is the opposite shape from this regime.
-#   uninformedMax 3 WETH         -- 3x calm. Correlated pressure only matters if it is big enough to
-#                                   move the mid against the informed flow that is pushing back.
+#   uninformedMax 3 WETH         -- 3x calm on uniswap. Correlated pressure only matters if it is big
+#                                   enough to move the mid against the informed flow pushing back.
 #
 # The informed flow bot (which pulls price back toward fair) is left at calm's setting on purpose:
 # it is the counterparty that makes the push finite. Raising it too would just cancel the regime out.
+#
+# CAVEAT, and the reason balancer/curve are NOT raised: `balancerMaxWethWei` and `curveMaxWethWei`
+# are a single cap used for BOTH the uninformed and the informed leg on those venues
+# (`ammMax` in core/src/flow/logic.ts maps each to `[cap, cap]`); only uniswap has separate
+# `uninformedMaxWethWei` / `informedMaxWethWei`. Raising them here would have tripled the
+# gap-closing flow too -- cancelling out the regime on two of three venues and leaving the venues
+# with asymmetric reversion strength, which is a spurious cross-venue signal in a regime that is
+# supposed to have none. So the directional push is uniswap-sized, and balancer/curve stay at calm.
 #
 # There is deliberately no `run.seed` (ADR 0017 §1): the seed is supplied per scenario.
 
@@ -46,8 +54,8 @@ flow:
   uninformedPersistBlocks: 12 # hold a direction long enough for it to accumulate
   uninformedTrendCorrelation: 1.0 # every venue leans the same way (ADR 0017 regime 2)
   informedMaxWethWei: "2000000000000000000" # unchanged: this is the force pushing back
-  balancerMaxWethWei: "3000000000000000000"
-  curveMaxWethWei: "3000000000000000000"
+  balancerMaxWethWei: "1000000000000000000" # one cap for both legs on this venue -- see the caveat above
+  curveMaxWethWei: "1000000000000000000" # ditto
   informedArbFeeBps: 30
   uninformedArrivalRate: "0.9"
   uninformedSizeSigma: "1.0"

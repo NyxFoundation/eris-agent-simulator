@@ -16,7 +16,10 @@ import {
 } from "@eris/sdk/chain.js";
 import { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
-import { checkRunFeeViolations } from "../postRunCheck.js";
+import {
+  checkRunFeeViolations,
+  countRunRevertedTxs,
+} from "../postRunCheck.js";
 import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
 import type {
   AgentObservation,
@@ -429,6 +432,10 @@ export async function runRealtimeSimulation(
       })),
     ];
     for (const t of fundTargets) {
+      // The whale passes through here too, even though its balances are overwritten a moment later
+      // once the fair price is known: this loop is also where each adapter's setupWallet grants the
+      // token approvals. Skipping it to avoid the redundant funding left the whale unapproved, and
+      // all four of its swaps reverted on-chain while every log said the event had fired.
       const isFlow = t.key !== undefined;
       // aave borrower actors are endowed with collateral WETH directly (a USDC→WETH prep swap tends to fail on
       // slippage, and the actor struggles to secure collateral and never reaches borrowing). The collateral is
@@ -492,20 +499,39 @@ export async function runRealtimeSimulation(
     if (whaleEvents.length > 0) {
       const wallet = flowWalletMap.get(WHALE_WALLET_KEY);
       if (!wallet) throw new Error("whale wallet missing from flowWalletMap");
-      const funding = whaleFunding(schedule.events, latestFairPrice);
+      // Fail fast on a whale pointed at a venue this run does not have. Otherwise submitIntent
+      // cannot resolve an adapter, handleFlowOrders swallows the throw, and the run continues with
+      // the event silently missing -- every other calibration coupling here (victim HF, the LST rate
+      // oracle, the state dump's venues) fails at setup instead.
+      for (const ev of whaleEvents) {
+        const venue = ev.venue ?? "uniswap";
+        if (!enabledIds.includes(venue as ProtocolId))
+          throw new Error(
+            `whale event targets venue "${venue}", which is not enabled for this run ` +
+              `(enabled: ${enabledIds.join(", ")}). Enable it in run.protocols or retarget the event`,
+          );
+      }
+      const fairForFunding: Record<string, number> = {
+        WETH: latestFairPrice,
+        ...(ctx.fairPrices ?? {}),
+      };
+      const funding = whaleFunding(schedule.events, fairForFunding);
       await fundWallet(
         publicClient,
         walletClient,
         chain,
         wallet.privateKey,
         config.flowEthWei,
-        funding.baseWei,
+        funding.baseWei.WETH ?? 0n,
         funding.usdcUnits,
+        funding.baseWei,
       );
       logger.event({
         type: "stress_whale_funded",
         address: wallet.address,
-        baseWei: funding.baseWei.toString(),
+        baseWei: Object.fromEntries(
+          Object.entries(funding.baseWei).map(([k, v]) => [k, v.toString()]),
+        ),
         usdcUnits: funding.usdcUnits.toString(),
         events: whaleEvents.length,
       });
@@ -941,7 +967,15 @@ export async function runRealtimeSimulation(
           // Advance base by OU only, and apply the (deterministic) stress overlay to derive the effective price.
           // The effective price propagates consistently to PriceFeed / Aave WETH oracle / GMX / scoring (ADR 0009 §1).
           const blockIndex = bn - runStartBlock;
-          baseFair = nextFairPrice(baseFair, rng, fairAnchor, config.ou.global);
+          // perBase.WETH, not global: readOuParams populates an entry for every registered base, so
+          // reading the global here made `market.baseVolatility: { WETH: ... }` parse, typecheck and
+          // do nothing. The entry falls back to the global when the regime sets no WETH override.
+          baseFair = nextFairPrice(
+            baseFair,
+            rng,
+            fairAnchor,
+            config.ou.perBase.WETH ?? config.ou.global,
+          );
           const overlay = schedule.at(blockIndex);
           latestFairPrice = baseFair * overlay.wethMult;
           // ADR 0013: advance extra bases with independent Rngs and distribute the effective prices into ctx.fairPrices.
@@ -1010,8 +1044,11 @@ export async function runRealtimeSimulation(
                 }
               } else if (ev.type === "whale") {
                 // Relayed through the ordinary flow path so the print is signed, ordered and
-                // attributed exactly like any other flow order — an agent must not be able to
-                // recognize it as an environment action from anything but its size.
+                // attributed exactly like any other flow order, and competes for the same block
+                // space. It is not hidden: the whale trades from a dedicated address endowed during
+                // setup, so an agent watching balances at block 0 can identify the wallet and its
+                // capacity before any print. That is deliberate — reading the tape is part of the
+                // regime — but it does mean the event is anticipatable, not just reactable.
                 try {
                   const order = buildWhaleOrder(
                     ev,
@@ -1413,6 +1450,30 @@ export async function runRealtimeSimulation(
     const violations = config.economicGas
       ? []
       : checkRunFeeViolations(logger.runDir, config.maxPriorityFeeWei);
+
+    // The environment's own shocks must not fail quietly. A whale is submitted through the ordinary
+    // relay, so a *submission* error is caught and logged -- but an on-chain revert is not one: the
+    // tx lands, the schedule says the whale fired, and only blocks.csv shows it did nothing. A
+    // missing token approval once turned this regime into calm with every log looking healthy.
+    if (whaleEvents.length > 0) {
+      const whaleTxs = countRunRevertedTxs(
+        logger.runDir,
+        `flow-${WHALE_WALLET_KEY}`,
+      );
+      if (whaleTxs.reverted > 0)
+        logger.event({
+          type: "stress_whale_reverted",
+          reverted: whaleTxs.reverted,
+          total: whaleTxs.total,
+          note: "whale orders landed but reverted on-chain; this regime degraded toward calm",
+        });
+      console.error(
+        whaleTxs.reverted > 0
+          ? `[stress] WARNING: ${whaleTxs.reverted}/${whaleTxs.total} whale orders reverted on-chain — ` +
+              `the whale regime did not actually shock this run`
+          : `[stress] ${whaleTxs.total} whale orders executed`,
+      );
+    }
     if (config.economicGas) {
       logger.event({
         type: "fee_cap_enforcement_disabled",

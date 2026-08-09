@@ -115,6 +115,10 @@ export async function buildFlowContext(
     fairPriceUsdcPerWeth: fairPrice,
     protocols: enabledIds,
     poolPrices,
+    // The persisted uninformed trend derives its direction from this rather than from the shared
+    // RNG stream (which would shift every downstream draw). Without it the direction would be a
+    // function of the block window alone -- identical on every seed, and therefore memorizable.
+    flowSeed: ctx.config.flowSeed,
     ...(aaveActors ? { aaveActors } : {}),
     flowBalances,
     // If flow holds base inventory (flowWethWei>0), allow selling (gated by balance).

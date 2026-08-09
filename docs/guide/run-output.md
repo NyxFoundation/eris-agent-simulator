@@ -18,7 +18,7 @@ npm run check:ordering -- runs/<run_id>   # inspect Anvil's fee ordering
 npm run check:strategy -- <file>          # static cheatcode check of strategy code (entry side)
 ```
 
-> The entry points for a run are `sim:realtime` and `backtest` (identical output format, with `summary.json`'s `mode` being `"realtime"` / `"backtest"`). **SEED (= regime) is a label for the market conditions** — the price path is reproducible, but tx timing/ordering is non-deterministic, so results vary even within the same regime. When you need to compare runs, accumulate samples and aggregate — [Backtest](backtest.md)'s `--repeat N` handles the iteration and the display of mean alphaUsdc for you.
+> The entry points for a run are `sim:realtime` and `backtest` (identical output format, with `summary.json`'s `mode` being `"realtime"` / `"backtest"`). **SEED (= regime) is a label for the market conditions** — the price path is reproducible, but tx timing/ordering is non-deterministic, so results vary even within the same regime. When you need to compare runs, accumulate samples and aggregate — [Backtest](backtest.md)'s `--repeat N` runs the same scenario N times and prints each run so you can see the spread, and `--scenarios` ranks a whole set at once.
 
 ## Key fields in summary.json
 

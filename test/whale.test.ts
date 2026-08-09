@@ -11,6 +11,7 @@ import {
   parseStressEvents,
 } from "../core/src/realtime/events.js";
 import { buildWhaleOrder, whaleFunding } from "../core/src/realtime/whale.js";
+import { baseTokens } from "@eris/sdk/markets.js";
 
 const WHALE = {
   type: "whale" as const,
@@ -105,23 +106,74 @@ test("a whale accepts any fill: capping slippage would cap the event itself", ()
   assert.equal(action.minAmountOut, "0");
 });
 
-test("funding covers the largest scheduled order on both sides with headroom", () => {
-  const events = [
-    { ...new EventSchedule([WHALE], 42, 100).events[0], magnitude: 10 },
-    { ...new EventSchedule([WHALE], 42, 100).events[0], magnitude: 50 },
+const whaleEvent = (over: Record<string, unknown>) => ({
+  ...new EventSchedule([WHALE], 42, 100).events[0],
+  ...over,
+});
+
+test("funding covers the cumulative same-side notional, not just the largest order", () => {
+  // Sizing on the max only looks sufficient because buys and sells replenish each other. A seed that
+  // draws every whale on the same side spends the sum, and the last order would revert on balance.
+  const allSells = [
+    whaleEvent({ side: "sell", magnitude: 50 }),
+    whaleEvent({ side: "sell", magnitude: 50 }),
+    whaleEvent({ side: "sell", magnitude: 50 }),
   ];
-  const funding = whaleFunding(events, 2000);
-  // Sized on the largest (50), not the first or the sum, and with headroom: a swap quotes at the
-  // pool price, not at fair, so funding the exact notional makes the biggest whale of a run fail.
-  assert.ok(funding.baseWei > 50n * 10n ** 18n, `baseWei=${funding.baseWei}`);
+  const funding = whaleFunding(allSells, { WETH: 2000 });
   assert.ok(
-    funding.usdcUnits > 100_000n * 10n ** 6n,
-    `usdcUnits=${funding.usdcUnits}`,
+    funding.baseWei.WETH >= 150n * 10n ** 18n,
+    `baseWei=${funding.baseWei.WETH} does not cover 150 WETH of sells`,
+  );
+  // Nothing was bought, so no USDC is needed.
+  assert.equal(funding.usdcUnits, 0n);
+});
+
+test("the two sides are funded separately rather than netted", () => {
+  // Order matters: a sell that comes before the buy needs its base up front regardless of what the
+  // buy would have replenished afterwards.
+  const funding = whaleFunding(
+    [
+      whaleEvent({ side: "sell", magnitude: 40 }),
+      whaleEvent({ side: "buy", magnitude: 40 }),
+    ],
+    { WETH: 2000 },
+  );
+  assert.ok(funding.baseWei.WETH >= 40n * 10n ** 18n);
+  assert.ok(funding.usdcUnits >= 80_000n * 10n ** 6n);
+});
+
+test("a non-WETH whale is funded in its own base at its own price", (t) => {
+  // Previously hard-coded to WETH: a WBTC whale got WETH it could not sell and USDC priced off the
+  // WETH feed, so it reverted either way -- silently.
+  const extra = baseTokens().find((b) => b.symbol !== "WETH");
+  if (!extra) {
+    t.skip(
+      "registry has no non-WETH base (fork default); needs local constants",
+    );
+    return;
+  }
+  const funding = whaleFunding(
+    [whaleEvent({ side: "sell", base: extra.symbol, magnitude: 5 })],
+    { WETH: 2000, [extra.symbol]: 60_000 },
+  );
+  assert.equal(funding.baseWei.WETH, undefined);
+  assert.ok(
+    funding.baseWei[extra.symbol] >= 5n * 10n ** BigInt(extra.decimals),
+  );
+});
+
+test("a whale whose base has no fair price fails fast rather than going unfunded", () => {
+  assert.throws(
+    () => whaleFunding([whaleEvent({ side: "buy", base: "WETH" })], {}),
+    /no fair price is available/,
   );
 });
 
 test("no whale in the schedule means no endowment", () => {
-  assert.deepEqual(whaleFunding([], 2000), { baseWei: 0n, usdcUnits: 0n });
+  assert.deepEqual(whaleFunding([], { WETH: 2000 }), {
+    baseWei: {},
+    usdcUnits: 0n,
+  });
 });
 
 test("side/venue are rejected on event types they do not apply to", () => {

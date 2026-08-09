@@ -131,16 +131,17 @@ function scoresFromSummary(
   });
 }
 
-// The middle value, or the lower of the two middles for an even count. Used to fold --repeat runs
-// into one score per scenario. Repeats are a calibration diagnostic (ADR 0017 §5), not part of
-// official scoring, so the fold only has to be robust, not clever.
-function median(values: number[]): number | undefined {
-  if (values.length === 0) return undefined;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor((sorted.length - 1) / 2)];
-}
-
-function foldRepeats(runs: AgentScore[][]): AgentScore[] {
+// Fold N repeats of one scenario into a single per-agent record by picking, for each agent, the
+// repeat whose ranking metric is the median and reporting *that repeat's whole record*.
+//
+// Not a per-metric median: taking the median of netPnlUsdc and of alphaUsdc independently can report
+// a pair that no single run produced, and then the run directory recorded alongside explains
+// neither. Since --repeat exists so a calibration number can be traced back to a run, the reported
+// numbers have to come from one.
+function foldRepeats(
+  runs: AgentScore[][],
+  metric: ScoringMetric,
+): AgentScore[] {
   if (runs.length === 1) return runs[0];
   const ids: string[] = [];
   for (const run of runs)
@@ -152,18 +153,18 @@ function foldRepeats(runs: AgentScore[][]): AgentScore[] {
     // Disqualified in any repeat means disqualified: the failure is a property of the agent, and
     // letting a lucky repeat wash it out would defeat the point of detecting it.
     const failed = entries.find((a) => a.disqualified !== undefined);
-    const pick = (key: "netPnlUsdc" | "alphaUsdc") =>
-      median(
-        entries
-          .map((a) => a[key])
-          .filter(
-            (v): v is number => typeof v === "number" && Number.isFinite(v),
-          ),
-      );
+    const scored = entries.filter(
+      (a) => typeof a[metric] === "number" && Number.isFinite(a[metric]),
+    );
+    const chosen =
+      scored.length > 0
+        ? scored.sort((a, b) => (a[metric] as number) - (b[metric] as number))[
+            Math.floor((scored.length - 1) / 2)
+          ]
+        : entries[0];
     return {
+      ...chosen,
       id,
-      netPnlUsdc: pick("netPnlUsdc"),
-      alphaUsdc: pick("alphaUsdc"),
       ...(failed ? { disqualified: failed.disqualified } : {}),
     };
   });
@@ -369,7 +370,10 @@ async function main(): Promise<void> {
           .filter((id): id is string => typeof id === "string")
       : [];
   };
-  const effectivePathFor = (scenario: Scenario): string => {
+  // Parse (and cache) a regime file. Separated from writing the effective YAML so the pre-flight
+  // checks below can read a regime without also producing a file that the run loop immediately
+  // overwrites.
+  const loadRegimeDoc = (scenario: Scenario): RegimeDoc => {
     let doc = regimeDocs.get(scenario.regimePath);
     if (!doc) {
       doc = parseYaml(readFileSync(scenario.regimePath, "utf8")) as RegimeDoc;
@@ -380,6 +384,10 @@ async function main(): Promise<void> {
         );
       regimeDocs.set(scenario.regimePath, doc);
     }
+    return doc;
+  };
+  const effectivePathFor = (scenario: Scenario): string => {
+    const doc = loadRegimeDoc(scenario);
     const effective: RegimeDoc = {
       ...doc,
       run: { ...(doc.run ?? {}), ...runOverrides, seed: scenario.seed },
@@ -400,10 +408,13 @@ async function main(): Promise<void> {
 
   // Whether the venues each regime requires are all present in the state dump. If some are missing,
   // an eth_call to a zero address gives a cryptic error, so fail-fast first -- and do it for the
-  // whole set before anvil starts, not lazily per scenario.
+  // whole set before anvil starts, not lazily per scenario. Once per regime, not once per scenario:
+  // the protocol list is a property of the regime, so re-checking it per seed just repeats itself.
+  const checkedRegimes = new Set<string>();
   for (const scenario of scenarios) {
-    effectivePathFor(scenario);
-    const doc = regimeDocs.get(scenario.regimePath);
+    if (checkedRegimes.has(scenario.regimePath)) continue;
+    checkedRegimes.add(scenario.regimePath);
+    const doc = loadRegimeDoc(scenario);
     const effectiveProtocols =
       (runOverrides.protocols as string[] | undefined) ??
       doc?.run?.protocols ??
@@ -416,6 +427,27 @@ async function main(): Promise<void> {
           `venues with --protocols (e.g. --protocols ${effectiveProtocols
             .filter((p) => !missing.includes(p))
             .join(",")})`,
+      );
+  }
+
+  // A roster that differs between regimes makes the standings incomparable: `total` averages only
+  // the regimes an agent appeared in, so an agent present in one regime is ranked on a fraction of
+  // the evidence, against a differently sized z-pool. The competition always passes one roster via
+  // --agents; the per-regime defaults exist for solo verification and do differ (lending-incident
+  // carries a liquidator), so say so rather than silently producing a lopsided ranking.
+  if (matrixMode && rosterAgents === undefined) {
+    const rosters = new Map<string, string>();
+    for (const scenario of scenarios)
+      rosters.set(
+        scenario.regime,
+        rosterOf(loadRegimeDoc(scenario)).sort().join(","),
+      );
+    if (new Set(rosters.values()).size > 1)
+      console.error(
+        `[backtest] warning: the regimes in this set have different default rosters, so agents ` +
+          `appear in different numbers of regimes and their totals are not comparable ` +
+          `(${[...rosters].map(([r, ids]) => `${r}:[${ids}]`).join(" ")}). ` +
+          `Pass --agents <roster> to score one field across every regime`,
       );
   }
   if (Object.keys(runOverrides).length > 0 || rosterAgents !== undefined)
@@ -501,18 +533,59 @@ async function main(): Promise<void> {
     // Scoring reconstruction finishes inside runRealtimeSimulation, i.e. before the next revert
     // erases the history it reads.
     const results: ScenarioResult[] = [];
+    // Kept alongside `results` only for the --repeat spread report below; the folded record is what
+    // reaches matrix.json.
+    const repeatsByScenario: AgentScore[][][] = [];
+    const blocksByScenario: Array<Array<number | undefined>> = [];
+    // Prepared before the loop, and rewritten after every scenario. A full private matrix is ~6 h;
+    // holding the results in memory until the end means an OOM, an anvil death or a Ctrl-C at
+    // scenario 29 of 30 throws away everything already computed.
+    const outDir = matrixMode
+      ? resolve(
+          ROOT,
+          "runs",
+          `matrix-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+        )
+      : undefined;
+    if (outDir) mkdirSync(outDir, { recursive: true });
+    const flush = (): void => {
+      if (!outDir) return;
+      writeFileSync(
+        join(outDir, "matrix.json"),
+        `${JSON.stringify(
+          {
+            schema: 1,
+            createdAt: new Date().toISOString(),
+            sourceCommit: gitHead(ROOT) ?? "unknown",
+            scenarioSet: flags.scenarios,
+            metric,
+            repeat,
+            // Complete only once every scenario has run; until then this is a partial matrix.
+            scenariosPlanned: scenarios.length,
+            // Both metrics are stored regardless of which one ranks, so the standings can be
+            // recomputed under a different scoring rule without re-running anything (ADR 0017 §4).
+            scenarios: results,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      writeFileSync(
+        join(outDir, "standings.json"),
+        `${JSON.stringify(computeStandings(results, metric), null, 2)}\n`,
+      );
+    };
     let index = 0;
     for (const scenario of scenarios) {
       index++;
       const label = scenarioId(scenario.regime, scenario.seed);
-      const expectedAgents = rosterOf(
-        regimeDocs.get(scenario.regimePath) as RegimeDoc,
-      );
+      const expectedAgents = rosterOf(loadRegimeDoc(scenario));
       // Have both the coordinator and the agent processes read this scenario's effective regime.
       process.env.ERIS_CONFIG = effectivePathFor(scenario);
 
       const perRepeat: AgentScore[][] = [];
       const runDirs: string[] = [];
+      const blocksPerRepeat: Array<number | undefined> = [];
       let lastError: string | undefined;
       for (let i = 0; i < repeat; i++) {
         console.error(
@@ -529,8 +602,10 @@ async function main(): Promise<void> {
           });
           runDirs.push(runDir);
           const summary = readRunSummary(runDir);
-          if (summary)
+          if (summary) {
             perRepeat.push(scoresFromSummary(summary, expectedAgents));
+            blocksPerRepeat.push(summary.blocksProcessed);
+          }
           else {
             lastError = `summary.json not found (${runDir})`;
             console.error(`[backtest] warning: ${lastError}`);
@@ -543,20 +618,48 @@ async function main(): Promise<void> {
           console.error(`[backtest] scenario ${label} failed: ${lastError}`);
         }
       }
+      repeatsByScenario.push(perRepeat);
+      blocksByScenario.push(blocksPerRepeat);
       results.push({
         regime: scenario.regime,
         seed: scenario.seed,
-        ...(perRepeat.length > 0 ? { agents: foldRepeats(perRepeat) } : {}),
+        ...(perRepeat.length > 0
+          ? { agents: foldRepeats(perRepeat, metric) }
+          : {}),
         ...(runDirs.length > 0 ? { runDir: runDirs[runDirs.length - 1] } : {}),
         ...(perRepeat.length === 0 && lastError !== undefined
           ? { error: lastError }
           : {}),
       });
+      flush();
     }
 
     // ---- Report ----
     const standings = computeStandings(results, metric);
     console.log("");
+    // With --repeat, show each run rather than only the fold. The point of repeating a scenario is
+    // to see how far it moves run to run (ADR 0005 says to read results as a distribution), and a
+    // single folded line hides both the spread and a run that ended early on fewer blocks.
+    if (repeat > 1) {
+      for (const [s, scenario] of scenarios.entries()) {
+        const runs = repeatsByScenario[s] ?? [];
+        if (runs.length === 0) continue;
+        console.log(
+          `  ${scenarioId(scenario.regime, scenario.seed)} — ${runs.length}/${repeat} runs:`,
+        );
+        for (const [i, run] of runs.entries())
+          console.log(
+            `    run ${i + 1} (${blocksByScenario[s]?.[i] ?? "?"} blocks): ` +
+              run
+                .map(
+                  (a) =>
+                    `${a.id}=${a[metric]?.toFixed(2) ?? "-"}${a.disqualified ? "(DQ)" : ""}`,
+                )
+                .join("  "),
+          );
+      }
+      console.log("");
+    }
     for (const result of results) {
       const label = scenarioId(result.regime, result.seed);
       if (!result.agents) {
@@ -572,33 +675,9 @@ async function main(): Promise<void> {
       console.log(`  ${label}: ${line}`);
     }
 
-    if (matrixMode) {
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const outDir = resolve(ROOT, "runs", `matrix-${stamp}`);
-      mkdirSync(outDir, { recursive: true });
-      writeFileSync(
-        join(outDir, "matrix.json"),
-        `${JSON.stringify(
-          {
-            schema: 1,
-            createdAt: new Date().toISOString(),
-            sourceCommit: gitHead(ROOT) ?? "unknown",
-            scenarioSet: flags.scenarios,
-            metric,
-            repeat,
-            // Both metrics are stored regardless of which one ranks, so the standings can be
-            // recomputed under a different scoring rule without re-running anything (ADR 0017 §4).
-            scenarios: results,
-          },
-          null,
-          2,
-        )}\n`,
-      );
-      writeFileSync(
-        join(outDir, "standings.json"),
-        `${JSON.stringify(standings, null, 2)}\n`,
-      );
-
+    if (matrixMode && outDir) {
+      // Already written incrementally by flush(); this is the final, complete pass.
+      flush();
       console.log("");
       console.log(
         `standings (${metric}, regime-internal z-score, equal weight per regime):`,

@@ -150,8 +150,8 @@ npm run backtest -- --regime calm --seed 101 --agents my-roster.yaml
 npm run backtest -- --scenarios config/scenarios/public.yaml --agents my-roster.yaml  # every regime x seed
 ```
 
-- Read results by `mean alphaUsdc` (β-removed PnL). A single netPnl is contaminated by price drift
-- Judge by the distribution of `--repeat` (even in the same regime it varies slightly with tx ordering; see [Backtest](backtest.md))
+- `netPnlUsdc` is the competition's metric but includes price drift (β); `alphaUsdc` removes β from spot inventory. Both are printed and both land in `matrix.json`, so read them together
+- Judge by the distribution across seeds, not by one run (tx ordering varies even within a scenario). `--repeat N` shows that spread for a single scenario; `--scenarios` covers the seed axis (see [Backtest](backtest.md))
 - Verify across regimes: not overfiring in calm and capturing opportunity in crash — doing both is skill
 
 ## Shared helpers (example/agents/lib/)
