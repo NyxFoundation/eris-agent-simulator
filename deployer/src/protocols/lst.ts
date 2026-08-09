@@ -36,10 +36,16 @@ const SIMULATED_SECONDS_PER_BLOCK = 3600n; // one block == one hour of staking
 const SECONDS_PER_YEAR = 31_536_000n;
 const RAY = 10n ** 27n;
 
-/// Blocks between requesting a withdrawal and being able to claim it. On the economic clock above
-/// this is a day, against Lido's real one-to-five days -- long enough that queueing is a real cost
-/// against selling into the pool, short enough to complete inside a few-hundred-block run.
+/// Floor on how long a withdrawal waits. On the economic clock above this is a day, against Lido's
+/// real one-to-five days -- long enough that queueing is a real cost against selling into the pool,
+/// short enough to complete inside a few-hundred-block run.
 const WITHDRAWAL_DELAY_BLOCKS = 24n;
+
+/// How much queued WETH the vault finalizes per block (issue #38 phase 2). With the per-round trade
+/// cap around 1 WETH, this makes an ordinary exit cost a block or two on top of the floor while a
+/// ten-WETH exit costs ten -- so size and congestion both show up in the wait instead of the queue
+/// being a flat toll. 0 would disable the limit entirely.
+const QUEUE_THROUGHPUT_WEI_PER_BLOCK = parseUnits("1", 18);
 
 /// Secondary-market depth. Far smaller than the $3M spot venues on purpose: an LST book is thin,
 /// and a book an agent cannot move is a book with no exit decision in it. Calibrated against the
@@ -124,6 +130,17 @@ export async function deployLst({ seed }: { seed: boolean }) {
   const vault = (await waitTx(deployHash)).contractAddress as Address;
   ok("MockLSTVault", vault);
 
+  const throughputHash = await deployerWallet.writeContract({
+    address: vault,
+    abi: vaultArtifact.abi,
+    functionName: "setQueueThroughput",
+    args: [QUEUE_THROUGHPUT_WEI_PER_BLOCK],
+    account: dep,
+    chain: anvilChain,
+  });
+  await waitTx(throughputHash);
+  ok("queue throughput", `${QUEUE_THROUGHPUT_WEI_PER_BLOCK} wei/block`);
+
   setProtocol("lst", {
     vault,
     lstToken: vault, // the vault is its own share token (wstETH model)
@@ -132,6 +149,7 @@ export async function deployLst({ seed }: { seed: boolean }) {
     simulatedSecondsPerBlock: Number(SIMULATED_SECONDS_PER_BLOCK),
     targetApyBps: Number(TARGET_APY_BPS),
     withdrawalDelayBlocks: Number(WITHDRAWAL_DELAY_BLOCKS),
+    queueThroughputWeiPerBlock: QUEUE_THROUGHPUT_WEI_PER_BLOCK.toString(),
   });
 
   if (!seed) return;

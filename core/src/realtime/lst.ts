@@ -14,11 +14,16 @@ import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
 import { LST } from "@eris/sdk/constants.js";
 import { getLstState, rewardRatePerBlockRay } from "@eris/sdk/protocols/lst.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
+import { Rng } from "@eris/sdk/rng.js";
 import type { RunLogger } from "../logger.js";
 
 // accrueRewards touches a handful of slots. Pinning the gas skips viem's eth_estimateGas (an extra
 // EVM execution) on a tx the environment sends every block.
 const ACCRUE_GAS = 200_000n;
+
+// Salt for the APY Rng, so resampling the yield never disturbs the price path's or the flow's
+// consumption sequence (same discipline as the stress overlay's STRS salt).
+const LST_SEED_SALT = 0x4c_53_54_59; // "LSTY"
 
 // A discount this large right after setup means the pool is not tracking the vault's redemption
 // rate -- almost always an unwired rate oracle, which hands every agent the same risk-free arb
@@ -32,7 +37,48 @@ export type LstRuntime = {
   // rate baked in at deploy time, which is legitimate -- it just cannot be retuned per run.
   canConfigure: boolean;
   rewardRatePerBlockRay: bigint;
+  // Phase 2: the seed-derived APY path, if the run asked for a varying one.
+  apySchedule: ApySchedule | null;
 };
+
+/// Seed-driven APY variation (issue #38 phase 2).
+///
+/// A constant yield makes the venue trivial -- "stake everything at block 0" is optimal and stays
+/// optimal. Resampling it from a range on a fixed cadence means holding LST has a changing
+/// opportunity cost against the pool's discount, so the allocation is a decision rather than a
+/// setup step. Deterministic in the seed, from an Rng of its own so the price path is untouched.
+export class ApySchedule {
+  private readonly rng: Rng;
+  private readonly range: [number, number];
+  readonly stepBlocks: number;
+  private currentBps: number;
+
+  constructor(
+    seed: number,
+    range: [number, number],
+    stepBlocks: number,
+    initialBps: number,
+  ) {
+    this.rng = new Rng((seed ^ LST_SEED_SALT) >>> 0);
+    this.range = range;
+    this.stepBlocks = Math.max(1, stepBlocks);
+    this.currentBps = initialBps;
+  }
+
+  /// The APY for this block, or null when it has not changed and no write is needed.
+  nextAt(blockIndex: number): number | null {
+    if (blockIndex % this.stepBlocks !== 0) return null;
+    const [lo, hi] = this.range;
+    const sampled = Math.round(lo + (hi - lo) * this.rng.next());
+    if (sampled === this.currentBps) return null;
+    this.currentBps = sampled;
+    return sampled;
+  }
+
+  get apyBps(): number {
+    return this.currentBps;
+  }
+}
 
 /// Align the deployed vault with this run's economic clock, and refuse to start on a market that
 /// is not tracking the redemption rate.
@@ -83,6 +129,20 @@ export async function setupLst(
         },
       );
     }
+    if (ctx.config.lstQueueThroughputWeiPerBlock > 0n) {
+      await sendAndMine(
+        ctx.publicClient,
+        ctx.walletClient,
+        ctx.chain,
+        ctx.adminPk,
+        {
+          to: LST.vault,
+          data: encodeCall("setQueueThroughput", [
+            ctx.config.lstQueueThroughputWeiPerBlock,
+          ]),
+        },
+      );
+    }
   }
 
   const state = await getLstState(ctx);
@@ -101,6 +161,10 @@ export async function setupLst(
     redemptionRateWeth: state.redemptionRateWeth,
     marketPriceWeth: state.midPriceWeth,
     discountBps: state.discountBps,
+    // Phase 2 knobs, so a run's variation is visible in the log rather than only in its effects.
+    apyRangeBps: ctx.config.lstApyRangeBps,
+    apyStepBlocks: ctx.config.lstApyRangeBps ? ctx.config.lstApyStepBlocks : 0,
+    queueThroughputWeiPerBlock: state.queueThroughputWeiPerBlock.toString(),
   });
   if (!canConfigure) {
     console.warn(
@@ -133,11 +197,99 @@ export async function setupLst(
     });
   }
 
+  // Varying the yield needs operator rights (it is a setRewardRate per step). Without them the run
+  // keeps the deployed rate, which is a real limitation rather than a silent downgrade.
+  const apySchedule =
+    canConfigure && ctx.config.lstApyRangeBps
+      ? new ApySchedule(
+          ctx.config.seed,
+          ctx.config.lstApyRangeBps,
+          ctx.config.lstApyStepBlocks,
+          ctx.config.lstApyBps,
+        )
+      : null;
+  if (ctx.config.lstApyRangeBps && !canConfigure) {
+    console.warn(
+      "[lst] lst.apyRangeBps was set but the admin key is not a vault operator, so the yield stays fixed",
+    );
+  }
+
   return {
     vault: LST.vault,
     canConfigure,
     rewardRatePerBlockRay: targetRate,
+    apySchedule,
   };
+}
+
+/// Resample the APY for this block if the schedule says so (issue #38 phase 2). Returns the new
+/// value when it changed, so the caller can log it.
+export async function stepLstApy(
+  ctx: SimContext,
+  runtime: LstRuntime,
+  blockIndex: number,
+  priorityFeeWei: bigint,
+): Promise<number | null> {
+  const next = runtime.apySchedule?.nextAt(blockIndex);
+  if (next === null || next === undefined) return null;
+  const rate = rewardRatePerBlockRay(
+    next,
+    ctx.config.lstSimulatedSecondsPerBlock,
+  );
+  await sendNoMine(
+    ctx.publicClient,
+    ctx.walletClient,
+    ctx.chain,
+    ctx.adminPk,
+    {
+      to: runtime.vault,
+      data: encodeCall("setRewardRate", [rate]),
+      gas: ACCRUE_GAS,
+    },
+    priorityFeeWei,
+  );
+  return next;
+}
+
+/// Apply a staking penalty (the stress overlay's lstSlash, issue #38 phase 2). The vault settles
+/// accrued rewards first, so the cut lands on the current pool rather than on a stale one.
+export async function slashLst(
+  ctx: SimContext,
+  runtime: LstRuntime,
+  magnitude: number,
+  logger: RunLogger,
+): Promise<void> {
+  const bps = BigInt(Math.round(magnitude * 10_000));
+  if (bps <= 0n) return;
+  if (!runtime.canConfigure) {
+    logger.event({
+      type: "lst_slash_skipped",
+      reason: "the admin key is not a vault operator",
+      bps: Number(bps),
+    });
+    return;
+  }
+  const before = await getLstState(ctx);
+  await sendAndMine(
+    ctx.publicClient,
+    ctx.walletClient,
+    ctx.chain,
+    ctx.adminPk,
+    {
+      to: runtime.vault,
+      data: encodeCall("slash", [bps]),
+    },
+  );
+  const after = await getLstState(ctx);
+  logger.event({
+    type: "lst_slash",
+    bps: Number(bps),
+    redemptionRateBefore: before.redemptionRateWeth,
+    redemptionRateAfter: after.redemptionRateWeth,
+    // The market has not repriced yet: the gap this opens is the opportunity the event creates.
+    marketPriceWeth: after.midPriceWeth,
+    discountBps: after.discountBps,
+  });
 }
 
 /// Advance the vault's clock one block. Accrual is permissionless and its size is a pure function
@@ -186,7 +338,12 @@ export function lstBlockEvent(
 }
 
 function encodeCall(
-  functionName: "setRewardRate" | "setWithdrawalDelayBlocks" | "accrueRewards",
+  functionName:
+    | "setRewardRate"
+    | "setWithdrawalDelayBlocks"
+    | "setQueueThroughput"
+    | "accrueRewards"
+    | "slash",
   args: readonly unknown[],
 ): Hex {
   return encodeFunctionData({

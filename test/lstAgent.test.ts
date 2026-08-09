@@ -21,6 +21,7 @@ function lst(overrides: Partial<LstObservation> = {}): LstObservation {
     apyBps: 300,
     yieldPerBlockBps: 0.034,
     withdrawalDelayBlocks: 20,
+    estimatedQueueDelayBlocks: 20,
     queueLength: 0,
     rewardReserveWei: (50n * WAD).toString(),
     lstBalanceWei: "0",
@@ -192,4 +193,88 @@ test("dust does not trigger an action", () => {
     lst: lst(),
   });
   assert.equal(decision.kind, "hold");
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2: the yield moves, so staking is a live decision
+// ---------------------------------------------------------------------------
+
+test("it does not stake through a lean stretch", () => {
+  // The yield varies during the run (issue #38 phase 2). Below the floor it stops paying for the
+  // slashing exposure that holding LST carries, so the right move is to sit in WETH.
+  const decision = decideCarry({ ...base, lst: lst({ apyBps: 120 }) });
+  assert.equal(decision.kind, "hold");
+  if (decision.kind !== "hold") return;
+  assert.match(decision.reason, /below the 200bps floor/);
+});
+
+test("it stakes again once the yield recovers", () => {
+  const decision = decideCarry({ ...base, lst: lst({ apyBps: 600 }) });
+  assert.equal(decision.kind, "stake");
+});
+
+test("a lean yield does not stop it taking a real discount", () => {
+  // The carry is paid by the discount, not by the yield, so a poor APY is no reason to skip it.
+  const decision = decideCarry({
+    ...base,
+    lst: lst({ apyBps: 120, discountBps: 60 }),
+  });
+  assert.equal(decision.kind, "carry");
+});
+
+test("congestion, not the advertised floor, closes the queue", () => {
+  // The floor says 20 blocks and 40 remain, so the floor would green-light this. The queue is
+  // congested and actually quotes 36, which does not fit.
+  const decision = decideCarry({
+    ...base,
+    blocksRemaining: 40,
+    wethBalanceWei: 0n,
+    lst: lst({
+      discountBps: 60,
+      lstBalanceWei: WAD.toString(),
+      withdrawalDelayBlocks: 20,
+      estimatedQueueDelayBlocks: 36,
+    }),
+  });
+  assert.notEqual(decision.kind, "queue");
+});
+
+test("a position too large for the queue is redeemed in the slice that fits", () => {
+  // 30 blocks left, a 20-block floor and a 4-block margin leave 6 blocks of draining at 1 WETH per
+  // block. Queueing all 10 WETH would strand 4 of them past the horizon (scored as unrealizable);
+  // refusing to queue would forfeit the 6 that would have made it.
+  const decision = decideCarry({
+    ...base,
+    blocksRemaining: 30,
+    wethBalanceWei: 0n,
+    lst: lst({
+      discountBps: 60,
+      lstBalanceWei: (10n * WAD).toString(),
+      lstRedemptionValueWethWei: (10n * WAD).toString(),
+      withdrawalDelayBlocks: 20,
+      queueDelayPerWethBlocks: 21,
+      estimatedQueueDelayBlocks: 30,
+      queueThroughputWeiPerBlock: WAD.toString(),
+    }),
+  });
+  assert.equal(decision.kind, "queue");
+  if (decision.kind !== "queue") return;
+  assert.equal(decision.lstIn, 6n * WAD);
+});
+
+test("an unlimited queue still redeems the whole position", () => {
+  const decision = decideCarry({
+    ...base,
+    blocksRemaining: 30,
+    wethBalanceWei: 0n,
+    lst: lst({
+      discountBps: 60,
+      lstBalanceWei: (10n * WAD).toString(),
+      lstRedemptionValueWethWei: (10n * WAD).toString(),
+      // No throughput limit reported: the floor is the whole story.
+    }),
+  });
+  assert.equal(decision.kind, "queue");
+  if (decision.kind !== "queue") return;
+  assert.equal(decision.lstIn, 10n * WAD);
 });

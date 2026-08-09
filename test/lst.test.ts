@@ -105,7 +105,7 @@ const baseRealizable = {
   unreachableAssets: 0n,
   blockNumber: 100,
   horizonBlock: 200,
-  withdrawalDelayBlocks: 20,
+  queueDelayBlocks: 20,
 };
 
 test("shares mark at par while the queue still fits inside the run", () => {
@@ -215,11 +215,12 @@ function summary(
 
 test("valuation reads the queue delay and every account in one stage", async () => {
   const { asked, values } = await drive(valuationCtx(), [
-    () => [20n, summary(WAD, WAD)],
+    () => [20n, 0n, summary(WAD, WAD)],
     () => [(WAD * 9900n) / 10_000n],
   ]);
-  // Stage 0 is one delay read plus one summary per agent; stage 1 is one quote for the holder.
-  assert.equal(asked[0].length, 2);
+  // Stage 0 is the queue floor, the throughput, and one summary per agent; stage 1 is one quote
+  // for the holder.
+  assert.equal(asked[0].length, 3);
   assert.equal(asked[1].length, 1);
   // Par, since the queue fits (block 100 + 20 <= horizon 200), valued at the WETH fair.
   assert.equal(values[AGENT.id].valueUsdc, FAIR);
@@ -241,7 +242,7 @@ test("an agent holding nothing costs no second-stage read", async () => {
 
 test("a redemption that outlives the run is reported, not counted", async () => {
   const { values } = await drive(valuationCtx(), [
-    () => [20n, summary(0n, 0n, 0n, 0n, 2n * WAD)],
+    () => [20n, 0n, summary(0n, 0n, 0n, 0n, 2n * WAD)],
   ]);
   const value = values[AGENT.id];
   assert.equal(value.valueUsdc, 0);
@@ -257,7 +258,9 @@ test("a redemption that outlives the run is reported, not counted", async () => 
 });
 
 test("an unreadable account is reported instead of scored as exited", async () => {
-  const { values } = await drive(valuationCtx(), [() => [20n, undefined]]);
+  const { values } = await drive(valuationCtx(), [
+    () => [20n, 0n, undefined],
+  ]);
   const value = values[AGENT.id];
   assert.equal(value.valueUsdc, 0);
   assert.equal(value.unpriced[0].reason, "read-failed");
@@ -266,7 +269,7 @@ test("an unreadable account is reported instead of scored as exited", async () =
 
 test("a refused pool quote is reported while the queue still carries the value", async () => {
   const { values } = await drive(valuationCtx(), [
-    () => [20n, summary(WAD, WAD)],
+    () => [20n, 0n, summary(WAD, WAD)],
     () => [undefined], // get_dy reverted (no liquidity at this size)
   ]);
   const value = values[AGENT.id];
@@ -276,9 +279,9 @@ test("a refused pool quote is reported while the queue still carries the value",
 
 test("the horizon the scorer passes is the one the vault splits the queue at", async () => {
   const { asked } = await drive(valuationCtx({ horizonBlock: 175 }), [
-    () => [20n, summary(0n, 0n)],
+    () => [20n, 0n, summary(0n, 0n)],
   ]);
-  const summaryRead = asked[0][1] as { args: unknown[] };
+  const summaryRead = asked[0][2] as { args: unknown[] };
   assert.deepEqual(summaryRead.args, [AGENT.address, 175n]);
 });
 
@@ -353,6 +356,7 @@ function lstObservation(
     apyBps: 300,
     yieldPerBlockBps: 0.034,
     withdrawalDelayBlocks: 20,
+    estimatedQueueDelayBlocks: 20,
     queueLength: 0,
     rewardReserveWei: (50n * WAD).toString(),
     lstBalanceWei: "0",
@@ -432,4 +436,30 @@ test("claiming with nothing finalized is rejected rather than burned on a revert
     lstAdapter.validate({ type: "lstClaimWithdraw" }, ready, balances(0n)).ok,
     true,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2: congestion, varying yield, slashing
+// ---------------------------------------------------------------------------
+
+test("scoring uses the congested wait, not the vault's advertised floor", async () => {
+  // The floor is 20 blocks and the horizon is 80 away, so judging by the floor the queue "fits".
+  // The real wait for this size is 90 blocks, which does not -- and marking it at par would credit
+  // an exit the agent could never complete.
+  const { values } = await drive(valuationCtx({ horizonBlock: 180 }), [
+    () => [20n, WAD /* throughput: rate-limited */, summary(WAD, WAD)],
+    // stage 1 is [get_dy, estimateDelayBlocks] for the one holder
+    () => [(WAD * 9000n) / 10_000n, 90n],
+  ]);
+  // Falls back to the pool's price rather than par.
+  assert.equal(values[AGENT.id].valueUsdc, FAIR * 0.9);
+});
+
+test("an unlimited queue costs no extra read", async () => {
+  const { asked } = await drive(valuationCtx(), [
+    () => [20n, 0n /* throughput 0 = no limit */, summary(WAD, WAD)],
+    () => [WAD],
+  ]);
+  // Stage 1 is the pool quote only: no delay read when the queue is not rate-limited.
+  assert.equal(asked[1].length, 1);
 });

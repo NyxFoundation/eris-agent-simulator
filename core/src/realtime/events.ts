@@ -18,7 +18,12 @@
 import { Rng } from "@eris/sdk/rng.js";
 import type { TokenSymbol } from "@eris/sdk/types.js";
 
-export type StressEventType = "spike" | "crash";
+// spike / crash distort a base's price through the overlay. lstSlash is different in kind: it is a
+// one-shot staking penalty applied to the LST vault (issue #38 phase 2), so it carries no price
+// multiplier and no trapezoid -- it happens on a single block and the exchange rate is permanently
+// lower afterwards. It shares this config section because it is the same thing from a run's point
+// of view: a seed-placed shock the agents have to survive.
+export type StressEventType = "spike" | "crash" | "lstSlash";
 
 // Event spec given via env (ERIS_STRESS_EVENTS). Ranges are given, not values.
 export type StressEventConfig = {
@@ -26,14 +31,19 @@ export type StressEventConfig = {
   // ADR 0013: the base the event targets (default WETH). Lets crash/spike apply to WBTC etc.
   base?: TokenSymbol;
   // Deviation width of the price multiplier. spike acts as +, crash as −. The seed picks from [min,max].
+  // For lstSlash this is the fraction of the staking pool burnt (0.02 = a 2% slash).
   magnitudeRange: [number, number];
   // Fraction of run length for the event start position [min,max]. The seed picks.
   windowFrac: [number, number];
-  // Length of each trapezoid segment (block count; fixed).
+  // Length of each trapezoid segment (block count; fixed). Not applicable to lstSlash, which is
+  // instantaneous, so they default to 0 there.
   rampBlocks: number;
   holdBlocks: number;
   decayBlocks: number;
 };
+
+// A slash is instantaneous, so its window is the single block it lands on.
+const POINT_EVENT_SPAN = 1;
 
 // Event resolved by the seed (blockIndex is 0-based from runStart).
 export type ResolvedStressEvent = {
@@ -95,7 +105,10 @@ export class EventSchedule {
         rng.next(),
       );
       const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], rng.next());
-      const span = c.rampBlocks + c.holdBlocks + c.decayBlocks;
+      const span =
+        c.type === "lstSlash"
+          ? POINT_EVENT_SPAN
+          : c.rampBlocks + c.holdBlocks + c.decayBlocks;
       // Clamp startBlock so the window fits inside the run window (scoring history depth; event window ⊂ run window).
       const maxStart = Math.max(0, runBlocks - span);
       const startBlock = Math.max(
@@ -129,9 +142,18 @@ export class EventSchedule {
 
   // The overlay at this blockIndex. Overlapping events compose their multipliers multiplicatively
   // (if non-overlapping, each event appears as-is).
+  // Events that land exactly on this blockIndex and are applied once rather than as an overlay
+  // (currently the LST slash). The coordinator executes them; the price path never sees them.
+  pointEventsAt(blockIndex: number): ResolvedStressEvent[] {
+    return this.events.filter(
+      (ev) => ev.type === "lstSlash" && ev.startBlock === blockIndex,
+    );
+  }
+
   at(blockIndex: number): OverlayState {
     const baseMults: Record<string, number> = {};
     for (const ev of this.events) {
+      if (ev.type === "lstSlash") continue; // not a price distortion
       const e = envelope(ev, blockIndex);
       if (e === 0) continue;
       const sign = ev.type === "crash" ? -1 : 1;
@@ -173,8 +195,8 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     throw new Error(`${label} must be an object`);
   }
   const o = raw as Record<string, unknown>;
-  if (o.type !== "spike" && o.type !== "crash") {
-    throw new Error(`${label}.type must be "spike" or "crash"`);
+  if (o.type !== "spike" && o.type !== "crash" && o.type !== "lstSlash") {
+    throw new Error(`${label}.type must be "spike", "crash" or "lstSlash"`);
   }
   if (o.base !== undefined && typeof o.base !== "string") {
     throw new Error(`${label}.base must be a token symbol string`);
@@ -185,16 +207,29 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     {
       min: 0,
       exclusiveMin: true,
+      // A slash is a fraction of the pool; anything at or above 1 would wipe it out.
+      ...(o.type === "lstSlash" ? { max: 1 } : {}),
     },
   );
   const windowFrac = parseRange(o.windowFrac, `${label}.windowFrac`, {
     min: 0,
     max: 1,
   });
-  const rampBlocks = parseNonNegInt(o.rampBlocks, `${label}.rampBlocks`);
-  const holdBlocks = parseNonNegInt(o.holdBlocks, `${label}.holdBlocks`);
-  const decayBlocks = parseNonNegInt(o.decayBlocks, `${label}.decayBlocks`);
-  if (rampBlocks + holdBlocks + decayBlocks <= 0) {
+  // A slash lands on one block, so the trapezoid fields do not apply and are optional there.
+  const isPoint = o.type === "lstSlash";
+  const rampBlocks = parseNonNegInt(
+    isPoint ? (o.rampBlocks ?? 0) : o.rampBlocks,
+    `${label}.rampBlocks`,
+  );
+  const holdBlocks = parseNonNegInt(
+    isPoint ? (o.holdBlocks ?? 0) : o.holdBlocks,
+    `${label}.holdBlocks`,
+  );
+  const decayBlocks = parseNonNegInt(
+    isPoint ? (o.decayBlocks ?? 0) : o.decayBlocks,
+    `${label}.decayBlocks`,
+  );
+  if (!isPoint && rampBlocks + holdBlocks + decayBlocks <= 0) {
     throw new Error(
       `${label} must have a positive total window (ramp+hold+decay)`,
     );

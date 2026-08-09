@@ -14,18 +14,24 @@ each cycle, and to notice when the run is too short for the slow one.
 gap between them is the entire game:
 
 - `redemptionRateWeth` — WETH the vault owes per 1 LST. **Full value, but slow**:
-  reaching it means queueing a redemption with `lstRequestWithdraw`, waiting
-  `withdrawalDelayBlocks`, then `lstClaimWithdraw`.
+  reaching it means queueing a redemption with `lstRequestWithdraw`, waiting for
+  the queue, then `lstClaimWithdraw`.
 - `marketPriceWeth` — WETH the LST/WETH pool pays per 1 LST **right now**, fee
   and impact included. Instant, but only worth what the pool quotes.
 - `discountBps` — how far the market sits below redemption.
   **Positive = LST is trading cheap.** Negative = it is at a premium.
 
-Two more fields size the decision:
+Three more fields size the decision:
 
 - `yieldPerBlockBps` — what staked LST earns per block (`apyBps` is the same
   thing annualised on the run's compressed clock). This is the reward for simply
-  holding.
+  holding. **It changes during the run**, so a stake that was worth holding
+  earlier may not be, and vice versa — re-read it, do not assume it.
+- `estimatedQueueDelayBlocks` — how many blocks a redemption of **your** size
+  would actually wait right now. The queue is rate-limited, so this is larger
+  than `withdrawalDelayBlocks` when the queue is busy or your position is big.
+  Use this one, never the floor. `queueDelayPerWethBlocks` is the same figure
+  for a one-WETH exit, i.e. the congestion with your own size taken out.
 - `blocksRemaining` (top level, not under `lst`) — how much run is left.
 
 Your own position: `lstBalanceWei`, `lstRedemptionValueWethWei` (what your shares
@@ -40,11 +46,17 @@ You are scored on what you could realize, not on face value. So before choosing
 the slow path, check:
 
 ```
-blocksRemaining > withdrawalDelayBlocks + 4
+blocksRemaining > estimatedQueueDelayBlocks + 4
 ```
 
+Note this can flip against you without you doing anything: if others queue large
+redemptions ahead of you, your wait grows. Re-check it every cycle.
+
 If that fails, the queue is closed to you: the only exit left is the pool, at
-its discount.
+its discount. Note `estimatedQueueDelayBlocks` is quoted for your *whole*
+balance; `queueDelayPerWethBlocks` is the same for a marginal one-WETH exit. A
+big position can be too large to redeem in full while a slice of it still fits —
+that is a sizing problem, not a closed queue.
 
 ## Decision procedure (every cycle)
 
@@ -53,7 +65,13 @@ its discount.
    nothing and costs nothing to take.
 2. **Redeem what you hold, before buying more.** If `discountBps > 27` (pool cost
    ~12bps + 15bps safety), the queue check passes, and you hold LST, queue it:
-   `{"type":"lstRequestWithdraw","amountLstWei":"<lstBalanceWei>"}`. Redemption
+   `{"type":"lstRequestWithdraw","amountLstWei":"<the slice that fits>"}`.
+   **Size it to what can actually finalize.** With `queueThroughputWeiPerBlock`
+   set, the queue drains that much WETH per block, so only
+   `(blocksRemaining - withdrawalDelayBlocks - 4) x throughput` of value can
+   still land. Queue more than that and the overflow is stranded past the run and
+   scores as nothing; queue none of it and you forfeit the part that would have
+   made it. Take the slice, and queue the rest later if the queue frees up. Redemption
    is what turns the discount into WETH you can trade again — buy first and you
    just keep buying until the discount closes, then hold an open position instead
    of a realised profit.
@@ -69,7 +87,12 @@ its discount.
 4. **Harvest a premium.** If `discountBps < -27` (the pool is paying *above*
    redemption) and you hold LST, sell into it instead of queueing:
    `{"type":"lstSwap","tokenIn":"LST","amountIn":"<lstBalanceWei>","slippageBps":50}`.
-5. **Otherwise stake toward a target, then stop.** While the queue check passes,
+5. **Otherwise stake toward a target — if the yield is worth it — then stop.**
+   Skip staking entirely while `apyBps` is under ~200: below that the yield stops
+   paying for the risk of holding LST (a slash can cut the redemption rate mid-run)
+   and for the cost of eventually exiting. `apyBps` **moves during the run**, so
+   this flips both ways: check it every cycle rather than deciding once.
+   Otherwise, while the queue check passes,
    hold about **70% of your WETH-denominated book** as LST, where the book is
    `balances.wethWei + lstRedemptionValueWethWei + pendingWithdrawalWethWei`.
    Stake the shortfall with
@@ -96,6 +119,7 @@ its discount.
 ## Explicit noop criteria
 
 - `discountBps` inside +/-27bps and no free WETH: nothing to do.
+- `apyBps` below ~200 and no dislocation: hold WETH, do not stake.
 - Queue no longer fits and you already hold LST: hold, do not sell.
 - No WETH and no LST at all: this venue is WETH-denominated, so say so
   (`funding.wethWei` is zero) rather than trying to trade.
@@ -103,7 +127,11 @@ its discount.
 ## Revision invariants (for self-improvement)
 
 - **Never queue a redemption that cannot finalize before the run ends.** That
-  converts a good position into an unrealizable one.
+  converts a good position into an unrealizable one. Judge it on
+  `estimatedQueueDelayBlocks`, never on `withdrawalDelayBlocks`.
+- **A slash can cut the redemption rate mid-run.** It lands on one block and the
+  pool has not repriced yet, so the discount jumps: that is an opportunity to
+  buy, not a reason to panic-sell.
 - **Never panic-sell late.** Holding is already marked at the pool price.
 - Tunable: the discount thresholds, sizing fractions, how much slack to leave on
   the queue check.

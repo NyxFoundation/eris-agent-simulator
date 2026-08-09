@@ -364,9 +364,21 @@ export type LstObservation = {
   // Yield per block as a fraction, so an agent can compare "wait N blocks" against a discount
   // without re-deriving it from the APY.
   yieldPerBlockBps: number;
-  // Blocks between requesting a redemption and being able to claim it.
+  // Floor on the wait between requesting a redemption and being able to claim it.
   withdrawalDelayBlocks: number;
-  // Unclaimed requests across the whole vault (the queue's length; congestion in phase 2).
+  // What the wait would *actually* be if you queued your whole share balance right now: the floor
+  // plus whatever is already queued ahead of you plus your own size draining (issue #38 phase 2).
+  // Equal to withdrawalDelayBlocks when the queue is not rate-limited. This, not the floor, is the
+  // number to compare against blocksRemaining.
+  estimatedQueueDelayBlocks: number;
+  // The wait for a one-WETH redemption, i.e. the queue's congestion with your own size taken out.
+  // Lets an agent see that the queue is busy even when it holds nothing yet.
+  queueDelayPerWethBlocks?: number;
+  // WETH the queue finalizes per block ("0" = no limit). With it you can size a redemption to what
+  // will actually finalize in the blocks you have left, instead of queueing all of it and finding
+  // out none of it lands.
+  queueThroughputWeiPerBlock?: string;
+  // Unclaimed requests across the whole vault (the queue's length).
   queueLength: number;
   // Remaining pre-funded rewards, in wei. Zero means yield has stopped accruing.
   rewardReserveWei: string;

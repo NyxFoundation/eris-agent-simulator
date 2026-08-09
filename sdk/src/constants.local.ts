@@ -7,7 +7,7 @@ import type { MarketLegs } from "./types.js";
 
 // Canonical fingerprint of the source deployments.json (ADR 0016 §2). The backtest CLI
 // compares it against the state dump manifest and, on mismatch, regenerates from the manifest's bundled deployments.
-export const DEPLOYMENTS_FINGERPRINT = "sha256:df9a6a34d7dc09fc3220a0888ee5a42ab1e750f4158c0cebbd26c8e6e9cb31aa";
+export const DEPLOYMENTS_FINGERPRINT = "sha256:667fd167cccfc4cd05b10d05cbfcd72819b4a9f922d75f628b3cbf29c017f1e6";
 
 export type LocalDeployment = {
   CHAIN_ID: number;

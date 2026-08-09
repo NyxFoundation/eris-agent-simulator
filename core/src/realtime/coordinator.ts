@@ -75,7 +75,14 @@ import {
   STARTUP_WARN_BPS,
 } from "./noArb.js";
 import { EventSchedule } from "./events.js";
-import { accrueLst, lstBlockEvent, setupLst, type LstRuntime } from "./lst.js";
+import {
+  accrueLst,
+  lstBlockEvent,
+  setupLst,
+  slashLst,
+  stepLstApy,
+  type LstRuntime,
+} from "./lst.js";
 import type { LstState } from "@eris/sdk/protocols/lst.js";
 import { VulnSchedule } from "./vulnEvents.js";
 import {
@@ -903,6 +910,24 @@ export async function runRealtimeSimulation(
             }
           }
 
+          // LST slashing (issue #38 phase 2): a one-shot staking penalty placed by the same
+          // seed-driven schedule as spike/crash. Applied here, before the block's other work, so
+          // the redemption rate an agent observes this block already reflects it — and so the gap
+          // it opens against the (not yet repriced) market is the opportunity the event creates.
+          if (lstRuntime) {
+            for (const ev of schedule.pointEventsAt(blockIndex)) {
+              try {
+                await slashLst(ctx, lstRuntime, ev.magnitude, logger);
+              } catch (error) {
+                logger.event({
+                  type: "lst_slash_failed",
+                  blockIndex,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }
+          }
+
           // keeper / oracle write / state+flow are mutually independent (separate wallets too), so run them in
           // parallel. tx recording (blocks.csv) is removed from the loop and scanned in bulk after the run (see logBlock).
 
@@ -954,6 +979,20 @@ export async function runRealtimeSimulation(
                 priorityFeeWei: oracleFee,
                 actionType: "lstAccrue",
               });
+              // Phase 2: resample the yield on its own cadence. Sent from the same key, so it is
+              // sequential with the accrual above rather than racing it on the nonce.
+              const apyBps = await stepLstApy(
+                ctx,
+                lstRuntime,
+                blockIndex,
+                oracleFee,
+              );
+              if (apyBps !== null)
+                logger.event({
+                  type: "lst_apy_changed",
+                  blockNumber: bn,
+                  apyBps,
+                });
             } catch (error) {
               logger.event({
                 type: "lst_accrual_failed",

@@ -73,8 +73,21 @@ contract MockLSTVault {
     /// @notice Block at which rewards were last accrued.
     uint256 public lastAccrualBlock;
 
-    /// @notice Blocks between a withdrawal request and it becoming claimable (the queue's time cost).
+    /// @notice Floor on how long a withdrawal request waits before it can be claimed.
     uint256 public withdrawalDelayBlocks;
+
+    /// @notice How much queued WETH the protocol can finalize per block. 0 disables the limit, in
+    ///         which case every request simply waits `withdrawalDelayBlocks` (phase 1 behaviour).
+    ///
+    /// A real withdrawal queue is rate-limited by how fast the protocol can free capital, and it
+    /// finalizes in order. That makes the wait depend on two things a staker has to reason about:
+    /// how much is already queued ahead of them, and how large their own exit is. Without it the
+    /// queue is a fixed toll and the exit decision has no size to it (issue #38 phase 2).
+    uint256 public queueThroughputWeiPerBlock;
+
+    /// @notice The block the queue is currently booked out to. Requests stack after it, so a large
+    ///         exit pushes back everyone who queues later -- including its own owner next time.
+    uint256 public queueDrainBlock;
 
     /// @notice Accounts allowed to reconfigure the vault (rate / delay) and to slash. Accrual itself
     ///         is permissionless -- see `accrueRewards`.
@@ -112,6 +125,7 @@ contract MockLSTVault {
     event Slashed(uint256 assets, uint256 totalPooledWeth);
     event RewardRateSet(uint256 rewardRatePerBlockRay);
     event WithdrawalDelaySet(uint256 withdrawalDelayBlocks);
+    event QueueThroughputSet(uint256 queueThroughputWeiPerBlock);
     event OperatorSet(address indexed account, bool allowed);
 
     modifier onlyOperator() {
@@ -235,9 +249,28 @@ contract MockLSTVault {
     // Withdrawal queue (request -> finalize -> claim)
     // -----------------------------------------------------------------------
 
-    /// @notice Burn `shares` and join the withdrawal queue at today's rate. Claimable after
-    ///         `withdrawalDelayBlocks`; the alternative is selling into the secondary market now,
-    ///         at whatever discount it quotes.
+    /// @notice When a redemption of `assets` requested right now would become claimable.
+    ///
+    /// The floor is `withdrawalDelayBlocks`, but once a throughput limit is set the request also
+    /// has to wait for whatever is queued ahead of it and then for its own size to drain. Exposed
+    /// so an agent can price the wait before committing to it, rather than discovering it after.
+    function estimateClaimableAt(uint256 assets) public view returns (uint256) {
+        uint256 floorBlock = block.number + withdrawalDelayBlocks;
+        uint256 throughput = queueThroughputWeiPerBlock;
+        if (throughput == 0) return floorBlock;
+        uint256 start = queueDrainBlock > floorBlock ? queueDrainBlock : floorBlock;
+        // Round up: a partial block of draining still costs a block.
+        return start + (assets + throughput - 1) / throughput;
+    }
+
+    /// @notice Blocks a redemption of `assets` would wait if requested now.
+    function estimateDelayBlocks(uint256 assets) external view returns (uint256) {
+        return estimateClaimableAt(assets) - block.number;
+    }
+
+    /// @notice Burn `shares` and join the withdrawal queue at today's rate. Claimable once the
+    ///         queue reaches it (see `estimateClaimableAt`); the alternative is selling into the
+    ///         secondary market now, at whatever discount it quotes.
     function requestWithdraw(uint256 shares) public returns (uint256 requestId) {
         require(shares > 0, "LST: zero shares");
         uint256 assets = convertToAssets(shares);
@@ -247,7 +280,8 @@ contract MockLSTVault {
         totalPooledWeth -= assets;
         pendingWithdrawalWeth += assets;
         requestId = withdrawalRequests.length;
-        uint256 claimableAt = block.number + withdrawalDelayBlocks;
+        uint256 claimableAt = estimateClaimableAt(assets);
+        if (queueThroughputWeiPerBlock > 0) queueDrainBlock = claimableAt;
         withdrawalRequests.push(
             WithdrawalRequest({
                 owner: msg.sender,
@@ -473,6 +507,11 @@ contract MockLSTVault {
         emit WithdrawalDelaySet(delayBlocks);
     }
 
+    function setQueueThroughput(uint256 weiPerBlock) external onlyOperator {
+        queueThroughputWeiPerBlock = weiPerBlock;
+        emit QueueThroughputSet(weiPerBlock);
+    }
+
     function setOperator(address account, bool allowed) external onlyOperator {
         operators[account] = allowed;
         emit OperatorSet(account, allowed);
@@ -490,7 +529,9 @@ contract MockLSTVault {
             uint256 queuedWeth,
             uint256 queueLength,
             uint256 delayBlocks,
-            uint256 ratePerBlockRay
+            uint256 ratePerBlockRay,
+            uint256 throughputWeiPerBlock,
+            uint256 drainBlock
         )
     {
         return (
@@ -501,7 +542,9 @@ contract MockLSTVault {
             pendingWithdrawalWeth,
             openRequestCount,
             withdrawalDelayBlocks,
-            rewardRatePerBlockRay
+            rewardRatePerBlockRay,
+            queueThroughputWeiPerBlock,
+            queueDrainBlock
         );
     }
 

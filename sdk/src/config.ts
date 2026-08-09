@@ -183,6 +183,16 @@ export type SimConfig = {
   // Target APY in bps on that clock. Kept the same order as the Aave WETH supply rate on purpose:
   // a 1000x-speed LST would make every other venue irrelevant.
   lstApyBps: number;
+  // Issue #38 phase 2: when set to a [min,max] bps pair, the APY is resampled from it every
+  // lstApyStepBlocks using a seed-derived Rng, instead of holding lstApyBps for the whole run.
+  // Without variation the optimum is "stake everything at block 0" and the venue has no decision
+  // in it. Empty (the default) keeps the fixed rate.
+  lstApyRangeBps: [number, number] | null;
+  lstApyStepBlocks: number;
+  // Queued WETH the vault can finalize per block. 0 leaves whatever the deploy baked in, and a
+  // deploy default of 0 means no limit -- every request waits exactly the delay. With a limit, the
+  // wait grows with your own size and with whatever is queued ahead of you.
+  lstQueueThroughputWeiPerBlock: bigint;
   // Blocks between requesting a redemption and being able to claim it (the queue's time cost).
   // 0 leaves whatever the deploy baked in.
   lstWithdrawalDelayBlocks: number;
@@ -394,6 +404,15 @@ export function loadConfig(env = process.env): SimConfig {
       intEnv(env.ERIS_LST_SIMULATED_SECONDS_PER_BLOCK, 3600),
     ),
     lstApyBps: Math.max(0, intEnv(env.ERIS_LST_APY_BPS, 300)),
+    lstApyRangeBps: parseBpsRange(
+      env.ERIS_LST_APY_RANGE_BPS,
+      "ERIS_LST_APY_RANGE_BPS",
+    ),
+    lstApyStepBlocks: Math.max(1, intEnv(env.ERIS_LST_APY_STEP_BLOCKS, 10)),
+    lstQueueThroughputWeiPerBlock: bigintEnv(
+      env.ERIS_LST_QUEUE_THROUGHPUT_WEI_PER_BLOCK,
+      0n,
+    ),
     lstWithdrawalDelayBlocks: Math.max(
       0,
       intEnv(env.ERIS_LST_WITHDRAWAL_DELAY_BLOCKS, 0),
@@ -470,6 +489,25 @@ function floatEnv(value: string | undefined, fallback: number): number {
 function bigintEnv(value: string | undefined, fallback: bigint): bigint {
   if (value === undefined || value === "") return fallback;
   return BigInt(value);
+}
+
+// A "[min, max]" bps pair, accepted as JSON or as a bare CSV so it survives the YAML→env encoding
+// (an array of numbers becomes "200,600"). Null when unset, which means "no variation".
+function parseBpsRange(
+  value: string | undefined,
+  label: string,
+): [number, number] | null {
+  if (value === undefined || value.trim() === "") return null;
+  const parts = value
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .split(",")
+    .map((s) => Number(s.trim()));
+  if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n) || n < 0))
+    throw new Error(`${label} must be a [min, max] pair of non-negative bps`);
+  const [lo, hi] = parts;
+  if (lo > hi) throw new Error(`${label} must have min <= max`);
+  return [lo, hi];
 }
 
 // ADR 0013: unit suffix (derived from decimals) for a base symbol's "amount env".

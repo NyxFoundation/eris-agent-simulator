@@ -131,6 +131,9 @@ const SCHEMA: Record<string, string> = {
   "lst.apyBps": "ERIS_LST_APY_BPS",
   "lst.withdrawalDelayBlocks": "ERIS_LST_WITHDRAWAL_DELAY_BLOCKS",
   "lst.maxDepositWethWei": "ERIS_LST_MAX_DEPOSIT_WETH_WEI",
+  "lst.apyRangeBps": "ERIS_LST_APY_RANGE_BPS",
+  "lst.apyStepBlocks": "ERIS_LST_APY_STEP_BLOCKS",
+  "lst.queueThroughputWeiPerBlock": "ERIS_LST_QUEUE_THROUGHPUT_WEI_PER_BLOCK",
   // vuln (ADR 0014: vulnerability-occurrence events)
   "vuln.events": "ERIS_VULN_EVENTS",
   "vuln.poolLiquidityUsdcUnits": "ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS",

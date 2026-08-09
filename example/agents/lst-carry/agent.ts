@@ -17,7 +17,12 @@
  * The last one matters more than it looks. Scoring marks an LST position at what it could realize,
  * so a panicked end-of-run exit converts a mark into the same number minus fees.
  */
-import type { AgentAction, AgentObservation, LstObservation } from "@eris/sdk";
+import type {
+  AgentAction,
+  AgentContext,
+  AgentObservation,
+  LstObservation,
+} from "@eris/sdk";
 
 // Round-trip cost of touching the pool (its fee plus the impact of a real-size order), in bps.
 // The carry has to clear this before it is worth doing.
@@ -42,6 +47,13 @@ const STAKE_REBALANCE_BAND_BPS = Number(
 const CARRY_FRACTION_BPS = Number(
   process.env.ERIS_LST_CARRY_FRACTION_BPS ?? "5000",
 );
+// Below this APY, staking is not worth the risk of holding LST: the yield stops covering the
+// slashing exposure and the cost of eventually exiting. The yield varies during the run (issue #38
+// phase 2), so this is a live decision rather than a one-time one -- an agent that ignores it
+// simply stakes through the lean stretches and collects the downside for nothing.
+const MIN_STAKE_APY_BPS = Number(
+  process.env.ERIS_LST_MIN_STAKE_APY_BPS ?? "200",
+);
 const SLIPPAGE_BPS = Number(process.env.ERIS_LST_SLIPPAGE_BPS ?? "50");
 // Dust floor: below this, an action costs more in gas than it can earn.
 const MIN_ACTION_WEI = 10n ** 15n; // 0.001 WETH
@@ -56,12 +68,49 @@ function fraction(amount: bigint, bps: number): bigint {
 
 /// Whether a redemption queued now would finalize with room to spare before the run ends. When the
 /// run has no block limit the queue is always reachable.
+///
+/// Takes the *effective* wait, not the vault's floor: once the queue is rate-limited (issue #38
+/// phase 2) the wait grows with what is already queued ahead and with the size being redeemed, so
+/// a decision made against the floor would queue exits that cannot finish.
 export function queueFitsInRun(
   blocksRemaining: number | undefined,
-  withdrawalDelayBlocks: number,
+  queueDelayBlocks: number,
 ): boolean {
   if (blocksRemaining === undefined) return true;
-  return blocksRemaining > withdrawalDelayBlocks + QUEUE_MARGIN_BLOCKS;
+  return blocksRemaining > queueDelayBlocks + QUEUE_MARGIN_BLOCKS;
+}
+
+/// How much of a share balance is worth queueing right now.
+///
+/// The queue drains at a fixed rate, so a large position cannot all finalize before the run ends
+/// even when a small one could. Queueing the whole thing anyway leaves the overflow stranded (it
+/// scores as unrealizable), and refusing to queue at all forfeits the part that would have made it.
+/// So take the slice that fits: partial exits are what a real staker does against a busy queue.
+export function queueableShares(
+  input: {
+    lst: LstObservation;
+    blocksRemaining: number | undefined;
+  },
+  shares: bigint,
+): bigint {
+  const throughput = BigInt(input.lst.queueThroughputWeiPerBlock ?? "0");
+  const redemptionValue = BigInt(input.lst.lstRedemptionValueWethWei);
+  if (
+    throughput <= 0n ||
+    input.blocksRemaining === undefined ||
+    redemptionValue <= 0n
+  ) {
+    return shares;
+  }
+  // Blocks left for draining once the floor and the safety margin are paid for.
+  const drainBlocks =
+    input.blocksRemaining -
+    input.lst.withdrawalDelayBlocks -
+    QUEUE_MARGIN_BLOCKS;
+  if (drainBlocks <= 0) return 0n;
+  const affordableAssets = BigInt(drainBlocks) * throughput;
+  if (affordableAssets >= redemptionValue) return shares;
+  return (shares * affordableAssets) / redemptionValue;
 }
 
 /// The decision, split out from the observation plumbing so it can be reasoned about (and tested)
@@ -88,10 +137,13 @@ export function decideCarry(input: {
   // 1. Anything already finalized is free to take, and leaving it queued earns nothing.
   if (claimable > 0n) return { kind: "claim" };
 
-  const canQueue = queueFitsInRun(
-    input.blocksRemaining,
-    lst.withdrawalDelayBlocks,
-  );
+  // Is the queue open at all? Judged on a *marginal* exit rather than on liquidating the whole
+  // position: how much of the position fits is a sizing question, handled by queueableShares. The
+  // two differ once a balance grows past what the queue can drain in the time left, and conflating
+  // them shuts the venue down early -- measured as the last 38 blocks of a run spent holding.
+  const queueDelay = lst.estimatedQueueDelayBlocks ?? lst.withdrawalDelayBlocks;
+  const marginalDelay = lst.queueDelayPerWethBlocks ?? queueDelay;
+  const canQueue = queueFitsInRun(input.blocksRemaining, marginalDelay);
   const edgeBps = lst.discountBps - POOL_COST_BPS - SAFETY_BPS;
 
   // 2. Close out what you already hold before buying more. The carry is buy-then-redeem, and it is
@@ -104,7 +156,8 @@ export function decideCarry(input: {
   //    run became stake -> queue -> stake churn and left 14 WETH in a queue that outlived the run.
   //    Below this level, holding and earning the yield is the better trade.
   if (canQueue && lstBalance >= MIN_ACTION_WEI && edgeBps > 0) {
-    return { kind: "queue", lstIn: lstBalance };
+    const lstIn = queueableShares(input, lstBalance);
+    if (lstIn >= MIN_ACTION_WEI) return { kind: "queue", lstIn };
   }
 
   // 3. The market is cheap enough to buy and redeem at par -- the carry this agent is named for.
@@ -130,10 +183,17 @@ export function decideCarry(input: {
     if (size >= MIN_ACTION_WEI) return { kind: "harvest", lstIn: size };
   }
 
-  // 5. No dislocation to trade, so just earn the yield -- but only if an exit can still be queued.
-  //    Staking into the last blocks of a run buys yield you cannot collect and an exit that has to
-  //    pay the pool's discount.
-  if (canQueue && input.wethBalanceWei > 0n && lst.yieldPerBlockBps > 0) {
+  // 5. No dislocation to trade, so earn the yield -- if it is worth earning, and if an exit can
+  //    still be queued. Staking into the last blocks of a run buys yield you cannot collect and an
+  //    exit that has to pay the pool's discount; staking through a lean stretch collects the
+  //    slashing exposure without being paid for it.
+  const yieldWorthIt = lst.apyBps >= MIN_STAKE_APY_BPS;
+  if (
+    canQueue &&
+    yieldWorthIt &&
+    input.wethBalanceWei > 0n &&
+    lst.yieldPerBlockBps > 0
+  ) {
     // Measured against the whole WETH-denominated book, so once the target is reached this stops
     // firing instead of nibbling at the remaining balance forever.
     const staked =
@@ -155,7 +215,13 @@ export function decideCarry(input: {
     // would pay, so an exit here just donates the fee.
     return {
       kind: "hold",
-      reason: `queue no longer fits in the run (${input.blocksRemaining ?? "?"} blocks left, needs ${lst.withdrawalDelayBlocks + QUEUE_MARGIN_BLOCKS}); holding, since selling only pays the pool fee`,
+      reason: `queue no longer fits in the run (${input.blocksRemaining ?? "?"} blocks left, a marginal exit needs ${marginalDelay + QUEUE_MARGIN_BLOCKS} at the current congestion, this whole position ${queueDelay}); holding, since selling only pays the pool fee`,
+    };
+  }
+  if (!yieldWorthIt && input.wethBalanceWei > 0n) {
+    return {
+      kind: "hold",
+      reason: `yield ${lst.apyBps.toFixed(0)}bps is below the ${MIN_STAKE_APY_BPS}bps floor; holding WETH rather than taking slashing exposure for it`,
     };
   }
   return {
@@ -166,6 +232,7 @@ export function decideCarry(input: {
 
 export function decide(
   obs: AgentObservation,
+  ctx?: AgentContext,
 ): AgentAction | Record<string, unknown> | null {
   const lst = obs.protocols.lst;
   if (!lst) {
@@ -191,6 +258,20 @@ export function decide(
     blocksRemaining: obs.blocksRemaining,
   });
   const fee = obs.limits.defaultPriorityFeePerGasWei;
+
+  // Record why, every cycle. A rule agent's noop leaves no trace on chain and none in the mempool
+  // log, so without this a run where the agent correctly sat out is indistinguishable from one
+  // where it was broken -- and phase 2 is full of reasons to correctly sit out.
+  ctx?.log({
+    round: obs.round,
+    reason: decision.kind === "hold" ? decision.reason : decision.kind,
+    signals: {
+      discountBps: Number(lst.discountBps.toFixed(2)),
+      apyBps: Number(lst.apyBps.toFixed(0)),
+      queueDelayBlocks: lst.estimatedQueueDelayBlocks,
+      blocksRemaining: obs.blocksRemaining ?? -1,
+    },
+  });
 
   switch (decision.kind) {
     case "claim":

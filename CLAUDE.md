@@ -114,11 +114,20 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   「run 終了までに finalize するキューの par」の**良い方**。run 終了後にしか claim できない pending は価値から外し
   `reason:"unrealizable"` で `scoring_unpriced_holdings` に報告する（黙って 0 にしない）。#41 の staged-read
   インターフェース（`valueAtBlock` / `liquidatableValueUsdc` / `ValuationContext.horizonBlock`）の最初の消費者
-- Phase 2（seed 由来の APY 変動・キュー混雑・サイズ依存 depeg・`slash` の stress overlay 化）は未実装。
-  そのため Phase 1 では市場が自然に discount を作らない = at-par の断面から始めると `lst-carry` は stake しかしない。
-  carry/queue/claim 経路を実走で見るには `config/lst.yaml` のコメント手順でプールを off-peg にする
-  （実証済み: 38bps の discount から prompt 駆動の LLM が carry→queue→claim を完走し唯一の黒字。
-  期限切れは `blocksRemaining <= withdrawalDelayBlocks+4` を理由に自分で noop した）
+- **Phase 2（選択を非自明にする）実装済み**。`config/lst.yaml` の `lst:` / `stress:` に較正例:
+  - **APY 変動** — `lst.apyRangeBps` + `apyStepBlocks` で seed 由来 Rng（独立 salt）から N ブロックごとに再サンプル
+    → coordinator が `setRewardRate`。固定利回りだと「block 0 で全ステーク」が恒久最適になるため
+  - **キュー混雑 + サイズ依存** — vault の finalize をスループット律速に（`queueThroughputWeiPerBlock`）。
+    `claimableAt = max(floor, queueDrainBlock) + ceil(assets/throughput)` = 大口ほど待ち、先客がいるほど待つ。
+    観測は実効待ちを `estimatedQueueDelayBlocks`（自分の全保有）と `queueDelayPerWethBlocks`（限界 1 WETH）で分けて出す。
+    **採点も実効待ちを使う**（floor で判定すると完了不能な exit を par 評価してしまう）
+  - **`lstSlash`** — ADR 0009 と同じレンジ config で `stress.events` に書ける点イベント。1 ブロックで rate を恒久的に下げる。
+    **discount は開かない**（プールが rate oracle 追随でリプライスする＝oracle が正しく効いている証拠）。
+    slash は「保有者が損をする」リスクであって裁定機会ではない。よって magnitude は利回りスケールで較正する
+    （70 ブロック run の利回り ~3-8bps に対し 10-30bps。最初に試した 100-300bps は利回りの 15 倍でステーク自体が常に負けになった）
+- **USDC 建て採点では LST 保有戦略は構造的に β で不利**（実測: noop 0 > lst-carry −203 > lst-carry-wide −233、
+  一方で WETH を持たない venue-arb は +115）。alphaUsdc は free inventory の β しか除去せず、
+  LST ポジションは live mark のため。ETH 建て採点（DAT 型）が issue #38 の motivation で follow-on
 
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 

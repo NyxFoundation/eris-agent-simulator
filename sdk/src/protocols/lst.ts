@@ -73,6 +73,10 @@ export type LstState = {
   pooledWeth: bigint;
   shareSupply: bigint;
   reserves: { weth: bigint; lst: bigint };
+  // Issue #38 phase 2: 0 means the queue is not rate-limited and every request waits exactly
+  // withdrawalDelayBlocks. Otherwise the wait also covers what is queued ahead plus your own size.
+  queueThroughputWeiPerBlock: bigint;
+  queueDrainBlock: bigint;
 };
 
 function toFloat(wei: bigint): number {
@@ -194,6 +198,8 @@ export async function getLstState(ctx: SimContext): Promise<LstState> {
     queueLength,
     delayBlocks,
     ratePerBlockRay,
+    throughputWeiPerBlock,
+    drainBlock,
   ] = summary;
 
   // Two-sided probe, the same discipline as the balancer/curve adapters: a one-sided quote
@@ -229,6 +235,8 @@ export async function getLstState(ctx: SimContext): Promise<LstState> {
     pooledWeth,
     shareSupply,
     reserves: { weth: wethReserve, lst: lstReserve },
+    queueThroughputWeiPerBlock: throughputWeiPerBlock,
+    queueDrainBlock: drainBlock,
   };
 }
 
@@ -418,6 +426,31 @@ async function observe(
     claimable: blockNumber >= claimableAt[i],
   }));
 
+  // What queueing would actually cost right now. With a rate-limited queue this exceeds the floor
+  // by whatever is booked ahead plus this size's own drain time (issue #38 phase 2), and it is the
+  // number an agent must compare against the blocks left in the run.
+  const estimateDelay = async (assets: bigint): Promise<number> => {
+    if (state.queueThroughputWeiPerBlock === 0n)
+      return state.withdrawalDelayBlocks;
+    try {
+      return Number(
+        (await publicClient.readContract({
+          address: deployment.vault,
+          abi: lstVaultAbi,
+          functionName: "estimateDelayBlocks",
+          args: [assets],
+        })) as bigint,
+      );
+    } catch {
+      return state.withdrawalDelayBlocks;
+    }
+  };
+  const [estimatedQueueDelayBlocks, queueDelayPerWethBlocks] =
+    await Promise.all([
+      estimateDelay(shareAssets > 0n ? shareAssets : WAD),
+      estimateDelay(WAD),
+    ]);
+
   return {
     redemptionRateWeth: state.redemptionRateWeth,
     marketPriceWeth: state.midPriceWeth,
@@ -431,6 +464,9 @@ async function observe(
     apyBps: state.apyBps,
     yieldPerBlockBps: state.yieldPerBlockBps,
     withdrawalDelayBlocks: state.withdrawalDelayBlocks,
+    estimatedQueueDelayBlocks,
+    queueDelayPerWethBlocks,
+    queueThroughputWeiPerBlock: state.queueThroughputWeiPerBlock.toString(),
     queueLength: state.queueLength,
     rewardReserveWei: state.rewardReserveWei.toString(),
     lstBalanceWei: shares.toString(),
@@ -551,10 +587,12 @@ export function realizableWethWei(input: {
   unreachableAssets: bigint;
   blockNumber: number;
   horizonBlock: number;
-  withdrawalDelayBlocks: number;
+  // The wait this *particular* redemption would face, not the vault's floor: with a rate-limited
+  // queue it also covers what is booked ahead and this size's own drain time (issue #38 phase 2).
+  queueDelayBlocks: number;
 }): { wei: bigint; queueUsed: boolean } {
   const queueFitsInRun =
-    input.blockNumber + input.withdrawalDelayBlocks <= input.horizonBlock;
+    input.blockNumber + input.queueDelayBlocks <= input.horizonBlock;
   const viaQueue = queueFitsInRun ? input.shareAssets : 0n;
   const viaMarket = input.instantExitWei ?? 0n;
   const shareValue = viaQueue > viaMarket ? viaQueue : viaMarket;
@@ -566,9 +604,11 @@ export function realizableWethWei(input: {
 
 /// Historical valuation (issue #41's staged reads, issue #38's realizable marking).
 ///
-/// Two stages, because the instant-exit quote depends on a balance the first stage returns:
-///   0. every agent's account summary, split at the run's horizon, plus the queue delay
-///   1. get_dy for exactly the agents that hold shares
+/// Two stages, because both the instant-exit quote and the queue's wait depend on a balance the
+/// first stage returns:
+///   0. every agent's account summary, split at the run's horizon, plus the queue floor
+///   1. for exactly the agents that hold shares: the pool quote at that size, and — when the queue
+///      is rate-limited — the wait that size would actually face
 ///
 /// Takes the deployment explicitly rather than reading the module-level LST constant, so the
 /// marking rules can be exercised without a deployed vault.
@@ -582,6 +622,11 @@ export async function* lstValuationRun(
       abi: lstVaultAbi,
       functionName: "withdrawalDelayBlocks",
     },
+    {
+      address: deployment.vault,
+      abi: lstVaultAbi,
+      functionName: "queueThroughputWeiPerBlock",
+    },
     ...ctx.agents.map((a) => ({
       address: deployment.vault,
       abi: lstVaultAbi,
@@ -590,10 +635,12 @@ export async function* lstValuationRun(
     })),
   ];
 
-  const delayBlocks =
+  const floorDelayBlocks =
     typeof summaries[0] === "bigint" ? Number(summaries[0]) : 0;
+  const rateLimited =
+    typeof summaries[1] === "bigint" && (summaries[1] as bigint) > 0n;
   const perAgent = ctx.agents.map((_agent, i) => {
-    const row = summaries[1 + i] as readonly bigint[] | undefined;
+    const row = summaries[2 + i] as readonly bigint[] | undefined;
     if (!row) return undefined;
     return {
       shares: row[0],
@@ -604,7 +651,7 @@ export async function* lstValuationRun(
     };
   });
 
-  // Only agents holding shares need a pool quote.
+  // Only agents holding shares need a pool quote (and, if the queue is rate-limited, a wait quote).
   const quoteTargets = perAgent
     .map((row, i) => ({ row, i }))
     .filter((x): x is { row: NonNullable<typeof x.row>; i: number } =>
@@ -612,21 +659,36 @@ export async function* lstValuationRun(
     );
   let quotes: unknown[] = [];
   if (quoteTargets.length > 0) {
-    quotes = yield quoteTargets.map(({ row }): ValuationRead => ({
-      address: deployment.pool,
-      abi: curveStableSwapNgAbi,
-      functionName: "get_dy",
-      args: [
-        BigInt(deployment.poolLstIndex),
-        BigInt(deployment.poolWethIndex),
-        row.shares,
-      ],
-    }));
+    quotes = yield [
+      ...quoteTargets.map(({ row }): ValuationRead => ({
+        address: deployment.pool,
+        abi: curveStableSwapNgAbi,
+        functionName: "get_dy",
+        args: [
+          BigInt(deployment.poolLstIndex),
+          BigInt(deployment.poolWethIndex),
+          row.shares,
+        ],
+      })),
+      ...(rateLimited
+        ? quoteTargets.map(({ row }): ValuationRead => ({
+            address: deployment.vault,
+            abi: lstVaultAbi,
+            functionName: "estimateDelayBlocks",
+            args: [row.shareAssets],
+          }))
+        : []),
+    ];
   }
   const quoteByIndex = new Map<number, bigint | undefined>();
+  const delayByIndex = new Map<number, number>();
   quoteTargets.forEach(({ i }, k) => {
     const q = quotes[k];
     quoteByIndex.set(i, typeof q === "bigint" ? q : undefined);
+    const d = rateLimited ? quotes[quoteTargets.length + k] : undefined;
+    // A wait we could not read falls back to the floor, which understates it — but the alternative
+    // is refusing to mark a position we can otherwise price.
+    delayByIndex.set(i, typeof d === "bigint" ? Number(d) : floorDelayBlocks);
   });
 
   const fairWeth = ctx.fairByBase().WETH ?? 0;
@@ -672,7 +734,7 @@ export async function* lstValuationRun(
       unreachableAssets: row.unreachableAssets,
       blockNumber: ctx.blockNumber,
       horizonBlock: ctx.horizonBlock,
-      withdrawalDelayBlocks: delayBlocks,
+      queueDelayBlocks: delayByIndex.get(i) ?? floorDelayBlocks,
     });
     if (row.unreachableAssets > 0n) {
       // Queued at par, but the queue finalizes after the run ends: real value, not realizable
@@ -755,7 +817,7 @@ export const lstAdapter: ProtocolAdapter = {
       unreachableAssets: 0n,
       blockNumber,
       horizonBlock: blockNumber,
-      withdrawalDelayBlocks: Number(delayBlocks),
+      queueDelayBlocks: Number(delayBlocks),
     });
     return toFloat(wei) * fairPrice;
   },

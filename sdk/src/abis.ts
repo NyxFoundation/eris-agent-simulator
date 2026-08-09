@@ -114,7 +114,14 @@ export const lstVaultAbi = parseAbi([
   "function accountSummary(address owner) view returns (uint256 shares, uint256 shareAssets, uint256 pendingAssets, uint256 claimableAssets, uint256 nextClaimableAt, uint256 openRequests)",
   "function accountSummaryAt(address owner, uint256 horizonBlock) view returns (uint256 shares, uint256 shareAssets, uint256 claimableAssets, uint256 reachableAssets, uint256 unreachableAssets, uint256 openRequests)",
   "function openRequestsOf(address owner) view returns (uint256[] ids, uint256[] assets, uint256[] claimableAt)",
-  "function vaultSummary() view returns (uint256 pooledWeth, uint256 shareSupply, uint256 redemptionRate, uint256 reserve, uint256 queuedWeth, uint256 queueLength, uint256 delayBlocks, uint256 ratePerBlockRay)",
+  "function vaultSummary() view returns (uint256 pooledWeth, uint256 shareSupply, uint256 redemptionRate, uint256 reserve, uint256 queuedWeth, uint256 queueLength, uint256 delayBlocks, uint256 ratePerBlockRay, uint256 throughputWeiPerBlock, uint256 drainBlock)",
+  // Issue #38 phase 2: the queue is rate-limited, so the wait depends on your size and on what is
+  // already queued ahead of you. Quote it before committing rather than discovering it after.
+  "function estimateClaimableAt(uint256 assets) view returns (uint256)",
+  "function estimateDelayBlocks(uint256 assets) view returns (uint256)",
+  "function setQueueThroughput(uint256 weiPerBlock)",
+  "function queueThroughputWeiPerBlock() view returns (uint256)",
+  "function queueDrainBlock() view returns (uint256)",
   "function surplusWeth() view returns (uint256)",
 ]);
 
