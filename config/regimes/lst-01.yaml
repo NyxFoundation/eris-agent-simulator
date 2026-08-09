@@ -1,0 +1,81 @@
+# config/regimes/lst-01.yaml — official regime: the liquid staking venue (issue #38). ADR 0016 §2
+#
+# regime = this file (market conditions) + seed. Same discipline as calm-01/crash-01: ranges rather
+# than values, blockTimeSec fixed to the production value, and the published seed is one sample of
+# many (the production run uses a different one).
+# Run: npm run backtest -- --regime lst-01 [--agents <roster>] [--repeat N]
+#
+# What this regime tests that the others do not: an asset with two prices at once. The vault owes
+# `redemptionRateWeth` per share but only through a withdrawal queue; the LST/WETH pool pays
+# `marketPriceWeth` immediately at whatever discount it trades. Scoring marks the position at what
+# it could realize, so an exit the run does not have time to finish is worth what the pool would
+# pay for it, not par.
+#
+# Funding note: this venue is WETH-denominated and cannot be traded from a USDC-only wallet, so
+# unlike calm-01 this regime hands out WETH. That reintroduces price drift into netPnlUsdc — read
+# alphaUsdc, and read scores within a run rather than across price paths.
+
+run:
+  seed: 301
+  blocks: 60
+  seconds: 600 # end by block count (set well above blocks x blockTimeSec)
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  # aave is included so the phase 3 layer (LST as collateral, leveraged staking) is reachable;
+  # gmx is left out to keep the run short.
+  protocols: [uniswap, balancer, curve, aave, lst]
+  economicGas: false
+  localDeploy: true # backtest runs on a local anvil loaded with the distributed state
+  reportDir: ./runs
+
+funding:
+  wethWei: "20000000000000000000" # 20 WETH: the venue is WETH-denominated
+  usdcUnits: "25000000000"
+
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+
+# Phase 2 is what keeps "stake everything at block 0" from being the answer: the yield moves, the
+# queue congests, and a slash can cut the redemption rate mid-run. See config/lst.yaml for the
+# reasoning behind each number.
+lst:
+  simulatedSecondsPerBlock: 3600
+  apyBps: 300
+  withdrawalDelayBlocks: 20
+  maxDepositWethWei: "5000000000000000000"
+  apyRangeBps: [100, 900]
+  apyStepBlocks: 10
+  queueThroughputWeiPerBlock: "1000000000000000000"
+
+stress:
+  events:
+    - { type: lstSlash, magnitudeRange: [0.001, 0.003], windowFrac: [0.3, 0.5] }
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  # No LST flow bot yet, so the secondary market moves only when agents trade it: from an at-par
+  # start the discount stays near zero and the carry path does not fire. That is phase 2's
+  # remaining gap, not a property of this regime.
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: lst-carry
+    wallet: AGENT2_PRIVATE_KEY
+    description: liquid staking — stake for yield, or trade the redemption/market gap
+  - id: lst-carry-levered
+    dir: lst-carry
+    wallet: AGENT3_PRIVATE_KEY
+    description: the same strategy with the phase 3 leverage loop switched on
+    env: { ERIS_LST_LEVERAGE_TARGET_HF: "2.0" }
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)
