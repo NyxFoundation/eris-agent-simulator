@@ -125,6 +125,18 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
     **discount は開かない**（プールが rate oracle 追随でリプライスする＝oracle が正しく効いている証拠）。
     slash は「保有者が損をする」リスクであって裁定機会ではない。よって magnitude は利回りスケールで較正する
     （70 ブロック run の利回り ~3-8bps に対し 10-30bps。最初に試した 100-300bps は利回りの 15 倍でステーク自体が常に負けになった）
+- **Phase 3（レバレッジ）実装済み**。`run.protocols` に `aave` を足すと有効:
+  - deployer が LST を **Aave の担保専用 reserve** として登録（`registerLstReserve`。LTV 70% / LT 75% /
+    bonus 7.5%。**borrow は無効**＝現実の LST 上場と同じで、狙いは「LST を担保に ETH を借りる」レバステーキング）。
+    Aave 自身の同名 reserve から clone できないため **LTV/LT は明示指定**（issue #38 が指摘した通り）。
+    rate strategy のみ WETH から借用
+  - **価格は WETH × 償還レート**。専用 MockAggregator を持ち、`sdk/src/protocols/oracles.ts` が
+    他の全オラクルと同じ 3 経路（mined / mempool / storage）で毎ブロック書く。よって **1 ブロック遅れ**を継承し、
+    slash はまず vault に効き、次ブロックで HF に届く = liquidation cascade の起点
+  - `aaveSupply`/`aaveWithdraw` の asset に `"LST"` を指定可能（`TokenKind` に `"lst"` を追加し、
+    scorer の spot 掃引から外して二重計上を防いでいる。評価は Aave の totalCollateralBase 経由）
+  - **同梱 agent はレバレッジしない**。市場側の検証は `test/lstLeverage.test.ts`（要 `ERIS_LOCAL_DEPLOY=1` +
+    ローカルデプロイ。実チェーンで listing → ETH 借入 → slash → HF 低下 を検査。CI では skip）
 - **USDC 建て採点では LST 保有戦略は構造的に β で不利**（実測: noop 0 > lst-carry −203 > lst-carry-wide −233、
   一方で WETH を持たない venue-arb は +115）。alphaUsdc は free inventory の β しか除去せず、
   LST ポジションは live mark のため。ETH 建て採点（DAT 型）が issue #38 の motivation で follow-on

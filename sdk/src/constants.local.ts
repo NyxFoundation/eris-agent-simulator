@@ -7,7 +7,7 @@ import type { MarketLegs } from "./types.js";
 
 // Canonical fingerprint of the source deployments.json (ADR 0016 §2). The backtest CLI
 // compares it against the state dump manifest and, on mismatch, regenerates from the manifest's bundled deployments.
-export const DEPLOYMENTS_FINGERPRINT = "sha256:667fd167cccfc4cd05b10d05cbfcd72819b4a9f922d75f628b3cbf29c017f1e6";
+export const DEPLOYMENTS_FINGERPRINT = "sha256:179a47cf7017a30988c339a84057bf1dc97cc23b1b8bb84c0f7ec329bba1b3fe";
 
 export type LocalDeployment = {
   CHAIN_ID: number;
@@ -59,6 +59,9 @@ export type LocalDeployment = {
     simulatedSecondsPerBlock: number;
     targetApyBps: number;
     withdrawalDelayBlocks: number;
+    aaveAggregator?: Address;
+    aaveAToken?: Address;
+    aaveVariableDebtToken?: Address;
   };
 };
 
@@ -136,6 +139,9 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     simulatedSecondsPerBlock: 3600,
     targetApyBps: 300,
     withdrawalDelayBlocks: 24,
+    aaveAggregator: "0x70bDA08DBe07363968e9EE53d899dFE48560605B" as Address,
+    aaveAToken: "0xfB2C19FF34F419a02e4564e8Ce6A3448fAD93f8b" as Address,
+    aaveVariableDebtToken: "0x555a114B12884781a975Fa45bDb4d3cC9ba1d640" as Address,
   },
   MARKET_LEGS: {
     uniswap: {

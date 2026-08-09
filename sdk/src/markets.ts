@@ -33,8 +33,14 @@ const QUOTE_SYMBOL: TokenSymbol = "USDC";
 // Add here only when adding a new stable. A base is treated as a base without doing anything.
 const STABLE_SYMBOLS = new Set<TokenSymbol>(["USDC", "USDT", "DAI", "USDC.e"]);
 
+// Yield-bearing claims valued by their own venue rather than by the fair-price feed (issue #38).
+// Listed here so they stay out of the scorer's spot sweep -- see TokenKind for why.
+const LST_SYMBOLS = new Set<TokenSymbol>(["LST"]);
+
 export function kindOf(symbol: TokenSymbol): TokenKind {
-  return STABLE_SYMBOLS.has(symbol) ? "stable" : "base";
+  if (STABLE_SYMBOLS.has(symbol)) return "stable";
+  if (LST_SYMBOLS.has(symbol)) return "lst";
+  return "base";
 }
 
 export function tokenInfo(symbol: TokenSymbol): TokenInfo {

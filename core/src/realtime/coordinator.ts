@@ -638,6 +638,24 @@ export async function runRealtimeSimulation(
         config.runBlocks,
         agentExtraEnv,
       );
+      // An agent that dies mid-run silently stops trading, which reads in summary.json exactly like
+      // an agent that chose not to trade. Record it so the two can be told apart.
+      const runtime = agent;
+      const child = agent.process;
+      if (!child) continue;
+      child.onExit = (info) => {
+        logger.event({
+          type: "agent_process_exited",
+          agentId: runtime.id,
+          ...info,
+          stderrTail: child.getStderr().slice(-2000),
+        });
+        console.error(
+          `[agent] ${runtime.id} ${info.reason}` +
+            (info.code !== undefined ? ` (code ${info.code})` : "") +
+            (info.signal ? ` (signal ${info.signal})` : ""),
+        );
+      };
     }
 
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----

@@ -184,6 +184,11 @@ export type LstDeployment = {
   simulatedSecondsPerBlock: number;
   targetApyBps: number;
   withdrawalDelayBlocks: number;
+  // Issue #38 phase 3: present when the LST is listed as Aave collateral. Absent when the deploy
+  // had no Aave, in which case the venue still works and only leverage is unavailable.
+  aaveAggregator?: Address;
+  aaveAToken?: Address;
+  aaveVariableDebtToken?: Address;
 };
 
 export const LST: LstDeployment | null = L?.LST ?? null;

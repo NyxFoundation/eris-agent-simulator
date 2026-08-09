@@ -31,6 +31,12 @@ run:
   blockTimeSec: 2
   # The AMM venues stay on so the LST market is not the only thing moving, and so a run exercises
   # the same cross-venue no-arbitrage guard as usual.
+  #
+  # Add `aave` to get the phase 3 layer: the deploy lists the LST as Aave collateral (LTV 70% / LT
+  # 75%, collateral only), priced at WETH x the vault's redemption rate and rewritten every block.
+  # That makes leveraged staking possible -- supply LST, borrow WETH, stake again -- and makes a
+  # slash reach health factors one block after it reaches the vault. No shipped agent levers by
+  # default; test/lstLeverage.test.ts exercises the market end to end.
   protocols: [uniswap, balancer, curve, lst]
   economicGas: false
   localDeploy: true

@@ -5,7 +5,7 @@ import {
   type Address,
   type PublicClient,
 } from "viem";
-import { AAVE, TOKENS, stableBalanceOf } from "../constants.js";
+import { AAVE, LST, TOKENS, stableBalanceOf } from "../constants.js";
 import { marketsFor, tokenInfo, tokenRegistry } from "../markets.js";
 import {
   accountAddress,
@@ -95,23 +95,32 @@ export const mockAggregatorAbi = parseAbi([
 // Aave uses native USDC as the reserve (settlement stable).
 const AAVE_STABLE = TOKENS.USDC.address;
 const AAVE_STABLE_SYMBOL: TokenSymbol = "USDC";
+// The LST venue's share token, when it is listed as collateral (issue #38 phase 3).
+const LST_SYMBOL: TokenSymbol = "LST";
 
 // Base symbols enabled for aave (from MARKET_LEGS.aave; WETH only on the default fork).
 function aaveBaseSymbols(): TokenSymbol[] {
   return marketsFor("aave").map((m) => m.base);
 }
 
-// Symbols of the reserves we read/write (enabled bases + settlement stable).
-// [WETH, USDC] on the default fork (matches prior behavior).
+// Symbols of the reserves we read/write (enabled bases + settlement stable + the LST when it is
+// listed). [WETH, USDC] on the default fork (matches prior behavior).
+//
+// The LST is collateral only (issue #38 phase 3): it is listed so ETH can be borrowed *against* it,
+// which is the leveraged-staking loop, and the reserve is deliberately not borrow-enabled. Supply
+// and withdraw are the operations that make sense; a borrow of it is rejected on chain.
 function aaveReserveSymbols(): TokenSymbol[] {
-  return [...aaveBaseSymbols(), AAVE_STABLE_SYMBOL];
+  const symbols = [...aaveBaseSymbols(), AAVE_STABLE_SYMBOL];
+  if (LST?.aaveAToken) symbols.push(LST_SYMBOL);
+  return symbols;
 }
 
-// Symbol -> reserve address. The stable is native USDC; everything else uses the registry address.
+// Symbol -> reserve address. The stable is native USDC; the LST is the vault's own share token
+// (it is not in the base registry, by design); everything else uses the registry address.
 function aaveAsset(symbol: TokenSymbol): Address {
-  return symbol === AAVE_STABLE_SYMBOL
-    ? AAVE_STABLE
-    : tokenInfo(symbol).address;
+  if (symbol === AAVE_STABLE_SYMBOL) return AAVE_STABLE;
+  if (symbol === LST_SYMBOL && LST) return LST.lstToken;
+  return tokenInfo(symbol).address;
 }
 
 type AaveActionType =
@@ -181,11 +190,17 @@ function validate(
     asset: TokenSymbol;
     amount: string;
   };
-  // The stable uses the aggregated USDC-equivalent balance; bases use the bases map (WETH equals wethWei for compatibility).
-  const assetBalance = (): bigint =>
-    a.asset === AAVE_STABLE_SYMBOL
-      ? stableBalanceOf(balances, AAVE_STABLE)
-      : (balances.bases?.[a.asset] ?? balances.wethWei);
+  // The stable uses the aggregated USDC-equivalent balance; bases use the bases map (WETH equals
+  // wethWei for compatibility). The LST is in neither: it is not a registry base, so its balance
+  // comes from its own venue's observation -- falling through to wethWei would compare an LST
+  // amount against a WETH balance and wave through a supply that reverts on chain.
+  const assetBalance = (): bigint => {
+    if (a.asset === AAVE_STABLE_SYMBOL)
+      return stableBalanceOf(balances, AAVE_STABLE);
+    if (a.asset === LST_SYMBOL)
+      return BigInt(obs.protocols.lst?.lstBalanceWei ?? "0");
+    return balances.bases?.[a.asset] ?? balances.wethWei;
+  };
   if (a.amount !== "max") {
     const amount = BigInt(a.amount);
     if (amount <= 0n) return { ok: false, reason: "amount must be positive" };
@@ -194,7 +209,8 @@ function validate(
         return { ok: false, reason: "supply amount exceeds balance" };
       // ADR 0013: apply the supply limit to every base. WETH=maxAaveSupplyWethWei; additional bases use
       // limits.baseLimits[asset] ("0"=no limit). Stable assets have no supply limit (as before).
-      if (a.asset !== AAVE_STABLE_SYMBOL) {
+      // The LST's own cap is the per-stake one on the venue itself, so it is not re-capped here.
+      if (a.asset !== AAVE_STABLE_SYMBOL && a.asset !== LST_SYMBOL) {
         const maxSupply =
           a.asset === "WETH"
             ? BigInt(obs.limits.maxAaveSupplyWethWei)
@@ -525,7 +541,15 @@ export const aaveAdapter: ProtocolAdapter = {
   // positive. Immutable for a deployment, so resolved once.
   async accountedTokens(publicClient): Promise<Address[]> {
     if (reserveTokenCache) return reserveTokenCache;
-    const assets = Object.values(tokenRegistry()).map((t) => t.address);
+    // Every reserve this venue trades, not just the ones in the token registry: the LST is listed
+    // as collateral but deliberately kept out of the registry (issue #38), so registry-only lookup
+    // left its aToken looking like an unaccounted holding in every levered run.
+    const assets = [
+      ...new Set([
+        ...Object.values(tokenRegistry()).map((t) => t.address),
+        ...aaveReserveSymbols().map(aaveAsset),
+      ]),
+    ];
     const results = (await publicClient.multicall({
       contracts: assets.map((asset) => ({
         address: AAVE.PoolDataProvider,

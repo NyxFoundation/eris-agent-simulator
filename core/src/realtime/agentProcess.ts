@@ -92,19 +92,38 @@ export class RealtimeAgentProcess {
       this.stderr += data.toString();
       if (this.stderr.length > 20_000) this.stderr = this.stderr.slice(-20_000);
     });
-    this.child.on("error", () => {
+    this.child.on("error", (error) => {
       this.alive = false;
+      this.onExit?.({ reason: `spawn error: ${error.message}` });
     });
-    this.child.on("exit", () => {
+    this.child.on("exit", (code, signal) => {
+      const wasAlive = this.alive;
       this.alive = false;
+      // Only interesting if it went on its own. close() kills every agent at the end of the run,
+      // and that is not news.
+      if (wasAlive && !this.stopped) {
+        this.onExit?.({
+          code: code ?? undefined,
+          signal: signal ?? undefined,
+          reason: "exited before the run ended",
+        });
+      }
     });
   }
+
+  /// Notified when the process dies on its own. Without this an agent that crashes mid-run just
+  /// stops trading, and the run looks like one where it chose not to act -- indistinguishable in
+  /// summary.json, and the difference is the whole result.
+  onExit?: (info: { code?: number; signal?: string; reason: string }) => void;
+
+  private stopped = false;
 
   isAlive(): boolean {
     return this.alive && !this.child.killed;
   }
 
   close(): void {
+    this.stopped = true;
     this.child.kill();
   }
 

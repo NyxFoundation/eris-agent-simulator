@@ -479,6 +479,9 @@ async function observe(
       weth: state.reserves.weth.toString(),
       lst: state.reserves.lst.toString(),
     },
+    // Phase 3: only true when the deploy listed it, so an agent can tell "leverage is off" from
+    // "my supply failed".
+    aaveCollateral: Boolean(deployment.aaveAToken),
   };
 }
 

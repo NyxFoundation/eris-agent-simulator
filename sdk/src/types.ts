@@ -3,8 +3,14 @@ import type { Address, Hex } from "viem";
 // Keys of the token registry (TOKENS in src/markets.ts). Made a string by stripping the literal union
 // (so adding a token is just adding a constant. ADR 0013). Actual existence is managed in TOKENS.
 export type TokenSymbol = string;
-// base = a tradable with a USD price (WETH/WBTC…), stable = a $1-pegged settlement currency (USDC-equivalent).
-export type TokenKind = "base" | "stable";
+// base = a tradable with a USD price (WETH/WBTC…), stable = a $1-pegged settlement currency
+// (USDC-equivalent), lst = a yield-bearing claim on a base whose venue values it itself.
+//
+// An lst is deliberately neither of the first two. Calling it a base would put it in the scorer's
+// spot sweep, priced off the fair-price feed at face value -- while its own adapter is separately
+// marking it at what it could realize (issue #38). That is a double count and a wrong number.
+// Keeping it its own kind means it is only ever valued by the venue that understands it.
+export type TokenKind = "base" | "stable" | "lst";
 
 export type ProtocolId =
   "uniswap" | "balancer" | "curve" | "gmx" | "aave" | "lst";
@@ -395,6 +401,10 @@ export type LstObservation = {
   claimableWithdrawalWethWei: string;
   // Pool depth, so an agent can size an exit against it.
   poolReserves?: { weth: string; lst: string };
+  // Issue #38 phase 3: whether the LST is listed as Aave collateral, which is what makes leveraged
+  // staking possible (supply LST, borrow WETH, stake again). Absent or false means the deploy had
+  // no Aave to list it on, and `aaveSupply` with asset "LST" will be rejected.
+  aaveCollateral?: boolean;
 };
 
 export type ProtocolObservations = {

@@ -14,6 +14,7 @@ import { accounts, deployerWallet, publicClient } from "../clients.js";
 import { anvilChain } from "../config.js";
 import { approve } from "../erc20.js";
 import { getRegistry, setProtocol, token } from "../registry.js";
+import { registerLstReserve } from "./aave-v3.js";
 import { wrapWeth } from "../tokens.js";
 import { ROOT, assert, info, loadForgeArtifact, ok, waitTx } from "../util.js";
 
@@ -73,6 +74,10 @@ const POOL_MA_EXP_TIME = 866n;
 const RATE_ORACLE_SELECTOR = toFunctionSelector(
   "function stEthPerToken() view returns (uint256)",
 );
+
+/// The WETH price the other venues are seeded at ($3000). Only used for the LST's opening Aave
+/// oracle value; the environment rewrites it from the run's fair price every block.
+const INITIAL_WETH_PRICE_USD = 3000;
 
 const CURVE_VENDOR = resolve(ROOT, "vendor", "curve");
 
@@ -294,5 +299,33 @@ async function seedSecondaryMarket(
     poolLstIndex: 1,
     poolFee: Number(POOL_FEE),
     poolA: Number(POOL_A),
+  });
+
+  await listAsAaveCollateral(vault);
+}
+
+/// Issue #38 phase 3: list the LST as Aave collateral so it can be levered.
+///
+/// Skipped when Aave is not in this deploy — the venue works without it, leverage is the layer on
+/// top. Registered here rather than inside the Aave deploy because the vault does not exist yet at
+/// that point (Aave runs before Curve, which the secondary market needs).
+async function listAsAaveCollateral(vault: Address) {
+  const aave = getRegistry().protocols.aaveV3 as
+    { pool?: string; tokens?: Record<string, string> } | undefined;
+  if (!aave?.pool) {
+    info("LST: skipping the Aave listing (aave is not in this deploy)");
+    return;
+  }
+  // The LST opens at the vault's redemption rate against WETH, which the pool was just seeded at.
+  // The environment overwrites this every block; it only has to be sane at block 0.
+  const initialPriceUsd8 = BigInt(Math.round(INITIAL_WETH_PRICE_USD * 1e8));
+  const { aggregator, aToken, variableDebtToken } = await registerLstReserve(
+    vault,
+    initialPriceUsd8,
+  );
+  setProtocol("lst", {
+    aaveAggregator: aggregator,
+    aaveAToken: aToken,
+    aaveVariableDebtToken: variableDebtToken,
   });
 }

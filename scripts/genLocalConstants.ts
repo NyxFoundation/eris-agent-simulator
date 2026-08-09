@@ -59,6 +59,9 @@ type LstInfo = {
   simulatedSecondsPerBlock: number;
   targetApyBps: number;
   withdrawalDelayBlocks: number;
+  aaveAggregator?: Address;
+  aaveAToken?: Address;
+  aaveVariableDebtToken?: Address;
 };
 
 function readLst(
@@ -75,6 +78,16 @@ function readLst(
     simulatedSecondsPerBlock: Number(lst.simulatedSecondsPerBlock ?? 0),
     targetApyBps: Number(lst.targetApyBps ?? 0),
     withdrawalDelayBlocks: Number(lst.withdrawalDelayBlocks ?? 0),
+    // Phase 3: only present when the deploy also had Aave to list it on.
+    ...(lst.aaveAToken
+      ? {
+          aaveAggregator: getAddress(String(lst.aaveAggregator)),
+          aaveAToken: getAddress(String(lst.aaveAToken)),
+          aaveVariableDebtToken: getAddress(
+            String(lst.aaveVariableDebtToken),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -324,7 +337,14 @@ function render(d: {
     poolWethIndex: ${d.lst.poolWethIndex},
     simulatedSecondsPerBlock: ${d.lst.simulatedSecondsPerBlock},
     targetApyBps: ${d.lst.targetApyBps},
-    withdrawalDelayBlocks: ${d.lst.withdrawalDelayBlocks},
+    withdrawalDelayBlocks: ${d.lst.withdrawalDelayBlocks},${
+      d.lst.aaveAToken
+        ? `
+    aaveAggregator: ${a(d.lst.aaveAggregator!)},
+    aaveAToken: ${a(d.lst.aaveAToken!)},
+    aaveVariableDebtToken: ${a(d.lst.aaveVariableDebtToken!)},`
+        : ""
+    }
   },`
     : "";
 
@@ -432,6 +452,9 @@ export type LocalDeployment = {
     simulatedSecondsPerBlock: number;
     targetApyBps: number;
     withdrawalDelayBlocks: number;
+    aaveAggregator?: Address;
+    aaveAToken?: Address;
+    aaveVariableDebtToken?: Address;
   };
 };
 

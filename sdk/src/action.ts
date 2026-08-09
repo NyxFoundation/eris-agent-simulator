@@ -369,12 +369,14 @@ function applyLeafSpend(
       spendStable(BigInt(item.amountQuoteDesired ?? item.amountUsdcDesired));
       break;
     case "aaveSupply":
-      if (kindOf(item.asset) === "base")
-        spendBase(item.asset, BigInt(item.amount));
-      else spendStable(BigInt(item.amount));
+      // Anything that is not the settlement stable is deducted from the base side. An LST is
+      // neither (issue #38 phase 3) and is not in the bases map, so spendBase is a no-op for it --
+      // correct, since its balance is tracked by its own venue rather than here.
+      if (kindOf(item.asset) === "stable") spendStable(BigInt(item.amount));
+      else spendBase(item.asset, BigInt(item.amount));
       break;
     case "aaveRepay": {
-      const isBase = kindOf(item.asset) === "base";
+      const isBase = kindOf(item.asset) !== "stable";
       const amt =
         item.amount === "max"
           ? isBase
