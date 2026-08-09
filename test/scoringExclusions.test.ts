@@ -147,6 +147,7 @@ function valuationCtx(): ValuationContext {
   return {
     publicClient: {} as never,
     blockNumber: 100,
+    horizonBlock: 100,
     agents: [AGENT],
     activeStables: [USDC],
     fairByBase: () => ({ WETH: FAIR }),

@@ -25,9 +25,12 @@ function stableVariantDecimals(token: Address): number | undefined {
 
 // Why a holding is missing from a value. "unpriced" means the amount is known but has no USD price;
 // "read-failed" means the read that would have revealed the holding failed, so the holding is
-// *unknown* rather than zero (issue #44). Both are excluded from the value and both are reported —
-// a zero in summary.json must never be mistaken for a trading loss.
-export type ScoringExclusionReason = "unpriced" | "read-failed";
+// *unknown* rather than zero (issue #44); "unrealizable" means it is known and priceable but
+// cannot be turned into anything before the run ends -- an LST redemption whose queue finalizes
+// after the last block (issue #38). All three are excluded from the value and all three are
+// reported — a zero in summary.json must never be mistaken for a trading loss.
+export type ScoringExclusionReason =
+  "unpriced" | "read-failed" | "unrealizable";
 
 // A holding left out of a value, and why.
 export type UnpricedAmount = {
