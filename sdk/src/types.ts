@@ -6,7 +6,8 @@ export type TokenSymbol = string;
 // base = a tradable with a USD price (WETH/WBTC…), stable = a $1-pegged settlement currency (USDC-equivalent).
 export type TokenKind = "base" | "stable";
 
-export type ProtocolId = "uniswap" | "balancer" | "curve" | "gmx" | "aave";
+export type ProtocolId =
+  "uniswap" | "balancer" | "curve" | "gmx" | "aave" | "lst";
 
 // ---------------------------------------------------------------------------
 // Market leg (venue-specific metadata. ADR 0013). One per protocol × base.
@@ -146,6 +147,38 @@ export type GmxDecreaseAction = {
   maxPriorityFeePerGasWei?: string;
 };
 
+// LST venue (issue #38). The market is LST/WETH -- adapter-private, not a base/USDC market -- so
+// these actions carry no `base` selector.
+export type LstDepositAction = {
+  type: "lstDeposit";
+  // WETH to stake, in wei. Mints LST at the current redemption rate.
+  amountWethWei: string;
+  maxPriorityFeePerGasWei?: string;
+};
+
+export type LstSwapAction = {
+  type: "lstSwap";
+  // "WETH" buys LST from the secondary market; "LST" sells into it (the instant, discounted exit).
+  tokenIn: "WETH" | "LST";
+  amountIn: string; // wei of tokenIn (both are 18-decimal)
+  slippageBps?: number;
+  maxPriorityFeePerGasWei?: string;
+};
+
+export type LstRequestWithdrawAction = {
+  type: "lstRequestWithdraw";
+  // LST shares to queue for redemption at par. Claimable after the queue delay.
+  amountLstWei: string;
+  maxPriorityFeePerGasWei?: string;
+};
+
+export type LstClaimWithdrawAction = {
+  type: "lstClaimWithdraw";
+  // A specific request id, or omitted / "all" to claim every finalized request.
+  requestId?: string;
+  maxPriorityFeePerGasWei?: string;
+};
+
 // Bundleable leaves (excluding GMX)
 export type BundleActionItem =
   | SwapAction
@@ -157,7 +190,11 @@ export type BundleActionItem =
   | AaveSupplyAction
   | AaveWithdrawAction
   | AaveBorrowAction
-  | AaveRepayAction;
+  | AaveRepayAction
+  | LstDepositAction
+  | LstSwapAction
+  | LstRequestWithdrawAction
+  | LstClaimWithdrawAction;
 
 // All leaf actions (including GMX. The unit of intent / buildTxs)
 export type LeafAction =
@@ -294,12 +331,67 @@ export type AaveObservation = {
   poolLiquidity?: Partial<Record<TokenSymbol, string>>;
 };
 
+// A queued redemption. The shares are already burnt; what is left is a par claim on WETH that
+// lands at `claimableAtBlock`.
+export type LstWithdrawalObservation = {
+  requestId: string;
+  assetsWethWei: string;
+  claimableAtBlock: string;
+  claimable: boolean;
+};
+
+// LST venue (issue #38).
+//
+// The whole point of the venue is that an LST has two prices, and they are reported separately:
+//   - redemptionRateWeth: what the vault owes per share. Reachable only through the queue.
+//   - marketPriceWeth:    what the pool pays per share right now, fee and impact included.
+// discountBps is how far the second sits below the first -- positive means the market is cheap, so
+// buying and queueing a redemption earns the discount in exchange for waiting.
+export type LstObservation = {
+  // WETH per 1e18 LST, from the vault (`stEthPerToken`).
+  redemptionRateWeth: number;
+  // Executable mid at probe size = sqrt(sell x buy), which cancels the pool's symmetric fee.
+  marketPriceWeth: number;
+  // Executable WETH received per LST sold into the pool (fee/impact included) -- the instant exit.
+  marketSellPriceWeth?: number;
+  // Executable WETH paid per LST bought from the pool.
+  marketBuyPriceWeth?: number;
+  // (redemptionRate - marketPrice) / redemptionRate, in bps. Positive = the market is discounted.
+  discountBps: number;
+  // The APY the vault is currently paying on its compressed economic clock (the run's clock, not
+  // wall-clock: one block advances lst.simulatedSecondsPerBlock seconds of staking).
+  apyBps: number;
+  // Yield per block as a fraction, so an agent can compare "wait N blocks" against a discount
+  // without re-deriving it from the APY.
+  yieldPerBlockBps: number;
+  // Blocks between requesting a redemption and being able to claim it.
+  withdrawalDelayBlocks: number;
+  // Unclaimed requests across the whole vault (the queue's length; congestion in phase 2).
+  queueLength: number;
+  // Remaining pre-funded rewards, in wei. Zero means yield has stopped accruing.
+  rewardReserveWei: string;
+  // Your position.
+  lstBalanceWei: string;
+  // What your shares redeem for through the queue, at the current rate.
+  lstRedemptionValueWethWei: string;
+  // What selling your whole share balance into the pool would fetch right now, fee and impact
+  // included -- the instant exit, quoted at your actual size rather than at probe size.
+  instantExitWethWei: string;
+  // Your queued redemptions.
+  pendingWithdrawals: LstWithdrawalObservation[];
+  pendingWithdrawalWethWei: string;
+  claimableWithdrawalWethWei: string;
+  // Pool depth, so an agent can size an exit against it.
+  poolReserves?: { weth: string; lst: string };
+};
+
 export type ProtocolObservations = {
   uniswap?: UniswapObservation;
   balancer?: AmmObservation;
   curve?: AmmObservation;
   gmx?: GmxObservation;
   aave?: AaveObservation;
+  lst?: LstObservation;
 };
 
 export type AgentObservation = {
@@ -318,6 +410,12 @@ export type AgentObservation = {
   // unit-convert base amounts (agents cannot call tokenInfo, so it is passed via the observation).
   baseDecimals?: Record<TokenSymbol, number>;
   markets?: string[];
+  // Blocks left before the run ends, counted from the first block this agent observed (undefined
+  // when the run has no block limit). An exit that takes longer than this cannot complete inside
+  // the run, which is exactly what makes the LST withdrawal queue a decision rather than a
+  // formality (issue #38). Approximate by a block or two: an agent starts observing right around
+  // the first competition block, not before it.
+  blocksRemaining?: number;
   enabledProtocols: ProtocolId[];
   balances: {
     ethWei: string;
@@ -348,6 +446,8 @@ export type AgentObservation = {
     maxGmxSizeUsd: string;
     maxAaveSupplyWethWei: string;
     maxAaveBorrowUsdcUnits: string;
+    // Issue #38: cap on a single LST stake (wei). "0" = uncapped (bounded by balance).
+    maxLstDepositWethWei?: string;
     // ADR 0013: base symbol -> per-round cap (base units, decimal string). WETH equals maxWethInWei
     // etc. above for compatibility. Caps for additional bases (WBTC etc.) go here. "0" = no cap
     // (balance bound). A base-agnostic agent can cap its base-sell size at this value.

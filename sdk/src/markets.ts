@@ -114,7 +114,11 @@ function attachLeg(
 // Assemble the protocol's enabled markets from MARKET_LEGS. Preserves the base registration order
 // (WETH first → the deterministic-order premise for RNG/scoring. ADR 0013 backward compatibility).
 export function marketsFor(protocol: ProtocolId): MarketConfig[] {
-  const legs = MARKET_LEGS[protocol];
+  // A venue whose market is not a base/USDC pair has no leg table: the LST venue trades LST/WETH
+  // and keeps that market adapter-private (issue #38). Generalizing MarketConfig's `quote` so it
+  // could live here is a separate cleanup.
+  const legs = MARKET_LEGS[protocol as keyof typeof MARKET_LEGS];
+  if (!legs) return [];
   const out: MarketConfig[] = [];
   for (const base of Object.keys(legs)) {
     const market: MarketConfig = {

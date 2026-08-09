@@ -165,6 +165,39 @@ export const AAVE = L?.AAVE ?? {
 };
 
 // ---------------------------------------------------------------------------
+// LST venue (issue #38). A wstETH-style vault plus its LST/WETH stableswap-ng secondary market.
+//
+// Unlike the other venues there is no Arbitrum counterpart to point at: the vault is ours, deployed
+// by the bundled deployer and baked into the ADR 0016 state dump. So this is null on a fork, and a
+// run that enables the lst protocol without local deploy fails fast rather than reading zeros.
+// ---------------------------------------------------------------------------
+export type LstDeployment = {
+  vault: Address;
+  // The vault is its own share token (non-rebasing wstETH model), so this equals `vault`. Kept
+  // separate because nothing else should have to know that.
+  lstToken: Address;
+  asset: Address; // WETH
+  pool: Address; // LST/WETH stableswap-ng
+  poolLstIndex: number;
+  poolWethIndex: number;
+  // Deploy-time economic clock, reported so a run can say what it inherited (a run may retune it).
+  simulatedSecondsPerBlock: number;
+  targetApyBps: number;
+  withdrawalDelayBlocks: number;
+};
+
+export const LST: LstDeployment | null = L?.LST ?? null;
+
+export function requireLst(): LstDeployment {
+  if (!LST)
+    throw new Error(
+      "the lst venue is not deployed in this environment: it exists only under local deploy " +
+        "(run.localDeploy: true with a state dump / deployer that includes lst). Drop lst from run.protocols to use a fork.",
+    );
+  return LST;
+}
+
+// ---------------------------------------------------------------------------
 // Market leg registry (ADR 0013). Venue-specific leg per protocol × base.
 // The fork default is WETH/USDC only (built from the existing venue constants). Under local-deploy,
 // genLocalConstants overlays a MARKET_LEGS that adds WBTC etc. (L?.MARKET_LEGS).

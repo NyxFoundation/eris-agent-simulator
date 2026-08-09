@@ -43,8 +43,40 @@ type Deployments = {
       }[];
     };
     aaveV3?: Record<string, unknown>;
+    lst?: Record<string, string | number>;
   };
 };
+
+// Issue #38: the LST venue exists only locally (there is no Arbitrum contract to point at), and a
+// partial deploy may omit it, so every field is checked before a block is emitted.
+type LstInfo = {
+  vault: Address;
+  lstToken: Address;
+  asset: Address;
+  pool: Address;
+  poolLstIndex: number;
+  poolWethIndex: number;
+  simulatedSecondsPerBlock: number;
+  targetApyBps: number;
+  withdrawalDelayBlocks: number;
+};
+
+function readLst(
+  lst: Record<string, string | number> | undefined,
+): LstInfo | undefined {
+  if (!lst?.vault || !lst?.pool) return undefined;
+  return {
+    vault: getAddress(String(lst.vault)),
+    lstToken: getAddress(String(lst.lstToken ?? lst.vault)),
+    asset: getAddress(String(need(lst.asset, "lst.asset"))),
+    pool: getAddress(String(lst.pool)),
+    poolLstIndex: Number(need(lst.poolLstIndex, "lst.poolLstIndex")),
+    poolWethIndex: Number(need(lst.poolWethIndex, "lst.poolWethIndex")),
+    simulatedSecondsPerBlock: Number(lst.simulatedSecondsPerBlock ?? 0),
+    targetApyBps: Number(lst.targetApyBps ?? 0),
+    withdrawalDelayBlocks: Number(lst.withdrawalDelayBlocks ?? 0),
+  };
+}
 
 type GmxMarketList = NonNullable<
   NonNullable<Deployments["protocols"]["gmxV2"]>["markets"]
@@ -229,6 +261,7 @@ export function generateLocalConstants(deploymentsPath?: string): {
       PoolDataProvider: ca(aave.poolDataProvider, "aaveV3.poolDataProvider"),
     },
     wbtc: wbtcInfo,
+    lst: readLst(p.lst),
   });
 
   const target = resolve(ROOT, "sdk", "src", "constants.local.ts");
@@ -244,6 +277,12 @@ export function generateLocalConstants(deploymentsPath?: string): {
   } else {
     console.log(`  WBTC: none (WETH only. MARKET_LEGS is WETH-only)`);
   }
+  const lstInfo = readLst(p.lst);
+  console.log(
+    lstInfo
+      ? `  LST=${lstInfo.vault} (pool=${lstInfo.pool} apy=${lstInfo.targetApyBps}bps clock=${lstInfo.simulatedSecondsPerBlock}s/block)`
+      : `  LST: none (the lst venue is unavailable in this deployment)`,
+  );
   console.log(`  local run: set ERIS_LOCAL_DEPLOY=1 to use`);
   return { target, deploymentsPath: path, fingerprint };
 }
@@ -269,9 +308,25 @@ function render(d: {
   ethUsdMarket: Address;
   aave: Record<string, Address>;
   wbtc?: WbtcInfo;
+  lst?: LstInfo;
 }): string {
   const a = (x: string) => `"${x}" as Address`;
   const w = d.wbtc;
+  const lstBlock = d.lst
+    ? `
+  // Issue #38: the LST venue (wstETH-style vault + LST/WETH stableswap-ng secondary market).
+  LST: {
+    vault: ${a(d.lst.vault)},
+    lstToken: ${a(d.lst.lstToken)},
+    asset: ${a(d.lst.asset)},
+    pool: ${a(d.lst.pool)},
+    poolLstIndex: ${d.lst.poolLstIndex},
+    poolWethIndex: ${d.lst.poolWethIndex},
+    simulatedSecondsPerBlock: ${d.lst.simulatedSecondsPerBlock},
+    targetApyBps: ${d.lst.targetApyBps},
+    withdrawalDelayBlocks: ${d.lst.withdrawalDelayBlocks},
+  },`
+    : "";
 
   // ---- TOKENS' WBTC entry (if any) ----
   const tokensWbtc = w
@@ -366,6 +421,18 @@ export type LocalDeployment = {
   };
   // ADR 0013: multi-asset market legs (WBTC etc.). Includes the WBTC leg if WBTC is in deployments.json.
   MARKET_LEGS?: MarketLegs;
+  // Issue #38: present only when the deploy included the lst venue.
+  LST?: {
+    vault: Address;
+    lstToken: Address;
+    asset: Address;
+    pool: Address;
+    poolLstIndex: number;
+    poolWethIndex: number;
+    simulatedSecondsPerBlock: number;
+    targetApyBps: number;
+    withdrawalDelayBlocks: number;
+  };
 };
 
 export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
@@ -429,7 +496,7 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     AclAdmin: ${a(d.aave.AclAdmin)},
     AclManager: ${a(d.aave.AclManager)},
     PoolDataProvider: ${a(d.aave.PoolDataProvider)},
-  },${marketLegs}
+  },${lstBlock}${marketLegs}
 };
 `;
 }

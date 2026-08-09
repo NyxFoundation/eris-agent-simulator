@@ -68,6 +68,56 @@ export const balancerQueriesAbi = parseAbi([
   "function querySwap((bytes32 poolId, uint8 kind, address assetIn, address assetOut, uint256 amount, bytes userData) singleSwap, (address sender, bool fromInternalBalance, address recipient, bool toInternalBalance) funds) returns (uint256)",
 ]);
 
+// Curve StableSwap-NG (the LST/WETH secondary market, issue #38). Note the int128 coin indices --
+// stableswap and the crypto pools above disagree on that, so they cannot share an ABI.
+export const curveStableSwapNgAbi = parseAbi([
+  "function get_dy(int128 i, int128 j, uint256 dx) view returns (uint256)",
+  "function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) returns (uint256)",
+  "function coins(uint256 i) view returns (address)",
+  "function balances(uint256 i) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
+  // The rate the pool applies to each coin. For the LST leg this is the vault's redemption rate,
+  // which is what keeps a rising exchange rate from opening a free arb (issue #38).
+  "function stored_rates() view returns (uint256[])",
+  "function A() view returns (uint256)",
+  "function fee() view returns (uint256)",
+]);
+
+// MockLSTVault (issue #38): ERC-4626 shaped with wstETH aliases and a request/claim withdrawal
+// queue. `redeem` enqueues rather than paying out, so previewRedeem is the queue's eventual payout.
+export const lstVaultAbi = parseAbi([
+  "function asset() view returns (address)",
+  "function totalAssets() view returns (uint256)",
+  "function balanceOf(address owner) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function convertToShares(uint256 assets) view returns (uint256)",
+  "function convertToAssets(uint256 shares) view returns (uint256)",
+  "function previewDeposit(uint256 assets) view returns (uint256)",
+  "function previewRedeem(uint256 shares) view returns (uint256)",
+  "function stEthPerToken() view returns (uint256)",
+  "function deposit(uint256 assets, address receiver) returns (uint256)",
+  "function requestWithdraw(uint256 shares) returns (uint256)",
+  "function claimWithdraw(uint256 requestId) returns (uint256)",
+  "function claimAllWithdrawals() returns (uint256)",
+  "function accrueRewards() returns (uint256)",
+  "function fundRewards(uint256 assets)",
+  "function slash(uint256 bps) returns (uint256)",
+  "function setRewardRate(uint256 ratePerBlockRay)",
+  "function setWithdrawalDelayBlocks(uint256 delayBlocks)",
+  "function operators(address account) view returns (bool)",
+  "function rewardReserve() view returns (uint256)",
+  "function withdrawalDelayBlocks() view returns (uint256)",
+  "function rewardRatePerBlockRay() view returns (uint256)",
+  "function requestIdsOf(address owner) view returns (uint256[])",
+  "function withdrawalRequests(uint256 id) view returns (address owner, uint256 shares, uint256 assets, uint256 claimableAt, bool claimed)",
+  "function accountSummary(address owner) view returns (uint256 shares, uint256 shareAssets, uint256 pendingAssets, uint256 claimableAssets, uint256 nextClaimableAt, uint256 openRequests)",
+  "function accountSummaryAt(address owner, uint256 horizonBlock) view returns (uint256 shares, uint256 shareAssets, uint256 claimableAssets, uint256 reachableAssets, uint256 unreachableAssets, uint256 openRequests)",
+  "function openRequestsOf(address owner) view returns (uint256[] ids, uint256[] assets, uint256[] claimableAt)",
+  "function vaultSummary() view returns (uint256 pooledWeth, uint256 shareSupply, uint256 redemptionRate, uint256 reserve, uint256 queuedWeth, uint256 queueLength, uint256 delayBlocks, uint256 ratePerBlockRay)",
+  "function surplusWeth() view returns (uint256)",
+]);
+
 // Curve CryptoSwap (tricrypto v0.2.x): exchange / get_dy / coins / balances
 export const curveTricryptoAbi = parseAbi([
   "function get_dy(uint256 i, uint256 j, uint256 dx) view returns (uint256)",

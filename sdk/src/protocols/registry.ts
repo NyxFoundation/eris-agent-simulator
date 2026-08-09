@@ -7,6 +7,7 @@ import { balancerAdapter } from "./balancer.js";
 import { curveAdapter } from "./curve.js";
 import { aaveAdapter } from "./aave.js";
 import { gmxAdapter } from "./gmx.js";
+import { lstAdapter } from "./lst.js";
 import { activeBaseSymbols, tokenInfo } from "../markets.js";
 
 // All adapters (only implemented ones are registered). Added as phases progress.
@@ -16,26 +17,27 @@ const ALL_ADAPTERS: ProtocolAdapter[] = [
   curveAdapter,
   aaveAdapter,
   gmxAdapter,
+  lstAdapter,
 ];
 
 const ALL_BY_ID = new Map<ProtocolId, ProtocolAdapter>(
   ALL_ADAPTERS.map((a) => [a.id, a]),
 );
 
-export const ALL_PROTOCOL_IDS: ProtocolId[] = [
-  "uniswap",
-  "balancer",
-  "curve",
-  "gmx",
-  "aave",
-];
+export const ALL_PROTOCOL_IDS: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id);
 
-// Set by the coordinator at startup. When unset, all implemented adapters are treated as enabled.
-let enabledIds: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id);
+// The venues a run gets when it does not say. lst is left out because it exists only under local
+// deploy (issue #38) -- defaulting it on would break every fork run at the first read.
+const DEFAULT_PROTOCOL_IDS: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id).filter(
+  (id) => id !== "lst",
+);
+
+// Set by the coordinator at startup. When unset, the default set above is treated as enabled.
+let enabledIds: ProtocolId[] = [...DEFAULT_PROTOCOL_IDS];
 
 export function setEnabledProtocols(ids: ProtocolId[]): void {
   const filtered = ids.filter((id) => ALL_BY_ID.has(id));
-  enabledIds = filtered.length > 0 ? filtered : ALL_ADAPTERS.map((a) => a.id);
+  enabledIds = filtered.length > 0 ? filtered : [...DEFAULT_PROTOCOL_IDS];
 }
 
 export function enabledAdapters(): ProtocolAdapter[] {
