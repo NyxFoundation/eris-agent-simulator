@@ -17,6 +17,9 @@
  *                                   frozen control every roster needs (ADR 0018 §5), without
  *                                   duplicating the agent directory
  *   ERIS_LLM_MODEL=<model>          backend for the revision call (improve.md frontmatter wins)
+ *   ERIS_IMPROVE_LOG_CALLS=1        record the raw revision exchange (system / context / response)
+ *                                   to runs/<id>/agents/<agentId>.llm.jsonl. Off by default: it holds
+ *                                   every generated strategy in full
  *
  * Environment variables (passed by the environment; the ADR 0006 contract is unchanged):
  *   ERIS_AGENT_ID / ERIS_AGENT_DIR / ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL /
@@ -44,7 +47,7 @@ import type {
   BalanceSnapshot,
   ProtocolId,
 } from "@eris/sdk/types.js";
-import { createAgentLog } from "./agentLog.js";
+import { createAgentLog, createJsonlAppender } from "./agentLog.js";
 import { callLlm } from "./llm.js";
 import {
   buildRevisionContext,
@@ -220,17 +223,35 @@ async function main(): Promise<void> {
   // strategy underneath a running agent (ADR 0018). In every other mode this is just agentModule.decide.
   let activeDecide = agentModule.decide;
   let deciding = false;
+  // What the strategy actually did recently. The self-improvement loop shows this to the model as
+  // the evidence for a rewrite, so it has to hold the decisions themselves -- recording only that a
+  // block happened rendered every entry as "no action" and left the model with nothing to reason
+  // about. Populated here rather than from the observation stream because that is where the outcome
+  // of a decision (an action, or an error) actually exists.
+  const recentDecisions: Array<{
+    round: number;
+    action?: unknown;
+    reason?: string;
+  }> = [];
+  const rememberDecision = (entry: {
+    round: number;
+    action?: unknown;
+    reason?: string;
+  }): void => {
+    recentDecisions.push(entry);
+    if (recentDecisions.length > 32) recentDecisions.shift();
+  };
   const invokeDecide = async (obs: AgentObservation): Promise<void> => {
     if (!activeDecide || deciding) return;
     deciding = true;
     try {
       const action = await activeDecide(obs, ctx);
       if (action) ctx.submit(action);
+      rememberDecision({ round: obs.round, action: action ?? undefined });
     } catch (error) {
-      agentLog({
-        round: obs.round,
-        reason: `decide error: ${error instanceof Error ? error.message : String(error)}`,
-      });
+      const reason = `decide error: ${error instanceof Error ? error.message : String(error)}`;
+      rememberDecision({ round: obs.round, reason });
+      agentLog({ round: obs.round, reason });
     } finally {
       deciding = false;
     }
@@ -327,6 +348,13 @@ async function main(): Promise<void> {
     const improveAgent = loadImproveAgent(agentDir);
     const model =
       improveAgent.model ?? process.env.ERIS_LLM_MODEL ?? DEFAULT_IMPROVE_MODEL;
+    // The raw exchange, opt-in. The outcome log says a revision was rejected or rolled back; only
+    // this says what was asked and what came back, which is what prompt tuning actually needs.
+    // Off by default because it holds every generated strategy in full.
+    const llmLog =
+      process.env.ERIS_IMPROVE_LOG_CALLS === "1"
+        ? createJsonlAppender(runDir, agentId, ".llm")
+        : undefined;
     const { blocks: reviseEvery, clamped } = effectiveReviseInterval(
       improveAgent.reviseEveryBlocks,
       config.runBlocks,
@@ -349,20 +377,19 @@ async function main(): Promise<void> {
       version: number;
     } | null = null;
     let revisions = 0;
-    let lastBlock = 0;
+    // Block of the last revision opportunity. Seeded from the first observation, not 0: obs.round is
+    // the absolute chain block (read.ts passes `round: bn`), so starting at 0 made the very first
+    // observation satisfy `block - lastBlock >= reviseEvery` and fire a revision before the strategy
+    // had traded a single block -- with no performance to reason about, burning one of the
+    // participant's revisions on nothing.
+    let lastRevisionBlock: number | null = null;
     // Value at the moment of the last revision, to judge whether that revision helped.
     let valueAtRevision: number | null = null;
     let initialValue: number | null = null;
-    const recent: Array<{ round: number; reason?: string; action?: unknown }> =
-      [];
-
     ctx.onObservation((obs) => {
       const value = obs.inventory?.valueUsdc;
-      if (typeof value === "number") {
-        if (initialValue === null) initialValue = value;
-      }
-      recent.push({ round: obs.round });
-      if (recent.length > 32) recent.shift();
+      if (typeof value === "number" && initialValue === null)
+        initialValue = value;
     });
 
     const valueNow = (): number | null => {
@@ -403,7 +430,10 @@ async function main(): Promise<void> {
               },
               block,
             );
+            // Reset the baseline too: leaving it at the rolled-back revision's value would judge
+            // the *next* revision against a measurement of the one just undone.
             previous = null;
+            valueAtRevision = value;
           }
         }
 
@@ -417,15 +447,23 @@ async function main(): Promise<void> {
               ? value - valueAtRevision
               : null,
           currentVersion,
-          recent,
+          recent: recentDecisions,
           observation: latestObservation,
         });
         revisions++;
-        const raw = await callLlm({
-          model,
-          system,
-          messages: [{ role: "user", content: context }],
-        });
+        let raw: string;
+        try {
+          raw = await callLlm({
+            model,
+            system,
+            messages: [{ role: "user", content: context }],
+          });
+          llmLog?.({ kind: "revision_call", block, model, system, context, raw });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          llmLog?.({ kind: "revision_call", block, model, system, context, error: reason });
+          throw error;
+        }
         let parsedJson: unknown;
         try {
           parsedJson = JSON.parse(stripFences(raw));
@@ -483,8 +521,14 @@ async function main(): Promise<void> {
 
     ctx.onObservation((obs) => {
       const block = obs.round;
-      if (block - lastBlock < reviseEvery) return;
-      lastBlock = block;
+      // Seed the baseline from the first block seen rather than 0. obs.round is the absolute chain
+      // block, so a 0 baseline made the first observation instantly "overdue" for a revision.
+      if (lastRevisionBlock === null) {
+        lastRevisionBlock = block;
+        return;
+      }
+      if (block - lastRevisionBlock < reviseEvery) return;
+      lastRevisionBlock = block;
       void maybeRevise(block);
     });
   }

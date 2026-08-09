@@ -16,6 +16,7 @@ import {
   DEFAULT_REVISE_EVERY_BLOCKS,
   effectiveReviseInterval,
   loadImproveAgent,
+  EXECUTOR_TIMEOUT_MS,
   MAX_REVISIONS_PER_RUN,
   parseRevision,
 } from "../example/agents/runtime/improve.js";
@@ -200,4 +201,30 @@ test("buildRevisionContext: reports PnL since the run and since the last revisio
   // Without this the model cannot tell whether its own last change helped.
   assert.match(context, /since the last revision: -80\.00/);
   assert.match(context, /block 118: no action — no gap/);
+});
+
+test("compileExecutor: a strategy that never returns is bounded, not left to wedge the agent", async () => {
+  // The Script timeout covers evaluating the function expression, not calling it. Without a bound
+  // on the call, a generated body that awaits forever holds the caller's `deciding` guard and the
+  // agent stops deciding for the rest of the run while every log still looks healthy.
+  const r = compileExecutor(`await new Promise(() => {}); return null;`);
+  assert.ok(r.ok);
+  const started = Date.now();
+  await assert.rejects(
+    async () => await r.executor({ round: 1 } as never, {} as never),
+    /is not returning/,
+  );
+  // Bounded near the limit rather than hanging; generous upper bound so a slow machine cannot flake.
+  assert.ok(
+    Date.now() - started < EXECUTOR_TIMEOUT_MS * 3,
+    "the call was not bounded",
+  );
+});
+
+test("compileExecutor: a fast strategy is not penalised by the timeout", async () => {
+  const r = compileExecutor(`return { type: "noop" };`);
+  assert.ok(r.ok);
+  assert.deepEqual(await r.executor({ round: 1 } as never, {} as never), {
+    type: "noop",
+  });
 });

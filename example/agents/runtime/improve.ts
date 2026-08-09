@@ -26,6 +26,9 @@ import type { AgentAction, AgentObservation } from "@eris/sdk/types.js";
 
 // How often the LLM is offered a chance to revise, in blocks, when improve.md does not say.
 export const DEFAULT_REVISE_EVERY_BLOCKS = 60;
+// Wall-clock bound on one call into a generated strategy. Blocks are 2 s in production, so a
+// strategy that has not answered in this long has already missed its block.
+export const EXECUTOR_TIMEOUT_MS = 2000;
 // Ceiling the operator puts on the participant's declaration. A co-located run shares one LLM
 // budget, so "revise every block" from one participant would starve the field; a declaration below
 // this is honored as-is, above it is clamped and the clamp is recorded.
@@ -150,10 +153,16 @@ export type Executor = (
 export type CompileResult =
   { ok: true; executor: Executor } | { ok: false; reason: string };
 
-// Compile generated source into a callable, inside a vm context with no module system, no process
-// and no network of its own. The sandbox is not a security boundary against a determined attacker --
-// it is a boundary against an LLM reaching for something that is not the trading interface. The
-// cheatcode check below is the part that addresses intent.
+// Compile generated source into a callable inside a vm context.
+//
+// Be clear about what this does and does not contain. The vm removes *ambient* capability: there is
+// no require, no process, no fs, no fetch in scope. It does not sandbox the agent from the chain,
+// because `ctx` is passed in and carries publicClient / walletClient -- generated code can trade
+// exactly as freely as the hand-written strategy it replaces. That is intentional (it is the same
+// capability, not an escalation), but it means the vm is a guard against a model reaching for
+// something outside the trading interface, not a containment boundary. The cheatcode check below is
+// the part that addresses intent, and it is what stops generated code from calling the privileged
+// RPCs that a participant's own code is also forbidden from calling.
 export function compileExecutor(source: string): CompileResult {
   const findings = findCheatcodeUsage(source);
   if (findings.length > 0)
@@ -197,8 +206,28 @@ export function compileExecutor(source: string): CompileResult {
     // deep-equality against a host object fails -- exactly the kind of difference that shows up far
     // from its cause, in validation or logging, rather than at the boundary. Actions are plain data
     // by contract, so a structural clone loses nothing; anything unclonable was not a valid action.
+    //
+    // The Script timeout above covers only *evaluating* the function expression, not calling it, so
+    // a generated body that loops or awaits forever would wedge the agent permanently: the caller's
+    // `deciding` guard blocks every later decision and the process never exits. Racing the call
+    // bounds that. It does not kill the runaway work -- vm cannot interrupt an async body -- but it
+    // frees the loop, and the throw is recorded as a decide error.
     const normalized: Executor = async (obs, ctx) => {
-      const result = await fn(obs, ctx);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const result = await Promise.race([
+        Promise.resolve(fn(obs, ctx)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `executor exceeded ${EXECUTOR_TIMEOUT_MS}ms; the strategy is not returning`,
+                ),
+              ),
+            EXECUTOR_TIMEOUT_MS,
+          );
+        }),
+      ]).finally(() => clearTimeout(timer));
       if (result === null || result === undefined) return null;
       try {
         return structuredClone(result);
