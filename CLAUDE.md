@@ -89,6 +89,31 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 - stress run（events かつ `ERIS_RUN_BLOCKS>0`）は**時間制限を自動無効化**しブロック数で終了する（`ERIS_RUN_SECONDS` が先に切れて crash 窓へ到達しない事故を回避。override は `stress_run_time_limit_disabled` で記録）
 - coordinator は `stress_schedule` / `stress_victim_hf` / `stress_liquidation` を events.jsonl へ emit する。liquidator agent には victim アドレスを `ERIS_LIQUIDATION_VICTIMS` で配布する。清算の帰属は agent ログの `liquidationCall`(rawTx) を一次情報にする（events.jsonl を直接読んで解析する。旧 stress-report ツールは撤去済み）
 
+### LST venue（wstETH 風 vault + LST/WETH 二次市場。issue #38 Phase 1。既定 off・**ローカルデプロイ専用**）
+
+利回りで償還レートが上がる非 rebasing の LST（`deployer/contracts/MockLSTVault.sol`）と、その二次市場
+（既存 stableswap-ng factory 上の LST/WETH plain pool）。**同じ資産に価格が 2 つある**のが本質:
+`redemptionRateWeth`（vault が負う par。ただし出金キュー `withdrawalDelayBlocks` 待ち）と
+`marketPriceWeth`（プールが今払う額。discount 付き）。observation は両方 + `discountBps` /
+`yieldPerBlockBps` / キュー長 / 自分サイズでの `instantExitWethWei` / pending を別々に出す。
+
+- **Arbitrum に対応物が無い**（vault は自作）ので fork では使えない。`run.protocols` に `lst` を入れて
+  ローカルデプロイでないと起動時 fail-fast。有効化済みの雛形が `config/lst.yaml`
+  （`cd deployer && npm run deploy -- --keep-fresh` → `npm run gen:local-constants` → `sim:realtime -- --config config/lst.yaml`）
+- **利回りは EVM 時間でなく経済クロック**（`lst.simulatedSecondsPerBlock` / `lst.apyBps`。既定 1 block=1h・3%/yr
+  = Aave WETH supply と同オーダー。速すぎると他 venue が無意味になる）。原資は事前投入 reward reserve に上限され、
+  `accrueRewards()` は permissionless（額はブロック数の純関数なので誰が叩いても同じ）。coordinator は毎ブロック
+  oracle tx と**同じ admin nonce の直列**で叩く（並列にすると nonce 衝突でレートが凍る）
+- **プールの rate oracle 配線が要**（`stEthPerToken()` を asset_type=1 で登録）。未配線だとレート上昇が全員に開かれた
+  無リスク裁定になる（ADR 0007 を毀損）。deploy 時 assert + 起動時 `lst_setup` で乖離 200bps 超は fail-fast
+- **採点は realizable**（`sdk/src/protocols/lst.ts` `realizableWethWei`）: shares は「今プールで売った額」と
+  「run 終了までに finalize するキューの par」の**良い方**。run 終了後にしか claim できない pending は価値から外し
+  `reason:"unrealizable"` で `scoring_unpriced_holdings` に報告する（黙って 0 にしない）。#41 の staged-read
+  インターフェース（`valueAtBlock` / `liquidatableValueUsdc` / `ValuationContext.horizonBlock`）の最初の消費者
+- Phase 2（seed 由来の APY 変動・キュー混雑・サイズ依存 depeg・`slash` の stress overlay 化）は未実装。
+  そのため Phase 1 では市場が自然に discount を作らない = 参照 agent `lst-carry` は stake しかしない。
+  carry/queue/claim 経路を実走で見るには `config/lst.yaml` のコメント手順でプールを off-peg にする
+
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 
 ## アーキテクチャ（環境とエージェント実行の分離。ADR 0006 / ADR 0015）

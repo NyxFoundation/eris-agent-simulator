@@ -103,3 +103,18 @@ agents:
     description: base-agnostic cross-venue arbitrage (all active bases x all venues; LLM-driven via prompt.md)
     env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
     # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
+  # The LST venue (issue #38) is left out of this file's roster on purpose: the vault has no
+  # Arbitrum counterpart, so it exists only under local deploy, and enabling it here would break
+  # the fork Quick Start above. To trade it, use the ready-made config instead:
+  #
+  #   cd deployer && npm run deploy -- --keep-fresh && cd ..
+  #   npm run gen:local-constants
+  #   npm run sim:realtime -- --config config/lst.yaml
+  #
+  # That config adds `lst` to run.protocols, funds WETH (the venue is WETH-denominated) and runs
+  # example/agents/lst-carry/. To add it here instead, set run.localDeploy: true, add `lst` to
+  # run.protocols, set funding.wethWei above zero, and uncomment:
+  # - id: lst-carry
+  #   wallet: AGENT4_PRIVATE_KEY
+  #   description: liquid staking — stake for yield, or trade the redemption/market gap
+  #   env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
