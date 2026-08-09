@@ -477,16 +477,20 @@ contract MockLSTVault {
         emit RewardsFunded(msg.sender, assets, rewardReserve);
     }
 
-    /// @notice Cut the pool by `bps` (a staking penalty; the stress overlay's LST event in phase 2).
-    ///         The WETH returns to the reward reserve rather than leaving, so the vault stays
-    ///         solvent against its outstanding shares and queued claims.
+    /// @notice Cut the pool by `bps` (a staking penalty; the stress overlay's LST event).
+    ///
+    /// The WETH leaves the vault. An earlier version moved it into the reward reserve, which kept
+    /// the books tidy but made a slash a transfer rather than a loss: accrual paid the same WETH
+    /// back out as future yield, so the redemption rate recovered and the reserve was silently
+    /// topped up past what the environment funded. Burning it keeps "a slash is permanent" true
+    /// and keeps the reserve bound honest.
     function slash(uint256 bps) external onlyOperator returns (uint256 slashed) {
-        require(bps <= 10_000, "LST: bps out of range");
+        require(bps < 10_000, "LST: bps out of range");
         accrueRewards();
         slashed = (totalPooledWeth * bps) / 10_000;
         if (slashed == 0) return 0;
         totalPooledWeth -= slashed;
-        rewardReserve += slashed;
+        require(IVaultAsset(asset).transfer(BURN_ADDRESS, slashed), "LST: transfer failed");
         emit Slashed(slashed, totalPooledWeth);
     }
 

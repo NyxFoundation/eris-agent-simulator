@@ -39,6 +39,10 @@ export class Reader {
   // begins, so it does not exist yet. Everyone starts observing at the same point, so deriving it
   // here costs at most a block or two of accuracy and gives no one an advantage.
   private firstBlock: number | null = null;
+  // When this process started, and when it first managed to observe a block. The gap between them
+  // is startup lag the run has already spent.
+  private readonly startedAtMs = Date.now();
+  private firstSeenAtMs: number | null = null;
 
   constructor(opts: {
     ctx: SimContext;
@@ -111,16 +115,40 @@ export class Reader {
       this.enabledIds,
     );
     this.firstBlock ??= bn;
+    this.firstSeenAtMs ??= Date.now();
     // The environment passes its resolved block budget, which is what a CLI --blocks override
     // changed; the YAML the child reloads still says whatever the file says.
     const runBlocks = Number(
       process.env.ERIS_RUN_BLOCKS ?? this.ctx.config.runBlocks,
     );
+    const budgets: number[] = [];
     if (runBlocks > 0) {
-      observation.blocksRemaining = Math.max(
+      // Counting from the first block *this* agent saw overstates the remaining run by however
+      // long the process took to boot -- and an agent told the run is longer than it is starts
+      // exits it cannot finish. Charge the startup lag against the budget.
+      const startupLagBlocks = Math.max(
         0,
-        runBlocks - (bn - this.firstBlock),
+        Math.round(
+          (this.firstSeenAtMs - this.startedAtMs) /
+            1000 /
+            Math.max(1, this.ctx.config.blockTimeSec),
+        ),
       );
+      budgets.push(runBlocks - startupLagBlocks - (bn - this.firstBlock));
+    }
+    // A run without a block limit still ends on the wall clock, and nothing above accounts for it.
+    const runSeconds = this.ctx.config.runSeconds;
+    if (runSeconds > 0) {
+      const elapsedSec = (Date.now() - this.startedAtMs) / 1000;
+      budgets.push(
+        Math.floor(
+          (runSeconds - elapsedSec) / Math.max(1, this.ctx.config.blockTimeSec),
+        ),
+      );
+    }
+    if (budgets.length > 0) {
+      // Whichever terminator comes first is the one that ends the run.
+      observation.blocksRemaining = Math.max(0, Math.min(...budgets));
     }
     return { observation, balances, stateById, fairPrice };
   }

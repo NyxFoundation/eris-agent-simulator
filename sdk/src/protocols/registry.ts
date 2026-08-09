@@ -9,6 +9,7 @@ import { aaveAdapter } from "./aave.js";
 import { gmxAdapter } from "./gmx.js";
 import { lstAdapter } from "./lst.js";
 import { activeBaseSymbols, tokenInfo } from "../markets.js";
+import { setEnabledProtocolIds } from "./enabled.js";
 
 // All adapters (only implemented ones are registered). Added as phases progress.
 const ALL_ADAPTERS: ProtocolAdapter[] = [
@@ -34,10 +35,14 @@ const DEFAULT_PROTOCOL_IDS: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id).filter(
 
 // Set by the coordinator at startup. When unset, the default set above is treated as enabled.
 let enabledIds: ProtocolId[] = [...DEFAULT_PROTOCOL_IDS];
+setEnabledProtocolIds(enabledIds);
 
 export function setEnabledProtocols(ids: ProtocolId[]): void {
   const filtered = ids.filter((id) => ALL_BY_ID.has(id));
   enabledIds = filtered.length > 0 ? filtered : [...DEFAULT_PROTOCOL_IDS];
+  // Published so an adapter can ask what the run enabled without importing this module back
+  // (which would be a cycle, since this one imports every adapter).
+  setEnabledProtocolIds(enabledIds);
 }
 
 export function enabledAdapters(): ProtocolAdapter[] {

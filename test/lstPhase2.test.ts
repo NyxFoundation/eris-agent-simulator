@@ -68,15 +68,20 @@ test("a slash parses without the trapezoid fields spike/crash require", () => {
 });
 
 test("a slash magnitude at or above the whole pool is rejected", () => {
-  assert.throws(
-    () =>
-      parseStressEvents(
-        JSON.stringify([
-          { type: "lstSlash", magnitudeRange: [0.5, 1.5], windowFrac: [0, 1] },
-        ]),
-      ),
-    /magnitudeRange max must be <= 1/,
-  );
+  for (const hi of [1.5, 1]) {
+    assert.throws(
+      () =>
+        parseStressEvents(
+          JSON.stringify([
+            { type: "lstSlash", magnitudeRange: [0.5, hi], windowFrac: [0, 1] },
+          ]),
+        ),
+      /magnitudeRange max must be < 1/,
+      `magnitudeRange max ${hi} should be rejected`,
+    );
+  }
+  // Exactly 1 wipes the pool: totalPooledWeth hits zero, convertToAssets falls back to 1:1, the
+  // rate oracle snaps to par, and every staker is erased with the discount reading 0.
 });
 
 test("a slash lands on exactly one block and never touches the price overlay", () => {
@@ -129,4 +134,41 @@ test("congestion can close the queue that the floor says is open", () => {
   // 4-block margin), it is not.
   assert.ok(queueFitsInRun(40, 20));
   assert.ok(!queueFitsInRun(40, 36));
+});
+
+// ---------------------------------------------------------------------------
+// Surviving the coordinator's dropped blocks
+// ---------------------------------------------------------------------------
+
+test("a slash still fires when its block is skipped", () => {
+  // onBlock returns early while it is still processing the previous block, so the index a slash
+  // was scheduled on is not guaranteed to be handed to us. Matching it exactly meant the whole
+  // stress axis silently did nothing while stress_schedule claimed otherwise.
+  const schedule = new EventSchedule(parseStressEvents(slashCfg), 1, 100);
+  const [ev] = schedule.events;
+  // The coordinator caught up across a gap that spans the scheduled index.
+  const caught = schedule.pointEventsAt(ev.startBlock - 2, ev.startBlock + 2);
+  assert.equal(caught.length, 1);
+  // ... and it is not double-fired by a range that has already passed it.
+  assert.equal(schedule.pointEventsAt(ev.startBlock + 1, ev.startBlock + 5).length, 0);
+});
+
+test("a dropped block costs the APY one step of staleness, not its whole path", () => {
+  // A missed index used to skip the Rng draw as well, so every later step drew a different value
+  // than the same seed produced elsewhere — exactly what the salted Rng exists to prevent.
+  const undisturbed = new ApySchedule(1, [100, 900], 10, 300);
+  const path: Array<number | null> = [];
+  for (let i = 0; i < 60; i++) path.push(undisturbed.nextAt(i));
+
+  const dropped = new ApySchedule(1, [100, 900], 10, 300);
+  const droppedPath: Array<number | null> = [];
+  for (let i = 0; i < 60; i++) {
+    if (i === 20 || i === 21) continue; // the coordinator was busy
+    droppedPath.push(dropped.nextAt(i));
+  }
+  // Same seed, same values in the same order — the only difference is when they were observed.
+  assert.deepEqual(
+    droppedPath.filter((v) => v !== null),
+    path.filter((v) => v !== null),
+  );
 });

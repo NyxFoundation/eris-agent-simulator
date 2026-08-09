@@ -52,6 +52,7 @@ export class ApySchedule {
   private readonly range: [number, number];
   readonly stepBlocks: number;
   private currentBps: number;
+  private stepsTaken = 0;
 
   constructor(
     seed: number,
@@ -65,11 +66,23 @@ export class ApySchedule {
     this.currentBps = initialBps;
   }
 
-  /// The APY for this block, or null when it has not changed and no write is needed.
+  /// The APY as of `blockIndex`, or null when nothing changed and no write is needed.
+  ///
+  /// Driven by "how many steps should have happened by now" rather than by an exact modulo, because
+  /// the coordinator drops block notifications while it is busy. A missed index used to skip both
+  /// the resample *and* its Rng draw, so every later step drew a different value than the same
+  /// seed produced elsewhere -- destroying the reproducibility the salted Rng exists to give.
   nextAt(blockIndex: number): number | null {
-    if (blockIndex % this.stepBlocks !== 0) return null;
+    const dueSteps = Math.floor(blockIndex / this.stepBlocks) + 1;
+    if (dueSteps <= this.stepsTaken) return null;
     const [lo, hi] = this.range;
-    const sampled = Math.round(lo + (hi - lo) * this.rng.next());
+    let sampled = this.currentBps;
+    // Consume every draw the seed owes, so a dropped block costs a block of staleness and nothing
+    // more. The path stays a pure function of (seed, blockIndex).
+    while (this.stepsTaken < dueSteps) {
+      sampled = Math.round(lo + (hi - lo) * this.rng.next());
+      this.stepsTaken += 1;
+    }
     if (sampled === this.currentBps) return null;
     this.currentBps = sampled;
     return sampled;
@@ -174,7 +187,15 @@ export async function setupLst(
   }
 
   // Fail fast on a market that does not track redemption. |discount| is used rather than the
-  // signed value: a large premium is the same breakage seen from the other side.
+  // signed value: a large premium is the same breakage seen from the other side. A pool that did
+  // not quote at all is a different failure and gets its own message rather than being reported
+  // as a 10000bps oracle fault.
+  if (!state.marketQuoted) {
+    throw new Error(
+      "the LST/WETH pool did not quote at startup: it reverted or has no liquidity at probe size. " +
+        "Check that the deploy seeded it (deployer/src/protocols/lst.ts), or drop lst from run.protocols.",
+    );
+  }
   const absDiscount = Math.abs(state.discountBps);
   if (absDiscount > LST_STARTUP_FAIL_BPS) {
     throw new Error(
@@ -258,6 +279,7 @@ export async function slashLst(
   runtime: LstRuntime,
   magnitude: number,
   logger: RunLogger,
+  priorityFeeWei: bigint,
 ): Promise<void> {
   const bps = BigInt(Math.round(magnitude * 10_000));
   if (bps <= 0n) return;

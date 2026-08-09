@@ -75,10 +75,6 @@ const RATE_ORACLE_SELECTOR = toFunctionSelector(
   "function stEthPerToken() view returns (uint256)",
 );
 
-/// The WETH price the other venues are seeded at ($3000). Only used for the LST's opening Aave
-/// oracle value; the environment rewrites it from the run's fair price every block.
-const INITIAL_WETH_PRICE_USD = 3000;
-
 const CURVE_VENDOR = resolve(ROOT, "vendor", "curve");
 
 function curveArtifact(name: string): { abi: Abi; bytecode: Hex } {
@@ -316,12 +312,16 @@ async function listAsAaveCollateral(vault: Address) {
     info("LST: skipping the Aave listing (aave is not in this deploy)");
     return;
   }
-  // The LST opens at the vault's redemption rate against WETH, which the pool was just seeded at.
-  // The environment overwrites this every block; it only has to be sane at block 0.
-  const initialPriceUsd8 = BigInt(Math.round(INITIAL_WETH_PRICE_USD * 1e8));
+  // Priced at Aave's own WETH price times the vault's rate; registerLstReserve reads the former.
+  // The environment overwrites this every block, but it has to be right at block 0 too.
+  const redemptionRateWad = (await publicClient.readContract({
+    address: vault,
+    abi: loadForgeArtifact("MockLSTVault", "MockLSTVault").abi,
+    functionName: "stEthPerToken",
+  })) as bigint;
   const { aggregator, aToken, variableDebtToken } = await registerLstReserve(
     vault,
-    initialPriceUsd8,
+    redemptionRateWad,
   );
   setProtocol("lst", {
     aaveAggregator: aggregator,

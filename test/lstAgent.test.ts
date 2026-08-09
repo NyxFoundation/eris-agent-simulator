@@ -241,9 +241,9 @@ test("congestion, not the advertised floor, closes the queue", () => {
 });
 
 test("a position too large for the queue is redeemed in the slice that fits", () => {
-  // 30 blocks left, a 20-block floor and a 4-block margin leave 6 blocks of draining at 1 WETH per
-  // block. Queueing all 10 WETH would strand 4 of them past the horizon (scored as unrealizable);
-  // refusing to queue would forfeit the 6 that would have made it.
+  // 30 blocks left against the wait the vault is actually quoting (21) plus a 4-block margin
+  // leaves 5 blocks of draining at 1 WETH per block. Queueing all 10 WETH would strand the rest
+  // past the horizon (scored as unrealizable); refusing to queue would forfeit what would fit.
   const decision = decideCarry({
     ...base,
     blocksRemaining: 30,
@@ -260,7 +260,7 @@ test("a position too large for the queue is redeemed in the slice that fits", ()
   });
   assert.equal(decision.kind, "queue");
   if (decision.kind !== "queue") return;
-  assert.equal(decision.lstIn, 6n * WAD);
+  assert.equal(decision.lstIn, 5n * WAD);
 });
 
 test("an unlimited queue still redeems the whole position", () => {
@@ -339,4 +339,78 @@ test("a borrow is sized to land on the target health factor, not past it", async
   // $1500 at $3000/WETH = 0.5 WETH.
   assert.equal(decision.wethOut, WAD / 2n);
   process.env.ERIS_LST_LEVERAGE_TARGET_HF = "0";
+});
+
+test("a market that did not quote is not traded on", () => {
+  // discountBps is 0 when there is no quote, but the agent must not fall through to "sell into the
+  // premium" either — there is nothing to sell into.
+  const decision = decideCarry({
+    ...base,
+    lst: lst({
+      marketQuoted: false,
+      discountBps: 0,
+      lstBalanceWei: WAD.toString(),
+    }),
+  });
+  assert.notEqual(decision.kind, "carry");
+  assert.notEqual(decision.kind, "harvest");
+  assert.notEqual(decision.kind, "queue");
+});
+
+test("leverage yields to a claimable redemption and to a premium", async () => {
+  // decideLeverage runs first, so an unconditional "post any LST as collateral" made decideCarry's
+  // claim (free money already finalized) and harvest branches unreachable for a levered agent —
+  // which holds LST continuously by construction.
+  process.env.ERIS_LST_LEVERAGE_TARGET_HF = "2.0";
+  const mod = await import(
+    `../example/agents/lst-carry/agent.js?yield=${Date.now()}`
+  );
+  const aave = {
+    healthFactor: (2n ** 256n - 1n).toString(),
+    totalDebtBase: "0",
+    availableBorrowsBase: "0",
+  };
+  const claimable = mod.decideLeverage({
+    lst: lst({
+      aaveCollateral: true,
+      lstBalanceWei: WAD.toString(),
+      claimableWithdrawalWethWei: WAD.toString(),
+    }),
+    aave,
+    wethBalanceWei: 0n,
+    fairPriceUsd: 3000,
+  });
+  assert.equal(claimable, null, "a finalized redemption comes first");
+
+  const premium = mod.decideLeverage({
+    lst: lst({ aaveCollateral: true, lstBalanceWei: WAD.toString() }),
+    aave,
+    wethBalanceWei: 0n,
+    fairPriceUsd: 3000,
+    premiumWorthHarvesting: true,
+  });
+  assert.equal(premium, null, "a premium is worth more than posting collateral");
+  process.env.ERIS_LST_LEVERAGE_TARGET_HF = "0";
+});
+
+test("the redeemable slice is sized off the congested wait, not the floor", async () => {
+  // The fit check already used the quoted wait; sizing used the advertised floor. With the queue
+  // booked out the two disagreed and the agent queued more than could finalize — the stranded-WETH
+  // loss queueableShares exists to prevent.
+  const mod = await import(
+    `../example/agents/lst-carry/agent.js?size=${Date.now()}`
+  );
+  const congested = lst({
+    lstBalanceWei: (10n * WAD).toString(),
+    lstRedemptionValueWethWei: (10n * WAD).toString(),
+    withdrawalDelayBlocks: 20,
+    queueDelayPerWethBlocks: 31, // 20 floor + 11 already booked ahead
+    queueThroughputWeiPerBlock: WAD.toString(),
+  });
+  // 40 left - 31 quoted - 4 margin = 5 blocks of draining = 5 WETH, not the 16 the floor implies.
+  const shares = mod.queueableShares(
+    { lst: congested, blocksRemaining: 40 },
+    10n * WAD,
+  );
+  assert.equal(shares, 5n * WAD);
 });

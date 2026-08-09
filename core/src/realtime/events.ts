@@ -142,11 +142,20 @@ export class EventSchedule {
 
   // The overlay at this blockIndex. Overlapping events compose their multipliers multiplicatively
   // (if non-overlapping, each event appears as-is).
-  // Events that land exactly on this blockIndex and are applied once rather than as an overlay
-  // (currently the LST slash). The coordinator executes them; the price path never sees them.
-  pointEventsAt(blockIndex: number): ResolvedStressEvent[] {
+  // Events applied once rather than as an overlay (currently the LST slash), for every index in
+  // the caught-up range fromIndex..toIndex.
+  //
+  // A range rather than a single index because the coordinator skips block notifications while it
+  // is still processing the previous one (`if (processing) return`), and every other consumer here
+  // already compensates the same way (keeperTask, vulnTask, logBlock all take fromBlock..toBlock).
+  // Matching one index exactly meant a dropped block silently swallowed the whole stress axis: the
+  // run logged its schedule and then never slashed.
+  pointEventsAt(fromIndex: number, toIndex = fromIndex): ResolvedStressEvent[] {
     return this.events.filter(
-      (ev) => ev.type === "lstSlash" && ev.startBlock === blockIndex,
+      (ev) =>
+        ev.type === "lstSlash" &&
+        ev.startBlock >= fromIndex &&
+        ev.startBlock <= toIndex,
     );
   }
 
@@ -207,8 +216,11 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     {
       min: 0,
       exclusiveMin: true,
-      // A slash is a fraction of the pool; anything at or above 1 would wipe it out.
-      ...(o.type === "lstSlash" ? { max: 1 } : {}),
+      // A slash is a fraction of the pool, and wiping it out entirely is not a stress event: at
+      // 100% totalPooledWeth hits zero, convertToAssets falls back to its 1:1 branch, the pool's
+      // rate oracle snaps back to par, and every staker is silently erased while the discount
+      // reads 0. Exclusive, matching the sentence above it.
+      ...(o.type === "lstSlash" ? { max: 1, exclusiveMax: true } : {}),
     },
   );
   const windowFrac = parseRange(o.windowFrac, `${label}.windowFrac`, {
@@ -248,7 +260,12 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
 function parseRange(
   value: unknown,
   label: string,
-  bounds: { min?: number; max?: number; exclusiveMin?: boolean },
+  bounds: {
+    min?: number;
+    max?: number;
+    exclusiveMin?: boolean;
+    exclusiveMax?: boolean;
+  },
 ): [number, number] {
   if (
     !Array.isArray(value) ||
@@ -263,8 +280,12 @@ function parseRange(
     if (bounds.exclusiveMin ? lo <= bounds.min : lo < bounds.min)
       throw new Error(`${label} min must be >= ${bounds.min}`);
   }
-  if (bounds.max !== undefined && hi > bounds.max)
-    throw new Error(`${label} max must be <= ${bounds.max}`);
+  if (bounds.max !== undefined) {
+    if (bounds.exclusiveMax ? hi >= bounds.max : hi > bounds.max)
+      throw new Error(
+        `${label} max must be ${bounds.exclusiveMax ? "<" : "<="} ${bounds.max}`,
+      );
+  }
   return [lo, hi];
 }
 

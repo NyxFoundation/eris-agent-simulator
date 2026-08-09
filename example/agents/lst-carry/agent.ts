@@ -125,11 +125,15 @@ export function queueableShares(
   ) {
     return shares;
   }
-  // Blocks left for draining once the floor and the safety margin are paid for.
+  // Blocks left for draining once the wait *and* the safety margin are paid for. The wait has to
+  // be the marginal one the vault is quoting right now (floor plus whatever is booked ahead), not
+  // the advertised floor: with the queue already booked out, sizing off the floor queues more than
+  // can finalize -- precisely the stranded-WETH loss this function exists to prevent. decideCarry
+  // already uses the quoted wait for the fit check; the two must not disagree.
+  const marginalWait =
+    input.lst.queueDelayPerWethBlocks ?? input.lst.withdrawalDelayBlocks;
   const drainBlocks =
-    input.blocksRemaining -
-    input.lst.withdrawalDelayBlocks -
-    QUEUE_MARGIN_BLOCKS;
+    input.blocksRemaining - marginalWait - QUEUE_MARGIN_BLOCKS;
   if (drainBlocks <= 0) return 0n;
   const affordableAssets = BigInt(drainBlocks) * throughput;
   if (affordableAssets >= redemptionValue) return shares;
@@ -160,6 +164,8 @@ export type CarryDecision =
 /// any yield, because liquidation hands over the bonus on top of the debt.
 export function decideLeverage(input: {
   lst: LstObservation;
+  // Whether the spot path has a premium worth selling into; leverage yields to it.
+  premiumWorthHarvesting?: boolean;
   aave:
     | {
         healthFactor: string;
@@ -172,6 +178,12 @@ export function decideLeverage(input: {
 }): CarryDecision | null {
   if (LEVERAGE_TARGET_HF <= 0) return null; // opt-in
   if (!input.lst.aaveCollateral || !input.aave) return null;
+  // Finalized WETH in the queue and a market paying above par are both free, and neither has
+  // anything to do with the loop. Posting collateral unconditionally in front of them made them
+  // unreachable for a levered agent, which holds LST continuously by construction: claimable WETH
+  // sat in the queue untouched for the rest of the run.
+  if (BigInt(input.lst.claimableWithdrawalWethWei) > 0n) return null;
+  if (input.premiumWorthHarvesting) return null;
   const lstBalance = BigInt(input.lst.lstBalanceWei);
   const hfRaw = BigInt(input.aave.healthFactor);
   // Aave reports a sentinel near uint256 max when there is no debt at all.
@@ -238,7 +250,12 @@ export function decideCarry(input: {
   const queueDelay = lst.estimatedQueueDelayBlocks ?? lst.withdrawalDelayBlocks;
   const marginalDelay = lst.queueDelayPerWethBlocks ?? queueDelay;
   const canQueue = queueFitsInRun(input.blocksRemaining, marginalDelay);
-  const edgeBps = lst.discountBps - POOL_COST_BPS - SAFETY_BPS;
+  // No quote means no tradable market, whatever discountBps says. Every branch below that touches
+  // the pool is gated on this.
+  const quoted = lst.marketQuoted !== false;
+  const edgeBps = quoted
+    ? lst.discountBps - POOL_COST_BPS - SAFETY_BPS
+    : Number.NEGATIVE_INFINITY;
 
   // 2. Close out what you already hold before buying more. The carry is buy-then-redeem, and it is
   //    the redemption that turns the discount into WETH you can trade again -- so queueing comes
@@ -270,6 +287,7 @@ export function decideCarry(input: {
   // 4. The mirror image: the market is paying above redemption, so sell into it instead of
   //    queueing. (discountBps < 0 is a premium.)
   if (
+    quoted &&
     lstBalance >= MIN_ACTION_WEI &&
     -lst.discountBps > POOL_COST_BPS + SAFETY_BPS
   ) {
@@ -374,6 +392,10 @@ export function decide(
       aave: obs.protocols.aave,
       wethBalanceWei,
       fairPriceUsd: obs.fairPriceUsdcPerWeth,
+      premiumWorthHarvesting:
+        lst.marketQuoted !== false &&
+        BigInt(lst.lstBalanceWei) >= MIN_ACTION_WEI &&
+        -lst.discountBps > POOL_COST_BPS + SAFETY_BPS,
     }) ??
     decideCarry({
       lst,

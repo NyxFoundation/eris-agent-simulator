@@ -64,7 +64,11 @@ export type LstState = {
   // sqrt(sell x buy): the mid the two sides imply once the symmetric fee cancels.
   midPriceWeth: number;
   // How far the market sits below redemption, in bps. Positive = the market is discounted.
+  // Zero when the pool refused to quote -- see marketQuoted.
   discountBps: number;
+  // Whether the pool actually quoted. False means there is no market leg right now (it reverted,
+  // or there is no liquidity at probe size), not that the market is worthless.
+  marketQuoted: boolean;
   apyBps: number;
   yieldPerBlockBps: number;
   withdrawalDelayBlocks: number;
@@ -219,6 +223,11 @@ export async function getLstState(ctx: SimContext): Promise<LstState> {
       : sellPriceWeth;
 
   const redemptionRateWeth = toFloat(redemptionRateRaw);
+  // A pool that refused to quote has no price, which is not the same as a price of zero. Treating
+  // it as zero made discountBps read 10000 -- an infinite free carry -- so an agent would empty its
+  // wallet into a market that just told us it could not fill, and setupLst would blame the rate
+  // oracle for it.
+  const marketQuoted = midPriceWeth > 0;
   return {
     deployment,
     redemptionRateWeth,
@@ -226,7 +235,10 @@ export async function getLstState(ctx: SimContext): Promise<LstState> {
     sellPriceWeth,
     buyPriceWeth,
     midPriceWeth,
-    discountBps: discountBpsFrom(redemptionRateWeth, midPriceWeth),
+    marketQuoted,
+    discountBps: marketQuoted
+      ? discountBpsFrom(redemptionRateWeth, midPriceWeth)
+      : 0,
     apyBps: apyBpsFrom(ratePerBlockRay, ctx.config.lstSimulatedSecondsPerBlock),
     yieldPerBlockBps: yieldPerBlockBpsFrom(ratePerBlockRay),
     withdrawalDelayBlocks: Number(delayBlocks),
@@ -461,6 +473,7 @@ async function observe(
       ? { marketBuyPriceWeth: state.buyPriceWeth }
       : {}),
     discountBps: state.discountBps,
+    marketQuoted: state.marketQuoted,
     apyBps: state.apyBps,
     yieldPerBlockBps: state.yieldPerBlockBps,
     withdrawalDelayBlocks: state.withdrawalDelayBlocks,
@@ -638,8 +651,11 @@ export async function* lstValuationRun(
     })),
   ];
 
+  // A failed read here must not become "no wait at all": zero would make every queue look
+  // reachable and mark every position at par, which is the silent-zero pattern this repo spent
+  // #44 removing. Undefined propagates and the positions are reported instead.
   const floorDelayBlocks =
-    typeof summaries[0] === "bigint" ? Number(summaries[0]) : 0;
+    typeof summaries[0] === "bigint" ? Number(summaries[0]) : undefined;
   const rateLimited =
     typeof summaries[1] === "bigint" && (summaries[1] as bigint) > 0n;
   const perAgent = ctx.agents.map((_agent, i) => {
@@ -684,14 +700,17 @@ export async function* lstValuationRun(
     ];
   }
   const quoteByIndex = new Map<number, bigint | undefined>();
-  const delayByIndex = new Map<number, number>();
+  const delayByIndex = new Map<number, number | undefined>();
   quoteTargets.forEach(({ i }, k) => {
     const q = quotes[k];
     quoteByIndex.set(i, typeof q === "bigint" ? q : undefined);
     const d = rateLimited ? quotes[quoteTargets.length + k] : undefined;
-    // A wait we could not read falls back to the floor, which understates it — but the alternative
-    // is refusing to mark a position we can otherwise price.
-    delayByIndex.set(i, typeof d === "bigint" ? Number(d) : floorDelayBlocks);
+    // The size-aware wait when the queue is rate-limited, otherwise the floor. Either can be
+    // undefined if its read failed, and undefined stays undefined: see the marking below.
+    delayByIndex.set(
+      i,
+      typeof d === "bigint" ? Number(d) : rateLimited ? undefined : floorDelayBlocks,
+    );
   });
 
   const fairWeth = ctx.fairByBase().WETH ?? 0;
@@ -728,6 +747,17 @@ export async function* lstValuationRun(
         read: "CurveStableSwapNG.get_dy",
       });
     }
+    const queueDelayBlocks = delayByIndex.get(i);
+    if (row.shares > 0n && queueDelayBlocks === undefined) {
+      // Without the wait there is no way to tell a reachable queue from an unreachable one, and
+      // guessing "reachable" marks the position at par. Report and mark at the market instead.
+      unpriced.push({
+        source: "lst-queue-delay",
+        amountRaw: "",
+        reason: "read-failed",
+        read: "MockLSTVault.withdrawalDelayBlocks",
+      });
+    }
     const { wei } = realizableWethWei({
       shares: row.shares,
       shareAssets: row.shareAssets,
@@ -737,11 +767,13 @@ export async function* lstValuationRun(
       unreachableAssets: row.unreachableAssets,
       blockNumber: ctx.blockNumber,
       horizonBlock: ctx.horizonBlock,
-      queueDelayBlocks: delayByIndex.get(i) ?? floorDelayBlocks,
+      // Unknown wait = treat the queue as closed. Understating the exit is recoverable; overstating
+      // it credits value the agent could never have taken.
+      queueDelayBlocks: queueDelayBlocks ?? Number.POSITIVE_INFINITY,
     });
     if (row.unreachableAssets > 0n) {
       // Queued at par, but the queue finalizes after the run ends: real value, not realizable
-      // inside the run. Excluded from the mark and reported, never silently zeroed.
+      // inside the run. Excluded from the realizable mark and reported, never silently zeroed.
       unpriced.push({
         token: deployment.asset,
         amountRaw: row.unreachableAssets.toString(),
@@ -750,12 +782,20 @@ export async function* lstValuationRun(
         read: "MockLSTVault.accountSummaryAt",
       });
     }
-    const valueUsdc = toFloat(wei) * fairWeth;
+    // Two marks, because they genuinely differ here and the difference is the venue's point:
+    //   valueUsdc              face value -- what the vault owes, the number Aave's oracle uses
+    //   liquidatableValueUsdc  what an exit would actually return before the run ends
+    // Reporting only the realizable one (as an earlier revision did) left #41's liquidatable
+    // plumbing carrying an identical copy, i.e. dead, and made this venue the only one whose
+    // headline mark was not face value.
+    const parWei =
+      row.shareAssets +
+      row.claimableAssets +
+      row.reachableAssets +
+      row.unreachableAssets;
     out[agent.id] = {
-      valueUsdc,
-      // The venue is marked at realizable value throughout, so the two agree here. They are kept
-      // separate because #39/#40 will have positions whose face value diverges from their exit.
-      liquidatableValueUsdc: valueUsdc,
+      valueUsdc: toFloat(parWei) * fairWeth,
+      liquidatableValueUsdc: toFloat(wei) * fairWeth,
       unpriced,
     };
   });

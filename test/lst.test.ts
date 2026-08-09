@@ -222,7 +222,8 @@ test("valuation reads the queue delay and every account in one stage", async () 
   // for the holder.
   assert.equal(asked[0].length, 3);
   assert.equal(asked[1].length, 1);
-  // Par, since the queue fits (block 100 + 20 <= horizon 200), valued at the WETH fair.
+  // Par, since the queue fits (block 100 + 20 <= horizon 200), valued at the WETH fair. Both
+  // marks agree here, which is the normal case -- they only diverge when an exit cannot complete.
   assert.equal(values[AGENT.id].valueUsdc, FAIR);
   assert.equal(values[AGENT.id].liquidatableValueUsdc, FAIR);
   assert.deepEqual(values[AGENT.id].unpriced, []);
@@ -240,12 +241,15 @@ test("an agent holding nothing costs no second-stage read", async () => {
   assert.equal(values[AGENT.id].valueUsdc, 0);
 });
 
-test("a redemption that outlives the run is reported, not counted", async () => {
+test("a redemption that outlives the run is reported, and excluded from the realizable mark", async () => {
   const { values } = await drive(valuationCtx(), [
     () => [20n, 0n, summary(0n, 0n, 0n, 0n, 2n * WAD)],
   ]);
   const value = values[AGENT.id];
-  assert.equal(value.valueUsdc, 0);
+  // Face value still counts the queued WETH -- it exists, the vault owes it. What it cannot do is
+  // arrive before the run ends, which is what the realizable mark says.
+  assert.equal(value.valueUsdc, 2 * FAIR);
+  assert.equal(value.liquidatableValueUsdc, 0);
   assert.deepEqual(value.unpriced, [
     {
       token: DEPLOYMENT.asset,
@@ -451,8 +455,9 @@ test("scoring uses the congested wait, not the vault's advertised floor", async 
     // stage 1 is [get_dy, estimateDelayBlocks] for the one holder
     () => [(WAD * 9000n) / 10_000n, 90n],
   ]);
-  // Falls back to the pool's price rather than par.
-  assert.equal(values[AGENT.id].valueUsdc, FAIR * 0.9);
+  // Face value is par; the realizable mark falls back to the pool's price.
+  assert.equal(values[AGENT.id].valueUsdc, FAIR);
+  assert.equal(values[AGENT.id].liquidatableValueUsdc, FAIR * 0.9);
 });
 
 test("an unlimited queue costs no extra read", async () => {
@@ -462,4 +467,79 @@ test("an unlimited queue costs no extra read", async () => {
   ]);
   // Stage 1 is the pool quote only: no delay read when the queue is not rate-limited.
   assert.equal(asked[1].length, 1);
+});
+
+test("an unreadable queue delay marks at the market, not at par", async () => {
+  // The silent-zero pattern this repo removed in #44, in a new place: a failed
+  // withdrawalDelayBlocks read used to become a zero-block wait, which makes every queue look
+  // reachable and marks every position at par. Unknown means "assume closed" and say so.
+  const { values } = await drive(valuationCtx(), [
+    () => [undefined /* delay read failed */, 0n, summary(WAD, WAD)],
+    () => [(WAD * 9500n) / 10_000n],
+  ]);
+  const value = values[AGENT.id];
+  assert.equal(value.valueUsdc, FAIR, "face value is unaffected");
+  assert.equal(
+    value.liquidatableValueUsdc,
+    FAIR * 0.95,
+    "realizable must fall back to the pool quote",
+  );
+  assert.ok(
+    value.unpriced.some(
+      (u) => u.source === "lst-queue-delay" && u.reason === "read-failed",
+    ),
+    "the failed read must be reported",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3: LST posted as Aave collateral must not escape the realizable mark
+// ---------------------------------------------------------------------------
+
+test("LST supplied to Aave is haircut the same way a wallet balance is", async () => {
+  // The hole this closes: Aave marks collateral at its oracle price, which for an LST is the
+  // vault's par rate. Left alone, ten shares in a wallet score the pool's discounted quote while
+  // the same ten shares posted to Aave score par -- free score for switching leverage on, with no
+  // skill in it. Both must reach the same answer, because withdrawing the aToken leaves you
+  // holding exactly the same unexitable shares.
+  const { aaveAdapter } = await import("@eris/sdk/protocols/aave.js");
+  const ctx = valuationCtx({ horizonBlock: 105 }); // block 100: only a 5-block queue would fit
+  const run = aaveAdapter.valueAtBlock?.(ctx);
+  assert.ok(run);
+
+  const stage0 = await run.next();
+  // getUserAccountData per agent, then the aToken balance per agent when the LST is listed.
+  const collateralUsd8 = 3000n * 10n ** 8n; // $3000 of collateral, no debt
+  const stage1 = await run.next([
+    [collateralUsd8, 0n, 0n, 8000n, 7000n, 2n ** 128n],
+    WAD, // 1 LST posted
+  ]);
+  if (stage1.done) {
+    // No LST in this deployment (the fork default): nothing to haircut, and that is fine.
+    assert.ok(!stage0.done);
+    return;
+  }
+  const done = await run.next([
+    (WAD * 9000n) / 10_000n, // get_dy: the pool pays 0.9 WETH for the share
+    WAD, // convertToAssets: par is 1 WETH
+    40n, // estimateDelayBlocks: 40 blocks, far past the 5-block horizon
+  ]);
+  assert.ok(done.done);
+  const value = done.value[AGENT.id];
+  assert.equal(value.valueUsdc, 3000, "face value stays at the oracle mark");
+  // 0.1 WETH of the par value cannot be recovered: $3000 - 0.1 * $3000.
+  assert.equal(value.liquidatableValueUsdc, 3000 - 0.1 * FAIR);
+  assert.ok(
+    value.unpriced.some((u) => u.source === "aave-lst-collateral"),
+    "the unrecoverable part must be reported",
+  );
+});
+
+test("a pool that will not quote is no market, not a 10000bps discount", () => {
+  // sellPrice 0 used to flow into discountBps as (rate - 0)/rate = 10000, which reads as an
+  // infinite free carry: the agent empties its wallet into a pool that just said it cannot fill,
+  // and startup blames the rate oracle for it.
+  const obs = lstObservation({ marketQuoted: false, discountBps: 0 });
+  assert.equal(obs.discountBps, 0);
+  assert.equal(obs.marketQuoted, false);
 });

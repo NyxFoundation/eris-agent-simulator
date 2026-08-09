@@ -363,7 +363,11 @@ export type LstObservation = {
   // Executable WETH paid per LST bought from the pool.
   marketBuyPriceWeth?: number;
   // (redemptionRate - marketPrice) / redemptionRate, in bps. Positive = the market is discounted.
+  // Zero when the pool did not quote -- check marketQuoted before acting on it.
   discountBps: number;
+  // False means the pool refused to quote (reverted, or no liquidity at probe size). There is no
+  // instant exit and no carry to take; it is not a 100% discount.
+  marketQuoted?: boolean;
   // The APY the vault is currently paying on its compressed economic clock (the run's clock, not
   // wall-clock: one block advances lst.simulatedSecondsPerBlock seconds of staking).
   apyBps: number;

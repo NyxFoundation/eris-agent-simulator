@@ -933,9 +933,12 @@ export async function runRealtimeSimulation(
           // the redemption rate an agent observes this block already reflects it — and so the gap
           // it opens against the (not yet repriced) market is the opportunity the event creates.
           if (lstRuntime) {
-            for (const ev of schedule.pointEventsAt(blockIndex)) {
+            // The caught-up range, not just this index: onBlock skips notifications while it is
+            // busy, and matching one index exactly let a dropped block swallow the whole event.
+            const fromIndex = Math.max(0, fromBlock - runStartBlock);
+            for (const ev of schedule.pointEventsAt(fromIndex, blockIndex)) {
               try {
-                await slashLst(ctx, lstRuntime, ev.magnitude, logger);
+                await slashLst(ctx, lstRuntime, ev.magnitude, logger, oracleFee);
               } catch (error) {
                 logger.event({
                   type: "lst_slash_failed",
