@@ -6,18 +6,17 @@
  * env ERIS_AGENT_DIR. bot.ts decides how to run from that directory's contents:
  *   - agent.ts exports run(ctx)   -> self-driven: pass ctx and delegate (no loop)
  *   - agent.ts exports decide()   -> rule strategy: drive a read->decide->send loop
- *   - prompt.md only              -> prompt type: have the LLM emit an action every decision
+ *   - agent.ts + improve.md       -> self-improving: the same loop, plus an LLM that periodically
+ *                                   rewrites the strategy out of the trade path (ADR 0018)
  *
- * An agent that ships both agent.ts and prompt.md provides both ways of running (ADR 0015 §2's
- * "agent.ts takes precedence when both are present" is the default). Switch it via the roster env:
- *   ERIS_AGENT_MODE=prompt          run via prompt.md (LLM-driven) even when agent.ts exists
- *   ERIS_PROMPT_REVISE_EVERY=<N>    in prompt mode, every N decision cycles the LLM self-revises
- *                                   the prompt body (default 0 = off; revised versions are saved to
- *                                   runs/<id>/agents/<agentId>.prompt.v<K>.md and used by later cycles)
- *   ERIS_PROMPT_REVISE_PERSIST=1    also write the revision back to the agent directory's prompt.md
- *   ERIS_PROMPT_LOG_CALLS=1         record the raw LLM conversation (system / sent messages /
- *                                   raw response / errors) to runs/<id>/agents/<agentId>.llm.jsonl
- *                                   (opt-in debug log for prompt tuning)
+ * Prompt mode (an LLM producing an action every decision) was removed in ADR 0018: measured at
+ * 8-28 blocks per decision and 1/64 the actions of the same strategy in rule mode, it could not
+ * compete. The LLM now improves the strategy instead of driving it.
+ *
+ *   ERIS_AGENT_FROZEN=1             ignore improve.md and run the strategy unchanged. This is the
+ *                                   frozen control every roster needs (ADR 0018 §5), without
+ *                                   duplicating the agent directory
+ *   ERIS_LLM_MODEL=<model>          backend for the revision call (improve.md frontmatter wins)
  *
  * Environment variables (passed by the environment; the ADR 0006 contract is unchanged):
  *   ERIS_AGENT_ID / ERIS_AGENT_DIR / ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL /
@@ -45,23 +44,23 @@ import type {
   BalanceSnapshot,
   ProtocolId,
 } from "@eris/sdk/types.js";
-import { createAgentLog, createJsonlAppender } from "./agentLog.js";
-import { callLlm, type LlmMessage } from "./llm.js";
+import { createAgentLog } from "./agentLog.js";
+import { callLlm } from "./llm.js";
 import {
+  buildRevisionContext,
   buildRevisionSystem,
-  buildRevisionUser,
-  buildSystemPrompt,
-  buildUserMessage,
-  DEFAULT_PROMPT_INTERVAL_MS,
-  DEFAULT_PROMPT_MODEL,
-  DEFAULT_PROMPT_REVISE_EVERY,
-  loadPromptAgent,
-  type RecentAction,
-} from "./prompt.js";
+  compileExecutor,
+  effectiveReviseInterval,
+  loadImproveAgent,
+  MAX_REVISIONS_PER_RUN,
+  parseRevision,
+  type RevisionOutcome,
+} from "./improve.js";
 import { createMempoolLog, Sender } from "./send.js";
 import { Reader } from "./read.js";
 
-const LLM_MAX_ATTEMPTS = 4; // retry cap on validation failure (append the error to the conversation; ADR 0015 §4)
+// Backend for the revision call when neither improve.md nor the roster names one.
+const DEFAULT_IMPROVE_MODEL = "gpt-oss:120b";
 
 async function main(): Promise<void> {
   const privateKey = process.env.ERIS_AGENT_PRIVATE_KEY as Hex | undefined;
@@ -132,52 +131,62 @@ async function main(): Promise<void> {
   });
 
   // ---- resolve the agent module (1 agent = 1 directory) ----
-  // Default is agent.ts precedence (ADR 0015 §2). A co-located agent can be switched to
-  // LLM-driven (prompt.md) via ERIS_AGENT_MODE=prompt (both ways of running are always provided).
+  // agent.ts is always the strategy (ADR 0015 §2). If improve.md sits beside it, the same strategy
+  // runs at the same speed and an LLM is periodically offered the chance to rewrite it (ADR 0018).
+  // The retired prompt mode put the LLM in the trade path instead, which cost 8-28 blocks per
+  // decision -- 1/64 the actions of the same strategy in rule mode (ADR 0017 §5 B1).
+  // A roster still asking for prompt mode would otherwise run as a plain rule agent and look fine,
+  // which is the worst outcome: the participant thinks an LLM is involved and nothing says otherwise.
+  const retired = [
+    "ERIS_AGENT_MODE",
+    "ERIS_PROMPT_REVISE_EVERY",
+    "ERIS_PROMPT_REVISE_PERSIST",
+    "ERIS_PROMPT_LOG_CALLS",
+  ].filter((k) => process.env[k] !== undefined);
+  if (retired.length > 0) {
+    process.stderr.write(
+      `[bot] ${retired.join(", ")} is retired (ADR 0018 removed prompt mode). An agent is agent.ts, ` +
+        `optionally with improve.md beside it for LLM-driven self-improvement; ` +
+        `use ERIS_AGENT_FROZEN=1 to run it without the improvement loop\n`,
+    );
+    process.exit(1);
+    return;
+  }
   const agentTsPath = join(agentDir, "agent.ts");
   const hasAgentTs = existsSync(agentTsPath);
-  const hasPrompt = existsSync(join(agentDir, "prompt.md"));
-  const forcedMode = process.env.ERIS_AGENT_MODE;
-  if (
-    forcedMode !== undefined &&
-    forcedMode !== "agent" &&
-    forcedMode !== "prompt"
-  ) {
+  const hasImprove = existsSync(join(agentDir, "improve.md"));
+  // Opt out of the improvement loop while keeping the same directory: the frozen control that
+  // ADR 0018 §5 requires in every roster is this flag, not a second copy of the agent.
+  const frozen = process.env.ERIS_AGENT_FROZEN === "1";
+  if (!hasAgentTs) {
     process.stderr.write(
-      `[bot] ERIS_AGENT_MODE must be "agent" or "prompt" (got: ${forcedMode})\n`,
+      existsSync(join(agentDir, "prompt.md"))
+        ? `[bot] ${agentDir} has prompt.md but no agent.ts. Prompt mode was removed (ADR 0018): ` +
+            `an agent is agent.ts, optionally with improve.md beside it\n`
+        : `[bot] ${agentDir} has no agent.ts (ADR 0015 §2 / ADR 0018 §1)\n`,
     );
     process.exit(1);
     return;
   }
-  let mode: "run" | "decide" | "prompt";
-  let agentModule: AgentModule | null = null;
-  if (forcedMode === "prompt" ? false : hasAgentTs) {
-    agentModule = (await import(
-      pathToFileURL(agentTsPath).href
-    )) as AgentModule;
-    if (typeof agentModule.run === "function") mode = "run";
-    else if (typeof agentModule.decide === "function") mode = "decide";
-    else {
-      process.stderr.write(
-        `[bot] ${agentTsPath} must export decide() or run(ctx)\n`,
-      );
-      process.exit(1);
-      return;
-    }
-  } else if (hasPrompt) {
-    mode = "prompt";
-  } else {
+  const agentModule = (await import(
+    pathToFileURL(agentTsPath).href
+  )) as AgentModule;
+  let mode: "run" | "decide" | "improve";
+  if (typeof agentModule.run === "function") mode = "run";
+  else if (typeof agentModule.decide === "function")
+    mode = hasImprove && !frozen ? "improve" : "decide";
+  else {
     process.stderr.write(
-      forcedMode === "prompt"
-        ? `[bot] ERIS_AGENT_MODE=prompt but ${agentDir} has no prompt.md\n`
-        : `[bot] ${agentDir} has neither agent.ts nor prompt.md (ADR 0015 §2)\n`,
+      `[bot] ${agentTsPath} must export decide() or run(ctx)\n`,
     );
     process.exit(1);
     return;
   }
-  if (forcedMode === "agent" && !hasAgentTs) {
+  if (hasImprove && typeof agentModule.run === "function") {
+    // run(ctx) owns its own loop, so there is no decide to swap out.
     process.stderr.write(
-      `[bot] ERIS_AGENT_MODE=agent but ${agentDir} has no agent.ts\n`,
+      `[bot] ${agentDir} has improve.md but exports run(ctx); self-improvement applies to ` +
+        `decide() strategies only (ADR 0018 §1)\n`,
     );
     process.exit(1);
     return;
@@ -207,12 +216,15 @@ async function main(): Promise<void> {
   };
 
   // ---- driving decide (rule strategy) ----
+  // Held in a variable rather than called through agentModule so the improvement loop can swap the
+  // strategy underneath a running agent (ADR 0018). In every other mode this is just agentModule.decide.
+  let activeDecide = agentModule.decide;
   let deciding = false;
   const invokeDecide = async (obs: AgentObservation): Promise<void> => {
-    if (!agentModule?.decide || deciding) return;
+    if (!activeDecide || deciding) return;
     deciding = true;
     try {
-      const action = await agentModule.decide(obs, ctx);
+      const action = await activeDecide(obs, ctx);
       if (action) ctx.submit(action);
     } catch (error) {
       agentLog({
@@ -257,8 +269,10 @@ async function main(): Promise<void> {
           // a subscriber failure must not affect the observation loop
         }
       }
-      // A decide type without intervalMs runs "once per new block" (same cadence as the old shim + readline).
-      if (mode === "decide" && intervalMs === undefined)
+      // A decide type without intervalMs runs "once per new block" (same cadence as the old shim +
+      // readline). Self-improving agents are on this path too -- that is the point: the trading loop
+      // is exactly as fast as a rule agent's, and only the strategy behind it changes (ADR 0018).
+      if ((mode === "decide" || mode === "improve") && intervalMs === undefined)
         void invokeDecide(snap.observation);
     } catch (error) {
       process.stderr.write(
@@ -299,229 +313,180 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (mode === "prompt") {
-    await runPromptLoop();
+  if (mode === "improve") {
+    await runImproveLoop();
   }
 
-  // ---- prompt type: LLM every decision (Hermes JSON mode + validation retry; ADR 0015 §4) ----
-  // When ERIS_PROMPT_REVISE_EVERY > 0, every N decision cycles the LLM self-revises the prompt body
-  // (self-improvement; revised versions are saved to runs/<id>/agents/<agentId>.prompt.v<K>.md and
-  //  used by later cycles. ERIS_PROMPT_REVISE_PERSIST=1 also writes back to the agent directory's prompt.md).
-  async function runPromptLoop(): Promise<void> {
-    const promptAgent = loadPromptAgent(agentDir);
+  // ---- self-improving type: the LLM rewrites the strategy, out of the trade path (ADR 0018) ----
+  //
+  // The block loop above already drives activeDecide every block. All this does is periodically hand
+  // the model the current source plus how it has been doing, and swap activeDecide if what comes
+  // back is better. Every accept, decline, rejection and rollback is logged, because the previous
+  // attempt at this (deleted src/llm) shipped a rollback that never once fired and nobody noticed.
+  async function runImproveLoop(): Promise<void> {
+    const improveAgent = loadImproveAgent(agentDir);
     const model =
-      promptAgent.model ?? process.env.ERIS_LLM_MODEL ?? DEFAULT_PROMPT_MODEL;
-    const schema = agentActionSchemaFor(config.enabledProtocols);
-    const jsonSchema = actionJsonSchema(config.enabledProtocols);
-    let body = promptAgent.body;
-    const rebuildSystem = (): string =>
-      buildSystemPrompt(
-        { ...promptAgent, body },
-        config.enabledProtocols,
-        jsonSchema,
-      );
-    let system = rebuildSystem();
-    const reviseEveryRaw = Number(
-      process.env.ERIS_PROMPT_REVISE_EVERY ?? DEFAULT_PROMPT_REVISE_EVERY,
+      improveAgent.model ?? process.env.ERIS_LLM_MODEL ?? DEFAULT_IMPROVE_MODEL;
+    const { blocks: reviseEvery, clamped } = effectiveReviseInterval(
+      improveAgent.reviseEveryBlocks,
+      config.runBlocks,
     );
-    const reviseEvery =
-      Number.isFinite(reviseEveryRaw) && reviseEveryRaw > 0
-        ? Math.floor(reviseEveryRaw)
-        : 0;
-    const revisePersist = process.env.ERIS_PROMPT_REVISE_PERSIST === "1";
-    const recent: RecentAction[] = [];
-    const interval = promptAgent.intervalMs ?? DEFAULT_PROMPT_INTERVAL_MS;
-    let cycling = false;
-    let lastDecidedRound = -1;
-    let decidedCycles = 0;
-    let revision = 0;
-    let initialValueUsdc: number | null = null;
+    if (clamped)
+      agentLog({
+        reason:
+          `revision cadence clamped from ${improveAgent.reviseEveryBlocks} to ${reviseEvery} blocks ` +
+          `(a co-located run shares one LLM budget; ADR 0018 §4)`,
+      });
 
-    // ---- LLM conversation log (opt-in via ERIS_PROMPT_LOG_CALLS=1; diagnostic aid for ADR 0015 §4) ----
-    // So that "what part of the observation the LLM read and what it returned" can be traced after
-    // the run, record the raw conversation to runs/<id>/agents/<agentId>.llm.jsonl. The system prompt
-    // is large and identical across decisions, so write its full text only on the first call and right
-    // after each self-revision as kind:"llm_system", and have each per-call kind:"llm_call" reference
-    // it by revision number (the validation-retry exchanges are kept inside messages).
-    const llmCallLog =
-      process.env.ERIS_PROMPT_LOG_CALLS === "1"
-        ? createJsonlAppender(runDir, agentId, ".llm")
-        : null;
-    const logSystem = (): void =>
-      llmCallLog?.({ kind: "llm_system", revision, system });
-    const loggedCallLlm = async (
-      meta: Record<string, unknown>,
-      req: Parameters<typeof callLlm>[0],
-    ): Promise<string> => {
-      if (!llmCallLog) return callLlm(req);
-      try {
-        const response = await callLlm(req);
-        llmCallLog({
-          kind: "llm_call",
-          ...meta,
-          revision,
-          model: req.model,
-          messages: req.messages,
-          response,
-        });
-        return response;
-      } catch (error) {
-        llmCallLog({
-          kind: "llm_call",
-          ...meta,
-          revision,
-          model: req.model,
-          messages: req.messages,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
+    // The strategy the participant shipped, as text. It is what the model is shown first, and what a
+    // rollback returns to when the first revision turns out worse.
+    const originalSource = readFileSync(agentTsPath, "utf8");
+    let currentSource = originalSource;
+    let currentVersion = 0;
+    let previous: {
+      executor: typeof activeDecide;
+      source: string;
+      version: number;
+    } | null = null;
+    let revisions = 0;
+    let lastBlock = 0;
+    // Value at the moment of the last revision, to judge whether that revision helped.
+    let valueAtRevision: number | null = null;
+    let initialValue: number | null = null;
+    const recent: Array<{ round: number; reason?: string; action?: unknown }> =
+      [];
+
+    ctx.onObservation((obs) => {
+      const value = obs.inventory?.valueUsdc;
+      if (typeof value === "number") {
+        if (initialValue === null) initialValue = value;
       }
-    };
-    logSystem();
+      recent.push({ round: obs.round });
+      if (recent.length > 32) recent.shift();
+    });
 
-    // Prompt revision (self-improvement). Run inside the same cycling lock as the decision cycle so it never races the decision.
-    const revisePrompt = async (obs: AgentObservation): Promise<void> => {
+    const valueNow = (): number | null => {
+      const v = latestObservation?.inventory?.valueUsdc;
+      return typeof v === "number" ? v : null;
+    };
+
+    const record = (outcome: RevisionOutcome, block: number): void => {
+      // `state`, not `signals`: signals is numeric-only, and a revision record is mostly text
+      // (the model's notes, a rejection reason). Post-run diagnosis reads this.
+      agentLog({
+        round: block,
+        reason: `revision ${outcome.kind}`,
+        state: { ...outcome },
+      });
+    };
+
+    let revising = false;
+    const maybeRevise = async (block: number): Promise<void> => {
+      if (revising || revisions >= MAX_REVISIONS_PER_RUN) return;
+      revising = true;
       try {
-        const reviseSystem = buildRevisionSystem(promptAgent);
-        const text = await loggedCallLlm(
-          // The revision system prompt differs from the decision one, so include it directly in the record.
-          { purpose: "revise", round: obs.round, system: reviseSystem },
-          {
-            model,
-            system: reviseSystem,
-            messages: [
+        // Judge the previous revision before asking for another one: if it made things worse, put
+        // the old strategy back rather than letting the model iterate on a regression.
+        const value = valueNow();
+        if (previous && valueAtRevision !== null && value !== null) {
+          const delta = value - valueAtRevision;
+          if (delta < 0) {
+            activeDecide = previous.executor;
+            currentSource = previous.source;
+            currentVersion = previous.version;
+            record(
               {
-                role: "user",
-                content: buildRevisionUser(body, recent.slice(-16), {
-                  cycles: decidedCycles,
-                  initialValueUsdc,
-                  currentValueUsdc: obs.inventory.valueUsdc,
-                  recentRevertRate: obs.competition?.recentRevertRate,
-                  recentSampleSize: obs.competition?.recentSampleSize,
-                }),
+                kind: "rolled-back",
+                version: currentVersion,
+                before: valueAtRevision,
+                after: value,
               },
-            ],
-            json: false, // revision is free text (markdown body)
+              block,
+            );
+            previous = null;
+          }
+        }
+
+        const system = buildRevisionSystem(improveAgent, currentSource);
+        const context = buildRevisionContext({
+          block,
+          valueUsdc: value ?? 0,
+          initialValueUsdc: initialValue ?? 0,
+          sinceLastRevisionUsdc:
+            valueAtRevision !== null && value !== null
+              ? value - valueAtRevision
+              : null,
+          currentVersion,
+          recent,
+          observation: latestObservation,
+        });
+        revisions++;
+        const raw = await callLlm({
+          model,
+          system,
+          messages: [{ role: "user", content: context }],
+        });
+        let parsedJson: unknown;
+        try {
+          parsedJson = JSON.parse(stripFences(raw));
+        } catch {
+          record(
+            { kind: "rejected", reason: "response was not valid JSON" },
+            block,
+          );
+          return;
+        }
+        const parsed = parseRevision(parsedJson);
+        if (!parsed.ok) {
+          record({ kind: "rejected", reason: parsed.reason }, block);
+          return;
+        }
+        if (parsed.revision.executorTs === null) {
+          record({ kind: "declined", notes: parsed.revision.notes }, block);
+          return;
+        }
+        const compiled = compileExecutor(parsed.revision.executorTs);
+        if (!compiled.ok) {
+          record({ kind: "rejected", reason: compiled.reason }, block);
+          return;
+        }
+        // Keep what is being replaced so a regression has somewhere to go back to.
+        previous = {
+          executor: activeDecide,
+          source: currentSource,
+          version: currentVersion,
+        };
+        activeDecide = compiled.executor;
+        currentSource = parsed.revision.executorTs;
+        currentVersion += 1;
+        valueAtRevision = value;
+        record(
+          {
+            kind: "installed",
+            version: currentVersion,
+            notes: parsed.revision.notes,
           },
+          block,
         );
-        const next = stripFences(text).trim();
-        // Discard a broken revision (empty / extreme length) and keep the current prompt (fail-closed).
-        if (next.length < 40 || next.length > 20_000)
-          throw new Error(`revised body rejected (length=${next.length})`);
-        revision++;
-        body = next;
-        system = rebuildSystem();
-        logSystem(); // record the full revised system prompt in the conversation log too, versioned
-        agentLog({
-          round: obs.round,
-          reason: `prompt revised v${revision}`,
-          state: {
-            kind: "prompt_revision",
-            revision,
-            cycles: decidedCycles,
-            valueUsdc: obs.inventory.valueUsdc,
-          },
-        });
-        // Keep the revision history in the run directory, versioned (primary source for post-run diagnostics/comparison).
-        if (runDir) {
-          const dir = join(runDir, "agents");
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(join(dir, `${agentId}.prompt.v${revision}.md`), body);
-        }
-        // Optional: write back to the agent directory's prompt.md (keep the frontmatter unchanged).
-        if (revisePersist) {
-          const path = join(agentDir, "prompt.md");
-          const raw = readFileSync(path, "utf8");
-          const m = raw.match(/^(---\n[\s\S]*?\n---\n)/);
-          if (m) writeFileSync(path, `${m[1]}${body}\n`);
-        }
       } catch (error) {
-        agentLog({
-          round: obs.round,
-          reason: `prompt revision failed: ${error instanceof Error ? error.message : String(error)}`,
-        });
+        record(
+          {
+            kind: "rejected",
+            reason: `revision failed: ${error instanceof Error ? error.message : String(error)}`,
+          },
+          block,
+        );
+      } finally {
+        revising = false;
       }
     };
 
-    const cycle = async (): Promise<void> => {
-      const obs = latestObservation;
-      if (cycling || !obs || obs.round === lastDecidedRound) return;
-      cycling = true;
-      lastDecidedRound = obs.round;
-      initialValueUsdc ??= obs.inventory.valueUsdc;
-      try {
-        const messages: LlmMessage[] = [
-          { role: "user", content: buildUserMessage(obs, recent.slice(-8)) },
-        ];
-        let lastError = "";
-        let decided = false;
-        for (let attempt = 1; attempt <= LLM_MAX_ATTEMPTS; attempt++) {
-          let text: string;
-          try {
-            text = await loggedCallLlm(
-              { purpose: "decision", round: obs.round, attempt },
-              { model, system, messages, jsonSchema },
-            );
-          } catch (error) {
-            lastError = error instanceof Error ? error.message : String(error);
-            break; // a failure of the call itself is not retried; skip this cycle
-          }
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(stripFences(text));
-          } catch {
-            lastError = "response was not valid JSON";
-            messages.push({ role: "assistant", content: text });
-            messages.push({
-              role: "user",
-              content: `Your response was not valid JSON. Respond with exactly one JSON object matching the <schema>. Error: ${lastError}`,
-            });
-            continue;
-          }
-          const check = schema.safeParse(parsed);
-          if (!check.success) {
-            // Append the error (what violated the schema) to the conversation and retry (Hermes pattern).
-            lastError = check.error.issues
-              .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-              .join("; ");
-            messages.push({ role: "assistant", content: text });
-            messages.push({
-              role: "user",
-              content: `Your action failed schema validation: ${lastError}. Fix it and respond with exactly one JSON object matching the <schema>.`,
-            });
-            continue;
-          }
-          const action = parsed as Record<string, unknown>;
-          agentLog({ round: obs.round, action, reason: "llm decision" });
-          recent.push({ round: obs.round, action });
-          if (recent.length > 16) recent.shift();
-          ctx.submit(action);
-          decided = true;
-          break;
-        }
-        if (!decided) {
-          // fail-closed: exceeding the cap records this cycle as skipped (noop). An invalid action never reaches the chain.
-          agentLog({
-            round: obs.round,
-            action: { type: "noop" },
-            reason: `llm cycle skipped: ${lastError}`,
-          });
-          recent.push({
-            round: obs.round,
-            action: { type: "noop" },
-            note: `skipped (${lastError.slice(0, 120)})`,
-          });
-          if (recent.length > 16) recent.shift();
-        }
-        // ---- self-improvement: revise the prompt body every N decision cycles (within the same lock = serial with the decision) ----
-        decidedCycles++;
-        if (reviseEvery > 0 && decidedCycles % reviseEvery === 0)
-          await revisePrompt(obs);
-      } finally {
-        cycling = false;
-      }
-    };
-    setInterval(() => void cycle(), interval);
+    ctx.onObservation((obs) => {
+      const block = obs.round;
+      if (block - lastBlock < reviseEvery) return;
+      lastBlock = block;
+      void maybeRevise(block);
+    });
   }
 }
 
