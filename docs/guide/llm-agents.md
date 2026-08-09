@@ -97,7 +97,7 @@ agents:
 
 ```bash
 set -a; source .env.local; set +a   # only secrets like OLLAMA_API_KEY
-npm run sim:realtime                 # or npm run backtest -- --regime calm-01
+npm run sim:realtime                 # or npm run backtest -- --regime calm --seed 101
 ```
 
 > The prompt type is bottlenecked by LLM latency on top of the wall-clock wait for block time. The LLM calls remain even in a backtest ([Backtest](backtest.md)).

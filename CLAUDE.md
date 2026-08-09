@@ -72,7 +72,10 @@ agents:
 - `npm run build:contracts` — モックオラクル + PriceFeed を forge build（sim:realtime の前提。`out/` 未生成なら最低 1 回）
 - `npm run gen:local-constants` — deployments.json → `sdk/src/constants.local.ts` 生成（同梱 `deployer/` のローカルデプロイ出力を読む）
 - `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
-- `npm run backtest -- --regime <name>` — 参加者バックテスト（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml`（+seed）を再生する。`--repeat N`（snapshot/revert 反復・run 毎に採点再構成）/ `--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
+- `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
+- `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積で、シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（シナリオ × agent の生スコア。**netPnlUsdc と alphaUsdc の両方**）と `standings.json`（レジーム内 z-score → レジーム等重み平均）を書く。順位は派生物で、採点方法は将来見直す前提（matrix.json から再計算できる）。`--metric netPnlUsdc|alphaUsdc` / `--repeat N`（較正の診断用。採点は 1 回が既定）
+  - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算）/ `crash`（価格ギャップのみ。流動性引き抜きは issue #52 待ち）。`depeg` は採点方法の見直し待ち。`lst` は競技セット外
+  - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査

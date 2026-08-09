@@ -119,8 +119,8 @@ Once you bake a state dump from a deployed anvil, you can **replay official regi
 
 ```bash
 npm run gen:state-dump                                # bake once from the running deployer anvil
-npm run backtest -- --regime calm-01 --repeat 5       # calm market, 5 times (prints mean alphaUsdc)
-npm run backtest -- --regime crash-01                 # crash + Aave liquidation scenario
+npm run backtest -- --regime calm --seed 101         # one scenario (regime + seed)
+npm run backtest -- --scenarios config/scenarios/public.yaml   # the whole public set + standings
 ```
 
 For details, see [Backtesting](docs/guide/backtest.md).

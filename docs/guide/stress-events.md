@@ -11,8 +11,8 @@ stress:
   victimCount: 0   # >0 builds liquidatable victims (fresh state required; see below)
 ```
 
-> To try it quickly, the fastest path is to run the official regime `config/regimes/crash-01.yaml`
-> (which includes 2 victims + a liquidator roster) via [Backtest](backtest.md): `npm run backtest -- --regime crash-01`.
+> To try it quickly, the fastest path is to run the official regime `config/regimes/lending-incident.yaml`
+> (which includes 2 victims + a liquidator roster) via [Backtest](backtest.md): `npm run backtest -- --regime lending-incident --seed 202`.
 
 The event overlay is a trapezoid — the effective price ramps away from the base price, holds, then decays back (a crash with magnitude 0.14, `rampBlocks: 3`, `holdBlocks: 6`, `decayBlocks: 8` looks like this; β≈0 outside the window):
 

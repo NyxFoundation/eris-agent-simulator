@@ -146,8 +146,8 @@ agents:
 ```
 
 ```bash
-npm run backtest -- --regime calm-01 --agents my-roster.yaml --repeat 5
-npm run backtest -- --regime crash-01 --agents my-roster.yaml   # also look at another regime
+npm run backtest -- --regime calm --seed 101 --agents my-roster.yaml
+npm run backtest -- --scenarios config/scenarios/public.yaml --agents my-roster.yaml  # every regime x seed
 ```
 
 - Read results by `mean alphaUsdc` (β-removed PnL). A single netPnl is contaminated by price drift

@@ -11,6 +11,7 @@ import {
   MAX_BUNDLE_ACTIONS,
 } from "./constants.js";
 import type { ProtocolId } from "./types.js";
+import type { OuParams } from "./rng.js";
 import { baseTokens } from "./markets.js";
 
 // The lst venue is deliberately not in the default set: it exists only under local deploy (issue
@@ -25,6 +26,11 @@ const ALL_PROTOCOLS: ProtocolId[] = [
 
 // Protocols that can be named in run.protocols but are not in the default set.
 const OPT_IN_PROTOCOLS: ProtocolId[] = ["lst"];
+
+export type OuConfig = {
+  global: OuParams;
+  perBase: Record<string, OuParams>;
+};
 
 export type SimConfig = {
   rpcUrl: string;
@@ -87,6 +93,16 @@ export type SimConfig = {
   // protocols' working set (ADR 0006 Risks anvil cold-fetch mitigation). The competition-phase mine
   // then avoids hitting upstream fetches. 0 disables it (ERIS_PREWARM_BLOCKS).
   prewarmBlocks: number;
+  // Fair-price OU parameters (market.* in YAML). `global` is the default and the WETH path; `perBase`
+  // resolves each registered base, falling back to the global value. A regime sets these to be a
+  // regime -- e.g. cex-drift is a nonzero `drift` with a weak `kappa` (ADR 0017 regime 1).
+  ou: OuConfig;
+  // Reconstruct the value cross-section only every Nth block instead of every block (ERIS_SCORE_EVERY).
+  // The final score reads only the first and last cross-sections (alphaByAgent = alphaLast - alphaFirst),
+  // so thinning does not change any agent's score -- it only coarsens the equity curve written to
+  // events.jsonl. The first and last blocks are always read. 1 (default) = every block.
+  // Used to cut reconstruction cost when replaying a whole scenario matrix (ADR 0017 §3).
+  scoreEvery: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -134,6 +150,11 @@ export type SimConfig = {
   uninformedFlowCount: number;
   // How many blocks the uninformed direction persists (default 1). >1 mimics order-flow imbalance and naturally produces a spread.
   uninformedFlowPersistBlocks: number;
+  // Probability [0,1] that a venue's persisted uninformed direction follows the market-wide one
+  // instead of its own (UNINFORMED_FLOW_TREND_CORRELATION). 0 (default) = independent per venue,
+  // which manufactures a cross-venue spread; 1 = the whole market leans the same way, which is what
+  // the informed-flow regime is (ADR 0017 regime 2). Only bites when uninformedPersistBlocks > 1.
+  uninformedFlowTrendCorrelation: number;
   informedFlowMaxWethWei: bigint;
   enabledProtocols: ProtocolId[];
   maxGmxSizeUsd: bigint;
@@ -290,6 +311,8 @@ export function loadConfig(env = process.env): SimConfig {
     localSnapshotFile: env.ERIS_LOCAL_SNAPSHOT_FILE ?? ".local-snapshot",
     runMode: env.ERIS_RUN_MODE === "backtest" ? "backtest" : "realtime",
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
+    ou: readOuParams(env),
+    scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),
@@ -335,6 +358,10 @@ export function loadConfig(env = process.env): SimConfig {
     ),
     uninformedFlowCount: intEnv(env.UNINFORMED_FLOW_COUNT, 1),
     uninformedFlowPersistBlocks: intEnv(env.UNINFORMED_FLOW_PERSIST_BLOCKS, 1),
+    uninformedFlowTrendCorrelation: Math.min(
+      1,
+      Math.max(0, floatEnv(env.UNINFORMED_FLOW_TREND_CORRELATION, 0)),
+    ),
     informedFlowMaxWethWei: bigintEnv(
       env.INFORMED_FLOW_MAX_WETH_WEI,
       2_000_000_000_000_000_000n,
@@ -541,6 +568,34 @@ function readBaseAmounts(
     out[t.symbol] = bigintEnv(env[key], 0n);
   }
   return out;
+}
+
+// OU parameters for the fair-price process, per base (ADR 0017 regime 1).
+//
+// These used to live only in sdk/src/rng.ts as module-level constants read straight from
+// process.env, which meant a regime YAML could not set them: the YAML loader builds a source map, it
+// does not mutate process.env. Reading them here puts them on the same footing as every other run
+// knob -- YAML sets them, and the coordinator passes them explicitly rather than the price model
+// reaching for globals.
+function readOuParams(env: NodeJS.ProcessEnv): OuConfig {
+  const global = {
+    volatility: floatEnv(env.ERIS_PRICE_VOLATILITY, 0.004),
+    kappa: floatEnv(env.ERIS_PRICE_REVERT_KAPPA, 0.02),
+    drift: floatEnv(env.ERIS_PRICE_DRIFT, 0),
+  };
+  const perBase: Record<string, OuParams> = {};
+  for (const t of baseTokens()) {
+    const sfx = t.symbol.toUpperCase();
+    perBase[t.symbol] = {
+      volatility: floatEnv(
+        env[`ERIS_PRICE_VOLATILITY_${sfx}`],
+        global.volatility,
+      ),
+      kappa: floatEnv(env[`ERIS_PRICE_REVERT_KAPPA_${sfx}`], global.kappa),
+      drift: floatEnv(env[`ERIS_PRICE_DRIFT_${sfx}`], global.drift),
+    };
+  }
+  return { global, perBase };
 }
 
 function hexEnv(value: string | undefined, fallback: string): Hex {

@@ -128,6 +128,9 @@ export async function buildFlowContext(
       uninformedFlowPersistBlocks: String(
         ctx.config.uninformedFlowPersistBlocks,
       ),
+      uninformedFlowTrendCorrelation: String(
+        ctx.config.uninformedFlowTrendCorrelation,
+      ),
       informedFlowMaxWethWei: ctx.config.informedFlowMaxWethWei.toString(),
       balancerFlowMaxWethWei: ctx.config.balancerFlowMaxWethWei.toString(),
       curveFlowMaxWethWei: ctx.config.curveFlowMaxWethWei.toString(),

@@ -28,6 +28,10 @@ export type FlowLimits = {
   uninformedFlowCountPerBlock: number;
   // Persistence in blocks of the uninformed direction (default 1). >1 makes per-venue trends produce cross-venue divergence naturally.
   uninformedFlowPersistBlocks: number;
+  // Probability [0,1] that a venue's persisted direction follows the market-wide one instead of its
+  // own (default 0 = independent per venue). Turns the trend from a cross-venue spread into
+  // one-sided pressure on the whole market (ADR 0017 regime 2).
+  uninformedFlowTrendCorrelation: number;
   informedFlowMaxWethWei: bigint;
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
@@ -89,6 +93,7 @@ export type FlowContextWire = {
     uninformedFlowMaxWethWei: string;
     uninformedFlowCountPerBlock?: string;
     uninformedFlowPersistBlocks?: string;
+    uninformedFlowTrendCorrelation?: string;
     informedFlowMaxWethWei: string;
     balancerFlowMaxWethWei: string;
     curveFlowMaxWethWei: string;
@@ -203,6 +208,16 @@ function capUsdc(amount: bigint, balance: FlowBalance | null): bigint {
   return amount > balance.usdcUnits ? balance.usdcUnits : amount;
 }
 
+// FNV-1a style hash over (window, tag) used to place the persisted uninformed trend. Deterministic
+// and rng-free on purpose: the trend must not consume the shared flow RNG, or adding the feature
+// would shift every downstream draw.
+function trendHash(window: number, tag: string): number {
+  let h = ((window + 1) * 0x9e_37_79_b1) >>> 0;
+  for (let c = 0; c < tag.length; c++)
+    h = ((h ^ tag.charCodeAt(c)) * 0x01_00_01_93) >>> 0;
+  return h >>> 0;
+}
+
 // AMM (uniswap/balancer/curve) flow. uninformed noise + informed (pull price toward fair).
 // base defaults to WETH. When base!=="WETH", use that base symbol for tokenIn and attach action.base
 // so the adapter can resolve the WBTC/USDC market. The WETH path is byte-identical to before (no base
@@ -236,6 +251,10 @@ export function buildAmmFlow(
   // >0 makes the per-block count Poisson(λ) and each size lognormal (mean = uninformedMax×0.5, σ=sizeSigma).
   uninformedArrivalRate = 0,
   uninformedSizeSigma = 1,
+  // ADR 0017 regime 2 (informed-flow): probability in [0,1] that a venue's persisted direction follows
+  // the market-wide direction instead of its own. 0 (default) = the old per-venue independent trend
+  // (byte-compatible). Only meaningful with persistBlocks > 1, which is what creates a direction at all.
+  trendCorrelation = 0,
 ): FlowOrder[] {
   const orders: FlowOrder[] = [];
   const swapType =
@@ -260,11 +279,27 @@ export function buildAmmFlow(
   let trendTokenIn: TokenSymbol | null = null;
   if (persistBlocks > 1) {
     const window = Math.floor(round / persistBlocks);
-    let h = ((window + 1) * 0x9e3779b1) >>> 0;
-    for (let c = 0; c < protocol.length; c++)
-      h = ((h ^ protocol.charCodeAt(c)) * 0x01000193) >>> 0;
-    // USDC in=buy (price up) / base in=sell (price down). venue×window splits up/down and creates a spread.
-    trendTokenIn = h % 2 === 0 ? "USDC" : base;
+    const venueHash = trendHash(window, protocol);
+    if (trendCorrelation > 0) {
+      // Correlated directional flow (ADR 0017 regime 2). The per-venue hash above deliberately
+      // splits the venues up/down to manufacture a cross-venue spread; that is the wrong shape for
+      // "the whole market is being pushed one way". Drawing the direction from a venue-independent
+      // hash makes every venue lean together, so the gap that opens is against fair rather than
+      // against each other -- and an agent has to take a side instead of arbitraging the middle.
+      //
+      // The correlation is a probability rather than a switch so the regime can sit anywhere between
+      // the two: at 0.7 most venues follow the market and the stragglers still leave relative value.
+      // The draw is another hash, not rng, so correlation=0 leaves the RNG consumption sequence (and
+      // therefore every existing run) byte-identical.
+      const follow =
+        trendHash(window, `${protocol}|corr`) / 0x1_00_00_00_00 <
+        trendCorrelation;
+      trendTokenIn =
+        (follow ? trendHash(window, "") : venueHash) % 2 === 0 ? "USDC" : base;
+    } else {
+      // USDC in=buy (price up) / base in=sell (price down). venue×window splits up/down and creates a spread.
+      trendTokenIn = venueHash % 2 === 0 ? "USDC" : base;
+    }
   }
   // Poisson mode (arrivalRate>0): draw the per-block arrival count as Poisson(λ) (0-count blocks arise naturally).
   // Legacy mode (arrivalRate=0): fixed count max(1, uninformedCount). RNG consumption is as before (byte-compatible).
@@ -661,6 +696,10 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
       1,
       Number(wire.uninformedFlowPersistBlocks ?? "1"),
     ),
+    uninformedFlowTrendCorrelation: clampProb(
+      wire.uninformedFlowTrendCorrelation,
+      0,
+    ),
     informedFlowMaxWethWei: BigInt(wire.informedFlowMaxWethWei),
     balancerFlowMaxWethWei: BigInt(wire.balancerFlowMaxWethWei),
     curveFlowMaxWethWei: BigInt(wire.curveFlowMaxWethWei),
@@ -732,6 +771,7 @@ export function buildFlowOrders(
           limits.informedArbFeeBps,
           limits.uninformedArrivalRate,
           limits.uninformedSizeSigma,
+          limits.uninformedFlowTrendCorrelation,
         ),
       );
     } else if (protocol === "aave") {
@@ -839,6 +879,7 @@ export function buildFlowOrders(
           limits.informedArbFeeBps,
           limits.uninformedArrivalRate,
           limits.uninformedSizeSigma,
+          limits.uninformedFlowTrendCorrelation,
         ),
       );
     }

@@ -556,6 +556,24 @@ type MulticallFn = (
   blockNumber: bigint,
 ) => Promise<unknown[]>;
 
+// Blocks to read a value cross-section at. `every` > 1 thins the series to cut reconstruction cost
+// when replaying a scenario matrix (ADR 0017 §3).
+//
+// fromBlock and toBlock are always included, which is what keeps thinning score-neutral:
+// alphaByAgent is alphaLast - alphaFirst, so only those two cross-sections reach summary.json.
+// Everything dropped in between is equity-curve resolution in events.jsonl, nothing else.
+export function scoringBlocks(
+  fromBlock: number,
+  toBlock: number,
+  every: number,
+): number[] {
+  const step = Math.max(1, Math.floor(every));
+  const blocks: number[] = [];
+  for (let b = fromBlock; b < toBlock; b += step) blocks.push(b);
+  blocks.push(toBlock);
+  return blocks;
+}
+
 export async function reconstructValueSeries(opts: {
   publicClient: PublicClient;
   logger: RunLogger;
@@ -565,6 +583,8 @@ export async function reconstructValueSeries(opts: {
   priceFeed: Address;
   fromBlock: number;
   toBlock: number;
+  // Read a cross-section only every Nth block (config.scoreEvery). Score-neutral; see scoringBlocks.
+  scoreEvery?: number;
 }): Promise<ReconstructionMeta> {
   const {
     publicClient,
@@ -575,6 +595,7 @@ export async function reconstructValueSeries(opts: {
     priceFeed,
     fromBlock,
     toBlock,
+    scoreEvery = 1,
   } = opts;
   const started = Date.now();
   let failedReads = 0;
@@ -624,7 +645,15 @@ export async function reconstructValueSeries(opts: {
   // at another, and collapsing those into one entry would hide half the story.
   const unpricedKey = (h: UnpricedHolding) =>
     `${h.agentId}|${h.source}|${h.token?.toLowerCase() ?? ""}|${h.reason ?? "unpriced"}`;
-  for (let b = fromBlock; b <= toBlock; b++) {
+  const blocks = scoringBlocks(fromBlock, toBlock, scoreEvery);
+  if (scoreEvery > 1)
+    logger.event({
+      type: "scoring_thinned",
+      scoreEvery,
+      crossSections: blocks.length,
+      windowBlocks: toBlock - fromBlock + 1,
+    });
+  for (const b of blocks) {
     const snapshot = await readValueSnapshotAtBlock({
       publicClient,
       agents,

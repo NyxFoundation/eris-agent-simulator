@@ -17,12 +17,7 @@ import {
 import { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
 import { checkRunFeeViolations } from "../postRunCheck.js";
-import {
-  nextFairPrice,
-  ouParamsForSymbol,
-  priceRngForAsset,
-  Rng,
-} from "@eris/sdk/rng.js";
+import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
 import type {
   AgentObservation,
   AgentSpec,
@@ -75,6 +70,7 @@ import {
   STARTUP_WARN_BPS,
 } from "./noArb.js";
 import { EventSchedule } from "./events.js";
+import { buildWhaleOrder, whaleFunding, WHALE_WALLET_KEY } from "./whale.js";
 import {
   accrueLst,
   lstBlockEvent,
@@ -130,7 +126,12 @@ async function prewarmWorkingSet(
     const warmRng = new Rng(ctx.config.seed);
     let warmPrice = startPrice;
     for (let i = 1; i <= blocks; i++) {
-      warmPrice = nextFairPrice(warmPrice, warmRng, startPrice);
+      warmPrice = nextFairPrice(
+        warmPrice,
+        warmRng,
+        startPrice,
+        ctx.config.ou.global,
+      );
       await updateOracles(ctx, warmPrice);
       const states = await Promise.all(
         adapters.map((adapter) => adapter.readState(ctx, warmPrice)),
@@ -178,6 +179,11 @@ type RealtimeAgentRuntime = {
   initial: BalanceSnapshot;
   included: number; // number of txs included in a block (read by aggregation)
   reverted: number; // of those, the number that reverted
+  // Why the agent process went away before the run ended, if it did. Set from onExit, which only
+  // fires on an early exit or a spawn failure. Surfaced in summary.json because the alternative is
+  // grepping events.jsonl, and because scenario-matrix standings treat an agent that died as
+  // disqualified for that scenario rather than as one that chose to sit still (ADR 0017 §4).
+  exitedEarly?: string;
 };
 
 type SubmittedMeta = {
@@ -318,6 +324,29 @@ export async function runRealtimeSimulation(
     }
   }
 
+  // Resolved before wallet funding, not at the start of the block loop: the whale wallet has to be
+  // endowed with enough inventory to place the largest order the seed drew, and that is only knowable
+  // from the resolved schedule. The schedule is a pure function of (config, seed, runBlocks) with no
+  // chain dependency, so building it early costs nothing.
+  const schedule = new EventSchedule(
+    config.stressEvents,
+    config.seed,
+    config.runBlocks,
+  );
+  // A dedicated wallet so a whale order does not drain the ordinary flow wallets mid-run (which
+  // would quietly change the flow bot's behavior for the rest of the run) and so blocks.csv
+  // attributes the print to the event rather than to background flow.
+  const whaleEvents = schedule.events.filter((e) => e.type === "whale");
+  if (whaleEvents.length > 0) {
+    const key = WHALE_WALLET_KEY;
+    const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+    flowWalletMap.set(key, {
+      id: `flow-${key}`,
+      address: accountAddress(privateKey),
+      privateKey,
+    });
+  }
+
   const adminPk = config.privateKeys.admin;
   const keeperPk = config.privateKeys.keeper;
   const rng = new Rng(config.seed);
@@ -453,6 +482,33 @@ export async function runRealtimeSimulation(
     // impact. If the aggregator is not deployed (aave disabled) it is a no-op (ADR 0016 Phase 0).
     if (config.localDeploy) {
       await writeAaveOraclesStorage(ctx, latestFairPrice);
+    }
+
+    // ---- whale endowment (ADR 0017 regime 3) ----
+    // Funded here rather than in the loop above because the size is denominated against the fair
+    // price, which is only known once the pools have been read. A whale's whole job is to place an
+    // order far larger than ordinary flow, so flow-sized funding would make it fail on balance and
+    // silently turn the regime into calm for that seed.
+    if (whaleEvents.length > 0) {
+      const wallet = flowWalletMap.get(WHALE_WALLET_KEY);
+      if (!wallet) throw new Error("whale wallet missing from flowWalletMap");
+      const funding = whaleFunding(schedule.events, latestFairPrice);
+      await fundWallet(
+        publicClient,
+        walletClient,
+        chain,
+        wallet.privateKey,
+        config.flowEthWei,
+        funding.baseWei,
+        funding.usdcUnits,
+      );
+      logger.event({
+        type: "stress_whale_funded",
+        address: wallet.address,
+        baseWei: funding.baseWei.toString(),
+        usdcUnits: funding.usdcUnits.toString(),
+        events: whaleEvents.length,
+      });
     }
 
     // ---- stress victims (ADR 0009 §4): build seed-derived victims that make liquidation possible ----
@@ -644,6 +700,7 @@ export async function runRealtimeSimulation(
       const child = agent.process;
       if (!child) continue;
       child.onExit = (info) => {
+        runtime.exitedEarly = info.reason;
         logger.event({
           type: "agent_process_exited",
           agentId: runtime.id,
@@ -802,11 +859,6 @@ export async function runRealtimeSimulation(
       extraBaseFair[b] = p0;
       extraAnchor[b] = p0;
     }
-    const schedule = new EventSchedule(
-      config.stressEvents,
-      config.seed,
-      config.runBlocks,
-    );
     let processedBlocks = 0;
     let processing = false;
     let lastProcessedBlock = Number(await publicClient.getBlockNumber());
@@ -889,7 +941,7 @@ export async function runRealtimeSimulation(
           // Advance base by OU only, and apply the (deterministic) stress overlay to derive the effective price.
           // The effective price propagates consistently to PriceFeed / Aave WETH oracle / GMX / scoring (ADR 0009 §1).
           const blockIndex = bn - runStartBlock;
-          baseFair = nextFairPrice(baseFair, rng, fairAnchor);
+          baseFair = nextFairPrice(baseFair, rng, fairAnchor, config.ou.global);
           const overlay = schedule.at(blockIndex);
           latestFairPrice = baseFair * overlay.wethMult;
           // ADR 0013: advance extra bases with independent Rngs and distribute the effective prices into ctx.fairPrices.
@@ -899,7 +951,7 @@ export async function runRealtimeSimulation(
               extraBaseFair[b],
               extraPriceRng[b],
               extraAnchor[b],
-              ouParamsForSymbol(b),
+              config.ou.perBase[b] ?? config.ou.global,
             );
             fairPrices[b] = extraBaseFair[b] * (overlay.baseMults[b] ?? 1);
           }
@@ -928,23 +980,62 @@ export async function runRealtimeSimulation(
             }
           }
 
-          // LST slashing (issue #38 phase 2): a one-shot staking penalty placed by the same
-          // seed-driven schedule as spike/crash. Applied here, before the block's other work, so
-          // the redemption rate an agent observes this block already reflects it — and so the gap
-          // it opens against the (not yet repriced) market is the opportunity the event creates.
-          if (lstRuntime) {
-            // The caught-up range, not just this index: onBlock skips notifications while it is
-            // busy, and matching one index exactly let a dropped block swallow the whole event.
+          // Point stress events (lstSlash, whale): one-shot shocks the coordinator executes,
+          // placed by the same seed-driven schedule as spike/crash. Applied here, before the block's
+          // other work, so what an agent observes this block already reflects them — and so the gap
+          // they open against the (not yet repriced) market is the opportunity the event creates.
+          //
+          // The caught-up range, not just this index: onBlock skips notifications while it is busy,
+          // and matching one index exactly let a dropped block swallow the whole event.
+          {
             const fromIndex = Math.max(0, fromBlock - runStartBlock);
             for (const ev of schedule.pointEventsAt(fromIndex, blockIndex)) {
-              try {
-                await slashLst(ctx, lstRuntime, ev.magnitude, logger, oracleFee);
-              } catch (error) {
-                logger.event({
-                  type: "lst_slash_failed",
-                  blockIndex,
-                  error: error instanceof Error ? error.message : String(error),
-                });
+              if (ev.type === "lstSlash") {
+                if (!lstRuntime) continue;
+                try {
+                  await slashLst(
+                    ctx,
+                    lstRuntime,
+                    ev.magnitude,
+                    logger,
+                    oracleFee,
+                  );
+                } catch (error) {
+                  logger.event({
+                    type: "lst_slash_failed",
+                    blockIndex,
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  });
+                }
+              } else if (ev.type === "whale") {
+                // Relayed through the ordinary flow path so the print is signed, ordered and
+                // attributed exactly like any other flow order — an agent must not be able to
+                // recognize it as an environment action from anything but its size.
+                try {
+                  const order = buildWhaleOrder(
+                    ev,
+                    fairPrices[ev.base] ?? latestFairPrice,
+                    config.defaultPriorityFeeWei,
+                  );
+                  logger.event({
+                    type: "stress_whale",
+                    blockIndex,
+                    blockNumber: bn,
+                    venue: ev.venue,
+                    side: ev.side,
+                    base: ev.base,
+                    magnitude: ev.magnitude,
+                  });
+                  await handleFlowOrders([order]);
+                } catch (error) {
+                  logger.event({
+                    type: "stress_whale_failed",
+                    blockIndex,
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  });
+                }
               }
             }
           }
@@ -1294,6 +1385,7 @@ export async function runRealtimeSimulation(
           priceFeed: priceFeedAddress,
           fromBlock: runStartBlock,
           toBlock: finalBlock,
+          scoreEvery: config.scoreEvery,
         });
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
@@ -1332,11 +1424,22 @@ export async function runRealtimeSimulation(
 
     // ---- final PnL ----
     const finalFairPrice = latestFairPrice;
+    // Price every registered base, not just WETH. valueUsdc marks an unlisted base at `p[sym] ?? 0`,
+    // so passing the scalar WETH price valued an agent's WBTC at exactly zero: anyone holding a
+    // non-WETH base at the last block had that inventory deleted from netPnlUsdc. Measured on a
+    // 24-agent calm run, the WBTC-trading agents reported a reproducible -6,686 USDC "loss" while the
+    // reconstruction (which does price every base since issue #41) put the same agents at +13 alpha.
+    // ctx.fairPrices is the per-base map the block loop already maintains; the WETH-only fallback is
+    // for a run that ended before the first block was processed.
+    const finalFairPrices: Record<string, number> =
+      ctx.fairPrices && Object.keys(ctx.fairPrices).length > 0
+        ? ctx.fairPrices
+        : { WETH: finalFairPrice };
     const agentsSummary = [];
     for (const agent of agentRuntimes) {
       const final = await getBalances(publicClient, agent.address);
-      const initialValue = valueUsdc(agent.initial, finalFairPrice);
-      let finalValue = valueUsdc(final, finalFairPrice);
+      const initialValue = valueUsdc(agent.initial, finalFairPrices);
+      let finalValue = valueUsdc(final, finalFairPrices);
       const protocolValues: Record<string, number> = {};
       for (const adapter of adapters) {
         const v = await adapter.valueUsdc(
@@ -1366,6 +1469,11 @@ export async function runRealtimeSimulation(
         // at par, which is all of them today.
         ...(agent.id in liquidatableValueByAgent
           ? { liquidatableValueUsdc: liquidatableValueByAgent[agent.id] }
+          : {}),
+        // Present only when the agent process went away before the run ended (ADR 0017 §4 reads this
+        // to disqualify the agent for that scenario instead of scoring its frozen position).
+        ...(agent.exitedEarly !== undefined
+          ? { processExitedEarly: agent.exitedEarly }
           : {}),
         // submission count's primary source is the agent's self-reported log (agents/<id>.jsonl) (ADR 0006 §5)
         includedTxCount: agent.included,

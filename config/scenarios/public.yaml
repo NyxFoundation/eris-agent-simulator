@@ -1,0 +1,29 @@
+# config/scenarios/public.yaml — the public scenario set (ADR 0017 §2).
+#
+# A scenario is (regime, seed). This file is the cartesian product of the two lists below, so the
+# set is `regimes.length * seeds.length` scenarios, each addressed as `<regime>#<seed>`.
+#
+# Public means both halves are published: the regime YAMLs (including the stress ranges) and the
+# seeds. Participants tune against this set before the competition. The private set is the same
+# regimes with a disjoint, unpublished seed list -- same distribution family, different realizations
+# (ADR 0009's "give ranges, not values" applied to the competition itself).
+#
+# Because the generator is open source, you can and should sample your own seeds instead of
+# overfitting to these five. Generalizing across the distribution is the thing being measured; the
+# published seeds are five draws from it, not the target.
+#
+# Run: npm run backtest -- --scenarios config/scenarios/public.yaml --agents <roster>
+
+# Six of the seven regimes ADR 0017 lists. The seventh, depeg, waits on the scoring rework: its shock
+# moves the unit of account itself, which the current USDC-denominated score cannot express.
+# `crash` is also incomplete until issue #52 lands its liquidity-withdrawal half -- today it is the
+# price gap alone.
+regimes:
+  - calm
+  - cex-drift
+  - informed-flow
+  - whale
+  - lending-incident
+  - crash
+
+seeds: [101, 202, 303, 404, 505]
