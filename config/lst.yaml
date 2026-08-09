@@ -83,18 +83,24 @@ agents:
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
     description: does nothing (baseline)
-  # Rule-based by default so the venue is exercised without an LLM backend. Add
-  # `env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }` to drive the same agent
-  # through prompt.md instead (needs OLLAMA_API_KEY or a CLI backend; see docs/guide/llm-agents.md).
+  # LLM-driven through prompt.md, matching the committed example.yaml roster: the venue's default
+  # path is the one a participant actually submits (ADR 0015 §2, issue #38). Needs OLLAMA_API_KEY
+  # in .env.local. Without a backend the run completes and this agent fails closed to noop, so if
+  # it never trades, check agents/lst-carry.jsonl for the reason before blaming the strategy.
+  # Remove the `env:` line to run the same strategy rule-based via agent.ts.
   - id: lst-carry
     wallet: AGENT2_PRIVATE_KEY
-    description: liquid staking — stake for yield, or trade the redemption/market gap
-  # A second instance that demands a wider discount before it acts, so the two compete for the same
-  # dislocation and the venue sees more than one participant.
+    description: liquid staking — stake for yield, or trade the redemption/market gap (LLM-driven via prompt.md)
+    env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
+    # Claude Code / Codex subscription instead of Ollama (no API key) — use this env line instead.
+    # This is the combination the prompt was verified on (see docs/guide/llm-agents.md):
+    # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
+  # The same strategy run rule-based (agent.ts) with a wider entry threshold: a second participant
+  # competing for the same dislocation, and a control for the prompt-driven one above.
   - id: lst-carry-wide
     dir: lst-carry
     wallet: AGENT3_PRIVATE_KEY
-    description: lst-carry with a wider entry threshold
+    description: lst-carry with a wider entry threshold (rule-based via agent.ts)
     env: { ERIS_LST_SAFETY_BPS: "40" }
   - id: venue-arb
     wallet: AGENT4_PRIVATE_KEY
