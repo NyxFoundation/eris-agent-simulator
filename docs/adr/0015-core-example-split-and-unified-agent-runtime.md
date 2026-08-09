@@ -95,7 +95,7 @@ eris-competition-poc/            # npm workspaces ルート
 │     │  ├─ llm.ts               #   素の LLM 呼び出し 1 関数（プロバイダ切替のみ）
 │     │  └─ agentLog.ts
 │     ├─ arb-bot/agent.ts        # ルール戦略
-│     └─ my-arb/prompt.md        # プロンプト型 agent
+│     └─ my-arb/{agent.ts,improve.md}  # 参加者向け出発点サンプル（ADR 0018 で自己改善型に）
 └─ deployer/                     # venue デプロイは環境側（現状のまま）
 ```
 

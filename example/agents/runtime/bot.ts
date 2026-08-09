@@ -249,6 +249,22 @@ async function main(): Promise<void> {
       const action = await activeDecide(obs, ctx);
       if (action) ctx.submit(action);
       rememberDecision({ round: obs.round, action: action ?? undefined });
+      // Record the decision not to trade, with its reason. send.ts drops noops before they reach
+      // the log, so a strategy that passes every block used to leave nothing behind at all -- and an
+      // empty agent log cannot distinguish "never started" from "looked and declined". Both happened
+      // during this branch's calibration runs and both cost time to diagnose.
+      const declined =
+        action === null ||
+        action === undefined ||
+        (action as { type?: string }).type === "noop";
+      if (declined)
+        agentLog({
+          round: obs.round,
+          action: { type: "noop" },
+          reason:
+            (action as { reason?: string } | null)?.reason ??
+            "decide returned nothing",
+        });
     } catch (error) {
       const reason = `decide error: ${error instanceof Error ? error.message : String(error)}`;
       rememberDecision({ round: obs.round, reason });
