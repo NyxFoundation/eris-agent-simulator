@@ -10,8 +10,7 @@ Each run generates a `runs/<run_id>/` directory. The dedicated evaluation, scori
 | `events.jsonl` | event stream (observation, stress, liquidation, etc.); the primary source for scoring |
 | `blocks.csv` | per-block tx records (fee comes from the on-chain tx field) |
 | `agents/<id>.jsonl` | each agent's self-reported log (decision `reason` / `signals` / `state`, plus mempool activity appended by runtime/send.ts as `kind:"mempool"`: submitted / submit_failed / rejected) |
-| `agents/<id>.prompt.v<K>.md` | prompt-agent self-revision history (when `ERIS_PROMPT_REVISE_EVERY` is enabled; full text, versioned) |
-| `agents/<id>.llm.jsonl` | prompt-agent LLM conversation log (opt-in via `ERIS_PROMPT_LOG_CALLS=1`; full system prompt, sent messages, raw responses, errors; see [LLM Agents](llm-agents.md)) |
+| `agents/<id>.llm.jsonl` | raw strategy-revision exchange for a self-improving agent (opt-in via `ERIS_IMPROVE_LOG_CALLS=1`; system prompt, sent context, response, errors; see [Self-improving agents](llm-agents.md)). Revision *outcomes* are in `agents/<id>.jsonl` |
 
 ```bash
 npm run check:ordering -- runs/<run_id>   # inspect Anvil's fee ordering

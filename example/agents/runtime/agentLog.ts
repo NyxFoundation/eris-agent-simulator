@@ -30,7 +30,7 @@ export type AgentLog = (entry: AgentLogEntry) => void;
 // Low-level append to runs/<runDir>/agents/<agentId><suffix>.jsonl.
 // Shared implementation so the action log (createAgentLog) and mempool self-reports (send.ts)
 // write to the same file (no suffix), while the LLM conversation log (bot.ts's
-// ERIS_PROMPT_LOG_CALLS) writes to a separate file (suffix ".llm").
+// ERIS_IMPROVE_LOG_CALLS) writes to a separate file (suffix ".llm").
 export function createJsonlAppender(
   runDir: string | undefined,
   agentId: string,

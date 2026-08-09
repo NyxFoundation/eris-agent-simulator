@@ -2,7 +2,27 @@
 
 ## Status
 
-Proposed
+Accepted（2026-08-10 実装。Phase 1-2。branch feat/lst-venue）
+
+### 最初の実走（存在証明であって、有効性の証明ではない）
+
+`calm#101` / R=150 / claude-cli で、同一戦略の自己改善版と frozen 版を同居させた:
+
+| agent | netPnlUsdc | 改訂 |
+|-------|-----------|------|
+| venue-arb（自己改善） | **+57.6** | block 775 で採用(v1)、block 835 で辞退 |
+| venue-arb-frozen | +10.0 | — |
+| noop | 0.0 | — |
+
+- モデルは「`the widest gaps need inventory this agent does not hold` で 12 ブロック以上停止＝
+  構造的デッドロック」と診断して書き換えた。**agent が書いた noop の理由文字列がそのまま
+  改善の根拠になっている** — 証拠チャネルとして意図どおり機能した
+- 次の機会では「v1 は効き始めたばかりなので触らない」と**辞退**した。§4 が狙った
+  「勝っているときに触らない」がそのまま出た。先行実装の失敗診断への直接の対処である
+- 生成コードの reject は 0 件
+
+**これは 1 run・1 シードであり、機構が動くことの存在証明にすぎない。**先行実装は multi-seed の
+paired 比較で frozen に負けている（1 件は p=0.031 の有意敗）。有効性の主張には同じ規模の検証が要る。
 
 ## Context
 

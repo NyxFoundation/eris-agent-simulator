@@ -13,7 +13,7 @@ There are 3 types (details in [Architecture](architecture.md)). This page follow
 |---|---|---|
 | rule strategy | `agent.ts` (`decide(obs, ctx)`) | most strategies; observe → decide each block |
 | self-driven | `agent.ts` (`run(ctx)`) | custom loops / event-driven (e.g. liquidator) |
-| prompt | `prompt.md` | let an LLM decide each time (see [LLM Agents](llm-agents.md)) |
+| self-improving | `agent.ts` + `improve.md` | trade at rule speed while an LLM rewrites the strategy in-run (see [Self-improving agents](llm-agents.md)) |
 
 ## Step 1: The minimal agent
 

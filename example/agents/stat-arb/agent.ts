@@ -25,6 +25,7 @@
  */
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { RollingStats } from "../lib/rolling-stats.js";
+import { affordable } from "../lib/affordable.js";
 
 const WINDOW = Math.max(
   2,
@@ -155,10 +156,13 @@ export function decide(obs: AgentObservation): AgentAction | null {
       Math.floor(SIZE_FLOOR_BPS + (SIZE_CAP_BPS - SIZE_FLOOR_BPS) * t),
     ),
   );
-  const amountIn = (max * BigInt(sizeBps)) / 10_000n;
+  // Capped by the wallet as well as by the rule limit. Under USDC-only funding the sell leg has no
+  // inventory behind it; proposing it anyway is a self-reject, which is indistinguishable in the
+  // score from choosing not to trade (issue #54).
+  const amountIn = affordable(obs, tokenIn, (max * BigInt(sizeBps)) / 10_000n);
 
   if (amountIn <= 0n) {
-    return noop("size rounds to zero");
+    return noop(`no ${tokenIn} to fund this side of the spread`);
   }
 
   // EV in USDC ≈ size_usdc * |gap|. Convert to wei via fair price.

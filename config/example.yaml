@@ -19,20 +19,25 @@
 # set localDeploy: false, drop `lst` from run.protocols (its vault has no Arbitrum counterpart) and
 # start `npm run anvil` in another terminal with ARB_RPC_URL set.
 #
-# LLM-driven by default: the trading agents below run in prompt mode (prompt.md, one LLM call per
-# decision; ERIS_AGENT_MODE: "prompt") and need an LLM backend. Pick one:
+# The agents below are rule strategies (agent.ts) that trade every block. Three of them also ship an
+# improve.md, so an LLM periodically rewrites the strategy while it runs (ADR 0018) -- the LLM is
+# never in the trade path. Prompt mode, where an LLM produced each action, was removed: it managed
+# one decision every 8-28 blocks and 1/64 the actions of the same strategy in rule mode.
+#
+# A self-improving agent needs an LLM backend. Pick one:
 #   - Ollama Cloud (default; model gpt-oss:120b): set OLLAMA_API_KEY in `.env.local`
 #   - local ollama (no key): ERIS_OLLAMA_BASE_URL=http://127.0.0.1:11434/api in `.env.local`
-#   - Claude Code / Codex subscription (no API key; spawns the logged-in CLI): swap each agent's
-#     env for the commented ERIS_LLM_MODEL variant below ("claude-cli:haiku" / "codex")
-# Without a backend the run completes but the trading agents fail closed to noop (no trades).
-# To run the same strategies rule-based (agent.ts, no LLM), remove the `env:` line from each agent.
+#   - Claude Code / Codex subscription (no API key; spawns the logged-in CLI):
+#     ERIS_LLM_MODEL: "claude-cli:haiku" / "codex" in the agent's env
+# Without a backend the run still completes: revisions fail and are recorded, and the strategy keeps
+# trading unchanged. Set ERIS_AGENT_FROZEN=1 on an agent to skip the improvement loop entirely.
 # See docs/guide/llm-agents.md.
 
 run:
   seed: 1
-  # LLM decisions take ~10s each over Ollama Cloud, so give the run enough blocks/wall-clock for
-  # prompt-mode agents to act (rule-based runs are fine with fewer, e.g. 24 blocks / 70s).
+  # The trading loop is rule-speed (one decision per block) regardless of the LLM, so the run length
+  # is not set by LLM latency any more. It does need to be long enough for at least one revision to
+  # land -- improve.md declares reviseEveryBlocks: 60.
   blocks: 100
   seconds: 300
   blockTimeSec: 2
@@ -108,19 +113,22 @@ agents:
     description: does nothing (baseline; rule-based on purpose)
   - id: venue-arb
     wallet: AGENT2_PRIVATE_KEY
-    description: WETH-only cross-venue arbitrage (LLM-driven via prompt.md)
-    env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
-    # Claude Code / Codex subscription instead of Ollama (no API key) — use this env line instead:
-    # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
-  - id: multi-arb
+    description: WETH-only cross-venue arbitrage, with an LLM revising it in-run (improve.md)
+    env: { ERIS_IMPROVE_LOG_CALLS: "1" }
+    # Claude Code / Codex subscription instead of Ollama (no API key):
+    # env: { ERIS_IMPROVE_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
+  - id: venue-arb-frozen
+    dir: venue-arb
     wallet: AGENT3_PRIVATE_KEY
-    description: base-agnostic cross-venue arbitrage (all active bases x all venues; LLM-driven via prompt.md)
-    env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
-    # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
-  - id: lst-carry
+    description: the same strategy with the improvement loop off — the control that says whether revising helped (ADR 0018 §5)
+    env: { ERIS_AGENT_FROZEN: "1" }
+  - id: multi-arb
     wallet: AGENT4_PRIVATE_KEY
-    description: liquid staking — stake for yield, or trade the LST redemption/market gap (LLM-driven via prompt.md)
-    env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
-    # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
+    description: base-agnostic cross-venue arbitrage (all active bases x all venues), revised in-run
+    env: { ERIS_IMPROVE_LOG_CALLS: "1" }
+  - id: lst-carry
+    wallet: AGENT5_PRIVATE_KEY
+    description: liquid staking — stake for yield, or trade the LST redemption/market gap, revised in-run
+    env: { ERIS_IMPROVE_LOG_CALLS: "1" }
   # config/lst.yaml is the same venue with a second competing participant and the calibration knobs
   # spelled out, if you want to look at the LST market on its own.

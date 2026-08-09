@@ -23,22 +23,25 @@ deployer/  venue デプロイ（自己完結サブパッケージ。workspace �
 |------|------|--------|
 | `agent.ts`（`decide(obs, ctx)` export） | ルール戦略 | runtime/bot.ts が read→decide→send のループで駆動（`export const config = { intervalMs }` で間隔指定可） |
 | `agent.ts`（`run(ctx)` export） | 自走型 | bot.ts はループせず ctx（clients/observe/submit/log）を渡して委譲（例 liquidator） |
-| `prompt.md`（frontmatter: name/description 必須） | プロンプト型 | bot.ts が observation を添えて毎判断 LLM に action を出させる（例 my-arb） |
+| `agent.ts` + `improve.md`（frontmatter: name/description 必須） | **自己改善型**（ADR 0018） | decide を毎ブロック駆動しつつ、LLM が取引経路の**外**で戦略コードを書き換える |
 
-`runtime/`（汎用スクリプト: bot/read/send/llm/prompt/deploy/agentLog）と `lib/`（共有戦略ヘルパ）は予約名。
-同梱の全 agent は agent.ts と併置で **prompt.md も持ち、両方の動かし方を提供する**（runtime の既定は
-agent.ts 優先 = ADR 0015 §2。ただし **雛形 `config/example.yaml` のロスターは取引 agent を prompt モードで
-出荷**＝Quick Start 既定は LLM 駆動。要 OLLAMA_API_KEY in .env.local、LLM 判断 ~10s/回なので run 長は
-100 blocks/300s 目安。noop はルールのまま。API キー無しでも `model: codex[:<m>]` / `claude-cli[:<m>]` で
-**Codex/Claude Code サブスク CLI 実行**が可能 = docs/guide/llm-agents.md）。ロスターの `env` で切り替え:
+`runtime/`（汎用スクリプト: bot/read/send/llm/improve/deploy/agentLog）と `lib/`（共有戦略ヘルパ）は予約名。
 
-- `ERIS_AGENT_MODE: "prompt"` — agent.ts があっても prompt.md（毎判断 LLM）で動かす
-- `ERIS_PROMPT_REVISE_EVERY: "<N>"` — prompt モードで N 判断サイクルごとに LLM が prompt 本文を
-  **自己改訂**する（既定 0=off。改訂版は `runs/<id>/agents/<agentId>.prompt.v<K>.md` に版付き保存され
-  以後のサイクルで使用。`ERIS_PROMPT_REVISE_PERSIST: "1"` で agent ディレクトリの prompt.md にも書き戻し）
+**プロンプト型（毎判断 LLM）は ADR 0018 で廃止**。実測で 1 判断 8〜28 ブロック・行動回数がルール型の
+1/64 で競技として成立しなかった（ADR 0017 §5 B1）。`ERIS_AGENT_MODE` / `ERIS_PROMPT_*` は fail-fast する。
+`improve.md` は prompt.md の改名ではない（前者は「いつ・何を根拠に・どう直すか」、後者は「この observation で
+どう動くか」）。ロスターの `env`:
+
+- `ERIS_AGENT_FROZEN: "1"` — improve.md を無視して戦略を固定。**ADR 0018 §5 が要求する frozen 対照**
+  （自己改善が効いたかを毎 run 見えるようにする）をディレクトリ複製なしで作る
+- `ERIS_LLM_MODEL: "<model>"` — 改訂呼び出しのバックエンド（improve.md の frontmatter が優先）。
+  API キー無しでも `codex[:<m>]` / `claude-cli[:<m>]` でサブスク CLI 実行可 = docs/guide/llm-agents.md
+- `ERIS_IMPROVE_LOG_CALLS: "1"` — 改訂の生のやり取りを `agents/<id>.llm.jsonl` に残す（既定 off）
+
+改訂は `{version, notes, executorTs}` を返し、`executorTs: null` は「今の戦略を維持」。生成コードは
+**cheatcode 静的検査 → コンパイル → 2 秒の実行上限**を通ってから設置され、悪化したら rollback する。
+LLM バックエンドが無くても run は完走し、改訂失敗が記録されて戦略は無改変で走り続ける。
 directShim / relay / stdin-stdout プロトコルは廃止済み（ERIS_AGENT_DIRECT_TX は退役）。
-プロンプト型の action 形式は sdk の zod スキーマ（`sdk/src/actionSchema.ts`）から `<schema>` を生成し、
-validate 失敗はエラー内容を会話に追記して再試行（上限超過は noop = fail-closed）。
 
 ## 設定（YAML 単一ソース。ADR 0013）
 
@@ -183,7 +186,7 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 runtime/send.ts が同じファイルに mempool 活動（`kind:"mempool"`: submitted / submit_failed /
 rejected）を自己申告で追記する（coordinator が submitted を数えられなくなる穴を塞ぐ。ADR 0006 §5）。
 出力先は coordinator が渡す env `ERIS_RUN_DIR` / `ERIS_AGENT_ID` で決まる。run 後の診断はこれを一次情報にする。
-prompt 型は `ERIS_PROMPT_LOG_CALLS: "1"`（ロスターの env）で LLM との生の対話（system 全文・送信
+自己改善型は `ERIS_IMPROVE_LOG_CALLS: "1"`（ロスターの env）で LLM との生の対話（system 全文・送信
 messages・生応答・エラー）を `agents/<agentId>.llm.jsonl` に残せる（opt-in。プロンプト調整の一次情報）。
 
 ## spot EC2 で重い run を回す（ローカル逼迫の回避。spot skills）

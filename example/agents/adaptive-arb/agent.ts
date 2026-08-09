@@ -12,6 +12,7 @@
  *   ADAPT_CEIL_FRACTION  fraction of the opportunity value allocated to the bid ceiling (default 0.8; the rest is kept as net profit)
  */
 import type { AgentAction, AgentContext, AgentObservation } from "@eris/sdk";
+import { affordable } from "../lib/affordable.js";
 
 const CEIL_FRACTION = Number(process.env.ADAPT_CEIL_FRACTION ?? "0.8");
 const GAS_UNITS_ESTIMATE = 180_000n;
@@ -75,7 +76,12 @@ export function decide(
     SIZE_BPS_MAX,
     Math.max(SIZE_BPS_MIN, Math.floor(Math.abs(gap) * 200_000)),
   );
-  const amountIn = (max * BigInt(sizeBps)) / 10_000n;
+  // Cap by the wallet, not just by the rule limit. Under USDC-only funding the sell leg has no
+  // inventory behind it, and proposing it anyway is a self-reject that reads in the score exactly
+  // like choosing not to trade (issue #54).
+  const amountIn = affordable(obs, tokenIn, (max * BigInt(sizeBps)) / 10_000n);
+  if (amountIn === 0n)
+    return noop(`no ${tokenIn} to fund this side of the gap`);
 
   // Opportunity value ceiling (per gas) = profit * CEIL_FRACTION / gas. Bidding above this eats into net.
   const sizeUsdc =
