@@ -141,6 +141,18 @@ decide 型・prompt 型）の判断頻度や observe / LLM レイテンシとブ
 クラッシュしない・validate を通る等の挙動確認・スモーク専用とし、**成績を読むのは regime
 既定値の run のみ**とする。
 
+> **改訂（ADR 0017）: seed はこの規約の対象外になった。**
+> 本 ADR は seed を regime YAML の一部とみなし、`--seed` を含む全 override を「スモーク専用」として
+> いた。ADR 0017 が評価単位を **シナリオ =（regime, seed）** と定めたことで、seed は regime の
+> 一部ではなく評価の第 2 軸になり、`config/regimes/*.yaml` からは削除された。したがって:
+>
+> - **`--seed` は必須の入力であって override ではない。**seed を与えた run の成績は正規のものとして
+>   読む。むしろ seed を与えない run はもう存在しない（`--regime` は `--seed` なしで fail-fast する）
+> - **`blockTimeSec` / `blocks` / `protocols` 等、それ以外の override は本節の規定のまま**である。
+>   成績を読む run はレジーム既定値を使う
+> - 「公開 regime の seed は 1 サンプルで本番は別サンプル」という §2 の過学習対策は、
+>   ADR 0017 §2 の Public / Private シードセットへ発展的に置き換わった
+
 **B2: 同期ステップ再生（回帰テスト・paired 比較用）** — 壁時計から切り離したターン制で進める:
 毎ブロック、flow 注文の投入後に **全 agent の「このブロックの判断完了」通知（+ tx 到着）が揃った
 時点で mine** し、次ブロックへ進む。noop を選んだブロックは tx が来ず沈黙とタイムアウトで

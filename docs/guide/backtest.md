@@ -57,6 +57,29 @@ seeds: [101, 202, 303, 404, 505]
 
 The published (public) set exists for tuning. The competition's private set is the same regimes with a disjoint, unpublished seed list — same distribution family, different realizations. **Because the generator is open source, sample your own seeds rather than overfitting to the published five**: generalizing across the distribution is what is being measured.
 
+<details>
+<summary>Operators: building the private set</summary>
+
+`config/scenarios/private.yaml` is deliberately not in the repository — the regimes are public and
+only the realized seeds are withheld, so the file *is* the secret. Build it the same shape as
+`public.yaml`, and keep it out of the working tree (it is covered by the same ignore rules as any
+untracked file; do not `git add` it).
+
+1. Draw the seeds from a wide range with a source the repository does not contain, and check them
+   against `public.yaml` — the two sets must not intersect, or a participant has already tuned on
+   part of the private set.
+2. Use the same `regimes:` list as the public set. Different regimes would compare participants on
+   conditions they were never told to prepare for.
+3. Keep 20 seeds per regime as the baseline; expand only after the heat count is known, since heats
+   multiply the run count (ADR 0017 §3).
+4. Publish the seed list after the competition so participants can reproduce their own results.
+
+Nothing else needs to be secret. The stress ranges, the OU parameters and the flow calibration are
+all published on purpose — withholding them would measure who guessed the environment rather than
+who traded it well.
+
+</details>
+
 Two artifacts land in `runs/matrix-<id>/`:
 
 | file | what it is |
@@ -76,6 +99,28 @@ An agent that broke a rule (priority fee cap), whose process died mid-run, or th
 - **The only thing that varies is tx ordering** (same property as production realtime, ADR 0005). Results converge into a narrow band but are not bit-identical.
 - **`--repeat` is a diagnostic, not part of scoring.** Repeating a scenario reduces the tx-timing noise but does nothing about the variation between market conditions, and since the wall-clock budget is `scenarios x repeats`, spending it on repeats is the same as halving the number of scenarios. The competition runs each scenario once and buys precision with more seeds instead (ADR 0017 §3). Use `--repeat` when you want to *measure* how much a scenario moves run to run; standings fold the repeats with a median.
 - Bit-identical regression comparison (diff-checking a single line of code) is planned but unimplemented as B2 synchronous-step replay (ADR 0016 §3).
+
+## What the competition actually scores (ADR 0017 §6)
+
+Every participant runs in the **same world at the same time** — one scenario is one run with the
+whole field co-located on one chain. That is what makes the comparison fair (everybody met the same
+market), and it also means three things are part of the competition whether you engage with them or
+not:
+
+- **Opportunities are finite and shared.** A liquidation or an arbitrage gap is taken by whoever
+  gets there first; it does not exist separately for each participant. In pilot runs, arbitrage
+  profit per agent fell by roughly 30x going from 4 co-located agents to 16.
+- **In-block ordering is bought with gas.** anvil orders the block by priority fee (`--order fees`),
+  so when two agents chase the same gap in the same block, the higher bid executes first
+  (ADR 0011). Bidding is a real lever, and over-bidding is a real cost.
+- **Speed counts.** Blocks are mined every `blockTimeSec` seconds regardless of whether your agent
+  has finished thinking. A rule agent (`decide`) runs once per block; a prompt agent waits for an
+  LLM round trip (~10 s), so at the production 2-second block it acts roughly once every five
+  blocks and holds its position in between. This is a structural difference between the two agent
+  kinds, not a tuning detail — pick the kind that suits your strategy knowingly.
+
+Scoring itself is unaffected by any of this: it reads the same value cross-sections for everyone at
+the same blocks.
 
 ## Sparring (compete against other agents)
 
