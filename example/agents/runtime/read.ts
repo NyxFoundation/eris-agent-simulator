@@ -34,6 +34,11 @@ export class Reader {
   private readonly runId: string;
   private readonly extraBaseSymbols: string[];
   private readonly history: AgentObservation["history"] = [];
+  // The first block this agent saw, used to estimate how much of the run is left. The environment
+  // cannot pass the run's start block in env: agent processes are spawned before interval mining
+  // begins, so it does not exist yet. Everyone starts observing at the same point, so deriving it
+  // here costs at most a block or two of accuracy and gives no one an advantage.
+  private firstBlock: number | null = null;
 
   constructor(opts: {
     ctx: SimContext;
@@ -105,6 +110,18 @@ export class Reader {
       this.ctx.config,
       this.enabledIds,
     );
+    this.firstBlock ??= bn;
+    // The environment passes its resolved block budget, which is what a CLI --blocks override
+    // changed; the YAML the child reloads still says whatever the file says.
+    const runBlocks = Number(
+      process.env.ERIS_RUN_BLOCKS ?? this.ctx.config.runBlocks,
+    );
+    if (runBlocks > 0) {
+      observation.blocksRemaining = Math.max(
+        0,
+        runBlocks - (bn - this.firstBlock),
+      );
+    }
     return { observation, balances, stateById, fairPrice };
   }
 }

@@ -73,8 +73,8 @@ export function loadPromptAgent(agentDir: string): PromptAgent {
 const ENV_RULES = `# Environment rules
 
 You are one trading agent among several competing on a simulated DeFi market
-(Uniswap v3 / Balancer / Curve spot, GMX perp, Aave v3 lending — only the venues
-listed in observation.enabledProtocols are live this run).
+(Uniswap v3 / Balancer / Curve spot, GMX perp, Aave v3 lending, LST liquid staking —
+only the venues listed in observation.enabledProtocols are live this run).
 
 ## Observation (the user message contains the latest one as JSON)
 - fairPriceUsdcPerWeth: the environment's fair price for WETH in USDC. Venue prices
@@ -87,6 +87,14 @@ listed in observation.enabledProtocols are live this run).
   before reaching the chain (the cycle is wasted).
 - competition: priority-fee auction feedback (maxCompetitorPriorityFeeWei etc.).
   Blocks order transactions by priority fee, descending.
+- blocksRemaining: blocks left before the run ends. Anything that takes longer than
+  this to unwind cannot be unwound, and is scored at whatever you could exit it for.
+- protocols.lst (when the lst venue is live): a liquid staking token with TWO prices.
+  redemptionRateWeth is what the vault owes per LST, reachable only through a
+  withdrawal queue that takes withdrawalDelayBlocks. marketPriceWeth is what the
+  LST/WETH pool pays right now. discountBps is how far the market sits below
+  redemption (positive = LST is cheap). You are scored on what you could realize, so
+  a queued redemption only counts if it finalizes while blocksRemaining lasts.
 
 ## Action rules
 - Output exactly ONE action object per decision cycle, as JSON matching the schema.

@@ -75,6 +75,8 @@ import {
   STARTUP_WARN_BPS,
 } from "./noArb.js";
 import { EventSchedule } from "./events.js";
+import { accrueLst, lstBlockEvent, setupLst, type LstRuntime } from "./lst.js";
+import type { LstState } from "@eris/sdk/protocols/lst.js";
 import { VulnSchedule } from "./vulnEvents.js";
 import {
   deployVulnPools,
@@ -580,6 +582,14 @@ export async function runRealtimeSimulation(
       logger.event({ type: "prewarm_completed", blocks: config.prewarmBlocks });
     }
 
+    // ---- LST venue (issue #38): align the deployed vault with this run's economic clock, and
+    // refuse to start on a secondary market that is not tracking the redemption rate (an unwired
+    // rate oracle would hand every agent the same risk-free arb). Must happen before interval
+    // mining starts, since the reconfiguration is a mined setup tx.
+    const lstRuntime: LstRuntime | null = enabledIds.includes("lst")
+      ? await setupLst(ctx, logger)
+      : null;
+
     // ---- cross-venue no-arbitrage check at startup (phantom-spread guard; see noArb.ts) ----
     // Calibrated pools must not offer a positive *executable* cross-venue round trip. Fail fast on
     // gross breakage (mis-deploy) before agent processes launch; smaller positives are warned and
@@ -618,6 +628,7 @@ export async function runRealtimeSimulation(
         logger.runDir,
         { privateKey: agent.privateKey, priceFeedAddress, runId },
         config.agentsDir,
+        config.runBlocks,
         agentExtraEnv,
       );
     }
@@ -924,6 +935,34 @@ export async function runRealtimeSimulation(
           //   storage write (no tx → no front-run target). GMX is not front-run-relevant because the keeper does not
           //   execute in realtime, so avoid direct mapping-storage writes and keep it a normal-fee mempool tx (undecided).
           // 0010: put PriceFeed/oracle on the next block as fee-topping mempool txs.
+          // LST venue (issue #38): advance the vault's economic clock one block. Accrual is
+          // permissionless and its size is a pure function of blocks elapsed, so this only keeps
+          // the observable rate current -- it grants the environment nothing an agent could not do
+          // itself. It rides inside oracleTask rather than as its own parallel task because it
+          // sends from the same admin key: two concurrent senders race on the nonce, and anvil
+          // rejects the loser as "replacement transaction underpriced" (seen in a live run, which
+          // left the redemption rate frozen for the whole run).
+          const accrueLstTask = async (): Promise<void> => {
+            if (!lstRuntime) return;
+            try {
+              const hash = await accrueLst(ctx, lstRuntime, {
+                priorityFeeWei: oracleFee,
+              });
+              submittedByHash.set(hash.toLowerCase(), {
+                ownerId: "oracle",
+                role: "system",
+                priorityFeeWei: oracleFee,
+                actionType: "lstAccrue",
+              });
+            } catch (error) {
+              logger.event({
+                type: "lst_accrual_failed",
+                blockNumber: bn,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          };
+
           const oracleTask = async (): Promise<void> => {
             try {
               if (economicGas) {
@@ -949,6 +988,7 @@ export async function runRealtimeSimulation(
                     BigInt(bn),
                   );
                 }
+                await accrueLstTask();
                 return;
               }
               const feedHash = await updatePriceFeedMempool(
@@ -991,6 +1031,7 @@ export async function runRealtimeSimulation(
                   actionType: "oracleUpdate",
                 });
               }
+              await accrueLstTask();
             } catch (error) {
               logger.event({
                 type: "oracle_update_failed",
@@ -1024,6 +1065,11 @@ export async function runRealtimeSimulation(
                 consecutiveBlocks: w.consecutiveBlocks,
               });
             }
+            // LST telemetry rides on the state the loop already read: how far the market sits from
+            // redemption, and whether the reward reserve is running dry. The primary post-run
+            // source for whether the venue behaved (issue #38).
+            const lstState = stateById.get("lst") as LstState | undefined;
+            if (lstState) logger.event(lstBlockEvent(lstState, bn));
             const uni = stateById.get("uniswap") as
               { priceUsdcPerWeth?: number } | undefined;
             latestHistory.push({
@@ -1174,6 +1220,9 @@ export async function runRealtimeSimulation(
     };
     // agent -> α (β-removed PnL versus fair at execution; ADR 0015 Notes / equivalent to the amm-challenge edge).
     let alphaByAgent: Record<string, number> = {};
+    // agent -> realizable value at the last cross-section, where it differs from the mark
+    // (issue #38: an LST redemption still in the queue when the run ends).
+    let liquidatableValueByAgent: Record<string, number> = {};
     if (finalBlock >= runStartBlock) {
       try {
         const meta = await reconstructValueSeries({
@@ -1188,6 +1237,7 @@ export async function runRealtimeSimulation(
         });
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
+        liquidatableValueByAgent = meta.liquidatableValueByAgent;
         logger.event({ type: "value_series_reconstructed", ...meta });
       } catch (err) {
         // The reconstruction refuses a cross-section it cannot read rather than emitting a cliff in
@@ -1249,6 +1299,13 @@ export async function runRealtimeSimulation(
         // comparison. undefined when reconstruction did not run (finalBlock<runStartBlock).
         ...(agent.id in alphaByAgent
           ? { alphaUsdc: alphaByAgent[agent.id] }
+          : {}),
+        // What the position could actually be exited for at the run's last block, when the
+        // reconstruction found that it differs from the mark at that same cross-section (issue
+        // #38: an LST redemption whose queue outlives the run). Absent for every venue that exits
+        // at par, which is all of them today.
+        ...(agent.id in liquidatableValueByAgent
+          ? { liquidatableValueUsdc: liquidatableValueByAgent[agent.id] }
           : {}),
         // submission count's primary source is the agent's self-reported log (agents/<id>.jsonl) (ADR 0006 §5)
         includedTxCount: agent.included,

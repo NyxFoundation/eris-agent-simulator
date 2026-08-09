@@ -28,6 +28,11 @@ export class RealtimeAgentProcess {
     runDir: string,
     direct: DirectAccess,
     agentsDir: string,
+    // The run's block budget as the environment resolved it. Passed explicitly because the child
+    // rebuilds its config from the YAML and would otherwise miss a CLI --blocks override: an agent
+    // that thinks the run is longer than it is will start exits it cannot finish (issue #38's
+    // withdrawal queue makes that a scoring loss, not just a missed trade).
+    runBlocks: number,
     // Extra env the environment injects into all agents (e.g. ADR 0009 stress victim addresses).
     // If spec.env specifies a value it takes precedence (extraEnv acts as the default).
     extraEnv?: Record<string, string>,
@@ -55,6 +60,7 @@ export class RealtimeAgentProcess {
     childEnv.ERIS_AGENT_PRIVATE_KEY = direct.privateKey;
     childEnv.ERIS_PRICE_FEED_ADDRESS = direct.priceFeedAddress;
     childEnv.ERIS_RUN_ID = direct.runId;
+    if (runBlocks > 0) childEnv.ERIS_RUN_BLOCKS = String(runBlocks);
 
     let command: string;
     let args: string[];
