@@ -126,6 +126,14 @@ const SCHEMA: Record<string, string> = {
   "stress.victimCount": "ERIS_STRESS_VICTIM_COUNT",
   "stress.victimHf0": "ERIS_STRESS_VICTIM_HF0",
   "stress.victimWethWei": "ERIS_STRESS_VICTIM_WETH_WEI",
+  // lst (issue #38: liquid staking venue)
+  "lst.simulatedSecondsPerBlock": "ERIS_LST_SIMULATED_SECONDS_PER_BLOCK",
+  "lst.apyBps": "ERIS_LST_APY_BPS",
+  "lst.withdrawalDelayBlocks": "ERIS_LST_WITHDRAWAL_DELAY_BLOCKS",
+  "lst.maxDepositWethWei": "ERIS_LST_MAX_DEPOSIT_WETH_WEI",
+  "lst.apyRangeBps": "ERIS_LST_APY_RANGE_BPS",
+  "lst.apyStepBlocks": "ERIS_LST_APY_STEP_BLOCKS",
+  "lst.queueThroughputWeiPerBlock": "ERIS_LST_QUEUE_THROUGHPUT_WEI_PER_BLOCK",
   // vuln (ADR 0014: vulnerability-occurrence events)
   "vuln.events": "ERIS_VULN_EVENTS",
   "vuln.poolLiquidityUsdcUnits": "ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS",
@@ -141,7 +149,7 @@ const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
   "limits.aaveSupplyBase": { prefix: "MAX_AAVE_SUPPLY" },
   "flow.baseMax": { prefix: "FLOW_MAX" },
 };
-const SECTIONS = ["run", "funding", "limits", "flow", "stress", "vuln"];
+const SECTIONS = ["run", "funding", "limits", "flow", "stress", "vuln", "lst"];
 
 function baseEnvName(prefix: string, sym: string, infix?: string): string {
   const unit = unitSuffixFor(tokenInfo(sym).decimals);

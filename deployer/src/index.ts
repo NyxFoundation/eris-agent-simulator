@@ -11,11 +11,20 @@ import { deployBalancerV2 } from "./protocols/balancer-v2.js";
 import { deployAaveV3 } from "./protocols/aave-v3.js";
 import { deployCurve } from "./protocols/curve.js";
 import { deployGmxV2 } from "./protocols/gmx-v2.js";
+import { deployLst } from "./protocols/lst.js";
 
-type ProtocolName = "uniswap" | "balancer" | "aave" | "gmx" | "curve";
+type ProtocolName = "uniswap" | "balancer" | "aave" | "gmx" | "curve" | "lst";
 
-// gmx takes several minutes via hardhat-deploy, so put it last in ALL
-const ALL: ProtocolName[] = ["uniswap", "balancer", "aave", "curve", "gmx"];
+// gmx takes several minutes via hardhat-deploy, so put it last in ALL.
+// lst reuses the stableswap-ng factory for its secondary market, so it comes after curve.
+const ALL: ProtocolName[] = [
+  "uniswap",
+  "balancer",
+  "aave",
+  "curve",
+  "lst",
+  "gmx",
+];
 
 const DEPLOYERS: Record<
   ProtocolName,
@@ -25,6 +34,7 @@ const DEPLOYERS: Record<
   balancer: deployBalancerV2,
   aave: deployAaveV3,
   curve: deployCurve,
+  lst: deployLst,
   gmx: deployGmxV2,
 };
 

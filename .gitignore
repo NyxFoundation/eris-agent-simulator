@@ -9,6 +9,7 @@ config/*.yaml
 !config/all18-mixed.yaml
 !config/claude-llm.yaml
 !config/vuln-test.yaml
+!config/lst.yaml
 runs/
 cache/
 out/

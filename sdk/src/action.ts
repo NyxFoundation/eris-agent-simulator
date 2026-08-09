@@ -368,13 +368,27 @@ function applyLeafSpend(
       );
       spendStable(BigInt(item.amountQuoteDesired ?? item.amountUsdcDesired));
       break;
+    // Issue #38: an lst leg is bundleable, so cumulative validation has to see what it consumes.
+    // Without these two cases both leaves of a {lstDeposit 10 WETH, lstSwap 10 WETH} bundle
+    // validated against the same untouched balance, the bundle was accepted, and the second leg
+    // reverted on chain at the agent's expense.
+    case "lstDeposit":
+      spendBase("WETH", BigInt(item.amountWethWei));
+      break;
+    case "lstSwap":
+      if (item.tokenIn === "WETH") spendBase("WETH", BigInt(item.amountIn));
+      // Selling LST credits WETH, but the LST side is not in the bases map (it is the venue's own
+      // accounting), so there is nothing to deduct and the credit is left to the on-chain result.
+      break;
     case "aaveSupply":
-      if (kindOf(item.asset) === "base")
-        spendBase(item.asset, BigInt(item.amount));
-      else spendStable(BigInt(item.amount));
+      // Anything that is not the settlement stable is deducted from the base side. An LST is
+      // neither (issue #38 phase 3) and is not in the bases map, so spendBase is a no-op for it --
+      // correct, since its balance is tracked by its own venue rather than here.
+      if (kindOf(item.asset) === "stable") spendStable(BigInt(item.amount));
+      else spendBase(item.asset, BigInt(item.amount));
       break;
     case "aaveRepay": {
-      const isBase = kindOf(item.asset) === "base";
+      const isBase = kindOf(item.asset) !== "stable";
       const amt =
         item.amount === "max"
           ? isBase

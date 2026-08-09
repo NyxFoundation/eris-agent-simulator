@@ -5,7 +5,7 @@ import {
   type Address,
   type PublicClient,
 } from "viem";
-import { AAVE, TOKENS, stableBalanceOf } from "../constants.js";
+import { AAVE, LST, TOKENS, stableBalanceOf } from "../constants.js";
 import { marketsFor, tokenInfo, tokenRegistry } from "../markets.js";
 import {
   accountAddress,
@@ -15,7 +15,7 @@ import {
   sendAndMine,
   sendAsImpersonated,
 } from "../chain.js";
-import { erc20Abi } from "../abis.js";
+import { curveStableSwapNgAbi, erc20Abi, lstVaultAbi } from "../abis.js";
 import type {
   AaveObservation,
   AgentObservation,
@@ -28,10 +28,12 @@ import type {
   BuiltTx,
   ProtocolAdapter,
   SimContext,
+  UnpricedHoldingDetail,
   ValidationResult,
 } from "./types.js";
 import { approveTx } from "./uniswap.js";
 import { deployContract } from "./deploy.js";
+import { enabledProtocolIds } from "./enabled.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
 const VARIABLE_RATE = 2n;
@@ -95,23 +97,38 @@ export const mockAggregatorAbi = parseAbi([
 // Aave uses native USDC as the reserve (settlement stable).
 const AAVE_STABLE = TOKENS.USDC.address;
 const AAVE_STABLE_SYMBOL: TokenSymbol = "USDC";
+// The LST venue's share token, when it is listed as collateral (issue #38 phase 3).
+const LST_SYMBOL: TokenSymbol = "LST";
 
 // Base symbols enabled for aave (from MARKET_LEGS.aave; WETH only on the default fork).
 function aaveBaseSymbols(): TokenSymbol[] {
   return marketsFor("aave").map((m) => m.base);
 }
 
-// Symbols of the reserves we read/write (enabled bases + settlement stable).
-// [WETH, USDC] on the default fork (matches prior behavior).
+// Symbols of the reserves we read/write (enabled bases + settlement stable + the LST when it is
+// listed). [WETH, USDC] on the default fork (matches prior behavior).
+//
+// The LST is collateral only (issue #38 phase 3): it is listed so ETH can be borrowed *against* it,
+// which is the leveraged-staking loop, and the reserve is deliberately not borrow-enabled. Supply
+// and withdraw are the operations that make sense; a borrow of it is rejected on chain.
 function aaveReserveSymbols(): TokenSymbol[] {
-  return [...aaveBaseSymbols(), AAVE_STABLE_SYMBOL];
+  const symbols = [...aaveBaseSymbols(), AAVE_STABLE_SYMBOL];
+  // Gated on the run enabling lst, not merely on the deployment having listed it. Keying off the
+  // deployment alone meant a `protocols: [uniswap, aave]` run against the new state dump deployed
+  // an extra aggregator, sent an extra setAssetSources and setReserveFlashLoaning, added a reserve
+  // read per agent per block and an admin tx per block -- changing the nonce and tx ordering of
+  // every pre-existing local aave run, against this file's own "byte-identical when disabled" rule.
+  if (LST?.aaveAToken && enabledProtocolIds().includes("lst"))
+    symbols.push(LST_SYMBOL);
+  return symbols;
 }
 
-// Symbol -> reserve address. The stable is native USDC; everything else uses the registry address.
+// Symbol -> reserve address. The stable is native USDC; the LST is the vault's own share token
+// (it is not in the base registry, by design); everything else uses the registry address.
 function aaveAsset(symbol: TokenSymbol): Address {
-  return symbol === AAVE_STABLE_SYMBOL
-    ? AAVE_STABLE
-    : tokenInfo(symbol).address;
+  if (symbol === AAVE_STABLE_SYMBOL) return AAVE_STABLE;
+  if (symbol === LST_SYMBOL && LST) return LST.lstToken;
+  return tokenInfo(symbol).address;
 }
 
 type AaveActionType =
@@ -181,11 +198,17 @@ function validate(
     asset: TokenSymbol;
     amount: string;
   };
-  // The stable uses the aggregated USDC-equivalent balance; bases use the bases map (WETH equals wethWei for compatibility).
-  const assetBalance = (): bigint =>
-    a.asset === AAVE_STABLE_SYMBOL
-      ? stableBalanceOf(balances, AAVE_STABLE)
-      : (balances.bases?.[a.asset] ?? balances.wethWei);
+  // The stable uses the aggregated USDC-equivalent balance; bases use the bases map (WETH equals
+  // wethWei for compatibility). The LST is in neither: it is not a registry base, so its balance
+  // comes from its own venue's observation -- falling through to wethWei would compare an LST
+  // amount against a WETH balance and wave through a supply that reverts on chain.
+  const assetBalance = (): bigint => {
+    if (a.asset === AAVE_STABLE_SYMBOL)
+      return stableBalanceOf(balances, AAVE_STABLE);
+    if (a.asset === LST_SYMBOL)
+      return BigInt(obs.protocols.lst?.lstBalanceWei ?? "0");
+    return balances.bases?.[a.asset] ?? balances.wethWei;
+  };
   if (a.amount !== "max") {
     const amount = BigInt(a.amount);
     if (amount <= 0n) return { ok: false, reason: "amount must be positive" };
@@ -194,7 +217,8 @@ function validate(
         return { ok: false, reason: "supply amount exceeds balance" };
       // ADR 0013: apply the supply limit to every base. WETH=maxAaveSupplyWethWei; additional bases use
       // limits.baseLimits[asset] ("0"=no limit). Stable assets have no supply limit (as before).
-      if (a.asset !== AAVE_STABLE_SYMBOL) {
+      // The LST's own cap is the per-stake one on the venue itself, so it is not re-capped here.
+      if (a.asset !== AAVE_STABLE_SYMBOL && a.asset !== LST_SYMBOL) {
         const maxSupply =
           a.asset === "WETH"
             ? BigInt(obs.limits.maxAaveSupplyWethWei)
@@ -487,13 +511,86 @@ export const aaveAdapter: ProtocolAdapter = {
 
   // Aave needs no per-venue wiring in the scorer: getUserAccountData is an aggregate that already
   // covers every supplied asset, which is why this venue never had the #41 hole.
+  //
+  // It does have a different one once an LST is listed (issue #38 phase 3). Aave marks that
+  // collateral at its oracle price, which is the vault's *par* redemption rate — correct for
+  // deciding liquidations, and wrong for deciding what an agent could walk away with. Left alone,
+  // supplying LST to Aave launders a position the LST venue would have haircut into a par mark:
+  // in the last blocks of a run, ten shares in a wallet score the pool's discounted quote while
+  // the same ten shares posted here score par. That is free score for turning leverage on. So the
+  // LST leg of the collateral is re-marked in liquidatableValueUsdc, using the same realizable
+  // rule the venue itself applies.
   async *valueAtBlock(ctx) {
-    const results = yield ctx.agents.map((a) => ({
-      address: AAVE.Pool,
-      abi: aavePoolAbi,
-      functionName: "getUserAccountData",
-      args: [a.address],
-    }));
+    const lstListed = Boolean(LST?.aaveAToken);
+    const results = yield [
+      ...ctx.agents.map((a) => ({
+        address: AAVE.Pool,
+        abi: aavePoolAbi,
+        functionName: "getUserAccountData",
+        args: [a.address],
+      })),
+      ...(lstListed
+        ? ctx.agents.map((a) => ({
+            address: LST!.aaveAToken as Address,
+            abi: erc20Abi,
+            functionName: "balanceOf",
+            args: [a.address],
+          }))
+        : []),
+    ];
+    // Second stage only for agents actually holding LST collateral: what that many shares would
+    // fetch on the secondary market right now, and what the queue would charge in time.
+    const lstCollateral = new Map<number, bigint>();
+    if (lstListed) {
+      ctx.agents.forEach((_a, i) => {
+        const bal = results[ctx.agents.length + i];
+        if (typeof bal === "bigint" && bal > 0n) lstCollateral.set(i, bal);
+      });
+    }
+    const haircutTargets = [...lstCollateral.entries()];
+    let haircutReads: unknown[] = [];
+    if (haircutTargets.length > 0 && LST) {
+      const lst = LST;
+      haircutReads = yield haircutTargets.flatMap(([, shares]) => [
+        {
+          address: lst.pool,
+          abi: curveStableSwapNgAbi,
+          functionName: "get_dy",
+          args: [
+            BigInt(lst.poolLstIndex),
+            BigInt(lst.poolWethIndex),
+            shares,
+          ],
+        },
+        {
+          address: lst.vault,
+          abi: lstVaultAbi,
+          functionName: "convertToAssets",
+          args: [shares],
+        },
+        {
+          address: lst.vault,
+          abi: lstVaultAbi,
+          functionName: "estimateDelayBlocks",
+          args: [shares],
+        },
+      ]);
+    }
+    // agent -> WETH of par value that an exit could not actually recover.
+    const shortfallWei = new Map<number, bigint>();
+    haircutTargets.forEach(([agentIndex], k) => {
+      const exit = haircutReads[k * 3];
+      const par = haircutReads[k * 3 + 1];
+      const delay = haircutReads[k * 3 + 2];
+      if (typeof par !== "bigint" || par === 0n) return;
+      const queueFits =
+        typeof delay === "bigint" &&
+        ctx.blockNumber + Number(delay) <= ctx.horizonBlock;
+      if (queueFits) return; // par is reachable through the queue: no haircut
+      if (typeof exit !== "bigint") return; // cannot price the exit; leave the par mark alone
+      if (exit < par) shortfallWei.set(agentIndex, par - exit);
+    });
+
     const out: Record<string, AgentProtocolValue> = {};
     ctx.agents.forEach((agent, i) => {
       const account = results[i] as readonly bigint[] | undefined;
@@ -502,19 +599,35 @@ export const aaveAdapter: ProtocolAdapter = {
       // A failed read is the whole position going missing, and a zero there is indistinguishable
       // from having been liquidated — report it instead (issue #44).
       const usd = account ? Number(account[0] - account[1]) / 1e8 : 0;
+      const unpriced: UnpricedHoldingDetail[] = account
+        ? []
+        : [
+            {
+              source: "aave-account",
+              amountRaw: "",
+              reason: "read-failed" as const,
+              read: "AavePool.getUserAccountData",
+            },
+          ];
+      let liquidatableUsdc = usd;
+      const shortfall = shortfallWei.get(i);
+      const shares = lstCollateral.get(i);
+      if (account && shortfall !== undefined && shares !== undefined && LST) {
+        const shortfallUsd =
+          (Number(shortfall) / 1e18) * (ctx.fairByBase().WETH ?? 0);
+        liquidatableUsdc = usd - shortfallUsd;
+        unpriced.push({
+          token: LST.lstToken,
+          amountRaw: shares.toString(),
+          source: "aave-lst-collateral",
+          reason: "unrealizable",
+          read: "MockLSTVault.estimateDelayBlocks",
+        });
+      }
       out[agent.id] = {
         valueUsdc: usd,
-        liquidatableValueUsdc: usd,
-        unpriced: account
-          ? []
-          : [
-              {
-                source: "aave-account",
-                amountRaw: "",
-                reason: "read-failed",
-                read: "AavePool.getUserAccountData",
-              },
-            ],
+        liquidatableValueUsdc: liquidatableUsdc,
+        unpriced,
       };
     });
     return out;
@@ -525,7 +638,15 @@ export const aaveAdapter: ProtocolAdapter = {
   // positive. Immutable for a deployment, so resolved once.
   async accountedTokens(publicClient): Promise<Address[]> {
     if (reserveTokenCache) return reserveTokenCache;
-    const assets = Object.values(tokenRegistry()).map((t) => t.address);
+    // Every reserve this venue trades, not just the ones in the token registry: the LST is listed
+    // as collateral but deliberately kept out of the registry (issue #38), so registry-only lookup
+    // left its aToken looking like an unaccounted holding in every levered run.
+    const assets = [
+      ...new Set([
+        ...Object.values(tokenRegistry()).map((t) => t.address),
+        ...aaveReserveSymbols().map(aaveAsset),
+      ]),
+    ];
     const results = (await publicClient.multicall({
       contracts: assets.map((asset) => ({
         address: AAVE.PoolDataProvider,

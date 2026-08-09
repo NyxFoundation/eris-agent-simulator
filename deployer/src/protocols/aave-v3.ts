@@ -19,6 +19,13 @@ function readDeployment(name: string): { address: Address; abi: Abi } {
   return { address: j.address as Address, abi: j.abi as Abi };
 }
 
+function readArtifact(name: string): { abi: Abi; bytecode: `0x${string}` } {
+  const j = JSON.parse(
+    readFileSync(resolve(DEPLOYMENTS, `${name}.json`), "utf8"),
+  );
+  return { abi: j.abi as Abi, bytecode: j.bytecode as `0x${string}` };
+}
+
 // Target tokens (Aave test token keys)
 const TOKEN_KEYS = ["WETH", "USDC", "WBTC", "USDT", "DAI"] as const;
 
@@ -274,6 +281,193 @@ async function registerSharedReserves() {
     "shared reserve registration",
     SHARED_RESERVE_KEYS.filter((k) => reg.tokens[k]).join(", "),
   );
+}
+
+// ---------------------------------------------------------------------------
+// LST as a reserve (issue #38 phase 3)
+// ---------------------------------------------------------------------------
+
+// Aave's own reserves supply the risk parameters for the shared tokens above by cloning a
+// same-named market. An LST has no such source, so its parameters are stated here instead. These
+// sit a notch below Arbitrum's real wstETH market (LTV 78.5% / LT 81%): the vault can be slashed
+// and the secondary market is thin, both of which argue for less leverage, and a conservative
+// number makes the liquidation cascade a tail event rather than the default outcome.
+const LST_LTV = 7000n; // 70%
+const LST_LIQUIDATION_THRESHOLD = 7500n; // 75%
+const LST_LIQUIDATION_BONUS = 10_750n; // 7.5% bonus (Aave encodes it as 100% + bonus)
+const LST_RESERVE_FACTOR = 1500n; // 15%
+
+/// Register the LST vault's share token as an Aave reserve: collateral only, no borrowing.
+///
+/// Collateral-only mirrors how liquid staking tokens are actually listed (nobody borrows wstETH
+/// meaningfully; the point is borrowing ETH *against* it), and it keeps the leverage loop to the
+/// one the venue is about — stake, post as collateral, borrow WETH, stake again.
+///
+/// The price source is a MockAggregator of its own rather than a borrowed one, because the LST is
+/// not worth the same as WETH: it is worth WETH x the vault's redemption rate, and that rate rises
+/// with yield and falls with a slash. The environment writes it every block, so the oracle lags
+/// the vault by exactly one block — the same lag every other price in this simulation has, and the
+/// thing that makes a slash reach health factors a block after it reaches the vault.
+export async function registerLstReserve(
+  lstToken: Address,
+  redemptionRateWad: bigint,
+): Promise<{
+  aggregator: Address;
+  aToken: Address;
+  variableDebtToken: Address;
+}> {
+  info("Aave V3: registering the LST reserve (collateral only)");
+  const configuratorAddr = readDeployment(
+    "PoolConfigurator-Proxy-Aave",
+  ).address;
+  const configuratorAbi = readDeployment("PoolConfigurator-Implementation").abi;
+  const oracle = readDeployment("AaveOracle-Aave");
+  const poolAbi = poolImplAbi();
+  const pdpAddr = readDeployment("PoolDataProvider-Aave").address;
+  const pdpAbi = readDeployment("PoolDataProvider-Aave").abi;
+  const { pool, tokens } = aave();
+
+  // The opening price has to be WETH x the redemption rate *at Aave's own WETH price*, not at the
+  // price the spot venues were seeded with. Those differ (Aave's testnet WETH aggregator says
+  // $4000, the pools are seeded at $3000), and using the seed price listed the LST 25% below its
+  // collateral value until the environment's first per-block write corrected it -- a window in
+  // which health factors were wrong.
+  const wethPriceUsd8 = (await publicClient.readContract({
+    address: oracle.address,
+    abi: oracle.abi,
+    functionName: "getAssetPrice",
+    args: [tokens.WETH],
+  })) as bigint;
+  const initialPriceUsd8 = (wethPriceUsd8 * redemptionRateWad) / 10n ** 18n;
+
+  const existing = (await publicClient.readContract({
+    address: pool,
+    abi: poolAbi,
+    functionName: "getReserveData",
+    args: [lstToken],
+  })) as { aTokenAddress: Address };
+  const fresh =
+    !existing.aTokenAddress || existing.aTokenAddress === ZERO_ADDRESS;
+
+  // The aggregator is deployed only when it will actually be wired. Deploying it first meant a
+  // re-run on an existing reserve returned a brand new contract that setAssetSources never pointed
+  // at, which then went into deployments.json and constants as "the LST's price source" while
+  // nothing read it -- and burned a CREATE, shifting every later address on a nominal no-op.
+  let aggregator: Address;
+  if (fresh) {
+    // From Aave's own MockAggregator, so the storage layout matches what the environment writes to
+    // (the answer in slot 0).
+    const aggArtifact = readArtifact("WETH-TestnetPriceAggregator-Aave");
+    const aggHash = await deployerWallet.deployContract({
+      abi: aggArtifact.abi,
+      bytecode: aggArtifact.bytecode,
+      args: [initialPriceUsd8],
+      account: dep,
+      chain: anvilChain,
+    });
+    aggregator = (await waitTx(aggHash)).contractAddress as Address;
+    ok("LST price aggregator", aggregator);
+  } else {
+    aggregator = (await publicClient.readContract({
+      address: oracle.address,
+      abi: oracle.abi,
+      functionName: "getSourceOfAsset",
+      args: [lstToken],
+    })) as Address;
+    ok("LST price aggregator", `${aggregator} (existing)`);
+  }
+
+  if (fresh) {
+    // The interest rate strategy is cloned from WETH: nothing is borrowable here, so the curve only
+    // ever prices supply, and WETH's is the closest thing to an ETH-denominated asset's.
+    const wethReserve = (await publicClient.readContract({
+      address: pool,
+      abi: poolAbi,
+      functionName: "getReserveData",
+      args: [tokens.WETH],
+    })) as { interestRateStrategyAddress: Address };
+
+    let h = await deployerWallet.writeContract({
+      address: oracle.address,
+      abi: oracle.abi,
+      functionName: "setAssetSources",
+      args: [[lstToken], [aggregator]],
+      account: dep,
+      chain: anvilChain,
+    });
+    await waitTx(h);
+
+    h = await deployerWallet.writeContract({
+      address: configuratorAddr,
+      abi: configuratorAbi,
+      functionName: "initReserves",
+      args: [
+        [
+          {
+            aTokenImpl: readDeployment("AToken-Aave").address,
+            stableDebtTokenImpl: readDeployment("StableDebtToken-Aave").address,
+            variableDebtTokenImpl: readDeployment("VariableDebtToken-Aave")
+              .address,
+            underlyingAssetDecimals: 18,
+            interestRateStrategyAddress:
+              wethReserve.interestRateStrategyAddress,
+            underlyingAsset: lstToken,
+            treasury: readDeployment("TreasuryProxy").address,
+            incentivesController: readDeployment("IncentivesProxy").address,
+            aTokenName: "Aave Eris LST",
+            aTokenSymbol: "aErLST",
+            variableDebtTokenName: "Aave Variable Debt Eris LST",
+            variableDebtTokenSymbol: "variableDebtErLST",
+            stableDebtTokenName: "Aave Stable Debt Eris LST",
+            stableDebtTokenSymbol: "stableDebtErLST",
+            params: "0x10",
+          },
+        ],
+      ],
+      account: dep,
+      chain: anvilChain,
+    });
+    await waitTx(h);
+
+    h = await deployerWallet.writeContract({
+      address: configuratorAddr,
+      abi: configuratorAbi,
+      functionName: "configureReserveAsCollateral",
+      args: [
+        lstToken,
+        LST_LTV,
+        LST_LIQUIDATION_THRESHOLD,
+        LST_LIQUIDATION_BONUS,
+      ],
+      account: dep,
+      chain: anvilChain,
+    });
+    await waitTx(h);
+    h = await deployerWallet.writeContract({
+      address: configuratorAddr,
+      abi: configuratorAbi,
+      functionName: "setReserveFactor",
+      args: [lstToken, LST_RESERVE_FACTOR],
+      account: dep,
+      chain: anvilChain,
+    });
+    await waitTx(h);
+    // Deliberately not calling setReserveBorrowing: the LST is collateral, not something to borrow.
+  } else {
+    ok("LST reserve", "already exists, reusing");
+  }
+
+  const toks = (await publicClient.readContract({
+    address: pdpAddr,
+    abi: pdpAbi,
+    functionName: "getReserveTokensAddresses",
+    args: [lstToken],
+  })) as readonly [Address, Address, Address];
+  ok(
+    "LST reserve",
+    `LTV ${Number(LST_LTV) / 100}% / LT ${Number(LST_LIQUIDATION_THRESHOLD) / 100}% / collateral only`,
+  );
+  return { aggregator, aToken: toks[0], variableDebtToken: toks[2] };
 }
 
 /** Mint test tokens to the deployer via the Faucet */

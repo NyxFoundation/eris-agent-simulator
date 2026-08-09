@@ -154,6 +154,45 @@ export const gmxDecreaseSchema = z.object({
   ...priorityFee,
 });
 
+// LST venue (issue #38). The market is LST/WETH, so there is no `base` market selector here.
+export const lstDepositSchema = z.object({
+  type: z.literal("lstDeposit"),
+  amountWethWei: decimalString.describe(
+    "WETH to stake (wei). Mints LST at the vault's current redemption rate.",
+  ),
+  ...priorityFee,
+});
+
+export const lstSwapSchema = z.object({
+  type: z.literal("lstSwap"),
+  tokenIn: z
+    .enum(["WETH", "LST"])
+    .describe(
+      'the token you are sending: "WETH" buys LST from the secondary market, "LST" sells into it (the instant exit, at the pool\'s discount).',
+    ),
+  amountIn: decimalString.describe("wei of tokenIn (both are 18-decimal)"),
+  slippageBps: z.number().int().nonnegative().optional(),
+  ...priorityFee,
+});
+
+export const lstRequestWithdrawSchema = z.object({
+  type: z.literal("lstRequestWithdraw"),
+  amountLstWei: decimalString.describe(
+    "LST shares to queue for redemption at par (wei). Claimable after withdrawalDelayBlocks; this is the slow, full-value exit.",
+  ),
+  ...priorityFee,
+});
+
+export const lstClaimWithdrawSchema = z.object({
+  type: z.literal("lstClaimWithdraw"),
+  requestId: decimalString
+    .optional()
+    .describe(
+      "a specific queued request id. Omit to claim every request that has finalized.",
+    ),
+  ...priorityFee,
+});
+
 const rawTxSchema = z.object({
   to: hexString,
   data: hexString,
@@ -190,6 +229,12 @@ const LEAF_SCHEMAS_BY_PROTOCOL: Record<ProtocolId, z.ZodTypeAny[]> = {
     aaveRepaySchema,
   ],
   gmx: [gmxIncreaseSchema, gmxDecreaseSchema],
+  lst: [
+    lstDepositSchema,
+    lstSwapSchema,
+    lstRequestWithdrawSchema,
+    lstClaimWithdrawSchema,
+  ],
 };
 
 // GMX cannot be bundled because it requires keeper execution (same rule as bundleable in action.ts).
@@ -198,11 +243,19 @@ const BUNDLEABLE_PROTOCOLS: ProtocolId[] = [
   "balancer",
   "curve",
   "aave",
+  "lst",
 ];
 
 // AgentAction schema restricted to enabled venues (default is all venues).
 export function agentActionSchemaFor(
-  enabled: ProtocolId[] = ["uniswap", "balancer", "curve", "gmx", "aave"],
+  enabled: ProtocolId[] = [
+    "uniswap",
+    "balancer",
+    "curve",
+    "gmx",
+    "aave",
+    "lst",
+  ],
 ): z.ZodTypeAny {
   const leaves = enabled.flatMap((id) => LEAF_SCHEMAS_BY_PROTOCOL[id] ?? []);
   const bundleable = enabled

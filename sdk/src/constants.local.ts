@@ -7,7 +7,7 @@ import type { MarketLegs } from "./types.js";
 
 // Canonical fingerprint of the source deployments.json (ADR 0016 §2). The backtest CLI
 // compares it against the state dump manifest and, on mismatch, regenerates from the manifest's bundled deployments.
-export const DEPLOYMENTS_FINGERPRINT = "sha256:0ea10b08653ec9ea09c4524268c56c2c3f3730326cccd5d87e3bc0d15fb501be";
+export const DEPLOYMENTS_FINGERPRINT = "sha256:b7d41bba15bd2c1ce520982367e50e6f30381de94390fb4033fda3ce26633d5a";
 
 export type LocalDeployment = {
   CHAIN_ID: number;
@@ -48,6 +48,21 @@ export type LocalDeployment = {
   };
   // ADR 0013: multi-asset market legs (WBTC etc.). Includes the WBTC leg if WBTC is in deployments.json.
   MARKET_LEGS?: MarketLegs;
+  // Issue #38: present only when the deploy included the lst venue.
+  LST?: {
+    vault: Address;
+    lstToken: Address;
+    asset: Address;
+    pool: Address;
+    poolLstIndex: number;
+    poolWethIndex: number;
+    simulatedSecondsPerBlock: number;
+    targetApyBps: number;
+    withdrawalDelayBlocks: number;
+    aaveAggregator?: Address;
+    aaveAToken?: Address;
+    aaveVariableDebtToken?: Address;
+  };
 };
 
 export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
@@ -92,19 +107,19 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     usdcToken: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address,
   },
   GMX: {
-    RoleStore: "0xD49a0e9A4CD5979aE36840f542D2d7f02C4817Be" as Address,
-    DataStore: "0x70bDA08DBe07363968e9EE53d899dFE48560605B" as Address,
-    Oracle: "0x54B8d8E2455946f2A5B8982283f2359812e815ce" as Address,
-    EventEmitter: "0x821f3361D454cc98b7555221A06Be563a7E2E0A6" as Address,
-    Router: "0x9BcC604D4381C5b0Ad12Ff3Bf32bEdE063416BC7" as Address,
-    ExchangeRouter: "0x3a622DB2db50f463dF562Dc5F341545A64C580fc" as Address,
-    OrderHandler: "0x0fe4223AD99dF788A6Dcad148eB4086E6389cEB6" as Address,
-    OrderVault: "0x3C15538ED063e688c8DF3d571Cb7a0062d2fB18D" as Address,
-    LiquidationHandler: "0xF6a8aD553b265405526030c2102fda2bDcdDC177" as Address,
-    Reader: "0xF85895D097B2C25946BB95C4d11E2F3c035F8f0C" as Address,
-    Config: "0xC66AB83418C20A65C3f8e83B3d11c8C3a6097b6F" as Address,
+    RoleStore: "0xB06c856C8eaBd1d8321b687E188204C1018BC4E5" as Address,
+    DataStore: "0x71089Ba41e478702e1904692385Be3972B2cBf9e" as Address,
+    Oracle: "0xD6b040736e948621c5b6E0a494473c47a6113eA8" as Address,
+    EventEmitter: "0xf090f16dEc8b6D24082Edd25B1C8D26f2bC86128" as Address,
+    Router: "0x3904b8f5b0F49cD206b7d5AABeE5D1F37eE15D8d" as Address,
+    ExchangeRouter: "0x9C85258d9A00C01d00ded98065ea3840dF06f09c" as Address,
+    OrderHandler: "0x0Dd99d9f56A14E9D53b2DdC62D9f0bAbe806647A" as Address,
+    OrderVault: "0x8fC8CFB7f7362E44E472c690A6e025B80E406458" as Address,
+    LiquidationHandler: "0xF5b81Fe0B6F378f9E6A3fb6A6cD1921FCeA11799" as Address,
+    Reader: "0x6B21b3ae41f818Fc91e322b53f8D0773d31eCB75" as Address,
+    Config: "0x071586BA1b380B00B793Cc336fe01106B0BFbE6D" as Address,
   },
-  GMX_MARKETS: { ETH_USD: "0xE733b869384b78dB550a4D5aC903E96B936D9293" as Address },
+  GMX_MARKETS: { ETH_USD: "0xA5ecC14E7c21e0E4Fc9B41092F3db87d7B3c9865" as Address },
   AAVE: {
     PoolAddressesProvider: "0xB0D4afd8879eD9F52b28595d31B441D079B2Ca07" as Address,
     Pool: "0x7B6fCB97Fc1B74e16CBe577054a4426d3487837C" as Address,
@@ -112,6 +127,21 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     AclAdmin: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as Address,
     AclManager: "0x4EE6eCAD1c2Dae9f525404De8555724e3c35d07B" as Address,
     PoolDataProvider: "0x5081a39b8A5f0E35a8D959395a630b68B74Dd30f" as Address,
+  },
+  // Issue #38: the LST venue (wstETH-style vault + LST/WETH stableswap-ng secondary market).
+  LST: {
+    vault: "0xD49a0e9A4CD5979aE36840f542D2d7f02C4817Be" as Address,
+    lstToken: "0xD49a0e9A4CD5979aE36840f542D2d7f02C4817Be" as Address,
+    asset: "0x5FbDB2315678afecb367f032d93F642f64180aa3" as Address,
+    pool: "0x3d8bf8Fc25136DC4Bf6CF7c2ee688b9a66a480F3" as Address,
+    poolLstIndex: 1,
+    poolWethIndex: 0,
+    simulatedSecondsPerBlock: 3600,
+    targetApyBps: 300,
+    withdrawalDelayBlocks: 24,
+    aaveAggregator: "0x70bDA08DBe07363968e9EE53d899dFE48560605B" as Address,
+    aaveAToken: "0xfB2C19FF34F419a02e4564e8Ce6A3448fAD93f8b" as Address,
+    aaveVariableDebtToken: "0x555a114B12884781a975Fa45bDb4d3cC9ba1d640" as Address,
   },
   MARKET_LEGS: {
     uniswap: {
@@ -127,8 +157,8 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
       WBTC: { pool: "0xF2AdAad89d56D49C697B9907C7D66ef27d96f859" as Address, baseIndex: 1, quoteIndex: 0, stable: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address },
     },
     gmx: {
-      WETH: { market: "0xE733b869384b78dB550a4D5aC903E96B936D9293" as Address },
-      WBTC: { market: "0x1aE4DB9915671B3E15fc265bAF3B9E509DC1f56e" as Address },
+      WETH: { market: "0xA5ecC14E7c21e0E4Fc9B41092F3db87d7B3c9865" as Address },
+      WBTC: { market: "0x2ffb9D923da1736ad51739B857cEf3a56EFD5f47" as Address },
     },
     aave: {
       WETH: {},

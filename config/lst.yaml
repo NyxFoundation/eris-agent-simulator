@@ -1,0 +1,151 @@
+# config/lst.yaml — the LST venue (issue #38): a wstETH-style vault plus its LST/WETH market.
+#
+#   npm run sim:realtime -- --config config/lst.yaml
+#
+# Prerequisites. This venue has no Arbitrum counterpart — the vault is ours — so unlike every other
+# venue it runs **only on a local deploy**:
+#
+#   1. cd deployer && npm run deploy -- --keep-fresh        # includes the lst protocol
+#   2. npm run gen:local-constants                          # picks up LST from deployments.json
+#   3. npm run sim:realtime -- --config config/lst.yaml
+#
+# A fork run that lists `lst` in run.protocols fails fast at startup rather than reading zeros.
+#
+# Funding note: the LST venue is WETH-denominated, so unlike the USDC-only evaluation profile this
+# config hands out WETH. That reintroduces price drift (beta) into netPnlUsdc. alphaUsdc removes it
+# from *free inventory* by evaluating at a fixed reference fair, but a staked position is marked
+# live like every other protocol position, so some beta survives there too — the same approximation
+# Aave supply has always had. Compare agents within one run, not across price paths.
+#
+# Read scores here with that in mind: **a strategy that holds LST is structurally penalised against
+# one that holds none**, because it carries WETH exposure that a USDC-denominated score treats as
+# risk without reward. Measured on this config: noop 0 > lst-carry -203 > lst-carry-wide -233, while
+# venue-arb (which ends flat in WETH) makes +115 on the same blocks. That is the scoring frame, not
+# the venue. Scoring in ETH terms is exactly the DAT-style competition issue #38 opens with, and it
+# is the follow-on this phase makes possible rather than something this phase does.
+
+run:
+  seed: 1
+  blocks: 80
+  seconds: 400 # end by block count (well above blocks x blockTimeSec)
+  blockTimeSec: 2
+  # The AMM venues stay on so the LST market is not the only thing moving, and so a run exercises
+  # the same cross-venue no-arbitrage guard as usual.
+  #
+  # Add `aave` to get the phase 3 layer: the deploy lists the LST as Aave collateral (LTV 70% / LT
+  # 75%, collateral only), priced at WETH x the vault's redemption rate and rewritten every block.
+  # That makes leveraged staking possible -- supply LST, borrow WETH, stake again -- and makes a
+  # slash reach health factors one block after it reaches the vault.
+  #
+  # To watch an agent lever, add `aave` here and give lst-carry
+  # `env: { ERIS_LST_LEVERAGE_TARGET_HF: "2.0" }`. It then runs stake -> post -> borrow -> stake up
+  # to that health factor and repays if it drops under 1.6. Off by default: leverage multiplies the
+  # slashing exposure as readily as the yield.
+  protocols: [uniswap, balancer, curve, lst]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+
+funding:
+  # WETH to stake with (see the funding note above). USDC is still handed out so the AMM agents in
+  # the roster have something to trade.
+  wethWei: "20000000000000000000" # 20 WETH
+  usdcUnits: "25000000000"
+
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+
+# LST venue calibration (issue #38).
+#
+# Yield runs on a compressed *economic* clock rather than EVM time — warping time would also move
+# Aave's accrual and GMX funding. One block stands for simulatedSecondsPerBlock seconds of staking.
+#
+# apyBps is deliberately the same order as the Aave WETH supply rate: a 1000x-speed LST would make
+# every other venue irrelevant. At the defaults below (3%/yr on a one-hour-per-block clock) an
+# 80-block run accrues roughly 2.7bps of yield — small against the pool's ~12bps round trip, which
+# is the point: in phase 1 the money is in the discount and the queue decision, not in the carry.
+# Phase 2 (seed-driven APY variation, queue congestion, size-dependent depeg, slashing) is what
+# makes the choice non-trivial.
+lst:
+  simulatedSecondsPerBlock: 3600 # one block == one hour of staking
+  apyBps: 300 # 3%/yr, ~ Aave WETH supply. The starting point when apyRangeBps varies it.
+  # Floor on the wait between requesting a redemption and claiming it. 0 keeps whatever the deploy
+  # baked in (24). Kept well under run.blocks so the queue is a real, usable option — raise it above
+  # run.blocks to see agents correctly refuse to queue at all.
+  withdrawalDelayBlocks: 20
+  maxDepositWethWei: "5000000000000000000" # cap per stake
+  # ---- phase 2: what makes the choice non-trivial ----
+  # Without variation the optimum is "stake everything at block 0" and stays there. The APY is
+  # resampled from this range every apyStepBlocks off a seed-derived Rng (independent of the price
+  # path), so the opportunity cost of holding LST moves against the pool's discount. Comment it out
+  # to pin the yield at apyBps.
+  apyRangeBps: [100, 900]
+  apyStepBlocks: 10
+  # The queue finalizes at most this much per block, so the wait covers what is queued ahead of you
+  # plus your own size draining. This is what makes a large exit expensive in time as well as in
+  # price, and what makes a busy queue worth watching. 0 keeps the deploy default (1 WETH/block);
+  # observation reports the effective wait as estimatedQueueDelayBlocks.
+  queueThroughputWeiPerBlock: "1000000000000000000"
+
+# A staking penalty placed by the same seed-driven schedule as spike/crash (ADR 0009 style, ranges
+# rather than values). It lands on a single block and permanently lowers the redemption rate.
+#
+# Two things about it, both measured:
+#
+#   - It does not open a discount. The pool reads the vault's rate as its oracle, so the market
+#     reprices with the cut instead of lagging it. That is the rate oracle working, not a bug: what
+#     a slash creates is a *loss for whoever is holding*, not an arbitrage for whoever is watching.
+#   - So the magnitude has to be read against the yield, not against a price crash. On this clock a
+#     70-block run earns roughly 3-8bps, so 10-30bps below is "a slash costs you a few runs' worth
+#     of yield" — a real reason to weigh staking against holding WETH. The 100-300bps first tried
+#     dwarfed the yield by 15x and simply made staking a losing move on every seed.
+stress:
+  events:
+    - { type: lstSlash, magnitudeRange: [0.001, 0.003], windowFrac: [0.3, 0.5] }
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  # There is no LST flow bot yet: the secondary market moves only when agents trade it. That is
+  # deliberate for phase 1 — an environment-driven depeg is phase 2's job. Consequence: from a
+  # freshly deployed (at-par) chain the discount stays near zero, so lst-carry will stake and
+  # nothing else. To watch the carry / queue / claim path actually run, put the pool off-peg first
+  # by selling LST into it, e.g. with the deployer account:
+  #   cast send $VAULT 'deposit(uint256,address)(uint256)' 18e18 $DEPLOYER
+  #   cast send $POOL  'exchange(int128,int128,uint256,uint256)(uint256)' 1 0 17e18 0
+  # At the pool's calibration (100 WETH a side, A=100) that is ~70bps of discount; the agents then
+  # trade it back toward par and stop, which is the venue working as intended.
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  # LLM-driven through prompt.md, matching the committed example.yaml roster: the venue's default
+  # path is the one a participant actually submits (ADR 0015 §2, issue #38). Needs OLLAMA_API_KEY
+  # in .env.local. Without a backend the run completes and this agent fails closed to noop, so if
+  # it never trades, check agents/lst-carry.jsonl for the reason before blaming the strategy.
+  # Remove the `env:` line to run the same strategy rule-based via agent.ts.
+  - id: lst-carry
+    wallet: AGENT2_PRIVATE_KEY
+    description: liquid staking — stake for yield, or trade the redemption/market gap (LLM-driven via prompt.md)
+    env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
+    # Claude Code / Codex subscription instead of Ollama (no API key) — use this env line instead.
+    # This is the combination the prompt was verified on (see docs/guide/llm-agents.md):
+    # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
+  # The same strategy run rule-based (agent.ts) with a wider entry threshold: a second participant
+  # competing for the same dislocation, and a control for the prompt-driven one above.
+  - id: lst-carry-wide
+    dir: lst-carry
+    wallet: AGENT3_PRIVATE_KEY
+    description: lst-carry with a wider entry threshold (rule-based via agent.ts)
+    env: { ERIS_LST_SAFETY_BPS: "40" }
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)

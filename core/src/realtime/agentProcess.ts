@@ -28,6 +28,11 @@ export class RealtimeAgentProcess {
     runDir: string,
     direct: DirectAccess,
     agentsDir: string,
+    // The run's block budget as the environment resolved it. Passed explicitly because the child
+    // rebuilds its config from the YAML and would otherwise miss a CLI --blocks override: an agent
+    // that thinks the run is longer than it is will start exits it cannot finish (issue #38's
+    // withdrawal queue makes that a scoring loss, not just a missed trade).
+    runBlocks: number,
     // Extra env the environment injects into all agents (e.g. ADR 0009 stress victim addresses).
     // If spec.env specifies a value it takes precedence (extraEnv acts as the default).
     extraEnv?: Record<string, string>,
@@ -55,6 +60,7 @@ export class RealtimeAgentProcess {
     childEnv.ERIS_AGENT_PRIVATE_KEY = direct.privateKey;
     childEnv.ERIS_PRICE_FEED_ADDRESS = direct.priceFeedAddress;
     childEnv.ERIS_RUN_ID = direct.runId;
+    if (runBlocks > 0) childEnv.ERIS_RUN_BLOCKS = String(runBlocks);
 
     let command: string;
     let args: string[];
@@ -86,19 +92,38 @@ export class RealtimeAgentProcess {
       this.stderr += data.toString();
       if (this.stderr.length > 20_000) this.stderr = this.stderr.slice(-20_000);
     });
-    this.child.on("error", () => {
+    this.child.on("error", (error) => {
       this.alive = false;
+      this.onExit?.({ reason: `spawn error: ${error.message}` });
     });
-    this.child.on("exit", () => {
+    this.child.on("exit", (code, signal) => {
+      const wasAlive = this.alive;
       this.alive = false;
+      // Only interesting if it went on its own. close() kills every agent at the end of the run,
+      // and that is not news.
+      if (wasAlive && !this.stopped) {
+        this.onExit?.({
+          code: code ?? undefined,
+          signal: signal ?? undefined,
+          reason: "exited before the run ended",
+        });
+      }
     });
   }
+
+  /// Notified when the process dies on its own. Without this an agent that crashes mid-run just
+  /// stops trading, and the run looks like one where it chose not to act -- indistinguishable in
+  /// summary.json, and the difference is the whole result.
+  onExit?: (info: { code?: number; signal?: string; reason: string }) => void;
+
+  private stopped = false;
 
   isAlive(): boolean {
     return this.alive && !this.child.killed;
   }
 
   close(): void {
+    this.stopped = true;
     this.child.kill();
   }
 

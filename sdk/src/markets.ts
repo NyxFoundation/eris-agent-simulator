@@ -33,8 +33,14 @@ const QUOTE_SYMBOL: TokenSymbol = "USDC";
 // Add here only when adding a new stable. A base is treated as a base without doing anything.
 const STABLE_SYMBOLS = new Set<TokenSymbol>(["USDC", "USDT", "DAI", "USDC.e"]);
 
+// Yield-bearing claims valued by their own venue rather than by the fair-price feed (issue #38).
+// Listed here so they stay out of the scorer's spot sweep -- see TokenKind for why.
+const LST_SYMBOLS = new Set<TokenSymbol>(["LST"]);
+
 export function kindOf(symbol: TokenSymbol): TokenKind {
-  return STABLE_SYMBOLS.has(symbol) ? "stable" : "base";
+  if (STABLE_SYMBOLS.has(symbol)) return "stable";
+  if (LST_SYMBOLS.has(symbol)) return "lst";
+  return "base";
 }
 
 export function tokenInfo(symbol: TokenSymbol): TokenInfo {
@@ -114,7 +120,11 @@ function attachLeg(
 // Assemble the protocol's enabled markets from MARKET_LEGS. Preserves the base registration order
 // (WETH first → the deterministic-order premise for RNG/scoring. ADR 0013 backward compatibility).
 export function marketsFor(protocol: ProtocolId): MarketConfig[] {
-  const legs = MARKET_LEGS[protocol];
+  // A venue whose market is not a base/USDC pair has no leg table: the LST venue trades LST/WETH
+  // and keeps that market adapter-private (issue #38). Generalizing MarketConfig's `quote` so it
+  // could live here is a separate cleanup.
+  const legs = MARKET_LEGS[protocol as keyof typeof MARKET_LEGS];
+  if (!legs) return [];
   const out: MarketConfig[] = [];
   for (const base of Object.keys(legs)) {
     const market: MarketConfig = {

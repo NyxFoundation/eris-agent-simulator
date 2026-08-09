@@ -1,5 +1,5 @@
 import { encodeFunctionData, type Address, type Hex } from "viem";
-import { TOKENS } from "../constants.js";
+import { LST, TOKENS } from "../constants.js";
 import { tokenInfo } from "../markets.js";
 import {
   bigintToStorageWord,
@@ -7,8 +7,43 @@ import {
   sendNoMine,
   setStorageAt,
 } from "../chain.js";
+import { lstVaultAbi } from "../abis.js";
 import type { SimContext } from "./types.js";
 import { mockAggregatorAbi, toAavePrice } from "./aave.js";
+
+// Aave's price for the LST, when it is listed as collateral (issue #38 phase 3).
+//
+// An LST is not worth what its underlying is worth: it is worth WETH x the vault's redemption
+// rate, which rises with yield and drops with a slash. Aave has no idea about any of that, so the
+// price is derived here and written through the same three paths as every other oracle -- which
+// also means it inherits the same one-block lag. That lag is what turns a slash into a liquidation
+// cascade: the cut lands on the vault, the oracle follows a block later, and positions that were
+// healthy become liquidatable together.
+//
+// Returns null when the LST is not listed, has no aggregator, or the rate cannot be read -- in
+// every case leaving the existing price alone rather than writing a wrong one.
+async function lstAaveAggregator(
+  ctx: SimContext,
+  fairPrice: number,
+): Promise<{ aggregator: Address; aavePrice: bigint } | null> {
+  if (!LST?.aaveAToken) return null;
+  const aggregator = ctx.oracle.aaveAggregators[LST.lstToken.toLowerCase()];
+  if (!aggregator) return null;
+  if (!Number.isFinite(fairPrice) || fairPrice <= 0) return null;
+  let rate: bigint;
+  try {
+    rate = (await ctx.publicClient.readContract({
+      address: LST.vault,
+      abi: lstVaultAbi,
+      functionName: "stEthPerToken",
+    })) as bigint;
+  } catch {
+    return null;
+  }
+  const priceUsd = (fairPrice * Number(rate)) / 1e18;
+  if (!Number.isFinite(priceUsd) || priceUsd <= 0) return null;
+  return { aggregator, aavePrice: toAavePrice(priceUsd) };
+}
 
 // ADR 0013: enumerate additional bases beyond WETH/USDC that have an Aave mock aggregator registered.
 // On the default fork ctx.fairPrices is unset or WETH-only, so this returns an empty array, byte-identical to before.
@@ -89,6 +124,26 @@ export async function updateOracles(
           abi: mockAggregatorAbi,
           functionName: "setAnswer",
           args: [aavePrice],
+        }),
+      },
+    );
+    wrote = true;
+  }
+
+  // Issue #38 phase 3: the LST's own price, WETH x the vault's redemption rate.
+  const lstAgg = await lstAaveAggregator(ctx, fairPrice);
+  if (lstAgg) {
+    await sendAndMine(
+      ctx.publicClient,
+      ctx.walletClient,
+      ctx.chain,
+      ctx.adminPk,
+      {
+        to: lstAgg.aggregator,
+        data: encodeFunctionData({
+          abi: mockAggregatorAbi,
+          functionName: "setAnswer",
+          args: [lstAgg.aavePrice],
         }),
       },
     );
@@ -179,6 +234,28 @@ export async function updateOraclesMempool(
       ),
     );
   }
+  // Issue #38 phase 3: the LST's own price, WETH x the vault's redemption rate.
+  const lstAgg = await lstAaveAggregator(ctx, fairPrice);
+  if (lstAgg) {
+    hashes.push(
+      await sendNoMine(
+        ctx.publicClient,
+        ctx.walletClient,
+        ctx.chain,
+        ctx.adminPk,
+        {
+          to: lstAgg.aggregator,
+          data: encodeFunctionData({
+            abi: mockAggregatorAbi,
+            functionName: "setAnswer",
+            args: [lstAgg.aavePrice],
+          }),
+          gas: SETTER_GAS,
+        },
+        priorityFeeWei,
+      ),
+    );
+  }
   if (ctx.oracle.gmxProvider && ctx.updateGmxOracle) {
     // GMX submits two txs internally (WETH/USDC). The hashes can't be tracked but they land in the mempool.
     await ctx.updateGmxOracle(ctx, fairPrice, { noMine: true, priorityFeeWei });
@@ -223,6 +300,16 @@ export async function writeAaveOraclesStorage(
       aggregator,
       AGG_ANSWER_SLOT,
       bigintToStorageWord(aavePrice),
+    );
+  }
+  // Issue #38 phase 3: the LST's own price, WETH x the vault's redemption rate.
+  const lstAgg = await lstAaveAggregator(ctx, fairPrice);
+  if (lstAgg) {
+    await setStorageAt(
+      ctx.publicClient,
+      lstAgg.aggregator,
+      AGG_ANSWER_SLOT,
+      bigintToStorageWord(lstAgg.aavePrice),
     );
   }
 }

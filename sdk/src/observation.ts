@@ -96,6 +96,8 @@ export async function observationFor(
       maxGmxSizeUsd: config.maxGmxSizeUsd.toString(),
       maxAaveSupplyWethWei: config.maxAaveSupplyWethWei.toString(),
       maxAaveBorrowUsdcUnits: config.maxAaveBorrowUsdcUnits.toString(),
+      // Issue #38: per-stake cap for the LST venue.
+      maxLstDepositWethWei: config.lstMaxDepositWethWei.toString(),
       // ADR 0013: expose per-base caps. WETH is the existing value; additional bases come from config's per-base map (default 0).
       baseLimits: buildBaseLimits(config),
     },

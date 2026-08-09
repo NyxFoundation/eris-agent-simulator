@@ -100,6 +100,10 @@ export type ValuationAgent = { id: string; address: Address };
 export type ValuationContext = {
   publicClient: PublicClient;
   blockNumber: number;
+  // Last block of the run window. Realizable-exit marking needs to know how much of the run is
+  // left: a redemption queued now is only worth par if it finalizes before the run ends (issue
+  // #38). Equals blockNumber when the caller has no horizon, which is the conservative reading.
+  horizonBlock: number;
   agents: readonly ValuationAgent[];
   // The stables the run already sums as USDC-equivalent spot.
   activeStables: readonly Address[];

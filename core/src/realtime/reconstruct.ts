@@ -56,6 +56,10 @@ export type ReconstructionMeta = {
   alphaRefFairUsdcPerWeth: number;
   // agent -> α (= value at the fixed reference fair, toBlock − fromBlock; β-removed trade-derived PnL).
   alphaByAgent: Record<string, number>;
+  // agent -> realizable value at the run's last cross-section, for the agents where it differs
+  // from the mark (issue #38: a redemption still in the queue when the run ends). Absent entries
+  // mean the two agreed, which is the normal case.
+  liquidatableValueByAgent: Record<string, number>;
   // Holdings excluded from the value series because they could not be priced (issue #41) or could not
   // be read (issue #44).
   unpricedHoldings: UnpricedHolding[];
@@ -124,6 +128,11 @@ export type AgentValueSnapshot = {
   id: string;
   valueUsdc: number;
   alphaValueUsdc: number;
+  // What the agent could actually realize at this cross-section: free inventory plus each venue's
+  // exit value rather than its face mark. Equal to valueUsdc for every venue that exits at par,
+  // which is all of them except the LST queue (issue #38) -- so past runs compare unchanged, and
+  // the two only separate where a position genuinely cannot be liquidated for its mark.
+  liquidatableValueUsdc: number;
 };
 
 // A holding excluded from an agent's value: the scorer cannot price it, nothing sums it (issue #41),
@@ -206,6 +215,10 @@ export async function readValueSnapshotAtBlock(opts: {
   activeStables: Address[];
   priceFeed: Address;
   blockNumber: number;
+  // Last block of the run window. Venues whose exit takes time mark against it: an LST redemption
+  // queued at this cross-section is only worth par if it finalizes before the run ends (issue #38).
+  // Defaults to blockNumber, i.e. "nothing further is reachable" -- the conservative reading.
+  horizonBlock?: number;
   // Fixed reference fair for α evaluation (base symbol -> USD). If unspecified, α = total value.
   refFairByBase?: Record<string, number>;
 }): Promise<ValueSnapshot> {
@@ -302,6 +315,7 @@ export async function readValueSnapshotAtBlock(opts: {
   const ctx: ValuationContext = {
     publicClient,
     blockNumber: opts.blockNumber,
+    horizonBlock: opts.horizonBlock ?? opts.blockNumber,
     agents,
     activeStables,
     fairByBase: () => fairByBase,
@@ -396,12 +410,16 @@ export async function readValueSnapshotAtBlock(opts: {
     // Evaluate free inventory two ways: at live fair (β-inclusive) and at the fixed reference fair (β-removed).
     let total = valueUsdc(balance, fairByBase);
     let alphaTotal = valueUsdc(balance, refFairByBase);
+    // Free inventory is realizable by definition, so the liquidatable series starts from the same
+    // live mark and only the venues diverge.
+    let liquidatableTotal = valueUsdc(balance, fairByBase);
     // Protocol positions are a live mark in both evaluations (β removal applies to free inventory only).
     for (const [id, byAgent] of protocolValues) {
       const value = byAgent[agent.id];
       if (!value) continue;
       total += value.valueUsdc;
       alphaTotal += value.valueUsdc;
+      liquidatableTotal += value.liquidatableValueUsdc;
       for (const holding of value.unpriced) {
         unpriced.push({
           ...holding,
@@ -410,7 +428,12 @@ export async function readValueSnapshotAtBlock(opts: {
         });
       }
     }
-    values.push({ id: agent.id, valueUsdc: total, alphaValueUsdc: alphaTotal });
+    values.push({
+      id: agent.id,
+      valueUsdc: total,
+      alphaValueUsdc: alphaTotal,
+      liquidatableValueUsdc: liquidatableTotal,
+    });
   });
 
   return {
@@ -573,6 +596,7 @@ export async function reconstructValueSeries(opts: {
     activeStables,
     priceFeed,
     blockNumber: toBlock,
+    horizonBlock: toBlock,
   });
   failedReads += refSnapshot.failedReads;
   mergeFailedReads(failedReadTargets, refSnapshot.failedReadTargets);
@@ -588,6 +612,10 @@ export async function reconstructValueSeries(opts: {
 
   const alphaFirst = new Map<string, number>();
   const alphaLast = new Map<string, number>();
+  // Realizable value at the run's last cross-section, and the mark from that same cross-section to
+  // compare it against (issue #38). Reported alongside the mark rather than replacing it.
+  const liquidatableLast = new Map<string, number>();
+  const markedLast = new Map<string, number>();
   // Holdings the scorer could not price (issue #41) or could not read (issue #44). Deduplicated
   // across the run window (they persist block to block) and emitted once at the end, so a zero in
   // summary.json is never mistaken for a trading loss. amountRaw is the last one seen.
@@ -604,14 +632,22 @@ export async function reconstructValueSeries(opts: {
       activeStables,
       priceFeed,
       blockNumber: b,
+      horizonBlock: toBlock,
       refFairByBase,
     });
     failedReads += snapshot.failedReads;
     mergeFailedReads(failedReadTargets, snapshot.failedReadTargets);
     for (const h of snapshot.unpriced) unpriced.set(unpricedKey(h), h);
-    for (const { id, valueUsdc: total, alphaValueUsdc } of snapshot.values) {
+    for (const {
+      id,
+      valueUsdc: total,
+      alphaValueUsdc,
+      liquidatableValueUsdc,
+    } of snapshot.values) {
       if (!alphaFirst.has(id)) alphaFirst.set(id, alphaValueUsdc);
       alphaLast.set(id, alphaValueUsdc);
+      liquidatableLast.set(id, liquidatableValueUsdc);
+      markedLast.set(id, total);
       // The observation shape readPerRoundValues reads (inventory.valueUsdc = total value).
       // Do not include protocols (avoids double-counting perRoundValueUsdc). alphaValueUsdc is
       // the fixed-reference fair evaluation (β-removed) and can also be read as a per-round α series.
@@ -627,7 +663,14 @@ export async function reconstructValueSeries(opts: {
           ...(snapshot.poolPriceUsdcPerWeth !== null
             ? { poolPriceUsdcPerWeth: snapshot.poolPriceUsdcPerWeth }
             : {}),
-          inventory: { valueUsdc: total, alphaValueUsdc },
+          inventory: {
+            valueUsdc: total,
+            alphaValueUsdc,
+            // Only worth a field when it says something the mark does not.
+            ...(liquidatableValueUsdc !== total
+              ? { liquidatableValueUsdc }
+              : {}),
+          },
         },
       });
     }
@@ -636,6 +679,21 @@ export async function reconstructValueSeries(opts: {
   const alphaByAgent: Record<string, number> = {};
   for (const { id } of agents)
     alphaByAgent[id] = (alphaLast.get(id) ?? 0) - (alphaFirst.get(id) ?? 0);
+  // Only agents whose realizable value actually diverged from the mark. Comparing against the
+  // mark from the *same* cross-section matters: the coordinator's end-of-run PnL is computed at a
+  // different block by a different path, so comparing against that would flag every agent.
+  const liquidatableValueByAgent: Record<string, number> = {};
+  for (const { id } of agents) {
+    const liquidatable = liquidatableLast.get(id);
+    const marked = markedLast.get(id);
+    if (
+      liquidatable !== undefined &&
+      marked !== undefined &&
+      Math.abs(liquidatable - marked) > 1e-9
+    ) {
+      liquidatableValueByAgent[id] = liquidatable;
+    }
+  }
 
   // Issue #41: tokens outside the accounted set are invisible to the per-block cross-section (they
   // cannot be enumerated), so they are discovered once from the run window's Transfer logs.
@@ -683,6 +741,7 @@ export async function reconstructValueSeries(opts: {
     elapsedMs: Date.now() - started,
     alphaRefFairUsdcPerWeth: refFairByBase.WETH,
     alphaByAgent,
+    liquidatableValueByAgent,
     unpricedHoldings,
   };
 }

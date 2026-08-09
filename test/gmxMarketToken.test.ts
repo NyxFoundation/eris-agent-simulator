@@ -34,6 +34,7 @@ async function drive(stages: Array<(reads: unknown[]) => unknown[]>) {
   const run = gmxAdapter.valueAtBlock!({
     publicClient: undefined as never,
     blockNumber: 1,
+    horizonBlock: 1,
     agents: AGENTS,
     activeStables: [TOKENS.USDC.address as Address],
     fairByBase: () => FAIR,
@@ -228,6 +229,7 @@ test("a perp whose base has no fair price is reported, not scored at zero", asyn
   const run = gmxAdapter.valueAtBlock!({
     publicClient: undefined as never,
     blockNumber: 1,
+    horizonBlock: 1,
     agents: AGENTS,
     activeStables: [TOKENS.USDC.address as Address],
     fairByBase: () => ({}), // price feed read failed for every base

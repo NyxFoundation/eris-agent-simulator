@@ -13,6 +13,8 @@ import {
 import type { ProtocolId } from "./types.js";
 import { baseTokens } from "./markets.js";
 
+// The lst venue is deliberately not in the default set: it exists only under local deploy (issue
+// #38), so defaulting it on would break every fork run. Enable it explicitly via run.protocols.
 const ALL_PROTOCOLS: ProtocolId[] = [
   "uniswap",
   "balancer",
@@ -20,6 +22,9 @@ const ALL_PROTOCOLS: ProtocolId[] = [
   "gmx",
   "aave",
 ];
+
+// Protocols that can be named in run.protocols but are not in the default set.
+const OPT_IN_PROTOCOLS: ProtocolId[] = ["lst"];
 
 export type SimConfig = {
   rpcUrl: string;
@@ -170,6 +175,29 @@ export type SimConfig = {
   aaveFlowActorSizeSigma: number;
   // ADR 0013: per-leg AMM flow cap for non-WETH bases (base units). Empty/0 default = WBTC flow off.
   baseFlowMax: Record<string, bigint>;
+  // ---- LST venue (issue #38) ----
+  // Yield runs on a compressed *economic* clock rather than EVM time: one block stands for this
+  // many seconds of staking. EVM time is deliberately not warped for it (that would also move
+  // Aave's accrual and GMX funding).
+  lstSimulatedSecondsPerBlock: number;
+  // Target APY in bps on that clock. Kept the same order as the Aave WETH supply rate on purpose:
+  // a 1000x-speed LST would make every other venue irrelevant.
+  lstApyBps: number;
+  // Issue #38 phase 2: when set to a [min,max] bps pair, the APY is resampled from it every
+  // lstApyStepBlocks using a seed-derived Rng, instead of holding lstApyBps for the whole run.
+  // Without variation the optimum is "stake everything at block 0" and the venue has no decision
+  // in it. Empty (the default) keeps the fixed rate.
+  lstApyRangeBps: [number, number] | null;
+  lstApyStepBlocks: number;
+  // Queued WETH the vault can finalize per block. 0 leaves whatever the deploy baked in, and a
+  // deploy default of 0 means no limit -- every request waits exactly the delay. With a limit, the
+  // wait grows with your own size and with whatever is queued ahead of you.
+  lstQueueThroughputWeiPerBlock: bigint;
+  // Blocks between requesting a redemption and being able to claim it (the queue's time cost).
+  // 0 leaves whatever the deploy baked in.
+  lstWithdrawalDelayBlocks: number;
+  // Per-agent cap on a single stake, in wei. 0 = uncapped (bounded by balance).
+  lstMaxDepositWethWei: bigint;
   // Launch command and deterministic seed for the orderflow bot (a separate process).
   flowBotCommand: string;
   flowBotArgs: string[];
@@ -369,6 +397,30 @@ export function loadConfig(env = process.env): SimConfig {
     // (e.g. FLOW_MAX_WBTC_SATS). Default 0 = flow off for WBTC etc. → extraBases do not consume RNG = byte-compatible.
     // WETH flow keeps using uninformed/balancer/curve FlowMaxWethWei (not listed here).
     baseFlowMax: readBaseAmounts(env, "FLOW_MAX", { WETH: 0n }),
+    // LST venue (issue #38). The defaults mirror what the deployer bakes into the state dump, so a
+    // run that says nothing about lst behaves exactly as deployed.
+    lstSimulatedSecondsPerBlock: Math.max(
+      0,
+      intEnv(env.ERIS_LST_SIMULATED_SECONDS_PER_BLOCK, 3600),
+    ),
+    lstApyBps: Math.max(0, intEnv(env.ERIS_LST_APY_BPS, 300)),
+    lstApyRangeBps: parseBpsRange(
+      env.ERIS_LST_APY_RANGE_BPS,
+      "ERIS_LST_APY_RANGE_BPS",
+    ),
+    lstApyStepBlocks: Math.max(1, intEnv(env.ERIS_LST_APY_STEP_BLOCKS, 10)),
+    lstQueueThroughputWeiPerBlock: bigintEnv(
+      env.ERIS_LST_QUEUE_THROUGHPUT_WEI_PER_BLOCK,
+      0n,
+    ),
+    lstWithdrawalDelayBlocks: Math.max(
+      0,
+      intEnv(env.ERIS_LST_WITHDRAWAL_DELAY_BLOCKS, 0),
+    ),
+    lstMaxDepositWethWei: bigintEnv(
+      env.ERIS_LST_MAX_DEPOSIT_WETH_WEI,
+      5_000_000_000_000_000_000n,
+    ),
     flowBotCommand: env.FLOW_BOT_COMMAND ?? "node",
     flowBotArgs:
       env.FLOW_BOT_ARGS && env.FLOW_BOT_ARGS.trim() !== ""
@@ -405,7 +457,8 @@ function parseEnabledProtocols(value: string | undefined): ProtocolId[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean) as ProtocolId[];
-  const invalid = ids.filter((id) => !ALL_PROTOCOLS.includes(id));
+  const known = [...ALL_PROTOCOLS, ...OPT_IN_PROTOCOLS];
+  const invalid = ids.filter((id) => !known.includes(id));
   if (invalid.length > 0)
     throw new Error(
       `unknown protocol in ENABLED_PROTOCOLS: ${invalid.join(", ")}`,
@@ -436,6 +489,25 @@ function floatEnv(value: string | undefined, fallback: number): number {
 function bigintEnv(value: string | undefined, fallback: bigint): bigint {
   if (value === undefined || value === "") return fallback;
   return BigInt(value);
+}
+
+// A "[min, max]" bps pair, accepted as JSON or as a bare CSV so it survives the YAML→env encoding
+// (an array of numbers becomes "200,600"). Null when unset, which means "no variation".
+function parseBpsRange(
+  value: string | undefined,
+  label: string,
+): [number, number] | null {
+  if (value === undefined || value.trim() === "") return null;
+  const parts = value
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .split(",")
+    .map((s) => Number(s.trim()));
+  if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n) || n < 0))
+    throw new Error(`${label} must be a [min, max] pair of non-negative bps`);
+  const [lo, hi] = parts;
+  if (lo > hi) throw new Error(`${label} must have min <= max`);
+  return [lo, hi];
 }
 
 // ADR 0013: unit suffix (derived from decimals) for a base symbol's "amount env".
