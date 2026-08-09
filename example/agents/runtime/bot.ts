@@ -58,6 +58,7 @@ import {
   MAX_REVISIONS_PER_RUN,
   parseRevision,
   type RevisionOutcome,
+  type StrategyVersion,
 } from "./improve.js";
 import { createMempoolLog, Sender } from "./send.js";
 import { Reader } from "./read.js";
@@ -366,16 +367,23 @@ async function main(): Promise<void> {
           `(a co-located run shares one LLM budget; ADR 0018 §4)`,
       });
 
-    // The strategy the participant shipped, as text. It is what the model is shown first, and what a
-    // rollback returns to when the first revision turns out worse.
-    const originalSource = readFileSync(agentTsPath, "utf8");
-    let currentSource = originalSource;
+    // Every version that has run, version 0 being the strategy the participant shipped. Kept whole so
+    // the model can revert to any of them by number rather than by reproducing source, and so the
+    // log can be read back afterwards.
+    const versions: Array<
+      StrategyVersion & { executor: typeof activeDecide }
+    > = [
+      {
+        version: 0,
+        source: readFileSync(agentTsPath, "utf8"),
+        notes: "the strategy as submitted",
+        installedAtBlock: 0,
+        valueAtInstall: null,
+        executor: activeDecide,
+      },
+    ];
+    const current = () => versions[versions.length - 1];
     let currentVersion = 0;
-    let previous: {
-      executor: typeof activeDecide;
-      source: string;
-      version: number;
-    } | null = null;
     let revisions = 0;
     // Block of the last revision opportunity. Seeded from the first observation, not 0: obs.round is
     // the absolute chain block (read.ts passes `round: bn`), so starting at 0 made the very first
@@ -412,32 +420,11 @@ async function main(): Promise<void> {
       if (revising || revisions >= MAX_REVISIONS_PER_RUN) return;
       revising = true;
       try {
-        // Judge the previous revision before asking for another one: if it made things worse, put
-        // the old strategy back rather than letting the model iterate on a regression.
+        // Nothing is judged here. Whether a revision helped, and whether to undo it, is the model's
+        // call -- an automatic revert needs a threshold and there is no defensible one (ADR 0018 §5).
+        // What the harness owes the model is the evidence: the history, and the value at each point.
         const value = valueNow();
-        if (previous && valueAtRevision !== null && value !== null) {
-          const delta = value - valueAtRevision;
-          if (delta < 0) {
-            activeDecide = previous.executor;
-            currentSource = previous.source;
-            currentVersion = previous.version;
-            record(
-              {
-                kind: "rolled-back",
-                version: currentVersion,
-                before: valueAtRevision,
-                after: value,
-              },
-              block,
-            );
-            // Reset the baseline too: leaving it at the rolled-back revision's value would judge
-            // the *next* revision against a measurement of the one just undone.
-            previous = null;
-            valueAtRevision = value;
-          }
-        }
-
-        const system = buildRevisionSystem(improveAgent, currentSource);
+        const system = buildRevisionSystem(improveAgent, current().source);
         const context = buildRevisionContext({
           block,
           valueUsdc: value ?? 0,
@@ -447,6 +434,7 @@ async function main(): Promise<void> {
               ? value - valueAtRevision
               : null,
           currentVersion,
+          history: versions.map(({ executor: _executor, ...v }) => v),
           recent: recentDecisions,
           observation: latestObservation,
         });
@@ -479,6 +467,46 @@ async function main(): Promise<void> {
           record({ kind: "rejected", reason: parsed.reason }, block);
           return;
         }
+        if (parsed.revision.revertTo !== null) {
+          const target = versions.find(
+            (v) => v.version === parsed.revision.revertTo,
+          );
+          if (!target) {
+            record(
+              {
+                kind: "rejected",
+                reason: `revertTo ${parsed.revision.revertTo}: no such version (have ${versions
+                  .map((v) => v.version)
+                  .join(", ")})`,
+              },
+              block,
+            );
+            return;
+          }
+          // Re-installed as a new version rather than by rewinding the list: the history is a record
+          // of what ran and when, and rewinding it would erase the fact that the reverted version
+          // ever did.
+          currentVersion += 1;
+          activeDecide = target.executor;
+          versions.push({
+            ...target,
+            version: currentVersion,
+            notes: `reverted to v${target.version}: ${parsed.revision.notes}`,
+            installedAtBlock: block,
+            valueAtInstall: value,
+          });
+          valueAtRevision = value;
+          record(
+            {
+              kind: "reverted",
+              to: target.version,
+              from: currentVersion - 1,
+              notes: parsed.revision.notes,
+            },
+            block,
+          );
+          return;
+        }
         if (parsed.revision.executorTs === null) {
           record({ kind: "declined", notes: parsed.revision.notes }, block);
           return;
@@ -488,15 +516,16 @@ async function main(): Promise<void> {
           record({ kind: "rejected", reason: compiled.reason }, block);
           return;
         }
-        // Keep what is being replaced so a regression has somewhere to go back to.
-        previous = {
-          executor: activeDecide,
-          source: currentSource,
-          version: currentVersion,
-        };
-        activeDecide = compiled.executor;
-        currentSource = parsed.revision.executorTs;
         currentVersion += 1;
+        activeDecide = compiled.executor;
+        versions.push({
+          version: currentVersion,
+          source: parsed.revision.executorTs,
+          notes: parsed.revision.notes,
+          installedAtBlock: block,
+          valueAtInstall: value,
+          executor: compiled.executor,
+        });
         valueAtRevision = value;
         record(
           {

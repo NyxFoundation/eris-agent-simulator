@@ -39,21 +39,29 @@ flowchart TB
     P -->|"code"| CHK{"cheatcode check<br/>+ compile"}
     CHK -->|"fail"| REJ["reject, keep the current strategy"]
     CHK -->|"ok"| INST["install"]
+    P -->|"revertTo: n"| BACK["reinstall version n"]
   end
   INST -.->|"swaps the function<br/>the loop is calling"| DEC
-  INST --> RB{"worse than before?"}
-  RB -->|"yes"| BACK["roll back"]
+  BACK -.-> DEC
 ```
 
 The model returns one JSON object:
 
 ```json
-{ "version": 2, "notes": "why you did or did not change it", "executorTs": "<new decide body>" }
+{ "notes": "why", "executorTs": "<new decide body>" }   // install this
+{ "notes": "why", "executorTs": null }                  // leave it alone
+{ "notes": "why", "revertTo": 1 }                       // go back to an earlier version
 ```
 
-`"executorTs": null` means **keep the current strategy**, and that is often the right answer. A
-strategy that is working does not need help, and a rewrite that turns out worse is rolled back
-anyway — so a speculative change costs a revision and gains nothing.
+`"executorTs": null` means **keep the current strategy**, and that is often the right answer: a
+strategy that is working does not need help.
+
+**Nothing reverts automatically.** Undoing a change is the model's call, made with `revertTo` and the
+version number — the context it receives lists every version, when it went in, and what the agent
+was worth at the time. An automatic "revert when value went down" would need a threshold and there
+is no defensible one: the previous implementation's never fired in 18 runs, and the obvious opposite
+(any loss at all) reverts every revision in a regime where everyone is losing. Whether a dip is the
+strategy or the market is a judgment, so `improve.md` is where you state how to make it.
 
 ## What the generated code may do
 
@@ -72,7 +80,7 @@ the previous strategy keeps running and the reason is logged.
 |---|---|
 | cheatcode static check on generated code | an LLM-authored strategy is not trusted code, and the submission gate cannot see code that does not exist yet |
 | compile / call failure is never installed | a broken rewrite must not stop the agent trading |
-| rollback when a revision performs worse | one bad rewrite should not decide the run |
+| `revertTo` in the model's hands, not a threshold | whether a dip is the strategy or the market is a judgment; a fixed rule is either never right or always wrong (§5) |
 | revision cadence clamped | a co-located run shares one LLM budget; "revise every block" from one agent would starve the field |
 | every outcome logged | the previous attempt at self-improvement shipped a rollback that never once fired and nobody noticed |
 
@@ -82,7 +90,7 @@ going to do that anyway.
 
 ## Logs
 
-Revision outcomes (installed / declined / rejected / rolled-back, with the model's notes) land in
+Revision outcomes (installed / declined / rejected / reverted, with the model's notes) land in
 `runs/<id>/agents/<agentId>.jsonl` alongside the trading decisions.
 
 `ERIS_IMPROVE_LOG_CALLS: "1"` additionally writes the raw exchange — the system prompt, the context

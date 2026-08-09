@@ -92,7 +92,35 @@ test("parseRevision: null or omitted executorTs means 'keep the current strategy
     const r = parseRevision(raw);
     assert.ok(r.ok);
     assert.equal(r.revision.executorTs, null);
+    assert.equal(r.revision.revertTo, null);
   }
+});
+
+test("parseRevision: revertTo is how the model undoes its own change", () => {
+  // Reverting is the model's judgment, not an automatic threshold: an automatic rule needs a number
+  // and there is no defensible one (the previous implementation's never fired; the obvious opposite
+  // reverts every revision in a losing regime).
+  const r = parseRevision({ notes: "v1 made it worse", revertTo: 0 });
+  assert.ok(r.ok);
+  assert.equal(r.revision.revertTo, 0);
+  assert.equal(r.revision.executorTs, null);
+});
+
+test("parseRevision: asking for both a rewrite and a revert is ambiguous", () => {
+  // Guessing which one was meant is how a model's intent gets silently overridden.
+  const r = parseRevision({
+    notes: "x",
+    executorTs: "return null;",
+    revertTo: 1,
+  });
+  assert.ok(!r.ok);
+  assert.match(r.reason, /not both/);
+});
+
+test("parseRevision: a non-integer revertTo is rejected", () => {
+  const r = parseRevision({ notes: "x", revertTo: "the good one" });
+  assert.ok(!r.ok);
+  assert.match(r.reason, /integer version/);
 });
 
 test("parseRevision: malformed responses are rejected, not coerced", () => {
@@ -192,6 +220,7 @@ test("buildRevisionContext: reports PnL since the run and since the last revisio
     initialValueUsdc: 25_000,
     sinceLastRevisionUsdc: -80,
     currentVersion: 2,
+    history: [],
     recent: [{ round: 118, reason: "no gap" }],
     observation: null,
   });
@@ -227,4 +256,46 @@ test("compileExecutor: a fast strategy is not penalised by the timeout", async (
   assert.deepEqual(await r.executor({ round: 1 } as never, {} as never), {
     type: "noop",
   });
+});
+
+test("buildRevisionContext: the history is what makes a revert an informed choice", () => {
+  // Without it the model can only guess which earlier version to go back to, and `revertTo` becomes
+  // a coin flip rather than a judgment.
+  const context = buildRevisionContext({
+    block: 200,
+    valueUsdc: 24_000,
+    initialValueUsdc: 25_000,
+    sinceLastRevisionUsdc: -900,
+    currentVersion: 1,
+    history: [
+      {
+        version: 0,
+        source: "return null;",
+        notes: "the strategy as submitted",
+        installedAtBlock: 0,
+        valueAtInstall: 25_000,
+      },
+      {
+        version: 1,
+        source: "return {};",
+        notes: "widened the entry threshold",
+        installedAtBlock: 140,
+        valueAtInstall: 24_900,
+      },
+    ],
+    recent: [],
+    observation: null,
+  });
+  assert.match(context, /v0 @ block 0/);
+  assert.match(context, /widened the entry threshold/);
+  // Values are shown relative to the run start, which is the frame the model reasons in.
+  assert.match(context, /v1 @ block 140 \(value then: -100\.00 USDC/);
+});
+
+test("buildRevisionSystem: reverting is offered, and said to be manual", () => {
+  const agent = loadImproveAgent(agentDir(FRONTMATTER));
+  const system = buildRevisionSystem(agent, "return null;");
+  assert.match(system, /revertTo/);
+  // The model must know nothing will undo a bad change for it.
+  assert.match(system, /Nothing reverts automatically/);
 });

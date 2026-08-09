@@ -44,19 +44,39 @@ export type ImproveAgent = {
   body: string;
 };
 
-// What the LLM returns. `executorTs` is the body of a decide function; `null` means "leave the
-// strategy alone", which is how a prompt expresses "do not touch a winning strategy".
+// What the LLM returns. Three answers, all legitimate:
+//   executorTs: "<body>"  install this as the new strategy
+//   executorTs: null      leave the strategy alone (how a prompt says "do not touch a winner")
+//   revertTo: <version>   go back to an earlier version
+//
+// Reverting is the model's call rather than the harness's. An automatic "roll back when value went
+// down" needs a threshold, and there is no defensible one: the previous implementation's never
+// fired in 18 runs, and the obvious opposite (any loss at all) reverts every revision in a regime
+// where everyone is losing. The model already sees the PnL since each revision and the notes it
+// wrote at the time, so the judgment belongs there -- and improve.md is where a participant states
+// how to make it. Timing is unchanged either way: both fire at a revision opportunity.
 export type StrategyRevision = {
   version: number;
   notes: string;
   executorTs: string | null;
+  revertTo: number | null;
+};
+
+// One installed strategy and what happened after it. Handed to the model so a revert is an informed
+// choice rather than a guess, and kept in the log so a run can be read back.
+export type StrategyVersion = {
+  version: number;
+  source: string;
+  notes: string;
+  installedAtBlock: number;
+  valueAtInstall: number | null;
 };
 
 export type RevisionOutcome =
   | { kind: "installed"; version: number; notes: string }
   | { kind: "declined"; notes: string }
   | { kind: "rejected"; reason: string }
-  | { kind: "rolled-back"; version: number; before: number; after: number };
+  | { kind: "reverted"; to: number; from: number; notes: string };
 
 // improve.md: the improvement prompt. Not a renamed prompt.md -- prompt.md said "given this
 // observation, what do you do", improve.md says "when, on what evidence, and how should the strategy
@@ -132,6 +152,17 @@ export function parseRevision(raw: unknown): ParseResult {
       ok: false,
       reason: "executorTs was empty; use null to keep the current strategy",
     };
+  const revertRaw =
+    o.revertTo === null || o.revertTo === undefined ? null : Number(o.revertTo);
+  if (revertRaw !== null && !Number.isInteger(revertRaw))
+    return { ok: false, reason: "revertTo must be an integer version or null" };
+  // Asking for both is ambiguous, and guessing which one was meant is how a model's intent gets
+  // silently overridden.
+  if (executor !== null && revertRaw !== null)
+    return {
+      ok: false,
+      reason: "give either executorTs or revertTo, not both",
+    };
   const version = Number(o.version);
   return {
     ok: true,
@@ -139,6 +170,7 @@ export function parseRevision(raw: unknown): ParseResult {
       version: Number.isFinite(version) ? version : 0,
       notes: o.notes,
       executorTs: executor,
+      revertTo: revertRaw,
     },
   };
 }
@@ -275,15 +307,19 @@ export function buildRevisionSystem(
     ``,
     `## What to return`,
     ``,
-    `Exactly one JSON object, no prose around it:`,
+    `Exactly one JSON object, no prose around it. Three answers are available:`,
     ``,
     "```json",
-    `{ "version": <n>, "notes": "why you did or did not change it", "executorTs": "<new body>" | null }`,
+    `{ "notes": "why", "executorTs": "<new body>" }   // install this as the strategy`,
+    `{ "notes": "why", "executorTs": null }           // leave it alone`,
+    `{ "notes": "why", "revertTo": 1 }                // go back to an earlier version`,
     "```",
     ``,
-    `Return \`"executorTs": null\` to keep the current strategy. Doing that is often right: a strategy`,
-    `that is working does not need to be touched, and a rewrite that performs worse than what it`,
-    `replaced will be rolled back automatically.`,
+    `Leaving it alone is often right: a strategy that is working does not need to be touched, and a`,
+    `rewrite that turns out worse costs you a revision to undo.`,
+    ``,
+    `**Nothing reverts automatically.** If a change you made has hurt, you have to say so — use`,
+    `\`revertTo\` with the version you want back. The history below records what each version did.`,
     ``,
     `The body may use only: obs, ctx, and the standard JavaScript built-ins. There is no require,`,
     `no import, no process, no network. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
@@ -300,6 +336,7 @@ export function buildRevisionContext(opts: {
   initialValueUsdc: number;
   sinceLastRevisionUsdc: number | null;
   currentVersion: number;
+  history: StrategyVersion[];
   recent: Array<{ round: number; reason?: string; action?: unknown }>;
   observation: AgentObservation | null;
 }): string {
@@ -313,6 +350,20 @@ export function buildRevisionContext(opts: {
     lines.push(
       `PnL since the last revision: ${opts.sinceLastRevisionUsdc.toFixed(2)} USDC`,
     );
+  // The history is what makes `revertTo` an informed choice rather than a guess: each version's
+  // stated intent, and the value the agent was carrying when it went in.
+  if (opts.history.length > 0) {
+    lines.push(``, `strategy history (version 0 is the one you were shipped):`);
+    for (const v of opts.history) {
+      const value =
+        v.valueAtInstall === null
+          ? "unknown"
+          : `${(v.valueAtInstall - opts.initialValueUsdc).toFixed(2)} USDC vs the run start`;
+      lines.push(
+        `  v${v.version} @ block ${v.installedAtBlock} (value then: ${value}) — ${v.notes}`,
+      );
+    }
+  }
   lines.push(
     ``,
     `recent decisions (newest last):`,

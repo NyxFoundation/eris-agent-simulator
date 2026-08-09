@@ -37,3 +37,9 @@ redemption rate. If the strategy has parked everything and stopped thinking, tha
 - Check balances before choosing a direction; a leg the runtime rejects scores like doing nothing.
 - Respect `obs.limits`.
 - Return one action object or `null`. `ctx.log({ reason })` records why.
+
+## Undoing a change
+
+Nothing reverts automatically. If one of your rewrites made things worse, return
+`{"notes": "...", "revertTo": <version>}` — the context lists every version, when it went in, and
+what the agent was worth at the time.

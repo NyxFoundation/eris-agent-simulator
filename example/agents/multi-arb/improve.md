@@ -13,8 +13,7 @@ Return `"executorTs": null` unless you can name the specific thing that is going
 particular, leave it alone when:
 
 - **It is making money.** A strategy that is up does not need your help, and a rewrite that turns
-  out worse is rolled back anyway — you will have spent one of your few revisions to end up back
-  where you started.
+  out worse costs you another revision to undo — nothing reverts on your behalf.
 - **The loss is the market, not the strategy.** In a falling market a strategy holding inventory
   loses money while doing exactly what it should. Look at whether the *trades* were bad, not at
   whether the number is negative.
@@ -51,3 +50,9 @@ You are given the recent decisions and the PnL since the run started and since y
 Every base in `obs.fairPricesUsd` across every AMM venue in `obs.protocols`, not just WETH. Thinner
 bases distort further and stay distorted longer, which is an edge — but they also slip more, so
 judge by net edge after fees, not by the size of the gap.
+
+## Undoing a change
+
+Nothing reverts automatically. If one of your rewrites made things worse, return
+`{"notes": "...", "revertTo": <version>}` — the context lists every version, when it went in, and
+what the agent was worth at the time.

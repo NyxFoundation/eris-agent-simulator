@@ -38,8 +38,10 @@ deployer/  venue デプロイ（自己完結サブパッケージ。workspace �
   API キー無しでも `codex[:<m>]` / `claude-cli[:<m>]` でサブスク CLI 実行可 = docs/guide/llm-agents.md
 - `ERIS_IMPROVE_LOG_CALLS: "1"` — 改訂の生のやり取りを `agents/<id>.llm.jsonl` に残す（既定 off）
 
-改訂は `{version, notes, executorTs}` を返し、`executorTs: null` は「今の戦略を維持」。生成コードは
-**cheatcode 静的検査 → コンパイル → 2 秒の実行上限**を通ってから設置され、悪化したら rollback する。
+改訂は `{notes, executorTs}` か `{notes, revertTo: <version>}` を返し、`executorTs: null` は
+「今の戦略を維持」。生成コードは **cheatcode 静的検査 → コンパイル → 2 秒の実行上限**を通ってから設置。
+**自動 rollback は無い**（閾値に妥当な値が無いため。旧実装は 18 run 中 0 件発火、逆に「少しでも負けたら」
+だと全員が負けるレジームで毎回巻き戻る）。戻すかどうかはモデルの判断で、版履歴を渡して `revertTo` で行う。
 LLM バックエンドが無くても run は完走し、改訂失敗が記録されて戦略は無改変で走り続ける。
 directShim / relay / stdin-stdout プロトコルは廃止済み（ERIS_AGENT_DIRECT_TX は退役）。
 

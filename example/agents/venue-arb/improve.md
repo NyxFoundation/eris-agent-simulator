@@ -38,3 +38,9 @@ loses to anyone who traded.
   the run. A leg the runtime rejects is indistinguishable from doing nothing.
 - Respect `obs.limits`.
 - Return one action object or `null`. `ctx.log({ reason })` records why, and you will read it later.
+
+## Undoing a change
+
+Nothing reverts automatically. If one of your rewrites made things worse, return
+`{"notes": "...", "revertTo": <version>}` — the context lists every version, when it went in, and
+what the agent was worth at the time.
