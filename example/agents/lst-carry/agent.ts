@@ -55,8 +55,31 @@ const MIN_STAKE_APY_BPS = Number(
   process.env.ERIS_LST_MIN_STAKE_APY_BPS ?? "200",
 );
 const SLIPPAGE_BPS = Number(process.env.ERIS_LST_SLIPPAGE_BPS ?? "50");
+// Leveraged staking (issue #38 phase 3): post LST as Aave collateral, borrow WETH against it, stake
+// that too. Off by default -- it multiplies the yield and the slashing exposure in equal measure,
+// and the LST's Aave price follows the vault a block late, so a slash reaches the health factor
+// after it reaches the position. Opt in with ERIS_LST_LEVERAGE_TARGET_HF.
+const LEVERAGE_TARGET_HF = Number(
+  process.env.ERIS_LST_LEVERAGE_TARGET_HF ?? "0",
+);
+// Never borrow the health factor below this, whatever the target says: liquidation costs the
+// bonus (7.5%) on the seized collateral, which is worth many runs of yield.
+const LEVERAGE_MIN_HF = Number(process.env.ERIS_LST_LEVERAGE_MIN_HF ?? "1.6");
+// Only borrow when the health factor is this multiple above the target, so one turn of the loop
+// does not immediately need undoing.
+const LEVERAGE_BORROW_BAND = Number(
+  process.env.ERIS_LST_LEVERAGE_BORROW_BAND ?? "1.25",
+);
 // Dust floor: below this, an action costs more in gas than it can earn.
 const MIN_ACTION_WEI = 10n ** 15n; // 0.001 WETH
+
+/// Aave's health factor as a readable number, or -1 when there is no debt (it reports a sentinel
+/// near uint256 max, which does not survive a plain Number()).
+function hfForLog(raw: string | undefined): number {
+  if (raw === undefined) return -1;
+  const hf = BigInt(raw);
+  return hf > 10n ** 30n ? -1 : Number(hf / 10n ** 14n) / 1e4;
+}
 
 function minBI(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
@@ -121,7 +144,78 @@ export type CarryDecision =
   | { kind: "queue"; lstIn: bigint }
   | { kind: "harvest"; lstIn: bigint }
   | { kind: "stake"; wethIn: bigint }
+  // Phase 3 leverage: post LST as collateral, borrow WETH against it, unwind when the health
+  // factor gets close.
+  | { kind: "collateralize"; lstIn: bigint }
+  | { kind: "borrow"; wethOut: bigint }
+  | { kind: "deleverage"; wethIn: bigint }
   | { kind: "hold"; reason: string };
+
+/// The leverage leg (issue #38 phase 3), kept separate because it is opt-in and reads a different
+/// part of the observation -- Aave's account state -- from everything else here.
+///
+/// The loop is stake -> post -> borrow -> stake. Each turn buys more yield and more slashing
+/// exposure, so it is bounded by a target health factor rather than run to the LTV ceiling.
+/// Unwinding comes first and unconditionally: a health factor under the floor is worth more than
+/// any yield, because liquidation hands over the bonus on top of the debt.
+export function decideLeverage(input: {
+  lst: LstObservation;
+  aave:
+    | {
+        healthFactor: string;
+        availableBorrowsBase: string;
+        totalDebtBase: string;
+      }
+    | undefined;
+  wethBalanceWei: bigint;
+  fairPriceUsd: number;
+}): CarryDecision | null {
+  if (LEVERAGE_TARGET_HF <= 0) return null; // opt-in
+  if (!input.lst.aaveCollateral || !input.aave) return null;
+  const lstBalance = BigInt(input.lst.lstBalanceWei);
+  const hfRaw = BigInt(input.aave.healthFactor);
+  // Aave reports a sentinel near uint256 max when there is no debt at all.
+  const hasDebt = hfRaw < 10n ** 30n;
+  const hf = hasDebt
+    ? Number(hfRaw) / Number(10n ** 18n)
+    : Number.POSITIVE_INFINITY;
+
+  // 1. Too close to liquidation: repay before anything else.
+  if (hf < LEVERAGE_MIN_HF && input.wethBalanceWei >= MIN_ACTION_WEI) {
+    return { kind: "deleverage", wethIn: input.wethBalanceWei };
+  }
+  // 2. Unposted LST earns yield but supports no borrowing. Post it.
+  if (lstBalance >= MIN_ACTION_WEI) {
+    return { kind: "collateralize", lstIn: lstBalance };
+  }
+  // 3. Borrowed WETH is not leverage until it is staked and posted again. Hand back to the spot
+  //    decisions while there is WETH in hand: borrowing on top of an unstaked balance piles debt
+  //    against collateral that never grew (measured as 38 borrows against 18 forced repayments,
+  //    oscillating 1.16 <-> 2.14).
+  if (input.wethBalanceWei >= MIN_ACTION_WEI) return null;
+  // 4. Borrow against what is posted, sized to land *on* the target rather than past it.
+  //
+  //    Health factor is collateral x LT / debt, so scaling the existing debt by hf/target puts the
+  //    position exactly at the target. Sizing off the headroom instead overshoots: measured as 24
+  //    borrows against 22 forced repayments, oscillating 2.89 <-> 1.56, because each borrow blew
+  //    straight through the target and the floor beneath it. With no debt yet there is nothing to
+  //    scale from, so the first turn takes half the headroom and the next turn corrects.
+  if (
+    hf > LEVERAGE_TARGET_HF * LEVERAGE_BORROW_BAND &&
+    input.fairPriceUsd > 0
+  ) {
+    const availableUsd = Number(BigInt(input.aave.availableBorrowsBase)) / 1e8;
+    const debtUsd = Number(BigInt(input.aave.totalDebtBase)) / 1e8;
+    const borrowUsd = hasDebt
+      ? Math.min(debtUsd * (hf / LEVERAGE_TARGET_HF - 1), availableUsd)
+      : availableUsd * 0.5;
+    const wethOut = BigInt(
+      Math.floor((borrowUsd / input.fairPriceUsd) * 1e18),
+    );
+    if (wethOut >= MIN_ACTION_WEI) return { kind: "borrow", wethOut };
+  }
+  return null;
+}
 
 export function decideCarry(input: {
   lst: LstObservation;
@@ -200,7 +294,13 @@ export function decideCarry(input: {
       BigInt(lst.lstRedemptionValueWethWei) +
       BigInt(lst.pendingWithdrawalWethWei);
     const book = input.wethBalanceWei + staked;
-    const target = fraction(book, STAKE_TARGET_BPS);
+    // With the leverage loop on, holding a WETH buffer defeats the point: the loop only turns when
+    // borrowed WETH is staked and re-posted. Measured with the 70% target: ten stake/post pairs
+    // and not a single borrow.
+    const target = fraction(
+      book,
+      LEVERAGE_TARGET_HF > 0 ? 10_000 : STAKE_TARGET_BPS,
+    );
     if (target > staked + fraction(book, STAKE_REBALANCE_BAND_BPS)) {
       const size = minBI(
         minBI(target - staked, input.maxStakeWei),
@@ -239,9 +339,26 @@ export function decide(
     return { type: "noop", reason: "the lst venue is not enabled this run" };
   }
   const wethBalanceWei = BigInt(obs.balances.wethWei || "0");
-  if (wethBalanceWei === 0n && BigInt(lst.lstBalanceWei) === 0n) {
+  // Empty hands are only a dead end if there is nothing posted either. A levered position holds
+  // its whole book as Aave collateral, so checking the wallet alone reads that as "this venue is
+  // unusable" -- and because this return happens before the decision log, a run doing exactly that
+  // looks like an agent that stopped responding. It cost an afternoon of misdiagnosis.
+  const collateralBase = BigInt(obs.protocols.aave?.totalCollateralBase ?? "0");
+  const queued =
+    BigInt(lst.pendingWithdrawalWethWei) +
+    BigInt(lst.claimableWithdrawalWethWei);
+  if (
+    wethBalanceWei === 0n &&
+    BigInt(lst.lstBalanceWei) === 0n &&
+    collateralBase === 0n &&
+    queued === 0n
+  ) {
     // This venue is denominated in WETH. A USDC-only funding profile leaves nothing to work with,
     // which is a configuration mismatch rather than a market judgement -- say so plainly.
+    ctx?.log({
+      round: obs.round,
+      reason: "no WETH, no LST, nothing posted or queued",
+    });
     return {
       type: "noop",
       reason:
@@ -249,14 +366,23 @@ export function decide(
     };
   }
 
-  const decision = decideCarry({
-    lst,
-    wethBalanceWei,
-    maxStakeWei:
-      BigInt(obs.limits.maxLstDepositWethWei ?? "0") || wethBalanceWei,
-    maxSwapWei: BigInt(obs.limits.maxWethInWei) || wethBalanceWei,
-    blocksRemaining: obs.blocksRemaining,
-  });
+  // Leverage first when it is switched on: an unhealthy borrow outranks any trade, and posting
+  // collateral is what makes the loop turn. Falls through to the spot decisions otherwise.
+  const decision =
+    decideLeverage({
+      lst,
+      aave: obs.protocols.aave,
+      wethBalanceWei,
+      fairPriceUsd: obs.fairPriceUsdcPerWeth,
+    }) ??
+    decideCarry({
+      lst,
+      wethBalanceWei,
+      maxStakeWei:
+        BigInt(obs.limits.maxLstDepositWethWei ?? "0") || wethBalanceWei,
+      maxSwapWei: BigInt(obs.limits.maxWethInWei) || wethBalanceWei,
+      blocksRemaining: obs.blocksRemaining,
+    });
   const fee = obs.limits.defaultPriorityFeePerGasWei;
 
   // Record why, every cycle. A rule agent's noop leaves no trace on chain and none in the mempool
@@ -270,6 +396,8 @@ export function decide(
       apyBps: Number(lst.apyBps.toFixed(0)),
       queueDelayBlocks: lst.estimatedQueueDelayBlocks,
       blocksRemaining: obs.blocksRemaining ?? -1,
+      // 1e18 fixed point; Aave's no-debt sentinel is astronomically large, so it is reported as -1.
+      healthFactor: hfForLog(obs.protocols.aave?.healthFactor),
     },
   });
 
@@ -302,6 +430,27 @@ export function decide(
       return {
         type: "lstDeposit",
         amountWethWei: decision.wethIn.toString(),
+        maxPriorityFeePerGasWei: fee,
+      };
+    case "collateralize":
+      return {
+        type: "aaveSupply",
+        asset: "LST",
+        amount: decision.lstIn.toString(),
+        maxPriorityFeePerGasWei: fee,
+      };
+    case "borrow":
+      return {
+        type: "aaveBorrow",
+        asset: "WETH",
+        amount: decision.wethOut.toString(),
+        maxPriorityFeePerGasWei: fee,
+      };
+    case "deleverage":
+      return {
+        type: "aaveRepay",
+        asset: "WETH",
+        amount: decision.wethIn.toString(),
         maxPriorityFeePerGasWei: fee,
       };
     default:

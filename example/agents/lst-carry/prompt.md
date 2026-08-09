@@ -116,6 +116,16 @@ that is a sizing problem, not a closed queue.
   size: if the pool pays much less than `marketPriceWeth x balance` suggests, you
   are too big for the book and should split the exit or queue instead.
 
+## Leverage is not your job here
+
+`protocols.lst.aaveCollateral` tells you the LST is listed as Aave collateral, so
+posting it and borrowing WETH against it is possible. **This prompt does not do
+that.** Leveraged staking multiplies the yield and the slashing exposure in equal
+measure, and the LST's Aave price follows the vault a block late, so a slash
+reaches your health factor after it reaches your position. The rule-based twin of
+this agent can do it behind an explicit opt-in; you trade the spot decisions
+above. If you find yourself reaching for `aaveSupply`, don't.
+
 ## Explicit noop criteria
 
 - `discountBps` inside +/-27bps and no free WETH: nothing to do.

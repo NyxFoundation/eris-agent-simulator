@@ -135,8 +135,12 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
     slash はまず vault に効き、次ブロックで HF に届く = liquidation cascade の起点
   - `aaveSupply`/`aaveWithdraw` の asset に `"LST"` を指定可能（`TokenKind` に `"lst"` を追加し、
     scorer の spot 掃引から外して二重計上を防いでいる。評価は Aave の totalCollateralBase 経由）
-  - **同梱 agent はレバレッジしない**。市場側の検証は `test/lstLeverage.test.ts`（要 `ERIS_LOCAL_DEPLOY=1` +
-    ローカルデプロイ。実チェーンで listing → ETH 借入 → slash → HF 低下 を検査。CI では skip）
+  - `lst-carry` は **`ERIS_LST_LEVERAGE_TARGET_HF` で opt-in**（既定 0=off）。ループは
+    stake→collateralize→borrow→stake で、目標 HF に**着地する**サイズだけ借りる（headroom 基準で借りると
+    目標も下限も突き抜けて borrow/repay が振動する: 実測 24/22 → 2/0）。HF が下限を割ったら他の何より先に返済。
+    prompt 版は spot に専念（LLM に env の opt-in は効かないため、手を出さないよう明記）
+  - 市場側の検証は `test/lstLeverage.test.ts`（要 `ERIS_LOCAL_DEPLOY=1` + ローカルデプロイ。実チェーンで
+    listing → ETH 借入 → slash 後も HF 不変(=oracle lag) → oracle 更新で HF 低下 を検査。CI では skip）
 - **USDC 建て採点では LST 保有戦略は構造的に β で不利**（実測: noop 0 > lst-carry −203 > lst-carry-wide −233、
   一方で WETH を持たない venue-arb は +115）。alphaUsdc は free inventory の β しか除去せず、
   LST ポジションは live mark のため。ETH 建て採点（DAT 型）が issue #38 の motivation で follow-on

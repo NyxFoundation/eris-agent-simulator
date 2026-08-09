@@ -6,6 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  decide,
   decideCarry,
   queueFitsInRun,
 } from "../example/agents/lst-carry/agent.js";
@@ -277,4 +278,65 @@ test("an unlimited queue still redeems the whole position", () => {
   assert.equal(decision.kind, "queue");
   if (decision.kind !== "queue") return;
   assert.equal(decision.lstIn, 10n * WAD);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3: leverage, and the empty-hands case it created
+// ---------------------------------------------------------------------------
+
+test("empty hands with a posted position is not treated as an unusable venue", () => {
+  // The bug this pins: a levered position holds its whole book as Aave collateral, so checking the
+  // wallet alone reads "no WETH and no LST" as a misconfigured run. The agent then returned noop
+  // from before the decision log, and the run looked like an agent that had stopped responding.
+  const obs = {
+    balances: { wethWei: "0", usdcUnits: "0", ethWei: "0" },
+    fairPriceUsdcPerWeth: 3000,
+    round: 1,
+    limits: {
+      maxWethInWei: WAD.toString(),
+      maxLstDepositWethWei: (5n * WAD).toString(),
+      defaultPriorityFeePerGasWei: "100000000",
+    },
+    protocols: {
+      lst: lst({ aaveCollateral: true }),
+      aave: {
+        healthFactor: (2n ** 256n - 1n).toString(),
+        totalCollateralBase: "1500000000000", // $15k posted
+        totalDebtBase: "0",
+        availableBorrowsBase: "0",
+        supplied: {},
+        borrowed: {},
+      },
+    },
+  } as never;
+  const action = decide(obs) as { type: string; reason?: string };
+  assert.notEqual(
+    action.reason,
+    "no WETH and no LST: the lst venue is WETH-denominated, so this run needs funding.wethWei > 0",
+  );
+});
+
+test("a borrow is sized to land on the target health factor, not past it", async () => {
+  // Sizing off the headroom overshoots the target and the floor beneath it: measured as 24 borrows
+  // against 22 forced repayments, oscillating 2.89 <-> 1.56. Scaling the existing debt by
+  // hf/target lands on the target instead, because HF is collateral x LT / debt.
+  process.env.ERIS_LST_LEVERAGE_TARGET_HF = "2.0";
+  const mod = await import(
+    `../example/agents/lst-carry/agent.js?lev=${Date.now()}`
+  );
+  // $3000 of debt at HF 3.0, target 2.0 -> borrow another $1500 to halve the ratio.
+  const decision = mod.decideLeverage({
+    lst: lst({ aaveCollateral: true }),
+    aave: {
+      healthFactor: (3n * WAD).toString(),
+      totalDebtBase: (3000n * 10n ** 8n).toString(),
+      availableBorrowsBase: (9000n * 10n ** 8n).toString(),
+    },
+    wethBalanceWei: 0n,
+    fairPriceUsd: 3000,
+  });
+  assert.equal(decision?.kind, "borrow");
+  // $1500 at $3000/WETH = 0.5 WETH.
+  assert.equal(decision.wethOut, WAD / 2n);
+  process.env.ERIS_LST_LEVERAGE_TARGET_HF = "0";
 });
