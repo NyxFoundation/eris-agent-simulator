@@ -103,9 +103,10 @@ An agent that broke a rule (priority fee cap), whose process died mid-run, or th
 ## What the competition actually scores (ADR 0017 §6)
 
 Every participant runs in the **same world at the same time** — one scenario is one run with the
-whole field co-located on one chain. That is what makes the comparison fair (everybody met the same
-market), and it also means three things are part of the competition whether you engage with them or
-not:
+whole field co-located on one chain. That is not a convenience: the score is a z-score computed
+across the agents *within a scenario*, so "who did better" only means anything because everybody met
+the same market on the same blocks. It also means three things are part of the competition whether
+you engage with them or not:
 
 - **Opportunities are finite and shared.** A liquidation or an arbitrage gap is taken by whoever
   gets there first; it does not exist separately for each participant. In pilot runs, arbitrage
