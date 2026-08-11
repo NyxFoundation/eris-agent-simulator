@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findCheatcodeUsage } from "../core/src/strategyStaticCheck.js";
+import { findCheatcodeUsage } from "@eris/sdk/strategyStaticCheck.js";
 
 test("findCheatcodeUsage: detects cheatcode RPC with line numbers", () => {
   const source = [

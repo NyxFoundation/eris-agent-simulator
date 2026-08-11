@@ -95,7 +95,7 @@ eris-competition-poc/            # npm workspaces ルート
 │     │  ├─ llm.ts               #   素の LLM 呼び出し 1 関数（プロバイダ切替のみ）
 │     │  └─ agentLog.ts
 │     ├─ arb-bot/agent.ts        # ルール戦略
-│     └─ my-arb/prompt.md        # プロンプト型 agent
+│     └─ my-arb/{agent.ts,improve.md}  # 参加者向け出発点サンプル（ADR 0018 で自己改善型に）
 └─ deployer/                     # venue デプロイは環境側（現状のまま）
 ```
 
@@ -111,6 +111,15 @@ venue デプロイ（環境の仕事 = `deployer/`）と参加者コントラク
 | `agent.ts`（`decide` export） | ルール戦略 | bot.ts が read→decide→send のループで駆動 |
 | `agent.ts`（`run(ctx)` export） | 自走型 | bot.ts はループせず ctx（clients/read/send/log）を渡して委譲 |
 | `prompt.md` | プロンプト型 | bot.ts が observation を添えて LLM に action を出させる |
+
+> **改訂（ADR 0018）: プロンプト型は廃止され、自己改善型に置き換わった。**
+> 実測で prompt 型は 1 判断あたり 8〜28 ブロックを要し、同一戦略のルール型に対して行動回数が
+> **1/64** だった（ADR 0017 §5 B1）。LLM は取引経路から外し、`agent.ts` + `improve.md` で
+> **戦略コードを定期的に書き換える**役に移した。表の 3 行目は次に読み替える:
+>
+> | 中身 | 種別 | 動き方 |
+> |------|------|--------|
+> | `agent.ts` + `improve.md` | 自己改善型 | decide を毎ブロック駆動しつつ、LLM が `node:vm` 上の executor を書き換える（`ERIS_AGENT_FROZEN=1` で改訂ループを止められる） |
 
 `runtime/` は予約名であり agent ではない。`params.json` のような構造化パラメータファイルは設けない
 （戦略パラメータはコードまたはプロンプト本文が持つ）。

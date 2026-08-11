@@ -1,0 +1,93 @@
+# config/regimes/whale.yaml — official regime 3: single large orders that move the mid. ADR 0017 §1
+#
+# What this regime tests: at a handful of unannounced blocks, one very large market order prints and
+# knocks a pool away from fair. Fair itself does not move at all -- that is the difference from
+# `crash`, where fair drops and the pools lag behind it. Here the pool is the thing that is wrong, so
+# the trade is to take the other side of the print and let the venue reprice, and the risk is that
+# the dislocation is bigger than the depth you are willing to cross.
+# Run: npm run backtest -- --regime whale --seed 505 [--agents <roster>]
+#
+# Calibration:
+#   magnitudeRange [25, 60]  order size in WETH. Against the deployed Uniswap pool this is enough to
+#                            move the mid clearly without emptying one side of the book. Recalibrate
+#                            if the deployer's pool depth changes -- the whole event is impact, so it
+#                            is entirely a function of depth.
+#                            MEASURED, needs revisiting: a 30-block smoke run of this regime paid the
+#                            bundled arb agents ~1,600 and ~2,800 USDC on 25,000 of capital. That is
+#                            a very large edge for four prints, which suggests the size is generous
+#                            enough that simply being present pays and the regime may not separate
+#                            strong strategies from adequate ones. Left as-is pending the ADR 0017 §5
+#                            pilot, which is where the size gets settled against measured
+#                            discrimination rather than against a guess.
+#   side (unset)             the seed picks buy or sell per event. Leaving it unset is what stops the
+#                            direction being memorizable across the published seeds.
+#   venue                    defaults to uniswap, the deepest venue, so the size has to be real. The
+#                            second and third whales are pointed at balancer and curve so a strategy
+#                            cannot just watch one pool.
+#   4 events                 spread across the run via disjoint windowFrac bands. Several prints per
+#                            run mean the score is not decided by one draw (ADR 0017 §5).
+#
+# The whale trades from its own wallet, endowed at setup from the resolved schedule, so it neither
+# drains the ordinary flow wallets nor shows up in blocks.csv as background flow.
+#
+# There is deliberately no `run.seed` (ADR 0017 §1): the seed is supplied per scenario.
+
+run:
+  blocks: 360 # R: ADR 0017 §1
+  seconds: 1800 # a stress run auto-disables the time limit and ends by block count (ADR 0009)
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  protocols: [uniswap, balancer, curve, gmx, aave]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+
+funding:
+  wethWei: "0" # USDC-only distribution: nobody starts already exposed (ADR 0017 §4)
+  usdcUnits: "25000000000"
+
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+
+stress:
+  # Ranges, not values: the seed samples both the size and the block (ADR 0009). The windows are
+  # disjoint so the four prints land spread out rather than clustering into one shock.
+  events:
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.10, 0.25] }
+    - {
+        type: whale,
+        magnitudeRange: [25, 60],
+        windowFrac: [0.3, 0.45],
+        venue: balancer,
+      }
+    - {
+        type: whale,
+        magnitudeRange: [25, 60],
+        windowFrac: [0.5, 0.65],
+        venue: curve,
+      }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.7, 0.85] }
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: venue-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage
+  - id: multi-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: base-agnostic cross-venue arbitrage (all active bases x all venues)

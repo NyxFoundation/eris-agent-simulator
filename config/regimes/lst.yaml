@@ -1,9 +1,9 @@
-# config/regimes/lst-01.yaml — official regime: the liquid staking venue (issue #38). ADR 0016 §2
+# config/regimes/lst.yaml — the liquid staking venue (issue #38). ADR 0016 §2
 #
-# regime = this file (market conditions) + seed. Same discipline as calm-01/crash-01: ranges rather
-# than values, blockTimeSec fixed to the production value, and the published seed is one sample of
-# many (the production run uses a different one).
-# Run: npm run backtest -- --regime lst-01 [--agents <roster>] [--repeat N]
+# Not part of the ADR 0017 competition set (the seven regimes there do not include the LST venue).
+# Kept as an official regime for venue-level verification, and it follows the same discipline:
+# ranges rather than values, blockTimeSec fixed to the production value, seed supplied at run time.
+# Run: npm run backtest -- --regime lst --seed 301 [--agents <roster>]
 #
 # What this regime tests that the others do not: an asset with two prices at once. The vault owes
 # `redemptionRateWeth` per share but only through a withdrawal queue; the LST/WETH pool pays
@@ -12,11 +12,10 @@
 # pay for it, not par.
 #
 # Funding note: this venue is WETH-denominated and cannot be traded from a USDC-only wallet, so
-# unlike calm-01 this regime hands out WETH. That reintroduces price drift into netPnlUsdc — read
+# unlike calm this regime hands out WETH. That reintroduces price drift into netPnlUsdc — read
 # alphaUsdc, and read scores within a run rather than across price paths.
 
 run:
-  seed: 301
   blocks: 60
   seconds: 600 # end by block count (set well above blocks x blockTimeSec)
   blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)

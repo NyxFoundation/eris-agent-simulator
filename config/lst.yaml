@@ -127,25 +127,24 @@ agents:
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
     description: does nothing (baseline)
-  # LLM-driven through prompt.md, matching the committed example.yaml roster: the venue's default
-  # path is the one a participant actually submits (ADR 0015 §2, issue #38). Needs OLLAMA_API_KEY
-  # in .env.local. Without a backend the run completes and this agent fails closed to noop, so if
-  # it never trades, check agents/lst-carry.jsonl for the reason before blaming the strategy.
-  # Remove the `env:` line to run the same strategy rule-based via agent.ts.
+  # Self-improving (agent.ts + improve.md, ADR 0018): the strategy trades every block and an LLM
+  # periodically rewrites it. Needs OLLAMA_API_KEY in .env.local, or ERIS_LLM_MODEL: "claude-cli"
+  # for a subscription CLI. Without a backend the run still completes — the revisions are recorded
+  # as failed and the strategy keeps trading unchanged.
   - id: lst-carry
     wallet: AGENT2_PRIVATE_KEY
-    description: liquid staking — stake for yield, or trade the redemption/market gap (LLM-driven via prompt.md)
-    env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1" }
-    # Claude Code / Codex subscription instead of Ollama (no API key) — use this env line instead.
-    # This is the combination the prompt was verified on (see docs/guide/llm-agents.md):
-    # env: { ERIS_AGENT_MODE: "prompt", ERIS_PROMPT_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
-  # The same strategy run rule-based (agent.ts) with a wider entry threshold: a second participant
-  # competing for the same dislocation, and a control for the prompt-driven one above.
+    description: liquid staking — stake for yield, or trade the redemption/market gap, revised in-run
+    env: { ERIS_IMPROVE_LOG_CALLS: "1" }
+    # Claude Code / Codex subscription instead of Ollama (no API key):
+    # env: { ERIS_IMPROVE_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }
+  # The same strategy with the improvement loop off and a wider entry threshold: a second participant
+  # competing for the same dislocation, and the frozen control for the self-improving one above
+  # (ADR 0018 §5 — without it there is no way to tell whether revising helped).
   - id: lst-carry-wide
     dir: lst-carry
     wallet: AGENT3_PRIVATE_KEY
-    description: lst-carry with a wider entry threshold (rule-based via agent.ts)
-    env: { ERIS_LST_SAFETY_BPS: "40" }
+    description: lst-carry with a wider entry threshold, improvement loop off (the frozen control)
+    env: { ERIS_LST_SAFETY_BPS: "40", ERIS_AGENT_FROZEN: "1" }
   - id: venue-arb
     wallet: AGENT4_PRIVATE_KEY
     description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)

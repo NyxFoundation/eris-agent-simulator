@@ -10,7 +10,7 @@ import { join } from "node:path";
 import {
   findCheatcodeUsage,
   type StaticCheckFinding,
-} from "../core/src/strategyStaticCheck.js";
+} from "@eris/sdk/strategyStaticCheck.js";
 
 // ADR 0015 §2: 1 agent = 1 directory. runtime/ is a reserved name (not participant code, so excluded);
 // lib/ holds shared strategy helpers, so it is included.

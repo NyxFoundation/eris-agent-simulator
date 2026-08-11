@@ -54,6 +54,49 @@ test("buildSource(nested schema) -> loadConfig: reflected in SimConfig", () => {
   assert.equal(config.initialWethWei, 0n);
 });
 
+test("market.*: the OU parameters reach SimConfig from YAML (ADR 0017 regime 1)", () => {
+  // These used to be module-level constants in sdk/src/rng.ts read straight from process.env, which
+  // a regime YAML has no way to set -- the loader builds a source map rather than mutating env. The
+  // cex-drift regime is nothing but these two numbers, so this is the test that it is a regime at all.
+  const source = buildSource({
+    market: { volatility: 0.01, kappa: 0.004, drift: 0.0015 },
+  });
+  assert.equal(source.ERIS_PRICE_VOLATILITY, "0.01");
+  assert.equal(source.ERIS_PRICE_REVERT_KAPPA, "0.004");
+  assert.equal(source.ERIS_PRICE_DRIFT, "0.0015");
+
+  const config = loadConfig(source);
+  assert.deepEqual(config.ou.global, {
+    volatility: 0.01,
+    kappa: 0.004,
+    drift: 0.0015,
+  });
+  // Every registered base resolves, falling back to the global value when it has no override.
+  assert.deepEqual(config.ou.perBase.WETH, config.ou.global);
+});
+
+test("market.*: unset falls back to the calm defaults", () => {
+  const config = loadConfig(buildSource({ run: { seed: 1 } }));
+  assert.deepEqual(config.ou.global, {
+    volatility: 0.004,
+    kappa: 0.02,
+    drift: 0,
+  });
+});
+
+test("market.base*: per-base overrides expand to <PREFIX>_<SYM> with no unit suffix", () => {
+  // Distinct from the funding/limits per-base maps, whose env names carry a unit (INITIAL_WETH_WEI).
+  // A volatility has no unit, so appending one would silently produce a key nothing reads.
+  const source = buildSource({
+    market: { volatility: 0.004, baseVolatility: { WETH: 0.02 } },
+  });
+  assert.equal(source.ERIS_PRICE_VOLATILITY_WETH, "0.02");
+  const config = loadConfig(source);
+  assert.equal(config.ou.perBase.WETH.volatility, 0.02);
+  // The global is untouched: only that base moved.
+  assert.equal(config.ou.global.volatility, 0.004);
+});
+
 test("buildSource: expands the per-base map into <prefix>_<SYM>_<unit> (WETH=WEI)", () => {
   // WETH is in the fork default registry, so the unit suffix (WEI) can be derived.
   const source = buildSource({ funding: { base: { WETH: "5" } } });

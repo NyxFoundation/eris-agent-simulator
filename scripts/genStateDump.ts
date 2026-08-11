@@ -159,7 +159,7 @@ async function main(): Promise<void> {
     `  commit=${manifest.sourceCommit.slice(0, 12)} chainId=${manifest.chainId} genesis=${genesis.hash.slice(0, 12)}…`,
   );
   console.log(`  fingerprint=${manifest.deploymentsFingerprint.slice(0, 20)}…`);
-  console.log(`  run: npm run backtest -- --regime calm-01`);
+  console.log(`  run: npm run backtest -- --regime calm --seed 101`);
 }
 
 main().catch((error) => {

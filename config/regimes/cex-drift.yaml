@@ -1,0 +1,74 @@
+# config/regimes/cex-drift.yaml — official regime 1: reference price drifting away from on-chain price.
+# ADR 0017 §1
+#
+# What this regime tests: the fair price (the off-chain reference every agent can read from the
+# PriceFeed, one block late) walks away from where the pools are trading and keeps going, instead of
+# snapping back. Pool prices only move when someone trades, so a persistent drift opens a gap that
+# stays open and widens -- the skill is noticing early and sizing into a move that has not finished.
+# Run: npm run backtest -- --regime cex-drift --seed 303 [--agents <roster>]
+#
+# The two knobs that make it this regime rather than `calm` (market.* is new in ADR 0017; before it
+# the OU parameters were only reachable through raw env, so a regime could not set them):
+#
+#   drift  0.0015/block  -- a directional pull. Over 360 blocks that compounds to roughly +70% if
+#                           nothing resisted it; mean reversion and the pools' own impact pull much
+#                           of it back, so the realized path is a strong trend, not a moonshot.
+#   kappa  0.004         -- one fifth of calm's 0.02. Mean reversion is what normally erases β by
+#                           run end (ADR 0003/0007); weakening it is precisely what lets a drift
+#                           persist. It is deliberately not zero: with no anchor at all the price
+#                           random-walks off and never comes back, which stops being a drift regime
+#                           and starts being a lottery on the seed's direction.
+#
+# NOTE on scoring: this regime carries real β by construction, and the competition currently ranks on
+# netPnlUsdc (ADR 0017 §4). Funding is USDC-only so nobody starts exposed, but an agent that ends the
+# run holding inventory is marked at the drifted price. That is the intended difficulty here -- the
+# drift is tradeable in both directions -- but it is the regime where the choice of scoring metric
+# matters most, so re-check its calibration when the metric changes.
+#
+# There is deliberately no `run.seed` (ADR 0017 §1): the seed is supplied per scenario.
+
+run:
+  blocks: 360 # R: ADR 0017 §1 (long enough for a drift to develop and be traded)
+  seconds: 1800 # end by block count (must stay well above blocks x blockTimeSec = 720s)
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  protocols: [uniswap, balancer, curve, gmx, aave]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+
+market:
+  volatility: 0.004 # same per-block noise as calm: the regime is the trend, not the noise
+  kappa: 0.004 # weak mean reversion, so the drift is allowed to persist
+  drift: 0.0015 # the directional pull that defines this regime
+
+funding:
+  wethWei: "0" # USDC-only distribution: nobody starts already exposed to the drift (ADR 0017 §4)
+  usdcUnits: "25000000000"
+
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: venue-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage
+  - id: multi-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: base-agnostic cross-venue arbitrage (all active bases x all venues)

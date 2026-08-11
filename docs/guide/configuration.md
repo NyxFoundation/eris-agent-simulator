@@ -56,7 +56,7 @@ agents:
 | `dir` | | Override for the real directory (when lining up multiple instances of the same strategy under different ids) |
 | `baseline` | | `true` treats it as a zero-skill baseline (noop / random) |
 | `description` | | Human-readable description |
-| `env` | | Strategy parameters passed to the agent process (`ERIS_AGENT_MODE` / `ERIS_LLM_*` etc.; distinct from the sim config keys) |
+| `env` | | Strategy parameters passed to the agent process (`ERIS_LLM_MODEL` / `ERIS_AGENT_FROZEN` / `ERIS_IMPROVE_LOG_CALLS` etc.; distinct from the sim config keys) |
 | `command` / `args` | | Override for a fully custom agent (other languages etc.; read/send/validate all self-provided = unsupported). Normally omitted |
 
 ## One-shot CLI overrides (sim:realtime)

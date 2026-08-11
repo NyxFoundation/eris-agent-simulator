@@ -69,7 +69,15 @@ const PRICE_DRIFT = floatEnv(process.env.ERIS_PRICE_DRIFT, 0);
 // OU parameters for a single asset (ADR 0013).
 export type OuParams = { volatility: number; kappa: number; drift: number };
 
-// Global default (backward compatible: same behavior as the old nextFairPrice).
+// Legacy env-driven accessors. The run's parameters now live in SimConfig (`config.ou`, from the
+// YAML `market.*` section; see readOuParams in config.ts), because the YAML loader builds a source
+// map rather than mutating process.env and so could never reach the constants above. The
+// coordinator passes config.ou explicitly; these remain only as the default for a caller that
+// passes no params, and they read process.env, which the config path deliberately does not.
+//
+// Prefer passing params. A caller that forgets gets the module defaults with no error -- e.g. the
+// cex-drift regime's drift silently becoming 0. ERIS_PRICE_* is listed in RETIRED_CONFIG_ENV so a
+// stale environment at least announces itself.
 export function globalOuParams(): OuParams {
   return {
     volatility: PRICE_VOLATILITY,

@@ -45,7 +45,7 @@ flowchart LR
 - **Multi-agent competition** — agents run as fully independent processes, subscribe to blocks at their own pace, and sign and send directly themselves. In-block ordering is determined by anvil `--order fees` (descending priority fee).
 - **Controllable fair price** — the coordinator generates a SEED-derived deterministic fair price every block and writes it to the on-chain `PriceFeed` and mock oracles. Aave health factors and GMX mark prices follow it.
 - **Market stress & liquidation** — price spikes/crashes can be injected to trigger the Aave liquidation path.
-- **LLM-driven autonomous agents** — a single `prompt.md` is the strategy itself. The LLM emits an action on every decision and can even self-revise the prompt (no hand-written trading logic).
+- **Self-improving agents** — the strategy trades every block on its own, and an LLM periodically rewrites it in-run from its own track record. The LLM is never in the trade path.
 - **Fork-free local deploy mode** — avoids cold-state RPC round trips to the fork backend (fork RPC latency), and multi-asset (WETH/WBTC) works too.
 - **Backtesting** — with a distributed state dump plus official regimes (market scenarios), a strategy can be verified over and over under the same environment and the same scoring (`--repeat` to read the distribution).
 
@@ -77,13 +77,13 @@ cd ..
 
 ### Choose an LLM backend
 
-**The default roster is LLM-driven**: the trading agents run in prompt mode (`prompt.md`, one LLM call per decision), so they need an LLM backend to trade. Pick one — without it the run still completes, but the trading agents fail closed to `noop` and trade nothing:
+**The default roster is self-improving**: the trading agents are rule strategies that trade every block on their own, and an LLM periodically rewrites them ([Self-improving agents](docs/guide/llm-agents.md)). A backend is therefore optional — without one the run completes normally, the revisions are recorded as failed, and the strategies keep trading unchanged. Pick one to see the improvement loop actually work:
 
 | backend | setup |
 |---|---|
 | **Ollama Cloud** (default; model `gpt-oss:120b`) | put `OLLAMA_API_KEY=...` in `.env.local` |
 | **Local ollama** (no key) | `ERIS_OLLAMA_BASE_URL=http://127.0.0.1:11434/api` in `.env.local`, and set a locally-pulled model via the roster env `ERIS_LLM_MODEL` |
-| **Claude Code / Codex subscription** (no API key; spawns the logged-in CLI) | in `config/local.yaml`, swap each prompt agent's `env:` for the commented variant with `ERIS_LLM_MODEL: "claude-cli:haiku"` (or `"codex"`) |
+| **Claude Code / Codex subscription** (no API key; spawns the logged-in CLI) | in `config/local.yaml`, add `ERIS_LLM_MODEL: "claude-cli:haiku"` (or `"codex"`) to the agent's `env:` |
 
 To skip LLMs entirely and run the same strategies rule-based (`agent.ts`), remove the `env:` line from each agent in the roster. Details: [LLM Agents](docs/guide/llm-agents.md).
 
@@ -119,8 +119,8 @@ Once you bake a state dump from a deployed anvil, you can **replay official regi
 
 ```bash
 npm run gen:state-dump                                # bake once from the running deployer anvil
-npm run backtest -- --regime calm-01 --repeat 5       # calm market, 5 times (prints mean alphaUsdc)
-npm run backtest -- --regime crash-01                 # crash + Aave liquidation scenario
+npm run backtest -- --regime calm --seed 101         # one scenario (regime + seed)
+npm run backtest -- --scenarios config/scenarios/public.yaml   # the whole public set + standings
 ```
 
 For details, see [Backtesting](docs/guide/backtest.md).
@@ -138,7 +138,7 @@ For details, see [Backtesting](docs/guide/backtest.md).
 | [Backtesting](docs/guide/backtest.md) | Replaying state dump + official regimes, iterating with `--repeat`, sparring, what is and isn't measurable |
 | [Run Output and Analysis](docs/guide/run-output.md) | The output files under `runs/<id>/` and how to analyze a run afterwards |
 | [Protocols and Actions](docs/guide/protocols-and-actions.md) | Reference: actions per venue, stablecoin accounting, oracle control |
-| [LLM-driven Autonomous Agents](docs/guide/llm-agents.md) | prompt.md-type agents (per-decision LLM, self-revision, conversation log) |
+| [Self-improving Agents](docs/guide/llm-agents.md) | agent.ts + improve.md (in-run strategy rewriting, sandbox, rollback, frozen control) |
 
 **How the environment works / operations**:
 

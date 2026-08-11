@@ -61,7 +61,7 @@ Drop exactly one of the following into `example/agents/<id>/` and add the id to 
 |---|---|---|
 | `agent.ts` (exports `decide(obs, ctx)`) | rule strategy | bot.ts drives a read→decide→send loop (interval can be set via `export const config = { intervalMs }`) |
 | `agent.ts` (exports `run(ctx)`) | self-driven | bot.ts does not loop; it delegates by passing ctx (clients / latestObservation / onObservation / submit / log) (e.g. liquidator) |
-| `prompt.md` (frontmatter: name/description required) | prompt type | bot.ts attaches the observation and has the LLM emit an action on every decision ([LLM agents](llm-agents.md)) |
+| `agent.ts` + `improve.md` (frontmatter: name/description required) | self-improving | decide() drives every block as usual, and an LLM periodically rewrites the strategy out of the trade path ([Self-improving agents](llm-agents.md)) |
 
 runtime/send.ts appends mempool activity (`kind:"mempool"`: submitted / submit_failed / rejected) to `runs/<id>/agents/<id>.jsonl` as a self-report (closing the gap where the coordinator can no longer count submissions).
 

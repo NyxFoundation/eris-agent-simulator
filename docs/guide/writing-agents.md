@@ -13,7 +13,7 @@ There are 3 types (details in [Architecture](architecture.md)). This page follow
 |---|---|---|
 | rule strategy | `agent.ts` (`decide(obs, ctx)`) | most strategies; observe → decide each block |
 | self-driven | `agent.ts` (`run(ctx)`) | custom loops / event-driven (e.g. liquidator) |
-| prompt | `prompt.md` | let an LLM decide each time (see [LLM Agents](llm-agents.md)) |
+| self-improving | `agent.ts` + `improve.md` | trade at rule speed while an LLM rewrites the strategy in-run (see [Self-improving agents](llm-agents.md)) |
 
 ## Step 1: The minimal agent
 
@@ -146,12 +146,12 @@ agents:
 ```
 
 ```bash
-npm run backtest -- --regime calm-01 --agents my-roster.yaml --repeat 5
-npm run backtest -- --regime crash-01 --agents my-roster.yaml   # also look at another regime
+npm run backtest -- --regime calm --seed 101 --agents my-roster.yaml
+npm run backtest -- --scenarios config/scenarios/public.yaml --agents my-roster.yaml  # every regime x seed
 ```
 
-- Read results by `mean alphaUsdc` (β-removed PnL). A single netPnl is contaminated by price drift
-- Judge by the distribution of `--repeat` (even in the same regime it varies slightly with tx ordering; see [Backtest](backtest.md))
+- `netPnlUsdc` is the competition's metric but includes price drift (β); `alphaUsdc` removes β from spot inventory. Both are printed and both land in `matrix.json`, so read them together
+- Judge by the distribution across seeds, not by one run (tx ordering varies even within a scenario). `--repeat N` shows that spread for a single scenario; `--scenarios` covers the seed axis (see [Backtest](backtest.md))
 - Verify across regimes: not overfiring in calm and capturing opportunity in crash — doing both is skill
 
 ## Shared helpers (example/agents/lib/)

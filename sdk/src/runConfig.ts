@@ -75,12 +75,18 @@ const SCHEMA: Record<string, string> = {
   "run.localDeploy": "ERIS_LOCAL_DEPLOY",
   "run.skipReset": "ERIS_SKIP_RESET",
   "run.prewarmBlocks": "ERIS_PREWARM_BLOCKS",
+  "run.scoreEvery": "ERIS_SCORE_EVERY",
   "run.reportDir": "REPORT_DIR",
   "run.flashArb": "ERIS_FLASH_ARB",
   "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",
   "run.agentTimeoutMs": "AGENT_TIMEOUT_MS",
   "run.agentsConfig": "AGENTS_CONFIG", // roster file path when there are no inline agents
   "run.agentsDir": "ERIS_AGENTS_DIR", // root of the agent directory convention (ADR 0015 §6)
+  // market (the fair-price OU process. ADR 0017 regime 1 "cex-drift" needs these per regime, and
+  // until now they were only reachable through raw env, which a regime YAML cannot set)
+  "market.volatility": "ERIS_PRICE_VOLATILITY",
+  "market.kappa": "ERIS_PRICE_REVERT_KAPPA",
+  "market.drift": "ERIS_PRICE_DRIFT",
   // funding
   "funding.ethWei": "INITIAL_ETH_WEI",
   "funding.wethWei": "INITIAL_WETH_WEI",
@@ -103,6 +109,7 @@ const SCHEMA: Record<string, string> = {
   "flow.uninformedMaxWethWei": "UNINFORMED_FLOW_MAX_WETH_WEI",
   "flow.uninformedCount": "UNINFORMED_FLOW_COUNT",
   "flow.uninformedPersistBlocks": "UNINFORMED_FLOW_PERSIST_BLOCKS",
+  "flow.uninformedTrendCorrelation": "UNINFORMED_FLOW_TREND_CORRELATION",
   "flow.informedMaxWethWei": "INFORMED_FLOW_MAX_WETH_WEI",
   "flow.balancerMaxWethWei": "BALANCER_FLOW_MAX_WETH_WEI",
   "flow.curveMaxWethWei": "CURVE_FLOW_MAX_WETH_WEI",
@@ -149,7 +156,23 @@ const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
   "limits.aaveSupplyBase": { prefix: "MAX_AAVE_SUPPLY" },
   "flow.baseMax": { prefix: "FLOW_MAX" },
 };
-const SECTIONS = ["run", "funding", "limits", "flow", "stress", "vuln", "lst"];
+// Per-base overrides whose env name is `<PREFIX>_<SYMBOL>` with no unit suffix. Distinct from
+// BASE_SECTIONS, whose names carry one (`MAX_AGENT_WBTC_IN_SATS`): a volatility has no unit.
+const BASE_PLAIN_SECTIONS: Record<string, string> = {
+  "market.baseVolatility": "ERIS_PRICE_VOLATILITY",
+  "market.baseKappa": "ERIS_PRICE_REVERT_KAPPA",
+  "market.baseDrift": "ERIS_PRICE_DRIFT",
+};
+const SECTIONS = [
+  "run",
+  "market",
+  "funding",
+  "limits",
+  "flow",
+  "stress",
+  "vuln",
+  "lst",
+];
 
 function baseEnvName(prefix: string, sym: string, infix?: string): string {
   const unit = unitSuffixFor(tokenInfo(sym).decimals);
@@ -173,7 +196,15 @@ function applyDoc(
       for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
         const path = `${k}.${sk}`;
         const baseDef = BASE_SECTIONS[path];
-        if (baseDef) {
+        const basePlainPrefix = BASE_PLAIN_SECTIONS[path];
+        if (basePlainPrefix) {
+          if (sv && typeof sv === "object" && !Array.isArray(sv))
+            for (const [sym, value] of Object.entries(
+              sv as Record<string, unknown>,
+            ))
+              source[`${basePlainPrefix}_${sym.toUpperCase()}`] =
+                toEnvString(value);
+        } else if (baseDef) {
           if (sv && typeof sv === "object" && !Array.isArray(sv))
             for (const [sym, amt] of Object.entries(
               sv as Record<string, unknown>,

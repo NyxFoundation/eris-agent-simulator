@@ -18,12 +18,25 @@
 import { Rng } from "@eris/sdk/rng.js";
 import type { TokenSymbol } from "@eris/sdk/types.js";
 
-// spike / crash distort a base's price through the overlay. lstSlash is different in kind: it is a
-// one-shot staking penalty applied to the LST vault (issue #38 phase 2), so it carries no price
-// multiplier and no trapezoid -- it happens on a single block and the exchange rate is permanently
-// lower afterwards. It shares this config section because it is the same thing from a run's point
-// of view: a seed-placed shock the agents have to survive.
-export type StressEventType = "spike" | "crash" | "lstSlash";
+// spike / crash distort a base's price through the overlay. lstSlash and whale are different in
+// kind: they happen on a single block and the coordinator executes them, rather than being a
+// multiplier layered on the price path.
+//   lstSlash  a one-shot staking penalty applied to the LST vault (issue #38 phase 2); the exchange
+//             rate is permanently lower afterwards
+//   whale     a single large market order that moves the mid (ADR 0017 regime 3). Unlike crash, the
+//             fair price does not move at all -- the pool is knocked away from an unchanged fair,
+//             which is the opposite direction of dislocation and a different trade to find
+// They share this config section because from a run's point of view they are the same thing: a
+// seed-placed shock the agents have to survive.
+export type StressEventType = "spike" | "crash" | "lstSlash" | "whale";
+
+// Types that happen on one block and are executed, rather than layered onto the price as a
+// multiplier. `at()` ignores them; `pointEventsAt()` returns them.
+const POINT_EVENT_TYPES = new Set<StressEventType>(["lstSlash", "whale"]);
+
+// Which way a whale trades. "random" (the default) lets the seed pick, which is what keeps the
+// direction from being memorizable across a published regime's seeds.
+export type WhaleSide = "buy" | "sell" | "random";
 
 // Event spec given via env (ERIS_STRESS_EVENTS). Ranges are given, not values.
 export type StressEventConfig = {
@@ -32,7 +45,15 @@ export type StressEventConfig = {
   base?: TokenSymbol;
   // Deviation width of the price multiplier. spike acts as +, crash as −. The seed picks from [min,max].
   // For lstSlash this is the fraction of the staking pool burnt (0.02 = a 2% slash).
+  // For whale this is the order size in whole base units (30 = a 30 WETH market order). Absolute
+  // rather than a fraction because what matters is the size against pool depth, and depth is a
+  // property of the deployed venue, not of this config.
   magnitudeRange: [number, number];
+  // whale only: which way it trades. Default "random" = the seed decides.
+  side?: WhaleSide;
+  // whale only: the venue it hits. Default "uniswap" (the deepest pool, so the size has to be real
+  // to move it).
+  venue?: "uniswap" | "balancer" | "curve";
   // Fraction of run length for the event start position [min,max]. The seed picks.
   windowFrac: [number, number];
   // Length of each trapezoid segment (block count; fixed). Not applicable to lstSlash, which is
@@ -50,6 +71,9 @@ export type ResolvedStressEvent = {
   type: StressEventType;
   base: string; // target base (default WETH)
   magnitude: number;
+  // whale only: resolved from config.side, with "random" collapsed to a concrete side by the seed.
+  side?: "buy" | "sell";
+  venue?: "uniswap" | "balancer" | "curve";
   startBlock: number;
   rampBlocks: number;
   holdBlocks: number;
@@ -105,20 +129,33 @@ export class EventSchedule {
         rng.next(),
       );
       const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], rng.next());
-      const span =
-        c.type === "lstSlash"
-          ? POINT_EVENT_SPAN
-          : c.rampBlocks + c.holdBlocks + c.decayBlocks;
+      const span = POINT_EVENT_TYPES.has(c.type)
+        ? POINT_EVENT_SPAN
+        : c.rampBlocks + c.holdBlocks + c.decayBlocks;
       // Clamp startBlock so the window fits inside the run window (scoring history depth; event window ⊂ run window).
       const maxStart = Math.max(0, runBlocks - span);
       const startBlock = Math.max(
         0,
         Math.min(Math.round(startFrac * runBlocks), maxStart),
       );
+      // Draw the side for every whale regardless of config so the RNG consumption stays a pure
+      // function of the event list -- making it conditional would let one event's `side: buy` shift
+      // the schedule of every event after it.
+      const sideDraw = c.type === "whale" ? rng.next() : undefined;
+      const side =
+        c.type === "whale"
+          ? c.side === undefined || c.side === "random"
+            ? sideDraw! < 0.5
+              ? ("buy" as const)
+              : ("sell" as const)
+            : c.side
+          : undefined;
       return {
         type: c.type,
         base: c.base ?? "WETH",
         magnitude,
+        ...(side !== undefined ? { side } : {}),
+        ...(c.type === "whale" ? { venue: c.venue ?? "uniswap" } : {}),
         startBlock,
         rampBlocks: c.rampBlocks,
         holdBlocks: c.holdBlocks,
@@ -153,7 +190,7 @@ export class EventSchedule {
   pointEventsAt(fromIndex: number, toIndex = fromIndex): ResolvedStressEvent[] {
     return this.events.filter(
       (ev) =>
-        ev.type === "lstSlash" &&
+        POINT_EVENT_TYPES.has(ev.type) &&
         ev.startBlock >= fromIndex &&
         ev.startBlock <= toIndex,
     );
@@ -162,7 +199,7 @@ export class EventSchedule {
   at(blockIndex: number): OverlayState {
     const baseMults: Record<string, number> = {};
     for (const ev of this.events) {
-      if (ev.type === "lstSlash") continue; // not a price distortion
+      if (POINT_EVENT_TYPES.has(ev.type)) continue; // executed, not a price distortion
       const e = envelope(ev, blockIndex);
       if (e === 0) continue;
       const sign = ev.type === "crash" ? -1 : 1;
@@ -204,8 +241,27 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     throw new Error(`${label} must be an object`);
   }
   const o = raw as Record<string, unknown>;
-  if (o.type !== "spike" && o.type !== "crash" && o.type !== "lstSlash") {
-    throw new Error(`${label}.type must be "spike", "crash" or "lstSlash"`);
+  if (
+    o.type !== "spike" &&
+    o.type !== "crash" &&
+    o.type !== "lstSlash" &&
+    o.type !== "whale"
+  ) {
+    throw new Error(
+      `${label}.type must be "spike", "crash", "lstSlash" or "whale"`,
+    );
+  }
+  if (o.side !== undefined) {
+    if (o.type !== "whale")
+      throw new Error(`${label}.side only applies to type "whale"`);
+    if (o.side !== "buy" && o.side !== "sell" && o.side !== "random")
+      throw new Error(`${label}.side must be "buy", "sell" or "random"`);
+  }
+  if (o.venue !== undefined) {
+    if (o.type !== "whale")
+      throw new Error(`${label}.venue only applies to type "whale"`);
+    if (o.venue !== "uniswap" && o.venue !== "balancer" && o.venue !== "curve")
+      throw new Error(`${label}.venue must be "uniswap", "balancer" or "curve"`);
   }
   if (o.base !== undefined && typeof o.base !== "string") {
     throw new Error(`${label}.base must be a token symbol string`);
@@ -227,8 +283,8 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     min: 0,
     max: 1,
   });
-  // A slash lands on one block, so the trapezoid fields do not apply and are optional there.
-  const isPoint = o.type === "lstSlash";
+  // A point event lands on one block, so the trapezoid fields do not apply and are optional there.
+  const isPoint = POINT_EVENT_TYPES.has(o.type);
   const rampBlocks = parseNonNegInt(
     isPoint ? (o.rampBlocks ?? 0) : o.rampBlocks,
     `${label}.rampBlocks`,
@@ -249,6 +305,10 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
   return {
     type: o.type,
     base: typeof o.base === "string" ? o.base : undefined,
+    ...(o.side !== undefined ? { side: o.side as WhaleSide } : {}),
+    ...(o.venue !== undefined
+      ? { venue: o.venue as "uniswap" | "balancer" | "curve" }
+      : {}),
     magnitudeRange,
     windowFrac,
     rampBlocks,

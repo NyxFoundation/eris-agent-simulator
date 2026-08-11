@@ -179,14 +179,14 @@ describe("resolveRegimePath", () => {
   it("a name resolves to config/regimes/<name>.yaml, a path spec resolves as-is", () => {
     const root = join(tmp, "root");
     mkdirSync(join(root, "config", "regimes"), { recursive: true });
-    writeFileSync(join(root, "config", "regimes", "calm-01.yaml"), "run: {}\n");
+    writeFileSync(join(root, "config", "regimes", "calm.yaml"), "run: {}\n");
     assert.equal(
-      resolveRegimePath(root, "calm-01"),
-      join(root, "config", "regimes", "calm-01.yaml"),
+      resolveRegimePath(root, "calm"),
+      join(root, "config", "regimes", "calm.yaml"),
     );
     assert.equal(
-      resolveRegimePath(root, "config/regimes/calm-01.yaml"),
-      join(root, "config", "regimes", "calm-01.yaml"),
+      resolveRegimePath(root, "config/regimes/calm.yaml"),
+      join(root, "config", "regimes", "calm.yaml"),
     );
   });
 
@@ -194,7 +194,7 @@ describe("resolveRegimePath", () => {
     const root = join(tmp, "root");
     assert.throws(
       () => resolveRegimePath(root, "spike-99"),
-      /regime not found: spike-99.*available: calm-01/s,
+      /regime not found: spike-99.*available: calm/s,
     );
   });
 });
