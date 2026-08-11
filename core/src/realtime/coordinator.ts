@@ -1324,7 +1324,10 @@ export async function runRealtimeSimulation(
           // a debt decrease as a liquidation. Outside the window (overlay=1) it does not read, avoiding log bloat / RPC load.
           const victimTask = async (): Promise<void> => {
             if (stressVictims.length === 0) return;
-            const active = schedule.activeEventAt(blockIndex);
+            // Price events only: a liquidityPull window leaves the price where it was, and its
+            // trapezoid outlasts the crash's, so gating on any active event would read health
+            // factors on blocks where nothing has moved.
+            const active = schedule.activePriceEventAt(blockIndex);
             if (!active && overlay.wethMult === 1) return;
             const accounts = await readVictimsAccount(ctx, stressVictims);
             logger.event({

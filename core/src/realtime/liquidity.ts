@@ -166,27 +166,38 @@ export async function setupLiquidityPull(
     );
   }
 
+  // Two dependent rounds of independent reads, not 2N sequential round trips: every scenario in a
+  // matrix run pays this before its first block.
+  const tokenIds = (await Promise.all(
+    Array.from({ length: Number(count) }, (_, i) =>
+      ctx.publicClient.readContract({
+        address: UNISWAP.nonfungiblePositionManager,
+        abi: nonfungiblePositionManagerAbi,
+        functionName: "tokenOfOwnerByIndex",
+        args: [owner, BigInt(i)],
+      }),
+    ),
+  )) as bigint[];
+  const raws = (await Promise.all(
+    tokenIds.map((tokenId) =>
+      ctx.publicClient.readContract({
+        address: UNISWAP.nonfungiblePositionManager,
+        abi: nonfungiblePositionManagerAbi,
+        functionName: "positions",
+        args: [tokenId],
+      }),
+    ),
+  )) as PositionTuple[];
+
   const positions: LiquidityPullPosition[] = [];
-  for (let i = 0n; i < count; i++) {
-    const tokenId = (await ctx.publicClient.readContract({
-      address: UNISWAP.nonfungiblePositionManager,
-      abi: nonfungiblePositionManagerAbi,
-      functionName: "tokenOfOwnerByIndex",
-      args: [owner, i],
-    })) as bigint;
-    const raw = (await ctx.publicClient.readContract({
-      address: UNISWAP.nonfungiblePositionManager,
-      abi: nonfungiblePositionManagerAbi,
-      functionName: "positions",
-      args: [tokenId],
-    })) as PositionTuple;
+  raws.forEach((raw, i) => {
     const [, , token0, token1, fee, tickLower, tickUpper, liquidity] = raw;
     const match = wanted.get(
       `${token0.toLowerCase()}:${token1.toLowerCase()}:${fee}`,
     );
-    if (!match || liquidity <= 0n) continue;
+    if (!match || liquidity <= 0n) return;
     positions.push({
-      tokenId,
+      tokenId: tokenIds[i],
       base: match.base,
       marketKey: match.key,
       pool: match.pool,
@@ -196,7 +207,7 @@ export async function setupLiquidityPull(
       tickUpper: Number(tickUpper),
       seededLiquidity: liquidity,
     });
-  }
+  });
 
   const uncovered = bases.filter((b) => !positions.some((p) => p.base === b));
   if (uncovered.length > 0) {
@@ -208,8 +219,9 @@ export async function setupLiquidityPull(
     );
   }
 
-  // The decay leg deposits tokens back through the position manager, so it needs standing approval.
-  // The deploy-time approval covered only the exact seeding amounts.
+  // The decay leg deposits tokens back through the position manager, so it needs standing approval:
+  // the deploy-time approval covered only the exact seeding amounts. Sequential because they all
+  // come from one key and each mines a block -- concurrent sends would race on the nonce.
   const tokens = [...new Set(positions.flatMap((p) => [p.token0, p.token1]))];
   for (const token of tokens) {
     await sendAndMine(
@@ -230,16 +242,20 @@ export async function setupLiquidityPull(
 
   // Balances matter for the restore: putting depth back after the price has moved needs a different
   // mix than the withdrawal returned, and the shortfall (if any) comes from the owner's own float.
+  const balanceValues = (await Promise.all(
+    tokens.map((token) =>
+      ctx.publicClient.readContract({
+        address: token,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [owner],
+      }),
+    ),
+  )) as bigint[];
   const balances: Record<string, string> = {};
-  for (const token of tokens) {
-    const bal = (await ctx.publicClient.readContract({
-      address: token,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [owner],
-    })) as bigint;
-    balances[token] = bal.toString();
-  }
+  tokens.forEach((token, i) => {
+    balances[token] = balanceValues[i].toString();
+  });
 
   logger.event({
     type: "stress_liquidity_pull_setup",

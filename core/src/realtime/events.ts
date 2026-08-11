@@ -35,13 +35,27 @@ import type { TokenSymbol } from "@eris/sdk/types.js";
 export type StressEventType =
   "spike" | "crash" | "lstSlash" | "whale" | "liquidityPull";
 
-// Types that happen on one block and are executed, rather than layered onto the price as a
-// multiplier. `at()` ignores them; `pointEventsAt()` returns them.
-const POINT_EVENT_TYPES = new Set<StressEventType>(["lstSlash", "whale"]);
+// How the run consumes each type:
+//   overlay  a multiplier layered on the fair price every block of its window (`at()`)
+//   point    executed once, on the block it lands on (`pointEventsAt()`)
+//   state    a target the coordinator holds the venue at for the window (`depthMultiplierAt()`)
+//
+// A total Record rather than one opt-in Set per consumer: with separate Sets, adding a sixth type
+// and forgetting one of them compiles, typechecks, and produces a schedule that logs itself and then
+// does nothing. That is not hypothetical -- `pointEventsAt` shipped once with exactly that shape of
+// hole (see the note on the caught-up range below). Here the compiler demands the decision.
+const EVENT_KIND: Record<StressEventType, "overlay" | "point" | "state"> = {
+  spike: "overlay",
+  crash: "overlay",
+  lstSlash: "point",
+  whale: "point",
+  liquidityPull: "state",
+};
 
-// Types whose trapezoid is a price multiplier. Everything else is executed by the coordinator, so
-// `at()` must skip it -- otherwise a liquidityPull would silently move the fair price as well.
-const PRICE_OVERLAY_TYPES = new Set<StressEventType>(["spike", "crash"]);
+const isPointEvent = (type: StressEventType): boolean =>
+  EVENT_KIND[type] === "point";
+const isPriceOverlay = (type: StressEventType): boolean =>
+  EVENT_KIND[type] === "overlay";
 
 // Which way a whale trades. "random" (the default) lets the seed pick, which is what keeps the
 // direction from being memorizable across a published regime's seeds.
@@ -149,7 +163,7 @@ export class EventSchedule {
         rng.next(),
       );
       const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], rng.next());
-      const span = POINT_EVENT_TYPES.has(c.type)
+      const span = isPointEvent(c.type)
         ? POINT_EVENT_SPAN
         : c.rampBlocks + c.holdBlocks + c.decayBlocks;
       // Clamp startBlock so the window fits inside the run window (scoring history depth; event window ⊂ run window).
@@ -249,9 +263,27 @@ export class EventSchedule {
     ];
   }
 
-  // The in-window event at this blockIndex (if several overlap, the first one). For visualization/logging.
+  // The in-window event at this blockIndex, of any kind (if several overlap, the first one). For
+  // visualization/logging. Callers that mean "is the price dislocated right now" want
+  // activePriceEventAt: since issue #52 a window can be open with the price untouched.
   activeEventAt(blockIndex: number): ResolvedStressEvent | null {
+    return this.activeIn(blockIndex, () => true);
+  }
+
+  // The in-window *price* event at this blockIndex. A liquidityPull window does not count: it moves
+  // depth, not price, so treating it as an active event makes consumers gated on dislocation (the
+  // victim health-factor reads) fire on blocks where nothing has moved -- and its trapezoid is
+  // deliberately longer than the crash's, so those blocks exist by design.
+  activePriceEventAt(blockIndex: number): ResolvedStressEvent | null {
+    return this.activeIn(blockIndex, isPriceOverlay);
+  }
+
+  private activeIn(
+    blockIndex: number,
+    accept: (type: StressEventType) => boolean,
+  ): ResolvedStressEvent | null {
     for (const ev of this.events) {
+      if (!accept(ev.type)) continue;
       if (blockIndex >= ev.startBlock && blockIndex < ev.endBlock) return ev;
     }
     return null;
@@ -270,7 +302,7 @@ export class EventSchedule {
   pointEventsAt(fromIndex: number, toIndex = fromIndex): ResolvedStressEvent[] {
     return this.events.filter(
       (ev) =>
-        POINT_EVENT_TYPES.has(ev.type) &&
+        isPointEvent(ev.type) &&
         ev.startBlock >= fromIndex &&
         ev.startBlock <= toIndex,
     );
@@ -296,7 +328,7 @@ export class EventSchedule {
   at(blockIndex: number): OverlayState {
     const baseMults: Record<string, number> = {};
     for (const ev of this.events) {
-      if (!PRICE_OVERLAY_TYPES.has(ev.type)) continue; // executed, not a price distortion
+      if (!isPriceOverlay(ev.type)) continue; // executed, not a price distortion
       const e = envelope(ev, blockIndex);
       if (e === 0) continue;
       const sign = ev.type === "crash" ? -1 : 1;
@@ -408,7 +440,7 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     max: 1,
   });
   // A point event lands on one block, so the trapezoid fields do not apply and are optional there.
-  const isPoint = POINT_EVENT_TYPES.has(o.type);
+  const isPoint = isPointEvent(o.type);
   const rampBlocks = parseNonNegInt(
     isPoint ? (o.rampBlocks ?? 0) : o.rampBlocks,
     `${label}.rampBlocks`,
