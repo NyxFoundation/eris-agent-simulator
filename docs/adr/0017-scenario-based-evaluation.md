@@ -11,7 +11,7 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 未了（§7 のフェーズ順）:
 
 - **`crash` の流動性引き抜き**（issue #52）— 価格ギャップだけで、レジーム 6 の半分が欠けている
-- **`depeg`**（Phase 3）— 採点方法の見直し待ち
+- **`depeg`**（Phase 3）— issue #39（Liquity fork の CDP venue）→ #27（depeg イベント）の順で実施予定
 - **§5 の較正値**— パイロットは R=20〜40 の短縮 run で、本番 R=360 での実測は未了。
   特に `blockTimeSec` と LLM 型の判断頻度、`whale` の magnitude、`informed-flow` の較正値は
   根拠が未確定のまま
@@ -48,7 +48,7 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 | 2 | Informed flow（相関のある方向性フロー注入） | informed flow bot + `flow.uninformedPersistBlocks`（方向の持続） | 方向性バーストの強度ノブ露出（小） |
 | 3 | Whale order（mid を動かす単発大口） | なし（サイズは Poisson/lognormal のみ） | 点イベント型の stress event 追加（小〜中） |
 | 4 | Lending incident（担保価値急落 + 清算ウェーブ） | `lending-incident.yaml`（crash + victim 群 + 清算） | victim 数の拡大のみ |
-| 5 | Stablecoin depeg | 未実装。`OverlayState.usdcPx` にフックのみ残置（"v1 is always 1"）。issue #39 が該当 | 建値通貨が動く = 採点 numeraire に直結（大） |
+| 5 | Stablecoin depeg | 未実装。`OverlayState.usdcPx` にフックのみ残置（"v1 is always 1"）。**issue #27**（depeg イベント）と **#39**（CDP venue）が該当 | ステーブルの値付け（`valueUsdc` が額面 1.0 で加算している）+ イベント型の追加 |
 | 6 | Crash event（流動性引き抜き + 価格ギャップ） | 価格ギャップは `crash.yaml`（victim 無し）で充足 | LP 撤退イベント（issue #52。中） |
 
 ### 解決したい課題
@@ -95,7 +95,7 @@ C 案は A>B>C（crash がそのまま順位）、A 案・B 案はいずれも B
 | 実装 | ゼロ（両方とも既に `summary.json` に出ている） | ゼロ | 全面改修 + 既存 regime の再較正 |
 | 意味 | 価格ドリフト（β）込みの総損益 | 現物在庫を run 内固定の参照 fair で評価し、β を相殺した残り = 取った edge | DeFi ネイティブな建値 |
 | β の混入 | する。crash レジームでは現物を持たない `noop` が構造的に上位に来る | 現物在庫のぶんは除去される。ただし**プロトコル内ポジション（Aave 担保 / GMX / LST）は α 側でも live mark** なので残存 β がある（`reconstruct.ts:416`） | LST / WETH 戦略に有利 |
-| depeg レジームとの整合 | USDC 自体が動くと建値が壊れる | 同左 | 整合する |
+| depeg レジームとの整合 | 影響なし（下記のとおり USDC は建値のまま） | 同左 | 同左 |
 
 いずれも既に計算・出力されているため、選択は「どちらで順位を付けるか」だけの問題であり、
 後から差し替えられる（§4 の `matrix.json` に両方を残す）。
@@ -531,8 +531,20 @@ R を伸ばしても引くのは同じ seed が定めた 1 本の道筋の続き
    `matrix.json` / `standings.json` の出力、`--score-every`、ADR 0016 §3 の override 規約改訂
 3. **Phase 2**: 未実装レジーム — `market.*` の YAML 露出（`cex-drift`）、方向性フロー強度ノブ
    （`informed-flow`）、whale 点イベント、LP 撤退イベント（`crash`）
-4. **Phase 3**: depeg レジーム（issue #39）。USDC 建て採点と建値通貨の変動が衝突するため、
-   採点方法の見直し（別 issue）とセットで最後に扱う
+4. **Phase 3**: depeg レジーム。**issue #39（Liquity V1 fork の CDP venue、eUSD 発行）→
+   issue #27（depeg stress event）の順**で進める。
+
+   **当初「建値通貨が動くので採点方法の見直し待ち」としていたのは誤りだった。**#27 も #39 も
+   **USDC を $1 の建値のまま据え置き、別のステーブルを depeg させる**設計なので、numeraire の
+   問題は起きない。実際の障害は `sdk/src/pnl.ts` の `valueUsdc` が `usdcUnits` を額面のまま
+   加算していること（ステーブルは常に 1.0）で、これは指標の選択と独立に直せる実装課題である。
+   したがって **depeg は #56（採点方式の決定）を待たない**。
+
+   #39 を先にする理由: #27 を先に実施すると USDT 相当のステーブルを新規に足すことになるが、
+   #39 が eUSD を持ち込んだ後は depeg の対象をそちらへ移すのが自然で、先に足したステーブルが
+   無駄になる。#39 が先なら #27 は「既にある eUSD を depeg させる」だけになる。
+   代償は #39 が大きい（LST venue 相当）ことで、**レジーム 5 がコンペに間に合わない可能性がある**。
+   集約はレジーム等重み平均なのでレジーム 6 本でも成立する（§4）
 
 ## Consequences
 
@@ -614,5 +626,5 @@ R を伸ばしても引くのは同じ seed が定めた 1 本の道筋の続き
   本 ADR では採用を見送り、「決めていないこと」へ移した
 - ADR 0011: economic gas — 同居構成でブロック内順序を gas 入札で買える根拠
 - ADR 0013 / 0015: config 単一ソース（regime YAML のスキーマ元）/ agent 契約と bundle
-- issue #38（LST venue、ETH 建て採点の motivation）/ issue #39（depegged eUSD）/ issue #41（値付け不能保有）
+- issue #38（LST venue、ETH 建て採点の motivation）/ #27・#39（depeg レジーム）/ #41（値付け不能保有）/ #52（流動性引き抜き）/ #55・#56（採点方式）
 - ASCON の Market shocks 分類 — レジーム 7 種の出典
