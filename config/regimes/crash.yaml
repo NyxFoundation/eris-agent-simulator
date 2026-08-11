@@ -10,16 +10,17 @@
 # one window via alignWith -- a depth withdrawal somewhere else in the run would be a different
 # regime, and independent draws from the same range land ~160 blocks apart in a 360-block run.
 #
-# ONLY UNISWAP THINS (issue #52 phase 1). The other four venues keep their block-0 depth for the
-# whole run, so a cross-venue agent -- and both non-baseline agents in the roster below are one --
-# can route around the thin book and pay close to the pre-crash cost of size. Until balancer and
-# curve are covered (phase 2), this regime asks "how much of the gap can I take *on uniswap*", which
-# is a weaker question than the one it is meant to ask.
+# Measured on the state dump (issue #52 phase 3, 50% pull, see test/liquidityPullDepth.test.ts):
+# the executable price for a small trade moves <=0.1bps -- the pull is a constraint, not a free
+# arbitrage -- while the cost of taking 10 WETH goes 98.6 -> 195.3bps on uniswap and balancer
+# (x1.98) and 17.2 -> 71.5bps on curve (x4.15; a crypto pool's impact is far more convex).
 #
-# NOT YET CALIBRATED (phase 3): the two magnitudes interact -- a thinner book moves price further for
-# the same flow -- so the crash magnitude below is still the one calibrated against block-0 depth.
-# Measure realized slippage on a fixed notional inside vs outside the window before reading scores
-# from this regime as final.
+# The crash magnitude below was NOT changed for it. The expectation was that a thinner book would
+# make the same flow move price further, so the two magnitudes would need re-calibrating together --
+# measured against a pull-free control on the same seed, the pool-fair dislocation inside the window
+# went 2087 -> 2100bps, i.e. unchanged. In a 45-block run with three agents the dislocation is
+# already almost entirely the crash's own; what the thin book changes is the cost of *taking* it.
+# Worth re-checking at R=360 with a full roster, where more of the gap gets arbitraged away.
 #
 # There is deliberately no `run.seed` (ADR 0017 §1): the seed is supplied per scenario.
 # blockTimeSec and blocks are part of the regime (ADR 0016 §3).

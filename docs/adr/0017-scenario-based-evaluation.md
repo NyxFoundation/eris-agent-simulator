@@ -10,11 +10,13 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 
 未了（§7 のフェーズ順）:
 
-- **`crash` の流動性引き抜きの venue 展開と較正**（issue #52 Phase 2・3）— 引き抜き自体は実装済み
-  （`liquidityPull` イベント。crash と同じ窓へ `alignWith` で重ねる）が、**薄くなるのは uniswap だけ**で
-  他 4 venue は block-0 の depth のままなので、cross-venue agent は回避経路を持つ。レジーム 6 が問うはずの
-  「ギャップのどれだけを実際に取れるか」は、その分だけ弱まっている。加えて**2 つの magnitude は相互作用する**
-  （板が薄いほど同じフローで価格が動く）ため、crash の magnitude は block-0 の depth に対して較正されたまま
+- **`crash` の流動性引き抜き**（issue #52）— 実装済み（`liquidityPull` イベント。crash と同じ窓へ
+  `alignWith` で重ね、uniswap / balancer / curve が同時に薄くなる。`lending-incident` にも同じ窓で入れた）。
+  実測（50% 引き抜き）で 10 WETH の執行コストは uniswap/balancer が ×1.98、curve が ×4.15 になり、
+  小口の実行価格は 0.1bps 以下しか動かない（= 裁定機会を開かない）。
+  **当初「2 つの magnitude は相互作用するので crash 側を較正し直す」と書いたが、実測では確認できなかった**
+  （pull 無しの対照と比べて窓内の pool-fair 乖離は 2087 → 2100bps）。R=45・agent 3 体では乖離がほぼ crash
+  そのもので、板の薄さが変えるのは**取りに行くコスト**だった。R=360・本番ロスターでの再確認は残る
 - **`depeg`**（Phase 3）— issue #39（Liquity fork の CDP venue）→ #27（depeg イベント）の順で実施予定
 - **§5 の較正値**— パイロットは R=20〜40 の短縮 run で、本番 R=360 での実測は未了。
   特に `blockTimeSec` と LLM 型の判断頻度、`whale` の magnitude、`informed-flow` の較正値は
@@ -69,7 +71,7 @@ run 全体の config からイベントへ作り替える件、1 週間の運用
 | 3 | Whale order（mid を動かす単発大口） | なし（サイズは Poisson/lognormal のみ） | 点イベント型の stress event 追加（小〜中） |
 | 4 | Lending incident（担保価値急落 + 清算ウェーブ） | `lending-incident.yaml`（crash + victim 群 + 清算） | victim 数の拡大のみ |
 | 5 | Stablecoin depeg | 未実装。`OverlayState.usdcPx` にフックのみ残置（"v1 is always 1"）。**issue #27**（depeg イベント）と **#39**（CDP venue）が該当 | ステーブルの値付け（`valueUsdc` が額面 1.0 で加算している）+ イベント型の追加 |
-| 6 | Crash event（流動性引き抜き + 価格ギャップ） | 価格ギャップは `crash.yaml`（victim 無し）で充足。**LP 撤退は `liquidityPull` として実装済み**（issue #52 Phase 1 = uniswap。`alignWith: crash` で同一窓） | Balancer / Curve への展開と、2 つの magnitude の相互作用の較正（issue #52 Phase 2・3） |
+| 6 | Crash event（流動性引き抜き + 価格ギャップ） | **両方とも実装済み**（`crash.yaml`。`liquidityPull` を `alignWith: crash` で同一窓に重ね、uniswap / balancer / curve が同時に薄くなる） | R=360・本番ロスターでの再測定（issue #52 の較正は R=45 で実施） |
 
 ### 解決したい課題
 
@@ -557,8 +559,16 @@ R を伸ばしても引くのは同じ seed が定めた 1 本の道筋の続き
    （一撃で抜いて一撃で戻すと dropped block に取り残される）。引き抜きは**両側比例**で mid を
    動かさない — このイベントが変えるのは値段ではなく**サイズのコスト**である。
    crash と重ねるには `alignWith` が要る（同じ `windowFrac` レンジでも draw は独立なので、
-   R=360 では両者が平均 ~160 ブロック離れる）。uniswap 限定で、fork では seed 済み LP が
-   環境の持ち物でないため fail-fast する。
+   R=360 では両者が平均 ~160 ブロック離れる）。**uniswap / balancer / curve が同時に薄くなる**
+   （`venue:` 省略が全 venue。1 つだけ薄くしても cross-venue agent は執行を他所へ移すだけで、
+   レジームが問うはずのものが弱まる）。fork では seed 済み LP が環境の持ち物でないため fail-fast する。
+
+   実測（50% 引き抜き、`test/liquidityPullDepth.test.ts`）: 小口の実行価格は 0.1bps 以下しか
+   動かず（= 裁定機会を開かない）、10 WETH の執行コストは uniswap/balancer が 98.6 → 195.3bps
+   （×1.98）、curve が 17.2 → 71.5bps（×4.15。crypto pool の impact は凸性が強い）。
+   `lending-incident` にも同じ窓で入れたが、**breach 条件と清算件数は不変**である
+   （HF はオラクル価格で決まり depth に依存しない。現行 liquidator は差し押さえた担保を
+   unwind しないので、板の薄さが効く経路が今はまだ無い）。
 4. **Phase 3**: depeg レジーム。**issue #39（Liquity V1 fork の CDP venue、eUSD 発行）→
    issue #27（depeg stress event）の順**で進める。
 
