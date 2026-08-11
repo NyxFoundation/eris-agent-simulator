@@ -10,10 +10,11 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 
 未了（§7 のフェーズ順）:
 
-- **`crash` の流動性引き抜き較正**（issue #52 Phase 3）— 引き抜き自体は実装済み（`liquidityPull` イベント。
-  crash と同じ窓へ `alignWith` で重ねる）。**2 つの magnitude は相互作用する**（板が薄いほど同じフローで
-  価格が動く）ので、crash の magnitude は block-0 の depth に対して較正されたままである。
-  Balancer / Curve への展開も未了（Phase 1 は uniswap のみ）
+- **`crash` の流動性引き抜きの venue 展開と較正**（issue #52 Phase 2・3）— 引き抜き自体は実装済み
+  （`liquidityPull` イベント。crash と同じ窓へ `alignWith` で重ねる）が、**薄くなるのは uniswap だけ**で
+  他 4 venue は block-0 の depth のままなので、cross-venue agent は回避経路を持つ。レジーム 6 が問うはずの
+  「ギャップのどれだけを実際に取れるか」は、その分だけ弱まっている。加えて**2 つの magnitude は相互作用する**
+  （板が薄いほど同じフローで価格が動く）ため、crash の magnitude は block-0 の depth に対して較正されたまま
 - **`depeg`**（Phase 3）— issue #39（Liquity fork の CDP venue）→ #27（depeg イベント）の順で実施予定
 - **§5 の較正値**— パイロットは R=20〜40 の短縮 run で、本番 R=360 での実測は未了。
   特に `blockTimeSec` と LLM 型の判断頻度、`whale` の magnitude、`informed-flow` の較正値は

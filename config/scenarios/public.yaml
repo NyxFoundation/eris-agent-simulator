@@ -17,8 +17,10 @@
 # Six of the seven regimes ADR 0017 lists. The seventh, depeg, waits on issue #39 (the CDP venue that
 # brings the stable to break) and then #27 -- not on the scoring rework, since both keep USDC as the
 # $1 quote unit.
-# `crash` now carries both halves (issue #52 phase 1: the gap and the liquidity withdrawal), but the
-# two magnitudes have not been co-calibrated -- a thinner book moves price further for the same flow.
+# `crash` now carries both halves (issue #52 phase 1: the gap and the liquidity withdrawal), with two
+# caveats. Only uniswap thins -- the other four venues keep block-0 depth, so cross-venue agents can
+# route around it (phase 2) -- and the two magnitudes have not been co-calibrated, since a thinner
+# book moves price further for the same flow (phase 3).
 regimes:
   - calm
   - cex-drift
