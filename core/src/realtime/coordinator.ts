@@ -16,10 +16,7 @@ import {
 } from "@eris/sdk/chain.js";
 import { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
-import {
-  checkRunFeeViolations,
-  countRunRevertedTxs,
-} from "../postRunCheck.js";
+import { checkRunFeeViolations, countRunRevertedTxs } from "../postRunCheck.js";
 import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
 import type {
   AgentObservation,
@@ -40,7 +37,10 @@ import {
   updateOraclesMempool,
   writeAaveOraclesStorage,
 } from "@eris/sdk/protocols/oracles.js";
-import { GMX_MARKETS } from "@eris/sdk/constants.js";
+import {
+  DEFAULT_ANVIL_PRIVATE_KEYS,
+  GMX_MARKETS,
+} from "@eris/sdk/constants.js";
 import {
   baseTokens,
   gmxMarketAddresses,
@@ -82,6 +82,11 @@ import {
   stepLstApy,
   type LstRuntime,
 } from "./lst.js";
+import {
+  reconcileLiquidityPull,
+  setupLiquidityPull,
+  type LiquidityPullRuntime,
+} from "./liquidity.js";
 import type { LstState } from "@eris/sdk/protocols/lst.js";
 import { VulnSchedule } from "./vulnEvents.js";
 import {
@@ -678,6 +683,40 @@ export async function runRealtimeSimulation(
     const lstRuntime: LstRuntime | null = enabledIds.includes("lst")
       ? await setupLst(ctx, logger)
       : null;
+
+    // ---- liquidity-pull stress event (issue #52): find the environment-owned depth this run may
+    // withdraw, and refuse to start if the schedule asks for depth nobody here owns. Like the LST
+    // setup this sends mined transactions (standing approvals for the restore leg), so it belongs
+    // before interval mining starts.
+    let liquidityPullRuntime: LiquidityPullRuntime | null = null;
+    if (schedule.hasLiquidityPull()) {
+      // The seeded positions belong to the deployer, which is the anvil default account 0 (ADR 0016
+      // §4). An agent bound to AGENT0_PRIVATE_KEY is that same account, and two senders on one key
+      // race on the nonce — the failure mode that once froze the LST redemption rate for a whole run.
+      const lpOwnerPk = DEFAULT_ANVIL_PRIVATE_KEYS[0];
+      const clash = agentRuntimes.find(
+        (a) => a.privateKey.toLowerCase() === lpOwnerPk.toLowerCase(),
+      );
+      if (clash) {
+        throw new Error(
+          `stress event liquidityPull withdraws depth as the deployer account, but agent "${clash.id}" ` +
+            "is bound to the same key (AGENT0_PRIVATE_KEY = anvil account 0). Move that agent to " +
+            "another wallet, or to AUTO",
+        );
+      }
+      liquidityPullRuntime = await setupLiquidityPull(
+        ctx,
+        schedule,
+        { localDeploy: config.localDeploy, ownerPk: lpOwnerPk },
+        logger,
+      );
+      // Its withdrawals are environment transactions, like the oracle writes: attributing them to a
+      // participant would put them through the post-run fee check (core/src/postRunCheck.ts).
+      ownerByAddress.set(liquidityPullRuntime.owner.toLowerCase(), {
+        ownerId: "liquidity",
+        role: "system",
+      });
+    }
 
     // ---- cross-venue no-arbitrage check at startup (phantom-spread guard; see noArb.ts) ----
     // Calibrated pools must not offer a positive *executable* cross-venue round trip. Fail fast on
@@ -1332,6 +1371,38 @@ export async function runRealtimeSimulation(
             }
           };
 
+          // Liquidity-pull stress event (issue #52): move each seeded pool toward the depth this
+          // block's trapezoid asks for. Its own task rather than riding inside oracleTask because it
+          // sends from the LP owner key, not the admin key, so the two cannot collide on a nonce.
+          const liquidityTask = async (): Promise<void> => {
+            if (!liquidityPullRuntime) return;
+            try {
+              const hashes = await reconcileLiquidityPull(
+                ctx,
+                liquidityPullRuntime,
+                schedule,
+                blockIndex,
+                bn,
+                { priorityFeeWei: oracleFee },
+                logger,
+              );
+              for (const hash of hashes) {
+                submittedByHash.set(hash.toLowerCase(), {
+                  ownerId: "liquidity",
+                  role: "system",
+                  priorityFeeWei: oracleFee,
+                  actionType: "liquidityPull",
+                });
+              }
+            } catch (error) {
+              logger.event({
+                type: "stress_liquidity_pull_failed",
+                blockNumber: bn,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          };
+
           // Record each task's duration (for diagnosing the environment loop's bottleneck; the measurement source for ADR 0006 "judgment metrics").
           const timed = async (task: () => Promise<void>): Promise<number> => {
             const t0 = Date.now();
@@ -1347,12 +1418,16 @@ export async function runRealtimeSimulation(
           ];
           if (stressVictims.length > 0) tasks.push(timed(victimTask));
           if (vulnRuntime) tasks.push(timed(vulnTask));
+          if (liquidityPullRuntime) tasks.push(timed(liquidityTask));
           const results = await Promise.all(tasks);
           const [keeperMs, oracleMs, stateFlowMs] = results;
           let taskIdx = 3;
           const victimMs =
             stressVictims.length > 0 ? results[taskIdx++] : undefined;
           const vulnMs = vulnRuntime ? results[taskIdx++] : undefined;
+          const liquidityMs = liquidityPullRuntime
+            ? results[taskIdx++]
+            : undefined;
           logger.event({
             type: "round_timing",
             blockNumber: bn,
@@ -1362,6 +1437,7 @@ export async function runRealtimeSimulation(
             stateFlowMs,
             ...(victimMs !== undefined ? { victimMs } : {}),
             ...(vulnMs !== undefined ? { vulnMs } : {}),
+            ...(liquidityMs !== undefined ? { liquidityMs } : {}),
             totalMs: Date.now() - roundStart,
           });
 

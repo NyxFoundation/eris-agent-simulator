@@ -5,12 +5,15 @@
 # lives in `lending-incident`, which is the same shock plus Aave victims.
 # Run: npm run backtest -- --regime crash --seed 606 [--agents <roster>]
 #
-# INCOMPLETE (issue #52): the other half of this regime is the liquidity withdrawal -- LPs pulling
-# depth so that the same notional costs far more slippage while the gap is open. Until that event
-# type exists, every pool keeps its block-0 depth for the whole run, which makes this regime a
-# "larger opportunity" regime rather than a crash: the gap grows but the cost of taking it does not.
-# Read scores from it with that in mind, and re-calibrate the magnitude once #52 lands (a thinner
-# book moves price further for the same flow, so the two knobs interact).
+# Both halves of a crash are here (issue #52): the price gaps *and* the book thins, so the binding
+# question is not "is there a gap?" but "how much of it can I actually take?". The two events share
+# one window via alignWith -- a depth withdrawal somewhere else in the run would be a different
+# regime, and independent draws from the same range land ~160 blocks apart in a 360-block run.
+#
+# NOT YET CALIBRATED (issue #52 phase 3): the two knobs interact -- a thinner book moves price
+# further for the same flow -- so the crash magnitude below is still the one calibrated against
+# block-0 depth. Measure realized slippage on a fixed notional inside vs outside the window before
+# reading scores from this regime as final.
 #
 # There is deliberately no `run.seed` (ADR 0017 §1): the seed is supplied per scenario.
 # blockTimeSec and blocks are part of the regime (ADR 0016 §3).
@@ -55,6 +58,21 @@ stress:
         rampBlocks: 3,
         holdBlocks: 6,
         decayBlocks: 8,
+      }
+    # Depth leaves the pools while the price gaps (issue #52). The withdrawal is proportional, so the
+    # mid does not move and no risk-free edge opens -- what changes is the cost of size.
+    # windowFrac is still required (and still drawn) but alignWith is what places it: this event only
+    # means anything on the crash's window.
+    # The decay is longer than the crash's on purpose: depth comes back slower than price does, so an
+    # agent that waited out the gap still trades a thinner book for a while afterwards.
+    - {
+        type: liquidityPull,
+        magnitudeRange: [0.4, 0.6],
+        windowFrac: [0.25, 0.7],
+        alignWith: crash,
+        rampBlocks: 3,
+        holdBlocks: 6,
+        decayBlocks: 12,
       }
 
 agents:

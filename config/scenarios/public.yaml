@@ -14,10 +14,11 @@
 #
 # Run: npm run backtest -- --scenarios config/scenarios/public.yaml --agents <roster>
 
-# Six of the seven regimes ADR 0017 lists. The seventh, depeg, waits on the scoring rework: its shock
-# moves the unit of account itself, which the current USDC-denominated score cannot express.
-# `crash` is also incomplete until issue #52 lands its liquidity-withdrawal half -- today it is the
-# price gap alone.
+# Six of the seven regimes ADR 0017 lists. The seventh, depeg, waits on issue #39 (the CDP venue that
+# brings the stable to break) and then #27 -- not on the scoring rework, since both keep USDC as the
+# $1 quote unit.
+# `crash` now carries both halves (issue #52 phase 1: the gap and the liquidity withdrawal), but the
+# two magnitudes have not been co-calibrated -- a thinner book moves price further for the same flow.
 regimes:
   - calm
   - cex-drift

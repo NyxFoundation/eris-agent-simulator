@@ -22,6 +22,9 @@ export const wethAbi = parseAbi([
 export const poolAbi = parseAbi([
   "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
   "function tickSpacing() view returns (int24)",
+  // Depth in range at the current tick. It is what decides slippage on a given notional, and the
+  // liquidityPull stress event (issue #52) moves it mid-run, so agents have to be able to see it.
+  "function liquidity() view returns (uint128)",
   // Uncollected-fee accounting (issue #21): a position's fees live in the pool until poke/collect.
   "function feeGrowthGlobal0X128() view returns (uint256)",
   "function feeGrowthGlobal1X128() view returns (uint256)",
@@ -39,10 +42,17 @@ export const swapRouterAbi = parseAbi([
 export const nonfungiblePositionManagerAbi = parseAbi([
   "function mint((address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline) params) payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
   "function decreaseLiquidity((uint256 tokenId, uint128 liquidity, uint256 amount0Min, uint256 amount1Min, uint256 deadline) params) payable returns (uint256 amount0, uint256 amount1)",
+  // The liquidityPull stress event (issue #52) has to put the depth back when its window closes,
+  // so the withdrawal is a constraint for the duration rather than a permanent change to the venue.
+  "function increaseLiquidity((uint256 tokenId, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, uint256 deadline) params) payable returns (uint128 liquidity, uint256 amount0, uint256 amount1)",
   "function collect((uint256 tokenId, address recipient, uint128 amount0Max, uint128 amount1Max) params) payable returns (uint256 amount0, uint256 amount1)",
   "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)",
   "function balanceOf(address owner) view returns (uint256)",
   "function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)",
+  // decreaseLiquidity only credits tokensOwed; the tokens do not leave the pool until collect. The
+  // liquidityPull event has to do both, and in one transaction: two sends from the same key race on
+  // the nonce the same way the LST accrual did.
+  "function multicall(bytes[] data) payable returns (bytes[] results)",
   // Issue #41: positions may sit in pools outside the registered market set; the factory resolves them.
   "function factory() view returns (address)",
 ]);

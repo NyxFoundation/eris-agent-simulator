@@ -258,12 +258,17 @@ export type LpPositionObservation = {
   market?: string;
 };
 
+// In-range depth (uint128, decimal string). It decides how much of a price gap a given notional can
+// actually take, and the liquidityPull stress event (issue #52) moves it mid-run, so an agent that
+// sizes against block-0 depth will be wrong exactly when the crash window is open. Optional because
+// a pool whose depth could not be read reports no depth rather than "zero depth".
 export type UniswapMarketObservation = {
   pair: string;
   fee: number;
   priceUsdcPerWeth: number; // base/USD (naming stays WETH-compatible; the value is that base's price)
   tick: number;
   tickSpacing: number;
+  liquidity?: string;
 };
 
 export type UniswapObservation = {
@@ -273,6 +278,7 @@ export type UniswapObservation = {
     priceUsdcPerWeth: number;
     tick: number;
     tickSpacing: number;
+    liquidity?: string;
   };
   positions: LpPositionObservation[];
   // ADR 0013: non-WETH markets (WBTC/USDC etc.). The WETH market stays on pool/positions.

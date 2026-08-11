@@ -10,7 +10,10 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 
 未了（§7 のフェーズ順）:
 
-- **`crash` の流動性引き抜き**（issue #52）— 価格ギャップだけで、レジーム 6 の半分が欠けている
+- **`crash` の流動性引き抜き較正**（issue #52 Phase 3）— 引き抜き自体は実装済み（`liquidityPull` イベント。
+  crash と同じ窓へ `alignWith` で重ねる）。**2 つの magnitude は相互作用する**（板が薄いほど同じフローで
+  価格が動く）ので、crash の magnitude は block-0 の depth に対して較正されたままである。
+  Balancer / Curve への展開も未了（Phase 1 は uniswap のみ）
 - **`depeg`**（Phase 3）— issue #39（Liquity fork の CDP venue）→ #27（depeg イベント）の順で実施予定
 - **§5 の較正値**— パイロットは R=20〜40 の短縮 run で、本番 R=360 での実測は未了。
   特に `blockTimeSec` と LLM 型の判断頻度、`whale` の magnitude、`informed-flow` の較正値は
@@ -19,6 +22,22 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 採点値（`netPnlUsdc`）と集約式は Decision として確定しているが、**採点方法自体を将来見直す前提**で
 選んでいる（§4）。その差し替えは `matrix.json` の生スコアから再計算でき、本 ADR の実行基盤を
 変更しない。
+
+### 2026-08-11 追記 — コンペ本体の構造は本 ADR とは違う
+
+**本番コンペはシナリオ行列ではなく、1 本の連続経済に非公開スケジュールでイベントを注入する形で行う**
+（実チェーン・参加者数百人・運用期間 1 週間）。本 ADR が置いた「シナリオ = snapshot/revert で
+隔離された (regime, seed) の独立ワールド」という前提は**コンペ本体の設計としては誤りで、
+持ち込んだのは環境側（ADR 0016 のバックテスト用途からの引き継ぎ）である**。したがって
+**Public/Private のシナリオ行列（§3）とシナリオ内 z 正規化（§4）は、成績決定の構造としては
+置き換えられる**（連続経済ではエポック単位の集約になる）。
+
+**Superseded ではない。**実装（シナリオ行列 runner・レジーム 6 本の中身・生スコアを残して後から
+再採点できる構造・失格規則・同居構成）はいずれも有効で、**参加者の練習用およびバックテスト
+（ADR 0016 の用途）として残る**。レジーム定義そのものは連続経済でもそのまま注入イベントになる。
+
+連続経済側の設計（エポック単位の採点、注入スケジュールの非公開化、`cex-drift` と `informed-flow` を
+run 全体の config からイベントへ作り替える件、1 週間の運用予算）は別 ADR で起草する。
 
 ## Context
 
@@ -49,7 +68,7 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 | 3 | Whale order（mid を動かす単発大口） | なし（サイズは Poisson/lognormal のみ） | 点イベント型の stress event 追加（小〜中） |
 | 4 | Lending incident（担保価値急落 + 清算ウェーブ） | `lending-incident.yaml`（crash + victim 群 + 清算） | victim 数の拡大のみ |
 | 5 | Stablecoin depeg | 未実装。`OverlayState.usdcPx` にフックのみ残置（"v1 is always 1"）。**issue #27**（depeg イベント）と **#39**（CDP venue）が該当 | ステーブルの値付け（`valueUsdc` が額面 1.0 で加算している）+ イベント型の追加 |
-| 6 | Crash event（流動性引き抜き + 価格ギャップ） | 価格ギャップは `crash.yaml`（victim 無し）で充足 | LP 撤退イベント（issue #52。中） |
+| 6 | Crash event（流動性引き抜き + 価格ギャップ） | 価格ギャップは `crash.yaml`（victim 無し）で充足。**LP 撤退は `liquidityPull` として実装済み**（issue #52 Phase 1 = uniswap。`alignWith: crash` で同一窓） | Balancer / Curve への展開と、2 つの magnitude の相互作用の較正（issue #52 Phase 2・3） |
 
 ### 解決したい課題
 
@@ -530,7 +549,15 @@ R を伸ばしても引くのは同じ seed が定めた 1 本の道筋の続き
 2. **Phase 1**: `run.seed` の regime からの分離、`config/scenarios/*.yaml`、
    `matrix.json` / `standings.json` の出力、`--score-every`、ADR 0016 §3 の override 規約改訂
 3. **Phase 2**: 未実装レジーム — `market.*` の YAML 露出（`cex-drift`）、方向性フロー強度ノブ
-   （`informed-flow`）、whale 点イベント、LP 撤退イベント（`crash`）
+   （`informed-flow`）、whale 点イベント、LP 撤退イベント（`crash`）。
+
+   LP 撤退（issue #52）は `liquidityPull` として実装済み。**価格 overlay ではなく状態**なので、
+   台形は「そのブロックの目標 depth」を表し、coordinator が毎ブロック reconcile する
+   （一撃で抜いて一撃で戻すと dropped block に取り残される）。引き抜きは**両側比例**で mid を
+   動かさない — このイベントが変えるのは値段ではなく**サイズのコスト**である。
+   crash と重ねるには `alignWith` が要る（同じ `windowFrac` レンジでも draw は独立なので、
+   R=360 では両者が平均 ~160 ブロック離れる）。uniswap 限定で、fork では seed 済み LP が
+   環境の持ち物でないため fail-fast する。
 4. **Phase 3**: depeg レジーム。**issue #39（Liquity V1 fork の CDP venue、eUSD 発行）→
    issue #27（depeg stress event）の順**で進める。
 
@@ -568,7 +595,7 @@ R を伸ばしても引くのは同じ seed が定めた 1 本の道筋の続き
   - → 全参加者が全シナリオに同居するため、メンバー構成はシナリオ間で一定になり、
     参加者間の相対比較としては一貫する。絶対値の解釈にのみ注意を要する
 - レジーム 7 種のうち 2 種（depeg / 流動性引き抜き）が新規実装であり、コンペ開始までの
-  リードタイムを消費する
+  リードタイムを消費する（流動性引き抜きは実装済み。残るは depeg）
   - → Phase 2/3 に置き、間に合わない場合はレジーム数を減らして開催する（集約はレジーム等重みなので
     レジーム数の変更に耐える）
 - z-score により「どれだけ勝ったか」の絶対額が順位から見えにくくなる

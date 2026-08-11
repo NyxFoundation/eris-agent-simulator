@@ -108,6 +108,150 @@ test("overlapping events compose multiplicatively", () => {
   assert.ok(Math.abs(s.at(12).wethMult - 0.99) < 1e-9, `${s.at(12).wethMult}`);
 });
 
+// ---- liquidityPull (issue #52) ----
+
+const FIXED_PULL: StressEventConfig = {
+  type: "liquidityPull",
+  magnitudeRange: [0.5, 0.5],
+  windowFrac: [0.5, 0.5],
+  rampBlocks: 2,
+  holdBlocks: 2,
+  decayBlocks: 2,
+};
+
+test("liquidityPull drives depth on the same trapezoid, and leaves the price alone", () => {
+  const s = new EventSchedule([FIXED_PULL], 1, 20);
+  assert.equal(s.hasLiquidityPull(), true);
+  assert.deepEqual(s.liquidityPullBases(), ["WETH"]);
+
+  // Outside the window there is no entry at all, which the coordinator reads as "restore to seeded".
+  assert.deepEqual(s.depthMultiplierAt(9), {});
+  assert.deepEqual(s.depthMultiplierAt(16), {});
+  // ramp (t=0 -> e=0.5), hold (e=1), decay (t=4 -> e=0.5)
+  assert.ok(Math.abs(s.depthMultiplierAt(10).WETH - 0.75) < 1e-9);
+  assert.ok(Math.abs(s.depthMultiplierAt(12).WETH - 0.5) < 1e-9);
+  assert.ok(Math.abs(s.depthMultiplierAt(14).WETH - 0.75) < 1e-9);
+
+  // A depth event must not move the fair price: it changes the cost of size, not what anything is
+  // worth. If it leaked into the overlay it would be a crash nobody configured.
+  assert.equal(s.at(12).wethMult, 1);
+  assert.equal(s.at(12).usdcPx, 1);
+});
+
+test("a run with no liquidityPull never asks for depth changes", () => {
+  const s = new EventSchedule([FIXED_CRASH], 1, 20);
+  assert.equal(s.hasLiquidityPull(), false);
+  assert.deepEqual(s.liquidityPullBases(), []);
+  assert.deepEqual(s.depthMultiplierAt(12), {});
+});
+
+test("crash and liquidityPull on one window are independent axes", () => {
+  const s = new EventSchedule([FIXED_CRASH, FIXED_PULL], 1, 20);
+  // The gap is the crash's alone...
+  assert.ok(Math.abs(s.at(12).wethMult - 0.9) < 1e-9, `${s.at(12).wethMult}`);
+  // ...and the depth is the pull's alone. Composing them is what makes regime 6 a crash rather than
+  // a larger opportunity (issue #52).
+  assert.ok(Math.abs(s.depthMultiplierAt(12).WETH - 0.5) < 1e-9);
+});
+
+test("overlapping liquidityPulls compose multiplicatively", () => {
+  const s = new EventSchedule([FIXED_PULL, FIXED_PULL], 1, 20);
+  // 0.5 * 0.5: two LPs pulling half each leaves a quarter, not zero.
+  assert.ok(Math.abs(s.depthMultiplierAt(12).WETH - 0.25) < 1e-9);
+});
+
+test("liquidityPull targets its own base", () => {
+  const s = new EventSchedule([{ ...FIXED_PULL, base: "WBTC" }], 1, 20);
+  assert.deepEqual(s.liquidityPullBases(), ["WBTC"]);
+  assert.equal(s.depthMultiplierAt(12).WETH, undefined);
+  assert.ok(Math.abs(s.depthMultiplierAt(12).WBTC - 0.5) < 1e-9);
+});
+
+test("alignWith puts the pull on the crash's window rather than its own draw", () => {
+  // Same range, independent draws: in a 360-block run the two windows are nowhere near each other.
+  const wide: [number, number] = [0.25, 0.7];
+  const apart = new EventSchedule(
+    [
+      { ...FIXED_CRASH, windowFrac: wide },
+      { ...FIXED_PULL, windowFrac: wide },
+    ],
+    606,
+    360,
+  );
+  assert.notEqual(apart.events[0].startBlock, apart.events[1].startBlock);
+
+  const aligned = new EventSchedule(
+    [
+      { ...FIXED_CRASH, windowFrac: wide },
+      { ...FIXED_PULL, windowFrac: wide, alignWith: "crash" },
+    ],
+    606,
+    360,
+  );
+  assert.equal(aligned.events[1].startBlock, aligned.events[0].startBlock);
+  // The crash keeps the position it drew: aligning must not move the event being followed.
+  assert.equal(aligned.events[0].startBlock, apart.events[0].startBlock);
+  // Its own trapezoid length is unchanged -- only the start is shared.
+  assert.equal(
+    aligned.events[1].endBlock - aligned.events[1].startBlock,
+    apart.events[1].endBlock - apart.events[1].startBlock,
+  );
+
+  // ...and now the book is thin exactly while the price is gapping.
+  const hold = aligned.events[0].startBlock + 2;
+  assert.ok(aligned.at(hold).wethMult < 1);
+  assert.ok(aligned.depthMultiplierAt(hold).WETH < 1);
+});
+
+test("alignWith is checked against the events that exist", () => {
+  assert.throws(
+    () => new EventSchedule([{ ...FIXED_PULL, alignWith: "crash" }], 1, 20),
+    /no event of that type is configured/,
+  );
+  assert.throws(
+    () =>
+      parseStressEvents(
+        '[{"type":"liquidityPull","magnitudeRange":[0.4,0.6],"windowFrac":[0.3,0.7],"rampBlocks":1,"holdBlocks":1,"decayBlocks":1,"alignWith":"liquidityPull"}]',
+      ),
+    /must name a different event type/,
+  );
+  assert.throws(
+    () =>
+      parseStressEvents(
+        '[{"type":"liquidityPull","magnitudeRange":[0.4,0.6],"windowFrac":[0.3,0.7],"rampBlocks":1,"holdBlocks":1,"decayBlocks":1,"alignWith":"boom"}]',
+      ),
+    /alignWith must be a stress event type/,
+  );
+});
+
+test("liquidityPull of the whole book is rejected", () => {
+  // At 100% every swap reverts and the venue stops existing for the window -- an outage, not a thin
+  // book to size against.
+  assert.throws(
+    () =>
+      parseStressEvents(
+        '[{"type":"liquidityPull","magnitudeRange":[0.5,1.0],"windowFrac":[0.3,0.7],"rampBlocks":1,"holdBlocks":1,"decayBlocks":1}]',
+      ),
+    /magnitudeRange max must be < 1/,
+  );
+  // ...and it needs a window, like the other trapezoid events.
+  assert.throws(
+    () =>
+      parseStressEvents(
+        '[{"type":"liquidityPull","magnitudeRange":[0.4,0.6],"windowFrac":[0.3,0.7],"rampBlocks":0,"holdBlocks":0,"decayBlocks":0}]',
+      ),
+    /positive total window/,
+  );
+  // Phase 1 is uniswap-only, so a venue override is refused rather than silently ignored.
+  assert.throws(
+    () =>
+      parseStressEvents(
+        '[{"type":"liquidityPull","magnitudeRange":[0.4,0.6],"windowFrac":[0.3,0.7],"rampBlocks":1,"holdBlocks":1,"decayBlocks":1,"venue":"curve"}]',
+      ),
+    /venue only applies/,
+  );
+});
+
 // ---- parseStressEvents ----
 
 test("parseStressEvents: unset/empty is []", () => {
