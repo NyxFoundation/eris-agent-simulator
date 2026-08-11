@@ -203,6 +203,43 @@ test("alignWith puts the pull on the crash's window rather than its own draw", (
   assert.ok(aligned.depthMultiplierAt(hold).WETH < 1);
 });
 
+test("alignWith refuses what it cannot align", () => {
+  // Sliding the follower earlier to make it fit would un-align the pair, which is the one thing
+  // alignWith exists to guarantee -- so it is a config error, not a silent adjustment.
+  const late: [number, number] = [0.99, 0.99];
+  assert.throws(
+    () =>
+      new EventSchedule(
+        [
+          { ...FIXED_CRASH, windowFrac: late }, // span 6, clamped to start 14 of 20
+          {
+            ...FIXED_PULL,
+            windowFrac: late,
+            alignWith: "crash",
+            decayBlocks: 8,
+          }, // span 12
+        ],
+        1,
+        20,
+      ),
+    /its own window is 12 blocks and the run is 20/,
+  );
+  // Chained alignment would resolve differently depending on the order this pass visits the events.
+  assert.throws(
+    () =>
+      new EventSchedule(
+        [
+          { ...FIXED_PULL, alignWith: "crash" },
+          { ...FIXED_CRASH, alignWith: "spike" },
+          { ...FIXED_CRASH, type: "spike" },
+        ],
+        1,
+        60,
+      ),
+    /chained alignWith is not supported/,
+  );
+});
+
 test("alignWith is checked against the events that exist", () => {
   assert.throws(
     () => new EventSchedule([{ ...FIXED_PULL, alignWith: "crash" }], 1, 20),

@@ -26,9 +26,13 @@ test("depth never goes negative, whatever the envelope says", () => {
   assert.equal(scaleLiquidity(SEEDED, -0.5), 0n);
 });
 
-test("the same multiplier always yields the same target", () => {
-  const mult = 1 - 0.37 * (1 / 3);
-  assert.equal(scaleLiquidity(SEEDED, mult), scaleLiquidity(SEEDED, mult));
+test("a given multiplier pins one exact target", () => {
+  // Fixed expected values, not f(x) === f(x): the point is that two runs of the same scenario
+  // withdraw the same depth, which a self-comparison would assert for any implementation.
+  assert.equal(scaleLiquidity(SEEDED, 0.75), 2356194490192344928n);
+  // A repeating decimal, to pin the 1e9 grid itself: round(0.8766666666666667 * 1e9) = 876666667.
+  assert.equal(scaleLiquidity(SEEDED, 1 - 0.37 / 3), 2754129560694249623n);
+  assert.equal(scaleLiquidity(10n ** 18n, 0.123456789), 123456789000000000n);
 });
 
 test("scaling is monotonic across a trapezoid's envelope", () => {

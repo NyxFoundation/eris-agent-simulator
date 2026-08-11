@@ -84,6 +84,7 @@ import {
 } from "./lst.js";
 import {
   reconcileLiquidityPull,
+  restoreLiquidityPull,
   setupLiquidityPull,
   type LiquidityPullRuntime,
 } from "./liquidity.js";
@@ -1395,8 +1396,12 @@ export async function runRealtimeSimulation(
                 });
               }
             } catch (error) {
+              // Distinct from liquidity.ts's per-position `stress_liquidity_pull_failed`: this one
+              // means *no* position was reconciled this block, which post-run analysis has to be
+              // able to tell apart from one market failing.
               logger.event({
-                type: "stress_liquidity_pull_failed",
+                type: "stress_liquidity_task_failed",
+                blockIndex,
                 blockNumber: bn,
                 error: error instanceof Error ? error.message : String(error),
               });
@@ -1471,6 +1476,21 @@ export async function runRealtimeSimulation(
     for (const agent of agentRuntimes) agent.process?.close();
     flowProcess.close();
     await setIntervalMining(publicClient, 0);
+
+    // ---- liquidity-pull teardown (issue #52): the run can end with a window still open, since the
+    // schedule may place it against the last block and the time limit can cut in mid-window. Restore
+    // here so a shared anvil does not hand the next run a thinner venue. Agents are already stopped,
+    // so this cannot be traded against.
+    if (liquidityPullRuntime) {
+      try {
+        await restoreLiquidityPull(ctx, liquidityPullRuntime, logger);
+      } catch (error) {
+        logger.event({
+          type: "stress_liquidity_teardown_failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     // ---- bulk recording of blocks.csv: scan all run blocks for what was removed from the realtime loop ----
     // (finish before resetFork erases history, and before the violation check and summary)

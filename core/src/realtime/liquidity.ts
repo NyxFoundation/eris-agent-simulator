@@ -50,9 +50,15 @@ const MIN_DELTA_BPS = 1n;
 // the owner ran out of one side.
 const RESTORE_TOLERANCE_BPS = 10n;
 
-// Blocks to wait after the window closes before reading depth back: transactions are sent to the
-// mempool (not mined inline), so the restore lands on the next block.
-const RESTORE_VERIFY_LAG = 2;
+// Blocks to wait for a submitted write before treating it as lost and resynchronizing from the
+// chain. Under interval mining a transaction lands on the next block, so this is slack for a busy
+// block rather than an expected path.
+const PENDING_TIMEOUT_BLOCKS = 3;
+
+// A restore is recomputed at a price that has moved since the previous attempt, so it converges in a
+// block or two. This bounds the pathological case where it never quite lands and would otherwise
+// re-send for the rest of the run.
+const MAX_RESTORE_ATTEMPTS = 5;
 
 export type LiquidityPullPosition = {
   tokenId: bigint;
@@ -71,12 +77,16 @@ export type LiquidityPullRuntime = {
   owner: Address;
   ownerPk: Hex;
   positions: LiquidityPullPosition[];
-  // Target depth already sent to the chain, keyed by tokenId. Each block sends only the delta
-  // against this, so a target that has not changed costs nothing.
+  // Depth the position actually holds, keyed by tokenId -- read back from the chain after each write
+  // mines, never assumed from what was submitted. Each block sends only the delta against this.
   applied: Map<string, bigint>;
-  // Block index at which to verify the pools came back to their seeded depth (null = nothing to
-  // verify right now).
-  verifyAt: number | null;
+  // Write submitted but not yet confirmed, keyed by tokenId. While one is outstanding the position
+  // is left alone: re-deriving the delta from pre-transaction depth would double the withdrawal.
+  pending: Map<string, { hash: Hex; blockIndex: number }>;
+  // Restore attempts since the window closed, keyed by tokenId (see MAX_RESTORE_ATTEMPTS).
+  restoreAttempts: Map<string, number>;
+  // Whether this window's outcome has already been logged.
+  restoreReported: boolean;
 };
 
 type PositionTuple = readonly [
@@ -250,12 +260,26 @@ export async function setupLiquidityPull(
     ownerPk: opts.ownerPk,
     positions,
     applied: new Map(),
-    verifyAt: null,
+    pending: new Map(),
+    restoreAttempts: new Map(),
+    restoreReported: true,
   };
 }
 
 /// Move each tracked pool toward the depth the schedule asks for on this block. Returns the hashes
 /// it submitted so the coordinator can attribute them.
+///
+/// Every decision is made against the depth the position *actually* holds, read back after each
+/// write mines, rather than against the depth that was submitted. Two failures make that necessary
+/// and neither is exotic:
+///   - `sendNoMine` returns when anvil accepts the transaction, not when it succeeds. A revert
+///     (deadline, gas, a token float that ran dry) would otherwise leave the pool at its old depth
+///     while this run recorded the new target, and the delta would never be recomputed again.
+///   - `increaseLiquidity` derives liquidity from token amounts at *execution* price, taking the
+///     minimum of the two sides. The amounts are computed from a `slot0` read one block earlier, so
+///     any price move in between makes the restore land short -- and the decay leg runs precisely
+///     while a crash is recovering, so the price is moving by construction. Re-reading turns that
+///     shortfall into the next block's delta instead of a silent permanent loss of depth.
 export async function reconcileLiquidityPull(
   ctx: SimContext,
   runtime: LiquidityPullRuntime,
@@ -266,21 +290,55 @@ export async function reconcileLiquidityPull(
   logger: RunLogger,
 ): Promise<Hex[]> {
   const mults = schedule.depthMultiplierAt(blockIndex);
+  const windowOpen = Object.keys(mults).length > 0;
+  if (windowOpen) runtime.restoreReported = false;
   const hashes: Hex[] = [];
   let deadline = 0n;
+  let allSettled = true;
 
   for (const pos of runtime.positions) {
     const key = pos.tokenId.toString();
+
+    // Settle the previous write before deciding anything: re-deriving a delta while one is still in
+    // the mempool would withdraw the same depth twice.
+    if (runtime.pending.has(key)) {
+      const settled = await settlePending(
+        ctx,
+        runtime,
+        pos,
+        blockIndex,
+        logger,
+      );
+      if (!settled) {
+        allSettled = false;
+        continue;
+      }
+    }
+
     const mult = mults[pos.base] ?? 1;
     const target = scaleLiquidity(pos.seededLiquidity, mult);
     const applied = runtime.applied.get(key) ?? pos.seededLiquidity;
     if (target === applied) continue;
-    // Rounding noise is not worth a transaction -- but closing the window is, however small the
-    // remainder, because leaving it un-restored hands the next scenario a thinner venue.
     const delta = target > applied ? target - applied : applied - target;
     const isRestore = target === pos.seededLiquidity;
+    // Rounding noise is not worth a transaction. Closing the window is worth chasing -- leaving the
+    // pool short hands the rest of the run a thinner venue -- but not forever: each restore is
+    // computed at a price that has since moved, so a pathological case could otherwise re-send every
+    // block for the rest of the run.
     if (!isRestore && (delta * 10_000n) / pos.seededLiquidity < MIN_DELTA_BPS)
       continue;
+    if (isRestore) {
+      const attempts = runtime.restoreAttempts.get(key) ?? 0;
+      if (attempts >= MAX_RESTORE_ATTEMPTS) continue;
+      if (
+        (delta * 10_000n) / pos.seededLiquidity < MIN_DELTA_BPS &&
+        attempts > 0
+      )
+        continue;
+      runtime.restoreAttempts.set(key, attempts + 1);
+    } else {
+      runtime.restoreAttempts.set(key, 0);
+    }
 
     if (deadline === 0n) {
       const block = await ctx.publicClient.getBlock();
@@ -308,7 +366,8 @@ export async function reconcileLiquidityPull(
         target < applied
           ? await withdraw(ctx, runtime, pos, applied - target, deadline, opts)
           : await deposit(ctx, runtime, pos, target - applied, deadline, opts);
-      runtime.applied.set(key, target);
+      runtime.pending.set(key, { hash, blockIndex });
+      allSettled = false;
       hashes.push(hash);
       logger.event({
         type: "stress_liquidity_pull",
@@ -320,13 +379,13 @@ export async function reconcileLiquidityPull(
         depthMultiplier: mult,
         ...(poolLiquidityBefore !== undefined ? { poolLiquidityBefore } : {}),
         seededLiquidity: pos.seededLiquidity.toString(),
-        previousTarget: applied.toString(),
+        previousLiquidity: applied.toString(),
         targetLiquidity: target.toString(),
         hash,
       });
     } catch (error) {
-      // Leave `applied` untouched: the next block recomputes the same delta and retries, so a single
-      // failed send costs one block of depth rather than desynchronizing the pool for the whole run.
+      // `applied` is untouched, so the next block recomputes the same delta and retries: a failed
+      // send costs one block of depth rather than desynchronizing the pool for the whole run.
       logger.event({
         type: "stress_liquidity_pull_failed",
         blockIndex,
@@ -339,14 +398,93 @@ export async function reconcileLiquidityPull(
     }
   }
 
-  const windowOpen = Object.keys(mults).length > 0;
-  if (windowOpen) {
-    runtime.verifyAt = blockIndex + RESTORE_VERIFY_LAG;
-  } else if (runtime.verifyAt !== null && blockIndex >= runtime.verifyAt) {
-    runtime.verifyAt = null;
-    await verifyRestored(ctx, runtime, blockIndex, blockNumber, logger);
+  // Report the outcome once per window, and only when nothing is still in flight -- checking while a
+  // restore sits in the mempool would read the pre-restore depth and cry incomplete.
+  if (!windowOpen && allSettled && !runtime.restoreReported) {
+    const anyMoved = runtime.positions.some(
+      (p) =>
+        (runtime.applied.get(p.tokenId.toString()) ?? p.seededLiquidity) !==
+        p.seededLiquidity,
+    );
+    const exhausted = runtime.positions.every(
+      (p) =>
+        (runtime.restoreAttempts.get(p.tokenId.toString()) ?? 0) >=
+        MAX_RESTORE_ATTEMPTS,
+    );
+    if (!anyMoved || exhausted) {
+      runtime.restoreReported = true;
+      reportRestored(runtime, { blockIndex, blockNumber }, logger);
+    }
   }
   return hashes;
+}
+
+// Resolve an in-flight write: confirm it mined, then resynchronize `applied` with what the position
+// actually holds. Returns false while the transaction is still pending, meaning "leave this position
+// alone this block".
+async function settlePending(
+  ctx: SimContext,
+  runtime: LiquidityPullRuntime,
+  pos: LiquidityPullPosition,
+  blockIndex: number,
+  logger: RunLogger,
+): Promise<boolean> {
+  const key = pos.tokenId.toString();
+  const pending = runtime.pending.get(key);
+  if (!pending) return true;
+
+  let status: "success" | "reverted" | null = null;
+  try {
+    const receipt = await ctx.publicClient.getTransactionReceipt({
+      hash: pending.hash,
+    });
+    status = receipt.status === "success" ? "success" : "reverted";
+  } catch {
+    status = null; // not mined yet
+  }
+
+  if (status === null) {
+    if (blockIndex - pending.blockIndex < PENDING_TIMEOUT_BLOCKS) return false;
+    // Stuck in the mempool for several blocks. Give up on it and resynchronize from the chain: the
+    // delta is always re-derived from actual depth, so even if the transaction lands later the next
+    // block corrects for it rather than compounding it.
+    logger.event({
+      type: "stress_liquidity_pull_stuck",
+      blockIndex,
+      market: pos.marketKey,
+      tokenId: key,
+      hash: pending.hash,
+      submittedAtBlockIndex: pending.blockIndex,
+    });
+  }
+  runtime.pending.delete(key);
+
+  const actual = await readPositionLiquidity(ctx, pos).catch(() => null);
+  if (actual !== null) runtime.applied.set(key, actual);
+  if (status === "reverted") {
+    logger.event({
+      type: "stress_liquidity_pull_reverted",
+      blockIndex,
+      market: pos.marketKey,
+      tokenId: key,
+      hash: pending.hash,
+      liquidity: actual === null ? undefined : actual.toString(),
+    });
+  }
+  return true;
+}
+
+async function readPositionLiquidity(
+  ctx: SimContext,
+  pos: LiquidityPullPosition,
+): Promise<bigint> {
+  const raw = (await ctx.publicClient.readContract({
+    address: UNISWAP.nonfungiblePositionManager,
+    abi: nonfungiblePositionManagerAbi,
+    functionName: "positions",
+    args: [pos.tokenId],
+  })) as PositionTuple;
+  return raw[7];
 }
 
 // Withdraw depth and take the tokens out of the pool. decreaseLiquidity only credits tokensOwed, so
@@ -404,15 +542,17 @@ async function withdraw(
   );
 }
 
-// Put depth back. increaseLiquidity takes token amounts and derives the liquidity from them, so the
-// amounts are computed from the current price for exactly the liquidity being restored.
-async function deposit(
+// Put depth back. increaseLiquidity takes token amounts and derives the liquidity from them at
+// *execution* price, taking the minimum of the two sides -- so these amounts, computed from the
+// price as it is now, come up short by roughly the price move between this read and the mine. No
+// safety margin is added for that: overshooting would just be withdrawn again next block. The
+// reconcile loop reads the position back once the write settles and carries any shortfall into the
+// next delta, which converges while the price is still moving.
+async function depositCalldata(
   ctx: SimContext,
-  runtime: LiquidityPullRuntime,
   pos: LiquidityPullPosition,
   liquidity: bigint,
   deadline: bigint,
-  opts: { priorityFeeWei: bigint },
 ): Promise<Hex> {
   const slot0 = (await ctx.publicClient.readContract({
     address: pos.pool,
@@ -425,6 +565,30 @@ async function deposit(
     getSqrtRatioAtTick(pos.tickUpper),
     liquidity,
   );
+  return encodeFunctionData({
+    abi: nonfungiblePositionManagerAbi,
+    functionName: "increaseLiquidity",
+    args: [
+      {
+        tokenId: pos.tokenId,
+        amount0Desired: amount0,
+        amount1Desired: amount1,
+        amount0Min: 0n,
+        amount1Min: 0n,
+        deadline,
+      },
+    ],
+  });
+}
+
+async function deposit(
+  ctx: SimContext,
+  runtime: LiquidityPullRuntime,
+  pos: LiquidityPullPosition,
+  liquidity: bigint,
+  deadline: bigint,
+  opts: { priorityFeeWei: bigint },
+): Promise<Hex> {
   return sendNoMine(
     ctx.publicClient,
     ctx.walletClient,
@@ -432,56 +596,43 @@ async function deposit(
     runtime.ownerPk,
     {
       to: UNISWAP.nonfungiblePositionManager,
-      data: encodeFunctionData({
-        abi: nonfungiblePositionManagerAbi,
-        functionName: "increaseLiquidity",
-        args: [
-          {
-            tokenId: pos.tokenId,
-            amount0Desired: amount0,
-            amount1Desired: amount1,
-            amount0Min: 0n,
-            amount1Min: 0n,
-            deadline,
-          },
-        ],
-      }),
+      data: await depositCalldata(ctx, pos, liquidity, deadline),
       gas: RECONCILE_GAS,
     },
     opts.priorityFeeWei,
   );
 }
 
-// Read the depth back after a window closes. The window has to end with the venue where it started,
-// or the rest of the run (and, under the scenario matrix, the next scenario) trades a pool this
-// event quietly drained.
-async function verifyRestored(
+// Teardown only: there is no next block to settle on, so this one waits for its receipt.
+async function depositMined(
   ctx: SimContext,
   runtime: LiquidityPullRuntime,
-  blockIndex: number,
-  blockNumber: number,
+  pos: LiquidityPullPosition,
+  liquidity: bigint,
+  deadline: bigint,
+): Promise<Hex> {
+  return sendAndMine(
+    ctx.publicClient,
+    ctx.walletClient,
+    ctx.chain,
+    runtime.ownerPk,
+    {
+      to: UNISWAP.nonfungiblePositionManager,
+      data: await depositCalldata(ctx, pos, liquidity, deadline),
+    },
+  );
+}
+
+// Record how the window closed. `applied` is depth read back from the chain after the last write
+// settled, so this reports rather than checks -- the reconcile loop is what chases the pool back.
+function reportRestored(
+  runtime: LiquidityPullRuntime,
+  at: { blockIndex: number; blockNumber: number } | null,
   logger: RunLogger,
-): Promise<void> {
+): void {
   for (const pos of runtime.positions) {
-    let actual: bigint;
-    try {
-      actual = (await ctx.publicClient
-        .readContract({
-          address: UNISWAP.nonfungiblePositionManager,
-          abi: nonfungiblePositionManagerAbi,
-          functionName: "positions",
-          args: [pos.tokenId],
-        })
-        .then((raw) => (raw as PositionTuple)[7])) as bigint;
-    } catch (error) {
-      logger.event({
-        type: "stress_liquidity_restore_unverified",
-        blockIndex,
-        market: pos.marketKey,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      continue;
-    }
+    const key = pos.tokenId.toString();
+    const actual = runtime.applied.get(key) ?? pos.seededLiquidity;
     const diff =
       actual > pos.seededLiquidity
         ? actual - pos.seededLiquidity
@@ -492,15 +643,78 @@ async function verifyRestored(
         driftBps > RESTORE_TOLERANCE_BPS
           ? "stress_liquidity_restore_incomplete"
           : "stress_liquidity_restored",
-      blockIndex,
-      blockNumber,
+      ...(at ?? { phase: "teardown" }),
       market: pos.marketKey,
-      tokenId: pos.tokenId.toString(),
+      tokenId: key,
       seededLiquidity: pos.seededLiquidity.toString(),
       actualLiquidity: actual.toString(),
       driftBps: Number(driftBps),
+      attempts: runtime.restoreAttempts.get(key) ?? 0,
     });
   }
+}
+
+/// Put the depth back before the run ends, whatever the schedule managed to do.
+///
+/// The block loop can simply stop with a window still open: `EventSchedule` clamps `startBlock` to
+/// `runBlocks - span`, so `endBlock` can equal `runBlocks` and the only block that could issue the
+/// restore is the last one -- and the run may also end early on its time limit. Under the scenario
+/// matrix the per-scenario snapshot/revert would hide it, but a plain `sim:realtime` on a shared
+/// anvil would hand the next run a permanently thinner venue, which is exactly the contamination
+/// this module exists to avoid. Mined rather than mempool: there is no next block to settle on.
+export async function restoreLiquidityPull(
+  ctx: SimContext,
+  runtime: LiquidityPullRuntime,
+  logger: RunLogger,
+): Promise<void> {
+  for (const pos of runtime.positions) {
+    const key = pos.tokenId.toString();
+    runtime.pending.delete(key);
+    for (let attempt = 0; attempt < MAX_RESTORE_ATTEMPTS; attempt++) {
+      let actual: bigint;
+      try {
+        actual = await readPositionLiquidity(ctx, pos);
+      } catch (error) {
+        logger.event({
+          type: "stress_liquidity_teardown_failed",
+          market: pos.marketKey,
+          tokenId: key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        break;
+      }
+      runtime.applied.set(key, actual);
+      if (actual >= pos.seededLiquidity) break;
+      const shortfall = pos.seededLiquidity - actual;
+      if ((shortfall * 10_000n) / pos.seededLiquidity < MIN_DELTA_BPS) break;
+      try {
+        const block = await ctx.publicClient.getBlock();
+        await depositMined(
+          ctx,
+          runtime,
+          pos,
+          shortfall,
+          block.timestamp + 3600n,
+        );
+        logger.event({
+          type: "stress_liquidity_teardown_restore",
+          market: pos.marketKey,
+          tokenId: key,
+          attempt: attempt + 1,
+          shortfall: shortfall.toString(),
+        });
+      } catch (error) {
+        logger.event({
+          type: "stress_liquidity_teardown_failed",
+          market: pos.marketKey,
+          tokenId: key,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        break;
+      }
+    }
+  }
+  reportRestored(runtime, null, logger);
 }
 
 // The envelope is a float; depth is a uint128. Scale through a fixed 1e9 grid so the same block

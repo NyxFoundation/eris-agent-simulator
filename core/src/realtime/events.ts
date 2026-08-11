@@ -189,21 +189,41 @@ export class EventSchedule {
     // schedule of the events around it.
     configs.forEach((c, i) => {
       if (c.alignWith === undefined) return;
-      const anchor = this.events.find(
+      const anchorIndex = this.events.findIndex(
         (ev, j) => j !== i && ev.type === c.alignWith,
       );
-      if (!anchor) {
+      if (anchorIndex < 0) {
         throw new Error(
           `stress event[${i}] has alignWith: "${c.alignWith}", but no event of that type is configured`,
         );
       }
+      // Chains would depend on the order this pass happens to visit the events (following an anchor
+      // that is itself moved later reads its pre-alignment start), so they are refused rather than
+      // resolved half the time.
+      if (configs[anchorIndex].alignWith !== undefined) {
+        throw new Error(
+          `stress event[${i}] aligns with event[${anchorIndex}], which is itself aligned; chained alignWith is not supported`,
+        );
+      }
+      const anchor = this.events[anchorIndex];
       const ev = this.events[i];
       const span = ev.endBlock - ev.startBlock;
-      const startBlock = Math.min(
-        anchor.startBlock,
-        Math.max(0, runBlocks - span),
-      );
-      this.events[i] = { ...ev, startBlock, endBlock: startBlock + span };
+      // A follower with a longer trapezoid than its anchor cannot start where the anchor does when
+      // the anchor sits near the end of the run. Silently sliding it earlier would un-align the pair
+      // -- which is the single thing alignWith exists to guarantee -- so this is a config error.
+      if (anchor.startBlock + span > runBlocks) {
+        throw new Error(
+          `stress event[${i}] aligns with a ${c.alignWith} at block ${anchor.startBlock}, but its own ` +
+            `window is ${span} blocks and the run is ${runBlocks}: shorten it, or lower windowFrac's ` +
+            "upper bound (a heavily shortened run, e.g. --blocks on a smoke test, can hit this on " +
+            "some seeds where the regime's own length does not)",
+        );
+      }
+      this.events[i] = {
+        ...ev,
+        startBlock: anchor.startBlock,
+        endBlock: anchor.startBlock + span,
+      };
     });
   }
 
