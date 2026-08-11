@@ -87,8 +87,39 @@ jobs:
           npm run gen:local-constants
           npm run gen:state-dump
 
+      # A scenario is (regime, seed) and the regime YAML carries no seed, so --seed is required
+      # (ADR 0017 §1). --blocks shortens the run for CI; the regime's own 360 would take 12 minutes.
       - name: Backtest against the dump
-        run: npm run backtest -- --regime calm-01 --blocks 12
+        run: npm run backtest -- --regime calm --seed 101 --blocks 12 --seconds 90
+
+      # The matrix path is what the competition actually runs, and it is a different code path from
+      # a single --regime run: it writes matrix.json / standings.json and has to survive a scenario
+      # that fails without abandoning the rest. Two scenarios is enough to exercise the loop.
+      - name: Replay a small scenario matrix
+        run: |
+          cat > "$RUNNER_TEMP/ci-scenarios.yaml" <<'YAML'
+          regimes: [calm]
+          seeds: [101, 202]
+          YAML
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-scenarios.yaml" --blocks 12 --seconds 90
+          node -e '
+            const { readdirSync, readFileSync } = require("node:fs");
+            const dir = readdirSync("runs").filter((d) => d.startsWith("matrix-")).sort().at(-1);
+            if (!dir) throw new Error("no matrix directory was produced");
+            const m = JSON.parse(readFileSync(`runs/${dir}/matrix.json`, "utf8"));
+            const s = JSON.parse(readFileSync(`runs/${dir}/standings.json`, "utf8"));
+            const failed = m.scenarios.filter((x) => !x.agents);
+            if (failed.length) throw new Error(`scenarios produced no result: ${JSON.stringify(failed)}`);
+            if (m.scenarios.length !== 2) throw new Error(`expected 2 scenarios, got ${m.scenarios.length}`);
+            if (!s.agents?.length) throw new Error("standings ranked nobody");
+            // Both metrics must survive into the matrix, since the scoring rule is expected to
+            // change and matrix.json is what makes a finished run re-scorable (ADR 0017 §4).
+            for (const sc of m.scenarios)
+              for (const a of sc.agents)
+                if (!("netPnlUsdc" in a) || !("alphaUsdc" in a))
+                  throw new Error(`${sc.regime}#${sc.seed} ${a.id} is missing a metric`);
+            console.log(`matrix ok: ${m.scenarios.length} scenarios, ${s.agents.length} ranked`);
+          '
 
       # The backtest exits 0 even when the scorer quietly read nothing, which is the failure mode
       # this whole job exists to catch, so assert on the run's own output.
