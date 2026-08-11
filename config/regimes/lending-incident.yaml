@@ -55,6 +55,20 @@ stress:
         holdBlocks: 6,
         decayBlocks: 8,
       }
+    # The books thin while the collateral gaps (issue #52), on the crash's own window. This regime is
+    # about the lending side, and depth is what decides whether a liquidator can actually unwind the
+    # collateral it seizes -- with a deep book, taking a breached position is close to riskless.
+    # The breach itself is unaffected: health factors are set by the oracle, not by pool depth, so
+    # the ADR 0009 §4 calibration above still holds.
+    - {
+        type: liquidityPull,
+        magnitudeRange: [0.4, 0.6],
+        windowFrac: [0.3, 0.7],
+        alignWith: crash,
+        rampBlocks: 3,
+        holdBlocks: 6,
+        decayBlocks: 12,
+      }
   victimCount: 2
   victimHf0: 1.10
 

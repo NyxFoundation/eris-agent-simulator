@@ -22,6 +22,9 @@ export const wethAbi = parseAbi([
 export const poolAbi = parseAbi([
   "function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)",
   "function tickSpacing() view returns (int24)",
+  // Depth in range at the current tick. It is what decides slippage on a given notional, and the
+  // liquidityPull stress event (issue #52) moves it mid-run, so agents have to be able to see it.
+  "function liquidity() view returns (uint128)",
   // Uncollected-fee accounting (issue #21): a position's fees live in the pool until poke/collect.
   "function feeGrowthGlobal0X128() view returns (uint256)",
   "function feeGrowthGlobal1X128() view returns (uint256)",
@@ -39,10 +42,17 @@ export const swapRouterAbi = parseAbi([
 export const nonfungiblePositionManagerAbi = parseAbi([
   "function mint((address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline) params) payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)",
   "function decreaseLiquidity((uint256 tokenId, uint128 liquidity, uint256 amount0Min, uint256 amount1Min, uint256 deadline) params) payable returns (uint256 amount0, uint256 amount1)",
+  // The liquidityPull stress event (issue #52) has to put the depth back when its window closes,
+  // so the withdrawal is a constraint for the duration rather than a permanent change to the venue.
+  "function increaseLiquidity((uint256 tokenId, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, uint256 deadline) params) payable returns (uint128 liquidity, uint256 amount0, uint256 amount1)",
   "function collect((uint256 tokenId, address recipient, uint128 amount0Max, uint128 amount1Max) params) payable returns (uint256 amount0, uint256 amount1)",
   "function positions(uint256 tokenId) view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)",
   "function balanceOf(address owner) view returns (uint256)",
   "function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)",
+  // decreaseLiquidity only credits tokensOwed; the tokens do not leave the pool until collect. The
+  // liquidityPull event has to do both, and in one transaction: two sends from the same key race on
+  // the nonce the same way the LST accrual did.
+  "function multicall(bytes[] data) payable returns (bytes[] results)",
   // Issue #41: positions may sit in pools outside the registered market set; the factory resolves them.
   "function factory() view returns (address)",
 ]);
@@ -56,6 +66,9 @@ export const balancerVaultAbi = parseAbi([
   "function getPoolTokens(bytes32 poolId) view returns (address[] tokens, uint256[] balances, uint256 lastChangeBlock)",
   "function swap((bytes32 poolId, uint8 kind, address assetIn, address assetOut, uint256 amount, bytes userData) singleSwap, (address sender, bool fromInternalBalance, address recipient, bool toInternalBalance) funds, uint256 limit, uint256 deadline) payable returns (uint256 amountCalculated)",
   "function joinPool(bytes32 poolId, address sender, address recipient, (address[] assets, uint256[] maxAmountsIn, bytes userData, bool fromInternalBalance) request) payable",
+  // Proportional exit for the liquidityPull stress event (issue #52). EXACT_BPT_IN_FOR_TOKENS_OUT
+  // takes both sides at the pool's current weights, so depth changes and the spot price does not.
+  "function exitPool(bytes32 poolId, address sender, address recipient, (address[] assets, uint256[] minAmountsOut, bytes userData, bool toInternalBalance) request)",
 ]);
 
 // Balancer v2 WeightedPool. The spot price of a weighted pool is set by the balance/weight ratios,
@@ -66,6 +79,18 @@ export const balancerWeightedPoolAbi = parseAbi([
 
 export const balancerQueriesAbi = parseAbi([
   "function querySwap((bytes32 poolId, uint8 kind, address assetIn, address assetOut, uint256 amount, bytes userData) singleSwap, (address sender, bool fromInternalBalance, address recipient, bool toInternalBalance) funds) returns (uint256)",
+]);
+
+// twocrypto-ng liquidity operations, for the liquidityPull stress event (issue #52). These pools are
+// their own ERC-20, so the LP balance is read from the pool address itself. `remove_liquidity` is the
+// balanced exit -- it returns both coins at the current ratio and does not touch the price (the
+// one-coin variant would, which is why it is not here).
+export const curveTwocryptoLiquidityAbi = parseAbi([
+  "function add_liquidity(uint256[2] amounts, uint256 min_mint_amount) returns (uint256)",
+  "function remove_liquidity(uint256 amount, uint256[2] min_amounts) returns (uint256[2])",
+  "function balances(uint256 i) view returns (uint256)",
+  "function balanceOf(address owner) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
 ]);
 
 // Curve StableSwap-NG (the LST/WETH secondary market, issue #38). Note the int128 coin indices --

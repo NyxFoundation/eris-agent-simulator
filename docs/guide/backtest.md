@@ -39,7 +39,7 @@ flowchart LR
 A regime is **a YAML in the existing config schema** (same format as [Configuration](configuration.md)) describing a family of market conditions: the fair-price OU parameters, flow intensity, and the stress event ranges. It carries no seed. Given one, the fair-price path, flow orders, and stress event schedule all replay deterministically.
 
 - `config/regimes/calm.yaml` — normal market (no stress)
-- `config/regimes/crash.yaml` — trapezoidal crash, no victims (price gap only; the liquidity-withdrawal half is pending [#52](https://github.com/NyxFoundation/eris-agent-simulator/issues/52))
+- `config/regimes/crash.yaml` — trapezoidal crash, no victims: a price gap plus a `liquidityPull` on the same window, so uniswap, balancer and curve all thin exactly while the price moves ([#52](https://github.com/NyxFoundation/eris-agent-simulator/issues/52)). At a 50% pull the cost of taking 10 WETH roughly doubles (uniswap/balancer) to quadruples (curve), while the price a small trade sees is unchanged
 - `config/regimes/lending-incident.yaml` — the same crash plus 2 liquidation-target victims and a liquidator roster slot
 - `config/regimes/lst.yaml` — the liquid staking venue (not part of the competition set)
 

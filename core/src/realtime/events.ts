@@ -18,21 +18,44 @@
 import { Rng } from "@eris/sdk/rng.js";
 import type { TokenSymbol } from "@eris/sdk/types.js";
 
-// spike / crash distort a base's price through the overlay. lstSlash and whale are different in
-// kind: they happen on a single block and the coordinator executes them, rather than being a
-// multiplier layered on the price path.
-//   lstSlash  a one-shot staking penalty applied to the LST vault (issue #38 phase 2); the exchange
-//             rate is permanently lower afterwards
-//   whale     a single large market order that moves the mid (ADR 0017 regime 3). Unlike crash, the
-//             fair price does not move at all -- the pool is knocked away from an unchanged fair,
-//             which is the opposite direction of dislocation and a different trade to find
+// spike / crash distort a base's price through the overlay. The others are different in kind:
+//   lstSlash       a one-shot staking penalty applied to the LST vault (issue #38 phase 2); the
+//                  exchange rate is permanently lower afterwards
+//   whale          a single large market order that moves the mid (ADR 0017 regime 3). Unlike crash,
+//                  the fair price does not move at all -- the pool is knocked away from an unchanged
+//                  fair, which is the opposite direction of dislocation and a different trade to find
+//   liquidityPull  seeded pool depth is withdrawn for the length of a window and put back afterwards
+//                  (issue #52). Neither a price multiplier nor a one-shot: it is a *state* the
+//                  coordinator holds for the window, so it has a trapezoid like spike/crash but the
+//                  envelope drives a target depth instead of a price. Composed with crash on the
+//                  same window it is what makes regime 6 a crash rather than a larger opportunity --
+//                  the gap says what is on offer, the depth says how much of it anyone can take.
 // They share this config section because from a run's point of view they are the same thing: a
 // seed-placed shock the agents have to survive.
-export type StressEventType = "spike" | "crash" | "lstSlash" | "whale";
+export type StressEventType =
+  "spike" | "crash" | "lstSlash" | "whale" | "liquidityPull";
 
-// Types that happen on one block and are executed, rather than layered onto the price as a
-// multiplier. `at()` ignores them; `pointEventsAt()` returns them.
-const POINT_EVENT_TYPES = new Set<StressEventType>(["lstSlash", "whale"]);
+// How the run consumes each type:
+//   overlay  a multiplier layered on the fair price every block of its window (`at()`)
+//   point    executed once, on the block it lands on (`pointEventsAt()`)
+//   state    a target the coordinator holds the venue at for the window (`depthMultiplierAt()`)
+//
+// A total Record rather than one opt-in Set per consumer: with separate Sets, adding a sixth type
+// and forgetting one of them compiles, typechecks, and produces a schedule that logs itself and then
+// does nothing. That is not hypothetical -- `pointEventsAt` shipped once with exactly that shape of
+// hole (see the note on the caught-up range below). Here the compiler demands the decision.
+const EVENT_KIND: Record<StressEventType, "overlay" | "point" | "state"> = {
+  spike: "overlay",
+  crash: "overlay",
+  lstSlash: "point",
+  whale: "point",
+  liquidityPull: "state",
+};
+
+const isPointEvent = (type: StressEventType): boolean =>
+  EVENT_KIND[type] === "point";
+const isPriceOverlay = (type: StressEventType): boolean =>
+  EVENT_KIND[type] === "overlay";
 
 // Which way a whale trades. "random" (the default) lets the seed pick, which is what keeps the
 // direction from being memorizable across a published regime's seeds.
@@ -45,17 +68,30 @@ export type StressEventConfig = {
   base?: TokenSymbol;
   // Deviation width of the price multiplier. spike acts as +, crash as −. The seed picks from [min,max].
   // For lstSlash this is the fraction of the staking pool burnt (0.02 = a 2% slash).
+  // For liquidityPull this is the fraction of the seeded pool depth withdrawn at the top of the
+  // trapezoid (0.5 = half the book gone while the window holds).
   // For whale this is the order size in whole base units (30 = a 30 WETH market order). Absolute
   // rather than a fraction because what matters is the size against pool depth, and depth is a
   // property of the deployed venue, not of this config.
   magnitudeRange: [number, number];
   // whale only: which way it trades. Default "random" = the seed decides.
   side?: WhaleSide;
-  // whale only: the venue it hits. Default "uniswap" (the deepest pool, so the size has to be real
+  // whale: the venue it prints on. Default "uniswap" (the deepest pool, so the size has to be real
   // to move it).
+  // liquidityPull: the venue whose book thins. **Default is every enabled venue** -- thinning one
+  // while the others keep block-0 depth just moves execution elsewhere, so narrowing is opt-in.
   venue?: "uniswap" | "balancer" | "curve";
   // Fraction of run length for the event start position [min,max]. The seed picks.
   windowFrac: [number, number];
+  // Start where the first event of this type starts, instead of drawing an independent position.
+  // windowFrac is still required and still drawn (so the schedule stays a pure function of the
+  // event list) -- the draw is simply not used for the start.
+  //
+  // This exists because "same range" is not "same window": two events sampling [0.25, 0.7] of a
+  // 360-block run land ~160 blocks apart on average, so a liquidityPull configured alongside a crash
+  // would almost never thin the book while the price is gapping. Issue #52's composition is a
+  // property of the pair, not of either event, and it has to be stated rather than hoped for.
+  alignWith?: StressEventType;
   // Length of each trapezoid segment (block count; fixed). Not applicable to lstSlash, which is
   // instantaneous, so they default to 0 there.
   rampBlocks: number;
@@ -129,7 +165,7 @@ export class EventSchedule {
         rng.next(),
       );
       const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], rng.next());
-      const span = POINT_EVENT_TYPES.has(c.type)
+      const span = isPointEvent(c.type)
         ? POINT_EVENT_SPAN
         : c.rampBlocks + c.holdBlocks + c.decayBlocks;
       // Clamp startBlock so the window fits inside the run window (scoring history depth; event window ⊂ run window).
@@ -156,11 +192,58 @@ export class EventSchedule {
         magnitude,
         ...(side !== undefined ? { side } : {}),
         ...(c.type === "whale" ? { venue: c.venue ?? "uniswap" } : {}),
+        // liquidityPull keeps `venue` undefined when unset: that means "all enabled", which the
+        // schedule cannot resolve on its own (it does not know which protocols the run turned on).
+        ...(c.type === "liquidityPull" && c.venue !== undefined
+          ? { venue: c.venue }
+          : {}),
         startBlock,
         rampBlocks: c.rampBlocks,
         holdBlocks: c.holdBlocks,
         decayBlocks: c.decayBlocks,
         endBlock: startBlock + span,
+      };
+    });
+
+    // Second pass: move the events that follow another one onto its start. Done after every draw so
+    // the RNG consumption stays a pure function of the event list -- an alignment must not shift the
+    // schedule of the events around it.
+    configs.forEach((c, i) => {
+      if (c.alignWith === undefined) return;
+      const anchorIndex = this.events.findIndex(
+        (ev, j) => j !== i && ev.type === c.alignWith,
+      );
+      if (anchorIndex < 0) {
+        throw new Error(
+          `stress event[${i}] has alignWith: "${c.alignWith}", but no event of that type is configured`,
+        );
+      }
+      // Chains would depend on the order this pass happens to visit the events (following an anchor
+      // that is itself moved later reads its pre-alignment start), so they are refused rather than
+      // resolved half the time.
+      if (configs[anchorIndex].alignWith !== undefined) {
+        throw new Error(
+          `stress event[${i}] aligns with event[${anchorIndex}], which is itself aligned; chained alignWith is not supported`,
+        );
+      }
+      const anchor = this.events[anchorIndex];
+      const ev = this.events[i];
+      const span = ev.endBlock - ev.startBlock;
+      // A follower with a longer trapezoid than its anchor cannot start where the anchor does when
+      // the anchor sits near the end of the run. Silently sliding it earlier would un-align the pair
+      // -- which is the single thing alignWith exists to guarantee -- so this is a config error.
+      if (anchor.startBlock + span > runBlocks) {
+        throw new Error(
+          `stress event[${i}] aligns with a ${c.alignWith} at block ${anchor.startBlock}, but its own ` +
+            `window is ${span} blocks and the run is ${runBlocks}: shorten it, or lower windowFrac's ` +
+            "upper bound (a heavily shortened run, e.g. --blocks on a smoke test, can hit this on " +
+            "some seeds where the regime's own length does not)",
+        );
+      }
+      this.events[i] = {
+        ...ev,
+        startBlock: anchor.startBlock,
+        endBlock: anchor.startBlock + span,
       };
     });
   }
@@ -169,9 +252,58 @@ export class EventSchedule {
     return this.events.length > 0;
   }
 
-  // The in-window event at this blockIndex (if several overlap, the first one). For visualization/logging.
+  // Whether the run needs the depth-withdrawal machinery at all (issue #52). The coordinator only
+  // discovers and tracks the seeded LP positions when this is true, so an ordinary run pays nothing.
+  hasLiquidityPull(): boolean {
+    return this.events.some((ev) => ev.type === "liquidityPull");
+  }
+
+  // The bases a liquidityPull targets. The coordinator needs them at setup, before any window opens,
+  // to fail fast on a venue it cannot withdraw from.
+  liquidityPullBases(): string[] {
+    return [
+      ...new Set(
+        this.events
+          .filter((ev) => ev.type === "liquidityPull")
+          .map((ev) => ev.base),
+      ),
+    ];
+  }
+
+  // The venues a liquidityPull withdraws from, intersected with the ones this run enabled. An event
+  // without `venue` means every venue that has a proportional exit path: thinning one book while the
+  // others keep their block-0 depth only moves execution elsewhere, which is not the regime.
+  liquidityPullVenues<T extends string>(enabled: T[]): T[] {
+    const asked = new Set(
+      this.events
+        .filter((ev) => ev.type === "liquidityPull")
+        .map((ev) => ev.venue),
+    );
+    if (asked.has(undefined)) return [...enabled];
+    return enabled.filter((v) => asked.has(v as never));
+  }
+
+  // The in-window event at this blockIndex, of any kind (if several overlap, the first one). For
+  // visualization/logging. Callers that mean "is the price dislocated right now" want
+  // activePriceEventAt: since issue #52 a window can be open with the price untouched.
   activeEventAt(blockIndex: number): ResolvedStressEvent | null {
+    return this.activeIn(blockIndex, () => true);
+  }
+
+  // The in-window *price* event at this blockIndex. A liquidityPull window does not count: it moves
+  // depth, not price, so treating it as an active event makes consumers gated on dislocation (the
+  // victim health-factor reads) fire on blocks where nothing has moved -- and its trapezoid is
+  // deliberately longer than the crash's, so those blocks exist by design.
+  activePriceEventAt(blockIndex: number): ResolvedStressEvent | null {
+    return this.activeIn(blockIndex, isPriceOverlay);
+  }
+
+  private activeIn(
+    blockIndex: number,
+    accept: (type: StressEventType) => boolean,
+  ): ResolvedStressEvent | null {
     for (const ev of this.events) {
+      if (!accept(ev.type)) continue;
       if (blockIndex >= ev.startBlock && blockIndex < ev.endBlock) return ev;
     }
     return null;
@@ -190,16 +322,33 @@ export class EventSchedule {
   pointEventsAt(fromIndex: number, toIndex = fromIndex): ResolvedStressEvent[] {
     return this.events.filter(
       (ev) =>
-        POINT_EVENT_TYPES.has(ev.type) &&
+        isPointEvent(ev.type) &&
         ev.startBlock >= fromIndex &&
         ev.startBlock <= toIndex,
     );
   }
 
+  // Fraction of the seeded pool depth that should still be in the pool at this block, per base
+  // (1 = untouched). The coordinator reconciles the venue against this every block rather than
+  // removing once and restoring once: the target is a pure function of blockIndex, so a dropped
+  // block notification costs one block of lag instead of stranding the pool at the wrong depth.
+  // Overlapping pulls compose multiplicatively, the same way overlapping price events do.
+  depthMultiplierAt(blockIndex: number): Record<string, number> {
+    const byBase: Record<string, number> = {};
+    for (const ev of this.events) {
+      if (ev.type !== "liquidityPull") continue;
+      const e = envelope(ev, blockIndex);
+      if (e === 0) continue;
+      const cur = byBase[ev.base] ?? 1;
+      byBase[ev.base] = cur * (1 - ev.magnitude * e);
+    }
+    return byBase;
+  }
+
   at(blockIndex: number): OverlayState {
     const baseMults: Record<string, number> = {};
     for (const ev of this.events) {
-      if (POINT_EVENT_TYPES.has(ev.type)) continue; // executed, not a price distortion
+      if (!isPriceOverlay(ev.type)) continue; // executed, not a price distortion
       const e = envelope(ev, blockIndex);
       if (e === 0) continue;
       const sign = ev.type === "crash" ? -1 : 1;
@@ -245,11 +394,27 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     o.type !== "spike" &&
     o.type !== "crash" &&
     o.type !== "lstSlash" &&
-    o.type !== "whale"
+    o.type !== "whale" &&
+    o.type !== "liquidityPull"
   ) {
     throw new Error(
-      `${label}.type must be "spike", "crash", "lstSlash" or "whale"`,
+      `${label}.type must be "spike", "crash", "lstSlash", "whale" or "liquidityPull"`,
     );
+  }
+  if (o.alignWith !== undefined) {
+    if (
+      o.alignWith !== "spike" &&
+      o.alignWith !== "crash" &&
+      o.alignWith !== "lstSlash" &&
+      o.alignWith !== "whale" &&
+      o.alignWith !== "liquidityPull"
+    ) {
+      throw new Error(`${label}.alignWith must be a stress event type`);
+    }
+    // Following your own type is ambiguous the moment there are two of them, and it says nothing:
+    // the point of alignWith is to tie two *different* shocks to one moment.
+    if (o.alignWith === o.type)
+      throw new Error(`${label}.alignWith must name a different event type`);
   }
   if (o.side !== undefined) {
     if (o.type !== "whale")
@@ -258,10 +423,16 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       throw new Error(`${label}.side must be "buy", "sell" or "random"`);
   }
   if (o.venue !== undefined) {
-    if (o.type !== "whale")
-      throw new Error(`${label}.venue only applies to type "whale"`);
+    // whale picks the venue it prints on; liquidityPull narrows which books thin (omit it to thin
+    // every enabled venue, which is the default because thinning one only moves execution elsewhere).
+    if (o.type !== "whale" && o.type !== "liquidityPull")
+      throw new Error(
+        `${label}.venue only applies to types "whale" and "liquidityPull"`,
+      );
     if (o.venue !== "uniswap" && o.venue !== "balancer" && o.venue !== "curve")
-      throw new Error(`${label}.venue must be "uniswap", "balancer" or "curve"`);
+      throw new Error(
+        `${label}.venue must be "uniswap", "balancer" or "curve"`,
+      );
   }
   if (o.base !== undefined && typeof o.base !== "string") {
     throw new Error(`${label}.base must be a token symbol string`);
@@ -276,7 +447,14 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       // 100% totalPooledWeth hits zero, convertToAssets falls back to its 1:1 branch, the pool's
       // rate oracle snaps back to par, and every staker is silently erased while the discount
       // reads 0. Exclusive, matching the sentence above it.
-      ...(o.type === "lstSlash" ? { max: 1, exclusiveMax: true } : {}),
+      //
+      // A liquidityPull is bounded the same way and for the same reason: at 100% the pool has no
+      // depth at all, every swap reverts, and the venue stops existing for the window. That is not
+      // a thin book an agent has to size against -- it is an outage, and the regime is about the
+      // former (issue #52: "how much of the gap can I actually take").
+      ...(o.type === "lstSlash" || o.type === "liquidityPull"
+        ? { max: 1, exclusiveMax: true }
+        : {}),
     },
   );
   const windowFrac = parseRange(o.windowFrac, `${label}.windowFrac`, {
@@ -284,7 +462,7 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     max: 1,
   });
   // A point event lands on one block, so the trapezoid fields do not apply and are optional there.
-  const isPoint = POINT_EVENT_TYPES.has(o.type);
+  const isPoint = isPointEvent(o.type);
   const rampBlocks = parseNonNegInt(
     isPoint ? (o.rampBlocks ?? 0) : o.rampBlocks,
     `${label}.rampBlocks`,
@@ -308,6 +486,9 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     ...(o.side !== undefined ? { side: o.side as WhaleSide } : {}),
     ...(o.venue !== undefined
       ? { venue: o.venue as "uniswap" | "balancer" | "curve" }
+      : {}),
+    ...(o.alignWith !== undefined
+      ? { alignWith: o.alignWith as StressEventType }
       : {}),
     magnitudeRange,
     windowFrac,

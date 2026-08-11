@@ -71,7 +71,7 @@ flowchart LR
   "history": [ { "round": 608, "poolPriceUsdcPerWeth": 3000.0, "fairPriceUsdcPerWeth": 3000 }, … ],
   "limits": { "maxWethInWei": "1000000000000000000", "maxUsdcInUnits": "5000000000",
               "defaultPriorityFeePerGasWei": "100000000", "defaultSlippageBps": 50, … },
-  "protocols": { "uniswap": { "pool": { "priceUsdcPerWeth": 3000.0, "fee": 3000, … } },
+  "protocols": { "uniswap": { "pool": { "priceUsdcPerWeth": 3000.0, "fee": 3000, "liquidity": "54772255750516611", … } },
                  "balancer": { "priceUsdcPerWeth": 2991.0 }, "curve": { … }, "aave": { … } },
   "competition": { "maxCompetitorPriorityFeeWei": "0", "recentRevertRate": 0, … }
 }
@@ -86,6 +86,13 @@ Things to watch when reading:
   are rejected by validation)
 - The shape of `protocols.<venue>` differs per venue. **It's safest not to read it directly, but to normalize it with a
   shared helper** (Step 4). Reading `obs.pool` directly has repeatedly caused a TypeError → noop for every round
+- **`protocols.uniswap.pool.liquidity` is in-range depth, and it moves during a run.** The `crash` regime withdraws a
+  large fraction of it while the price is gapping (issue #52), so a size that was fine in `calm` can cost far more
+  slippage exactly when the opportunity looks biggest. Sizing against depth read at block 0 is the mistake this field
+  exists to let you avoid. It is a `uint128` decimal string (`BigInt(...)`), and **it is absent, not `"0"`, when the
+  read failed** — treat a missing value as "unknown", never as an empty book. Non-WETH markets carry their own under
+  `protocols.uniswap.markets["WBTC/USDC"].liquidity`. Balancer and Curve expose depth as `reserves` instead, and today
+  they keep their block-0 depth for the whole run
 
 ## Step 3: Return an action
 

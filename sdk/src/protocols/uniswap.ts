@@ -51,6 +51,10 @@ type UniswapMarketState = {
   priceUsdcPerWeth: number; // base/USD (name kept WETH-compatible; value is this base's price)
   tick: number;
   tickSpacing: number;
+  // In-range depth. Constant for a whole run until the liquidityPull stress event (issue #52)
+  // withdraws seeded depth for the length of a window. Undefined when the read failed -- never 0,
+  // which would read as an empty book.
+  liquidity: bigint | undefined;
 };
 
 type UniswapState = {
@@ -58,6 +62,7 @@ type UniswapState = {
   priceUsdcPerWeth: number;
   tick: number;
   tickSpacing: number;
+  liquidity: bigint | undefined;
   // All uniswap markets (including WETH). WETH only on the default fork.
   markets: UniswapMarketState[];
 };
@@ -125,7 +130,7 @@ async function getMarketState(
   market: MarketConfig,
 ): Promise<UniswapMarketState> {
   const leg = legOf(market);
-  const [slot0, tickSpacing] = await Promise.all([
+  const [slot0, tickSpacing, liquidity] = await Promise.all([
     publicClient.readContract({
       address: leg.pool,
       abi: poolAbi,
@@ -138,12 +143,23 @@ async function getMarketState(
         functionName: "tickSpacing",
       })
       .catch(() => leg.tickSpacing),
+    // Unlike tickSpacing there is no configured value to fall back to, and "0" would read as an
+    // empty book -- which is a state the liquidityPull event deliberately cannot produce. An
+    // unreadable depth is reported as absent instead (see UniswapMarketObservation.liquidity).
+    publicClient
+      .readContract({
+        address: leg.pool,
+        abi: poolAbi,
+        functionName: "liquidity",
+      })
+      .catch(() => undefined),
   ]);
   return {
     market,
     priceUsdcPerWeth: poolPriceFromSqrtX96(slot0[0], market),
     tick: Number(slot0[1]),
     tickSpacing: Number(tickSpacing),
+    liquidity: liquidity === undefined ? undefined : BigInt(liquidity),
   };
 }
 
@@ -159,6 +175,7 @@ export async function getPoolState(
     priceUsdcPerWeth: weth.priceUsdcPerWeth,
     tick: weth.tick,
     tickSpacing: weth.tickSpacing,
+    liquidity: weth.liquidity,
     markets: states,
   };
 }
@@ -1198,6 +1215,9 @@ export const uniswapAdapter: ProtocolAdapter = {
         priceUsdcPerWeth: weth.priceUsdcPerWeth,
         tick: weth.tick,
         tickSpacing: weth.tickSpacing,
+        ...(weth.liquidity === undefined
+          ? {}
+          : { liquidity: weth.liquidity.toString() }),
       },
       positions,
     };
@@ -1210,6 +1230,9 @@ export const uniswapAdapter: ProtocolAdapter = {
         priceUsdcPerWeth: ms.priceUsdcPerWeth,
         tick: ms.tick,
         tickSpacing: ms.tickSpacing,
+        ...(ms.liquidity === undefined
+          ? {}
+          : { liquidity: ms.liquidity.toString() }),
       };
     }
     if (Object.keys(extra).length > 0) obs.markets = extra;

@@ -92,6 +92,40 @@ jobs:
       - name: Backtest against the dump
         run: npm run backtest -- --regime calm --seed 101 --blocks 12 --seconds 90
 
+      # The liquidity pull (issue #52) is the one part of the stress overlay that writes to the
+      # venues instead of to the price, and `calm` does not carry it. It is also the part most
+      # exposed to what the deployer actually produced: the Balancer join had to be rebuilt because
+      # this deployment's WeightedPool does not implement ALL_TOKENS_IN_FOR_EXACT_BPT_OUT, and that
+      # class of mismatch is invisible until a real pool refuses the call.
+      #
+      # 80 blocks, not the 12 used above: the pull's trapezoid is 21 blocks and its start is drawn
+      # from windowFrac's upper bound (0.7), so a shorter run cannot hold the window and fails fast
+      # rather than silently mis-composing the pair (see EventSchedule's alignWith check).
+      - name: Replay the crash regime (liquidity pull across all three venues)
+        run: |
+          npm run backtest -- --regime crash --seed 606 --blocks 80
+          node -e '
+            const { readdirSync, readFileSync } = require("node:fs");
+            const dir = readdirSync("runs").filter((d) => /^\d{4}-/.test(d)).sort().at(-1);
+            const events = readFileSync(`runs/${dir}/events.jsonl`, "utf8")
+              .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+            const pulls = events.filter((e) => e.type === "stress_liquidity_pull");
+            const venues = new Set(pulls.map((e) => e.venue));
+            for (const v of ["uniswap", "balancer", "curve"])
+              if (!venues.has(v)) throw new Error(`no depth was withdrawn from ${v}`);
+            const bad = events.filter((e) =>
+              ["stress_liquidity_pull_failed", "stress_liquidity_pull_reverted",
+               "stress_liquidity_task_failed", "stress_liquidity_teardown_failed"].includes(e.type));
+            if (bad.length) throw new Error(`liquidity pull writes failed: ${JSON.stringify(bad.slice(0, 3))}`);
+            // The window has to end with the venues where it started, or the next run on a shared
+            // chain trades a pool this event drained.
+            const incomplete = events.filter((e) => e.type === "stress_liquidity_restore_incomplete");
+            if (incomplete.length) throw new Error(`depth was not restored: ${JSON.stringify(incomplete)}`);
+            const restored = events.filter((e) => e.type === "stress_liquidity_restored");
+            if (restored.length < 3) throw new Error(`expected a restore per venue, got ${restored.length}`);
+            console.log(`liquidity pull ok: ${pulls.length} writes across ${[...venues].join(", ")}`);
+          '
+
       # The matrix path is what the competition actually runs, and it is a different code path from
       # a single --regime run: it writes matrix.json / standings.json and has to survive a scenario
       # that fails without abandoning the rest. Two scenarios is enough to exercise the loop.

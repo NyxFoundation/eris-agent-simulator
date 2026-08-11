@@ -10,7 +10,13 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 
 未了（§7 のフェーズ順）:
 
-- **`crash` の流動性引き抜き**（issue #52）— 価格ギャップだけで、レジーム 6 の半分が欠けている
+- **`crash` の流動性引き抜き**（issue #52）— 実装済み（`liquidityPull` イベント。crash と同じ窓へ
+  `alignWith` で重ね、uniswap / balancer / curve が同時に薄くなる。`lending-incident` にも同じ窓で入れた）。
+  実測（50% 引き抜き）で 10 WETH の執行コストは uniswap/balancer が ×1.98、curve が ×4.15 になり、
+  小口の実行価格は 0.1bps 以下しか動かない（= 裁定機会を開かない）。
+  **当初「2 つの magnitude は相互作用するので crash 側を較正し直す」と書いたが、実測では確認できなかった**
+  （pull 無しの対照と比べて窓内の pool-fair 乖離は 2087 → 2100bps）。R=45・agent 3 体では乖離がほぼ crash
+  そのもので、板の薄さが変えるのは**取りに行くコスト**だった。R=360・本番ロスターでの再確認は残る
 - **`depeg`**（Phase 3）— issue #39（Liquity fork の CDP venue）→ #27（depeg イベント）の順で実施予定
 - **§5 の較正値**— パイロットは R=20〜40 の短縮 run で、本番 R=360 での実測は未了。
   特に `blockTimeSec` と LLM 型の判断頻度、`whale` の magnitude、`informed-flow` の較正値は
@@ -19,6 +25,22 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 採点値（`netPnlUsdc`）と集約式は Decision として確定しているが、**採点方法自体を将来見直す前提**で
 選んでいる（§4）。その差し替えは `matrix.json` の生スコアから再計算でき、本 ADR の実行基盤を
 変更しない。
+
+### 2026-08-11 追記 — コンペ本体の構造は本 ADR とは違う
+
+**本番コンペはシナリオ行列ではなく、1 本の連続経済に非公開スケジュールでイベントを注入する形で行う**
+（実チェーン・参加者数百人・運用期間 1 週間）。本 ADR が置いた「シナリオ = snapshot/revert で
+隔離された (regime, seed) の独立ワールド」という前提は**コンペ本体の設計としては誤りで、
+持ち込んだのは環境側（ADR 0016 のバックテスト用途からの引き継ぎ）である**。したがって
+**Public/Private のシナリオ行列（§3）とシナリオ内 z 正規化（§4）は、成績決定の構造としては
+置き換えられる**（連続経済ではエポック単位の集約になる）。
+
+**Superseded ではない。**実装（シナリオ行列 runner・レジーム 6 本の中身・生スコアを残して後から
+再採点できる構造・失格規則・同居構成）はいずれも有効で、**参加者の練習用およびバックテスト
+（ADR 0016 の用途）として残る**。レジーム定義そのものは連続経済でもそのまま注入イベントになる。
+
+連続経済側の設計（エポック単位の採点、注入スケジュールの非公開化、`cex-drift` と `informed-flow` を
+run 全体の config からイベントへ作り替える件、1 週間の運用予算）は別 ADR で起草する。
 
 ## Context
 
@@ -49,7 +71,7 @@ Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 | 3 | Whale order（mid を動かす単発大口） | なし（サイズは Poisson/lognormal のみ） | 点イベント型の stress event 追加（小〜中） |
 | 4 | Lending incident（担保価値急落 + 清算ウェーブ） | `lending-incident.yaml`（crash + victim 群 + 清算） | victim 数の拡大のみ |
 | 5 | Stablecoin depeg | 未実装。`OverlayState.usdcPx` にフックのみ残置（"v1 is always 1"）。**issue #27**（depeg イベント）と **#39**（CDP venue）が該当 | ステーブルの値付け（`valueUsdc` が額面 1.0 で加算している）+ イベント型の追加 |
-| 6 | Crash event（流動性引き抜き + 価格ギャップ） | 価格ギャップは `crash.yaml`（victim 無し）で充足 | LP 撤退イベント（issue #52。中） |
+| 6 | Crash event（流動性引き抜き + 価格ギャップ） | **両方とも実装済み**（`crash.yaml`。`liquidityPull` を `alignWith: crash` で同一窓に重ね、uniswap / balancer / curve が同時に薄くなる） | R=360・本番ロスターでの再測定（issue #52 の較正は R=45 で実施） |
 
 ### 解決したい課題
 
@@ -530,7 +552,23 @@ R を伸ばしても引くのは同じ seed が定めた 1 本の道筋の続き
 2. **Phase 1**: `run.seed` の regime からの分離、`config/scenarios/*.yaml`、
    `matrix.json` / `standings.json` の出力、`--score-every`、ADR 0016 §3 の override 規約改訂
 3. **Phase 2**: 未実装レジーム — `market.*` の YAML 露出（`cex-drift`）、方向性フロー強度ノブ
-   （`informed-flow`）、whale 点イベント、LP 撤退イベント（`crash`）
+   （`informed-flow`）、whale 点イベント、LP 撤退イベント（`crash`）。
+
+   LP 撤退（issue #52）は `liquidityPull` として実装済み。**価格 overlay ではなく状態**なので、
+   台形は「そのブロックの目標 depth」を表し、coordinator が毎ブロック reconcile する
+   （一撃で抜いて一撃で戻すと dropped block に取り残される）。引き抜きは**両側比例**で mid を
+   動かさない — このイベントが変えるのは値段ではなく**サイズのコスト**である。
+   crash と重ねるには `alignWith` が要る（同じ `windowFrac` レンジでも draw は独立なので、
+   R=360 では両者が平均 ~160 ブロック離れる）。**uniswap / balancer / curve が同時に薄くなる**
+   （`venue:` 省略が全 venue。1 つだけ薄くしても cross-venue agent は執行を他所へ移すだけで、
+   レジームが問うはずのものが弱まる）。fork では seed 済み LP が環境の持ち物でないため fail-fast する。
+
+   実測（50% 引き抜き、`test/liquidityPullDepth.test.ts`）: 小口の実行価格は 0.1bps 以下しか
+   動かず（= 裁定機会を開かない）、10 WETH の執行コストは uniswap/balancer が 98.6 → 195.3bps
+   （×1.98）、curve が 17.2 → 71.5bps（×4.15。crypto pool の impact は凸性が強い）。
+   `lending-incident` にも同じ窓で入れたが、**breach 条件と清算件数は不変**である
+   （HF はオラクル価格で決まり depth に依存しない。現行 liquidator は差し押さえた担保を
+   unwind しないので、板の薄さが効く経路が今はまだ無い）。
 4. **Phase 3**: depeg レジーム。**issue #39（Liquity V1 fork の CDP venue、eUSD 発行）→
    issue #27（depeg stress event）の順**で進める。
 
@@ -568,7 +606,7 @@ R を伸ばしても引くのは同じ seed が定めた 1 本の道筋の続き
   - → 全参加者が全シナリオに同居するため、メンバー構成はシナリオ間で一定になり、
     参加者間の相対比較としては一貫する。絶対値の解釈にのみ注意を要する
 - レジーム 7 種のうち 2 種（depeg / 流動性引き抜き）が新規実装であり、コンペ開始までの
-  リードタイムを消費する
+  リードタイムを消費する（流動性引き抜きは実装済み。残るは depeg）
   - → Phase 2/3 に置き、間に合わない場合はレジーム数を減らして開催する（集約はレジーム等重みなので
     レジーム数の変更に耐える）
 - z-score により「どれだけ勝ったか」の絶対額が順位から見えにくくなる
