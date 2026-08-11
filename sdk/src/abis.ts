@@ -66,6 +66,9 @@ export const balancerVaultAbi = parseAbi([
   "function getPoolTokens(bytes32 poolId) view returns (address[] tokens, uint256[] balances, uint256 lastChangeBlock)",
   "function swap((bytes32 poolId, uint8 kind, address assetIn, address assetOut, uint256 amount, bytes userData) singleSwap, (address sender, bool fromInternalBalance, address recipient, bool toInternalBalance) funds, uint256 limit, uint256 deadline) payable returns (uint256 amountCalculated)",
   "function joinPool(bytes32 poolId, address sender, address recipient, (address[] assets, uint256[] maxAmountsIn, bytes userData, bool fromInternalBalance) request) payable",
+  // Proportional exit for the liquidityPull stress event (issue #52). EXACT_BPT_IN_FOR_TOKENS_OUT
+  // takes both sides at the pool's current weights, so depth changes and the spot price does not.
+  "function exitPool(bytes32 poolId, address sender, address recipient, (address[] assets, uint256[] minAmountsOut, bytes userData, bool toInternalBalance) request)",
 ]);
 
 // Balancer v2 WeightedPool. The spot price of a weighted pool is set by the balance/weight ratios,
@@ -76,6 +79,18 @@ export const balancerWeightedPoolAbi = parseAbi([
 
 export const balancerQueriesAbi = parseAbi([
   "function querySwap((bytes32 poolId, uint8 kind, address assetIn, address assetOut, uint256 amount, bytes userData) singleSwap, (address sender, bool fromInternalBalance, address recipient, bool toInternalBalance) funds) returns (uint256)",
+]);
+
+// twocrypto-ng liquidity operations, for the liquidityPull stress event (issue #52). These pools are
+// their own ERC-20, so the LP balance is read from the pool address itself. `remove_liquidity` is the
+// balanced exit -- it returns both coins at the current ratio and does not touch the price (the
+// one-coin variant would, which is why it is not here).
+export const curveTwocryptoLiquidityAbi = parseAbi([
+  "function add_liquidity(uint256[2] amounts, uint256 min_mint_amount) returns (uint256)",
+  "function remove_liquidity(uint256 amount, uint256[2] min_amounts) returns (uint256[2])",
+  "function balances(uint256 i) view returns (uint256)",
+  "function balanceOf(address owner) view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
 ]);
 
 // Curve StableSwap-NG (the LST/WETH secondary market, issue #38). Note the int128 coin indices --

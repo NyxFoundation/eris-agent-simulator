@@ -88,6 +88,7 @@ import {
   setupLiquidityPull,
   type LiquidityPullRuntime,
 } from "./liquidity.js";
+import { PULL_VENUES } from "./liquidityVenues.js";
 import type { LstState } from "@eris/sdk/protocols/lst.js";
 import { VulnSchedule } from "./vulnEvents.js";
 import {
@@ -708,7 +709,13 @@ export async function runRealtimeSimulation(
       liquidityPullRuntime = await setupLiquidityPull(
         ctx,
         schedule,
-        { localDeploy: config.localDeploy, ownerPk: lpOwnerPk },
+        {
+          localDeploy: config.localDeploy,
+          ownerPk: lpOwnerPk,
+          // Only the venues this run turned on: an event that names no venue thins every book, and
+          // asking for one that is not deployed would fail the discovery check for no reason.
+          enabledVenues: PULL_VENUES.filter((v) => enabledIds.includes(v)),
+        },
         logger,
       );
       // Its withdrawals are environment transactions, like the oracle writes: attributing them to a

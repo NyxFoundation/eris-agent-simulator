@@ -76,8 +76,10 @@ export type StressEventConfig = {
   magnitudeRange: [number, number];
   // whale only: which way it trades. Default "random" = the seed decides.
   side?: WhaleSide;
-  // whale only: the venue it hits. Default "uniswap" (the deepest pool, so the size has to be real
+  // whale: the venue it prints on. Default "uniswap" (the deepest pool, so the size has to be real
   // to move it).
+  // liquidityPull: the venue whose book thins. **Default is every enabled venue** -- thinning one
+  // while the others keep block-0 depth just moves execution elsewhere, so narrowing is opt-in.
   venue?: "uniswap" | "balancer" | "curve";
   // Fraction of run length for the event start position [min,max]. The seed picks.
   windowFrac: [number, number];
@@ -190,6 +192,11 @@ export class EventSchedule {
         magnitude,
         ...(side !== undefined ? { side } : {}),
         ...(c.type === "whale" ? { venue: c.venue ?? "uniswap" } : {}),
+        // liquidityPull keeps `venue` undefined when unset: that means "all enabled", which the
+        // schedule cannot resolve on its own (it does not know which protocols the run turned on).
+        ...(c.type === "liquidityPull" && c.venue !== undefined
+          ? { venue: c.venue }
+          : {}),
         startBlock,
         rampBlocks: c.rampBlocks,
         holdBlocks: c.holdBlocks,
@@ -261,6 +268,19 @@ export class EventSchedule {
           .map((ev) => ev.base),
       ),
     ];
+  }
+
+  // The venues a liquidityPull withdraws from, intersected with the ones this run enabled. An event
+  // without `venue` means every venue that has a proportional exit path: thinning one book while the
+  // others keep their block-0 depth only moves execution elsewhere, which is not the regime.
+  liquidityPullVenues<T extends string>(enabled: T[]): T[] {
+    const asked = new Set(
+      this.events
+        .filter((ev) => ev.type === "liquidityPull")
+        .map((ev) => ev.venue),
+    );
+    if (asked.has(undefined)) return [...enabled];
+    return enabled.filter((v) => asked.has(v as never));
   }
 
   // The in-window event at this blockIndex, of any kind (if several overlap, the first one). For
@@ -403,10 +423,12 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       throw new Error(`${label}.side must be "buy", "sell" or "random"`);
   }
   if (o.venue !== undefined) {
-    // liquidityPull is uniswap-only in phase 1 (issue #52): each venue needs its own proportional
-    // withdrawal path, so balancer/curve arrive with phase 2 rather than being silently accepted here.
-    if (o.type !== "whale")
-      throw new Error(`${label}.venue only applies to type "whale"`);
+    // whale picks the venue it prints on; liquidityPull narrows which books thin (omit it to thin
+    // every enabled venue, which is the default because thinning one only moves execution elsewhere).
+    if (o.type !== "whale" && o.type !== "liquidityPull")
+      throw new Error(
+        `${label}.venue only applies to types "whale" and "liquidityPull"`,
+      );
     if (o.venue !== "uniswap" && o.venue !== "balancer" && o.venue !== "curve")
       throw new Error(
         `${label}.venue must be "uniswap", "balancer" or "curve"`,

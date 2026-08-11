@@ -279,14 +279,29 @@ test("liquidityPull of the whole book is rejected", () => {
       ),
     /positive total window/,
   );
-  // Phase 1 is uniswap-only, so a venue override is refused rather than silently ignored.
-  assert.throws(
-    () =>
-      parseStressEvents(
-        '[{"type":"liquidityPull","magnitudeRange":[0.4,0.6],"windowFrac":[0.3,0.7],"rampBlocks":1,"holdBlocks":1,"decayBlocks":1,"venue":"curve"}]',
-      ),
-    /venue only applies/,
+});
+
+test("liquidityPull thins every enabled venue unless narrowed", () => {
+  const all = new EventSchedule([FIXED_PULL], 1, 20);
+  assert.deepEqual(all.liquidityPullVenues(["uniswap", "balancer", "curve"]), [
+    "uniswap",
+    "balancer",
+    "curve",
+  ]);
+  // Thinning one book while the others keep block-0 depth only moves execution elsewhere, so the
+  // default is everything and narrowing is explicit.
+  const narrowed = new EventSchedule(
+    [{ ...FIXED_PULL, venue: "curve" }],
+    1,
+    20,
   );
+  assert.deepEqual(
+    narrowed.liquidityPullVenues(["uniswap", "balancer", "curve"]),
+    ["curve"],
+  );
+  // A venue the run did not enable is not invented.
+  assert.deepEqual(narrowed.liquidityPullVenues(["uniswap", "balancer"]), []);
+  assert.deepEqual(all.liquidityPullVenues(["uniswap"]), ["uniswap"]);
 });
 
 // ---- parseStressEvents ----
