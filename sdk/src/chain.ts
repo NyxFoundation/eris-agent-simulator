@@ -525,6 +525,17 @@ export async function sendAsImpersonated(
 // Funding (Arbitrum): ETH=setBalance / WETH=deposit / stable=dealErc20
 // ---------------------------------------------------------------------------
 
+// Gas headroom granted *on top of* the requested inventory. It exists for environment machinery
+// (flow bots, the whale, admin top-ups that pass ethWei=0 and pay for the grant out of this buffer):
+// running those dry silently removes market flow, so they get slack.
+//
+// Scored wallets must NOT take it. ADR 0019 §6: the epoch series is live-marked, so every wei of ETH
+// an agent did not ask for is unchosen β in its own std term. Under the endowment that ADR proposes
+// (1 ETH + 100k USDC) the buffer alone would be 5x the intended gas reserve -- 15.2% of the portfolio
+// in ETH instead of 2.9%. The coordinator therefore passes `gasBufferWei: 0n` for agent wallets, which
+// makes `funding.ethWei` the wallet's actual native balance (minus the gas of the WETH wrap below,
+// when the roster asks for base inventory) and makes the ERIS_ECONOMIC_GAS lower-bound check in
+// coordinator.ts validate the balance the agent really gets.
 const GAS_BUFFER_WEI = 5_000_000_000_000_000_000n; // 5 ETH
 
 export async function fundWallet(
@@ -538,9 +549,10 @@ export async function fundWallet(
   // ADR 0013: base inventory other than WETH (symbol -> amount). Default is to grant none (WBTC starts at 0 by policy).
   // WETH here is ignored (the deposit path above is authoritative).
   baseAmounts?: Record<string, bigint>,
+  gasBufferWei: bigint = GAS_BUFFER_WEI,
 ): Promise<void> {
   const address = accountAddress(privateKey);
-  await setEthBalance(publicClient, address, ethWei + wethWei + GAS_BUFFER_WEI);
+  await setEthBalance(publicClient, address, ethWei + wethWei + gasBufferWei);
   if (wethWei > 0n) {
     await sendAndMine(publicClient, walletClient, chain, privateKey, {
       to: TOKENS.WETH.address,

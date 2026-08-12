@@ -16,10 +16,7 @@ import {
 } from "@eris/sdk/chain.js";
 import { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
-import {
-  marketPricedStables,
-  readStablePrices,
-} from "@eris/sdk/stables.js";
+import { marketPricedStables, readStablePrices } from "@eris/sdk/stables.js";
 import { checkRunFeeViolations, countRunRevertedTxs } from "../postRunCheck.js";
 import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
 import type {
@@ -487,6 +484,10 @@ export async function runRealtimeSimulation(
         wethWei,
         config.initialUsdcUnits,
         baseAmounts,
+        // Agents are scored, so `funding.ethWei` is their whole native balance: the default gas buffer
+        // would be unchosen β in the live-marked epoch series (ADR 0019 §6). Flow wallets keep it --
+        // they are machinery, and a dry flow bot removes market activity from everyone.
+        isFlow ? undefined : 0n,
       );
       for (const adapter of adapters) {
         if (!adapter.setupWallet) continue;
@@ -779,7 +780,9 @@ export async function runRealtimeSimulation(
       // depegging it would move a price nobody can see or act on.
       const market = marketPricedStables().find((m) => m.symbol === symbol);
       if (!market) {
-        const known = marketPricedStables().map((m) => m.symbol).join(", ");
+        const known = marketPricedStables()
+          .map((m) => m.symbol)
+          .join(", ");
         throw new Error(
           `stress event depeg targets "${symbol}", which this run does not price from a market ` +
             `(available: ${known || "none"}). Either the deployment has no pool for it, or its ` +
@@ -1437,8 +1440,7 @@ export async function runRealtimeSimulation(
             // Liquity telemetry rides on the same read: where the peg sat, how the fee curves moved
             // and whether the system ever entered Recovery Mode (issue #39).
             const liquityState = stateById.get("liquity") as
-              | LiquityState
-              | undefined;
+              LiquityState | undefined;
             if (liquityState) logger.event(liquityBlockEvent(liquityState, bn));
             const uni = stateById.get("uniswap") as
               { priceUsdcPerWeth?: number } | undefined;
