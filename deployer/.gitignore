@@ -19,6 +19,8 @@ vendor/aave/typechain-types/
 #  - gmx-src: localhost support is kept as vendor/gmx-localhost.patch
 #  - curve-src: build-only (runtime uses the bytecode in vendor/curve)
 #  - twocrypto-src: same (build lite-0.3.10 with Docker vyper 0.3.10 -> vendor/curve)
+#  - liquity-src: built in place with foundry (solc 0.6.11); the deployer reads its out/ (issue #39)
 vendor/gmx-src/
 vendor/curve-src/
 vendor/twocrypto-src/
+vendor/liquity-src/

@@ -12,17 +12,29 @@ import { deployAaveV3 } from "./protocols/aave-v3.js";
 import { deployCurve } from "./protocols/curve.js";
 import { deployGmxV2 } from "./protocols/gmx-v2.js";
 import { deployLst } from "./protocols/lst.js";
+import { deployLiquityVenue } from "./protocols/liquity.js";
 
-type ProtocolName = "uniswap" | "balancer" | "aave" | "gmx" | "curve" | "lst";
+type ProtocolName =
+  | "uniswap"
+  | "balancer"
+  | "aave"
+  | "gmx"
+  | "curve"
+  | "lst"
+  | "liquity";
 
 // gmx takes several minutes via hardhat-deploy, so put it last in ALL.
 // lst reuses the stableswap-ng factory for its secondary market, so it comes after curve.
+// liquity does too (its eUSD/USDC market), and it warps the chain 14 days forward to clear the
+// bootstrap period -- harmless for everything already deployed, but time only moves forward, so it
+// goes after everything that cares (issue #39).
 const ALL: ProtocolName[] = [
   "uniswap",
   "balancer",
   "aave",
   "curve",
   "lst",
+  "liquity",
   "gmx",
 ];
 
@@ -35,6 +47,7 @@ const DEPLOYERS: Record<
   aave: deployAaveV3,
   curve: deployCurve,
   lst: deployLst,
+  liquity: deployLiquityVenue,
   gmx: deployGmxV2,
 };
 
