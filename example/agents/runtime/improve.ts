@@ -24,7 +24,7 @@ import { findCheatcodeUsage } from "@eris/sdk/strategyStaticCheck.js";
 import type { AgentContext } from "@eris/sdk/agent.js";
 import type { AgentAction, AgentObservation } from "@eris/sdk/types.js";
 
-// How often the LLM is offered a chance to revise, in blocks, when improve.md does not say.
+// How often the LLM is offered a chance to revise, in blocks, when prompt.md does not say.
 export const DEFAULT_REVISE_EVERY_BLOCKS = 60;
 // Wall-clock bound on one call into a generated strategy. Blocks are 2 s in production, so a
 // strategy that has not answered in this long has already missed its block.
@@ -53,7 +53,7 @@ export type ImproveAgent = {
 // down" needs a threshold, and there is no defensible one: the previous implementation's never
 // fired in 18 runs, and the obvious opposite (any loss at all) reverts every revision in a regime
 // where everyone is losing. The model already sees the PnL since each revision and the notes it
-// wrote at the time, so the judgment belongs there -- and improve.md is where a participant states
+// wrote at the time, so the judgment belongs there -- and prompt.md is where a participant states
 // how to make it. Timing is unchanged either way: both fire at a revision opportunity.
 export type StrategyRevision = {
   version: number;
@@ -78,21 +78,56 @@ export type RevisionOutcome =
   | { kind: "rejected"; reason: string }
   | { kind: "reverted"; to: number; from: number; notes: string };
 
-// improve.md: the improvement prompt. Not a renamed prompt.md -- prompt.md said "given this
-// observation, what do you do", improve.md says "when, on what evidence, and how should the strategy
-// change" (ADR 0018 §1).
+// prompt.md: the improvement policy (ADR 0018 §1, renamed from improve.md in ADR 0018 Amendment 1).
+//
+// The file name is reused from the retired per-decision prompt, and the two mean opposite things:
+// the old one said "given this observation, what do you do", this one says "when, on what evidence,
+// and how should the strategy change". Nineteen files of the old kind were deleted in f42fd2a and
+// still exist in git history and in every bundle taken before it, so the name alone cannot say which
+// contract a file is written against -- and both formats carry the same `name` / `description`
+// frontmatter, so that cannot either.
+//
+// Hence IMPROVE_KIND: the file declares its own contract. Without it, an old prompt.md would be
+// loaded as an improvement policy and the model would be handed trading instructions as its brief,
+// with nothing anywhere saying so. A missing marker is refused rather than guessed at.
+export const IMPROVE_KIND = "improve";
+
+// What a directory says about the improvement loop, before anything is parsed.
+//   present  prompt.md is there and the loop applies
+//   renamed  only the pre-Amendment-1 improve.md is there -- the participant meant to opt in
+//   absent   neither, so the strategy runs unrevised, which is a legitimate agent
+export type ImprovePolicyState = "present" | "renamed" | "absent";
+
+/// Distinguish "no improvement policy" from "a policy under the old file name".
+///
+/// Without the middle case a renamed-away improve.md is simply ignored: the strategy trades, no LLM
+/// ever touches it, and nothing in the run says so. Silence is the worst of the three outcomes, so
+/// the caller is given enough to refuse.
+export function improvePolicyState(agentDir: string): ImprovePolicyState {
+  if (existsSync(join(agentDir, "prompt.md"))) return "present";
+  if (existsSync(join(agentDir, "improve.md"))) return "renamed";
+  return "absent";
+}
+
 export function loadImproveAgent(agentDir: string): ImproveAgent {
-  const path = join(agentDir, "improve.md");
-  if (!existsSync(path)) throw new Error(`improve.md not found in ${agentDir}`);
+  const path = join(agentDir, "prompt.md");
+  if (!existsSync(path)) throw new Error(`prompt.md not found in ${agentDir}`);
   const raw = readFileSync(path, "utf8");
   const m = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!m)
     throw new Error(
-      `${path}: frontmatter (---) is required (name / description mandatory)`,
+      `${path}: frontmatter (---) is required (kind / name / description mandatory)`,
     );
   const fm = parseYaml(m[1]) as Record<string, unknown> | null;
   if (!fm || typeof fm !== "object")
     throw new Error(`${path}: frontmatter must be a YAML mapping`);
+  if (fm.kind !== IMPROVE_KIND)
+    throw new Error(
+      `${path}: frontmatter "kind: ${IMPROVE_KIND}" is required. A prompt.md without it is the ` +
+        "retired per-decision prompt (ADR 0018 removed prompt mode, deleting 19 of them in f42fd2a); " +
+        "loading one as an improvement policy would hand the model trading instructions as its brief. " +
+        "If this file really is an improvement policy, add the marker — see example/agents/venue-arb/prompt.md",
+    );
   if (typeof fm.name !== "string" || fm.name.trim() === "")
     throw new Error(`${path}: frontmatter "name" is required`);
   if (typeof fm.description !== "string" || fm.description.trim() === "")
@@ -280,7 +315,7 @@ export function compileExecutor(source: string): CompileResult {
   }
 }
 
-// The system prompt for a revision. The participant's improve.md is the policy; this frames what the
+// The system prompt for a revision. The participant's prompt.md is the policy; this frames what the
 // model is being asked to produce and what it is allowed to see.
 export function buildRevisionSystem(
   agent: ImproveAgent,

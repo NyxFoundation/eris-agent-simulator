@@ -4,6 +4,25 @@
 
 Accepted（2026-08-10 実装。Phase 1-2。branch feat/lst-venue）
 
+**Amendment 1（2026-08-12）: 自己改善型のファイル名を `improve.md` から `prompt.md` へ戻す。**
+本文 §1 は「意味が入れ替わるので名前を分ける」と決めたが、agent ディレクトリに置く「LLM への指示」は
+1 種類しか存在しなくなったので、参加者から見て名前を 2 つ覚える理由が無い。決定を覆すのは名前だけで、
+**意味は §1 のまま**（prompt.md = 「いつ・何を根拠に・どう直すか」であって「この observation でどう動くか」
+ではない）。
+
+名前を再利用する以上、旧形式との衝突は設計で塞ぐ:
+
+- frontmatter に **`kind: improve` を必須**とする。旧 prompt.md も `name` / `description` を持つので、
+  キーの有無では区別できない（実測: `git show f42fd2a^:example/agents/arb-bot/prompt.md`）
+- マーカーの無い `prompt.md` は**起動時に fail-fast**。黙って読むと、旧形式の「gap が 5bps を超えたら
+  swap しろ」といった取引指示が、改訂方針として system prompt の `## The operator's instructions` に
+  入る。旧形式 19 個は f42fd2a で削除済みだが、git 履歴と Amendment 以前に取られた bundle には残る
+- `improve.md` だけがあるディレクトリも fail-fast。無視すると戦略は取引を続け、LLM が一度も動かなかった
+  ことが run のどこにも出ない（黙った縮退は本 repo が #44 以降一貫して禁じている失敗の形）
+
+実装は `example/agents/runtime/improve.ts`（`IMPROVE_KIND` / `improvePolicyState`）と
+`bot.ts`。検証は `test/improve.test.ts`。
+
 ### 最初の実走（存在証明であって、有効性の証明ではない）
 
 `calm#101` / R=150 / claude-cli で、同一戦略の自己改善版と frozen 版を同居させた:
@@ -153,6 +172,10 @@ rollback する。**
 **`improve.md` は `prompt.md` の改名ではない。**prompt.md は「この observation でどう動くか」を
 書く判断プロンプトで、improve.md は「どういうときに、何を根拠に、戦略をどう直すか」を書く
 メタプロンプトである。意味が入れ替わるので、同梱 19 agent の prompt.md は転用せず整理する。
+
+> **Amendment 1 でファイル名は `prompt.md` に戻した**（Status 参照）。上の「意味が入れ替わる」という
+> 判断はそのまま有効で、変わったのは名前だけ。旧形式との衝突は frontmatter の `kind: improve` と
+> 起動時 fail-fast で塞ぐ。以降この節の `improve.md` は `prompt.md` と読み替える。
 
 ### 2. 書き換えの対象と実行
 

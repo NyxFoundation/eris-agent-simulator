@@ -30,10 +30,20 @@ import type { TokenSymbol } from "@eris/sdk/types.js";
 //                  envelope drives a target depth instead of a price. Composed with crash on the
 //                  same window it is what makes regime 6 a crash rather than a larger opportunity --
 //                  the gap says what is on offer, the depth says how much of it anyone can take.
+//   eusdDepeg      eUSD is sold into its own market for the length of a window and bought back
+//                  afterwards (issue #39). Also a state: the envelope drives how much of the pool's
+//                  seeded eUSD depth the environment has dumped, and the resulting discount is
+//                  whatever the stableswap curve gives. It is what puts the CDP venue's redemption
+//                  arb on the table -- at par there is nothing there to trade, by construction.
 // They share this config section because from a run's point of view they are the same thing: a
 // seed-placed shock the agents have to survive.
 export type StressEventType =
-  "spike" | "crash" | "lstSlash" | "whale" | "liquidityPull";
+  | "spike"
+  | "crash"
+  | "lstSlash"
+  | "whale"
+  | "liquidityPull"
+  | "eusdDepeg";
 
 // How the run consumes each type:
 //   overlay  a multiplier layered on the fair price every block of its window (`at()`)
@@ -50,6 +60,7 @@ const EVENT_KIND: Record<StressEventType, "overlay" | "point" | "state"> = {
   lstSlash: "point",
   whale: "point",
   liquidityPull: "state",
+  eusdDepeg: "state",
 };
 
 const isPointEvent = (type: StressEventType): boolean =>
@@ -70,6 +81,9 @@ export type StressEventConfig = {
   // For lstSlash this is the fraction of the staking pool burnt (0.02 = a 2% slash).
   // For liquidityPull this is the fraction of the seeded pool depth withdrawn at the top of the
   // trapezoid (0.5 = half the book gone while the window holds).
+  // For eusdDepeg this is the fraction of the eUSD/USDC pool's seeded eUSD depth the environment has
+  // sold into it at the top of the trapezoid (0.3 = 30k eUSD dumped into a 100k pool). The discount
+  // that produces is a property of the curve, not of this number.
   // For whale this is the order size in whole base units (30 = a 30 WETH market order). Absolute
   // rather than a fraction because what matters is the size against pool depth, and depth is a
   // property of the deployed venue, not of this config.
@@ -258,6 +272,28 @@ export class EventSchedule {
     return this.events.some((ev) => ev.type === "liquidityPull");
   }
 
+  // Whether the run needs the eUSD depeg machinery at all (issue #39). Like the liquidity pull, the
+  // coordinator only stages the actor and tracks its inventory when this is true.
+  hasEusdDepeg(): boolean {
+    return this.events.some((ev) => ev.type === "eusdDepeg");
+  }
+
+  // Fraction of the eUSD/USDC pool's seeded eUSD depth the environment should have sold by this
+  // block (0 = none). Reconciled against rather than applied once, for the same reason as the depth
+  // multiplier: the target is a pure function of the block index, so a dropped block notification
+  // costs a block of lag instead of leaving the peg stuck wherever it happened to be.
+  eusdDepegFractionAt(blockIndex: number): number {
+    let sold = 0;
+    for (const ev of this.events) {
+      if (ev.type !== "eusdDepeg") continue;
+      const e = envelope(ev, blockIndex);
+      if (e === 0) continue;
+      // Additive rather than multiplicative: two overlapping dumps sell two amounts of eUSD.
+      sold += ev.magnitude * e;
+    }
+    return sold;
+  }
+
   // The bases a liquidityPull targets. The coordinator needs them at setup, before any window opens,
   // to fail fast on a venue it cannot withdraw from.
   liquidityPullBases(): string[] {
@@ -395,10 +431,11 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     o.type !== "crash" &&
     o.type !== "lstSlash" &&
     o.type !== "whale" &&
-    o.type !== "liquidityPull"
+    o.type !== "liquidityPull" &&
+    o.type !== "eusdDepeg"
   ) {
     throw new Error(
-      `${label}.type must be "spike", "crash", "lstSlash", "whale" or "liquidityPull"`,
+      `${label}.type must be "spike", "crash", "lstSlash", "whale", "liquidityPull" or "eusdDepeg"`,
     );
   }
   if (o.alignWith !== undefined) {
@@ -407,7 +444,8 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       o.alignWith !== "crash" &&
       o.alignWith !== "lstSlash" &&
       o.alignWith !== "whale" &&
-      o.alignWith !== "liquidityPull"
+      o.alignWith !== "liquidityPull" &&
+      o.alignWith !== "eusdDepeg"
     ) {
       throw new Error(`${label}.alignWith must be a stress event type`);
     }
@@ -452,7 +490,12 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       // depth at all, every swap reverts, and the venue stops existing for the window. That is not
       // a thin book an agent has to size against -- it is an outage, and the regime is about the
       // former (issue #52: "how much of the gap can I actually take").
-      ...(o.type === "lstSlash" || o.type === "liquidityPull"
+      //
+      // An eusdDepeg is bounded the same way once more: selling the pool's entire eUSD side leaves
+      // nothing to buy, so the discount stops being a price and becomes an outage.
+      ...(o.type === "lstSlash" ||
+      o.type === "liquidityPull" ||
+      o.type === "eusdDepeg"
         ? { max: 1, exclusiveMax: true }
         : {}),
     },

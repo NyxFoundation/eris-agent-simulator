@@ -1,4 +1,5 @@
 ---
+kind: improve
 name: multi-arb
 description: Base-agnostic cross-venue arbitrage. The LLM tunes the strategy in-run; the strategy itself trades every block.
 reviseEveryBlocks: 60

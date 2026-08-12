@@ -13,7 +13,7 @@ export type TokenSymbol = string;
 export type TokenKind = "base" | "stable" | "lst";
 
 export type ProtocolId =
-  "uniswap" | "balancer" | "curve" | "gmx" | "aave" | "lst";
+  "uniswap" | "balancer" | "curve" | "gmx" | "aave" | "lst" | "liquity";
 
 // ---------------------------------------------------------------------------
 // Market leg (venue-specific metadata. ADR 0013). One per protocol × base.
@@ -185,6 +185,87 @@ export type LstClaimWithdrawAction = {
   maxPriorityFeePerGasWei?: string;
 };
 
+// Liquity venue (issue #39): a CDP stablecoin, eUSD.
+//
+// Collateral is native ETH, because that is what the forked core takes (`msg.value`). Every
+// collateral amount here is still denominated in WETH wei and the adapter unwraps first, so an agent
+// never has to think about which of the two it holds -- except for gas, which native ETH also pays:
+// sinking the whole balance into a Trove strands the agent with no way to send the next transaction.
+export type LiquityOpenTroveAction = {
+  type: "liquityOpenTrove";
+  // WETH to unwrap and post as collateral.
+  collateralWethWei: string;
+  // eUSD to draw. The Trove's booked debt is this plus the borrowing fee plus the 200 eUSD gas
+  // compensation, and the sum must clear MIN_NET_DEBT (1,800).
+  debtEusdWei: string;
+  // Slippage bound on the borrowing fee, which moves with baseRate. Default 500 (5%).
+  maxFeeBps?: number;
+  maxPriorityFeePerGasWei?: string;
+};
+
+export type LiquityAdjustTroveAction = {
+  type: "liquityAdjustTrove";
+  // Exactly one side of each pair. Adding collateral unwraps WETH; withdrawing returns native ETH.
+  addCollateralWethWei?: string;
+  withdrawCollateralWei?: string;
+  debtChangeEusdWei?: string;
+  // Whether debtChangeEusdWei is drawn (true) or repaid (false). Required when there is a change.
+  isDebtIncrease?: boolean;
+  maxFeeBps?: number;
+  maxPriorityFeePerGasWei?: string;
+};
+
+export type LiquityCloseTroveAction = {
+  type: "liquityCloseTrove";
+  maxPriorityFeePerGasWei?: string;
+};
+
+// Buy eUSD below par and exchange it for collateral at the oracle price: the venue's clearest α.
+// The adapter computes the HintHelpers hints and truncates the amount to what the sorted list can
+// actually absorb -- an unhinted redemption walks the list on-chain and is prohibitively expensive.
+export type LiquityRedeemAction = {
+  type: "liquityRedeem";
+  amountEusdWei: string;
+  // Cap on how many Troves the redemption walks. 0 (default) means no cap.
+  maxIterations?: number;
+  // Slippage bound on the redemption fee, which rises with every redemption in the run. Default 500.
+  maxFeeBps?: number;
+  maxPriorityFeePerGasWei?: string;
+};
+
+export type LiquityProvideToSpAction = {
+  type: "liquityProvideToSP";
+  amountEusdWei: string;
+  maxPriorityFeePerGasWei?: string;
+};
+
+export type LiquityWithdrawFromSpAction = {
+  type: "liquityWithdrawFromSP";
+  // Decimal wei, or "max". "0" is legal and claims the accrued ETH gain without touching the deposit.
+  amountEusdWei: string;
+  maxPriorityFeePerGasWei?: string;
+};
+
+export type LiquityLiquidateAction = {
+  type: "liquityLiquidate";
+  // Specific Troves to liquidate. Omit to sweep the riskiest `maxTroves` instead.
+  borrowers?: string[];
+  maxTroves?: number;
+  maxPriorityFeePerGasWei?: string;
+};
+
+// The eUSD/USDC market. Not one of the seven actions issue #39 lists, but the venue's own α --
+// buying a depegged eUSD to redeem it -- is unreachable without it, and the alternative is every
+// agent hand-rolling a rawTx against the pool.
+export type LiquitySwapEusdAction = {
+  type: "liquitySwapEusd";
+  // "USDC" buys eUSD from the pool; "EUSD" sells into it.
+  tokenIn: "USDC" | "EUSD";
+  amountIn: string; // units of tokenIn (USDC is 6-decimal, eUSD is 18)
+  slippageBps?: number;
+  maxPriorityFeePerGasWei?: string;
+};
+
 // Bundleable leaves (excluding GMX)
 export type BundleActionItem =
   | SwapAction
@@ -200,7 +281,15 @@ export type BundleActionItem =
   | LstDepositAction
   | LstSwapAction
   | LstRequestWithdrawAction
-  | LstClaimWithdrawAction;
+  | LstClaimWithdrawAction
+  | LiquityOpenTroveAction
+  | LiquityAdjustTroveAction
+  | LiquityCloseTroveAction
+  | LiquityRedeemAction
+  | LiquityProvideToSpAction
+  | LiquityWithdrawFromSpAction
+  | LiquityLiquidateAction
+  | LiquitySwapEusdAction;
 
 // All leaf actions (including GMX. The unit of intent / buildTxs)
 export type LeafAction =
@@ -417,6 +506,105 @@ export type LstObservation = {
   aaveCollateral?: boolean;
 };
 
+// Your Trove, and where it sits in the queue a redemption walks (issue #39).
+export type LiquityTroveObservation = {
+  // Liquity's own status enum: 1 = active, 3 = closed by liquidation, 4 = closed by redemption.
+  status: number;
+  collWei: string;
+  // Everything the system books against you, including pending redistribution and the 200 eUSD gas
+  // compensation. This is the number ICR is computed from.
+  debtEusdWei: string;
+  // What you would actually have to repay to close: debt minus the gas compensation the GasPool
+  // holds on your behalf. Valuing a Trove against the gross debt understates it by 200 eUSD.
+  netDebtEusdWei: string;
+  // Individual collateral ratio, as a plain ratio (1.1 = 110% = MCR).
+  icr: number;
+  // The collateral price at which ICR falls to MCR -- i.e. how far the market has to move before
+  // this Trove is liquidatable. Zero when there is no debt.
+  liquidationPriceUsd: number;
+  // Redemptions start at the riskiest Trove and walk up. 0 means yours is next.
+  positionFromRiskiest: number;
+  // Net debt of every Trove ahead of you in that walk: the redemption volume the system can absorb
+  // before it reaches you. This, not ICR alone, is what "am I about to be redeemed against" means.
+  redeemedAheadEusdWei: string;
+  // Whether the walk above could be resolved. False when the list is larger than the observation
+  // scans, in which case positionFromRiskiest and redeemedAheadEusdWei are not meaningful.
+  positionKnown: boolean;
+};
+
+// Liquity V1 as the CDP stablecoin venue (issue #39).
+//
+// Four things move at once here and the observation reports them separately, because trading the
+// venue means playing them against each other:
+//   - the system's TCR and Recovery Mode, which move *everyone's* liquidation risk at the same time
+//   - your own ICR and your position in the sorted list, which is what being redeemed against means
+//   - the two fee curves, which rise with use and decay on a ~12h half-life (so within a run they
+//     effectively only rise: the first large redemption prices the ones after it)
+//   - the market price of eUSD against the $1 the protocol will always redeem it for
+export type LiquityObservation = {
+  // The collateral price Liquity itself marks against, from the environment's PriceFeed via the
+  // oracle adapter. Equal to the run's fair price, one block stale like every other oracle here.
+  priceUsd: number;
+  // System total collateral ratio, as a plain ratio. Below CCR the system enters Recovery Mode.
+  tcr: number;
+  // In Recovery Mode the liquidation threshold stops being MCR: a Trove is liquidatable once its
+  // ICR is under the *current TCR* (which is itself under CCR while this lasts), and only if the
+  // Stability Pool can absorb its whole debt. The seizure is capped at 110% of the debt, so a
+  // borrower over that keeps the rest as a claimable surplus. Borrowing is
+  // restricted. It is the venue's reflexive failure mode and it applies to everyone at once.
+  recoveryMode: boolean;
+  mcr: number; // 1.1
+  ccr: number; // 1.5
+  troveCount: number;
+  totalCollWei: string;
+  totalDebtEusdWei: string;
+  // Fee on newly drawn debt, in bps (floor 50, rises with baseRate).
+  borrowingRateBps: number;
+  // Fee taken out of the ETH a redemption pays, in bps (floor 50). Subtract it from the discount
+  // below to see whether redeeming is actually profitable.
+  redemptionRateBps: number;
+  baseRateBps: number;
+  // Floor on a Trove's net debt (1,800 eUSD) and the gas compensation added on top (200 eUSD).
+  minNetDebtEusdWei: string;
+  gasCompensationEusdWei: string;
+  // --- the eUSD market, against the $1 the protocol redeems at ---
+  eusdBalanceWei: string;
+  // Executable mid at probe size, in USDC per eUSD. 1.0 is par.
+  marketPriceUsdc: number;
+  marketSellPriceUsdc?: number;
+  marketBuyPriceUsdc?: number;
+  // False means the pool refused to quote (no market, or no liquidity at probe size). discountBps
+  // is then 0 rather than a fictitious 10000, so check this before acting on it.
+  marketQuoted: boolean;
+  // (1 - marketPrice) x 10000. Positive means eUSD trades below par: buying it and redeeming
+  // against the riskiest Trove converts the discount into collateral.
+  discountBps: number;
+  // discountBps minus redemptionRateBps: the edge a redemption actually captures before impact and
+  // gas. Negative means the fee eats the dislocation and the right move is to wait.
+  redemptionEdgeBps: number;
+  poolReserves?: { eusd: string; usdc: string };
+  // --- your Trove ---
+  trove?: LiquityTroveObservation;
+  // The Trove a redemption would hit first, and its ICR: the one worth redeeming against, and the
+  // one worth liquidating if the price keeps falling.
+  riskiestTrove?: { owner: string; icr: number; netDebtEusdWei: string };
+  // --- your Stability Pool position ---
+  spDepositEusdWei: string;
+  // ETH already earned from absorbed liquidations, claimable by withdrawing (any amount, including 0).
+  spEthGainWei: string;
+  spLqtyGainWei: string;
+  spTotalDepositsEusdWei: string;
+  // Your share of the pool in bps, which is your share of the next liquidation's collateral.
+  spShareBps: number;
+  // --- gas headroom ---
+  // Collateral is native ETH, so a Trove is funded out of the same balance that pays for gas.
+  ethBalanceWei: string;
+  // What to keep back for the rest of the run. Posting past this strands the agent: it can no longer
+  // send the transaction that would close the position. Self-stranding is a legitimate loss, not a
+  // bug, so the number is surfaced rather than enforced.
+  suggestedGasReserveWei: string;
+};
+
 export type ProtocolObservations = {
   uniswap?: UniswapObservation;
   balancer?: AmmObservation;
@@ -424,6 +612,7 @@ export type ProtocolObservations = {
   gmx?: GmxObservation;
   aave?: AaveObservation;
   lst?: LstObservation;
+  liquity?: LiquityObservation;
 };
 
 export type AgentObservation = {

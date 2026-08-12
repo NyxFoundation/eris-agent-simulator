@@ -127,7 +127,7 @@ agents:
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
     description: does nothing (baseline)
-  # Self-improving (agent.ts + improve.md, ADR 0018): the strategy trades every block and an LLM
+  # Self-improving (agent.ts + prompt.md, ADR 0018): the strategy trades every block and an LLM
   # periodically rewrites it. Needs OLLAMA_API_KEY in .env.local, or ERIS_LLM_MODEL: "claude-cli"
   # for a subscription CLI. Without a backend the run still completes — the revisions are recorded
   # as failed and the strategy keeps trading unchanged.

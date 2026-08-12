@@ -138,7 +138,7 @@ For details, see [Backtesting](docs/guide/backtest.md).
 | [Backtesting](docs/guide/backtest.md) | Replaying state dump + official regimes, iterating with `--repeat`, sparring, what is and isn't measurable |
 | [Run Output and Analysis](docs/guide/run-output.md) | The output files under `runs/<id>/` and how to analyze a run afterwards |
 | [Protocols and Actions](docs/guide/protocols-and-actions.md) | Reference: actions per venue, stablecoin accounting, oracle control |
-| [Self-improving Agents](docs/guide/llm-agents.md) | agent.ts + improve.md (in-run strategy rewriting, sandbox, rollback, frozen control) |
+| [Self-improving Agents](docs/guide/llm-agents.md) | agent.ts + prompt.md (in-run strategy rewriting, sandbox, rollback, frozen control) |
 
 **How the environment works / operations**:
 
@@ -148,6 +148,20 @@ For details, see [Backtesting](docs/guide/backtest.md).
 | [Configuration (config/local.yaml)](docs/guide/configuration.md) | The single-source YAML config, its sections, and how to write the roster |
 | [Market Stress Events](docs/guide/stress-events.md) | Injecting price spikes/crashes and triggering Aave liquidation |
 | [Repository Layout](docs/guide/repository-layout.md) | Quick reference for the directory layout |
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+That is the answer to the question this repository is built around: **copy `example/agents/<id>/`,
+change it, keep what you build.** A strategy written from one of the bundled agents is yours, and
+nothing here asks for it back.
+
+A few files in the tree are somebody else's work and keep their own terms — the canonical WETH9 mock
+and Curve's prebuilt artifacts. [THIRD-PARTY.md](THIRD-PARTY.md) lists them, along with the
+dependencies `deployer/scripts/setup-vendors.sh` fetches at setup rather than redistributing.
 
 ---
 

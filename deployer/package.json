@@ -2,6 +2,7 @@
   "name": "eris-app-deployer",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Orchestrator that deploys Uniswap V3 / Balancer V2 / Aave V3 / Curve / GMX V2 from scratch onto an empty anvil chain",
   "scripts": {

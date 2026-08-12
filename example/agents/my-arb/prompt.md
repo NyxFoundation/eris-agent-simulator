@@ -1,4 +1,5 @@
 ---
+kind: improve
 name: my-arb
 description: The starting-point sample — a naive cross-venue arb, with an LLM improving it in-run.
 reviseEveryBlocks: 60

@@ -2,6 +2,7 @@
   "name": "@eris/core",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "eris-competition environment daemon + scoring (ADR 0015). Off-limits to participants. Importing from example is forbidden (checked by scripts/checkImportBoundaries.ts).",
   "dependencies": {

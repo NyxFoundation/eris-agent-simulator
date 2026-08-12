@@ -70,7 +70,7 @@ export class RealtimeAgentProcess {
       args = spec.args ?? [];
     } else {
       // Convention resolution (ADR 0015 §6): id (or the dir override) points to <agentsDir>/<dir>/, and
-      // bot.ts drives its contents (agent.ts decide/run, plus improve.md when self-improving).
+      // bot.ts drives its contents (agent.ts decide/run, plus prompt.md when self-improving).
       const agentDir = resolve(agentsDir, spec.dir ?? spec.id);
       if (!existsSync(agentDir)) {
         throw new Error(

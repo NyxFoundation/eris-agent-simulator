@@ -23,18 +23,24 @@ deployer/  venue デプロイ（自己完結サブパッケージ。workspace �
 |------|------|--------|
 | `agent.ts`（`decide(obs, ctx)` export） | ルール戦略 | runtime/bot.ts が read→decide→send のループで駆動（`export const config = { intervalMs }` で間隔指定可） |
 | `agent.ts`（`run(ctx)` export） | 自走型 | bot.ts はループせず ctx（clients/observe/submit/log）を渡して委譲（例 liquidator） |
-| `agent.ts` + `improve.md`（frontmatter: name/description 必須） | **自己改善型**（ADR 0018） | decide を毎ブロック駆動しつつ、LLM が取引経路の**外**で戦略コードを書き換える |
+| `agent.ts` + `prompt.md`（frontmatter: **`kind: improve`** / name / description 必須） | **自己改善型**（ADR 0018） | decide を毎ブロック駆動しつつ、LLM が取引経路の**外**で戦略コードを書き換える |
 
 `runtime/`（汎用スクリプト: bot/read/send/llm/improve/deploy/agentLog）と `lib/`（共有戦略ヘルパ）は予約名。
 
 **プロンプト型（毎判断 LLM）は ADR 0018 で廃止**。実測で 1 判断 8〜28 ブロック・行動回数がルール型の
 1/64 で競技として成立しなかった（ADR 0017 §5 B1）。`ERIS_AGENT_MODE` / `ERIS_PROMPT_*` は fail-fast する。
-`improve.md` は prompt.md の改名ではない（前者は「いつ・何を根拠に・どう直すか」、後者は「この observation で
-どう動くか」）。ロスターの `env`:
 
-- `ERIS_AGENT_FROZEN: "1"` — improve.md を無視して戦略を固定。**ADR 0018 §5 が要求する frozen 対照**
+**`prompt.md` は同じ名前で意味が逆になっている**（ADR 0018 Amendment 1。当初は `improve.md` という別名で
+分離していたのを、名前を戻した）。旧 prompt.md は「この observation でどう動くか」、今の prompt.md は
+「いつ・何を根拠に・どう直すか」。旧形式 19 個は f42fd2a で削除済みだが git 履歴と旧 bundle には残っており、
+**frontmatter のキー（name/description）も同じ**なので、区別できるのは `kind: improve` だけ。マーカーの無い
+prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が「改訂方針」として system prompt に入る）。
+`improve.md` だけがあるディレクトリも fail-fast（黙って無改訂で走ると、LLM が一度も動かなかったことが
+どこにも出ない）。ロスターの `env`:
+
+- `ERIS_AGENT_FROZEN: "1"` — prompt.md を無視して戦略を固定。**ADR 0018 §5 が要求する frozen 対照**
   （自己改善が効いたかを毎 run 見えるようにする）をディレクトリ複製なしで作る
-- `ERIS_LLM_MODEL: "<model>"` — 改訂呼び出しのバックエンド（improve.md の frontmatter が優先）。
+- `ERIS_LLM_MODEL: "<model>"` — 改訂呼び出しのバックエンド（prompt.md の frontmatter が優先）。
   API キー無しでも `codex[:<m>]` / `claude-cli[:<m>]` でサブスク CLI 実行可 = docs/guide/llm-agents.md
 - `ERIS_IMPROVE_LOG_CALLS: "1"` — 改訂の生のやり取りを `agents/<id>.llm.jsonl` に残す（既定 off）
 
@@ -79,14 +85,14 @@ agents:
 - `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
 - `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積で、シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（シナリオ × agent の生スコア。**netPnlUsdc と alphaUsdc の両方**）と `standings.json`（レジーム内 z-score → レジーム等重み平均）を書く。順位は派生物で、採点方法は将来見直す前提（matrix.json から再計算できる）。`--metric netPnlUsdc|alphaUsdc` / `--repeat N`（較正の診断用。採点は 1 回が既定）
-  - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）。`depeg` は issue #39 → #27 待ち。`lst` は競技セット外
+  - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）。`depeg`（レジストリの stable を外す方）は issue #27 待ち。`lst` / `liquity` は競技セット外（venue 単体検証用）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
 - `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）
 
-> **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
+> **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
 
 > 評価・採点・可視化系コマンド（`sim` 同期ラウンド / `evaluate` / `gate` / `discrimination` / `leaderboard` / `dashboard` / `stress-report`）は撤去済み。run は `sim:realtime` 一本。run 後の解析は `runs/<id>/` の `summary.json` / `events.jsonl` / `blocks.csv` を直接読む。
 
@@ -154,6 +160,72 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 - **USDC 建て採点では LST 保有戦略は構造的に β で不利**（実測: noop 0 > lst-carry −203 > lst-carry-wide −233、
   一方で WETH を持たない venue-arb は +115）。alphaUsdc は free inventory の β しか除去せず、
   LST ポジションは live mark のため。ETH 建て採点（DAT 型）が issue #38 の motivation で follow-on
+
+### CDP stablecoin venue（Liquity V1 フォーク = eUSD。issue #39。既定 off・**ローカルデプロイ専用**）
+
+Liquity V1 の core を**無改変**でフォークした CDP（`deployer/src/protocols/liquity.ts`）。Recovery Mode・
+再分配・sorted list・2 本の動的手数料がそのまま入っているので、他 venue に無い skill が 4 つ増える:
+
+- **redemption arb** — eUSD は常に「最もリスクの高い Trove に対して $1 分の担保」と交換できる。よって
+  eUSD/USDC プールのディスカウントは**プロトコルが強制する価格に対する乖離**であって価格予想ではない（ADR 0007 の α 方向）
+- **Stability Pool** — eUSD を預けて清算債務を吸収し担保を割引で受け取る
+- **Recovery Mode** — system TCR が CCR(150%) を割ると清算閾値が MCR でなくなり、**その時点の TCR** を
+  下回る Trove が清算対象になる（SP がその債務を全額吸収できる場合のみ。押収は債務の 110% で頭打ちで、
+  余剰は借り手が claim できる）。全員の線が同時に動くのが Aave の per-position HF と対照的
+- **sorted list 上の位置** — 償還は最下位 ICR から walk するので、借り手は「自分の前にどれだけ債務があるか」を守る
+
+ours なのは 2 つだけ（core は無改変）:
+- `LiquityPriceFeedAdapter` — Liquity は wiring 後に ownership を renounce するのでオラクルアドレスは永久固定。
+  一方 run は毎回新しい PriceFeed を deploy するので、その間に挟んで admin key で毎 run 差し替える
+- `LiquityRedemptionHelper` — **部分償還のヒントは実行時価格に依存する**（`_redeemCollateralFromTrove` が
+  執行価格から NICR を再計算してヒントと一致しなければ partial を cancel）。環境はブロック毎にオラクルを
+  書き、しかも agent より先に入るので、オフチェーンで計算したヒントは構造的に必ず陳腐化する
+  （venue の初回 live run で全償還が `Unable to redeem any amount` で revert して判明）。helper は
+  `fetchPrice()` で価格を確定させた同一 tx 内でヒントを計算する。periphery であって core の改変ではない
+
+- **eUSD は TOKENS レジストリに入れない**。stable として登録すると scorer の spot 掃引が $1 で評価してしまい、
+  デペグした CDP stablecoin に phantom value を与える（issue #39 が名指しで禁じている失敗）。
+  アダプタが**プールの約定価格**で評価する（mark = probe サイズの両側 mid / realizable = 自分サイズの
+  get_dy と、債務は get_dx で買い戻しコスト）。gas compensation 200 eUSD は借り手の負債ではないので差し引く。
+  ICR<100% の Trove は 0 で clamp（担保を捨てて歩き去れる = CDP の実際の性質）
+- **担保は native ETH**（core が `msg.value` で受ける）。action 側は WETH wei 建てで、`buildTxs` が
+  `WETH.withdraw` を前置する。ただし**ガスと同じ残高**なので、全部突っ込むと閉じる tx すら送れなくなる。
+  observation に `ethBalanceWei` / `suggestedGasReserveWei` を出すが**強制はしない**（self-stranding は正当な負け）
+- action は 8 つ: `liquityOpenTrove` / `liquityAdjustTrove` / `liquityCloseTrove` / `liquityRedeem` /
+  `liquityProvideToSP` / `liquityWithdrawFromSP` / `liquityLiquidate` + `liquitySwapEusd`。
+  最後の 1 つは issue #39 の列挙には無いが、**venue 自身の α（デペグを買って償還する）が届かなくなる**ため追加
+- **`eusdDepeg` ストレスイベント**（`stress.events`）— プールは par で seed されるので、放っておくと
+  redemption arb は「何もしないのが正解」になる。環境（deployer アカウント = genesis Trove の余剰 eUSD 保有者）が
+  窓の間だけ eUSD を売り、閉じたら買い戻す。liquidityPull と同じ**毎ブロック目標へ reconcile** 方式
+  （一撃だと dropped block で取り残される）。magnitude は「プールの seeded eUSD depth の何割を売ったか」
+- **較正**（実測。100k/100k・A=100 のプール）: 40k 売却で 114bps / 50k で 175bps / 60k で 282bps。
+  償還手数料 floor 50bps + 償還 ETH を USDC に戻す ~30bps を超えて初めて α になる。
+  プールの A は 2000 ではなく **100**（A=2000 だと半分売っても 4.4bps しか動かず、償還手数料を永久に超えない）。
+  eUSD 供給 250k に対し baseRate は 5k 償還ごとに約 +100bps 上がるので、**先に償還した者が後続の価格を決める**
+- coordinator は `liquity_setup`（オラクル差し替えと drift 検証。Recovery Mode 開幕やデペグ済みチェーンは fail-fast）/
+  `liquity_block`（毎ブロックの peg・TCR・手数料・最下位 ICR）/ `stress_eusd_depeg`（+ `_setup` / `_capped` /
+  `_failed` / `_restored`）を emit する
+- **オラクル順序の実測**（issue #39 の Open point「清算は Aave より順序に敏感か」への回答）: 敏感だが
+  **特別扱いは不要**。実測（`config/regimes/liquity-crash.yaml`, seed 501）では、Trove が MCR を割った
+  ブロック 982 → agent が観測した 983（観測は 1 ブロック遅れ）→ 清算が着弾した 984 で **2 ブロック遅延**。
+  内訳は「観測遅れ 1 + mempool 1」で、これは全 venue 共通。**部分償還のヒントと違い、`liquidate()` には
+  実行時に一致しなければならない値が無い**（執行価格で ICR を再判定するだけ）ので、価格が戻れば単に
+  revert して gas を捨てるだけ＝構造的な破綻ではない。よって helper のような仕組みは清算側には不要
+- 参照 agent は 3 体: `redemption-arb`（α 側）/ `trove-manager`（借り手側。清算・償還・Recovery Mode に
+  対する防御）/ `sp-underwriter`（Stability Pool で清算を吸収し、自分で `liquidate` を叩いて担保を取る）。
+  借り手の防御が効くかは**借りた eUSD を使ったかどうか**で決まる（`ERIS_TROVE_SPEND_DEBT`）。実測で
+  200% 保持組は無傷、125% で全額 post して eUSD を売った組は清算され −13,140（担保 20 ETH を失い USDC を残す）
+- **Recovery Mode は現状の較正では到達不能**（実測: seed 501 で最小 TCR 2.244 対 CCR 1.5）。genesis Trove
+  が 250 ETH / 250k eUSD（300%）で TCR を支配するため。到達させるには system 債務を約 3 倍にする必要があり、
+  それは償還手数料カーブ（供給に反比例。250k で 5k 償還あたり +100bps → 700k なら +36bps）と SP の相対深度
+  （RM の清算は SP が債務を全額吸収できる場合のみ成立）を必ず薄める。**issue #59** に分離
+- **LQTY は意図どおり「値付けしないが見える」**: SP 預入で LQTY gain が付き、run 後に
+  `scoring_unpriced_holdings` に `erc20-unaccounted` として 61.3 LQTY が報告された（黙って 0 にしていない）
+- 設定例は `config/liquity.yaml`、レジームは `config/regimes/liquity.yaml`（α 側）と
+  `config/regimes/liquity-crash.yaml`（借り手 / 引受側）、参照 agent は
+  `example/agents/redemption-arb/`（`agent.ts` + `prompt.md`）。issue #39 は「agent.ts と prompt.md を
+  両方積め」と書いているが、その理由（既定ロスターが prompt モード = LLM が毎判断する）は ADR 0018 で
+  消えている。今の prompt.md は改訂方針であって毎判断プロンプトではない
 
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 

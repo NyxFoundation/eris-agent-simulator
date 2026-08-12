@@ -1,0 +1,87 @@
+# config/regimes/liquity.yaml — the CDP stablecoin venue (issue #39). ADR 0016 §2
+#
+# Not part of the ADR 0017 competition set (the seven regimes there predate this venue). Kept as an
+# official regime for venue-level verification, and it follows the same discipline: ranges rather
+# than values, blockTimeSec fixed to the production value, seed supplied at run time.
+# Run: npm run backtest -- --regime liquity --seed 401 [--agents <roster>]
+#
+# What this regime tests that the others do not: a dislocation against a price the protocol
+# *enforces* rather than one the market has to agree on. eUSD is always exchangeable for $1 of
+# collateral against the riskiest Trove, so a discount on its pool is an α with a floor under it —
+# bounded by a redemption fee that every redemption in the run raises for everyone after it.
+#
+# Funding stays USDC-only (ADR 0017 §4): the whole loop is USDC -> eUSD -> ETH -> USDC, so nobody
+# has to start with price exposure to trade it.
+
+run:
+  blocks: 120 # long enough for the depeg window plus the recovery after it
+  seconds: 900 # a stress run ends by block count (ADR 0009)
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  # uniswap is not optional: redemption pays native ETH, and without a spot market an agent has to
+  # keep the price exposure it just earned rather than banking the arb.
+  protocols: [uniswap, balancer, curve, liquity]
+  economicGas: false
+  localDeploy: true # backtest runs on a local anvil loaded with the distributed state
+  reportDir: ./runs
+
+funding:
+  wethWei: "0" # USDC-only: netPnlUsdc carries β, so nobody may start already exposed
+  usdcUnits: "25000000000"
+
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  # There is no eUSD flow bot: the peg moves only when the stress event below pushes it or an agent
+  # trades it. That is why the event is part of the regime rather than optional decoration — at par
+  # the venue is correctly inert.
+
+stress:
+  events:
+    # Calibration, measured on the deployed pool (100k/100k, A=100). magnitude is the fraction of
+    # its seeded eUSD depth the environment has sold at the top of the trapezoid, and what that
+    # produces is the *marginal* discount an agent would trade against: 40k sold moves it 114bps,
+    # 50k moves it 175bps, 60k moves it 282bps.
+    #
+    # The costs it has to clear: a 50bps redemption fee floor, ~30bps to sell the redeemed ETH back
+    # to USDC, and whatever safety margin the agent keeps. So the low end of this range barely pays
+    # and the high end pays well -- and the trapezoid's ramp passes through every level in between,
+    # where the right move is to wait. A range where every draw pays would measure reaction time
+    # rather than judgement.
+    #
+    # One more thing this scale makes sharp: with a 250k eUSD supply, Liquity's baseRate rises about
+    # 100bps per 5k redeemed, so the *first* redemption is cheap and the next one may not clear at
+    # all. That is the venue's own timing pressure, not a calibration artefact.
+    - {
+        type: eusdDepeg,
+        magnitudeRange: [0.4, 0.6],
+        windowFrac: [0.25, 0.6],
+        rampBlocks: 4,
+        holdBlocks: 12,
+        decayBlocks: 15,
+      }
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: redemption-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: buys eUSD below par and redeems it against the riskiest Trove
+  - id: redemption-arb-eager
+    dir: redemption-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: the same strategy with a thinner safety margin
+    env: { ERIS_REDEMPTION_SAFETY_BPS: "5" }
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)

@@ -1,0 +1,90 @@
+# config/regimes/liquity-crash.yaml — the CDP venue's borrower and underwriter sides (issue #39).
+#
+# Not part of the ADR 0017 competition set. `liquity` covers the venue's α (buy a depegged eUSD and
+# redeem it); this one covers the other half, which only exists when the collateral price falls:
+#
+#   trove-manager    holds a Trove through the path, against liquidation, redemption and Recovery Mode
+#   sp-underwriter   deposits eUSD to absorb what falls under MCR, calls the liquidation, banks the ETH
+#
+# Run: npm run backtest -- --regime liquity-crash --seed 501 [--agents <roster>]
+#
+# **Two Troves that differ in one switch.** `trove-manager` holds the eUSD it draws, so repaying is
+# always available as a defence; `trove-manager-spent` sells it for USDC and posts every last WETH,
+# so when the crash comes it has neither. That is the regime's question -- what a CDP borrower's
+# defences are actually worth -- and it is why one of them gets liquidated and the other does not.
+#
+# Funding is WETH-heavy because a Trove needs collateral. That reintroduces price drift into
+# netPnlUsdc; read alphaUsdc, and read scores within a run rather than across price paths.
+#
+# **Recovery Mode is not reachable here** and the regime does not pretend otherwise. The genesis
+# Trove is 250 ETH against 250k eUSD (300% ICR) and dwarfs anything agents can open with this
+# funding: measured at seed 501, the system TCR bottoms at 2.244 against a CCR of 1.5. Reaching it
+# needs the system's debt roughly tripled, which dilutes the redemption fee curve and the Stability
+# Pool's relative depth -- both of them properties #39 measured -- so it is issue #59 rather than a
+# constant in this file.
+
+run:
+  blocks: 120
+  seconds: 900 # a stress run ends by block count (ADR 0009)
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  # uniswap is not optional: both the Stability Pool and a closed Trove pay out in native ETH, and
+  # without a spot market an agent has to keep the exposure instead of banking it.
+  protocols: [uniswap, balancer, curve, liquity]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+
+funding:
+  # A Trove needs collateral, so unlike the evaluation profile this hands out WETH (ADR 0017 §4
+  # applies to the competition set; this regime is venue verification).
+  wethWei: "20000000000000000000" # 20 WETH
+  usdcUnits: "25000000000"
+
+limits:
+  agentWethWei: "5000000000000000000"
+  agentUsdcUnits: "5000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+
+stress:
+  events:
+    # Deep enough to take a thin Trove through MCR, and no deeper. `trove-manager-spent` opens at
+    # 125%, so 15% puts it at 106% and 22% at 98% -- under the 110% floor across the whole range,
+    # which is what makes the liquidation path a property of the regime rather than of the seed.
+    # The Trove that kept its eUSD sits at 200% and comes through every draw.
+    - {
+        type: crash,
+        magnitudeRange: [0.15, 0.22],
+        windowFrac: [0.3, 0.65],
+        rampBlocks: 4,
+        holdBlocks: 12,
+        decayBlocks: 15,
+      }
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: trove-manager
+    wallet: AGENT2_PRIVATE_KEY
+    description: borrows at 200% and keeps the eUSD, so repayment stays available as a defence
+  - id: trove-manager-spent
+    dir: trove-manager
+    wallet: AGENT3_PRIVATE_KEY
+    description: borrows at 125%, posts everything and sells the eUSD — the borrower with no defences left
+    env:
+      ERIS_TROVE_TARGET_ICR: "1.25"
+      ERIS_TROVE_FLOOR_ICR: "1.15"
+      ERIS_TROVE_OPEN_BPS: "10000"
+      ERIS_TROVE_SPEND_DEBT: "1"
+  - id: sp-underwriter
+    wallet: AGENT4_PRIVATE_KEY
+    description: underwrites the Stability Pool, calls the liquidation and banks the collateral
