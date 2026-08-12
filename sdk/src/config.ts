@@ -14,8 +14,9 @@ import type { ProtocolId } from "./types.js";
 import type { OuParams } from "./rng.js";
 import { baseTokens } from "./markets.js";
 
-// The lst venue is deliberately not in the default set: it exists only under local deploy (issue
-// #38), so defaulting it on would break every fork run. Enable it explicitly via run.protocols.
+// The lst and liquity venues are deliberately not in the default set: they exist only under local
+// deploy (issues #38 / #39), so defaulting either on would break every fork run. Enable them
+// explicitly via run.protocols.
 const ALL_PROTOCOLS: ProtocolId[] = [
   "uniswap",
   "balancer",
@@ -25,7 +26,7 @@ const ALL_PROTOCOLS: ProtocolId[] = [
 ];
 
 // Protocols that can be named in run.protocols but are not in the default set.
-const OPT_IN_PROTOCOLS: ProtocolId[] = ["lst"];
+const OPT_IN_PROTOCOLS: ProtocolId[] = ["lst", "liquity"];
 
 export type OuConfig = {
   global: OuParams;

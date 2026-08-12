@@ -97,6 +97,10 @@ export const curveTwocryptoLiquidityAbi = parseAbi([
 // stableswap and the crypto pools above disagree on that, so they cannot share an ABI.
 export const curveStableSwapNgAbi = parseAbi([
   "function get_dy(int128 i, int128 j, uint256 dx) view returns (uint256)",
+  // The mirror of get_dy: how much of coin i it takes to obtain dy of coin j. Buying back a Trove's
+  // eUSD debt is quoted with this (issue #39) -- get_dy would answer a different question and
+  // marking the liability off it would understate what closing the position costs.
+  "function get_dx(int128 i, int128 j, uint256 dy) view returns (uint256)",
   "function exchange(int128 i, int128 j, uint256 dx, uint256 min_dy) returns (uint256)",
   "function coins(uint256 i) view returns (address)",
   "function balances(uint256 i) view returns (uint256)",
@@ -148,6 +152,112 @@ export const lstVaultAbi = parseAbi([
   "function queueThroughputWeiPerBlock() view returns (uint256)",
   "function queueDrainBlock() view returns (uint256)",
   "function surplusWeth() view returns (uint256)",
+]);
+
+// ---------------------------------------------------------------------------
+// Liquity V1, the CDP stablecoin venue issuing eUSD (issue #39).
+//
+// The core is forked unmodified, so these are Liquity's own signatures -- including the LUSD names
+// the source uses for what this venue calls eUSD. Renaming them here would make the ABI stop
+// matching the deployed selectors.
+// ---------------------------------------------------------------------------
+
+export const troveManagerAbi = parseAbi([
+  // System state. Every ratio view takes the price explicitly rather than reading the oracle, which
+  // is what lets the observation and the scorer evaluate a *historical* block at that block's price.
+  "function getTCR(uint256 price) view returns (uint256)",
+  "function checkRecoveryMode(uint256 price) view returns (bool)",
+  "function getEntireSystemColl() view returns (uint256)",
+  "function getEntireSystemDebt() view returns (uint256)",
+  "function MCR() view returns (uint256)",
+  "function CCR() view returns (uint256)",
+  "function MIN_NET_DEBT() view returns (uint256)",
+  // The 200 eUSD held in the GasPool for the duration of a Trove. It is part of the Trove's debt but
+  // not of what the borrower has to repay, so a valuation that ignores it understates every Trove.
+  "function LUSD_GAS_COMPENSATION() view returns (uint256)",
+  // Per-Trove state. getEntireDebtAndColl includes pending redistribution rewards, which is what the
+  // system will actually charge, so it is the one to value against.
+  "function getEntireDebtAndColl(address borrower) view returns (uint256 debt, uint256 coll, uint256 pendingLUSDDebtReward, uint256 pendingETHReward)",
+  "function getCurrentICR(address borrower, uint256 price) view returns (uint256)",
+  "function getNominalICR(address borrower) view returns (uint256)",
+  "function getTroveStatus(address borrower) view returns (uint256)",
+  "function getTroveOwnersCount() view returns (uint256)",
+  "function getTroveFromTroveOwnersArray(uint256 index) view returns (address)",
+  // Both fee curves. They decay on a ~12h half-life, so within a run the first large redemption
+  // raises the cost for everyone who follows -- which is the timing decision the venue adds.
+  "function getBorrowingRateWithDecay() view returns (uint256)",
+  "function getRedemptionRateWithDecay() view returns (uint256)",
+  "function getBorrowingFeeWithDecay(uint256 debt) view returns (uint256)",
+  "function getRedemptionFeeWithDecay(uint256 ethDrawn) view returns (uint256)",
+  "function baseRate() view returns (uint256)",
+  "function BORROWING_FEE_FLOOR() view returns (uint256)",
+  "function REDEMPTION_FEE_FLOOR() view returns (uint256)",
+  // Actions.
+  "function redeemCollateral(uint256 LUSDAmount, address firstRedemptionHint, address upperPartialRedemptionHint, address lowerPartialRedemptionHint, uint256 partialRedemptionHintNICR, uint256 maxIterations, uint256 maxFeePercentage)",
+  "function liquidate(address borrower)",
+  "function batchLiquidateTroves(address[] troveArray)",
+  "function liquidateTroves(uint256 n)",
+]);
+
+export const borrowerOperationsAbi = parseAbi([
+  // Collateral is native ETH (msg.value), which is why the adapter unwraps WETH first.
+  "function openTrove(uint256 maxFeePercentage, uint256 LUSDAmount, address upperHint, address lowerHint) payable",
+  "function addColl(address upperHint, address lowerHint) payable",
+  "function withdrawColl(uint256 amount, address upperHint, address lowerHint)",
+  "function withdrawLUSD(uint256 maxFeePercentage, uint256 amount, address upperHint, address lowerHint)",
+  "function repayLUSD(uint256 amount, address upperHint, address lowerHint)",
+  "function adjustTrove(uint256 maxFeePercentage, uint256 collWithdrawal, uint256 LUSDChange, bool isDebtIncrease, address upperHint, address lowerHint) payable",
+  "function closeTrove()",
+  "function claimCollateral()",
+  // Net debt plus the gas compensation, i.e. what a requested borrow actually books as debt.
+  "function getCompositeDebt(uint256 debt) pure returns (uint256)",
+]);
+
+export const stabilityPoolAbi = parseAbi([
+  "function provideToSP(uint256 amount, address frontEndTag)",
+  "function withdrawFromSP(uint256 amount)",
+  "function getCompoundedLUSDDeposit(address depositor) view returns (uint256)",
+  "function getDepositorETHGain(address depositor) view returns (uint256)",
+  "function getDepositorLQTYGain(address depositor) view returns (uint256)",
+  "function getTotalLUSDDeposits() view returns (uint256)",
+  "function getETH() view returns (uint256)",
+]);
+
+export const sortedTrovesAbi = parseAbi([
+  // Sorted by nominal ICR, descending: the head is the safest Trove and the tail is the one a
+  // redemption reaches first.
+  "function getFirst() view returns (address)",
+  "function getLast() view returns (address)",
+  "function getNext(address id) view returns (address)",
+  "function getPrev(address id) view returns (address)",
+  "function getSize() view returns (uint256)",
+  "function contains(address id) view returns (bool)",
+  "function findInsertPosition(uint256 NICR, address prevId, address nextId) view returns (address, address)",
+]);
+
+// HintHelpers deliberately has no ABI here. A redemption's hints cannot be computed off chain in
+// this environment -- they depend on the price the transaction itself fetches, and the oracle moves
+// every block ahead of every agent -- so they are computed on chain by LiquityRedemptionHelper
+// instead. An ABI here would invite exactly the stale-hint call that reverted every redemption in
+// the venue's first live run.
+
+// The oracle Liquity holds forever (deployer/contracts/LiquityPriceFeedAdapter.sol). Each run points
+// it at the PriceFeed it just deployed. `fetchPrice` is state-changing (it caches the last good
+// price), but simulating it is the only way to ask what the venue would actually serve right now --
+// which is what the startup check compares against the run's fair price.
+export const liquityPriceFeedAdapterAbi = parseAbi([
+  "function operator() view returns (address)",
+  "function source() view returns (address)",
+  "function lastGoodPrice() view returns (uint256)",
+  "function setSource(address source)",
+  "function fetchPrice() returns (uint256)",
+]);
+
+// LiquityRedemptionHelper (deployer/contracts/LiquityRedemptionHelper.sol). Liquity checks a partial
+// redemption against a hint derived from the price the transaction itself fetches, so the hints have
+// to be computed on chain: this environment writes a new price every block, ahead of every agent.
+export const liquityRedemptionHelperAbi = parseAbi([
+  "function redeem(uint256 amount, uint256 maxFeePercentage, uint256 maxIterations) returns (uint256 redeemed, uint256 ethOut)",
 ]);
 
 // Curve CryptoSwap (tricrypto v0.2.x): exchange / get_dy / coins / balances

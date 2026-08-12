@@ -44,6 +44,7 @@ type Deployments = {
     };
     aaveV3?: Record<string, unknown>;
     lst?: Record<string, string | number>;
+    liquity?: Record<string, string | number>;
   };
 };
 
@@ -83,9 +84,71 @@ function readLst(
       ? {
           aaveAggregator: getAddress(String(lst.aaveAggregator)),
           aaveAToken: getAddress(String(lst.aaveAToken)),
-          aaveVariableDebtToken: getAddress(
-            String(lst.aaveVariableDebtToken),
-          ),
+          aaveVariableDebtToken: getAddress(String(lst.aaveVariableDebtToken)),
+        }
+      : {}),
+  };
+}
+
+// Issue #39: the Liquity venue. Local-only for the same reason as the LST vault, and a partial
+// deploy may omit it, so the whole block is emitted only when the core addresses are present.
+type LiquityInfo = {
+  troveManager: Address;
+  borrowerOperations: Address;
+  stabilityPool: Address;
+  sortedTroves: Address;
+  activePool: Address;
+  defaultPool: Address;
+  collSurplusPool: Address;
+  gasPool: Address;
+  hintHelpers: Address;
+  priceFeed: Address;
+  redemptionHelper?: Address;
+  eusd: Address;
+  lqtyToken: Address;
+  lqtyStaking: Address;
+  communityIssuance: Address;
+  eusdUsdcPool?: Address;
+  eusdIndex?: number;
+  usdcIndex?: number;
+  stable?: Address;
+};
+
+function readLiquity(
+  liquity: Record<string, string | number> | undefined,
+  usdc: Address,
+): LiquityInfo | undefined {
+  if (!liquity?.troveManager || !liquity?.eusd) return undefined;
+  const at = (key: string): Address =>
+    getAddress(String(need(liquity[key], `liquity.${key}`)));
+  return {
+    troveManager: at("troveManager"),
+    borrowerOperations: at("borrowerOperations"),
+    stabilityPool: at("stabilityPool"),
+    sortedTroves: at("sortedTroves"),
+    activePool: at("activePool"),
+    defaultPool: at("defaultPool"),
+    collSurplusPool: at("collSurplusPool"),
+    gasPool: at("gasPool"),
+    hintHelpers: at("hintHelpers"),
+    priceFeed: at("priceFeed"),
+    // Absent on a deployment that predates the helper; the adapter fails fast rather than building
+    // a redemption whose hints cannot survive the next oracle write.
+    ...(liquity.redemptionHelper
+      ? { redemptionHelper: getAddress(String(liquity.redemptionHelper)) }
+      : {}),
+    eusd: at("eusd"),
+    lqtyToken: at("lqtyToken"),
+    lqtyStaking: at("lqtyStaking"),
+    communityIssuance: at("communityIssuance"),
+    // The market is a separate concern: a Trove and the Stability Pool work without one, and a
+    // deploy with no curve factory legitimately has none.
+    ...(liquity.eusdUsdcPool
+      ? {
+          eusdUsdcPool: getAddress(String(liquity.eusdUsdcPool)),
+          eusdIndex: Number(need(liquity.eusdIndex, "liquity.eusdIndex")),
+          usdcIndex: Number(need(liquity.usdcIndex, "liquity.usdcIndex")),
+          stable: usdc,
         }
       : {}),
   };
@@ -275,6 +338,7 @@ export function generateLocalConstants(deploymentsPath?: string): {
     },
     wbtc: wbtcInfo,
     lst: readLst(p.lst),
+    liquity: readLiquity(p.liquity, usdc),
   });
 
   const target = resolve(ROOT, "sdk", "src", "constants.local.ts");
@@ -295,6 +359,12 @@ export function generateLocalConstants(deploymentsPath?: string): {
     lstInfo
       ? `  LST=${lstInfo.vault} (pool=${lstInfo.pool} apy=${lstInfo.targetApyBps}bps clock=${lstInfo.simulatedSecondsPerBlock}s/block)`
       : `  LST: none (the lst venue is unavailable in this deployment)`,
+  );
+  const liquityInfo = readLiquity(p.liquity, usdc);
+  console.log(
+    liquityInfo
+      ? `  LIQUITY=${liquityInfo.troveManager} (eUSD=${liquityInfo.eusd} market=${liquityInfo.eusdUsdcPool ?? "none"})`
+      : `  LIQUITY: none (the liquity venue is unavailable in this deployment)`,
   );
   console.log(`  local run: set ERIS_LOCAL_DEPLOY=1 to use`);
   return { target, deploymentsPath: path, fingerprint };
@@ -322,9 +392,45 @@ function render(d: {
   aave: Record<string, Address>;
   wbtc?: WbtcInfo;
   lst?: LstInfo;
+  liquity?: LiquityInfo;
 }): string {
   const a = (x: string) => `"${x}" as Address`;
   const w = d.wbtc;
+  const liq = d.liquity;
+  const liquityBlock = liq
+    ? `
+  // Issue #39: Liquity V1 as the CDP stablecoin venue (eUSD). priceFeed is the adapter Liquity holds
+  // forever, which each run repoints at its own PriceFeed -- not the run's feed itself.
+  LIQUITY: {
+    troveManager: ${a(liq.troveManager)},
+    borrowerOperations: ${a(liq.borrowerOperations)},
+    stabilityPool: ${a(liq.stabilityPool)},
+    sortedTroves: ${a(liq.sortedTroves)},
+    activePool: ${a(liq.activePool)},
+    defaultPool: ${a(liq.defaultPool)},
+    collSurplusPool: ${a(liq.collSurplusPool)},
+    gasPool: ${a(liq.gasPool)},
+    hintHelpers: ${a(liq.hintHelpers)},
+    priceFeed: ${a(liq.priceFeed)},${
+      liq.redemptionHelper
+        ? `
+    redemptionHelper: ${a(liq.redemptionHelper)},`
+        : ""
+    }
+    eusd: ${a(liq.eusd)},
+    lqtyToken: ${a(liq.lqtyToken)},
+    lqtyStaking: ${a(liq.lqtyStaking)},
+    communityIssuance: ${a(liq.communityIssuance)},${
+      liq.eusdUsdcPool
+        ? `
+    eusdUsdcPool: ${a(liq.eusdUsdcPool)},
+    eusdIndex: ${liq.eusdIndex},
+    usdcIndex: ${liq.usdcIndex},
+    stable: ${a(liq.stable!)},`
+        : ""
+    }
+  },`
+    : "";
   const lstBlock = d.lst
     ? `
   // Issue #38: the LST venue (wstETH-style vault + LST/WETH stableswap-ng secondary market).
@@ -456,6 +562,28 @@ export type LocalDeployment = {
     aaveAToken?: Address;
     aaveVariableDebtToken?: Address;
   };
+  // Issue #39: present only when the deploy included the liquity venue.
+  LIQUITY?: {
+    troveManager: Address;
+    borrowerOperations: Address;
+    stabilityPool: Address;
+    sortedTroves: Address;
+    activePool: Address;
+    defaultPool: Address;
+    collSurplusPool: Address;
+    gasPool: Address;
+    hintHelpers: Address;
+    priceFeed: Address;
+    redemptionHelper?: Address;
+    eusd: Address;
+    lqtyToken: Address;
+    lqtyStaking: Address;
+    communityIssuance: Address;
+    eusdUsdcPool?: Address;
+    eusdIndex?: number;
+    usdcIndex?: number;
+    stable?: Address;
+  };
 };
 
 export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
@@ -519,7 +647,7 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     AclAdmin: ${a(d.aave.AclAdmin)},
     AclManager: ${a(d.aave.AclManager)},
     PoolDataProvider: ${a(d.aave.PoolDataProvider)},
-  },${lstBlock}${marketLegs}
+  },${lstBlock}${liquityBlock}${marketLegs}
 };
 `;
 }

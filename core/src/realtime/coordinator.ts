@@ -88,8 +88,18 @@ import {
   setupLiquidityPull,
   type LiquidityPullRuntime,
 } from "./liquidity.js";
+import {
+  liquityBlockEvent,
+  reconcileEusdDepeg,
+  restoreEusdDepeg,
+  setupEusdDepeg,
+  setupLiquity,
+  type EusdDepegRuntime,
+  type LiquityRuntime,
+} from "./liquity.js";
 import { PULL_VENUES } from "./liquidityVenues.js";
 import type { LstState } from "@eris/sdk/protocols/lst.js";
+import type { LiquityState } from "@eris/sdk/protocols/liquity.js";
 import { VulnSchedule } from "./vulnEvents.js";
 import {
   deployVulnPools,
@@ -686,32 +696,72 @@ export async function runRealtimeSimulation(
       ? await setupLst(ctx, logger)
       : null;
 
+    // ---- Liquity venue (issue #39): point the CDP's permanent oracle adapter at this run's
+    // PriceFeed, and refuse to start on a venue that would mark Troves against another run's price
+    // or on a peg that is already broken. A mined setup transaction, so it belongs before interval
+    // mining starts -- and after the prewarm, whose trading is what settles the fair price it checks.
+    const liquityRuntime: LiquityRuntime | null = enabledIds.includes("liquity")
+      ? await setupLiquity(
+          ctx,
+          { priceFeed: priceFeedAddress, fairPrice: latestFairPrice },
+          logger,
+        )
+      : null;
+
+    // The environment's depth and its eUSD both belong to the deployer, which is the anvil default
+    // account 0 (ADR 0016 §4). An agent bound to AGENT0_PRIVATE_KEY is that same account, and two
+    // senders on one key race on the nonce — the failure mode that once froze the LST redemption
+    // rate for a whole run. Checked once for both events, since they share the key.
+    const deployerPk = DEFAULT_ANVIL_PRIVATE_KEYS[0];
+    if (schedule.hasLiquidityPull() || schedule.hasEusdDepeg()) {
+      const clash = agentRuntimes.find(
+        (a) => a.privateKey.toLowerCase() === deployerPk.toLowerCase(),
+      );
+      if (clash) {
+        throw new Error(
+          `a stress event trades as the deployer account, but agent "${clash.id}" is bound to the ` +
+            "same key (AGENT0_PRIVATE_KEY = anvil account 0). Move that agent to another wallet, " +
+            "or to AUTO",
+        );
+      }
+    }
+
+    // ---- eUSD depeg stress event (issue #39): stage the account that will push the peg off par.
+    // Without it the CDP venue's redemption arb has nothing to trade -- the pool is seeded at par by
+    // construction -- so a regime that wants the venue exercised has to ask for this event.
+    let eusdDepegRuntime: EusdDepegRuntime | null = null;
+    if (schedule.hasEusdDepeg()) {
+      if (!liquityRuntime) {
+        throw new Error(
+          "stress event eusdDepeg needs the liquity venue: add it to run.protocols (it is the " +
+            "venue whose stablecoin the event depegs)",
+        );
+      }
+      eusdDepegRuntime = await setupEusdDepeg(
+        ctx,
+        { localDeploy: config.localDeploy, actorPk: deployerPk },
+        logger,
+      );
+      // Its swaps are environment transactions, like the oracle writes: attributing them to a
+      // participant would put them through the post-run fee check (core/src/postRunCheck.ts).
+      ownerByAddress.set(eusdDepegRuntime.actor.toLowerCase(), {
+        ownerId: "liquity-depeg",
+        role: "system",
+      });
+    }
+
     // ---- liquidity-pull stress event (issue #52): find the environment-owned depth this run may
     // withdraw, and refuse to start if the schedule asks for depth nobody here owns. Like the LST
     // setup this sends mined transactions (standing approvals for the restore leg), so it belongs
     // before interval mining starts.
     let liquidityPullRuntime: LiquidityPullRuntime | null = null;
     if (schedule.hasLiquidityPull()) {
-      // The seeded positions belong to the deployer, which is the anvil default account 0 (ADR 0016
-      // §4). An agent bound to AGENT0_PRIVATE_KEY is that same account, and two senders on one key
-      // race on the nonce — the failure mode that once froze the LST redemption rate for a whole run.
-      const lpOwnerPk = DEFAULT_ANVIL_PRIVATE_KEYS[0];
-      const clash = agentRuntimes.find(
-        (a) => a.privateKey.toLowerCase() === lpOwnerPk.toLowerCase(),
-      );
-      if (clash) {
-        throw new Error(
-          `stress event liquidityPull withdraws depth as the deployer account, but agent "${clash.id}" ` +
-            "is bound to the same key (AGENT0_PRIVATE_KEY = anvil account 0). Move that agent to " +
-            "another wallet, or to AUTO",
-        );
-      }
       liquidityPullRuntime = await setupLiquidityPull(
         ctx,
         schedule,
         {
           localDeploy: config.localDeploy,
-          ownerPk: lpOwnerPk,
+          ownerPk: deployerPk,
           // Only the venues this run turned on: an event that names no venue thins every book, and
           // asking for one that is not deployed would fail the discovery check for no reason.
           enabledVenues: PULL_VENUES.filter((v) => enabledIds.includes(v)),
@@ -1305,6 +1355,12 @@ export async function runRealtimeSimulation(
             // source for whether the venue behaved (issue #38).
             const lstState = stateById.get("lst") as LstState | undefined;
             if (lstState) logger.event(lstBlockEvent(lstState, bn));
+            // Liquity telemetry rides on the same read: where the peg sat, how the fee curves moved
+            // and whether the system ever entered Recovery Mode (issue #39).
+            const liquityState = stateById.get("liquity") as
+              | LiquityState
+              | undefined;
+            if (liquityState) logger.event(liquityBlockEvent(liquityState, bn));
             const uni = stateById.get("uniswap") as
               { priceUsdcPerWeth?: number } | undefined;
             latestHistory.push({
@@ -1418,6 +1474,40 @@ export async function runRealtimeSimulation(
             }
           };
 
+          // eUSD depeg stress event (issue #39): move the peg toward where this block's trapezoid
+          // wants it. Its own task for the same reason as the liquidity pull -- it sends from the
+          // deployer key rather than the admin key -- and sequential with it inside that key, which
+          // the two being separate awaited tasks does not guarantee, so they share one task here.
+          const depegTask = async (): Promise<void> => {
+            if (!eusdDepegRuntime) return;
+            try {
+              const hashes = await reconcileEusdDepeg(
+                ctx,
+                eusdDepegRuntime,
+                schedule,
+                blockIndex,
+                bn,
+                { priorityFeeWei: oracleFee },
+                logger,
+              );
+              for (const hash of hashes) {
+                submittedByHash.set(hash.toLowerCase(), {
+                  ownerId: "liquity-depeg",
+                  role: "system",
+                  priorityFeeWei: oracleFee,
+                  actionType: "eusdDepeg",
+                });
+              }
+            } catch (error) {
+              logger.event({
+                type: "stress_eusd_depeg_task_failed",
+                blockIndex,
+                blockNumber: bn,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          };
+
           // Record each task's duration (for diagnosing the environment loop's bottleneck; the measurement source for ADR 0006 "judgment metrics").
           const timed = async (task: () => Promise<void>): Promise<number> => {
             const t0 = Date.now();
@@ -1434,6 +1524,7 @@ export async function runRealtimeSimulation(
           if (stressVictims.length > 0) tasks.push(timed(victimTask));
           if (vulnRuntime) tasks.push(timed(vulnTask));
           if (liquidityPullRuntime) tasks.push(timed(liquidityTask));
+          if (eusdDepegRuntime) tasks.push(timed(depegTask));
           const results = await Promise.all(tasks);
           const [keeperMs, oracleMs, stateFlowMs] = results;
           let taskIdx = 3;
@@ -1443,6 +1534,7 @@ export async function runRealtimeSimulation(
           const liquidityMs = liquidityPullRuntime
             ? results[taskIdx++]
             : undefined;
+          const depegMs = eusdDepegRuntime ? results[taskIdx++] : undefined;
           logger.event({
             type: "round_timing",
             blockNumber: bn,
@@ -1453,6 +1545,7 @@ export async function runRealtimeSimulation(
             ...(victimMs !== undefined ? { victimMs } : {}),
             ...(vulnMs !== undefined ? { vulnMs } : {}),
             ...(liquidityMs !== undefined ? { liquidityMs } : {}),
+            ...(depegMs !== undefined ? { depegMs } : {}),
             totalMs: Date.now() - roundStart,
           });
 
@@ -1497,6 +1590,20 @@ export async function runRealtimeSimulation(
       } catch (error) {
         logger.event({
           type: "stress_liquidity_teardown_failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // ---- eUSD depeg teardown (issue #39): same argument as the depth restore above, plus one more.
+    // The startup check refuses to begin on a depegged pool, so a run that ended mid-window would
+    // not just hand the next run a different venue -- it would stop it from starting at all.
+    if (eusdDepegRuntime) {
+      try {
+        await restoreEusdDepeg(ctx, eusdDepegRuntime, logger);
+      } catch (error) {
+        logger.event({
+          type: "stress_eusd_depeg_teardown_failed",
           error: error instanceof Error ? error.message : String(error),
         });
       }

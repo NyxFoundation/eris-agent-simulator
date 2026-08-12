@@ -7,7 +7,7 @@ import type { MarketLegs } from "./types.js";
 
 // Canonical fingerprint of the source deployments.json (ADR 0016 §2). The backtest CLI
 // compares it against the state dump manifest and, on mismatch, regenerates from the manifest's bundled deployments.
-export const DEPLOYMENTS_FINGERPRINT = "sha256:b7d41bba15bd2c1ce520982367e50e6f30381de94390fb4033fda3ce26633d5a";
+export const DEPLOYMENTS_FINGERPRINT = "sha256:c6bce1b47747bd3425512f1eff91693e69348db3fedd2566f9a4871312990f7d";
 
 export type LocalDeployment = {
   CHAIN_ID: number;
@@ -63,6 +63,28 @@ export type LocalDeployment = {
     aaveAToken?: Address;
     aaveVariableDebtToken?: Address;
   };
+  // Issue #39: present only when the deploy included the liquity venue.
+  LIQUITY?: {
+    troveManager: Address;
+    borrowerOperations: Address;
+    stabilityPool: Address;
+    sortedTroves: Address;
+    activePool: Address;
+    defaultPool: Address;
+    collSurplusPool: Address;
+    gasPool: Address;
+    hintHelpers: Address;
+    priceFeed: Address;
+    redemptionHelper?: Address;
+    eusd: Address;
+    lqtyToken: Address;
+    lqtyStaking: Address;
+    communityIssuance: Address;
+    eusdUsdcPool?: Address;
+    eusdIndex?: number;
+    usdcIndex?: number;
+    stable?: Address;
+  };
 };
 
 export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
@@ -107,19 +129,19 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     usdcToken: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address,
   },
   GMX: {
-    RoleStore: "0xB06c856C8eaBd1d8321b687E188204C1018BC4E5" as Address,
-    DataStore: "0x71089Ba41e478702e1904692385Be3972B2cBf9e" as Address,
-    Oracle: "0xD6b040736e948621c5b6E0a494473c47a6113eA8" as Address,
-    EventEmitter: "0xf090f16dEc8b6D24082Edd25B1C8D26f2bC86128" as Address,
-    Router: "0x3904b8f5b0F49cD206b7d5AABeE5D1F37eE15D8d" as Address,
-    ExchangeRouter: "0x9C85258d9A00C01d00ded98065ea3840dF06f09c" as Address,
-    OrderHandler: "0x0Dd99d9f56A14E9D53b2DdC62D9f0bAbe806647A" as Address,
-    OrderVault: "0x8fC8CFB7f7362E44E472c690A6e025B80E406458" as Address,
-    LiquidationHandler: "0xF5b81Fe0B6F378f9E6A3fb6A6cD1921FCeA11799" as Address,
-    Reader: "0x6B21b3ae41f818Fc91e322b53f8D0773d31eCB75" as Address,
-    Config: "0x071586BA1b380B00B793Cc336fe01106B0BFbE6D" as Address,
+    RoleStore: "0x56fC17a65ccFEC6B7ad0aDe9BD9416CB365B9BE8" as Address,
+    DataStore: "0x51C65cd0Cdb1A8A8b79dfc2eE965B1bA0bb8fc89" as Address,
+    Oracle: "0x6A59CC73e334b018C9922793d96Df84B538E6fD5" as Address,
+    EventEmitter: "0x114e375B6FCC6d6fCb68c7A1d407E652C54F25FB" as Address,
+    Router: "0x967AB65ef14c58bD4DcfFeaAA1ADb40a022140E5" as Address,
+    ExchangeRouter: "0xB468647B04bF657C9ee2de65252037d781eABafD" as Address,
+    OrderHandler: "0xb868Cc77A95a65F42611724AF05Aa2d3B6Ec05F2" as Address,
+    OrderVault: "0x193521C8934bCF3473453AF4321911E7A89E0E12" as Address,
+    LiquidationHandler: "0x696358bBb1a743052E0E87BeD78AAd9d18f0e1F4" as Address,
+    Reader: "0xa195ACcEB1945163160CD5703Ed43E4f78176a54" as Address,
+    Config: "0x8D81A3DCd17030cD5F23Ac7370e4Efb10D2b3cA4" as Address,
   },
-  GMX_MARKETS: { ETH_USD: "0xA5ecC14E7c21e0E4Fc9B41092F3db87d7B3c9865" as Address },
+  GMX_MARKETS: { ETH_USD: "0xc89606Fce5eDcE056a5FC7A247e0fEA5f2a65168" as Address },
   AAVE: {
     PoolAddressesProvider: "0xB0D4afd8879eD9F52b28595d31B441D079B2Ca07" as Address,
     Pool: "0x7B6fCB97Fc1B74e16CBe577054a4426d3487837C" as Address,
@@ -143,6 +165,29 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     aaveAToken: "0xfB2C19FF34F419a02e4564e8Ce6A3448fAD93f8b" as Address,
     aaveVariableDebtToken: "0x555a114B12884781a975Fa45bDb4d3cC9ba1d640" as Address,
   },
+  // Issue #39: Liquity V1 as the CDP stablecoin venue (eUSD). priceFeed is the adapter Liquity holds
+  // forever, which each run repoints at its own PriceFeed -- not the run's feed itself.
+  LIQUITY: {
+    troveManager: "0xaB7B4c595d3cE8C85e16DA86630f2fc223B05057" as Address,
+    borrowerOperations: "0x821f3361D454cc98b7555221A06Be563a7E2E0A6" as Address,
+    stabilityPool: "0x045857BDEAE7C1c7252d611eB24eB55564198b4C" as Address,
+    sortedTroves: "0xB06c856C8eaBd1d8321b687E188204C1018BC4E5" as Address,
+    activePool: "0xAD523115cd35a8d4E60B3C0953E0E0ac10418309" as Address,
+    defaultPool: "0x413b1AfCa96a3df5A686d8BFBF93d30688a7f7D9" as Address,
+    collSurplusPool: "0x02df3a3F960393F5B349E40A599FEda91a7cc1A7" as Address,
+    gasPool: "0x2b5A4e5493d4a54E717057B127cf0C000C876f9B" as Address,
+    hintHelpers: "0x1780bCf4103D3F501463AD3414c7f4b654bb7aFd" as Address,
+    priceFeed: "0x12Bcb546bC60fF39F1Adfc7cE4605d5Bd6a6A876" as Address,
+    redemptionHelper: "0xe039608E695D21aB11675EBBA00261A0e750526c" as Address,
+    eusd: "0xeF31027350Be2c7439C1b0BE022d49421488b72C" as Address,
+    lqtyToken: "0xC66AB83418C20A65C3f8e83B3d11c8C3a6097b6F" as Address,
+    lqtyStaking: "0x71089Ba41e478702e1904692385Be3972B2cBf9e" as Address,
+    communityIssuance: "0x5133BBdfCCa3Eb4F739D599ee4eC45cBCD0E16c5" as Address,
+    eusdUsdcPool: "0x4Bf20508953919be9691522ee74a7677c1a0a932" as Address,
+    eusdIndex: 0,
+    usdcIndex: 1,
+    stable: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address,
+  },
   MARKET_LEGS: {
     uniswap: {
       WETH: { pool: "0xe35086d02782CEC7D20b1a164dE141aa39CEe723" as Address, fee: 3000, tickSpacing: 60 },
@@ -157,8 +202,8 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
       WBTC: { pool: "0xF2AdAad89d56D49C697B9907C7D66ef27d96f859" as Address, baseIndex: 1, quoteIndex: 0, stable: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address },
     },
     gmx: {
-      WETH: { market: "0xA5ecC14E7c21e0E4Fc9B41092F3db87d7B3c9865" as Address },
-      WBTC: { market: "0x2ffb9D923da1736ad51739B857cEf3a56EFD5f47" as Address },
+      WETH: { market: "0xc89606Fce5eDcE056a5FC7A247e0fEA5f2a65168" as Address },
+      WBTC: { market: "0x444836B743C4f79386C13Ce133dd8814ADfE2A1d" as Address },
     },
     aave: {
       WETH: {},

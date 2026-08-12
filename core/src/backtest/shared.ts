@@ -197,6 +197,7 @@ const VENUE_TO_DEPLOYMENT_KEY: Record<string, string> = {
   gmx: "gmxV2",
   aave: "aaveV3",
   lst: "lst",
+  liquity: "liquity",
 };
 
 // Whether the venues the regime requires are all present in the state dump (deployments bundled in

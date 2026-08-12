@@ -8,6 +8,7 @@ import { curveAdapter } from "./curve.js";
 import { aaveAdapter } from "./aave.js";
 import { gmxAdapter } from "./gmx.js";
 import { lstAdapter } from "./lst.js";
+import { liquityAdapter } from "./liquity.js";
 import { activeBaseSymbols, tokenInfo } from "../markets.js";
 import { setEnabledProtocolIds } from "./enabled.js";
 
@@ -19,6 +20,7 @@ const ALL_ADAPTERS: ProtocolAdapter[] = [
   aaveAdapter,
   gmxAdapter,
   lstAdapter,
+  liquityAdapter,
 ];
 
 const ALL_BY_ID = new Map<ProtocolId, ProtocolAdapter>(
@@ -27,10 +29,12 @@ const ALL_BY_ID = new Map<ProtocolId, ProtocolAdapter>(
 
 export const ALL_PROTOCOL_IDS: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id);
 
-// The venues a run gets when it does not say. lst is left out because it exists only under local
-// deploy (issue #38) -- defaulting it on would break every fork run at the first read.
+// The venues a run gets when it does not say. lst and liquity are left out because they exist only
+// under local deploy (issues #38 / #39) -- defaulting either on would break every fork run at the
+// first read.
+const LOCAL_ONLY_PROTOCOL_IDS: ProtocolId[] = ["lst", "liquity"];
 const DEFAULT_PROTOCOL_IDS: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id).filter(
-  (id) => id !== "lst",
+  (id) => !LOCAL_ONLY_PROTOCOL_IDS.includes(id),
 );
 
 // Set by the coordinator at startup. When unset, the default set above is treated as enabled.

@@ -42,8 +42,9 @@ run:
   seconds: 300
   blockTimeSec: 2
   # gmx and aave are left out because they are the slow half of the deploy; add them once
-  # `deployer` has run with them. `lst` is local-only (issue #38) and fails fast on a fork.
-  protocols: [uniswap, balancer, curve, lst]
+  # `deployer` has run with them. `lst` (issue #38) and `liquity` (issue #39) are local-only and
+  # fail fast on a fork.
+  protocols: [uniswap, balancer, curve, lst, liquity]
   economicGas: false
   localDeploy: true
   reportDir: ./runs
@@ -97,9 +98,26 @@ flow:
   # To trade multi-asset (WBTC), enable WBTC flow (creates price divergence = arbitrage opportunities):
   # baseMax: { WBTC: "50000000" }
 
-# stress (market stress events. default off):
-# stress:
-#   events:
+# stress (market stress events).
+#
+# The eUSD depeg is here rather than commented out because the CDP venue is otherwise correctly
+# inert: the deploy seeds the eUSD/USDC pool at par, and redemption costs a 50bps floor fee, so with
+# nothing pushing the peg the right move is to sit still and redemption-arb would do exactly that.
+# The event has the environment sell eUSD into its own market for the length of a window and buy it
+# back afterwards. See config/liquity.yaml for how the magnitude range was calibrated.
+#
+# Uncomment the crash below to add a price gap as well (ADR 0009); `victimCount` stages the Aave
+# positions a liquidator agent could take.
+stress:
+  events:
+    - {
+        type: eusdDepeg,
+        magnitudeRange: [0.4, 0.6],
+        windowFrac: [0.25, 0.6],
+        rampBlocks: 4,
+        holdBlocks: 10,
+        decayBlocks: 12,
+      }
 #     - { type: crash, magnitudeRange: [0.12, 0.16], windowFrac: [0.3, 0.7], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
 #   victimCount: 0
 
@@ -129,6 +147,10 @@ agents:
   - id: lst-carry
     wallet: AGENT5_PRIVATE_KEY
     description: liquid staking — stake for yield, or trade the LST redemption/market gap, revised in-run
+    env: { ERIS_IMPROVE_LOG_CALLS: "1" }
+  - id: redemption-arb
+    wallet: AGENT6_PRIVATE_KEY
+    description: CDP stablecoin — buy eUSD below par and redeem it against the riskiest Trove, revised in-run
     env: { ERIS_IMPROVE_LOG_CALLS: "1" }
   # config/lst.yaml is the same venue with a second competing participant and the calibration knobs
   # spelled out, if you want to look at the LST market on its own.

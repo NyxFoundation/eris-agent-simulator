@@ -167,6 +167,73 @@ test("liquidityPull targets its own base", () => {
   assert.ok(Math.abs(s.depthMultiplierAt(12).WBTC - 0.5) < 1e-9);
 });
 
+// ---- eusdDepeg (issue #39) ----
+
+const FIXED_DEPEG: StressEventConfig = {
+  type: "eusdDepeg",
+  magnitudeRange: [0.4, 0.4],
+  windowFrac: [0.5, 0.5],
+  rampBlocks: 2,
+  holdBlocks: 2,
+  decayBlocks: 2,
+};
+
+test("eusdDepeg drives how much eUSD has been sold, and leaves the price overlay alone", () => {
+  const s = new EventSchedule([FIXED_DEPEG], 1, 20);
+  assert.equal(s.hasEusdDepeg(), true);
+
+  // Outside the window nothing is sold, which the coordinator reads as "buy it all back".
+  assert.equal(s.eusdDepegFractionAt(9), 0);
+  assert.equal(s.eusdDepegFractionAt(16), 0);
+  // ramp (t=0 -> e=0.5), hold (e=1), decay (t=4 -> e=0.5)
+  assert.ok(Math.abs(s.eusdDepegFractionAt(10) - 0.2) < 1e-9);
+  assert.ok(Math.abs(s.eusdDepegFractionAt(12) - 0.4) < 1e-9);
+  assert.ok(Math.abs(s.eusdDepegFractionAt(14) - 0.2) < 1e-9);
+
+  // The collateral price is untouched: this event moves a stablecoin's market, not ETH.
+  assert.equal(s.at(12).wethMult, 1);
+});
+
+test("a run with no eusdDepeg never asks for one", () => {
+  const s = new EventSchedule([FIXED_CRASH], 1, 20);
+  assert.equal(s.hasEusdDepeg(), false);
+  assert.equal(s.eusdDepegFractionAt(12), 0);
+});
+
+test("overlapping depegs add up rather than compounding", () => {
+  // Two actors each selling 40% of the pool have sold 80% of it, not 64%.
+  const s = new EventSchedule([FIXED_DEPEG, FIXED_DEPEG], 1, 20);
+  assert.ok(Math.abs(s.eusdDepegFractionAt(12) - 0.8) < 1e-9);
+});
+
+test("a depeg can be aligned with a crash, which is a different regime from either alone", () => {
+  const s = new EventSchedule(
+    [FIXED_CRASH, { ...FIXED_DEPEG, alignWith: "crash" }],
+    7,
+    40,
+  );
+  const crash = s.events[0];
+  assert.equal(s.events[1].startBlock, crash.startBlock);
+});
+
+test("selling the pool's entire eUSD side is refused: it is an outage, not a discount", () => {
+  assert.throws(
+    () =>
+      parseStressEvents(
+        '[{"type":"eusdDepeg","magnitudeRange":[0.5,1.0],"windowFrac":[0.3,0.7],"rampBlocks":1,"holdBlocks":1,"decayBlocks":1}]',
+      ),
+    /magnitudeRange max must be < 1/,
+  );
+  // And it needs a window like every other state event.
+  assert.throws(
+    () =>
+      parseStressEvents(
+        '[{"type":"eusdDepeg","magnitudeRange":[0.3,0.5],"windowFrac":[0.3,0.7],"rampBlocks":0,"holdBlocks":0,"decayBlocks":0}]',
+      ),
+    /positive total window/,
+  );
+});
+
 test("alignWith puts the pull on the crash's window rather than its own draw", () => {
   // Same range, independent draws: in a 360-block run the two windows are nowhere near each other.
   const wide: [number, number] = [0.25, 0.7];

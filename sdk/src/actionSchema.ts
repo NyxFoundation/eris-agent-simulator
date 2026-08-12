@@ -193,6 +193,118 @@ export const lstClaimWithdrawSchema = z.object({
   ...priorityFee,
 });
 
+// Liquity venue (issue #39). Collateral is denominated in WETH wei even though the protocol takes
+// native ETH -- the adapter unwraps -- so there is no `base` selector and no ETH/WETH choice to make.
+const liquityMaxFeeBps = z
+  .number()
+  .int()
+  .positive()
+  .max(10_000)
+  .optional()
+  .describe(
+    "slippage bound on the protocol fee, in bps. Both fee curves rise with use, so a bound that is too tight reverts. Default 500 (5%).",
+  );
+
+export const liquityOpenTroveSchema = z.object({
+  type: z.literal("liquityOpenTrove"),
+  collateralWethWei: decimalString.describe(
+    "WETH to unwrap and post as collateral (wei). It also has to leave enough native ETH behind to pay for gas.",
+  ),
+  debtEusdWei: decimalString.describe(
+    "eUSD to draw (wei). Booked debt is this plus the borrowing fee plus 200 eUSD of gas compensation, and the total must clear MIN_NET_DEBT (1,800 eUSD).",
+  ),
+  maxFeeBps: liquityMaxFeeBps,
+  ...priorityFee,
+});
+
+export const liquityAdjustTroveSchema = z.object({
+  type: z.literal("liquityAdjustTrove"),
+  addCollateralWethWei: decimalString
+    .optional()
+    .describe("WETH to unwrap and add as collateral (wei)."),
+  withdrawCollateralWei: decimalString
+    .optional()
+    .describe("collateral to take back out, paid in native ETH (wei)."),
+  debtChangeEusdWei: decimalString
+    .optional()
+    .describe("eUSD to draw or repay (wei); set isDebtIncrease to say which."),
+  isDebtIncrease: z
+    .boolean()
+    .optional()
+    .describe(
+      "true draws more eUSD, false repays. Required with a debt change.",
+    ),
+  maxFeeBps: liquityMaxFeeBps,
+  ...priorityFee,
+});
+
+export const liquityCloseTroveSchema = z.object({
+  type: z.literal("liquityCloseTrove"),
+  ...priorityFee,
+});
+
+export const liquityRedeemSchema = z.object({
+  type: z.literal("liquityRedeem"),
+  amountEusdWei: decimalString.describe(
+    "eUSD to redeem for collateral at the oracle price (wei). Worth doing when eUSD trades below par by more than redemptionRateBps.",
+  ),
+  maxIterations: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe("cap on how many Troves the redemption walks. 0 = no cap."),
+  maxFeeBps: liquityMaxFeeBps,
+  ...priorityFee,
+});
+
+export const liquityProvideToSpSchema = z.object({
+  type: z.literal("liquityProvideToSP"),
+  amountEusdWei: decimalString.describe(
+    "eUSD to deposit into the Stability Pool (wei). It absorbs liquidated debt and pays out the collateral at a discount.",
+  ),
+  ...priorityFee,
+});
+
+export const liquityWithdrawFromSpSchema = z.object({
+  type: z.literal("liquityWithdrawFromSP"),
+  amountEusdWei: decimalOrMax.describe(
+    'eUSD to withdraw (wei), or "max". "0" claims the accrued ETH gain without touching the deposit.',
+  ),
+  ...priorityFee,
+});
+
+export const liquityLiquidateSchema = z.object({
+  type: z.literal("liquityLiquidate"),
+  borrowers: z
+    .array(hexString)
+    .optional()
+    .describe("specific Trove owners to liquidate."),
+  maxTroves: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "instead of naming owners, sweep this many of the riskiest Troves.",
+    ),
+  ...priorityFee,
+});
+
+export const liquitySwapEusdSchema = z.object({
+  type: z.literal("liquitySwapEusd"),
+  tokenIn: z
+    .enum(["USDC", "EUSD"])
+    .describe(
+      'the token you are sending: "USDC" buys eUSD from the pool, "EUSD" sells into it.',
+    ),
+  amountIn: decimalString.describe(
+    "units of tokenIn (USDC is 6-decimal, eUSD is 18-decimal)",
+  ),
+  slippageBps: z.number().int().nonnegative().optional(),
+  ...priorityFee,
+});
+
 const rawTxSchema = z.object({
   to: hexString,
   data: hexString,
@@ -234,6 +346,16 @@ const LEAF_SCHEMAS_BY_PROTOCOL: Record<ProtocolId, z.ZodTypeAny[]> = {
     lstSwapSchema,
     lstRequestWithdrawSchema,
     lstClaimWithdrawSchema,
+  ],
+  liquity: [
+    liquityOpenTroveSchema,
+    liquityAdjustTroveSchema,
+    liquityCloseTroveSchema,
+    liquityRedeemSchema,
+    liquityProvideToSpSchema,
+    liquityWithdrawFromSpSchema,
+    liquityLiquidateSchema,
+    liquitySwapEusdSchema,
   ],
 };
 

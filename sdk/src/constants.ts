@@ -203,6 +203,102 @@ export function requireLst(): LstDeployment {
 }
 
 // ---------------------------------------------------------------------------
+// Liquity V1 as the CDP stablecoin venue, issuing eUSD (issue #39).
+//
+// Like the LST vault this has no Arbitrum counterpart to point at -- the core is deployed by the
+// bundled deployer and baked into the ADR 0016 state dump -- so it is null on a fork and a run that
+// enables the liquity protocol without local deploy fails fast rather than reading zeros.
+//
+// eUSD is deliberately absent from TOKENS. Registering it as a stable would price it at $1 in the
+// scorer's spot sweep, which is exactly the phantom value a depegged CDP stablecoin must not be
+// credited with; the adapter marks it at what the market would pay instead (see TokenKind).
+// ---------------------------------------------------------------------------
+export type LiquityDeployment = {
+  troveManager: Address;
+  borrowerOperations: Address;
+  stabilityPool: Address;
+  sortedTroves: Address;
+  activePool: Address;
+  defaultPool: Address;
+  collSurplusPool: Address;
+  gasPool: Address;
+  hintHelpers: Address;
+  // Computes a redemption's hints inside the transaction that uses them. Liquity checks a partial
+  // redemption against a hint derived from the execution price, and this environment moves the
+  // oracle every block, so an off-chain hint is stale before it lands (see the contract's notes).
+  // Absent on a deployment that predates it, in which case redemption is unavailable rather than
+  // silently reverting.
+  redemptionHelper?: Address;
+  // The LiquityPriceFeedAdapter, not the run's PriceFeed: Liquity renounces ownership, so the
+  // address baked into TroveManager is permanent and each run repoints this one at its own feed.
+  priceFeed: Address;
+  eusd: Address;
+  lqtyToken: Address;
+  lqtyStaking: Address;
+  communityIssuance: Address;
+  // The eUSD/USDC stableswap-ng market. Absent when the deploy had no curve factory to host it, in
+  // which case the venue still works and only the peg has nowhere to trade.
+  eusdUsdcPool?: Address;
+  eusdIndex?: number;
+  usdcIndex?: number;
+  // The pool's stable leg, which is the run's USDC.
+  stable?: Address;
+};
+
+export const LIQUITY: LiquityDeployment | null = L?.LIQUITY ?? null;
+
+export function requireLiquity(): LiquityDeployment {
+  if (!LIQUITY)
+    throw new Error(
+      "the liquity venue is not deployed in this environment: it exists only under local deploy " +
+        "(issue #39). Drop liquity from run.protocols to use a fork.",
+    );
+  return LIQUITY;
+}
+
+// The redemption helper, or a fail-fast naming what to do about it. Redemption is the venue's
+// headline trade, so "the deployment has no helper" must not read as "the redemption failed".
+export function requireRedemptionHelper(): Address {
+  const l = requireLiquity();
+  if (!l.redemptionHelper) {
+    throw new Error(
+      "this liquity deployment has no LiquityRedemptionHelper: redemptions need their hints " +
+        "computed at execution (the oracle moves every block), so redeem it through a deployment " +
+        "that includes it — redeploy with `cd deployer && npm run deploy -- --keep-fresh`.",
+    );
+  }
+  return l.redemptionHelper;
+}
+
+// The eUSD market, or a fail-fast when the deploy produced none. Kept separate from the deployment
+// because a Trove and the Stability Pool work without a market -- only the peg needs one.
+export function requireEusdMarket(): {
+  pool: Address;
+  eusdIndex: number;
+  usdcIndex: number;
+  stable: Address;
+} {
+  const l = requireLiquity();
+  if (
+    !l.eusdUsdcPool ||
+    l.eusdIndex === undefined ||
+    l.usdcIndex === undefined ||
+    !l.stable
+  ) {
+    throw new Error(
+      "the liquity deployment has no eUSD/USDC market: the deploy ran without a curve factory to " +
+        "host it (deployer/src/protocols/liquity.ts seedEusdPool). Redeploy with curve enabled.",
+    );
+  }
+  return {
+    pool: l.eusdUsdcPool,
+    eusdIndex: l.eusdIndex,
+    usdcIndex: l.usdcIndex,
+    stable: l.stable,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Market leg registry (ADR 0013). Venue-specific leg per protocol × base.
 // The fork default is WETH/USDC only (built from the existing venue constants). Under local-deploy,
 // genLocalConstants overlays a MARKET_LEGS that adds WBTC etc. (L?.MARKET_LEGS).

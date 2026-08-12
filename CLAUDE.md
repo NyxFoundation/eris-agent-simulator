@@ -79,7 +79,7 @@ agents:
 - `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
 - `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積で、シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（シナリオ × agent の生スコア。**netPnlUsdc と alphaUsdc の両方**）と `standings.json`（レジーム内 z-score → レジーム等重み平均）を書く。順位は派生物で、採点方法は将来見直す前提（matrix.json から再計算できる）。`--metric netPnlUsdc|alphaUsdc` / `--repeat N`（較正の診断用。採点は 1 回が既定）
-  - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）。`depeg` は issue #39 → #27 待ち。`lst` は競技セット外
+  - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）。`depeg`（レジストリの stable を外す方）は issue #27 待ち。`lst` / `liquity` は競技セット外（venue 単体検証用）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
@@ -154,6 +154,52 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 - **USDC 建て採点では LST 保有戦略は構造的に β で不利**（実測: noop 0 > lst-carry −203 > lst-carry-wide −233、
   一方で WETH を持たない venue-arb は +115）。alphaUsdc は free inventory の β しか除去せず、
   LST ポジションは live mark のため。ETH 建て採点（DAT 型）が issue #38 の motivation で follow-on
+
+### CDP stablecoin venue（Liquity V1 フォーク = eUSD。issue #39。既定 off・**ローカルデプロイ専用**）
+
+Liquity V1 の core を**無改変**でフォークした CDP（`deployer/src/protocols/liquity.ts`）。Recovery Mode・
+再分配・sorted list・2 本の動的手数料がそのまま入っているので、他 venue に無い skill が 4 つ増える:
+
+- **redemption arb** — eUSD は常に「最もリスクの高い Trove に対して $1 分の担保」と交換できる。よって
+  eUSD/USDC プールのディスカウントは**プロトコルが強制する価格に対する乖離**であって価格予想ではない（ADR 0007 の α 方向）
+- **Stability Pool** — eUSD を預けて清算債務を吸収し担保を割引で受け取る
+- **Recovery Mode** — system TCR が CCR(150%) を割ると全員の清算リスクが同時に動く（Aave の per-position HF と対照的）
+- **sorted list 上の位置** — 償還は最下位 ICR から walk するので、借り手は「自分の前にどれだけ債務があるか」を守る
+
+ours なのは 2 つだけ（core は無改変）:
+- `LiquityPriceFeedAdapter` — Liquity は wiring 後に ownership を renounce するのでオラクルアドレスは永久固定。
+  一方 run は毎回新しい PriceFeed を deploy するので、その間に挟んで admin key で毎 run 差し替える
+- `LiquityRedemptionHelper` — **部分償還のヒントは実行時価格に依存する**（`_redeemCollateralFromTrove` が
+  執行価格から NICR を再計算してヒントと一致しなければ partial を cancel）。環境はブロック毎にオラクルを
+  書き、しかも agent より先に入るので、オフチェーンで計算したヒントは構造的に必ず陳腐化する
+  （venue の初回 live run で全償還が `Unable to redeem any amount` で revert して判明）。helper は
+  `fetchPrice()` で価格を確定させた同一 tx 内でヒントを計算する。periphery であって core の改変ではない
+
+- **eUSD は TOKENS レジストリに入れない**。stable として登録すると scorer の spot 掃引が $1 で評価してしまい、
+  デペグした CDP stablecoin に phantom value を与える（issue #39 が名指しで禁じている失敗）。
+  アダプタが**プールの約定価格**で評価する（mark = probe サイズの両側 mid / realizable = 自分サイズの
+  get_dy と、債務は get_dx で買い戻しコスト）。gas compensation 200 eUSD は借り手の負債ではないので差し引く。
+  ICR<100% の Trove は 0 で clamp（担保を捨てて歩き去れる = CDP の実際の性質）
+- **担保は native ETH**（core が `msg.value` で受ける）。action 側は WETH wei 建てで、`buildTxs` が
+  `WETH.withdraw` を前置する。ただし**ガスと同じ残高**なので、全部突っ込むと閉じる tx すら送れなくなる。
+  observation に `ethBalanceWei` / `suggestedGasReserveWei` を出すが**強制はしない**（self-stranding は正当な負け）
+- action は 8 つ: `liquityOpenTrove` / `liquityAdjustTrove` / `liquityCloseTrove` / `liquityRedeem` /
+  `liquityProvideToSP` / `liquityWithdrawFromSP` / `liquityLiquidate` + `liquitySwapEusd`。
+  最後の 1 つは issue #39 の列挙には無いが、**venue 自身の α（デペグを買って償還する）が届かなくなる**ため追加
+- **`eusdDepeg` ストレスイベント**（`stress.events`）— プールは par で seed されるので、放っておくと
+  redemption arb は「何もしないのが正解」になる。環境（deployer アカウント = genesis Trove の余剰 eUSD 保有者）が
+  窓の間だけ eUSD を売り、閉じたら買い戻す。liquidityPull と同じ**毎ブロック目標へ reconcile** 方式
+  （一撃だと dropped block で取り残される）。magnitude は「プールの seeded eUSD depth の何割を売ったか」
+- **較正**（実測。100k/100k・A=100 のプール）: 40k 売却で 114bps / 50k で 175bps / 60k で 282bps。
+  償還手数料 floor 50bps + 償還 ETH を USDC に戻す ~30bps を超えて初めて α になる。
+  プールの A は 2000 ではなく **100**（A=2000 だと半分売っても 4.4bps しか動かず、償還手数料を永久に超えない）。
+  eUSD 供給 250k に対し baseRate は 5k 償還ごとに約 +100bps 上がるので、**先に償還した者が後続の価格を決める**
+- coordinator は `liquity_setup`（オラクル差し替えと drift 検証。Recovery Mode 開幕やデペグ済みチェーンは fail-fast）/
+  `liquity_block`（毎ブロックの peg・TCR・手数料・最下位 ICR）/ `stress_eusd_depeg`（+ `_setup` / `_capped` /
+  `_failed` / `_restored`）を emit する
+- 設定例は `config/liquity.yaml`、レジームは `config/regimes/liquity.yaml`、参照 agent は
+  `example/agents/redemption-arb/`（`agent.ts` + `improve.md`。ADR 0018 で prompt.md は廃止済みなので
+  issue #39 の「両方積む」要求はこの形に読み替え）
 
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 

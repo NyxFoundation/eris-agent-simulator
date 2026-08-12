@@ -42,10 +42,14 @@ const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 const GENESIS_PRICE_USD = 3000n;
 
 /// The genesis Trove. Deliberately over-collateralized: it is not a participant, and it exists to
-/// mint the eUSD that seeds the market. At 225% it is also the *last* Trove redemptions would
+/// mint the eUSD that seeds the market. At 300% it is also the *last* Trove redemptions would
 /// reach, so agent-opened Troves are what redemption arb actually competes over.
-const GENESIS_COLL_ETH = 150n;
-const GENESIS_DEBT_EUSD = 200_000n; // 150 * 3000 / 200000 = 225% ICR
+///
+/// It mints more than the market and the Stability Pool need, and the surplus is the point: eUSD
+/// only exists if it came out of a Trove, so the environment's own inventory -- what the `eusdDepeg`
+/// stress event sells to push the peg off par (issue #39 phase 5) -- has to be minted here too.
+const GENESIS_COLL_ETH = 250n;
+const GENESIS_DEBT_EUSD = 250_000n; // 250 * 3000 / 250000 = 300% ICR
 
 /// How the minted supply is placed. What is left stays with the deployer, which is where the
 /// coordinator can draw from if a run needs to top anything up.
@@ -61,8 +65,17 @@ const BOOTSTRAP_SECONDS = 14n * 24n * 60n * 60n + 3600n;
 /// 0.5% floor; this is only the slippage bound on it.
 const MAX_BORROW_FEE = parseEther("0.05");
 
-// Curve plain-pool parameters, matched to the USDC/DAI pool the factory already hosts.
-const A = 2000n;
+// Curve plain-pool parameters. Everything but the amplification matches the USDC/DAI pool the
+// factory already hosts.
+//
+// A is 100 rather than that pool's 2000, and it is the one number here that had to be measured
+// rather than copied. Redemption costs a 0.5% floor fee, so the venue's α exists only when eUSD
+// trades more than 50bps below par -- and at A=2000 a 100k/100k pool moves 4.4bps when *half* its
+// eUSD side is sold (measured on chain). No plausible flow could ever open the trade. At A=100 the
+// same pool moves 22bps on a 10k sale and 114bps on 40k, which keeps the stableswap's peg-then-cliff
+// shape -- eUSD is sticky near par and gives way when it is really pushed -- at a scale agents
+// holding 25k of capital can actually interact with.
+const A = 100n;
 const FEE = 1_000_000n; // 0.01%
 const OFFPEG = 20_000_000_000n;
 const MA_EXP_TIME = 866n;
@@ -271,6 +284,25 @@ export async function deployLiquityVenue({ seed }: { seed: boolean }) {
   ]);
   ok("wiring", "core + LQTY connected");
 
+  // Periphery: computes a redemption's hints inside the transaction that uses them. Liquity checks
+  // a partial redemption against a hint derived from the *execution* price, and this environment
+  // moves the oracle every block, so hints computed off-chain are stale by construction and every
+  // redemption reverts (measured on the venue's first live run). See the contract's own notes.
+  const redemptionHelperArtifact = loadForgeArtifact(
+    "LiquityRedemptionHelper",
+    "LiquityRedemptionHelper",
+  );
+  const redemptionHelperHash = await deployerWallet.deployContract({
+    abi: redemptionHelperArtifact.abi,
+    bytecode: redemptionHelperArtifact.bytecode,
+    args: [troveManager, hintHelpers, sortedTroves, priceFeed, eusd],
+    account: dep,
+    chain: anvilChain,
+  });
+  const redemptionHelper = (await waitTx(redemptionHelperHash))
+    .contractAddress as Address;
+  ok("LiquityRedemptionHelper", redemptionHelper);
+
   setProtocol("liquity", {
     troveManager,
     borrowerOperations,
@@ -282,6 +314,7 @@ export async function deployLiquityVenue({ seed }: { seed: boolean }) {
     gasPool,
     hintHelpers,
     priceFeed,
+    redemptionHelper,
     eusd,
     lqtyToken,
     lqtyStaking,
