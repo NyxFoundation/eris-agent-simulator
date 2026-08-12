@@ -215,9 +215,10 @@ ours なのは 2 つだけ（core は無改変）:
   対する防御）/ `sp-underwriter`（Stability Pool で清算を吸収し、自分で `liquidate` を叩いて担保を取る）。
   借り手の防御が効くかは**借りた eUSD を使ったかどうか**で決まる（`ERIS_TROVE_SPEND_DEBT`）。実測で
   200% 保持組は無傷、125% で全額 post して eUSD を売った組は清算され −13,140（担保 20 ETH を失い USDC を残す）
-- **Recovery Mode は現状の較正では到達不能**。genesis Trove が 250 ETH / 250k eUSD（300%）で TCR を支配し、
-  22% crash でも TCR ≈ 2.7 のまま。到達させるには genesis の較正を変える必要があり、それは他の全レジームの
-  venue 性格も変えるので、別途の判断事項として残す
+- **Recovery Mode は現状の較正では到達不能**（実測: seed 501 で最小 TCR 2.244 対 CCR 1.5）。genesis Trove
+  が 250 ETH / 250k eUSD（300%）で TCR を支配するため。到達させるには system 債務を約 3 倍にする必要があり、
+  それは償還手数料カーブ（供給に反比例。250k で 5k 償還あたり +100bps → 700k なら +36bps）と SP の相対深度
+  （RM の清算は SP が債務を全額吸収できる場合のみ成立）を必ず薄める。**issue #59** に分離
 - **LQTY は意図どおり「値付けしないが見える」**: SP 預入で LQTY gain が付き、run 後に
   `scoring_unpriced_holdings` に `erc20-unaccounted` として 61.3 LQTY が報告された（黙って 0 にしていない）
 - 設定例は `config/liquity.yaml`、レジームは `config/regimes/liquity.yaml`（α 側）と

@@ -18,9 +18,10 @@
 #
 # **Recovery Mode is not reachable here** and the regime does not pretend otherwise. The genesis
 # Trove is 250 ETH against 250k eUSD (300% ICR) and dwarfs anything agents can open with this
-# funding, so the system TCR stays near 2.7 through a 22% crash. Exercising it means changing the
-# genesis calibration in the deployer, which changes the venue for every other regime too -- a
-# decision worth taking on its own rather than as a side effect of this file.
+# funding: measured at seed 501, the system TCR bottoms at 2.244 against a CCR of 1.5. Reaching it
+# needs the system's debt roughly tripled, which dilutes the redemption fee curve and the Stability
+# Pool's relative depth -- both of them properties #39 measured -- so it is issue #59 rather than a
+# constant in this file.
 
 run:
   blocks: 120
