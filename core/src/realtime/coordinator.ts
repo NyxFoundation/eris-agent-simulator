@@ -69,6 +69,10 @@ import {
 } from "./priceFeed.js";
 import { reconstructValueSeries } from "./reconstruct.js";
 import {
+  scoreEpochSeriesByAgent,
+  type EpochScore,
+} from "../scoring/epochScore.js";
+import {
   NoArbMonitor,
   noArbFindings,
   STARTUP_FAIL_BPS,
@@ -1749,6 +1753,7 @@ export async function runRealtimeSimulation(
     // agent -> realizable value at the last cross-section, where it differs from the mark
     // (issue #38: an LST redemption still in the queue when the run ends).
     let liquidatableValueByAgent: Record<string, number> = {};
+    let epochScores: Record<string, EpochScore> | undefined;
     if (finalBlock >= runStartBlock) {
       try {
         const meta = await reconstructValueSeries({
@@ -1767,6 +1772,8 @@ export async function runRealtimeSimulation(
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
         liquidatableValueByAgent = meta.liquidatableValueByAgent;
+        if (meta.epochSeries)
+          epochScores = scoreEpochSeriesByAgent(meta.epochSeries.valuesByAgent);
         logger.event({ type: "value_series_reconstructed", ...meta });
       } catch (err) {
         // The reconstruction refuses a cross-section it cannot read rather than emitting a cliff in
@@ -1906,6 +1913,11 @@ export async function runRealtimeSimulation(
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
       valueSeries,
+      // ADR 0019's score, derived from the epoch series in the same summary so it can be recomputed
+      // when lambda or the epoch length changes. The denominator is this run's epoch count: every
+      // agent shares the boundaries here, which is what "fixed across the field" asks for (the live
+      // competition pins it at 42 because a participant can join or die mid-week).
+      ...(epochScores ? { epochScores } : {}),
       violations,
       agents: agentsSummary,
     });
