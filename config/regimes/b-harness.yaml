@@ -1,0 +1,112 @@
+# config/regimes/b-harness.yaml — one week at the shape ADR 0019 scores it (issue #56)
+#
+# Run: npm run backtest -- --regime b-harness --seed 801
+#
+# Not a market character like the other regimes. This is the calibration harness for the competition
+# metric: the only place the provisional numbers in ADR 0019 can be measured, because they are all
+# properties of a *series*, not of a run's endpoints.
+#
+#   lambda = 0.25       is it a hurdle that real strategies clear, or one nobody clears?
+#   epoch  = 4h         does an epoch contain enough activity for its return to mean anything?
+#   1 ETH of gas        does a week of trading fit inside the reserve?
+#
+# Shape: 42 epochs of 12 blocks = 504 blocks. The epoch length is blocks rather than hours because an
+# anvil run has no simulated clock (ADR 0019 §8); 12 leaves room for G7's 5-block median window and
+# keeps the run inside anvil's ~1,050 block history retention, so the existing post-run
+# reconstruction still works.
+#
+# Funding is the §6 distribution, and this file is the only place it lives. The 7 official regimes
+# keep their 100 ETH + 25k, because they are the participants' practice harness and changing their
+# funding would break comparison with every stored matrix. Measured on depeg#701: under the old
+# distribution all four agents' std_e agreed to within 1.1% (they were all just ETH's volatility) and
+# noop scored -1.963e-3; under this one the spread is 199.9% and noop comes back to -6.18e-5.
+#
+# Three depeg windows rather than one. A week in the live competition is a schedule of injected
+# events, not a single incident, and a metric with a std term has to be measured against a series
+# that actually varies. The windows are drawn independently from the seed, so their spacing is a
+# property of the scenario rather than of this file.
+
+run:
+  blocks: 504 # 42 epochs x 12 blocks
+  seconds: 2400 # a stress run ends by block count anyway (ADR 0009); this is only a backstop
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  epochBlocks: 12 # ADR 0019 §8
+  markMedianBlocks: 5 # G7's window, ending at the boundary
+  # curve is not optional: it owns the stableSwap action, which is the only way to trade the pair.
+  protocols: [uniswap, balancer, curve, aave]
+  economicGas: true # ADR 0011: gas is a real cost against a 1 ETH reserve
+  localDeploy: true # the DAI/USDC pool is one the deployer seeded; a fork has no such thing
+  reportDir: ./runs
+
+funding:
+  ethWei: "1000000000000000000" # 1 ETH: gas reserve only (ADR 0019 §6)
+  wethWei: "0" # USDC-only, and now literally: nobody starts holding a stable with a market either
+  usdcUnits: "100000000000" # 100,000 USDC
+
+limits:
+  agentWethWei: "1000000000000000000"
+  # 5% of the endowment per round, not the 20% the practice regimes allow. Left as-is deliberately:
+  # ADR 0019 sends "should the caps scale with the endowment" to its open items, and on depeg#701
+  # neither agent hit the cap (zero rejected submissions), so raising it here would change the
+  # measurement for a constraint that was not binding.
+  agentUsdcUnits: "5000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+
+stress:
+  events:
+    # Same calibration as config/regimes/depeg.yaml: the pool is 100k/100k at A=100, where selling
+    # ~40% of the seeded DAI depth is ~114bps below par, 50% is ~175bps and 60% is ~282bps. The
+    # windows are spread over the run so that the epochs between them are quiet -- a week where every
+    # epoch is an opportunity would not tell us whether lambda separates anyone.
+    - {
+        type: depeg,
+        stable: DAI,
+        magnitudeRange: [0.35, 0.6],
+        windowFrac: [0.1, 0.25],
+        rampBlocks: 4,
+        holdBlocks: 12,
+        decayBlocks: 15,
+      }
+    - {
+        type: depeg,
+        stable: DAI,
+        magnitudeRange: [0.35, 0.6],
+        windowFrac: [0.4, 0.55],
+        rampBlocks: 4,
+        holdBlocks: 12,
+        decayBlocks: 15,
+      }
+    - {
+        type: depeg,
+        stable: DAI,
+        magnitudeRange: [0.35, 0.6],
+        windowFrac: [0.7, 0.85],
+        rampBlocks: 4,
+        holdBlocks: 12,
+        decayBlocks: 15,
+      }
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline). Its score is the hurdle every other agent has to clear
+  - id: peg-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: buys DAI below par and sells it back as the peg recovers
+  - id: peg-arb-eager
+    dir: peg-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: the same strategy that buys a shallower discount and holds for par
+    env: { ERIS_PEG_ARB_BUY_BPS: "10", ERIS_PEG_ARB_SELL_BPS: "0" }
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)

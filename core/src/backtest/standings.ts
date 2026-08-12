@@ -26,6 +26,12 @@ export type AgentScore = {
   id: string;
   netPnlUsdc?: number;
   alphaUsdc?: number;
+  // The two cross-sections the metrics above are differences of. Carried into matrix.json because
+  // the run directories do not survive: of the 30 runs in the 2026-08-09 sweep, 5 had already lost
+  // theirs, and with only the differences stored there was no way to recompute a score under a
+  // changed rule -- which is the whole premise of standings.json being a derivative (ADR 0017 §4).
+  initialValueUsdc?: number;
+  finalValueUsdc?: number;
   // Set when the agent must not be credited with a score for this scenario: it broke a rule, its
   // process died, or it never reported. The reason is carried through to the report.
   disqualified?: string;
