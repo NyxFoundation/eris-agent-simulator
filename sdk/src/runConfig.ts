@@ -76,6 +76,7 @@ const SCHEMA: Record<string, string> = {
   "run.skipReset": "ERIS_SKIP_RESET",
   "run.prewarmBlocks": "ERIS_PREWARM_BLOCKS",
   "run.scoreEvery": "ERIS_SCORE_EVERY",
+  "run.epochBlocks": "ERIS_EPOCH_BLOCKS",
   "run.reportDir": "REPORT_DIR",
   "run.flashArb": "ERIS_FLASH_ARB",
   "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",

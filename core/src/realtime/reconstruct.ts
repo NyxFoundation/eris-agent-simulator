@@ -77,6 +77,23 @@ export type ReconstructionMeta = {
   // Holdings excluded from the value series because they could not be priced (issue #41) or could not
   // be read (issue #44).
   unpricedHoldings: UnpricedHolding[];
+  // The value cross-sections at epoch boundaries (ADR 0019 §1). Absent when the run is shorter than
+  // one epoch or the series is disabled (run.epochBlocks: 0).
+  //
+  // Raw values, not returns or scores: the metric (floor, log returns, mean - lambda*std) is meant to
+  // stay recomputable from stored data when lambda or the epoch length changes, the same way
+  // standings.json is derived from matrix.json (ADR 0017 §4).
+  epochSeries?: EpochSeries;
+};
+
+export type EpochSeries = {
+  epochBlocks: number;
+  // Number of returns the series supports = boundaryBlocks.length - 1.
+  epochs: number;
+  boundaryBlocks: number[];
+  // agent -> value at each boundary, aligned with boundaryBlocks. `null` marks a boundary whose
+  // cross-section did not report that agent, so a gap is never read as a value of zero.
+  valuesByAgent: Record<string, Array<number | null>>;
 };
 
 // A contract/function whose reads failed during the reconstruction, and how often.
@@ -634,6 +651,28 @@ export function scoringBlocks(
   return blocks;
 }
 
+// Blocks the epoch series is sampled at (ADR 0019 §1/§8). E epochs need E+1 boundaries, so the run's
+// start is boundary 0 and the returned array is one longer than the epoch count.
+//
+// A trailing partial epoch is dropped rather than scored short: a window shorter than the others
+// produces a smaller log return by construction, which the metric would read as the agent slowing
+// down. Dropping it costs at most `epochBlocks - 1` blocks of a run that was not sized for the epoch
+// length in the first place.
+//
+// These are *not* forced to coincide with scoringBlocks: with `scoreEvery > 1` the thinned series can
+// skip a boundary, so the caller reads the union of the two.
+export function epochBoundaryBlocks(
+  fromBlock: number,
+  toBlock: number,
+  epochBlocks: number,
+): number[] {
+  const step = Math.floor(epochBlocks);
+  if (!Number.isFinite(step) || step < 1) return [];
+  const epochs = Math.floor((toBlock - fromBlock) / step);
+  if (epochs < 1) return [];
+  return Array.from({ length: epochs + 1 }, (_, i) => fromBlock + i * step);
+}
+
 export async function reconstructValueSeries(opts: {
   publicClient: PublicClient;
   logger: RunLogger;
@@ -645,6 +684,8 @@ export async function reconstructValueSeries(opts: {
   toBlock: number;
   // Read a cross-section only every Nth block (config.scoreEvery). Score-neutral; see scoringBlocks.
   scoreEvery?: number;
+  // Epoch length for the ADR 0019 value series (config.epochBlocks). 0 = do not produce the series.
+  epochBlocks?: number;
 }): Promise<ReconstructionMeta> {
   const {
     publicClient,
@@ -656,6 +697,7 @@ export async function reconstructValueSeries(opts: {
     fromBlock,
     toBlock,
     scoreEvery = 1,
+    epochBlocks = 0,
   } = opts;
   const started = Date.now();
   let failedReads = 0;
@@ -705,7 +747,22 @@ export async function reconstructValueSeries(opts: {
   // at another, and collapsing those into one entry would hide half the story.
   const unpricedKey = (h: UnpricedHolding) =>
     `${h.agentId}|${h.source}|${h.token?.toLowerCase() ?? ""}|${h.reason ?? "unpriced"}`;
-  const blocks = scoringBlocks(fromBlock, toBlock, scoreEvery);
+  // Epoch boundaries are read even when the rest of the series is thinned: they are the score, the
+  // thinned cross-sections are only the equity curve.
+  const boundaryBlocks = epochBoundaryBlocks(fromBlock, toBlock, epochBlocks);
+  const boundaryIndex = new Map(boundaryBlocks.map((b, i) => [b, i]));
+  const epochValuesByAgent = new Map<string, Array<number | null>>(
+    agents.map((a) => [
+      a.id,
+      Array.from({ length: boundaryBlocks.length }, () => null),
+    ]),
+  );
+  const blocks = [
+    ...new Set([
+      ...scoringBlocks(fromBlock, toBlock, scoreEvery),
+      ...boundaryBlocks,
+    ]),
+  ].sort((a, b) => a - b);
   if (scoreEvery > 1)
     logger.event({
       type: "scoring_thinned",
@@ -737,6 +794,12 @@ export async function reconstructValueSeries(opts: {
       alphaLast.set(id, alphaValueUsdc);
       liquidatableLast.set(id, liquidatableValueUsdc);
       markedLast.set(id, total);
+      // ADR 0019 §3: the epoch series is the ordinary live mark, not alphaValueUsdc. Its β removal is
+      // partial (free inventory is held at the reference fair while protocol positions stay live), so
+      // scoring on it would price the same bet differently depending on the instrument.
+      const epochAt = boundaryIndex.get(b);
+      const epochValues = epochValuesByAgent.get(id);
+      if (epochAt !== undefined && epochValues) epochValues[epochAt] = total;
       // The observation shape readPerRoundValues reads (inventory.valueUsdc = total value).
       // Do not include protocols (avoids double-counting perRoundValueUsdc). alphaValueUsdc is
       // the fixed-reference fair evaluation (β-removed) and can also be read as a per-round α series.
@@ -829,6 +892,27 @@ export async function reconstructValueSeries(opts: {
     );
   }
 
+  const epochSeries: EpochSeries | undefined =
+    boundaryBlocks.length > 1
+      ? {
+          epochBlocks: Math.floor(epochBlocks),
+          epochs: boundaryBlocks.length - 1,
+          boundaryBlocks,
+          valuesByAgent: Object.fromEntries(epochValuesByAgent),
+        }
+      : undefined;
+  if (epochSeries) {
+    const gaps = Object.values(epochSeries.valuesByAgent).reduce(
+      (n, series) => n + series.filter((v) => v === null).length,
+      0,
+    );
+    if (gaps > 0)
+      console.warn(
+        `[reconstruct] epoch series has ${gaps} missing boundary value(s); ` +
+          "a null is a boundary that reported no value, not a value of zero",
+      );
+  }
+
   return {
     source: "post-run-reconstruction",
     granularityBlocks: scoreEvery,
@@ -843,6 +927,7 @@ export async function reconstructValueSeries(opts: {
     alphaByAgent,
     liquidatableValueByAgent,
     unpricedHoldings,
+    ...(epochSeries ? { epochSeries } : {}),
   };
 }
 

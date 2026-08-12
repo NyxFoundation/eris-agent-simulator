@@ -104,6 +104,12 @@ export type SimConfig = {
   // events.jsonl. The first and last blocks are always read. 1 (default) = every block.
   // Used to cut reconstruction cost when replaying a whole scenario matrix (ADR 0017 §3).
   scoreEvery: number;
+  // Length of a scoring epoch in blocks (ERIS_EPOCH_BLOCKS; 0 disables the series). ADR 0019 scores a
+  // log-return series sampled at epoch boundaries rather than the run's endpoints. On the live chain a
+  // boundary is a real-time 4h mark, but an anvil run has no simulated clock, so the calibration
+  // harness counts blocks: 12/epoch, which leaves room for G7's per-boundary median window and keeps a
+  // 42-epoch week (504 blocks) inside anvil's ~1,050 block history retention (ADR 0019 §8).
+  epochBlocks: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -314,6 +320,7 @@ export function loadConfig(env = process.env): SimConfig {
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
+    epochBlocks: Math.max(0, intEnv(env.ERIS_EPOCH_BLOCKS, 12)),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),
