@@ -126,10 +126,15 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   oracle tx と**同じ admin nonce の直列**で叩く（並列にすると nonce 衝突でレートが凍る）
 - **プールの rate oracle 配線が要**（`stEthPerToken()` を asset_type=1 で登録）。未配線だとレート上昇が全員に開かれた
   無リスク裁定になる（ADR 0007 を毀損）。deploy 時 assert + 起動時 `lst_setup` で乖離 200bps 超は fail-fast
-- **採点は realizable**（`sdk/src/protocols/lst.ts` `realizableWethWei`）: shares は「今プールで売った額」と
-  「run 終了までに finalize するキューの par」の**良い方**。run 終了後にしか claim できない pending は価値から外し
-  `reason:"unrealizable"` で `scoring_unpriced_holdings` に報告する（黙って 0 にしない）。#41 の staged-read
-  インターフェース（`valueAtBlock` / `liquidatableValueUsdc` / `ValuationContext.horizonBlock`）の最初の消費者
+- **マークが 2 本ある**（`sdk/src/protocols/lst.ts`）。**採点が合計するのは `valueUsdc` = face value**
+  （`shareAssets + claimable + reachable + unreachable` × WETH fair = vault が負う par）。
+  `realizableWethWei`（「今プールで売った額」と「run 終了までに finalize するキューの par」の**良い方**）は
+  `liquidatableValueUsdc` に入り、**マークと差が出た agent だけ報告される診断値**。run 終了後にしか claim
+  できない pending は realizable 側からは外れて `reason:"unrealizable"` で `scoring_unpriced_holdings` に
+  報告されるが、**採点側の par には含まれている**。#41 の staged-read インターフェース
+  （`valueAtBlock` / `liquidatableValueUsdc` / `ValuationContext.horizonBlock`）の最初の消費者。
+  **どちらを採点に使うかは未決**: #38 の意図は realizable、現行実装は par（ADR 0019 §3 が採点の基礎に
+  「通常の live mark」を選んだ結果でもある）。`lst` が競技セットに入る前に決める
 - **Phase 2（選択を非自明にする）実装済み**。`config/lst.yaml` の `lst:` / `stress:` に較正例:
   - **APY 変動** — `lst.apyRangeBps` + `apyStepBlocks` で seed 由来 Rng（独立 salt）から N ブロックごとに再サンプル
     → coordinator が `setRewardRate`。固定利回りだと「block 0 で全ステーク」が恒久最適になるため
