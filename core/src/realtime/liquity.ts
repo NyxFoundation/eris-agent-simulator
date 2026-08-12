@@ -16,7 +16,11 @@
 // coordinator drops block notifications while it is busy, so a state that is re-derived every block
 // costs a block of lag where a one-shot would strand the pool.
 import { encodeFunctionData, maxUint256, type Address, type Hex } from "viem";
-import { curveStableSwapNgAbi, erc20Abi } from "@eris/sdk/abis.js";
+import {
+  curveStableSwapNgAbi,
+  erc20Abi,
+  troveManagerAbi,
+} from "@eris/sdk/abis.js";
 import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
 import { liquityPriceFeedAdapterAbi } from "@eris/sdk/abis.js";
 import { LIQUITY, requireEusdMarket } from "@eris/sdk/constants.js";
@@ -210,6 +214,82 @@ export function liquityBlockEvent(
     stabilityPoolEusdWei: state.spTotalDepositsEusdWei.toString(),
     riskiestIcr: state.troves[0]?.icr ?? null,
   };
+}
+
+/// What the venue actually did in a range of blocks, from its own logs.
+///
+/// The block telemetry above can only say that a Trove disappeared; it cannot say whether it was
+/// closed, redeemed away or liquidated. Issue #39's open question -- whether Liquity's ordering
+/// sensitivity needs special handling in an environment that rewrites the oracle every block ahead
+/// of every agent -- is a question about liquidations specifically, so it has to be counted rather
+/// than inferred.
+///
+/// Scanned over a range because the coordinator drops block notifications while it is busy, the same
+/// reason every other catch-up consumer here takes fromBlock..toBlock.
+export async function watchLiquityEvents(
+  ctx: SimContext,
+  fromBlock: number,
+  toBlock: number,
+  logger: RunLogger,
+): Promise<void> {
+  if (!LIQUITY || fromBlock > toBlock) return;
+  const range = {
+    address: LIQUITY.troveManager,
+    fromBlock: BigInt(fromBlock),
+    toBlock: BigInt(toBlock),
+  } as const;
+  const [liquidated, redeemed] = await Promise.all([
+    ctx.publicClient.getLogs({
+      ...range,
+      event: troveManagerAbi.find(
+        (e) => e.type === "event" && e.name === "TroveLiquidated",
+      ) as never,
+      strict: false,
+    }),
+    ctx.publicClient.getLogs({
+      ...range,
+      event: troveManagerAbi.find(
+        (e) => e.type === "event" && e.name === "Redemption",
+      ) as never,
+      strict: false,
+    }),
+  ]);
+  for (const raw of liquidated) {
+    const log = raw as unknown as {
+      args?: Record<string, unknown>;
+      blockNumber?: bigint;
+      transactionHash?: string;
+    };
+    const args = log.args ?? {};
+    logger.event({
+      type: "liquity_liquidation",
+      blockNumber: Number(log.blockNumber ?? 0n),
+      borrower: String(args._borrower ?? ""),
+      debtEusdWei: String(args._debt ?? ""),
+      collWei: String(args._coll ?? ""),
+      // Liquity's TroveManagerOperation: 0 = applyPendingRewards, 1 = liquidateInNormalMode,
+      // 2 = liquidateInRecoveryMode, 3 = redeemCollateral. Which mode it was is the finding.
+      operation: Number(args._operation ?? 0),
+      txHash: log.transactionHash,
+    });
+  }
+  for (const raw of redeemed) {
+    const log = raw as unknown as {
+      args?: Record<string, unknown>;
+      blockNumber?: bigint;
+      transactionHash?: string;
+    };
+    const args = log.args ?? {};
+    logger.event({
+      type: "liquity_redemption",
+      blockNumber: Number(log.blockNumber ?? 0n),
+      attemptedEusdWei: String(args._attemptedLUSDAmount ?? ""),
+      actualEusdWei: String(args._actualLUSDAmount ?? ""),
+      ethSentWei: String(args._ETHSent ?? ""),
+      ethFeeWei: String(args._ETHFee ?? ""),
+      txHash: log.transactionHash,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

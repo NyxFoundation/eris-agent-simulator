@@ -192,6 +192,12 @@ export const troveManagerAbi = parseAbi([
   "function baseRate() view returns (uint256)",
   "function BORROWING_FEE_FLOOR() view returns (uint256)",
   "function REDEMPTION_FEE_FLOOR() view returns (uint256)",
+  // Ground truth for what the venue actually did, rather than what the block state implies. A Trove
+  // count that fell could be a close, a full redemption or a liquidation, and issue #39's open
+  // question about ordering can only be answered by counting the real ones.
+  "event TroveLiquidated(address indexed _borrower, uint256 _debt, uint256 _coll, uint8 _operation)",
+  "event Liquidation(uint256 _liquidatedDebt, uint256 _liquidatedColl, uint256 _collGasCompensation, uint256 _LUSDGasCompensation)",
+  "event Redemption(uint256 _attemptedLUSDAmount, uint256 _actualLUSDAmount, uint256 _ETHSent, uint256 _ETHFee)",
   // Actions.
   "function redeemCollateral(uint256 LUSDAmount, address firstRedemptionHint, address upperPartialRedemptionHint, address lowerPartialRedemptionHint, uint256 partialRedemptionHintNICR, uint256 maxIterations, uint256 maxFeePercentage)",
   "function liquidate(address borrower)",

@@ -203,7 +203,23 @@ ours なのは 2 つだけ（core は無改変）:
 - coordinator は `liquity_setup`（オラクル差し替えと drift 検証。Recovery Mode 開幕やデペグ済みチェーンは fail-fast）/
   `liquity_block`（毎ブロックの peg・TCR・手数料・最下位 ICR）/ `stress_eusd_depeg`（+ `_setup` / `_capped` /
   `_failed` / `_restored`）を emit する
-- 設定例は `config/liquity.yaml`、レジームは `config/regimes/liquity.yaml`、参照 agent は
+- **オラクル順序の実測**（issue #39 の Open point「清算は Aave より順序に敏感か」への回答）: 敏感だが
+  **特別扱いは不要**。実測（`config/regimes/liquity-crash.yaml`, seed 501）では、Trove が MCR を割った
+  ブロック 982 → agent が観測した 983（観測は 1 ブロック遅れ）→ 清算が着弾した 984 で **2 ブロック遅延**。
+  内訳は「観測遅れ 1 + mempool 1」で、これは全 venue 共通。**部分償還のヒントと違い、`liquidate()` には
+  実行時に一致しなければならない値が無い**（執行価格で ICR を再判定するだけ）ので、価格が戻れば単に
+  revert して gas を捨てるだけ＝構造的な破綻ではない。よって helper のような仕組みは清算側には不要
+- 参照 agent は 3 体: `redemption-arb`（α 側）/ `trove-manager`（借り手側。清算・償還・Recovery Mode に
+  対する防御）/ `sp-underwriter`（Stability Pool で清算を吸収し、自分で `liquidate` を叩いて担保を取る）。
+  借り手の防御が効くかは**借りた eUSD を使ったかどうか**で決まる（`ERIS_TROVE_SPEND_DEBT`）。実測で
+  200% 保持組は無傷、125% で全額 post して eUSD を売った組は清算され −13,140（担保 20 ETH を失い USDC を残す）
+- **Recovery Mode は現状の較正では到達不能**。genesis Trove が 250 ETH / 250k eUSD（300%）で TCR を支配し、
+  22% crash でも TCR ≈ 2.7 のまま。到達させるには genesis の較正を変える必要があり、それは他の全レジームの
+  venue 性格も変えるので、別途の判断事項として残す
+- **LQTY は意図どおり「値付けしないが見える」**: SP 預入で LQTY gain が付き、run 後に
+  `scoring_unpriced_holdings` に `erc20-unaccounted` として 61.3 LQTY が報告された（黙って 0 にしていない）
+- 設定例は `config/liquity.yaml`、レジームは `config/regimes/liquity.yaml`（α 側）と
+  `config/regimes/liquity-crash.yaml`（借り手 / 引受側）、参照 agent は
   `example/agents/redemption-arb/`（`agent.ts` + `prompt.md`）。issue #39 は「agent.ts と prompt.md を
   両方積め」と書いているが、その理由（既定ロスターが prompt モード = LLM が毎判断する）は ADR 0018 で
   消えている。今の prompt.md は改訂方針であって毎判断プロンプトではない

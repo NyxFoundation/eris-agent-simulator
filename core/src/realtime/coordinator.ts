@@ -90,6 +90,7 @@ import {
 } from "./liquidity.js";
 import {
   liquityBlockEvent,
+  watchLiquityEvents,
   reconcileEusdDepeg,
   restoreEusdDepeg,
   setupEusdDepeg,
@@ -1508,6 +1509,24 @@ export async function runRealtimeSimulation(
             }
           };
 
+          // Liquity ground truth (issue #39): a Trove that disappeared could have been closed,
+          // redeemed away or liquidated, and only the venue's own logs say which. The open question
+          // the issue leaves -- whether Liquity's ordering sensitivity needs special handling when
+          // the oracle is rewritten every block ahead of every agent -- is about liquidations, so
+          // they have to be counted rather than inferred from the block state.
+          const liquityWatchTask = async (): Promise<void> => {
+            if (!liquityRuntime || fromBlock > bn) return;
+            try {
+              await watchLiquityEvents(ctx, fromBlock, bn, logger);
+            } catch (error) {
+              logger.event({
+                type: "liquity_watch_failed",
+                blockNumber: bn,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          };
+
           // Record each task's duration (for diagnosing the environment loop's bottleneck; the measurement source for ADR 0006 "judgment metrics").
           const timed = async (task: () => Promise<void>): Promise<number> => {
             const t0 = Date.now();
@@ -1525,6 +1544,7 @@ export async function runRealtimeSimulation(
           if (vulnRuntime) tasks.push(timed(vulnTask));
           if (liquidityPullRuntime) tasks.push(timed(liquidityTask));
           if (eusdDepegRuntime) tasks.push(timed(depegTask));
+          if (liquityRuntime) tasks.push(timed(liquityWatchTask));
           const results = await Promise.all(tasks);
           const [keeperMs, oracleMs, stateFlowMs] = results;
           let taskIdx = 3;
@@ -1535,6 +1555,7 @@ export async function runRealtimeSimulation(
             ? results[taskIdx++]
             : undefined;
           const depegMs = eusdDepegRuntime ? results[taskIdx++] : undefined;
+          const liquityMs = liquityRuntime ? results[taskIdx++] : undefined;
           logger.event({
             type: "round_timing",
             blockNumber: bn,
@@ -1546,6 +1567,7 @@ export async function runRealtimeSimulation(
             ...(vulnMs !== undefined ? { vulnMs } : {}),
             ...(liquidityMs !== undefined ? { liquidityMs } : {}),
             ...(depegMs !== undefined ? { depegMs } : {}),
+            ...(liquityMs !== undefined ? { liquityMs } : {}),
             totalMs: Date.now() - roundStart,
           });
 
