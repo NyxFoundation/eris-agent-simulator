@@ -1,14 +1,15 @@
 [← README](../../README.md)
 
-# Self-improving agents (agent.ts + improve.md)
+# Self-improving agents (agent.ts + prompt.md)
 
-An LLM in this simulator **rewrites the strategy; it does not make the trades**. Put an `improve.md`
+An LLM in this simulator **rewrites the strategy; it does not make the trades**. Put a `prompt.md`
 beside your `agent.ts` and the agent becomes self-improving: `decide()` runs every block exactly as
 fast as any rule agent, and periodically the model is handed the current strategy source plus how it
 has been doing, and may return a replacement.
 
 ```markdown
 ---
+kind: improve                     # required — says which contract this file is written against
 name: my-arb                      # required
 description: cross-venue arb that widens its margin under adverse selection   # required
 reviseEveryBlocks: 60             # blocks between revision opportunities (optional; default 60)
@@ -22,8 +23,16 @@ model: gpt-oss:120b               # optional ("claude..." = Anthropic API, "code
 > **Prompt mode was removed (ADR 0018).** Until recently an agent could be a `prompt.md` that the LLM
 > consulted for *every action*. Measured at production settings, that managed one decision every
 > 8-28 blocks and **1/64 the actions** of the same strategy in rule mode — it could not compete.
-> `improve.md` is not a renamed `prompt.md`: the old file answered "given this observation, what do
-> you do", the new one answers "when, on what evidence, and how should the strategy change".
+>
+> **This file has the same name and the opposite meaning.** The old `prompt.md` answered "given this
+> observation, what do you do"; this one answers "when, on what evidence, and how should the strategy
+> change". Nineteen files of the old kind were deleted when prompt mode went, and they still exist in
+> git history and in any bundle taken before it — both formats carry the same `name` / `description`
+> frontmatter, so nothing but `kind: improve` can tell them apart. A `prompt.md` without the marker is
+> **refused at startup** rather than loaded, because loading one would hand the reviser a set of
+> trading instructions as its brief and say nothing about it. (The file was briefly called
+> `improve.md`; that name is also refused, so a directory that still uses it fails instead of quietly
+> running with no LLM at all.)
 
 ## How it runs
 
@@ -61,7 +70,7 @@ version number — the context it receives lists every version, when it went in,
 was worth at the time. An automatic "revert when value went down" would need a threshold and there
 is no defensible one: the previous implementation's never fired in 18 runs, and the obvious opposite
 (any loss at all) reverts every revision in a regime where everyone is losing. Whether a dip is the
-strategy or the market is a judgment, so `improve.md` is where you state how to make it.
+strategy or the market is a judgment, so `prompt.md` is where you state how to make it.
 
 ## What the generated code may do
 
@@ -95,7 +104,7 @@ Revision outcomes (installed / declined / rejected / reverted, with the model's 
 
 `ERIS_IMPROVE_LOG_CALLS: "1"` additionally writes the raw exchange — the system prompt, the context
 that was sent, and the response — to `runs/<id>/agents/<agentId>.llm.jsonl`. Off by default because
-it holds every generated strategy in full. It is the log to turn on when tuning `improve.md`.
+it holds every generated strategy in full. It is the log to turn on when tuning `prompt.md`.
 
 ## Backends (runtime/llm.ts)
 
@@ -145,7 +154,7 @@ Notes:
 ```yaml
 # roster in config/local.yaml
 agents:
-  - id: venue-arb                    # example/agents/venue-arb/ (agent.ts + improve.md)
+  - id: venue-arb                    # example/agents/venue-arb/ (agent.ts + prompt.md)
     wallet: AGENT1_PRIVATE_KEY
     env: { ERIS_LLM_MODEL: "claude-cli", ERIS_IMPROVE_LOG_CALLS: "1" }
   - id: venue-arb-frozen             # the control: same strategy, no improvement loop

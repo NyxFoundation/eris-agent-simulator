@@ -15,19 +15,21 @@ import {
   compileExecutor,
   DEFAULT_REVISE_EVERY_BLOCKS,
   effectiveReviseInterval,
+  improvePolicyState,
   loadImproveAgent,
   EXECUTOR_TIMEOUT_MS,
   MAX_REVISIONS_PER_RUN,
   parseRevision,
 } from "../example/agents/runtime/improve.js";
 
-function agentDir(improveMd: string): string {
+function agentDir(promptMd: string): string {
   const dir = mkdtempSync(join(tmpdir(), "eris-improve-"));
-  writeFileSync(join(dir, "improve.md"), improveMd);
+  writeFileSync(join(dir, "prompt.md"), promptMd);
   return dir;
 }
 
 const FRONTMATTER = `---
+kind: improve
 name: test-agent
 description: an agent used by the tests
 ---
@@ -48,9 +50,38 @@ test("loadImproveAgent: the participant can declare the cadence", () => {
   assert.equal(agent.reviseEveryBlocks, 30);
 });
 
+// The file name is reused from the retired per-decision prompt (ADR 0018 Amendment 1), and both
+// formats carry the same name/description frontmatter -- so the marker is the only thing that can
+// tell them apart. Getting this wrong means handing the reviser trading instructions as its brief.
+test("loadImproveAgent: a prompt.md without the marker is refused, not reinterpreted", () => {
+  const legacy = `---
+name: arb-bot
+description: Gap-driven swaps with profit-proportional priority-fee bidding
+---
+
+# Mission
+
+You are a gap-driven arbitrage bot. Swap when the gap exceeds 5bps.`;
+  assert.throws(() => loadImproveAgent(agentDir(legacy)), /kind: improve/);
+  // And the message has to say what the file is, or nobody can act on it.
+  assert.throws(() => loadImproveAgent(agentDir(legacy)), /prompt mode/i);
+});
+
+test("improvePolicyState: the old file name is a refusal, not silence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-improve-"));
+  assert.equal(improvePolicyState(dir), "absent");
+  writeFileSync(join(dir, "improve.md"), FRONTMATTER);
+  // A directory that still uses the old name meant to opt in. Reading it as "absent" would run the
+  // strategy unrevised with nothing anywhere saying the LLM was never involved.
+  assert.equal(improvePolicyState(dir), "renamed");
+  writeFileSync(join(dir, "prompt.md"), FRONTMATTER);
+  assert.equal(improvePolicyState(dir), "present");
+});
+
 test("loadImproveAgent: a missing name or bad cadence is an explicit error", () => {
   assert.throws(
-    () => loadImproveAgent(agentDir("---\ndescription: x\n---\nbody")),
+    () =>
+      loadImproveAgent(agentDir("---\nkind: improve\ndescription: x\n---\nbody")),
     /"name" is required/,
   );
   assert.throws(
@@ -204,7 +235,7 @@ test("buildRevisionSystem: the model is told it is not trading, and may decline"
   const agent = loadImproveAgent(agentDir(FRONTMATTER));
   const system = buildRevisionSystem(agent, "return null;");
   assert.match(system, /You are NOT trading/);
-  // The participant's own instructions have to reach the model, or improve.md is decorative.
+  // The participant's own instructions have to reach the model, or prompt.md is decorative.
   assert.match(system, /Only rewrite the strategy when it is losing money/);
   // Declining must read as a legitimate answer, since "do not touch a winner" is the fix for the
   // failure mode the previous implementation had.

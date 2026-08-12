@@ -1,4 +1,5 @@
 ---
+kind: improve
 name: redemption-arb
 description: CDP stablecoin arb — buy eUSD below par and redeem it against the riskiest Trove. The LLM tunes the strategy in-run.
 reviseEveryBlocks: 60

@@ -2,7 +2,7 @@
 // The agent.ts in example/agents/<id>/ exports one of:
 //   - decide(obs, ctx): rule strategy. runtime/bot.ts drives it in a read→decide→send loop
 //   - run(ctx): self-driven (liquidator etc.). bot.ts does not loop and delegates by passing ctx
-// A self-improving agent (agent.ts + improve.md) exports decide like any rule agent; the LLM swaps
+// A self-improving agent (agent.ts + prompt.md) exports decide like any rule agent; the LLM swaps
 // that function out of band rather than producing actions itself (ADR 0018).
 import type { Address, PublicClient, WalletClient } from "viem";
 import type { SimConfig } from "./config.js";

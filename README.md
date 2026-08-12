@@ -138,7 +138,7 @@ For details, see [Backtesting](docs/guide/backtest.md).
 | [Backtesting](docs/guide/backtest.md) | Replaying state dump + official regimes, iterating with `--repeat`, sparring, what is and isn't measurable |
 | [Run Output and Analysis](docs/guide/run-output.md) | The output files under `runs/<id>/` and how to analyze a run afterwards |
 | [Protocols and Actions](docs/guide/protocols-and-actions.md) | Reference: actions per venue, stablecoin accounting, oracle control |
-| [Self-improving Agents](docs/guide/llm-agents.md) | agent.ts + improve.md (in-run strategy rewriting, sandbox, rollback, frozen control) |
+| [Self-improving Agents](docs/guide/llm-agents.md) | agent.ts + prompt.md (in-run strategy rewriting, sandbox, rollback, frozen control) |
 
 **How the environment works / operations**:
 

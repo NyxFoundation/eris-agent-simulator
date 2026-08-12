@@ -23,18 +23,24 @@ deployer/  venue デプロイ（自己完結サブパッケージ。workspace �
 |------|------|--------|
 | `agent.ts`（`decide(obs, ctx)` export） | ルール戦略 | runtime/bot.ts が read→decide→send のループで駆動（`export const config = { intervalMs }` で間隔指定可） |
 | `agent.ts`（`run(ctx)` export） | 自走型 | bot.ts はループせず ctx（clients/observe/submit/log）を渡して委譲（例 liquidator） |
-| `agent.ts` + `improve.md`（frontmatter: name/description 必須） | **自己改善型**（ADR 0018） | decide を毎ブロック駆動しつつ、LLM が取引経路の**外**で戦略コードを書き換える |
+| `agent.ts` + `prompt.md`（frontmatter: **`kind: improve`** / name / description 必須） | **自己改善型**（ADR 0018） | decide を毎ブロック駆動しつつ、LLM が取引経路の**外**で戦略コードを書き換える |
 
 `runtime/`（汎用スクリプト: bot/read/send/llm/improve/deploy/agentLog）と `lib/`（共有戦略ヘルパ）は予約名。
 
 **プロンプト型（毎判断 LLM）は ADR 0018 で廃止**。実測で 1 判断 8〜28 ブロック・行動回数がルール型の
 1/64 で競技として成立しなかった（ADR 0017 §5 B1）。`ERIS_AGENT_MODE` / `ERIS_PROMPT_*` は fail-fast する。
-`improve.md` は prompt.md の改名ではない（前者は「いつ・何を根拠に・どう直すか」、後者は「この observation で
-どう動くか」）。ロスターの `env`:
 
-- `ERIS_AGENT_FROZEN: "1"` — improve.md を無視して戦略を固定。**ADR 0018 §5 が要求する frozen 対照**
+**`prompt.md` は同じ名前で意味が逆になっている**（ADR 0018 Amendment 1。当初は `improve.md` という別名で
+分離していたのを、名前を戻した）。旧 prompt.md は「この observation でどう動くか」、今の prompt.md は
+「いつ・何を根拠に・どう直すか」。旧形式 19 個は f42fd2a で削除済みだが git 履歴と旧 bundle には残っており、
+**frontmatter のキー（name/description）も同じ**なので、区別できるのは `kind: improve` だけ。マーカーの無い
+prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が「改訂方針」として system prompt に入る）。
+`improve.md` だけがあるディレクトリも fail-fast（黙って無改訂で走ると、LLM が一度も動かなかったことが
+どこにも出ない）。ロスターの `env`:
+
+- `ERIS_AGENT_FROZEN: "1"` — prompt.md を無視して戦略を固定。**ADR 0018 §5 が要求する frozen 対照**
   （自己改善が効いたかを毎 run 見えるようにする）をディレクトリ複製なしで作る
-- `ERIS_LLM_MODEL: "<model>"` — 改訂呼び出しのバックエンド（improve.md の frontmatter が優先）。
+- `ERIS_LLM_MODEL: "<model>"` — 改訂呼び出しのバックエンド（prompt.md の frontmatter が優先）。
   API キー無しでも `codex[:<m>]` / `claude-cli[:<m>]` でサブスク CLI 実行可 = docs/guide/llm-agents.md
 - `ERIS_IMPROVE_LOG_CALLS: "1"` — 改訂の生のやり取りを `agents/<id>.llm.jsonl` に残す（既定 off）
 
@@ -198,8 +204,9 @@ ours なのは 2 つだけ（core は無改変）:
   `liquity_block`（毎ブロックの peg・TCR・手数料・最下位 ICR）/ `stress_eusd_depeg`（+ `_setup` / `_capped` /
   `_failed` / `_restored`）を emit する
 - 設定例は `config/liquity.yaml`、レジームは `config/regimes/liquity.yaml`、参照 agent は
-  `example/agents/redemption-arb/`（`agent.ts` + `improve.md`。ADR 0018 で prompt.md は廃止済みなので
-  issue #39 の「両方積む」要求はこの形に読み替え）
+  `example/agents/redemption-arb/`（`agent.ts` + `prompt.md`）。issue #39 は「agent.ts と prompt.md を
+  両方積め」と書いているが、その理由（既定ロスターが prompt モード = LLM が毎判断する）は ADR 0018 で
+  消えている。今の prompt.md は改訂方針であって毎判断プロンプトではない
 
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 

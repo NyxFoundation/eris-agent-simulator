@@ -20,7 +20,7 @@
 # start `npm run anvil` in another terminal with ARB_RPC_URL set.
 #
 # The agents below are rule strategies (agent.ts) that trade every block. Three of them also ship an
-# improve.md, so an LLM periodically rewrites the strategy while it runs (ADR 0018) -- the LLM is
+# prompt.md, so an LLM periodically rewrites the strategy while it runs (ADR 0018) -- the LLM is
 # never in the trade path. Prompt mode, where an LLM produced each action, was removed: it managed
 # one decision every 8-28 blocks and 1/64 the actions of the same strategy in rule mode.
 #
@@ -37,7 +37,7 @@ run:
   seed: 1
   # The trading loop is rule-speed (one decision per block) regardless of the LLM, so the run length
   # is not set by LLM latency any more. It does need to be long enough for at least one revision to
-  # land -- improve.md declares reviseEveryBlocks: 60.
+  # land -- prompt.md declares reviseEveryBlocks: 60.
   blocks: 100
   seconds: 300
   blockTimeSec: 2
@@ -131,7 +131,7 @@ agents:
     description: does nothing (baseline; rule-based on purpose)
   - id: venue-arb
     wallet: AGENT2_PRIVATE_KEY
-    description: WETH-only cross-venue arbitrage, with an LLM revising it in-run (improve.md)
+    description: WETH-only cross-venue arbitrage, with an LLM revising it in-run (prompt.md)
     env: { ERIS_IMPROVE_LOG_CALLS: "1" }
     # Claude Code / Codex subscription instead of Ollama (no API key):
     # env: { ERIS_IMPROVE_LOG_CALLS: "1", ERIS_LLM_MODEL: "claude-cli:haiku" }

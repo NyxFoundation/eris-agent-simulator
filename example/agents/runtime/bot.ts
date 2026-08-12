@@ -6,17 +6,19 @@
  * env ERIS_AGENT_DIR. bot.ts decides how to run from that directory's contents:
  *   - agent.ts exports run(ctx)   -> self-driven: pass ctx and delegate (no loop)
  *   - agent.ts exports decide()   -> rule strategy: drive a read->decide->send loop
- *   - agent.ts + improve.md       -> self-improving: the same loop, plus an LLM that periodically
+ *   - agent.ts + prompt.md        -> self-improving: the same loop, plus an LLM that periodically
  *                                   rewrites the strategy out of the trade path (ADR 0018)
  *
  * Prompt mode (an LLM producing an action every decision) was removed in ADR 0018: measured at
  * 8-28 blocks per decision and 1/64 the actions of the same strategy in rule mode, it could not
- * compete. The LLM now improves the strategy instead of driving it.
+ * compete. The LLM now improves the strategy instead of driving it -- and prompt.md now holds the
+ * policy for *that*, not per-decision instructions, which is why it must declare `kind: improve`
+ * (ADR 0018 Amendment 1). A file without the marker is refused rather than reinterpreted.
  *
- *   ERIS_AGENT_FROZEN=1             ignore improve.md and run the strategy unchanged. This is the
+ *   ERIS_AGENT_FROZEN=1             ignore prompt.md and run the strategy unchanged. This is the
  *                                   frozen control every roster needs (ADR 0018 §5), without
  *                                   duplicating the agent directory
- *   ERIS_LLM_MODEL=<model>          backend for the revision call (improve.md frontmatter wins)
+ *   ERIS_LLM_MODEL=<model>          backend for the revision call (prompt.md frontmatter wins)
  *   ERIS_IMPROVE_LOG_CALLS=1        record the raw revision exchange (system / context / response)
  *                                   to runs/<id>/agents/<agentId>.llm.jsonl. Off by default: it holds
  *                                   every generated strategy in full
@@ -54,6 +56,7 @@ import {
   buildRevisionSystem,
   compileExecutor,
   effectiveReviseInterval,
+  improvePolicyState,
   loadImproveAgent,
   MAX_REVISIONS_PER_RUN,
   parseRevision,
@@ -63,7 +66,7 @@ import {
 import { createMempoolLog, Sender } from "./send.js";
 import { Reader } from "./read.js";
 
-// Backend for the revision call when neither improve.md nor the roster names one.
+// Backend for the revision call when neither prompt.md nor the roster names one.
 const DEFAULT_IMPROVE_MODEL = "gpt-oss:120b";
 
 async function main(): Promise<void> {
@@ -135,7 +138,7 @@ async function main(): Promise<void> {
   });
 
   // ---- resolve the agent module (1 agent = 1 directory) ----
-  // agent.ts is always the strategy (ADR 0015 §2). If improve.md sits beside it, the same strategy
+  // agent.ts is always the strategy (ADR 0015 §2). If prompt.md sits beside it, the same strategy
   // runs at the same speed and an LLM is periodically offered the chance to rewrite it (ADR 0018).
   // The retired prompt mode put the LLM in the trade path instead, which cost 8-28 blocks per
   // decision -- 1/64 the actions of the same strategy in rule mode (ADR 0017 §5 B1).
@@ -150,7 +153,7 @@ async function main(): Promise<void> {
   if (retired.length > 0) {
     process.stderr.write(
       `[bot] ${retired.join(", ")} is retired (ADR 0018 removed prompt mode). An agent is agent.ts, ` +
-        `optionally with improve.md beside it for LLM-driven self-improvement; ` +
+        `optionally with prompt.md (kind: improve) beside it for LLM-driven self-improvement; ` +
         `use ERIS_AGENT_FROZEN=1 to run it without the improvement loop\n`,
     );
     process.exit(1);
@@ -158,7 +161,20 @@ async function main(): Promise<void> {
   }
   const agentTsPath = join(agentDir, "agent.ts");
   const hasAgentTs = existsSync(agentTsPath);
-  const hasImprove = existsSync(join(agentDir, "improve.md"));
+  const policy = improvePolicyState(agentDir);
+  const hasImprove = policy === "present";
+  // The improvement policy was called improve.md until ADR 0018 Amendment 1. A directory still
+  // carrying the old name would otherwise run as a plain rule agent: the strategy trades, nothing
+  // ever revises it, and no line of output says the LLM was never involved. Refuse instead.
+  if (policy === "renamed") {
+    process.stderr.write(
+      `[bot] ${agentDir} has improve.md, which was renamed prompt.md (ADR 0018 Amendment 1). ` +
+        `Rename it and add \`kind: improve\` to its frontmatter, or delete it to run the strategy ` +
+        `unchanged\n`,
+    );
+    process.exit(1);
+    return;
+  }
   // Opt out of the improvement loop while keeping the same directory: the frozen control that
   // ADR 0018 §5 requires in every roster is this flag, not a second copy of the agent.
   const frozen = process.env.ERIS_AGENT_FROZEN === "1";
@@ -166,7 +182,7 @@ async function main(): Promise<void> {
     process.stderr.write(
       existsSync(join(agentDir, "prompt.md"))
         ? `[bot] ${agentDir} has prompt.md but no agent.ts. Prompt mode was removed (ADR 0018): ` +
-            `an agent is agent.ts, optionally with improve.md beside it\n`
+            `an agent is agent.ts, and prompt.md is the policy for revising it, not a strategy\n`
         : `[bot] ${agentDir} has no agent.ts (ADR 0015 §2 / ADR 0018 §1)\n`,
     );
     process.exit(1);
@@ -186,10 +202,14 @@ async function main(): Promise<void> {
     process.exit(1);
     return;
   }
+  // Read the policy before a single block is traded. Loading it inside the improvement loop meant a
+  // malformed or unmarked prompt.md was only discovered once the agent was already trading, which
+  // makes a configuration error look like a mid-run crash.
+  const improveAgent = mode === "improve" ? loadImproveAgent(agentDir) : null;
   if (hasImprove && typeof agentModule.run === "function") {
     // run(ctx) owns its own loop, so there is no decide to swap out.
     process.stderr.write(
-      `[bot] ${agentDir} has improve.md but exports run(ctx); self-improvement applies to ` +
+      `[bot] ${agentDir} has prompt.md but exports run(ctx); self-improvement applies to ` +
         `decide() strategies only (ADR 0018 §1)\n`,
     );
     process.exit(1);
@@ -362,7 +382,7 @@ async function main(): Promise<void> {
   // back is better. Every accept, decline, rejection and rollback is logged, because the previous
   // attempt at this (deleted src/llm) shipped a rollback that never once fired and nobody noticed.
   async function runImproveLoop(): Promise<void> {
-    const improveAgent = loadImproveAgent(agentDir);
+    if (!improveAgent) return;
     const model =
       improveAgent.model ?? process.env.ERIS_LLM_MODEL ?? DEFAULT_IMPROVE_MODEL;
     // The raw exchange, opt-in. The outcome log says a revision was rejected or rolled back; only

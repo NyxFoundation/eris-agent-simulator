@@ -21,7 +21,7 @@ core/src/           environment daemon + scoring (participants do not touch this
 example/agents/     participant template (1 agent = 1 directory is the unit of copy and submission)
   runtime/            generic driver scripts (bot / read / send / llm / prompt / agentLog; reserved names)
   lib/                shared strategy helpers (markets.ts, etc.; reserved name)
-  <id>/               the agent itself (agent.ts's decide/run, plus improve.md to self-improve)
+  <id>/               the agent itself (agent.ts's decide/run, plus prompt.md to self-improve)
 contracts/          PriceFeed + mock oracles + FlashArb (Foundry)
 deployer/           bundled deploy orchestrator (self-contained subpackage that deploys all 5 venues to an empty anvil)
 config/             YAML config (example.yaml = template / vuln-test.yaml / regimes/ = official regimes; ADR 0016)

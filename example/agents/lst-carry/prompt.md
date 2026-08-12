@@ -1,4 +1,5 @@
 ---
+kind: improve
 name: lst-carry
 description: Liquid staking — stake for yield, or trade the redemption/market gap. The LLM tunes the strategy in-run.
 reviseEveryBlocks: 60
