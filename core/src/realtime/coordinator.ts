@@ -1762,6 +1762,7 @@ export async function runRealtimeSimulation(
           toBlock: finalBlock,
           scoreEvery: config.scoreEvery,
           epochBlocks: config.epochBlocks,
+          markMedianBlocks: config.markMedianBlocks,
         });
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;

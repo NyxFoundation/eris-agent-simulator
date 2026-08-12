@@ -23,7 +23,9 @@ import { valueUsdc } from "@eris/sdk/pnl.js";
 import {
   decodeStableProbes,
   marketPricedStables,
+  medianStablePrices,
   PAR_STABLE_PRICES,
+  readStablePrices,
   stableProbeReads,
   type StableMarket,
   type StablePrices,
@@ -84,6 +86,19 @@ export type ReconstructionMeta = {
   // stay recomputable from stored data when lambda or the epoch length changes, the same way
   // standings.json is derived from matrix.json (ADR 0017 §4).
   epochSeries?: EpochSeries;
+  // How the epoch boundaries were marked (ADR 0019 G7). Absent when nothing was medianed.
+  markMedian?: MarkMedianMeta;
+};
+
+export type MarkMedianMeta = {
+  windowBlocks: number;
+  boundaries: number;
+  // Which manipulable marks the median covers. Named explicitly because the ADR's G7 lists four
+  // surfaces and this is not yet all of them.
+  surfaces: string[];
+  // stable symbol -> the largest gap seen between the boundary's live probe and the median it was
+  // scored at, over all boundaries.
+  maxDeviationBps: Record<string, number>;
 };
 
 export type EpochSeries = {
@@ -252,6 +267,11 @@ export async function readValueSnapshotAtBlock(opts: {
   horizonBlock?: number;
   // Fixed reference fair for α evaluation (base symbol -> USD). If unspecified, α = total value.
   refFairByBase?: Record<string, number>;
+  // Stable prices to value this cross-section at, replacing the ones probed at this block (ADR 0019
+  // G7: epoch boundaries are marked at the median over the blocks before them, so a one-block push
+  // into a thin pool does not become the score). The probe at this block still runs -- the caller
+  // compares the two to report how far the mark was moved.
+  stablePricesOverride?: StablePrices;
 }): Promise<ValueSnapshot> {
   const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
   let failedReads = 0;
@@ -392,13 +412,17 @@ export async function readValueSnapshotAtBlock(opts: {
       // the per-agent decode below turns into a reported holding. Unlike a missing WETH fair this
       // is not a reason to refuse the block: par is a defensible number, it just is not a measured
       // one, and saying so is the whole point (issue #27).
-      stablePrices = decodeStableProbes(
+      const probed = decodeStableProbes(
         stableMarkets,
         results.slice(
           stableProbeBase,
           stableProbeBase + stableMarkets.length * 2,
         ),
       );
+      // The override has to win before any adapter reads ctx.stablePrices(): the Liquity venue prices
+      // its Trove debt and Stability Pool deposit off the same seam, so a boundary marked at the
+      // median for spot eUSD and at the live push for the debt would be two rules at once.
+      stablePrices = opts.stablePricesOverride ?? probed;
     },
   });
 
@@ -673,6 +697,88 @@ export function epochBoundaryBlocks(
   return Array.from({ length: epochs + 1 }, (_, i) => fromBlock + i * step);
 }
 
+// G7 (ADR 0019 §5): mark each epoch boundary at the median of the blocks leading up to it, so that
+// pushing a pool for one block does not become the score. It has to hold for most of the window to
+// count, which turns a spread-cost round trip into a position.
+//
+// Scope today is the market-priced stables. That is one seam, not one venue: spot registry stables
+// (#27) and the Liquity venue's Trove debt / Stability Pool deposit both price off ctx.stablePrices()
+// (protocols/liquity.ts). The other two surfaces the ADR names -- the LST market price and LP share
+// reserves -- compute their price inside their own adapter's staged reads (protocols/lst.ts issues
+// its own get_dy), so they are still marked live. Recorded rather than left implicit: a partial G7
+// that reads as a complete one is the failure mode this rule exists to prevent.
+class MarkMedian {
+  private readonly maxDeviationBps = new Map<string, number>();
+  private boundaries = 0;
+
+  constructor(
+    private readonly opts: {
+      publicClient: PublicClient;
+      activeStables: Address[];
+      windowBlocks: number;
+      // The run's first block: earlier boundaries get a shorter window rather than reads of blocks
+      // that predate the run.
+      floorBlock: number;
+    },
+  ) {}
+
+  private get enabled(): boolean {
+    return (
+      this.opts.windowBlocks > 1 &&
+      marketPricedStables(this.opts.activeStables).length > 0
+    );
+  }
+
+  // The prices to value the boundary at, or undefined to keep the live mark (nothing to median).
+  async at(block: number): Promise<StablePrices | undefined> {
+    if (!this.enabled) return undefined;
+    const first = Math.max(
+      this.opts.floorBlock,
+      block - this.opts.windowBlocks + 1,
+    );
+    const window: number[] = [];
+    for (let b = first; b <= block; b++) window.push(b);
+    if (window.length <= 1) return undefined;
+    // N x 2 reads per stable per boundary. The client folds them into multicalls, and only the ~43
+    // boundaries pay it -- the equity curve does not.
+    const samples = await Promise.all(
+      window.map((b) =>
+        readStablePrices(
+          this.opts.publicClient,
+          this.opts.activeStables,
+          BigInt(b),
+        ),
+      ),
+    );
+    const median = medianStablePrices(samples);
+    const live = samples[samples.length - 1];
+    for (const quote of median.quotes) {
+      const livePrice = live.byToken[quote.token.toLowerCase()] ?? 0;
+      if (!(livePrice > 0) || !(quote.priceUsdc > 0)) continue;
+      const bps = (Math.abs(quote.priceUsdc - livePrice) / livePrice) * 10_000;
+      this.maxDeviationBps.set(
+        quote.symbol,
+        Math.max(this.maxDeviationBps.get(quote.symbol) ?? 0, bps),
+      );
+    }
+    this.boundaries++;
+    return median;
+  }
+
+  // Reported so a run says how much the rule actually moved: a large gap between the live mark and
+  // the median is either a volatile peg or somebody leaning on the pool at the boundary, and both
+  // are things the operator wants to see rather than infer.
+  summary(): MarkMedianMeta | undefined {
+    if (this.boundaries === 0) return undefined;
+    return {
+      windowBlocks: this.opts.windowBlocks,
+      boundaries: this.boundaries,
+      surfaces: ["stables"],
+      maxDeviationBps: Object.fromEntries(this.maxDeviationBps),
+    };
+  }
+}
+
 export async function reconstructValueSeries(opts: {
   publicClient: PublicClient;
   logger: RunLogger;
@@ -686,6 +792,9 @@ export async function reconstructValueSeries(opts: {
   scoreEvery?: number;
   // Epoch length for the ADR 0019 value series (config.epochBlocks). 0 = do not produce the series.
   epochBlocks?: number;
+  // G7 window: how many blocks each epoch boundary's manipulable marks are medianed over, the
+  // boundary block included (config.markMedianBlocks). <= 1 marks boundaries live.
+  markMedianBlocks?: number;
 }): Promise<ReconstructionMeta> {
   const {
     publicClient,
@@ -698,6 +807,7 @@ export async function reconstructValueSeries(opts: {
     toBlock,
     scoreEvery = 1,
     epochBlocks = 0,
+    markMedianBlocks = 0,
   } = opts;
   const started = Date.now();
   let failedReads = 0;
@@ -770,7 +880,18 @@ export async function reconstructValueSeries(opts: {
       crossSections: blocks.length,
       windowBlocks: toBlock - fromBlock + 1,
     });
+  // G7 (ADR 0019 §5): only the epoch boundaries are medianed. The cross-sections in between are the
+  // equity curve, and smoothing those would hide real intra-epoch moves without protecting any score.
+  const markMedian = new MarkMedian({
+    publicClient,
+    activeStables,
+    windowBlocks: markMedianBlocks,
+    floorBlock: fromBlock,
+  });
   for (const b of blocks) {
+    const stablePricesOverride = boundaryIndex.has(b)
+      ? await markMedian.at(b)
+      : undefined;
     const snapshot = await readValueSnapshotAtBlock({
       publicClient,
       agents,
@@ -780,6 +901,7 @@ export async function reconstructValueSeries(opts: {
       blockNumber: b,
       horizonBlock: toBlock,
       refFairByBase,
+      ...(stablePricesOverride ? { stablePricesOverride } : {}),
     });
     failedReads += snapshot.failedReads;
     mergeFailedReads(failedReadTargets, snapshot.failedReadTargets);
@@ -928,6 +1050,7 @@ export async function reconstructValueSeries(opts: {
     liquidatableValueByAgent,
     unpricedHoldings,
     ...(epochSeries ? { epochSeries } : {}),
+    ...(markMedian.summary() ? { markMedian: markMedian.summary() } : {}),
   };
 }
 

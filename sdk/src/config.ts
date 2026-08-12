@@ -110,6 +110,12 @@ export type SimConfig = {
   // harness counts blocks: 12/epoch, which leaves room for G7's per-boundary median window and keeps a
   // 42-epoch week (504 blocks) inside anvil's ~1,050 block history retention (ADR 0019 §8).
   epochBlocks: number;
+  // G7 window (ERIS_MARK_MEDIAN_BLOCKS): how many blocks, the boundary included, the manipulable
+  // marks are medianed over when an epoch boundary is valued. <= 1 marks boundaries live.
+  // 5 of a 12-block epoch is provisional -- the ADR leaves N to be set against the epoch length once
+  // the harness has run (ADR 0019 "not yet decided"). Longer resists a held push better but drags
+  // legitimate late-epoch moves into the mark.
+  markMedianBlocks: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -321,6 +327,7 @@ export function loadConfig(env = process.env): SimConfig {
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
     epochBlocks: Math.max(0, intEnv(env.ERIS_EPOCH_BLOCKS, 12)),
+    markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),

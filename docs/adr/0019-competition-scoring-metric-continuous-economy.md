@@ -215,6 +215,13 @@ per-round の hard cap を pre-submit で検査している（`agentUsdcUnits` /
 別の規則**になるから。base インベントリは環境の `PriceFeed` 由来で参加者が動かせないので対象外
 （対象は LST の市場価格・eUSD・LP share の reserve・#27 以降の spot レジストリ stable）。
 
+**実装状況（2026-08-13、`run.markMedianBlocks` 既定 5）**: median が掛かるのは **market-priced stable
+の seam だけ**。これは 1 venue でなく 1 継ぎ目で、#27 の spot レジストリ stable と Liquity の Trove 債務 /
+Stability Pool 預入（`protocols/liquity.ts` が `ctx.stablePrices()` から読む）の両方を覆う。残る 2 面 —
+**LST の市場価格と LP share の reserve** — は各アダプタが staged read の中で自前に価格を作るので
+**live mark のまま**。`summary.json` の `markMedian.surfaces` が対象面を明示する
+（部分適用が完全適用に見えるのが G7 の防ぎたい失敗そのものなので、黙って部分適用しない）。
+
 ### 6. funding — 「USDC-only」を実際にそうする
 
 ```yaml
@@ -372,7 +379,7 @@ Superseded にはしない（実装が生きている部分まで死んだよう
 1. **funding の変更**（`ethWei: 1 ETH` / `usdcUnits: 100k` / `economicGas: true` + `GAS_BUFFER_WEI` を
    `funding.ethWei` へ畳む。§6）— run 挙動が変わる
 2. **G7 TWAP**（`reconstruct.ts` + アダプタ。**全境界**）— 後追い適用できないので、これ以前の run では
-   検証できない
+   検証できない。stable の seam は実装済み、**LST の市場価格と LP share の reserve が残**（§5 G7）
 3. **epoch 系列の生産**（実時刻 4h → 最近接ブロック写像、43 断面 = 境界 0..42）
 4. **G1 フロア → G2 採点上の凍結 → score** の実装。本番スコアラは新規に置き、`matrix.json` と同じく
    生の epoch 系列から後追い再計算できる形にする。`core/src/backtest/standings.ts` の z-score は
