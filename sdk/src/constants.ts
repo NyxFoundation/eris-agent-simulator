@@ -1,5 +1,5 @@
 import type { Address } from "viem";
-import type { MarketLegs, TokenSymbol } from "./types.js";
+import type { MarketLegs, ProtocolId, TokenSymbol } from "./types.js";
 import { LOCAL_DEPLOYMENT } from "./constants.local.js";
 
 // ---------------------------------------------------------------------------
@@ -21,8 +21,8 @@ export type { TokenSymbol };
 
 // ADR 0013: token registry. The Record<symbol,...> type annotation permits index access by
 // TokenSymbol (=string). Under local-deploy the overlay adds WBTC etc.
-export const TOKENS: Record<string, { address: Address; decimals: number }> =
-  L?.TOKENS ?? {
+export const TOKENS: Record<string, { address: Address; decimals: number }> = {
+  ...(L?.TOKENS ?? {
     WETH: {
       address: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1" as Address,
       decimals: 18,
@@ -31,7 +31,15 @@ export const TOKENS: Record<string, { address: Address; decimals: number }> =
       address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" as Address,
       decimals: 6,
     },
-  };
+  }),
+  // Issue #27 (b): eUSD is a registry stable, priced from its own market rather than at $1. It is
+  // issued by a venue instead of deployed as a run token, so it is picked up from the liquity
+  // deployment rather than from the deployer's token table. #39 kept it out of the registry only
+  // because the registry priced stables at par -- STABLE_MARKET_LEGS below is what dissolves that.
+  ...(L?.LIQUITY?.eusd
+    ? { eUSD: { address: L.LIQUITY.eusd, decimals: 18 } }
+    : {}),
+};
 
 // Unified stable accounting: native USDC / USDC.e / USDT(USD₮0) are all treated as 6-decimal "USDC-equivalent" worth $1.
 // On Arbitrum the deep Balancer/Curve WETH/stable pools are USDC.e / USDT pairs, so we use a
@@ -54,13 +62,58 @@ export function oppositeToken(symbol: TokenSymbol): TokenSymbol {
   return symbol === "WETH" ? "USDC" : "WETH";
 }
 
-// Look up the per-venue stable balance. Falls back to the summed value when there is no stables map.
+// Look up the per-venue stable balance. Falls back to usdcUnits when there is no stables map, which
+// is the right answer for the fork's USDC-equivalents and the only one available for a snapshot
+// assembled without one.
 export function stableBalanceOf(
   balances: { usdcUnits: bigint; stables?: Record<string, bigint> },
   token: Address,
 ): bigint {
   return balances.stables?.[token.toLowerCase()] ?? balances.usdcUnits;
 }
+
+// ---------------------------------------------------------------------------
+// Market-priced stables (issue #27). A stable listed here is worth what its pool pays, not $1; the
+// pricing rules live in stables.ts. A stable *not* listed is the USDC-equivalent dollar -- USDC by
+// definition (the numéraire), and the fork's USDC.e / USD₮0 for want of a pool to quote them.
+// ---------------------------------------------------------------------------
+export type StableMarketLeg = {
+  pool: Address; // curve stableswap-ng
+  stableIndex: number;
+  quoteIndex: number;
+  // The protocol whose being enabled brings this stable into the run. A stable nobody can trade is
+  // worse than absent: it would be swept, probed and reported every block while no action could
+  // touch it. eUSD comes with the CDP that issues it; a plain stable comes with the venue that owns
+  // its pool, which is where `stableSwap` lives.
+  venue: ProtocolId;
+};
+
+function buildStableMarketLegs(): Record<TokenSymbol, StableMarketLeg> {
+  const out: Record<TokenSymbol, StableMarketLeg> = {};
+  // eUSD's market is part of the liquity deployment, not a standalone venue leg.
+  const liquity = L?.LIQUITY;
+  if (
+    liquity?.eusdUsdcPool &&
+    liquity.eusdIndex !== undefined &&
+    liquity.usdcIndex !== undefined
+  ) {
+    out.eUSD = {
+      pool: liquity.eusdUsdcPool,
+      stableIndex: liquity.eusdIndex,
+      quoteIndex: liquity.usdcIndex,
+      venue: "liquity",
+    };
+  }
+  // Issue #27 (c): stables the deployer seeded a stableswap pool for. Those pools come off the
+  // Curve factory, and the curve adapter is what can trade them.
+  for (const [symbol, leg] of Object.entries(L?.STABLE_MARKETS ?? {})) {
+    out[symbol] = { ...leg, venue: "curve" };
+  }
+  return out;
+}
+
+export const STABLE_MARKET_LEGS: Record<TokenSymbol, StableMarketLeg> =
+  buildStableMarketLegs();
 
 export function symbolForAddress(addr: Address): TokenSymbol | undefined {
   const lower = addr.toLowerCase();

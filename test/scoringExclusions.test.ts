@@ -11,6 +11,7 @@ import { toPriceFeedAnswer } from "@eris/sdk/priceFeed.js";
 import { TOKENS, USDC_VARIANTS } from "@eris/sdk/constants.js";
 import { aaveAdapter } from "@eris/sdk/protocols/aave.js";
 import type { ValuationContext } from "@eris/sdk/protocols/types.js";
+import { PAR_STABLE_PRICES } from "@eris/sdk/stables.js";
 
 const PRICE_FEED = "0x00000000000000000000000000000000feed0001" as Address;
 const AGENT = {
@@ -151,6 +152,7 @@ function valuationCtx(): ValuationContext {
     agents: [AGENT],
     activeStables: [USDC],
     fairByBase: () => ({ WETH: FAIR }),
+    stablePrices: () => PAR_STABLE_PRICES,
   };
 }
 

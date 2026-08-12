@@ -14,6 +14,7 @@ import {
   getAdapter,
 } from "./protocols/registry.js";
 import { kindOf, tokenInfo } from "./markets.js";
+import { TOKENS } from "./constants.js";
 
 export type ValidatedIntent = {
   action: LeafAction;
@@ -320,15 +321,20 @@ function applyLeafSpend(
     if (base === "WETH") work.wethWei += amount;
     if (work.bases) work.bases[base] = (work.bases[base] ?? 0n) + amount;
   };
+  // usdcUnits is native USDC since issue #27, so it only moves when the venue's stable *is* native
+  // USDC. Decrementing it for a USDC.e leg would have a bundle refuse its own second leg over a
+  // balance that leg never touched.
+  const isNativeStable = stableKey === TOKENS.USDC.address.toLowerCase();
   const spendStable = (amount: bigint) => {
-    work.usdcUnits = work.usdcUnits > amount ? work.usdcUnits - amount : 0n;
+    if (isNativeStable)
+      work.usdcUnits = work.usdcUnits > amount ? work.usdcUnits - amount : 0n;
     if (work.stables && stableKey in work.stables) {
       const cur = work.stables[stableKey];
       work.stables[stableKey] = cur > amount ? cur - amount : 0n;
     }
   };
   const creditStable = (amount: bigint) => {
-    work.usdcUnits += amount;
+    if (isNativeStable) work.usdcUnits += amount;
     if (work.stables && stableKey in work.stables)
       work.stables[stableKey] += amount;
   };

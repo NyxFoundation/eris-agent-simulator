@@ -24,6 +24,11 @@ import type {
   BalanceSnapshot,
   LiquityObservation,
 } from "@eris/sdk/types.js";
+import {
+  PAR_STABLE_PRICES,
+  type StableMarket,
+  type StablePrices,
+} from "@eris/sdk/stables.js";
 
 const WAD = 10n ** 18n;
 const USDC = 10n ** 6n;
@@ -99,7 +104,6 @@ test("the gas compensation is not the borrower's liability", () => {
       netDebtEusdWei: 4000n * WAD,
       spDepositEusdWei: 0n,
       spEthGainWei: 0n,
-      eusdBalanceWei: 0n,
     },
     fairPriceUsd: FAIR,
     eusdPriceUsdc: 1,
@@ -108,14 +112,15 @@ test("the gas compensation is not the borrower's liability", () => {
   assert.equal(value.valueUsdc, 2000);
 });
 
-test("eUSD is marked at the market, not at the dollar it is named after", () => {
+test("a Stability Pool deposit is marked at the market, not at the dollar it is named after", () => {
+  // The wallet's loose eUSD is the registry's to price since issue #27 (b); what this venue still
+  // owns is the deposit, and it moves with the peg the same way.
   const holdings = {
     collWei: 0n,
     debtEusdWei: 0n,
     netDebtEusdWei: 0n,
-    spDepositEusdWei: 1000n * WAD,
+    spDepositEusdWei: 10_000n * WAD,
     spEthGainWei: 0n,
-    eusdBalanceWei: 9000n * WAD,
   };
   const atPar = liquityPositionValue({
     holdings,
@@ -128,7 +133,6 @@ test("eUSD is marked at the market, not at the dollar it is named after", () => 
     eusdPriceUsdc: 0.97,
   });
   assert.equal(atPar.valueUsdc, 10_000);
-  // 3% off par on 10,000 of eUSD, whether it sits in the wallet or in the Stability Pool.
   assert.equal(Math.round(depegged.valueUsdc), 9700);
 });
 
@@ -140,7 +144,6 @@ test("a depegged debt is cheaper to close, and the realizable mark says so", () 
       netDebtEusdWei: 4000n * WAD,
       spDepositEusdWei: 0n,
       spEthGainWei: 0n,
-      eusdBalanceWei: 0n,
     },
     fairPriceUsd: FAIR,
     eusdPriceUsdc: 0.98,
@@ -154,15 +157,14 @@ test("a depegged debt is cheaper to close, and the realizable mark says so", () 
   assert.ok(value.liquidatableValueUsdc < value.valueUsdc);
 });
 
-test("selling a large eUSD balance realizes less than the mid says", () => {
+test("withdrawing a large Stability Pool deposit realizes less than the mid says", () => {
   const value = liquityPositionValue({
     holdings: {
       collWei: 0n,
       debtEusdWei: 0n,
       netDebtEusdWei: 0n,
-      spDepositEusdWei: 0n,
+      spDepositEusdWei: 20_000n * WAD,
       spEthGainWei: 0n,
-      eusdBalanceWei: 20_000n * WAD,
     },
     fairPriceUsd: FAIR,
     eusdPriceUsdc: 0.99,
@@ -182,7 +184,6 @@ test("a Trove past 100% is worth zero, not a negative number", () => {
       netDebtEusdWei: 4000n * WAD,
       spDepositEusdWei: 0n,
       spEthGainWei: 0n,
-      eusdBalanceWei: 0n,
     },
     fairPriceUsd: 2000,
     eusdPriceUsdc: 1,
@@ -199,7 +200,6 @@ test("Stability Pool ETH gains are collateral the depositor already owns", () =>
       netDebtEusdWei: 0n,
       spDepositEusdWei: 5000n * WAD,
       spEthGainWei: WAD / 2n,
-      eusdBalanceWei: 0n,
     },
     fairPriceUsd: FAIR,
     eusdPriceUsdc: 1,
@@ -219,7 +219,39 @@ function context(overrides: Partial<ValuationContext> = {}): ValuationContext {
     agents: [AGENT],
     activeStables: [],
     fairByBase: () => ({ WETH: FAIR }),
+    stablePrices: () => PAR_STABLE_PRICES,
     ...overrides,
+  };
+}
+
+// The registry's view of eUSD (issue #27 (b)): the adapter reads the price from here instead of
+// probing the pool itself, so a valuation test says what the market said rather than what a probe
+// read returned.
+const EUSD_MARKET: StableMarket = {
+  symbol: "eUSD",
+  token: DEPLOYMENT.eusd,
+  decimals: 18,
+  venue: "liquity",
+  pool: DEPLOYMENT.eusdUsdcPool as Address,
+  stableIndex: 0,
+  quoteIndex: 1,
+  probeStableUnits: 1_000n * WAD,
+  probeQuoteUnits: 1_000n * USDC,
+};
+
+function eusdAt(priceUsdc: number): StablePrices {
+  return {
+    byToken: { [DEPLOYMENT.eusd.toLowerCase()]: priceUsdc },
+    unquoted: [],
+    quotes: [],
+  };
+}
+
+function eusdUnquoted(): StablePrices {
+  return {
+    byToken: { [DEPLOYMENT.eusd.toLowerCase()]: 1 },
+    unquoted: [EUSD_MARKET],
+    quotes: [],
   };
 }
 
@@ -247,25 +279,22 @@ function entire(debt: bigint, coll: bigint) {
   return [debt, coll, 0n, 0n] as const;
 }
 
-test("the historical mark prices eUSD off the pool and the Trove off the fair price", async () => {
-  const { asked, values } = await drive(context(), [
-    // stage 0: gas compensation, the market probe, then the agent's four position reads
-    () => [
-      GAS_COMPENSATION,
-      // 1,000 eUSD probe fetches 990 USDC: 100bps below par.
-      990n * USDC,
-      entire(4200n * WAD, 2n * WAD),
-      0n,
-      0n,
-      1000n * WAD,
+test("the historical mark prices eUSD off the registry and the Trove off the fair price", async () => {
+  // eUSD 100bps below par, as the scorer's shared probe measured it.
+  const { asked, values } = await drive(
+    context({ stablePrices: () => eusdAt(0.99) }),
+    [
+      // stage 0: gas compensation, then the agent's three position reads
+      () => [GAS_COMPENSATION, entire(4200n * WAD, 2n * WAD), 1000n * WAD, 0n],
+      // stage 1: own-size quotes for the deposit and for buying the debt back
+      () => [990n * USDC, 3960n * USDC],
     ],
-    // stage 1: own-size quotes for the eUSD held and for buying the debt back
-    () => [990n * USDC, 3960n * USDC],
-  ]);
-  // Stage 0 asks for exactly one read per agent position plus the two globals.
-  assert.equal(asked[0].length, 6);
+  );
+  // Stage 0 asks for one read per agent position plus the one global. The market probe is gone: the
+  // wallet's eUSD is registry spot and its price comes off ctx (issue #27 (b)).
+  assert.equal(asked[0].length, 4);
   const v = values[AGENT.id];
-  // Trove 6000 - 4000 x 0.99, plus 1,000 eUSD at 0.99.
+  // Trove 6000 - 4000 x 0.99, plus a 1,000 eUSD deposit at 0.99.
   assert.equal(Math.round(v.valueUsdc), Math.round(6000 - 3960 + 990));
   assert.equal(
     Math.round(v.liquidatableValueUsdc),
@@ -274,16 +303,20 @@ test("the historical mark prices eUSD off the pool and the Trove off the fair pr
   assert.equal(v.unpriced.length, 0);
 });
 
+test("the wallet's eUSD is left to the registry, so nothing counts it twice", async () => {
+  // The agent holds nothing on the venue itself. Whatever eUSD is in its wallet is the scorer's
+  // spot sweep to price; this adapter must contribute exactly zero.
+  const { asked, values } = await drive(
+    context({ stablePrices: () => eusdAt(0.9) }),
+    [() => [GAS_COMPENSATION, entire(0n, 0n), 0n, 0n]],
+  );
+  assert.equal(asked.length, 1);
+  assert.equal(values[AGENT.id].valueUsdc, 0);
+});
+
 test("a failed position read is reported, not scored as zero", async () => {
   const { values } = await drive(context(), [
-    () => [
-      GAS_COMPENSATION,
-      990n * USDC,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    ],
+    () => [GAS_COMPENSATION, undefined, undefined, undefined],
   ]);
   const v = values[AGENT.id];
   assert.equal(v.valueUsdc, 0);
@@ -293,34 +326,29 @@ test("a failed position read is reported, not scored as zero", async () => {
 });
 
 test("a market that will not quote falls back to par and says so", async () => {
-  const { values } = await drive(context(), [
-    () => [
-      GAS_COMPENSATION,
-      undefined, // the probe reverted
-      entire(0n, 0n),
-      0n,
-      0n,
-      5000n * WAD,
-    ],
-  ]);
+  const { values } = await drive(
+    context({ stablePrices: () => eusdUnquoted() }),
+    [() => [GAS_COMPENSATION, entire(0n, 0n), 5000n * WAD, 0n]],
+  );
   const v = values[AGENT.id];
   // Par is the least wrong fallback -- it is the value the protocol enforces -- but silently
   // assuming it is exactly what this venue must never do, so the holding is reported.
   assert.equal(v.valueUsdc, 5000);
   assert.equal(v.unpriced.length, 1);
   assert.equal(v.unpriced[0].source, "liquity-eusd-market");
+  assert.equal(v.unpriced[0].reason, "par-fallback");
   assert.equal(v.unpriced[0].token, DEPLOYMENT.eusd);
 });
 
 test("an agent with nothing on the venue costs no second-stage read", async () => {
   const { asked, values } = await drive(context(), [
-    () => [GAS_COMPENSATION, 990n * USDC, entire(0n, 0n), 0n, 0n, 0n],
+    () => [GAS_COMPENSATION, entire(0n, 0n), 0n, 0n],
   ]);
   assert.equal(asked.length, 1);
   assert.equal(values[AGENT.id].valueUsdc, 0);
 });
 
-test("a deployment without a market skips the probe entirely", async () => {
+test("a deployment without a market marks at par and says that too", async () => {
   const noMarket: LiquityDeployment = {
     ...DEPLOYMENT,
     eusdUsdcPool: undefined,
@@ -329,11 +357,13 @@ test("a deployment without a market skips the probe entirely", async () => {
   };
   const { asked, values } = await drive(
     context(),
-    [() => [GAS_COMPENSATION, entire(0n, 0n), 0n, 0n, 2000n * WAD]],
+    [() => [GAS_COMPENSATION, entire(0n, 0n), 2000n * WAD, 0n]],
     noMarket,
   );
-  assert.equal(asked[0].length, 5);
+  // No market means no own-size quotes either, so there is no second stage to ask for.
+  assert.equal(asked.length, 1);
   assert.equal(values[AGENT.id].valueUsdc, 2000);
+  assert.equal(values[AGENT.id].unpriced[0].reason, "par-fallback");
 });
 
 // ---------------------------------------------------------------------------

@@ -38,7 +38,14 @@ async function deploy(
 }
 
 // Safe parameters for deploy_plain_pool (per the repo's tests/fixtures/pools.py)
-const A = 2000n;
+//
+// A is 100 rather than the fixture's 2000, for the reason issue #39 measured on the eUSD pool: a
+// stableswap at A=2000 barely reprices. Selling *half* of a 100k/100k pool's side moves it 4.4bps,
+// so no plausible flow -- and no configurable depeg event -- could ever push this pair far enough
+// off par for anyone to trade it. At A=100 the same pool gives 114bps for 40k sold, which is past
+// the cost of doing anything about it. Issue #27 (c) needs that: a stable nobody can profitably
+// arb back to par is a stable whose peg is decorative.
+const A = 100n;
 const FEE = 1_000_000n; // 0.01%
 const OFFPEG = 20_000_000_000n;
 const MA_EXP_TIME = 866n;
@@ -371,5 +378,11 @@ async function seedPool(factory: Address) {
   await waitTx(addHash);
   ok("add_liquidity", "100k USDC / 100k DAI");
 
-  setProtocol("curve", { usdcDaiPool: pool });
+  // The indices matter to the poc: DAI is a market-priced registry stable (issue #27 (c)), so the
+  // scorer probes this pool both ways every cross-section and needs to know which coin is which.
+  setProtocol("curve", {
+    usdcDaiPool: pool,
+    usdcDaiUsdcIndex: 0,
+    usdcDaiDaiIndex: 1,
+  });
 }

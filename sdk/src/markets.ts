@@ -31,7 +31,20 @@ const QUOTE_SYMBOL: TokenSymbol = "USDC";
 
 // Symbols treated as stable. Everything else is base (a tradable with a USD price).
 // Add here only when adding a new stable. A base is treated as a base without doing anything.
-const STABLE_SYMBOLS = new Set<TokenSymbol>(["USDC", "USDT", "DAI", "USDC.e"]);
+//
+// Since issue #27 "stable" no longer means "worth $1". It means the token is *meant* to settle at a
+// dollar and is quoted against USDC rather than against a USD fair-price feed; whether it currently
+// does is a question for its market (constants' STABLE_MARKET_LEGS, priced in stables.ts). USDC is
+// the one exception that is a dollar by definition, because it is the numéraire.
+const STABLE_SYMBOLS = new Set<TokenSymbol>([
+  "USDC",
+  "USDT",
+  "DAI",
+  "USDC.e",
+  // Issue #27 (b): the CDP stablecoin from #39, promoted out of the liquity adapter's private
+  // accounting now that being in the registry no longer means being priced at par.
+  "eUSD",
+]);
 
 // Yield-bearing claims valued by their own venue rather than by the fair-price feed (issue #38).
 // Listed here so they stay out of the scorer's spot sweep -- see TokenKind for why.

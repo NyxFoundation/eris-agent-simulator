@@ -16,6 +16,10 @@ import {
 } from "@eris/sdk/chain.js";
 import { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
+import {
+  marketPricedStables,
+  readStablePrices,
+} from "@eris/sdk/stables.js";
 import { checkRunFeeViolations, countRunRevertedTxs } from "../postRunCheck.js";
 import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
 import type {
@@ -40,6 +44,7 @@ import {
 import {
   DEFAULT_ANVIL_PRIVATE_KEYS,
   GMX_MARKETS,
+  TOKENS,
 } from "@eris/sdk/constants.js";
 import {
   baseTokens,
@@ -91,13 +96,16 @@ import {
 import {
   liquityBlockEvent,
   watchLiquityEvents,
-  reconcileEusdDepeg,
-  restoreEusdDepeg,
   setupEusdDepeg,
   setupLiquity,
-  type EusdDepegRuntime,
   type LiquityRuntime,
 } from "./liquity.js";
+import {
+  reconcileStableDepeg,
+  restoreStableDepeg,
+  setupStableDepeg,
+  type StableDepegRuntime,
+} from "./stableDepeg.js";
 import { PULL_VENUES } from "./liquidityVenues.js";
 import type { LstState } from "@eris/sdk/protocols/lst.js";
 import type { LiquityState } from "@eris/sdk/protocols/liquity.js";
@@ -714,7 +722,11 @@ export async function runRealtimeSimulation(
     // senders on one key race on the nonce — the failure mode that once froze the LST redemption
     // rate for a whole run. Checked once for both events, since they share the key.
     const deployerPk = DEFAULT_ANVIL_PRIVATE_KEYS[0];
-    if (schedule.hasLiquidityPull() || schedule.hasEusdDepeg()) {
+    if (
+      schedule.hasLiquidityPull() ||
+      schedule.hasEusdDepeg() ||
+      schedule.depegStables().length > 0
+    ) {
       const clash = agentRuntimes.find(
         (a) => a.privateKey.toLowerCase() === deployerPk.toLowerCase(),
       );
@@ -727,10 +739,17 @@ export async function runRealtimeSimulation(
       }
     }
 
-    // ---- eUSD depeg stress event (issue #39): stage the account that will push the peg off par.
-    // Without it the CDP venue's redemption arb has nothing to trade -- the pool is seeded at par by
-    // construction -- so a regime that wants the venue exercised has to ask for this event.
-    let eusdDepegRuntime: EusdDepegRuntime | null = null;
+    // ---- depeg stress events (issues #39 and #27 (c)): stage the accounts that will push each
+    // peg off par. Without one, a stable's market sits at par by construction and there is nothing
+    // to trade -- so a regime that wants the peg exercised has to ask for the event.
+    //
+    // One list rather than one variable: a run can depeg eUSD and a plain stable in the same window,
+    // and they differ only in which pool and which float.
+    const depegRuntimes: Array<{
+      runtime: StableDepegRuntime;
+      fractionAt: (blockIndex: number) => number;
+      ownerId: string;
+    }> = [];
     if (schedule.hasEusdDepeg()) {
       if (!liquityRuntime) {
         throw new Error(
@@ -738,15 +757,62 @@ export async function runRealtimeSimulation(
             "venue whose stablecoin the event depegs)",
         );
       }
-      eusdDepegRuntime = await setupEusdDepeg(
-        ctx,
-        { localDeploy: config.localDeploy, actorPk: deployerPk },
-        logger,
-      );
-      // Its swaps are environment transactions, like the oracle writes: attributing them to a
-      // participant would put them through the post-run fee check (core/src/postRunCheck.ts).
-      ownerByAddress.set(eusdDepegRuntime.actor.toLowerCase(), {
+      depegRuntimes.push({
+        runtime: await setupEusdDepeg(
+          ctx,
+          { localDeploy: config.localDeploy, actorPk: deployerPk },
+          logger,
+        ),
+        fractionAt: (i) => schedule.eusdDepegFractionAt(i),
         ownerId: "liquity-depeg",
+      });
+    }
+    for (const symbol of schedule.depegStables()) {
+      if (!config.localDeploy) {
+        throw new Error(
+          "stress event depeg requires run.localDeploy: the environment sells into a pool it seeded, " +
+            "and a fork has no such pool (issue #27 (c))",
+        );
+      }
+      const market = marketPricedStables().find((m) => m.symbol === symbol);
+      if (!market) {
+        throw new Error(
+          `stress event depeg targets "${symbol}", which this deployment does not price from a ` +
+            `market (known: ${marketPricedStables().map((m) => m.symbol).join(", ") || "none"}). ` +
+            "A stable with no pool cannot be pushed off par -- and would be scored at $1 whatever " +
+            "the event did.",
+        );
+      }
+      depegRuntimes.push({
+        runtime: await setupStableDepeg(
+          ctx,
+          {
+            market: {
+              symbol: market.symbol,
+              stable: market.token,
+              quote: TOKENS.USDC.address,
+              pool: market.pool,
+              stableIndex: market.stableIndex,
+              quoteIndex: market.quoteIndex,
+            },
+            label: "stress_depeg",
+            actorPk: deployerPk,
+            emptyInventoryHint:
+              `The deploy mints the initial ${symbol} supply to the deployer account and seeds only ` +
+              "part of it into the pool, so an empty balance means a different account deployed the " +
+              "tokens, or a previous run spent it.",
+          },
+          logger,
+        ),
+        fractionAt: (i) => schedule.depegFractionAt(symbol, i),
+        ownerId: `depeg-${symbol.toLowerCase()}`,
+      });
+    }
+    // Their swaps are environment transactions, like the oracle writes: attributing them to a
+    // participant would put them through the post-run fee check (core/src/postRunCheck.ts).
+    for (const { runtime, ownerId } of depegRuntimes) {
+      ownerByAddress.set(runtime.actor.toLowerCase(), {
+        ownerId,
         role: "system",
       });
     }
@@ -1480,32 +1546,36 @@ export async function runRealtimeSimulation(
           // deployer key rather than the admin key -- and sequential with it inside that key, which
           // the two being separate awaited tasks does not guarantee, so they share one task here.
           const depegTask = async (): Promise<void> => {
-            if (!eusdDepegRuntime) return;
-            try {
-              const hashes = await reconcileEusdDepeg(
-                ctx,
-                eusdDepegRuntime,
-                schedule,
-                blockIndex,
-                bn,
-                { priorityFeeWei: oracleFee },
-                logger,
-              );
-              for (const hash of hashes) {
-                submittedByHash.set(hash.toLowerCase(), {
-                  ownerId: "liquity-depeg",
-                  role: "system",
-                  priorityFeeWei: oracleFee,
-                  actionType: "eusdDepeg",
+            // Sequential across stables as well as with the pull: they all send from the deployer
+            // key, and two senders on one key race on the nonce.
+            for (const { runtime, fractionAt, ownerId } of depegRuntimes) {
+              try {
+                const hashes = await reconcileStableDepeg(
+                  ctx,
+                  runtime,
+                  fractionAt(blockIndex),
+                  blockIndex,
+                  bn,
+                  { priorityFeeWei: oracleFee },
+                  logger,
+                );
+                for (const hash of hashes) {
+                  submittedByHash.set(hash.toLowerCase(), {
+                    ownerId,
+                    role: "system",
+                    priorityFeeWei: oracleFee,
+                    actionType: "depeg",
+                  });
+                }
+              } catch (error) {
+                logger.event({
+                  type: `${runtime.label}_task_failed`,
+                  stable: runtime.symbol,
+                  blockIndex,
+                  blockNumber: bn,
+                  error: error instanceof Error ? error.message : String(error),
                 });
               }
-            } catch (error) {
-              logger.event({
-                type: "stress_eusd_depeg_task_failed",
-                blockIndex,
-                blockNumber: bn,
-                error: error instanceof Error ? error.message : String(error),
-              });
             }
           };
 
@@ -1543,7 +1613,7 @@ export async function runRealtimeSimulation(
           if (stressVictims.length > 0) tasks.push(timed(victimTask));
           if (vulnRuntime) tasks.push(timed(vulnTask));
           if (liquidityPullRuntime) tasks.push(timed(liquidityTask));
-          if (eusdDepegRuntime) tasks.push(timed(depegTask));
+          if (depegRuntimes.length > 0) tasks.push(timed(depegTask));
           if (liquityRuntime) tasks.push(timed(liquityWatchTask));
           const results = await Promise.all(tasks);
           const [keeperMs, oracleMs, stateFlowMs] = results;
@@ -1554,7 +1624,8 @@ export async function runRealtimeSimulation(
           const liquidityMs = liquidityPullRuntime
             ? results[taskIdx++]
             : undefined;
-          const depegMs = eusdDepegRuntime ? results[taskIdx++] : undefined;
+          const depegMs =
+            depegRuntimes.length > 0 ? results[taskIdx++] : undefined;
           const liquityMs = liquityRuntime ? results[taskIdx++] : undefined;
           logger.event({
             type: "round_timing",
@@ -1620,12 +1691,13 @@ export async function runRealtimeSimulation(
     // ---- eUSD depeg teardown (issue #39): same argument as the depth restore above, plus one more.
     // The startup check refuses to begin on a depegged pool, so a run that ended mid-window would
     // not just hand the next run a different venue -- it would stop it from starting at all.
-    if (eusdDepegRuntime) {
+    for (const { runtime } of depegRuntimes) {
       try {
-        await restoreEusdDepeg(ctx, eusdDepegRuntime, logger);
+        await restoreStableDepeg(ctx, runtime, logger);
       } catch (error) {
         logger.event({
-          type: "stress_eusd_depeg_teardown_failed",
+          type: `${runtime.label}_teardown_failed`,
+          stable: runtime.symbol,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -1731,11 +1803,24 @@ export async function runRealtimeSimulation(
       ctx.fairPrices && Object.keys(ctx.fairPrices).length > 0
         ? ctx.fairPrices
         : { WETH: finalFairPrice };
+    // Issue #27: what each market-priced stable settles at, at the last block. The initial
+    // valuation uses the same prices for the same reason the fair prices are shared -- netPnlUsdc is
+    // a difference, and pricing the two ends off different marks would book a peg's whole history
+    // as this agent's PnL. Nothing is endowed in a market-priced stable, so the initial snapshot
+    // holds none of them and the choice only bites on a run that ends mid-depeg.
+    const finalStablePrices = await readStablePrices(
+      publicClient,
+      activeStables(),
+    );
     const agentsSummary = [];
     for (const agent of agentRuntimes) {
       const final = await getBalances(publicClient, agent.address);
-      const initialValue = valueUsdc(agent.initial, finalFairPrices);
-      let finalValue = valueUsdc(final, finalFairPrices);
+      const initialValue = valueUsdc(
+        agent.initial,
+        finalFairPrices,
+        finalStablePrices,
+      );
+      let finalValue = valueUsdc(final, finalFairPrices, finalStablePrices);
       const protocolValues: Record<string, number> = {};
       for (const adapter of adapters) {
         const v = await adapter.valueUsdc(

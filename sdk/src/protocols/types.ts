@@ -2,6 +2,7 @@ import type { Address, Hex, PublicClient, WalletClient } from "viem";
 import type { makeChain } from "../chain.js";
 import type { SimConfig } from "../config.js";
 import type { Rng } from "../rng.js";
+import type { StablePrices } from "../stables.js";
 import type { UnpricedAmount } from "../valuation.js";
 import type {
   AgentObservation,
@@ -105,11 +106,16 @@ export type ValuationContext = {
   // #38). Equals blockNumber when the caller has no horizon, which is the conservative reading.
   horizonBlock: number;
   agents: readonly ValuationAgent[];
-  // The stables the run already sums as USDC-equivalent spot.
+  // The stables the run sweeps as spot.
   activeStables: readonly Address[];
   // USD price per base symbol. The prices are themselves read in the first stage, so this is only
   // populated once that stage returns: call it when computing values, never when choosing reads.
   fairByBase(): Record<string, number>;
+  // What each market-priced stable is worth in USDC at this cross-section (issue #27). One owner
+  // for the number: the scorer probes each stable's market in stage 0 and every venue that names a
+  // stable leg reads it from here, so nothing prices the same token twice or differently. Same
+  // "populated after stage 0" contract as fairByBase.
+  stablePrices(): StablePrices;
 };
 
 // A holding the adapter could not fold into its value, either because it cannot be priced (#41) or

@@ -26,11 +26,15 @@ export function minimumFor(tokenIn: string): bigint {
 }
 
 // What the wallet holds of the token a swap would spend. Non-WETH bases come from balances.bases
-// when the run has them (ADR 0013); an unknown symbol reads as zero, which is the safe direction --
-// it makes the agent skip rather than propose something unfundable.
+// when the run has them (ADR 0013); stables other than USDC come from balances.stables, which since
+// issue #27 keeps them apart instead of summing them into usdcUnits. An unknown symbol reads as
+// zero, which is the safe direction -- it makes the agent skip rather than propose something
+// unfundable.
 export function balanceOf(obs: AgentObservation, tokenIn: string): bigint {
   if (tokenIn === "USDC") return BigInt(obs.balances.usdcUnits);
   if (tokenIn === "WETH") return BigInt(obs.balances.wethWei);
+  const stable = obs.balances.stables?.[tokenIn];
+  if (stable) return BigInt(stable.balance);
   const bases = (obs.balances as unknown as { bases?: Record<string, string> })
     .bases;
   const raw = bases?.[tokenIn];

@@ -1,7 +1,12 @@
 import { encodeFunctionData, type Address, type PublicClient } from "viem";
-import { curveTricryptoAbi, erc20Abi } from "../abis.js";
+import {
+  curveStableSwapNgAbi,
+  curveTricryptoAbi,
+  erc20Abi,
+} from "../abis.js";
 import { CURVE, TOKENS, stableBalanceOf } from "../constants.js";
 import { poolShareValueUsdc } from "../valuation.js";
+import { marketPricedStables, type StableMarket } from "../stables.js";
 import {
   marketFor,
   marketsFor,
@@ -18,6 +23,7 @@ import type {
   AmmObservation,
   BalanceSnapshot,
   CurveLeg,
+  StableSwapAction,
   CurveSwapAction,
   LeafAction,
 } from "../types.js";
@@ -239,7 +245,56 @@ function parseBase(obj: Record<string, unknown>): {
   return { base, market };
 }
 
+// Issue #27 (c): the stable/stable leg. Its pool is a stableswap-ng created by the same factory as
+// this venue's crypto pools, which is why it lives here rather than behind a ProtocolId of its own --
+// a venue whose entire job is one pool would need a config flag and a place in every roster to say
+// the same thing.
+function parseStableSwap(obj: Record<string, unknown>): LeafAction | null {
+  if (obj.type !== "stableSwap") return null;
+  if (typeof obj.stable !== "string")
+    throw new Error("stable must be a token symbol string");
+  const market = stableMarketBySymbol(obj.stable);
+  if (!market)
+    throw new Error(
+      `stableSwap: "${obj.stable}" is not a market-priced stable in this deployment ` +
+        `(known: ${marketPricedStables().map((m) => m.symbol).join(", ") || "none"})`,
+    );
+  if (obj.tokenIn !== market.symbol && obj.tokenIn !== "USDC")
+    throw new Error(`tokenIn must be ${market.symbol} or USDC`);
+  requireDecimalString(obj.amountIn, "amountIn");
+  const action: StableSwapAction = {
+    type: "stableSwap",
+    stable: market.symbol,
+    tokenIn: obj.tokenIn,
+    amountIn: obj.amountIn,
+  };
+  if (obj.maxPriorityFeePerGasWei !== undefined) {
+    requireDecimalString(
+      obj.maxPriorityFeePerGasWei,
+      "maxPriorityFeePerGasWei",
+    );
+    action.maxPriorityFeePerGasWei = obj.maxPriorityFeePerGasWei;
+  }
+  if (obj.slippageBps !== undefined) {
+    if (
+      typeof obj.slippageBps !== "number" ||
+      !Number.isInteger(obj.slippageBps) ||
+      obj.slippageBps < 0 ||
+      obj.slippageBps > 1000
+    ) {
+      throw new Error("slippageBps must be an integer between 0 and 1000");
+    }
+    action.slippageBps = obj.slippageBps;
+  }
+  return action;
+}
+
+function stableMarketBySymbol(symbol: string): StableMarket | undefined {
+  return marketPricedStables().find((m) => m.symbol === symbol);
+}
+
 function parse(obj: Record<string, unknown>): LeafAction | null {
+  if (obj.type === "stableSwap") return parseStableSwap(obj);
   if (obj.type !== "curveSwap") return null;
   const { base, market } = parseBase(obj);
   if (obj.tokenIn !== market.base && obj.tokenIn !== market.quote)
@@ -272,11 +327,53 @@ function parse(obj: Record<string, unknown>): LeafAction | null {
   return action;
 }
 
+// The per-round USDC cap, restated in another token's decimals. Both are dollars, so the conversion
+// is the decimal difference and nothing else.
+function scaleUsdcLimit(limitUsdcUnits: bigint, decimals: number): bigint {
+  const quoteDecimals = TOKENS.USDC.decimals;
+  if (decimals === quoteDecimals) return limitUsdcUnits;
+  return decimals > quoteDecimals
+    ? limitUsdcUnits * 10n ** BigInt(decimals - quoteDecimals)
+    : limitUsdcUnits / 10n ** BigInt(quoteDecimals - decimals);
+}
+
+function validateStableSwap(
+  action: StableSwapAction,
+  obs: AgentObservation,
+  balances: BalanceSnapshot,
+): ValidationResult {
+  const amountIn = BigInt(action.amountIn);
+  if (amountIn <= 0n) return { ok: false, reason: "amountIn must be positive" };
+  const market = stableMarketBySymbol(action.stable);
+  if (!market)
+    return { ok: false, reason: `no market for stable ${action.stable}` };
+  const sellingStable = action.tokenIn === market.symbol;
+  // Both legs are dollars, so both are capped by the shared per-round USDC limit -- but the limit is
+  // denominated in USDC's six decimals and a stable need not share them. Comparing 18-decimal DAI
+  // wei against it rejected every unwind while letting every buy through, so an agent could open a
+  // position it was structurally unable to close: measured at 42 rejected sells against 6 accepted
+  // buys, and the resulting "profit" was a mark on a position that never came back.
+  const maxIn = scaleUsdcLimit(
+    BigInt(obs.limits.maxUsdcInUnits),
+    sellingStable ? market.decimals : TOKENS.USDC.decimals,
+  );
+  if (maxIn > 0n && amountIn > maxIn)
+    return { ok: false, reason: "amountIn exceeds configured per-round limit" };
+  const balance = sellingStable
+    ? stableBalanceOf(balances, market.token)
+    : stableBalanceOf(balances, TOKENS.USDC.address);
+  if (amountIn > balance)
+    return { ok: false, reason: "amountIn exceeds balance" };
+  return { ok: true };
+}
+
 function validate(
   action: LeafAction,
   obs: AgentObservation,
   balances: BalanceSnapshot,
 ): ValidationResult {
+  if (action.type === "stableSwap")
+    return validateStableSwap(action, obs, balances);
   if (action.type !== "curveSwap")
     return { ok: false, reason: "not a curve action" };
   const amountIn = BigInt(action.amountIn);
@@ -335,6 +432,37 @@ async function buildSwapTx(
   };
 }
 
+// Both coins of a stableswap-ng plain pool, quoted the same way a curveSwap is: read the executable
+// output, then bound it by the caller's slippage. `stableIndex`/`quoteIndex` come from the registry,
+// so an agent never has to know which coin the deploy put first.
+async function buildStableSwapTx(
+  publicClient: PublicClient,
+  action: StableSwapAction,
+): Promise<BuiltTx> {
+  const market = stableMarketBySymbol(action.stable);
+  if (!market) throw new Error(`stableSwap: no market for ${action.stable}`);
+  const amountIn = BigInt(action.amountIn);
+  const [i, j] =
+    action.tokenIn === market.symbol
+      ? [market.stableIndex, market.quoteIndex]
+      : [market.quoteIndex, market.stableIndex];
+  const quoted = (await publicClient.readContract({
+    address: market.pool,
+    abi: curveStableSwapNgAbi,
+    functionName: "get_dy",
+    args: [BigInt(i), BigInt(j), amountIn],
+  })) as bigint;
+  const minDy = applySlippage(quoted, action.slippageBps ?? 50);
+  return {
+    to: market.pool,
+    data: encodeFunctionData({
+      abi: curveStableSwapNgAbi,
+      functionName: "exchange",
+      args: [BigInt(i), BigInt(j), amountIn, minDy],
+    }),
+  };
+}
+
 export const curveAdapter: ProtocolAdapter = {
   id: "curve",
   stableToken: CURVE.usdcToken,
@@ -374,6 +502,8 @@ export const curveAdapter: ProtocolAdapter = {
   },
 
   async buildTxs(ctx, _owner, action): Promise<BuiltTx[]> {
+    if (action.type === "stableSwap")
+      return [await buildStableSwapTx(ctx.publicClient, action)];
     if (action.type !== "curveSwap")
       throw new Error("curve buildTxs: unexpected action");
     const market = resolveMarket("curve", action);
@@ -429,6 +559,7 @@ export const curveAdapter: ProtocolAdapter = {
     });
 
     const fairByBase = ctx.fairByBase();
+    const stablePrices = ctx.stablePrices();
     const out: Record<string, AgentProtocolValue> = {};
     ctx.agents.forEach((agent, a) => {
       let valueUsdc = 0;
@@ -445,7 +576,12 @@ export const curveAdapter: ProtocolAdapter = {
           });
           return;
         }
-        const share = poolShareValueUsdc(pool, balance, fairByBase);
+        const share = poolShareValueUsdc(
+          pool,
+          balance,
+          fairByBase,
+          stablePrices,
+        );
         valueUsdc += share.valueUsdc;
         for (const h of share.unpriced)
           unpriced.push({ ...h, source: "curve-lp" });
@@ -477,6 +613,12 @@ export const curveAdapter: ProtocolAdapter = {
       const leg = legOf(m);
       approve(tokenInfo(m.base).address, leg.pool);
       approve(leg.stable, leg.pool);
+    }
+    // Issue #27 (c): the stable/stable pools, both legs. Without these a stableSwap reverts on the
+    // transfer and the depeg is untradable for everyone equally, which reads as "nobody found it".
+    for (const m of marketPricedStables()) {
+      approve(m.token, m.pool);
+      approve(TOKENS.USDC.address, m.pool);
     }
     return txs;
   },

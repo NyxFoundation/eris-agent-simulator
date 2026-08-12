@@ -22,11 +22,14 @@
 // `WETH.withdraw` before the call. The scorer already prices loose native ETH, so this is not a
 // valuation gap -- but it is a gas interaction, and the observation surfaces the remaining headroom.
 //
-// *eUSD is never worth $1 by assumption.* It is deliberately absent from the token registry, because
-// registering it as a stable would have the scorer's spot sweep price it at par -- and a CDP
-// stablecoin trading at 0.97 marked at 1.00 hands every holder phantom value, which is precisely
-// what makes the redemption arb look profitable before it has been done. Everything here marks eUSD
-// at what the eUSD/USDC pool would actually pay.
+// *eUSD is never worth $1 by assumption.* A CDP stablecoin trading at 0.97 marked at 1.00 hands
+// every holder phantom value, which is precisely what makes the redemption arb look profitable
+// before it has been done. eUSD used to be kept out of the token registry to guarantee that, because
+// the registry priced anything of kind "stable" at par. Issue #27 removed the reason: registry
+// stables are priced from their market now, so eUSD *is* a registry stable and the shared probe
+// (stables.ts) is the single owner of what it is worth. This adapter reads that price rather than
+// asserting one, and rather than probing the pool a second time -- two owners of one number is the
+// double-counting hazard promoting it had to avoid.
 import {
   encodeFunctionData,
   formatUnits,
@@ -79,15 +82,12 @@ import type {
   ValuationRun,
 } from "./types.js";
 import { approveTx } from "./uniswap.js";
+import { readStablePrices, stablePriceUsdc } from "../stables.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
 const WAD = 10n ** 18n;
 const USDC_DECIMALS = 6;
-
-// Probe size for the two-sided market quote: big enough to be a real trade against a 100k pool,
-// small enough that it reports the pool's price rather than its own footprint.
-const PROBE_EUSD_WEI = 1_000n * WAD;
 
 // Slippage bound on the protocol's own fee curves when an action does not say. Both fees rise with
 // use, so a tight bound reverts on exactly the busy blocks an agent most wants to act.
@@ -206,36 +206,6 @@ export function liquidationPriceUsd(
 /// below par, so buying and redeeming converts the gap into collateral.
 export function discountBpsFrom(marketPriceUsdc: number): number {
   return (1 - marketPriceUsdc) * 10_000;
-}
-
-// USDC per eUSD from a raw quote pair.
-function usdcPerEusd(eusdIn: bigint, usdcOut: bigint): number {
-  if (eusdIn <= 0n) return 0;
-  return (
-    Number(formatUnits(usdcOut, USDC_DECIMALS)) /
-    Number(formatUnits(eusdIn, 18))
-  );
-}
-
-async function quote(
-  publicClient: PublicClient,
-  pool: Address,
-  i: number,
-  j: number,
-  dx: bigint,
-): Promise<bigint | undefined> {
-  try {
-    return (await publicClient.readContract({
-      address: pool,
-      abi: curveStableSwapNgAbi,
-      functionName: "get_dy",
-      args: [BigInt(i), BigInt(j), dx],
-    })) as bigint;
-  } catch {
-    // A quote the pool refuses is "no market at this size", not a price of zero. Zero would read as
-    // a 10000bps discount -- an infinite free arb -- which is the failure mode issue #38 hit first.
-    return undefined;
-  }
 }
 
 export async function getLiquityState(
@@ -471,30 +441,15 @@ async function readMarket(publicClient: PublicClient): Promise<{
     };
   }
   const market = requireEusdMarket();
-  const sellOut = await quote(
-    publicClient,
-    market.pool,
-    market.eusdIndex,
-    market.usdcIndex,
-    PROBE_EUSD_WEI,
-  );
-  const sellPriceUsdc = sellOut ? usdcPerEusd(PROBE_EUSD_WEI, sellOut) : 0;
-  let buyPriceUsdc = 0;
-  if (sellOut && sellOut > 0n) {
-    const buyOut = await quote(
-      publicClient,
-      market.pool,
-      market.usdcIndex,
-      market.eusdIndex,
-      sellOut,
-    );
-    if (buyOut && buyOut > 0n) buyPriceUsdc = usdcPerEusd(buyOut, sellOut);
-  }
-  const midPriceUsdc =
-    sellPriceUsdc > 0 && buyPriceUsdc > 0
-      ? Math.sqrt(sellPriceUsdc * buyPriceUsdc)
-      : sellPriceUsdc;
-  const marketQuoted = midPriceUsdc > 0;
+  // The peg's price is the registry's now (issue #27 (b)): eUSD is a market-priced stable, so the
+  // same two-sided probe answers here and in the scorer's cross-section. One owner for the number,
+  // which is what keeps an agent's observation and its score from disagreeing about a discount.
+  const quotes = await readStablePrices(publicClient, [l.eusd]);
+  const eusdQuote = quotes.quotes[0];
+  const sellPriceUsdc = eusdQuote?.sellPriceUsdc ?? 0;
+  const buyPriceUsdc = eusdQuote?.buyPriceUsdc ?? 0;
+  const midPriceUsdc = eusdQuote?.quoted ? eusdQuote.priceUsdc : 0;
+  const marketQuoted = Boolean(eusdQuote?.quoted);
 
   let reserves: { eusd: bigint; usdc: bigint } | undefined;
   try {
@@ -1307,13 +1262,17 @@ async function buildTxs(
 // ---------------------------------------------------------------------------
 
 // What an agent holds on this venue, before it is priced.
+//
+// The wallet's loose eUSD is deliberately absent. Since issue #27 (b) eUSD is a registry stable and
+// the scorer's spot sweep prices it from the same market this adapter reads, so counting it here
+// too would value it twice -- the hazard TokenKind "lst" exists to prevent for the LST share token
+// (#38). What stays is what only this venue knows about: the Trove and the Stability Pool.
 type LiquityHoldings = {
   collWei: bigint;
   debtEusdWei: bigint;
   netDebtEusdWei: bigint;
   spDepositEusdWei: bigint;
   spEthGainWei: bigint;
-  eusdBalanceWei: bigint;
 };
 
 /// Price a Liquity position, given what eUSD is worth.
@@ -1336,7 +1295,7 @@ export function liquityPositionValue(input: {
   debtBuybackUsdc?: number;
 }): { valueUsdc: number; liquidatableValueUsdc: number } {
   const { holdings: h, fairPriceUsd, eusdPriceUsdc } = input;
-  const longEusd = toFloat(h.eusdBalanceWei + h.spDepositEusdWei);
+  const longEusd = toFloat(h.spDepositEusdWei);
   const collUsd = toFloat(h.collWei) * fairPriceUsd;
   const gainUsd = toFloat(h.spEthGainWei) * fairPriceUsd;
   const netDebtEusd = toFloat(h.netDebtEusdWei);
@@ -1385,16 +1344,6 @@ export async function* liquityValuationRun(
       abi: troveManagerAbi,
       functionName: "LUSD_GAS_COMPENSATION",
     },
-    ...(hasMarket
-      ? [
-          {
-            address: pool,
-            abi: curveStableSwapNgAbi,
-            functionName: "get_dy",
-            args: [eusdIndex, usdcIndex, PROBE_EUSD_WEI],
-          },
-        ]
-      : []),
     ...ctx.agents.flatMap((a) => [
       {
         address: deployment.troveManager,
@@ -1414,36 +1363,19 @@ export async function* liquityValuationRun(
         functionName: "getDepositorETHGain",
         args: [a.address],
       },
-      {
-        address: deployment.eusd,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [a.address],
-      },
     ]),
   ];
   const results = yield stage0;
 
   const gasCompensation =
     typeof results[0] === "bigint" ? (results[0] as bigint) : 0n;
-  const probeOut =
-    hasMarket && typeof results[1] === "bigint"
-      ? (results[1] as bigint)
-      : undefined;
-  const perAgentBase = hasMarket ? 2 : 1;
   const holdings = ctx.agents.map((_agent, i) => {
-    const base = perAgentBase + i * 4;
+    const base = 1 + i * 3;
     const entire = results[base] as
       readonly [bigint, bigint, bigint, bigint] | undefined;
     const spDeposit = results[base + 1];
     const spGain = results[base + 2];
-    const eusd = results[base + 3];
-    if (
-      !entire ||
-      typeof spDeposit !== "bigint" ||
-      typeof spGain !== "bigint" ||
-      typeof eusd !== "bigint"
-    )
+    if (!entire || typeof spDeposit !== "bigint" || typeof spGain !== "bigint")
       return undefined;
     const [debt, coll] = entire;
     return {
@@ -1452,21 +1384,29 @@ export async function* liquityValuationRun(
       netDebtEusdWei: debt > gasCompensation ? debt - gasCompensation : 0n,
       spDepositEusdWei: spDeposit,
       spEthGainWei: spGain,
-      eusdBalanceWei: eusd,
     } satisfies LiquityHoldings;
   });
 
-  // The mid, from the probe alone. Only the sell side is probed here: the second stage already costs
-  // a round trip for the sizes that matter, and pairing it with a buy quote of the same notional
-  // would double the reads on every block for a second decimal place.
-  const probeMid = probeOut ? usdcPerEusd(PROBE_EUSD_WEI, probeOut) : undefined;
+  // The mid comes from the registry, which probed this same pool both ways in stage 0 (issue #27).
+  // The adapter used to run its own one-sided probe here; two owners of one price is exactly what
+  // promoting eUSD into the registry had to remove.
+  const stablePrices = ctx.stablePrices();
+  // A deploy with no curve factory has no market for the peg at all, which reads the same way as a
+  // market that would not quote: the mark is par by assumption either way, and either way it is
+  // said out loud rather than assumed.
+  const marketQuoted =
+    hasMarket &&
+    !stablePrices.unquoted.some(
+      (m) => m.token.toLowerCase() === deployment.eusd.toLowerCase(),
+    );
+  const eusdPriceUsdc = stablePriceUsdc(stablePrices, deployment.eusd);
 
   // Own-size quotes, for exactly the agents whose position has a size worth quoting.
   const longTargets: number[] = [];
   const debtTargets: number[] = [];
   holdings.forEach((h, i) => {
     if (!h) return;
-    if (h.eusdBalanceWei + h.spDepositEusdWei > 0n) longTargets.push(i);
+    if (h.spDepositEusdWei > 0n) longTargets.push(i);
     if (h.netDebtEusdWei > 0n) debtTargets.push(i);
   });
   let quotes: unknown[] = [];
@@ -1476,11 +1416,7 @@ export async function* liquityValuationRun(
         address: pool,
         abi: curveStableSwapNgAbi,
         functionName: "get_dy",
-        args: [
-          eusdIndex,
-          usdcIndex,
-          holdings[i]!.eusdBalanceWei + holdings[i]!.spDepositEusdWei,
-        ],
+        args: [eusdIndex, usdcIndex, holdings[i]!.spDepositEusdWei],
       })),
       ...debtTargets.map((i): ValuationRead => ({
         address: pool,
@@ -1526,23 +1462,24 @@ export async function* liquityValuationRun(
       return;
     }
     const unpriced: UnpricedHoldingDetail[] = [];
-    const exposure = h.eusdBalanceWei + h.spDepositEusdWei + h.netDebtEusdWei;
-    if (probeMid === undefined && exposure > 0n) {
+    const exposure = h.spDepositEusdWei + h.netDebtEusdWei;
+    if (!marketQuoted && exposure > 0n) {
       // Falling back to par is the least wrong choice -- par is the value the protocol itself
       // enforces through redemption -- but it is exactly the assumption this venue must not make
-      // silently, so the eUSD leg is reported as marked without a market.
+      // silently, so the eUSD leg is reported as marked without a market. The wallet's loose eUSD
+      // is reported by the scorer's spot sweep, which prices it now.
       unpriced.push({
         token: deployment.eusd,
         amountRaw: exposure.toString(),
         source: "liquity-eusd-market",
-        reason: "read-failed",
+        reason: "par-fallback",
         read: "CurveStableSwapNG.get_dy",
       });
     }
     const value = liquityPositionValue({
       holdings: h,
       fairPriceUsd: fairWeth,
-      eusdPriceUsdc: probeMid ?? 1,
+      eusdPriceUsdc,
       longExitUsdc: longExitByIndex.get(i),
       debtBuybackUsdc: debtCostByIndex.get(i),
     });
@@ -1579,7 +1516,9 @@ export const liquityAdapter: ProtocolAdapter = {
     if (!LIQUITY) return 0;
     const d = LIQUITY;
     const s = state as LiquityState | undefined;
-    const [entire, spDeposit, spGain, eusdBalance, gasCompensation] =
+    // The wallet's loose eUSD is not read here: it is registry spot now, swept and priced by the
+    // caller (issue #27 (b)). What is left is the Trove and the Stability Pool.
+    const [entire, spDeposit, spGain, gasCompensation] =
       (await Promise.all([
         read(
           ctx.publicClient,
@@ -1602,7 +1541,6 @@ export const liquityAdapter: ProtocolAdapter = {
           "getDepositorETHGain",
           [agent],
         ),
-        read(ctx.publicClient, d.eusd, erc20Abi, "balanceOf", [agent]),
         read(
           ctx.publicClient,
           d.troveManager,
@@ -1611,7 +1549,6 @@ export const liquityAdapter: ProtocolAdapter = {
         ),
       ])) as [
         readonly [bigint, bigint, bigint, bigint],
-        bigint,
         bigint,
         bigint,
         bigint,
@@ -1625,7 +1562,6 @@ export const liquityAdapter: ProtocolAdapter = {
         netDebtEusdWei: debt > gasCompensation ? debt - gasCompensation : 0n,
         spDepositEusdWei: spDeposit,
         spEthGainWei: spGain,
-        eusdBalanceWei: eusdBalance,
       },
       fairPriceUsd: fairPrice,
       eusdPriceUsdc,
@@ -1645,9 +1581,10 @@ export const liquityAdapter: ProtocolAdapter = {
   },
 
   async accountedTokens(): Promise<Address[]> {
-    // eUSD is valued above. LQTY deliberately is not listed: the venue issues it (Stability Pool
-    // deposits accrue it) but nothing values it, and issue #41's convention is that such a token
-    // stays visible as an unaccounted holding rather than being quietly excused.
+    // eUSD is swept as a registry stable and the Trove / Stability Pool legs are valued above. LQTY
+    // deliberately is not listed: the venue issues it (Stability Pool deposits accrue it) but
+    // nothing values it, and issue #41's convention is that such a token stays visible as an
+    // unaccounted holding rather than being quietly excused.
     return LIQUITY ? [LIQUITY.eusd] : [];
   },
 
@@ -1666,5 +1603,4 @@ export const liquityAdapter: ProtocolAdapter = {
   },
 };
 
-export const LIQUITY_PROBE_EUSD_WEI = PROBE_EUSD_WEI;
 export const LIQUITY_GAS_RESERVE_WEI = SUGGESTED_GAS_RESERVE_WEI;

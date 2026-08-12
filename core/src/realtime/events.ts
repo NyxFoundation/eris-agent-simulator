@@ -35,6 +35,12 @@ import type { TokenSymbol } from "@eris/sdk/types.js";
 //                  seeded eUSD depth the environment has dumped, and the resulting discount is
 //                  whatever the stableswap curve gives. It is what puts the CDP venue's redemption
 //                  arb on the table -- at par there is nothing there to trade, by construction.
+//   depeg          the same mechanism for any other market-priced registry stable, named by
+//                  `stable:` (issue #27 (c)). It is a separate type only because eusdDepeg needs no
+//                  `stable` and predates it; the runtime is shared. The trade it opens is a
+//                  different one: eUSD has a redemption floor a CDP enforces, and a plain stable
+//                  has only the belief that it is a dollar, so closing the gap is an opinion rather
+//                  than a claim on collateral.
 // They share this config section because from a run's point of view they are the same thing: a
 // seed-placed shock the agents have to survive.
 export type StressEventType =
@@ -43,7 +49,8 @@ export type StressEventType =
   | "lstSlash"
   | "whale"
   | "liquidityPull"
-  | "eusdDepeg";
+  | "eusdDepeg"
+  | "depeg";
 
 // How the run consumes each type:
 //   overlay  a multiplier layered on the fair price every block of its window (`at()`)
@@ -61,6 +68,7 @@ const EVENT_KIND: Record<StressEventType, "overlay" | "point" | "state"> = {
   whale: "point",
   liquidityPull: "state",
   eusdDepeg: "state",
+  depeg: "state",
 };
 
 const isPointEvent = (type: StressEventType): boolean =>
@@ -88,6 +96,9 @@ export type StressEventConfig = {
   // rather than a fraction because what matters is the size against pool depth, and depth is a
   // property of the deployed venue, not of this config.
   magnitudeRange: [number, number];
+  // depeg only: which registry stable is pushed off par. Must be one the deployment gave a market
+  // (constants' STABLE_MARKET_LEGS), or the coordinator has no pool to sell into.
+  stable?: TokenSymbol;
   // whale only: which way it trades. Default "random" = the seed decides.
   side?: WhaleSide;
   // whale: the venue it prints on. Default "uniswap" (the deepest pool, so the size has to be real
@@ -120,6 +131,8 @@ const POINT_EVENT_SPAN = 1;
 export type ResolvedStressEvent = {
   type: StressEventType;
   base: string; // target base (default WETH)
+  // depeg only: the stable being pushed off par.
+  stable?: string;
   magnitude: number;
   // whale only: resolved from config.side, with "random" collapsed to a concrete side by the seed.
   side?: "buy" | "sell";
@@ -203,6 +216,7 @@ export class EventSchedule {
       return {
         type: c.type,
         base: c.base ?? "WETH",
+        ...(c.stable !== undefined ? { stable: c.stable } : {}),
         magnitude,
         ...(side !== undefined ? { side } : {}),
         ...(c.type === "whale" ? { venue: c.venue ?? "uniswap" } : {}),
@@ -276,6 +290,31 @@ export class EventSchedule {
   // coordinator only stages the actor and tracks its inventory when this is true.
   hasEusdDepeg(): boolean {
     return this.events.some((ev) => ev.type === "eusdDepeg");
+  }
+
+  // The registry stables a `depeg` event targets (issue #27 (c)). The coordinator needs them at
+  // setup, before any window opens, to fail fast on a stable it has no market for. eUSD is not
+  // here: it has its own type and its own actor.
+  depegStables(): string[] {
+    const seen = new Set<string>();
+    for (const ev of this.events) {
+      if (ev.type !== "depeg" || !ev.stable) continue;
+      seen.add(ev.stable);
+    }
+    return [...seen];
+  }
+
+  // Fraction of a stable's seeded pool depth the environment should have sold by this block. Same
+  // shape and same reasoning as eusdDepegFractionAt; separate only because it is per-stable.
+  depegFractionAt(stable: string, blockIndex: number): number {
+    let sold = 0;
+    for (const ev of this.events) {
+      if (ev.type !== "depeg" || ev.stable !== stable) continue;
+      const e = envelope(ev, blockIndex);
+      if (e === 0) continue;
+      sold += ev.magnitude * e;
+    }
+    return sold;
   }
 
   // Fraction of the eUSD/USDC pool's seeded eUSD depth the environment should have sold by this
@@ -432,11 +471,22 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     o.type !== "lstSlash" &&
     o.type !== "whale" &&
     o.type !== "liquidityPull" &&
-    o.type !== "eusdDepeg"
+    o.type !== "eusdDepeg" &&
+    o.type !== "depeg"
   ) {
     throw new Error(
-      `${label}.type must be "spike", "crash", "lstSlash", "whale", "liquidityPull" or "eusdDepeg"`,
+      `${label}.type must be "spike", "crash", "lstSlash", "whale", "liquidityPull", "eusdDepeg" or "depeg"`,
     );
+  }
+  if (o.type === "depeg") {
+    // Which stable is not a default anyone could guess: a run can have several, and picking one
+    // silently would make the regime depend on registry order.
+    if (typeof o.stable !== "string" || o.stable.length === 0)
+      throw new Error(
+        `${label}.stable is required for type "depeg" (the registry stable to push off par)`,
+      );
+  } else if (o.stable !== undefined) {
+    throw new Error(`${label}.stable only applies to type "depeg"`);
   }
   if (o.alignWith !== undefined) {
     if (
@@ -445,7 +495,8 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       o.alignWith !== "lstSlash" &&
       o.alignWith !== "whale" &&
       o.alignWith !== "liquidityPull" &&
-      o.alignWith !== "eusdDepeg"
+      o.alignWith !== "eusdDepeg" &&
+      o.alignWith !== "depeg"
     ) {
       throw new Error(`${label}.alignWith must be a stress event type`);
     }
@@ -495,7 +546,8 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       // nothing to buy, so the discount stops being a price and becomes an outage.
       ...(o.type === "lstSlash" ||
       o.type === "liquidityPull" ||
-      o.type === "eusdDepeg"
+      o.type === "eusdDepeg" ||
+      o.type === "depeg"
         ? { max: 1, exclusiveMax: true }
         : {}),
     },
@@ -526,6 +578,7 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
   return {
     type: o.type,
     base: typeof o.base === "string" ? o.base : undefined,
+    ...(typeof o.stable === "string" ? { stable: o.stable } : {}),
     ...(o.side !== undefined ? { side: o.side as WhaleSide } : {}),
     ...(o.venue !== undefined
       ? { venue: o.venue as "uniswap" | "balancer" | "curve" }
