@@ -15,9 +15,11 @@
  *                 are, and adding collateral moves you up. Defending that position is the skill the
  *                 issue names as having no equivalent anywhere else in this simulator.
  *
- *   Recovery Mode below a system-wide 150% TCR *everyone* under 150% becomes liquidatable at once,
- *                 not just those under 110%. Nothing you did causes it and nothing you do stops it,
- *                 so the only response is to already be above the line when it arrives.
+ *   Recovery Mode below a system-wide 150% TCR the threshold stops being 110%: a Trove is
+ *                 liquidatable once its ICR is under the *current TCR*, and only if the Stability
+ *                 Pool can absorb the whole debt (the seizure is capped at 110%, the rest is a
+ *                 claimable surplus). Nothing you did moves that line and nothing you do stops it,
+ *                 so the only response is to already be above it when it arrives.
  *
  * What it does with the eUSD it draws is one switch, `ERIS_TROVE_SPEND_DEBT`, and it is the switch
  * that decides whether the other three matter. Held, the eUSD is the repayment that raises a failing
@@ -139,7 +141,7 @@ export function decideTrove(input: {
         reason: `collateral supports ${debt.toFixed(0)} eUSD of debt, under the ${(Number(minNetDebt) / 1e18).toFixed(0)} minimum`,
       };
     // Recovery Mode raises the bar for opening from MCR to CCR, and there is no reason to open into
-    // it at all: the system is already one price move from liquidating everyone under 150%.
+    // it at all: the system is already one price move from liquidating Troves that were fine.
     if (l.recoveryMode)
       return {
         kind: "hold",

@@ -19,9 +19,11 @@ they are not the same risk:
   taken) but it resizes a position somebody else chose to shrink.
   `trove.positionFromRiskiest` and `trove.redeemedAheadEusdWei` say how exposed the Trove is; more
   collateral moves it up the list.
-- **Recovery Mode.** Below a system-wide 150% TCR, every Trove under 150% becomes liquidatable at
-  once. `recoveryMode` and `tcr` are visible before it arrives, and nothing the borrower does
-  causes it or stops it — the only response is to be above the line already.
+- **Recovery Mode.** Below a system-wide 150% TCR the threshold stops being 110%: a Trove becomes
+  liquidatable once its ICR is under the *current* TCR, and only if the Stability Pool can absorb
+  its whole debt. What is seized is capped at 110% of the debt and the rest is claimable, so it is
+  cheaper than an ordinary liquidation — but the line moves for everyone at once. `recoveryMode`
+  and `tcr` are visible before it arrives, and nothing the borrower does causes it or stops it.
 
 The oracle is one block stale for everyone, so a ratio that is barely above a threshold is
 effectively already through it.

@@ -26,8 +26,11 @@ Three separate decisions:
 - **When to take the ETH.** `spEthGainWei` accrues as collateral — a price bet the agent never
   chose. Withdrawing `"0"` claims it without touching the deposit.
 
-Recovery Mode (`recoveryMode`, below a 150% system TCR) changes the game: everything under 150%
-becomes liquidatable, so the pool can be spent far faster than usual.
+Recovery Mode (`recoveryMode`, below a 150% system TCR) changes the game: a Trove becomes
+liquidatable once its ICR is under the *current* TCR rather than under 110%, so the pool can be
+spent far faster than usual. Two things change with it — the payout is capped at 110% of the debt
+(the borrower keeps the surplus), and the liquidation only goes through if the pool can absorb that
+Trove's whole debt.
 
 ## When to leave it alone
 

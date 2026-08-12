@@ -547,7 +547,10 @@ export type LiquityObservation = {
   priceUsd: number;
   // System total collateral ratio, as a plain ratio. Below CCR the system enters Recovery Mode.
   tcr: number;
-  // In Recovery Mode any Trove under CCR (not just under MCR) can be liquidated and borrowing is
+  // In Recovery Mode the liquidation threshold stops being MCR: a Trove is liquidatable once its
+  // ICR is under the *current TCR* (which is itself under CCR while this lasts), and only if the
+  // Stability Pool can absorb its whole debt. The seizure is capped at 110% of the debt, so a
+  // borrower over that keeps the rest as a claimable surplus. Borrowing is
   // restricted. It is the venue's reflexive failure mode and it applies to everyone at once.
   recoveryMode: boolean;
   mcr: number; // 1.1

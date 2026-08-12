@@ -169,7 +169,9 @@ Liquity V1 の core を**無改変**でフォークした CDP（`deployer/src/pr
 - **redemption arb** — eUSD は常に「最もリスクの高い Trove に対して $1 分の担保」と交換できる。よって
   eUSD/USDC プールのディスカウントは**プロトコルが強制する価格に対する乖離**であって価格予想ではない（ADR 0007 の α 方向）
 - **Stability Pool** — eUSD を預けて清算債務を吸収し担保を割引で受け取る
-- **Recovery Mode** — system TCR が CCR(150%) を割ると全員の清算リスクが同時に動く（Aave の per-position HF と対照的）
+- **Recovery Mode** — system TCR が CCR(150%) を割ると清算閾値が MCR でなくなり、**その時点の TCR** を
+  下回る Trove が清算対象になる（SP がその債務を全額吸収できる場合のみ。押収は債務の 110% で頭打ちで、
+  余剰は借り手が claim できる）。全員の線が同時に動くのが Aave の per-position HF と対照的
 - **sorted list 上の位置** — 償還は最下位 ICR から walk するので、借り手は「自分の前にどれだけ債務があるか」を守る
 
 ours なのは 2 つだけ（core は無改変）:

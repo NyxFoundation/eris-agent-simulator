@@ -8,8 +8,11 @@
 //                   starting from the riskiest Trove. When eUSD trades below $1 that is a clean
 //                   cross-venue α: buy the discount, redeem at par, pay the redemption fee
 //   Stability Pool  deposit eUSD to absorb liquidated debt and receive the collateral at a discount
-//   Recovery Mode   below a system-wide 150% TCR every Trove under 150% becomes liquidatable at
-//                   once, which is a reflexive crash rather than Aave's per-position health factor
+//   Recovery Mode   below a system-wide 150% TCR (CCR) the liquidation threshold stops being a
+//                   constant: a Trove is liquidatable once its ICR is under the *current TCR*, and
+//                   the seizure is capped at 110% of the debt with the surplus claimable. So the
+//                   line moves for everyone at the same time -- a reflexive crash rather than
+//                   Aave's per-position health factor
 //
 // Two things about the venue shape the code here more than anything else.
 //
