@@ -66,7 +66,11 @@ flowchart LR
   "blockNumber": "610",
   "fairPriceUsdcPerWeth": 2993.27,          // fair price distributed by the environment (1 block late = by design)
   "fairPricesUsd": { "WETH": 2993.27, "WBTC": 60065.96 },  // per-base fair when multi-asset
-  "balances": { "ethWei": "…", "wethWei": "0", "usdcUnits": "25000000000" },
+  "balances": { "ethWei": "…", "wethWei": "0", "usdcUnits": "25000000000",
+                "stables": { "USDC": { "token": "0x…", "decimals": 6,  "balance": "25000000000",
+                                       "priceUsdc": 1,     "marketQuoted": false },
+                             "DAI":  { "token": "0x…", "decimals": 18, "balance": "0",
+                                       "priceUsdc": 0.991, "marketQuoted": true } } },
   "inventory": { "valueUsdc": 339290.8, "weth": 0, "usdc": 25000, "eth": 105.0 },
   "history": [ { "round": 608, "poolPriceUsdcPerWeth": 3000.0, "fairPriceUsdcPerWeth": 3000 }, … ],
   "limits": { "maxWethInWei": "1000000000000000000", "maxUsdcInUnits": "5000000000",
@@ -81,6 +85,17 @@ Things to watch when reading:
 
 - **Token amounts are decimal strings** (`wethWei` is 18-decimal wei, `usdcUnits` is 6-decimal). Handle them with
   `BigInt(...)`. `inventory` is a human-readable numeric conversion (approximate)
+- **`usdcUnits` is native USDC alone, and it is a budget rather than a valuation** (issue #27). It used to be every
+  stable summed together, which could not be spent anywhere: USDT is not accepted in a USDC pool. What the wallet is
+  worth is `inventory.valueUsdc`; what a USDC leg can be sized against is this
+- **`balances.stables` is where a stable stops being a dollar.** Each entry carries the balance *and* `priceUsdc`, the
+  two-sided executable mid of that stable's own market. A registry stable is scored at that price, in your wallet and
+  in an LP leg alike — so holding a depegged one is a real loss, and buying one below par is a real position with a
+  real downside. `marketQuoted: false` means `priceUsdc: 1` is par by assumption (no market, or the pool would not
+  quote): **do not read a `1` there as "the peg is holding"**. Trade the pair with `stableSwap`
+- **Per-round limits are denominated in USDC's six decimals.** `maxUsdcInUnits` bounds both legs of a `stableSwap`,
+  so for an 18-decimal stable you have to scale it (`limit * 10n ** 12n`) before sizing a sell. Getting this wrong
+  rejects every unwind while letting every buy through, which leaves you holding a position you cannot close
 - `history` is the pool/fair series for the last ~20 blocks (for gauging momentum and the persistence of a gap)
 - `limits` holds the per-round trade limits and the default/max fees. **Cap your size here** (actions over the limit
   are rejected by validation)

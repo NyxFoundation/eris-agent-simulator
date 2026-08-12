@@ -7,7 +7,7 @@ import type { MarketLegs } from "./types.js";
 
 // Canonical fingerprint of the source deployments.json (ADR 0016 §2). The backtest CLI
 // compares it against the state dump manifest and, on mismatch, regenerates from the manifest's bundled deployments.
-export const DEPLOYMENTS_FINGERPRINT = "sha256:c6bce1b47747bd3425512f1eff91693e69348db3fedd2566f9a4871312990f7d";
+export const DEPLOYMENTS_FINGERPRINT = "sha256:026fe70e6f4e871b2c33171976cb961d5a7160c4f36363db27b09f95344a9eec";
 
 export type LocalDeployment = {
   CHAIN_ID: number;
@@ -15,8 +15,15 @@ export type LocalDeployment = {
     WETH: { address: Address; decimals: number };
     USDC: { address: Address; decimals: number };
     WBTC?: { address: Address; decimals: number };
+    DAI?: { address: Address; decimals: number };
   };
   USDC_VARIANTS: { native: Address; bridged: Address; usdt: Address };
+  // Issue #27 (c): stables the deploy gave a market, so the scorer prices them from it instead of
+  // asserting $1. Keyed by registry symbol. eUSD is not here -- its market comes from LIQUITY.
+  STABLE_MARKETS?: Record<
+    string,
+    { pool: Address; stableIndex: number; quoteIndex: number }
+  >;
   UNISWAP: {
     poolWethUsdc500: Address;
     swapRouter: Address;
@@ -93,6 +100,10 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
     WETH: { address: "0x5FbDB2315678afecb367f032d93F642f64180aa3" as Address, decimals: 18 },
     USDC: { address: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address, decimals: 6 },
     WBTC: { address: "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853" as Address, decimals: 8 },
+    DAI: { address: "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707" as Address, decimals: 18 },
+  },
+  STABLE_MARKETS: {
+    DAI: { pool: "0xD33d097DD5eE1cB4927632DD211c7981eda96319" as Address, stableIndex: 1, quoteIndex: 0 },
   },
   // Local uses a single USDC/USDT. native/bridged are the same USDC; usdt maps to USDT.
   USDC_VARIANTS: {

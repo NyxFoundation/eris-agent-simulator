@@ -105,6 +105,21 @@ export type CurveSwapAction = {
   maxPriorityFeePerGasWei?: string;
 };
 
+// Issue #27 (c): swap a market-priced registry stable against USDC on the stableswap pool that
+// quotes it. Without it a depeg is something an agent can only watch: the registry knows what DAI is
+// worth, and nothing lets anyone act on it. The same argument #39 made for liquitySwapEusd -- a
+// venue whose α cannot be reached is not a venue.
+export type StableSwapAction = {
+  type: "stableSwap";
+  // The market-priced stable. USDC is the other leg, always: it is the numéraire.
+  stable: TokenSymbol;
+  // Which side is being spent -- the stable, or the USDC buying it.
+  tokenIn: TokenSymbol;
+  amountIn: string;
+  slippageBps?: number;
+  maxPriorityFeePerGasWei?: string;
+};
+
 // Aave v3
 export type AaveSupplyAction = {
   type: "aaveSupply";
@@ -274,6 +289,7 @@ export type BundleActionItem =
   | CollectFeesAction
   | BalancerSwapAction
   | CurveSwapAction
+  | StableSwapAction
   | AaveSupplyAction
   | AaveWithdrawAction
   | AaveBorrowAction
@@ -641,7 +657,30 @@ export type AgentObservation = {
   balances: {
     ethWei: string;
     wethWei: string;
+    // Native USDC only, since issue #27. It is a *budget*, not a valuation: the summed figure it
+    // replaced could not be spent anywhere, because USDT is not accepted in a USDC pool. What the
+    // wallet is worth is inventory.valueUsdc.
     usdcUnits: string;
+    // Every stable the run holds, kept apart instead of summed (issue #27 (a) step 1). Keyed by
+    // registry symbol, or by raw address for the fork's USDC.e / USD₮0 which the registry does not
+    // name. This is where an agent sizes a specific venue's stable leg from -- and where it reads
+    // that a stablecoin is no longer trading at a dollar.
+    stables?: Record<
+      string,
+      {
+        token: string;
+        decimals: number;
+        // Raw balance, in the token's own units.
+        balance: string;
+        // USDC per unit. 1 for USDC (the numéraire, $1 by definition) and for any stable with no
+        // market to quote it.
+        priceUsdc: number;
+        // False means priceUsdc is par by convention or by fallback, not an observation of a
+        // market. A stable that is *meant* to be a dollar and has no market saying otherwise reads
+        // the same as one whose market went quiet -- so do not read `1` as "the peg is holding".
+        marketQuoted: boolean;
+      }
+    >;
   };
   inventory: {
     valueUsdc: number;
@@ -754,7 +793,10 @@ export type RawTxIntent = {
 export type BalanceSnapshot = {
   ethWei: bigint;
   wethWei: bigint;
-  usdcUnits: bigint; // sum of active stables (for display/PnL)
+  // Native USDC only, since issue #27. A spending budget, not a valuation: it used to be every
+  // active stable summed, which could not be spent anywhere. The per-stable breakdown is `stables`,
+  // and what the wallet is worth comes from pnl.ts valueUsdc over that.
+  usdcUnits: bigint;
   // ADR 0013: base symbol -> balance (WETH/WBTC etc.). wethWei equals bases["WETH"] for compatibility.
   bases?: Record<string, bigint>;
   // stable token address (lowercase) -> balance. Validation checks each venue's stable individually via this map.

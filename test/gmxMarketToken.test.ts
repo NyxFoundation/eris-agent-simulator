@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import type { Address } from "viem";
 import { gmxAdapter } from "@eris/sdk/protocols/gmx.js";
 import { GMX_MARKETS, TOKENS } from "@eris/sdk/constants.js";
+import { PAR_STABLE_PRICES } from "@eris/sdk/stables.js";
 
 const MARKET = GMX_MARKETS.ETH_USD;
 const AGENTS = [
@@ -38,6 +39,7 @@ async function drive(stages: Array<(reads: unknown[]) => unknown[]>) {
     agents: AGENTS,
     activeStables: [TOKENS.USDC.address as Address],
     fairByBase: () => FAIR,
+    stablePrices: () => PAR_STABLE_PRICES,
   });
   const asked: unknown[][] = [];
   let input: unknown[] | undefined;
@@ -233,6 +235,7 @@ test("a perp whose base has no fair price is reported, not scored at zero", asyn
     agents: AGENTS,
     activeStables: [TOKENS.USDC.address as Address],
     fairByBase: () => ({}), // price feed read failed for every base
+    stablePrices: () => PAR_STABLE_PRICES,
   });
   const first = await run.next();
   const done = await run.next([[position], [], marketProps, 0n, 0n] as never);

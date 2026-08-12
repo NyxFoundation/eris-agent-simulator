@@ -14,6 +14,20 @@ import {
   getAdapter,
 } from "./protocols/registry.js";
 import { kindOf, tokenInfo } from "./markets.js";
+import { TOKENS } from "./constants.js";
+import { marketPricedStables } from "./stables.js";
+
+// Both dollars, so converting between two stables' units is the decimal difference and nothing else.
+function rescaleDecimals(amount: bigint, from: number, to: number): bigint {
+  if (from === to) return amount;
+  return to > from
+    ? amount * 10n ** BigInt(to - from)
+    : amount / 10n ** BigInt(from - to);
+}
+
+function stableMarketBySymbol(symbol: string) {
+  return marketPricedStables().find((m) => m.symbol === symbol);
+}
 
 export type ValidatedIntent = {
   action: LeafAction;
@@ -320,20 +334,37 @@ function applyLeafSpend(
     if (base === "WETH") work.wethWei += amount;
     if (work.bases) work.bases[base] = (work.bases[base] ?? 0n) + amount;
   };
+  // usdcUnits is native USDC since issue #27, so it only moves when the venue's stable *is* native
+  // USDC. Decrementing it for a USDC.e leg would have a bundle refuse its own second leg over a
+  // balance that leg never touched.
+  const isNativeStable = stableKey === TOKENS.USDC.address.toLowerCase();
   const spendStable = (amount: bigint) => {
-    work.usdcUnits = work.usdcUnits > amount ? work.usdcUnits - amount : 0n;
+    if (isNativeStable)
+      work.usdcUnits = work.usdcUnits > amount ? work.usdcUnits - amount : 0n;
     if (work.stables && stableKey in work.stables) {
       const cur = work.stables[stableKey];
       work.stables[stableKey] = cur > amount ? cur - amount : 0n;
     }
   };
   const creditStable = (amount: bigint) => {
-    work.usdcUnits += amount;
+    if (isNativeStable) work.usdcUnits += amount;
     if (work.stables && stableKey in work.stables)
       work.stables[stableKey] += amount;
   };
   const currentStable = (): bigint =>
     work.stables?.[stableKey] ?? work.usdcUnits;
+  // Move a named stable by a signed amount, keeping usdcUnits in step when it is the numéraire.
+  // Used by stableSwap, whose two legs are the action's own pair rather than the adapter's.
+  const moveStable = (key: string, delta: bigint) => {
+    if (key === TOKENS.USDC.address.toLowerCase()) {
+      work.usdcUnits =
+        work.usdcUnits + delta > 0n ? work.usdcUnits + delta : 0n;
+    }
+    if (work.stables && key in work.stables) {
+      const next = work.stables[key] + delta;
+      work.stables[key] = next > 0n ? next : 0n;
+    }
+  };
 
   switch (item.type) {
     case "swap":
@@ -368,6 +399,33 @@ function applyLeafSpend(
       );
       spendStable(BigInt(item.amountQuoteDesired ?? item.amountUsdcDesired));
       break;
+    // Issue #27 (c): a stableSwap is bundleable too, and its two legs are named by the action
+    // rather than by the adapter's stableToken -- so it moves its own pair instead of going through
+    // spendStable/creditStable. Without this, both leaves of a
+    // {stableSwap USDC->DAI 5k, stableSwap USDC->DAI 5k} bundle validated against the same
+    // untouched 5k and the second reverted on chain at the agent's expense (the same hole the lst
+    // cases below were added for).
+    case "stableSwap": {
+      const amt = BigInt(item.amountIn);
+      const market = stableMarketBySymbol(item.stable);
+      if (!market) break;
+      const inKey = (
+        item.tokenIn === market.symbol ? market.token : TOKENS.USDC.address
+      ).toLowerCase();
+      const outKey = (
+        item.tokenIn === market.symbol ? TOKENS.USDC.address : market.token
+      ).toLowerCase();
+      moveStable(inKey, -amt);
+      // Both legs are dollars, so the output is the input rescaled by the decimal difference. It
+      // ignores the discount and the pool fee, which only ever credits slightly too much -- the
+      // conservative direction is the *spend*, and that is exact.
+      const inDecimals =
+        inKey === TOKENS.USDC.address.toLowerCase() ? 6 : market.decimals;
+      const outDecimals =
+        outKey === TOKENS.USDC.address.toLowerCase() ? 6 : market.decimals;
+      moveStable(outKey, rescaleDecimals(amt, inDecimals, outDecimals));
+      break;
+    }
     // Issue #38: an lst leg is bundleable, so cumulative validation has to see what it consumes.
     // Without these two cases both leaves of a {lstDeposit 10 WETH, lstSwap 10 WETH} bundle
     // validated against the same untouched balance, the bundle was accepted, and the second leg

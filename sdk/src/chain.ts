@@ -16,6 +16,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { erc20Abi, wethAbi } from "./abis.js";
 import { MULTICALL3, TOKENS } from "./constants.js";
 import { baseTokens, tokenInfo } from "./markets.js";
+import { isParStable } from "./stables.js";
 import type { BalanceSnapshot, TokenSymbol } from "./types.js";
 
 export function makeChain(chainId: number) {
@@ -61,8 +62,16 @@ export function accountAddress(privateKey: Hex): Address {
 }
 
 // ---------------------------------------------------------------------------
-// Unified stable accounting: usdcUnits is the sum of the active stables (native USDC / USDC.e / USDT).
-// All are treated as 6-decimal and worth $1. The coordinator sets the active set from the enabled adapters.
+// The run's stables. The coordinator sets the active set from the enabled adapters (each venue's
+// stable leg, plus any stable a venue issues).
+//
+// usdcUnits used to be the sum of all of them, on the convention that native USDC / USDC.e / USD₮0
+// are interchangeable dollars. Issue #27 narrowed it to native USDC alone, for two reasons. As a
+// *budget* -- which is the only thing the nine participant-facing uses do with it -- the sum was
+// already wrong: USDT cannot be spent in a USDC pool, and funding grants the configured amount to
+// each stable, so the sum read roughly double what any single venue would accept. And as soon as one
+// stable is priced from a market rather than asserted at par (stables.ts), summing them at face
+// value states a total that no longer exists. The per-stable breakdown lives in `stables`.
 // ---------------------------------------------------------------------------
 let ACTIVE_STABLES: Address[] = [TOKENS.USDC.address];
 
@@ -156,7 +165,9 @@ export async function getBalances(
   ACTIVE_STABLES.forEach((token, i) => {
     stables[token.toLowerCase()] = stableBalances[i];
   });
-  const usdcUnits = stableBalances.reduce((sum, b) => sum + b, 0n);
+  // Native USDC alone (issue #27 (a) step 2). Narrowing only ever makes an agent trade smaller;
+  // leaving it summed made agents overstate their dollars exactly when a stable depegs.
+  const usdcUnits = stables[TOKENS.USDC.address.toLowerCase()] ?? 0n;
   return { ethWei, wethWei, usdcUnits, bases, stables };
 }
 
@@ -542,8 +553,14 @@ export async function fundWallet(
     });
   }
   if (usdcUnits > 0n) {
-    // Grant usdcUnits to each active stable (so each stable has inventory cross-venue)
+    // Grant the endowment to each *par* stable, so every venue's USDC-equivalent leg has inventory.
+    //
+    // Market-priced stables are deliberately excluded (issue #27). Two reasons: conjuring eUSD with
+    // a cheatcode would put stablecoin into circulation that no Trove ever borrowed, and endowing
+    // everyone with a stable that is about to depeg makes the loss β on a position nobody chose. A
+    // market-priced stable has to be bought, which is what makes holding one a decision.
     for (const token of ACTIVE_STABLES) {
+      if (!isParStable(token)) continue;
       await dealErc20(publicClient, token, address, usdcUnits);
     }
   }

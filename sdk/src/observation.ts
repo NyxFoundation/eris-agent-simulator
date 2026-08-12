@@ -11,7 +11,13 @@ import type {
   ProtocolId,
   ProtocolObservations,
 } from "./types.js";
-import { tokenInfo } from "./markets.js";
+import { tokenInfo, tokenInfoByAddress } from "./markets.js";
+import {
+  readStablePrices,
+  stableKeyFor,
+  stablePriceUsdc,
+  type StablePrices,
+} from "./stables.js";
 import type { ProtocolAdapter, SimContext } from "./protocols/types.js";
 
 export async function observationFor(
@@ -31,6 +37,12 @@ export async function observationFor(
   // Per-protocol observations are independent reads, so issue them in parallel. With the agent client
   // (batch=true), same-tick reads are auto-aggregated into a single Multicall3, so parallel issuance directly reduces round-trip count.
   const protocols: ProtocolObservations = {};
+  // Issue #27: what each market-priced stable is worth right now. Read alongside the venues so it
+  // rides the same batch, and so the agent's own inventory total agrees with the scorer's.
+  const stablePricesPromise = readStablePrices(
+    ctx.publicClient,
+    Object.keys(balances.stables ?? {}) as Address[],
+  );
   await Promise.all(
     adapters.map(async (adapter) => {
       const obs = await adapter.observe(
@@ -42,6 +54,7 @@ export async function observationFor(
       (protocols as Record<string, unknown>)[adapter.id] = obs;
     }),
   );
+  const stablePrices = await stablePricesPromise;
   return {
     kind: "observation",
     runId,
@@ -72,8 +85,11 @@ export async function observationFor(
       ethWei: balances.ethWei.toString(),
       wethWei: balances.wethWei.toString(),
       usdcUnits: balances.usdcUnits.toString(),
+      ...(balances.stables
+        ? { stables: buildStableBalances(balances.stables, stablePrices) }
+        : {}),
     },
-    inventory: balanceToInventory(balances, fairPrice),
+    inventory: balanceToInventory(balances, fairPrice, stablePrices),
     history: history.slice(-20),
     limits: {
       maxWethInWei: config.maxAgentWethInWei.toString(),
@@ -132,6 +148,35 @@ function buildBaseLimits(
       maxSwapInBaseWei: maxSwap.toString(),
       maxLpBaseWei: maxLp.toString(),
       maxAaveSupplyBaseWei: maxAave.toString(),
+    };
+  }
+  return out;
+}
+
+// The per-stable breakdown an agent sizes and marks against (issue #27 (a) step 1). Keyed by
+// registry symbol so a strategy can name the stable it wants; the raw address rides along because
+// per-venue validation checks that.
+function buildStableBalances(
+  stables: Record<string, bigint>,
+  prices: StablePrices,
+): NonNullable<AgentObservation["balances"]["stables"]> {
+  const quoted = new Set(
+    prices.quotes
+      .filter((q) => q.quoted)
+      .map((q) => q.token.toLowerCase()),
+  );
+  const out: NonNullable<AgentObservation["balances"]["stables"]> = {};
+  for (const [token, balance] of Object.entries(stables)) {
+    const address = token as Address;
+    // The fork's USDC.e / USD₮0 are outside the registry and 6-decimal by the same convention that
+    // makes them dollars.
+    const decimals = tokenInfoByAddress(address)?.decimals ?? 6;
+    out[stableKeyFor(address)] = {
+      token,
+      decimals,
+      balance: balance.toString(),
+      priceUsdc: stablePriceUsdc(prices, address),
+      marketQuoted: quoted.has(token.toLowerCase()),
     };
   }
   return out;

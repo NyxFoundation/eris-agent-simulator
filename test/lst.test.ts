@@ -23,6 +23,7 @@ import type {
   BalanceSnapshot,
   LstObservation,
 } from "@eris/sdk/types.js";
+import { PAR_STABLE_PRICES } from "@eris/sdk/stables.js";
 
 const WAD = 10n ** 18n;
 const FAIR = 3000;
@@ -180,6 +181,7 @@ function valuationCtx(
     agents: [AGENT],
     activeStables: [],
     fairByBase: () => ({ WETH: FAIR }),
+    stablePrices: () => PAR_STABLE_PRICES,
     ...overrides,
   };
 }

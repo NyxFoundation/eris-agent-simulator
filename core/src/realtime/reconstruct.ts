@@ -20,6 +20,14 @@ import { MULTICALL3, TOKENS } from "@eris/sdk/constants.js";
 import { baseTokens, marketsFor, tokenInfo } from "@eris/sdk/markets.js";
 import type { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
+import {
+  decodeStableProbes,
+  marketPricedStables,
+  PAR_STABLE_PRICES,
+  stableProbeReads,
+  type StableMarket,
+  type StablePrices,
+} from "@eris/sdk/stables.js";
 import { poolPriceUsdcPerWethFromSqrtX96 } from "@eris/sdk/protocols/uniswap.js";
 import { getAdapter, hasAdapter } from "@eris/sdk/protocols/registry.js";
 import type {
@@ -282,6 +290,13 @@ export async function readValueSnapshotAtBlock(opts: {
   if (wethPool)
     head.push({ address: wethPool, abi: poolAbi, functionName: "slot0" });
 
+  // Issue #27: what each market-priced stable is actually worth at this cross-section. Two reads
+  // per stable (both executable directions) and one owner for the answer -- every venue that names
+  // a stable leg reads it back off ctx rather than probing the same pool again.
+  const stableMarkets = marketPricedStables(activeStables);
+  const stableProbeBase = head.length;
+  head.push(...(stableProbeReads(stableMarkets) as MulticallContract[]));
+
   // Per-agent spot reads, described once so that both the request and the decode below work off the
   // same list. A failed read can then name the holding it hid instead of decoding to zero (issue #44).
   const spotLayout: SpotRead[] = [
@@ -318,6 +333,7 @@ export async function readValueSnapshotAtBlock(opts: {
   const blockNumber = BigInt(opts.blockNumber);
   let headResults: unknown[] = [];
   let fairByBase: Record<string, number> = {};
+  let stablePrices: StablePrices = PAR_STABLE_PRICES;
   const ctx: ValuationContext = {
     publicClient,
     blockNumber: opts.blockNumber,
@@ -325,6 +341,7 @@ export async function readValueSnapshotAtBlock(opts: {
     agents,
     activeStables,
     fairByBase: () => fairByBase,
+    stablePrices: () => stablePrices,
   };
   const protocolValues = await runValuations({
     runs: adaptersForIds(enabledIds)
@@ -354,6 +371,17 @@ export async function readValueSnapshotAtBlock(opts: {
       extraBases.forEach((b, i) => {
         fairByBase[b] = fromPriceFeedAnswer((results[1 + i] as bigint) ?? 0n);
       });
+      // A stable whose pool refuses to quote resolves to par here and is named in `unquoted`, which
+      // the per-agent decode below turns into a reported holding. Unlike a missing WETH fair this
+      // is not a reason to refuse the block: par is a defensible number, it just is not a measured
+      // one, and saying so is the whole point (issue #27).
+      stablePrices = decodeStableProbes(
+        stableMarkets,
+        results.slice(
+          stableProbeBase,
+          stableProbeBase + stableMarkets.length * 2,
+        ),
+      );
     },
   });
 
@@ -369,10 +397,15 @@ export async function readValueSnapshotAtBlock(opts: {
   const refFairByBase = opts.refFairByBase ?? fairByBase;
   const values: AgentValueSnapshot[] = [];
   const unpriced: UnpricedHolding[] = [];
+  // Stables the run priced from a market that would not quote at this block. Reported per agent
+  // that actually holds one, so the diagnostic names a value someone's number depends on.
+  const unquotedStables = new Map<string, StableMarket>(
+    stablePrices.unquoted.map((m) => [m.token.toLowerCase(), m]),
+  );
   agents.forEach((agent, i) => {
     const spotStart = spotBase + i * spotLayout.length;
     let ethWei = 0n;
-    let usdcUnits = 0n;
+    const stables: Record<string, bigint> = {};
     const bases: Record<string, bigint> = {};
     spotLayout.forEach((read, k) => {
       const raw = headResults[spotStart + k];
@@ -395,9 +428,24 @@ export async function readValueSnapshotAtBlock(opts: {
       }
       if (read.kind === "eth") ethWei = raw;
       else if (read.kind === "base") bases[read.symbol] = raw;
-      else usdcUnits += raw;
+      else stables[read.token.toLowerCase()] = raw;
     });
     const wethWei = bases.WETH ?? 0n;
+    // Native USDC alone, matching getBalances since issue #27. The other stables are valued from
+    // the `stables` breakdown at their own prices rather than summed in here at face value.
+    const usdcUnits = stables[TOKENS.USDC.address.toLowerCase()] ?? 0n;
+    for (const [token, units] of Object.entries(stables)) {
+      const market = unquotedStables.get(token);
+      if (!market || units <= 0n) continue;
+      unpriced.push({
+        agentId: agent.id,
+        source: `spot-${market.symbol}`,
+        token: market.token,
+        amountRaw: units.toString(),
+        reason: "par-fallback",
+        read: "CurveStableSwapNG.get_dy",
+      });
+    }
     // A base the run never wrote a price for values at zero the same way an unreadable balance does,
     // so a holding of one is reported rather than quietly counted as nothing (WETH cannot land here:
     // a missing WETH fair already failed the block above).
@@ -412,13 +460,19 @@ export async function readValueSnapshotAtBlock(opts: {
         });
       }
     }
-    const balance = { ethWei, wethWei, usdcUnits, bases };
+    const balance = { ethWei, wethWei, usdcUnits, bases, stables };
     // Evaluate free inventory two ways: at live fair (β-inclusive) and at the fixed reference fair (β-removed).
-    let total = valueUsdc(balance, fairByBase);
-    let alphaTotal = valueUsdc(balance, refFairByBase);
+    //
+    // The stable leg is marked live in *both* (issue #27). Unlike a base's fair price, a stable's
+    // discount is not exogenous drift: it is a dislocation against a price the protocol itself
+    // enforces, and closing it is the trade the venue exists for. Evaluating it at a fixed reference
+    // would cancel exactly the thing being measured. Nothing is endowed in a market-priced stable
+    // (fundWallet grants only the par ones), so every unit of the exposure was chosen.
+    let total = valueUsdc(balance, fairByBase, stablePrices);
+    let alphaTotal = valueUsdc(balance, refFairByBase, stablePrices);
     // Free inventory is realizable by definition, so the liquidatable series starts from the same
     // live mark and only the venues diverge.
-    let liquidatableTotal = valueUsdc(balance, fairByBase);
+    let liquidatableTotal = valueUsdc(balance, fairByBase, stablePrices);
     // Protocol positions are a live mark in both evaluations (β removal applies to free inventory only).
     for (const [id, byAgent] of protocolValues) {
       const value = byAgent[agent.id];
@@ -758,10 +812,20 @@ export async function reconstructValueSeries(opts: {
     const unreadable = unpricedHoldings.filter(
       (h) => h.reason === "read-failed",
     ).length;
+    // par-fallback holdings are counted in the value, at $1, because their market would not quote
+    // (issue #27) -- reported for the opposite reason to the others, so they are counted apart.
+    const atPar = unpricedHoldings.filter(
+      (h) => h.reason === "par-fallback",
+    ).length;
+    const excluded = unpricedHoldings.length - atPar;
     console.warn(
-      `[reconstruct] ${unpricedHoldings.length} holding(s) excluded from agent value ` +
-        `(${unpricedHoldings.length - unreadable} unpriceable, ${unreadable} unreadable; ` +
-        "see scoring_unpriced_holdings in events.jsonl); a zero here is not a trading loss",
+      `[reconstruct] ${excluded} holding(s) excluded from agent value ` +
+        `(${excluded - unreadable} unpriceable, ${unreadable} unreadable)` +
+        (atPar > 0
+          ? `, ${atPar} stable holding(s) marked at par because their market did not quote`
+          : "") +
+        "; see scoring_unpriced_holdings in events.jsonl — a zero here is not a trading loss, " +
+        "and a dollar is not a measurement",
     );
   }
 

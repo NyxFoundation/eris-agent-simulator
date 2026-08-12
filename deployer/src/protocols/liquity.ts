@@ -65,11 +65,11 @@ const BOOTSTRAP_SECONDS = 14n * 24n * 60n * 60n + 3600n;
 /// 0.5% floor; this is only the slippage bound on it.
 const MAX_BORROW_FEE = parseEther("0.05");
 
-// Curve plain-pool parameters. Everything but the amplification matches the USDC/DAI pool the
-// factory already hosts.
+// Curve plain-pool parameters. Matches the USDC/DAI pool the factory already hosts.
 //
-// A is 100 rather than that pool's 2000, and it is the one number here that had to be measured
-// rather than copied. Redemption costs a 0.5% floor fee, so the venue's α exists only when eUSD
+// A is 100, and it is the one number here that had to be measured rather than copied. (The USDC/DAI
+// pool was 2000 when this was written; issue #27 (c) moved it to 100 on exactly this finding.)
+// Redemption costs a 0.5% floor fee, so the venue's α exists only when eUSD
 // trades more than 50bps below par -- and at A=2000 a 100k/100k pool moves 4.4bps when *half* its
 // eUSD side is sold (measured on chain). No plausible flow could ever open the trade. At A=100 the
 // same pool moves 22bps on a 10k sale and 114bps on 40k, which keeps the stableswap's peg-then-cliff

@@ -11,6 +11,7 @@ import { lstAdapter } from "./lst.js";
 import { liquityAdapter } from "./liquity.js";
 import { activeBaseSymbols, tokenInfo } from "../markets.js";
 import { setEnabledProtocolIds } from "./enabled.js";
+import { stablesForProtocols } from "../stables.js";
 
 // All adapters (only implemented ones are registered). Added as phases progress.
 const ALL_ADAPTERS: ProtocolAdapter[] = [
@@ -58,9 +59,16 @@ export function enabledAdapters(): ProtocolAdapter[] {
 export function initProtocols(ids: ProtocolId[]): ProtocolAdapter[] {
   setEnabledProtocols(ids);
   const adapters = enabledAdapters();
-  setActiveStables(
-    adapters.map((a) => a.stableToken).filter((t): t is Address => Boolean(t)),
-  );
+  setActiveStables([
+    // Each venue's USDC-equivalent leg...
+    ...adapters
+      .map((a) => a.stableToken)
+      .filter((t): t is Address => Boolean(t)),
+    // ...plus every stable this run's venues bring with them, which are swept and priced from their
+    // own market rather than assumed to be dollars (issue #27). eUSD arrives with liquity, a
+    // stableswap-paired stable with curve.
+    ...stablesForProtocols(enabledIds).map((m) => m.token),
+  ]);
   // ADR 0013: register the enabled protocols' bases (WETH + additional bases) into ACTIVE_BASES. getBalances
   // reads all base balances and feeds observation (baseBalances) and scoring. [WETH] on the default fork (matches prior behavior).
   setActiveBases(

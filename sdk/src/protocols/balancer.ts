@@ -599,6 +599,7 @@ export const balancerAdapter: ProtocolAdapter = {
     });
 
     const fairByBase = ctx.fairByBase();
+    const stablePrices = ctx.stablePrices();
     const balancesBase = pools.length * 2;
     const out: Record<string, AgentProtocolValue> = {};
     ctx.agents.forEach((agent, a) => {
@@ -616,7 +617,12 @@ export const balancerAdapter: ProtocolAdapter = {
           });
           return;
         }
-        const share = poolShareValueUsdc(pool, balance, fairByBase);
+        const share = poolShareValueUsdc(
+          pool,
+          balance,
+          fairByBase,
+          stablePrices,
+        );
         valueUsdc += share.valueUsdc;
         for (const h of share.unpriced)
           unpriced.push({ ...h, source: "balancer-bpt" });

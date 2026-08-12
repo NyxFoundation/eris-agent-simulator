@@ -85,7 +85,7 @@ agents:
 - `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
 - `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積で、シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（シナリオ × agent の生スコア。**netPnlUsdc と alphaUsdc の両方**）と `standings.json`（レジーム内 z-score → レジーム等重み平均）を書く。順位は派生物で、採点方法は将来見直す前提（matrix.json から再計算できる）。`--metric netPnlUsdc|alphaUsdc` / `--repeat N`（較正の診断用。採点は 1 回が既定）
-  - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）。`depeg`（レジストリの stable を外す方）は issue #27 待ち。`lst` / `liquity` は競技セット外（venue 単体検証用）
+  - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）。`lst` / `liquity` は競技セット外（venue 単体検証用）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
@@ -183,11 +183,13 @@ ours なのは 2 つだけ（core は無改変）:
   （venue の初回 live run で全償還が `Unable to redeem any amount` で revert して判明）。helper は
   `fetchPrice()` で価格を確定させた同一 tx 内でヒントを計算する。periphery であって core の改変ではない
 
-- **eUSD は TOKENS レジストリに入れない**。stable として登録すると scorer の spot 掃引が $1 で評価してしまい、
-  デペグした CDP stablecoin に phantom value を与える（issue #39 が名指しで禁じている失敗）。
-  アダプタが**プールの約定価格**で評価する（mark = probe サイズの両側 mid / realizable = 自分サイズの
-  get_dy と、債務は get_dx で買い戻しコスト）。gas compensation 200 eUSD は借り手の負債ではないので差し引く。
-  ICR<100% の Trove は 0 で clamp（担保を捨てて歩き去れる = CDP の実際の性質）
+- **eUSD は TOKENS レジストリに入れない**……**だったが issue #27 (b) で昇格した**。外していた理由は
+  「レジストリが stable を $1 で値付ける」だけで、それが消えたため。今は**市場価格 stable**（下の節）で、
+  価格の所有者は共通 probe = `sdk/src/stables.ts`。**spot の eUSD 残高は scorer の spot 掃引が値付け、
+  liquity アダプタは値付けない**（二重計上の回避）。アダプタに残るのは Trove と Stability Pool で、
+  realizable は自分サイズの get_dy、債務は get_dx で買い戻しコスト。gas compensation 200 eUSD は
+  借り手の負債ではないので差し引く。ICR<100% の Trove は 0 で clamp（担保を捨てて歩き去れる = CDP の
+  実際の性質）
 - **担保は native ETH**（core が `msg.value` で受ける）。action 側は WETH wei 建てで、`buildTxs` が
   `WETH.withdraw` を前置する。ただし**ガスと同じ残高**なので、全部突っ込むと閉じる tx すら送れなくなる。
   observation に `ethBalanceWei` / `suggestedGasReserveWei` を出すが**強制はしない**（self-stranding は正当な負け）
@@ -226,6 +228,62 @@ ours なのは 2 つだけ（core は無改変）:
   `example/agents/redemption-arb/`（`agent.ts` + `prompt.md`）。issue #39 は「agent.ts と prompt.md を
   両方積め」と書いているが、その理由（既定ロスターが prompt モード = LLM が毎判断する）は ADR 0018 で
   消えている。今の prompt.md は改訂方針であって毎判断プロンプトではない
+
+### 市場価格 stable（レジストリの stable を $1 断定でなく市場から値付ける。issue #27）
+
+**「stable = $1」はコードがそう書いていたから**だった。`chain.ts` が active stable を全部足して
+`usdcUnits` 1 本に潰し、`valuation.ts` が `kind === "stable"` を無条件に 1 と値付けていたので、
+デペグした stable も par で採点されていた（#39 が eUSD をレジストリの**外**に置いて避けていた
+phantom value そのもの）。issue #27 でこれを 3 段階で外した:
+
+1. **観測に内訳を出す** — `obs.balances.stables[<symbol>] = {token, decimals, balance, priceUsdc,
+   marketQuoted}`。`marketQuoted: false` は「市場が答えなかったので par を仮置きした」で、
+   **`priceUsdc: 1` を「ペグが保たれている」と読んではいけない**
+2. **`usdcUnits` を native USDC だけに narrow** — 9 箇所の参加者向け用途は全部**予算**であって評価では
+   ない（評価は `inventory.valueUsdc`）。合計値は予算として元々間違っていた（USDT は USDC プールで
+   使えないし、funding は stable ごとに同額を配るので実際に使える額の約 2 倍を表示していた）
+3. **market から値付ける**（`sdk/src/stables.ts`）— **両側の executable probe の幾何平均**
+   `sqrt(sell × buy)`（片側だけだと売り側に張り付いて過小評価する。LST / Liquity と同じ規律）。
+   両側とも固定 notional なので**1 stage で済み**、採点断面の 1 multicall に相乗りできる。
+   quote が返らなければ **par に落として `par-fallback` で報告**（黙って par が最悪、黙って 0 は
+   「100% ディスカウント = 無限の裁定」に読めてもっと悪い）
+
+- **USDC は numéraire で $1 固定**（issue #27 "Settled"）。全 metric が USDC 建てなので、ここを
+  浮かせると過去 run の数字の意味が変わる。`marketPricedStables()` は USDC の leg を無視する
+- **market を持つ stable は funding で配らない**（`fundWallet` は par stable にだけ配る）。cheatcode で
+  eUSD を湧かせるのは Trove が発行していない stablecoin を流通させることだし、これから割れる stable を
+  全員に配ると損が「誰も選んでいないポジションの β」になる。**買って初めて持てる**のがこの regime の要
+- **α でも live mark**（base の fair と違い、peg の乖離は protocol が強制する価格に対する dislocation で、
+  それを閉じるのが venue の存在理由。固定参照で評価すると測りたいものが打ち消える）
+- `STABLE_MARKET_LEGS`（`sdk/src/constants.ts`）が「どの stable がどのプールで値付くか」の単一ソース。
+  leg は `venue` を持ち、**その protocol が有効な run にだけ**その stable が入る（sweep されるが取引
+  できない stable は無い方がまし）。eUSD → `liquity` / DAI → `curve`
+- **eUSD はレジストリに昇格**（(b)）。#39 が外していた理由（レジストリが stable を par で値付ける）は
+  消えたので、**価格の所有権を移した**（二重計上の回避 = `TokenKind: "lst"` と同じ論点）。
+  liquity アダプタは spot eUSD 残高を**もう値付けない**（scorer の spot sweep が値付ける）。Trove の
+  債務と Stability Pool 預入は venue のものとして残り、価格は `ctx.stablePrices()` から読む
+- **DAI が 2 つ目の市場価格 stable**（(c)）。deployer の USDC/DAI stableswap-ng plain pool（100k/100k）を
+  使う。**A は 2000 → 100**（#39 と同じ較正: A=2000 だと半分売っても 4.4bps しか動かず、永久に
+  コストを超えない）。eUSD と違い**償還フロアが無い**ので、ディスカウントは「戻ると信じるかどうか」で
+  あって行使できる請求権ではない = 別のスキル
+- **`stableSwap` action**（curve アダプタ所有。プールが Curve stableswap-ng だから）—
+  `{type, stable, tokenIn, amountIn, slippageBps?}`。無いとデペグは「見えるだけ」になる
+  （#39 が `liquitySwapEusd` を足したのと同じ理由）。**per-round 上限は USDC の 6 decimals 建てなので
+  18 decimals の stable では換算が要る**（実測でこれを忘れると sell が毎回 reject され、買いだけ通って
+  「閉じられないポジションの含み益」になる: 42 reject / 6 accept）
+- **`depeg` ストレスイベント**（`stress.events`。`stable:` 必須）— 環境が窓の間だけその stable を
+  プールへ売り、閉じたら買い戻す。機構は `core/src/realtime/stableDepeg.ts` に共通化してあり、
+  `eusdDepeg` も同じ実装を通る（イベント名は #39 の `stress_eusd_depeg*` のまま。他の stable は
+  `stress_depeg*` + payload の `stable`）。**毎ブロック目標へ reconcile**（一撃だと dropped block で
+  取り残される）で、売却量はチェーンから読み直す（revert しても窓がずれない）
+- Aave の aggregator にも伝播する（`sdk/src/protocols/oracles.ts`。3 経路すべて）。ただし
+  **今どの market-priced stable も Aave reserve ではない**ので現状は no-op で、listing した日に効く
+- レジームは `config/regimes/depeg.yaml`（公式セット入り = ADR 0017 の 7 本目）、参照 agent は
+  `example/agents/peg-arb/`。実測（seed 701）: 環境が depth の 59% を売って最大 89.5bps のディスカウント、
+  peg-arb +139.6 / peg-arb-eager +195.7 / noop 0。**買い手が反対側を取ったぶん、環境が買い戻すと
+  プールは stable 不足になって par を超える**（裁定側が解消できていれば −6bps 程度で収まるが、
+  解消できないと大きく行き過ぎる。上限バグで sell が全 reject された run では −143bps まで振れ、
+  「閉じられないポジションの含み益」が +439 と表示された）
 
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 

@@ -104,6 +104,17 @@ export const curveSwapSchema = z.object({
   ...priorityFee,
 });
 
+// Issue #27 (c): the stable/stable leg. `stable` names the market-priced registry stable; the other
+// side is always USDC, so tokenIn is one of the two.
+export const stableSwapSchema = z.object({
+  type: z.literal("stableSwap"),
+  stable: tokenSymbol,
+  tokenIn: tokenSymbol,
+  amountIn: decimalString,
+  slippageBps: z.number().int().nonnegative().optional(),
+  ...priorityFee,
+});
+
 export const aaveSupplySchema = z.object({
   type: z.literal("aaveSupply"),
   asset: tokenSymbol,
@@ -333,7 +344,7 @@ const LEAF_SCHEMAS_BY_PROTOCOL: Record<ProtocolId, z.ZodTypeAny[]> = {
     collectFeesSchema,
   ],
   balancer: [balancerSwapSchema],
-  curve: [curveSwapSchema],
+  curve: [curveSwapSchema, stableSwapSchema],
   aave: [
     aaveSupplySchema,
     aaveWithdrawSchema,

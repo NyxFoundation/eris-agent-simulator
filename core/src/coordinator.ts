@@ -6,11 +6,25 @@ import type { Address, Hex } from "viem";
 import { accountAddress, getBalances } from "@eris/sdk/chain.js";
 import type { ProtocolId, RawTxIntent, TxIntent } from "@eris/sdk/types.js";
 import { baseTokens } from "@eris/sdk/markets.js";
-import { enabledAdapters } from "@eris/sdk/protocols/registry.js";
+import { enabledAdapters, getAdapter } from "@eris/sdk/protocols/registry.js";
 import type { FlowKind, SimContext } from "@eris/sdk/protocols/types.js";
 import { FlowProcess, type FlowOrderWire } from "./flowProcess.js";
 import type { FlowContextWire } from "./flow/logic.js";
 import { readAaveFlowReserves } from "@eris/sdk/protocols/aave.js";
+import { stableBalanceOf, TOKENS } from "@eris/sdk/constants.js";
+
+// The stable a venue actually trades against. usdcUnits used to be every stable summed, which was a
+// serviceable stand-in for it; since issue #27 narrowed that field to native USDC, a flow bot on
+// Balancer's USDC.e leg would have sized against a balance it was not spending.
+function venueStableUnits(
+  protocol: ProtocolId,
+  balances: Parameters<typeof stableBalanceOf>[0],
+): bigint {
+  return stableBalanceOf(
+    balances,
+    getAdapter(protocol).stableToken ?? TOKENS.USDC.address,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // observation / flow / submit
@@ -51,7 +65,7 @@ export async function buildFlowContext(
         wethSupplied: r.wethSupplied.toString(),
         usdcBorrowed: r.usdcBorrowed.toString(),
         wethWei: b.wethWei.toString(),
-        usdcUnits: b.usdcUnits.toString(),
+        usdcUnits: venueStableUnits("aave", b).toString(),
       });
     }
   }
@@ -62,7 +76,7 @@ export async function buildFlowContext(
       const b = await getBalances(ctx.publicClient, wallet.address);
       flowBalances[`${protocol}:${kind}`] = {
         wethWei: b.wethWei.toString(),
-        usdcUnits: b.usdcUnits.toString(),
+        usdcUnits: venueStableUnits(protocol, b).toString(),
       };
     }
   }

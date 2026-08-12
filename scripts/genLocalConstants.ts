@@ -245,6 +245,9 @@ export function generateLocalConstants(deploymentsPath?: string): {
         wbtcUsdcCryptoPool?: string;
         cryptoWbtcIndex?: number;
         cryptoWbtcStableIndex?: number;
+        usdcDaiPool?: string;
+        usdcDaiUsdcIndex?: number;
+        usdcDaiDaiIndex?: number;
       })
     | undefined;
   const curve = {
@@ -288,6 +291,23 @@ export function generateLocalConstants(deploymentsPath?: string): {
     };
   }
 
+  // ---- Issue #27 (c): DAI as the second market-priced stable. It needs both the token and the
+  // stableswap pool that quotes it; a deploy with either missing simply has no market-priced stable
+  // other than eUSD, and every registry stable stays the USDC-equivalent dollar.
+  const dai = t.DAI ? getAddress(t.DAI) : undefined;
+  const daiMarket =
+    dai &&
+    curveP?.usdcDaiPool &&
+    curveP.usdcDaiUsdcIndex !== undefined &&
+    curveP.usdcDaiDaiIndex !== undefined
+      ? {
+          token: dai,
+          pool: getAddress(curveP.usdcDaiPool),
+          stableIndex: Number(curveP.usdcDaiDaiIndex),
+          quoteIndex: Number(curveP.usdcDaiUsdcIndex),
+        }
+      : undefined;
+
   const fingerprint = deploymentsFingerprint(data);
   const out = render({
     deploymentsPath: path,
@@ -296,6 +316,7 @@ export function generateLocalConstants(deploymentsPath?: string): {
     weth,
     usdc,
     usdt,
+    daiMarket,
     multicall3,
     uni: {
       pool: ca(uni.wethUsdcPool, "uniswapV3.wethUsdcPool"),
@@ -377,6 +398,14 @@ function render(d: {
   weth: Address;
   usdc: Address;
   usdt: Address;
+  // Issue #27 (c): the second market-priced stable and the pool that quotes it, when the deploy
+  // produced both.
+  daiMarket?: {
+    token: Address;
+    pool: Address;
+    stableIndex: number;
+    quoteIndex: number;
+  };
   multicall3: Address;
   uni: { pool: Address; swapRouter: Address; npm: Address; quoterV2: Address };
   bal: {
@@ -459,6 +488,18 @@ function render(d: {
     ? `\n    WBTC: { address: ${a(w.token)}, decimals: 8 },`
     : "";
 
+  // ---- Issue #27 (c): DAI, and the pool the scorer prices it from ----
+  const dm = d.daiMarket;
+  const tokensDai = dm
+    ? `\n    DAI: { address: ${a(dm.token)}, decimals: 18 },`
+    : "";
+  const stableMarkets = dm
+    ? `
+  STABLE_MARKETS: {
+    DAI: { pool: ${a(dm.pool)}, stableIndex: ${dm.stableIndex}, quoteIndex: ${dm.quoteIndex} },
+  },`
+    : "";
+
   // ---- MARKET_LEGS (WETH + WBTC leg. The WBTC leg is included only for venues whose addresses are all present) ----
   const uniWbtc = w?.uniPool
     ? `\n      WBTC: { pool: ${a(w.uniPool)}, fee: 3000, tickSpacing: 60 },`
@@ -514,8 +555,15 @@ export type LocalDeployment = {
     WETH: { address: Address; decimals: number };
     USDC: { address: Address; decimals: number };
     WBTC?: { address: Address; decimals: number };
+    DAI?: { address: Address; decimals: number };
   };
   USDC_VARIANTS: { native: Address; bridged: Address; usdt: Address };
+  // Issue #27 (c): stables the deploy gave a market, so the scorer prices them from it instead of
+  // asserting $1. Keyed by registry symbol. eUSD is not here -- its market comes from LIQUITY.
+  STABLE_MARKETS?: Record<
+    string,
+    { pool: Address; stableIndex: number; quoteIndex: number }
+  >;
   UNISWAP: {
     poolWethUsdc500: Address;
     swapRouter: Address;
@@ -590,8 +638,8 @@ export const LOCAL_DEPLOYMENT: LocalDeployment | null = {
   CHAIN_ID: ${d.chainId},
   TOKENS: {
     WETH: { address: ${a(d.weth)}, decimals: 18 },
-    USDC: { address: ${a(d.usdc)}, decimals: 6 },${tokensWbtc}
-  },
+    USDC: { address: ${a(d.usdc)}, decimals: 6 },${tokensWbtc}${tokensDai}
+  },${stableMarkets}
   // Local uses a single USDC/USDT. native/bridged are the same USDC; usdt maps to USDT.
   USDC_VARIANTS: {
     native: ${a(d.usdc)},

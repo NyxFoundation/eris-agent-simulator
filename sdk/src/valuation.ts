@@ -7,6 +7,7 @@
 import { formatUnits, type Address } from "viem";
 import { USDC_VARIANTS } from "./constants.js";
 import { tokenInfoByAddress } from "./markets.js";
+import { stablePriceUsdc, type StablePrices } from "./stables.js";
 
 // Stables the run settles in but the token registry does not name. On the Arbitrum fork the registry
 // is WETH/USDC only, while the deep Balancer and Curve pools hold USDC.e and USDT -- so a BPT holder
@@ -23,14 +24,23 @@ function stableVariantDecimals(token: Address): number | undefined {
   return undefined;
 }
 
-// Why a holding is missing from a value. "unpriced" means the amount is known but has no USD price;
-// "read-failed" means the read that would have revealed the holding failed, so the holding is
-// *unknown* rather than zero (issue #44); "unrealizable" means it is known and priceable but
-// cannot be turned into anything before the run ends -- an LST redemption whose queue finalizes
-// after the last block (issue #38). All three are excluded from the value and all three are
-// reported — a zero in summary.json must never be mistaken for a trading loss.
+// Why a holding is missing from a value, or in it on an assumption.
+//
+// "unpriced" means the amount is known but has no USD price; "read-failed" means the read that
+// would have revealed the holding failed, so the holding is *unknown* rather than zero (issue #44);
+// "unrealizable" means it is known and priceable but cannot be turned into anything before the run
+// ends -- an LST redemption whose queue finalizes after the last block (issue #38). Those three are
+// excluded from the value.
+//
+// "par-fallback" is the odd one out: the holding *is* counted, at $1, because its market would not
+// quote (issue #27). Par is the least wrong number -- it is the price a CDP redemption or an
+// issuer's mint/burn actually enforces -- but it is an assumption, and the whole point of pricing
+// stables from a market is that this environment stops making it silently.
+//
+// All four are reported — a zero in summary.json must never be mistaken for a trading loss, and
+// neither must a dollar.
 export type ScoringExclusionReason =
-  "unpriced" | "read-failed" | "unrealizable";
+  "unpriced" | "read-failed" | "unrealizable" | "par-fallback";
 
 // A holding left out of a value, and why.
 export type UnpricedAmount = {
@@ -46,16 +56,21 @@ export type UnpricedAmount = {
   read?: string;
 };
 
-// USD value of a raw token amount. Stables are $1; bases use the run's fair price. Undefined means
-// the token is outside the registry, i.e. unpriceable — not worthless.
+// USD value of a raw token amount. Bases use the run's fair price; stables use what their market
+// pays, falling back to par for the numéraire and for any stable no pool quotes (issue #27).
+// Undefined means the token is outside the registry, i.e. unpriceable — not worthless.
 export function tokenAmountUsd(
   token: Address,
   amount: bigint,
   fairByBase: Record<string, number>,
+  stablePrices?: StablePrices,
 ): number | undefined {
   const info = tokenInfoByAddress(token);
   if (info) {
-    const price = info.kind === "stable" ? 1 : fairByBase[info.symbol];
+    const price =
+      info.kind === "stable"
+        ? stablePriceUsdc(stablePrices, token)
+        : fairByBase[info.symbol];
     if (price === undefined) return undefined;
     return Number(formatUnits(amount, info.decimals)) * price;
   }
@@ -80,6 +95,7 @@ export function poolShareValueUsdc(
   reserves: PoolReserves,
   lpBalance: bigint,
   fairByBase: Record<string, number>,
+  stablePrices?: StablePrices,
 ): { valueUsdc: number; unpriced: UnpricedAmount[] } {
   if (lpBalance <= 0n || reserves.totalSupply <= 0n)
     return { valueUsdc: 0, unpriced: [] };
@@ -88,7 +104,12 @@ export function poolShareValueUsdc(
   for (let i = 0; i < reserves.tokens.length; i++) {
     const reserve = reserves.balances[i] ?? 0n;
     const amount = (reserve * lpBalance) / reserves.totalSupply;
-    const usd = tokenAmountUsd(reserves.tokens[i], amount, fairByBase);
+    const usd = tokenAmountUsd(
+      reserves.tokens[i],
+      amount,
+      fairByBase,
+      stablePrices,
+    );
     if (usd === undefined) {
       if (amount > 0n)
         unpriced.push({

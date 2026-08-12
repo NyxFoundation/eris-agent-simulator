@@ -8,6 +8,7 @@ import {
   setStorageAt,
 } from "../chain.js";
 import { lstVaultAbi } from "../abis.js";
+import { marketPricedStables, readStablePrices } from "../stables.js";
 import type { SimContext } from "./types.js";
 import { mockAggregatorAbi, toAavePrice } from "./aave.js";
 
@@ -65,6 +66,39 @@ function extraAaveAggregators(
   return out;
 }
 
+// Issue #27 (c): the Aave price of a *market-priced* stable. Aave marks every stable at $1 from a
+// mock aggregator, which is the same assertion the scorer stopped making -- so a stable used as
+// collateral would keep its full borrowing power all the way through a depeg while the wallet's
+// copy of the same token was marked down. Reading it off the same probe the scorer uses keeps the
+// two consistent.
+//
+// Empty unless a market-priced stable is actually listed as an Aave reserve. Nothing is today
+// (aaveReserveSymbols() is the bases plus USDC plus the LST), so this costs one pool read and
+// nothing else; it activates the day one is listed rather than being discovered then.
+async function stableAaveAggregators(
+  ctx: SimContext,
+): Promise<Array<{ aggregator: Address; aavePrice: bigint }>> {
+  const markets = marketPricedStables();
+  const listed = markets.filter(
+    (m) => ctx.oracle.aaveAggregators[m.token.toLowerCase()],
+  );
+  if (listed.length === 0) return [];
+  const prices = await readStablePrices(
+    ctx.publicClient,
+    listed.map((m) => m.token),
+  );
+  const out: Array<{ aggregator: Address; aavePrice: bigint }> = [];
+  for (const m of listed) {
+    const price = prices.byToken[m.token.toLowerCase()];
+    if (!Number.isFinite(price) || !(price > 0)) continue;
+    out.push({
+      aggregator: ctx.oracle.aaveAggregators[m.token.toLowerCase()],
+      aavePrice: toAavePrice(price),
+    });
+  }
+  return out;
+}
+
 // At the start of each round, make the GMX/Aave mock prices track fairPrice.
 // Price updates are done with coordinator-privileged txs (in a separate block from the competition block).
 export async function updateOracles(
@@ -112,7 +146,11 @@ export async function updateOracles(
   }
 
   // ADR 0013: also track additional bases' (WBTC etc.) Aave aggregators. Empty loop on the default fork.
-  for (const { aggregator, aavePrice } of extraAaveAggregators(ctx)) {
+  // Issue #27 (c): and any market-priced stable Aave lists, at what its pool says rather than $1.
+  for (const { aggregator, aavePrice } of [
+    ...extraAaveAggregators(ctx),
+    ...(await stableAaveAggregators(ctx)),
+  ]) {
     await sendAndMine(
       ctx.publicClient,
       ctx.walletClient,
@@ -214,7 +252,11 @@ export async function updateOraclesMempool(
     );
   }
   // ADR 0013: also update additional bases' (WBTC etc.) Aave aggregators via the mempool. Empty loop on the default fork.
-  for (const { aggregator, aavePrice } of extraAaveAggregators(ctx)) {
+  // Issue #27 (c): and any market-priced stable Aave lists.
+  for (const { aggregator, aavePrice } of [
+    ...extraAaveAggregators(ctx),
+    ...(await stableAaveAggregators(ctx)),
+  ]) {
     hashes.push(
       await sendNoMine(
         ctx.publicClient,
@@ -294,7 +336,11 @@ export async function writeAaveOraclesStorage(
     );
   }
   // ADR 0013: also write additional bases' (WBTC etc.) Aave aggregators to storage directly. Empty loop on the default fork.
-  for (const { aggregator, aavePrice } of extraAaveAggregators(ctx)) {
+  // Issue #27 (c): and any market-priced stable Aave lists.
+  for (const { aggregator, aavePrice } of [
+    ...extraAaveAggregators(ctx),
+    ...(await stableAaveAggregators(ctx)),
+  ]) {
     await setStorageAt(
       ctx.publicClient,
       aggregator,

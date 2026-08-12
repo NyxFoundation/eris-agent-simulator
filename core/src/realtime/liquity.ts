@@ -15,22 +15,22 @@
 // same reconcile-to-a-target shape as the liquidity pull (issue #52) and for the same reason: the
 // coordinator drops block notifications while it is busy, so a state that is re-derived every block
 // costs a block of lag where a one-shot would strand the pool.
-import { encodeFunctionData, maxUint256, type Address, type Hex } from "viem";
-import {
-  curveStableSwapNgAbi,
-  erc20Abi,
-  troveManagerAbi,
-} from "@eris/sdk/abis.js";
-import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
+import { encodeFunctionData, type Address, type Hex } from "viem";
+import { troveManagerAbi } from "@eris/sdk/abis.js";
+import { accountAddress, sendAndMine } from "@eris/sdk/chain.js";
 import { liquityPriceFeedAdapterAbi } from "@eris/sdk/abis.js";
-import { LIQUITY, requireEusdMarket } from "@eris/sdk/constants.js";
+import {
+  LIQUITY,
+  requireEusdMarket,
+  STABLE_MARKET_LEGS,
+} from "@eris/sdk/constants.js";
 import {
   getLiquityState,
   type LiquityState,
 } from "@eris/sdk/protocols/liquity.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
-import type { EventSchedule } from "./events.js";
+import { setupStableDepeg, type StableDepegRuntime } from "./stableDepeg.js";
 
 // How far the oracle the venue serves may sit from the run's fair price before the run refuses to
 // start. This is not calibration noise: either the adapter points at this run's PriceFeed or it does
@@ -42,22 +42,6 @@ const ORACLE_TOLERANCE_BPS = 100;
 // depegged). Either way the redemption arb would open as a freebie for whoever looks first.
 export const LIQUITY_STARTUP_WARN_BPS = 25;
 export const LIQUITY_STARTUP_FAIL_BPS = 200;
-
-// Swaps against a stableswap pool are a fixed shape; pinning the gas skips an eth_estimateGas (a
-// whole extra EVM execution) on a transaction the environment may send every block of a window.
-const DEPEG_GAS = 600_000n;
-
-// Slippage bound on the environment's own depeg trades. It is not being protected from a bad price
-// -- moving the price is the point -- only from a pathological fill.
-const DEPEG_SLIPPAGE_BPS = 500n;
-
-// Deltas below this fraction of the pool's seeded eUSD depth are rounding, not schedule. Closing the
-// window is exempt: leaving the peg broken would hand the rest of the run a different venue.
-const MIN_DELTA_BPS = 50n;
-
-// Blocks to wait for a submitted swap before treating it as lost. Under interval mining a
-// transaction lands on the next block, so this is slack for a busy block rather than a normal path.
-const PENDING_TIMEOUT_BLOCKS = 3;
 
 export type LiquityRuntime = {
   troveManager: Address;
@@ -79,6 +63,19 @@ export async function setupLiquity(
       "the liquity protocol is enabled but no Liquity deployment is available: the venue exists " +
         "only under local deploy (issue #39). Enable run.localDeploy with a state dump that " +
         "includes liquity, or drop liquity from run.protocols.",
+    );
+  }
+  // Since issue #27 the wallet's eUSD is a registry stable priced from its own pool, and this
+  // adapter deliberately stopped valuing it. A deployment without that pool therefore has no way to
+  // value eUSD at all -- a borrower who drew 4,000 against a Trove would be scored as having lost
+  // the whole borrow, silently. The venue used to be usable without a market ("only the peg has
+  // nowhere to trade"); it is not any more, so say so instead of scoring it wrong.
+  if (!STABLE_MARKET_LEGS.EUSD) {
+    throw new Error(
+      "the liquity deployment has no eUSD/USDC market, and since issue #27 eUSD is priced from " +
+        "that pool rather than assumed to be $1 -- so a wallet holding eUSD would be scored at " +
+        "zero. Redeploy with the curve factory present (`cd deployer && npm run deploy " +
+        "-- --keep-fresh`), or drop liquity from run.protocols.",
     );
   }
   const admin = accountAddress(ctx.adminPk);
@@ -291,31 +288,20 @@ export async function watchLiquityEvents(
     });
   }
 }
-
 // ---------------------------------------------------------------------------
 // eUSD depeg (the stress overlay's eusdDepeg, issue #39)
+//
+// The mechanism is stable-agnostic and lives in stableDepeg.ts, because issue #27 (c) needed the
+// same thing for a second stable. What stays here is the part that is genuinely about this venue:
+// which account holds the float, and what to tell an operator when it does not.
 // ---------------------------------------------------------------------------
 
-export type EusdDepegRuntime = {
-  actor: Address;
-  actorPk: Hex;
-  pool: Address;
-  eusdIndex: number;
-  usdcIndex: number;
-  eusd: Address;
-  usdc: Address;
-  // The pool's eUSD depth at run start. The event's magnitude is a fraction of this, so the same
-  // config means the same imbalance whatever the deploy seeded.
-  seededPoolEusdWei: bigint;
-  // The actor's eUSD balance at run start, which bounds how far the peg can be pushed.
-  startEusdWei: bigint;
-  pending: { hash: Hex; blockIndex: number } | null;
-  // Whether the inventory limit has already been reported. Once is enough; it is a calibration
-  // finding, not a per-block event.
-  cappedReported: boolean;
-};
+// #39 named these events before there was a second depeg. They keep their names so a run's
+// diagnostics still line up with every measurement taken against them; other stables emit
+// `stress_depeg` with the symbol in the payload.
+export const EUSD_DEPEG_LABEL = "stress_eusd_depeg";
 
-/// Stage the account that will move the peg, and record what it has to work with.
+/// Stage the account that will move the peg.
 ///
 /// The actor is the deployer, which is where the genesis Trove's eUSD ended up (issue #39 phase 1:
 /// LUSDToken has no admin mint, so every eUSD in existence came out of that Trove). It is not a
@@ -324,7 +310,7 @@ export async function setupEusdDepeg(
   ctx: SimContext,
   opts: { localDeploy: boolean; actorPk: Hex },
   logger: RunLogger,
-): Promise<EusdDepegRuntime> {
+): Promise<StableDepegRuntime> {
   if (!opts.localDeploy) {
     throw new Error(
       "stress event eusdDepeg requires run.localDeploy: the liquity venue and its eUSD market exist " +
@@ -333,358 +319,24 @@ export async function setupEusdDepeg(
   }
   const market = requireEusdMarket();
   const l = LIQUITY!;
-  const actor = accountAddress(opts.actorPk);
-
-  const [poolEusd, actorEusd, actorUsdc] = (await Promise.all([
-    ctx.publicClient.readContract({
-      address: market.pool,
-      abi: curveStableSwapNgAbi,
-      functionName: "balances",
-      args: [BigInt(market.eusdIndex)],
-    }),
-    ctx.publicClient.readContract({
-      address: l.eusd,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [actor],
-    }),
-    ctx.publicClient.readContract({
-      address: market.stable,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [actor],
-    }),
-  ])) as [bigint, bigint, bigint];
-
-  if (actorEusd === 0n) {
-    throw new Error(
-      `stress event eusdDepeg has nothing to sell: the actor (${actor}) holds no eUSD. The deploy ` +
-        "leaves the genesis Trove's surplus with the deployer account (deployer/src/protocols/liquity.ts), " +
-        "so an empty balance means a different account deployed the venue, or a previous run spent it.",
-    );
-  }
-
-  // The deploy approved the pool for exactly the amounts it seeded, so both legs need standing
-  // approval before the window opens. Sequential: one key, one nonce.
-  for (const token of [l.eusd, market.stable]) {
-    await sendAndMine(
-      ctx.publicClient,
-      ctx.walletClient,
-      ctx.chain,
-      opts.actorPk,
-      {
-        to: token,
-        data: encodeFunctionData({
-          abi: erc20Abi,
-          functionName: "approve",
-          args: [market.pool, maxUint256],
-        }),
+  return setupStableDepeg(
+    ctx,
+    {
+      market: {
+        symbol: "EUSD",
+        stable: l.eusd,
+        quote: market.stable,
+        pool: market.pool,
+        stableIndex: market.eusdIndex,
+        quoteIndex: market.usdcIndex,
       },
-    );
-  }
-
-  logger.event({
-    type: "stress_eusd_depeg_setup",
-    actor,
-    pool: market.pool,
-    poolEusdWei: poolEusd.toString(),
-    actorEusdWei: actorEusd.toString(),
-    actorUsdcUnits: actorUsdc.toString(),
-    // What fraction of the pool the actor could sell at most. Below the configured magnitude the
-    // window will simply be shallower than asked for, which the reconcile reports.
-    maxFractionOfPool:
-      poolEusd > 0n ? Number((actorEusd * 10_000n) / poolEusd) / 10_000 : 0,
-  });
-
-  return {
-    actor,
-    actorPk: opts.actorPk,
-    pool: market.pool,
-    eusdIndex: market.eusdIndex,
-    usdcIndex: market.usdcIndex,
-    eusd: l.eusd,
-    usdc: market.stable,
-    seededPoolEusdWei: poolEusd,
-    startEusdWei: actorEusd,
-    pending: null,
-    cappedReported: false,
-  };
-}
-
-/// Move the peg toward where the schedule wants it on this block.
-///
-/// Every decision is made against the eUSD the actor *actually* still holds, read back each block,
-/// rather than against what was submitted: a swap can revert (slippage, an empty float, an agent
-/// arriving first in the same block) and a target derived from an assumed fill would then be wrong
-/// for the rest of the window.
-export async function reconcileEusdDepeg(
-  ctx: SimContext,
-  runtime: EusdDepegRuntime,
-  schedule: EventSchedule,
-  blockIndex: number,
-  blockNumber: number,
-  opts: { priorityFeeWei: bigint },
-  logger: RunLogger,
-): Promise<Hex[]> {
-  const fraction = schedule.eusdDepegFractionAt(blockIndex);
-
-  if (runtime.pending) {
-    const settled = await settlePending(ctx, runtime, blockIndex, logger);
-    if (!settled) return [];
-  }
-
-  const balance = (await ctx.publicClient.readContract({
-    address: runtime.eusd,
-    abi: erc20Abi,
-    functionName: "balanceOf",
-    args: [runtime.actor],
-  })) as bigint;
-  const sold =
-    runtime.startEusdWei > balance ? runtime.startEusdWei - balance : 0n;
-
-  const asked =
-    (runtime.seededPoolEusdWei * BigInt(Math.round(fraction * 1e9))) /
-    1_000_000_000n;
-  // Bounded by what the actor can still sell. A window that cannot reach its magnitude is a
-  // calibration finding, so it is reported rather than silently delivering a shallower depeg.
-  const target = asked > runtime.startEusdWei ? runtime.startEusdWei : asked;
-  if (target < asked && !runtime.cappedReported) {
-    runtime.cappedReported = true;
-    logger.event({
-      type: "stress_eusd_depeg_capped",
-      blockIndex,
-      askedEusdWei: asked.toString(),
-      availableEusdWei: runtime.startEusdWei.toString(),
-      note: "the depeg is shallower than the configured magnitude: the actor's eUSD ran out",
-    });
-  }
-
-  if (target === sold) return [];
-  const delta = target > sold ? target - sold : sold - target;
-  const closing = target === 0n;
-  if (
-    !closing &&
-    (delta * 10_000n) / (runtime.seededPoolEusdWei || 1n) < MIN_DELTA_BPS
-  )
-    return [];
-
-  try {
-    const call =
-      target > sold
-        ? await buildSell(ctx, runtime, delta)
-        : await buildBuyBack(ctx, runtime, delta);
-    if (!call) return [];
-    const hash = await sendNoMine(
-      ctx.publicClient,
-      ctx.walletClient,
-      ctx.chain,
-      runtime.actorPk,
-      { to: call.to, data: call.data, gas: DEPEG_GAS },
-      opts.priorityFeeWei,
-    );
-    runtime.pending = { hash, blockIndex };
-    logger.event({
-      type: "stress_eusd_depeg",
-      blockIndex,
-      blockNumber,
-      direction: target > sold ? "sell" : "buyback",
-      targetFraction: Number(fraction.toFixed(4)),
-      targetSoldEusdWei: target.toString(),
-      soldEusdWei: sold.toString(),
-      deltaEusdWei: delta.toString(),
-      hash,
-    });
-    return [hash];
-  } catch (error) {
-    // `sold` is re-derived from the chain next block, so a failed send costs one block of lag
-    // rather than desynchronizing the window.
-    logger.event({
-      type: "stress_eusd_depeg_failed",
-      blockIndex,
-      blockNumber,
-      targetSoldEusdWei: target.toString(),
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return [];
-  }
-}
-
-async function buildSell(
-  ctx: SimContext,
-  runtime: EusdDepegRuntime,
-  amountEusd: bigint,
-): Promise<{ to: Address; data: Hex } | null> {
-  const quoted = (await ctx.publicClient.readContract({
-    address: runtime.pool,
-    abi: curveStableSwapNgAbi,
-    functionName: "get_dy",
-    args: [BigInt(runtime.eusdIndex), BigInt(runtime.usdcIndex), amountEusd],
-  })) as bigint;
-  if (quoted <= 0n) return null;
-  return {
-    to: runtime.pool,
-    data: encodeFunctionData({
-      abi: curveStableSwapNgAbi,
-      functionName: "exchange",
-      args: [
-        BigInt(runtime.eusdIndex),
-        BigInt(runtime.usdcIndex),
-        amountEusd,
-        (quoted * (10_000n - DEPEG_SLIPPAGE_BPS)) / 10_000n,
-      ],
-    }),
-  };
-}
-
-/// The buy-back leg sizes on the *output*: the target is an amount of eUSD to take back off the
-/// market, not an amount of USDC to spend, so it is get_dx rather than get_dy. Spending the USDC the
-/// sale produced would come up short by exactly the round trip's cost and leave the peg permanently
-/// a little broken.
-async function buildBuyBack(
-  ctx: SimContext,
-  runtime: EusdDepegRuntime,
-  amountEusd: bigint,
-): Promise<{ to: Address; data: Hex } | null> {
-  const [needed, usdcBalance] = (await Promise.all([
-    ctx.publicClient.readContract({
-      address: runtime.pool,
-      abi: curveStableSwapNgAbi,
-      functionName: "get_dx",
-      args: [BigInt(runtime.usdcIndex), BigInt(runtime.eusdIndex), amountEusd],
-    }),
-    ctx.publicClient.readContract({
-      address: runtime.usdc,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [runtime.actor],
-    }),
-  ])) as [bigint, bigint];
-  const spend = needed > usdcBalance ? usdcBalance : needed;
-  if (spend <= 0n) return null;
-  const quoted = (await ctx.publicClient.readContract({
-    address: runtime.pool,
-    abi: curveStableSwapNgAbi,
-    functionName: "get_dy",
-    args: [BigInt(runtime.usdcIndex), BigInt(runtime.eusdIndex), spend],
-  })) as bigint;
-  if (quoted <= 0n) return null;
-  return {
-    to: runtime.pool,
-    data: encodeFunctionData({
-      abi: curveStableSwapNgAbi,
-      functionName: "exchange",
-      args: [
-        BigInt(runtime.usdcIndex),
-        BigInt(runtime.eusdIndex),
-        spend,
-        (quoted * (10_000n - DEPEG_SLIPPAGE_BPS)) / 10_000n,
-      ],
-    }),
-  };
-}
-
-async function settlePending(
-  ctx: SimContext,
-  runtime: EusdDepegRuntime,
-  blockIndex: number,
-  logger: RunLogger,
-): Promise<boolean> {
-  const pending = runtime.pending;
-  if (!pending) return true;
-  let status: "success" | "reverted" | null = null;
-  try {
-    const receipt = await ctx.publicClient.getTransactionReceipt({
-      hash: pending.hash,
-    });
-    status = receipt.status === "success" ? "success" : "reverted";
-  } catch {
-    status = null;
-  }
-  if (status === null) {
-    if (blockIndex - pending.blockIndex < PENDING_TIMEOUT_BLOCKS) return false;
-    logger.event({
-      type: "stress_eusd_depeg_stuck",
-      blockIndex,
-      hash: pending.hash,
-      submittedAtBlockIndex: pending.blockIndex,
-    });
-  }
-  if (status === "reverted") {
-    logger.event({
-      type: "stress_eusd_depeg_reverted",
-      blockIndex,
-      hash: pending.hash,
-    });
-  }
-  runtime.pending = null;
-  return true;
-}
-
-/// Put the peg back before the run ends, whatever the schedule managed to do.
-///
-/// The block loop can simply stop with a window still open (`EventSchedule` clamps the start so the
-/// window can end on the last block, and a run can also end early on its time limit). Under the
-/// scenario matrix the per-scenario revert would hide it, but a plain `sim:realtime` on a shared
-/// anvil would hand the next run a permanently depegged stablecoin -- and the startup check above
-/// would then refuse to start it. Mined rather than mempool: there is no next block to settle on.
-export async function restoreEusdDepeg(
-  ctx: SimContext,
-  runtime: EusdDepegRuntime,
-  logger: RunLogger,
-): Promise<void> {
-  runtime.pending = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const balance = (await ctx.publicClient.readContract({
-      address: runtime.eusd,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [runtime.actor],
-    })) as bigint;
-    const sold =
-      runtime.startEusdWei > balance ? runtime.startEusdWei - balance : 0n;
-    if ((sold * 10_000n) / (runtime.seededPoolEusdWei || 1n) < MIN_DELTA_BPS) {
-      logger.event({
-        type: "stress_eusd_depeg_restored",
-        phase: "teardown",
-        outstandingEusdWei: sold.toString(),
-        attempts: attempt,
-      });
-      return;
-    }
-    try {
-      const call = await buildBuyBack(ctx, runtime, sold);
-      if (!call) break;
-      await sendAndMine(
-        ctx.publicClient,
-        ctx.walletClient,
-        ctx.chain,
-        runtime.actorPk,
-        { to: call.to, data: call.data },
-      );
-    } catch (error) {
-      logger.event({
-        type: "stress_eusd_depeg_teardown_failed",
-        outstandingEusdWei: sold.toString(),
-        error: error instanceof Error ? error.message : String(error),
-      });
-      break;
-    }
-  }
-  const balance = (await ctx.publicClient.readContract({
-    address: runtime.eusd,
-    abi: erc20Abi,
-    functionName: "balanceOf",
-    args: [runtime.actor],
-  })) as bigint;
-  const outstanding =
-    runtime.startEusdWei > balance ? runtime.startEusdWei - balance : 0n;
-  logger.event({
-    type:
-      (outstanding * 10_000n) / (runtime.seededPoolEusdWei || 1n) <
-      MIN_DELTA_BPS
-        ? "stress_eusd_depeg_restored"
-        : "stress_eusd_depeg_restore_incomplete",
-    phase: "teardown",
-    outstandingEusdWei: outstanding.toString(),
-  });
+      label: EUSD_DEPEG_LABEL,
+      actorPk: opts.actorPk,
+      emptyInventoryHint:
+        "The deploy leaves the genesis Trove's surplus with the deployer account " +
+        "(deployer/src/protocols/liquity.ts), so an empty balance means a different account deployed " +
+        "the venue, or a previous run spent it.",
+    },
+    logger,
+  );
 }

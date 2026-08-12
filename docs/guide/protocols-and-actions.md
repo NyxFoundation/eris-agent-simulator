@@ -8,10 +8,19 @@ Each adapter (`sdk/src/protocols/<name>.ts`) implements parse/validate, calldata
 |---|---|---|
 | Uniswap V3 | `swap`, `mintLiquidity`, `removeLiquidity`, `collectFees` | fork: WETH/USDC 0.05% pool / local: WETH/USDC 0.3% pool |
 | Balancer v2 | `balancerSwap` | fork: 33/33/34 WETH/USDC/USDT weighted (seeded at fork time) / local: 50/50 WETH/USDC |
-| Curve | `curveSwap` | fork: tricrypto WETH↔USDT / local: twocrypto-ng WETH/USDC |
+| Curve | `curveSwap`, `stableSwap` | fork: tricrypto WETH↔USDT / local: twocrypto-ng WETH/USDC, plus the stableswap-ng pools that quote each market-priced stable |
 | Aave v3 | `aaveSupply`, `aaveWithdraw`, `aaveBorrow`, `aaveRepay` | native USDC / WETH reserves |
 | GMX v2 | `gmxIncrease`, `gmxDecrease` | ETH/USD perp market |
 | LST | `lstDeposit`, `lstSwap`, `lstRequestWithdraw`, `lstClaimWithdraw` | **local only**: a wstETH-style vault plus its LST/WETH stableswap-ng market |
+| Liquity (eUSD) | `liquityOpenTrove`, `liquityAdjustTrove`, `liquityCloseTrove`, `liquityRedeem`, `liquityProvideToSP`, `liquityWithdrawFromSP`, `liquityLiquidate`, `liquitySwapEusd` | **local only**: a Liquity V1 fork issuing eUSD, plus its eUSD/USDC stableswap-ng market |
+
+`stableSwap` (issue #27) trades a **market-priced stable** against USDC on the pool that quotes it:
+`{"type":"stableSwap","stable":"DAI","tokenIn":"USDC","amountIn":"…"}`. It lives on the Curve
+adapter because those pools come off the Curve factory, so a run has to enable `curve` to reach any
+of them — and a stable whose owning venue is disabled is not tradable, not swept and not priced,
+which is the only combination that leaves nothing to fall through the cracks. Both legs are bounded
+by `limits.maxUsdcInUnits`, which is denominated in USDC's six decimals: an 18-decimal stable needs
+that scaled (`limit * 10n ** 12n`) before you size a sell against it.
 
 The LST venue (issue #38) is the one venue with no fork counterpart — the vault is deployed by
 `deployer/`, so a fork run that lists `lst` fails fast at startup. It is also the one venue where an
@@ -28,7 +37,23 @@ In addition there are the protocol-agnostic `noop` / `bundle` (multiple bundleab
 
 ## Stablecoin Accounting
 
-Arbitrum's deep WETH/stable liquidity lives in the USDC.e / USDT pools, so native USDC, USDC.e, and USDT are all summed into balances and PnL as **USDC-equivalent** at `$1` and 6 decimals (`setActiveStables` / `getBalances` in `sdk/src/chain.ts`). Uniswap / Aave / GMX use native USDC, Balancer uses native USDC (its pool is seeded at fork time), and Curve uses USDT on fork and USDC on local.
+Arbitrum's deep WETH/stable liquidity lives in the USDC.e / USDT pools, so native USDC, USDC.e and
+USDT are all treated as **USDC-equivalent** at `$1` and 6 decimals (`setActiveStables` /
+`getBalances` in `sdk/src/chain.ts`). Uniswap / Aave / GMX use native USDC, Balancer uses native
+USDC (its pool is seeded at fork time), and Curve uses USDT on fork and USDC on local.
+
+Two things changed in issue #27, and both are visible to agents:
+
+- **`balances.usdcUnits` is native USDC alone.** It used to be every active stable summed, which is
+  not a number anyone can spend — USDT is not accepted in a USDC pool. Treat it as a budget for a
+  USDC leg; what the wallet is *worth* is `inventory.valueUsdc`.
+- **A stable with a market is worth what that market pays**, not `$1`. `balances.stables` carries
+  each one's balance, decimals and `priceUsdc` (the two-sided executable mid of its own pool), and
+  the scorer marks spot balances and LP legs at the same number. `marketQuoted: false` means
+  `priceUsdc: 1` is par by assumption rather than an observation, so do not read it as "the peg is
+  holding". USDC itself stays `$1` by definition: it is the numéraire every metric is denominated
+  in. Today the market-priced stables are **eUSD** (from the Liquity venue) and **DAI** (local
+  deploy); funding never grants either, so any exposure to one is a position somebody chose.
 
 ## Oracle Control (Aave v3 / GMX v2)
 

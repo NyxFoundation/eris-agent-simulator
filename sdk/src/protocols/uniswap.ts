@@ -25,6 +25,7 @@ import {
   type MarketConfig,
 } from "../markets.js";
 import { tokenAmountUsd, type UnpricedAmount } from "../valuation.js";
+import type { StablePrices } from "../stables.js";
 import { resolveMarket } from "./marketHelpers.js";
 import type {
   AgentObservation,
@@ -839,8 +840,12 @@ export function positionPoolKey(
 export type LpValuationContext = {
   // lowercased pool address -> current tick.
   tickByPool: Record<string, number>;
-  // base symbol -> USD price. Stables are $1 and do not appear here.
+  // base symbol -> USD price. Stables do not appear here: they are quoted against USDC, not
+  // against a USD fair-price feed, so their prices come from stablePrices (issue #27).
   fairByBase: Record<string, number>;
+  // Market-priced stables (issue #27). Omitted -> every stable leg is valued at par, which is the
+  // right answer for a run whose only stables are USDC-equivalents.
+  stablePrices?: StablePrices;
   // positionPoolKey -> pool address, for pools outside the registered market set.
   poolByKey?: Record<string, Address>;
   // Issue #21: pool fee growth keyed by lowercased pool address. Omitted -> fees are not marked.
@@ -930,7 +935,12 @@ export function lpPositionValuation(
     });
   }
   for (const [token, amount] of totals) {
-    const usd = tokenAmountUsd(token, amount, ctx.fairByBase);
+    const usd = tokenAmountUsd(
+      token,
+      amount,
+      ctx.fairByBase,
+      ctx.stablePrices,
+    );
     if (usd === undefined) {
       if (amount > 0n) unpriced.push({ token, amountRaw: amount.toString() });
       continue;
@@ -1444,6 +1454,7 @@ export const uniswapAdapter: ProtocolAdapter = {
     }
 
     const fairByBase = ctx.fairByBase();
+    const stablePrices = ctx.stablePrices();
     const out = unreadableCount(zero());
     owners.forEach(({ agentId, index }, j) => {
       const raw = positions[j];
@@ -1464,6 +1475,7 @@ export const uniswapAdapter: ProtocolAdapter = {
       const valuation = lpPositionValuation(raw as PositionTuple, {
         tickByPool,
         fairByBase,
+        stablePrices,
         poolByKey,
         feeGrowthByPool,
       });

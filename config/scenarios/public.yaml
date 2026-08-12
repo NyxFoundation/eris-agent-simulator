@@ -14,13 +14,18 @@
 #
 # Run: npm run backtest -- --scenarios config/scenarios/public.yaml --agents <roster>
 
-# Six of the seven regimes ADR 0017 lists. The seventh, depeg, waits on issue #39 (the CDP venue that
-# brings the stable to break) and then #27 -- not on the scoring rework, since both keep USDC as the
-# $1 quote unit.
+# All seven regimes ADR 0017 lists. `depeg` was the last one outstanding: it needed a stable the
+# scorer would actually mark down, which issue #27 delivered by pricing registry stables from their
+# market instead of asserting $1. USDC stays the $1 quote unit, so the scoring rework (#56) was
+# never a dependency.
 # `crash` carries both halves (issue #52: the gap and the liquidity withdrawal, across uniswap,
 # balancer and curve), and `lending-incident` thins its books on the crash window too. Measured at
 # a 50% pull, the cost of taking 10 WETH roughly doubles on uniswap/balancer and quadruples on
 # curve, while the price a small trade sees moves <=0.1bps.
+#
+# Note that adding depeg moves every standing: the z-score is taken within a regime and then
+# averaged across them (ADR 0017 §3), so a seventh regime redistributes the weights. Comparisons
+# against a matrix run before this one have to be re-run rather than read across.
 regimes:
   - calm
   - cex-drift
@@ -28,5 +33,6 @@ regimes:
   - whale
   - lending-incident
   - crash
+  - depeg
 
 seeds: [101, 202, 303, 404, 505]
