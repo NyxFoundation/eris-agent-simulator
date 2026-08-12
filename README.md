@@ -151,6 +151,20 @@ For details, see [Backtesting](docs/guide/backtest.md).
 
 ---
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+That is the answer to the question this repository is built around: **copy `example/agents/<id>/`,
+change it, keep what you build.** A strategy written from one of the bundled agents is yours, and
+nothing here asks for it back.
+
+A few files in the tree are somebody else's work and keep their own terms — the canonical WETH9 mock
+and Curve's prebuilt artifacts. [THIRD-PARTY.md](THIRD-PARTY.md) lists them, along with the
+dependencies `deployer/scripts/setup-vendors.sh` fetches at setup rather than redistributing.
+
+---
+
 ## Disclaimer
 
 This is an **MVP / Proof of Concept** for research and experimentation, not intended for production use. The Aave / GMX oracles are mocks controlled by the coordinator, and the fair price is a synthetic path generated deterministically. Simulation results (PnL, ranking, discrimination) depend on the environment configuration, SEED, and sample count, and do not guarantee real-market performance.

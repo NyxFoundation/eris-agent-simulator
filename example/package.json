@@ -2,6 +2,7 @@
   "name": "eris-example-agents",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Participant template (ADR 0015). agents/ is the unit of copy/submission. Depends only on sdk (importing core is forbidden).",
   "dependencies": {

@@ -2,6 +2,7 @@
   "name": "@eris/sdk",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Contract layer for eris-competition (ADR 0015). Types, action schema, chain IO, and protocol adapters that both the environment (core) and participants (example) depend on.",
   "exports": {
