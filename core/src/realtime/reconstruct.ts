@@ -93,8 +93,8 @@ export type ReconstructionMeta = {
 export type MarkMedianMeta = {
   windowBlocks: number;
   boundaries: number;
-  // Which manipulable marks the median covers. Named explicitly because the ADR's G7 lists four
-  // surfaces and this is not yet all of them.
+  // Which manipulable marks the median covers, named rather than assumed: if a future venue marks a
+  // holding off a pool quote, this list is where its absence should become visible.
   surfaces: string[];
   // stable symbol -> the largest gap seen between the boundary's live probe and the median it was
   // scored at, over all boundaries.
@@ -701,12 +701,24 @@ export function epochBoundaryBlocks(
 // pushing a pool for one block does not become the score. It has to hold for most of the window to
 // count, which turns a spread-cost round trip into a position.
 //
-// Scope today is the market-priced stables. That is one seam, not one venue: spot registry stables
-// (#27) and the Liquity venue's Trove debt / Stability Pool deposit both price off ctx.stablePrices()
-// (protocols/liquity.ts). The other two surfaces the ADR names -- the LST market price and LP share
-// reserves -- compute their price inside their own adapter's staged reads (protocols/lst.ts issues
-// its own get_dy), so they are still marked live. Recorded rather than left implicit: a partial G7
-// that reads as a complete one is the failure mode this rule exists to prevent.
+// Scope is the market-priced stables, and that turns out to be the whole surface. It is one seam,
+// not one venue: spot registry stables (#27) and the Liquity venue's Trove debt / Stability Pool
+// deposit both price off ctx.stablePrices() (protocols/liquity.ts).
+//
+// The ADR's G7 originally named two more, and both fall out on inspection:
+//
+//   LP shares are valued by composition -- reserves x the environment's fair price -- never by the
+//   pool's own price, and the agent's spot side is marked at those same external prices. So a push
+//   moves value between the agent's two buckets rather than creating any: what the trader loses, the
+//   pool gains, and the agent gets back only its share of it. A wash if it owns the whole pool, a
+//   loss otherwise.
+//
+//   The LST venue's scored mark is face value (vault redemption rate x the WETH fair), which reads
+//   no pool at all. Its pool quote feeds liquidatableValueUsdc, a reported diagnostic that the value
+//   series does not sum.
+//
+// What makes the stables different is that there the pool quote *is* the mark of a holding whose
+// cost basis sits somewhere else, so moving the pool moves the score.
 class MarkMedian {
   private readonly maxDeviationBps = new Map<string, number>();
   private boundaries = 0;
