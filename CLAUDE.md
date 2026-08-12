@@ -280,8 +280,10 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   **今どの market-priced stable も Aave reserve ではない**ので現状は no-op で、listing した日に効く
 - レジームは `config/regimes/depeg.yaml`（公式セット入り = ADR 0017 の 7 本目）、参照 agent は
   `example/agents/peg-arb/`。実測（seed 701）: 環境が depth の 59% を売って最大 89.5bps のディスカウント、
-  peg-arb +139.6 / peg-arb-eager +195.7 / noop 0。**買い手が反対側を取るのでペグは戻るとき行き過ぎる**
-  （実測 −143bps = par 超え）
+  peg-arb +139.6 / peg-arb-eager +195.7 / noop 0。**買い手が反対側を取ったぶん、環境が買い戻すと
+  プールは stable 不足になって par を超える**（裁定側が解消できていれば −6bps 程度で収まるが、
+  解消できないと大きく行き過ぎる。上限バグで sell が全 reject された run では −143bps まで振れ、
+  「閉じられないポジションの含み益」が +439 と表示された）
 
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 

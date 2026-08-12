@@ -36,7 +36,10 @@ export function valueUsdc(
   const wethPrice = p.WETH ?? 0;
   const eth = Number(formatUnits(snapshot.ethWei, 18)) * wethPrice;
   let total = eth;
-  if (snapshot.stables) {
+  // Object.keys rather than a truthiness check: validateLeafItems builds an empty `stables` map
+  // when the snapshot it copies had none, and treating that as authoritative would drop usdcUnits
+  // from the total entirely instead of falling back to it.
+  if (snapshot.stables && Object.keys(snapshot.stables).length > 0) {
     for (const [token, units] of Object.entries(snapshot.stables)) {
       total +=
         Number(formatUnits(units, stableDecimals(token))) *

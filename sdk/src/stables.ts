@@ -28,6 +28,7 @@ import { formatUnits, type Address, type PublicClient } from "viem";
 import { curveStableSwapNgAbi } from "./abis.js";
 import { STABLE_MARKET_LEGS, TOKENS } from "./constants.js";
 import { tokenInfoByAddress } from "./markets.js";
+import { enabledProtocolIds } from "./protocols/enabled.js";
 import type { ProtocolId, TokenSymbol } from "./types.js";
 
 // A stable and the pool that quotes it against the run's USDC.
@@ -85,14 +86,13 @@ function probeUnits(decimals: number): bigint {
   return DEFAULT_PROBE_USD * 10n ** BigInt(decimals);
 }
 
-// Every stable the deployment gave a market, in registry order. Optionally narrowed to a set of
-// tokens (the run's active stables), so a venue that is deployed but not enabled costs no reads.
-export function marketPricedStables(
-  tokens?: readonly Address[],
-): StableMarket[] {
-  const wanted = tokens
-    ? new Set(tokens.map((t) => t.toLowerCase()))
-    : undefined;
+// Every stable the *deployment* gave a market, whether or not this run enabled its venue. Derived
+// once: STABLE_MARKET_LEGS and TOKENS are module constants, and this is called from the per-block
+// oracle writes and from every action parse.
+let deployedMarkets: StableMarket[] | undefined;
+
+function allMarkets(): StableMarket[] {
+  if (deployedMarkets) return deployedMarkets;
   const quoteDecimals = TOKENS.USDC.decimals;
   const out: StableMarket[] = [];
   for (const [symbol, leg] of Object.entries(STABLE_MARKET_LEGS)) {
@@ -105,7 +105,6 @@ export function marketPricedStables(
     // a market leg naming it is ignored here rather than quietly redefining the unit.
     if (info.address.toLowerCase() === TOKENS.USDC.address.toLowerCase())
       continue;
-    if (wanted && !wanted.has(info.address.toLowerCase())) continue;
     out.push({
       symbol,
       token: info.address,
@@ -118,17 +117,38 @@ export function marketPricedStables(
       probeQuoteUnits: probeUnits(quoteDecimals),
     });
   }
+  deployedMarkets = out;
   return out;
 }
 
-// The market-priced stables a run actually gets: those whose owning venue is enabled. A stable
-// whose venue is switched off is not swept, not probed, and not tradable -- all three together,
-// which is the only combination that is coherent.
+// The market-priced stables this run can actually see, in registry order: those whose owning venue
+// the run enabled. Optionally narrowed further to a set of tokens (the run's active stables).
+//
+// Venue-gated rather than deployment-wide, because the three things have to agree. A stable the run
+// did not enable is not swept, so its balance never reaches a value; if it were still parseable and
+// approved, an agent could spend USDC on a token the scorer would then not count -- the dollars
+// would simply vanish from its score.
+export function marketPricedStables(
+  tokens?: readonly Address[],
+): StableMarket[] {
+  const wanted = tokens
+    ? new Set(tokens.map((t) => t.toLowerCase()))
+    : undefined;
+  const enabled = new Set(enabledProtocolIds());
+  return allMarkets().filter(
+    (m) =>
+      enabled.has(m.venue) &&
+      (!wanted || wanted.has(m.token.toLowerCase())),
+  );
+}
+
+// The market-priced stables an explicit protocol set brings with it. Used by initProtocols, which
+// runs *while* setting the enabled ids and so cannot read them back yet.
 export function stablesForProtocols(
   protocols: readonly ProtocolId[],
 ): StableMarket[] {
   const enabled = new Set(protocols);
-  return marketPricedStables().filter((m) => enabled.has(m.venue));
+  return allMarkets().filter((m) => enabled.has(m.venue));
 }
 
 export function stableMarketFor(token: Address): StableMarket | undefined {
@@ -138,8 +158,12 @@ export function stableMarketFor(token: Address): StableMarket | undefined {
 
 // True when this token is a dollar by convention rather than by measurement: USDC itself, or a
 // registry stable no pool quotes. Funding grants these and only these -- see fundWallet.
+//
+// Deliberately checked against the whole deployment rather than the enabled venues: a venue-issued
+// stable must never be conjured by a cheatcode just because its venue is switched off.
 export function isParStable(token: Address): boolean {
-  return stableMarketFor(token) === undefined;
+  const target = token.toLowerCase();
+  return !allMarkets().some((m) => m.token.toLowerCase() === target);
 }
 
 // One contract read inside a batched cross-section multicall. Structurally the scorer's
@@ -250,6 +274,10 @@ export function decodeStableProbes(
 export async function readStablePrices(
   publicClient: PublicClient,
   tokens?: readonly Address[],
+  // Read at a specific block. The end-of-run PnL needs it: the environment's depeg teardown runs
+  // after the last competition block, and pricing the close at the restored peg would score the
+  // teardown rather than the run.
+  blockNumber?: bigint,
 ): Promise<StablePrices> {
   const markets = marketPricedStables(tokens);
   if (markets.length === 0) return PAR_STABLE_PRICES;
@@ -262,6 +290,7 @@ export async function readStablePrices(
           abi: read.abi,
           functionName: read.functionName,
           ...(read.args ? { args: read.args } : {}),
+          ...(blockNumber !== undefined ? { blockNumber } : {}),
         } as never)
         // A quote the pool refuses is "no market at this size", not a price of zero.
         .catch(() => undefined),

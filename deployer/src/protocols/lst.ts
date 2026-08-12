@@ -60,8 +60,9 @@ const REWARD_RESERVE = parseUnits("50", 18);
 
 // Curve stableswap-ng plain-pool parameters. Modelled on the real wstETH/ETH ng pool: a low fee and
 // a soft A, so the curve holds the peg over ordinary size and gives way (the cliff) on a large
-// one-sided exit. Much lower than the USDC/DAI pool's 2000 because an LST is not a hard peg — at
-// 500 the curve was so flat that no trade an agent is allowed to make registered at all.
+// one-sided exit. This used to be contrasted with the USDC/DAI pool's A=2000; that pool has since
+// been dropped to 100 for the same reason (issue #27 (c)), so all three stableswap pools here now
+// share it. At 500 the curve was so flat that no trade an agent is allowed to make registered at all.
 const POOL_A = 100n;
 const POOL_FEE = 4_000_000n; // 0.04%
 const POOL_OFFPEG_FEE_MULTIPLIER = 20_000_000_000n;

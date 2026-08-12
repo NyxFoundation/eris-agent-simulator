@@ -22,19 +22,35 @@
  */
 import type { AgentAction, AgentContext, AgentObservation } from "@eris/sdk";
 
+// A roster's `env` is a string map, so a typo silently becomes NaN and the comparison below is
+// then false forever -- an agent that never trades, indistinguishable in the score from one that
+// correctly sat out. Fail at startup instead, where the message is attached to the cause.
+function numberEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value))
+    throw new Error(`${name} must be a number, got ${JSON.stringify(raw)}`);
+  return value;
+}
+
 // The discount at which buying is worth the round trip. The pool charges its fee on both legs and
 // the exit price is not the entry price, so a few bps of dislocation is noise.
-const BUY_BPS = Number(process.env.ERIS_PEG_ARB_BUY_BPS ?? "40");
+const BUY_BPS = numberEnv("ERIS_PEG_ARB_BUY_BPS", 40);
 // Where to let go. Above par is a premium; waiting for one is waiting for the environment to
 // overshoot, which the buy-back leg of the event does not promise.
-const SELL_BPS = Number(process.env.ERIS_PEG_ARB_SELL_BPS ?? "10");
+const SELL_BPS = numberEnv("ERIS_PEG_ARB_SELL_BPS", 10);
 // Fraction of the spendable dollar budget committed per buy, in bps. A single block's dislocation
 // is not the deepest it will get, so this leaves room to keep buying into it.
-const SIZE_BPS = BigInt(process.env.ERIS_PEG_ARB_SIZE_BPS ?? "2500");
+const SIZE_BPS = BigInt(Math.round(numberEnv("ERIS_PEG_ARB_SIZE_BPS", 2500)));
 // Which stable to trade. Unset = whichever quoted stable is furthest from par this block.
 const TARGET = process.env.ERIS_PEG_ARB_STABLE ?? "";
 
-const MIN_USDC_UNITS = 1_000_000n; // 1 USDC
+// Dust floor, in dollars. Below this a leg is not worth a transaction: the gas eats it, and a
+// balance of a few wei left over from an unwind would otherwise have the agent propose a swap every
+// remaining block of the run for nothing.
+const MIN_DOLLARS = 1n;
+const MIN_USDC_UNITS = MIN_DOLLARS * 1_000_000n;
 const SLIPPAGE_BPS = 100;
 
 function minBI(a: bigint, b: bigint): bigint {
@@ -65,6 +81,11 @@ function quotedStables(obs: AgentObservation): StableView[] {
   for (const [symbol, s] of Object.entries(obs.balances.stables ?? {})) {
     if (symbol === "USDC" || !s.marketQuoted) continue;
     if (TARGET && symbol !== TARGET) continue;
+    // EUSD is reachable through stableSwap like any other market-priced stable, but its venue has
+    // a better instrument for it: a redemption enforces par rather than hoping for it, which is
+    // what `example/agents/redemption-arb/` trades. Leaving it here would have this agent take the
+    // strictly worse side of the same dislocation.
+    if (symbol === "EUSD") continue;
     out.push({
       symbol,
       balance: BigInt(s.balance),
@@ -102,7 +123,11 @@ export function decide(
   // Sell first. Holding through the end of the run is the one way this strategy loses money it
   // never had to lose, so unwinding takes priority over adding.
   const rich = stables
-    .filter((s) => s.balance > 0n && s.discountBps <= SELL_BPS)
+    .filter(
+      (s) =>
+        s.balance >= MIN_DOLLARS * 10n ** BigInt(s.decimals) &&
+        s.discountBps <= SELL_BPS,
+    )
     .sort((a, b) => a.discountBps - b.discountBps)[0];
   if (rich) {
     // Bounded by the per-round cap, restated in this stable's decimals. Asking for the whole

@@ -36,8 +36,11 @@ export const TOKENS: Record<string, { address: Address; decimals: number }> = {
   // issued by a venue instead of deployed as a run token, so it is picked up from the liquity
   // deployment rather than from the deployer's token table. #39 kept it out of the registry only
   // because the registry priced stables at par -- STABLE_MARKET_LEGS below is what dissolves that.
+  // The symbol is uppercase like every other one: it is an action field (`stableSwap.stable`), and
+  // actionSchema's tokenSymbol rejects mixed case so a prompt-mode typo comes back as a validation
+  // error instead of dying at send time. `liquitySwapEusd` already spells it "EUSD".
   ...(L?.LIQUITY?.eusd
-    ? { eUSD: { address: L.LIQUITY.eusd, decimals: 18 } }
+    ? { EUSD: { address: L.LIQUITY.eusd, decimals: 18 } }
     : {}),
 };
 
@@ -97,7 +100,7 @@ function buildStableMarketLegs(): Record<TokenSymbol, StableMarketLeg> {
     liquity.eusdIndex !== undefined &&
     liquity.usdcIndex !== undefined
   ) {
-    out.eUSD = {
+    out.EUSD = {
       pool: liquity.eusdUsdcPool,
       stableIndex: liquity.eusdIndex,
       quoteIndex: liquity.usdcIndex,

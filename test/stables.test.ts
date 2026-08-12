@@ -30,6 +30,13 @@ const { TOKENS } = await import("@eris/sdk/constants.js");
 const { readValueSnapshotAtBlock } =
   await import("../core/src/realtime/reconstruct.js");
 const { toPriceFeedAnswer } = await import("@eris/sdk/priceFeed.js");
+const { setEnabledProtocolIds } = await import("@eris/sdk/protocols/enabled.js");
+const { validateAction } = await import("@eris/sdk/action.js");
+
+// A market-priced stable belongs to the venue that owns its pool, and marketPricedStables() is
+// gated on the run having enabled it. Say so explicitly rather than relying on whichever module
+// happened to initialise the registry first.
+setEnabledProtocolIds(["uniswap", "curve"]);
 
 const WAD = 10n ** 18n;
 const USDC_UNIT = 10n ** 6n;
@@ -290,3 +297,107 @@ test(
     assert.equal(reported[0].amountRaw, (1_000n * WAD).toString());
   },
 );
+
+// ---------------------------------------------------------------------------
+// Reachability: swept, priced and tradable have to agree
+// ---------------------------------------------------------------------------
+
+test("a stable whose venue the run disabled is not visible at all", { skip }, () => {
+  setEnabledProtocolIds(["uniswap"]);
+  try {
+    // Not priced, so a holding of it would be marked at par; the point is that it is not tradable
+    // either, so nobody can acquire one. All three move together or dollars vanish from a score.
+    assert.equal(marketPricedStables().length, 0);
+  } finally {
+    setEnabledProtocolIds(["uniswap", "curve"]);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Bundle accounting
+// ---------------------------------------------------------------------------
+
+const AGENT_OBS = {
+  round: 1,
+  limits: {
+    maxUsdcInUnits: "5000000000",
+    maxWethInWei: "1000000000000000000",
+    maxPriorityFeePerGasWei: "1000000000",
+    defaultPriorityFeePerGasWei: "100000000",
+    maxBundleActions: 5,
+    maxOpenPositions: 5,
+  },
+  protocols: {},
+  enabledProtocols: ["uniswap", "curve"],
+} as never;
+
+test("a bundle cannot spend the same dollars on two stableSwaps", { skip }, () => {
+  const balances = {
+    ethWei: 0n,
+    wethWei: 0n,
+    usdcUnits: 5_000n * USDC_UNIT,
+    bases: { WETH: 0n },
+    stables: {
+      [TOKENS.USDC.address.toLowerCase()]: 5_000n * USDC_UNIT,
+      [DAI!.token.toLowerCase()]: 0n,
+    },
+  };
+  const leg = {
+    type: "stableSwap",
+    stable: "DAI",
+    tokenIn: "USDC",
+    amountIn: (5_000n * USDC_UNIT).toString(),
+  };
+  const single = validateAction(
+    { type: "bundle", actions: [leg] } as never,
+    AGENT_OBS,
+    balances,
+  );
+  assert.equal(single.ok, true);
+  // The second leg has to see the first one's spend. Before issue #27 wired stableSwap into
+  // applyLeafSpend both legs validated against the same untouched 5,000 and the second reverted on
+  // chain at the agent's expense.
+  const doubled = validateAction(
+    { type: "bundle", actions: [leg, leg] } as never,
+    AGENT_OBS,
+    balances,
+  );
+  assert.equal(doubled.ok, false);
+});
+
+test("the stable a bundle just bought is spendable by its next leg", { skip }, () => {
+  const balances = {
+    ethWei: 0n,
+    wethWei: 0n,
+    usdcUnits: 1_000n * USDC_UNIT,
+    bases: { WETH: 0n },
+    stables: {
+      [TOKENS.USDC.address.toLowerCase()]: 1_000n * USDC_UNIT,
+      [DAI!.token.toLowerCase()]: 0n,
+    },
+  };
+  // Buy 1,000 USDC of DAI, then sell (almost) all of it back: the credit has to cross the decimal
+  // difference, or the round trip reads as spending DAI the wallet does not have.
+  const round = validateAction(
+    {
+      type: "bundle",
+      actions: [
+        {
+          type: "stableSwap",
+          stable: "DAI",
+          tokenIn: "USDC",
+          amountIn: (1_000n * USDC_UNIT).toString(),
+        },
+        {
+          type: "stableSwap",
+          stable: "DAI",
+          tokenIn: "DAI",
+          amountIn: (990n * WAD).toString(),
+        },
+      ],
+    } as never,
+    AGENT_OBS,
+    balances,
+  );
+  assert.equal(round.ok, true);
+});

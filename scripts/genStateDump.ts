@@ -103,6 +103,12 @@ async function main(): Promise<void> {
     localDeploy: true,
     localSnapshotFile: snapshotFile,
   });
+  // evm_revert restores the mining mode along with the state, and the clean snapshot was taken with
+  // automine off (a run turns it off at competition start and never turns it back on). Leaving it
+  // that way hands the next `sim:realtime` an anvil that accepts transactions and mines none of
+  // them, so setup hangs on a receipt that will never arrive -- with nothing to say why. Measured
+  // once, the hard way.
+  await rpc<null>(rpcUrl, "evm_setAutomine", [true]);
 
   // ---- dump (hex-gzip -> plain JSON. --load-state only accepts plain JSON) ----
   const hex = await rpc<string>(rpcUrl, "anvil_dumpState");

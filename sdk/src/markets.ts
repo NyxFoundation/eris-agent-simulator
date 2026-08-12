@@ -42,8 +42,9 @@ const STABLE_SYMBOLS = new Set<TokenSymbol>([
   "DAI",
   "USDC.e",
   // Issue #27 (b): the CDP stablecoin from #39, promoted out of the liquity adapter's private
-  // accounting now that being in the registry no longer means being priced at par.
-  "eUSD",
+  // accounting now that being in the registry no longer means being priced at par. Uppercase like
+  // every other symbol -- it reaches agents as an action field.
+  "EUSD",
 ]);
 
 // Yield-bearing claims valued by their own venue rather than by the fair-price feed (issue #38).

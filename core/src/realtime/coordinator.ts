@@ -774,13 +774,17 @@ export async function runRealtimeSimulation(
             "and a fork has no such pool (issue #27 (c))",
         );
       }
+      // Enabled-venue gated (marketPricedStables reads the run's protocol set), not merely
+      // deployed: a stable this run did not enable is not swept, not priced and not tradable, so
+      // depegging it would move a price nobody can see or act on.
       const market = marketPricedStables().find((m) => m.symbol === symbol);
       if (!market) {
+        const known = marketPricedStables().map((m) => m.symbol).join(", ");
         throw new Error(
-          `stress event depeg targets "${symbol}", which this deployment does not price from a ` +
-            `market (known: ${marketPricedStables().map((m) => m.symbol).join(", ") || "none"}). ` +
-            "A stable with no pool cannot be pushed off par -- and would be scored at $1 whatever " +
-            "the event did.",
+          `stress event depeg targets "${symbol}", which this run does not price from a market ` +
+            `(available: ${known || "none"}). Either the deployment has no pool for it, or its ` +
+            "venue is missing from run.protocols -- a stable with neither cannot be pushed off " +
+            "par, and would be scored at $1 whatever the event did.",
         );
       }
       depegRuntimes.push({
@@ -810,9 +814,17 @@ export async function runRealtimeSimulation(
     }
     // Their swaps are environment transactions, like the oracle writes: attributing them to a
     // participant would put them through the post-run fee check (core/src/postRunCheck.ts).
-    for (const { runtime, ownerId } of depegRuntimes) {
-      ownerByAddress.set(runtime.actor.toLowerCase(), {
-        ownerId,
+    //
+    // One entry, not one per runtime. Every depeg -- and the liquidity pull below -- trades as the
+    // same deployer account, so per-mechanism entries would simply overwrite each other and label
+    // every unmatched tx from that account with whichever ran last. A tx whose hash *is* in
+    // submittedByHash still gets its own mechanism's id; this is only the fallback.
+    if (depegRuntimes.length > 0) {
+      ownerByAddress.set(depegRuntimes[0].runtime.actor.toLowerCase(), {
+        ownerId:
+          depegRuntimes.length === 1
+            ? depegRuntimes[0].ownerId
+            : depegRuntimes.map((d) => d.ownerId).join("+"),
         role: "system",
       });
     }
@@ -1541,11 +1553,9 @@ export async function runRealtimeSimulation(
             }
           };
 
-          // eUSD depeg stress event (issue #39): move the peg toward where this block's trapezoid
-          // wants it. Its own task for the same reason as the liquidity pull -- it sends from the
-          // deployer key rather than the admin key -- and sequential with it inside that key, which
-          // the two being separate awaited tasks does not guarantee, so they share one task here.
-          const depegTask = async (): Promise<void> => {
+          // Depeg stress events (issues #39 and #27 (c)): move each peg toward where this block's
+          // trapezoid wants it.
+          const depegStep = async (): Promise<void> => {
             // Sequential across stables as well as with the pull: they all send from the deployer
             // key, and two senders on one key race on the nonce.
             for (const { runtime, fractionAt, ownerId } of depegRuntimes) {
@@ -1612,8 +1622,17 @@ export async function runRealtimeSimulation(
           ];
           if (stressVictims.length > 0) tasks.push(timed(victimTask));
           if (vulnRuntime) tasks.push(timed(vulnTask));
-          if (liquidityPullRuntime) tasks.push(timed(liquidityTask));
-          if (depegRuntimes.length > 0) tasks.push(timed(depegTask));
+          // One task for both, actually rather than by comment. Every one of these sends from the
+          // deployer key, and `sendNoMine` resolves the nonce per call -- two of them in the same
+          // Promise.all resolve the same pending nonce and one silently replaces the other. The
+          // comment here used to claim they shared a task while the code pushed two; the crash +
+          // depeg combination `alignWith` exists to express is exactly when both are live.
+          const deployerKeyTask = async (): Promise<void> => {
+            if (liquidityPullRuntime) await liquidityTask();
+            if (depegRuntimes.length > 0) await depegStep();
+          };
+          if (liquidityPullRuntime || depegRuntimes.length > 0)
+            tasks.push(timed(deployerKeyTask));
           if (liquityRuntime) tasks.push(timed(liquityWatchTask));
           const results = await Promise.all(tasks);
           const [keeperMs, oracleMs, stateFlowMs] = results;
@@ -1621,11 +1640,14 @@ export async function runRealtimeSimulation(
           const victimMs =
             stressVictims.length > 0 ? results[taskIdx++] : undefined;
           const vulnMs = vulnRuntime ? results[taskIdx++] : undefined;
-          const liquidityMs = liquidityPullRuntime
-            ? results[taskIdx++]
-            : undefined;
-          const depegMs =
-            depegRuntimes.length > 0 ? results[taskIdx++] : undefined;
+          // One measurement now that both share a task; reported under both names so the existing
+          // round_timing readers keep working.
+          const deployerKeyMs =
+            liquidityPullRuntime || depegRuntimes.length > 0
+              ? results[taskIdx++]
+              : undefined;
+          const liquidityMs = liquidityPullRuntime ? deployerKeyMs : undefined;
+          const depegMs = depegRuntimes.length > 0 ? deployerKeyMs : undefined;
           const liquityMs = liquityRuntime ? results[taskIdx++] : undefined;
           logger.event({
             type: "round_timing",
@@ -1673,6 +1695,14 @@ export async function runRealtimeSimulation(
     flowProcess.close();
     await setIntervalMining(publicClient, 0);
 
+    // The last block anyone competed on, captured *before* the teardowns below. Everything after it
+    // is the environment putting the chain back, and scoring across those blocks would score the
+    // teardown: a depeg restore buys the stable back to par (issue #27), so an agent that never
+    // unwound would be marked at par and holding through the end would cost nothing -- which is
+    // exactly the risk the regime exists to create. Nothing agents did lands after this point,
+    // because they were stopped one line above.
+    const finalBlock = Number(await publicClient.getBlockNumber());
+
     // ---- liquidity-pull teardown (issue #52): the run can end with a window still open, since the
     // schedule may place it against the last block and the time limit can cut in mid-window. Restore
     // here so a shared anvil does not hand the next run a thinner venue. Agents are already stopped,
@@ -1705,7 +1735,6 @@ export async function runRealtimeSimulation(
 
     // ---- bulk recording of blocks.csv: scan all run blocks for what was removed from the realtime loop ----
     // (finish before resetFork erases history, and before the violation check and summary)
-    const finalBlock = Number(await publicClient.getBlockNumber());
     for (let b = runStartBlock; b <= finalBlock; b++) await logBlock(b);
 
     // ---- scoring: batch-reconstruct the per-agent value series from historical blocks (ADR 0006 §4) ----
@@ -1811,6 +1840,8 @@ export async function runRealtimeSimulation(
     const finalStablePrices = await readStablePrices(
       publicClient,
       activeStables(),
+      // At the last competition block, for the same reason the reconstruction stops there.
+      BigInt(finalBlock),
     );
     const agentsSummary = [];
     for (const agent of agentRuntimes) {

@@ -15,26 +15,22 @@
 // same reconcile-to-a-target shape as the liquidity pull (issue #52) and for the same reason: the
 // coordinator drops block notifications while it is busy, so a state that is re-derived every block
 // costs a block of lag where a one-shot would strand the pool.
-import { encodeFunctionData, maxUint256, type Address, type Hex } from "viem";
-import {
-  curveStableSwapNgAbi,
-  erc20Abi,
-  troveManagerAbi,
-} from "@eris/sdk/abis.js";
-import { accountAddress, sendAndMine, sendNoMine } from "@eris/sdk/chain.js";
+import { encodeFunctionData, type Address, type Hex } from "viem";
+import { troveManagerAbi } from "@eris/sdk/abis.js";
+import { accountAddress, sendAndMine } from "@eris/sdk/chain.js";
 import { liquityPriceFeedAdapterAbi } from "@eris/sdk/abis.js";
-import { LIQUITY, requireEusdMarket } from "@eris/sdk/constants.js";
+import {
+  LIQUITY,
+  requireEusdMarket,
+  STABLE_MARKET_LEGS,
+} from "@eris/sdk/constants.js";
 import {
   getLiquityState,
   type LiquityState,
 } from "@eris/sdk/protocols/liquity.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { RunLogger } from "../logger.js";
-import type { EventSchedule } from "./events.js";
-import {
-  setupStableDepeg,
-  type StableDepegRuntime,
-} from "./stableDepeg.js";
+import { setupStableDepeg, type StableDepegRuntime } from "./stableDepeg.js";
 
 // How far the oracle the venue serves may sit from the run's fair price before the run refuses to
 // start. This is not calibration noise: either the adapter points at this run's PriceFeed or it does
@@ -46,22 +42,6 @@ const ORACLE_TOLERANCE_BPS = 100;
 // depegged). Either way the redemption arb would open as a freebie for whoever looks first.
 export const LIQUITY_STARTUP_WARN_BPS = 25;
 export const LIQUITY_STARTUP_FAIL_BPS = 200;
-
-// Swaps against a stableswap pool are a fixed shape; pinning the gas skips an eth_estimateGas (a
-// whole extra EVM execution) on a transaction the environment may send every block of a window.
-const DEPEG_GAS = 600_000n;
-
-// Slippage bound on the environment's own depeg trades. It is not being protected from a bad price
-// -- moving the price is the point -- only from a pathological fill.
-const DEPEG_SLIPPAGE_BPS = 500n;
-
-// Deltas below this fraction of the pool's seeded eUSD depth are rounding, not schedule. Closing the
-// window is exempt: leaving the peg broken would hand the rest of the run a different venue.
-const MIN_DELTA_BPS = 50n;
-
-// Blocks to wait for a submitted swap before treating it as lost. Under interval mining a
-// transaction lands on the next block, so this is slack for a busy block rather than a normal path.
-const PENDING_TIMEOUT_BLOCKS = 3;
 
 export type LiquityRuntime = {
   troveManager: Address;
@@ -83,6 +63,19 @@ export async function setupLiquity(
       "the liquity protocol is enabled but no Liquity deployment is available: the venue exists " +
         "only under local deploy (issue #39). Enable run.localDeploy with a state dump that " +
         "includes liquity, or drop liquity from run.protocols.",
+    );
+  }
+  // Since issue #27 the wallet's eUSD is a registry stable priced from its own pool, and this
+  // adapter deliberately stopped valuing it. A deployment without that pool therefore has no way to
+  // value eUSD at all -- a borrower who drew 4,000 against a Trove would be scored as having lost
+  // the whole borrow, silently. The venue used to be usable without a market ("only the peg has
+  // nowhere to trade"); it is not any more, so say so instead of scoring it wrong.
+  if (!STABLE_MARKET_LEGS.EUSD) {
+    throw new Error(
+      "the liquity deployment has no eUSD/USDC market, and since issue #27 eUSD is priced from " +
+        "that pool rather than assumed to be $1 -- so a wallet holding eUSD would be scored at " +
+        "zero. Redeploy with the curve factory present (`cd deployer && npm run deploy " +
+        "-- --keep-fresh`), or drop liquity from run.protocols.",
     );
   }
   const admin = accountAddress(ctx.adminPk);
@@ -330,7 +323,7 @@ export async function setupEusdDepeg(
     ctx,
     {
       market: {
-        symbol: "eUSD",
+        symbol: "EUSD",
         stable: l.eusd,
         quote: market.stable,
         pool: market.pool,

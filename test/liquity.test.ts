@@ -228,7 +228,7 @@ function context(overrides: Partial<ValuationContext> = {}): ValuationContext {
 // probing the pool itself, so a valuation test says what the market said rather than what a probe
 // read returned.
 const EUSD_MARKET: StableMarket = {
-  symbol: "eUSD",
+  symbol: "EUSD",
   token: DEPLOYMENT.eusd,
   decimals: 18,
   venue: "liquity",

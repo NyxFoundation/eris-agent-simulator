@@ -793,7 +793,10 @@ export type RawTxIntent = {
 export type BalanceSnapshot = {
   ethWei: bigint;
   wethWei: bigint;
-  usdcUnits: bigint; // sum of active stables (for display/PnL)
+  // Native USDC only, since issue #27. A spending budget, not a valuation: it used to be every
+  // active stable summed, which could not be spent anywhere. The per-stable breakdown is `stables`,
+  // and what the wallet is worth comes from pnl.ts valueUsdc over that.
+  usdcUnits: bigint;
   // ADR 0013: base symbol -> balance (WETH/WBTC etc.). wethWei equals bases["WETH"] for compatibility.
   bases?: Record<string, bigint>;
   // stable token address (lowercase) -> balance. Validation checks each venue's stable individually via this map.
