@@ -93,6 +93,47 @@ stress:
         holdBlocks: 12,
         decayBlocks: 15,
       }
+    # A week of nothing but depeg windows gives a cross-venue arbitrageur no work at all: measured
+    # over five seeds, `venue-arb` sent zero transactions in three of them, so lambda was being
+    # calibrated against one kind of skill (docs/scoring-metric-measurements.md §10). These two are
+    # the other regimes the competition set carries, as windows rather than run-wide settings.
+    #
+    # cexDrift: the reference price is pulled in one direction for a while and mean reversion is
+    # weakened so the pull survives. Calibrated from `config/regimes/cex-drift.yaml`, which held the
+    # whole run at drift 0.0015 with kappa 0.004 against the 0.02 default (a multiplier of 0.2). The
+    # direction is left to the seed -- a published regime whose drift is always up is memorisable.
+    - {
+        type: cexDrift,
+        magnitudeRange: [0.001, 0.002],
+        kappaMultRange: [0.15, 0.3],
+        windowFrac: [0.15, 0.3],
+        rampBlocks: 6,
+        holdBlocks: 24,
+        decayBlocks: 12,
+      }
+    - {
+        type: cexDrift,
+        magnitudeRange: [0.001, 0.002],
+        kappaMultRange: [0.15, 0.3],
+        windowFrac: [0.55, 0.75],
+        rampBlocks: 6,
+        holdBlocks: 24,
+        decayBlocks: 12,
+      }
+    # flowTrend: retail order flow leans one way across every venue at once, which is what opens a
+    # cross-venue gap wide enough to be worth taking. Calibrated from
+    # `config/regimes/informed-flow.yaml`: 3x the uninformed size, a direction held for 12 blocks,
+    # and every venue leaning together.
+    - {
+        type: flowTrend,
+        magnitudeRange: [2.0, 3.0],
+        trendCorrelation: 1.0,
+        persistBlocks: 12,
+        windowFrac: [0.35, 0.5],
+        rampBlocks: 6,
+        holdBlocks: 30,
+        decayBlocks: 10,
+      }
 
 agents:
   - id: noop

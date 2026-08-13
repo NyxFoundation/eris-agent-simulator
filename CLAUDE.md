@@ -103,6 +103,16 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 
 - `stress.events` — イベント配列（**値でなくレンジ**を与え過学習を抑制）。YAML 配列で書ける（例: `- { type: crash, magnitudeRange: [0.12, 0.16], windowFrac: [0.3, 0.7], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }`）。`spike`/`crash` の台形（ramp→hold→decay）。要 `run.blocks>0`
 - `liquidityPull`（issue #52。uniswap / balancer / curve・**ローカルデプロイ専用**）— 同じ台形で**プールの depth を引き抜き、窓が閉じたら戻す**。`venue:` 省略で**有効な全 venue**（1 つだけ薄くしても執行が他所へ移るだけ。narrowing が opt-in）。magnitude は「抜く割合」（1.0 は禁止＝板が消えると全 swap が revert して「薄い板」でなく「停止」になる）。価格 overlay ではなく coordinator が毎ブロック**目標 depth へ reconcile** する（一撃 removal だと dropped block で取り残される。`pointEventsAt` が同じ理由で一度壊れた）。**両側比例**で抜くので mid は動かず無リスク裁定は開かない。環境が seed した LP（deployer = anvil account 0）を動かすので、ロスターが `AGENT0_PRIVATE_KEY` を使っていると nonce 衝突で fail-fast。fork では seed した LP が存在しないので同じく fail-fast
+- **`cexDrift` / `flowTrend`**（issue #56）— **run 全体の config だった 2 レジームを窓イベント化したもの**。
+  連続経済では「run 全体がドリフトしている週」を注入できない（週は 1 本で、その中に複数のエピソードが
+  非公開スケジュールで入る）。`cexDrift` は**価格の walk 自体**を変える（drift を足し `kappaMultRange` で
+  平均回帰を弱める。overlay と違い窓が閉じても価格は戻らない = ドリフトの意味）。`flowTrend` は
+  uninformed フローを窓の間だけ傾ける（`magnitudeRange` = サイズ倍率、`trendCorrelation` /
+  `persistBlocks` は窓が開いている間フル適用。「ramp 中は相関 0.5」は弱いレジームではなく別のレジーム）。
+  較正元は `config/regimes/cex-drift.yaml`（drift 0.0015 / kappa 0.004 = 既定 0.02 の 0.2 倍）と
+  `config/regimes/informed-flow.yaml`（サイズ 3x / persist 12 / correlation 1.0）。**単一種のイベントで
+  埋めた週は特定の戦略にしか仕事を作らない**（実測: depeg だけの週では venue-arb が 5 seed 中 3 本で
+  無取引 = `docs/scoring-metric-measurements.md`）
 - **`alignWith: <type>`** — 窓の開始位置を他イベントと共有する。**同じ `windowFrac` レンジでも draw は独立**なので、360 ブロック run では crash と liquidityPull が平均 ~160 ブロック離れて落ちる。「gap の最中に板が薄い」は組み合わせの性質なので明示が要る（`config/regimes/crash.yaml` が使用例）
 - `stress.victimCount`(既定 0=無効) / `stress.victimHf0`(既定 1.10) / `stress.victimWethWei`(victim 1 体の supply)。**較正の連動**: 建てるには `HF0 ≳ LT/(0.97·LTV)`（実測 Arbitrum WETH の LT=0.84/LTV=0.80 で ≈1.08。これ未満は borrow が LTV 縁に張り付くため fail-fast）。割るには crash magnitude `m > (HF0−1)/HF0`（HF0=1.10 なら m>9.1% → 例の [0.12,0.16] で確実に割れる）。breach 不能な設定は `stress_calibration_warning` を emit。borrow がサイレント revert したら setup で fail-fast(debt 検証)
 - **victim を建てるには fresh state 必須**（soft-reset だと前 run の victim ポジが残留して HF が壊れる。未満は fail-fast）: fork は full re-fork（`ARB_RPC_URL` 設定 + `ERIS_SKIP_RESET` 不可）、ローカルデプロイは resetFork の snapshot/revert クリーン断面で満たす（ADR 0016。backtest で実証済み）。ローカルでは victim を建てる前に Aave オラクルを初期 fair price へ較正する（fork の「オラクル≈実勢≈fair0」が成立しないため。coordinator が自動実行）

@@ -78,7 +78,7 @@ import {
   STARTUP_FAIL_BPS,
   STARTUP_WARN_BPS,
 } from "./noArb.js";
-import { EventSchedule } from "./events.js";
+import { EventSchedule, withOuOverride } from "./events.js";
 import { buildWhaleOrder, whaleFunding, WHALE_WALLET_KEY } from "./whale.js";
 import {
   accrueLst,
@@ -1153,12 +1153,15 @@ export async function runRealtimeSimulation(
           // perBase.WETH, not global: readOuParams populates an entry for every registered base, so
           // reading the global here made `market.baseVolatility: { WETH: ... }` parse, typecheck and
           // do nothing. The entry falls back to the global when the regime sets no WETH override.
-          baseFair = nextFairPrice(
-            baseFair,
-            rng,
-            fairAnchor,
+          // A cexDrift episode changes the walk rather than multiplying its output (issue #56):
+          // an overlay would leave the base path where it was and let mean reversion erase the
+          // episode the moment the window closed. Identity outside every window, so a run without
+          // one steps exactly as before.
+          const ouWeth = withOuOverride(
             config.ou.perBase.WETH ?? config.ou.global,
+            schedule.ouOverrideAt(blockIndex, "WETH"),
           );
+          baseFair = nextFairPrice(baseFair, rng, fairAnchor, ouWeth);
           const overlay = schedule.at(blockIndex);
           latestFairPrice = baseFair * overlay.wethMult;
           // ADR 0013: advance extra bases with independent Rngs and distribute the effective prices into ctx.fairPrices.
@@ -1168,7 +1171,10 @@ export async function runRealtimeSimulation(
               extraBaseFair[b],
               extraPriceRng[b],
               extraAnchor[b],
-              config.ou.perBase[b] ?? config.ou.global,
+              withOuOverride(
+                config.ou.perBase[b] ?? config.ou.global,
+                schedule.ouOverrideAt(blockIndex, b),
+              ),
             );
             fairPrices[b] = extraBaseFair[b] * (overlay.baseMults[b] ?? 1);
           }
@@ -1462,6 +1468,11 @@ export async function runRealtimeSimulation(
                 latestStateById,
                 latestFairPrice,
                 bn,
+                // A flowTrend episode leans the uninformed flow for the length of its window
+                // (issue #56). Applied here rather than inside the bot: the bot is a separate
+                // process with its own RNG, and having it rebuild the schedule would mean two
+                // copies of it that can disagree.
+                schedule.flowTrendAt(bn - runStartBlock),
               );
               flowProcess.pushContext(flowContext);
             }

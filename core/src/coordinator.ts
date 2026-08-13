@@ -9,6 +9,7 @@ import { baseTokens } from "@eris/sdk/markets.js";
 import { enabledAdapters, getAdapter } from "@eris/sdk/protocols/registry.js";
 import type { FlowKind, SimContext } from "@eris/sdk/protocols/types.js";
 import { FlowProcess, type FlowOrderWire } from "./flowProcess.js";
+import type { FlowTrendOverride } from "./realtime/events.js";
 import type { FlowContextWire } from "./flow/logic.js";
 import { readAaveFlowReserves } from "@eris/sdk/protocols/aave.js";
 import { stableBalanceOf, TOKENS } from "@eris/sdk/constants.js";
@@ -33,12 +34,23 @@ function venueStableUnits(
 // Pass a FlowContext to the orderflow bot process, receive FlowOrder[], and convert to TxIntent.
 // The coordinator owns flow wallet selection and tx submission (the bot only decides orders).
 // Assemble the FlowContext (poolPrices / aave reserves / limits). Reused every block in realtime too.
+// Scale a wei cap by a float multiplier without leaving bigint arithmetic. Rounded to the nearest
+// wei via basis points: the multiplier comes from an event envelope, so it is a smooth ramp and the
+// rounding never accumulates.
+function scaleWei(value: bigint, mult: number): bigint {
+  if (mult === 1) return value;
+  return (value * BigInt(Math.round(mult * 10_000))) / 10_000n;
+}
+
 export async function buildFlowContext(
   ctx: SimContext,
   enabledIds: ProtocolId[],
   stateById: Map<ProtocolId, unknown>,
   fairPrice: number,
   round: number,
+  // A flowTrend episode's effect on this block's uninformed flow (issue #56). Omitted = no episode
+  // is open, which is also what every non-realtime caller passes.
+  flowTrend?: FlowTrendOverride,
 ): Promise<FlowContextWire> {
   const poolPrices: Partial<Record<"uniswap" | "balancer" | "curve", number>> =
     {};
@@ -141,13 +153,20 @@ export async function buildFlowContext(
       ctx.config.initialWethWei === 0n && ctx.config.flowWethWei === 0n,
     ...(extraBases.length > 0 ? { extraBases } : {}),
     limits: {
-      uninformedFlowMaxWethWei: ctx.config.uninformedFlowMaxWethWei.toString(),
+      // The three uninformed-flow knobs are the ones a flowTrend episode leans on: how big the
+      // orders are, how long a direction is held, and whether the venues lean together. The bot
+      // reads them off the wire every block, so an episode is expressed by sending different
+      // numbers rather than by teaching the bot about events.
+      uninformedFlowMaxWethWei: scaleWei(
+        ctx.config.uninformedFlowMaxWethWei,
+        flowTrend?.sizeMult ?? 1,
+      ).toString(),
       uninformedFlowCountPerBlock: String(ctx.config.uninformedFlowCount),
       uninformedFlowPersistBlocks: String(
-        ctx.config.uninformedFlowPersistBlocks,
+        flowTrend?.persistBlocks ?? ctx.config.uninformedFlowPersistBlocks,
       ),
       uninformedFlowTrendCorrelation: String(
-        ctx.config.uninformedFlowTrendCorrelation,
+        flowTrend?.trendCorrelation ?? ctx.config.uninformedFlowTrendCorrelation,
       ),
       informedFlowMaxWethWei: ctx.config.informedFlowMaxWethWei.toString(),
       balancerFlowMaxWethWei: ctx.config.balancerFlowMaxWethWei.toString(),
