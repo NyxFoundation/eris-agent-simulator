@@ -8,6 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  scoreEpochSeriesByAgent,
   DEFAULT_LAMBDA,
   scoreEpochSeries,
 } from "../core/src/scoring/epochScore.js";
@@ -120,4 +121,63 @@ test("a series without a usable start is not scored at all", () => {
   assert.equal(scoreEpochSeries({ values: [null, 100, 110] }), null);
   assert.equal(scoreEpochSeries({ values: [0, 100] }), null);
   assert.equal(scoreEpochSeries({ values: [100] }), null);
+});
+
+// ---------------------------------------------------------------------------
+// The benchmark term (ADR 0019 §2). x_e is excess over the roster's baseline entry, not the raw
+// return -- without it, every agent is charged for drift on the ETH gas reserve it was made to hold.
+// ---------------------------------------------------------------------------
+
+test("the benchmark's own drift cancels out of both terms", () => {
+  // Two agents holding nothing but the same gas reserve, which moves with ETH. Raw returns make them
+  // both look risky; excess returns say what they are, which is identical to doing nothing.
+  const drift = [100, 103, 99, 104, 101];
+  const score = scoreEpochSeries({ values: drift, benchmark: drift });
+  assert.ok(score);
+  assert.equal(score.score, 0);
+  assert.equal(score.meanLogReturn, 0);
+  assert.equal(score.stdLogReturn, 0);
+  assert.equal(score.benchmarkApplied, true);
+
+  // Scored raw, the same series is neither 0 nor flat -- this is the -5.07e-5 the B harness measured
+  // for noop before the benchmark was applied.
+  const raw = scoreEpochSeries({ values: drift });
+  assert.ok(raw);
+  assert.equal(raw.benchmarkApplied, false);
+  assert.ok(raw.stdLogReturn > 0);
+  assert.ok(raw.score < 0);
+});
+
+test("an agent is measured on what it added to the benchmark", () => {
+  // The agent tracks the benchmark for three epochs and then earns 1% on top in the fourth. Its
+  // whole series is that one epoch, at a dispersion that comes from its own trade rather than ETH.
+  const bench = [100, 103, 99, 104, 101];
+  const values = [100, 103, 99, 104, 101 * 1.01];
+  const score = scoreEpochSeries({ values, benchmark: bench });
+  assert.ok(score);
+  assert.equal(score.logReturns.slice(0, 3).every((x) => Math.abs(x) < 1e-12), true);
+  assert.ok(Math.abs(score.logReturns[3] - Math.log(1.01)) < 1e-12);
+  assert.ok(score.meanLogReturn > 0);
+});
+
+test("scoreEpochSeriesByAgent resolves the benchmark by roster id", () => {
+  const bench = [100, 110, 105];
+  const scores = scoreEpochSeriesByAgent(
+    { noop: bench, trader: [100, 110, 110] },
+    { benchmarkId: "noop" },
+  );
+  // The benchmark scores itself: present in the report, and exactly 0.
+  assert.equal(scores.noop.score, 0);
+  assert.equal(scores.noop.benchmarkApplied, true);
+  // The trader avoided the benchmark's second-epoch fall, which is its whole excess.
+  assert.ok(Math.abs(scores.trader.logReturns[0]) < 1e-12);
+  assert.ok(Math.abs(scores.trader.logReturns[1] - Math.log(110 / 105)) < 1e-12);
+});
+
+test("a missing benchmark id leaves the returns raw and says so", () => {
+  const scores = scoreEpochSeriesByAgent(
+    { trader: [100, 110, 105] },
+    { benchmarkId: "noop" },
+  );
+  assert.equal(scores.trader.benchmarkApplied, false);
 });

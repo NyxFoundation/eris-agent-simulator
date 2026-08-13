@@ -1772,8 +1772,23 @@ export async function runRealtimeSimulation(
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
         liquidatableValueByAgent = meta.liquidatableValueByAgent;
-        if (meta.epochSeries)
-          epochScores = scoreEpochSeriesByAgent(meta.epochSeries.valuesByAgent);
+        if (meta.epochSeries) {
+          // ADR 0019 §2: the score is excess over the roster's baseline entry. Without one the
+          // returns stay raw and every agent is charged for the drift of the ETH gas reserve it had
+          // to hold -- measured at 93% of an active agent's dispersion, so this is not a detail.
+          const baseline = agentRuntimes.find((a) => a.spec.baseline)?.id;
+          if (baseline === undefined)
+            console.warn(
+              "[scoring] no roster agent is marked `baseline: true`; epoch scores are raw returns, " +
+                "not excess over a benchmark (ADR 0019 §2)",
+            );
+          epochScores = scoreEpochSeriesByAgent(
+            meta.epochSeries.valuesByAgent,
+            {
+              ...(baseline !== undefined ? { benchmarkId: baseline } : {}),
+            },
+          );
+        }
         logger.event({ type: "value_series_reconstructed", ...meta });
       } catch (err) {
         // The reconstruction refuses a cross-section it cannot read rather than emitting a cliff in
