@@ -21,10 +21,13 @@
 # distribution all four agents' std_e agreed to within 1.1% (they were all just ETH's volatility) and
 # noop scored -1.963e-3; under this one the spread is 199.9% and noop comes back to -6.18e-5.
 #
-# Three depeg windows rather than one. A week in the live competition is a schedule of injected
-# events, not a single incident, and a metric with a std term has to be measured against a series
-# that actually varies. The windows are drawn independently from the seed, so their spacing is a
-# property of the scenario rather than of this file.
+# Six windows of three kinds rather than one incident. A week in the live competition is a schedule
+# of injected events, and a metric with a std term has to be measured against a series that varies.
+# Two of them do not close (a depeg that stays broken, a drift that reprices), because a week where
+# the environment always puts things back answers "will it come back?" before anyone asks: holding
+# through becomes a free option, and the more patient of two otherwise identical strategies wins by
+# construction. The windows are drawn independently from the seed, so their spacing is a property of
+# the scenario rather than of this file.
 
 run:
   blocks: 504 # 42 epochs x 12 blocks
@@ -40,7 +43,13 @@ run:
 
 funding:
   ethWei: "1000000000000000000" # 1 ETH: gas reserve only (ADR 0019 §6)
-  wethWei: "0" # USDC-only, and now literally: nobody starts holding a stable with a market either
+  # 20 WETH. USDC-only funding was a rule the old metric needed: it charged everyone for the drift
+  # of whatever they were handed, so handing out an asset that moves put luck in the standings. The
+  # benchmark subtraction cancels anything every entry holds equally -- the baseline entry included
+  # -- so the rule has no work left to do, and it was costing a measurement: a cross-venue
+  # arbitrageur needs inventory to sell on the expensive side, and with none it sat out three of
+  # five seeds ("the widest gaps need inventory this agent does not hold", 503 rounds of 513).
+  wethWei: "20000000000000000000"
   usdcUnits: "100000000000" # 100,000 USDC
 
 limits:
@@ -84,14 +93,20 @@ stress:
         holdBlocks: 12,
         decayBlocks: 15,
       }
+    # The third one does not close. The regime table calls this a *non-mean-reverting* deviation, and
+    # a week where the environment always buys the stable back makes "will par return?" a question
+    # with a known answer -- holding through is then a free option, and the more patient of two
+    # otherwise identical strategies wins by construction rather than by judgement. With this window
+    # open at the end of the run, an agent still holding is marked at the pool, not at par.
     - {
         type: depeg,
         stable: DAI,
         magnitudeRange: [0.35, 0.6],
+        persist: true,
         windowFrac: [0.7, 0.85],
         rampBlocks: 4,
         holdBlocks: 12,
-        decayBlocks: 15,
+        decayBlocks: 0,
       }
     # A week of nothing but depeg windows gives a cross-venue arbitrageur no work at all: measured
     # over five seeds, `venue-arb` sent zero transactions in three of them, so lambda was being
@@ -111,10 +126,14 @@ stress:
         holdBlocks: 24,
         decayBlocks: 12,
       }
+    # The second drift is a repricing: the walk's anchor moves with it, so the level survives the
+    # window instead of being pulled back to where the week started. Without one of these, every
+    # price move in the run is temporary by construction.
     - {
         type: cexDrift,
         magnitudeRange: [0.001, 0.002],
         kappaMultRange: [0.15, 0.3],
+        repriceAnchor: true,
         windowFrac: [0.55, 0.75],
         rampBlocks: 6,
         holdBlocks: 24,

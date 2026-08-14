@@ -1161,7 +1161,14 @@ export async function runRealtimeSimulation(
             config.ou.perBase.WETH ?? config.ou.global,
             schedule.ouOverrideAt(blockIndex, "WETH"),
           );
-          baseFair = nextFairPrice(baseFair, rng, fairAnchor, ouWeth);
+          // A repricing episode moves what the walk reverts to, so the level it reached survives the
+          // window instead of being pulled back to where the run started (issue #56). 1 otherwise.
+          baseFair = nextFairPrice(
+            baseFair,
+            rng,
+            fairAnchor * schedule.anchorMultiplierAt(blockIndex, "WETH"),
+            ouWeth,
+          );
           const overlay = schedule.at(blockIndex);
           latestFairPrice = baseFair * overlay.wethMult;
           // ADR 0013: advance extra bases with independent Rngs and distribute the effective prices into ctx.fairPrices.
@@ -1170,7 +1177,7 @@ export async function runRealtimeSimulation(
             extraBaseFair[b] = nextFairPrice(
               extraBaseFair[b],
               extraPriceRng[b],
-              extraAnchor[b],
+              extraAnchor[b] * schedule.anchorMultiplierAt(blockIndex, b),
               withOuOverride(
                 config.ou.perBase[b] ?? config.ou.global,
                 schedule.ouOverrideAt(blockIndex, b),

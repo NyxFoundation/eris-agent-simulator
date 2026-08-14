@@ -130,6 +130,21 @@ export type StressEventConfig = {
   // pull -- the `cex-drift` regime did it with a run-wide kappa of 0.004 against the 0.02 default,
   // i.e. a multiplier of 0.2. Omit to leave mean reversion alone.
   kappaMultRange?: [number, number];
+  // depeg / eusdDepeg only: the dislocation does not close (issue #56). The design calls regime 5 a
+  // *non-mean-reverting* deviation, and a window that always ends with the environment buying the
+  // stable back is the opposite: par is then guaranteed to return, so "buy the discount and wait"
+  // is not a judgement, it is a free option bounded only by size. With this set the level holds to
+  // the end of the run, and holding through it is a real loss.
+  //
+  // The teardown still buys back after the last competition block -- the startup check refuses to
+  // begin on a depegged pool, so leaving it dislocated would stop the *next* run from starting.
+  // That restore happens outside every scored cross-section.
+  persist?: boolean;
+  // cexDrift only: the market repriced rather than wandered. The OU pulls back to the run's anchor,
+  // so without this a drift episode is erased by mean reversion once the window closes and no event
+  // in the system can express "the price moved and stayed there" -- which is the case that decides
+  // whether betting on a return is skill or habit.
+  repriceAnchor?: boolean;
   // flowTrend only: how the uninformed flow leans while the window is open. `magnitudeRange` is the
   // multiplier on its size (the `informed-flow` regime used 3x), and these two are the shape of the
   // lean the multiplier is applied to. Omitted values leave the run's own setting in place.
@@ -173,6 +188,9 @@ export type ResolvedStressEvent = {
   side?: "buy" | "sell";
   // cexDrift: the mean-reversion multiplier the seed drew. flowTrend: the lean it holds.
   kappaMult?: number;
+  // depeg: the dislocation holds to the end of the run. cexDrift: the anchor moves with it.
+  persist?: boolean;
+  repriceAnchor?: boolean;
   trendCorrelation?: number;
   persistBlocks?: number;
   venue?: "uniswap" | "balancer" | "curve";
@@ -222,6 +240,8 @@ function envelope(ev: ResolvedStressEvent, blockIndex: number): number {
   const { rampBlocks: r, holdBlocks: h, decayBlocks: d } = ev;
   if (t < r) return r === 0 ? 1 : (t + 1) / r; // rise (takes effect from the first window block)
   if (t < r + h) return 1; // hold
+  // A dislocation that does not close: the level it reached is where the run leaves it (issue #56).
+  if (ev.persist) return 1;
   if (t < r + h + d) return d === 0 ? 1 : 1 - (t - (r + h) + 1) / d; // decay
   return 0; // outside window (from endBlock onward)
 }
@@ -283,6 +303,8 @@ export class EventSchedule {
         magnitude,
         ...(side !== undefined ? { side } : {}),
         ...(kappaMult !== undefined ? { kappaMult } : {}),
+        ...(c.persist === true ? { persist: true } : {}),
+        ...(c.repriceAnchor === true ? { repriceAnchor: true } : {}),
         ...(c.type === "flowTrend" && c.trendCorrelation !== undefined
           ? { trendCorrelation: c.trendCorrelation }
           : {}),
@@ -511,6 +533,26 @@ export class EventSchedule {
     return { driftAdd, kappaMult };
   }
 
+  // Where the price process should mean-revert to this block, as a multiple of the run's anchor.
+  //
+  // Only `repriceAnchor` episodes move it, and they move it by exactly the drift they have applied
+  // so far -- the same multiplicative step the OU takes -- so mean reversion has nothing to fight
+  // during the episode and the level it reached is still there afterwards. 1 for every run without
+  // one, which is every run that existed before this.
+  anchorMultiplierAt(blockIndex: number, base = "WETH"): number {
+    let mult = 1;
+    for (const ev of this.events) {
+      if (ev.type !== "cexDrift" || ev.repriceAnchor !== true) continue;
+      if (ev.base !== base) continue;
+      const sign = ev.side === "sell" ? -1 : 1;
+      const last = Math.min(blockIndex, ev.endBlock - 1);
+      for (let t = ev.startBlock; t <= last; t++) {
+        mult *= 1 + sign * ev.magnitude * envelope(ev, t);
+      }
+    }
+    return mult;
+  }
+
   // How the uninformed order flow should lean this block. `sizeMult` fades with the trapezoid; the
   // shape knobs do not, because "half a correlation" during the ramp is not a weaker version of the
   // regime, it is a different one -- they apply as long as the window is open.
@@ -647,6 +689,25 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     if (o.side !== "buy" && o.side !== "sell" && o.side !== "random")
       throw new Error(`${label}.side must be "buy", "sell" or "random"`);
   }
+  if (o.persist !== undefined) {
+    if (o.type !== "depeg" && o.type !== "eusdDepeg")
+      throw new Error(
+        `${label}.persist only applies to types "depeg" and "eusdDepeg"`,
+      );
+    if (typeof o.persist !== "boolean")
+      throw new Error(`${label}.persist must be a boolean`);
+    // Rejected rather than ignored: a decay that never runs would read as a window that closes.
+    if (o.persist === true && o.decayBlocks !== 0)
+      throw new Error(
+        `${label}.persist requires decayBlocks: 0 (a dislocation that does not close has no decay)`,
+      );
+  }
+  if (o.repriceAnchor !== undefined) {
+    if (o.type !== "cexDrift")
+      throw new Error(`${label}.repriceAnchor only applies to type "cexDrift"`);
+    if (typeof o.repriceAnchor !== "boolean")
+      throw new Error(`${label}.repriceAnchor must be a boolean`);
+  }
   if (o.kappaMultRange !== undefined) {
     if (o.type !== "cexDrift")
       throw new Error(
@@ -767,6 +828,8 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     ...(o.kappaMultRange !== undefined
       ? { kappaMultRange: o.kappaMultRange as [number, number] }
       : {}),
+    ...(o.persist === true ? { persist: true } : {}),
+    ...(o.repriceAnchor === true ? { repriceAnchor: true } : {}),
     ...(o.trendCorrelation !== undefined
       ? { trendCorrelation: o.trendCorrelation as number }
       : {}),
