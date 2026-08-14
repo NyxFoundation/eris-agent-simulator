@@ -170,3 +170,36 @@ agents:
   - id: venue-arb
     wallet: AGENT4_PRIVATE_KEY
     description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)
+  # Four agents measured lambda against two kinds of skill, and two of those four were the same code
+  # at different thresholds. These five widen it in the directions the metric is actually uncertain
+  # about (docs/scoring-metric-measurements.md §11).
+  - id: multi-arb
+    wallet: AGENT5_PRIVATE_KEY
+    description: >-
+      cross-venue arbitrage by an independent implementation. venue-arb outearns everything else by
+      10-40x, and a second author's version says whether that is the opportunity or the code
+  - id: lp-provider
+    wallet: AGENT6_PRIVATE_KEY
+    description: >-
+      provides liquidity and collects fees. The one strategy type that holds inventory and waits,
+      which is where the metric's std term should bite hardest
+  - id: random
+    wallet: AUTO
+    description: >-
+      trades at random, deterministically seeded. The lower control: the field has shown that lambda
+      can demote a profitable strategy, but not yet that it demotes an unprofitable one
+  - id: levered-long
+    dir: levered-long
+    wallet: AUTO
+    env: { ERIS_LEVER_TARGET_HF: "1.8" }
+    description: >-
+      borrows against its collateral to hold more WETH than it was funded with. Nothing else in the
+      roster borrows, so ADR 0019's own stated weakness -- a lucky leveraged week is rewarded -- has
+      never been measured
+  - id: levered-long-max
+    dir: levered-long
+    wallet: AUTO
+    env: { ERIS_LEVER_TARGET_HF: "1.15", ERIS_LEVER_MIN_HF: "1.06" }
+    description: >-
+      the same strategy with almost no margin. A downward drift episode can liquidate it, which is
+      the only way G1 (the bankruptcy floor) and G2 (the scoring freeze) get exercised on real data
