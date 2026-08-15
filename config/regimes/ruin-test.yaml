@@ -47,11 +47,12 @@ funding:
   usdcUnits: "100000000000" # 100,000 USDC
 
 limits:
+  # Back to the practice regimes' caps (2026-08-16). They were raised 4x on 2026-08-15 on the theory
+  # that they were what stopped a leveraged agent reaching its target, and that turned out to be
+  # wrong: the agent's borrows were reverting because the Aave pool had run out of USDC, not because
+  # the caps were tight (docs/scoring-metric-measurements.md §9.4). Raising them changed nothing
+  # about that, so the reason for having raised them is gone.
   agentWethWei: "1000000000000000000"
-  # 5% of the endowment per round, not the 20% the practice regimes allow. Left as-is deliberately:
-  # ADR 0019 sends "should the caps scale with the endowment" to its open items, and on depeg#701
-  # neither agent hit the cap (zero rejected submissions), so raising it here would change the
-  # measurement for a constraint that was not binding.
   agentUsdcUnits: "5000000000"
 
 flow:
@@ -133,9 +134,6 @@ stress:
         holdBlocks: 24,
         decayBlocks: 12,
       }
-    # The crash. Placed in the middle of the run rather than at the end so that there are epochs
-    # afterwards -- G2 freezes the series from the bankruptcy onwards, and a freeze with nothing left
-    # to freeze proves nothing.
     - {
         type: crash,
         magnitudeRange: [0.22, 0.28],
@@ -193,6 +191,26 @@ agents:
     description: >-
       trades at random, deterministically seeded. The lower control: the field has shown that lambda
       can demote a profitable strategy, but not yet that it demotes an unprofitable one
+  # Three sizes of one strategy, and the only thing that differs between them is the fraction of the
+  # balance each trade uses. M9 is mean - lambda*std with both terms scaling in size, so small trades
+  # should scale the score linearly while the log return's own drag (-k^2*sigma^2/2) and the pool's
+  # slippage bend it back further out. Where it bends decides whether the metric rewards conviction
+  # or merely size.
+  #
+  # The first attempt at this used 25% and 50% and measured nothing: peg-arb clamps its size to the
+  # per-round cap (agent.ts), and both twins clamped to the same 20,000 USDC. These two sit at a
+  # quarter and a half of that cap, so the 2x between them is real. `peg-arb` stays at 25% as the
+  # third point, where the cap binds.
+  - id: peg-arb-small
+    dir: peg-arb
+    wallet: AUTO
+    env: { ERIS_PEG_ARB_SIZE_BPS: "500" }
+    description: peg-arb trading 5% of its balance (5,000 USDC, well under the cap)
+  - id: peg-arb-big
+    dir: peg-arb
+    wallet: AUTO
+    env: { ERIS_PEG_ARB_SIZE_BPS: "1000" }
+    description: the same at 10% -- twice peg-arb-small, still under the cap
   - id: levered-long
     dir: levered-long
     wallet: AUTO
@@ -206,6 +224,5 @@ agents:
     wallet: AUTO
     env: { ERIS_LEVER_TARGET_HF: "1.05", ERIS_LEVER_MIN_HF: "1.02" }
     description: >-
-      the same strategy at about five times leverage. Retuned from 1.15 because three seeds at that
-      level survived every drift episode the schedule drew: defending successfully is the common
-      case, and the gates are about the other one
+      the same strategy with almost no margin. A downward drift episode can liquidate it, which is
+      the only way G1 (the bankruptcy floor) and G2 (the scoring freeze) get exercised on real data
