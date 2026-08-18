@@ -87,6 +87,7 @@ agents:
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積で、シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（シナリオ × agent の生スコア。**netPnlUsdc と alphaUsdc の両方**）と `standings.json`（レジーム内 z-score → レジーム等重み平均）を書く。順位は派生物で、採点方法は将来見直す前提（matrix.json から再計算できる）。`--metric netPnlUsdc|alphaUsdc` / `--repeat N`（較正の診断用。採点は 1 回が既定）
   - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）。`lst` / `liquity` は競技セット外（venue 単体検証用）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
+- `npm run metrics -- <runDir...>` — 保存済み run を**全候補指標で採点し直す**（issue #56。M1 PnL / M4 超過対数成長 / M7 MPPM / M9 `mean−λ·std` / M13 Sharpe と、run 集合に対する M27 Borda）。チェーン不要・再 run 不要で `summary.json` の epoch 系列だけを読む。`--lambda` / `--rho` / `--out <path>`。実測の記録は `docs/scoring-metric-measurements.md`
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
@@ -102,6 +103,22 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
 
 - `stress.events` — イベント配列（**値でなくレンジ**を与え過学習を抑制）。YAML 配列で書ける（例: `- { type: crash, magnitudeRange: [0.12, 0.16], windowFrac: [0.3, 0.7], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }`）。`spike`/`crash` の台形（ramp→hold→decay）。要 `run.blocks>0`
 - `liquidityPull`（issue #52。uniswap / balancer / curve・**ローカルデプロイ専用**）— 同じ台形で**プールの depth を引き抜き、窓が閉じたら戻す**。`venue:` 省略で**有効な全 venue**（1 つだけ薄くしても執行が他所へ移るだけ。narrowing が opt-in）。magnitude は「抜く割合」（1.0 は禁止＝板が消えると全 swap が revert して「薄い板」でなく「停止」になる）。価格 overlay ではなく coordinator が毎ブロック**目標 depth へ reconcile** する（一撃 removal だと dropped block で取り残される。`pointEventsAt` が同じ理由で一度壊れた）。**両側比例**で抜くので mid は動かず無リスク裁定は開かない。環境が seed した LP（deployer = anvil account 0）を動かすので、ロスターが `AGENT0_PRIVATE_KEY` を使っていると nonce 衝突で fail-fast。fork では seed した LP が存在しないので同じく fail-fast
+- **`cexDrift` / `flowTrend`**（issue #56）— **run 全体の config だった 2 レジームを窓イベント化したもの**。
+  連続経済では「run 全体がドリフトしている週」を注入できない（週は 1 本で、その中に複数のエピソードが
+  非公開スケジュールで入る）。`cexDrift` は**価格の walk 自体**を変える（drift を足し `kappaMultRange` で
+  平均回帰を弱める。overlay と違い窓が閉じても価格は戻らない = ドリフトの意味）。`flowTrend` は
+  uninformed フローを窓の間だけ傾ける（`magnitudeRange` = サイズ倍率、`trendCorrelation` /
+  `persistBlocks` は窓が開いている間フル適用。「ramp 中は相関 0.5」は弱いレジームではなく別のレジーム）。
+  較正元は `config/regimes/cex-drift.yaml`（drift 0.0015 / kappa 0.004 = 既定 0.02 の 0.2 倍）と
+  `config/regimes/informed-flow.yaml`（サイズ 3x / persist 12 / correlation 1.0）。**単一種のイベントで
+  埋めた週は特定の戦略にしか仕事を作らない**（実測: depeg だけの週では venue-arb が 5 seed 中 3 本で
+  無取引 = `docs/scoring-metric-measurements.md`）
+- **`persist: true`**（depeg / eusdDepeg）/ **`repriceAnchor: true`**（cexDrift）— **戻さない**（issue #56）。
+  既定では窓が閉じると環境が買い戻し、OU も初期 anchor へ引き戻すので、**どの価格変動も一時的**になる。
+  すると「par に戻るか」の答えが常に yes になり、粘る戦略が判断ではなく構造で勝つ。`persist` は水準を
+  run の最後まで保持（`decayBlocks: 0` 必須。decay を黙って無視しないため fail-fast）、`repriceAnchor` は
+  OU の anchor をドリフト分だけ動かして新しい水準を常態にする。**teardown の買い戻しは残る**
+  （起動チェックがデペグ済みプールを拒否するので、次の run が始められなくなる。最終採点ブロックより後）
 - **`alignWith: <type>`** — 窓の開始位置を他イベントと共有する。**同じ `windowFrac` レンジでも draw は独立**なので、360 ブロック run では crash と liquidityPull が平均 ~160 ブロック離れて落ちる。「gap の最中に板が薄い」は組み合わせの性質なので明示が要る（`config/regimes/crash.yaml` が使用例）
 - `stress.victimCount`(既定 0=無効) / `stress.victimHf0`(既定 1.10) / `stress.victimWethWei`(victim 1 体の supply)。**較正の連動**: 建てるには `HF0 ≳ LT/(0.97·LTV)`（実測 Arbitrum WETH の LT=0.84/LTV=0.80 で ≈1.08。これ未満は borrow が LTV 縁に張り付くため fail-fast）。割るには crash magnitude `m > (HF0−1)/HF0`（HF0=1.10 なら m>9.1% → 例の [0.12,0.16] で確実に割れる）。breach 不能な設定は `stress_calibration_warning` を emit。borrow がサイレント revert したら setup で fail-fast(debt 検証)
 - **victim を建てるには fresh state 必須**（soft-reset だと前 run の victim ポジが残留して HF が壊れる。未満は fail-fast）: fork は full re-fork（`ARB_RPC_URL` 設定 + `ERIS_SKIP_RESET` 不可）、ローカルデプロイは resetFork の snapshot/revert クリーン断面で満たす（ADR 0016。backtest で実証済み）。ローカルでは victim を建てる前に Aave オラクルを初期 fair price へ較正する（fork の「オラクル≈実勢≈fair0」が成立しないため。coordinator が自動実行）
@@ -126,10 +143,15 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   oracle tx と**同じ admin nonce の直列**で叩く（並列にすると nonce 衝突でレートが凍る）
 - **プールの rate oracle 配線が要**（`stEthPerToken()` を asset_type=1 で登録）。未配線だとレート上昇が全員に開かれた
   無リスク裁定になる（ADR 0007 を毀損）。deploy 時 assert + 起動時 `lst_setup` で乖離 200bps 超は fail-fast
-- **採点は realizable**（`sdk/src/protocols/lst.ts` `realizableWethWei`）: shares は「今プールで売った額」と
-  「run 終了までに finalize するキューの par」の**良い方**。run 終了後にしか claim できない pending は価値から外し
-  `reason:"unrealizable"` で `scoring_unpriced_holdings` に報告する（黙って 0 にしない）。#41 の staged-read
-  インターフェース（`valueAtBlock` / `liquidatableValueUsdc` / `ValuationContext.horizonBlock`）の最初の消費者
+- **マークが 2 本ある**（`sdk/src/protocols/lst.ts`）。**採点が合計するのは `valueUsdc` = face value**
+  （`shareAssets + claimable + reachable + unreachable` × WETH fair = vault が負う par）。
+  `realizableWethWei`（「今プールで売った額」と「run 終了までに finalize するキューの par」の**良い方**）は
+  `liquidatableValueUsdc` に入り、**マークと差が出た agent だけ報告される診断値**。run 終了後にしか claim
+  できない pending は realizable 側からは外れて `reason:"unrealizable"` で `scoring_unpriced_holdings` に
+  報告されるが、**採点側の par には含まれている**。#41 の staged-read インターフェース
+  （`valueAtBlock` / `liquidatableValueUsdc` / `ValuationContext.horizonBlock`）の最初の消費者。
+  **どちらを採点に使うかは未決**: #38 の意図は realizable、現行実装は par（ADR 0019 §3 が採点の基礎に
+  「通常の live mark」を選んだ結果でもある）。`lst` が競技セットに入る前に決める
 - **Phase 2（選択を非自明にする）実装済み**。`config/lst.yaml` の `lst:` / `stress:` に較正例:
   - **APY 変動** — `lst.apyRangeBps` + `apyStepBlocks` で seed 由来 Rng（独立 salt）から N ブロックごとに再サンプル
     → coordinator が `setRewardRate`。固定利回りだと「block 0 で全ステーク」が恒久最適になるため

@@ -187,7 +187,7 @@ test("side/venue are rejected on event types they do not apply to", () => {
   };
   assert.throws(
     () => parseStressEvents(JSON.stringify([{ ...crash, side: "buy" }])),
-    /side only applies to type "whale"/,
+    /side only applies to types "whale" and "cexDrift"/,
   );
   // venue names where a whale prints and which book a liquidityPull thins; a price overlay has no
   // venue at all -- it moves the fair price, which every venue prices against.

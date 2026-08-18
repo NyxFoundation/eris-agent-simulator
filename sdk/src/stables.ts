@@ -137,8 +137,7 @@ export function marketPricedStables(
   const enabled = new Set(enabledProtocolIds());
   return allMarkets().filter(
     (m) =>
-      enabled.has(m.venue) &&
-      (!wanted || wanted.has(m.token.toLowerCase())),
+      enabled.has(m.venue) && (!wanted || wanted.has(m.token.toLowerCase())),
   );
 }
 
@@ -297,6 +296,61 @@ export async function readStablePrices(
     ),
   );
   return decodeStableProbes(markets, results);
+}
+
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// Collapse probe samples taken at consecutive blocks into one price per stable (ADR 0019 G7).
+//
+// The marks a scoring cross-section reads are pool reads, so the holder can move them: buy into a
+// thin pool in the boundary block, be marked at the pushed price, unwind next block. The median over
+// the blocks before the boundary means a one-block push has to be held for most of the window to
+// count, which turns a spread-cost round trip into a position.
+//
+// Applied only at epoch boundaries. The rest of the value series keeps the live mark, because it is
+// an equity curve, not a score.
+//
+// Samples are index-aligned: every sample comes from stableProbeReads(markets) over the same market
+// list, so quotes[i] is the same stable in each.
+export function medianStablePrices(
+  samples: readonly StablePrices[],
+): StablePrices {
+  if (samples.length <= 1) return samples[0] ?? PAR_STABLE_PRICES;
+  const byToken: Record<string, number> = {};
+  const unquoted: StableMarket[] = [];
+  const quotes: StableQuote[] = [];
+  samples[0].quotes.forEach((first, i) => {
+    const key = first.token.toLowerCase();
+    // Blocks where the pool refused to quote are dropped rather than counted as par: a par sample
+    // would pull the median toward 1 and hide exactly the dislocation the venue exists to close.
+    const observed = samples
+      .map((s) => s.quotes[i])
+      .filter((q): q is StableQuote => q !== undefined && q.quoted);
+    if (observed.length === 0) {
+      byToken[key] = 1;
+      quotes.push({ ...first, priceUsdc: 1, quoted: false });
+      const market = samples
+        .flatMap((s) => s.unquoted)
+        .find((m) => m.token.toLowerCase() === key);
+      if (market) unquoted.push(market);
+      return;
+    }
+    byToken[key] = median(observed.map((q) => q.priceUsdc));
+    quotes.push({
+      ...first,
+      priceUsdc: byToken[key],
+      sellPriceUsdc: median(observed.map((q) => q.sellPriceUsdc)),
+      buyPriceUsdc: median(observed.map((q) => q.buyPriceUsdc)),
+      quoted: true,
+    });
+  });
+  return { byToken, unquoted, quotes };
 }
 
 // USDC per unit of a stable. Par for the numéraire, for a stable no pool quotes, and for a market

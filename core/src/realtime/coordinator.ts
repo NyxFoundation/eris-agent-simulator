@@ -16,10 +16,7 @@ import {
 } from "@eris/sdk/chain.js";
 import { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
-import {
-  marketPricedStables,
-  readStablePrices,
-} from "@eris/sdk/stables.js";
+import { marketPricedStables, readStablePrices } from "@eris/sdk/stables.js";
 import { checkRunFeeViolations, countRunRevertedTxs } from "../postRunCheck.js";
 import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
 import type {
@@ -72,12 +69,16 @@ import {
 } from "./priceFeed.js";
 import { reconstructValueSeries } from "./reconstruct.js";
 import {
+  scoreEpochSeriesByAgent,
+  type EpochScore,
+} from "../scoring/epochScore.js";
+import {
   NoArbMonitor,
   noArbFindings,
   STARTUP_FAIL_BPS,
   STARTUP_WARN_BPS,
 } from "./noArb.js";
-import { EventSchedule } from "./events.js";
+import { EventSchedule, withOuOverride } from "./events.js";
 import { buildWhaleOrder, whaleFunding, WHALE_WALLET_KEY } from "./whale.js";
 import {
   accrueLst,
@@ -487,6 +488,10 @@ export async function runRealtimeSimulation(
         wethWei,
         config.initialUsdcUnits,
         baseAmounts,
+        // Agents are scored, so `funding.ethWei` is their whole native balance: the default gas buffer
+        // would be unchosen β in the live-marked epoch series (ADR 0019 §6). Flow wallets keep it --
+        // they are machinery, and a dry flow bot removes market activity from everyone.
+        isFlow ? undefined : 0n,
       );
       for (const adapter of adapters) {
         if (!adapter.setupWallet) continue;
@@ -779,7 +784,9 @@ export async function runRealtimeSimulation(
       // depegging it would move a price nobody can see or act on.
       const market = marketPricedStables().find((m) => m.symbol === symbol);
       if (!market) {
-        const known = marketPricedStables().map((m) => m.symbol).join(", ");
+        const known = marketPricedStables()
+          .map((m) => m.symbol)
+          .join(", ");
         throw new Error(
           `stress event depeg targets "${symbol}", which this run does not price from a market ` +
             `(available: ${known || "none"}). Either the deployment has no pool for it, or its ` +
@@ -1146,11 +1153,21 @@ export async function runRealtimeSimulation(
           // perBase.WETH, not global: readOuParams populates an entry for every registered base, so
           // reading the global here made `market.baseVolatility: { WETH: ... }` parse, typecheck and
           // do nothing. The entry falls back to the global when the regime sets no WETH override.
+          // A cexDrift episode changes the walk rather than multiplying its output (issue #56):
+          // an overlay would leave the base path where it was and let mean reversion erase the
+          // episode the moment the window closed. Identity outside every window, so a run without
+          // one steps exactly as before.
+          const ouWeth = withOuOverride(
+            config.ou.perBase.WETH ?? config.ou.global,
+            schedule.ouOverrideAt(blockIndex, "WETH"),
+          );
+          // A repricing episode moves what the walk reverts to, so the level it reached survives the
+          // window instead of being pulled back to where the run started (issue #56). 1 otherwise.
           baseFair = nextFairPrice(
             baseFair,
             rng,
-            fairAnchor,
-            config.ou.perBase.WETH ?? config.ou.global,
+            fairAnchor * schedule.anchorMultiplierAt(blockIndex, "WETH"),
+            ouWeth,
           );
           const overlay = schedule.at(blockIndex);
           latestFairPrice = baseFair * overlay.wethMult;
@@ -1160,8 +1177,11 @@ export async function runRealtimeSimulation(
             extraBaseFair[b] = nextFairPrice(
               extraBaseFair[b],
               extraPriceRng[b],
-              extraAnchor[b],
-              config.ou.perBase[b] ?? config.ou.global,
+              extraAnchor[b] * schedule.anchorMultiplierAt(blockIndex, b),
+              withOuOverride(
+                config.ou.perBase[b] ?? config.ou.global,
+                schedule.ouOverrideAt(blockIndex, b),
+              ),
             );
             fairPrices[b] = extraBaseFair[b] * (overlay.baseMults[b] ?? 1);
           }
@@ -1437,8 +1457,7 @@ export async function runRealtimeSimulation(
             // Liquity telemetry rides on the same read: where the peg sat, how the fee curves moved
             // and whether the system ever entered Recovery Mode (issue #39).
             const liquityState = stateById.get("liquity") as
-              | LiquityState
-              | undefined;
+              LiquityState | undefined;
             if (liquityState) logger.event(liquityBlockEvent(liquityState, bn));
             const uni = stateById.get("uniswap") as
               { priceUsdcPerWeth?: number } | undefined;
@@ -1456,6 +1475,11 @@ export async function runRealtimeSimulation(
                 latestStateById,
                 latestFairPrice,
                 bn,
+                // A flowTrend episode leans the uninformed flow for the length of its window
+                // (issue #56). Applied here rather than inside the bot: the bot is a separate
+                // process with its own RNG, and having it rebuild the schedule would mean two
+                // copies of it that can disagree.
+                schedule.flowTrendAt(bn - runStartBlock),
               );
               flowProcess.pushContext(flowContext);
             }
@@ -1747,6 +1771,7 @@ export async function runRealtimeSimulation(
     // agent -> realizable value at the last cross-section, where it differs from the mark
     // (issue #38: an LST redemption still in the queue when the run ends).
     let liquidatableValueByAgent: Record<string, number> = {};
+    let epochScores: Record<string, EpochScore> | undefined;
     if (finalBlock >= runStartBlock) {
       try {
         const meta = await reconstructValueSeries({
@@ -1759,10 +1784,29 @@ export async function runRealtimeSimulation(
           fromBlock: runStartBlock,
           toBlock: finalBlock,
           scoreEvery: config.scoreEvery,
+          epochBlocks: config.epochBlocks,
+          markMedianBlocks: config.markMedianBlocks,
         });
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
         liquidatableValueByAgent = meta.liquidatableValueByAgent;
+        if (meta.epochSeries) {
+          // ADR 0019 §2: the score is excess over the roster's baseline entry. Without one the
+          // returns stay raw and every agent is charged for the drift of the ETH gas reserve it had
+          // to hold -- measured at 93% of an active agent's dispersion, so this is not a detail.
+          const baseline = agentRuntimes.find((a) => a.spec.baseline)?.id;
+          if (baseline === undefined)
+            console.warn(
+              "[scoring] no roster agent is marked `baseline: true`; epoch scores are raw returns, " +
+                "not excess over a benchmark (ADR 0019 §2)",
+            );
+          epochScores = scoreEpochSeriesByAgent(
+            meta.epochSeries.valuesByAgent,
+            {
+              ...(baseline !== undefined ? { benchmarkId: baseline } : {}),
+            },
+          );
+        }
         logger.event({ type: "value_series_reconstructed", ...meta });
       } catch (err) {
         // The reconstruction refuses a cross-section it cannot read rather than emitting a cliff in
@@ -1902,6 +1946,11 @@ export async function runRealtimeSimulation(
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
       valueSeries,
+      // ADR 0019's score, derived from the epoch series in the same summary so it can be recomputed
+      // when lambda or the epoch length changes. The denominator is this run's epoch count: every
+      // agent shares the boundaries here, which is what "fixed across the field" asks for (the live
+      // competition pins it at 42 because a participant can join or die mid-week).
+      ...(epochScores ? { epochScores } : {}),
       violations,
       agents: agentsSummary,
     });

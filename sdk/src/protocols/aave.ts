@@ -346,7 +346,24 @@ async function reserveLastUpdate(
 // If resetFork does a re-fork with forking, block.timestamp is normally after lastUpdate so this
 // does not fire, but depending on the fork block the order can rarely invert, so we keep it as a guard.
 const AAVE_WARP_BUFFER_SECONDS = 3600n; // 1h. Margin to keep dt>0 stable when it fires.
-const LOCAL_FLASH_LIQUIDITY_USDC_UNITS = 100_000n * 10n ** 6n;
+// Borrowable USDC seeded into the pool at startup under local deploy. Named for flash loans, which
+// is what it was first for, but it is also the only stable liquidity anyone can borrow: the deployer
+// seeds Aave with a sanity-check amount and nothing else supplies USDC during a run.
+//
+// Raised from 100,000 (2026-08-16). At that level two leveraged agents plus the four Aave flow
+// actors emptied it, and every borrow after that reverted with `panic 0x11` -- an arithmetic
+// underflow that names nothing, so the agent's log showed 483 failures with no usable reason
+// (docs/scoring-metric-measurements.md §9.4). Note the panic has a second known cause in this file
+// (a reserve whose lastUpdateTimestamp is ahead of block.timestamp, guarded by
+// warpPastReserveLastUpdate below), so exhaustion is the hypothesis this raise tests rather than an
+// established fact.
+//
+// 2,000,000 is enough for two agents to loop to Aave's own LTV ceiling (~5x on a 163k endowment)
+// with room for the flow actors. It also lowers utilisation, and with it the borrow rate: at 100,000
+// against ~60,000 of debt the pool sat near full utilisation, so leverage was being charged a
+// crisis-level rate on top of failing. That is a change to the environment's economics, not just to
+// its capacity.
+const LOCAL_FLASH_LIQUIDITY_USDC_UNITS = 2_000_000n * 10n ** 6n;
 async function warpPastReserveLastUpdate(ctx: SimContext): Promise<void> {
   // Read the lastUpdate of the enabled reserves ([WETH, USDC] on the default fork) and go past their max.
   const updates = await Promise.all(

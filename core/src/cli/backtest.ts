@@ -73,6 +73,8 @@ type AgentSummary = {
   id: string;
   alphaUsdc?: number;
   netPnlUsdc?: number;
+  initialValueUsdc?: number;
+  finalValueUsdc?: number;
   processExitedEarly?: string;
 };
 type RunSummary = {
@@ -126,6 +128,15 @@ function scoresFromSummary(
       id,
       netPnlUsdc: agent.netPnlUsdc,
       alphaUsdc: agent.alphaUsdc,
+      // The endpoints behind those two, so a stored matrix can be rescored after the run directory
+      // is gone. Copied even for a disqualified agent: the disqualification is a ranking rule, and
+      // erasing what it actually did would make the rule unauditable.
+      ...(agent.initialValueUsdc !== undefined
+        ? { initialValueUsdc: agent.initialValueUsdc }
+        : {}),
+      ...(agent.finalValueUsdc !== undefined
+        ? { finalValueUsdc: agent.finalValueUsdc }
+        : {}),
       ...(disqualified !== undefined ? { disqualified } : {}),
     };
   });
@@ -605,8 +616,7 @@ async function main(): Promise<void> {
           if (summary) {
             perRepeat.push(scoresFromSummary(summary, expectedAgents));
             blocksPerRepeat.push(summary.blocksProcessed);
-          }
-          else {
+          } else {
             lastError = `summary.json not found (${runDir})`;
             console.error(`[backtest] warning: ${lastError}`);
           }
