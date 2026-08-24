@@ -406,18 +406,17 @@ async function main(): Promise<void> {
     // Every version that has run, version 0 being the strategy the participant shipped. Kept whole so
     // the model can revert to any of them by number rather than by reproducing source, and so the
     // log can be read back afterwards.
-    const versions: Array<
-      StrategyVersion & { executor: typeof activeDecide }
-    > = [
-      {
-        version: 0,
-        source: readFileSync(agentTsPath, "utf8"),
-        notes: "the strategy as submitted",
-        installedAtBlock: 0,
-        valueAtInstall: null,
-        executor: activeDecide,
-      },
-    ];
+    const versions: Array<StrategyVersion & { executor: typeof activeDecide }> =
+      [
+        {
+          version: 0,
+          source: readFileSync(agentTsPath, "utf8"),
+          notes: "the strategy as submitted",
+          installedAtBlock: 0,
+          valueAtInstall: null,
+          executor: activeDecide,
+        },
+      ];
     const current = () => versions[versions.length - 1];
     let currentVersion = 0;
     let revisions = 0;
@@ -460,7 +459,11 @@ async function main(): Promise<void> {
         // call -- an automatic revert needs a threshold and there is no defensible one (ADR 0018 §5).
         // What the harness owes the model is the evidence: the history, and the value at each point.
         const value = valueNow();
-        const system = buildRevisionSystem(improveAgent, current().source);
+        const system = buildRevisionSystem(
+          improveAgent,
+          current().source,
+          Object.keys(latestObservation?.protocols ?? {}) as ProtocolId[],
+        );
         const context = buildRevisionContext({
           block,
           valueUsdc: value ?? 0,
@@ -482,10 +485,24 @@ async function main(): Promise<void> {
             system,
             messages: [{ role: "user", content: context }],
           });
-          llmLog?.({ kind: "revision_call", block, model, system, context, raw });
+          llmLog?.({
+            kind: "revision_call",
+            block,
+            model,
+            system,
+            context,
+            raw,
+          });
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
-          llmLog?.({ kind: "revision_call", block, model, system, context, error: reason });
+          llmLog?.({
+            kind: "revision_call",
+            block,
+            model,
+            system,
+            context,
+            error: reason,
+          });
           throw error;
         }
         let parsedJson: unknown;
