@@ -1,0 +1,56 @@
+# config/rosters/metric-field.yaml — the field the scoring metrics are compared on (issue #56 / ADR 0020 §4).
+#
+# Lifted from config/regimes/b-harness.yaml, which grew this roster while calibrating M9 on a
+# continuous economy (docs/scoring-metric-measurements.md §5.4). ADR 0020 §2 moved the competition to
+# `scenario` mode, so the same field has to be re-measured there: the candidates were compared over a
+# 42-epoch week, and a scenario is a fraction of that.
+#
+# Every wallet is AUTO (keccak("auto-wallet:<seed>:<id>")) so the roster is self-contained -- it needs
+# no AGENTn_PRIVATE_KEY on the machine running it, which is what lets it go to a spot box unchanged.
+#
+# Run: npm run backtest -- --scenarios <set> --agents config/rosters/metric-field.yaml
+agents:
+  - id: noop
+    wallet: AUTO
+    baseline: true
+    description: does nothing (baseline). Its score is the hurdle every other agent has to clear
+  - id: peg-arb
+    wallet: AUTO
+    description: buys a stable below par and sells it back as the peg recovers
+  - id: peg-arb-eager
+    dir: peg-arb
+    wallet: AUTO
+    env: { ERIS_PEG_ARB_BUY_BPS: "10", ERIS_PEG_ARB_SELL_BPS: "0" }
+    description: the same strategy that buys a shallower discount and holds for par
+  - id: peg-arb-small
+    dir: peg-arb
+    wallet: AUTO
+    env: { ERIS_PEG_ARB_SIZE_BPS: "500" }
+    description: peg-arb trading 5% of its balance (well under the per-round cap)
+  - id: peg-arb-big
+    dir: peg-arb
+    wallet: AUTO
+    env: { ERIS_PEG_ARB_SIZE_BPS: "1000" }
+    description: the same at 10% -- twice peg-arb-small, still under the cap
+  - id: venue-arb
+    wallet: AUTO
+    description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)
+  - id: multi-arb
+    wallet: AUTO
+    description: cross-venue arbitrage by an independent implementation
+  - id: lp-provider
+    wallet: AUTO
+    description: provides liquidity and collects fees -- the one strategy that holds inventory and waits
+  - id: random
+    wallet: AUTO
+    description: trades at random, deterministically seeded. The lower control
+  - id: levered-long
+    dir: levered-long
+    wallet: AUTO
+    env: { ERIS_LEVER_TARGET_HF: "1.8" }
+    description: borrows against its collateral to hold more WETH than it was funded with
+  - id: levered-long-max
+    dir: levered-long
+    wallet: AUTO
+    env: { ERIS_LEVER_TARGET_HF: "1.15", ERIS_LEVER_MIN_HF: "1.06" }
+    description: the same with almost no margin -- the one agent a drawdown can actually liquidate

@@ -1,0 +1,6 @@
+# config/scenarios/metric-boxB.yaml — the other half of the scenario-mode metric comparison.
+#
+# The three regimes with the sharpest events, kept together so the box that runs them is the shorter
+# of the two: if one box has to be re-run, this is the cheaper one to lose. 9 scenarios ≈ 2.2 h.
+regimes: [metric-lending-incident, metric-crash, metric-depeg]
+seeds: [101, 202, 303]

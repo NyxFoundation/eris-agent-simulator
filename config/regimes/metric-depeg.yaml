@@ -1,0 +1,71 @@
+# config/regimes/metric-depeg.yaml — AUTO-GENERATED from config/regimes/depeg.yaml.
+#
+# Same market conditions, ADR 0019 §6 funding (1 ETH gas reserve + 100k USDC, economicGas). The
+# official regime hands out 100 ETH, which is 92.2% of an agent's portfolio by value: netPnlUsdc
+# nets that out (both ends are priced at the final price) but an epoch series marks it live, so
+# every agent's std_e would be ETH's volatility and M9's lambda term would measure the market
+# rather than the agent. Used only to compare M4 / M9 / M27 in scenario mode (ADR 0020 §4); the
+# competition's own regimes are the files this was generated from.
+#
+# Known cost of USDC-only: lp-provider cannot mint an LP position at all (measured: 21 of 24
+# rounds "insufficient LP budget"), so the one inventory-holding strategy sits the comparison out.
+run:
+  blocks: 120
+  seconds: 900
+  blockTimeSec: 2
+  protocols:
+    - uniswap
+    - balancer
+    - curve
+    - aave
+  economicGas: true
+  localDeploy: true
+  reportDir: ./runs
+  epochBlocks: 12
+  markMedianBlocks: 5
+funding:
+  wethWei: "0"
+  usdcUnits: "100000000000"
+  ethWei: "1000000000000000000"
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+stress:
+  events:
+    - type: depeg
+      stable: DAI
+      magnitudeRange:
+        - 0.35
+        - 0.6
+      windowFrac:
+        - 0.25
+        - 0.6
+      rampBlocks: 4
+      holdBlocks: 12
+      decayBlocks: 15
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: peg-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: buys DAI below par and sells it back as the peg recovers
+  - id: peg-arb-eager
+    dir: peg-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: the same strategy that buys a shallower discount and holds for par
+    env:
+      ERIS_PEG_ARB_BUY_BPS: "10"
+      ERIS_PEG_ARB_SELL_BPS: "0"
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)

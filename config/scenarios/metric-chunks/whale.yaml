@@ -1,0 +1,6 @@
+# One regime of the metric comparison, 3 seeds (ADR 0020 §4). Chunked so a spot interruption costs
+# ~40 min rather than the whole matrix. Regimes are the metric-* derivations: same market conditions
+# as the official ones, ADR 0019 §6 funding.
+regimes:
+  - metric-whale
+seeds: [101, 202, 303]
