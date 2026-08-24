@@ -26,3 +26,8 @@ probe_tmp.mts
 # root-only (does not pull in core/src/backtest)
 /backtest/
 
+
+# Runner logs from spot/bake/local matrix runs (artefacts, not config)
+/bake.log
+/spot-*.log
+/local-*.log

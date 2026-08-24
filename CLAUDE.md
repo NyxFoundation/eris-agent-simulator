@@ -44,6 +44,11 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
   API キー無しでも `codex[:<m>]` / `claude-cli[:<m>]` でサブスク CLI 実行可 = docs/guide/llm-agents.md
 - `ERIS_IMPROVE_LOG_CALLS: "1"` — 改訂の生のやり取りを `agents/<id>.llm.jsonl` に残す（既定 off）
 
+改訂プロンプトは**その run で有効な venue の action 名を列挙する**（`ACTION_TYPES_BY_PROTOCOL`。
+`sdk/src/action.ts` が単一の出典で、`test/actionVocabulary.test.ts` が改名・削除を検出）。渡さないと
+LLM の手掛かりは現在の戦略コードだけになり、**一度も swap したことのない戦略は `swap` の存在を
+知りようがない**（実測: USDC-only 配布で `lp-provider` が 18/18 シナリオ無取引 =
+`docs/scoring-metric-measurements.md` §5.8）。「持っていないことは何もしない理由にならない」も明記する。
 改訂は `{notes, executorTs}` か `{notes, revertTo: <version>}` を返し、`executorTs: null` は
 「今の戦略を維持」。生成コードは **cheatcode 静的検査 → コンパイル → 2 秒の実行上限**を通ってから設置。
 **自動 rollback は無い**（閾値に妥当な値が無いため。旧実装は 18 run 中 0 件発火、逆に「少しでも負けたら」
@@ -76,6 +81,24 @@ agents:
 （`ERIS_CONFIG`）のみ**。run ノブは CLI フラグ（`--seed` / `--blocks` / `--protocols` / `--agents` 等）で
 一回限り上書きできる。
 
+### `run.resetUnit` — world のリセット単位（ADR 0020）
+
+`continuous`（既定）/ `scenario` の 2 値。**この run が 1 つの world なのか、(regime, seed) ごとに
+world を作り直した中の 1 本なのかというラベル**で、これ自体は何もリセットしない（リセットしているのは
+`backtest --scenarios` の snapshot/revert）。**本番競技は `scenario`**（ADR 0020 §2。在庫の持ち越し・
+drawdown からの回復・レジームをまたぐ資本配分は競技の対象外になった）。既定が `continuous` なのは
+`sim:realtime` との互換であって本番の宣言ではない。
+
+- **`scenario` を宣言できるのは matrix runner だけ**。config に書いて `sim:realtime` を叩くと
+  **起動時 fail-fast**（1 つの world を「多数」と名乗る summary.json は、後から検出できない嘘になる）。
+  値の綴り間違いも fail-fast（黙って continuous に落ちると、matrix 全体が continuous と名乗る）
+- `summary.json` の `resetUnit` と `matrix.json` の `resetUnit` に必ず出る。`npm run metrics` は
+  **モードが混ざった run 集合を拒否**する（1 world あたりの epoch 数が違い、λ の実効的な厳しさが
+  `λ/√(epoch 長)` で動くので、Borda を取ると別々の競技を平均したものになる）。フィールドが無い
+  過去 run は `continuous` として読む（軸ができる前の run は全部 1 world だった）
+- **λ は `scenario` 側が未較正**。既知値（ADR 0019 の 0.25 / 測定記録の推奨 0.15）はどちらも
+  連続経済 × 12 ブロック epoch のもの。1 シナリオの epoch 数はシナリオ数 S に依存し、S は未決（#36 待ち）
+
 ## 実行コマンド
 
 - `npm run anvil` — 別ターミナルで Anvil フォークを起動（sim:realtime の前提。ローカルデプロイモードでは不要）
@@ -87,7 +110,8 @@ agents:
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積で、シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（シナリオ × agent の生スコア。**netPnlUsdc と alphaUsdc の両方**）と `standings.json`（レジーム内 z-score → レジーム等重み平均）を書く。順位は派生物で、採点方法は将来見直す前提（matrix.json から再計算できる）。`--metric netPnlUsdc|alphaUsdc` / `--repeat N`（較正の診断用。採点は 1 回が既定）
   - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）。`lst` / `liquity` は競技セット外（venue 単体検証用）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
-- `npm run metrics -- <runDir...>` — 保存済み run を**全候補指標で採点し直す**（issue #56。M1 PnL / M4 超過対数成長 / M7 MPPM / M9 `mean−λ·std` / M13 Sharpe と、run 集合に対する M27 Borda）。チェーン不要・再 run 不要で `summary.json` の epoch 系列だけを読む。`--lambda` / `--rho` / `--out <path>`。実測の記録は `docs/scoring-metric-measurements.md`
+- `npm run metrics -- <runDir...>` — 保存済み run を**全候補指標で採点し直す**（issue #56。M1 PnL / M4 超過対数成長 / M7 MPPM / M9 `mean−λ·std` / M13 Sharpe と、run 集合に対する M27 Borda）。チェーン不要・再 run 不要で `summary.json` の epoch 系列だけを読む。`--lambda` / `--rho` / `--out <path>`。**`resetUnit` が混ざった run 集合は拒否**する（ADR 0020 §1）。実測の記録は `docs/scoring-metric-measurements.md`
+- `npm run metrics -- --matrix runs/matrix-<id>` — **シナリオ行列を「指標 × 集約」の総当たりで採点し直す**（ADR 0020 §5）。連続経済では「どの指標か」だけが問いだが、`scenario` モードでは**シナリオ横断の集約**という第 2 の選択が要る（`core/src/scoring/aggregate.ts` = `zscore` 現行 / `borda` 順位 / `mean` 絶対量。どれもレジーム等重み）。出力は各組み合わせの順位、M9×zscore との一致/不一致、そして **#55 の露出**（1 体が場の sd を何倍に膨らませているか。1.0 = 誰も場のスケールを決めていない）。matrix.json の `runDir` は相対なので、spot から回収した tarball を展開したディレクトリでもそのまま読める
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
