@@ -33,6 +33,20 @@ export type OuConfig = {
   perBase: Record<string, OuParams>;
 };
 
+// ADR 0020 §1. The two shapes a competition can have: one economy run end to end, or a matrix of
+// (regime, seed) worlds each started from a clean slate.
+export type ResetUnit = "continuous" | "scenario";
+
+// Parsed rather than coerced: a typo silently falling back to "continuous" would label a scenario
+// run as a continuous one, and the two are not comparable (ADR 0020 Negative "どちらの数字か分からない").
+function resetUnitEnv(value: string | undefined): ResetUnit {
+  if (value === undefined || value === "") return "continuous";
+  if (value === "continuous" || value === "scenario") return value;
+  throw new Error(
+    `run.resetUnit must be "continuous" or "scenario" (got "${value}") — ADR 0020 §1`,
+  );
+}
+
 export type SimConfig = {
   rpcUrl: string;
   chainId: number;
@@ -90,6 +104,13 @@ export type SimConfig = {
   // The run's execution mode (a label stamped into summary.json's mode. ADR 0016 §6). The backtest CLI
   // injects ERIS_RUN_MODE=backtest. Does not affect scoring or behavior.
   runMode: "realtime" | "backtest";
+  // The world's reset unit (ERIS_RESET_UNIT / `run.resetUnit`. ADR 0020 §1). `continuous` is one world
+  // for the whole run (what sim:realtime does); `scenario` is a fresh world per (regime, seed), which
+  // only the scenario-matrix runner can produce -- the competition itself runs in `scenario` (ADR 0020 §2).
+  // It is a label, not a switch: nothing here resets anything. It exists so a stored run says which
+  // mode produced it, because the two are not comparable (the epoch count per world differs, and
+  // lambda is calibrated per mode -- ADR 0020 Negative).
+  resetUnit: ResetUnit;
   // Before the competition starts, run a market loop of N blocks with only the flow bot to warm the
   // protocols' working set (ADR 0006 Risks anvil cold-fetch mitigation). The competition-phase mine
   // then avoids hitting upstream fetches. 0 disables it (ERIS_PREWARM_BLOCKS).
@@ -323,6 +344,7 @@ export function loadConfig(env = process.env): SimConfig {
     localDeploy: env.ERIS_LOCAL_DEPLOY === "1",
     localSnapshotFile: env.ERIS_LOCAL_SNAPSHOT_FILE ?? ".local-snapshot",
     runMode: env.ERIS_RUN_MODE === "backtest" ? "backtest" : "realtime",
+    resetUnit: resetUnitEnv(env.ERIS_RESET_UNIT),
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),

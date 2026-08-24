@@ -569,6 +569,9 @@ async function main(): Promise<void> {
             createdAt: new Date().toISOString(),
             sourceCommit: gitHead(ROOT) ?? "unknown",
             scenarioSet: flags.scenarios,
+            // A matrix is a scenario-mode run by construction (ADR 0020 §1). Written out so a later
+            // comparison against a continuous run is refused rather than silently averaged.
+            resetUnit: "scenario",
             metric,
             repeat,
             // Complete only once every scenario has run; until then this is a partial matrix.
@@ -610,6 +613,10 @@ async function main(): Promise<void> {
             ERIS_LOCAL_DEPLOY: "1",
             ERIS_LOCAL_SNAPSHOT_FILE: snapshotFile,
             ERIS_RUN_MODE: "backtest",
+            // ADR 0020 §1: the matrix is the only thing that resets the world between runs, so it is
+            // the only thing allowed to declare the mode. A single --regime replay stays `continuous`
+            // -- it is one world, whatever the snapshot/revert around it does for the *next* scenario.
+            ...(matrixMode ? { ERIS_RESET_UNIT: "scenario" } : {}),
           });
           runDirs.push(runDir);
           const summary = readRunSummary(runDir);

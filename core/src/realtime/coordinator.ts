@@ -248,6 +248,23 @@ export async function runRealtimeSimulation(
     configPath,
   } = resolveRunInputs(process.argv, overrides);
   if (configPath) process.env.ERIS_CONFIG = configPath;
+
+  // ADR 0020 §1 fail-fast. `resetUnit: scenario` describes a world per (regime, seed), and only the
+  // scenario-matrix runner produces those -- it is the caller that resets between runs, not anything
+  // in here. Reaching this from a plain config file would run one continuous world and then stamp
+  // `scenario` into summary.json: a stored run whose mode is a lie, which later aggregation cannot
+  // detect (that is the whole reason the label exists). Hence the mode is only honoured when it
+  // arrives as a programmatic override from the runner, never from YAML alone.
+  if (
+    config.resetUnit === "scenario" &&
+    overrides.ERIS_RESET_UNIT !== "scenario"
+  )
+    throw new Error(
+      `run.resetUnit: scenario requires the scenario-matrix runner ` +
+        `(npm run backtest -- --scenarios <path>). A single run has one world, so use ` +
+        `resetUnit: continuous for sim:realtime (ADR 0020 §1)`,
+    );
+
   const adapters = initProtocols(config.enabledProtocols);
   const enabledIds = adapters.map((a) => a.id);
 
@@ -1941,6 +1958,10 @@ export async function runRealtimeSimulation(
       runId,
       // the backtest CLI (ADR 0016) injects ERIS_RUN_MODE=backtest. Otherwise realtime.
       mode: config.runMode,
+      // Which world shape produced these numbers (ADR 0020 §1). Recorded on every run so an
+      // aggregation across stored runs can refuse to mix the modes instead of averaging two
+      // different competitions together.
+      resetUnit: config.resetUnit,
       blockTimeSec: config.blockTimeSec,
       blocksProcessed: processedBlocks,
       elapsedMs,

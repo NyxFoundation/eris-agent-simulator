@@ -47,6 +47,11 @@ run:
   protocols: [uniswap, balancer, curve, lst, liquity]
   economicGas: false
   localDeploy: true
+  # World reset unit (ADR 0020 §1). `continuous` = this run is one world from start to finish, which
+  # is all a single sim:realtime can be. The competition itself runs `scenario` (a fresh world per
+  # (regime, seed) — ADR 0020 §2), and only `npm run backtest -- --scenarios <path>` can declare it:
+  # written here it fails fast, because one world labelled as many is a stored run that lies.
+  resetUnit: continuous
   reportDir: ./runs
 
 funding:
