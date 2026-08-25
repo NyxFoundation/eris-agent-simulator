@@ -54,6 +54,10 @@ export function decide(obs: AgentObservation): AgentAction | null {
   }
 
   if (!best || bestGap < 0.001) {
+    if (skippedUnfundable) {
+      const acquire = acquireInventory(obs, venues);
+      if (acquire) return acquire;
+    }
     return {
       type: "noop",
       reason: skippedUnfundable
@@ -81,6 +85,49 @@ export function decide(obs: AgentObservation): AgentAction | null {
   return {
     type: best.swapType,
     tokenIn,
+    amountIn: amountIn.toString(),
+    maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei,
+    slippageBps: 75,
+  };
+}
+
+// The round trip a cross-venue arbitrageur pays: one venue fee on the way in, one on the way out,
+// plus slippage on both. Below this the spread does not cover getting in and out again.
+const ROUND_TRIP_COST = 0.008; // 80bps
+
+// Every venue above fair means the only trade on offer is "sell WETH", which USDC-only funding makes
+// impossible (ADR 0019 §6 hands out no inventory). Doing nothing is one answer; the other is to buy
+// the inventory, and the difference between them is a judgement about price, not about funding.
+//
+// The judgement here: buying above fair is only worth it when the *cross-venue* spread pays for the
+// round trip. Selling to the richest venue is what earns; buying from the cheapest is the cost of
+// being able to. Below the cost of getting in and out, buying inventory is just taking naked beta
+// with extra steps -- which `mean - lambda*std` charges for twice (the drift and the variance).
+function acquireInventory(
+  obs: AgentObservation,
+  venues: Venue[],
+): AgentAction | null {
+  const priced = venues.filter((v) => Number.isFinite(v.price) && v.price > 0);
+  if (priced.length < 2) return null;
+  const cheapest = priced.reduce((a, b) => (b.price < a.price ? b : a));
+  const richest = priced.reduce((a, b) => (b.price > a.price ? b : a));
+  const spread = richest.price / cheapest.price - 1;
+  if (spread <= ROUND_TRIP_COST) return null;
+  if (!canFund(obs, "USDC")) return null;
+
+  // Size it to the leg that has to close: buying more than the rich venue can absorb leaves the
+  // remainder as inventory this agent has no plan for.
+  const amountIn = affordable(
+    obs,
+    "USDC",
+    (BigInt(obs.limits.maxUsdcInUnits) *
+      BigInt(Math.min(2500, Math.floor(spread * 200_000)))) /
+      10_000n,
+  );
+  if (amountIn === 0n) return null;
+  return {
+    type: cheapest.swapType,
+    tokenIn: "USDC",
     amountIn: amountIn.toString(),
     maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei,
     slippageBps: 75,

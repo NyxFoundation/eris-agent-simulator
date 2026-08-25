@@ -1,0 +1,233 @@
+# config/regimes/b-harness.yaml — one week at the shape ADR 0019 scores it (issue #56)
+#
+# Run: npm run backtest -- --regime b-harness --seed 801
+#
+# Not a market character like the other regimes. This is the calibration harness for the competition
+# metric: the only place the provisional numbers in ADR 0019 can be measured, because they are all
+# properties of a *series*, not of a run's endpoints.
+#
+#   lambda = 0.25       is it a hurdle that real strategies clear, or one nobody clears?
+#   epoch  = 4h         does an epoch contain enough activity for its return to mean anything?
+#   1 ETH of gas        does a week of trading fit inside the reserve?
+#
+# Shape: 42 epochs of 12 blocks = 504 blocks. The epoch length is blocks rather than hours because an
+# anvil run has no simulated clock (ADR 0019 §8); 12 leaves room for G7's 5-block median window and
+# keeps the run inside anvil's ~1,050 block history retention, so the existing post-run
+# reconstruction still works.
+#
+# Funding is the §6 distribution, and this file is the only place it lives. The 7 official regimes
+# keep their 100 ETH + 25k, because they are the participants' practice harness and changing their
+# funding would break comparison with every stored matrix. Measured on depeg#701: under the old
+# distribution all four agents' std_e agreed to within 1.1% (they were all just ETH's volatility) and
+# noop scored -1.963e-3; under this one the spread is 199.9% and noop comes back to -6.18e-5.
+#
+# Six windows of three kinds rather than one incident. A week in the live competition is a schedule
+# of injected events, and a metric with a std term has to be measured against a series that varies.
+# Two of them do not close (a depeg that stays broken, a drift that reprices), because a week where
+# the environment always puts things back answers "will it come back?" before anyone asks: holding
+# through becomes a free option, and the more patient of two otherwise identical strategies wins by
+# construction. The windows are drawn independently from the seed, so their spacing is a property of
+# the scenario rather than of this file.
+
+run:
+  blocks: 504 # 42 epochs x 12 blocks
+  seconds: 2400 # a stress run ends by block count anyway (ADR 0009); this is only a backstop
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  epochBlocks: 12 # ADR 0019 §8
+  markMedianBlocks: 5 # G7's window, ending at the boundary
+  # curve is not optional: it owns the stableSwap action, which is the only way to trade the pair.
+  protocols: [uniswap, balancer, curve, aave]
+  economicGas: true # ADR 0011: gas is a real cost against a 1 ETH reserve
+  localDeploy: true # the DAI/USDC pool is one the deployer seeded; a fork has no such thing
+  reportDir: ./runs
+
+funding:
+  ethWei: "1000000000000000000" # 1 ETH: gas reserve only (ADR 0019 §6)
+  # 20 WETH. USDC-only funding was a rule the old metric needed: it charged everyone for the drift
+  # of whatever they were handed, so handing out an asset that moves put luck in the standings. The
+  # benchmark subtraction cancels anything every entry holds equally -- the baseline entry included
+  # -- so the rule has no work left to do, and it was costing a measurement: a cross-venue
+  # arbitrageur needs inventory to sell on the expensive side, and with none it sat out three of
+  # five seeds ("the widest gaps need inventory this agent does not hold", 503 rounds of 513).
+  wethWei: "20000000000000000000"
+  usdcUnits: "100000000000" # 100,000 USDC
+
+limits:
+  # 4x the practice regimes', and the reason is not the one first written here. They were raised on
+  # 2026-08-15 on the theory that these caps were the environment's real leverage limit; that was
+  # wrong (the leveraged agent's borrows were reverting for lack of Aave liquidity -- see
+  # docs/scoring-metric-measurements.md §9.4), and the theory is retracted.
+  #
+  # They stay raised for a different and smaller reason: the three peg-arb entries below differ only
+  # in the fraction of balance they trade, and that comparison is only meaningful while every size
+  # stays under the cap. At the practice regimes' 5,000 USDC the 5% and 10% twins both clamp to the
+  # same number and measure nothing -- which is how the first attempt at this was wasted.
+  #
+  # Note this makes the harness's runs incomparable with the ones before 2026-08-15, and with the
+  # seven official regimes, which keep their own caps.
+  agentWethWei: "4000000000000000000"
+  agentUsdcUnits: "20000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+
+stress:
+  events:
+    # Same calibration as config/regimes/depeg.yaml: the pool is 100k/100k at A=100, where selling
+    # ~40% of the seeded DAI depth is ~114bps below par, 50% is ~175bps and 60% is ~282bps. The
+    # windows are spread over the run so that the epochs between them are quiet -- a week where every
+    # epoch is an opportunity would not tell us whether lambda separates anyone.
+    - {
+        type: depeg,
+        stable: DAI,
+        magnitudeRange: [0.35, 0.6],
+        windowFrac: [0.1, 0.25],
+        rampBlocks: 4,
+        holdBlocks: 12,
+        decayBlocks: 15,
+      }
+    - {
+        type: depeg,
+        stable: DAI,
+        magnitudeRange: [0.35, 0.6],
+        windowFrac: [0.4, 0.55],
+        rampBlocks: 4,
+        holdBlocks: 12,
+        decayBlocks: 15,
+      }
+    # The third one does not close. The regime table calls this a *non-mean-reverting* deviation, and
+    # a week where the environment always buys the stable back makes "will par return?" a question
+    # with a known answer -- holding through is then a free option, and the more patient of two
+    # otherwise identical strategies wins by construction rather than by judgement. With this window
+    # open at the end of the run, an agent still holding is marked at the pool, not at par.
+    - {
+        type: depeg,
+        stable: DAI,
+        magnitudeRange: [0.35, 0.6],
+        persist: true,
+        windowFrac: [0.7, 0.85],
+        rampBlocks: 4,
+        holdBlocks: 12,
+        decayBlocks: 0,
+      }
+    # A week of nothing but depeg windows gives a cross-venue arbitrageur no work at all: measured
+    # over five seeds, `venue-arb` sent zero transactions in three of them, so lambda was being
+    # calibrated against one kind of skill (docs/scoring-metric-measurements.md §10). These two are
+    # the other regimes the competition set carries, as windows rather than run-wide settings.
+    #
+    # cexDrift: the reference price is pulled in one direction for a while and mean reversion is
+    # weakened so the pull survives. Calibrated from `config/regimes/cex-drift.yaml`, which held the
+    # whole run at drift 0.0015 with kappa 0.004 against the 0.02 default (a multiplier of 0.2). The
+    # direction is left to the seed -- a published regime whose drift is always up is memorisable.
+    - {
+        type: cexDrift,
+        magnitudeRange: [0.001, 0.002],
+        kappaMultRange: [0.15, 0.3],
+        windowFrac: [0.15, 0.3],
+        rampBlocks: 6,
+        holdBlocks: 24,
+        decayBlocks: 12,
+      }
+    # The second drift is a repricing: the walk's anchor moves with it, so the level survives the
+    # window instead of being pulled back to where the week started. Without one of these, every
+    # price move in the run is temporary by construction.
+    - {
+        type: cexDrift,
+        magnitudeRange: [0.001, 0.002],
+        kappaMultRange: [0.15, 0.3],
+        repriceAnchor: true,
+        windowFrac: [0.55, 0.75],
+        rampBlocks: 6,
+        holdBlocks: 24,
+        decayBlocks: 12,
+      }
+    # flowTrend: retail order flow leans one way across every venue at once, which is what opens a
+    # cross-venue gap wide enough to be worth taking. Calibrated from
+    # `config/regimes/informed-flow.yaml`: 3x the uninformed size, a direction held for 12 blocks,
+    # and every venue leaning together.
+    - {
+        type: flowTrend,
+        magnitudeRange: [2.0, 3.0],
+        trendCorrelation: 1.0,
+        persistBlocks: 12,
+        windowFrac: [0.35, 0.5],
+        rampBlocks: 6,
+        holdBlocks: 30,
+        decayBlocks: 10,
+      }
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline). Its score is the hurdle every other agent has to clear
+  - id: peg-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: buys DAI below par and sells it back as the peg recovers
+  - id: peg-arb-eager
+    dir: peg-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: the same strategy that buys a shallower discount and holds for par
+    env: { ERIS_PEG_ARB_BUY_BPS: "10", ERIS_PEG_ARB_SELL_BPS: "0" }
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)
+  # Four agents measured lambda against two kinds of skill, and two of those four were the same code
+  # at different thresholds. These five widen it in the directions the metric is actually uncertain
+  # about (docs/scoring-metric-measurements.md §11).
+  - id: multi-arb
+    wallet: AGENT5_PRIVATE_KEY
+    description: >-
+      cross-venue arbitrage by an independent implementation. venue-arb outearns everything else by
+      10-40x, and a second author's version says whether that is the opportunity or the code
+  - id: lp-provider
+    wallet: AGENT6_PRIVATE_KEY
+    description: >-
+      provides liquidity and collects fees. The one strategy type that holds inventory and waits,
+      which is where the metric's std term should bite hardest
+  - id: random
+    wallet: AUTO
+    description: >-
+      trades at random, deterministically seeded. The lower control: the field has shown that lambda
+      can demote a profitable strategy, but not yet that it demotes an unprofitable one
+  # Three sizes of one strategy, and the only thing that differs between them is the fraction of the
+  # balance each trade uses. M9 is mean - lambda*std with both terms scaling in size, so small trades
+  # should scale the score linearly while the log return's own drag (-k^2*sigma^2/2) and the pool's
+  # slippage bend it back further out. Where it bends decides whether the metric rewards conviction
+  # or merely size.
+  #
+  # The first attempt at this used 25% and 50% and measured nothing: peg-arb clamps its size to the
+  # per-round cap (agent.ts), and both twins clamped to the same 20,000 USDC. These two sit at a
+  # quarter and a half of that cap, so the 2x between them is real. `peg-arb` stays at 25% as the
+  # third point, where the cap binds.
+  - id: peg-arb-small
+    dir: peg-arb
+    wallet: AUTO
+    env: { ERIS_PEG_ARB_SIZE_BPS: "500" }
+    description: peg-arb trading 5% of its balance (5,000 USDC, well under the cap)
+  - id: peg-arb-big
+    dir: peg-arb
+    wallet: AUTO
+    env: { ERIS_PEG_ARB_SIZE_BPS: "1000" }
+    description: the same at 10% -- twice peg-arb-small, still under the cap
+  - id: levered-long
+    dir: levered-long
+    wallet: AUTO
+    env: { ERIS_LEVER_TARGET_HF: "1.8" }
+    description: >-
+      borrows against its collateral to hold more WETH than it was funded with. Nothing else in the
+      roster borrows, so ADR 0019's own stated weakness -- a lucky leveraged week is rewarded -- has
+      never been measured
+  - id: levered-long-max
+    dir: levered-long
+    wallet: AUTO
+    env: { ERIS_LEVER_TARGET_HF: "1.15", ERIS_LEVER_MIN_HF: "1.06" }
+    description: >-
+      the same strategy with almost no margin. A downward drift episode can liquidate it, which is
+      the only way G1 (the bankruptcy floor) and G2 (the scoring freeze) get exercised on real data

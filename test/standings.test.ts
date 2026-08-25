@@ -173,3 +173,41 @@ test("the metric is selectable, and the two can disagree on the winner", () => {
   assert.equal(computeStandings(results, "netPnlUsdc").agents[0].id, "a");
   assert.equal(computeStandings(results, "alphaUsdc").agents[0].id, "b");
 });
+
+test("M4 and M9 are selectable, and lambda*std is the only thing between them", () => {
+  // The case the whole metric decision turns on (issue #56): `steady` earns less in total but on a
+  // smooth path, `swingy` earns more with the variance to match. M4 sees only the totals, M9 charges
+  // for the path -- so they disagree about which one won.
+  const results: ScenarioResult[] = [
+    {
+      regime: "calm",
+      seed: 1,
+      agents: [
+        { id: "swingy", excessLogGrowth: 0.1, score: 0.001 },
+        { id: "steady", excessLogGrowth: 0.08, score: 0.002 },
+      ],
+    },
+  ];
+  assert.equal(computeStandings(results, "excessLogGrowth").agents[0].id, "swingy");
+  assert.equal(computeStandings(results, "score").agents[0].id, "steady");
+});
+
+test("an agent with no epoch score is disqualified for that scenario, not scored zero", () => {
+  // A run stored before the epoch series existed, or one whose reconstruction produced no
+  // boundaries. Zero is a real result here -- it is what a benchmark earns -- so spending it on a
+  // missing measurement would place the agent mid-pack.
+  const results: ScenarioResult[] = [
+    {
+      regime: "calm",
+      seed: 1,
+      agents: [
+        { id: "a", excessLogGrowth: -0.5, score: -0.5 },
+        { id: "b", excessLogGrowth: -0.4, score: -0.4 },
+        { id: "gap", netPnlUsdc: 10 },
+      ],
+    },
+  ];
+  const standings = computeStandings(results, "score");
+  assert.equal(standings.agents.at(-1)?.id, "gap");
+  assert.equal(standings.scenarios[0].disqualified.gap, "no score in summary");
+});

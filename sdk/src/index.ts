@@ -10,7 +10,11 @@ export type {
   DecideFn,
   RunFn,
 } from "./agent.js";
-export { parseAction, validateAction } from "./action.js";
+export {
+  parseAction,
+  validateAction,
+  ACTION_TYPES_BY_PROTOCOL,
+} from "./action.js";
 export type {
   ActionValidation,
   ValidatedIntent,

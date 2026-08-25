@@ -73,9 +73,12 @@ const SCHEMA: Record<string, string> = {
   "run.protocols": "ENABLED_PROTOCOLS",
   "run.economicGas": "ERIS_ECONOMIC_GAS",
   "run.localDeploy": "ERIS_LOCAL_DEPLOY",
+  "run.resetUnit": "ERIS_RESET_UNIT", // continuous | scenario (ADR 0020 §1)
   "run.skipReset": "ERIS_SKIP_RESET",
   "run.prewarmBlocks": "ERIS_PREWARM_BLOCKS",
   "run.scoreEvery": "ERIS_SCORE_EVERY",
+  "run.epochBlocks": "ERIS_EPOCH_BLOCKS",
+  "run.markMedianBlocks": "ERIS_MARK_MEDIAN_BLOCKS",
   "run.reportDir": "REPORT_DIR",
   "run.flashArb": "ERIS_FLASH_ARB",
   "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",

@@ -1,0 +1,84 @@
+# config/regimes/metric-lending-incident.yaml — AUTO-GENERATED from config/regimes/lending-incident.yaml.
+#
+# Same market conditions, ADR 0019 §6 funding (1 ETH gas reserve + 100k USDC, economicGas). The
+# official regime hands out 100 ETH, which is 92.2% of an agent's portfolio by value: netPnlUsdc
+# nets that out (both ends are priced at the final price) but an epoch series marks it live, so
+# every agent's std_e would be ETH's volatility and M9's lambda term would measure the market
+# rather than the agent. Used only to compare M4 / M9 / M27 in scenario mode (ADR 0020 §4); the
+# competition's own regimes are the files this was generated from.
+#
+# Known cost of USDC-only: lp-provider cannot mint an LP position at all (measured: 21 of 24
+# rounds "insufficient LP budget"), so the one inventory-holding strategy sits the comparison out.
+run:
+  blocks: 360
+  seconds: 1800
+  blockTimeSec: 2
+  protocols:
+    - uniswap
+    - balancer
+    - curve
+    - gmx
+    - aave
+  economicGas: true
+  localDeploy: true
+  reportDir: ./runs
+  epochBlocks: 12
+  markMedianBlocks: 5
+funding:
+  wethWei: "0"
+  usdcUnits: "100000000000"
+  ethWei: "1000000000000000000"
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+stress:
+  events:
+    - type: crash
+      magnitudeRange:
+        - 0.12
+        - 0.16
+      windowFrac:
+        - 0.3
+        - 0.7
+      rampBlocks: 3
+      holdBlocks: 6
+      decayBlocks: 8
+    - type: liquidityPull
+      magnitudeRange:
+        - 0.4
+        - 0.6
+      windowFrac:
+        - 0.3
+        - 0.7
+      alignWith: crash
+      rampBlocks: 3
+      holdBlocks: 6
+      decayBlocks: 12
+  victimCount: 2
+  victimHf0: 1.1
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: venue-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage
+  - id: multi-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: base-agnostic cross-venue arbitrage (all active bases x all venues)
+  - id: liquidator
+    wallet: AGENT4_PRIVATE_KEY
+    description: Aave liquidation bot (receives victim addresses via
+      ERIS_LIQUIDATION_VICTIMS)

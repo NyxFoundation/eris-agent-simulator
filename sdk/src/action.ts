@@ -29,6 +29,35 @@ function stableMarketBySymbol(symbol: string) {
   return marketPricedStables().find((m) => m.symbol === symbol);
 }
 
+// The action vocabulary, by owning protocol. Adapters recognize their own types through `parse()`,
+// which answers "is this mine" but cannot answer "what is available" -- and something has to,
+// because a strategy author (or the model rewriting one, ADR 0018) can only use an action it knows
+// exists. A shipped strategy that never swaps is otherwise the model's only evidence about what a
+// swap is called, so the vocabulary has to be stated rather than inferred from the code in hand.
+//
+// `bundle` and `noop` are not listed: they belong to no protocol and every strategy already has them.
+// **Adding an action type means adding it here too**; test/actionVocabulary.test.ts checks that every
+// name listed is still owned by an adapter, so renames and removals break, but an omitted addition
+// only shows up as an action the model never learns about.
+export const ACTION_TYPES_BY_PROTOCOL: Record<ProtocolId, readonly string[]> = {
+  uniswap: ["swap", "mintLiquidity", "removeLiquidity", "collectFees"],
+  balancer: ["balancerSwap"],
+  curve: ["curveSwap", "stableSwap"],
+  gmx: ["gmxIncrease", "gmxDecrease"],
+  aave: ["aaveSupply", "aaveWithdraw", "aaveBorrow", "aaveRepay"],
+  lst: ["lstDeposit", "lstSwap", "lstRequestWithdraw", "lstClaimWithdraw"],
+  liquity: [
+    "liquityOpenTrove",
+    "liquityAdjustTrove",
+    "liquityCloseTrove",
+    "liquityRedeem",
+    "liquityProvideToSP",
+    "liquityWithdrawFromSP",
+    "liquityLiquidate",
+    "liquitySwapEusd",
+  ],
+};
+
 export type ValidatedIntent = {
   action: LeafAction;
   protocol: ProtocolId;

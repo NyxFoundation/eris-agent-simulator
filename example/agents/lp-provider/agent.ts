@@ -26,6 +26,8 @@ type Observation = {
     maxLpWethWei: string;
     maxLpUsdcUnits: string;
     maxOpenPositions: number;
+    // Per-round cap on USDC spent in one swap. Bounds how fast inventory can be acquired.
+    maxUsdcInUnits: string;
   };
 };
 
@@ -109,7 +111,7 @@ function decideAction(observation: Observation): AgentAction {
     amountWethDesired < MIN_WETH_MINT_WEI ||
     amountUsdcDesired < MIN_USDC_MINT_UNITS
   ) {
-    return { type: "noop", reason: "insufficient LP budget" };
+    return acquireInventory(observation, priorityFee);
   }
 
   const { tickLower, tickUpper } = chooseRange(observation);
@@ -122,6 +124,67 @@ function decideAction(observation: Observation): AgentAction {
     maxPriorityFeePerGasWei: priorityFee,
     slippageBps: 100,
   };
+}
+
+// A two-sided LP position needs both legs, and the competition funds USDC only -- nobody is handed
+// WETH (ADR 0019 §6). Being handed inventory and buying it are not the same thing: handed inventory
+// is beta nobody chose and it cancels out of every score because the benchmark holds it too, while
+// bought inventory costs the spread and then sits in this agent's own risk against a cash benchmark.
+// So acquiring it is a decision the strategy makes, not something the funding rule does for it.
+//
+// It is deliberately made only when the position is about to be opened. WETH held outside a range
+// earns nothing and is pure variance, so buying early or buying more than the mint can use is a
+// straight loss under `mean - lambda*std`.
+function acquireInventory(
+  observation: Observation,
+  priorityFee: string,
+): AgentAction {
+  const wethBalance = BigInt(observation.balances.wethWei);
+  const usdcBalance = BigInt(observation.balances.usdcUnits);
+  // Enough WETH for the WETH leg to match a full-size USDC leg. Not more.
+  const targetWethWei = weiForUsdc(
+    observation,
+    BigInt(observation.limits.maxLpUsdcUnits),
+  );
+  if (wethBalance >= targetWethWei) {
+    // Holding the inventory and still unable to mint means the USDC side is what is short.
+    return { type: "noop", reason: "insufficient LP budget" };
+  }
+  const shortfallUsdc = usdcForWeth(observation, targetWethWei - wethBalance);
+  const spend = minBig(
+    minBig(shortfallUsdc, BigInt(observation.limits.maxUsdcInUnits)),
+    // Keep the other leg fundable: spending everything on WETH would just move the shortage.
+    usdcBalance / 2n,
+  );
+  if (spend < MIN_USDC_MINT_UNITS) {
+    return { type: "noop", reason: "not enough USDC to buy LP inventory" };
+  }
+  return {
+    type: "swap",
+    tokenIn: "USDC",
+    amountIn: spend.toString(),
+    maxPriorityFeePerGasWei: priorityFee,
+    slippageBps: 100,
+  };
+}
+
+// USDC units (6 decimals) per 1 WETH, as an integer so the conversions stay in BigInt.
+function priceUnits(observation: Observation): bigint {
+  return BigInt(
+    Math.max(1, Math.round(observation.pool.priceUsdcPerWeth * 1e6)),
+  );
+}
+
+function usdcForWeth(observation: Observation, wei: bigint): bigint {
+  return (wei * priceUnits(observation)) / 10n ** 18n;
+}
+
+function weiForUsdc(observation: Observation, units: bigint): bigint {
+  return (units * 10n ** 18n) / priceUnits(observation);
+}
+
+function minBig(a: bigint, b: bigint): bigint {
+  return a < b ? a : b;
 }
 
 function shouldRebalance(

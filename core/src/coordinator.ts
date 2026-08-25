@@ -9,6 +9,7 @@ import { baseTokens } from "@eris/sdk/markets.js";
 import { enabledAdapters, getAdapter } from "@eris/sdk/protocols/registry.js";
 import type { FlowKind, SimContext } from "@eris/sdk/protocols/types.js";
 import { FlowProcess, type FlowOrderWire } from "./flowProcess.js";
+import type { FlowTrendOverride } from "./realtime/events.js";
 import type { FlowContextWire } from "./flow/logic.js";
 import { readAaveFlowReserves } from "@eris/sdk/protocols/aave.js";
 import { stableBalanceOf, TOKENS } from "@eris/sdk/constants.js";
@@ -33,12 +34,23 @@ function venueStableUnits(
 // Pass a FlowContext to the orderflow bot process, receive FlowOrder[], and convert to TxIntent.
 // The coordinator owns flow wallet selection and tx submission (the bot only decides orders).
 // Assemble the FlowContext (poolPrices / aave reserves / limits). Reused every block in realtime too.
+// Scale a wei cap by a float multiplier without leaving bigint arithmetic. Rounded to the nearest
+// wei via basis points: the multiplier comes from an event envelope, so it is a smooth ramp and the
+// rounding never accumulates.
+function scaleWei(value: bigint, mult: number): bigint {
+  if (mult === 1) return value;
+  return (value * BigInt(Math.round(mult * 10_000))) / 10_000n;
+}
+
 export async function buildFlowContext(
   ctx: SimContext,
   enabledIds: ProtocolId[],
   stateById: Map<ProtocolId, unknown>,
   fairPrice: number,
   round: number,
+  // A flowTrend episode's effect on this block's uninformed flow (issue #56). Omitted = no episode
+  // is open, which is also what every non-realtime caller passes.
+  flowTrend?: FlowTrendOverride,
 ): Promise<FlowContextWire> {
   const poolPrices: Partial<Record<"uniswap" | "balancer" | "curve", number>> =
     {};
@@ -49,37 +61,61 @@ export async function buildFlowContext(
       poolPrices[id] = s.priceUsdcPerWeth;
   }
 
-  // The aave borrower pool depends on each actor wallet's reserve + balance. The coordinator does the
-  // RPC reads and passes them in (the bot never touches the RPC). Read each actor's persistent position
-  // (supply/borrow) and balance.
-  let aaveActors: FlowContextWire["aaveActors"];
-  if (enabledIds.includes("aave")) {
-    aaveActors = [];
-    for (let i = 0; i < ctx.config.aaveFlowActorCount; i++) {
-      const key = `aave:actor${i}`;
-      const wallet = ctx.flowWalletByKey(key);
-      const r = await readAaveFlowReserves(ctx.publicClient, wallet.address);
-      const b = await getBalances(ctx.publicClient, wallet.address);
-      aaveActors.push({
+  // Every read below is independent -- one wallet's balance says nothing about another's -- so they
+  // are issued together rather than in a chain of awaits.
+  //
+  // This is the environment loop's bottleneck, and it is a latency problem rather than a workload
+  // one. The client batches contract reads into Multicall3 (`batch: true`), but only within a single
+  // await: a sequential loop over 8 flow wallets and 4 aave actors is ~16 round trips no matter how
+  // well each one batches. Measured at 4ms per round trip on an idle chain (60ms per block, fine)
+  // and ~20ms once agents were active enough to keep anvil's execution queue busy -- 331ms per
+  // block against a 2s budget, which cost 43 blocks of a 504-block run (issue #56).
+  const aaveActorKeys = enabledIds.includes("aave")
+    ? Array.from(
+        { length: ctx.config.aaveFlowActorCount },
+        (_, i) => `aave:actor${i}`,
+      )
+    : [];
+  const flowWalletRefs = enabledIds.flatMap((protocol) =>
+    (["informed", "uninformed"] as FlowKind[]).map((kind) => ({
+      protocol,
+      kind,
+    })),
+  );
+  const [aaveActorReads, flowWalletBalances] = await Promise.all([
+    Promise.all(
+      aaveActorKeys.map(async (key) => {
+        const wallet = ctx.flowWalletByKey(key);
+        const [reserves, balances] = await Promise.all([
+          readAaveFlowReserves(ctx.publicClient, wallet.address),
+          getBalances(ctx.publicClient, wallet.address),
+        ]);
+        return { key, reserves, balances };
+      }),
+    ),
+    Promise.all(
+      flowWalletRefs.map(({ protocol, kind }) =>
+        getBalances(ctx.publicClient, ctx.flowWallet(protocol, kind).address),
+      ),
+    ),
+  ]);
+  const aaveActors: FlowContextWire["aaveActors"] = enabledIds.includes("aave")
+    ? aaveActorReads.map(({ key, reserves, balances }) => ({
         key,
-        wethSupplied: r.wethSupplied.toString(),
-        usdcBorrowed: r.usdcBorrowed.toString(),
-        wethWei: b.wethWei.toString(),
-        usdcUnits: venueStableUnits("aave", b).toString(),
-      });
-    }
-  }
+        wethSupplied: reserves.wethSupplied.toString(),
+        usdcBorrowed: reserves.usdcBorrowed.toString(),
+        wethWei: balances.wethWei.toString(),
+        usdcUnits: venueStableUnits("aave", balances).toString(),
+      }))
+    : undefined;
   const flowBalances: FlowContextWire["flowBalances"] = {};
-  for (const protocol of enabledIds) {
-    for (const kind of ["informed", "uninformed"] as FlowKind[]) {
-      const wallet = ctx.flowWallet(protocol, kind);
-      const b = await getBalances(ctx.publicClient, wallet.address);
-      flowBalances[`${protocol}:${kind}`] = {
-        wethWei: b.wethWei.toString(),
-        usdcUnits: venueStableUnits(protocol, b).toString(),
-      };
-    }
-  }
+  flowWalletRefs.forEach(({ protocol, kind }, i) => {
+    const b = flowWalletBalances[i];
+    flowBalances[`${protocol}:${kind}`] = {
+      wethWei: b.wethWei.toString(),
+      usdcUnits: venueStableUnits(protocol, b).toString(),
+    };
+  });
 
   // ADR 0013 Phase 8: AMM flow context for non-WETH bases. Only include bases whose flow max > 0 and
   // whose price is available (omit when max=0/unset -> buildFlowOrders doesn't iterate that base and
@@ -141,13 +177,20 @@ export async function buildFlowContext(
       ctx.config.initialWethWei === 0n && ctx.config.flowWethWei === 0n,
     ...(extraBases.length > 0 ? { extraBases } : {}),
     limits: {
-      uninformedFlowMaxWethWei: ctx.config.uninformedFlowMaxWethWei.toString(),
+      // The three uninformed-flow knobs are the ones a flowTrend episode leans on: how big the
+      // orders are, how long a direction is held, and whether the venues lean together. The bot
+      // reads them off the wire every block, so an episode is expressed by sending different
+      // numbers rather than by teaching the bot about events.
+      uninformedFlowMaxWethWei: scaleWei(
+        ctx.config.uninformedFlowMaxWethWei,
+        flowTrend?.sizeMult ?? 1,
+      ).toString(),
       uninformedFlowCountPerBlock: String(ctx.config.uninformedFlowCount),
       uninformedFlowPersistBlocks: String(
-        ctx.config.uninformedFlowPersistBlocks,
+        flowTrend?.persistBlocks ?? ctx.config.uninformedFlowPersistBlocks,
       ),
       uninformedFlowTrendCorrelation: String(
-        ctx.config.uninformedFlowTrendCorrelation,
+        flowTrend?.trendCorrelation ?? ctx.config.uninformedFlowTrendCorrelation,
       ),
       informedFlowMaxWethWei: ctx.config.informedFlowMaxWethWei.toString(),
       balancerFlowMaxWethWei: ctx.config.balancerFlowMaxWethWei.toString(),

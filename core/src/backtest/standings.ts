@@ -20,12 +20,41 @@
 // to be a bounded penalty rather than -Infinity, or one bad scenario decides the whole competition.
 export const DISQUALIFIED_Z_PENALTY = 1;
 
-export type ScoringMetric = "netPnlUsdc" | "alphaUsdc";
+// The four metrics a matrix can be ranked on. The first two are endpoint differences in USDC; the
+// last two come from the epoch series ADR 0019 scores on, and are the pair the metric decision is
+// actually between (issue #56):
+//
+//   excessLogGrowth  M4 — the sum of the epoch excess log returns
+//   score            M9 — mean(x_e) - lambda*std(x_e) over the same series
+//
+// They differ by exactly `lambda*std`, because log returns telescope: sum(x_e) = E*mean(x_e). So an
+// agent's rank moves between them if and only if its per-epoch Sharpe crosses lambda -- which is why
+// both are selectable rather than one being hard-coded while the choice is open.
+export type ScoringMetric =
+  "netPnlUsdc" | "alphaUsdc" | "excessLogGrowth" | "score";
+
+export const SCORING_METRICS: ScoringMetric[] = [
+  "netPnlUsdc",
+  "alphaUsdc",
+  "excessLogGrowth",
+  "score",
+];
 
 export type AgentScore = {
   id: string;
   netPnlUsdc?: number;
   alphaUsdc?: number;
+  // From summary.json's epochScores (ADR 0019). Absent for a run stored before the epoch series
+  // existed, or one whose reconstruction produced no boundaries -- which disqualifies the agent for
+  // that scenario under an epoch metric rather than scoring it zero.
+  excessLogGrowth?: number;
+  score?: number;
+  // The two cross-sections the metrics above are differences of. Carried into matrix.json because
+  // the run directories do not survive: of the 30 runs in the 2026-08-09 sweep, 5 had already lost
+  // theirs, and with only the differences stored there was no way to recompute a score under a
+  // changed rule -- which is the whole premise of standings.json being a derivative (ADR 0017 §4).
+  initialValueUsdc?: number;
+  finalValueUsdc?: number;
   // Set when the agent must not be credited with a score for this scenario: it broke a rule, its
   // process died, or it never reported. The reason is carried through to the report.
   disqualified?: string;

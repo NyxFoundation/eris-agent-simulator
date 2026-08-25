@@ -39,6 +39,7 @@ import {
   scenarioId,
   type AgentScore,
   type ScenarioResult,
+  SCORING_METRICS,
   type ScoringMetric,
 } from "../backtest/standings.js";
 import {
@@ -61,7 +62,11 @@ const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --s
   --seed <N>             the scenario's seed. regimes no longer carry one (ADR 0017 §1)
   --scenarios <path>     scenario set (regimes x seeds) to replay as a matrix, e.g. config/scenarios/public.yaml
   --agents <roster>      replace the regime's default agents with a roster file (YAML/JSON)
-  --metric <name>        scoring metric for standings: netPnlUsdc (default) or alphaUsdc
+  --metric <name>        scoring metric for standings (default netPnlUsdc):
+                           netPnlUsdc      end value - start value, in USDC
+                           alphaUsdc       the same with free-inventory beta removed
+                           excessLogGrowth M4 - sum of the epoch excess log returns
+                           score           M9 - mean - lambda*std over the same series (ADR 0019)
   --repeat <N>           repeat each scenario N times (calibration diagnostic; standings take the median. default 1)
   --port <N>             port for the backtest-only anvil (default 8547)
   --state <dir>          state dump directory (default ${STATE_DIR_DEFAULT})
@@ -73,13 +78,22 @@ type AgentSummary = {
   id: string;
   alphaUsdc?: number;
   netPnlUsdc?: number;
+  initialValueUsdc?: number;
+  finalValueUsdc?: number;
   processExitedEarly?: string;
+};
+// The per-agent epoch score the coordinator writes (ADR 0019). Only the fields the standings need.
+type EpochScoreSummary = {
+  score?: number;
+  logReturns?: number[];
+  benchmarkApplied?: boolean;
 };
 type RunSummary = {
   runDir: string;
   blocksProcessed?: number;
   agents: AgentSummary[];
   violations: Array<{ ownerId?: string }>;
+  epochScores?: Record<string, EpochScoreSummary>;
 };
 
 function readRunSummary(runDir: string): RunSummary | undefined {
@@ -89,12 +103,14 @@ function readRunSummary(runDir: string): RunSummary | undefined {
     blocksProcessed?: number;
     agents?: AgentSummary[];
     violations?: Array<{ ownerId?: string }>;
+    epochScores?: Record<string, EpochScoreSummary>;
   };
   return {
     runDir,
     blocksProcessed: parsed.blocksProcessed,
     agents: parsed.agents ?? [],
     violations: parsed.violations ?? [],
+    ...(parsed.epochScores ? { epochScores: parsed.epochScores } : {}),
   };
 }
 
@@ -122,10 +138,27 @@ function scoresFromSummary(
       : agent.processExitedEarly !== undefined
         ? `process exited early: ${agent.processExitedEarly}`
         : undefined;
+    // M9 straight out of the epoch scorer, and M4 as the sum of the very series it scored. Taking
+    // M4 from the same returns rather than from the endpoints is deliberate: the series has already
+    // had ADR 0019's floor, freeze and gap-carry applied, so the two metrics stay exactly
+    // `lambda*std` apart and a bankrupt agent's M4 reflects the rule that froze it.
+    const epoch = summary.epochScores?.[id];
+    const excessLogGrowth = epoch?.logReturns?.reduce((a, b) => a + b, 0);
     return {
       id,
       netPnlUsdc: agent.netPnlUsdc,
       alphaUsdc: agent.alphaUsdc,
+      ...(epoch?.score !== undefined ? { score: epoch.score } : {}),
+      ...(excessLogGrowth !== undefined ? { excessLogGrowth } : {}),
+      // The endpoints behind those two, so a stored matrix can be rescored after the run directory
+      // is gone. Copied even for a disqualified agent: the disqualification is a ranking rule, and
+      // erasing what it actually did would make the rule unauditable.
+      ...(agent.initialValueUsdc !== undefined
+        ? { initialValueUsdc: agent.initialValueUsdc }
+        : {}),
+      ...(agent.finalValueUsdc !== undefined
+        ? { finalValueUsdc: agent.finalValueUsdc }
+        : {}),
       ...(disqualified !== undefined ? { disqualified } : {}),
     };
   });
@@ -252,16 +285,18 @@ async function main(): Promise<void> {
       "--seed does not apply to --scenarios (the set supplies the seeds)",
     );
 
-  const metric: ScoringMetric =
-    flags.metric === "alphaUsdc"
-      ? "alphaUsdc"
-      : flags.metric === undefined || flags.metric === "netPnlUsdc"
-        ? "netPnlUsdc"
-        : (() => {
-            throw new Error(
-              `--metric must be netPnlUsdc or alphaUsdc (got ${flags.metric})`,
-            );
-          })();
+  // netPnlUsdc stays the default: it is the one metric every stored matrix has, so leaving it alone
+  // keeps old runs comparable. The epoch metrics (M4/M9) are the ones the decision is between and
+  // are selectable while it is open (issue #56).
+  const metric: ScoringMetric = ((): ScoringMetric => {
+    if (flags.metric === undefined) return "netPnlUsdc";
+    const found = SCORING_METRICS.find((m) => m === flags.metric);
+    if (!found)
+      throw new Error(
+        `--metric must be one of ${SCORING_METRICS.join(" | ")} (got ${flags.metric})`,
+      );
+    return found;
+  })();
 
   const repeat = Number(flags.repeat ?? "1");
   if (!Number.isInteger(repeat) || repeat < 1)
@@ -558,6 +593,9 @@ async function main(): Promise<void> {
             createdAt: new Date().toISOString(),
             sourceCommit: gitHead(ROOT) ?? "unknown",
             scenarioSet: flags.scenarios,
+            // A matrix is a scenario-mode run by construction (ADR 0020 §1). Written out so a later
+            // comparison against a continuous run is refused rather than silently averaged.
+            resetUnit: "scenario",
             metric,
             repeat,
             // Complete only once every scenario has run; until then this is a partial matrix.
@@ -599,14 +637,17 @@ async function main(): Promise<void> {
             ERIS_LOCAL_DEPLOY: "1",
             ERIS_LOCAL_SNAPSHOT_FILE: snapshotFile,
             ERIS_RUN_MODE: "backtest",
+            // ADR 0020 §1: the matrix is the only thing that resets the world between runs, so it is
+            // the only thing allowed to declare the mode. A single --regime replay stays `continuous`
+            // -- it is one world, whatever the snapshot/revert around it does for the *next* scenario.
+            ...(matrixMode ? { ERIS_RESET_UNIT: "scenario" } : {}),
           });
           runDirs.push(runDir);
           const summary = readRunSummary(runDir);
           if (summary) {
             perRepeat.push(scoresFromSummary(summary, expectedAgents));
             blocksPerRepeat.push(summary.blocksProcessed);
-          }
-          else {
+          } else {
             lastError = `summary.json not found (${runDir})`;
             console.error(`[backtest] warning: ${lastError}`);
           }

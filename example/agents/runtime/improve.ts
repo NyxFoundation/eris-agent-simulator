@@ -21,8 +21,13 @@ import { join } from "node:path";
 import { createContext, Script } from "node:vm";
 import { parse as parseYaml } from "yaml";
 import { findCheatcodeUsage } from "@eris/sdk/strategyStaticCheck.js";
+import { ACTION_TYPES_BY_PROTOCOL } from "@eris/sdk/action.js";
 import type { AgentContext } from "@eris/sdk/agent.js";
-import type { AgentAction, AgentObservation } from "@eris/sdk/types.js";
+import type {
+  AgentAction,
+  AgentObservation,
+  ProtocolId,
+} from "@eris/sdk/types.js";
 
 // How often the LLM is offered a chance to revise, in blocks, when prompt.md does not say.
 export const DEFAULT_REVISE_EVERY_BLOCKS = 60;
@@ -320,7 +325,17 @@ export function compileExecutor(source: string): CompileResult {
 export function buildRevisionSystem(
   agent: ImproveAgent,
   currentExecutor: string,
+  // The venues this run actually has, taken from the latest observation. Listing the vocabulary
+  // matters most for the strategies that need an action they have never emitted: a shipped
+  // `lp-provider` only ever mints and collects, so without this the model's only evidence about
+  // what a swap is called is a strategy that never swaps -- and an invented name is rejected before
+  // it is installed. Measured: under USDC-only funding it sat out 18 of 18 scenarios for want of one
+  // (docs/scoring-metric-measurements.md §5.8 (f)).
+  enabledProtocols: readonly ProtocolId[] = [],
 ): string {
+  const vocabulary = enabledProtocols
+    .filter((id) => ACTION_TYPES_BY_PROTOCOL[id]?.length)
+    .map((id) => `  ${id}: ${ACTION_TYPES_BY_PROTOCOL[id].join(", ")}`);
   return [
     `You maintain the trading strategy of an autonomous agent in a DeFi simulation.`,
     ``,
@@ -359,6 +374,22 @@ export function buildRevisionSystem(
     `The body may use only: obs, ctx, and the standard JavaScript built-ins. There is no require,`,
     `no import, no process, no network. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
     `rejected before installation.`,
+    ...(vocabulary.length > 0
+      ? [
+          ``,
+          `## Actions available in this run`,
+          ``,
+          `The strategy above may use only some of these. An action type not listed here does not`,
+          `exist and is rejected before it reaches the chain.`,
+          ``,
+          ...vocabulary,
+          ``,
+          `Plus \`bundle\` (several of the above in one transaction) and \`noop\`. Sizes and limits`,
+          `are in \`obs.limits\`; what you hold is in \`obs.balances\`. **Holding none of an asset is`,
+          `not a reason to do nothing** — buying it is an action, with a cost, and whether that cost`,
+          `is worth paying is a judgement the strategy is allowed to make.`,
+        ]
+      : []),
   ].join("\n");
 }
 

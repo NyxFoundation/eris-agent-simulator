@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   EventSchedule,
   parseStressEvents,
+  withOuOverride,
   type StressEventConfig,
 } from "../core/src/realtime/events.js";
 
@@ -419,4 +420,289 @@ test("parseStressEvents: invalid input throws", () => {
       ),
     /positive total window/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Process events (issue #56): the two regimes that used to be run-wide settings, as windows.
+//
+// `cex-drift` and `informed-flow` could not be injected into a continuous economy at all -- a week
+// cannot "be" a drifting week the way a 360-block scenario could. As events they compose with the
+// rest, and a week can hold a drift episode, a flow episode and a depeg at once.
+// ---------------------------------------------------------------------------
+
+test("a cexDrift episode changes the walk, and leaves it alone outside its window", () => {
+  const schedule = new EventSchedule(
+    [
+      {
+        type: "cexDrift",
+        magnitudeRange: [0.0015, 0.0015],
+        kappaMultRange: [0.2, 0.2],
+        side: "buy",
+        windowFrac: [0.25, 0.25],
+        rampBlocks: 4,
+        holdBlocks: 10,
+        decayBlocks: 6,
+      },
+    ],
+    1,
+    100,
+  );
+  const ev = schedule.events[0];
+  // Identity before and after: a run with an episode still has an untouched price process outside
+  // it, which is what keeps beta near zero away from the window (ADR 0007).
+  assert.deepEqual(schedule.ouOverrideAt(ev.startBlock - 1), {
+    driftAdd: 0,
+    kappaMult: 1,
+  });
+  assert.deepEqual(schedule.ouOverrideAt(ev.endBlock), {
+    driftAdd: 0,
+    kappaMult: 1,
+  });
+  // At full strength the drift is the drawn magnitude and mean reversion is weakened to the drawn
+  // multiplier -- both together, because a drift the OU pulls straight back out is not a drift.
+  const peak = schedule.ouOverrideAt(ev.startBlock + ev.rampBlocks);
+  assert.ok(Math.abs(peak.driftAdd - 0.0015) < 1e-12);
+  assert.ok(Math.abs(peak.kappaMult - 0.2) < 1e-12);
+  // Half way up the ramp both are partly applied, so the market's character does not switch on one
+  // block.
+  const ramping = schedule.ouOverrideAt(ev.startBlock + 1);
+  assert.ok(ramping.driftAdd > 0 && ramping.driftAdd < 0.0015);
+  assert.ok(ramping.kappaMult > 0.2 && ramping.kappaMult < 1);
+});
+
+test("a downward cexDrift is the same episode with the sign flipped", () => {
+  const down = new EventSchedule(
+    [
+      {
+        type: "cexDrift",
+        magnitudeRange: [0.001, 0.001],
+        side: "sell",
+        windowFrac: [0.2, 0.2],
+        rampBlocks: 0,
+        holdBlocks: 10,
+        decayBlocks: 0,
+      },
+    ],
+    7,
+    100,
+  );
+  const ev = down.events[0];
+  assert.equal(ev.side, "sell");
+  assert.ok(down.ouOverrideAt(ev.startBlock).driftAdd < 0);
+});
+
+test("withOuOverride leaves untouched parameters byte-identical", () => {
+  const params = { volatility: 0.004, kappa: 0.02, drift: 0 };
+  assert.equal(
+    withOuOverride(params, { driftAdd: 0, kappaMult: 1 }),
+    params,
+    "no episode open must return the same object, not a copy",
+  );
+  const shifted = withOuOverride(params, { driftAdd: 0.001, kappaMult: 0.2 });
+  assert.equal(shifted.volatility, 0.004, "volatility is not an episode's business");
+  assert.ok(Math.abs(shifted.kappa - 0.004) < 1e-12);
+  assert.ok(Math.abs(shifted.drift - 0.001) < 1e-12);
+});
+
+test("a flowTrend episode leans the uninformed flow while its window is open", () => {
+  const schedule = new EventSchedule(
+    [
+      {
+        type: "flowTrend",
+        magnitudeRange: [3, 3],
+        trendCorrelation: 1,
+        persistBlocks: 12,
+        windowFrac: [0.3, 0.3],
+        rampBlocks: 5,
+        holdBlocks: 20,
+        decayBlocks: 5,
+      },
+    ],
+    3,
+    200,
+  );
+  const ev = schedule.events[0];
+  assert.deepEqual(schedule.flowTrendAt(ev.startBlock - 1), { sizeMult: 1 });
+  const peak = schedule.flowTrendAt(ev.startBlock + ev.rampBlocks);
+  assert.ok(Math.abs(peak.sizeMult - 3) < 1e-12);
+  // The shape knobs are not faded by the envelope: half a correlation during the ramp is a
+  // different regime, not a weaker one.
+  assert.equal(peak.trendCorrelation, 1);
+  assert.equal(peak.persistBlocks, 12);
+  const ramping = schedule.flowTrendAt(ev.startBlock);
+  assert.ok(ramping.sizeMult > 1 && ramping.sizeMult < 3);
+  assert.equal(ramping.trendCorrelation, 1);
+});
+
+test("process events do not disturb the price overlay or the point events", () => {
+  // The kinds are consumed by different callers, and a type that lands in the wrong bucket silently
+  // does nothing (the failure `pointEventsAt` shipped once).
+  const schedule = new EventSchedule(
+    [
+      {
+        type: "cexDrift",
+        magnitudeRange: [0.001, 0.001],
+        windowFrac: [0.2, 0.2],
+        rampBlocks: 0,
+        holdBlocks: 20,
+        decayBlocks: 0,
+      },
+      {
+        type: "flowTrend",
+        magnitudeRange: [2, 2],
+        windowFrac: [0.2, 0.2],
+        rampBlocks: 0,
+        holdBlocks: 20,
+        decayBlocks: 0,
+      },
+    ],
+    11,
+    100,
+  );
+  const at = schedule.at(schedule.events[0].startBlock);
+  assert.equal(at.wethMult, 1, "a process event is not a price multiplier");
+  assert.equal(
+    schedule.pointEventsAt(0, 99).length,
+    0,
+    "a process event is not executed once",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Dislocations that do not close (issue #56)
+//
+// The competition's regime table calls the stablecoin regime a *non-mean-reverting* deviation, and
+// the price regime a repricing. Neither was expressible: every window ended with the environment
+// putting things back, so "will it come back?" always had the answer yes, and betting on it was a
+// free option rather than a judgement.
+// ---------------------------------------------------------------------------
+
+test("a persistent depeg holds its level instead of decaying", () => {
+  const schedule = new EventSchedule(
+    [
+      {
+        type: "depeg",
+        stable: "DAI",
+        magnitudeRange: [0.5, 0.5],
+        persist: true,
+        windowFrac: [0.2, 0.2],
+        rampBlocks: 5,
+        holdBlocks: 10,
+        decayBlocks: 0,
+      },
+    ],
+    1,
+    100,
+  );
+  const ev = schedule.events[0];
+  assert.equal(ev.persist, true);
+  assert.equal(schedule.depegFractionAt("DAI", ev.startBlock - 1), 0);
+  // Full strength at the top of the ramp, and still there long after the trapezoid would have
+  // finished -- the run ends with the peg broken.
+  assert.ok(
+    Math.abs(schedule.depegFractionAt("DAI", ev.startBlock + 5) - 0.5) < 1e-12,
+  );
+  assert.ok(Math.abs(schedule.depegFractionAt("DAI", 99) - 0.5) < 1e-12);
+});
+
+test("an ordinary depeg still closes, so the two are distinguishable", () => {
+  const schedule = new EventSchedule(
+    [
+      {
+        type: "depeg",
+        stable: "DAI",
+        magnitudeRange: [0.5, 0.5],
+        windowFrac: [0.2, 0.2],
+        rampBlocks: 5,
+        holdBlocks: 10,
+        decayBlocks: 5,
+      },
+    ],
+    1,
+    100,
+  );
+  assert.equal(schedule.depegFractionAt("DAI", 99), 0);
+});
+
+test("persist without decayBlocks: 0 is refused rather than ignored", () => {
+  assert.throws(
+    () =>
+      parseStressEvents(
+        JSON.stringify([
+          {
+            type: "depeg",
+            stable: "DAI",
+            magnitudeRange: [0.4, 0.4],
+            persist: true,
+            windowFrac: [0.2, 0.2],
+            rampBlocks: 4,
+            holdBlocks: 10,
+            decayBlocks: 6,
+          },
+        ]),
+      ),
+    /persist requires decayBlocks: 0/,
+  );
+  assert.throws(
+    () =>
+      parseStressEvents(
+        JSON.stringify([
+          {
+            type: "crash",
+            magnitudeRange: [0.1, 0.1],
+            persist: true,
+            windowFrac: [0.2, 0.2],
+            rampBlocks: 0,
+            holdBlocks: 10,
+            decayBlocks: 0,
+          },
+        ]),
+      ),
+    /persist only applies to types "depeg" and "eusdDepeg"/,
+  );
+});
+
+test("a repricing cexDrift moves the anchor by exactly the drift it applied", () => {
+  const schedule = new EventSchedule(
+    [
+      {
+        type: "cexDrift",
+        magnitudeRange: [0.002, 0.002],
+        side: "buy",
+        repriceAnchor: true,
+        windowFrac: [0.2, 0.2],
+        rampBlocks: 0,
+        holdBlocks: 10,
+        decayBlocks: 0,
+      },
+    ],
+    5,
+    100,
+  );
+  const ev = schedule.events[0];
+  assert.equal(schedule.anchorMultiplierAt(ev.startBlock - 1), 1);
+  // Ten blocks of hold at 0.2% each, compounded the same way the OU compounds its own step.
+  const expected = 1.002 ** 10;
+  assert.ok(Math.abs(schedule.anchorMultiplierAt(ev.endBlock - 1) - expected) < 1e-12);
+  // And it stays there: the new level is what the walk now reverts to.
+  assert.ok(Math.abs(schedule.anchorMultiplierAt(99) - expected) < 1e-12);
+});
+
+test("a cexDrift without repriceAnchor leaves the anchor alone", () => {
+  const schedule = new EventSchedule(
+    [
+      {
+        type: "cexDrift",
+        magnitudeRange: [0.002, 0.002],
+        windowFrac: [0.2, 0.2],
+        rampBlocks: 0,
+        holdBlocks: 10,
+        decayBlocks: 0,
+      },
+    ],
+    5,
+    100,
+  );
+  assert.equal(schedule.anchorMultiplierAt(50), 1);
+  assert.equal(schedule.anchorMultiplierAt(99), 1);
 });

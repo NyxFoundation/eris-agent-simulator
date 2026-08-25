@@ -1,0 +1,7 @@
+# config/scenarios/metric-boxA.yaml — half the scenario-mode metric comparison (ADR 0020 §4).
+#
+# Split across two spot boxes because the whole set is ~5 h of wall clock and a spot interruption
+# takes everything on the box with it. Regimes are the metric-* derivations (official market
+# conditions, ADR 0019 §6 funding). 12 scenarios ≈ 3 h.
+regimes: [metric-calm, metric-cex-drift, metric-informed-flow, metric-whale]
+seeds: [101, 202, 303]

@@ -23,7 +23,9 @@ import { valueUsdc } from "@eris/sdk/pnl.js";
 import {
   decodeStableProbes,
   marketPricedStables,
+  medianStablePrices,
   PAR_STABLE_PRICES,
+  readStablePrices,
   stableProbeReads,
   type StableMarket,
   type StablePrices,
@@ -77,6 +79,36 @@ export type ReconstructionMeta = {
   // Holdings excluded from the value series because they could not be priced (issue #41) or could not
   // be read (issue #44).
   unpricedHoldings: UnpricedHolding[];
+  // The value cross-sections at epoch boundaries (ADR 0019 §1). Absent when the run is shorter than
+  // one epoch or the series is disabled (run.epochBlocks: 0).
+  //
+  // Raw values, not returns or scores: the metric (floor, log returns, mean - lambda*std) is meant to
+  // stay recomputable from stored data when lambda or the epoch length changes, the same way
+  // standings.json is derived from matrix.json (ADR 0017 §4).
+  epochSeries?: EpochSeries;
+  // How the epoch boundaries were marked (ADR 0019 G7). Absent when nothing was medianed.
+  markMedian?: MarkMedianMeta;
+};
+
+export type MarkMedianMeta = {
+  windowBlocks: number;
+  boundaries: number;
+  // Which manipulable marks the median covers, named rather than assumed: if a future venue marks a
+  // holding off a pool quote, this list is where its absence should become visible.
+  surfaces: string[];
+  // stable symbol -> the largest gap seen between the boundary's live probe and the median it was
+  // scored at, over all boundaries.
+  maxDeviationBps: Record<string, number>;
+};
+
+export type EpochSeries = {
+  epochBlocks: number;
+  // Number of returns the series supports = boundaryBlocks.length - 1.
+  epochs: number;
+  boundaryBlocks: number[];
+  // agent -> value at each boundary, aligned with boundaryBlocks. `null` marks a boundary whose
+  // cross-section did not report that agent, so a gap is never read as a value of zero.
+  valuesByAgent: Record<string, Array<number | null>>;
 };
 
 // A contract/function whose reads failed during the reconstruction, and how often.
@@ -235,6 +267,11 @@ export async function readValueSnapshotAtBlock(opts: {
   horizonBlock?: number;
   // Fixed reference fair for α evaluation (base symbol -> USD). If unspecified, α = total value.
   refFairByBase?: Record<string, number>;
+  // Stable prices to value this cross-section at, replacing the ones probed at this block (ADR 0019
+  // G7: epoch boundaries are marked at the median over the blocks before them, so a one-block push
+  // into a thin pool does not become the score). The probe at this block still runs -- the caller
+  // compares the two to report how far the mark was moved.
+  stablePricesOverride?: StablePrices;
 }): Promise<ValueSnapshot> {
   const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
   let failedReads = 0;
@@ -375,13 +412,17 @@ export async function readValueSnapshotAtBlock(opts: {
       // the per-agent decode below turns into a reported holding. Unlike a missing WETH fair this
       // is not a reason to refuse the block: par is a defensible number, it just is not a measured
       // one, and saying so is the whole point (issue #27).
-      stablePrices = decodeStableProbes(
+      const probed = decodeStableProbes(
         stableMarkets,
         results.slice(
           stableProbeBase,
           stableProbeBase + stableMarkets.length * 2,
         ),
       );
+      // The override has to win before any adapter reads ctx.stablePrices(): the Liquity venue prices
+      // its Trove debt and Stability Pool deposit off the same seam, so a boundary marked at the
+      // median for spot eUSD and at the live push for the debt would be two rules at once.
+      stablePrices = opts.stablePricesOverride ?? probed;
     },
   });
 
@@ -634,6 +675,122 @@ export function scoringBlocks(
   return blocks;
 }
 
+// Blocks the epoch series is sampled at (ADR 0019 §1/§8). E epochs need E+1 boundaries, so the run's
+// start is boundary 0 and the returned array is one longer than the epoch count.
+//
+// A trailing partial epoch is dropped rather than scored short: a window shorter than the others
+// produces a smaller log return by construction, which the metric would read as the agent slowing
+// down. Dropping it costs at most `epochBlocks - 1` blocks of a run that was not sized for the epoch
+// length in the first place.
+//
+// These are *not* forced to coincide with scoringBlocks: with `scoreEvery > 1` the thinned series can
+// skip a boundary, so the caller reads the union of the two.
+export function epochBoundaryBlocks(
+  fromBlock: number,
+  toBlock: number,
+  epochBlocks: number,
+): number[] {
+  const step = Math.floor(epochBlocks);
+  if (!Number.isFinite(step) || step < 1) return [];
+  const epochs = Math.floor((toBlock - fromBlock) / step);
+  if (epochs < 1) return [];
+  return Array.from({ length: epochs + 1 }, (_, i) => fromBlock + i * step);
+}
+
+// G7 (ADR 0019 §5): mark each epoch boundary at the median of the blocks leading up to it, so that
+// pushing a pool for one block does not become the score. It has to hold for most of the window to
+// count, which turns a spread-cost round trip into a position.
+//
+// Scope is the market-priced stables, and that turns out to be the whole surface. It is one seam,
+// not one venue: spot registry stables (#27) and the Liquity venue's Trove debt / Stability Pool
+// deposit both price off ctx.stablePrices() (protocols/liquity.ts).
+//
+// The ADR's G7 originally named two more, and both fall out on inspection:
+//
+//   LP shares are valued by composition -- reserves x the environment's fair price -- never by the
+//   pool's own price, and the agent's spot side is marked at those same external prices. So a push
+//   moves value between the agent's two buckets rather than creating any: what the trader loses, the
+//   pool gains, and the agent gets back only its share of it. A wash if it owns the whole pool, a
+//   loss otherwise.
+//
+//   The LST venue's scored mark is face value (vault redemption rate x the WETH fair), which reads
+//   no pool at all. Its pool quote feeds liquidatableValueUsdc, a reported diagnostic that the value
+//   series does not sum.
+//
+// What makes the stables different is that there the pool quote *is* the mark of a holding whose
+// cost basis sits somewhere else, so moving the pool moves the score.
+class MarkMedian {
+  private readonly maxDeviationBps = new Map<string, number>();
+  private boundaries = 0;
+
+  constructor(
+    private readonly opts: {
+      publicClient: PublicClient;
+      activeStables: Address[];
+      windowBlocks: number;
+      // The run's first block: earlier boundaries get a shorter window rather than reads of blocks
+      // that predate the run.
+      floorBlock: number;
+    },
+  ) {}
+
+  private get enabled(): boolean {
+    return (
+      this.opts.windowBlocks > 1 &&
+      marketPricedStables(this.opts.activeStables).length > 0
+    );
+  }
+
+  // The prices to value the boundary at, or undefined to keep the live mark (nothing to median).
+  async at(block: number): Promise<StablePrices | undefined> {
+    if (!this.enabled) return undefined;
+    const first = Math.max(
+      this.opts.floorBlock,
+      block - this.opts.windowBlocks + 1,
+    );
+    const window: number[] = [];
+    for (let b = first; b <= block; b++) window.push(b);
+    if (window.length <= 1) return undefined;
+    // N x 2 reads per stable per boundary. The client folds them into multicalls, and only the ~43
+    // boundaries pay it -- the equity curve does not.
+    const samples = await Promise.all(
+      window.map((b) =>
+        readStablePrices(
+          this.opts.publicClient,
+          this.opts.activeStables,
+          BigInt(b),
+        ),
+      ),
+    );
+    const median = medianStablePrices(samples);
+    const live = samples[samples.length - 1];
+    for (const quote of median.quotes) {
+      const livePrice = live.byToken[quote.token.toLowerCase()] ?? 0;
+      if (!(livePrice > 0) || !(quote.priceUsdc > 0)) continue;
+      const bps = (Math.abs(quote.priceUsdc - livePrice) / livePrice) * 10_000;
+      this.maxDeviationBps.set(
+        quote.symbol,
+        Math.max(this.maxDeviationBps.get(quote.symbol) ?? 0, bps),
+      );
+    }
+    this.boundaries++;
+    return median;
+  }
+
+  // Reported so a run says how much the rule actually moved: a large gap between the live mark and
+  // the median is either a volatile peg or somebody leaning on the pool at the boundary, and both
+  // are things the operator wants to see rather than infer.
+  summary(): MarkMedianMeta | undefined {
+    if (this.boundaries === 0) return undefined;
+    return {
+      windowBlocks: this.opts.windowBlocks,
+      boundaries: this.boundaries,
+      surfaces: ["stables"],
+      maxDeviationBps: Object.fromEntries(this.maxDeviationBps),
+    };
+  }
+}
+
 export async function reconstructValueSeries(opts: {
   publicClient: PublicClient;
   logger: RunLogger;
@@ -645,6 +802,11 @@ export async function reconstructValueSeries(opts: {
   toBlock: number;
   // Read a cross-section only every Nth block (config.scoreEvery). Score-neutral; see scoringBlocks.
   scoreEvery?: number;
+  // Epoch length for the ADR 0019 value series (config.epochBlocks). 0 = do not produce the series.
+  epochBlocks?: number;
+  // G7 window: how many blocks each epoch boundary's manipulable marks are medianed over, the
+  // boundary block included (config.markMedianBlocks). <= 1 marks boundaries live.
+  markMedianBlocks?: number;
 }): Promise<ReconstructionMeta> {
   const {
     publicClient,
@@ -656,6 +818,8 @@ export async function reconstructValueSeries(opts: {
     fromBlock,
     toBlock,
     scoreEvery = 1,
+    epochBlocks = 0,
+    markMedianBlocks = 0,
   } = opts;
   const started = Date.now();
   let failedReads = 0;
@@ -705,7 +869,22 @@ export async function reconstructValueSeries(opts: {
   // at another, and collapsing those into one entry would hide half the story.
   const unpricedKey = (h: UnpricedHolding) =>
     `${h.agentId}|${h.source}|${h.token?.toLowerCase() ?? ""}|${h.reason ?? "unpriced"}`;
-  const blocks = scoringBlocks(fromBlock, toBlock, scoreEvery);
+  // Epoch boundaries are read even when the rest of the series is thinned: they are the score, the
+  // thinned cross-sections are only the equity curve.
+  const boundaryBlocks = epochBoundaryBlocks(fromBlock, toBlock, epochBlocks);
+  const boundaryIndex = new Map(boundaryBlocks.map((b, i) => [b, i]));
+  const epochValuesByAgent = new Map<string, Array<number | null>>(
+    agents.map((a) => [
+      a.id,
+      Array.from({ length: boundaryBlocks.length }, () => null),
+    ]),
+  );
+  const blocks = [
+    ...new Set([
+      ...scoringBlocks(fromBlock, toBlock, scoreEvery),
+      ...boundaryBlocks,
+    ]),
+  ].sort((a, b) => a - b);
   if (scoreEvery > 1)
     logger.event({
       type: "scoring_thinned",
@@ -713,7 +892,18 @@ export async function reconstructValueSeries(opts: {
       crossSections: blocks.length,
       windowBlocks: toBlock - fromBlock + 1,
     });
+  // G7 (ADR 0019 §5): only the epoch boundaries are medianed. The cross-sections in between are the
+  // equity curve, and smoothing those would hide real intra-epoch moves without protecting any score.
+  const markMedian = new MarkMedian({
+    publicClient,
+    activeStables,
+    windowBlocks: markMedianBlocks,
+    floorBlock: fromBlock,
+  });
   for (const b of blocks) {
+    const stablePricesOverride = boundaryIndex.has(b)
+      ? await markMedian.at(b)
+      : undefined;
     const snapshot = await readValueSnapshotAtBlock({
       publicClient,
       agents,
@@ -723,6 +913,7 @@ export async function reconstructValueSeries(opts: {
       blockNumber: b,
       horizonBlock: toBlock,
       refFairByBase,
+      ...(stablePricesOverride ? { stablePricesOverride } : {}),
     });
     failedReads += snapshot.failedReads;
     mergeFailedReads(failedReadTargets, snapshot.failedReadTargets);
@@ -737,6 +928,12 @@ export async function reconstructValueSeries(opts: {
       alphaLast.set(id, alphaValueUsdc);
       liquidatableLast.set(id, liquidatableValueUsdc);
       markedLast.set(id, total);
+      // ADR 0019 §3: the epoch series is the ordinary live mark, not alphaValueUsdc. Its β removal is
+      // partial (free inventory is held at the reference fair while protocol positions stay live), so
+      // scoring on it would price the same bet differently depending on the instrument.
+      const epochAt = boundaryIndex.get(b);
+      const epochValues = epochValuesByAgent.get(id);
+      if (epochAt !== undefined && epochValues) epochValues[epochAt] = total;
       // The observation shape readPerRoundValues reads (inventory.valueUsdc = total value).
       // Do not include protocols (avoids double-counting perRoundValueUsdc). alphaValueUsdc is
       // the fixed-reference fair evaluation (β-removed) and can also be read as a per-round α series.
@@ -829,6 +1026,27 @@ export async function reconstructValueSeries(opts: {
     );
   }
 
+  const epochSeries: EpochSeries | undefined =
+    boundaryBlocks.length > 1
+      ? {
+          epochBlocks: Math.floor(epochBlocks),
+          epochs: boundaryBlocks.length - 1,
+          boundaryBlocks,
+          valuesByAgent: Object.fromEntries(epochValuesByAgent),
+        }
+      : undefined;
+  if (epochSeries) {
+    const gaps = Object.values(epochSeries.valuesByAgent).reduce(
+      (n, series) => n + series.filter((v) => v === null).length,
+      0,
+    );
+    if (gaps > 0)
+      console.warn(
+        `[reconstruct] epoch series has ${gaps} missing boundary value(s); ` +
+          "a null is a boundary that reported no value, not a value of zero",
+      );
+  }
+
   return {
     source: "post-run-reconstruction",
     granularityBlocks: scoreEvery,
@@ -843,6 +1061,8 @@ export async function reconstructValueSeries(opts: {
     alphaByAgent,
     liquidatableValueByAgent,
     unpricedHoldings,
+    ...(epochSeries ? { epochSeries } : {}),
+    ...(markMedian.summary() ? { markMedian: markMedian.summary() } : {}),
   };
 }
 

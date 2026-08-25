@@ -1,0 +1,8 @@
+# The two event-heavy regimes of metric-boxB.yaml on their own (6 scenarios ≈ 1.4 h).
+#
+# Written on 2026-08-23 when a box B run lost seven scenarios to ENOSPC: anvil's --load-state temp
+# directory under ~/.foundry/anvil/tmp grows to ~20 GB per matrix run and is NOT removed when that
+# anvil exits, so a second matrix on the same box fills the disk. The re-run used the full
+# metric-boxB.yaml instead; this file stays as the smaller unit for when only these two need redoing.
+regimes: [metric-crash, metric-depeg]
+seeds: [101, 202, 303]

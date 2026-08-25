@@ -50,18 +50,38 @@ export type StressEventType =
   | "whale"
   | "liquidityPull"
   | "eusdDepeg"
-  | "depeg";
+  | "depeg"
+  // The two below exist because a continuous economy has no other way to hold these regimes
+  // (issue #56). `cex-drift` and `informed-flow` were run-wide settings -- a whole run either had a
+  // drifting reference price or it did not -- which is expressible when a run is one scenario and
+  // meaningless when a run is a week that has to contain several episodes on an undisclosed
+  // schedule. As windowed events they compose with the rest, and a week can hold a drift episode,
+  // a flow episode and a depeg without being three separate runs.
+  //
+  // They also fix a measurement problem: a week built only from depeg windows gives a cross-venue
+  // arbitrageur nothing to do, so calibrating the scoring metric on it measures one kind of skill
+  // (docs/scoring-metric-measurements.md §10).
+  | "cexDrift"
+  | "flowTrend";
 
 // How the run consumes each type:
 //   overlay  a multiplier layered on the fair price every block of its window (`at()`)
 //   point    executed once, on the block it lands on (`pointEventsAt()`)
 //   state    a target the coordinator holds the venue at for the window (`depthMultiplierAt()`)
+//   process  a parameter the generator itself reads for the window, rather than a correction applied
+//            afterwards (`ouOverrideAt()` / `flowTrendAt()`). An overlay leaves the base path intact
+//            and multiplies the result, which is right for a gap that heals; a drift episode has to
+//            change the walk itself, or mean reversion pulls the price back to a path the drift
+//            never touched.
 //
 // A total Record rather than one opt-in Set per consumer: with separate Sets, adding a sixth type
 // and forgetting one of them compiles, typechecks, and produces a schedule that logs itself and then
 // does nothing. That is not hypothetical -- `pointEventsAt` shipped once with exactly that shape of
 // hole (see the note on the caught-up range below). Here the compiler demands the decision.
-const EVENT_KIND: Record<StressEventType, "overlay" | "point" | "state"> = {
+const EVENT_KIND: Record<
+  StressEventType,
+  "overlay" | "point" | "state" | "process"
+> = {
   spike: "overlay",
   crash: "overlay",
   lstSlash: "point",
@@ -69,6 +89,8 @@ const EVENT_KIND: Record<StressEventType, "overlay" | "point" | "state"> = {
   liquidityPull: "state",
   eusdDepeg: "state",
   depeg: "state",
+  cexDrift: "process",
+  flowTrend: "process",
 };
 
 const isPointEvent = (type: StressEventType): boolean =>
@@ -99,8 +121,35 @@ export type StressEventConfig = {
   // depeg only: which registry stable is pushed off par. Must be one the deployment gave a market
   // (constants' STABLE_MARKET_LEGS), or the coordinator has no pool to sell into.
   stable?: TokenSymbol;
-  // whale only: which way it trades. Default "random" = the seed decides.
+  // whale: which way it trades. cexDrift: which way the reference price is pulled ("buy" = up).
+  // Default "random" = the seed decides, which is what keeps the direction from being memorizable
+  // across a published regime's seeds.
   side?: WhaleSide;
+  // cexDrift only: what mean reversion is multiplied by while the window is open. A drift the OU
+  // pulls straight back out is not a drift, so the episode has to weaken kappa as well as add a
+  // pull -- the `cex-drift` regime did it with a run-wide kappa of 0.004 against the 0.02 default,
+  // i.e. a multiplier of 0.2. Omit to leave mean reversion alone.
+  kappaMultRange?: [number, number];
+  // depeg / eusdDepeg only: the dislocation does not close (issue #56). The design calls regime 5 a
+  // *non-mean-reverting* deviation, and a window that always ends with the environment buying the
+  // stable back is the opposite: par is then guaranteed to return, so "buy the discount and wait"
+  // is not a judgement, it is a free option bounded only by size. With this set the level holds to
+  // the end of the run, and holding through it is a real loss.
+  //
+  // The teardown still buys back after the last competition block -- the startup check refuses to
+  // begin on a depegged pool, so leaving it dislocated would stop the *next* run from starting.
+  // That restore happens outside every scored cross-section.
+  persist?: boolean;
+  // cexDrift only: the market repriced rather than wandered. The OU pulls back to the run's anchor,
+  // so without this a drift episode is erased by mean reversion once the window closes and no event
+  // in the system can express "the price moved and stayed there" -- which is the case that decides
+  // whether betting on a return is skill or habit.
+  repriceAnchor?: boolean;
+  // flowTrend only: how the uninformed flow leans while the window is open. `magnitudeRange` is the
+  // multiplier on its size (the `informed-flow` regime used 3x), and these two are the shape of the
+  // lean the multiplier is applied to. Omitted values leave the run's own setting in place.
+  trendCorrelation?: number;
+  persistBlocks?: number;
   // whale: the venue it prints on. Default "uniswap" (the deepest pool, so the size has to be real
   // to move it).
   // liquidityPull: the venue whose book thins. **Default is every enabled venue** -- thinning one
@@ -134,8 +183,16 @@ export type ResolvedStressEvent = {
   // depeg only: the stable being pushed off par.
   stable?: string;
   magnitude: number;
-  // whale only: resolved from config.side, with "random" collapsed to a concrete side by the seed.
+  // whale / cexDrift: resolved from config.side, with "random" collapsed to a concrete side by the
+  // seed ("buy" = a drift upwards).
   side?: "buy" | "sell";
+  // cexDrift: the mean-reversion multiplier the seed drew. flowTrend: the lean it holds.
+  kappaMult?: number;
+  // depeg: the dislocation holds to the end of the run. cexDrift: the anchor moves with it.
+  persist?: boolean;
+  repriceAnchor?: boolean;
+  trendCorrelation?: number;
+  persistBlocks?: number;
   venue?: "uniswap" | "balancer" | "curve";
   startBlock: number;
   rampBlocks: number;
@@ -150,6 +207,22 @@ export type OverlayState = {
   wethMult: number;
   usdcPx: number;
   baseMults: Record<string, number>;
+};
+
+// What a cexDrift episode does to the price walk this block (identity outside every window).
+export type OuOverride = {
+  // Added to the OU's per-block drift. Signed: negative is a downward episode.
+  driftAdd: number;
+  // Multiplies mean reversion. 1 leaves it alone.
+  kappaMult: number;
+};
+
+// What a flowTrend episode does to uninformed order flow this block (identity outside every window).
+export type FlowTrendOverride = {
+  sizeMult: number;
+  // Absent = keep the run's own setting.
+  trendCorrelation?: number;
+  persistBlocks?: number;
 };
 
 // Salt for a derived seed that does not collide with the price main-path Rng (seed) or flow Rng (flowSeed).
@@ -167,6 +240,8 @@ function envelope(ev: ResolvedStressEvent, blockIndex: number): number {
   const { rampBlocks: r, holdBlocks: h, decayBlocks: d } = ev;
   if (t < r) return r === 0 ? 1 : (t + 1) / r; // rise (takes effect from the first window block)
   if (t < r + h) return 1; // hold
+  // A dislocation that does not close: the level it reached is where the run leaves it (issue #56).
+  if (ev.persist) return 1;
   if (t < r + h + d) return d === 0 ? 1 : 1 - (t - (r + h) + 1) / d; // decay
   return 0; // outside window (from endBlock onward)
 }
@@ -204,14 +279,22 @@ export class EventSchedule {
       // Draw the side for every whale regardless of config so the RNG consumption stays a pure
       // function of the event list -- making it conditional would let one event's `side: buy` shift
       // the schedule of every event after it.
-      const sideDraw = c.type === "whale" ? rng.next() : undefined;
+      const sideDraw =
+        c.type === "whale" || c.type === "cexDrift" ? rng.next() : undefined;
       const side =
-        c.type === "whale"
+        c.type === "whale" || c.type === "cexDrift"
           ? c.side === undefined || c.side === "random"
             ? sideDraw! < 0.5
               ? ("buy" as const)
               : ("sell" as const)
             : c.side
+          : undefined;
+      // Drawn for every cexDrift whether or not the range is set, for the same reason as the side:
+      // the RNG consumption has to stay a pure function of the event list.
+      const kappaDraw = c.type === "cexDrift" ? rng.next() : undefined;
+      const kappaMult =
+        c.type === "cexDrift" && c.kappaMultRange !== undefined
+          ? lerp(c.kappaMultRange[0], c.kappaMultRange[1], kappaDraw as number)
           : undefined;
       return {
         type: c.type,
@@ -219,6 +302,15 @@ export class EventSchedule {
         ...(c.stable !== undefined ? { stable: c.stable } : {}),
         magnitude,
         ...(side !== undefined ? { side } : {}),
+        ...(kappaMult !== undefined ? { kappaMult } : {}),
+        ...(c.persist === true ? { persist: true } : {}),
+        ...(c.repriceAnchor === true ? { repriceAnchor: true } : {}),
+        ...(c.type === "flowTrend" && c.trendCorrelation !== undefined
+          ? { trendCorrelation: c.trendCorrelation }
+          : {}),
+        ...(c.type === "flowTrend" && c.persistBlocks !== undefined
+          ? { persistBlocks: c.persistBlocks }
+          : {}),
         ...(c.type === "whale" ? { venue: c.venue ?? "uniswap" } : {}),
         // liquidityPull keeps `venue` undefined when unset: that means "all enabled", which the
         // schedule cannot resolve on its own (it does not know which protocols the run turned on).
@@ -420,6 +512,71 @@ export class EventSchedule {
     return byBase;
   }
 
+  // What the price process itself should use this block, for the bases a cexDrift episode targets
+  // (ADR 0009's overlay stays for gaps; this is the walk changing). `driftAdd` is added to the OU's
+  // per-block drift and `kappaMult` scales its mean reversion, both faded by the trapezoid so an
+  // episode starts and ends gradually rather than switching the market's character on one block.
+  //
+  // Returns the identity (0 / 1) outside every window, so a run with no such event steps exactly as
+  // it did before this existed.
+  ouOverrideAt(blockIndex: number, base = "WETH"): OuOverride {
+    let driftAdd = 0;
+    let kappaMult = 1;
+    for (const ev of this.events) {
+      if (ev.type !== "cexDrift" || ev.base !== base) continue;
+      const e = envelope(ev, blockIndex);
+      if (e === 0) continue;
+      driftAdd += (ev.side === "sell" ? -1 : 1) * ev.magnitude * e;
+      // Interpolated from 1, so the pull weakens as the episode ramps in.
+      if (ev.kappaMult !== undefined) kappaMult *= 1 + (ev.kappaMult - 1) * e;
+    }
+    return { driftAdd, kappaMult };
+  }
+
+  // Where the price process should mean-revert to this block, as a multiple of the run's anchor.
+  //
+  // Only `repriceAnchor` episodes move it, and they move it by exactly the drift they have applied
+  // so far -- the same multiplicative step the OU takes -- so mean reversion has nothing to fight
+  // during the episode and the level it reached is still there afterwards. 1 for every run without
+  // one, which is every run that existed before this.
+  anchorMultiplierAt(blockIndex: number, base = "WETH"): number {
+    let mult = 1;
+    for (const ev of this.events) {
+      if (ev.type !== "cexDrift" || ev.repriceAnchor !== true) continue;
+      if (ev.base !== base) continue;
+      const sign = ev.side === "sell" ? -1 : 1;
+      const last = Math.min(blockIndex, ev.endBlock - 1);
+      for (let t = ev.startBlock; t <= last; t++) {
+        mult *= 1 + sign * ev.magnitude * envelope(ev, t);
+      }
+    }
+    return mult;
+  }
+
+  // How the uninformed order flow should lean this block. `sizeMult` fades with the trapezoid; the
+  // shape knobs do not, because "half a correlation" during the ramp is not a weaker version of the
+  // regime, it is a different one -- they apply as long as the window is open.
+  flowTrendAt(blockIndex: number): FlowTrendOverride {
+    let sizeMult = 1;
+    let trendCorrelation: number | undefined;
+    let persistBlocks: number | undefined;
+    for (const ev of this.events) {
+      if (ev.type !== "flowTrend") continue;
+      const e = envelope(ev, blockIndex);
+      if (e === 0) continue;
+      sizeMult *= 1 + (ev.magnitude - 1) * e;
+      if (ev.trendCorrelation !== undefined)
+        trendCorrelation = Math.max(trendCorrelation ?? 0, ev.trendCorrelation);
+      if (ev.persistBlocks !== undefined)
+        persistBlocks = Math.max(persistBlocks ?? 0, ev.persistBlocks);
+    }
+    return {
+      sizeMult,
+      ...(trendCorrelation !== undefined ? { trendCorrelation } : {}),
+      ...(persistBlocks !== undefined ? { persistBlocks } : {}),
+    };
+  }
+
   at(blockIndex: number): OverlayState {
     const baseMults: Record<string, number> = {};
     for (const ev of this.events) {
@@ -437,6 +594,21 @@ export class EventSchedule {
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+// Apply a cexDrift episode to one base's OU parameters. Kept here next to the envelope rather than
+// in the coordinator so that "what an episode does to the walk" has one definition, and so a unit
+// test can pin it without a chain.
+export function withOuOverride<T extends { kappa: number; drift: number }>(
+  params: T,
+  override: OuOverride,
+): T {
+  if (override.driftAdd === 0 && override.kappaMult === 1) return params;
+  return {
+    ...params,
+    kappa: params.kappa * override.kappaMult,
+    drift: params.drift + override.driftAdd,
+  };
 }
 
 // Parse and validate ERIS_STRESS_EVENTS (a JSON array). Empty/unset yields [].
@@ -472,10 +644,12 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     o.type !== "whale" &&
     o.type !== "liquidityPull" &&
     o.type !== "eusdDepeg" &&
-    o.type !== "depeg"
+    o.type !== "depeg" &&
+    o.type !== "cexDrift" &&
+    o.type !== "flowTrend"
   ) {
     throw new Error(
-      `${label}.type must be "spike", "crash", "lstSlash", "whale", "liquidityPull", "eusdDepeg" or "depeg"`,
+      `${label}.type must be "spike", "crash", "lstSlash", "whale", "liquidityPull", "eusdDepeg", "depeg", "cexDrift" or "flowTrend"`,
     );
   }
   if (o.type === "depeg") {
@@ -496,7 +670,9 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       o.alignWith !== "whale" &&
       o.alignWith !== "liquidityPull" &&
       o.alignWith !== "eusdDepeg" &&
-      o.alignWith !== "depeg"
+      o.alignWith !== "depeg" &&
+      o.alignWith !== "cexDrift" &&
+      o.alignWith !== "flowTrend"
     ) {
       throw new Error(`${label}.alignWith must be a stress event type`);
     }
@@ -506,10 +682,73 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       throw new Error(`${label}.alignWith must name a different event type`);
   }
   if (o.side !== undefined) {
-    if (o.type !== "whale")
-      throw new Error(`${label}.side only applies to type "whale"`);
+    if (o.type !== "whale" && o.type !== "cexDrift")
+      throw new Error(
+        `${label}.side only applies to types "whale" and "cexDrift"`,
+      );
     if (o.side !== "buy" && o.side !== "sell" && o.side !== "random")
       throw new Error(`${label}.side must be "buy", "sell" or "random"`);
+  }
+  if (o.persist !== undefined) {
+    if (o.type !== "depeg" && o.type !== "eusdDepeg")
+      throw new Error(
+        `${label}.persist only applies to types "depeg" and "eusdDepeg"`,
+      );
+    if (typeof o.persist !== "boolean")
+      throw new Error(`${label}.persist must be a boolean`);
+    // Rejected rather than ignored: a decay that never runs would read as a window that closes.
+    if (o.persist === true && o.decayBlocks !== 0)
+      throw new Error(
+        `${label}.persist requires decayBlocks: 0 (a dislocation that does not close has no decay)`,
+      );
+  }
+  if (o.repriceAnchor !== undefined) {
+    if (o.type !== "cexDrift")
+      throw new Error(`${label}.repriceAnchor only applies to type "cexDrift"`);
+    if (typeof o.repriceAnchor !== "boolean")
+      throw new Error(`${label}.repriceAnchor must be a boolean`);
+  }
+  if (o.kappaMultRange !== undefined) {
+    if (o.type !== "cexDrift")
+      throw new Error(
+        `${label}.kappaMultRange only applies to type "cexDrift"`,
+      );
+    const r = o.kappaMultRange;
+    if (
+      !Array.isArray(r) ||
+      r.length !== 2 ||
+      typeof r[0] !== "number" ||
+      typeof r[1] !== "number" ||
+      r[0] < 0 ||
+      r[1] < r[0]
+    )
+      throw new Error(
+        `${label}.kappaMultRange must be [min, max] with 0 <= min <= max`,
+      );
+  }
+  if (o.trendCorrelation !== undefined) {
+    if (o.type !== "flowTrend")
+      throw new Error(
+        `${label}.trendCorrelation only applies to type "flowTrend"`,
+      );
+    if (
+      typeof o.trendCorrelation !== "number" ||
+      o.trendCorrelation < 0 ||
+      o.trendCorrelation > 1
+    )
+      throw new Error(`${label}.trendCorrelation must be between 0 and 1`);
+  }
+  if (o.persistBlocks !== undefined) {
+    if (o.type !== "flowTrend")
+      throw new Error(
+        `${label}.persistBlocks only applies to type "flowTrend"`,
+      );
+    if (
+      typeof o.persistBlocks !== "number" ||
+      !Number.isInteger(o.persistBlocks) ||
+      o.persistBlocks < 1
+    )
+      throw new Error(`${label}.persistBlocks must be an integer >= 1`);
   }
   if (o.venue !== undefined) {
     // whale picks the venue it prints on; liquidityPull narrows which books thin (omit it to thin
@@ -585,6 +824,17 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       : {}),
     ...(o.alignWith !== undefined
       ? { alignWith: o.alignWith as StressEventType }
+      : {}),
+    ...(o.kappaMultRange !== undefined
+      ? { kappaMultRange: o.kappaMultRange as [number, number] }
+      : {}),
+    ...(o.persist === true ? { persist: true } : {}),
+    ...(o.repriceAnchor === true ? { repriceAnchor: true } : {}),
+    ...(o.trendCorrelation !== undefined
+      ? { trendCorrelation: o.trendCorrelation as number }
+      : {}),
+    ...(o.persistBlocks !== undefined
+      ? { persistBlocks: o.persistBlocks as number }
       : {}),
     magnitudeRange,
     windowFrac,
