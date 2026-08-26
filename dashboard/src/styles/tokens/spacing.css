@@ -1,0 +1,15 @@
+:root{
+--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-8:32px;--space-10:40px;--space-12:48px;--space-16:64px;--space-20:80px;--space-24:96px;
+
+--radius-sm:4px;--radius-md:6px;--radius-lg:10px;--radius-xl:14px;--radius-full:999px;
+
+--shadow-sm:0 1px 2px rgba(0,0,0,0.4);
+--shadow-md:0 4px 12px rgba(0,0,0,0.45);
+--shadow-lg:0 12px 32px rgba(0,0,0,0.5);
+--shadow-glow:0 0 0 1px rgba(201,169,224,0.25),0 0 24px rgba(201,169,224,0.12);
+
+--ease-standard:cubic-bezier(0.2,0.8,0.2,1);
+--duration-fast:120ms;
+--duration-normal:200ms;
+--duration-slow:320ms;
+}

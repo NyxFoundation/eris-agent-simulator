@@ -113,6 +113,16 @@ Output is written under `runs/<run_id>/` (`summary.json` / `events.jsonl` / `blo
 - Flow transactions and valid agent transactions are submitted in each block.
 - `valueSeries.failedReads` in `summary.json` is `0`.
 
+### Dashboard (optional)
+
+An optional web UI lives in the [`dashboard/`](dashboard/) workspace (Vite + React). It is not needed to run or score anything:
+
+```bash
+npm run dashboard   # dev server at http://localhost:5173
+```
+
+It currently renders built-in seed data; wiring every view to real run artifacts (`runs/<id>/`) is tracked in [#63](https://github.com/NyxFoundation/eris-competition-poc/issues/63). For deep-diving individual transactions, the local Blockscout explorer (`npm run explorer`, http://localhost:3100) remains the tool of choice.
+
 ### Backtesting (iterative strategy verification)
 
 Once you bake a state dump from a deployed anvil, you can **replay official regimes (market scenarios) as many times as you like** without launching the deployer. Market conditions are identical every time by seed determinism, and scoring is identical to realtime:

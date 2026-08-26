@@ -1,0 +1,15 @@
+@import 'tailwindcss';
+@import './tokens/colors.css';
+@import './tokens/typography.css';
+@import './tokens/spacing.css';
+@import './tokens/base.css';
+
+@keyframes marker-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes ticker-tape {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
