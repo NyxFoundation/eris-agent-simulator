@@ -57,6 +57,8 @@ export interface ExplorerBlock {
   number: string;
   time: string;
   txCount: number;
+  /** Raw block number for explorer deep links (absent in seed data). */
+  blockNumber?: number;
 }
 
 export type TxMethodTone = "default" | "danger";
@@ -69,6 +71,8 @@ export interface ExplorerTransaction {
   amount: string;
   time: string;
   methodTone: TxMethodTone;
+  /** Full tx hash for explorer deep links (absent in seed data). */
+  fullHash?: string;
 }
 
 export interface ExplorerStats {
@@ -250,6 +254,9 @@ export interface AgentTrade {
   method: string;
   amount: string;
   time: string;
+  /** Full tx hash / raw block number for explorer deep links (absent in seed data). */
+  fullHash?: string;
+  blockNumber?: number;
 }
 
 export type LogTone = "info" | "success" | "danger" | "warning";
@@ -264,6 +271,8 @@ export interface AgentDetail {
   rank: number;
   agent: string;
   address: string;
+  /** Full wallet address for explorer deep links (absent in seed data). */
+  fullAddress?: string;
   strategy: string;
   score: number;
   pnlPercent: number;

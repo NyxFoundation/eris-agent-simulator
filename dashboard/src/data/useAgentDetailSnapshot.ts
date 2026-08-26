@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchAgentDetailSnapshot } from "./provider";
+import { useSelectedRunId } from "./runSelection";
 import type { AgentDetailSnapshot } from "./types";
 
 interface AgentDetailSnapshotState {
@@ -8,7 +9,10 @@ interface AgentDetailSnapshotState {
   error: Error | null;
 }
 
-export function useAgentDetailSnapshot(agentId: string): AgentDetailSnapshotState {
+export function useAgentDetailSnapshot(
+  agentId: string,
+): AgentDetailSnapshotState {
+  const runId = useSelectedRunId();
   const [state, setState] = useState<AgentDetailSnapshotState>({
     data: null,
     loading: true,
@@ -34,7 +38,7 @@ export function useAgentDetailSnapshot(agentId: string): AgentDetailSnapshotStat
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+  }, [agentId, runId]);
 
   return state;
 }

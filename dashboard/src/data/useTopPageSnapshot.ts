@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchTopPageSnapshot } from "./provider";
+import { useSelectedRunId } from "./runSelection";
 import type { TopPageSnapshot } from "./types";
 
 interface TopPageSnapshotState {
@@ -9,6 +10,7 @@ interface TopPageSnapshotState {
 }
 
 export function useTopPageSnapshot(): TopPageSnapshotState {
+  const runId = useSelectedRunId();
   const [state, setState] = useState<TopPageSnapshotState>({
     data: null,
     loading: true,
@@ -17,6 +19,7 @@ export function useTopPageSnapshot(): TopPageSnapshotState {
 
   useEffect(() => {
     let cancelled = false;
+    setState({ data: null, loading: true, error: null });
     fetchTopPageSnapshot()
       .then((data) => {
         if (!cancelled) setState({ data, loading: false, error: null });
@@ -33,7 +36,7 @@ export function useTopPageSnapshot(): TopPageSnapshotState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [runId]);
 
   return state;
 }

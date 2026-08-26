@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchExplorerSnapshot } from "./provider";
+import { useSelectedRunId } from "./runSelection";
 import type { ExplorerSnapshot } from "./types";
 
 interface ExplorerSnapshotState {
@@ -9,6 +10,7 @@ interface ExplorerSnapshotState {
 }
 
 export function useExplorerSnapshot(): ExplorerSnapshotState {
+  const runId = useSelectedRunId();
   const [state, setState] = useState<ExplorerSnapshotState>({
     data: null,
     loading: true,
@@ -17,6 +19,7 @@ export function useExplorerSnapshot(): ExplorerSnapshotState {
 
   useEffect(() => {
     let cancelled = false;
+    setState({ data: null, loading: true, error: null });
     fetchExplorerSnapshot()
       .then((data) => {
         if (!cancelled) setState({ data, loading: false, error: null });
@@ -33,7 +36,7 @@ export function useExplorerSnapshot(): ExplorerSnapshotState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [runId]);
 
   return state;
 }

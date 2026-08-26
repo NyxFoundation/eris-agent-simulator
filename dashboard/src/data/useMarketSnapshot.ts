@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchMarketSnapshot } from "./provider";
+import { useSelectedRunId } from "./runSelection";
 import type { MarketSnapshot } from "./types";
 
 interface MarketSnapshotState {
@@ -9,6 +10,7 @@ interface MarketSnapshotState {
 }
 
 export function useMarketSnapshot(): MarketSnapshotState {
+  const runId = useSelectedRunId();
   const [state, setState] = useState<MarketSnapshotState>({
     data: null,
     loading: true,
@@ -17,6 +19,7 @@ export function useMarketSnapshot(): MarketSnapshotState {
 
   useEffect(() => {
     let cancelled = false;
+    setState({ data: null, loading: true, error: null });
     fetchMarketSnapshot()
       .then((data) => {
         if (!cancelled) setState({ data, loading: false, error: null });
@@ -33,7 +36,7 @@ export function useMarketSnapshot(): MarketSnapshotState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [runId]);
 
   return state;
 }

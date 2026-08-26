@@ -2,10 +2,16 @@ import { useState, type ReactNode } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
 import { Sidebar } from "@/components/Sidebar";
 import { Sparkline } from "@/design-system/Sparkline";
+import { blockscoutBlockUrl, useBlockscoutBase } from "@/data/blockscout";
 import { SEASON_LENGTH } from "@/data/seed";
 import { useTopPageSnapshot } from "@/data/useTopPageSnapshot";
 import { navigate } from "@/navigation";
-import type { AgentStanding, ExplorerBlock, MarketTicker, TapeEvent } from "@/data/types";
+import type {
+  AgentStanding,
+  ExplorerBlock,
+  MarketTicker,
+  TapeEvent,
+} from "@/data/types";
 
 const SECTION_LABEL_STYLE = {
   font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
@@ -83,16 +89,39 @@ const INFO_TABS: InfoTab[] = [
 
 function MarketTile({ market }: { market: MarketTicker }) {
   const tone = market.direction === "up" ? "success" : "danger";
-  const color = market.direction === "up" ? "var(--success-text)" : "var(--danger-text)";
+  const color =
+    market.direction === "up" ? "var(--success-text)" : "var(--danger-text)";
   return (
-    <div style={{ background: "var(--bg-canvas)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: "2px", minWidth: 0 }}>
-      <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-tertiary)", letterSpacing: "var(--tracking-wide)" }}>
+    <div
+      style={{
+        background: "var(--bg-canvas)",
+        padding: "8px 10px",
+        display: "flex",
+        flexDirection: "column",
+        gap: "2px",
+        minWidth: 0,
+      }}
+    >
+      <span
+        style={{
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-tertiary)",
+          letterSpacing: "var(--tracking-wide)",
+        }}
+      >
         {market.symbol}
       </span>
-      <span style={{ font: "var(--weight-semibold) var(--text-base) var(--font-mono)", color: "var(--text-primary)" }}>
+      <span
+        style={{
+          font: "var(--weight-semibold) var(--text-base) var(--font-mono)",
+          color: "var(--text-primary)",
+        }}
+      >
         {market.price}
       </span>
-      <span style={{ font: "var(--text-xs) var(--font-mono)", color }}>{market.delta}</span>
+      <span style={{ font: "var(--text-xs) var(--font-mono)", color }}>
+        {market.delta}
+      </span>
       <div style={{ marginTop: "2px" }}>
         <Sparkline points={market.points} width={100} height={20} tone={tone} />
       </div>
@@ -100,7 +129,19 @@ function MarketTile({ market }: { market: MarketTicker }) {
   );
 }
 
-function BlockPreviewRow({ block }: { block: ExplorerBlock }) {
+function BlockPreviewRow({
+  block,
+  href,
+}: {
+  block: ExplorerBlock;
+  href?: string;
+}) {
+  const numberStyle = {
+    font: "var(--text-sm) var(--font-mono)",
+    color: "var(--text-link)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  } as const;
   return (
     <div
       style={{
@@ -112,11 +153,34 @@ function BlockPreviewRow({ block }: { block: ExplorerBlock }) {
         borderBottom: "1px solid var(--border-subtle)",
       }}
     >
-      <span style={{ font: "var(--text-sm) var(--font-mono)", color: "var(--text-link)", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {block.number}
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open block in Blockscout"
+          style={{ ...numberStyle, textDecoration: "none" }}
+        >
+          {block.number}
+        </a>
+      ) : (
+        <span style={numberStyle}>{block.number}</span>
+      )}
+      <span
+        style={{
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-tertiary)",
+        }}
+      >
+        {block.time}
       </span>
-      <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-tertiary)" }}>{block.time}</span>
-      <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-secondary)", textAlign: "right" }}>
+      <span
+        style={{
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-secondary)",
+          textAlign: "right",
+        }}
+      >
         {block.txCount} tx
       </span>
     </div>
@@ -127,8 +191,14 @@ const LEADERBOARD_GRID = "56px minmax(0,1fr) 86px";
 
 function LeaderboardPreviewRow({ row }: { row: AgentStanding }) {
   const rankColor = row.rank <= 3 ? "var(--pink-300)" : "var(--text-secondary)";
-  const moveColor = row.move === 0 ? "var(--text-disabled)" : row.move > 0 ? "var(--success-text)" : "var(--danger-text)";
-  const moveLabel = row.move === 0 ? "—" : row.move > 0 ? `+${row.move}` : String(row.move);
+  const moveColor =
+    row.move === 0
+      ? "var(--text-disabled)"
+      : row.move > 0
+        ? "var(--success-text)"
+        : "var(--danger-text)";
+  const moveLabel =
+    row.move === 0 ? "—" : row.move > 0 ? `+${row.move}` : String(row.move);
   return (
     <div
       onClick={() => navigate(`/agent/${row.agent}`)}
@@ -142,10 +212,24 @@ function LeaderboardPreviewRow({ row }: { row: AgentStanding }) {
       }}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
-        <span style={{ font: "var(--weight-bold) 20px var(--font-mono)", color: rankColor, lineHeight: 1 }}>
+        <span
+          style={{
+            font: "var(--weight-bold) 20px var(--font-mono)",
+            color: rankColor,
+            lineHeight: 1,
+          }}
+        >
           {String(row.rank).padStart(2, "0")}
         </span>
-        <span style={{ font: "var(--text-xs) var(--font-mono)", color: moveColor, lineHeight: 1 }}>{moveLabel}</span>
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: moveColor,
+            lineHeight: 1,
+          }}
+        >
+          {moveLabel}
+        </span>
       </div>
       <span
         style={{
@@ -158,7 +242,13 @@ function LeaderboardPreviewRow({ row }: { row: AgentStanding }) {
       >
         {row.agent}
       </span>
-      <span style={{ font: "var(--weight-bold) 17px var(--font-mono)", color: "var(--text-primary)", textAlign: "right" }}>
+      <span
+        style={{
+          font: "var(--weight-bold) 17px var(--font-mono)",
+          color: "var(--text-primary)",
+          textAlign: "right",
+        }}
+      >
         {row.score.toFixed(1)}
       </span>
     </div>
@@ -168,13 +258,44 @@ function LeaderboardPreviewRow({ row }: { row: AgentStanding }) {
 function TapeItem({ item }: { item: TapeEvent }) {
   const color = TAPE_COLORS[item.tone];
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "0 var(--space-4)", borderRight: "1px solid var(--border-subtle)", whiteSpace: "nowrap" }}>
-      <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-disabled)" }}>{item.time}</span>
-      <span style={{ font: "var(--weight-semibold) var(--text-xs) var(--font-mono)", letterSpacing: "var(--tracking-wide)", color }}>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        padding: "0 var(--space-4)",
+        borderRight: "1px solid var(--border-subtle)",
+        whiteSpace: "nowrap",
+      }}
+    >
+      <span
+        style={{
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-disabled)",
+        }}
+      >
+        {item.time}
+      </span>
+      <span
+        style={{
+          font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+          letterSpacing: "var(--tracking-wide)",
+          color,
+        }}
+      >
         {item.kind}
       </span>
-      <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-secondary)" }}>{item.body}</span>
-      <span style={{ font: "var(--text-xs) var(--font-mono)", color }}>{item.value}</span>
+      <span
+        style={{
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-secondary)",
+        }}
+      >
+        {item.body}
+      </span>
+      <span style={{ font: "var(--text-xs) var(--font-mono)", color }}>
+        {item.value}
+      </span>
     </div>
   );
 }
@@ -184,8 +305,21 @@ function InfoTabs() {
   const active = INFO_TABS.find((tab) => tab.key === activeKey) ?? INFO_TABS[0];
 
   return (
-    <div style={{ borderTop: "1px solid var(--border-subtle)", display: "flex", flexDirection: "column" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: "1px", background: "var(--border-subtle)" }}>
+    <div
+      style={{
+        borderTop: "1px solid var(--border-subtle)",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, minmax(0,1fr))",
+          gap: "1px",
+          background: "var(--border-subtle)",
+        }}
+      >
         {INFO_TABS.map((tab) => {
           const isActive = tab.key === activeKey;
           return (
@@ -193,7 +327,9 @@ function InfoTabs() {
               key={tab.key}
               onClick={() => setActiveKey(tab.key)}
               style={{
-                background: isActive ? "var(--bg-surface-raised)" : "var(--bg-canvas)",
+                background: isActive
+                  ? "var(--bg-surface-raised)"
+                  : "var(--bg-canvas)",
                 borderTop: `3px solid ${isActive ? "var(--pink-500)" : "transparent"}`,
                 padding: "var(--space-3) var(--space-4)",
                 display: "flex",
@@ -218,7 +354,9 @@ function InfoTabs() {
                   fontWeight: "var(--weight-bold)",
                   letterSpacing: "var(--tracking-tight)",
                   textTransform: "uppercase",
-                  color: isActive ? "var(--text-primary)" : "var(--text-tertiary)",
+                  color: isActive
+                    ? "var(--text-primary)"
+                    : "var(--text-tertiary)",
                   lineHeight: 1,
                 }}
               >
@@ -240,9 +378,24 @@ function InfoTabs() {
           gap: "var(--space-5)",
         }}
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)", maxWidth: "80ch" }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--space-4)",
+            maxWidth: "80ch",
+          }}
+        >
           {active.body.map((text, i) => (
-            <p key={i} style={{ margin: 0, fontSize: "var(--text-base)", lineHeight: 1.65, color: "var(--text-secondary)" }}>
+            <p
+              key={i}
+              style={{
+                margin: 0,
+                fontSize: "var(--text-base)",
+                lineHeight: 1.65,
+                color: "var(--text-secondary)",
+              }}
+            >
               {text}
             </p>
           ))}
@@ -252,12 +405,36 @@ function InfoTabs() {
   );
 }
 
-function SectionPanel({ title, path, children }: { title: string; path: string; children: ReactNode }) {
+function SectionPanel({
+  title,
+  path,
+  children,
+}: {
+  title: string;
+  path: string;
+  children: ReactNode;
+}) {
   return (
     <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", padding: "6px 10px", borderBottom: "1px solid var(--border-subtle)" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          padding: "6px 10px",
+          borderBottom: "1px solid var(--border-subtle)",
+        }}
+      >
         <span style={SECTION_LABEL_STYLE}>{title}</span>
-        <span onClick={() => navigate(path)} style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-link)", letterSpacing: "var(--tracking-wide)", cursor: "pointer" }}>
+        <span
+          onClick={() => navigate(path)}
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--text-link)",
+            letterSpacing: "var(--tracking-wide)",
+            cursor: "pointer",
+          }}
+        >
           see all →
         </span>
       </div>
@@ -268,19 +445,48 @@ function SectionPanel({ title, path, children }: { title: string; path: string; 
 
 export function TopPage() {
   const { data, loading, error } = useTopPageSnapshot();
+  const blockscout = useBlockscoutBase();
 
   if (loading) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-canvas)" }}>
-        <span style={{ font: "var(--text-sm) var(--font-mono)", color: "var(--text-tertiary)" }}>Loading ASCON…</span>
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "var(--bg-canvas)",
+        }}
+      >
+        <span
+          style={{
+            font: "var(--text-sm) var(--font-mono)",
+            color: "var(--text-tertiary)",
+          }}
+        >
+          Loading ASCON…
+        </span>
       </div>
     );
   }
 
   if (error || !data) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-canvas)" }}>
-        <span style={{ font: "var(--text-sm) var(--font-mono)", color: "var(--danger-text)" }}>
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "var(--bg-canvas)",
+        }}
+      >
+        <span
+          style={{
+            font: "var(--text-sm) var(--font-mono)",
+            color: "var(--danger-text)",
+          }}
+        >
           Failed to load data{error ? `: ${error.message}` : ""}
         </span>
       </div>
@@ -292,7 +498,14 @@ export function TopPage() {
   const tapeLoop = tape.concat(tape);
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--bg-canvas)", display: "flex", alignItems: "stretch" }}>
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "var(--bg-canvas)",
+        display: "flex",
+        alignItems: "stretch",
+      }}
+    >
       <Sidebar activePage="home" />
 
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -314,26 +527,83 @@ export function TopPage() {
             gap: "var(--space-3)",
           }}
         >
-          <h1 style={{ margin: 0, fontSize: "64px", lineHeight: 0.92, fontWeight: "var(--weight-bold)", letterSpacing: "var(--tracking-tight)", textTransform: "uppercase", color: "var(--text-primary)" }}>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "64px",
+              lineHeight: 0.92,
+              fontWeight: "var(--weight-bold)",
+              letterSpacing: "var(--tracking-tight)",
+              textTransform: "uppercase",
+              color: "var(--text-primary)",
+            }}
+          >
             ASCON
           </h1>
-          <span style={{ font: "var(--font-mono)", fontSize: "var(--text-xs)", letterSpacing: "var(--tracking-widest)", color: "var(--text-tertiary)", textTransform: "uppercase" }}>
+          <span
+            style={{
+              font: "var(--font-mono)",
+              fontSize: "var(--text-xs)",
+              letterSpacing: "var(--tracking-widest)",
+              color: "var(--text-tertiary)",
+              textTransform: "uppercase",
+            }}
+          >
             agentic financial simulation layer
           </span>
         </div>
 
-        <div style={{ padding: "var(--space-3) var(--space-6)", display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "var(--space-4)" }}>
-          <h2 style={{ margin: 0, fontSize: "var(--text-xl)", fontWeight: "var(--weight-bold)", letterSpacing: "var(--tracking-tight)", lineHeight: 1, textTransform: "uppercase" }}>
+        <div
+          style={{
+            padding: "var(--space-3) var(--space-6)",
+            display: "flex",
+            alignItems: "baseline",
+            justifyContent: "space-between",
+            gap: "var(--space-4)",
+          }}
+        >
+          <h2
+            style={{
+              margin: 0,
+              fontSize: "var(--text-xl)",
+              fontWeight: "var(--weight-bold)",
+              letterSpacing: "var(--tracking-tight)",
+              lineHeight: 1,
+              textTransform: "uppercase",
+            }}
+          >
             See what's happening
           </h2>
-          <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-tertiary)", letterSpacing: "var(--tracking-wide)" }}>
-            SEASON {season} · {leaderboard.length} AGENTS · BLOCK {round.blockNumber.toLocaleString("en-US")}
+          <span
+            style={{
+              font: "var(--text-xs) var(--font-mono)",
+              color: "var(--text-tertiary)",
+              letterSpacing: "var(--tracking-wide)",
+            }}
+          >
+            SEASON {season} · {leaderboard.length} AGENTS · BLOCK{" "}
+            {round.blockNumber.toLocaleString("en-US")}
           </span>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.8fr) minmax(0,1.5fr) minmax(0,0.68fr)", borderTop: "1px solid var(--border-subtle)" }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns:
+              "minmax(0,0.8fr) minmax(0,1.5fr) minmax(0,0.68fr)",
+            borderTop: "1px solid var(--border-subtle)",
+          }}
+        >
           <SectionPanel title="Markets" path="/markets">
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))", gap: "1px", background: "var(--border-subtle)", borderBottom: "1px solid var(--border-subtle)" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))",
+                gap: "1px",
+                background: "var(--border-subtle)",
+                borderBottom: "1px solid var(--border-subtle)",
+              }}
+            >
               {marketTickers.map((market) => (
                 <MarketTile key={market.symbol} market={market} />
               ))}
@@ -342,10 +612,43 @@ export function TopPage() {
 
           <div style={{ borderLeft: "1px solid var(--border-subtle)" }}>
             <SectionPanel title="Leaderboard" path="/leaderboard">
-              <div style={{ display: "grid", gridTemplateColumns: LEADERBOARD_GRID, background: "var(--bg-surface-raised)", borderBottom: "1px solid var(--border-subtle)", padding: "7px 14px" }}>
-                <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-tertiary)", letterSpacing: "var(--tracking-wide)" }}>RANK</span>
-                <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-tertiary)", letterSpacing: "var(--tracking-wide)" }}>AGENT</span>
-                <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-tertiary)", letterSpacing: "var(--tracking-wide)", textAlign: "right" }}>SCORE</span>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: LEADERBOARD_GRID,
+                  background: "var(--bg-surface-raised)",
+                  borderBottom: "1px solid var(--border-subtle)",
+                  padding: "7px 14px",
+                }}
+              >
+                <span
+                  style={{
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                    letterSpacing: "var(--tracking-wide)",
+                  }}
+                >
+                  RANK
+                </span>
+                <span
+                  style={{
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                    letterSpacing: "var(--tracking-wide)",
+                  }}
+                >
+                  AGENT
+                </span>
+                <span
+                  style={{
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                    letterSpacing: "var(--tracking-wide)",
+                    textAlign: "right",
+                  }}
+                >
+                  SCORE
+                </span>
               </div>
               {leaderboard.slice(0, 6).map((row) => (
                 <LeaderboardPreviewRow key={row.rank} row={row} />
@@ -356,7 +659,15 @@ export function TopPage() {
           <div style={{ borderLeft: "1px solid var(--border-subtle)" }}>
             <SectionPanel title="Explorer" path="/explorer">
               {blocks.map((block) => (
-                <BlockPreviewRow key={block.number} block={block} />
+                <BlockPreviewRow
+                  key={block.number}
+                  block={block}
+                  href={
+                    blockscout && block.blockNumber !== undefined
+                      ? blockscoutBlockUrl(blockscout, block.blockNumber)
+                      : undefined
+                  }
+                />
               ))}
             </SectionPanel>
           </div>
@@ -364,8 +675,24 @@ export function TopPage() {
 
         <InfoTabs />
 
-        <div style={{ borderTop: "1px solid var(--border-subtle)", borderBottom: "1px solid var(--border-subtle)", background: "var(--bg-sunken)", overflow: "hidden", height: "44px", display: "flex", alignItems: "center" }}>
-          <div style={{ display: "flex", width: "max-content", animation: "ticker-tape 48s linear infinite" }}>
+        <div
+          style={{
+            borderTop: "1px solid var(--border-subtle)",
+            borderBottom: "1px solid var(--border-subtle)",
+            background: "var(--bg-sunken)",
+            overflow: "hidden",
+            height: "44px",
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              width: "max-content",
+              animation: "ticker-tape 48s linear infinite",
+            }}
+          >
             {tapeLoop.map((item, i) => (
               <TapeItem key={`${item.id}-${i}`} item={item} />
             ))}

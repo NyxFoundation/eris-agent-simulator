@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchArchiveSnapshot } from "./provider";
+import { useSelectedRunId } from "./runSelection";
 import type { ArchiveSnapshot } from "./types";
 
 interface ArchiveSnapshotState {
@@ -9,6 +10,7 @@ interface ArchiveSnapshotState {
 }
 
 export function useArchiveSnapshot(): ArchiveSnapshotState {
+  const runId = useSelectedRunId();
   const [state, setState] = useState<ArchiveSnapshotState>({
     data: null,
     loading: true,
@@ -17,6 +19,7 @@ export function useArchiveSnapshot(): ArchiveSnapshotState {
 
   useEffect(() => {
     let cancelled = false;
+    setState({ data: null, loading: true, error: null });
     fetchArchiveSnapshot()
       .then((data) => {
         if (!cancelled) setState({ data, loading: false, error: null });
@@ -33,7 +36,7 @@ export function useArchiveSnapshot(): ArchiveSnapshotState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [runId]);
 
   return state;
 }

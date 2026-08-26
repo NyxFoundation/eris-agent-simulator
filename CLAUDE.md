@@ -114,6 +114,7 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
 - `npm run metrics -- <runDir...>` — 保存済み run を**全候補指標で採点し直す**（issue #56。M1 PnL / M4 超過対数成長 / M7 MPPM / M9 `mean−λ·std` / M13 Sharpe と、run 集合に対する M27 Borda）。チェーン不要・再 run 不要で `summary.json` の epoch 系列だけを読む。`--lambda` / `--rho` / `--out <path>`。**`resetUnit` が混ざった run 集合は拒否**する（ADR 0020 §1）。実測の記録は `docs/scoring-metric-measurements.md`
 - `npm run metrics -- --matrix runs/matrix-<id>` — **シナリオ行列を「指標 × 集約」の総当たりで採点し直す**（ADR 0020 §5）。連続経済では「どの指標か」だけが問いだが、`scenario` モードでは**シナリオ横断の集約**という第 2 の選択が要る（`core/src/scoring/aggregate.ts` = `zscore` 現行 / `borda` 順位 / `mean` 絶対量。どれもレジーム等重み）。出力は各組み合わせの順位、M9×zscore との一致/不一致、そして **#55 の露出**（1 体が場の sd を何倍に膨らませているか。1.0 = 誰も場のスケールを決めていない）。matrix.json の `runDir` は相対なので、spot から回収した tarball を展開したディレクトリでもそのまま読める
 - `npm run explorer` — sim anvil を索引するローカル Blockscout（issue #31。stock イメージ pin、`infra/blockscout/`）。UI は http://localhost:3100。**チェーンをリセットしたら `npm run explorer:reset`**（resetFork/snapshot-revert の巻き戻しに indexer は追従できないので DB を消して再索引するのが正規のライフサイクル）。`npm run explorer:tag` が最新 run の `summary.json` から agent アドレスに名前タグを付ける（reset で消えるので run ごと）。接続先・chain id・fork 用 `FIRST_BLOCK` は `infra/blockscout/explorer.env`
+- `npm run dashboard` — 保存済み run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの run picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。Blockscout が起動していれば tx/block/address が deep link になる（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
@@ -121,7 +122,7 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
 
 > **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
 
-> 評価・採点・可視化系コマンド（`sim` 同期ラウンド / `evaluate` / `gate` / `discrimination` / `leaderboard` / `dashboard` / `stress-report`）は撤去済み。run は `sim:realtime` 一本。run 後の解析は `runs/<id>/` の `summary.json` / `events.jsonl` / `blocks.csv` を直接読む。
+> 評価・採点・可視化系コマンド（`sim` 同期ラウンド / `evaluate` / `gate` / `discrimination` / `leaderboard` / `stress-report`）は撤去済み。run は `sim:realtime` 一本。run 後の解析は `runs/<id>/` の `summary.json` / `events.jsonl` / `blocks.csv` / `market.json`（venue 別価格・depth・GMX OI・Aave 残高・tx notional。採点には不使用の報告用 = issue #63 Phase 2）を直接読む。可視化は `npm run dashboard`（`dashboard/` workspace。run picker で run を選ぶ。seed データに戻すには `VITE_DATA_PROVIDER=seed`）。
 
 ### 市場ストレスイベント（spike/crash + Aave 清算。ADR 0009。既定 off）
 

@@ -1,6 +1,63 @@
+import { useEffect, useState } from "react";
+import { isSeedProvider } from "@/data/provider";
+import { listRuns, type RunIndexEntry } from "@/data/runArtifacts";
+import { setSelectedRunId, useSelectedRunId } from "@/data/runSelection";
+import { Select } from "@/design-system/Select";
 import { navigate } from "@/navigation";
 
 export type SidebarNavKey = "home" | "leaderboard" | "explorer" | "markets";
+
+/**
+ * Run picker (issue #63 Phase 1): every view renders one run from runs/<id>/,
+ * newest by default. Hidden in seed-provider mode where there is nothing to pick.
+ */
+function RunPicker() {
+  const selected = useSelectedRunId();
+  const [runs, setRuns] = useState<RunIndexEntry[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listRuns()
+      .then((entries) => {
+        if (!cancelled) setRuns(entries);
+      })
+      .catch(() => {
+        if (!cancelled) setRuns([]);
+      });
+  }, []);
+
+  if (!runs || runs.length === 0) return null;
+  const value =
+    selected && runs.some((r) => r.id === selected) ? selected : runs[0].id;
+
+  return (
+    <div
+      style={{
+        padding: "var(--space-4)",
+        borderTop: "1px solid var(--border-subtle)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px",
+      }}
+    >
+      <span
+        style={{
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-tertiary)",
+          letterSpacing: "var(--tracking-wide)",
+        }}
+      >
+        RUN
+      </span>
+      <Select
+        value={value}
+        options={runs.map((r) => ({ label: r.id, value: r.id }))}
+        onChange={(e) => setSelectedRunId(e.target.value)}
+        style={{ width: "100%" }}
+      />
+    </div>
+  );
+}
 
 const SIDEBAR_NAV: { key: SidebarNavKey; label: string; path: string }[] = [
   { key: "home", label: "Top", path: "/" },
@@ -102,8 +159,24 @@ export function Sidebar({
       </div>
 
       {roundNumber !== undefined && (
-        <div style={{ padding: "var(--space-4)", borderTop: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: "7px" }}>
-          <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--pink-500)", flexShrink: 0 }} />
+        <div
+          style={{
+            padding: "var(--space-4)",
+            borderTop: "1px solid var(--border-subtle)",
+            display: "flex",
+            alignItems: "center",
+            gap: "7px",
+          }}
+        >
+          <span
+            style={{
+              width: "6px",
+              height: "6px",
+              borderRadius: "50%",
+              background: "var(--pink-500)",
+              flexShrink: 0,
+            }}
+          />
           <span
             style={{
               font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
@@ -117,9 +190,12 @@ export function Sidebar({
         </div>
       )}
 
+      <div style={{ marginTop: "auto" }}>
+        {!isSeedProvider && <RunPicker />}
+      </div>
+
       <div
         style={{
-          marginTop: "auto",
           padding: "var(--space-4)",
           borderTop: "1px solid var(--border-subtle)",
           display: "flex",
@@ -127,10 +203,23 @@ export function Sidebar({
           gap: "6px",
         }}
       >
-        <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-tertiary)", letterSpacing: "var(--tracking-wide)" }}>
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--text-tertiary)",
+            letterSpacing: "var(--tracking-wide)",
+          }}
+        >
           OBSERVER
         </span>
-        <span style={{ font: "var(--text-xs) var(--font-mono)", color: "var(--text-disabled)" }}>no login required</span>
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--text-disabled)",
+          }}
+        >
+          no login required
+        </span>
       </div>
     </div>
   );

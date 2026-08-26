@@ -1,0 +1,284 @@
+// Low-level loader for runs/<id>/ artifacts, served by the Vite dev-server
+// runs plugin (see vite.config.ts): /runs/index.json lists runs, /runs/<id>/<file>
+// serves the raw artifact. Parsing is deliberately defensive — older runs predate
+// several summary.json fields and must degrade to empty views, not crash them.
+
+export interface RunIndexEntry {
+  id: string;
+  mtimeMs: number;
+}
+
+export interface RunEvent {
+  ts: string;
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface BlockRow {
+  blockNumber: number;
+  txIndex: number;
+  hash: string;
+  from: string;
+  priorityFeeWei: string;
+  status: string;
+  ownerId: string;
+  role: string;
+  actionType: string;
+}
+
+export interface SummaryAgent {
+  id: string;
+  address: string;
+  initialValueUsdc: number;
+  finalValueUsdc: number;
+  netPnlUsdc: number;
+  alphaUsdc: number;
+  includedTxCount: number;
+  revertCount: number;
+}
+
+export interface EpochScore {
+  score: number;
+  meanLogReturn: number;
+  stdLogReturn: number;
+  logReturns: number[];
+  bankruptAtEpoch: number | null;
+}
+
+export interface RunSummary {
+  runId: string;
+  mode?: string;
+  resetUnit?: string;
+  blockTimeSec?: number;
+  blocksProcessed?: number;
+  finalFairPriceUsdcPerWeth?: number;
+  valueSeries?: {
+    fromBlock?: number;
+    toBlock?: number;
+    failedReads?: number;
+    epochSeries?: {
+      epochBlocks?: number;
+      epochs?: number;
+      boundaryBlocks?: number[];
+      valuesByAgent?: Record<string, number[]>;
+    };
+  };
+  epochScores?: Record<string, EpochScore>;
+  agents?: SummaryAgent[];
+  violations?: unknown[];
+}
+
+/** One line of runs/<id>/agents/<agentId>.jsonl — a decision or a mempool self-report. */
+export interface AgentLogEntry {
+  ts: string;
+  agentId?: string;
+  kind?: string;
+  event?: string;
+  round?: number;
+  reason?: string;
+  action?: { type?: string };
+  actionType?: string;
+  protocol?: string;
+  hash?: string;
+  blockSeen?: number;
+  error?: string;
+  [key: string]: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// runs/<id>/market.json — post-run market series reconstruction (issue #63 Phase 2).
+// Shape defined by core/src/realtime/marketSeries.ts; absent for runs recorded before it existed.
+
+export interface VenueQuoteSample {
+  mid: number;
+  buy?: number;
+  sell?: number;
+  depthUsd?: number;
+}
+
+export interface MarketSeriesRow {
+  block: number;
+  fair: Record<string, number>;
+  venues?: Record<string, Record<string, VenueQuoteSample>>;
+  gmx?: Record<
+    string,
+    { longOiUsd: number; shortOiUsd: number; fundingPerHourBps: number }
+  >;
+  aave?: Record<
+    string,
+    { suppliedUsd: number; borrowedUsd: number; utilization: number }
+  >;
+}
+
+export interface GmxPositionAtEnd {
+  agent: string;
+  base: string;
+  isLong: boolean;
+  sizeUsd: number;
+  collateralUsd: number;
+  entryPriceUsd: number | null;
+}
+
+export interface AaveAccountAtEnd {
+  agent: string;
+  collateralUsd: number;
+  debtUsd: number;
+  healthFactor: number | null;
+}
+
+export interface TxNotional {
+  usd: number;
+  amount: string;
+  base?: string;
+  side?: "buy" | "sell";
+}
+
+export interface MarketSeriesFile {
+  fromBlock: number;
+  toBlock: number;
+  granularityBlocks: number;
+  failedReads: number;
+  bases: string[];
+  venues: string[];
+  series: MarketSeriesRow[];
+  gmxPositionsAtEnd: GmxPositionAtEnd[];
+  aaveAccountsAtEnd: AaveAccountAtEnd[];
+  notionals: Record<string, TxNotional>;
+}
+
+export interface LoadedRun {
+  id: string;
+  summary: RunSummary;
+  events: RunEvent[];
+  blockRows: BlockRow[];
+  // null when the run predates the market series artifact — consumers fall back to Phase 1 behavior.
+  market: MarketSeriesFile | null;
+}
+
+async function fetchText(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  return res.text();
+}
+
+export async function listRuns(): Promise<RunIndexEntry[]> {
+  const res = await fetch("/runs/index.json");
+  if (!res.ok)
+    throw new Error(
+      `runs index unavailable (HTTP ${res.status}) — is the Vite dev server serving runs/?`,
+    );
+  return (await res.json()) as RunIndexEntry[];
+}
+
+function parseJsonl<T>(text: string): T[] {
+  const out: T[] = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      out.push(JSON.parse(trimmed) as T);
+    } catch {
+      // a torn tail line from a run killed mid-write; skip it
+    }
+  }
+  return out;
+}
+
+// blocks.csv columns: round,blockNumber,txIndex,hash,from,priorityFeeWei,status,ownerId,role,actionType,bundleId,bundleIndex
+// No field is quoted, so a plain split is safe. Header (and any repeated header) rows
+// are dropped by the numeric blockNumber check.
+function parseBlocksCsv(text: string): BlockRow[] {
+  const rows: BlockRow[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    const cols = line.split(",");
+    const blockNumber = Number(cols[1]);
+    if (!Number.isFinite(blockNumber)) continue;
+    rows.push({
+      blockNumber,
+      txIndex: Number(cols[2]) || 0,
+      hash: cols[3] ?? "",
+      from: (cols[4] ?? "").toLowerCase(),
+      priorityFeeWei: cols[5] ?? "",
+      status: cols[6] ?? "",
+      ownerId: cols[7] ?? "",
+      role: cols[8] ?? "",
+      actionType: cols[9] ?? "",
+    });
+  }
+  return rows;
+}
+
+const MAX_CACHED_RUNS = 2;
+const runCache = new Map<string, Promise<LoadedRun>>();
+
+export function loadRun(runId: string): Promise<LoadedRun> {
+  const cached = runCache.get(runId);
+  if (cached) return cached;
+
+  const loading = (async (): Promise<LoadedRun> => {
+    const base = `/runs/${encodeURIComponent(runId)}`;
+    const [summaryText, eventsText, blocksText, marketText] = await Promise.all(
+      [
+        fetchText(`${base}/summary.json`),
+        fetchText(`${base}/events.jsonl`).catch(() => ""),
+        fetchText(`${base}/blocks.csv`).catch(() => ""),
+        fetchText(`${base}/market.json`).catch(() => null),
+      ],
+    );
+    let market: MarketSeriesFile | null = null;
+    if (marketText) {
+      try {
+        market = JSON.parse(marketText) as MarketSeriesFile;
+      } catch {
+        // a torn artifact from a killed run; the Phase 1 fallback still renders
+      }
+    }
+    return {
+      id: runId,
+      summary: JSON.parse(summaryText) as RunSummary,
+      events: parseJsonl<RunEvent>(eventsText),
+      blockRows: parseBlocksCsv(blocksText),
+      market,
+    };
+  })();
+
+  loading.catch(() => runCache.delete(runId));
+  runCache.set(runId, loading);
+  while (runCache.size > MAX_CACHED_RUNS) {
+    const oldest = runCache.keys().next().value;
+    if (oldest === undefined) break;
+    runCache.delete(oldest);
+  }
+  return loading;
+}
+
+const agentLogCache = new Map<string, Promise<AgentLogEntry[]>>();
+
+export function loadAgentLog(
+  runId: string,
+  agentId: string,
+): Promise<AgentLogEntry[]> {
+  const key = `${runId}/${agentId}`;
+  const cached = agentLogCache.get(key);
+  if (cached) return cached;
+  const loading = fetchText(
+    `/runs/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}.jsonl`,
+  )
+    .then(parseJsonl<AgentLogEntry>)
+    .catch(() => [] as AgentLogEntry[]);
+  agentLogCache.set(key, loading);
+  if (agentLogCache.size > 64) {
+    const oldest = agentLogCache.keys().next().value;
+    if (oldest !== undefined) agentLogCache.delete(oldest);
+  }
+  return loading;
+}
+
+export async function loadAllAgentLogs(
+  runId: string,
+  agentIds: string[],
+): Promise<Map<string, AgentLogEntry[]>> {
+  const logs = await Promise.all(agentIds.map((id) => loadAgentLog(runId, id)));
+  return new Map(agentIds.map((id, i) => [id, logs[i]]));
+}

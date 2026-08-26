@@ -35,6 +35,30 @@ public/             Static assets, served as-is
 ## Data
 
 All pages consume snapshots through `src/data/provider.ts` — an explicit
-indirection point. It currently re-exports the seed-data provider
-(`localProvider.ts` over `seed.ts`); swapping in a provider that reads real run
-artifacts (`runs/<id>/`) requires no component changes (issue #63 Phase 1).
+indirection point. The default provider (`runsProvider.ts`, issue #63 Phase 1)
+builds every snapshot from run artifacts under `runs/<id>/`, served by a small
+Vite dev-server plugin (`/runs/index.json` + `/runs/<id>/<file>`, see
+`vite.config.ts`). The sidebar's run picker selects which run to render
+(newest by default, persisted per browser).
+
+- `summary.json` — standings (score = M9 in bps/epoch, PnL%, Sharpe, max DD)
+- `events.jsonl` — price/portfolio series (reconstructed observations), event tape
+- `blocks.csv` — explorer blocks/transactions (methods joined from agent logs)
+- `agents/<id>.jsonl` — decision logs and submitted-tx self-reports
+- `market.json` — post-run reconstruction extension (#63 Phase 2, written by
+  `core/src/realtime/marketSeries.ts`): per-block per-venue executable quotes +
+  pool depth, GMX OI/funding, Aave reserve totals, multi-asset fair prices,
+  end-of-run GMX positions / Aave accounts per agent, and decoded per-tx USD
+  notionals. Powers the cross-venue arb chart, MarketStats, positions/trades
+  tables, tx amounts, and volume aggregates. Runs recorded before the artifact
+  existed degrade to the Phase 1 rendering (`—`/`n/a`/empty).
+
+Live mode is Phase 3 (#63); until it lands the dashboard renders completed runs.
+
+When the local Blockscout explorer is running (`npm run explorer`, :3100),
+tx/block/address deep links appear automatically (availability is probed once
+through the Vite proxy at `/blockscout`); when it is down the links vanish and
+nothing else changes.
+
+Start with `VITE_DATA_PROVIDER=seed` to fall back to the IndexedDB seed provider
+(`localProvider.ts` over `seed.ts`) for UI development.
