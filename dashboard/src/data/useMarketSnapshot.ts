@@ -3,11 +3,13 @@ import { useSelectedRunId } from "./runSelection";
 import { useSnapshot, type SnapshotState } from "./useSnapshot";
 import type { MarketSnapshot } from "./types";
 
-export function useMarketSnapshot(): SnapshotState<MarketSnapshot> {
+export function useMarketSnapshot(
+  base = "WETH",
+): SnapshotState<MarketSnapshot> {
   const runId = useSelectedRunId();
   return useSnapshot(
-    `market:${runId ?? ""}`,
-    fetchMarketSnapshot,
+    `market:${runId ?? ""}:${base}`,
+    () => fetchMarketSnapshot(base),
     (data) => data.round.status === "live",
   );
 }

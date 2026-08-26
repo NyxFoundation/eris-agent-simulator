@@ -202,7 +202,7 @@ export function ExplorerPage() {
             color: "var(--text-tertiary)",
           }}
         >
-          Loading ASCON…
+          Loading Eris…
         </span>
       </div>
     );

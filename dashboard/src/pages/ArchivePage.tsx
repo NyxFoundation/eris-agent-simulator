@@ -156,7 +156,7 @@ export function ArchivePage() {
             color: "var(--text-tertiary)",
           }}
         >
-          Loading ASCON…
+          Loading Eris…
         </span>
       </div>
     );
@@ -229,7 +229,7 @@ export function ArchivePage() {
               cursor: "pointer",
             }}
           >
-            Round {round.roundNumber + 1} live →
+            Top →
           </span>
           <span
             style={{
@@ -238,10 +238,10 @@ export function ArchivePage() {
               letterSpacing: "var(--tracking-tight)",
             }}
           >
-            ASCON
+            ERIS
           </span>
           <div style={{ transform: "scale(1.4)", transformOrigin: "center" }}>
-            <Badge tone="neutral">Round {round.roundNumber} · Archived</Badge>
+            <Badge tone="neutral">Run {round.roundNumber} · Archived</Badge>
           </div>
           <span
             style={{

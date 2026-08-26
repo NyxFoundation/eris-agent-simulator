@@ -39,6 +39,7 @@ import type {
   StrategyCategory,
   TapeEvent,
   TopPageSnapshot,
+  VenueDepthView,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -226,6 +227,7 @@ function buildStandings(run: LoadedRun): AgentStanding[] {
     run.summary.valueSeries?.epochSeries?.valuesByAgent ?? {};
   const agents = run.summary.agents ?? [];
 
+  const moves = epochMoves(valuesByAgent);
   const rows = agents.map((agent) => {
     const epochScore = epochScores[agent.id];
     const stdLogReturn = epochScore?.stdLogReturn ?? 0;
@@ -245,7 +247,7 @@ function buildStandings(run: LoadedRun): AgentStanding[] {
       strategy: description,
       strategyCategory: categorize(agent.id, description),
       maxDrawdownPercent: maxDrawdownPercent(valuesByAgent[agent.id] ?? []),
-      move: 0, // no cross-round concept in a single run (issue #63 Phase 4)
+      move: moves.get(agent.id) ?? 0,
       netPnlUsdc: agent.netPnlUsdc,
     };
   });
@@ -255,6 +257,40 @@ function buildStandings(run: LoadedRun): AgentStanding[] {
     ...row,
     rank: i + 1,
   }));
+}
+
+// Rank change over the final epoch (issue #63 Phase 4): rank every agent by cumulative value gain
+// at the last two epoch boundaries and report the difference. A single run has no previous round,
+// but it does have epochs — the same unit the score is computed over.
+function epochMoves(
+  valuesByAgent: Record<string, Array<number | null>>,
+): Map<string, number> {
+  const ids = Object.keys(valuesByAgent);
+  const boundaries = valuesByAgent[ids[0]]?.length ?? 0;
+  if (ids.length === 0 || boundaries < 3) return new Map();
+
+  const rankAt = (boundary: number): Map<string, number> => {
+    const gains = ids.flatMap((id) => {
+      const series = valuesByAgent[id];
+      const start = series?.[0];
+      const value = series?.[boundary];
+      return start != null && value != null
+        ? [{ id, gain: value - start }]
+        : [];
+    });
+    gains.sort((a, b) => b.gain - a.gain);
+    return new Map(gains.map((g, i) => [g.id, i + 1]));
+  };
+
+  const previous = rankAt(boundaries - 2);
+  const current = rankAt(boundaries - 1);
+  const moves = new Map<string, number>();
+  for (const id of ids) {
+    const prev = previous.get(id);
+    const now = current.get(id);
+    if (prev !== undefined && now !== undefined) moves.set(id, prev - now);
+  }
+  return moves;
 }
 
 // ---------------------------------------------------------------------------
@@ -548,25 +584,6 @@ function fairSeries(run: LoadedRun): { block: number; fair: number }[] {
   return run.live?.fairSamples ?? [];
 }
 
-function buildCandles(run: LoadedRun): Candle[] {
-  const prices = fairSeries(run);
-  if (prices.length === 0) return [];
-  const bucketSize = Math.max(1, Math.ceil(prices.length / 48));
-  const candles: Candle[] = [];
-  for (let i = 0; i < prices.length; i += bucketSize) {
-    const bucket = prices.slice(i, i + bucketSize);
-    const values = bucket.map((p) => p.fair);
-    candles.push({
-      time: bucket[0].block,
-      open: values[0],
-      high: Math.max(...values),
-      low: Math.min(...values),
-      close: values[values.length - 1],
-    });
-  }
-  return candles;
-}
-
 // matches venue-arb's ROUND_TRIP_COST: one venue fee in, one out, plus slippage
 const ARB_THRESHOLD_BPS = 80;
 
@@ -660,19 +677,21 @@ function buildArbitrageFromMarket(
 function buildArbitrage(
   run: LoadedRun,
   infoByHash: Map<string, TxInfo>,
+  base = "WETH",
 ): ArbitrageSnapshot {
   if (run.market) {
     const fromMarket = buildArbitrageFromMarket(
       run,
       run.market,
       infoByHash,
-      "WETH",
+      base,
     );
     if (fromMarket) return fromMarket;
   }
   // Phase 1 fallback (runs recorded before market.json existed): the one pool reference price the
-  // reconstructed observations carry.
-  const prices = downsample(observationSeries(run).prices, 720);
+  // reconstructed observations carry. WETH only — other bases exist only via market.json.
+  const prices =
+    base === "WETH" ? downsample(observationSeries(run).prices, 720) : [];
   if (prices.length >= 2) {
     return {
       fair: prices.map((p) => ({ time: p.block, price: p.fair })),
@@ -697,7 +716,7 @@ function buildArbitrage(
     };
   }
   // Live run: only the accumulated fair samples exist (per-venue series are post-run artifacts).
-  const live = downsample(fairSeries(run), 720);
+  const live = downsample(fairSeriesForBase(run, base), 720);
   return {
     fair: live.map((p) => ({ time: p.block, price: p.fair })),
     venues: [],
@@ -969,32 +988,104 @@ function buildMarketTrades(run: LoadedRun, base: string): MarketTrade[] {
   return trades;
 }
 
-export async function fetchMarketSnapshot(): Promise<MarketSnapshot> {
+// AMM depth per venue for the base — the order book replacement (issue #63 Phase 4): every venue
+// is an AMM, so what exists is pool depth and an executable two-sided quote, not resting orders.
+function buildVenueDepths(run: LoadedRun, base: string): VenueDepthView[] {
+  const market = run.market;
+  if (!market) return [];
+  return market.venues.flatMap((venue) => {
+    const rows = market.series.flatMap((r) => {
+      const sample = r.venues?.[venue]?.[base];
+      return sample?.depthUsd !== undefined
+        ? [{ depthUsd: sample.depthUsd, buy: sample.buy, sell: sample.sell }]
+        : [];
+    });
+    if (rows.length === 0) return [];
+    const first = rows[0];
+    const lastRow = rows[rows.length - 1];
+    const deltaPercent =
+      first.depthUsd > 0
+        ? ((lastRow.depthUsd - first.depthUsd) / first.depthUsd) * 100
+        : 0;
+    return [
+      {
+        id: venue,
+        label: VENUE_LABELS[venue] ?? venue,
+        color: VENUE_COLORS[venue] ?? "#7c9eff",
+        depthUsd: formatUsd(lastRow.depthUsd),
+        deltaPercent: Math.round(deltaPercent * 10) / 10,
+        points: downsample(rows, 60).map((r) => r.depthUsd),
+        ...(lastRow.buy !== undefined ? { buy: formatUsd(lastRow.buy) } : {}),
+        ...(lastRow.sell !== undefined
+          ? { sell: formatUsd(lastRow.sell) }
+          : {}),
+      },
+    ];
+  });
+}
+
+// Fair series for an arbitrary base: WETH keeps the fine-grained observation series (with the live
+// fallback); other bases exist only in the reconstructed market series.
+function fairSeriesForBase(
+  run: LoadedRun,
+  base: string,
+): { block: number; fair: number }[] {
+  if (base === "WETH") return fairSeries(run);
+  return (run.market?.series ?? []).flatMap((r) => {
+    const fair = r.fair[base];
+    return fair !== undefined && fair > 0 ? [{ block: r.block, fair }] : [];
+  });
+}
+
+function candlesFor(prices: { block: number; fair: number }[]): Candle[] {
+  if (prices.length === 0) return [];
+  const bucketSize = Math.max(1, Math.ceil(prices.length / 48));
+  const candles: Candle[] = [];
+  for (let i = 0; i < prices.length; i += bucketSize) {
+    const bucket = prices.slice(i, i + bucketSize);
+    const values = bucket.map((p) => p.fair);
+    candles.push({
+      time: bucket[0].block,
+      open: values[0],
+      high: Math.max(...values),
+      low: Math.min(...values),
+      close: values[values.length - 1],
+    });
+  }
+  return candles;
+}
+
+export async function fetchMarketSnapshot(
+  base = "WETH",
+): Promise<MarketSnapshot> {
   const run = await resolveRun();
-  const { prices } = observationSeries(run);
+  const prices = fairSeriesForBase(run, base);
   const first = prices[0];
   const last = prices[prices.length - 1];
-  const lastFair = last?.fair ?? run.summary.finalFairPriceUsdcPerWeth ?? 0;
+  const lastFair =
+    last?.fair ??
+    (base === "WETH" ? (run.summary.finalFairPriceUsdcPerWeth ?? 0) : 0);
   const logs = await agentLogsFor(run);
   const infoByHash = await txInfoByHash(run);
+  const bases = run.market?.bases ?? ["WETH"];
 
   return {
     round: buildRound(run),
     stats: {
-      pair: "WETH/USDC",
+      pair: `${base}/USDC`,
       price: lastFair,
       direction: last && first && last.fair < first.fair ? "down" : "up",
-      ...buildMarketStats(run, "WETH"),
+      ...buildMarketStats(run, base),
     },
-    candles: buildCandles(run),
+    candles: candlesFor(prices),
     leaderboard: buildStandings(run),
-    positions: buildGmxPositions(run, "WETH", lastFair),
-    orders: [], // trigger orders are not part of any current strategy (issue #63 Phase 4)
-    trades: buildMarketTrades(run, "WETH"),
-    asks: [],
-    bids: [],
+    positions: buildGmxPositions(run, base, lastFair),
+    orders: [], // trigger orders are not part of any current strategy; the tab hides when empty
+    trades: buildMarketTrades(run, base),
+    venueDepths: buildVenueDepths(run, base),
+    pairs: bases.map((b) => ({ label: `${b}/USDC`, value: b })),
     feed: buildFeed(logs),
-    arbitrage: buildArbitrage(run, infoByHash),
+    arbitrage: buildArbitrage(run, infoByHash, base),
   };
 }
 

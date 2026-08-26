@@ -22,10 +22,10 @@ import type {
   MarketStats,
   MarketTicker,
   MarketTrade,
-  OrderBookLevel,
   RoundInfo,
   RoundProgressSegment,
   TapeEvent,
+  VenueDepthView,
   VenueSeries,
 } from "./types";
 
@@ -44,28 +44,135 @@ export function createSeedRound(): RoundInfo {
 }
 
 export const seedAgents: AgentStanding[] = [
-  { rank: 1, agent: "agent-9a12", strategy: "Options-hedged farming", strategyCategory: "mm", score: 92.4, pnlPercent: 61.2, sharpe: 2.41, maxDrawdownPercent: -4.1, move: 0 },
-  { rank: 2, agent: "agent-21cd", strategy: "Cross-DEX arbitrage", strategyCategory: "arb", score: 88.1, pnlPercent: 48.9, sharpe: 2.18, maxDrawdownPercent: -3.0, move: 2 },
-  { rank: 3, agent: "agent-7788", strategy: "Funding rate carry", strategyCategory: "arb", score: 81.6, pnlPercent: 33.4, sharpe: 2.02, maxDrawdownPercent: -5.6, move: -1 },
-  { rank: 4, agent: "agent-4f2a", strategy: "Delta-neutral LP", strategyCategory: "mm", score: 74.9, pnlPercent: 18.4, sharpe: 1.84, maxDrawdownPercent: -6.2, move: 1 },
-  { rank: 5, agent: "agent-55aa", strategy: "Liquidation sniper", strategyCategory: "dir", score: 70.2, pnlPercent: 15.0, sharpe: 1.61, maxDrawdownPercent: -8.9, move: -2 },
-  { rank: 6, agent: "agent-3e91", strategy: "Perp momentum", strategyCategory: "dir", score: 65.8, pnlPercent: 9.7, sharpe: 1.42, maxDrawdownPercent: -7.3, move: 0 },
-  { rank: 7, agent: "agent-c204", strategy: "Stablecoin basis", strategyCategory: "arb", score: 61.0, pnlPercent: 7.2, sharpe: 1.30, maxDrawdownPercent: -2.1, move: 3 },
-  { rank: 8, agent: "agent-88b1", strategy: "Oracle lag exploit", strategyCategory: "arb", score: 55.4, pnlPercent: 4.9, sharpe: 1.05, maxDrawdownPercent: -11.4, move: -3 },
-  { rank: 9, agent: "agent-1a6f", strategy: "Long-only spot", strategyCategory: "dir", score: 48.7, pnlPercent: -1.8, sharpe: 0.71, maxDrawdownPercent: -14.0, move: 1 },
-  { rank: 10, agent: "agent-de33", strategy: "Flashloan arb", strategyCategory: "arb", score: 41.2, pnlPercent: -6.4, sharpe: 0.52, maxDrawdownPercent: -18.7, move: -1 },
+  {
+    rank: 1,
+    agent: "agent-9a12",
+    strategy: "Options-hedged farming",
+    strategyCategory: "mm",
+    score: 92.4,
+    pnlPercent: 61.2,
+    sharpe: 2.41,
+    maxDrawdownPercent: -4.1,
+    move: 0,
+  },
+  {
+    rank: 2,
+    agent: "agent-21cd",
+    strategy: "Cross-DEX arbitrage",
+    strategyCategory: "arb",
+    score: 88.1,
+    pnlPercent: 48.9,
+    sharpe: 2.18,
+    maxDrawdownPercent: -3.0,
+    move: 2,
+  },
+  {
+    rank: 3,
+    agent: "agent-7788",
+    strategy: "Funding rate carry",
+    strategyCategory: "arb",
+    score: 81.6,
+    pnlPercent: 33.4,
+    sharpe: 2.02,
+    maxDrawdownPercent: -5.6,
+    move: -1,
+  },
+  {
+    rank: 4,
+    agent: "agent-4f2a",
+    strategy: "Delta-neutral LP",
+    strategyCategory: "mm",
+    score: 74.9,
+    pnlPercent: 18.4,
+    sharpe: 1.84,
+    maxDrawdownPercent: -6.2,
+    move: 1,
+  },
+  {
+    rank: 5,
+    agent: "agent-55aa",
+    strategy: "Liquidation sniper",
+    strategyCategory: "dir",
+    score: 70.2,
+    pnlPercent: 15.0,
+    sharpe: 1.61,
+    maxDrawdownPercent: -8.9,
+    move: -2,
+  },
+  {
+    rank: 6,
+    agent: "agent-3e91",
+    strategy: "Perp momentum",
+    strategyCategory: "dir",
+    score: 65.8,
+    pnlPercent: 9.7,
+    sharpe: 1.42,
+    maxDrawdownPercent: -7.3,
+    move: 0,
+  },
+  {
+    rank: 7,
+    agent: "agent-c204",
+    strategy: "Stablecoin basis",
+    strategyCategory: "arb",
+    score: 61.0,
+    pnlPercent: 7.2,
+    sharpe: 1.3,
+    maxDrawdownPercent: -2.1,
+    move: 3,
+  },
+  {
+    rank: 8,
+    agent: "agent-88b1",
+    strategy: "Oracle lag exploit",
+    strategyCategory: "arb",
+    score: 55.4,
+    pnlPercent: 4.9,
+    sharpe: 1.05,
+    maxDrawdownPercent: -11.4,
+    move: -3,
+  },
+  {
+    rank: 9,
+    agent: "agent-1a6f",
+    strategy: "Long-only spot",
+    strategyCategory: "dir",
+    score: 48.7,
+    pnlPercent: -1.8,
+    sharpe: 0.71,
+    maxDrawdownPercent: -14.0,
+    move: 1,
+  },
+  {
+    rank: 10,
+    agent: "agent-de33",
+    strategy: "Flashloan arb",
+    strategyCategory: "arb",
+    score: 41.2,
+    pnlPercent: -6.4,
+    sharpe: 0.52,
+    maxDrawdownPercent: -18.7,
+    move: -1,
+  },
 ];
 
 /**
  * Rounds progress bar on the top page: a fixed-length season of `SEASON_LENGTH`
  * rounds, wrapping so any absolute round number maps to a season position.
  */
-export function buildRoundsProgress(roundNumber: number): { liveRoundLabel: string; totalRounds: number; roundsProgress: RoundProgressSegment[] } {
+export function buildRoundsProgress(roundNumber: number): {
+  liveRoundLabel: string;
+  totalRounds: number;
+  roundsProgress: RoundProgressSegment[];
+} {
   const liveIndex = (roundNumber - 1) % SEASON_LENGTH;
-  const roundsProgress: RoundProgressSegment[] = Array.from({ length: SEASON_LENGTH }, (_, i) => ({
-    n: String(i + 1).padStart(2, "0"),
-    status: i < liveIndex ? "done" : i === liveIndex ? "live" : "upcoming",
-  }));
+  const roundsProgress: RoundProgressSegment[] = Array.from(
+    { length: SEASON_LENGTH },
+    (_, i) => ({
+      n: String(i + 1).padStart(2, "0"),
+      status: i < liveIndex ? "done" : i === liveIndex ? "live" : "upcoming",
+    }),
+  );
   return {
     liveRoundLabel: String(liveIndex + 1).padStart(2, "0"),
     totalRounds: SEASON_LENGTH,
@@ -77,15 +184,69 @@ const up = "up" as const;
 const down = "down" as const;
 
 export const seedMarketTickers: MarketTicker[] = [
-  { symbol: "ETH-USD", price: "$3,412.60", delta: "+1.84%", direction: up, points: [3180, 3220, 3190, 3260, 3300, 3280, 3350, 3412] },
-  { symbol: "BTC-USD", price: "$61,204", delta: "-0.62%", direction: down, points: [61800, 61950, 61700, 61500, 61350, 61600, 61300, 61204] },
-  { symbol: "SOL-USD", price: "$148.22", delta: "+4.10%", direction: up, points: [138, 141, 139, 144, 146, 145, 147, 148.2] },
-  { symbol: "USDX-USD", price: "$0.9942", delta: "-0.58%", direction: down, points: [1.0, 0.999, 0.998, 0.9975, 0.996, 0.9955, 0.995, 0.9942] },
-  { symbol: "ARB-USD", price: "$1.084", delta: "+2.31%", direction: up, points: [1.03, 1.04, 1.035, 1.05, 1.06, 1.055, 1.07, 1.084] },
-  { symbol: "stETH-ETH", price: "0.9968", delta: "-0.11%", direction: down, points: [0.9985, 0.998, 0.9979, 0.9974, 0.9972, 0.997, 0.9969, 0.9968] },
-  { symbol: "Funding APR", price: "11.4%", delta: "+0.9pp", direction: up, points: [9.8, 10.1, 10.5, 10.3, 10.9, 11.0, 11.2, 11.4] },
-  { symbol: "Borrow util.", price: "78.2%", delta: "+3.4pp", direction: up, points: [70, 71, 73, 72, 75, 76, 77, 78.2] },
-  { symbol: "Pool TVL", price: "$284.7M", delta: "+2.1%", direction: up, points: [268, 271, 274, 270, 277, 280, 282, 284.7] },
+  {
+    symbol: "ETH-USD",
+    price: "$3,412.60",
+    delta: "+1.84%",
+    direction: up,
+    points: [3180, 3220, 3190, 3260, 3300, 3280, 3350, 3412],
+  },
+  {
+    symbol: "BTC-USD",
+    price: "$61,204",
+    delta: "-0.62%",
+    direction: down,
+    points: [61800, 61950, 61700, 61500, 61350, 61600, 61300, 61204],
+  },
+  {
+    symbol: "SOL-USD",
+    price: "$148.22",
+    delta: "+4.10%",
+    direction: up,
+    points: [138, 141, 139, 144, 146, 145, 147, 148.2],
+  },
+  {
+    symbol: "USDX-USD",
+    price: "$0.9942",
+    delta: "-0.58%",
+    direction: down,
+    points: [1.0, 0.999, 0.998, 0.9975, 0.996, 0.9955, 0.995, 0.9942],
+  },
+  {
+    symbol: "ARB-USD",
+    price: "$1.084",
+    delta: "+2.31%",
+    direction: up,
+    points: [1.03, 1.04, 1.035, 1.05, 1.06, 1.055, 1.07, 1.084],
+  },
+  {
+    symbol: "stETH-ETH",
+    price: "0.9968",
+    delta: "-0.11%",
+    direction: down,
+    points: [0.9985, 0.998, 0.9979, 0.9974, 0.9972, 0.997, 0.9969, 0.9968],
+  },
+  {
+    symbol: "Funding APR",
+    price: "11.4%",
+    delta: "+0.9pp",
+    direction: up,
+    points: [9.8, 10.1, 10.5, 10.3, 10.9, 11.0, 11.2, 11.4],
+  },
+  {
+    symbol: "Borrow util.",
+    price: "78.2%",
+    delta: "+3.4pp",
+    direction: up,
+    points: [70, 71, 73, 72, 75, 76, 77, 78.2],
+  },
+  {
+    symbol: "Pool TVL",
+    price: "$284.7M",
+    delta: "+2.1%",
+    direction: up,
+    points: [268, 271, 274, 270, 277, 280, 282, 284.7],
+  },
 ];
 
 const TAPE_TONES: Record<string, TapeEvent["tone"]> = {
@@ -100,14 +261,70 @@ const TAPE_TONES: Record<string, TapeEvent["tone"]> = {
 };
 
 export const seedTape: TapeEvent[] = [
-  { id: 1, time: "14:02:11", kind: "DEPEG", body: "USDX pool imbalance", value: "-0.58%", tone: TAPE_TONES.DEPEG },
-  { id: 2, time: "14:01:47", kind: "LIQUIDATION", body: "agent-55aa position closed", value: "-12.4 ETH", tone: TAPE_TONES.LIQUIDATION },
-  { id: 3, time: "14:01:20", kind: "WHALE", body: "AMM swap ETH → USDC", value: "4,200 ETH", tone: TAPE_TONES.WHALE },
-  { id: 4, time: "14:00:58", kind: "FILL", body: "agent-9a12 opened perp long", value: "+1.8x", tone: TAPE_TONES.FILL },
-  { id: 5, time: "14:00:31", kind: "SCENARIO", body: "CEX drift injected", value: "sigma 2.4", tone: TAPE_TONES.SCENARIO },
-  { id: 6, time: "13:59:52", kind: "ORACLE", body: "stETH-ETH feed updated", value: "0.9968", tone: TAPE_TONES.ORACLE },
-  { id: 7, time: "13:59:04", kind: "FLASHLOAN", body: "agent-21cd arb executed", value: "+8.6k USDC", tone: TAPE_TONES.FLASHLOAN },
-  { id: 8, time: "13:58:22", kind: "REVERT", body: "agent-7788 tx reverted", value: "gas 214k", tone: TAPE_TONES.REVERT },
+  {
+    id: 1,
+    time: "14:02:11",
+    kind: "DEPEG",
+    body: "USDX pool imbalance",
+    value: "-0.58%",
+    tone: TAPE_TONES.DEPEG,
+  },
+  {
+    id: 2,
+    time: "14:01:47",
+    kind: "LIQUIDATION",
+    body: "agent-55aa position closed",
+    value: "-12.4 ETH",
+    tone: TAPE_TONES.LIQUIDATION,
+  },
+  {
+    id: 3,
+    time: "14:01:20",
+    kind: "WHALE",
+    body: "AMM swap ETH → USDC",
+    value: "4,200 ETH",
+    tone: TAPE_TONES.WHALE,
+  },
+  {
+    id: 4,
+    time: "14:00:58",
+    kind: "FILL",
+    body: "agent-9a12 opened perp long",
+    value: "+1.8x",
+    tone: TAPE_TONES.FILL,
+  },
+  {
+    id: 5,
+    time: "14:00:31",
+    kind: "SCENARIO",
+    body: "CEX drift injected",
+    value: "sigma 2.4",
+    tone: TAPE_TONES.SCENARIO,
+  },
+  {
+    id: 6,
+    time: "13:59:52",
+    kind: "ORACLE",
+    body: "stETH-ETH feed updated",
+    value: "0.9968",
+    tone: TAPE_TONES.ORACLE,
+  },
+  {
+    id: 7,
+    time: "13:59:04",
+    kind: "FLASHLOAN",
+    body: "agent-21cd arb executed",
+    value: "+8.6k USDC",
+    tone: TAPE_TONES.FLASHLOAN,
+  },
+  {
+    id: 8,
+    time: "13:58:22",
+    kind: "REVERT",
+    body: "agent-7788 tx reverted",
+    value: "gas 214k",
+    tone: TAPE_TONES.REVERT,
+  },
 ];
 
 export const seedExplorerStats: ExplorerStats = {
@@ -127,12 +344,60 @@ export const seedBlocks: ExplorerBlock[] = [
 ];
 
 export const seedTransactions: ExplorerTransaction[] = [
-  { seq: 0, hash: "0x71a…4f2", agent: "agent-9a12", method: "openPosition", amount: "4.2 ETH", time: "2s ago", methodTone: "default" },
-  { seq: 1, hash: "0x2c9…a01", agent: "agent-21cd", method: "swap", amount: "12,000 USDC", time: "14s ago", methodTone: "default" },
-  { seq: 2, hash: "0x9d4…7bc", agent: "agent-88b1", method: "liquidation", amount: "-2.1 wBTC", time: "26s ago", methodTone: "danger" },
-  { seq: 3, hash: "0x5e2…0d9", agent: "agent-7788", method: "closePosition", amount: "+3.8% ETH", time: "38s ago", methodTone: "default" },
-  { seq: 4, hash: "0x1f8…c3a", agent: "agent-4f2a", method: "addLiquidity", amount: "9,600 USDC", time: "50s ago", methodTone: "default" },
-  { seq: 5, hash: "0x8b0…9e1", agent: "agent-de33", method: "flashLoan", amount: "50,000 USDC", time: "1m ago", methodTone: "default" },
+  {
+    seq: 0,
+    hash: "0x71a…4f2",
+    agent: "agent-9a12",
+    method: "openPosition",
+    amount: "4.2 ETH",
+    time: "2s ago",
+    methodTone: "default",
+  },
+  {
+    seq: 1,
+    hash: "0x2c9…a01",
+    agent: "agent-21cd",
+    method: "swap",
+    amount: "12,000 USDC",
+    time: "14s ago",
+    methodTone: "default",
+  },
+  {
+    seq: 2,
+    hash: "0x9d4…7bc",
+    agent: "agent-88b1",
+    method: "liquidation",
+    amount: "-2.1 wBTC",
+    time: "26s ago",
+    methodTone: "danger",
+  },
+  {
+    seq: 3,
+    hash: "0x5e2…0d9",
+    agent: "agent-7788",
+    method: "closePosition",
+    amount: "+3.8% ETH",
+    time: "38s ago",
+    methodTone: "default",
+  },
+  {
+    seq: 4,
+    hash: "0x1f8…c3a",
+    agent: "agent-4f2a",
+    method: "addLiquidity",
+    amount: "9,600 USDC",
+    time: "50s ago",
+    methodTone: "default",
+  },
+  {
+    seq: 5,
+    hash: "0x8b0…9e1",
+    agent: "agent-de33",
+    method: "flashLoan",
+    amount: "50,000 USDC",
+    time: "1m ago",
+    methodTone: "default",
+  },
 ];
 
 export const seedMarketStats: MarketStats = {
@@ -150,9 +415,10 @@ export const seedMarketStats: MarketStats = {
 
 // Deterministic OHLC series so the chart looks the same on every load.
 const seedCloses = [
-  3380, 3392, 3375, 3401, 3418, 3406, 3422, 3435, 3428, 3441, 3412, 3419, 3430, 3450, 3462, 3440, 3455, 3470, 3448,
-  3465, 3480, 3458, 3472, 3490, 3475, 3468, 3488, 3502, 3490, 3505, 3495, 3510, 3498, 3415, 3420, 3408, 3418, 3405,
-  3412, 3412,
+  3380, 3392, 3375, 3401, 3418, 3406, 3422, 3435, 3428, 3441, 3412, 3419, 3430,
+  3450, 3462, 3440, 3455, 3470, 3448, 3465, 3480, 3458, 3472, 3490, 3475, 3468,
+  3488, 3502, 3490, 3505, 3495, 3510, 3498, 3415, 3420, 3408, 3418, 3405, 3412,
+  3412,
 ];
 
 export const seedCandles: Candle[] = seedCloses.map((close, i) => {
@@ -169,7 +435,12 @@ const ARB_THRESHOLD_BPS = 80; // matches venue-arb's ROUND_TRIP_COST (one venue 
 
 type StressWindow = { start: number; end: number; peakOffset: number };
 
-function ambientNoise(i: number, freq: number, amp: number, phase: number): number {
+function ambientNoise(
+  i: number,
+  freq: number,
+  amp: number,
+  phase: number,
+): number {
   return Math.sin(i * freq + phase) * amp;
 }
 
@@ -186,17 +457,45 @@ function stressOffset(i: number, windows: StressWindow[]): number {
 }
 
 // Curve's oracle lags behind a sharp move -> it stays cheap while the market has already repriced.
-const CURVE_LAG_WINDOW: StressWindow[] = [{ start: 9, end: 15, peakOffset: -46 }];
+const CURVE_LAG_WINDOW: StressWindow[] = [
+  { start: 9, end: 15, peakOffset: -46 },
+];
 // Balancer gets bid up by uninformed flow -> it runs rich relative to fair.
-const BALANCER_RICH_WINDOW: StressWindow[] = [{ start: 26, end: 31, peakOffset: 40 }];
+const BALANCER_RICH_WINDOW: StressWindow[] = [
+  { start: 26, end: 31, peakOffset: 40 },
+];
 
 export const seedArbitrage: ArbitrageSnapshot = (() => {
   const fair = seedCloses.map((price, i) => ({ time: i, price }));
 
   const venueDefs = [
-    { id: "uniswap", label: "Uniswap v3", color: "#7c9eff", freq: 0.35, amp: 3.5, phase: 0, windows: [] as StressWindow[] },
-    { id: "balancer", label: "Balancer", color: "#f5a623", freq: 0.22, amp: 6, phase: 1.4, windows: BALANCER_RICH_WINDOW },
-    { id: "curve", label: "Curve", color: "#4fd1a5", freq: 0.5, amp: 2.5, phase: 2.7, windows: CURVE_LAG_WINDOW },
+    {
+      id: "uniswap",
+      label: "Uniswap v3",
+      color: "#7c9eff",
+      freq: 0.35,
+      amp: 3.5,
+      phase: 0,
+      windows: [] as StressWindow[],
+    },
+    {
+      id: "balancer",
+      label: "Balancer",
+      color: "#f5a623",
+      freq: 0.22,
+      amp: 6,
+      phase: 1.4,
+      windows: BALANCER_RICH_WINDOW,
+    },
+    {
+      id: "curve",
+      label: "Curve",
+      color: "#4fd1a5",
+      freq: 0.5,
+      amp: 2.5,
+      phase: 2.7,
+      windows: CURVE_LAG_WINDOW,
+    },
   ];
 
   const venues: VenueSeries[] = venueDefs.map((v) => ({
@@ -205,13 +504,20 @@ export const seedArbitrage: ArbitrageSnapshot = (() => {
     color: v.color,
     points: fair.map((f, i) => ({
       time: f.time,
-      price: Math.round((f.price + ambientNoise(i, v.freq, v.amp, v.phase) + stressOffset(i, v.windows)) * 100) / 100,
+      price:
+        Math.round(
+          (f.price +
+            ambientNoise(i, v.freq, v.amp, v.phase) +
+            stressOffset(i, v.windows)) *
+            100,
+        ) / 100,
     })),
   }));
 
   const spread = fair.map((f, i) => {
     const prices = venues.map((v) => v.points[i].price);
-    const spreadBps = ((Math.max(...prices) - Math.min(...prices)) / f.price) * 10_000;
+    const spreadBps =
+      ((Math.max(...prices) - Math.min(...prices)) / f.price) * 10_000;
     return { time: f.time, spreadBps: Math.round(spreadBps * 10) / 10 };
   });
 
@@ -220,7 +526,10 @@ export const seedArbitrage: ArbitrageSnapshot = (() => {
   const trades: ArbTradeMarker[] = spread
     .filter((s) => s.spreadBps > ARB_THRESHOLD_BPS)
     .map((s) => {
-      const priced = venues.map((v) => ({ id: v.id, price: v.points[s.time].price }));
+      const priced = venues.map((v) => ({
+        id: v.id,
+        price: v.points[s.time].price,
+      }));
       const cheapest = priced.reduce((a, b) => (b.price < a.price ? b : a));
       const richest = priced.reduce((a, b) => (b.price > a.price ? b : a));
       // Alternate which leg gets flagged so both the buy-in and sell-out show up on the mock chart.
@@ -233,17 +542,65 @@ export const seedArbitrage: ArbitrageSnapshot = (() => {
 })();
 
 export const seedPositions: MarketPosition[] = [
-  { agent: "agent-9a12", side: "long", size: "2.1x", entry: "3,388", pnlPercent: 2.4 },
-  { agent: "agent-88b1", side: "short", size: "1.0x", entry: "3,440", pnlPercent: -0.8 },
-  { agent: "agent-21cd", side: "long", size: "3.4x", entry: "3,395", pnlPercent: 1.5 },
-  { agent: "agent-de33", side: "short", size: "0.8x", entry: "3,420", pnlPercent: -0.3 },
+  {
+    agent: "agent-9a12",
+    side: "long",
+    size: "2.1x",
+    entry: "3,388",
+    pnlPercent: 2.4,
+  },
+  {
+    agent: "agent-88b1",
+    side: "short",
+    size: "1.0x",
+    entry: "3,440",
+    pnlPercent: -0.8,
+  },
+  {
+    agent: "agent-21cd",
+    side: "long",
+    size: "3.4x",
+    entry: "3,395",
+    pnlPercent: 1.5,
+  },
+  {
+    agent: "agent-de33",
+    side: "short",
+    size: "0.8x",
+    entry: "3,420",
+    pnlPercent: -0.3,
+  },
 ];
 
 export const seedOrders: MarketOrder[] = [
-  { agent: "agent-7788", side: "long", size: "1.5x", trigger: "3,380.0", status: "pending" },
-  { agent: "agent-55aa", side: "short", size: "0.9x", trigger: "3,450.0", status: "pending" },
-  { agent: "agent-3e91", side: "long", size: "2.0x", trigger: "3,375.0", status: "pending" },
-  { agent: "agent-c204", side: "short", size: "1.1x", trigger: "3,460.0", status: "pending" },
+  {
+    agent: "agent-7788",
+    side: "long",
+    size: "1.5x",
+    trigger: "3,380.0",
+    status: "pending",
+  },
+  {
+    agent: "agent-55aa",
+    side: "short",
+    size: "0.9x",
+    trigger: "3,450.0",
+    status: "pending",
+  },
+  {
+    agent: "agent-3e91",
+    side: "long",
+    size: "2.0x",
+    trigger: "3,375.0",
+    status: "pending",
+  },
+  {
+    agent: "agent-c204",
+    side: "short",
+    size: "1.1x",
+    trigger: "3,460.0",
+    status: "pending",
+  },
 ];
 
 export const seedTrades: MarketTrade[] = [
@@ -255,23 +612,32 @@ export const seedTrades: MarketTrade[] = [
   { agent: "agent-55aa", side: "short", size: "1.5", price: "3,414.8" },
 ];
 
-export const seedAsks: OrderBookLevel[] = [
-  { price: "3,415.6", size: "2.4" },
-  { price: "3,414.9", size: "1.6" },
-  { price: "3,414.2", size: "1.2" },
-  { price: "3,413.5", size: "0.9" },
-  { price: "3,413.0", size: "0.8" },
-  { price: "3,412.6", size: "0.5" },
-];
-
-export const seedBids: OrderBookLevel[] = [
-  { price: "3,411.4", size: "2.0" },
-  { price: "3,410.9", size: "1.5" },
-  { price: "3,410.2", size: "1.1" },
-  { price: "3,409.6", size: "0.9" },
-  { price: "3,409.0", size: "0.7" },
-  { price: "3,408.4", size: "0.6" },
-];
+// AMM depth per venue (the order-book replacement, issue #63 Phase 4). Deterministic wobble so the
+// sparklines have shape; the middle venue dips like a liquidityPull window.
+export const seedVenueDepths: VenueDepthView[] = seedArbitrage.venues.map(
+  (venue, v) => {
+    const baseDepth = 5_800_000 + v * 120_000;
+    const points = Array.from({ length: 40 }, (_, i) => {
+      const wobble = Math.sin(i * 0.4 + v) * 40_000;
+      const pull =
+        v === 1 && i >= 18 && i <= 26
+          ? -baseDepth * 0.4 * (1 - Math.abs(i - 22) / 4)
+          : 0;
+      return Math.round(baseDepth + wobble + pull);
+    });
+    const last = points[points.length - 1];
+    return {
+      id: venue.id,
+      label: venue.label,
+      color: venue.color,
+      depthUsd: `$${last.toLocaleString("en-US")}`,
+      deltaPercent: Math.round(((last - points[0]) / points[0]) * 1000) / 10,
+      points,
+      buy: "$3,415.6",
+      sell: "$3,408.4",
+    };
+  },
+);
 
 export const seedFeed: MarketFeedItem[] = [
   { id: 1, text: "agent-9a12 buy 0.4 @3412.0" },
@@ -310,7 +676,7 @@ export const seedArchiveFinalStandings: ArchiveFinalStanding[] = [
   { rank: 4, agent: "agent-4f2a", score: 74.9, pnlPercent: 18.4, sharpe: 1.84 },
   { rank: 5, agent: "agent-55aa", score: 70.2, pnlPercent: 15.0, sharpe: 1.61 },
   { rank: 6, agent: "agent-3e91", score: 65.8, pnlPercent: 9.7, sharpe: 1.42 },
-  { rank: 7, agent: "agent-c204", score: 61.0, pnlPercent: 7.2, sharpe: 1.30 },
+  { rank: 7, agent: "agent-c204", score: 61.0, pnlPercent: 7.2, sharpe: 1.3 },
   { rank: 8, agent: "agent-88b1", score: 55.4, pnlPercent: -1.8, sharpe: 1.05 },
 ];
 
@@ -328,13 +694,27 @@ export const seedArchiveEvents: ArchiveEvent[] = [
 ];
 
 const AGENT_DETAIL_MARKETS = ["ETH/USDC", "wBTC/USDC", "SOL/USDC"];
-const AGENT_DETAIL_TRADE_METHODS = ["openPosition", "swap", "closePosition", "addLiquidity", "flashLoan"];
-const AGENT_DETAIL_TRADE_TIMES = ["2s ago", "18s ago", "40s ago", "1m ago", "2m ago", "3m ago"];
+const AGENT_DETAIL_TRADE_METHODS = [
+  "openPosition",
+  "swap",
+  "closePosition",
+  "addLiquidity",
+  "flashLoan",
+];
+const AGENT_DETAIL_TRADE_TIMES = [
+  "2s ago",
+  "18s ago",
+  "40s ago",
+  "1m ago",
+  "2m ago",
+  "3m ago",
+];
 
 // Deterministic pseudo wallet/tx address so the same agent always shows the same string.
 function shortHexAddress(seedText: string): string {
   let hash = 0;
-  for (let i = 0; i < seedText.length; i++) hash = (hash * 31 + seedText.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < seedText.length; i++)
+    hash = (hash * 31 + seedText.charCodeAt(i)) >>> 0;
   const hex = hash.toString(16).padStart(8, "0");
   return `0x${hex.slice(0, 4)}…${hex.slice(4, 8)}`;
 }
@@ -374,8 +754,14 @@ export function buildAgentDetail(standing: AgentStanding): AgentDetail {
   const trades: AgentTrade[] = Array.from({ length: 4 }, (_, i) => ({
     hash: shortHexAddress(`${standing.agent}-tx${i}`),
     block: (19_442_110 - i * (13 + seed)).toLocaleString("en-US"),
-    method: AGENT_DETAIL_TRADE_METHODS[(seed + i) % AGENT_DETAIL_TRADE_METHODS.length],
-    amount: i % 2 === 0 ? `${1 + ((seed + i) % 6)}.${(seed * 3 + i) % 10} ETH` : `${(1 + ((seed + i) % 8)) * 1200} USDC`,
+    method:
+      AGENT_DETAIL_TRADE_METHODS[
+        (seed + i) % AGENT_DETAIL_TRADE_METHODS.length
+      ],
+    amount:
+      i % 2 === 0
+        ? `${1 + ((seed + i) % 6)}.${(seed * 3 + i) % 10} ETH`
+        : `${(1 + ((seed + i) % 8)) * 1200} USDC`,
     time: AGENT_DETAIL_TRADE_TIMES[i % AGENT_DETAIL_TRADE_TIMES.length],
   }));
 
@@ -395,8 +781,16 @@ export function buildAgentDetail(standing: AgentStanding): AgentDetail {
 
   const fullLog: AgentLogLine[] = [
     ...recentLog,
-    { time: "11:30:07", text: "route reverted: insufficient liquidity, retried", tone: "danger" },
-    { time: "11:22:19", text: `detected price event on ${positions[0].market}, widened range`, tone: "warning" },
+    {
+      time: "11:30:07",
+      text: "route reverted: insufficient liquidity, retried",
+      tone: "danger",
+    },
+    {
+      time: "11:22:19",
+      text: `detected price event on ${positions[0].market}, widened range`,
+      tone: "warning",
+    },
     { time: "11:10:03", text: "evaluated 3 candidate routes", tone: "info" },
   ];
 

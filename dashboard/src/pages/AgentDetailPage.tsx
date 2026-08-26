@@ -133,7 +133,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
             color: "var(--text-tertiary)",
           }}
         >
-          Loading ASCON…
+          Loading Eris…
         </span>
       </div>
     );

@@ -132,7 +132,7 @@ export function Sidebar({
             font: "var(--weight-bold) 13px var(--font-sans)",
           }}
         >
-          A
+          E
         </span>
         <span
           style={{
@@ -141,7 +141,7 @@ export function Sidebar({
             textTransform: "uppercase",
           }}
         >
-          Ascon
+          Eris
         </span>
       </div>
       <div style={{ display: "flex", flexDirection: "column" }}>

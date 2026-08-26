@@ -19,22 +19,53 @@ function formatCountdown(remainingMs: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
-function RoundSegment({ segment, liveFillPercent }: { segment: RoundProgressSegment; liveFillPercent: number }) {
-  const fillPercent = segment.status === "done" ? 100 : segment.status === "live" ? liveFillPercent : 0;
-  const fillColor = segment.status === "done" ? "var(--purple-600)" : segment.status === "live" ? "var(--pink-500)" : "transparent";
+function RoundSegment({
+  segment,
+  liveFillPercent,
+  running,
+}: {
+  segment: RoundProgressSegment;
+  liveFillPercent: number;
+  running: boolean;
+}) {
+  const fillPercent =
+    segment.status === "done"
+      ? 100
+      : segment.status === "live"
+        ? liveFillPercent
+        : 0;
+  const fillColor =
+    segment.status === "done"
+      ? "var(--purple-600)"
+      : segment.status === "live"
+        ? "var(--pink-500)"
+        : "transparent";
   return (
     <div
       style={{
         flex: 1,
         height: "40px",
         position: "relative",
-        background: segment.status === "upcoming" ? "var(--gray-900)" : "var(--bg-surface)",
-        boxShadow: "inset 2px 0 0 var(--bg-canvas), inset 3px 0 0 var(--border-strong)",
+        background:
+          segment.status === "upcoming"
+            ? "var(--gray-900)"
+            : "var(--bg-surface)",
+        boxShadow:
+          "inset 2px 0 0 var(--bg-canvas), inset 3px 0 0 var(--border-strong)",
         overflow: "hidden",
       }}
     >
-      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${fillPercent}%`, background: fillColor }} />
-      {segment.status === "live" && (
+      <div
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: `${fillPercent}%`,
+          background: fillColor,
+        }}
+      />
+      {segment.status === "live" && running && (
         <div
           style={{
             position: "absolute",
@@ -55,8 +86,12 @@ function RoundSegment({ segment, liveFillPercent }: { segment: RoundProgressSegm
           left: "8px",
           font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
           letterSpacing: "var(--tracking-wide)",
-          color: segment.status === "upcoming" ? "var(--text-tertiary)" : "var(--gray-50)",
-          background: segment.status === "live" ? "var(--gray-950)" : "transparent",
+          color:
+            segment.status === "upcoming"
+              ? "var(--text-tertiary)"
+              : "var(--gray-50)",
+          background:
+            segment.status === "live" ? "var(--gray-950)" : "transparent",
           padding: "1px 3px",
         }}
       >
@@ -68,22 +103,64 @@ function RoundSegment({ segment, liveFillPercent }: { segment: RoundProgressSegm
 
 export function RoundsBar({ round }: { round: RoundInfo }) {
   const now = useNow();
-  const { liveRoundLabel, totalRounds, roundsProgress } = buildRoundsProgress(round.roundNumber);
+  const { roundsProgress } = buildRoundsProgress(round.roundNumber);
+  const running = round.status === "live";
   const countdown = formatCountdown(Math.max(0, round.endsAt - now));
-  const liveFillPercent = Math.min(100, Math.max(0, ((now - round.startsAt) / (round.endsAt - round.startsAt)) * 100));
+  const liveFillPercent = running
+    ? Math.min(
+        100,
+        Math.max(
+          0,
+          ((now - round.startsAt) / (round.endsAt - round.startsAt)) * 100,
+        ),
+      )
+    : 100;
 
   return (
-    <div style={{ width: "100%", background: "var(--bg-sunken)", borderBottom: "1px solid var(--border-subtle)" }}>
+    <div
+      style={{
+        width: "100%",
+        background: "var(--bg-sunken)",
+        borderBottom: "1px solid var(--border-subtle)",
+      }}
+    >
       <div style={{ display: "flex", width: "100%" }}>
         {roundsProgress.map((segment) => (
-          <RoundSegment key={segment.n} segment={segment} liveFillPercent={liveFillPercent} />
+          <RoundSegment
+            key={segment.n}
+            segment={segment}
+            liveFillPercent={liveFillPercent}
+            running={running}
+          />
         ))}
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "var(--space-2) var(--space-3)" }}>
-        <span style={{ font: "var(--font-mono)", fontSize: "var(--text-xs)", letterSpacing: "var(--tracking-widest)", color: "var(--pink-300)", textTransform: "uppercase" }}>
-          Round {liveRoundLabel} of {totalRounds} · live
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          padding: "var(--space-2) var(--space-3)",
+        }}
+      >
+        <span
+          style={{
+            font: "var(--font-mono)",
+            fontSize: "var(--text-xs)",
+            letterSpacing: "var(--tracking-widest)",
+            color: running ? "var(--pink-300)" : "var(--text-tertiary)",
+            textTransform: "uppercase",
+          }}
+        >
+          Run {round.roundNumber} · {running ? "live" : "archived"}
         </span>
-        <span style={{ font: "var(--weight-bold) var(--text-lg) var(--font-mono)", color: "var(--pink-300)" }}>{countdown} left</span>
+        <span
+          style={{
+            font: "var(--weight-bold) var(--text-lg) var(--font-mono)",
+            color: running ? "var(--pink-300)" : "var(--text-tertiary)",
+          }}
+        >
+          {running ? `${countdown} left` : "completed"}
+        </span>
       </div>
     </div>
   );

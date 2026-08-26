@@ -10,8 +10,7 @@ import {
   seedArchivePodium,
   seedArchiveRound,
   seedArchiveStats,
-  seedAsks,
-  seedBids,
+  seedVenueDepths,
   seedBlocks,
   seedCandles,
   seedExplorerStats,
@@ -58,10 +57,15 @@ async function ensureSeeded(): Promise<void> {
   ]);
 
   const tasks: Promise<void>[] = [];
-  if (!existingRound) tasks.push(putValue(STORES.round, createSeedRound(), ROUND_KEY));
-  if (!agentCount) tasks.push(...seedAgents.map((a) => putValue(STORES.agents, a)));
+  if (!existingRound)
+    tasks.push(putValue(STORES.round, createSeedRound(), ROUND_KEY));
+  if (!agentCount)
+    tasks.push(...seedAgents.map((a) => putValue(STORES.agents, a)));
   if (!existingExtras) {
-    const extras: TopExtras = { marketTickers: seedMarketTickers, tape: seedTape };
+    const extras: TopExtras = {
+      marketTickers: seedMarketTickers,
+      tape: seedTape,
+    };
     tasks.push(putValue(STORES.topExtras, extras, TOP_EXTRAS_KEY));
   }
   await Promise.all(tasks);
@@ -99,7 +103,9 @@ export async function fetchTopPageSnapshot(): Promise<TopPageSnapshot> {
  * Mock data provider backed by IndexedDB. Reuses the shared agents store so
  * the detail view always matches the current leaderboard standing.
  */
-export async function fetchAgentDetailSnapshot(agentId: string): Promise<AgentDetailSnapshot> {
+export async function fetchAgentDetailSnapshot(
+  agentId: string,
+): Promise<AgentDetailSnapshot> {
   await ensureSeeded();
   const [round, agents] = await Promise.all([
     getValue<RoundInfo>(STORES.round, ROUND_KEY),
@@ -119,18 +125,28 @@ export async function fetchAgentDetailSnapshot(agentId: string): Promise<AgentDe
 }
 
 async function ensureExplorerSeeded(): Promise<void> {
-  const [existingRound, existingStats, blockCount, txCount] = await Promise.all([
-    getValue<RoundInfo>(STORES.round, ROUND_KEY),
-    getValue<ExplorerStats>(STORES.explorerStats, EXPLORER_STATS_KEY),
-    countValues(STORES.blocks),
-    countValues(STORES.transactions),
-  ]);
+  const [existingRound, existingStats, blockCount, txCount] = await Promise.all(
+    [
+      getValue<RoundInfo>(STORES.round, ROUND_KEY),
+      getValue<ExplorerStats>(STORES.explorerStats, EXPLORER_STATS_KEY),
+      countValues(STORES.blocks),
+      countValues(STORES.transactions),
+    ],
+  );
 
   const tasks: Promise<void>[] = [];
-  if (!existingRound) tasks.push(putValue(STORES.round, createSeedRound(), ROUND_KEY));
-  if (!existingStats) tasks.push(putValue(STORES.explorerStats, seedExplorerStats, EXPLORER_STATS_KEY));
-  if (!blockCount) tasks.push(...seedBlocks.map((b) => putValue(STORES.blocks, b)));
-  if (!txCount) tasks.push(...seedTransactions.map((t) => putValue(STORES.transactions, t)));
+  if (!existingRound)
+    tasks.push(putValue(STORES.round, createSeedRound(), ROUND_KEY));
+  if (!existingStats)
+    tasks.push(
+      putValue(STORES.explorerStats, seedExplorerStats, EXPLORER_STATS_KEY),
+    );
+  if (!blockCount)
+    tasks.push(...seedBlocks.map((b) => putValue(STORES.blocks, b)));
+  if (!txCount)
+    tasks.push(
+      ...seedTransactions.map((t) => putValue(STORES.transactions, t)),
+    );
   await Promise.all(tasks);
 }
 
@@ -159,7 +175,13 @@ export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
   };
 }
 
-type MarketSnapshotBlob = Omit<MarketSnapshot, "round" | "leaderboard">;
+// The stored blob predates the Phase 4 shape (venueDepths/pairs replaced the fictional order
+// book), so those fields are attached at read time instead of persisted — an old IndexedDB blob
+// from a previous session then still renders.
+type MarketSnapshotBlob = Omit<
+  MarketSnapshot,
+  "round" | "leaderboard" | "venueDepths" | "pairs"
+>;
 
 async function ensureMarketSeeded(): Promise<void> {
   const [existingRound, existingSnapshot, agentCount] = await Promise.all([
@@ -169,8 +191,10 @@ async function ensureMarketSeeded(): Promise<void> {
   ]);
 
   const tasks: Promise<void>[] = [];
-  if (!existingRound) tasks.push(putValue(STORES.round, createSeedRound(), ROUND_KEY));
-  if (!agentCount) tasks.push(...seedAgents.map((a) => putValue(STORES.agents, a)));
+  if (!existingRound)
+    tasks.push(putValue(STORES.round, createSeedRound(), ROUND_KEY));
+  if (!agentCount)
+    tasks.push(...seedAgents.map((a) => putValue(STORES.agents, a)));
   if (!existingSnapshot) {
     const snapshot: MarketSnapshotBlob = {
       stats: seedMarketStats,
@@ -178,8 +202,6 @@ async function ensureMarketSeeded(): Promise<void> {
       positions: seedPositions,
       orders: seedOrders,
       trades: seedTrades,
-      asks: seedAsks,
-      bids: seedBids,
       feed: seedFeed,
       arbitrage: seedArbitrage,
     };
@@ -190,9 +212,11 @@ async function ensureMarketSeeded(): Promise<void> {
 
 /**
  * Mock data provider backed by IndexedDB. Seeds once on first run so the
- * chart, order book, and position feed persist across reloads.
+ * chart, depth panel, and position feed persist across reloads.
  */
-export async function fetchMarketSnapshot(): Promise<MarketSnapshot> {
+export async function fetchMarketSnapshot(
+  _base?: string,
+): Promise<MarketSnapshot> {
   await ensureMarketSeeded();
   const [round, snapshot, agents] = await Promise.all([
     getValue<RoundInfo>(STORES.round, ROUND_KEY),
@@ -208,11 +232,16 @@ export async function fetchMarketSnapshot(): Promise<MarketSnapshot> {
     round,
     leaderboard: agents.sort((a, b) => a.rank - b.rank),
     ...snapshot,
+    venueDepths: seedVenueDepths,
+    pairs: [{ label: "WETH/USDC", value: "WETH" }],
   };
 }
 
 async function ensureArchiveSeeded(): Promise<void> {
-  const existingArchive = await getValue<ArchiveSnapshot>(STORES.archive, ARCHIVE_KEY);
+  const existingArchive = await getValue<ArchiveSnapshot>(
+    STORES.archive,
+    ARCHIVE_KEY,
+  );
   if (existingArchive) return;
   const archive: ArchiveSnapshot = {
     round: seedArchiveRound,

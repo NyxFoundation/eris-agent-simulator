@@ -17,7 +17,8 @@ export interface AgentStanding {
   strategy: string;
   strategyCategory: StrategyCategory;
   maxDrawdownPercent: number;
-  /** Rank change since the previous round; 0 = unchanged. */
+  /** Rank change over the run's final epoch, on cumulative value gain (issue #63 Phase 4: there is
+   * no cross-round concept in a single run). Positive = climbed during the last epoch. */
   move: number;
 }
 
@@ -137,9 +138,21 @@ export interface MarketTrade {
   price: string;
 }
 
-export interface OrderBookLevel {
-  price: string;
-  size: string;
+/** One AMM venue's depth, replacing the fictional order book (issue #63 Phase 4): every venue is
+ * an AMM, so what exists is pool depth and an executable two-sided quote, not resting orders. */
+export interface VenueDepthView {
+  id: string;
+  label: string;
+  color: string;
+  /** Current pool depth in USD, formatted. */
+  depthUsd: string;
+  /** Depth change over the run, percent (liquidityPull makes this move). */
+  deltaPercent: number;
+  /** Depth series over the run, for the sparkline. */
+  points: number[];
+  /** Current executable quotes at probe size, formatted. */
+  buy?: string;
+  sell?: string;
 }
 
 export interface MarketFeedItem {
@@ -188,10 +201,13 @@ export interface MarketSnapshot {
   candles: Candle[];
   leaderboard: AgentStanding[];
   positions: MarketPosition[];
+  /** Trigger orders. No current strategy uses them, so the tab hides when empty (Phase 4). */
   orders: MarketOrder[];
   trades: MarketTrade[];
-  asks: OrderBookLevel[];
-  bids: OrderBookLevel[];
+  /** AMM depth per venue — the order book replacement (Phase 4). */
+  venueDepths: VenueDepthView[];
+  /** Markets the run actually trades (drives the pair selector). */
+  pairs: { label: string; value: string }[];
   feed: MarketFeedItem[];
   arbitrage: ArbitrageSnapshot;
 }

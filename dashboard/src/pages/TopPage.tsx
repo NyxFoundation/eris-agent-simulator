@@ -3,7 +3,6 @@ import { RoundsBar } from "@/components/RoundsBar";
 import { Sidebar } from "@/components/Sidebar";
 import { Sparkline } from "@/design-system/Sparkline";
 import { blockscoutBlockUrl, useBlockscoutBase } from "@/data/blockscout";
-import { SEASON_LENGTH } from "@/data/seed";
 import { useTopPageSnapshot } from "@/data/useTopPageSnapshot";
 import { navigate } from "@/navigation";
 import type {
@@ -35,54 +34,52 @@ interface InfoTab {
   body: string[];
 }
 
+// Real copy about this simulator (issue #63 Phase 4) — the seed build shipped a fictional
+// marketing text here. Sources: README, ADR 0006 (environment/agent split, post-run scoring),
+// ADR 0019 (epoch scoring), issue #63 (artifacts).
 const INFO_TABS: InfoTab[] = [
   {
     key: "overview",
     num: "01",
     label: "Overview",
     body: [
-      "Season 4 runs 13 rounds of one hour each. 128 autonomous agents trade the same forked DeFi stack — AMM, lending, perps, oracle, stablecoin — while market scenarios are injected without warning. Every fill, liquidation and revert is written on-chain and public; no login is required to watch any of it.",
-      "Each round opens with a fresh snapshot of mainnet state. Agents receive the same block feed at the same latency, so the only edge available is the strategy itself. There is no privileged mempool access, no private RPC, and no way to opt out of a scenario once it has been scheduled.",
-      "Scenarios are drawn from a pool of injected shocks: CEX price drift, whale orders that move a pool several percent in a single block, lending incidents that strand collateral, stablecoin depegs, and full crash cascades. Between four and seven fire per round, and the schedule is only revealed after the round confirms.",
-      "Telemetry from every round — positions, decision logs, invariant breaks — is retained permanently and linkable. This is what the leaderboard is actually ranking: not a backtest, but behaviour under adversarial conditions that a production deployment would eventually meet.",
-      "Spectators can drill into any agent from the leaderboard to read its portfolio curve, trade history and real-time decision log while a round is still live.",
+      "Eris is a DeFi trading-competition simulator. Autonomous agents compete on a multi-protocol venue set — Uniswap v3, Balancer, Curve, GMX v2 and Aave v3, plus optional LST and CDP-stablecoin venues — all deployed on a local anvil chain.",
+      "Agents run as fully independent processes and see only finalized on-chain state: no privileged RPC, no pending transactions, no other agent's orders. Each block they observe, decide, and sign their own transactions; in-block ordering is anvil's fee ordering (descending priority fee), so priority is something you bid for.",
+      "The environment daemon drives the market: a seed-derived fair price written on-chain every block, uninformed and informed order flow, a GMX keeper, and scheduled stress events — crashes, liquidity pulls, stablecoin depegs, whale orders — that agents cannot opt out of.",
+      "Self-improving agents pair a rule strategy with an LLM that rewrites the strategy code mid-run. The LLM is never in the trade path: the rules trade every block on their own, and revisions install only after a static check, compilation, and a sandboxed test run.",
     ],
   },
   {
-    key: "rules",
+    key: "environment",
     num: "02",
-    label: "Rules",
+    label: "Environment",
     body: [
-      "One smart wallet per agent, seeded with an identical 250,000 USDC balance at the start of every round. Balances do not carry across rounds, so a single catastrophic round cannot be recovered by size in the next one — and a lucky round cannot compound.",
-      "The composite score weights realised PnL, Sharpe ratio and maximum drawdown. Drawdown is measured intra-round on mark price, not on close, so an agent that survives a depeg by holding through it is still charged for the excursion.",
-      "Reverted transactions still cost gas and still count against the gas budget. Agents that spam the sequencer to probe state will exhaust that budget and finish the round unable to close positions.",
-      "Maximum leverage is 5x across all perp venues combined. Positions exceeding it are force-reduced at the next block rather than rejected, and the reduction is reported as a liquidation event in the live feed.",
-      "Manual intervention during a live round voids that round's score for the agent involved. Operators may redeploy between rounds; code changes are hashed and published so the leaderboard shows which version earned which result.",
-      "Disputes are opened in the round window plus 24 hours. After that the round is final and settlement proceeds.",
+      "SEED is a label for market conditions. The fair-price path is reproducible per (regime, seed), but transaction timing and in-block ordering are not — the same scenario replayed twice gives different fills, which is the point of measuring over many scenarios.",
+      "Official regimes: calm, cex-drift, informed-flow, whale, lending-incident, crash, and depeg. A scenario is one (regime, seed) pair; the backtest matrix replays a whole set against a state dump and ranks agents per regime.",
+      "Stress events are randomized-but-deterministic overlays on the fair price (ramp, hold, decay), liquidity pulls that thin every AMM pool at once, and depegs where the environment leans on a stablecoin's pool until the window closes. Seeded victim positions make Aave liquidations reachable for agents that watch health factors.",
+      "The fair price is distributed on-chain through a PriceFeed contract and lands one block late for everyone equally — reacting to information a block after it exists is part of the game.",
     ],
   },
   {
-    key: "prizes",
+    key: "scoring",
     num: "03",
-    label: "Prizes",
+    label: "Scoring",
     body: [
-      "The reward pool is funded on-chain before round 1 opens and is visible in the explorer from that moment. Nothing is held off-chain, and settlement executes automatically when the final round confirms — there is no manual payout step and no discretionary adjustment.",
-      "The top three finishers split 70% of the pool: 40% to first, 20% to second, 10% to third. Ranks four through ten share the remaining 30%, weighted by composite score rather than split evenly, so the gap between fourth and tenth is meaningful.",
-      "Ties are broken by Sharpe first, then by maximum drawdown, then by the earlier timestamp of the round in which the score was set. A tie that survives all three splits the combined allocation.",
-      "Agents disqualified for manual intervention forfeit their allocation to the pool, which is redistributed to the remaining ranked agents at settlement. Forfeitures are logged as ordinary transactions and are auditable alongside every other event.",
-      "Payouts land in the same smart wallet the agent traded from and appear in the explorer within a block of the final confirmation.",
+      "Scoring happens after the run, not during it. The coordinator walks back over historical block state and values every agent at identical block cross-sections (one batched multicall per block), so the live loop pays nothing for it and no agent can game a snapshot phase.",
+      "Score is mean − λ·std of per-epoch log returns of total account value, measured in excess of the roster's do-nothing baseline agent. The leaderboard shows it in bps of log growth per epoch.",
+      "PnL%, Sharpe (mean/std of the same epoch returns) and max drawdown come from the same reconstructed series and are shown for context; rank is by score. The rank move column is the change over the run's final epoch.",
+      "Holdings the scorer cannot price are reported, never silently zeroed — a zero that is really a read failure would be indistinguishable from a trading loss.",
     ],
   },
   {
-    key: "sponsors",
+    key: "artifacts",
     num: "04",
-    label: "Sponsors",
+    label: "Artifacts",
     body: [
-      "Season 4 is funded and infrastructure-backed by the six protocols across the stack ASCON forks: an AMM, a lending market, a perps venue, an oracle network, a stablecoin issuer and a token-launch platform. Each sponsor's mainnet contracts are cloned byte-for-byte into the simulation layer, so agents trade against real bytecode, not an approximation.",
-      "Title sponsor Ascend Protocol funds 60% of the round 4 reward pool and supplies the perps venue every agent trades on. Its production liquidation engine runs unmodified inside the simulation, including the same keeper incentives live on mainnet.",
-      "Infrastructure sponsors: Lumen Oracle Network feeds every price used for marks, liquidations and funding; Vault Finance supplies the lending market agents borrow against; Meridian AMM provides the spot and swap venue behind the ETH-USD, wBTC-USD and SOL-USD pairs.",
-      "Data sponsor Chainscope indexes every block, transaction and event ASCON produces and powers the public explorer — the same feed spectators see is the one agents receive, with no privileged latency advantage for either side.",
-      "Becoming a sponsor doesn't change how a round runs. Sponsor contracts are forked and frozen at round start like every other venue; sponsorship funds the reward pool and infrastructure costs, it does not buy match-fixing, private data feeds, or agent advantages.",
+      "Everything on these pages is derived from the run's files: summary.json (standings and epoch scores), events.jsonl (reconstructed observations and the event stream), blocks.csv (every transaction), agents/<id>.jsonl (each agent's own decision log), and market.json (per-venue prices, pool depth, GMX/Aave state, decoded transaction notionals).",
+      "The chain is the source of truth: every numeric series is reconstructed from on-chain reads after the run. Logs supply only reasoning, intent and identity.",
+      "While a run is live the dashboard tails the log files and reads the chain over RPC — prices, blocks, the event tape and decision logs update in place. Scores and per-venue series appear the moment the run completes.",
+      "The local Blockscout explorer (npm run explorer) is the deep-dive tool: when it is running, every transaction, address and block on these pages links into it.",
     ],
   },
 ];
@@ -464,7 +461,7 @@ export function TopPage() {
             color: "var(--text-tertiary)",
           }}
         >
-          Loading ASCON…
+          Loading Eris…
         </span>
       </div>
     );
@@ -494,7 +491,6 @@ export function TopPage() {
   }
 
   const { round, leaderboard, marketTickers, blocks, tape } = data;
-  const season = Math.ceil(round.roundNumber / SEASON_LENGTH);
   const tapeLoop = tape.concat(tape);
 
   return (
@@ -516,7 +512,7 @@ export function TopPage() {
             width: "100%",
             minHeight: "340px",
             backgroundImage:
-              "linear-gradient(90deg, rgba(8,6,16,0.92) 0%, rgba(8,6,16,0.55) 42%, rgba(8,6,16,0.15) 100%), url('/assets/ascon-bg.png')",
+              "linear-gradient(90deg, rgba(8,6,16,0.92) 0%, rgba(8,6,16,0.55) 42%, rgba(8,6,16,0.15) 100%), url('/assets/eris-bg.png')",
             backgroundSize: "cover, cover",
             backgroundPosition: "center, center",
             borderBottom: "1px solid var(--border-subtle)",
@@ -538,7 +534,7 @@ export function TopPage() {
               color: "var(--text-primary)",
             }}
           >
-            ASCON
+            ERIS
           </h1>
           <span
             style={{
@@ -581,7 +577,7 @@ export function TopPage() {
               letterSpacing: "var(--tracking-wide)",
             }}
           >
-            SEASON {season} · {leaderboard.length} AGENTS · BLOCK{" "}
+            RUN {round.roundNumber} · {leaderboard.length} AGENTS · BLOCK{" "}
             {round.blockNumber.toLocaleString("en-US")}
           </span>
         </div>
