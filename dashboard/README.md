@@ -53,7 +53,33 @@ Vite dev-server plugin (`/runs/index.json` + `/runs/<id>/<file>`, see
   tables, tx amounts, and volume aggregates. Runs recorded before the artifact
   existed degrade to the Phase 1 rendering (`—`/`n/a`/empty).
 
-Live mode is Phase 3 (#63); until it lands the dashboard renders completed runs.
+## Live mode (issue #63 Phase 3)
+
+A run in progress (no `summary.json` yet, `events.jsonl` still moving) appears
+in the run picker as `● <id> (live)` and every view refreshes in place every
+few seconds. Live data comes from three places, none of them the coordinator:
+
+- **file tails** — the dev server's `/runs/<id>/tail/<file>?offset=N` endpoint
+  streams appended bytes of `events.jsonl` (run meta, event tape, tx
+  attribution) and `agents/<id>.jsonl` (live decision log)
+- **JSON-RPC** — the anvil endpoint is discovered from the agents' own
+  `runtime_start` log lines; the browser reads the chain height, recent blocks,
+  and the on-chain PriceFeed directly (a live fair ticker accumulates while the
+  page watches)
+- **Blockscout** (optional) — when `npm run explorer` is up, its indexed height
+  is shown next to the RPC height so the indexer lag stays visible, and deep
+  links work during the run
+
+Scores, portfolio curves, per-venue series, and tx notionals are post-run
+artifacts by design (ADR 0006 §4) and appear the moment the run completes — the
+picker drops the live marker and the views switch to the archived rendering on
+the next poll, no reload needed.
+
+Lifecycle note: the Blockscout explorer indexes the same anvil, so its own
+lifecycle applies alongside live mode — `npm run explorer:reset` after a chain
+reset (the indexer cannot follow a rollback), `npm run explorer:tag` per run
+for agent name tags. The dashboard never depends on the explorer; it only adds
+links and the indexed-height stat.
 
 When the local Blockscout explorer is running (`npm run explorer`, :3100),
 tx/block/address deep links appear automatically (availability is probed once

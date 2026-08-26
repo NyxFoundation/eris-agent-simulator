@@ -304,6 +304,12 @@ export function ExplorerPage() {
               value={`${round.roundNumber} · ${round.status === "live" ? "Live" : "Archived"}`}
             />
             <StatTile label="Latest block" value={stats.latestBlockNumber} />
+            {stats.indexerBlockNumber !== undefined && (
+              <StatTile
+                label="Indexed block"
+                value={stats.indexerBlockNumber}
+              />
+            )}
             <StatTile
               label="Tx this round"
               value={stats.txCountThisRound.toLocaleString("en-US")}

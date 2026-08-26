@@ -6,6 +6,8 @@
 export interface RunIndexEntry {
   id: string;
   mtimeMs: number;
+  /** True while the run is in progress (no summary.json yet, events.jsonl still moving). */
+  live?: boolean;
 }
 
 export interface RunEvent {
@@ -146,6 +148,19 @@ export interface MarketSeriesFile {
   notionals: Record<string, TxNotional>;
 }
 
+// Present only on a live run's synthetic LoadedRun (issue #63 Phase 3): what the current-block RPC
+// reads reflect, so every live panel can carry the height it renders.
+export interface LiveExtras {
+  chainHeight: number | null;
+  /** Blockscout's indexed height when the explorer answers — the indexer lag stays visible. */
+  indexerHeight: number | null;
+  /** Fair-price samples accumulated while the page watches (one PriceFeed read per refresh). */
+  fairSamples: { block: number; fair: number }[];
+  startedAtMs: number | null;
+  runSeconds: number | null;
+  runBlocks: number | null;
+}
+
 export interface LoadedRun {
   id: string;
   summary: RunSummary;
@@ -153,6 +168,8 @@ export interface LoadedRun {
   blockRows: BlockRow[];
   // null when the run predates the market series artifact — consumers fall back to Phase 1 behavior.
   market: MarketSeriesFile | null;
+  // Set only while the run is live (assembled by liveRun.ts, not read from disk).
+  live?: LiveExtras;
 }
 
 async function fetchText(url: string): Promise<string> {

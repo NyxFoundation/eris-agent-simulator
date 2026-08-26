@@ -80,6 +80,8 @@ export interface ExplorerStats {
   txCountThisRound: number;
   activeAgents: number;
   avgBlockTimeSeconds: number;
+  /** Blockscout's indexed height in live mode, when it differs from the RPC height (skew display). */
+  indexerBlockNumber?: string;
 }
 
 export interface ExplorerSnapshot {

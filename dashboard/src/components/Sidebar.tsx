@@ -9,26 +9,39 @@ export type SidebarNavKey = "home" | "leaderboard" | "explorer" | "markets";
 
 /**
  * Run picker (issue #63 Phase 1): every view renders one run from runs/<id>/,
- * newest by default. Hidden in seed-provider mode where there is nothing to pick.
+ * newest by default. Re-polled so a run that starts (live) or completes while
+ * the page is open appears without a reload. Hidden in seed-provider mode
+ * where there is nothing to pick.
  */
+const RUN_LIST_POLL_MS = 10_000;
+
 function RunPicker() {
   const selected = useSelectedRunId();
   const [runs, setRuns] = useState<RunIndexEntry[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    listRuns()
-      .then((entries) => {
-        if (!cancelled) setRuns(entries);
-      })
-      .catch(() => {
-        if (!cancelled) setRuns([]);
-      });
+    const load = () => {
+      listRuns()
+        .then((entries) => {
+          if (!cancelled) setRuns(entries);
+        })
+        .catch(() => {
+          if (!cancelled) setRuns((prev) => prev ?? []);
+        });
+    };
+    load();
+    const timer = window.setInterval(load, RUN_LIST_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   if (!runs || runs.length === 0) return null;
   const value =
     selected && runs.some((r) => r.id === selected) ? selected : runs[0].id;
+  const liveSelected = runs.find((r) => r.id === value)?.live ?? false;
 
   return (
     <div
@@ -43,15 +56,18 @@ function RunPicker() {
       <span
         style={{
           font: "var(--text-xs) var(--font-mono)",
-          color: "var(--text-tertiary)",
+          color: liveSelected ? "var(--pink-300)" : "var(--text-tertiary)",
           letterSpacing: "var(--tracking-wide)",
         }}
       >
-        RUN
+        {liveSelected ? "RUN · LIVE" : "RUN"}
       </span>
       <Select
         value={value}
-        options={runs.map((r) => ({ label: r.id, value: r.id }))}
+        options={runs.map((r) => ({
+          label: r.live ? `● ${r.id} (live)` : r.id,
+          value: r.id,
+        }))}
         onChange={(e) => setSelectedRunId(e.target.value)}
         style={{ width: "100%" }}
       />

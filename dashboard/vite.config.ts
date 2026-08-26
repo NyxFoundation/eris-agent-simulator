@@ -7,10 +7,16 @@ import { defineConfig, type Plugin } from "vite";
 
 const RUNS_DIR = fileURLToPath(new URL("../runs", import.meta.url));
 
+// A run dir without summary.json is either in progress or dead: summary.json is written at the very
+// end of a run, so "no summary but events.jsonl still moving" is the live signal. Anything stale
+// beyond this window is a crashed run and drops off the index (it was never listed before either).
+const LIVE_FRESHNESS_MS = 30_000;
+
 /**
  * Serves the sibling runs/ directory (same repo, relative path — issue #63):
- *   /runs/index.json      -> run dirs that contain a summary.json, newest first
- *   /runs/<id>/<artifact> -> the artifact file itself
+ *   /runs/index.json           -> run dirs, newest first; `live: true` marks a run in progress
+ *   /runs/<id>/<artifact>      -> the artifact file itself
+ *   /runs/<id>/tail/<file>?offset=N -> incremental tail of a jsonl/csv artifact (live mode)
  * Dev-server only: the dashboard is a local viewer over local run output.
  */
 function runsPlugin(): Plugin {
@@ -18,11 +24,13 @@ function runsPlugin(): Plugin {
     name: "eris-runs",
     configureServer(server) {
       server.middlewares.use("/runs", (req, res, next) => {
-        const url = (req.url ?? "/").split("?")[0];
+        const [urlPath, query] = (req.url ?? "/").split("?");
+        const url = urlPath;
 
         if (url === "/index.json") {
-          let entries: { id: string; mtimeMs: number }[] = [];
+          let entries: { id: string; mtimeMs: number; live?: boolean }[] = [];
           try {
+            const now = Date.now();
             entries = fs
               .readdirSync(RUNS_DIR, { withFileTypes: true })
               .filter((d) => d.isDirectory())
@@ -33,6 +41,19 @@ function runsPlugin(): Plugin {
                   );
                   return [{ id: d.name, mtimeMs: stat.mtimeMs }];
                 } catch {
+                  // no summary yet — live if events.jsonl is still being appended to
+                  try {
+                    const events = fs.statSync(
+                      path.join(RUNS_DIR, d.name, "events.jsonl"),
+                    );
+                    if (now - events.mtimeMs < LIVE_FRESHNESS_MS) {
+                      return [
+                        { id: d.name, mtimeMs: events.mtimeMs, live: true },
+                      ];
+                    }
+                  } catch {
+                    // not a run dir
+                  }
                   return [];
                 }
               })
@@ -42,6 +63,54 @@ function runsPlugin(): Plugin {
           }
           res.setHeader("content-type", "application/json");
           res.end(JSON.stringify(entries));
+          return;
+        }
+
+        // Incremental tail for live mode: /runs/<id>/tail/<file>?offset=N returns the bytes
+        // appended since N plus the new offset, so the client polls without refetching the file.
+        const tailMatch = url.match(/^\/([^/]+)\/tail\/(.+)$/);
+        if (tailMatch) {
+          const rel = `${decodeURIComponent(tailMatch[1])}/${decodeURIComponent(tailMatch[2])}`;
+          const file = path.resolve(RUNS_DIR, rel);
+          if (
+            rel.includes("\0") ||
+            !file.startsWith(path.resolve(RUNS_DIR) + path.sep) ||
+            !/\.(jsonl|csv)$/.test(file)
+          ) {
+            res.statusCode = 403;
+            res.end();
+            return;
+          }
+          const offset = Math.max(
+            0,
+            Number(new URLSearchParams(query ?? "").get("offset") ?? 0) || 0,
+          );
+          fs.stat(file, (err, stat) => {
+            res.setHeader("content-type", "application/json");
+            if (err || !stat.isFile()) {
+              res.end(JSON.stringify({ offset: 0, text: "", missing: true }));
+              return;
+            }
+            const start = Math.min(offset, stat.size);
+            if (start >= stat.size) {
+              res.end(JSON.stringify({ offset: stat.size, text: "" }));
+              return;
+            }
+            const chunks: Buffer[] = [];
+            fs.createReadStream(file, { start, end: stat.size - 1 })
+              .on("data", (c) => chunks.push(c as Buffer))
+              .on("end", () => {
+                res.end(
+                  JSON.stringify({
+                    offset: stat.size,
+                    text: Buffer.concat(chunks).toString("utf8"),
+                  }),
+                );
+              })
+              .on("error", () => {
+                res.end(JSON.stringify({ offset: start, text: "" }));
+              });
+          });
           return;
         }
 

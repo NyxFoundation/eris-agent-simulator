@@ -121,7 +121,7 @@ An optional web UI lives in the [`dashboard/`](dashboard/) workspace (Vite + Rea
 npm run dashboard   # dev server at http://localhost:5173
 ```
 
-It renders completed runs from `runs/<id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json`) — pick the run in the sidebar, newest first. The `market.json` artifact is derived after each run by the same historical-read reconstruction that scores it (per-venue prices, pool depth, GMX/Aave state, decoded tx notionals; zero cost to the live loop). When the local Blockscout explorer is up (`npm run explorer`, http://localhost:3100), tx hashes, blocks, and addresses deep-link into it; without it the links simply disappear. Live mode is tracked in [#63](https://github.com/NyxFoundation/eris-competition-poc/issues/63) (Phase 3).
+It renders runs from `runs/<id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json`) — pick the run in the sidebar, newest first. A run still in progress shows up as `● (live)` and can be watched as it happens (prices, blocks, event tape, and decision logs updating; scores and per-venue series appear the moment the run completes). The `market.json` artifact is derived after each run by the same historical-read reconstruction that scores it (per-venue prices, pool depth, GMX/Aave state, decoded tx notionals; zero cost to the live loop). When the local Blockscout explorer is up (`npm run explorer`, http://localhost:3100), tx hashes, blocks, and addresses deep-link into it and its indexed height is shown next to the RPC height; without it the links simply disappear.
 
 ### Backtesting (iterative strategy verification)
 

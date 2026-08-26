@@ -4,6 +4,7 @@
 // with per-venue prices, venue state, and tx notionals. No sim reads at view
 // time; runs without market.json degrade to the Phase 1 rendering.
 
+import { liveAgentLog, loadLiveRun } from "./liveRun";
 import {
   loadAllAgentLogs,
   loadRun,
@@ -61,9 +62,23 @@ async function resolveRun(): Promise<ResolvedRun> {
     runs.findIndex((r) => r.id === selected),
   );
   const entry = runs[index === -1 ? 0 : index];
-  const run = await loadRun(entry.id);
+  // A live run has no summary.json yet — its state is tailed and read from the chain instead of
+  // loaded from artifacts (issue #63 Phase 3), and nothing about it is cached across refreshes.
+  const run = entry.live
+    ? await loadLiveRun(entry.id)
+    : await loadRun(entry.id);
   // runs are sorted newest-first; number them oldest = 1 so newer runs count up
   return { ...run, roundNumber: runs.length - runs.indexOf(entry) };
+}
+
+// The tailed in-memory logs for a live run; the on-disk artifacts otherwise. The artifact loader
+// caches whole files, which is exactly wrong while they are still being appended to.
+async function agentLogsFor(
+  run: LoadedRun,
+): Promise<Map<string, AgentLogEntry[]>> {
+  const ids = (run.summary.agents ?? []).map((a) => a.id);
+  if (run.live) return new Map(ids.map((id) => [id, liveAgentLog(run.id, id)]));
+  return loadAllAgentLogs(run.id, ids);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +169,23 @@ function lastBlock(run: LoadedRun): number {
 }
 
 function buildRound(run: ResolvedRun): RoundInfo {
+  if (run.live) {
+    const startsAt = run.live.startedAtMs ?? Date.now();
+    // The run ends at whichever bound bites first: the block count or the wall-clock cap.
+    const blockTimeSec = run.summary.blockTimeSec ?? 2;
+    const bounds = [
+      run.live.runBlocks !== null ? run.live.runBlocks * blockTimeSec : null,
+      run.live.runSeconds,
+    ].filter((s): s is number => s !== null && s > 0);
+    const durationSec = bounds.length > 0 ? Math.min(...bounds) : 0;
+    return {
+      roundNumber: run.roundNumber,
+      status: "live",
+      startsAt,
+      endsAt: startsAt + durationSec * 1000,
+      blockNumber: run.live.chainHeight ?? lastBlock(run),
+    };
+  }
   const started =
     eventOfType(run.events, "run_started_realtime")?.ts ?? run.events[0]?.ts;
   const completed =
@@ -447,8 +479,7 @@ type TxInfo = { method: string; protocol?: string };
 
 /** hash → agent-submitted method + venue; blocks.csv only knows agents sent "direct" txs. */
 async function txInfoByHash(run: LoadedRun): Promise<Map<string, TxInfo>> {
-  const ids = (run.summary.agents ?? []).map((a) => a.id);
-  const logs = await loadAllAgentLogs(run.id, ids);
+  const logs = await agentLogsFor(run);
   const byHash = new Map<string, TxInfo>();
   for (const entries of logs.values()) {
     for (const entry of entries) {
@@ -509,8 +540,16 @@ function buildTransactions(
 // ---------------------------------------------------------------------------
 // market series
 
-function buildCandles(run: LoadedRun): Candle[] {
+// Fair-price points per block: the reconstructed observations for a completed run, the accumulated
+// live PriceFeed samples while one is running (Phase 3 — the series grows as the page watches).
+function fairSeries(run: LoadedRun): { block: number; fair: number }[] {
   const { prices } = observationSeries(run);
+  if (prices.length > 0) return prices;
+  return run.live?.fairSamples ?? [];
+}
+
+function buildCandles(run: LoadedRun): Candle[] {
+  const prices = fairSeries(run);
   if (prices.length === 0) return [];
   const bucketSize = Math.max(1, Math.ceil(prices.length / 48));
   const candles: Candle[] = [];
@@ -634,24 +673,35 @@ function buildArbitrage(
   // Phase 1 fallback (runs recorded before market.json existed): the one pool reference price the
   // reconstructed observations carry.
   const prices = downsample(observationSeries(run).prices, 720);
-  const fair = prices.map((p) => ({ time: p.block, price: p.fair }));
+  if (prices.length >= 2) {
+    return {
+      fair: prices.map((p) => ({ time: p.block, price: p.fair })),
+      venues: [
+        {
+          id: "pool",
+          label: "Pool",
+          color: "#7c9eff",
+          points: prices.map((p) => ({ time: p.block, price: p.pool })),
+        },
+      ],
+      spread: prices.map((p) => ({
+        time: p.block,
+        spreadBps:
+          p.fair > 0
+            ? Math.round(Math.abs((p.pool - p.fair) / p.fair) * 10_000 * 10) /
+              10
+            : 0,
+      })),
+      thresholdBps: ARB_THRESHOLD_BPS,
+      trades: [],
+    };
+  }
+  // Live run: only the accumulated fair samples exist (per-venue series are post-run artifacts).
+  const live = downsample(fairSeries(run), 720);
   return {
-    fair,
-    venues: [
-      {
-        id: "pool",
-        label: "Pool",
-        color: "#7c9eff",
-        points: prices.map((p) => ({ time: p.block, price: p.pool })),
-      },
-    ],
-    spread: prices.map((p) => ({
-      time: p.block,
-      spreadBps:
-        p.fair > 0
-          ? Math.round(Math.abs((p.pool - p.fair) / p.fair) * 10_000 * 10) / 10
-          : 0,
-    })),
+    fair: live.map((p) => ({ time: p.block, price: p.fair })),
+    venues: [],
+    spread: [],
     thresholdBps: ARB_THRESHOLD_BPS,
     trades: [],
   };
@@ -677,6 +727,17 @@ function buildTickers(run: LoadedRun): MarketTicker[] {
       price: formatUsd(last.pool),
       ...formatDeltaPercent(first.pool, last.pool),
       points: poolPoints,
+    });
+  } else if (run.live && run.live.fairSamples.length >= 2) {
+    // live: the PriceFeed samples accumulated while the page watches
+    const samples = run.live.fairSamples;
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    tickers.push({
+      symbol: `WETH/USDC FAIR · blk ${last.block.toLocaleString("en-US")}`,
+      price: formatUsd(last.fair),
+      ...formatDeltaPercent(first.fair, last.fair),
+      points: downsample(samples, 40).map((p) => p.fair),
     });
   }
 
@@ -774,13 +835,23 @@ export async function fetchTopPageSnapshot(): Promise<TopPageSnapshot> {
 export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
   const run = await resolveRun();
   const infoByHash = await txInfoByHash(run);
+  // Live: blockRows only cover the recent chain window, so the round's tx count comes from the
+  // coordinator's tx_submitted stream instead; the indexer height rides along so its lag is visible.
+  const txCountThisRound = run.live
+    ? run.events.filter((e) => e.type === "tx_submitted").length
+    : run.blockRows.length;
   return {
     round: buildRound(run),
     stats: {
-      latestBlockNumber: lastBlock(run).toLocaleString("en-US"),
-      txCountThisRound: run.blockRows.length,
+      latestBlockNumber: (
+        run.live?.chainHeight ?? lastBlock(run)
+      ).toLocaleString("en-US"),
+      txCountThisRound,
       activeAgents: (run.summary.agents ?? []).length,
       avgBlockTimeSeconds: run.summary.blockTimeSec ?? 0,
+      ...(run.live?.indexerHeight != null
+        ? { indexerBlockNumber: run.live.indexerHeight.toLocaleString("en-US") }
+        : {}),
     },
     blocks: groupBlocks(run)
       .slice(0, 30)
@@ -904,10 +975,7 @@ export async function fetchMarketSnapshot(): Promise<MarketSnapshot> {
   const first = prices[0];
   const last = prices[prices.length - 1];
   const lastFair = last?.fair ?? run.summary.finalFairPriceUsdcPerWeth ?? 0;
-  const logs = await loadAllAgentLogs(
-    run.id,
-    (run.summary.agents ?? []).map((a) => a.id),
-  );
+  const logs = await agentLogsFor(run);
   const infoByHash = await txInfoByHash(run);
 
   return {
@@ -1059,8 +1127,7 @@ export async function fetchAgentDetailSnapshot(
     240,
   );
   const infoByHash = await txInfoByHash(run);
-  const logEntries =
-    (await loadAllAgentLogs(run.id, [agentId])).get(agentId) ?? [];
+  const logEntries = (await agentLogsFor(run)).get(agentId) ?? [];
 
   const trades: AgentTrade[] = run.blockRows
     .filter((row) => row.from === address)
