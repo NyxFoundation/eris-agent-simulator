@@ -21,6 +21,10 @@
     "check:strategy": "tsx scripts/checkStrategyCode.ts",
     "check:boundaries": "tsx scripts/checkImportBoundaries.ts",
     "bundle:agent": "tsx scripts/bundleAgent.ts",
+    "explorer": "infra/blockscout/explorer.sh up",
+    "explorer:down": "infra/blockscout/explorer.sh down",
+    "explorer:reset": "infra/blockscout/explorer.sh reset",
+    "explorer:tag": "infra/blockscout/explorer.sh tag",
     "build:contracts": "forge build",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts"
