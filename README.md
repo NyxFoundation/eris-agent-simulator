@@ -113,6 +113,16 @@ Output is written under `runs/<run_id>/` (`summary.json` / `events.jsonl` / `blo
 - Flow transactions and valid agent transactions are submitted in each block.
 - `valueSeries.failedReads` in `summary.json` is `0`.
 
+### Dashboard (optional)
+
+An optional web UI lives in the [`dashboard/`](dashboard/) workspace (Vite + React). It is not needed to run or score anything:
+
+```bash
+npm run dashboard   # dev server at http://localhost:5173
+```
+
+It renders runs from `runs/<id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json`) — pick the run in the sidebar, newest first. A run still in progress shows up as `● (live)` and can be watched as it happens (prices, blocks, event tape, and decision logs updating; scores and per-venue series appear the moment the run completes). The `market.json` artifact is derived after each run by the same historical-read reconstruction that scores it (per-venue prices, pool depth, GMX/Aave state, decoded tx notionals; zero cost to the live loop). When the local Blockscout explorer is up (`npm run explorer`, http://localhost:3100), tx hashes, blocks, and addresses deep-link into it and its indexed height is shown next to the RPC height; without it the links simply disappear.
+
 ### Backtesting (iterative strategy verification)
 
 Once you bake a state dump from a deployed anvil, you can **replay official regimes (market scenarios) as many times as you like** without launching the deployer. Market conditions are identical every time by seed determinism, and scoring is identical to realtime:

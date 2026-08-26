@@ -68,6 +68,7 @@ import {
   writePriceFeedStorageFor,
 } from "./priceFeed.js";
 import { reconstructValueSeries } from "./reconstruct.js";
+import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import {
   scoreEpochSeriesByAgent,
   type EpochScore,
@@ -1838,6 +1839,31 @@ export async function runRealtimeSimulation(
         };
         logger.event({ type: "value_series_reconstruction_failed", error });
         console.error(`[reconstruct] value series unavailable: ${error}`);
+      }
+
+      // ---- dashboard market series (issue #63 Phase 2): venue prices/state + tx notionals ----
+      // Same historical-read machinery as the value series, same window, zero live-loop cost.
+      // A reporting artifact: losing it degrades the dashboard, never the run, so its failure is
+      // logged and swallowed independently of scoring.
+      try {
+        const artifact = await reconstructMarketSeries({
+          publicClient,
+          agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+          enabledIds,
+          priceFeed: priceFeedAddress,
+          fromBlock: runStartBlock,
+          toBlock: finalBlock,
+          scoreEvery: config.scoreEvery,
+        });
+        logger.artifact("market.json", artifact);
+        logger.event({
+          type: "market_series_reconstructed",
+          ...marketSeriesMeta(artifact),
+        });
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        logger.event({ type: "market_series_reconstruction_failed", error });
+        console.error(`[reconstruct] market series unavailable: ${error}`);
       }
     }
 

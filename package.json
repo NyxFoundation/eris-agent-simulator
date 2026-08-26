@@ -7,7 +7,8 @@
   "workspaces": [
     "sdk",
     "core",
-    "example"
+    "example",
+    "dashboard"
   ],
   "scripts": {
     "anvil": "tsx core/src/cli/anvil.ts",
@@ -21,6 +22,7 @@
     "check:strategy": "tsx scripts/checkStrategyCode.ts",
     "check:boundaries": "tsx scripts/checkImportBoundaries.ts",
     "bundle:agent": "tsx scripts/bundleAgent.ts",
+    "dashboard": "npm run dev -w dashboard",
     "explorer": "infra/blockscout/explorer.sh up",
     "explorer:down": "infra/blockscout/explorer.sh down",
     "explorer:reset": "infra/blockscout/explorer.sh reset",

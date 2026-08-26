@@ -9,6 +9,7 @@ Each run generates a `runs/<run_id>/` directory. The dedicated evaluation, scori
 | `summary.json` | per-agent initial / final value, netPnl, alpha, included/revert tx counts, `valueSeries.failedReads`, `violations` |
 | `events.jsonl` | event stream (observation, stress, liquidation, etc.); the primary source for scoring |
 | `blocks.csv` | per-block tx records (fee comes from the on-chain tx field) |
+| `market.json` | post-run market series (issue #63 Phase 2): per-block per-venue executable quotes + pool depth, GMX OI/funding, Aave reserve totals, multi-asset fair prices, end-of-run GMX positions / Aave accounts, and decoded per-tx USD notionals. Derived from historical reads after the run (zero live-loop cost); feeds the `dashboard/` workspace. Reporting only — never an input to scoring |
 | `agents/<id>.jsonl` | each agent's self-reported log (decision `reason` / `signals` / `state`, plus mempool activity appended by runtime/send.ts as `kind:"mempool"`: submitted / submit_failed / rejected) |
 | `agents/<id>.llm.jsonl` | raw strategy-revision exchange for a self-improving agent (opt-in via `ERIS_IMPROVE_LOG_CALLS=1`; system prompt, sent context, response, errors; see [Self-improving agents](llm-agents.md)). Revision *outcomes* are in `agents/<id>.jsonl` |
 
