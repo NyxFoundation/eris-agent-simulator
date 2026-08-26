@@ -8,9 +8,13 @@ import { defineConfig, type Plugin } from "vite";
 const RUNS_DIR = fileURLToPath(new URL("../runs", import.meta.url));
 
 // A run dir without summary.json is either in progress or dead: summary.json is written at the very
-// end of a run, so "no summary but events.jsonl still moving" is the live signal. Anything stale
-// beyond this window is a crashed run and drops off the index (it was never listed before either).
-const LIVE_FRESHNESS_MS = 30_000;
+// end of a run, so "no summary but the artifacts still moving" is the live signal. The teardown
+// phase (bulk blocks.csv recording, then the reconstruction sweeps) can leave events.jsonl silent
+// for tens of seconds while blocks.csv is the file being written — so freshness is judged on the
+// newest of the two, with a window generous enough to bridge the quiet stretches. A run that
+// briefly dropped off the index mid-teardown would flip the dashboard to the neighboring run and
+// strand it there (the live refresh loop stops with the run it lost).
+const LIVE_FRESHNESS_MS = 120_000;
 
 /**
  * Serves the sibling runs/ directory (same repo, relative path — issue #63):
@@ -41,18 +45,19 @@ function runsPlugin(): Plugin {
                   );
                   return [{ id: d.name, mtimeMs: stat.mtimeMs }];
                 } catch {
-                  // no summary yet — live if events.jsonl is still being appended to
-                  try {
-                    const events = fs.statSync(
-                      path.join(RUNS_DIR, d.name, "events.jsonl"),
-                    );
-                    if (now - events.mtimeMs < LIVE_FRESHNESS_MS) {
-                      return [
-                        { id: d.name, mtimeMs: events.mtimeMs, live: true },
-                      ];
-                    }
-                  } catch {
-                    // not a run dir
+                  // no summary yet — live if any artifact is still being appended to
+                  const freshest = ["events.jsonl", "blocks.csv"]
+                    .map((f) => {
+                      try {
+                        return fs.statSync(path.join(RUNS_DIR, d.name, f))
+                          .mtimeMs;
+                      } catch {
+                        return 0;
+                      }
+                    })
+                    .reduce((a, b) => Math.max(a, b), 0);
+                  if (freshest > 0 && now - freshest < LIVE_FRESHNESS_MS) {
+                    return [{ id: d.name, mtimeMs: freshest, live: true }];
                   }
                   return [];
                 }

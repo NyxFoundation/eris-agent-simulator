@@ -22,6 +22,7 @@ export function useSnapshot<T>(
   const isLiveRef = useRef(isLive);
   isLiveRef.current = isLive;
   const keyRef = useRef<string | null>(null);
+  const wasLiveRef = useRef(false);
   const [tick, setTick] = useState(0);
   const [state, setState] = useState<SnapshotState<T>>({
     data: null,
@@ -34,6 +35,7 @@ export function useSnapshot<T>(
     let timer: number | undefined;
     if (keyRef.current !== key) {
       keyRef.current = key;
+      wasLiveRef.current = false;
       setState({ data: null, loading: true, error: null });
     }
     fetcherRef
@@ -41,7 +43,13 @@ export function useSnapshot<T>(
       .then((data) => {
         if (cancelled) return;
         setState({ data, loading: false, error: null });
-        if (isLiveRef.current(data)) {
+        const isLiveNow = isLiveRef.current(data);
+        // One grace refresh after live -> not-live: the run's completing artifacts settle over a
+        // few seconds, and the first non-live snapshot may still be a transitional read. The extra
+        // poll picks up the settled state instead of stopping on whatever the transition returned.
+        const wasLive = wasLiveRef.current;
+        wasLiveRef.current = isLiveNow;
+        if (isLiveNow || wasLive) {
           timer = window.setTimeout(
             () => setTick((n) => n + 1),
             LIVE_REFRESH_MS,
