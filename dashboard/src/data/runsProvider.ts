@@ -909,10 +909,13 @@ function buildMarketStats(
     };
   }
 
-  // decoded swap flow in the base over the whole run
+  // Decoded swap flow in the base over the whole run. priceUsd is the discriminator: it exists
+  // only when both legs moved, so one-sided transfers (Aave supplies, GMX collateral) — which
+  // still carry base/side — stay out of the traded volume.
   let volume = 0;
   for (const notional of Object.values(market.notionals)) {
-    if (notional.base === base && notional.side) volume += notional.usd;
+    if (notional.base === base && notional.priceUsd !== undefined)
+      volume += notional.usd;
   }
 
   const gmx = lastRow.gmx?.[base];
@@ -937,7 +940,11 @@ function buildMarketStats(
       totalOi > 0 ? Math.round((shortOi / totalOi) * 100) : 0,
     availableLiquidity: depthNow > 0 ? formatUsd(depthNow) : "n/a",
     totalLiquidity: depthStart > 0 ? formatUsd(depthStart) : "n/a",
-    fundingRate1h: gmx ? `${gmx.fundingPerHourBps.toFixed(2)}bps` : "n/a",
+    // absent = the funding read failed for that sample; "n/a" is honest, 0.00bps is not
+    fundingRate1h:
+      gmx?.fundingPerHourBps !== undefined
+        ? `${gmx.fundingPerHourBps.toFixed(2)}bps`
+        : "n/a",
   };
 }
 
@@ -968,7 +975,9 @@ function buildGmxPositions(
     });
 }
 
-// The agents' decoded swaps in the base, newest first — the "Trades" tab.
+// The agents' decoded swaps in the base, newest first — the "Trades" tab. Only txs with a real
+// counter leg (priceUsd) qualify; size is the base quantity and price the per-unit price paid or
+// received, matching what the columns claim.
 function buildMarketTrades(run: LoadedRun, base: string): MarketTrade[] {
   const market = run.market;
   if (!market) return [];
@@ -976,16 +985,32 @@ function buildMarketTrades(run: LoadedRun, base: string): MarketTrade[] {
   for (const row of [...run.blockRows].reverse()) {
     if (row.role !== "agent") continue;
     const notional = market.notionals[row.hash.toLowerCase()];
-    if (!notional || notional.base !== base || !notional.side) continue;
+    if (
+      !notional ||
+      notional.base !== base ||
+      !notional.side ||
+      notional.priceUsd === undefined ||
+      notional.baseUnits === undefined
+    )
+      continue;
     trades.push({
       agent: row.ownerId,
       side: notional.side === "buy" ? "long" : "short",
-      size: notional.amount,
-      price: formatUsd(notional.usd),
+      size: `${formatBaseUnits(notional.baseUnits)} ${base}`,
+      price: notional.priceUsd.toLocaleString("en-US", {
+        maximumFractionDigits: 1,
+      }),
     });
     if (trades.length >= 24) break;
   }
   return trades;
+}
+
+function formatBaseUnits(units: number): string {
+  if (units >= 1000)
+    return units.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  if (units >= 1) return units.toFixed(2);
+  return units.toPrecision(3);
 }
 
 // AMM depth per venue for the base — the order book replacement (issue #63 Phase 4): every venue
@@ -1101,9 +1126,10 @@ export async function fetchArchiveSnapshot(): Promise<ArchiveSnapshot> {
       (row) => methodOf(row, infoByHash) === "liquidationCall",
     ).length + run.events.filter((e) => e.type === "stress_liquidation").length;
 
-  // Every decoded tx's USD notional, summed — the run's total on-chain moved value.
+  // Traded volume: only txs that really exchanged both legs (priceUsd is the discriminator),
+  // matching the market page — deposits and collateral moves are not volume.
   const decodedVolume = Object.values(run.market?.notionals ?? {}).reduce(
-    (sum, n) => sum + n.usd,
+    (sum, n) => sum + (n.priceUsd !== undefined ? n.usd : 0),
     0,
   );
 
@@ -1155,6 +1181,9 @@ export async function fetchArchiveSnapshot(): Promise<ArchiveSnapshot> {
     })),
     closingPrices,
     events: buildArchiveEvents(run),
+    // Keeps the archive page polling while the run completes; the final standings replace the
+    // partial ones on the poll after summary.json lands.
+    ...(run.live ? { live: true } : {}),
   };
 }
 
@@ -1236,29 +1265,34 @@ export async function fetchAgentDetailSnapshot(
 
   // Venue positions still open at the run's end (market.json): GMX perps. The Aave account totals
   // exist in market.json too but do not fit this table's columns; a dedicated view is Phase 4 work.
-  const lastFairWeth =
-    run.market?.series[run.market.series.length - 1]?.fair.WETH ??
-    run.summary.finalFairPriceUsdcPerWeth ??
-    0;
+  // Each position marks against its own base's final fair — a WBTC perp priced off the WETH fair
+  // would be off by an order of magnitude.
+  const lastFairByBase =
+    run.market?.series[run.market.series.length - 1]?.fair ?? {};
   const positions: AgentPosition[] = (run.market?.gmxPositionsAtEnd ?? [])
     .filter((p) => p.agent === agentId)
-    .map((p) => ({
-      market: `${p.base}/USDC (GMX)`,
-      side: p.isLong ? ("long" as const) : ("short" as const),
-      size: formatUsd(p.sizeUsd),
-      entry: p.entryPriceUsd
-        ? p.entryPriceUsd.toLocaleString("en-US", { maximumFractionDigits: 1 })
-        : "—",
-      pnlPercent:
-        p.entryPriceUsd && p.entryPriceUsd > 0 && lastFairWeth > 0
-          ? Math.round(
-              (lastFairWeth / p.entryPriceUsd - 1) *
-                100 *
-                (p.isLong ? 1 : -1) *
-                10,
-            ) / 10
-          : 0,
-    }));
+    .map((p) => {
+      const lastFair = lastFairByBase[p.base] ?? 0;
+      return {
+        market: `${p.base}/USDC (GMX)`,
+        side: p.isLong ? ("long" as const) : ("short" as const),
+        size: formatUsd(p.sizeUsd),
+        entry: p.entryPriceUsd
+          ? p.entryPriceUsd.toLocaleString("en-US", {
+              maximumFractionDigits: 1,
+            })
+          : "—",
+        pnlPercent:
+          p.entryPriceUsd && p.entryPriceUsd > 0 && lastFair > 0
+            ? Math.round(
+                (lastFair / p.entryPriceUsd - 1) *
+                  100 *
+                  (p.isLong ? 1 : -1) *
+                  10,
+              ) / 10
+            : 0,
+      };
+    });
   const fullLog = buildAgentLogLines(logEntries);
 
   const agent: AgentDetail = {

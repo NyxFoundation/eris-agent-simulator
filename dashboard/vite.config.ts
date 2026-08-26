@@ -16,6 +16,23 @@ const RUNS_DIR = fileURLToPath(new URL("../runs", import.meta.url));
 // strand it there (the live refresh loop stops with the run it lost).
 const LIVE_FRESHNESS_MS = 120_000;
 
+// Resolve a request path to a real file inside runs/, or null. The prefix check alone would let a
+// symlink under runs/ point anywhere on disk; realpath closes that (local dev server, but cheap).
+function resolveInsideRuns(rel: string): string | null {
+  if (rel.includes("\0")) return null;
+  const resolved = path.resolve(RUNS_DIR, rel);
+  const root = path.resolve(RUNS_DIR) + path.sep;
+  if (!resolved.startsWith(root)) return null;
+  try {
+    const real = fs.realpathSync(resolved);
+    if (!real.startsWith(fs.realpathSync(RUNS_DIR) + path.sep)) return null;
+    return real;
+  } catch {
+    // nonexistent path: keep the prefix-checked resolution so callers can 404 on stat
+    return resolved;
+  }
+}
+
 /**
  * Serves the sibling runs/ directory (same repo, relative path — issue #63):
  *   /runs/index.json           -> run dirs, newest first; `live: true` marks a run in progress
@@ -73,15 +90,14 @@ function runsPlugin(): Plugin {
 
         // Incremental tail for live mode: /runs/<id>/tail/<file>?offset=N returns the bytes
         // appended since N plus the new offset, so the client polls without refetching the file.
+        // Chunks are capped: a first tail of a large log would otherwise buffer the whole file in
+        // memory at once — the client keeps polling with the returned offset until it catches up.
+        const TAIL_CHUNK_BYTES = 4 * 1024 * 1024;
         const tailMatch = url.match(/^\/([^/]+)\/tail\/(.+)$/);
         if (tailMatch) {
           const rel = `${decodeURIComponent(tailMatch[1])}/${decodeURIComponent(tailMatch[2])}`;
-          const file = path.resolve(RUNS_DIR, rel);
-          if (
-            rel.includes("\0") ||
-            !file.startsWith(path.resolve(RUNS_DIR) + path.sep) ||
-            !/\.(jsonl|csv)$/.test(file)
-          ) {
+          const file = resolveInsideRuns(rel);
+          if (!file || !/\.(jsonl|csv)$/.test(file)) {
             res.statusCode = 403;
             res.end();
             return;
@@ -101,13 +117,14 @@ function runsPlugin(): Plugin {
               res.end(JSON.stringify({ offset: stat.size, text: "" }));
               return;
             }
+            const end = Math.min(stat.size, start + TAIL_CHUNK_BYTES) - 1;
             const chunks: Buffer[] = [];
-            fs.createReadStream(file, { start, end: stat.size - 1 })
+            fs.createReadStream(file, { start, end })
               .on("data", (c) => chunks.push(c as Buffer))
               .on("end", () => {
                 res.end(
                   JSON.stringify({
-                    offset: stat.size,
+                    offset: end + 1,
                     text: Buffer.concat(chunks).toString("utf8"),
                   }),
                 );
@@ -120,11 +137,8 @@ function runsPlugin(): Plugin {
         }
 
         const rel = decodeURIComponent(url.replace(/^\//, ""));
-        const file = path.resolve(RUNS_DIR, rel);
-        if (
-          rel.includes("\0") ||
-          !file.startsWith(path.resolve(RUNS_DIR) + path.sep)
-        ) {
+        const file = resolveInsideRuns(rel);
+        if (!file) {
           res.statusCode = 403;
           res.end();
           return;

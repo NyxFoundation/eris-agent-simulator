@@ -5,11 +5,11 @@ import type { ArchiveSnapshot } from "./types";
 
 export function useArchiveSnapshot(): SnapshotState<ArchiveSnapshot> {
   const runId = useSelectedRunId();
-  // ArchiveSnapshot's round is typed "archived"-only, so it never self-reports live; the archive
-  // view of an in-progress run is a static partial and settles once the run completes.
+  // The snapshot carries its own live flag (its round is typed "archived"-only): while the run is
+  // still in progress the page keeps polling, and settles on the final standings once it completes.
   return useSnapshot(
     `archive:${runId ?? ""}`,
     fetchArchiveSnapshot,
-    () => false,
+    (data) => data.live === true,
   );
 }

@@ -104,7 +104,8 @@ export interface MarketSeriesRow {
   venues?: Record<string, Record<string, VenueQuoteSample>>;
   gmx?: Record<
     string,
-    { longOiUsd: number; shortOiUsd: number; fundingPerHourBps: number }
+    // fundingPerHourBps is absent when its read failed (never a silent 0).
+    { longOiUsd: number; shortOiUsd: number; fundingPerHourBps?: number }
   >;
   aave?: Record<
     string,
@@ -133,6 +134,11 @@ export interface TxNotional {
   amount: string;
   base?: string;
   side?: "buy" | "sell";
+  /** Absolute net base flow in whole tokens (set together with base/side). */
+  baseUnits?: number;
+  /** Counter-leg USD per base unit. Present only when both legs really moved — the discriminator
+   * between a swap and a one-sided transfer (Aave supply, GMX collateral). */
+  priceUsd?: number;
 }
 
 export interface MarketSeriesFile {

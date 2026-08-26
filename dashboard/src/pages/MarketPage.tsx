@@ -385,7 +385,7 @@ export function MarketPage() {
             {midPrice}
           </span>
           <div>
-            <div style={SECTION_LABEL_STYLE}>24h volume</div>
+            <div style={SECTION_LABEL_STYLE}>Volume · run</div>
             <div
               style={{
                 font: "var(--text-sm) var(--font-mono)",

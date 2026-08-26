@@ -47,6 +47,9 @@ test("summarizeTransfers: a sell swap reports side/base and the larger leg in US
   // out = 2 WETH * $3000 = $6000, in = $5940 -> max is the outbound leg
   assert.equal(notional.usd, 6000);
   assert.equal(notional.amount, "2.00 WETH");
+  // per-unit price = counter leg (received $5,940) over 2 WETH
+  assert.equal(notional.baseUnits, 2);
+  assert.equal(notional.priceUsd, 2970);
 });
 
 test("summarizeTransfers: a buy swap flips the side", () => {
@@ -62,6 +65,9 @@ test("summarizeTransfers: a buy swap flips the side", () => {
   assert.equal(notional.side, "buy");
   assert.equal(notional.base, "WETH");
   assert.equal(notional.usd, 3030);
+  // per-unit price = counter leg (paid $3,030) over 1 WETH
+  assert.equal(notional.baseUnits, 1);
+  assert.equal(notional.priceUsd, 3030);
 });
 
 test("summarizeTransfers: unknown tokens are counted, not silently priced", () => {
@@ -84,6 +90,9 @@ test("summarizeTransfers: unknown tokens are counted, not silently priced", () =
   // one-sided base flow still names the base
   assert.equal(notional.base, "WETH");
   assert.equal(notional.side, "sell");
+  // ...but with no counter leg there is no price: this is a deposit, not a trade, and the missing
+  // priceUsd is what keeps it out of the volume/trades views downstream
+  assert.equal(notional.priceUsd, undefined);
 });
 
 test("summarizeTransfers: transfers not involving the sender produce nothing", () => {

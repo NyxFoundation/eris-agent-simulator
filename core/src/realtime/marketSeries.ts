@@ -16,7 +16,13 @@ import {
   erc20Abi,
   poolAbi,
 } from "@eris/sdk/abis.js";
-import { AAVE, BALANCER, GMX, MULTICALL3 } from "@eris/sdk/constants.js";
+import {
+  AAVE,
+  BALANCER,
+  GMX,
+  MULTICALL3,
+  USDC_VARIANTS,
+} from "@eris/sdk/constants.js";
 import {
   baseTokens,
   marketsFor,
@@ -40,7 +46,9 @@ import {
 
 export type VenueQuoteSample = {
   mid: number;
-  // Executable two-sided quotes at probe size; absent when the buy probe failed for the sample.
+  // Two-sided quotes at probe size. Curve/balancer are measured executable probes; uniswap is
+  // slot0 mid +/- pool fee — the same "impact at probe size is negligible on the deep pool"
+  // approximation the no-arb monitor uses (core/src/realtime/noArb.ts quoteFor), not a tick-walk.
   buy?: number;
   sell?: number;
   // Total pool depth in USD (both sides at fair/par). What the liquidityPull event moves.
@@ -55,7 +63,9 @@ export type MarketSeriesRow = {
   venues?: Record<string, Record<string, VenueQuoteSample>>;
   gmx?: Record<
     string,
-    { longOiUsd: number; shortOiUsd: number; fundingPerHourBps: number }
+    // fundingPerHourBps derives from SAVED_FUNDING_FACTOR_PER_SECOND (an approximation of the
+    // current rate). Absent when the read failed — a failed read must not print as 0.00bps.
+    { longOiUsd: number; shortOiUsd: number; fundingPerHourBps?: number }
   >;
   // asset symbol -> reserve totals.
   aave?: Record<
@@ -88,6 +98,12 @@ export type TxNotional = {
   // Set when exactly one base token had a nonzero net flow for the sender.
   base?: string;
   side?: "buy" | "sell";
+  // Absolute net base flow, in whole tokens. Set together with base/side.
+  baseUnits?: number;
+  // Per-unit price actually paid/received: the counter-leg USD divided by baseUnits. Only set when
+  // the tx really exchanged both legs (a one-sided transfer such as an Aave supply has no counter
+  // leg and no price) — which is also what distinguishes a swap from a deposit downstream.
+  priceUsd?: number;
 };
 
 export type MarketSeriesArtifact = {
@@ -412,6 +428,13 @@ async function resolveAaveReserves(
 // ---------------------------------------------------------------------------
 // per-block sampling
 
+// The fork pools pair against USDC.e (balancer) and USDT (curve/tricrypto) — USDC-equivalent
+// 6-decimal stables that are not in the TOKENS registry. Without them a fork run's balancer and
+// curve depth silently vanish from the series.
+const USDC_EQUIVALENTS = new Set(
+  Object.values(USDC_VARIANTS).map((a) => a.toLowerCase()),
+);
+
 // USD price of a pool-side token given the row's fair map: bases at fair, stables at par (a
 // reporting approximation — depth is a size, not a mark), anything else unpriceable.
 function tokenUsd(
@@ -420,7 +443,10 @@ function tokenUsd(
   fair: Record<string, number>,
 ): number | undefined {
   const info = tokenInfoByAddress(token);
-  if (!info) return undefined;
+  if (!info) {
+    if (USDC_EQUIVALENTS.has(token.toLowerCase())) return Number(amount) / 1e6; // USDC.e / USD₮0, both 6 decimals, at par
+    return undefined;
+  }
   const units = Number(amount) / 10 ** info.decimals;
   if (info.kind === "stable") return units;
   const price = fair[info.symbol];
@@ -496,6 +522,17 @@ export function summarizeTransfers(opts: {
     ([, net]) => Math.abs(net) > 1e-12,
   );
   const single = flows.length === 1 ? flows[0] : undefined;
+  let priced: { baseUnits: number; priceUsd: number } | undefined;
+  if (single) {
+    const baseUnits = Math.abs(single[1]);
+    // The counter leg is whatever moved the other way: what was paid for a buy, received for a
+    // sell. A one-sided transfer (an Aave supply, GMX collateral) has no counter leg and gets no
+    // price — which is exactly what tells a swap apart from a deposit.
+    const counterUsd = single[1] > 0 ? outUsd : inUsd;
+    if (counterUsd > 0 && baseUnits > 0) {
+      priced = { baseUnits, priceUsd: counterUsd / baseUnits };
+    }
+  }
   return {
     usd,
     amount: `${formatUnitsShort(largest.units)} ${largest.symbol}`,
@@ -505,6 +542,7 @@ export function summarizeTransfers(opts: {
           side: single[1] > 0 ? ("buy" as const) : ("sell" as const),
         }
       : {}),
+    ...(priced ?? {}),
   };
 }
 
@@ -702,10 +740,13 @@ function fairLookup(
 ): (block: number) => Record<string, number> {
   return (block) => {
     if (series.length === 0) return {};
+    // The last sample at or before the block — never a later one: with a thinned series
+    // (scoreEvery > 1) the nearest sample can sit in the tx's future, and across a crash edge
+    // that prices the notional off information the tx could not have traded on.
     let best = series[0];
     for (const row of series) {
-      if (Math.abs(row.block - block) < Math.abs(best.block - block))
-        best = row;
+      if (row.block > block) break;
+      best = row;
     }
     return best.fair;
   };
@@ -1017,14 +1058,19 @@ async function sampleBlock(opts: {
     const [longA, longB, shortA, shortB] = oi as bigint[];
     const fundingRaw = stage0[entry.funding];
     // OI is stored in USD with 30 decimals; savedFundingFactorPerSecond is a per-second fraction
-    // at 30 decimals (sign = longs pay shorts when positive).
+    // at 30 decimals (sign = longs pay shorts when positive). A failed funding read leaves the
+    // field absent rather than printing 0.00bps — a zero here is not a measurement (issue #44's
+    // discipline applies to reporting too).
     gmx[entry.market.base] = {
       longOiUsd: round2(Number(longA + longB) / 1e30),
       shortOiUsd: round2(Number(shortA + shortB) / 1e30),
-      fundingPerHourBps:
-        typeof fundingRaw === "bigint"
-          ? round6((Number(fundingRaw) / 1e30) * 3600 * 10_000)
-          : 0,
+      ...(typeof fundingRaw === "bigint"
+        ? {
+            fundingPerHourBps: round6(
+              (Number(fundingRaw) / 1e30) * 3600 * 10_000,
+            ),
+          }
+        : {}),
     };
   }
 

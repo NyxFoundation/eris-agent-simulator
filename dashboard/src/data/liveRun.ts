@@ -82,13 +82,16 @@ async function rpc<T>(
 const LATEST_ANSWER_SELECTOR = "0x50d25bcd"; // latestAnswer()
 const PRICE_DECIMALS = 1e8;
 
+// Pinned to the height the sample is stamped with — the block reads before this take long enough
+// for a 2s chain to advance, and "latest" would attach block N+1's price to block N.
 async function readFair(
   rpcUrl: string,
   priceFeed: string,
+  blockNumber: number,
 ): Promise<number | null> {
   const result = await rpc<string>(rpcUrl, "eth_call", [
     { to: priceFeed, data: LATEST_ANSWER_SELECTOR },
-    "latest",
+    `0x${blockNumber.toString(16)}`,
   ]);
   if (!result || result === "0x") return null;
   const answer = Number(BigInt(result)) / PRICE_DECIMALS;
@@ -233,13 +236,13 @@ class LiveRunState {
         ]),
       ),
     );
-    // live fair sample rides the same refresh
-    if (this.meta.priceFeed) {
-      const fair = await readFair(url, this.meta.priceFeed);
-      if (
-        fair !== null &&
-        this.fairSamples[this.fairSamples.length - 1]?.block !== height
-      ) {
+    // live fair sample rides the same refresh, pinned to the height it is stamped with
+    if (
+      this.meta.priceFeed &&
+      this.fairSamples[this.fairSamples.length - 1]?.block !== height
+    ) {
+      const fair = await readFair(url, this.meta.priceFeed, height);
+      if (fair !== null) {
         this.fairSamples.push({ block: height, fair });
         if (this.fairSamples.length > 720)
           this.fairSamples = this.fairSamples.slice(-720);
@@ -268,9 +271,21 @@ class LiveRunState {
     }
   }
 
+  // The tail offsets are mutable shared state, so two concurrent refreshes would read the same
+  // chunk twice and fold every event in it twice (StrictMode's double-mounted effects do exactly
+  // this on page load). Concurrent callers share the in-flight refresh instead.
+  private inFlight: Promise<LoadedRun> | null = null;
+
+  refresh(): Promise<LoadedRun> {
+    this.inFlight ??= this.refreshOnce().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
   // One refresh = tail the files, read the chain, assemble a synthetic LoadedRun the ordinary
   // snapshot builders can render.
-  async refresh(): Promise<LoadedRun> {
+  private async refreshOnce(): Promise<LoadedRun> {
     const text = await tail(this.runId, "events.jsonl", this.eventsTail);
     if (text)
       this.foldEvents(parseJsonlChunk<RunEvent>(text, this.eventsCarry));

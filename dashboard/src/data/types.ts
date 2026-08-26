@@ -256,6 +256,9 @@ export interface ArchiveSnapshot {
   finalStandings: ArchiveFinalStanding[];
   closingPrices: ArchiveClosingPrice[];
   events: ArchiveEvent[];
+  /** True while the underlying run is still in progress — the page keeps polling until the final
+   * artifacts land instead of freezing on a partial snapshot. */
+  live?: boolean;
 }
 
 export interface AgentPosition {
