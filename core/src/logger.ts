@@ -70,4 +70,10 @@ export class RunLogger {
       `${safeStringify(summary, 2)}\n`,
     );
   }
+
+  // A standalone JSON artifact in the run dir (e.g. market.json, issue #63 Phase 2). Unindented:
+  // these are bulk series meant for programmatic consumption, not for reading in an editor.
+  artifact(filename: string, data: unknown): void {
+    writeFileSync(join(this.runDir, filename), `${safeStringify(data)}\n`);
+  }
 }
