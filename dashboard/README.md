@@ -21,12 +21,18 @@ From the repository root:
 
 ```
 index.html          HTML entry point
-vite.config.ts      Vite config (React / Tailwind plugins, @ alias)
+vite.config.ts      Vite config (React / Tailwind plugins, @ alias, the /runs dev-server plugin)
 tsconfig.json       TypeScript config (strict)
 src/
   main.tsx          React mount
   App.tsx           Root component
-  styles/index.css  Tailwind entry point
+  navigation.ts     Route table
+  pages/            TopPage / LeaderboardPage / MarketPage / AgentDetailPage / ExplorerPage / ArchivePage
+  components/       Shared UI
+  data/             Providers, run artifact readers, live-run polling, per-page snapshot hooks
+  design-system/    Primitives the pages are composed from
+  lib/              Formatting and small shared helpers
+  styles/           Tailwind entry point + tokens/
 public/             Static assets, served as-is
 ```
 
@@ -88,3 +94,7 @@ nothing else changes.
 
 Start with `VITE_DATA_PROVIDER=seed` to fall back to the IndexedDB seed provider
 (`localProvider.ts` over `seed.ts`) for UI development.
+
+For the operator-facing view of all this — including the explorer's
+reset-per-chain-reset lifecycle — see
+[docs/guide/dashboard.md](../docs/guide/dashboard.md).

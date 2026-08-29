@@ -38,10 +38,23 @@ flowchart LR
 
 A regime is **a YAML in the existing config schema** (same format as [Configuration](configuration.md)) describing a family of market conditions: the fair-price OU parameters, flow intensity, and the stress event ranges. It carries no seed. Given one, the fair-price path, flow orders, and stress event schedule all replay deterministically.
 
-- `config/regimes/calm.yaml` — normal market (no stress)
-- `config/regimes/crash.yaml` — trapezoidal crash, no victims: a price gap plus a `liquidityPull` on the same window, so uniswap, balancer and curve all thin exactly while the price moves ([#52](https://github.com/NyxFoundation/eris-agent-simulator/issues/52)). At a 50% pull the cost of taking 10 WETH roughly doubles (uniswap/balancer) to quadruples (curve), while the price a small trade sees is unchanged
-- `config/regimes/lending-incident.yaml` — the same crash plus 2 liquidation-target victims and a liquidator roster slot
-- `config/regimes/lst.yaml` — the liquid staking venue (not part of the competition set)
+The **seven official regimes** are the competition set (ADR 0017 §1, completed by issue #27):
+
+| regime | market condition |
+|---|---|
+| `calm` | normal market, no stress |
+| `cex-drift` | the reference price drifts away from the on-chain price (drift added, mean reversion weakened) |
+| `informed-flow` | correlated directional order flow |
+| `whale` | single large orders that move the mid while the fair price stays put |
+| `lending-incident` | collateral crash + victims + liquidations + books thinned on the same window |
+| `crash` | a price gap plus a `liquidityPull` on the same window, so uniswap, balancer and curve all thin exactly while the price moves ([#52](https://github.com/NyxFoundation/eris-agent-simulator/issues/52)). At a 50% pull the cost of taking 10 WETH roughly doubles (uniswap/balancer) to quadruples (curve), while the price a small trade sees is unchanged |
+| `depeg` | a registry stable stops being a dollar ([#27](https://github.com/NyxFoundation/eris-agent-simulator/issues/27)) |
+
+Also in `config/regimes/`, outside the competition set: `lst` and `liquity` / `liquity-crash` (single
+venues, for verifying them on their own), and the `b-harness` / `metric-*` / `ruin-test` /
+`lucky-drift` harnesses issue #56 used to calibrate the scoring metric.
+
+For what each regime's events actually do, see [Market Stress Events](stress-events.md).
 
 `blockTimeSec` and `blocks` are part of the regime (fixed to the same values as production). Short-circuit overrides like `--blocks` / `--seconds` are for behavior checks and smoke tests only; **runs whose scores you read should use the regime defaults** (ADR 0016 §3).
 
@@ -51,7 +64,7 @@ A regime is **a YAML in the existing config schema** (same format as [Configurat
 
 ```yaml
 # config/scenarios/public.yaml — the cartesian product of the two lists
-regimes: [calm, lending-incident, crash]
+regimes: [calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg]
 seeds: [101, 202, 303, 404, 505]
 ```
 
@@ -84,12 +97,16 @@ Two artifacts land in `runs/matrix-<id>/`:
 
 | file | what it is |
 |---|---|
-| `matrix.json` | raw per-scenario, per-agent scores — **both** `netPnlUsdc` and `alphaUsdc`, plus disqualifications and run directories |
+| `matrix.json` | raw per-scenario, per-agent scores — **all four metrics** (`netPnlUsdc` / `alphaUsdc` / `excessLogGrowth` / `score`, the last two where the run has an epoch series), plus `resetUnit`, disqualifications and run directories |
 | `standings.json` | the ranking derived from them |
 
-The ranking is a derived view on purpose. The scoring rule is expected to change (ADR 0017 leaves both the metric and the formula open), and keeping the raw matrix means a new rule can be applied to a finished competition without re-running anything.
+The ranking is a derived view on purpose. The scoring rule is expected to change (ADR 0017 leaves both the metric and the formula open), and keeping the raw matrix means a new rule can be applied to a finished competition without re-running anything — which is what `npm run metrics -- --matrix <dir>` does ([Scoring](scoring.md)).
 
 Ranking today: score each scenario with `--metric` (default `netPnlUsdc`), normalize to a z-score **across the agents within that scenario** — they all ran in the same world, so that is the one comparison the design guarantees is fair — then average within a regime and average the regimes with equal weight. Equal weight per regime is what stops a big-opportunity regime like `crash` from deciding the ranking on its own, and it makes the result insensitive to how many seeds each regime got.
+
+> **A matrix run is `scenario` mode** (ADR 0020): the world is rebuilt per (regime, seed), and `matrix.json` records `resetUnit: "scenario"` to say so. That is the competition's shape, and the matrix runner is the only thing allowed to declare it — a `sim:realtime` config that writes `resetUnit: scenario` fails fast at startup. `npm run metrics` refuses to aggregate a set that mixes the two.
+
+> **`--metric` picks which of the four the standings rank on.** `netPnlUsdc` stays the default because it is the one figure every stored matrix has, so it is the only metric comparable against older runs. `excessLogGrowth` (M4) and `score` (M9) are read off the epoch series in `summary.json`, not from the endpoints — M4 is the sum of the same series M9 scores, so the two differ by exactly `λ·std` and a rank moves only when an agent's per-epoch Sharpe crosses λ. Which one the competition uses is open ([#56](https://github.com/NyxFoundation/eris-agent-simulator/issues/56)); see [Scoring](scoring.md).
 
 An agent that broke a rule (priority fee cap), whose process died mid-run, or that never reported is **disqualified for that scenario and placed below every finisher** — scoring it zero would make crashing a viable tactic. A scenario that produced no result at all is excluded from the aggregation entirely: an environment failure is not charged to the participants.
 
@@ -115,10 +132,11 @@ you engage with them or not:
   so when two agents chase the same gap in the same block, the higher bid executes first
   (ADR 0011). Bidding is a real lever, and over-bidding is a real cost.
 - **Speed counts.** Blocks are mined every `blockTimeSec` seconds regardless of whether your agent
-  has finished thinking. A rule agent (`decide`) runs once per block; a prompt agent waits for an
-  LLM round trip (~10 s), so at the production 2-second block it acts roughly once every five
-  blocks and holds its position in between. This is a structural difference between the two agent
-  kinds, not a tuning detail — pick the kind that suits your strategy knowingly.
+  has finished thinking. `decide()` runs once per block and a round it spends computing is a round
+  it does not trade. This is why no LLM sits in the trade path any more: measured at production
+  settings, an agent that waited for a model on every action managed one decision every 8–28 blocks
+  and 1/64 the actions of the same strategy in rule mode (ADR 0018). A self-improving agent trades
+  at full rule speed and is revised out of band ([Self-improving agents](llm-agents.md)).
 
 Scoring itself is unaffected by any of this: it reads the same value cross-sections for everyone at
 the same blocks.
@@ -148,7 +166,7 @@ agents:
 |---|---|
 | Correctness and regression of strategy logic (crashes / validate violations / repeated noop) | Competition against real production participants (roster only goes as far as sparring against known strategies) |
 | Per-regime α tendency including your own fills' market impact | Behavior at production roster density |
-| Prompt behavior, self-revision tendency, and the full tx path (signing, revert) | Score at the production seed (same regime, but a different seed sample) |
+| How your `prompt.md` revision policy behaves, and the full tx path (signing, revert) | Score at the production seed (same regime, but a different seed sample) |
 
 ## CLI reference
 
@@ -157,7 +175,7 @@ agents:
 | `--regime <name\|path>` | `config/regimes/<name>.yaml` (or a YAML path). Requires `--seed` |
 | `--seed <N>` | The scenario's seed. Regimes carry none, so this is not optional |
 | `--scenarios <path>` | Replay a whole set (regimes x seeds) and write `matrix.json` + `standings.json`. Mutually exclusive with `--regime` |
-| `--metric <name>` | Metric the standings rank on: `netPnlUsdc` (default) or `alphaUsdc` |
+| `--metric <name>` | Metric the standings rank on: `netPnlUsdc` (default) / `alphaUsdc` / `excessLogGrowth` (M4) / `score` (M9). The last two need an epoch series ([Scoring](scoring.md)) |
 | `--agents <roster>` | Swap the regime's default agents with a roster file (YAML/JSON) |
 | `--repeat <N>` | Repeat each scenario N times (default 1). A calibration diagnostic; standings take the median |
 | `--port <N>` | Port for the backtest-dedicated anvil (default 8547; use a different port for parallel runs) |

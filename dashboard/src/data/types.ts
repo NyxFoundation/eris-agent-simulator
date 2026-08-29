@@ -12,7 +12,10 @@ export interface AgentStanding {
   rank: number;
   agent: string;
   score: number;
-  pnlPercent: number;
+  /** summary.json's netPnlUsdc, in USDC rather than as a share of starting value. The share is not
+   * a useful figure here: the gas endowment (100 ETH by default, ~78% of an agent's mark) sits in
+   * the denominator, so every real trading result rounds to 0.0% however many decimals it is given. */
+  netPnlUsdc: number;
   sharpe: number;
   strategy: string;
   strategyCategory: StrategyCategory;
@@ -221,14 +224,14 @@ export interface ArchiveRoundInfo {
 export interface ArchivePodiumEntry {
   rank: number;
   agent: string;
-  pnlPercent: number;
+  netPnlUsdc: number;
 }
 
 export interface ArchiveFinalStanding {
   rank: number;
   agent: string;
   score: number;
-  pnlPercent: number;
+  netPnlUsdc: number;
   sharpe: number;
 }
 
@@ -296,7 +299,7 @@ export interface AgentDetail {
   fullAddress?: string;
   strategy: string;
   score: number;
-  pnlPercent: number;
+  netPnlUsdc: number;
   sharpe: number;
   maxDrawdownPercent: number;
   portfolioPoints: number[];

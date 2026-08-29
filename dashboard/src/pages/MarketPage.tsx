@@ -7,6 +7,7 @@ import { Select } from "@/design-system/Select";
 import { Sparkline } from "@/design-system/Sparkline";
 import { Tabs } from "@/design-system/Tabs";
 import { navigate } from "@/navigation";
+import { formatPnlUsdc } from "@/lib/format";
 import { useMarketSnapshot } from "@/data/useMarketSnapshot";
 import type {
   AgentStanding,
@@ -61,7 +62,7 @@ function CrownIcon({ color }: { color: string }) {
 function LeaderboardMiniRow({ row }: { row: AgentStanding }) {
   const isTop3 = row.rank <= 3;
   const pnlColor =
-    row.pnlPercent >= 0 ? "var(--success-text)" : "var(--danger-text)";
+    row.netPnlUsdc >= 0 ? "var(--success-text)" : "var(--danger-text)";
   return (
     <div
       onClick={() => navigate(`/agent/${row.agent}`)}
@@ -89,8 +90,7 @@ function LeaderboardMiniRow({ row }: { row: AgentStanding }) {
         {row.agent}
       </span>
       <span style={{ textAlign: "right", color: pnlColor }}>
-        {row.pnlPercent >= 0 ? "+" : ""}
-        {row.pnlPercent.toFixed(1)}%
+        {formatPnlUsdc(row.netPnlUsdc)}
       </span>
     </div>
   );

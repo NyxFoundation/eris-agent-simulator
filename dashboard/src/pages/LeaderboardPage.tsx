@@ -5,6 +5,7 @@ import { Input } from "@/design-system/Input";
 import { Select } from "@/design-system/Select";
 import { useTopPageSnapshot } from "@/data/useTopPageSnapshot";
 import { navigate } from "@/navigation";
+import { formatPnlUsdc, formatScore } from "@/lib/format";
 import type { AgentStanding, StrategyCategory } from "@/data/types";
 
 const RANK_COLORS: Record<number, string> = {
@@ -46,7 +47,7 @@ function CrownIcon({ color }: { color: string }) {
 function LeaderboardTableRow({ row }: { row: AgentStanding }) {
   const isTop3 = row.rank <= 3;
   const pnlColor =
-    row.pnlPercent >= 0 ? "var(--success-text)" : "var(--danger-text)";
+    row.netPnlUsdc >= 0 ? "var(--success-text)" : "var(--danger-text)";
   return (
     <div
       onClick={() => navigate(`/agent/${row.agent}`)}
@@ -72,11 +73,10 @@ function LeaderboardTableRow({ row }: { row: AgentStanding }) {
         {row.strategy}
       </span>
       <span style={{ textAlign: "right", color: "var(--text-primary)" }}>
-        {row.score.toFixed(1)}
+        {formatScore(row.score)}
       </span>
       <span style={{ textAlign: "right", color: pnlColor }}>
-        {row.pnlPercent >= 0 ? "+" : ""}
-        {row.pnlPercent.toFixed(1)}%
+        {formatPnlUsdc(row.netPnlUsdc)}
       </span>
       <span style={{ textAlign: "right", color: "var(--text-primary)" }}>
         {row.sharpe.toFixed(2)}
@@ -276,7 +276,7 @@ export function LeaderboardPage() {
               <span>Agent</span>
               <span>Strategy</span>
               <span style={{ textAlign: "right" }}>Score</span>
-              <span style={{ textAlign: "right" }}>PnL</span>
+              <span style={{ textAlign: "right" }}>PnL (USDC)</span>
               <span style={{ textAlign: "right" }}>Sharpe</span>
               <span style={{ textAlign: "right" }}>Max DD</span>
             </div>

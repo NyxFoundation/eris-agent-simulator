@@ -13,6 +13,7 @@ import {
 } from "@/data/blockscout";
 import { useAgentDetailSnapshot } from "@/data/useAgentDetailSnapshot";
 import { navigate } from "@/navigation";
+import { formatPnlUsdc, formatScore } from "@/lib/format";
 import type { AgentPosition, AgentTrade } from "@/data/types";
 
 const SECTION_LABEL_STYLE = {
@@ -284,12 +285,14 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               gap: "16px",
             }}
           >
-            <StatCard label="Score" value={agent.score.toFixed(1)} />
+            <StatCard label="Score" value={formatScore(agent.score)} />
             <StatCard
-              label="PnL"
-              value={`${agent.pnlPercent >= 0 ? "+" : ""}${agent.pnlPercent.toFixed(1)}%`}
-              tone="success"
-              delta={`${agent.pnlPercent >= 0 ? "+" : ""}${agent.pnlPercent.toFixed(1)}%`}
+              label="PnL (USDC)"
+              value={formatPnlUsdc(agent.netPnlUsdc)}
+              // The card only tints its delta line, so the sign is echoed there to keep the
+              // red/green signal -- the same shape the Max drawdown card uses.
+              tone={agent.netPnlUsdc >= 0 ? "success" : "danger"}
+              delta={formatPnlUsdc(agent.netPnlUsdc)}
             />
             <StatCard label="Sharpe" value={agent.sharpe.toFixed(2)} />
             <StatCard

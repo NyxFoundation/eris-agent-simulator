@@ -28,7 +28,7 @@ cd ..
 
 ```mermaid
 flowchart LR
-  D["1. cd deployer<br/>npm run deploy -- --keep-fresh"] --> A[("anvil :8545<br/>5 venues + shared tokens<br/>(kept running)")]
+  D["1. cd deployer<br/>npm run deploy -- --keep-fresh"] --> A[("anvil :8545<br/>7 venues + shared tokens<br/>(kept running)")]
   D --> J["deployer/deployments/deployments.json"]
   J -->|"2. npm run gen:local-constants"| C["sdk/src/constants.local.ts"]
   C --> S["3. npm run sim:realtime -- --local-deploy"]
@@ -44,7 +44,7 @@ flowchart LR
 
    - `--keep-fresh` resets `deployments.json` before deploying.
    - **Do not** pass `--exit`. Passing it stops anvil after the deploy. Without it, anvil stays up and waits on `127.0.0.1:8545`.
-   - Deploys all 5 venues (Uniswap V3 / Balancer V2 / Aave V3 / Curve / GMX V2) + shared tokens (WETH/USDC/USDT/DAI/WBTC) + Multicall3. A few minutes to finish (GMX is the heaviest).
+   - Deploys all 7 venues (Uniswap V3 / Balancer V2 / Aave V3 / Curve / GMX V2 / the LST vault + its LST/WETH market / the Liquity V1 fork issuing eUSD) + shared tokens (WETH/USDC/USDT/DAI/WBTC) + Multicall3. A few minutes to finish (GMX is the heaviest). The last two have no Arbitrum counterpart, which is why they are local-only.
    - When done, `deployer/deployments/deployments.json` is written and it prints "anvil is still running."
 
 2. **Generate `constants.local` in the poc** (import the deploy addresses into the poc). From the repository root:

@@ -9,6 +9,13 @@ A TypeScript/viem orchestrator that deploys the major DeFi protocols from scratc
 | Aave V3 | ✅ | Run `@aave/deploy-v3` (hardhat-deploy) via `vendor/aave` |
 | Curve | ✅ | Deploy prebuilt bytecode of `stableswap-ng` built with Vyper 0.3.10, using viem |
 | GMX V2 | ✅ | Run `vendor/gmx-src` (gmx-synthetics, hardhat-deploy), patched for localhost support |
+| LST | ✅ | `contracts/MockLSTVault.sol` (a wstETH-style non-rebasing vault) plus its LST/WETH plain pool on the stableswap-ng factory, with the pool's rate oracle wired to `stEthPerToken()` |
+| Liquity (eUSD) | ✅ | An unmodified Liquity V1 core fork, plus two of ours: a price-feed adapter (Liquity renounces ownership, so the oracle address is fixed forever) and a redemption helper (partial-redemption hints depend on the execution-time price) |
+
+The order in `--only` does not matter, but the deploy order does: `lst` and `liquity` both reuse the
+stableswap-ng factory for their secondary markets, so they run after `curve`, and `liquity` warps the
+chain 14 days forward to clear its bootstrap period. The last two have no Arbitrum counterpart, which
+is why the simulator treats them as local-deploy only.
 
 ## Prerequisites
 
@@ -52,7 +59,7 @@ flowchart LR
   V["./scripts/setup-vendors.sh<br/>(once: clone + patch vendors)"] --> D["npm run deploy -- --keep-fresh"]
   D --> A[("anvil :8545<br/>kept running")]
   D --> T["shared tokens + Multicall3"]
-  T --> P["Uniswap V3 · Balancer V2 · Aave V3 · Curve · GMX V2<br/>pools/markets seeded with initial liquidity"]
+  T --> P["Uniswap V3 · Balancer V2 · Aave V3 · Curve · GMX V2 · LST · Liquity<br/>pools/markets seeded with initial liquidity"]
   P --> R["deployments/deployments.json"]
   R --> E["E2E: MANAGE_ANVIL=false npm run test:e2e"]
 ```
@@ -124,8 +131,13 @@ src/
     ├── balancer-v2.ts
     ├── aave-v3.ts
     ├── curve.ts
-    └── gmx-v2.ts
-contracts/             shared mock tokens (WETH9.sol, MockERC20.sol)
+    ├── gmx-v2.ts
+    ├── gmx-deposit.ts  GM liquidity provisioning (deposit → keeper execution)
+    ├── lst.ts          MockLSTVault + LST/WETH market + rate-oracle wiring
+    └── liquity.ts      Liquity V1 core fork + eUSD/USDC market + our adapter/helper
+contracts/             shared mock tokens (WETH9.sol, MockERC20.sol, Multicall3.sol) +
+                       MockLSTVault.sol + MockOracleProvider.sol +
+                       LiquityPriceFeedAdapter.sol / LiquityRedemptionHelper.sol
 vendor/aave/           minimal hardhat project that runs @aave/deploy-v3
 vendor/curve/          Curve bytecode prebuilt with Vyper (JSON)
 vendor/gmx-src/        gmx-synthetics clone (patched for localhost support)
