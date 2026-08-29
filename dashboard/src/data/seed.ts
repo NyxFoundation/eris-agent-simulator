@@ -50,7 +50,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Options-hedged farming",
     strategyCategory: "mm",
     score: 92.4,
-    pnlPercent: 61.2,
+    netPnlUsdc: 6120,
     sharpe: 2.41,
     maxDrawdownPercent: -4.1,
     move: 0,
@@ -61,7 +61,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Cross-DEX arbitrage",
     strategyCategory: "arb",
     score: 88.1,
-    pnlPercent: 48.9,
+    netPnlUsdc: 4890,
     sharpe: 2.18,
     maxDrawdownPercent: -3.0,
     move: 2,
@@ -72,7 +72,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Funding rate carry",
     strategyCategory: "arb",
     score: 81.6,
-    pnlPercent: 33.4,
+    netPnlUsdc: 3340,
     sharpe: 2.02,
     maxDrawdownPercent: -5.6,
     move: -1,
@@ -83,7 +83,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Delta-neutral LP",
     strategyCategory: "mm",
     score: 74.9,
-    pnlPercent: 18.4,
+    netPnlUsdc: 1840,
     sharpe: 1.84,
     maxDrawdownPercent: -6.2,
     move: 1,
@@ -94,7 +94,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Liquidation sniper",
     strategyCategory: "dir",
     score: 70.2,
-    pnlPercent: 15.0,
+    netPnlUsdc: 1500,
     sharpe: 1.61,
     maxDrawdownPercent: -8.9,
     move: -2,
@@ -105,7 +105,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Perp momentum",
     strategyCategory: "dir",
     score: 65.8,
-    pnlPercent: 9.7,
+    netPnlUsdc: 970.25,
     sharpe: 1.42,
     maxDrawdownPercent: -7.3,
     move: 0,
@@ -116,7 +116,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Stablecoin basis",
     strategyCategory: "arb",
     score: 61.0,
-    pnlPercent: 7.2,
+    netPnlUsdc: 720.5,
     sharpe: 1.3,
     maxDrawdownPercent: -2.1,
     move: 3,
@@ -127,7 +127,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Oracle lag exploit",
     strategyCategory: "arb",
     score: 55.4,
-    pnlPercent: 4.9,
+    netPnlUsdc: 490.75,
     sharpe: 1.05,
     maxDrawdownPercent: -11.4,
     move: -3,
@@ -138,7 +138,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Long-only spot",
     strategyCategory: "dir",
     score: 48.7,
-    pnlPercent: -1.8,
+    netPnlUsdc: -180.4,
     sharpe: 0.71,
     maxDrawdownPercent: -14.0,
     move: 1,
@@ -149,7 +149,7 @@ export const seedAgents: AgentStanding[] = [
     strategy: "Flashloan arb",
     strategyCategory: "arb",
     score: 41.2,
-    pnlPercent: -6.4,
+    netPnlUsdc: -640.9,
     sharpe: 0.52,
     maxDrawdownPercent: -18.7,
     move: -1,
@@ -664,20 +664,32 @@ export const seedArchiveStats: ArchiveStats = {
 };
 
 export const seedArchivePodium: ArchivePodiumEntry[] = [
-  { rank: 1, agent: "agent-9a12", pnlPercent: 61.2 },
-  { rank: 2, agent: "agent-21cd", pnlPercent: 48.9 },
-  { rank: 3, agent: "agent-7788", pnlPercent: 33.4 },
+  { rank: 1, agent: "agent-9a12", netPnlUsdc: 6120 },
+  { rank: 2, agent: "agent-21cd", netPnlUsdc: 4890 },
+  { rank: 3, agent: "agent-7788", netPnlUsdc: 3340 },
 ];
 
 export const seedArchiveFinalStandings: ArchiveFinalStanding[] = [
-  { rank: 1, agent: "agent-9a12", score: 92.4, pnlPercent: 61.2, sharpe: 2.41 },
-  { rank: 2, agent: "agent-21cd", score: 88.1, pnlPercent: 48.9, sharpe: 2.18 },
-  { rank: 3, agent: "agent-7788", score: 81.6, pnlPercent: 33.4, sharpe: 2.02 },
-  { rank: 4, agent: "agent-4f2a", score: 74.9, pnlPercent: 18.4, sharpe: 1.84 },
-  { rank: 5, agent: "agent-55aa", score: 70.2, pnlPercent: 15.0, sharpe: 1.61 },
-  { rank: 6, agent: "agent-3e91", score: 65.8, pnlPercent: 9.7, sharpe: 1.42 },
-  { rank: 7, agent: "agent-c204", score: 61.0, pnlPercent: 7.2, sharpe: 1.3 },
-  { rank: 8, agent: "agent-88b1", score: 55.4, pnlPercent: -1.8, sharpe: 1.05 },
+  { rank: 1, agent: "agent-9a12", score: 92.4, netPnlUsdc: 6120, sharpe: 2.41 },
+  { rank: 2, agent: "agent-21cd", score: 88.1, netPnlUsdc: 4890, sharpe: 2.18 },
+  { rank: 3, agent: "agent-7788", score: 81.6, netPnlUsdc: 3340, sharpe: 2.02 },
+  { rank: 4, agent: "agent-4f2a", score: 74.9, netPnlUsdc: 1840, sharpe: 1.84 },
+  { rank: 5, agent: "agent-55aa", score: 70.2, netPnlUsdc: 1500, sharpe: 1.61 },
+  {
+    rank: 6,
+    agent: "agent-3e91",
+    score: 65.8,
+    netPnlUsdc: 970.25,
+    sharpe: 1.42,
+  },
+  { rank: 7, agent: "agent-c204", score: 61.0, netPnlUsdc: 720.5, sharpe: 1.3 },
+  {
+    rank: 8,
+    agent: "agent-88b1",
+    score: 55.4,
+    netPnlUsdc: -180.4,
+    sharpe: 1.05,
+  },
 ];
 
 export const seedArchiveClosingPrices: ArchiveClosingPrice[] = [
@@ -726,7 +738,7 @@ function shortHexAddress(seedText: string): string {
  */
 export function buildAgentDetail(standing: AgentStanding): AgentDetail {
   const seed = standing.rank;
-  const trendUp = standing.pnlPercent >= 0;
+  const trendUp = standing.netPnlUsdc >= 0;
 
   const portfolioPoints = Array.from({ length: 14 }, (_, i) => {
     const drift = (trendUp ? 1 : -1) * i * (1.5 + (seed % 3) * 0.6);
@@ -800,7 +812,7 @@ export function buildAgentDetail(standing: AgentStanding): AgentDetail {
     address: shortHexAddress(standing.agent),
     strategy: standing.strategy,
     score: standing.score,
-    pnlPercent: standing.pnlPercent,
+    netPnlUsdc: standing.netPnlUsdc,
     sharpe: standing.sharpe,
     maxDrawdownPercent: standing.maxDrawdownPercent,
     portfolioPoints,

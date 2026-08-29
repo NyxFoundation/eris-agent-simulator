@@ -3,6 +3,7 @@ import { Badge } from "@/design-system/Badge";
 import { StatCard } from "@/design-system/StatCard";
 import { useArchiveSnapshot } from "@/data/useArchiveSnapshot";
 import { navigate } from "@/navigation";
+import { formatPnlUsdc, formatScore } from "@/lib/format";
 import type { ArchiveFinalStanding, ArchivePodiumEntry } from "@/data/types";
 
 const RANK_RING: Record<number, { bg: string; fg: string }> = {
@@ -89,13 +90,12 @@ function PodiumCard({ entry }: { entry: ArchivePodiumEntry }) {
         style={{
           font: "var(--text-sm) var(--font-mono)",
           color:
-            entry.pnlPercent >= 0
+            entry.netPnlUsdc >= 0
               ? "var(--success-text)"
               : "var(--danger-text)",
         }}
       >
-        {entry.pnlPercent >= 0 ? "+" : ""}
-        {entry.pnlPercent.toFixed(1)}%
+        {formatPnlUsdc(entry.netPnlUsdc)}
       </span>
     </div>
   );
@@ -104,7 +104,7 @@ function PodiumCard({ entry }: { entry: ArchivePodiumEntry }) {
 function FinalStandingRow({ row }: { row: ArchiveFinalStanding }) {
   const isTop3 = row.rank <= 3;
   const pnlColor =
-    row.pnlPercent >= 0 ? "var(--success-text)" : "var(--danger-text)";
+    row.netPnlUsdc >= 0 ? "var(--success-text)" : "var(--danger-text)";
   return (
     <div
       onClick={() => navigate(`/agent/${row.agent}`)}
@@ -126,10 +126,9 @@ function FinalStandingRow({ row }: { row: ArchiveFinalStanding }) {
         )}
       </span>
       <span style={{ color: "var(--text-link)" }}>{row.agent}</span>
-      <span style={{ textAlign: "right" }}>{row.score.toFixed(1)}</span>
+      <span style={{ textAlign: "right" }}>{formatScore(row.score)}</span>
       <span style={{ textAlign: "right", color: pnlColor }}>
-        {row.pnlPercent >= 0 ? "+" : ""}
-        {row.pnlPercent.toFixed(1)}%
+        {formatPnlUsdc(row.netPnlUsdc)}
       </span>
       <span style={{ textAlign: "right" }}>{row.sharpe.toFixed(2)}</span>
     </div>
@@ -353,7 +352,7 @@ export function ArchivePage() {
                 <span>#</span>
                 <span>Agent</span>
                 <span style={{ textAlign: "right" }}>Score</span>
-                <span style={{ textAlign: "right" }}>PnL</span>
+                <span style={{ textAlign: "right" }}>PnL (USDC)</span>
                 <span style={{ textAlign: "right" }}>Sharpe</span>
               </div>
               {finalStandings.map((row) => (

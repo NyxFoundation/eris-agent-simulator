@@ -236,27 +236,21 @@ function buildStandings(run: LoadedRun): AgentStanding[] {
       rank: 0,
       agent: agent.id,
       // the run's official metric (M9: mean − λ·std of epoch log returns), scaled
-      // to bps of log growth per epoch so it survives .toFixed(1) in the UI
+      // to bps of log growth per epoch. Formatted by formatScore, not toFixed(1):
+      // a real score is often a few hundredths of a bp and rounds away at one decimal.
       score: (epochScore?.score ?? 0) * 10_000,
-      pnlPercent:
-        agent.initialValueUsdc > 0
-          ? (agent.netPnlUsdc / agent.initialValueUsdc) * 100
-          : 0,
+      netPnlUsdc: agent.netPnlUsdc,
       sharpe:
         stdLogReturn > 0 ? (epochScore?.meanLogReturn ?? 0) / stdLogReturn : 0,
       strategy: description,
       strategyCategory: categorize(agent.id, description),
       maxDrawdownPercent: maxDrawdownPercent(valuesByAgent[agent.id] ?? []),
       move: moves.get(agent.id) ?? 0,
-      netPnlUsdc: agent.netPnlUsdc,
     };
   });
 
   rows.sort((a, b) => b.score - a.score || b.netPnlUsdc - a.netPnlUsdc);
-  return rows.map(({ netPnlUsdc: _drop, ...row }, i) => ({
-    ...row,
-    rank: i + 1,
-  }));
+  return rows.map((row, i) => ({ ...row, rank: i + 1 }));
 }
 
 // Rank change over the final epoch (issue #63 Phase 4): rank every agent by cumulative value gain
@@ -1171,12 +1165,12 @@ export async function fetchArchiveSnapshot(): Promise<ArchiveSnapshot> {
     },
     podium: standings
       .slice(0, 3)
-      .map((s) => ({ rank: s.rank, agent: s.agent, pnlPercent: s.pnlPercent })),
+      .map((s) => ({ rank: s.rank, agent: s.agent, netPnlUsdc: s.netPnlUsdc })),
     finalStandings: standings.map((s) => ({
       rank: s.rank,
       agent: s.agent,
       score: s.score,
-      pnlPercent: s.pnlPercent,
+      netPnlUsdc: s.netPnlUsdc,
       sharpe: s.sharpe,
     })),
     closingPrices,
@@ -1302,7 +1296,7 @@ export async function fetchAgentDetailSnapshot(
     fullAddress: summaryAgent?.address,
     strategy: standing.strategy,
     score: standing.score,
-    pnlPercent: standing.pnlPercent,
+    netPnlUsdc: standing.netPnlUsdc,
     sharpe: standing.sharpe,
     maxDrawdownPercent: standing.maxDrawdownPercent,
     portfolioPoints,
