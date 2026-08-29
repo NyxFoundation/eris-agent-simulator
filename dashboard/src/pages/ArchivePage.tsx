@@ -194,7 +194,7 @@ export function ArchivePage() {
         background: "var(--bg-canvas)",
       }}
     >
-      <Sidebar roundNumber={round.roundNumber} roundStatus={round.status} />
+      <Sidebar runNumber={round.runNumber} runStatus={round.status} />
 
       <div
         style={{
@@ -240,7 +240,7 @@ export function ArchivePage() {
             ERIS
           </span>
           <div style={{ transform: "scale(1.4)", transformOrigin: "center" }}>
-            <Badge tone="neutral">Run {round.roundNumber} · Archived</Badge>
+            <Badge tone="neutral">Run {round.runNumber} · Archived</Badge>
           </div>
           <span
             style={{

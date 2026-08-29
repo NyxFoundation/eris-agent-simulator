@@ -291,6 +291,15 @@ export async function runRealtimeSimulation(
     blockTimeSec: config.blockTimeSec,
     runSeconds: config.runSeconds,
     runBlocks: config.runBlocks,
+    // The scoring epoch (ADR 0019) is the competition's round. summary.json carries the boundaries,
+    // but only after the run ends -- a live viewer needs the length up front to lay the rounds out.
+    epochBlocks: config.epochBlocks,
+    scoreEvery: config.scoreEvery,
+    // SEED is the label for this run's market conditions (ADR 0005): the fair-price path and the
+    // stress schedule are both drawn from it. Nothing recorded it, so a stored run could not say
+    // which world it was -- which is the one thing needed to replay it.
+    seed: config.seed,
+    flowSeed: config.flowSeed,
   });
 
   // batch=true: automatically aggregate same-tick reads (parallel receipt fetches, readState, etc.) into

@@ -53,11 +53,38 @@ Vite dev-server plugin (`/runs/index.json` + `/runs/<id>/<file>`, see
 - `agents/<id>.jsonl` — decision logs and submitted-tx self-reports
 - `market.json` — post-run reconstruction extension (#63 Phase 2, written by
   `core/src/realtime/marketSeries.ts`): per-block per-venue executable quotes +
-  pool depth, GMX OI/funding, Aave reserve totals, multi-asset fair prices,
-  end-of-run GMX positions / Aave accounts per agent, and decoded per-tx USD
-  notionals. Powers the cross-venue arb chart, MarketStats, positions/trades
-  tables, tx amounts, and volume aggregates. Runs recorded before the artifact
+  pool depth, GMX OI/funding, Aave reserve totals, market-priced stable quotes,
+  multi-asset fair prices, end-of-run GMX positions / Aave accounts per agent,
+  and decoded per-tx USD notionals. Powers the venue panels, the cross-venue arb
+  chart, tx amounts, and volume aggregates. Runs recorded before the artifact
   existed degrade to the Phase 1 rendering (`—`/`n/a`/empty).
+
+The LST vault's and the Liquity system's *market-wide* state is not in
+`market.json`: the coordinator already writes it to `events.jsonl` every block
+(`lst_block` / `liquity_block`), so those panels read it from there. Their
+*per-agent* positions are in `market.json` (`lstPositionsAtEnd` /
+`liquityPositionsAtEnd`), alongside `gmxPositionsAtEnd` and
+`aaveAccountsAtEnd` — together they are what an agent page's positions table
+shows.
+
+## Rounds
+
+A round is a **scoring epoch** (ADR 0019), not a run — the unit the score
+(`mean − λ·std` of per-epoch log returns) is actually computed over. The bar at
+the top of every page is the selected run's epoch series
+(`summary.json` → `valueSeries.epochSeries.boundaryBlocks`); clicking a segment
+opens that round's per-agent result, and scopes `/explorer` to its block window.
+A live run has no scored series yet, so the bar lays the rounds out from the
+`epochBlocks` the coordinator records at run start and fills in the results when
+the run completes.
+
+Selecting a round also scopes `/markets` (every series, stat and table) and
+`/explorer` (blocks and transactions) to that round's block window; the
+end-of-run position tables stay the run's final cross-section and say so.
+
+`src/data/` is split three ways: `runsProvider.ts` builds the page snapshots,
+`venuePanels.ts` builds the per-application panels `/markets` renders, and
+`artifactHelpers.ts` holds the readers and formatters both share.
 
 ## Live mode (issue #63 Phase 3)
 

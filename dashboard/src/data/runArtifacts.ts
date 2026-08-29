@@ -43,8 +43,14 @@ export interface EpochScore {
   score: number;
   meanLogReturn: number;
   stdLogReturn: number;
+  /** One excess log return per epoch, in order. Index e-1 is epoch e (1-based). */
   logReturns: number[];
+  /** 1-based epoch at which the bankruptcy floor was first touched (ADR 0019 G1/G2), or null. */
   bankruptAtEpoch: number | null;
+  /** 1-based epochs whose value read failed and was carried forward at a return of 0. */
+  carriedForwardEpochs?: number[];
+  lambda?: number;
+  benchmarkApplied?: boolean;
 }
 
 export interface RunSummary {
@@ -62,7 +68,8 @@ export interface RunSummary {
       epochBlocks?: number;
       epochs?: number;
       boundaryBlocks?: number[];
-      valuesByAgent?: Record<string, number[]>;
+      // A boundary the scorer could not read is null, not 0 — a failed read must not become a loss.
+      valuesByAgent?: Record<string, Array<number | null>>;
     };
   };
   epochScores?: Record<string, EpochScore>;
@@ -111,6 +118,17 @@ export interface MarketSeriesRow {
     string,
     { suppliedUsd: number; borrowedUsd: number; utilization: number }
   >;
+  // Market-priced stables (issue #27). `quoted: false` means the pool would not quote and priceUsdc
+  // is par by fallback — it must never be rendered as "the peg held".
+  stables?: Record<
+    string,
+    {
+      priceUsdc: number;
+      sellPriceUsdc: number;
+      buyPriceUsdc: number;
+      quoted: boolean;
+    }
+  >;
 }
 
 export interface GmxPositionAtEnd {
@@ -120,6 +138,24 @@ export interface GmxPositionAtEnd {
   sizeUsd: number;
   collateralUsd: number;
   entryPriceUsd: number | null;
+}
+
+export interface LstPositionAtEnd {
+  agent: string;
+  shares: number;
+  shareAssetsWeth: number;
+  claimableWeth: number;
+  pendingWeth: number;
+  openRequests: number;
+}
+
+export interface LiquityPositionAtEnd {
+  agent: string;
+  troveDebtEusd: number;
+  troveCollWeth: number;
+  icr: number | null;
+  stabilityDepositEusd: number;
+  eusdBalance: number;
 }
 
 export interface AaveAccountAtEnd {
@@ -151,6 +187,9 @@ export interface MarketSeriesFile {
   series: MarketSeriesRow[];
   gmxPositionsAtEnd: GmxPositionAtEnd[];
   aaveAccountsAtEnd: AaveAccountAtEnd[];
+  // Absent in runs recorded before these venues were reported per agent.
+  lstPositionsAtEnd?: LstPositionAtEnd[];
+  liquityPositionsAtEnd?: LiquityPositionAtEnd[];
   notionals: Record<string, TxNotional>;
 }
 

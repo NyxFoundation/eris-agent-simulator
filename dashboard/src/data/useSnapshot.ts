@@ -12,10 +12,19 @@ export interface SnapshotState<T> {
   error: Error | null;
 }
 
+/**
+ * `key` identifies the *view* (which run, which agent): changing it drops the stale data and shows
+ * the loading state, because what is on screen no longer describes the same thing.
+ *
+ * `revision` identifies a *moment* of that view — the replay head. Changing it refetches without
+ * clearing, because the view is still the same one: blanking the page on every replay tick would
+ * make the whole feature a strobe.
+ */
 export function useSnapshot<T>(
   key: string,
   fetcher: () => Promise<T>,
   isLive: (data: T) => boolean,
+  revision: string | number = "",
 ): SnapshotState<T> {
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
@@ -68,7 +77,7 @@ export function useSnapshot<T>(
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [key, tick]);
+  }, [key, revision, tick]);
 
   return state;
 }

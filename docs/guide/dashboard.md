@@ -26,12 +26,140 @@ Every view is built from the run's own artifacts, served by a small Vite dev-ser
 | `events.jsonl` | price and portfolio series (the reconstructed observations), the event tape |
 | `blocks.csv` | the blocks/transactions view (methods joined from the agent logs) |
 | `agents/<id>.jsonl` | decision logs and submitted-tx self-reports |
-| `market.json` | per-venue quotes and depth, GMX OI/funding, Aave reserve totals, multi-asset fair prices, end-of-run positions, and decoded per-tx USD notionals — the cross-venue arb chart, market stats, positions/trades tables and volume aggregates |
+| `market.json` | per-venue quotes and depth, GMX OI/funding, Aave reserve totals, market-priced stable quotes, multi-asset fair prices, **per-agent end-of-run positions on every venue** (perp, LST vault, Trove / Stability Pool / eUSD, Aave account), and decoded per-tx USD notionals — the venue panels, the cross-venue arb chart, the agent pages' positions and the volume aggregates |
 
 `market.json` is written after each run by `core/src/realtime/marketSeries.ts`, on the same historical
 reads that score the run, so it costs the live loop nothing. It is **reporting only and never an
 input to scoring**. Runs recorded before it existed still render — the fields that need it degrade to
 `—` / `n/a` / empty rather than disappearing.
+
+Two venues are *not* in `market.json`: the LST vault and the Liquity system. The coordinator already
+emits their whole state every block (`lst_block` / `liquity_block` in `events.jsonl`), so the
+dashboard reads it from there rather than reconstructing it twice — which also means those panels
+work for runs recorded before `market.json` grew any of its fields.
+
+### Rounds
+
+**A round is a scoring epoch (ADR 0019), not a run.** The score is `mean − λ·std` of *per-epoch* log
+returns, so the epoch is the unit a result is actually earned in — and it is the unit the bar across
+the top of every page shows: one segment per epoch of the selected run, filled by chain progress
+through its own block range.
+
+Clicking a segment opens that round's result: per-agent Δ value and log return, the rank each agent
+held at the round's close and how it moved, and the environment events that landed inside the block
+range. Two columns that are easy to confuse:
+
+- **Δ value** is the raw change in account value, market exposure included. A do-nothing agent still
+  moves with the price, which is why every agent's Δ value is roughly the same in a quiet round.
+- **Log return** is the same round measured *in excess of the roster's do-nothing baseline*. That is
+  the series `epochScores[agent].logReturns` holds and the score averages, so it is the column that
+  explains the standings.
+
+The boundaries come from `summary.json` (`valueSeries.epochSeries.boundaryBlocks`), so a run scored
+with `run.epochBlocks: 0`, or one too short for a single epoch, has no rounds and the bar says so. A
+**live** run has no scored series yet — the coordinator records `epochBlocks` in
+`run_started_realtime`, so the bar lays the rounds out and tracks progress, but the results appear
+when the run completes.
+
+One live-mode detail worth knowing: a live view reads only a recent window of the chain over RPC, so
+a round older than that window has no transaction count to report. It says so
+(`tx count outside the live window`, and `—` in the explorer's stat) rather than printing `0`, which
+would be a claim that the round was quiet. Rounds that have not started yet are a real `0`.
+
+Each agent's page has the same breakdown for that agent alone (its **Rounds** tab), and the explorer
+scopes its block and transaction lists to the selected round.
+
+### An agent's page
+
+**Portfolio value** is the reconstructed value series — the same `inventory.valueUsdc` cross-sections
+the score is computed from, one point per scored block. Both axes are drawn and named: **y is the
+account value in USDC**, **x is block height** — not wall-clock time and not a point index, which is
+why the ticks read `1,272 … 1,329`. The caption carries the first and last value, and the curve is
+red when the run lost value (it was previously an axis-less sparkline drawn green whatever it did).
+
+**Open positions** is every venue position the run's end-of-run reads recorded for that agent: a GMX
+perp, an LST stake with its withdrawal queue, a Liquity Trove with its ICR, a Stability Pool deposit,
+a spot eUSD holding, an Aave account with its health factor. It was previously fed by GMX alone, so
+an agent that spent the whole run staking or borrowing showed an empty table — indistinguishable
+from a broken view. An agent that really ended flat now says so in words.
+
+The table is deliberately not perp-shaped: a stake has no entry price and a Trove has no PnL%, so
+the columns are venue / kind / size / **what it is marked against** (an entry price, a redemption
+rate, an ICR, an HF) / detail.
+
+### Markets (per-venue state)
+
+`/markets` is one tab per deployed application, built from that run's own artifacts, and only for
+the venues the run enabled (`run_started_realtime.enabledProtocols`):
+
+| tab | what it shows |
+|---|---|
+| **Scenario** | the run's seed, the stress schedule drawn from it (window, ramp/hold/decay, magnitude, which rounds it covers, whether it fired and how it ended), and every liquidation / redemption / slash / open arb window in block order |
+| **AMM** | cross-venue price/spread chart with the agents' own swap markers, pool depth per venue over the run, the executable two-sided quote at the final block, and the decoded agent swaps |
+| **Perp** | GMX long/short open interest and funding over the run, positions still open at the final block, keeper failures |
+| **Lending** | Aave borrowed and utilization per reserve, the seeded victims' worst health factor against the liquidation line, liquidations, and each agent's collateral/debt/HF |
+| **Stablecoin** | every market-priced stable's measured price against par, the Liquity system's TCR against the CCR, redemption and borrowing fees, redemptions, trove liquidations, and the environment's depeg windows |
+| **LST** | the vault's redemption rate against what its pool actually pays, the discount, the exit queue, the reward reserve, and any slash |
+
+The fair price is still on the page, but as what it is — the environment's own input, written on-chain
+every block — rather than the subject. What an agent trades against is venue state.
+
+**Every panel is scoped to the selected round.** Clicking a round in the bar narrows the page's
+series, stats and tables to that round's blocks, and the header states the window
+(`Round 03 · blocks 1,296–1,308`, with a link back to the whole run). So "widest cross-venue gap",
+"swap volume", pool depth and the LST redemption rate all answer *for that round* — the same
+question the round results answer for the agents. The per-round volumes add up to less than the
+run's, and should: the scorer drops a trailing partial epoch, so the blocks after the last boundary
+belong to no round.
+
+The three end-of-run tables are the exception, and say so in their own titles ("at the run's final
+block"): GMX positions, Aave accounts and the venue reserves are a single cross-section taken when
+the run ends, not a per-round quantity. **Scenario** is the other exception — a schedule belongs to
+the run, not to a round — so it is always run-wide and the scope line says so.
+
+#### Reading the scenario history
+
+The coordinator draws the stress schedule from the seed at run start and writes it once, as blocks
+*relative* to the run's first block (`stress_schedule`). The panel turns that into what a reader
+wants: the absolute window, the rounds it covers, and what actually happened in it.
+
+`crash` / `spike` / `cexDrift` / `flowTrend` leave **no per-block record** — they change the
+fair-price walk itself rather than acting on a venue — so their row says where to look (the price
+chart) instead of reporting "never fired", which would be a different and false claim. The events
+that do act on a venue (`liquidityPull`, `eusdDepeg`, `depeg`, `lstSlash`, `whale`) report the
+blocks they fired on and whether the environment restored the venue afterwards.
+
+The **seed** is recorded in `run_started_realtime`; runs from before that degrade to no seed stat
+rather than showing a wrong one.
+
+### Replay
+
+An archived run can be walked forward as if it were happening: `▶ replay` in the rounds bar arms it,
+and the transport (play/pause, a block scrubber, 1x/2x/4x) moves the head. Everything on every page
+is then derived as of that block — the rounds fill in, the tx counts climb, the venue panels and the
+explorer show only what had happened by then.
+
+This exists because live mode cannot cover the two cases that matter most: a run that has already
+finished, and a run that happened somewhere else (a spot box) and was collected afterwards. Live
+mode needs the run's own machine — the file tails are the dev server's filesystem and the chain
+reads go to the agents' anvil. Replay needs only `runs/<id>/`, and an archived run carries *more*
+than a live one (market.json, the scored epoch series, the complete blocks.csv), so it is a stronger
+view rather than a simulation of a weaker one.
+
+**The rule it keeps is that it never shows the future.** A round that has not closed at the head
+carries no result, and the standings are *recomputed* from the returns up to the head
+(`mean − λ·std` over the closed rounds, with the scorer's own λ) rather than read off the finished
+run — otherwise every frame of the walk would have the answer printed on it. The end-of-run position
+cross-sections are dropped for the same reason until the head reaches the end: they are a single
+read taken when the run finished and are not knowable earlier.
+
+Replay is per-browser and in-memory: it survives moving between pages, and a page reload ends it.
+
+**Runs collected from a remote box work unchanged.** `spot-run` brings back the box's whole `runs/`
+as a tarball, which lands at `runs/<collection>/runs/<id>/` — every artifact present, one or two
+levels deeper than a local run. The dev server's index scans that far down and uses the path
+relative to `runs/` as the id, so a collected run appears in the picker as
+`<run id>  ← <collection>` and replays like any other. Nothing has to be moved or renamed.
 
 ### Live mode
 
@@ -94,9 +222,27 @@ no archive balances) and the Linux `host.docker.internal` note are in
 
 ## How they fit together
 
-The dashboard never depends on the explorer. When the explorer is up, the dashboard probes it once
-through the Vite proxy and turns tx hashes, blocks and addresses into deep links; when it is down the
-links simply vanish and nothing else changes.
+The dashboard never depends on the explorer. When the explorer is up, the dashboard turns tx hashes,
+blocks and addresses into deep links; when it is down the links stay plain text and nothing else
+changes.
+
+The dashboard's own `/explorer` page is the front door to it. It states the connection outright —
+connected with the indexed height, or offline with the command to start it — because silence there is
+indistinguishable from a stalled chain.
+
+**Whether the links actually work is a separate question, and the height cannot answer it.** Every
+run rewinds the chain and no indexer can follow a rewind, so Blockscout can sit at a perfectly
+plausible height while the blocks at those heights belong to a *previous* run; and a healthy indexer
+routinely sits a few blocks past a run's last scored block, because the environment's teardown keeps
+mining after scoring stops. So the page asks the indexer for one transaction the selected run really
+produced. Found means the deep links work; not found prints
+`this run's transactions are not indexed … run npm run explorer:reset`, which is the actual remedy.
+Switching the run picker to an older run after a reset shows exactly that.
+
+Search resolves what you type before it links: a 32-byte hash to a transaction, a 20-byte address or
+an **agent name** to an address (Blockscout only knows wallets — `explorer:tag` names them, but the
+name is not addressable in a URL), a number to a block. Enter opens it in Blockscout; the lists below
+filter locally either way, so the search still works with the explorer down.
 
 ```mermaid
 flowchart LR

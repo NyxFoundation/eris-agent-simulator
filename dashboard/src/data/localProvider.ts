@@ -15,13 +15,10 @@ import {
   seedCandles,
   seedExplorerStats,
   seedFeed,
-  seedMarketStats,
   seedMarketTickers,
-  seedOrders,
-  seedPositions,
   seedTape,
-  seedTrades,
   seedTransactions,
+  seedVenuePanels,
 } from "./seed";
 import type {
   AgentDetailSnapshot,
@@ -169,19 +166,22 @@ export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
 
   return {
     round,
+    scope: {
+      roundIndex: null,
+      fromBlock: round.epochs[0]?.fromBlock ?? 0,
+      toBlock: round.epochs[round.epochs.length - 1]?.toBlock ?? 0,
+    },
     stats,
     blocks: blocks.sort((a, b) => b.number.localeCompare(a.number)),
     transactions: transactions.sort((a, b) => a.seq - b.seq),
+    agents: seedAgents.map((a) => ({ id: a.agent })),
   };
 }
 
-// The stored blob predates the Phase 4 shape (venueDepths/pairs replaced the fictional order
-// book), so those fields are attached at read time instead of persisted — an old IndexedDB blob
-// from a previous session then still renders.
-type MarketSnapshotBlob = Omit<
-  MarketSnapshot,
-  "round" | "leaderboard" | "venueDepths" | "pairs"
->;
+// Only the parts worth persisting are stored; everything the shape has gained since (venueDepths,
+// pairs, the venue panels) is attached at read time, so an IndexedDB blob written by an older
+// session still renders instead of failing to parse.
+type MarketSnapshotBlob = Pick<MarketSnapshot, "candles" | "feed" | "arbitrage">;
 
 async function ensureMarketSeeded(): Promise<void> {
   const [existingRound, existingSnapshot, agentCount] = await Promise.all([
@@ -197,11 +197,7 @@ async function ensureMarketSeeded(): Promise<void> {
     tasks.push(...seedAgents.map((a) => putValue(STORES.agents, a)));
   if (!existingSnapshot) {
     const snapshot: MarketSnapshotBlob = {
-      stats: seedMarketStats,
       candles: seedCandles,
-      positions: seedPositions,
-      orders: seedOrders,
-      trades: seedTrades,
       feed: seedFeed,
       arbitrage: seedArbitrage,
     };
@@ -230,9 +226,19 @@ export async function fetchMarketSnapshot(
 
   return {
     round,
+    scope: {
+      roundIndex: null,
+      fromBlock: round.epochs[0]?.fromBlock ?? 0,
+      toBlock: round.epochs[round.epochs.length - 1]?.toBlock ?? 0,
+    },
     leaderboard: agents.sort((a, b) => a.rank - b.rank),
     ...snapshot,
+    protocols: ["uniswap", "balancer", "curve", "gmx"],
+    base: "WETH",
+    fairPrice: snapshot.candles[snapshot.candles.length - 1]?.close ?? 0,
+    fairDirection: "up",
     venueDepths: seedVenueDepths,
+    panels: seedVenuePanels,
     pairs: [{ label: "WETH/USDC", value: "WETH" }],
   };
 }

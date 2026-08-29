@@ -16,30 +16,71 @@ import type {
   ExplorerBlock,
   ExplorerStats,
   ExplorerTransaction,
+  AgentRoundResult,
   MarketFeedItem,
-  MarketOrder,
-  MarketPosition,
-  MarketStats,
   MarketTicker,
-  MarketTrade,
+  RoundAgentResult,
+  RoundEpoch,
   RoundInfo,
-  RoundProgressSegment,
   TapeEvent,
+  VenuePanel,
   VenueDepthView,
   VenueSeries,
 } from "./types";
 
 export const ROUND_DURATION_MS = 2 * 3600 * 1000 + 14 * 60 * 1000 + 36 * 1000;
-export const SEASON_LENGTH = 13;
+
+// Eight rounds of twelve blocks — the shape a default sim:realtime run produces (run.epochBlocks
+// defaults to 12). Six are scored, one is running, one has not started.
+const SEED_EPOCH_BLOCKS = 12;
+const SEED_EPOCHS = 8;
+const SEED_FIRST_BLOCK = 19_442_026;
+
+function seedRoundResults(index: number): RoundAgentResult[] {
+  return seedAgents
+    .map((agent, i) => {
+      const swing = Math.sin(index * 1.3 + i) * (40 + i * 9);
+      return {
+        agent: agent.agent,
+        rank: 0,
+        deltaUsdc: Math.round(swing * 10) / 10,
+        logReturnBps: Math.round(swing * 0.4 * 100) / 100,
+        cumulativeRank: agent.rank,
+        move: index === 1 ? 0 : ((index + i) % 3) - 1,
+        bankrupt: false,
+      };
+    })
+    .sort((a, b) => b.logReturnBps - a.logReturnBps)
+    .map((row, i) => ({ ...row, rank: i + 1 }));
+}
+
+function seedEpochs(): RoundEpoch[] {
+  return Array.from({ length: SEED_EPOCHS }, (_, i) => {
+    const fromBlock = SEED_FIRST_BLOCK + i * SEED_EPOCH_BLOCKS;
+    const status = i < 6 ? "done" : i === 6 ? "live" : "upcoming";
+    return {
+      index: i + 1,
+      fromBlock,
+      toBlock: fromBlock + SEED_EPOCH_BLOCKS,
+      status: status as RoundEpoch["status"],
+      results: status === "done" ? seedRoundResults(i + 1) : [],
+      events: [],
+      txCount: 40 + ((i * 7) % 23),
+    };
+  });
+}
 
 export function createSeedRound(): RoundInfo {
   const endsAt = Date.now() + 42 * 60 * 1000 + 18 * 1000;
   return {
-    roundNumber: 14,
+    runId: "seed-run",
+    runNumber: 14,
     status: "live",
     startsAt: endsAt - ROUND_DURATION_MS,
     endsAt,
-    blockNumber: 19_442_110,
+    blockNumber: SEED_FIRST_BLOCK + 6 * SEED_EPOCH_BLOCKS + 5,
+    epochs: seedEpochs(),
+    epochBlocks: SEED_EPOCH_BLOCKS,
   };
 }
 
@@ -155,30 +196,6 @@ export const seedAgents: AgentStanding[] = [
     move: -1,
   },
 ];
-
-/**
- * Rounds progress bar on the top page: a fixed-length season of `SEASON_LENGTH`
- * rounds, wrapping so any absolute round number maps to a season position.
- */
-export function buildRoundsProgress(roundNumber: number): {
-  liveRoundLabel: string;
-  totalRounds: number;
-  roundsProgress: RoundProgressSegment[];
-} {
-  const liveIndex = (roundNumber - 1) % SEASON_LENGTH;
-  const roundsProgress: RoundProgressSegment[] = Array.from(
-    { length: SEASON_LENGTH },
-    (_, i) => ({
-      n: String(i + 1).padStart(2, "0"),
-      status: i < liveIndex ? "done" : i === liveIndex ? "live" : "upcoming",
-    }),
-  );
-  return {
-    liveRoundLabel: String(liveIndex + 1).padStart(2, "0"),
-    totalRounds: SEASON_LENGTH,
-    roundsProgress,
-  };
-}
 
 const up = "up" as const;
 const down = "down" as const;
@@ -400,19 +417,6 @@ export const seedTransactions: ExplorerTransaction[] = [
   },
 ];
 
-export const seedMarketStats: MarketStats = {
-  pair: "ETH/USDC",
-  price: 3412.08,
-  direction: "up",
-  volume24h: "$3.3m",
-  openInterest: "$4.2M",
-  openInterestLongPercent: 52,
-  openInterestShortPercent: 48,
-  availableLiquidity: "$53.1m",
-  totalLiquidity: "$50.1m",
-  fundingRate1h: "0.008%",
-};
-
 // Deterministic OHLC series so the chart looks the same on every load.
 const seedCloses = [
   3380, 3392, 3375, 3401, 3418, 3406, 3422, 3435, 3428, 3441, 3412, 3419, 3430,
@@ -541,77 +545,6 @@ export const seedArbitrage: ArbitrageSnapshot = (() => {
   return { fair, venues, spread, thresholdBps: ARB_THRESHOLD_BPS, trades };
 })();
 
-export const seedPositions: MarketPosition[] = [
-  {
-    agent: "agent-9a12",
-    side: "long",
-    size: "2.1x",
-    entry: "3,388",
-    pnlPercent: 2.4,
-  },
-  {
-    agent: "agent-88b1",
-    side: "short",
-    size: "1.0x",
-    entry: "3,440",
-    pnlPercent: -0.8,
-  },
-  {
-    agent: "agent-21cd",
-    side: "long",
-    size: "3.4x",
-    entry: "3,395",
-    pnlPercent: 1.5,
-  },
-  {
-    agent: "agent-de33",
-    side: "short",
-    size: "0.8x",
-    entry: "3,420",
-    pnlPercent: -0.3,
-  },
-];
-
-export const seedOrders: MarketOrder[] = [
-  {
-    agent: "agent-7788",
-    side: "long",
-    size: "1.5x",
-    trigger: "3,380.0",
-    status: "pending",
-  },
-  {
-    agent: "agent-55aa",
-    side: "short",
-    size: "0.9x",
-    trigger: "3,450.0",
-    status: "pending",
-  },
-  {
-    agent: "agent-3e91",
-    side: "long",
-    size: "2.0x",
-    trigger: "3,375.0",
-    status: "pending",
-  },
-  {
-    agent: "agent-c204",
-    side: "short",
-    size: "1.1x",
-    trigger: "3,460.0",
-    status: "pending",
-  },
-];
-
-export const seedTrades: MarketTrade[] = [
-  { agent: "agent-9a12", side: "long", size: "0.4", price: "3,412.0" },
-  { agent: "agent-88b1", side: "short", size: "1.1", price: "3,413.4" },
-  { agent: "agent-21cd", side: "long", size: "2.0", price: "3,410.9" },
-  { agent: "agent-de33", side: "short", size: "0.6", price: "3,414.0" },
-  { agent: "agent-7788", side: "long", size: "0.9", price: "3,411.6" },
-  { agent: "agent-55aa", side: "short", size: "1.5", price: "3,414.8" },
-];
-
 // AMM depth per venue (the order-book replacement, issue #63 Phase 4). Deterministic wobble so the
 // sparklines have shape; the middle venue dips like a liquidityPull window.
 export const seedVenueDepths: VenueDepthView[] = seedArbitrage.venues.map(
@@ -639,6 +572,96 @@ export const seedVenueDepths: VenueDepthView[] = seedArbitrage.venues.map(
   },
 );
 
+// Venue-state panels for the seed provider (the /markets page's shape). The real provider builds
+// these from a run's market.json and event stream; here they are just enough to develop against.
+export const seedVenuePanels: VenuePanel[] = [
+  {
+    id: "amm",
+    label: "AMM",
+    protocols: ["uniswap", "balancer", "curve"],
+    caption:
+      "Three constant-function venues quote the same pair. Depth is what a liquidity pull moves; the gap between venues is what an arbitrageur is paid to close, once it clears the round-trip cost.",
+    stats: [
+      { label: "Widest cross-venue gap", value: "134.0bps", tone: "up", sub: "threshold 80bps round-trip" },
+      { label: "Pool depth (all venues)", value: "$17.6M", sub: "start $17.4M" },
+      { label: "Swap volume · WETH", value: "$3.3M", sub: "412 swaps" },
+    ],
+    charts: [
+      {
+        id: "amm-depth",
+        title: "Pool depth · WETH",
+        unit: "usd",
+        lines: seedVenueDepths.map((venue) => ({
+          id: venue.id,
+          label: venue.label,
+          color: venue.color,
+          points: venue.points.map((value, i) => ({ time: i, value })),
+        })),
+      },
+    ],
+    tables: [
+      {
+        id: "amm-quotes",
+        title: "Executable quotes at the final block · WETH",
+        columns: [
+          { label: "Venue" },
+          { label: "Mid", align: "right" },
+          { label: "Sell", align: "right" },
+          { label: "Buy", align: "right" },
+          { label: "Depth", align: "right" },
+        ],
+        rows: seedVenueDepths.map((venue) => [
+          { text: venue.label, tone: "link" as const },
+          { text: "$3,412.00" },
+          { text: venue.sell ?? "—", tone: "down" as const },
+          { text: venue.buy ?? "—", tone: "up" as const },
+          { text: venue.depthUsd },
+        ]),
+        empty: "no venue quotes in this run's market series",
+      },
+    ],
+  },
+  {
+    id: "perp",
+    label: "Perp",
+    protocols: ["gmx"],
+    caption:
+      "GMX v2. Positions are opened as orders and executed by the environment's keeper a block later, so a perp trade always lands one block after the decision that produced it. Funding is what the crowded side pays the other.",
+    stats: [
+      { label: "Open interest", value: "$4.2M", sub: "52% long / 48% short" },
+      { label: "Funding / 1h", value: "0.080bps", sub: "positive = longs pay shorts" },
+    ],
+    charts: [],
+    tables: [
+      {
+        id: "gmx-positions",
+        title: "Positions open at the final block",
+        columns: [
+          { label: "Agent" },
+          { label: "Side" },
+          { label: "Size", align: "right" },
+          { label: "Entry", align: "right" },
+        ],
+        rows: [
+          [
+            { text: "agent-9a12", tone: "link" as const },
+            { text: "LONG", tone: "up" as const },
+            { text: "$120,400" },
+            { text: "3,388" },
+          ],
+          [
+            { text: "agent-88b1", tone: "link" as const },
+            { text: "SHORT", tone: "down" as const },
+            { text: "$61,900" },
+            { text: "3,440" },
+          ],
+        ],
+        empty: "no perp position was open when the run ended",
+      },
+    ],
+  },
+];
+
 export const seedFeed: MarketFeedItem[] = [
   { id: 1, text: "agent-9a12 buy 0.4 @3412.0" },
   { id: 2, text: "agent-88b1 sell 1.1 @3413.4" },
@@ -651,7 +674,7 @@ export const seedFeed: MarketFeedItem[] = [
 ];
 
 export const seedArchiveRound: ArchiveRoundInfo = {
-  roundNumber: 13,
+  runNumber: 13,
   status: "archived",
   finalBlockNumber: 19_201_884,
 };
@@ -740,28 +763,51 @@ export function buildAgentDetail(standing: AgentStanding): AgentDetail {
   const seed = standing.rank;
   const trendUp = standing.netPnlUsdc >= 0;
 
-  const portfolioPoints = Array.from({ length: 14 }, (_, i) => {
+  const portfolioSeries = Array.from({ length: 14 }, (_, i) => {
     const drift = (trendUp ? 1 : -1) * i * (1.5 + (seed % 3) * 0.6);
     const wobble = ((i * (seed + 3)) % 7) - 3;
-    return Math.round(100 + drift + wobble);
+    return {
+      time: SEED_FIRST_BLOCK + i * 6,
+      value: Math.round((100 + drift + wobble) * 3800),
+    };
   });
 
   const positions: AgentPosition[] = [
     {
-      market: AGENT_DETAIL_MARKETS[(seed - 1) % AGENT_DETAIL_MARKETS.length],
-      side: "long",
-      size: `${(1.2 + (seed % 4) * 0.5).toFixed(1)}x`,
-      entry: "3,388",
+      market: `GMX ${AGENT_DETAIL_MARKETS[(seed - 1) % AGENT_DETAIL_MARKETS.length]}`,
+      kind: "LONG",
+      tone: "up",
+      size: `$${((1.2 + (seed % 4) * 0.5) * 100_000).toLocaleString("en-US")}`,
+      mark: "entry 3,388",
+      note: "collateral $40,000",
       pnlPercent: trendUp ? 2.4 : -1.6,
     },
     {
-      market: AGENT_DETAIL_MARKETS[seed % AGENT_DETAIL_MARKETS.length],
-      side: "short",
-      size: `${(0.8 + (seed % 3) * 0.4).toFixed(1)}x`,
-      entry: "61,900",
-      pnlPercent: trendUp ? -1.1 : -3.2,
+      market: "LST vault",
+      kind: "STAKE",
+      tone: "neutral",
+      size: `${(8 + (seed % 3) * 1.5).toFixed(4)} LST`,
+      mark: "par 1.0041 WETH",
+      note: "nothing queued for withdrawal",
     },
   ];
+
+  const rounds: AgentRoundResult[] = seedEpochs()
+    .filter((e) => e.results.length > 0)
+    .map((e) => {
+      const result = e.results.find((r) => r.agent === standing.agent);
+      return {
+        index: e.index,
+        fromBlock: e.fromBlock,
+        toBlock: e.toBlock,
+        deltaUsdc: result?.deltaUsdc ?? 0,
+        logReturnBps: result?.logReturnBps ?? 0,
+        rank: result?.rank ?? standing.rank,
+        cumulativeRank: result?.cumulativeRank ?? standing.rank,
+        move: result?.move ?? 0,
+        txCount: e.txCount ?? 0,
+      };
+    });
 
   const trades: AgentTrade[] = Array.from({ length: 4 }, (_, i) => ({
     hash: shortHexAddress(`${standing.agent}-tx${i}`),
@@ -780,13 +826,13 @@ export function buildAgentDetail(standing: AgentStanding): AgentDetail {
   const recentLog: AgentLogLine[] = [
     {
       time: "12:04:02",
-      text: `evaluated funding skew, opened ${positions[0].side.toUpperCase()} ${positions[0].market.split("/")[0]}`,
+      text: `evaluated funding skew, opened ${positions[0].kind} ${positions[0].market}`,
       tone: "success",
     },
     { time: "11:58:40", text: "checked oracle deviation, held", tone: "info" },
     {
       time: "11:44:12",
-      text: `closed ${positions[1].market.split("/")[0]} ${positions[1].side}, ${trendUp ? "took profit" : "cut losses"}`,
+      text: `closed ${positions[1].market}, ${trendUp ? "took profit" : "cut losses"}`,
       tone: trendUp ? "success" : "warning",
     },
   ];
@@ -815,10 +861,11 @@ export function buildAgentDetail(standing: AgentStanding): AgentDetail {
     netPnlUsdc: standing.netPnlUsdc,
     sharpe: standing.sharpe,
     maxDrawdownPercent: standing.maxDrawdownPercent,
-    portfolioPoints,
+    portfolioSeries,
     positions,
     trades,
     recentLog,
     fullLog,
+    rounds,
   };
 }

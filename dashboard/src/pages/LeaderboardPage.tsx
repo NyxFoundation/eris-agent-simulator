@@ -216,7 +216,7 @@ export function LeaderboardPage() {
                   color: "var(--text-tertiary)",
                 }}
               >
-                Run {round.roundNumber} ·{" "}
+                Run {round.runNumber} ·{" "}
                 {round.status === "live" ? "live" : "archived"}
               </span>
             </div>

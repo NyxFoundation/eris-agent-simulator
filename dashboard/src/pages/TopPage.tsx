@@ -5,6 +5,7 @@ import { Sparkline } from "@/design-system/Sparkline";
 import { blockscoutBlockUrl, useBlockscoutBase } from "@/data/blockscout";
 import { useTopPageSnapshot } from "@/data/useTopPageSnapshot";
 import { navigate } from "@/navigation";
+import { formatScore } from "@/lib/format";
 import type {
   AgentStanding,
   ExplorerBlock,
@@ -246,7 +247,7 @@ function LeaderboardPreviewRow({ row }: { row: AgentStanding }) {
           textAlign: "right",
         }}
       >
-        {row.score.toFixed(1)}
+        {formatScore(row.score)}
       </span>
     </div>
   );
@@ -577,7 +578,7 @@ export function TopPage() {
               letterSpacing: "var(--tracking-wide)",
             }}
           >
-            RUN {round.roundNumber} · {leaderboard.length} AGENTS · BLOCK{" "}
+            RUN {round.runNumber} · {leaderboard.length} AGENTS · BLOCK{" "}
             {round.blockNumber.toLocaleString("en-US")}
           </span>
         </div>

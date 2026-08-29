@@ -115,6 +115,45 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
 - `npm run metrics -- --matrix runs/matrix-<id>` — **シナリオ行列を「指標 × 集約」の総当たりで採点し直す**（ADR 0020 §5）。連続経済では「どの指標か」だけが問いだが、`scenario` モードでは**シナリオ横断の集約**という第 2 の選択が要る（`core/src/scoring/aggregate.ts` = `zscore` 現行 / `borda` 順位 / `mean` 絶対量。どれもレジーム等重み）。出力は各組み合わせの順位、M9×zscore との一致/不一致、そして **#55 の露出**（1 体が場の sd を何倍に膨らませているか。1.0 = 誰も場のスケールを決めていない）。matrix.json の `runDir` は相対なので、spot から回収した tarball を展開したディレクトリでもそのまま読める
 - `npm run explorer` — sim anvil を索引するローカル Blockscout（issue #31。stock イメージ pin、`infra/blockscout/`）。UI は http://localhost:3100。**チェーンをリセットしたら `npm run explorer:reset`**（resetFork/snapshot-revert の巻き戻しに indexer は追従できないので DB を消して再索引するのが正規のライフサイクル）。`npm run explorer:tag` が最新 run の `summary.json` から agent アドレスに名前タグを付ける（reset で消えるので run ごと）。接続先・chain id・fork 用 `FIRST_BLOCK` は `infra/blockscout/explorer.env`
 - `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの run picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
+  - **「ラウンド」= 採点エポック**（ADR 0019。run ではない）。上部の帯は選択中 run の epoch 系列そのもの
+    （`valueSeries.epochSeries.boundaryBlocks`）で、セグメントを押すとその round の per-agent 結果
+    （Δ value / 超過対数リターン / 順位と変動 / その窓に落ちた環境イベント）が開き、`/explorer` の
+    ブロック窓もそこに絞られる。**`Δ value` と `log return` は別物**（前者は β 込みの生の資産変化なので
+    noop も動く。後者は baseline 超過＝スコアが平均する系列）。live run は採点系列が無いので
+    `run_started_realtime.epochBlocks` から枠だけ引いて進捗を出し、結果は完走時に入る
+  - **`/markets` は価格ではなく venue の状態**。有効な protocol ごとに 1 タブ（AMM / Perp / Lending /
+    Stablecoin / LST）。AMM・Perp・Lending・stable 価格は `market.json`、**LST と Liquity の
+    「市場全体の状態」は `events.jsonl` の `lst_block` / `liquity_block`**（coordinator が毎ブロック
+    出しているので二重に再構成しない＝古い run でも描ける）。パネルの構築は
+    `dashboard/src/data/venuePanels.ts`
+  - **リプレイ**: 完走した run を「ブロック B 時点」として前に歩かせる（rounds bar の `▶ replay`
+    → play/pause・スクラバ・1x/2x/4x）。live モードは run したマシンでしか成立しない（tail は dev
+    サーバーのファイルシステム、チェーン読取は agent の anvil）ので、**完走済み run と spot で回して
+    回収した run を観るにはこれが唯一の手段**。archived は live より情報が多い（market.json・採点済み
+    epoch・完全な blocks.csv）ので、劣化版ではなく上位互換。**未来を見せないのが要件**で、閉じていない
+    ラウンドは結果を持たず、順位も閉じたラウンドまでの `mean−λ·std` で計算し直す（完走時のスコアを
+    読むと毎フレームに答えが出てしまう）。run 終端の建玉断面も head が終端に届くまで落とす。
+    **spot から回収した run はそのまま開ける** — `spot-run` は box の `runs/` 丸ごとを tar で持ち帰り
+    `runs/<回収ID>/runs/<runID>/` に展開するので、dev サーバーの index は 2 階層下まで走査し、
+    `runs/` からの相対パスを id にする（picker には `<runID> ← <回収ID>` と出る）
+  - **`Scenario` タブが run の履歴**（既定タブ）。`stress_schedule`（seed から引かれた台形の計画）を
+    絶対ブロック窓・またがるラウンド・実際に発火したブロック・終わり方（restored / failed）に変換し、
+    清算・償還・slash・開いた arb 窓を時系列で並べる。**`crash`/`spike`/`cexDrift`/`flowTrend` は
+    毎ブロックの記録を残さない**（価格の walk 自体を変えるので）ため「never fired」とは書かず
+    「price chart を見よ」と出す。**seed は `run_started_realtime` に記録**（無い古い run は stat 自体を出さない）
+  - **パネルは選択中ラウンドにスコープされる**（`scopeRunToRound` が run 自体を窓で絞るので、
+    ビルダー側に第 2 の経路を作らない）。ヘッダに窓を明示し、全体に戻すリンクを出す。
+    **例外は run 終端の 3 表**（GMX 建玉 / Aave 口座 / reserve）で、これは run 終了時の 1 断面なので
+    タイトルに "at the run's final block" と書く。ラウンド別 volume の合計が run 全体より小さいのは
+    正しい（scorer が末尾の端数エポックを落とすため、最終境界より後のブロックはどのラウンドにも属さない）
+  - **agent の建玉は全 venue 分が `market.json` に入る**（`gmxPositionsAtEnd` / `aaveAccountsAtEnd` /
+    `lstPositionsAtEnd` / `liquityPositionsAtEnd`）。**以前は GMX だけを見ていたので、run 中ずっと
+    ステークや借入だけしていた agent は空表になり「壊れている」と見分けがつかなかった**。表は perp 形
+    ではなく venue / kind / size / **何に対してマークしているか**（entry 価格・償還レート・ICR・HF）/
+    detail。本当に建玉ゼロで終わった場合はその旨を文章で出す
+  - `/explorer` は Blockscout の接続状態を明示し（indexed 高さ併記 / 落ちていれば起動コマンド）、
+    検索が tx hash・block・address・**agent 名**（→ wallet address。Blockscout は名前を知らない）を
+    解決して deep link する。Blockscout が無くてもローカル一覧のフィルタとしては効く
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査

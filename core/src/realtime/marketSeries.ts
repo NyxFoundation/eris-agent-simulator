@@ -14,12 +14,17 @@ import {
   balancerQueriesAbi,
   curveTricryptoAbi,
   erc20Abi,
+  lstVaultAbi,
   poolAbi,
+  stabilityPoolAbi,
+  troveManagerAbi,
 } from "@eris/sdk/abis.js";
 import {
   AAVE,
   BALANCER,
   GMX,
+  LIQUITY,
+  LST,
   MULTICALL3,
   USDC_VARIANTS,
 } from "@eris/sdk/constants.js";
@@ -31,6 +36,12 @@ import {
 } from "@eris/sdk/markets.js";
 import { aaveReserveDataAbi } from "@eris/sdk/protocols/aave.js";
 import { twoSidedQuote } from "@eris/sdk/protocols/marketHelpers.js";
+import {
+  decodeStableProbes,
+  stableProbeReads,
+  stablesForProtocols,
+  type StableMarket,
+} from "@eris/sdk/stables.js";
 import { poolPriceFromSqrtX96 } from "@eris/sdk/protocols/uniswap.js";
 import type { MarketConfig } from "@eris/sdk/markets.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
@@ -72,6 +83,18 @@ export type MarketSeriesRow = {
     string,
     { suppliedUsd: number; borrowedUsd: number; utilization: number }
   >;
+  // Market-priced stables (issue #27): symbol -> the same two-sided probe the scorer marks them
+  // with. `quoted: false` means the pool refused to quote and priceUsdc is par by fallback — the
+  // one number here that must never be read as "the peg held".
+  stables?: Record<
+    string,
+    {
+      priceUsdc: number;
+      sellPriceUsdc: number;
+      buyPriceUsdc: number;
+      quoted: boolean;
+    }
+  >;
 };
 
 export type GmxPositionAtEnd = {
@@ -81,6 +104,33 @@ export type GmxPositionAtEnd = {
   sizeUsd: number;
   collateralUsd: number;
   entryPriceUsd: number | null;
+};
+
+// An LST holding is two numbers for one asset: the vault's par (behind a withdrawal queue) and what
+// the queue has actually released. Both, because the gap is the position's whole point (issue #38).
+export type LstPositionAtEnd = {
+  agent: string;
+  shares: number;
+  /** shares valued at the vault's redemption rate — the par it owes. */
+  shareAssetsWeth: number;
+  /** Queued and already finalizable. */
+  claimableWeth: number;
+  /** Queued but not yet finalizable at this block. */
+  pendingWeth: number;
+  openRequests: number;
+};
+
+// A CDP position is a debt and a collateral, and the ICR is the line the venue liquidates on. The
+// Stability Pool deposit is a separate claim on the same venue, so it is reported beside it.
+export type LiquityPositionAtEnd = {
+  agent: string;
+  /** getEntireDebtAndColl: includes pending redistribution, which is what the system will charge. */
+  troveDebtEusd: number;
+  troveCollWeth: number;
+  /** null when the agent has no Trove (the ICR of nothing is not 0). */
+  icr: number | null;
+  stabilityDepositEusd: number;
+  eusdBalance: number;
 };
 
 export type AaveAccountAtEnd = {
@@ -120,6 +170,8 @@ export type MarketSeriesArtifact = {
   series: MarketSeriesRow[];
   gmxPositionsAtEnd: GmxPositionAtEnd[];
   aaveAccountsAtEnd: AaveAccountAtEnd[];
+  lstPositionsAtEnd: LstPositionAtEnd[];
+  liquityPositionsAtEnd: LiquityPositionAtEnd[];
   // tx hash (lowercase) -> decoded notional. Absent hashes moved nothing priceable.
   notionals: Record<string, TxNotional>;
   notionalsMeta: {
@@ -134,7 +186,12 @@ export type MarketSeriesArtifact = {
 // The meta the coordinator logs to events.jsonl — everything except the bulky series/notionals.
 export type MarketSeriesMeta = Omit<
   MarketSeriesArtifact,
-  "series" | "notionals" | "gmxPositionsAtEnd" | "aaveAccountsAtEnd"
+  | "series"
+  | "notionals"
+  | "gmxPositionsAtEnd"
+  | "aaveAccountsAtEnd"
+  | "lstPositionsAtEnd"
+  | "liquityPositionsAtEnd"
 >;
 
 export function marketSeriesMeta(a: MarketSeriesArtifact): MarketSeriesMeta {
@@ -143,6 +200,8 @@ export function marketSeriesMeta(a: MarketSeriesArtifact): MarketSeriesMeta {
     notionals: _n,
     gmxPositionsAtEnd: _g,
     aaveAccountsAtEnd: _a,
+    lstPositionsAtEnd: _l,
+    liquityPositionsAtEnd: _q,
     ...meta
   } = a;
   return meta;
@@ -615,6 +674,9 @@ export async function reconstructMarketSeries(opts: {
     enabledIds,
     BigInt(toBlock),
   );
+  // Venue-gated like everywhere else: a stable whose owning venue this run did not enable is not
+  // tradable and not swept, so probing it would report a price nobody could act on.
+  const stableMarkets = stablesForProtocols(enabledIds);
 
   // ---- the per-block series ----
   const blocks = scoringBlocks(fromBlock, toBlock, scoreEvery);
@@ -628,6 +690,7 @@ export async function reconstructMarketSeries(opts: {
       ammMarkets,
       gmxMarkets,
       aaveReserves,
+      stableMarkets,
     });
     if (row) series.push(row);
   }
@@ -642,6 +705,19 @@ export async function reconstructMarketSeries(opts: {
   });
   const aaveAccountsAtEnd = enabledIds.includes("aave")
     ? await readAaveAccountsAtEnd({ call, agents, blockNumber: toBlock })
+    : [];
+  // The LST vault and the CDP are the two venues an agent can hold a position in that no other
+  // artifact records per agent — the scorer values them but writes only the total (issue #38/#39).
+  const lstPositionsAtEnd = enabledIds.includes("lst")
+    ? await readLstPositionsAtEnd({ call, agents, blockNumber: toBlock })
+    : [];
+  const liquityPositionsAtEnd = enabledIds.includes("liquity")
+    ? await readLiquityPositionsAtEnd({
+        call,
+        agents,
+        blockNumber: toBlock,
+        fairWeth: series[series.length - 1]?.fair.WETH ?? 0,
+      })
     : [];
 
   // ---- per-tx notionals from receipts ----
@@ -729,6 +805,8 @@ export async function reconstructMarketSeries(opts: {
     series,
     gmxPositionsAtEnd,
     aaveAccountsAtEnd,
+    lstPositionsAtEnd,
+    liquityPositionsAtEnd,
     notionals,
     notionalsMeta,
   };
@@ -763,6 +841,7 @@ async function sampleBlock(opts: {
   ammMarkets: AmmMarketLayout[];
   gmxMarkets: GmxMarketLayout[];
   aaveReserves: AaveReserveLayout[];
+  stableMarkets: StableMarket[];
 }): Promise<MarketSeriesRow | undefined> {
   const { call, blockNumber, priceFeed, extraBases } = opts;
   const batch = new ReadBatch();
@@ -899,6 +978,13 @@ async function sampleBlock(opts: {
       functionName: "totalSupply",
     }),
   }));
+
+  // Market-priced stables: two fixed-notional probes per stable, in stableProbeReads' own order.
+  // Indices are kept per read rather than as an offset into the batch, so the decode cannot drift
+  // if anything is ever appended between here and it -- the same idiom the reads above use.
+  const stableIdx = stableProbeReads(opts.stableMarkets).map((read) =>
+    batch.push(read),
+  );
 
   const stage0 = await call(batch.contracts, BigInt(blockNumber));
 
@@ -1089,6 +1175,22 @@ async function sampleBlock(opts: {
     };
   }
 
+  const stables: NonNullable<MarketSeriesRow["stables"]> = {};
+  if (opts.stableMarkets.length > 0) {
+    const prices = decodeStableProbes(
+      opts.stableMarkets,
+      stableIdx.map((i) => stage0[i]),
+    );
+    for (const quote of prices.quotes) {
+      stables[quote.symbol] = {
+        priceUsdc: round6(quote.priceUsdc),
+        sellPriceUsdc: round6(quote.sellPriceUsdc),
+        buyPriceUsdc: round6(quote.buyPriceUsdc),
+        quoted: quote.quoted,
+      };
+    }
+  }
+
   return {
     block: blockNumber,
     fair: Object.fromEntries(
@@ -1097,6 +1199,7 @@ async function sampleBlock(opts: {
     ...(Object.keys(venues).length > 0 ? { venues } : {}),
     ...(Object.keys(gmx).length > 0 ? { gmx } : {}),
     ...(Object.keys(aave).length > 0 ? { aave } : {}),
+    ...(Object.keys(stables).length > 0 ? { stables } : {}),
   };
 }
 
@@ -1240,5 +1343,107 @@ async function readAaveAccountsAtEnd(opts: {
       healthFactor,
     });
   });
+  return out;
+}
+
+// An agent's LST holding at the run's end (issue #38). One accountSummary read per agent gives the
+// shares, their par value, and the withdrawal queue split into what has finalized and what has not —
+// the two halves that make the discount a decision rather than free money.
+async function readLstPositionsAtEnd(opts: {
+  call: (
+    contracts: MulticallContract[],
+    blockNumber: bigint,
+  ) => Promise<unknown[]>;
+  agents: ReconstructionAgent[];
+  blockNumber: number;
+}): Promise<LstPositionAtEnd[]> {
+  const vault = LST?.vault;
+  if (!vault) return [];
+  const reads = opts.agents.map((a) => ({
+    address: vault,
+    abi: lstVaultAbi,
+    functionName: "accountSummary",
+    args: [a.address],
+  }));
+  const results = await opts.call(reads as never, BigInt(opts.blockNumber));
+  const out: LstPositionAtEnd[] = [];
+  opts.agents.forEach((agent, i) => {
+    const r = results[i] as readonly bigint[] | undefined;
+    if (!r) return;
+    const [shares, shareAssets, pending, claimable, , openRequests] = r;
+    if (shares <= 0n && pending <= 0n && claimable <= 0n) return;
+    out.push({
+      agent: agent.id,
+      shares: round6(Number(shares) / 1e18),
+      shareAssetsWeth: round6(Number(shareAssets) / 1e18),
+      claimableWeth: round6(Number(claimable) / 1e18),
+      pendingWeth: round6(Number(pending) / 1e18),
+      openRequests: Number(openRequests),
+    });
+  });
+  return out;
+}
+
+// An agent's CDP position at the run's end (issue #39): the Trove it owes on, the Stability Pool
+// deposit that underwrites other people's liquidations, and the eUSD it is holding. The ICR needs
+// the oracle price the venue itself would use, so it is read in a second stage off the first.
+async function readLiquityPositionsAtEnd(opts: {
+  call: (
+    contracts: MulticallContract[],
+    blockNumber: bigint,
+  ) => Promise<unknown[]>;
+  agents: ReconstructionAgent[];
+  blockNumber: number;
+  /** WETH fair at the same block — the price the ICR is expressed against. */
+  fairWeth: number;
+}): Promise<LiquityPositionAtEnd[]> {
+  const liquity = LIQUITY;
+  if (!liquity) return [];
+  const batch = new ReadBatch();
+  const idx = opts.agents.map((a) => ({
+    agent: a,
+    trove: batch.push({
+      address: liquity.troveManager,
+      abi: troveManagerAbi,
+      functionName: "getEntireDebtAndColl",
+      args: [a.address],
+    }),
+    deposit: batch.push({
+      address: liquity.stabilityPool,
+      abi: stabilityPoolAbi,
+      functionName: "getCompoundedLUSDDeposit",
+      args: [a.address],
+    }),
+    balance: batch.push({
+      address: liquity.eusd,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [a.address],
+    }),
+  }));
+  const results = await opts.call(batch.contracts, BigInt(opts.blockNumber));
+
+  const out: LiquityPositionAtEnd[] = [];
+  for (const entry of idx) {
+    const trove = results[entry.trove] as readonly bigint[] | undefined;
+    const deposit = results[entry.deposit];
+    const balance = results[entry.balance];
+    const debt = trove ? Number(trove[0]) / 1e18 : 0;
+    const coll = trove ? Number(trove[1]) / 1e18 : 0;
+    const depositEusd =
+      typeof deposit === "bigint" ? Number(deposit) / 1e18 : 0;
+    const eusd = typeof balance === "bigint" ? Number(balance) / 1e18 : 0;
+    if (debt <= 0 && coll <= 0 && depositEusd <= 0 && eusd <= 0) continue;
+    out.push({
+      agent: entry.agent.id,
+      troveDebtEusd: round6(debt),
+      troveCollWeth: round6(coll),
+      // Derived rather than read: getCurrentICR wants the oracle price as an argument, and the fair
+      // this row already carries is the same number the environment writes to that oracle.
+      icr: debt > 0 ? round6((coll * opts.fairWeth) / debt) : null,
+      stabilityDepositEusd: round6(depositEusd),
+      eusdBalance: round6(eusd),
+    });
+  }
   return out;
 }

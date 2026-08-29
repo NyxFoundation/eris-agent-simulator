@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { isSeedProvider } from "@/data/provider";
 import { listRuns, type RunIndexEntry } from "@/data/runArtifacts";
+import { setSelectedRound } from "@/data/roundSelection";
 import { setSelectedRunId, useSelectedRunId } from "@/data/runSelection";
 import { Select } from "@/design-system/Select";
 import { navigate } from "@/navigation";
@@ -14,6 +15,14 @@ export type SidebarNavKey = "home" | "leaderboard" | "explorer" | "markets";
  * where there is nothing to pick.
  */
 const RUN_LIST_POLL_MS = 10_000;
+
+/** A run collected from a remote box has a nested id (`<collection>/runs/<id>`); show the run's own
+ * name with where it came from, rather than the raw path. */
+function runLabel(id: string): string {
+  const parts = id.split("/");
+  if (parts.length === 1) return id;
+  return `${parts[parts.length - 1]}  ← ${parts[0]}`;
+}
 
 function RunPicker() {
   const selected = useSelectedRunId();
@@ -65,10 +74,15 @@ function RunPicker() {
       <Select
         value={value}
         options={runs.map((r) => ({
-          label: r.live ? `● ${r.id} (live)` : r.id,
+          label: `${r.live ? "● " : ""}${runLabel(r.id)}${r.live ? " (live)" : ""}`,
           value: r.id,
         }))}
-        onChange={(e) => setSelectedRunId(e.target.value)}
+        onChange={(e) => {
+          // A round index only means something inside one run; carrying it across would scope the
+          // next run's explorer to a block window that belongs to nothing.
+          setSelectedRound(null);
+          setSelectedRunId(e.target.value);
+        }}
         style={{ width: "100%" }}
       />
     </div>
@@ -84,12 +98,12 @@ const SIDEBAR_NAV: { key: SidebarNavKey; label: string; path: string }[] = [
 
 export function Sidebar({
   activePage,
-  roundNumber,
-  roundStatus,
+  runNumber,
+  runStatus,
 }: {
   activePage?: SidebarNavKey;
-  roundNumber?: number;
-  roundStatus?: string;
+  runNumber?: number;
+  runStatus?: string;
 }) {
   return (
     <div
@@ -174,7 +188,7 @@ export function Sidebar({
         })}
       </div>
 
-      {roundNumber !== undefined && (
+      {runNumber !== undefined && (
         <div
           style={{
             padding: "var(--space-4)",
@@ -201,7 +215,7 @@ export function Sidebar({
               textTransform: "uppercase",
             }}
           >
-            Round {roundNumber} · {roundStatus}
+            Run {runNumber} · {runStatus}
           </span>
         </div>
       )}

@@ -1,11 +1,16 @@
 import { useState } from "react";
-import type { ChangeEventHandler, CSSProperties } from "react";
+import type {
+  ChangeEventHandler,
+  CSSProperties,
+  KeyboardEventHandler,
+} from "react";
 
 export function Input({
   label,
   placeholder,
   value,
   onChange,
+  onKeyDown,
   mono = false,
   suffix,
   error,
@@ -16,6 +21,7 @@ export function Input({
   placeholder?: string;
   value?: string;
   onChange?: ChangeEventHandler<HTMLInputElement>;
+  onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
   mono?: boolean;
   suffix?: string;
   error?: string;
@@ -25,8 +31,22 @@ export function Input({
   const [focus, setFocus] = useState(false);
 
   return (
-    <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontFamily: "var(--font-sans)", ...style }}>
-      {label && <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>{label}</span>}
+    <label
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px",
+        fontFamily: "var(--font-sans)",
+        ...style,
+      }}
+    >
+      {label && (
+        <span
+          style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}
+        >
+          {label}
+        </span>
+      )}
       <div
         style={{
           display: "flex",
@@ -46,6 +66,7 @@ export function Input({
           placeholder={placeholder}
           disabled={disabled}
           onChange={onChange}
+          onKeyDown={onKeyDown}
           onFocus={() => setFocus(true)}
           onBlur={() => setFocus(false)}
           style={{
@@ -60,12 +81,24 @@ export function Input({
           }}
         />
         {suffix && (
-          <span style={{ color: "var(--text-tertiary)", fontFamily: "var(--font-mono)", fontSize: "var(--text-sm)" }}>
+          <span
+            style={{
+              color: "var(--text-tertiary)",
+              fontFamily: "var(--font-mono)",
+              fontSize: "var(--text-sm)",
+            }}
+          >
             {suffix}
           </span>
         )}
       </div>
-      {error && <span style={{ fontSize: "var(--text-xs)", color: "var(--danger-text)" }}>{error}</span>}
+      {error && (
+        <span
+          style={{ fontSize: "var(--text-xs)", color: "var(--danger-text)" }}
+        >
+          {error}
+        </span>
+      )}
     </label>
   );
 }

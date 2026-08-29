@@ -4,7 +4,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { Badge } from "@/design-system/Badge";
 import { StatCard } from "@/design-system/StatCard";
 import { Tabs } from "@/design-system/Tabs";
-import { Sparkline } from "@/design-system/Sparkline";
+import { StateChart } from "@/components/StateChart";
 import { LogStream } from "@/design-system/LogStream";
 import {
   blockscoutAddressUrl,
@@ -13,8 +13,15 @@ import {
 } from "@/data/blockscout";
 import { useAgentDetailSnapshot } from "@/data/useAgentDetailSnapshot";
 import { navigate } from "@/navigation";
-import { formatPnlUsdc, formatScore } from "@/lib/format";
-import type { AgentPosition, AgentTrade } from "@/data/types";
+import {
+  formatBps,
+  formatMove,
+  formatPnlUsdc,
+  formatScore,
+  formatUsd,
+} from "@/lib/format";
+import { cssVar } from "@/lib/cssVar";
+import type { AgentPosition, AgentTrade, VenueChart } from "@/data/types";
 
 const SECTION_LABEL_STYLE = {
   font: "var(--weight-medium) 9px var(--font-mono)",
@@ -25,12 +32,15 @@ const SECTION_LABEL_STYLE = {
 
 const TABS = [
   { label: "Overview", value: "overview" },
+  { label: "Rounds", value: "rounds" },
   { label: "Positions", value: "positions" },
   { label: "Trade history", value: "trades" },
   { label: "Decision log", value: "log" },
 ];
 
-const POSITIONS_GRID = "1fr 60px 80px 90px 80px";
+const ROUNDS_GRID = "60px 150px 70px 110px 100px 90px";
+
+const POSITIONS_GRID = "150px 70px 120px 130px minmax(0,1fr)";
 const TRADES_GRID = "120px 90px 1fr 100px 90px";
 
 function positionAvatar(agentId: string): string {
@@ -49,10 +59,12 @@ function PositionRow({
   padding: string;
   borderSide?: "borderTop" | "borderBottom";
 }) {
-  const sideColor =
-    position.side === "long" ? "var(--success-text)" : "var(--danger-text)";
-  const pnlColor =
-    position.pnlPercent >= 0 ? "var(--success-text)" : "var(--danger-text)";
+  const kindColor =
+    position.tone === "up"
+      ? "var(--success-text)"
+      : position.tone === "down"
+        ? "var(--danger-text)"
+        : "var(--text-secondary)";
   return (
     <div
       style={{
@@ -62,18 +74,48 @@ function PositionRow({
         [borderSide]: "1px solid var(--border-subtle)",
         font: "var(--text-sm) var(--font-mono)",
         color: "var(--text-primary)",
+        alignItems: "baseline",
       }}
     >
       <span>{position.market}</span>
-      <span style={{ color: sideColor, textTransform: "uppercase" }}>
-        {position.side}
-      </span>
+      <span style={{ color: kindColor }}>{position.kind}</span>
       <span>{position.size}</span>
-      <span>{position.entry}</span>
-      <span style={{ textAlign: "right", color: pnlColor }}>
-        {position.pnlPercent >= 0 ? "+" : ""}
-        {position.pnlPercent.toFixed(1)}%
+      <span style={{ color: "var(--text-secondary)" }}>{position.mark}</span>
+      <span
+        title={position.note ?? ""}
+        style={{
+          color:
+            position.pnlPercent === undefined
+              ? "var(--text-tertiary)"
+              : position.pnlPercent >= 0
+                ? "var(--success-text)"
+                : "var(--danger-text)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {position.pnlPercent !== undefined
+          ? `${position.pnlPercent >= 0 ? "+" : ""}${position.pnlPercent.toFixed(1)}% · ${position.note ?? ""}`
+          : (position.note ?? "")}
       </span>
+    </div>
+  );
+}
+
+/** Positions only exist as an end-of-run reconstruction, and a run can legitimately end with none.
+ * Saying which is which is the whole point — a bare table reads as a broken view. */
+function PositionsEmpty({ padding }: { padding: string }) {
+  return (
+    <div
+      style={{
+        padding,
+        font: "var(--text-xs) var(--font-mono)",
+        color: "var(--text-tertiary)",
+      }}
+    >
+      no venue position open at the final block — this agent ended flat, or the
+      run predates the per-agent venue reads in market.json
     </div>
   );
 }
@@ -164,7 +206,32 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   }
 
   const { round, agent } = data;
-  const positionsGridWithHeader = "1fr 70px 90px 100px 90px";
+  const series = agent.portfolioSeries;
+  const portfolioUp =
+    series.length < 2 || series[series.length - 1].value >= series[0].value;
+  // Both axes are named rather than left to be inferred: y is the account value the score is
+  // computed from, x is chain height — not wall-clock time, and not a point index.
+  const portfolioChart: VenueChart = {
+    id: `portfolio-${agent.agent}`,
+    title:
+      series.length >= 2
+        ? `Portfolio value · ${formatUsd(series[0].value)} → ${formatUsd(series[series.length - 1].value)}`
+        : "Portfolio value",
+    unit: "usd",
+    showBlockAxis: true,
+    yLabel: "account value (USDC)",
+    xLabel: "block",
+    height: 180,
+    lines: [
+      {
+        id: "value",
+        label: "total account value",
+        color: portfolioUp ? cssVar("--success") : cssVar("--danger"),
+        points: series,
+      },
+    ],
+  };
+  const positionsGridWithHeader = "160px 80px 130px 140px minmax(0,1fr)";
 
   return (
     <div
@@ -208,7 +275,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               cursor: "pointer",
             }}
           >
-            ← Round {round.roundNumber} leaderboard
+            ← Run {round.runNumber} leaderboard
           </span>
 
           <div
@@ -322,13 +389,20 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                   padding: "20px 22px",
                 }}
               >
-                <span style={SECTION_LABEL_STYLE}>Portfolio value</span>
-                <Sparkline
-                  points={agent.portfolioPoints}
-                  tone="success"
-                  width={500}
-                  height={140}
-                />
+                {agent.portfolioSeries.length >= 2 ? (
+                  <StateChart chart={portfolioChart} />
+                ) : (
+                  <span
+                    style={{
+                      font: "var(--text-xs) var(--font-mono)",
+                      color: "var(--text-tertiary)",
+                    }}
+                  >
+                    no reconstructed value series for this agent — the curve is
+                    built from the scoring cross-sections, which land when the
+                    run completes
+                  </span>
+                )}
                 <span style={{ ...SECTION_LABEL_STYLE, marginTop: "6px" }}>
                   Open positions
                 </span>
@@ -349,12 +423,15 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                       padding: "0 2px 4px",
                     }}
                   >
-                    <span>Market</span>
-                    <span>Side</span>
+                    <span>Venue</span>
+                    <span>Kind</span>
                     <span>Size</span>
-                    <span>Entry</span>
-                    <span style={{ textAlign: "right" }}>PnL</span>
+                    <span>Mark</span>
+                    <span>Detail</span>
                   </div>
+                  {agent.positions.length === 0 && (
+                    <PositionsEmpty padding="7px 2px" />
+                  )}
                   {agent.positions.map((p, i) => (
                     <PositionRow
                       key={i}
@@ -387,6 +464,120 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
             </div>
           )}
 
+          {tab === "rounds" && (
+            <div
+              style={{
+                background: "var(--bg-surface-raised)",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-lg)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: ROUNDS_GRID,
+                  padding: "10px 16px",
+                  background: "var(--bg-surface)",
+                  font: "9px var(--font-mono)",
+                  color: "var(--text-tertiary)",
+                  textTransform: "uppercase",
+                  letterSpacing: "var(--tracking-wide)",
+                  borderBottom: "1px solid var(--border-subtle)",
+                }}
+              >
+                <span>Round</span>
+                <span>Blocks</span>
+                <span style={{ textAlign: "right" }}>Tx</span>
+                <span style={{ textAlign: "right" }}>Δ value</span>
+                <span style={{ textAlign: "right" }}>Log return</span>
+                <span style={{ textAlign: "right" }}>Rank</span>
+              </div>
+              {agent.rounds.length === 0 && (
+                <div
+                  style={{
+                    padding: "16px",
+                    font: "var(--text-sm) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                  }}
+                >
+                  this run has no scored rounds yet — the epoch series is
+                  reconstructed once the run completes (ADR 0006 §4)
+                </div>
+              )}
+              {agent.rounds.map((r) => {
+                const gainColor =
+                  r.deltaUsdc > 0
+                    ? "var(--success-text)"
+                    : r.deltaUsdc < 0
+                      ? "var(--danger-text)"
+                      : "var(--text-tertiary)";
+                const moveColor =
+                  r.move === 0
+                    ? "var(--text-disabled)"
+                    : r.move > 0
+                      ? "var(--success-text)"
+                      : "var(--danger-text)";
+                return (
+                  <div
+                    key={r.index}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: ROUNDS_GRID,
+                      padding: "10px 16px",
+                      borderBottom: "1px solid var(--border-subtle)",
+                      font: "var(--text-sm) var(--font-mono)",
+                    }}
+                  >
+                    <span style={{ color: "var(--text-primary)" }}>
+                      {String(r.index).padStart(2, "0")}
+                    </span>
+                    <span style={{ color: "var(--text-tertiary)" }}>
+                      {r.fromBlock.toLocaleString("en-US")}–
+                      {r.toBlock.toLocaleString("en-US")}
+                    </span>
+                    <span
+                      style={{
+                        textAlign: "right",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      {r.txCount}
+                    </span>
+                    <span style={{ textAlign: "right", color: gainColor }}>
+                      {formatPnlUsdc(r.deltaUsdc)}
+                    </span>
+                    <span style={{ textAlign: "right", color: gainColor }}>
+                      {formatBps(r.logReturnBps)}
+                    </span>
+                    <span
+                      style={{
+                        textAlign: "right",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      {r.cumulativeRank}{" "}
+                      <span style={{ color: moveColor }}>
+                        {formatMove(r.move)}
+                      </span>
+                    </span>
+                  </div>
+                );
+              })}
+              <div
+                style={{
+                  padding: "10px 16px",
+                  font: "10px var(--font-mono)",
+                  color: "var(--text-tertiary)",
+                }}
+              >
+                A round is a scoring epoch. Log return is this agent's excess
+                over the roster's do-nothing baseline for that epoch — the
+                series the score (mean − λ·std) is computed from.
+              </div>
+            </div>
+          )}
+
           {tab === "positions" && (
             <div
               style={{
@@ -409,12 +600,15 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                   borderBottom: "1px solid var(--border-subtle)",
                 }}
               >
-                <span>Market</span>
-                <span>Side</span>
+                <span>Venue</span>
+                <span>Kind</span>
                 <span>Size</span>
-                <span>Entry</span>
-                <span style={{ textAlign: "right" }}>PnL</span>
+                <span>Mark</span>
+                <span>Detail</span>
               </div>
+              {agent.positions.length === 0 && (
+                <PositionsEmpty padding="14px 16px" />
+              )}
               {agent.positions.map((p, i) => (
                 <PositionRow
                   key={i}

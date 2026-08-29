@@ -31,3 +31,26 @@ export function formatScore(value: number): string {
   if (abs >= 1) return value.toFixed(2);
   return value.toFixed(3);
 }
+
+/** A round's log return, in bps. Same rule as the score: never round a non-zero to zero. */
+export function formatBps(value: number): string {
+  const abs = Math.abs(value);
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  if (value !== 0 && abs < 0.0005) return value > 0 ? "<+0.001bp" : ">-0.001bp";
+  const digits = abs >= 10 ? 1 : abs >= 1 ? 2 : 3;
+  return `${sign}${abs.toFixed(digits)}bp`;
+}
+
+/** A rank move, as the leaderboard's arrow column reads it. */
+export function formatMove(move: number): string {
+  if (move === 0) return "—";
+  return move > 0 ? `▲${move}` : `▼${-move}`;
+}
+
+/** Compact USD for chart captions. Cents below $1,000, whole dollars above, millions abbreviated. */
+export function formatUsd(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000)
+    return `$${(value / 1_000_000).toLocaleString("en-US", { maximumFractionDigits: 2 })}M`;
+  return `$${value.toLocaleString("en-US", { maximumFractionDigits: abs >= 1000 ? 0 : 2 })}`;
+}

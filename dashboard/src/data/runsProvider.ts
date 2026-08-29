@@ -1,8 +1,18 @@
-// Run-artifact data provider (issue #63 Phase 1+2): builds every snapshot the UI
-// consumes from runs/<id>/ files only — summary.json, events.jsonl, blocks.csv,
-// agents/<id>.jsonl, and (when the run has one) the reconstructed market.json
-// with per-venue prices, venue state, and tx notionals. No sim reads at view
-// time; runs without market.json degrade to the Phase 1 rendering.
+// Run-artifact data provider (issue #63): builds every snapshot the UI consumes from runs/<id>/
+// files only — summary.json, events.jsonl, blocks.csv, agents/<id>.jsonl, and (when the run has
+// one) the reconstructed market.json with per-venue prices, venue state and tx notionals. No sim
+// reads at view time; runs without market.json degrade to the earlier rendering.
+//
+// Two things this file owns that are worth naming:
+//
+//   rounds       A round is a scoring epoch (ADR 0019), not a run. summary.json's
+//                valueSeries.epochSeries carries the boundaries and the per-agent value at each,
+//                and epochScores[agent].logReturns carries the excess return the score averages —
+//                so a per-round result is a read of the scoring artifact, not a re-derivation.
+//   venue panels What each deployed application is doing. The AMM quotes and depth, GMX open
+//                interest and funding, and the Aave reserve totals come from market.json; the LST
+//                vault and the Liquity system are emitted per block by the coordinator into
+//                events.jsonl (lst_block / liquity_block) and are read from there.
 
 import { liveAgentLog, loadLiveRun } from "./liveRun";
 import {
@@ -14,12 +24,30 @@ import {
   type MarketSeriesFile,
   type RunEvent,
 } from "./runArtifacts";
+import {
+  downsample,
+  enabledProtocols,
+  eventOfType,
+  formatUsd,
+  fromWei,
+  num,
+  shortAddress,
+  stableSymbols,
+  str,
+  VENUE_COLORS,
+  VENUE_LABELS,
+  type TxInfo,
+} from "./artifactHelpers";
+import { buildScenarioPanel, buildVenuePanels } from "./venuePanels";
+import { getReplay, replayHeadFor } from "./replay";
+import { getSelectedRound } from "./roundSelection";
 import { getSelectedRunId } from "./runSelection";
 import type {
   AgentDetail,
   AgentDetailSnapshot,
   AgentLogLine,
   AgentPosition,
+  AgentRoundResult,
   AgentStanding,
   AgentTrade,
   ArbitrageSnapshot,
@@ -31,10 +59,10 @@ import type {
   ExplorerSnapshot,
   ExplorerTransaction,
   MarketFeedItem,
-  MarketPosition,
   MarketSnapshot,
   MarketTicker,
-  MarketTrade,
+  RoundAgentResult,
+  RoundEpoch,
   RoundInfo,
   StrategyCategory,
   TapeEvent,
@@ -47,7 +75,7 @@ import type {
 
 interface ResolvedRun extends LoadedRun {
   /** 1-based position of this run in chronological order across runs/. */
-  roundNumber: number;
+  runNumber: number;
 }
 
 async function resolveRun(): Promise<ResolvedRun> {
@@ -69,7 +97,7 @@ async function resolveRun(): Promise<ResolvedRun> {
     ? await loadLiveRun(entry.id)
     : await loadRun(entry.id);
   // runs are sorted newest-first; number them oldest = 1 so newer runs count up
-  return { ...run, roundNumber: runs.length - runs.indexOf(entry) };
+  return { ...run, runNumber: runs.length - runs.indexOf(entry) };
 }
 
 // The tailed in-memory logs for a live run; the on-disk artifacts otherwise. The artifact loader
@@ -84,10 +112,6 @@ async function agentLogsFor(
 
 // ---------------------------------------------------------------------------
 // shared derivations
-
-function eventOfType(events: RunEvent[], type: string): RunEvent | undefined {
-  return events.find((e) => e.type === type);
-}
 
 interface RegisteredAgent {
   id: string;
@@ -169,7 +193,201 @@ function lastBlock(run: LoadedRun): number {
   );
 }
 
+// ---------------------------------------------------------------------------
+// rounds (= scoring epochs)
+
+/** Rank ids by a value, descending; ids without a value are left out. */
+function rankBy(
+  ids: string[],
+  valueOf: (id: string) => number | null,
+): Map<string, number> {
+  const scored = ids.flatMap((id) => {
+    const value = valueOf(id);
+    return value === null ? [] : [{ id, value }];
+  });
+  scored.sort((a, b) => b.value - a.value);
+  return new Map(scored.map((s, i) => [s.id, i + 1]));
+}
+
+/**
+ * The run's rounds. Archived runs read the scored epoch series; a live run only knows the epoch
+ * length (the coordinator now records it at run start), so its rounds carry block ranges and a
+ * progress status but no results — those are post-run artifacts by design (ADR 0006 §4).
+ */
+function buildEpochs(
+  run: LoadedRun,
+  chainHeight: number | null,
+  // Replay head. When set, a round that has not closed by this block is not "done" and carries no
+  // result: showing a scored round the replay has not reached yet would print the answer on every
+  // frame of the walk.
+  headBlock: number | null = null,
+): RoundEpoch[] {
+  const txPerBlock = new Map<number, number>();
+  for (const row of run.blockRows)
+    txPerBlock.set(row.blockNumber, (txPerBlock.get(row.blockNumber) ?? 0) + 1);
+  // A live run's blockRows are synthesized from a recent RPC window, not from blocks.csv, so they
+  // start partway into the run. A round older than that window has no count to report — reporting
+  // 0 would say "nothing happened here", which is a different claim from "this view cannot see it".
+  //
+  // Empty blockRows on a live run means the browser reached no chain at all (watching a run on
+  // another machine over synced files, say), so *no* round has a count — not that every round was
+  // quiet. Infinity puts every window before the held one.
+  const heldFrom = run.live
+    ? run.blockRows.length > 0
+      ? Math.min(...run.blockRows.map((r) => r.blockNumber))
+      : Number.POSITIVE_INFINITY
+    : null;
+  const txBetween = (
+    from: number,
+    to: number,
+    started: boolean,
+  ): number | null => {
+    if (!started) return 0; // a round that has not begun really has no transactions
+    if (heldFrom !== null && from < heldFrom - 1) return null;
+    let count = 0;
+    for (const [block, n] of txPerBlock)
+      if (block > from && block <= to) count += n;
+    return count;
+  };
+
+  const notable = notableEvents(run);
+  const eventsBetween = (from: number, to: number) =>
+    notable
+      .filter((e) => {
+        const block = Number(e.blockNumber);
+        return Number.isFinite(block) && block > from && block <= to;
+      })
+      .slice(0, 8)
+      .map((e) => {
+        const rule = TAPE_RULES[e.type];
+        const value = rule.value(e);
+        return {
+          time: `blk ${Number(e.blockNumber).toLocaleString("en-US")}`,
+          text: `${rule.body(e)}${value ? ` (${value})` : ""}`,
+        };
+      });
+
+  const epochSeries = run.summary.valueSeries?.epochSeries;
+  const boundaries = epochSeries?.boundaryBlocks ?? [];
+
+  if (boundaries.length >= 2) {
+    const valuesByAgent = epochSeries?.valuesByAgent ?? {};
+    const epochScores = run.summary.epochScores ?? {};
+    const ids = (run.summary.agents ?? []).map((a) => a.id);
+    const valueAt = (id: string, boundary: number): number | null =>
+      valuesByAgent[id]?.[boundary] ?? null;
+    const cumulativeRankAt = (boundary: number) =>
+      rankBy(ids, (id) => {
+        const start = valueAt(id, 0);
+        const now = valueAt(id, boundary);
+        return start === null || now === null ? null : now - start;
+      });
+
+    const cumulativeRanks = boundaries.map((_, i) => cumulativeRankAt(i));
+
+    return boundaries.slice(1).map((toBlock, i) => {
+      const fromBlock = boundaries[i];
+      const index = i + 1;
+      const roundRank = rankBy(
+        ids,
+        (id) => epochScores[id]?.logReturns?.[i] ?? null,
+      );
+      const results: RoundAgentResult[] = ids.map((id) => {
+        const before = valueAt(id, i);
+        const after = valueAt(id, index);
+        const bankruptAt = epochScores[id]?.bankruptAtEpoch ?? null;
+        const previousRank = cumulativeRanks[i].get(id);
+        const currentRank = cumulativeRanks[index].get(id);
+        return {
+          agent: id,
+          rank: roundRank.get(id) ?? ids.length,
+          deltaUsdc: before !== null && after !== null ? after - before : 0,
+          logReturnBps: (epochScores[id]?.logReturns?.[i] ?? 0) * 10_000,
+          cumulativeRank: currentRank ?? ids.length,
+          // The first round has no previous close to move against, and the boundary-0 ranking is
+          // an all-zero tie — reporting a move off it would be an artifact of the sort order.
+          move:
+            index > 1 && previousRank !== undefined && currentRank !== undefined
+              ? previousRank - currentRank
+              : 0,
+          bankrupt: bankruptAt !== null && bankruptAt <= index,
+        };
+      });
+      results.sort((a, b) => a.rank - b.rank);
+      const status =
+        headBlock === null || headBlock >= toBlock
+          ? ("done" as const)
+          : headBlock > fromBlock
+            ? ("live" as const)
+            : ("upcoming" as const);
+      return {
+        index,
+        fromBlock,
+        toBlock,
+        status,
+        results: status === "done" ? results : [],
+        events:
+          status === "upcoming"
+            ? []
+            : eventsBetween(fromBlock, Math.min(toBlock, headBlock ?? toBlock)),
+        txCount: txBetween(
+          fromBlock,
+          Math.min(toBlock, headBlock ?? toBlock),
+          status !== "upcoming",
+        ),
+      };
+    });
+  }
+
+  // Live (or an unscored run): lay the rounds out from the configured epoch length.
+  const started = eventOfType(run.events, "run_started_realtime");
+  const epochBlocks = Number(started?.epochBlocks ?? 0);
+  const runBlocks = Number(started?.runBlocks ?? 0);
+  const start = firstEventBlock(run);
+  if (!(epochBlocks >= 1) || !(runBlocks >= epochBlocks) || start === null)
+    return [];
+  const count = Math.floor(runBlocks / epochBlocks);
+  const height = chainHeight ?? lastBlock(run);
+  return Array.from({ length: count }, (_, i) => {
+    const fromBlock = start + i * epochBlocks;
+    const toBlock = fromBlock + epochBlocks;
+    const status =
+      height >= toBlock
+        ? ("done" as const)
+        : height > fromBlock
+          ? ("live" as const)
+          : ("upcoming" as const);
+    return {
+      index: i + 1,
+      fromBlock,
+      toBlock,
+      status,
+      results: [],
+      events: eventsBetween(fromBlock, toBlock),
+      txCount: txBetween(fromBlock, toBlock, status !== "upcoming"),
+    };
+  });
+}
+
+/** The first block the run's own event stream mentions — the live stand-in for valueSeries.fromBlock. */
+function firstEventBlock(run: LoadedRun): number | null {
+  for (const event of run.events) {
+    if (event.type !== "round_timing") continue;
+    const block = Number(event.blockNumber);
+    if (Number.isFinite(block)) return block;
+  }
+  const first = run.blockRows[0]?.blockNumber;
+  return first ?? null;
+}
+
 function buildRound(run: ResolvedRun): RoundInfo {
+  const chainHeight = run.live?.chainHeight ?? null;
+  const replay = replayHeadFor(run.id) === null ? null : getReplay();
+  const epochs = buildEpochs(run, chainHeight, replay ? replay.block : null);
+  const epochBlocks =
+    run.summary.valueSeries?.epochSeries?.epochBlocks ??
+    Number(eventOfType(run.events, "run_started_realtime")?.epochBlocks ?? 0);
+
   if (run.live) {
     const startsAt = run.live.startedAtMs ?? Date.now();
     // The run ends at whichever bound bites first: the block count or the wall-clock cap.
@@ -180,11 +398,14 @@ function buildRound(run: ResolvedRun): RoundInfo {
     ].filter((s): s is number => s !== null && s > 0);
     const durationSec = bounds.length > 0 ? Math.min(...bounds) : 0;
     return {
-      roundNumber: run.roundNumber,
+      runId: run.id,
+      runNumber: run.runNumber,
       status: "live",
       startsAt,
       endsAt: startsAt + durationSec * 1000,
-      blockNumber: run.live.chainHeight ?? lastBlock(run),
+      blockNumber: chainHeight ?? lastBlock(run),
+      epochs,
+      epochBlocks,
     };
   }
   const started =
@@ -195,18 +416,33 @@ function buildRound(run: ResolvedRun): RoundInfo {
   const startsAt = started ? Date.parse(started) : Date.now();
   const endsAt = completed ? Date.parse(completed) : startsAt;
   return {
-    roundNumber: run.roundNumber,
-    status: "archived",
+    runId: run.id,
+    runNumber: run.runNumber,
+    status: replay ? "replay" : "archived",
     startsAt,
     endsAt,
-    blockNumber: lastBlock(run),
+    blockNumber: replay ? replay.block : lastBlock(run),
+    epochs,
+    epochBlocks,
+    ...(replay
+      ? {
+          replay: {
+            block: replay.block,
+            fromBlock: replay.fromBlock,
+            toBlock: replay.toBlock,
+            playing: replay.playing,
+            speed: replay.speed,
+          },
+        }
+      : {}),
   };
 }
 
-function maxDrawdownPercent(values: number[]): number {
+function maxDrawdownPercent(values: Array<number | null>): number {
   let peak = -Infinity;
   let worst = 0;
   for (const value of values) {
+    if (value === null) continue;
     if (value > peak) peak = value;
     if (peak > 0) worst = Math.min(worst, ((value - peak) / peak) * 100);
   }
@@ -220,31 +456,82 @@ function categorize(id: string, description: string): StrategyCategory {
   return "dir";
 }
 
-function buildStandings(run: LoadedRun): AgentStanding[] {
+function mean(values: number[]): number {
+  return values.length === 0
+    ? 0
+    : values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+/** Population std, matching core/src/scoring/epochScore.ts. */
+function std(values: number[]): number {
+  if (values.length === 0) return 0;
+  const m = mean(values);
+  return Math.sqrt(mean(values.map((v) => (v - m) ** 2)));
+}
+
+function buildStandings(
+  run: LoadedRun,
+  epochs: RoundEpoch[],
+  // Replay: the standings are recomputed from the returns up to this many closed rounds. Reading
+  // the finished run's score instead would show the outcome before the walk reaches it.
+  replaying = false,
+): AgentStanding[] {
   const registered = registeredAgents(run);
   const epochScores = run.summary.epochScores ?? {};
   const valuesByAgent =
     run.summary.valueSeries?.epochSeries?.valuesByAgent ?? {};
   const agents = run.summary.agents ?? [];
 
-  const moves = epochMoves(valuesByAgent);
+  const closed = epochs.filter((e) => e.status === "done").length;
+
+  // The rank move over the last closed round — the same unit the score is computed over. There is
+  // no cross-run concept here: one run is one competition.
+  const lastClosed = epochs.filter((e) => e.status === "done").pop();
+  const moves = new Map(
+    (lastClosed?.results ?? []).map((r) => [r.agent, r.move]),
+  );
+
   const rows = agents.map((agent) => {
     const epochScore = epochScores[agent.id];
-    const stdLogReturn = epochScore?.stdLogReturn ?? 0;
     const description = registered.get(agent.id)?.description ?? agent.id;
+    const values = valuesByAgent[agent.id] ?? [];
+
+    // Whole run: read the scorer's own figures. Replay: recompute over the closed rounds only.
+    let score = (epochScore?.score ?? 0) * 10_000;
+    let sharpe =
+      (epochScore?.stdLogReturn ?? 0) > 0
+        ? (epochScore?.meanLogReturn ?? 0) / (epochScore?.stdLogReturn ?? 1)
+        : 0;
+    let netPnlUsdc = agent.netPnlUsdc;
+    let drawdownValues: Array<number | null> = values;
+
+    if (replaying) {
+      const returns = (epochScore?.logReturns ?? []).slice(0, closed);
+      const m = mean(returns);
+      const sd = std(returns);
+      // λ is recorded per agent by the scorer; 0.25 is ADR 0019's value for runs that predate it.
+      const lambda = epochScore?.lambda ?? 0.25;
+      score = returns.length > 0 ? (m - lambda * sd) * 10_000 : 0;
+      sharpe = sd > 0 ? m / sd : 0;
+      const start = values[0];
+      const now = values[closed];
+      netPnlUsdc =
+        start != null && now != null ? now - start : closed === 0 ? 0 : netPnlUsdc;
+      drawdownValues = values.slice(0, closed + 1);
+    }
+
     return {
       rank: 0,
       agent: agent.id,
       // the run's official metric (M9: mean − λ·std of epoch log returns), scaled
       // to bps of log growth per epoch. Formatted by formatScore, not toFixed(1):
       // a real score is often a few hundredths of a bp and rounds away at one decimal.
-      score: (epochScore?.score ?? 0) * 10_000,
-      netPnlUsdc: agent.netPnlUsdc,
-      sharpe:
-        stdLogReturn > 0 ? (epochScore?.meanLogReturn ?? 0) / stdLogReturn : 0,
+      score,
+      netPnlUsdc,
+      sharpe,
       strategy: description,
       strategyCategory: categorize(agent.id, description),
-      maxDrawdownPercent: maxDrawdownPercent(valuesByAgent[agent.id] ?? []),
+      maxDrawdownPercent: maxDrawdownPercent(drawdownValues),
       move: moves.get(agent.id) ?? 0,
     };
   });
@@ -253,46 +540,8 @@ function buildStandings(run: LoadedRun): AgentStanding[] {
   return rows.map((row, i) => ({ ...row, rank: i + 1 }));
 }
 
-// Rank change over the final epoch (issue #63 Phase 4): rank every agent by cumulative value gain
-// at the last two epoch boundaries and report the difference. A single run has no previous round,
-// but it does have epochs — the same unit the score is computed over.
-function epochMoves(
-  valuesByAgent: Record<string, Array<number | null>>,
-): Map<string, number> {
-  const ids = Object.keys(valuesByAgent);
-  const boundaries = valuesByAgent[ids[0]]?.length ?? 0;
-  if (ids.length === 0 || boundaries < 3) return new Map();
-
-  const rankAt = (boundary: number): Map<string, number> => {
-    const gains = ids.flatMap((id) => {
-      const series = valuesByAgent[id];
-      const start = series?.[0];
-      const value = series?.[boundary];
-      return start != null && value != null
-        ? [{ id, gain: value - start }]
-        : [];
-    });
-    gains.sort((a, b) => b.gain - a.gain);
-    return new Map(gains.map((g, i) => [g.id, i + 1]));
-  };
-
-  const previous = rankAt(boundaries - 2);
-  const current = rankAt(boundaries - 1);
-  const moves = new Map<string, number>();
-  for (const id of ids) {
-    const prev = previous.get(id);
-    const now = current.get(id);
-    if (prev !== undefined && now !== undefined) moves.set(id, prev - now);
-  }
-  return moves;
-}
-
 // ---------------------------------------------------------------------------
 // formatting helpers
-
-function formatUsd(value: number): string {
-  return `$${value.toLocaleString("en-US", { maximumFractionDigits: value >= 1000 ? 0 : 2 })}`;
-}
 
 function formatDeltaPercent(
   from: number,
@@ -313,21 +562,6 @@ function shortHash(hash: string): string {
   return hash.length > 14 ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : hash;
 }
 
-function shortAddress(address: string): string {
-  return address.length > 12
-    ? `${address.slice(0, 6)}…${address.slice(-4)}`
-    : address;
-}
-
-function downsample<T>(points: T[], max: number): T[] {
-  if (points.length <= max) return points;
-  const stride = Math.ceil(points.length / max);
-  const out = points.filter((_, i) => i % stride === 0);
-  if (out[out.length - 1] !== points[points.length - 1])
-    out.push(points[points.length - 1]);
-  return out;
-}
-
 /** "t+42s" — block offset from the run's first block, in chain time. */
 function blockClock(run: LoadedRun, blockNumber: number): string {
   const blockTimeSec = run.summary.blockTimeSec ?? 1;
@@ -343,11 +577,6 @@ interface TapeRule {
   body: (e: RunEvent) => string;
   value: (e: RunEvent) => string;
 }
-
-const num = (v: unknown): number =>
-  typeof v === "number" ? v : Number(v ?? 0);
-const str = (v: unknown): string =>
-  typeof v === "string" ? v : String(v ?? "");
 
 const TAPE_RULES: Record<string, TapeRule> = {
   run_started_realtime: {
@@ -412,6 +641,26 @@ const TAPE_RULES: Record<string, TapeRule> = {
     body: (e) =>
       `${str(e.stable)} pool sell-off (blk ${num(e.blockNumber).toLocaleString("en-US")})`,
     value: () => "",
+  },
+  lst_slash: {
+    kind: "LST SLASH",
+    tone: "down",
+    body: (e) =>
+      `LST redemption rate cut ${num(e.redemptionRateBefore).toFixed(4)} → ${num(e.redemptionRateAfter).toFixed(4)}`,
+    value: (e) => `${num(e.bps).toFixed(0)}bps`,
+  },
+  liquity_liquidation: {
+    kind: "TROVE",
+    tone: "down",
+    body: (e) => `trove liquidated (${shortAddress(str(e.borrower))})`,
+    value: (e) => `${(fromWei(e.debtEusdWei) ?? 0).toFixed(0)} eUSD`,
+  },
+  liquity_redemption: {
+    kind: "REDEMPTION",
+    tone: "purple",
+    body: (e) =>
+      `eUSD redeemed for ETH (blk ${num(e.blockNumber).toLocaleString("en-US")})`,
+    value: (e) => `${(fromWei(e.actualEusdWei) ?? 0).toFixed(0)} eUSD`,
   },
   no_arb_persistent_warning: {
     kind: "ARB WINDOW",
@@ -482,10 +731,10 @@ function buildArchiveEvents(run: LoadedRun): ArchiveEvent[] {
 // blocks / transactions
 
 function groupBlocks(
-  run: LoadedRun,
+  rows: LoadedRun["blockRows"],
 ): { blockNumber: number; txCount: number }[] {
   const counts = new Map<number, number>();
-  for (const row of run.blockRows) {
+  for (const row of rows) {
     counts.set(row.blockNumber, (counts.get(row.blockNumber) ?? 0) + 1);
   }
   return [...counts.entries()]
@@ -504,8 +753,6 @@ function toExplorerBlock(
     blockNumber: block.blockNumber,
   };
 }
-
-type TxInfo = { method: string; protocol?: string };
 
 /** hash → agent-submitted method + venue; blocks.csv only knows agents sent "direct" txs. */
 async function txInfoByHash(run: LoadedRun): Promise<Map<string, TxInfo>> {
@@ -544,27 +791,32 @@ function notionalAmount(run: LoadedRun, hash: string): string {
 
 function buildTransactions(
   run: LoadedRun,
+  rows: LoadedRun["blockRows"],
   infoByHash: Map<string, TxInfo>,
   limit: number,
 ): ExplorerTransaction[] {
-  const rows = run.blockRows.slice(-limit).reverse();
-  return rows.map((row, i) => {
-    const method = methodOf(row, infoByHash);
-    const failed = row.status !== "success";
-    return {
-      seq: i,
-      hash: shortHash(row.hash),
-      fullHash: row.hash,
-      agent: row.ownerId,
-      method,
-      amount: notionalAmount(run, row.hash),
-      time: `blk ${row.blockNumber.toLocaleString("en-US")}`,
-      methodTone:
-        failed || method === "liquidationCall"
-          ? ("danger" as const)
-          : ("default" as const),
-    };
-  });
+  return rows
+    .slice(-limit)
+    .reverse()
+    .map((row, i) => {
+      const method = methodOf(row, infoByHash);
+      const failed = row.status !== "success";
+      return {
+        seq: i,
+        hash: shortHash(row.hash),
+        fullHash: row.hash,
+        fullAddress: row.from,
+        blockNumber: row.blockNumber,
+        agent: row.ownerId,
+        method,
+        amount: notionalAmount(run, row.hash),
+        time: `blk ${row.blockNumber.toLocaleString("en-US")}`,
+        methodTone:
+          failed || method === "liquidationCall"
+            ? ("danger" as const)
+            : ("default" as const),
+      };
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -580,18 +832,6 @@ function fairSeries(run: LoadedRun): { block: number; fair: number }[] {
 
 // matches venue-arb's ROUND_TRIP_COST: one venue fee in, one out, plus slippage
 const ARB_THRESHOLD_BPS = 80;
-
-const VENUE_COLORS: Record<string, string> = {
-  uniswap: "#7c9eff",
-  balancer: "#f5a623",
-  curve: "#4fd1a5",
-};
-
-const VENUE_LABELS: Record<string, string> = {
-  uniswap: "Uniswap v3",
-  balancer: "Balancer",
-  curve: "Curve",
-};
 
 // Cross-venue view from market.json (issue #63 Phase 2): per-venue executable mids, spread as the
 // widest venue-to-venue gap, and trade markers from the agents' actual swap txs.
@@ -720,7 +960,13 @@ function buildArbitrage(
   };
 }
 
-function buildTickers(run: LoadedRun): MarketTicker[] {
+function buildTickers(
+  run: LoadedRun,
+  // Replay: how many rounds have closed. The agent-value totals below come straight off
+  // summary.json, which scoping does not touch — without this the one ticker built from the scored
+  // series would show the finished run's growth on the first frame of the walk.
+  closedRounds?: number,
+): MarketTicker[] {
   const { prices } = observationSeries(run);
   const tickers: MarketTicker[] = [];
 
@@ -770,11 +1016,27 @@ function buildTickers(run: LoadedRun): MarketTicker[] {
         points: downsample(rows, 40).map((r) => r.fair[base]),
       });
     }
+    // Market-priced stables (issue #27): a stable's price is a measurement here, not a $1 axiom.
+    for (const symbol of stableSymbols(run.market)) {
+      const rows = run.market.series.flatMap((r) => {
+        const sample = r.stables?.[symbol];
+        return sample ? [{ block: r.block, price: sample.priceUsdc }] : [];
+      });
+      if (rows.length < 2) continue;
+      tickers.push({
+        symbol: `${symbol}/USDC`,
+        price: rows[rows.length - 1].price.toFixed(4),
+        ...formatDeltaPercent(rows[0].price, rows[rows.length - 1].price),
+        points: downsample(rows, 40).map((r) => r.price),
+      });
+    }
   }
 
   const boundaryValues =
     run.summary.valueSeries?.epochSeries?.valuesByAgent ?? {};
-  const agentSeries = Object.values(boundaryValues);
+  const agentSeries = Object.values(boundaryValues).map((series) =>
+    closedRounds === undefined ? series : series.slice(0, closedRounds + 1),
+  );
   if (agentSeries.length > 0 && agentSeries[0].length >= 2) {
     const totals = agentSeries[0].map((_, i) =>
       agentSeries.reduce((sum, s) => sum + (s[i] ?? 0), 0),
@@ -787,7 +1049,7 @@ function buildTickers(run: LoadedRun): MarketTicker[] {
     });
   }
 
-  const blocks = groupBlocks(run);
+  const blocks = groupBlocks(run.blockRows);
   if (blocks.length >= 2) {
     const perBlock = [...blocks].reverse().map((b) => b.txCount);
     const avg = perBlock.reduce((a, b) => a + b, 0) / perBlock.length;
@@ -803,10 +1065,29 @@ function buildTickers(run: LoadedRun): MarketTicker[] {
   return tickers;
 }
 
-function buildFeed(logs: Map<string, AgentLogEntry[]>): MarketFeedItem[] {
+function buildFeed(
+  logs: Map<string, AgentLogEntry[]>,
+  // The agent logs are not part of the scoped run (they are files, not events), so the round window
+  // is applied here — otherwise the feed would be the only panel still showing the whole run.
+  epoch?: RoundEpoch,
+  // Replay head: the same reason, for the same reason.
+  headBlock?: number,
+): MarketFeedItem[] {
   const submitted: { ts: string; text: string }[] = [];
   for (const [agentId, entries] of logs) {
     for (const entry of entries) {
+      if (
+        epoch &&
+        (typeof entry.blockSeen !== "number" ||
+          entry.blockSeen <= epoch.fromBlock ||
+          entry.blockSeen > epoch.toBlock)
+      )
+        continue;
+      if (
+        headBlock !== undefined &&
+        (typeof entry.blockSeen !== "number" || entry.blockSeen > headBlock)
+      )
+        continue;
       if (
         entry.kind === "mempool" &&
         entry.event === "submitted" &&
@@ -827,184 +1108,6 @@ function buildFeed(logs: Map<string, AgentLogEntry[]>): MarketFeedItem[] {
   return submitted
     .slice(0, 24)
     .map((item, i) => ({ id: i + 1, text: item.text }));
-}
-
-// ---------------------------------------------------------------------------
-// snapshots
-
-export async function fetchTopPageSnapshot(): Promise<TopPageSnapshot> {
-  const run = await resolveRun();
-  return {
-    round: buildRound(run),
-    leaderboard: buildStandings(run),
-    marketTickers: buildTickers(run),
-    blocks: groupBlocks(run)
-      .slice(0, 7)
-      .map((b) => toExplorerBlock(run, b)),
-    tape: buildTape(run),
-  };
-}
-
-export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
-  const run = await resolveRun();
-  const infoByHash = await txInfoByHash(run);
-  // Live: blockRows only cover the recent chain window, so the round's tx count comes from the
-  // coordinator's tx_submitted stream instead; the indexer height rides along so its lag is visible.
-  const txCountThisRound = run.live
-    ? run.events.filter((e) => e.type === "tx_submitted").length
-    : run.blockRows.length;
-  return {
-    round: buildRound(run),
-    stats: {
-      latestBlockNumber: (
-        run.live?.chainHeight ?? lastBlock(run)
-      ).toLocaleString("en-US"),
-      txCountThisRound,
-      activeAgents: (run.summary.agents ?? []).length,
-      avgBlockTimeSeconds: run.summary.blockTimeSec ?? 0,
-      ...(run.live?.indexerHeight != null
-        ? { indexerBlockNumber: run.live.indexerHeight.toLocaleString("en-US") }
-        : {}),
-    },
-    blocks: groupBlocks(run)
-      .slice(0, 30)
-      .map((b) => toExplorerBlock(run, b)),
-    transactions: buildTransactions(run, infoByHash, 60),
-  };
-}
-
-// MarketStats venue-state fields from market.json's series (issue #63 Phase 2). Runs without the
-// artifact keep the honest "n/a".
-function buildMarketStats(
-  run: LoadedRun,
-  base: string,
-): Pick<
-  MarketSnapshot["stats"],
-  | "volume24h"
-  | "openInterest"
-  | "openInterestLongPercent"
-  | "openInterestShortPercent"
-  | "availableLiquidity"
-  | "totalLiquidity"
-  | "fundingRate1h"
-> {
-  const market = run.market;
-  const firstRow = market?.series[0];
-  const lastRow = market?.series[market.series.length - 1];
-  if (!market || !firstRow || !lastRow) {
-    return {
-      volume24h: "n/a",
-      openInterest: "n/a",
-      openInterestLongPercent: 0,
-      openInterestShortPercent: 0,
-      availableLiquidity: "n/a",
-      totalLiquidity: "n/a",
-      fundingRate1h: "n/a",
-    };
-  }
-
-  // Decoded swap flow in the base over the whole run. priceUsd is the discriminator: it exists
-  // only when both legs moved, so one-sided transfers (Aave supplies, GMX collateral) — which
-  // still carry base/side — stay out of the traded volume.
-  let volume = 0;
-  for (const notional of Object.values(market.notionals)) {
-    if (notional.base === base && notional.priceUsd !== undefined)
-      volume += notional.usd;
-  }
-
-  const gmx = lastRow.gmx?.[base];
-  const longOi = gmx?.longOiUsd ?? 0;
-  const shortOi = gmx?.shortOiUsd ?? 0;
-  const totalOi = longOi + shortOi;
-
-  const depthAt = (row: typeof lastRow): number =>
-    market.venues.reduce(
-      (sum, v) => sum + (row.venues?.[v]?.[base]?.depthUsd ?? 0),
-      0,
-    );
-  const depthNow = depthAt(lastRow);
-  const depthStart = depthAt(firstRow);
-
-  return {
-    volume24h: volume > 0 ? formatUsd(volume) : "n/a",
-    openInterest: gmx ? formatUsd(totalOi) : "n/a",
-    openInterestLongPercent:
-      totalOi > 0 ? Math.round((longOi / totalOi) * 100) : 0,
-    openInterestShortPercent:
-      totalOi > 0 ? Math.round((shortOi / totalOi) * 100) : 0,
-    availableLiquidity: depthNow > 0 ? formatUsd(depthNow) : "n/a",
-    totalLiquidity: depthStart > 0 ? formatUsd(depthStart) : "n/a",
-    // absent = the funding read failed for that sample; "n/a" is honest, 0.00bps is not
-    fundingRate1h:
-      gmx?.fundingPerHourBps !== undefined
-        ? `${gmx.fundingPerHourBps.toFixed(2)}bps`
-        : "n/a",
-  };
-}
-
-// GMX positions still open at the run's end, as the market page's positions table.
-function buildGmxPositions(
-  run: LoadedRun,
-  base: string,
-  lastFair: number,
-): MarketPosition[] {
-  return (run.market?.gmxPositionsAtEnd ?? [])
-    .filter((p) => p.base === base)
-    .map((p) => {
-      const pnlPercent =
-        p.entryPriceUsd && p.entryPriceUsd > 0 && lastFair > 0
-          ? (lastFair / p.entryPriceUsd - 1) * 100 * (p.isLong ? 1 : -1)
-          : 0;
-      return {
-        agent: p.agent,
-        side: p.isLong ? ("long" as const) : ("short" as const),
-        size: formatUsd(p.sizeUsd),
-        entry: p.entryPriceUsd
-          ? p.entryPriceUsd.toLocaleString("en-US", {
-              maximumFractionDigits: 1,
-            })
-          : "—",
-        pnlPercent: Math.round(pnlPercent * 10) / 10,
-      };
-    });
-}
-
-// The agents' decoded swaps in the base, newest first — the "Trades" tab. Only txs with a real
-// counter leg (priceUsd) qualify; size is the base quantity and price the per-unit price paid or
-// received, matching what the columns claim.
-function buildMarketTrades(run: LoadedRun, base: string): MarketTrade[] {
-  const market = run.market;
-  if (!market) return [];
-  const trades: MarketTrade[] = [];
-  for (const row of [...run.blockRows].reverse()) {
-    if (row.role !== "agent") continue;
-    const notional = market.notionals[row.hash.toLowerCase()];
-    if (
-      !notional ||
-      notional.base !== base ||
-      !notional.side ||
-      notional.priceUsd === undefined ||
-      notional.baseUnits === undefined
-    )
-      continue;
-    trades.push({
-      agent: row.ownerId,
-      side: notional.side === "buy" ? "long" : "short",
-      size: `${formatBaseUnits(notional.baseUnits)} ${base}`,
-      price: notional.priceUsd.toLocaleString("en-US", {
-        maximumFractionDigits: 1,
-      }),
-    });
-    if (trades.length >= 24) break;
-  }
-  return trades;
-}
-
-function formatBaseUnits(units: number): string {
-  if (units >= 1000)
-    return units.toLocaleString("en-US", { maximumFractionDigits: 0 });
-  if (units >= 1) return units.toFixed(2);
-  return units.toPrecision(3);
 }
 
 // AMM depth per venue for the base — the order book replacement (issue #63 Phase 4): every venue
@@ -1074,10 +1177,311 @@ function candlesFor(prices: { block: number; fair: number }[]): Candle[] {
   return candles;
 }
 
+// ---------------------------------------------------------------------------
+// per-agent positions
+
+/** Every venue position market.json recorded for one agent at the run's final block. */
+function buildAgentPositions(
+  run: LoadedRun,
+  agentId: string,
+  lastFairByBase: Record<string, number>,
+): AgentPosition[] {
+  const market = run.market;
+  if (!market) return [];
+  const out: AgentPosition[] = [];
+
+  // GMX perps: marked against their own base's final fair — a WBTC perp priced off the WETH fair
+  // would be off by an order of magnitude.
+  for (const p of market.gmxPositionsAtEnd) {
+    if (p.agent !== agentId) continue;
+    const lastFair = lastFairByBase[p.base] ?? 0;
+    const pnlPercent =
+      p.entryPriceUsd && p.entryPriceUsd > 0 && lastFair > 0
+        ? Math.round(
+            (lastFair / p.entryPriceUsd - 1) * 100 * (p.isLong ? 1 : -1) * 10,
+          ) / 10
+        : 0;
+    out.push({
+      market: `GMX ${p.base}/USDC`,
+      kind: p.isLong ? "LONG" : "SHORT",
+      tone: p.isLong ? "up" : "down",
+      size: formatUsd(p.sizeUsd),
+      mark: p.entryPriceUsd
+        ? `entry ${p.entryPriceUsd.toLocaleString("en-US", { maximumFractionDigits: 1 })}`
+        : "entry —",
+      note: `collateral ${formatUsd(p.collateralUsd)}`,
+      pnlPercent,
+    });
+  }
+
+  // The LST vault: the shares' par and the withdrawal queue behind it. The queue is the position's
+  // real constraint — par you cannot reach yet is not the same asset as par you can.
+  for (const p of market.lstPositionsAtEnd ?? []) {
+    if (p.agent !== agentId) continue;
+    const queued = p.claimableWeth + p.pendingWeth;
+    out.push({
+      market: "LST vault",
+      kind: "STAKE",
+      tone: "neutral",
+      size: `${p.shares.toFixed(4)} LST`,
+      mark: `par ${p.shareAssetsWeth.toFixed(4)} WETH`,
+      note:
+        queued > 0
+          ? `queue: ${p.claimableWeth.toFixed(4)} claimable, ${p.pendingWeth.toFixed(4)} pending (${p.openRequests} request${p.openRequests === 1 ? "" : "s"})`
+          : "nothing queued for withdrawal",
+    });
+  }
+
+  // The CDP: a Trove is a debt against collateral with a liquidation line; the Stability Pool
+  // deposit and a spot eUSD balance are separate claims on the same venue.
+  for (const p of market.liquityPositionsAtEnd ?? []) {
+    if (p.agent !== agentId) continue;
+    if (p.troveDebtEusd > 0 || p.troveCollWeth > 0) {
+      out.push({
+        market: "Liquity Trove",
+        kind: "DEBT",
+        tone: p.icr !== null && p.icr < 1.1 ? "down" : "neutral",
+        size: `${p.troveDebtEusd.toLocaleString("en-US", { maximumFractionDigits: 0 })} eUSD`,
+        mark: p.icr !== null ? `ICR ${p.icr.toFixed(3)}` : "ICR —",
+        note: `${p.troveCollWeth.toFixed(3)} WETH collateral · MCR 1.100`,
+      });
+    }
+    if (p.stabilityDepositEusd > 0) {
+      out.push({
+        market: "Liquity Stability Pool",
+        kind: "DEPOSIT",
+        tone: "neutral",
+        size: `${p.stabilityDepositEusd.toLocaleString("en-US", { maximumFractionDigits: 0 })} eUSD`,
+        mark: "absorbs liquidated debt",
+        note: "paid in discounted collateral when a Trove is liquidated",
+      });
+    }
+    if (p.eusdBalance > 0) {
+      out.push({
+        market: "eUSD (spot)",
+        kind: "HOLD",
+        tone: "neutral",
+        size: `${p.eusdBalance.toLocaleString("en-US", { maximumFractionDigits: 2 })} eUSD`,
+        mark: `${(lastRowStable(run, "EUSD") ?? 1).toFixed(4)} USDC`,
+        note: "redeemable against the riskiest Trove at par",
+      });
+    }
+  }
+
+  // Aave: the account totals the pool itself reports, health factor included.
+  for (const a of market.aaveAccountsAtEnd) {
+    if (a.agent !== agentId) continue;
+    out.push({
+      market: "Aave account",
+      kind: a.debtUsd > 0 ? "BORROW" : "SUPPLY",
+      tone: a.healthFactor !== null && a.healthFactor < 1.1 ? "down" : "neutral",
+      size: formatUsd(a.collateralUsd),
+      mark:
+        a.healthFactor === null ? "HF ∞" : `HF ${a.healthFactor.toFixed(3)}`,
+      note: a.debtUsd > 0 ? `debt ${formatUsd(a.debtUsd)}` : "no debt drawn",
+    });
+  }
+
+  return out;
+}
+
+/** The final market-priced quote for a stable, when the run recorded one. */
+function lastRowStable(run: LoadedRun, symbol: string): number | undefined {
+  const rows = run.market?.series ?? [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const sample = rows[i].stables?.[symbol];
+    if (sample?.quoted) return sample.priceUsdc;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// round scoping
+//
+// A round is the unit a result is earned in, so "what did the venues do in round 4" has to be
+// answerable — the whole-run series answers a different question. Scoping is done by narrowing the
+// run itself rather than by threading a block range through every builder: the builders already
+// derive everything from run.events / run.blockRows / run.market.series, so a narrowed run gives
+// them a narrowed window with no second code path to keep honest.
+
+/** Where a run event's block number lives. Observations carry theirs inside the observation. */
+function eventBlockOf(event: RunEvent): number | null {
+  if (typeof event.blockNumber === "number") return event.blockNumber;
+  const obs = event.observation as { blockNumber?: number | string } | undefined;
+  const block = Number(obs?.blockNumber);
+  return Number.isFinite(block) ? block : null;
+}
+
+/**
+ * The same run, seen through one round's block window. Events without a block (run start, venue
+ * setup) are kept: they describe the run, not a moment in it, and the panels need them to say what
+ * the vault's APY or the withdrawal delay was.
+ */
+function scopeRunToBlocks(
+  run: ResolvedRun,
+  fromBlock: number,
+  toBlock: number,
+): ResolvedRun {
+  const inRange = (b: number) => b > fromBlock && b <= toBlock;
+
+  const blockRows = run.blockRows.filter((r) => inRange(r.blockNumber));
+  const events = run.events.filter((e) => {
+    const block = eventBlockOf(e);
+    return block === null || inRange(block);
+  });
+
+  let market = run.market;
+  if (market) {
+    const series = market.series.filter((r) => inRange(r.block));
+    // Notionals are keyed by hash with no block of their own, so they are narrowed through the
+    // scoped rows — otherwise a round's "swap volume" would quietly be the whole run's.
+    const hashes = new Set(blockRows.map((r) => r.hash.toLowerCase()));
+    const notionals = Object.fromEntries(
+      Object.entries(market.notionals).filter(([hash]) => hashes.has(hash)),
+    );
+    market = {
+      ...market,
+      fromBlock: series[0]?.block ?? fromBlock,
+      toBlock: series[series.length - 1]?.block ?? toBlock,
+      series,
+      notionals,
+    };
+  }
+
+  return { ...run, events, blockRows, market };
+}
+
+/**
+ * The run as it stood at the replay head, or unchanged when this run is not being replayed.
+ *
+ * The end-of-run position cross-sections are dropped while the head is short of the end: they are a
+ * single read taken when the run finished and are not knowable at an earlier block, so carrying them
+ * through would put the run's closing positions on every frame of the walk.
+ */
+function clampToReplay(run: ResolvedRun): ResolvedRun {
+  const head = replayHeadFor(run.id);
+  if (head === null) return run;
+  const clamped = scopeRunToBlocks(run, firstBlock(run) - 1, head);
+  if (head >= lastBlock(run) || !clamped.market) return clamped;
+  return {
+    ...clamped,
+    market: {
+      ...clamped.market,
+      gmxPositionsAtEnd: [],
+      aaveAccountsAtEnd: [],
+      lstPositionsAtEnd: [],
+      liquityPositionsAtEnd: [],
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// snapshots
+
+export async function fetchTopPageSnapshot(): Promise<TopPageSnapshot> {
+  const full = await resolveRun();
+  const round = buildRound(full);
+  const run = clampToReplay(full);
+  return {
+    round,
+    leaderboard: buildStandings(full, round.epochs, round.status === "replay"),
+    marketTickers: buildTickers(
+      run,
+      round.status === "replay"
+        ? round.epochs.filter((e) => e.status === "done").length
+        : undefined,
+    ),
+    blocks: groupBlocks(run.blockRows)
+      .slice(0, 7)
+      .map((b) => toExplorerBlock(run, b)),
+    tape: buildTape(run),
+  };
+}
+
+export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
+  const full = await resolveRun();
+  const round = buildRound(full);
+  const run = clampToReplay(full);
+  const infoByHash = await txInfoByHash(run);
+
+  // The page is the *round* explorer: when a round is selected, everything it shows is that round's
+  // block window. Selecting a round that this run does not have falls back to the whole run rather
+  // than showing an empty explorer.
+  const selected = getSelectedRound();
+  const epoch = round.epochs.find((e) => e.index === selected);
+  const from = epoch ? epoch.fromBlock : firstBlock(run);
+  const to = epoch ? epoch.toBlock : lastBlock(run);
+  const rows = epoch
+    ? run.blockRows.filter(
+        (r) =>
+          r.blockNumber > epoch.fromBlock && r.blockNumber <= epoch.toBlock,
+      )
+    : run.blockRows;
+
+  // Live: blockRows only cover the recent chain window, so the round's tx count comes from the
+  // coordinator's tx_submitted stream instead; the indexer height rides along so its lag is visible.
+  // Live: blockRows are synthesized from a recent RPC window. Without a round selected the count
+  // comes from the coordinator's own tx_submitted stream (which the tail holds in full); with one
+  // selected, a round that starts before the held window has no count to report — 0 would read as
+  // "this round was quiet".
+  const heldFrom = run.live
+    ? run.blockRows.length > 0
+      ? Math.min(...run.blockRows.map((r) => r.blockNumber))
+      : Number.POSITIVE_INFINITY
+    : null;
+  const txCountThisRound = !epoch
+    ? run.live
+      ? run.events.filter((e) => e.type === "tx_submitted").length
+      : rows.length
+    : heldFrom !== null && epoch.fromBlock < heldFrom - 1
+      ? null
+      : rows.length;
+
+  return {
+    round,
+    scope: {
+      roundIndex: epoch ? epoch.index : null,
+      fromBlock: from,
+      toBlock: to,
+    },
+    stats: {
+      latestBlockNumber: (
+        run.live?.chainHeight ?? lastBlock(run)
+      ).toLocaleString("en-US"),
+      txCountThisRound,
+      activeAgents: (run.summary.agents ?? []).length,
+      avgBlockTimeSeconds: run.summary.blockTimeSec ?? 0,
+      ...(run.live?.indexerHeight != null
+        ? { indexerBlockNumber: run.live.indexerHeight.toLocaleString("en-US") }
+        : {}),
+    },
+    blocks: groupBlocks(rows)
+      .slice(0, 30)
+      .map((b) => toExplorerBlock(run, b)),
+    transactions: buildTransactions(run, rows, infoByHash, 60),
+    agents: (run.summary.agents ?? []).map((a) => ({
+      id: a.id,
+      ...(a.address ? { address: a.address } : {}),
+    })),
+  };
+}
+
 export async function fetchMarketSnapshot(
   base = "WETH",
 ): Promise<MarketSnapshot> {
-  const run = await resolveRun();
+  const full = await resolveRun();
+  const round = buildRound(full);
+  // Replay wins over the round selection: the head is a prefix of the run and a round is a window
+  // inside it, and showing a later round while the head is behind it would show the future.
+  const replaying = round.status === "replay";
+  const epoch = replaying
+    ? undefined
+    : round.epochs.find((e) => e.index === getSelectedRound());
+  const run = replaying
+    ? clampToReplay(full)
+    : epoch
+      ? scopeRunToBlocks(full, epoch.fromBlock, epoch.toBlock)
+      : full;
   const prices = fairSeriesForBase(run, base);
   const first = prices[0];
   const last = prices[prices.length - 1];
@@ -1086,31 +1490,48 @@ export async function fetchMarketSnapshot(
     (base === "WETH" ? (run.summary.finalFairPriceUsdcPerWeth ?? 0) : 0);
   const logs = await agentLogsFor(run);
   const infoByHash = await txInfoByHash(run);
-  const bases = run.market?.bases ?? ["WETH"];
+  const bases = full.market?.bases ?? ["WETH"];
+  const arbitrage = buildArbitrage(run, infoByHash, base);
+  const venueDepths = buildVenueDepths(run, base);
 
   return {
-    round: buildRound(run),
-    stats: {
-      pair: `${base}/USDC`,
-      price: lastFair,
-      direction: last && first && last.fair < first.fair ? "down" : "up",
-      ...buildMarketStats(run, base),
+    round,
+    scope: {
+      roundIndex: epoch ? epoch.index : null,
+      fromBlock: epoch ? epoch.fromBlock : firstBlock(full),
+      toBlock: replaying
+        ? round.blockNumber
+        : epoch
+          ? epoch.toBlock
+          : lastBlock(full),
     },
-    candles: candlesFor(prices),
-    leaderboard: buildStandings(run),
-    positions: buildGmxPositions(run, base, lastFair),
-    orders: [], // trigger orders are not part of any current strategy; the tab hides when empty
-    trades: buildMarketTrades(run, base),
-    venueDepths: buildVenueDepths(run, base),
+    protocols: enabledProtocols(full),
     pairs: bases.map((b) => ({ label: `${b}/USDC`, value: b })),
-    feed: buildFeed(logs),
-    arbitrage: buildArbitrage(run, infoByHash, base),
+    base,
+    fairPrice: lastFair,
+    fairDirection: last && first && last.fair < first.fair ? "down" : "up",
+    candles: candlesFor(prices),
+    arbitrage,
+    venueDepths,
+    panels: buildVenuePanels(
+      run,
+      base,
+      arbitrage,
+      venueDepths,
+      infoByHash,
+      // Built from `full`: the schedule is the run's, not the selected round's.
+      buildScenarioPanel(full, round.epochs),
+    ),
+    leaderboard: buildStandings(full, round.epochs, replaying),
+    feed: buildFeed(logs, epoch, replaying ? round.blockNumber : undefined),
   };
 }
 
 export async function fetchArchiveSnapshot(): Promise<ArchiveSnapshot> {
-  const run = await resolveRun();
-  const standings = buildStandings(run);
+  const full = await resolveRun();
+  const round = buildRound(full);
+  const run = clampToReplay(full);
+  const standings = buildStandings(full, round.epochs, round.status === "replay");
   const { prices } = observationSeries(run);
   const last = prices[prices.length - 1];
   const infoByHash = await txInfoByHash(run);
@@ -1137,6 +1558,14 @@ export async function fetchArchiveSnapshot(): Promise<ArchiveSnapshot> {
         price: Math.round(price * 100) / 100,
       });
     }
+    for (const [symbol, sample] of Object.entries(
+      lastMarketRow.stables ?? {},
+    )) {
+      closingPrices.push({
+        pair: `${symbol}/USDC${sample.quoted ? "" : " (par fallback)"}`,
+        price: Math.round(sample.priceUsdc * 10_000) / 10_000,
+      });
+    }
   } else {
     const finalFair = last?.fair ?? run.summary.finalFairPriceUsdcPerWeth;
     if (typeof finalFair === "number")
@@ -1153,7 +1582,7 @@ export async function fetchArchiveSnapshot(): Promise<ArchiveSnapshot> {
 
   return {
     round: {
-      roundNumber: run.roundNumber,
+      runNumber: run.runNumber,
       status: "archived",
       finalBlockNumber: lastBlock(run),
     },
@@ -1229,15 +1658,24 @@ function buildAgentLogLines(entries: AgentLogEntry[]): AgentLogLine[] {
 export async function fetchAgentDetailSnapshot(
   agentId: string,
 ): Promise<AgentDetailSnapshot> {
-  const run = await resolveRun();
-  const standing = buildStandings(run).find((s) => s.agent === agentId);
+  const full = await resolveRun();
+  const round = buildRound(full);
+  const run = clampToReplay(full);
+  const standing = buildStandings(full, round.epochs, round.status === "replay").find(
+    (s) => s.agent === agentId,
+  );
   if (!standing) throw new Error(`agent ${agentId} not found in run ${run.id}`);
 
   const summaryAgent = (run.summary.agents ?? []).find((a) => a.id === agentId);
   const address = (summaryAgent?.address ?? "").toLowerCase();
   const { valuesByAgent } = observationSeries(run);
-  const portfolioPoints = downsample(
-    (valuesByAgent.get(agentId) ?? []).map((p) => p.value),
+  // Keep the block with the value: the chart's x axis is block height, and an index would be a
+  // different (and unlabelled) quantity.
+  const portfolioSeries = downsample(
+    (valuesByAgent.get(agentId) ?? []).map((p) => ({
+      time: p.block,
+      value: p.value,
+    })),
     240,
   );
   const infoByHash = await txInfoByHash(run);
@@ -1257,36 +1695,41 @@ export async function fetchAgentDetailSnapshot(
       time: blockClock(run, row.blockNumber),
     }));
 
-  // Venue positions still open at the run's end (market.json): GMX perps. The Aave account totals
-  // exist in market.json too but do not fit this table's columns; a dedicated view is Phase 4 work.
-  // Each position marks against its own base's final fair — a WBTC perp priced off the WETH fair
-  // would be off by an order of magnitude.
-  const lastFairByBase =
-    run.market?.series[run.market.series.length - 1]?.fair ?? {};
-  const positions: AgentPosition[] = (run.market?.gmxPositionsAtEnd ?? [])
-    .filter((p) => p.agent === agentId)
-    .map((p) => {
-      const lastFair = lastFairByBase[p.base] ?? 0;
-      return {
-        market: `${p.base}/USDC (GMX)`,
-        side: p.isLong ? ("long" as const) : ("short" as const),
-        size: formatUsd(p.sizeUsd),
-        entry: p.entryPriceUsd
-          ? p.entryPriceUsd.toLocaleString("en-US", {
-              maximumFractionDigits: 1,
-            })
-          : "—",
-        pnlPercent:
-          p.entryPriceUsd && p.entryPriceUsd > 0 && lastFair > 0
-            ? Math.round(
-                (lastFair / p.entryPriceUsd - 1) *
-                  100 *
-                  (p.isLong ? 1 : -1) *
-                  10,
-              ) / 10
-            : 0,
-      };
-    });
+  // This agent's result in each round, straight off the run's rounds.
+  const txByRound = new Map<number, number>();
+  for (const row of run.blockRows) {
+    if (row.from !== address) continue;
+    const epoch = round.epochs.find(
+      (e) => row.blockNumber > e.fromBlock && row.blockNumber <= e.toBlock,
+    );
+    if (epoch)
+      txByRound.set(epoch.index, (txByRound.get(epoch.index) ?? 0) + 1);
+  }
+  const rounds: AgentRoundResult[] = round.epochs.flatMap((epoch) => {
+    const result = epoch.results.find((r) => r.agent === agentId);
+    if (!result) return [];
+    return [
+      {
+        index: epoch.index,
+        fromBlock: epoch.fromBlock,
+        toBlock: epoch.toBlock,
+        deltaUsdc: result.deltaUsdc,
+        logReturnBps: result.logReturnBps,
+        rank: result.rank,
+        cumulativeRank: result.cumulativeRank,
+        move: result.move,
+        txCount: txByRound.get(epoch.index) ?? 0,
+      },
+    ];
+  });
+
+  // Every venue position the run's end-of-run reads recorded for this agent — not just the perps.
+  // A run without GMX is the common case, and a table fed only by GMX renders empty for an agent
+  // that spent the whole run staking or borrowing, which is indistinguishable from a broken view.
+  const lastRow = run.market?.series[run.market.series.length - 1];
+  const lastFairByBase = lastRow?.fair ?? {};
+  const positions = buildAgentPositions(run, agentId, lastFairByBase);
+
   const fullLog = buildAgentLogLines(logEntries);
 
   const agent: AgentDetail = {
@@ -1299,12 +1742,13 @@ export async function fetchAgentDetailSnapshot(
     netPnlUsdc: standing.netPnlUsdc,
     sharpe: standing.sharpe,
     maxDrawdownPercent: standing.maxDrawdownPercent,
-    portfolioPoints,
+    portfolioSeries,
     positions,
     trades,
     recentLog: fullLog.slice(0, 8),
     fullLog,
+    rounds,
   };
 
-  return { round: buildRound(run), agent };
+  return { round, agent };
 }

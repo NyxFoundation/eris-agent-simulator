@@ -33,6 +33,60 @@ function resolveInsideRuns(rel: string): string | null {
   }
 }
 
+type RunEntry = { id: string; mtimeMs: number; live?: boolean };
+
+/** A directory is a run when it holds a summary.json, or fresh artifacts still being appended to. */
+function classifyRun(rel: string): RunEntry | null {
+  const dir = path.join(RUNS_DIR, rel);
+  try {
+    const stat = fs.statSync(path.join(dir, "summary.json"));
+    return { id: rel, mtimeMs: stat.mtimeMs };
+  } catch {
+    // no summary yet — live if any artifact is still being appended to
+    const freshest = ["events.jsonl", "blocks.csv"]
+      .map((f) => {
+        try {
+          return fs.statSync(path.join(dir, f)).mtimeMs;
+        } catch {
+          return 0;
+        }
+      })
+      .reduce((a, b) => Math.max(a, b), 0);
+    if (freshest > 0 && Date.now() - freshest < LIVE_FRESHNESS_MS)
+      return { id: rel, mtimeMs: freshest, live: true };
+    return null;
+  }
+}
+
+/**
+ * Runs are not always at the top of runs/. A run collected from a remote box arrives as a tarball
+ * of that box's whole runs/ directory, so it lands at runs/<collection>/runs/<id>/ — every artifact
+ * present, one or two levels deeper than a local run. Scanning only the top level meant those runs
+ * could not be opened at all, which is exactly the case replay exists for.
+ *
+ * The id is the path relative to runs/, so the artifact and tail routes address it unchanged.
+ */
+const MAX_RUN_DEPTH = 2;
+
+function collectRuns(rel: string, depth: number): RunEntry[] {
+  const dir = path.join(RUNS_DIR, rel);
+  const children = fs
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isDirectory());
+  return children.flatMap((child) => {
+    const childRel = rel ? `${rel}/${child.name}` : child.name;
+    const run = classifyRun(childRel);
+    // A run dir is a leaf: its subdirectories are agents/, not more runs.
+    if (run) return [run];
+    if (depth >= MAX_RUN_DEPTH) return [];
+    try {
+      return collectRuns(childRel, depth + 1);
+    } catch {
+      return [];
+    }
+  });
+}
+
 /**
  * Serves the sibling runs/ directory (same repo, relative path — issue #63):
  *   /runs/index.json           -> run dirs, newest first; `live: true` marks a run in progress
@@ -49,37 +103,9 @@ function runsPlugin(): Plugin {
         const url = urlPath;
 
         if (url === "/index.json") {
-          let entries: { id: string; mtimeMs: number; live?: boolean }[] = [];
+          let entries: RunEntry[] = [];
           try {
-            const now = Date.now();
-            entries = fs
-              .readdirSync(RUNS_DIR, { withFileTypes: true })
-              .filter((d) => d.isDirectory())
-              .flatMap((d) => {
-                try {
-                  const stat = fs.statSync(
-                    path.join(RUNS_DIR, d.name, "summary.json"),
-                  );
-                  return [{ id: d.name, mtimeMs: stat.mtimeMs }];
-                } catch {
-                  // no summary yet — live if any artifact is still being appended to
-                  const freshest = ["events.jsonl", "blocks.csv"]
-                    .map((f) => {
-                      try {
-                        return fs.statSync(path.join(RUNS_DIR, d.name, f))
-                          .mtimeMs;
-                      } catch {
-                        return 0;
-                      }
-                    })
-                    .reduce((a, b) => Math.max(a, b), 0);
-                  if (freshest > 0 && now - freshest < LIVE_FRESHNESS_MS) {
-                    return [{ id: d.name, mtimeMs: freshest, live: true }];
-                  }
-                  return [];
-                }
-              })
-              .sort((a, b) => b.mtimeMs - a.mtimeMs);
+            entries = collectRuns("", 0).sort((a, b) => b.mtimeMs - a.mtimeMs);
           } catch {
             // no runs/ directory yet — an empty index is the honest answer
           }
@@ -93,7 +119,13 @@ function runsPlugin(): Plugin {
         // Chunks are capped: a first tail of a large log would otherwise buffer the whole file in
         // memory at once — the client keeps polling with the returned offset until it catches up.
         const TAIL_CHUNK_BYTES = 4 * 1024 * 1024;
-        const tailMatch = url.match(/^\/([^/]+)\/tail\/(.+)$/);
+        // A run id can contain slashes (a collected remote run), so the split is on the last
+        // "/tail/" rather than on the first path segment.
+        const tailAt = url.lastIndexOf("/tail/");
+        const tailMatch =
+          tailAt > 0
+            ? [url, url.slice(1, tailAt), url.slice(tailAt + "/tail/".length)]
+            : null;
         if (tailMatch) {
           const rel = `${decodeURIComponent(tailMatch[1])}/${decodeURIComponent(tailMatch[2])}`;
           const file = resolveInsideRuns(rel);
