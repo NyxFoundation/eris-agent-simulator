@@ -29,7 +29,7 @@ A strategy simulator that runs on a multi-protocol DeFi environment with every p
 ```mermaid
 flowchart LR
   COORD["Coordinator<br/>(environment daemon + scorer)<br/>fair price · flow orders · GMX keeper · post-run scoring"]
-  ANVIL[("local anvil<br/>Uniswap · Balancer · Curve · Aave · GMX<br/>one shared mempool, --order fees")]
+  ANVIL[("local anvil<br/>Uniswap · Balancer · Curve · Aave · GMX · LST · Liquity<br/>one shared mempool, --order fees")]
   AG["Agent processes × N<br/>observe finalized state → decide → sign & send"]
   COORD -- "PriceFeed / flow / keeper txs" --> ANVIL
   AG -- "agent txs" --> ANVIL
@@ -41,10 +41,10 @@ flowchart LR
 
 ## What is this
 
-- **Multi-protocol DeFi environment** — Uniswap V3 / Balancer v2 / Curve / Aave v3 / GMX v2, plus a liquid-staking venue (a wstETH-style vault and its LST/WETH market), are all provisioned on a single Anvil and enabled pluggably through the protocol adapter registry (`sdk/src/protocols/`).
+- **Multi-protocol DeFi environment** — Uniswap V3 / Balancer v2 / Curve / Aave v3 / GMX v2, plus a liquid-staking venue (a wstETH-style vault and its LST/WETH market) and a CDP stablecoin venue (an unmodified Liquity V1 fork issuing eUSD, with Stability Pool, redemptions and Recovery Mode), are all provisioned on a single Anvil and enabled pluggably through the protocol adapter registry (`sdk/src/protocols/`).
 - **Multi-agent competition** — agents run as fully independent processes, subscribe to blocks at their own pace, and sign and send directly themselves. In-block ordering is determined by anvil `--order fees` (descending priority fee).
 - **Controllable fair price** — the coordinator generates a SEED-derived deterministic fair price every block and writes it to the on-chain `PriceFeed` and mock oracles. Aave health factors and GMX mark prices follow it.
-- **Market stress & liquidation** — price spikes/crashes can be injected to trigger the Aave liquidation path.
+- **Market stress & liquidation** — nine kinds of seed-placed shock share one config section: price spikes/crashes that trigger the Aave liquidation path, whale orders, order books thinning for the length of a window, stablecoins pushed off par, a staking slash, and drift or flow episodes that change the price walk itself.
 - **Self-improving agents** — the strategy trades every block on its own, and an LLM periodically rewrites it in-run from its own track record. The LLM is never in the trade path.
 - **Fork-free local deploy mode** — avoids cold-state RPC round trips to the fork backend (fork RPC latency), and multi-asset (WETH/WBTC) works too.
 - **Backtesting** — with a distributed state dump plus official regimes (market scenarios), a strategy can be verified over and over under the same environment and the same scoring (`--repeat` to read the distribution).
@@ -105,9 +105,9 @@ npm run sim:realtime
 
 > To run against an Arbitrum fork instead, set `run.localDeploy: false` in `config/local.yaml`, remove `lst` from `run.protocols` (its vault is deployed by us and has no Arbitrum counterpart), put `ARB_RPC_URL` in `.env.local`, and start `npm run anvil` in another terminal.
 
-> LLM decisions take ~10s each, hence the 100-block / 300s run above (rule-based runs are fine with 24 blocks / 70s). If the trading agents only emit `noop`, you probably skipped [Choose an LLM backend](#choose-an-llm-backend) — check `runs/<run_id>/agents/<id>.jsonl` for `llm cycle skipped`.
+> The template's 100-block / 300s length is sized so at least one revision opportunity lands (`prompt.md` declares `reviseEveryBlocks: 60`), not by LLM latency — the strategies trade every block whether or not a backend is configured. A rule-only smoke test is fine at 24 blocks / 70s. If a trading agent emits nothing but `noop`, read its `runs/<run_id>/agents/<id>.jsonl`: the `reason` on each round says why, and a revision that never ran is logged there too.
 
-Output is written under `runs/<run_id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `agents/<id>.jsonl`). What to check:
+Output is written under `runs/<run_id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `market.json` / `agents/<id>.jsonl`). What to check:
 
 - Setup completes for all agents and the flow wallet.
 - Flow transactions and valid agent transactions are submitted in each block.
@@ -121,7 +121,7 @@ An optional web UI lives in the [`dashboard/`](dashboard/) workspace (Vite + Rea
 npm run dashboard   # dev server at http://localhost:5173
 ```
 
-It renders runs from `runs/<id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json`) — pick the run in the sidebar, newest first. A run still in progress shows up as `● (live)` and can be watched as it happens (prices, blocks, event tape, and decision logs updating; scores and per-venue series appear the moment the run completes). The `market.json` artifact is derived after each run by the same historical-read reconstruction that scores it (per-venue prices, pool depth, GMX/Aave state, decoded tx notionals; zero cost to the live loop). When the local Blockscout explorer is up (`npm run explorer`, http://localhost:3100), tx hashes, blocks, and addresses deep-link into it and its indexed height is shown next to the RPC height; without it the links simply disappear.
+It renders runs from `runs/<id>/` (`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json`) — pick the run in the sidebar, newest first. A run still in progress shows up as `● (live)` and can be watched as it happens (prices, blocks, event tape, and decision logs updating; scores and per-venue series appear the moment the run completes). The `market.json` artifact is derived after each run by the same historical-read reconstruction that scores it (per-venue prices, pool depth, GMX/Aave state, decoded tx notionals; zero cost to the live loop, and never an input to scoring). When the local Blockscout explorer is up (`npm run explorer`, http://localhost:3100), tx hashes, blocks, and addresses deep-link into it and its indexed height is shown next to the RPC height; without it the links simply disappear. Details, including the explorer's reset-per-chain-reset lifecycle: [Dashboard and Explorer](docs/guide/dashboard.md).
 
 ### Backtesting (iterative strategy verification)
 
@@ -131,9 +131,10 @@ Once you bake a state dump from a deployed anvil, you can **replay official regi
 npm run gen:state-dump                                # bake once from the running deployer anvil
 npm run backtest -- --regime calm --seed 101         # one scenario (regime + seed)
 npm run backtest -- --scenarios config/scenarios/public.yaml   # the whole public set + standings
+npm run metrics -- runs/<id>                          # rescore a finished run under every candidate metric
 ```
 
-For details, see [Backtesting](docs/guide/backtest.md).
+For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/scoring.md).
 
 ---
 
@@ -148,6 +149,7 @@ For details, see [Backtesting](docs/guide/backtest.md).
 | [Backtesting](docs/guide/backtest.md) | Replaying state dump + official regimes, iterating with `--repeat`, sparring, what is and isn't measurable |
 | [Run Output and Analysis](docs/guide/run-output.md) | The output files under `runs/<id>/` and how to analyze a run afterwards |
 | [Protocols and Actions](docs/guide/protocols-and-actions.md) | Reference: actions per venue, stablecoin accounting, oracle control |
+| [Scoring](docs/guide/scoring.md) | What is scored and how: the epoch value series, `mean − λ·std`, rescoring a stored run with `npm run metrics`, the world reset unit |
 | [Self-improving Agents](docs/guide/llm-agents.md) | agent.ts + prompt.md (in-run strategy rewriting, sandbox, rollback, frozen control) |
 
 **How the environment works / operations**:
@@ -156,8 +158,13 @@ For details, see [Backtesting](docs/guide/backtest.md).
 |---|---|
 | [Architecture](docs/guide/architecture.md) | Separation of the environment (market mechanism + scorer) from agent execution, fair price distribution, scoring reconstruction |
 | [Configuration (config/local.yaml)](docs/guide/configuration.md) | The single-source YAML config, its sections, and how to write the roster |
-| [Market Stress Events](docs/guide/stress-events.md) | Injecting price spikes/crashes and triggering Aave liquidation |
+| [Market Stress Events](docs/guide/stress-events.md) | The nine event types — price gaps, whales, thinning books, depegs, slashes, drift and flow episodes — plus Aave liquidation victims |
+| [Dashboard and Explorer](docs/guide/dashboard.md) | Watching a run live and reading a finished one; the local Blockscout explorer and its lifecycle |
 | [Repository Layout](docs/guide/repository-layout.md) | Quick reference for the directory layout |
+
+**Background**: [architecture decision records](docs/adr/) (ADR 0001–0020) hold the reasoning behind
+each design choice, and [the scoring metric measurements](docs/scoring-metric-measurements.md) hold
+the runs the metric decision is being made on.
 
 ---
 

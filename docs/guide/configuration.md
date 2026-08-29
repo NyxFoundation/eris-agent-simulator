@@ -16,19 +16,36 @@ npm run sim:realtime -- --config config/vuln-test.yaml    # specify a different 
 
 - `example.yaml` ships with **`run.localDeploy: true`**, matching the README Quick Start and the official regimes: every venue is deployed onto a bare anvil by the bundled `deployer/`, so no fork RPC is involved and `npm run sim:realtime` needs no flags. To use an Arbitrum fork, set `localDeploy: false`, drop `lst` from `run.protocols` (its vault is ours and has no Arbitrum counterpart), and start `npm run anvil` with `ARB_RPC_URL` set.
 
-Committed templates in `config/`: `example.yaml` (the default roster) / `lst.yaml` (the liquid-staking venue on its own) / `vuln-test.yaml` (vulnerability events) / `regimes/` (official regimes = market scenarios for [Backtest](backtest.md); this YAML follows the same schema).
+Committed templates in `config/`: `example.yaml` (the default roster) / `lst.yaml` (the liquid-staking venue on its own) / `liquity.yaml` (the CDP stablecoin venue on its own) / `vuln-test.yaml` (vulnerability events) / `regimes/` (official regimes = market scenarios for [Backtest](backtest.md); this YAML follows the same schema) / `scenarios/` (scenario sets = regimes × seeds, e.g. `public.yaml`).
 
 ## Main sections
 
 | section | role | example |
 |---|---|---|
-| `run` | run knobs (SEED, block count, realtime cap, enabled venues, mode) | `protocols: [uniswap, balancer, curve]` |
+| `run` | run knobs (SEED, block count, realtime cap, enabled venues, mode, world reset unit) | `protocols: [uniswap, balancer, curve]` |
+| `market` | the fair-price OU parameters (volatility / kappa / drift, and their per-base forms) | `kappa: "0.004"` |
 | `funding` | initial distribution (a USDC-only distribution can eliminate initial directional exposure) | `wethWei: "0"` |
 | `limits` | per-round caps for agents | `agentWethWei: "1000000000000000000"` |
 | `flow` | orderflow bot intensity (how much it moves the market) | `uninformedMaxWethWei: "1000000000000000000"` |
 | `stress` | market stress events (default off) | [stress-events.md](stress-events.md) |
+| `lst` | the liquid-staking venue's calibration (yield clock, APY range, withdrawal queue) | `config/lst.yaml` |
 | `vuln` | vulnerability-injection events (default off) | `config/vuln-test.yaml` |
 | `agents` | agent roster (written inline) | see below |
+
+`sdk/src/runConfig.ts`'s `SCHEMA` is the authoritative list of keys; anything not in it warns as an
+unknown key rather than being silently applied.
+
+### Scoring-related keys in `run`
+
+| key | default | what it does |
+|---|---|---|
+| `run.epochBlocks` | 12 | Spacing of the value-series boundaries the risk-adjusted score is computed over. `0` disables the epoch series |
+| `run.markMedianBlocks` | 5 | Window over which manipulable marks are taken as a median at each boundary, so a boundary cannot be moved by a trade placed on the boundary block |
+| `run.scoreEvery` | 1 | Reconstruct the value cross-section every Nth block. Score-neutral — it only coarsens the equity curve |
+| `run.resetUnit` | `continuous` | Whether this run is one world or one scenario out of a set. **Only the scenario-matrix runner may declare `scenario`**: writing it here and running `sim:realtime` fails fast at startup (ADR 0020 §1) |
+
+See [Scoring](scoring.md) for what these produce and how to rescore a stored run under a different
+metric.
 
 ## Roster (convention-based resolution, ADR 0015)
 
@@ -73,6 +90,7 @@ Without editing the YAML, you can override values per run (CLI flags take highes
 | `--agents` | `run.agentsConfig` | `--agents my-roster.yaml` (roster file. **Ignored if the config file has an inline `agents:`** = inline wins. See note below) |
 | `--local-deploy` | `run.localDeploy` | `--local-deploy` |
 | `--economic-gas` | `run.economicGas` | `--economic-gas` |
+| `--score-every` | `run.scoreEvery` | `--score-every 4` (score-neutral; coarsens the equity curve only) |
 
 > **How `--agents` behaves**: `sim:realtime` resolves the roster in the order "inline `agents:` > `run.agentsConfig` / `--agents` > default," so in a config with an inline roster (like `config/local.yaml`) `--agents` has no effect (edit the YAML's `agents:` instead). `npm run backtest`'s `--agents` is a separate mechanism that bakes the roster into the effective regime YAML, so it always replaces the roster even if the regime has an inline one ([Backtest](backtest.md)).
 

@@ -97,6 +97,7 @@ Things to watch when reading:
   so for an 18-decimal stable you have to scale it (`limit * 10n ** 12n`) before sizing a sell. Getting this wrong
   rejects every unwind while letting every buy through, which leaves you holding a position you cannot close
 - `history` is the pool/fair series for the last ~20 blocks (for gauging momentum and the persistence of a gap)
+- **`blocksRemaining` is how many blocks are left**, counted from the first block you observed (absent when the run has no block limit). An exit that takes longer than that cannot complete inside the run — which is what makes the LST withdrawal queue a decision rather than a formality. Approximate by a block or two
 - `limits` holds the per-round trade limits and the default/max fees. **Cap your size here** (actions over the limit
   are rejected by validation)
 - The shape of `protocols.<venue>` differs per venue. **It's safest not to read it directly, but to normalize it with a
@@ -172,7 +173,7 @@ npm run backtest -- --regime calm --seed 101 --agents my-roster.yaml
 npm run backtest -- --scenarios config/scenarios/public.yaml --agents my-roster.yaml  # every regime x seed
 ```
 
-- `netPnlUsdc` is the competition's metric but includes price drift (β); `alphaUsdc` removes β from spot inventory. Both are printed and both land in `matrix.json`, so read them together
+- `netPnlUsdc` is the default ranking metric but includes price drift (β); `alphaUsdc` removes β from spot inventory. Both are printed, and `matrix.json` also stores the two risk-adjusted candidates (`excessLogGrowth` / `score`), so a finished set can be re-ranked with `npm run metrics`. **Which metric the competition uses is still open** — read them together rather than tuning to one ([Scoring](scoring.md))
 - Judge by the distribution across seeds, not by one run (tx ordering varies even within a scenario). `--repeat N` shows that spread for a single scenario; `--scenarios` covers the seed axis (see [Backtest](backtest.md))
 - Verify across regimes: not overfiring in calm and capturing opportunity in crash — doing both is skill
 
