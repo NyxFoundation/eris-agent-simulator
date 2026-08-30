@@ -26,6 +26,7 @@ import {
 } from "@eris/sdk/chain.js";
 import { RunLogger } from "../logger.js";
 import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
+import { methodNameForCalldata } from "@eris/sdk/methodSelectors.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
 import { marketPricedStables, readStablePrices } from "@eris/sdk/stables.js";
 import { checkRunFeeViolations, countRunRevertedTxs } from "../postRunCheck.js";
@@ -1328,6 +1329,10 @@ export async function runRealtimeSimulation(
           role: owner.role,
           actionType:
             meta?.actionType ?? (owner.role === "agent" ? "direct" : ""),
+          // ADR 0021 §4: from the tx's own calldata, which this block fetch already has. The
+          // explorer used to name a participant's methods by joining their self-reported log, and a
+          // participant who runs their own agent files no such log with anyone.
+          method: methodNameForCalldata(tx.input) ?? "",
         });
       });
     };

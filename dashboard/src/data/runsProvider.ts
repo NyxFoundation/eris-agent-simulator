@@ -111,6 +111,12 @@ interface RegisteredAgent {
   address: string;
   baseline?: boolean;
   description?: string;
+  /**
+   * ADR 0021 §2: a participant who runs the agent on their own machine. Their decision log and
+   * their mempool self-reports are on that machine and never reach here, so the panels fed by
+   * those say so rather than rendering empty (§4 / axis C2).
+   */
+  external?: boolean;
 }
 
 function registeredAgents(run: LoadedRun): Map<string, RegisteredAgent> {
@@ -758,7 +764,12 @@ function toExplorerBlock(
   };
 }
 
-/** hash → agent-submitted method + venue; blocks.csv only knows agents sent "direct" txs. */
+/**
+ * hash → the venue an agent said it was trading. Kept for the *venue* label only: the method now
+ * comes off the chain (ADR 0021 §4), and this join is a nicety that simply produces nothing for a
+ * participant who runs their own agent — where before it produced nothing and the method was blank
+ * with it.
+ */
 async function txInfoByHash(run: LoadedRun): Promise<Map<string, TxInfo>> {
   const logs = await agentLogsFor(run);
   const byHash = new Map<string, TxInfo>();
@@ -780,10 +791,20 @@ async function txInfoByHash(run: LoadedRun): Promise<Map<string, TxInfo>> {
   return byHash;
 }
 
+/**
+ * What a transaction did.
+ *
+ * The chain first (ADR 0021 §4): `method` is decoded from the tx's own calldata, so it is there for
+ * every sender including a participant whose agent nobody here started. The self-reported action
+ * type is the fallback, and it says something slightly different — what the sender *meant*, at the
+ * level of an Eris action rather than a contract call ("swap" the intent, versus
+ * "exactInputSingle" the function). Both are worth having; only one of them exists for everybody.
+ */
 function methodOf(
-  row: { actionType: string; role: string; hash: string },
+  row: { actionType: string; role: string; hash: string; method?: string },
   infoByHash: Map<string, TxInfo>,
 ): string {
+  if (row.method) return row.method;
   return row.actionType === "direct"
     ? (infoByHash.get(row.hash.toLowerCase())?.method ?? "direct")
     : row.actionType || row.role;
@@ -1541,6 +1562,9 @@ export async function fetchMarketSnapshot(
     ),
     leaderboard: buildStandings(full, round.epochs, replaying),
     feed: buildFeed(logs, epoch, replaying ? round.blockNumber : undefined),
+    feedSelfHosted: [...registeredAgents(run).values()].filter(
+      (a) => a.external,
+    ).length,
   };
 }
 
@@ -1667,6 +1691,10 @@ export async function fetchAgentDetailSnapshot(
   const positions = buildAgentPositions(run, agentId, lastFairByBase);
 
   const fullLog = buildAgentLogLines(logEntries);
+  // An empty log and an absent one are different facts, and the panel has to say which. A local
+  // agent with no lines means it never logged a decision; an external one means the log exists, on
+  // somebody else's disk (ADR 0021 §4).
+  const external = registeredAgents(run).get(agentId)?.external === true;
 
   const agent: AgentDetail = {
     rank: standing.rank,
@@ -1684,6 +1712,7 @@ export async function fetchAgentDetailSnapshot(
     recentLog: fullLog.slice(0, 8),
     fullLog,
     rounds,
+    external,
   };
 
   return { round, agent };

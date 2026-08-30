@@ -208,6 +208,11 @@ const en = {
   "agent.noValueSeries":
     "no value series yet for this agent — the curve is built from scoring snapshots, which land when the run finishes",
   "agent.decisionLive": "Decision log — live ↓",
+  // ADR 0021 §2/§4. Said, not shown as an empty panel: an empty log reads as "this agent thought
+  // nothing", which is a different and wrong claim.
+  "agent.selfHosted": "Self-hosted participant",
+  "agent.selfHostedLog":
+    "This participant runs their agent on their own machine, so its decision log is on that machine and never reaches here. What this page shows about them comes from the chain: their transactions, their positions, and their score.",
   "agent.noRounds":
     "no scored rounds yet — the per-round series is built when the run finishes",
   "agent.roundsNote":
@@ -244,6 +249,11 @@ const en = {
   "market.noVenue": "this run enabled no venue the dashboard can render",
   "market.standings": "Standings",
   "market.submissions": "Agent submissions ↓",
+  // ADR 0021 §4: this feed comes from the agents' own reports of what they sent, which is the one
+  // thing a self-hosted participant files nowhere but their own disk. Their *included* transactions
+  // are on the chain and appear in the explorer; what is not visible is what they sent and lost.
+  "market.submissionsSelfHosted":
+    "{count} self-hosted participant(s) are not in this list — it is built from what agents report sending, and theirs is reported on their own machines. Their included transactions are in the explorer.",
   "market.noSubmissions": "no agent submitted a transaction in this run",
   "market.sell": "sell",
   "market.buy": "buy",
@@ -747,6 +757,9 @@ const ja: Record<MessageKey, string> = {
   "agent.noValueSeries":
     "資産系列はまだありません — 曲線は採点スナップショットから作られ、run 終了時に届きます",
   "agent.decisionLive": "判断ログ — ライブ ↓",
+  "agent.selfHosted": "自己ホスト参加者",
+  "agent.selfHostedLog":
+    "この参加者はエージェントを自分のマシンで動かしているため、判断ログはそちらにあり、ここには届きません。このページに出ているのはすべてチェーン由来です（取引・建玉・スコア）。",
   "agent.noRounds":
     "採点済みラウンドはまだありません — ラウンド系列は run 終了時に作られます",
   "agent.roundsNote":
@@ -782,6 +795,8 @@ const ja: Record<MessageKey, string> = {
   "market.noVenue": "この run には表示できる venue がありません",
   "market.standings": "順位",
   "market.submissions": "エージェントの送信 tx ↓",
+  "market.submissionsSelfHosted":
+    "自己ホストの参加者 {count} 名はこの一覧に出ません — これは各エージェントの自己申告から作られており、彼らの申告はそれぞれのマシンにあります。ブロックに入った tx は explorer で見られます。",
   "market.noSubmissions":
     "この run でトランザクションを送ったエージェントはいません",
   "market.sell": "売",

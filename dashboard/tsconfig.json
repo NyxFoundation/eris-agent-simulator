@@ -21,7 +21,8 @@
 
     "paths": {
       "@/*": ["./src/*"],
-      "@core/*": ["../core/src/*"]
+      "@core/*": ["../core/src/*"],
+      "@sdk/*": ["../sdk/src/*"]
     }
   },
   "include": ["src", "vite.config.ts"]

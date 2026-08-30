@@ -337,6 +337,13 @@ export interface MarketSnapshot {
   panels: VenuePanel[];
   leaderboard: AgentStanding[];
   feed: MarketFeedItem[];
+  /**
+   * How many registered participants run their agent themselves (ADR 0021 §2). The feed above is
+   * built from the agents' own mempool self-reports, which those participants file on their own
+   * machines — so when this is non-zero the feed is a subset, and the panel says so rather than
+   * letting a short list read as a quiet market (§4 / axis C2).
+   */
+  feedSelfHosted: number;
 }
 
 export type PositionSide = "long" | "short";
@@ -414,6 +421,12 @@ export interface AgentDetail {
   recentLog: AgentLogLine[];
   fullLog: AgentLogLine[];
   rounds: AgentRoundResult[];
+  /**
+   * ADR 0021 §2/§4: the participant runs this agent themselves, so its decision log and its
+   * mempool self-reports live on their machine. The panels fed by those are not shown — an empty
+   * one would read as "this agent thought nothing", which is a different claim.
+   */
+  external?: boolean;
 }
 
 export interface AgentDetailSnapshot {

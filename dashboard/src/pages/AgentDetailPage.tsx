@@ -43,13 +43,17 @@ const SECTION_LABEL_STYLE = {
   color: "var(--text-tertiary)",
 };
 
-/** The scenario-level tabs. "Standing" is prepended when the agent ranks in a competition. */
-const scenarioTabs = () => [
+/**
+ * The scenario-level tabs. "Standing" is prepended when the agent ranks in a competition, and the
+ * decision log is dropped for a self-hosted participant: that log is on their machine and nothing
+ * here can show it (ADR 0021 §4). An empty tab would read as "this agent thought nothing".
+ */
+const scenarioTabs = (external: boolean) => [
   { label: t("agent.tab.overview"), value: "overview" },
   { label: t("agent.tab.rounds"), value: "rounds" },
   { label: t("agent.tab.positions"), value: "positions" },
   { label: t("agent.tab.trades"), value: "trades" },
-  { label: t("agent.tab.log"), value: "log" },
+  ...(external ? [] : [{ label: t("agent.tab.log"), value: "log" }]),
 ];
 
 const ROUNDS_GRID = "60px 150px 70px 110px 100px 90px";
@@ -512,10 +516,14 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   // null = "not chosen yet": land on the standing when the agent ranks in a competition, on the
   // scenario overview otherwise (seed mode, live runs).
   const [chosenTab, setChosenTab] = useState<string | null>(null);
+  const external = data?.agent.external === true;
   const tab = chosenTab ?? (standing ? "standing" : "overview");
   const tabs = standing
-    ? [{ label: t("agent.tab.standing"), value: "standing" }, ...scenarioTabs()]
-    : scenarioTabs();
+    ? [
+        { label: t("agent.tab.standing"), value: "standing" },
+        ...scenarioTabs(external),
+      ]
+    : scenarioTabs(external);
 
   if (loading) {
     return (
@@ -832,9 +840,22 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                     marginBottom: "10px",
                   }}
                 >
-                  {t("agent.decisionLive")}
+                  {external ? t("agent.selfHosted") : t("agent.decisionLive")}
                 </span>
-                <LogStream lines={agent.recentLog} height={320} />
+                {external ? (
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: "12px",
+                      lineHeight: 1.6,
+                      color: "var(--text-secondary)",
+                    }}
+                  >
+                    {t("agent.selfHostedLog")}
+                  </p>
+                ) : (
+                  <LogStream lines={agent.recentLog} height={320} />
+                )}
               </div>
             </div>
           )}

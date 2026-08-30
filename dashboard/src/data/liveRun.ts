@@ -8,6 +8,7 @@
 // builders render it. Every reader is best-effort: a live view may be seconds behind and says so
 // (each panel carries the block height it reflects).
 
+import { methodNameForCalldata } from "@sdk/methodSelectors";
 import type {
   AgentLogEntry,
   BlockRow,
@@ -100,7 +101,9 @@ async function readFair(
 
 interface RpcBlock {
   number: string;
-  transactions: { hash: string; from: string }[];
+  // `input` is the calldata: what the tx actually asked the chain to do. ADR 0021 §4 makes it the
+  // source for the method name, in place of a join against the agents' self-reported logs.
+  transactions: { hash: string; from: string; input?: string }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +163,11 @@ class LiveRunState {
             typeof event.runSeconds === "number" ? event.runSeconds : null;
           this.meta.runBlocks =
             typeof event.runBlocks === "number" ? event.runBlocks : null;
+          // ADR 0021 §4: the environment records the endpoint. This used to be discovered from an
+          // agent's `runtime_start` line, which works only while the coordinator is the thing
+          // starting the agents — on the practice devnet they are other people's processes on other
+          // people's machines, and no line of theirs reaches here.
+          if (typeof event.rpcUrl === "string") this.meta.rpcUrl = event.rpcUrl;
           break;
         case "price_feed_deployed":
           if (typeof event.address === "string")
@@ -204,7 +212,9 @@ class LiveRunState {
             ? merged.slice(-AGENT_LOG_LIMIT)
             : merged,
         );
-        // the runtime start line names the RPC endpoint every agent talks to
+        // Fallback only, for a run recorded before the coordinator started writing the endpoint
+        // into run_started_realtime (ADR 0021 §4). A self-hosted agent leaves no log here at all,
+        // so this can never be the primary source.
         if (!this.meta.rpcUrl) {
           const start = fresh.find(
             (e) => e.event === "runtime_start" && typeof e.rpcUrl === "string",
@@ -353,6 +363,10 @@ class LiveRunState {
             `${from.slice(0, 6)}…${from.slice(-4)}`,
           role: submitted?.role ?? (agentId ? "agent" : "system"),
           actionType: submitted?.actionType ?? "",
+          // Decoded here rather than waiting for blocks.csv, which the coordinator writes in bulk
+          // after the run (ADR 0021 §4). Same table, so a tx named live keeps its name once the run
+          // is archived.
+          method: methodNameForCalldata(tx.input) ?? "",
         });
       });
     }

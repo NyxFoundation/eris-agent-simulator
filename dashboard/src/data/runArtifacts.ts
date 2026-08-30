@@ -37,6 +37,12 @@ export interface BlockRow {
   ownerId: string;
   role: string;
   actionType: string;
+  /**
+   * The function the tx called, decoded by the coordinator from the tx's own calldata
+   * (ADR 0021 §4). Empty for a run recorded before the column existed, and for a selector this
+   * deployment has no ABI for — an unnamed method rather than a guessed one.
+   */
+  method: string;
 }
 
 export interface SummaryAgent {
@@ -257,7 +263,7 @@ function parseJsonl<T>(text: string): T[] {
   return out;
 }
 
-// blocks.csv columns: round,blockNumber,txIndex,hash,from,priorityFeeWei,status,ownerId,role,actionType,bundleId,bundleIndex
+// blocks.csv columns: round,blockNumber,txIndex,hash,from,priorityFeeWei,status,ownerId,role,actionType,bundleId,bundleIndex,method
 // No field is quoted, so a plain split is safe. Header (and any repeated header) rows
 // are dropped by the numeric blockNumber check.
 function parseBlocksCsv(text: string): BlockRow[] {
@@ -277,6 +283,7 @@ function parseBlocksCsv(text: string): BlockRow[] {
       ownerId: cols[7] ?? "",
       role: cols[8] ?? "",
       actionType: cols[9] ?? "",
+      method: cols[12] ?? "",
     });
   }
   return rows;

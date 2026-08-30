@@ -16,6 +16,7 @@
     "backtest": "tsx core/src/cli/backtest.ts",
     "metrics": "tsx core/src/cli/metrics.ts",
     "gen:local-constants": "tsx scripts/genLocalConstants.ts",
+    "gen:method-selectors": "tsx scripts/genMethodSelectors.ts",
     "gen:state-dump": "tsx scripts/genStateDump.ts",
     "flow:market-maker": "tsx core/src/flow/market-maker.ts",
     "check:ordering": "tsx core/src/cli/checkOrdering.ts",

@@ -226,6 +226,10 @@ export default defineConfig({
       // answers to "who won" with no way to tell which is the real one. core/src/scoring/aggregate.ts
       // is pure (no fs, no chain) precisely so it can be reused this way -- see its header.
       "@core": fileURLToPath(new URL("../core/src", import.meta.url)),
+      // The method-name table (ADR 0021 §4) is built from the venue ABIs the sdk holds, and the
+      // live view decodes calldata in the browser -- so it needs the same table the coordinator
+      // used, not a second copy that can drift from it.
+      "@sdk": fileURLToPath(new URL("../sdk/src", import.meta.url)),
     },
   },
   server: {

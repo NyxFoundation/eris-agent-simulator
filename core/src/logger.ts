@@ -18,6 +18,14 @@ export const BLOCKS_CSV_COLUMNS = [
   "actionType",
   "bundleId",
   "bundleIndex",
+  // ADR 0021 §4: the function the tx called, decoded from its own calldata. Appended last so that
+  // every reader keyed on BLOCKS_CSV_INDEX keeps working against runs recorded before it existed.
+  //
+  // It replaces a join against the agents' self-reported logs, which only ever worked while the
+  // coordinator was the thing starting the agents. `actionType` says what the *sender intended* and
+  // exists only for txs the environment submitted; this says what the chain was asked to do, for
+  // every tx in the block including a participant's.
+  "method",
 ] as const;
 
 export const BLOCKS_CSV_INDEX = Object.fromEntries(
@@ -57,10 +65,11 @@ export class RunLogger {
     actionType?: string;
     bundleId?: string;
     bundleIndex?: number;
+    method?: string;
   }): void {
     appendFileSync(
       join(this.runDir, "blocks.csv"),
-      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""}\n`,
+      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""}\n`,
     );
   }
 

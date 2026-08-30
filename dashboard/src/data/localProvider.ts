@@ -235,5 +235,7 @@ export async function fetchMarketSnapshot(
     venueDepths: seedVenueDepths,
     panels: seedVenuePanels,
     pairs: [{ label: "WETH/USDC", value: "WETH" }],
+    // Fixture data has no registered participants, self-hosted or otherwise.
+    feedSelfHosted: 0,
   };
 }

@@ -465,6 +465,7 @@ export function MarketPage() {
     panels,
     leaderboard,
     feed,
+    feedSelfHosted,
   } = data;
 
   const panel = panels.find((p) => p.id === panelId) ?? panels[0];
@@ -772,6 +773,20 @@ export function MarketPage() {
               }}
             >
               <span style={SECTION_LABEL_STYLE}>{t("market.submissions")}</span>
+              {feedSelfHosted > 0 && (
+                <p
+                  style={{
+                    margin: "6px 0 0",
+                    font: "11px var(--font-mono)",
+                    lineHeight: 1.5,
+                    color: "var(--text-tertiary)",
+                  }}
+                >
+                  {t("market.submissionsSelfHosted", {
+                    count: String(feedSelfHosted),
+                  })}
+                </p>
+              )}
             </div>
             <div
               style={{
