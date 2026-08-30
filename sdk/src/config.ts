@@ -47,9 +47,40 @@ function resetUnitEnv(value: string | undefined): ResetUnit {
   );
 }
 
+// Who owns the node the run talks to (issue #33 / ADR 0021 §7). `anvil` is a dev node the
+// environment drives with cheatcodes; `external` is a real client (the OP Stack devnet of #35),
+// where the sequencer produces blocks and nothing can be conjured.
+export type ChainMode = "anvil" | "external";
+
+function chainModeEnv(value: string | undefined): ChainMode {
+  if (value === undefined || value === "") return "anvil";
+  if (value === "anvil" || value === "external") return value;
+  throw new Error(
+    `run.chainMode must be "anvil" or "external" (got "${value}") — issue #33`,
+  );
+}
+
 export type SimConfig = {
   rpcUrl: string;
+  // Where reads go. Same as rpcUrl unless the chain is served by a sequencer plus a read replica,
+  // which is the architecture decision #36 measures: Eris's load is read-heavy (every agent rebuilds
+  // its observation each block), and a sequencer that also answers those reads is the thing that
+  // jitters block production. Splitting the two is a config change here and a deployment change
+  // there, so the seam exists before the measurement rather than after it.
+  readRpcUrl: string;
   chainId: number;
+  // issue #33 / ADR 0021 §7. Set from `run.chainMode`; the coordinator installs it into the sdk's
+  // chain module (setChainMode) so every cheatcode entry point can refuse rather than fail silently.
+  chainMode: ChainMode;
+  // The account that funds everything on an external chain (issue #33 (1)): genesis prefunds it, and
+  // it sends ETH and mints/transfers tokens to the agent, flow and admin wallets. Unused in anvil
+  // mode, where balances are assigned with a cheatcode.
+  treasuryPrivateKey?: Hex;
+  // Native balance the treasury tops the admin and keeper wallets up to on an external chain
+  // (ERIS_EXTERNAL_ROLE_ETH_WEI). In anvil mode they are simply assigned 2,000,000 ETH, which is not
+  // a number a genesis alloc can hand out over and over; on a chain that runs for a week this is a
+  // real budget and the top-up is incremental.
+  externalRoleEthWei: bigint;
   // Upstream RPC to fork from (ARB_RPC_URL). When set, resetFork calls anvil_reset with a forking
   // config to rebuild the fork state clean each time (avoiding the anvil_reset [] problem where
   // positions such as Aave persist across runs/seeds). If unset, falls back to the legacy
@@ -301,9 +332,23 @@ export function loadConfig(env = process.env): SimConfig {
     env.MAX_AAVE_SUPPLY_WETH_WEI,
     5_000_000_000_000_000_000n,
   );
+  const rpcUrl = env.ANVIL_RPC_URL ?? `http://127.0.0.1:${anvilPort}`;
   return {
-    rpcUrl: env.ANVIL_RPC_URL ?? `http://127.0.0.1:${anvilPort}`,
+    rpcUrl,
+    readRpcUrl:
+      env.ERIS_READ_RPC_URL && env.ERIS_READ_RPC_URL.trim() !== ""
+        ? env.ERIS_READ_RPC_URL.trim()
+        : rpcUrl,
     chainId: intEnv(env.CHAIN_ID, CHAIN_ID),
+    chainMode: chainModeEnv(env.ERIS_CHAIN_MODE),
+    treasuryPrivateKey:
+      env.TREASURY_PRIVATE_KEY && env.TREASURY_PRIVATE_KEY.trim() !== ""
+        ? hexEnv(env.TREASURY_PRIVATE_KEY, "")
+        : undefined,
+    externalRoleEthWei: bigintEnv(
+      env.ERIS_EXTERNAL_ROLE_ETH_WEI,
+      50_000_000_000_000_000_000n,
+    ),
     forkUrl:
       env.ARB_RPC_URL && env.ARB_RPC_URL.trim() !== ""
         ? env.ARB_RPC_URL.trim()

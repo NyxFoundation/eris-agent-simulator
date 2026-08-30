@@ -1,4 +1,10 @@
-import { keccak256, stringToBytes, type Address, type Hex } from "viem";
+import {
+  keccak256,
+  stringToBytes,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
 import { privateKeyForWalletName } from "../config.js";
 import { resolveRunInputs } from "../runConfig.js";
 import {
@@ -6,13 +12,16 @@ import {
   activeStables,
   fundWallet,
   getBalances,
+  isPermissionlesslyMintable,
   makeClients,
   mine,
   resetFork,
   sendAndMine,
   setAutomine,
+  setChainMode,
   setEthBalance,
   setIntervalMining,
+  transferEth,
 } from "@eris/sdk/chain.js";
 import { RunLogger } from "../logger.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
@@ -131,6 +140,56 @@ const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH (gas f
 // Look up the WalletRole from a flowWalletMap key (`${protocol}:${kind}`).
 function flowRole(key: string): WalletRole {
   return key.endsWith(":informed") ? "informed-flow" : "uninformed-flow";
+}
+
+// The chain's actual block cadence, from the last two blocks' timestamps. On anvil the environment
+// sets it; on an external chain the sequencer does, and a mismatch with run.blockTimeSec silently
+// mis-sizes every epoch (ADR 0021 §3 sets epoch length in real time, converted through this number).
+async function observeBlockTimeSec(
+  publicClient: PublicClient,
+): Promise<number | null> {
+  try {
+    const head = await publicClient.getBlock();
+    if (head.number < 1n) return null;
+    const prev = await publicClient.getBlock({ blockNumber: head.number - 1n });
+    const dt = Number(head.timestamp - prev.timestamp);
+    return dt > 0 ? dt : null;
+  } catch {
+    return null;
+  }
+}
+
+// Free money check for a public chain (issue #33 (1) / ADR 0021 §7).
+//
+// "cheatcode-free" is about RPC methods, but the same hole can live in a *contract*: the deployer's
+// MockERC20 originally let anyone mint, which on a dev node is a convenience and on a chain
+// participants can reach is an unbounded balance for whoever notices. It is checked rather than
+// assumed because the answer depends on which build of the token the deployment happens to hold, and
+// a run scored against mintable tokens is not scored at all.
+async function assertTokensNotMintable(
+  ctx: SimContext,
+  logger: RunLogger,
+): Promise<void> {
+  const tokens = [
+    ...baseTokens().map((t) => ({ symbol: t.symbol, address: t.address })),
+    ...activeStables().map((address) => ({ symbol: "stable", address })),
+  ];
+  const open: string[] = [];
+  for (const t of tokens) {
+    if (await isPermissionlesslyMintable(ctx.publicClient, t.address))
+      open.push(`${t.symbol} (${t.address})`);
+  }
+  logger.event({
+    type: "external_chain_mint_guard",
+    checked: tokens.length,
+    permissionlessMint: open,
+  });
+  if (open.length > 0)
+    throw new Error(
+      `these scored tokens can be minted by anyone: ${open.join(", ")}. On a chain participants can ` +
+        "reach, that is an unlimited balance for whoever calls mint(), and no score computed against " +
+        "it means anything. Redeploy with a minter-gated token (deployer/contracts/MockERC20.sol)",
+    );
 }
 
 // Before the competition starts (= off the clock), run a short market loop with only the flow bot to make anvil
@@ -266,6 +325,42 @@ export async function runRealtimeSimulation(
         `resetUnit: continuous for sim:realtime (ADR 0020 §1)`,
     );
 
+  // ---- chain mode (issue #33 / ADR 0021 §7) ----
+  // Installed before anything touches the chain, so a cheatcode reached for on an external chain
+  // throws at the call rather than returning an RPC error some catch swallows.
+  setChainMode(config.chainMode, config.treasuryPrivateKey);
+  const external = config.chainMode === "external";
+  if (external) {
+    if (!config.treasuryPrivateKey)
+      throw new Error(
+        "run.chainMode: external needs TREASURY_PRIVATE_KEY in .env.local — on a chain without " +
+          "cheatcodes every balance has to be sent from an account genesis prefunded (issue #33 (1))",
+      );
+    if (!config.localDeploy)
+      throw new Error(
+        "run.chainMode: external requires run.localDeploy: true. The external chain runs *our* venue " +
+          "deployment (issue #33 Notes: a closed economy the environment owns every contract of), and " +
+          "the address overlay that names those contracts is what localDeploy turns on",
+      );
+    if (config.economicGas)
+      throw new Error(
+        "run.chainMode: external cannot use run.economicGas: the profile finalizes prices with a " +
+          "storage write, which no real chain permits. Use the default tx-based profile until the " +
+          "redesign in issue #33 (2) lands (ADR 0021 Negative)",
+      );
+    if (config.stressVictimCount > 0)
+      throw new Error(
+        "run.chainMode: external cannot stage stress victims: they require a fresh state per run " +
+          "(ADR 0009 §4), and a chain that never resets has none. Victims for the practice devnet " +
+          "have to be staged once and left standing",
+      );
+    if (config.prewarmBlocks > 0)
+      throw new Error(
+        "run.chainMode: external cannot prewarm: the warmup loop mines its own blocks, and there is " +
+          "no cold fork state to warm in the first place (issue #33 (2))",
+      );
+  }
+
   const adapters = initProtocols(config.enabledProtocols);
   const enabledIds = adapters.map((a) => a.id);
 
@@ -300,6 +395,13 @@ export async function runRealtimeSimulation(
     // which world it was -- which is the one thing needed to replay it.
     seed: config.seed,
     flowSeed: config.flowSeed,
+    // ADR 0021 §4: the endpoint the world is on, recorded by the environment. The dashboard's live
+    // mode used to discover it from an agent's `runtime_start` log line, which stops working the
+    // moment the agents are somebody else's processes on somebody else's machine. Reads go to
+    // readRpcUrl, which is the sequencer unless a replica is configured (#36).
+    rpcUrl: config.readRpcUrl,
+    chainId: config.chainId,
+    chainMode: config.chainMode,
   });
 
   // batch=true: automatically aggregate same-tick reads (parallel receipt fetches, readState, etc.) into
@@ -309,7 +411,16 @@ export async function runRealtimeSimulation(
     config.chainId,
     { batch: true },
   );
-  if (config.skipReset) {
+  if (external) {
+    // There is nothing to reset (issue #33 (3)). On the practice devnet that is the design: the
+    // chain does not stop for the whole period, and a run is a window on it rather than a world of
+    // its own (ADR 0021 §1).
+    logger.event({
+      type: "fork_reset_skipped",
+      reason: "external-chain",
+      note: "a real chain cannot be rewound; this run continues the world already on it",
+    });
+  } else if (config.skipReset) {
     // Diagnostic: keep the fork cache from the previous run (to isolate cold fetches; ADR 0006 Risks).
     logger.event({ type: "fork_reset_skipped" });
   } else {
@@ -325,7 +436,7 @@ export async function runRealtimeSimulation(
   // inherits the state after the previous run's teardown (setIntervalMining 0), so setup txs are not mined and it
   // hangs. Explicitly turn auto-mine ON in the setup phase to reliably mine all setup txs (not needed for fork,
   // which starts with --no-mining; turn it back OFF at competition start to make the fee competition work = see below).
-  if (config.localDeploy) {
+  if (config.localDeploy && !external) {
     await setAutomine(publicClient, true);
   }
 
@@ -458,15 +569,60 @@ export async function runRealtimeSimulation(
   });
   const submittedByHash = new Map<string, SubmittedMeta>();
 
+  // Top an environment wallet up to a target native balance from the treasury (issue #33 (1)).
+  // "Up to", not "by": the practice devnet funds the same admin and keeper on every segment, and
+  // sending the full amount each time would drain the treasury over a week of restarts.
+  const topUpFromTreasury = async (
+    address: Address,
+    targetWei: bigint,
+  ): Promise<void> => {
+    const treasuryPk = config.treasuryPrivateKey;
+    if (!treasuryPk) return;
+    const held = await publicClient.getBalance({ address });
+    if (held >= targetWei) return;
+    await transferEth(
+      publicClient,
+      walletClient,
+      chain,
+      treasuryPk,
+      address,
+      targetWei - held,
+    );
+  };
+
   // Realtime shared latest state (referenced by the relay's async action handler and flow context)
   let latestStateById = new Map<ProtocolId, unknown>();
   let latestFairPrice = 0;
   const latestHistory: AgentObservation["history"] = [];
 
   try {
+    // Before a single wei is granted: on a chain participants can reach, a token anyone can mint
+    // makes the endowment meaningless and the funding below pointless (issue #33 (1)).
+    if (external) await assertTokensNotMintable(ctx, logger);
+
     // ---- setup (fast flush: no-mining + sendAndMine) ----
-    await setEthBalance(publicClient, accountAddress(adminPk), GAS_ONLY_WEI);
-    await setEthBalance(publicClient, accountAddress(keeperPk), GAS_ONLY_WEI);
+    // The admin and keeper spend gas every block for the whole run, so on anvil they are simply
+    // given an absurd balance. On an external chain the treasury tops them up to a target instead:
+    // it is a finite account, and 2,000,000 ETH is not a number a genesis alloc can hand out twice.
+    if (external) {
+      const treasuryPk = config.treasuryPrivateKey as Hex;
+      await topUpFromTreasury(
+        accountAddress(adminPk),
+        config.externalRoleEthWei,
+      );
+      await topUpFromTreasury(
+        accountAddress(keeperPk),
+        config.externalRoleEthWei,
+      );
+      logger.event({
+        type: "treasury_funded_roles",
+        treasury: accountAddress(treasuryPk),
+        targetWei: config.externalRoleEthWei.toString(),
+      });
+    } else {
+      await setEthBalance(publicClient, accountAddress(adminPk), GAS_ONLY_WEI);
+      await setEthBalance(publicClient, accountAddress(keeperPk), GAS_ONLY_WEI);
+    }
     for (const adapter of adapters) {
       if (adapter.setupGlobal) await adapter.setupGlobal(ctx);
     }
@@ -546,7 +702,11 @@ export async function runRealtimeSimulation(
     // oracle update tx lands). The direct storage write is in the setup phase, so there is no front-run-side
     // impact. If the aggregator is not deployed (aave disabled) it is a no-op (ADR 0016 Phase 0).
     if (config.localDeploy) {
-      await writeAaveOraclesStorage(ctx, latestFairPrice);
+      // The storage write is a cheatcode; on an external chain the same calibration is an ordinary
+      // mined setter tx from the admin key. Both land before any agent starts, so neither is
+      // front-runnable -- the difference is only which mechanism is available (issue #33 (1)/(4)).
+      if (external) await updateOracles(ctx, latestFairPrice);
+      else await writeAaveOraclesStorage(ctx, latestFairPrice);
     }
 
     // ---- whale endowment (ADR 0017 regime 3) ----
@@ -1067,14 +1227,32 @@ export async function runRealtimeSimulation(
     // ---- start the competition phase: switch to interval mining every N real seconds ----
     // Local mode turned auto-mine ON for setup, so turn it back OFF here.
     // If auto-mine remains, each tx becomes its own block and the fee competition breaks (fork is OFF from the start).
-    if (config.localDeploy) {
+    if (config.localDeploy && !external) {
       await setAutomine(publicClient, false);
     }
-    await setIntervalMining(publicClient, config.blockTimeSec);
-    logger.event({
-      type: "interval_mining_started",
-      blockTimeSec: config.blockTimeSec,
-    });
+    if (external) {
+      // The sequencer has been producing blocks the whole time; there is no phase change to make.
+      // What the environment does have to know is the real cadence, because the block loop's
+      // polling interval and every "blocks per epoch" conversion are derived from it -- so measure
+      // it rather than trusting the configured value (issue #33 (2) / #35 genesis block time).
+      const observed = await observeBlockTimeSec(publicClient);
+      logger.event({
+        type: "external_chain_block_time",
+        configuredSec: config.blockTimeSec,
+        observedSec: observed,
+        note:
+          observed !== null && Math.abs(observed - config.blockTimeSec) > 0.5
+            ? "run.blockTimeSec disagrees with the chain; epoch lengths and the poll interval are " +
+              "derived from the configured value, so align it with the sequencer"
+            : undefined,
+      });
+    } else {
+      await setIntervalMining(publicClient, config.blockTimeSec);
+      logger.event({
+        type: "interval_mining_started",
+        blockTimeSec: config.blockTimeSec,
+      });
+    }
     const startTime = Date.now();
     // base/effective separation (ADR 0009 §1): advance the OU state as the base series, and derive the effective
     // price from stress events as a separable distortion. Outside the window, β≈0 as before (maintains ADR 0007).
@@ -1744,7 +1922,7 @@ export async function runRealtimeSimulation(
     // ---- competition end: stop the agents before scoring (a direct agent keeps placing orders unless stopped) ----
     for (const agent of agentRuntimes) agent.process?.close();
     flowProcess.close();
-    await setIntervalMining(publicClient, 0);
+    if (!external) await setIntervalMining(publicClient, 0);
 
     // The last block anyone competed on, captured *before* the teardowns below. Everything after it
     // is the environment putting the chain back, and scoring across those blocks would score the
@@ -2016,7 +2194,8 @@ export async function runRealtimeSimulation(
     );
   } finally {
     try {
-      await setIntervalMining(publicClient, 0);
+      if (config.chainMode !== "external")
+        await setIntervalMining(publicClient, 0);
     } catch {
       // ignore errors during teardown
     }

@@ -154,6 +154,7 @@ const CLI_ALIAS: Record<string, string> = {
   "economic-gas": "ERIS_ECONOMIC_GAS",
   "local-deploy": "ERIS_LOCAL_DEPLOY",
   "score-every": "ERIS_SCORE_EVERY",
+  "chain-mode": "ERIS_CHAIN_MODE",
 };
 function cliOverrides(argv: string[]): Record<string, string> {
   const flags = parseCliFlags(argv);

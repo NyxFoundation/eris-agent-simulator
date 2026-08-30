@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { getAddress, type Abi, type Address } from "viem";
 import { publicClient } from "../clients.js";
 import { ROOT, ok, info, assert, loadForgeArtifact } from "../util.js";
-import { RPC_URL } from "../config.js";
+import { CHAIN_ID, RPC_URL } from "../config.js";
 import { setProtocol, getRegistry } from "../registry.js";
 import { seedGmLiquidity, type GmDepositCore } from "./gmx-deposit.js";
 
@@ -58,8 +58,9 @@ const SHARED_TOKEN_KEYS = ["WETH", "USDC", "USDT", "WBTC"] as const;
 function seedSharedTokenArtifacts() {
   const reg = getRegistry();
   mkdirSync(DEPLOYMENTS, { recursive: true });
-  // hardhat-deploy requires a .chainId in the network folder
-  writeFileSync(resolve(DEPLOYMENTS, ".chainId"), "31337");
+  // hardhat-deploy requires a .chainId in the network folder, and checks it against the connected
+  // node: hardcoding 31337 pinned the whole GMX deploy to a dev anvil (issue #33 (4)).
+  writeFileSync(resolve(DEPLOYMENTS, ".chainId"), String(CHAIN_ID));
 
   const weth9 = loadForgeArtifact("WETH9", "WETH9");
   const erc20 = loadForgeArtifact("MockERC20", "MockERC20");
@@ -98,7 +99,14 @@ export async function deployGmxV2({ seed }: { seed: boolean }) {
     ["hardhat", "deploy", "--network", "localhost"],
     {
       cwd: GMX_DIR,
-      env: { ...process.env, SKIP_AUTO_HANDLER_REDEPLOYMENT: "true", RPC_URL },
+      env: {
+        ...process.env,
+        SKIP_AUTO_HANDLER_REDEPLOYMENT: "true",
+        RPC_URL,
+        // The vendor's `localhost` network reads both (patched in gmx-localhost.patch), so the
+        // child targets the same node and chain id this process resolved (issue #33 (4)).
+        CHAIN_ID: String(CHAIN_ID),
+      },
       stdio: ["ignore", "inherit", "inherit"],
     },
   );
