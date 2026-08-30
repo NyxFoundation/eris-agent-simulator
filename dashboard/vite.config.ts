@@ -33,15 +33,32 @@ function resolveInsideRuns(rel: string): string | null {
   }
 }
 
-type RunEntry = { id: string; mtimeMs: number; live?: boolean };
+type RunEntry = {
+  id: string;
+  mtimeMs: number;
+  live?: boolean;
+  /** A scenario matrix (`backtest --scenarios`) rather than a single world. */
+  kind?: "matrix";
+};
 
-/** A directory is a run when it holds a summary.json, or fresh artifacts still being appended to. */
+/**
+ * A directory is a run when it holds a summary.json, or fresh artifacts still being appended to.
+ * A matrix directory holds neither: it holds matrix.json, and its scenarios are separate run dirs
+ * beside it. Both go in the same index, tagged, because the picker offers both — a matrix is the
+ * outer unit the competition is actually scored over (ADR 0020) and a run is one draw inside it.
+ */
 function classifyRun(rel: string): RunEntry | null {
   const dir = path.join(RUNS_DIR, rel);
   try {
     const stat = fs.statSync(path.join(dir, "summary.json"));
     return { id: rel, mtimeMs: stat.mtimeMs };
   } catch {
+    try {
+      const stat = fs.statSync(path.join(dir, "matrix.json"));
+      return { id: rel, mtimeMs: stat.mtimeMs, kind: "matrix" };
+    } catch {
+      // neither — fall through to the live check below
+    }
     // no summary yet — live if any artifact is still being appended to
     const freshest = ["events.jsonl", "blocks.csv"]
       .map((f) => {
@@ -198,6 +215,11 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // The dashboard re-scores stored matrices, and the aggregation rules it offers have to be the
+      // same code `npm run metrics -- --matrix` runs: two implementations of one ranking is two
+      // answers to "who won" with no way to tell which is the real one. core/src/scoring/aggregate.ts
+      // is pure (no fs, no chain) precisely so it can be reused this way -- see its header.
+      "@core": fileURLToPath(new URL("../core/src", import.meta.url)),
     },
   },
   server: {

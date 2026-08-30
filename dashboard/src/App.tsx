@@ -5,6 +5,7 @@ import { ExplorerPage } from "@/pages/ExplorerPage";
 import { MarketPage } from "@/pages/MarketPage";
 import { ArchivePage } from "@/pages/ArchivePage";
 import { AgentDetailPage } from "@/pages/AgentDetailPage";
+import { MatrixPage } from "@/pages/MatrixPage";
 
 export default function App() {
   const [pathname, setPathname] = useState(() => window.location.pathname);
@@ -22,5 +23,10 @@ export default function App() {
   if (pathname === "/explorer") return <ExplorerPage />;
   if (pathname === "/markets") return <MarketPage />;
   if (pathname === "/archive") return <ArchivePage />;
-  return <TopPage />;
+  // One run's overview. It used to be the landing page, which meant the dashboard opened on a single
+  // draw from a regime's distribution — the reading config/scenarios/public.yaml explicitly warns
+  // against. The outer unit is the matrix, so that is what "/" resolves to; MatrixPage falls back to
+  // this view when there is no matrix on disk (the standalone `sim:realtime` loop).
+  if (pathname === "/run") return <TopPage />;
+  return <MatrixPage />;
 }

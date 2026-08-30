@@ -114,7 +114,33 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
 - `npm run metrics -- <runDir...>` — 保存済み run を**全候補指標で採点し直す**（issue #56。M1 PnL / M4 超過対数成長 / M7 MPPM / M9 `mean−λ·std` / M13 Sharpe と、run 集合に対する M27 Borda）。チェーン不要・再 run 不要で `summary.json` の epoch 系列だけを読む。`--lambda` / `--rho` / `--out <path>`。**`resetUnit` が混ざった run 集合は拒否**する（ADR 0020 §1）。実測の記録は `docs/scoring-metric-measurements.md`
 - `npm run metrics -- --matrix runs/matrix-<id>` — **シナリオ行列を「指標 × 集約」の総当たりで採点し直す**（ADR 0020 §5）。連続経済では「どの指標か」だけが問いだが、`scenario` モードでは**シナリオ横断の集約**という第 2 の選択が要る（`core/src/scoring/aggregate.ts` = `zscore` 現行 / `borda` 順位 / `mean` 絶対量。どれもレジーム等重み）。出力は各組み合わせの順位、M9×zscore との一致/不一致、そして **#55 の露出**（1 体が場の sd を何倍に膨らませているか。1.0 = 誰も場のスケールを決めていない）。matrix.json の `runDir` は相対なので、spot から回収した tarball を展開したディレクトリでもそのまま読める
 - `npm run explorer` — sim anvil を索引するローカル Blockscout（issue #31。stock イメージ pin、`infra/blockscout/`）。UI は http://localhost:3100。**チェーンをリセットしたら `npm run explorer:reset`**（resetFork/snapshot-revert の巻き戻しに indexer は追従できないので DB を消して再索引するのが正規のライフサイクル）。`npm run explorer:tag` が最新 run の `summary.json` から agent アドレスに名前タグを付ける（reset で消えるので run ごと）。接続先・chain id・fork 用 `FIRST_BLOCK` は `infra/blockscout/explorer.env`
-- `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの run picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
+- `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
+  - **選択は `matrix ⊃ scenario ⊃ round` の 3 段で、既定の着地点は matrix**（`/` = Standings）。
+    1 シナリオは分布からの 1 ドローであって結果ではない（`config/scenarios/public.yaml`:
+    "the published seeds are five draws from it, **not the target**"）ので、そこを既定にすると
+    「読んではいけない単位」を最初に見せることになる。実際 `full-calm#404` と `#505` で 1 位が違い、
+    どちらも 35 シナリオ通しの M9 順位では上位ではない。picker は matrix →（`regime#seed` 表示の）
+    scenario の順で、**— all runs —** で matrix 層を切ると `runs/` 全部が並ぶ（= `sim:realtime` の
+    日常ループ。matrix が 1 つも無ければ従来の run ビューに落ちる）。`/markets` と `/explorer` は
+    1 world の中でしか意味を持たないので scenario 層のまま
+  - **Standings（matrix ビュー）は「指標 × 集約」を両方コントロールにする**。順位表を 1 枚出すと
+    決まっていないことを決まったように見せるため（#56 未決 / ADR 0019 は z-score を後継未定で引退）。
+    指標は M9 / M1(epoch 系列) / net PnL(final marks) / α / M4 / M13 / M7、集約は zscore / borda / mean。
+    **集約は `core/src/scoring/aggregate.ts` を dashboard が直接 import する**（`@core/*` alias。
+    採点ロジックを 2 箇所に置くと CLI と画面で順位が食い違ったとき、どちらが本物か分からなくなる）。
+    実測で **15 通り全部が `npm run metrics -- --matrix` と一致**。
+    - **λ / ρ は生きたノブ**。`summary.json` の `logReturns` は floor・baseline 超過・破産凍結まで
+      適用済みで λ だけが未適用なので、スライダは近似ではなく正確な再採点になる
+    - **`M1 PnL (epoch 系列)` と `net PnL (final marks)` は別物**。後者（matrix.json 収録）は
+      両端を run 最終価格で評価するので β が相殺され `noop` がきっかり 0。前者（CLI の M1）は
+      epoch 境界の最初と最後の差で価格が動くので `full-calm#101` の `noop` は +322 USDC。
+      順位も違うので両方をラベル付きで出している
+    - #55 の露出（1 体が場の sd を何倍にしているか）と、他 14 通りとの不一致を並記する
+  - **順位の理由はラウンド層にしか無い**。順位表の行を開くと、その agent の全エポックを matrix 横断で
+    プールした mean / std / λ·std / 分布 / レジーム別内訳が出る（M9 自体はシナリオごと→レジーム平均
+    なので、これは別の順位ではなく説明）。実測: `clean-arb` は 1 ラウンド +0.32bp・std 1.78bp で 1 位、
+    `levered-long-max` は **+4.90bp**・std **78.60bp** で最下位。**15 倍稼いでいる方が最下位**で、
+    差は全部 std。レジーム別に割ると `cex-drift` だけ +48.3bp で他 6 本は負け＝レジーム適合の話だと分かる
   - **「ラウンド」= 採点エポック**（ADR 0019。run ではない）。上部の帯は選択中 run の epoch 系列そのもの
     （`valueSeries.epochSeries.boundaryBlocks`）で、セグメントを押すとその round の per-agent 結果
     （Δ value / 超過対数リターン / 順位と変動 / その窓に落ちた環境イベント）が開き、`/explorer` の

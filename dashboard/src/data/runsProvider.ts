@@ -19,6 +19,7 @@ import {
   loadAllAgentLogs,
   loadRun,
   listRuns,
+  runEntries,
   type AgentLogEntry,
   type LoadedRun,
   type MarketSeriesFile,
@@ -79,7 +80,9 @@ interface ResolvedRun extends LoadedRun {
 }
 
 async function resolveRun(): Promise<ResolvedRun> {
-  const runs = await listRuns();
+  // Matrix dirs share the index with runs but hold no run artifacts, so they are never a candidate
+  // here — loading one as a run would 404 on summary.json.
+  const runs = runEntries(await listRuns());
   if (runs.length === 0) {
     throw new Error(
       "no runs found under runs/ — complete a `npm run sim:realtime` first",
@@ -516,7 +519,11 @@ function buildStandings(
       const start = values[0];
       const now = values[closed];
       netPnlUsdc =
-        start != null && now != null ? now - start : closed === 0 ? 0 : netPnlUsdc;
+        start != null && now != null
+          ? now - start
+          : closed === 0
+            ? 0
+            : netPnlUsdc;
       drawdownValues = values.slice(0, closed + 1);
     }
 
@@ -1274,7 +1281,8 @@ function buildAgentPositions(
     out.push({
       market: "Aave account",
       kind: a.debtUsd > 0 ? "BORROW" : "SUPPLY",
-      tone: a.healthFactor !== null && a.healthFactor < 1.1 ? "down" : "neutral",
+      tone:
+        a.healthFactor !== null && a.healthFactor < 1.1 ? "down" : "neutral",
       size: formatUsd(a.collateralUsd),
       mark:
         a.healthFactor === null ? "HF ∞" : `HF ${a.healthFactor.toFixed(3)}`,
@@ -1307,7 +1315,8 @@ function lastRowStable(run: LoadedRun, symbol: string): number | undefined {
 /** Where a run event's block number lives. Observations carry theirs inside the observation. */
 function eventBlockOf(event: RunEvent): number | null {
   if (typeof event.blockNumber === "number") return event.blockNumber;
-  const obs = event.observation as { blockNumber?: number | string } | undefined;
+  const obs = event.observation as
+    { blockNumber?: number | string } | undefined;
   const block = Number(obs?.blockNumber);
   return Number.isFinite(block) ? block : null;
 }
@@ -1531,7 +1540,11 @@ export async function fetchArchiveSnapshot(): Promise<ArchiveSnapshot> {
   const full = await resolveRun();
   const round = buildRound(full);
   const run = clampToReplay(full);
-  const standings = buildStandings(full, round.epochs, round.status === "replay");
+  const standings = buildStandings(
+    full,
+    round.epochs,
+    round.status === "replay",
+  );
   const { prices } = observationSeries(run);
   const last = prices[prices.length - 1];
   const infoByHash = await txInfoByHash(run);
@@ -1661,9 +1674,11 @@ export async function fetchAgentDetailSnapshot(
   const full = await resolveRun();
   const round = buildRound(full);
   const run = clampToReplay(full);
-  const standing = buildStandings(full, round.epochs, round.status === "replay").find(
-    (s) => s.agent === agentId,
-  );
+  const standing = buildStandings(
+    full,
+    round.epochs,
+    round.status === "replay",
+  ).find((s) => s.agent === agentId);
   if (!standing) throw new Error(`agent ${agentId} not found in run ${run.id}`);
 
   const summaryAgent = (run.summary.agents ?? []).find((a) => a.id === agentId);

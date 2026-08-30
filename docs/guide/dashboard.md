@@ -16,9 +16,29 @@ out of `runs/<id>/` or straight off the anvil, and a run is complete without eit
 npm run dashboard        # Vite dev server at http://localhost:5173
 ```
 
-The sidebar's run picker lists `runs/<id>/`, newest first, and the selection persists per browser.
+The dashboard's selection has three nested levels, the same three the data has:
+
+```
+matrix  ⊃  scenario (= one run)  ⊃  round (= one scoring epoch)
+```
+
+**The landing page is the matrix**, because that is the unit the competition is scored on
+(ADR 0020). One scenario is a single draw from a regime's distribution, and
+`config/scenarios/public.yaml` says what to do with it: *"Generalizing across the distribution is the
+thing being measured; the published seeds are five draws from it, not the target."* Opening on one
+scenario invites exactly the reading that sentence warns against — in the 35-scenario `full-8h`
+matrix, `full-calm#404` and `full-calm#505` have different winners, and neither of them is the one
+the standings pick.
+
+The sidebar picks a matrix, then a scenario inside it (labelled `regime#seed`, not by timestamp).
+Choosing **— all runs —** turns the matrix level off and lists every run under `runs/`, which is the
+standalone `sim:realtime` loop; with no matrix on disk at all the dashboard opens on the run view as
+before. `Markets` and `Explorer` stay at the scenario level, because a venue's state and a block
+range only mean anything inside one world.
+
 Every view is built from the run's own artifacts, served by a small Vite dev-server plugin
-(`/runs/index.json` + `/runs/<id>/<file>`):
+(`/runs/index.json` + `/runs/<id>/<file>`). The index also lists matrix directories, tagged
+`kind: "matrix"` — they hold `matrix.json` instead of run artifacts:
 
 | artifact | what it drives |
 |---|---|
@@ -37,6 +57,37 @@ Two venues are *not* in `market.json`: the LST vault and the Liquity system. The
 emits their whole state every block (`lst_block` / `liquity_block` in `events.jsonl`), so the
 dashboard reads it from there rather than reconstructing it twice — which also means those panels
 work for runs recorded before `market.json` grew any of its fields.
+
+### Standings (the matrix view)
+
+Two independent choices turn a matrix into a ranking, and neither is settled — #56 is open on the
+metric, ADR 0019 retired the incumbent aggregator without naming a successor. So the page presents
+both as controls rather than presenting one table as the answer:
+
+| choice | what it decides | options |
+|---|---|---|
+| **metric** | what one scenario is worth to one agent | M9 `mean − λ·std` · M1 PnL (epoch series) · net PnL (final marks) · α · M4 excess log growth · M13 Sharpe · M7 MPPM |
+| **aggregation** | how 35 of those become one standing | z-score (incumbent) · Borda · mean — all with regimes weighted equally |
+
+The aggregators are imported from `core/src/scoring/aggregate.ts`, the same pure module
+`npm run metrics -- --matrix` runs, so the two agree by construction rather than by coincidence.
+Verified on the `full-8h` matrix: **all 15 metric × aggregator orders match the CLI exactly.**
+
+- **λ and ρ are live.** M9 is recomputed from each run's stored `logReturns`, which are already
+  floored, already in excess of the baseline and already frozen at bankruptcy — every part of the
+  ADR 0019 construction *except* λ. So moving the slider is the exact re-score, not an approximation.
+- **`M1 PnL (epoch series)` and `net PnL (final marks)` are different quantities, not roundings of
+  each other.** The stored `netPnlUsdc` prices *both* ends at the run's last prices, so β cancels and
+  `noop` is exactly 0. The CLI's M1 is the epoch series' last-minus-first with prices moving, where
+  `noop` earned +322 USDC in `full-calm#101`. They rank differently; both are on the menu, labelled.
+- **Scale exposure** is issue #55 as a number: how much of each scenario's spread is one agent's
+  doing. A z-score divides by that spread. Measured on `full-8h`: median 2.03×, worst 3.13×
+  (`levered-long-max` in `full-cex-drift#303`).
+- **If the rule were different** compares every other combination's order against the one on screen.
+  While the ranking rule is undecided, that is the honest summary of a matrix: how much of the order
+  is a property of the agents rather than of the choice.
+- The **scenario × agent** heatmap colours each row by that scenario's own z-score, so rows compare
+  to each other rather than to the field's absolute scale. Clicking a cell opens that scenario.
 
 ### Rounds
 
@@ -68,6 +119,22 @@ would be a claim that the round was quiet. Rounds that have not started yet are 
 
 Each agent's page has the same breakdown for that agent alone (its **Rounds** tab), and the explorer
 scopes its block and transaction lists to the selected round.
+
+**The round is also where the standings are explained.** Opening a row on the matrix page pools every
+epoch that agent produced across the whole matrix and shows mean, std, λ·std and the difference, plus
+the distribution and a per-regime split. This is *not* an alternative ranking — M9 is computed per
+scenario, then averaged per regime — it answers the one question the standings cannot. On `full-8h`:
+
+| agent | mean / round | std / round | M9 place |
+|---|---:|---:|---:|
+| `clean-arb` | +0.32 bp | 1.78 bp | **1** |
+| `multi-arb` | +1.50 bp | 14.03 bp | 14 |
+| `levered-long-max` | **+4.90 bp** | **78.60 bp** | **21 (last)** |
+
+The agent earning fifteen times more per round than the winner finishes last, and the whole of the
+difference is the spread. Nothing above the round level shows that. The per-regime split is where it
+becomes actionable — `levered-long-max` earns +48.3 bp/round in `cex-drift` and loses in all six
+other regimes, so its placing is a statement about regime fit, not about execution.
 
 ### An agent's page
 

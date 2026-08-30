@@ -1,0 +1,52 @@
+// Loads the selected matrix and the round series behind every one of its scenarios.
+//
+// Both are fetched together: the round series is what lets lambda move the standings rather than
+// only the explanation, and it is small (35 summary.json files, ~1.7 MB for the full set) because
+// only the epoch scores are read out of each.
+
+import { useMemo } from "react";
+import { loadMatrix, type LoadedMatrix } from "./matrixArtifacts";
+import {
+  getSelectedMatrixId,
+  NO_MATRIX,
+  useSelectedMatrixId,
+} from "./matrixSelection";
+import { loadMatrixRounds, type ScenarioRounds } from "./matrixScoring";
+import { listRuns, matrixEntries } from "./runArtifacts";
+import { useSnapshot } from "./useSnapshot";
+
+export interface MatrixSnapshot {
+  matrix: LoadedMatrix;
+  rounds: Map<string, ScenarioRounds>;
+  /** Scenarios whose run dir was not collected, so they have no round detail. */
+  missingRounds: number;
+}
+
+/** null data with no error means "there are no matrices under runs/" — a valid state, not a failure. */
+export function useMatrixSnapshot() {
+  const selected = useSelectedMatrixId();
+
+  const state = useSnapshot<MatrixSnapshot | null>(
+    `matrix:${selected ?? "latest"}`,
+    async () => {
+      let id = getSelectedMatrixId();
+      if (id === NO_MATRIX) return null;
+      if (!id) {
+        const matrices = matrixEntries(await listRuns());
+        // The index is newest-first, so this is the most recent competition on disk.
+        id = matrices[0]?.id ?? null;
+      }
+      if (!id) return null;
+      const matrix = await loadMatrix(id);
+      const rounds = await loadMatrixRounds(matrix);
+      return {
+        matrix,
+        rounds,
+        missingRounds: matrix.file.scenarios.length - rounds.size,
+      };
+    },
+    () => false,
+  );
+
+  return useMemo(() => state, [state]);
+}
