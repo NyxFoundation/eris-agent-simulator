@@ -41,7 +41,7 @@ timestamp):
 
 | route | level | what it is |
 |---|---|---|
-| `/` | competition | **Standings** — ranked by the competition rule; the score column shows the score itself (bps per round), plus one reference net-PnL column. A row opens the agent's page |
+| `/` | competition | **Standings** — ranked by the competition rule; the score column shows the score itself (×10⁴, no unit suffix), plus one reference net-PnL column. A row opens the agent's page |
 | `/scenario` | scenario | one world: its markets, its ranking, its blocks. Titled by what it is a draw of (`full-crash#303`), not by when the file was written |
 | `/markets`, `/explorer` | scenario | venue state and blocks — they only mean anything inside one world |
 | `/agent/<id>` | both | the agent's competition standing (its **Standing** tab) and its scenario-level detail |
@@ -66,7 +66,7 @@ Every view is built from the run's own artifacts, served by a small Vite dev-ser
 
 | artifact | what it drives |
 |---|---|
-| `summary.json` | standings (score = M9 in bps/epoch, PnL%, Sharpe, max drawdown) |
+| `summary.json` | standings (score = M9, shown ×10⁴; PnL%, Sharpe, max drawdown) |
 | `events.jsonl` | price and portfolio series (the reconstructed observations), the event tape |
 | `blocks.csv` | the blocks/transactions view (methods joined from the agent logs) |
 | `agents/<id>.jsonl` | decision logs and submitted-tx self-reports |
@@ -130,11 +130,12 @@ round detail. The aggregation is imported from `core/src/scoring/aggregate.ts`, 
 `npm run metrics -- --matrix` runs, so the dashboard and the CLI agree by construction rather than
 by coincidence.
 
-**The score column shows the score in its own units** — the regime-equal mean of per-scenario
-scores, in bps per round — because a unitless z aggregate answers "who is ahead" but not "by how
-much of what". The rank order still comes from the official z aggregation, whose value sits in the
-score cell's tooltip; the two can disagree in order, and that difference is the aggregation choice,
-stated rather than hidden. Regime columns are the same quantity per regime.
+**The score column shows the score itself** — the regime-equal mean of per-scenario scores,
+scaled ×10⁴ so it does not round to zero, displayed without a unit suffix — because a z aggregate
+answers "who is ahead" but not "by how much". The rank order still comes from the official z
+aggregation, whose value sits in the score cell's tooltip; the two can disagree in order, and that
+difference is the aggregation choice, stated rather than hidden. Regime columns are the same
+quantity per regime.
 
 The table carries one reference column, **net PnL (final marks)**, summed across scenarios. It is
 not the ranking: it prices both ends at the run's last prices, so β cancels and `noop` is exactly 0

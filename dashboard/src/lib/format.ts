@@ -32,13 +32,15 @@ export function formatScore(value: number): string {
   return value.toFixed(3);
 }
 
-/** A round's log return, in bps. Same rule as the score: never round a non-zero to zero. */
+/** A score or per-round log return, ×10⁴ (bps scale) but displayed without a unit suffix — the
+ * scale is stated once where the number is introduced, not on every value. Same rule as the score:
+ * never round a non-zero to zero. */
 export function formatBps(value: number): string {
   const abs = Math.abs(value);
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
-  if (value !== 0 && abs < 0.0005) return value > 0 ? "<+0.001bps" : ">-0.001bps";
+  if (value !== 0 && abs < 0.0005) return value > 0 ? "<+0.001" : ">-0.001";
   const digits = abs >= 10 ? 1 : abs >= 1 ? 2 : 3;
-  return `${sign}${abs.toFixed(digits)}bps`;
+  return `${sign}${abs.toFixed(digits)}`;
 }
 
 /** A rank move, as the leaderboard's arrow column reads it. */

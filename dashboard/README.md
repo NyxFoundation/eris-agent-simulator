@@ -52,8 +52,9 @@ A competition is a scenario matrix written by `backtest --scenarios`
 same shape as a competition of one scenario (`competitionFromRun`), so every
 page processes exactly one kind of object. The sidebar picks a competition,
 then a scenario inside it; `/` is the competition's standings under the fixed
-rule. The score column shows the score in its own units (regime-equal mean of
-per-scenario `mean − λ·std`, in bps per round); the rank order is the official
+rule. The score column shows the score itself (regime-equal mean of
+per-scenario `mean − λ·std`, ×10⁴ so it does not round to zero, no unit
+suffix); the rank order is the official
 aggregation (per-scenario z-scores averaged per regime), whose value sits in
 the score cell's tooltip. Re-scoring under other rules is `npm run metrics`'s
 job. A standings row opens the agent's page, whose Standing tab explains the
@@ -79,7 +80,7 @@ builds every snapshot from run artifacts under `runs/<id>/`, served by a small
 Vite dev-server plugin (`/runs/index.json` + `/runs/<id>/<file>`, see
 `vite.config.ts`).
 
-- `summary.json` — standings (score = M9 in bps/epoch, PnL%, Sharpe, max DD)
+- `summary.json` — standings (score = M9, shown ×10⁴; PnL%, Sharpe, max DD)
 - `events.jsonl` — price/portfolio series (reconstructed observations), event tape
 - `blocks.csv` — explorer blocks/transactions (methods joined from agent logs)
 - `agents/<id>.jsonl` — decision logs and submitted-tx self-reports

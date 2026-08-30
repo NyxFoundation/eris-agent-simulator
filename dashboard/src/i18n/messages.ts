@@ -59,13 +59,13 @@ const en = {
   "home.standingsFinal": "Standings · final",
   "home.standingsThrough": "Standings · through round {at}",
   "home.subtitle":
-    "Score: the agent's average per-round return in a scenario, minus a penalty for its swings (mean − λ·std, λ = 0.25), in bps per round. Rank: its standing within every scenario's field, averaged with equal weight per regime. Click a row for the full breakdown.",
+    "Score: the agent's average per-round return in a scenario, minus a penalty for its swings (mean − λ·std, λ = 0.25). Rank: its standing within every scenario's field, averaged with equal weight per regime. Click a row for the full breakdown.",
   "home.col.move": "move",
   "home.col.agent": "agent",
   "home.col.score": "score",
   "home.col.netPnl": "net PnL",
   "home.scoreTitle":
-    "average per-round score, in basis points. Ranked by the official aggregate (z): {z}",
+    "average per-round score. Ranked by the official aggregate (z): {z}",
   "home.netPnlTitle": "USDC, both ends priced at the run's final marks",
   "home.netPnlScrub": "final value — net PnL only exists at a run's end",
   "home.noteOpens": "{types} opens in {n} scenarios",
@@ -108,7 +108,7 @@ const en = {
   "scenario.info.scoring.p1":
     "Scoring happens after the run, not during it. The environment walks back over historical chain state and values every agent at identical block cross-sections, so the live loop pays nothing for it and no agent can game a snapshot phase.",
   "scenario.info.scoring.p2":
-    "Score is mean − λ·std of per-round log returns of total account value, measured in excess of a do-nothing baseline agent. It is shown in bps of log growth per round.",
+    "Score is mean − λ·std of per-round log returns of total account value, measured in excess of a do-nothing baseline agent.",
   "scenario.info.scoring.p3":
     "PnL, Sharpe (mean/std of the same per-round returns) and max drawdown come from the same reconstructed series and are shown for context; rank is by score.",
   "scenario.info.scoring.p4":
@@ -172,7 +172,7 @@ const en = {
   "agent.stat.drawdown": "Max drawdown",
   "agent.standing.rank": "rank",
   "agent.standing.rankValue": "{r} of {n}",
-  "agent.standing.score": "score (bps/round)",
+  "agent.standing.score": "score / round",
   "agent.standing.scoreTitle": "official ranking value (z aggregate): {z}",
   "agent.standing.netPnl": "net PnL (USDC)",
   "agent.standing.rounds": "rounds",
@@ -603,13 +603,13 @@ const ja: Record<MessageKey, string> = {
   "home.standingsFinal": "順位表 · 最終",
   "home.standingsThrough": "順位表 · ラウンド {at} 時点",
   "home.subtitle":
-    "スコア: シナリオ内の 1 ラウンドあたり平均リターンから、ぶれの大きさに応じたペナルティを引いた値（mean − λ·std、λ = 0.25。単位は bps/ラウンド）。順位: 各シナリオの場内での相対位置を、レジーム等重みで平均して決定。行をクリックすると内訳が見られます。",
+    "スコア: シナリオ内の 1 ラウンドあたり平均リターンから、ぶれの大きさに応じたペナルティを引いた値（mean − λ·std、λ = 0.25）。順位: 各シナリオの場内での相対位置を、レジーム等重みで平均して決定。行をクリックすると内訳が見られます。",
   "home.col.move": "変動",
   "home.col.agent": "エージェント",
   "home.col.score": "スコア",
   "home.col.netPnl": "純損益",
   "home.scoreTitle":
-    "1 ラウンドあたり平均スコア（bps）。順位は公式集約値 (z) で決定: {z}",
+    "1 ラウンドあたり平均スコア。順位は公式集約値 (z) で決定: {z}",
   "home.netPnlTitle": "USDC 建て。両端とも run の最終価格で評価",
   "home.netPnlScrub": "最終値 — 純損益は run 終了時にのみ定義されます",
   "home.noteOpens": "{types} の窓が {n} シナリオで開始",
@@ -651,7 +651,7 @@ const ja: Record<MessageKey, string> = {
   "scenario.info.scoring.p1":
     "採点は run の最中ではなく終了後に行われます。環境が過去のチェーン状態を遡り、全エージェントを同一ブロック断面で評価するので、実行ループは採点コストを払わず、スナップショット時刻を狙った操作もできません。",
   "scenario.info.scoring.p2":
-    "スコアは総資産価値の 1 ラウンドごと対数リターン（何もしないベースライン超過分）の mean − λ·std です。表示単位は bps/ラウンド。",
+    "スコアは総資産価値の 1 ラウンドごと対数リターン（何もしないベースライン超過分）の mean − λ·std です。",
   "scenario.info.scoring.p3":
     "損益・シャープ（同じ系列の mean/std）・最大ドローダウンは同じ再構成系列から出す参考値で、順位はスコアで決まります。",
   "scenario.info.scoring.p4":
@@ -713,7 +713,7 @@ const ja: Record<MessageKey, string> = {
   "agent.stat.drawdown": "最大ドローダウン",
   "agent.standing.rank": "順位",
   "agent.standing.rankValue": "{n} 体中 {r} 位",
-  "agent.standing.score": "スコア (bps/ラウンド)",
+  "agent.standing.score": "スコア / ラウンド",
   "agent.standing.scoreTitle": "公式の順位決定値 (z 集約): {z}",
   "agent.standing.netPnl": "純損益 (USDC)",
   "agent.standing.rounds": "ラウンド数",
