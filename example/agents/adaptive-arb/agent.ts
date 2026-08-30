@@ -12,7 +12,8 @@
  *   ADAPT_CEIL_FRACTION  fraction of the opportunity value allocated to the bid ceiling (default 0.8; the rest is kept as net profit)
  */
 import type { AgentAction, AgentContext, AgentObservation } from "@eris/sdk";
-import { affordable } from "../lib/affordable.js";
+import { affordable, limitFor } from "../lib/affordable.js";
+import { marketViews } from "../lib/markets.js";
 
 const CEIL_FRACTION = Number(process.env.ADAPT_CEIL_FRACTION ?? "0.8");
 const GAS_UNITS_ESTIMATE = 180_000n;
@@ -41,53 +42,78 @@ export function decide(
   };
   const fair = obs.fairPriceUsdcPerWeth;
   if (!Number.isFinite(fair) || fair <= 0) return noop("invalid fair");
-  // Pick the venue with the largest deviation among the 3 venues (same opportunity selection as arb-bot).
-  const venues: Array<{
-    swapType: "swap" | "balancerSwap" | "curveSwap";
-    price: number;
-  }> = [];
-  const uni = obs.protocols?.uniswap?.pool?.priceUsdcPerWeth;
-  if (Number.isFinite(uni) && (uni ?? 0) > 0)
-    venues.push({ swapType: "swap", price: uni as number });
-  const bal = obs.protocols?.balancer?.priceUsdcPerWeth;
-  if (Number.isFinite(bal) && (bal ?? 0) > 0)
-    venues.push({ swapType: "balancerSwap", price: bal as number });
-  const curve = obs.protocols?.curve?.priceUsdcPerWeth;
-  if (Number.isFinite(curve) && (curve ?? 0) > 0)
-    venues.push({ swapType: "curveSwap", price: curve as number });
-  if (venues.length === 0) return noop("no venue");
-  let best = venues[0];
-  let gap = fair / venues[0].price - 1;
-  for (const v of venues) {
-    const g = fair / v.price - 1;
-    if (Math.abs(g) > Math.abs(gap)) {
-      gap = g;
-      best = v;
-    }
-  }
-  signals.gapBps = gap * 10_000;
-  if (Math.abs(gap) < GAP_THRESHOLD) return noop("gap too small");
+  // Every active base, not just WETH (ADR 0013): the widest gap this round may be in the WBTC
+  // market, and scanning only WETH left it untouched however far it drifted.
+  const ranked = marketViews(obs)
+    .flatMap((view) =>
+      view.venues.map((v) => ({
+        base: view.base,
+        decimals: view.baseDecimals,
+        swapType: v.swapType,
+        price: v.price,
+        gap: view.fair / v.price - 1,
+      })),
+    )
+    .filter((c) => Number.isFinite(c.gap))
+    .sort((a, b) => Math.abs(b.gap) - Math.abs(a.gap));
+  if (ranked.length === 0) return noop("no venue");
 
-  const tokenIn = gap > 0 ? "USDC" : "WETH";
-  const max = BigInt(
-    tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits,
-  );
-  const sizeBps = Math.min(
-    SIZE_BPS_MAX,
-    Math.max(SIZE_BPS_MIN, Math.floor(Math.abs(gap) * 200_000)),
-  );
-  // Cap by the wallet, not just by the rule limit. Under USDC-only funding the sell leg has no
-  // inventory behind it, and proposing it anyway is a self-reject that reads in the score exactly
-  // like choosing not to trade (issue #54).
-  const amountIn = affordable(obs, tokenIn, (max * BigInt(sizeBps)) / 10_000n);
-  if (amountIn === 0n)
-    return noop(`no ${tokenIn} to fund this side of the gap`);
+  const sizeFor = (g: number): number =>
+    Math.min(
+      SIZE_BPS_MAX,
+      Math.max(SIZE_BPS_MIN, Math.floor(Math.abs(g) * 200_000)),
+    );
+
+  signals.gapBps = ranked[0].gap * 10_000;
+  if (Math.abs(ranked[0].gap) < GAP_THRESHOLD) return noop("gap too small");
+
+  let chosen: {
+    venue: (typeof ranked)[number];
+    gap: number;
+    tokenIn: string;
+    amountIn: bigint;
+  } | null = null;
+  let skippedUnfundable = false;
+  for (const candidate of ranked) {
+    if (Math.abs(candidate.gap) < GAP_THRESHOLD) break;
+    const token = candidate.gap > 0 ? "USDC" : candidate.base;
+    const cap = limitFor(obs, token);
+    // Cap by the wallet, not just by the rule limit. Proposing an unfundable leg is a self-reject
+    // that reads in the score exactly like choosing not to trade (issue #54).
+    const amount = affordable(
+      obs,
+      token,
+      (cap * BigInt(sizeFor(candidate.gap))) / 10_000n,
+    );
+    if (amount === 0n) {
+      skippedUnfundable = true;
+      continue;
+    }
+    chosen = { venue: candidate, gap: candidate.gap, tokenIn: token, amountIn: amount };
+    break;
+  }
+  if (chosen === null)
+    return noop(
+      skippedUnfundable
+        ? "every venue with a gap wants a leg this wallet cannot fund"
+        : "no fundable gap",
+    );
+
+  const best = chosen.venue;
+  const gap = chosen.gap;
+  const tokenIn = chosen.tokenIn;
+  const sizeBps = sizeFor(gap);
+  const amountIn = chosen.amountIn;
+  signals.gapBps = gap * 10_000;
 
   // Opportunity value ceiling (per gas) = profit * CEIL_FRACTION / gas. Bidding above this eats into net.
+  // The leg's USD size uses the *base's* own decimals and fair: a WBTC leg priced off the WETH
+  // fair with 18 decimals would be wrong by ten orders of magnitude.
   const sizeUsdc =
     tokenIn === "USDC"
       ? Number(amountIn) / 1e6
-      : (Number(amountIn) / 1e18) * fair;
+      : (Number(amountIn) / 10 ** best.decimals) *
+        (marketViews(obs).find((v) => v.base === best.base)?.fair ?? fair);
   const profitUsdc = sizeUsdc * Math.abs(gap);
   const profitWei =
     BigInt(Math.max(0, Math.floor((profitUsdc / fair) * 1e9))) * ONE_GWEI;
@@ -118,13 +144,16 @@ export function decide(
 
   signals.bidGwei = Number(bid / ONE_GWEI);
   signals.ceilingGwei = Number(ceilingPerGas / ONE_GWEI);
-  const action: AgentAction = {
+  // `base` only belongs on a non-WETH swap (ADR 0013): the WETH market is the untagged default.
+  const built: Record<string, unknown> = {
     type: best.swapType,
     tokenIn,
     amountIn: amountIn.toString(),
     maxPriorityFeePerGasWei: bid.toString(),
     slippageBps: 75,
   };
-  ctx.log({ round, action, signals });
+  if (best.base !== "WETH") built.base = best.base;
+  const action = built as unknown as AgentAction;
+  ctx.log({ round, action, signals, reason: `${best.base} gap ${(gap * 10_000).toFixed(1)}bps on ${best.swapType}` });
   return action;
 }

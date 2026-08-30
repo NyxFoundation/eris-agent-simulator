@@ -1,0 +1,119 @@
+# config/rosters/full-field.yaml — a field wide enough for every venue the full-* regimes deploy.
+#
+# One roster across the whole set, because a roster that differs between regimes makes the standings
+# incomparable: `total` averages only the regimes an agent appeared in, so an agent present in one is
+# ranked on a fraction of the evidence against a differently sized z-pool (backtest warns about this).
+#
+# Every wallet is AUTO (keccak("auto-wallet:<seed>:<id>")), so the roster is self-contained and needs
+# no AGENTn_PRIVATE_KEY on the box running it.
+#
+# Funding is USDC-only (ADR 0017 §4). Nobody starts holding WETH, an LST share or eUSD: every unit of
+# exposure below is one the agent chose to buy, and pays the beta that USDC-denominated scoring
+# charges for it. Strategies whose venue is quiet in a given regime are expected to idle there —
+# that is a result, not a gap.
+#
+# The six strategies that ship a prompt.md are frozen (ERIS_AGENT_FROZEN: "1"), so the LLM never
+# rewrites them mid-run. This is a comparison between rule strategies: leaving revision on would
+# make each scenario's result depend on what a model wrote that time, which is a different
+# experiment and the one ADR 0018 §5 says to run against a frozen control rather than instead of
+# one. lst-carry-wide needs the flag too -- it points at lst-carry via `dir`.
+#
+# Run: npm run backtest -- --scenarios config/scenarios/full.yaml --agents config/rosters/full-field.yaml
+agents:
+  # --- controls -------------------------------------------------------------
+  - id: noop
+    wallet: AUTO
+    baseline: true
+    description: does nothing (baseline). Its score is the hurdle every other agent has to clear
+  - id: random
+    wallet: AUTO
+    description: trades at random, deterministically seeded. The lower control
+
+  # --- cross-venue arbitrage (the AMM venues) --------------------------------
+  - id: venue-arb
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: WETH-only cross-venue arbitrage, swapping toward fair on the most deviated pool
+  - id: multi-arb
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: base-agnostic cross-venue arbitrage (all active bases x all venues)
+  - id: clean-arb
+    wallet: AUTO
+    description: two-leg round trip priced against fees, impact and expected adverse move
+  - id: clean-arb-wide
+    dir: clean-arb
+    wallet: AUTO
+    env: { ERIS_ARB_SAFETY_BPS: "150" }
+    description: the same strategy demanding a wider margin before it trades
+  - id: cross-venue-arb
+    wallet: AUTO
+    description: buys the cheapest venue and sells the dearest (an independent implementation)
+  - id: max-profit-arb
+    wallet: AUTO
+    description: sizes its priority fee off the expected profit — bids for order rather than for size
+  - id: stat-arb
+    wallet: AUTO
+    description: trades the pool's deviation from the oracle fair rather than venue against venue
+  - id: adaptive-arb
+    wallet: AUTO
+    description: bids the minimum needed to win the ordering, capped by the opportunity's value
+
+  # --- lending: leverage and liquidation -------------------------------------
+  - id: levered-long
+    dir: levered-long
+    wallet: AUTO
+    env: { ERIS_LEVER_TARGET_HF: "1.8" }
+    description: borrows against its collateral to hold more WETH than it was funded with
+  - id: levered-long-max
+    dir: levered-long
+    wallet: AUTO
+    env: { ERIS_LEVER_TARGET_HF: "1.15", ERIS_LEVER_MIN_HF: "1.06" }
+    description: the same with almost no margin — the one agent a drawdown can actually liquidate
+  - id: liquidator
+    wallet: AUTO
+    description: liquidates unhealthy Aave positions. Idle until a regime seeds victims and breaks one
+
+  # --- liquidity provision ---------------------------------------------------
+  - id: lp-provider
+    wallet: AUTO
+    description: provides liquidity and collects fees — the one strategy that holds inventory and waits
+
+  # --- market-priced stables (DAI, and eUSD once liquity is deployed) ---------
+  - id: peg-arb
+    wallet: AUTO
+    description: buys a stable below par and sells it back as the peg recovers
+  - id: peg-arb-eager
+    dir: peg-arb
+    wallet: AUTO
+    env: { ERIS_PEG_ARB_BUY_BPS: "10", ERIS_PEG_ARB_SELL_BPS: "0" }
+    description: the same strategy buying a shallower discount and holding for par
+
+  # --- LST: the two prices of one asset --------------------------------------
+  # Under USDC-only funding these have to buy the WETH the venue is denominated in before they can
+  # do anything, and they do -- but only when the discount or the yield left in the run covers what
+  # buying costs. "I was not handed inventory" is not a market judgement; "the venue is not paying
+  # enough to be worth entering" is.
+  - id: lst-carry
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: stakes for yield, or trades the gap between the vault's redemption rate and the pool
+  - id: lst-carry-wide
+    dir: lst-carry
+    wallet: AUTO
+    env: { ERIS_LST_SAFETY_BPS: "45", ERIS_AGENT_FROZEN: "1" }
+    description: the same, demanding three times the edge over cost before it trades the gap
+
+  # --- CDP stablecoin: the three sides of the Liquity venue -------------------
+  - id: redemption-arb
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: buys eUSD below par and redeems it against the riskiest Trove — a claim, not a forecast
+  - id: trove-manager
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: borrows against ETH and defends the Trove against redemption and liquidation
+  - id: sp-underwriter
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: underwrites liquidations from the Stability Pool and takes the collateral at a discount

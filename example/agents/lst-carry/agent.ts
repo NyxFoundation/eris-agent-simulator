@@ -55,6 +55,14 @@ const MIN_STAKE_APY_BPS = Number(
   process.env.ERIS_LST_MIN_STAKE_APY_BPS ?? "200",
 );
 const SLIPPAGE_BPS = Number(process.env.ERIS_LST_SLIPPAGE_BPS ?? "50");
+// Cost of acquiring the WETH this venue is denominated in: one AMM fee plus the slippage of the
+// buy. Funding is USDC-only in every official regime (ADR 0017 §4), so a strategy that will not
+// buy its own exposure simply never trades -- and "I was not handed inventory" is not a market
+// judgement. What is a judgement is whether the venue is worth paying the entry for.
+const ENTRY_COST_BPS = Number(process.env.ERIS_LST_ENTRY_COST_BPS ?? "35");
+// Share of the USDC budget to convert on entry. Half, not all: the rest stays as the numéraire the
+// score is denominated in, so a wrong entry is a position rather than the whole book.
+const ENTRY_BPS = Number(process.env.ERIS_LST_ENTRY_BPS ?? "5000");
 // Leveraged staking (issue #38 phase 3): post LST as Aave collateral, borrow WETH against it, stake
 // that too. Off by default -- it multiplies the yield and the slashing exposure in equal measure,
 // and the LST's Aave price follows the vault a block late, so a slash reaches the health factor
@@ -229,6 +237,108 @@ export function decideLeverage(input: {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// entry: buying the WETH this venue is denominated in
+//
+// Funding is USDC-only in every official regime, so the venue is unreachable until the agent buys
+// its way in. That is a trade with a price -- one AMM fee plus slippage -- and it is only worth
+// paying when the LST side offers more than it costs. Two things can pay for it:
+//
+//   the discount   the pool is selling LST below what the vault owes, and the gap is wider than the
+//                  cost of getting in and back out again.
+//   the yield      staking pays yieldPerBlockBps for as long as the run has left. Over a short
+//                  horizon that is a few basis points and cannot cover an entry; over a long one it
+//                  can. Without a horizon the run length is unknown, so the yield is not counted.
+//
+// Neither is a reason to convert the whole book: ENTRY_BPS leaves the rest in the numéraire the
+// score is denominated in, so a wrong entry is a position rather than the run.
+
+type EntryVenue = { swapType: "swap" | "balancerSwap" | "curveSwap"; price: number };
+
+function cheapestWethVenue(obs: AgentObservation): EntryVenue | null {
+  const p = obs.protocols ?? {};
+  const venues: EntryVenue[] = [];
+  if (p.uniswap?.pool)
+    venues.push({ swapType: "swap", price: p.uniswap.pool.priceUsdcPerWeth });
+  if (p.balancer)
+    venues.push({ swapType: "balancerSwap", price: p.balancer.priceUsdcPerWeth });
+  if (p.curve)
+    venues.push({ swapType: "curveSwap", price: p.curve.priceUsdcPerWeth });
+  let best: EntryVenue | null = null;
+  for (const v of venues) {
+    if (!Number.isFinite(v.price) || v.price <= 0) continue;
+    if (best === null || v.price < best.price) best = v;
+  }
+  return best;
+}
+
+export function decideEntry(
+  obs: AgentObservation,
+  lst: LstObservation,
+): { action: AgentAction; reason: string } {
+  // The discount is only actionable if the pool answered; an unquoted market is par by fallback and
+  // must not be read as "the peg held" (issue #27's discipline applies here too).
+  const discountBps = lst.marketQuoted === false ? 0 : -lst.discountBps;
+  const blocksRemaining = obs.blocksRemaining;
+  const yieldBps =
+    blocksRemaining === undefined
+      ? 0
+      : lst.yieldPerBlockBps * blocksRemaining;
+
+  // Two paths in, and they do not cost the same. Staking mints at the vault's par and the scorer
+  // marks the position at par too, so holding to the end never touches the pool: the only cost is
+  // buying the WETH. Buying the LST cheap on the secondary market does touch it, twice, so it pays
+  // the pool cost and the noise margin on top. Charging the pool round trip to the stake path was
+  // wrong, and it was the difference between a hurdle the yield can clear and one it cannot.
+  const stakeHurdle = ENTRY_COST_BPS;
+  const discountHurdle = ENTRY_COST_BPS + POOL_COST_BPS + SAFETY_BPS;
+  const worthIt = discountBps > discountHurdle || yieldBps > stakeHurdle;
+  if (!worthIt)
+    return {
+      action: {
+        type: "noop",
+        reason: `buying in costs ${ENTRY_COST_BPS.toFixed(0)}bps: the yield left is ${yieldBps.toFixed(1)}bps against that, and the discount is ${discountBps.toFixed(1)}bps against ${discountHurdle.toFixed(0)}bps — neither pays for the entry`,
+      },
+      reason: "no WETH: the venue is not offering enough to pay for buying in",
+    };
+
+  const venue = cheapestWethVenue(obs);
+  if (venue === null)
+    return {
+      action: {
+        type: "noop",
+        reason: "no WETH and no AMM venue quoting a price to buy it on",
+      },
+      reason: "no WETH and nowhere to buy it",
+    };
+
+  const budget = BigInt(obs.balances.usdcUnits || "0");
+  const capped =
+    budget < BigInt(obs.limits.maxUsdcInUnits)
+      ? budget
+      : BigInt(obs.limits.maxUsdcInUnits);
+  const amountIn = (capped * BigInt(ENTRY_BPS)) / 10_000n;
+  if (amountIn === 0n)
+    return {
+      action: { type: "noop", reason: "no USDC to buy the entry with" },
+      reason: "no WETH and no USDC to buy it with",
+    };
+
+  return {
+    action: {
+      type: venue.swapType,
+      tokenIn: "USDC",
+      amountIn: amountIn.toString(),
+      maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei,
+      slippageBps: SLIPPAGE_BPS,
+    },
+    reason:
+      discountBps > discountHurdle
+        ? `buying in: the LST is ${discountBps.toFixed(1)}bps below par against a ${discountHurdle.toFixed(0)}bps round trip`
+        : `buying in: ${yieldBps.toFixed(1)}bps of yield left over ${blocksRemaining} blocks against a ${stakeHurdle.toFixed(0)}bps entry`,
+  };
+}
+
 export function decideCarry(input: {
   lst: LstObservation;
   wethBalanceWei: bigint;
@@ -371,17 +481,19 @@ export function decide(
     collateralBase === 0n &&
     queued === 0n
   ) {
-    // This venue is denominated in WETH. A USDC-only funding profile leaves nothing to work with,
-    // which is a configuration mismatch rather than a market judgement -- say so plainly.
+    // This venue is denominated in WETH and the wallet holds none. Buy it, when the venue is
+    // offering enough to cover what buying costs -- see decideEntry.
+    const entry = decideEntry(obs, lst);
     ctx?.log({
       round: obs.round,
-      reason: "no WETH, no LST, nothing posted or queued",
+      reason: entry.reason,
+      signals: {
+        discountBps: lst.discountBps,
+        apyBps: lst.apyBps,
+        blocksRemaining: obs.blocksRemaining,
+      },
     });
-    return {
-      type: "noop",
-      reason:
-        "no WETH and no LST: the lst venue is WETH-denominated, so this run needs funding.wethWei > 0",
-    };
+    return entry.action;
   }
 
   // Leverage first when it is switched on: an unhealthy borrow outranks any trade, and posting

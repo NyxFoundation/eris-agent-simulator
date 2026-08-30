@@ -7,6 +7,8 @@
 // env:
 //   CROSS_VENUE_SPREAD_BPS  minimum spread to trade (bps, default 10)
 import type { AgentAction, AgentObservation } from "@eris/sdk";
+import { limitFor } from "../lib/affordable.js";
+import { marketViews } from "../lib/markets.js";
 
 const SPREAD_BPS = intEnv("CROSS_VENUE_SPREAD_BPS", 10);
 const SIZE_BPS_MIN = 250;
@@ -19,65 +21,84 @@ export function decide(
   try {
     const p = obs.protocols ?? {};
     const fee = obs.limits.defaultPriorityFeePerGasWei;
-    const venues: Array<{ swapType: string; price: number }> = [];
-    const uni = p.uniswap?.pool?.priceUsdcPerWeth;
-    if (typeof uni === "number" && uni > 0)
-      venues.push({ swapType: "swap", price: uni });
-    const bal = p.balancer?.priceUsdcPerWeth;
-    if (typeof bal === "number" && bal > 0)
-      venues.push({ swapType: "balancerSwap", price: bal });
-    const cv = p.curve?.priceUsdcPerWeth;
-    if (typeof cv === "number" && cv > 0)
-      venues.push({ swapType: "curveSwap", price: cv });
-    if (venues.length < 2) {
-      return { type: "noop", reason: "need >=2 venues" };
+    // Scan every active base, not just WETH (ADR 0013). The bundle is delta-neutral inside one
+    // market, so the base has to be the same on both legs -- what changes is which market offers
+    // the widest venue-to-venue spread this round.
+    type Pick = {
+      base: string;
+      decimals: number;
+      lo: { swapType: string; price: number };
+      hi: { swapType: string; price: number };
+      spread: number;
+    };
+    let pick: Pick | null = null;
+    for (const view of marketViews(obs)) {
+      if (view.venues.length < 2) continue;
+      let lo = view.venues[0];
+      let hi = view.venues[0];
+      for (const v of view.venues) {
+        if (v.price < lo.price) lo = v;
+        if (v.price > hi.price) hi = v;
+      }
+      if (lo.swapType === hi.swapType) continue;
+      const spread = hi.price / lo.price - 1;
+      if (spread < SPREAD_BPS / 10_000) continue;
+      if (pick === null || spread > pick.spread)
+        pick = {
+          base: view.base,
+          decimals: view.baseDecimals,
+          lo,
+          hi,
+          spread,
+        };
     }
-    let lo = venues[0];
-    let hi = venues[0];
-    for (const v of venues) {
-      if (v.price < lo.price) lo = v;
-      if (v.price > hi.price) hi = v;
-    }
-    const spread = hi.price / lo.price - 1;
-    if (spread < SPREAD_BPS / 10_000 || lo.swapType === hi.swapType) {
+    if (pick === null) {
       return { type: "noop", reason: "spread too small" };
     }
+    const spread = pick.spread;
+    const lo = pick.lo;
+    const hi = pick.hi;
     const sizeBps = Math.min(
       SIZE_BPS_MAX,
       Math.max(SIZE_BPS_MIN, Math.floor(spread * 200_000)),
     );
-    // Delta neutralization: capping the buy leg and sell leg with independent USDC/WETH limits leaves the
-    // WETH amounts mismatched, so a residual (directional) position accumulates every round. Instead, cap the
-    // buy leg by "the USDC needed to buy the sellable WETH limit" and sell exactly the WETH bought (buy==sell so net delta~0).
+    // Delta neutralization: capping the buy leg and sell leg with independent USDC/base limits leaves
+    // the base amounts mismatched, so a residual (directional) position accumulates every round.
+    // Instead, cap the buy leg by "the USDC needed to buy the sellable base limit" and sell exactly
+    // what was bought (buy==sell so net delta~0).
     const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
-    const maxWeth = BigInt(obs.limits.maxWethInWei);
-    const priceScaled = BigInt(Math.max(1, Math.round(lo.price * 100))); // USDC*100/WETH
-    // USDC (1e6) needed to buy maxWeth (wei) at lo.price = maxWeth * priceScaled / (100 * 1e12)
-    const usdcForWethCap = (maxWeth * priceScaled) / (100n * 10n ** 12n);
-    const usdcCap = maxUsdc < usdcForWethCap ? maxUsdc : usdcForWethCap;
+    const maxBase = limitFor(obs, pick.base);
+    const baseScale = 10n ** BigInt(pick.decimals);
+    const priceScaled = BigInt(Math.max(1, Math.round(lo.price * 100))); // USDC*100/base
+    // USDC (1e6) needed to buy maxBase at lo.price
+    const usdcForBaseCap = (maxBase * priceScaled * 1_000_000n) / (100n * baseScale);
+    const usdcCap = maxUsdc < usdcForBaseCap ? maxUsdc : usdcForBaseCap;
     const usdcIn = (usdcCap * BigInt(sizeBps)) / 10_000n;
-    // WETH (wei) acquired by the buy leg = usdcIn (1e6) * 1e18 / (lo.price * 1e6) = usdcIn * 1e12 * 100 / priceScaled
-    const boughtWethWei = (usdcIn * 10n ** 12n * 100n) / priceScaled;
-    // Sell 98% since slippage shrinks the received amount (matches delta while avoiding a naked short / exceeding balance).
-    const wethIn = (boughtWethWei * 98n) / 100n;
-    if (usdcIn <= 0n || wethIn <= 0n) {
+    // base acquired by the buy leg at lo.price
+    const boughtBase = (usdcIn * 100n * baseScale) / (priceScaled * 1_000_000n);
+    // Sell 98% since slippage shrinks the received amount (matches delta while avoiding a naked
+    // short / exceeding balance).
+    const baseIn = (boughtBase * 98n) / 100n;
+    if (usdcIn <= 0n || baseIn <= 0n) {
       return { type: "noop", reason: "computed size zero" };
     }
+    const withBase = (a: Record<string, unknown>): Record<string, unknown> =>
+      pick.base === "WETH" ? a : { ...a, base: pick.base };
     const bundle = {
       type: "bundle",
       actions: [
-        {
+        withBase({
           type: lo.swapType,
           tokenIn: "USDC",
           amountIn: usdcIn.toString(),
           slippageBps: SLIPPAGE_BPS,
-        },
-        {
+        }),
+        withBase({
           type: hi.swapType,
-          tokenIn: "WETH",
-          amountIn: wethIn.toString(),
+          tokenIn: pick.base,
+          amountIn: baseIn.toString(),
           slippageBps: SLIPPAGE_BPS,
-        },
+        }),
       ],
       maxPriorityFeePerGasWei: fee,
     };
