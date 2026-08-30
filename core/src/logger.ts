@@ -76,4 +76,11 @@ export class RunLogger {
   artifact(filename: string, data: unknown): void {
     writeFileSync(join(this.runDir, filename), `${safeStringify(data)}\n`);
   }
+
+  // One line appended to a jsonl artifact. Distinct from `event`, which is the run's single
+  // chronological log: a series with its own file can be tailed on its own, which is what makes
+  // live standings possible without reading a week of events (ADR 0021 §3).
+  append(filename: string, row: unknown): void {
+    appendFileSync(join(this.runDir, filename), `${safeStringify(row)}\n`);
+  }
 }

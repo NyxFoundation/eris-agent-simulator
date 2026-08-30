@@ -78,7 +78,8 @@ import {
   writePriceFeedStorage,
   writePriceFeedStorageFor,
 } from "./priceFeed.js";
-import { reconstructValueSeries } from "./reconstruct.js";
+import { reconstructValueSeries, type EpochSeries } from "./reconstruct.js";
+import { LiveScorer } from "./liveScoring.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import {
   scoreEpochSeriesByAgent,
@@ -159,6 +160,60 @@ async function observeBlockTimeSec(
   } catch {
     return null;
   }
+}
+
+// How far apart the two ways of reading the same boundary came out (ADR 0021 §3). Reported per run
+// rather than asserted in a test, because the thing that could break them apart -- a venue whose
+// state depends on when it is read rather than on which block -- would only show up on a chain.
+export function compareEpochSeries(
+  live: EpochSeries,
+  swept: EpochSeries,
+): {
+  boundaries: number;
+  compared: number;
+  maxAbsDiffUsdc: number;
+  maxRelDiff: number;
+  worst?: {
+    agentId: string;
+    boundaryBlock: number;
+    live: number;
+    swept: number;
+  };
+} {
+  const sweptIndex = new Map(swept.boundaryBlocks.map((b, i) => [b, i]));
+  let compared = 0;
+  let maxAbsDiffUsdc = 0;
+  let maxRelDiff = 0;
+  let worst:
+    | { agentId: string; boundaryBlock: number; live: number; swept: number }
+    | undefined;
+  for (const [agentId, liveValues] of Object.entries(live.valuesByAgent)) {
+    const sweptValues = swept.valuesByAgent[agentId];
+    if (!sweptValues) continue;
+    live.boundaryBlocks.forEach((block, i) => {
+      const j = sweptIndex.get(block);
+      if (j === undefined) return;
+      const a = liveValues[i];
+      const b = sweptValues[j];
+      if (a === null || b === null || a === undefined || b === undefined)
+        return;
+      compared++;
+      const abs = Math.abs(a - b);
+      const rel = Math.abs(b) > 0 ? abs / Math.abs(b) : abs > 0 ? 1 : 0;
+      if (abs > maxAbsDiffUsdc) {
+        maxAbsDiffUsdc = abs;
+        worst = { agentId, boundaryBlock: block, live: a, swept: b };
+      }
+      maxRelDiff = Math.max(maxRelDiff, rel);
+    });
+  }
+  return {
+    boundaries: live.boundaryBlocks.length,
+    compared,
+    maxAbsDiffUsdc,
+    maxRelDiff,
+    ...(worst ? { worst } : {}),
+  };
 }
 
 // Free money check for a public chain (issue #33 (1) / ADR 0021 §7).
@@ -302,6 +357,12 @@ type SubmittedMeta = {
 // The economic-gas (ADR 0011) endowment floor. 1 tx ~1.5M gas; a floor (~tens of txs) so even a modest tip does
 // not run out of gas on the first move. The final endowment value is decided by calibration measurement (ADR "undecided").
 const MIN_ECONOMIC_GAS_ETH_WEI = 500_000_000_000_000_000n; // 0.5 ETH
+
+// How long a window the post-run sweep will attempt. anvil retains roughly 1,050 blocks of state
+// (ADR 0006 Risks), and reading past that returns zeros rather than an error -- a value series that
+// silently reads as a cliff. Below the measured limit on purpose: the sweep also reads the G7 median
+// window before each boundary, which reaches a few blocks further back than the boundary itself.
+const HISTORY_SWEEP_LIMIT = 1000;
 
 export async function runRealtimeSimulation(
   // Evaluation tools inject per-regime SEED etc. programmatically (without mutating env).
@@ -1347,6 +1408,26 @@ export async function runRealtimeSimulation(
     let processing = false;
     let lastProcessedBlock = Number(await publicClient.getBlockNumber());
     const runStartBlock = lastProcessedBlock + 1;
+
+    // ---- live scoring (ADR 0021 §3) ----
+    // The epoch boundary is read as it goes past rather than swept up afterwards. On a chain that
+    // never stops there is no afterwards, and on any chain the node's history depth is finite --
+    // both of which the sweep hits at exactly the run lengths a practice period needs.
+    const liveScorer = new LiveScorer({
+      publicClient,
+      logger,
+      agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+      enabledIds,
+      activeStables: activeStables(),
+      priceFeed: priceFeedAddress,
+      runStartBlock,
+      epochBlocks: config.epochBlocks,
+      markMedianBlocks: config.markMedianBlocks,
+      // Venue state at each boundary, so a live viewer has something to draw before market.json
+      // exists. Off when the post-run reconstruction will cover it anyway *and* the run is short
+      // enough for that to be the richer artifact.
+      sampleMarket: true,
+    });
     if (schedule.hasEvents()) {
       // Include runStartBlock → the dashboard can judge the window in absolute blocks (ADR 0008/0009).
       logger.event({
@@ -1934,6 +2015,12 @@ export async function runRealtimeSimulation(
             tasks.push(timed(deployerKeyTask));
           if (liquityRuntime) tasks.push(timed(liquityWatchTask));
           const results = await Promise.all(tasks);
+
+          // After the block's own work, not beside it: this reads the block that has just been
+          // mined, so it cannot race anything above, and running it inside the Promise.all would
+          // put a cross-section read on the critical path of every block instead of one in twelve.
+          const epochMs = await timed(() => liveScorer.onBlock(bn));
+
           const [keeperMs, oracleMs, stateFlowMs] = results;
           let taskIdx = 3;
           const victimMs =
@@ -1960,6 +2047,9 @@ export async function runRealtimeSimulation(
             ...(liquidityMs !== undefined ? { liquidityMs } : {}),
             ...(depegMs !== undefined ? { depegMs } : {}),
             ...(liquityMs !== undefined ? { liquityMs } : {}),
+            // Zero on the eleven blocks in twelve that are not a boundary; the non-zero ones are
+            // what live scoring costs the loop.
+            ...(epochMs > 0 ? { epochMs } : {}),
             totalMs: Date.now() - roundStart,
           });
 
@@ -2047,7 +2137,54 @@ export async function runRealtimeSimulation(
     // (issue #38: an LST redemption still in the queue when the run ends).
     let liquidatableValueByAgent: Record<string, number> = {};
     let epochScores: Record<string, EpochScore> | undefined;
-    if (finalBlock >= runStartBlock) {
+
+    // ---- the score (ADR 0019), from the series read at the boundaries (ADR 0021 §3) ----
+    // Taken here rather than out of the post-run sweep below, because this is the series that
+    // exists on a chain the sweep cannot cover: too long for the node's history, and with no end to
+    // start sweeping from. On a short run the two are the same numbers -- the same reader, the same
+    // blocks, the same median window -- so nothing about a bounded run changes.
+    const liveEpochSeries = liveScorer.series();
+    if (liveEpochSeries) {
+      // ADR 0019 §2: the score is excess over the roster's baseline entry. Without one the returns
+      // stay raw and every agent is charged for the drift of the ETH gas reserve it had to hold --
+      // measured at 93% of an active agent's dispersion, so this is not a detail.
+      const baseline = agentRuntimes.find((a) => a.spec.baseline)?.id;
+      if (baseline === undefined)
+        console.warn(
+          "[scoring] no roster agent is marked `baseline: true`; epoch scores are raw returns, " +
+            "not excess over a benchmark (ADR 0019 §2)",
+        );
+      epochScores = scoreEpochSeriesByAgent(liveEpochSeries.valuesByAgent, {
+        ...(baseline !== undefined ? { benchmarkId: baseline } : {}),
+      });
+      logger.event({ type: "epoch_series_scored", ...liveScorer.meta() });
+    }
+
+    // The post-run sweep produces things the boundary series does not: the equity curve between
+    // boundaries, alpha (which needs the first and last cross-section at a fixed reference fair),
+    // the unpriced-holdings report, and the venue-state artifact the dashboard draws from. All of it
+    // is worth having -- and none of it is reachable once the window outruns the node's history,
+    // which is precisely the case ADR 0021 exists for. So it is attempted for a window that fits and
+    // skipped, explicitly, for one that does not.
+    const sweepWindow = finalBlock - runStartBlock;
+    const sweepFits = sweepWindow <= HISTORY_SWEEP_LIMIT;
+    if (finalBlock >= runStartBlock && !sweepFits) {
+      logger.event({
+        type: "post_run_sweep_skipped",
+        windowBlocks: sweepWindow,
+        limit: HISTORY_SWEEP_LIMIT,
+        haveEpochSeries: liveEpochSeries !== undefined,
+        note:
+          "the run window is longer than the node retains state for, so a post-run sweep would " +
+          "read zeros rather than history. The score comes from the boundaries read live (ADR 0021 §3); " +
+          "the equity curve, alpha and market.json are what this costs",
+      });
+      console.error(
+        `[reconstruct] window ${sweepWindow} blocks exceeds the ~${HISTORY_SWEEP_LIMIT}-block sweep ` +
+          "limit; scoring used the live epoch boundaries and the equity curve was not rebuilt",
+      );
+    }
+    if (finalBlock >= runStartBlock && sweepFits) {
       try {
         const meta = await reconstructValueSeries({
           publicClient,
@@ -2065,24 +2202,16 @@ export async function runRealtimeSimulation(
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
         liquidatableValueByAgent = meta.liquidatableValueByAgent;
-        if (meta.epochSeries) {
-          // ADR 0019 §2: the score is excess over the roster's baseline entry. Without one the
-          // returns stay raw and every agent is charged for the drift of the ETH gas reserve it had
-          // to hold -- measured at 93% of an active agent's dispersion, so this is not a detail.
-          const baseline = agentRuntimes.find((a) => a.spec.baseline)?.id;
-          if (baseline === undefined)
-            console.warn(
-              "[scoring] no roster agent is marked `baseline: true`; epoch scores are raw returns, " +
-                "not excess over a benchmark (ADR 0019 §2)",
-            );
-          epochScores = scoreEpochSeriesByAgent(
-            meta.epochSeries.valuesByAgent,
-            {
-              ...(baseline !== undefined ? { benchmarkId: baseline } : {}),
-            },
-          );
-        }
         logger.event({ type: "value_series_reconstructed", ...meta });
+        // The claim that live scoring *replaces* the sweep rests on the two producing the same
+        // number at the same boundary. On a run short enough to have both, check it rather than
+        // assert it: a divergence means one of the two reads a different world, and the run that
+        // discovers it should be the one that says so.
+        if (liveEpochSeries && meta.epochSeries)
+          logger.event({
+            type: "epoch_series_agreement",
+            ...compareEpochSeries(liveEpochSeries, meta.epochSeries),
+          });
       } catch (err) {
         // The reconstruction refuses a cross-section it cannot read rather than emitting a cliff in
         // the value series (issue #44). Losing the series is bad; publishing a wrong one is worse —
@@ -2122,6 +2251,21 @@ export async function runRealtimeSimulation(
         logger.event({ type: "market_series_reconstruction_failed", error });
         console.error(`[reconstruct] market series unavailable: ${error}`);
       }
+    }
+
+    // The boundary series is the authoritative one wherever both exist, so that summary.json's
+    // rounds and its scores are the same object. They agree by construction on a run the sweep
+    // covers -- same reader, same blocks, same median window -- and only the live one exists on a
+    // run it does not.
+    if (liveEpochSeries) {
+      valueSeries = {
+        ...valueSeries,
+        epochSeries: liveEpochSeries,
+        // Nested rather than spread. `valueSeries.source` describes where the *equity curve* came
+        // from, and spreading the live meta over it renamed the sweep's own artifact to
+        // "live-epoch-boundaries" -- a run that did sweep, claiming it had not.
+        epochSeriesMeta: liveScorer.meta(),
+      };
     }
 
     // ---- post-run rule check (ADR 0006 §5): exceeding the fee cap is grounds for invalidating a run ----

@@ -157,6 +157,10 @@ export function buildManifest(opts: {
     },
     round: {
       epochBlocks: config.epochBlocks,
+      // Real time is the unit ADR 0021 §3 states a round in; blocks are what that comes to at this
+      // chain's cadence. Both are published, because a participant sizing an exit against
+      // `blocksRemaining` needs the blocks and a participant deciding when to check the standings
+      // needs the minutes.
       approxSeconds: config.epochBlocks * config.blockTimeSec,
       markMedianBlocks: config.markMedianBlocks,
       scoreEvery: config.scoreEvery,

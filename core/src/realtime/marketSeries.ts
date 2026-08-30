@@ -615,6 +615,76 @@ function formatUnitsShort(units: number): string {
 // ---------------------------------------------------------------------------
 // main entry
 
+// A market sampler that stays alive across the run, so a row can be taken at the block it describes
+// rather than replayed out of history afterwards (ADR 0021 §3).
+//
+// The layouts -- which AMM markets, which GMX markets, which Aave reserves -- are resolved once and
+// reused, which is also why this is a class: they cost several reads each, and on a chain that never
+// restarts there is no "after" in which to resolve them.
+export class LiveMarketSampler {
+  private layouts: {
+    extraBases: string[];
+    ammMarkets: AmmMarketLayout[];
+    gmxMarkets: GmxMarketLayout[];
+    aaveReserves: AaveReserveLayout[];
+    stableMarkets: StableMarket[];
+  } | null = null;
+
+  constructor(
+    private readonly opts: {
+      publicClient: PublicClient;
+      enabledIds: ProtocolId[];
+      priceFeed: Address;
+    },
+  ) {}
+
+  private async call(
+    contracts: MulticallContract[],
+    blockNumber: bigint,
+  ): Promise<unknown[]> {
+    if (contracts.length === 0) return [];
+    const results = (await this.opts.publicClient.multicall({
+      contracts: contracts as never,
+      blockNumber,
+      multicallAddress: MULTICALL3,
+      allowFailure: true,
+    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+    return results.map((r) => (r.status === "failure" ? undefined : r.result));
+  }
+
+  private async resolve(blockNumber: number) {
+    if (this.layouts) return this.layouts;
+    this.layouts = {
+      extraBases: baseTokens()
+        .map((t) => t.symbol)
+        .filter((s) => s !== "WETH"),
+      ammMarkets: ammMarketLayouts(this.opts.enabledIds),
+      gmxMarkets: await resolveGmxMarkets(
+        this.opts.publicClient,
+        this.opts.enabledIds,
+        BigInt(blockNumber),
+      ),
+      aaveReserves: await resolveAaveReserves(
+        this.opts.publicClient,
+        this.opts.enabledIds,
+        BigInt(blockNumber),
+      ),
+      stableMarkets: stablesForProtocols(this.opts.enabledIds),
+    };
+    return this.layouts;
+  }
+
+  async sample(blockNumber: number): Promise<MarketSeriesRow | undefined> {
+    const layouts = await this.resolve(blockNumber);
+    return sampleBlock({
+      call: (contracts, bn) => this.call(contracts, bn),
+      blockNumber,
+      priceFeed: this.opts.priceFeed,
+      ...layouts,
+    });
+  }
+}
+
 export async function reconstructMarketSeries(opts: {
   publicClient: PublicClient;
   agents: ReconstructionAgent[];

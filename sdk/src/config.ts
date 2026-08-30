@@ -162,6 +162,14 @@ export type SimConfig = {
   // harness counts blocks: 12/epoch, which leaves room for G7's per-boundary median window and keeps a
   // 42-epoch week (504 blocks) inside anvil's ~1,050 block history retention (ADR 0019 §8).
   epochBlocks: number;
+  // Epoch length stated in real time (ERIS_EPOCH_SECONDS; 0 = state it in blocks instead). ADR 0021
+  // §3 settles the *unit*: a round on a chain that runs for a week is 30 minutes to an hour, so that
+  // standings move several times a day without the series growing far past what the metric has been
+  // calibrated on. Blocks are then whatever that comes to at this chain's cadence, which is the
+  // right dependency direction -- an operator who changes the block time should not silently change
+  // how long a round is. The block count it resolves to, and the lambda that goes with it, are the
+  // pieces ADR 0021 leaves open and #56 decides.
+  epochSeconds: number;
   // G7 window (ERIS_MARK_MEDIAN_BLOCKS): how many blocks, the boundary included, the manipulable
   // marks are medianed over when an epoch boundary is valued. <= 1 marks boundaries live.
   // 5 of a 12-block epoch is provisional -- the ADR leaves N to be set against the epoch length once
@@ -333,6 +341,7 @@ export function loadConfig(env = process.env): SimConfig {
     5_000_000_000_000_000_000n,
   );
   const rpcUrl = env.ANVIL_RPC_URL ?? `http://127.0.0.1:${anvilPort}`;
+  const blockTimeSec = intEnv(env.ERIS_BLOCK_TIME_SEC, 2);
   return {
     rpcUrl,
     readRpcUrl:
@@ -382,7 +391,7 @@ export function loadConfig(env = process.env): SimConfig {
     // Aave variable-rate accrual and GMX funding occur at a realistic scale.
     roundTimeSeconds: intEnv(env.ROUND_TIME_SECONDS, 3600),
     // Real-time mode settings.
-    blockTimeSec: intEnv(env.ERIS_BLOCK_TIME_SEC, 2),
+    blockTimeSec,
     runSeconds: intEnv(env.ERIS_RUN_SECONDS, 20),
     runBlocks: intEnv(env.ERIS_RUN_BLOCKS, 0),
     skipReset: env.ERIS_SKIP_RESET === "1",
@@ -393,7 +402,8 @@ export function loadConfig(env = process.env): SimConfig {
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
-    epochBlocks: Math.max(0, intEnv(env.ERIS_EPOCH_BLOCKS, 12)),
+    epochBlocks: resolveEpochBlocks(env, blockTimeSec),
+    epochSeconds: Math.max(0, intEnv(env.ERIS_EPOCH_SECONDS, 0)),
     markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
@@ -558,6 +568,28 @@ export function loadConfig(env = process.env): SimConfig {
       keeper: hexEnv(env.KEEPER_PRIVATE_KEY, deriveRoleKey("keeper")),
     },
   };
+}
+
+// Blocks per scoring epoch. Stated in real time when `run.epochSeconds` is set (ADR 0021 §3), in
+// blocks otherwise -- and refusing to accept both, because two answers to "how long is a round" is
+// exactly the ambiguity the axis was introduced to remove.
+function resolveEpochBlocks(
+  env: NodeJS.ProcessEnv,
+  blockTimeSec: number,
+): number {
+  const seconds = Math.max(0, intEnv(env.ERIS_EPOCH_SECONDS, 0));
+  const blocks = Math.max(0, intEnv(env.ERIS_EPOCH_BLOCKS, 12));
+  if (seconds === 0) return blocks;
+  if (env.ERIS_EPOCH_BLOCKS !== undefined && env.ERIS_EPOCH_BLOCKS !== "")
+    throw new Error(
+      "run.epochSeconds and run.epochBlocks both set. A round has one length: state it in seconds " +
+        "(which converts at run.blockTimeSec) or in blocks, not both (ADR 0021 §3)",
+    );
+  if (!(blockTimeSec > 0))
+    throw new Error(
+      "run.epochSeconds needs a positive run.blockTimeSec to convert into blocks",
+    );
+  return Math.max(1, Math.round(seconds / blockTimeSec));
 }
 
 function parseEnabledProtocols(value: string | undefined): ProtocolId[] {
