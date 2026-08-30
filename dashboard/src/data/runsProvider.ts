@@ -39,6 +39,7 @@ import {
   VENUE_LABELS,
   type TxInfo,
 } from "./artifactHelpers";
+import { t } from "@/i18n/messages";
 import { buildScenarioPanel, buildVenuePanels } from "./venuePanels";
 import { getReplay, replayHeadFor } from "./replay";
 import { getSelectedRound } from "./roundSelection";
@@ -72,19 +73,14 @@ import type {
 // ---------------------------------------------------------------------------
 // run resolution
 
-interface ResolvedRun extends LoadedRun {
-  /** 1-based position of this run in chronological order across runs/. */
-  runNumber: number;
-}
+type ResolvedRun = LoadedRun;
 
 async function resolveRun(): Promise<ResolvedRun> {
   // Matrix dirs share the index with runs but hold no run artifacts, so they are never a candidate
   // here — loading one as a run would 404 on summary.json.
   const runs = runEntries(await listRuns());
   if (runs.length === 0) {
-    throw new Error(
-      "no runs found under runs/ — complete a `npm run sim:realtime` first",
-    );
+    throw new Error(t("err.noRuns"));
   }
   const selected = getSelectedRunId();
   const index = Math.max(
@@ -94,11 +90,7 @@ async function resolveRun(): Promise<ResolvedRun> {
   const entry = runs[index === -1 ? 0 : index];
   // A live run has no summary.json yet — its state is tailed and read from the chain instead of
   // loaded from artifacts (issue #63 Phase 3), and nothing about it is cached across refreshes.
-  const run = entry.live
-    ? await loadLiveRun(entry.id)
-    : await loadRun(entry.id);
-  // runs are sorted newest-first; number them oldest = 1 so newer runs count up
-  return { ...run, runNumber: runs.length - runs.indexOf(entry) };
+  return entry.live ? loadLiveRun(entry.id) : loadRun(entry.id);
 }
 
 // The tailed in-memory logs for a live run; the on-disk artifacts otherwise. The artifact loader
@@ -400,7 +392,6 @@ function buildRound(run: ResolvedRun): RoundInfo {
     const durationSec = bounds.length > 0 ? Math.min(...bounds) : 0;
     return {
       runId: run.id,
-      runNumber: run.runNumber,
       status: "live",
       startsAt,
       endsAt: startsAt + durationSec * 1000,
@@ -418,7 +409,6 @@ function buildRound(run: ResolvedRun): RoundInfo {
   const endsAt = completed ? Date.parse(completed) : startsAt;
   return {
     runId: run.id,
-    runNumber: run.runNumber,
     status: replay ? "replay" : "archived",
     startsAt,
     endsAt,
@@ -577,7 +567,8 @@ function blockClock(run: LoadedRun, blockNumber: number): string {
 // tape / archive events
 
 interface TapeRule {
-  kind: string;
+  /** Resolved lazily so the ticker follows the current language. */
+  kind: () => string;
   tone: TapeEvent["tone"];
   body: (e: RunEvent) => string;
   value: (e: RunEvent) => string;
@@ -585,26 +576,33 @@ interface TapeRule {
 
 const TAPE_RULES: Record<string, TapeRule> = {
   run_started_realtime: {
-    kind: "RUN",
+    kind: () => t("tape.kind.run"),
     tone: "neutral",
     body: (e) =>
-      `run started · ${((e.enabledProtocols as string[]) ?? []).join(" ")}`,
-    value: (e) => `${num(e.runBlocks)} blocks`,
+      t("tape.runStarted", {
+        protocols: ((e.enabledProtocols as string[]) ?? []).join(" "),
+      }),
+    value: (e) => t("tape.blocksN", { n: num(e.runBlocks) }),
   },
   stress_schedule: {
-    kind: "SCENARIO",
+    kind: () => t("tape.kind.scenario"),
     tone: "accent",
     body: (e) => {
       const events = (e.events as { type?: string }[] | undefined) ?? [];
-      return `stress schedule: ${events.map((s) => s.type).join(", ")}`;
+      return t("tape.schedule", {
+        types: events.map((s) => s.type).join(", "),
+      });
     },
-    value: (e) => `${((e.events as unknown[]) ?? []).length} events`,
+    value: (e) =>
+      t("tape.eventsN", { n: ((e.events as unknown[]) ?? []).length }),
   },
   stress_victim_hf: {
-    kind: "VICTIM HF",
+    kind: () => t("tape.kind.victimHf"),
     tone: "down",
     body: (e) =>
-      `victim health factors at blk ${num(e.blockNumber).toLocaleString("en-US")}`,
+      t("tape.victimHf", {
+        block: num(e.blockNumber).toLocaleString("en-US"),
+      }),
     value: (e) => {
       const victims =
         (e.victims as { healthFactor?: string }[] | undefined) ?? [];
@@ -615,69 +613,90 @@ const TAPE_RULES: Record<string, TapeRule> = {
     },
   },
   stress_liquidation: {
-    kind: "LIQUIDATION",
+    kind: () => t("tape.kind.liquidation"),
     tone: "down",
     body: (e) =>
-      `liquidation at blk ${num(e.blockNumber).toLocaleString("en-US")}`,
+      t("tape.liquidation", {
+        block: num(e.blockNumber).toLocaleString("en-US"),
+      }),
     value: () => "",
   },
   stress_liquidity_pull: {
-    kind: "LIQUIDITY",
+    kind: () => t("tape.kind.liquidity"),
     tone: "down",
-    body: (e) => `${str(e.venue)} ${str(e.market)} depth ${str(e.direction)}`,
+    body: (e) =>
+      t("tape.liquidityPull", {
+        venue: str(e.venue),
+        market: str(e.market),
+        direction: str(e.direction),
+      }),
     value: (e) => `×${num(e.depthMultiplier).toFixed(2)}`,
   },
   stress_liquidity_restored: {
-    kind: "LIQUIDITY",
+    kind: () => t("tape.kind.liquidity"),
     tone: "up",
-    body: (e) => `${str(e.venue)} depth restored`,
+    body: (e) => t("tape.liquidityRestored", { venue: str(e.venue) }),
     value: () => "",
   },
   stress_eusd_depeg: {
-    kind: "DEPEG",
+    kind: () => t("tape.kind.depeg"),
     tone: "down",
     body: (e) =>
-      `eUSD pool sell-off (blk ${num(e.blockNumber).toLocaleString("en-US")})`,
+      t("tape.eusdDepeg", {
+        block: num(e.blockNumber).toLocaleString("en-US"),
+      }),
     value: () => "",
   },
   stress_depeg: {
-    kind: "DEPEG",
+    kind: () => t("tape.kind.depeg"),
     tone: "down",
     body: (e) =>
-      `${str(e.stable)} pool sell-off (blk ${num(e.blockNumber).toLocaleString("en-US")})`,
+      t("tape.depeg", {
+        stable: str(e.stable),
+        block: num(e.blockNumber).toLocaleString("en-US"),
+      }),
     value: () => "",
   },
   lst_slash: {
-    kind: "LST SLASH",
+    kind: () => t("tape.kind.lstSlash"),
     tone: "down",
     body: (e) =>
-      `LST redemption rate cut ${num(e.redemptionRateBefore).toFixed(4)} → ${num(e.redemptionRateAfter).toFixed(4)}`,
+      t("tape.lstSlash", {
+        before: num(e.redemptionRateBefore).toFixed(4),
+        after: num(e.redemptionRateAfter).toFixed(4),
+      }),
     value: (e) => `${num(e.bps).toFixed(0)}bps`,
   },
   liquity_liquidation: {
-    kind: "TROVE",
+    kind: () => t("tape.kind.trove"),
     tone: "down",
-    body: (e) => `trove liquidated (${shortAddress(str(e.borrower))})`,
+    body: (e) => t("tape.trove", { borrower: shortAddress(str(e.borrower)) }),
     value: (e) => `${(fromWei(e.debtEusdWei) ?? 0).toFixed(0)} eUSD`,
   },
   liquity_redemption: {
-    kind: "REDEMPTION",
+    kind: () => t("tape.kind.redemption"),
     tone: "purple",
     body: (e) =>
-      `eUSD redeemed for ETH (blk ${num(e.blockNumber).toLocaleString("en-US")})`,
+      t("tape.redemption", {
+        block: num(e.blockNumber).toLocaleString("en-US"),
+      }),
     value: (e) => `${(fromWei(e.actualEusdWei) ?? 0).toFixed(0)} eUSD`,
   },
   no_arb_persistent_warning: {
-    kind: "ARB WINDOW",
+    kind: () => t("tape.kind.arbWindow"),
     tone: "purple",
     body: (e) =>
-      `${str(e.base)} ${str(e.buyVenue)}→${str(e.sellVenue)} gap open`,
+      t("tape.arbWindow", {
+        base: str(e.base),
+        buy: str(e.buyVenue),
+        sell: str(e.sellVenue),
+      }),
     value: (e) => `${num(e.profitBps).toFixed(0)}bps`,
   },
   run_completed: {
-    kind: "RUN",
+    kind: () => t("tape.kind.run"),
     tone: "neutral",
-    body: () => "run completed, scoring reconstructed",
+    body: () => t("tape.runCompleted"),
     value: () => "",
   },
 };
@@ -704,7 +723,7 @@ function buildTape(run: LoadedRun): TapeEvent[] {
     return {
       id: i + 1,
       time: clockTime(event.ts),
-      kind: rule.kind,
+      kind: rule.kind(),
       body: rule.body(event),
       value: rule.value(event),
       tone: rule.tone,
@@ -1188,13 +1207,17 @@ function buildAgentPositions(
         : 0;
     out.push({
       market: `GMX ${p.base}/USDC`,
-      kind: p.isLong ? "LONG" : "SHORT",
+      kind: p.isLong ? t("vp.side.long") : t("vp.side.short"),
       tone: p.isLong ? "up" : "down",
       size: formatUsd(p.sizeUsd),
       mark: p.entryPriceUsd
-        ? `entry ${p.entryPriceUsd.toLocaleString("en-US", { maximumFractionDigits: 1 })}`
-        : "entry —",
-      note: `collateral ${formatUsd(p.collateralUsd)}`,
+        ? t("pos.entry", {
+            v: p.entryPriceUsd.toLocaleString("en-US", {
+              maximumFractionDigits: 1,
+            }),
+          })
+        : t("pos.entryNone"),
+      note: t("pos.collateralNote", { v: formatUsd(p.collateralUsd) }),
       pnlPercent,
     });
   }
@@ -1206,14 +1229,18 @@ function buildAgentPositions(
     const queued = p.claimableWeth + p.pendingWeth;
     out.push({
       market: "LST vault",
-      kind: "STAKE",
+      kind: t("pos.kind.stake"),
       tone: "neutral",
       size: `${p.shares.toFixed(4)} LST`,
-      mark: `par ${p.shareAssetsWeth.toFixed(4)} WETH`,
+      mark: t("pos.par", { v: p.shareAssetsWeth.toFixed(4) }),
       note:
         queued > 0
-          ? `queue: ${p.claimableWeth.toFixed(4)} claimable, ${p.pendingWeth.toFixed(4)} pending (${p.openRequests} request${p.openRequests === 1 ? "" : "s"})`
-          : "nothing queued for withdrawal",
+          ? t(p.openRequests === 1 ? "pos.queueOne" : "pos.queue", {
+              claimable: p.claimableWeth.toFixed(4),
+              pending: p.pendingWeth.toFixed(4),
+              n: p.openRequests,
+            })
+          : t("pos.noQueue"),
     });
   }
 
@@ -1224,31 +1251,31 @@ function buildAgentPositions(
     if (p.troveDebtEusd > 0 || p.troveCollWeth > 0) {
       out.push({
         market: "Liquity Trove",
-        kind: "DEBT",
+        kind: t("pos.kind.debt"),
         tone: p.icr !== null && p.icr < 1.1 ? "down" : "neutral",
         size: `${p.troveDebtEusd.toLocaleString("en-US", { maximumFractionDigits: 0 })} eUSD`,
-        mark: p.icr !== null ? `ICR ${p.icr.toFixed(3)}` : "ICR —",
-        note: `${p.troveCollWeth.toFixed(3)} WETH collateral · MCR 1.100`,
+        mark: p.icr !== null ? `ICR ${p.icr.toFixed(3)}` : t("pos.icrNone"),
+        note: t("pos.troveNote", { coll: p.troveCollWeth.toFixed(3) }),
       });
     }
     if (p.stabilityDepositEusd > 0) {
       out.push({
         market: "Liquity Stability Pool",
-        kind: "DEPOSIT",
+        kind: t("pos.kind.deposit"),
         tone: "neutral",
         size: `${p.stabilityDepositEusd.toLocaleString("en-US", { maximumFractionDigits: 0 })} eUSD`,
-        mark: "absorbs liquidated debt",
-        note: "paid in discounted collateral when a Trove is liquidated",
+        mark: t("pos.spMark"),
+        note: t("pos.spNote"),
       });
     }
     if (p.eusdBalance > 0) {
       out.push({
-        market: "eUSD (spot)",
-        kind: "HOLD",
+        market: t("pos.eusdSpot"),
+        kind: t("pos.kind.hold"),
         tone: "neutral",
         size: `${p.eusdBalance.toLocaleString("en-US", { maximumFractionDigits: 2 })} eUSD`,
         mark: `${(lastRowStable(run, "EUSD") ?? 1).toFixed(4)} USDC`,
-        note: "redeemable against the riskiest Trove at par",
+        note: t("pos.eusdNote"),
       });
     }
   }
@@ -1257,14 +1284,17 @@ function buildAgentPositions(
   for (const a of market.aaveAccountsAtEnd) {
     if (a.agent !== agentId) continue;
     out.push({
-      market: "Aave account",
-      kind: a.debtUsd > 0 ? "BORROW" : "SUPPLY",
+      market: t("pos.aave"),
+      kind: a.debtUsd > 0 ? t("pos.kind.borrow") : t("pos.kind.supply"),
       tone:
         a.healthFactor !== null && a.healthFactor < 1.1 ? "down" : "neutral",
       size: formatUsd(a.collateralUsd),
       mark:
         a.healthFactor === null ? "HF ∞" : `HF ${a.healthFactor.toFixed(3)}`,
-      note: a.debtUsd > 0 ? `debt ${formatUsd(a.debtUsd)}` : "no debt drawn",
+      note:
+        a.debtUsd > 0
+          ? t("pos.debtNote", { v: formatUsd(a.debtUsd) })
+          : t("pos.noDebt"),
     });
   }
 

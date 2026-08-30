@@ -25,6 +25,7 @@ import {
 } from "@/data/standings";
 import { useAgentDetailSnapshot } from "@/data/useAgentDetailSnapshot";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
+import { t } from "@/i18n/messages";
 import {
   formatBps,
   formatMove,
@@ -43,12 +44,12 @@ const SECTION_LABEL_STYLE = {
 };
 
 /** The scenario-level tabs. "Standing" is prepended when the agent ranks in a competition. */
-const SCENARIO_TABS = [
-  { label: "Overview", value: "overview" },
-  { label: "Rounds", value: "rounds" },
-  { label: "Positions", value: "positions" },
-  { label: "Trade history", value: "trades" },
-  { label: "Decision log", value: "log" },
+const scenarioTabs = () => [
+  { label: t("agent.tab.overview"), value: "overview" },
+  { label: t("agent.tab.rounds"), value: "rounds" },
+  { label: t("agent.tab.positions"), value: "positions" },
+  { label: t("agent.tab.trades"), value: "trades" },
+  { label: t("agent.tab.log"), value: "log" },
 ];
 
 const ROUNDS_GRID = "60px 150px 70px 110px 100px 90px";
@@ -127,8 +128,7 @@ function PositionsEmpty({ padding }: { padding: string }) {
         color: "var(--text-tertiary)",
       }}
     >
-      no venue position open at the final block — this agent ended flat, or the
-      run predates the per-agent venue reads in market.json
+      {t("agent.positions.empty")}
     </div>
   );
 }
@@ -149,7 +149,7 @@ function TradeRow({ trade, href }: { trade: AgentTrade; href?: string }) {
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          title="Open transaction in Blockscout"
+          title={t("agent.openTx")}
           style={{ color: "var(--text-link)", textDecoration: "none" }}
         >
           {trade.hash}
@@ -235,9 +235,11 @@ function ReturnHistogram({ values }: { values: number[] }) {
       >
         <span>≤ {formatBps(-edge)}</span>
         <span>
-          {clipped > 0
-            ? `0 · ${clipped} round${clipped === 1 ? "" : "s"} past the edge, stacked into the end bins`
-            : "0"}
+          {clipped > 1
+            ? t("agent.histogram.clipped", { n: clipped })
+            : clipped === 1
+              ? t("agent.histogram.clippedOne")
+              : "0"}
         </span>
         <span>≥ {formatBps(edge)}</span>
       </div>
@@ -249,7 +251,10 @@ function ReturnHistogram({ values }: { values: number[] }) {
 interface CompetitionStanding {
   rank: number;
   fieldSize: number;
+  /** The official ranking value (z aggregate) — tooltip material, not the headline number. */
   total: number;
+  /** Regime-equal mean score, ×10⁴ for display in bps per round. */
+  scoreBps: number;
   netPnlUsdc: number;
   regimes: { regime: string; value: number | undefined }[];
   decomposition: AgentRoundDecomposition | null;
@@ -267,6 +272,7 @@ function useCompetitionStanding(agentId: string): CompetitionStanding | null {
       rank: rank + 1,
       fieldSize: standings.rows.length,
       total: row.total,
+      scoreBps: (standings.scoreByAgent[agentId]?.overall ?? 0) * 10_000,
       netPnlUsdc: standings.netPnlByAgent[agentId] ?? 0,
       regimes: standings.regimes.map((regime) => ({
         regime,
@@ -299,12 +305,33 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
         }}
       >
         <Stat
-          label="rank"
-          value={`${standing.rank} of ${standing.fieldSize}`}
+          label={t("agent.standing.rank")}
+          value={t("agent.standing.rankValue", {
+            r: standing.rank,
+            n: standing.fieldSize,
+          })}
         />
-        <Stat label="score" value={formatStanding(standing.total)} />
-        <Stat label="net PnL" value={formatPnlUsdc(standing.netPnlUsdc)} />
-        {d && <Stat label="rounds" value={String(d.stats.epochs)} />}
+        <div
+          title={t("agent.standing.scoreTitle", {
+            z: formatStanding(standing.total),
+          })}
+        >
+          <Stat
+            label={t("agent.standing.score")}
+            value={formatBps(standing.scoreBps)}
+            caps={false}
+          />
+        </div>
+        <Stat
+          label={t("agent.standing.netPnl")}
+          value={formatPnlUsdc(standing.netPnlUsdc)}
+        />
+        {d && (
+          <Stat
+            label={t("agent.standing.rounds")}
+            value={String(d.stats.epochs)}
+          />
+        )}
       </div>
 
       {!d ? (
@@ -315,9 +342,7 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
             lineHeight: 1.6,
           }}
         >
-          No round series on disk for this agent — the scenario runs behind this
-          competition were not collected, so the standing can be shown but not
-          explained.
+          {t("agent.standing.noSeries")}
         </span>
       ) : (
         <>
@@ -330,10 +355,7 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
               maxWidth: "78ch",
             }}
           >
-            Every round this agent produced, pooled across the whole
-            competition. An agent can earn several times more per round than the
-            winner and still place last — the difference is the spread λ charges
-            for.
+            {t("agent.standing.explain")}
           </p>
 
           <div
@@ -344,20 +366,24 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
             }}
           >
             <Stat
-              label="mean / round"
+              label={t("agent.standing.mean")}
               value={formatBps(d.stats.mean * 10_000)}
             />
             <Stat
-              label="std / round"
+              label={t("agent.standing.std")}
               value={formatSpreadBps(d.stats.std * 10_000)}
             />
             <Stat
-              label={`λ·std (λ=${LAMBDA.toFixed(2)})`}
+              label={t("agent.standing.lambdaStd", {
+                lambda: LAMBDA.toFixed(2),
+              })}
               value={formatSpreadBps(LAMBDA * d.stats.std * 10_000)}
+              caps={false}
             />
             <Stat
-              label="mean − λ·std"
+              label={t("agent.standing.scoreLine")}
               value={formatBps(d.stats.score * 10_000)}
+              caps={false}
             />
           </div>
 
@@ -367,7 +393,9 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
             <div
               style={{ display: "flex", flexDirection: "column", gap: "6px" }}
             >
-              <span style={SECTION_LABEL_STYLE}>by regime</span>
+              <span style={SECTION_LABEL_STYLE}>
+                {t("agent.standing.byRegime")}
+              </span>
               <div style={{ overflowX: "auto" }}>
                 <div style={{ minWidth: "560px" }}>
                   <div
@@ -382,11 +410,19 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                       letterSpacing: "var(--tracking-wide)",
                     }}
                   >
-                    <span>regime</span>
-                    <span style={{ textAlign: "right" }}>rounds</span>
-                    <span style={{ textAlign: "right" }}>mean</span>
-                    <span style={{ textAlign: "right" }}>std</span>
-                    <span style={{ textAlign: "right" }}>mean − λ·std</span>
+                    <span>{t("agent.standing.col.regime")}</span>
+                    <span style={{ textAlign: "right" }}>
+                      {t("agent.standing.col.rounds")}
+                    </span>
+                    <span style={{ textAlign: "right" }}>
+                      {t("agent.standing.col.mean")}
+                    </span>
+                    <span style={{ textAlign: "right" }}>
+                      {t("agent.standing.col.std")}
+                    </span>
+                    <span style={{ textAlign: "right", textTransform: "none" }}>
+                      mean − λ·std
+                    </span>
                   </div>
                   {d.byRegime.map((r) => (
                     <div
@@ -449,12 +485,18 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                 lineHeight: 1.6,
               }}
             >
-              Hit the bankruptcy floor in {d.bankruptIn.length} scenario
-              {d.bankruptIn.length === 1 ? "" : "s"} — every later round is
-              frozen at a return of 0:{" "}
-              {d.bankruptIn
-                .map((b) => `${b.regime}#${b.seed} @ round ${b.epoch}`)
-                .join(", ")}
+              {d.bankruptIn.length === 1
+                ? t("agent.standing.bankruptOne", {
+                    list: d.bankruptIn
+                      .map((b) => `${b.regime}#${b.seed} @ ${b.epoch}`)
+                      .join(", "),
+                  })
+                : t("agent.standing.bankrupt", {
+                    n: d.bankruptIn.length,
+                    list: d.bankruptIn
+                      .map((b) => `${b.regime}#${b.seed} @ ${b.epoch}`)
+                      .join(", "),
+                  })}
             </span>
           )}
         </>
@@ -472,8 +514,8 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   const [chosenTab, setChosenTab] = useState<string | null>(null);
   const tab = chosenTab ?? (standing ? "standing" : "overview");
   const tabs = standing
-    ? [{ label: "Standing", value: "standing" }, ...SCENARIO_TABS]
-    : SCENARIO_TABS;
+    ? [{ label: t("agent.tab.standing"), value: "standing" }, ...scenarioTabs()]
+    : scenarioTabs();
 
   if (loading) {
     return (
@@ -492,7 +534,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
             color: "var(--text-tertiary)",
           }}
         >
-          Loading Eris…
+          {t("common.loading")}
         </span>
       </div>
     );
@@ -515,7 +557,9 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
             color: "var(--danger-text)",
           }}
         >
-          Failed to load agent{error ? `: ${error.message}` : ""}
+          {t("common.loadFailed", {
+            detail: error ? `: ${error.message}` : "",
+          })}
         </span>
       </div>
     );
@@ -531,17 +575,20 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
     id: `portfolio-${agent.agent}`,
     title:
       series.length >= 2
-        ? `Portfolio value · ${formatUsd(series[0].value)} → ${formatUsd(series[series.length - 1].value)}`
-        : "Portfolio value",
+        ? t("agent.portfolioRange", {
+            from: formatUsd(series[0].value),
+            to: formatUsd(series[series.length - 1].value),
+          })
+        : t("agent.portfolio"),
     unit: "usd",
     showBlockAxis: true,
-    yLabel: "account value (USDC)",
-    xLabel: "block",
+    yLabel: t("agent.yLabel"),
+    xLabel: t("agent.xLabel"),
     height: 180,
     lines: [
       {
         id: "value",
-        label: "total account value",
+        label: t("agent.lineLabel"),
         color: portfolioUp ? cssVar("--success") : cssVar("--danger"),
         points: series,
       },
@@ -591,7 +638,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               cursor: "pointer",
             }}
           >
-            ← back
+            {t("agent.back")}
           </span>
 
           <div
@@ -640,7 +687,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                     href={blockscoutAddressUrl(blockscout, agent.fullAddress)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title="Open address in Blockscout"
+                    title={t("agent.openAddress")}
                     style={{
                       color: "var(--text-link)",
                       textDecoration: "none",
@@ -655,7 +702,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               </div>
             </div>
             <span style={{ marginLeft: "auto" }}>
-              <Badge tone="success">Rank {agent.rank}</Badge>
+              <Badge tone="success">{t("agent.rank", { n: agent.rank })}</Badge>
             </span>
           </div>
 
@@ -671,18 +718,24 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                 gap: "16px",
               }}
             >
-              <StatCard label="Score" value={formatScore(agent.score)} />
               <StatCard
-                label="PnL (USDC)"
+                label={t("agent.stat.score")}
+                value={formatScore(agent.score)}
+              />
+              <StatCard
+                label={t("agent.stat.pnl")}
                 value={formatPnlUsdc(agent.netPnlUsdc)}
                 // The card only tints its delta line, so the sign is echoed there to keep the
                 // red/green signal -- the same shape the Max drawdown card uses.
                 tone={agent.netPnlUsdc >= 0 ? "success" : "danger"}
                 delta={formatPnlUsdc(agent.netPnlUsdc)}
               />
-              <StatCard label="Sharpe" value={agent.sharpe.toFixed(2)} />
               <StatCard
-                label="Max drawdown"
+                label={t("agent.stat.sharpe")}
+                value={agent.sharpe.toFixed(2)}
+              />
+              <StatCard
+                label={t("agent.stat.drawdown")}
                 value={`${agent.maxDrawdownPercent.toFixed(1)}%`}
                 tone="danger"
                 delta={`${agent.maxDrawdownPercent.toFixed(1)}%`}
@@ -722,13 +775,11 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                       color: "var(--text-tertiary)",
                     }}
                   >
-                    no reconstructed value series for this agent — the curve is
-                    built from the scoring cross-sections, which land when the
-                    run completes
+                    {t("agent.noValueSeries")}
                   </span>
                 )}
                 <span style={{ ...SECTION_LABEL_STYLE, marginTop: "6px" }}>
-                  Open positions
+                  {t("agent.openPositions")}
                 </span>
                 <div
                   style={{
@@ -747,11 +798,11 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                       padding: "0 2px 4px",
                     }}
                   >
-                    <span>Venue</span>
-                    <span>Kind</span>
-                    <span>Size</span>
-                    <span>Mark</span>
-                    <span>Detail</span>
+                    <span>{t("agent.positions.col.venue")}</span>
+                    <span>{t("agent.positions.col.kind")}</span>
+                    <span>{t("agent.positions.col.size")}</span>
+                    <span>{t("agent.positions.col.mark")}</span>
+                    <span>{t("agent.positions.col.detail")}</span>
                   </div>
                   {agent.positions.length === 0 && (
                     <PositionsEmpty padding="7px 2px" />
@@ -781,7 +832,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                     marginBottom: "10px",
                   }}
                 >
-                  Decision log — live ↓
+                  {t("agent.decisionLive")}
                 </span>
                 <LogStream lines={agent.recentLog} height={320} />
               </div>
@@ -810,12 +861,18 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                   borderBottom: "1px solid var(--border-subtle)",
                 }}
               >
-                <span>Round</span>
-                <span>Blocks</span>
+                <span>{t("agent.tab.rounds")}</span>
+                <span>{t("agent.trades.col.block")}</span>
                 <span style={{ textAlign: "right" }}>Tx</span>
-                <span style={{ textAlign: "right" }}>Δ value</span>
-                <span style={{ textAlign: "right" }}>Log return</span>
-                <span style={{ textAlign: "right" }}>Rank</span>
+                <span style={{ textAlign: "right" }}>
+                  {t("rounds.col.delta")}
+                </span>
+                <span style={{ textAlign: "right" }}>
+                  {t("rounds.col.logReturn")}
+                </span>
+                <span style={{ textAlign: "right" }}>
+                  {t("rounds.col.rank")}
+                </span>
               </div>
               {agent.rounds.length === 0 && (
                 <div
@@ -825,8 +882,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                     color: "var(--text-tertiary)",
                   }}
                 >
-                  this run has no scored rounds yet — the epoch series is
-                  reconstructed once the run completes (ADR 0006 §4)
+                  {t("agent.noRounds")}
                 </div>
               )}
               {agent.rounds.map((r) => {
@@ -895,9 +951,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                   color: "var(--text-tertiary)",
                 }}
               >
-                A round is a scoring epoch. Log return is this agent's excess
-                over the roster's do-nothing baseline for that epoch — the
-                series the score (mean − λ·std) is computed from.
+                {t("agent.roundsNote")}
               </div>
             </div>
           )}
@@ -924,11 +978,11 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                   borderBottom: "1px solid var(--border-subtle)",
                 }}
               >
-                <span>Venue</span>
-                <span>Kind</span>
-                <span>Size</span>
-                <span>Mark</span>
-                <span>Detail</span>
+                <span>{t("agent.positions.col.venue")}</span>
+                <span>{t("agent.positions.col.kind")}</span>
+                <span>{t("agent.positions.col.size")}</span>
+                <span>{t("agent.positions.col.mark")}</span>
+                <span>{t("agent.positions.col.detail")}</span>
               </div>
               {agent.positions.length === 0 && (
                 <PositionsEmpty padding="14px 16px" />
@@ -967,11 +1021,13 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                   borderBottom: "1px solid var(--border-subtle)",
                 }}
               >
-                <span>Tx hash</span>
-                <span>Block</span>
-                <span>Method</span>
-                <span>Amount</span>
-                <span style={{ textAlign: "right" }}>Time</span>
+                <span>{t("agent.trades.col.hash")}</span>
+                <span>{t("agent.trades.col.block")}</span>
+                <span>{t("agent.trades.col.method")}</span>
+                <span>{t("agent.trades.col.amount")}</span>
+                <span style={{ textAlign: "right" }}>
+                  {t("agent.trades.col.time")}
+                </span>
               </div>
               {agent.trades.map((t, i) => (
                 <TradeRow

@@ -17,6 +17,7 @@ import { Sparkline } from "@/design-system/Sparkline";
 import { Tabs } from "@/design-system/Tabs";
 import { setSelectedRound } from "@/data/roundSelection";
 import { navigate } from "@/navigation";
+import { t } from "@/i18n/messages";
 import { formatPnlUsdc } from "@/lib/format";
 import { useMarketSnapshot } from "@/data/useMarketSnapshot";
 import type {
@@ -42,9 +43,9 @@ const RANK_COLORS: Record<number, string> = {
   3: "color-mix(in oklch, var(--amber-500), var(--red-500) 40%)",
 };
 
-const CHART_VIEWS = [
-  { label: "Cross-venue arb", value: "arb" },
-  { label: "Fair price", value: "price" },
+const chartViews = () => [
+  { label: t("market.view.arb"), value: "arb" },
+  { label: t("market.view.price"), value: "price" },
 ];
 
 function toneColor(tone: StatTone | "link" | undefined): string {
@@ -301,13 +302,13 @@ function VenueDepthRow({ venue }: { venue: VenueDepthView }) {
           }}
         >
           <span>
-            sell{" "}
+            {t("market.sell")}{" "}
             <span style={{ color: "var(--danger-text)" }}>
               {venue.sell ?? "—"}
             </span>
           </span>
           <span>
-            buy{" "}
+            {t("market.buy")}{" "}
             <span style={{ color: "var(--success-text)" }}>
               {venue.buy ?? "—"}
             </span>
@@ -439,11 +440,13 @@ export function MarketPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [panelKey]);
 
-  if (loading) return <CenteredMessage text="Loading Eris…" />;
+  if (loading) return <CenteredMessage text={t("common.loading")} />;
   if (error || !data)
     return (
       <CenteredMessage
-        text={`Failed to load data${error ? `: ${error.message}` : ""}`}
+        text={t("common.loadFailed", {
+          detail: error ? `: ${error.message}` : "",
+        })}
         tone="danger"
       />
     );
@@ -509,9 +512,7 @@ export function MarketPage() {
             style={{ minWidth: "150px" }}
           />
           <div>
-            <div style={SECTION_LABEL_STYLE}>
-              Fair price · environment input
-            </div>
+            <div style={SECTION_LABEL_STYLE}>{t("market.fair")}</div>
             <div
               style={{
                 font: "var(--weight-semibold) var(--text-lg) var(--font-mono)",
@@ -525,7 +526,7 @@ export function MarketPage() {
             </div>
           </div>
           <div style={{ marginLeft: "auto" }}>
-            <div style={SECTION_LABEL_STYLE}>Venues in this run</div>
+            <div style={SECTION_LABEL_STYLE}>{t("market.venuesInRun")}</div>
             <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
               {protocols.length === 0 && (
                 <span
@@ -534,7 +535,7 @@ export function MarketPage() {
                     color: "var(--text-tertiary)",
                   }}
                 >
-                  not recorded
+                  {t("market.notRecorded")}
                 </span>
               )}
               {protocols.map((p) => (
@@ -572,7 +573,7 @@ export function MarketPage() {
             flexWrap: "wrap",
           }}
         >
-          <span style={SECTION_LABEL_STYLE}>Scope</span>
+          <span style={SECTION_LABEL_STYLE}>{t("market.scope")}</span>
           <span
             style={{
               font: "var(--text-xs) var(--font-mono)",
@@ -583,10 +584,21 @@ export function MarketPage() {
             }}
           >
             {panel?.runWide
-              ? `whole run · blocks ${round.epochs[0]?.fromBlock.toLocaleString("en-US") ?? "—"}–${round.blockNumber.toLocaleString("en-US")} · this tab is never scoped to a round`
+              ? t("market.runWide", {
+                  from:
+                    round.epochs[0]?.fromBlock.toLocaleString("en-US") ?? "—",
+                  to: round.blockNumber.toLocaleString("en-US"),
+                })
               : scope.roundIndex === null
-                ? `whole run · blocks ${scope.fromBlock.toLocaleString("en-US")}–${scope.toBlock.toLocaleString("en-US")}`
-                : `Round ${String(scope.roundIndex).padStart(2, "0")} · blocks ${scope.fromBlock.toLocaleString("en-US")}–${scope.toBlock.toLocaleString("en-US")}`}
+                ? t("market.wholeRun", {
+                    from: scope.fromBlock.toLocaleString("en-US"),
+                    to: scope.toBlock.toLocaleString("en-US"),
+                  })
+                : t("market.roundScope", {
+                    i: String(scope.roundIndex).padStart(2, "0"),
+                    from: scope.fromBlock.toLocaleString("en-US"),
+                    to: scope.toBlock.toLocaleString("en-US"),
+                  })}
           </span>
           {scope.roundIndex === null || panel?.runWide ? (
             <span
@@ -595,7 +607,7 @@ export function MarketPage() {
                 color: "var(--text-tertiary)",
               }}
             >
-              click a round in the bar above to narrow every panel to it
+              {t("market.scopeHint")}
             </span>
           ) : (
             <span
@@ -606,7 +618,7 @@ export function MarketPage() {
                 cursor: "pointer",
               }}
             >
-              show the whole run →
+              {t("market.backToRun")}
             </span>
           )}
         </div>
@@ -644,7 +656,7 @@ export function MarketPage() {
                   >
                     <div style={{ maxWidth: "340px" }}>
                       <Tabs
-                        tabs={CHART_VIEWS}
+                        tabs={chartViews()}
                         value={chartView}
                         onChange={setChartView}
                       />
@@ -689,9 +701,9 @@ export function MarketPage() {
                               color: "var(--text-tertiary)",
                             }}
                           >
-                            ▲ buy / ▼ sell, coloured by venue · dashed = fair ·
-                            lower pane = widest venue gap vs the{" "}
-                            {arbitrage.thresholdBps}bps round-trip cost
+                            {t("market.arbLegend", {
+                              n: arbitrage.thresholdBps,
+                            })}
                           </span>
                         </div>
                         <ArbitrageChart data={arbitrage} height={380} />
@@ -725,7 +737,7 @@ export function MarketPage() {
                   color: "var(--text-tertiary)",
                 }}
               >
-                this run enabled no venue the dashboard knows how to render
+                {t("market.noVenue")}
               </div>
             )}
           </div>
@@ -746,7 +758,7 @@ export function MarketPage() {
                 padding: "14px 16px 10px",
               }}
             >
-              <span style={SECTION_LABEL_STYLE}>Leaderboard</span>
+              <span style={SECTION_LABEL_STYLE}>{t("market.standings")}</span>
             </div>
             {leaderboard.slice(0, 8).map((row) => (
               <LeaderboardMiniRow key={row.rank} row={row} />
@@ -759,7 +771,7 @@ export function MarketPage() {
                 marginTop: "12px",
               }}
             >
-              <span style={SECTION_LABEL_STYLE}>Agent submissions ↓</span>
+              <span style={SECTION_LABEL_STYLE}>{t("market.submissions")}</span>
             </div>
             <div
               style={{
@@ -776,7 +788,7 @@ export function MarketPage() {
                     paddingTop: "6px",
                   }}
                 >
-                  no agent submitted a transaction in this run
+                  {t("market.noSubmissions")}
                 </span>
               )}
               {feed.map((item) => (

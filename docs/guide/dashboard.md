@@ -41,7 +41,7 @@ timestamp):
 
 | route | level | what it is |
 |---|---|---|
-| `/` | competition | **Standings** — the ranking under the competition rule, one reference net-PnL column. A row opens the agent's page |
+| `/` | competition | **Standings** — ranked by the competition rule; the score column shows the score itself (bps per round), plus one reference net-PnL column. A row opens the agent's page |
 | `/scenario` | scenario | one world: its markets, its ranking, its blocks. Titled by what it is a draw of (`full-crash#303`), not by when the file was written |
 | `/markets`, `/explorer` | scenario | venue state and blocks — they only mean anything inside one world |
 | `/agent/<id>` | both | the agent's competition standing (its **Standing** tab) and its scenario-level detail |
@@ -49,6 +49,12 @@ timestamp):
 The ranking rule is fixed on the page; exploring other metrics, aggregations, λ or ρ is a CLI job
 (`npm run metrics -- --matrix <dir>`), not a dashboard control — the dashboard is what competition
 participants read, and a headline that quietly depends on a control is the thing it exists to avoid.
+
+Two more things participants see, because they are participants: **names, not storage ids** — a
+competition is its scenario set and date ("full-8h · 8/29"), a scenario is `regime#seed`, the yaml
+path and the timestamped directory live in tooltips, and nothing is numbered "Run N" over the local
+runs/ directory — and **two languages**: every string lives in `dashboard/src/i18n/messages.ts` in
+English and Japanese, switched from the sidebar and persisted per browser.
 
 Two cases have no standings, and say so rather than inventing them: a **live** run — `summary.json`
 is written at the end, so its results do not exist yet — and seed-provider mode, which serves
@@ -123,6 +129,12 @@ still ranks by the score `matrix.json` stored (the same rule, at the same λ), a
 round detail. The aggregation is imported from `core/src/scoring/aggregate.ts`, the same pure module
 `npm run metrics -- --matrix` runs, so the dashboard and the CLI agree by construction rather than
 by coincidence.
+
+**The score column shows the score in its own units** — the regime-equal mean of per-scenario
+scores, in bps per round — because a unitless z aggregate answers "who is ahead" but not "by how
+much of what". The rank order still comes from the official z aggregation, whose value sits in the
+score cell's tooltip; the two can disagree in order, and that difference is the aggregation choice,
+stated rather than hidden. Regime columns are the same quantity per regime.
 
 The table carries one reference column, **net PnL (final marks)**, summed across scenarios. It is
 not the ranking: it prices both ends at the run's last prices, so β cancels and `noop` is exactly 0

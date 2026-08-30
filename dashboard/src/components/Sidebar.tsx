@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { loadCompetition, scenarioRunId } from "@/data/competition";
+import {
+  competitionLabel,
+  loadCompetition,
+  runDisplayName,
+  scenarioRunId,
+} from "@/data/competition";
 import {
   resolveCompetitionId,
   setSelectedCompetitionId,
@@ -15,12 +20,18 @@ import {
 import { setSelectedRound } from "@/data/roundSelection";
 import { setSelectedRunId, useSelectedRunId } from "@/data/runSelection";
 import { Select } from "@/design-system/Select";
+import { setLocale, useLocale, type Locale } from "@/i18n/locale";
+import { t } from "@/i18n/messages";
 import { navigate } from "@/navigation";
 
 export type SidebarNavKey = "home" | "scenario" | "explorer" | "markets";
 
 /**
  * Two-level picker: competition, then scenario (one world inside it).
+ *
+ * Both levels show names, not storage ids: a competition is its scenario set and date
+ * ("full-8h · 8/29"), a scenario is what it is a draw of ("calm#101"). The raw directory id stays
+ * one hover away in the option title.
  *
  * "— single run —" is not a second mode. It makes the selected run the outer unit, which the home
  * reads as a competition of one scenario — same standings, same round cursor.
@@ -34,8 +45,13 @@ const RUN_LIST_POLL_MS = 10_000;
  * name with where it came from, rather than the raw path. */
 function runLabel(id: string): string {
   const parts = id.split("/");
-  if (parts.length === 1) return id;
-  return `${parts[parts.length - 1]}  ← ${parts[0]}`;
+  if (parts.length === 1) return runDisplayName(id);
+  return `${runDisplayName(id)}  ← ${parts[0]}`;
+}
+
+/** "full-calm#101" -> "calm#101": with every scenario in the same set, the prefix carries nothing. */
+function shortScenario(name: string): string {
+  return name.replace(/^full-/, "");
 }
 
 const SINGLE_RUNS_OPTION = " single";
@@ -64,6 +80,7 @@ function PickerBlock({
           font: "var(--text-xs) var(--font-mono)",
           color: labelColor ?? "var(--text-tertiary)",
           letterSpacing: "var(--tracking-wide)",
+          textTransform: "uppercase",
         }}
       >
         {label}
@@ -75,9 +92,13 @@ function PickerBlock({
 
 function Picker() {
   const selectedRun = useSelectedRunId();
+  const locale = useLocale();
   const [entries, setEntries] = useState<RunIndexEntry[] | null>(null);
-  // run id -> "regime#seed". A scenario's own name is what it is a draw of, not when it was written:
-  // "full-crash#303" says which distribution and which draw, where a timestamp says neither.
+  // competition id -> display label ("full-8h · 8/29").
+  const [competitionNames, setCompetitionNames] = useState<Map<string, string>>(
+    new Map(),
+  );
+  // run id -> "regime#seed". A scenario's own name is what it is a draw of, not when it was written.
   const [scenarioNames, setScenarioNames] = useState<Map<
     string,
     string
@@ -108,6 +129,26 @@ function Picker() {
   );
   const runs = useMemo(() => (entries ? runEntries(entries) : []), [entries]);
 
+  // Resolve each listed competition's display name (cached loads; the id stays the fallback).
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      competitions.map(async (entry) => {
+        try {
+          const c = await loadCompetition(entry.id);
+          return [entry.id, competitionLabel(c, locale)] as const;
+        } catch {
+          return [entry.id, entry.id] as const;
+        }
+      }),
+    ).then((pairs) => {
+      if (!cancelled) setCompetitionNames(new Map(pairs));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [competitions, locale]);
+
   // Same resolution the standings loader and the scenario title use, so all three agree on which
   // competition is in view when nothing has been picked yet.
   const competitionValue = entries ? resolveCompetitionId(entries) : null;
@@ -128,7 +169,7 @@ function Picker() {
           new Map(
             m.file.scenarios.map((s) => [
               scenarioRunId(m.id, s.runDir),
-              `${s.regime}#${s.seed}`,
+              shortScenario(`${s.regime}#${s.seed}`),
             ]),
           ),
         );
@@ -170,15 +211,16 @@ function Picker() {
   return (
     <>
       {competitions.length > 0 && (
-        <PickerBlock label="COMPETITION">
+        <PickerBlock label={t("sidebar.competition")}>
           <Select
             value={competitionValue ?? SINGLE_RUNS_OPTION}
             options={[
               ...competitions.map((m) => ({
-                label: runLabel(m.id),
+                label: competitionNames.get(m.id) ?? m.id,
                 value: m.id,
+                title: m.id,
               })),
-              { label: "— single run —", value: SINGLE_RUNS_OPTION },
+              { label: t("sidebar.singleRun"), value: SINGLE_RUNS_OPTION },
             ]}
             onChange={(e) => {
               const picked = e.target.value;
@@ -206,14 +248,17 @@ function Picker() {
       )}
       {options.length > 0 && (
         <PickerBlock
-          label={liveSelected ? "SCENARIO · LIVE" : "SCENARIO"}
+          label={
+            liveSelected ? t("sidebar.scenarioLive") : t("sidebar.scenario")
+          }
           labelColor={liveSelected ? "var(--pink-300)" : undefined}
         >
           <Select
             value={runValue}
             options={options.map((r) => ({
-              label: `${r.live ? "● " : ""}${scenarioNames?.get(r.id) ?? runLabel(r.id)}${r.live ? " (live)" : ""}`,
+              label: `${r.live ? "● " : ""}${scenarioNames?.get(r.id) ?? runLabel(r.id)}${r.live ? ` (${t("common.live")})` : ""}`,
               value: r.id,
+              title: r.id,
             }))}
             onChange={(e) => {
               // A round index only means something inside one run; carrying it across would scope
@@ -229,22 +274,59 @@ function Picker() {
   );
 }
 
-// In seed-provider mode there are no competitions, so "/" renders the scenario view.
-const SIDEBAR_NAV: { key: SidebarNavKey; label: string; path: string }[] =
-  isSeedProvider
-    ? [
-        { key: "home", label: "Top", path: "/" },
-        { key: "explorer", label: "Explorer", path: "/explorer" },
-        { key: "markets", label: "Markets", path: "/markets" },
-      ]
-    : [
-        { key: "home", label: "Standings", path: "/" },
-        { key: "scenario", label: "Scenario", path: "/scenario" },
-        { key: "markets", label: "Markets", path: "/markets" },
-        { key: "explorer", label: "Explorer", path: "/explorer" },
-      ];
+function LanguageToggle() {
+  const locale = useLocale();
+  const options: { value: Locale; label: string }[] = [
+    { value: "en", label: "EN" },
+    { value: "ja", label: "日本語" },
+  ];
+  return (
+    <div style={{ display: "flex", gap: "4px" }}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => setLocale(o.value)}
+          style={{
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-sm)",
+            background:
+              o.value === locale ? "var(--bg-surface-raised)" : "transparent",
+            color:
+              o.value === locale
+                ? "var(--text-primary)"
+                : "var(--text-tertiary)",
+            font: "var(--text-xs) var(--font-mono)",
+            padding: "3px 9px",
+            cursor: "pointer",
+          }}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
+  // Read so the whole sidebar re-renders (nav labels, picker labels) when the language changes.
+  useLocale();
+
+  // In seed-provider mode there are no competitions, so "/" renders the scenario view.
+  const nav: { key: SidebarNavKey; label: string; path: string }[] =
+    isSeedProvider
+      ? [
+          { key: "home", label: t("nav.top"), path: "/" },
+          { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
+          { key: "markets", label: t("nav.markets"), path: "/markets" },
+        ]
+      : [
+          { key: "home", label: t("nav.standings"), path: "/" },
+          { key: "scenario", label: t("nav.scenario"), path: "/scenario" },
+          { key: "markets", label: t("nav.markets"), path: "/markets" },
+          { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
+        ];
+
   return (
     <div
       style={{
@@ -299,7 +381,7 @@ export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
         </span>
       </div>
       <div style={{ display: "flex", flexDirection: "column" }}>
-        {SIDEBAR_NAV.map((item) => {
+        {nav.map((item) => {
           const isActive = item.key === activePage;
           return (
             <div
@@ -336,25 +418,17 @@ export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
           borderTop: "1px solid var(--border-subtle)",
           display: "flex",
           flexDirection: "column",
-          gap: "6px",
+          gap: "8px",
         }}
       >
-        <span
-          style={{
-            font: "var(--text-xs) var(--font-mono)",
-            color: "var(--text-tertiary)",
-            letterSpacing: "var(--tracking-wide)",
-          }}
-        >
-          OBSERVER
-        </span>
+        <LanguageToggle />
         <span
           style={{
             font: "var(--text-xs) var(--font-mono)",
             color: "var(--text-disabled)",
           }}
         >
-          no login required
+          {t("sidebar.readOnly")} · {t("sidebar.noSignIn")}
         </span>
       </div>
     </div>

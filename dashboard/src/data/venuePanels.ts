@@ -9,6 +9,7 @@
 // A panel is data, not layout: the page renders stats, charts and tables generically, and every
 // decision about what a venue's state *is* is made here.
 
+import { t } from "@/i18n/messages";
 import type { LoadedRun } from "./runArtifacts";
 import {
   blockSeriesOf,
@@ -102,13 +103,13 @@ function buildAmmPanel(
     const widest = Math.max(...spreads);
     const above = spreads.filter((s) => s > arbitrage.thresholdBps).length;
     stats.push({
-      label: "Widest cross-venue gap",
+      label: t("vp.amm.widestGap"),
       value: formatBps(widest),
       tone: widest > arbitrage.thresholdBps ? "up" : "neutral",
-      sub: `threshold ${arbitrage.thresholdBps}bps round-trip`,
+      sub: t("vp.amm.threshold", { n: arbitrage.thresholdBps }),
     });
     stats.push({
-      label: "Blocks above threshold",
+      label: t("vp.amm.aboveThreshold"),
       value: `${above} / ${spreads.length}`,
       tone: above > 0 ? "warn" : "neutral",
       sub: formatPercent((above / spreads.length) * 100),
@@ -129,10 +130,10 @@ function buildAmmPanel(
     const start = depthAt(firstRow);
     if (now > 0) {
       stats.push({
-        label: "Pool depth (all venues)",
+        label: t("vp.amm.poolDepth"),
         value: formatUsd(now),
         tone: now < start ? "down" : "neutral",
-        sub: `start ${formatUsd(start)}`,
+        sub: t("vp.amm.start", { v: formatUsd(start) }),
       });
     }
 
@@ -148,16 +149,16 @@ function buildAmmPanel(
     }
     if (volume > 0) {
       stats.push({
-        label: `Swap volume · ${base}`,
+        label: t("vp.amm.swapVolume", { base }),
         value: formatUsd(volume),
-        sub: `${swapCount.toLocaleString("en-US")} swaps`,
+        sub: t("vp.amm.swapsN", { n: swapCount.toLocaleString("en-US") }),
       });
     }
 
     charts.push(
       chartFrom(
         "amm-depth",
-        `Pool depth · ${base}`,
+        t("vp.amm.depthChart", { base }),
         "usd",
         market.venues.map((venue) =>
           lineFrom(
@@ -196,16 +197,16 @@ function buildAmmPanel(
       });
       tables.push({
         id: "amm-quotes",
-        title: `Executable quotes at the final block · ${base}`,
+        title: t("vp.amm.quotesTitle", { base }),
         columns: [
-          { label: "Venue" },
-          { label: "Mid", align: "right" },
-          { label: "Sell", align: "right" },
-          { label: "Buy", align: "right" },
-          { label: "Depth", align: "right" },
+          { label: t("vp.col.venue") },
+          { label: t("vp.col.mid"), align: "right" },
+          { label: t("vp.col.sell"), align: "right" },
+          { label: t("vp.col.buy"), align: "right" },
+          { label: t("vp.col.depth"), align: "right" },
         ],
         rows,
-        empty: "no venue quotes in this run's market series",
+        empty: t("vp.amm.quotesEmpty"),
       });
     }
   }
@@ -214,15 +215,14 @@ function buildAmmPanel(
 
   return {
     id: "amm",
-    label: "AMM",
+    label: t("vp.amm.label"),
     protocols,
-    caption:
-      "Three constant-function venues quote the same pair. Depth is what a liquidity pull moves; the gap between venues is what an arbitrageur is paid to close, once it clears the round-trip cost.",
+    caption: t("vp.amm.caption"),
     stats,
     charts: charts.filter((c): c is VenueChart => c !== null),
     tables,
     ...(depths.length === 0 && !market
-      ? { note: "per-venue depth appears once the run completes (market.json)" }
+      ? { note: t("vp.amm.note") }
       : {}),
   };
 }
@@ -238,38 +238,41 @@ function buildPerpPanel(run: LoadedRun, base: string): VenuePanel {
   if (lastGmx) {
     const total = lastGmx.longOiUsd + lastGmx.shortOiUsd;
     stats.push({
-      label: "Open interest",
+      label: t("vp.perp.oi"),
       value: formatUsd(total),
       sub:
         total > 0
-          ? `${Math.round((lastGmx.longOiUsd / total) * 100)}% long / ${Math.round((lastGmx.shortOiUsd / total) * 100)}% short`
-          : "no open interest",
+          ? t("vp.perp.oiSplit", {
+              long: Math.round((lastGmx.longOiUsd / total) * 100),
+              short: Math.round((lastGmx.shortOiUsd / total) * 100),
+            })
+          : t("vp.perp.noOi"),
     });
     stats.push({
-      label: "Long OI",
+      label: t("vp.perp.longOi"),
       value: formatUsd(lastGmx.longOiUsd),
       tone: "up",
     });
     stats.push({
-      label: "Short OI",
+      label: t("vp.perp.shortOi"),
       value: formatUsd(lastGmx.shortOiUsd),
       tone: "down",
     });
     stats.push({
-      label: "Funding / 1h",
+      label: t("vp.perp.funding"),
       // absent = the funding read failed for that sample; "n/a" is honest, 0.00bps is not
       value:
         lastGmx.fundingPerHourBps !== undefined
           ? `${lastGmx.fundingPerHourBps.toFixed(3)}bps`
           : "n/a",
-      sub: "positive = longs pay shorts",
+      sub: t("vp.perp.fundingSub"),
     });
 
     charts.push(
-      chartFrom("gmx-oi", `Open interest · ${base}`, "usd", [
+      chartFrom("gmx-oi", t("vp.perp.oiChart", { base }), "usd", [
         lineFrom(
           "long",
-          "Long",
+          t("vp.perp.long"),
           "#4fd1a5",
           rowsWithGmx.map((r) => ({
             time: r.block,
@@ -278,7 +281,7 @@ function buildPerpPanel(run: LoadedRun, base: string): VenuePanel {
         ),
         lineFrom(
           "short",
-          "Short",
+          t("vp.perp.short"),
           "#e879a6",
           rowsWithGmx.map((r) => ({
             time: r.block,
@@ -290,7 +293,7 @@ function buildPerpPanel(run: LoadedRun, base: string): VenuePanel {
     charts.push(
       chartFrom(
         "gmx-funding",
-        "Funding rate per hour",
+        t("vp.perp.fundingChart"),
         "bps",
         [
           lineFrom(
@@ -303,7 +306,7 @@ function buildPerpPanel(run: LoadedRun, base: string): VenuePanel {
             }),
           ),
         ],
-        { value: 0, label: "balanced" },
+        { value: 0, label: t("vp.perp.balanced") },
       ),
     );
   }
@@ -317,14 +320,14 @@ function buildPerpPanel(run: LoadedRun, base: string): VenuePanel {
     0;
   tables.push({
     id: "gmx-positions",
-    title: "Positions open at the run's final block",
+    title: t("vp.perp.positionsTitle"),
     columns: [
-      { label: "Agent" },
-      { label: "Side" },
-      { label: "Size", align: "right" },
-      { label: "Collateral", align: "right" },
-      { label: "Entry", align: "right" },
-      { label: "PnL", align: "right" },
+      { label: t("vp.col.agent") },
+      { label: t("vp.col.side") },
+      { label: t("vp.col.size"), align: "right" },
+      { label: t("vp.col.collateral"), align: "right" },
+      { label: t("vp.col.entry"), align: "right" },
+      { label: t("vp.col.pnl"), align: "right" },
     ],
     rows: positions.map((p) => {
       const pnlPercent =
@@ -333,7 +336,7 @@ function buildPerpPanel(run: LoadedRun, base: string): VenuePanel {
           : 0;
       return [
         cell(p.agent, "link"),
-        cell(p.isLong ? "LONG" : "SHORT", p.isLong ? "up" : "down"),
+        cell(p.isLong ? t("vp.side.long") : t("vp.side.short"), p.isLong ? "up" : "down"),
         cell(formatUsd(p.sizeUsd)),
         cell(formatUsd(p.collateralUsd)),
         cell(
@@ -349,25 +352,24 @@ function buildPerpPanel(run: LoadedRun, base: string): VenuePanel {
         ),
       ];
     }),
-    empty: "no perp position was open when the run ended",
+    empty: t("vp.perp.positionsEmpty"),
   });
 
   const keeperFailures = eventsOfType(run.events, "keeper_failed").length;
   if (keeperFailures > 0) {
     stats.push({
-      label: "Keeper failures",
+      label: t("vp.perp.keeperFailures"),
       value: String(keeperFailures),
       tone: "warn",
-      sub: "orders the environment's keeper could not execute",
+      sub: t("vp.perp.keeperSub"),
     });
   }
 
   return {
     id: "perp",
-    label: "Perp",
+    label: t("vp.perp.label"),
     protocols: ["gmx"],
-    caption:
-      "GMX v2. Positions are opened as orders and executed by the environment's keeper a block later, so a perp trade always lands one block after the decision that produced it. Funding is what the crowded side pays the other.",
+    caption: t("vp.perp.caption"),
     stats,
     charts: charts.filter((c): c is VenueChart => c !== null),
     tables,
@@ -375,8 +377,8 @@ function buildPerpPanel(run: LoadedRun, base: string): VenuePanel {
       ? {}
       : {
           note: market
-            ? `no GMX state recorded for ${base} in this run`
-            : "GMX state appears once the run completes (market.json)",
+            ? t("vp.perp.noState", { base })
+            : t("vp.perp.note"),
         }),
   };
 }
@@ -400,20 +402,22 @@ function buildLendingPanel(run: LoadedRun): VenuePanel {
       (sum, a) => sum + (lastAave[a]?.borrowedUsd ?? 0),
       0,
     );
-    stats.push({ label: "Total supplied", value: formatUsd(supplied) });
+    stats.push({ label: t("vp.lending.supplied"), value: formatUsd(supplied) });
     stats.push({
-      label: "Total borrowed",
+      label: t("vp.lending.borrowed"),
       value: formatUsd(borrowed),
       sub:
         supplied > 0
-          ? `utilization ${formatPercent((borrowed / supplied) * 100, 2)}`
+          ? t("vp.lending.utilization", {
+              v: formatPercent((borrowed / supplied) * 100, 2),
+            })
           : undefined,
     });
 
     charts.push(
       chartFrom(
         "aave-borrowed",
-        "Borrowed by reserve",
+        t("vp.lending.borrowedChart"),
         "usd",
         assets.map((asset, i) =>
           lineFrom(
@@ -431,7 +435,7 @@ function buildLendingPanel(run: LoadedRun): VenuePanel {
     charts.push(
       chartFrom(
         "aave-utilization",
-        "Utilization by reserve",
+        t("vp.lending.utilizationChart"),
         "percent",
         assets.map((asset, i) =>
           lineFrom(
@@ -449,12 +453,12 @@ function buildLendingPanel(run: LoadedRun): VenuePanel {
 
     tables.push({
       id: "aave-reserves",
-      title: "Reserves at the run's final block",
+      title: t("vp.lending.reservesTitle"),
       columns: [
-        { label: "Asset" },
-        { label: "Supplied", align: "right" },
-        { label: "Borrowed", align: "right" },
-        { label: "Utilization", align: "right" },
+        { label: t("vp.col.asset") },
+        { label: t("vp.col.suppliedCol"), align: "right" },
+        { label: t("vp.col.borrowedCol"), align: "right" },
+        { label: t("vp.col.utilizationCol"), align: "right" },
       ],
       rows: assets.map((asset) => [
         cell(asset, "link"),
@@ -462,7 +466,7 @@ function buildLendingPanel(run: LoadedRun): VenuePanel {
         cell(formatUsd(lastAave[asset].borrowedUsd)),
         cell(formatPercent(lastAave[asset].utilization * 100, 2)),
       ]),
-      empty: "no Aave reserve totals in this run's market series",
+      empty: t("vp.lending.reservesEmpty"),
     });
   }
 
@@ -482,18 +486,18 @@ function buildLendingPanel(run: LoadedRun): VenuePanel {
   if (victimHf.length > 0) {
     const worst = Math.min(...victimHf.map((p) => p.value));
     stats.push({
-      label: "Worst victim health factor",
+      label: t("vp.lending.worstHf"),
       value: worst.toFixed(3),
       tone: worst < 1 ? "down" : "neutral",
-      sub: worst < 1 ? "liquidatable" : "above the liquidation line",
+      sub: worst < 1 ? t("vp.lending.liquidatable") : t("vp.lending.aboveLine"),
     });
     charts.push(
       chartFrom(
         "aave-victim-hf",
-        "Seeded victim health factor (worst)",
+        t("vp.lending.victimChart"),
         "ratio",
-        [lineFrom("hf", "Min HF", "#e879a6", victimHf)],
-        { value: 1, label: "liquidation" },
+        [lineFrom("hf", t("vp.lending.minHf"), "#e879a6", victimHf)],
+        { value: 1, label: t("vp.lending.liquidationLine") },
       ),
     );
   }
@@ -501,19 +505,19 @@ function buildLendingPanel(run: LoadedRun): VenuePanel {
   const liquidations = blockSeriesOf(run, "stress_liquidation");
   if (liquidations.length > 0) {
     stats.push({
-      label: "Liquidations",
+      label: t("vp.lending.liquidations"),
       value: String(liquidations.length),
       tone: "down",
     });
   }
   tables.push({
     id: "aave-liquidations",
-    title: "Liquidations",
+    title: t("vp.lending.liquidations"),
     columns: [
-      { label: "Block" },
-      { label: "Victim" },
-      { label: "Health factor", align: "right" },
-      { label: "Remaining debt", align: "right" },
+      { label: t("vp.col.block") },
+      { label: t("vp.col.victim") },
+      { label: t("vp.col.healthFactor"), align: "right" },
+      { label: t("vp.col.remainingDebt"), align: "right" },
     ],
     rows: liquidations.slice(-24).map((e) => [
       cell(Number(e.blockNumber).toLocaleString("en-US")),
@@ -522,18 +526,18 @@ function buildLendingPanel(run: LoadedRun): VenuePanel {
       // Aave base units are 8-decimal USD.
       cell(formatUsd((fromWei(e.remainingDebtBase, 8) ?? 0) as number)),
     ]),
-    empty: "no victim was liquidated in this run",
+    empty: t("vp.lending.liquidationsEmpty"),
   });
 
   const accounts = market?.aaveAccountsAtEnd ?? [];
   tables.push({
     id: "aave-accounts",
-    title: "Agent accounts at the run's final block",
+    title: t("vp.lending.accountsTitle"),
     columns: [
-      { label: "Agent" },
-      { label: "Collateral", align: "right" },
-      { label: "Debt", align: "right" },
-      { label: "Health factor", align: "right" },
+      { label: t("vp.col.agent") },
+      { label: t("vp.col.collateral"), align: "right" },
+      { label: t("vp.col.debt"), align: "right" },
+      { label: t("vp.col.healthFactor"), align: "right" },
     ],
     rows: accounts.map((a) => [
       cell(a.agent, "link"),
@@ -544,24 +548,21 @@ function buildLendingPanel(run: LoadedRun): VenuePanel {
         a.healthFactor !== null && a.healthFactor < 1.1 ? "down" : "neutral",
       ),
     ]),
-    empty: "no agent held an Aave position when the run ended",
+    empty: t("vp.lending.accountsEmpty"),
   });
 
   return {
     id: "lending",
-    label: "Lending",
+    label: t("vp.lending.label"),
     protocols: ["aave"],
-    caption:
-      "Aave v3. The oracle the pool prices collateral with is written by the environment and lands one block late, so a health factor an agent reads is always a block behind the price that will break it.",
+    caption: t("vp.lending.caption"),
     stats,
     charts: charts.filter((c): c is VenueChart => c !== null),
     tables,
     ...(lastAave
       ? {}
       : {
-          note: market
-            ? "no Aave reserve state recorded in this run"
-            : "Aave state appears once the run completes (market.json)",
+          note: market ? t("vp.lending.noState") : t("vp.lending.note"),
         }),
   };
 }
@@ -604,12 +605,15 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
       ...rows.filter((r) => r.quoted).map((r) => r.priceUsdc),
     );
     stats.push({
-      label: `${symbol} price`,
+      label: t("vp.stable.price", { symbol }),
       value: last.priceUsdc.toFixed(4),
       tone: last.priceUsdc < 0.999 ? "down" : "neutral",
       sub: last.quoted
-        ? `deepest ${Number.isFinite(lowest) ? lowest.toFixed(4) : "—"} · ${formatBps((last.priceUsdc - 1) * 10_000)} vs par`
-        : "pool would not quote — par by fallback",
+        ? t("vp.stable.deepest", {
+            v: Number.isFinite(lowest) ? lowest.toFixed(4) : "—",
+            bps: formatBps((last.priceUsdc - 1) * 10_000),
+          })
+        : t("vp.stable.noQuote"),
     });
   }
 
@@ -621,25 +625,33 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
     const debt = fromWei(lastLiquity.totalDebtEusdWei) ?? 0;
     const sp = fromWei(lastLiquity.stabilityPoolEusdWei) ?? 0;
     stats.push({
-      label: "System TCR",
+      label: t("vp.stable.tcr"),
       value: tcr.toFixed(3),
       tone: tcr < 1.5 ? "down" : "neutral",
-      sub: lastLiquity.recoveryMode ? "RECOVERY MODE" : "above CCR (1.5)",
+      sub: lastLiquity.recoveryMode
+        ? t("vp.stable.recovery")
+        : t("vp.stable.aboveCcr"),
     });
     stats.push({
-      label: "Troves open",
+      label: t("vp.stable.troves"),
       value: String(num(lastLiquity.troveCount)),
-      sub: `riskiest ICR ${Number(lastLiquity.riskiestIcr ?? 0).toFixed(3)}`,
+      sub: t("vp.stable.riskiest", {
+        v: Number(lastLiquity.riskiestIcr ?? 0).toFixed(3),
+      }),
     });
     stats.push({
-      label: "eUSD debt",
+      label: t("vp.stable.debt"),
       value: `${debt.toLocaleString("en-US", { maximumFractionDigits: 0 })}`,
-      sub: `stability pool ${sp.toLocaleString("en-US", { maximumFractionDigits: 0 })} eUSD`,
+      sub: t("vp.stable.spSub", {
+        v: sp.toLocaleString("en-US", { maximumFractionDigits: 0 }),
+      }),
     });
     stats.push({
-      label: "Redemption fee",
+      label: t("vp.stable.redemptionFee"),
       value: `${num(lastLiquity.redemptionRateBps).toFixed(1)}bps`,
-      sub: `borrowing ${num(lastLiquity.borrowingRateBps).toFixed(1)}bps`,
+      sub: t("vp.stable.borrowingSub", {
+        v: num(lastLiquity.borrowingRateBps).toFixed(1),
+      }),
     });
     // The peg itself, from the venue's own read — so the number is here for runs recorded before
     // market.json carried a stables field, not only for the ones that do.
@@ -651,10 +663,13 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
           .filter((p) => p > 0),
       );
       stats.unshift({
-        label: "eUSD price",
+        label: t("vp.stable.eusdPrice"),
         value: price.toFixed(4),
         tone: price < 0.999 ? "down" : "neutral",
-        sub: `deepest ${Number.isFinite(deepest) ? deepest.toFixed(4) : "—"} · ${formatBps(num(lastLiquity.discountBps) * -1)} vs par`,
+        sub: t("vp.stable.deepest", {
+          v: Number.isFinite(deepest) ? deepest.toFixed(4) : "—",
+          bps: formatBps(num(lastLiquity.discountBps) * -1),
+        }),
       });
     }
 
@@ -665,7 +680,7 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
       priceLines.push(
         lineFrom(
           "EUSD",
-          "eUSD (venue read)",
+          t("vp.stable.eusdVenueRead"),
           seriesColor(symbols.length),
           seriesOf(liquityBlocks, "marketPriceUsdc"),
         ),
@@ -675,23 +690,23 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
     charts.push(
       chartFrom(
         "liquity-tcr",
-        "System collateral ratio",
+        t("vp.stable.tcrChart"),
         "ratio",
         [lineFrom("tcr", "TCR", "#7c9eff", seriesOf(liquityBlocks, "tcr"))],
-        { value: 1.5, label: "CCR — recovery mode" },
+        { value: 1.5, label: t("vp.stable.ccrLine") },
       ),
     );
     charts.push(
-      chartFrom("liquity-fees", "Redemption / borrowing fee", "bps", [
+      chartFrom("liquity-fees", t("vp.stable.feesChart"), "bps", [
         lineFrom(
           "redemption",
-          "Redemption",
+          t("vp.stable.redemptionLine"),
           "#f5a623",
           seriesOf(liquityBlocks, "redemptionRateBps"),
         ),
         lineFrom(
           "borrowing",
-          "Borrowing",
+          t("vp.stable.borrowingLine"),
           "#b18cf0",
           seriesOf(liquityBlocks, "borrowingRateBps"),
         ),
@@ -701,12 +716,12 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
     const redemptions = blockSeriesOf(run, "liquity_redemption");
     tables.push({
       id: "liquity-redemptions",
-      title: "Redemptions",
+      title: t("vp.stable.redemptionsTitle"),
       columns: [
-        { label: "Block" },
-        { label: "eUSD redeemed", align: "right" },
-        { label: "ETH out", align: "right" },
-        { label: "ETH fee", align: "right" },
+        { label: t("vp.col.block") },
+        { label: t("vp.col.eusdRedeemed"), align: "right" },
+        { label: t("vp.col.ethOut"), align: "right" },
+        { label: t("vp.col.ethFee"), align: "right" },
       ],
       rows: redemptions
         .slice(-24)
@@ -716,21 +731,20 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
           cell((fromWei(e.ethSentWei) ?? 0).toFixed(4)),
           cell((fromWei(e.ethFeeWei) ?? 0).toFixed(4), "down"),
         ]),
-      empty:
-        "nobody redeemed eUSD in this run — the discount never cleared the redemption fee, or nobody tried",
+      empty: t("vp.stable.redemptionsEmpty"),
     });
 
     const troveLiquidations = blockSeriesOf(run, "liquity_liquidation");
     if (troveLiquidations.length > 0) {
       tables.push({
         id: "liquity-liquidations",
-        title: "Trove liquidations",
+        title: t("vp.stable.troveLiqTitle"),
         columns: [
-          { label: "Block" },
-          { label: "Borrower" },
-          { label: "Debt", align: "right" },
-          { label: "Collateral", align: "right" },
-          { label: "Mode", align: "right" },
+          { label: t("vp.col.block") },
+          { label: t("vp.col.borrower") },
+          { label: t("vp.col.debt"), align: "right" },
+          { label: t("vp.col.collateral"), align: "right" },
+          { label: t("vp.col.mode"), align: "right" },
         ],
         rows: troveLiquidations
           .slice(-24)
@@ -739,19 +753,23 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
             cell(shortAddress(str(e.borrower)), "link"),
             cell(`${(fromWei(e.debtEusdWei) ?? 0).toFixed(0)} eUSD`),
             cell(`${(fromWei(e.collWei) ?? 0).toFixed(3)} ETH`),
-            cell(num(e.operation) === 2 ? "recovery" : "normal"),
+            cell(
+              num(e.operation) === 2
+                ? t("vp.stable.modeRecovery")
+                : t("vp.stable.modeNormal"),
+            ),
           ]),
-        empty: "no trove was liquidated",
+        empty: t("vp.stable.troveLiqEmpty"),
       });
     }
   }
 
   const priceChart = chartFrom(
     "stable-prices",
-    "Stablecoin price against USDC",
+    t("vp.stable.priceChart"),
     "ratio",
     priceLines,
-    { value: 1, label: "par" },
+    { value: 1, label: t("vp.stable.parLine") },
   );
   if (priceChart) charts.unshift(priceChart);
 
@@ -763,19 +781,19 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
   if (depegs.length > 0) {
     const peak = Math.max(...depegs.map((e) => num(e.targetFraction)));
     stats.push({
-      label: "Depeg pressure",
+      label: t("vp.stable.depegPressure"),
       value: formatPercent(peak * 100),
       tone: "warn",
-      sub: `${depegs.length} blocks of environment selling`,
+      sub: t("vp.stable.depegSub", { n: depegs.length }),
     });
     tables.push({
       id: "depeg-windows",
-      title: "Depeg windows (environment selling)",
+      title: t("vp.stable.depegTitle"),
       columns: [
-        { label: "Block" },
-        { label: "Stable" },
-        { label: "Target share of depth", align: "right" },
-        { label: "Sold", align: "right" },
+        { label: t("vp.col.block") },
+        { label: t("vp.col.stable") },
+        { label: t("vp.col.targetShare"), align: "right" },
+        { label: t("vp.col.sold"), align: "right" },
       ],
       rows: depegs.slice(-24).map((e) => [
         cell(Number(e.blockNumber).toLocaleString("en-US")),
@@ -788,23 +806,20 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
           "down",
         ),
       ]),
-      empty: "the environment never leaned on a peg in this run",
+      empty: t("vp.stable.depegEmpty"),
     });
   }
 
   return {
     id: "stable",
-    label: "Stablecoin",
+    label: t("vp.stable.label"),
     protocols,
-    caption:
-      "A stablecoin's price here is measured, not assumed: the mark is the geometric mean of both executable directions on its pool. eUSD adds a redemption floor — $1 of collateral from the riskiest trove — so its discount is a claim you can exercise, not a forecast.",
+    caption: t("vp.stable.caption"),
     stats,
     charts: charts.filter((c): c is VenueChart => c !== null),
     tables,
     ...(symbols.length === 0 && !lastLiquity
-      ? {
-          note: "no stablecoin market in this run (the price series arrives with market.json's stables field)",
-        }
+      ? { note: t("vp.stable.note") }
       : {}),
   };
 }
@@ -823,51 +838,51 @@ function buildLstPanel(run: LoadedRun): VenuePanel {
     const marketPrice = num(last.marketPriceWeth);
     const discount = num(last.discountBps);
     stats.push({
-      label: "Redemption rate",
+      label: t("vp.lst.rate"),
       value: `${rate.toFixed(6)} WETH`,
-      sub: "what the vault owes per LST — the par",
+      sub: t("vp.lst.rateSub"),
     });
     stats.push({
-      label: "Market price",
+      label: t("vp.lst.market"),
       value: `${marketPrice.toFixed(6)} WETH`,
       // Below par is the normal state of a queued exit, not an alarm — only a material discount is.
       tone: discount > 20 ? "down" : "neutral",
-      sub: "what the pool pays right now",
+      sub: t("vp.lst.marketSub"),
     });
     stats.push({
-      label: "Discount",
+      label: t("vp.lst.discount"),
       value: formatBps(discount),
       tone: discount > 20 ? "down" : "neutral",
-      sub: "market below par; the exit queue is the reason it can persist",
+      sub: t("vp.lst.discountSub"),
     });
     stats.push({
-      label: "Exit queue",
+      label: t("vp.lst.queue"),
       value: String(num(last.queueLength)),
-      sub: `withdrawal delay ${num(setup?.withdrawalDelayBlocks)} blocks`,
+      sub: t("vp.lst.queueSub", { n: num(setup?.withdrawalDelayBlocks) }),
     });
     const reserve = fromWei(last.rewardReserveWei) ?? 0;
     stats.push({
-      label: "Reward reserve",
+      label: t("vp.lst.reserve"),
       value: `${reserve.toFixed(3)} WETH`,
       tone: reserve <= 0 ? "down" : "neutral",
       sub:
         reserve <= 0
-          ? "exhausted — yield has stopped"
-          : `APY ${num(setup?.effectiveApyBps) / 100}%`,
+          ? t("vp.lst.reserveEmpty")
+          : t("vp.lst.apy", { v: num(setup?.effectiveApyBps) / 100 }),
     });
 
     charts.push(
-      chartFrom("lst-rate", "Redemption rate vs market price", "eth", [
+      chartFrom("lst-rate", t("vp.lst.rateChart"), "eth", [
         lineFrom(
           "rate",
-          "Redemption rate (par)",
+          t("vp.lst.rateLine"),
           "#7c9eff",
           seriesOf(blocks, "redemptionRateWeth"),
           true,
         ),
         lineFrom(
           "market",
-          "Market price",
+          t("vp.lst.marketLine"),
           "#4fd1a5",
           seriesOf(blocks, "marketPriceWeth"),
         ),
@@ -876,24 +891,24 @@ function buildLstPanel(run: LoadedRun): VenuePanel {
     charts.push(
       chartFrom(
         "lst-discount",
-        "Discount to par",
+        t("vp.lst.discountChart"),
         "bps",
         [
           lineFrom(
             "discount",
-            "Discount",
+            t("vp.lst.discountLine"),
             "#f5a623",
             seriesOf(blocks, "discountBps"),
           ),
         ],
-        { value: 0, label: "par" },
+        { value: 0, label: t("vp.stable.parLine") },
       ),
     );
     charts.push(
-      chartFrom("lst-queue", "Exit queue length", "count", [
+      chartFrom("lst-queue", t("vp.lst.queueChart"), "count", [
         lineFrom(
           "queue",
-          "Queued exits",
+          t("vp.lst.queueLine"),
           "#e879a6",
           seriesOf(blocks, "queueLength"),
         ),
@@ -904,20 +919,20 @@ function buildLstPanel(run: LoadedRun): VenuePanel {
   const slashes = eventsOfType(run.events, "lst_slash");
   if (slashes.length > 0) {
     stats.push({
-      label: "Slashes",
+      label: t("vp.lst.slashes"),
       value: String(slashes.length),
       tone: "down",
-      sub: "permanent cuts to the redemption rate",
+      sub: t("vp.lst.slashesSub"),
     });
   }
   tables.push({
     id: "lst-slashes",
-    title: "Slash events",
+    title: t("vp.lst.slashTitle"),
     columns: [
-      { label: "Rate before", align: "right" },
-      { label: "Rate after", align: "right" },
-      { label: "Cut", align: "right" },
-      { label: "Discount after", align: "right" },
+      { label: t("vp.col.rateBefore"), align: "right" },
+      { label: t("vp.col.rateAfter"), align: "right" },
+      { label: t("vp.col.cut"), align: "right" },
+      { label: t("vp.col.discountAfter"), align: "right" },
     ],
     rows: slashes.map((e) => [
       cell(num(e.redemptionRateBefore).toFixed(6)),
@@ -925,37 +940,39 @@ function buildLstPanel(run: LoadedRun): VenuePanel {
       cell(`${num(e.bps).toFixed(0)}bps`, "down"),
       cell(formatBps(num(e.discountBps))),
     ]),
-    empty: "the vault was never slashed in this run",
+    empty: t("vp.lst.slashEmpty"),
   });
 
   const apyChanges = eventsOfType(run.events, "lst_apy_changed");
   if (apyChanges.length > 0) {
     tables.push({
       id: "lst-apy",
-      title: "Yield changes",
-      columns: [{ label: "Block" }, { label: "APY", align: "right" }],
+      title: t("vp.lst.apyTitle"),
+      columns: [
+        { label: t("vp.col.block") },
+        { label: t("vp.col.apy"), align: "right" },
+      ],
       rows: apyChanges
         .slice(-24)
         .map((e) => [
           cell(Number(e.blockNumber).toLocaleString("en-US")),
           cell(`${num(e.apyBps) / 100}%`),
         ]),
-      empty: "the yield was fixed for the whole run",
+      empty: t("vp.lst.apyEmpty"),
     });
   }
 
   return {
     id: "lst",
-    label: "LST",
+    label: t("vp.lst.label"),
     protocols: ["lst"],
-    caption:
-      "A non-rebasing liquid staking token has two prices for one asset: the redemption rate the vault owes (behind a withdrawal queue) and what its secondary pool pays right now. The gap is only free money if you can afford to wait.",
+    caption: t("vp.lst.caption"),
     stats,
     charts: charts.filter((c): c is VenueChart => c !== null),
     tables,
     ...(last
       ? {}
-      : { note: "no LST state was recorded in this run's event stream" }),
+      : { note: t("vp.lst.note") }),
   };
 }
 
@@ -984,7 +1001,7 @@ function buildSwapTable(
       cell(row.ownerId, "link"),
       cell(venue ? (VENUE_LABELS[venue] ?? venue) : "—"),
       cell(
-        notional.side === "buy" ? "BUY" : "SELL",
+        notional.side === "buy" ? t("vp.side.buy") : t("vp.side.sell"),
         notional.side === "buy" ? "up" : "down",
       ),
       cell(`${formatBaseUnits(notional.baseUnits)} ${base}`),
@@ -998,18 +1015,17 @@ function buildSwapTable(
   }
   return {
     id: "amm-swaps",
-    title: `Agent swaps · ${base}`,
+    title: t("vp.amm.swapsTitle", { base }),
     columns: [
-      { label: "Block" },
-      { label: "Agent" },
-      { label: "Venue" },
-      { label: "Side" },
-      { label: "Size", align: "right" },
-      { label: "Price", align: "right" },
+      { label: t("vp.col.block") },
+      { label: t("vp.col.agent") },
+      { label: t("vp.col.venue") },
+      { label: t("vp.col.side") },
+      { label: t("vp.col.size"), align: "right" },
+      { label: t("vp.col.price"), align: "right" },
     ],
     rows,
-    empty:
-      "no agent swap in this base was decoded — either nobody traded it, or the run predates market.json",
+    empty: t("vp.amm.swapsEmpty"),
   };
 }
 
@@ -1092,11 +1108,18 @@ const SCENARIO_FIRING: Record<string, string[]> = {
 };
 
 /** How a schedule type shows up in the run, for the types that leave no per-block trace. */
-const SCENARIO_UNRECORDED: Record<string, string> = {
-  crash: "overlay on the fair price — see the price chart",
-  spike: "overlay on the fair price — see the price chart",
-  cexDrift: "changes the price walk — see the price chart",
-  flowTrend: "tilts the order flow — see the swap volume",
+const scenarioUnrecorded = (type: string): string | undefined => {
+  switch (type) {
+    case "crash":
+    case "spike":
+      return t("vp.scenario.crash");
+    case "cexDrift":
+      return t("vp.scenario.cexDrift");
+    case "flowTrend":
+      return t("vp.scenario.flowTrend");
+    default:
+      return undefined;
+  }
 };
 
 /** The rounds a block window overlaps, as "3–5" / "4" / "—". */
@@ -1129,24 +1152,27 @@ export function buildScenarioPanel(
   // The seed is what makes a run reproducible, so it leads.
   if (started?.seed !== undefined) {
     stats.push({
-      label: "Seed",
+      label: t("vp.scenario.seed"),
       value: String(num(started.seed)),
-      sub: `flow seed ${num(started.flowSeed)} · the label for this run's market conditions`,
+      sub: t("vp.scenario.seedSub", { flow: num(started.flowSeed) }),
     });
   }
   stats.push({
-    label: "Scheduled events",
+    label: t("vp.scenario.scheduled"),
     value: String(scheduled.length),
     tone: scheduled.length === 0 ? "neutral" : "warn",
     sub:
       scheduled.length === 0
-        ? "none — the fair-price walk was the only thing moving"
+        ? t("vp.scenario.scheduledNone")
         : scheduled.map((e) => str(e.type)).join(", "),
   });
   stats.push({
-    label: "Run window",
+    label: t("vp.scenario.window"),
     value: `${runStart.toLocaleString("en-US")} → ${(runStart + num(started?.runBlocks)).toLocaleString("en-US")}`,
-    sub: `${num(started?.runBlocks)} blocks · ${epochs.length} rounds`,
+    sub: t("vp.scenario.windowSub", {
+      blocks: num(started?.runBlocks),
+      rounds: epochs.length,
+    }),
   });
 
   // --- the plan, and what became of it ---
@@ -1154,7 +1180,7 @@ export function buildScenarioPanel(
     const from = runStart + num(event.startBlock);
     const to = runStart + num(event.endBlock);
     const firingTypes = SCENARIO_FIRING[str(event.type)] ?? [];
-    const unrecorded = SCENARIO_UNRECORDED[str(event.type)];
+    const unrecorded = scenarioUnrecorded(str(event.type));
     const fired = firingTypes.flatMap((t) => blockSeriesOf(run, t));
     const firstFired = fired[0];
     const lastFired = fired[fired.length - 1];
@@ -1165,17 +1191,21 @@ export function buildScenarioPanel(
       (t) => eventsOfType(run.events, `${t}_restored`).length > 0,
     );
     const ended = failed
-      ? "failed"
+      ? t("vp.scenario.failed")
       : restored
-        ? "restored"
+        ? t("vp.scenario.restored")
         : unrecorded || fired.length === 0
           ? ""
-          : "left in place";
+          : t("vp.scenario.leftInPlace");
     const outcome = unrecorded
       ? unrecorded
       : fired.length === 0
-        ? "never fired"
-        : `${fired.length} blk ${Number(firstFired.blockNumber).toLocaleString("en-US")}–${Number(lastFired.blockNumber).toLocaleString("en-US")}${ended ? ` · ${ended}` : ""}`;
+        ? t("vp.scenario.neverFired")
+        : `${t("vp.scenario.firedBlocks", {
+            n: fired.length,
+            from: Number(firstFired.blockNumber).toLocaleString("en-US"),
+            to: Number(lastFired.blockNumber).toLocaleString("en-US"),
+          })}${ended ? ` · ${ended}` : ""}`;
     return [
       cell(str(event.type), "link"),
       // The trapezoid's shape rides with its window: ramp/hold/decay is what the window is made of,
@@ -1203,17 +1233,16 @@ export function buildScenarioPanel(
 
   tables.push({
     id: "scenario-schedule",
-    title: "Stress schedule (drawn from the seed at run start)",
+    title: t("vp.scenario.scheduleTitle"),
     columns: [
-      { label: "Event", width: "110px" },
-      { label: "Window · ramp/hold/decay", width: "205px" },
-      { label: "Rounds", width: "60px" },
-      { label: "Mag", align: "right", width: "60px" },
-      { label: "Outcome", width: "minmax(0,1fr)" },
+      { label: t("vp.col.event"), width: "110px" },
+      { label: t("vp.col.windowShape"), width: "205px" },
+      { label: t("vp.col.rounds"), width: "60px" },
+      { label: t("vp.col.mag"), align: "right", width: "60px" },
+      { label: t("vp.col.outcome"), width: "minmax(0,1fr)" },
     ],
     rows: scheduleRows,
-    empty:
-      "no stress event was scheduled — this run is the fair-price walk and the order flow, nothing else",
+    empty: t("vp.scenario.scheduleEmpty"),
   });
 
   // --- everything else the environment or the venues did, in block order ---
@@ -1222,55 +1251,72 @@ export function buildScenarioPanel(
   for (const e of blockSeriesOf(run, "stress_liquidation"))
     notable.push({
       block: Number(e.blockNumber),
-      kind: "liquidation",
-      text: `victim ${str(e.victimId)} liquidated at HF ${(Number(e.healthFactor ?? 0) / 1e18).toFixed(3)}`,
+      kind: t("vp.scenario.liquidation"),
+      text: t("vp.scenario.liquidationText", {
+        victim: str(e.victimId),
+        hf: (Number(e.healthFactor ?? 0) / 1e18).toFixed(3),
+      }),
       tone: "down",
     });
   for (const e of blockSeriesOf(run, "liquity_liquidation"))
     notable.push({
       block: Number(e.blockNumber),
-      kind: "trove liquidated",
-      text: `${shortAddress(str(e.borrower))} · ${(fromWei(e.debtEusdWei) ?? 0).toFixed(0)} eUSD`,
+      kind: t("vp.scenario.troveLiquidated"),
+      text: t("vp.scenario.troveText", {
+        borrower: shortAddress(str(e.borrower)),
+        debt: (fromWei(e.debtEusdWei) ?? 0).toFixed(0),
+      }),
       tone: "down",
     });
   for (const e of blockSeriesOf(run, "liquity_redemption"))
     notable.push({
       block: Number(e.blockNumber),
-      kind: "redemption",
-      text: `${(fromWei(e.actualEusdWei) ?? 0).toFixed(0)} eUSD redeemed for ${(fromWei(e.ethSentWei) ?? 0).toFixed(4)} ETH`,
+      kind: t("vp.scenario.redemption"),
+      text: t("vp.scenario.redemptionText", {
+        eusd: (fromWei(e.actualEusdWei) ?? 0).toFixed(0),
+        eth: (fromWei(e.ethSentWei) ?? 0).toFixed(4),
+      }),
     });
   for (const e of eventsOfType(run.events, "lst_slash"))
     notable.push({
       block: Number(e.blockNumber ?? 0),
-      kind: "lst slash",
-      text: `redemption rate ${num(e.redemptionRateBefore).toFixed(6)} → ${num(e.redemptionRateAfter).toFixed(6)}`,
+      kind: t("vp.scenario.lstSlash"),
+      text: t("vp.scenario.lstSlashText", {
+        before: num(e.redemptionRateBefore).toFixed(6),
+        after: num(e.redemptionRateAfter).toFixed(6),
+      }),
       tone: "down",
     });
   for (const e of blockSeriesOf(run, "no_arb_persistent_warning"))
     notable.push({
       block: Number(e.blockNumber),
-      kind: "arb window",
-      text: `${str(e.base)} ${str(e.buyVenue)}→${str(e.sellVenue)} open at ${num(e.profitBps).toFixed(0)}bps`,
+      kind: t("vp.scenario.arbWindow"),
+      text: t("vp.scenario.arbWindowText", {
+        base: str(e.base),
+        buy: str(e.buyVenue),
+        sell: str(e.sellVenue),
+        bps: num(e.profitBps).toFixed(0),
+      }),
       tone: "warn",
     });
   notable.sort((a, b) => a.block - b.block);
 
   if (notable.length > 0) {
     stats.push({
-      label: "Venue events",
+      label: t("vp.scenario.venueEvents"),
       value: String(notable.length),
-      sub: "liquidations, redemptions, slashes and open arb windows",
+      sub: t("vp.scenario.venueEventsSub"),
     });
   }
 
   tables.push({
     id: "scenario-notable",
-    title: "What the venues did, in block order",
+    title: t("vp.scenario.notableTitle"),
     columns: [
-      { label: "Block", width: "100px" },
-      { label: "Round", width: "70px" },
-      { label: "Event", width: "140px" },
-      { label: "Detail", width: "minmax(0,2fr)" },
+      { label: t("vp.col.block"), width: "100px" },
+      { label: t("vp.col.round"), width: "70px" },
+      { label: t("vp.col.event"), width: "140px" },
+      { label: t("vp.col.detail"), width: "minmax(0,2fr)" },
     ],
     rows: notable.slice(0, 40).map((n) => [
       cell(n.block.toLocaleString("en-US")),
@@ -1278,17 +1324,15 @@ export function buildScenarioPanel(
       cell(n.kind, n.tone ?? "neutral"),
       cell(n.text),
     ]),
-    empty:
-      "nothing was liquidated, redeemed or slashed, and no arb window stayed open long enough to be reported",
+    empty: t("vp.scenario.notableEmpty"),
   });
 
   return {
     id: "scenario",
-    label: "Scenario",
+    label: t("vp.scenario.label"),
     runWide: true,
     protocols: [],
-    caption:
-      "What the environment did to this run. The stress schedule is drawn from the seed at run start as a trapezoid (ramp, hold, decay) over the fair-price walk, so it is randomised but reproducible — the same seed replays the same windows. Everything here is the whole run, whichever round is selected, because a scenario is a property of the run.",
+    caption: t("vp.scenario.caption"),
     stats,
     charts: [],
     tables,

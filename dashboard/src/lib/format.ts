@@ -36,9 +36,9 @@ export function formatScore(value: number): string {
 export function formatBps(value: number): string {
   const abs = Math.abs(value);
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
-  if (value !== 0 && abs < 0.0005) return value > 0 ? "<+0.001bp" : ">-0.001bp";
+  if (value !== 0 && abs < 0.0005) return value > 0 ? "<+0.001bps" : ">-0.001bps";
   const digits = abs >= 10 ? 1 : abs >= 1 ? 2 : 3;
-  return `${sign}${abs.toFixed(digits)}bp`;
+  return `${sign}${abs.toFixed(digits)}bps`;
 }
 
 /** A rank move, as the leaderboard's arrow column reads it. */

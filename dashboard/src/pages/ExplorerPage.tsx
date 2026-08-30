@@ -20,7 +20,10 @@ import {
   useIndexedTxProbe,
 } from "@/data/blockscout";
 import { setSelectedRound, useSelectedRound } from "@/data/roundSelection";
+import { runDisplayName } from "@/data/competition";
 import { useExplorerSnapshot } from "@/data/useExplorerSnapshot";
+import { useScenarioLabel } from "@/data/useScenarioLabel";
+import { t } from "@/i18n/messages";
 import type { ExplorerBlock, ExplorerTransaction } from "@/data/types";
 
 const SECTION_LABEL_STYLE = {
@@ -30,12 +33,19 @@ const SECTION_LABEL_STYLE = {
   color: "var(--text-tertiary)",
 };
 
-const SEARCH_HINT: Record<string, string> = {
-  tx: "transaction hash",
-  address: "wallet address",
-  block: "block number",
-  agent: "agent → wallet address",
-  unknown: "no exact match — filtering the lists below",
+const searchHint = (kind: string): string => {
+  switch (kind) {
+    case "tx":
+      return t("explorer.hint.tx");
+    case "address":
+      return t("explorer.hint.address");
+    case "block":
+      return t("explorer.hint.block");
+    case "agent":
+      return t("explorer.hint.agent");
+    default:
+      return t("explorer.hint.unknown");
+  }
 };
 
 function StatTile({ label, value }: { label: string; value: string }) {
@@ -57,11 +67,7 @@ function StatTile({ label, value }: { label: string; value: string }) {
 function BlockRow({ block, href }: { block: ExplorerBlock; href?: string }) {
   return (
     <div
-      title={
-        href
-          ? "Open block in Blockscout"
-          : "start `npm run explorer` to open blocks"
-      }
+      title={href ? t("explorer.openBlock") : t("explorer.startToOpen")}
       onClick={href ? () => window.open(href, "_blank", "noopener") : undefined}
       style={{
         display: "flex",
@@ -113,7 +119,7 @@ function BlockRow({ block, href }: { block: ExplorerBlock; href?: string }) {
             color: "var(--text-secondary)",
           }}
         >
-          {block.txCount} tx
+          {t("rounds.txN", { n: block.txCount })}
         </div>
       </div>
     </div>
@@ -169,7 +175,7 @@ function TransactionRow({
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              title="Open transaction in Blockscout"
+              title={t("agent.openTx")}
               style={{ color: "inherit", textDecoration: "none" }}
             >
               {tx.hash}
@@ -189,7 +195,7 @@ function TransactionRow({
               href={addressHref}
               target="_blank"
               rel="noopener noreferrer"
-              title="Open sender in Blockscout"
+              title={t("agent.openAddress")}
               style={{ color: "var(--text-link)", textDecoration: "none" }}
             >
               {tx.agent}
@@ -250,6 +256,7 @@ export function ExplorerPage() {
   const { data, loading, error } = useExplorerSnapshot();
   const blockscout = useBlockscoutStatus();
   const selectedRound = useSelectedRound();
+  const scenario = useScenarioLabel();
   const [search, setSearch] = useState("");
 
   const target = useMemo(
@@ -287,25 +294,29 @@ export function ExplorerPage() {
     data?.transactions.find((tx) => tx.fullHash)?.fullHash,
   );
 
-  if (loading) return <CenteredMessage text="Loading Eris…" />;
+  if (loading) return <CenteredMessage text={t("common.loading")} />;
   if (error || !data)
     return (
       <CenteredMessage
-        text={`Failed to load data${error ? `: ${error.message}` : ""}`}
+        text={t("common.loadFailed", {
+          detail: error ? `: ${error.message}` : "",
+        })}
         tone="danger"
       />
     );
 
   const { round, scope, stats } = data;
   const base = blockscout.base;
+  const worldName = scenario.name
+    ? scenario.name.replace(/^full-/, "")
+    : runDisplayName(round.runId);
 
   const indexerNote = ((): string | null => {
-    if (indexedProbe === "missing")
-      return "this run's transactions are not indexed — the indexer is holding a different chain; run `npm run explorer:reset`";
+    if (indexedProbe === "missing") return t("explorer.notIndexed");
     // Live: the gap between the chain and the indexer is genuine lag, and worth seeing.
     if (round.status === "live" && blockscout.indexedHeight !== null) {
       const behind = round.blockNumber - blockscout.indexedHeight;
-      return behind > 1 ? `${behind} blocks behind the chain` : null;
+      return behind > 1 ? t("explorer.behind", { n: behind }) : null;
     }
     return null;
   })();
@@ -351,7 +362,7 @@ export function ExplorerPage() {
               letterSpacing: "var(--tracking-tight)",
             }}
           >
-            Round explorer
+            {t("explorer.title")}
           </span>
 
           {/* Connection state. The dashboard reads run artifacts; Blockscout indexes the same
@@ -386,27 +397,26 @@ export function ExplorerPage() {
                   rel="noopener noreferrer"
                   style={{ color: "var(--text-link)", textDecoration: "none" }}
                 >
-                  Blockscout connected
+                  {t("explorer.connected")}
                 </a>
                 <span style={{ color: "var(--text-tertiary)" }}>
-                  indexed block{" "}
-                  {blockscout.indexedHeight?.toLocaleString("en-US") ?? "—"}
+                  {t("explorer.indexed", {
+                    n: blockscout.indexedHeight?.toLocaleString("en-US") ?? "—",
+                  })}
                   {blockscout.indexedPercent !== null &&
                     blockscout.indexedPercent < 100 &&
-                    ` · ${blockscout.indexedPercent.toFixed(1)}% indexed`}
+                    t("explorer.indexedPct", {
+                      p: blockscout.indexedPercent.toFixed(1),
+                    })}
                 </span>
                 {indexerNote && (
                   <span style={{ color: "var(--warning)" }}>{indexerNote}</span>
                 )}
               </>
             ) : blockscout.probed ? (
-              <span>
-                Blockscout offline — run <code>npm run explorer</code> to open
-                transactions, blocks and addresses here (and{" "}
-                <code>npm run explorer:reset</code> after a chain reset)
-              </span>
+              <span>{t("explorer.offline")}</span>
             ) : (
-              <span>probing the local explorer…</span>
+              <span>{t("explorer.probing")}</span>
             )}
           </div>
 
@@ -420,7 +430,7 @@ export function ExplorerPage() {
             }}
           >
             <Input
-              placeholder="Search by tx hash / block / agent / wallet address…"
+              placeholder={t("explorer.search")}
               mono
               suffix="⌕"
               value={search}
@@ -440,7 +450,7 @@ export function ExplorerPage() {
                 }}
               >
                 <span>
-                  {SEARCH_HINT[target.kind]}
+                  {searchHint(target.kind)}
                   {target.agentId ? ` · ${target.value}` : ""}
                 </span>
                 <span style={{ marginLeft: "auto" }}>
@@ -452,13 +462,11 @@ export function ExplorerPage() {
                         cursor: "pointer",
                       }}
                     >
-                      open in Blockscout ↗ (enter)
+                      {t("explorer.open")}
                     </span>
                   ) : (
                     <span>
-                      {blockscout.probed
-                        ? "explorer offline — showing local matches only"
-                        : "…"}
+                      {blockscout.probed ? t("explorer.localOnly") : "…"}
                     </span>
                   )}
                 </span>
@@ -479,16 +487,20 @@ export function ExplorerPage() {
             flexWrap: "wrap",
           }}
         >
-          <span style={SECTION_LABEL_STYLE}>Scope</span>
+          <span style={SECTION_LABEL_STYLE}>{t("market.scope")}</span>
           <Select
             value={selectedRound === null ? "all" : String(selectedRound)}
             options={[
               {
-                label: `Whole run (${round.epochs.length} rounds)`,
+                label: t("explorer.wholeRun", { n: round.epochs.length }),
                 value: "all",
               },
               ...round.epochs.map((e) => ({
-                label: `Round ${String(e.index).padStart(2, "0")} · blk ${e.fromBlock.toLocaleString("en-US")}–${e.toBlock.toLocaleString("en-US")}`,
+                label: t("explorer.roundOption", {
+                  i: String(e.index).padStart(2, "0"),
+                  from: e.fromBlock.toLocaleString("en-US"),
+                  to: e.toBlock.toLocaleString("en-US"),
+                }),
                 value: String(e.index),
               })),
             ]}
@@ -506,8 +518,15 @@ export function ExplorerPage() {
             }}
           >
             {scope.roundIndex === null
-              ? `blocks ${scope.fromBlock.toLocaleString("en-US")}–${scope.toBlock.toLocaleString("en-US")}`
-              : `round ${scope.roundIndex} · blocks ${scope.fromBlock.toLocaleString("en-US")}–${scope.toBlock.toLocaleString("en-US")}`}
+              ? t("explorer.scopeBlocks", {
+                  from: scope.fromBlock.toLocaleString("en-US"),
+                  to: scope.toBlock.toLocaleString("en-US"),
+                })
+              : t("explorer.scopeRound", {
+                  i: scope.roundIndex,
+                  from: scope.fromBlock.toLocaleString("en-US"),
+                  to: scope.toBlock.toLocaleString("en-US"),
+                })}
           </span>
         </div>
 
@@ -528,19 +547,24 @@ export function ExplorerPage() {
             }}
           >
             <StatTile
-              label="Run"
-              value={`${round.runNumber} · ${round.status === "live" ? "Live" : "Archived"}`}
+              label={t("explorer.stat.scenario")}
+              value={`${worldName} · ${round.status === "live" ? t("common.live") : t("common.finished")}`}
             />
-            <StatTile label="Latest block" value={stats.latestBlockNumber} />
+            <StatTile
+              label={t("explorer.stat.latest")}
+              value={stats.latestBlockNumber}
+            />
             {stats.indexerBlockNumber !== undefined && (
               <StatTile
-                label="Indexed block"
+                label={t("explorer.stat.indexed")}
                 value={stats.indexerBlockNumber}
               />
             )}
             <StatTile
               label={
-                scope.roundIndex === null ? "Tx this run" : "Tx this round"
+                scope.roundIndex === null
+                  ? t("explorer.stat.txRun")
+                  : t("explorer.stat.txRound")
               }
               // null = the live view does not hold this round's blocks; "0" would be a claim.
               value={
@@ -550,11 +574,11 @@ export function ExplorerPage() {
               }
             />
             <StatTile
-              label="Active agents"
+              label={t("explorer.stat.agents")}
               value={String(stats.activeAgents)}
             />
             <StatTile
-              label="Avg block time"
+              label={t("explorer.stat.blockTime")}
               value={`${stats.avgBlockTimeSeconds}s`}
             />
           </div>
@@ -595,7 +619,7 @@ export function ExplorerPage() {
                   color: "var(--text-primary)",
                 }}
               >
-                Blocks
+                {t("explorer.blocks")}
               </span>
               <span
                 style={{
@@ -603,7 +627,7 @@ export function ExplorerPage() {
                   color: "var(--text-tertiary)",
                 }}
               >
-                {blocks.length} shown
+                {t("explorer.shown", { n: blocks.length })}
               </span>
             </div>
             {blocks.length === 0 && (
@@ -614,7 +638,7 @@ export function ExplorerPage() {
                   color: "var(--text-tertiary)",
                 }}
               >
-                no block in this scope matches
+                {t("explorer.noBlocks")}
               </div>
             )}
             {blocks.map((block) => (
@@ -652,7 +676,7 @@ export function ExplorerPage() {
                   color: "var(--text-primary)",
                 }}
               >
-                Transactions
+                {t("explorer.transactions")}
               </span>
               <span
                 style={{
@@ -660,7 +684,7 @@ export function ExplorerPage() {
                   color: "var(--text-tertiary)",
                 }}
               >
-                {transactions.length} shown
+                {t("explorer.shown", { n: transactions.length })}
               </span>
             </div>
             {transactions.length === 0 && (
@@ -671,7 +695,7 @@ export function ExplorerPage() {
                   color: "var(--text-tertiary)",
                 }}
               >
-                no transaction in this scope matches
+                {t("explorer.noTx")}
               </div>
             )}
             {transactions.map((tx) => (

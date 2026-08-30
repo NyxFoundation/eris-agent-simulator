@@ -90,7 +90,16 @@ export function Panel({
   );
 }
 
-export function Stat({ label, value }: { label: string; value: string }) {
+export function Stat({
+  label,
+  value,
+  caps = true,
+}: {
+  label: string;
+  value: string;
+  /** Off for labels carrying a symbol the uppercase transform would mangle (λ → Λ). */
+  caps?: boolean;
+}) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
       <span
@@ -98,7 +107,7 @@ export function Stat({ label, value }: { label: string; value: string }) {
           font: "var(--text-xs) var(--font-mono)",
           color: "var(--text-tertiary)",
           letterSpacing: "var(--tracking-wide)",
-          textTransform: "uppercase",
+          textTransform: caps ? "uppercase" : "none",
         }}
       >
         {label}
@@ -123,11 +132,6 @@ export function formatStanding(value: number): string {
 /** A spread, not a direction: a leading "+" on a standard deviation reads as a gain that is not one. */
 export function formatSpreadBps(value: number): string {
   return formatBps(Math.abs(value)).replace(/^\+/, "");
-}
-
-/** "1 scenarios" reads as a bug in the code rather than as a competition with one scenario in it. */
-export function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
 export function toneColor(value: number): string {

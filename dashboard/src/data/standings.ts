@@ -168,6 +168,16 @@ export interface Standings {
   /** Net PnL (final marks) summed across every scenario. Defined only at a run's end — both ends
    * are priced at the final marks, so there is no "value at round k" to take. */
   netPnlByAgent: Record<string, number>;
+  /**
+   * The score in its own units (raw log return per round; display ×10⁴ as bps): per-scenario
+   * scores averaged per regime, then across regimes with equal weight. This is what the standings
+   * table shows — the rank itself still comes from `rows` (the official z aggregation), and the
+   * two can disagree in order; that difference is the aggregation choice, stated, not hidden.
+   */
+  scoreByAgent: Record<
+    string,
+    { overall: number; byRegime: Record<string, number> }
+  >;
 }
 
 export function buildStandings(
@@ -194,6 +204,30 @@ export function buildStandings(
     }
   }
 
+  // Regime-equal means of the raw scores, from exactly the rows the ranking aggregates.
+  const perRegime = new Map<string, Map<string, number[]>>(); // agent -> regime -> scores
+  for (const row of scenarioRows) {
+    for (const [id, value] of Object.entries(row.byAgent)) {
+      const byRegime = perRegime.get(id) ?? new Map<string, number[]>();
+      const list = byRegime.get(row.regime) ?? [];
+      list.push(value);
+      byRegime.set(row.regime, list);
+      perRegime.set(id, byRegime);
+    }
+  }
+  const scoreByAgent: Standings["scoreByAgent"] = {};
+  for (const [id, byRegimeLists] of perRegime) {
+    const byRegime: Record<string, number> = {};
+    for (const [regime, values] of byRegimeLists) {
+      byRegime[regime] = values.reduce((a, b) => a + b, 0) / values.length;
+    }
+    const regimeMeans = Object.values(byRegime);
+    scoreByAgent[id] = {
+      overall: regimeMeans.reduce((a, b) => a + b, 0) / regimeMeans.length,
+      byRegime,
+    };
+  }
+
   return {
     rows: aggregateScenarios(scenarioRows, "zscore"),
     regimes,
@@ -201,6 +235,7 @@ export function buildStandings(
     throughRound,
     endedScenarios,
     netPnlByAgent,
+    scoreByAgent,
   };
 }
 

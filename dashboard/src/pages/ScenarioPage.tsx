@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
+import { t, type MessageKey } from "@/i18n/messages";
 import { Sidebar } from "@/components/Sidebar";
 import { Sparkline } from "@/design-system/Sparkline";
 import { blockscoutBlockUrl, useBlockscoutBase } from "@/data/blockscout";
@@ -32,59 +33,20 @@ const TAPE_COLORS: Record<TapeEvent["tone"], string> = {
 interface InfoTab {
   key: string;
   num: string;
-  label: string;
-  body: string[];
+  label: MessageKey;
+  body: MessageKey[];
 }
 
-// Real copy about this simulator (issue #63 Phase 4) — the seed build shipped a fictional
-// marketing text here. Sources: README, ADR 0006 (environment/agent split, post-run scoring),
-// ADR 0019 (epoch scoring), issue #63 (artifacts).
-const INFO_TABS: InfoTab[] = [
-  {
-    key: "overview",
-    num: "01",
-    label: "Overview",
-    body: [
-      "Eris is a DeFi trading-competition simulator. Autonomous agents compete on a multi-protocol venue set — Uniswap v3, Balancer, Curve, GMX v2 and Aave v3, plus optional LST and CDP-stablecoin venues — all deployed on a local anvil chain.",
-      "Agents run as fully independent processes and see only finalized on-chain state: no privileged RPC, no pending transactions, no other agent's orders. Each block they observe, decide, and sign their own transactions; in-block ordering is anvil's fee ordering (descending priority fee), so priority is something you bid for.",
-      "The environment daemon drives the market: a seed-derived fair price written on-chain every block, uninformed and informed order flow, a GMX keeper, and scheduled stress events — crashes, liquidity pulls, stablecoin depegs, whale orders — that agents cannot opt out of.",
-      "Self-improving agents pair a rule strategy with an LLM that rewrites the strategy code mid-run. The LLM is never in the trade path: the rules trade every block on their own, and revisions install only after a static check, compilation, and a sandboxed test run.",
-    ],
-  },
-  {
-    key: "environment",
-    num: "02",
-    label: "Environment",
-    body: [
-      "SEED is a label for market conditions. The fair-price path is reproducible per (regime, seed), but transaction timing and in-block ordering are not — the same scenario replayed twice gives different fills, which is the point of measuring over many scenarios.",
-      "Official regimes: calm, cex-drift, informed-flow, whale, lending-incident, crash, and depeg. A scenario is one (regime, seed) pair; a competition replays a whole set against a state dump and ranks agents per regime.",
-      "Stress events are randomized-but-deterministic overlays on the fair price (ramp, hold, decay), liquidity pulls that thin every AMM pool at once, and depegs where the environment leans on a stablecoin's pool until the window closes. Seeded victim positions make Aave liquidations reachable for agents that watch health factors.",
-      "The fair price is distributed on-chain through a PriceFeed contract and lands one block late for everyone equally — reacting to information a block after it exists is part of the game.",
-    ],
-  },
-  {
-    key: "scoring",
-    num: "03",
-    label: "Scoring",
-    body: [
-      "Scoring happens after the run, not during it. The coordinator walks back over historical block state and values every agent at identical block cross-sections (one batched multicall per block), so the live loop pays nothing for it and no agent can game a snapshot phase.",
-      "Score is mean − λ·std of per-epoch log returns of total account value, measured in excess of the roster's do-nothing baseline agent. The leaderboard shows it in bps of log growth per epoch.",
-      "PnL%, Sharpe (mean/std of the same epoch returns) and max drawdown come from the same reconstructed series and are shown for context; rank is by score. The rank move column is the change over the run's final epoch.",
-      "Holdings the scorer cannot price are reported, never silently zeroed — a zero that is really a read failure would be indistinguishable from a trading loss.",
-    ],
-  },
-  {
-    key: "artifacts",
-    num: "04",
-    label: "Artifacts",
-    body: [
-      "Everything on these pages is derived from the run's files: summary.json (standings and epoch scores), events.jsonl (reconstructed observations and the event stream), blocks.csv (every transaction), agents/<id>.jsonl (each agent's own decision log), and market.json (per-venue prices, pool depth, GMX/Aave state, decoded transaction notionals).",
-      "The chain is the source of truth: every numeric series is reconstructed from on-chain reads after the run. Logs supply only reasoning, intent and identity.",
-      "While a run is live the dashboard tails the log files and reads the chain over RPC — prices, blocks, the event tape and decision logs update in place. Scores and per-venue series appear the moment the run completes.",
-      "The local Blockscout explorer (npm run explorer) is the deep-dive tool: when it is running, every transaction, address and block on these pages links into it.",
-    ],
-  },
-];
+// The learning layer: what this simulator is, in the viewer's language. Keys resolve through the
+// dictionary so the copy exists in both languages and in exactly one place.
+const INFO_TAB_KEYS = ["overview", "environment", "scoring", "artifacts"] as const;
+
+const INFO_TABS: InfoTab[] = INFO_TAB_KEYS.map((key, i) => ({
+  key,
+  num: String(i + 1).padStart(2, "0"),
+  label: `scenario.info.${key}.label` as MessageKey,
+  body: [1, 2, 3, 4].map((n) => `scenario.info.${key}.p${n}` as MessageKey),
+}));
 
 function MarketTile({ market }: { market: MarketTicker }) {
   const tone = market.direction === "up" ? "success" : "danger";
@@ -359,7 +321,7 @@ function InfoTabs() {
                   lineHeight: 1,
                 }}
               >
-                {tab.label}
+                {t(tab.label)}
               </span>
             </div>
           );
@@ -385,9 +347,9 @@ function InfoTabs() {
             maxWidth: "80ch",
           }}
         >
-          {active.body.map((text, i) => (
+          {active.body.map((key) => (
             <p
-              key={i}
+              key={key}
               style={{
                 margin: 0,
                 fontSize: "var(--text-base)",
@@ -395,7 +357,7 @@ function InfoTabs() {
                 color: "var(--text-secondary)",
               }}
             >
-              {text}
+              {t(key)}
             </p>
           ))}
         </div>
@@ -435,7 +397,7 @@ function SectionPanel({
               cursor: "pointer",
             }}
           >
-            see all →
+            {t("common.seeAll")}
           </span>
         )}
       </div>
@@ -466,7 +428,7 @@ export function ScenarioPage() {
             color: "var(--text-tertiary)",
           }}
         >
-          Loading Eris…
+          {t("common.loading")}
         </span>
       </div>
     );
@@ -489,7 +451,7 @@ export function ScenarioPage() {
             color: "var(--danger-text)",
           }}
         >
-          Failed to load data{error ? `: ${error.message}` : ""}
+          {t("common.loadFailed", { detail: error ? `: ${error.message}` : "" })}
         </span>
       </div>
     );
@@ -541,7 +503,7 @@ export function ScenarioPage() {
               color: "var(--text-primary)",
             }}
           >
-            {scenario.name ?? "Scenario"}
+            {scenario.name?.replace(/^full-/, "") ?? t("scenario.fallbackTitle")}
           </h1>
           <span
             style={{
@@ -553,9 +515,14 @@ export function ScenarioPage() {
             }}
           >
             {[
-              scenario.seed !== null ? `seed ${scenario.seed}` : null,
+              scenario.seed !== null
+                ? t("scenario.seed", { n: scenario.seed })
+                : null,
               round.epochs.length > 0
-                ? `${round.epochs.length} rounds x ${round.epochBlocks} blocks`
+                ? t("scenario.roundsBlocks", {
+                    rounds: round.epochs.length,
+                    blocks: round.epochBlocks,
+                  })
                 : null,
               scenario.competition,
               scenario.name === null ? round.runId : null,
@@ -584,7 +551,7 @@ export function ScenarioPage() {
               textTransform: "uppercase",
             }}
           >
-            See what's happening
+            {t("scenario.hero")}
           </h2>
           <span
             style={{
@@ -593,8 +560,10 @@ export function ScenarioPage() {
               letterSpacing: "var(--tracking-wide)",
             }}
           >
-            RUN {round.runNumber} · {leaderboard.length} AGENTS · BLOCK{" "}
-            {round.blockNumber.toLocaleString("en-US")}
+            {t("scenario.heroMeta", {
+              agents: leaderboard.length,
+              block: round.blockNumber.toLocaleString("en-US"),
+            })}
           </span>
         </div>
 
@@ -606,7 +575,7 @@ export function ScenarioPage() {
             borderTop: "1px solid var(--border-subtle)",
           }}
         >
-          <SectionPanel title="Markets" path="/markets">
+          <SectionPanel title={t("scenario.markets")} path="/markets">
             <div
               style={{
                 display: "grid",
@@ -623,7 +592,7 @@ export function ScenarioPage() {
           </SectionPanel>
 
           <div style={{ borderLeft: "1px solid var(--border-subtle)" }}>
-            <SectionPanel title="Leaderboard">
+            <SectionPanel title={t("scenario.standings")}>
               <div
                 style={{
                   display: "grid",
@@ -638,28 +607,32 @@ export function ScenarioPage() {
                     font: "var(--text-xs) var(--font-mono)",
                     color: "var(--text-tertiary)",
                     letterSpacing: "var(--tracking-wide)",
+                    textTransform: "uppercase",
                   }}
                 >
-                  RANK
+                  {t("rounds.col.rank")}
                 </span>
                 <span
                   style={{
                     font: "var(--text-xs) var(--font-mono)",
                     color: "var(--text-tertiary)",
                     letterSpacing: "var(--tracking-wide)",
+                    textTransform: "uppercase",
                   }}
                 >
-                  AGENT
+                  {t("home.col.agent")}
                 </span>
                 <span
+                  title={t("agent.standing.score")}
                   style={{
                     font: "var(--text-xs) var(--font-mono)",
                     color: "var(--text-tertiary)",
                     letterSpacing: "var(--tracking-wide)",
                     textAlign: "right",
+                    textTransform: "uppercase",
                   }}
                 >
-                  SCORE
+                  {t("home.col.score")}
                 </span>
               </div>
               {leaderboard.map((row) => (
@@ -669,7 +642,7 @@ export function ScenarioPage() {
           </div>
 
           <div style={{ borderLeft: "1px solid var(--border-subtle)" }}>
-            <SectionPanel title="Explorer" path="/explorer">
+            <SectionPanel title={t("scenario.explorer")} path="/explorer">
               {blocks.map((block) => (
                 <BlockPreviewRow
                   key={block.number}

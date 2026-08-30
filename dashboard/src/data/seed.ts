@@ -68,7 +68,6 @@ export function createSeedRound(): RoundInfo {
   const endsAt = Date.now() + 42 * 60 * 1000 + 18 * 1000;
   return {
     runId: "seed-run",
-    runNumber: 14,
     status: "live",
     startsAt: endsAt - ROUND_DURATION_MS,
     endsAt,

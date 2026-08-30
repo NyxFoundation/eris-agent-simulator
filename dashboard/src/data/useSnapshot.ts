@@ -3,6 +3,7 @@
 //   - a snapshot that reports itself live schedules the next refresh WITHOUT dropping the data,
 //     so live mode updates in place instead of flashing "Loading…" every few seconds
 import { useEffect, useRef, useState } from "react";
+import { useLocale } from "@/i18n/locale";
 
 const LIVE_REFRESH_MS = 3_000;
 
@@ -26,6 +27,10 @@ export function useSnapshot<T>(
   isLive: (data: T) => boolean,
   revision: string | number = "",
 ): SnapshotState<T> {
+  // Snapshots carry display strings built in the data layer (via t()), so a language switch is a
+  // view change: the key includes the locale and the snapshot rebuilds in the new language.
+  const locale = useLocale();
+  key = `${locale}:${key}`;
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
   const isLiveRef = useRef(isLive);

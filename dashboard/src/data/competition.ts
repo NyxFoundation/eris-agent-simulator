@@ -110,6 +110,43 @@ export function competitionFromRun(
   };
 }
 
+// ---------------------------------------------------------------------------
+// display names
+//
+// A competition's heading is a name, not a storage detail: the scenario set it ran ("full-8h"),
+// never the yaml path that configured it or the timestamped directory it landed in. The raw id
+// stays available as a tooltip for anyone who needs to find the files.
+
+/** "config/scenarios/full-8h.yaml" -> "full-8h"; already-clean names pass through. */
+function nameFromScenarioSet(set: string): string {
+  const base = set.split("/").filter(Boolean).pop() ?? set;
+  return base.replace(/\.ya?ml$/i, "");
+}
+
+/** "2026-08-29T16-03-52-390Z" (a run dir basename) -> "2026-08-29 16:03"; else the basename. */
+export function runDisplayName(runId: string): string {
+  const base = runId.split("/").filter(Boolean).pop() ?? runId;
+  const m = base.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})/);
+  return m ? `${m[1]} ${m[2]}:${m[3]}` : base;
+}
+
+/** The competition's human name. A single-run competition is named by its run's timestamp. */
+export function competitionName(c: Competition): string {
+  if (!c.fromSingleRun && c.file.scenarioSet)
+    return nameFromScenarioSet(c.file.scenarioSet);
+  if (c.fromSingleRun) return runDisplayName(c.id);
+  return c.id.split("/").filter(Boolean).pop() ?? c.id;
+}
+
+/** "full-8h · 8/29" — the picker label; the date separates re-runs of the same set. */
+export function competitionLabel(c: Competition, locale: string): string {
+  const name = competitionName(c);
+  if (!c.file.createdAt) return name;
+  const date = new Date(c.file.createdAt);
+  if (Number.isNaN(date.getTime())) return name;
+  return `${name} · ${date.toLocaleDateString(locale === "ja" ? "ja-JP" : "en-US", { month: "numeric", day: "numeric" })}`;
+}
+
 const cache = new Map<string, Promise<Competition>>();
 
 export function loadCompetition(id: string): Promise<Competition> {

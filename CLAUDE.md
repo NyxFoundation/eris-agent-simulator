@@ -146,12 +146,25 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
     - ブロック単位の細かい移動（1 シナリオ内）は `replay.ts` に残る。これはこの位置の**細分**であって
       対立する概念ではなく、シナリオを 1 本開いているときにだけ存在する
   - **順位表はルール固定**（参加者向け。指標 × 集約のコントロール・λ/ρ スライダ・不一致パネル・
-    #55 露出は 2026-08-31 に撤去した）。ルールはシナリオごと M9 `mean − λ·std`（λ=0.25）→
-    シナリオ内 z-score → レジーム等重み平均で、参考列として net PnL(final marks) の合計を 1 列だけ
-    併記する（β が相殺され `noop` がきっかり 0 になる方の量）。**集約は
-    `core/src/scoring/aggregate.ts` を dashboard が直接 import する**（`@core/*` alias。採点ロジックを
-    2 箇所に置くと CLI と画面で順位が食い違ったとき、どちらが本物か分からなくなる）。
+    #55 露出は 2026-08-31 に撤去した）。順位はシナリオごと M9 `mean − λ·std`（λ=0.25）→
+    シナリオ内 z-score → レジーム等重み平均で決まるが、**スコア列に表示するのは M9 の
+    レジーム等重み平均そのもの（bps/round）**で、z 集約値はスコアセルの tooltip に降格
+    （無単位の z は「どれだけ差があるか」を答えられないため。表示値と順位は稀に前後し得るが、
+    それは集約方式の差そのものでキャプションに明記）。参考列として net PnL(final marks) の合計を
+    1 列だけ併記（β が相殺され `noop` がきっかり 0 になる方の量。ラウンドスクラブ中は灰色）。
+    **集約は `core/src/scoring/aggregate.ts` を dashboard が直接 import する**（`@core/*` alias。
+    採点ロジックを 2 箇所に置くと CLI と画面で順位が食い違ったとき、どちらが本物か分からなくなる）。
     指標・集約・λ/ρ を振った再採点は `npm run metrics -- --matrix` の仕事で、UI には出さない
+  - **表示名の原則**: 内部 ID を UI に出さない。競技名は scenarioSet + 実施日から自動導出
+    （`dashboard/src/data/competition.ts` の `competitionName`。h1 に `full-8h`、picker に
+    `full-8h · 8/29`、生の ID は tooltip）。シナリオは常に `regime#seed`（表示では `full-` 接頭辞を
+    剥がす）。**runs/ ディレクトリの通し番号「Run N」は全廃**（開発機ローカルの座標で参加者に無意味）
+  - **UI は日英対応**（`dashboard/src/i18n/` = locale ストア + 全文言辞書 `messages.ts`。サイドバーの
+    トグルで切替、localStorage 永続、既定はブラウザ言語）。**データ層のビルダー（venuePanels /
+    runsProvider の tape・建玉表）も `t()` を呼ぶ**ため、useSnapshot が key に locale を含めて
+    言語切替でスナップショットを再構築する。文言の規律: 実装語彙（ファイル名・ADR 番号）は
+    学習層（scenario ページの Info タブ）以外に出さない / 単位は必ず添える（bps・USDC）/
+    状態語は live・finished の 2 語 / `npm run` コマンドは explorer 起動などローカル運用文脈のみ
   - **順位の理由は agent ページの Standing タブ**（順位表の行クリックで飛ぶ既定タブ）。その agent の
     全エポックを competition 横断でプールした mean / std / λ·std / 分布 / レジーム別内訳を出す
     （M9 自体はシナリオごと→レジーム平均なので、これは別の順位ではなく説明）。実測: `clean-arb` は

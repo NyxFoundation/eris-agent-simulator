@@ -6,6 +6,8 @@ export interface SelectOption {
   /** An option that exists but cannot be chosen right now — offered greyed rather than removed, so
    * the list does not silently change length and leave the absence unexplained. */
   disabled?: boolean;
+  /** Hover text — where a display name keeps the underlying id one hover away. */
+  title?: string;
 }
 
 export function Select({
@@ -24,8 +26,22 @@ export function Select({
   style?: CSSProperties;
 }) {
   return (
-    <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontFamily: "var(--font-sans)", ...style }}>
-      {label && <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>{label}</span>}
+    <label
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px",
+        fontFamily: "var(--font-sans)",
+        ...style,
+      }}
+    >
+      {label && (
+        <span
+          style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}
+        >
+          {label}
+        </span>
+      )}
       <select
         value={value}
         onChange={onChange}
@@ -44,7 +60,12 @@ export function Select({
         }}
       >
         {options.map((o) => (
-          <option key={o.value} value={o.value} disabled={o.disabled}>
+          <option
+            key={o.value}
+            value={o.value}
+            disabled={o.disabled}
+            title={o.title}
+          >
             {o.label}
           </option>
         ))}

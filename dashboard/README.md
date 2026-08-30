@@ -52,10 +52,24 @@ A competition is a scenario matrix written by `backtest --scenarios`
 same shape as a competition of one scenario (`competitionFromRun`), so every
 page processes exactly one kind of object. The sidebar picks a competition,
 then a scenario inside it; `/` is the competition's standings under the fixed
-rule (score = mean − λ·std per scenario, z-scored and averaged with equal
-weight per regime; re-scoring under other rules is `npm run metrics`'s job).
-A standings row opens the agent's page, whose Standing tab explains the place
-(pooled rounds, per-regime split).
+rule. The score column shows the score in its own units (regime-equal mean of
+per-scenario `mean − λ·std`, in bps per round); the rank order is the official
+aggregation (per-scenario z-scores averaged per regime), whose value sits in
+the score cell's tooltip. Re-scoring under other rules is `npm run metrics`'s
+job. A standings row opens the agent's page, whose Standing tab explains the
+place (pooled rounds, per-regime split).
+
+Everything on screen is a display name, never a storage id: a competition is
+its scenario set and date ("full-8h · 8/29", derived in
+`src/data/competition.ts`), a scenario is `regime#seed`, and the raw directory
+id stays one hover away. There is no serial "Run N" anywhere.
+
+## Language
+
+Every user-visible string lives in `src/i18n/messages.ts`, in English and
+Japanese; the sidebar's toggle switches the language (persisted per browser,
+defaulting to the browser language). Data-layer builders call `t()` too, so
+snapshots are keyed by locale and rebuild on switch.
 
 ## Data
 

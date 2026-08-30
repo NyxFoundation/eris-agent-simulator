@@ -16,6 +16,9 @@ import {
 } from "@/data/competitionSelection";
 import { setCursorRange } from "@/data/roundCursor";
 import { setSelectedRound, useSelectedRound } from "@/data/roundSelection";
+import { runDisplayName } from "@/data/competition";
+import { useScenarioLabel } from "@/data/useScenarioLabel";
+import { t } from "@/i18n/messages";
 import { navigate } from "@/navigation";
 import { formatBps, formatMove, formatPnlUsdc } from "@/lib/format";
 import type { RoundEpoch, RoundInfo } from "@/data/types";
@@ -40,9 +43,7 @@ function formatCountdown(remainingMs: number): string {
 /** A live view only holds a recent window of the chain, so an older round has no count to report —
  * which is not the same statement as "no transactions", and must not print as one. */
 function formatTxCount(txCount: number | null): string {
-  return txCount === null
-    ? "tx count outside the live window"
-    : `${txCount} tx`;
+  return txCount === null ? t("rounds.txOutside") : t("rounds.txN", { n: txCount });
 }
 
 const LABEL_STYLE = {
@@ -78,7 +79,12 @@ function RoundSegment({
   return (
     <div
       onClick={onSelect}
-      title={`Round ${epoch.index} · blocks ${epoch.fromBlock.toLocaleString("en-US")}–${epoch.toBlock.toLocaleString("en-US")} · ${formatTxCount(epoch.txCount)}`}
+      title={t("rounds.segmentTitle", {
+        i: epoch.index,
+        from: epoch.fromBlock.toLocaleString("en-US"),
+        to: epoch.toBlock.toLocaleString("en-US"),
+        tx: formatTxCount(epoch.txCount),
+      })}
       style={{
         flex: 1,
         height: "40px",
@@ -166,7 +172,7 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
             color: "var(--text-primary)",
           }}
         >
-          Round {String(epoch.index).padStart(2, "0")}
+          {t("rounds.heading", { i: String(epoch.index).padStart(2, "0") })}
         </span>
         <span
           style={{
@@ -174,9 +180,11 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
             color: "var(--text-tertiary)",
           }}
         >
-          blocks {epoch.fromBlock.toLocaleString("en-US")}–
-          {epoch.toBlock.toLocaleString("en-US")} ·{" "}
-          {formatTxCount(epoch.txCount)}
+          {t("rounds.blocks", {
+            from: epoch.fromBlock.toLocaleString("en-US"),
+            to: epoch.toBlock.toLocaleString("en-US"),
+          })}{" "}
+          · {formatTxCount(epoch.txCount)}
         </span>
         <span
           onClick={() => {
@@ -188,7 +196,7 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
             cursor: "pointer",
           }}
         >
-          open in explorer →
+          {t("rounds.openExplorer")}
         </span>
         <span
           onClick={() => setSelectedRound(null)}
@@ -199,7 +207,7 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
             cursor: "pointer",
           }}
         >
-          close ✕
+          {t("rounds.close")}
         </span>
       </div>
 
@@ -210,9 +218,7 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
             color: "var(--text-tertiary)",
           }}
         >
-          {epoch.status === "done"
-            ? "this round was not scored — the run recorded no epoch series"
-            : "scored after the run completes: the value series is reconstructed from historical block state (ADR 0006 §4)"}
+          {epoch.status === "done" ? t("rounds.notScored") : t("rounds.scoredLater")}
         </span>
       ) : (
         <div style={{ display: "flex", flexDirection: "column" }}>
@@ -226,10 +232,10 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
             }}
           >
             <span>#</span>
-            <span>Agent</span>
-            <span style={{ textAlign: "right" }}>Δ value</span>
-            <span style={{ textAlign: "right" }}>Log return</span>
-            <span style={{ textAlign: "right" }}>Rank</span>
+            <span>{t("rounds.col.agent")}</span>
+            <span style={{ textAlign: "right" }}>{t("rounds.col.delta")}</span>
+            <span style={{ textAlign: "right" }}>{t("rounds.col.logReturn")}</span>
+            <span style={{ textAlign: "right" }}>{t("rounds.col.rank")}</span>
           </div>
           {epoch.results.map((row) => {
             const gainColor =
@@ -272,7 +278,7 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
                   {row.agent}
                   {row.bankrupt && (
                     <span
-                      title="score frozen at the bankruptcy floor (ADR 0019 G1/G2)"
+                      title={t("rounds.bankrupt")}
                       style={{ color: "var(--danger-text)" }}
                     >
                       {" "}
@@ -304,19 +310,14 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
               color: "var(--text-tertiary)",
             }}
           >
-            Δ value is the raw change in account value, market exposure included
-            — which is why a do-nothing agent still moves with the price. Log
-            return is the same round measured in excess of the roster's
-            do-nothing baseline, and that is the quantity the score (mean −
-            λ·std) averages. Rank is cumulative gain since the run's first
-            boundary; the arrow is its change over this round.
+            {t("rounds.deltaNote")}
           </span>
         </div>
       )}
 
       {epoch.events.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-          <span style={LABEL_STYLE}>What the environment did</span>
+          <span style={LABEL_STYLE}>{t("rounds.envDid")}</span>
           {epoch.events.map((e, i) => (
             <span
               key={i}
@@ -353,14 +354,14 @@ function ReplayControls({ round }: { round: RoundInfo }) {
     return (
       <span
         onClick={() => startReplay(round.runId, first, last)}
-        title="Walk this run forward from its first block"
+        title={t("rounds.replayStartTitle")}
         style={{
           font: "var(--text-xs) var(--font-mono)",
           color: "var(--text-link)",
           cursor: "pointer",
         }}
       >
-        ▶ replay
+        {t("rounds.replayStart")}
       </span>
     );
   }
@@ -384,7 +385,7 @@ function ReplayControls({ round }: { round: RoundInfo }) {
           cursor: "pointer",
           width: "14px",
         }}
-        title={replay.playing ? "Pause" : done ? "Replay again" : "Play"}
+        title={replay.playing ? t("rounds.pause") : done ? t("rounds.playAgain") : t("rounds.play")}
       >
         {replay.playing ? "❚❚" : "▶"}
       </span>
@@ -403,8 +404,10 @@ function ReplayControls({ round }: { round: RoundInfo }) {
           whiteSpace: "nowrap",
         }}
       >
-        blk {replay.block.toLocaleString("en-US")} /{" "}
-        {replay.toBlock.toLocaleString("en-US")}
+        {t("rounds.blk", {
+          b: replay.block.toLocaleString("en-US"),
+          to: replay.toBlock.toLocaleString("en-US"),
+        })}
       </span>
       {REPLAY_SPEEDS.map((speed) => (
         <span
@@ -430,7 +433,7 @@ function ReplayControls({ round }: { round: RoundInfo }) {
           cursor: "pointer",
         }}
       >
-        exit
+        {t("rounds.replayExit")}
       </span>
     </div>
   );
@@ -439,8 +442,14 @@ function ReplayControls({ round }: { round: RoundInfo }) {
 export function RoundsBar({ round }: { round: RoundInfo }) {
   const now = useNow();
   const selectedRound = useSelectedRound();
+  const scenario = useScenarioLabel();
   const running = round.status === "live";
   const countdown = formatCountdown(Math.max(0, round.endsAt - now));
+  // The bar names the world it shows: the scenario ("calm#101"), or the run's own timestamp when
+  // it belongs to no competition. Never a serial number over the local runs/ directory.
+  const worldName = scenario.name
+    ? scenario.name.replace(/^full-/, "")
+    : runDisplayName(round.runId);
 
   // The round selection lives in the shared cursor (roundCursor.ts), and a cursor position is only
   // meaningful against a length. A competition owns the range while one is selected -- its longest
@@ -505,8 +514,7 @@ export function RoundsBar({ round }: { round: RoundInfo }) {
             color: "var(--text-tertiary)",
           }}
         >
-          no round series in this run (run.epochBlocks: 0, or the run is too
-          short for one epoch)
+          {t("rounds.noRounds")}
         </div>
       )}
       <div
@@ -528,13 +536,25 @@ export function RoundsBar({ round }: { round: RoundInfo }) {
             textTransform: "uppercase",
           }}
         >
-          Run {round.runNumber} ·{" "}
-          {round.replay ? "REPLAY" : running ? "live" : "archived"}
+          {worldName} ·{" "}
+          {round.replay
+            ? t("rounds.replay")
+            : running
+              ? t("common.live")
+              : t("common.finished")}
           {round.epochs.length > 0 && (
             <>
               {" · "}
-              {doneCount}/{round.epochs.length} rounds
-              {round.epochBlocks > 0 ? ` × ${round.epochBlocks} blocks` : ""}
+              {round.epochBlocks > 0
+                ? t("rounds.progressBlocks", {
+                    done: doneCount,
+                    total: round.epochs.length,
+                    blocks: round.epochBlocks,
+                  })
+                : t("rounds.progress", {
+                    done: doneCount,
+                    total: round.epochs.length,
+                  })}
             </>
           )}
         </span>
@@ -546,10 +566,16 @@ export function RoundsBar({ round }: { round: RoundInfo }) {
           }}
         >
           {round.replay
-            ? `replay ${Math.round(((round.replay.block - round.replay.fromBlock) / Math.max(1, round.replay.toBlock - round.replay.fromBlock)) * 100)}%`
+            ? t("rounds.replayPct", {
+                pct: Math.round(
+                  ((round.replay.block - round.replay.fromBlock) /
+                    Math.max(1, round.replay.toBlock - round.replay.fromBlock)) *
+                    100,
+                ),
+              })
             : running
-              ? `${countdown} left`
-              : "completed"}
+              ? t("rounds.left", { t: countdown })
+              : t("common.finished")}
         </span>
       </div>
       {selected && <RoundResults epoch={selected} />}

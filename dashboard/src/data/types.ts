@@ -51,7 +51,6 @@ export interface RoundInfo {
   /** The run directory's id — what replay is armed against. */
   runId: string;
   /** 1-based position of the run among runs/, oldest = 1. Labelled "Run" in the UI. */
-  runNumber: number;
   /** "replay" is an archived run walked forward: the views show it as of `replay.block`. */
   status: "live" | "archived" | "replay";
   startsAt: number;

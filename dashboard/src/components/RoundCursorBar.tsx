@@ -18,6 +18,7 @@ import {
   type CursorSpeed,
   type CursorState,
 } from "@/data/roundCursor";
+import { t } from "@/i18n/messages";
 
 const LABEL = {
   font: "var(--weight-medium) 9px var(--font-mono)",
@@ -39,7 +40,7 @@ function Segment({
     <button
       type="button"
       onClick={onSelect}
-      title={`round ${index}`}
+      title={t("rounds.heading", { i: index })}
       style={{
         flex: 1,
         minWidth: "6px",
@@ -114,8 +115,8 @@ export function RoundCursorBar({
           }}
         >
           {atEnd
-            ? `FINAL · ${maxRound} rounds`
-            : `ROUND ${String(at).padStart(2, "0")} / ${maxRound}`}
+            ? t("cursor.final", { n: maxRound })
+            : t("cursor.at", { at: String(at).padStart(2, "0"), max: maxRound })}
         </span>
 
         <button
@@ -132,7 +133,7 @@ export function RoundCursorBar({
             letterSpacing: "var(--tracking-wide)",
           }}
         >
-          {playing ? "❚❚ pause" : "▶ play"}
+          {playing ? t("cursor.pause") : t("cursor.play")}
         </button>
 
         <div style={{ display: "flex", gap: "4px" }}>
@@ -171,16 +172,24 @@ export function RoundCursorBar({
               padding: 0,
             }}
           >
-            jump to final →
+            {t("cursor.jumpFinal")}
           </button>
         )}
 
         <span style={{ ...LABEL, marginLeft: "auto", textAlign: "right" }}>
           {atEnd
-            ? `${scenarioCount} scenario${scenarioCount === 1 ? "" : "s"} · complete`
+            ? scenarioCount === 1
+              ? t("cursor.completeOne")
+              : t("cursor.complete", { n: scenarioCount })
             : endedScenarios > 0
-              ? `${scenarioCount - endedScenarios} of ${scenarioCount} still running · ${endedScenarios} ended earlier`
-              : `${scenarioCount} scenario${scenarioCount === 1 ? "" : "s"} @ round ${at}`}
+              ? t("cursor.running", {
+                  running: scenarioCount - endedScenarios,
+                  total: scenarioCount,
+                  ended: endedScenarios,
+                })
+              : scenarioCount === 1
+                ? t("cursor.atRoundOne", { at })
+                : t("cursor.atRound", { n: scenarioCount, at })}
         </span>
       </div>
 
