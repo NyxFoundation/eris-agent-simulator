@@ -1,6 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
 import { Sidebar } from "@/components/Sidebar";
+import {
+  formatSpreadBps,
+  formatStanding,
+  Stat,
+  toneColor,
+} from "@/components/competitionUi";
 import { Badge } from "@/design-system/Badge";
 import { StatCard } from "@/design-system/StatCard";
 import { Tabs } from "@/design-system/Tabs";
@@ -11,8 +17,14 @@ import {
   blockscoutTxUrl,
   useBlockscoutBase,
 } from "@/data/blockscout";
+import {
+  buildStandings,
+  decomposeAgent,
+  LAMBDA,
+  type AgentRoundDecomposition,
+} from "@/data/standings";
 import { useAgentDetailSnapshot } from "@/data/useAgentDetailSnapshot";
-import { navigate } from "@/navigation";
+import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import {
   formatBps,
   formatMove,
@@ -30,7 +42,8 @@ const SECTION_LABEL_STYLE = {
   color: "var(--text-tertiary)",
 };
 
-const TABS = [
+/** The scenario-level tabs. "Standing" is prepended when the agent ranks in a competition. */
+const SCENARIO_TABS = [
   { label: "Overview", value: "overview" },
   { label: "Rounds", value: "rounds" },
   { label: "Positions", value: "positions" },
@@ -154,10 +167,313 @@ function TradeRow({ trade, href }: { trade: AgentTrade; href?: string }) {
   );
 }
 
+function ReturnHistogram({ values }: { values: number[] }) {
+  const bins = 41;
+  const bps = values.map((v) => v * 10_000);
+  // Scaled to a high quantile rather than the maximum: most of these distributions have one round
+  // orders of magnitude past the rest, and scaling to it draws the shape of the axis rather than
+  // the shape of the returns. Rounds past the edge are counted into the end bins and reported
+  // below, so nothing is hidden, only compressed at the tails.
+  const sortedAbs = [...bps].map(Math.abs).sort((a, b) => a - b);
+  const quantile =
+    sortedAbs[
+      Math.min(sortedAbs.length - 1, Math.floor(sortedAbs.length * 0.98))
+    ] ?? 0;
+  const edge = Math.max(quantile, 1e-9);
+  const clipped = bps.filter((v) => Math.abs(v) > edge).length;
+  const counts = new Array(bins).fill(0) as number[];
+  for (const v of bps) {
+    const idx = Math.min(
+      bins - 1,
+      Math.max(0, Math.floor(((v + edge) / (2 * edge)) * bins)),
+    );
+    counts[idx] += 1;
+  }
+  const peak = Math.max(...counts, 1);
+  const width = 100 / bins;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+      <svg
+        viewBox="0 0 100 34"
+        preserveAspectRatio="none"
+        style={{ width: "100%", height: "70px", display: "block" }}
+      >
+        {counts.map((c, i) => {
+          const h = (c / peak) * 32;
+          const centre = -edge + ((i + 0.5) / bins) * 2 * edge;
+          return (
+            <rect
+              key={i}
+              x={i * width}
+              y={33 - h}
+              width={width * 0.86}
+              height={h}
+              fill={
+                centre >= 0
+                  ? "color-mix(in oklch, var(--green-500), transparent 35%)"
+                  : "color-mix(in oklch, var(--red-500), transparent 35%)"
+              }
+            />
+          );
+        })}
+        <line
+          x1="50"
+          y1="0"
+          x2="50"
+          y2="33"
+          stroke="var(--border-strong)"
+          strokeWidth="0.3"
+        />
+      </svg>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-tertiary)",
+        }}
+      >
+        <span>≤ {formatBps(-edge)}</span>
+        <span>
+          {clipped > 0
+            ? `0 · ${clipped} round${clipped === 1 ? "" : "s"} past the edge, stacked into the end bins`
+            : "0"}
+        </span>
+        <span>≥ {formatBps(edge)}</span>
+      </div>
+    </div>
+  );
+}
+
+/** The agent's place in the competition, and the round-level distribution that explains it. */
+interface CompetitionStanding {
+  rank: number;
+  fieldSize: number;
+  total: number;
+  netPnlUsdc: number;
+  regimes: { regime: string; value: number | undefined }[];
+  decomposition: AgentRoundDecomposition | null;
+}
+
+function useCompetitionStanding(agentId: string): CompetitionStanding | null {
+  const { data } = useCompetitionSnapshot();
+  return useMemo(() => {
+    if (!data) return null;
+    const standings = buildStandings(data.competition, data.rounds);
+    const rank = standings.rows.findIndex((r) => r.id === agentId);
+    if (rank === -1) return null;
+    const row = standings.rows[rank];
+    return {
+      rank: rank + 1,
+      fieldSize: standings.rows.length,
+      total: row.total,
+      netPnlUsdc: standings.netPnlByAgent[agentId] ?? 0,
+      regimes: standings.regimes.map((regime) => ({
+        regime,
+        value: row.byRegime[regime],
+      })),
+      decomposition: decomposeAgent(agentId, data.competition, data.rounds),
+    };
+  }, [data, agentId]);
+}
+
+function StandingTab({ standing }: { standing: CompetitionStanding }) {
+  const d = standing.decomposition;
+  return (
+    <div
+      style={{
+        background: "var(--bg-surface-raised)",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: "var(--radius-lg)",
+        padding: "20px 22px",
+        display: "flex",
+        flexDirection: "column",
+        gap: "18px",
+      }}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+          gap: "14px",
+        }}
+      >
+        <Stat
+          label="rank"
+          value={`${standing.rank} of ${standing.fieldSize}`}
+        />
+        <Stat label="score" value={formatStanding(standing.total)} />
+        <Stat label="net PnL" value={formatPnlUsdc(standing.netPnlUsdc)} />
+        {d && <Stat label="rounds" value={String(d.stats.epochs)} />}
+      </div>
+
+      {!d ? (
+        <span
+          style={{
+            font: "var(--text-sm) var(--font-sans)",
+            color: "var(--text-tertiary)",
+            lineHeight: 1.6,
+          }}
+        >
+          No round series on disk for this agent — the scenario runs behind this
+          competition were not collected, so the standing can be shown but not
+          explained.
+        </span>
+      ) : (
+        <>
+          <p
+            style={{
+              margin: 0,
+              font: "var(--text-xs) var(--font-sans)",
+              color: "var(--text-tertiary)",
+              lineHeight: 1.6,
+              maxWidth: "78ch",
+            }}
+          >
+            Every round this agent produced, pooled across the whole
+            competition. An agent can earn several times more per round than the
+            winner and still place last — the difference is the spread λ charges
+            for.
+          </p>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+              gap: "14px",
+            }}
+          >
+            <Stat
+              label="mean / round"
+              value={formatBps(d.stats.mean * 10_000)}
+            />
+            <Stat
+              label="std / round"
+              value={formatSpreadBps(d.stats.std * 10_000)}
+            />
+            <Stat
+              label={`λ·std (λ=${LAMBDA.toFixed(2)})`}
+              value={formatSpreadBps(LAMBDA * d.stats.std * 10_000)}
+            />
+            <Stat
+              label="mean − λ·std"
+              value={formatBps(d.stats.score * 10_000)}
+            />
+          </div>
+
+          <ReturnHistogram values={d.pooled} />
+
+          {d.byRegime.length > 1 && (
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "6px" }}
+            >
+              <span style={SECTION_LABEL_STYLE}>by regime</span>
+              <div style={{ overflowX: "auto" }}>
+                <div style={{ minWidth: "560px" }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 80px 90px 90px 100px",
+                      padding: "6px 8px",
+                      font: "var(--text-xs) var(--font-mono)",
+                      color: "var(--text-tertiary)",
+                      borderBottom: "1px solid var(--border-subtle)",
+                      textTransform: "uppercase",
+                      letterSpacing: "var(--tracking-wide)",
+                    }}
+                  >
+                    <span>regime</span>
+                    <span style={{ textAlign: "right" }}>rounds</span>
+                    <span style={{ textAlign: "right" }}>mean</span>
+                    <span style={{ textAlign: "right" }}>std</span>
+                    <span style={{ textAlign: "right" }}>mean − λ·std</span>
+                  </div>
+                  {d.byRegime.map((r) => (
+                    <div
+                      key={r.regime}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 80px 90px 90px 100px",
+                        padding: "6px 8px",
+                        font: "var(--text-xs) var(--font-mono)",
+                        borderBottom: "1px solid var(--border-subtle)",
+                      }}
+                    >
+                      <span style={{ color: "var(--text-secondary)" }}>
+                        {r.regime}
+                      </span>
+                      <span
+                        style={{
+                          textAlign: "right",
+                          color: "var(--text-tertiary)",
+                        }}
+                      >
+                        {r.stats.epochs}
+                      </span>
+                      <span
+                        style={{
+                          textAlign: "right",
+                          color: toneColor(r.stats.mean),
+                        }}
+                      >
+                        {formatBps(r.stats.mean * 10_000)}
+                      </span>
+                      <span
+                        style={{
+                          textAlign: "right",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        {formatSpreadBps(r.stats.std * 10_000)}
+                      </span>
+                      <span
+                        style={{
+                          textAlign: "right",
+                          color: toneColor(r.stats.score),
+                        }}
+                      >
+                        {formatBps(r.stats.score * 10_000)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {d.bankruptIn.length > 0 && (
+            <span
+              style={{
+                font: "var(--text-xs) var(--font-sans)",
+                color: "var(--danger-text)",
+                lineHeight: 1.6,
+              }}
+            >
+              Hit the bankruptcy floor in {d.bankruptIn.length} scenario
+              {d.bankruptIn.length === 1 ? "" : "s"} — every later round is
+              frozen at a return of 0:{" "}
+              {d.bankruptIn
+                .map((b) => `${b.regime}#${b.seed} @ round ${b.epoch}`)
+                .join(", ")}
+            </span>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function AgentDetailPage({ agentId }: { agentId: string }) {
   const { data, loading, error } = useAgentDetailSnapshot(agentId);
   const blockscout = useBlockscoutBase();
-  const [tab, setTab] = useState("overview");
+  const standing = useCompetitionStanding(agentId);
+  // null = "not chosen yet": land on the standing when the agent ranks in a competition, on the
+  // scenario overview otherwise (seed mode, live runs).
+  const [chosenTab, setChosenTab] = useState<string | null>(null);
+  const tab = chosenTab ?? (standing ? "standing" : "overview");
+  const tabs = standing
+    ? [{ label: "Standing", value: "standing" }, ...SCENARIO_TABS]
+    : SCENARIO_TABS;
 
   if (loading) {
     return (
@@ -241,7 +557,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
         background: "var(--bg-canvas)",
       }}
     >
-      <Sidebar activePage="leaderboard" />
+      <Sidebar />
 
       <div
         style={{
@@ -267,7 +583,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
           }}
         >
           <span
-            onClick={() => navigate("/leaderboard")}
+            onClick={() => window.history.back()}
             style={{
               font: "var(--text-sm) var(--font-mono)",
               color: "var(--text-link)",
@@ -275,7 +591,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               cursor: "pointer",
             }}
           >
-            ← Run {round.runNumber} leaderboard
+            ← back
           </span>
 
           <div
@@ -343,32 +659,40 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
             </span>
           </div>
 
-          <Tabs tabs={TABS} value={tab} onChange={setTab} />
+          <Tabs tabs={tabs} value={tab} onChange={setChosenTab} />
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4,1fr)",
-              gap: "16px",
-            }}
-          >
-            <StatCard label="Score" value={formatScore(agent.score)} />
-            <StatCard
-              label="PnL (USDC)"
-              value={formatPnlUsdc(agent.netPnlUsdc)}
-              // The card only tints its delta line, so the sign is echoed there to keep the
-              // red/green signal -- the same shape the Max drawdown card uses.
-              tone={agent.netPnlUsdc >= 0 ? "success" : "danger"}
-              delta={formatPnlUsdc(agent.netPnlUsdc)}
-            />
-            <StatCard label="Sharpe" value={agent.sharpe.toFixed(2)} />
-            <StatCard
-              label="Max drawdown"
-              value={`${agent.maxDrawdownPercent.toFixed(1)}%`}
-              tone="danger"
-              delta={`${agent.maxDrawdownPercent.toFixed(1)}%`}
-            />
-          </div>
+          {/* The stat cards are the selected scenario's numbers; the standing tab carries its own,
+              competition-level ones — mixing the two scales on one row invites misreading. */}
+          {tab !== "standing" && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4,1fr)",
+                gap: "16px",
+              }}
+            >
+              <StatCard label="Score" value={formatScore(agent.score)} />
+              <StatCard
+                label="PnL (USDC)"
+                value={formatPnlUsdc(agent.netPnlUsdc)}
+                // The card only tints its delta line, so the sign is echoed there to keep the
+                // red/green signal -- the same shape the Max drawdown card uses.
+                tone={agent.netPnlUsdc >= 0 ? "success" : "danger"}
+                delta={formatPnlUsdc(agent.netPnlUsdc)}
+              />
+              <StatCard label="Sharpe" value={agent.sharpe.toFixed(2)} />
+              <StatCard
+                label="Max drawdown"
+                value={`${agent.maxDrawdownPercent.toFixed(1)}%`}
+                tone="danger"
+                delta={`${agent.maxDrawdownPercent.toFixed(1)}%`}
+              />
+            </div>
+          )}
+
+          {tab === "standing" && standing && (
+            <StandingTab standing={standing} />
+          )}
 
           {tab === "overview" && (
             <div

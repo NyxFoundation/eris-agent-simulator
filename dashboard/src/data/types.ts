@@ -340,55 +340,6 @@ export interface MarketSnapshot {
   feed: MarketFeedItem[];
 }
 
-export interface ArchiveRoundInfo {
-  runNumber: number;
-  status: "archived";
-  finalBlockNumber: number;
-}
-
-export interface ArchivePodiumEntry {
-  rank: number;
-  agent: string;
-  netPnlUsdc: number;
-}
-
-export interface ArchiveFinalStanding {
-  rank: number;
-  agent: string;
-  score: number;
-  netPnlUsdc: number;
-  sharpe: number;
-}
-
-export interface ArchiveStats {
-  totalTx: number;
-  agentsEntered: number;
-  totalVolume: string;
-  liquidations: number;
-}
-
-export interface ArchiveClosingPrice {
-  pair: string;
-  price: number;
-}
-
-export interface ArchiveEvent {
-  time: string;
-  text: string;
-}
-
-export interface ArchiveSnapshot {
-  round: ArchiveRoundInfo;
-  stats: ArchiveStats;
-  podium: ArchivePodiumEntry[];
-  finalStandings: ArchiveFinalStanding[];
-  closingPrices: ArchiveClosingPrice[];
-  events: ArchiveEvent[];
-  /** True while the underlying run is still in progress — the page keeps polling until the final
-   * artifacts land instead of freezing on a partial snapshot. */
-  live?: boolean;
-}
-
 export type PositionSide = "long" | "short";
 
 /** One position an agent still held when the run ended.

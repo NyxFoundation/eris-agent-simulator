@@ -19,42 +19,43 @@ npm run dashboard        # Vite dev server at http://localhost:5173
 The dashboard's selection has three nested levels, the same three the data has:
 
 ```
-matrix  ⊃  scenario (= one run)  ⊃  round (= one scoring epoch)
+competition  ⊃  scenario (= one run, "regime#seed")  ⊃  round (= one scoring epoch)
 ```
 
-**The landing page is the matrix**, because that is the unit the competition is scored on
-(ADR 0020). One scenario is a single draw from a regime's distribution, and
+**The landing page is the competition's standings**, because that is the unit the competition is
+scored on (ADR 0020). One scenario is a single draw from a regime's distribution, and
 `config/scenarios/public.yaml` says what to do with it: *"Generalizing across the distribution is the
 thing being measured; the published seeds are five draws from it, not the target."* Opening on one
 scenario invites exactly the reading that sentence warns against — in the 35-scenario `full-8h`
-matrix, `full-calm#404` and `full-calm#505` have different winners, and neither of them is the one
+set, `full-calm#404` and `full-calm#505` have different winners, and neither of them is the one
 the standings pick.
 
 **There is no second model for a run that is not part of a competition.** A `sim:realtime` run is a
 competition with one scenario in it, and the dashboard says so: choosing **— single run —** in the
-matrix picker makes the selected run the outer unit, read as a matrix of one. Same home, same
-metric and aggregation controls, same round cursor. (The aggregation over one scenario is degenerate
-but not meaningless — z-score is the field's spread within it, Borda its ranking, mean the raw
-metric — and all three necessarily agree.)
+competition picker makes the selected run the outer unit, read as a competition of one — same
+standings, same round cursor. The normalization happens once, at the data layer's entry point
+(`src/data/competition.ts`), so every page downstream processes exactly one kind of object.
 
-The sidebar picks a matrix, then a scenario inside it (labelled `regime#seed`, not by timestamp).
-The three levels are three routes:
+The sidebar picks a competition, then a scenario inside it (labelled `regime#seed`, not by
+timestamp):
 
 | route | level | what it is |
 |---|---|---|
-| `/` | matrix | **Home** — the competition at a glance: who leads, which regime each strategy owns, and how spread the leader's win is |
-| `/standings` | matrix | the full ranking table, with the metric, the aggregation and λ/ρ as controls |
+| `/` | competition | **Standings** — the ranking under the competition rule, one reference net-PnL column. A row opens the agent's page |
 | `/scenario` | scenario | one world: its markets, its ranking, its blocks. Titled by what it is a draw of (`full-crash#303`), not by when the file was written |
+| `/markets`, `/explorer` | scenario | venue state and blocks — they only mean anything inside one world |
+| `/agent/<id>` | both | the agent's competition standing (its **Standing** tab) and its scenario-level detail |
 
-`Markets` and `Explorer` stay at the scenario level, because a venue's state and a block range only
-mean anything inside one world. (`/run` still resolves to `/scenario` so older links land somewhere.)
+The ranking rule is fixed on the page; exploring other metrics, aggregations, λ or ρ is a CLI job
+(`npm run metrics -- --matrix <dir>`), not a dashboard control — the dashboard is what competition
+participants read, and a headline that quietly depends on a control is the thing it exists to avoid.
 
 Two cases have no standings, and say so rather than inventing them: a **live** run — `summary.json`
 is written at the end, so its results do not exist yet — and seed-provider mode, which serves
 fixtures. Both open on the scenario view, which for a live run is the only view with anything to say.
 
 Every view is built from the run's own artifacts, served by a small Vite dev-server plugin
-(`/runs/index.json` + `/runs/<id>/<file>`). The index also lists matrix directories, tagged
+(`/runs/index.json` + `/runs/<id>/<file>`). The index also lists competition directories, tagged
 `kind: "matrix"` — they hold `matrix.json` instead of run artifacts:
 
 | artifact | what it drives |
@@ -81,10 +82,10 @@ work for runs recorded before `market.json` grew any of its fields.
 score is the mean and spread of per-epoch returns, ranks change at epoch boundaries, an environment
 window opens in one — so the round axis is what every view is read against, and there is exactly one
 position on it (`src/data/roundCursor.ts`). Selecting a round on a scenario page and scrubbing the
-matrix are the same act; they used to be separate stores that could disagree.
+competition are the same act; they used to be separate stores that could disagree.
 
-The cursor spans the whole matrix: **at round k every scenario is at its own round k**, which is what
-makes 35 independent worlds watchable as one competition. Pressing play advances it.
+The cursor spans the whole competition: **at round k every scenario is at its own round k**, which is
+what makes 35 independent worlds watchable as one competition. Pressing play advances it.
 
 - **Standings become "through round k"** — recomputed over the first k rounds of every scenario, never
   read off the finished run, with the rank move since round k−1 beside each agent.
@@ -92,9 +93,9 @@ makes 35 independent worlds watchable as one competition. Pressing play advances
   else's 29. Past its last round a scenario's world has *ended*, so its result stays in the standings
   — dropping it would move the field for a reason that is not a result — and the bar says how many
   are in that state (`30 of 35 still running · 5 ended earlier`).
-- **Two metrics cannot be scoped to a round**: `net PnL (final marks)` and `α` price both ends at the
-  run's last prices, so there is no value at round k to take. While the cursor is mid-competition
-  they are offered greyed rather than showing the finished number under a round label.
+- **Net PnL cannot be scoped to a round** — it prices both ends at the run's last prices, so there
+  is no value at round k to take. While the cursor is mid-competition the standings show it greyed
+  rather than putting the finished number under a round label.
 - **Round k tells you why the standings moved.** The panel lists the environment windows covering it,
   drawn from each scenario's seed before its first block. Measured on `full-8h` seed 101:
 
@@ -113,36 +114,24 @@ Sub-round movement — walking the individual blocks inside one scenario — sta
 a refinement of this position, not a competing notion of it, and it only exists once a single
 scenario is open.
 
-### Standings (the matrix view)
+### Standings
 
-Two independent choices turn a matrix into a ranking, and neither is settled — #56 is open on the
-metric, ADR 0019 retired the incumbent aggregator without naming a successor. So the page presents
-both as controls rather than presenting one table as the answer:
+One table, under the one rule the competition is scored by: per scenario, the score is
+`mean − λ·std` (λ = 0.25) over the stored epoch series; across scenarios, a z-score within each
+scenario's field, averaged with equal weight per regime. A scenario whose run dir was not collected
+still ranks by the score `matrix.json` stored (the same rule, at the same λ), and simply has no
+round detail. The aggregation is imported from `core/src/scoring/aggregate.ts`, the same pure module
+`npm run metrics -- --matrix` runs, so the dashboard and the CLI agree by construction rather than
+by coincidence.
 
-| choice | what it decides | options |
-|---|---|---|
-| **metric** | what one scenario is worth to one agent | M9 `mean − λ·std` · M1 PnL (epoch series) · net PnL (final marks) · α · M4 excess log growth · M13 Sharpe · M7 MPPM |
-| **aggregation** | how 35 of those become one standing | z-score (incumbent) · Borda · mean — all with regimes weighted equally |
+The table carries one reference column, **net PnL (final marks)**, summed across scenarios. It is
+not the ranking: it prices both ends at the run's last prices, so β cancels and `noop` is exactly 0
+— it is the raw number a trader reads first, and it greys out while the cursor is mid-competition
+(it has no per-round value).
 
-The aggregators are imported from `core/src/scoring/aggregate.ts`, the same pure module
-`npm run metrics -- --matrix` runs, so the two agree by construction rather than by coincidence.
-Verified on the `full-8h` matrix: **all 15 metric × aggregator orders match the CLI exactly.**
-
-- **λ and ρ are live.** M9 is recomputed from each run's stored `logReturns`, which are already
-  floored, already in excess of the baseline and already frozen at bankruptcy — every part of the
-  ADR 0019 construction *except* λ. So moving the slider is the exact re-score, not an approximation.
-- **`M1 PnL (epoch series)` and `net PnL (final marks)` are different quantities, not roundings of
-  each other.** The stored `netPnlUsdc` prices *both* ends at the run's last prices, so β cancels and
-  `noop` is exactly 0. The CLI's M1 is the epoch series' last-minus-first with prices moving, where
-  `noop` earned +322 USDC in `full-calm#101`. They rank differently; both are on the menu, labelled.
-- **Scale exposure** is issue #55 as a number: how much of each scenario's spread is one agent's
-  doing. A z-score divides by that spread. Measured on `full-8h`: median 2.03×, worst 3.13×
-  (`levered-long-max` in `full-cex-drift#303`).
-- **If the rule were different** compares every other combination's order against the one on screen.
-  While the ranking rule is undecided, that is the honest summary of a matrix: how much of the order
-  is a property of the agents rather than of the choice.
-- The **scenario × agent** heatmap colours each row by that scenario's own z-score, so rows compare
-  to each other rather than to the field's absolute scale. Clicking a cell opens that scenario.
+Re-ranking a stored competition under other metrics, aggregations, λ or ρ is deliberately not a
+dashboard control: `npm run metrics -- <runDir...>` and `npm run metrics -- --matrix <dir>` re-score
+stored runs under every candidate without re-running anything.
 
 ### Rounds
 
@@ -175,12 +164,13 @@ would be a claim that the round was quiet. Rounds that have not started yet are 
 Each agent's page has the same breakdown for that agent alone (its **Rounds** tab), and the explorer
 scopes its block and transaction lists to the selected round.
 
-**The round is also where the standings are explained.** Opening a row on the matrix page pools every
-epoch that agent produced across the whole matrix and shows mean, std, λ·std and the difference, plus
-the distribution and a per-regime split. This is *not* an alternative ranking — M9 is computed per
-scenario, then averaged per regime — it answers the one question the standings cannot. On `full-8h`:
+**The round is also where the standings are explained.** A standings row opens the agent's page,
+whose **Standing** tab pools every epoch that agent produced across the whole competition and shows
+mean, std, λ·std and the difference, plus the distribution and a per-regime split. This is *not* an
+alternative ranking — the score is computed per scenario, then averaged per regime — it answers the
+one question the standings cannot. On `full-8h`:
 
-| agent | mean / round | std / round | M9 place |
+| agent | mean / round | std / round | place |
 |---|---:|---:|---:|
 | `clean-arb` | +0.32 bp | 1.78 bp | **1** |
 | `multi-arb` | +1.50 bp | 14.03 bp | 14 |

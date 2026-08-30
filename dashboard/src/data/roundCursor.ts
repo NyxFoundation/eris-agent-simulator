@@ -7,8 +7,8 @@
 // a replay head for walking a finished run, and a live head for one in progress. Three stores, one
 // concept: a position on the round axis.
 //
-// This is that position, held once. `round` is 1-based and matrix-relative: at round k every
-// scenario in the matrix is at its own round k, which is what makes 35 independent worlds
+// This is that position, held once. `round` is 1-based and competition-relative: at round k every
+// scenario in the competition is at its own round k, which is what makes 35 independent worlds
 // watchable as one competition. `null` means the end — the finished result, which is what a
 // standing means when nobody is scrubbing.
 //
@@ -27,7 +27,7 @@ export type CursorSpeed = (typeof CURSOR_SPEEDS)[number];
 export interface CursorState {
   /** 1-based round, or null for "the end" — the finished result. */
   round: number | null;
-  /** The highest round any scenario in the current matrix reaches. 0 when unknown. */
+  /** The highest round any scenario in the current competition reaches. 0 when unknown. */
   maxRound: number;
   playing: boolean;
   speed: CursorSpeed;
@@ -79,10 +79,10 @@ export function getCursor(): CursorState {
 }
 
 /**
- * Tell the cursor how long the thing in view is — the longest scenario of a matrix, or a single
- * run's epoch count when no matrix is selected.
+ * Tell the cursor how long the thing in view is — the longest scenario of a competition, or a
+ * single run's epoch count when none is selected.
  *
- * A position that still exists in the new range is kept, so walking from the matrix into one of its
+ * A position that still exists in the new range is kept, so walking from the competition into one of its
  * scenarios lands on the round you were already looking at. A position past the new end is parked
  * at the end rather than clamped to it: round 20 of a nine-round scenario is not round 9, and
  * pretending otherwise would label a view with a round it is not showing.

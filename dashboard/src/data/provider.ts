@@ -13,6 +13,5 @@ export const {
   fetchTopPageSnapshot,
   fetchExplorerSnapshot,
   fetchMarketSnapshot,
-  fetchArchiveSnapshot,
   fetchAgentDetailSnapshot,
 } = provider;

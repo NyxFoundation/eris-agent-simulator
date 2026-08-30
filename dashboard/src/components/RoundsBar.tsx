@@ -10,7 +10,10 @@ import {
   startReplay,
   stopReplay,
 } from "@/data/replay";
-import { getSelectedMatrixId } from "@/data/matrixSelection";
+import {
+  getSelectedCompetitionId,
+  SINGLE_RUNS,
+} from "@/data/competitionSelection";
 import { setCursorRange } from "@/data/roundCursor";
 import { setSelectedRound, useSelectedRound } from "@/data/roundSelection";
 import { navigate } from "@/navigation";
@@ -440,11 +443,12 @@ export function RoundsBar({ round }: { round: RoundInfo }) {
   const countdown = formatCountdown(Math.max(0, round.endsAt - now));
 
   // The round selection lives in the shared cursor (roundCursor.ts), and a cursor position is only
-  // meaningful against a length. A matrix owns the range while one is selected -- its longest
+  // meaningful against a length. A competition owns the range while one is selected -- its longest
   // scenario -- so a standalone run only claims it when nothing longer is in view. Without this,
-  // seeking on a run opened outside a matrix would clamp every round to 1.
+  // seeking on a run opened outside a competition would clamp every round to 1.
   useEffect(() => {
-    if (getSelectedMatrixId() !== null) return;
+    const stored = getSelectedCompetitionId();
+    if (stored !== null && stored !== SINGLE_RUNS) return;
     setCursorRange(round.epochs.length);
   }, [round.epochs.length]);
 

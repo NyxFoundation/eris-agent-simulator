@@ -10,7 +10,7 @@
 // per-block record (crash / spike / cexDrift / flowTrend change the price walk itself rather than
 // overlaying it), so this is the plan, and "planned" is what it says.
 
-import { scenarioRunId, type LoadedMatrix } from "./matrixArtifacts";
+import { scenarioRunId, type Competition } from "./competition";
 
 const HEAD_BYTES = 128 * 1024;
 
@@ -44,12 +44,12 @@ async function loadHead(runId: string): Promise<string> {
   return body.text ?? "";
 }
 
-export async function loadMatrixSchedules(
-  matrix: LoadedMatrix,
+export async function loadSchedules(
+  competition: Competition,
 ): Promise<Map<string, ScenarioSchedule>> {
   const entries = await Promise.all(
-    matrix.file.scenarios.map(async (s) => {
-      const runId = scenarioRunId(matrix.id, s.runDir);
+    competition.file.scenarios.map(async (s) => {
+      const runId = scenarioRunId(competition.id, s.runDir);
       const key = `${s.regime}#${s.seed}`;
       try {
         const head = await loadHead(runId);
@@ -114,7 +114,7 @@ export interface OpenWindow {
   opening: boolean;
 }
 
-/** Every scheduled window covering a round, across the whole matrix. */
+/** Every scheduled window covering a round, across the whole competition. */
 export function windowsAtRound(
   schedules: Map<string, ScenarioSchedule>,
   round: number,

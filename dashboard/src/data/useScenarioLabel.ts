@@ -8,39 +8,40 @@
 // for the round series or the schedules, and loading them for a title would refetch 35 summaries.
 
 import { useEffect, useState } from "react";
-import { loadMatrix, scenarioRunId } from "./matrixArtifacts";
-import { resolveMatrixId, useSelectedMatrixId } from "./matrixSelection";
+import { loadCompetition, scenarioRunId } from "./competition";
+import {
+  resolveCompetitionId,
+  useSelectedCompetitionId,
+} from "./competitionSelection";
 import { listRuns } from "./runArtifacts";
 import { useSelectedRunId } from "./runSelection";
 
 export interface ScenarioLabel {
-  /** "full-crash#303", or null when the run belongs to no matrix. */
+  /** "full-crash#303", or null when the run belongs to no competition. */
   name: string | null;
-  /** The matrix it came from, for the subtitle. */
-  matrixSet: string | null;
+  /** The competition it came from, for the subtitle. */
+  competition: string | null;
   seed: number | null;
 }
 
+const EMPTY: ScenarioLabel = { name: null, competition: null, seed: null };
+
 export function useScenarioLabel(): ScenarioLabel {
   const runId = useSelectedRunId();
-  const matrixId = useSelectedMatrixId();
-  const [label, setLabel] = useState<ScenarioLabel>({
-    name: null,
-    matrixSet: null,
-    seed: null,
-  });
+  const competitionId = useSelectedCompetitionId();
+  const [label, setLabel] = useState<ScenarioLabel>(EMPTY);
 
   useEffect(() => {
     let cancelled = false;
     if (!runId) {
-      setLabel({ name: null, matrixSet: null, seed: null });
+      setLabel(EMPTY);
       return;
     }
     listRuns()
       .then((index) => {
-        const id = resolveMatrixId(index);
-        if (!id) throw new Error("no matrix");
-        return loadMatrix(id);
+        const id = resolveCompetitionId(index);
+        if (!id) throw new Error("no competition");
+        return loadCompetition(id);
       })
       .then((m) => {
         if (cancelled) return;
@@ -51,20 +52,20 @@ export function useScenarioLabel(): ScenarioLabel {
           scenario
             ? {
                 name: `${scenario.regime}#${scenario.seed}`,
-                matrixSet: m.file.scenarioSet ?? m.id,
+                competition: m.file.scenarioSet ?? m.id,
                 seed: scenario.seed,
               }
-            : { name: null, matrixSet: null, seed: null },
+            : EMPTY,
         );
       })
       .catch(() => {
-        // No matrix to name it by; the page falls back to the run's own id.
-        if (!cancelled) setLabel({ name: null, matrixSet: null, seed: null });
+        // No competition to name it by; the page falls back to the run's own id.
+        if (!cancelled) setLabel(EMPTY);
       });
     return () => {
       cancelled = true;
     };
-  }, [runId, matrixId]);
+  }, [runId, competitionId]);
 
   return label;
 }

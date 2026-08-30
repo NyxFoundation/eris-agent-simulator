@@ -57,7 +57,7 @@ const INFO_TABS: InfoTab[] = [
     label: "Environment",
     body: [
       "SEED is a label for market conditions. The fair-price path is reproducible per (regime, seed), but transaction timing and in-block ordering are not — the same scenario replayed twice gives different fills, which is the point of measuring over many scenarios.",
-      "Official regimes: calm, cex-drift, informed-flow, whale, lending-incident, crash, and depeg. A scenario is one (regime, seed) pair; the backtest matrix replays a whole set against a state dump and ranks agents per regime.",
+      "Official regimes: calm, cex-drift, informed-flow, whale, lending-incident, crash, and depeg. A scenario is one (regime, seed) pair; a competition replays a whole set against a state dump and ranks agents per regime.",
       "Stress events are randomized-but-deterministic overlays on the fair price (ramp, hold, decay), liquidity pulls that thin every AMM pool at once, and depegs where the environment leans on a stablecoin's pool until the window closes. Seeded victim positions make Aave liquidations reachable for agents that watch health factors.",
       "The fair price is distributed on-chain through a PriceFeed contract and lands one block late for everyone equally — reacting to information a block after it exists is part of the game.",
     ],
@@ -410,7 +410,7 @@ function SectionPanel({
   children,
 }: {
   title: string;
-  path: string;
+  path?: string;
   children: ReactNode;
 }) {
   return (
@@ -425,17 +425,19 @@ function SectionPanel({
         }}
       >
         <span style={SECTION_LABEL_STYLE}>{title}</span>
-        <span
-          onClick={() => navigate(path)}
-          style={{
-            font: "var(--text-xs) var(--font-mono)",
-            color: "var(--text-link)",
-            letterSpacing: "var(--tracking-wide)",
-            cursor: "pointer",
-          }}
-        >
-          see all →
-        </span>
+        {path && (
+          <span
+            onClick={() => navigate(path)}
+            style={{
+              font: "var(--text-xs) var(--font-mono)",
+              color: "var(--text-link)",
+              letterSpacing: "var(--tracking-wide)",
+              cursor: "pointer",
+            }}
+          >
+            see all →
+          </span>
+        )}
       </div>
       {children}
     </div>
@@ -555,7 +557,7 @@ export function ScenarioPage() {
               round.epochs.length > 0
                 ? `${round.epochs.length} rounds x ${round.epochBlocks} blocks`
                 : null,
-              scenario.matrixSet,
+              scenario.competition,
               scenario.name === null ? round.runId : null,
             ]
               .filter(Boolean)
@@ -621,7 +623,7 @@ export function ScenarioPage() {
           </SectionPanel>
 
           <div style={{ borderLeft: "1px solid var(--border-subtle)" }}>
-            <SectionPanel title="Leaderboard" path="/leaderboard">
+            <SectionPanel title="Leaderboard">
               <div
                 style={{
                   display: "grid",
@@ -660,7 +662,7 @@ export function ScenarioPage() {
                   SCORE
                 </span>
               </div>
-              {leaderboard.slice(0, 6).map((row) => (
+              {leaderboard.map((row) => (
                 <LeaderboardPreviewRow key={row.rank} row={row} />
               ))}
             </SectionPanel>

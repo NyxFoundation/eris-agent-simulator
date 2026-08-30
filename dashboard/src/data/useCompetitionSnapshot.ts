@@ -1,30 +1,30 @@
-// Loads the matrix in view and the round series behind every one of its scenarios.
+// Loads the competition in view and the round series behind every one of its scenarios.
 //
-// There is one selection model, not two: the outer unit is always a matrix, and a standalone
-// `sim:realtime` run is a matrix of one scenario (see synthesizeMatrix). That is what lets the
-// dashboard have one home, one set of controls and one round cursor rather than a competition mode
-// and a single-run mode that have to be kept in step with each other.
-//
-// The round series is fetched alongside, because it is what lets lambda move the standings rather
-// than only the explanation, and it is small — only each run's epoch scores are read out.
+// There is one selection model, not two: the outer unit is always a competition, and a standalone
+// `sim:realtime` run is a competition of one scenario (see competitionFromRun). That is what lets
+// the dashboard have one home and one round cursor rather than a competition mode and a single-run
+// mode that have to be kept in step with each other.
 
 import { useMemo } from "react";
 import {
-  loadMatrix,
-  synthesizeMatrix,
-  type LoadedMatrix,
-} from "./matrixArtifacts";
-import { resolveMatrixId, useSelectedMatrixId } from "./matrixSelection";
-import { loadMatrixSchedules, type ScenarioSchedule } from "./matrixSchedule";
-import { loadMatrixRounds, type ScenarioRounds } from "./matrixScoring";
+  competitionFromRun,
+  loadCompetition,
+  type Competition,
+} from "./competition";
+import {
+  resolveCompetitionId,
+  useSelectedCompetitionId,
+} from "./competitionSelection";
+import { loadSchedules, type ScenarioSchedule } from "./schedule";
+import { loadCompetitionRounds, type ScenarioRounds } from "./standings";
 import { isSeedProvider } from "./provider";
 import { listRuns, loadRun, runEntries } from "./runArtifacts";
 import { getSelectedRunId, useSelectedRunId } from "./runSelection";
 import { eventOfType } from "./artifactHelpers";
 import { useSnapshot } from "./useSnapshot";
 
-export interface MatrixSnapshot {
-  matrix: LoadedMatrix;
+export interface CompetitionSnapshot {
+  competition: Competition;
   rounds: Map<string, ScenarioRounds>;
   /** What the environment was scheduled to do, per scenario, placed on the round axis. */
   schedules: Map<string, ScenarioSchedule>;
@@ -37,26 +37,26 @@ export interface MatrixSnapshot {
  * empty runs/, or a run still in progress. A live run genuinely has no standings — summary.json is
  * written at the end — so that is a fact reported rather than a gap papered over.
  */
-export function useMatrixSnapshot() {
-  const selectedMatrix = useSelectedMatrixId();
+export function useCompetitionSnapshot() {
+  const selectedCompetition = useSelectedCompetitionId();
   const selectedRun = useSelectedRunId();
 
-  const state = useSnapshot<MatrixSnapshot | null>(
-    `matrix:${selectedMatrix ?? "latest"}:${selectedRun ?? ""}`,
+  const state = useSnapshot<CompetitionSnapshot | null>(
+    `competition:${selectedCompetition ?? "latest"}:${selectedRun ?? ""}`,
     async () => {
       // Seed-provider mode serves fixtures for UI development, but the dev server still has the real
-      // runs/ directory beside it. Without this the landing page would read real matrices off disk
-      // and show real standings while every other page showed fixtures.
+      // runs/ directory beside it. Without this the landing page would read real competitions off
+      // disk and show real standings while every other page showed fixtures.
       if (isSeedProvider) return null;
 
       const index = await listRuns();
-      const id = resolveMatrixId(index);
+      const id = resolveCompetitionId(index);
 
-      let matrix: LoadedMatrix;
+      let competition: Competition;
       if (id) {
-        matrix = await loadMatrix(id);
+        competition = await loadCompetition(id);
       } else {
-        // No matrix chosen: the outer unit is the selected run on its own.
+        // No competition chosen: the outer unit is the selected run on its own.
         const runs = runEntries(index);
         const runId =
           getSelectedRunId() && runs.some((r) => r.id === getSelectedRunId())
@@ -70,18 +70,18 @@ export function useMatrixSnapshot() {
         const started = eventOfType(run.events, "run_started_realtime");
         const seed =
           typeof started?.seed === "number" ? (started.seed as number) : 0;
-        matrix = synthesizeMatrix(runId, run.summary, seed);
+        competition = competitionFromRun(runId, run.summary, seed);
       }
 
       const [rounds, schedules] = await Promise.all([
-        loadMatrixRounds(matrix),
-        loadMatrixSchedules(matrix),
+        loadCompetitionRounds(competition),
+        loadSchedules(competition),
       ]);
       return {
-        matrix,
+        competition,
         rounds,
         schedules,
-        missingRounds: matrix.file.scenarios.length - rounds.size,
+        missingRounds: competition.file.scenarios.length - rounds.size,
       };
     },
     () => false,

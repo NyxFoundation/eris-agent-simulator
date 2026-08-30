@@ -1,5 +1,5 @@
 const DB_NAME = "eris-dashboard";
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 
 export const STORES = {
   round: "round",
@@ -9,7 +9,6 @@ export const STORES = {
   blocks: "blocks",
   transactions: "transactions",
   marketSnapshot: "marketSnapshot",
-  archive: "archive",
 } as const;
 
 export type StoreName = (typeof STORES)[keyof typeof STORES];
@@ -29,7 +28,7 @@ function openDatabase(): Promise<IDBDatabase> {
         if (db.objectStoreNames.contains(STORES.transactions)) {
           db.deleteObjectStore(STORES.transactions);
         }
-        for (const legacyStore of ["markets", "events", "ticker"]) {
+        for (const legacyStore of ["markets", "events", "ticker", "archive"]) {
           if (db.objectStoreNames.contains(legacyStore)) {
             db.deleteObjectStore(legacyStore);
           }
@@ -56,9 +55,6 @@ function openDatabase(): Promise<IDBDatabase> {
         if (!db.objectStoreNames.contains(STORES.marketSnapshot)) {
           db.createObjectStore(STORES.marketSnapshot);
         }
-        if (!db.objectStoreNames.contains(STORES.archive)) {
-          db.createObjectStore(STORES.archive);
-        }
       };
       request.onsuccess = () => {
         // Let this connection get out of the way if another tab needs a newer schema version.
@@ -66,7 +62,8 @@ function openDatabase(): Promise<IDBDatabase> {
         resolve(request.result);
       };
       request.onerror = () => reject(request.error);
-      request.onblocked = () => reject(new Error("IndexedDB upgrade blocked by another open tab"));
+      request.onblocked = () =>
+        reject(new Error("IndexedDB upgrade blocked by another open tab"));
     });
   }
   return dbPromise;
@@ -82,7 +79,8 @@ async function withStore<T>(
     const tx = db.transaction(storeName, mode);
     const store = tx.objectStore(storeName);
     const request = run(store);
-    tx.oncomplete = () => resolve(request ? (request.result as T) : (undefined as T));
+    tx.oncomplete = () =>
+      resolve(request ? (request.result as T) : (undefined as T));
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);
   });
@@ -92,11 +90,20 @@ export function getAll<T>(storeName: StoreName): Promise<T[]> {
   return withStore<T[]>(storeName, "readonly", (store) => store.getAll());
 }
 
-export function getValue<T>(storeName: StoreName, key: IDBValidKey): Promise<T | undefined> {
-  return withStore<T | undefined>(storeName, "readonly", (store) => store.get(key));
+export function getValue<T>(
+  storeName: StoreName,
+  key: IDBValidKey,
+): Promise<T | undefined> {
+  return withStore<T | undefined>(storeName, "readonly", (store) =>
+    store.get(key),
+  );
 }
 
-export function putValue<T>(storeName: StoreName, value: T, key?: IDBValidKey): Promise<void> {
+export function putValue<T>(
+  storeName: StoreName,
+  value: T,
+  key?: IDBValidKey,
+): Promise<void> {
   return withStore<void>(storeName, "readwrite", (store) => {
     store.put(value, key);
   });

@@ -25,10 +25,10 @@ vite.config.ts      Vite config (React / Tailwind plugins, @ alias, the /runs de
 tsconfig.json       TypeScript config (strict)
 src/
   main.tsx          React mount
-  App.tsx           Root component
-  navigation.ts     Route table
-  pages/            TopPage / LeaderboardPage / MarketPage / AgentDetailPage / ExplorerPage / ArchivePage
-  components/       Shared UI
+  App.tsx           Root component + route table
+  navigation.ts     pushState helper
+  pages/            HomePage (standings) / ScenarioPage / MarketPage / ExplorerPage / AgentDetailPage
+  components/       Shared UI (Sidebar, the two round bars, competitionUi)
   data/             Providers, run artifact readers, live-run polling, per-page snapshot hooks
   design-system/    Primitives the pages are composed from
   lib/              Formatting and small shared helpers
@@ -38,14 +38,32 @@ public/             Static assets, served as-is
 
 `@/` is an alias for `src/`, defined in both `vite.config.ts` and `tsconfig.json`.
 
+## Selection
+
+Everything on screen belongs to one hierarchy, normalized at the data layer's
+entry point (`src/data/competition.ts`):
+
+```
+competition  ⊃  scenario (= one run, "regime#seed")  ⊃  round (= one scoring epoch)
+```
+
+A competition is a scenario matrix written by `backtest --scenarios`
+(`runs/<id>/matrix.json`); a standalone `sim:realtime` run is wrapped into the
+same shape as a competition of one scenario (`competitionFromRun`), so every
+page processes exactly one kind of object. The sidebar picks a competition,
+then a scenario inside it; `/` is the competition's standings under the fixed
+rule (score = mean − λ·std per scenario, z-scored and averaged with equal
+weight per regime; re-scoring under other rules is `npm run metrics`'s job).
+A standings row opens the agent's page, whose Standing tab explains the place
+(pooled rounds, per-regime split).
+
 ## Data
 
 All pages consume snapshots through `src/data/provider.ts` — an explicit
 indirection point. The default provider (`runsProvider.ts`, issue #63 Phase 1)
 builds every snapshot from run artifacts under `runs/<id>/`, served by a small
 Vite dev-server plugin (`/runs/index.json` + `/runs/<id>/<file>`, see
-`vite.config.ts`). The sidebar's run picker selects which run to render
-(newest by default, persisted per browser).
+`vite.config.ts`).
 
 - `summary.json` — standings (score = M9 in bps/epoch, PnL%, Sharpe, max DD)
 - `events.jsonl` — price/portfolio series (reconstructed observations), event tape

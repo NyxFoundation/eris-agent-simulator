@@ -1,4 +1,4 @@
-// The matrix's round cursor: the clock the whole competition is read against.
+// The competition's round cursor: the clock the whole competition is read against.
 //
 // One segment per round, spanning every scenario at once — at round k all 35 worlds are at their
 // own round k, which is what makes independent scenarios watchable as a single competition. Playing

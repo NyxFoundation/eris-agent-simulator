@@ -1,48 +1,38 @@
-// The home: the whole competition at a glance.
+// The home: the competition standings.
 //
-// Three questions, in the order they get asked. Who is winning (standings), where they won it
-// (regimes), and whether the win is spread or concentrated (scenarios). Each card is the top of a
-// table that lives in full on /standings — the home states the headline under the default ranking
-// rule, and /standings is where the rule itself is interrogated.
-//
-// Everything obeys the round cursor, so scrubbing the bar replays the competition from the home.
+// One table, under the one rule the competition is scored by. A row opens the agent's page, where
+// the round-level distribution behind its place lives. Everything obeys the round cursor, so
+// scrubbing the bar replays the competition from here.
 
+import { useEffect, useMemo } from "react";
 import { RoundCursorBar } from "@/components/RoundCursorBar";
 import { Sidebar } from "@/components/Sidebar";
 import {
-  formatMetric,
-  formatTotal,
+  formatStanding,
   MoveCell,
   Panel,
   plural,
   Stat,
   toneColor,
-} from "@/components/matrixUi";
-import { useMemo } from "react";
-import { scenarioRunId } from "@/data/matrixArtifacts";
-import { windowsAtRound } from "@/data/matrixSchedule";
-import {
-  buildStandings,
-  DEFAULT_AGGREGATOR,
-  DEFAULT_LAMBDA,
-  DEFAULT_METRIC,
-  DEFAULT_RHO,
-  METRICS,
-  rankMoves,
-} from "@/data/matrixScoring";
+} from "@/components/competitionUi";
+import { scenarioRunId } from "@/data/competition";
+import { windowsAtRound } from "@/data/schedule";
+import { buildStandings, rankMoves } from "@/data/standings";
 import { setCursorRange, useCursor } from "@/data/roundCursor";
-import { setSelectedRunId } from "@/data/runSelection";
-import { useMatrixSnapshot } from "@/data/useMatrixSnapshot";
+import { getSelectedRunId, setSelectedRunId } from "@/data/runSelection";
+import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
+import { formatPnlUsdc } from "@/lib/format";
 import { navigate } from "@/navigation";
 import { ScenarioPage } from "./ScenarioPage";
 
-const PAGE_MAX_WIDTH = "1320px";
-const TOP_N = 6;
+const PAGE_MAX_WIDTH = "1180px";
 
 export function HomePage() {
-  const { data, loading, error } = useMatrixSnapshot();
+  const { data, loading, error } = useCompetitionSnapshot();
   const cursor = useCursor();
 
+  // The cursor's range is the longest scenario in the competition. Shorter scenarios end early
+  // rather than being excluded — see buildStandings.
   const maxRound = useMemo(() => {
     if (!data) return 0;
     let max = 0;
@@ -52,28 +42,21 @@ export function HomePage() {
     return max;
   }, [data]);
 
-  useMemo(() => setCursorRange(maxRound), [maxRound]);
+  useEffect(() => {
+    setCursorRange(maxRound);
+  }, [maxRound]);
 
-  // The home reports the default ranking rule and says so. Changing it is what /standings is for:
-  // a headline that quietly depends on a choice the reader cannot see is the thing this whole page
-  // set exists to avoid.
   const standings = useMemo(() => {
     if (!data) return null;
-    return buildStandings(
-      data.matrix,
-      data.rounds,
-      DEFAULT_METRIC,
-      DEFAULT_AGGREGATOR,
-      { lambda: DEFAULT_LAMBDA, rho: DEFAULT_RHO },
-      cursor.round,
-    );
+    return buildStandings(data.competition, data.rounds, cursor.round);
   }, [data, cursor.round]);
 
   const moves = useMemo(() => {
     if (!data || !standings) return new Map<string, number | null>();
-    return rankMoves(data.matrix, data.rounds, standings);
+    return rankMoves(data.competition, data.rounds, standings);
   }, [data, standings]);
 
+  // One line of context for the selected round: which environment windows open here, who moved.
   const note = useMemo(() => {
     if (!data || !standings || cursor.round === null) return undefined;
     const open = windowsAtRound(data.schedules, cursor.round);
@@ -93,6 +76,18 @@ export function HomePage() {
     );
     return parts.join(" · ");
   }, [data, standings, cursor.round, moves]);
+
+  // Keep the scenario selection inside the competition on screen, so drilling into Markets or
+  // Explorer never lands on a world belonging to a different competition.
+  useEffect(() => {
+    if (!data) return;
+    const ids = data.competition.file.scenarios.map((s) =>
+      scenarioRunId(data.competition.id, s.runDir),
+    );
+    const current = getSelectedRunId();
+    if (current && ids.includes(current)) return;
+    if (ids[0]) setSelectedRunId(ids[0]);
+  }, [data]);
 
   if (loading) {
     return (
@@ -117,10 +112,21 @@ export function HomePage() {
   if (error || !data || !standings || standings.rows.length === 0)
     return <ScenarioPage />;
 
-  const file = data.matrix.file;
-  const leader = standings.rows[0];
-  const metricLabel =
-    METRICS.find((m) => m.key === standings.metric)?.label ?? standings.metric;
+  const file = data.competition.file;
+  const at = standings.throughRound;
+  // A single run has one scenario labelled "run": its regime column would repeat the total.
+  const regimes = standings.regimes.length > 1 ? standings.regimes : [];
+  const scrubbing = at !== null;
+  // Built without repeat(): `repeat(0, ...)` is invalid CSS and would break the whole grid for a
+  // single-run competition, which has no regime columns.
+  const columns = [
+    "36px",
+    "46px",
+    "minmax(150px, 1fr)",
+    "96px",
+    ...regimes.map(() => "minmax(72px, 94px)"),
+    "110px",
+  ].join(" ");
 
   return (
     <div
@@ -168,284 +174,156 @@ export function HomePage() {
                 letterSpacing: "var(--tracking-tight)",
               }}
             >
-              {file.scenarioSet ?? data.matrix.id}
+              {file.scenarioSet ?? data.competition.id}
             </h1>
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+                gridTemplateColumns: "repeat(auto-fit, minmax(120px, 160px))",
                 gap: "14px",
               }}
             >
               <Stat label="scenarios" value={String(file.scenarios.length)} />
-              <Stat label="regimes" value={String(standings.regimes.length)} />
+              {regimes.length > 0 && (
+                <Stat label="regimes" value={String(regimes.length)} />
+              )}
               <Stat label="agents" value={String(standings.agentIds.length)} />
               <Stat
                 label="rounds"
                 value={
-                  cursor.round === null
-                    ? `${maxRound} · final`
-                    : `${cursor.round} of ${maxRound}`
+                  at === null ? `${maxRound} · final` : `${at} of ${maxRound}`
                 }
               />
-              <Stat label="ranked by" value={metricLabel} />
             </div>
+            {data.missingRounds > 0 && (
+              <span
+                style={{
+                  font: "var(--text-xs) var(--font-sans)",
+                  color: "var(--warning-text)",
+                }}
+              >
+                {data.missingRounds} of {file.scenarios.length} scenario runs
+                were not collected — they still rank, but have no round detail.
+              </span>
+            )}
           </header>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
-              gap: "18px",
-              alignItems: "start",
-            }}
+          <Panel
+            title={
+              at === null
+                ? "Standings · final"
+                : `Standings · through round ${at}`
+            }
+            subtitle="Score: each scenario's mean − λ·std of per-round returns, ranked within its field and averaged with equal weight per regime. Open a row for why it sits where it does."
           >
-            <StandingsCard standings={standings} moves={moves} />
-            <RegimesCard standings={standings} />
-            <ConsistencyCard standings={standings} leaderId={leader.id} />
-          </div>
+            <div style={{ overflowX: "auto" }}>
+              <div style={{ minWidth: `${420 + regimes.length * 78}px` }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: columns,
+                    padding: "9px 16px",
+                    borderBottom: "1px solid var(--border-subtle)",
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                    letterSpacing: "var(--tracking-wide)",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  <span>#</span>
+                  <span style={{ textAlign: "center" }}>move</span>
+                  <span>agent</span>
+                  <span style={{ textAlign: "right" }}>score</span>
+                  {regimes.map((r) => (
+                    <span key={r} style={{ textAlign: "right" }} title={r}>
+                      {r.replace(/^full-/, "")}
+                    </span>
+                  ))}
+                  <span style={{ textAlign: "right" }}>net PnL</span>
+                </div>
+
+                {standings.rows.map((row, i) => (
+                  <div
+                    key={row.id}
+                    onClick={() =>
+                      navigate(`/agent/${encodeURIComponent(row.id)}`)
+                    }
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: columns,
+                      padding: "10px 16px",
+                      borderBottom: "1px solid var(--border-subtle)",
+                      font: "var(--text-sm) var(--font-mono)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ color: "var(--text-tertiary)" }}>
+                      {i + 1}
+                    </span>
+                    <MoveCell move={moves.get(row.id) ?? null} />
+                    <span
+                      style={{
+                        color: "var(--text-link)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                      title={row.id}
+                    >
+                      {row.id}
+                    </span>
+                    <span
+                      style={{
+                        textAlign: "right",
+                        color: toneColor(row.total),
+                        fontWeight: "var(--weight-semibold)" as never,
+                      }}
+                    >
+                      {formatStanding(row.total)}
+                    </span>
+                    {regimes.map((r) => {
+                      const v = row.byRegime[r];
+                      return (
+                        <span
+                          key={r}
+                          style={{
+                            textAlign: "right",
+                            font: "var(--text-xs) var(--font-mono)",
+                            color:
+                              v === undefined
+                                ? "var(--text-disabled)"
+                                : toneColor(v),
+                          }}
+                        >
+                          {v === undefined ? "—" : formatStanding(v)}
+                        </span>
+                      );
+                    })}
+                    {/* Net PnL prices both ends at the run's final marks, so it has no value "at
+                        round k" — while the cursor is mid-competition the finished number is shown
+                        dimmed rather than under a round label. */}
+                    <span
+                      title={
+                        scrubbing
+                          ? "final value — net PnL is only defined at a run's end"
+                          : undefined
+                      }
+                      style={{
+                        textAlign: "right",
+                        font: "var(--text-xs) var(--font-mono)",
+                        color: scrubbing
+                          ? "var(--text-disabled)"
+                          : toneColor(standings.netPnlByAgent[row.id] ?? 0),
+                      }}
+                    >
+                      {formatPnlUsdc(standings.netPnlByAgent[row.id] ?? 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Panel>
         </main>
       </div>
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-
-function StandingsCard({
-  standings,
-  moves,
-}: {
-  standings: ReturnType<typeof buildStandings>;
-  moves: Map<string, number | null>;
-}) {
-  return (
-    <Panel
-      title={
-        standings.throughRound === null
-          ? "Standings"
-          : `Standings · through round ${standings.throughRound}`
-      }
-      subtitle="M9 × z-score, the default rule. Open the full table to change it."
-      action={{ label: "see all →", onClick: () => navigate("/standings") }}
-    >
-      <div style={{ padding: "4px 0" }}>
-        {standings.rows.slice(0, TOP_N).map((row, i) => (
-          <div
-            key={row.id}
-            onClick={() => navigate(`/agent/${encodeURIComponent(row.id)}`)}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "28px 40px 1fr 84px",
-              alignItems: "center",
-              padding: "9px 16px",
-              borderBottom: "1px solid var(--border-subtle)",
-              font: "var(--text-sm) var(--font-mono)",
-              cursor: "pointer",
-            }}
-          >
-            <span style={{ color: "var(--text-tertiary)" }}>
-              {String(i + 1).padStart(2, "0")}
-            </span>
-            <MoveCell move={moves.get(row.id) ?? null} />
-            <span
-              style={{
-                color: "var(--text-link)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {row.id}
-            </span>
-            <span style={{ textAlign: "right", color: toneColor(row.total) }}>
-              {formatTotal(row.total, standings.aggregator, standings.metric)}
-            </span>
-          </div>
-        ))}
-      </div>
-    </Panel>
-  );
-}
-
-function RegimesCard({
-  standings,
-}: {
-  standings: ReturnType<typeof buildStandings>;
-}) {
-  // Who leads each regime. A strategy that wins the total by winning one regime and losing six is a
-  // different result from one that is never worst anywhere, and the total alone cannot tell them apart.
-  const rows = standings.regimes.map((regime) => {
-    let best: { id: string; value: number } | null = null;
-    for (const row of standings.rows) {
-      const v = row.byRegime[regime];
-      if (v === undefined) continue;
-      if (!best || v > best.value) best = { id: row.id, value: v };
-    }
-    return { regime, best };
-  });
-
-  return (
-    <Panel
-      title="Who leads each regime"
-      subtitle="Regimes are weighted equally in the total, whatever their seed count (ADR 0017 §3)."
-      action={{ label: "see all →", onClick: () => navigate("/standings") }}
-    >
-      <div style={{ padding: "4px 0" }}>
-        {rows.map(({ regime, best }) => (
-          <div
-            key={regime}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr 76px",
-              gap: "8px",
-              alignItems: "center",
-              padding: "9px 16px",
-              borderBottom: "1px solid var(--border-subtle)",
-              font: "var(--text-xs) var(--font-mono)",
-            }}
-          >
-            <span style={{ color: "var(--text-secondary)" }}>
-              {regime.replace(/^full-/, "")}
-            </span>
-            <span
-              style={{
-                color: "var(--text-link)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-              title={best?.id}
-            >
-              {best?.id ?? "—"}
-            </span>
-            <span
-              style={{
-                textAlign: "right",
-                color: best ? toneColor(best.value) : "var(--text-disabled)",
-              }}
-            >
-              {best
-                ? formatTotal(
-                    best.value,
-                    standings.aggregator,
-                    standings.metric,
-                  )
-                : "—"}
-            </span>
-          </div>
-        ))}
-      </div>
-    </Panel>
-  );
-}
-
-function ConsistencyCard({
-  standings,
-  leaderId,
-}: {
-  standings: ReturnType<typeof buildStandings>;
-  leaderId: string;
-}) {
-  // One cell per scenario, coloured by how the leader did in it. This is the question a single total
-  // cannot answer: a standing built on 35 ordinary results and one built on two blowouts read the
-  // same at the top and mean different things.
-  const byRegime = new Map<string, typeof standings.cells>();
-  for (const cell of standings.cells) {
-    const list = byRegime.get(cell.regime) ?? [];
-    list.push(cell);
-    byRegime.set(cell.regime, list);
-  }
-
-  const zOf = (cell: (typeof standings.cells)[number]): number | null => {
-    const values = Object.values(cell.byAgent);
-    const own = cell.byAgent[leaderId];
-    if (typeof own !== "number" || values.length < 2) return null;
-    const mu = values.reduce((a, b) => a + b, 0) / values.length;
-    const sd =
-      Math.sqrt(
-        values.reduce((s, v) => s + (v - mu) ** 2, 0) / values.length,
-      ) || 1;
-    return (own - mu) / sd;
-  };
-
-  return (
-    <Panel
-      title={`Where ${leaderId} won it`}
-      subtitle="One cell per scenario, shaded by the leader's standing within that scenario's field."
-      action={{ label: "see all →", onClick: () => navigate("/standings") }}
-    >
-      <div
-        style={{
-          padding: "12px 16px 16px",
-          display: "flex",
-          flexDirection: "column",
-          gap: "5px",
-        }}
-      >
-        {[...byRegime.entries()].map(([regime, cells]) => (
-          <div
-            key={regime}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "108px 1fr",
-              gap: "8px",
-              alignItems: "center",
-            }}
-          >
-            <span
-              style={{
-                font: "var(--text-xs) var(--font-mono)",
-                color: "var(--text-secondary)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {regime.replace(/^full-/, "")}
-            </span>
-            <div style={{ display: "flex", gap: "3px" }}>
-              {cells.map((cell) => {
-                const z = zOf(cell);
-                const strength =
-                  z === null ? 0 : Math.min(1, Math.abs(z) / 2.5);
-                const hue =
-                  z === null
-                    ? "var(--bg-sunken)"
-                    : z >= 0
-                      ? "var(--green-500)"
-                      : "var(--red-500)";
-                return (
-                  <button
-                    key={cell.seed}
-                    type="button"
-                    title={
-                      z === null
-                        ? `${cell.regime}#${cell.seed} · no value`
-                        : `${cell.regime}#${cell.seed}\n${leaderId}: ${formatMetric(cell.byAgent[leaderId], standings.metric)} (z ${z.toFixed(2)})\nclick to open this scenario`
-                    }
-                    onClick={() => {
-                      setSelectedRunId(cell.runId);
-                      navigate("/scenario");
-                    }}
-                    style={{
-                      flex: 1,
-                      height: "17px",
-                      border: "none",
-                      borderRadius: "2px",
-                      cursor: "pointer",
-                      background:
-                        z === null
-                          ? "var(--bg-sunken)"
-                          : `color-mix(in oklch, ${hue}, transparent ${Math.round(100 - strength * 88)}%)`,
-                    }}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-    </Panel>
-  );
-}
-
-/** Kept so the scenario-run mapping stays in one place if the home ever links deeper. */
-export { scenarioRunId };

@@ -8,16 +8,16 @@ export interface RunIndexEntry {
   mtimeMs: number;
   /** True while the run is in progress (no summary.json yet, events.jsonl still moving). */
   live?: boolean;
-  /** A scenario matrix rather than a single world: it holds matrix.json and no run artifacts. */
+  /** A competition rather than a single world: the dir holds matrix.json and no run artifacts. */
   kind?: "matrix";
 }
 
-/** Index entries that are actual runs. A matrix dir has no summary.json and cannot be loaded as one. */
+/** Index entries that are actual runs. A competition dir has no summary.json and cannot be loaded as one. */
 export function runEntries(entries: RunIndexEntry[]): RunIndexEntry[] {
   return entries.filter((e) => e.kind !== "matrix");
 }
 
-export function matrixEntries(entries: RunIndexEntry[]): RunIndexEntry[] {
+export function competitionEntries(entries: RunIndexEntry[]): RunIndexEntry[] {
   return entries.filter((e) => e.kind === "matrix");
 }
 

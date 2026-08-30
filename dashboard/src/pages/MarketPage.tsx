@@ -747,16 +747,6 @@ export function MarketPage() {
               }}
             >
               <span style={SECTION_LABEL_STYLE}>Leaderboard</span>
-              <span
-                onClick={() => navigate("/leaderboard")}
-                style={{
-                  font: "11px var(--font-mono)",
-                  color: "var(--text-link)",
-                  cursor: "pointer",
-                }}
-              >
-                all →
-              </span>
             </div>
             {leaderboard.slice(0, 8).map((row) => (
               <LeaderboardMiniRow key={row.rank} row={row} />

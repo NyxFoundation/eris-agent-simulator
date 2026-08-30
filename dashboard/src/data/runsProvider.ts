@@ -53,8 +53,6 @@ import type {
   AgentTrade,
   ArbitrageSnapshot,
   ArbTradeMarker,
-  ArchiveEvent,
-  ArchiveSnapshot,
   Candle,
   ExplorerBlock,
   ExplorerSnapshot,
@@ -712,26 +710,6 @@ function buildTape(run: LoadedRun): TapeEvent[] {
       tone: rule.tone,
     };
   });
-}
-
-function buildArchiveEvents(run: LoadedRun): ArchiveEvent[] {
-  return notableEvents(run)
-    .filter(
-      (e) => e.type !== "run_started_realtime" && e.type !== "run_completed",
-    )
-    .slice(0, 12)
-    .map((event) => {
-      const rule = TAPE_RULES[event.type];
-      const value = rule.value(event);
-      const block =
-        typeof event.blockNumber === "number"
-          ? `blk ${event.blockNumber.toLocaleString("en-US")}`
-          : clockTime(event.ts);
-      return {
-        time: block,
-        text: `${rule.body(event)}${value ? ` (${value})` : ""}`,
-      };
-    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1533,93 +1511,6 @@ export async function fetchMarketSnapshot(
     ),
     leaderboard: buildStandings(full, round.epochs, replaying),
     feed: buildFeed(logs, epoch, replaying ? round.blockNumber : undefined),
-  };
-}
-
-export async function fetchArchiveSnapshot(): Promise<ArchiveSnapshot> {
-  const full = await resolveRun();
-  const round = buildRound(full);
-  const run = clampToReplay(full);
-  const standings = buildStandings(
-    full,
-    round.epochs,
-    round.status === "replay",
-  );
-  const { prices } = observationSeries(run);
-  const last = prices[prices.length - 1];
-  const infoByHash = await txInfoByHash(run);
-
-  const liquidations =
-    run.blockRows.filter(
-      (row) => methodOf(row, infoByHash) === "liquidationCall",
-    ).length + run.events.filter((e) => e.type === "stress_liquidation").length;
-
-  // Traded volume: only txs that really exchanged both legs (priceUsd is the discriminator),
-  // matching the market page — deposits and collateral moves are not volume.
-  const decodedVolume = Object.values(run.market?.notionals ?? {}).reduce(
-    (sum, n) => sum + (n.priceUsd !== undefined ? n.usd : 0),
-    0,
-  );
-
-  const closingPrices = [];
-  const lastMarketRow = run.market?.series[run.market.series.length - 1];
-  if (lastMarketRow) {
-    // multi-asset closing fairs from the reconstructed market series
-    for (const [base, price] of Object.entries(lastMarketRow.fair)) {
-      closingPrices.push({
-        pair: `${base}/USDC fair`,
-        price: Math.round(price * 100) / 100,
-      });
-    }
-    for (const [symbol, sample] of Object.entries(
-      lastMarketRow.stables ?? {},
-    )) {
-      closingPrices.push({
-        pair: `${symbol}/USDC${sample.quoted ? "" : " (par fallback)"}`,
-        price: Math.round(sample.priceUsdc * 10_000) / 10_000,
-      });
-    }
-  } else {
-    const finalFair = last?.fair ?? run.summary.finalFairPriceUsdcPerWeth;
-    if (typeof finalFair === "number")
-      closingPrices.push({
-        pair: "WETH/USDC fair",
-        price: Math.round(finalFair * 100) / 100,
-      });
-  }
-  if (last)
-    closingPrices.push({
-      pair: "WETH/USDC pool",
-      price: Math.round(last.pool * 100) / 100,
-    });
-
-  return {
-    round: {
-      runNumber: run.runNumber,
-      status: "archived",
-      finalBlockNumber: lastBlock(run),
-    },
-    stats: {
-      totalTx: run.blockRows.length,
-      agentsEntered: (run.summary.agents ?? []).length,
-      totalVolume: decodedVolume > 0 ? formatUsd(decodedVolume) : "n/a",
-      liquidations,
-    },
-    podium: standings
-      .slice(0, 3)
-      .map((s) => ({ rank: s.rank, agent: s.agent, netPnlUsdc: s.netPnlUsdc })),
-    finalStandings: standings.map((s) => ({
-      rank: s.rank,
-      agent: s.agent,
-      score: s.score,
-      netPnlUsdc: s.netPnlUsdc,
-      sharpe: s.sharpe,
-    })),
-    closingPrices,
-    events: buildArchiveEvents(run),
-    // Keeps the archive page polling while the run completes; the final standings replace the
-    // partial ones on the poll after summary.json lands.
-    ...(run.live ? { live: true } : {}),
   };
 }
 

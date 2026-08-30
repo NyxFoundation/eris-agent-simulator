@@ -4,12 +4,6 @@ import {
   createSeedRound,
   seedAgents,
   seedArbitrage,
-  seedArchiveClosingPrices,
-  seedArchiveEvents,
-  seedArchiveFinalStandings,
-  seedArchivePodium,
-  seedArchiveRound,
-  seedArchiveStats,
   seedVenueDepths,
   seedBlocks,
   seedCandles,
@@ -23,7 +17,6 @@ import {
 import type {
   AgentDetailSnapshot,
   AgentStanding,
-  ArchiveSnapshot,
   ExplorerBlock,
   ExplorerSnapshot,
   ExplorerStats,
@@ -38,7 +31,6 @@ import type {
 const ROUND_KEY = "current";
 const EXPLORER_STATS_KEY = "current";
 const MARKET_SNAPSHOT_KEY = "current";
-const ARCHIVE_KEY = "round-13";
 const TOP_EXTRAS_KEY = "current";
 
 interface TopExtras {
@@ -181,7 +173,10 @@ export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
 // Only the parts worth persisting are stored; everything the shape has gained since (venueDepths,
 // pairs, the venue panels) is attached at read time, so an IndexedDB blob written by an older
 // session still renders instead of failing to parse.
-type MarketSnapshotBlob = Pick<MarketSnapshot, "candles" | "feed" | "arbitrage">;
+type MarketSnapshotBlob = Pick<
+  MarketSnapshot,
+  "candles" | "feed" | "arbitrage"
+>;
 
 async function ensureMarketSeeded(): Promise<void> {
   const [existingRound, existingSnapshot, agentCount] = await Promise.all([
@@ -241,36 +236,4 @@ export async function fetchMarketSnapshot(
     panels: seedVenuePanels,
     pairs: [{ label: "WETH/USDC", value: "WETH" }],
   };
-}
-
-async function ensureArchiveSeeded(): Promise<void> {
-  const existingArchive = await getValue<ArchiveSnapshot>(
-    STORES.archive,
-    ARCHIVE_KEY,
-  );
-  if (existingArchive) return;
-  const archive: ArchiveSnapshot = {
-    round: seedArchiveRound,
-    stats: seedArchiveStats,
-    podium: seedArchivePodium,
-    finalStandings: seedArchiveFinalStandings,
-    closingPrices: seedArchiveClosingPrices,
-    events: seedArchiveEvents,
-  };
-  await putValue(STORES.archive, archive, ARCHIVE_KEY);
-}
-
-/**
- * Mock data provider backed by IndexedDB. Seeds once on first run so the
- * archived round's final standings and stats persist across reloads.
- */
-export async function fetchArchiveSnapshot(): Promise<ArchiveSnapshot> {
-  await ensureArchiveSeeded();
-  const archive = await getValue<ArchiveSnapshot>(STORES.archive, ARCHIVE_KEY);
-
-  if (!archive) {
-    throw new Error("Archive data missing after seeding");
-  }
-
-  return archive;
 }

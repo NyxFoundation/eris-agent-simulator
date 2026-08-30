@@ -115,55 +115,49 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
 - `npm run metrics -- --matrix runs/matrix-<id>` — **シナリオ行列を「指標 × 集約」の総当たりで採点し直す**（ADR 0020 §5）。連続経済では「どの指標か」だけが問いだが、`scenario` モードでは**シナリオ横断の集約**という第 2 の選択が要る（`core/src/scoring/aggregate.ts` = `zscore` 現行 / `borda` 順位 / `mean` 絶対量。どれもレジーム等重み）。出力は各組み合わせの順位、M9×zscore との一致/不一致、そして **#55 の露出**（1 体が場の sd を何倍に膨らませているか。1.0 = 誰も場のスケールを決めていない）。matrix.json の `runDir` は相対なので、spot から回収した tarball を展開したディレクトリでもそのまま読める
 - `npm run explorer` — sim anvil を索引するローカル Blockscout（issue #31。stock イメージ pin、`infra/blockscout/`）。UI は http://localhost:3100。**チェーンをリセットしたら `npm run explorer:reset`**（resetFork/snapshot-revert の巻き戻しに indexer は追従できないので DB を消して再索引するのが正規のライフサイクル）。`npm run explorer:tag` が最新 run の `summary.json` から agent アドレスに名前タグを付ける（reset で消えるので run ごと）。接続先・chain id・fork 用 `FIRST_BLOCK` は `infra/blockscout/explorer.env`
 - `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
-  - **選択は `matrix ⊃ scenario ⊃ round` の 3 段で、既定の着地点は matrix**（`/` = Standings）。
+  - **選択は `competition ⊃ scenario ⊃ round`**（UI から "matrix" という語は消した。ディスク上の
+    `matrix.json` は core の出力なのでそのまま）。既定の着地点は competition = `/` の順位表。
     1 シナリオは分布からの 1 ドローであって結果ではない（`config/scenarios/public.yaml`:
     "the published seeds are five draws from it, **not the target**"）ので、そこを既定にすると
-    「読んではいけない単位」を最初に見せることになる。実際 `full-calm#404` と `#505` で 1 位が違い、
-    どちらも 35 シナリオ通しの M9 順位では上位ではない。picker は matrix →（`regime#seed` 表示の）
-    scenario の順。**「matrix に属さない run」という第 2 のモデルは無い** — `sim:realtime` の 1 run は
-    「1 シナリオの競技」で、picker の **— single run —** はその run を外側の単位にする（`synthesizeMatrix`）。
-    ホームもコントロールもカーソルも同じ。**3 階層 = 3 ルート**（`/` = Home「競技の一望」/
-    `/standings` = 順位表 + ルールのコントロール / `/scenario` = 1 world。`/run` は `/scenario` へ）。
-    1 シナリオでの集約は退化するが無意味ではない
-    （zscore = その中の散らばり / borda = 順位 / mean = 生の値。必然的に 3 つとも一致する）。
-    `/markets` と `/explorer` は 1 world の中でしか意味を持たないので scenario 層のまま。
-    **順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に書かれるので結果が
-    まだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
+    「読んではいけない単位」を最初に見せることになる。picker は competition →（`regime#seed` 表示の）
+    scenario の順。**「competition に属さない run」という第 2 のモデルは無い** — `sim:realtime` の
+    1 run は「1 シナリオの競技」で、picker の **— single run —** はその run を外側の単位にする
+    （`competitionFromRun`。データ層の入口 1 箇所で正規化し、以降のページは 1 種類の型しか見ない）。
+    **ルートは `/`（= Standings）と `/scenario` の 2 本 + `/agent/<id>`**。参加者向けに整理した際
+    `/standings`・`/leaderboard`（scenario 内順位と重複）・`/archive`（未到達の seed 遺物）・
+    `/run` エイリアスは削除した。`/markets` と `/explorer` は 1 world の中でしか意味を持たないので
+    scenario 層のまま。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
+    書かれるので結果がまだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
   - **ラウンドは UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
     スコアも順位変動も環境イベントも全部エポック単位なので、全ビューはこの軸に対して読む。
     **以前はラウンド軸を 3 回別々に実装していた**（ラウンド選択 / replay head / live head）。
-    カーソルは matrix 全体を張る = **round k では 35 シナリオが各自の round k にいる**。再生は
+    カーソルは competition 全体を張る = **round k では 35 シナリオが各自の round k にいる**。再生は
     カーソルを進めるだけで、独立した「リプレイモード」ではない
     - **順位は "through round k"**（先頭 k ラウンドで再計算。完走結果を読まない）+ round k−1 からの移動
     - **シナリオ長は揃っていない**（full-8h では depeg が 9、他は 29）。最終ラウンドを過ぎた
       シナリオは**世界が終了した**扱いで順位に残す（除くと「結果でない理由」で場が動く）。
       帯に `30 of 35 still running · 5 ended earlier` と出す
-    - **`net PnL (final marks)` と `α` はラウンド絞り不可**（両端を run 最終価格で評価するので
-      round k の値が存在しない）。スクラブ中は灰色で提示し、完走値をラウンド名で出さない
+    - **net PnL はラウンド絞り不可**（両端を run 最終価格で評価するので round k の値が存在しない）。
+      順位表の参考列としてだけ出し、スクラブ中は灰色で提示して完走値をラウンド名で出さない
     - **round k のパネルがその窓を出す**（seed から引かれた計画。実測 seed 101: whale r5/r13/r19/r24-25、
       crash r14-15、lending-incident r15-16、depeg r4-7、calm/cex-drift/informed-flow は無し）。
       **だから round 7 の順位は最終順位の予告ではない** — round 7 では裁定勢が首位で、
       その座を奪う crash 窓はまだ開いていない
     - ブロック単位の細かい移動（1 シナリオ内）は `replay.ts` に残る。これはこの位置の**細分**であって
       対立する概念ではなく、シナリオを 1 本開いているときにだけ存在する
-  - **Standings（matrix ビュー）は「指標 × 集約」を両方コントロールにする**。順位表を 1 枚出すと
-    決まっていないことを決まったように見せるため（#56 未決 / ADR 0019 は z-score を後継未定で引退）。
-    指標は M9 / M1(epoch 系列) / net PnL(final marks) / α / M4 / M13 / M7、集約は zscore / borda / mean。
-    **集約は `core/src/scoring/aggregate.ts` を dashboard が直接 import する**（`@core/*` alias。
-    採点ロジックを 2 箇所に置くと CLI と画面で順位が食い違ったとき、どちらが本物か分からなくなる）。
-    実測で **15 通り全部が `npm run metrics -- --matrix` と一致**。
-    - **λ / ρ は生きたノブ**。`summary.json` の `logReturns` は floor・baseline 超過・破産凍結まで
-      適用済みで λ だけが未適用なので、スライダは近似ではなく正確な再採点になる
-    - **`M1 PnL (epoch 系列)` と `net PnL (final marks)` は別物**。後者（matrix.json 収録）は
-      両端を run 最終価格で評価するので β が相殺され `noop` がきっかり 0。前者（CLI の M1）は
-      epoch 境界の最初と最後の差で価格が動くので `full-calm#101` の `noop` は +322 USDC。
-      順位も違うので両方をラベル付きで出している
-    - #55 の露出（1 体が場の sd を何倍にしているか）と、他 14 通りとの不一致を並記する
-  - **順位の理由はラウンド層にしか無い**。順位表の行を開くと、その agent の全エポックを matrix 横断で
-    プールした mean / std / λ·std / 分布 / レジーム別内訳が出る（M9 自体はシナリオごと→レジーム平均
-    なので、これは別の順位ではなく説明）。実測: `clean-arb` は 1 ラウンド +0.32bp・std 1.78bp で 1 位、
-    `levered-long-max` は **+4.90bp**・std **78.60bp** で最下位。**15 倍稼いでいる方が最下位**で、
-    差は全部 std。レジーム別に割ると `cex-drift` だけ +48.3bp で他 6 本は負け＝レジーム適合の話だと分かる
+  - **順位表はルール固定**（参加者向け。指標 × 集約のコントロール・λ/ρ スライダ・不一致パネル・
+    #55 露出は 2026-08-31 に撤去した）。ルールはシナリオごと M9 `mean − λ·std`（λ=0.25）→
+    シナリオ内 z-score → レジーム等重み平均で、参考列として net PnL(final marks) の合計を 1 列だけ
+    併記する（β が相殺され `noop` がきっかり 0 になる方の量）。**集約は
+    `core/src/scoring/aggregate.ts` を dashboard が直接 import する**（`@core/*` alias。採点ロジックを
+    2 箇所に置くと CLI と画面で順位が食い違ったとき、どちらが本物か分からなくなる）。
+    指標・集約・λ/ρ を振った再採点は `npm run metrics -- --matrix` の仕事で、UI には出さない
+  - **順位の理由は agent ページの Standing タブ**（順位表の行クリックで飛ぶ既定タブ）。その agent の
+    全エポックを competition 横断でプールした mean / std / λ·std / 分布 / レジーム別内訳を出す
+    （M9 自体はシナリオごと→レジーム平均なので、これは別の順位ではなく説明）。実測: `clean-arb` は
+    1 ラウンド +0.32bp・std 1.78bp で 1 位、`levered-long-max` は **+4.90bp**・std **78.60bp** で
+    最下位。**15 倍稼いでいる方が最下位**で、差は全部 std。レジーム別に割ると `cex-drift` だけ
+    +48.3bp で他 6 本は負け＝レジーム適合の話だと分かる
   - **「ラウンド」= 採点エポック**（ADR 0019。run ではない）。上部の帯は選択中 run の epoch 系列そのもの
     （`valueSeries.epochSeries.boundaryBlocks`）で、セグメントを押すとその round の per-agent 結果
     （Δ value / 超過対数リターン / 順位と変動 / その窓に落ちた環境イベント）が開き、`/explorer` の

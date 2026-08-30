@@ -1,12 +1,8 @@
-// Pieces shared by the matrix-level pages: the home overview and the full standings.
-//
-// Extracted rather than duplicated because the two pages show the same quantities at different
-// depth — a top-five card and a full table are the same numbers formatted twice, and two copies of
-// "how a total is formatted" is two chances for the home and the standings to disagree about what
-// an agent scored.
+// Pieces shared by the competition-level views: the standings table on the home page and the
+// standing section of an agent page. One copy of "how a standing is formatted" keeps the two from
+// disagreeing about what an agent scored.
 
-import { METRICS, type Aggregator, type MetricKey } from "@/data/matrixScoring";
-import { formatBps, formatPnlUsdc } from "@/lib/format";
+import { formatBps } from "@/lib/format";
 
 export function Panel({
   title,
@@ -16,7 +12,7 @@ export function Panel({
 }: {
   title: string;
   subtitle?: string;
-  /** A link rendered on the header's right — "see all →" on the home cards. */
+  /** A link rendered on the header's right. */
   action?: { label: string; onClick: () => void };
   children: React.ReactNode;
 }) {
@@ -119,22 +115,8 @@ export function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** A metric's own units. Log-growth metrics are shown in bps so they are not a wall of zeroes. */
-export function formatMetric(value: number, metric: MetricKey): string {
-  const unit = METRICS.find((m) => m.key === metric)?.unit ?? "usdc";
-  if (unit === "usdc") return formatPnlUsdc(value);
-  if (unit === "ratio") return (value >= 0 ? "+" : "") + value.toFixed(3);
-  return formatBps(value * 10_000);
-}
-
-/** An aggregated total. Only `mean` keeps the metric's units; the others produce their own scale. */
-export function formatTotal(
-  value: number,
-  aggregator: Aggregator,
-  metric: MetricKey,
-): string {
-  if (aggregator === "mean") return formatMetric(value, metric);
-  if (aggregator === "borda") return value.toFixed(2);
+/** An aggregated standing (a z-score average): unitless, signed. */
+export function formatStanding(value: number): string {
   return (value >= 0 ? "+" : "") + value.toFixed(3);
 }
 
@@ -143,7 +125,7 @@ export function formatSpreadBps(value: number): string {
   return formatBps(Math.abs(value)).replace(/^\+/, "");
 }
 
-/** "1 scenarios" reads as a bug in the code rather than as a matrix with one scenario in it. */
+/** "1 scenarios" reads as a bug in the code rather than as a competition with one scenario in it. */
 export function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }

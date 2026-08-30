@@ -6,12 +6,6 @@ import type {
   AgentTrade,
   ArbitrageSnapshot,
   ArbTradeMarker,
-  ArchiveClosingPrice,
-  ArchiveEvent,
-  ArchiveFinalStanding,
-  ArchivePodiumEntry,
-  ArchiveRoundInfo,
-  ArchiveStats,
   Candle,
   ExplorerBlock,
   ExplorerStats,
@@ -671,61 +665,6 @@ export const seedFeed: MarketFeedItem[] = [
   { id: 6, text: "agent-55aa sell 1.5 @3414.8" },
   { id: 7, text: "agent-3e91 buy 0.3 @3411.2" },
   { id: 8, text: "agent-c204 sell 0.7 @3413.9" },
-];
-
-export const seedArchiveRound: ArchiveRoundInfo = {
-  runNumber: 13,
-  status: "archived",
-  finalBlockNumber: 19_201_884,
-};
-
-export const seedArchiveStats: ArchiveStats = {
-  totalTx: 48_112,
-  agentsEntered: 31,
-  totalVolume: "$18.4M",
-  liquidations: 14,
-};
-
-export const seedArchivePodium: ArchivePodiumEntry[] = [
-  { rank: 1, agent: "agent-9a12", netPnlUsdc: 6120 },
-  { rank: 2, agent: "agent-21cd", netPnlUsdc: 4890 },
-  { rank: 3, agent: "agent-7788", netPnlUsdc: 3340 },
-];
-
-export const seedArchiveFinalStandings: ArchiveFinalStanding[] = [
-  { rank: 1, agent: "agent-9a12", score: 92.4, netPnlUsdc: 6120, sharpe: 2.41 },
-  { rank: 2, agent: "agent-21cd", score: 88.1, netPnlUsdc: 4890, sharpe: 2.18 },
-  { rank: 3, agent: "agent-7788", score: 81.6, netPnlUsdc: 3340, sharpe: 2.02 },
-  { rank: 4, agent: "agent-4f2a", score: 74.9, netPnlUsdc: 1840, sharpe: 1.84 },
-  { rank: 5, agent: "agent-55aa", score: 70.2, netPnlUsdc: 1500, sharpe: 1.61 },
-  {
-    rank: 6,
-    agent: "agent-3e91",
-    score: 65.8,
-    netPnlUsdc: 970.25,
-    sharpe: 1.42,
-  },
-  { rank: 7, agent: "agent-c204", score: 61.0, netPnlUsdc: 720.5, sharpe: 1.3 },
-  {
-    rank: 8,
-    agent: "agent-88b1",
-    score: 55.4,
-    netPnlUsdc: -180.4,
-    sharpe: 1.05,
-  },
-];
-
-export const seedArchiveClosingPrices: ArchiveClosingPrice[] = [
-  { pair: "ETH/USDC", price: 3296 },
-  { pair: "wBTC/USDC", price: 59_880 },
-  { pair: "SOL/USDC", price: 138 },
-];
-
-export const seedArchiveEvents: ArchiveEvent[] = [
-  { time: "blk 19,190,204", text: "whale sell wBTC" },
-  { time: "blk 19,193,881", text: "oracle lag +400ms" },
-  { time: "blk 19,198,552", text: "stablecoin depeg −3%" },
-  { time: "blk 19,201,110", text: "CEX drift injected on ETH/USDC" },
 ];
 
 const AGENT_DETAIL_MARKETS = ["ETH/USDC", "wBTC/USDC", "SOL/USDC"];
