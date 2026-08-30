@@ -13,6 +13,7 @@ import {
 } from "./matrixSelection";
 import { loadMatrixSchedules, type ScenarioSchedule } from "./matrixSchedule";
 import { loadMatrixRounds, type ScenarioRounds } from "./matrixScoring";
+import { isSeedProvider } from "./provider";
 import { listRuns, matrixEntries } from "./runArtifacts";
 import { useSnapshot } from "./useSnapshot";
 
@@ -32,6 +33,11 @@ export function useMatrixSnapshot() {
   const state = useSnapshot<MatrixSnapshot | null>(
     `matrix:${selected ?? "latest"}`,
     async () => {
+      // The seed provider serves fixtures for UI development, but the dev server still has the real
+      // runs/ directory beside it — so without this the landing page would show real standings while
+      // every other page showed fixtures. In seed mode there is no matrix and "/" is the run view,
+      // exactly as it was before the matrix level existed.
+      if (isSeedProvider) return null;
       let id = getSelectedMatrixId();
       if (id === NO_MATRIX) return null;
       if (!id) {
