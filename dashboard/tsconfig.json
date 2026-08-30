@@ -25,5 +25,5 @@
       "@sdk/*": ["../sdk/src/*"]
     }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "server", "vite.config.ts"]
 }

@@ -170,6 +170,13 @@ export type SimConfig = {
   // how long a round is. The block count it resolves to, and the lambda that goes with it, are the
   // pieces ADR 0021 leaves open and #56 decides.
   epochSeconds: number;
+  // Wall-clock hours per output segment (ERIS_SEGMENT_HOURS; 0 = one directory for the whole run,
+  // which is every run today). ADR 0021 §6: the chain stays continuous and only the artifacts are
+  // cut, because a week of events.jsonl is a file nobody can open and a viewer should not have to
+  // read Monday to see Friday.
+  segmentHours: number;
+  // Display name for the segmented period ("practice week 1"). Falls back to the run id.
+  segmentName: string;
   // G7 window (ERIS_MARK_MEDIAN_BLOCKS): how many blocks, the boundary included, the manipulable
   // marks are medianed over when an epoch boundary is valued. <= 1 marks boundaries live.
   // 5 of a 12-block epoch is provisional -- the ADR leaves N to be set against the epoch length once
@@ -404,6 +411,8 @@ export function loadConfig(env = process.env): SimConfig {
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
     epochBlocks: resolveEpochBlocks(env, blockTimeSec),
     epochSeconds: Math.max(0, intEnv(env.ERIS_EPOCH_SECONDS, 0)),
+    segmentHours: Math.max(0, floatEnv(env.ERIS_SEGMENT_HOURS, 0)),
+    segmentName: env.ERIS_SEGMENT_NAME ?? "",
     markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",

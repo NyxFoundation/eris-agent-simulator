@@ -32,7 +32,34 @@ export const BLOCKS_CSV_INDEX = Object.fromEntries(
   BLOCKS_CSV_COLUMNS.map((name, i) => [name, i]),
 ) as Record<(typeof BLOCKS_CSV_COLUMNS)[number], number>;
 
-export class RunLogger {
+// What a run writes. An interface, not just a class, because a long-lived devnet rolls its output
+// into segments (ADR 0021 §6) and everything that writes has to follow without knowing it happened.
+export interface RunArtifactWriter {
+  readonly runDir: string;
+  event(event: Record<string, unknown>): void;
+  blockRow(row: BlockRowInput): void;
+  summary(summary: Record<string, unknown>): void;
+  artifact(filename: string, data: unknown): void;
+  append(filename: string, row: unknown): void;
+}
+
+export type BlockRowInput = {
+  round: number;
+  blockNumber: bigint;
+  txIndex: number;
+  hash: string;
+  from: string;
+  priorityFeeWei: bigint;
+  status: string;
+  ownerId: string;
+  role: string;
+  actionType?: string;
+  bundleId?: string;
+  bundleIndex?: number;
+  method?: string;
+};
+
+export class RunLogger implements RunArtifactWriter {
   readonly runDir: string;
 
   constructor(root: string, runId: string) {
@@ -52,21 +79,7 @@ export class RunLogger {
     );
   }
 
-  blockRow(row: {
-    round: number;
-    blockNumber: bigint;
-    txIndex: number;
-    hash: string;
-    from: string;
-    priorityFeeWei: bigint;
-    status: string;
-    ownerId: string;
-    role: string;
-    actionType?: string;
-    bundleId?: string;
-    bundleIndex?: number;
-    method?: string;
-  }): void {
+  blockRow(row: BlockRowInput): void {
     appendFileSync(
       join(this.runDir, "blocks.csv"),
       `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""}\n`,

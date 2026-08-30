@@ -33,8 +33,14 @@ export interface ScenarioRounds {
   bankruptAtEpoch: Record<string, number | null>;
 }
 
-function scenarioKey(s: { regime: string; seed: number }): string {
-  return `${s.regime}#${s.seed}`;
+/**
+ * Identity, not display. `runDir` is the one field guaranteed unique across a competition's
+ * scenarios — a matrix can repeat (regime, seed) under `--repeat`, and a practice period's segments
+ * (ADR 0021 §6) can share a label when several fall in the same hour. Keying on the label collapsed
+ * six segments into one and pooled their rounds together.
+ */
+function scenarioKey(s: { runDir: string }): string {
+  return s.runDir;
 }
 
 /**

@@ -50,7 +50,9 @@ export async function loadSchedules(
   const entries = await Promise.all(
     competition.file.scenarios.map(async (s) => {
       const runId = scenarioRunId(competition.id, s.runDir);
-      const key = `${s.regime}#${s.seed}`;
+      // Keyed by runDir, which is the only unique field: a matrix can repeat (regime, seed) under
+      // --repeat, and a practice period's segments can share a display label (ADR 0021 §6).
+      const key = s.runDir;
       try {
         const head = await loadHead(runId);
         let epochBlocks = 0;

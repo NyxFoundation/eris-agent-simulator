@@ -24,7 +24,8 @@ import {
   setIntervalMining,
   transferEth,
 } from "@eris/sdk/chain.js";
-import { RunLogger } from "../logger.js";
+import { RunLogger, type RunArtifactWriter } from "../logger.js";
+import { SegmentedRun, sliceEpochSeries } from "../segments.js";
 import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
 import { methodNameForCalldata } from "@eris/sdk/methodSelectors.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
@@ -449,7 +450,20 @@ export async function runRealtimeSimulation(
   }
 
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
-  const logger = new RunLogger(config.runDirRoot, runId);
+  // ADR 0021 §6: a chain that runs for a week cannot write one directory. When segmenting is on,
+  // the output is cut into day-sized run directories under one competition, and everything that
+  // writes goes through the same interface -- so nothing below this line knows it is happening.
+  const segments =
+    config.segmentHours > 0
+      ? new SegmentedRun({
+          root: config.runDirRoot,
+          competitionId: runId,
+          hours: config.segmentHours,
+          scenarioSet: config.segmentName || runId,
+        })
+      : null;
+  const logger: RunArtifactWriter =
+    segments ?? new RunLogger(config.runDirRoot, runId);
   logger.event({
     type: "run_started_realtime",
     runId,
@@ -1433,6 +1447,139 @@ export async function runRealtimeSimulation(
       // enough for that to be the richer artifact.
       sampleMarket: true,
     });
+    if (segments) segments.noteFirstBlock(runStartBlock);
+
+    // ADR 0019 §2's benchmark, resolved once: every segment's score is excess over the same entry.
+    const baselineId = agentRuntimes.find((a) => a.spec.baseline)?.id;
+
+    // Close a segment: write it a summary.json holding the epochs that fell inside it, so each
+    // segment is an ordinary run directory that every existing tool can read. The slice carries the
+    // boundary immediately before the segment's start as its own boundary 0 (see sliceEpochSeries),
+    // because a segment's first epoch ends inside it but begins in the one before.
+    const closeSegment = (atBlock: number): unknown[] => {
+      if (!segments) return [];
+      const whole = liveScorer.series();
+      const sliced = whole
+        ? sliceEpochSeries(whole, segments.currentSegmentStartBlock, atBlock)
+        : undefined;
+      const scores =
+        sliced && sliced.boundaryBlocks.length > 1
+          ? scoreEpochSeriesByAgent(sliced.valuesByAgent, {
+              ...(baselineId !== undefined ? { benchmarkId: baselineId } : {}),
+            })
+          : undefined;
+      const agents = agentRuntimes.map((a) => ({
+        id: a.id,
+        address: a.address,
+        // Segment endpoints, from the boundaries the segment covers. Deliberately not the run's
+        // opening balances: a segment is a window on a continuous economy, and an agent's PnL for
+        // Tuesday is what changed on Tuesday.
+        initialValueUsdc: sliced?.valuesByAgent[a.id]?.[0] ?? 0,
+        finalValueUsdc:
+          sliced?.valuesByAgent[a.id]?.[
+            (sliced.boundaryBlocks.length ?? 1) - 1
+          ] ?? 0,
+        netPnlUsdc:
+          (sliced?.valuesByAgent[a.id]?.[
+            (sliced.boundaryBlocks.length ?? 1) - 1
+          ] ?? 0) - (sliced?.valuesByAgent[a.id]?.[0] ?? 0),
+        includedTxCount: a.included,
+        revertCount: a.reverted,
+      }));
+      logger.summary({
+        runId: `${runId}/segment-${segments.currentSegment}`,
+        mode: config.runMode,
+        resetUnit: config.resetUnit,
+        blockTimeSec: config.blockTimeSec,
+        segment: segments.currentSegment,
+        fromBlock: segments.currentSegmentStartBlock,
+        toBlock: atBlock,
+        finalFairPriceUsdcPerWeth: latestFairPrice,
+        valueSeries: sliced
+          ? {
+              source: "live-epoch-boundaries",
+              epochSeries: {
+                epochBlocks: config.epochBlocks,
+                epochs: Math.max(0, sliced.boundaryBlocks.length - 1),
+                ...sliced,
+              },
+            }
+          : { source: "live-epoch-boundaries", failed: true },
+        ...(scores ? { epochScores: scores } : {}),
+        violations: [],
+        agents,
+      });
+      // The index entry is standings-shaped (the dashboard reads a competition's scenarios with the
+      // same code either way), so it carries the score rather than only the balances.
+      return agents.map((a) => ({
+        id: a.id,
+        netPnlUsdc: a.netPnlUsdc,
+        // Alpha needs the fixed-reference sweep, which a segment of a continuous chain does not get.
+        // Reported as 0 rather than omitted, because the field is what the standings read.
+        alphaUsdc: 0,
+        score: scores?.[a.id]?.score ?? 0,
+        excessLogGrowth: (scores?.[a.id]?.logReturns ?? []).reduce(
+          (x, y) => x + y,
+          0,
+        ),
+        initialValueUsdc: a.initialValueUsdc,
+        finalValueUsdc: a.finalValueUsdc,
+      }));
+    };
+
+    const rollSegment = async (atBlock: number): Promise<void> => {
+      if (!segments) return;
+      const agents = closeSegment(atBlock);
+      const previous = segments.currentSegment;
+      segments.roll(atBlock, agents);
+      // The new segment opens with the same header the first one did, so it stands alone: a viewer
+      // that lands on Thursday should not have to read Monday to learn what the chain is.
+      logger.event({
+        type: "run_started_realtime",
+        runId,
+        segment: segments.currentSegment,
+        previousSegment: previous,
+        enabledProtocols: enabledIds,
+        blockTimeSec: config.blockTimeSec,
+        runSeconds: config.runSeconds,
+        runBlocks: config.runBlocks,
+        epochBlocks: config.epochBlocks,
+        scoreEvery: config.scoreEvery,
+        seed: config.seed,
+        flowSeed: config.flowSeed,
+        rpcUrl: config.readRpcUrl,
+        chainId: config.chainId,
+        chainMode: config.chainMode,
+        fromBlock: atBlock,
+      });
+      logger.event({
+        type: "agents_registered",
+        agents: agentRuntimes.map((a) => ({
+          id: a.id,
+          address: a.address,
+          baseline: a.spec.baseline ?? false,
+          description: a.spec.description,
+          external: a.external,
+        })),
+      });
+      logger.artifact(
+        MANIFEST_FILENAME,
+        buildManifest({
+          config,
+          priceFeed: priceFeedAddress,
+          participants: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            external: a.external,
+            baseline: a.spec.baseline ?? false,
+            description: a.spec.description,
+          })),
+        }),
+      );
+      console.error(
+        `[segment] rolled to ${logger.runDir} at block ${atBlock} (ADR 0021 §6)`,
+      );
+    };
     if (schedule.hasEvents()) {
       // Include runStartBlock → the dashboard can judge the window in absolute blocks (ADR 0008/0009).
       logger.event({
@@ -2026,6 +2173,11 @@ export async function runRealtimeSimulation(
           // put a cross-section read on the critical path of every block instead of one in twelve.
           const epochMs = await timed(() => liveScorer.onBlock(bn));
 
+          // ADR 0021 §6: cut the output, never the chain. Checked after the boundary read so a
+          // segment that ends on one keeps it -- the next segment carries it as its own first
+          // boundary, which is what stops each segment losing an epoch at the seam.
+          if (segments?.dueToRoll()) await rollSegment(bn);
+
           const [keeperMs, oracleMs, stateFlowMs] = results;
           let taskIdx = 3;
           const victimMs =
@@ -2148,21 +2300,47 @@ export async function runRealtimeSimulation(
     // exists on a chain the sweep cannot cover: too long for the node's history, and with no end to
     // start sweeping from. On a short run the two are the same numbers -- the same reader, the same
     // blocks, the same median window -- so nothing about a bounded run changes.
-    const liveEpochSeries = liveScorer.series();
+    const wholeEpochSeries = liveScorer.series();
+    // The summary written here belongs to whichever directory `logger` points at -- which, when
+    // segmenting, is the *final segment*, not the whole period. Scoring it over the whole series
+    // gave the last day the week's epochs: every earlier segment's returns counted twice in any
+    // standings taken over the period, and the last day showed a score nothing that happened on it
+    // could explain (seen on a five-segment run: 9 epochs in the last segment against 1+3+2+3 in
+    // the others).
+    const liveEpochSeries =
+      wholeEpochSeries && segments
+        ? {
+            ...wholeEpochSeries,
+            ...sliceEpochSeries(
+              wholeEpochSeries,
+              segments.currentSegmentStartBlock,
+              finalBlock,
+            ),
+          }
+        : wholeEpochSeries;
     if (liveEpochSeries) {
       // ADR 0019 §2: the score is excess over the roster's baseline entry. Without one the returns
       // stay raw and every agent is charged for the drift of the ETH gas reserve it had to hold --
       // measured at 93% of an active agent's dispersion, so this is not a detail.
-      const baseline = agentRuntimes.find((a) => a.spec.baseline)?.id;
-      if (baseline === undefined)
+      if (baselineId === undefined)
         console.warn(
           "[scoring] no roster agent is marked `baseline: true`; epoch scores are raw returns, " +
             "not excess over a benchmark (ADR 0019 §2)",
         );
       epochScores = scoreEpochSeriesByAgent(liveEpochSeries.valuesByAgent, {
-        ...(baseline !== undefined ? { benchmarkId: baseline } : {}),
+        ...(baselineId !== undefined ? { benchmarkId: baselineId } : {}),
       });
-      logger.event({ type: "epoch_series_scored", ...liveScorer.meta() });
+      logger.event({
+        type: "epoch_series_scored",
+        ...liveScorer.meta(),
+        ...(segments
+          ? {
+              segment: segments.currentSegment,
+              boundaries: liveEpochSeries.boundaryBlocks.length,
+              periodBoundaries: wholeEpochSeries?.boundaryBlocks.length,
+            }
+          : {}),
+      });
     }
 
     // The post-run sweep produces things the boundary series does not: the equity curve between
@@ -2407,6 +2585,23 @@ export async function runRealtimeSimulation(
       violations,
       agents: agentsSummary,
     });
+    // The last segment closes with the same index entry every other one got, so a period that ended
+    // is a complete list of days rather than a list missing its last (ADR 0021 §6). Its own
+    // summary.json is the one written just above -- the whole-run summary *is* the final segment's,
+    // since that is the directory `logger` points at.
+    if (segments)
+      segments.finish(
+        finalBlock,
+        agentsSummary.map((a) => ({
+          id: a.id,
+          address: a.address,
+          netPnlUsdc: a.netPnlUsdc,
+          alphaUsdc: a.alphaUsdc ?? 0,
+          score: epochScores?.[a.id]?.score ?? 0,
+          initialValueUsdc: a.initialValueUsdc,
+          finalValueUsdc: a.finalValueUsdc,
+        })),
+      );
     logger.event({ type: "run_completed", runId, runDir: logger.runDir });
     console.error(
       `realtime simulation completed: ${logger.runDir} (${processedBlocks} blocks, ${Math.round(elapsedMs / 1000)}s)`,

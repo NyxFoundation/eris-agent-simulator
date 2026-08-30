@@ -1,10 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  competitionLabel,
-  loadCompetition,
-  runDisplayName,
-  scenarioRunId,
-} from "@/data/competition";
+import { competitionLabel, loadCompetition, runDisplayName, scenarioLabel, scenarioRunId } from "@/data/competition";
 import {
   resolveCompetitionId,
   setSelectedCompetitionId,
@@ -169,7 +164,7 @@ function Picker() {
           new Map(
             m.file.scenarios.map((s) => [
               scenarioRunId(m.id, s.runDir),
-              shortScenario(`${s.regime}#${s.seed}`),
+              shortScenario(scenarioLabel(s)),
             ]),
           ),
         );

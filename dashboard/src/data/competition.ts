@@ -24,6 +24,13 @@ export interface CompetitionScenario {
   agents: ScenarioAgentResult[];
   /** Path to that scenario's run dir, relative to the poc root that produced it. */
   runDir: string;
+  /**
+   * What to call this instead of "regime#seed". A scenario matrix has no use for it — "crash#303"
+   * already names a distribution and a draw. A practice period's segments do: they are cuts of one
+   * continuous world (ADR 0021 §6), and "segment#3" names nothing a participant cares about, where
+   * "2026-09-02" does.
+   */
+  label?: string;
 }
 
 /** Shape of matrix.json, written by core/src/backtest/matrix.ts. Parsed defensively: `schema` is 1
@@ -128,6 +135,18 @@ export function runDisplayName(runId: string): string {
   const base = runId.split("/").filter(Boolean).pop() ?? runId;
   const m = base.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})/);
   return m ? `${m[1]} ${m[2]}:${m[3]}` : base;
+}
+
+/**
+ * What a scenario is called: its own label when it has one, otherwise the regime and seed it was
+ * drawn from. One function, so every place that names a scenario names it the same way.
+ */
+export function scenarioLabel(s: {
+  regime: string;
+  seed: number;
+  label?: string;
+}): string {
+  return s.label ?? `${s.regime}#${s.seed}`;
 }
 
 /** The competition's human name. A single-run competition is named by its run's timestamp. */

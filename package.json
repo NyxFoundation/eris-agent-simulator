@@ -26,6 +26,8 @@
     "check:boundaries": "tsx scripts/checkImportBoundaries.ts",
     "bundle:agent": "tsx scripts/bundleAgent.ts",
     "dashboard": "npm run dev -w dashboard",
+    "dashboard:build": "npm run build -w dashboard",
+    "dashboard:serve": "tsx dashboard/server/serve.ts",
     "explorer": "infra/blockscout/explorer.sh up",
     "explorer:down": "infra/blockscout/explorer.sh down",
     "explorer:reset": "infra/blockscout/explorer.sh reset",

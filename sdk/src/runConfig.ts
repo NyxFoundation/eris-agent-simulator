@@ -91,6 +91,8 @@ const SCHEMA: Record<string, string> = {
   "run.scoreEvery": "ERIS_SCORE_EVERY",
   "run.epochBlocks": "ERIS_EPOCH_BLOCKS",
   "run.epochSeconds": "ERIS_EPOCH_SECONDS", // ADR 0021 §3: a round stated in real time
+  "run.segmentHours": "ERIS_SEGMENT_HOURS", // ADR 0021 §6: hours per output segment (0 = one dir)
+  "run.segmentName": "ERIS_SEGMENT_NAME",
   "run.markMedianBlocks": "ERIS_MARK_MEDIAN_BLOCKS",
   "run.reportDir": "REPORT_DIR",
   "run.flashArb": "ERIS_FLASH_ARB",
