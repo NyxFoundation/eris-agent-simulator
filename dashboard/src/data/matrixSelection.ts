@@ -52,3 +52,23 @@ function subscribe(callback: () => void): () => void {
 export function useSelectedMatrixId(): string | null {
   return useSyncExternalStore(subscribe, getSelectedMatrixId, () => null);
 }
+
+/**
+ * The matrix actually in view: the stored choice, or the newest one on disk when nothing has been
+ * chosen yet. `null` means the outer unit is a single run.
+ *
+ * This exists because the fallback was being applied independently in the picker, the standings
+ * loader and the scenario title — three places deciding "which matrix" from the same inputs, which
+ * is three chances to disagree. It did: with nothing stored, the scenario page could not name the
+ * scenario the picker was displaying by name.
+ */
+export function resolveMatrixId(
+  index: { id: string; kind?: "matrix" }[],
+): string | null {
+  const stored = getSelectedMatrixId();
+  if (stored === NO_MATRIX) return null;
+  const matrices = index.filter((e) => e.kind === "matrix");
+  if (stored && matrices.some((m) => m.id === stored)) return stored;
+  // The index is newest-first, so this is the most recent competition on disk.
+  return matrices[0]?.id ?? null;
+}

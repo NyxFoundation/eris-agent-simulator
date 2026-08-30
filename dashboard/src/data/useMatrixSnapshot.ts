@@ -14,15 +14,11 @@ import {
   synthesizeMatrix,
   type LoadedMatrix,
 } from "./matrixArtifacts";
-import {
-  getSelectedMatrixId,
-  NO_MATRIX,
-  useSelectedMatrixId,
-} from "./matrixSelection";
+import { resolveMatrixId, useSelectedMatrixId } from "./matrixSelection";
 import { loadMatrixSchedules, type ScenarioSchedule } from "./matrixSchedule";
 import { loadMatrixRounds, type ScenarioRounds } from "./matrixScoring";
 import { isSeedProvider } from "./provider";
-import { listRuns, loadRun, matrixEntries, runEntries } from "./runArtifacts";
+import { listRuns, loadRun, runEntries } from "./runArtifacts";
 import { getSelectedRunId, useSelectedRunId } from "./runSelection";
 import { eventOfType } from "./artifactHelpers";
 import { useSnapshot } from "./useSnapshot";
@@ -54,14 +50,10 @@ export function useMatrixSnapshot() {
       if (isSeedProvider) return null;
 
       const index = await listRuns();
-      let id = getSelectedMatrixId();
-      if (!id) {
-        // The index is newest-first, so this is the most recent competition on disk.
-        id = matrixEntries(index)[0]?.id ?? null;
-      }
+      const id = resolveMatrixId(index);
 
       let matrix: LoadedMatrix;
-      if (id && id !== NO_MATRIX) {
+      if (id) {
         matrix = await loadMatrix(id);
       } else {
         // No matrix chosen: the outer unit is the selected run on its own.

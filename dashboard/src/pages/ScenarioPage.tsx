@@ -3,6 +3,7 @@ import { RoundsBar } from "@/components/RoundsBar";
 import { Sidebar } from "@/components/Sidebar";
 import { Sparkline } from "@/design-system/Sparkline";
 import { blockscoutBlockUrl, useBlockscoutBase } from "@/data/blockscout";
+import { useScenarioLabel } from "@/data/useScenarioLabel";
 import { useTopPageSnapshot } from "@/data/useTopPageSnapshot";
 import { navigate } from "@/navigation";
 import { formatScore } from "@/lib/format";
@@ -441,7 +442,8 @@ function SectionPanel({
   );
 }
 
-export function TopPage() {
+export function ScenarioPage() {
+  const scenario = useScenarioLabel();
   const { data, loading, error } = useTopPageSnapshot();
   const blockscout = useBlockscoutBase();
 
@@ -503,7 +505,7 @@ export function TopPage() {
         alignItems: "stretch",
       }}
     >
-      <Sidebar activePage="home" />
+      <Sidebar activePage="scenario" />
 
       <div style={{ flex: 1, minWidth: 0 }}>
         <RoundsBar round={round} />
@@ -524,18 +526,20 @@ export function TopPage() {
             gap: "var(--space-3)",
           }}
         >
+          {/* The scenario names itself. This used to be the ERIS wordmark, which made every
+              scenario look like the application's front page and said nothing about which of the
+              35 worlds was on screen. */}
           <h1
             style={{
               margin: 0,
-              fontSize: "64px",
-              lineHeight: 0.92,
+              fontSize: "52px",
+              lineHeight: 0.95,
               fontWeight: "var(--weight-bold)",
               letterSpacing: "var(--tracking-tight)",
-              textTransform: "uppercase",
               color: "var(--text-primary)",
             }}
           >
-            ERIS
+            {scenario.name ?? "Scenario"}
           </h1>
           <span
             style={{
@@ -546,7 +550,16 @@ export function TopPage() {
               textTransform: "uppercase",
             }}
           >
-            agentic financial simulation layer
+            {[
+              scenario.seed !== null ? `seed ${scenario.seed}` : null,
+              round.epochs.length > 0
+                ? `${round.epochs.length} rounds x ${round.epochBlocks} blocks`
+                : null,
+              scenario.matrixSet,
+              scenario.name === null ? round.runId : null,
+            ]
+              .filter(Boolean)
+              .join("  \u00b7  ")}
           </span>
         </div>
 

@@ -38,8 +38,16 @@ but not meaningless — z-score is the field's spread within it, Borda its ranki
 metric — and all three necessarily agree.)
 
 The sidebar picks a matrix, then a scenario inside it (labelled `regime#seed`, not by timestamp).
+The three levels are three routes:
+
+| route | level | what it is |
+|---|---|---|
+| `/` | matrix | **Home** — the competition at a glance: who leads, which regime each strategy owns, and how spread the leader's win is |
+| `/standings` | matrix | the full ranking table, with the metric, the aggregation and λ/ρ as controls |
+| `/scenario` | scenario | one world: its markets, its ranking, its blocks. Titled by what it is a draw of (`full-crash#303`), not by when the file was written |
+
 `Markets` and `Explorer` stay at the scenario level, because a venue's state and a block range only
-mean anything inside one world.
+mean anything inside one world. (`/run` still resolves to `/scenario` so older links land somewhere.)
 
 Two cases have no standings, and say so rather than inventing them: a **live** run — `summary.json`
 is written at the end, so its results do not exist yet — and seed-provider mode, which serves

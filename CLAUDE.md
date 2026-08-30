@@ -122,7 +122,9 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
     どちらも 35 シナリオ通しの M9 順位では上位ではない。picker は matrix →（`regime#seed` 表示の）
     scenario の順。**「matrix に属さない run」という第 2 のモデルは無い** — `sim:realtime` の 1 run は
     「1 シナリオの競技」で、picker の **— single run —** はその run を外側の単位にする（`synthesizeMatrix`）。
-    ホームもコントロールもカーソルも同じ。1 シナリオでの集約は退化するが無意味ではない
+    ホームもコントロールもカーソルも同じ。**3 階層 = 3 ルート**（`/` = Home「競技の一望」/
+    `/standings` = 順位表 + ルールのコントロール / `/scenario` = 1 world。`/run` は `/scenario` へ）。
+    1 シナリオでの集約は退化するが無意味ではない
     （zscore = その中の散らばり / borda = 順位 / mean = 生の値。必然的に 3 つとも一致する）。
     `/markets` と `/explorer` は 1 world の中でしか意味を持たないので scenario 層のまま。
     **順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に書かれるので結果が
