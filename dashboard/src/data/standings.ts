@@ -71,13 +71,16 @@ export async function loadCompetitionRounds(
           byAgent[id] = e.logReturns;
           bankruptAtEpoch[id] = e.bankruptAtEpoch ?? null;
         }
-        if (Object.keys(byAgent).length === 0) return null;
+        // A scenario whose summary is present but holds no scored round yet is a *result pending*,
+        // not a missing file. A practice period's current segment is always in that state (ADR 0021
+        // §6): its first epoch has not closed. Reported as an empty series rather than as absent, so
+        // the page does not tell a viewer their day was "not collected" every day.
         return [
           scenarioKey(s),
           { regime: s.regime, seed: s.seed, runId, byAgent, bankruptAtEpoch },
         ] as const;
       } catch {
-        // A scenario whose run dir was not collected simply has no round detail. Its stored score
+        // A scenario whose run dir was not collected genuinely has no round detail. Its stored score
         // still ranks it — dropping the scenario instead would silently change the standings.
         return null;
       }

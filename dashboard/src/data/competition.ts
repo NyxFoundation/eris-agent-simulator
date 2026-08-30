@@ -57,13 +57,27 @@ export interface Competition {
 /**
  * A scenario's `runDir` is relative to the root of whatever machine produced it ("runs/<id>"), so it
  * cannot be used as an id here: a competition collected from a remote box lives at
- * runs/<collection>/runs/matrix-<x>/ with its scenarios beside it. The run is always a sibling of
- * the competition dir, so resolving through the competition's own prefix works for both layouts.
+ * runs/<collection>/runs/matrix-<x>/, and the id has to be relative to *this* machine's runs/.
+ *
+ * Two layouts, because the two kinds of competition nest differently:
+ *
+ *   a scenario matrix writes its scenarios *beside* the index (runs/matrix-x/ + runs/<scenario>/)
+ *   a practice period writes its segments *inside* it   (runs/<period>/ + runs/<period>/<day>/)
+ *
+ * Resolving both through the competition's own path covers each. Assuming the sibling layout for
+ * everything left a segmented period fetching runs/<day>/summary.json — a 404 per segment, and a
+ * standings page stuck on "Loading…".
  */
 export function scenarioRunId(competitionId: string, runDir: string): string {
-  const name = runDir.split("/").filter(Boolean).pop() ?? runDir;
-  const cut = competitionId.lastIndexOf("/");
-  return cut === -1 ? name : `${competitionId.slice(0, cut + 1)}${name}`;
+  const rel = runDir.replace(/^\.?\/?runs\//, "").replace(/^\/+/, "");
+  const prefixCut = competitionId.lastIndexOf("/");
+  const prefix = prefixCut === -1 ? "" : competitionId.slice(0, prefixCut + 1);
+  const competitionName = competitionId.slice(prefixCut + 1);
+  // Nested: the run dir names the competition it lives in.
+  if (competitionName && rel.startsWith(`${competitionName}/`))
+    return `${prefix}${rel}`;
+  const name = rel.split("/").filter(Boolean).pop() ?? rel;
+  return `${prefix}${name}`;
 }
 
 /**

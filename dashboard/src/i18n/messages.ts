@@ -56,6 +56,14 @@ const en = {
   "home.roundsAt": "{at} of {n}",
   "home.missingRounds":
     "{missing} of {total} scenario runs were not collected — they still count toward the ranking, but have no round detail.",
+  // ADR 0021 §1. Shown on any competition that is not a scenario matrix — the practice devnet runs
+  // one continuous world (ADR 0020 §2 puts the official competition in `scenario` mode), so a
+  // continuous competition is by construction not the official scoring. Said on the standings
+  // itself, permanently, because a ranking whose provenance travels separately from the ranking is
+  // a ranking that will be misread.
+  "home.practiceBadge": "practice",
+  "home.practiceNote":
+    "Practice standings, not the official scoring. The competition is scored separately, from submitted bundles replayed over a scenario matrix — nothing here feeds into it.",
   "home.standingsFinal": "Standings · final",
   "home.standingsThrough": "Standings · through round {at}",
   "home.subtitle":
@@ -610,6 +618,9 @@ const ja: Record<MessageKey, string> = {
   "home.roundsAt": "{at} / {n}",
   "home.missingRounds":
     "{total} 本中 {missing} 本のシナリオ run が未回収です。順位には含まれますが、ラウンド詳細は表示できません。",
+  "home.practiceBadge": "練習",
+  "home.practiceNote":
+    "これは練習順位で、公式採点ではありません。公式競技は提出バンドルをシナリオ行列で再生して別途採点され、ここの結果は一切反映されません。",
   "home.standingsFinal": "順位表 · 最終",
   "home.standingsThrough": "順位表 · ラウンド {at} 時点",
   "home.subtitle":

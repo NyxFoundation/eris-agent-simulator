@@ -131,6 +131,15 @@ export function HomePage() {
 
   const file = data.competition.file;
   const at = standings.throughRound;
+  // ADR 0021 §1: a continuous competition is not the official scoring. ADR 0020 §2 puts the official
+  // competition in `scenario` mode, so a continuous one -- the practice devnet, or a local
+  // sim:realtime -- is by construction something else, and says so on the standings rather than only
+  // in the manifest a participant may never open.
+  //
+  // On the positive assertion, not on "not scenario": a matrix.json written before ADR 0020 added
+  // the field carries no resetUnit at all, and those were scenario matrices — the official shape.
+  // Labelling them practice would be the same kind of error in the opposite direction.
+  const practice = data.competition.file.resetUnit === "continuous";
   // A single run has one scenario labelled "run": its regime column would repeat the total.
   const regimes = standings.regimes.length > 1 ? standings.regimes : [];
   const scrubbing = at !== null;
@@ -194,16 +203,36 @@ export function HomePage() {
           <header
             style={{ display: "flex", flexDirection: "column", gap: "10px" }}
           >
-            <h1
-              title={data.competition.id}
-              style={{
-                margin: 0,
-                font: "var(--weight-bold) 21px var(--font-sans)",
-                letterSpacing: "var(--tracking-tight)",
-              }}
+            <div
+              style={{ display: "flex", alignItems: "center", gap: "10px" }}
             >
-              {competitionName(data.competition)}
-            </h1>
+              <h1
+                title={data.competition.id}
+                style={{
+                  margin: 0,
+                  font: "var(--weight-bold) 21px var(--font-sans)",
+                  letterSpacing: "var(--tracking-tight)",
+                }}
+              >
+                {competitionName(data.competition)}
+              </h1>
+              {practice && (
+                <span
+                  title={t("home.practiceNote")}
+                  style={{
+                    font: "var(--weight-medium) 10px var(--font-mono)",
+                    letterSpacing: "var(--tracking-widest)",
+                    textTransform: "uppercase",
+                    color: "var(--text-tertiary)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-sm)",
+                    padding: "3px 7px",
+                  }}
+                >
+                  {t("home.practiceBadge")}
+                </span>
+              )}
+            </div>
             <div
               style={{
                 display: "grid",
@@ -258,7 +287,11 @@ export function HomePage() {
                 ? t("home.standingsFinal")
                 : t("home.standingsThrough", { at })
             }
-            subtitle={t("home.subtitle")}
+            subtitle={
+              practice
+                ? `${t("home.practiceNote")} ${t("home.subtitle")}`
+                : t("home.subtitle")
+            }
           >
             <div style={{ overflowX: "auto" }}>
               <div style={{ minWidth: `${380 + regimes.length * 74}px` }}>
