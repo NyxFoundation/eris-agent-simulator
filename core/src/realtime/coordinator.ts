@@ -12,6 +12,7 @@ import {
   activeStables,
   fundWallet,
   getBalances,
+  fundAddress,
   isPermissionlesslyMintable,
   makeClients,
   mine,
@@ -24,6 +25,7 @@ import {
   transferEth,
 } from "@eris/sdk/chain.js";
 import { RunLogger } from "../logger.js";
+import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
 import { marketPricedStables, readStablePrices } from "@eris/sdk/stables.js";
 import { checkRunFeeViolations, countRunRevertedTxs } from "../postRunCheck.js";
@@ -263,8 +265,15 @@ async function prewarmWorkingSet(
 type RealtimeAgentRuntime = {
   id: string;
   spec: AgentSpec;
-  privateKey: Hex;
+  // null for a registered participant who holds their own key (ADR 0021 §2). Everything the
+  // environment does with an agent -- fund it, attribute its txs, score it, rule-check it -- is
+  // address-based, so the key is only ever needed to *spawn* one, and an external agent is not
+  // spawned.
+  privateKey: Hex | null;
   address: Address;
+  // True when nothing here starts the process (ADR 0021 §2). Distinct from `process === null`,
+  // which is also true for a local agent before setup finishes.
+  external: boolean;
   process: RealtimeAgentProcess | null; // spawned after setup completes
   initial: BalanceSnapshot;
   included: number; // number of txs included in a block (read by aggregation)
@@ -442,12 +451,18 @@ export async function runRealtimeSimulation(
 
   // ---- agent wallets (processes start after setup completes; agentSpecs is already resolved from YAML/env) ----
   const agentRuntimes: RealtimeAgentRuntime[] = agentSpecs.map((spec) => {
-    const privateKey = privateKeyForWalletName(config, spec.wallet, spec.id);
+    // An entry registered by address has no key here at all; one registered by wallet still does,
+    // even when external, because a practice devnet that issues funded keys is a legitimate way to
+    // run one (the manifest hands the key to that participant).
+    const privateKey = spec.address
+      ? null
+      : privateKeyForWalletName(config, spec.wallet, spec.id);
     return {
       id: spec.id,
       spec,
       privateKey,
-      address: accountAddress(privateKey),
+      address: (spec.address as Address) ?? accountAddress(privateKey as Hex),
+      external: spec.external === true,
       process: null,
       initial: { ethWei: 0n, wethWei: 0n, usdcUnits: 0n },
       included: 0,
@@ -628,16 +643,19 @@ export async function runRealtimeSimulation(
     }
     const fundTargets: Array<{
       role: WalletRole;
-      privateKey: Hex;
+      privateKey: Hex | null;
+      address: Address;
       key?: string;
     }> = [
       ...agentRuntimes.map((a) => ({
         role: "agent" as WalletRole,
         privateKey: a.privateKey,
+        address: a.address,
       })),
       ...[...flowWalletMap.entries()].map(([key, w]) => ({
         role: flowRole(key),
         privateKey: w.privateKey,
+        address: w.address,
         key,
       })),
     ];
@@ -662,26 +680,41 @@ export async function runRealtimeSimulation(
       const baseAmounts = isFlow
         ? config.flowBaseAmounts
         : config.initialBaseAmounts;
+      // Agents are scored, so `funding.ethWei` is their whole native balance: the default gas buffer
+      // would be unchosen β in the live-marked epoch series (ADR 0019 §6). Flow wallets keep it --
+      // they are machinery, and a dry flow bot removes market activity from everyone.
+      const gasBuffer = isFlow ? undefined : 0n;
+      const ethWei = isFlow ? config.flowEthWei : config.initialEthWei;
+      if (!t.privateKey) {
+        // A participant's own address (ADR 0021 §2). Same endowment, reached without signing as
+        // them -- and therefore without the venue approvals below, which only they can grant.
+        await fundAddress(
+          publicClient,
+          walletClient,
+          chain,
+          t.address,
+          ethWei,
+          wethWei,
+          config.initialUsdcUnits,
+          baseAmounts,
+          gasBuffer,
+        );
+        continue;
+      }
       await fundWallet(
         publicClient,
         walletClient,
         chain,
         t.privateKey,
-        isFlow ? config.flowEthWei : config.initialEthWei,
+        ethWei,
         wethWei,
         config.initialUsdcUnits,
         baseAmounts,
-        // Agents are scored, so `funding.ethWei` is their whole native balance: the default gas buffer
-        // would be unchosen β in the live-marked epoch series (ADR 0019 §6). Flow wallets keep it --
-        // they are machinery, and a dry flow bot removes market activity from everyone.
-        isFlow ? undefined : 0n,
+        gasBuffer,
       );
       for (const adapter of adapters) {
         if (!adapter.setupWallet) continue;
-        const approvals = await adapter.setupWallet(
-          ctx,
-          accountAddress(t.privateKey),
-        );
+        const approvals = await adapter.setupWallet(ctx, t.address);
         for (const tx of approvals) {
           await sendAndMine(publicClient, walletClient, chain, t.privateKey, {
             to: tx.to,
@@ -871,8 +904,30 @@ export async function runRealtimeSimulation(
         address: a.address,
         baseline: a.spec.baseline ?? false,
         description: a.spec.description,
+        // ADR 0021 §4: the dashboard hides the decision-log and mempool panels for these, because
+        // those artifacts are on the participant's machine and nothing here can show them. An empty
+        // panel and an absent one say different things.
+        external: a.external,
       })),
     });
+
+    // ---- environment manifest (ADR 0021 §2) ----
+    // Written once the PriceFeed exists, because that address is the one piece a participant cannot
+    // look up anywhere else. It carries no keys and no stress timings -- see core/src/manifest.ts.
+    logger.artifact(
+      MANIFEST_FILENAME,
+      buildManifest({
+        config,
+        priceFeed: priceFeedAddress,
+        participants: agentRuntimes.map((a) => ({
+          id: a.id,
+          address: a.address,
+          external: a.external,
+          baseline: a.spec.baseline ?? false,
+          description: a.spec.description,
+        })),
+      }),
+    );
 
     // ---- pre-warm (anvil cold fetch mitigation of ADR 0006 Risks; see prewarmWorkingSet) ----
     if (config.prewarmBlocks > 0) {
@@ -919,8 +974,11 @@ export async function runRealtimeSimulation(
       schedule.hasEusdDepeg() ||
       schedule.depegStables().length > 0
     ) {
+      // By address, not by key: a participant registered by address collides just as hard, and the
+      // environment never sees their key to compare it against.
+      const deployerAddress = accountAddress(deployerPk).toLowerCase();
       const clash = agentRuntimes.find(
-        (a) => a.privateKey.toLowerCase() === deployerPk.toLowerCase(),
+        (a) => a.address.toLowerCase() === deployerAddress,
       );
       if (clash) {
         throw new Error(
@@ -1080,6 +1138,18 @@ export async function runRealtimeSimulation(
 
     // ---- launch agent processes (ADR 0015 §5: uniformly runtime/bot.ts; pass the private key and PriceFeed via env) ----
     for (const agent of agentRuntimes) {
+      if (agent.external || !agent.privateKey) {
+        // ADR 0021 §2: registered, funded, scored -- and started by whoever registered it. Recorded
+        // so a run whose participants never connected is distinguishable from one where the
+        // coordinator failed to launch them: both look like an agent that made no trades.
+        logger.event({
+          type: "agent_external_registered",
+          agentId: agent.id,
+          address: agent.address,
+          note: "the participant runs this agent; its decision log stays on their machine",
+        });
+        continue;
+      }
       agent.process = new RealtimeAgentProcess(
         agent.spec,
         config.rpcUrl,

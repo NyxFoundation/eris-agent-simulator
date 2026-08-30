@@ -853,6 +853,115 @@ export async function fundWallet(
   }
 }
 
+// Fund an address whose key the environment does not hold (ADR 0021 §2: a registered participant
+// who runs the agent themselves). Same endowment as fundWallet, reached without ever signing as the
+// recipient: WETH is granted directly rather than wrapped by the holder, since only the holder could
+// call `deposit`. Venue approvals are *not* granted here for the same reason -- an approval is the
+// holder's signature, so a self-hosted agent sends its own (example/agents/runtime/bot.ts).
+export async function fundAddress(
+  publicClient: PublicClient,
+  walletClient: WalletClient,
+  chain: ReturnType<typeof makeChain>,
+  address: Address,
+  ethWei: bigint,
+  wethWei: bigint,
+  usdcUnits: bigint,
+  baseAmounts?: Record<string, bigint>,
+  gasBufferWei: bigint = GAS_BUFFER_WEI,
+): Promise<void> {
+  const targetEth = ethWei + gasBufferWei;
+  if (CHAIN_MODE === "external") {
+    const held = await publicClient.getBalance({ address });
+    await transferEth(
+      publicClient,
+      walletClient,
+      chain,
+      requireTreasury("fundAddress"),
+      address,
+      targetEth > held ? targetEth - held : 0n,
+    );
+    if (wethWei > 0n)
+      await grantWeth(publicClient, walletClient, chain, address, wethWei);
+  } else {
+    await setEthBalance(publicClient, address, targetEth);
+    if (wethWei > 0n)
+      await dealErc20(publicClient, TOKENS.WETH.address, address, wethWei);
+  }
+  if (usdcUnits > 0n) {
+    for (const token of ACTIVE_STABLES) {
+      if (!isParStable(token)) continue;
+      await grantToken(
+        publicClient,
+        walletClient,
+        chain,
+        token,
+        address,
+        usdcUnits,
+      );
+    }
+  }
+  if (baseAmounts) {
+    for (const [symbol, amount] of Object.entries(baseAmounts)) {
+      if (symbol === "WETH" || amount <= 0n) continue;
+      await grantToken(
+        publicClient,
+        walletClient,
+        chain,
+        tokenInfo(symbol).address,
+        address,
+        amount,
+      );
+    }
+  }
+}
+
+// WETH9 has no mint: every unit in existence was deposited against ETH. So the treasury wraps its
+// own and sends the result, which is the only cheatcode-free way to put WETH in an account whose key
+// nobody here holds.
+async function grantWeth(
+  publicClient: PublicClient,
+  walletClient: WalletClient,
+  chain: ReturnType<typeof makeChain>,
+  holder: Address,
+  amount: bigint,
+): Promise<void> {
+  const treasuryPk = requireTreasury("grantWeth");
+  const treasury = accountAddress(treasuryPk);
+  const held = (await publicClient.readContract({
+    address: TOKENS.WETH.address,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [holder],
+  })) as bigint;
+  if (held >= amount) return;
+  const short = amount - held;
+  const treasuryWeth = (await publicClient.readContract({
+    address: TOKENS.WETH.address,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [treasury],
+  })) as bigint;
+  if (treasuryWeth < short) {
+    await sendAndMine(publicClient, walletClient, chain, treasuryPk, {
+      to: TOKENS.WETH.address,
+      data: encodeFunctionData({
+        abi: wethAbi,
+        functionName: "deposit",
+        args: [],
+      }),
+      value: short - treasuryWeth,
+    });
+  }
+  await sendAndMine(publicClient, walletClient, chain, treasuryPk, {
+    to: TOKENS.WETH.address,
+    data: encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "transfer",
+      args: [holder, short],
+    }),
+  });
+}
+
 // One grant, either mechanism. The cheatcode *assigns* a balance and the treasury *adds* to one, so
 // re-funding a wallet that already holds tokens diverges between the modes -- which is why the
 // external path tops up to the target instead of sending it outright.
