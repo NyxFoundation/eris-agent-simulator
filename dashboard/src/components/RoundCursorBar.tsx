@@ -177,10 +177,10 @@ export function RoundCursorBar({
 
         <span style={{ ...LABEL, marginLeft: "auto", textAlign: "right" }}>
           {atEnd
-            ? `${scenarioCount} scenarios · complete`
+            ? `${scenarioCount} scenario${scenarioCount === 1 ? "" : "s"} · complete`
             : endedScenarios > 0
               ? `${scenarioCount - endedScenarios} of ${scenarioCount} still running · ${endedScenarios} ended earlier`
-              : `${scenarioCount} scenarios @ round ${at}`}
+              : `${scenarioCount} scenario${scenarioCount === 1 ? "" : "s"} @ round ${at}`}
         </span>
       </div>
 

@@ -120,9 +120,13 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
     "the published seeds are five draws from it, **not the target**"）ので、そこを既定にすると
     「読んではいけない単位」を最初に見せることになる。実際 `full-calm#404` と `#505` で 1 位が違い、
     どちらも 35 シナリオ通しの M9 順位では上位ではない。picker は matrix →（`regime#seed` 表示の）
-    scenario の順で、**— all runs —** で matrix 層を切ると `runs/` 全部が並ぶ（= `sim:realtime` の
-    日常ループ。matrix が 1 つも無ければ従来の run ビューに落ちる）。`/markets` と `/explorer` は
-    1 world の中でしか意味を持たないので scenario 層のまま
+    scenario の順。**「matrix に属さない run」という第 2 のモデルは無い** — `sim:realtime` の 1 run は
+    「1 シナリオの競技」で、picker の **— single run —** はその run を外側の単位にする（`synthesizeMatrix`）。
+    ホームもコントロールもカーソルも同じ。1 シナリオでの集約は退化するが無意味ではない
+    （zscore = その中の散らばり / borda = 順位 / mean = 生の値。必然的に 3 つとも一致する）。
+    `/markets` と `/explorer` は 1 world の中でしか意味を持たないので scenario 層のまま。
+    **順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に書かれるので結果が
+    まだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
   - **ラウンドは UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
     スコアも順位変動も環境イベントも全部エポック単位なので、全ビューはこの軸に対して読む。
     **以前はラウンド軸を 3 回別々に実装していた**（ラウンド選択 / replay head / live head）。

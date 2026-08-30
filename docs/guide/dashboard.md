@@ -30,11 +30,20 @@ scenario invites exactly the reading that sentence warns against — in the 35-s
 matrix, `full-calm#404` and `full-calm#505` have different winners, and neither of them is the one
 the standings pick.
 
+**There is no second model for a run that is not part of a competition.** A `sim:realtime` run is a
+competition with one scenario in it, and the dashboard says so: choosing **— single run —** in the
+matrix picker makes the selected run the outer unit, read as a matrix of one. Same home, same
+metric and aggregation controls, same round cursor. (The aggregation over one scenario is degenerate
+but not meaningless — z-score is the field's spread within it, Borda its ranking, mean the raw
+metric — and all three necessarily agree.)
+
 The sidebar picks a matrix, then a scenario inside it (labelled `regime#seed`, not by timestamp).
-Choosing **— all runs —** turns the matrix level off and lists every run under `runs/`, which is the
-standalone `sim:realtime` loop; with no matrix on disk at all the dashboard opens on the run view as
-before. `Markets` and `Explorer` stay at the scenario level, because a venue's state and a block
-range only mean anything inside one world.
+`Markets` and `Explorer` stay at the scenario level, because a venue's state and a block range only
+mean anything inside one world.
+
+Two cases have no standings, and say so rather than inventing them: a **live** run — `summary.json`
+is written at the end, so its results do not exist yet — and seed-provider mode, which serves
+fixtures. Both open on the scenario view, which for a live run is the only view with anything to say.
 
 Every view is built from the run's own artifacts, served by a small Vite dev-server plugin
 (`/runs/index.json` + `/runs/<id>/<file>`). The index also lists matrix directories, tagged

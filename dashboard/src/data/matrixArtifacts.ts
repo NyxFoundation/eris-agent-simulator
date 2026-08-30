@@ -45,6 +45,8 @@ export interface MatrixFile {
 export interface LoadedMatrix {
   id: string;
   file: MatrixFile;
+  /** Built from one run rather than read from a matrix.json — see synthesizeMatrix. */
+  synthetic?: boolean;
 }
 
 /**
@@ -57,6 +59,63 @@ export function scenarioRunId(matrixId: string, runDir: string): string {
   const name = runDir.split("/").filter(Boolean).pop() ?? runDir;
   const cut = matrixId.lastIndexOf("/");
   return cut === -1 ? name : `${matrixId.slice(0, cut + 1)}${name}`;
+}
+
+/**
+ * A single run, as a matrix of one scenario.
+ *
+ * There is no second model for "a run that is not part of a competition": a `sim:realtime` run is a
+ * competition with one scenario in it, and saying so keeps one selection model, one home and one set
+ * of controls instead of two parallel worlds that have to be kept in step. The aggregation over one
+ * scenario is degenerate but not meaningless — z-score is the field's spread within that scenario,
+ * borda is its ranking, mean is the raw metric.
+ *
+ * Everything is read from the run's own summary.json, so this asserts nothing the run did not record.
+ * A run still in progress has no summary.json and therefore no scenario — its results do not exist
+ * yet, which is a fact about the run rather than a gap in this function.
+ */
+export function synthesizeMatrix(
+  runId: string,
+  summary: {
+    resetUnit?: string;
+    agents?: {
+      id: string;
+      initialValueUsdc: number;
+      finalValueUsdc: number;
+      netPnlUsdc: number;
+      alphaUsdc?: number;
+    }[];
+    epochScores?: Record<string, { score: number; logReturns: number[] }>;
+  },
+  seed: number,
+): LoadedMatrix {
+  const scores = summary.epochScores ?? {};
+  const agents: MatrixAgentRow[] = (summary.agents ?? []).map((a) => {
+    const epoch = scores[a.id];
+    return {
+      id: a.id,
+      netPnlUsdc: a.netPnlUsdc,
+      alphaUsdc: a.alphaUsdc ?? 0,
+      score: epoch?.score ?? 0,
+      // The excess returns telescope, so their sum is the run's excess log growth exactly.
+      excessLogGrowth: (epoch?.logReturns ?? []).reduce((x, y) => x + y, 0),
+      initialValueUsdc: a.initialValueUsdc,
+      finalValueUsdc: a.finalValueUsdc,
+    };
+  });
+  return {
+    id: runId,
+    synthetic: true,
+    file: {
+      schema: 1,
+      scenarioSet: runId,
+      resetUnit: summary.resetUnit ?? "continuous",
+      scenariosPlanned: 1,
+      // The run carries no regime name — a regime is a config the backtest runner names, and a
+      // standalone run was not launched through it. The seed is what the run does record.
+      scenarios: [{ regime: "run", seed, agents, runDir: runId }],
+    },
+  };
 }
 
 const cache = new Map<string, Promise<LoadedMatrix>>();

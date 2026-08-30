@@ -152,6 +152,11 @@ function formatSpreadBps(value: number): string {
   return formatBps(Math.abs(value)).replace(/^\+/, "");
 }
 
+/** "1 scenarios" reads as a bug in the code rather than as a matrix with one scenario in it. */
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
 function toneColor(value: number): string {
   if (value > 0) return "var(--success-text)";
   if (value < 0) return "var(--danger-text)";
@@ -167,6 +172,7 @@ function Controls({
   params,
   fromSeries,
   scrubbing,
+  scenarioCount,
   onMetric,
   onAggregator,
   onParams,
@@ -176,6 +182,7 @@ function Controls({
   params: ScoringParams;
   fromSeries: boolean;
   scrubbing: boolean;
+  scenarioCount: number;
   onMetric: (m: MetricKey) => void;
   onAggregator: (a: Aggregator) => void;
   onParams: (p: ScoringParams) => void;
@@ -266,7 +273,7 @@ function Controls({
               letterSpacing: "var(--tracking-wide)",
             }}
           >
-            AGGREGATION · 35 numbers → one standing
+            AGGREGATION · {scenarioCount} → one standing
           </span>
           <Select
             value={aggregator}
@@ -818,7 +825,7 @@ function StandingsTable({
     <Panel
       title={
         at === null
-          ? `Standings · final · ${standings.rows.length} agents · ${standings.cells.length} scenarios`
+          ? `Standings · final · ${standings.rows.length} agents · ${plural(standings.cells.length, "scenario")}`
           : `Standings · through round ${at} · ${standings.rows.length} agents`
       }
       subtitle={
@@ -1290,8 +1297,9 @@ export function MatrixPage() {
     );
   }
 
-  // No matrix on disk: the dashboard is being used on standalone `sim:realtime` runs, which is the
-  // day-to-day loop. Fall through to the run view rather than showing an empty competition.
+  // Nothing to show standings for: seed-provider mode, an empty runs/, or a run still in progress —
+  // a live run's results do not exist until it completes. The scenario view is the right home for
+  // all three, and for a live run it is the only one that has anything to say.
   if (error || !data || !standings) return <TopPage />;
 
   const file = data.matrix.file;
@@ -1356,14 +1364,14 @@ export function MatrixPage() {
               <Stat label="seeds" value={seeds.join(" ")} />
               <Stat label="agents" value={String(standings.agentIds.length)} />
               <Stat label="reset unit" value={file.resetUnit ?? "continuous"} />
-              <Stat
-                label="recorded"
-                value={
-                  file.createdAt
-                    ? new Date(file.createdAt).toLocaleDateString("en-US")
-                    : "—"
-                }
-              />
+              {/* A matrix built from one run records no creation time of its own; an empty stat
+                  would be a column asking to be read rather than an absence. */}
+              {file.createdAt && (
+                <Stat
+                  label="recorded"
+                  value={new Date(file.createdAt).toLocaleDateString("en-US")}
+                />
+              )}
             </div>
             {data.missingRounds > 0 && (
               <span
@@ -1384,6 +1392,7 @@ export function MatrixPage() {
             params={params}
             fromSeries={standings.fromSeries}
             scrubbing={scrubbing}
+            scenarioCount={file.scenarios.length}
             onMetric={setMetric}
             onAggregator={setAggregator}
             onParams={setParams}
