@@ -3,6 +3,9 @@ import type { ChangeEventHandler, CSSProperties } from "react";
 export interface SelectOption {
   label: string;
   value: string;
+  /** An option that exists but cannot be chosen right now — offered greyed rather than removed, so
+   * the list does not silently change length and leave the absence unexplained. */
+  disabled?: boolean;
 }
 
 export function Select({
@@ -41,7 +44,7 @@ export function Select({
         }}
       >
         {options.map((o) => (
-          <option key={o.value} value={o.value}>
+          <option key={o.value} value={o.value} disabled={o.disabled}>
             {o.label}
           </option>
         ))}

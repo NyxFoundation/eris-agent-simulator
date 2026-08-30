@@ -8,6 +8,7 @@
 // why it sits where it does.
 
 import { useEffect, useMemo, useState } from "react";
+import { RoundCursorBar } from "@/components/RoundCursorBar";
 import { Sidebar } from "@/components/Sidebar";
 import { scenarioRunId } from "@/data/matrixArtifacts";
 import {
@@ -19,13 +20,17 @@ import {
   DEFAULT_LAMBDA,
   DEFAULT_METRIC,
   DEFAULT_RHO,
+  ENDPOINT_ONLY_METRICS,
   METRICS,
-  ROUND_ONLY_METRICS,
+  rankMoves,
+  SERIES_METRICS,
   type Aggregator,
   type MatrixStandings,
   type MetricKey,
   type ScoringParams,
 } from "@/data/matrixScoring";
+import { windowsAtRound } from "@/data/matrixSchedule";
+import { setCursorRange, useCursor } from "@/data/roundCursor";
 import {
   useMatrixSnapshot,
   type MatrixSnapshot,
@@ -161,6 +166,7 @@ function Controls({
   aggregator,
   params,
   fromSeries,
+  scrubbing,
   onMetric,
   onAggregator,
   onParams,
@@ -169,6 +175,7 @@ function Controls({
   aggregator: Aggregator;
   params: ScoringParams;
   fromSeries: boolean;
+  scrubbing: boolean;
   onMetric: (m: MetricKey) => void;
   onAggregator: (a: Aggregator) => void;
   onParams: (p: ScoringParams) => void;
@@ -229,7 +236,17 @@ function Controls({
           </span>
           <Select
             value={metric}
-            options={METRICS.map((m) => ({ label: m.label, value: m.key }))}
+            options={METRICS.map((m) => ({
+              // The two final-marks metrics price both ends at the run's last prices, so there is
+              // no "value at round k" to take. While the cursor is mid-competition they are not
+              // offered rather than silently showing the finished number under a round label.
+              label:
+                scrubbing && ENDPOINT_ONLY_METRICS.includes(m.key)
+                  ? `${m.label}  (end only)`
+                  : m.label,
+              value: m.key,
+              disabled: scrubbing && ENDPOINT_ONLY_METRICS.includes(m.key),
+            }))}
             onChange={(e) => onMetric(e.target.value as MetricKey)}
           />
         </label>
@@ -473,7 +490,10 @@ function Decomposition({
       >
         <Stat label="rounds" value={String(d.stats.epochs)} />
         <Stat label="mean / round" value={formatBps(d.stats.mean * 10_000)} />
-        <Stat label="std / round" value={formatSpreadBps(d.stats.std * 10_000)} />
+        <Stat
+          label="std / round"
+          value={formatSpreadBps(d.stats.std * 10_000)}
+        />
         <Stat
           label={`λ·std (λ=${lambda.toFixed(2)})`}
           value={formatSpreadBps(penalty * 10_000)}
@@ -578,25 +598,234 @@ function Decomposition({
 }
 
 // ---------------------------------------------------------------------------
+// what the environment did in this round
+
+function ThisRoundPanel({
+  snapshot,
+  round,
+  standings,
+  moves,
+}: {
+  snapshot: MatrixSnapshot;
+  round: number;
+  standings: MatrixStandings;
+  moves: Map<string, number | null>;
+}) {
+  const open = useMemo(
+    () => windowsAtRound(snapshot.schedules, round),
+    [snapshot, round],
+  );
+  const opening = open.filter((w) => w.opening);
+  const movers = standings.rows
+    .map((r) => ({ id: r.id, move: moves.get(r.id) ?? null }))
+    .filter((m): m is { id: string; move: number } => (m.move ?? 0) !== 0)
+    .sort((a, b) => Math.abs(b.move) - Math.abs(a.move))
+    .slice(0, 5);
+
+  return (
+    <Panel
+      title={`Round ${round}`}
+      subtitle="What the environment was scheduled to do here, and who it moved. The schedule is drawn from each scenario's seed before its first block, so these are the planned windows — crash, spike, cexDrift and flowTrend change the price walk itself and leave no per-block record."
+    >
+      <div
+        style={{
+          padding: "14px 16px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "12px",
+        }}
+      >
+        {open.length === 0 ? (
+          <span
+            style={{
+              font: "var(--text-sm) var(--font-sans)",
+              color: "var(--text-tertiary)",
+            }}
+          >
+            No scheduled window covers this round in any scenario — every world
+            is in its ordinary regime here.
+          </span>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+            {open.slice(0, 8).map((w) => (
+              <div
+                key={`${w.key}:${w.window.type}:${w.window.fromRound}`}
+                onClick={() => {
+                  setSelectedRunId(w.runId);
+                  navigate("/run");
+                }}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "88px 1fr 170px",
+                  gap: "10px",
+                  alignItems: "center",
+                  font: "var(--text-xs) var(--font-mono)",
+                  cursor: "pointer",
+                }}
+              >
+                <span
+                  style={{
+                    color: w.opening
+                      ? "var(--warning-text)"
+                      : "var(--text-tertiary)",
+                  }}
+                >
+                  {w.opening ? "opens" : "open"}
+                </span>
+                <span style={{ color: "var(--text-primary)" }}>
+                  {w.window.type}
+                  {w.window.venue ? ` · ${w.window.venue}` : ""}
+                  {w.window.stable ? ` · ${w.window.stable}` : ""}
+                </span>
+                <span
+                  style={{ textAlign: "right", color: "var(--text-secondary)" }}
+                >
+                  {w.regime.replace(/^full-/, "")}#{w.seed}
+                  <span style={{ color: "var(--text-tertiary)" }}>
+                    {" "}
+                    r{w.window.fromRound}–{w.window.toRound}
+                  </span>
+                </span>
+              </div>
+            ))}
+            {open.length > 8 && (
+              <span
+                style={{
+                  font: "var(--text-xs) var(--font-mono)",
+                  color: "var(--text-tertiary)",
+                }}
+              >
+                + {open.length - 8} more
+              </span>
+            )}
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            gap: "14px",
+            flexWrap: "wrap",
+            borderTop: "1px solid var(--border-subtle)",
+            paddingTop: "11px",
+          }}
+        >
+          <span style={{ ...LABEL_UPPER }}>moved this round</span>
+          {movers.length === 0 ? (
+            <span
+              style={{
+                font: "var(--text-xs) var(--font-mono)",
+                color: "var(--text-tertiary)",
+              }}
+            >
+              {round <= 1
+                ? "no previous round to compare"
+                : "nobody changed place"}
+            </span>
+          ) : (
+            movers.map((m) => (
+              <span
+                key={m.id}
+                style={{
+                  font: "var(--text-xs) var(--font-mono)",
+                  color:
+                    m.move > 0 ? "var(--success-text)" : "var(--danger-text)",
+                }}
+              >
+                {m.id} {m.move > 0 ? `▲${m.move}` : `▼${-m.move}`}
+              </span>
+            ))
+          )}
+        </div>
+
+        {opening.length > 0 && (
+          <span
+            style={{
+              font: "var(--text-xs) var(--font-sans)",
+              color: "var(--text-tertiary)",
+              lineHeight: 1.6,
+            }}
+          >
+            A window opening in one scenario moves the whole standing, because a
+            scenario is a seventh of a regime and a regime is a seventh of the
+            total.
+          </span>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+const LABEL_UPPER = {
+  font: "var(--text-xs) var(--font-mono)",
+  color: "var(--text-tertiary)",
+  letterSpacing: "var(--tracking-wide)",
+  textTransform: "uppercase" as const,
+};
+
+// ---------------------------------------------------------------------------
 // standings
+
+/** null is "no previous round to compare against", which is not the same claim as "did not move". */
+function MoveCell({ move }: { move: number | null }) {
+  if (move === null)
+    return (
+      <span
+        style={{
+          textAlign: "center",
+          color: "var(--text-disabled)",
+          font: "var(--text-xs) var(--font-mono)",
+        }}
+      >
+        ·
+      </span>
+    );
+  return (
+    <span
+      style={{
+        textAlign: "center",
+        font: "var(--text-xs) var(--font-mono)",
+        color:
+          move > 0
+            ? "var(--success-text)"
+            : move < 0
+              ? "var(--danger-text)"
+              : "var(--text-disabled)",
+      }}
+    >
+      {move === 0 ? "—" : move > 0 ? `▲${move}` : `▼${-move}`}
+    </span>
+  );
+}
 
 function StandingsTable({
   standings,
   snapshot,
   lambda,
+  moves,
 }: {
   standings: MatrixStandings;
   snapshot: MatrixSnapshot;
   lambda: number;
+  moves: Map<string, number | null>;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const regimes = standings.regimes;
-  const columns = `36px 150px 96px repeat(${regimes.length}, minmax(74px, 1fr)) 74px`;
+  const columns = `36px 46px 150px 96px repeat(${regimes.length}, minmax(74px, 1fr)) 74px`;
+  const at = standings.throughRound;
 
   return (
     <Panel
-      title={`Standings · ${standings.rows.length} agents · ${standings.cells.length} scenarios`}
-      subtitle="Regimes are weighted equally regardless of how many seeds each contributed (ADR 0017 §3). Open a row for the round-level distribution behind it."
+      title={
+        at === null
+          ? `Standings · final · ${standings.rows.length} agents · ${standings.cells.length} scenarios`
+          : `Standings · through round ${at} · ${standings.rows.length} agents`
+      }
+      subtitle={
+        at === null
+          ? "Regimes are weighted equally regardless of how many seeds each contributed (ADR 0017 §3). Open a row for the round-level distribution behind it."
+          : `Recomputed over the first ${at} round${at === 1 ? "" : "s"} of every scenario, not read off the finished run — the cursor must never show the future. The arrow is the move since round ${at - 1}.`
+      }
     >
       <div style={{ overflowX: "auto" }}>
         <div style={{ minWidth: `${360 + regimes.length * 80}px` }}>
@@ -616,6 +845,7 @@ function StandingsTable({
             }}
           >
             <span>#</span>
+            <span style={{ textAlign: "center" }}>move</span>
             <span>agent</span>
             <span style={{ textAlign: "right" }}>total</span>
             {regimes.map((r) => (
@@ -643,6 +873,7 @@ function StandingsTable({
                   }}
                 >
                   <span style={{ color: "var(--text-tertiary)" }}>{i + 1}</span>
+                  <MoveCell move={moves.get(row.id) ?? null} />
                   <span
                     style={{
                       color: "var(--text-link)",
@@ -983,6 +1214,7 @@ function DisagreementPanel({
 
 export function MatrixPage() {
   const { data, loading, error } = useMatrixSnapshot();
+  const cursor = useCursor();
   const [metric, setMetric] = useState<MetricKey>(DEFAULT_METRIC);
   const [aggregator, setAggregator] = useState<Aggregator>(DEFAULT_AGGREGATOR);
   const [params, setParams] = useState<ScoringParams>({
@@ -990,10 +1222,43 @@ export function MatrixPage() {
     rho: DEFAULT_RHO,
   });
 
+  // The cursor's range is the longest scenario in the matrix. Scenarios shorter than that end
+  // early rather than being excluded — see buildStandings.
+  const maxRound = useMemo(() => {
+    if (!data) return 0;
+    let max = 0;
+    for (const series of data.rounds.values())
+      for (const returns of Object.values(series.byAgent))
+        max = Math.max(max, returns.length);
+    return max;
+  }, [data]);
+
+  useEffect(() => {
+    setCursorRange(maxRound);
+  }, [maxRound]);
+
+  // A metric defined only at the run's end cannot be scoped to a round. Rather than showing the
+  // finished number under a round label, the page falls back to M9 while the cursor is mid-run.
+  const scrubbing = cursor.round !== null;
+  const effectiveMetric =
+    scrubbing && ENDPOINT_ONLY_METRICS.includes(metric) ? "score" : metric;
+
   const standings = useMemo(() => {
     if (!data) return null;
-    return buildStandings(data.matrix, data.rounds, metric, aggregator, params);
-  }, [data, metric, aggregator, params]);
+    return buildStandings(
+      data.matrix,
+      data.rounds,
+      effectiveMetric,
+      aggregator,
+      params,
+      cursor.round,
+    );
+  }, [data, effectiveMetric, aggregator, params, cursor.round]);
+
+  const moves = useMemo(() => {
+    if (!data || !standings) return new Map<string, number | null>();
+    return rankMoves(data.matrix, data.rounds, standings);
+  }, [data, standings]);
 
   // Keep the scenario selection inside the matrix on screen, so drilling into Markets or Explorer
   // never lands on a world belonging to a different competition.
@@ -1049,6 +1314,11 @@ export function MatrixPage() {
           flexDirection: "column",
         }}
       >
+        <RoundCursorBar
+          cursor={cursor}
+          scenarioCount={file.scenarios.length}
+          endedScenarios={standings.endedScenarios}
+        />
         <main
           style={{
             maxWidth: PAGE_MAX_WIDTH,
@@ -1109,10 +1379,11 @@ export function MatrixPage() {
           </header>
 
           <Controls
-            metric={metric}
+            metric={effectiveMetric}
             aggregator={aggregator}
             params={params}
             fromSeries={standings.fromSeries}
+            scrubbing={scrubbing}
             onMetric={setMetric}
             onAggregator={setAggregator}
             onParams={setParams}
@@ -1129,17 +1400,27 @@ export function MatrixPage() {
                   lineHeight: 1.6,
                 }}
               >
-                {ROUND_ONLY_METRICS.includes(metric)
-                  ? "This metric is computed from the per-epoch series, and none of this matrix's scenario runs were collected — matrix.json alone cannot produce it. Pick one of the four metrics it stores, or collect the runs."
+                {SERIES_METRICS.includes(effectiveMetric)
+                  ? "This metric is computed from the per-epoch series, and none of this matrix's scenario runs were collected — matrix.json alone cannot produce it. Pick one of the metrics it stores, or collect the runs."
                   : "This matrix produced no comparable values for the selected metric."}
               </p>
             </Panel>
           ) : (
             <>
+              {cursor.round !== null && (
+                <ThisRoundPanel
+                  snapshot={data}
+                  round={cursor.round}
+                  standings={standings}
+                  moves={moves}
+                />
+              )}
+
               <StandingsTable
                 standings={standings}
                 snapshot={data}
                 lambda={params.lambda}
+                moves={moves}
               />
 
               <div

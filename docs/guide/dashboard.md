@@ -58,6 +58,44 @@ emits their whole state every block (`lst_block` / `liquity_block` in `events.js
 dashboard reads it from there rather than reconstructing it twice — which also means those panels
 work for runs recorded before `market.json` grew any of its fields.
 
+### The round cursor
+
+**The round is the dashboard's clock.** Everything in this system is measured in scoring epochs — the
+score is the mean and spread of per-epoch returns, ranks change at epoch boundaries, an environment
+window opens in one — so the round axis is what every view is read against, and there is exactly one
+position on it (`src/data/roundCursor.ts`). Selecting a round on a scenario page and scrubbing the
+matrix are the same act; they used to be separate stores that could disagree.
+
+The cursor spans the whole matrix: **at round k every scenario is at its own round k**, which is what
+makes 35 independent worlds watchable as one competition. Pressing play advances it.
+
+- **Standings become "through round k"** — recomputed over the first k rounds of every scenario, never
+  read off the finished run, with the rank move since round k−1 beside each agent.
+- **Scenarios are not all the same length.** In `full-8h`, depeg runs 9 rounds against everyone
+  else's 29. Past its last round a scenario's world has *ended*, so its result stays in the standings
+  — dropping it would move the field for a reason that is not a result — and the bar says how many
+  are in that state (`30 of 35 still running · 5 ended earlier`).
+- **Two metrics cannot be scoped to a round**: `net PnL (final marks)` and `α` price both ends at the
+  run's last prices, so there is no value at round k to take. While the cursor is mid-competition
+  they are offered greyed rather than showing the finished number under a round label.
+- **Round k tells you why the standings moved.** The panel lists the environment windows covering it,
+  drawn from each scenario's seed before its first block. Measured on `full-8h` seed 101:
+
+  | regime | scheduled windows, as rounds |
+  |---|---|
+  | `calm` / `cex-drift` / `informed-flow` | none |
+  | `whale` | r5, r13, r19, r24–25 |
+  | `crash` | crash + liquidityPull r14–15 |
+  | `lending-incident` | crash + liquidityPull r15–16 |
+  | `depeg` | depeg r4–7 |
+
+  Which is why the standings at round 7 are not a preview of the final ones: at round 7 the arbitrage
+  agents lead, and the crash windows that cost them their lead have not opened yet.
+
+Sub-round movement — walking the individual blocks inside one scenario — stays in `replay.ts`. It is
+a refinement of this position, not a competing notion of it, and it only exists once a single
+scenario is open.
+
 ### Standings (the matrix view)
 
 Two independent choices turn a matrix into a ranking, and neither is settled — #56 is open on the

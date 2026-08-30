@@ -45,12 +45,28 @@ export type MetricKey =
   | "sharpePerEpoch"
   | "mppm";
 
-/** Metrics that live only in the epoch series, so a matrix with no collected runs cannot show them. */
-export const ROUND_ONLY_METRICS: MetricKey[] = [
+/**
+ * Metrics computed from the epoch series rather than read off matrix.json.
+ *
+ * Two consequences: a matrix whose scenario runs were not collected cannot show them at all, and —
+ * because the series can be truncated — they are the ones the round cursor can scope. M4 is in here
+ * even though matrix.json stores it: the excess log returns telescope, so the sum of the stored
+ * series is bit-identical to the stored total (checked over all 735 agent-scenarios of the full-8h
+ * matrix), which buys a round-scopeable M4 at no cost in fidelity.
+ */
+export const SERIES_METRICS: MetricKey[] = [
+  "score",
   "epochPnlUsdc",
+  "excessLogGrowth",
   "sharpePerEpoch",
   "mppm",
 ];
+
+/**
+ * The two that are defined only at a run's end. Both ends are priced at the final marks, so there
+ * is no "value at round k" to take — asking for one would mean inventing a mark the run never had.
+ */
+export const ENDPOINT_ONLY_METRICS: MetricKey[] = ["netPnlUsdc", "alphaUsdc"];
 
 export const METRICS: {
   key: MetricKey;
@@ -262,54 +278,79 @@ export interface ScoringParams {
   rho: number;
 }
 
+/**
+ * One scenario's metric value per agent, optionally as of a round rather than at the end.
+ *
+ * `throughRound` truncates the stored series, which is what makes the standings scrubbable: at
+ * round k the series is the first k entries and every metric is recomputed over exactly those. A
+ * scenario shorter than k is *not* dropped — its world ended, so its final value is its result and
+ * removing it would move the standings for a reason that is not a result. `endedScenarios` counts
+ * them so the UI can say which.
+ */
 export function scenarioValues(
   scenario: MatrixScenario,
   metric: MetricKey,
   params: ScoringParams,
   rounds: Map<string, ScenarioRounds>,
-): { byAgent: Record<string, number>; fromSeries: boolean } {
+  throughRound: number | null = null,
+): { byAgent: Record<string, number>; fromSeries: boolean; ended: boolean } {
   const byAgent: Record<string, number> = {};
   const series = rounds.get(scenarioKey(scenario));
+  let ended = false;
 
-  if (series && (metric === "score" || ROUND_ONLY_METRICS.includes(metric))) {
+  if (series && SERIES_METRICS.includes(metric)) {
     for (const agent of scenario.agents) {
+      const full = series.byAgent[agent.id];
+      if (!full) continue;
+      if (throughRound !== null && full.length <= throughRound) ended = true;
+      const upTo =
+        throughRound === null
+          ? full.length
+          : Math.min(throughRound, full.length);
+      if (upTo <= 0) continue;
+
       if (metric === "epochPnlUsdc") {
-        // First boundary to last one that reported, so a trailing gap reads as a gap rather than as
-        // a collapse to zero. Same rule as core/src/scoring/metrics.ts.
+        // First boundary to the last one that reported inside the window, so a gap reads as a gap
+        // rather than as a collapse to zero. Same rule as core/src/scoring/metrics.ts. There is one
+        // more boundary than there are rounds, so round k ends at index k.
         const values = series.valuesByAgent[agent.id];
         if (!values) continue;
         const first = values[0];
         if (typeof first !== "number") continue;
         let last = first;
-        for (const v of values) if (typeof v === "number") last = v;
+        for (const v of values.slice(0, upTo + 1))
+          if (typeof v === "number") last = v;
         byAgent[agent.id] = last - first;
         continue;
       }
-      const returns = series.byAgent[agent.id];
-      if (!returns) continue;
+
+      const returns = upTo === full.length ? full : full.slice(0, upTo);
       byAgent[agent.id] =
         metric === "score"
           ? statsOf(returns, params.lambda).score
-          : seriesMetric(
-              returns,
-              metric as "sharpePerEpoch" | "mppm",
-              params.rho,
-            );
+          : metric === "excessLogGrowth"
+            ? returns.reduce((a, b) => a + b, 0)
+            : seriesMetric(
+                returns,
+                metric as "sharpePerEpoch" | "mppm",
+                params.rho,
+              );
     }
-    if (Object.keys(byAgent).length > 0) return { byAgent, fromSeries: true };
+    if (Object.keys(byAgent).length > 0)
+      return { byAgent, fromSeries: true, ended };
   }
 
-  // No series: the round-only metrics genuinely do not exist for this scenario, and inventing a
-  // fallback would be inventing a result. The four stored ones still read straight off matrix.json.
-  if (ROUND_ONLY_METRICS.includes(metric))
-    return { byAgent, fromSeries: false };
+  // No series: a series metric genuinely does not exist for this scenario, and inventing a fallback
+  // would be inventing a result. The endpoint metrics still read straight off matrix.json.
+  if (SERIES_METRICS.includes(metric))
+    return { byAgent, fromSeries: false, ended };
 
   for (const agent of scenario.agents) {
     const value = agent[metric as keyof typeof agent];
     if (typeof value === "number" && Number.isFinite(value))
       byAgent[agent.id] = value;
   }
-  return { byAgent, fromSeries: false };
+  return { byAgent, fromSeries: false, ended: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +363,8 @@ export interface ScenarioCell {
   byAgent: Record<string, number>;
   /** issue #55: how much of this scenario's spread is one agent's doing, and whose. */
   sdInflation: { ratio: number; agentId?: string };
+  /** True when the cursor is past this scenario's last round: its world has finished. */
+  ended: boolean;
 }
 
 export interface MatrixStandings {
@@ -337,6 +380,10 @@ export interface MatrixStandings {
   regimes: string[];
   cells: ScenarioCell[];
   agentIds: string[];
+  /** The round these standings are as of, or null for the finished result. */
+  throughRound: number | null;
+  /** Scenarios whose world had already ended at that round — counted, never silently dropped. */
+  endedScenarios: number;
 }
 
 export function buildStandings(
@@ -345,18 +392,22 @@ export function buildStandings(
   metric: MetricKey,
   aggregator: Aggregator,
   params: ScoringParams,
+  throughRound: number | null = null,
 ): MatrixStandings {
   let fromSeries = false;
+  let endedScenarios = 0;
   const cells: ScenarioCell[] = matrix.file.scenarios.map((s) => {
-    const scenario = scenarioValues(s, metric, params, rounds);
+    const scenario = scenarioValues(s, metric, params, rounds, throughRound);
     const byAgent = scenario.byAgent;
     if (scenario.fromSeries) fromSeries = true;
+    if (scenario.ended) endedScenarios += 1;
     return {
       regime: s.regime,
       seed: s.seed,
       runId: scenarioRunId(matrix.id, s.runDir),
       byAgent,
       sdInflation: sdInflationFromExtreme(byAgent),
+      ended: scenario.ended,
     };
   });
 
@@ -383,7 +434,45 @@ export function buildStandings(
     regimes,
     cells,
     agentIds,
+    throughRound,
+    endedScenarios,
   };
+}
+
+/**
+ * Where each agent stood one round earlier, so the standings can show the move.
+ *
+ * Rank movement is the thing a round-by-round view is for: a total that ticks up says nothing on
+ * its own, and "▲3 this round" is the sentence a viewer is actually reading for. At round 1 there
+ * is no previous round and every move is undefined rather than zero — zero would claim the field
+ * started in the order it happens to be in.
+ */
+export function rankMoves(
+  matrix: LoadedMatrix,
+  rounds: Map<string, ScenarioRounds>,
+  standings: MatrixStandings,
+): Map<string, number | null> {
+  const at = standings.throughRound;
+  const out = new Map<string, number | null>();
+  if (at === null || at <= 1) {
+    for (const row of standings.rows) out.set(row.id, null);
+    return out;
+  }
+  const before = buildStandings(
+    matrix,
+    rounds,
+    standings.metric,
+    standings.aggregator,
+    standings.params,
+    at - 1,
+  );
+  const wasAt = new Map(before.rows.map((r, i) => [r.id, i]));
+  standings.rows.forEach((row, i) => {
+    const was = wasAt.get(row.id);
+    // Positive = moved up the table (a smaller index).
+    out.set(row.id, was === undefined ? null : was - i);
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------------------

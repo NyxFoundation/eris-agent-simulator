@@ -151,9 +151,15 @@ function runsPlugin(): Plugin {
             res.end();
             return;
           }
-          const offset = Math.max(
-            0,
-            Number(new URLSearchParams(query ?? "").get("offset") ?? 0) || 0,
+          const params = new URLSearchParams(query ?? "");
+          const offset = Math.max(0, Number(params.get("offset") ?? 0) || 0);
+          // An explicit cap, for readers that only want the head of a file. The run-start and
+          // stress-schedule events are written before the first block, so they sit in the first few
+          // KB of events.jsonl — reading 128KB of each of a matrix's 35 scenarios costs 4MB where
+          // reading the files costs 102MB, for exactly the same answer.
+          const limit = Math.min(
+            TAIL_CHUNK_BYTES,
+            Math.max(1, Number(params.get("limit") ?? 0) || TAIL_CHUNK_BYTES),
           );
           fs.stat(file, (err, stat) => {
             res.setHeader("content-type", "application/json");
@@ -166,7 +172,7 @@ function runsPlugin(): Plugin {
               res.end(JSON.stringify({ offset: stat.size, text: "" }));
               return;
             }
-            const end = Math.min(stat.size, start + TAIL_CHUNK_BYTES) - 1;
+            const end = Math.min(stat.size, start + limit) - 1;
             const chunks: Buffer[] = [];
             fs.createReadStream(file, { start, end })
               .on("data", (c) => chunks.push(c as Buffer))

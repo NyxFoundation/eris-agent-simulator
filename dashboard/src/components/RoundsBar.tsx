@@ -10,6 +10,8 @@ import {
   startReplay,
   stopReplay,
 } from "@/data/replay";
+import { getSelectedMatrixId } from "@/data/matrixSelection";
+import { setCursorRange } from "@/data/roundCursor";
 import { setSelectedRound, useSelectedRound } from "@/data/roundSelection";
 import { navigate } from "@/navigation";
 import { formatBps, formatMove, formatPnlUsdc } from "@/lib/format";
@@ -329,7 +331,6 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
   );
 }
 
-
 // Replay transport. An archived run is a complete record, so walking it forward is a matter of
 // clamping what the views derive from -- the control here only moves the head.
 function ReplayControls({ round }: { round: RoundInfo }) {
@@ -340,7 +341,11 @@ function ReplayControls({ round }: { round: RoundInfo }) {
   if (!replay) {
     // Replay needs a finished run with rounds to walk: a live run is already moving, and a run with
     // no epoch series has no boundaries to step between.
-    if (round.status !== "archived" || first === undefined || last === undefined)
+    if (
+      round.status !== "archived" ||
+      first === undefined ||
+      last === undefined
+    )
       return null;
     return (
       <span
@@ -405,7 +410,9 @@ function ReplayControls({ round }: { round: RoundInfo }) {
           style={{
             font: "var(--text-xs) var(--font-mono)",
             color:
-              replay.speed === speed ? "var(--pink-300)" : "var(--text-tertiary)",
+              replay.speed === speed
+                ? "var(--pink-300)"
+                : "var(--text-tertiary)",
             cursor: "pointer",
           }}
         >
@@ -431,6 +438,15 @@ export function RoundsBar({ round }: { round: RoundInfo }) {
   const selectedRound = useSelectedRound();
   const running = round.status === "live";
   const countdown = formatCountdown(Math.max(0, round.endsAt - now));
+
+  // The round selection lives in the shared cursor (roundCursor.ts), and a cursor position is only
+  // meaningful against a length. A matrix owns the range while one is selected -- its longest
+  // scenario -- so a standalone run only claims it when nothing longer is in view. Without this,
+  // seeking on a run opened outside a matrix would clamp every round to 1.
+  useEffect(() => {
+    if (getSelectedMatrixId() !== null) return;
+    setCursorRange(round.epochs.length);
+  }, [round.epochs.length]);
 
   // The live segment fills by chain progress through its own block range, not by wall clock: the
   // bar is a block series, and a stalled chain should show a stalled round.

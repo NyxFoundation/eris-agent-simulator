@@ -123,6 +123,23 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
     scenario の順で、**— all runs —** で matrix 層を切ると `runs/` 全部が並ぶ（= `sim:realtime` の
     日常ループ。matrix が 1 つも無ければ従来の run ビューに落ちる）。`/markets` と `/explorer` は
     1 world の中でしか意味を持たないので scenario 層のまま
+  - **ラウンドは UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
+    スコアも順位変動も環境イベントも全部エポック単位なので、全ビューはこの軸に対して読む。
+    **以前はラウンド軸を 3 回別々に実装していた**（ラウンド選択 / replay head / live head）。
+    カーソルは matrix 全体を張る = **round k では 35 シナリオが各自の round k にいる**。再生は
+    カーソルを進めるだけで、独立した「リプレイモード」ではない
+    - **順位は "through round k"**（先頭 k ラウンドで再計算。完走結果を読まない）+ round k−1 からの移動
+    - **シナリオ長は揃っていない**（full-8h では depeg が 9、他は 29）。最終ラウンドを過ぎた
+      シナリオは**世界が終了した**扱いで順位に残す（除くと「結果でない理由」で場が動く）。
+      帯に `30 of 35 still running · 5 ended earlier` と出す
+    - **`net PnL (final marks)` と `α` はラウンド絞り不可**（両端を run 最終価格で評価するので
+      round k の値が存在しない）。スクラブ中は灰色で提示し、完走値をラウンド名で出さない
+    - **round k のパネルがその窓を出す**（seed から引かれた計画。実測 seed 101: whale r5/r13/r19/r24-25、
+      crash r14-15、lending-incident r15-16、depeg r4-7、calm/cex-drift/informed-flow は無し）。
+      **だから round 7 の順位は最終順位の予告ではない** — round 7 では裁定勢が首位で、
+      その座を奪う crash 窓はまだ開いていない
+    - ブロック単位の細かい移動（1 シナリオ内）は `replay.ts` に残る。これはこの位置の**細分**であって
+      対立する概念ではなく、シナリオを 1 本開いているときにだけ存在する
   - **Standings（matrix ビュー）は「指標 × 集約」を両方コントロールにする**。順位表を 1 枚出すと
     決まっていないことを決まったように見せるため（#56 未決 / ADR 0019 は z-score を後継未定で引退）。
     指標は M9 / M1(epoch 系列) / net PnL(final marks) / α / M4 / M13 / M7、集約は zscore / borda / mean。

@@ -11,6 +11,7 @@ import {
   NO_MATRIX,
   useSelectedMatrixId,
 } from "./matrixSelection";
+import { loadMatrixSchedules, type ScenarioSchedule } from "./matrixSchedule";
 import { loadMatrixRounds, type ScenarioRounds } from "./matrixScoring";
 import { listRuns, matrixEntries } from "./runArtifacts";
 import { useSnapshot } from "./useSnapshot";
@@ -18,6 +19,8 @@ import { useSnapshot } from "./useSnapshot";
 export interface MatrixSnapshot {
   matrix: LoadedMatrix;
   rounds: Map<string, ScenarioRounds>;
+  /** What the environment was scheduled to do, per scenario, placed on the round axis. */
+  schedules: Map<string, ScenarioSchedule>;
   /** Scenarios whose run dir was not collected, so they have no round detail. */
   missingRounds: number;
 }
@@ -38,10 +41,14 @@ export function useMatrixSnapshot() {
       }
       if (!id) return null;
       const matrix = await loadMatrix(id);
-      const rounds = await loadMatrixRounds(matrix);
+      const [rounds, schedules] = await Promise.all([
+        loadMatrixRounds(matrix),
+        loadMatrixSchedules(matrix),
+      ]);
       return {
         matrix,
         rounds,
+        schedules,
         missingRounds: matrix.file.scenarios.length - rounds.size,
       };
     },

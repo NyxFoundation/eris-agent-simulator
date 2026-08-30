@@ -1,29 +1,27 @@
-// Which round (scoring epoch) the views are scoped to. Deliberately in-memory rather than
-// localStorage: an epoch index only means something inside one run, and a remembered "round 7"
-// would silently point at a different block range the next time a shorter run is opened.
-import { useSyncExternalStore } from "react";
+// Which round the views are scoped to.
+//
+// This used to be its own store, which is how the dashboard ended up with three separate notions of
+// "where on the round axis am I" — this one, the replay head, and the live head. It is now a view
+// onto the single cursor in roundCursor.ts, so selecting a round on a scenario page and scrubbing
+// the matrix are the same act rather than two that can disagree.
+//
+// The numbering lines up without translation: the cursor's round is 1-based over epochs, and so is
+// a scenario's, so round k of the matrix is round k of each scenario in it. A scenario shorter than
+// the cursor's position has simply ended — the pages that scope to a round say so rather than
+// clamping silently, because a clamped view claims to show round k while showing something else.
 
-let selectedRound: number | null = null;
-
-const listeners = new Set<() => void>();
+import { getCursor, seekCursor, useCursor } from "./roundCursor";
 
 /** 1-based round index, or null for "the whole run". */
 export function getSelectedRound(): number | null {
-  return selectedRound;
+  return getCursor().round;
 }
 
 export function setSelectedRound(index: number | null): void {
-  if (index === selectedRound) return;
-  selectedRound = index;
-  for (const listener of [...listeners]) listener();
-}
-
-function subscribe(callback: () => void): () => void {
-  listeners.add(callback);
-  return () => listeners.delete(callback);
+  seekCursor(index);
 }
 
 /** Data hooks depend on this so a round change refetches the snapshots that scope to it. */
 export function useSelectedRound(): number | null {
-  return useSyncExternalStore(subscribe, getSelectedRound, () => null);
+  return useCursor().round;
 }
