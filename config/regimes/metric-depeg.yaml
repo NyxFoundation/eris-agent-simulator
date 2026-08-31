@@ -32,6 +32,8 @@ funding:
 limits:
   agentWethWei: "1000000000000000000"
   agentUsdcUnits: "5000000000"
+  agentBase:
+    WBTC: "5000000"
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"
@@ -40,6 +42,8 @@ flow:
   informedArbFeeBps: 30
   uninformedArrivalRate: "0.9"
   uninformedSizeSigma: "1.0"
+  baseMax:
+    WBTC: "5000000"
 stress:
   events:
     - type: depeg

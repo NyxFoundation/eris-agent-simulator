@@ -13,6 +13,7 @@ const REGIMES = [
   "lending-incident",
   "crash",
   "depeg",
+  "vuln",
 ];
 
 for (const r of REGIMES) {

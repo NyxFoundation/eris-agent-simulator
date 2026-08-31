@@ -1,4 +1,4 @@
-# config/regimes/metric-calm.yaml — AUTO-GENERATED from config/regimes/calm.yaml.
+# config/regimes/metric-vuln.yaml — AUTO-GENERATED from config/regimes/vuln.yaml.
 #
 # Same market conditions, ADR 0019 §6 funding (1 ETH gas reserve + 100k USDC, economicGas), and
 # no base inventory at all. The official regime hands out a native ETH reserve plus a WETH/WBTC
@@ -26,6 +26,9 @@ run:
   reportDir: ./runs
   epochBlocks: 12
   markMedianBlocks: 5
+market:
+  volatility: 0.004
+  kappa: 0.02
 funding:
   wethWei: "0"
   usdcUnits: "100000000000"
@@ -48,14 +51,62 @@ flow:
   aaveActorSizeSigma: "1.0"
   baseMax:
     WBTC: "5000000"
+vuln:
+  poolLiquidityUsdcUnits: "2000000000000"
+  poolFeeBps: 30
+  llm: "0"
+  events:
+    - type: rigged-pool
+      windowFrac:
+        - 0.2
+        - 0.35
+      poolCount:
+        - 4
+        - 6
+      riggedFrac:
+        - 0.5
+        - 0.7
+      baitBps:
+        - 300
+        - 600
+      rugBps:
+        - 3000
+        - 6000
+      rugThresholdFrac:
+        - 0.2
+        - 0.4
+    - type: rigged-pool
+      windowFrac:
+        - 0.6
+        - 0.8
+      poolCount:
+        - 4
+        - 6
+      riggedFrac:
+        - 0.5
+        - 0.7
+      baitBps:
+        - 300
+        - 600
+      rugBps:
+        - 3000
+        - 6000
+      rugThresholdFrac:
+        - 0.2
+        - 0.4
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
     description: does nothing (baseline)
-  - id: venue-arb
+  - id: discovery-arb
     wallet: AGENT2_PRIVATE_KEY
-    description: WETH-only cross-venue arbitrage
-  - id: multi-arb
+    description: discovers the new pools and trades the best quote immediately (the
+      naive side)
+  - id: discovery-arb-verify
     wallet: AGENT3_PRIVATE_KEY
-    description: base-agnostic cross-venue arbitrage (all active bases x all venues)
+    description: discovers the same pools and checks the contract before trading
+      (the careful side)
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage, which never looks at a new pool at all

@@ -33,10 +33,10 @@ funding:
 limits:
   agentWethWei: "1000000000000000000"
   agentUsdcUnits: "5000000000"
+  agentBase:
+    WBTC: "5000000"
 flow:
-  uninformedMaxWethWei: "3000000000000000000"
-  uninformedPersistBlocks: 12
-  uninformedTrendCorrelation: 1
+  uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
@@ -46,6 +46,34 @@ flow:
   gmxArrivalRate: "0.75"
   gmxSizeSigma: "1.0"
   aaveActorSizeSigma: "1.0"
+  baseMax:
+    WBTC: "5000000"
+stress:
+  events:
+    - type: flowTrend
+      magnitudeRange:
+        - 2
+        - 3
+      trendCorrelation: 1
+      persistBlocks: 12
+      windowFrac:
+        - 0.15
+        - 0.3
+      rampBlocks: 6
+      holdBlocks: 30
+      decayBlocks: 10
+    - type: flowTrend
+      magnitudeRange:
+        - 2
+        - 3
+      trendCorrelation: 1
+      persistBlocks: 12
+      windowFrac:
+        - 0.55
+        - 0.75
+      rampBlocks: 6
+      holdBlocks: 30
+      decayBlocks: 10
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY

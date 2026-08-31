@@ -28,8 +28,7 @@ run:
   markMedianBlocks: 5
 market:
   volatility: 0.004
-  kappa: 0.004
-  drift: 0.0015
+  kappa: 0.02
 funding:
   wethWei: "0"
   usdcUnits: "100000000000"
@@ -37,6 +36,8 @@ funding:
 limits:
   agentWethWei: "1000000000000000000"
   agentUsdcUnits: "5000000000"
+  agentBase:
+    WBTC: "5000000"
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"
@@ -48,6 +49,50 @@ flow:
   gmxArrivalRate: "0.75"
   gmxSizeSigma: "1.0"
   aaveActorSizeSigma: "1.0"
+  baseMax:
+    WBTC: "5000000"
+stress:
+  events:
+    - type: cexDrift
+      magnitudeRange:
+        - 0.001
+        - 0.002
+      kappaMultRange:
+        - 0.15
+        - 0.3
+      windowFrac:
+        - 0.1
+        - 0.25
+      rampBlocks: 6
+      holdBlocks: 24
+      decayBlocks: 12
+    - type: cexDrift
+      magnitudeRange:
+        - 0.001
+        - 0.002
+      kappaMultRange:
+        - 0.15
+        - 0.3
+      repriceAnchor: true
+      windowFrac:
+        - 0.4
+        - 0.55
+      rampBlocks: 6
+      holdBlocks: 24
+      decayBlocks: 12
+    - type: cexDrift
+      magnitudeRange:
+        - 0.001
+        - 0.002
+      kappaMultRange:
+        - 0.15
+        - 0.3
+      windowFrac:
+        - 0.7
+        - 0.85
+      rampBlocks: 6
+      holdBlocks: 24
+      decayBlocks: 12
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY
