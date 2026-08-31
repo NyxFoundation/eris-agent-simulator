@@ -45,6 +45,10 @@ funding:
 limits:
   agentWethWei: "1000000000000000000"
   agentUsdcUnits: "5000000000"
+  # ADR 0013 multi-asset: the per-round WBTC cap, matched to agentWethWei by notional.
+  # The pools are seeded to the same depth ($6.0M measured), and funding hands out 8 WETH against
+  # 0.4 WBTC, so equal notional is also equal depth fraction: 1 WETH ~ $3,000 ~ 0.05 BTC.
+  agentBase: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
 
 flow:
   uninformedMaxWethWei: "1000000000000000000"
@@ -57,6 +61,12 @@ flow:
   gmxArrivalRate: "0.75"
   gmxSizeSigma: "1.0"
   aaveActorSizeSigma: "1.0"
+  # WBTC orderflow. Without it nothing exogenous moves the WBTC pools: the fair price walks and
+  # the pool sits still, so the funded WBTC leg is inventory nobody trades against (measured on a
+  # 60-block calm run: 390 WETH base-leg txs against 7 WBTC, all 7 from one agent, and a pool that
+  # moved +0.07% while its fair moved -1.17%). Sized to the WETH flow by notional; one value covers
+  # the uninformed and informed legs on all three venues, where WETH splits them 1x and 2x.
+  baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
 
 stress:
   # Ranges, not values: the seed samples them (ADR 0009). Deeper than lending-incident's crash because
