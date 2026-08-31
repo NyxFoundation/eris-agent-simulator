@@ -19,5 +19,6 @@ regimes:
   - lending-incident
   - crash
   - depeg
+  - vuln
 
 seeds: [606, 707, 808, 909, 1010]

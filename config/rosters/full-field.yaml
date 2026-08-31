@@ -7,10 +7,12 @@
 # Every wallet is AUTO (keccak("auto-wallet:<seed>:<id>")), so the roster is self-contained and needs
 # no AGENTn_PRIVATE_KEY on the box running it.
 #
-# Funding is USDC-only (ADR 0017 §4). Nobody starts holding WETH, an LST share or eUSD: every unit of
-# exposure below is one the agent chose to buy, and pays the beta that USDC-denominated scoring
-# charges for it. Strategies whose venue is quiet in a given regime are expected to idle there —
-# that is a result, not a gap.
+# Funding comes from the regime, not from here, and since issue #54 it is an ETH/BTC/USDC basket
+# rather than the USDC-only this file used to describe: the LST vault and the Trove are WETH/ETH
+# denominated, so under USDC-only the sell side of half these strategies had no inventory behind it.
+# The beta of the basket cancels out of M9 because the benchmark holds the same funding.
+# Strategies whose venue is quiet in a given regime are expected to idle there — that is a result,
+# not a gap.
 #
 # The six strategies that ship a prompt.md are frozen (ERIS_AGENT_FROZEN: "1"), so the LLM never
 # rewrites them mid-run. This is a comparison between rule strategies: leaving revision on would
@@ -117,3 +119,15 @@ agents:
     env: { ERIS_AGENT_FROZEN: "1" }
     wallet: AUTO
     description: underwrites liquidations from the Stability Pool and takes the collateral at a discount
+
+  # --- pools that appear mid-run: the two sides of looking before trading -----
+  # Idle in every regime but `vuln`, which is the only one that spawns pools -- the same shape as
+  # `liquidator`, which does nothing until a regime seeds victims. Reaching a new pool at all takes
+  # subscribing to the factory and building a graph, so a field without these two would leave the
+  # vuln regime measuring nothing: the pools would appear and no agent would be able to see them.
+  - id: discovery-arb
+    wallet: AUTO
+    description: discovers new pools and trades the best quote immediately — the naive side
+  - id: discovery-arb-verify
+    wallet: AUTO
+    description: discovers the same pools and checks the contract before trading — the careful side

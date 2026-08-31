@@ -33,10 +33,16 @@
 # full-boxA sets are one thing. That is a change in the competition, not a widening of it -- see any
 # config/regimes/<name>.yaml header.
 #
-# Sized to one box and one working day, measured rather than guessed: one 360-block scenario takes
-# 795s wall on a c7i.4xlarge-class box (720s of block time at blockTimeSec 2, plus 75s of
-# per-scenario setup and reconstruction), and depeg's 120 blocks take 315s. That is 5,085s per seed,
-# so five seeds is 7.1 hours -- six would be 8.5 and miss the budget.
+# Sizing, measured rather than guessed: one 360-block scenario takes 795s wall on a c7i.4xlarge-class
+# box (720s of block time at blockTimeSec 2, plus 75s of per-scenario setup and reconstruction), and
+# depeg's 120 blocks take 315s.
+#
+# At seven regimes that was 5,085s per seed and five seeds fitted one working day at 7.1 hours. The
+# eighth regime is another 795s per seed, so the set is now 5,880s per seed and 8.2 hours -- past the
+# day it used to fit in. Nothing here is sized down to recover it: dropping a seed would cost a draw
+# from the distribution, which is the thing being measured, and shortening a regime would change the
+# regime. What it costs is that this is an overnight run rather than a working-day one, or two boxes
+# with a manual merge (see below).
 #
 # One box on purpose. Splitting across two halves the wall clock at the same compute cost, but it
 # splits matrix.json in two as well: z-scores are computed inside a matrix, so a single ranking then
@@ -48,6 +54,12 @@
 #
 # To extend beyond the published seeds: run config/scenarios/full-boxB.yaml (seeds 606-1010) and
 # concatenate the `scenarios` arrays into one matrix.json, as runs/matrix-metric-merged did.
+#
+# `vuln` is the eighth regime (ADR 0014, promoted from a verification config). It asks something no
+# other regime does: a quote better than the market is not always one to take. Pools spring up
+# mid-run from the seed, a majority rigged to skim above a size threshold, and reaching them at all
+# means subscribing to the factory rather than reading a price. Adding it redistributes the weights
+# again -- the z-score is per regime and the regimes are averaged with equal weight (ADR 0017 §3).
 regimes:
   - calm
   - cex-drift
@@ -56,5 +68,6 @@ regimes:
   - lending-incident
   - crash
   - depeg
+  - vuln
 
 seeds: [101, 202, 303, 404, 505]
