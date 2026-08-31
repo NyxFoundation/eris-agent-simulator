@@ -201,6 +201,20 @@ fails at startup — `blocks: 0` with a week-long time limit is the shape a neve
 suggests and the one that does not start. `config/practice.yaml` states a week at a two-second
 cadence (302,400 blocks) and keeps `seconds` as a generous ceiling rather than the stop condition.
 
+### Segments are an operator's word
+
+A segment is where files are written, and participants never see the term. In the dashboard a
+period's segments appear by date (`2026-09-02`), the competition by its name, and the standings by
+agent — the word "segment" is in the config, the console and the directory names, and nowhere on
+screen. The manifest handed to participants does not contain it at all.
+
+That is the same discipline the rest of the UI follows (internal ids stay out of it), and it has one
+consequence worth stating: **segments are also the unit the standings average over**. Each scenario
+is z-scored and then averaged with equal weight, so daily segments mean one vote per day whatever
+each day's round count. Cutting the period differently changes that weighting — it does not change a
+single round's return, which is placed on a fixed grid from the run's first block and is entirely
+independent of where the cuts fall.
+
 ### How many rounds a period has
 
 A round is a fixed length, so the count grows with the period — but the dashboard reads a **segment**,

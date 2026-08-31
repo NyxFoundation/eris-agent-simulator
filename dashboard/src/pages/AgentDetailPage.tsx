@@ -492,13 +492,13 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
               {d.bankruptIn.length === 1
                 ? t("agent.standing.bankruptOne", {
                     list: d.bankruptIn
-                      .map((b) => `${b.regime}#${b.seed} @ ${b.epoch}`)
+                      .map((b) => `${b.label} @ ${b.epoch}`)
                       .join(", "),
                   })
                 : t("agent.standing.bankrupt", {
                     n: d.bankruptIn.length,
                     list: d.bankruptIn
-                      .map((b) => `${b.regime}#${b.seed} @ ${b.epoch}`)
+                      .map((b) => `${b.label} @ ${b.epoch}`)
                       .join(", "),
                   })}
             </span>

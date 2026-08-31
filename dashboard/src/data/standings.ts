@@ -14,7 +14,7 @@ import {
   type ScenarioRow,
 } from "@core/scoring/aggregate";
 import type { Competition, CompetitionScenario } from "./competition";
-import { scenarioRunId } from "./competition";
+import { scenarioLabel, scenarioRunId } from "./competition";
 import { listRuns } from "./runArtifacts";
 import type { EpochScore, RunSummary } from "./runArtifacts";
 
@@ -307,8 +307,13 @@ export interface AgentRoundDecomposition {
   stats: RoundStats;
   /** Per-regime stats, so a strategy that only works in one regime is visible as such. */
   byRegime: { regime: string; stats: RoundStats; scenarios: number }[];
-  /** Scenarios in which the agent hit the bankruptcy floor. */
-  bankruptIn: { regime: string; seed: number; epoch: number }[];
+  /**
+   * Scenarios in which the agent hit the bankruptcy floor, named the way the picker names them.
+   * `regime#seed` is right for a matrix and wrong for a practice period, whose scenarios are
+   * segments — a participant should not be told they went bankrupt in "segment#1" (ADR 0021 §6:
+   * the word is an implementation detail of where files are written).
+   */
+  bankruptIn: { label: string; epoch: number }[];
 }
 
 /**
@@ -326,7 +331,7 @@ export function decomposeAgent(
 ): AgentRoundDecomposition | null {
   const pooled: number[] = [];
   const perRegime = new Map<string, { returns: number[]; scenarios: number }>();
-  const bankruptIn: { regime: string; seed: number; epoch: number }[] = [];
+  const bankruptIn: { label: string; epoch: number }[] = [];
 
   for (const s of competition.file.scenarios) {
     const series = rounds.get(scenarioKey(s));
@@ -339,7 +344,7 @@ export function decomposeAgent(
     perRegime.set(s.regime, bucket);
     const bankrupt = series.bankruptAtEpoch[agentId];
     if (typeof bankrupt === "number")
-      bankruptIn.push({ regime: s.regime, seed: s.seed, epoch: bankrupt });
+      bankruptIn.push({ label: scenarioLabel(s), epoch: bankrupt });
   }
 
   if (pooled.length === 0) return null;
