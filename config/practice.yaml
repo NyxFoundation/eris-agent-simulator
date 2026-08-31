@@ -21,10 +21,15 @@
 
 run:
   seed: 1
-  # No block limit: the period ends when the operator stops it, not when a counter runs out. The
-  # time limit is what bounds a session; set it to the period's length.
-  blocks: 0
-  seconds: 604800 # one week
+  # The period's length, in blocks. Not `blocks: 0` with a wall-clock limit, which is the shape a
+  # never-ending chain suggests: an episode's window is placed as a fraction of the run's *length*
+  # (ADR 0009), so a run with no block count has nowhere to put one and fails at startup. One week
+  # at a two-second cadence.
+  blocks: 302400
+  # A ceiling, not the stop condition — a run with episodes ends on the block count so the time
+  # limit cannot cut in before a window opens (ADR 0009 §4). Generous, so a chain running slightly
+  # behind cadence is not truncated.
+  seconds: 900000
   blockTimeSec: 2
   protocols: [uniswap, balancer, curve, lst, liquity]
   localDeploy: true

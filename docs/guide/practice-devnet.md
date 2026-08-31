@@ -166,6 +166,14 @@ is N × (a few blocks) before the first agent trades. The treasury's transfers a
 approvals go out as batches — one sender, consecutive nonces, one wait — and the loop prints its
 progress, because an environment that is silent for ten minutes reads as one that has hung.
 
+### Length
+
+A period is bounded in **blocks**, not wall-clock seconds. An episode's window is placed as a
+fraction of the run's length (ADR 0009), so a run with no block count has nowhere to put one and
+fails at startup — `blocks: 0` with a week-long time limit is the shape a never-ending chain
+suggests and the one that does not start. `config/practice.yaml` states a week at a two-second
+cadence (302,400 blocks) and keeps `seconds` as a generous ceiling rather than the stop condition.
+
 ### What a period produces
 
 One directory per day (`run.segmentHours`), under one competition:
