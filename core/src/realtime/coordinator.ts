@@ -2442,17 +2442,23 @@ export async function runRealtimeSimulation(
     // standings taken over the period, and the last day showed a score nothing that happened on it
     // could explain (seen on a five-segment run: 9 epochs in the last segment against 1+3+2+3 in
     // the others).
-    const liveEpochSeries =
-      wholeEpochSeries && segments
-        ? {
-            ...wholeEpochSeries,
-            ...sliceEpochSeries(
-              wholeEpochSeries,
-              segments.currentSegmentStartBlock,
-              finalBlock,
-            ),
-          }
-        : wholeEpochSeries;
+    const liveEpochSeries = ((): EpochSeries | undefined => {
+      if (!wholeEpochSeries || !segments) return wholeEpochSeries;
+      const cut = sliceEpochSeries(
+        wholeEpochSeries,
+        segments.currentSegmentStartBlock,
+        finalBlock,
+      );
+      // `epochs` has to be recomputed, not inherited. Spreading the slice over the whole series
+      // replaced its blocks and values and left the period's count behind: the final segment's
+      // summary said `epochs: 9` while carrying five boundaries — four returns. An artifact that
+      // contradicts itself is worse than one that is missing a field.
+      return {
+        ...wholeEpochSeries,
+        ...cut,
+        epochs: Math.max(0, cut.boundaryBlocks.length - 1),
+      };
+    })();
     if (liveEpochSeries) {
       // ADR 0019 §2: the score is excess over the roster's baseline entry. Without one the returns
       // stay raw and every agent is charged for the drift of the ETH gas reserve it had to hold --
