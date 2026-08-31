@@ -10,6 +10,9 @@ config/*.yaml
 !config/claude-llm.yaml
 !config/vuln-test.yaml
 !config/lst.yaml
+# The practice period's worked example (ADR 0021). A template like the others -- it names no node
+# and holds no key; the endpoints and the treasury live in .env.local.
+!config/practice.yaml
 runs/
 cache/
 out/

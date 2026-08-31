@@ -1,0 +1,116 @@
+# The practice devnet (ADR 0021).
+#
+#   npm run sim:realtime -- --config config/practice.yaml
+#
+# A period, not a run: the chain does not stop, participants run their own agents against it, and
+# the standings are practice standings — the competition itself is scored separately, from submitted
+# bundles replayed over a scenario matrix (ADR 0017 / ADR 0020).
+#
+# Two things have to be true of the chain this points at, and neither is set here:
+#
+#   ANVIL_RPC_URL / CHAIN_ID / TREASURY_PRIVATE_KEY in .env.local. They belong to a deployment, not
+#   to a config a repo commits — this file must not name one operator's node.
+#
+#   run.chainMode: external once that chain is a real client (issue #35's OP Stack devnet). Left at
+#   the default here so the file runs against a local anvil today; flipping it turns every cheatcode
+#   into a refusal with the work item that replaces it named (issue #33).
+#
+# Hand participants their credentials one at a time:
+#   npm run manifest -- --config config/practice.yaml                    # the public manifest
+#   npm run manifest -- --config config/practice.yaml --participant <id> # their address (+ key)
+
+run:
+  seed: 1
+  # No block limit: the period ends when the operator stops it, not when a counter runs out. The
+  # time limit is what bounds a session; set it to the period's length.
+  blocks: 0
+  seconds: 604800 # one week
+  blockTimeSec: 2
+  protocols: [uniswap, balancer, curve, lst, liquity]
+  localDeploy: true
+  # One world from start to finish, which is what a practice period is. The official competition
+  # runs `scenario` (ADR 0020 §2), and only the matrix runner can declare it.
+  resetUnit: continuous
+
+  # A round stated in real time (ADR 0021 §3). Half an hour is the short end of the band the ADR
+  # settles on: standings move roughly 48 times a day, which is often enough to watch and rare
+  # enough that a round is a position rather than a tick. The block count follows from
+  # blockTimeSec — an operator who changes the cadence should not silently change the round.
+  #
+  # The value here and the lambda that goes with it are the piece ADR 0021 leaves open (#56).
+  epochSeconds: 1800
+
+  # One directory per day (ADR 0021 §6). The chain stays continuous; only the artifacts are cut,
+  # because a week of events.jsonl is a file nobody opens.
+  segmentHours: 24
+  segmentName: practice
+  reportDir: ./runs
+
+funding:
+  # USDC-only, so nothing anybody did not choose shows up in their score as price drift. WETH has to
+  # be bought, which is what makes holding it a decision (the same argument #27 makes for a
+  # market-priced stable).
+  wethWei: "0"
+  usdcUnits: "100000000000" # 100k USDC
+
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+
+# What the period contains. ADR 0021 §1 publishes the *kinds* and how many, and withholds when each
+# window opens — the manifest is built from this list and carries neither the windows nor the seed
+# they were drawn from.
+#
+# `windowFrac` is a fraction of the period, so on a week-long run these land days apart.
+stress:
+  events:
+    - {
+        type: crash,
+        magnitudeRange: [0.12, 0.16],
+        windowFrac: [0.1, 0.25],
+        rampBlocks: 3,
+        holdBlocks: 6,
+        decayBlocks: 8,
+      }
+    - {
+        type: eusdDepeg,
+        magnitudeRange: [0.4, 0.6],
+        windowFrac: [0.35, 0.55],
+        rampBlocks: 4,
+        holdBlocks: 10,
+        decayBlocks: 12,
+      }
+    - {
+        type: whale,
+        magnitudeRange: [8, 20],
+        windowFrac: [0.6, 0.9],
+      }
+
+# The roster is a registration list, not a launch list (ADR 0021 §2).
+#
+#   external: true + address   the participant holds their own key. Prefer this: a key the operator
+#                              generated is a key the operator has.
+#   external: true + wallet    the operator issues a funded key and hands it over.
+#
+# `noop` is the baseline every score is measured as excess over (ADR 0019 §2) and is run by the
+# operator, so it stays an ordinary entry.
+# `wallet: AUTO` rather than a named dev key. On a chain the environment cannot assign balances, the
+# endowment is a floor: an address that already holds something keeps it. Two agents bound to
+# prefunded dev accounts once started a run with $3.0bn against a fresh address's $34k, and their
+# scores were a report on one large ETH holding. The run records `initial_endowment` and warns above
+# a 2x spread, but a level field starts with fresh addresses.
+agents:
+  - id: noop
+    wallet: AUTO
+    baseline: true
+    description: does nothing — the benchmark every score is excess over
+  # - id: alice
+  #   external: true
+  #   address: "0x..."
+  #   description: a registered participant

@@ -18,6 +18,7 @@ import {
   mine,
   resetFork,
   sendAndMine,
+  sendBatch,
   setAutomine,
   setChainMode,
   setEthBalance,
@@ -29,7 +30,11 @@ import { SegmentedRun, sliceEpochSeries } from "../segments.js";
 import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
 import { methodNameForCalldata } from "@eris/sdk/methodSelectors.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
-import { marketPricedStables, readStablePrices } from "@eris/sdk/stables.js";
+import {
+  marketPricedStables,
+  PAR_STABLE_PRICES,
+  readStablePrices,
+} from "@eris/sdk/stables.js";
 import { checkRunFeeViolations, countRunRevertedTxs } from "../postRunCheck.js";
 import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
 import type {
@@ -735,6 +740,9 @@ export async function runRealtimeSimulation(
         key,
       })),
     ];
+    // Progress, because on a real chain this loop is minutes rather than instants, and an
+    // environment that prints nothing for ten minutes reads as one that has hung.
+    let funded = 0;
     for (const t of fundTargets) {
       // The whale passes through here too, even though its balances are overwritten a moment later
       // once the fair price is known: this loop is also where each adapter's setupWallet grants the
@@ -788,17 +796,27 @@ export async function runRealtimeSimulation(
         baseAmounts,
         gasBuffer,
       );
+      // Every venue's approvals for this wallet, collected and sent as one batch. They all come
+      // from the same key with nothing between them, so on a dev node this is what it always was
+      // (send, mine, wait) and on a chain the environment does not mine it is one block instead of
+      // one per approval — fifteen wallets at eighteen transactions each is nine minutes of setup
+      // at a two-second block time, which the first external run spent in silence.
+      const approvals: Array<{ to: Address; data?: Hex; value?: bigint }> = [];
       for (const adapter of adapters) {
         if (!adapter.setupWallet) continue;
-        const approvals = await adapter.setupWallet(ctx, t.address);
-        for (const tx of approvals) {
-          await sendAndMine(publicClient, walletClient, chain, t.privateKey, {
-            to: tx.to,
-            data: tx.data,
-            value: tx.value,
-          });
-        }
+        for (const tx of await adapter.setupWallet(ctx, t.address))
+          approvals.push({ to: tx.to, data: tx.data, value: tx.value });
       }
+      await sendBatch(
+        publicClient,
+        walletClient,
+        chain,
+        t.privateKey,
+        approvals,
+      );
+      funded++;
+      if (funded % 5 === 0 || funded === fundTargets.length)
+        console.error(`[setup] funded ${funded}/${fundTargets.length} wallets`);
     }
 
     // The initial fair price is finalized here (used by the local oracle calibration and victim setup below).
@@ -924,6 +942,44 @@ export async function runRealtimeSimulation(
 
     for (const agent of agentRuntimes) {
       agent.initial = await getBalances(publicClient, agent.address);
+    }
+
+    // What each agent actually starts with (ADR 0021 §2 / issue #33 (1)).
+    //
+    // The two funding mechanisms differ in a way that only shows up here. A cheatcode *assigns* a
+    // balance, so every agent starts at exactly the endowment whatever it held before. A treasury
+    // *adds* to one, so the endowment is a floor: an address that already holds something keeps it.
+    //
+    // That is right for a continuous economy — an agent that traded well yesterday should still have
+    // its gains — and it is a trap at the start of a period. Measured on the first external run:
+    // two agents bound to a prefunded dev account started with $3.0bn against a fresh address's
+    // $34k, and their per-round returns were then a report on one very large ETH holding. Nothing in
+    // the artifacts said so.
+    {
+      const fair: Record<string, number> = {
+        WETH: latestFairPrice,
+        ...(ctx.fairPrices ?? {}),
+      };
+      const values = agentRuntimes.map((a) => ({
+        id: a.id,
+        valueUsdc: valueUsdc(a.initial, fair, PAR_STABLE_PRICES),
+      }));
+      const positive = values.filter((v) => v.valueUsdc > 0);
+      const min = Math.min(...positive.map((v) => v.valueUsdc));
+      const max = Math.max(...positive.map((v) => v.valueUsdc));
+      const ratio = positive.length > 1 && min > 0 ? max / min : 1;
+      logger.event({ type: "initial_endowment", values, ratio });
+      // A factor of two is already a different competition; this is deliberately loud rather than
+      // fatal, because mid-period the spread is real history rather than a misconfiguration.
+      if (ratio > 2)
+        console.error(
+          `[funding] WARNING: agents start ${ratio.toFixed(1)}x apart ` +
+            `(${min.toFixed(0)} .. ${max.toFixed(0)} USDC). ` +
+            (external
+              ? "On a chain the environment cannot assign balances, the endowment is a floor: an " +
+                "address that already held something keeps it. Use fresh addresses for a fresh field."
+              : "Check the roster's funding overrides."),
+        );
     }
 
     // ---- On-chain distribution path for the fair price (ADR 0006 §3). Kept permanent and written every block ----

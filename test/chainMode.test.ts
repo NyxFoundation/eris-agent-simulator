@@ -7,6 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   chainMode,
+  sendBatch,
   dealErc20,
   increaseTime,
   isExternalChain,
@@ -101,4 +102,66 @@ test("reads can be pointed at a replica without moving writes (issue #36)", () =
   });
   assert.equal(split.rpcUrl, "http://seq:8545");
   assert.equal(split.readRpcUrl, "http://replica:8545");
+});
+
+test("a batch assigns sequential nonces and waits only for the last", async () => {
+  // Funding on a chain the environment does not mine costs one block per transaction, and there
+  // were eighteen per wallet: the first external run sat in the funding loop for six minutes with
+  // four events written. Batching is what fixes that, and it is only correct because the
+  // transactions share a sender and take consecutive nonces — the last cannot be included before the
+  // earlier ones, so one wait is a wait for all of them.
+  //
+  // Nonces are assigned here rather than by viem, which re-reads the pending count per send; two
+  // overlapping sends would take the same one and the second would silently replace the first.
+  setChainMode("external", `0x${"11".repeat(32)}`);
+  const sent: Array<{ nonce?: number; to: string }> = [];
+  let waitedFor: string | undefined;
+  const fake = {
+    getBlock: async () => ({ baseFeePerGas: 0n }),
+    getTransactionCount: async () => 7,
+    waitForTransactionReceipt: async ({ hash }: { hash: string }) => {
+      waitedFor = hash;
+      return {};
+    },
+    // biome-ignore lint/suspicious/noExplicitAny: a stub client
+  } as any;
+  // biome-ignore lint/suspicious/noExplicitAny: a stub client
+  const wallet = {
+    sendTransaction: async (tx: { nonce?: number; to: string }) => {
+      sent.push({ nonce: tx.nonce, to: tx.to });
+      return `0x${String(tx.nonce).padStart(64, "0")}`;
+    },
+    // biome-ignore lint/suspicious/noExplicitAny: a stub client
+  } as any;
+
+  const targets = [ADDRESS, ADDRESS, ADDRESS] as const;
+  const hashes = await sendBatch(
+    fake,
+    wallet,
+    // biome-ignore lint/suspicious/noExplicitAny: a stub chain
+    {} as any,
+    `0x${"22".repeat(32)}`,
+    targets.map((to) => ({ to })),
+  );
+  assert.deepEqual(
+    sent.map((t) => t.nonce),
+    [7, 8, 9],
+    "consecutive, starting from the pending count",
+  );
+  assert.equal(hashes.length, 3);
+  assert.equal(waitedFor, hashes[2], "waits for the last, which implies the rest");
+});
+
+test("an empty batch sends nothing and waits for nothing", async () => {
+  setChainMode("external", `0x${"11".repeat(32)}`);
+  // biome-ignore lint/suspicious/noExplicitAny: the stub must never be called
+  const explode = new Proxy({} as any, {
+    get() {
+      throw new Error("a batch of no transactions must not touch the chain");
+    },
+  });
+  assert.deepEqual(
+    await sendBatch(explode, explode, explode, `0x${"22".repeat(32)}`, []),
+    [],
+  );
 });

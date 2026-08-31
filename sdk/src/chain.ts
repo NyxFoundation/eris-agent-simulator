@@ -582,6 +582,85 @@ export async function sendNoMine(
   });
 }
 
+// Several transactions from one key, waiting once.
+//
+// On a dev node every `sendAndMine` mines its own block, so a hundred setup transactions cost
+// nothing. On a chain the environment does not mine, each one waits for the sequencer: funding
+// fifteen wallets at roughly eighteen transactions each, at a two-second block time, is nine
+// minutes of silence before the first agent trades. Measured, not estimated -- the first
+// external-mode run sat in the funding loop for over six minutes with four events written.
+//
+// Nonces are assigned explicitly rather than left to viem, which re-reads the pending count per
+// send and would hand two overlapping sends the same one. And because they are sequential and from
+// a single sender, the last transaction cannot be included before the earlier ones -- so waiting for
+// its receipt is waiting for all of them, not an approximation of it.
+export async function sendBatch(
+  publicClient: PublicClient,
+  walletClient: WalletClient,
+  chain: ReturnType<typeof makeChain>,
+  privateKey: Hex,
+  txs: Array<{ to: Address; data?: Hex; value?: bigint; gas?: bigint }>,
+): Promise<Hex[]> {
+  if (txs.length === 0) return [];
+  const account = privateKeyToAccount(privateKey);
+  const block = await publicClient.getBlock();
+  const baseFee = block.baseFeePerGas ?? 0n;
+  let nonce = await publicClient.getTransactionCount({
+    address: account.address,
+    blockTag: "pending",
+  });
+  const hashes: Hex[] = [];
+  for (const tx of txs) {
+    hashes.push(
+      await walletClient.sendTransaction({
+        account,
+        chain,
+        to: tx.to,
+        data: tx.data,
+        value: tx.value ?? 0n,
+        gas: tx.gas,
+        nonce: nonce++,
+        maxFeePerGas: baseFee + 1_000_000_000n,
+        maxPriorityFeePerGas: 1_000_000_000n,
+      }),
+    );
+  }
+  if (CHAIN_MODE === "anvil") await mine(publicClient);
+  await publicClient.waitForTransactionReceipt({
+    hash: hashes[hashes.length - 1],
+  });
+  return hashes;
+}
+
+// Send a transaction that has to come from one particular address -- a venue's role admin, an ACL
+// admin. On a fork that address belongs to somebody else (a mainnet multisig), so the only way is to
+// impersonate it. On a chain the environment deployed itself, it is *our own account*: the deployer,
+// which is also the treasury (issue #33 (1)/(4)).
+//
+// So this picks the mechanism rather than the caller doing it, and on an external chain it refuses
+// loudly when the address is not one we hold. That case is a deployment whose admin keys the
+// environment does not control, which is not a smaller problem than a missing cheatcode.
+export async function sendAsPrivileged(
+  publicClient: PublicClient,
+  walletClient: WalletClient,
+  chain: ReturnType<typeof makeChain>,
+  from: Address,
+  tx: { to: Address; data?: Hex; value?: bigint },
+  what: string,
+): Promise<Hex> {
+  if (CHAIN_MODE !== "external")
+    return sendAsImpersonated(publicClient, walletClient, chain, from, tx);
+  const treasuryPk = requireTreasury(what);
+  if (accountAddress(treasuryPk).toLowerCase() !== from.toLowerCase())
+    throw new Error(
+      `${what} has to be sent by ${from}, which is not the treasury ` +
+        `(${accountAddress(treasuryPk)}). On an external chain there is no impersonation, so the ` +
+        "environment can only act as an admin whose key it holds -- redeploy with the treasury as " +
+        "that role's admin (issue #33 (4))",
+    );
+  return sendAndMine(publicClient, walletClient, chain, treasuryPk, tx);
+}
+
 // Send from an impersonated address (role-admin / acl-admin, etc.)
 export async function sendAsImpersonated(
   publicClient: PublicClient,
@@ -790,23 +869,27 @@ export async function fundWallet(
 ): Promise<void> {
   const address = accountAddress(privateKey);
   if (CHAIN_MODE === "external") {
-    // A real chain has no way to *set* a balance, so the wallet is topped up to the target rather
-    // than assigned it: the treasury sends the shortfall. Topping up rather than sending the full
-    // amount matters on the practice devnet, where the same wallet is funded again on a later
-    // segment and already holds most of what it needs (ADR 0021 §6).
-    const target = ethWei + wethWei + gasBufferWei;
-    const held = await publicClient.getBalance({ address });
-    await transferEth(
+    // Identical to funding an address whose key nobody here holds: the treasury sends everything,
+    // including the WETH, rather than sending ETH and having the recipient wrap it. Nothing about
+    // the endowment changes -- what changes is that every transaction has one sender, which is what
+    // lets them go out as a batch instead of one block-wait each.
+    //
+    // It also makes `funding.ethWei` exactly the wallet's native balance, rather than that minus
+    // whatever the wrap cost, which is what ADR 0019 §6 asks for.
+    await fundAddress(
       publicClient,
       walletClient,
       chain,
-      requireTreasury("fundWallet"),
       address,
-      target > held ? target - held : 0n,
+      ethWei,
+      wethWei,
+      usdcUnits,
+      baseAmounts,
+      gasBufferWei,
     );
-  } else {
-    await setEthBalance(publicClient, address, ethWei + wethWei + gasBufferWei);
+    return;
   }
+  await setEthBalance(publicClient, address, ethWei + wethWei + gasBufferWei);
   if (wethWei > 0n) {
     await sendAndMine(publicClient, walletClient, chain, privateKey, {
       to: TOKENS.WETH.address,
@@ -827,28 +910,14 @@ export async function fundWallet(
     // market-priced stable has to be bought, which is what makes holding one a decision.
     for (const token of ACTIVE_STABLES) {
       if (!isParStable(token)) continue;
-      await grantToken(
-        publicClient,
-        walletClient,
-        chain,
-        token,
-        address,
-        usdcUnits,
-      );
+      await dealErc20(publicClient, token, address, usdcUnits);
     }
   }
   if (baseAmounts) {
     for (const [symbol, amount] of Object.entries(baseAmounts)) {
       // WETH is handled via the deposit path. Do not grant 0.
       if (symbol === "WETH" || amount <= 0n) continue;
-      await grantToken(
-        publicClient,
-        walletClient,
-        chain,
-        tokenInfo(symbol).address,
-        address,
-        amount,
-      );
+      await dealErc20(publicClient, tokenInfo(symbol).address, address, amount);
     }
   }
 }
@@ -870,62 +939,55 @@ export async function fundAddress(
   gasBufferWei: bigint = GAS_BUFFER_WEI,
 ): Promise<void> {
   const targetEth = ethWei + gasBufferWei;
-  if (CHAIN_MODE === "external") {
-    const held = await publicClient.getBalance({ address });
-    await transferEth(
-      publicClient,
-      walletClient,
-      chain,
-      requireTreasury("fundAddress"),
-      address,
-      targetEth > held ? targetEth - held : 0n,
-    );
-    if (wethWei > 0n)
-      await grantWeth(publicClient, walletClient, chain, address, wethWei);
-  } else {
+  const grants: Array<{ token: Address; amount: bigint }> = [];
+  if (usdcUnits > 0n)
+    for (const token of ACTIVE_STABLES)
+      if (isParStable(token)) grants.push({ token, amount: usdcUnits });
+  if (baseAmounts)
+    for (const [symbol, amount] of Object.entries(baseAmounts)) {
+      if (symbol === "WETH" || amount <= 0n) continue;
+      grants.push({ token: tokenInfo(symbol).address, amount });
+    }
+
+  if (CHAIN_MODE !== "external") {
     await setEthBalance(publicClient, address, targetEth);
     if (wethWei > 0n)
       await dealErc20(publicClient, TOKENS.WETH.address, address, wethWei);
+    for (const g of grants)
+      await dealErc20(publicClient, g.token, address, g.amount);
+    return;
   }
-  if (usdcUnits > 0n) {
-    for (const token of ACTIVE_STABLES) {
-      if (!isParStable(token)) continue;
-      await grantToken(
-        publicClient,
-        walletClient,
-        chain,
-        token,
-        address,
-        usdcUnits,
-      );
-    }
-  }
-  if (baseAmounts) {
-    for (const [symbol, amount] of Object.entries(baseAmounts)) {
-      if (symbol === "WETH" || amount <= 0n) continue;
-      await grantToken(
-        publicClient,
-        walletClient,
-        chain,
-        tokenInfo(symbol).address,
-        address,
-        amount,
-      );
-    }
-  }
+
+  // Everything the treasury has to send for this wallet, planned first and sent once. The reads that
+  // decide what is needed are cheap; the sends are what cost a block each, and there were eighteen
+  // of them per wallet.
+  const treasuryPk = requireTreasury("fundAddress");
+  const txs: Array<{ to: Address; data?: Hex; value?: bigint }> = [];
+  const held = await publicClient.getBalance({ address });
+  // Topped up to the target rather than assigned it -- a real chain cannot set a balance, and the
+  // practice devnet funds the same wallet again on a later segment (ADR 0021 §6).
+  if (targetEth > held)
+    txs.push({ to: address, value: targetEth - held });
+  if (wethWei > 0n)
+    txs.push(...(await wethGrantTxs(publicClient, treasuryPk, address, wethWei)));
+  for (const g of grants)
+    txs.push(
+      ...(await tokenGrantTxs(publicClient, treasuryPk, g.token, address, g.amount)),
+    );
+  await sendBatch(publicClient, walletClient, chain, treasuryPk, txs);
 }
 
+// The transactions that put `amount` of WETH in `holder`'s hands, or none if it already has them.
+//
 // WETH9 has no mint: every unit in existence was deposited against ETH. So the treasury wraps its
 // own and sends the result, which is the only cheatcode-free way to put WETH in an account whose key
-// nobody here holds.
-async function grantWeth(
+// nobody here holds -- and, since the treasury signs both halves, they batch with everything else.
+async function wethGrantTxs(
   publicClient: PublicClient,
-  walletClient: WalletClient,
-  chain: ReturnType<typeof makeChain>,
+  treasuryPk: Hex,
   holder: Address,
   amount: bigint,
-): Promise<void> {
-  const treasuryPk = requireTreasury("grantWeth");
+): Promise<Array<{ to: Address; data?: Hex; value?: bigint }>> {
   const treasury = accountAddress(treasuryPk);
   const held = (await publicClient.readContract({
     address: TOKENS.WETH.address,
@@ -933,7 +995,7 @@ async function grantWeth(
     functionName: "balanceOf",
     args: [holder],
   })) as bigint;
-  if (held >= amount) return;
+  if (held >= amount) return [];
   const short = amount - held;
   const treasuryWeth = (await publicClient.readContract({
     address: TOKENS.WETH.address,
@@ -941,8 +1003,9 @@ async function grantWeth(
     functionName: "balanceOf",
     args: [treasury],
   })) as bigint;
-  if (treasuryWeth < short) {
-    await sendAndMine(publicClient, walletClient, chain, treasuryPk, {
+  const txs: Array<{ to: Address; data?: Hex; value?: bigint }> = [];
+  if (treasuryWeth < short)
+    txs.push({
       to: TOKENS.WETH.address,
       data: encodeFunctionData({
         abi: wethAbi,
@@ -951,8 +1014,7 @@ async function grantWeth(
       }),
       value: short - treasuryWeth,
     });
-  }
-  await sendAndMine(publicClient, walletClient, chain, treasuryPk, {
+  txs.push({
     to: TOKENS.WETH.address,
     data: encodeFunctionData({
       abi: erc20Abi,
@@ -960,38 +1022,61 @@ async function grantWeth(
       args: [holder, short],
     }),
   });
+  return txs;
 }
 
-// One grant, either mechanism. The cheatcode *assigns* a balance and the treasury *adds* to one, so
-// re-funding a wallet that already holds tokens diverges between the modes -- which is why the
-// external path tops up to the target instead of sending it outright.
-async function grantToken(
+// The transaction that tops `holder` up to `amount` of `token`, or none if it is already there.
+// Mint where the treasury may mint, transfer where it may not -- and refuse rather than silently
+// under-fund, because an agent that starts with nothing looks, in every artifact, exactly like an
+// agent that chose not to trade.
+async function tokenGrantTxs(
   publicClient: PublicClient,
-  walletClient: WalletClient,
-  chain: ReturnType<typeof makeChain>,
+  treasuryPk: Hex,
   token: Address,
   holder: Address,
   amount: bigint,
-): Promise<void> {
-  if (CHAIN_MODE !== "external") {
-    await dealErc20(publicClient, token, holder, amount);
-    return;
-  }
+): Promise<Array<{ to: Address; data?: Hex; value?: bigint }>> {
+  const treasury = accountAddress(treasuryPk);
   const held = (await publicClient.readContract({
     address: token,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [holder],
   })) as bigint;
-  if (held >= amount) return;
-  await grantErc20(
-    publicClient,
-    walletClient,
-    chain,
-    token,
-    holder,
-    amount - held,
-  );
+  if (held >= amount) return [];
+  const short = amount - held;
+  if (await canTreasuryMint(publicClient, token, treasury))
+    return [
+      {
+        to: token,
+        data: encodeFunctionData({
+          abi: mintableAbi,
+          functionName: "mint",
+          args: [holder, short],
+        }),
+      },
+    ];
+  const treasuryHeld = (await publicClient.readContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [treasury],
+  })) as bigint;
+  if (treasuryHeld < short)
+    throw new Error(
+      `treasury cannot fund ${short} of token ${token}: it holds ${treasuryHeld} and the token does ` +
+        "not let it mint. Prefund the treasury in genesis, or give it the minter role (issue #33 (1))",
+    );
+  return [
+    {
+      to: token,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "transfer",
+        args: [holder, short],
+      }),
+    },
+  ];
 }
 
 export function snapshotForLog(snapshot: BalanceSnapshot) {

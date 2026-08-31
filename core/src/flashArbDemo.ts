@@ -3,7 +3,7 @@
 // so the agent can compute the same value with getContractAddress (no env injection). Off by default.
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address } from "viem";
-import { mine, setEthBalance } from "@eris/sdk/chain.js";
+import { isExternalChain, mine, setEthBalance } from "@eris/sdk/chain.js";
 import { AAVE, BALANCER, TOKENS, UNISWAP } from "@eris/sdk/constants.js";
 import { readForgeArtifact } from "@eris/sdk/forge.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
@@ -44,7 +44,7 @@ export async function deployFlashArb(ctx: SimContext): Promise<Address> {
     maxFeePerGas: baseFee + 1_000_000_000n,
     maxPriorityFeePerGas: 1_000_000_000n,
   });
-  await mine(ctx.publicClient);
+  if (!isExternalChain()) await mine(ctx.publicClient);
   const receipt = await ctx.publicClient.waitForTransactionReceipt({ hash });
   if (!receipt.contractAddress) throw new Error("FlashArb deploy failed");
   if (

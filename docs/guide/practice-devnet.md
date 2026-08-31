@@ -120,8 +120,9 @@ A roster entry is a registration, not a launch instruction:
 ```yaml
 agents:
   - id: noop
-    wallet: AGENT1_PRIVATE_KEY   # the operator's own baseline (ADR 0019 §2)
-    baseline: true
+    wallet: AUTO                 # the operator's own baseline (ADR 0019 §2). AUTO, not a named dev
+    baseline: true               # key: on a real chain those come prefunded, and the endowment is a
+                                 # floor rather than an assignment — see below.
 
   - id: alice
     external: true
@@ -149,6 +150,21 @@ run that would look healthy and mean nothing:
 | `economicGas: true` | that profile finalizes prices with a storage write, which no real chain permits |
 | `stressVictimCount > 0` | victims need a fresh state per run, and this chain has none |
 | a permissionlessly mintable token | free money for whoever notices, and no score computed against it means anything |
+
+That last one needs the minter-gated `MockERC20`, so a deployment (and any state dump built from it)
+has to be rebuilt before external mode will start against it.
+
+**The endowment is a floor, not an equalizer.** A cheatcode *assigns* a balance; a treasury *adds* to
+one. So an address that already holds something keeps it — right for a chain that never resets, and a
+trap at the start of a period: the first external run had two agents on prefunded dev accounts start
+with $3.0bn against a fresh address's $34k, and their per-round returns were a report on one large
+ETH holding. Every run records `initial_endowment` and warns above a 2x spread; use fresh addresses
+for a fresh field. It is a warning rather than a refusal because mid-period a spread is real history.
+
+**Setup is minutes, not instants.** Every transaction waits for the sequencer, so funding N wallets
+is N × (a few blocks) before the first agent trades. The treasury's transfers and each wallet's
+approvals go out as batches — one sender, consecutive nonces, one wait — and the loop prints its
+progress, because an environment that is silent for ten minutes reads as one that has hung.
 
 ### What a period produces
 

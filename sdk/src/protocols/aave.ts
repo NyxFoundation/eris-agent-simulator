@@ -13,7 +13,7 @@ import {
   increaseTime,
   mine,
   sendAndMine,
-  sendAsImpersonated,
+  sendAsPrivileged,
 } from "../chain.js";
 import { curveStableSwapNgAbi, erc20Abi, lstVaultAbi } from "../abis.js";
 import type {
@@ -733,7 +733,7 @@ export const aaveAdapter: ProtocolAdapter = {
       args: [admin],
     })) as boolean;
     if (!isAdmin) {
-      await sendAsImpersonated(
+      await sendAsPrivileged(
         ctx.publicClient,
         ctx.walletClient,
         ctx.chain,
@@ -746,6 +746,7 @@ export const aaveAdapter: ProtocolAdapter = {
             args: [admin],
           }),
         },
+        "granting the environment POOL_ADMIN",
       );
     }
 

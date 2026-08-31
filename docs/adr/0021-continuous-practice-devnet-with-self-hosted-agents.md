@@ -207,13 +207,56 @@ anvil + プロキシ案（B1）は**不採用**。#33（funding・順序・ラ�
 | §4 データ源の規律 | メソッド名は calldata デコード（`sdk/src/methodSelectors.ts` は生成物。ブラウザに ABI パーサを積まないため。ABI とのズレはテストが落とす）。16 ブロック run で 114/114 命名、`direct` は消滅。判断ログタブは external で非表示、送信フィードは「何名がここに出ないか」を明示。live の RPC は `run_started_realtime` から | — |
 | §5 hosted | `/runs` ハンドラを `dashboard/server/runsApi.ts` に切り出し、dev サーバーと `npm run dashboard:serve` が共有 | — |
 | §6 日次セグメント | `core/src/segments.ts`。`competition ⊃ scenario` にセグメント列として載り、`resetUnit` は正直に `continuous`。**エポックは厳密に分割される**（境界上で始まるセグメントは繰り越さない／途中で始まるものは繰り越す） | セグメント粒度の実測（下表） |
-| §7 実クライアント | `run.chainMode: external`。cheatcode は**その場で拒否**し、代替機構を名指しする（実チェーンでは未知 RPC がエラーオブジェクトを返すだけで、呼び出し側の多くがそれを飲み込む＝「誰にも資金を配らず、何もマイニングせず、完走した競技として summary を書く」run になる）。funding は treasury 実送金、ブロックはシーケンサ、reset は無し、Aave の warp は fork 由来なので不実行 | — |
-| #33 (1) funding | treasury EOA からの実送金。**代入ではなく差分補填**（同じ admin/keeper を毎セグメント補充するので、有限口座から 2,000,000 ETH を二度は配れない）。`MockERC20.mint` に minter ゲートを追加し、**起動前に「誰でも mint できるか」を実測して落とす**（"cheatcode-free" は RPC の話だが、同じ穴が contract 側にあった） | — |
+| §7 実クライアント | `run.chainMode: external`。cheatcode は**その場で拒否**し、代替機構を名指しする（実チェーンでは未知 RPC がエラーオブジェクトを返すだけで、呼び出し側の多くがそれを飲み込む＝「誰にも資金を配らず、何もマイニングせず、完走した競技として summary を書く」run になる）。funding は treasury 実送金、ブロックはシーケンサ、reset は無し、Aave の warp は fork 由来なので不実行。**フル run を実走して確認済み**（下節。走らせて初めて出た問題が 4 つあった） | op-geth 上での実走 |
+| #33 (1) funding | treasury EOA からの実送金。**代入ではなく差分補填**（同じ admin/keeper を毎セグメント補充するので、有限口座から 2,000,000 ETH を二度は配れない）。`MockERC20.mint` に minter ゲートを追加し、**起動前に「誰でも mint できるか」を実測して落とす**（"cheatcode-free" は RPC の話だが、同じ穴が contract 側にあった）。**実走で確認済み**（下節） | 配布用 state dump の焼き直し（minter ゲート付きトークンを焼き込むため） |
 | #33 (2) 順序 | `npm run check:ordering -- --live` が**自分で入札して測る**。到着順と手数料順をわざと逆にするので、到着順を保つビルダーは降順プローブなら通ってこれで落ちる。anvil `--order fees` で 15 組 0 件、`--order fifo` で 10/10 検出 | **op-geth 上での実測**（devnet 待ち） |
 | #33 (3) reset | external では resetFork を拒否。練習場ではそれが設計 | — |
 | #33 (4) 機械的移植 | GMX vendor の `localhost` network を `RPC_URL`/`CHAIN_ID` 駆動へ（patch + deployer 両方）、`.chainId` も同様。archive RPC 依存は §3 が消した | — |
 | #35 Eris 側 IF | RPC/chainId/treasury 鍵 → deployer network entry + external run mode。read/write RPC 分離の口（`run.readRpcUrl`）も先に開けてある | rollup config / genesis / ops は別 repo |
 | #36 read 容量 | `npm run stress:rpc` が**observation 形状**で測る（`reconstruct.ts` と同じ read 集合の Multicall3 を agent × block）。cold/warm 分離・ブロック間隔ジッタ・履歴深度・replica 要否の判定まで出す | **op-geth 上での実測**（devnet 待ち） |
+
+### external モードの実走（2026-08-31）
+
+**anvil 上で走らせた**。ノードは anvil だが、run は実クライアントとして扱う — `chainMode: external` が
+cheatcode を全部拒否するので、ブロック生成は**運営がシーケンサの cadence として run の外で設定した**
+interval mining のみ、funding は treasury 実送金、reset は無し。venue は minter ゲート付き MockERC20 で
+deploy し直した（uniswap/balancer/curve/aave、fresh anvil、`gen:local-constants` 再生成）。
+
+結果（24 ブロック / epoch 6 / 3 agent / 15 wallet）:
+
+```
+external_chain_mint_guard   checked 4, permissionlessMint []      ← ゲート済みトークンが通る
+fork_reset_skipped          reason external-chain
+treasury_funded_roles       treasury 0xf39F…2266
+external_chain_block_time   configured 2, observed 2              ← cadence を計測している
+interval_mining_started     （無い）                                ← 環境はマイニングに触れていない
+epoch_boundary × 4          live 採点
+epoch_series_agreement      compared 12, maxAbsDiff 0.00 USDC     ← 事後 sweep と一致
+value_series_reconstructed  failedReads 0
+house-arb                   14 tx / revert 0 / net +57.25
+initial_endowment           ratio 1.0001                          ← 場が揃っている
+```
+
+**走らせて初めて出た問題が 4 つある。どれも単体テストでは出ない。**
+
+1. **`deployContract` が自分でブロックをマイニングしていた**。cheatcode 監査の grep から漏れていた
+   1 箇所で、ガードが起動 12 秒後に捕まえた。`sendAndMine` と同じ分岐（dev node は自分で掘る／
+   external はシーケンサを待つ）に修正
+2. **Aave / GMX の権限付与が impersonation だった**。fork ではロール admin は他人（mainnet multisig）
+   なので偽装しか手が無いが、**自前デプロイのチェーンでは admin は自分の口座**（deployer = treasury）。
+   `sendAsPrivileged` が機構を選び、external で自分の鍵でないアドレスを要求されたら**その旨を言って落ちる**
+3. **setup が 9 分間の沈黙になった**。dev node では `sendAndMine` が即座に掘るのでタダだが、実チェーンでは
+   1 tx = 1 ブロック待ち。15 wallet × 約 18 tx × 2 秒。実測で 6 分経過してもイベントは 4 行だった。
+   `sendBatch`（同一送信者・連番 nonce・**最後の 1 本だけ待つ**）と進捗出力で解消。external の funding は
+   全部 treasury 送信に寄せた（受取人が WETH を wrap する必要が無くなる＝バッチ可能。ついでに
+   `funding.ethWei` が正味の native 残高そのものになり ADR 0019 §6 に一致する）
+4. **エンダウメントは「下限」であって「均一化」ではない**。cheatcode は残高を*代入*し、treasury は*加算*する。
+   anvil の prefund 済みアカウントに紐付いた 2 体が **$3.0bn** で始まり、fresh address の 1 体が **$34k** で
+   始まった。ラウンドリターンは巨大な ETH 保有の報告になり、**成果物のどこにもそう書いていなかった**。
+   `initial_endowment` として毎 run 記録し、2 倍を超える開きは警告する（**fail-fast にはしない** —
+   期間の途中では開きは設定ミスではなく実際の履歴だから）
+
+3 と 4 は「動くが使えない／黙って間違う」種類で、コードを読んでも出てこない。
 
 計測ツールを 2 つとも「使ってみて直した」ことが結論に効いている:
 
