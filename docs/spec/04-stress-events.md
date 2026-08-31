@@ -231,6 +231,16 @@ soft-reset だと前 run の victim ポジションが残留して HF が壊れ�
 | `lending-incident` | 暴落 + victim + 清算 + 同じ窓の引き抜き |
 | `crash` | 価格ギャップ + 同じ窓での引き抜き（3 venue が同時に薄くなる） |
 | `depeg` | レジストリの stable が $1 でなくなる |
+| `vuln` | run 途中でプールが湧き、過半が rigged（ADR 0014） |
+
+`cex-drift` と `informed-flow` は **run 全体設定ではなく窓イベント**（`cexDrift` / `flowTrend`）で表現する。実測（seed 101 / 360 ブロック / プール乖離の平均 bps）:
+
+| regime | run 全体版 | 窓イベント版 | calm 基準 |
+|---|---|---|---|
+| `cex-drift` | **1,055 bps**（fair が +34.6% 暴走、venue-arb が +8,458） | **461 bps**（fair −5.1%、venue-arb +1,191） | 39 bps |
+| `informed-flow` | 45.0 bps | 42.7 bps | 39 bps |
+
+**`cex-drift` の run 全体版は自身の宣言長で壊れていた** — 60 ブロックでは 55bps に見えるので長らく発覚しなかった。窓化は非公開スケジュール化であると同時に、この暴走を台形で有界にする修正でもある。
 
 **7 本とも全 venue（`lst` / `liquity` 含む）をデプロイする。** 以前は 5 venue 版と `full-*` の 7 venue 版が並立していたが、5 venue 版は「競技とは何か」への 2 つ目の答えを残さないために撤去した。`config/regimes/{lst,liquity,liquity-crash}.yaml` は**venue 単体の検証用**として競技セットの外に残る（レジームであって venue の有無ではない）。
 

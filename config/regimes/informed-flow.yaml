@@ -51,9 +51,7 @@ limits:
   agentBase: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
 
 flow:
-  uninformedMaxWethWei: "3000000000000000000" # 3x calm: the pressure has to be able to move the mid
-  uninformedPersistBlocks: 12 # hold a direction long enough for it to accumulate
-  uninformedTrendCorrelation: 1.0 # every venue leans the same way (ADR 0017 regime 2)
+  uninformedMaxWethWei: "1000000000000000000" # calm's. The episodes below multiply it while open
   informedMaxWethWei: "2000000000000000000" # unchanged: this is the force pushing back
   balancerMaxWethWei: "1000000000000000000" # one cap for both legs on this venue -- see the caveat above
   curveMaxWethWei: "1000000000000000000" # ditto
@@ -69,6 +67,42 @@ flow:
   # moved +0.07% while its fair moved -1.17%). Sized to the WETH flow by notional; one value covers
   # the uninformed and informed legs on all three venues, where WETH splits them 1x and 2x.
   baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
+
+stress:
+  # The lean is two episodes rather than a run-wide setting (issue #56). Run-wide, the whole run was
+  # one long push in one direction, which a participant can read off the regime's name; as windows,
+  # when the pressure arrives is drawn from the seed and a run can hold other kinds of episode too.
+  #
+  # Calibration from the run-wide values this replaces: uninformed size 2-3x calm's (the old setting
+  # was a flat 3x), every venue leaning together (trendCorrelation 1.0) and a direction held for 12
+  # blocks -- unchanged, because those two are the shape of the lean rather than its strength, and
+  # the trapezoid deliberately does not fade them. Half a correlation is a different regime, not a
+  # weaker one.
+  #
+  # Measured for scale, run-wide at 360 blocks: a mean pool-to-fair gap of 45.0bps against calm's
+  # 31.1, which is the whole signature -- this regime is a modest, sustained pressure rather than a
+  # dislocation, and at 60 blocks it was indistinguishable from calm (32.9 against 31.1).
+  events:
+    - {
+        type: flowTrend,
+        magnitudeRange: [2.0, 3.0],
+        trendCorrelation: 1.0,
+        persistBlocks: 12,
+        windowFrac: [0.15, 0.3],
+        rampBlocks: 6,
+        holdBlocks: 30,
+        decayBlocks: 10,
+      }
+    - {
+        type: flowTrend,
+        magnitudeRange: [2.0, 3.0],
+        trendCorrelation: 1.0,
+        persistBlocks: 12,
+        windowFrac: [0.55, 0.75],
+        rampBlocks: 6,
+        holdBlocks: 30,
+        decayBlocks: 10,
+      }
 
 agents:
   - id: noop

@@ -231,6 +231,16 @@ In `config/regimes/`, referenced by the scenario matrix.
 | `lending-incident` | A crash plus victims plus liquidations plus a pull in the same window |
 | `crash` | A price gap with a pull in the same window (three venues thin at once) |
 | `depeg` | A registry stable stops being worth $1 |
+| `vuln` | Pools appear mid-run, most of them rigged (ADR 0014) |
+
+`cex-drift` and `informed-flow` are expressed as **windowed events** (`cexDrift` / `flowTrend`) rather than run-wide settings. Measured (seed 101, 360 blocks, mean pool-to-fair gap in bps):
+
+| Regime | Run-wide | Windowed | calm reference |
+|---|---|---|---|
+| `cex-drift` | **1,055 bps** (fair ran away +34.6%, venue-arb +8,458) | **461 bps** (fair −5.1%, venue-arb +1,191) | 39 bps |
+| `informed-flow` | 45.0 bps | 42.7 bps | 39 bps |
+
+**Run-wide, `cex-drift` was broken at the length it declares** — over 60 blocks the same settings read as a sane 55bps, which is how it survived unnoticed. Windowing is both the undisclosed schedule and the fix that bounds the runaway inside a trapezoid.
 
 **All seven deploy every venue, `lst` and `liquity` included.** A five-venue variant of each used to sit beside a seven-venue `full-*` one; the five-venue set was retired rather than kept as a second answer to what the competition is. `config/regimes/{lst,liquity,liquity-crash}.yaml` remain outside the set for **single-venue verification** — that is about regimes, not about which venues exist.
 
