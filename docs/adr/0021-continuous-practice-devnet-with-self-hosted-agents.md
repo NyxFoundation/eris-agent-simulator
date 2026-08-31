@@ -258,6 +258,14 @@ initial_endowment           ratio 1.0001                          ← 場が揃�
 
 3 と 4 は「動くが使えない／黙って間違う」種類で、コードを読んでも出てこない。
 
+**5 つ目は「切り替えられるか」を試して出た。** run の宛先は 2 軸あり、別々の場所で設定する —
+**チェーン**（`.env.local` + `--chain-mode`）と**アドレス**（`constants.local.ts`）。config ファイルは
+共通なので切替自体はフラグ 1 つだが、**アドレス overlay は同時に 1 つ**しか無いので deployment を移るたびに
+`DEPLOYMENTS_JSON=<path> npm run gen:local-constants` が要る。片方だけ動かした場合、以前は setup の
+数分後に `Cannot decode zero data ("0x")` と生アドレスが出るだけだった。起動時に deployment の
+コード有無を実測し、**何が無いか + 再生成コマンド**を出して落とすようにした（`deployment_check`）。
+両モードで走る — ローカル run を別の anvil に向けてしまう事故は external と同じだけ起きる。
+
 計測ツールを 2 つとも「使ってみて直した」ことが結論に効いている:
 
 - `stress:rpc` は最初、**何もデプロイされていない anvil に対して 3,360 observations/s と "sequencer-only is

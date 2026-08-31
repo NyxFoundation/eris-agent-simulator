@@ -119,6 +119,12 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `prewarmBlocks > 0`。さらに **scored token が誰でも mint できるなら落とす** — "cheatcode-free" は RPC の話だが、
   同じ穴が contract 側にあった（`MockERC20.mint` は permissionless だった。minter ゲートを追加済み）
 - `run.readRpcUrl` で read を replica へ分離できる（#36 の判断待ちだが、口だけ先に開けてある）
+- **ローカル ⇄ devnet の切り替えは 2 軸**で、別々の場所にある。**チェーン**（`.env.local` の
+  `ANVIL_RPC_URL`/`CHAIN_ID`/`TREASURY_PRIVATE_KEY` + `--chain-mode external`）と**アドレス**
+  （`sdk/src/constants.local.ts`。`DEPLOYMENTS_JSON=<path> npm run gen:local-constants` で切替）。
+  config ファイル自体は共通。**アドレス overlay は同時に 1 つ**なので、deployment を移るたびに再生成が要る。
+  片方だけ動かすと以前は setup の数分後に `Cannot decode zero data ("0x")` と生アドレスが出るだけだったので、
+  **起動時に deployment の有無を実測して落とす**（`deployment_check`。何が無いかと再生成コマンドを出す）
 
 ### 練習 devnet（ADR 0021。止まらないチェーン + 自己ホスト参加者）
 

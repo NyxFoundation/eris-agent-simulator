@@ -87,6 +87,10 @@ import {
 } from "./priceFeed.js";
 import { reconstructValueSeries, type EpochSeries } from "./reconstruct.js";
 import { LiveScorer } from "./liveScoring.js";
+import {
+  checkDeployment,
+  deploymentMismatchMessage,
+} from "./deploymentCheck.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import {
   scoreEpochSeriesByAgent,
@@ -692,8 +696,25 @@ export async function runRealtimeSimulation(
   const latestHistory: AgentObservation["history"] = [];
 
   try {
-    // Before a single wei is granted: on a chain participants can reach, a token anyone can mint
-    // makes the endowment meaningless and the funding below pointless (issue #33 (1)).
+    // Before anything else: is the deployment this run names actually on this chain? Two things pick
+    // the target and they are set in different places (the chain in .env.local, the addresses in
+    // constants.local.ts), so switching between a local node and a devnet means changing both. When
+    // only one moves, every read comes back "0x" and the failure surfaces as a decode error naming a
+    // bare address, several minutes into setup.
+    {
+      const check = await checkDeployment({ publicClient, enabledIds });
+      logger.event({
+        type: "deployment_check",
+        chainId: check.chainId,
+        checked: check.checked,
+        missing: check.missing,
+      });
+      if (check.missing.length > 0)
+        throw new Error(deploymentMismatchMessage(check, config.rpcUrl));
+    }
+
+    // Then, on a chain participants can reach, a token anyone can mint makes the endowment
+    // meaningless and the funding below pointless (issue #33 (1)).
     if (external) await assertTokensNotMintable(ctx, logger);
 
     // ---- setup (fast flush: no-mining + sendAndMine) ----

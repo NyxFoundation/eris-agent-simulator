@@ -136,6 +136,33 @@ agents:
 `command` / `args` / `dir` / `env` on an external entry are **refused**, not ignored: a roster that
 silently kept them would read as if the operator were running the agent.
 
+### Switching between a local node and the devnet
+
+A run's target has two axes, set in different places, and both have to move together:
+
+| axis | where | local dev node | devnet |
+|---|---|---|---|
+| the chain | `.env.local` | `ANVIL_RPC_URL=http://127.0.0.1:8545` | the devnet's RPC, `CHAIN_ID`, `TREASURY_PRIVATE_KEY` |
+| the mode | `run.chainMode` / `--chain-mode` | `anvil` (default) | `external` |
+| the addresses | `sdk/src/constants.local.ts` | generated from the local `deployments.json` | generated from the devnet's |
+
+The config file itself does not change:
+
+```bash
+# local
+npm run sim:realtime -- --config config/practice.yaml
+
+# the devnet — same file, one flag, plus the addresses for that deployment
+DEPLOYMENTS_JSON=<devnet>/deployments.json npm run gen:local-constants
+npm run sim:realtime -- --config config/practice.yaml --chain-mode external
+```
+
+There is one generated address overlay at a time, so moving between two deployments means
+regenerating it. Forgetting to is the easy mistake, and it used to surface minutes into setup as
+`Cannot decode zero data ("0x")` against a bare address — which is what a call to an address holding
+no code looks like, and says nothing about what went wrong. Every run now checks the deployment
+before it does anything else and names what is missing and how to fix it.
+
 ### On a real chain
 
 `run.chainMode: external` turns every anvil cheatcode into a refusal that names the mechanism
