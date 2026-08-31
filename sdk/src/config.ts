@@ -89,13 +89,6 @@ export type SimConfig = {
   // Re-fork target block (FORK_BLOCK_NUMBER). Pinning it makes reruns fully reproducible.
   // If unset, the first resetFork captures latest and reuses it for subsequent resets.
   forkBlockNumber?: number;
-  // Liquidation demo (GitHub #1). When ERIS_LIQUIDATION_DEMO=1, the coordinator has a victim wallet
-  // open an over-leveraged Aave position, then from shockRound onward lowers the Aave WETH oracle to
-  // push HF<1 and create a situation the liquidator agent can liquidate. Default off (existing runs/tests unchanged).
-  liquidationDemo: boolean;
-  liquidationShockBps: number; // WETH oracle drop amount (bps, default 1500=15%)
-  liquidationShockRound: number; // round at which the drop begins (default 3)
-  liquidationVictimSupplyWethWei: bigint; // WETH the victim supplies (default 5)
   // Seed-derived victim cohort that makes liquidations possible (WETH supply + USDC borrow, HF≈H0). Not scored.
   // count=0 (default) disables it. When >0, aave enabled + full re-fork (ARB_RPC_URL required) is a precondition (ADR 0009 §4).
   stressVictimCount: number; // ERIS_STRESS_VICTIM_COUNT
@@ -114,8 +107,6 @@ export type SimConfig = {
   // Flash arb demo (GitHub #3). With ERIS_FLASH_ARB=1 the coordinator deploys the FlashArb contract
   // and makes it available to the flash-arb agent. Requires uniswap+balancer+aave enabled. Default off.
   flashArbDemo: boolean;
-  rounds: number;
-  roundTimeSeconds: number;
   // Real-time mode (core/src/realtime/coordinator.ts). The interval-mining block interval (seconds)
   // and the run's stop condition (wall-clock time or block count).
   blockTimeSec: number;
@@ -162,14 +153,10 @@ export type SimConfig = {
   // harness counts blocks: 12/epoch, which leaves room for G7's per-boundary median window and keeps a
   // 42-epoch week (504 blocks) inside anvil's ~1,050 block history retention (ADR 0019 §8).
   epochBlocks: number;
-  // Epoch length stated in real time (ERIS_EPOCH_SECONDS; 0 = state it in blocks instead). ADR 0021
-  // §3 settles the *unit*: a round on a chain that runs for a week is 30 minutes to an hour, so that
-  // standings move several times a day without the series growing far past what the metric has been
-  // calibrated on. Blocks are then whatever that comes to at this chain's cadence, which is the
-  // right dependency direction -- an operator who changes the block time should not silently change
-  // how long a round is. The block count it resolves to, and the lambda that goes with it, are the
-  // pieces ADR 0021 leaves open and #56 decides.
-  epochSeconds: number;
+  // Note: `run.epochSeconds` has no field of its own. It is consumed where it is resolved, by
+  // resolveEpochBlocks below, and reaching this object as a second unread copy only invited a reader
+  // to use the wrong one.
+  //
   // Wall-clock hours per output segment (ERIS_SEGMENT_HOURS; 0 = one directory for the whole run,
   // which is every run today). ADR 0021 §6: the chain stays continuous and only the artifacts are
   // cut, because a week of events.jsonl is a file nobody can open and a viewer should not have to
@@ -373,13 +360,6 @@ export function loadConfig(env = process.env): SimConfig {
       env.FORK_BLOCK_NUMBER && env.FORK_BLOCK_NUMBER.trim() !== ""
         ? intEnv(env.FORK_BLOCK_NUMBER, 0)
         : undefined,
-    liquidationDemo: env.ERIS_LIQUIDATION_DEMO === "1",
-    liquidationShockBps: intEnv(env.ERIS_LIQUIDATION_SHOCK_BPS, 1500),
-    liquidationShockRound: intEnv(env.ERIS_LIQUIDATION_SHOCK_ROUND, 3),
-    liquidationVictimSupplyWethWei: bigintEnv(
-      env.ERIS_LIQUIDATION_VICTIM_WETH_WEI,
-      5_000_000_000_000_000_000n,
-    ),
     stressVictimCount: intEnv(env.ERIS_STRESS_VICTIM_COUNT, 0),
     stressVictimHf0: floatEnv(env.ERIS_STRESS_VICTIM_HF0, 1.1),
     stressVictimSupplyWethWei: bigintEnv(
@@ -393,10 +373,6 @@ export function loadConfig(env = process.env): SimConfig {
     vulnPoolFeeBps: intEnv(env.ERIS_VULN_POOL_FEE_BPS, 30),
     vulnLlm: env.ERIS_VULN_LLM ?? "0",
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
-    rounds: intEnv(env.ROUNDS, 50),
-    // EVM time to advance per round (seconds). Passed to evm_increaseTime in the round loop so that
-    // Aave variable-rate accrual and GMX funding occur at a realistic scale.
-    roundTimeSeconds: intEnv(env.ROUND_TIME_SECONDS, 3600),
     // Real-time mode settings.
     blockTimeSec,
     runSeconds: intEnv(env.ERIS_RUN_SECONDS, 20),
@@ -410,7 +386,6 @@ export function loadConfig(env = process.env): SimConfig {
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
     epochBlocks: resolveEpochBlocks(env, blockTimeSec),
-    epochSeconds: Math.max(0, intEnv(env.ERIS_EPOCH_SECONDS, 0)),
     segmentHours: Math.max(0, floatEnv(env.ERIS_SEGMENT_HOURS, 0)),
     segmentName: env.ERIS_SEGMENT_NAME ?? "",
     markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
@@ -582,6 +557,13 @@ export function loadConfig(env = process.env): SimConfig {
 // Blocks per scoring epoch. Stated in real time when `run.epochSeconds` is set (ADR 0021 §3), in
 // blocks otherwise -- and refusing to accept both, because two answers to "how long is a round" is
 // exactly the ambiguity the axis was introduced to remove.
+//
+// ADR 0021 §3 settles the *unit*: a round on a chain that runs for a week is 30 minutes to an hour,
+// so that standings move several times a day without the series growing far past what the metric has
+// been calibrated on. Blocks are then whatever that comes to at this chain's cadence, which is the
+// right dependency direction -- an operator who changes the block time should not silently change
+// how long a round is. The block count it resolves to, and the lambda that goes with it, are the
+// pieces ADR 0021 leaves open and #56 decides.
 function resolveEpochBlocks(
   env: NodeJS.ProcessEnv,
   blockTimeSec: number,
