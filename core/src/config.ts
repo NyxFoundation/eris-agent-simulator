@@ -48,9 +48,14 @@ export function loadAgents(path: string): AgentSpec[] {
 
 export function privateKeyForWalletName(
   config: SimConfig,
-  wallet: string,
+  wallet: string | undefined,
   agentId: string,
 ): Hex {
+  if (wallet === undefined)
+    throw new Error(
+      `agent "${agentId}" has no wallet binding. Only an external agent registered by address can ` +
+        "omit it, and the environment never signs for one of those (ADR 0021 §2)",
+    );
   switch (wallet) {
     case "AGENT0_PRIVATE_KEY":
       return config.privateKeys.agent0;
@@ -101,6 +106,7 @@ export function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
   }
   const seenIds = new Set<string>();
   const seenNamedWallets = new Set<string>();
+  const seenAddresses = new Set<string>();
   return file.agents.map((agent, index) => {
     const label = `${path} agents[${index}]`;
     if (!agent || typeof agent !== "object")
@@ -135,12 +141,48 @@ export function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
     if (agent.args !== undefined && agent.command === undefined) {
       throw new Error(`${label}.args requires an explicit command`);
     }
-    if (!isSupportedAgentWallet(agent.wallet)) {
+    // ADR 0021 §2: an external entry is a registration, not a process. Everything that describes how
+    // to *start* something is therefore rejected rather than ignored -- a `command` that silently
+    // does nothing is a roster that reads as if the operator were running the agent.
+    if (agent.external !== undefined && typeof agent.external !== "boolean")
+      throw new Error(`${label}.external must be a boolean when present`);
+    if (agent.external) {
+      for (const key of ["command", "args", "dir", "env"] as const) {
+        if (agent[key] !== undefined)
+          throw new Error(
+            `${label}.${key} has no meaning for an external agent: the participant runs it on their ` +
+              "own machine, so the environment never spawns anything (ADR 0021 §2)",
+          );
+      }
+    }
+    if (agent.address !== undefined) {
+      if (!agent.external)
+        throw new Error(
+          `${label}.address is only for external agents: the environment signs for every agent it ` +
+            "spawns, and an address alone is not something it can sign with",
+        );
+      if (!/^0x[0-9a-fA-F]{40}$/.test(String(agent.address)))
+        throw new Error(
+          `${label}.address must be a 0x-prefixed 20-byte hex address`,
+        );
+      if (agent.wallet !== undefined)
+        throw new Error(
+          `${label} sets both address and wallet. Pick one: address means the participant holds the ` +
+            "key, wallet means the environment derives it and hands it over",
+        );
+      const lower = String(agent.address).toLowerCase();
+      if (seenAddresses.has(lower))
+        throw new Error(`${path} registers address ${agent.address} twice`);
+      seenAddresses.add(lower);
+    } else if (!isSupportedAgentWallet(agent.wallet)) {
       throw new Error(
-        `${label}.wallet must be one of ${SUPPORTED_AGENT_WALLETS.join(", ")}`,
+        `${label}.wallet must be one of ${SUPPORTED_AGENT_WALLETS.join(", ")}` +
+          (agent.external
+            ? ", or give `address` instead if the participant holds their own key"
+            : ""),
       );
     }
-    if (agent.wallet !== "AUTO") {
+    if (agent.wallet !== undefined && agent.wallet !== "AUTO") {
       if (seenNamedWallets.has(agent.wallet)) {
         throw new Error(
           `${path} reuses named wallet ${agent.wallet}; use "AUTO" for additional agents`,
@@ -182,6 +224,8 @@ export function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
       description: agent.description,
       env: agent.env,
       baseline: agent.baseline,
+      external: agent.external,
+      address: agent.address,
     };
   });
 }

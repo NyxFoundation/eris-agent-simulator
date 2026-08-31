@@ -41,7 +41,6 @@ import type {
   AgentProtocolValue,
   BuiltTx,
   ProtocolAdapter,
-  SimContext,
   ValidationResult,
 } from "./types.js";
 
@@ -935,12 +934,7 @@ export function lpPositionValuation(
     });
   }
   for (const [token, amount] of totals) {
-    const usd = tokenAmountUsd(
-      token,
-      amount,
-      ctx.fairByBase,
-      ctx.stablePrices,
-    );
+    const usd = tokenAmountUsd(token, amount, ctx.fairByBase, ctx.stablePrices);
     if (usd === undefined) {
       if (amount > 0n) unpriced.push({ token, amountRaw: amount.toString() });
       continue;

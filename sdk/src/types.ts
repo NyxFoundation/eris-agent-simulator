@@ -748,11 +748,23 @@ export type AgentSpec = {
   // <agentsDir>/<dir ?? id>/). Explicit command/args override for a fully self-contained agent (other languages, etc.).
   command?: string;
   args?: string[];
-  wallet: string;
+  // Which key the environment signs for this agent with. Required unless `address` is given: an
+  // external participant who holds their own key is registered by address instead (ADR 0021 §2).
+  wallet?: string;
   description?: string;
   env?: Record<string, string>;
   // A yardstick for discrimination. If true, it is a baseline such as noop/random.
   baseline?: boolean;
+  // ADR 0021 §2: a registered participant who runs the agent on their own machine. The environment
+  // funds it, attributes its txs, scores it and rule-checks it exactly as before -- all of which are
+  // address-based already -- but never starts a process for it. Its decision log lives on the
+  // participant's disk and never reaches the coordinator, which is the point (§4 / axis C2).
+  external?: boolean;
+  // The participant's own address, for an external entry whose key the environment does not hold.
+  // This is the safer registration: a key the operator generated is a key the operator has. The
+  // alternative -- `wallet`, with the environment deriving and handing over a key -- stays available
+  // because a practice devnet issuing funded keys is a legitimate way to run one.
+  address?: string;
 };
 
 export type AgentsFile = {

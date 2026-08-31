@@ -1,0 +1,321 @@
+# ADR 0021: 常時稼働の練習用 devnet と自己ホスト型エージェント参加
+
+## Status
+
+Accepted（2026-08-31）
+
+**§1〜§7 は実装済み。ただし OP Stack devnet そのものは存在しない**（#35 が明言するとおり rollup config /
+genesis / ops スクリプトは別 infra repo の担当で、本 repo には入らない）。したがって現在の到達点は
+「**実クライアントに向けられる状態のコードと、その上で走らせる前に答えを出すべき 2 つの計測ツール**」であり、
+devnet を立てた日に走らせるものが揃っている、という意味である。実測が残っている項目は下の
+「実装状況」表と「決めていないこと」に分けて明示する。
+
+前提となる実チェーン移行の下地は issue として先行している（#33 = cheatcode-free 化、
+#35 = OP Stack 選定とインターフェース、#36 = read 負荷試験）。本 ADR はその上に載る
+**運用モデルの決定**であり、#33/#35/#36 の技術判断を置き換えない。
+
+## Context
+
+eris の公式競技パイプラインは「参加者が bundle を提出し、運営がシナリオ行列
+（ADR 0017 / ADR 0020: シナリオ =（regime, seed）、world はシナリオごとにリセット）を
+運営側インフラで再生して採点する」形で確定している。一方、本番までの**シミュレーション期間**に
+参加者へ提供する環境の形は未決だった。
+
+今回、この期間について次の前提が置かれた:
+
+- **チェーンは期間中止まらない**（snapshot/revert・genesis 再起動を期間中は行わない）
+- **参加者は自分のマシンでエージェントを動かす**（運営はプロセスを spawn しない）
+- **エージェントの判断ログは参加者のローカルにしか存在しない**
+
+現行実装はこの前提と 6 箇所で衝突する:
+
+1. **ロスターが spawn 前提** — `config/local.yaml` の `agents:` は coordinator が
+   `runtime/bot.ts` を起動する単位。外部参加者には「id + wallet の登録」しか要らない
+2. **採点が run 終了後の一括再構成前提** — `core/src/realtime/reconstruct.ts` は完走後に
+   歴史ブロックを遡る。止まらないチェーンでは「終了後」が来ず、ノードの歴史保持にも上限がある
+3. **ダッシュボード/エクスプローラの一部が agent ログ依存** — 判断ログタブ、mempool 送信フィード
+   （自己申告）、explorer のメソッド名（ログ join）、live モードの RPC 発見
+   （`runtime_start` ログ行）は、ログが中央に無いと成立しない
+4. **順位の位置づけが未定義** — 期間中の順位を公式ルール（#56 未決のまま）と混同させると、
+   決まっていないことを決まったように見せる
+5. **成果物の肥大** — 週スケール連続稼働では events.jsonl / blocks.csv が全読み不能な大きさになる
+6. **チェーン基盤の cheatcode 依存** — funding / resetFork / interval mining は anvil 専用（#33 が
+   全項目を特定済み）。また anvil の RPC を素で公開すると cheatcode を誰でも叩ける
+
+### 解決したい課題
+
+上記 6 衝突を解消し、「参加者が勝手にエージェントを動かせる常時稼働環境」を、
+公式競技パイプラインを変えずに提供できるようにする。
+
+### 検討した選択肢
+
+判断軸は独立に 4 つある（2026-08-31 のレビューで各軸を確認済み）。
+
+**軸 A: 期間の位置づけ**
+
+| 観点 | A1: 期間そのものが公式競技（連続採点） | A2: 練習場（公式は行列のまま） | A3: 併用 |
+|------|------|------|------|
+| ADR 0020 との整合 | 連続経済への実質回帰（在庫持ち越し・資本配分が競技対象に戻る） | 不変 | 部分的に回帰 |
+| 採点の確定度 | #56 未決のまま公式化する圧力 | 練習順位と明示でき、未決を持ち込まない | 配分の追加判断が要る |
+| 参加者価値 | 高（本番そのもの） | 高（接続検証 + 相場勘、公式と同じ venue/環境挙動） | 最も高いが複雑 |
+
+**軸 B: チェーン基盤**
+
+| 観点 | B1: anvil + RPC allowlist プロキシ | B2: 実クライアント（op-geth 等） |
+|------|------|------|
+| 現行ツール互換 | そのまま（cheatcode funding / `--order fees`） | #33 の 4 項目の移植が必要 |
+| セキュリティ | プロキシの穴 = 即死（`anvil_*` が誰でも可）| cheatcode が存在しない |
+| 長期稼働耐性 | 単一プロセス・メモリ肥大の実績リスク（36 体で崩壊歴あり） | archive ノード・replica 構成が取れる（#36） |
+| 本番への連続性 | 低（本番は実 L2 方向 = #33/#35） | 高（本番下地と同一系譜） |
+
+**軸 C: 判断ログの扱い**
+
+| 観点 | C1: 中央へアップロード | C2: ローカルのみ・中央はチェーン由来のみ | C3: My agent ローカル合流モード |
+|------|------|------|------|
+| 前提との整合 | 前提に反する（かつ自己申告は検証不能） | 整合 | 整合 |
+| 実装量 | 収集基盤が要る | デコード置換のみ | ダッシュボードにリモート成果物モードが要る |
+| 参加者体験 | — | ログは各自のファイル/端末で見る | 自分のログだけ UI で見える |
+
+**軸 D: 練習順位の公開**
+
+| 観点 | D1: 毎エポック即時 | D2: 遅延公開 | D3: 期間終了まで非公開 |
+|------|------|------|------|
+| 観戦性・動機付け | 高 | 中 | 低 |
+| 模倣・戦略推測 | 材料になる（ただし取引自体はオンチェーンで元々全員に可視） | 弱まる | 無い |
+| 実装 | 逐次採点が必須 | 同左 + 遅延バッファ | 逐次採点は内部用のみ |
+
+## Decision
+
+**シミュレーション期間は公式採点の対象外の「練習場」とし、実クライアント基盤の devnet を
+止めずに走らせ、登録制の自己ホスト型エージェントを受け入れ、チェーン由来データのみから
+毎エポック即時の練習順位を公開する（A2 / B2 / C2 / D1）。公式採点は従来どおり
+提出バンドル × シナリオ行列（ADR 0017 / 0020）で行い、本 ADR はそこに一切触れない。**
+
+```
+運営側（hosted）                                      参加者側（ローカル）
+┌──────────────────────────────────────────┐         ┌──────────────────────┐
+│ devnet（実クライアント、止まらない）         │◄─ tx ──┤ agent プロセス × N    │
+│   ▲ 毎ブロック: oracle/flow/keeper/stress  │── 観測 ─►│ （runtime はそのまま） │
+│ coordinator ─┬─ events.jsonl / blocks.csv │         │ agents/<id>.jsonl     │
+│              └─ エポック境界の逐次断面      │         │ （ローカルのみ）       │
+│ ダッシュボード（practice 順位を毎エポック） │◄─ 閲覧 ─┤ ブラウザ              │
+│ Blockscout                                │         └──────────────────────┘
+└──────────────────────────────────────────┘
+```
+
+### 1. 位置づけ: 練習場（A2）
+
+期間中の順位は**練習順位**であり、順位表・配布物に「公式採点ではない」ことを常時明示する
+（ダッシュボードの文言原則 = 決まっていないことを決まったように見せない、の適用）。
+公式競技のパイプライン（bundle 提出・`check:strategy`・`backtest --scenarios`・
+matrix/standings）は不変。ADR 0020 が言う本番のリセット単位（scenario）とも衝突しない —
+練習場は `resetUnit: continuous` の 1 world である。
+
+ストレスイベントの予定は**種類と頻度のみ公開し、タイミングは非公開**とする
+（例:「期間中に crash と depeg の窓が複数回ある」までは告知、いつ開くかは伏せる。
+練習価値と本番同等性 = 非公開スケジュールの折衷。2026-08-31 決定）。
+
+### 2. 参加モデル: 登録制 + 環境マニフェスト
+
+- ロスターに **external エントリ**（`{ id, wallet }` のみ。`command`/spawn 無し）を追加する。
+  帰属・採点・fee 上限検査（`postRunCheck`）は元々 address ベースなので変更は薄い
+- funding は treasury EOA からの**実送金**（#33 (1)。トークンは自前 MockERC20 なので mint+transfer）
+- 参加者には**環境マニフェスト**を配布する: RPC URL・chainId・全 venue のデプロイ済みアドレス・
+  PriceFeed・エポック予定。runtime は coordinator IPC（`ERIS_RUN_DIR` 等）無しの既定値で動き、
+  判断ログは各自のローカルに落ちる
+
+### 3. 採点: エポック境界の逐次断面（D1 の前提条件）
+
+事後一括再構成を、**coordinator がエポック境界を通過するたびにその場で断面（Multicall3）を取り
+epoch 系列へ追記する**方式に置き換える。歴史保持深度の制約が消え、ダッシュボードに既にある
+「through round k」再計算がそのまま**期間中のライブ順位**になる（live run に順位が無い、という
+現行制約の解消）。market series も同様に逐次追記へ。エポック長は**実時間 30 分〜1 時間を目安**に再較正する
+（2026-08-31 決定。順位が 1 日に何度も動き、かつ系列長が現行の採点感覚と大きく乖離しない帯。
+ブロック数への換算と λ の値は採点側と一体で確定する = 下表）。
+
+### 4. データ源の規律: 中央は「coordinator 成果物 + チェーン」のみ（C2）
+
+- explorer のメソッド名は agent ログ join をやめ、**calldata のオンチェーンデコード**へ
+  （sdk の protocol アダプタが ABI を保有。「真実の出典はチェーン」の規律に一致）
+- 判断ログタブ・mempool 送信フィードは外部参加者では**非表示**とし、空状態文言で
+  「ログは各参加者のローカルにある」と明示する。My agent ローカル合流モードは**作らない**
+  （C3 は却下。需要が観測されたら「決めていないこと」経由で再訪）
+- live モードの RPC 発見は agent ログ依存をやめ、coordinator が `run_started_realtime` に
+  RPC を記録する
+
+### 5. 提供形態: 運営 hosted
+
+成果物は coordinator のマシンにしか無いため、ダッシュボードは運営が hosted で提供する
+（dev サーバーの `/runs` プラグインを小さな静的サーバーへ切り出し + Blockscout 同居）。
+参加者ローカル起動（現行の使い方）は開発用として残る。
+
+### 6. 長期稼働: run ディレクトリの日次セグメント化
+
+チェーンは連続のまま、**成果物の run ディレクトリだけを日次等で切り替える**。ダッシュボードの
+competition ⊃ scenario 構造にセグメント列として載る（`resetUnit: continuous` のセグメント集合
+なので `npm run metrics` のモード混在拒否とは干渉しない）。tail API は増分なので live は既に耐える。
+
+### 7. チェーン基盤: 実クライアント（B2）
+
+anvil + プロキシ案（B1）は**不採用**。#33（funding・順序・ライフサイクル・機械的移植の 4 項目）、
+#35（OP Stack 選定・genesis 設計・シーケンサ順序検証）、#36（read 容量・replica 判断）の系譜に
+従う。op-geth が既定で priority-fee 順にブロックを構築する点が「oracle を tx で先頭に置く」現行
+設計を生かす（#35）。実装順は **#33/#35/#36 → 本 ADR の §2〜§6** とする。
+
+## Consequences
+
+### Positive
+
+- 公式競技パイプラインに触れずに、参加者の接続検証・練習・観戦が成立する
+- 逐次採点により**期間中のライブ順位**が初めて可能になる（歴史深度制約も同時に消える）
+- 中央データがチェーン由来に統一され、検証不能な自己申告（mempool ログ）への依存が消える
+- cheatcode の攻撃面が基盤ごと消える（実クライアントに `anvil_*` は存在しない）
+
+### Negative
+
+- 判断ログ・送信フィードが中央ダッシュボードから消える
+  - → チェーン由来で代替できるもの（メソッド名・金額・建玉・順位）はデコードで残す。
+    submitted-but-not-included の可視性は諦める（外部エージェントでは元々検証不能）
+- ADR 0006 §5 が塞いだ「submit 数を数えられない穴」が外部エージェントで再発する
+  - → included tx はチェーンで数えられる。練習場では順位に影響しない統計として扱う
+- `economicGas` プロファイル（ADR 0011）は storage-write 確定のため実チェーンで使えない
+  - → 既定プロファイル（tx ベース）で運用（#33 (2)。tx 化再設計は本 ADR のスコープ外）
+- 参加者の回線レイテンシ差は構造上残る（ブロック内順序は fee 順で公平、観測到達だけ差が出る）
+  - → 練習場では受容。公式（行列）には影響しない
+
+### Risks
+
+- **op-geth の順序保証が実測未検証**（#35 の load-bearing assumption）
+  - → #35 のシーケンサ順序検証を §2 以降の実装より先に完了させる
+- **read 負荷で devnet が崩壊**（36 体の observe で anvil を落とした実績がある）
+  - → #36 の容量測定と replica 判断を先行させる。必要なら read/write RPC を分離配布
+- **即時公開順位が模倣を誘発**
+  - → 受容（D1 選択時に確認済み）。取引はオンチェーンで元々全員に可視であり、
+    順位の遅延で得られる守秘は限定的
+- **練習順位が公式ルールと誤読される**
+  - → 順位表に practice 表記を常設。#56（指標選択）の未決は練習場に持ち込まれない
+
+## 実装状況（2026-08-31）
+
+運用手順は `docs/guide/practice-devnet.md`、設定例は `config/practice.yaml`。
+
+| 決定 | 実装 | 残っている実測 |
+|------|------|--------------|
+| §1 練習場 | 順位表に `practice` バッジ + キャプション常設（判定は `resetUnit === "continuous"`。**「scenario でない」ではなく「continuous である」で判定する** — ADR 0020 以前の matrix.json は当該フィールドを持たず、あれは公式形だった）。マニフェストにも `status.scored: false`。イベントは**種類と件数のみ**公開し、窓は resolved schedule ではなく config のイベント列から作るので構造的に漏れない | — |
+| §2 登録制 + マニフェスト | ロスターの `external: true` + `address`（参加者が鍵を持つ。**運営が作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env` は**黙殺せず拒否**。`npm run manifest`（公開分は鍵なし、参加者分は stdout のみ）。runtime は `ERIS_MANIFEST` で自走し、**自分の venue approval を自分で出す**（approval は本人の署名なので運営には出せない） | — |
+| §3 逐次断面採点 | `core/src/realtime/liveScoring.ts`。同じ reader・同じブロック・同じ G7 median 窓なので事後 sweep と**一致する**ことを毎 run 検査（`epoch_series_agreement`。32 ブロック run で 12 断面すべて差 0.00 USDC）。`epochs.jsonl` / `market.jsonl` を逐次 append。エポック長は**実時間指定**（`run.epochSeconds`） | λ とブロック換算値は #56 と一体で未決（下表） |
+| §4 データ源の規律 | メソッド名は calldata デコード（`sdk/src/methodSelectors.ts` は生成物。ブラウザに ABI パーサを積まないため。ABI とのズレはテストが落とす）。16 ブロック run で 114/114 命名、`direct` は消滅。判断ログタブは external で非表示、送信フィードは「何名がここに出ないか」を明示。live の RPC は `run_started_realtime` から | — |
+| §5 hosted | `/runs` ハンドラを `dashboard/server/runsApi.ts` に切り出し、dev サーバーと `npm run dashboard:serve` が共有 | — |
+| §6 日次セグメント | `core/src/segments.ts`。`competition ⊃ scenario` にセグメント列として載り、`resetUnit` は正直に `continuous`。**エポックは厳密に分割される**（境界上で始まるセグメントは繰り越さない／途中で始まるものは繰り越す） | セグメント粒度の実測（下表） |
+| §7 実クライアント | `run.chainMode: external`。cheatcode は**その場で拒否**し、代替機構を名指しする（実チェーンでは未知 RPC がエラーオブジェクトを返すだけで、呼び出し側の多くがそれを飲み込む＝「誰にも資金を配らず、何もマイニングせず、完走した競技として summary を書く」run になる）。funding は treasury 実送金、ブロックはシーケンサ、reset は無し、Aave の warp は fork 由来なので不実行。**フル run を実走して確認済み**（下節。走らせて初めて出た問題が 4 つあった） | op-geth 上での実走 |
+| #33 (1) funding | treasury EOA からの実送金。**代入ではなく差分補填**（同じ admin/keeper を毎セグメント補充するので、有限口座から 2,000,000 ETH を二度は配れない）。`MockERC20.mint` に minter ゲートを追加し、**起動前に「誰でも mint できるか」を実測して落とす**（"cheatcode-free" は RPC の話だが、同じ穴が contract 側にあった）。**実走で確認済み**（下節） | 配布用 state dump の焼き直し（minter ゲート付きトークンを焼き込むため） |
+| #33 (2) 順序 | `npm run check:ordering -- --live` が**自分で入札して測る**。到着順と手数料順をわざと逆にするので、到着順を保つビルダーは降順プローブなら通ってこれで落ちる。anvil `--order fees` で 15 組 0 件、`--order fifo` で 10/10 検出 | **op-geth 上での実測**（devnet 待ち） |
+| #33 (3) reset | external では resetFork を拒否。練習場ではそれが設計 | — |
+| #33 (4) 機械的移植 | GMX vendor の `localhost` network を `RPC_URL`/`CHAIN_ID` 駆動へ（patch + deployer 両方）、`.chainId` も同様。archive RPC 依存は §3 が消した | — |
+| #35 Eris 側 IF | RPC/chainId/treasury 鍵 → deployer network entry + external run mode。read/write RPC 分離の口（`run.readRpcUrl`）も先に開けてある | rollup config / genesis / ops は別 repo |
+| #36 read 容量 | `npm run stress:rpc` が**observation 形状**で測る（`reconstruct.ts` と同じ read 集合の Multicall3 を agent × block）。cold/warm 分離・ブロック間隔ジッタ・履歴深度・replica 要否の判定まで出す | **op-geth 上での実測**（devnet 待ち） |
+
+### external モードの実走（2026-08-31）
+
+**anvil 上で走らせた**。ノードは anvil だが、run は実クライアントとして扱う — `chainMode: external` が
+cheatcode を全部拒否するので、ブロック生成は**運営がシーケンサの cadence として run の外で設定した**
+interval mining のみ、funding は treasury 実送金、reset は無し。venue は minter ゲート付き MockERC20 で
+deploy し直した（uniswap/balancer/curve/aave、fresh anvil、`gen:local-constants` 再生成）。
+
+結果（24 ブロック / epoch 6 / 3 agent / 15 wallet）:
+
+```
+external_chain_mint_guard   checked 4, permissionlessMint []      ← ゲート済みトークンが通る
+fork_reset_skipped          reason external-chain
+treasury_funded_roles       treasury 0xf39F…2266
+external_chain_block_time   configured 2, observed 2              ← cadence を計測している
+interval_mining_started     （無い）                                ← 環境はマイニングに触れていない
+epoch_boundary × 4          live 採点
+epoch_series_agreement      compared 12, maxAbsDiff 0.00 USDC     ← 事後 sweep と一致
+value_series_reconstructed  failedReads 0
+house-arb                   14 tx / revert 0 / net +57.25
+initial_endowment           ratio 1.0001                          ← 場が揃っている
+```
+
+**走らせて初めて出た問題が 4 つある。どれも単体テストでは出ない。**
+
+1. **`deployContract` が自分でブロックをマイニングしていた**。cheatcode 監査の grep から漏れていた
+   1 箇所で、ガードが起動 12 秒後に捕まえた。`sendAndMine` と同じ分岐（dev node は自分で掘る／
+   external はシーケンサを待つ）に修正
+2. **Aave / GMX の権限付与が impersonation だった**。fork ではロール admin は他人（mainnet multisig）
+   なので偽装しか手が無いが、**自前デプロイのチェーンでは admin は自分の口座**（deployer = treasury）。
+   `sendAsPrivileged` が機構を選び、external で自分の鍵でないアドレスを要求されたら**その旨を言って落ちる**
+3. **setup が 9 分間の沈黙になった**。dev node では `sendAndMine` が即座に掘るのでタダだが、実チェーンでは
+   1 tx = 1 ブロック待ち。15 wallet × 約 18 tx × 2 秒。実測で 6 分経過してもイベントは 4 行だった。
+   `sendBatch`（同一送信者・連番 nonce・**最後の 1 本だけ待つ**）と進捗出力で解消。external の funding は
+   全部 treasury 送信に寄せた（受取人が WETH を wrap する必要が無くなる＝バッチ可能。ついでに
+   `funding.ethWei` が正味の native 残高そのものになり ADR 0019 §6 に一致する）
+4. **エンダウメントは「下限」であって「均一化」ではない**。cheatcode は残高を*代入*し、treasury は*加算*する。
+   anvil の prefund 済みアカウントに紐付いた 2 体が **$3.0bn** で始まり、fresh address の 1 体が **$34k** で
+   始まった。ラウンドリターンは巨大な ETH 保有の報告になり、**成果物のどこにもそう書いていなかった**。
+   `initial_endowment` として毎 run 記録し、2 倍を超える開きは警告する（**fail-fast にはしない** —
+   期間の途中では開きは設定ミスではなく実際の履歴だから）
+
+3 と 4 は「動くが使えない／黙って間違う」種類で、コードを読んでも出てこない。
+
+**5 つ目は「切り替えられるか」を試して出た。** run の宛先は 2 軸あり、別々の場所で設定する —
+**チェーン**（`.env.local` + `--chain-mode`）と**アドレス**（`constants.local.ts`）。config ファイルは
+共通なので切替自体はフラグ 1 つだが、**アドレス overlay は同時に 1 つ**しか無いので deployment を移るたびに
+`DEPLOYMENTS_JSON=<path> npm run gen:local-constants` が要る。片方だけ動かした場合、以前は setup の
+数分後に `Cannot decode zero data ("0x")` と生アドレスが出るだけだった。起動時に deployment の
+コード有無を実測し、**何が無いか + 再生成コマンド**を出して落とすようにした（`deployment_check`）。
+両モードで走る — ローカル run を別の anvil に向けてしまう事故は external と同じだけ起きる。
+
+### devnet 相当でダッシュボードを見て出たこと（2026-08-31）
+
+external モードのチェーン + 自己ホスト参加者 + セグメントを立て、ローカルのダッシュボードで見た。
+**参加者 `alice`（address 登録のみ・自分のマシンで agent 実行）が順位表に載り 1 位になる**ところまで確認。
+`practice` バッジ、live セグメントの picker、agent ページのタブ差、explorer のメソッド名も devnet 側で確認済み。
+
+その過程で 3 件出た:
+
+1. **`blocks.csv` が全セグメントで空だった。** 一括スキャンは run 終了時にしか走らないので、
+   **止まらない期間では永久に書かれず**、書かれても全ブロックが最終セグメントに入る。§3 が採点で解いたのと
+   同じ「終わりが来ない」問題が 1 層下にあった。セグメント運用時のみブロックごとに追記する
+   （`bn - 1` を timed task で。roll の直前に flush してから閉じるので行は属すべきセグメントに入る）。
+   run 終了で終わる run は従来どおり末尾一括で byte-identical。実測: 3 セグメントに 609/644/208 行、
+   命名 100%、`alice` も `house-arb` も帰属
+2. **セグメントの時計が setup 中に回っていた。** 実チェーンの setup は分単位なので、最初の "1 日" が
+   短くなる。さらに setup が窓より長いと**ブロックを 1 つも含まないセグメント**が生まれ、index には
+   `607..606` という反転した範囲が載った。最初のブロックで時計を開始し、run が始まる前には roll しない
+3. **live セグメントが「未回収」と表示されていた。** 期間の現行セグメントは roll するまで summary.json を
+   持たないので、稼働中の期間では毎日「1 本未回収」と出続ける。runs index の `live` フラグを見て
+   「進行中」と「回収できていない」を区別する
+
+計測ツールを 2 つとも「使ってみて直した」ことが結論に効いている:
+
+- `stress:rpc` は最初、**何もデプロイされていない anvil に対して 3,360 observations/s と "sequencer-only is
+  sufficient" を報告した**。ノードは空アドレスへの call を実残高より速く断るので、全滅は巨大な容量に見える。
+  今は読む対象が無ければ測る前に落ちる
+- ブロック間隔は最初、負荷生成と**同じプロセスでポーリング**していて、負荷時にポーラ自身が遅れ、2 ブロック飛びを
+  半分の長さの間隔 2 つに割って「負荷時のほうがブロックが速い」と結論した。今はブロック自身の timestamp を
+  事後に読む
+
+## 決めていないこと
+
+| 項目 | 決めない理由 | いつ決めるか |
+|------|------------|------------|
+| エポック長のブロック数と λ | 目安（実時間 30 分〜1 時間）は決定済み。**単位は実装で確定した** — `run.epochSeconds` に実時間で書き、ブロック数はそのチェーンの cadence から導出する（block time を変えた運営者が知らぬ間にラウンド長を変えてしまう方向の依存を断つ）。残るのは帯のどこを取るかと λ で、これは λ の実効的厳しさと連動し採点側（#56 / ADR 0020 の再比較）と一体。`config/practice.yaml` の 1800 秒は**帯の下端を置いただけの暫定値**で、決定ではない | #56 と同時 |
+| セグメント粒度（日次か否か） | 成果物サイズの実測が無い。`run.segmentHours` で可変にしてあり、既定を 24 に置いただけ | devnet 初回稼働の実測後 |
+| read replica の要否と RPC 配布形態 | #36 の測定待ち | #36 完了時 |
+| 練習成績の選抜利用（A3 の余地） | 公式ルールの確定（#56）が先 | 公式ルール確定後 |
+| My agent ローカル合流モード | 今回は不要と判断。需要が未観測 | 練習期間の参加者フィードバック後 |
+
+## Notes
+
+### 参考資料
+
+- ADR 0006: 環境とエージェント実行の分離（本 ADR が依拠する「チェーン経由でしか観測しない」規律）
+- ADR 0016: 参加者向け backtest（ローカル練習の既存手段。devnet はこれを置き換えず補完する）
+- ADR 0017 / ADR 0020: 公式採点 = シナリオ行列と world リセット単位（本 ADR は不変のまま前提化）
+- ADR 0019: 採点メトリクス（練習順位も同じ M9 系列を「through round k」で読む）
+- issue #33: Run the environment on a real L2（cheatcode-free 化の 4 項目）
+- issue #35: OP Stack chain: approach selection & Eris-side interface
+- issue #36: OP Stack devnet RPC stress test（read 容量・replica 判断）
+- issue #32 / #63: ダッシュボード（hosted 化・practice 表示は同 workspace 上の増分）
+- 2026-08-31 のレビュー: 4 軸（位置づけ / 基盤 / ログ / 公開）の選択を確認

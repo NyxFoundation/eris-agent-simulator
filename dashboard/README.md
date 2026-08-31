@@ -25,10 +25,10 @@ vite.config.ts      Vite config (React / Tailwind plugins, @ alias, the /runs de
 tsconfig.json       TypeScript config (strict)
 src/
   main.tsx          React mount
-  App.tsx           Root component
-  navigation.ts     Route table
-  pages/            TopPage / LeaderboardPage / MarketPage / AgentDetailPage / ExplorerPage / ArchivePage
-  components/       Shared UI
+  App.tsx           Root component + route table
+  navigation.ts     pushState helper
+  pages/            HomePage (standings) / ScenarioPage / MarketPage / ExplorerPage / AgentDetailPage
+  components/       Shared UI (Sidebar, the two round bars, competitionUi)
   data/             Providers, run artifact readers, live-run polling, per-page snapshot hooks
   design-system/    Primitives the pages are composed from
   lib/              Formatting and small shared helpers
@@ -38,26 +38,86 @@ public/             Static assets, served as-is
 
 `@/` is an alias for `src/`, defined in both `vite.config.ts` and `tsconfig.json`.
 
+## Selection
+
+Everything on screen belongs to one hierarchy, normalized at the data layer's
+entry point (`src/data/competition.ts`):
+
+```
+competition  ⊃  scenario (= one run, "regime#seed")  ⊃  round (= one scoring epoch)
+```
+
+A competition is a scenario matrix written by `backtest --scenarios`
+(`runs/<id>/matrix.json`); a standalone `sim:realtime` run is wrapped into the
+same shape as a competition of one scenario (`competitionFromRun`), so every
+page processes exactly one kind of object. The sidebar picks a competition,
+then a scenario inside it; `/` is the competition's standings under the fixed
+rule. The score column shows the score itself (regime-equal mean of
+per-scenario `mean − λ·std`, ×10⁴ so it does not round to zero, no unit
+suffix); the rank order is the official
+aggregation (per-scenario z-scores averaged per regime), whose value sits in
+the score cell's tooltip. Re-scoring under other rules is `npm run metrics`'s
+job. A standings row opens the agent's page, whose Standing tab explains the
+place (pooled rounds, per-regime split).
+
+Everything on screen is a display name, never a storage id: a competition is
+its scenario set and date ("full-8h · 8/29", derived in
+`src/data/competition.ts`), a scenario is `regime#seed`, and the raw directory
+id stays one hover away. There is no serial "Run N" anywhere.
+
+## Language
+
+Every user-visible string lives in `src/i18n/messages.ts`, in English and
+Japanese; the sidebar's toggle switches the language (persisted per browser,
+defaulting to the browser language). Data-layer builders call `t()` too, so
+snapshots are keyed by locale and rebuild on switch.
+
 ## Data
 
 All pages consume snapshots through `src/data/provider.ts` — an explicit
 indirection point. The default provider (`runsProvider.ts`, issue #63 Phase 1)
 builds every snapshot from run artifacts under `runs/<id>/`, served by a small
 Vite dev-server plugin (`/runs/index.json` + `/runs/<id>/<file>`, see
-`vite.config.ts`). The sidebar's run picker selects which run to render
-(newest by default, persisted per browser).
+`vite.config.ts`).
 
-- `summary.json` — standings (score = M9 in bps/epoch, PnL%, Sharpe, max DD)
+- `summary.json` — standings (score = M9, shown ×10⁴; PnL%, Sharpe, max DD)
 - `events.jsonl` — price/portfolio series (reconstructed observations), event tape
 - `blocks.csv` — explorer blocks/transactions (methods joined from agent logs)
 - `agents/<id>.jsonl` — decision logs and submitted-tx self-reports
 - `market.json` — post-run reconstruction extension (#63 Phase 2, written by
   `core/src/realtime/marketSeries.ts`): per-block per-venue executable quotes +
-  pool depth, GMX OI/funding, Aave reserve totals, multi-asset fair prices,
-  end-of-run GMX positions / Aave accounts per agent, and decoded per-tx USD
-  notionals. Powers the cross-venue arb chart, MarketStats, positions/trades
-  tables, tx amounts, and volume aggregates. Runs recorded before the artifact
+  pool depth, GMX OI/funding, Aave reserve totals, market-priced stable quotes,
+  multi-asset fair prices, end-of-run GMX positions / Aave accounts per agent,
+  and decoded per-tx USD notionals. Powers the venue panels, the cross-venue arb
+  chart, tx amounts, and volume aggregates. Runs recorded before the artifact
   existed degrade to the Phase 1 rendering (`—`/`n/a`/empty).
+
+The LST vault's and the Liquity system's *market-wide* state is not in
+`market.json`: the coordinator already writes it to `events.jsonl` every block
+(`lst_block` / `liquity_block`), so those panels read it from there. Their
+*per-agent* positions are in `market.json` (`lstPositionsAtEnd` /
+`liquityPositionsAtEnd`), alongside `gmxPositionsAtEnd` and
+`aaveAccountsAtEnd` — together they are what an agent page's positions table
+shows.
+
+## Rounds
+
+A round is a **scoring epoch** (ADR 0019), not a run — the unit the score
+(`mean − λ·std` of per-epoch log returns) is actually computed over. The bar at
+the top of every page is the selected run's epoch series
+(`summary.json` → `valueSeries.epochSeries.boundaryBlocks`); clicking a segment
+opens that round's per-agent result, and scopes `/explorer` to its block window.
+A live run has no scored series yet, so the bar lays the rounds out from the
+`epochBlocks` the coordinator records at run start and fills in the results when
+the run completes.
+
+Selecting a round also scopes `/markets` (every series, stat and table) and
+`/explorer` (blocks and transactions) to that round's block window; the
+end-of-run position tables stay the run's final cross-section and say so.
+
+`src/data/` is split three ways: `runsProvider.ts` builds the page snapshots,
+`venuePanels.ts` builds the per-application panels `/markets` renders, and
+`artifactHelpers.ts` holds the readers and formatters both share.
 
 ## Live mode (issue #63 Phase 3)
 

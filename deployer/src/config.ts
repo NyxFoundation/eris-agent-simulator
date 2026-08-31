@@ -13,8 +13,9 @@ export const MNEMONIC =
 export const MANAGE_ANVIL =
   (process.env.MANAGE_ANVIL ?? "true").toLowerCase() === "true";
 
-// Default chainId of an empty anvil.
-export const CHAIN_ID = 31337;
+// Default chainId of an empty anvil. Overridable because the same deploy path targets the external
+// chain of issue #35, whose id comes from its genesis (issue #33 (4)).
+export const CHAIN_ID = Number(process.env.CHAIN_ID ?? "31337");
 
 export const anvilChain = defineChain({
   id: CHAIN_ID,

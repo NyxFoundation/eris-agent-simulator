@@ -2,6 +2,8 @@
 // the RNG source is derived from the market (SEED) and agent id -> same SEED = same yardstick (before/after is reproducible).
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { Rng } from "@eris/sdk/rng.js";
+import { limitFor } from "../lib/affordable.js";
+import { marketViews } from "../lib/markets.js";
 
 function hashStr(s: string): number {
   let h = 2166136261;
@@ -20,16 +22,23 @@ export function decide(obs: AgentObservation): AgentAction | null {
   if (rng.next() < 0.35) {
     return { type: "noop", reason: "random skip" };
   }
-  const tokenIn = rng.next() < 0.5 ? "WETH" : "USDC";
-  const max = BigInt(
-    tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits,
-  );
+  // Draw the market too, not just the direction. A yardstick that only ever touches WETH is not a
+  // yardstick for a multi-asset field: it would score as "did nothing" on every WBTC dislocation
+  // the real strategies were busy trading (ADR 0013).
+  const views = marketViews(obs).filter((v) => v.venues.length > 0);
+  if (views.length === 0) return { type: "noop", reason: "no venue" };
+  const view = views[rng.int(0, views.length - 1)];
+  const tokenIn = rng.next() < 0.5 ? view.base : "USDC";
+  const max = limitFor(obs, tokenIn);
   const amountIn = (max * BigInt(1 + rng.int(0, 50))) / 100n;
-  return {
+  const action: Record<string, unknown> = {
     type: "swap",
     tokenIn,
     amountIn: amountIn.toString(),
     maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei,
     slippageBps: 75,
   };
+  // `base` only belongs on a non-WETH swap (ADR 0013): the WETH market is the untagged default.
+  if (view.base !== "WETH") action.base = view.base;
+  return action as unknown as AgentAction;
 }

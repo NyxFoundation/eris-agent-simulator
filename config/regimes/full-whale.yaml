@@ -1,0 +1,87 @@
+# config/regimes/full-whale.yaml — the `whale` regime with every venue deployed.
+#
+# Derived from config/regimes/whale.yaml by adding `lst` and `liquity` to run.protocols. Nothing else
+# changes: the OU parameters, the flow calibration, the stress ranges and the USDC-only funding are
+# the official ones.
+#
+# This is a SEPARATE regime set, not the official one, and the distinction is the point (ADR 0016 §3).
+# Adding the two venues changes the competition rather than merely widening it:
+#   - liquity promotes eUSD into the market-priced stable set (STABLE_MARKET_LEGS), so a stable that
+#     can lose its peg exists in *every* regime here, not only in depeg.
+#   - a regime's liquidityPull with no `venue:` thins every enabled venue, so its meaning widens with
+#     the venue set.
+#   - funding stays USDC-only (ADR 0017 §4), so an LST or CDP strategy has to buy its own exposure
+#     and carries the beta that USDC-denominated scoring charges for it. That is deliberate: not
+#     holding something is not a reason to do nothing.
+# Scores from this set are therefore not comparable with a matrix run on the official regimes.
+#
+# Run: npm run backtest -- --regime full-whale --seed 101 --agents <roster>
+# Or as a set: npm run backtest -- --scenarios config/scenarios/full.yaml --agents <roster>
+
+run:
+  blocks: 360 # R: ADR 0017 §1
+  seconds: 1800 # a stress run auto-disables the time limit and ends by block count (ADR 0009)
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+
+funding:
+  # An ETH/BTC/USDC basket rather than USDC only. The score is excess over the do-nothing
+  # baseline, which holds the same funding, so the basket's beta cancels out of the metric by
+  # construction (lp-provider's own comment says as much: "handed inventory is beta nobody chose
+  # and it cancels out of every score because the benchmark holds it too"). What USDC-only was
+  # protecting is netPnlUsdc, a reporting figure. What it cost was reachability: the LST vault and
+  # the Trove are WETH/ETH denominated, and the sell side of every arbitrage had no inventory
+  # behind it, so half of each strategy was structurally dead (issue #54).
+  wethWei: "8000000000000000000" # 8 WETH
+  base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
+  usdcUnits: "25000000000"
+
+limits:
+  agentWethWei: "1000000000000000000"
+  agentUsdcUnits: "5000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+
+stress:
+  # Ranges, not values: the seed samples both the size and the block (ADR 0009). The windows are
+  # disjoint so the four prints land spread out rather than clustering into one shock.
+  events:
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.10, 0.25] }
+    - {
+        type: whale,
+        magnitudeRange: [25, 60],
+        windowFrac: [0.3, 0.45],
+        venue: balancer,
+      }
+    - {
+        type: whale,
+        magnitudeRange: [25, 60],
+        windowFrac: [0.5, 0.65],
+        venue: curve,
+      }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.7, 0.85] }
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: venue-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage
+  - id: multi-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: base-agnostic cross-venue arbitrage (all active bases x all venues)

@@ -4,6 +4,15 @@
 @import './tokens/spacing.css';
 @import './tokens/base.css';
 
+/* Rows that navigate somewhere: inline styles cannot express :hover, so the one hover
+   affordance lives here. */
+.row-link {
+  cursor: pointer;
+}
+.row-link:hover {
+  background: var(--bg-surface-raised);
+}
+
 @keyframes marker-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }

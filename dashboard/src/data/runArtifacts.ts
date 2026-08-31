@@ -8,6 +8,17 @@ export interface RunIndexEntry {
   mtimeMs: number;
   /** True while the run is in progress (no summary.json yet, events.jsonl still moving). */
   live?: boolean;
+  /** A competition rather than a single world: the dir holds matrix.json and no run artifacts. */
+  kind?: "matrix";
+}
+
+/** Index entries that are actual runs. A competition dir has no summary.json and cannot be loaded as one. */
+export function runEntries(entries: RunIndexEntry[]): RunIndexEntry[] {
+  return entries.filter((e) => e.kind !== "matrix");
+}
+
+export function competitionEntries(entries: RunIndexEntry[]): RunIndexEntry[] {
+  return entries.filter((e) => e.kind === "matrix");
 }
 
 export interface RunEvent {
@@ -26,6 +37,12 @@ export interface BlockRow {
   ownerId: string;
   role: string;
   actionType: string;
+  /**
+   * The function the tx called, decoded by the coordinator from the tx's own calldata
+   * (ADR 0021 §4). Empty for a run recorded before the column existed, and for a selector this
+   * deployment has no ABI for — an unnamed method rather than a guessed one.
+   */
+  method: string;
 }
 
 export interface SummaryAgent {
@@ -43,8 +60,14 @@ export interface EpochScore {
   score: number;
   meanLogReturn: number;
   stdLogReturn: number;
+  /** One excess log return per epoch, in order. Index e-1 is epoch e (1-based). */
   logReturns: number[];
+  /** 1-based epoch at which the bankruptcy floor was first touched (ADR 0019 G1/G2), or null. */
   bankruptAtEpoch: number | null;
+  /** 1-based epochs whose value read failed and was carried forward at a return of 0. */
+  carriedForwardEpochs?: number[];
+  lambda?: number;
+  benchmarkApplied?: boolean;
 }
 
 export interface RunSummary {
@@ -62,7 +85,8 @@ export interface RunSummary {
       epochBlocks?: number;
       epochs?: number;
       boundaryBlocks?: number[];
-      valuesByAgent?: Record<string, number[]>;
+      // A boundary the scorer could not read is null, not 0 — a failed read must not become a loss.
+      valuesByAgent?: Record<string, Array<number | null>>;
     };
   };
   epochScores?: Record<string, EpochScore>;
@@ -111,6 +135,17 @@ export interface MarketSeriesRow {
     string,
     { suppliedUsd: number; borrowedUsd: number; utilization: number }
   >;
+  // Market-priced stables (issue #27). `quoted: false` means the pool would not quote and priceUsdc
+  // is par by fallback — it must never be rendered as "the peg held".
+  stables?: Record<
+    string,
+    {
+      priceUsdc: number;
+      sellPriceUsdc: number;
+      buyPriceUsdc: number;
+      quoted: boolean;
+    }
+  >;
 }
 
 export interface GmxPositionAtEnd {
@@ -120,6 +155,24 @@ export interface GmxPositionAtEnd {
   sizeUsd: number;
   collateralUsd: number;
   entryPriceUsd: number | null;
+}
+
+export interface LstPositionAtEnd {
+  agent: string;
+  shares: number;
+  shareAssetsWeth: number;
+  claimableWeth: number;
+  pendingWeth: number;
+  openRequests: number;
+}
+
+export interface LiquityPositionAtEnd {
+  agent: string;
+  troveDebtEusd: number;
+  troveCollWeth: number;
+  icr: number | null;
+  stabilityDepositEusd: number;
+  eusdBalance: number;
 }
 
 export interface AaveAccountAtEnd {
@@ -151,6 +204,9 @@ export interface MarketSeriesFile {
   series: MarketSeriesRow[];
   gmxPositionsAtEnd: GmxPositionAtEnd[];
   aaveAccountsAtEnd: AaveAccountAtEnd[];
+  // Absent in runs recorded before these venues were reported per agent.
+  lstPositionsAtEnd?: LstPositionAtEnd[];
+  liquityPositionsAtEnd?: LiquityPositionAtEnd[];
   notionals: Record<string, TxNotional>;
 }
 
@@ -207,7 +263,7 @@ function parseJsonl<T>(text: string): T[] {
   return out;
 }
 
-// blocks.csv columns: round,blockNumber,txIndex,hash,from,priorityFeeWei,status,ownerId,role,actionType,bundleId,bundleIndex
+// blocks.csv columns: round,blockNumber,txIndex,hash,from,priorityFeeWei,status,ownerId,role,actionType,bundleId,bundleIndex,method
 // No field is quoted, so a plain split is safe. Header (and any repeated header) rows
 // are dropped by the numeric blockNumber check.
 function parseBlocksCsv(text: string): BlockRow[] {
@@ -227,6 +283,7 @@ function parseBlocksCsv(text: string): BlockRow[] {
       ownerId: cols[7] ?? "",
       role: cols[8] ?? "",
       actionType: cols[9] ?? "",
+      method: cols[12] ?? "",
     });
   }
   return rows;

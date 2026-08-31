@@ -1,4 +1,10 @@
-import { keccak256, stringToBytes, type Address, type Hex } from "viem";
+import {
+  keccak256,
+  stringToBytes,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
 import { privateKeyForWalletName } from "../config.js";
 import { resolveRunInputs } from "../runConfig.js";
 import {
@@ -6,17 +12,29 @@ import {
   activeStables,
   fundWallet,
   getBalances,
+  fundAddress,
+  isPermissionlesslyMintable,
   makeClients,
   mine,
   resetFork,
   sendAndMine,
+  sendBatch,
   setAutomine,
+  setChainMode,
   setEthBalance,
   setIntervalMining,
+  transferEth,
 } from "@eris/sdk/chain.js";
-import { RunLogger } from "../logger.js";
+import { RunLogger, type RunArtifactWriter } from "../logger.js";
+import { SegmentedRun, sliceEpochSeries } from "../segments.js";
+import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
+import { methodNameForCalldata } from "@eris/sdk/methodSelectors.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
-import { marketPricedStables, readStablePrices } from "@eris/sdk/stables.js";
+import {
+  marketPricedStables,
+  PAR_STABLE_PRICES,
+  readStablePrices,
+} from "@eris/sdk/stables.js";
 import { checkRunFeeViolations, countRunRevertedTxs } from "../postRunCheck.js";
 import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
 import type {
@@ -67,7 +85,12 @@ import {
   writePriceFeedStorage,
   writePriceFeedStorageFor,
 } from "./priceFeed.js";
-import { reconstructValueSeries } from "./reconstruct.js";
+import { reconstructValueSeries, type EpochSeries } from "./reconstruct.js";
+import { LiveScorer } from "./liveScoring.js";
+import {
+  checkDeployment,
+  deploymentMismatchMessage,
+} from "./deploymentCheck.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import {
   scoreEpochSeriesByAgent,
@@ -131,6 +154,110 @@ const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH (gas f
 // Look up the WalletRole from a flowWalletMap key (`${protocol}:${kind}`).
 function flowRole(key: string): WalletRole {
   return key.endsWith(":informed") ? "informed-flow" : "uninformed-flow";
+}
+
+// The chain's actual block cadence, from the last two blocks' timestamps. On anvil the environment
+// sets it; on an external chain the sequencer does, and a mismatch with run.blockTimeSec silently
+// mis-sizes every epoch (ADR 0021 §3 sets epoch length in real time, converted through this number).
+async function observeBlockTimeSec(
+  publicClient: PublicClient,
+): Promise<number | null> {
+  try {
+    const head = await publicClient.getBlock();
+    if (head.number < 1n) return null;
+    const prev = await publicClient.getBlock({ blockNumber: head.number - 1n });
+    const dt = Number(head.timestamp - prev.timestamp);
+    return dt > 0 ? dt : null;
+  } catch {
+    return null;
+  }
+}
+
+// How far apart the two ways of reading the same boundary came out (ADR 0021 §3). Reported per run
+// rather than asserted in a test, because the thing that could break them apart -- a venue whose
+// state depends on when it is read rather than on which block -- would only show up on a chain.
+export function compareEpochSeries(
+  live: EpochSeries,
+  swept: EpochSeries,
+): {
+  boundaries: number;
+  compared: number;
+  maxAbsDiffUsdc: number;
+  maxRelDiff: number;
+  worst?: {
+    agentId: string;
+    boundaryBlock: number;
+    live: number;
+    swept: number;
+  };
+} {
+  const sweptIndex = new Map(swept.boundaryBlocks.map((b, i) => [b, i]));
+  let compared = 0;
+  let maxAbsDiffUsdc = 0;
+  let maxRelDiff = 0;
+  let worst:
+    | { agentId: string; boundaryBlock: number; live: number; swept: number }
+    | undefined;
+  for (const [agentId, liveValues] of Object.entries(live.valuesByAgent)) {
+    const sweptValues = swept.valuesByAgent[agentId];
+    if (!sweptValues) continue;
+    live.boundaryBlocks.forEach((block, i) => {
+      const j = sweptIndex.get(block);
+      if (j === undefined) return;
+      const a = liveValues[i];
+      const b = sweptValues[j];
+      if (a === null || b === null || a === undefined || b === undefined)
+        return;
+      compared++;
+      const abs = Math.abs(a - b);
+      const rel = Math.abs(b) > 0 ? abs / Math.abs(b) : abs > 0 ? 1 : 0;
+      if (abs > maxAbsDiffUsdc) {
+        maxAbsDiffUsdc = abs;
+        worst = { agentId, boundaryBlock: block, live: a, swept: b };
+      }
+      maxRelDiff = Math.max(maxRelDiff, rel);
+    });
+  }
+  return {
+    boundaries: live.boundaryBlocks.length,
+    compared,
+    maxAbsDiffUsdc,
+    maxRelDiff,
+    ...(worst ? { worst } : {}),
+  };
+}
+
+// Free money check for a public chain (issue #33 (1) / ADR 0021 §7).
+//
+// "cheatcode-free" is about RPC methods, but the same hole can live in a *contract*: the deployer's
+// MockERC20 originally let anyone mint, which on a dev node is a convenience and on a chain
+// participants can reach is an unbounded balance for whoever notices. It is checked rather than
+// assumed because the answer depends on which build of the token the deployment happens to hold, and
+// a run scored against mintable tokens is not scored at all.
+async function assertTokensNotMintable(
+  ctx: SimContext,
+  logger: RunLogger,
+): Promise<void> {
+  const tokens = [
+    ...baseTokens().map((t) => ({ symbol: t.symbol, address: t.address })),
+    ...activeStables().map((address) => ({ symbol: "stable", address })),
+  ];
+  const open: string[] = [];
+  for (const t of tokens) {
+    if (await isPermissionlesslyMintable(ctx.publicClient, t.address))
+      open.push(`${t.symbol} (${t.address})`);
+  }
+  logger.event({
+    type: "external_chain_mint_guard",
+    checked: tokens.length,
+    permissionlessMint: open,
+  });
+  if (open.length > 0)
+    throw new Error(
+      `these scored tokens can be minted by anyone: ${open.join(", ")}. On a chain participants can ` +
+        "reach, that is an unlimited balance for whoever calls mint(), and no score computed against " +
+        "it means anything. Redeploy with a minter-gated token (deployer/contracts/MockERC20.sol)",
+    );
 }
 
 // Before the competition starts (= off the clock), run a short market loop with only the flow bot to make anvil
@@ -204,8 +331,15 @@ async function prewarmWorkingSet(
 type RealtimeAgentRuntime = {
   id: string;
   spec: AgentSpec;
-  privateKey: Hex;
+  // null for a registered participant who holds their own key (ADR 0021 §2). Everything the
+  // environment does with an agent -- fund it, attribute its txs, score it, rule-check it -- is
+  // address-based, so the key is only ever needed to *spawn* one, and an external agent is not
+  // spawned.
+  privateKey: Hex | null;
   address: Address;
+  // True when nothing here starts the process (ADR 0021 §2). Distinct from `process === null`,
+  // which is also true for a local agent before setup finishes.
+  external: boolean;
   process: RealtimeAgentProcess | null; // spawned after setup completes
   initial: BalanceSnapshot;
   included: number; // number of txs included in a block (read by aggregation)
@@ -234,6 +368,24 @@ type SubmittedMeta = {
 // The economic-gas (ADR 0011) endowment floor. 1 tx ~1.5M gas; a floor (~tens of txs) so even a modest tip does
 // not run out of gas on the first move. The final endowment value is decided by calibration measurement (ADR "undecided").
 const MIN_ECONOMIC_GAS_ETH_WEI = 500_000_000_000_000_000n; // 0.5 ETH
+
+// How long a window the post-run sweep will attempt. anvil retains roughly 1,050 blocks of state
+// (ADR 0006 Risks), and reading past that returns zeros rather than an error -- a value series that
+// silently reads as a cliff. Below the measured limit on purpose: the sweep also reads the G7 median
+// window before each boundary, which reaches a few blocks further back than the boundary itself.
+const HISTORY_SWEEP_LIMIT = 1000;
+
+// Roughly what one block of a full-venue run appends to events.jsonl, measured at 1,437 B/block on a
+// 400-block run with five venues and three agents (blocks.csv adds another ~731). It scales with the
+// roster and the venue count, so this is an order of magnitude rather than a figure -- which is all
+// the advisory below needs it to be.
+const EVENT_BYTES_PER_BLOCK = 1_400;
+
+// Past this, a run that writes one directory is a run whose artifacts nobody can open and whose
+// rounds bar renders one control per round. ADR 0021 §6 exists for exactly this, and 20,000 blocks
+// is around eleven hours at a two-second cadence -- comfortably longer than any calibration run and
+// comfortably shorter than a period.
+const SEGMENT_ADVISORY_BLOCKS = 20_000;
 
 export async function runRealtimeSimulation(
   // Evaluation tools inject per-regime SEED etc. programmatically (without mutating env).
@@ -266,6 +418,60 @@ export async function runRealtimeSimulation(
         `resetUnit: continuous for sim:realtime (ADR 0020 §1)`,
     );
 
+  // ---- chain mode (issue #33 / ADR 0021 §7) ----
+  // Installed before anything touches the chain, so a cheatcode reached for on an external chain
+  // throws at the call rather than returning an RPC error some catch swallows.
+  setChainMode(config.chainMode, config.treasuryPrivateKey);
+  const external = config.chainMode === "external";
+  if (external) {
+    if (!config.treasuryPrivateKey)
+      throw new Error(
+        "run.chainMode: external needs TREASURY_PRIVATE_KEY in .env.local — on a chain without " +
+          "cheatcodes every balance has to be sent from an account genesis prefunded (issue #33 (1))",
+      );
+    if (!config.localDeploy)
+      throw new Error(
+        "run.chainMode: external requires run.localDeploy: true. The external chain runs *our* venue " +
+          "deployment (issue #33 Notes: a closed economy the environment owns every contract of), and " +
+          "the address overlay that names those contracts is what localDeploy turns on",
+      );
+    if (config.economicGas)
+      throw new Error(
+        "run.chainMode: external cannot use run.economicGas: the profile finalizes prices with a " +
+          "storage write, which no real chain permits. Use the default tx-based profile until the " +
+          "redesign in issue #33 (2) lands (ADR 0021 Negative)",
+      );
+    if (config.stressVictimCount > 0)
+      throw new Error(
+        "run.chainMode: external cannot stage stress victims: they require a fresh state per run " +
+          "(ADR 0009 §4), and a chain that never resets has none. Victims for the practice devnet " +
+          "have to be staged once and left standing",
+      );
+    if (config.prewarmBlocks > 0)
+      throw new Error(
+        "run.chainMode: external cannot prewarm: the warmup loop mines its own blocks, and there is " +
+          "no cold fork state to warm in the first place (issue #33 (2))",
+      );
+  }
+
+  // A long run that writes one directory (ADR 0021 §6). Advisory rather than fatal: a deliberately
+  // long unsegmented run is a legitimate thing to do, and the operator is the one who knows whether
+  // this is a period or a calibration. But it should not be a surprise -- measured, a week
+  // unsegmented is a 435MB events.jsonl, a 221MB blocks.csv and 336 rounds in a single bar.
+  if (config.segmentHours === 0 && config.runBlocks > SEGMENT_ADVISORY_BLOCKS) {
+    const rounds =
+      config.epochBlocks > 0
+        ? Math.floor(config.runBlocks / config.epochBlocks)
+        : 0;
+    console.error(
+      `[run] WARNING: ${config.runBlocks.toLocaleString("en-US")} blocks into one directory ` +
+        `(~${Math.round((config.runBlocks * EVENT_BYTES_PER_BLOCK) / 1e6)}MB of events.jsonl` +
+        (rounds > 0 ? `, ${rounds} rounds in one bar` : "") +
+        "). Set run.segmentHours to cut the output into days — the chain stays continuous, " +
+        "and each segment is an ordinary run directory (ADR 0021 §6).",
+    );
+  }
+
   const adapters = initProtocols(config.enabledProtocols);
   const enabledIds = adapters.map((a) => a.id);
 
@@ -283,7 +489,20 @@ export async function runRealtimeSimulation(
   }
 
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
-  const logger = new RunLogger(config.runDirRoot, runId);
+  // ADR 0021 §6: a chain that runs for a week cannot write one directory. When segmenting is on,
+  // the output is cut into day-sized run directories under one competition, and everything that
+  // writes goes through the same interface -- so nothing below this line knows it is happening.
+  const segments =
+    config.segmentHours > 0
+      ? new SegmentedRun({
+          root: config.runDirRoot,
+          competitionId: runId,
+          hours: config.segmentHours,
+          scenarioSet: config.segmentName || runId,
+        })
+      : null;
+  const logger: RunArtifactWriter =
+    segments ?? new RunLogger(config.runDirRoot, runId);
   logger.event({
     type: "run_started_realtime",
     runId,
@@ -291,6 +510,22 @@ export async function runRealtimeSimulation(
     blockTimeSec: config.blockTimeSec,
     runSeconds: config.runSeconds,
     runBlocks: config.runBlocks,
+    // The scoring epoch (ADR 0019) is the competition's round. summary.json carries the boundaries,
+    // but only after the run ends -- a live viewer needs the length up front to lay the rounds out.
+    epochBlocks: config.epochBlocks,
+    scoreEvery: config.scoreEvery,
+    // SEED is the label for this run's market conditions (ADR 0005): the fair-price path and the
+    // stress schedule are both drawn from it. Nothing recorded it, so a stored run could not say
+    // which world it was -- which is the one thing needed to replay it.
+    seed: config.seed,
+    flowSeed: config.flowSeed,
+    // ADR 0021 §4: the endpoint the world is on, recorded by the environment. The dashboard's live
+    // mode used to discover it from an agent's `runtime_start` log line, which stops working the
+    // moment the agents are somebody else's processes on somebody else's machine. Reads go to
+    // readRpcUrl, which is the sequencer unless a replica is configured (#36).
+    rpcUrl: config.readRpcUrl,
+    chainId: config.chainId,
+    chainMode: config.chainMode,
   });
 
   // batch=true: automatically aggregate same-tick reads (parallel receipt fetches, readState, etc.) into
@@ -300,7 +535,16 @@ export async function runRealtimeSimulation(
     config.chainId,
     { batch: true },
   );
-  if (config.skipReset) {
+  if (external) {
+    // There is nothing to reset (issue #33 (3)). On the practice devnet that is the design: the
+    // chain does not stop for the whole period, and a run is a window on it rather than a world of
+    // its own (ADR 0021 §1).
+    logger.event({
+      type: "fork_reset_skipped",
+      reason: "external-chain",
+      note: "a real chain cannot be rewound; this run continues the world already on it",
+    });
+  } else if (config.skipReset) {
     // Diagnostic: keep the fork cache from the previous run (to isolate cold fetches; ADR 0006 Risks).
     logger.event({ type: "fork_reset_skipped" });
   } else {
@@ -316,18 +560,24 @@ export async function runRealtimeSimulation(
   // inherits the state after the previous run's teardown (setIntervalMining 0), so setup txs are not mined and it
   // hangs. Explicitly turn auto-mine ON in the setup phase to reliably mine all setup txs (not needed for fork,
   // which starts with --no-mining; turn it back OFF at competition start to make the fee competition work = see below).
-  if (config.localDeploy) {
+  if (config.localDeploy && !external) {
     await setAutomine(publicClient, true);
   }
 
   // ---- agent wallets (processes start after setup completes; agentSpecs is already resolved from YAML/env) ----
   const agentRuntimes: RealtimeAgentRuntime[] = agentSpecs.map((spec) => {
-    const privateKey = privateKeyForWalletName(config, spec.wallet, spec.id);
+    // An entry registered by address has no key here at all; one registered by wallet still does,
+    // even when external, because a practice devnet that issues funded keys is a legitimate way to
+    // run one (the manifest hands the key to that participant).
+    const privateKey = spec.address
+      ? null
+      : privateKeyForWalletName(config, spec.wallet, spec.id);
     return {
       id: spec.id,
       spec,
       privateKey,
-      address: accountAddress(privateKey),
+      address: (spec.address as Address) ?? accountAddress(privateKey as Hex),
+      external: spec.external === true,
       process: null,
       initial: { ethWei: 0n, wethWei: 0n, usdcUnits: 0n },
       included: 0,
@@ -449,33 +699,101 @@ export async function runRealtimeSimulation(
   });
   const submittedByHash = new Map<string, SubmittedMeta>();
 
+  // Top an environment wallet up to a target native balance from the treasury (issue #33 (1)).
+  // "Up to", not "by": the practice devnet funds the same admin and keeper on every segment, and
+  // sending the full amount each time would drain the treasury over a week of restarts.
+  const topUpFromTreasury = async (
+    address: Address,
+    targetWei: bigint,
+  ): Promise<void> => {
+    const treasuryPk = config.treasuryPrivateKey;
+    if (!treasuryPk) return;
+    const held = await publicClient.getBalance({ address });
+    if (held >= targetWei) return;
+    await transferEth(
+      publicClient,
+      walletClient,
+      chain,
+      treasuryPk,
+      address,
+      targetWei - held,
+    );
+  };
+
   // Realtime shared latest state (referenced by the relay's async action handler and flow context)
   let latestStateById = new Map<ProtocolId, unknown>();
   let latestFairPrice = 0;
   const latestHistory: AgentObservation["history"] = [];
 
   try {
+    // Before anything else: is the deployment this run names actually on this chain? Two things pick
+    // the target and they are set in different places (the chain in .env.local, the addresses in
+    // constants.local.ts), so switching between a local node and a devnet means changing both. When
+    // only one moves, every read comes back "0x" and the failure surfaces as a decode error naming a
+    // bare address, several minutes into setup.
+    {
+      const check = await checkDeployment({ publicClient, enabledIds });
+      logger.event({
+        type: "deployment_check",
+        chainId: check.chainId,
+        checked: check.checked,
+        missing: check.missing,
+      });
+      if (check.missing.length > 0)
+        throw new Error(deploymentMismatchMessage(check, config.rpcUrl));
+    }
+
+    // Then, on a chain participants can reach, a token anyone can mint makes the endowment
+    // meaningless and the funding below pointless (issue #33 (1)).
+    if (external) await assertTokensNotMintable(ctx, logger);
+
     // ---- setup (fast flush: no-mining + sendAndMine) ----
-    await setEthBalance(publicClient, accountAddress(adminPk), GAS_ONLY_WEI);
-    await setEthBalance(publicClient, accountAddress(keeperPk), GAS_ONLY_WEI);
+    // The admin and keeper spend gas every block for the whole run, so on anvil they are simply
+    // given an absurd balance. On an external chain the treasury tops them up to a target instead:
+    // it is a finite account, and 2,000,000 ETH is not a number a genesis alloc can hand out twice.
+    if (external) {
+      const treasuryPk = config.treasuryPrivateKey as Hex;
+      await topUpFromTreasury(
+        accountAddress(adminPk),
+        config.externalRoleEthWei,
+      );
+      await topUpFromTreasury(
+        accountAddress(keeperPk),
+        config.externalRoleEthWei,
+      );
+      logger.event({
+        type: "treasury_funded_roles",
+        treasury: accountAddress(treasuryPk),
+        targetWei: config.externalRoleEthWei.toString(),
+      });
+    } else {
+      await setEthBalance(publicClient, accountAddress(adminPk), GAS_ONLY_WEI);
+      await setEthBalance(publicClient, accountAddress(keeperPk), GAS_ONLY_WEI);
+    }
     for (const adapter of adapters) {
       if (adapter.setupGlobal) await adapter.setupGlobal(ctx);
     }
     const fundTargets: Array<{
       role: WalletRole;
-      privateKey: Hex;
+      privateKey: Hex | null;
+      address: Address;
       key?: string;
     }> = [
       ...agentRuntimes.map((a) => ({
         role: "agent" as WalletRole,
         privateKey: a.privateKey,
+        address: a.address,
       })),
       ...[...flowWalletMap.entries()].map(([key, w]) => ({
         role: flowRole(key),
         privateKey: w.privateKey,
+        address: w.address,
         key,
       })),
     ];
+    // Progress, because on a real chain this loop is minutes rather than instants, and an
+    // environment that prints nothing for ten minutes reads as one that has hung.
+    let funded = 0;
     for (const t of fundTargets) {
       // The whale passes through here too, even though its balances are overwritten a moment later
       // once the fair price is known: this loop is also where each adapter's setupWallet grants the
@@ -497,34 +815,59 @@ export async function runRealtimeSimulation(
       const baseAmounts = isFlow
         ? config.flowBaseAmounts
         : config.initialBaseAmounts;
+      // Agents are scored, so `funding.ethWei` is their whole native balance: the default gas buffer
+      // would be unchosen β in the live-marked epoch series (ADR 0019 §6). Flow wallets keep it --
+      // they are machinery, and a dry flow bot removes market activity from everyone.
+      const gasBuffer = isFlow ? undefined : 0n;
+      const ethWei = isFlow ? config.flowEthWei : config.initialEthWei;
+      if (!t.privateKey) {
+        // A participant's own address (ADR 0021 §2). Same endowment, reached without signing as
+        // them -- and therefore without the venue approvals below, which only they can grant.
+        await fundAddress(
+          publicClient,
+          walletClient,
+          chain,
+          t.address,
+          ethWei,
+          wethWei,
+          config.initialUsdcUnits,
+          baseAmounts,
+          gasBuffer,
+        );
+        continue;
+      }
       await fundWallet(
         publicClient,
         walletClient,
         chain,
         t.privateKey,
-        isFlow ? config.flowEthWei : config.initialEthWei,
+        ethWei,
         wethWei,
         config.initialUsdcUnits,
         baseAmounts,
-        // Agents are scored, so `funding.ethWei` is their whole native balance: the default gas buffer
-        // would be unchosen β in the live-marked epoch series (ADR 0019 §6). Flow wallets keep it --
-        // they are machinery, and a dry flow bot removes market activity from everyone.
-        isFlow ? undefined : 0n,
+        gasBuffer,
       );
+      // Every venue's approvals for this wallet, collected and sent as one batch. They all come
+      // from the same key with nothing between them, so on a dev node this is what it always was
+      // (send, mine, wait) and on a chain the environment does not mine it is one block instead of
+      // one per approval — fifteen wallets at eighteen transactions each is nine minutes of setup
+      // at a two-second block time, which the first external run spent in silence.
+      const approvals: Array<{ to: Address; data?: Hex; value?: bigint }> = [];
       for (const adapter of adapters) {
         if (!adapter.setupWallet) continue;
-        const approvals = await adapter.setupWallet(
-          ctx,
-          accountAddress(t.privateKey),
-        );
-        for (const tx of approvals) {
-          await sendAndMine(publicClient, walletClient, chain, t.privateKey, {
-            to: tx.to,
-            data: tx.data,
-            value: tx.value,
-          });
-        }
+        for (const tx of await adapter.setupWallet(ctx, t.address))
+          approvals.push({ to: tx.to, data: tx.data, value: tx.value });
       }
+      await sendBatch(
+        publicClient,
+        walletClient,
+        chain,
+        t.privateKey,
+        approvals,
+      );
+      funded++;
+      if (funded % 5 === 0 || funded === fundTargets.length)
+        console.error(`[setup] funded ${funded}/${fundTargets.length} wallets`);
     }
 
     // The initial fair price is finalized here (used by the local oracle calibration and victim setup below).
@@ -537,7 +880,11 @@ export async function runRealtimeSimulation(
     // oracle update tx lands). The direct storage write is in the setup phase, so there is no front-run-side
     // impact. If the aggregator is not deployed (aave disabled) it is a no-op (ADR 0016 Phase 0).
     if (config.localDeploy) {
-      await writeAaveOraclesStorage(ctx, latestFairPrice);
+      // The storage write is a cheatcode; on an external chain the same calibration is an ordinary
+      // mined setter tx from the admin key. Both land before any agent starts, so neither is
+      // front-runnable -- the difference is only which mechanism is available (issue #33 (1)/(4)).
+      if (external) await updateOracles(ctx, latestFairPrice);
+      else await writeAaveOraclesStorage(ctx, latestFairPrice);
     }
 
     // ---- whale endowment (ADR 0017 regime 3) ----
@@ -648,6 +995,44 @@ export async function runRealtimeSimulation(
       agent.initial = await getBalances(publicClient, agent.address);
     }
 
+    // What each agent actually starts with (ADR 0021 §2 / issue #33 (1)).
+    //
+    // The two funding mechanisms differ in a way that only shows up here. A cheatcode *assigns* a
+    // balance, so every agent starts at exactly the endowment whatever it held before. A treasury
+    // *adds* to one, so the endowment is a floor: an address that already holds something keeps it.
+    //
+    // That is right for a continuous economy — an agent that traded well yesterday should still have
+    // its gains — and it is a trap at the start of a period. Measured on the first external run:
+    // two agents bound to a prefunded dev account started with $3.0bn against a fresh address's
+    // $34k, and their per-round returns were then a report on one very large ETH holding. Nothing in
+    // the artifacts said so.
+    {
+      const fair: Record<string, number> = {
+        WETH: latestFairPrice,
+        ...(ctx.fairPrices ?? {}),
+      };
+      const values = agentRuntimes.map((a) => ({
+        id: a.id,
+        valueUsdc: valueUsdc(a.initial, fair, PAR_STABLE_PRICES),
+      }));
+      const positive = values.filter((v) => v.valueUsdc > 0);
+      const min = Math.min(...positive.map((v) => v.valueUsdc));
+      const max = Math.max(...positive.map((v) => v.valueUsdc));
+      const ratio = positive.length > 1 && min > 0 ? max / min : 1;
+      logger.event({ type: "initial_endowment", values, ratio });
+      // A factor of two is already a different competition; this is deliberately loud rather than
+      // fatal, because mid-period the spread is real history rather than a misconfiguration.
+      if (ratio > 2)
+        console.error(
+          `[funding] WARNING: agents start ${ratio.toFixed(1)}x apart ` +
+            `(${min.toFixed(0)} .. ${max.toFixed(0)} USDC). ` +
+            (external
+              ? "On a chain the environment cannot assign balances, the endowment is a floor: an " +
+                "address that already held something keeps it. Use fresh addresses for a fresh field."
+              : "Check the roster's funding overrides."),
+        );
+    }
+
     // ---- On-chain distribution path for the fair price (ADR 0006 §3). Kept permanent and written every block ----
     const priceFeedAddress = await deployPriceFeed(ctx, latestFairPrice);
     logger.event({ type: "price_feed_deployed", address: priceFeedAddress });
@@ -702,8 +1087,30 @@ export async function runRealtimeSimulation(
         address: a.address,
         baseline: a.spec.baseline ?? false,
         description: a.spec.description,
+        // ADR 0021 §4: the dashboard hides the decision-log and mempool panels for these, because
+        // those artifacts are on the participant's machine and nothing here can show them. An empty
+        // panel and an absent one say different things.
+        external: a.external,
       })),
     });
+
+    // ---- environment manifest (ADR 0021 §2) ----
+    // Written once the PriceFeed exists, because that address is the one piece a participant cannot
+    // look up anywhere else. It carries no keys and no stress timings -- see core/src/manifest.ts.
+    logger.artifact(
+      MANIFEST_FILENAME,
+      buildManifest({
+        config,
+        priceFeed: priceFeedAddress,
+        participants: agentRuntimes.map((a) => ({
+          id: a.id,
+          address: a.address,
+          external: a.external,
+          baseline: a.spec.baseline ?? false,
+          description: a.spec.description,
+        })),
+      }),
+    );
 
     // ---- pre-warm (anvil cold fetch mitigation of ADR 0006 Risks; see prewarmWorkingSet) ----
     if (config.prewarmBlocks > 0) {
@@ -750,8 +1157,11 @@ export async function runRealtimeSimulation(
       schedule.hasEusdDepeg() ||
       schedule.depegStables().length > 0
     ) {
+      // By address, not by key: a participant registered by address collides just as hard, and the
+      // environment never sees their key to compare it against.
+      const deployerAddress = accountAddress(deployerPk).toLowerCase();
       const clash = agentRuntimes.find(
-        (a) => a.privateKey.toLowerCase() === deployerPk.toLowerCase(),
+        (a) => a.address.toLowerCase() === deployerAddress,
       );
       if (clash) {
         throw new Error(
@@ -911,6 +1321,18 @@ export async function runRealtimeSimulation(
 
     // ---- launch agent processes (ADR 0015 §5: uniformly runtime/bot.ts; pass the private key and PriceFeed via env) ----
     for (const agent of agentRuntimes) {
+      if (agent.external || !agent.privateKey) {
+        // ADR 0021 §2: registered, funded, scored -- and started by whoever registered it. Recorded
+        // so a run whose participants never connected is distinguishable from one where the
+        // coordinator failed to launch them: both look like an agent that made no trades.
+        logger.event({
+          type: "agent_external_registered",
+          agentId: agent.id,
+          address: agent.address,
+          note: "the participant runs this agent; its decision log stays on their machine",
+        });
+        continue;
+      }
       agent.process = new RealtimeAgentProcess(
         agent.spec,
         config.rpcUrl,
@@ -1028,8 +1450,24 @@ export async function runRealtimeSimulation(
           role: owner.role,
           actionType:
             meta?.actionType ?? (owner.role === "agent" ? "direct" : ""),
+          // ADR 0021 §4: from the tx's own calldata, which this block fetch already has. The
+          // explorer used to name a participant's methods by joining their self-reported log, and a
+          // participant who runs their own agent files no such log with anyone.
+          method: methodNameForCalldata(tx.input) ?? "",
         });
       });
+    };
+
+    // How far blocks.csv has been written. The scan is off the critical path (it re-reads mined
+    // blocks), but *when* it runs matters: a single bulk pass at the end works for a run with an
+    // end and fails twice for a period that does not have one — nothing is written while it runs,
+    // and when it finally is, every block lands in whichever segment happened to be current. Both
+    // observed: five segments of a devnet period, every blocks.csv empty (ADR 0021 §6).
+    let loggedThroughBlock = 0;
+    const flushBlocks = async (upTo: number): Promise<void> => {
+      if (loggedThroughBlock === 0) loggedThroughBlock = runStartBlock - 1;
+      for (let b = loggedThroughBlock + 1; b <= upTo; b++) await logBlock(b);
+      loggedThroughBlock = Math.max(loggedThroughBlock, upTo);
     };
 
     // ADR 0010 profile: set the oracle/PriceFeed update fee above the agent cap so --order fees places it at
@@ -1058,14 +1496,32 @@ export async function runRealtimeSimulation(
     // ---- start the competition phase: switch to interval mining every N real seconds ----
     // Local mode turned auto-mine ON for setup, so turn it back OFF here.
     // If auto-mine remains, each tx becomes its own block and the fee competition breaks (fork is OFF from the start).
-    if (config.localDeploy) {
+    if (config.localDeploy && !external) {
       await setAutomine(publicClient, false);
     }
-    await setIntervalMining(publicClient, config.blockTimeSec);
-    logger.event({
-      type: "interval_mining_started",
-      blockTimeSec: config.blockTimeSec,
-    });
+    if (external) {
+      // The sequencer has been producing blocks the whole time; there is no phase change to make.
+      // What the environment does have to know is the real cadence, because the block loop's
+      // polling interval and every "blocks per epoch" conversion are derived from it -- so measure
+      // it rather than trusting the configured value (issue #33 (2) / #35 genesis block time).
+      const observed = await observeBlockTimeSec(publicClient);
+      logger.event({
+        type: "external_chain_block_time",
+        configuredSec: config.blockTimeSec,
+        observedSec: observed,
+        note:
+          observed !== null && Math.abs(observed - config.blockTimeSec) > 0.5
+            ? "run.blockTimeSec disagrees with the chain; epoch lengths and the poll interval are " +
+              "derived from the configured value, so align it with the sequencer"
+            : undefined,
+      });
+    } else {
+      await setIntervalMining(publicClient, config.blockTimeSec);
+      logger.event({
+        type: "interval_mining_started",
+        blockTimeSec: config.blockTimeSec,
+      });
+    }
     const startTime = Date.now();
     // base/effective separation (ADR 0009 §1): advance the OU state as the base series, and derive the effective
     // price from stress events as a separable distortion. Outside the window, β≈0 as before (maintains ADR 0007).
@@ -1090,6 +1546,161 @@ export async function runRealtimeSimulation(
     let processing = false;
     let lastProcessedBlock = Number(await publicClient.getBlockNumber());
     const runStartBlock = lastProcessedBlock + 1;
+
+    // ---- live scoring (ADR 0021 §3) ----
+    // The epoch boundary is read as it goes past rather than swept up afterwards. On a chain that
+    // never stops there is no afterwards, and on any chain the node's history depth is finite --
+    // both of which the sweep hits at exactly the run lengths a practice period needs.
+    const liveScorer = new LiveScorer({
+      publicClient,
+      logger,
+      agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+      enabledIds,
+      activeStables: activeStables(),
+      priceFeed: priceFeedAddress,
+      runStartBlock,
+      epochBlocks: config.epochBlocks,
+      markMedianBlocks: config.markMedianBlocks,
+      // Venue state at each boundary, so a live viewer has something to draw before market.json
+      // exists. Off when the post-run reconstruction will cover it anyway *and* the run is short
+      // enough for that to be the richer artifact.
+      sampleMarket: true,
+    });
+    if (segments) segments.noteFirstBlock(runStartBlock);
+
+    // ADR 0019 §2's benchmark, resolved once: every segment's score is excess over the same entry.
+    const baselineId = agentRuntimes.find((a) => a.spec.baseline)?.id;
+
+    // Close a segment: write it a summary.json holding the epochs that fell inside it, so each
+    // segment is an ordinary run directory that every existing tool can read. The slice carries the
+    // boundary immediately before the segment's start as its own boundary 0 (see sliceEpochSeries),
+    // because a segment's first epoch ends inside it but begins in the one before.
+    const closeSegment = (atBlock: number): unknown[] => {
+      if (!segments) return [];
+      const whole = liveScorer.series();
+      const sliced = whole
+        ? sliceEpochSeries(whole, segments.currentSegmentStartBlock, atBlock)
+        : undefined;
+      const scores =
+        sliced && sliced.boundaryBlocks.length > 1
+          ? scoreEpochSeriesByAgent(sliced.valuesByAgent, {
+              ...(baselineId !== undefined ? { benchmarkId: baselineId } : {}),
+            })
+          : undefined;
+      const agents = agentRuntimes.map((a) => ({
+        id: a.id,
+        address: a.address,
+        // Segment endpoints, from the boundaries the segment covers. Deliberately not the run's
+        // opening balances: a segment is a window on a continuous economy, and an agent's PnL for
+        // Tuesday is what changed on Tuesday.
+        initialValueUsdc: sliced?.valuesByAgent[a.id]?.[0] ?? 0,
+        finalValueUsdc:
+          sliced?.valuesByAgent[a.id]?.[
+            (sliced.boundaryBlocks.length ?? 1) - 1
+          ] ?? 0,
+        netPnlUsdc:
+          (sliced?.valuesByAgent[a.id]?.[
+            (sliced.boundaryBlocks.length ?? 1) - 1
+          ] ?? 0) - (sliced?.valuesByAgent[a.id]?.[0] ?? 0),
+        includedTxCount: a.included,
+        revertCount: a.reverted,
+      }));
+      logger.summary({
+        runId: `${runId}/segment-${segments.currentSegment}`,
+        mode: config.runMode,
+        resetUnit: config.resetUnit,
+        blockTimeSec: config.blockTimeSec,
+        segment: segments.currentSegment,
+        fromBlock: segments.currentSegmentStartBlock,
+        toBlock: atBlock,
+        finalFairPriceUsdcPerWeth: latestFairPrice,
+        valueSeries: sliced
+          ? {
+              source: "live-epoch-boundaries",
+              epochSeries: {
+                epochBlocks: config.epochBlocks,
+                epochs: Math.max(0, sliced.boundaryBlocks.length - 1),
+                ...sliced,
+              },
+            }
+          : { source: "live-epoch-boundaries", failed: true },
+        ...(scores ? { epochScores: scores } : {}),
+        violations: [],
+        agents,
+      });
+      // The index entry is standings-shaped (the dashboard reads a competition's scenarios with the
+      // same code either way), so it carries the score rather than only the balances.
+      return agents.map((a) => ({
+        id: a.id,
+        netPnlUsdc: a.netPnlUsdc,
+        // Alpha needs the fixed-reference sweep, which a segment of a continuous chain does not get.
+        // Reported as 0 rather than omitted, because the field is what the standings read.
+        alphaUsdc: 0,
+        score: scores?.[a.id]?.score ?? 0,
+        excessLogGrowth: (scores?.[a.id]?.logReturns ?? []).reduce(
+          (x, y) => x + y,
+          0,
+        ),
+        initialValueUsdc: a.initialValueUsdc,
+        finalValueUsdc: a.finalValueUsdc,
+      }));
+    };
+
+    const rollSegment = async (atBlock: number): Promise<void> => {
+      if (!segments) return;
+      // Before the directory changes: these rows belong to the segment that is closing.
+      await flushBlocks(atBlock);
+      const agents = closeSegment(atBlock);
+      const previous = segments.currentSegment;
+      segments.roll(atBlock, agents);
+      // The new segment opens with the same header the first one did, so it stands alone: a viewer
+      // that lands on Thursday should not have to read Monday to learn what the chain is.
+      logger.event({
+        type: "run_started_realtime",
+        runId,
+        segment: segments.currentSegment,
+        previousSegment: previous,
+        enabledProtocols: enabledIds,
+        blockTimeSec: config.blockTimeSec,
+        runSeconds: config.runSeconds,
+        runBlocks: config.runBlocks,
+        epochBlocks: config.epochBlocks,
+        scoreEvery: config.scoreEvery,
+        seed: config.seed,
+        flowSeed: config.flowSeed,
+        rpcUrl: config.readRpcUrl,
+        chainId: config.chainId,
+        chainMode: config.chainMode,
+        fromBlock: atBlock,
+      });
+      logger.event({
+        type: "agents_registered",
+        agents: agentRuntimes.map((a) => ({
+          id: a.id,
+          address: a.address,
+          baseline: a.spec.baseline ?? false,
+          description: a.spec.description,
+          external: a.external,
+        })),
+      });
+      logger.artifact(
+        MANIFEST_FILENAME,
+        buildManifest({
+          config,
+          priceFeed: priceFeedAddress,
+          participants: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            external: a.external,
+            baseline: a.spec.baseline ?? false,
+            description: a.spec.description,
+          })),
+        }),
+      );
+      console.error(
+        `[segment] rolled to ${logger.runDir} at block ${atBlock} (ADR 0021 §6)`,
+      );
+    };
     if (schedule.hasEvents()) {
       // Include runStartBlock → the dashboard can judge the window in absolute blocks (ADR 0008/0009).
       logger.event({
@@ -1677,6 +2288,28 @@ export async function runRealtimeSimulation(
             tasks.push(timed(deployerKeyTask));
           if (liquityRuntime) tasks.push(timed(liquityWatchTask));
           const results = await Promise.all(tasks);
+
+          // After the block's own work, not beside it: this reads the block that has just been
+          // mined, so it cannot race anything above, and running it inside the Promise.all would
+          // put a cross-section read on the critical path of every block instead of one in twelve.
+          const epochMs = await timed(() => liveScorer.onBlock(bn));
+
+          // Only while segmenting: keep blocks.csv within a block of the head, so a roll is a
+          // boundary rather than a bulk scan of a whole day stalling the environment loop. A run
+          // with an end keeps the single pass at the end, byte-identical to before.
+          //
+          // bn - 1, not bn: this block is being processed right now and the environment's own txs
+          // for it are still in flight.
+          const blocksMs = segments
+            ? await timed(() => flushBlocks(bn - 1))
+            : 0;
+
+          // ADR 0021 §6: cut the output, never the chain. Checked after the boundary read so a
+          // segment that ends on one keeps it -- the next segment carries it as its own first
+          // boundary, which is what stops each segment losing an epoch at the seam.
+          if (bn >= runStartBlock && segments?.dueToRoll())
+            await rollSegment(bn);
+
           const [keeperMs, oracleMs, stateFlowMs] = results;
           let taskIdx = 3;
           const victimMs =
@@ -1703,6 +2336,10 @@ export async function runRealtimeSimulation(
             ...(liquidityMs !== undefined ? { liquidityMs } : {}),
             ...(depegMs !== undefined ? { depegMs } : {}),
             ...(liquityMs !== undefined ? { liquityMs } : {}),
+            // Zero on the eleven blocks in twelve that are not a boundary; the non-zero ones are
+            // what live scoring costs the loop.
+            ...(epochMs > 0 ? { epochMs } : {}),
+            ...(blocksMs > 0 ? { blocksMs } : {}),
             totalMs: Date.now() - roundStart,
           });
 
@@ -1735,7 +2372,7 @@ export async function runRealtimeSimulation(
     // ---- competition end: stop the agents before scoring (a direct agent keeps placing orders unless stopped) ----
     for (const agent of agentRuntimes) agent.process?.close();
     flowProcess.close();
-    await setIntervalMining(publicClient, 0);
+    if (!external) await setIntervalMining(publicClient, 0);
 
     // The last block anyone competed on, captured *before* the teardowns below. Everything after it
     // is the environment putting the chain back, and scoring across those blocks would score the
@@ -1775,9 +2412,11 @@ export async function runRealtimeSimulation(
       }
     }
 
-    // ---- bulk recording of blocks.csv: scan all run blocks for what was removed from the realtime loop ----
-    // (finish before resetFork erases history, and before the violation check and summary)
-    for (let b = runStartBlock; b <= finalBlock; b++) await logBlock(b);
+    // ---- blocks.csv: whatever is not yet written ----
+    // The whole window for a run with an end (unchanged), the final segment's tail for a period
+    // that has been flushing as it went. Finishes before resetFork erases history, and before the
+    // violation check and the summary.
+    await flushBlocks(finalBlock);
 
     // ---- scoring: batch-reconstruct the per-agent value series from historical blocks (ADR 0006 §4) ----
     let valueSeries: Record<string, unknown> = {
@@ -1790,7 +2429,86 @@ export async function runRealtimeSimulation(
     // (issue #38: an LST redemption still in the queue when the run ends).
     let liquidatableValueByAgent: Record<string, number> = {};
     let epochScores: Record<string, EpochScore> | undefined;
-    if (finalBlock >= runStartBlock) {
+
+    // ---- the score (ADR 0019), from the series read at the boundaries (ADR 0021 §3) ----
+    // Taken here rather than out of the post-run sweep below, because this is the series that
+    // exists on a chain the sweep cannot cover: too long for the node's history, and with no end to
+    // start sweeping from. On a short run the two are the same numbers -- the same reader, the same
+    // blocks, the same median window -- so nothing about a bounded run changes.
+    const wholeEpochSeries = liveScorer.series();
+    // The summary written here belongs to whichever directory `logger` points at -- which, when
+    // segmenting, is the *final segment*, not the whole period. Scoring it over the whole series
+    // gave the last day the week's epochs: every earlier segment's returns counted twice in any
+    // standings taken over the period, and the last day showed a score nothing that happened on it
+    // could explain (seen on a five-segment run: 9 epochs in the last segment against 1+3+2+3 in
+    // the others).
+    const liveEpochSeries = ((): EpochSeries | undefined => {
+      if (!wholeEpochSeries || !segments) return wholeEpochSeries;
+      const cut = sliceEpochSeries(
+        wholeEpochSeries,
+        segments.currentSegmentStartBlock,
+        finalBlock,
+      );
+      // `epochs` has to be recomputed, not inherited. Spreading the slice over the whole series
+      // replaced its blocks and values and left the period's count behind: the final segment's
+      // summary said `epochs: 9` while carrying five boundaries — four returns. An artifact that
+      // contradicts itself is worse than one that is missing a field.
+      return {
+        ...wholeEpochSeries,
+        ...cut,
+        epochs: Math.max(0, cut.boundaryBlocks.length - 1),
+      };
+    })();
+    if (liveEpochSeries) {
+      // ADR 0019 §2: the score is excess over the roster's baseline entry. Without one the returns
+      // stay raw and every agent is charged for the drift of the ETH gas reserve it had to hold --
+      // measured at 93% of an active agent's dispersion, so this is not a detail.
+      if (baselineId === undefined)
+        console.warn(
+          "[scoring] no roster agent is marked `baseline: true`; epoch scores are raw returns, " +
+            "not excess over a benchmark (ADR 0019 §2)",
+        );
+      epochScores = scoreEpochSeriesByAgent(liveEpochSeries.valuesByAgent, {
+        ...(baselineId !== undefined ? { benchmarkId: baselineId } : {}),
+      });
+      logger.event({
+        type: "epoch_series_scored",
+        ...liveScorer.meta(),
+        ...(segments
+          ? {
+              segment: segments.currentSegment,
+              boundaries: liveEpochSeries.boundaryBlocks.length,
+              periodBoundaries: wholeEpochSeries?.boundaryBlocks.length,
+            }
+          : {}),
+      });
+    }
+
+    // The post-run sweep produces things the boundary series does not: the equity curve between
+    // boundaries, alpha (which needs the first and last cross-section at a fixed reference fair),
+    // the unpriced-holdings report, and the venue-state artifact the dashboard draws from. All of it
+    // is worth having -- and none of it is reachable once the window outruns the node's history,
+    // which is precisely the case ADR 0021 exists for. So it is attempted for a window that fits and
+    // skipped, explicitly, for one that does not.
+    const sweepWindow = finalBlock - runStartBlock;
+    const sweepFits = sweepWindow <= HISTORY_SWEEP_LIMIT;
+    if (finalBlock >= runStartBlock && !sweepFits) {
+      logger.event({
+        type: "post_run_sweep_skipped",
+        windowBlocks: sweepWindow,
+        limit: HISTORY_SWEEP_LIMIT,
+        haveEpochSeries: liveEpochSeries !== undefined,
+        note:
+          "the run window is longer than the node retains state for, so a post-run sweep would " +
+          "read zeros rather than history. The score comes from the boundaries read live (ADR 0021 §3); " +
+          "the equity curve, alpha and market.json are what this costs",
+      });
+      console.error(
+        `[reconstruct] window ${sweepWindow} blocks exceeds the ~${HISTORY_SWEEP_LIMIT}-block sweep ` +
+          "limit; scoring used the live epoch boundaries and the equity curve was not rebuilt",
+      );
+    }
+    if (finalBlock >= runStartBlock && sweepFits) {
       try {
         const meta = await reconstructValueSeries({
           publicClient,
@@ -1808,24 +2526,16 @@ export async function runRealtimeSimulation(
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
         liquidatableValueByAgent = meta.liquidatableValueByAgent;
-        if (meta.epochSeries) {
-          // ADR 0019 §2: the score is excess over the roster's baseline entry. Without one the
-          // returns stay raw and every agent is charged for the drift of the ETH gas reserve it had
-          // to hold -- measured at 93% of an active agent's dispersion, so this is not a detail.
-          const baseline = agentRuntimes.find((a) => a.spec.baseline)?.id;
-          if (baseline === undefined)
-            console.warn(
-              "[scoring] no roster agent is marked `baseline: true`; epoch scores are raw returns, " +
-                "not excess over a benchmark (ADR 0019 §2)",
-            );
-          epochScores = scoreEpochSeriesByAgent(
-            meta.epochSeries.valuesByAgent,
-            {
-              ...(baseline !== undefined ? { benchmarkId: baseline } : {}),
-            },
-          );
-        }
         logger.event({ type: "value_series_reconstructed", ...meta });
+        // The claim that live scoring *replaces* the sweep rests on the two producing the same
+        // number at the same boundary. On a run short enough to have both, check it rather than
+        // assert it: a divergence means one of the two reads a different world, and the run that
+        // discovers it should be the one that says so.
+        if (liveEpochSeries && meta.epochSeries)
+          logger.event({
+            type: "epoch_series_agreement",
+            ...compareEpochSeries(liveEpochSeries, meta.epochSeries),
+          });
       } catch (err) {
         // The reconstruction refuses a cross-section it cannot read rather than emitting a cliff in
         // the value series (issue #44). Losing the series is bad; publishing a wrong one is worse —
@@ -1865,6 +2575,21 @@ export async function runRealtimeSimulation(
         logger.event({ type: "market_series_reconstruction_failed", error });
         console.error(`[reconstruct] market series unavailable: ${error}`);
       }
+    }
+
+    // The boundary series is the authoritative one wherever both exist, so that summary.json's
+    // rounds and its scores are the same object. They agree by construction on a run the sweep
+    // covers -- same reader, same blocks, same median window -- and only the live one exists on a
+    // run it does not.
+    if (liveEpochSeries) {
+      valueSeries = {
+        ...valueSeries,
+        epochSeries: liveEpochSeries,
+        // Nested rather than spread. `valueSeries.source` describes where the *equity curve* came
+        // from, and spreading the live meta over it renamed the sweep's own artifact to
+        // "live-epoch-boundaries" -- a run that did sweep, claiming it had not.
+        epochSeriesMeta: liveScorer.meta(),
+      };
     }
 
     // ---- post-run rule check (ADR 0006 §5): exceeding the fee cap is grounds for invalidating a run ----
@@ -2001,13 +2726,31 @@ export async function runRealtimeSimulation(
       violations,
       agents: agentsSummary,
     });
+    // The last segment closes with the same index entry every other one got, so a period that ended
+    // is a complete list of days rather than a list missing its last (ADR 0021 §6). Its own
+    // summary.json is the one written just above -- the whole-run summary *is* the final segment's,
+    // since that is the directory `logger` points at.
+    if (segments)
+      segments.finish(
+        finalBlock,
+        agentsSummary.map((a) => ({
+          id: a.id,
+          address: a.address,
+          netPnlUsdc: a.netPnlUsdc,
+          alphaUsdc: a.alphaUsdc ?? 0,
+          score: epochScores?.[a.id]?.score ?? 0,
+          initialValueUsdc: a.initialValueUsdc,
+          finalValueUsdc: a.finalValueUsdc,
+        })),
+      );
     logger.event({ type: "run_completed", runId, runDir: logger.runDir });
     console.error(
       `realtime simulation completed: ${logger.runDir} (${processedBlocks} blocks, ${Math.round(elapsedMs / 1000)}s)`,
     );
   } finally {
     try {
-      await setIntervalMining(publicClient, 0);
+      if (config.chainMode !== "external")
+        await setIntervalMining(publicClient, 0);
     } catch {
       // ignore errors during teardown
     }

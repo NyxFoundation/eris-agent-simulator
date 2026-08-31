@@ -36,7 +36,7 @@ import {
   actionJsonSchema,
   agentActionSchemaFor,
 } from "@eris/sdk/actionSchema.js";
-import { accountAddress, makeClients } from "@eris/sdk/chain.js";
+import { accountAddress, makeClients, sendAndMine } from "@eris/sdk/chain.js";
 import { loadConfig } from "@eris/sdk/config.js";
 import { GMX_MARKETS } from "@eris/sdk/constants.js";
 import { baseTokens, gmxMarketAddresses } from "@eris/sdk/markets.js";
@@ -69,16 +69,76 @@ import { Reader } from "./read.js";
 // Backend for the revision call when neither prompt.md nor the roster names one.
 const DEFAULT_IMPROVE_MODEL = "gpt-oss:120b";
 
+// The published environment manifest (ADR 0021 §2), when running self-hosted. Only the two fields
+// the runtime cannot otherwise learn are read from it; everything else still comes from the config
+// file, which participants have a copy of.
+type Manifest = {
+  chain?: { rpcUrl?: string };
+  contracts?: { priceFeed?: string };
+};
+
+const erc20AllowanceAbi = [
+  {
+    type: "function",
+    name: "allowance",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+// `approve(address,uint256)` = 0x095ea7b3, then two 32-byte words. Decoded by hand rather than with
+// viem's decodeFunctionData because a setupWallet tx that is *not* an approve has to fall through
+// silently (some venue may add one), and a throw-on-mismatch decoder would make that a crash.
+function decodeApprove(data: Hex): { spender: Address; amount: bigint } | null {
+  if (!data || !data.startsWith("0x095ea7b3") || data.length < 138) return null;
+  const body = data.slice(10);
+  return {
+    spender: `0x${body.slice(24, 64)}` as Address,
+    amount: BigInt(`0x${body.slice(64, 128)}`),
+  };
+}
+
+function loadManifest(path: string | undefined): Manifest | null {
+  if (!path) return null;
+  if (!existsSync(path)) {
+    process.stderr.write(`[bot] ERIS_MANIFEST=${path} does not exist\n`);
+    process.exit(1);
+  }
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Manifest;
+  } catch (err) {
+    // Refused rather than ignored: falling back to env would silently point the agent at whatever
+    // chain happened to be in the shell, which is how a participant ends up trading nothing on a
+    // node nobody is scoring.
+    process.stderr.write(
+      `[bot] ERIS_MANIFEST=${path} is not readable JSON: ${err instanceof Error ? err.message : err}\n`,
+    );
+    process.exit(1);
+    return null;
+  }
+}
+
 async function main(): Promise<void> {
+  // ADR 0021 §2: on the practice devnet nobody spawns this process, so the three things the
+  // coordinator used to inject come from the published environment manifest instead. Env still wins
+  // -- a coordinator-spawned run is unchanged, byte for byte.
+  const manifest = loadManifest(process.env.ERIS_MANIFEST);
   const privateKey = process.env.ERIS_AGENT_PRIVATE_KEY as Hex | undefined;
-  const rpcUrl = process.env.ERIS_RPC_URL;
-  const priceFeed = process.env.ERIS_PRICE_FEED_ADDRESS as Address | undefined;
+  const rpcUrl = process.env.ERIS_RPC_URL ?? manifest?.chain?.rpcUrl;
+  const priceFeed = (process.env.ERIS_PRICE_FEED_ADDRESS ??
+    manifest?.contracts?.priceFeed) as Address | undefined;
   const agentDirEnv = process.env.ERIS_AGENT_DIR;
   const agentId = process.env.ERIS_AGENT_ID ?? "unknown";
   const runDir = process.env.ERIS_RUN_DIR;
   if (!privateKey || !rpcUrl || !priceFeed || !agentDirEnv) {
     process.stderr.write(
-      "[bot] missing env (ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL / ERIS_PRICE_FEED_ADDRESS / ERIS_AGENT_DIR)\n",
+      "[bot] missing env (ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL / ERIS_PRICE_FEED_ADDRESS / ERIS_AGENT_DIR)\n" +
+        "      Self-hosted? Point ERIS_MANIFEST at the environment manifest and it supplies the\n" +
+        "      RPC URL and PriceFeed address; the key and the agent directory are yours.\n",
     );
     process.exit(1);
   }
@@ -216,6 +276,62 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Every venue approval this wallet still needs, sent from this wallet's own key.
+  //
+  // Which approvals are needed is the adapters' knowledge (setupWallet), and it is granted with the
+  // agent's key in the coordinator path too -- so this costs exactly the same gas and produces the
+  // same allowances. What is new is only *who sends it*: an environment that does not hold the key
+  // cannot.
+  //
+  // Each tx is an `approve(spender, max)`, so the calldata is decoded and the current allowance read
+  // first. A self-hosted agent restarts (a crash, a redeploy, a new day on a chain that never
+  // resets), and re-approving on every start would burn the endowment a little at a time.
+  const ensureVenueApprovals = async (): Promise<void> => {
+    const pending: Array<{ to: Address; data: Hex }> = [];
+    for (const adapter of adapters) {
+      if (!adapter.setupWallet) continue;
+      let txs: Awaited<ReturnType<NonNullable<typeof adapter.setupWallet>>>;
+      try {
+        txs = await adapter.setupWallet(simCtx, address);
+      } catch {
+        continue; // a venue that cannot describe its approvals is one this agent will fail on later, loudly
+      }
+      for (const tx of txs) {
+        const decoded = decodeApprove(tx.data as Hex);
+        if (!decoded) {
+          pending.push({ to: tx.to as Address, data: tx.data as Hex });
+          continue;
+        }
+        const allowance = (await publicClient
+          .readContract({
+            address: tx.to as Address,
+            abi: erc20AllowanceAbi,
+            functionName: "allowance",
+            args: [address, decoded.spender],
+          })
+          .catch(() => 0n)) as bigint;
+        if (allowance < decoded.amount / 2n)
+          pending.push({ to: tx.to as Address, data: tx.data as Hex });
+      }
+    }
+    if (pending.length === 0) return;
+    for (const tx of pending) {
+      try {
+        await sendAndMine(publicClient, walletClient, chain, privateKey, tx);
+      } catch (err) {
+        // Not fatal: the agent may not need this venue, and an approval that failed shows up as a
+        // reverted trade with a reason rather than as a silent absence.
+        logMempool({
+          event: "approval_failed",
+          to: tx.to,
+          error:
+            err instanceof Error ? err.message.split("\n")[0] : String(err),
+        });
+      }
+    }
+    logMempool({ event: "approvals_granted", count: pending.length });
+  };
+
   // ---- latest state (updated by the read loop, referenced by decide/submit) ----
   let latestObservation: AgentObservation | null = null;
   let latestBalances: BalanceSnapshot | null = null;
@@ -340,6 +456,17 @@ async function main(): Promise<void> {
       processing = false;
     }
   };
+
+  // ADR 0021 §2: grant this wallet's venue approvals if nobody else did. A coordinator-spawned
+  // agent had them granted during setup, using this same key -- but the environment cannot sign for
+  // a participant who holds their own key, so a self-hosted agent grants them itself. Skipped when
+  // they are already in place, which makes it a no-op on every existing path and idempotent across
+  // restarts on the practice devnet.
+  //
+  // Before the block watcher, not after. Registered first, the very first block fired a decision
+  // that reached the venue with no allowance: `MockERC20: insufficient allowance`, a reverted trade
+  // in the participant's log for a reason that had nothing to do with their strategy.
+  await ensureVenueApprovals();
 
   publicClient.watchBlockNumber({
     emitOnBegin: true,

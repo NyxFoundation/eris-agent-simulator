@@ -24,9 +24,10 @@ import { baseFairPrice } from "./marketHelpers.js";
 import {
   accountAddress,
   increaseTime,
+  isExternalChain,
   mine,
   sendAndMine,
-  sendAsImpersonated,
+  sendAsPrivileged,
   sendNoMine,
 } from "../chain.js";
 import type {
@@ -1031,7 +1032,9 @@ export const gmxAdapter: ProtocolAdapter = {
           maxFeePerGas: baseFee + 1_000_000_000n,
           maxPriorityFeePerGas: 1_000_000_000n,
         });
-        await mine(ctx.publicClient);
+        // The keeper runs inside the block loop, so on a dev node it mines its own block; on an
+        // external chain the sequencer already is (issue #33 (2)).
+        if (!isExternalChain()) await mine(ctx.publicClient);
         await ctx.publicClient.waitForTransactionReceipt({ hash });
       } catch (error) {
         // Skip fill failures (acceptablePrice etc.). GMX auto-cancels/refunds them.
@@ -1039,7 +1042,7 @@ export const gmxAdapter: ProtocolAdapter = {
         console.error(
           `gmx keeper executeOrder failed: key=${key} ${error instanceof Error ? error.message : String(error)}`,
         );
-        if (!opts?.noMine) await mine(ctx.publicClient);
+        if (!opts?.noMine && !isExternalChain()) await mine(ctx.publicClient);
       }
     }
   },
@@ -1253,7 +1256,7 @@ export const gmxAdapter: ProtocolAdapter = {
         args: [account, roleKey],
       })) as boolean;
       if (has) continue;
-      await sendAsImpersonated(
+      await sendAsPrivileged(
         ctx.publicClient,
         ctx.walletClient,
         ctx.chain,
@@ -1266,6 +1269,7 @@ export const gmxAdapter: ProtocolAdapter = {
             args: [account, roleKey],
           }),
         },
+        "granting the environment a GMX role",
       );
     }
 

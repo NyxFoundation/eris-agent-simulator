@@ -1,6 +1,6 @@
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address } from "viem";
-import { mine } from "../chain.js";
+import { isExternalChain, mine } from "../chain.js";
 import { readForgeArtifact } from "../forge.js";
 import type { SimContext } from "./types.js";
 
@@ -24,7 +24,10 @@ export async function deployContract(
     maxFeePerGas: baseFee + 1_000_000_000n,
     maxPriorityFeePerGas: 1_000_000_000n,
   });
-  await mine(ctx.publicClient);
+  // Same split as sendAndMine: on a dev node the environment mines the block itself, on an external
+  // chain the sequencer does (issue #33 (2)). The receipt wait is what both have in common, and it
+  // is the part that matters -- the caller uses the deployed address immediately.
+  if (!isExternalChain()) await mine(ctx.publicClient);
   const receipt = await ctx.publicClient.waitForTransactionReceipt({ hash });
   if (!receipt.contractAddress) throw new Error(`${name} deploy failed`);
   return receipt.contractAddress;

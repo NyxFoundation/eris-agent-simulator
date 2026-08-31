@@ -22,6 +22,12 @@ export const SECRET_ENV_KEYS = [
   "ARB_RPC_URL",
   "FORK_BLOCK_NUMBER",
   "ANVIL_RPC_URL",
+  // The external chain's endpoints and its funding account (issue #33 / #35). The URLs are not
+  // secret in the way a key is, but they are per-deployment rather than per-config, which is the
+  // same reason ANVIL_RPC_URL lives here: a committed regime YAML must not name one operator's node.
+  "ERIS_READ_RPC_URL",
+  "CHAIN_ID",
+  "TREASURY_PRIVATE_KEY",
   "ANTHROPIC_API_KEY",
   "OLLAMA_API_KEY",
   "ERIS_OLLAMA_API_KEY",
@@ -73,11 +79,20 @@ const SCHEMA: Record<string, string> = {
   "run.protocols": "ENABLED_PROTOCOLS",
   "run.economicGas": "ERIS_ECONOMIC_GAS",
   "run.localDeploy": "ERIS_LOCAL_DEPLOY",
+  "run.chainMode": "ERIS_CHAIN_MODE", // anvil | external (issue #33 / ADR 0021 §7)
+  // The external chain's id (issue #35 genesis design). Also readable from env, for the usual
+  // reason: it belongs to the deployment, not to the regime. Setting it here wins, like every other
+  // schema key -- so a committed regime YAML should leave it out and let .env.local name the chain.
+  "run.chainId": "CHAIN_ID",
+  "run.externalRoleEthWei": "ERIS_EXTERNAL_ROLE_ETH_WEI",
   "run.resetUnit": "ERIS_RESET_UNIT", // continuous | scenario (ADR 0020 §1)
   "run.skipReset": "ERIS_SKIP_RESET",
   "run.prewarmBlocks": "ERIS_PREWARM_BLOCKS",
   "run.scoreEvery": "ERIS_SCORE_EVERY",
   "run.epochBlocks": "ERIS_EPOCH_BLOCKS",
+  "run.epochSeconds": "ERIS_EPOCH_SECONDS", // ADR 0021 §3: a round stated in real time
+  "run.segmentHours": "ERIS_SEGMENT_HOURS", // ADR 0021 §6: hours per output segment (0 = one dir)
+  "run.segmentName": "ERIS_SEGMENT_NAME",
   "run.markMedianBlocks": "ERIS_MARK_MEDIAN_BLOCKS",
   "run.reportDir": "REPORT_DIR",
   "run.flashArb": "ERIS_FLASH_ARB",

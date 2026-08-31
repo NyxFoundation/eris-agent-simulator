@@ -13,7 +13,7 @@ import {
   increaseTime,
   mine,
   sendAndMine,
-  sendAsImpersonated,
+  sendAsPrivileged,
 } from "../chain.js";
 import { curveStableSwapNgAbi, erc20Abi, lstVaultAbi } from "../abis.js";
 import type {
@@ -365,6 +365,12 @@ const AAVE_WARP_BUFFER_SECONDS = 3600n; // 1h. Margin to keep dt>0 stable when i
 // its capacity.
 const LOCAL_FLASH_LIQUIDITY_USDC_UNITS = 2_000_000n * 10n ** 6n;
 async function warpPastReserveLastUpdate(ctx: SimContext): Promise<void> {
+  // Issue #33 (4): the warp is a fork artifact. A reserve's lastUpdateTimestamp can only sit ahead
+  // of block.timestamp because anvil pinned a fork block whose clock predates the state it copied;
+  // on a chain that produced the reserve itself, the two advance together and there is nothing to
+  // correct. Skipping it is not an optimisation -- evm_increaseTime does not exist there, and
+  // reaching for it would abort a setup that had no problem to solve.
+  if (ctx.config.chainMode === "external") return;
   // Read the lastUpdate of the enabled reserves ([WETH, USDC] on the default fork) and go past their max.
   const updates = await Promise.all(
     aaveReserveSymbols().map((sym) =>
@@ -573,11 +579,7 @@ export const aaveAdapter: ProtocolAdapter = {
           address: lst.pool,
           abi: curveStableSwapNgAbi,
           functionName: "get_dy",
-          args: [
-            BigInt(lst.poolLstIndex),
-            BigInt(lst.poolWethIndex),
-            shares,
-          ],
+          args: [BigInt(lst.poolLstIndex), BigInt(lst.poolWethIndex), shares],
         },
         {
           address: lst.vault,
@@ -731,7 +733,7 @@ export const aaveAdapter: ProtocolAdapter = {
       args: [admin],
     })) as boolean;
     if (!isAdmin) {
-      await sendAsImpersonated(
+      await sendAsPrivileged(
         ctx.publicClient,
         ctx.walletClient,
         ctx.chain,
@@ -744,6 +746,7 @@ export const aaveAdapter: ProtocolAdapter = {
             args: [admin],
           }),
         },
+        "granting the environment POOL_ADMIN",
       );
     }
 

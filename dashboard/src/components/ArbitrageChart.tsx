@@ -58,6 +58,9 @@ export function ArbitrageChart({ data, height = 320 }: { data: ArbitrageSnapshot
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         title: "fair",
+        // The dotted last-value rails were five horizontal lines competing with the two that mean
+        // something (par and the round-trip threshold). The right-hand badges already carry the value.
+        priceLineVisible: false,
       },
       0,
     );
@@ -66,7 +69,16 @@ export function ArbitrageChart({ data, height = 320 }: { data: ArbitrageSnapshot
     for (const venue of data.venues) {
       venueSeries.set(
         venue.id,
-        chart.addSeries(LineSeries, { color: venue.color, lineWidth: 2, title: venue.label }, 0),
+        chart.addSeries(
+          LineSeries,
+          {
+            color: venue.color,
+            lineWidth: 2,
+            title: venue.label,
+            priceLineVisible: false,
+          },
+          0,
+        ),
       );
     }
     venueSeriesRef.current = venueSeries;
@@ -83,13 +95,15 @@ export function ArbitrageChart({ data, height = 320 }: { data: ArbitrageSnapshot
       lineWidth: 1,
       lineStyle: LineStyle.Dotted,
       axisLabelVisible: true,
-      title: `${data.thresholdBps}bps round-trip cost`,
+      title: `${data.thresholdBps}bps`,
     });
 
     markersRef.current = createSeriesMarkers(spreadSeries, []);
 
     const panes = chart.panes();
-    panes[0]?.setStretchFactor(3);
+    // The markers sit in the spread pane, so it cannot be a sliver: at 3:1 they overlapped the
+    // histogram and each other into an unreadable band.
+    panes[0]?.setStretchFactor(2.2);
     panes[1]?.setStretchFactor(1);
 
     const resizeObserver = new ResizeObserver((entries) => {
@@ -132,12 +146,13 @@ export function ArbitrageChart({ data, height = 320 }: { data: ArbitrageSnapshot
     );
 
     const venueColor = new Map(data.venues.map((v) => [v.id, v.color]));
+    // Shape carries the side and colour carries the venue -- both already in the legend. The text
+    // label did not fit: a dozen trades in a twelve-block round overlapped into one unreadable line.
     const markers: SeriesMarker<Time>[] = data.trades.map((t) => ({
       time: t.time as UTCTimestamp,
       position: t.side === "buy" ? "belowBar" : "aboveBar",
       color: venueColor.get(t.venue) ?? tertiaryColor,
       shape: t.side === "buy" ? "arrowUp" : "arrowDown",
-      text: `${t.side} ${t.venue}`,
     }));
     markersRef.current?.setMarkers(markers);
 

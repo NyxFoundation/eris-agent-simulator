@@ -47,9 +47,40 @@ function resetUnitEnv(value: string | undefined): ResetUnit {
   );
 }
 
+// Who owns the node the run talks to (issue #33 / ADR 0021 §7). `anvil` is a dev node the
+// environment drives with cheatcodes; `external` is a real client (the OP Stack devnet of #35),
+// where the sequencer produces blocks and nothing can be conjured.
+export type ChainMode = "anvil" | "external";
+
+function chainModeEnv(value: string | undefined): ChainMode {
+  if (value === undefined || value === "") return "anvil";
+  if (value === "anvil" || value === "external") return value;
+  throw new Error(
+    `run.chainMode must be "anvil" or "external" (got "${value}") — issue #33`,
+  );
+}
+
 export type SimConfig = {
   rpcUrl: string;
+  // Where reads go. Same as rpcUrl unless the chain is served by a sequencer plus a read replica,
+  // which is the architecture decision #36 measures: Eris's load is read-heavy (every agent rebuilds
+  // its observation each block), and a sequencer that also answers those reads is the thing that
+  // jitters block production. Splitting the two is a config change here and a deployment change
+  // there, so the seam exists before the measurement rather than after it.
+  readRpcUrl: string;
   chainId: number;
+  // issue #33 / ADR 0021 §7. Set from `run.chainMode`; the coordinator installs it into the sdk's
+  // chain module (setChainMode) so every cheatcode entry point can refuse rather than fail silently.
+  chainMode: ChainMode;
+  // The account that funds everything on an external chain (issue #33 (1)): genesis prefunds it, and
+  // it sends ETH and mints/transfers tokens to the agent, flow and admin wallets. Unused in anvil
+  // mode, where balances are assigned with a cheatcode.
+  treasuryPrivateKey?: Hex;
+  // Native balance the treasury tops the admin and keeper wallets up to on an external chain
+  // (ERIS_EXTERNAL_ROLE_ETH_WEI). In anvil mode they are simply assigned 2,000,000 ETH, which is not
+  // a number a genesis alloc can hand out over and over; on a chain that runs for a week this is a
+  // real budget and the top-up is incremental.
+  externalRoleEthWei: bigint;
   // Upstream RPC to fork from (ARB_RPC_URL). When set, resetFork calls anvil_reset with a forking
   // config to rebuild the fork state clean each time (avoiding the anvil_reset [] problem where
   // positions such as Aave persist across runs/seeds). If unset, falls back to the legacy
@@ -131,6 +162,21 @@ export type SimConfig = {
   // harness counts blocks: 12/epoch, which leaves room for G7's per-boundary median window and keeps a
   // 42-epoch week (504 blocks) inside anvil's ~1,050 block history retention (ADR 0019 §8).
   epochBlocks: number;
+  // Epoch length stated in real time (ERIS_EPOCH_SECONDS; 0 = state it in blocks instead). ADR 0021
+  // §3 settles the *unit*: a round on a chain that runs for a week is 30 minutes to an hour, so that
+  // standings move several times a day without the series growing far past what the metric has been
+  // calibrated on. Blocks are then whatever that comes to at this chain's cadence, which is the
+  // right dependency direction -- an operator who changes the block time should not silently change
+  // how long a round is. The block count it resolves to, and the lambda that goes with it, are the
+  // pieces ADR 0021 leaves open and #56 decides.
+  epochSeconds: number;
+  // Wall-clock hours per output segment (ERIS_SEGMENT_HOURS; 0 = one directory for the whole run,
+  // which is every run today). ADR 0021 §6: the chain stays continuous and only the artifacts are
+  // cut, because a week of events.jsonl is a file nobody can open and a viewer should not have to
+  // read Monday to see Friday.
+  segmentHours: number;
+  // Display name for the segmented period ("practice week 1"). Falls back to the run id.
+  segmentName: string;
   // G7 window (ERIS_MARK_MEDIAN_BLOCKS): how many blocks, the boundary included, the manipulable
   // marks are medianed over when an epoch boundary is valued. <= 1 marks boundaries live.
   // 5 of a 12-block epoch is provisional -- the ADR leaves N to be set against the epoch length once
@@ -301,9 +347,24 @@ export function loadConfig(env = process.env): SimConfig {
     env.MAX_AAVE_SUPPLY_WETH_WEI,
     5_000_000_000_000_000_000n,
   );
+  const rpcUrl = env.ANVIL_RPC_URL ?? `http://127.0.0.1:${anvilPort}`;
+  const blockTimeSec = intEnv(env.ERIS_BLOCK_TIME_SEC, 2);
   return {
-    rpcUrl: env.ANVIL_RPC_URL ?? `http://127.0.0.1:${anvilPort}`,
+    rpcUrl,
+    readRpcUrl:
+      env.ERIS_READ_RPC_URL && env.ERIS_READ_RPC_URL.trim() !== ""
+        ? env.ERIS_READ_RPC_URL.trim()
+        : rpcUrl,
     chainId: intEnv(env.CHAIN_ID, CHAIN_ID),
+    chainMode: chainModeEnv(env.ERIS_CHAIN_MODE),
+    treasuryPrivateKey:
+      env.TREASURY_PRIVATE_KEY && env.TREASURY_PRIVATE_KEY.trim() !== ""
+        ? hexEnv(env.TREASURY_PRIVATE_KEY, "")
+        : undefined,
+    externalRoleEthWei: bigintEnv(
+      env.ERIS_EXTERNAL_ROLE_ETH_WEI,
+      50_000_000_000_000_000_000n,
+    ),
     forkUrl:
       env.ARB_RPC_URL && env.ARB_RPC_URL.trim() !== ""
         ? env.ARB_RPC_URL.trim()
@@ -337,7 +398,7 @@ export function loadConfig(env = process.env): SimConfig {
     // Aave variable-rate accrual and GMX funding occur at a realistic scale.
     roundTimeSeconds: intEnv(env.ROUND_TIME_SECONDS, 3600),
     // Real-time mode settings.
-    blockTimeSec: intEnv(env.ERIS_BLOCK_TIME_SEC, 2),
+    blockTimeSec,
     runSeconds: intEnv(env.ERIS_RUN_SECONDS, 20),
     runBlocks: intEnv(env.ERIS_RUN_BLOCKS, 0),
     skipReset: env.ERIS_SKIP_RESET === "1",
@@ -348,7 +409,10 @@ export function loadConfig(env = process.env): SimConfig {
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
-    epochBlocks: Math.max(0, intEnv(env.ERIS_EPOCH_BLOCKS, 12)),
+    epochBlocks: resolveEpochBlocks(env, blockTimeSec),
+    epochSeconds: Math.max(0, intEnv(env.ERIS_EPOCH_SECONDS, 0)),
+    segmentHours: Math.max(0, floatEnv(env.ERIS_SEGMENT_HOURS, 0)),
+    segmentName: env.ERIS_SEGMENT_NAME ?? "",
     markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
@@ -513,6 +577,28 @@ export function loadConfig(env = process.env): SimConfig {
       keeper: hexEnv(env.KEEPER_PRIVATE_KEY, deriveRoleKey("keeper")),
     },
   };
+}
+
+// Blocks per scoring epoch. Stated in real time when `run.epochSeconds` is set (ADR 0021 §3), in
+// blocks otherwise -- and refusing to accept both, because two answers to "how long is a round" is
+// exactly the ambiguity the axis was introduced to remove.
+function resolveEpochBlocks(
+  env: NodeJS.ProcessEnv,
+  blockTimeSec: number,
+): number {
+  const seconds = Math.max(0, intEnv(env.ERIS_EPOCH_SECONDS, 0));
+  const blocks = Math.max(0, intEnv(env.ERIS_EPOCH_BLOCKS, 12));
+  if (seconds === 0) return blocks;
+  if (env.ERIS_EPOCH_BLOCKS !== undefined && env.ERIS_EPOCH_BLOCKS !== "")
+    throw new Error(
+      "run.epochSeconds and run.epochBlocks both set. A round has one length: state it in seconds " +
+        "(which converts at run.blockTimeSec) or in blocks, not both (ADR 0021 §3)",
+    );
+  if (!(blockTimeSec > 0))
+    throw new Error(
+      "run.epochSeconds needs a positive run.blockTimeSec to convert into blocks",
+    );
+  return Math.max(1, Math.round(seconds / blockTimeSec));
 }
 
 function parseEnabledProtocols(value: string | undefined): ProtocolId[] {

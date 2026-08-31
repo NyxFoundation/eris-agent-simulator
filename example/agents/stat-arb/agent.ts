@@ -25,7 +25,8 @@
  */
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { RollingStats } from "../lib/rolling-stats.js";
-import { affordable } from "../lib/affordable.js";
+import { affordable, limitFor } from "../lib/affordable.js";
+import { marketViews } from "../lib/markets.js";
 
 const WINDOW = Math.max(
   2,
@@ -62,8 +63,24 @@ if (!Number.isFinite(BID_ALPHA) || BID_ALPHA < 0) {
   process.exit(1);
 }
 
-const stats = new RollingStats(WINDOW);
-const seenRounds = new Set<number>();
+// One estimator per base. A z-score is only meaningful against the deviation history of the *same*
+// market: WBTC's gap distribution is not WETH's, and pooling them would score a normal WBTC
+// dislocation against WETH's variance (ADR 0013 -- the registry is multi-asset, so the statistics
+// have to be too).
+const statsByBase = new Map<string, RollingStats>();
+const seenByBase = new Map<string, Set<number>>();
+
+function statsFor(base: string): RollingStats {
+  let s = statsByBase.get(base);
+  if (!s) statsByBase.set(base, (s = new RollingStats(WINDOW)));
+  return s;
+}
+
+function seenFor(base: string): Set<number> {
+  let s = seenByBase.get(base);
+  if (!s) seenByBase.set(base, (s = new Set<number>()));
+  return s;
+}
 
 function computeGap(pool: number, fair: number): number | null {
   if (!Number.isFinite(pool) || pool <= 0) return null;
@@ -71,19 +88,24 @@ function computeGap(pool: number, fair: number): number | null {
   return fair / pool - 1;
 }
 
+// history carries the WETH pool and fair only, so it seeds WETH's estimator alone; the other bases
+// burn in live. Better than seeding them from WETH's history, which would hand them a distribution
+// that is not theirs.
 function seedFromHistory(
   history: AgentObservation["history"] | undefined,
 ): void {
   if (!history || history.length === 0) return;
+  const stats = statsFor("WETH");
+  const seen = seenFor("WETH");
   for (const point of history) {
-    if (seenRounds.has(point.round)) continue;
+    if (seen.has(point.round)) continue;
     const gap = computeGap(
       point.poolPriceUsdcPerWeth,
       point.fairPriceUsdcPerWeth,
     );
     if (gap === null) continue;
     stats.update(gap);
-    seenRounds.add(point.round);
+    seen.add(point.round);
   }
 }
 
@@ -92,108 +114,147 @@ function noop(reason: string): AgentAction {
 }
 
 export function decide(obs: AgentObservation): AgentAction | null {
-  // The observation is nested (protocols.uniswap.pool). This strategy uses a flat shape that assumes a
-  // top-level pool, so when uniswap is unavailable it cannot arbitrage and returns noop.
-  const uniPool = obs.protocols?.uniswap?.pool;
-  if (!uniPool) return noop("uniswap pool unavailable");
+  const views = marketViews(obs).filter((v) => v.venues.length > 0);
+  if (views.length === 0) return noop("no venue quoting any base");
 
   seedFromHistory(obs.history);
 
-  const pool = uniPool.priceUsdcPerWeth;
-  const fair = obs.fairPriceUsdcPerWeth;
-  const gap = computeGap(pool, fair);
-  if (gap === null) return noop("invalid prices");
-
-  // Score against the current model BEFORE incorporating the new sample —
-  // otherwise the latest point pulls the mean toward itself and damps the
-  // signal. Then fold it in for next round.
-  const z = stats.zscore(gap);
-  stats.update(gap);
-  seenRounds.add(obs.round);
-
-  if (stats.count() < BURN_IN) {
-    return noop(`burn-in (${stats.count()}/${BURN_IN})`);
-  }
-
-  const absZ = Math.abs(z);
-  if (absZ < Z_ENTER) {
-    return noop(`|z|=${absZ.toFixed(2)} < ${Z_ENTER}`);
-  }
-
-  // Use z (uniswap gap) to judge "is this a moving regime", but execute on the max-deviation venue among the 3 venues.
-  const venues: Array<{
+  // Score every active base, then take the strongest signal that can actually be funded. Scoring
+  // only WETH left the WBTC markets untouched however far they drifted.
+  type Candidate = {
+    base: string;
+    absZ: number;
+    bestGap: number;
     swapType: "swap" | "balancerSwap" | "curveSwap";
-    price: number;
-  }> = [{ swapType: "swap", price: pool }];
-  const balP = obs.protocols?.balancer?.priceUsdcPerWeth;
-  if (Number.isFinite(balP) && (balP ?? 0) > 0)
-    venues.push({ swapType: "balancerSwap", price: balP as number });
-  const curveP = obs.protocols?.curve?.priceUsdcPerWeth;
-  if (Number.isFinite(curveP) && (curveP ?? 0) > 0)
-    venues.push({ swapType: "curveSwap", price: curveP as number });
-  let best = venues[0];
-  let bestGap = fair / venues[0].price - 1;
-  for (const v of venues) {
-    const g = fair / v.price - 1;
-    if (Math.abs(g) > Math.abs(bestGap)) {
-      bestGap = g;
-      best = v;
-    }
-  }
-
-  const tokenIn: "WETH" | "USDC" = bestGap > 0 ? "USDC" : "WETH";
-  const max = BigInt(
-    tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits,
-  );
-
-  // Linear ramp: SIZE_FLOOR_BPS at |z| = Z_ENTER, SIZE_CAP_BPS at |z| >= Z_AGGRESSIVE.
-  const span = Math.max(0.0001, Z_AGGRESSIVE - Z_ENTER);
-  const t = Math.max(0, Math.min(1, (absZ - Z_ENTER) / span));
-  const sizeBps = Math.max(
-    SIZE_FLOOR_BPS,
-    Math.min(
-      SIZE_CAP_BPS,
-      Math.floor(SIZE_FLOOR_BPS + (SIZE_CAP_BPS - SIZE_FLOOR_BPS) * t),
-    ),
-  );
-  // Capped by the wallet as well as by the rule limit. Under USDC-only funding the sell leg has no
-  // inventory behind it; proposing it anyway is a self-reject, which is indistinguishable in the
-  // score from choosing not to trade (issue #54).
-  const amountIn = affordable(obs, tokenIn, (max * BigInt(sizeBps)) / 10_000n);
-
-  if (amountIn <= 0n) {
-    return noop(`no ${tokenIn} to fund this side of the spread`);
-  }
-
-  // EV in USDC ≈ size_usdc * |gap|. Convert to wei via fair price.
-  const sizeUsdc =
-    tokenIn === "USDC"
-      ? Number(amountIn) / 1e6
-      : (Number(amountIn) / 1e18) * fair;
-  const evUsdc = sizeUsdc * Math.abs(bestGap);
-  const evGwei = Math.max(0, Math.floor((evUsdc / fair) * 1e9));
-  const evWei = BigInt(evGwei) * 1_000_000_000n;
-
-  const alphaScale = 10_000n;
-  const alphaNum = BigInt(
-    Math.max(0, Math.floor(BID_ALPHA * Number(alphaScale))),
-  );
-  const bidPerGasWei = (evWei * alphaNum) / alphaScale / GAS_UNITS_ESTIMATE;
-
-  const minBid = BigInt(obs.limits.defaultPriorityFeePerGasWei);
-  const maxBid = BigInt(obs.limits.maxPriorityFeePerGasWei);
-  const bid =
-    bidPerGasWei < minBid
-      ? minBid
-      : bidPerGasWei > maxBid
-        ? maxBid
-        : bidPerGasWei;
-
-  return {
-    type: best.swapType,
-    tokenIn,
-    amountIn: amountIn.toString(),
-    maxPriorityFeePerGasWei: bid.toString(),
-    slippageBps: 75,
+    fair: number;
+    decimals: number;
   };
+  const candidates: Candidate[] = [];
+  let burningIn = 0;
+
+  for (const view of views) {
+    // The signal is the uniswap gap where uniswap quotes this base (the venue the estimator was
+    // tuned on), and the first available venue otherwise.
+    const signalVenue =
+      view.venues.find((v) => v.protocol === "uniswap") ?? view.venues[0];
+    const gap = computeGap(signalVenue.price, view.fair);
+    if (gap === null) continue;
+
+    const stats = statsFor(view.base);
+    const seen = seenFor(view.base);
+    // Score against the current model BEFORE incorporating the new sample -- otherwise the latest
+    // point pulls the mean toward itself and damps the signal. Then fold it in for next round.
+    const z = stats.zscore(gap);
+    if (!seen.has(obs.round)) {
+      stats.update(gap);
+      seen.add(obs.round);
+    }
+    if (stats.count() < BURN_IN) {
+      burningIn++;
+      continue;
+    }
+    const absZ = Math.abs(z);
+    if (absZ < Z_ENTER) continue;
+
+    // Judge the regime on the signal venue, but execute on the most deviated one.
+    let best = view.venues[0];
+    let bestGap = view.fair / view.venues[0].price - 1;
+    for (const v of view.venues) {
+      const g = view.fair / v.price - 1;
+      if (Math.abs(g) > Math.abs(bestGap)) {
+        bestGap = g;
+        best = v;
+      }
+    }
+    candidates.push({
+      base: view.base,
+      absZ,
+      bestGap,
+      swapType: best.swapType,
+      fair: view.fair,
+      decimals: view.baseDecimals,
+    });
+  }
+
+  if (candidates.length === 0)
+    return noop(
+      burningIn > 0
+        ? `burn-in (${views.map((v) => `${v.base} ${statsFor(v.base).count()}/${BURN_IN}`).join(", ")})`
+        : "no base deviating far enough to trade",
+    );
+
+  candidates.sort((a, b) => b.absZ - a.absZ);
+
+  // Try the strongest signal first and fall through to the next when the leg cannot be funded --
+  // a base whose sell side is empty must not shadow one whose buy side is not.
+  let skippedUnfundable = false;
+  for (const c of candidates) {
+    const tokenIn = c.bestGap > 0 ? "USDC" : c.base;
+    const max = limitFor(obs, tokenIn);
+
+    // Linear ramp: SIZE_FLOOR_BPS at |z| = Z_ENTER, SIZE_CAP_BPS at |z| >= Z_AGGRESSIVE.
+    const span = Math.max(0.0001, Z_AGGRESSIVE - Z_ENTER);
+    const t = Math.max(0, Math.min(1, (c.absZ - Z_ENTER) / span));
+    const sizeBps = Math.max(
+      SIZE_FLOOR_BPS,
+      Math.min(
+        SIZE_CAP_BPS,
+        Math.floor(SIZE_FLOOR_BPS + (SIZE_CAP_BPS - SIZE_FLOOR_BPS) * t),
+      ),
+    );
+    // Capped by the wallet as well as by the rule limit: proposing an unfundable leg is a
+    // self-reject, indistinguishable in the score from choosing not to trade (issue #54).
+    const amountIn = affordable(obs, tokenIn, (max * BigInt(sizeBps)) / 10_000n);
+    if (amountIn <= 0n) {
+      skippedUnfundable = true;
+      continue;
+    }
+
+    // EV in USDC ~= size_usdc * |gap|. Convert to wei via the base's own fair price.
+    const sizeUsdc =
+      tokenIn === "USDC"
+        ? Number(amountIn) / 1e6
+        : (Number(amountIn) / 10 ** c.decimals) * c.fair;
+    const evUsdc = sizeUsdc * Math.abs(c.bestGap);
+    // The bid is denominated in the chain's own currency, so the conversion is through the WETH
+    // fair price whatever base the trade is in.
+    const evGwei = Math.max(
+      0,
+      Math.floor((evUsdc / obs.fairPriceUsdcPerWeth) * 1e9),
+    );
+    const evWei = BigInt(evGwei) * 1_000_000_000n;
+
+    const alphaScale = 10_000n;
+    const alphaNum = BigInt(
+      Math.max(0, Math.floor(BID_ALPHA * Number(alphaScale))),
+    );
+    const bidPerGasWei = (evWei * alphaNum) / alphaScale / GAS_UNITS_ESTIMATE;
+
+    const minBid = BigInt(obs.limits.defaultPriorityFeePerGasWei);
+    const maxBid = BigInt(obs.limits.maxPriorityFeePerGasWei);
+    const bid =
+      bidPerGasWei < minBid
+        ? minBid
+        : bidPerGasWei > maxBid
+          ? maxBid
+          : bidPerGasWei;
+
+    // `base` only belongs on a non-WETH swap (ADR 0013): the WETH market is the untagged default,
+    // and the action union has no `base` on the shapes that are not swaps.
+    const action: Record<string, unknown> = {
+      type: c.swapType,
+      tokenIn,
+      amountIn: amountIn.toString(),
+      maxPriorityFeePerGasWei: bid.toString(),
+      slippageBps: 75,
+    };
+    if (c.base !== "WETH") action.base = c.base;
+    return action as unknown as AgentAction;
+  }
+
+  return noop(
+    skippedUnfundable
+      ? "every deviating base wants a leg this wallet cannot fund"
+      : "no fundable base",
+  );
 }

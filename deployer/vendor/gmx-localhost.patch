@@ -420,11 +420,16 @@ diff --git a/hardhat.config.ts b/hardhat.config.ts
 index 8ca5e8c..8d1e66c 100644
 --- a/hardhat.config.ts
 +++ b/hardhat.config.ts
-@@ -200,6 +200,7 @@ const config: HardhatUserConfig = {
+@@ -200,6 +200,12 @@ const config: HardhatUserConfig = {
        chainId: Number(process.env.FORK_ID) || 42161, // default to Arbitrum One
      },
      localhost: {
-+      chainId: 31337, // anvil default; chainId is required for synthetic token address computation
++      // Both are env-driven so the same deploy path reaches an external chain (issue #33 (4)).
++      // hardhat's built-in default for `localhost` is 127.0.0.1:8545, which is only ever right for
++      // a dev node on the deployer's own machine.
++      url: process.env.RPC_URL || "http://127.0.0.1:8545",
++      // anvil default; chainId is required for synthetic token address computation
++      chainId: Number(process.env.CHAIN_ID) || 31337,
        saveDeployments: true,
      },
      arbitrum: {

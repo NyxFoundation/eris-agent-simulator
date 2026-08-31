@@ -1,20 +1,33 @@
-import { useState } from "react";
+// /markets — what each deployed application is doing.
+//
+// The page used to be a price chart with a venue-agnostic stat strip, which said almost nothing
+// about a run: the price is the environment's own input (a seeded fair path written on-chain every
+// block), while what an agent actually reads and trades against is venue *state* — an AMM's depth
+// and cross-venue gap, a perp's open interest and funding, a lender's utilization and the health
+// factors near the line, a CDP's peg and collateral ratio, an LST's redemption rate against its
+// market price. One tab per application, each built from that run's own artifacts.
+import { useEffect, useState, type ReactNode } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
 import { Sidebar } from "@/components/Sidebar";
 import { CandleChart } from "@/components/CandleChart";
 import { ArbitrageChart } from "@/components/ArbitrageChart";
+import { StateChart } from "@/components/StateChart";
 import { Select } from "@/design-system/Select";
 import { Sparkline } from "@/design-system/Sparkline";
 import { Tabs } from "@/design-system/Tabs";
+import { setSelectedRound } from "@/data/roundSelection";
 import { navigate } from "@/navigation";
+import { t } from "@/i18n/messages";
 import { formatPnlUsdc } from "@/lib/format";
 import { useMarketSnapshot } from "@/data/useMarketSnapshot";
 import type {
   AgentStanding,
-  MarketOrder,
-  MarketPosition,
-  MarketTrade,
+  StatTone,
   VenueDepthView,
+  VenuePanel,
+  VenueStat,
+  VenueTable,
+  VenueTableCell,
 } from "@/data/types";
 
 const SECTION_LABEL_STYLE = {
@@ -30,13 +43,25 @@ const RANK_COLORS: Record<number, string> = {
   3: "color-mix(in oklch, var(--amber-500), var(--red-500) 40%)",
 };
 
-const CHART_VIEWS = [
-  { label: "Price", value: "price" },
-  { label: "Cross-venue arb", value: "arb" },
+const chartViews = () => [
+  { label: t("market.view.arb"), value: "arb" },
+  { label: t("market.view.price"), value: "price" },
 ];
 
-const POSITIONS_GRID = "1fr 60px 80px 90px 90px";
-const TRADES_GRID = "1fr 90px 90px";
+function toneColor(tone: StatTone | "link" | undefined): string {
+  switch (tone) {
+    case "up":
+      return "var(--success-text)";
+    case "down":
+      return "var(--danger-text)";
+    case "warn":
+      return "var(--warning)";
+    case "link":
+      return "var(--text-link)";
+    default:
+      return "var(--text-primary)";
+  }
+}
 
 function CrownIcon({ color }: { color: string }) {
   return (
@@ -96,89 +121,127 @@ function LeaderboardMiniRow({ row }: { row: AgentStanding }) {
   );
 }
 
-function PositionRow({ row }: { row: MarketPosition }) {
-  const sideColor =
-    row.side === "long" ? "var(--success-text)" : "var(--danger-text)";
+function StatTile({ stat }: { stat: VenueStat }) {
   return (
     <div
-      title="Position detail not yet available"
       style={{
-        display: "grid",
-        gridTemplateColumns: POSITIONS_GRID,
-        padding: "10px 20px",
-        borderBottom: "1px solid var(--border-subtle)",
-        font: "var(--text-sm) var(--font-mono)",
-        cursor: "not-allowed",
+        border: "1px solid var(--border-subtle)",
+        borderRadius: "var(--radius-md)",
+        padding: "10px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: "3px",
+        minWidth: 0,
+        background: "var(--bg-surface)",
       }}
     >
-      <span style={{ color: "var(--text-link)" }}>{row.agent}</span>
-      <span style={{ color: sideColor, textTransform: "uppercase" }}>
-        {row.side}
+      <span style={SECTION_LABEL_STYLE}>{stat.label}</span>
+      <span
+        style={{
+          font: "var(--weight-semibold) var(--text-md) var(--font-mono)",
+          color: toneColor(stat.tone),
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {stat.value}
       </span>
-      <span style={{ textAlign: "right", color: "var(--text-primary)" }}>
-        {row.size}
-      </span>
-      <span style={{ textAlign: "right", color: "var(--text-secondary)" }}>
-        {row.entry}
-      </span>
-      <span style={{ textAlign: "right", color: sideColor }}>
-        {row.pnlPercent >= 0 ? "+" : ""}
-        {row.pnlPercent.toFixed(1)}%
-      </span>
+      {stat.sub && (
+        <span
+          style={{
+            font: "10px var(--font-mono)",
+            color: "var(--text-tertiary)",
+          }}
+        >
+          {stat.sub}
+        </span>
+      )}
     </div>
   );
 }
 
-function OrderRow({ row }: { row: MarketOrder }) {
-  const sideColor =
-    row.side === "long" ? "var(--success-text)" : "var(--danger-text)";
+function PanelTable({ table }: { table: VenueTable }) {
+  const grid = table.columns
+    .map((c, i) =>
+      c.width ? c.width : i === 0 ? "minmax(0,1.2fr)" : "minmax(0,1fr)",
+    )
+    .join(" ");
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: POSITIONS_GRID,
-        padding: "10px 20px",
-        borderBottom: "1px solid var(--border-subtle)",
-        font: "var(--text-sm) var(--font-mono)",
-      }}
-    >
-      <span style={{ color: "var(--text-link)" }}>{row.agent}</span>
-      <span style={{ color: sideColor, textTransform: "uppercase" }}>
-        {row.side}
-      </span>
-      <span style={{ textAlign: "right", color: "var(--text-primary)" }}>
-        {row.size}
-      </span>
-      <span style={{ textAlign: "right", color: "var(--text-secondary)" }}>
-        {row.trigger}
-      </span>
-      <span style={{ textAlign: "right", color: "var(--text-tertiary)" }}>
-        {row.status}
-      </span>
-    </div>
-  );
-}
-
-function TradeRow({ row }: { row: MarketTrade }) {
-  const sideColor =
-    row.side === "long" ? "var(--success-text)" : "var(--danger-text)";
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: TRADES_GRID,
-        padding: "10px 20px",
-        borderBottom: "1px solid var(--border-subtle)",
-        font: "var(--text-sm) var(--font-mono)",
-      }}
-    >
-      <span style={{ color: sideColor }}>{row.agent}</span>
-      <span style={{ textAlign: "right", color: "var(--text-secondary)" }}>
-        {row.size}
-      </span>
-      <span style={{ textAlign: "right", color: "var(--text-tertiary)" }}>
-        {row.price}
-      </span>
+    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+      <span style={SECTION_LABEL_STYLE}>{table.title}</span>
+      <div
+        style={{
+          border: "1px solid var(--border-subtle)",
+          borderRadius: "var(--radius-md)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: grid,
+            gap: "8px",
+            padding: "8px 12px",
+            background: "var(--bg-surface)",
+            borderBottom: "1px solid var(--border-subtle)",
+          }}
+        >
+          {table.columns.map((column) => (
+            <span
+              key={column.label}
+              style={{
+                ...SECTION_LABEL_STYLE,
+                textAlign: column.align ?? "left",
+              }}
+            >
+              {column.label}
+            </span>
+          ))}
+        </div>
+        {table.rows.length === 0 ? (
+          <div
+            style={{
+              padding: "12px",
+              font: "var(--text-xs) var(--font-mono)",
+              color: "var(--text-tertiary)",
+            }}
+          >
+            {table.empty}
+          </div>
+        ) : (
+          table.rows.map((row, i) => (
+            <div
+              key={i}
+              style={{
+                display: "grid",
+                gridTemplateColumns: grid,
+                gap: "8px",
+                padding: "8px 12px",
+                borderBottom: "1px solid var(--border-subtle)",
+                font: "var(--text-sm) var(--font-mono)",
+              }}
+            >
+              {row.map((c: VenueTableCell, j) => (
+                <span
+                  key={j}
+                  // The cells are single-line so the columns stay aligned; the full text is one
+                  // hover away rather than lost.
+                  title={c.text}
+                  style={{
+                    textAlign: table.columns[j]?.align ?? "left",
+                    color: toneColor(c.tone),
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {c.text}
+                </span>
+              ))}
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -239,13 +302,13 @@ function VenueDepthRow({ venue }: { venue: VenueDepthView }) {
           }}
         >
           <span>
-            sell{" "}
+            {t("market.sell")}{" "}
             <span style={{ color: "var(--danger-text)" }}>
               {venue.sell ?? "—"}
             </span>
           </span>
           <span>
-            buy{" "}
+            {t("market.buy")}{" "}
             <span style={{ color: "var(--success-text)" }}>
               {venue.buy ?? "—"}
             </span>
@@ -256,84 +319,158 @@ function VenueDepthRow({ venue }: { venue: VenueDepthView }) {
   );
 }
 
+function PanelBody({
+  panel,
+  children,
+}: {
+  panel: VenuePanel;
+  children?: ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "20px",
+        padding: "18px 20px 40px",
+        minWidth: 0,
+      }}
+    >
+      <p
+        style={{
+          margin: 0,
+          maxWidth: "84ch",
+          font: "var(--text-sm) var(--font-sans)",
+          lineHeight: 1.6,
+          color: "var(--text-secondary)",
+        }}
+      >
+        {panel.caption}
+      </p>
+
+      {panel.note && (
+        <div
+          style={{
+            padding: "8px 12px",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-md)",
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--warning)",
+          }}
+        >
+          {panel.note}
+        </div>
+      )}
+
+      {panel.stats.length > 0 && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+            gap: "10px",
+          }}
+        >
+          {panel.stats.map((stat) => (
+            <StatTile key={stat.label} stat={stat} />
+          ))}
+        </div>
+      )}
+
+      {children}
+
+      {panel.charts.length > 0 && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            gap: "20px",
+          }}
+        >
+          {panel.charts.map((chart) => (
+            <StateChart key={chart.id} chart={chart} />
+          ))}
+        </div>
+      )}
+
+      {panel.tables.map((table) => (
+        <PanelTable key={table.id} table={table} />
+      ))}
+    </div>
+  );
+}
+
+function CenteredMessage({ text, tone }: { text: string; tone?: "danger" }) {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "var(--bg-canvas)",
+      }}
+    >
+      <span
+        style={{
+          font: "var(--text-sm) var(--font-mono)",
+          color:
+            tone === "danger" ? "var(--danger-text)" : "var(--text-tertiary)",
+        }}
+      >
+        {text}
+      </span>
+    </div>
+  );
+}
+
 export function MarketPage() {
   const [selectedBase, setSelectedBase] = useState("WETH");
   const { data, loading, error } = useMarketSnapshot(selectedBase);
-  const [bottomTab, setBottomTab] = useState("positions");
-  const [chartView, setChartView] = useState("price");
+  // Empty until the run says which panels it has: the first tab is the run's own lead (Scenario),
+  // and hard-coding "amm" made the default disagree with the tab order.
+  const [panelId, setPanelId] = useState("");
+  const [chartView, setChartView] = useState("arb");
 
-  if (loading) {
-    return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "var(--bg-canvas)",
-        }}
-      >
-        <span
-          style={{
-            font: "var(--text-sm) var(--font-mono)",
-            color: "var(--text-tertiary)",
-          }}
-        >
-          Loading Eris…
-        </span>
-      </div>
-    );
-  }
+  // The run switch can change which applications exist; keep the tab on something the run has.
+  const panelIds: string[] = data?.panels.map((p) => p.id) ?? [];
+  const panelKey = panelIds.join("|");
+  useEffect(() => {
+    if (panelIds.length > 0 && !panelIds.includes(panelId))
+      setPanelId(panelIds[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelKey]);
 
-  if (error || !data) {
+  if (loading) return <CenteredMessage text={t("common.loading")} />;
+  if (error || !data)
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "var(--bg-canvas)",
-        }}
-      >
-        <span
-          style={{
-            font: "var(--text-sm) var(--font-mono)",
-            color: "var(--danger-text)",
-          }}
-        >
-          Failed to load data{error ? `: ${error.message}` : ""}
-        </span>
-      </div>
+      <CenteredMessage
+        text={t("common.loadFailed", {
+          detail: error ? `: ${error.message}` : "",
+        })}
+        tone="danger"
+      />
     );
-  }
 
   const {
     round,
-    stats,
-    candles,
-    leaderboard,
-    positions,
-    orders,
-    trades,
-    venueDepths,
+    scope,
+    protocols,
     pairs,
-    feed,
+    base,
+    fairPrice,
+    fairDirection,
+    candles,
     arbitrage,
+    venueDepths,
+    panels,
+    leaderboard,
+    feed,
+    feedSelfHosted,
   } = data;
+
+  const panel = panels.find((p) => p.id === panelId) ?? panels[0];
   const priceColor =
-    stats.direction === "up" ? "var(--success-text)" : "var(--danger-text)";
-  const midPrice = stats.price.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-  // Trigger orders exist in the protocol but no current strategy uses them; the tab only appears
-  // when a run actually produced some (issue #63 Phase 4).
-  const bottomTabs = [
-    { label: "Positions", value: "positions" },
-    ...(orders.length > 0 ? [{ label: "Orders", value: "orders" }] : []),
-    { label: "Trades", value: "trades" },
-  ];
+    fairDirection === "up" ? "var(--success-text)" : "var(--danger-text)";
 
   return (
     <div
@@ -354,93 +491,143 @@ export function MarketPage() {
         }}
       >
         <RoundsBar round={round} />
+
         <div
           style={{
             display: "flex",
             alignItems: "center",
-            gap: "32px",
-            padding: "12px 24px",
+            gap: "24px",
+            padding: "12px 20px",
             borderBottom: "1px solid var(--border-subtle)",
             flexWrap: "wrap",
           }}
         >
-          <div style={{ minWidth: "150px" }}>
-            <Select
-              value={selectedBase}
-              options={
-                pairs.length > 0
-                  ? pairs
-                  : [{ label: `${selectedBase}/USDC`, value: selectedBase }]
-              }
-              onChange={(e) => setSelectedBase(e.target.value)}
-              style={{ minWidth: "150px" }}
-            />
+          <Select
+            value={base}
+            options={
+              pairs.length > 0
+                ? pairs
+                : [{ label: `${base}/USDC`, value: base }]
+            }
+            onChange={(e) => setSelectedBase(e.target.value)}
+            style={{ minWidth: "150px" }}
+          />
+          <div>
+            <div style={SECTION_LABEL_STYLE}>{t("market.fair")}</div>
+            <div
+              style={{
+                font: "var(--weight-semibold) var(--text-lg) var(--font-mono)",
+                color: priceColor,
+              }}
+            >
+              {fairPrice.toLocaleString("en-US", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </div>
           </div>
+          <div style={{ marginLeft: "auto" }}>
+            <div style={SECTION_LABEL_STYLE}>{t("market.venuesInRun")}</div>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+              {protocols.length === 0 && (
+                <span
+                  style={{
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                  }}
+                >
+                  {t("market.notRecorded")}
+                </span>
+              )}
+              {protocols.map((p) => (
+                <span
+                  key={p}
+                  style={{
+                    font: "10px var(--font-mono)",
+                    letterSpacing: "var(--tracking-wide)",
+                    textTransform: "uppercase",
+                    color: "var(--text-secondary)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-sm)",
+                    padding: "2px 6px",
+                  }}
+                >
+                  {p}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Which blocks everything below covers. Selecting a round in the bar above narrows every
+            series, stat and table on this page — the end-of-run position tables say so in their
+            own titles, because those are the run's close whatever window is selected. */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            padding: "8px 20px",
+            borderBottom: "1px solid var(--border-subtle)",
+            background:
+              scope.roundIndex === null ? "transparent" : "var(--bg-surface)",
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={SECTION_LABEL_STYLE}>{t("market.scope")}</span>
           <span
             style={{
-              font: "var(--weight-semibold) var(--text-lg) var(--font-mono)",
-              color: priceColor,
+              font: "var(--text-xs) var(--font-mono)",
+              color:
+                scope.roundIndex === null || panel?.runWide
+                  ? "var(--text-tertiary)"
+                  : "var(--pink-300)",
             }}
           >
-            {midPrice}
+            {panel?.runWide
+              ? t("market.runWide", {
+                  from:
+                    round.epochs[0]?.fromBlock.toLocaleString("en-US") ?? "—",
+                  to: round.blockNumber.toLocaleString("en-US"),
+                })
+              : scope.roundIndex === null
+                ? t("market.wholeRun", {
+                    from: scope.fromBlock.toLocaleString("en-US"),
+                    to: scope.toBlock.toLocaleString("en-US"),
+                  })
+                : t("market.roundScope", {
+                    i: String(scope.roundIndex).padStart(2, "0"),
+                    from: scope.fromBlock.toLocaleString("en-US"),
+                    to: scope.toBlock.toLocaleString("en-US"),
+                  })}
           </span>
-          <div>
-            <div style={SECTION_LABEL_STYLE}>Volume · run</div>
-            <div
+          {scope.roundIndex === null || panel?.runWide ? (
+            <span
               style={{
-                font: "var(--text-sm) var(--font-mono)",
-                color: "var(--text-primary)",
+                font: "var(--text-xs) var(--font-mono)",
+                color: "var(--text-tertiary)",
               }}
             >
-              {stats.volume24h}
-            </div>
-          </div>
-          <div>
-            <div style={SECTION_LABEL_STYLE}>Open interest</div>
-            <div
+              {t("market.scopeHint")}
+            </span>
+          ) : (
+            <span
+              onClick={() => setSelectedRound(null)}
               style={{
-                font: "var(--text-sm) var(--font-mono)",
-                color: "var(--text-primary)",
+                font: "var(--text-xs) var(--font-mono)",
+                color: "var(--text-link)",
+                cursor: "pointer",
               }}
             >
-              {stats.openInterest}{" "}
-              <span style={{ color: "var(--success-text)" }}>
-                {stats.openInterestLongPercent}%
-              </span>
-              /
-              <span style={{ color: "var(--danger-text)" }}>
-                {stats.openInterestShortPercent}%
-              </span>
-            </div>
-          </div>
-          <div>
-            <div style={SECTION_LABEL_STYLE}>Available liquidity</div>
-            <div
-              style={{
-                font: "var(--text-sm) var(--font-mono)",
-                color: "var(--text-primary)",
-              }}
-            >
-              {stats.availableLiquidity} / {stats.totalLiquidity}
-            </div>
-          </div>
-          <div>
-            <div style={SECTION_LABEL_STYLE}>Funding / 1h</div>
-            <div
-              style={{
-                font: "var(--text-sm) var(--font-mono)",
-                color: "var(--text-primary)",
-              }}
-            >
-              {stats.fundingRate1h}
-            </div>
-          </div>
+              {t("market.backToRun")}
+            </span>
+          )}
         </div>
 
         <main
           style={{
             display: "grid",
-            gridTemplateColumns: "240px 1fr 300px",
+            gridTemplateColumns: "minmax(0,1fr) 300px",
             flex: 1,
             width: "100%",
             boxSizing: "border-box",
@@ -448,178 +635,110 @@ export function MarketPage() {
           }}
         >
           <div
-            style={{
-              borderRight: "1px solid var(--border-subtle)",
-              display: "flex",
-              flexDirection: "column",
-              minWidth: 0,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                padding: "14px 16px 10px",
-              }}
-            >
-              <span style={SECTION_LABEL_STYLE}>Leaderboard</span>
-              <span
-                onClick={() => navigate("/leaderboard")}
-                style={{
-                  font: "11px var(--font-mono)",
-                  color: "var(--text-link)",
-                  cursor: "pointer",
-                }}
-              >
-                all →
-              </span>
-            </div>
-            {leaderboard.slice(0, 8).map((row) => (
-              <LeaderboardMiniRow key={row.rank} row={row} />
-            ))}
-          </div>
-
-          <div
             style={{ display: "flex", flexDirection: "column", minWidth: 0 }}
           >
             <div style={{ padding: "0 20px" }}>
               <Tabs
-                tabs={CHART_VIEWS}
-                value={chartView}
-                onChange={setChartView}
+                tabs={panels.map((p) => ({ label: p.label, value: p.id }))}
+                value={panel?.id ?? ""}
+                onChange={setPanelId}
               />
             </div>
 
-            {chartView === "price" ? (
-              <div style={{ padding: "16px 20px 8px" }}>
-                <CandleChart candles={candles} height={320} />
-              </div>
-            ) : (
-              <div style={{ padding: "16px 20px 8px" }}>
-                <div
-                  style={{ display: "flex", gap: "16px", padding: "0 0 10px" }}
-                >
-                  {arbitrage.venues.map((v) => (
-                    <span
-                      key={v.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        font: "11px var(--font-mono)",
-                        color: "var(--text-secondary)",
-                      }}
-                    >
-                      <span
-                        style={{
-                          width: "8px",
-                          height: "8px",
-                          borderRadius: "50%",
-                          background: v.color,
-                          display: "inline-block",
-                        }}
-                      />
-                      {v.label}
-                    </span>
-                  ))}
-                  <span
+            {panel ? (
+              <PanelBody panel={panel}>
+                {panel.id === "amm" && (
+                  <div
                     style={{
-                      marginLeft: "auto",
-                      font: "11px var(--font-mono)",
-                      color: "var(--text-tertiary)",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "10px",
                     }}
                   >
-                    threshold {arbitrage.thresholdBps}bps · round-trip cost
-                  </span>
-                </div>
-                <ArbitrageChart data={arbitrage} height={320} />
-              </div>
-            )}
-
-            <div
-              style={{
-                padding: "0 20px",
-                borderBottom: "1px solid var(--border-subtle)",
-              }}
-            >
-              <Tabs
-                tabs={bottomTabs}
-                value={bottomTab}
-                onChange={setBottomTab}
-              />
-            </div>
-
-            {bottomTab === "positions" && (
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: POSITIONS_GRID,
-                    padding: "9px 20px",
-                    font: "9px var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                    textTransform: "uppercase",
-                    borderBottom: "1px solid var(--border-subtle)",
-                  }}
-                >
-                  <span>Agent</span>
-                  <span>Side</span>
-                  <span style={{ textAlign: "right" }}>Size</span>
-                  <span style={{ textAlign: "right" }}>Entry</span>
-                  <span style={{ textAlign: "right" }}>PnL</span>
-                </div>
-                {positions.map((row, i) => (
-                  <PositionRow key={i} row={row} />
-                ))}
-              </div>
-            )}
-
-            {bottomTab === "orders" && (
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: POSITIONS_GRID,
-                    padding: "9px 20px",
-                    font: "9px var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                    textTransform: "uppercase",
-                    borderBottom: "1px solid var(--border-subtle)",
-                  }}
-                >
-                  <span>Agent</span>
-                  <span>Side</span>
-                  <span style={{ textAlign: "right" }}>Size</span>
-                  <span style={{ textAlign: "right" }}>Trigger</span>
-                  <span style={{ textAlign: "right" }}>Status</span>
-                </div>
-                {orders.map((row, i) => (
-                  <OrderRow key={i} row={row} />
-                ))}
-              </div>
-            )}
-
-            {bottomTab === "trades" && (
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: TRADES_GRID,
-                    padding: "9px 20px",
-                    font: "9px var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                    textTransform: "uppercase",
-                    borderBottom: "1px solid var(--border-subtle)",
-                  }}
-                >
-                  <span>Agent</span>
-                  <span style={{ textAlign: "right" }}>Size</span>
-                  <span style={{ textAlign: "right" }}>Price</span>
-                </div>
-                {trades.map((row, i) => (
-                  <TradeRow key={i} row={row} />
-                ))}
+                    <div style={{ maxWidth: "340px" }}>
+                      <Tabs
+                        tabs={chartViews()}
+                        value={chartView}
+                        onChange={setChartView}
+                      />
+                    </div>
+                    {chartView === "arb" ? (
+                      <div>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: "16px",
+                            padding: "0 0 10px",
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          {arbitrage.venues.map((v) => (
+                            <span
+                              key={v.id}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                font: "11px var(--font-mono)",
+                                color: "var(--text-secondary)",
+                              }}
+                            >
+                              <span
+                                style={{
+                                  width: "8px",
+                                  height: "8px",
+                                  borderRadius: "50%",
+                                  background: v.color,
+                                  display: "inline-block",
+                                }}
+                              />
+                              {v.label}
+                            </span>
+                          ))}
+                          <span
+                            style={{
+                              marginLeft: "auto",
+                              font: "11px var(--font-mono)",
+                              color: "var(--text-tertiary)",
+                            }}
+                          >
+                            {t("market.arbLegend", {
+                              n: arbitrage.thresholdBps,
+                            })}
+                          </span>
+                        </div>
+                        <ArbitrageChart data={arbitrage} height={380} />
+                      </div>
+                    ) : (
+                      <CandleChart candles={candles} height={300} />
+                    )}
+                    {venueDepths.length > 0 && (
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns:
+                            "repeat(auto-fit, minmax(240px, 1fr))",
+                          gap: "16px",
+                          paddingTop: "8px",
+                        }}
+                      >
+                        {venueDepths.map((venue) => (
+                          <VenueDepthRow key={venue.id} venue={venue} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </PanelBody>
+            ) : (
+              <div
+                style={{
+                  padding: "24px 20px",
+                  font: "var(--text-sm) var(--font-mono)",
+                  color: "var(--text-tertiary)",
+                }}
+              >
+                {t("market.noVenue")}
               </div>
             )}
           </div>
@@ -634,37 +753,40 @@ export function MarketPage() {
           >
             <div
               style={{
-                padding: "12px 16px",
-                borderBottom: "1px solid var(--border-subtle)",
+                display: "flex",
+                alignItems: "baseline",
+                justifyContent: "space-between",
+                padding: "14px 16px 10px",
               }}
             >
-              <span style={SECTION_LABEL_STYLE}>AMM depth</span>
+              <span style={SECTION_LABEL_STYLE}>{t("market.standings")}</span>
             </div>
+            {leaderboard.slice(0, 8).map((row) => (
+              <LeaderboardMiniRow key={row.rank} row={row} />
+            ))}
+
             <div
               style={{
-                padding: "10px 16px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "12px",
-                borderBottom: "1px solid var(--border-subtle)",
+                padding: "16px 16px 6px",
+                borderTop: "1px solid var(--border-subtle)",
+                marginTop: "12px",
               }}
             >
-              {venueDepths.length === 0 && (
-                <span
+              <span style={SECTION_LABEL_STYLE}>{t("market.submissions")}</span>
+              {feedSelfHosted > 0 && (
+                <p
                   style={{
+                    margin: "6px 0 0",
                     font: "11px var(--font-mono)",
+                    lineHeight: 1.5,
                     color: "var(--text-tertiary)",
                   }}
                 >
-                  depth series appears after the run completes
-                </span>
+                  {t("market.submissionsSelfHosted", {
+                    count: String(feedSelfHosted),
+                  })}
+                </p>
               )}
-              {venueDepths.map((venue) => (
-                <VenueDepthRow key={venue.id} venue={venue} />
-              ))}
-            </div>
-            <div style={{ padding: "12px 16px 6px" }}>
-              <span style={SECTION_LABEL_STYLE}>Recent trades ↓</span>
             </div>
             <div
               style={{
@@ -673,6 +795,17 @@ export function MarketPage() {
                 padding: "0 16px 16px",
               }}
             >
+              {feed.length === 0 && (
+                <span
+                  style={{
+                    font: "11px var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                    paddingTop: "6px",
+                  }}
+                >
+                  {t("market.noSubmissions")}
+                </span>
+              )}
               {feed.map((item) => (
                 <div
                   key={item.id}

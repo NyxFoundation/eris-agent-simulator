@@ -719,7 +719,7 @@ export function epochBoundaryBlocks(
 //
 // What makes the stables different is that there the pool quote *is* the mark of a holding whose
 // cost basis sits somewhere else, so moving the pool moves the score.
-class MarkMedian {
+export class MarkMedian {
   private readonly maxDeviationBps = new Map<string, number>();
   private boundaries = 0;
 

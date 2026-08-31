@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
-import { TopPage } from "@/pages/TopPage";
-import { LeaderboardPage } from "@/pages/LeaderboardPage";
+import { HomePage } from "@/pages/HomePage";
 import { ExplorerPage } from "@/pages/ExplorerPage";
 import { MarketPage } from "@/pages/MarketPage";
-import { ArchivePage } from "@/pages/ArchivePage";
 import { AgentDetailPage } from "@/pages/AgentDetailPage";
+import { ScenarioPage } from "@/pages/ScenarioPage";
 
 export default function App() {
   const [pathname, setPathname] = useState(() => window.location.pathname);
@@ -18,9 +17,11 @@ export default function App() {
   const agentMatch = pathname.match(/^\/agent\/([^/]+)$/);
   if (agentMatch)
     return <AgentDetailPage agentId={decodeURIComponent(agentMatch[1])} />;
-  if (pathname === "/leaderboard") return <LeaderboardPage />;
   if (pathname === "/explorer") return <ExplorerPage />;
   if (pathname === "/markets") return <MarketPage />;
-  if (pathname === "/archive") return <ArchivePage />;
-  return <TopPage />;
+  // The three levels, as two routes plus the agent pages: "/" is the competition (its standings),
+  // "/scenario" is one world inside it. Markets and Explorer stay at the scenario level, because a
+  // venue's state and a block range only mean anything inside one world.
+  if (pathname === "/scenario") return <ScenarioPage />;
+  return <HomePage />;
 }
