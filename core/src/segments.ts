@@ -46,6 +46,11 @@ export class SegmentedRun implements RunArtifactWriter {
   private segment = 0;
   private segmentStartedAtMs: number;
   private segmentStartBlock = 0;
+  // The directory's name, fixed when the directory is created. Derived from the start time once and
+  // then held: the start time moves when the first block arrives (see noteFirstBlock), and a name
+  // recomputed after that would stop matching the directory on disk the moment a period's setup
+  // straddled midnight.
+  private segmentDirId: string;
 
   constructor(
     private readonly opts: {
@@ -61,16 +66,17 @@ export class SegmentedRun implements RunArtifactWriter {
   ) {
     mkdirSync(join(opts.root, opts.competitionId), { recursive: true });
     this.segmentStartedAtMs = Date.now();
+    this.segmentDirId = this.newSegmentId();
     this.logger = new RunLogger(
       join(opts.root, opts.competitionId),
-      this.segmentId(),
+      this.segmentDirId,
     );
     this.writeIndex();
   }
 
-  private segmentId(): string {
-    // Named by when it started rather than by its number: a viewer looking for Tuesday should not
-    // have to count.
+  // Named by when it started rather than by its number: a viewer looking for Tuesday should not
+  // have to count. Called once per directory; `segmentDirId` is what everything else reads.
+  private newSegmentId(): string {
     const iso = new Date(this.segmentStartedAtMs).toISOString();
     return `${iso.slice(0, 10)}-s${String(this.segment).padStart(2, "0")}`;
   }
@@ -120,12 +126,22 @@ export class SegmentedRun implements RunArtifactWriter {
     return this.segmentStartBlock;
   }
 
-  /** The first segment starts when the competition's first block is known. */
+  /**
+   * The first segment starts when the competition's first block is known -- which is also when its
+   * clock starts. Setup is minutes on a real chain (issue #33 (1)), and counting that against the
+   * first segment's window makes the first day short; long enough setup rolled a segment before the
+   * run had a block at all, leaving an empty directory whose index entry claimed to span 607..606.
+   */
   noteFirstBlock(blockNumber: number): void {
-    if (this.segmentStartBlock === 0) this.segmentStartBlock = blockNumber;
+    if (this.segmentStartBlock !== 0) return;
+    this.segmentStartBlock = blockNumber;
+    this.segmentStartedAtMs = Date.now();
+    this.writeIndex();
   }
 
   dueToRoll(nowMs = Date.now()): boolean {
+    // Never before the run has a block: a segment with no blocks in it is not a day of the period.
+    if (this.segmentStartBlock === 0) return false;
     return nowMs - this.segmentStartedAtMs >= this.opts.hours * 3_600_000;
   }
 
@@ -138,7 +154,8 @@ export class SegmentedRun implements RunArtifactWriter {
     this.segment++;
     this.segmentStartedAtMs = Date.now();
     this.segmentStartBlock = atBlock;
-    this.logger = new RunLogger(this.competitionDir, this.segmentId());
+    this.segmentDirId = this.newSegmentId();
+    this.logger = new RunLogger(this.competitionDir, this.segmentDirId);
     this.writeIndex();
     return this.logger.runDir;
   }
@@ -149,7 +166,7 @@ export class SegmentedRun implements RunArtifactWriter {
   }
 
   private closeIndexEntry(atBlock: number, agents: unknown[]): void {
-    const id = this.segmentId();
+    const id = this.segmentDirId;
     const existing = this.index.find((e) => e.runDir.endsWith(id));
     const entry: SegmentIndexEntry = {
       regime: "segment",
@@ -170,7 +187,7 @@ export class SegmentedRun implements RunArtifactWriter {
   // Rewritten on every change rather than appended, because it is an index: a half-written list of
   // days is worse than a list that is one day behind, and it is a few kilobytes.
   private writeIndex(): void {
-    const id = this.segmentId();
+    const id = this.segmentDirId;
     if (!this.index.some((e) => e.runDir.endsWith(id)))
       this.index.push({
         regime: "segment",

@@ -15,6 +15,7 @@ import {
 } from "@core/scoring/aggregate";
 import type { Competition, CompetitionScenario } from "./competition";
 import { scenarioRunId } from "./competition";
+import { listRuns } from "./runArtifacts";
 import type { EpochScore, RunSummary } from "./runArtifacts";
 
 /** The λ every stored run was scored with. */
@@ -53,6 +54,15 @@ function scenarioKey(s: { runDir: string }): string {
 export async function loadCompetitionRounds(
   competition: Competition,
 ): Promise<Map<string, ScenarioRounds>> {
+  // A period's current segment has no summary.json until it rolls (ADR 0021 §6), so on a live
+  // period one scenario always 404s. That is "still running", not "never collected", and telling a
+  // viewer their day was missing — every day, for the whole period — is the wrong statement. The
+  // runs index already marks a run in progress; consult it rather than inferring from the 404.
+  const live = new Set(
+    await listRuns()
+      .then((index) => index.filter((r) => r.live).map((r) => r.id))
+      .catch(() => []),
+  );
   const entries = await Promise.all(
     competition.file.scenarios.map(async (s) => {
       const runId = scenarioRunId(competition.id, s.runDir);
@@ -60,7 +70,19 @@ export async function loadCompetitionRounds(
         const res = await fetch(
           `/runs/${encodeURIComponent(runId)}/summary.json`,
         );
-        if (!res.ok) return null;
+        if (!res.ok)
+          return live.has(runId)
+            ? ([
+                scenarioKey(s),
+                {
+                  regime: s.regime,
+                  seed: s.seed,
+                  runId,
+                  byAgent: {},
+                  bankruptAtEpoch: {},
+                },
+              ] as const)
+            : null;
         const summary = (await res.json()) as RunSummary;
         const scores = summary.epochScores ?? {};
         const byAgent: Record<string, number[]> = {};

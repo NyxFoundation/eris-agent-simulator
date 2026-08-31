@@ -1428,6 +1428,18 @@ export async function runRealtimeSimulation(
       });
     };
 
+    // How far blocks.csv has been written. The scan is off the critical path (it re-reads mined
+    // blocks), but *when* it runs matters: a single bulk pass at the end works for a run with an
+    // end and fails twice for a period that does not have one — nothing is written while it runs,
+    // and when it finally is, every block lands in whichever segment happened to be current. Both
+    // observed: five segments of a devnet period, every blocks.csv empty (ADR 0021 §6).
+    let loggedThroughBlock = 0;
+    const flushBlocks = async (upTo: number): Promise<void> => {
+      if (loggedThroughBlock === 0) loggedThroughBlock = runStartBlock - 1;
+      for (let b = loggedThroughBlock + 1; b <= upTo; b++) await logBlock(b);
+      loggedThroughBlock = Math.max(loggedThroughBlock, upTo);
+    };
+
     // ADR 0010 profile: set the oracle/PriceFeed update fee above the agent cap so --order fees places it at
     // txIndex 0. Place the keeper just below it, fixing the "oracle update → order execution" order within the
     // same block (even with parallel submission, fee decides ordering regardless of arrival order).
@@ -1606,6 +1618,8 @@ export async function runRealtimeSimulation(
 
     const rollSegment = async (atBlock: number): Promise<void> => {
       if (!segments) return;
+      // Before the directory changes: these rows belong to the segment that is closing.
+      await flushBlocks(atBlock);
       const agents = closeSegment(atBlock);
       const previous = segments.currentSegment;
       segments.roll(atBlock, agents);
@@ -2250,10 +2264,21 @@ export async function runRealtimeSimulation(
           // put a cross-section read on the critical path of every block instead of one in twelve.
           const epochMs = await timed(() => liveScorer.onBlock(bn));
 
+          // Only while segmenting: keep blocks.csv within a block of the head, so a roll is a
+          // boundary rather than a bulk scan of a whole day stalling the environment loop. A run
+          // with an end keeps the single pass at the end, byte-identical to before.
+          //
+          // bn - 1, not bn: this block is being processed right now and the environment's own txs
+          // for it are still in flight.
+          const blocksMs = segments
+            ? await timed(() => flushBlocks(bn - 1))
+            : 0;
+
           // ADR 0021 §6: cut the output, never the chain. Checked after the boundary read so a
           // segment that ends on one keeps it -- the next segment carries it as its own first
           // boundary, which is what stops each segment losing an epoch at the seam.
-          if (segments?.dueToRoll()) await rollSegment(bn);
+          if (bn >= runStartBlock && segments?.dueToRoll())
+            await rollSegment(bn);
 
           const [keeperMs, oracleMs, stateFlowMs] = results;
           let taskIdx = 3;
@@ -2284,6 +2309,7 @@ export async function runRealtimeSimulation(
             // Zero on the eleven blocks in twelve that are not a boundary; the non-zero ones are
             // what live scoring costs the loop.
             ...(epochMs > 0 ? { epochMs } : {}),
+            ...(blocksMs > 0 ? { blocksMs } : {}),
             totalMs: Date.now() - roundStart,
           });
 
@@ -2356,9 +2382,11 @@ export async function runRealtimeSimulation(
       }
     }
 
-    // ---- bulk recording of blocks.csv: scan all run blocks for what was removed from the realtime loop ----
-    // (finish before resetFork erases history, and before the violation check and summary)
-    for (let b = runStartBlock; b <= finalBlock; b++) await logBlock(b);
+    // ---- blocks.csv: whatever is not yet written ----
+    // The whole window for a run with an end (unchanged), the final segment's tail for a period
+    // that has been flushing as it went. Finishes before resetFork erases history, and before the
+    // violation check and the summary.
+    await flushBlocks(finalBlock);
 
     // ---- scoring: batch-reconstruct the per-agent value series from historical blocks (ADR 0006 §4) ----
     let valueSeries: Record<string, unknown> = {
