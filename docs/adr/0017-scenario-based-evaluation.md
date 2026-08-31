@@ -4,6 +4,29 @@
 
 Accepted（2026-08-09 実装。Phase 0–2 の大半。branch feat/lst-venue）
 
+**Amendment 1（2026-09-01）: 公式レジームは 8 本・全 venue・バスケット配布に一本化した。**
+
+本 ADR が定めたのは 5 venue・USDC-only のレジーム 7 本だったが、その後 3 つが動いた。
+
+- **配布**（issue #54）: USDC-only では LST vault と Trove が WETH/ETH 建てのため**各戦略の売り側に
+  在庫が無く構造的に死ぬ**。ETH/BTC/USDC バスケット（8 WETH + 0.4 WBTC + 25k USDC）に変更済み。
+  β はベンチマークが同じ配布を持つので M9 からは相殺される — USDC-only が守っていたのは報告値の
+  `netPnlUsdc` だった。§4 の「USDC-only」は**この一点において上書きされる**
+- **venue**: 5 venue 版と 7 venue 版（`full-*`）が並立していたが、**「競技とは何か」に 2 つ目の答えを
+  残さないため 5 venue 版を撤去**し、`full-*` が平名を取った。`public.yaml` = `full-8h` = `full-boxA` は
+  同内容になったので `public.yaml` に統合
+- **レジーム数**: `vuln` を加えて 8 本（ADR 0014 Amendment 1）。§3 のレジーム等重み平均により、
+  **8 本目は全員の重みを変える**
+
+あわせて `cex-drift` / `informed-flow` は run 全体設定ではなく窓イベントで表現する（issue #56）。
+run 全体版の `cex-drift` は**本 ADR が定めた 360 ブロックで壊れていた** — 実測でプール乖離が平均
+1,055bps に居座り、fair が +34.6% 暴走し、`venue-arb` が資本の +17% を無条件に得ていた。60 ブロックでは
+55bps に見えるため長く発覚しなかった。窓化後は 461bps（calm 基準 39bps）。
+
+**過去の行列と読み比べてはいけない**: 配布・venue 集合・レジーム数・`cex-drift` の中身がいずれも
+変わっており、§4 が言うとおり順位は再計算ではなく再実行が要る。
+
+
 実装済み: シナリオ =（regime, seed）への分離、シナリオ行列 runner、`matrix.json` / `standings.json`、
 `--score-every`、レジーム 6 本（`calm` / `cex-drift` / `informed-flow` / `whale` /
 `lending-incident` / `crash`）。
