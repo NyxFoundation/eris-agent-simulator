@@ -1,8 +1,8 @@
 # config/regimes/full-lending-incident.yaml — the `lending-incident` regime with every venue deployed.
 #
 # Derived from config/regimes/lending-incident.yaml by adding `lst` and `liquity` to run.protocols. Nothing else
-# changes: the OU parameters, the flow calibration, the stress ranges and the USDC-only funding are
-# the official ones.
+# changes about the market: the OU parameters, the flow calibration and the stress ranges are the
+# official ones. The funding is NOT the official set's -- see the funding block below.
 #
 # This is a SEPARATE regime set, not the official one, and the distinction is the point (ADR 0016 §3).
 # Adding the two venues changes the competition rather than merely widening it:
@@ -10,9 +10,9 @@
 #     can lose its peg exists in *every* regime here, not only in depeg.
 #   - a regime's liquidityPull with no `venue:` thins every enabled venue, so its meaning widens with
 #     the venue set.
-#   - funding stays USDC-only (ADR 0017 §4), so an LST or CDP strategy has to buy its own exposure
-#     and carries the beta that USDC-denominated scoring charges for it. That is deliberate: not
-#     holding something is not a reason to do nothing.
+#   - funding is an ETH/BTC/USDC basket, where the official set is USDC-only (issue #54). The LST
+#     vault and the Trove are WETH/ETH denominated, so under USDC-only the sell side of every
+#     strategy had no inventory behind it. The full argument is on the funding block itself.
 # Scores from this set are therefore not comparable with a matrix run on the official regimes.
 #
 # Run: npm run backtest -- --regime full-lending-incident --seed 101 --agents <roster>
