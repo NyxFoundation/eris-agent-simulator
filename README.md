@@ -151,6 +151,7 @@ For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/
 | [Protocols and Actions](docs/guide/protocols-and-actions.md) | Reference: actions per venue, stablecoin accounting, oracle control |
 | [Scoring](docs/guide/scoring.md) | What is scored and how: the epoch value series, `mean − λ·std`, rescoring a stored run with `npm run metrics`, the world reset unit |
 | [Self-improving Agents](docs/guide/llm-agents.md) | agent.ts + prompt.md (in-run strategy rewriting, sandbox, rollback, frozen control) |
+| [The Practice Devnet](docs/guide/practice-devnet.md) | Connecting your own agent to a chain that never stops, and what the practice standings are (and are not) |
 
 **How the environment works / operations**:
 
@@ -160,9 +161,10 @@ For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/
 | [Configuration (config/local.yaml)](docs/guide/configuration.md) | The single-source YAML config, its sections, and how to write the roster |
 | [Market Stress Events](docs/guide/stress-events.md) | The nine event types — price gaps, whales, thinning books, depegs, slashes, drift and flow episodes — plus Aave liquidation victims |
 | [Dashboard and Explorer](docs/guide/dashboard.md) | Watching a run live and reading a finished one; the local Blockscout explorer and its lifecycle |
+| [The Practice Devnet](docs/guide/practice-devnet.md) | Running a period: registering participants, handing out the manifest, the real-chain mode, hosting the dashboard |
 | [Repository Layout](docs/guide/repository-layout.md) | Quick reference for the directory layout |
 
-**Background**: [architecture decision records](docs/adr/) (ADR 0001–0020) hold the reasoning behind
+**Background**: [architecture decision records](docs/adr/) (ADR 0001–0021) hold the reasoning behind
 each design choice, and [the scoring metric measurements](docs/scoring-metric-measurements.md) hold
 the runs the metric decision is being made on.
 

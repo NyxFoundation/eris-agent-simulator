@@ -2,9 +2,15 @@
 
 ## Status
 
-Proposed（2026-08-31）
+Accepted（2026-08-31）
 
-実装は未着手。前提となる実チェーン移行の下地は issue として先行している（#33 = cheatcode-free 化、
+**§1〜§7 は実装済み。ただし OP Stack devnet そのものは存在しない**（#35 が明言するとおり rollup config /
+genesis / ops スクリプトは別 infra repo の担当で、本 repo には入らない）。したがって現在の到達点は
+「**実クライアントに向けられる状態のコードと、その上で走らせる前に答えを出すべき 2 つの計測ツール**」であり、
+devnet を立てた日に走らせるものが揃っている、という意味である。実測が残っている項目は下の
+「実装状況」表と「決めていないこと」に分けて明示する。
+
+前提となる実チェーン移行の下地は issue として先行している（#33 = cheatcode-free 化、
 #35 = OP Stack 選定とインターフェース、#36 = read 負荷試験）。本 ADR はその上に載る
 **運用モデルの決定**であり、#33/#35/#36 の技術判断を置き換えない。
 
@@ -189,12 +195,41 @@ anvil + プロキシ案（B1）は**不採用**。#33（funding・順序・ラ�
 - **練習順位が公式ルールと誤読される**
   - → 順位表に practice 表記を常設。#56（指標選択）の未決は練習場に持ち込まれない
 
+## 実装状況（2026-08-31）
+
+運用手順は `docs/guide/practice-devnet.md`、設定例は `config/practice.yaml`。
+
+| 決定 | 実装 | 残っている実測 |
+|------|------|--------------|
+| §1 練習場 | 順位表に `practice` バッジ + キャプション常設（判定は `resetUnit === "continuous"`。**「scenario でない」ではなく「continuous である」で判定する** — ADR 0020 以前の matrix.json は当該フィールドを持たず、あれは公式形だった）。マニフェストにも `status.scored: false`。イベントは**種類と件数のみ**公開し、窓は resolved schedule ではなく config のイベント列から作るので構造的に漏れない | — |
+| §2 登録制 + マニフェスト | ロスターの `external: true` + `address`（参加者が鍵を持つ。**運営が作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env` は**黙殺せず拒否**。`npm run manifest`（公開分は鍵なし、参加者分は stdout のみ）。runtime は `ERIS_MANIFEST` で自走し、**自分の venue approval を自分で出す**（approval は本人の署名なので運営には出せない） | — |
+| §3 逐次断面採点 | `core/src/realtime/liveScoring.ts`。同じ reader・同じブロック・同じ G7 median 窓なので事後 sweep と**一致する**ことを毎 run 検査（`epoch_series_agreement`。32 ブロック run で 12 断面すべて差 0.00 USDC）。`epochs.jsonl` / `market.jsonl` を逐次 append。エポック長は**実時間指定**（`run.epochSeconds`） | λ とブロック換算値は #56 と一体で未決（下表） |
+| §4 データ源の規律 | メソッド名は calldata デコード（`sdk/src/methodSelectors.ts` は生成物。ブラウザに ABI パーサを積まないため。ABI とのズレはテストが落とす）。16 ブロック run で 114/114 命名、`direct` は消滅。判断ログタブは external で非表示、送信フィードは「何名がここに出ないか」を明示。live の RPC は `run_started_realtime` から | — |
+| §5 hosted | `/runs` ハンドラを `dashboard/server/runsApi.ts` に切り出し、dev サーバーと `npm run dashboard:serve` が共有 | — |
+| §6 日次セグメント | `core/src/segments.ts`。`competition ⊃ scenario` にセグメント列として載り、`resetUnit` は正直に `continuous`。**エポックは厳密に分割される**（境界上で始まるセグメントは繰り越さない／途中で始まるものは繰り越す） | セグメント粒度の実測（下表） |
+| §7 実クライアント | `run.chainMode: external`。cheatcode は**その場で拒否**し、代替機構を名指しする（実チェーンでは未知 RPC がエラーオブジェクトを返すだけで、呼び出し側の多くがそれを飲み込む＝「誰にも資金を配らず、何もマイニングせず、完走した競技として summary を書く」run になる）。funding は treasury 実送金、ブロックはシーケンサ、reset は無し、Aave の warp は fork 由来なので不実行 | — |
+| #33 (1) funding | treasury EOA からの実送金。**代入ではなく差分補填**（同じ admin/keeper を毎セグメント補充するので、有限口座から 2,000,000 ETH を二度は配れない）。`MockERC20.mint` に minter ゲートを追加し、**起動前に「誰でも mint できるか」を実測して落とす**（"cheatcode-free" は RPC の話だが、同じ穴が contract 側にあった） | — |
+| #33 (2) 順序 | `npm run check:ordering -- --live` が**自分で入札して測る**。到着順と手数料順をわざと逆にするので、到着順を保つビルダーは降順プローブなら通ってこれで落ちる。anvil `--order fees` で 15 組 0 件、`--order fifo` で 10/10 検出 | **op-geth 上での実測**（devnet 待ち） |
+| #33 (3) reset | external では resetFork を拒否。練習場ではそれが設計 | — |
+| #33 (4) 機械的移植 | GMX vendor の `localhost` network を `RPC_URL`/`CHAIN_ID` 駆動へ（patch + deployer 両方）、`.chainId` も同様。archive RPC 依存は §3 が消した | — |
+| #35 Eris 側 IF | RPC/chainId/treasury 鍵 → deployer network entry + external run mode。read/write RPC 分離の口（`run.readRpcUrl`）も先に開けてある | rollup config / genesis / ops は別 repo |
+| #36 read 容量 | `npm run stress:rpc` が**observation 形状**で測る（`reconstruct.ts` と同じ read 集合の Multicall3 を agent × block）。cold/warm 分離・ブロック間隔ジッタ・履歴深度・replica 要否の判定まで出す | **op-geth 上での実測**（devnet 待ち） |
+
+計測ツールを 2 つとも「使ってみて直した」ことが結論に効いている:
+
+- `stress:rpc` は最初、**何もデプロイされていない anvil に対して 3,360 observations/s と "sequencer-only is
+  sufficient" を報告した**。ノードは空アドレスへの call を実残高より速く断るので、全滅は巨大な容量に見える。
+  今は読む対象が無ければ測る前に落ちる
+- ブロック間隔は最初、負荷生成と**同じプロセスでポーリング**していて、負荷時にポーラ自身が遅れ、2 ブロック飛びを
+  半分の長さの間隔 2 つに割って「負荷時のほうがブロックが速い」と結論した。今はブロック自身の timestamp を
+  事後に読む
+
 ## 決めていないこと
 
 | 項目 | 決めない理由 | いつ決めるか |
 |------|------------|------------|
-| エポック長のブロック数と λ | 目安（実時間 30 分〜1 時間）は決定済み。換算値は λ の実効的厳しさと連動し、採点側（#56 / ADR 0020 の再比較）と一体 | 逐次採点の実装前 |
-| セグメント粒度（日次か否か） | 成果物サイズの実測が無い | devnet 初回稼働の実測後 |
+| エポック長のブロック数と λ | 目安（実時間 30 分〜1 時間）は決定済み。**単位は実装で確定した** — `run.epochSeconds` に実時間で書き、ブロック数はそのチェーンの cadence から導出する（block time を変えた運営者が知らぬ間にラウンド長を変えてしまう方向の依存を断つ）。残るのは帯のどこを取るかと λ で、これは λ の実効的厳しさと連動し採点側（#56 / ADR 0020 の再比較）と一体。`config/practice.yaml` の 1800 秒は**帯の下端を置いただけの暫定値**で、決定ではない | #56 と同時 |
+| セグメント粒度（日次か否か） | 成果物サイズの実測が無い。`run.segmentHours` で可変にしてあり、既定を 24 に置いただけ | devnet 初回稼働の実測後 |
 | read replica の要否と RPC 配布形態 | #36 の測定待ち | #36 完了時 |
 | 練習成績の選抜利用（A3 の余地） | 公式ルールの確定（#56）が先 | 公式ルール確定後 |
 | My agent ローカル合流モード | 今回は不要と判断。需要が未観測 | 練習期間の参加者フィードバック後 |

@@ -99,6 +99,52 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
 - **λ は `scenario` 側が未較正**。既知値（ADR 0019 の 0.25 / 測定記録の推奨 0.15）はどちらも
   連続経済 × 12 ブロック epoch のもの。1 シナリオの epoch 数はシナリオ数 S に依存し、S は未決（#36 待ち）
 
+### `run.chainMode` — ノードを誰が持っているか（ADR 0021 §7 / issue #33）
+
+`anvil`（既定）/ `external` の 2 値。**`external` は cheatcode が一つも無い実クライアント**（#35 の OP Stack
+devnet）を指す。cheatcode 関数はそのまま残り、external では**呼ばれた瞬間に拒否して代替機構を名指しする** —
+実チェーンでは未知 RPC がエラーオブジェクトを返すだけで、~30 箇所ある呼び出し側の多くがそれを飲み込むので、
+拒否しないと「誰にも資金を配らず、何もマイニングせず、完走した競技として summary.json を書く」run になる。
+
+- **funding は treasury EOA からの実送金**（`TREASURY_PRIVATE_KEY`。genesis が prefund する）。**代入ではなく
+  差分補填**する — 練習 devnet は同じ admin/keeper を毎セグメント補充するので、有限口座から 2,000,000 ETH を
+  二度は配れない。token は mint できるなら mint、できなければ transfer。**鍵を持っていない参加者の address へも
+  配れる**（`fundAddress`。WETH だけは本人しか `deposit` できないので treasury が wrap して送る）
+- **ブロックはシーケンサが作る**。`setIntervalMining`/`setAutomine` は無く、`sendAndMine` は receipt を待つだけ
+  （setup の各段は自分が書いた state を読み返すので、着弾前に返すと前の世界を見て動く）。coordinator は
+  **実 cadence を計測**する（`run.blockTimeSec` とズレるとエポック長が全部狂う）
+- **リセットは無い**。練習場ではそれが設計（ADR 0021 §1）
+- **起動時に落とす組み合わせ**: treasury 鍵なし / `localDeploy: false` / `economicGas: true`（storage 書き込みで
+  価格を確定する＝実チェーン不可）/ `stressVictimCount > 0`（victim は run ごとの fresh state が要る）/
+  `prewarmBlocks > 0`。さらに **scored token が誰でも mint できるなら落とす** — "cheatcode-free" は RPC の話だが、
+  同じ穴が contract 側にあった（`MockERC20.mint` は permissionless だった。minter ゲートを追加済み）
+- `run.readRpcUrl` で read を replica へ分離できる（#36 の判断待ちだが、口だけ先に開けてある）
+
+### 練習 devnet（ADR 0021。止まらないチェーン + 自己ホスト参加者）
+
+**公式採点ではない**。公式競技は提出バンドル × シナリオ行列（ADR 0017 / 0020）で、練習期間の結果は一切
+反映されない。順位表は `resetUnit === "continuous"` を見て `practice` バッジを常設する（**「scenario でない」
+ではなく「continuous である」で判定** — ADR 0020 以前の matrix.json は当該フィールドを持たず、あれは公式形だった）。
+
+- **ロスターは登録リストであって起動リストではない**。`external: true` + `address`（参加者が鍵を持つ。**運営が
+  作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env`
+  は**黙殺せず拒否**する（黙って落とすと「運営が動かしている」ように読めるロスターになる）
+- **判断ログは参加者のマシンにしか無い**。dashboard は agent ページの判断ログタブを external では**出さず**、
+  そう書く（空パネルは「このエージェントは何も考えなかった」という別の主張になる）。送信フィードは「何名が
+  ここに出ないか」を明示する。**submitted-but-not-included は諦める**（運営が動かしていない agent では元々検証不能）
+- **メソッド名は calldata デコード**（`sdk/src/methodSelectors.ts`）。agent ログ join は coordinator が agent を
+  起動している間しか成立せず、外部参加者の tx が全部 `direct` になる＝トラフィックが最も多いところで最も情報が無い
+- **採点はエポック境界をその場で読む**（`core/src/realtime/liveScoring.ts`）。事後 sweep は「終わり」が来ないチェーンと
+  ノードの履歴保持深度の両方に当たる。同じ reader・同じブロック・同じ G7 median 窓なので**一致する**ことを毎 run
+  検査する（`epoch_series_agreement`）。sweep は equity curve / alpha / market.json のために残るが、履歴深度を
+  超える窓では**明示的にスキップ**（そこで sweep すると 0 を読んで「崖のある完全な系列」になる）
+- **成果物は日次セグメント**（`run.segmentHours`）。チェーンは連続のまま、run ディレクトリだけを切る。
+  `competition ⊃ scenario` にセグメント列として載り、`resetUnit` は正直に `continuous`。**エポックは厳密に分割
+  される** — 境界上で始まるセグメントは繰り越さず、途中で始まるものは直前の境界を繰り越す（前者を繰り越すと
+  同じエポックが 2 セグメントで採点され、後者を繰り越さないとセグメントごとに 1 エポック消える）
+- **エポック長は実時間で書く**（`run.epochSeconds`。ADR 0021 §3 が単位を確定した）。ブロック数は cadence から
+  導出。両方書くと fail-fast。設定例は `config/practice.yaml`、運用手順は `docs/guide/practice-devnet.md`
+
 ## 実行コマンド
 
 - `npm run anvil` — 別ターミナルで Anvil フォークを起動（sim:realtime の前提。ローカルデプロイモードでは不要）
@@ -211,6 +257,11 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
   - `/explorer` は Blockscout の接続状態を明示し（indexed 高さ併記 / 落ちていれば起動コマンド）、
     検索が tx hash・block・address・**agent 名**（→ wallet address。Blockscout は名前を知らない）を
     解決して deep link する。Blockscout が無くてもローカル一覧のフィルタとしては効く
+- `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/ラウンド長/action 語彙/limits/登録アドレス）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
+- `npm run check:ordering -- --live` — **ビルダーが手数料順に並べるかを自分で入札して測る**（#35 の load-bearing assumption）。既定プロファイルは oracle を全員より高く積んで txIndex 0 に置くので、順序が守られないチェーンでは環境の価格が front-run 可能になる。**入札は昇順に送る**ので到着順と手数料順が逆になり、到着順を保つだけのビルダーは降順プローブなら通ってこれで落ちる。引数なしは従来どおり blocks.csv の事後検査
+- `npm run stress:rpc` — **Eris 形状の read 負荷**で RPC 容量を測る（#36）。`reconstruct.ts` と同じ read 集合の Multicall3 を agent × block で撃ち、cold/warm 別の p50/p99・ブロック間隔ジッタ（負荷有無）・`eth_call` の到達可能深度・sequencer-only か replica かの判定を出す。**読む対象が無いチェーンでは測る前に落ちる**（空アドレスへの call はノードが実残高より速く断るので、全滅が巨大な容量に見える。実際に「何もデプロイされていない anvil に 3,360 obs/s・sequencer-only で十分」と報告した）
+- `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**read-only だがアクセス境界ではない** — `runs/` 配下は全部公開になる
+- `npm run gen:method-selectors` — venue ABI から selector→関数名テーブルを再生成（ADR 0021 §4）。生成物にしてあるのはブラウザに ABI パーサと keccak を積まないため（実測 +15kB gzip）。ABI とのズレは `test/methodNames.test.ts` が落とす
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
