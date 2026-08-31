@@ -201,6 +201,27 @@ fails at startup — `blocks: 0` with a week-long time limit is the shape a neve
 suggests and the one that does not start. `config/practice.yaml` states a week at a two-second
 cadence (302,400 blocks) and keeps `seconds` as a generous ceiling rather than the stop condition.
 
+### How many rounds a period has
+
+A round is a fixed length, so the count grows with the period — but the dashboard reads a **segment**,
+not the period, so what it renders is bounded by the segment:
+
+| | 30-minute rounds |
+|---|---|
+| per 24h segment | **48 rounds** — the steady state, whatever the period's length |
+| per week, unsegmented | 336 rounds in one bar |
+
+The artifacts follow the same split. Measured at ~1.4 KB of `events.jsonl` and ~0.7 KB of
+`blocks.csv` per block on a five-venue run, one week unsegmented is a **435 MB events.jsonl and a
+221 MB blocks.csv**; cut into days it is ~62 MB and ~32 MB each. That is what §6 is for, and a run
+longer than about eleven hours with `segmentHours: 0` says so at startup rather than finding out
+later.
+
+Nothing grows without bound while segmenting. Every artifact is per segment (`events.jsonl`,
+`blocks.csv`, `epochs.jsonl`, `market.jsonl` all restart), and the only thing the coordinator holds
+across the whole period is the epoch series — one number per agent per round, which is 336 × N for a
+week.
+
 ### What a period produces
 
 One directory per day (`run.segmentHours`), under one competition:

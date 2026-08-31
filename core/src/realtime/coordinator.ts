@@ -375,6 +375,18 @@ const MIN_ECONOMIC_GAS_ETH_WEI = 500_000_000_000_000_000n; // 0.5 ETH
 // window before each boundary, which reaches a few blocks further back than the boundary itself.
 const HISTORY_SWEEP_LIMIT = 1000;
 
+// Roughly what one block of a full-venue run appends to events.jsonl, measured at 1,437 B/block on a
+// 400-block run with five venues and three agents (blocks.csv adds another ~731). It scales with the
+// roster and the venue count, so this is an order of magnitude rather than a figure -- which is all
+// the advisory below needs it to be.
+const EVENT_BYTES_PER_BLOCK = 1_400;
+
+// Past this, a run that writes one directory is a run whose artifacts nobody can open and whose
+// rounds bar renders one control per round. ADR 0021 §6 exists for exactly this, and 20,000 blocks
+// is around eleven hours at a two-second cadence -- comfortably longer than any calibration run and
+// comfortably shorter than a period.
+const SEGMENT_ADVISORY_BLOCKS = 20_000;
+
 export async function runRealtimeSimulation(
   // Evaluation tools inject per-regime SEED etc. programmatically (without mutating env).
   overrides: Record<string, string | number | boolean> = {},
@@ -440,6 +452,24 @@ export async function runRealtimeSimulation(
         "run.chainMode: external cannot prewarm: the warmup loop mines its own blocks, and there is " +
           "no cold fork state to warm in the first place (issue #33 (2))",
       );
+  }
+
+  // A long run that writes one directory (ADR 0021 §6). Advisory rather than fatal: a deliberately
+  // long unsegmented run is a legitimate thing to do, and the operator is the one who knows whether
+  // this is a period or a calibration. But it should not be a surprise -- measured, a week
+  // unsegmented is a 435MB events.jsonl, a 221MB blocks.csv and 336 rounds in a single bar.
+  if (config.segmentHours === 0 && config.runBlocks > SEGMENT_ADVISORY_BLOCKS) {
+    const rounds =
+      config.epochBlocks > 0
+        ? Math.floor(config.runBlocks / config.epochBlocks)
+        : 0;
+    console.error(
+      `[run] WARNING: ${config.runBlocks.toLocaleString("en-US")} blocks into one directory ` +
+        `(~${Math.round((config.runBlocks * EVENT_BYTES_PER_BLOCK) / 1e6)}MB of events.jsonl` +
+        (rounds > 0 ? `, ${rounds} rounds in one bar` : "") +
+        "). Set run.segmentHours to cut the output into days — the chain stays continuous, " +
+        "and each segment is an ordinary run directory (ADR 0021 §6).",
+    );
   }
 
   const adapters = initProtocols(config.enabledProtocols);
