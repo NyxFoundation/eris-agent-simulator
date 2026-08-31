@@ -94,12 +94,9 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 | `flowWethWei` | 0 | Flow wallets' WETH |
 | `flowBase` | {} | Flow wallets' other bases |
 
-**The funding model differs between the two regime sets.**
+**The official regimes hand out an ETH/BTC/USDC basket** (8 WETH + 0.4 WBTC + 25k USDC, issue #54). They began as USDC-only (`wethWei: "0"`) to remove opening β (ADR 0017 §4), until it turned out that **the LST vault and the Trove are WETH/ETH denominated, so under USDC-only the sell side of every strategy had no inventory behind it**. The β cancels out of M9 because the benchmark holds the same funding — what USDC-only was protecting was `netPnlUsdc`, a reporting figure.
 
-| Set | Funding | Why |
-|---|---|---|
-| `calm` / `crash` / `depeg` … (`public.yaml`, 5 venues) | **USDC-only** (`wethWei: "0"`) | Removes opening β and keeps `netPnlUsdc` clean (ADR 0017 §4) |
-| `full-*` (7 venues) | **An ETH/BTC/USDC basket** (8 WETH + 0.4 WBTC + 25k USDC) | Issue #54. The LST vault and the Trove are WETH/ETH denominated, so under USDC-only **the sell side of every strategy had no inventory behind it**. The β cancels out of M9 because the benchmark holds the same funding |
+The only regimes still USDC-only are the **`metric-*`** ones, for a different reason (ADR 0019 §6: an epoch series is a live mark, so handed-out inventory puts the market's volatility into every agent's `std_e`). `scripts/genMetricRegimes.ts` drops `funding.base` along with the WETH when it generates them from the official regimes.
 
 The template (`config/example.yaml`) hands out WETH for the same reason — it is for exploring, not for measuring.
 

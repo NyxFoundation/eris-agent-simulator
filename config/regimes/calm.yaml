@@ -12,19 +12,34 @@
 #   - blockTimeSec and blocks are part of the regime (fixed to the production values). Shortening is
 #     an explicit override for behavior checks and smoke tests only; runs whose scores you read must
 #     use these defaults (ADR 0016 §3).
+#   - every venue is deployed, `lst` and `liquity` included. That is not merely a wider set: liquity
+#     promotes eUSD into the market-priced stable registry, so a stable that can lose its peg exists
+#     in every regime rather than only in depeg, and a liquidityPull with no `venue:` thins every
+#     enabled venue. This file used to be full-calm.yaml, a separate set beside a five-venue one;
+#     the five-venue set was retired rather than kept as a second answer to what the competition is.
+#   - funding is an ETH/BTC/USDC basket, not USDC-only (issue #54) -- the reasoning is on the
+#     funding block itself.
 # The roster is the default for pre-submission verification. Replaceable via --agents <roster.yaml|json>.
 
 run:
   blocks: 360 # R: ADR 0017 §1 (crash window x3-4, ~72 LLM decisions, inside anvil's ~1050 history depth)
   seconds: 1800 # end by block count (must stay well above blocks x blockTimeSec = 720s)
   blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
-  protocols: [uniswap, balancer, curve, gmx, aave]
+  protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
   economicGas: false
   localDeploy: true # backtest runs on a local anvil loaded with the distributed state
   reportDir: ./runs
 
 funding:
-  wethWei: "0" # USDC-only distribution (removes initial directional exposure)
+  # An ETH/BTC/USDC basket rather than USDC only. The score is excess over the do-nothing
+  # baseline, which holds the same funding, so the basket's beta cancels out of the metric by
+  # construction (lp-provider's own comment says as much: "handed inventory is beta nobody chose
+  # and it cancels out of every score because the benchmark holds it too"). What USDC-only was
+  # protecting is netPnlUsdc, a reporting figure. What it cost was reachability: the LST vault and
+  # the Trove are WETH/ETH denominated, and the sell side of every arbitrage had no inventory
+  # behind it, so half of each strategy was structurally dead (issue #54).
+  wethWei: "8000000000000000000" # 8 WETH
+  base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
   usdcUnits: "25000000000"
 
 limits:

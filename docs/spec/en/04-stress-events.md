@@ -232,6 +232,6 @@ In `config/regimes/`, referenced by the scenario matrix.
 | `crash` | A price gap with a pull in the same window (three venues thin at once) |
 | `depeg` | A registry stable stops being worth $1 |
 
-`lst` and `liquity` are outside the competition set (they exist for single-venue verification).
+**All seven deploy every venue, `lst` and `liquity` included.** A five-venue variant of each used to sit beside a seven-venue `full-*` one; the five-venue set was retired rather than kept as a second answer to what the competition is. `config/regimes/{lst,liquity,liquity-crash}.yaml` remain outside the set for **single-venue verification** — that is about regimes, not about which venues exist.
 
 **A week built from one kind of event only makes work for one kind of strategy.** Measured: in a depeg-only week, venue-arb made no trades in three of five seeds ([`docs/scoring-metric-measurements.md`](../../scoring-metric-measurements.md)). That is why `cexDrift` and `flowTrend` became windowed events at all — a continuous economy cannot inject "a week that drifts", because the week is one run containing several episodes on an undisclosed schedule.

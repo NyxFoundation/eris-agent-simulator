@@ -94,12 +94,9 @@ RPC URL や chain id が秘密情報側にあるのは、**それらが regime �
 | `flowWethWei` | 0 | flow ウォレットの WETH |
 | `flowBase` | {} | flow ウォレットの追加 base |
 
-**配布モデルはレジームセットで 2 つに分かれる。**
+**公式レジームは ETH / BTC / USDC のバスケットを配る**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）。当初は USDC-only（`wethWei: "0"`）で初期 β を消していたが（ADR 0017 §4）、**LST vault と Trove は WETH/ETH 建てなので、USDC-only では各戦略の売り側に在庫が無く構造的に死ぬ**ことが分かった。β はベンチマークも同じ配布を持つので M9 からは相殺される — USDC-only が守っていたのは報告値である `netPnlUsdc` の方だった。
 
-| セット | 配布 | 理由 |
-|---|---|---|
-| `calm` / `crash` / `depeg` …（`public.yaml`、5 venue） | **USDC-only**（`wethWei: "0"`） | 初期 β を消し、`netPnlUsdc` を綺麗に保つ（ADR 0017 §4） |
-| `full-*`（7 venue） | **ETH / BTC / USDC のバスケット**（8 WETH + 0.4 WBTC + 25k USDC） | issue #54。LST vault と Trove は WETH/ETH 建てなので、USDC-only では**各戦略の売り側に在庫が無く構造的に死ぬ**。β はベンチマークも同じ配布を持つので M9 からは相殺される |
+USDC-only を維持しているのは **`metric-*` レジームだけ**で、こちらは理由が違う（ADR 0019 §6：エポック系列は live mark なので、配った在庫のボラティリティが全員の `std_e` に乗る）。`scripts/genMetricRegimes.ts` が公式レジームから生成する際に `funding.base` ごと落とす。
 
 雛形（`config/example.yaml`）が WETH を配るのも同じ理由（探索用であり測定用ではない）。
 

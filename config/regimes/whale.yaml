@@ -1,48 +1,45 @@
 # config/regimes/whale.yaml — official regime 3: single large orders that move the mid. ADR 0017 §1
 #
-# What this regime tests: at a handful of unannounced blocks, one very large market order prints and
-# knocks a pool away from fair. Fair itself does not move at all -- that is the difference from
-# `crash`, where fair drops and the pools lag behind it. Here the pool is the thing that is wrong, so
-# the trade is to take the other side of the print and let the venue reprice, and the risk is that
-# the dislocation is bigger than the depth you are willing to cross.
-# Run: npm run backtest -- --regime whale --seed 505 [--agents <roster>]
+# regime = this file (market conditions), seed = supplied at run time. This file defines the OU fair
+# price / flow intensity / stress; the seed picks the realized path out of that family.
+# Run: npm run backtest -- --regime whale --seed 101 [--agents <roster>]
+# Or as part of a scenario matrix: npm run backtest -- --scenarios config/scenarios/public.yaml
 #
-# Calibration:
-#   magnitudeRange [25, 60]  order size in WETH. Against the deployed Uniswap pool this is enough to
-#                            move the mid clearly without emptying one side of the book. Recalibrate
-#                            if the deployer's pool depth changes -- the whole event is impact, so it
-#                            is entirely a function of depth.
-#                            MEASURED, needs revisiting: a 30-block smoke run of this regime paid the
-#                            bundled arb agents ~1,600 and ~2,800 USDC on 25,000 of capital. That is
-#                            a very large edge for four prints, which suggests the size is generous
-#                            enough that simply being present pays and the regime may not separate
-#                            strong strategies from adequate ones. Left as-is pending the ADR 0017 §5
-#                            pilot, which is where the size gets settled against measured
-#                            discrimination rather than against a guess.
-#   side (unset)             the seed picks buy or sell per event. Leaving it unset is what stops the
-#                            direction being memorizable across the published seeds.
-#   venue                    defaults to uniswap, the deepest venue, so the size has to be real. The
-#                            second and third whales are pointed at balancer and curve so a strategy
-#                            cannot just watch one pool.
-#   4 events                 spread across the run via disjoint windowFrac bands. Several prints per
-#                            run mean the score is not decided by one draw (ADR 0017 §5).
-#
-# The whale trades from its own wallet, endowed at setup from the resolved schedule, so it neither
-# drains the ordinary flow wallets nor shows up in blocks.csv as background flow.
-#
-# There is deliberately no `run.seed` (ADR 0017 §1): the seed is supplied per scenario.
+# Note:
+#   - There is deliberately no `run.seed` here (ADR 0017 §1). The seed is the second axis of a
+#     scenario, not a property of the regime, so it must be given explicitly and a run cannot
+#     silently inherit one.
+#   - blockTimeSec and blocks are part of the regime (fixed to the production values). Shortening is
+#     an explicit override for behavior checks and smoke tests only; runs whose scores you read must
+#     use these defaults (ADR 0016 §3).
+#   - every venue is deployed, `lst` and `liquity` included. That is not merely a wider set: liquity
+#     promotes eUSD into the market-priced stable registry, so a stable that can lose its peg exists
+#     in every regime rather than only in depeg, and a liquidityPull with no `venue:` thins every
+#     enabled venue. This file used to be full-whale.yaml, a separate set beside a five-venue one;
+#     the five-venue set was retired rather than kept as a second answer to what the competition is.
+#   - funding is an ETH/BTC/USDC basket, not USDC-only (issue #54) -- the reasoning is on the
+#     funding block itself.
+# The roster is the default for pre-submission verification. Replaceable via --agents <roster.yaml|json>.
 
 run:
   blocks: 360 # R: ADR 0017 §1
   seconds: 1800 # a stress run auto-disables the time limit and ends by block count (ADR 0009)
   blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
-  protocols: [uniswap, balancer, curve, gmx, aave]
+  protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
   economicGas: false
   localDeploy: true
   reportDir: ./runs
 
 funding:
-  wethWei: "0" # USDC-only distribution: nobody starts already exposed (ADR 0017 §4)
+  # An ETH/BTC/USDC basket rather than USDC only. The score is excess over the do-nothing
+  # baseline, which holds the same funding, so the basket's beta cancels out of the metric by
+  # construction (lp-provider's own comment says as much: "handed inventory is beta nobody chose
+  # and it cancels out of every score because the benchmark holds it too"). What USDC-only was
+  # protecting is netPnlUsdc, a reporting figure. What it cost was reachability: the LST vault and
+  # the Trove are WETH/ETH denominated, and the sell side of every arbitrage had no inventory
+  # behind it, so half of each strategy was structurally dead (issue #54).
+  wethWei: "8000000000000000000" # 8 WETH
+  base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
   usdcUnits: "25000000000"
 
 limits:
