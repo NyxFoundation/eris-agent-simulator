@@ -26,6 +26,9 @@ import {
   type RunArtifactWriter,
 } from "./logger.js";
 
+/** The file inside a competition directory naming the segment that is current right now. */
+export const CURRENT_SEGMENT_FILE = "current-segment";
+
 export type SegmentIndexEntry = {
   /** Scenario shape, so the dashboard reads this with the code it already has. */
   regime: "segment";
@@ -72,6 +75,25 @@ export class SegmentedRun implements RunArtifactWriter {
       this.segmentDirId,
     );
     this.writeIndex();
+    this.writePointer();
+  }
+
+  /**
+   * Where a running agent process reads the directory it should be writing its decision log into.
+   *
+   * An agent is spawned once and handed ERIS_RUN_DIR; a segment roll changes the directory under it
+   * hours later. Without a pointer every log line for the rest of the period lands in the first
+   * segment, and every segment after it shows a local agent with no lines -- which the dashboard
+   * states as "it never logged a decision" (runsProvider.ts). That is false, and it is the one
+   * reading a viewer cannot check.
+   */
+  get pointerPath(): string {
+    return join(this.competitionDir, CURRENT_SEGMENT_FILE);
+  }
+
+  private writePointer(): void {
+    // Written after the directory exists, so a reader never sees a path that is not there yet.
+    writeFileSync(this.pointerPath, `${this.logger.runDir}\n`);
   }
 
   // Named by when it started rather than by its number: a viewer looking for Tuesday should not
@@ -157,6 +179,7 @@ export class SegmentedRun implements RunArtifactWriter {
     this.segmentDirId = this.newSegmentId();
     this.logger = new RunLogger(this.competitionDir, this.segmentDirId);
     this.writeIndex();
+    this.writePointer();
     return this.logger.runDir;
   }
 

@@ -1074,8 +1074,15 @@ export async function runRealtimeSimulation(
       };
     }
     // Merge the stress victim env (ADR 0009) and vuln env (ADR 0014) into a single extra env for distribution.
+    // ERIS_RUN_DIR is fixed when the process starts; the segment it names is not (ADR 0021 sec 6).
+    // Hand the child the pointer so its log follows the roll instead of piling into segment 0.
+    const segmentEnv = segments
+      ? { ERIS_RUN_DIR_POINTER: segments.pointerPath }
+      : undefined;
     const agentExtraEnv =
-      victimEnv || vulnEnv ? { ...victimEnv, ...vulnEnv } : undefined;
+      victimEnv || vulnEnv || segmentEnv
+        ? { ...victimEnv, ...vulnEnv, ...segmentEnv }
+        : undefined;
 
     // Emit the agent registry in one line (ADR 0008 P0). The dashboard can grasp all agents (id/address/
     // classification hint) immediately from a file tail alone (closes the gap for agents that never act or are
