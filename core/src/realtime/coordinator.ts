@@ -147,7 +147,7 @@ import {
   readVictimsAccount,
   setupStressVictims,
   type StressVictim,
-} from "../liquidationDemo.js";
+} from "../stressVictims.js";
 
 const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH (gas for admin/keeper)
 

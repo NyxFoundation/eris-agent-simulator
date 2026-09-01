@@ -26,6 +26,40 @@
 # Note that adding depeg moves every standing: the z-score is taken within a regime and then
 # averaged across them (ADR 0017 §3), so a seventh regime redistributes the weights. Comparisons
 # against a matrix run before this one have to be re-run rather than read across.
+#
+# The regimes now deploy every venue, `lst` and `liquity` included. There used to be a five-venue
+# variant of each regime beside a `full-*` seven-venue one; the five-venue set was retired rather
+# than kept as a second answer to what the competition is, so this file and the former full-8h /
+# full-boxA sets are one thing. That is a change in the competition, not a widening of it -- see any
+# config/regimes/<name>.yaml header.
+#
+# Sizing, measured rather than guessed: one 360-block scenario takes 795s wall on a c7i.4xlarge-class
+# box (720s of block time at blockTimeSec 2, plus 75s of per-scenario setup and reconstruction), and
+# depeg's 120 blocks take 315s.
+#
+# At seven regimes that was 5,085s per seed and five seeds fitted one working day at 7.1 hours. The
+# eighth regime is another 795s per seed, so the set is now 5,880s per seed and 8.2 hours -- past the
+# day it used to fit in. Nothing here is sized down to recover it: dropping a seed would cost a draw
+# from the distribution, which is the thing being measured, and shortening a regime would change the
+# regime. What it costs is that this is an overnight run rather than a working-day one, or two boxes
+# with a manual merge (see below).
+#
+# One box on purpose. Splitting across two halves the wall clock at the same compute cost, but it
+# splits matrix.json in two as well: z-scores are computed inside a matrix, so a single ranking then
+# needs a manual merge (there is no tool; see runs/matrix-metric-merged for the precedent). And the
+# resilience argument for splitting does not survive contact: two c7i.4xlarge spot boxes taken in
+# the same region were reclaimed in the same second (2026-08-29 14:58:06Z). Losing half is also not
+# the failure mode -- backtest rewrites matrix.json after every scenario, so a death at scenario 30
+# still leaves 29 scored.
+#
+# To extend beyond the published seeds: run config/scenarios/full-boxB.yaml (seeds 606-1010) and
+# concatenate the `scenarios` arrays into one matrix.json, as runs/matrix-metric-merged did.
+#
+# `vuln` is the eighth regime (ADR 0014, promoted from a verification config). It asks something no
+# other regime does: a quote better than the market is not always one to take. Pools spring up
+# mid-run from the seed, a majority rigged to skim above a size threshold, and reaching them at all
+# means subscribing to the factory rather than reading a price. Adding it redistributes the weights
+# again -- the z-score is per regime and the regimes are averaged with equal weight (ADR 0017 §3).
 regimes:
   - calm
   - cex-drift
@@ -34,5 +68,6 @@ regimes:
   - lending-incident
   - crash
   - depeg
+  - vuln
 
 seeds: [101, 202, 303, 404, 505]

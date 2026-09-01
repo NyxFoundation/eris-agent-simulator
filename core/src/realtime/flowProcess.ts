@@ -29,7 +29,6 @@ export class RealtimeFlowProcess {
         NODE_ENV: process.env.NODE_ENV ?? "development",
         ERIS_FLOW_SEED: String(flowSeed),
         ERIS_RUN_DIR: runDir,
-        ERIS_REALTIME: "1",
       },
     });
 

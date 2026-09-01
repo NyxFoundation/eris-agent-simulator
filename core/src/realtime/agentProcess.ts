@@ -55,8 +55,6 @@ export class RealtimeAgentProcess {
     childEnv.ERIS_AGENT_ADDRESS = agentAddress;
     childEnv.REPORT_DIR = process.env.REPORT_DIR ?? "./runs";
     childEnv.ERIS_RUN_DIR = runDir;
-    // Tell the child it is in realtime mode (so agents with their own loop can branch).
-    childEnv.ERIS_REALTIME = "1";
     childEnv.ERIS_AGENT_PRIVATE_KEY = direct.privateKey;
     childEnv.ERIS_PRICE_FEED_ADDRESS = direct.priceFeedAddress;
     childEnv.ERIS_RUN_ID = direct.runId;

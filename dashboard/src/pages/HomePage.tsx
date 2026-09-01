@@ -30,7 +30,13 @@ import { ScenarioPage } from "./ScenarioPage";
 
 const PAGE_MAX_WIDTH = "1180px";
 
-/** "full-calm" reads as noise once every column is a regime; the shared prefix goes. */
+/**
+ * "full-calm" reads as noise once every column is a regime; the shared prefix goes.
+ *
+ * The regimes were renamed (the five-venue set was retired and full-* took the plain names), so a
+ * matrix run since then has nothing to strip. Matrices recorded before it do, and they are the
+ * reason this stays: a stored run is read long after the file that named it changed.
+ */
 const shortRegime = (r: string) => r.replace(/^full-/, "");
 
 export function HomePage() {
@@ -203,9 +209,7 @@ export function HomePage() {
           <header
             style={{ display: "flex", flexDirection: "column", gap: "10px" }}
           >
-            <div
-              style={{ display: "flex", alignItems: "center", gap: "10px" }}
-            >
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <h1
                 title={data.competition.id}
                 style={{

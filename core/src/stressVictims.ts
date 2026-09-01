@@ -1,7 +1,10 @@
-// Liquidation demo (GitHub #1). Used by the coordinator only when ERIS_LIQUIDATION_DEMO=1.
-// Has a victim wallet open an over-leveraged Aave position, then from shockRound onward lowers the Aave
-// WETH oracle to make HF<1, creating a situation where the liquidator agent can liquidate via liquidationCall.
-// Off by default, so it has no effect on normal runs/tests.
+// The seed-derived victim cohort that makes liquidation possible (ADR 0009 §4).
+//
+// It replaced a single fixed-key victim driven by ERIS_LIQUIDATION_DEMO, which shocked the Aave
+// oracle directly from a configured round. That predecessor was removed once the realtime path
+// arrived: a crash bakes the effective price into the Aave oracle through the ordinary mempool, so
+// the victims break naturally and consistently with scoring and the PriceFeed, and nothing has to
+// overwrite an oracle behind the price series.
 import {
   encodeFunctionData,
   keccak256,
@@ -9,139 +12,23 @@ import {
   type Address,
   type Hex,
 } from "viem";
-import {
-  accountAddress,
-  fundWallet,
-  mine,
-  sendAndMine,
-} from "@eris/sdk/chain.js";
+import { accountAddress, fundWallet, sendAndMine } from "@eris/sdk/chain.js";
 import { AAVE, TOKENS } from "@eris/sdk/constants.js";
-import {
-  aavePoolAbi,
-  mockAggregatorAbi,
-  toAavePrice,
-} from "@eris/sdk/protocols/aave.js";
+import { aavePoolAbi } from "@eris/sdk/protocols/aave.js";
 import { approveTx } from "@eris/sdk/protocols/uniswap.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 
 const AAVE_STABLE = TOKENS.USDC.address;
 const VARIABLE_RATE = 2n;
 
-// Fixed keys for the demo (canonically defined in sdk/src/wellKnown.ts. contract shared with agents).
-import { VICTIM_ADDRESS, VICTIM_PRIVATE_KEY } from "@eris/sdk/wellKnown.js";
-
-export { VICTIM_ADDRESS, VICTIM_PRIVATE_KEY };
-
-// Fund the victim and approve the Aave Pool (once, during the setup phase).
-export async function setupVictim(ctx: SimContext): Promise<void> {
-  const { publicClient, walletClient, chain, config } = ctx;
-  await fundWallet(
-    publicClient,
-    walletClient,
-    chain,
-    VICTIM_PRIVATE_KEY,
-    1_000_000_000_000_000_000n, // 1 ETH (gas)
-    config.liquidationVictimSupplyWethWei + 1_000_000_000_000_000_000n, // supply + buffer
-    1_000_000n, // 1 USDC (dust)
-  );
-  for (const tx of [
-    approveTx(TOKENS.WETH.address, AAVE.Pool),
-    approveTx(AAVE_STABLE, AAVE.Pool),
-  ]) {
-    await sendAndMine(publicClient, walletClient, chain, VICTIM_PRIVATE_KEY, {
-      to: tx.to,
-      data: tx.data,
-    });
-  }
-}
-
-// The victim supplies WETH -> borrows USDC at nearly the full borrow capacity (puts HF near 1).
-export async function openVictimPosition(ctx: SimContext): Promise<void> {
-  const { publicClient, walletClient, chain, config } = ctx;
-  await sendAndMine(publicClient, walletClient, chain, VICTIM_PRIVATE_KEY, {
-    to: AAVE.Pool,
-    data: encodeFunctionData({
-      abi: aavePoolAbi,
-      functionName: "supply",
-      args: [
-        TOKENS.WETH.address,
-        config.liquidationVictimSupplyWethWei,
-        VICTIM_ADDRESS,
-        0,
-      ],
-    }),
-  });
-  const acc = (await publicClient.readContract({
-    address: AAVE.Pool,
-    abi: aavePoolAbi,
-    functionName: "getUserAccountData",
-    args: [VICTIM_ADDRESS],
-  })) as readonly bigint[];
-  // availableBorrowsBase is USD 8-digit. To USDC (6-digit): /1e2. 99% to stay on the safe side.
-  const borrowUsdc = (acc[2] * 99n) / 10_000n;
-  if (borrowUsdc > 0n) {
-    await sendAndMine(publicClient, walletClient, chain, VICTIM_PRIVATE_KEY, {
-      to: AAVE.Pool,
-      data: encodeFunctionData({
-        abi: aavePoolAbi,
-        functionName: "borrow",
-        args: [AAVE_STABLE, borrowUsdc, VARIABLE_RATE, 0, VICTIM_ADDRESS],
-      }),
-    });
-  }
-}
-
-// Lower the Aave WETH oracle from fairPrice by shockBps to bring the victim to HF<1.
-// updateOracles resets it to fairPrice each round, so overwrite it immediately afterward.
-export async function applyOracleShock(
-  ctx: SimContext,
-  fairPrice: number,
-): Promise<void> {
-  const agg = ctx.oracle.aaveAggregators[TOKENS.WETH.address.toLowerCase()];
-  if (!agg) return;
-  const shocked = fairPrice * (1 - ctx.config.liquidationShockBps / 10_000);
-  await sendAndMine(
-    ctx.publicClient,
-    ctx.walletClient,
-    ctx.chain,
-    ctx.adminPk,
-    {
-      to: agg,
-      data: encodeFunctionData({
-        abi: mockAggregatorAbi,
-        functionName: "setAnswer",
-        args: [toAavePrice(shocked)],
-      }),
-    },
-  );
-  await mine(ctx.publicClient);
-}
-
-// The victim's current HF (1e18 = 1.0). For visualization.
-export async function victimHealthFactor(ctx: SimContext): Promise<bigint> {
-  const acc = (await ctx.publicClient.readContract({
-    address: AAVE.Pool,
-    abi: aavePoolAbi,
-    functionName: "getUserAccountData",
-    args: [VICTIM_ADDRESS],
-  })) as readonly bigint[];
-  return acc[5];
-}
-
-// ---------------------------------------------------------------------------
-// realtime generalization (ADR 0009 §4): a seed-derived victim cohort that makes liquidation happen
-//
-// In realtime (src/realtime/coordinator.ts) the synchronous sim's post-applyOracleShock overwrite is
-// not used. Because a crash bakes the effective price (base × wethMult) into the Aave WETH oracle via
-// the mempool, the victims' HF breaks naturally (consistent with scoring and PriceFeed). Here we only
-// build the victim cohort in the setup phase (HF≈H0). Victims are excluded from scoring (a profit source
-// for the liquidator agent).
+// The cohort is built in the setup phase at HF≈HF0 and left alone; the crash window is what breaks
+// it. Victims are excluded from scoring, which is what makes them a profit source for a liquidator
+// agent rather than a competitor.
 //
 // [HARD REQUIREMENT] fresh state is required: since victims are built every run, with a soft-reset
 // (anvil_reset []) the previous run's victim positions linger/stick and the HF calculation breaks.
 // A fork satisfies this via a full re-fork (ARB_RPC_URL); a local deploy via resetFork's snapshot/revert
 // clean slice (the calling coordinator fail-fast checks this. ADR 0009 §4 / ADR 0016 §2).
-// ---------------------------------------------------------------------------
 
 export type StressVictim = { id: string; privateKey: Hex; address: Address };
 

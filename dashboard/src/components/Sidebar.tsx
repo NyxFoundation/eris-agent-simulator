@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { competitionLabel, loadCompetition, runDisplayName, scenarioLabel, scenarioRunId } from "@/data/competition";
+import {
+  competitionLabel,
+  loadCompetition,
+  runDisplayName,
+  scenarioLabel,
+  scenarioRunId,
+} from "@/data/competition";
 import {
   resolveCompetitionId,
   setSelectedCompetitionId,
@@ -44,7 +50,10 @@ function runLabel(id: string): string {
   return `${runDisplayName(id)}  ← ${parts[0]}`;
 }
 
-/** "full-calm#101" -> "calm#101": with every scenario in the same set, the prefix carries nothing. */
+/**
+ * "full-calm#101" -> "calm#101": with every scenario in the same set, the prefix carries nothing.
+ * Only matrices recorded before the regimes were renamed still carry one; kept for those.
+ */
 function shortScenario(name: string): string {
   return name.replace(/^full-/, "");
 }

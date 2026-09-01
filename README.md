@@ -163,6 +163,7 @@ For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/
 | [Dashboard and Explorer](docs/guide/dashboard.md) | Watching a run live and reading a finished one; the local Blockscout explorer and its lifecycle |
 | [The Practice Devnet](docs/guide/practice-devnet.md) | Running a period: registering participants, handing out the manifest, the real-chain mode, hosting the dashboard |
 | [Repository Layout](docs/guide/repository-layout.md) | Quick reference for the directory layout |
+| [Specification (as-built)](docs/spec/en/) | Normative reference for what the system *is*: runtime lifecycle, data contracts, invariants, and what is still undecided ([日本語](docs/spec/)) |
 
 **Background**: [architecture decision records](docs/adr/) (ADR 0001–0021) hold the reasoning behind
 each design choice, and [the scoring metric measurements](docs/scoring-metric-measurements.md) hold

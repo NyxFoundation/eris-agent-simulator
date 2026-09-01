@@ -6,10 +6,12 @@ agents.local.json
 # Run settings are managed in config/. Ignore the local live files; commit the templates and scenario configs
 config/*.yaml
 !config/example.yaml
-!config/all18-mixed.yaml
-!config/claude-llm.yaml
 !config/vuln-test.yaml
 !config/lst.yaml
+# The Liquity venue's worked example, the counterpart to lst.yaml. It was documented in CLAUDE.md
+# and referenced by the spec while the exception was missing, so a clone did not have the file the
+# docs pointed at.
+!config/liquity.yaml
 # The practice period's worked example (ADR 0021). A template like the others -- it names no node
 # and holds no key; the endpoints and the treasury live in .env.local.
 !config/practice.yaml
@@ -29,6 +31,10 @@ probe_tmp.mts
 # root-only (does not pull in core/src/backtest)
 /backtest/
 
+
+# `npm run manifest` writes here by default (core/src/manifest.ts MANIFEST_FILENAME). An artefact of
+# a run, not a checked-in document -- the copy that matters is the one inside runs/<id>/.
+/manifest.json
 
 # Runner logs from spot/bake/local matrix runs (artefacts, not config)
 /bake.log
