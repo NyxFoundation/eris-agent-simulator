@@ -81,8 +81,8 @@ One coordinator (`core/src/realtime/coordinator.ts:390`, `runRealtimeSimulation`
 | Concept | Definition | Source |
 |---|---|---|
 | **run** | One execution. Produces one `runs/<runId>/` (several when segmenting) | `coordinator.ts:491` |
-| **block** | The environment's smallest unit of time. 2 s by default (`run.blockTimeSec`) | `sdk/src/config.ts:351` |
-| **epoch (round)** | The scoring unit. 12 blocks by default (`run.epochBlocks`), or stated in real time (`run.epochSeconds`) | `sdk/src/config.ts:590` |
+| **block** | The environment's smallest unit of time. 2 s by default (`run.blockTimeSec`) | `sdk/src/config.ts:338` |
+| **epoch (round)** | The scoring unit. 12 blocks by default (`run.epochBlocks`), or stated in real time (`run.epochSeconds`) | `sdk/src/config.ts:572` |
 | **scenario** | A (regime, seed) pair — one replay of a market | ADR 0017 §1 |
 | **regime** | A kind of market condition. `config/regimes/<name>.yaml` holds the rules for price, flow and events | `config/regimes/` |
 | **fair price** | The reference price the environment generates and publishes to everyone through the PriceFeed | `core/src/realtime/priceFeed.ts` |

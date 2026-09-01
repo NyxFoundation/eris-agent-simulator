@@ -224,7 +224,7 @@ archived は live より情報が多い（`market.json`・採点済みエポッ�
 
 | 対象 | 表示 |
 |---|---|
-| 競技名 | scenarioSet + 実施日から自動導出（h1 に `full-8h`、picker に `full-8h · 8/29`、生の ID は tooltip） |
+| 競技名 | scenarioSet + 実施日から自動導出（h1 に `full-8h`、picker に `full-8h · 8/29`、生の ID は tooltip）。**この例の `full-8h` は保存済み run が記録している名前**で、セットファイル自体はレジーム一本化の際に `public.yaml` へ統合された — 表示名は `matrix.json` の `scenarioSet` から来るので、消えたセット名も過去の run では出続ける |
 | シナリオ | 常に `regime#seed`（表示では `full-` 接頭辞を剥がす）。セグメントは日付ラベル |
 | run | `2026-08-29 16:03`（ディレクトリ名のタイムスタンプを整形） |
 | **`runs/` の通し番号「Run N」** | **全廃**（開発機ローカルの座標で参加者に無意味） |

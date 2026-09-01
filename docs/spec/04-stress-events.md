@@ -242,6 +242,6 @@ soft-reset だと前 run の victim ポジションが残留して HF が壊れ�
 
 **`cex-drift` の run 全体版は自身の宣言長で壊れていた** — 60 ブロックでは 55bps に見えるので長らく発覚しなかった。窓化は非公開スケジュール化であると同時に、この暴走を台形で有界にする修正でもある。
 
-**7 本とも全 venue（`lst` / `liquity` 含む）をデプロイする。** 以前は 5 venue 版と `full-*` の 7 venue 版が並立していたが、5 venue 版は「競技とは何か」への 2 つ目の答えを残さないために撤去した。`config/regimes/{lst,liquity,liquity-crash}.yaml` は**venue 単体の検証用**として競技セットの外に残る（レジームであって venue の有無ではない）。
+**8 本とも全 venue（`lst` / `liquity` 含む）をデプロイする。** 以前は 5 venue 版と `full-*` の 7 venue 版が並立していたが、5 venue 版は「競技とは何か」への 2 つ目の答えを残さないために撤去した。`config/regimes/{lst,liquity,liquity-crash}.yaml` は**venue 単体の検証用**として競技セットの外に残る（レジームであって venue の有無ではない）。
 
 **単一種のイベントで埋めた週は特定の戦略にしか仕事を作らない。** 実測で、depeg だけの週では venue-arb が 5 seed 中 3 本で無取引だった（[`docs/scoring-metric-measurements.md`](../scoring-metric-measurements.md)）。`cexDrift` / `flowTrend` が窓イベント化されているのはこのためで、連続経済では「run 全体がドリフトしている週」を注入できない（週は 1 本で、その中に複数のエピソードが非公開スケジュールで入る）。

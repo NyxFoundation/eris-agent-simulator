@@ -81,8 +81,8 @@
 | 概念 | 定義 | 出典 |
 |---|---|---|
 | **run** | 1 回の実行。`runs/<runId>/` を 1 つ（セグメント時は複数）生成する | `coordinator.ts:491` |
-| **ブロック** | 環境の時間の最小単位。既定 2 秒（`run.blockTimeSec`） | `sdk/src/config.ts:351` |
-| **エポック（ラウンド）** | 採点の単位。既定 12 ブロック（`run.epochBlocks`）。実時間で書くこともできる（`run.epochSeconds`） | `sdk/src/config.ts:590` |
+| **ブロック** | 環境の時間の最小単位。既定 2 秒（`run.blockTimeSec`） | `sdk/src/config.ts:338` |
+| **エポック（ラウンド）** | 採点の単位。既定 12 ブロック（`run.epochBlocks`）。実時間で書くこともできる（`run.epochSeconds`） | `sdk/src/config.ts:572` |
 | **シナリオ** | (regime, seed) の組。1 本の市場の再生 | ADR 0017 §1 |
 | **regime** | 市場条件の型。`config/regimes/<name>.yaml` が価格・フロー・イベントの生成規則を持つ | `config/regimes/` |
 | **fair price** | 環境が生成し PriceFeed 経由で全員に配る基準価格 | `core/src/realtime/priceFeed.ts` |

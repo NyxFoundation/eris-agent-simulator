@@ -237,7 +237,7 @@ agents:
 | `config/local.yaml` | 実際に使うファイル（gitignore） |
 | `config/practice.yaml` | 練習 devnet |
 | `config/lst.yaml` | venue 単体の検証（較正ノブを明示） |
-| `config/liquity.yaml` | 同上（Liquity）。**`.gitignore` の `config/*.yaml` に掛かっていて repo に入っていない** — clone しても存在しない |
+| `config/liquity.yaml` | 同上（Liquity）。長らく `.gitignore` の `config/*.yaml` に掛かったままで**文書が指すのに clone に存在しない**状態だったが、除外解除を追加して出荷済み |
 | `config/vuln-test.yaml` | 脆弱性イベント |
 | `config/regimes/<name>.yaml` | 公式レジーム（backtest が読む） |
 | `config/scenarios/<name>.yaml` | シナリオセット（`{regimes, seeds}` の直積） |

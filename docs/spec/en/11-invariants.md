@@ -23,7 +23,7 @@
 | `run.resetUnit: scenario` declared by anything but the matrix runner | `coordinator.ts:405` |
 | A misspelled `run.resetUnit` | `sdk/src/config.ts:42` |
 | A misspelled `run.chainMode` | `sdk/src/config.ts:55` |
-| Both `run.epochSeconds` and `run.epochBlocks` set | `sdk/src/config.ts:592` |
+| Both `run.epochSeconds` and `run.epochBlocks` set | `sdk/src/config.ts:576` |
 | `economicGas` with `funding.ethWei < 0.5 ETH` | `coordinator.ts:479` |
 | Roster validation (duplicate ids, reused wallets, contradictory external entries, …) | `core/src/config.ts:99` |
 
@@ -94,7 +94,7 @@ LLM-generated code passes **the same static check plus a vm compile plus a 2-sec
 
 ## 11.5 Unit tests
 
-57 files under `test/` (`node --test`). Grouped by what they hold:
+58 files under `test/` (`node --test`). Grouped by what they hold:
 
 | Area | Tests |
 |---|---|

@@ -166,7 +166,7 @@
 | `run.epochBlocks` | 1 エポックのブロック数 | 12 |
 | `run.epochSeconds` | 1 エポックの実時間（秒）。`blockTimeSec` で換算 | 0（未使用） |
 
-- **`epochSeconds` と `epochBlocks` の両方指定は throw**（`sdk/src/config.ts:592`）。「ラウンドの長さ」に 2 つの答えがある状態を排除する。
+- **`epochSeconds` と `epochBlocks` の両方指定は throw**（`sdk/src/config.ts:576`）。「ラウンドの長さ」に 2 つの答えがある状態を排除する。
 - **ストレス run は時間制限を自動無効化する**（L1737）。`stress.events` があり `run.blocks > 0` なら `run.seconds` を 0 にして、時間切れで crash 窓に到達しない事故を防ぐ。override は `stress_run_time_limit_disabled` に記録する。
 - external では**実 cadence を計測**して `external_chain_block_time` に記録する。設定値とのズレは全エポック長を狂わせるため。
 

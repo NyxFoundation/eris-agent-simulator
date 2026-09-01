@@ -224,7 +224,7 @@ Archived carries *more* information than live (`market.json`, scored epochs, a c
 
 | Subject | Displayed as |
 |---|---|
-| Competition | Derived from the scenario set and the date (`full-8h` in the h1, `full-8h · 8/29` in the picker, the raw id in a tooltip) |
+| Competition | Derived from the scenario set and the date (`full-8h` in the h1, `full-8h · 8/29` in the picker, the raw id in a tooltip). **The `full-8h` here is a name a stored run recorded**; the set file itself was folded into `public.yaml` when the regimes were consolidated. The display name comes from `matrix.json`'s `scenarioSet`, so a retired set name keeps appearing on the runs that used it |
 | Scenario | Always `regime#seed` (with the `full-` prefix stripped). Segments use a date label |
 | Run | `2026-08-29 16:03` (the directory's timestamp, formatted) |
 | **"Run N" sequence numbers** | **Gone** — a coordinate on the developer's machine that means nothing to a participant |

@@ -23,7 +23,7 @@
 | `run.resetUnit: scenario` を行列ランナー以外が宣言 | `coordinator.ts:405` |
 | `run.resetUnit` の綴り間違い | `sdk/src/config.ts:42` |
 | `run.chainMode` の綴り間違い | `sdk/src/config.ts:55` |
-| `run.epochSeconds` と `run.epochBlocks` の両方指定 | `sdk/src/config.ts:592` |
+| `run.epochSeconds` と `run.epochBlocks` の両方指定 | `sdk/src/config.ts:576` |
 | `economicGas` かつ `funding.ethWei < 0.5 ETH` | `coordinator.ts:479` |
 | ロスターの検証（id 重複・ウォレット再利用・external の矛盾…） | `core/src/config.ts:99` |
 
@@ -94,7 +94,7 @@ LLM 生成コードは設置前に**同じ静的検査 + vm コンパイル + 2 
 
 ## 11.5 ユニットテスト
 
-`test/` に 57 ファイル（`node --test`）。何を守っているかで分けると：
+`test/` に 58 ファイル（`node --test`）。何を守っているかで分けると：
 
 | 領域 | テスト |
 |---|---|

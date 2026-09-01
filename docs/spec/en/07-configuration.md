@@ -237,7 +237,7 @@ agents:
 | `config/local.yaml` | The file actually used (gitignored) |
 | `config/practice.yaml` | The practice devnet |
 | `config/lst.yaml` | Single-venue verification with the calibration knobs spelled out |
-| `config/liquity.yaml` | The same for Liquity. **Caught by `.gitignore`'s `config/*.yaml` and not in the repo** — a fresh clone does not have it |
+| `config/liquity.yaml` | The same for Liquity. It sat behind `.gitignore`'s `config/*.yaml` for a long time, **documented but absent from a clone**; the exception was added and it now ships |
 | `config/vuln-test.yaml` | Vulnerability events |
 | `config/regimes/<name>.yaml` | The official regimes (read by backtest) |
 | `config/scenarios/<name>.yaml` | Scenario sets (the cartesian product of `{regimes, seeds}`) |

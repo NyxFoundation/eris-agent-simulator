@@ -164,7 +164,7 @@ The order matters.
 | `run.epochBlocks` | Blocks per epoch | 12 |
 | `run.epochSeconds` | Seconds per epoch, converted at `blockTimeSec` | 0 (unused) |
 
-- **Setting both `epochSeconds` and `epochBlocks` throws** (`sdk/src/config.ts:592`). "How long is a round" gets one answer.
+- **Setting both `epochSeconds` and `epochBlocks` throws** (`sdk/src/config.ts:576`). "How long is a round" gets one answer.
 - **A stress run disables the time limit automatically** (L1737). With `stress.events` and `run.blocks > 0`, `run.seconds` becomes 0 so a time limit cannot expire before the crash window opens. The override is recorded as `stress_run_time_limit_disabled`.
 - On external, the **real cadence is measured** and recorded as `external_chain_block_time`. A mismatch with the configured value mis-sizes every epoch.
 
