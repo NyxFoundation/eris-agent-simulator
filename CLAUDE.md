@@ -63,8 +63,9 @@ run の設定値とエージェントロスターは **`config/local.yaml` 一�
 **雛形は `run.localDeploy: true` 既定**（README Quick Start と config/regimes/* に揃えた。fork 用フラグは不要になり
 `npm run sim:realtime` だけで走る）。fork に戻すには `localDeploy: false` + `run.protocols` から `lst` を外す
 （LST の vault は自作で Arbitrum に対応物が無い）+ `ARB_RPC_URL` + 別端末で `npm run anvil`。
-キーは**ネスト lowercase**（`run` / `funding` / `limits` / `flow` / `stress` / `vuln` + `agents`）で
-`sdk/src/runConfig.ts` の `SCHEMA` が内部キーへ写す。ロスターは規約解決（ADR 0015 §6）:
+キーは**ネスト lowercase**（`run` / `funding` / `fees` / `flow` / `stress` / `vuln` + `agents`）で
+`sdk/src/runConfig.ts` の `SCHEMA` が内部キーへ写す。**`limits` セクションは廃止**（下の「発注上限は無い」）。
+ロスターは規約解決（ADR 0015 §6）:
 
 ```yaml
 agents:
@@ -80,6 +81,41 @@ agents:
 **env に残るのは秘密情報（`.env.local`: RPC/鍵/API キー）・agent IPC（`ERIS_AGENT_*`）・設定ファイル選択
 （`ERIS_CONFIG`）のみ**。run ノブは CLI フラグ（`--seed` / `--blocks` / `--protocols` / `--agents` 等）で
 一回限り上書きできる。
+
+### 発注上限は無い（`limits` セクションは撤廃）
+
+**どの venue にも 1 件あたりの金額上限が無い。**swap 1 WETH / 5,000 USDC、GMX 50,000 USD、Aave supply 5 WETH、
+LP 建玉 10、bundle 内 action 5 — 全部消した。**引き上げではなく撤廃**なのは、(a) 「無制限」と書かれた数値は
+いずれ誰かが設定するから、(b) その上限が規則であると同時に**参照戦略 19 ファイルのサイズ決定式の入力**
+だったから。`clean-arb` の 1 取引は `maxUsdcInUnits` の一定割合、`lp-mint` は `maxLpWethWei` の 1/10、
+`levered-long` は `maxWethInWei` を supply チャンクと退避準備金の両方に使っていた。**全員が、保有額とも
+機会の良さとも無関係に同じサイズで張っていた**（環境がその数値を配っていたので）。
+
+- 今 1 件の取引を縛るのは**自分の残高**と**相手プールの厚み**（大きく出すほど不利な約定）だけ
+- `observation.limits` に残るのは fee/slippage の既定値のみ。**サイズの予算は入っていない**
+- 各 agent は自分でサイズ比率を宣言する。共通ヘルパは `example/agents/lib/affordable.ts` の
+  `sized(obs, token, bps)`（旧 `limitFor` は削除）。`levered-long` は `ESCAPE_RESERVE_WEI` を自分で名前付け
+- **上限をスケールとして使っていた非 agent 側 2 箇所**は、今も存在する量へ移した:
+  vuln プールの rug 閾値は**配布 USDC の割合**（config の frac を 1/5 にして絶対値 1,000〜2,000 USDC を維持）、
+  Aave フローの目標債務は `flow.aaveBorrowUsdcUnits`（agent の規則を消したついでに背景市場を較正し直さないため）
+- `npm run manifest` は**「上限は無い」と明記**する（節ごと省くと「未公開」と区別が付かない）
+- **CLAUDE.md と `docs/scoring-metric-measurements.md` の実測値は全部上限下で取ったもの**。数字は変わる
+
+### GMX の funding は localhost でも動く
+
+以前は**構造的に 0** だった。upstream の hardhat 用マーケット設定（localhost はこれを通る）は
+`maxFundingFactorPerSecond` しか置かず、`fundingFactor` も `fundingIncreaseFactorPerSecond` も 0 のまま。
+実測（485 ブロック）で long OI 74,651 / short 54,752 の偏りに対し全ブロック 0.000 だった。
+`deployer/vendor/gmx-localhost.patch` が arbitrum 側と同じ値（100% スキューで年率 ~63%）を入れて解消。
+
+- **2 層あって 1 つの変更で両方直る**: レートが 0 だったのは `fundingFactor` が 0 だから。加えて
+  読み側（`marketSeries.ts`）は `savedFundingFactorPerSecond` を読むが、これは**適応 funding 経路の保存値**で、
+  `fundingIncreaseFactorPerSecond == 0` だと MarketUtils が早期 return して**永久に 0**。適応 funding を
+  有効にすると読んでいるキーがそのまま埋まる
+- **値を盛らないこと**。盛ると perp だけ Aave の借入金利と違う時計で回る（LST の APY で一度やった失敗）。
+  よって**レートは実物・符号も偏り追随**だが、**数百ブロックで積む額は小さい**（Aave の利息と同じ理由。EVM 時間は warp しない）
+- **これ以前に焼いた state dump は旧設定を持つ**ので、そこからの replay は今も 0 を返す。
+  その 0 は「板が均衡している」ではなく「この deploy に funding が無い」。`npm run gen:state-dump` で焼き直す
 
 ### `run.resetUnit` — world のリセット単位（ADR 0020）
 
@@ -187,6 +223,14 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     `/run` エイリアスは削除した。`/markets` と `/explorer` は 1 world の中でしか意味を持たないので
     scenario 層のまま。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
     書かれるので結果がまだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
+  - **トップページ（`/`）が「この競技とは何か」を全部持つ**。順位表の下に 3 つ:
+    **シナリオ一覧**（1 行 1 世界 = `regime#seed` / ラウンド数 / 首位 / 環境イベント種別。行クリックで開く。
+    `dashboard/src/data/scenarioList.ts`）、**単位の梯子**（競技 › シナリオ › ラウンド › ブロック）、
+    **Info タブ**（overview / environment / scoring / data = `components/InfoTabs.tsx`）。
+    3 つとも以前は「まずシナリオを 1 つ選ばないと読めない」位置にあった。特に Info タブは
+    35 世界のうち 1 つの末尾にあったので、**「シナリオとは何か」の説明がシナリオを開かないと読めず、
+    しかもその世界固有の説明に読めた**。イベント列の空欄は「予定なし」であって「calm」ではない
+    （cex-drift は窓を開けず run 全体を曲げるし、窓化以前の run はそもそも schedule を持たない）
   - **ラウンドは UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
     スコアも順位変動も環境イベントも全部エポック単位なので、全ビューはこの軸に対して読む。
     **以前はラウンド軸を 3 回別々に実装していた**（ラウンド選択 / replay head / live head）。
@@ -477,9 +521,9 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   あって行使できる請求権ではない = 別のスキル
 - **`stableSwap` action**（curve アダプタ所有。プールが Curve stableswap-ng だから）—
   `{type, stable, tokenIn, amountIn, slippageBps?}`。無いとデペグは「見えるだけ」になる
-  （#39 が `liquitySwapEusd` を足したのと同じ理由）。**per-round 上限は USDC の 6 decimals 建てなので
-  18 decimals の stable では換算が要る**（実測でこれを忘れると sell が毎回 reject され、買いだけ通って
-  「閉じられないポジションの含み益」になる: 42 reject / 6 accept）
+  （#39 が `liquitySwapEusd` を足したのと同じ理由）。発注上限の撤廃前は、この上限が USDC の 6 decimals 建て
+  だったため 18 decimals の stable で換算漏れを起こし、sell だけ毎回 reject されて「閉じられないポジションの
+  含み益」になっていた（42 reject / 6 accept）。上限そのものが無くなったのでこの罠は消えた
 - **`depeg` ストレスイベント**（`stress.events`。`stable:` 必須）— 環境が窓の間だけその stable を
   プールへ売り、閉じたら買い戻す。機構は `core/src/realtime/stableDepeg.ts` に共通化してあり、
   `eusdDepeg` も同じ実装を通る（イベント名は #39 の `stress_eusd_depeg*` のまま。他の stable は
