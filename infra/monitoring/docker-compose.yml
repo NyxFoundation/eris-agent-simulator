@@ -1,0 +1,109 @@
+# ASCON infra monitoring — reuse the standard stack instead of a bespoke script.
+#   cAdvisor + node_exporter  -> container + host metrics
+#   Prometheus                -> scrape + store + alert rules
+#   Grafana (+ image-renderer)-> dashboards + alerting -> Slack (chart images inline)
+#   Loki + Promtail           -> logs (crash context in alerts)
+#   eris-exporter             -> ASCON domain metrics (epoch/tx/unique-users/crashes/chain)
+# Start:  cd infra/monitoring && docker compose up -d
+name: ascon-monitoring
+
+services:
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: ascon-node-exporter
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+    pid: host
+    restart: unless-stopped
+    volumes:
+      - /:/host:ro,rslave
+      - ascon-textfile:/textfile:ro
+    ports: ["9100:9100"]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: ascon-cadvisor
+    restart: unless-stopped
+    privileged: true
+    devices: ["/dev/kmsg"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports: ["8081:8080"]          # 8080 is taken on the host
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: ascon-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ascon-prom-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports: ["9090:9090"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  renderer:
+    image: grafana/grafana-image-renderer:3.11.6
+    container_name: ascon-renderer
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: ascon-grafana
+    restart: unless-stopped
+    env_file: [./grafana/grafana.env, ./grafana/secret.env]
+    environment:
+      - GF_RENDERING_SERVER_URL=http://renderer:8081/render
+      - GF_RENDERING_CALLBACK_URL=http://grafana:3000/
+      - GF_UNIFIED_ALERTING_SCREENSHOTS_CAPTURE=true
+      - GF_UNIFIED_ALERTING_SCREENSHOTS_MAX_CONCURRENT_SCREENSHOTS=5
+      - GF_LOG_FILTERS=rendering:debug
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ascon-grafana-data:/var/lib/grafana
+    ports: ["3000:3000"]
+    depends_on: [prometheus, renderer]
+
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: ascon-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    ports: ["3100:3100"]
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    container_name: ascon-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./promtail/config.yml:/etc/promtail/config.yml:ro
+      - /home/gohan/ascon-bench/logs:/logs:ro
+      - /home/gohan/workspace/eris-agent-simulator/runs:/runs:ro
+    depends_on: [loki]
+
+  eris-exporter:
+    image: python:3.12-slim
+    container_name: ascon-eris-exporter
+    restart: unless-stopped
+    network_mode: host          # reach anvil on 127.0.0.1:8545 (it binds loopback only)
+    command: python /app/exporter.py
+    environment:
+      - ASCON_RPC=http://127.0.0.1:8545
+      - ASCON_TEXTFILE=/textfile/ascon.prom
+    volumes:
+      - ./exporter:/app:ro
+      - /home/gohan/workspace/eris-agent-simulator/runs:/runs:ro
+      - ascon-textfile:/textfile
+
+volumes:
+  ascon-prom-data:
+  ascon-grafana-data:
+  ascon-textfile:
