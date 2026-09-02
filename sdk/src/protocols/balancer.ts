@@ -300,24 +300,7 @@ function validate(
   const market = marketFor("balancer", base);
   if (!market) return { ok: false, reason: `no balancer market for ${base}` };
   const inIsBase = action.tokenIn === market.base;
-  // ADR 0013: apply the per-round limit to every base. The base side uses per-base limits (WETH=maxWethInWei;
-  // additional bases use limits.baseLimits[base]; "0"=no limit). The quote side uses the shared maxUsdcInUnits. WETH is byte-compatible.
-  if (inIsBase) {
-    const maxBaseIn =
-      base === "WETH"
-        ? BigInt(obs.limits.maxWethInWei)
-        : BigInt(obs.limits.baseLimits?.[base]?.maxSwapInBaseWei ?? "0");
-    if (maxBaseIn > 0n && amountIn > maxBaseIn)
-      return {
-        ok: false,
-        reason: "amountIn exceeds configured per-round limit",
-      };
-  } else if (amountIn > BigInt(obs.limits.maxUsdcInUnits)) {
-    return {
-      ok: false,
-      reason: "amountIn exceeds configured per-round limit",
-    };
-  }
+  // The balance is the only cap -- no per-order size limit on any venue.
   const balance = inIsBase
     ? (balances.bases?.[base] ?? balances.wethWei)
     : stableBalanceOf(balances, legOf(market).stable);

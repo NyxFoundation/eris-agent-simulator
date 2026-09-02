@@ -72,14 +72,16 @@ export function decide(
   if (Math.abs(gap) < GAP_THRESHOLD) return noop("gap too small");
 
   const tokenIn = gap > 0 ? "USDC" : "WETH";
-  const max = BigInt(
-    tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits,
+  // The balance is the capital; SIZE_BPS_MIN..MAX is how much of it this agent puts behind a gap.
+  const held = BigInt(
+    tokenIn === "WETH" ? obs.balances.wethWei : obs.balances.usdcUnits,
   );
   const sizeBps = Math.min(
     SIZE_BPS_MAX,
     Math.max(SIZE_BPS_MIN, Math.floor(Math.abs(gap) * 200_000)),
   );
-  const amountIn = (max * BigInt(sizeBps)) / 10_000n;
+  const amountIn = (held * BigInt(sizeBps)) / 10_000n;
+  if (amountIn <= 0n) return noop("nothing to trade with");
 
   const sizeUsdc =
     tokenIn === "USDC"

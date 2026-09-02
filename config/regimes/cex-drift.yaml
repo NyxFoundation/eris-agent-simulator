@@ -46,14 +46,6 @@ funding:
   base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
   usdcUnits: "25000000000"
 
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
-  # ADR 0013 multi-asset: the per-round WBTC cap, matched to agentWethWei by notional.
-  # The pools are seeded to the same depth ($6.0M measured), and funding hands out 8 WETH against
-  # 0.4 WBTC, so equal notional is also equal depth fraction: 1 WETH ~ $3,000 ~ 0.05 BTC.
-  agentBase: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
-
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"

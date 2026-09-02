@@ -1096,25 +1096,8 @@ function validate(
     const market = marketFor("uniswap", base);
     if (!market) return { ok: false, reason: `no uniswap market for ${base}` };
     const inIsBase = action.tokenIn === market.base;
-    // ADR 0013: apply the per-round limit to every base. The base-input side uses per-base limits (WETH=maxWethInWei;
-    // additional bases use limits.baseLimits[base]; "0"=no limit=balance bound). The quote-input side uses the shared
-    // maxUsdcInUnits. WETH behaves identically to before since maxWethInWei is always >0 (byte-compatible).
-    if (inIsBase) {
-      const maxBaseIn =
-        base === "WETH"
-          ? BigInt(obs.limits.maxWethInWei)
-          : BigInt(obs.limits.baseLimits?.[base]?.maxSwapInBaseWei ?? "0");
-      if (maxBaseIn > 0n && amountIn > maxBaseIn)
-        return {
-          ok: false,
-          reason: "amountIn exceeds configured per-round limit",
-        };
-    } else if (amountIn > BigInt(obs.limits.maxUsdcInUnits)) {
-      return {
-        ok: false,
-        reason: "amountIn exceeds configured per-round limit",
-      };
-    }
+    // The balance is the only cap. There is no per-order size limit on any venue any more, so a
+    // swap is bounded by what the wallet actually holds and by what the pool gives back for it.
     const balance = inIsBase
       ? (balances.bases?.[market.base] ?? balances.wethWei)
       : stableBalanceOf(balances, TOKENS.USDC.address);
@@ -1140,31 +1123,13 @@ function validate(
     ) {
       return { ok: false, reason: "ticks must align to pool tick spacing" };
     }
-    // ADR 0013: apply the LP limit to every base. The base side uses per-base limits (WETH=maxLpWethWei;
-    // additional bases use limits.baseLimits[base]; "0"=no limit). The quote side uses the shared maxLpUsdcUnits. WETH is byte-compatible.
-    const maxLpBase =
-      base === "WETH"
-        ? BigInt(obs.limits.maxLpWethWei)
-        : BigInt(obs.limits.baseLimits?.[base]?.maxLpBaseWei ?? "0");
-    if (
-      (maxLpBase > 0n && baseAmt > maxLpBase) ||
-      quoteAmt > BigInt(obs.limits.maxLpUsdcUnits)
-    )
-      return {
-        ok: false,
-        reason: "LP desired amounts exceed configured LP limits",
-      };
+    // Balance only -- no LP size cap and no cap on how many positions may be open at once.
     const baseBal = balances.bases?.[base] ?? balances.wethWei;
     if (
       baseAmt > baseBal ||
       quoteAmt > stableBalanceOf(balances, TOKENS.USDC.address)
     )
       return { ok: false, reason: "LP desired amounts exceed balance" };
-    if (uni.positions.length >= obs.limits.maxOpenPositions)
-      return {
-        ok: false,
-        reason: "open LP position count exceeds configured max",
-      };
     return { ok: true };
   }
   const position = uni.positions.find(

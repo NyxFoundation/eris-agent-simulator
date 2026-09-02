@@ -35,9 +35,6 @@ if (!Number.isFinite(CEIL_FRACTION) || CEIL_FRACTION <= 0) {
   process.exit(1);
 }
 
-function minBI(a: bigint, b: bigint): bigint {
-  return a < b ? a : b;
-}
 function baseToFloat(amountBaseWei: bigint, decimals: number): number {
   return Number(amountBaseWei) / 10 ** decimals;
 }
@@ -123,9 +120,8 @@ export function decide(
   if (!Number.isFinite(fair) || fair <= 0) return noop("invalid fair");
 
   const views = marketViews(obs);
+  // Capital = balance. With no per-order cap the sizing fractions below are the entire risk budget.
   const usdcBal = BigInt(obs.balances.usdcUnits || "0");
-  const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
-  const maxWeth = BigInt(obs.limits.maxWethInWei);
 
   // ---- 1) 2-leg cross-venue arbitrage (delta-neutral; ranked by expected USDC profit) ----
   let bestTwo: TwoLeg | null = null;
@@ -143,14 +139,13 @@ export function decide(
       (cheap.feeBps + rich.feeBps + SAFETY_MARGIN_BPS) / 10000;
     if (spread <= roundtripCost) continue;
 
-    const usdcCap = minBI(usdcBal, maxUsdc);
-    if (usdcCap <= 0n) continue;
+    if (usdcBal <= 0n) continue;
     const netEdge = spread - roundtripCost;
     const sizeBps = Math.min(
       MAX_SIZE_BPS,
       Math.max(MIN_SIZE_BPS, Math.floor(netEdge * SPREAD_GAIN)),
     );
-    const usdcIn = (usdcCap * BigInt(sizeBps)) / 10000n;
+    const usdcIn = (usdcBal * BigInt(sizeBps)) / 10000n;
     if (usdcIn <= 0n) continue;
     // Net against any base already sitting in the wallet (leftover from a prior round's rounding),
     // instead of only the freshly-bought estimate, so residual inventory is actively drained rather
@@ -160,12 +155,10 @@ export function decide(
       view.baseDecimals,
     );
     const boughtBase = baseToFloat(usdcIn, 6) / cheap.price;
-    let baseSell = floatToBase(
+    const baseSell = floatToBase(
       existingBase + boughtBase * 0.98,
       view.baseDecimals,
     );
-    const maxBaseIn = BigInt(view.maxSwapInBaseWei || "0");
-    if (maxBaseIn > 0n) baseSell = minBI(baseSell, maxBaseIn);
     if (baseSell <= 0n) continue;
 
     const profitUsdc = baseToFloat(usdcIn, 6) * netEdge;
@@ -224,15 +217,7 @@ export function decide(
 
       const buyBase = gap > 0;
       const tokenIn = buyBase ? "USDC" : view.base;
-      let cap: bigint;
-      if (buyBase) {
-        cap = minBI(usdcBal, maxUsdc);
-      } else {
-        const baseBal = BigInt(view.baseBalanceWei || "0");
-        const maxBaseIn = BigInt(view.maxSwapInBaseWei || "0");
-        cap = view.base === "WETH" ? minBI(baseBal, maxWeth) : baseBal;
-        if (maxBaseIn > 0n) cap = minBI(cap, maxBaseIn);
-      }
+      const cap = buyBase ? usdcBal : BigInt(view.baseBalanceWei || "0");
       if (cap <= 0n) continue;
 
       const netEdge = gapAbs - singleLegCost;
