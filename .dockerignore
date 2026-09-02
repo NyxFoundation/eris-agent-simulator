@@ -1,6 +1,7 @@
-# Build-context excludes for infra/docker-agent/Dockerfile (agent-runtime image).
-# node_modules are reinstalled in-image via npm ci; the rest is either regenerated or not needed
-# at agent runtime. The big one is deployer/vendor (3.6 GB gmx hardhat vendor).
+# Default build-context excludes (used by Dockerfile.team). node_modules are reinstalled in-image
+# via npm ci; the rest is regenerated or not needed at agent runtime. The big one is deployer/vendor
+# (3.6 GB gmx hardhat vendor). Dockerfile.base uses its own Dockerfile.base.dockerignore, which also
+# strips team agent code from the base.
 **/node_modules
 .git
 runs

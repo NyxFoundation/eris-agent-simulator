@@ -9,42 +9,40 @@ uses). Memory limits are only trustworthy if you develop against the environment
 
 | image | contents | built by |
 |---|---|---|
-| **`eris-agent-base`** | the shared runtime — sdk + core + `example/agents/runtime` + toolchain (`npm ci`). **No team code.** | `build.sh base` |
-| **`eris-agent:<id>`** | `FROM base` + only that one team's `example/agents/<id>/` (and its own deps) | `build.sh team <id>` |
+| **`eris-agent-base`** | the shared runtime — sdk + core + `example/agents/{runtime,lib}` + toolchain (`npm ci`). **No team code.** | `npm run agent:build` |
+| **`eris-agent:<id>`** | `FROM base` + only that one team's `example/agents/<id>/` (and its own deps) | `npm run agent:build -- team <id>` |
 
 **Why per-team, not one shared image:** a single image with every agent baked in would put every
-team's strategy source inside every container — an IP/integrity leak in a prize competition. Per-team
-images also let a team bring its own dependencies (installed at build time; run-time egress stays
-blocked), and give a pinned artifact (`eris-agent:<id>` digest) for the replay audit. The base layer
-is shared on disk, so 100 team images cost ~one base plus small per-team deltas.
+team's strategy source inside every container (extractable via `docker save`) — an IP/integrity leak
+in a prize competition. Per-team images also let a team bring its own dependencies (installed at
+build time), and give a pinned artifact (`eris-agent:<id>` digest) for the replay audit. The base
+layer is shared on disk, so 100 team images cost ~one base plus small per-team deltas.
 
 > **Build-time supply chain:** `build.sh team` runs the team's `npm install` (postinstall scripts
 > execute). Build team images in a throwaway/sandboxed builder.
 
 ```bash
-infra/docker-agent/build.sh base            # once
-infra/docker-agent/build.sh team my-agent   # per team (auto-builds base if missing)
+npm run agent:build              # base (once)
+npm run agent:build -- team foo  # per team (auto-builds base if missing) -> eris-agent:foo
 ```
 
 ## Self-test the memory budget
 
-Run your team image with the real cap. `--memory-swap` equals `--memory`, so an over-budget agent is
-OOM-killed rather than silently swapping — that is the signal you want.
+`self-test.sh` builds the team image and runs a short live environment (funds wallets + deploys
+venues) with only that agent + a noop baseline, each capped. An agent that exceeds the cap is
+OOM-killed and reported as an early exit (code 137).
 
 ```bash
-infra/docker-agent/build.sh team my-agent
-docker run --rm --network host --memory=1g --memory-swap=1g --cpus=0.5 \
-  -e ERIS_LOCAL_DEPLOY=1 -e ERIS_RPC_URL=http://127.0.0.1:8545 \
-  -e ERIS_AGENT_ID=me -e ERIS_AGENT_DIR=/eris/example/agents/my-agent \
-  -e ERIS_AGENT_PRIVATE_KEY=0x... -e ERIS_PRICE_FEED_ADDRESS=0x... \
-  -v "$PWD/runs:/eris/runs" \
-  eris-agent:my-agent
+npm run anvil &                                   # a local-deploy chain (prerequisite)
+npm run agent:selftest -- my-agent                # memory cap: ERIS_DOCKER_MEM (default 1g)
 ```
 
-Measured footprint of the reference agent is ~130–170 MiB regardless of the LLM improve loop
-(inference runs off-container), so 1 GiB is comfortable — this verifies *your* agent's compute.
+`--memory-swap` is pinned to `--memory`, so an over-budget agent OOM-kills rather than silently
+swapping — that is the signal you want. Measured footprint of the reference agent is ~130–170 MiB
+regardless of the LLM improve loop (inference runs off-container), so 1 GiB is comfortable; this
+verifies *your* agent's compute. Watch it live with `docker stats eris-my-agent`.
 
-## Wiring into a run
+## Wiring into a run (operator)
 
 Point each agent's `command` at `run-agent.sh` and pass its directory via `env`:
 
@@ -61,10 +59,11 @@ agents:
 ```
 
 Run the environment as usual (`ERIS_LOCAL_DEPLOY=1 npm run sim:realtime -- --config <cfg>`). Afterwards
-sweep any survivors: `infra/docker-agent/reap.sh`.
+sweep any survivors: `npm run agent:reap`.
 
 `run-agent.sh` picks the image `eris-agent:<basename of ERIS_AGENT_DIR>` by default (override with
-`ERIS_AGENT_IMAGE`). It has two modes:
+`ERIS_AGENT_IMAGE`). **Invariant:** the agent directory basename, the `build.sh team <id>` id, and
+`ERIS_AGENT_ID` must be the same `<id>`, or you get a confusing "image not found". It has two modes:
 
 - **image (default)** — the per-team image; the coordinator's absolute host paths are remapped onto
   the image's `/eris`, and the config file + `runs/` dir are mounted in.
@@ -72,6 +71,14 @@ sweep any survivors: `infra/docker-agent/reap.sh`.
   host path; no build, for iterating on runtime code.
 
 Caps: `ERIS_DOCKER_MEM` (default `1g`), `ERIS_DOCKER_CPUS` (default `0.5`).
+
+## Isolation caveat (egress)
+
+Containers run with `--network host`, so they share the host network — **run-time egress is NOT
+contained by these scripts.** For the live competition, egress blocking (competition rules) must be
+enforced by the operator's host/network policy (firewall, or a bridge network with no NAT); it is
+not provided by `--network host`. Deps are resolved at build time precisely so run time needs no
+outbound access.
 
 ## Env contract (two silent traps)
 
@@ -90,4 +97,5 @@ addressed by the parallel oracle writes in this PR and by a longer block time.
 
 ## Files
 
-`Dockerfile.base`, `Dockerfile.team`, `build.sh`, `run-agent.sh`, `reap.sh`.
+`Dockerfile.base` (+ `Dockerfile.base.dockerignore`), `Dockerfile.team`, `build.sh`, `run-agent.sh`,
+`self-test.sh`, `reap.sh`. Exposed as `npm run agent:build` / `agent:selftest` / `agent:reap`.

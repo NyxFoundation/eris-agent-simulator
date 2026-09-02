@@ -10,7 +10,7 @@ cd "$REPO"
 
 build_base() { docker build -f infra/docker-agent/Dockerfile.base -t "$BASE" .; }
 
-case "${1:-}" in
+case "${1:-base}" in
   base)
     build_base ;;
   team)

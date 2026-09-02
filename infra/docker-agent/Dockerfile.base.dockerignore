@@ -1,0 +1,20 @@
+# Build-context excludes for Dockerfile.base ONLY (BuildKit uses <Dockerfile>.dockerignore when
+# present, INSTEAD of .dockerignore -- so this must repeat the general excludes too).
+#
+# The critical extra vs .dockerignore: keep ALL team/reference agent code OUT of the base build
+# context, so no team's strategy ever enters a base layer (COPY layers are additive; a later
+# `rm` only whiteouts). Every per-team image is FROM base, so a leak here leaks to everyone.
+**/node_modules
+.git
+runs
+cache
+*.log
+deployer/vendor
+deployer/out
+dashboard/dist
+dashboard/build
+
+# No agent code in the base -- only the shared runtime + lib that bot.ts needs.
+example/agents/*
+!example/agents/runtime
+!example/agents/lib
