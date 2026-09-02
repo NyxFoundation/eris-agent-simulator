@@ -84,6 +84,49 @@ const en = {
   "home.noteMoved": "{n} agents changed place",
   "home.noteMovedOne": "1 agent changed place",
 
+  // ---- the scenario list on the standings page ----
+  // A competition is its scenarios; this is where you pick one, and picking one is a decision that
+  // deserves more than a name in a dropdown.
+  "home.scenarios.title": "Scenarios",
+  "home.scenarios.subtitle":
+    "One row per world: a regime drawn at a seed, with whoever leads it and what the environment is scheduled to do there. Click a row to open it. A single scenario is one draw from the distribution, not the result — the standings above are.",
+  "home.scenarios.col.scenario": "scenario",
+  "home.scenarios.col.rounds": "rounds",
+  "home.scenarios.col.leader": "leader",
+  "home.scenarios.col.events": "environment episodes",
+  // "none scheduled" is about the episode schedule, not about the world being quiet: a regime such
+  // as cex-drift can bend the whole run rather than open a timed window, and runs recorded before
+  // those regimes were windowed have no schedule at all.
+  "home.scenarios.eventsTitle":
+    "Timed episodes drawn from the seed. \"None scheduled\" does not mean the world was quiet — a regime can shape the entire run instead of opening a window.",
+  "home.scenarios.roundsAt": "{at} / {n}",
+  "home.scenarios.ended": "ended",
+  "home.scenarios.endedTitle":
+    "This world ran out of rounds before the cursor. Its last value is its result, so it stays in the standings.",
+  "home.scenarios.noEvents": "none scheduled",
+  "home.scenarios.noLeader": "no result yet",
+  "home.scenarios.missing":
+    "round detail was not collected for this scenario",
+  "home.scenarios.leaderTitle":
+    "leads through the selected round, by mean − λ·std of per-round excess log returns",
+
+  // ---- how the units nest ----
+  // "Round" means three different things to three different readers: a block, a scoring window, or
+  // a whole run. Saying which one this dashboard means, once, beats disambiguating it per panel.
+  "units.title": "How this fits together",
+  "units.competition": "Competition",
+  "units.competitionBody":
+    "Every scenario replayed, ranked together. This page.",
+  "units.scenario": "Scenario",
+  "units.scenarioBody":
+    "One world: a regime drawn at a seed, run start to finish. All agents trade it at the same time.",
+  "units.round": "Round",
+  "units.roundBody":
+    "The scoring window — several blocks, not one. Scores, rank moves and environment episodes are all read against it.",
+  "units.block": "Block",
+  "units.blockBody":
+    "Two seconds, and one chance to act. Transactions inside one are ordered by priority fee.",
+
   // ---- scenario page ----
   "scenario.fallbackTitle": "Scenario",
   "scenario.seed": "seed {n}",
@@ -239,22 +282,23 @@ const en = {
   "agent.openAddress": "Open address in Blockscout",
 
   // ---- markets page ----
-  "market.fair": "Fair price · environment input",
+  "market.fair": "Reference price · what the environment publishes",
   "market.venuesInRun": "Venues in this run",
   "market.notRecorded": "not recorded",
   "market.scope": "Scope",
   "market.wholeRun": "whole run · blocks {from}–{to}",
   "market.runWide":
-    "whole run · blocks {from}–{to} · this tab always covers the whole run",
+    "Whole run · blocks {from}–{to}. This tab is not narrowed by the round you pick: its tables are a single snapshot taken at the run's last block.",
   "market.roundScope": "Round {i} · blocks {from}–{to}",
   "market.scopeHint":
-    "click a round in the bar above to narrow every panel to it",
+    "Pick a round in the bar above and every panel below narrows to that round's blocks.",
   "market.backToRun": "show the whole run →",
   "market.view.arb": "Cross-venue arb",
   "market.view.price": "Fair price",
   "market.arbLegend":
-    "▲ buy / ▼ sell by venue · dashed = fair · lower pane = widest gap vs the {n}bps round-trip cost",
-  "market.noVenue": "this run enabled no venue the dashboard can render",
+    "▲ = a buy, ▼ = a sell, coloured by venue. The dashed line is the reference price. The lower pane plots the widest gap between venues against the {n}bps round-trip cost: above that line there was arbitrage to take.",
+  "market.noVenue":
+    "This run had no venue with a panel on this page. Nothing is missing — it enabled none of them.",
   "market.standings": "Standings",
   "market.submissions": "Agent submissions ↓",
   // ADR 0021 §4: this feed comes from the agents' own reports of what they sent, which is the one
@@ -334,7 +378,7 @@ const en = {
   // ---- venue panels (markets tabs) ----
   "vp.amm.label": "AMM",
   "vp.amm.caption":
-    "Three constant-function venues quote the same pair. Depth is what a liquidity pull moves; the gap between venues is what an arbitrageur is paid to close, once it clears the round-trip cost.",
+    "Three AMMs quote the same pair independently, so one asset has three prices at once. Two things to read. Depth is how much a pool holds: a liquidity pull takes it away, and a thinner pool moves further on the same trade. The gap between venues is the arbitrage — but only once it clears the round-trip cost of both swaps.",
   "vp.amm.widestGap": "Widest cross-venue gap",
   "vp.amm.threshold": "threshold {n}bps round-trip",
   "vp.amm.aboveThreshold": "Blocks above threshold",
@@ -364,14 +408,14 @@ const en = {
 
   "vp.perp.label": "Perp",
   "vp.perp.caption":
-    "GMX v2. Positions are opened as orders and executed by the environment's keeper a block later, so a perp trade always lands one block after the decision that produced it. Funding is what the crowded side pays the other.",
+    "GMX v2. A position is submitted as an order and executed by the environment's keeper on the next block, so a perp trade always lands one block after the decision behind it. Funding is paid by whichever side is crowded to the other: the rate follows the open-interest skew above, and over a run of a few hundred blocks the amount it moves is small.",
   "vp.perp.oi": "Open interest",
   "vp.perp.oiSplit": "{long}% long / {short}% short",
   "vp.perp.noOi": "no open interest",
   "vp.perp.longOi": "Long OI",
   "vp.perp.shortOi": "Short OI",
   "vp.perp.funding": "Funding / 1h",
-  "vp.perp.fundingSub": "positive = longs pay shorts",
+  "vp.perp.fundingSub": "positive = longs pay shorts, negative = the reverse",
   "vp.perp.oiChart": "Open interest · {base}",
   "vp.perp.long": "Long",
   "vp.perp.short": "Short",
@@ -391,7 +435,7 @@ const en = {
 
   "vp.lending.label": "Lending",
   "vp.lending.caption":
-    "Aave v3. The oracle the pool prices collateral with is written by the environment and lands one block late, so a health factor an agent reads is always a block behind the price that will break it.",
+    "Aave v3. The oracle that prices collateral is written by the environment and lands one block late. So the health factor an agent reads is always one block behind the price that will break it: a position that still looks safe on screen can already be liquidatable on chain.",
   "vp.lending.supplied": "Total supplied",
   "vp.lending.borrowed": "Total borrowed",
   "vp.lending.utilization": "utilization {v}",
@@ -423,7 +467,7 @@ const en = {
 
   "vp.stable.label": "Stablecoin",
   "vp.stable.caption":
-    "A stablecoin's price here is measured, not assumed: the mark is the geometric mean of both executable directions on its pool. eUSD adds a redemption floor — $1 of collateral from the riskiest trove — so its discount is a claim you can exercise, not a forecast.",
+    "Stablecoin prices here are measured, not assumed. The mark is the geometric mean of both executable directions on the coin's own pool, so a coin off its peg reads as off its peg. eUSD is the one with a floor under it: it can always be redeemed for $1 of collateral from the riskiest trove, which makes its discount a claim you can exercise rather than a forecast.",
   "vp.stable.price": "{symbol} price",
   "vp.stable.deepest": "deepest {v} · {bps} vs par",
   "vp.stable.noQuote": "pool would not quote — par assumed",
@@ -468,7 +512,7 @@ const en = {
 
   "vp.lst.label": "LST",
   "vp.lst.caption":
-    "A non-rebasing liquid staking token has two prices for one asset: the redemption rate the vault owes (behind a withdrawal queue) and what its secondary pool pays right now. The gap is only free money if you can afford to wait.",
+    "A non-rebasing liquid staking token carries two prices for one asset. One is the redemption rate the vault owes you, which sits behind a withdrawal queue. The other is what its secondary pool will pay right now. The gap between them is only profit if you can afford to wait out the queue.",
   "vp.lst.rate": "Redemption rate",
   "vp.lst.rateSub": "what the vault owes per LST — the par",
   "vp.lst.market": "Market price",
@@ -503,7 +547,7 @@ const en = {
 
   "vp.scenario.label": "Scenario",
   "vp.scenario.caption":
-    "What the environment did to this run. The stress schedule is drawn from the seed at run start as a trapezoid (ramp, hold, decay) over the fair-price walk — randomised but reproducible, so the same seed replays the same windows. This tab always covers the whole run: a scenario is a property of the run, not of a round.",
+    "What the environment did to this run. Its schedule is drawn from the seed before the first block: each episode is a trapezoid — it ramps up, holds, then decays — laid over the fair-price walk. The draw is random but reproducible, so the same seed always replays the same windows. This tab covers the whole run rather than the round you picked, because a scenario is a property of the run.",
   "vp.scenario.seed": "Seed",
   "vp.scenario.seedSub":
     "flow seed {flow} · the label for this run's market conditions",
@@ -640,6 +684,38 @@ const ja: Record<MessageKey, string> = {
   "home.noteNoMove": "順位変動なし",
   "home.noteMoved": "{n} 体の順位が変動",
   "home.noteMovedOne": "1 体の順位が変動",
+
+  "home.scenarios.title": "シナリオ",
+  "home.scenarios.subtitle":
+    "1 行 1 世界。レジームとシードの組、その世界の首位、環境がそこで起こす予定のイベントを並べています。行をクリックすると開きます。1 つのシナリオは分布からの 1 ドローであって結果ではありません — 結果は上の順位表です。",
+  "home.scenarios.col.scenario": "シナリオ",
+  "home.scenarios.col.rounds": "ラウンド",
+  "home.scenarios.col.leader": "首位",
+  "home.scenarios.col.events": "環境イベント",
+  "home.scenarios.eventsTitle":
+    "シードから引かれた時限イベントです。「予定なし」は世界が静かだったという意味ではありません。cex-drift のようなレジームは、窓を開けずに run 全体を形づくることがあります。",
+  "home.scenarios.roundsAt": "{at} / {n}",
+  "home.scenarios.ended": "終了",
+  "home.scenarios.endedTitle":
+    "カーソルより前にラウンドが尽きた世界です。最後の値がその世界の結果なので、順位表には残ります。",
+  "home.scenarios.noEvents": "予定なし",
+  "home.scenarios.noLeader": "結果はまだありません",
+  "home.scenarios.missing": "このシナリオのラウンド詳細は回収されていません",
+  "home.scenarios.leaderTitle":
+    "選択中のラウンドまでの首位。ラウンドごとの超過対数リターンの mean − λ·std で判定",
+
+  "units.title": "単位の関係",
+  "units.competition": "競技",
+  "units.competitionBody": "全シナリオを再生して一緒に順位を付けたもの。このページです。",
+  "units.scenario": "シナリオ",
+  "units.scenarioBody":
+    "1 つの世界。レジームとシードの組を最初から最後まで走らせたもので、全エージェントが同時に取引します。",
+  "units.round": "ラウンド",
+  "units.roundBody":
+    "採点の窓で、1 ブロックではなく複数ブロックです。スコアも順位変動も環境イベントも、すべてこの軸で読みます。",
+  "units.block": "ブロック",
+  "units.blockBody":
+    "2 秒であり、1 回の行動機会です。同じブロック内の順序は優先手数料で決まります。",
 
   "scenario.fallbackTitle": "シナリオ",
   "scenario.seed": "シード {n}",
@@ -788,22 +864,23 @@ const ja: Record<MessageKey, string> = {
   "agent.openTx": "Blockscout でトランザクションを開く",
   "agent.openAddress": "Blockscout でアドレスを開く",
 
-  "market.fair": "フェア価格 · 環境の入力値",
+  "market.fair": "参照価格 · 環境が配信する基準価格",
   "market.venuesInRun": "この run の venue",
   "market.notRecorded": "記録なし",
   "market.scope": "範囲",
   "market.wholeRun": "run 全体 · ブロック {from}–{to}",
   "market.runWide":
-    "run 全体 · ブロック {from}–{to} · このタブは常に run 全体を表示",
+    "run 全体 · ブロック {from}–{to}。このタブはラウンドで絞り込まれません。表が run の最終ブロック時点の 1 断面だからです。",
   "market.roundScope": "ラウンド {i} · ブロック {from}–{to}",
   "market.scopeHint":
-    "上の帯でラウンドを選ぶと、全パネルがその範囲に絞られます",
+    "上の帯でラウンドを選ぶと、下のパネルがすべてそのラウンドのブロックに絞られます。",
   "market.backToRun": "run 全体に戻す →",
   "market.view.arb": "venue 間裁定",
   "market.view.price": "フェア価格",
   "market.arbLegend":
-    "▲ 買い / ▼ 売り（venue 色）· 破線 = フェア · 下段 = 最大の venue 間差と往復コスト {n}bps の比較",
-  "market.noVenue": "この run には表示できる venue がありません",
+    "▲ は買い、▼ は売りで、色は venue を表します。破線は参照価格です。下段は venue 間の最大価格差を往復コスト {n}bps と並べたもので、この線より上にある間は裁定の余地があったということです。",
+  "market.noVenue":
+    "この run には、このページにパネルを持つ venue が 1 つも有効になっていません。表示漏れではなく、そもそも使われていないということです。",
   "market.standings": "順位",
   "market.submissions": "エージェントの送信 tx ↓",
   "market.submissionsSelfHosted":
@@ -878,7 +955,7 @@ const ja: Record<MessageKey, string> = {
 
   "vp.amm.label": "AMM",
   "vp.amm.caption":
-    "3 つの AMM が同じペアを別々に値付けします。板の厚み（depth）は流動性引き抜きが削るもの。venue 間の価格差は、往復コストを超えたときに裁定者が閉じて報酬を得るものです。",
+    "同じペアを 3 つの AMM が別々に値付けするので、1 つの資産に同時に 3 つの価格が付きます。読むところは 2 つです。深度はプールの厚みで、流動性引き抜きが減らします。薄いほど、同じ取引で価格が大きく動きます。venue 間の価格差は裁定の機会ですが、2 回のスワップの往復コストを超えて初めて利益になります。",
   "vp.amm.widestGap": "最大 venue 間価格差",
   "vp.amm.threshold": "しきい値 {n}bps（往復コスト）",
   "vp.amm.aboveThreshold": "しきい値超えブロック数",
@@ -908,14 +985,14 @@ const ja: Record<MessageKey, string> = {
 
   "vp.perp.label": "Perp",
   "vp.perp.caption":
-    "GMX v2。ポジションは注文として出され、環境のキーパーが 1 ブロック後に執行します — perp の取引は判断の 1 ブロック後に必ず着地します。ファンディングは混んでいる側が反対側に払うものです。",
+    "GMX v2。建玉は注文として出され、環境のキーパーが次のブロックで執行します。つまり perp の取引は、必ず判断の 1 ブロック後に成立します。ファンディングは建玉が偏っている側から反対側へ支払われます。レートは上の OI の偏りに追随しますが、数百ブロックの run で実際に動く金額は小さい値です。",
   "vp.perp.oi": "建玉総額 (OI)",
   "vp.perp.oiSplit": "ロング {long}% / ショート {short}%",
   "vp.perp.noOi": "建玉なし",
   "vp.perp.longOi": "ロング OI",
   "vp.perp.shortOi": "ショート OI",
   "vp.perp.funding": "ファンディング / 1h",
-  "vp.perp.fundingSub": "正 = ロングがショートに支払う",
+  "vp.perp.fundingSub": "正 = ロングがショートに支払う。負はその逆",
   "vp.perp.oiChart": "建玉総額 · {base}",
   "vp.perp.long": "ロング",
   "vp.perp.short": "ショート",
@@ -935,7 +1012,7 @@ const ja: Record<MessageKey, string> = {
 
   "vp.lending.label": "レンディング",
   "vp.lending.caption":
-    "Aave v3。担保を値付けするオラクルは環境が書き込み、1 ブロック遅れて届きます — エージェントが読む健全性係数は、それを壊す価格より常に 1 ブロック古いものです。",
+    "Aave v3。担保の価格を決めるオラクルは環境が書き込み、1 ブロック遅れて届きます。したがってエージェントが読む健全性係数は、それを割る価格より常に 1 ブロック古い値です。画面上はまだ安全に見えるポジションが、チェーン上では既に清算可能ということが起こります。",
   "vp.lending.supplied": "総供給",
   "vp.lending.borrowed": "総借入",
   "vp.lending.utilization": "利用率 {v}",
@@ -967,7 +1044,7 @@ const ja: Record<MessageKey, string> = {
 
   "vp.stable.label": "ステーブルコイン",
   "vp.stable.caption":
-    "ここでのステーブルコイン価格は仮定ではなく実測です: プールの両方向の実行可能価格の幾何平均をマークにしています。eUSD には償還フロア — 最もリスクの高いトローブから $1 分の担保と交換できる権利 — があるため、そのディスカウントは予想ではなく行使できる請求権です。",
+    "ここでのステーブルコインの価格は、仮定ではなく実測です。マークはそのコインのプールの売り・買い両方向の実行可能価格の幾何平均なので、ペグが外れていれば外れたまま表示されます。eUSD だけは下に床があります。常に最もリスクの高いトローブから $1 分の担保と交換できるため、そのディスカウントは予想ではなく行使できる請求権です。",
   "vp.stable.price": "{symbol} 価格",
   "vp.stable.deepest": "最安 {v} · par 比 {bps}",
   "vp.stable.noQuote": "プールが値を返さず — par を仮置き",
@@ -1013,7 +1090,7 @@ const ja: Record<MessageKey, string> = {
 
   "vp.lst.label": "LST",
   "vp.lst.caption":
-    "非 rebasing の LST には、同じ資産に 2 つの価格があります: vault が負う償還レート（出金キューの向こう側）と、二次市場のプールが今払う価格です。その差が「タダで拾える」のは、待てる者だけです。",
+    "非 rebasing の LST は、同じ資産に価格を 2 つ持ちます。1 つは vault が負う償還レートで、これは出金キューの向こう側にあります。もう 1 つは二次市場のプールが今すぐ払う価格です。2 つの差が利益になるのは、キューを待てる場合だけです。",
   "vp.lst.rate": "償還レート",
   "vp.lst.rateSub": "vault が 1 LST あたりに負う額 — par",
   "vp.lst.market": "市場価格",
@@ -1047,7 +1124,7 @@ const ja: Record<MessageKey, string> = {
 
   "vp.scenario.label": "シナリオ",
   "vp.scenario.caption":
-    "環境がこの run に対して行ったこと。ストレス予定は run 開始時にシードから引かれ、フェア価格の上に台形（ramp・hold・decay）として重なります — ランダム化されつつ再現可能で、同じシードは同じ窓を再生します。このタブは常に run 全体です: シナリオはラウンドではなく run の属性だからです。",
+    "環境がこの run に対して行ったことです。予定は最初のブロックより前にシードから引かれます。各イベントは台形で、立ち上がり（ramp）・維持（hold）・減衰（decay）の順にフェア価格の上へ重なります。引き方はランダムですが再現可能なので、同じシードは必ず同じ窓を再生します。このタブは選んだラウンドではなく run 全体を表示します。シナリオは run の属性だからです。",
   "vp.scenario.seed": "シード",
   "vp.scenario.seedSub": "フローシード {flow} · この run の市場条件のラベル",
   "vp.scenario.scheduled": "予定イベント",

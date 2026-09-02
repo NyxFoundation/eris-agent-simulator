@@ -7,6 +7,7 @@
 // replays the competition from here.
 
 import { useEffect, useMemo } from "react";
+import { InfoTabs } from "@/components/InfoTabs";
 import { RoundCursorBar } from "@/components/RoundCursorBar";
 import { Sidebar } from "@/components/Sidebar";
 import {
@@ -18,8 +19,10 @@ import {
 } from "@/components/competitionUi";
 import { competitionName, scenarioRunId } from "@/data/competition";
 import { windowsAtRound } from "@/data/schedule";
+import { buildScenarioList, type ScenarioListRow } from "@/data/scenarioList";
 import { buildStandings, rankMoves } from "@/data/standings";
 import { setCursorRange, useCursor } from "@/data/roundCursor";
+import { setSelectedRound } from "@/data/roundSelection";
 import { getSelectedRunId, setSelectedRunId } from "@/data/runSelection";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { useLocale } from "@/i18n/locale";
@@ -38,6 +41,189 @@ const PAGE_MAX_WIDTH = "1180px";
  * reason this stays: a stored run is read long after the file that named it changed.
  */
 const shortRegime = (r: string) => r.replace(/^full-/, "");
+
+const SCENARIO_GRID = "minmax(120px, 1.1fr) 92px minmax(120px, 1.2fr) 2fr";
+
+/**
+ * How the units nest, stated once.
+ *
+ * "Round" carries three meanings across the material a participant reads: the rules draft used it
+ * for a block, this dashboard uses it for the scoring window, and a run is a scenario. A reader who
+ * has not been told which is which cannot interpret "rank moved at round 14".
+ */
+function UnitLadder() {
+  const rungs = [
+    { label: t("units.competition"), body: t("units.competitionBody") },
+    { label: t("units.scenario"), body: t("units.scenarioBody") },
+    { label: t("units.round"), body: t("units.roundBody") },
+    { label: t("units.block"), body: t("units.blockBody") },
+  ];
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+        gap: "1px",
+        background: "var(--border-subtle)",
+      }}
+    >
+      {rungs.map((rung, i) => (
+        <div
+          key={rung.label}
+          style={{
+            background: "var(--bg-surface)",
+            padding: "11px 14px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "4px",
+            minWidth: 0,
+          }}
+        >
+          <span
+            style={{
+              font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+              letterSpacing: "var(--tracking-wide)",
+              textTransform: "uppercase",
+              color: "var(--text-primary)",
+            }}
+          >
+            {/* The chevron is the containment: each rung sits inside the one before it. */}
+            {i > 0 && (
+              <span style={{ color: "var(--text-disabled)" }}>{"› "}</span>
+            )}
+            {rung.label}
+          </span>
+          <span
+            style={{
+              font: "var(--text-xs) var(--font-sans)",
+              color: "var(--text-tertiary)",
+              lineHeight: 1.55,
+            }}
+          >
+            {rung.body}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ScenarioRow({
+  row,
+  scrubbing,
+}: {
+  row: ScenarioListRow;
+  scrubbing: boolean;
+}) {
+  const open = () => {
+    // A round index belongs to one run; carrying it into another scopes the next explorer view to a
+    // block window that means nothing there.
+    setSelectedRound(null);
+    setSelectedRunId(row.runId);
+    navigate("/scenario");
+  };
+  return (
+    <div
+      className="row-link"
+      onClick={open}
+      style={{
+        display: "grid",
+        gridTemplateColumns: SCENARIO_GRID,
+        columnGap: "8px",
+        alignItems: "baseline",
+        padding: "9px 16px",
+        borderBottom: "1px solid var(--border-subtle)",
+        font: "var(--text-sm) var(--font-mono)",
+      }}
+    >
+      <span
+        style={{
+          color: "var(--text-link)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+        title={row.runId}
+      >
+        {row.label}
+      </span>
+      <span
+        style={{
+          font: "var(--text-xs) var(--font-mono)",
+          color: row.ended ? "var(--text-disabled)" : "var(--text-secondary)",
+        }}
+        title={row.ended ? t("home.scenarios.endedTitle") : undefined}
+      >
+        {scrubbing
+          ? t("home.scenarios.roundsAt", {
+              at: row.roundsSoFar,
+              n: row.rounds,
+            })
+          : String(row.rounds)}
+        {row.ended && ` · ${t("home.scenarios.ended")}`}
+      </span>
+      {row.leader ? (
+        <span
+          title={t("home.scenarios.leaderTitle")}
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {row.leader.id}
+          <span
+            style={{
+              marginLeft: "6px",
+              font: "var(--text-xs) var(--font-mono)",
+              color: toneColor(row.leader.score),
+            }}
+          >
+            {formatBps(row.leader.score * 10_000)}
+          </span>
+        </span>
+      ) : (
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--text-disabled)",
+          }}
+        >
+          {row.missing
+            ? t("home.scenarios.missing")
+            : t("home.scenarios.noLeader")}
+        </span>
+      )}
+      <span
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "5px",
+          font: "var(--text-xs) var(--font-mono)",
+        }}
+      >
+        {row.events.length === 0 ? (
+          <span style={{ color: "var(--text-disabled)" }}>
+            {t("home.scenarios.noEvents")}
+          </span>
+        ) : (
+          row.events.map((type) => (
+            <span
+              key={type}
+              style={{
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-sm)",
+                padding: "1px 6px",
+                color: "var(--text-secondary)",
+              }}
+            >
+              {type}
+            </span>
+          ))
+        )}
+      </span>
+    </div>
+  );
+}
 
 export function HomePage() {
   const { data, loading, error } = useCompetitionSnapshot();
@@ -68,6 +254,16 @@ export function HomePage() {
     if (!data || !standings) return new Map<string, number | null>();
     return rankMoves(data.competition, data.rounds, standings);
   }, [data, standings]);
+
+  const scenarioRows = useMemo(() => {
+    if (!data) return [];
+    return buildScenarioList(
+      data.competition,
+      data.rounds,
+      data.schedules,
+      cursor.round,
+    );
+  }, [data, cursor.round]);
 
   // One line of context for the selected round: which environment windows open here, who moved.
   const note = useMemo(() => {
@@ -428,6 +624,48 @@ export function HomePage() {
               </div>
             </div>
           </Panel>
+
+          {/* Choosing a world to look at, from the list rather than from a dropdown of names. */}
+          <Panel
+            title={t("home.scenarios.title")}
+            subtitle={t("home.scenarios.subtitle")}
+          >
+            <div style={{ overflowX: "auto" }}>
+              <div style={{ minWidth: "560px" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: SCENARIO_GRID,
+                    columnGap: "8px",
+                    padding: "9px 16px",
+                    borderBottom: "1px solid var(--border-subtle)",
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                    letterSpacing: "var(--tracking-wide)",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  <span>{t("home.scenarios.col.scenario")}</span>
+                  <span>{t("home.scenarios.col.rounds")}</span>
+                  <span>{t("home.scenarios.col.leader")}</span>
+                  <span title={t("home.scenarios.eventsTitle")}>
+                    {t("home.scenarios.col.events")}
+                  </span>
+                </div>
+                {scenarioRows.map((row) => (
+                  <ScenarioRow key={row.key} row={row} scrubbing={scrubbing} />
+                ))}
+              </div>
+            </div>
+          </Panel>
+
+          <Panel title={t("units.title")}>
+            <UnitLadder />
+          </Panel>
+
+          {/* Overview / Environment / Scoring / Data. It lived at the bottom of a single scenario,
+              where the explanation of what a scenario is could only be found by first picking one. */}
+          <InfoTabs />
         </main>
       </div>
     </div>
