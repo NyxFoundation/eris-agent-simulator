@@ -33,9 +33,12 @@ venues) with only that agent + a noop baseline, each capped. An agent that excee
 OOM-killed and reported as an early exit (code 137).
 
 ```bash
-npm run anvil &                                   # a local-deploy chain (prerequisite)
+# prerequisite: a local-deploy chain (anvil + all venues), per the repo Quick Start
+cd deployer && npm run deploy -- --keep-fresh &   # starts anvil + deploys every venue
+cd .. && npm run gen:local-constants              # import the deployed addresses
 npm run agent:selftest -- my-agent                # memory cap: ERIS_DOCKER_MEM (default 1g)
 ```
+(`npm run anvil` is fork-mode only and refuses under `ERIS_LOCAL_DEPLOY=1`.)
 
 `--memory-swap` is pinned to `--memory`, so an over-budget agent OOM-kills rather than silently
 swapping — that is the signal you want. Measured footprint of the reference agent is ~130–170 MiB

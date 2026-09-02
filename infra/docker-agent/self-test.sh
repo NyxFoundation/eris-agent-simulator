@@ -7,8 +7,11 @@
 #
 #   infra/docker-agent/self-test.sh <agent-id>
 #
-# Memory cap: ERIS_DOCKER_MEM (default 1g). Chain: ERIS_RPC_URL (default http://127.0.0.1:8545);
-# a local-deploy chain must already be running (e.g. `npm run anvil` in another terminal).
+# Memory cap: ERIS_DOCKER_MEM (default 1g). Chain: ERIS_RPC_URL (default http://127.0.0.1:8545).
+# A local-deploy chain (anvil + all venues) must already be running -- start it with
+#   cd deployer && npm run deploy -- --keep-fresh   # then, at the repo root:
+#   npm run gen:local-constants
+# (`npm run anvil` is fork-mode only and refuses under ERIS_LOCAL_DEPLOY=1.)
 set -euo pipefail
 ID="${1:?usage: self-test.sh <agent-id> (a directory under example/agents/)}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,7 +24,9 @@ cd "$REPO"
 if ! curl -s -o /dev/null --max-time 3 -X POST "$RPC" \
      -H 'content-type: application/json' \
      -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'; then
-  echo "no chain at $RPC -- start one first (e.g. \`npm run anvil\`) or set ERIS_RPC_URL" >&2
+  echo "no chain at $RPC -- start the local-deploy chain first:" >&2
+  echo "  cd deployer && npm run deploy -- --keep-fresh   (then: npm run gen:local-constants)" >&2
+  echo "  or set ERIS_RPC_URL to an existing local-deploy chain" >&2
   exit 1
 fi
 
