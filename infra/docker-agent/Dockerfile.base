@@ -1,0 +1,26 @@
+# Shared base image: the eris agent runtime, WITHOUT any team/reference agent code.
+#
+# Every per-team image is `FROM` this (see Dockerfile.team), so the runtime + node_modules are one
+# shared layer on disk while each team's image carries only its own agent. Crucially, the base holds
+# NO team strategy code, so no team's container ever contains another team's source.
+FROM node:24-bookworm-slim
+WORKDIR /eris
+
+# Dependency layer (caches unless a manifest changes).
+COPY package.json package-lock.json ./
+COPY sdk/package.json sdk/
+COPY core/package.json core/
+COPY example/package.json example/
+COPY dashboard/package.json dashboard/
+RUN npm ci
+
+# Runtime source (see .dockerignore for the excludes).
+COPY . .
+
+# Strip every agent directory except the shared runtime + lib that bot.ts needs. Per-team images add
+# their own agent dir on top. Without this the base (and thus every team image) would ship all the
+# reference/other agents' code.
+RUN find example/agents -mindepth 1 -maxdepth 1 -type d ! -name runtime ! -name lib -exec rm -rf {} +
+
+ENV NODE_ENV=production
+ENTRYPOINT ["node", "--import", "tsx", "example/agents/runtime/bot.ts"]

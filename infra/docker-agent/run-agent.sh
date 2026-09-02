@@ -53,7 +53,9 @@ fi
 
 # Image mode: remap the coordinator's host paths ($REPO/...) onto the image's /eris.
 remap() { printf '%s' "${1/$REPO//eris}"; }
-IMG="${ERIS_AGENT_IMAGE:-eris-agent:local}"
+# Default to this team's own image (base + only their agent); the agent dir's basename is the tag.
+# Build it with: infra/docker-agent/build.sh team <agent-id>. Override with ERIS_AGENT_IMAGE.
+IMG="${ERIS_AGENT_IMAGE:-eris-agent:$(basename "${ERIS_AGENT_DIR:?ERIS_AGENT_DIR is required in image mode (set it in the roster env)}")}"
 MOUNTS=( -v "$REPO/runs:/eris/runs" )
 ENVS=( -e "ERIS_RUN_DIR=$(remap "${ERIS_RUN_DIR:-$REPO/runs}")" )
 [ -n "${ERIS_AGENT_DIR:-}" ] && ENVS+=( -e "ERIS_AGENT_DIR=$(remap "$ERIS_AGENT_DIR")" )
