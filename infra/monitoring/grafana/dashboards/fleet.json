@@ -2,7 +2,7 @@
   "uid": "ascon-fleet",
   "title": "ASCON infra fleet",
   "tags": ["ascon"],
-  "timezone": "browser",
+  "timezone": "Asia/Tokyo",
   "schemaVersion": 39,
   "refresh": "10s",
   "time": { "from": "now-30m", "to": "now" },

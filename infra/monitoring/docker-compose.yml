@@ -54,6 +54,7 @@ services:
     container_name: ascon-renderer
     restart: unless-stopped
     env_file: [./grafana/secret.env]
+    environment: [TZ=Asia/Tokyo, BROWSER_TZ=Asia/Tokyo]
 
   grafana:
     image: grafana/grafana:13.2.1
@@ -64,6 +65,8 @@ services:
       - GF_RENDERING_SERVER_URL=http://renderer:8081/render
       - GF_RENDERING_CALLBACK_URL=http://grafana:3000/
       - GF_UNIFIED_ALERTING_SCREENSHOTS_CAPTURE=true
+      - GF_DATE_FORMATS_DEFAULT_TIMEZONE=Asia/Tokyo
+      - TZ=Asia/Tokyo
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
