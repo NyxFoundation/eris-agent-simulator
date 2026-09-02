@@ -12,7 +12,8 @@ side of it.
 | cadvisor | per-container CPU/mem/net (the `eris-*` agent containers) | 8081 |
 | node-exporter | host CPU/mem/disk (+ textfile collector for ASCON metrics) | 9100 |
 | prometheus | scrape + store + query | 9090 |
-| grafana (+ renderer) | dashboards + alerting → Slack (uploads chart images) | 3000 |
+| grafana | dashboards + alert rules → webhook to alertimg | 3000 |
+| alertimg | Grafana webhook → Prometheus query → matplotlib chart → Slack (with image) | 9878 |
 | loki + promtail | logs from `~/ascon-bench/logs` and each run's `agents/*.jsonl` | 3100 |
 | eris-exporter | ASCON domain metrics (tx / unique users / crashes / chain / epoch) | textfile |
 
@@ -42,9 +43,14 @@ publicly — reach them via the Cloudflare tunnel / registered-users only, per `
 | Agent crashed | `increase(ascon_agent_crashes_total[2m]) > 0` (OOM=137 etc.) | eris-exporter (events.jsonl `agent_process_exited`) |
 | Chain RPC down | `ascon_chain_up == 0` | eris-exporter (eth_blockNumber probe) |
 
-Grafana renders the alert's linked dashboard panel and uploads it to Slack via the bot token
-(`GF_UNIFIED_ALERTING_SCREENSHOTS_CAPTURE=true` + the image-renderer container). Crash alerts point
-to Grafana Explore → Loki for the recent logs.
+**Chart images.** Grafana's own Slack image path is broken across these versions — Slack retired the
+classic `files.upload` (Grafana ≤11.5 → `method_deprecated`) and the image-renderer/Grafana pairing
+408-times-out (11.6 + renderer 3.11 asset 404s / v4 renderer). So Grafana instead POSTs each alert to
+**alertimg** (a webhook contact point). alertimg queries Prometheus for the alert's series (chosen by
+the alert's `kind` label), renders it with matplotlib, and uploads it to Slack via the **current**
+files API (`files.getUploadURLExternal` + `files.completeUploadExternal`) using the bot token — with
+the alert summary as the message. Version-independent and future-proof. Crash alerts also point to
+Grafana Explore → Loki for the recent logs.
 
 ## eris-exporter (domain metrics)
 
