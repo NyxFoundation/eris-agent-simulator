@@ -4,8 +4,8 @@ contactPoints:
     name: slack-ascon
     receivers:
       - uid: slack_ascon
-        type: webhook
+        type: slack
         settings:
-          url: http://alertimg:9878/
-          httpMethod: POST
+          token: ${SLACK_BOT_TOKEN}
+          recipient: "C0BUGK1G7CZ"
         disableResolveMessage: false

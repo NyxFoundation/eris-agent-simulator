@@ -48,27 +48,28 @@ services:
     ports: ["9090:9090"]
     extra_hosts: ["host.docker.internal:host-gateway"]
 
-  alertimg:                     # Grafana webhook -> Prometheus query -> matplotlib -> Slack (current files API)
-    build: ./alertimg
-    container_name: ascon-alertimg
+  renderer:
+    # v5+ required for Grafana 13 (Go renderer; no pinned semver tag is published)
+    image: grafana/grafana-image-renderer:latest
+    container_name: ascon-renderer
     restart: unless-stopped
     env_file: [./grafana/secret.env]
-    environment:
-      - SLACK_CHANNEL=C0BUGK1G7CZ
-      - PROM_URL=http://prometheus:9090
-    depends_on: [prometheus]
 
   grafana:
-    image: grafana/grafana:11.6.0
+    image: grafana/grafana:13.2.1
     container_name: ascon-grafana
     restart: unless-stopped
     env_file: [./grafana/grafana.env, ./grafana/secret.env]
+    environment:
+      - GF_RENDERING_SERVER_URL=http://renderer:8081/render
+      - GF_RENDERING_CALLBACK_URL=http://grafana:3000/
+      - GF_UNIFIED_ALERTING_SCREENSHOTS_CAPTURE=true
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - ascon-grafana-data:/var/lib/grafana
     ports: ["3000:3000"]
-    depends_on: [prometheus, alertimg]
+    depends_on: [prometheus, renderer]
 
   loki:
     image: grafana/loki:3.1.1
