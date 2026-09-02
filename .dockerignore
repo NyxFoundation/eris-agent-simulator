@@ -1,0 +1,12 @@
+# Build-context excludes for infra/docker-agent/Dockerfile (agent-runtime image).
+# node_modules are reinstalled in-image via npm ci; the rest is either regenerated or not needed
+# at agent runtime. The big one is deployer/vendor (3.6 GB gmx hardhat vendor).
+**/node_modules
+.git
+runs
+cache
+*.log
+deployer/vendor
+deployer/out
+dashboard/dist
+dashboard/build
