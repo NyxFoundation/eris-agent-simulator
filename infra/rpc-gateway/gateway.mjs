@@ -42,6 +42,15 @@ const RATE_BURST = Number(process.env.RPC_RATE_BURST ?? "300");     // bucket ca
 const HEAVY_WEIGHT = Number(process.env.RPC_HEAVY_WEIGHT ?? "5");   // cost of an EVM-executing read
 const HEAVY = /^(eth_call|eth_estimateGas|eth_createAccessList|eth_getLogs|debug_|trace_|arbtrace_)/;
 const weight = (m) => (m && HEAVY.test(m) ? HEAVY_WEIGHT : 1);
+
+// ---- method allowlist (4.22: make the dev anvil cheatcode-free for callers via the gateway) ----
+// Default-deny: only standard eth_/net_/web3_ pass. Blocks anvil_/evm_/hardhat_ (setBalance, mine,
+// setStorageAt, impersonate, snapshot...), debug_/trace_ control+trace, txpool_ (mempool spying),
+// miner_/admin_/personal_. The operator hits anvil directly (not the gateway) for setup, so its
+// cheatcodes still work. Set RPC_FILTER=0 to disable (e.g. an internal all-access gateway).
+const METHOD_ALLOW = new RegExp(process.env.RPC_METHOD_ALLOW ?? "^(eth_|net_|web3_)");
+const FILTER_METHODS = (process.env.RPC_FILTER ?? "1") !== "0";
+let methodDenied = 0;
 const buckets = new Map();                                          // client -> {tokens, last}
 let rateLimited = 0;
 function allow(client, cost) {
@@ -91,6 +100,7 @@ function metricsText() {
   o += `# TYPE rpc_in_flight gauge\nrpc_in_flight{${L}} ${inFlight}\n`;
   o += `# TYPE rpc_upstream_up gauge\nrpc_upstream_up{${L}} ${upstreamUp}\n`;
   o += `# TYPE rpc_ratelimited_total counter\nrpc_ratelimited_total{${L}} ${rateLimited}\n`;
+  o += `# TYPE rpc_method_denied_total counter\nrpc_method_denied_total{${L}} ${methodDenied}\n`;
   return o;
 }
 
@@ -138,6 +148,17 @@ const server = http.createServer((req, res) => {
     // verified the signature), so a plain base64url decode of the payload is enough.
     const client = clientFromReq(req);
     const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "";
+
+    // method allowlist (4.22): reject cheatcodes / privileged methods before anvil is touched
+    if (FILTER_METHODS && methods.length) {
+      const bad = methods.find((m) => !METHOD_ALLOW.test(m));
+      if (bad) {
+        methodDenied++;
+        logline({ ts: new Date().toISOString(), env: ENV_NAME, method: bad, status: "method_denied", client, ip });
+        res.writeHead(403, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32601, message: `method not permitted: ${bad}` } }));
+      }
+    }
 
     // per-client rate limit (heavy EVM-executing reads cost more) -> 429 before touching anvil
     const cost = (methods.length ? methods : [label]).reduce((s, m) => s + weight(m), 0) || 1;

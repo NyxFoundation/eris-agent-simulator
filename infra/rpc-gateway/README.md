@@ -87,3 +87,21 @@ anvil is touched, and are counted in `rpc_ratelimited_total`.
 
 A legit agent does ~1 observation/block (well under 1 req/s), so it never hits the limit; only spam does.
 Verified: 400 `eth_call` from one client → 96 pass / 304 rejected (429); tune the envs on the service.
+
+## Cheatcode / method allowlist (4.22: cheatcode-free chain for callers)
+
+The dev anvil ships state-manipulation cheatcodes (`anvil_setBalance`, `evm_mine`, `setStorageAt`,
+impersonation, snapshots) and mempool introspection (`txpool_content`). The gateway is the participant's
+RPC boundary, so it **default-denies** everything except standard reads/sends and blocks the privileged
+namespaces before anvil is touched. The operator hits anvil directly (not the gateway), so setup
+cheatcodes still work.
+
+| env | default | meaning |
+|---|---|---|
+| `RPC_FILTER` | 1 | enable the method allowlist (0 disables — internal all-access gateway) |
+| `RPC_METHOD_ALLOW` | `^(eth_\|net_\|web3_)` | regex of permitted method prefixes |
+
+Denied methods get HTTP 403 + a JSON-RPC error and are counted in `rpc_method_denied_total`. Verified:
+`anvil_setBalance`/`evm_mine`/`hardhat_setBalance`/`txpool_content`/`debug_traceTransaction` → 403,
+`eth_blockNumber`/`eth_call` → 200, both locally and over the external `ascon-rpc` tunnel (closing the
+prior exposure where an Access-authenticated caller could call cheatcodes).
