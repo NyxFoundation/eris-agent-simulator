@@ -29,7 +29,14 @@ CPUS="${ERIS_DOCKER_CPUS:-0.5}"
 NAME="eris-${ERIS_AGENT_ID:?ERIS_AGENT_ID is required (set by the coordinator)}"
 
 # Shared cap/runtime flags, so the two modes cannot drift.
-CAPS=( --rm --network host --name "$NAME" --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS" )
+# Hardening (verified not to break the agent): fork-bomb (pids), fd cap (ulimit), no privilege
+# escalation, read-only rootfs + a size-capped tmpfs /tmp for scratch. NOTE: --cap-drop=ALL was
+# tried and SILENTLY breaks the agent (reads/tx fail -> all noop, container looks healthy), so it
+# is intentionally omitted; a targeted cap-drop is a follow-up. Egress is still open (host net) --
+# agent<->agent isolation is a separate network stage.
+CAPS=( --rm --network host --name "$NAME" --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
+  --pids-limit="${ERIS_DOCKER_PIDS:-256}" --ulimit nofile=2048:2048 --security-opt=no-new-privileges
+  --read-only --tmpfs /tmp:rw,size=512m,mode=1777 )
 
 # Env forwarded by name. Two are silent if lost under command-override:
 #   ERIS_AGENT_DIR    -- command-override skips the directory convention; set it in the roster env:.
@@ -40,7 +47,7 @@ COMMON_ENV=(
   -e ERIS_AGENT_ID -e ERIS_RPC_URL -e ERIS_AGENT_ADDRESS -e ERIS_AGENT_PRIVATE_KEY
   -e ERIS_PRICE_FEED_ADDRESS -e ERIS_RUN_ID -e ERIS_RUN_BLOCKS -e ERIS_AGENT_FROZEN
   -e ERIS_LLM_MODEL -e ERIS_LOCAL_DEPLOY -e ERIS_OLLAMA_BASE_URL -e ERIS_OLLAMA_API_KEY
-  -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY
+  -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e HOME=/tmp
 )
 
 if [ "${ERIS_AGENT_BINDMOUNT:-0}" = "1" ]; then
