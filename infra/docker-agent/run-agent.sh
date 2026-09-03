@@ -28,13 +28,25 @@ MEM="${ERIS_DOCKER_MEM:-1g}"
 CPUS="${ERIS_DOCKER_CPUS:-0.5}"
 NAME="eris-${ERIS_AGENT_ID:?ERIS_AGENT_ID is required (set by the coordinator)}"
 
+# Agent-to-agent isolation (ISOLATION.md, verified): put each agent on its OWN docker network that
+# only anvil also joins. Agents cannot reach each other (separate L2), can reach anvil by name, and
+# still egress (NAT) so a team may use its own LLM. Opt-in; needs anvil running as a bridge
+# container (ERIS_ANVIL_CONTAINER, default ascon-anvil) and ERIS_RPC_URL=http://<that>:8545.
+if [ "${ERIS_AGENT_ISOLATE:-0}" = "1" ]; then
+  ANVIL_CT="${ERIS_ANVIL_CONTAINER:-ascon-anvil}"
+  ISONET="ag-${ERIS_AGENT_ID}"
+  docker network create "$ISONET" >/dev/null 2>&1 || true
+  docker network connect "$ISONET" "$ANVIL_CT" >/dev/null 2>&1 || true   # idempotent; anvil multi-homes
+  export ERIS_AGENT_NET="$ISONET"
+fi
+
 # Shared cap/runtime flags, so the two modes cannot drift.
 # Hardening (verified not to break the agent): fork-bomb (pids), fd cap (ulimit), no privilege
 # escalation, read-only rootfs + a size-capped tmpfs /tmp for scratch. NOTE: --cap-drop=ALL was
 # tried and SILENTLY breaks the agent (reads/tx fail -> all noop, container looks healthy), so it
 # is intentionally omitted; a targeted cap-drop is a follow-up. Egress is still open (host net) --
 # agent<->agent isolation is a separate network stage.
-CAPS=( --rm --network host --name "$NAME" --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
+CAPS=( --rm --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
   --pids-limit="${ERIS_DOCKER_PIDS:-256}" --ulimit nofile=2048:2048 --security-opt=no-new-privileges
   --read-only --tmpfs /tmp:rw,size=512m,mode=1777 )
 
