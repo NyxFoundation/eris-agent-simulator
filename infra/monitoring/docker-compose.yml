@@ -108,11 +108,28 @@ services:
       - /home/gohan/workspace/eris-agent-simulator/runs:/runs:ro
       - ascon-textfile:/textfile
 
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:stable
+    container_name: ascon-anvil
+    restart: unless-stopped
+    network_mode: host          # binds 127.0.0.1:8545 (loopback only — no port exposed)
+    volumes:
+      - /home/gohan/workspace/eris-agent-simulator/backtest/state/venues-state.json:/state.json:ro
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        anvil --port 8545 --code-size-limit 50000 --base-fee 0 --gas-limit 320000000 --accounts 10 --balance 1000000 --load-state /state.json &
+        ANVILPID=$$!
+        sleep 4
+        cast rpc --rpc-url http://127.0.0.1:8545 anvil_setBlockGasLimit 0x1312D000 || true
+        wait $$ANVILPID
+
   rpc-gateway-live:
     image: node:24-bookworm-slim
     container_name: ascon-rpc-gateway-live
     restart: unless-stopped
     network_mode: host          # reach anvil on 127.0.0.1:8545; also be the tunnel origin on :8546
+    depends_on: [anvil]
     command: node /app/gateway.mjs
     environment:
       - PORT=8546
