@@ -101,10 +101,46 @@ services:
     command: python /app/exporter.py
     environment:
       - ASCON_RPC=http://127.0.0.1:8545
+      - ASCON_ENV=live
       - ASCON_TEXTFILE=/textfile/ascon.prom
     volumes:
       - ./exporter:/app:ro
       - /home/gohan/workspace/eris-agent-simulator/runs:/runs:ro
+      - ascon-textfile:/textfile
+
+  rpc-gateway-live:
+    image: node:24-bookworm-slim
+    container_name: ascon-rpc-gateway-live
+    restart: unless-stopped
+    network_mode: host          # reach anvil on 127.0.0.1:8545; also be the tunnel origin on :8546
+    command: node /app/gateway.mjs
+    environment:
+      - PORT=8546
+      - UPSTREAM=http://127.0.0.1:8545
+      - ENV_NAME=live
+      - LOG_FILE=/var/log/ascon/rpc/rpc-gateway-live.log
+      - METRICS_FILE=/textfile/rpc-gateway-live.prom
+    volumes:
+      - ../rpc-gateway:/app:ro
+      - /home/gohan/ascon-logs:/var/log/ascon
+      - ascon-textfile:/textfile
+
+  rpc-gateway-test:
+    image: node:24-bookworm-slim
+    container_name: ascon-rpc-gateway-test
+    restart: unless-stopped
+    network_mode: host
+    profiles: [test]            # starts only with: docker compose --profile test up -d
+    command: node /app/gateway.mjs
+    environment:
+      - PORT=8556
+      - UPSTREAM=http://127.0.0.1:8555
+      - ENV_NAME=test
+      - LOG_FILE=/var/log/ascon/rpc/rpc-gateway-test.log
+      - METRICS_FILE=/textfile/rpc-gateway-test.prom
+    volumes:
+      - ../rpc-gateway:/app:ro
+      - /home/gohan/ascon-logs:/var/log/ascon
       - ascon-textfile:/textfile
 
 volumes:

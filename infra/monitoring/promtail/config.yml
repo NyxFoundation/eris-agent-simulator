@@ -10,3 +10,10 @@ scrape_configs:
     static_configs:
       - targets: [localhost]
         labels: { job: ascon-agents, __path__: /runs/*/agents/*.jsonl }
+  - job_name: ascon-rpc
+    static_configs:
+      - targets: [localhost]
+        labels: { job: ascon-rpc, __path__: /logs/rpc/*.log }
+    pipeline_stages:
+      - json: { expressions: { env: env } }
+      - labels: { env: }
