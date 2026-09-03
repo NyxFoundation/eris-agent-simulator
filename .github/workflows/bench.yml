@@ -1,0 +1,70 @@
+# Load-test bench on a self-hosted runner (needs Docker + real cores, which GitHub-hosted runners
+# lack), commenting the resource summary on the PR.
+#
+# Prerequisites (one-time, operator):
+#   1. Register a self-hosted runner on gohanserver with the label `ascon-bench`
+#      (repo Settings -> Actions -> Runners). It needs docker, foundry (anvil/cast), node 22.
+#   2. Add repo secret OLLAMA_API_KEY (only used by --mode llm).
+name: bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      agents: { description: agents, default: "12" }
+      blocks: { description: blocks, default: "200" }
+      mode:   { description: frozen|llm, default: "frozen" }
+  pull_request:
+    branches: [main]
+    paths:
+      - "core/src/realtime/**"
+      - "example/agents/runtime/**"
+      - "infra/docker-agent/**"
+      - "bench/**"
+      - ".github/workflows/bench.yml"
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: [self-hosted, ascon-bench]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: stable }
+      - run: npm ci
+      - run: npm run build:contracts
+
+      - name: run bench
+        env:
+          ANVIL_PORT: "8547"            # dedicated port — do not disturb a running monitoring anvil (8545)
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+        run: |
+          bash bench/run.sh \
+            --agents "${{ github.event.inputs.agents || '12' }}" \
+            --blocks "${{ github.event.inputs.blocks || '200' }}" \
+            --mode   "${{ github.event.inputs.mode   || 'frozen' }}" \
+            --out "$GITHUB_WORKSPACE/bench-out"
+
+      - name: comment summary on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/bench-out/summary.md`, 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, body,
+            });
+
+      - name: upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ github.run_id }}
+          path: bench-out/

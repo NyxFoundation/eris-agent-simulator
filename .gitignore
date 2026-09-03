@@ -40,3 +40,5 @@ probe_tmp.mts
 /bake.log
 /spot-*.log
 /local-*.log
+bench/results/
+config/_bench.yaml
