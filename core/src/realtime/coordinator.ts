@@ -90,7 +90,7 @@ import { LiveScorer } from "./liveScoring.js";
 import {
   checkDeployment,
   deploymentMismatchMessage,
-} from "./deploymentCheck.js";
+} from "@eris/sdk/deploymentCheck.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import {
   scoreEpochSeriesByAgent,

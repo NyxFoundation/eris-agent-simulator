@@ -125,6 +125,15 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   config ファイル自体は共通。**アドレス overlay は同時に 1 つ**なので、deployment を移るたびに再生成が要る。
   片方だけ動かすと以前は setup の数分後に `Cannot decode zero data ("0x")` と生アドレスが出るだけだったので、
   **起動時に deployment の有無を実測して落とす**（`deployment_check`。何が無いかと再生成コマンドを出す）
+- **agent プロセスも取引前に同じことを確かめる**（`example/agents/runtime/preflight.ts`。検査本体は
+  `sdk/src/deploymentCheck.ts` = coordinator と同じ 1 本。`example → core` は禁止なので sdk に置いてある）。
+  RPC 疎通（5 回リトライ = 自己ホストの起動レース用）→ chain id が `run.chainId` と一致するか →
+  venue アドレスに bytecode があるか、の順に見て、駄目なら **exit 1**。coordinator は `onExit` で拾い
+  `agent_process_exited` と summary の `processExitedEarly` / `stderrTail` に残す。
+  **落とすのは、落とさないと区別が付かないから** — チェーンに届かない agent は生きたままループし続け、
+  `summary.json` には `includedTxCount: 0` / `netPnlUsdc: 0` / `violations: []` だけが残る。これは
+  「何もしないことを選んだ agent」の記録と同一で、事後に見分ける材料がどこにも無い（実測: コンテナ内の
+  agent が起動 10 秒で 25 行書いた後、100 ブロック run の残り 2 分 48 秒を無言で過ごし、idle として採点された）
 
 ### 練習 devnet（ADR 0021。止まらないチェーン + 自己ホスト参加者）
 
