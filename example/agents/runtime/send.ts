@@ -47,6 +47,11 @@ const GAS_REFILL_TX_HEADROOM = BigInt(
 const GAS_LIMIT_ESTIMATE = 1_500_000n; // gas cap estimate for one tx
 const GAS_REFILL_COOLDOWN_BLOCKS = 3; // wait for the refill tx to be mined and reflected in the balance
 
+// Anti-abuse (rules §2.6): cap on-chain txs per block per agent, and cap one tx's gas so no single tx
+// can hog the 320M block (gas bomb). Both are enforced operator-side here, before the tx is sent.
+const MAX_TXS_PER_ROUND = Number(process.env.ERIS_MAX_TXS_PER_ROUND ?? "3");
+const MAX_TX_GAS = BigInt(process.env.ERIS_MAX_TX_GAS ?? "30000000"); // ~10x the heaviest real op, << 320M block
+
 export class Sender {
   private readonly ctx: SimContext;
   private readonly adapters: ProtocolAdapter[];
@@ -57,6 +62,9 @@ export class Sender {
   // ---- self-managed nonce + serialized sending ----
   private nextNonce: number | null = null;
   private sendQueue: Promise<void> = Promise.resolve();
+
+  // ---- anti-abuse: on-chain txs sent per round (keyed by blockSeen) for the per-block cap ----
+  private readonly txByRound = new Map<number, number>();
 
   // ---- competition signal (ADR 0011): your recent txs (ring buffer) ----
   private readonly ownTxs: OwnTx[] = [];
@@ -101,6 +109,15 @@ export class Sender {
     meta: Record<string, unknown>,
   ): Promise<void> {
     const { publicClient, walletClient, chain } = this.ctx;
+    // Per-block tx cap (rules §2.6): count on-chain txs by the round the agent acted on (blockSeen).
+    const round = Number(meta.blockSeen ?? -1);
+    const sentThisRound = this.txByRound.get(round) ?? 0;
+    if (sentThisRound >= MAX_TXS_PER_ROUND) {
+      this.logMempool({ event: "rejected", reason: `per-block tx cap (${MAX_TXS_PER_ROUND})`, ...meta });
+      return;
+    }
+    this.txByRound.set(round, sentThisRound + 1);
+    for (const k of this.txByRound.keys()) if (k < round - 4) this.txByRound.delete(k); // prune old rounds
     try {
       const block = await publicClient.getBlock();
       const baseFee = block.baseFeePerGas ?? 0n;
@@ -124,6 +141,10 @@ export class Sender {
         } catch {
           // Let viem/anvil surface the original simulation failure below.
         }
+      }
+      if (gas !== undefined && gas > MAX_TX_GAS) {
+        this.logMempool({ event: "rejected", reason: `tx gas cap (${MAX_TX_GAS})`, gas: gas.toString(), ...meta });
+        return;
       }
       const hash = await walletClient.sendTransaction({
         account: this.account,
