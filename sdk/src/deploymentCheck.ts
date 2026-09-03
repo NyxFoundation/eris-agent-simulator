@@ -17,6 +17,11 @@
 //
 // It runs in both chain modes. Pointing a local run at the wrong anvil is exactly as easy as
 // pointing an external one at the wrong devnet.
+//
+// It lives in sdk/ rather than core/ because the agent runtime asks the same question before it
+// starts trading (example/agents/runtime/preflight.ts), and example/ cannot import core/. Two copies
+// of "is this the right chain" would drift, and the half that drifted would go quiet rather than
+// loud -- which is the failure this check exists to prevent.
 import type { Address, PublicClient } from "viem";
 import {
   AAVE,
@@ -27,9 +32,9 @@ import {
   LST,
   MULTICALL3,
   UNISWAP,
-} from "@eris/sdk/constants.js";
-import { baseTokens, marketsFor, stableTokens } from "@eris/sdk/markets.js";
-import type { ProtocolId } from "@eris/sdk/types.js";
+} from "./constants.js";
+import { baseTokens, marketsFor, stableTokens } from "./markets.js";
+import type { ProtocolId } from "./types.js";
 
 export type DeploymentTarget = { what: string; address: Address };
 
@@ -90,9 +95,11 @@ export type DeploymentCheck = {
 export async function checkDeployment(opts: {
   publicClient: PublicClient;
   enabledIds: ProtocolId[];
+  /** Pass it when the caller already asked (the agent preflight does), to save the round trip. */
+  chainId?: number;
 }): Promise<DeploymentCheck> {
   const targets = deploymentTargets(opts.enabledIds);
-  const chainId = await opts.publicClient.getChainId();
+  const chainId = opts.chainId ?? (await opts.publicClient.getChainId());
   const codes = await Promise.all(
     targets.map((t) =>
       opts.publicClient

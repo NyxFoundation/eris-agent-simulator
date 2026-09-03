@@ -1,0 +1,59 @@
+{
+  "uid": "ascon-fleet",
+  "title": "ASCON infra fleet",
+  "tags": ["ascon"],
+  "timezone": "Asia/Tokyo",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Host load (1m) vs cores",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "node_load1", "legendFormat": "load1" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(count(node_cpu_seconds_total) by (cpu))", "legendFormat": "cores" }
+      ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Host memory used %",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", "legendFormat": "host mem %" }
+      ]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Per-agent CPU (cores)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(container_cpu_usage_seconds_total{name=~\"eris-.*\"}[1m])", "legendFormat": "{{name}}" }
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Per-agent memory (MiB) — cap 1024",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "decmbytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "container_memory_working_set_bytes{name=~\"eris-.*\"} / 1048576", "legendFormat": "{{name}}" }
+      ]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Agent containers up",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 15 },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(container_last_seen{name=~\"eris-.*\"})", "legendFormat": "containers" }
+      ]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "ASCON — tx/sec & unique users (eris-exporter)",
+      "gridPos": { "h": 5, "w": 18, "x": 6, "y": 15 },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(ascon_tx_total[1m])", "legendFormat": "tx/s" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ascon_unique_users", "legendFormat": "unique users" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "ascon_round_lag", "legendFormat": "round lag" }
+      ]
+    }
+  ]
+}

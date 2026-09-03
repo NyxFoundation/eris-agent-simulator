@@ -64,6 +64,7 @@ import {
   type StrategyVersion,
 } from "./improve.js";
 import { createMempoolLog, Sender } from "./send.js";
+import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
 
 // Backend for the revision call when neither prompt.md nor the roster names one.
@@ -163,6 +164,23 @@ async function main(): Promise<void> {
     { batch: true },
   );
   const address = accountAddress(privateKey);
+
+  // Before the first read: is this chain one this agent can actually trade on? An agent that cannot
+  // reach its RPC still starts, still loops, and still reports nothing -- which summary.json records
+  // as 0 transactions and 0 PnL, exactly like an agent that chose to sit still (see preflight.ts).
+  // Every other startup problem in this file is refused rather than reinterpreted; this one was the
+  // exception, and it is the one nobody can spot afterwards.
+  const failure = await preflightChain({
+    publicClient,
+    rpcUrl,
+    expectedChainId: config.chainId,
+    enabledIds: adapters.map((a) => a.id),
+  });
+  if (failure) {
+    process.stderr.write(`[bot] ${failure.message}\n`);
+    process.exit(1);
+    return;
+  }
 
   // The adapter's readState/observe/buildTxs only use ctx's clients/config.
   // admin/keeper/flow are environment-only, so on the agent side ctx they are dummies (own key) / throw.

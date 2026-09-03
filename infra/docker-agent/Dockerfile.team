@@ -1,0 +1,14 @@
+# Per-team image: the shared runtime base + ONLY this team's agent code (and its own deps).
+# No other team's strategy is present. Build via infra/docker-agent/build.sh team <agent-id>.
+ARG BASE=eris-agent-base:local
+FROM ${BASE}
+ARG AGENT_ID
+# Guard: an empty AGENT_ID would make the COPY below pull in the whole agents dir (every team).
+RUN test -n "$AGENT_ID" || { echo "AGENT_ID build-arg is required (use build.sh team <id>)"; exit 1; }
+COPY example/agents/${AGENT_ID}/ /eris/example/agents/${AGENT_ID}/
+# A team may ship its own package.json; resolve its deps at build time (run-time egress should be
+# blocked by the operator's network policy). Build teams' images in a throwaway sandbox -- npm runs
+# their postinstall scripts.
+RUN if [ -f "/eris/example/agents/${AGENT_ID}/package.json" ]; then \
+      cd "/eris/example/agents/${AGENT_ID}" && npm install --no-audit --no-fund; \
+    fi

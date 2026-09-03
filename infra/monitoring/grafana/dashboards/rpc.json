@@ -1,0 +1,128 @@
+{
+  "uid": "ascon-rpc",
+  "title": "ASCON — RPC & Chain",
+  "tags": ["ascon"],
+  "timezone": "Asia/Tokyo",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "label": "environment",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(ascon_chain_up, env)", "refId": "env" },
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    { "type": "row", "title": "RPC endpoints", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+
+    {
+      "type": "timeseries", "title": "RPC request rate by method (req/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 20, "stacking": { "mode": "normal" } } } },
+      "targets": [ { "refId": "A", "expr": "sum by (method) (rate(rpc_requests_total{env=~\"$env\"}[1m]))", "legendFormat": "{{method}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "RPC latency p95 by method (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum by (method, le) (rate(rpc_request_duration_seconds_bucket{env=~\"$env\"}[5m])))", "legendFormat": "{{method}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Overall RPC latency p50 / p95 / p99 (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(rpc_request_duration_seconds_bucket{env=~\"$env\"}[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(rpc_request_duration_seconds_bucket{env=~\"$env\"}[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(rpc_request_duration_seconds_bucket{env=~\"$env\"}[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries", "title": "RPC errors by status (req/s)",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [ { "refId": "A", "expr": "sum by (status) (rate(rpc_requests_total{env=~\"$env\", status!=\"ok\"}[1m]))", "legendFormat": "{{status}}" } ]
+    },
+    {
+      "type": "stat", "title": "In-flight / upstream",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(rpc_in_flight{env=~\"$env\"})", "legendFormat": "in-flight" },
+        { "refId": "B", "expr": "min(rpc_upstream_up{env=~\"$env\"})", "legendFormat": "upstream up" }
+      ]
+    },
+
+    { "type": "row", "title": "Chain (erigon-style)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 } },
+
+    {
+      "type": "stat", "title": "Block number",
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "max(ascon_chain_block_number{env=~\"$env\"})" } ]
+    },
+    {
+      "type": "timeseries", "title": "Block interval (s)",
+      "gridPos": { "h": 6, "w": 10, "x": 4, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [ { "refId": "A", "expr": "ascon_block_interval_seconds{env=~\"$env\"}", "legendFormat": "{{env}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Tx per block",
+      "gridPos": { "h": 6, "w": 10, "x": 14, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "refId": "A", "expr": "ascon_block_tx_count{env=~\"$env\"}", "legendFormat": "{{env}}" } ]
+    },
+    {
+      "type": "timeseries", "title": "Gas used vs limit",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "ascon_block_gas_used{env=~\"$env\"}", "legendFormat": "used {{env}}" },
+        { "refId": "B", "expr": "ascon_block_gas_limit{env=~\"$env\"}", "legendFormat": "limit {{env}}" }
+      ]
+    },
+    {
+      "type": "gauge", "title": "Block fullness",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [ { "refId": "A", "expr": "max(ascon_block_fullness_ratio{env=~\"$env\"})" } ]
+    },
+    {
+      "type": "timeseries", "title": "Base fee / gas price (gwei)",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "ascon_block_base_fee_gwei{env=~\"$env\"}", "legendFormat": "base fee {{env}}" },
+        { "refId": "B", "expr": "ascon_gas_price_gwei{env=~\"$env\"}", "legendFormat": "gas price {{env}}" }
+      ]
+    },
+
+    { "type": "row", "title": "RPC call timeline (who called what, when)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 } },
+
+    {
+      "type": "logs", "title": "Recent RPC calls",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 32 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" },
+      "targets": [ { "refId": "A", "expr": "{job=\"ascon-rpc\"} | json | env=~\"$env\"" } ]
+    }
+  ]
+}

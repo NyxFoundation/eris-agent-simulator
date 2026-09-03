@@ -1,0 +1,8 @@
+tunnel: gohanserver
+credentials-file: /root/.cloudflared/e31472d7-6c2c-4744-a171-a9867b03ee66.json
+ingress:
+  - hostname: ascon-monitor.nyx.foundation
+    service: http://localhost:3000
+  - hostname: ascon-rpc.nyx.foundation
+    service: http://localhost:8546
+  - service: http_status:404

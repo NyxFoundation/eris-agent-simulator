@@ -1,0 +1,126 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: ascon-infra
+    folder: ASCON
+    interval: 30s
+    rules:
+      - uid: ascon_cpu_high
+        title: CPU load high
+        condition: C
+        for: 30s
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        panelId: 1
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "node_load1", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [16] }
+        labels: { severity: warning, kind: cpu }
+        annotations: { summary: "host loadavg(1m) is above 16 cores" }
+
+      - uid: ascon_hostmem_high
+        title: Host memory high
+        condition: C
+        for: 1m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        panelId: 2
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [85] }
+        labels: { severity: warning, kind: memory }
+        annotations: { summary: "host memory usage is above 85%" }
+
+      - uid: ascon_container_mem_high
+        title: Agent container near OOM
+        condition: C
+        for: 30s
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        panelId: 4
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "max(container_memory_working_set_bytes{name=~\"eris-.*\"} / container_spec_memory_limit_bytes) * 100", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [90] }
+        labels: { severity: critical, kind: container-mem }
+        annotations: { summary: "an agent container is above 90% of its memory cap" }
+
+      - uid: ascon_agent_crash
+        title: Agent crashed
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        panelId: 6
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "increase(ascon_agent_crashes_total[2m])", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        labels: { severity: critical, kind: crash }
+        annotations: { summary: "an agent process exited early (crash/OOM) — check logs in Grafana Explore (Loki)" }
+
+      - uid: ascon_chain_down
+        title: Chain RPC down
+        condition: C
+        for: 30s
+        noDataState: Alerting
+        execErrState: Alerting
+        dashboardUid: ascon-fleet
+        panelId: 6
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "ascon_chain_up", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+        labels: { severity: critical, kind: chain }
+        annotations: { summary: "the chain RPC is unreachable (ascon_chain_up=0)" }
