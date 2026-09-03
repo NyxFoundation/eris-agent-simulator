@@ -43,3 +43,35 @@ anvil; the **per-agent-network approach is preferred because it needs no firewal
 Status: **isolation mechanism verified end-to-end at small scale; run-agent.sh + reap.sh implement it.**
 The remaining step is running anvil as a bridge container in the competition environment (above) — a
 network-topology change to do at competition-env buildout, not on the live monitoring chain.
+
+## 4.22/A production topology — the gateway as the sole RPC boundary (verified)
+
+Combining agent isolation (A) with the cheatcode filter (4.22): each agent's private network joins ONLY
+the **rpc-gateway** (the hub), not anvil. So an agent can reach nothing but the gateway, which enforces
+the method allowlist (cheatcode-free) + per-client rate limit and forwards to anvil.
+
+Verified on throwaway resources (2026-09-04), agent on its own net:
+
+| from agent | result |
+|---|---|
+| gateway `eth_blockNumber` | reachable (→ anvil) ✅ |
+| gateway `anvil_setBalance` | **403 blocked** ✅ |
+| anvil directly | **blocked** (anvil not on the agent net) ✅ |
+| another agent | **blocked** (separate net) ✅ |
+
+`run-agent.sh ERIS_AGENT_ISOLATE=1` connects the hub (`ERIS_AGENT_HUB`, default `ascon-rpc-gateway-live`)
+to each `ag-<id>` net; set `ERIS_RPC_URL=http://ascon-rpc-gateway-live:8546`. `reap.sh` cleans the nets.
+
+### Cutover runbook (do on a STABLE/wired link — recreates anvil + gateway)
+
+1. In `infra/monitoring/docker-compose.yml`, move **anvil** off `network_mode: host` onto a bridge
+   `ascon-chain` and publish `127.0.0.1:8545:8545` (so host-net sim/eris-exporter keep reaching it at
+   127.0.0.1:8545). Move **rpc-gateway-live** onto `ascon-chain`, publish `127.0.0.1:8546:8546` (tunnel
+   origin), and set `UPSTREAM=http://ascon-anvil:8545`.
+2. `docker compose up -d anvil rpc-gateway-live` (chain resets to the venues snapshot; monitoring blips).
+3. Run agents with `ERIS_AGENT_ISOLATE=1` + `ERIS_RPC_URL=http://ascon-rpc-gateway-live:8546`.
+4. Verify: agent→gateway `eth_blockNumber` ok, agent→gateway `anvil_setBalance` 403, agent→`ascon-anvil:8545`
+   blocked, agent→sibling blocked; external `ascon-rpc` unchanged.
+
+Not applied to the live stack yet: the topology is proven and the code is ready; the cutover recreates
+the running anvil+gateway, so run it over wired ethernet (WiFi drops mid-cutover risk breaking the stack).

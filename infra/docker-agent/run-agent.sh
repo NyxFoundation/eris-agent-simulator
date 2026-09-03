@@ -33,10 +33,13 @@ NAME="eris-${ERIS_AGENT_ID:?ERIS_AGENT_ID is required (set by the coordinator)}"
 # still egress (NAT) so a team may use its own LLM. Opt-in; needs anvil running as a bridge
 # container (ERIS_ANVIL_CONTAINER, default ascon-anvil) and ERIS_RPC_URL=http://<that>:8545.
 if [ "${ERIS_AGENT_ISOLATE:-0}" = "1" ]; then
-  ANVIL_CT="${ERIS_ANVIL_CONTAINER:-ascon-anvil}"
+  # Hub = the container agents may reach on their private net. Default the RPC gateway so agents get the
+  # cheatcode filter + rate limit and CANNOT reach anvil directly (set ERIS_RPC_URL=http://<hub>:8546).
+  # Set ERIS_AGENT_HUB=ascon-anvil to expose anvil directly instead (no filter).
+  HUB_CT="${ERIS_AGENT_HUB:-ascon-rpc-gateway-live}"
   ISONET="ag-${ERIS_AGENT_ID}"
   docker network create "$ISONET" >/dev/null 2>&1 || true
-  docker network connect "$ISONET" "$ANVIL_CT" >/dev/null 2>&1 || true   # idempotent; anvil multi-homes
+  docker network connect "$ISONET" "$HUB_CT" >/dev/null 2>&1 || true   # idempotent; hub multi-homes
   export ERIS_AGENT_NET="$ISONET"
 fi
 

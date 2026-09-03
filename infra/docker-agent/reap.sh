@@ -4,7 +4,7 @@
 # but the coordinator can SIGKILL the wrapper (uncatchable), leaving a detached --rm container and its
 # ag-<id> network with only anvil still attached. Run this after a sim to sweep survivors. Idempotent.
 set -euo pipefail
-ANVIL_CT="${ERIS_ANVIL_CONTAINER:-ascon-anvil}"
+HUB_CT="${ERIS_AGENT_HUB:-ascon-rpc-gateway-live}"
 
 survivors=$(docker ps -aq --filter "name=^eris-" 2>/dev/null || true)
 if [ -n "$survivors" ]; then
@@ -16,9 +16,9 @@ fi
 cleaned=0
 for net in $(docker network ls --format '{{.Name}}' | grep -E '^ag-' || true); do
   others=$(docker network inspect "$net" --format '{{range .Containers}}{{.Name}}
-{{end}}' 2>/dev/null | grep -vE "^$ANVIL_CT$" | grep -cv '^$' || true)
+{{end}}' 2>/dev/null | grep -vE "^$HUB_CT$" | grep -cv '^$' || true)
   if [ "${others:-0}" -eq 0 ]; then
-    docker network disconnect -f "$net" "$ANVIL_CT" >/dev/null 2>&1 || true
+    docker network disconnect -f "$net" "$HUB_CT" >/dev/null 2>&1 || true
     docker network rm "$net" >/dev/null 2>&1 && cleaned=$((cleaned+1)) || true
   fi
 done
