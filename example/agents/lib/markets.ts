@@ -42,8 +42,6 @@ export type MarketView = {
   baseBalanceWei: string;
   // base decimals (WETH=18 / WBTC=8). Used to convert between base amount and USD/quote.
   baseDecimals: number;
-  // per-round cap on base-input swap (base units, decimal string). "0" = no cap (balance bound).
-  maxSwapInBaseWei: string;
 };
 
 const QUOTE = "USDC";
@@ -152,18 +150,7 @@ export function marketViews(obs: AgentObservation): MarketView[] {
         ? obs.balances.wethWei
         : (obs.baseBalances?.[base] ?? "0");
     const baseDecimals = obs.baseDecimals?.[base] ?? 18;
-    const maxSwapInBaseWei =
-      base === "WETH"
-        ? obs.limits.maxWethInWei
-        : (obs.limits.baseLimits?.[base]?.maxSwapInBaseWei ?? "0");
-    views.push({
-      base,
-      fair,
-      venues,
-      baseBalanceWei,
-      baseDecimals,
-      maxSwapInBaseWei,
-    });
+    views.push({ base, fair, venues, baseBalanceWei, baseDecimals });
   }
   return views;
 }

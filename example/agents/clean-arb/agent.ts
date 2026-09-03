@@ -20,9 +20,6 @@ const MAX_SIZE_BPS = 2500;
 const SPREAD_GAIN = 200_000; // linear gain from net edge -> size
 const LEG_SLIPPAGE_BPS = 120;
 
-function minBI(a: bigint, b: bigint): bigint {
-  return a < b ? a : b;
-}
 function baseToFloat(amountBaseWei: bigint, decimals: number): number {
   return Number(amountBaseWei) / 10 ** decimals;
 }
@@ -43,8 +40,10 @@ export function decide(
   obs: AgentObservation,
 ): AgentAction | Record<string, unknown> | null {
   const views = marketViews(obs);
-  const usdcBal = BigInt(obs.balances.usdcUnits || "0");
-  const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
+  // The whole USDC balance is the capital this agent sizes against. The environment no longer hands
+  // out a per-order cap, so `sizeBps` below -- 2.5% of the stack at the smallest edge, 25% at the
+  // largest -- is the agent's own risk statement rather than a fraction of someone else's number.
+  const usdcCapital = BigInt(obs.balances.usdcUnits || "0");
   const fee = obs.limits.defaultPriorityFeePerGasWei;
 
   // Scan all bases x venues and pick the largest profitable 2-leg.
@@ -62,19 +61,16 @@ export function decide(
     const roundtripCost =
       (cheap.feeBps + rich.feeBps + SAFETY_MARGIN_BPS) / 10000;
     if (spread <= roundtripCost) continue; // only when it beats cost
-    const usdcCap = minBI(usdcBal, maxUsdc);
-    if (usdcCap <= 0n) continue;
+    if (usdcCapital <= 0n) continue;
     const netEdge = spread - roundtripCost;
     const sizeBps = Math.min(
       MAX_SIZE_BPS,
       Math.max(MIN_SIZE_BPS, Math.floor(netEdge * SPREAD_GAIN)),
     );
-    const usdcIn = (usdcCap * BigInt(sizeBps)) / 10000n;
+    const usdcIn = (usdcCapital * BigInt(sizeBps)) / 10000n;
     if (usdcIn <= 0n) continue;
     const boughtBase = baseToFloat(usdcIn, 6) / cheap.price;
-    let baseSell = floatToBase(boughtBase * 0.98, view.baseDecimals);
-    const maxBaseIn = BigInt(view.maxSwapInBaseWei || "0");
-    if (maxBaseIn > 0n) baseSell = minBI(baseSell, maxBaseIn);
+    const baseSell = floatToBase(boughtBase * 0.98, view.baseDecimals);
     if (baseSell <= 0n) continue;
     if (!bestTwo || spread > bestTwo.spread)
       bestTwo = { base: view.base, spread, cheap, rich, usdcIn, baseSell };

@@ -16,18 +16,9 @@ const observation: AgentObservation = {
   inventory: { valueUsdc: 0, weth: 0, usdc: 0, eth: 0 },
   history: [],
   limits: {
-    maxWethInWei: "100",
-    maxUsdcInUnits: "100",
     defaultPriorityFeePerGasWei: "10",
     maxPriorityFeePerGasWei: "20",
     defaultSlippageBps: 50,
-    maxBundleActions: 5,
-    maxLpWethWei: "100",
-    maxLpUsdcUnits: "100",
-    maxOpenPositions: 5,
-    maxGmxSizeUsd: "0",
-    maxAaveSupplyWethWei: "0",
-    maxAaveBorrowUsdcUnits: "0",
   },
   protocols: {
     uniswap: {
@@ -219,7 +210,7 @@ test("validateAction: a standalone WETH sell under USDC-only is rejected for ins
   assert.equal(result.ok, false);
 });
 
-test("parseAction rejects nested bundle and validateAction rejects oversized bundle", () => {
+test("parseAction rejects nested bundle; bundle length itself is not capped", () => {
   assert.throws(
     () =>
       parseAction({
@@ -228,24 +219,20 @@ test("parseAction rejects nested bundle and validateAction rejects oversized bun
       }),
     /nested bundle/,
   );
-  assert.deepEqual(
-    validateAction(
-      parseAction({
-        type: "bundle",
-        actions: [
-          { type: "collectFees", tokenId: "1" },
-          { type: "collectFees", tokenId: "1" },
-          { type: "collectFees", tokenId: "1" },
-          { type: "collectFees", tokenId: "1" },
-          { type: "collectFees", tokenId: "1" },
-          { type: "collectFees", tokenId: "1" },
-        ],
-      }),
-      observation,
-      balances,
-    ),
-    { ok: false, reason: "bundle action count exceeds configured max" },
+  // Six leaves used to be one over the cap. There is no cap: what bounds a bundle is the balance
+  // its leaves consume and the gas the block will accept.
+  const validation = validateAction(
+    parseAction({
+      type: "bundle",
+      actions: Array.from({ length: 6 }, () => ({
+        type: "collectFees",
+        tokenId: "1",
+      })),
+    }),
+    observation,
+    balances,
   );
+  assert.equal(validation.ok, true);
 });
 
 test("parseAction accepts rawTx", () => {
@@ -338,16 +325,13 @@ test("validateAction rejects rawTx with excessive priority fee", () => {
   });
 });
 
-test("validateAction rejects oversized rawBundle", () => {
+test("a long rawBundle is accepted; tx count is not capped", () => {
   const txs = Array.from({ length: 6 }, () => ({
     to: "0xdead",
     data: "0x1234",
   }));
   const action = parseAction({ type: "rawBundle", txs });
-  assert.deepEqual(validateAction(action, observation, balances), {
-    ok: false,
-    reason: "rawBundle tx count exceeds configured max",
-  });
+  assert.equal(validateAction(action, observation, balances).ok, true);
 });
 
 test("parseAction accepts balancer and curve swaps", () => {
@@ -414,18 +398,37 @@ test("parseAction accepts gmxIncrease and rejects it inside bundle", () => {
   );
 });
 
-test("validateAction rejects gmx size over configured max", () => {
-  const action = parseAction({
-    type: "gmxIncrease",
-    isLong: true,
-    collateral: "WETH",
-    collateralAmount: "1",
-    sizeDeltaUsd: "100",
-  });
-  assert.deepEqual(validateAction(action, observation, balances), {
-    ok: false,
-    reason: "sizeDeltaUsd exceeds configured max",
-  });
+test("gmx size is not capped, but its collateral is still bounded by the balance", () => {
+  // sizeDeltaUsd used to be checked against maxGmxSizeUsd. What stops an oversized position now is
+  // the collateral behind it -- and GMX's own reserve configuration, on chain.
+  assert.equal(
+    validateAction(
+      parseAction({
+        type: "gmxIncrease",
+        isLong: true,
+        collateral: "USDC",
+        collateralAmount: "100", // balances.usdcUnits = 100
+        sizeDeltaUsd: "100",
+      }),
+      observation,
+      balances,
+    ).ok,
+    true,
+  );
+  assert.deepEqual(
+    validateAction(
+      parseAction({
+        type: "gmxIncrease",
+        isLong: true,
+        collateral: "USDC",
+        collateralAmount: "101",
+        sizeDeltaUsd: "100",
+      }),
+      observation,
+      balances,
+    ),
+    { ok: false, reason: "collateralAmount exceeds balance" },
+  );
 });
 
 test("validateAction enforces cumulative balance across a bundle of LP mints", () => {

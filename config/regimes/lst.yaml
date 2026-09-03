@@ -30,10 +30,6 @@ funding:
   wethWei: "20000000000000000000" # 20 WETH: the venue is WETH-denominated
   usdcUnits: "25000000000"
 
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
-
 # Phase 2 is what keeps "stake everything at block 0" from being the answer: the yield moves, the
 # queue congests, and a slash can cut the redemption rate mid-run. See config/lst.yaml for the
 # reasoning behind each number.

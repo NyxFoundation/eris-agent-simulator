@@ -41,7 +41,9 @@ export type FlowLimits = {
   // Max number of gmx orders emitted in a firing block (>=1, default 1). >1 bursts 1..N randomly.
   gmxFlowMaxBurst: number;
   aaveFlowMaxWethWei: bigint;
-  maxAaveBorrowUsdcUnits: bigint;
+  // Target debt the borrower pool sizes itself against (USDC units). Environment calibration; it
+  // was `limits.aaveBorrowUsdcUnits` while that doubled as the agent cap.
+  aaveFlowBorrowUsdcUnits: bigint;
   // Per-block probability of emitting aave flow (0..1, default 0.5). In the actor pool, each actor's per-block action probability.
   aaveFlowActivityProb: number;
   // ADR 0015 Notes / amm-challenge: informed flow's fee boundary (bps). 0=off (linear gap).
@@ -104,7 +106,7 @@ export type FlowContextWire = {
     gmxFlowActivityProb?: string;
     gmxFlowMaxBurst?: string;
     aaveFlowMaxWethWei: string;
-    maxAaveBorrowUsdcUnits: string;
+    aaveFlowBorrowUsdcUnits: string;
     aaveFlowActivityProb?: string;
     // ADR 0015 Notes / amm-challenge: informed flow's fee boundary (bps). unset/"0"=off (byte-compatible).
     informedArbFeeBps?: string;
@@ -525,7 +527,7 @@ export function buildGmxFlow(
 export function buildAaveFlow(
   rng: Rng,
   aaveFlowMaxWethWei: bigint,
-  maxAaveBorrowUsdcUnits: bigint,
+  aaveFlowBorrowUsdcUnits: bigint,
   defaultPriorityFeeWei: bigint,
   reserves: { wethSupplied: bigint; usdcBorrowed: bigint },
   fairPrice: number,
@@ -577,8 +579,8 @@ export function buildAaveFlow(
   } else if (rng.bool()) {
     const amount = randomBigInt(
       rng,
-      maxAaveBorrowUsdcUnits / 10n,
-      (maxAaveBorrowUsdcUnits * 3n) / 10n,
+      aaveFlowBorrowUsdcUnits / 10n,
+      (aaveFlowBorrowUsdcUnits * 3n) / 10n,
     );
     action = {
       type: "aaveBorrow",
@@ -613,7 +615,7 @@ export function buildAaveActorsFlow(
   rng: Rng,
   actors: AaveActorState[],
   aaveFlowMaxWethWei: bigint,
-  maxAaveBorrowUsdcUnits: bigint,
+  aaveFlowBorrowUsdcUnits: bigint,
   defaultPriorityFeeWei: bigint,
   fairPrice: number,
   activityProb: number,
@@ -629,7 +631,7 @@ export function buildAaveActorsFlow(
   //     while leaving room for 2 steps (a stale double-borrow won't breach HF). Once reached, repay part.
   const TARGET_LTV_NUM = 30n;
   const TARGET_LTV_DEN = 100n;
-  const minStep = maxAaveBorrowUsdcUnits / 25n; // don't move a difference below this (avoids fractional loops)
+  const minStep = aaveFlowBorrowUsdcUnits / 25n; // don't move a difference below this (avoids fractional loops)
   const orders: FlowOrderOut[] = [];
   for (const actor of actors) {
     // Each actor independently decides "act this block?" (intermittent).
@@ -681,8 +683,8 @@ export function buildAaveActorsFlow(
       const room = targetDebt - actor.usdcBorrowed;
       const want = randomBigInt(
         rng,
-        maxAaveBorrowUsdcUnits / 20n,
-        maxAaveBorrowUsdcUnits / 10n,
+        aaveFlowBorrowUsdcUnits / 20n,
+        aaveFlowBorrowUsdcUnits / 10n,
       );
       const amount = minBI(want, room);
       if (amount > 0n)
@@ -734,7 +736,7 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
     gmxFlowActivityProb: clampProb(wire.gmxFlowActivityProb, 0.5),
     gmxFlowMaxBurst: Math.max(1, Number(wire.gmxFlowMaxBurst ?? "1")),
     aaveFlowMaxWethWei: BigInt(wire.aaveFlowMaxWethWei),
-    maxAaveBorrowUsdcUnits: BigInt(wire.maxAaveBorrowUsdcUnits),
+    aaveFlowBorrowUsdcUnits: BigInt(wire.aaveFlowBorrowUsdcUnits),
     aaveFlowActivityProb: clampProb(wire.aaveFlowActivityProb, 0.5),
     informedArbFeeBps: Math.max(0, Number(wire.informedArbFeeBps ?? "0")),
     uninformedArrivalRate: Math.max(
@@ -816,7 +818,7 @@ export function buildFlowOrders(
               usdcUnits: BigInt(a.usdcUnits),
             })),
             limits.aaveFlowMaxWethWei,
-            limits.maxAaveBorrowUsdcUnits,
+            limits.aaveFlowBorrowUsdcUnits,
             limits.defaultPriorityFeeWei,
             ctx.fairPriceUsdcPerWeth,
             limits.aaveFlowActivityProb,
@@ -829,7 +831,7 @@ export function buildFlowOrders(
           ...buildAaveFlow(
             rng,
             limits.aaveFlowMaxWethWei,
-            limits.maxAaveBorrowUsdcUnits,
+            limits.aaveFlowBorrowUsdcUnits,
             limits.defaultPriorityFeeWei,
             {
               wethSupplied: BigInt(ctx.aaveReserves?.wethSupplied ?? "0"),

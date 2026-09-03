@@ -313,11 +313,7 @@ export function decideEntry(
     };
 
   const budget = BigInt(obs.balances.usdcUnits || "0");
-  const capped =
-    budget < BigInt(obs.limits.maxUsdcInUnits)
-      ? budget
-      : BigInt(obs.limits.maxUsdcInUnits);
-  const amountIn = (capped * BigInt(ENTRY_BPS)) / 10_000n;
+  const amountIn = (budget * BigInt(ENTRY_BPS)) / 10_000n;
   if (amountIn === 0n)
     return {
       action: { type: "noop", reason: "no USDC to buy the entry with" },
@@ -512,9 +508,10 @@ export function decide(
     decideCarry({
       lst,
       wethBalanceWei,
-      maxStakeWei:
-        BigInt(obs.limits.maxLstDepositWethWei ?? "0") || wethBalanceWei,
-      maxSwapWei: BigInt(obs.limits.maxWethInWei) || wethBalanceWei,
+      // Balance-bound on both sides: neither the stake nor the secondary-market swap has a
+      // configured cap any more, so the carry sizes itself against what it actually holds.
+      maxStakeWei: wethBalanceWei,
+      maxSwapWei: wethBalanceWei,
       blocksRemaining: obs.blocksRemaining,
     });
   const fee = obs.limits.defaultPriorityFeePerGasWei;

@@ -2,7 +2,7 @@
 // the RNG source is derived from the market (SEED) and agent id -> same SEED = same yardstick (before/after is reproducible).
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { Rng } from "@eris/sdk/rng.js";
-import { limitFor } from "../lib/affordable.js";
+import { balanceOf } from "../lib/affordable.js";
 import { marketViews } from "../lib/markets.js";
 
 function hashStr(s: string): number {
@@ -29,8 +29,12 @@ export function decide(obs: AgentObservation): AgentAction | null {
   if (views.length === 0) return { type: "noop", reason: "no venue" };
   const view = views[rng.int(0, views.length - 1)];
   const tokenIn = rng.next() < 0.5 ? view.base : "USDC";
-  const max = limitFor(obs, tokenIn);
-  const amountIn = (max * BigInt(1 + rng.int(0, 50))) / 100n;
+  // A random slice of the balance, up to half of it. The yardstick used to draw against the rule
+  // cap; with no cap left, "how much" has to come from somewhere, and the wallet is the honest
+  // denominator for an agent whose whole point is to make no decisions.
+  const held = balanceOf(obs, tokenIn);
+  const amountIn = (held * BigInt(1 + rng.int(0, 50))) / 100n;
+  if (amountIn <= 0n) return { type: "noop", reason: "nothing to trade with" };
   const action: Record<string, unknown> = {
     type: "swap",
     tokenIn,

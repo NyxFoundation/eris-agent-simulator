@@ -378,9 +378,6 @@ function lstObservation(
 function observation(lst: LstObservation): AgentObservation {
   return {
     limits: {
-      maxWethInWei: WAD.toString(),
-      maxUsdcInUnits: "5000000000",
-      maxLstDepositWethWei: (5n * WAD).toString(),
       defaultPriorityFeePerGasWei: "100000000",
       maxPriorityFeePerGasWei: "5000000000",
     },
@@ -395,14 +392,14 @@ const balances = (wethWei: bigint): BalanceSnapshot => ({
   bases: { WETH: wethWei },
 });
 
-test("a stake beyond the configured cap is rejected before it reaches the chain", () => {
+test("a stake is capped by the balance alone, not by a configured per-stake limit", () => {
+  // 6 WETH used to exceed a 5 WETH per-stake cap. The wallet holds 10, so it is now a valid stake.
   const obs = observation(lstObservation());
   const action = {
     type: "lstDeposit" as const,
     amountWethWei: (6n * WAD).toString(),
   };
-  const result = lstAdapter.validate(action, obs, balances(10n * WAD));
-  assert.equal(result.ok, false);
+  assert.equal(lstAdapter.validate(action, obs, balances(10n * WAD)).ok, true);
 });
 
 test("a stake beyond the WETH balance is rejected", () => {

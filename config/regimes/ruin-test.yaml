@@ -46,15 +46,6 @@ funding:
   wethWei: "20000000000000000000"
   usdcUnits: "100000000000" # 100,000 USDC
 
-limits:
-  # Back to the practice regimes' caps (2026-08-16). They were raised 4x on 2026-08-15 on the theory
-  # that they were what stopped a leveraged agent reaching its target, and that turned out to be
-  # wrong: the agent's borrows were reverting because the Aave pool had run out of USDC, not because
-  # the caps were tight (docs/scoring-metric-measurements.md §9.4). Raising them changed nothing
-  # about that, so the reason for having raised them is gone.
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
-
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"

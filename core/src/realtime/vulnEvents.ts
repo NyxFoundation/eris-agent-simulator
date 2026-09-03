@@ -32,8 +32,9 @@ export type VulnEventConfig = {
   baitBps: [number, number];
   // The fraction the rigged pool skims, in bps [min,max].
   rugBps: [number, number];
-  // Dry-run evasion threshold (per-round cap ratio [min,max]). It skims only amountIn exceeding
-  // this ratio × the per-round cap (small probes pass through).
+  // Dry-run evasion threshold, as a ratio of the USDC an agent is funded with [min,max]. It skims
+  // only amountIn exceeding that (small probes pass through). It was a ratio of the per-round cap
+  // until the order caps were removed.
   rugThresholdFrac: [number, number];
 };
 
@@ -45,7 +46,7 @@ export type ResolvedVulnPool = {
   rigged: boolean; // ground-truth (for scoring; not exposed on-chain / to agents)
   baitBps: number; // discount width vs fair (makes base look this much cheaper)
   rugBps: number; // skim fraction (bps; integer)
-  rugThresholdFrac: number; // skim threshold as a per-round cap ratio
+  rugThresholdFrac: number; // skim threshold as a ratio of the agent's funded USDC
   startBlock: number; // funding (appearance) block index
 };
 
@@ -219,7 +220,7 @@ function parseOne(raw: unknown, i: number): VulnEventConfig {
     exclusiveMin: true,
     max: 10_000,
   });
-  // rugThresholdFrac is the skim threshold (per-round cap ratio). At 0 the threshold is 0 = unconditional rig,
+  // rugThresholdFrac is the skim threshold (ratio of funded USDC). At 0 the threshold is 0 = unconditional rig,
   // which breaks the design intent of a conditional rig where "small probes pass through" (the rationale that
   // makes LLM auditing load-bearing), so require greater than 0.
   const rugThresholdFrac = parseRange(

@@ -5,11 +5,7 @@
 // Environment-only config (stress/vuln event schedule definitions, the agent roster) is extended on
 // the core side (RealtimeConfig / validateAgentsFile in core/src/config.ts).
 import { keccak256, stringToBytes, type Hex } from "viem";
-import {
-  CHAIN_ID,
-  DEFAULT_ANVIL_PRIVATE_KEYS,
-  MAX_BUNDLE_ACTIONS,
-} from "./constants.js";
+import { CHAIN_ID, DEFAULT_ANVIL_PRIVATE_KEYS } from "./constants.js";
 import type { ProtocolId } from "./types.js";
 import type { OuParams } from "./rng.js";
 import { baseTokens } from "./markets.js";
@@ -199,19 +195,6 @@ export type SimConfig = {
   // values it highest fills first (realistic priority gas auction). Default false fully reproduces
   // the ADR 0010 profile (the rollback target). Per-run switch (ERIS_ECONOMIC_GAS).
   economicGas: boolean;
-  maxAgentWethInWei: bigint;
-  maxAgentUsdcInUnits: bigint;
-  // ADR 0013: base symbol -> per-round swap cap (token units). WETH equals maxAgentWethInWei for
-  // compatibility. Additional bases are MAX_AGENT_<SYM>_<UNIT> (e.g. MAX_AGENT_WBTC_IN_SATS).
-  // Unset is 0 (= no per-round cap on that base; limits work is out of scope for Phase 8).
-  maxAgentBaseIn: Record<string, bigint>;
-  maxBundleActions: number;
-  maxLpWethWei: bigint;
-  maxLpUsdcUnits: bigint;
-  // ADR 0013: base symbol -> LP mint cap. WETH equals maxLpWethWei for compatibility.
-  // Additional bases are MAX_LP_<SYM>_<UNIT> (e.g. MAX_LP_WBTC_SATS). Unset is 0.
-  maxLpBase: Record<string, bigint>;
-  maxOpenPositions: number;
   uninformedFlowMaxWethWei: bigint;
   // Uninformed flow count per block per venue (default 1). >1 gives hybrid alpha.
   uninformedFlowCount: number;
@@ -224,12 +207,11 @@ export type SimConfig = {
   uninformedFlowTrendCorrelation: number;
   informedFlowMaxWethWei: bigint;
   enabledProtocols: ProtocolId[];
-  maxGmxSizeUsd: bigint;
-  maxAaveSupplyWethWei: bigint;
-  // ADR 0013: base symbol -> Aave supply cap. WETH equals maxAaveSupplyWethWei for compatibility.
-  // Additional bases are MAX_AAVE_SUPPLY_<SYM>_<UNIT> (e.g. MAX_AAVE_SUPPLY_WBTC_SATS). Unset is 0.
-  maxAaveSupplyBase: Record<string, bigint>;
-  maxAaveBorrowUsdcUnits: bigint;
+  // Size of the Aave borrower pool's target debt (USDC units). Environment machinery, not an agent
+  // rule: the flow actors size their positions off it. It used to be `limits.aaveBorrowUsdcUnits`,
+  // doing double duty as the agent cap; when the agent caps went away it moved into `flow` so that
+  // removing a rule did not silently re-calibrate the background market.
+  aaveFlowBorrowUsdcUnits: bigint;
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
   gmxFlowMaxSizeUsd: bigint;
@@ -284,8 +266,6 @@ export type SimConfig = {
   // Blocks between requesting a redemption and being able to claim it (the queue's time cost).
   // 0 leaves whatever the deploy baked in.
   lstWithdrawalDelayBlocks: number;
-  // Per-agent cap on a single stake, in wei. 0 = uncapped (bounded by balance).
-  lstMaxDepositWethWei: bigint;
   // Launch command and deterministic seed for the orderflow bot (a separate process).
   flowBotCommand: string;
   flowBotArgs: string[];
@@ -321,18 +301,6 @@ export function loadConfig(env = process.env): SimConfig {
   const initialWethWei = bigintEnv(
     env.INITIAL_WETH_WEI,
     10_000_000_000_000_000_000n,
-  );
-  const maxAgentWethInWei = bigintEnv(
-    env.MAX_AGENT_WETH_IN_WEI,
-    1_000_000_000_000_000_000n,
-  );
-  const maxLpWethWei = bigintEnv(
-    env.MAX_LP_WETH_WEI,
-    1_000_000_000_000_000_000n,
-  );
-  const maxAaveSupplyWethWei = bigintEnv(
-    env.MAX_AAVE_SUPPLY_WETH_WEI,
-    5_000_000_000_000_000_000n,
   );
   const rpcUrl = env.ANVIL_RPC_URL ?? `http://127.0.0.1:${anvilPort}`;
   const blockTimeSec = intEnv(env.ERIS_BLOCK_TIME_SEC, 2);
@@ -414,20 +382,6 @@ export function loadConfig(env = process.env): SimConfig {
     ),
     maxPriorityFeeWei: bigintEnv(env.MAX_PRIORITY_FEE_WEI, 5_000_000_000n),
     economicGas,
-    maxAgentWethInWei,
-    maxAgentUsdcInUnits: bigintEnv(env.MAX_AGENT_USDC_IN_UNITS, 5_000_000_000n),
-    // The per-round swap cap for additional bases is MAX_AGENT_<SYM>_IN_<UNIT> (WETH reuses the existing WEI value).
-    maxAgentBaseIn: readBaseAmounts(
-      env,
-      "MAX_AGENT",
-      { WETH: maxAgentWethInWei },
-      "IN",
-    ),
-    maxBundleActions: intEnv(env.MAX_BUNDLE_ACTIONS, MAX_BUNDLE_ACTIONS),
-    maxLpWethWei,
-    maxLpUsdcUnits: bigintEnv(env.MAX_LP_USDC_UNITS, 5_000_000_000n),
-    maxLpBase: readBaseAmounts(env, "MAX_LP", { WETH: maxLpWethWei }),
-    maxOpenPositions: intEnv(env.MAX_OPEN_POSITIONS, 10),
     uninformedFlowMaxWethWei: bigintEnv(
       env.UNINFORMED_FLOW_MAX_WETH_WEI,
       1_000_000_000_000_000_000n,
@@ -443,13 +397,8 @@ export function loadConfig(env = process.env): SimConfig {
       2_000_000_000_000_000_000n,
     ),
     enabledProtocols: parseEnabledProtocols(env.ENABLED_PROTOCOLS),
-    maxGmxSizeUsd: bigintEnv(env.MAX_GMX_SIZE_USD, 50_000n * 10n ** 30n),
-    maxAaveSupplyWethWei,
-    maxAaveSupplyBase: readBaseAmounts(env, "MAX_AAVE_SUPPLY", {
-      WETH: maxAaveSupplyWethWei,
-    }),
-    maxAaveBorrowUsdcUnits: bigintEnv(
-      env.MAX_AAVE_BORROW_USDC_UNITS,
+    aaveFlowBorrowUsdcUnits: bigintEnv(
+      env.AAVE_FLOW_BORROW_USDC_UNITS,
       5_000_000_000n,
     ),
     balancerFlowMaxWethWei: bigintEnv(
@@ -519,10 +468,6 @@ export function loadConfig(env = process.env): SimConfig {
     lstWithdrawalDelayBlocks: Math.max(
       0,
       intEnv(env.ERIS_LST_WITHDRAWAL_DELAY_BLOCKS, 0),
-    ),
-    lstMaxDepositWethWei: bigintEnv(
-      env.ERIS_LST_MAX_DEPOSIT_WETH_WEI,
-      5_000_000_000_000_000_000n,
     ),
     flowBotCommand: env.FLOW_BOT_COMMAND ?? "node",
     flowBotArgs:

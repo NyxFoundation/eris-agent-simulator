@@ -62,8 +62,6 @@ function input(
     ethWei: WAD,
     ethBaselineWei: WAD,
     wethBaselineWei: 0n,
-    maxUsdcPerRound: 5000n * USDC,
-    maxWethPerRound: WAD,
     canSellEth: true,
     ...overrides,
   };
@@ -85,18 +83,19 @@ test("a discount wide enough to clear every cost is bought", () => {
   const d = decideRedemption(input({ liquity: liquity({ discountBps: 150 }) }));
   assert.equal(d.kind, "buy");
   if (d.kind !== "buy") return;
-  // Bounded by the per-round limit rather than by the 30% of balance it would otherwise take.
-  assert.equal(d.usdcIn, 5000n * USDC);
+  // 30% of the 25,000 balance. This used to be trimmed to a 5,000 per-round limit; with the limit
+  // gone, BUY_FRACTION_BPS is the whole of the sizing decision.
+  assert.equal(d.usdcIn, 7500n * USDC);
   assert.ok(d.edgeBps > 0);
 });
 
 test("the purchase leaves enough discount behind to still be worth redeeming", () => {
   // The shape of a real broken peg: the pool is eUSD-heavy by 40k and shows 120bps. Redeeming needs
   // 85bps, so only the 15bps of headroom above that (plus safety) may be spent on impact -- which
-  // caps the buy far below the per-round limit.
+  // caps the buy far below what the balance alone would allow.
   //
-  // This is the bug the first live run of this agent had: it bought the whole 5,000, its own fill
-  // took the discount to 78bps, and the redemption it exists to perform never fired.
+  // This is the bug the first live run of this agent had: it bought the whole size it could afford,
+  // its own fill took the discount to 78bps, and the redemption it exists to perform never fired.
   const depegged = liquity({
     discountBps: 120,
     poolReserves: {
@@ -214,19 +213,19 @@ test("the redemption's proceeds are recycled before anything else is opened", ()
 
 test("the WETH a run funded is left alone; only redemption proceeds are sold", () => {
   // The template config hands out 20 WETH for the LST venue. Selling it would pay the AMM's fee on
-  // inventory the agent never chose, and (measured on that config) an uncapped sale is rejected by
-  // the per-round limit every block, starving every other decision.
+  // inventory the agent never chose, so the baseline is what separates "mine" from "proceeds".
   const funded = decideRedemption(
     input({ wethWei: 20n * WAD, wethBaselineWei: 20n * WAD }),
   );
   assert.notEqual(funded.kind, "unwind");
-  // Proceeds on top of it are sold, in per-round-sized pieces.
+  // Proceeds on top of it are sold whole. This used to go out one per-round cap at a time, which
+  // left the branch firing for several blocks and blocked every decision below it.
   const withProceeds = decideRedemption(
     input({ wethWei: 23n * WAD, wethBaselineWei: 20n * WAD }),
   );
   assert.equal(withProceeds.kind, "unwind");
   if (withProceeds.kind === "unwind")
-    assert.equal(withProceeds.wethWei, WAD); // the per-round cap, not the whole 3
+    assert.equal(withProceeds.wethWei, 3n * WAD);
 });
 
 test("only the ETH above the starting endowment is tradable", () => {

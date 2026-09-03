@@ -135,8 +135,6 @@ export function decideRedemption(input: {
   ethWei: bigint;
   ethBaselineWei: bigint;
   wethBaselineWei: bigint;
-  maxUsdcPerRound: bigint;
-  maxWethPerRound: bigint;
   canSellEth: boolean;
 }): RedemptionDecision {
   const l = input.liquity;
@@ -150,15 +148,10 @@ export function decideRedemption(input: {
         ? input.wethWei - input.wethBaselineWei
         : 0n;
     if (sellable >= MIN_WETH_WEI) {
-      // Capped at the per-round swap limit rather than sent whole. A redemption large enough to
-      // exceed it would otherwise be rejected by the runtime every block, and because this branch
-      // comes first the agent would never reach any of its other decisions -- measured on the
-      // template config, where a WETH-funded wallet spent all 40 blocks being rejected.
-      const size =
-        input.maxWethPerRound > 0n && sellable > input.maxWethPerRound
-          ? input.maxWethPerRound
-          : sellable;
-      return { kind: "unwind", wethWei: size };
+      // Sold whole. This used to be trimmed to a per-round swap cap, which meant a large
+      // redemption unwound a slice at a time while the branch above it kept firing -- the agent
+      // never reached any of its other decisions. With no cap there is nothing to trim to.
+      return { kind: "unwind", wethWei: sellable };
     }
     const reserve =
       input.ethBaselineWei > BigInt(l.suggestedGasReserveWei)
@@ -201,8 +194,8 @@ export function decideRedemption(input: {
       fraction(input.usdcUnits, BUY_FRACTION_BPS),
       input.usdcUnits,
     );
-    if (input.maxUsdcPerRound > 0n) size = minBI(size, input.maxUsdcPerRound);
-    // The pool's own depth is the harder bound: past a share of it the purchase is bidding against
+    // The pool's own depth is the only bound left, and it was always the harder one: past a share
+    // of it the purchase is bidding against
     // itself and the average fill is nowhere near the quoted discount.
     const poolEusd = l.poolReserves ? BigInt(l.poolReserves.eusd) : 0n;
     if (poolEusd > 0n) {
@@ -260,8 +253,6 @@ export function decide(
     ethWei,
     ethBaselineWei: baselineEthWei,
     wethBaselineWei: baselineWethWei,
-    maxUsdcPerRound: BigInt(obs.limits.maxUsdcInUnits || "0"),
-    maxWethPerRound: BigInt(obs.limits.maxWethInWei || "0"),
     // Turning ETH back into USDC needs a spot market. Without one the proceeds stay in ETH, which
     // is a worse position than the agent chose but better than a swap that reverts every block.
     canSellEth: obs.enabledProtocols.includes("uniswap"),

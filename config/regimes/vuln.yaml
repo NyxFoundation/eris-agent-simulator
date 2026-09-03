@@ -49,11 +49,6 @@ funding:
   base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
   usdcUnits: "25000000000"
 
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000" # the rug threshold is a fraction of this per-round cap
-  agentBase: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
-
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"
@@ -86,14 +81,14 @@ vuln:
       riggedFrac: [0.5, 0.7] # the rest are genuine arbitrage, which is what makes looking worthwhile
       baitBps: [300, 600] # quoted 3-6% below fair -- far enough to be obviously worth taking
       rugBps: [3000, 6000] # what a rigged pool skims once the threshold is crossed
-      rugThresholdFrac: [0.2, 0.4] # of the per-round cap: small trades pass, real ones get skimmed
+      rugThresholdFrac: [0.04, 0.08] # of funded USDC: small probes pass, real trades get skimmed
     - type: rigged-pool
       windowFrac: [0.6, 0.8]
       poolCount: [4, 6]
       riggedFrac: [0.5, 0.7]
       baitBps: [300, 600]
       rugBps: [3000, 6000]
-      rugThresholdFrac: [0.2, 0.4]
+      rugThresholdFrac: [0.04, 0.08]
 
 agents:
   - id: noop
