@@ -112,13 +112,14 @@ services:
     image: ghcr.io/foundry-rs/foundry:stable
     container_name: ascon-anvil
     restart: unless-stopped
-    network_mode: host          # binds 127.0.0.1:8545 (loopback only — no port exposed)
+    networks: [ascon-chain]
+    ports: ["127.0.0.1:8545:8545"]
     volumes:
       - /home/gohan/workspace/eris-agent-simulator/backtest/state/venues-state.json:/state.json:ro
     entrypoint: ["sh", "-c"]
     command:
       - |
-        anvil --port 8545 --code-size-limit 50000 --base-fee 0 --gas-limit 320000000 --accounts 10 --balance 1000000 --load-state /state.json &
+        anvil --host 0.0.0.0 --port 8545 --code-size-limit 50000 --base-fee 0 --gas-limit 320000000 --accounts 10 --balance 1000000 --load-state /state.json &
         ANVILPID=$$!
         sleep 4
         cast rpc --rpc-url http://127.0.0.1:8545 anvil_setBlockGasLimit 0x1312D000 || true
@@ -128,12 +129,13 @@ services:
     image: node:24-bookworm-slim
     container_name: ascon-rpc-gateway-live
     restart: unless-stopped
-    network_mode: host          # reach anvil on 127.0.0.1:8545; also be the tunnel origin on :8546
+    networks: [ascon-chain]
+    ports: ["127.0.0.1:8546:8546"]
     depends_on: [anvil]
     command: node /app/gateway.mjs
     environment:
       - PORT=8546
-      - UPSTREAM=http://127.0.0.1:8545
+      - UPSTREAM=http://ascon-anvil:8545
       - ENV_NAME=live
       - LOG_FILE=/var/log/ascon/rpc/rpc-gateway-live.log
       - METRICS_FILE=/textfile/rpc-gateway-live.prom
@@ -159,6 +161,10 @@ services:
       - ../rpc-gateway:/app:ro
       - /home/gohan/ascon-logs:/var/log/ascon
       - ascon-textfile:/textfile
+
+networks:
+  ascon-chain:
+    driver: bridge
 
 volumes:
   ascon-prom-data:
