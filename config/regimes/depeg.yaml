@@ -1,40 +1,47 @@
 # config/regimes/depeg.yaml — a registry stable that stops being a dollar (issue #27). ADR 0016 §2
 #
-# Run: npm run backtest -- --regime depeg --seed 701 [--agents <roster>]
+# regime = this file (market conditions), seed = supplied at run time. This file defines the OU fair
+# price / flow intensity / stress; the seed picks the realized path out of that family.
+# Run: npm run backtest -- --regime depeg --seed 101 [--agents <roster>]
+# Or as part of a scenario matrix: npm run backtest -- --scenarios config/scenarios/public.yaml
 #
-# What this regime tests that the others do not: an asset whose price the scorer used to assert.
-# Every stable in the registry was worth $1 because the code said so, which meant no strategy could
-# be right or wrong about one. Since issue #27 a stable with a market is marked at what that market
-# pays, in the wallet and in an LP leg alike -- so holding the wrong dollar costs something, and
-# buying the discount is a position with a real downside rather than free money.
-#
-# It is deliberately not the liquity regime with a different token. eUSD's discount is bounded by a
-# redemption a CDP will always honour, so the trade is a claim you can enforce. DAI here has no
-# floor at all: the only reason to expect par to return is that the dislocation is a window rather
-# than a repricing, and an agent still holding at the last block is marked at the pool, not at par.
-# The skill being measured is the difference between those two situations.
-#
-# Funding stays USDC-only (ADR 0017 §4), and note that this now means it literally: fundWallet
-# grants the endowment to par stables only, so nobody starts holding DAI. Every unit of exposure to
-# the depeg is a unit somebody chose to buy.
+# Note:
+#   - There is deliberately no `run.seed` here (ADR 0017 §1). The seed is the second axis of a
+#     scenario, not a property of the regime, so it must be given explicitly and a run cannot
+#     silently inherit one.
+#   - blockTimeSec and blocks are part of the regime (fixed to the production values). Shortening is
+#     an explicit override for behavior checks and smoke tests only; runs whose scores you read must
+#     use these defaults (ADR 0016 §3).
+#   - every venue is deployed, `lst` and `liquity` included. That is not merely a wider set: liquity
+#     promotes eUSD into the market-priced stable registry, so a stable that can lose its peg exists
+#     in every regime rather than only in depeg, and a liquidityPull with no `venue:` thins every
+#     enabled venue. This file used to be full-depeg.yaml, a separate set beside a five-venue one;
+#     the five-venue set was retired rather than kept as a second answer to what the competition is.
+#   - funding is an ETH/BTC/USDC basket, not USDC-only (issue #54) -- the reasoning is on the
+#     funding block itself.
+# The roster is the default for pre-submission verification. Replaceable via --agents <roster.yaml|json>.
 
 run:
   blocks: 120 # the depeg window plus enough afterwards for the peg to come back
   seconds: 900 # a stress run ends by block count (ADR 0009)
   blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
   # curve is not optional: it owns the stableSwap action, which is the only way to trade the pair.
-  protocols: [uniswap, balancer, curve, aave]
+  protocols: [uniswap, balancer, curve, aave, lst, liquity]
   economicGas: false
   localDeploy: true # the DAI/USDC pool is one the deployer seeded; a fork has no such thing
   reportDir: ./runs
 
 funding:
-  wethWei: "0" # USDC-only: netPnlUsdc carries β, so nobody may start already exposed
+  # An ETH/BTC/USDC basket rather than USDC only. The score is excess over the do-nothing
+  # baseline, which holds the same funding, so the basket's beta cancels out of the metric by
+  # construction (lp-provider's own comment says as much: "handed inventory is beta nobody chose
+  # and it cancels out of every score because the benchmark holds it too"). What USDC-only was
+  # protecting is netPnlUsdc, a reporting figure. What it cost was reachability: the LST vault and
+  # the Trove are WETH/ETH denominated, and the sell side of every arbitrage had no inventory
+  # behind it, so half of each strategy was structurally dead (issue #54).
+  wethWei: "8000000000000000000" # 8 WETH
+  base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
   usdcUnits: "25000000000"
-
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
 
 flow:
   uninformedMaxWethWei: "1000000000000000000"
@@ -47,6 +54,12 @@ flow:
   # There is no DAI flow bot. The pair sits at par unless the event below pushes it or an agent
   # trades it, which is the same arrangement the liquity regime uses and for the same reason: an
   # emergent depeg would make the regime's character a function of who entered.
+  # WBTC orderflow. Without it nothing exogenous moves the WBTC pools: the fair price walks and
+  # the pool sits still, so the funded WBTC leg is inventory nobody trades against (measured on a
+  # 60-block calm run: 390 WETH base-leg txs against 7 WBTC, all 7 from one agent, and a pool that
+  # moved +0.07% while its fair moved -1.17%). Sized to the WETH flow by notional; one value covers
+  # the uninformed and informed legs on all three venues, where WETH splits them 1x and 2x.
+  baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
 
 stress:
   events:

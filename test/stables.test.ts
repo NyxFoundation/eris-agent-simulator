@@ -320,12 +320,8 @@ test("a stable whose venue the run disabled is not visible at all", { skip }, ()
 const AGENT_OBS = {
   round: 1,
   limits: {
-    maxUsdcInUnits: "5000000000",
-    maxWethInWei: "1000000000000000000",
     maxPriorityFeePerGasWei: "1000000000",
     defaultPriorityFeePerGasWei: "100000000",
-    maxBundleActions: 5,
-    maxOpenPositions: 5,
   },
   protocols: {},
   enabledProtocols: ["uniswap", "curve"],

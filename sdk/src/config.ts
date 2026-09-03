@@ -5,11 +5,7 @@
 // Environment-only config (stress/vuln event schedule definitions, the agent roster) is extended on
 // the core side (RealtimeConfig / validateAgentsFile in core/src/config.ts).
 import { keccak256, stringToBytes, type Hex } from "viem";
-import {
-  CHAIN_ID,
-  DEFAULT_ANVIL_PRIVATE_KEYS,
-  MAX_BUNDLE_ACTIONS,
-} from "./constants.js";
+import { CHAIN_ID, DEFAULT_ANVIL_PRIVATE_KEYS } from "./constants.js";
 import type { ProtocolId } from "./types.js";
 import type { OuParams } from "./rng.js";
 import { baseTokens } from "./markets.js";
@@ -89,13 +85,6 @@ export type SimConfig = {
   // Re-fork target block (FORK_BLOCK_NUMBER). Pinning it makes reruns fully reproducible.
   // If unset, the first resetFork captures latest and reuses it for subsequent resets.
   forkBlockNumber?: number;
-  // Liquidation demo (GitHub #1). When ERIS_LIQUIDATION_DEMO=1, the coordinator has a victim wallet
-  // open an over-leveraged Aave position, then from shockRound onward lowers the Aave WETH oracle to
-  // push HF<1 and create a situation the liquidator agent can liquidate. Default off (existing runs/tests unchanged).
-  liquidationDemo: boolean;
-  liquidationShockBps: number; // WETH oracle drop amount (bps, default 1500=15%)
-  liquidationShockRound: number; // round at which the drop begins (default 3)
-  liquidationVictimSupplyWethWei: bigint; // WETH the victim supplies (default 5)
   // Seed-derived victim cohort that makes liquidations possible (WETH supply + USDC borrow, HF≈H0). Not scored.
   // count=0 (default) disables it. When >0, aave enabled + full re-fork (ARB_RPC_URL required) is a precondition (ADR 0009 §4).
   stressVictimCount: number; // ERIS_STRESS_VICTIM_COUNT
@@ -114,8 +103,6 @@ export type SimConfig = {
   // Flash arb demo (GitHub #3). With ERIS_FLASH_ARB=1 the coordinator deploys the FlashArb contract
   // and makes it available to the flash-arb agent. Requires uniswap+balancer+aave enabled. Default off.
   flashArbDemo: boolean;
-  rounds: number;
-  roundTimeSeconds: number;
   // Real-time mode (core/src/realtime/coordinator.ts). The interval-mining block interval (seconds)
   // and the run's stop condition (wall-clock time or block count).
   blockTimeSec: number;
@@ -162,14 +149,10 @@ export type SimConfig = {
   // harness counts blocks: 12/epoch, which leaves room for G7's per-boundary median window and keeps a
   // 42-epoch week (504 blocks) inside anvil's ~1,050 block history retention (ADR 0019 §8).
   epochBlocks: number;
-  // Epoch length stated in real time (ERIS_EPOCH_SECONDS; 0 = state it in blocks instead). ADR 0021
-  // §3 settles the *unit*: a round on a chain that runs for a week is 30 minutes to an hour, so that
-  // standings move several times a day without the series growing far past what the metric has been
-  // calibrated on. Blocks are then whatever that comes to at this chain's cadence, which is the
-  // right dependency direction -- an operator who changes the block time should not silently change
-  // how long a round is. The block count it resolves to, and the lambda that goes with it, are the
-  // pieces ADR 0021 leaves open and #56 decides.
-  epochSeconds: number;
+  // Note: `run.epochSeconds` has no field of its own. It is consumed where it is resolved, by
+  // resolveEpochBlocks below, and reaching this object as a second unread copy only invited a reader
+  // to use the wrong one.
+  //
   // Wall-clock hours per output segment (ERIS_SEGMENT_HOURS; 0 = one directory for the whole run,
   // which is every run today). ADR 0021 §6: the chain stays continuous and only the artifacts are
   // cut, because a week of events.jsonl is a file nobody can open and a viewer should not have to
@@ -212,19 +195,6 @@ export type SimConfig = {
   // values it highest fills first (realistic priority gas auction). Default false fully reproduces
   // the ADR 0010 profile (the rollback target). Per-run switch (ERIS_ECONOMIC_GAS).
   economicGas: boolean;
-  maxAgentWethInWei: bigint;
-  maxAgentUsdcInUnits: bigint;
-  // ADR 0013: base symbol -> per-round swap cap (token units). WETH equals maxAgentWethInWei for
-  // compatibility. Additional bases are MAX_AGENT_<SYM>_<UNIT> (e.g. MAX_AGENT_WBTC_IN_SATS).
-  // Unset is 0 (= no per-round cap on that base; limits work is out of scope for Phase 8).
-  maxAgentBaseIn: Record<string, bigint>;
-  maxBundleActions: number;
-  maxLpWethWei: bigint;
-  maxLpUsdcUnits: bigint;
-  // ADR 0013: base symbol -> LP mint cap. WETH equals maxLpWethWei for compatibility.
-  // Additional bases are MAX_LP_<SYM>_<UNIT> (e.g. MAX_LP_WBTC_SATS). Unset is 0.
-  maxLpBase: Record<string, bigint>;
-  maxOpenPositions: number;
   uninformedFlowMaxWethWei: bigint;
   // Uninformed flow count per block per venue (default 1). >1 gives hybrid alpha.
   uninformedFlowCount: number;
@@ -237,12 +207,11 @@ export type SimConfig = {
   uninformedFlowTrendCorrelation: number;
   informedFlowMaxWethWei: bigint;
   enabledProtocols: ProtocolId[];
-  maxGmxSizeUsd: bigint;
-  maxAaveSupplyWethWei: bigint;
-  // ADR 0013: base symbol -> Aave supply cap. WETH equals maxAaveSupplyWethWei for compatibility.
-  // Additional bases are MAX_AAVE_SUPPLY_<SYM>_<UNIT> (e.g. MAX_AAVE_SUPPLY_WBTC_SATS). Unset is 0.
-  maxAaveSupplyBase: Record<string, bigint>;
-  maxAaveBorrowUsdcUnits: bigint;
+  // Size of the Aave borrower pool's target debt (USDC units). Environment machinery, not an agent
+  // rule: the flow actors size their positions off it. It used to be `limits.aaveBorrowUsdcUnits`,
+  // doing double duty as the agent cap; when the agent caps went away it moved into `flow` so that
+  // removing a rule did not silently re-calibrate the background market.
+  aaveFlowBorrowUsdcUnits: bigint;
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
   gmxFlowMaxSizeUsd: bigint;
@@ -297,8 +266,6 @@ export type SimConfig = {
   // Blocks between requesting a redemption and being able to claim it (the queue's time cost).
   // 0 leaves whatever the deploy baked in.
   lstWithdrawalDelayBlocks: number;
-  // Per-agent cap on a single stake, in wei. 0 = uncapped (bounded by balance).
-  lstMaxDepositWethWei: bigint;
   // Launch command and deterministic seed for the orderflow bot (a separate process).
   flowBotCommand: string;
   flowBotArgs: string[];
@@ -335,18 +302,6 @@ export function loadConfig(env = process.env): SimConfig {
     env.INITIAL_WETH_WEI,
     10_000_000_000_000_000_000n,
   );
-  const maxAgentWethInWei = bigintEnv(
-    env.MAX_AGENT_WETH_IN_WEI,
-    1_000_000_000_000_000_000n,
-  );
-  const maxLpWethWei = bigintEnv(
-    env.MAX_LP_WETH_WEI,
-    1_000_000_000_000_000_000n,
-  );
-  const maxAaveSupplyWethWei = bigintEnv(
-    env.MAX_AAVE_SUPPLY_WETH_WEI,
-    5_000_000_000_000_000_000n,
-  );
   const rpcUrl = env.ANVIL_RPC_URL ?? `http://127.0.0.1:${anvilPort}`;
   const blockTimeSec = intEnv(env.ERIS_BLOCK_TIME_SEC, 2);
   return {
@@ -373,13 +328,6 @@ export function loadConfig(env = process.env): SimConfig {
       env.FORK_BLOCK_NUMBER && env.FORK_BLOCK_NUMBER.trim() !== ""
         ? intEnv(env.FORK_BLOCK_NUMBER, 0)
         : undefined,
-    liquidationDemo: env.ERIS_LIQUIDATION_DEMO === "1",
-    liquidationShockBps: intEnv(env.ERIS_LIQUIDATION_SHOCK_BPS, 1500),
-    liquidationShockRound: intEnv(env.ERIS_LIQUIDATION_SHOCK_ROUND, 3),
-    liquidationVictimSupplyWethWei: bigintEnv(
-      env.ERIS_LIQUIDATION_VICTIM_WETH_WEI,
-      5_000_000_000_000_000_000n,
-    ),
     stressVictimCount: intEnv(env.ERIS_STRESS_VICTIM_COUNT, 0),
     stressVictimHf0: floatEnv(env.ERIS_STRESS_VICTIM_HF0, 1.1),
     stressVictimSupplyWethWei: bigintEnv(
@@ -393,10 +341,6 @@ export function loadConfig(env = process.env): SimConfig {
     vulnPoolFeeBps: intEnv(env.ERIS_VULN_POOL_FEE_BPS, 30),
     vulnLlm: env.ERIS_VULN_LLM ?? "0",
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
-    rounds: intEnv(env.ROUNDS, 50),
-    // EVM time to advance per round (seconds). Passed to evm_increaseTime in the round loop so that
-    // Aave variable-rate accrual and GMX funding occur at a realistic scale.
-    roundTimeSeconds: intEnv(env.ROUND_TIME_SECONDS, 3600),
     // Real-time mode settings.
     blockTimeSec,
     runSeconds: intEnv(env.ERIS_RUN_SECONDS, 20),
@@ -410,7 +354,6 @@ export function loadConfig(env = process.env): SimConfig {
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
     epochBlocks: resolveEpochBlocks(env, blockTimeSec),
-    epochSeconds: Math.max(0, intEnv(env.ERIS_EPOCH_SECONDS, 0)),
     segmentHours: Math.max(0, floatEnv(env.ERIS_SEGMENT_HOURS, 0)),
     segmentName: env.ERIS_SEGMENT_NAME ?? "",
     markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
@@ -439,20 +382,6 @@ export function loadConfig(env = process.env): SimConfig {
     ),
     maxPriorityFeeWei: bigintEnv(env.MAX_PRIORITY_FEE_WEI, 5_000_000_000n),
     economicGas,
-    maxAgentWethInWei,
-    maxAgentUsdcInUnits: bigintEnv(env.MAX_AGENT_USDC_IN_UNITS, 5_000_000_000n),
-    // The per-round swap cap for additional bases is MAX_AGENT_<SYM>_IN_<UNIT> (WETH reuses the existing WEI value).
-    maxAgentBaseIn: readBaseAmounts(
-      env,
-      "MAX_AGENT",
-      { WETH: maxAgentWethInWei },
-      "IN",
-    ),
-    maxBundleActions: intEnv(env.MAX_BUNDLE_ACTIONS, MAX_BUNDLE_ACTIONS),
-    maxLpWethWei,
-    maxLpUsdcUnits: bigintEnv(env.MAX_LP_USDC_UNITS, 5_000_000_000n),
-    maxLpBase: readBaseAmounts(env, "MAX_LP", { WETH: maxLpWethWei }),
-    maxOpenPositions: intEnv(env.MAX_OPEN_POSITIONS, 10),
     uninformedFlowMaxWethWei: bigintEnv(
       env.UNINFORMED_FLOW_MAX_WETH_WEI,
       1_000_000_000_000_000_000n,
@@ -468,13 +397,8 @@ export function loadConfig(env = process.env): SimConfig {
       2_000_000_000_000_000_000n,
     ),
     enabledProtocols: parseEnabledProtocols(env.ENABLED_PROTOCOLS),
-    maxGmxSizeUsd: bigintEnv(env.MAX_GMX_SIZE_USD, 50_000n * 10n ** 30n),
-    maxAaveSupplyWethWei,
-    maxAaveSupplyBase: readBaseAmounts(env, "MAX_AAVE_SUPPLY", {
-      WETH: maxAaveSupplyWethWei,
-    }),
-    maxAaveBorrowUsdcUnits: bigintEnv(
-      env.MAX_AAVE_BORROW_USDC_UNITS,
+    aaveFlowBorrowUsdcUnits: bigintEnv(
+      env.AAVE_FLOW_BORROW_USDC_UNITS,
       5_000_000_000n,
     ),
     balancerFlowMaxWethWei: bigintEnv(
@@ -545,10 +469,6 @@ export function loadConfig(env = process.env): SimConfig {
       0,
       intEnv(env.ERIS_LST_WITHDRAWAL_DELAY_BLOCKS, 0),
     ),
-    lstMaxDepositWethWei: bigintEnv(
-      env.ERIS_LST_MAX_DEPOSIT_WETH_WEI,
-      5_000_000_000_000_000_000n,
-    ),
     flowBotCommand: env.FLOW_BOT_COMMAND ?? "node",
     flowBotArgs:
       env.FLOW_BOT_ARGS && env.FLOW_BOT_ARGS.trim() !== ""
@@ -582,6 +502,13 @@ export function loadConfig(env = process.env): SimConfig {
 // Blocks per scoring epoch. Stated in real time when `run.epochSeconds` is set (ADR 0021 §3), in
 // blocks otherwise -- and refusing to accept both, because two answers to "how long is a round" is
 // exactly the ambiguity the axis was introduced to remove.
+//
+// ADR 0021 §3 settles the *unit*: a round on a chain that runs for a week is 30 minutes to an hour,
+// so that standings move several times a day without the series growing far past what the metric has
+// been calibrated on. Blocks are then whatever that comes to at this chain's cadence, which is the
+// right dependency direction -- an operator who changes the block time should not silently change
+// how long a round is. The block count it resolves to, and the lambda that goes with it, are the
+// pieces ADR 0021 leaves open and #56 decides.
 function resolveEpochBlocks(
   env: NodeJS.ProcessEnv,
   blockTimeSec: number,

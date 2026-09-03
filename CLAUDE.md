@@ -63,8 +63,9 @@ run の設定値とエージェントロスターは **`config/local.yaml` 一�
 **雛形は `run.localDeploy: true` 既定**（README Quick Start と config/regimes/* に揃えた。fork 用フラグは不要になり
 `npm run sim:realtime` だけで走る）。fork に戻すには `localDeploy: false` + `run.protocols` から `lst` を外す
 （LST の vault は自作で Arbitrum に対応物が無い）+ `ARB_RPC_URL` + 別端末で `npm run anvil`。
-キーは**ネスト lowercase**（`run` / `funding` / `limits` / `flow` / `stress` / `vuln` + `agents`）で
-`sdk/src/runConfig.ts` の `SCHEMA` が内部キーへ写す。ロスターは規約解決（ADR 0015 §6）:
+キーは**ネスト lowercase**（`run` / `funding` / `fees` / `flow` / `stress` / `vuln` + `agents`）で
+`sdk/src/runConfig.ts` の `SCHEMA` が内部キーへ写す。**`limits` セクションは廃止**（下の「発注上限は無い」）。
+ロスターは規約解決（ADR 0015 §6）:
 
 ```yaml
 agents:
@@ -80,6 +81,41 @@ agents:
 **env に残るのは秘密情報（`.env.local`: RPC/鍵/API キー）・agent IPC（`ERIS_AGENT_*`）・設定ファイル選択
 （`ERIS_CONFIG`）のみ**。run ノブは CLI フラグ（`--seed` / `--blocks` / `--protocols` / `--agents` 等）で
 一回限り上書きできる。
+
+### 発注上限は無い（`limits` セクションは撤廃）
+
+**どの venue にも 1 件あたりの金額上限が無い。**swap 1 WETH / 5,000 USDC、GMX 50,000 USD、Aave supply 5 WETH、
+LP 建玉 10、bundle 内 action 5 — 全部消した。**引き上げではなく撤廃**なのは、(a) 「無制限」と書かれた数値は
+いずれ誰かが設定するから、(b) その上限が規則であると同時に**参照戦略 19 ファイルのサイズ決定式の入力**
+だったから。`clean-arb` の 1 取引は `maxUsdcInUnits` の一定割合、`lp-mint` は `maxLpWethWei` の 1/10、
+`levered-long` は `maxWethInWei` を supply チャンクと退避準備金の両方に使っていた。**全員が、保有額とも
+機会の良さとも無関係に同じサイズで張っていた**（環境がその数値を配っていたので）。
+
+- 今 1 件の取引を縛るのは**自分の残高**と**相手プールの厚み**（大きく出すほど不利な約定）だけ
+- `observation.limits` に残るのは fee/slippage の既定値のみ。**サイズの予算は入っていない**
+- 各 agent は自分でサイズ比率を宣言する。共通ヘルパは `example/agents/lib/affordable.ts` の
+  `sized(obs, token, bps)`（旧 `limitFor` は削除）。`levered-long` は `ESCAPE_RESERVE_WEI` を自分で名前付け
+- **上限をスケールとして使っていた非 agent 側 2 箇所**は、今も存在する量へ移した:
+  vuln プールの rug 閾値は**配布 USDC の割合**（config の frac を 1/5 にして絶対値 1,000〜2,000 USDC を維持）、
+  Aave フローの目標債務は `flow.aaveBorrowUsdcUnits`（agent の規則を消したついでに背景市場を較正し直さないため）
+- `npm run manifest` は**「上限は無い」と明記**する（節ごと省くと「未公開」と区別が付かない）
+- **CLAUDE.md と `docs/scoring-metric-measurements.md` の実測値は全部上限下で取ったもの**。数字は変わる
+
+### GMX の funding は localhost でも動く
+
+以前は**構造的に 0** だった。upstream の hardhat 用マーケット設定（localhost はこれを通る）は
+`maxFundingFactorPerSecond` しか置かず、`fundingFactor` も `fundingIncreaseFactorPerSecond` も 0 のまま。
+実測（485 ブロック）で long OI 74,651 / short 54,752 の偏りに対し全ブロック 0.000 だった。
+`deployer/vendor/gmx-localhost.patch` が arbitrum 側と同じ値（100% スキューで年率 ~63%）を入れて解消。
+
+- **2 層あって 1 つの変更で両方直る**: レートが 0 だったのは `fundingFactor` が 0 だから。加えて
+  読み側（`marketSeries.ts`）は `savedFundingFactorPerSecond` を読むが、これは**適応 funding 経路の保存値**で、
+  `fundingIncreaseFactorPerSecond == 0` だと MarketUtils が早期 return して**永久に 0**。適応 funding を
+  有効にすると読んでいるキーがそのまま埋まる
+- **値を盛らないこと**。盛ると perp だけ Aave の借入金利と違う時計で回る（LST の APY で一度やった失敗）。
+  よって**レートは実物・符号も偏り追随**だが、**数百ブロックで積む額は小さい**（Aave の利息と同じ理由。EVM 時間は warp しない）
+- **これ以前に焼いた state dump は旧設定を持つ**ので、そこからの replay は今も 0 を返す。
+  その 0 は「板が均衡している」ではなく「この deploy に funding が無い」。`npm run gen:state-dump` で焼き直す
 
 ### `run.resetUnit` — world のリセット単位（ADR 0020）
 
@@ -125,6 +161,15 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   config ファイル自体は共通。**アドレス overlay は同時に 1 つ**なので、deployment を移るたびに再生成が要る。
   片方だけ動かすと以前は setup の数分後に `Cannot decode zero data ("0x")` と生アドレスが出るだけだったので、
   **起動時に deployment の有無を実測して落とす**（`deployment_check`。何が無いかと再生成コマンドを出す）
+- **agent プロセスも取引前に同じことを確かめる**（`example/agents/runtime/preflight.ts`。検査本体は
+  `sdk/src/deploymentCheck.ts` = coordinator と同じ 1 本。`example → core` は禁止なので sdk に置いてある）。
+  RPC 疎通（5 回リトライ = 自己ホストの起動レース用）→ chain id が `run.chainId` と一致するか →
+  venue アドレスに bytecode があるか、の順に見て、駄目なら **exit 1**。coordinator は `onExit` で拾い
+  `agent_process_exited` と summary の `processExitedEarly` / `stderrTail` に残す。
+  **落とすのは、落とさないと区別が付かないから** — チェーンに届かない agent は生きたままループし続け、
+  `summary.json` には `includedTxCount: 0` / `netPnlUsdc: 0` / `violations: []` だけが残る。これは
+  「何もしないことを選んだ agent」の記録と同一で、事後に見分ける材料がどこにも無い（実測: コンテナ内の
+  agent が起動 10 秒で 25 行書いた後、100 ブロック run の残り 2 分 48 秒を無言で過ごし、idle として採点された）
 
 ### 練習 devnet（ADR 0021。止まらないチェーン + 自己ホスト参加者）
 
@@ -165,7 +210,10 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積で、シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（シナリオ × agent の生スコア。**4 指標すべて**）と `standings.json`（レジーム内 z-score → レジーム等重み平均）を書く。順位は派生物で、採点方法は将来見直す前提（matrix.json から再計算できる）。`--metric netPnlUsdc|alphaUsdc|excessLogGrowth|score` / `--repeat N`（較正の診断用。採点は 1 回が既定）
   - **`excessLogGrowth`(M4) と `score`(M9) は epoch 系列から採る**（`summary.json` の `epochScores`）。M4 は M9 が採点したのと**同じ系列の合計**で取る（端点から取らない）ので、両者の差はきっかり `λ·std` になり、破産した agent の M4 は G1/G2 が凍結した後の系列を反映する。**順位が動くのはその agent の 1 epoch あたり Sharpe が λ を跨いだときだけ**。#56 の判断が開いている間、どちらも選べるようにしてある（既定は `netPnlUsdc` = 過去の行列と比較可能な唯一の指標）
-  - **公式レジーム**: `calm` / `cex-drift`（OU に drift、kappa 弱化）/ `informed-flow`（相関した方向性フロー）/ `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）。`lst` / `liquity` は競技セット外（venue 単体検証用）
+  - **公式レジーム（8 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）
+  - **`cex-drift` / `informed-flow` は窓イベント**（`cexDrift` / `flowTrend`）で表現する（issue #56）。run 全体設定だった頃の `cex-drift` は**宣言長 360 ブロックで壊れていた** — 実測でプール乖離が平均 1,055bps（10%）に居座り fair が +34.6% 暴走、venue-arb が +8,458 を無条件に得ていた。60 ブロックでは 55bps に見えるので発覚が遅れた。窓化後は 461bps・+1,191（calm 基準は 39bps・−289）。`informed-flow` は窓化しても 45.0 → 42.7bps でほぼ中立（この regime はもともと calm と識別しにくい）
+  - **`vuln` を公式化するにはフィールド側の追加が要る** — 悪意あるプールは factory 購読で発見するので、`discovery-arb` / `discovery-arb-verify` を `config/rosters/full-field.yaml` に入れないと**誰も見つけられず何も測れない**（`liquidator` が victim 無しでは遊ぶのと同じ形）。実測: 無検証は −5,306、検証側は +721、新プールを見ない venue-arb は −220（calm と同じ）
+  - **7 本とも全 venue（`lst` / `liquity` 含む）をデプロイし、配布は ETH/BTC/USDC バスケット**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）。以前は 5 venue・USDC-only 版と `full-*` の 7 venue 版が並立していたが、**5 venue 版は撤去した**（「競技とは何か」に 2 つ目の答えを残さないため）。`full-8h` / `full-boxA` は `public.yaml` と同内容になったので統合済み。`config/regimes/{lst,liquity,liquity-crash}.yaml` は venue 単体検証用として競技セット外に残る。USDC-only を保つのは `metric-*` だけで、理由は別（ADR 0019 §6。`genMetricRegimes.ts` が `funding.base` ごと落とす）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
 - `npm run metrics -- <runDir...>` — 保存済み run を**全候補指標で採点し直す**（issue #56。M1 PnL / M4 超過対数成長 / M7 MPPM / M9 `mean−λ·std` / M13 Sharpe と、run 集合に対する M27 Borda）。チェーン不要・再 run 不要で `summary.json` の epoch 系列だけを読む。`--lambda` / `--rho` / `--out <path>`。**`resetUnit` が混ざった run 集合は拒否**する（ADR 0020 §1）。実測の記録は `docs/scoring-metric-measurements.md`
 - `npm run metrics -- --matrix runs/matrix-<id>` — **シナリオ行列を「指標 × 集約」の総当たりで採点し直す**（ADR 0020 §5）。連続経済では「どの指標か」だけが問いだが、`scenario` モードでは**シナリオ横断の集約**という第 2 の選択が要る（`core/src/scoring/aggregate.ts` = `zscore` 現行 / `borda` 順位 / `mean` 絶対量。どれもレジーム等重み）。出力は各組み合わせの順位、M9×zscore との一致/不一致、そして **#55 の露出**（1 体が場の sd を何倍に膨らませているか。1.0 = 誰も場のスケールを決めていない）。matrix.json の `runDir` は相対なので、spot から回収した tarball を展開したディレクトリでもそのまま読める
@@ -184,6 +232,14 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     `/run` エイリアスは削除した。`/markets` と `/explorer` は 1 world の中でしか意味を持たないので
     scenario 層のまま。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
     書かれるので結果がまだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
+  - **トップページ（`/`）が「この競技とは何か」を全部持つ**。順位表の下に 3 つ:
+    **シナリオ一覧**（1 行 1 世界 = `regime#seed` / ラウンド数 / 首位 / 環境イベント種別。行クリックで開く。
+    `dashboard/src/data/scenarioList.ts`）、**単位の梯子**（競技 › シナリオ › ラウンド › ブロック）、
+    **Info タブ**（overview / environment / scoring / data = `components/InfoTabs.tsx`）。
+    3 つとも以前は「まずシナリオを 1 つ選ばないと読めない」位置にあった。特に Info タブは
+    35 世界のうち 1 つの末尾にあったので、**「シナリオとは何か」の説明がシナリオを開かないと読めず、
+    しかもその世界固有の説明に読めた**。イベント列の空欄は「予定なし」であって「calm」ではない
+    （cex-drift は窓を開けず run 全体を曲げるし、窓化以前の run はそもそも schedule を持たない）
   - **ラウンドは UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
     スコアも順位変動も環境イベントも全部エポック単位なので、全ビューはこの軸に対して読む。
     **以前はラウンド軸を 3 回別々に実装していた**（ラウンド選択 / replay head / live head）。
@@ -474,9 +530,9 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   あって行使できる請求権ではない = 別のスキル
 - **`stableSwap` action**（curve アダプタ所有。プールが Curve stableswap-ng だから）—
   `{type, stable, tokenIn, amountIn, slippageBps?}`。無いとデペグは「見えるだけ」になる
-  （#39 が `liquitySwapEusd` を足したのと同じ理由）。**per-round 上限は USDC の 6 decimals 建てなので
-  18 decimals の stable では換算が要る**（実測でこれを忘れると sell が毎回 reject され、買いだけ通って
-  「閉じられないポジションの含み益」になる: 42 reject / 6 accept）
+  （#39 が `liquitySwapEusd` を足したのと同じ理由）。発注上限の撤廃前は、この上限が USDC の 6 decimals 建て
+  だったため 18 decimals の stable で換算漏れを起こし、sell だけ毎回 reject されて「閉じられないポジションの
+  含み益」になっていた（42 reject / 6 accept）。上限そのものが無くなったのでこの罠は消えた
 - **`depeg` ストレスイベント**（`stress.events`。`stable:` 必須）— 環境が窓の間だけその stable を
   プールへ売り、閉じたら買い戻す。機構は `core/src/realtime/stableDepeg.ts` に共通化してあり、
   `eusdDepeg` も同じ実装を通る（イベント名は #39 の `stress_eusd_depeg*` のまま。他の stable は

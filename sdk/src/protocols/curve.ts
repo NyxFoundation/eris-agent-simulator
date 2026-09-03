@@ -1,9 +1,5 @@
 import { encodeFunctionData, type Address, type PublicClient } from "viem";
-import {
-  curveStableSwapNgAbi,
-  curveTricryptoAbi,
-  erc20Abi,
-} from "../abis.js";
+import { curveStableSwapNgAbi, curveTricryptoAbi, erc20Abi } from "../abis.js";
 import { CURVE, TOKENS, stableBalanceOf } from "../constants.js";
 import { poolShareValueUsdc } from "../valuation.js";
 import { marketPricedStables, type StableMarket } from "../stables.js";
@@ -257,7 +253,11 @@ function parseStableSwap(obj: Record<string, unknown>): LeafAction | null {
   if (!market)
     throw new Error(
       `stableSwap: "${obj.stable}" is not a market-priced stable in this deployment ` +
-        `(known: ${marketPricedStables().map((m) => m.symbol).join(", ") || "none"})`,
+        `(known: ${
+          marketPricedStables()
+            .map((m) => m.symbol)
+            .join(", ") || "none"
+        })`,
     );
   if (obj.tokenIn !== market.symbol && obj.tokenIn !== "USDC")
     throw new Error(`tokenIn must be ${market.symbol} or USDC`);
@@ -348,17 +348,6 @@ function validateStableSwap(
   if (!market)
     return { ok: false, reason: `no market for stable ${action.stable}` };
   const sellingStable = action.tokenIn === market.symbol;
-  // Both legs are dollars, so both are capped by the shared per-round USDC limit -- but the limit is
-  // denominated in USDC's six decimals and a stable need not share them. Comparing 18-decimal DAI
-  // wei against it rejected every unwind while letting every buy through, so an agent could open a
-  // position it was structurally unable to close: measured at 42 rejected sells against 6 accepted
-  // buys, and the resulting "profit" was a mark on a position that never came back.
-  const maxIn = scaleUsdcLimit(
-    BigInt(obs.limits.maxUsdcInUnits),
-    sellingStable ? market.decimals : TOKENS.USDC.decimals,
-  );
-  if (maxIn > 0n && amountIn > maxIn)
-    return { ok: false, reason: "amountIn exceeds configured per-round limit" };
   const balance = sellingStable
     ? stableBalanceOf(balances, market.token)
     : stableBalanceOf(balances, TOKENS.USDC.address);
@@ -382,24 +371,7 @@ function validate(
   const market = marketFor("curve", base);
   if (!market) return { ok: false, reason: `no curve market for ${base}` };
   const inIsBase = action.tokenIn === market.base;
-  // ADR 0013: apply the per-round limit to every base. The base side uses per-base limits (WETH=maxWethInWei;
-  // additional bases use limits.baseLimits[base]; "0"=no limit). The quote side uses the shared maxUsdcInUnits. WETH is byte-compatible.
-  if (inIsBase) {
-    const maxBaseIn =
-      base === "WETH"
-        ? BigInt(obs.limits.maxWethInWei)
-        : BigInt(obs.limits.baseLimits?.[base]?.maxSwapInBaseWei ?? "0");
-    if (maxBaseIn > 0n && amountIn > maxBaseIn)
-      return {
-        ok: false,
-        reason: "amountIn exceeds configured per-round limit",
-      };
-  } else if (amountIn > BigInt(obs.limits.maxUsdcInUnits)) {
-    return {
-      ok: false,
-      reason: "amountIn exceeds configured per-round limit",
-    };
-  }
+  // The balance is the only cap -- no per-order size limit on any venue.
   const balance = inIsBase
     ? (balances.bases?.[market.base] ?? balances.wethWei)
     : stableBalanceOf(balances, legOf(market).stable);

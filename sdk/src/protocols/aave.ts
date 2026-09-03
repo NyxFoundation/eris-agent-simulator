@@ -212,34 +212,13 @@ function validate(
   if (a.amount !== "max") {
     const amount = BigInt(a.amount);
     if (amount <= 0n) return { ok: false, reason: "amount must be positive" };
-    if (a.type === "aaveSupply") {
-      if (amount > assetBalance())
-        return { ok: false, reason: "supply amount exceeds balance" };
-      // ADR 0013: apply the supply limit to every base. WETH=maxAaveSupplyWethWei; additional bases use
-      // limits.baseLimits[asset] ("0"=no limit). Stable assets have no supply limit (as before).
-      // The LST's own cap is the per-stake one on the venue itself, so it is not re-capped here.
-      if (a.asset !== AAVE_STABLE_SYMBOL && a.asset !== LST_SYMBOL) {
-        const maxSupply =
-          a.asset === "WETH"
-            ? BigInt(obs.limits.maxAaveSupplyWethWei)
-            : BigInt(
-                obs.limits.baseLimits?.[a.asset]?.maxAaveSupplyBaseWei ?? "0",
-              );
-        if (maxSupply > 0n && amount > maxSupply)
-          return { ok: false, reason: "supply exceeds configured limit" };
-      }
-    }
-    if (a.type === "aaveRepay") {
-      if (amount > assetBalance())
-        return { ok: false, reason: "repay amount exceeds balance" };
-    }
-    if (
-      a.type === "aaveBorrow" &&
-      a.asset === "USDC" &&
-      amount > BigInt(obs.limits.maxAaveBorrowUsdcUnits)
-    ) {
-      return { ok: false, reason: "borrow exceeds configured USDC limit" };
-    }
+    // Balance for what you put in; the reserve's own collateral rules for what you take out. There
+    // is no configured supply or borrow cap any more -- an over-borrow is answered by the health
+    // factor and a liquidator, not by a validation error.
+    if (a.type === "aaveSupply" && amount > assetBalance())
+      return { ok: false, reason: "supply amount exceeds balance" };
+    if (a.type === "aaveRepay" && amount > assetBalance())
+      return { ok: false, reason: "repay amount exceeds balance" };
   }
   return { ok: true };
 }

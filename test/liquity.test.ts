@@ -418,18 +418,9 @@ function observation(
     inventory: { valueUsdc: 0, weth: 10, usdc: 25_000, eth: 1 },
     history: [],
     limits: {
-      maxWethInWei: WAD.toString(),
-      maxUsdcInUnits: (5000n * USDC).toString(),
       defaultPriorityFeePerGasWei: "1000000000",
       maxPriorityFeePerGasWei: "5000000000",
       defaultSlippageBps: 50,
-      maxBundleActions: 5,
-      maxLpWethWei: "0",
-      maxLpUsdcUnits: "0",
-      maxOpenPositions: 1,
-      maxGmxSizeUsd: "0",
-      maxAaveSupplyWethWei: "0",
-      maxAaveBorrowUsdcUnits: "0",
     },
     protocols: { liquity: base },
   };
@@ -578,8 +569,10 @@ test("withdrawing zero from the Stability Pool claims the gain, and is only refu
   assert.equal(withGain.ok, true);
 });
 
-test("buying eUSD is bounded by the USDC balance and the per-round limit", () => {
-  const tooBig = liquityAdapter.validate(
+test("buying eUSD is bounded by the USDC balance and nothing else", () => {
+  // 10,000 used to be rejected for exceeding a 5,000 per-round cap. The wallet holds 25,000, so
+  // with the cap gone it goes through; only a size the wallet cannot pay for is refused.
+  const fine = liquityAdapter.validate(
     {
       type: "liquitySwapEusd",
       tokenIn: "USDC",
@@ -588,18 +581,17 @@ test("buying eUSD is bounded by the USDC balance and the per-round limit", () =>
     observation(),
     BALANCES,
   );
-  // 10,000 is affordable but over the 5,000 per-round cap.
-  assert.equal(tooBig.ok, false);
-  const fine = liquityAdapter.validate(
+  assert.equal(fine.ok, true);
+  const unaffordable = liquityAdapter.validate(
     {
       type: "liquitySwapEusd",
       tokenIn: "USDC",
-      amountIn: (4000n * USDC).toString(),
+      amountIn: (25_001n * USDC).toString(),
     },
     observation(),
     BALANCES,
   );
-  assert.equal(fine.ok, true);
+  assert.equal(unaffordable.ok, false);
 });
 
 test("the venue accounts for eUSD and deliberately leaves LQTY visible", async () => {

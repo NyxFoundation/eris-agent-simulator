@@ -1,11 +1,11 @@
 # config/regimes/metric-informed-flow.yaml — AUTO-GENERATED from config/regimes/informed-flow.yaml.
 #
-# Same market conditions, ADR 0019 §6 funding (1 ETH gas reserve + 100k USDC, economicGas). The
-# official regime hands out 100 ETH, which is 92.2% of an agent's portfolio by value: netPnlUsdc
-# nets that out (both ends are priced at the final price) but an epoch series marks it live, so
-# every agent's std_e would be ETH's volatility and M9's lambda term would measure the market
-# rather than the agent. Used only to compare M4 / M9 / M27 in scenario mode (ADR 0020 §4); the
-# competition's own regimes are the files this was generated from.
+# Same market conditions, ADR 0019 §6 funding (1 ETH gas reserve + 100k USDC, economicGas), and
+# no base inventory at all. The official regime hands out a native ETH reserve plus a WETH/WBTC
+# basket: netPnlUsdc nets those out (both ends are priced at the final price) but an epoch series
+# marks them live, so every agent's std_e would be the market's volatility and M9's lambda term
+# would measure the market rather than the agent. Used only to compare M4 / M9 / M27 in scenario
+# mode (ADR 0020 §4); the competition's own regimes are the files this was generated from.
 #
 # Known cost of USDC-only: lp-provider cannot mint an LP position at all (measured: 21 of 24
 # rounds "insufficient LP budget"), so the one inventory-holding strategy sits the comparison out.
@@ -19,6 +19,8 @@ run:
     - curve
     - gmx
     - aave
+    - lst
+    - liquity
   economicGas: true
   localDeploy: true
   reportDir: ./runs
@@ -28,13 +30,8 @@ funding:
   wethWei: "0"
   usdcUnits: "100000000000"
   ethWei: "1000000000000000000"
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
 flow:
-  uninformedMaxWethWei: "3000000000000000000"
-  uninformedPersistBlocks: 12
-  uninformedTrendCorrelation: 1
+  uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
@@ -44,6 +41,34 @@ flow:
   gmxArrivalRate: "0.75"
   gmxSizeSigma: "1.0"
   aaveActorSizeSigma: "1.0"
+  baseMax:
+    WBTC: "5000000"
+stress:
+  events:
+    - type: flowTrend
+      magnitudeRange:
+        - 2
+        - 3
+      trendCorrelation: 1
+      persistBlocks: 12
+      windowFrac:
+        - 0.15
+        - 0.3
+      rampBlocks: 6
+      holdBlocks: 30
+      decayBlocks: 10
+    - type: flowTrend
+      magnitudeRange:
+        - 2
+        - 3
+      trendCorrelation: 1
+      persistBlocks: 12
+      windowFrac:
+        - 0.55
+        - 0.75
+      rampBlocks: 6
+      holdBlocks: 30
+      decayBlocks: 10
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY

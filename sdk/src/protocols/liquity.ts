@@ -818,12 +818,6 @@ function validate(
       }
       if (amount > balances.usdcUnits)
         return { ok: false, reason: "amountIn exceeds USDC balance" };
-      const maxUsdcIn = BigInt(obs.limits.maxUsdcInUnits);
-      if (maxUsdcIn > 0n && amount > maxUsdcIn)
-        return {
-          ok: false,
-          reason: "amountIn exceeds the configured per-round limit",
-        };
       return { ok: true };
     }
     default:
@@ -1518,41 +1512,35 @@ export const liquityAdapter: ProtocolAdapter = {
     const s = state as LiquityState | undefined;
     // The wallet's loose eUSD is not read here: it is registry spot now, swept and priced by the
     // caller (issue #27 (b)). What is left is the Trove and the Stability Pool.
-    const [entire, spDeposit, spGain, gasCompensation] =
-      (await Promise.all([
-        read(
-          ctx.publicClient,
-          d.troveManager,
-          troveManagerAbi,
-          "getEntireDebtAndColl",
-          [agent],
-        ),
-        read(
-          ctx.publicClient,
-          d.stabilityPool,
-          stabilityPoolAbi,
-          "getCompoundedLUSDDeposit",
-          [agent],
-        ),
-        read(
-          ctx.publicClient,
-          d.stabilityPool,
-          stabilityPoolAbi,
-          "getDepositorETHGain",
-          [agent],
-        ),
-        read(
-          ctx.publicClient,
-          d.troveManager,
-          troveManagerAbi,
-          "LUSD_GAS_COMPENSATION",
-        ),
-      ])) as [
-        readonly [bigint, bigint, bigint, bigint],
-        bigint,
-        bigint,
-        bigint,
-      ];
+    const [entire, spDeposit, spGain, gasCompensation] = (await Promise.all([
+      read(
+        ctx.publicClient,
+        d.troveManager,
+        troveManagerAbi,
+        "getEntireDebtAndColl",
+        [agent],
+      ),
+      read(
+        ctx.publicClient,
+        d.stabilityPool,
+        stabilityPoolAbi,
+        "getCompoundedLUSDDeposit",
+        [agent],
+      ),
+      read(
+        ctx.publicClient,
+        d.stabilityPool,
+        stabilityPoolAbi,
+        "getDepositorETHGain",
+        [agent],
+      ),
+      read(
+        ctx.publicClient,
+        d.troveManager,
+        troveManagerAbi,
+        "LUSD_GAS_COMPENSATION",
+      ),
+    ])) as [readonly [bigint, bigint, bigint, bigint], bigint, bigint, bigint];
     const [debt, coll] = entire;
     const eusdPriceUsdc = s?.marketQuoted ? s.midPriceUsdc : 1;
     return liquityPositionValue({

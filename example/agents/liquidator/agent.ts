@@ -10,7 +10,6 @@
 import { maxUint256, parseAbi } from "viem";
 import type { AgentContext } from "@eris/sdk";
 import { AAVE, TOKENS } from "@eris/sdk/constants.js";
-import { VICTIM_ADDRESS } from "@eris/sdk/wellKnown.js";
 import { buildLiquidationCall } from "../lib/aave-liquidation.js";
 
 const poolAbi = parseAbi([
@@ -24,10 +23,22 @@ const HF_ONE = 10n ** 18n;
 const WETH_REALIZE_THRESHOLD_WEI = 10_500_000_000_000_000_000n; // 10.5 WETH
 
 export async function run(ctx: AgentContext): Promise<void> {
-  const victims = (process.env.ERIS_LIQUIDATION_VICTIMS ?? VICTIM_ADDRESS)
+  // The environment sets this whenever it staged a cohort (ADR 0009 §4). There used to be a fallback
+  // to a fixed demo address, from the single-victim predecessor that has since been removed -- so an
+  // unset variable now means "this run has no victims", and scanning anything would be scanning an
+  // account nobody opened. Say so once instead.
+  const victims = (process.env.ERIS_LIQUIDATION_VICTIMS ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  if (victims.length === 0) {
+    ctx.log({
+      reason:
+        "no ERIS_LIQUIDATION_VICTIMS in this run: nothing to liquidate " +
+        "(set stress.victimCount > 0 to stage a cohort)",
+    });
+    return;
+  }
 
   let busy = false;
   ctx.onObservation((obs) => {
@@ -73,9 +84,10 @@ export async function run(ctx: AgentContext): Promise<void> {
         // 2) Settle by swapping the WETH gained from liquidation back to USDC (sell roughly the amount above the initial WETH)
         const wethWei = BigInt(obs.balances.wethWei);
         if (wethWei > WETH_REALIZE_THRESHOLD_WEI) {
-          const maxIn = BigInt(obs.limits.maxWethInWei);
-          const excess = wethWei - 10_000_000_000_000_000_000n; // amount above the initial 10 WETH
-          const amountIn = excess < maxIn ? excess : maxIn;
+          // Sell the whole seized excess in one go. It used to be dribbled out a cap's worth per
+          // round, which left the agent holding WETH it had already decided to be rid of -- pure
+          // directional exposure, on a strategy whose edge is the liquidation bonus.
+          const amountIn = wethWei - 10_000_000_000_000_000_000n; // above the initial 10 WETH
           if (amountIn > 0n) {
             const action = {
               type: "swap",

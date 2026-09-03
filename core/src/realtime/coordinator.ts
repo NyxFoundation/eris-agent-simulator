@@ -90,7 +90,7 @@ import { LiveScorer } from "./liveScoring.js";
 import {
   checkDeployment,
   deploymentMismatchMessage,
-} from "./deploymentCheck.js";
+} from "@eris/sdk/deploymentCheck.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import {
   scoreEpochSeriesByAgent,
@@ -147,7 +147,7 @@ import {
   readVictimsAccount,
   setupStressVictims,
   type StressVictim,
-} from "../liquidationDemo.js";
+} from "../stressVictims.js";
 
 const GAS_ONLY_WEI = 2_000_000_000_000_000_000_000_000n; // 2,000,000 ETH (gas for admin/keeper)
 
@@ -1986,29 +1986,42 @@ export async function runRealtimeSimulation(
           const oracleTask = async (): Promise<void> => {
             try {
               if (economicGas) {
-                await writePriceFeedStorage(
-                  publicClient,
-                  priceFeedAddress,
-                  latestFairPrice,
-                  BigInt(bn),
-                );
-                await writeAaveOraclesStorage(ctx, latestFairPrice);
-                if (ctx.oracle.gmxProvider && ctx.updateGmxOracle) {
-                  await ctx.updateGmxOracle(ctx, latestFairPrice, {
-                    noMine: true,
-                    priorityFeeWei: oracleFee,
-                  });
-                }
-                for (const b of extraBaseSymbols) {
-                  await writePriceFeedStorageFor(
+                // These oracle writes are independent, so run them concurrently instead of in
+                // series: at high agent counts this phase is the environment loop's dominant cost
+                // (it is what sizes the block time), and the calls only queue on anvil, they do not
+                // depend on each other. The PriceFeed / Aave / additional-base writes are keyless
+                // `anvil_setStorageAt` calls (no nonce). The GMX oracle update and the LST accrual
+                // both send txs from the admin key, so they share a nonce and must stay sequential
+                // with each other (two concurrent admin-key senders race and anvil drops the loser
+                // as "replacement transaction underpriced"); they form one sequential sub-task that
+                // runs alongside the storage writes.
+                await Promise.all([
+                  writePriceFeedStorage(
                     publicClient,
                     priceFeedAddress,
-                    tokenInfo(b).address,
-                    fairPrices[b],
+                    latestFairPrice,
                     BigInt(bn),
-                  );
-                }
-                await accrueLstTask();
+                  ),
+                  writeAaveOraclesStorage(ctx, latestFairPrice),
+                  ...extraBaseSymbols.map((b) =>
+                    writePriceFeedStorageFor(
+                      publicClient,
+                      priceFeedAddress,
+                      tokenInfo(b).address,
+                      fairPrices[b],
+                      BigInt(bn),
+                    ),
+                  ),
+                  (async () => {
+                    if (ctx.oracle.gmxProvider && ctx.updateGmxOracle) {
+                      await ctx.updateGmxOracle(ctx, latestFairPrice, {
+                        noMine: true,
+                        priorityFeeWei: oracleFee,
+                      });
+                    }
+                    await accrueLstTask();
+                  })(),
+                ]);
                 return;
               }
               const feedHash = await updatePriceFeedMempool(

@@ -126,10 +126,14 @@ function sanitizedSource(name: string): string {
     .trim();
 }
 
-// Compute the rigged skim threshold (denominated in tokenIn=USDC) as per-round USDC cap × frac.
+// The rigged skim threshold (denominated in tokenIn=USDC): a fraction of the USDC an agent is
+// funded with. It used to be a fraction of the per-round USDC cap, which is gone -- and a threshold
+// has to stay on the scale of a trade someone would actually make, or the pool either skims
+// everyone (too low) or no one (too high) and stops discriminating between the agents that checked
+// the pool and the agents that did not.
 function rugThresholdUnits(config: SimConfig, frac: number): bigint {
   const scaled = BigInt(Math.round(frac * 1_000_000));
-  return (config.maxAgentUsdcInUnits * scaled) / 1_000_000n;
+  return (config.initialUsdcUnits * scaled) / 1_000_000n;
 }
 
 // setup: deploy the factory + all pools and issue disclosures (funding is done at the window).

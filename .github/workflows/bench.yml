@@ -1,0 +1,113 @@
+# Load-test bench, triggered on demand by an `@bench` PR comment (or manual dispatch), on a
+# self-hosted runner (Docker + real cores), commenting the resource summary back on the PR.
+#
+# Prerequisites (one-time, operator):
+#   1. Self-hosted runner on gohanserver labeled `ascon-bench` (docker access, foundry, node 22).
+#   2. Repo secret OLLAMA_API_KEY (only used by --mode llm).
+#   3. This file must be on the DEFAULT branch (main) for the @bench comment trigger to fire
+#      (GitHub always uses the default-branch workflow for issue_comment events).
+#
+# Comment usage:  `@bench`  or  `@bench --agents 100 --blocks 300 --mode llm`
+name: bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      agents: { description: agents, default: "12" }
+      blocks: { description: blocks, default: "200" }
+      mode:   { description: frozen|llm, default: "frozen" }
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: bench-${{ github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    # Manual dispatch, OR a PR comment containing @bench from a trusted author (blocks randoms/forks
+    # from running PR code on the self-hosted box).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      ( github.event.issue.pull_request &&
+        contains(github.event.comment.body, '@bench') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) )
+    runs-on: [self-hosted, ascon-bench]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: prep (ack, resolve PR head, whitelist args)
+        id: prep
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let ref, args = [];
+            if (context.eventName === 'issue_comment') {
+              // 👀 ack the command
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: context.payload.comment.id, content: 'eyes' });
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: context.issue.number });
+              ref = pr.data.head.sha;
+              // whitelist only known flags/values from the comment (no shell injection)
+              const raw = (context.payload.comment.body.match(/@bench\s*(.*)/s) || [,''])[1];
+              const pick = (re, ...vals) => { const m = raw.match(re); if (m) args.push(...vals.map(v => v===true?m[1]:v)); };
+              pick(/--agents\s+(\d{1,3})/, '--agents', true);
+              pick(/--blocks\s+(\d{1,5})/, '--blocks', true);
+              pick(/--block-time\s+(\d{1,2})/, '--block-time', true);
+              pick(/--mode\s+(frozen|llm)/, '--mode', true);
+              if (/--each\b/.test(raw)) args.push('--each');           // one container per example agent
+              const ag = raw.match(/--agent\s+([A-Za-z0-9._-]{1,40})/); // just this agent + reference
+              if (ag) args.push('--agent', ag[1]);
+              core.setOutput('pr', String(context.issue.number));
+            } else {
+              ref = context.sha;
+              const i = context.payload.inputs || {};
+              if (i.agents) args.push('--agents', i.agents);
+              if (i.blocks) args.push('--blocks', i.blocks);
+              if (i.mode)   args.push('--mode', i.mode);
+            }
+            core.setOutput('ref', ref);
+            core.setOutput('args', args.join(' '));
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.prep.outputs.ref }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: stable }
+      - run: npm ci
+      - run: npm run build:contracts
+
+      - name: run bench
+        env:
+          ANVIL_PORT: "8547"                       # dedicated port — won't disturb a running anvil (8545)
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          ARGS: ${{ steps.prep.outputs.args }}      # already whitelisted in prep
+        run: bash bench/run.sh $ARGS --out "$GITHUB_WORKSPACE/bench-out"
+
+      - name: comment summary on the PR
+        if: github.event_name == 'issue_comment' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body;
+            try { body = fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/bench-out/summary.md`, 'utf8'); }
+            catch { body = ':x: bench failed before producing a summary — see the workflow run logs.'; }
+            body += `\n\n<sub>run: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})</sub>`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: Number('${{ steps.prep.outputs.pr }}'), body });
+
+      - name: upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ github.run_id }}
+          path: bench-out/

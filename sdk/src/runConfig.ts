@@ -111,18 +111,11 @@ const SCHEMA: Record<string, string> = {
   "funding.usdcUnits": "INITIAL_USDC_UNITS",
   "funding.flowEthWei": "ERIS_FLOW_ETH_WEI",
   "funding.flowWethWei": "FLOW_WETH_WEI",
-  // limits
-  "limits.agentWethWei": "MAX_AGENT_WETH_IN_WEI",
-  "limits.agentUsdcUnits": "MAX_AGENT_USDC_IN_UNITS",
-  "limits.lpWethWei": "MAX_LP_WETH_WEI",
-  "limits.lpUsdcUnits": "MAX_LP_USDC_UNITS",
-  "limits.bundleActions": "MAX_BUNDLE_ACTIONS",
-  "limits.openPositions": "MAX_OPEN_POSITIONS",
-  "limits.gmxSizeUsd": "MAX_GMX_SIZE_USD",
-  "limits.aaveSupplyWethWei": "MAX_AAVE_SUPPLY_WETH_WEI",
-  "limits.aaveBorrowUsdcUnits": "MAX_AAVE_BORROW_USDC_UNITS",
-  "limits.priorityFeeWei": "DEFAULT_PRIORITY_FEE_WEI",
-  "limits.maxPriorityFeeWei": "MAX_PRIORITY_FEE_WEI",
+  // fees. What used to be the `limits` section -- per-order size caps for every venue, plus the
+  // bundle-length and open-position counts -- is gone: the competition has no order-size cap, and
+  // a knob that only ever reads "unlimited" is a knob someone will eventually set.
+  "fees.priorityFeeWei": "DEFAULT_PRIORITY_FEE_WEI",
+  "fees.maxPriorityFeeWei": "MAX_PRIORITY_FEE_WEI",
   // flow
   "flow.uninformedMaxWethWei": "UNINFORMED_FLOW_MAX_WETH_WEI",
   "flow.uninformedCount": "UNINFORMED_FLOW_COUNT",
@@ -135,6 +128,10 @@ const SCHEMA: Record<string, string> = {
   "flow.gmxActivityProb": "GMX_FLOW_ACTIVITY_PROB",
   "flow.gmxMaxBurst": "GMX_FLOW_MAX_BURST",
   "flow.aaveMaxWethWei": "AAVE_FLOW_MAX_WETH_WEI",
+  // Target debt for the borrower pool. Was `limits.aaveBorrowUsdcUnits`, which doubled as the
+  // agent's borrow cap; it lives here now so that removing the cap did not also re-calibrate the
+  // background market.
+  "flow.aaveBorrowUsdcUnits": "AAVE_FLOW_BORROW_USDC_UNITS",
   "flow.aaveActivityProb": "AAVE_FLOW_ACTIVITY_PROB",
   "flow.aaveActorCount": "AAVE_FLOW_ACTOR_COUNT",
   "flow.informedArbFeeBps": "ERIS_INFORMED_ARB_FEE_BPS",
@@ -169,9 +166,6 @@ const SCHEMA: Record<string, string> = {
 const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
   "funding.base": { prefix: "INITIAL" },
   "funding.flowBase": { prefix: "FLOW_BASE" },
-  "limits.agentBase": { prefix: "MAX_AGENT", infix: "IN" },
-  "limits.lpBase": { prefix: "MAX_LP" },
-  "limits.aaveSupplyBase": { prefix: "MAX_AAVE_SUPPLY" },
   "flow.baseMax": { prefix: "FLOW_MAX" },
 };
 // Per-base overrides whose env name is `<PREFIX>_<SYMBOL>` with no unit suffix. Distinct from
@@ -185,7 +179,7 @@ const SECTIONS = [
   "run",
   "market",
   "funding",
-  "limits",
+  "fees",
   "flow",
   "stress",
   "vuln",

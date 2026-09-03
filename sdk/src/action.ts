@@ -207,11 +207,6 @@ export function validateAction(
   if (action.type === "bundle") {
     if (action.actions.length === 0)
       return { ok: false, reason: "bundle actions must not be empty" };
-    if (action.actions.length > observation.limits.maxBundleActions)
-      return {
-        ok: false,
-        reason: "bundle action count exceeds configured max",
-      };
     const bundlePriority = action.maxPriorityFeePerGasWei;
     const bundleId = `${observation.runId}:${observation.round}:${hashAction(action)}`;
     return validateLeafItems(
@@ -246,9 +241,10 @@ function validateLeafItems(
     return { ok: false, reason: "priority fee exceeds configured max" };
   }
 
-  // Enforce cumulative balances/position counts across the bundle. Validate each leaf against
-  // "the balance minus what earlier leaves already consumed", preventing multiple leaves from
-  // collectively exceeding the wallet balance or maxOpenPositions (no effect on single actions).
+  // Enforce cumulative balances across the bundle. Validate each leaf against "the balance minus
+  // what earlier leaves already consumed", preventing multiple leaves from collectively exceeding
+  // the wallet balance (no effect on single actions). The balance is now the only bound: the
+  // order-size and position-count caps were removed with the rest of the limits.
   const work: BalanceSnapshot = {
     ethWei: balances.ethWei,
     wethWei: balances.wethWei,
@@ -260,9 +256,6 @@ function validateLeafItems(
     // it in sync with wethWei and stays byte-compatible.
     ...(balances.bases ? { bases: { ...balances.bases } } : {}),
   };
-  const baseLpPositions = observation.protocols.uniswap?.positions.length ?? 0;
-  let newLpPositions = 0;
-
   const intents: ValidatedIntent[] = [];
   for (let i = 0; i < actions.length; i++) {
     const item = actions[i];
@@ -280,18 +273,6 @@ function validateLeafItems(
     const result = adapter.validate(item, observation, work);
     if (!result.ok) return result;
 
-    if (item.type === "mintLiquidity") {
-      if (
-        baseLpPositions + newLpPositions >=
-        observation.limits.maxOpenPositions
-      ) {
-        return {
-          ok: false,
-          reason: "open LP position count exceeds configured max",
-        };
-      }
-      newLpPositions++;
-    }
     applyLeafSpend(work, item, observation, adapter.stableToken);
 
     intents.push({
@@ -514,9 +495,6 @@ function validateRawBundleAction(
   action: Extract<AgentAction, { type: "rawBundle" }>,
   observation: AgentObservation,
 ): ActionValidation {
-  if (action.txs.length > observation.limits.maxBundleActions) {
-    return { ok: false, reason: "rawBundle tx count exceeds configured max" };
-  }
   const priorityFeeWei = BigInt(
     action.maxPriorityFeePerGasWei ??
       observation.limits.defaultPriorityFeePerGasWei,

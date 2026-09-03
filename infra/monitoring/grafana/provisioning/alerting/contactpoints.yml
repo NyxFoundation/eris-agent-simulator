@@ -1,0 +1,11 @@
+apiVersion: 1
+contactPoints:
+  - orgId: 1
+    name: slack-ascon
+    receivers:
+      - uid: slack_ascon
+        type: slack
+        settings:
+          token: ${SLACK_BOT_TOKEN}
+          recipient: "C0BUGK1G7CZ"
+        disableResolveMessage: false

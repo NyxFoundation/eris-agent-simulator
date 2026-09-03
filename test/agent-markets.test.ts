@@ -18,18 +18,9 @@ function baseObs(): AgentObservation {
     inventory: { valueUsdc: 0, weth: 0, usdc: 0, eth: 0 },
     history: [],
     limits: {
-      maxWethInWei: "100",
-      maxUsdcInUnits: "100",
       defaultPriorityFeePerGasWei: "10",
       maxPriorityFeePerGasWei: "20",
       defaultSlippageBps: 50,
-      maxBundleActions: 5,
-      maxLpWethWei: "100",
-      maxLpUsdcUnits: "100",
-      maxOpenPositions: 5,
-      maxGmxSizeUsd: "0",
-      maxAaveSupplyWethWei: "0",
-      maxAaveBorrowUsdcUnits: "0",
     },
     protocols: {
       uniswap: {

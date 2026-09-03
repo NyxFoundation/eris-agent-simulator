@@ -1,0 +1,106 @@
+# config/regimes/vuln.yaml — official regime 8: pools that appear mid-run, some of them rigged (ADR 0014)
+#
+# regime = this file (market conditions), seed = supplied at run time. This file defines the OU fair
+# price / flow intensity / stress; the seed picks the realized path out of that family.
+# Run: npm run backtest -- --regime vuln --seed 101 [--agents <roster>]
+# Or as part of a scenario matrix: npm run backtest -- --scenarios config/scenarios/public.yaml
+#
+# Note:
+#   - There is deliberately no `run.seed` here (ADR 0017 §1). The seed is the second axis of a
+#     scenario, not a property of the regime, so it must be given explicitly and a run cannot
+#     silently inherit one.
+#   - blockTimeSec and blocks are part of the regime (fixed to the production values). Shortening is
+#     an explicit override for behavior checks and smoke tests only; runs whose scores you read must
+#     use these defaults (ADR 0016 §3).
+#   - every venue is deployed, `lst` and `liquity` included.
+#   - funding is an ETH/BTC/USDC basket, not USDC-only (issue #54).
+# The roster is the default for pre-submission verification. Replaceable via --agents <roster.yaml|json>.
+#
+# What this regime asks that no other one does: a quote that looks better than the market is not
+# always a quote you should take. Pools spring up mid-run from the seed, a majority of them rigged
+# to skim above a size threshold. Reaching them at all requires subscribing to the factory and
+# building a pool graph; taking them safely requires checking the contract before trading, which is
+# a pre-trade dry-run and a codehash comparison rather than a price calculation.
+#
+# The skim lands in the agent's own value, so the ordinary scoring picks it up: a rugged agent's
+# epoch series drops and M9 charges it. The environment's ground-truth events
+# (vulnerability_exploited / safe_pool_captured) are for attribution, not for scoring.
+#
+# The field needs agents that can see the pools at all. `discovery-arb` and `discovery-arb-verify`
+# are in config/rosters/full-field.yaml for that reason, idle in every other regime the way
+# `liquidator` is idle until a regime seeds victims.
+
+run:
+  blocks: 360 # R: ADR 0017 §1, matching the other regimes so scenario lengths stay comparable
+  seconds: 1800 # end by block count (must stay well above blocks x blockTimeSec = 720s)
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+
+market:
+  volatility: 0.004 # calm's: the regime is the pools, not the price
+  kappa: 0.02
+
+funding:
+  # The same ETH/BTC/USDC basket as every other regime (issue #54).
+  wethWei: "8000000000000000000" # 8 WETH
+  base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
+  usdcUnits: "25000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+  baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
+
+# Ranges rather than values, fixed by the seed, for the same reason every other stress event is
+# (ADR 0009 / ADR 0004): a published regime whose bait is always 4% is a constant to memorise.
+vuln:
+  poolLiquidityUsdcUnits: "2000000000000" # ~$2M a side. Deep enough that the bait is realisable profit
+  poolFeeBps: 30 # 0.3%, small enough not to cancel an honest pool's bait
+  # Off, deliberately. ADR 0014 §4-2 makes the pre-trade dry-run the primary check and the LLM audit
+  # auxiliary, and an official regime must not depend on a model endpoint being reachable -- a
+  # scenario that scores differently because an API was down is not a measurement. Participants may
+  # still run their own; `config/vuln-test.yaml` turns it on for verification.
+  llm: "0"
+  events:
+    # Two windows rather than one, so the decision recurs: an agent that got skimmed the first time
+    # has a second chance to have learned something, and one that sat out has to decide again.
+    - type: rigged-pool
+      windowFrac: [0.2, 0.35]
+      poolCount: [4, 6] # spawned together, so the choice is which to take, not whether to look
+      riggedFrac: [0.5, 0.7] # the rest are genuine arbitrage, which is what makes looking worthwhile
+      baitBps: [300, 600] # quoted 3-6% below fair -- far enough to be obviously worth taking
+      rugBps: [3000, 6000] # what a rigged pool skims once the threshold is crossed
+      rugThresholdFrac: [0.04, 0.08] # of funded USDC: small probes pass, real trades get skimmed
+    - type: rigged-pool
+      windowFrac: [0.6, 0.8]
+      poolCount: [4, 6]
+      riggedFrac: [0.5, 0.7]
+      baitBps: [300, 600]
+      rugBps: [3000, 6000]
+      rugThresholdFrac: [0.04, 0.08]
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: discovery-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: discovers the new pools and trades the best quote immediately (the naive side)
+  - id: discovery-arb-verify
+    wallet: AGENT3_PRIVATE_KEY
+    description: discovers the same pools and checks the contract before trading (the careful side)
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage, which never looks at a new pool at all

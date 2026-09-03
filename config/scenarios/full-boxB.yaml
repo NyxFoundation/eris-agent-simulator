@@ -1,28 +1,24 @@
-# config/scenarios/full.yaml — the full-venue scenario set.
+# config/scenarios/full-boxB.yaml — the second half of config/scenarios/full.yaml, by seed.
 #
-# A scenario is (regime, seed), so this file is the cartesian product below: 7 regimes x 10 seeds =
-# 70 scenarios. It is the official regime family with `lst` and `liquity` added (see any
-# config/regimes/full-*.yaml header for what that changes), so its scores stand on their own and are
-# not comparable with a matrix run on the official set.
+# 7 regimes x 5 seeds = 35 scenarios, on the seeds the published set does not carry. The first half
+# is config/scenarios/public.yaml (seeds 101-505), which is the same 35-scenario shape and is sized
+# to one box and one working day — see its header for the measurement.
 #
-# Ten seeds rather than the public set's five: the thing being measured is generalization across the
-# distribution, and the only honest way to buy more confidence in that is more draws from it — not a
-# longer run of one draw, which anvil's ~1,050-block history depth caps anyway.
-#
-# 70 scenarios is more than one spot box should carry: 6 regimes x 360 blocks + depeg x 120 = 2,280
-# blocks per seed, and a spot interruption takes everything on the box with it. Split by *seed*
-# (config/scenarios/full-boxA.yaml / full-boxB.yaml) so that a box that dies loses draws rather than
-# regimes — each half is still a complete 7-regime matrix, just a smaller one.
+# Each half is a complete 7-regime matrix, which is the point of splitting by seed rather than by
+# regime: a box that dies loses draws, not a whole market condition. What it costs is that z-scores
+# are computed inside a matrix, so ranking both halves as one needs the two `scenarios` arrays
+# concatenated into a single matrix.json by hand (runs/matrix-metric-merged is the precedent).
 #
 # Run: npm run backtest -- --scenarios config/scenarios/full-boxB.yaml --agents config/rosters/full-field.yaml
 
 regimes:
-  - full-calm
-  - full-cex-drift
-  - full-informed-flow
-  - full-whale
-  - full-lending-incident
-  - full-crash
-  - full-depeg
+  - calm
+  - cex-drift
+  - informed-flow
+  - whale
+  - lending-incident
+  - crash
+  - depeg
+  - vuln
 
 seeds: [606, 707, 808, 909, 1010]

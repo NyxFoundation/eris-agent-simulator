@@ -1,0 +1,101 @@
+# config/liquity.yaml — the CDP stablecoin venue (issue #39): Liquity V1 issuing eUSD.
+#
+#   npm run sim:realtime -- --config config/liquity.yaml
+#
+# Prerequisites. The core is deployed by the bundled deployer and has no Arbitrum counterpart to
+# point at, so like the LST vault it runs **only on a local deploy**:
+#
+#   1. cd deployer && npm run deploy -- --keep-fresh   # includes the liquity protocol
+#   2. npm run gen:local-constants                     # picks up LIQUITY from deployments.json
+#   3. npm run sim:realtime -- --config config/liquity.yaml
+#
+# A fork run that lists `liquity` in run.protocols fails fast at startup rather than reading zeros.
+#
+# What this venue adds that nothing else does:
+#
+#   redemption arb      eUSD is always exchangeable for $1 of collateral against the riskiest Trove,
+#                       minus a fee. A discount on the eUSD/USDC pool is therefore a gap against
+#                       something the protocol enforces, not a price forecast — the α direction of
+#                       ADR 0007
+#   Stability Pool      deposit eUSD to absorb liquidated debt and take the collateral at a discount
+#   Recovery Mode       under a 150% system TCR, everybody's liquidation risk moves at once
+#   the sorted list     redemptions start at the riskiest Trove, so a borrower's position in the
+#                       list is a thing to defend
+#
+# **The peg has to be pushed for any of it to be tradable.** The deploy seeds the eUSD/USDC pool at
+# par, and at par redemption arb correctly does nothing: the fee (50bps floor) exceeds a dislocation
+# of zero. `stress.events` below therefore carries an `eusdDepeg`, which has the environment sell
+# eUSD into its own market for the length of a window and buy it back afterwards — the same
+# reconcile-to-a-target shape as the liquidity pull (issue #52).
+
+run:
+  seed: 1
+  blocks: 90
+  seconds: 450 # end by block count (well above blocks x blockTimeSec)
+  blockTimeSec: 2
+  # uniswap is not optional here: redemption pays out in native ETH, and an agent that cannot sell
+  # it back has to hold the price exposure it just earned.
+  protocols: [uniswap, balancer, curve, liquity]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+
+funding:
+  # USDC-only, the evaluation profile (ADR 0017 §4). Redemption arb needs nothing else: it buys eUSD
+  # with USDC, redeems it for ETH and sells the ETH back. Hand out WETH instead if you want to watch
+  # the borrower side — a Trove needs collateral, and MIN_NET_DEBT is 1,800 eUSD.
+  wethWei: "0"
+  usdcUnits: "25000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+
+stress:
+  events:
+    # Ranges, not values: the seed samples them (ADR 0009).
+    #
+    # Calibration, measured on the deployed pool (100k/100k, A=100). magnitude is the fraction of
+    # its seeded eUSD depth the environment has sold at the top of the trapezoid, and what that
+    # produces is the *marginal* discount an agent would trade against: 40k sold moves it 114bps,
+    # 50k moves it 175bps, 60k moves it 282bps.
+    #
+    # The costs it has to clear: a 50bps redemption fee floor, ~30bps to sell the redeemed ETH back
+    # to USDC, and whatever safety margin the agent keeps. So the low end of this range barely pays
+    # and the high end pays well -- and the trapezoid's ramp passes through every level in between,
+    # where the right move is to wait. A range where every draw pays would measure reaction time
+    # rather than judgement.
+    #
+    # One more thing this scale makes sharp: with a 250k eUSD supply, Liquity's baseRate rises about
+    # 100bps per 5k redeemed, so the *first* redemption is cheap and the next one may not clear at
+    # all. That is the venue's own timing pressure, not a calibration artefact.
+    - {
+        type: eusdDepeg,
+        magnitudeRange: [0.4, 0.6],
+        windowFrac: [0.25, 0.6],
+        rampBlocks: 4,
+        holdBlocks: 10,
+        decayBlocks: 12,
+      }
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: redemption-arb
+    wallet: AGENT2_PRIVATE_KEY
+    description: buys eUSD below par and redeems it against the riskiest Trove
+  - id: redemption-arb-eager
+    dir: redemption-arb
+    wallet: AGENT3_PRIVATE_KEY
+    description: the same strategy with a thinner safety margin — does the extra fill pay for the extra fee?
+    env: { ERIS_REDEMPTION_SAFETY_BPS: "5" }
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)

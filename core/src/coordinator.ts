@@ -4,7 +4,7 @@
 import { privateKeyToAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";
 import { accountAddress, getBalances } from "@eris/sdk/chain.js";
-import type { ProtocolId, RawTxIntent, TxIntent } from "@eris/sdk/types.js";
+import type { ProtocolId, TxIntent } from "@eris/sdk/types.js";
 import { baseTokens } from "@eris/sdk/markets.js";
 import { enabledAdapters, getAdapter } from "@eris/sdk/protocols/registry.js";
 import type { FlowKind, SimContext } from "@eris/sdk/protocols/types.js";
@@ -190,7 +190,8 @@ export async function buildFlowContext(
         flowTrend?.persistBlocks ?? ctx.config.uninformedFlowPersistBlocks,
       ),
       uninformedFlowTrendCorrelation: String(
-        flowTrend?.trendCorrelation ?? ctx.config.uninformedFlowTrendCorrelation,
+        flowTrend?.trendCorrelation ??
+          ctx.config.uninformedFlowTrendCorrelation,
       ),
       informedFlowMaxWethWei: ctx.config.informedFlowMaxWethWei.toString(),
       balancerFlowMaxWethWei: ctx.config.balancerFlowMaxWethWei.toString(),
@@ -199,7 +200,7 @@ export async function buildFlowContext(
       gmxFlowActivityProb: String(ctx.config.gmxFlowActivityProb),
       gmxFlowMaxBurst: String(ctx.config.gmxFlowMaxBurst),
       aaveFlowMaxWethWei: ctx.config.aaveFlowMaxWethWei.toString(),
-      maxAaveBorrowUsdcUnits: ctx.config.maxAaveBorrowUsdcUnits.toString(),
+      aaveFlowBorrowUsdcUnits: ctx.config.aaveFlowBorrowUsdcUnits.toString(),
       aaveFlowActivityProb: String(ctx.config.aaveFlowActivityProb),
       informedArbFeeBps: String(ctx.config.informedArbFeeBps),
       uninformedArrivalRate: String(ctx.config.uninformedFlowArrivalRate),
@@ -306,24 +307,6 @@ export async function submitIntent(
     hashes.push(hash);
   }
   return hashes;
-}
-
-export async function submitRawTxIntent(
-  ctx: SimContext,
-  intent: RawTxIntent,
-): Promise<Hex> {
-  const account = privateKeyToAccount(intent.privateKey);
-  const block = await ctx.publicClient.getBlock();
-  const baseFee = block.baseFeePerGas ?? 0n;
-  return ctx.walletClient.sendTransaction({
-    account,
-    chain: ctx.chain,
-    to: intent.rawTx.to as Address,
-    data: intent.rawTx.data as Hex,
-    value: intent.rawTx.value ? BigInt(intent.rawTx.value) : 0n,
-    maxFeePerGas: baseFee + intent.priorityFeeWei,
-    maxPriorityFeePerGas: intent.priorityFeeWei,
-  });
 }
 
 export async function initialFairPrice(

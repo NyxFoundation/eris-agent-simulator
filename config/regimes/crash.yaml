@@ -1,46 +1,46 @@
 # config/regimes/crash.yaml — official regime 6: crash event (price gap). ADR 0017 §1
 #
-# A seed-randomized trapezoidal crash on the same market conditions as calm, with no victims: this
-# regime is about surviving and trading a price gap, not about the lending side. The liquidation wave
-# lives in `lending-incident`, which is the same shock plus Aave victims.
-# Run: npm run backtest -- --regime crash --seed 606 [--agents <roster>]
+# regime = this file (market conditions), seed = supplied at run time. This file defines the OU fair
+# price / flow intensity / stress; the seed picks the realized path out of that family.
+# Run: npm run backtest -- --regime crash --seed 101 [--agents <roster>]
+# Or as part of a scenario matrix: npm run backtest -- --scenarios config/scenarios/public.yaml
 #
-# Both halves of a crash are here (issue #52): the price gaps *and* the book thins, so the binding
-# question is not "is there a gap?" but "how much of it can I actually take?". The two events share
-# one window via alignWith -- a depth withdrawal somewhere else in the run would be a different
-# regime, and independent draws from the same range land ~160 blocks apart in a 360-block run.
-#
-# Measured on the state dump (issue #52 phase 3, 50% pull, see test/liquidityPullDepth.test.ts):
-# the executable price for a small trade moves <=0.1bps -- the pull is a constraint, not a free
-# arbitrage -- while the cost of taking 10 WETH goes 98.6 -> 195.3bps on uniswap and balancer
-# (x1.98) and 17.2 -> 71.5bps on curve (x4.15; a crypto pool's impact is far more convex).
-#
-# The crash magnitude below was NOT changed for it. The expectation was that a thinner book would
-# make the same flow move price further, so the two magnitudes would need re-calibrating together --
-# measured against a pull-free control on the same seed, the pool-fair dislocation inside the window
-# went 2087 -> 2100bps, i.e. unchanged. In a 45-block run with three agents the dislocation is
-# already almost entirely the crash's own; what the thin book changes is the cost of *taking* it.
-# Worth re-checking at R=360 with a full roster, where more of the gap gets arbitraged away.
-#
-# There is deliberately no `run.seed` (ADR 0017 §1): the seed is supplied per scenario.
-# blockTimeSec and blocks are part of the regime (ADR 0016 §3).
+# Note:
+#   - There is deliberately no `run.seed` here (ADR 0017 §1). The seed is the second axis of a
+#     scenario, not a property of the regime, so it must be given explicitly and a run cannot
+#     silently inherit one.
+#   - blockTimeSec and blocks are part of the regime (fixed to the production values). Shortening is
+#     an explicit override for behavior checks and smoke tests only; runs whose scores you read must
+#     use these defaults (ADR 0016 §3).
+#   - every venue is deployed, `lst` and `liquity` included. That is not merely a wider set: liquity
+#     promotes eUSD into the market-priced stable registry, so a stable that can lose its peg exists
+#     in every regime rather than only in depeg, and a liquidityPull with no `venue:` thins every
+#     enabled venue. This file used to be full-crash.yaml, a separate set beside a five-venue one;
+#     the five-venue set was retired rather than kept as a second answer to what the competition is.
+#   - funding is an ETH/BTC/USDC basket, not USDC-only (issue #54) -- the reasoning is on the
+#     funding block itself.
+# The roster is the default for pre-submission verification. Replaceable via --agents <roster.yaml|json>.
 
 run:
   blocks: 360 # R: ADR 0017 §1 (crash window x3-4, ~72 LLM decisions, inside anvil's ~1050 history depth)
   seconds: 1800 # a stress run auto-disables the time limit and ends by block count (ADR 0009)
   blockTimeSec: 2
-  protocols: [uniswap, balancer, curve, gmx, aave]
+  protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
   economicGas: false
   localDeploy: true
   reportDir: ./runs
 
 funding:
-  wethWei: "0" # USDC-only distribution: netPnlUsdc carries β, so nobody may start already exposed (ADR 0017 §4)
+  # An ETH/BTC/USDC basket rather than USDC only. The score is excess over the do-nothing
+  # baseline, which holds the same funding, so the basket's beta cancels out of the metric by
+  # construction (lp-provider's own comment says as much: "handed inventory is beta nobody chose
+  # and it cancels out of every score because the benchmark holds it too"). What USDC-only was
+  # protecting is netPnlUsdc, a reporting figure. What it cost was reachability: the LST vault and
+  # the Trove are WETH/ETH denominated, and the sell side of every arbitrage had no inventory
+  # behind it, so half of each strategy was structurally dead (issue #54).
+  wethWei: "8000000000000000000" # 8 WETH
+  base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
   usdcUnits: "25000000000"
-
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
 
 flow:
   uninformedMaxWethWei: "1000000000000000000"
@@ -53,6 +53,12 @@ flow:
   gmxArrivalRate: "0.75"
   gmxSizeSigma: "1.0"
   aaveActorSizeSigma: "1.0"
+  # WBTC orderflow. Without it nothing exogenous moves the WBTC pools: the fair price walks and
+  # the pool sits still, so the funded WBTC leg is inventory nobody trades against (measured on a
+  # 60-block calm run: 390 WETH base-leg txs against 7 WBTC, all 7 from one agent, and a pool that
+  # moved +0.07% while its fair moved -1.17%). Sized to the WETH flow by notional; one value covers
+  # the uninformed and informed legs on all three venues, where WETH splits them 1x and 2x.
+  baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
 
 stress:
   # Ranges, not values: the seed samples them (ADR 0009). Deeper than lending-incident's crash because

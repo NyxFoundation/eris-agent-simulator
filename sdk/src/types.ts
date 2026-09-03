@@ -693,32 +693,20 @@ export type AgentObservation = {
     poolPriceUsdcPerWeth: number;
     fairPriceUsdcPerWeth: number;
   }>;
+  // What the runtime still decides for you. Order size is *not* in here: the competition has no
+  // per-order cap on any venue, so the only bound on a trade is the wallet's balance and the depth
+  // the venue is willing to give up. An agent that wants to be sized has to size itself.
+  //
+  // Everything that used to live here -- maxWethInWei / maxUsdcInUnits / maxLpWethWei /
+  // maxLpUsdcUnits / maxGmxSizeUsd / maxAaveSupplyWethWei / maxAaveBorrowUsdcUnits /
+  // maxLstDepositWethWei / baseLimits, plus the maxBundleActions and maxOpenPositions counts -- was
+  // removed rather than raised. Raising a cap leaves it as a number every strategy reads as its
+  // budget (the reference field sized itself off these values in 19 files), and a budget handed out
+  // by the environment is not a decision the agent made.
   limits: {
-    maxWethInWei: string;
-    maxUsdcInUnits: string;
     defaultPriorityFeePerGasWei: string;
     maxPriorityFeePerGasWei: string;
     defaultSlippageBps: number;
-    maxBundleActions: number;
-    maxLpWethWei: string;
-    maxLpUsdcUnits: string;
-    maxOpenPositions: number;
-    maxGmxSizeUsd: string;
-    maxAaveSupplyWethWei: string;
-    maxAaveBorrowUsdcUnits: string;
-    // Issue #38: cap on a single LST stake (wei). "0" = uncapped (bounded by balance).
-    maxLstDepositWethWei?: string;
-    // ADR 0013: base symbol -> per-round cap (base units, decimal string). WETH equals maxWethInWei
-    // etc. above for compatibility. Caps for additional bases (WBTC etc.) go here. "0" = no cap
-    // (balance bound). A base-agnostic agent can cap its base-sell size at this value.
-    baseLimits?: Record<
-      TokenSymbol,
-      {
-        maxSwapInBaseWei: string;
-        maxLpBaseWei: string;
-        maxAaveSupplyBaseWei: string;
-      }
-    >;
   };
   protocols: ProtocolObservations;
   // Competition signals (ADR 0011. Observations that make the priority-fee auction skill-based under

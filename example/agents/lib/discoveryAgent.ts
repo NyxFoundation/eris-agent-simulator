@@ -25,6 +25,11 @@ const MAX_NEW_ACTIONS_PER_BLOCK = 2;
 // reverting after approve (not because the approval hasn't landed, but a broken/booby-trapped dry-run).
 // Once exceeded, fall to the safe side and avoid.
 const MAX_VERIFY_RETRIES = 4;
+// How much USDC to put into a pool this agent has just discovered, in basis points of the balance.
+// A rigged pool skims what it is handed, so this is the loss taken on a pool that turns out to be
+// hostile as well as the profit taken on one that does not -- it is the whole bet either way, and
+// there is no longer a per-order cap standing behind it.
+const PROBE_SIZE_BPS = 2_000; // 20%
 
 export async function runDiscoveryAgent(
   ctx: AgentContext,
@@ -83,7 +88,11 @@ export async function runDiscoveryAgent(
       try {
         const bn = BigInt(obs.round ?? 0);
         const fee = obs.limits?.defaultPriorityFeePerGasWei;
-        const amountIn = BigInt(obs.limits?.maxUsdcInUnits ?? "0");
+        // A fixed fraction of the USDC on hand. This is the probe size a discovery agent commits
+        // to a pool it has just found, and with no per-order cap to inherit it has to be stated.
+        const amountIn =
+          (BigInt(obs.balances?.usdcUnits ?? "0") * BigInt(PROBE_SIZE_BPS)) /
+          10_000n;
         if (amountIn <= 0n) return;
         const fairByBase: Record<string, number> = {
           WETH: obs.fairPriceUsdcPerWeth,

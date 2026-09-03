@@ -86,8 +86,6 @@ export function decideUnderwriting(input: {
   ethWei: bigint;
   ethBaselineWei: bigint;
   wethBaselineWei: bigint;
-  maxUsdcPerRound: bigint;
-  maxWethPerRound: bigint;
   canSellEth: boolean;
 }): UnderwriterDecision {
   const l = input.liquity;
@@ -106,11 +104,8 @@ export function decideUnderwriting(input: {
         ? input.wethWei - input.wethBaselineWei
         : 0n;
     if (sellable >= MIN_WETH_WEI) {
-      const size =
-        input.maxWethPerRound > 0n && sellable > input.maxWethPerRound
-          ? input.maxWethPerRound
-          : sellable;
-      return { kind: "unwind", wethWei: size };
+      // Sold whole: there is no per-round swap cap to slice it against any more.
+      return { kind: "unwind", wethWei: sellable };
     }
     const reserve =
       input.ethBaselineWei > BigInt(l.suggestedGasReserveWei)
@@ -137,11 +132,7 @@ export function decideUnderwriting(input: {
         kind: "hold",
         reason: `eUSD is ${(-l.discountBps).toFixed(1)}bps above par; underwriting at a premium means the liquidation discount has to earn it back first`,
       };
-    const size =
-      input.maxUsdcPerRound > 0n
-        ? minBI(target, input.maxUsdcPerRound)
-        : target;
-    if (size >= MIN_USDC_UNITS) return { kind: "buy", usdcIn: size };
+    if (target >= MIN_USDC_UNITS) return { kind: "buy", usdcIn: target };
   }
 
   return {
@@ -176,8 +167,6 @@ export function decide(
     ethWei,
     ethBaselineWei: baselineEthWei,
     wethBaselineWei: baselineWethWei,
-    maxUsdcPerRound: BigInt(obs.limits.maxUsdcInUnits || "0"),
-    maxWethPerRound: BigInt(obs.limits.maxWethInWei || "0"),
     canSellEth: obs.enabledProtocols.includes("uniswap"),
   });
   const fee = obs.limits.defaultPriorityFeePerGasWei;
