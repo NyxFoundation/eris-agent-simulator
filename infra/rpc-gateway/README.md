@@ -71,3 +71,19 @@ node infra/rpc-gateway/writeload.mjs --url http://127.0.0.1:8555 --senders 400 -
 Reports tx/block (gas-bound, identical at 2s/4s), mined tx/s, and derived participant capacity. Result:
 the pipeline handles thousands of light tx/s (12k–15k tx/block), so capacity is bound by heavy DeFi-tx
 *execution*, not RPC ingestion or gas — see the ASCON `docs/18` §17.
+
+## Per-client rate limit (anti-abuse)
+
+The gateway rate-limits each caller with a token bucket, so no single team can hammer the shared node
+(e.g. `eth_call`/`simulateTx` spam). Heavy, EVM-executing reads cost more than light ones. Caller key is
+the Access `common_name` (falls back to IP). Over-limit requests get HTTP 429 + a JSON-RPC error before
+anvil is touched, and are counted in `rpc_ratelimited_total`.
+
+| env | default | meaning |
+|---|--:|---|
+| `RPC_RATE_REFILL` | 100 | tokens/sec/client (**0 disables** — set 0 for load tests) |
+| `RPC_RATE_BURST` | 300 | bucket capacity (short-burst allowance) |
+| `RPC_HEAVY_WEIGHT` | 5 | cost of a heavy read (`eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_getLogs`, `debug_*`, `trace_*`); light calls cost 1 |
+
+A legit agent does ~1 observation/block (well under 1 req/s), so it never hits the limit; only spam does.
+Verified: 400 `eth_call` from one client → 96 pass / 304 rejected (429); tune the envs on the service.

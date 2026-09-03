@@ -36,6 +36,25 @@ const batchB = new Map();                                 // le -> count  (batch
 const BATCH_BUCKETS = [1, 2, 5, 10, 20, 50, 100];
 let inFlight = 0, upstreamUp = 1;
 
+// ---- per-client rate limit (anti-abuse C): token bucket, heavy methods cost more (simulateTx spam) ----
+const RATE_REFILL = Number(process.env.RPC_RATE_REFILL ?? "100");   // tokens/sec/client (0 disables)
+const RATE_BURST = Number(process.env.RPC_RATE_BURST ?? "300");     // bucket capacity
+const HEAVY_WEIGHT = Number(process.env.RPC_HEAVY_WEIGHT ?? "5");   // cost of an EVM-executing read
+const HEAVY = /^(eth_call|eth_estimateGas|eth_createAccessList|eth_getLogs|debug_|trace_|arbtrace_)/;
+const weight = (m) => (m && HEAVY.test(m) ? HEAVY_WEIGHT : 1);
+const buckets = new Map();                                          // client -> {tokens, last}
+let rateLimited = 0;
+function allow(client, cost) {
+  if (RATE_REFILL <= 0) return true;
+  const now = Date.now();
+  let b = buckets.get(client);
+  if (!b) { b = { tokens: RATE_BURST, last: now }; buckets.set(client, b); }
+  b.tokens = Math.min(RATE_BURST, b.tokens + ((now - b.last) / 1000) * RATE_REFILL);
+  b.last = now;
+  if (b.tokens < cost) return false;
+  b.tokens -= cost; return true;
+}
+
 const methodLabel = (m) => (hist.size >= MAX_METHODS && !hist.has(m)) ? "_other" : (m || "_unknown");
 // rpc_requests_total counts every JSON-RPC *call* (a batch expands to its members); the duration
 // histogram is per HTTP *request* (labeled by the single method, or "_batch"). Two different denominators
@@ -71,6 +90,7 @@ function metricsText() {
   o += `rpc_batch_size_count{${L}} ${batchCount}\n`;
   o += `# TYPE rpc_in_flight gauge\nrpc_in_flight{${L}} ${inFlight}\n`;
   o += `# TYPE rpc_upstream_up gauge\nrpc_upstream_up{${L}} ${upstreamUp}\n`;
+  o += `# TYPE rpc_ratelimited_total counter\nrpc_ratelimited_total{${L}} ${rateLimited}\n`;
   return o;
 }
 
@@ -118,6 +138,15 @@ const server = http.createServer((req, res) => {
     // verified the signature), so a plain base64url decode of the payload is enough.
     const client = clientFromReq(req);
     const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "";
+
+    // per-client rate limit (heavy EVM-executing reads cost more) -> 429 before touching anvil
+    const cost = (methods.length ? methods : [label]).reduce((s, m) => s + weight(m), 0) || 1;
+    if (!allow(client || ip || "anon", cost)) {
+      rateLimited++;
+      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "rate_limited", client, ip });
+      res.writeHead(429, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32005, message: "rate limited" } }));
+    }
 
     inFlight++;
     forward(bodyBuf, (err, status, upBody, dur) => {
