@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Aggregate the sampler CSV into per-container + fleet memory/CPU stats.
+"""Aggregate the sampler CSV into fleet + PER-AGENT memory/CPU stats.
   Usage: agg.py STATS.csv [label] [--md]
---md emits a Markdown block suitable for a GitHub PR comment; otherwise plain text."""
+Container name is eris-<id> (id == agent), so each container's series is that agent's footprint.
+--md emits Markdown for a GitHub PR comment; otherwise plain text."""
 import sys, csv
 from collections import defaultdict
 
@@ -23,27 +24,31 @@ with open(path) as f:
 names = sorted(per_mem)
 if not names:
     print("no samples in " + path); sys.exit(0)
-peak = sorted(max(per_mem[n]) for n in names)
-mean = sorted(sum(per_mem[n]) / len(per_mem[n]) for n in names)
-cpud = sorted(max(per_cpu[n]) for n in names)
+def stats(n):
+    mm, cc = per_mem[n], per_cpu[n]
+    agent = n[5:] if n.startswith("eris-") else n
+    return dict(agent=agent, mem_peak=max(mm), mem_mean=sum(mm) / len(mm), cpu_peak=max(cc))
+rowsd = sorted((stats(n) for n in names), key=lambda d: d["mem_peak"], reverse=True)
+peak = sorted(d["mem_peak"] for d in rowsd)
 med = lambda a: a[len(a) // 2]
 fleet_mem_gb = max(by_ts.values()) / 1024
 gmax = peak[-1]
-proj100 = gmax * 100 / 1024
 
 if md:
     print(f"### 🧪 bench — {label}\n")
-    print(f"| metric | value |\n|---|---|")
-    print(f"| containers | {len(names)} |")
-    print(f"| per-container mem peak (MiB) | min {peak[0]:.0f} · median {med(peak):.0f} · max {gmax:.0f} |")
-    print(f"| per-container mem mean (MiB) | median {med(mean):.0f} |")
-    print(f"| per-container cpu peak (%) | median {med(cpud):.1f} · max {cpud[-1]:.1f} |")
+    print("| metric | value |\n|---|---|")
+    print(f"| agents (containers) | {len(names)} |")
+    print(f"| per-agent mem peak (MiB) | min {peak[0]:.0f} · median {med(peak):.0f} · max {gmax:.0f} |")
     print(f"| fleet peak mem | {fleet_mem_gb:.1f} GB |")
-    print(f"| projection to 100 (worst peak {gmax:.0f} MiB) | {proj100:.1f} GB |")
+    print(f"| projection to 100 (worst {gmax:.0f} MiB) | {gmax * 100 / 1024:.1f} GB |")
+    print("\n<details><summary>per-agent CPU / memory</summary>\n")
+    print("| agent | mem peak MiB | mem mean MiB | cpu peak % |\n|---|--:|--:|--:|")
+    for d in rowsd:
+        print(f"| `{d['agent']}` | {d['mem_peak']:.0f} | {d['mem_mean']:.0f} | {d['cpu_peak']:.1f} |")
+    print("\n</details>")
 else:
-    print(f"== {label} ==  containers={len(names)} samples={rows}")
-    print(f"per-container PEAK mem MiB : min={peak[0]:.0f} median={med(peak):.0f} max={gmax:.0f}")
-    print(f"per-container MEAN mem MiB : median={med(mean):.0f}")
-    print(f"per-container PEAK cpu %%  : median={med(cpud):.1f} max={cpud[-1]:.1f}")
-    print(f"fleet PEAK mem GB         : {fleet_mem_gb:.1f}")
-    print(f"projection to 100 (x{gmax:.0f} MiB) : {proj100:.1f} GB")
+    print(f"== {label} ==  agents={len(names)} samples={rows}")
+    print(f"fleet peak mem: {fleet_mem_gb:.1f} GB   per-agent mem peak: min {peak[0]:.0f} / med {med(peak):.0f} / max {gmax:.0f} MiB")
+    print(f"{'agent':<20}{'mem_peak':>10}{'mem_mean':>10}{'cpu_peak':>10}")
+    for d in rowsd:
+        print(f"{d['agent']:<20}{d['mem_peak']:>10.0f}{d['mem_mean']:>10.0f}{d['cpu_peak']:>10.1f}")

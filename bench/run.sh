@@ -11,11 +11,14 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$REPO"
 
-AGENTS=12; BLOCKS=200; BT=2; MODE=frozen; MEM="${ERIS_DOCKER_MEM:-1g}"; OUT=""
+AGENTS=12; BLOCKS=200; BT=2; MODE=frozen; MEM="${ERIS_DOCKER_MEM:-1g}"; OUT=""; ROSTER=""
 while [ $# -gt 0 ]; do case "$1" in
   --agents) AGENTS=$2; shift 2;; --blocks) BLOCKS=$2; shift 2;; --block-time) BT=$2; shift 2;;
   --mode) MODE=$2; shift 2;; --mem) MEM=$2; shift 2;; --out) OUT=$2; shift 2;;
+  --each) ROSTER=each; shift;;                 # one container per example agent (per-agent compare)
+  --agent) ROSTER="agent:$2"; shift 2;;        # just this agent + a venue-arb reference
   *) echo "unknown arg: $1" >&2; exit 1;; esac; done
+ROSTER="${ROSTER:-$AGENTS}"                     # default: N venue-arb clones (load test)
 OUT="${OUT:-$REPO/bench/results/$(date +%Y%m%d-%H%M%S)-${AGENTS}${MODE}}"
 mkdir -p "$OUT"
 CFG="$REPO/config/_bench.yaml"
@@ -27,7 +30,7 @@ export ANVIL_RPC_URL="http://127.0.0.1:${ANVIL_PORT}"
 export ERIS_RPC_URL="$ANVIL_RPC_URL"
 
 echo "[1/5] reset chain";  bash "$REPO/bench/lib/reset-chain.sh"
-echo "[2/5] config";       python3 "$REPO/bench/lib/mkconfig.py" "$AGENTS" "$BLOCKS" "$BT" "$MODE" "$CFG"
+echo "[2/5] config ($ROSTER)"; python3 "$REPO/bench/lib/mkconfig.py" "$BLOCKS" "$BT" "$MODE" "$CFG" "$ROSTER"
 echo "[3/5] sampler";      setsid python3 "$REPO/bench/lib/sampler.py" "$OUT/stats.csv" 1800 >"$OUT/sampler.log" 2>&1 & SAMP=$!
 echo "[4/5] sim ($AGENTS agents, $BLOCKS blocks, ${BT}s block, mem $MEM)"
 # bind-mount mode: stock node:24 + this checkout mounted (no per-team image build needed for a bench).
