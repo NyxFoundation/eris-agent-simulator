@@ -62,7 +62,7 @@ services:
     restart: unless-stopped
     env_file: [./grafana/grafana.env, ./grafana/secret.env]
     environment:
-      - GF_SERVER_ROOT_URL=https://monitor.ascon.dev
+      - GF_SERVER_ROOT_URL=https://ascon-monitor.nyx.foundation
       - GF_RENDERING_SERVER_URL=http://renderer:8081/render
       - GF_RENDERING_CALLBACK_URL=http://grafana:3000/
       - GF_UNIFIED_ALERTING_SCREENSHOTS_CAPTURE=true
