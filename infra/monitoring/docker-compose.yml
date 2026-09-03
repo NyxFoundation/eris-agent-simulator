@@ -89,7 +89,7 @@ services:
     command: -config.file=/etc/promtail/config.yml
     volumes:
       - ./promtail/config.yml:/etc/promtail/config.yml:ro
-      - /home/gohan/ascon-bench/logs:/logs:ro
+      - /home/gohan/ascon-logs:/logs:ro
       - /home/gohan/workspace/eris-agent-simulator/runs:/runs:ro
     depends_on: [loki]
 
