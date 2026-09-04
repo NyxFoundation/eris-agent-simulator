@@ -70,6 +70,7 @@ ERIS_AGENT_ID=alice \
 ERIS_AGENT_DIR=example/agents/my-strategy \
 ERIS_AGENT_PRIVATE_KEY=0x… \
 ERIS_RUN_DIR=./my-logs \
+CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
   node --import tsx example/agents/runtime/bot.ts
 ```
 
