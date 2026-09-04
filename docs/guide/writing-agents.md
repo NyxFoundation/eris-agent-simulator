@@ -73,8 +73,7 @@ flowchart LR
                                        "priceUsdc": 0.991, "marketQuoted": true } } },
   "inventory": { "valueUsdc": 339290.8, "weth": 0, "usdc": 25000, "eth": 105.0 },
   "history": [ { "round": 608, "poolPriceUsdcPerWeth": 3000.0, "fairPriceUsdcPerWeth": 3000 }, … ],
-  "limits": { "maxWethInWei": "1000000000000000000", "maxUsdcInUnits": "5000000000",
-              "defaultPriorityFeePerGasWei": "100000000", "defaultSlippageBps": 50, … },
+  "limits": { "defaultPriorityFeePerGasWei": "100000000", "maxPriorityFeePerGasWei": "…", "defaultSlippageBps": 50 },
   "protocols": { "uniswap": { "pool": { "priceUsdcPerWeth": 3000.0, "fee": 3000, "liquidity": "54772255750516611", … } },
                  "balancer": { "priceUsdcPerWeth": 2991.0 }, "curve": { … }, "aave": { … } },
   "competition": { "maxCompetitorPriorityFeeWei": "0", "recentRevertRate": 0, … }
@@ -93,12 +92,12 @@ Things to watch when reading:
   in an LP leg alike — so holding a depegged one is a real loss, and buying one below par is a real position with a
   real downside. `marketQuoted: false` means `priceUsdc: 1` is par by assumption (no market, or the pool would not
   quote): **do not read a `1` there as "the peg is holding"**. Trade the pair with `stableSwap`
-- **Per-round limits are denominated in USDC's six decimals.** `maxUsdcInUnits` bounds both legs of a `stableSwap`,
-  so for an 18-decimal stable you have to scale it (`limit * 10n ** 12n`) before sizing a sell. Getting this wrong
-  rejects every unwind while letting every buy through, which leaves you holding a position you cannot close
+- **There is no per-order size cap** (`maxUsdcInUnits`/`maxWethInWei` were removed from `limits`). The only bounds on
+  a trade are your wallet balance and the venue depth you are willing to move — **size yourself**. Oversizing is bounded
+  by your balance and by slippage, not by a validator size cap
 - `history` is the pool/fair series for the last ~20 blocks (for gauging momentum and the persistence of a gap)
 - **`blocksRemaining` is how many blocks are left**, counted from the first block you observed (absent when the run has no block limit). An exit that takes longer than that cannot complete inside the run — which is what makes the LST withdrawal queue a decision rather than a formality. Approximate by a block or two
-- `limits` holds the per-round trade limits and the default/max fees. **Cap your size here** (actions over the limit
+- `limits` holds only the default/max **fees** and default slippage (no size caps). **Fee-cap your action here** (actions over the fee limit
   are rejected by validation)
 - The shape of `protocols.<venue>` differs per venue. **It's safest not to read it directly, but to normalize it with a
   shared helper** (Step 4). Reading `obs.pool` directly has repeatedly caused a TypeError → noop for every round
@@ -201,7 +200,7 @@ for (const view of marketViews(obs)) {
    "persistence" of the gap with `history` before moving
 3. **Initial funding is USDC-only by default** (`funding.wethWei: "0"`). A strategy that starts by selling WETH has no
    inventory in the first round. Decide direction after checking `obs.balances`
-4. **Follow `obs.limits` for size and fee**. Overruns are rejected by validation, wasting that round
+4. **Use `obs.limits` for the fee/slippage defaults; size the trade yourself** (there is no size cap in `limits`). Fee overruns are rejected by validation, wasting that round
 
 ## Submission
 
