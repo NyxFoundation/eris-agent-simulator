@@ -63,7 +63,7 @@ def check_revert(rows, warn):
     for r in rows:
         if r.get("role") == "agent":
             tot[r["ownerId"]] += 1
-            if r.get("status") != "success":
+            if str(r.get("status", "")).lower() in ("reverted", "revert", "failed", "error", "submit_failed"):
                 bad[r["ownerId"]] += 1
     out = []
     for owner, n in sorted(tot.items()):
