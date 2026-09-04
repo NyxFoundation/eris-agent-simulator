@@ -63,10 +63,17 @@ export function createJsonlAppender(
   // logs huge or unbounded output could fill the host disk (DoS). Cap the per-agent log file size
   // and the per-entry size. Once the file cap is hit we write one final notice and go silent; a
   // single oversized entry is replaced by a truncation notice. Both bounds are env-overridable.
-  const MAX_BYTES = Number(process.env.ERIS_MAX_LOG_BYTES ?? 67108864); // 64 MiB per <agentId><suffix>.jsonl
-  const MAX_LINE = Number(process.env.ERIS_MAX_LOG_LINE_BYTES ?? 262144); // 256 KiB per entry
+  // Parse a byte limit: finite, non-negative; otherwise fall back to the default (so a bad/NaN/
+  // Infinity env value cannot silently disable the cap).
+  const byteLimit = (v: string | undefined, def: number): number => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : def;
+  };
+  const MAX_BYTES = byteLimit(process.env.ERIS_MAX_LOG_BYTES, 67108864); // 64 MiB per <agentId><suffix>.jsonl
+  const MAX_LINE = byteLimit(process.env.ERIS_MAX_LOG_LINE_BYTES, 262144); // 256 KiB per entry
   let written = -1; // lazily seeded from the file size on first write (robust across restarts)
   let capped = false;
+  let lastFile = ""; // reset the byte accounting when a segment roll changes the target file (ADR 0021)
   return (record) => {
     try {
       const dir = join(resolveDir(), "agents");
@@ -75,6 +82,12 @@ export function createJsonlAppender(
         ready.add(dir);
       }
       const file = join(dir, `${agentId}${suffix}.jsonl`);
+      if (file !== lastFile) {
+        // new segment (or first write): re-seed accounting for this file and clear the cap
+        lastFile = file;
+        written = -1;
+        capped = false;
+      }
       if (written < 0) {
         try {
           written = statSync(file).size;
