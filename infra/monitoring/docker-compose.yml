@@ -162,6 +162,23 @@ services:
       - /home/gohan/ascon-logs:/var/log/ascon
       - ascon-textfile:/textfile
 
+  dashboard:
+    image: node:24-bookworm-slim
+    container_name: ascon-dashboard
+    restart: unless-stopped
+    working_dir: /eris
+    command: node_modules/.bin/tsx dashboard/server/serve.ts
+    environment:
+      - PORT=5174
+      - ERIS_RUNS_DIR=/eris/runs
+      - ERIS_DASHBOARD_DIST=/eris/dashboard/dist
+      - HOME=/tmp
+    ports: ["127.0.0.1:5174:5174"]
+    tmpfs:
+      - /tmp
+    volumes:
+      - /home/gohan/workspace/eris-agent-simulator:/eris:ro
+
 networks:
   ascon-chain:
     driver: bridge
