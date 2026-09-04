@@ -49,6 +49,11 @@ const weight = (m) => (m && HEAVY.test(m) ? HEAVY_WEIGHT : 1);
 // miner_/admin_/personal_. The operator hits anvil directly (not the gateway) for setup, so its
 // cheatcodes still work. Set RPC_FILTER=0 to disable (e.g. an internal all-access gateway).
 const METHOD_ALLOW = new RegExp(process.env.RPC_METHOD_ALLOW ?? "^(eth_|net_|web3_)");
+// Deny-list checked even for eth_* (allow-list is namespace-level, this is method-level): block the
+// methods that ride on the node's own/unlocked accounts. anvil boots deterministic prefunded UNLOCKED
+// accounts, so eth_sendTransaction/eth_accounts/eth_sign* would let a caller move funds without signing.
+// Participants must sign locally and use eth_sendRawTransaction. Set RPC_METHOD_DENY to override.
+const METHOD_DENY = new RegExp(process.env.RPC_METHOD_DENY ?? "^(eth_accounts|eth_sendTransaction|eth_sign)");
 const FILTER_METHODS = (process.env.RPC_FILTER ?? "1") !== "0";
 let methodDenied = 0;
 const buckets = new Map();                                          // client -> {tokens, last}
@@ -151,7 +156,7 @@ const server = http.createServer((req, res) => {
 
     // method allowlist (4.22): reject cheatcodes / privileged methods before anvil is touched
     if (FILTER_METHODS && methods.length) {
-      const bad = methods.find((m) => !METHOD_ALLOW.test(m));
+      const bad = methods.find((m) => !METHOD_ALLOW.test(m) || METHOD_DENY.test(m));
       if (bad) {
         methodDenied++;
         logline({ ts: new Date().toISOString(), env: ENV_NAME, method: bad, status: "method_denied", client, ip });
