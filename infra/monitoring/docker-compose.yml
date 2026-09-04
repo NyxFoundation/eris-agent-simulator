@@ -172,8 +172,11 @@ services:
       - PORT=5174
       - ERIS_RUNS_DIR=/eris/runs
       - ERIS_DASHBOARD_DIST=/eris/dashboard/dist
+      - ERIS_BLOCKSCOUT_URL=http://host.docker.internal:4000
       - HOME=/tmp
     ports: ["127.0.0.1:5174:5174"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     tmpfs:
       - /tmp
     volumes:

@@ -49,12 +49,15 @@ services:
     command: sh -c "bin/blockscout eval \"Elixir.Explorer.ReleaseTasks.create_and_migrate()\" && bin/blockscout start"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - chain
     env_file:
       - ./envs/common-blockscout.env
     environment:
-      ETHEREUM_JSONRPC_HTTP_URL: http://host.docker.internal:${RPC_PORT:?}/
-      ETHEREUM_JSONRPC_TRACE_URL: http://host.docker.internal:${RPC_PORT}/
-      ETHEREUM_JSONRPC_WS_URL: ws://host.docker.internal:${RPC_PORT}/
+      ETHEREUM_JSONRPC_HTTP_URL: http://ascon-anvil:${RPC_PORT:?}/
+      ETHEREUM_JSONRPC_TRACE_URL: http://ascon-anvil:${RPC_PORT}/
+      ETHEREUM_JSONRPC_WS_URL: ws://ascon-anvil:${RPC_PORT}/
       CHAIN_ID: ${CHAIN_ID:?}
       # Fork mode must set this to the fork block, or the indexer walks all of Arbitrum
       # history backwards from the head. Local-deploy / backtest anvil starts at 0.
@@ -91,6 +94,12 @@ services:
       FRONT_PROXY_PASS: http://frontend:3000
     ports:
       - "${EXPLORER_PORT}:80"
+
+networks:
+  default:
+  chain:
+    external: true
+    name: ascon-monitoring_ascon-chain
 
 volumes:
   db-data:
