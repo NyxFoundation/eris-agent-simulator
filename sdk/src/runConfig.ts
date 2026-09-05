@@ -94,6 +94,8 @@ const SCHEMA: Record<string, string> = {
   "run.segmentHours": "ERIS_SEGMENT_HOURS", // ADR 0021 §6: hours per output segment (0 = one dir)
   "run.segmentName": "ERIS_SEGMENT_NAME",
   "run.markMedianBlocks": "ERIS_MARK_MEDIAN_BLOCKS",
+  // Rules §2.6: the block gas limit the coordinator sets once setup is done (0 = leave the node's).
+  "run.blockGasLimit": "ERIS_BLOCK_GAS_LIMIT",
   "run.reportDir": "REPORT_DIR",
   "run.flashArb": "ERIS_FLASH_ARB",
   "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",

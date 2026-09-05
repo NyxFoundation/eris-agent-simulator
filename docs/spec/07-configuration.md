@@ -65,6 +65,7 @@ RPC URL や chain id が秘密情報側にあるのは、**それらが regime �
 | `segmentHours` | 0 | 1 セグメントの時間（0 = 単一ディレクトリ） |
 | `segmentName` | "" | 期間全体の表示名 |
 | `markMedianBlocks` | 5 | G7 の median 窓 |
+| `blockGasLimit` | 30000000 | setup 完了後・mining 開始前に coordinator が設定するブロックガスリミット（規約 §2.6。0 = ノードの値のまま） |
 | `reportDir` | `./runs` | 出力ルート |
 | `flashArb` | false | FlashArb コントラクトのデプロイ |
 | `localSnapshotFile` | `.local-snapshot` | snapshot id の置き場 |

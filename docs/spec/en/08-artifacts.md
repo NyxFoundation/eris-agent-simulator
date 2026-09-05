@@ -116,7 +116,7 @@ One event per line, each carrying an ISO `ts`. The catalogue below is what the c
 | `agent_process_exited` | An agent process ending early |
 | `initial_endowment` | Each agent's opening value and the max/min ratio |
 | `price_feed_deployed` / `flash_arb_deployed` | |
-| `interval_mining_started` / `fork_reset_skipped` / `prewarm_completed` | |
+| `interval_mining_started` / `block_gas_limit_set` / `fork_reset_skipped` / `prewarm_completed` | |
 | `external_chain_block_time` / `external_chain_mint_guard` / `treasury_funded_roles` | External mode |
 | `economic_gas_enabled` / `fee_cap_enforcement_disabled` | The economicGas profile |
 | `realtime_block_error` | An exception during block processing (the loop continues) |

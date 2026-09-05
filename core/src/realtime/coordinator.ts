@@ -20,6 +20,7 @@ import {
   sendAndMine,
   sendBatch,
   setAutomine,
+  setBlockGasLimit,
   setChainMode,
   setEthBalance,
   setIntervalMining,
@@ -526,6 +527,8 @@ export async function runRealtimeSimulation(
     rpcUrl: config.readRpcUrl,
     chainId: config.chainId,
     chainMode: config.chainMode,
+    // Rules §2.6. 0 means the node's own limit was left in place.
+    blockGasLimit: config.blockGasLimit,
   });
 
   // batch=true: automatically aggregate same-tick reads (parallel receipt fetches, readState, etc.) into
@@ -1523,6 +1526,17 @@ export async function runRealtimeSimulation(
             : undefined,
       });
     } else {
+      // Rules §2.6: the competition phase runs at the published block gas limit. Setup ran at the
+      // node's own (the deployer's 3,000,000,000, carried by the state dump), so this is the last
+      // thing before mining starts. Recorded, because a block that is not the published size changes
+      // what the fee auction means and nothing else in the run would say so.
+      if (config.blockGasLimit > 0) {
+        await setBlockGasLimit(publicClient, config.blockGasLimit);
+        logger.event({
+          type: "block_gas_limit_set",
+          gasLimit: config.blockGasLimit,
+        });
+      }
       await setIntervalMining(publicClient, config.blockTimeSec);
       logger.event({
         type: "interval_mining_started",
@@ -1678,6 +1692,7 @@ export async function runRealtimeSimulation(
         rpcUrl: config.readRpcUrl,
         chainId: config.chainId,
         chainMode: config.chainMode,
+        blockGasLimit: config.blockGasLimit,
         fromBlock: atBlock,
       });
       logger.event({

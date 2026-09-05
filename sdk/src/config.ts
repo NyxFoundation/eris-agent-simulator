@@ -170,6 +170,12 @@ export type SimConfig = {
   // the harness has run (ADR 0019 "not yet decided"). Longer resists a held push better but drags
   // legitimate late-epoch moves into the mark.
   markMedianBlocks: number;
+  // Block gas limit the coordinator applies once setup is done and before interval mining starts
+  // (ERIS_BLOCK_GAS_LIMIT; the rules publish 30,000,000 in §2.6). Setup runs at whatever the node
+  // was started with -- the deployer's anvil needs 3,000,000,000 to deploy GMX and a state dump
+  // carries that forward -- and the competition phase runs at the published block size, which is
+  // what makes the priority-fee auction of §2.6 exist. 0 leaves the node's limit alone.
+  blockGasLimit: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -389,6 +395,7 @@ export function loadConfig(env = process.env): SimConfig {
     segmentHours: Math.max(0, floatEnv(env.ERIS_SEGMENT_HOURS, 0)),
     segmentName: env.ERIS_SEGMENT_NAME ?? "",
     markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
+    blockGasLimit: Math.max(0, intEnv(env.ERIS_BLOCK_GAS_LIMIT, 30_000_000)),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),

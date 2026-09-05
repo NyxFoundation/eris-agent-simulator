@@ -116,7 +116,7 @@ runs/
 | `agent_process_exited` | エージェントプロセスの異常終了 |
 | `initial_endowment` | 各エージェントの初期価値と最大/最小比 |
 | `price_feed_deployed` / `flash_arb_deployed` | |
-| `interval_mining_started` / `fork_reset_skipped` / `prewarm_completed` | |
+| `interval_mining_started` / `block_gas_limit_set` / `fork_reset_skipped` / `prewarm_completed` | |
 | `external_chain_block_time` / `external_chain_mint_guard` / `treasury_funded_roles` | external モード |
 | `economic_gas_enabled` / `fee_cap_enforcement_disabled` | economicGas プロファイル |
 | `realtime_block_error` | ブロック処理中の例外（ループは継続） |
