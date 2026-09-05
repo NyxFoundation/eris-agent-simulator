@@ -34,7 +34,7 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 
 ### venue（アダプタの `valueAtBlock`）
 
-[01 §1.4](01-architecture.md) の段階生成器。アダプタは `valueUsdc`（マーク）と `liquidatableValueUsdc`（実現可能額）を返す。**採点が合計するのは前者**。
+[01 §1.4](01-architecture.md) の段階生成器。アダプタは `valueUsdc`（額面）と `liquidatableValueUsdc`（実現可能額）を返す。**採点が合計するのは後者**（issue #40 公理 3 / ADR 0022 Amendment 1）。額面のほうは、差が出たエージェントについてだけ `markedValueUsdc` として報告される。
 
 ### 値付けから外れた保有の報告
 

@@ -37,10 +37,10 @@
 
 | | |
 |---|---|
-| 状態 | **未決** |
-| 内容 | 採点が合計するのは `valueUsdc` = **face value（vault が負う par）**。`realizableWethWei` は `liquidatableValueUsdc` に入る診断値 |
-| 対立 | issue #38 の意図は realizable、現行実装は par（ADR 0019 §3 が採点の基礎に「通常の live mark」を選んだ結果でもある） |
-| 期限 | **`lst` が競技セットに入る前に決める** |
+| 状態 | **決着（2026-09-05・issue #40 / ADR 0022 Amendment 1）** |
+| 結論 | **realizable**。採点系列は全 venue で `liquidatableValueUsdc` を合計する |
+| 理由 | 未決だったのは正しさが不明だったからではなく、決める場が無かったから。issue #40 の公理 3（額面で評価すると攻撃が捏造された価値として記録される）がその場を作り、同じ議論が LST のキュー滞留にもそのまま通る |
+| 副作用 | 報告の向きが反転し、額面が `markedValueUsdc` として出る |
 
 ### ETH 建て採点
 

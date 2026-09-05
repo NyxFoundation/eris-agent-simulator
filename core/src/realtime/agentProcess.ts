@@ -146,11 +146,14 @@ export class RealtimeAgentProcess {
     // is a net.Socket at runtime; `Readable` is the declared type and has no unref.
     (this.child.stderr as unknown as { unref?: () => void } | null)?.unref?.();
     this.child.unref();
+    // Referenced, on purpose. An unref'd timer may never fire -- the coordinator can finish
+    // scoring and exit inside the grace window -- and an escalation that only sometimes happens is
+    // not an escalation. Two seconds of bounded wait at the very end of a run is not the failure
+    // this method exists to prevent; waiting forever was.
     const escalation = setTimeout(() => {
       if (this.alive) this.child.kill("SIGKILL");
+      escalation.unref();
     }, CLOSE_GRACE_MS);
-    // The escalation itself must not be the thing that holds the loop open.
-    escalation.unref();
   }
 
   getStderr(): string {

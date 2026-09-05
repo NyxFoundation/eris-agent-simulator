@@ -507,13 +507,8 @@ export const aaveAdapter: ProtocolAdapter = {
     })) as readonly bigint[];
     // The base currency is USD with 8 decimals. net = collateral - debt converted to dollars (USDC-equivalent).
     // Collateral (aToken) is outside the wallet and borrows (USDC) are already counted inside it, so net cancels double-counting.
-    //
-    // Floored at zero for the same reason the scored path floors it (issue #40 axiom 3): a borrower
-    // whose collateral is worth less than its debt can drop the collateral and walk away, and the
-    // borrowed asset is already in the wallet. Kept in step with valueAtBlock so the reference
-    // netPnlUsdc column and the scored series do not disagree about the same position.
     const net = account[0] - account[1];
-    return Math.max(0, Number(net) / 1e8);
+    return Number(net) / 1e8;
   },
 
   // Aave needs no per-venue wiring in the scorer: getUserAccountData is an aggregate that already
@@ -627,24 +622,25 @@ export const aaveAdapter: ProtocolAdapter = {
           read: "MockLSTVault.estimateDelayBlocks",
         });
       }
-      // A borrower whose collateral is worth less than its debt can drop the collateral and walk
-      // away, so the position is worth zero rather than a negative number (issue #40 axiom 3). The
-      // borrowed asset is already counted in the wallet, so the walk-away keeps it: collateral 1,000
-      // against debt 5,000 is 5,000 in the wallet plus nothing here, not 5,000 minus 4,000.
+      // **Not floored at zero, deliberately** -- unlike Liquity below 100% ICR and unlike
+      // SimpleLending's own borrowers (issue #40 axiom 3).
       //
-      // Not a special case for this venue -- it is the rule the Liquity adapter already applies
-      // below 100% ICR and the one SimpleLending applies to its own borrowers. Scoring the same
-      // economic position three different ways depending on which venue it sits in was the
-      // inconsistency; the floor is what removes it.
-      if (liquidatableUsdc < 0) {
-        unpriced.push({
-          source: "aave-underwater",
-          amountRaw: "",
-          reason: "unrealizable",
-          read: `debt exceeds collateral by ${(-liquidatableUsdc).toFixed(2)} USDC; the position is floored at zero (walk-away)`,
-        });
-        liquidatableUsdc = 0;
-      }
+      // The walk-away floor is only sound as one half of a pair. It says a borrower keeps the
+      // borrowed asset and abandons collateral worth less than the debt; the other half is that
+      // somebody eats that shortfall, and in Liquity and in SimpleLending somebody does -- the
+      // Stability Pool absorbs it, and SimpleLending socializes bad debt onto its suppliers, so the
+      // adapters see the loss on the other side and the books balance.
+      //
+      // Aave has no such mechanism here and this adapter models none: a supplier's aTokens stay 1:1
+      // whatever happens to a borrower. Flooring the borrower alone would create score out of
+      // nothing -- the field's total would rise by the shortfall -- which is precisely the failure
+      // axiom 3 exists to prevent, arrived at from the opposite direction. So the position stays at
+      // collateral minus debt, which is negative while under water and exactly offsets the borrowed
+      // asset sitting in the wallet.
+      //
+      // What this leaves unmodelled is Aave bad debt, and that is stated rather than hidden: see
+      // docs/adr/0022 and the note in the rules. Closing it means marking the supplier side down by
+      // the unbacked share, which needs per-reserve backing that getUserAccountData does not carry.
       out[agent.id] = {
         valueUsdc: usd,
         liquidatableValueUsdc: liquidatableUsdc,

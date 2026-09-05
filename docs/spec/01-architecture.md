@@ -106,7 +106,7 @@ example/  ──►  sdk/  ◄──  core/  ──►  runs/<id>/  ◄──  d
 
 ### 値付けが 2 本あること
 
-`AgentProtocolValue` は `valueUsdc`（マーク）と `liquidatableValueUsdc`（実際に手仕舞ったら得られる額）を分けて返す（`types.ts:128`）。**採点が合計するのは前者**で、後者は差が出たエージェントだけ報告される診断値。現状で両者が食い違うのは LST のキュー滞留のみ。
+`AgentProtocolValue` は `valueUsdc`（額面）と `liquidatableValueUsdc`（実際に手仕舞ったら得られる額）を分けて返す（`types.ts:128`）。**採点が合計するのは後者**（issue #40 公理 3 / ADR 0022 Amendment 1）で、額面のほうが差の出たエージェントだけ `markedValueUsdc` として報告される。食い違うのは LST のキュー滞留・ICR<100% の Trove・裏付けを失った貸付。
 
 ## 1.5 チェーン層
 

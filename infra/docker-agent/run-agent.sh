@@ -107,4 +107,17 @@ if [ -n "${ERIS_CONFIG:-}" ]; then
   MOUNTS+=( -v "$CFG_HOST:$CFG_IMG:ro" )
 fi
 
-exec docker run "${CAPS[@]}" "${COMMON_ENV[@]}" "${ENVS[@]}" "${MOUNTS[@]}" "$IMG"
+# Not `exec`: the wrapper stays as the thing the coordinator can signal, and it removes the
+# container itself. Killing the docker *client* does not stop a daemon-managed container, so an
+# `exec`d wrapper left the agent running with its key and its RPC connection after the run ended.
+# `--init` above makes the graceful path work; this is what makes the ungraceful one work too.
+docker run "${CAPS[@]}" "${COMMON_ENV[@]}" "${ENVS[@]}" "${MOUNTS[@]}" "$IMG" &
+CHILD=$!
+stop() {
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  kill "$CHILD" 2>/dev/null || true
+  wait "$CHILD" 2>/dev/null || true
+  exit 0
+}
+trap stop TERM INT
+wait "$CHILD"

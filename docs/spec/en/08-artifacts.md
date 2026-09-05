@@ -54,7 +54,7 @@ runs/
 | `initialValueUsdc` / `finalValueUsdc` | Total value at start / end (including venue positions) |
 | `netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `alphaUsdc` | PnL with β removed (**look here for skill**). Absent when no reconstruction ran |
-| `liquidatableValueUsdc` | Present only for agents whose mark and realizable value diverged |
+| `markedValueUsdc` | The **face mark**, present only for agents whose mark sat above the scored value. Scoring is at recoverable value (issue #40 axiom 3), so this is the number that was not used |
 | `processExitedEarly` | Why the process went away before the run ended. **The scenario matrix reads this to disqualify** |
 | `includedTxCount` / `revertCount` | Transactions included / of those, reverted |
 | `stderrTail` | Tail of the agent process's stderr (crash diagnosis) |
@@ -69,7 +69,7 @@ runs/
 | `granularityBlocks` / `fromBlock` / `toBlock` / `blocks` / `windowBlocks` | The read window |
 | `failedReads` / `failedReadTargets` | How many cross-sections failed, and **which contract and function** |
 | `alphaRefFairUsdcPerWeth` / `alphaByAgent` | The fixed α reference and the values |
-| `liquidatableValueByAgent` | Only agents whose mark diverged |
+| `markedValueByAgent` | The face mark, only for agents where it diverged from the scored value |
 | `unpricedHoldings` | Holdings that could not be priced, could not be read, cannot be realized, or fell back to par ([06 §6.2](06-scoring.md)) |
 | `epochSeries` | **The boundary values every score is computed from** (below) |
 | `epochSeriesMeta` | Live scoring metadata (`boundaries` / `failedBoundaries` / `epochBlocks` / `markMedianBlocks`) |

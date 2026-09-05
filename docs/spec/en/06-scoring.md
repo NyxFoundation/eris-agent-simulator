@@ -34,7 +34,7 @@ LP tokens are valued as **a proportional share of the pool's reserves** (`poolSh
 
 ### Venues (the adapter's `valueAtBlock`)
 
-The staged generator from [01 §1.4](01-architecture.md). An adapter returns `valueUsdc` (the mark) and `liquidatableValueUsdc` (what an exit would realize). **Scoring sums the first.**
+The staged generator from [01 §1.4](01-architecture.md). An adapter returns `valueUsdc` (the face mark) and `liquidatableValueUsdc` (what an exit would realize). **Scoring sums the second** (issue #40 axiom 3 / ADR 0022 Amendment 1); the face mark is reported as `markedValueUsdc` only where the two differ.
 
 ### Reporting what fell out of the value
 

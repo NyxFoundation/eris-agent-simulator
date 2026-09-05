@@ -106,7 +106,7 @@ The obvious `valueAtBlock(agent, block)` costs **one round trip per agent per pr
 
 ### Two marks, not one
 
-`AgentProtocolValue` returns `valueUsdc` (the mark) and `liquidatableValueUsdc` (what an exit would actually realize) separately (`types.ts:128`). **Scoring sums the first.** The second is a diagnostic reported only where they disagree — today, only the LST withdrawal queue.
+`AgentProtocolValue` returns `valueUsdc` (the face mark) and `liquidatableValueUsdc` (what an exit would actually realize) separately (`types.ts:128`). **Scoring sums the second** (issue #40 axiom 3 / ADR 0022 Amendment 1). The face mark is reported as `markedValueUsdc` only where the two disagree — an LST redemption whose queue outlives the run, a Trove under 100% ICR, a lending supply whose collateral is worthless.
 
 ## 1.5 The chain layer
 

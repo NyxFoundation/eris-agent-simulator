@@ -76,7 +76,7 @@ and a per-epoch ratio scales with `√(epoch length)`, so changing `epochBlocks`
 | `valueSeries.epochSeries` | `epochBlocks` / `epochs` / `boundaryBlocks` / `valuesByAgent` (`null` = a boundary that did not report, never a zero) |
 | `valueSeries.markMedian` | `windowBlocks` / `surfaces` / `maxDeviationBps` per stable |
 | `valueSeries.alphaByAgent` | β-removed PnL per agent (`alphaUsdc` is the last minus the first) |
-| `valueSeries.liquidatableValueByAgent` | what an exit would actually have returned, where a venue marks a position at something other than that (LST; see [Protocols and Actions](protocols-and-actions.md)) |
+| `valueSeries.markedValueByAgent` | the **face mark**, where a venue carried a position above what it could have realized. Every venue is scored at recoverable value (issue #40 axiom 3), so this is the number that was not used — an LST redemption whose queue outlives the run, a lending supply whose collateral is worthless, a Trove under 100% ICR |
 | `valueSeries.unpricedHoldings` | holdings the scorer could not price, reported rather than silently zeroed (`reason: "unrealizable"` / `erc20-unaccounted`) |
 | `valueSeries.failedReads` | cross-sections that could not be read (`0` if healthy) |
 

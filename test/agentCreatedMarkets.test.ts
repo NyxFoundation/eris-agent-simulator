@@ -753,16 +753,17 @@ test("every adapter that can be scored fills the recoverable value", async () =>
   }
 });
 
-test("an Aave borrower under water is worth zero, not a negative number", () => {
-  // The walk-away rule, applied to the venue that did not have it. Collateral 1,000 against debt
-  // 5,000 is 5,000 in the wallet plus nothing here -- not 5,000 minus 4,000. The same rule the
-  // Liquity adapter applies below 100% ICR and SimpleLending applies to its own borrowers; scoring
-  // the same economic position three different ways was the inconsistency.
+test("the Aave borrower is NOT floored, because nothing takes the other side", () => {
+  // The walk-away floor is only sound as one half of a pair: somebody has to eat the shortfall.
+  // Liquity's Stability Pool does and SimpleLending socializes it onto suppliers, so both adapters
+  // see the loss on the other side. Aave has no such mechanism here and this adapter models none,
+  // so flooring the borrower alone would raise the field's total by the shortfall -- the same
+  // fabricated value axiom 3 exists to prevent, arrived at from the opposite direction.
   const source = readFileSync(
     new URL("../sdk/src/protocols/aave.ts", import.meta.url),
     "utf8",
   );
-  assert.match(source, /if \(liquidatableUsdc < 0\)/);
-  assert.match(source, /aave-underwater/);
-  assert.match(source, /Math\.max\(0, Number\(net\) \/ 1e8\)/);
+  assert.doesNotMatch(source, /aave-underwater/);
+  assert.doesNotMatch(source, /Math\.max\(0, Number\(net\)/);
+  assert.match(source, /Not floored at zero, deliberately/);
 });

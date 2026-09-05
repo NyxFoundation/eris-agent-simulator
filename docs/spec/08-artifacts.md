@@ -54,7 +54,7 @@ runs/
 | `initialValueUsdc` / `finalValueUsdc` | run 開始 / 終了時の総価値（venue ポジションの評価を含む） |
 | `netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `alphaUsdc` | β 除去 PnL（**スキル比較はこちら**）。再構成が走らなかった run では欠落 |
-| `liquidatableValueUsdc` | マークと実現可能額が食い違ったエージェントにのみ付く |
+| `markedValueUsdc` | **額面**。採点値（回収可能額）と食い違ったエージェントにのみ付く。issue #40 公理 3 以降、採点は回収可能額なので、これは「使われなかったほうの数字」 |
 | `processExitedEarly` | プロセスが run 終了前に消えた理由。**シナリオ行列はこれを読んで失格にする** |
 | `includedTxCount` / `revertCount` | 取り込まれた tx 数 / うち revert した数 |
 | `stderrTail` | エージェントプロセスの stderr 末尾（クラッシュ診断用） |
@@ -69,7 +69,7 @@ runs/
 | `granularityBlocks` / `fromBlock` / `toBlock` / `blocks` / `windowBlocks` | 読み取り範囲 |
 | `failedReads` / `failedReadTargets` | 読めなかった横断面の数と、**どのコントラクトのどの関数か** |
 | `alphaRefFairUsdcPerWeth` / `alphaByAgent` | α の固定参照とその値 |
-| `liquidatableValueByAgent` | マークと差が出たエージェントのみ |
+| `markedValueByAgent` | 額面。採点値と差が出たエージェントのみ |
 | `unpricedHoldings` | 値付けできなかった / 読めなかった / 換金不能 / par 仮置きの保有（[06 §6.2](06-scoring.md)） |
 | `epochSeries` | **採点の元になる境界値**（下記） |
 | `epochSeriesMeta` | live 採点のメタ（`boundaries` / `failedBoundaries` / `epochBlocks` / `markMedianBlocks`） |

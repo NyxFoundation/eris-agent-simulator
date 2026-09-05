@@ -36,7 +36,7 @@ npm run check:strategy -- <file>          # static cheatcode check of strategy c
 | `epochScores[<id>]` | the risk-adjusted score per agent — `score` (`mean − λ·std`), the `logReturns` it came from, `bankruptAtEpoch`, `carriedForwardEpochs`, `benchmarkApplied` ([Scoring](scoring.md)) |
 | `valueSeries.epochSeries` | the boundary values every score above is computed from (`boundaryBlocks` / `valuesByAgent`, `null` = a boundary that did not report) |
 | `valueSeries.markMedian` | which manipulable marks were medianed at the boundaries, and the largest deviation seen |
-| `valueSeries.alphaByAgent` / `liquidatableValueByAgent` | the β-removed series, and what an exit would actually have returned where a venue marks a position at something else (LST) |
+| `valueSeries.alphaByAgent` / `markedValueByAgent` | the β-removed series, and the **face mark** where a venue carried a position above what it could have realized. The scored value is the recoverable one (issue #40 axiom 3), so an entry here is the number that was *not* used |
 | `valueSeries.unpricedHoldings` | holdings the scorer could not price, reported rather than silently zeroed |
 | `valueSeries.failedReads` | number of cross-sections that could not be read during value reconstruction (`0` if healthy) |
 | `violations` | violations from the post-run rule checks (fee limit overruns, etc.) |
