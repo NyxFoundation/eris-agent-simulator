@@ -1,12 +1,7 @@
 import { useMemo, useState } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
 import { Sidebar } from "@/components/Sidebar";
-import {
-  formatSpreadBps,
-  formatStanding,
-  Stat,
-  toneColor,
-} from "@/components/competitionUi";
+import { Stat, toneColor } from "@/components/competitionUi";
 import { Badge } from "@/design-system/Badge";
 import { StatCard } from "@/design-system/StatCard";
 import { Tabs } from "@/design-system/Tabs";
@@ -20,8 +15,7 @@ import {
 import {
   buildStandings,
   decomposeAgent,
-  LAMBDA,
-  type AgentRoundDecomposition,
+  type AgentStandingDetail,
 } from "@/data/standings";
 import { useAgentDetailSnapshot } from "@/data/useAgentDetailSnapshot";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
@@ -173,11 +167,11 @@ function TradeRow({ trade, href }: { trade: AgentTrade; href?: string }) {
 
 function ReturnHistogram({ values }: { values: number[] }) {
   const bins = 41;
-  const bps = values.map((v) => v * 10_000);
-  // Scaled to a high quantile rather than the maximum: most of these distributions have one round
-  // orders of magnitude past the rest, and scaling to it draws the shape of the axis rather than
-  // the shape of the returns. Rounds past the edge are counted into the end bins and reported
-  // below, so nothing is hidden, only compressed at the tails.
+  // Deviation scores, centred on 50 (the field's mean) so the sign is "above or below the field".
+  const bps = values.map((v) => v - 50);
+  // Scaled to a high quantile rather than the maximum: one epoch far past the rest would otherwise
+  // set the axis. Epochs past the edge are counted into the end bins and reported below, so
+  // nothing is hidden, only compressed at the tails.
   const sortedAbs = [...bps].map(Math.abs).sort((a, b) => a - b);
   const quantile =
     sortedAbs[
@@ -237,7 +231,7 @@ function ReturnHistogram({ values }: { values: number[] }) {
           color: "var(--text-tertiary)",
         }}
       >
-        <span>≤ {formatBps(-edge)}</span>
+        <span>≤ {(50 - edge).toFixed(1)}</span>
         <span>
           {clipped > 1
             ? t("agent.histogram.clipped", { n: clipped })
@@ -245,7 +239,7 @@ function ReturnHistogram({ values }: { values: number[] }) {
               ? t("agent.histogram.clippedOne")
               : "0"}
         </span>
-        <span>≥ {formatBps(edge)}</span>
+        <span>≥ {(50 + edge).toFixed(1)}</span>
       </div>
     </div>
   );
@@ -254,14 +248,14 @@ function ReturnHistogram({ values }: { values: number[] }) {
 /** The agent's place in the competition, and the round-level distribution that explains it. */
 interface CompetitionStanding {
   rank: number;
+  tied: boolean;
   fieldSize: number;
-  /** The official ranking value (z aggregate) — tooltip material, not the headline number. */
-  total: number;
-  /** Regime-equal mean score, ×10⁴ for display in bps per round. */
-  scoreBps: number;
+  /** Score(a) of rules §4.4.1, at the two decimals §4.6 ranks on. Null when no epoch scored. */
+  score: number | null;
   netPnlUsdc: number;
+  epochsScored: number;
   regimes: { regime: string; value: number | undefined }[];
-  decomposition: AgentRoundDecomposition | null;
+  detail: AgentStandingDetail | null;
 }
 
 function useCompetitionStanding(agentId: string): CompetitionStanding | null {
@@ -269,26 +263,27 @@ function useCompetitionStanding(agentId: string): CompetitionStanding | null {
   return useMemo(() => {
     if (!data) return null;
     const standings = buildStandings(data.competition, data.rounds);
-    const rank = standings.rows.findIndex((r) => r.id === agentId);
-    if (rank === -1) return null;
-    const row = standings.rows[rank];
+    const row = standings.rows.find((r) => r.id === agentId);
+    if (!row) return null;
+    const byRegime = standings.tByRegime[agentId] ?? {};
     return {
-      rank: rank + 1,
+      rank: row.rank,
+      tied: row.tied,
       fieldSize: standings.rows.length,
-      total: row.total,
-      scoreBps: (standings.scoreByAgent[agentId]?.overall ?? 0) * 10_000,
+      score: row.score,
       netPnlUsdc: standings.netPnlByAgent[agentId] ?? 0,
+      epochsScored: row.epochs.length,
       regimes: standings.regimes.map((regime) => ({
         regime,
-        value: row.byRegime[regime],
+        value: byRegime[regime],
       })),
-      decomposition: decomposeAgent(agentId, data.competition, data.rounds),
+      detail: decomposeAgent(agentId, data.competition, data.rounds, standings),
     };
   }, [data, agentId]);
 }
 
 function StandingTab({ standing }: { standing: CompetitionStanding }) {
-  const d = standing.decomposition;
+  const d = standing.detail;
   return (
     <div
       style={{
@@ -310,19 +305,26 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
       >
         <Stat
           label={t("agent.standing.rank")}
-          value={t("agent.standing.rankValue", {
-            r: standing.rank,
-            n: standing.fieldSize,
-          })}
+          value={
+            t("agent.standing.rankValue", {
+              r: standing.rank,
+              n: standing.fieldSize,
+            }) + (standing.tied ? " =" : "")
+          }
         />
         <div
-          title={t("agent.standing.scoreTitle", {
-            z: formatStanding(standing.total),
-          })}
+          title={
+            d
+              ? t("agent.standing.scoreTitle", {
+                  std: d.tStd.toFixed(2),
+                  worst: formatScore(d.worstT),
+                })
+              : undefined
+          }
         >
           <Stat
             label={t("agent.standing.score")}
-            value={formatBps(standing.scoreBps)}
+            value={formatScore(standing.score)}
             caps={false}
           />
         </div>
@@ -330,12 +332,10 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
           label={t("agent.standing.netPnl")}
           value={formatPnlUsdc(standing.netPnlUsdc)}
         />
-        {d && (
-          <Stat
-            label={t("agent.standing.rounds")}
-            value={String(d.stats.epochs)}
-          />
-        )}
+        <Stat
+          label={t("agent.standing.rounds")}
+          value={String(standing.epochsScored)}
+        />
       </div>
 
       {!d ? (
@@ -371,27 +371,77 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
           >
             <Stat
               label={t("agent.standing.mean")}
-              value={formatBps(d.stats.mean * 10_000)}
+              value={formatScore(d.tMean)}
+              caps={false}
             />
             <Stat
               label={t("agent.standing.std")}
-              value={formatSpreadBps(d.stats.std * 10_000)}
+              value={d.tStd.toFixed(2)}
+              caps={false}
             />
             <Stat
-              label={t("agent.standing.lambdaStd", {
-                lambda: LAMBDA.toFixed(2),
-              })}
-              value={formatSpreadBps(LAMBDA * d.stats.std * 10_000)}
+              label={t("agent.standing.worst")}
+              value={formatScore(d.worstT)}
               caps={false}
             />
             <Stat
               label={t("agent.standing.scoreLine")}
-              value={formatBps(d.stats.score * 10_000)}
+              value={formatScore(standing.score)}
               caps={false}
             />
           </div>
 
-          <ReturnHistogram values={d.pooled} />
+          <ReturnHistogram values={d.epochs.map((e) => e.t)} />
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <span style={SECTION_LABEL_STYLE}>{t("agent.standing.byEpoch")}</span>
+            <div style={{ overflowX: "auto" }}>
+              <div style={{ minWidth: "520px" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "60px 1fr 110px 90px 80px",
+                    padding: "6px 8px",
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                    borderBottom: "1px solid var(--border-subtle)",
+                    textTransform: "uppercase",
+                    letterSpacing: "var(--tracking-wide)",
+                  }}
+                >
+                  <span>s</span>
+                  <span>{t("agent.standing.col.scenario")}</span>
+                  <span style={{ textAlign: "right" }}>P (USDC)</span>
+                  <span style={{ textAlign: "right" }}>T</span>
+                  <span style={{ textAlign: "right" }}>w</span>
+                </div>
+                {d.epochs.map((e) => (
+                  <div
+                    key={e.s}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "60px 1fr 110px 90px 80px",
+                      padding: "6px 8px",
+                      font: "var(--text-xs) var(--font-mono)",
+                      borderBottom: "1px solid var(--border-subtle)",
+                    }}
+                  >
+                    <span style={{ color: "var(--text-tertiary)" }}>{e.s}</span>
+                    <span style={{ color: "var(--text-secondary)" }}>{e.label}</span>
+                    <span style={{ textAlign: "right", color: toneColor(e.pnl) }}>
+                      {formatPnlUsdc(e.pnl)}
+                    </span>
+                    <span style={{ textAlign: "right", color: toneColor(e.t - 50) }}>
+                      {formatScore(e.t)}
+                    </span>
+                    <span style={{ textAlign: "right", color: "var(--text-tertiary)" }}>
+                      {e.w.toFixed(3)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
 
           {d.byRegime.length > 1 && (
             <div
@@ -401,11 +451,11 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                 {t("agent.standing.byRegime")}
               </span>
               <div style={{ overflowX: "auto" }}>
-                <div style={{ minWidth: "560px" }}>
+                <div style={{ minWidth: "460px" }}>
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "1fr 80px 90px 90px 100px",
+                      gridTemplateColumns: "1fr 80px 100px 100px",
                       padding: "6px 8px",
                       font: "var(--text-xs) var(--font-mono)",
                       color: "var(--text-tertiary)",
@@ -424,16 +474,13 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                     <span style={{ textAlign: "right" }}>
                       {t("agent.standing.col.std")}
                     </span>
-                    <span style={{ textAlign: "right", textTransform: "none" }}>
-                      mean − λ·std
-                    </span>
                   </div>
                   {d.byRegime.map((r) => (
                     <div
                       key={r.regime}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "1fr 80px 90px 90px 100px",
+                        gridTemplateColumns: "1fr 80px 100px 100px",
                         padding: "6px 8px",
                         font: "var(--text-xs) var(--font-mono)",
                         borderBottom: "1px solid var(--border-subtle)",
@@ -448,15 +495,15 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                           color: "var(--text-tertiary)",
                         }}
                       >
-                        {r.stats.epochs}
+                        {r.epochs}
                       </span>
                       <span
                         style={{
                           textAlign: "right",
-                          color: toneColor(r.stats.mean),
+                          color: toneColor(r.tMean - 50),
                         }}
                       >
-                        {formatBps(r.stats.mean * 10_000)}
+                        {formatScore(r.tMean)}
                       </span>
                       <span
                         style={{
@@ -464,15 +511,7 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                           color: "var(--text-secondary)",
                         }}
                       >
-                        {formatSpreadBps(r.stats.std * 10_000)}
-                      </span>
-                      <span
-                        style={{
-                          textAlign: "right",
-                          color: toneColor(r.stats.score),
-                        }}
-                      >
-                        {formatBps(r.stats.score * 10_000)}
+                        {r.tStd.toFixed(2)}
                       </span>
                     </div>
                   ))}
@@ -492,13 +531,13 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
               {d.bankruptIn.length === 1
                 ? t("agent.standing.bankruptOne", {
                     list: d.bankruptIn
-                      .map((b) => `${b.label} @ ${b.epoch}`)
+                      .map((b) => `${b.label} (${formatPnlUsdc(b.finalValueUsdc)})`)
                       .join(", "),
                   })
                 : t("agent.standing.bankrupt", {
                     n: d.bankruptIn.length,
                     list: d.bankruptIn
-                      .map((b) => `${b.label} @ ${b.epoch}`)
+                      .map((b) => `${b.label} (${formatPnlUsdc(b.finalValueUsdc)})`)
                       .join(", "),
                   })}
             </span>
@@ -722,7 +761,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(4,1fr)",
+                gridTemplateColumns: "repeat(3,1fr)",
                 gap: "16px",
               }}
             >
@@ -737,10 +776,6 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                 // red/green signal -- the same shape the Max drawdown card uses.
                 tone={agent.netPnlUsdc >= 0 ? "success" : "danger"}
                 delta={formatPnlUsdc(agent.netPnlUsdc)}
-              />
-              <StatCard
-                label={t("agent.stat.sharpe")}
-                value={agent.sharpe.toFixed(2)}
               />
               <StatCard
                 label={t("agent.stat.drawdown")}

@@ -48,26 +48,17 @@ export interface BlockRow {
 export interface SummaryAgent {
   id: string;
   address: string;
+  /** The benchmark (rules §4.3): valued and shown, never in the population. */
+  baseline?: boolean;
   initialValueUsdc: number;
   finalValueUsdc: number;
   netPnlUsdc: number;
+  /** P of rules §4.4.1 — V_K − V_0 off the epoch boundaries, each end at its own marks. Absent on
+   * a run recorded before the coordinator wrote it. */
+  pnlUsdc?: number;
   alphaUsdc: number;
   includedTxCount: number;
   revertCount: number;
-}
-
-export interface EpochScore {
-  score: number;
-  meanLogReturn: number;
-  stdLogReturn: number;
-  /** One excess log return per epoch, in order. Index e-1 is epoch e (1-based). */
-  logReturns: number[];
-  /** 1-based epoch at which the bankruptcy floor was first touched (ADR 0019 G1/G2), or null. */
-  bankruptAtEpoch: number | null;
-  /** 1-based epochs whose value read failed and was carried forward at a return of 0. */
-  carriedForwardEpochs?: number[];
-  lambda?: number;
-  benchmarkApplied?: boolean;
 }
 
 export interface RunSummary {
@@ -89,7 +80,6 @@ export interface RunSummary {
       valuesByAgent?: Record<string, Array<number | null>>;
     };
   };
-  epochScores?: Record<string, EpochScore>;
   agents?: SummaryAgent[];
   violations?: unknown[];
 }

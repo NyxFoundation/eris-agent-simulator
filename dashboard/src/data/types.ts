@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
 // rounds
 //
-// A "round" is a scoring epoch (ADR 0019), not a run: the score is mean − λ·std of *per-epoch* log
-// returns, so the epoch is the unit a result is actually earned in. A run is a sequence of rounds;
-// summary.json's valueSeries.epochSeries carries their boundaries and the per-agent value at each
-// one, and epochScores[agent].logReturns carries the return the score is built from.
+// A "round" is an evaluation interval of the rules (§0.1), not a run: the leaderboard's running
+// progress inside an epoch. The score is one number per run (rules §4.4.1: P = V_K − V_0,
+// standardised over the field), so rounds explain a result without being what it is earned in.
+// summary.json's valueSeries.epochSeries carries their boundaries and the per-agent value at each.
 
 export interface RoundAgentResult {
   agent: string;
@@ -12,13 +12,14 @@ export interface RoundAgentResult {
   rank: number;
   /** Account-value change across the round, USDC. */
   deltaUsdc: number;
-  /** The round's log return in bps — the quantity the score averages. */
+  /** The round's log return of account value, in bps. Context only: the score is one number per
+   * epoch (rules §4.4.1), not a function of the rounds. */
   logReturnBps: number;
   /** Rank by cumulative gain since the run's first boundary, at this round's close. */
   cumulativeRank: number;
   /** Cumulative-rank change against the previous round's close. Positive = climbed. */
   move: number;
-  /** True once the scorer froze this agent's series (G1/G2 bankruptcy floor). */
+  /** Asset value at or below zero at this round's close (rules §4.5: bankrupt; no floor, no freeze). */
   bankrupt: boolean;
 }
 
@@ -69,12 +70,13 @@ export type StrategyCategory = "arb" | "mm" | "dir";
 export interface AgentStanding {
   rank: number;
   agent: string;
-  score: number;
+  /** T(a, s) for this epoch (rules §4.4.1): 50 + 10 (P − μ) / σ over the field. Null for the
+   * benchmark, which is valued but not in the population, and while the field has no spread. */
+  score: number | null;
   /** summary.json's netPnlUsdc, in USDC rather than as a share of starting value. The share is not
    * a useful figure here: the gas endowment (100 ETH by default, ~78% of an agent's mark) sits in
    * the denominator, so every real trading result rounds to 0.0% however many decimals it is given. */
   netPnlUsdc: number;
-  sharpe: number;
   strategy: string;
   strategyCategory: StrategyCategory;
   maxDrawdownPercent: number;
@@ -409,9 +411,9 @@ export interface AgentDetail {
   /** Full wallet address for explorer deep links (absent in seed data). */
   fullAddress?: string;
   strategy: string;
-  score: number;
+  /** T(a, s) for this epoch; see AgentStanding.score. */
+  score: number | null;
   netPnlUsdc: number;
-  sharpe: number;
   maxDrawdownPercent: number;
   /** Account value at each scored block — the same cross-sections the score is computed from.
    * Carries the block so the chart can label its x axis with what it actually is. */

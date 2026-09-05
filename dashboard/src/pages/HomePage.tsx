@@ -1,21 +1,15 @@
 // The home: the competition standings.
 //
-// One table, under the one rule the competition is scored by. The score column shows the score in
-// its own units (bps per round); the rank order comes from the official aggregation, whose value
-// sits in the score cell's tooltip. A row opens the agent's page, where the round-level
-// distribution behind its place lives. Everything obeys the round cursor, so scrubbing the bar
-// replays the competition from here.
+// One table, under the one rule the competition is scored by (rules §4.4): per epoch a deviation
+// score T over the field, across epochs a weighted average of T. The regime columns are the
+// agent's mean T per regime -- an explanation, not a second ranking. A row opens the agent's page,
+// where the per-epoch series behind its place lives. Everything obeys the round cursor, so
+// scrubbing the bar replays the competition from here.
 
 import { useEffect, useMemo } from "react";
 import { RoundCursorBar } from "@/components/RoundCursorBar";
 import { Sidebar } from "@/components/Sidebar";
-import {
-  formatStanding,
-  MoveCell,
-  Panel,
-  Stat,
-  toneColor,
-} from "@/components/competitionUi";
+import { MoveCell, Panel, Stat, toneColor } from "@/components/competitionUi";
 import { competitionName, scenarioRunId } from "@/data/competition";
 import { windowsAtRound } from "@/data/schedule";
 import { buildStandings, rankMoves } from "@/data/standings";
@@ -24,7 +18,7 @@ import { getSelectedRunId, setSelectedRunId } from "@/data/runSelection";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { useLocale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
-import { formatBps, formatPnlUsdc } from "@/lib/format";
+import { formatPnlUsdc, formatScore } from "@/lib/format";
 import { navigate } from "@/navigation";
 import { ScenarioPage } from "./ScenarioPage";
 
@@ -50,8 +44,8 @@ export function HomePage() {
     if (!data) return 0;
     let max = 0;
     for (const series of data.rounds.values())
-      for (const returns of Object.values(series.byAgent))
-        max = Math.max(max, returns.length);
+      for (const values of Object.values(series.valuesByAgent))
+        max = Math.max(max, values.length - 1);
     return max;
   }, [data]);
 
@@ -166,9 +160,6 @@ export function HomePage() {
     ...regimes.map(() => "minmax(66px, 92px)"),
     "104px",
   ].join(" ");
-
-  const scoreBps = (raw: number | undefined): string =>
-    raw === undefined ? "—" : formatBps(raw * 10_000);
 
   return (
     <div
@@ -343,8 +334,8 @@ export function HomePage() {
                   </span>
                 </div>
 
-                {standings.rows.map((row, i) => {
-                  const score = standings.scoreByAgent[row.id];
+                {standings.rows.map((row) => {
+                  const byRegime = standings.tByRegime[row.id] ?? {};
                   return (
                     <div
                       key={row.id}
@@ -362,7 +353,8 @@ export function HomePage() {
                       }}
                     >
                       <span style={{ color: "var(--text-tertiary)" }}>
-                        {i + 1}
+                        {row.rank}
+                        {row.tied ? "=" : ""}
                       </span>
                       {scrubbing && (
                         <MoveCell move={moves.get(row.id) ?? null} />
@@ -379,18 +371,20 @@ export function HomePage() {
                       </span>
                       <span
                         title={t("home.scoreTitle", {
-                          z: formatStanding(row.total),
+                          n: row.epochs.length,
+                          std: row.tStd === null ? "—" : row.tStd.toFixed(2),
+                          worst: formatScore(row.worstT),
                         })}
                         style={{
                           textAlign: "right",
-                          color: toneColor(score?.overall ?? 0),
+                          color: toneColor((row.score ?? 50) - 50),
                           fontWeight: "var(--weight-semibold)" as never,
                         }}
                       >
-                        {scoreBps(score?.overall)}
+                        {formatScore(row.score)}
                       </span>
                       {regimes.map((r) => {
-                        const v = score?.byRegime[r];
+                        const v = byRegime[r];
                         return (
                           <span
                             key={r}
@@ -400,10 +394,10 @@ export function HomePage() {
                               color:
                                 v === undefined
                                   ? "var(--text-disabled)"
-                                  : toneColor(v),
+                                  : toneColor(v - 50),
                             }}
                           >
-                            {scoreBps(v)}
+                            {formatScore(v)}
                           </span>
                         );
                       })}

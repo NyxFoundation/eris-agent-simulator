@@ -11,14 +11,18 @@ export interface ScenarioAgentResult {
   id: string;
   netPnlUsdc: number;
   alphaUsdc: number;
-  /** The competition score for this scenario: mean − λ·std of per-round excess log returns. */
-  score: number;
-  excessLogGrowth: number;
+  /** P(a, s) of rules §4.4.1: V_K − V_0, each end at its own marks. Absent on a matrix recorded
+   * before it existed, where netPnlUsdc (both ends at the final marks) stands in. */
+  pnlUsdc?: number;
+  /** The benchmark (§4.3): valued and shown, never in the population. */
+  baseline?: boolean;
   initialValueUsdc: number;
   finalValueUsdc: number;
 }
 
 export interface CompetitionScenario {
+  /** Scheduled ordinal (rules §4.4.1); the epoch's weight is a function of it. Position + 1 when absent. */
+  s?: number;
   regime: string;
   seed: number;
   agents: ScenarioAgentResult[];
@@ -33,15 +37,16 @@ export interface CompetitionScenario {
   label?: string;
 }
 
-/** Shape of matrix.json, written by core/src/backtest/matrix.ts. Parsed defensively: `schema` is 1
- * today, and older files may lack fields that were added later. */
+/** Shape of matrix.json, written by core/src/cli/backtest.ts. Parsed defensively: schema 2 carries
+ * `k` and per-agent P; a schema-1 file has neither and is scored on netPnlUsdc with k = its size. */
 export interface CompetitionFile {
   schema?: number;
   createdAt?: string;
   sourceCommit?: string;
   scenarioSet?: string;
   resetUnit?: string;
-  metric?: string;
+  /** The schedule length the epoch weights are taken over (rules §4.4.1). */
+  k?: number;
   repeat?: number;
   scenariosPlanned?: number;
   scenarios: CompetitionScenario[];
@@ -97,32 +102,29 @@ export function competitionFromRun(
       finalValueUsdc: number;
       netPnlUsdc: number;
       alphaUsdc?: number;
+      pnlUsdc?: number;
+      baseline?: boolean;
     }[];
-    epochScores?: Record<string, { score: number; logReturns: number[] }>;
   },
   seed: number,
 ): Competition {
-  const scores = summary.epochScores ?? {};
-  const agents: ScenarioAgentResult[] = (summary.agents ?? []).map((a) => {
-    const epoch = scores[a.id];
-    return {
-      id: a.id,
-      netPnlUsdc: a.netPnlUsdc,
-      alphaUsdc: a.alphaUsdc ?? 0,
-      score: epoch?.score ?? 0,
-      // The excess returns telescope, so their sum is the run's excess log growth exactly.
-      excessLogGrowth: (epoch?.logReturns ?? []).reduce((x, y) => x + y, 0),
-      initialValueUsdc: a.initialValueUsdc,
-      finalValueUsdc: a.finalValueUsdc,
-    };
-  });
+  const agents: ScenarioAgentResult[] = (summary.agents ?? []).map((a) => ({
+    id: a.id,
+    netPnlUsdc: a.netPnlUsdc,
+    alphaUsdc: a.alphaUsdc ?? 0,
+    ...(a.pnlUsdc !== undefined ? { pnlUsdc: a.pnlUsdc } : {}),
+    ...(a.baseline ? { baseline: true } : {}),
+    initialValueUsdc: a.initialValueUsdc,
+    finalValueUsdc: a.finalValueUsdc,
+  }));
   return {
     id: runId,
     fromSingleRun: true,
     file: {
-      schema: 1,
+      schema: 2,
       scenarioSet: runId,
       resetUnit: summary.resetUnit ?? "continuous",
+      k: 1,
       scenariosPlanned: 1,
       // The run carries no regime name — a regime is a config the backtest runner names, and a
       // standalone run was not launched through it. The seed is what the run does record.
