@@ -202,11 +202,46 @@ for (const view of marketViews(obs)) {
    inventory in the first round. Decide direction after checking `obs.balances`
 4. **Use `obs.limits` for the fee/slippage defaults; size the trade yourself** (there is no size cap in `limits`). Fee overruns are rejected by validation, wasting that round
 
+## Deploying your own contracts
+
+Permitted (issue #40). Deployment is a `rawTx` with **no `to`**, whose `data` is the creation
+bytecode, so it goes through the runtime like every other transaction — sharing the nonce manager,
+the per-block transaction cap and the gas budget. Signing your own deploys instead puts a second
+sender on your key, and two senders on one key race on the nonce.
+
+```ts
+import { deployAction, currentNonce, findDeployedContracts } from "../lib/deployContract.js";
+
+const nonce = await currentNonce(ctx.publicClient, ctx.address);
+ctx.submit(deployAction("MyContract", [constructorArg]));
+// the runtime owns the nonce, so find the address afterwards rather than predicting it
+const found = await findDeployedContracts(ctx.publicClient, ctx.address, {
+  fromNonce: nonce,
+  toNonce: nonce + 2,
+});
+```
+
+Three things follow from the rules rather than from the code:
+
+- **What you deploy is `unknown` to everybody else.** The environment publishes it to the
+  `MarketRegistry` and makes no claim about it. Under the round-trip rule (rules §4.1) **value left
+  inside a contract the environment cannot value is worth zero at the epoch's final block** — your
+  own contract included. Profit taken *through* it counts in full.
+- **Gas is capped** at 30,000,000 per transaction and 90,000,000 per agent per block (rules §2.6).
+  The gateway refuses an over-cap transaction up front; exceeding it is a §8 offence, because a
+  contract that eats the block starves the environment's price update as well as your rivals.
+- **The bundle carries the artifacts.** `bundle:agent` scans your source for the contract names you
+  hand to `deployAction` / `readForgeArtifact` and ships `out/<Name>.sol/<Name>.json` for each. Run
+  `npm run build:contracts` first, and check the bundler's output: a name it could not find is
+  printed as a warning, and the alternative is a deployment that throws on the operator's machine at
+  the first block it is attempted.
+
 ## Submission
 
 ```bash
+npm run build:contracts       # only if your agent deploys its own contracts
 npm run check:strategy        # static cheatcode check (entry gate)
-npm run bundle:agent my-strategy   # submission zip (runtime + sdk + lib + target agent)
+npm run bundle:agent my-strategy   # submission zip (runtime + sdk + lib + target agent + artifacts)
 ```
 
 The bundled strategies in `example/agents/` (noop = minimal form / arb-bot = a model with a decision log / multi-arb =
