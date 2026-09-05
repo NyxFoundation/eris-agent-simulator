@@ -57,6 +57,7 @@ runs/
 | `liquidatableValueUsdc` | マークと実現可能額が食い違ったエージェントにのみ付く |
 | `processExitedEarly` | プロセスが run 終了前に消えた理由。**シナリオ行列はこれを読んで失格にする** |
 | `includedTxCount` / `revertCount` | 取り込まれた tx 数 / うち revert した数 |
+| `unloggedTxCount` | 取り込まれたのに agent 自身の `submitted` ログに無い tx 数（規約 §8 の人為的介入の事後検出。coordinator が起動した agent のみ。判定ではなく報告 — 送信直後のクラッシュでも同じ痕跡が出る） |
 | `stderrTail` | エージェントプロセスの stderr 末尾（クラッシュ診断用） |
 
 **初期値と最終値は同じ価格で評価する**（最終ブロックの fair prices と stable prices）。`netPnlUsdc` は差分なので、両端を別のマークで評価するとペグの歴史全体がそのエージェントの PnL として記帳されてしまう。
@@ -134,6 +135,7 @@ runs/
 | `post_run_sweep_skipped` | 窓が履歴保持深度を超えたので**明示的にスキップ**した |
 | `market_series_reconstructed` / `market_series_reconstruction_failed` | market.json |
 | `rule_violations_detected` | 事後ルール検査 |
+| `unlogged_agent_txs` | agent の `submitted` ログに無い on-chain tx（件数・agent 別・先頭 200 件） |
 
 ### ストレス / venue
 

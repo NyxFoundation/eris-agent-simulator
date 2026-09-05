@@ -57,6 +57,7 @@ runs/
 | `liquidatableValueUsdc` | Present only for agents whose mark and realizable value diverged |
 | `processExitedEarly` | Why the process went away before the run ended. **The scenario matrix reads this to disqualify** |
 | `includedTxCount` / `revertCount` | Transactions included / of those, reverted |
+| `unloggedTxCount` | Included transactions absent from the agent's own `submitted` log (post-hoc detection of the human intervention rules §8 forbids; only for agents the coordinator started; a report, not a verdict -- a crash between send and log leaves the same mark) |
 | `stderrTail` | Tail of the agent process's stderr (crash diagnosis) |
 
 **Both ends are priced at the same marks** (the final block's fair prices and stable prices). `netPnlUsdc` is a difference, and pricing the two ends off different marks would book a peg's whole history as this agent's PnL.
@@ -134,6 +135,7 @@ One event per line, each carrying an ISO `ts`. The catalogue below is what the c
 | `post_run_sweep_skipped` | The window exceeded the node's retention, so the sweep was **explicitly skipped** |
 | `market_series_reconstructed` / `market_series_reconstruction_failed` | market.json |
 | `rule_violations_detected` | Post-hoc rule checks |
+| `unlogged_agent_txs` | On-chain agent txs absent from the agent's `submitted` log (count, per agent, first 200) |
 
 ### Stress and venues
 

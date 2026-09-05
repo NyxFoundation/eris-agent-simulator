@@ -1,8 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   checkFeeViolations,
   countRevertedTxs,
+  findUnloggedAgentTxs,
+  readSubmittedHashes,
+  reconcileRunAgentTxs,
 } from "../core/src/postRunCheck.js";
 
 const HEADER =
@@ -77,4 +83,60 @@ test("countRevertedTxs: an owner with no txs is zero, not an error", () => {
     total: 0,
     reverted: 0,
   });
+});
+
+test("findUnloggedAgentTxs: an included tx the agent never reported sending is flagged, per agent", () => {
+  const found = findUnloggedAgentTxs(
+    csv([
+      // reported (hash case differs between the chain and the log; both are normalised)
+      "10,100,1,0xAAA,0x111,1,success,arb,agent,swap,,",
+      // not reported: the mark this check exists for
+      "10,100,2,0xbbb,0x111,1,success,arb,agent,swap,,",
+      // an external participant (no entry in the map): nothing to reconcile against, skipped
+      "10,100,3,0xccc,0x222,1,success,ext,agent,direct,,",
+      // environment txs are never the agent's
+      "11,101,0,0xddd,0x333,1,success,oracle,system,oracleUpdate,,",
+    ]),
+    new Map([
+      ["arb", new Set(["0xaaa"])],
+      ["quiet", new Set<string>()],
+    ]),
+  );
+  assert.deepEqual(found, [{ ownerId: "arb", hash: "0xbbb", blockNumber: 100 }]);
+});
+
+test("readSubmittedHashes: only `submitted` mempool entries count; a missing log is an empty set", () => {
+  const runDir = mkdtempSync(join(tmpdir(), "eris-postrun-"));
+  mkdirSync(join(runDir, "agents"));
+  writeFileSync(
+    join(runDir, "agents", "arb.jsonl"),
+    [
+      JSON.stringify({ kind: "mempool", event: "submitted", hash: "0xAAA", nonce: 1 }),
+      JSON.stringify({ kind: "mempool", event: "submit_failed", error: "nonce too low" }),
+      JSON.stringify({ kind: "mempool", event: "rejected", reason: "over cap" }),
+      JSON.stringify({ round: 100, reason: "gap too small" }),
+      "not json at all",
+      JSON.stringify({ kind: "mempool", event: "submitted", hash: "0xbbb" }),
+    ].join("\n") + "\n",
+  );
+  assert.deepEqual([...readSubmittedHashes(runDir, "arb")].sort(), ["0xaaa", "0xbbb"]);
+  assert.deepEqual(readSubmittedHashes(runDir, "never-wrote"), new Set());
+});
+
+test("reconcileRunAgentTxs: an agent with no log at all has every included tx flagged; no blocks.csv means nothing to say", () => {
+  const runDir = mkdtempSync(join(tmpdir(), "eris-postrun-"));
+  assert.deepEqual(reconcileRunAgentTxs(runDir, ["arb"]), []);
+  mkdirSync(join(runDir, "agents"));
+  writeFileSync(
+    join(runDir, "blocks.csv"),
+    csv([
+      "10,100,1,0xaaa,0x111,1,success,arb,agent,swap,,",
+      "10,100,2,0xbbb,0x111,1,reverted,arb,agent,swap,,",
+      "10,100,3,0xccc,0x222,1,success,ext,agent,direct,,",
+    ]) + "\n",
+  );
+  assert.deepEqual(reconcileRunAgentTxs(runDir, ["arb"]), [
+    { ownerId: "arb", hash: "0xaaa", blockNumber: 100 },
+    { ownerId: "arb", hash: "0xbbb", blockNumber: 100 },
+  ]);
 });

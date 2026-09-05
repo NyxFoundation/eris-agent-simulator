@@ -36,7 +36,11 @@ import {
   PAR_STABLE_PRICES,
   readStablePrices,
 } from "@eris/sdk/stables.js";
-import { checkRunFeeViolations, countRunRevertedTxs } from "../postRunCheck.js";
+import {
+  checkRunFeeViolations,
+  countRunRevertedTxs,
+  reconcileRunAgentTxs,
+} from "../postRunCheck.js";
 import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
 import type {
   AgentObservation,
@@ -2666,6 +2670,37 @@ export async function runRealtimeSimulation(
       logger.event({ type: "rule_violations_detected", violations });
     }
 
+    // ---- on-chain txs the agent's own runtime never reported sending (rules §8) ----
+    // Reconciled only for the agents this coordinator started: an external participant's log is
+    // on their machine. Reported per agent and in the summary; the verdict is the operator's
+    // (postRunCheck.ts says why a runtime crash can leave the same mark).
+    const unloggedTxs = reconcileRunAgentTxs(
+      logger.runDir,
+      agentRuntimes.filter((a) => a.process !== undefined).map((a) => a.id),
+    );
+    const unloggedTxCountByAgent: Record<string, number> = {};
+    for (const tx of unloggedTxs)
+      unloggedTxCountByAgent[tx.ownerId] =
+        (unloggedTxCountByAgent[tx.ownerId] ?? 0) + 1;
+    if (unloggedTxs.length > 0) {
+      logger.event({
+        type: "unlogged_agent_txs",
+        count: unloggedTxs.length,
+        byAgent: unloggedTxCountByAgent,
+        txs: unloggedTxs.slice(0, 200),
+        note:
+          "included on chain from the agent's wallet, absent from the agent's submitted log: sent by " +
+          "something other than the process the coordinator started, or the runtime died between " +
+          "send and log -- read with processExitedEarly / stderrTail",
+      });
+      console.error(
+        `[post-run] WARNING: ${unloggedTxs.length} on-chain agent tx(s) have no matching submitted log entry ` +
+          `(${Object.entries(unloggedTxCountByAgent)
+            .map(([id, n]) => `${id}: ${n}`)
+            .join(", ")})`,
+      );
+    }
+
     // ---- final PnL ----
     const finalFairPrice = latestFairPrice;
     // Price every registered base, not just WETH. valueUsdc marks an unlisted base at `p[sym] ?? 0`,
@@ -2737,6 +2772,11 @@ export async function runRealtimeSimulation(
         // submission count's primary source is the agent's self-reported log (agents/<id>.jsonl) (ADR 0006 §5)
         includedTxCount: agent.included,
         revertCount: agent.reverted,
+        // Included txs the agent's runtime never reported sending (rules §8; see postRunCheck.ts).
+        // Only for agents this coordinator started -- an external participant has no log here.
+        ...(agent.process !== undefined
+          ? { unloggedTxCount: unloggedTxCountByAgent[agent.id] ?? 0 }
+          : {}),
         stderrTail: agent.process?.getStderr() ?? "",
       });
     }
