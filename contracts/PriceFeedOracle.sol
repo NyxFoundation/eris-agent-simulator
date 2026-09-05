@@ -51,6 +51,15 @@ contract PriceFeedOracle {
         loanUnit = 10 ** loanDecimals;
     }
 
+    /// @notice Always the zero address. This oracle has no owner and no setter — but "has no
+    ///         `owner()` function" and "has an owner of nobody" are different facts to a caller, and
+    ///         only the second one is checkable. A verifier that treats a missing `owner()` as
+    ///         "possibly movable" is being correct, not paranoid: a contract that does not answer
+    ///         has not told you anything. So this answers.
+    function owner() external pure returns (address) {
+        return address(0);
+    }
+
     function price() external view returns (uint256) {
         uint256 collateralUsd = _usd(collateralFeedToken);
         uint256 loanUsd = _usd(loanFeedToken);
