@@ -10,6 +10,48 @@ export type DirectAccess = {
   runId: string;
 };
 
+// Names the child needs to run at all -- node, tsx, and the subscription CLIs the self-improving
+// runtime shells out to (`codex exec` / `claude -p` read their login from HOME). Deliberately short:
+// anything else is either the runtime's own ERIS_* namespace or a secret belonging to the operator
+// or to another participant.
+const OS_PASSTHROUGH = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TERM",
+  "NODE_ENV",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "NODE_EXTRA_CA_CERTS",
+  // Windows cannot spawn a process without these.
+  "SystemRoot",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "windir",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "USERPROFILE",
+]);
+
+// Inference credentials and endpoints (example/agents/runtime/llm.ts). Not secrets belonging to
+// other participants -- these are the operator's own defaults, overridable per agent by the roster.
+const INFERENCE_ENV = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OLLAMA_API_KEY",
+];
+
 // Agent process in realtime mode (ADR 0015 §5).
 // spawn is always `node --import tsx <agentsDir>/runtime/bot.ts` (the agent directory is passed via
 // env ERIS_AGENT_DIR). The stdin/stdout protocol has been retired; the child reads the chain itself
@@ -37,15 +79,30 @@ export class RealtimeAgentProcess {
     // If spec.env specifies a value it takes precedence (extraEnv acts as the default).
     extraEnv?: Record<string, string>,
   ) {
-    const childEnv: NodeJS.ProcessEnv = { ...process.env };
-    // Remove the parent Claude Code session markers (prevents a hang from nesting detection).
-    for (const k of Object.keys(childEnv)) {
-      if (
-        k.startsWith("CLAUDE_CODE_") ||
-        k === "CLAUDECODE" ||
-        k === "AI_AGENT"
-      )
-        delete childEnv[k];
+    // The child is participant code that the operator executes, so its environment is BUILT rather
+    // than inherited. `{ ...process.env }` handed every submitted agent the operator's whole
+    // environment: every other agent's wallet key, TREASURY_PRIVATE_KEY, the fork RPC URL, and --
+    // now that participants supply their own inference credentials -- one API key per participant.
+    // Nothing the runtime reads needs any of that (example/agents/runtime/*.ts reads ERIS_* plus the
+    // inference names below), and the child does not load .env.local: that is bootstrapEnv.ts, on
+    // this side of the spawn. The allowlist also drops CLAUDE_CODE_* / CLAUDECODE / AI_AGENT, which
+    // used to be deleted by name here to stop `claude -p` hanging on nesting detection.
+    const childEnv: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v === undefined) continue;
+      // ERIS_* is the runtime's own namespace. The private key is excluded because it is per-agent
+      // and injected below -- inheriting the parent's would be the leak this list exists to stop.
+      if (k.startsWith("ERIS_") && k !== "ERIS_AGENT_PRIVATE_KEY")
+        childEnv[k] = v;
+      else if (OS_PASSTHROUGH.has(k)) childEnv[k] = v;
+    }
+    // Inference credentials are forwarded as a DEFAULT, so a single-operator local run keeps working
+    // with one key in .env.local. A roster entry's `env` is applied after this and overrides them,
+    // which is how each participant gets its own; an agent never sees another agent's, because
+    // another agent's key only ever exists in that other agent's spec.
+    for (const k of INFERENCE_ENV) {
+      const v = process.env[k];
+      if (v !== undefined) childEnv[k] = v;
     }
     Object.assign(childEnv, extraEnv ?? {});
     Object.assign(childEnv, spec.env ?? {});
