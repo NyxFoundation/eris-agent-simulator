@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { agentToken } from "../inference/proxy.js";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AgentSpec } from "@eris/sdk/types.js";
@@ -96,7 +97,12 @@ export class RealtimeAgentProcess {
       if (v === undefined) continue;
       // ERIS_* is the runtime's own namespace. The private key is excluded because it is per-agent
       // and injected below -- inheriting the parent's would be the leak this list exists to stop.
-      if (k.startsWith("ERIS_") && k !== "ERIS_AGENT_PRIVATE_KEY")
+      // ERIS_INFERENCE_SECRET is the operator's: the child gets a token derived from it below.
+      if (
+        k.startsWith("ERIS_") &&
+        k !== "ERIS_AGENT_PRIVATE_KEY" &&
+        k !== "ERIS_INFERENCE_SECRET"
+      )
         childEnv[k] = v;
       else if (OS_PASSTHROUGH.has(k)) childEnv[k] = v;
     }
@@ -110,6 +116,11 @@ export class RealtimeAgentProcess {
     }
     Object.assign(childEnv, extraEnv ?? {});
     Object.assign(childEnv, spec.env ?? {});
+    // Rules §2.3 / §2.5: inference goes through the operator's proxy. The agent authenticates to it
+    // with a token that is a function of its id and a secret only the coordinator and the proxy
+    // hold, so one agent cannot present itself as another and no agent holds an upstream key.
+    const inferenceSecret = process.env.ERIS_INFERENCE_SECRET;
+    if (inferenceSecret) childEnv.ERIS_INFERENCE_TOKEN = agentToken(inferenceSecret, spec.id);
     childEnv.NODE_ENV = process.env.NODE_ENV ?? "development";
     childEnv.ERIS_AGENT_ID = spec.id;
     childEnv.ERIS_RPC_URL = rpcUrl;

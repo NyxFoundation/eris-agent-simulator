@@ -28,6 +28,15 @@ test("resolveLlmProvider: routes model names to providers", () => {
   });
 });
 
+test("resolveLlmProvider: OpenAI's own names and the openai: prefix route to the OpenAI-compatible family; gpt-oss stays on Ollama", () => {
+  assert.deepEqual(resolveLlmProvider("openai:anything"), { kind: "openai" });
+  assert.deepEqual(resolveLlmProvider("gpt-4o-mini"), { kind: "openai" });
+  assert.deepEqual(resolveLlmProvider("gpt-5"), { kind: "openai" });
+  assert.deepEqual(resolveLlmProvider("o3-mini"), { kind: "openai" });
+  assert.deepEqual(resolveLlmProvider("gpt-oss:120b"), { kind: "ollama" });
+  assert.deepEqual(resolveLlmProvider("olmo2"), { kind: "ollama" });
+});
+
 test("resolveLlmProvider: empty model after the prefix falls back to the CLI default", () => {
   assert.deepEqual(resolveLlmProvider("codex:"), { kind: "codex" });
   assert.deepEqual(resolveLlmProvider("claude-cli: "), { kind: "claude-cli" });

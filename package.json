@@ -15,6 +15,7 @@
     "sim:realtime": "tsx core/src/cli/sim-realtime.ts",
     "backtest": "tsx core/src/cli/backtest.ts",
     "competition": "tsx core/src/cli/competition.ts",
+    "inference-proxy": "tsx core/src/cli/inferenceProxy.ts",
     "gen:local-constants": "tsx scripts/genLocalConstants.ts",
     "gen:method-selectors": "tsx scripts/genMethodSelectors.ts",
     "gen:state-dump": "tsx scripts/genStateDump.ts",

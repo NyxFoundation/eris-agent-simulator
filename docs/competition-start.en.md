@@ -266,9 +266,12 @@ agents:
 | `claude…` (a model name starting with `claude`) | the Anthropic API | `ANTHROPIC_API_KEY` |
 | anything else (default) | the ollama family | `ERIS_OLLAMA_BASE_URL` (Ollama Cloud by default) + `OLLAMA_API_KEY` |
 
-> **OpenAI API keys and OpenAI-compatible endpoints are not supported yet** (OpenAI is reachable only
-> through the `codex` subscription CLI). Which inference services you may use on submission is set by
-> rules §2.5.
+| `openai:<model>`, or a name starting with `gpt-` / `o1` / `o3` / `o4` | OpenAI-compatible chat completions | `OPENAI_API_KEY` (`OPENAI_BASE_URL` for a compatible endpoint) |
+
+> **In the competition no key reaches your agent.** Inference goes through the operator's proxy
+> (rules §2.3, §2.5); the models you may use are the proxy's published list (§2.5) and every exchange
+> is recorded. Set `ERIS_INFERENCE_BASE_URL` locally to exercise the same path
+> (`infra/inference-proxy/README.md`).
 
 A run completes with no backend at all: the revision is recorded as failed and the strategy keeps
 trading unchanged. Details in [llm-agents.md](guide/llm-agents.md).

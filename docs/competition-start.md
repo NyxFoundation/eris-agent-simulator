@@ -226,7 +226,9 @@ agents:
 | `claude...`（`claude` で始まるモデル名） | Anthropic API | `ANTHROPIC_API_KEY` |
 | それ以外（既定） | Ollama 系 | `ERIS_OLLAMA_BASE_URL`（既定 Ollama Cloud）+ `OLLAMA_API_KEY` |
 
-> **OpenAI の API キーと OpenAI 互換エンドポイントは現時点で未対応です**（OpenAI はサブスクの `codex` CLI 経由でのみ使えます）。提出時に使える推論サービスは規約 §2.5 が定めます。
+| `openai:<model>` または `gpt-` / `o1` / `o3` / `o4` で始まるモデル名 | OpenAI 互換 chat completions | `OPENAI_API_KEY`（互換エンドポイントは `OPENAI_BASE_URL`） |
+
+> **本番では鍵はエージェントに渡りません。** 推論は運営のプロキシ経由で（規約 §2.3・§2.5）、使えるモデルはプロキシの一覧（§2.5 で公表）に限られ、全ての往復が記録されます。ローカルで `ERIS_INFERENCE_BASE_URL` を設定すると同じ経路を試せます（`infra/inference-proxy/README.md`）。
 
 バックエンドが無くても run は完走します。改訂の失敗が記録され、戦略は無改変で走り続けます。詳細は [llm-agents.md](guide/llm-agents.md)。
 

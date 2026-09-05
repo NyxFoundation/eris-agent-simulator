@@ -41,7 +41,11 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
 - `ERIS_AGENT_FROZEN: "1"` — prompt.md を無視して戦略を固定。**ADR 0018 §5 が要求する frozen 対照**
   （自己改善が効いたかを毎 run 見えるようにする）をディレクトリ複製なしで作る
 - `ERIS_LLM_MODEL: "<model>"` — 改訂呼び出しのバックエンド（prompt.md の frontmatter が優先）。
-  API キー無しでも `codex[:<m>]` / `claude-cli[:<m>]` でサブスク CLI 実行可 = docs/guide/llm-agents.md
+  API キー無しでも `codex[:<m>]` / `claude-cli[:<m>]` でサブスク CLI 実行可 = docs/guide/llm-agents.md。
+  `openai:<m>` / `gpt-*` は OpenAI 互換 chat completions。**本番は運営の推論プロキシ経由**
+  （`ERIS_INFERENCE_BASE_URL` + agent ごとの `ERIS_INFERENCE_TOKEN` = HMAC(ERIS_INFERENCE_SECRET, agentId)。
+  agent は鍵を持たない。`npm run inference-proxy`、`core/src/inference/proxy.ts`、規約 §2.3/§2.5。
+  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）
 - `ERIS_IMPROVE_LOG_CALLS: "1"` — 改訂の生のやり取りを `agents/<id>.llm.jsonl` に残す（既定 off）
 
 改訂プロンプトは**その run で有効な venue の action 名を列挙する**（`ACTION_TYPES_BY_PROTOCOL`。
