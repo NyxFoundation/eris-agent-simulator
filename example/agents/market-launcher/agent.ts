@@ -158,6 +158,22 @@ export async function run(ctx: AgentContext): Promise<void> {
       return;
     }
     const fee = obs.limits?.defaultPriorityFeePerGasWei;
+    // The deadline outranks every phase, not just the one that watches for it. Whatever this agent
+    // is in the middle of -- waiting for a deploy, retrying a mint, waiting for a market to appear
+    // -- the exit needs the blocks it needs, and a build that is still in progress at the bell is
+    // worth less than nothing under the round-trip rule. Anything not yet built is abandoned here.
+    if (
+      blocksLeft(obs) <= EXIT_BLOCKS &&
+      phase !== "exit-pool" &&
+      phase !== "exiting"
+    ) {
+      ctx.log({
+        round: obs.round,
+        reason: `exit deadline reached during "${phase}" — abandoning the rest of the build`,
+        state: { kind: "market_launcher_deadline", abandoned: phase },
+      });
+      phase = "exit-pool";
+    }
     const priceFeed = process.env.ERIS_PRICE_FEED_ADDRESS as Address | undefined;
     if (!priceFeed) {
       ctx.log({
@@ -433,11 +449,9 @@ export async function run(ctx: AgentContext): Promise<void> {
         // moves on or tries again.
         return;
       }
-      case "supplied": {
-        if (blocksLeft(obs) > EXIT_BLOCKS) return;
-        phase = "exit-pool";
+      case "supplied":
+        // The transition out of here is the deadline guard above, which every phase goes through.
         return;
-      }
       case "exit-pool": {
         // The LP first. Both legs are tokens the environment prices, so this position is real value
         // and the round-trip rule marks it at its share of the pool's reserves -- but only while it
