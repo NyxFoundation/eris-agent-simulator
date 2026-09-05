@@ -76,13 +76,47 @@ COMMON_ENV=(
   -e ERIS_MAX_TXS_PER_ROUND -e ERIS_MAX_TX_GAS
 )
 
+# Run the container with this wrapper supervising it, and make sure the *container* dies when the
+# wrapper is asked to stop.
+#
+# Not `exec`: killing the docker **client** does not stop a daemon-managed container, so an `exec`d
+# wrapper left the agent running with its key and its RPC connection after the run had ended and
+# been scored. `--init` above fixes the graceful path (tini forwards the signal to a process that is
+# otherwise PID 1 and therefore ignores it); this is what fixes the ungraceful one.
+#
+# Both modes go through here. The bind-mount path used to have its own `exec` and its own hole.
+supervise() {
+  "$@" &
+  CHILD=$!
+  trap stop TERM INT
+  wait "$CHILD"
+}
+
+stop() {
+  # Removal, then verification. A failed `docker rm -f` that is shrugged off leaves exactly the
+  # container this function exists to remove, so retry briefly and say so if it survives -- an agent
+  # that outlives the run still holds its key and its RPC connection.
+  for _ in 1 2 3; do
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    docker ps -q --filter "name=^${NAME}$" | grep -q . || break
+    sleep 1
+  done
+  if docker ps -q --filter "name=^${NAME}$" | grep -q .; then
+    echo "run-agent: FAILED to remove container $NAME; it is still running" >&2
+  fi
+  kill "$CHILD" 2>/dev/null || true
+  wait "$CHILD" 2>/dev/null || true
+  exit 0
+}
+
 if [ "${ERIS_AGENT_BINDMOUNT:-0}" = "1" ]; then
   # Bind-mount mode: same host path inside the container, so coordinator paths resolve as-is.
-  exec docker run "${CAPS[@]}" "${COMMON_ENV[@]}" \
+  supervise docker run "${CAPS[@]}" "${COMMON_ENV[@]}" \
     -e ERIS_RUN_DIR -e ERIS_AGENT_DIR -e ERIS_CONFIG \
     -v "$REPO:$REPO:ro" -v "$REPO/runs:$REPO/runs" -w "$REPO" \
     "${ERIS_AGENT_IMAGE:-node:24-bookworm-slim}" \
     node --import tsx "$REPO/example/agents/runtime/bot.ts"
+  exit $?
 fi
 
 # Image mode: remap the coordinator's host paths ($REPO/...) onto the image's /eris.
@@ -107,17 +141,4 @@ if [ -n "${ERIS_CONFIG:-}" ]; then
   MOUNTS+=( -v "$CFG_HOST:$CFG_IMG:ro" )
 fi
 
-# Not `exec`: the wrapper stays as the thing the coordinator can signal, and it removes the
-# container itself. Killing the docker *client* does not stop a daemon-managed container, so an
-# `exec`d wrapper left the agent running with its key and its RPC connection after the run ended.
-# `--init` above makes the graceful path work; this is what makes the ungraceful one work too.
-docker run "${CAPS[@]}" "${COMMON_ENV[@]}" "${ENVS[@]}" "${MOUNTS[@]}" "$IMG" &
-CHILD=$!
-stop() {
-  docker rm -f "$NAME" >/dev/null 2>&1 || true
-  kill "$CHILD" 2>/dev/null || true
-  wait "$CHILD" 2>/dev/null || true
-  exit 0
-}
-trap stop TERM INT
-wait "$CHILD"
+supervise docker run "${CAPS[@]}" "${COMMON_ENV[@]}" "${ENVS[@]}" "${MOUNTS[@]}" "$IMG"

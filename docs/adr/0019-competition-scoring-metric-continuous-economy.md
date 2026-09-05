@@ -277,9 +277,10 @@ stable と Liquity の Trove 債務 / Stability Pool 預入（`protocols/liquity
   agent の spot 側も同じ外部価格でマークされる。よってプールを押しても**自分の 2 つのバケツの間で
   価値が移るだけ**（トレーダーが失うぶんをプールが得て、agent はその自分の持ち分しか取り戻せない）。
   プールを全部持っていれば wash、そうでなければ損。**総額は増やせない**
-- **LST の採点対象のマークは face value** — `valueUsdc` = vault の償還レート × WETH fair で、
-  プールを一切読まない。プール quote が入るのは `liquidatableValueUsdc` の方で、これは報告用の
-  診断値であって価値系列は合計しない
+- **LST の採点対象のマークは realizable**（issue #40 公理 3 / ADR 0022 Amendment 1 で変更。
+  この ADR を書いた時点では face value だった）。プール quote は採点に入るが、操作面にはならない
+  —— 上の LP 持ち分と同じで、プールを押しても agent 自身の 2 つのバケツの間で価値が動くだけ。
+  動かせるのは discount で、それは G7 の中央値窓が覆う
 
 stable だけが違うのは、そこでは**プールの quote が「取得原価が別の場所にある保有」のマークそのもの**に
 なっているから。プールを動かすとスコアが動く。`summary.json` の `markMedian.surfaces` が対象面を
@@ -455,7 +456,7 @@ Superseded にはしない（実装が生きている部分まで死んだよう
 | 1 ETH のガス十分性 | 週あたり実消費が未測 | 同上 |
 | G7 の TWAP 窓 N | epoch 長との相対で決める（全境界に同じ N を使う。poc では epoch = 12 ブロック） | G7 実装時 |
 | 断面のオンライン取得（run 後再構成の置き換え） | 504 ブロックなら現行の再構成で足りる。実チェーン（#33）では history が引けないので必ず要るが、それは移行時の作業 | 実チェーン移行時 / epoch を 24 ブロックへ伸ばすとき |
-| LST を採点で par と realizable のどちらでマークするか | §3 が「通常の live mark」を選んだ結果、採点は `valueUsdc` = par を合計しており、run 内に finalize しない pending も par で入る。#38 の意図（realizable で採点）と食い違う。`lst` は競技セット外なので今は無害 | `lst` を競技セットに入れる前 |
+| ~~LST を採点で par と realizable のどちらでマークするか~~ | **決着（2026-09-05・issue #40 / ADR 0022 Amendment 1）: realizable。**採点系列は全 venue で `liquidatableValueUsdc` を合計する | 済 |
 | 参加者向け rules text | ADR は内部の判断記録であって公表文ではない | 本番募集時 |
 | 練習ハーネス（ADR 0017）側の採点をどう揃えるか | 練習の目的は執行の練習であって順位の予習ではない | 本番の採点が動いた後 |
 

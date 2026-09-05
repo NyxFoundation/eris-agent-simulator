@@ -91,7 +91,7 @@ Each epoch boundary is valued at **the median over the preceding `markMedianBloc
 |---|---|---|
 | Market-priced stables (spot, Trove debt, SP deposits) | **Yes** | The pool quote **is** the mark of a holding whose cost basis sits elsewhere, so moving the pool moves the score |
 | LP shares | No | Valued by composition (reserves × the environment's fair price). Pushing the pool moves value between the agent's own two buckets |
-| LST | No | The scored mark is face value (redemption rate × WETH fair) and reads no pool at all |
+| LST | No | Since issue #40 axiom 3 the scored mark is the realizable one, so the pool quote is in it — but pushing that pool moves value between the agent's own two buckets, exactly as with LP shares. What it can move is the discount, and the median window covers that |
 
 Live and sweep use the same window. How much the rule actually moved is reported in `valueSeries.markMedian.maxDeviationBps`.
 

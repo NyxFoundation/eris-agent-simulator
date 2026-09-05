@@ -169,7 +169,7 @@ remote box reads correctly from wherever the tarball was unpacked.
 | | |
 |---|---|
 | **Decided** | Post-run reconstruction at shared cross-sections (ADR 0006). The benchmark is a real roster entry (ADR 0019 §2). Bankruptcy floor + freeze. E fixed across the field. `scenario` is the competition's world reset unit (ADR 0020 §2) |
-| **Open** | The headline metric (ADR 0019 is Proposed; issue #56). The cross-scenario aggregator. λ on the scenario side. The scenario count S. Whether the LST venue is scored at par or at the realizable mark |
+| **Open** | The headline metric (ADR 0019 is Proposed; issue #56). The cross-scenario aggregator. λ on the scenario side. The scenario count S |
 
 Because every candidate is recomputable from stored artifacts, none of these has to be settled before
 running: `matrix.json` and `summary.json` keep the raw numbers, and the rule can be applied to a

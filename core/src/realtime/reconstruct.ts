@@ -831,9 +831,11 @@ export function epochBoundaryBlocks(
 //   pool gains, and the agent gets back only its share of it. A wash if it owns the whole pool, a
 //   loss otherwise.
 //
-//   The LST venue's scored mark is face value (vault redemption rate x the WETH fair), which reads
-//   no pool at all. Its pool quote feeds liquidatableValueUsdc, a reported diagnostic that the value
-//   series does not sum.
+//   The LST venue reads its pool for the realizable side, and since issue #40 axiom 3 the realizable
+//   side is what the value series sums -- so the pool quote *is* in the score there. It is still not
+//   a manipulation surface for the same reason the LP shares above are not: pushing the LST/WETH
+//   pool moves value between the agent's own two buckets. What it can do is lower the *discount*,
+//   and a lower discount is a higher mark, so the median window covers it like everything else.
 //
 // What makes the stables different is that there the pool quote *is* the mark of a holding whose
 // cost basis sits somewhere else, so moving the pool moves the score.

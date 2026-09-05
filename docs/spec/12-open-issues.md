@@ -33,7 +33,7 @@
 | 候補 | `zscore` / `borda` / `mean`（[06 §6.6](06-scoring.md)）。`npm run metrics -- --matrix` が総当たりで比較できる |
 | 現状の運用 | ダッシュボードは `zscore` 固定で表示し、再採点は CLI の仕事にしてある |
 
-### LST の採点基礎（par か realizable か）
+### ~~LST の採点基礎（par か realizable か）~~ — 決着済み
 
 | | |
 |---|---|

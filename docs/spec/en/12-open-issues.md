@@ -37,10 +37,10 @@ The chapter that exists so nothing undecided gets written as decided ([README](R
 
 | | |
 |---|---|
-| State | **Undecided** |
+| State | **Settled (2026-09-05)** |
 | What | **Settled 2026-09-05 (issue #40 / ADR 0022 Amendment 1): realizable.** Scoring sums `liquidatableValueUsdc` for every venue; the face mark is reported as `markedValueUsdc` where it differs |
-| The tension | Issue #38's intent was realizable; the implementation uses par (partly a consequence of ADR 0019 §3 choosing the ordinary live mark as the basis) |
-| Deadline | **Before `lst` enters the competition set** |
+| Why it took this long | It was not undecided because nobody knew which was right — there was no occasion to decide it. Issue #40 axiom 3 is that occasion: marking at par records an attack as fabricated value, and the argument carries to the LST queue unchanged |
+| Side effect | The reporting direction reverses: the face mark is what gets reported, as `markedValueUsdc` |
 
 ### ETH-denominated scoring
 
