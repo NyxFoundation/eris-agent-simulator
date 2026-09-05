@@ -503,6 +503,23 @@ export async function run(ctx: AgentContext): Promise<void> {
         return;
       }
       case "exiting": {
+        // A mint submitted just before the deadline lands a block or two later, after `exit-pool`
+        // has already looked and found nothing. Look again from here: an LP that appears after the
+        // exit began is still an LP, and abandoning it is exactly the loss the round-trip rule
+        // charges for.
+        if (
+          blocksLeft(obs) > 1 &&
+          obs.protocols.uniswap?.positions.some(
+            (p) =>
+              p.market?.includes(`#${POOL_FEE}`) &&
+              (BigInt(p.liquidity) > 0n ||
+                BigInt(p.tokensOwedWethWei) > 0n ||
+                BigInt(p.tokensOwedUsdcUnits) > 0n),
+          )
+        ) {
+          phase = "exit-pool";
+          return;
+        }
         const mine = lending.markets.find((m) => m.marketId === marketId);
         const { supplied } = withdrawableNow(mine);
         // Utilisation is the supplier's risk, not an accounting error: if a borrower has the loan
@@ -514,18 +531,22 @@ export async function run(ctx: AgentContext): Promise<void> {
           if (exit) ctx.submit(exit);
           return;
         }
+        const strandedLp = (obs.protocols.uniswap?.positions ?? []).filter(
+          (p) => p.market?.includes(`#${POOL_FEE}`) && BigInt(p.liquidity) > 0n,
+        ).length;
         ctx.log({
           round: obs.round,
           // Never "exited" when it did not. A creator whose own market was still holding its money
           // at the bell scored zero on it, and that is the finding, not a footnote.
           reason:
-            supplied > 0n
-              ? `could not exit: ${supplied} loan-token units still inside at the bell`
+            supplied > 0n || strandedLp > 0
+              ? `could not exit: ${supplied} loan-token units and ${strandedLp} LP position(s) still inside at the bell`
               : "exited",
           state: {
             kind: "market_launcher_done",
             marketId,
             strandedAssets: supplied.toString(),
+            strandedLpPositions: strandedLp,
           },
         });
         phase = "done";
