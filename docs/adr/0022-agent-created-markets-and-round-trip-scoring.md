@@ -209,6 +209,35 @@ T0 は環境コントラクトの owner ガードを**列挙して計測せよ**
 owner ガード監査は **6→13 プローブすべて guarded**（`MockAggregator` / `MockOracleProvider` に
 ガードを足す前は 2 件が unprotected だった）。ガス予算違反は 0 件。
 
+### 負荷試験（`bench/run.sh --markets 12`）
+
+12 体（参照 4 役を循環）・200 ブロック・2 秒ブロック・各エージェント 1GB / CPU 上限つきコンテナ。
+16 コア / 187GB の box、`ANVIL_PORT=8555` で本番 anvil から隔離。
+
+**ブロックループ**（`round_timing`。予算は 1 ブロック 2,000ms）:
+
+| | p50 | p95 | max |
+|---|---|---|---|
+| `totalMs`（ループ全体） | 58 | 77 | 103 |
+| **`registryMs`（本 issue が足した分）** | **11** | **18** | **46** |
+| `oracleMs` | 58 | 72 | 80 |
+| `stateFlowMs` | 17 | 23 | 32 |
+| `epochMs`（境界ブロックのみ） | 18 | 29 | 44 |
+
+**エージェント側**: メモリ peak 126〜133 MiB / CPU peak 51〜54%（1 コア比）。
+frozen の venue-arb の既知値 ~168 MiB より軽い（このロスターは LLM を回さず、
+判断も swap 主体より単純なため）。
+
+読み取れること: **発見スイープ + registry 書き込みはブロック予算の 0.6%（p50）**、
+最悪でも 2.3%。ブロックループの支配項は依然 oracle 書き込みで、本 issue はそれを動かしていない。
+
+**受け入れていない残件**（負荷試験中に発見。本 issue の範囲外・既存）:
+run が完走して `realtime simulation completed` を出したあと、**プロセスが終了しない**。
+`bench/run.sh --agents 4`（本 issue と無関係な既定ロスター）でも再現するので既存の欠陥である。
+run 時間制限のタイマーは `finish()` で clear されているので、event loop に別のハンドルが
+残っている。**CI の `grep -q "simulation completed"` はそこまで到達しない**し、練習 devnet の
+セグメント切り替えにも効くので、別 issue に分けて追う。
+
 ### 実測が見つけた欠陥（実装後・レビュー前）
 
 live run を回さなければ出なかったものが 3 件あった。記録として残す:

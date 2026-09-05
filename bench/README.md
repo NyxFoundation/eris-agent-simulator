@@ -42,6 +42,15 @@ matches `eris-explorer-*`, so a bench reset used to take the local Blockscout st
 The container execution itself is `infra/docker-agent/run-agent.sh` (bind-mount mode by default here,
 so no per-team image build is needed for a bench).
 
+## Known: the sim does not always exit
+
+Measured 2026-09-05. The coordinator prints `realtime simulation completed`, writes `summary.json`,
+and then sits at 0% CPU without exiting — reproduced with the stock `--agents 4` roster, so it is not
+about any one agent. `run.sh` therefore bounds the sim with a generous `timeout` and says so in
+`run.log` when it trips; the run's own artifacts are complete either way. Left as a separate defect:
+it also means CI never reaches the log line it greps for, and a practice-devnet segment roll would
+inherit it.
+
 ## CI
 
 `.github/workflows/bench.yml` runs this on a **self-hosted runner** (needs Docker + real cores, which
