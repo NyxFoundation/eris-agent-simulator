@@ -3,6 +3,11 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AgentSpec } from "@eris/sdk/types.js";
 
+// How long a stopped agent gets to exit before it is killed outright. Short: by the time close() is
+// called the run is over and scored, and every extra second is one the environment spends waiting
+// for a process whose output nobody will read.
+const CLOSE_GRACE_MS = 2_000;
+
 // Credentials and connection endpoints passed to the agent child process in direct mode (ADR 0006 §2 / ADR 0015).
 export type DirectAccess = {
   privateKey: string;
@@ -120,9 +125,32 @@ export class RealtimeAgentProcess {
     return this.alive && !this.child.killed;
   }
 
+  /// Stop the agent, and stop *waiting* on it.
+  ///
+  /// The environment's own exit must not depend on a participant's teardown. Measured 2026-09-05: a
+  /// run with containerised agents printed `realtime simulation completed`, wrote summary.json, and
+  /// then never exited — the coordinator sat at 0% CPU holding a pipe to a child that would not
+  /// die. The mechanism is that the agent's node process is **PID 1** inside its container, and
+  /// Linux does not deliver a signal with its default disposition to PID 1: node installs no
+  /// SIGTERM handler, so the agent ignored the stop entirely, `docker run` waited for a container
+  /// that was never going to stop, and this child's stderr pipe kept the environment's event loop
+  /// alive forever. `--init` on the container side fixes the ordinary case (see
+  /// infra/docker-agent/run-agent.sh); this is what makes the environment robust to an agent that
+  /// does not stop for any reason at all — which, in a competition where participants write the
+  /// agent, is a thing to be robust to rather than a thing to trust.
   close(): void {
     this.stopped = true;
     this.child.kill();
+    // unref, not destroy: late stderr is still captured into the buffer that summary.json's
+    // stderrTail reads, it just stops being a reason for the environment to stay alive. The stream
+    // is a net.Socket at runtime; `Readable` is the declared type and has no unref.
+    (this.child.stderr as unknown as { unref?: () => void } | null)?.unref?.();
+    this.child.unref();
+    const escalation = setTimeout(() => {
+      if (this.alive) this.child.kill("SIGKILL");
+    }, CLOSE_GRACE_MS);
+    // The escalation itself must not be the thing that holds the loop open.
+    escalation.unref();
   }
 
   getStderr(): string {

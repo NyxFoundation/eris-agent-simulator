@@ -52,7 +52,13 @@ fi
 # `--label eris.role=agent` is what the sweepers match on. Matching on the `eris-` name prefix looked
 # equivalent and is not: `eris-explorer-*` is the local Blockscout stack, so a bench reset on a box
 # that had the explorer running tore it down as collateral.
-CAPS=( --rm --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label eris.role=agent
+# `--init` runs tini as PID 1. Without it the agent's node process *is* PID 1, and Linux does not
+# deliver a signal with its default disposition to PID 1 — node installs no SIGTERM handler, so the
+# agent ignored the coordinator's stop entirely, `docker run` waited for a container that was never
+# going to stop, and the environment's own process never exited (measured 2026-09-05: it printed
+# `realtime simulation completed`, wrote summary.json, and then sat at 0% CPU forever). tini
+# forwards the signal to the real process, which then stops the way it always should have.
+CAPS=( --rm --init --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label eris.role=agent
   --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
   --pids-limit="${ERIS_DOCKER_PIDS:-256}" --ulimit nofile=2048:2048 --security-opt=no-new-privileges
   --read-only --tmpfs /tmp:rw,size=512m,mode=1777 )
