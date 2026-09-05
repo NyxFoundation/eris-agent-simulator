@@ -334,6 +334,44 @@ export async function run(ctx: AgentContext): Promise<void> {
           phase = "supplied";
           return;
         }
+        const mintParams = (amount0Min: bigint, amount1Min: bigint) => ({
+          token0: token0.address,
+          token1: token1.address,
+          fee: POOL_FEE,
+          tickLower: FULL_RANGE_LOWER,
+          tickUpper: FULL_RANGE_UPPER,
+          amount0Desired: wethIsToken0 ? weth : usdc,
+          amount1Desired: wethIsToken0 ? usdc : weth,
+          amount0Min,
+          amount1Min,
+          recipient: self,
+          deadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
+        });
+        // The price check above is a read; this is the constraint. Between the read and the mine an
+        // opponent can outbid this transaction, add liquidity and swap the price away, and a mint
+        // with zero minimums would then deposit at *their* ratio for them to unwind. Simulating for
+        // the amounts and bounding them is the same thing `mintLiquidity` does for the registered
+        // markets -- it makes a moved price a revert rather than a donation.
+        let mins: [bigint, bigint];
+        try {
+          const simulated = await ctx.publicClient.simulateContract({
+            account: self,
+            address: UNISWAP.nonfungiblePositionManager,
+            abi: nonfungiblePositionManagerAbi,
+            functionName: "mint",
+            args: [mintParams(0n, 0n)],
+          });
+          const [, , amount0, amount1] = simulated.result;
+          mins = [(amount0 * 99n) / 100n, (amount1 * 99n) / 100n];
+        } catch (error) {
+          // The pool moved, or the mint would fail for some other reason. Retry next block rather
+          // than sending something that will revert and cost a transaction out of the allowance.
+          ctx.log({
+            round: obs.round,
+            reason: `pool mint would revert: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
+          });
+          return;
+        }
         ctx.submit({
           type: "rawTx",
           tx: {
@@ -341,23 +379,7 @@ export async function run(ctx: AgentContext): Promise<void> {
             data: encodeFunctionData({
               abi: nonfungiblePositionManagerAbi,
               functionName: "mint",
-              args: [
-                {
-                  token0: token0.address,
-                  token1: token1.address,
-                  fee: POOL_FEE,
-                  tickLower: FULL_RANGE_LOWER,
-                  tickUpper: FULL_RANGE_UPPER,
-                  amount0Desired: wethIsToken0 ? weth : usdc,
-                  amount1Desired: wethIsToken0 ? usdc : weth,
-                  // The creator is the only side of its own empty pool, so there is no price to be
-                  // protected from -- a slippage bound here would only be a way to fail.
-                  amount0Min: 0n,
-                  amount1Min: 0n,
-                  recipient: self,
-                  deadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
-                },
-              ],
+              args: [mintParams(mins[0], mins[1])],
             }),
           },
           maxPriorityFeePerGasWei: fee,
