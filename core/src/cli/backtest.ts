@@ -509,15 +509,20 @@ async function main(): Promise<void> {
     [
       "--port",
       String(port),
-      // Same calibration as the deployer's anvil (deployer/src/anvil.ts startAnvil)
-      // (code-size/base-fee/gas-limit). When you change that one, match it here.
-      // Only --order fees is a deliberate addition to align with production realtime.
+      // Same calibration as the deployer's anvil (deployer/src/anvil.ts startAnvil) for
+      // code-size and base-fee. When you change those there, match them here.
+      // Two deliberate differences: --order fees aligns with production realtime, and the
+      // gas limit is the competition's, not the deployer's. The deployer runs at 3,000,000,000
+      // because deploying GMX needs it; this anvil loads a finished state dump and never
+      // deploys, so it runs at the block size the rules publish (§2.6: 30,000,000, the value
+      // Ethereum L1 and OP Mainnet ran for years and anvil's own default). Sizing it to fit
+      // every agent's every transaction would remove the priority-fee auction §2.6 describes.
       "--code-size-limit",
       "50000",
       "--base-fee",
       "0",
       "--gas-limit",
-      "3000000000",
+      "30000000",
       "--accounts",
       "10",
       "--balance",
