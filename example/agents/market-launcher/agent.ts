@@ -67,6 +67,14 @@ const POOL_SEED_BPS = Number(process.env.ERIS_LAUNCHER_POOL_BPS ?? "1500");
 // How far the pool's actual price may sit from fair before this agent refuses to fund it. Pool
 // creation is idempotent, so "I created it" does not mean "I set its price".
 const POOL_MAX_DRIFT = Number(process.env.ERIS_LAUNCHER_POOL_MAX_DRIFT ?? "0.02");
+// ~year 2106. A deadline is a wall-clock value, and a wall-clock value in calldata makes the same
+// decision produce a different transaction on replay. The sdk's LP path uses the same constant.
+const DEADLINE_FAR_FUTURE = BigInt(2 ** 32 - 1);
+// How many blocks the seeding attempt is retried before giving up. The mint can revert for reasons
+// this agent cannot see -- `simulateContract` runs against the latest block, so a higher-fee
+// price-mover already in the mempool is invisible to it -- and one revert must not be the end of
+// the attempt, or the bound that protects the deposit becomes the thing that prevents it.
+const POOL_SEED_ATTEMPTS = Number(process.env.ERIS_LAUNCHER_POOL_ATTEMPTS ?? "6");
 
 // The pool's own price, or undefined when it does not exist yet. Read through the factory, because
 // a pool this agent just made is by definition not in the registered market set.
@@ -114,6 +122,7 @@ export async function run(ctx: AgentContext): Promise<void> {
   let oracle: Address | undefined;
   let marketId: string | undefined;
   let nonceBeforeDeploy = 0;
+  let seedAttempts = 0;
   let busy = false;
 
   ctx.onObservation((obs) => {
@@ -293,6 +302,29 @@ export async function run(ctx: AgentContext): Promise<void> {
         return;
       }
       case "seed-pool": {
+        // Did the last attempt land? The position appearing is the only evidence that matters, and
+        // it is why this phase does not advance on submission.
+        const seeded = obs.protocols.uniswap?.positions.some(
+          (p) => p.market?.includes(`#${POOL_FEE}`) && BigInt(p.liquidity) > 0n,
+        );
+        if (seeded) {
+          ctx.log({
+            round: obs.round,
+            reason: "pool seeded",
+            state: { kind: "market_launcher_pool_live" },
+          });
+          phase = "supplied";
+          return;
+        }
+        if (seedAttempts >= POOL_SEED_ATTEMPTS) {
+          ctx.log({
+            round: obs.round,
+            reason: `giving up on seeding the pool after ${seedAttempts} attempts`,
+            state: { kind: "market_launcher_pool_abandoned" },
+          });
+          phase = "supplied";
+          return;
+        }
         // **Check the price before funding it.** `createAndInitializePoolIfNecessary` is idempotent:
         // if somebody initialized this pair and fee tier first, the create call above succeeded
         // against *their* pool at *their* price, and a full-range mint with zero minimums would
@@ -345,7 +377,11 @@ export async function run(ctx: AgentContext): Promise<void> {
           amount0Min,
           amount1Min,
           recipient: self,
-          deadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
+          // Far future, not "now plus an hour": a wall-clock value in calldata makes the same
+          // decision produce a different transaction on replay, and a deterministic replay of the
+          // strategy is what §2.4 and §7 of the rules rest on. The sdk's own LP path uses the same
+          // constant for the same reason.
+          deadline: DEADLINE_FAR_FUTURE,
         });
         // The price check above is a read; this is the constraint. Between the read and the mine an
         // opponent can outbid this transaction, add liquidity and swap the price away, and a mint
@@ -386,10 +422,15 @@ export async function run(ctx: AgentContext): Promise<void> {
         } as Record<string, unknown>);
         ctx.log({
           round: obs.round,
-          reason: `seeding the pool with ${weth} wei and ${usdc} USDC`,
-          state: { kind: "market_launcher_pool_seed" },
+          reason: `seeding the pool with ${weth} wei and ${usdc} USDC (attempt ${seedAttempts + 1})`,
+          state: { kind: "market_launcher_pool_seed", attempt: seedAttempts + 1 },
         });
-        phase = "supplied";
+        seedAttempts++;
+        // Deliberately still in `seed-pool`. The mint is bounded, so it *can* revert -- a
+        // price-mover that outbid it, a simulation against a block that has since moved -- and a
+        // phase that advanced on submission would treat one revert as the end of the attempt. The
+        // next block sees whether a position exists (the check at the top of this case) and either
+        // moves on or tries again.
         return;
       }
       case "supplied": {
