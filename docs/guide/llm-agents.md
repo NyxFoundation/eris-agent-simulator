@@ -80,8 +80,9 @@ hand-written strategy (it is handed the same `ctx`), and the same prohibitions: 
 run through the cheatcode static check before it is installed**, so `anvil_*` / `evm_*` /
 `hardhat_*` and the privileged chain helpers are refused exactly as they are in a submission.
 
-Code that fails the check, fails to compile, or does not return within 2 seconds is not installed —
-the previous strategy keeps running and the reason is logged.
+Code that fails the check or fails to compile is not installed — the previous strategy keeps running
+and the reason is logged. Once installed, every call is bounded at 5 seconds (rules §2.3, the same
+bound a hand-written `decide()` gets); past it the block is no action.
 
 ## Guards
 

@@ -50,6 +50,7 @@ import type {
   ProtocolId,
 } from "@eris/sdk/types.js";
 import { createAgentLog, createJsonlAppender } from "./agentLog.js";
+import { DecideTimeoutError, withDecideTimeout } from "./decideTimeout.js";
 import { callLlm } from "./llm.js";
 import {
   buildRevisionContext,
@@ -398,7 +399,10 @@ async function main(): Promise<void> {
     if (!activeDecide || deciding) return;
     deciding = true;
     try {
-      const action = await activeDecide(obs, ctx);
+      // Rules §2.3: 5,000 ms per decision, then the block is no action (decideTimeout.ts says what
+      // that does and does not cover). The same bound for the shipped strategy and for one the model
+      // installed -- improve.ts races its executors too, so a generated body is bounded either way.
+      const action = await withDecideTimeout(activeDecide(obs, ctx), obs.round);
       if (action) ctx.submit(action);
       rememberDecision({ round: obs.round, action: action ?? undefined });
       // Record the decision not to trade, with its reason. send.ts drops noops before they reach
@@ -418,7 +422,12 @@ async function main(): Promise<void> {
             "decide returned nothing",
         });
     } catch (error) {
-      const reason = `decide error: ${error instanceof Error ? error.message : String(error)}`;
+      // A timeout is its own line, not a `decide error:` -- the strategy did not fail, it did not
+      // answer, and a post-run reader counting one should not have to parse the other.
+      const reason =
+        error instanceof DecideTimeoutError
+          ? error.message
+          : `decide error: ${error instanceof Error ? error.message : String(error)}`;
       rememberDecision({ round: obs.round, reason });
       agentLog({ round: obs.round, reason });
     } finally {

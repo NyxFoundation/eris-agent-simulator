@@ -16,9 +16,9 @@ import {
   DEFAULT_REVISE_EVERY_BLOCKS,
   improvePolicyState,
   loadImproveAgent,
-  EXECUTOR_TIMEOUT_MS,
   parseRevision,
 } from "../example/agents/runtime/improve.js";
+import { DECIDE_TIMEOUT_MS } from "../example/agents/runtime/decideTimeout.js";
 
 function agentDir(promptMd: string): string {
   const dir = mkdtempSync(join(tmpdir(), "eris-improve-"));
@@ -256,7 +256,7 @@ test("compileExecutor: a strategy that never returns is bounded, not left to wed
   );
   // Bounded near the limit rather than hanging; generous upper bound so a slow machine cannot flake.
   assert.ok(
-    Date.now() - started < EXECUTOR_TIMEOUT_MS * 3,
+    Date.now() - started < DECIDE_TIMEOUT_MS * 3,
     "the call was not bounded",
   );
 });

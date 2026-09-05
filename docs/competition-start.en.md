@@ -26,8 +26,6 @@ the competition
     │                 A regime is a type of market condition. Which epoch is which
     │                 regime is not announced in advance.
     │
-    ├ evaluation group  The units running at the same time (cap 32), re-drawn every epoch.
-    │
     └ evaluation interval ×29   A 12-block slice. Used for the leaderboard's running
                                 progress. NOT used for scoring.
 ```
@@ -46,12 +44,11 @@ market-wide move is absorbed into everyone's mean, so **you neither gain from a 
 a selloff.**
 
 Every unit is handed the same initial capital: **8 WETH + 0.4 WBTC + 25,000 USDC**, plus ETH for
-gas. A benchmark agent that never moves its capital sits in every group.
+gas. One benchmark agent that never moves its capital runs alongside. Every unit runs on the same single chain at the same time.
 
 > **All of that is the competition's scoring, not this repository's.** `npm run backtest` and
 > `summary.json` still score the old way: `mean − 0.25 × std` of the excess log return over 12-block
-> intervals, then a z-score within the scenario and an equal-weight mean over regimes. Splitting into
-> evaluation groups, re-drawing them each epoch and weighting later epochs are **not implemented**
+> intervals, then a z-score within the scenario and an equal-weight mean over regimes. Weighting later epochs is **not implemented**
 > locally. **Local numbers are for comparing your own versions against each other, not for predicting
 > where you will place.**
 
@@ -248,8 +245,8 @@ code and decides whether to rewrite it.
 
 Generated code passes a **cheatcode static check → compilation** (evaluating the function expression
 is capped at 1 second) before it is installed. **It is not trial-run first.** Once installed, every
-call to `decide` is capped at **2 seconds** (`EXECUTOR_TIMEOUT_MS`); exceeding it records that round
-as a `decide error:`. A revision that fails is not installed; the failure is recorded and the
+call to `decide` is capped at **5 seconds** (`DECIDE_TIMEOUT_MS`, rules §2.3), the same bound a
+hand-written strategy gets; exceeding it records that round as no action (`decide timeout:`). A revision that fails is not installed; the failure is recorded and the
 strategy keeps trading unchanged. There is no automatic rollback — reverting is the model's decision, made
 with the version history and `revertTo`.
 
@@ -320,8 +317,8 @@ You need the `manifest.json` the operator publishes (RPC, chain id, every venue 
 length, action vocabulary, limits) and your own wallet. Your decision log stays **on your machine and
 nowhere else**. Steps are in [practice-devnet.md](guide/practice-devnet.md).
 
-Practice teaches you execution and how to read observations. **Epoch resets, evaluation groups and
-deviation scoring do not exist there** — that structure only exists in the real thing.
+Practice teaches you execution and how to read observations. **Epoch resets and deviation scoring do not
+exist there** — that structure only exists in the real thing.
 
 ---
 
