@@ -22,7 +22,10 @@ const ALL_PROTOCOLS: ProtocolId[] = [
 ];
 
 // Protocols that can be named in run.protocols but are not in the default set.
-const OPT_IN_PROTOCOLS: ProtocolId[] = ["lst", "liquity"];
+// Venues a run only gets when it names them. `lending` joins lst/liquity for the same reason -- the
+// singleton is ours, so there is nothing to point at on a fork -- and for one more: it only exists
+// at all when `agentMarkets.enabled` is on, which the coordinator checks and fails fast on.
+const OPT_IN_PROTOCOLS: ProtocolId[] = ["lst", "liquity", "lending"];
 
 export type OuConfig = {
   global: OuParams;
