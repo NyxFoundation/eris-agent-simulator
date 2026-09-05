@@ -445,6 +445,60 @@ export async function getLpPositions(
       ? await readPoolFeeGrowth(publicClient, ticksByPool)
       : {};
 
+  // Issue #40: positions in pools the environment did not deploy. An agent that creates its own
+  // pool and provides liquidity to it used to see *nothing* here -- the position was dropped for
+  // having no MARKET_LEGS entry -- so it could not read its own holding and `removeLiquidity` would
+  // not even accept the tokenId, because validation checks the observation. Under the round-trip
+  // rule that is the whole position lost at the bell, for want of being able to see it.
+  //
+  // Resolved through the factory, exactly as the scorer already does (issue #41), and only when the
+  // agent actually holds such a position: no position, no reads.
+  const unregistered = new Map<string, { token0: Address; token1: Address; fee: number }>();
+  for (const raw of rawPositions) {
+    const [, , token0, token1, fee] = raw;
+    if (positionMarketOf(token0, token1, fee, markets)) continue;
+    unregistered.set(positionPoolKey(token0, token1, fee), { token0, token1, fee });
+  }
+  const poolByKey: Record<string, Address> = {};
+  if (unregistered.size > 0) {
+    const factory = await uniswapFactory(publicClient);
+    if (factory) {
+      const entries = [...unregistered.entries()];
+      const resolved = await Promise.all(
+        entries.map(([, p]) =>
+          publicClient
+            .readContract({
+              address: factory,
+              abi: uniswapV3FactoryAbi,
+              functionName: "getPool",
+              args: [p.token0, p.token1, p.fee],
+            })
+            .catch(() => undefined),
+        ),
+      );
+      const ticks = await Promise.all(
+        resolved.map((pool) =>
+          pool && pool !== ZERO_ADDRESS
+            ? publicClient
+                .readContract({
+                  address: pool as Address,
+                  abi: poolAbi,
+                  functionName: "slot0",
+                })
+                .catch(() => undefined)
+            : undefined,
+        ),
+      );
+      entries.forEach(([key], i) => {
+        const pool = resolved[i] as Address | undefined;
+        if (!pool || pool === ZERO_ADDRESS) return;
+        poolByKey[key] = pool;
+        const slot0 = ticks[i] as readonly [bigint, number] | undefined;
+        if (slot0) tickByPool[pool.toLowerCase()] = slot0[1];
+      });
+    }
+  }
+
   const positions: LpPositionObservation[] = [];
   for (let i = 0; i < tokenIds.length; i++) {
     const tokenId = tokenIds[i];
@@ -463,7 +517,41 @@ export async function getLpPositions(
       tokensOwed1,
     ] = rawPositions[i];
     const market = positionMarketOf(token0, token1, fee, markets);
-    if (!market) continue;
+    if (!market) {
+      // An agent-created pool. Reported with the raw pair as its key, and valued the way every
+      // other unknown holding is: each leg at the environment's price, or nothing when the
+      // environment does not price it (an agent-issued token is worth zero to everyone).
+      const resolved = poolByKey[positionPoolKey(token0, token1, fee)];
+      const unknownTick =
+        resolved === undefined ? undefined : tickByPool[resolved.toLowerCase()];
+      if (unknownTick === undefined) continue; // the pool could not be resolved; not "worth zero"
+      const amounts = liquidityToTokenAmounts({
+        liquidity,
+        tick: unknownTick,
+        tickLower,
+        tickUpper,
+      });
+      const amount0 = amounts.amount0 + tokensOwed0;
+      const amount1 = amounts.amount1 + tokensOwed1;
+      positions.push({
+        tokenId: tokenId.toString(),
+        tickLower,
+        tickUpper,
+        liquidity: liquidity.toString(),
+        tokensOwedWethWei: tokensOwed0.toString(),
+        tokensOwedUsdcUnits: tokensOwed1.toString(),
+        uncollectedFeesWethWei: "0",
+        uncollectedFeesUsdcUnits: "0",
+        amountWethWei: amounts.amount0.toString(),
+        amountUsdcUnits: amounts.amount1.toString(),
+        valueUsdc:
+          (tokenAmountUsd(token0, amount0, fairPriceByBase) ?? 0) +
+          (tokenAmountUsd(token1, amount1, fairPriceByBase) ?? 0),
+        // The raw pair, because there is no registry name for it.
+        market: `${token0}/${token1}#${fee}`,
+      });
+      continue;
+    }
     const { baseIsToken0 } = sortedTokensFor(market);
     const pool = legOf(market).pool.toLowerCase();
     const tick = tickByPool[pool] ?? 0;

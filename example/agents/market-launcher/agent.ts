@@ -19,8 +19,11 @@
 // Self-driven (`run(ctx)`, ADR 0015 §3) rather than `decide`, because creation is a sequence with
 // state: deploy, wait for the address, create the market, supply, hold, withdraw.
 import type { Address } from "viem";
+import { encodeFunctionData } from "viem";
 import type { AgentContext, AgentObservation } from "@eris/sdk";
-import { TOKENS } from "@eris/sdk/constants.js";
+import { nonfungiblePositionManagerAbi } from "@eris/sdk/abis.js";
+import { TOKENS, UNISWAP } from "@eris/sdk/constants.js";
+import { sqrtPriceX96For } from "@eris/sdk/protocols/uniswap.js";
 import {
   currentNonce,
   deployAction,
@@ -42,13 +45,27 @@ const SEED_BPS = Number(process.env.ERIS_LAUNCHER_SEED_BPS ?? "3000");
 // Start withdrawing this many blocks before the end. A supply position still inside the venue at
 // the epoch's final block is worth zero, and the withdrawal itself needs a block to land.
 const EXIT_BLOCKS = Number(process.env.ERIS_LAUNCHER_EXIT_BLOCKS ?? "12");
+// The fee tier the second market is opened at. The environment's WETH/USDC pool is 3000, so 500 is
+// a venue that did not exist -- which is the point: "where should liquidity live" is only a decision
+// if a different answer is reachable.
+const POOL_FEE = Number(process.env.ERIS_LAUNCHER_POOL_FEE ?? "500");
+// Full range for tickSpacing 10 (fee 500). A concentrated range would earn more and is a real
+// choice; full range is the one that needs no view about where the price goes, which keeps this
+// agent about *creating* a market rather than about running one.
+const FULL_RANGE_LOWER = -887270;
+const FULL_RANGE_UPPER = 887270;
+// Share of the WETH and USDC balances seeded into the pool.
+const POOL_SEED_BPS = Number(process.env.ERIS_LAUNCHER_POOL_BPS ?? "1500");
 
 type Phase =
   | "deploy-oracle"
   | "await-oracle"
   | "create-market"
   | "await-market"
+  | "create-pool"
+  | "seed-pool"
   | "supplied"
+  | "exit-pool"
   | "exiting"
   | "done";
 
@@ -199,11 +216,140 @@ export async function run(ctx: AgentContext): Promise<void> {
           reason: `seeding ${amount} USDC into ${marketId}`,
           state: { kind: "market_launcher_seed", marketId, amount: amount.toString() },
         });
+        phase = "create-pool";
+        return;
+      }
+      case "create-pool": {
+        // A WETH/USDC pool at a fee tier the environment does not run. It is `verified` in the
+        // registry because the implementation is the factory's -- which says nothing about the
+        // price it is initialized at, and that is exactly the distinction `verified` carries.
+        const [token0, token1] =
+          TOKENS.WETH.address.toLowerCase() < TOKENS.USDC.address.toLowerCase()
+            ? [TOKENS.WETH, TOKENS.USDC]
+            : [TOKENS.USDC, TOKENS.WETH];
+        const wethIsToken0 =
+          token0.address.toLowerCase() === TOKENS.WETH.address.toLowerCase();
+        ctx.submit({
+          type: "createPool",
+          tokenA: TOKENS.WETH.address,
+          tokenB: TOKENS.USDC.address,
+          fee: POOL_FEE,
+          // Initialized at fair. Seeding away from fair is legal and is somebody else's strategy;
+          // an honest creator opens a market where it belongs.
+          sqrtPriceX96: sqrtPriceX96For({
+            humanPrice: wethIsToken0
+              ? obs.fairPriceUsdcPerWeth
+              : 1 / obs.fairPriceUsdcPerWeth,
+            token0Decimals: token0.decimals,
+            token1Decimals: token1.decimals,
+          }).toString(),
+          maxPriorityFeePerGasWei: fee,
+        });
+        ctx.log({
+          round: obs.round,
+          reason: `creating a WETH/USDC pool at fee ${POOL_FEE}`,
+          state: { kind: "market_launcher_pool", fee: POOL_FEE },
+        });
+        phase = "seed-pool";
+        return;
+      }
+      case "seed-pool": {
+        // A rawTx rather than `mintLiquidity`: that action resolves the pool from the registered
+        // market set, so it can only mint into the environment's fee tier. Minting into a pool you
+        // just made is by definition outside that set.
+        const [token0, token1] =
+          TOKENS.WETH.address.toLowerCase() < TOKENS.USDC.address.toLowerCase()
+            ? [TOKENS.WETH, TOKENS.USDC]
+            : [TOKENS.USDC, TOKENS.WETH];
+        const wethIsToken0 =
+          token0.address.toLowerCase() === TOKENS.WETH.address.toLowerCase();
+        const weth = bps(BigInt(obs.balances.wethWei), POOL_SEED_BPS);
+        const usdc = bps(BigInt(obs.balances.usdcUnits), POOL_SEED_BPS);
+        if (weth <= 0n || usdc <= 0n) {
+          ctx.log({
+            round: obs.round,
+            reason: "pool created but there is nothing to seed it with",
+          });
+          phase = "supplied";
+          return;
+        }
+        ctx.submit({
+          type: "rawTx",
+          tx: {
+            to: UNISWAP.nonfungiblePositionManager,
+            data: encodeFunctionData({
+              abi: nonfungiblePositionManagerAbi,
+              functionName: "mint",
+              args: [
+                {
+                  token0: token0.address,
+                  token1: token1.address,
+                  fee: POOL_FEE,
+                  tickLower: FULL_RANGE_LOWER,
+                  tickUpper: FULL_RANGE_UPPER,
+                  amount0Desired: wethIsToken0 ? weth : usdc,
+                  amount1Desired: wethIsToken0 ? usdc : weth,
+                  // The creator is the only side of its own empty pool, so there is no price to be
+                  // protected from -- a slippage bound here would only be a way to fail.
+                  amount0Min: 0n,
+                  amount1Min: 0n,
+                  recipient: self,
+                  deadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
+                },
+              ],
+            }),
+          },
+          maxPriorityFeePerGasWei: fee,
+        } as Record<string, unknown>);
+        ctx.log({
+          round: obs.round,
+          reason: `seeding the pool with ${weth} wei and ${usdc} USDC`,
+          state: { kind: "market_launcher_pool_seed" },
+        });
         phase = "supplied";
         return;
       }
       case "supplied": {
         if (blocksLeft(obs) > EXIT_BLOCKS) return;
+        phase = "exit-pool";
+        return;
+      }
+      case "exit-pool": {
+        // The LP first. Both legs are tokens the environment prices, so this position is real value
+        // and the round-trip rule marks it at its share of the pool's reserves -- but only while it
+        // is a position. Left as an unclaimed balance inside the pool it is worth nothing.
+        const position = obs.protocols.uniswap?.positions.find(
+          (p) => p.market?.includes(`#${POOL_FEE}`) && BigInt(p.liquidity) > 0n,
+        );
+        if (position) {
+          ctx.submit({
+            type: "removeLiquidity",
+            tokenId: position.tokenId,
+            liquidity: position.liquidity,
+            maxPriorityFeePerGasWei: fee,
+          });
+          ctx.log({
+            round: obs.round,
+            reason: `pulling liquidity from the pool (tokenId ${position.tokenId})`,
+            state: { kind: "market_launcher_pool_exit", tokenId: position.tokenId },
+          });
+          return;
+        }
+        // decreaseLiquidity only credits tokensOwed; the tokens do not leave the pool until collect.
+        const owed = obs.protocols.uniswap?.positions.find(
+          (p) =>
+            p.market?.includes(`#${POOL_FEE}`) &&
+            (BigInt(p.tokensOwedWethWei) > 0n ||
+              BigInt(p.tokensOwedUsdcUnits) > 0n),
+        );
+        if (owed) {
+          ctx.submit({
+            type: "collectFees",
+            tokenId: owed.tokenId,
+            maxPriorityFeePerGasWei: fee,
+          });
+          return;
+        }
         if (!marketId) {
           phase = "done";
           return;
