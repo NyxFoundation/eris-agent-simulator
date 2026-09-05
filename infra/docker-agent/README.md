@@ -38,7 +38,7 @@ cd deployer && npm run deploy -- --keep-fresh
 
 # Terminal 2 — once Terminal 1 has printed the deployed addresses:
 npm run gen:local-constants                        # import the deployed addresses
-npm run agent:selftest -- my-agent                 # memory cap: ERIS_DOCKER_MEM (default 1g)
+npm run agent:selftest -- my-agent                 # memory cap: ERIS_DOCKER_MEM (default 4g)
 ```
 (`npm run anvil` is fork-mode only and refuses under `ERIS_LOCAL_DEPLOY=1`. Don't run
 `gen:local-constants` until the deploy has finished — `--keep-fresh` resets `deployments.json` first.)
@@ -76,7 +76,9 @@ sweep any survivors: `npm run agent:reap`.
 - **bind-mount** (`ERIS_AGENT_BINDMOUNT=1`) — stock `node:24` with the repo bind-mounted at its own
   host path; no build, for iterating on runtime code.
 
-Caps: `ERIS_DOCKER_MEM` (default `1g`), `ERIS_DOCKER_CPUS` (default `0.5`).
+Caps: `ERIS_DOCKER_MEM` (default `4g`), `ERIS_DOCKER_CPUS` (default `2`) — the budget the
+competition rules promise a participant. The headroom is nominal rather than reserved: the 100-
+container run below measured ~190 MiB of host memory per agent.
 
 ## Isolation caveat (egress)
 

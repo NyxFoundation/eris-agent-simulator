@@ -7,7 +7,8 @@
 #
 #   infra/docker-agent/self-test.sh <agent-id>
 #
-# Memory cap: ERIS_DOCKER_MEM (default 1g). Chain: ERIS_RPC_URL (default http://127.0.0.1:8545).
+# Memory cap: ERIS_DOCKER_MEM (default 4g, the budget the competition rules promise). Chain:
+# ERIS_RPC_URL (default http://127.0.0.1:8545).
 # A local-deploy chain (anvil + all venues) must already be running. In another terminal:
 #   cd deployer && npm run deploy -- --keep-fresh   # leave running; wait for it to print addresses
 # then, at the repo root (deploy finished), import the addresses:
@@ -17,7 +18,7 @@
 set -euo pipefail
 ID="${1:?usage: self-test.sh <agent-id> (a directory under example/agents/)}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-MEM="${ERIS_DOCKER_MEM:-1g}"
+MEM="${ERIS_DOCKER_MEM:-4g}"
 RPC="${ERIS_RPC_URL:-http://127.0.0.1:8545}"
 cd "$REPO"
 [ -d "example/agents/$ID" ] || { echo "no such agent: example/agents/$ID" >&2; exit 1; }

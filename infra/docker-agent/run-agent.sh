@@ -12,8 +12,16 @@
 #   bind-mount       -- ERIS_AGENT_BINDMOUNT=1: stock node:24 with the repo bind-mounted at its own
 #                       host path (no build; handy for iterating on runtime code on the same host).
 #
-# Caps default to 1 GiB / 0.5 vCPU (ERIS_DOCKER_MEM / ERIS_DOCKER_CPUS). --memory-swap is pinned to
-# --memory so the limit is a hard ceiling (over-budget agents OOM-kill instead of swapping).
+# Caps default to what the competition rules promise a participant: 4 GiB / 2 vCPU
+# (ERIS_DOCKER_MEM / ERIS_DOCKER_CPUS). --memory-swap is pinned to --memory so the limit is a hard
+# ceiling (over-budget agents OOM-kill instead of swapping).
+#
+# The defaults used to be 1 GiB / 0.5 vCPU, which is a quarter of the promise on both axes. That is
+# the wrong direction to be wrong in twice over: an agent sized against the published budget gets
+# OOM-killed here (code 137, which the coordinator reports as an early exit), and a participant
+# self-testing with this script -- which is what it is for -- tunes against a budget they were never
+# held to. The headroom is nominal, not reserved: 100 containers measured ~19 GB of host memory in
+# total (~190 MiB each), so raising the ceiling costs nothing until an agent actually misbehaves.
 #
 # NOTE on isolation: --network host means the container shares the host network, so run-time egress
 # is NOT contained here -- it must be enforced by the operator's host/network policy. See README.
@@ -24,8 +32,8 @@
 set -euo pipefail
 
 REPO="${ERIS_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-MEM="${ERIS_DOCKER_MEM:-1g}"
-CPUS="${ERIS_DOCKER_CPUS:-0.5}"
+MEM="${ERIS_DOCKER_MEM:-4g}"
+CPUS="${ERIS_DOCKER_CPUS:-2}"
 NAME="eris-${ERIS_AGENT_ID:?ERIS_AGENT_ID is required (set by the coordinator)}"
 
 # Shared cap/runtime flags, so the two modes cannot drift.
