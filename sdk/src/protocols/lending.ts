@@ -64,6 +64,29 @@ export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Addr
 // disappears silently.
 export const LENDING_OBSERVATION_LIMIT = 32;
 
+// Hard ceiling on how many market ids any single read will look at. `createMarket` is
+// permissionless and costs the creator nothing but gas, so the count is attacker-controlled: one
+// transaction into a batching contract opens hundreds. Everything downstream -- the observation,
+// both valuation paths, the registry sweep -- has to be bounded by something that is not the
+// attacker's choice.
+//
+// Above this the newest ids win and the drop is *logged*, never silent: a cap that quietly
+// truncates reads as "that is all there was".
+export const MARKET_SCAN_LIMIT = 512;
+
+// A market with nothing in it cannot hold anybody's position -- supply, borrow and collateral are
+// all zero, so every position in it is zero by construction. That is what makes dropping them exact
+// rather than a heuristic, and it is what collapses a spam attack of N empty markets to no
+// per-agent reads at all.
+export function marketIsEmpty(totals: MarketTotals | undefined): boolean {
+  if (!totals) return true;
+  return (
+    totals.totalSupplyAssets === 0n &&
+    totals.totalBorrowAssets === 0n &&
+    totals.totalCollateralAssets === 0n
+  );
+}
+
 export const simpleLendingAbi = [
   {
     type: "function",
@@ -346,6 +369,9 @@ export type LendingState = {
   totalsById: Record<string, MarketTotals>;
   priceById: Record<string, bigint>;
   oracleOwnerById: Record<string, Address>;
+  // Markets that exist and are not in this state. Nonzero means somebody opened more markets than
+  // one read carries, which is a fact an agent should be able to see rather than infer.
+  dropped: number;
 };
 
 const EMPTY_STATE: LendingState = {
@@ -355,6 +381,7 @@ const EMPTY_STATE: LendingState = {
   totalsById: {},
   priceById: {},
   oracleOwnerById: {},
+  dropped: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -476,7 +503,12 @@ function paramsTuple(p: MarketParams) {
   };
 }
 
-export async function readLendingState(ctx: SimContext): Promise<LendingState> {
+export async function readLendingState(
+  ctx: SimContext,
+  // How many markets the result carries. The observation wants a readable handful; the end-of-run
+  // valuation wants every market anybody is actually in, which is what `marketIsEmpty` bounds.
+  limit: number = LENDING_OBSERVATION_LIMIT,
+): Promise<LendingState> {
   const singleton = ctx.lending;
   if (!singleton) return EMPTY_STATE;
   const { publicClient } = ctx;
@@ -493,47 +525,70 @@ export async function readLendingState(ctx: SimContext): Promise<LendingState> {
     // A run whose singleton is not there yet reads as "no markets", not as a failed block.
     return { ...EMPTY_STATE, singleton };
   }
-  // Newest first: a market created ten blocks ago is more likely to be the one somebody is baiting
-  // with than the one that has been sitting there since block 0.
-  const selected = ids.slice(-LENDING_OBSERVATION_LIMIT).reverse();
-  if (selected.length === 0)
+  // Newest first, and never more than the scan ceiling: the count is the creator's choice, so the
+  // cost of reading it must not be.
+  const scanned = ids.slice(-MARKET_SCAN_LIMIT).reverse();
+  const scanDropped = ids.length - scanned.length;
+  if (scanned.length === 0)
     return { ...EMPTY_STATE, singleton, marketIds: [] };
 
+  // Totals first, for every scanned id. It is one multicall regardless of the count, and it is what
+  // decides which markets are worth a second read: an empty market holds nobody's position.
+  const totalsById: Record<string, MarketTotals> = {};
+  const totalsResults = (await publicClient.multicall({
+    contracts: scanned.map((id) => ({
+      address: singleton,
+      abi: simpleLendingAbi,
+      functionName: "market",
+      args: [id],
+    })) as never,
+    multicallAddress: MULTICALL3,
+    allowFailure: true,
+  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+  scanned.forEach((id, i) => {
+    const m = totalsResults[i];
+    if (m.status !== "success" || !Array.isArray(m.result)) return;
+    const t = m.result as bigint[];
+    totalsById[id] = {
+      totalSupplyAssets: t[0] ?? 0n,
+      totalSupplyShares: t[1] ?? 0n,
+      totalBorrowAssets: t[2] ?? 0n,
+      totalBorrowShares: t[3] ?? 0n,
+      lastUpdate: t[4] ?? 0n,
+      totalCollateralAssets: t[5] ?? 0n,
+    };
+  });
+
+  // Markets somebody is actually in come first; empty ones fill whatever room is left, because a
+  // freshly created market is empty and still worth seeing before deciding to be its first lender.
+  const used = scanned.filter((id) => !marketIsEmpty(totalsById[id]));
+  const empty = scanned.filter((id) => marketIsEmpty(totalsById[id]));
+  const selected = [...used, ...empty].slice(0, limit);
+  const observationDropped = scanned.length - selected.length;
+
   const results = (await publicClient.multicall({
-    contracts: selected.flatMap((id) => [
-      { address: singleton, abi: simpleLendingAbi, functionName: "marketParams", args: [id] },
-      { address: singleton, abi: simpleLendingAbi, functionName: "market", args: [id] },
-    ]) as never,
+    contracts: selected.map((id) => ({
+      address: singleton,
+      abi: simpleLendingAbi,
+      functionName: "marketParams",
+      args: [id],
+    })) as never,
     multicallAddress: MULTICALL3,
     allowFailure: true,
   })) as Array<{ status: "success" | "failure"; result?: unknown }>;
 
   const paramsById: Record<string, MarketParams> = {};
-  const totalsById: Record<string, MarketTotals> = {};
   selected.forEach((id, i) => {
-    const p = results[i * 2];
-    const m = results[i * 2 + 1];
-    if (p.status === "success" && Array.isArray(p.result)) {
-      const [loanToken, collateralToken, oracle, irm, lltv] = p.result as [
-        Address,
-        Address,
-        Address,
-        Address,
-        bigint,
-      ];
-      paramsById[id] = { loanToken, collateralToken, oracle, irm, lltv };
-    }
-    if (m.status === "success" && Array.isArray(m.result)) {
-      const t = m.result as bigint[];
-      totalsById[id] = {
-        totalSupplyAssets: t[0] ?? 0n,
-        totalSupplyShares: t[1] ?? 0n,
-        totalBorrowAssets: t[2] ?? 0n,
-        totalBorrowShares: t[3] ?? 0n,
-        lastUpdate: t[4] ?? 0n,
-        totalCollateralAssets: t[5] ?? 0n,
-      };
-    }
+    const p = results[i];
+    if (p.status !== "success" || !Array.isArray(p.result)) return;
+    const [loanToken, collateralToken, oracle, irm, lltv] = p.result as [
+      Address,
+      Address,
+      Address,
+      Address,
+      bigint,
+    ];
+    paramsById[id] = { loanToken, collateralToken, oracle, irm, lltv };
   });
 
   // The market's own price and who can move it. Both are read here rather than in the scorer,
@@ -583,6 +638,7 @@ export async function readLendingState(ctx: SimContext): Promise<LendingState> {
     totalsById,
     priceById,
     oracleOwnerById,
+    dropped: scanDropped + observationDropped,
   };
 }
 
@@ -602,8 +658,9 @@ export async function observeLending(
   agent: Address,
 ): Promise<LendingObservation> {
   const singleton = state.singleton;
-  if (!singleton) return { singleton: ZERO_ADDRESS, markets: [] };
-  if (state.marketIds.length === 0) return { singleton, markets: [] };
+  if (!singleton) return { singleton: ZERO_ADDRESS, markets: [], dropped: 0 };
+  if (state.marketIds.length === 0)
+    return { singleton, markets: [], dropped: state.dropped };
   const ids = state.marketIds.filter((id) => state.paramsById[id]);
   const results = (await ctx.publicClient.multicall({
     contracts: ids.flatMap((id) => [
@@ -664,7 +721,7 @@ export async function observeLending(
       totalBorrowAssets: (totals?.totalBorrowAssets ?? 0n).toString(),
     };
   });
-  return { singleton, markets };
+  return { singleton, markets, dropped: state.dropped };
 }
 
 // ---------------------------------------------------------------------------
@@ -906,7 +963,12 @@ async function* lendingValuationRun(
   const idsResult = (yield [
     { address: singleton, abi: simpleLendingAbi, functionName: "marketIds" },
   ] as ValuationRead[]) as unknown[];
-  const ids = (idsResult[0] as readonly `0x${string}`[] | undefined) ?? [];
+  const allIds = (idsResult[0] as readonly `0x${string}`[] | undefined) ?? [];
+  // Bounded by something that is not the attacker's choice: `createMarket` is permissionless, so
+  // one transaction into a batching contract can open hundreds, and the per-agent stage below is
+  // markets x agents. Newest first, because a position in a market nobody has touched since block 0
+  // would have to have been opened before it.
+  const ids = allIds.slice(-MARKET_SCAN_LIMIT);
   if (ids.length === 0) return empty;
 
   // Stage 2: each market's parameters and totals.
@@ -941,10 +1003,15 @@ async function* lendingValuationRun(
       },
     });
   });
-  if (markets.length === 0) return empty;
+  // A market with nothing in it holds nobody's position -- supply, borrow and collateral are all
+  // zero, so every position in it is zero by construction. Dropping them is exact rather than a
+  // heuristic, and it is what stops a spam attack from turning the per-agent stage into
+  // markets x agents reads for markets nobody is in.
+  const inhabited = markets.filter((m) => !marketIsEmpty(m.totals));
+  if (inhabited.length === 0) return empty;
 
-  // Stage 3: every agent's position in every market.
-  const positionResults = (yield markets.flatMap((m) =>
+  // Stage 3: every agent's position in every market anybody is in.
+  const positionResults = (yield inhabited.flatMap((m) =>
     ctx.agents.map((agent) => ({
       address: singleton,
       abi: simpleLendingAbi,
@@ -959,7 +1026,7 @@ async function* lendingValuationRun(
   for (const a of ctx.agents)
     out[a.id] = { valueUsdc: 0, liquidatableValueUsdc: 0, unpriced: [] };
 
-  markets.forEach((m, mi) => {
+  inhabited.forEach((m, mi) => {
     // The collateral pile, in loan-token units, valued the environment's way. `undefined` means the
     // collateral token is one the environment does not price — which is the honest answer for a
     // token the market's creator minted, and the reason the drain reads as a transfer.
@@ -1166,7 +1233,7 @@ export const lendingAdapter: ProtocolAdapter = {
     return buildLendingTxs(ctx, owner, action);
   },
 
-  async valueUsdc(ctx, agent, state, fairPrice): Promise<number> {
+  async valueUsdc(ctx, agent, _state, fairPrice): Promise<number> {
     // The end-of-run PnL path values venues one agent at a time. Returning 0 here was wrong in the
     // way this whole issue is about: `netPnlUsdc` is a headline number, and a position sitting
     // inside the venue read as a total loss. Measured in a live run -- a lender with 7,500 USDC
@@ -1175,7 +1242,14 @@ export const lendingAdapter: ProtocolAdapter = {
     //
     // The rule is the same one valueAtBlock applies: recoverable, at the *environment's* prices.
     // The market's own oracle decides liquidations and never writes a mark.
-    return liveLendingValueUsdc(ctx, agent, (state as LendingState) ?? EMPTY_STATE, fairPrice);
+    // The state is read here rather than taken from the argument: the end-of-run path passes
+    // `null` for every adapter (every other one reads the chain itself), and treating that as an
+    // empty state is what produced the zero. Read up to the scan ceiling rather than the
+    // observation's handful, so the number agrees with the historical series instead of quietly
+    // omitting a position that sits in an older market.
+    if (!ctx.lending) return 0;
+    const state = await readLendingState(ctx, MARKET_SCAN_LIMIT);
+    return liveLendingValueUsdc(ctx, agent, state, fairPrice);
   },
 
   valueAtBlock(ctx) {

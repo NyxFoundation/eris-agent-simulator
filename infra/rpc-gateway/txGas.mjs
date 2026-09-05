@@ -18,9 +18,11 @@ function rlpDecode(buf, pos) {
   return { start: pos + 1 + lenLen, end: pos + 1 + lenLen + n, next: pos + 1 + lenLen + n, list: true };
 }
 
-// The gas limit of a signed transaction, or null when it cannot be read. Null means "let it
-// through": a transaction shape this does not understand is a gateway gap, not a violation, and
-// the post-run check catches what lands on chain either way.
+// The gas limit of a signed transaction, or null when it cannot be read.
+//
+// Null is not "fine": the caller refuses the transaction. A cap that lets through everything it
+// cannot parse is not a cap — an unrecognised envelope type would be the whole bypass, and the
+// post-run check only notices after the block it starved is gone.
 export function txGasLimit(rawHex) {
   try {
     const hex = rawHex.startsWith("0x") ? rawHex.slice(2) : rawHex;
@@ -35,7 +37,11 @@ export function txGasLimit(rawHex) {
     let body = buf;
     let gasIndex;
     if (type === 0x01) { body = buf.subarray(1); gasIndex = 3; }
-    else if (type === 0x02 || type === 0x03) { body = buf.subarray(1); gasIndex = 4; }
+    // 0x04 (EIP-7702 set-code) shares the 1559 prefix, so the gas limit is at the same index. It is
+    // listed explicitly rather than folded into a range: an unrecognised envelope must NOT parse,
+    // because the caller treats an unreadable gas limit as a reason to refuse, and a type that
+    // happens to put something else at index 4 would silently report the wrong number.
+    else if (type === 0x02 || type === 0x03 || type === 0x04) { body = buf.subarray(1); gasIndex = 4; }
     else if (type >= 0xc0) { gasIndex = 2; }
     else return null;
     const outer = rlpDecode(body, 0);

@@ -784,7 +784,9 @@ export type StrandedHoldingObservation = {
   market: string;
   token: string;
   symbol?: string;
-  // Net units sent in minus units received back, floored at zero.
+  // Net units sent in minus units received back, floored at zero and capped by what the contract
+  // still holds of that token. The cap matters: a contract that pulled tokens and forwarded them on
+  // holds none of them, and the loss (which the spot balance already records) did not stay here.
   amountRaw: string;
 };
 
@@ -802,6 +804,10 @@ export type RegistryObservation = {
     unlimited: boolean;
   }>;
   strandedUnknown: StrandedHoldingObservation[];
+  // Registry entries that exist and are not in `entries`. Deployment is permissionless, so the count
+  // is somebody's choice; one observation carries a bounded, newest-first slice of it, and the
+  // number dropped is reported rather than left to be inferred from a list that looks complete.
+  dropped: number;
 };
 
 // Your side of one market on the permissionless lending singleton (issue #40 T4).
@@ -832,6 +838,10 @@ export type LendingPositionObservation = {
 export type LendingObservation = {
   singleton: string;
   markets: LendingPositionObservation[];
+  // Markets that exist and are not in `markets`. `createMarket` is permissionless, so the count is
+  // whatever somebody chose to open; one read carries a bounded slice of it, and the number dropped
+  // is reported rather than left to be inferred from a list that looks complete.
+  dropped: number;
 };
 
 export type ProtocolObservations = {

@@ -73,15 +73,22 @@ const MAX_TX_GAS = BigInt(process.env.RPC_MAX_TX_GAS ?? "30000000");   // 0 disa
 let gasDenied = 0;
 
 // The over-cap transaction in a request, if any. Returns its gas limit; null when everything is fine.
+// Returns the offending gas limit, the string "unreadable" when a submission's gas could not be
+// read, or null when everything is within the cap.
+//
+// Fail closed. A transaction whose gas limit this cannot read is refused rather than forwarded: a
+// cap that passes what it does not understand is bypassed by using a transaction type it does not
+// understand, and the post-run check only sees it after the block it starved is over.
 function overCapGas(parsed) {
   if (MAX_TX_GAS <= 0n) return null;
   const calls = Array.isArray(parsed) ? parsed : [parsed];
   for (const c of calls) {
     if (!c || c.method !== "eth_sendRawTransaction") continue;
     const raw = Array.isArray(c.params) ? c.params[0] : undefined;
-    if (typeof raw !== "string") continue;
+    if (typeof raw !== "string") return "unreadable";
     const gas = txGasLimit(raw);
-    if (gas !== null && gas > MAX_TX_GAS) return gas;
+    if (gas === null) return "unreadable";
+    if (gas > MAX_TX_GAS) return gas;
   }
   return null;
 }
@@ -201,8 +208,11 @@ const server = http.createServer((req, res) => {
     if (overCap !== null) {
       gasDenied++;
       logline({ ts: new Date().toISOString(), env: ENV_NAME, method: "eth_sendRawTransaction", status: "gas_denied", gas: String(overCap), limit: String(MAX_TX_GAS), client, ip });
+      const message = overCap === "unreadable"
+        ? `could not read the transaction's gas limit; refusing it (the per-transaction cap is ${MAX_TX_GAS})`
+        : `transaction gas limit ${overCap} exceeds the per-transaction cap ${MAX_TX_GAS}`;
       res.writeHead(403, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32003, message: `transaction gas limit ${overCap} exceeds the per-transaction cap ${MAX_TX_GAS}` } }));
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32003, message } }));
     }
 
     // per-client rate limit (heavy EVM-executing reads cost more) -> 429 before touching anvil

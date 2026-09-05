@@ -7,10 +7,15 @@ import assert from "node:assert/strict";
 import { parseAction } from "../sdk/src/action.js";
 import { ACTION_TYPES_BY_PROTOCOL } from "../sdk/src/action.js";
 import { initProtocols } from "../sdk/src/protocols/registry.js";
-import { StrandedLedger } from "../sdk/src/agentMarkets.js";
+import {
+  clampToBalances,
+  StrandedLedger,
+  type StrandedFlow,
+} from "../sdk/src/agentMarkets.js";
 import {
   backedFraction,
   lendingAdapter,
+  marketIsEmpty,
 } from "../sdk/src/protocols/lending.js";
 import {
   registryKindIndex,
@@ -427,4 +432,89 @@ test("the registry kind enum matches the contract's ordering", () => {
 
 test("an out-of-range kind reads as unknown, never as verified", () => {
   assert.equal(registryKindOf(99), "unknown");
+});
+
+// ---------------------------------------------------------------------------
+// What the codex review found, pinned so it cannot come back
+// ---------------------------------------------------------------------------
+
+test("a contract that forwarded the tokens on is not holding them", () => {
+  // C pulls 100 USDC from A and sends it to B in the same transaction. A's net into C is 100 and C
+  // ends with nothing: A did lose the money -- its spot balance says so, and that is where the loss
+  // is scored -- but reporting it as "stranded in C" is the wrong account of where it went.
+  const flows: StrandedFlow[] = [
+    { market: TRAP, token: USDC, amountRaw: 100n },
+  ];
+  const held = new Map([[`${TRAP.toLowerCase()}|${USDC.toLowerCase()}`, 0n]]);
+  assert.deepEqual(clampToBalances(flows, held), []);
+});
+
+test("a partial forward is reported at what is left, not at what went in", () => {
+  const flows: StrandedFlow[] = [
+    { market: TRAP, token: USDC, amountRaw: 100n },
+  ];
+  const held = new Map([[`${TRAP.toLowerCase()}|${USDC.toLowerCase()}`, 40n]]);
+  assert.deepEqual(
+    clampToBalances(flows, held).map((f) => f.amountRaw),
+    [40n],
+  );
+});
+
+test("an unread balance reports the net rather than dropping the flow", () => {
+  // A balance that could not be read is not evidence that nothing is there.
+  const flows: StrandedFlow[] = [
+    { market: TRAP, token: USDC, amountRaw: 100n },
+  ];
+  assert.deepEqual(
+    clampToBalances(flows, new Map()).map((f) => f.amountRaw),
+    [100n],
+  );
+});
+
+test("a market with nothing in it holds nobody's position", () => {
+  // This is what makes dropping spam markets exact rather than a heuristic: with all three totals
+  // at zero, every position in the market is zero by construction.
+  const zero = {
+    totalSupplyAssets: 0n,
+    totalSupplyShares: 0n,
+    totalBorrowAssets: 0n,
+    totalBorrowShares: 0n,
+    lastUpdate: 5n,
+    totalCollateralAssets: 0n,
+  };
+  assert.equal(marketIsEmpty(zero), true);
+  assert.equal(marketIsEmpty(undefined), true);
+  // Collateral alone is enough to make it inhabited: a borrower posted it, and a borrower has a
+  // position worth marking even before anybody supplies.
+  assert.equal(marketIsEmpty({ ...zero, totalCollateralAssets: 1n }), false);
+  assert.equal(marketIsEmpty({ ...zero, totalSupplyAssets: 1n }), false);
+  assert.equal(marketIsEmpty({ ...zero, totalBorrowAssets: 1n }), false);
+});
+
+test("the gateway reads an EIP-7702 transaction's gas limit", async () => {
+  // Type 0x04 shares the 1559 prefix. It used to fall through to "unreadable", and an unreadable
+  // gas limit used to mean "let it through" -- which is the whole cap, bypassed by choosing a
+  // transaction type the reader did not know about.
+  const { privateKeyToAccount } = await import("viem/accounts");
+  const account = privateKeyToAccount(
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+  );
+  const raw = await account.signTransaction({
+    to: "0x0000000000000000000000000000000000000001" as Address,
+    gas: 320_000_000n,
+    maxFeePerGas: 10n ** 9n,
+    maxPriorityFeePerGas: 1n,
+    nonce: 1,
+    chainId: 31337,
+    type: "eip7702",
+    authorizationList: [],
+  } as never);
+  assert.equal(txGasLimit(raw), 320_000_000n);
+});
+
+test("an envelope type the reader does not know is unreadable, not zero", () => {
+  // Unreadable is the caller's signal to refuse. Returning 0 (or any number) would let an unknown
+  // shape past the cap; returning null makes the gateway fail closed.
+  assert.equal(txGasLimit("0x7fdeadbeef"), null);
+  assert.equal(txGasLimit("0x"), null);
 });

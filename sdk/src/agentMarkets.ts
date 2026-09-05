@@ -12,7 +12,11 @@
 // the last block, what it still has to get out.
 //
 // It is deliberately **not** the contract's balance: a pool holding 1,000 USDC owes it to whoever
-// holds the LP, and crediting the depositor as well would count the same reserves twice.
+// holds the LP, and crediting the depositor as well would count the same reserves twice. But the
+// balance is an *upper bound* and the report is capped by it, because the net alone overclaims: if
+// C pulls 100 USDC from A and forwards it to B in the same transaction, C ends holding nothing and
+// A's net into C is still 100. A did lose the 100 -- its spot balance says so, and that is where
+// the loss is scored -- but "stranded in C" would be the wrong account of where it went.
 import { parseAbiItem, type Address, type Hex, type PublicClient } from "viem";
 import { MULTICALL3 } from "./constants.js";
 import { erc20Abi } from "./abis.js";
@@ -43,6 +47,60 @@ export type StrandedFlow = {
   token: Address;
   amountRaw: bigint;
 };
+
+// Cap each flow by what the contract actually still holds of that token. Without it the report
+// claims value is sitting somewhere it is not: a contract that passed the tokens straight through
+// to a third party holds none of them.
+export function clampToBalances(
+  flows: readonly StrandedFlow[],
+  balances: ReadonlyMap<string, bigint>,
+): StrandedFlow[] {
+  const out: StrandedFlow[] = [];
+  for (const flow of flows) {
+    const held = balances.get(`${flow.market.toLowerCase()}|${flow.token.toLowerCase()}`);
+    if (held === undefined) {
+      // The balance could not be read. Report the net rather than dropping the flow: an unread
+      // balance is not evidence that nothing is there.
+      out.push(flow);
+      continue;
+    }
+    const amount = held < flow.amountRaw ? held : flow.amountRaw;
+    if (amount > 0n) out.push({ ...flow, amountRaw: amount });
+  }
+  return out;
+}
+
+// balanceOf for a set of (holder, token) pairs, keyed the way clampToBalances reads them.
+export async function readHeldBalances(
+  publicClient: PublicClient,
+  pairs: ReadonlyArray<{ holder: Address; token: Address }>,
+  blockNumber?: bigint,
+): Promise<Map<string, bigint>> {
+  const out = new Map<string, bigint>();
+  if (pairs.length === 0) return out;
+  let results: Array<{ status: "success" | "failure"; result?: unknown }>;
+  try {
+    results = (await publicClient.multicall({
+      contracts: pairs.map(({ holder, token }) => ({
+        address: token,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [holder],
+      })) as never,
+      multicallAddress: MULTICALL3,
+      allowFailure: true,
+      ...(blockNumber === undefined ? {} : { blockNumber }),
+    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+  } catch {
+    return out;
+  }
+  pairs.forEach(({ holder, token }, i) => {
+    const r = results[i];
+    if (r.status !== "success" || typeof r.result !== "bigint") return;
+    out.set(`${holder.toLowerCase()}|${token.toLowerCase()}`, r.result);
+  });
+  return out;
+}
 
 function key(market: string, token: string): string {
   return `${market.toLowerCase()}|${token.toLowerCase()}`;
@@ -176,6 +234,12 @@ export const UNLIMITED_ALLOWANCE_THRESHOLD = 1n << 255n;
 // Builds `observation.registry` block by block, keeping the running stranded-holdings ledger the
 // round-trip rule needs. Stateful because the ledger is: it is a net over the whole run, and a
 // per-block reader that re-scanned from the start every block would spend the run doing it.
+// How many registry entries one observation carries. Deployment is permissionless and costs the
+// creator only gas, so the entry count is somebody's choice; the per-block cost of reading it must
+// not be. Newest first, and the number dropped is reported rather than left to be inferred from a
+// list that looks complete.
+export const REGISTRY_OBSERVATION_LIMIT = 128;
+
 export class MarketRegistryWatcher {
   private readonly ledger = new StrandedLedger();
   private readonly markets = new Set<string>();
@@ -195,8 +259,13 @@ export class MarketRegistryWatcher {
     publicClient: PublicClient,
     blockNumber: number,
   ): Promise<RegistryObservation> {
-    const entries = await readRegistryEntries(publicClient, this.registry);
-    for (const e of entries) this.markets.add(e.market.toLowerCase());
+    const all = await readRegistryEntries(publicClient, this.registry);
+    // Every entry feeds the ledger's market set -- an omitted entry would make a real deposit look
+    // like it went nowhere -- but only a bounded, newest-first slice is read back per block and
+    // carried in the observation.
+    for (const e of all) this.markets.add(e.market.toLowerCase());
+    const entries = all.slice(-REGISTRY_OBSERVATION_LIMIT).reverse();
+    const droppedEntries = all.length - entries.length;
 
     const [codehashes, oracleOwners] = await Promise.all([
       readCodehashes(
@@ -235,18 +304,27 @@ export class MarketRegistryWatcher {
         .filter((e) => !e.verified)
         .map((e) => e.market.toLowerCase()),
     );
-    const strandedUnknown: StrandedHoldingObservation[] = this.ledger
+    const outstanding = this.ledger
       .outstanding()
       .filter(
         (f) =>
           unknownMarkets.has(f.market.toLowerCase()) &&
           this.pricedTokens.has(f.token.toLowerCase()),
-      )
-      .map((f) => ({
-        market: f.market,
-        token: f.token,
-        amountRaw: f.amountRaw.toString(),
-      }));
+      );
+    // Capped by what the contract still holds: the net alone would claim value is sitting somewhere
+    // it is not, for a contract that forwarded it on.
+    const held = await readHeldBalances(
+      publicClient,
+      outstanding.map((f) => ({ holder: f.market, token: f.token })),
+    );
+    const strandedUnknown: StrandedHoldingObservation[] = clampToBalances(
+      outstanding,
+      held,
+    ).map((f) => ({
+      market: f.market,
+      token: f.token,
+      amountRaw: f.amountRaw.toString(),
+    }));
 
     // Allowances are read only against tokens the agent could actually lose: the run's priced set.
     const allowancePairs = entries.flatMap((e) =>
@@ -278,6 +356,7 @@ export class MarketRegistryWatcher {
         unlimited: a.amount >= UNLIMITED_ALLOWANCE_THRESHOLD,
       })),
       strandedUnknown,
+      dropped: droppedEntries,
     };
   }
 }

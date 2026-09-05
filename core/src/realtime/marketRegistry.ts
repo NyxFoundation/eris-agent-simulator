@@ -70,6 +70,14 @@ export type PendingEntry = {
   seenAtBlock: number;
 };
 
+// Ceiling on the discovery backlog. Registration is capped per block and the overflow carries, which
+// is what stops a deploy-spam agent from inflating the environment's write cost -- but the queue
+// itself is memory, and `createMarket` is permissionless and costs the creator only gas. Past this
+// the *oldest* pending entries are dropped and the drop is logged: a queue that grows without bound
+// is a way to make the environment do unbounded work, and a queue that truncates silently is a way
+// to make a contract permanently invisible without anybody noticing.
+export const MAX_PENDING_ENTRIES = 2048;
+
 export type MarketRegistryRuntime = {
   address: Address;
   deployBlock: number;
@@ -176,6 +184,18 @@ export async function sweepMarkets(
   if (fromBlock > toBlock) return;
   const { publicClient } = ctx;
   const found: PendingEntry[] = [];
+  // One read per distinct address per sweep. Every market on the lending singleton lives at the
+  // singleton's address, so a batch of two hundred `CreateMarket` events used to mean two hundred
+  // `eth_getCode` calls for one contract -- inside the block loop.
+  const codehashCache = new Map<string, Hex>();
+  const codehash = async (address: Address): Promise<Hex> => {
+    const key = address.toLowerCase();
+    const hit = codehashCache.get(key);
+    if (hit) return hit;
+    const value = await codehashOf(publicClient, address);
+    codehashCache.set(key, value);
+    return value;
+  };
 
   // ---- factory logs: address, tokens and parameters, directly ----
   if (runtime.uniswapFactory) {
@@ -202,7 +222,7 @@ export async function sweepMarkets(
           token0: args.token0 ?? ZERO_ADDRESS,
           token1: args.token1 ?? ZERO_ADDRESS,
           oracle: ZERO_ADDRESS,
-          codehash: await codehashOf(publicClient, args.pool),
+          codehash: await codehash(args.pool),
           // Verified: the implementation is the environment's factory's. It says nothing about
           // what is inside the pool, or about the price it was initialized at.
           verified: true,
@@ -255,7 +275,7 @@ export async function sweepMarkets(
         token0: a.loanToken,
         token1: a.collateralToken,
         oracle: a.oracle,
-        codehash: await codehashOf(publicClient, runtime.lending),
+        codehash: await codehash(runtime.lending),
         // Verified: the singleton is environment-owned canonical code with readable parameters.
         // The oracle it points at is emphatically not covered by that.
         verified: true,
@@ -320,7 +340,7 @@ export async function sweepMarkets(
         token0: ZERO_ADDRESS,
         token1: ZERO_ADDRESS,
         oracle: ZERO_ADDRESS,
-        codehash: await codehashOf(publicClient, fresh[i].address),
+        codehash: await codehash(fresh[i].address),
         // Nothing deployed by an agent is verified. Its bytecode is whatever they compiled.
         verified: false,
         extra: ZERO_BYTES32,
@@ -346,6 +366,19 @@ export async function sweepMarkets(
         KIND_PRIORITY[a.kind] - KIND_PRIORITY[b.kind] ||
         a.seenAtBlock - b.seenAtBlock,
     );
+  }
+  if (runtime.pending.length > MAX_PENDING_ENTRIES) {
+    const dropped = runtime.pending.length - MAX_PENDING_ENTRIES;
+    runtime.pending = runtime.pending.slice(0, MAX_PENDING_ENTRIES);
+    logger.event({
+      type: "market_registration_dropped",
+      dropped,
+      backlog: MAX_PENDING_ENTRIES,
+      note:
+        "the discovery backlog exceeded its ceiling; these contracts will not be published. " +
+        "They are still on chain and still findable by anyone who scans for them -- what is lost " +
+        "is the environment publishing them, which is the same loss as an internal CREATE.",
+    });
   }
 }
 

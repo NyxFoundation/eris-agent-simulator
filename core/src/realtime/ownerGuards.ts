@@ -63,10 +63,18 @@ const aggregatorAbi = parseAbi(["function setAnswer(int256 answer)"]);
 const gmxProviderAbi = parseAbi([
   "function setPrice(address token, uint256 price)",
 ]);
+// The two-sided overload. Solidity dispatches on the selector, so gating one overload and leaving
+// the other open would be an entirely separate hole -- and an audit that probes only one would
+// report a clean bill of health for it.
+const gmxProviderRangeAbi = parseAbi([
+  "function setPrice(address token, uint256 min, uint256 max)",
+]);
 const lstVaultAbi = parseAbi([
   "function setRewardRate(uint256 ratePerBlockRay)",
   "function slash(uint256 bps) returns (uint256)",
   "function setOperator(address account, bool allowed)",
+  "function setWithdrawalDelayBlocks(uint256 delayBlocks)",
+  "function setQueueThroughput(uint256 weiPerBlock)",
 ]);
 const registryAbi = [
   {
@@ -105,15 +113,29 @@ export function guardProbesFor(opts: {
 }): GuardProbe[] {
   const probes: GuardProbe[] = [];
   if (opts.priceFeed) {
-    probes.push({
-      label: "PriceFeed.setPrice",
-      address: opts.priceFeed,
-      data: encodeFunctionData({
-        abi: priceFeedAbi,
-        functionName: "setPrice",
-        args: [1n],
-      }),
-    });
+    probes.push(
+      {
+        label: "PriceFeed.setPrice",
+        address: opts.priceFeed,
+        data: encodeFunctionData({
+          abi: priceFeedAbi,
+          functionName: "setPrice",
+          args: [1n],
+        }),
+      },
+      {
+        // The extra-base write (ADR 0013). A separate function with a separate selector, so it
+        // needs a separate probe: gating one and not the other is a different hole, and an audit
+        // that only tries the first would report a pass for it.
+        label: "PriceFeed.setPriceFor",
+        address: opts.priceFeed,
+        data: encodeFunctionData({
+          abi: priceFeedAbi,
+          functionName: "setPriceFor",
+          args: [GUARD_PROBE_ADDRESS, 1n],
+        }),
+      },
+    );
   }
   if (opts.marketRegistry) {
     probes.push({
@@ -171,18 +193,47 @@ export function guardProbesFor(opts: {
           args: [GUARD_PROBE_ADDRESS, true],
         }),
       },
+      {
+        label: "MockLSTVault.setWithdrawalDelayBlocks",
+        address: opts.lstVault,
+        data: encodeFunctionData({
+          abi: lstVaultAbi,
+          functionName: "setWithdrawalDelayBlocks",
+          args: [0n],
+        }),
+      },
+      {
+        label: "MockLSTVault.setQueueThroughput",
+        address: opts.lstVault,
+        data: encodeFunctionData({
+          abi: lstVaultAbi,
+          functionName: "setQueueThroughput",
+          args: [0n],
+        }),
+      },
     );
   }
   if (opts.gmxOracleProvider) {
-    probes.push({
-      label: "MockOracleProvider.setPrice",
-      address: opts.gmxOracleProvider,
-      data: encodeFunctionData({
-        abi: gmxProviderAbi,
-        functionName: "setPrice",
-        args: [GUARD_PROBE_ADDRESS, 1n],
-      }),
-    });
+    probes.push(
+      {
+        label: "MockOracleProvider.setPrice(address,uint256)",
+        address: opts.gmxOracleProvider,
+        data: encodeFunctionData({
+          abi: gmxProviderAbi,
+          functionName: "setPrice",
+          args: [GUARD_PROBE_ADDRESS, 1n],
+        }),
+      },
+      {
+        label: "MockOracleProvider.setPrice(address,uint256,uint256)",
+        address: opts.gmxOracleProvider,
+        data: encodeFunctionData({
+          abi: gmxProviderRangeAbi,
+          functionName: "setPrice",
+          args: [GUARD_PROBE_ADDRESS, 1n, 1n],
+        }),
+      },
+    );
   }
   return probes;
 }

@@ -43,7 +43,9 @@ import type { ProtocolId } from "@eris/sdk/types.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
 import {
+  clampToBalances,
   fetchAgentTransfers,
+  readHeldBalances,
   StrandedLedger,
   type TransferLogLike,
 } from "@eris/sdk/agentMarkets.js";
@@ -707,8 +709,18 @@ export async function findStrandedInUnknownContracts(opts: {
     }
     const ledger = new StrandedLedger();
     ledger.apply(logs, agent.address, unknown);
-    for (const flow of ledger.outstanding()) {
-      if (!priced.has(flow.token.toLowerCase())) continue;
+    const outstanding = ledger
+      .outstanding()
+      .filter((f) => priced.has(f.token.toLowerCase()));
+    // Capped by what the contract still holds at the terminal block. The net alone overclaims: a
+    // contract that pulled tokens from the agent and forwarded them straight on holds none of them,
+    // and the loss -- which the agent's own spot balance already records -- did not stay here.
+    const held = await readHeldBalances(
+      publicClient,
+      outstanding.map((f) => ({ holder: f.market, token: f.token })),
+      BigInt(toBlock),
+    );
+    for (const flow of clampToBalances(outstanding, held)) {
       out.push({
         agentId: agent.id,
         source: `unknown-contract:${flow.market}`,

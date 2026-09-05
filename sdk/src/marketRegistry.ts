@@ -235,13 +235,19 @@ export async function readCodehashes(
   publicClient: PublicClient,
   addresses: readonly Address[],
 ): Promise<Record<string, Hex>> {
+  // Deduplicated, because the address is not one-to-one with the entry: every market on the lending
+  // singleton lives at the singleton's address, so a field that opened two hundred markets would
+  // otherwise cost two hundred `eth_getCode` calls per agent per block for one contract.
+  const unique = [
+    ...new Map(addresses.map((a) => [a.toLowerCase(), a])).values(),
+  ];
   const out: Record<string, Hex> = {};
   const codes = await Promise.all(
-    addresses.map((address) =>
+    unique.map((address) =>
       publicClient.getCode({ address }).catch(() => undefined),
     ),
   );
-  addresses.forEach((address, i) => {
+  unique.forEach((address, i) => {
     const code = codes[i];
     if (code === undefined) return;
     out[address.toLowerCase()] = keccak256(code);
