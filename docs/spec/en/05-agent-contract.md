@@ -260,4 +260,4 @@ ADR 0021 §2. A registered entry the environment never starts.
 
 ## 5.10 Submission
 
-`npm run bundle:agent <id>` produces the submission zip (runtime + sdk + lib + the agent; ADR 0015 §7). **The agent directory is the unit of copying and submission**, and a strategy built from one of the bundled agents is the participant's ([README](../../../README.md), License).
+`npm run bundle:agent <id>` produces the submission zip (runtime + sdk + lib + the agent; ADR 0015 §7). **A directory without a `kind: improve` prompt.md is refused** (rules §2.5 require every submitted agent to revise its strategy; start-up does not require it because 17 of the example agents are prompt.md-less teaching steps that rosters run as they are. The check is the same `loadImproveAgent` bot.ts applies at start). **The agent directory is the unit of copying and submission**, and a strategy built from one of the bundled agents is the participant's ([README](../../../README.md), License).

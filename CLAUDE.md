@@ -291,7 +291,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
-- `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）
+- `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）。**`kind: improve` の prompt.md が無いディレクトリは拒否**（規約 §2.5 が全提出 agent に戦略改訂を要求する。起動時ではなく提出物の段で止めるのは、example の 17 agent が prompt.md 無しの教材だから）
 
 > **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
 

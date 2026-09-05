@@ -284,6 +284,8 @@ npm run backtest -- --scenarios config/scenarios/public.yaml --agents <あなた
 npm run bundle:agent my-strategy
 ```
 
+`bundle:agent` は `prompt.md`（frontmatter に `kind: improve` / `name` / `description`）の無いディレクトリを**拒否します**。規約 §2.5 が全提出エージェントに戦略の改訂を求めるためで、ルールだけの `decide()` は動きはしますが提出物にはなりません。
+
 **資源の上限を自分で確かめられます。** 本番では各エージェントが規約 §2.3 の上限（2 vCPU / メモリ 4 GB）を掛けたコンテナで動きます。**同じイメージと同じ上限**でローカル検証できます。
 
 ```bash

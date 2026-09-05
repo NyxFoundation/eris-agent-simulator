@@ -337,7 +337,9 @@ npm run bundle:agent my-strategy
 ```
 
 That writes `bundle-my-strategy.zip` (the runtime, the sdk, the shared lib, and your agent
-directory).
+directory). `bundle:agent` **refuses** a directory without a `prompt.md` (frontmatter `kind: improve` /
+`name` / `description`): rules §2.5 require every submitted agent to revise its strategy, so a
+rule-only `decide()` runs but is not a submission.
 
 **You can check your resource budget yourself.** In the competition each agent runs in a container
 capped at rules §2.3's limits (2 vCPU / 4 GB). The **same image and the same caps** are available

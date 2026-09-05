@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { loadImproveAgent } from "../example/agents/runtime/improve.js";
 
 const AGENTS_DIR = "example/agents";
 
@@ -33,6 +34,24 @@ function main(): void {
   const agentDir = join(AGENTS_DIR, id);
   if (!existsSync(agentDir)) {
     console.error(`agent directory not found: ${agentDir}`);
+    process.exitCode = 1;
+    return;
+  }
+  // Rules §2.5 (participation terms art. 8): every submitted agent revises its strategy with a
+  // model, so a directory without an improvement policy is not a submission. The runtime would run
+  // it as a rule-only strategy without complaint -- 17 of the example agents are exactly that, and
+  // they are the teaching steps -- which is why the gate is here, on the artifact that gets
+  // submitted, and not at start-up. loadImproveAgent is the same check bot.ts applies when it
+  // starts, so a bundle that passes here is one that will start.
+  try {
+    loadImproveAgent(agentDir);
+  } catch (error) {
+    console.error(
+      `[bundle] refused: ${agentDir} is not a submittable agent — ` +
+        `${error instanceof Error ? error.message : String(error)}\n` +
+        "[bundle] the rules require every submitted agent to carry a prompt.md (frontmatter kind: improve / " +
+        "name / description) next to agent.ts (rules §2.5); see docs/competition-start.md",
+    );
     process.exitCode = 1;
     return;
   }

@@ -260,4 +260,4 @@ ADR 0021 §2。環境がプロセスを起動しない登録エントリ。
 
 ## 5.10 提出
 
-`npm run bundle:agent <id>` が提出用 zip を作る（runtime + sdk + lib + 対象エージェント。ADR 0015 §7）。**エージェントディレクトリがコピーと提出の単位**であり、バンドルされた戦略はその参加者のものになる（[README](../../README.md) の License 節）。
+`npm run bundle:agent <id>` が提出用 zip を作る（runtime + sdk + lib + 対象エージェント。ADR 0015 §7）。**`kind: improve` の prompt.md を持たないディレクトリは拒否する**（規約 §2.5 は全提出エージェントに戦略の改訂を求める。起動時に要求しないのは、example の 17 エージェントが prompt.md 無しの教材で、ロスターにそのまま載るため。検査は bot.ts が起動時に使う `loadImproveAgent` と同一）。**エージェントディレクトリがコピーと提出の単位**であり、バンドルされた戦略はその参加者のものになる（[README](../../README.md) の License 節）。
