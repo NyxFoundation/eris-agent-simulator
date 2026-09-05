@@ -291,7 +291,39 @@ contract SimpleLending {
         if (assets == 0) revert ZeroAmount();
         Market storage m = market[id];
         shares = _toSharesDown(assets, m.totalBorrowAssets, m.totalBorrowShares);
+        // Never take more than is owed. Repaying the exact debt is the ordinary case and it is the
+        // one that used to fail: a caller reads its debt, a block of accrual lands, it sends the
+        // read value rounded up, and the share conversion comes out above the position -- which
+        // subtracted into an arithmetic panic rather than into "you repaid everything". Measured in
+        // the first live run: sixteen consecutive `lendingRepay max` transactions reverted that way,
+        // and the borrower could not unwind before the epoch ended.
+        uint256 owed = position[id][msg.sender].borrowShares;
+        if (shares > owed) {
+            shares = owed;
+            assets = _toAssetsUp(shares, m.totalBorrowAssets, m.totalBorrowShares);
+        }
         position[id][msg.sender].borrowShares -= uint128(shares);
+        m.totalBorrowShares -= uint128(shares);
+        m.totalBorrowAssets = m.totalBorrowAssets > uint128(assets)
+            ? m.totalBorrowAssets - uint128(assets)
+            : 0;
+        _pullToken(params.loanToken, msg.sender, assets);
+        emit Repay(id, msg.sender, assets, shares);
+    }
+
+    /// @notice Clear the caller's whole debt, in one transaction, at the price the contract itself
+    ///         computes. The counterpart to `withdrawAll`, and the one an exit deadline actually
+    ///         needs: a borrower that has to read its debt, round it, and hope no accrual lands in
+    ///         between is a borrower that cannot reliably get out.
+    function repayAll(
+        MarketParams memory params
+    ) external nonReentrant returns (uint256 assets) {
+        bytes32 id = _accrue(params);
+        Market storage m = market[id];
+        uint256 shares = position[id][msg.sender].borrowShares;
+        if (shares == 0) revert ZeroAmount();
+        assets = _toAssetsUp(shares, m.totalBorrowAssets, m.totalBorrowShares);
+        position[id][msg.sender].borrowShares = 0;
         m.totalBorrowShares -= uint128(shares);
         m.totalBorrowAssets = m.totalBorrowAssets > uint128(assets)
             ? m.totalBorrowAssets - uint128(assets)

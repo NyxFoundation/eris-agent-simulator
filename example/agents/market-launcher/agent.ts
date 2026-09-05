@@ -7,8 +7,10 @@
 //
 // Honest here means something specific and checkable:
 //
-//   * the oracle is a `PriceFeedOracle`, which has no owner and no setter. `owner()` does not exist,
-//     so a verifier reads "nobody can move this price" from the code rather than from a promise.
+//   * the oracle is a `PriceFeedOracle`: no setter, and `owner()` answers with the zero address. It
+//     answers deliberately — "has no owner() function" and "has an owner of nobody" are different
+//     facts to a caller, and only the second is checkable. A verifier that reads silence as
+//     "possibly movable" is being correct, so an honest creator has to say it out loud.
 //   * the LLTV is conservative (80%), which under Morpho's formula also means the liquidation
 //     incentive is small. A creator advertising safety is advertising a thin bonus.
 //   * it exits its own position before the bell, because under the round-trip rule a supplier who
@@ -35,6 +37,40 @@ const SEED_BPS = Number(process.env.ERIS_LAUNCHER_SEED_BPS ?? "3000");
 // Start withdrawing this many blocks before the end. A supply position still inside the venue at
 // the epoch's final block is worth zero, and the withdrawal itself needs a block to land.
 const EXIT_BLOCKS = Number(process.env.ERIS_LAUNCHER_EXIT_BLOCKS ?? "12");
+
+// Withdraw as much as the market can actually pay right now.
+//
+// "max" is the right ask and the wrong plan: it withdraws the whole supply position, and a market
+// whose loan tokens are out with a borrower cannot pay it, so the transaction reverts and the whole
+// position stays inside. Under the round-trip rule the difference between "all or nothing" and "as
+// much as is there" is the difference between zero and most of it. Measured in a live run: a
+// borrower could not repay (a separate bug), the market stayed utilised, and an all-or-nothing exit
+// left 7,500 USDC inside at the bell.
+function withdrawAction(
+  lending: NonNullable<AgentObservation["protocols"]["lending"]>,
+  marketId: string,
+  fee: string | undefined,
+): Record<string, unknown> {
+  const market = lending.markets.find((m) => m.marketId === marketId);
+  const supplied = BigInt(market?.supplyAssets ?? "0");
+  const idle =
+    BigInt(market?.totalSupplyAssets ?? "0") -
+    BigInt(market?.totalBorrowAssets ?? "0");
+  const available = idle < supplied ? idle : supplied;
+  return available > 0n && available < supplied
+    ? {
+        type: "lendingWithdraw",
+        marketId,
+        amount: available.toString(),
+        maxPriorityFeePerGasWei: fee,
+      }
+    : {
+        type: "lendingWithdraw",
+        marketId,
+        amount: "max",
+        maxPriorityFeePerGasWei: fee,
+      };
+}
 
 type Phase =
   | "deploy-oracle"
@@ -201,14 +237,7 @@ export async function run(ctx: AgentContext): Promise<void> {
           phase = "done";
           return;
         }
-        ctx.submit({
-          type: "lendingWithdraw",
-          marketId,
-          // "max" withdraws the whole supply position in assets, which is the number that matters at
-          // the bell: what is still inside is worth zero.
-          amount: "max",
-          maxPriorityFeePerGasWei: fee,
-        });
+        ctx.submit(withdrawAction(lending, marketId, fee));
         ctx.log({
           round: obs.round,
           reason: `round-tripping out of ${marketId} with ${blocksLeft(obs)} blocks left`,
@@ -223,12 +252,7 @@ export async function run(ctx: AgentContext): Promise<void> {
         // tokens, there is nothing to hand back and the withdrawal reverts. Retry every block --
         // a repayment or a liquidation may free the liquidity before the bell.
         if (mine && BigInt(mine.supplyAssets) > 0n && blocksLeft(obs) > 1) {
-          ctx.submit({
-            type: "lendingWithdraw",
-            marketId: marketId as string,
-            amount: "max",
-            maxPriorityFeePerGasWei: fee,
-          });
+          ctx.submit(withdrawAction(lending, marketId as string, fee));
           return;
         }
         ctx.log({

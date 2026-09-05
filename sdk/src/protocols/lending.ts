@@ -115,6 +115,25 @@ export const simpleLendingAbi = [
   })),
   {
     type: "function",
+    name: "repayAll",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        components: [
+          { name: "loanToken", type: "address" },
+          { name: "collateralToken", type: "address" },
+          { name: "oracle", type: "address" },
+          { name: "irm", type: "address" },
+          { name: "lltv", type: "uint256" },
+        ],
+      },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "withdrawAll",
     stateMutability: "nonpayable",
     inputs: [
@@ -766,14 +785,24 @@ export async function buildLendingTxs(
       ];
     case "lendingRepay": {
       const raw = (action as { amount: string }).amount;
-      const amount =
-        raw === "max"
-          ? await currentDebt(ctx, singleton, params, owner)
-          : BigInt(raw);
-      if (amount === 0n) return [];
+      if (raw !== "max") {
+        const amount = BigInt(raw);
+        if (amount === 0n) return [];
+        return [
+          exactApproveTx(params.loanToken, singleton, amount),
+          call("repay", [tuple, amount]),
+        ];
+      }
+      // "max" goes through repayAll, which computes the debt inside the transaction. Sending a
+      // read-then-rounded figure to `repay` is what an exit deadline cannot afford: a block of
+      // accrual between the read and the send, and the caller is a wei short with no second chance.
+      // The approval still has to be sized from a read -- there is no way around that -- so it
+      // carries a margin, and the contract only ever pulls what is actually owed.
+      const debt = await currentDebt(ctx, singleton, params, owner);
+      if (debt === 0n) return [];
       return [
-        exactApproveTx(params.loanToken, singleton, amount),
-        call("repay", [tuple, amount]),
+        exactApproveTx(params.loanToken, singleton, debt),
+        call("repayAll", [tuple]),
       ];
     }
     case "lendingLiquidate": {
@@ -1040,6 +1069,78 @@ async function* lendingValuationRun(
   return out;
 }
 
+// One agent's value in this venue at the current block, for the end-of-run PnL path.
+//
+// Same rule as the historical valuation above and deliberately a separate implementation of it: the
+// staged generator exists to batch reads across agents and blocks, and this path has one agent and
+// one block. What must not differ is the *rule*, so both go through `backedFraction` and both price
+// tokens with the environment's prices rather than with the market's oracle.
+export async function liveLendingValueUsdc(
+  ctx: SimContext,
+  agent: Address,
+  state: LendingState,
+  fairPrice: number,
+): Promise<number> {
+  const singleton = state.singleton;
+  if (!singleton || state.marketIds.length === 0) return 0;
+  const ids = state.marketIds.filter((id) => state.paramsById[id]);
+  if (ids.length === 0) return 0;
+  const fairByBase = ctx.fairPrices ?? { WETH: fairPrice };
+  let positions: Array<{ status: string; result?: unknown }>;
+  try {
+    positions = (await ctx.publicClient.multicall({
+      contracts: ids.map((id) => ({
+        address: singleton,
+        abi: simpleLendingAbi,
+        functionName: "expectedPosition",
+        args: [paramsTuple(state.paramsById[id]), agent],
+      })) as never,
+      multicallAddress: MULTICALL3,
+      allowFailure: true,
+    })) as Array<{ status: string; result?: unknown }>;
+  } catch {
+    return 0;
+  }
+
+  let total = 0;
+  ids.forEach((id, i) => {
+    const raw = positions[i];
+    if (raw.status !== "success" || !Array.isArray(raw.result)) return;
+    const [supplyAssets, borrowAssets, collateral] = raw.result as bigint[];
+    const params = state.paramsById[id];
+    const totals = state.totalsById[id];
+    if (!totals) return;
+
+    const collateralUsd = tokenAmountUsd(
+      params.collateralToken,
+      totals.totalCollateralAssets,
+      fairByBase,
+    );
+    const loanUnitUsd = tokenAmountUsd(params.loanToken, WAD, fairByBase);
+    const collateralInLoanUnits =
+      collateralUsd !== undefined && loanUnitUsd !== undefined && loanUnitUsd > 0
+        ? BigInt(Math.floor((collateralUsd / loanUnitUsd) * 1e18))
+        : 0n;
+    const fraction = backedFraction(totals, collateralInLoanUnits);
+
+    if (supplyAssets > 0n) {
+      total +=
+        tokenAmountUsd(
+          params.loanToken,
+          (supplyAssets * fraction) / WAD,
+          fairByBase,
+        ) ?? 0;
+    }
+    if (collateral > 0n || borrowAssets > 0n) {
+      const collateralValue =
+        tokenAmountUsd(params.collateralToken, collateral, fairByBase) ?? 0;
+      const debt = tokenAmountUsd(params.loanToken, borrowAssets, fairByBase) ?? 0;
+      total += Math.max(0, collateralValue - debt);
+    }
+  });
+  return total;
+}
+
 // ---------------------------------------------------------------------------
 // Adapter
 // ---------------------------------------------------------------------------
@@ -1065,11 +1166,16 @@ export const lendingAdapter: ProtocolAdapter = {
     return buildLendingTxs(ctx, owner, action);
   },
 
-  async valueUsdc(): Promise<number> {
-    // The live end-of-run PnL path values venues one agent at a time; this venue's markets are
-    // discovered rather than configured, so it contributes through valueAtBlock only. Returning 0
-    // here is not "worth nothing": the block cross-section below is the number that is scored.
-    return 0;
+  async valueUsdc(ctx, agent, state, fairPrice): Promise<number> {
+    // The end-of-run PnL path values venues one agent at a time. Returning 0 here was wrong in the
+    // way this whole issue is about: `netPnlUsdc` is a headline number, and a position sitting
+    // inside the venue read as a total loss. Measured in a live run -- a lender with 7,500 USDC
+    // supplied and a borrower with 2 WETH of collateral both showed the full amount as a trading
+    // loss while the scored series (valueAtBlock) had them roughly flat.
+    //
+    // The rule is the same one valueAtBlock applies: recoverable, at the *environment's* prices.
+    // The market's own oracle decides liquidations and never writes a mark.
+    return liveLendingValueUsdc(ctx, agent, (state as LendingState) ?? EMPTY_STATE, fairPrice);
   },
 
   valueAtBlock(ctx) {
