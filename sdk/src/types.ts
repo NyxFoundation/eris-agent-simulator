@@ -13,7 +13,17 @@ export type TokenSymbol = string;
 export type TokenKind = "base" | "stable" | "lst";
 
 export type ProtocolId =
-  "uniswap" | "balancer" | "curve" | "gmx" | "aave" | "lst" | "liquity";
+  | "uniswap"
+  | "balancer"
+  | "curve"
+  | "gmx"
+  | "aave"
+  | "lst"
+  | "liquity"
+  // Issue #40: the permissionless lending singleton agents create markets in. Distinct from `aave`
+  // because Aave's reserves are opened by an admin-only PoolConfigurator, so it cannot be opened to
+  // agents without handing them admin.
+  | "lending";
 
 // ---------------------------------------------------------------------------
 // Market leg (venue-specific metadata. ADR 0013). One per protocol × base.
@@ -281,6 +291,96 @@ export type LiquitySwapEusdAction = {
   maxPriorityFeePerGasWei?: string;
 };
 
+// ---------------------------------------------------------------------------
+// Agent-created markets (issue #40)
+//
+// Every address here is a raw hex address rather than a registry symbol: the whole point is that
+// these venues trade tokens the environment never deployed and cannot name.
+// ---------------------------------------------------------------------------
+
+// Create a Uniswap V3 pool through the environment's factory and initialize its price. The pool is
+// `verified` in the registry — its implementation is the factory's, which the environment deployed —
+// but its *contents* are whatever the creator seeds, so "verified" says nothing about whether the
+// price is fair. Liquidity comes afterwards, from `mintLiquidity`.
+export type CreatePoolAction = {
+  type: "createPool";
+  tokenA: string;
+  tokenB: string;
+  // Uniswap V3 fee in pips (500 / 3000 / 10000).
+  fee: number;
+  // Initial price as sqrt(token1/token0) * 2^96. The adapter sorts the pair, so compute this against
+  // the sorted order (the lower address is token0).
+  sqrtPriceX96: string;
+  maxPriorityFeePerGasWei?: string;
+};
+
+// Open a market on the permissionless lending singleton. Anyone can call it and no parameter is
+// vetted: a self-owned oracle and a 99% LLTV are both legal, and reading them is the counterparty's
+// job (issue #40 T4).
+export type CreateLendingMarketAction = {
+  type: "createLendingMarket";
+  loanToken: string;
+  collateralToken: string;
+  // Any address implementing `price()`. `ConfigurableOracle` has an owner who can move it;
+  // `PriceFeedOracle` cannot be moved at all.
+  oracle: string;
+  // Any address implementing `borrowRatePerSecond`. The zero address means no interest.
+  irm: string;
+  // Loan-to-value at which a position becomes liquidatable, in WAD (0.9e18 = 90%). Must be < 1e18.
+  lltv: string;
+  maxPriorityFeePerGasWei?: string;
+};
+
+// The market a lending action acts on, by the id `createMarket` emitted. The adapter reads the
+// parameters back off the singleton, so an agent never has to keep the tuple in sync.
+type LendingActionBase = {
+  marketId: string;
+  maxPriorityFeePerGasWei?: string;
+};
+
+export type LendingSupplyAction = LendingActionBase & {
+  type: "lendingSupply";
+  // Loan-token units.
+  amount: string;
+};
+
+export type LendingWithdrawAction = LendingActionBase & {
+  type: "lendingWithdraw";
+  // Loan-token units, or "max" for the whole supply position. Under the round-trip rule this is the
+  // action that decides whether a position was worth anything: what is still inside at the epoch's
+  // final block is worth zero.
+  amount: string;
+};
+
+export type LendingSupplyCollateralAction = LendingActionBase & {
+  type: "lendingSupplyCollateral";
+  amount: string;
+};
+
+export type LendingWithdrawCollateralAction = LendingActionBase & {
+  type: "lendingWithdrawCollateral";
+  amount: string;
+};
+
+export type LendingBorrowAction = LendingActionBase & {
+  type: "lendingBorrow";
+  amount: string;
+};
+
+export type LendingRepayAction = LendingActionBase & {
+  type: "lendingRepay";
+  // Loan-token units, or "max" to clear the debt.
+  amount: string;
+};
+
+export type LendingLiquidateAction = LendingActionBase & {
+  type: "lendingLiquidate";
+  borrower: string;
+  // Collateral units to seize. The debt repaid follows from the market's oracle price and its
+  // liquidation incentive — both of which the market's creator chose.
+  seizedAssets: string;
+};
+
 // Bundleable leaves (excluding GMX)
 export type BundleActionItem =
   | SwapAction
@@ -305,14 +405,26 @@ export type BundleActionItem =
   | LiquityProvideToSpAction
   | LiquityWithdrawFromSpAction
   | LiquityLiquidateAction
-  | LiquitySwapEusdAction;
+  | LiquitySwapEusdAction
+  | CreatePoolAction
+  | CreateLendingMarketAction
+  | LendingSupplyAction
+  | LendingWithdrawAction
+  | LendingSupplyCollateralAction
+  | LendingWithdrawCollateralAction
+  | LendingBorrowAction
+  | LendingRepayAction
+  | LendingLiquidateAction;
 
 // All leaf actions (including GMX. The unit of intent / buildTxs)
 export type LeafAction =
   BundleActionItem | GmxIncreaseAction | GmxDecreaseAction;
 
 export type RawTx = {
-  to: string;
+  // Omitted is a contract deployment (issue #40 T5): `data` is then the creation bytecode. The
+  // runtime sends it like any other transaction, so the deploy shares the nonce manager, the
+  // per-block transaction cap and the gas budget with the agent's trades.
+  to?: string;
   data: string;
   value?: string;
 };
@@ -621,6 +733,107 @@ export type LiquityObservation = {
   suggestedGasReserveWei: string;
 };
 
+// ---------------------------------------------------------------------------
+// Agent-created markets: registry + lending observations (issue #40 T3)
+// ---------------------------------------------------------------------------
+
+export type RegistryKind =
+  | "unknown"
+  | "uniswapV3Pool"
+  | "balancerWeightedPool"
+  | "curvePlainPool"
+  | "curveTwocryptoPool"
+  | "lendingMarket"
+  | "erc20";
+
+// One thing the environment saw appear. `verified` means only "this came out of a factory whose
+// implementation the environment deployed"; it is not a safety claim, and losing money to an
+// unverified contract is a legitimate loss that is not made whole.
+export type RegistryEntryObservation = {
+  market: string;
+  kind: RegistryKind;
+  creator: string;
+  // True when this agent is the creator. It gets a one-block head start on its own contract, which
+  // is the registry's distribution lag rather than a privilege.
+  mine: boolean;
+  token0?: string;
+  token1?: string;
+  // Lending markets: the price source, and the first parameter a verifier reads.
+  oracle?: string;
+  // Who can move that price. `0x0000…0000` means nobody — the oracle renounced ownership or never
+  // had an owner. Undefined means the address does not answer `owner()`, which is *not* the same as
+  // "nobody owns it": it may own itself through code you have not read.
+  oracleOwner?: string;
+  // keccak256 of the runtime code at the block the entry was registered.
+  codehashAtRegistration: string;
+  // keccak256 of the runtime code right now. A difference means the implementation moved between
+  // registration and this block — the classic proxy rug. The environment does not police it: under
+  // the round-trip rule a swapped-out proxy is just another way of not getting out, so noticing it
+  // is a skill difference.
+  codehashNow?: string;
+  verified: boolean;
+  registeredAtBlock: string;
+  // The lending marketId / Balancer poolId, when the kind has one.
+  extra?: string;
+};
+
+// A token this agent has moved into a registry entry the environment cannot value, netted against
+// what came back. **This is the number the round-trip rule scores at zero**: profit taken *through*
+// an unknown contract counts in full, but what is still inside when the epoch ends is worth nothing.
+export type StrandedHoldingObservation = {
+  market: string;
+  token: string;
+  symbol?: string;
+  // Net units sent in minus units received back, floored at zero.
+  amountRaw: string;
+};
+
+export type RegistryObservation = {
+  address: string;
+  entries: RegistryEntryObservation[];
+  // Outstanding ERC-20 allowances this agent has granted to registry entries. A contract that drains
+  // through an unlimited `approve` is in scope: approvals are the victim's problem, and an agent
+  // that approved MaxUint256 to an unknown contract has made a decision.
+  allowances: Array<{
+    spender: string;
+    token: string;
+    symbol?: string;
+    amount: string;
+    unlimited: boolean;
+  }>;
+  strandedUnknown: StrandedHoldingObservation[];
+};
+
+// Your side of one market on the permissionless lending singleton (issue #40 T4).
+export type LendingPositionObservation = {
+  marketId: string;
+  loanToken: string;
+  collateralToken: string;
+  oracle: string;
+  // Zero address = nobody can move the price. Undefined = the oracle does not answer `owner()`.
+  oracleOwner?: string;
+  irm: string;
+  // Liquidation LTV in WAD. High is leverage, and leverage is one of the two baits that work at a
+  // 12-minute epoch (the other is the liquidation incentive).
+  lltv: string;
+  liquidationIncentiveFactor: string;
+  // Collateral units per loan-token unit, 1e36-scaled and decimal-adjusted, as the market's own
+  // oracle reports it. If the creator owns the oracle, this number is whatever they want it to be.
+  price: string;
+  supplyAssets: string;
+  borrowAssets: string;
+  collateral: string;
+  healthy: boolean;
+  // Market-wide totals, so a supplier can see whether the loan token is actually there to withdraw.
+  totalSupplyAssets: string;
+  totalBorrowAssets: string;
+};
+
+export type LendingObservation = {
+  singleton: string;
+  markets: LendingPositionObservation[];
+};
+
 export type ProtocolObservations = {
   uniswap?: UniswapObservation;
   balancer?: AmmObservation;
@@ -629,6 +842,7 @@ export type ProtocolObservations = {
   aave?: AaveObservation;
   lst?: LstObservation;
   liquity?: LiquityObservation;
+  lending?: LendingObservation;
 };
 
 export type AgentObservation = {
@@ -709,6 +923,11 @@ export type AgentObservation = {
     defaultSlippageBps: number;
   };
   protocols: ProtocolObservations;
+  // What other agents have deployed, as the environment discovered it (issue #40 T3). Absent when
+  // the run has no registry. Rule agents can read the registry contract or the chain directly; this
+  // is what everything else sees, and it is one block behind for everyone — except the creator of an
+  // entry, who knew about their own contract before it was published.
+  registry?: RegistryObservation;
   // Competition signals (ADR 0011. Observations that make the priority-fee auction skill-based under
   // economicGas). In direct mode the agent self-derives them from the most recent block (not an env
   // privilege, but the same as a real MEV searcher watching recent blocks). undefined in relay mode or early in observation.

@@ -40,7 +40,15 @@ function stableMarketBySymbol(symbol: string) {
 // name listed is still owned by an adapter, so renames and removals break, but an omitted addition
 // only shows up as an action the model never learns about.
 export const ACTION_TYPES_BY_PROTOCOL: Record<ProtocolId, readonly string[]> = {
-  uniswap: ["swap", "mintLiquidity", "removeLiquidity", "collectFees"],
+  uniswap: [
+    "swap",
+    "mintLiquidity",
+    "removeLiquidity",
+    "collectFees",
+    // Issue #40: create a market the environment did not deploy. The pool is `verified` in the
+    // registry because its implementation is the factory's, which says nothing about its contents.
+    "createPool",
+  ],
   balancer: ["balancerSwap"],
   curve: ["curveSwap", "stableSwap"],
   gmx: ["gmxIncrease", "gmxDecrease"],
@@ -55,6 +63,20 @@ export const ACTION_TYPES_BY_PROTOCOL: Record<ProtocolId, readonly string[]> = {
     "liquityWithdrawFromSP",
     "liquityLiquidate",
     "liquitySwapEusd",
+  ],
+  // Issue #40. `createPool` is Uniswap's (it goes through that factory) and lives under `uniswap`;
+  // everything here is the permissionless lending singleton's. Deploying an arbitrary contract is
+  // not in this table at all — it is a runtime capability rather than a venue action, and it is
+  // named separately in the revision prompt for the same reason `bundle` and `noop` are.
+  lending: [
+    "createLendingMarket",
+    "lendingSupply",
+    "lendingWithdraw",
+    "lendingSupplyCollateral",
+    "lendingWithdrawCollateral",
+    "lendingBorrow",
+    "lendingRepay",
+    "lendingLiquidate",
   ],
 };
 
@@ -171,11 +193,21 @@ function parseRawBundleAction(obj: Record<string, unknown>): AgentAction {
 }
 
 function parseRawTx(obj: Record<string, unknown>): RawTx {
-  if (typeof obj.to !== "string" || !HEX_PATTERN.test(obj.to))
-    throw new Error("raw tx to must be a hex string");
+  // `to` omitted (or explicitly null) is a contract deployment (issue #40 T5). Deployment is
+  // permitted in the competition; what bounds it is the gas budget, and what makes it safe for
+  // everyone else is that whatever lands is unverified and carries no safety claim to anybody who
+  // decides to touch it.
+  const isDeploy = obj.to === undefined || obj.to === null;
+  if (!isDeploy && (typeof obj.to !== "string" || !HEX_PATTERN.test(obj.to)))
+    throw new Error("raw tx to must be a hex string (omit it to deploy)");
   if (typeof obj.data !== "string" || !HEX_PATTERN.test(obj.data))
     throw new Error("raw tx data must be a hex string");
-  const tx: RawTx = { to: obj.to, data: obj.data };
+  if (isDeploy && obj.data.length <= 2)
+    throw new Error("a deployment needs creation bytecode in data");
+  const tx: RawTx = {
+    ...(isDeploy ? {} : { to: obj.to as string }),
+    data: obj.data,
+  };
   if (obj.value !== undefined) {
     requireDecimalString(obj.value, "raw tx value");
     tx.value = obj.value;

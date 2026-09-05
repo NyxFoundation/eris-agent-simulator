@@ -42,6 +42,7 @@ import { GMX_MARKETS } from "@eris/sdk/constants.js";
 import { baseTokens, gmxMarketAddresses } from "@eris/sdk/markets.js";
 import type { FlowWallet, SimContext } from "@eris/sdk/protocols/types.js";
 import { initProtocols } from "@eris/sdk/protocols/registry.js";
+import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { loadYamlConfig } from "@eris/sdk/runConfig.js";
 import { Rng } from "@eris/sdk/rng.js";
 import type {
@@ -75,7 +76,14 @@ const DEFAULT_IMPROVE_MODEL = "gpt-oss:120b";
 // file, which participants have a copy of.
 type Manifest = {
   chain?: { rpcUrl?: string };
-  contracts?: { priceFeed?: string };
+  contracts?: {
+    priceFeed?: string;
+    // Issue #40: the discovery registry, the permissionless lending singleton, and the block the
+    // registry was deployed (nothing before it can be an entry).
+    marketRegistry?: string;
+    lending?: string;
+    marketRegistryFromBlock?: number;
+  };
 };
 
 const erc20AllowanceAbi = [
@@ -132,6 +140,18 @@ async function main(): Promise<void> {
   const rpcUrl = process.env.ERIS_RPC_URL ?? manifest?.chain?.rpcUrl;
   const priceFeed = (process.env.ERIS_PRICE_FEED_ADDRESS ??
     manifest?.contracts?.priceFeed) as Address | undefined;
+  // Issue #40: per-run contracts, so they come from env (coordinator-spawned) or the manifest
+  // (self-hosted), never from constants.local.ts. Absent means the run has no agent-created markets,
+  // which is a capability being off rather than an error.
+  const marketRegistry = (process.env.ERIS_MARKET_REGISTRY_ADDRESS ??
+    manifest?.contracts?.marketRegistry) as Address | undefined;
+  const lending = (process.env.ERIS_LENDING_ADDRESS ??
+    manifest?.contracts?.lending) as Address | undefined;
+  const registryFromBlock = Number(
+    process.env.ERIS_MARKET_REGISTRY_FROM_BLOCK ??
+      manifest?.contracts?.marketRegistryFromBlock ??
+      0,
+  );
   const agentDirEnv = process.env.ERIS_AGENT_DIR;
   const agentId = process.env.ERIS_AGENT_ID ?? "unknown";
   const runDir = process.env.ERIS_RUN_DIR;
@@ -195,6 +215,8 @@ async function main(): Promise<void> {
     oracle: { aaveAggregators: {} },
     gmx: { market: GMX_MARKETS.ETH_USD, markets: gmxMarketAddresses() },
     pendingGmxOrders: [],
+    ...(marketRegistry ? { marketRegistry } : {}),
+    ...(lending ? { lending } : {}),
     flowWallet(): FlowWallet {
       throw new Error("flow wallet is environment-only");
     },
@@ -206,6 +228,9 @@ async function main(): Promise<void> {
   const logMempool = createMempoolLog(runDir, agentId);
   const agentLog = createAgentLog();
   const sender = new Sender({ ctx: simCtx, adapters, privateKey, logMempool });
+  // The scorer's valuation context has no SimContext, and the improve loop's sandbox runs the same
+  // adapters -- so the singleton is published module-side too, exactly as the coordinator does it.
+  setLendingSingleton(lending);
   const reader = new Reader({
     ctx: simCtx,
     adapters,
@@ -213,6 +238,9 @@ async function main(): Promise<void> {
     address,
     runId,
     extraBaseSymbols,
+    ...(marketRegistry
+      ? { registry: { address: marketRegistry, fromBlock: registryFromBlock } }
+      : {}),
   });
 
   // ---- resolve the agent module (1 agent = 1 directory) ----

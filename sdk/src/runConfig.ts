@@ -161,6 +161,11 @@ const SCHEMA: Record<string, string> = {
   "vuln.poolLiquidityUsdcUnits": "ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS",
   "vuln.poolFeeBps": "ERIS_VULN_POOL_FEE_BPS",
   "vuln.llm": "ERIS_VULN_LLM",
+  // agentMarkets (issue #40: agent-created markets)
+  "agentMarkets.enabled": "ERIS_AGENT_MARKETS",
+  "agentMarkets.registrationsPerBlock": "ERIS_AGENT_MARKETS_CAP",
+  "agentMarkets.maxTxGas": "ERIS_MAX_TX_GAS",
+  "agentMarkets.maxAgentBlockGas": "ERIS_MAX_AGENT_BLOCK_GAS",
 };
 // per-base map (`{WBTC: value}` → `<prefix>_<SYM>[_<infix>]_<unit>`. unit is derived from decimals).
 const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
@@ -184,6 +189,7 @@ const SECTIONS = [
   "stress",
   "vuln",
   "lst",
+  "agentMarkets",
 ];
 
 function baseEnvName(prefix: string, sym: string, infix?: string): string {

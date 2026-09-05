@@ -55,6 +55,97 @@ export function checkRunFeeViolations(
   return checkFeeViolations(readFileSync(path, "utf8"), maxPriorityFeeWei);
 }
 
+// Gas-budget violations (issue #40 T0).
+//
+// Rules §5 caps the *number* of transactions an agent may put in a block, not their gas. That is
+// enough while every transaction is a swap; it stops being enough the moment agents deploy their own
+// contracts, because a single call into code somebody wrote to be expensive can eat the block gas
+// limit and starve everyone else — including the environment's own oracle update, which is what
+// turns it from a trade against a counterparty into an attack on the competition.
+//
+// Two ceilings, both measured from the receipt rather than from anything the agent reports:
+//   perTx     one transaction's gas.
+//   perBlock  one agent's gas across all its transactions in one block.
+//
+// The RPC gateway refuses an over-cap transaction up front (it can read the signed gas limit before
+// the transaction ever reaches the node). This is the after-the-fact half: the gateway can be
+// bypassed by a self-hosted participant sending straight to a node, and what lands on chain is the
+// authority. A zero ceiling disables the corresponding check.
+export type GasViolation = {
+  ownerId: string;
+  kind: "per-tx" | "per-block";
+  blockNumber: number;
+  // The offending transaction, or "" for a per-block total (which is not one transaction).
+  hash: string;
+  gasUsed: string;
+  limit: string;
+};
+
+export function checkGasViolations(
+  blocksCsv: string,
+  limits: { maxTxGas: bigint; maxAgentBlockGas: bigint },
+): GasViolation[] {
+  const I = BLOCKS_CSV_INDEX;
+  const violations: GasViolation[] = [];
+  // (ownerId, blockNumber) -> gas. Built in one pass so the per-block totals do not need a second.
+  const perBlock = new Map<string, { ownerId: string; block: number; gas: bigint }>();
+  for (const line of blocksCsv.split("\n").slice(1)) {
+    if (line.length === 0) continue;
+    const cols = line.split(",");
+    if (cols[I.role] !== "agent") continue;
+    const raw = cols[I.gasUsed];
+    // Runs recorded before the column existed have no gas to check. Silently skipping them is
+    // right: the alternative is reading "" as zero and reporting a clean bill of health for a run
+    // that was never measured.
+    if (raw === undefined || raw === "") continue;
+    let gas: bigint;
+    try {
+      gas = BigInt(raw);
+    } catch {
+      continue;
+    }
+    const blockNumber = Number(cols[I.blockNumber]);
+    const ownerId = cols[I.ownerId];
+    if (limits.maxTxGas > 0n && gas > limits.maxTxGas) {
+      violations.push({
+        ownerId,
+        kind: "per-tx",
+        blockNumber,
+        hash: cols[I.hash],
+        gasUsed: gas.toString(),
+        limit: limits.maxTxGas.toString(),
+      });
+    }
+    const key = `${ownerId}|${blockNumber}`;
+    const entry = perBlock.get(key);
+    if (entry) entry.gas += gas;
+    else perBlock.set(key, { ownerId, block: blockNumber, gas });
+  }
+  if (limits.maxAgentBlockGas > 0n) {
+    for (const { ownerId, block, gas } of perBlock.values()) {
+      if (gas <= limits.maxAgentBlockGas) continue;
+      violations.push({
+        ownerId,
+        kind: "per-block",
+        blockNumber: block,
+        hash: "",
+        gasUsed: gas.toString(),
+        limit: limits.maxAgentBlockGas.toString(),
+      });
+    }
+  }
+  return violations;
+}
+
+export function checkRunGasViolations(
+  runDir: string,
+  limits: { maxTxGas: bigint; maxAgentBlockGas: bigint },
+): GasViolation[] {
+  const path = join(runDir, "blocks.csv");
+  if (!existsSync(path)) return [];
+  return checkGasViolations(readFileSync(path, "utf8"), limits);
+}
+
 // Environment-owned transactions that reverted, by owner (ADR 0017 regime 3).
 //
 // The environment's own shocks must not fail quietly. A whale order is submitted through the same

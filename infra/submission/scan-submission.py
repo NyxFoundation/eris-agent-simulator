@@ -15,6 +15,16 @@ MAX_UNZIP_MB = 50
 MAX_FILES = 2000
 MAX_FILE_MB = 8
 CODE_EXT = (".ts", ".tsx", ".js", ".mjs", ".cjs", ".json")
+# Issue #40 T6: a bundle may now carry contracts. Deployment is a permitted capability, so the
+# scanner has to have an opinion about the two shapes it arrives in rather than tripping over them:
+# Solidity sources (harmless text, but worth naming so an operator knows contracts are in play) and
+# forge artifacts (a JSON whose `bytecode.object` is one enormous hex string -- scanning it as code
+# would fire the "large hex blob" rule on every honest submission).
+SOURCE_EXT = (".sol",)
+# EIP-3860 caps initcode at 49,152 bytes; EIP-170 caps deployed code at 24,576. Anything past the
+# initcode limit cannot deploy at all, so it is a mistake rather than an attack -- but it is also
+# exactly what a bundle-size attack looks like, so say so.
+MAX_INITCODE_BYTES = 49152
 BINARY_EXT = (".node", ".so", ".dll", ".exe", ".dylib", ".wasm", ".bin", ".a", ".o", ".class", ".pyc")
 
 findings = []  # (severity, path, message)
@@ -54,6 +64,23 @@ def scan_code(path, text):
     if re.search(r"['\"][A-Za-z0-9+/=]{800,}['\"]", text):
         add("WARN", path, "large base64/hex blob (possible packed payload)")
 
+def scan_forge_artifact(path, text):
+    """A forge artifact carries creation bytecode, which is the point. Check the shape and the size;
+    do not run the source-code rules over a hex blob."""
+    try: art = json.loads(text)
+    except Exception: return False
+    bc = art.get("bytecode")
+    obj = bc.get("object") if isinstance(bc, dict) else bc
+    if not isinstance(obj, str) or not obj.startswith("0x"): return False
+    nbytes = (len(obj) - 2) // 2
+    if nbytes == 0:
+        add("WARN", path, "forge artifact with empty bytecode (abstract contract or interface?)")
+    elif nbytes > MAX_INITCODE_BYTES:
+        add("WARN", path, f"creation bytecode {nbytes} bytes exceeds the EIP-3860 initcode limit ({MAX_INITCODE_BYTES}); this cannot deploy")
+    else:
+        add("INFO", path, f"forge artifact, {nbytes} bytes of creation bytecode (deployment is permitted; issue #40)")
+    return True
+
 def scan_package_json(path, text):
     try: pkg = json.loads(text)
     except Exception: return add("WARN", path, "package.json does not parse")
@@ -81,6 +108,10 @@ def walk_dir(root):
             if sz > MAX_FILE_MB * 1024 * 1024: add("WARN", rel, f"large file ({sz//1024//1024} MB)")
             if fn == "package.json":
                 scan_package_json(rel, open(fp, errors="ignore").read())
+            elif low.endswith(SOURCE_EXT):
+                add("INFO", rel, "Solidity source (contracts in a submission are permitted; what bounds them is the gas budget, rules §2.6)")
+            elif low.endswith(".json") and "node_modules" not in rel and scan_forge_artifact(rel, open(fp, errors="ignore").read()):
+                pass
             elif low.endswith(CODE_EXT) and "node_modules" not in rel:
                 scan_code(rel, open(fp, errors="ignore").read())
             elif "node_modules" in rel and low.endswith(CODE_EXT[:5]):

@@ -33,6 +33,10 @@ export async function observationFor(
   history: AgentObservation["history"],
   config: SimConfig,
   enabledIds: ProtocolId[],
+  // Issue #40: what other agents have deployed, already assembled by the caller. It is passed in
+  // rather than read here because it is *stateful* -- the stranded-holdings ledger is a running net
+  // over the whole run -- and this function is a pure projection of one block's reads.
+  registry?: AgentObservation["registry"],
 ): Promise<AgentObservation> {
   // Per-protocol observations are independent reads, so issue them in parallel. With the agent client
   // (batch=true), same-tick reads are auto-aggregated into a single Multicall3, so parallel issuance directly reduces round-trip count.
@@ -108,6 +112,7 @@ export async function observationFor(
       defaultSlippageBps: 50,
     },
     protocols,
+    ...(registry ? { registry } : {}),
   };
 }
 

@@ -26,6 +26,15 @@ export const BLOCKS_CSV_COLUMNS = [
   // exists only for txs the environment submitted; this says what the chain was asked to do, for
   // every tx in the block including a participant's.
   "method",
+  // Issue #40 T0: the gas the transaction actually burned. Appended last, so every reader keyed on
+  // BLOCKS_CSV_INDEX keeps working against runs recorded before it existed.
+  //
+  // Rules §5 caps the *number* of transactions per agent per block, not their gas, so a contract
+  // that eats the block gas limit can starve other participants -- and the environment's own oracle
+  // update, which is what makes it an attack on the competition rather than on a counterparty. The
+  // cap is enforced up front by the RPC gateway and detected afterwards from this column, the same
+  // mechanical shape as the priority-fee cap (the value comes from the receipt, not self-reported).
+  "gasUsed",
 ] as const;
 
 export const BLOCKS_CSV_INDEX = Object.fromEntries(
@@ -57,6 +66,7 @@ export type BlockRowInput = {
   bundleId?: string;
   bundleIndex?: number;
   method?: string;
+  gasUsed?: bigint;
 };
 
 export class RunLogger implements RunArtifactWriter {
@@ -82,7 +92,7 @@ export class RunLogger implements RunArtifactWriter {
   blockRow(row: BlockRowInput): void {
     appendFileSync(
       join(this.runDir, "blocks.csv"),
-      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""}\n`,
+      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""},${row.gasUsed?.toString() ?? ""}\n`,
     );
   }
 

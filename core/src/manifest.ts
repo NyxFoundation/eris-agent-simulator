@@ -111,11 +111,24 @@ export function buildManifest(opts: {
   participants: ManifestParticipant[];
   /** Deployed at setup, so it is only known once a run has started. */
   priceFeed?: string;
+  /**
+   * Issue #40: the discovery registry and the permissionless lending singleton, also per-run
+   * deploys. A self-hosted participant has no other way to learn either address, and without the
+   * registry address their agent sees no agent-created markets at all -- which would look exactly
+   * like a field where nobody deployed anything.
+   */
+  marketRegistry?: string;
+  lending?: string;
+  marketRegistryFromBlock?: number;
 }): EnvironmentManifest {
   const { config, participants } = opts;
   const protocols = config.enabledProtocols;
   const contracts = contractsFor(protocols);
   if (opts.priceFeed) contracts.priceFeed = opts.priceFeed;
+  if (opts.marketRegistry) contracts.marketRegistry = opts.marketRegistry;
+  if (opts.lending) contracts.lending = opts.lending;
+  if (opts.marketRegistryFromBlock !== undefined)
+    contracts.marketRegistryFromBlock = opts.marketRegistryFromBlock;
 
   const tokens: EnvironmentManifest["tokens"] = {};
   for (const t of baseTokens())

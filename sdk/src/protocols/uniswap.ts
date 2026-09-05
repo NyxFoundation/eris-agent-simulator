@@ -120,6 +120,25 @@ export function poolPriceFromSqrtX96(
   return baseIsToken0 ? rawToken1PerToken0 * scale : scale / rawToken1PerToken0;
 }
 
+// The inverse, for `createPool` (issue #40): the sqrtPriceX96 that initializes a pool at a given
+// price. `humanPrice` is whole units of token1 per one whole token0, with the pair already sorted
+// (the lower address is token0), so the decimal difference is applied here rather than by the
+// caller. A pool initialized at the wrong price is not a bug the environment can catch -- seeding a
+// market away from fair is a legitimate thing to do -- so the arithmetic being obvious matters.
+export function sqrtPriceX96For(opts: {
+  humanPrice: number;
+  token0Decimals: number;
+  token1Decimals: number;
+}): bigint {
+  const raw =
+    opts.humanPrice *
+    10 ** (opts.token1Decimals - opts.token0Decimals);
+  if (!(raw > 0)) throw new Error("sqrtPriceX96For: price must be positive");
+  // Float sqrt then a single conversion. Uniswap re-derives the tick from this value, so the last
+  // few bits do not survive initialization anyway; what matters is landing in the right tick.
+  return BigInt(Math.floor(Math.sqrt(raw) * 2 ** 96));
+}
+
 // Backward compatible: WETH/USDC sqrtPriceX96 -> USDC per WETH. Shared by reconstruct/dashboard.
 export function poolPriceUsdcPerWethFromSqrtX96(sqrtPriceX96: bigint): number {
   return poolPriceFromSqrtX96(sqrtPriceX96, wethMarket());
@@ -1005,7 +1024,39 @@ function parseBase(obj: Record<string, unknown>): {
   return { base, market };
 }
 
+const HEX_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+
+// Issue #40: the fee tiers the environment's factory enables. A pool at an unenabled tier reverts on
+// chain, which costs the creator a block and the gas — cheap, but a rejection here is cheaper.
+const ENABLED_FEE_TIERS = new Set([100, 500, 3000, 10000]);
+
 function parse(obj: Record<string, unknown>): LeafAction | null {
+  if (obj.type === "createPool") {
+    for (const key of ["tokenA", "tokenB"] as const) {
+      if (typeof obj[key] !== "string" || !HEX_ADDRESS_PATTERN.test(obj[key]))
+        throw new Error(`${key} must be a 20-byte hex address`);
+    }
+    const fee = requireInteger(obj.fee, "fee");
+    if (!ENABLED_FEE_TIERS.has(fee))
+      throw new Error(
+        `fee must be one of ${[...ENABLED_FEE_TIERS].join(" / ")} (pips)`,
+      );
+    requireDecimalString(obj.sqrtPriceX96, "sqrtPriceX96");
+    if (
+      (obj.tokenA as string).toLowerCase() ===
+      (obj.tokenB as string).toLowerCase()
+    )
+      throw new Error("tokenA and tokenB must differ");
+    const action: LeafAction = {
+      type: "createPool",
+      tokenA: obj.tokenA as string,
+      tokenB: obj.tokenB as string,
+      fee,
+      sqrtPriceX96: obj.sqrtPriceX96,
+    };
+    addPriorityFee(action, obj);
+    return action;
+  }
   if (obj.type === "swap") {
     const { base, market } = parseBase(obj);
     if (obj.tokenIn !== market.base && obj.tokenIn !== market.quote)
@@ -1088,6 +1139,14 @@ function validate(
 ): ValidationResult {
   const uni = obs.protocols.uniswap;
   if (!uni) return { ok: false, reason: "uniswap not enabled" };
+  // Creating a market costs gas and nothing else. Whether the pair is worth having, whether the
+  // price is sane and whether anyone will trade it are the creator's problem — that is the decision
+  // the capability exists to hand over (issue #40).
+  if (action.type === "createPool") {
+    if (BigInt(action.sqrtPriceX96) <= 0n)
+      return { ok: false, reason: "sqrtPriceX96 must be positive" };
+    return { ok: true };
+  }
   if (action.type === "swap") {
     const amountIn = BigInt(action.amountIn);
     if (amountIn <= 0n)
@@ -1209,6 +1268,27 @@ export const uniswapAdapter: ProtocolAdapter = {
   },
 
   async buildTxs(ctx, owner, action): Promise<BuiltTx[]> {
+    if (action.type === "createPool") {
+      // createAndInitializePoolIfNecessary on the position manager, not the raw factory: it creates
+      // and initializes in one call, and it is idempotent, so a creator racing another agent for the
+      // same pair does not lose the block to a revert. Liquidity is a separate decision and comes
+      // from mintLiquidity — a pool with no reserves is discoverable and useless, which is exactly
+      // what a creator wants for the one block before it seeds.
+      const [token0, token1] =
+        action.tokenA.toLowerCase() < action.tokenB.toLowerCase()
+          ? [action.tokenA as Address, action.tokenB as Address]
+          : [action.tokenB as Address, action.tokenA as Address];
+      return [
+        {
+          to: UNISWAP.nonfungiblePositionManager,
+          data: encodeFunctionData({
+            abi: nonfungiblePositionManagerAbi,
+            functionName: "createAndInitializePoolIfNecessary",
+            args: [token0, token1, action.fee, BigInt(action.sqrtPriceX96)],
+          }),
+        },
+      ];
+    }
     if (action.type === "swap") {
       const market = resolveMarket("uniswap", action as SwapAction);
       const slippageBps = (action as SwapAction).slippageBps ?? 50;

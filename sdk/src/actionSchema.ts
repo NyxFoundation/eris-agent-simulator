@@ -317,7 +317,8 @@ export const liquitySwapEusdSchema = z.object({
 });
 
 const rawTxSchema = z.object({
-  to: hexString,
+  // Omitted is a contract deployment (issue #40 T5): `data` is then the creation bytecode.
+  to: hexString.optional(),
   data: hexString,
   value: decimalString.optional(),
 });
@@ -334,7 +335,103 @@ export const rawBundleActionSchema = z.object({
   ...priorityFee,
 });
 
+// ---------------------------------------------------------------------------
+// Agent-created markets (issue #40)
+// ---------------------------------------------------------------------------
+
+// Raw addresses rather than registry symbols: these venues trade tokens the environment never
+// deployed and cannot name.
+const hexAddress = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]{40}$/, "must be a 20-byte hex address");
+const hex32 = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]{64}$/, "must be a 32-byte hex string");
+
+export const createPoolSchema = z.object({
+  type: z.literal("createPool"),
+  tokenA: hexAddress,
+  tokenB: hexAddress,
+  fee: z
+    .number()
+    .int()
+    .describe("Uniswap V3 fee in pips: 100, 500, 3000 or 10000"),
+  sqrtPriceX96: decimalString.describe(
+    "initial price as sqrt(token1/token0) * 2^96, computed against the sorted pair " +
+      "(the lower address is token0)",
+  ),
+  ...priorityFee,
+});
+
+export const createLendingMarketSchema = z.object({
+  type: z.literal("createLendingMarket"),
+  loanToken: hexAddress,
+  collateralToken: hexAddress,
+  oracle: hexAddress.describe(
+    "any address implementing price(). It may be one you control -- and a counterparty is " +
+      "expected to read owner() and decide what that means",
+  ),
+  irm: hexAddress.describe(
+    "any address implementing borrowRatePerSecond. The zero address means no interest",
+  ),
+  lltv: decimalString.describe("liquidation LTV in WAD, below 1e18 (0.9e18 = 90%)"),
+  ...priorityFee,
+});
+
+const lendingMarketRef = { marketId: hex32 };
+
+export const lendingSupplySchema = z.object({
+  type: z.literal("lendingSupply"),
+  ...lendingMarketRef,
+  amount: decimalString,
+  ...priorityFee,
+});
+
+export const lendingWithdrawSchema = z.object({
+  type: z.literal("lendingWithdraw"),
+  ...lendingMarketRef,
+  amount: decimalOrMax,
+  ...priorityFee,
+});
+
+export const lendingSupplyCollateralSchema = z.object({
+  type: z.literal("lendingSupplyCollateral"),
+  ...lendingMarketRef,
+  amount: decimalString,
+  ...priorityFee,
+});
+
+export const lendingWithdrawCollateralSchema = z.object({
+  type: z.literal("lendingWithdrawCollateral"),
+  ...lendingMarketRef,
+  amount: decimalString,
+  ...priorityFee,
+});
+
+export const lendingBorrowSchema = z.object({
+  type: z.literal("lendingBorrow"),
+  ...lendingMarketRef,
+  amount: decimalString,
+  ...priorityFee,
+});
+
+export const lendingRepaySchema = z.object({
+  type: z.literal("lendingRepay"),
+  ...lendingMarketRef,
+  amount: decimalOrMax,
+  ...priorityFee,
+});
+
+export const lendingLiquidateSchema = z.object({
+  type: z.literal("lendingLiquidate"),
+  ...lendingMarketRef,
+  borrower: hexAddress,
+  seizedAssets: decimalString,
+  ...priorityFee,
+});
+
 // protocol → the leaf action schemas that protocol accepts.
+
 // Used to drop actions for disabled venues from the prompt's <schema> based on enabledProtocols.
 const LEAF_SCHEMAS_BY_PROTOCOL: Record<ProtocolId, z.ZodTypeAny[]> = {
   uniswap: [
@@ -342,6 +439,7 @@ const LEAF_SCHEMAS_BY_PROTOCOL: Record<ProtocolId, z.ZodTypeAny[]> = {
     mintLiquiditySchema,
     removeLiquiditySchema,
     collectFeesSchema,
+    createPoolSchema,
   ],
   balancer: [balancerSwapSchema],
   curve: [curveSwapSchema, stableSwapSchema],
@@ -368,6 +466,16 @@ const LEAF_SCHEMAS_BY_PROTOCOL: Record<ProtocolId, z.ZodTypeAny[]> = {
     liquityLiquidateSchema,
     liquitySwapEusdSchema,
   ],
+  lending: [
+    createLendingMarketSchema,
+    lendingSupplySchema,
+    lendingWithdrawSchema,
+    lendingSupplyCollateralSchema,
+    lendingWithdrawCollateralSchema,
+    lendingBorrowSchema,
+    lendingRepaySchema,
+    lendingLiquidateSchema,
+  ],
 };
 
 // GMX cannot be bundled because it requires keeper execution (same rule as bundleable in action.ts).
@@ -377,6 +485,9 @@ const BUNDLEABLE_PROTOCOLS: ProtocolId[] = [
   "curve",
   "aave",
   "lst",
+  // Issue #40: creating a market and seeding it in one block is the creator's whole edge (the
+  // registry publishes it one block later), and an atomic borrow-and-exit is the counterparty's.
+  "lending",
 ];
 
 // AgentAction schema restricted to enabled venues (default is all venues).

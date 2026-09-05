@@ -30,6 +30,16 @@ const MAX_VERIFY_RETRIES = 4;
 // hostile as well as the profit taken on one that does not -- it is the whole bet either way, and
 // there is no longer a per-order cap standing behind it.
 const PROBE_SIZE_BPS = 2_000; // 20%
+// Issue #40: the same idea for a lending market found through the MarketRegistry. Smaller, because
+// unlike a swap this position has to survive until the agent can withdraw it -- and what it cannot
+// withdraw before the epoch's final block is worth nothing.
+const REGISTRY_PROBE_BPS = Number(
+  process.env.ERIS_DISCOVERY_REGISTRY_BPS ?? "1000",
+);
+// Blocks before the end at which every registry position starts unwinding.
+const REGISTRY_EXIT_BLOCKS = Number(
+  process.env.ERIS_DISCOVERY_EXIT_BLOCKS ?? "16",
+);
 
 export async function runDiscoveryAgent(
   ctx: AgentContext,
@@ -54,10 +64,11 @@ export async function runDiscoveryAgent(
     ctx.submit(action);
   };
 
-  // In a run with no vuln pool (factory not distributed) there is nothing to discover -> idle (the
+  // In a run with neither a vuln factory nor a registry there is nothing to discover -> idle (the
   // runtime's block subscription keeps the process alive). The old stdin/stdout per-line noop response is unnecessary in run(ctx).
-  if (!factory) {
-    ctx.log({ reason: "discovery idle: no vuln factory" });
+  const hasRegistry = process.env.ERIS_MARKET_REGISTRY_ADDRESS !== undefined;
+  if (!factory && !hasRegistry) {
+    ctx.log({ reason: "discovery idle: no vuln factory and no market registry" });
     return;
   }
 
@@ -68,18 +79,153 @@ export async function runDiscoveryAgent(
     address: t.address,
     decimals: t.decimals,
   }));
-  const discovery = new PoolDiscovery({
-    publicClient,
-    factory,
-    fromBlock: BigInt(process.env.ERIS_VULN_FROM_BLOCK ?? "0"),
-    usdcAddr: usdc.address,
-    usdcDecimals: usdc.decimals,
-    bases,
-  });
+  // Absent in a run that only has agent-created markets: the vuln regime's factory is what this
+  // object watches, and there is nothing to watch without one.
+  const discovery = factory
+    ? new PoolDiscovery({
+        publicClient,
+        factory,
+        fromBlock: BigInt(process.env.ERIS_VULN_FROM_BLOCK ?? "0"),
+        usdcAddr: usdc.address,
+        usdcDecimals: usdc.decimals,
+        bases,
+      })
+    : undefined;
 
   const state = new Map<string, PoolState>();
   const verifyRetries = new Map<string, number>();
+  const registryState = new Map<string, PoolState>();
   let busy = false;
+
+  // ---- registry pass (issue #40) ------------------------------------------------------------
+  //
+  // The vuln regime's pools come from a factory the environment tells this agent about. Agent-created
+  // markets do not: they come from the MarketRegistry, and the environment makes no claim about
+  // them beyond "this exists". The naive side lends into anything the registry lists; the careful
+  // side reads three things first — whether the code is the environment's, whether the code has
+  // changed since it was published, and **who can move the oracle**. That third one is the whole
+  // difference here: in a market whose creator owns the oracle, the creator decides who gets
+  // liquidated and what a seizure is worth.
+  //
+  // The exit deadline is not a refinement either. Under the round-trip rule a supply position still
+  // inside a venue at the epoch's final block is worth zero, so a lender that never withdraws has
+  // lost the money whether or not anybody attacked it.
+  const registryPass = (obs: {
+    round?: number;
+    blocksRemaining?: number;
+    balances: { usdcUnits: string };
+    limits?: { defaultPriorityFeePerGasWei?: string };
+    protocols: {
+      lending?: {
+        singleton: string;
+        markets: Array<{
+          marketId: string;
+          loanToken: string;
+          oracleOwner?: string;
+          supplyAssets: string;
+        }>;
+      };
+    };
+    registry?: {
+      entries: Array<{
+        kind: string;
+        extra?: string;
+        mine: boolean;
+        verified: boolean;
+        codehashNow?: string;
+        codehashAtRegistration: string;
+        oracleOwner?: string;
+      }>;
+    };
+  }): boolean => {
+    const lending = obs.protocols.lending;
+    if (!lending?.singleton) return false;
+    const fee = obs.limits?.defaultPriorityFeePerGasWei;
+    const blocksRemaining = obs.blocksRemaining ?? Number.POSITIVE_INFINITY;
+
+    // Exit before anything else. Nothing found this block is worth more than getting out of what
+    // was found last block.
+    if (blocksRemaining <= REGISTRY_EXIT_BLOCKS) {
+      for (const market of lending.markets) {
+        if (BigInt(market.supplyAssets) <= 0n) continue;
+        emit(
+          {
+            type: "lendingWithdraw",
+            marketId: market.marketId,
+            amount: "max",
+            maxPriorityFeePerGasWei: fee,
+            reason: "round-tripping out before the final block",
+          },
+          { round: Number(obs.round ?? 0), signals: {} },
+        );
+        return true;
+      }
+      return false;
+    }
+
+    const entryById = new Map(
+      (obs.registry?.entries ?? [])
+        .filter((e) => e.kind === "lendingMarket" && e.extra)
+        .map((e) => [String(e.extra).toLowerCase(), e]),
+    );
+    for (const market of lending.markets) {
+      const key = market.marketId.toLowerCase();
+      if (registryState.get(key)) continue;
+      const entry = entryById.get(key);
+      if (!entry) continue; // published one block later than it was created, for everyone
+      if (entry.mine) continue;
+
+      if (opts.verify) {
+        const reasons: string[] = [];
+        if (!entry.verified) reasons.push("unverified implementation");
+        if (
+          entry.codehashNow !== undefined &&
+          entry.codehashNow.toLowerCase() !==
+            entry.codehashAtRegistration.toLowerCase()
+        )
+          reasons.push("code changed since registration");
+        if (entry.oracleOwner === undefined)
+          reasons.push("oracle does not answer owner()");
+        else if (
+          entry.oracleOwner.toLowerCase() !==
+          "0x0000000000000000000000000000000000000000"
+        )
+          reasons.push(`oracle is movable by ${entry.oracleOwner}`);
+        if (reasons.length > 0) {
+          ctx.log({
+            round: Number(obs.round ?? 0),
+            reason: `vulnerability_avoided market=${market.marketId}: ${reasons.join("; ")}`,
+            state: {
+              kind: "vulnerability_avoided",
+              marketId: market.marketId,
+              checks: { reasons },
+            },
+          });
+          registryState.set(key, "avoided");
+          continue; // no tx emitted, so the per-block budget is untouched
+        }
+      }
+
+      const amount =
+        (BigInt(obs.balances.usdcUnits) * BigInt(REGISTRY_PROBE_BPS)) / 10_000n;
+      if (amount <= 0n) continue;
+      emit(
+        {
+          type: "lendingSupply",
+          marketId: market.marketId,
+          amount: amount.toString(),
+          maxPriorityFeePerGasWei: fee,
+          reason: opts.verify
+            ? "verified-safe lending market"
+            : "registry lending market (unverified)",
+        },
+        { round: Number(obs.round ?? 0), signals: {} },
+      );
+      registryState.set(key, "traded");
+      return true;
+    }
+    return false;
+  };
 
   ctx.onObservation((obs) => {
     if (busy) return; // if the previous block's discovery/verification isn't done, limit to one to avoid drops
@@ -88,6 +234,11 @@ export async function runDiscoveryAgent(
       try {
         const bn = BigInt(obs.round ?? 0);
         const fee = obs.limits?.defaultPriorityFeePerGasWei;
+        // Issue #40: agent-created markets first. They carry an exit deadline (the round-trip rule)
+        // and the vuln pools do not, so a block spent on a swap is a block the withdrawal did not
+        // get -- and the per-block transaction cap means only one of the two can happen anyway.
+        if (registryPass(obs as never)) return;
+        if (!discovery) return;
         // A fixed fraction of the USDC on hand. This is the probe size a discovery agent commits
         // to a pool it has just found, and with no per-order cap to inherit it has to be stated.
         const amountIn =

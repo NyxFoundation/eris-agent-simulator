@@ -67,6 +67,15 @@ export interface SimContext {
     fairPrice: number,
     opts?: { noMine?: boolean; priorityFeeWei?: bigint },
   ) => Promise<void>;
+  // Issue #40: contracts the environment deploys per *run* rather than per deployment, so they
+  // cannot live in constants.local.ts the way a venue address does. Both are undefined in a run
+  // without agent-created markets, and every reader treats that as "the capability is off" rather
+  // than as an error.
+  //
+  //   marketRegistry  where agent-deployed contracts are published (the PriceFeed pattern).
+  //   lending         the permissionless lending singleton agents open markets in.
+  marketRegistry?: Address;
+  lending?: Address;
   // Flow wallet per protocol/kind
   flowWallet(protocol: ProtocolId, kind: FlowKind): FlowWallet;
   // Look up a flow wallet by an arbitrary key (e.g. "aave:actor0" of the aave borrower pool; throws if unregistered).

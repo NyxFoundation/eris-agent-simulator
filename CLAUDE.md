@@ -491,6 +491,72 @@ ours なのは 2 つだけ（core は無改変）:
   両方積め」と書いているが、その理由（既定ロスターが prompt モード = LLM が毎判断する）は ADR 0018 で
   消えている。今の prompt.md は改訂方針であって毎判断プロンプトではない
 
+### エージェントが作る市場（MarketRegistry + 許可不要レンディング。issue #40 / ADR 0022。既定 off・**ローカルデプロイ専用**）
+
+参加者が**自分のコントラクトをデプロイでき**、環境がそれを検出して全員に配る。`agentMarkets.enabled: true`
+で有効（既定 off。毎ブロックの getLogs と block 取得が増えるので、誰もデプロイしない run に払わせない）。
+`run.protocols` に `lending` を入れるなら必須で、入れて false だと**起動時 fail-fast**。
+
+- **採点はラウンドトリップ規則**（ADR 0022 §1）。**環境が評価できないコントラクトの中に残った価値は
+  エポック最終ブロックで 0。ただし通り抜けた利益は満額数える。** deposit 10,000 → withdraw 11,000 なら
+  +1,000 は計上され、計上されないのは鐘が鳴った時点でまだ中にあるものだけ。**あらゆる罠クラスが
+  「時間内に抜け出せなかった」1 つに潰れる**ので、honeypot にも proxy 差し替えにも個別の防御機構が要らない
+  - **「0 にした」のではなく「報告するようにした」**。EOA 掃引はもともとそこを見ず、どのアダプタも
+    請求しないので値は元から 0 だった。`scoring_unpriced_holdings` に `reason:"unrealizable"` で出す
+    （`unknown-contract:<addr>`）。出さないと「置き忘れ」と「取引の損」が summary.json で区別できない
+  - 数え方は **Transfer ログのネット**（`sdk/src/agentMarkets.ts` の `StrandedLedger`）。残高ではない —
+    プールの 1,000 USDC は LP 保有者のものなので、預けた側にも足すと同じリザーブを 2 回数える
+- **`MarketRegistry` は PriceFeed パターンの 2 例目**（`contracts/MarketRegistry.sol`）。owner-gated write、
+  1 エントリ 1 イベント、`count`/`all`/`isRegistered`。**1 ブロックの配布遅延を継承する**ので作った本人が
+  1 ブロック早く知る＝作る誘因。**dedup キーは `(market, extra)` の対**（貸出市場は全部シングルトンの
+  アドレスに乗り、`extra` = marketId で区別する）
+  - **codehash は登録時のものだけ。更新しない。**ラウンドトリップ規則の下では差し替え proxy は
+    「抜け出せなかった」の一形態なので環境が取り締まる必要がなく、気づくかどうかが技能差になる
+  - **登録は毎ブロック上限つき・環境負担**（`agentMarkets.registrationsPerBlock`、既定 8）。あふれは
+    次ブロックへ繰り越し、factory 由来を先に。**書き込みは admin ではなく setup 鍵**（oracle 更新が
+    毎ブロック admin から出ているので、同じ鍵に 2 送信者を置くと nonce を奪い合う）
+  - 発見は **factory ログ + `to === null` の top-level CREATE スキャン**。**内部 CREATE は取りこぼす**
+    （対称なので受容。誰にも見えないものは誰も釣れない）。ERC-20 判定は name/symbol/decimals の
+    static call ヒューリスティック
+- **`SimpleLending.sol` = 許可不要の貸出シングルトン**（Morpho Blue 風。`ProtocolId: "lending"`）。
+  市場は `(loanToken, collateralToken, oracle, irm, lltv)` で `createMarket` は誰でも呼べる。
+  **Aave にできないのはここ** — reserve を開くのは `PoolConfigurator` で `POOL_ADMIN` 専用だから、
+  Aave をエージェントへ開くには admin を渡すしかない
+  - **オラクルは任意アドレス。作成者が握っていてよい**（ADR 0014 が先送りした偽オラクルクラス）。
+    Verifier の仕事は `owner()` を読むこと。`ConfigurableOracle`（owner あり＝罠）と
+    `PriceFeedOracle`（owner なし・immutable＝正直）を両方同梱してあるので、
+    「オラクルが動かせるか」は本物の識別子になる
+  - **採点は回収可能額**（`backedFraction`）。供給側は「残っている loan token ＋ **環境価格**で見た担保」
+    への持分、借り手側は `max(0, 担保 − 債務)` で**床は 0**（担保を捨てて歩き去れる＝Liquity の
+    ICR<100% clamp と同じ規則）。**市場自身のオラクルは清算だけを決め、マークは書かない**
+  - **金利は装飾**。エポック 12 分で 3%/年は 0.00007%。効く餌は**レバレッジ（高 LLTV）と清算ボーナス**で、
+    貸出の罠の被害者は**借り手か清算人**であって供給側ではない。IRM は正直にそう書いて同梱
+- **アクション**: `createPool`（uniswap 所有。NPM の `createAndInitializePoolIfNecessary`）/
+  `createLendingMarket` + `lendingSupply`/`Withdraw`/`SupplyCollateral`/`WithdrawCollateral`/`Borrow`/
+  `Repay`/`Liquidate`（lending 所有）。**デプロイは `to` を省いた `rawTx`** — ランタイム経由なので
+  nonce 管理・本数上限・ガス予算を取引と共有する（自前署名すると同じ鍵に 2 送信者ができる）。
+  ヘルパは `example/agents/lib/deployContract.ts`
+- **承認は必要額ちょうど**（`exactApproveTx`）。無制限 approve で抜くコントラクトは規約の範囲内なので、
+  参照ランタイム自身がその穴になってはいけない。observation は registry エントリへの未消化 allowance を出す
+- **ガス予算（T0）**: **per-tx 30,000,000 / per-agent-per-block 90,000,000**。規約 §5 は tx の**本数**しか
+  縛っていないので、自分で書いた高価なコードへの 1 呼び出しでブロックを飢えさせられる —
+  他参加者だけでなく**環境のオラクル更新**も。1 つの数字を 3 か所が読む（ゲートウェイが RLP で
+  gas limit を読んで **403 入口拒否** / ランタイムが自己制限 / run 後に blocks.csv の `gasUsed` 列で検出）
+- **owner ガードは実測する**（`core/src/realtime/ownerGuards.ts`）。役割のないアドレスから特権書き込みを
+  `eth_call` で模擬し、**revert しなければ穴**。`agentMarkets` が on の run では 1 つでも残れば起動時に落とす。
+  **実際に 2 件見つかって塞いだ**: `MockAggregator.setAnswer` と `MockOracleProvider.setPrice` が
+  permissionless だった（＝ Aave 全借り手の清算と GMX 全建玉のマークが誰でも動かせた）。
+  owner は `immutable` なのでスロット 0 は `_answer` のままで economic-gas の直書きは不変
+- **環境はエージェント製市場に手を出さない。**`noArb` は有効アダプタの state（= `MARKET_LEGS`）しか
+  読まないので構造的に対象外で、`test/agentCreatedMarkets.test.ts` がその境界を検査する。
+  帰結: **罠を仕掛ける者は他のエージェントからしか収穫できない**
+- 参照 agent は 4 体: `market-launcher`（正直な作成者。immutable オラクルで作って鐘の前に withdraw）/
+  `market-taker`（利用者。`oracleOwner` を読んでから入る）/ `trap-launcher`（自分が握るオラクルで
+  90% LLTV の市場を作り、供給された分を借り出す）＋ `discovery-arb` / `discovery-arb-verify` を
+  registry からも引くよう拡張。レジームは `config/regimes/agent-markets.yaml`（**公式セット外**。
+  `lst`/`liquity` と同じ venue 単体検証用）
+- **公式セットは 7 本のまま。**8 本目にするかは live run を見てから
+
 ### 市場価格 stable（レジストリの stable を $1 断定でなく市場から値付ける。issue #27）
 
 **「stable = $1」はコードがそう書いていたから**だった。`chain.ts` が active stable を全部足して

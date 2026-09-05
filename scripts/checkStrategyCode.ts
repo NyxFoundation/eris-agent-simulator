@@ -43,6 +43,17 @@ function main(): void {
   );
   if (results.length === 0) {
     console.error(`[static-check] PASS (${targets.length} files)`);
+    // Issue #40 T6: deployment used to be neither allowed nor forbidden in writing, which meant a
+    // participant deciding whether to ship a contract had to infer the answer from the absence of a
+    // rule. It is allowed. Stating it here, where the gate already speaks to the participant, is
+    // cheaper than a paragraph in a document they may not reach.
+    console.error(
+      "[static-check] deploying your own contracts IS permitted (issue #40). A rawTx with no `to` " +
+        "deploys the creation bytecode in `data`; the environment publishes what it finds to the " +
+        "MarketRegistry. What bounds it: the per-transaction and per-block gas budget (rules §2.6), " +
+        "and the fact that anything you deploy is `unknown` to everyone else — value left inside a " +
+        "contract the environment cannot value is worth zero at the epoch's final block (rules §4.1).",
+    );
     return;
   }
   for (const r of results) {

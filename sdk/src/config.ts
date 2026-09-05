@@ -100,6 +100,23 @@ export type SimConfig = {
   // (a stub that scans source for keywords). The coordinator distributes it to discovery-arb-verify via ERIS_VULN_LLM.
   // Scoring uses the environment's ground truth, so the LLM is auxiliary (its verdict is a reference log). The dry-run is the primary check.
   vulnLlm: string;
+  // ---- agent-created markets (issue #40) ----
+  // Whether the environment deploys the MarketRegistry + the permissionless lending singleton and
+  // sweeps for agent-deployed contracts. Off by default: it adds a per-block getLogs and a block
+  // fetch, and a run that nobody deploys into should not pay for them.
+  agentMarkets: boolean;
+  // How many discoveries the environment publishes per block. The deploy is paid by the agent
+  // (ADR 0011) but the registry write is paid by the environment, so without a cap a deploy-spam
+  // agent inflates that cost without bound. The overflow carries into the next block rather than
+  // being dropped, factory-made kinds first.
+  agentMarketsPerBlockCap: number;
+  // Gas ceiling on a single agent transaction, and on one agent's transactions within one block
+  // (issue #40 T0). Rules section 5 caps the *number* of transactions per block, not their gas, so a
+  // contract that eats the block gas limit can starve other participants and the environment's own
+  // oracle update. 0 disables the check. Detection is post-run over blocks.csv, the same mechanical
+  // shape as the priority-fee cap; the RPC gateway refuses over-cap transactions up front.
+  maxTxGas: bigint;
+  maxAgentBlockGas: bigint;
   // Flash arb demo (GitHub #3). With ERIS_FLASH_ARB=1 the coordinator deploys the FlashArb contract
   // and makes it available to the flash-arb agent. Requires uniswap+balancer+aave enabled. Default off.
   flashArbDemo: boolean;
@@ -340,6 +357,17 @@ export function loadConfig(env = process.env): SimConfig {
     ),
     vulnPoolFeeBps: intEnv(env.ERIS_VULN_POOL_FEE_BPS, 30),
     vulnLlm: env.ERIS_VULN_LLM ?? "0",
+    agentMarkets: env.ERIS_AGENT_MARKETS === "1",
+    agentMarketsPerBlockCap: intEnv(env.ERIS_AGENT_MARKETS_CAP, 8),
+    // 30,000,000: the number the agent runtime has always self-limited to (send.ts), promoted to
+    // the config so the runtime, the RPC gateway and the post-run check all read one value instead
+    // of three that can drift apart. It is ~10x the heaviest real operation and well under the
+    // 320,000,000 block gas limit the rules fix.
+    maxTxGas: bigintEnv(env.ERIS_MAX_TX_GAS, 30_000_000n),
+    // 3 x maxTxGas: the per-block transaction cap (rules §2.6) times the per-transaction ceiling.
+    // An agent that uses its whole allowance can therefore take at most 90/320 of a block, which
+    // leaves room for the environment's oracle write and for everybody else.
+    maxAgentBlockGas: bigintEnv(env.ERIS_MAX_AGENT_BLOCK_GAS, 90_000_000n),
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
     // Real-time mode settings.
     blockTimeSec,

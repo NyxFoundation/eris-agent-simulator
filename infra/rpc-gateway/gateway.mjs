@@ -14,6 +14,8 @@ import http from "node:http";
 import { createWriteStream, writeFileSync, renameSync } from "node:fs";
 import { URL } from "node:url";
 
+import { txGasLimit } from "./txGas.mjs";
+
 const PORT = Number(process.env.PORT || 8546);
 const UPSTREAM = new URL(process.env.UPSTREAM || "http://127.0.0.1:8545");
 const ENV_NAME = process.env.ENV_NAME || "live";
@@ -56,6 +58,34 @@ const METHOD_ALLOW = new RegExp(process.env.RPC_METHOD_ALLOW ?? "^(eth_|net_|web
 const METHOD_DENY = new RegExp(process.env.RPC_METHOD_DENY ?? "^(eth_accounts|eth_sendTransaction|eth_sign)");
 const FILTER_METHODS = (process.env.RPC_FILTER ?? "1") !== "0";
 let methodDenied = 0;
+// ---- per-tx gas cap (issue #40 T0) ----
+// Rules §5 caps how MANY transactions an agent may put in a block, not how much gas each one burns.
+// That is enough while every transaction is a swap; it stops being enough once agents deploy their
+// own contracts, because one call into deliberately expensive code can eat the block gas limit and
+// starve every other participant -- and the environment's own oracle update, which is what makes it
+// an attack on the competition rather than a trade against a counterparty.
+//
+// The gas limit is a signed field of the transaction, so it can be read here without executing
+// anything and without trusting the sender. Refusing up front is strictly better than detecting
+// afterwards: by the time blocks.csv shows it, the block it starved is gone. The post-run check in
+// core/src/postRunCheck.ts stays as the authority (a self-hosted participant can bypass a gateway).
+const MAX_TX_GAS = BigInt(process.env.RPC_MAX_TX_GAS ?? "30000000");   // 0 disables. Same number as SimConfig.maxTxGas / ERIS_MAX_TX_GAS
+let gasDenied = 0;
+
+// The over-cap transaction in a request, if any. Returns its gas limit; null when everything is fine.
+function overCapGas(parsed) {
+  if (MAX_TX_GAS <= 0n) return null;
+  const calls = Array.isArray(parsed) ? parsed : [parsed];
+  for (const c of calls) {
+    if (!c || c.method !== "eth_sendRawTransaction") continue;
+    const raw = Array.isArray(c.params) ? c.params[0] : undefined;
+    if (typeof raw !== "string") continue;
+    const gas = txGasLimit(raw);
+    if (gas !== null && gas > MAX_TX_GAS) return gas;
+  }
+  return null;
+}
+
 const buckets = new Map();                                          // client -> {tokens, last}
 let rateLimited = 0;
 function allow(client, cost) {
@@ -105,6 +135,7 @@ function metricsText() {
   o += `# TYPE rpc_in_flight gauge\nrpc_in_flight{${L}} ${inFlight}\n`;
   o += `# TYPE rpc_upstream_up gauge\nrpc_upstream_up{${L}} ${upstreamUp}\n`;
   o += `# TYPE rpc_ratelimited_total counter\nrpc_ratelimited_total{${L}} ${rateLimited}\n`;
+  o += `# TYPE rpc_gas_denied_total counter\nrpc_gas_denied_total{${L}} ${gasDenied}\n`;
   o += `# TYPE rpc_method_denied_total counter\nrpc_method_denied_total{${L}} ${methodDenied}\n`;
   return o;
 }
@@ -163,6 +194,15 @@ const server = http.createServer((req, res) => {
         res.writeHead(403, { "content-type": "application/json" });
         return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32601, message: `method not permitted: ${bad}` } }));
       }
+    }
+
+    // per-tx gas cap (issue #40 T0) -> refuse before the transaction can starve a block
+    const overCap = overCapGas(parsed);
+    if (overCap !== null) {
+      gasDenied++;
+      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: "eth_sendRawTransaction", status: "gas_denied", gas: String(overCap), limit: String(MAX_TX_GAS), client, ip });
+      res.writeHead(403, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32003, message: `transaction gas limit ${overCap} exceeds the per-transaction cap ${MAX_TX_GAS}` } }));
     }
 
     // per-client rate limit (heavy EVM-executing reads cost more) -> 429 before touching anvil

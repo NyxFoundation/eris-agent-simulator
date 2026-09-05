@@ -50,7 +50,14 @@ const GAS_REFILL_COOLDOWN_BLOCKS = 3; // wait for the refill tx to be mined and 
 // Anti-abuse (rules §2.6): cap on-chain txs per block per agent, and cap one tx's gas so no single tx
 // can hog the 320M block (gas bomb). Both are enforced operator-side here, before the tx is sent.
 const MAX_TXS_PER_ROUND = Number(process.env.ERIS_MAX_TXS_PER_ROUND ?? "3");
+// The run's gas budget (issue #40 T0). The environment hands both numbers down so the runtime
+// self-limits to exactly what the post-run check judges by; a participant running self-hosted gets
+// the same defaults. Rules §5 caps how many transactions an agent may put in a block, not their gas,
+// and once agents deploy their own contracts one expensive call can starve the block for everyone.
 const MAX_TX_GAS = BigInt(process.env.ERIS_MAX_TX_GAS ?? "30000000"); // ~10x the heaviest real op, << 320M block
+const MAX_AGENT_BLOCK_GAS = BigInt(
+  process.env.ERIS_MAX_AGENT_BLOCK_GAS ?? "90000000",
+); // 3 x MAX_TX_GAS = the per-block tx cap times the per-tx ceiling
 
 export class Sender {
   private readonly ctx: SimContext;
@@ -65,6 +72,10 @@ export class Sender {
 
   // ---- anti-abuse: on-chain txs sent per round (keyed by blockSeen) for the per-block cap ----
   private readonly txByRound = new Map<number, number>();
+  // Gas committed per round, for the per-block gas budget. Counted from the gas *limit* the
+  // transaction carries rather than from what it burns: the limit is what reserves block space, and
+  // it is the only number available before the transaction is sent.
+  private readonly gasByRound = new Map<number, bigint>();
 
   // ---- competition signal (ADR 0011): your recent txs (ring buffer) ----
   private readonly ownTxs: OwnTx[] = [];
@@ -104,7 +115,10 @@ export class Sender {
   }
 
   private async sendBuiltTx(
-    tx: { to: Address; data?: Hex; value?: bigint; gas?: bigint },
+    // `to` omitted is a contract deployment (issue #40 T5). It reaches here from a rawTx action with
+    // no `to`, which is how an agent deploys through the runtime instead of around it -- around it
+    // means a second sender on the same key, and two senders on one key race on the nonce.
+    tx: { to?: Address; data?: Hex; value?: bigint; gas?: bigint },
     priorityFeeWei: bigint,
     meta: Record<string, unknown>,
   ): Promise<void> {
@@ -145,6 +159,25 @@ export class Sender {
       if (gas !== undefined && gas > MAX_TX_GAS) {
         this.logMempool({ event: "rejected", reason: `tx gas cap (${MAX_TX_GAS})`, gas: gas.toString(), ...meta });
         return;
+      }
+      if (gas !== undefined && MAX_AGENT_BLOCK_GAS > 0n) {
+        const usedThisRound = this.gasByRound.get(round) ?? 0n;
+        if (usedThisRound + gas > MAX_AGENT_BLOCK_GAS) {
+          // Refunded, not consumed: the transaction is not going out, so it must not count against
+          // the per-block transaction cap either.
+          this.txByRound.set(round, (this.txByRound.get(round) ?? 1) - 1);
+          this.logMempool({
+            event: "rejected",
+            reason: `per-block gas budget (${MAX_AGENT_BLOCK_GAS})`,
+            gas: gas.toString(),
+            usedThisRound: usedThisRound.toString(),
+            ...meta,
+          });
+          return;
+        }
+        this.gasByRound.set(round, usedThisRound + gas);
+        for (const k of this.gasByRound.keys())
+          if (k < round - 4) this.gasByRound.delete(k);
       }
       const hash = await walletClient.sendTransaction({
         account: this.account,
@@ -244,12 +277,20 @@ export class Sender {
       this.enqueueSend(() =>
         this.sendBuiltTx(
           {
-            to: rawIntent.tx.to as Address,
+            // Omitted `to` is a deployment (issue #40 T5). Sent through the runtime rather than
+            // around it so it shares the nonce manager, the per-block transaction cap and the gas
+            // budget with every other transaction the agent makes.
+            ...(rawIntent.tx.to === undefined
+              ? {}
+              : { to: rawIntent.tx.to as Address }),
             data: rawIntent.tx.data as Hex,
             value: rawIntent.tx.value ? BigInt(rawIntent.tx.value) : undefined,
           },
           rawIntent.priorityFeeWei,
-          { actionType: "rawTx", blockSeen },
+          {
+            actionType: rawIntent.tx.to === undefined ? "deploy" : "rawTx",
+            blockSeen,
+          },
         ),
       );
     }

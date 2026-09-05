@@ -41,6 +41,12 @@ import type {
 } from "@eris/sdk/protocols/types.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
+import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
+import {
+  fetchAgentTransfers,
+  StrandedLedger,
+  type TransferLogLike,
+} from "@eris/sdk/agentMarkets.js";
 
 // Measured upper bound of anvil's historical state retention depth (~1,050; ADR 0006 Risks). Warn if likely to exceed it.
 const HISTORY_DEPTH_LIMIT = 1000;
@@ -652,6 +658,71 @@ export async function findUnaccountedTokens(opts: {
   return out;
 }
 
+// Known tokens an agent moved into a registry entry the environment cannot value, netted against
+// what came back out (issue #40 axiom 1).
+//
+// Netted, not "the contract's balance": a pool holding 1,000 USDC owes it to whoever holds the LP,
+// and crediting the depositor as well would count the same reserves twice. Profit taken *through*
+// an unknown contract already counts in full through ordinary spot accounting — deposit 10,000 at
+// block 100, withdraw 11,000 at block 500, and the +1,000 is in the wallet. What this finds is only
+// what is still inside when the bell rings.
+export async function findStrandedInUnknownContracts(opts: {
+  publicClient: PublicClient;
+  agents: ReconstructionAgent[];
+  activeStables: Address[];
+  marketRegistry: Address;
+  fromBlock: number;
+  toBlock: number;
+}): Promise<UnpricedHolding[]> {
+  const { publicClient, agents, marketRegistry, fromBlock, toBlock } = opts;
+  let entries: Awaited<ReturnType<typeof readRegistryEntries>>;
+  try {
+    entries = await readRegistryEntries(publicClient, marketRegistry);
+  } catch {
+    return []; // best effort; never fail a run's scoring over a diagnostic
+  }
+  // Only the entries carrying no safety claim. A verified venue is valued by its adapter, and
+  // double-reporting it would say a scored position went missing.
+  const unknown = new Set(
+    entries.filter((e) => !e.verified).map((e) => e.market.toLowerCase()),
+  );
+  if (unknown.size === 0) return [];
+  const priced = new Set<string>([
+    ...baseTokens().map((t) => t.address.toLowerCase()),
+    ...opts.activeStables.map((a) => a.toLowerCase()),
+  ]);
+
+  const out: UnpricedHolding[] = [];
+  for (const agent of agents) {
+    let logs: TransferLogLike[];
+    try {
+      logs = await fetchAgentTransfers(
+        publicClient,
+        agent.address,
+        BigInt(fromBlock),
+        BigInt(toBlock),
+      );
+    } catch {
+      continue;
+    }
+    const ledger = new StrandedLedger();
+    ledger.apply(logs, agent.address, unknown);
+    for (const flow of ledger.outstanding()) {
+      if (!priced.has(flow.token.toLowerCase())) continue;
+      out.push({
+        agentId: agent.id,
+        source: `unknown-contract:${flow.market}`,
+        token: flow.token,
+        amountRaw: flow.amountRaw.toString(),
+        // Not "unpriced": the token has a price. What it does not have is a way out, which is
+        // exactly what the round-trip rule scores at zero.
+        reason: "unrealizable",
+      });
+    }
+  }
+  return out;
+}
+
 type MulticallFn = (
   contracts: MulticallContract[],
   blockNumber: bigint,
@@ -807,6 +878,11 @@ export async function reconstructValueSeries(opts: {
   // G7 window: how many blocks each epoch boundary's manipulable marks are medianed over, the
   // boundary block included (config.markMedianBlocks). <= 1 marks boundaries live.
   markMedianBlocks?: number;
+  // Issue #40: where agent-created contracts are published. Given, the scorer additionally reports
+  // known tokens the agent left *inside* an entry it cannot value. Those are already worth zero to
+  // the value series -- an EOA sweep does not see them and no adapter claims them -- and the whole
+  // point of reporting them is that a zero must never be mistaken for a trading loss.
+  marketRegistry?: Address;
 }): Promise<ReconstructionMeta> {
   const {
     publicClient,
@@ -820,6 +896,7 @@ export async function reconstructValueSeries(opts: {
     scoreEvery = 1,
     epochBlocks = 0,
     markMedianBlocks = 0,
+    marketRegistry,
   } = opts;
   const started = Date.now();
   let failedReads = 0;
@@ -992,6 +1069,24 @@ export async function reconstructValueSeries(opts: {
     toBlock,
   })) {
     unpriced.set(unpricedKey(holding), holding);
+  }
+
+  // Issue #40 axiom 1: value left inside a contract the environment cannot value is worth 0 at the
+  // epoch's final block. It already *is* zero -- nothing sweeps it and no adapter claims it -- so
+  // this reports it rather than changing it. Reporting is the load-bearing half: an agent that
+  // deposited 10,000 USDC into an unknown contract and never got it back shows a value series
+  // indistinguishable from one that lost 10,000 trading, and the two are different findings.
+  if (marketRegistry) {
+    for (const holding of await findStrandedInUnknownContracts({
+      publicClient,
+      agents,
+      activeStables,
+      marketRegistry,
+      fromBlock,
+      toBlock,
+    })) {
+      unpriced.set(unpricedKey(holding), holding);
+    }
   }
 
   // Default the reason once, here, so every site upstream can leave it off when it only ever reports

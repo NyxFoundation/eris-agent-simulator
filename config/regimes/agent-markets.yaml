@@ -1,0 +1,87 @@
+# config/regimes/agent-markets.yaml — agent-created markets (issue #40)
+#
+# regime = this file (market conditions), seed = supplied at run time.
+# Run: npm run backtest -- --regime agent-markets --seed 101 [--agents <roster>]
+#
+# **Not an official competition regime.** It is the verification regime for the capability, in the
+# same position `config/regimes/lst.yaml` and `liquity.yaml` occupy for their venues: every side of
+# the mechanism has an agent playing it, so a run that produces nothing is a finding rather than an
+# ambiguity. The official set stays at seven (§3.2 of the rules); whether this becomes an eighth is
+# a separate decision that needs live runs behind it.
+#
+# What this regime asks that no other one does: **can you get out?** Under the round-trip rule
+# (rules §4.1) value left inside a contract the environment cannot value is worth zero at the
+# epoch's final block, and profit taken *through* one counts in full. So the question is never "is
+# this contract safe" in the abstract — it is "can I judge whether I can get out of it in time",
+# which is a decision with a deadline attached. Every trap class here collapses into a single
+# failure mode: you could not get out.
+#
+# The field is deliberately complete. A capability nobody uses is not exercised, and this one needs
+# a market that gets created, a market that gets found and used, a trap that gets set, an agent that
+# walks into it, and one that does not.
+
+run:
+  blocks: 360 # matching the other regimes so scenario lengths stay comparable
+  seconds: 1800 # end by block count (must stay well above blocks x blockTimeSec = 720s)
+  blockTimeSec: 2
+  protocols: [uniswap, balancer, curve, gmx, aave, lending]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+  epochBlocks: 360 # one epoch = one run, so "the epoch's final block" is the run's final block
+
+market:
+  volatility: 0.004 # calm's: the regime is the contracts, not the price
+  kappa: 0.02
+
+funding:
+  # The same ETH/BTC/USDC basket as the official regimes (issue #54). WETH matters here beyond the
+  # usual: it is the collateral leg of the honest market, so an agent with none can only be a lender.
+  wethWei: "8000000000000000000" # 8 WETH
+  base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
+  usdcUnits: "25000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+  baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
+
+agentMarkets:
+  enabled: true
+  # Discoveries published per block. The deploy is paid by the agent (ADR 0011) but the registry
+  # write is paid by the environment, so without a cap a deploy-spam agent inflates that cost
+  # without bound. The overflow carries into the next block, factory-made kinds first.
+  registrationsPerBlock: 8
+  # The gas budget (issue #40 T0). Rules §5 caps how many transactions an agent may put in a block,
+  # not their gas; once agents deploy their own contracts one expensive call can starve the block.
+  maxTxGas: "30000000"
+  maxAgentBlockGas: "90000000"
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: market-launcher
+    wallet: AGENT2_PRIVATE_KEY
+    description: builds a lending market with an immutable oracle, seeds it, and withdraws before the bell
+  - id: market-taker
+    wallet: AGENT3_PRIVATE_KEY
+    description: uses other agents' markets, gating on who can move the oracle
+  - id: trap-launcher
+    wallet: AGENT4_PRIVATE_KEY
+    description: builds a market it owns the oracle of, and borrows out whatever anyone supplies
+  - id: discovery-arb
+    wallet: AGENT5_PRIVATE_KEY
+    description: lends into anything the registry lists (the naive side)
+  - id: discovery-arb-verify
+    wallet: AGENT6_PRIVATE_KEY
+    description: reads the oracle owner and the codehash first (the careful side)
