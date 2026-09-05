@@ -1064,25 +1064,42 @@ export async function runRealtimeSimulation(
     // froze for a whole run.
     let marketRegistry: MarketRegistryRuntime | undefined;
     if (config.agentMarkets) {
-      // The registrar's key has to be its own, and "has to" is not the same as "is". The oracle
-      // update sends from admin every block and the registry write sends from here in the same
-      // Promise.all: on one key they resolve the same pending nonce and one silently replaces the
-      // other -- which is how the LST redemption rate once froze for a whole run. Checked rather
-      // than assumed, because the two keys come from separate env vars and nothing else would
-      // notice them being set to the same value.
+      // The registrar's key has to be nobody else's, and "has to" is not the same as "is".
+      //
+      // Two separate reasons, and the second is the serious one:
+      //   - nonce. The oracle update sends from admin every block and the registry write sends from
+      //     the registrar in the same Promise.all. On one key they resolve the same pending nonce
+      //     and one silently replaces the other, which is how the LST redemption rate once froze
+      //     for a whole run.
+      //   - authority. `MarketRegistry`'s owner is whoever deployed it, and the owner is the only
+      //     address that can publish an entry. A *participant* holding that key could publish
+      //     anything it liked as `verified` -- the one claim the environment makes about a
+      //     contract, made by the party the claim is supposed to protect everyone from.
+      //
+      // Compared by address rather than by key, so an externally-registered participant (ADR 0021
+      // §2 -- the environment holds no key for them, only an address) is covered too.
       const registrarPk = config.privateKeys.setup;
-      for (const [name, other] of [
-        ["admin", config.privateKeys.admin],
-        ["keeper", config.privateKeys.keeper],
-      ] as const) {
-        if (registrarPk.toLowerCase() === other.toLowerCase())
-          throw new Error(
-            `SETUP_PRIVATE_KEY is the same key as ${name.toUpperCase()}_PRIVATE_KEY. The market ` +
-              "registry writes from the setup key every block, alongside the oracle update on the " +
-              "admin key; two senders on one key race on the nonce and one is silently dropped " +
-              "(issue #40). Give the registrar its own key, or run with agentMarkets.enabled: false.",
-          );
-      }
+      const registrarAddress = accountAddress(registrarPk).toLowerCase();
+      const claimed = new Map<string, string>([
+        [accountAddress(config.privateKeys.admin).toLowerCase(), "the admin wallet"],
+        [accountAddress(config.privateKeys.keeper).toLowerCase(), "the keeper wallet"],
+        ...[...flowWalletMap.values()].map(
+          (w) => [w.address.toLowerCase(), `flow wallet ${w.id}`] as const,
+        ),
+        ...agentRuntimes.map(
+          (a) => [a.address.toLowerCase(), `participant ${a.id}`] as const,
+        ),
+      ]);
+      const collision = claimed.get(registrarAddress);
+      if (collision)
+        throw new Error(
+          `the market registrar's address (${registrarAddress}, from SETUP_PRIVATE_KEY) is also ` +
+            `${collision}. The registrar deploys and owns MarketRegistry, and its owner is the only ` +
+            "address that can publish an entry -- so a participant holding it could publish its own " +
+            "trap as `verified`. It also writes every block alongside the oracle update, and two " +
+            "senders on one key race on the nonce (issue #40 T0). Give the registrar an address " +
+            "nothing else in the run uses, or run with agentMarkets.enabled: false.",
+        );
       marketRegistry = await deployAgentMarketVenues(
         ctx,
         registrarPk,
