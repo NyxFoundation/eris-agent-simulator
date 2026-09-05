@@ -43,10 +43,11 @@ import type { ProtocolId } from "@eris/sdk/types.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
 import {
-  clampToBalances,
+  allocateToBalances,
   fetchAgentTransfers,
   readHeldBalances,
   StrandedLedger,
+  type StrandedFlow,
   type TransferLogLike,
 } from "@eris/sdk/agentMarkets.js";
 
@@ -694,7 +695,10 @@ export async function findStrandedInUnknownContracts(opts: {
     ...opts.activeStables.map((a) => a.toLowerCase()),
   ]);
 
-  const out: UnpricedHolding[] = [];
+  // Every agent's flows first, then one allocation across all of them. Capping each agent against
+  // the same contract balance separately reports the same tokens once per agent: A and B each put
+  // 100 into C, C forwards 100 away and keeps 100, and both are told 100 is theirs.
+  const byAgent: Array<{ agent: ReconstructionAgent; flows: StrandedFlow[] }> = [];
   for (const agent of agents) {
     let logs: TransferLogLike[];
     try {
@@ -709,18 +713,34 @@ export async function findStrandedInUnknownContracts(opts: {
     }
     const ledger = new StrandedLedger();
     ledger.apply(logs, agent.address, unknown);
-    const outstanding = ledger
-      .outstanding()
-      .filter((f) => priced.has(f.token.toLowerCase()));
-    // Capped by what the contract still holds at the terminal block. The net alone overclaims: a
-    // contract that pulled tokens from the agent and forwarded them straight on holds none of them,
-    // and the loss -- which the agent's own spot balance already records -- did not stay here.
-    const held = await readHeldBalances(
-      publicClient,
-      outstanding.map((f) => ({ holder: f.market, token: f.token })),
-      BigInt(toBlock),
-    );
-    for (const flow of clampToBalances(outstanding, held)) {
+    byAgent.push({
+      agent,
+      flows: ledger
+        .outstanding()
+        .filter((f) => priced.has(f.token.toLowerCase())),
+    });
+  }
+
+  // What each contract still holds at the terminal block. The net alone overclaims: a contract that
+  // pulled tokens from an agent and forwarded them straight on holds none of them, and the loss --
+  // which the agent's own spot balance already records -- did not stay here.
+  const pairs = new Map<string, { holder: Address; token: Address }>();
+  for (const { flows } of byAgent) {
+    for (const f of flows)
+      pairs.set(`${f.market.toLowerCase()}|${f.token.toLowerCase()}`, {
+        holder: f.market,
+        token: f.token,
+      });
+  }
+  const held = await readHeldBalances(
+    publicClient,
+    [...pairs.values()],
+    BigInt(toBlock),
+  );
+
+  const out: UnpricedHolding[] = [];
+  for (const { agent, flows } of allocateToBalances(byAgent, held)) {
+    for (const flow of flows) {
       out.push({
         agentId: agent.id,
         source: `unknown-contract:${flow.market}`,

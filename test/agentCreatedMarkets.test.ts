@@ -8,6 +8,7 @@ import { parseAction } from "../sdk/src/action.js";
 import { ACTION_TYPES_BY_PROTOCOL } from "../sdk/src/action.js";
 import { initProtocols } from "../sdk/src/protocols/registry.js";
 import {
+  allocateToBalances,
   clampToBalances,
   StrandedLedger,
   type StrandedFlow,
@@ -27,6 +28,11 @@ import { BLOCKS_CSV_COLUMNS } from "../core/src/logger.js";
 import { venueExecQuotes } from "../core/src/realtime/noArb.js";
 import { txGasLimit } from "../infra/rpc-gateway/txGas.mjs";
 import { sqrtPriceX96For } from "../sdk/src/protocols/uniswap.js";
+import { withdrawAction, withdrawableNow } from "../example/agents/lib/agentMarkets.js";
+import {
+  guardProbesFor,
+  unprotectedFindings,
+} from "../core/src/realtime/ownerGuards.js";
 import type { Address } from "viem";
 
 // ---------------------------------------------------------------------------
@@ -517,4 +523,178 @@ test("an envelope type the reader does not know is unreadable, not zero", () => 
   // shape past the cap; returning null makes the gateway fail closed.
   assert.equal(txGasLimit("0x7fdeadbeef"), null);
   assert.equal(txGasLimit("0x"), null);
+});
+
+// ---------------------------------------------------------------------------
+// What the second review pass found
+// ---------------------------------------------------------------------------
+
+test("two agents cannot both be told the same tokens are theirs", () => {
+  // A and B each put 100 into C; C forwards 100 away and keeps 100. Clamping each agent separately
+  // against C's balance reports 100 twice -- 200 sitting in a contract holding 100.
+  const held = new Map([[`${TRAP.toLowerCase()}|${USDC.toLowerCase()}`, 100n]]);
+  const allocated = allocateToBalances(
+    [
+      { agent: "a", flows: [{ market: TRAP, token: USDC, amountRaw: 100n }] },
+      { agent: "b", flows: [{ market: TRAP, token: USDC, amountRaw: 100n }] },
+    ],
+    held,
+  );
+  const total = allocated
+    .flatMap((a) => a.flows)
+    .reduce((sum, f) => sum + f.amountRaw, 0n);
+  assert.equal(total, 100n);
+  assert.deepEqual(
+    allocated.map((a) => a.flows[0]?.amountRaw),
+    [50n, 50n],
+  );
+});
+
+test("an allocation never inflates a flow above what went in", () => {
+  // C holds more than these agents put in (somebody else's money, or its own). Each is still capped
+  // by its own net: the balance is an upper bound on the claim, not a source of one.
+  const held = new Map([[`${TRAP.toLowerCase()}|${USDC.toLowerCase()}`, 1_000n]]);
+  const allocated = allocateToBalances(
+    [{ agent: "a", flows: [{ market: TRAP, token: USDC, amountRaw: 100n }] }],
+    held,
+  );
+  assert.equal(allocated[0].flows[0].amountRaw, 100n);
+});
+
+test("a withdrawal asks for what the market can pay, not for all of it", () => {
+  const lending = {
+    singleton: TRAP,
+    dropped: 0,
+    markets: [
+      {
+        marketId: `0x${"1".repeat(64)}`,
+        loanToken: USDC,
+        collateralToken: TRAP,
+        oracle: AGENT,
+        irm: AGENT,
+        lltv: "800000000000000000",
+        liquidationIncentiveFactor: "1030927835051546391",
+        price: "0",
+        supplyAssets: "1000",
+        borrowAssets: "0",
+        collateral: "0",
+        healthy: true,
+        totalSupplyAssets: "1000",
+        totalBorrowAssets: "600",
+      },
+    ],
+  };
+  const id = lending.markets[0].marketId;
+  assert.deepEqual(withdrawableNow(lending.markets[0]), {
+    supplied: 1000n,
+    available: 400n,
+  });
+  const action = withdrawAction(lending, id, "1");
+  assert.equal(action?.amount, "400");
+});
+
+test("nothing withdrawable means no transaction at all", () => {
+  // Submitting a call that is going to revert costs one of the three transactions the block allows
+  // and buys nothing.
+  const lending = {
+    singleton: TRAP,
+    dropped: 0,
+    markets: [
+      {
+        marketId: `0x${"2".repeat(64)}`,
+        loanToken: USDC,
+        collateralToken: TRAP,
+        oracle: AGENT,
+        irm: AGENT,
+        lltv: "800000000000000000",
+        liquidationIncentiveFactor: "0",
+        price: "0",
+        supplyAssets: "1000",
+        borrowAssets: "0",
+        collateral: "0",
+        healthy: true,
+        totalSupplyAssets: "1000",
+        totalBorrowAssets: "1000",
+      },
+    ],
+  };
+  assert.equal(withdrawAction(lending, lending.markets[0].marketId, "1"), null);
+});
+
+test("a fully liquid position still asks for max", () => {
+  const lending = {
+    singleton: TRAP,
+    dropped: 0,
+    markets: [
+      {
+        marketId: `0x${"3".repeat(64)}`,
+        loanToken: USDC,
+        collateralToken: TRAP,
+        oracle: AGENT,
+        irm: AGENT,
+        lltv: "800000000000000000",
+        liquidationIncentiveFactor: "0",
+        price: "0",
+        supplyAssets: "1000",
+        borrowAssets: "0",
+        collateral: "0",
+        healthy: true,
+        totalSupplyAssets: "1000",
+        totalBorrowAssets: "0",
+      },
+    ],
+  };
+  assert.equal(
+    withdrawAction(lending, lending.markets[0].marketId, "1")?.amount,
+    "max",
+  );
+});
+
+test("a guard that could not be established is not a guard", () => {
+  // An audit that could not reach the contract has not shown the guard is there, and this whole
+  // check exists because reading the source was not good enough evidence.
+  const probes = guardProbesFor({ priceFeed: TRAP });
+  const findings = probes.map((p) => ({
+    label: p.label,
+    address: p.address,
+    status: "unreachable" as const,
+    detail: "no code at the address",
+  }));
+  assert.equal(unprotectedFindings(findings, probes).length, probes.length);
+});
+
+test("the guard audit probes both PriceFeed writes and both oracle overloads", () => {
+  const labels = guardProbesFor({
+    priceFeed: TRAP,
+    gmxOracleProvider: AGENT,
+    lstVault: USDC,
+  }).map((p) => p.label);
+  for (const expected of [
+    "PriceFeed.setPrice",
+    "PriceFeed.setPriceFor",
+    "MockOracleProvider.setPrice(address,uint256)",
+    "MockOracleProvider.setPrice(address,uint256,uint256)",
+    "MockLSTVault.setWithdrawalDelayBlocks",
+    "MockLSTVault.setQueueThroughput",
+  ]) {
+    assert.ok(labels.includes(expected), `missing probe: ${expected}`);
+  }
+});
+
+test("a market wiped out by bad debt is not an empty market", () => {
+  // Supply 100, borrow 100, collateral goes to zero, liquidate: every asset total is zero and the
+  // supplier still holds shares. The position is worth nothing, which is the right mark -- but a
+  // market that vanishes from the observation because it was wiped out is one whose holder cannot
+  // see what happened to them.
+  assert.equal(
+    marketIsEmpty({
+      totalSupplyAssets: 0n,
+      totalSupplyShares: 500n,
+      totalBorrowAssets: 0n,
+      totalBorrowShares: 0n,
+      lastUpdate: 7n,
+      totalCollateralAssets: 0n,
+    }),
+    false,
+  );
 });

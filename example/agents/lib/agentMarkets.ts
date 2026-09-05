@@ -13,6 +13,7 @@
 // same failure mode, which is that you could not get out in time.
 import type {
   AgentObservation,
+  LendingObservation,
   LendingPositionObservation,
   RegistryEntryObservation,
 } from "@eris/sdk";
@@ -99,4 +100,44 @@ export function collateralInLoanUnits(
 // competition removed per-order caps outright rather than raising them, so nothing hands one down.
 export function bps(amount: bigint, basisPoints: number): bigint {
   return (amount * BigInt(Math.max(0, Math.floor(basisPoints)))) / 10_000n;
+}
+
+
+// How much of a supply position the market can actually pay right now.
+//
+// "max" is the right ask and the wrong plan. `withdrawAll` takes the whole position, and a market
+// whose loan tokens are out with a borrower cannot pay it -- the transaction reverts and the whole
+// position stays inside. Under the round-trip rule that is the difference between zero and most of
+// it, and retrying the same all-or-nothing call until the bell is the version of the mistake that
+// looks like it is trying.
+export function withdrawableNow(
+  market: LendingPositionObservation | undefined,
+): { supplied: bigint; available: bigint } {
+  const supplied = BigInt(market?.supplyAssets ?? "0");
+  const idle =
+    BigInt(market?.totalSupplyAssets ?? "0") -
+    BigInt(market?.totalBorrowAssets ?? "0");
+  const available = idle < 0n ? 0n : idle < supplied ? idle : supplied;
+  return { supplied, available };
+}
+
+// The withdrawal to send this block, or null when there is nothing the market can pay. Null is the
+// answer to keep: submitting a call that is going to revert costs a transaction out of the
+// per-block allowance and buys nothing.
+export function withdrawAction(
+  lending: LendingObservation | undefined,
+  marketId: string,
+  fee: string | undefined,
+): Record<string, unknown> | null {
+  const market = lending?.markets.find((m) => m.marketId === marketId);
+  const { supplied, available } = withdrawableNow(market);
+  if (supplied === 0n) return null;
+  if (available === 0n) return null;
+  return {
+    type: "lendingWithdraw",
+    marketId,
+    // Only ask for everything when everything is there. Otherwise take what is.
+    amount: available >= supplied ? "max" : available.toString(),
+    maxPriorityFeePerGasWei: fee,
+  };
 }

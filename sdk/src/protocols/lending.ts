@@ -83,7 +83,14 @@ export function marketIsEmpty(totals: MarketTotals | undefined): boolean {
   return (
     totals.totalSupplyAssets === 0n &&
     totals.totalBorrowAssets === 0n &&
-    totals.totalCollateralAssets === 0n
+    totals.totalCollateralAssets === 0n &&
+    // Shares as well as assets. Bad-debt socialisation can take every asset total to zero while
+    // suppliers still hold shares: supply 100, borrow 100, collateral goes to zero, liquidate. The
+    // position is worth nothing, which is the right mark -- but it exists, and a market that
+    // vanishes from the observation because it was wiped out is a market whose holder cannot see
+    // what happened to them.
+    totals.totalSupplyShares === 0n &&
+    totals.totalBorrowShares === 0n
   );
 }
 

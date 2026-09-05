@@ -51,6 +51,9 @@ export type StrandedFlow = {
 // Cap each flow by what the contract actually still holds of that token. Without it the report
 // claims value is sitting somewhere it is not: a contract that passed the tokens straight through
 // to a third party holds none of them.
+//
+// Single-agent form. Use `allocateToBalances` when more than one agent's flows are in hand: capping
+// each agent independently against the same balance would report the same tokens once per agent.
 export function clampToBalances(
   flows: readonly StrandedFlow[],
   balances: ReadonlyMap<string, bigint>,
@@ -68,6 +71,41 @@ export function clampToBalances(
     if (amount > 0n) out.push({ ...flow, amountRaw: amount });
   }
   return out;
+}
+
+export type AgentFlows<T> = { agent: T; flows: readonly StrandedFlow[] };
+
+// The same cap, taken across every agent at once and split pro rata.
+//
+// Clamping each agent separately against the same balance reports the same tokens once per agent:
+// A and B each put 100 into C, C forwards 100 away and keeps 100, and both are told 100 is theirs.
+// Two hundred is reported as sitting in a contract holding one hundred. Splitting in proportion to
+// what each put in is the only allocation available -- the contract's balance is fungible and its
+// internal accounting is, by construction, something the environment cannot read.
+export function allocateToBalances<T>(
+  byAgent: ReadonlyArray<AgentFlows<T>>,
+  balances: ReadonlyMap<string, bigint>,
+): Array<AgentFlows<T>> {
+  const totals = new Map<string, bigint>();
+  for (const { flows } of byAgent) {
+    for (const f of flows) {
+      const k = key(f.market, f.token);
+      totals.set(k, (totals.get(k) ?? 0n) + f.amountRaw);
+    }
+  }
+  return byAgent.map(({ agent, flows }) => ({
+    agent,
+    flows: flows.flatMap((f) => {
+      const k = key(f.market, f.token);
+      const held = balances.get(k);
+      // An unread balance is not evidence that nothing is there.
+      if (held === undefined) return [f];
+      const total = totals.get(k) ?? 0n;
+      if (total === 0n) return [];
+      const amount = held >= total ? f.amountRaw : (f.amountRaw * held) / total;
+      return amount > 0n ? [{ ...f, amountRaw: amount }] : [];
+    }),
+  }));
 }
 
 // balanceOf for a set of (holder, token) pairs, keyed the way clampToBalances reads them.

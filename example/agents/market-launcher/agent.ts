@@ -26,7 +26,12 @@ import {
   deployAction,
   findDeployedContracts,
 } from "../lib/deployContract.js";
-import { blocksLeft, bps } from "../lib/agentMarkets.js";
+import {
+  blocksLeft,
+  bps,
+  withdrawableNow,
+  withdrawAction,
+} from "../lib/agentMarkets.js";
 
 // Loan-to-value the market liquidates at, in WAD. 80% is the conservative end: it caps a borrower's
 // leverage at 5x and, through the incentive formula, keeps the liquidation bonus near 3%.
@@ -37,40 +42,6 @@ const SEED_BPS = Number(process.env.ERIS_LAUNCHER_SEED_BPS ?? "3000");
 // Start withdrawing this many blocks before the end. A supply position still inside the venue at
 // the epoch's final block is worth zero, and the withdrawal itself needs a block to land.
 const EXIT_BLOCKS = Number(process.env.ERIS_LAUNCHER_EXIT_BLOCKS ?? "12");
-
-// Withdraw as much as the market can actually pay right now.
-//
-// "max" is the right ask and the wrong plan: it withdraws the whole supply position, and a market
-// whose loan tokens are out with a borrower cannot pay it, so the transaction reverts and the whole
-// position stays inside. Under the round-trip rule the difference between "all or nothing" and "as
-// much as is there" is the difference between zero and most of it. Measured in a live run: a
-// borrower could not repay (a separate bug), the market stayed utilised, and an all-or-nothing exit
-// left 7,500 USDC inside at the bell.
-function withdrawAction(
-  lending: NonNullable<AgentObservation["protocols"]["lending"]>,
-  marketId: string,
-  fee: string | undefined,
-): Record<string, unknown> {
-  const market = lending.markets.find((m) => m.marketId === marketId);
-  const supplied = BigInt(market?.supplyAssets ?? "0");
-  const idle =
-    BigInt(market?.totalSupplyAssets ?? "0") -
-    BigInt(market?.totalBorrowAssets ?? "0");
-  const available = idle < supplied ? idle : supplied;
-  return available > 0n && available < supplied
-    ? {
-        type: "lendingWithdraw",
-        marketId,
-        amount: available.toString(),
-        maxPriorityFeePerGasWei: fee,
-      }
-    : {
-        type: "lendingWithdraw",
-        marketId,
-        amount: "max",
-        maxPriorityFeePerGasWei: fee,
-      };
-}
 
 type Phase =
   | "deploy-oracle"
@@ -237,7 +208,8 @@ export async function run(ctx: AgentContext): Promise<void> {
           phase = "done";
           return;
         }
-        ctx.submit(withdrawAction(lending, marketId, fee));
+        const exit = withdrawAction(lending, marketId, fee);
+        if (exit) ctx.submit(exit);
         ctx.log({
           round: obs.round,
           reason: `round-tripping out of ${marketId} with ${blocksLeft(obs)} blocks left`,
@@ -248,17 +220,29 @@ export async function run(ctx: AgentContext): Promise<void> {
       }
       case "exiting": {
         const mine = lending.markets.find((m) => m.marketId === marketId);
+        const { supplied } = withdrawableNow(mine);
         // Utilisation is the supplier's risk, not an accounting error: if a borrower has the loan
-        // tokens, there is nothing to hand back and the withdrawal reverts. Retry every block --
-        // a repayment or a liquidation may free the liquidity before the bell.
-        if (mine && BigInt(mine.supplyAssets) > 0n && blocksLeft(obs) > 1) {
-          ctx.submit(withdrawAction(lending, marketId as string, fee));
+        // tokens there is nothing to hand back. Retry every block for as long as there is anything
+        // to take -- a repayment or a liquidation can free liquidity before the bell -- and take
+        // whatever is there rather than asking for all of it.
+        if (supplied > 0n && blocksLeft(obs) > 1) {
+          const exit = withdrawAction(lending, marketId as string, fee);
+          if (exit) ctx.submit(exit);
           return;
         }
         ctx.log({
           round: obs.round,
-          reason: "exited",
-          state: { kind: "market_launcher_done", marketId },
+          // Never "exited" when it did not. A creator whose own market was still holding its money
+          // at the bell scored zero on it, and that is the finding, not a footnote.
+          reason:
+            supplied > 0n
+              ? `could not exit: ${supplied} loan-token units still inside at the bell`
+              : "exited",
+          state: {
+            kind: "market_launcher_done",
+            marketId,
+            strandedAssets: supplied.toString(),
+          },
         });
         phase = "done";
         return;

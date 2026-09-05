@@ -297,7 +297,14 @@ function shortRevert(error: unknown): string {
   return (line ?? message.split("\n")[0] ?? "").trim().slice(0, 160);
 }
 
-// The findings that are actually problems: an unprotected write with no stated reason to be one.
+// The findings that are actually problems.
+//
+// `unreachable` counts. An audit that could not establish whether a guard is there has not shown
+// that it is, and this whole module exists because reading the source was not good enough evidence
+// -- so "the probe failed" must not be quieter than "the probe passed". A probe only reaches this
+// function when the run *had* an address for it, so unreachable means the address answered with no
+// code or the node would not answer at all, and neither is a state to open arbitrary transactions
+// against.
 export function unprotectedFindings(
   findings: GuardFinding[],
   probes: GuardProbe[],
@@ -309,15 +316,21 @@ export function unprotectedFindings(
   );
   return findings.filter(
     (f) =>
-      f.status === "unprotected" &&
+      (f.status === "unprotected" || f.status === "unreachable") &&
       !excused.has(`${f.label}|${f.address.toLowerCase()}`),
   );
 }
 
 export function guardFailureMessage(findings: GuardFinding[]): string {
-  const lines = findings.map((f) => `  - ${f.label} @ ${f.address}`);
+  const lines = findings.map(
+    (f) =>
+      `  - ${f.label} @ ${f.address}` +
+      (f.status === "unreachable"
+        ? ` (could not be established: ${f.detail ?? "probe failed"})`
+        : ""),
+  );
   return (
-    "[owner-guards] the following privileged writes can be performed by anyone:\n" +
+    "[owner-guards] the following privileged writes are not known to be guarded:\n" +
     `${lines.join("\n")}\n` +
     "Refusing to start a run in which agents can send arbitrary transactions (issue #40 T0): an " +
     "unguarded price setter is not a market to trade against, it is a switch that decides every " +

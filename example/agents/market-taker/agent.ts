@@ -23,6 +23,7 @@ import {
   bps,
   collateralInLoanUnits,
   lendingMarketsWithProvenance,
+  withdrawAction,
 } from "../lib/agentMarkets.js";
 
 // Share of the USDC balance committed to one market. Sized here because nothing sizes it for you.
@@ -70,13 +71,11 @@ export async function decide(
         };
       }
       if (BigInt(market.supplyAssets) > 0n) {
-        return {
-          type: "lendingWithdraw",
-          marketId: market.marketId,
-          amount: "max",
-          maxPriorityFeePerGasWei: fee,
-          reason: "round-tripping out of the supply position",
-        };
+        // As much as the market can pay, not all of it. Asking for the whole position in a market
+        // a borrower has drawn from reverts, and retrying that every block until the bell leaves
+        // even the part that *was* withdrawable inside.
+        const exit = withdrawAction(lending, market.marketId, fee);
+        if (exit) return { ...exit, reason: "round-tripping out of the supply position" };
       }
     }
     return null;

@@ -298,10 +298,13 @@ contract SimpleLending {
         // the first live run: sixteen consecutive `lendingRepay max` transactions reverted that way,
         // and the borrower could not unwind before the epoch ended.
         uint256 owed = position[id][msg.sender].borrowShares;
-        if (shares > owed) {
-            shares = owed;
-            assets = _toAssetsUp(shares, m.totalBorrowAssets, m.totalBorrowShares);
-        }
+        if (shares > owed) shares = owed;
+        // And never pull more than the shares being burnt are actually worth. The floor conversion
+        // above maps a range of amounts onto the same share count, so without this a caller who
+        // sends a little too much has the excess taken: it comes off `totalBorrowAssets` without
+        // burning any debt share, which is value that belongs to nobody afterwards.
+        uint256 maxAssets = _toAssetsUp(shares, m.totalBorrowAssets, m.totalBorrowShares);
+        if (assets > maxAssets) assets = maxAssets;
         position[id][msg.sender].borrowShares -= uint128(shares);
         m.totalBorrowShares -= uint128(shares);
         m.totalBorrowAssets = m.totalBorrowAssets > uint128(assets)

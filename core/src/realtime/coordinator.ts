@@ -1064,9 +1064,28 @@ export async function runRealtimeSimulation(
     // froze for a whole run.
     let marketRegistry: MarketRegistryRuntime | undefined;
     if (config.agentMarkets) {
+      // The registrar's key has to be its own, and "has to" is not the same as "is". The oracle
+      // update sends from admin every block and the registry write sends from here in the same
+      // Promise.all: on one key they resolve the same pending nonce and one silently replaces the
+      // other -- which is how the LST redemption rate once froze for a whole run. Checked rather
+      // than assumed, because the two keys come from separate env vars and nothing else would
+      // notice them being set to the same value.
+      const registrarPk = config.privateKeys.setup;
+      for (const [name, other] of [
+        ["admin", config.privateKeys.admin],
+        ["keeper", config.privateKeys.keeper],
+      ] as const) {
+        if (registrarPk.toLowerCase() === other.toLowerCase())
+          throw new Error(
+            `SETUP_PRIVATE_KEY is the same key as ${name.toUpperCase()}_PRIVATE_KEY. The market ` +
+              "registry writes from the setup key every block, alongside the oracle update on the " +
+              "admin key; two senders on one key race on the nonce and one is silently dropped " +
+              "(issue #40). Give the registrar its own key, or run with agentMarkets.enabled: false.",
+          );
+      }
       marketRegistry = await deployAgentMarketVenues(
         ctx,
-        config.privateKeys.setup,
+        registrarPk,
         config.agentMarketsPerBlockCap,
         logger,
       );

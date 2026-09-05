@@ -787,6 +787,11 @@ export type StrandedHoldingObservation = {
   // Net units sent in minus units received back, floored at zero and capped by what the contract
   // still holds of that token. The cap matters: a contract that pulled tokens and forwarded them on
   // holds none of them, and the loss (which the spot balance already records) did not stay here.
+  //
+  // In the observation this is an **upper bound**: an agent can see its own flows and the
+  // contract's balance, but not what other agents put into the same contract, so a balance several
+  // agents have a claim on reads as if it were all yours. The scorer's report splits it pro rata,
+  // because it can see everybody.
   amountRaw: string;
 };
 
