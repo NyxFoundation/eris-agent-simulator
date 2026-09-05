@@ -1,0 +1,23 @@
+# config/scenarios/basis-arb-eval.yaml — the measurement set for issue #30 (basis-arb).
+#
+# Not a competition set. Two regimes at the ends of the range the strategy is sensitive to, three
+# seeds each, so a difference has to survive three draws before it is read as a difference:
+#
+#   calm       the pools sit close to fair. Measured dislocation ~39bps, which is under the round
+#              trip that a two-legged AMM arbitrage has to clear -- clean-arb sat out an entire
+#              60-block smoke here. If a one-legged hedged strategy has an edge anywhere, this is
+#              where it should show, because it only pays one pool fee.
+#   cex-drift  the other end: ~461bps of dislocation, with the drift persisting rather than mean
+#              reverting (repriceAnchor). This is where a hedge has to actually work -- an unhedged
+#              single leg is a directional bet on a trending market.
+#
+# Three seeds because a single 60-block smoke produced -905, -2, -412 and +110 across four edge
+# thresholds of the same strategy in the same world: at that trade count the run-to-run spread is
+# larger than the effect being measured.
+#
+# Run: npm run backtest -- --scenarios config/scenarios/basis-arb-eval.yaml --agents config/rosters/basis-arb-eval.yaml
+regimes:
+  - calm
+  - cex-drift
+
+seeds: [101, 202, 303]
