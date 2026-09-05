@@ -38,6 +38,10 @@ run:
   economicGas: false
   localDeploy: true
   reportDir: ./runs
+  # Rules §4.1: a mark is the median over the 5 blocks ending at the valuation block, so an
+  # agent cannot reprice a pool at the close and book the move. Unset means 0 = mark live off a
+  # single block, which leaves that open; the metric-* regimes have carried 5 all along.
+  markMedianBlocks: 5
 
 market:
   volatility: 0.004 # calm's: the regime is the pools, not the price
