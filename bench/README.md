@@ -15,6 +15,19 @@ Options: `--agents N`, `--blocks B`, `--block-time S`, `--mode frozen|llm` (llm 
 loop against Ollama Cloud — needs `OLLAMA_API_KEY`), `--mem 1g`, `--out DIR`. `ANVIL_PORT` (default
 8545) isolates the chain — set a dedicated port when a monitoring/production anvil is already running.
 
+`--markets N` (issue #40) puts N agent-created-market participants in the field instead of N
+venue-arb clones, cycling through the four reference roles, with the registry and the permissionless
+lending singleton on. It is a different load: the AMM roster never touches the per-block discovery
+sweep, the registry write, or the registry read every agent does every block, and those are what
+this capability added to the loop.
+
+```bash
+ANVIL_PORT=8555 bench/run.sh --markets 32 --blocks 200 --block-time 2
+```
+
+Container cleanup matches `--label eris.role=agent`, not the `eris-` name prefix — that prefix also
+matches `eris-explorer-*`, so a bench reset used to take the local Blockscout stack down with it.
+
 ## Layout
 
 | path | role |
