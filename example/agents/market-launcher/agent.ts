@@ -21,9 +21,17 @@
 import type { Address } from "viem";
 import { encodeFunctionData } from "viem";
 import type { AgentContext, AgentObservation } from "@eris/sdk";
-import { nonfungiblePositionManagerAbi } from "@eris/sdk/abis.js";
+import {
+  nonfungiblePositionManagerAbi,
+  poolAbi,
+  uniswapV3FactoryAbi,
+} from "@eris/sdk/abis.js";
 import { TOKENS, UNISWAP } from "@eris/sdk/constants.js";
-import { sqrtPriceX96For } from "@eris/sdk/protocols/uniswap.js";
+import {
+  poolPriceUsdcPerWethFromSqrtX96,
+  sqrtPriceX96For,
+  uniswapFactory,
+} from "@eris/sdk/protocols/uniswap.js";
 import {
   currentNonce,
   deployAction,
@@ -56,6 +64,37 @@ const FULL_RANGE_LOWER = -887270;
 const FULL_RANGE_UPPER = 887270;
 // Share of the WETH and USDC balances seeded into the pool.
 const POOL_SEED_BPS = Number(process.env.ERIS_LAUNCHER_POOL_BPS ?? "1500");
+// How far the pool's actual price may sit from fair before this agent refuses to fund it. Pool
+// creation is idempotent, so "I created it" does not mean "I set its price".
+const POOL_MAX_DRIFT = Number(process.env.ERIS_LAUNCHER_POOL_MAX_DRIFT ?? "0.02");
+
+// The pool's own price, or undefined when it does not exist yet. Read through the factory, because
+// a pool this agent just made is by definition not in the registered market set.
+async function poolPriceFor(
+  ctx: AgentContext,
+  fee: number,
+): Promise<number | undefined> {
+  const factory = await uniswapFactory(ctx.publicClient);
+  if (!factory) return undefined;
+  try {
+    const pool = (await ctx.publicClient.readContract({
+      address: factory,
+      abi: uniswapV3FactoryAbi,
+      functionName: "getPool",
+      args: [TOKENS.WETH.address, TOKENS.USDC.address, fee],
+    })) as Address;
+    if (!pool || pool === "0x0000000000000000000000000000000000000000") return undefined;
+    const slot0 = await ctx.publicClient.readContract({
+      address: pool,
+      abi: poolAbi,
+      functionName: "slot0",
+    });
+    const price = poolPriceUsdcPerWethFromSqrtX96(slot0[0]);
+    return price > 0 ? price : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 type Phase =
   | "deploy-oracle"
@@ -254,6 +293,28 @@ export async function run(ctx: AgentContext): Promise<void> {
         return;
       }
       case "seed-pool": {
+        // **Check the price before funding it.** `createAndInitializePoolIfNecessary` is idempotent:
+        // if somebody initialized this pair and fee tier first, the create call above succeeded
+        // against *their* pool at *their* price, and a full-range mint with zero minimums would
+        // hand the difference to whoever arbitrages it back. That is a real attack on a creator and
+        // it costs one read to refuse.
+        const poolPrice = await poolPriceFor(ctx, POOL_FEE);
+        if (poolPrice === undefined) return; // not initialized yet; the create is still in flight
+        const drift =
+          Math.abs(poolPrice - obs.fairPriceUsdcPerWeth) /
+          Math.max(1e-9, obs.fairPriceUsdcPerWeth);
+        if (drift > POOL_MAX_DRIFT) {
+          ctx.log({
+            round: obs.round,
+            reason:
+              `refusing to seed the pool: it is initialized at ${poolPrice.toFixed(2)} against a ` +
+              `fair of ${obs.fairPriceUsdcPerWeth.toFixed(2)} — somebody opened it first, and ` +
+              "liquidity added at their price is theirs to arbitrage",
+            state: { kind: "market_launcher_pool_refused", poolPrice, drift },
+          });
+          phase = "supplied";
+          return;
+        }
         // A rawTx rather than `mintLiquidity`: that action resolves the pool from the registered
         // market set, so it can only mint into the environment's fee tier. Minting into a pool you
         // just made is by definition outside that set.

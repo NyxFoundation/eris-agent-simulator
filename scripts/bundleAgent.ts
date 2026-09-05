@@ -29,17 +29,22 @@ const AGENTS_DIR = "example/agents";
 // copying `out/` wholesale: the whole of `out/` is every venue mock in the repository, and a
 // submission is not entitled to ship those.
 //
-// The names are the string literals handed to the sdk's single artifact reader, in any of its three
-// spellings. A name assembled at runtime is not found, which is the honest failure: the bundle
-// cannot carry what the source does not name.
+// The names are the string literals handed to the sdk's artifact reader, in any of its spellings.
+// A scan cannot see through an alias, a variable or a template, and pretending otherwise would be
+// worse than admitting it — so `artifacts.json` in the agent's own directory is the declaration
+// that always wins, and the guide tells participants to use it when the scan cannot see the name.
 const ARTIFACT_REFERENCE =
   /\b(?:deployAction|readForgeArtifact|artifactAbi)\(\s*["'`]([A-Za-z_][A-Za-z0-9_]*)["'`]/g;
+// The explicit list, when the scan is not enough. `["MyContract", ...]`.
+const ARTIFACT_MANIFEST = "artifacts.json";
 
+// `.ts` only. Scanning documentation too would ship an artifact for every contract a comment or a
+// README happens to name as an example, which is a submission carrying code it does not use.
 function collectSources(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) collectSources(p, out);
-    else if (p.endsWith(".ts") || p.endsWith(".md")) out.push(p);
+    else if (p.endsWith(".ts")) out.push(p);
   }
   return out;
 }
@@ -48,6 +53,18 @@ function artifactNamesFor(dirs: string[]): string[] {
   const names = new Set<string>();
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
+    const manifest = join(dir, ARTIFACT_MANIFEST);
+    if (existsSync(manifest)) {
+      try {
+        const declared = JSON.parse(readFileSync(manifest, "utf8"));
+        if (Array.isArray(declared))
+          for (const n of declared) if (typeof n === "string") names.add(n);
+      } catch {
+        // Refused rather than ignored: a malformed declaration is a bundle that silently ships
+        // fewer contracts than the participant asked for.
+        throw new Error(`${manifest} is not a JSON array of contract names`);
+      }
+    }
     for (const file of collectSources(dir)) {
       const source = readFileSync(file, "utf8");
       for (const m of source.matchAll(ARTIFACT_REFERENCE)) names.add(m[1]);

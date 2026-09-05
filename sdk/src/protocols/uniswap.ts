@@ -426,25 +426,6 @@ export async function getLpPositions(
     ),
   );
 
-  // Issue #21: fees earned since the last checkpoint sit in the pool, not in tokensOwed, so a
-  // narrow-range position looks flat until it collects. Read the pool fee growth for every boundary
-  // an owned position touches so the observation shows the fees as they accrue.
-  const ticksByPool = new Map<Address, Set<number>>();
-  for (const raw of rawPositions) {
-    const [, , token0, token1, fee, tickLower, tickUpper, liquidity] = raw;
-    if (liquidity <= 0n) continue;
-    const market = positionMarketOf(token0, token1, fee, markets);
-    if (!market) continue;
-    const pool = legOf(market).pool;
-    const ticks = ticksByPool.get(pool) ?? new Set<number>();
-    ticks.add(tickLower).add(tickUpper);
-    ticksByPool.set(pool, ticks);
-  }
-  const feeGrowthByPool =
-    ticksByPool.size > 0
-      ? await readPoolFeeGrowth(publicClient, ticksByPool)
-      : {};
-
   // Issue #40: positions in pools the environment did not deploy. An agent that creates its own
   // pool and provides liquidity to it used to see *nothing* here -- the position was dropped for
   // having no MARKET_LEGS entry -- so it could not read its own holding and `removeLiquidity` would
@@ -493,11 +474,35 @@ export async function getLpPositions(
         const pool = resolved[i] as Address | undefined;
         if (!pool || pool === ZERO_ADDRESS) return;
         poolByKey[key] = pool;
-        const slot0 = ticks[i] as readonly [bigint, number] | undefined;
-        if (slot0) tickByPool[pool.toLowerCase()] = slot0[1];
+        const slot0 = ticks[i];
+        if (slot0) tickByPool[pool.toLowerCase()] = Number(slot0[1]);
       });
     }
   }
+
+  // Issue #21: fees earned since the last checkpoint sit in the pool, not in tokensOwed, so a
+  // narrow-range position looks flat until it collects. Read the pool fee growth for every boundary
+  // an owned position touches so the observation shows the fees as they accrue.
+  //
+  // Agent-created pools are in this read too. Leaving them out understated the position by exactly
+  // the fees it had earned -- and a creator's whole return on providing liquidity is the fees.
+  const ticksByPool = new Map<Address, Set<number>>();
+  for (const raw of rawPositions) {
+    const [, , token0, token1, fee, tickLower, tickUpper, liquidity] = raw;
+    if (liquidity <= 0n) continue;
+    const market = positionMarketOf(token0, token1, fee, markets);
+    const pool = market
+      ? legOf(market).pool
+      : poolByKey[positionPoolKey(token0, token1, fee)];
+    if (!pool) continue;
+    const ticks = ticksByPool.get(pool) ?? new Set<number>();
+    ticks.add(tickLower).add(tickUpper);
+    ticksByPool.set(pool, ticks);
+  }
+  const feeGrowthByPool =
+    ticksByPool.size > 0
+      ? await readPoolFeeGrowth(publicClient, ticksByPool)
+      : {};
 
   const positions: LpPositionObservation[] = [];
   for (let i = 0; i < tokenIds.length; i++) {
@@ -531,8 +536,17 @@ export async function getLpPositions(
         tickLower,
         tickUpper,
       });
-      const amount0 = amounts.amount0 + tokensOwed0;
-      const amount1 = amounts.amount1 + tokensOwed1;
+      const fees = uncollectedFees({
+        liquidity,
+        tick: unknownTick,
+        tickLower,
+        tickUpper,
+        feeGrowthInside0LastX128,
+        feeGrowthInside1LastX128,
+        pool: feeGrowthByPool[resolved.toLowerCase()],
+      });
+      const amount0 = amounts.amount0 + tokensOwed0 + fees.fees0;
+      const amount1 = amounts.amount1 + tokensOwed1 + fees.fees1;
       positions.push({
         tokenId: tokenId.toString(),
         tickLower,
@@ -540,8 +554,8 @@ export async function getLpPositions(
         liquidity: liquidity.toString(),
         tokensOwedWethWei: tokensOwed0.toString(),
         tokensOwedUsdcUnits: tokensOwed1.toString(),
-        uncollectedFeesWethWei: "0",
-        uncollectedFeesUsdcUnits: "0",
+        uncollectedFeesWethWei: fees.fees0.toString(),
+        uncollectedFeesUsdcUnits: fees.fees1.toString(),
         amountWethWei: amounts.amount0.toString(),
         amountUsdcUnits: amounts.amount1.toString(),
         valueUsdc:

@@ -230,11 +230,20 @@ Three things follow from the rules rather than from the code:
 - **Gas is capped** at 30,000,000 per transaction and 90,000,000 per agent per block (rules §2.6).
   The gateway refuses an over-cap transaction up front; exceeding it is a §8 offence, because a
   contract that eats the block starves the environment's price update as well as your rivals.
-- **The bundle carries the artifacts.** `bundle:agent` scans your source for the contract names you
+- **The bundle carries the artifacts.** `bundle:agent` scans your `.ts` for the contract names you
   hand to `deployAction` / `readForgeArtifact` and ships `out/<Name>.sol/<Name>.json` for each. Run
-  `npm run build:contracts` first, and check the bundler's output: a name it could not find is
-  printed as a warning, and the alternative is a deployment that throws on the operator's machine at
-  the first block it is attempted.
+  `npm run build:contracts` first, and check the bundler's output — it prints what it shipped.
+
+  A scan cannot see through an alias, a variable or a template. If you build the name at runtime,
+  declare it instead: **`artifacts.json` in your agent directory**, a JSON array of contract names,
+  always wins over the scan.
+
+  ```json
+  ["MyOracle", "MyToken"]
+  ```
+
+  Getting this wrong is not a build error. It is a deployment that throws on the operator's machine
+  at the first block it is attempted, and nobody is there to fix it.
 
 ## Submission
 
