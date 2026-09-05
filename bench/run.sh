@@ -5,6 +5,8 @@
 # Markdown summary (consumed by CI to comment on the PR).
 #
 #   bench/run.sh [--agents N] [--blocks B] [--block-time S] [--mode frozen|llm] [--mem 1g] [--out DIR]
+#   bench/run.sh --markets N ...   # issue #40: load-test the agent-created-market path instead of
+#                                  # the AMM path -- registry sweep, lending singleton, N creators
 #
 # Env: ANVIL_PORT (default 8545). For CI on a shared host, set a dedicated port so it won't touch a
 # running monitoring/production anvil.
@@ -16,6 +18,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --agents) AGENTS=$2; shift 2;; --blocks) BLOCKS=$2; shift 2;; --block-time) BT=$2; shift 2;;
   --mode) MODE=$2; shift 2;; --mem) MEM=$2; shift 2;; --out) OUT=$2; shift 2;;
   --each) ROSTER=each; shift;;                 # one container per example agent (per-agent compare)
+  --markets) ROSTER="markets:$2"; AGENTS=$2; shift 2;;   # issue #40: N agent-created-market participants
   --agent) ROSTER="agent:$2"; shift 2;;        # just this agent + a venue-arb reference
   *) echo "unknown arg: $1" >&2; exit 1;; esac; done
 ROSTER="${ROSTER:-$AGENTS}"                     # default: N venue-arb clones (load test)

@@ -6,7 +6,8 @@
 set -euo pipefail
 HUB_CT="${ERIS_AGENT_HUB:-ascon-rpc-gateway-live}"
 
-survivors=$(docker ps -aq --filter "name=^eris-" 2>/dev/null || true)
+# Labelled, not name-prefixed: `eris-explorer-*` is the Blockscout stack and is not ours to reap.
+survivors=$(docker ps -aq --filter "label=eris.role=agent" 2>/dev/null || true)
 if [ -n "$survivors" ]; then
   echo "reaping $(echo "$survivors" | wc -l) container(s)..."
   docker rm -f $survivors >/dev/null 2>&1 || true
@@ -22,4 +23,4 @@ for net in $(docker network ls --format '{{.Name}}' | grep -E '^ag-' || true); d
     docker network rm "$net" >/dev/null 2>&1 && cleaned=$((cleaned+1)) || true
   fi
 done
-echo "done; remaining containers: $(docker ps -aq --filter "name=^eris-" | wc -l), isolation nets removed: $cleaned"
+echo "done; remaining containers: $(docker ps -aq --filter "label=eris.role=agent" | wc -l), isolation nets removed: $cleaned"

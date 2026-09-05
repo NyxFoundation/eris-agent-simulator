@@ -10,7 +10,9 @@ RPC="http://127.0.0.1:$PORT"
 LOG="${ANVIL_LOG:-/tmp/ascon-bench-anvil.log}"
 
 # stop leftover bench agents (containers) and any sim, then the anvil on THIS port only
-for c in $(docker ps -aq --filter "name=^eris-" 2>/dev/null || true); do docker rm -f "$c" >/dev/null 2>&1 || true; done
+# Agent containers only. The name prefix `eris-` also matches `eris-explorer-*`, the local
+# Blockscout stack, and a bench reset is not entitled to take that down.
+for c in $(docker ps -aq --filter "label=eris.role=agent" 2>/dev/null || true); do docker rm -f "$c" >/dev/null 2>&1 || true; done
 for pid in $(pgrep -x node 2>/dev/null || true); do
   tr "\0" " " < "/proc/$pid/cmdline" 2>/dev/null | grep -q "cli/sim-realtime" && kill "$pid" 2>/dev/null || true
 done

@@ -49,7 +49,11 @@ fi
 # tried and SILENTLY breaks the agent (reads/tx fail -> all noop, container looks healthy), so it
 # is intentionally omitted; a targeted cap-drop is a follow-up. Egress is still open (host net) --
 # agent<->agent isolation is a separate network stage.
-CAPS=( --rm --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
+# `--label eris.role=agent` is what the sweepers match on. Matching on the `eris-` name prefix looked
+# equivalent and is not: `eris-explorer-*` is the local Blockscout stack, so a bench reset on a box
+# that had the explorer running tore it down as collateral.
+CAPS=( --rm --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label eris.role=agent
+  --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
   --pids-limit="${ERIS_DOCKER_PIDS:-256}" --ulimit nofile=2048:2048 --security-opt=no-new-privileges
   --read-only --tmpfs /tmp:rw,size=512m,mode=1777 )
 
