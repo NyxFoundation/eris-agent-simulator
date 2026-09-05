@@ -73,6 +73,9 @@ COMMON_ENV=(
   -e ERIS_PRICE_FEED_ADDRESS -e ERIS_RUN_ID -e ERIS_RUN_BLOCKS -e ERIS_AGENT_FROZEN
   -e ERIS_LLM_MODEL -e ERIS_LOCAL_DEPLOY -e ERIS_OLLAMA_BASE_URL -e ERIS_OLLAMA_API_KEY
   -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e HOME=/tmp
+  # Set by the coordinator for every child (agentProcess.ts). Without them the container falls back
+  # to the image's NODE_ENV and to no REPORT_DIR at all.
+  -e NODE_ENV -e REPORT_DIR
   -e ERIS_MAX_TXS_PER_ROUND -e ERIS_MAX_TX_GAS -e ERIS_MAX_AGENT_BLOCK_GAS
   # Issue #40. Without these a containerised agent cannot see the registry or the lending venue at
   # all -- and the failure is quiet: it reads an empty registry and an absent venue, which is

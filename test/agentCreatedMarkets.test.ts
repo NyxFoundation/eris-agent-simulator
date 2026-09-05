@@ -798,16 +798,34 @@ test("the container wrapper forwards every env the capability needs", () => {
     new URL("../infra/docker-agent/run-agent.sh", import.meta.url),
     "utf8",
   );
+  // Every name the coordinator sets for a child (agentProcess.ts + agentExtraEnv), except the ones
+  // run-agent.sh remaps itself (ERIS_RUN_DIR / ERIS_AGENT_DIR / ERIS_CONFIG).
   for (const name of [
     "ERIS_MARKET_REGISTRY_ADDRESS",
     "ERIS_LENDING_ADDRESS",
     "ERIS_MARKET_REGISTRY_FROM_BLOCK",
     "ERIS_MAX_TX_GAS",
     "ERIS_MAX_AGENT_BLOCK_GAS",
+    "ERIS_VULN_FACTORY",
+    "ERIS_LIQUIDATION_VICTIMS",
+    "NODE_ENV",
+    "REPORT_DIR",
   ]) {
     assert.ok(
       wrapper.includes(`-e ${name}`),
       `run-agent.sh does not forward ${name}`,
     );
   }
+});
+
+test("a venue that is not there is absent from protocols, not undefined in it", async () => {
+  // `Object.keys(obs.protocols)` is what the revision prompt reads to tell a model which venues it
+  // may trade (ADR 0018), and a key whose value is undefined still appears there. The model would
+  // be told it can trade a venue that does not exist, write a strategy around it, and have every
+  // action rejected at build time.
+  const source = readFileSync(
+    new URL("../sdk/src/observation.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /if \(obs !== undefined\)/);
 });

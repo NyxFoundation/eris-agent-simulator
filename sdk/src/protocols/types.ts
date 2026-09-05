@@ -174,6 +174,11 @@ export interface ProtocolAdapter {
   readState(ctx: SimContext, fairPrice: number): Promise<unknown>;
 
   // ---- Observation contribution (goes into obs.protocols[id]) ----
+  //
+  // `undefined` means "this venue is not present in this run", and the key is then left out of
+  // obs.protocols entirely rather than set to undefined. The difference is load-bearing: the
+  // revision prompt lists `Object.keys(obs.protocols)` as the venues a model may trade, and an
+  // undefined-valued key still shows up there.
   observe(
     ctx: SimContext,
     state: unknown,

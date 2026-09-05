@@ -55,7 +55,13 @@ export async function observationFor(
         agentAddress,
         fairPrice,
       );
-      (protocols as Record<string, unknown>)[adapter.id] = obs;
+      // An adapter that returns undefined is saying its venue is not there in this run, and the key
+      // has to be *absent* rather than present-and-undefined: `Object.keys(obs.protocols)` is what
+      // the revision prompt reads to tell a model which venues exist (ADR 0018), and a key whose
+      // value is undefined still appears there. The model would be told it can trade a venue that
+      // does not exist, write a strategy around it, and have every action rejected at build time.
+      if (obs !== undefined)
+        (protocols as Record<string, unknown>)[adapter.id] = obs;
     }),
   );
   const stablePrices = await stablePricesPromise;
