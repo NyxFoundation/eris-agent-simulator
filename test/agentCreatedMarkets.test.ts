@@ -33,6 +33,7 @@ import {
   guardProbesFor,
   unprotectedFindings,
 } from "../core/src/realtime/ownerGuards.js";
+import { readFileSync } from "node:fs";
 import type { Address } from "viem";
 
 // ---------------------------------------------------------------------------
@@ -697,4 +698,71 @@ test("a market wiped out by bad debt is not an empty market", () => {
     }),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Axiom 3 extended to every venue (the deferred T1 item, now decided)
+// ---------------------------------------------------------------------------
+
+test("the scored value is the recoverable one, and the mark is reported beside it", async () => {
+  // The rule, stated as the shape of the data rather than as prose: a cross-section carries the
+  // recoverable value in `valueUsdc` (which is what the epoch series and alpha are built from) and
+  // the face mark in `markedValueUsdc`. If those two ever swap places the score silently becomes
+  // par again, and nothing else in the system would notice.
+  const { readValueSnapshotAtBlock } = await import(
+    "../core/src/realtime/reconstruct.js"
+  );
+  assert.equal(typeof readValueSnapshotAtBlock, "function");
+  // The type is the contract. `AgentValueSnapshot` must not carry a field named
+  // liquidatableValueUsdc any more: a reader that still asks for it is reading the old rule.
+  const source = readFileSync(
+    new URL("../core/src/realtime/reconstruct.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /markedValueUsdc: number;/);
+  assert.doesNotMatch(source, /liquidatableValueUsdc: number;/);
+  // And the scored total must be built from the recoverable value, not the mark.
+  assert.match(source, /total \+= value\.liquidatableValueUsdc;/);
+  assert.match(source, /alphaTotal \+= value\.liquidatableValueUsdc;/);
+});
+
+test("every adapter that can be scored fills the recoverable value", async () => {
+  // The flip is only safe because every adapter populates `liquidatableValueUsdc`. One that filled
+  // `valueUsdc` and left the other at zero would delete its venue from every agent's score, and the
+  // symptom would be a plausible-looking loss rather than an error.
+  const files = [
+    "uniswap",
+    "balancer",
+    "curve",
+    "gmx",
+    "aave",
+    "lst",
+    "liquity",
+    "lending",
+  ];
+  for (const name of files) {
+    const source = readFileSync(
+      new URL(`../sdk/src/protocols/${name}.ts`, import.meta.url),
+      "utf8",
+    );
+    assert.match(
+      source,
+      /liquidatableValueUsdc/,
+      `${name} never mentions liquidatableValueUsdc, so it cannot be filling it`,
+    );
+  }
+});
+
+test("an Aave borrower under water is worth zero, not a negative number", () => {
+  // The walk-away rule, applied to the venue that did not have it. Collateral 1,000 against debt
+  // 5,000 is 5,000 in the wallet plus nothing here -- not 5,000 minus 4,000. The same rule the
+  // Liquity adapter applies below 100% ICR and SimpleLending applies to its own borrowers; scoring
+  // the same economic position three different ways was the inconsistency.
+  const source = readFileSync(
+    new URL("../sdk/src/protocols/aave.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /if \(liquidatableUsdc < 0\)/);
+  assert.match(source, /aave-underwater/);
+  assert.match(source, /Math\.max\(0, Number\(net\) \/ 1e8\)/);
 });

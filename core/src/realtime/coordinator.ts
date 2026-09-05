@@ -2657,7 +2657,7 @@ export async function runRealtimeSimulation(
     let alphaByAgent: Record<string, number> = {};
     // agent -> realizable value at the last cross-section, where it differs from the mark
     // (issue #38: an LST redemption still in the queue when the run ends).
-    let liquidatableValueByAgent: Record<string, number> = {};
+    let markedValueByAgent: Record<string, number> = {};
     let epochScores: Record<string, EpochScore> | undefined;
 
     // ---- the score (ADR 0019), from the series read at the boundaries (ADR 0021 §3) ----
@@ -2756,7 +2756,7 @@ export async function runRealtimeSimulation(
         });
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
-        liquidatableValueByAgent = meta.liquidatableValueByAgent;
+        markedValueByAgent = meta.markedValueByAgent;
         logger.event({ type: "value_series_reconstructed", ...meta });
         // The claim that live scoring *replaces* the sweep rests on the two producing the same
         // number at the same boundary. On a run short enough to have both, check it rather than
@@ -2935,12 +2935,14 @@ export async function runRealtimeSimulation(
         ...(agent.id in alphaByAgent
           ? { alphaUsdc: alphaByAgent[agent.id] }
           : {}),
-        // What the position could actually be exited for at the run's last block, when the
-        // reconstruction found that it differs from the mark at that same cross-section (issue
-        // #38: an LST redemption whose queue outlives the run). Absent for every venue that exits
-        // at par, which is all of them today.
-        ...(agent.id in liquidatableValueByAgent
-          ? { liquidatableValueUsdc: liquidatableValueByAgent[agent.id] }
+        // The face mark at the run's last block, when the reconstruction found it above the value
+        // that was actually scored at that same cross-section. The score is the recoverable value
+        // (issue #40 axiom 3), so an entry here says the position was carried above what it could
+        // have been exited for -- an LST redemption whose queue outlives the run, a lending supply
+        // whose collateral is worthless, a borrower under water. Absent when the two agreed, which
+        // is the normal case.
+        ...(agent.id in markedValueByAgent
+          ? { markedValueUsdc: markedValueByAgent[agent.id] }
           : {}),
         // Present only when the agent process went away before the run ended (ADR 0017 §4 reads this
         // to disqualify the agent for that scenario instead of scoring its frozen position).

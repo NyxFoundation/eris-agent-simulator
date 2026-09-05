@@ -390,8 +390,11 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   できない pending は realizable 側からは外れて `reason:"unrealizable"` で `scoring_unpriced_holdings` に
   報告されるが、**採点側の par には含まれている**。#41 の staged-read インターフェース
   （`valueAtBlock` / `liquidatableValueUsdc` / `ValuationContext.horizonBlock`）の最初の消費者。
-  **どちらを採点に使うかは未決**: #38 の意図は realizable、現行実装は par（ADR 0019 §3 が採点の基礎に
-  「通常の live mark」を選んだ結果でもある）。`lst` が競技セットに入る前に決める
+  **決着済み（issue #40 / ADR 0022 Amendment 1）: 採点は realizable**。#38 の意図どおり。
+  ADR 0019 §3 が par を選んでいたのは「決める場が無かった」からで、issue #40 の公理 3
+  （額面で評価すると攻撃が捏造された価値として記録される）がその場を作った。
+  **採点系列は全 venue で `liquidatableValueUsdc` を合計する**。報告の向きは反転し、
+  額面のほうが `markedValueUsdc` として出る
 - **Phase 2（選択を非自明にする）実装済み**。`config/lst.yaml` の `lst:` / `stress:` に較正例:
   - **APY 変動** — `lst.apyRangeBps` + `apyStepBlocks` で seed 由来 Rng（独立 salt）から N ブロックごとに再サンプル
     → coordinator が `setRewardRate`。固定利回りだと「block 0 で全ステーク」が恒久最適になるため

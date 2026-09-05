@@ -507,8 +507,13 @@ export const aaveAdapter: ProtocolAdapter = {
     })) as readonly bigint[];
     // The base currency is USD with 8 decimals. net = collateral - debt converted to dollars (USDC-equivalent).
     // Collateral (aToken) is outside the wallet and borrows (USDC) are already counted inside it, so net cancels double-counting.
+    //
+    // Floored at zero for the same reason the scored path floors it (issue #40 axiom 3): a borrower
+    // whose collateral is worth less than its debt can drop the collateral and walk away, and the
+    // borrowed asset is already in the wallet. Kept in step with valueAtBlock so the reference
+    // netPnlUsdc column and the scored series do not disagree about the same position.
     const net = account[0] - account[1];
-    return Number(net) / 1e8;
+    return Math.max(0, Number(net) / 1e8);
   },
 
   // Aave needs no per-venue wiring in the scorer: getUserAccountData is an aggregate that already
@@ -621,6 +626,24 @@ export const aaveAdapter: ProtocolAdapter = {
           reason: "unrealizable",
           read: "MockLSTVault.estimateDelayBlocks",
         });
+      }
+      // A borrower whose collateral is worth less than its debt can drop the collateral and walk
+      // away, so the position is worth zero rather than a negative number (issue #40 axiom 3). The
+      // borrowed asset is already counted in the wallet, so the walk-away keeps it: collateral 1,000
+      // against debt 5,000 is 5,000 in the wallet plus nothing here, not 5,000 minus 4,000.
+      //
+      // Not a special case for this venue -- it is the rule the Liquity adapter already applies
+      // below 100% ICR and the one SimpleLending applies to its own borrowers. Scoring the same
+      // economic position three different ways depending on which venue it sits in was the
+      // inconsistency; the floor is what removes it.
+      if (liquidatableUsdc < 0) {
+        unpriced.push({
+          source: "aave-underwater",
+          amountRaw: "",
+          reason: "unrealizable",
+          read: `debt exceeds collateral by ${(-liquidatableUsdc).toFixed(2)} USDC; the position is floored at zero (walk-away)`,
+        });
+        liquidatableUsdc = 0;
       }
       out[agent.id] = {
         valueUsdc: usd,
