@@ -15,7 +15,7 @@ Each run generates a `runs/<run_id>/` directory. The dedicated evaluation, scori
 
 ```bash
 npm run dashboard                         # render a run in a browser (live or finished) — dashboard.md
-npm run metrics -- runs/<run_id>          # rescore under every candidate metric — scoring.md
+npm run backtest -- --scenarios <set>     # a matrix: standings under the competition's rule — scoring.md
 npm run check:ordering -- runs/<run_id>   # inspect Anvil's fee ordering
 npm run check:strategy -- <file>          # static cheatcode check of strategy code (entry side)
 ```
@@ -33,7 +33,7 @@ npm run check:strategy -- <file>          # static cheatcode check of strategy c
 | `agents[].netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `agents[].includedTxCount` / `revertCount` | number of included / reverted txs |
 | `agents[].stderrTail` | tail of the agent process's stderr (for crash diagnosis) |
-| `epochScores[<id>]` | the risk-adjusted score per agent — `score` (`mean − λ·std`), the `logReturns` it came from, `bankruptAtEpoch`, `carriedForwardEpochs`, `benchmarkApplied` ([Scoring](scoring.md)) |
+| `agents[].pnlUsdc` / `baseline` | P of rules §4.4.1 (V_K − V_0 off the epoch boundaries, each end at its own marks) and whether the agent is the benchmark ([Scoring](scoring.md)) |
 | `valueSeries.epochSeries` | the boundary values every score above is computed from (`boundaryBlocks` / `valuesByAgent`, `null` = a boundary that did not report) |
 | `valueSeries.markMedian` | which manipulable marks were medianed at the boundaries, and the largest deviation seen |
 | `valueSeries.alphaByAgent` / `liquidatableValueByAgent` | the β-removed series, and what an exit would actually have returned where a venue marks a position at something else (LST) |
@@ -41,9 +41,9 @@ npm run check:strategy -- <file>          # static cheatcode check of strategy c
 | `valueSeries.failedReads` | number of cross-sections that could not be read during value reconstruction (`0` if healthy) |
 | `violations` | violations from the post-run rule checks (fee limit overruns, etc.) |
 
-Everything the score is derived from is stored, not just the score, so a finished run can be
-rescored under a different metric without re-running it: `npm run metrics -- runs/<id>`
-([Scoring](scoring.md)).
+Everything the score is derived from is stored: P per agent and the boundary series behind it. The
+score itself (T, Score) needs the field, so it lives in a matrix's `standings.json` and on the
+dashboard, both computed by `core/src/scoring/deviationScore.ts` ([Scoring](scoring.md)).
 
 ## Liquidation Attribution (stress runs)
 

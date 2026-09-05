@@ -54,21 +54,21 @@ Block-level movement inside one scenario stays in `replay.ts`. It is a **refinem
 
 ### The rule is fixed (for participants)
 
-The metric × aggregator controls, the λ/ρ sliders, the disagreement panel and the #55 exposure were removed on 2026-08-31. Rescoring under other metrics is `npm run metrics -- --matrix`'s job.
+The metric × aggregator controls, the λ/ρ sliders, the disagreement panel and the #55 exposure were removed on 2026-08-31, and on 2026-09-06 the rule itself was fixed as the deviation score of rules §4.4 (ADR 0022). There is no metric to vary.
 
 ```
-per scenario   M9 = mean − λ·std (λ = 0.25)
-  → z-score within the scenario
+per scenario (= epoch)   P = V_K − V_0 → T = 50 + 10 (P − μ) / σ over the field
+  → Score = Σ w·T / Σ w (w linear 1 → 1.5 on the ordinal)
   → mean with equal weight per regime
 ```
 
-**The aggregation is imported by the dashboard from `core/src/scoring/aggregate.ts`** (through the `@core/*` alias). Two implementations of one ranking leave no way to tell which is real when the CLI and the screen disagree.
+**The scoring is imported by the dashboard from `core/src/scoring/deviationScore.ts`** (through the `@core/*` alias). Two implementations of one ranking leave no way to tell which is real when the CLI and the screen disagree.
 
 ### Display
 
 | Column | Contents |
 |---|---|
-| Score | **The equal-weight regime mean of M9 itself** (×10⁴, no unit label). The aggregated z is demoted to a tooltip |
+| Score | **Score at two decimals.** The tooltip carries the number of scored epochs and the §4.6 tie-breaks (std of T, worst epoch) |
 | net PnL (final marks) | A reference column: the quantity where β cancels and `noop` is exactly 0 |
 
 The z is kept out of the table because **a unitless z cannot answer "by how much"**. **The displayed value and the rank can occasionally disagree**, which is the difference between the aggregators, and the caption says so.
@@ -85,7 +85,7 @@ A ranking whose provenance travels separately from the ranking will be misread, 
 
 The ranking is **recomputed over the first k rounds** (it never reads the finished result), and the move from round k−1 is shown alongside.
 
-`summary.json`'s `logReturns` are **already floored, already in excess of the baseline, and already frozen at bankruptcy** — every part of the construction except λ. So "through round k" is exactly `mean − λ·std` over the first k entries, not an approximation (`dashboard/src/data/standings.ts:47-53`).
+"Through round k" re-reads P = V_k − V_0 from the boundary series and recomputes T and Score — **exactly** the rule, not an approximation (`scenarioPnl` in `dashboard/src/data/standings.ts`).
 
 ### When scenarios have different lengths
 
@@ -167,7 +167,7 @@ Only GMX used to be, so an agent that spent the run staking or borrowing produce
 
 The default tab is **Standing (why this rank)** — but only when the agent ranks in a competition; otherwise (seed mode, live runs) it lands on Overview (`AgentDetailPage.tsx:516`).
 
-It pools that agent's epochs **across the whole competition** and shows mean / std / λ·std / the distribution / a per-regime breakdown. M9 itself is per scenario and then averaged per regime, so this is **an explanation, not a second ranking**.
+It lists every epoch the agent was scored in (s / scenario / P / T / w), the mean, std and worst of T (the §4.6 tie-breaks), the distribution and a per-regime breakdown. The rank is decided by Score, so this is **an explanation, not a second ranking**.
 
 Measured: `clean-arb` ranks first on +0.32bp per round with a std of 1.78bp; `levered-long-max` ranks last on **+4.90bp** with a std of **78.60bp**. **The agent earning fifteen times as much is last**, and the whole difference is std. Split by regime, it is +48.3bp in `cex-drift` and negative in the other six — i.e. a story about regime fit.
 
@@ -197,7 +197,7 @@ Archived carries *more* information than live (`market.json`, scored epochs, a c
 **Not showing the future is a requirement**:
 
 - A round that has not closed has no result
-- The ranking is **recomputed as `mean − λ·std` over closed rounds only** (reading the finished score would print the answer on every frame)
+- The ranking is **recomputed from P = V_k − V_0 over closed rounds only** (reading the finished figure would print the answer on every frame)
 - The end-of-run position tables are withheld until the head reaches the end
 
 ## 9.8 Finding runs (the `/runs` API)

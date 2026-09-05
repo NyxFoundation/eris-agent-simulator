@@ -210,7 +210,7 @@ screen. The manifest handed to participants does not contain it at all.
 
 That is the same discipline the rest of the UI follows (internal ids stay out of it), and it has one
 consequence worth stating: **segments are also the unit the standings average over**. Each scenario
-is z-scored and then averaged with equal weight, so daily segments mean one vote per day whatever
+is one epoch of the deviation score (rules §4.4), so daily segments mean one epoch per day whatever
 each day's round count. Cutting the period differently changes that weighting — it does not change a
 single round's return, which is placed on a fixed grid from the run's first block and is entirely
 independent of where the cuts fall.

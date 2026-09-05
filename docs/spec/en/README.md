@@ -26,7 +26,7 @@ ADRs are a history, so overturned text survives in them — ADR 0002 → 0018, t
 | [03 The market](03-market.md) | Fair-price generation and propagation, orderflow, the venues |
 | [04 Stress events](04-stress-events.md) | The nine event types, schedule resolution, liquidation victims |
 | [05 The agent contract](05-agent-contract.md) | The three execution contracts, observations, the 25 actions, limits, self-improvement |
-| [06 Scoring](06-scoring.md) | Valuation, the epoch series, M9 with G1/G2, candidate metrics, cross-scenario aggregation |
+| [06 Scoring](06-scoring.md) | Valuation, the boundary series, P and the deviation score T / Score (rules §4.4), matrix standings, the epoch-order lottery |
 | [07 Configuration](07-configuration.md) | The full YAML schema, resolution order, CLI flags, the roster |
 | [08 Artifacts](08-artifacts.md) | Every file under `runs/<id>/` and its fields, the event catalogue |
 | [09 Dashboard](09-dashboard.md) | Information hierarchy, the round cursor, standings display rules |

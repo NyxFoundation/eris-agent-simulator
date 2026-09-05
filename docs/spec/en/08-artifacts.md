@@ -41,7 +41,7 @@ runs/
 | `blockTimeSec` / `blocksProcessed` / `elapsedMs` | Measured execution |
 | `finalFairPriceUsdcPerWeth` | The final fair price |
 | `valueSeries` | Value-series metadata (below) |
-| `epochScores[<id>]` | Per-agent scoring results (below) |
+| `agents[].pnlUsdc` / `baseline` | P of rules §4.4.1 (the two ends of the boundary series) and whether the agent is the benchmark (below) |
 | `violations` | Post-hoc rule violations |
 | `agents[]` | Per-agent aggregates (below) |
 | `segment` / `fromBlock` / `toBlock` | Segmented runs only |
@@ -55,7 +55,7 @@ runs/
 | `netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `alphaUsdc` | PnL with β removed (**look here for skill**). Absent when no reconstruction ran |
 | `liquidatableValueUsdc` | Present only for agents whose mark and realizable value diverged |
-| `processExitedEarly` | Why the process went away before the run ended. **The scenario matrix reads this to disqualify** |
+| `processExitedEarly` | Why the process went away before the run ended. **Does not change the score** (rules §2.3 / §4.4.2: valued on what it left behind, like everyone else); the matrix carries it as a flag |
 | `includedTxCount` / `revertCount` | Transactions included / of those, reverted |
 | `unloggedTxCount` | Included transactions absent from the agent's own `submitted` log (post-hoc detection of the human intervention rules §8 forbids; only for agents the coordinator started; a report, not a verdict -- a crash between send and log leaves the same mark) |
 | `stderrTail` | Tail of the agent process's stderr (crash diagnosis) |
@@ -89,17 +89,16 @@ runs/
 
 **Where both series exist, the live one is authoritative**, so `summary.json`'s rounds and its scores are the same object. On a run that also swept, `valueSeries.source` stays the sweep's and the live metadata is **nested** under `epochSeriesMeta` — spreading it would rename the sweep's own artifact and make a run that did sweep claim it had not.
 
-### `epochScores[<id>]`
+### `agents[].pnlUsdc` (P of rules §4.4.1)
 
 | Field | Contents |
 |---|---|
-| `score` | `mean − λ·std` |
-| `meanLogReturn` / `stdLogReturn` | The two terms |
-| `logReturns` | The E returns actually scored (floored, frozen and carried) |
-| `bankruptAtEpoch` | The 1-based epoch that first touched the floor, or `null` |
-| `carriedForwardEpochs` | Epochs whose value was missing (**the environment's failure, not the agent's**, so it is stated) |
-| `floorUsdc` / `lambda` | The parameters applied |
-| `benchmarkApplied` | **False means raw returns.** They must not be read as excess |
+| `pnlUsdc` | `V_K − V_0`: the first and last values of the boundary series, each at its own boundary's marks (§4.1's 5-block median). Absent on a run without a boundary series |
+| `pnlFinalBoundaryIndex` | Present only when the final boundary did not report and **the most recent one that did** served as V_K (§4.4.2, an environment-side event) |
+| `baseline` | The benchmark (the roster's `baseline: true`): valued and shown, never in the population (§4.3) |
+| `netPnlUsdc` | The difference with both ends at the **final** marks. A per-run constant away from P when everyone starts with the same basket |
+
+The score (T / Score) is not in `summary.json`: one run is one epoch and T depends on the field's μ and σ, so the matrix's `standings.json` and the dashboard compute it with `core/src/scoring/deviationScore.ts`.
 
 ## 8.3 `events.jsonl`
 
@@ -260,15 +259,14 @@ The only document handed to self-hosted participants (ADR 0021 §2). Built by `b
 
 `runDir` is **relative**, so a tarball collected from a remote box unpacks and reads as-is.
 
-`standings.json` is **a derivative**: `computeStandings` recomputes it from `matrix.json`. The ranking rule is expected to change (ADR 0017 §4).
+`standings.json` is **a derivative**: `computeStandings` recomputes it from `matrix.json` (ADR 0017 §4). The rule is fixed: the deviation score of rules §4.4 (ADR 0022).
 
 | `standings.json` | Contents |
 |---|---|
-| `metric` | Which metric ranked it |
-| `agents[]` | `id` / `total` / `byRegime` / `scenariosScored` / `disqualifications` |
-| `regimes` | Regime order (the order the matrix ran) |
-| `scenarios[]` | Per scenario: `scores` / `z` / `disqualified` |
-| `excludedScenarios[]` | **Scenarios with no summary** — an environment failure, not charged to participants |
+| `k` / `S` | The scheduled epoch count and the ordinals that entered the final score (rules §4.4.1) |
+| `epochs[]` | Per ordinal: `regime` / `seed` / `w` / `n` / `mu` / `sigma` / `excluded` (`invalid` / `sigma-zero` / `empty`) / `tByAgent` / `benchmarkPnl` |
+| `agents[]` | In rank order: `rank` / `tied` / `score` (two decimals) / `scoreRaw` / `epochs` (s, pnl, t, w) / `tStd` / `worstT` / `flags` |
+| `benchmarks[]` | The benchmark's P per ordinal (reference; outside the population) |
 
 ### The segment index (`core/src/segments.ts`)
 

@@ -178,7 +178,7 @@ npm run backtest -- --regime calm --seed 101 --agents my-roster.yaml
 npm run backtest -- --scenarios config/scenarios/public.yaml --agents my-roster.yaml  # every regime x seed
 ```
 
-- `netPnlUsdc` is the default ranking metric but includes price drift (β); `alphaUsdc` removes β from spot inventory. Both are printed, and `matrix.json` also stores the two risk-adjusted candidates (`excessLogGrowth` / `score`), so a finished set can be re-ranked with `npm run metrics`. **Which metric the competition uses is still open** — read them together rather than tuning to one ([Scoring](scoring.md))
+- The standings are the competition's rule (rules §4.4): per scenario your P = V_K − V_0 becomes a deviation score T over the field, and the score is the weighted average across scenarios. `netPnlUsdc` and `alphaUsdc` (β removed from spot inventory) are printed for context. **A local field is your roster, not the competition's**, so read the numbers as comparisons between your own versions
 - Judge by the distribution across seeds, not by one run (tx ordering varies even within a scenario). `--repeat N` shows that spread for a single scenario; `--scenarios` covers the seed axis (see [Backtest](backtest.md))
 - Verify across regimes: not overfiring in calm and capturing opportunity in crash — doing both is skill
 

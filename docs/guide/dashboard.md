@@ -46,9 +46,9 @@ timestamp):
 | `/markets`, `/explorer` | scenario | venue state and blocks — they only mean anything inside one world |
 | `/agent/<id>` | both | the agent's competition standing (its **Standing** tab) and its scenario-level detail |
 
-The ranking rule is fixed on the page; exploring other metrics, aggregations, λ or ρ is a CLI job
-(`npm run metrics -- --matrix <dir>`), not a dashboard control — the dashboard is what competition
-participants read, and a headline that quietly depends on a control is the thing it exists to avoid.
+The ranking rule is fixed on the page and is the competition's (rules §4.4, ADR 0022); there is no
+metric to vary — the dashboard is what competition participants read, and a headline that quietly
+depends on a control is the thing it exists to avoid.
 
 Two more things participants see, because they are participants: **names, not storage ids** — a
 competition is its scenario set and date ("full-8h · 8/29"), a scenario is `regime#seed`, the yaml
@@ -66,7 +66,7 @@ Every view is built from the run's own artifacts, served by a small Vite dev-ser
 
 | artifact | what it drives |
 |---|---|
-| `summary.json` | standings (score = M9, shown ×10⁴; PnL%, Sharpe, max drawdown) |
+| `summary.json` | standings (score = T for that epoch; net PnL, max drawdown) and P per agent |
 | `events.jsonl` | price and portfolio series (the reconstructed observations), the event tape |
 | `blocks.csv` | the blocks/transactions view (methods joined from the agent logs) |
 | `agents/<id>.jsonl` | decision logs and submitted-tx self-reports |
@@ -122,36 +122,30 @@ scenario is open.
 
 ### Standings
 
-One table, under the one rule the competition is scored by: per scenario, the score is
-`mean − λ·std` (λ = 0.25) over the stored epoch series; across scenarios, a z-score within each
-scenario's field, averaged with equal weight per regime. A scenario whose run dir was not collected
-still ranks by the score `matrix.json` stored (the same rule, at the same λ), and simply has no
-round detail. The aggregation is imported from `core/src/scoring/aggregate.ts`, the same pure module
-`npm run metrics -- --matrix` runs, so the dashboard and the CLI agree by construction rather than
-by coincidence.
+One table, under the one rule the competition is scored by (rules §4.4, ADR 0022): per scenario
+(= one epoch) every agent's P = V_K − V_0 becomes a deviation score T = 50 + 10 (P − μ) / σ over
+the field, and the score is the average of T across epochs with a weight rising linearly from 1 to
+1.5 on the epoch's order. The benchmark is valued but never in the population. A scenario whose run
+dir was not collected still ranks by the P `matrix.json` stored, and simply has no round detail.
+The arithmetic is imported from `core/src/scoring/deviationScore.ts`, the same pure module the
+matrix runner uses, so the dashboard and the CLI agree by construction rather than by coincidence.
 
-**The score column shows the score itself** — the regime-equal mean of per-scenario scores,
-scaled ×10⁴ so it does not round to zero, displayed without a unit suffix — because a z aggregate
-answers "who is ahead" but not "by how much". The rank order still comes from the official z
-aggregation, whose value sits in the score cell's tooltip; the two can disagree in order, and that
-difference is the aggregation choice, stated rather than hidden. Regime columns are the same
-quantity per regime.
+**The score column shows Score at two decimals** — the precision the rules rank on (§4.6) — and
+its tooltip carries the tie-breaks (the std of the agent's own T series, its worst epoch). Regime
+columns are the agent's mean T within that regime: an explanation of where the score comes from,
+not a second ranking.
 
 The table carries one reference column, **net PnL (final marks)**, summed across scenarios. It is
 not the ranking: it prices both ends at the run's last prices, so β cancels and `noop` is exactly 0
 — it is the raw number a trader reads first, and it greys out while the cursor is mid-competition
 (it has no per-round value).
 
-Re-ranking a stored competition under other metrics, aggregations, λ or ρ is deliberately not a
-dashboard control: `npm run metrics -- <runDir...>` and `npm run metrics -- --matrix <dir>` re-score
-stored runs under every candidate without re-running anything.
-
 ### Rounds
 
-**A round is a scoring epoch (ADR 0019), not a run.** The score is `mean − λ·std` of *per-epoch* log
-returns, so the epoch is the unit a result is actually earned in — and it is the unit the bar across
-the top of every page shows: one segment per epoch of the selected run, filled by chain progress
-through its own block range.
+**A round is an evaluation interval of the rules (§0.1), not a run.** The score is one number per
+epoch (= one run), so rounds are the leaderboard's running progress rather than what a result is
+earned in — and they are the unit the bar across the top of every page shows: one segment per
+12-block interval of the selected run, filled by chain progress through its own block range.
 
 Clicking a segment opens that round's result: per-agent Δ value and log return, the rank each agent
 held at the round's close and how it moved, and the environment events that landed inside the block
@@ -159,9 +153,8 @@ range. Two columns that are easy to confuse:
 
 - **Δ value** is the raw change in account value, market exposure included. A do-nothing agent still
   moves with the price, which is why every agent's Δ value is roughly the same in a quiet round.
-- **Log return** is the same round measured *in excess of the roster's do-nothing baseline*. That is
-  the series `epochScores[agent].logReturns` holds and the score averages, so it is the column that
-  explains the standings.
+- **Log return** is the same round as a log ratio of account value. Context only — nothing in the
+  score averages it.
 
 The boundaries come from `summary.json` (`valueSeries.epochSeries.boundaryBlocks`), so a run scored
 with `run.epochBlocks: 0`, or one too short for a single epoch, has no rounds and the bar says so. A
@@ -177,17 +170,12 @@ would be a claim that the round was quiet. Rounds that have not started yet are 
 Each agent's page has the same breakdown for that agent alone (its **Rounds** tab), and the explorer
 scopes its block and transaction lists to the selected round.
 
-**The round is also where the standings are explained.** A standings row opens the agent's page,
-whose **Standing** tab pools every epoch that agent produced across the whole competition and shows
-mean, std, λ·std and the difference, plus the distribution and a per-regime split. This is *not* an
-alternative ranking — the score is computed per scenario, then averaged per regime — it answers the
-one question the standings cannot. On `full-8h`:
-
-| agent | mean / round | std / round | place |
-|---|---:|---:|---:|
-| `clean-arb` | +0.32 bp | 1.78 bp | **1** |
-| `multi-arb` | +1.50 bp | 14.03 bp | 14 |
-| `levered-long-max` | **+4.90 bp** | **78.60 bp** | **21 (last)** |
+**The agent page is where the standings are explained.** A standings row opens the agent's page,
+whose **Standing** tab lists every epoch the agent was scored in (ordinal, scenario, P, T, w), the
+mean, std and worst of its T series — the §4.6 tie-breaks — the distribution of T, and a per-regime
+split. This is *not* an alternative ranking; it answers the one question the standings cannot: why
+an agent sits where it does. A strategy that wins big in one regime and loses in the rest can place
+below a steady one, and the per-regime T shows exactly that.
 
 The agent earning fifteen times more per round than the winner finishes last, and the whole of the
 difference is the spread. Nothing above the round level shows that. The per-regime split is where it
@@ -273,8 +261,8 @@ view rather than a simulation of a weaker one.
 
 **The rule it keeps is that it never shows the future.** A round that has not closed at the head
 carries no result, and the standings are *recomputed* from the returns up to the head
-(`mean − λ·std` over the closed rounds, with the scorer's own λ) rather than read off the finished
-run — otherwise every frame of the walk would have the answer printed on it. The end-of-run position
+(P = V_k − V_0 over the closed rounds, standardised over the field) rather than read off the
+finished run — otherwise every frame of the walk would have the answer printed on it. The end-of-run position
 cross-sections are dropped for the same reason until the head reaches the end: they are a single
 read taken when the run finished and are not knowable earlier.
 

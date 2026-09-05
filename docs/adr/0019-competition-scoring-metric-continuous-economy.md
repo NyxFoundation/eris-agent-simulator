@@ -2,6 +2,8 @@
 
 ## Status
 
+**Superseded by [ADR 0022](0022-competition-scoring-deviation-score.md)（2026-09-06）** — 競技規約 §4.4 が偏差値方式を確定し、M9（`mean − λ·std`）と λ は削除された。以下は経緯の記録。
+
 Proposed（2026-08-12。決定は issue #56 で確定、実装は未着手）
 
 **2026-08-13 改訂** — レビューで issue #56 の記録から 2 点変えた: G7 を「最終境界のみ」から

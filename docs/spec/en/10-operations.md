@@ -30,8 +30,7 @@ Source: the `scripts` block of `package.json`.
 
 | Command | Role |
 |---|---|
-| `npm run metrics -- <runDir...>` | Rescore stored runs under every candidate metric |
-| `npm run metrics -- --matrix runs/matrix-<id>` | Rescore a matrix across every metric × aggregator |
+| `npm run competition -- commit <file>` / `plan --hidden --lottery --k` | Commitments for the hidden set and lottery seed, and the epoch-order plan (rules §3.3) |
 | `npm run dashboard` | The dev server (:5173) |
 | `npm run dashboard:build` / `dashboard:serve` | The operator-hosted dashboard (:5174) |
 | `npm run explorer` / `explorer:down` / `explorer:reset` / `explorer:tag` | The local Blockscout |
@@ -91,7 +90,7 @@ To go back to a fork: `run.localDeploy: false`, remove `lst` and `liquity` from 
 ```
 npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [options]
   --agents <roster>    replace the regime's default roster
-  --metric <name>      the standings metric (default netPnlUsdc)
+  --scenarios <path>   a {regimes, seeds} product or a {k, epochs: [{s, regime, seed}]} plan
   --repeat <N>         repeat each scenario N times (a calibration diagnostic; standings take the median)
   --port <N>           port for the backtest-only anvil (default 8547)
   --state <dir>        state dump directory
@@ -207,6 +206,6 @@ A collected run opens in the dashboard as-is: it unpacks to `runs/<collection>/r
 
 ## 10.8 Removed commands
 
-These do not exist. Post-run analysis reads `runs/<id>/` directly, or uses `npm run metrics` and the dashboard.
+These do not exist. Post-run analysis reads `runs/<id>/` directly, or uses the dashboard (`npm run metrics` was retired on 2026-09-06 as well).
 
 `sim` (synchronous rounds) / `evaluate` / `gate` / `discrimination` / `leaderboard` / `stress-report`

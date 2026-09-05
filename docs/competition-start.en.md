@@ -46,11 +46,7 @@ a selloff.**
 Every unit is handed the same initial capital: **8 WETH + 0.4 WBTC + 25,000 USDC**, plus ETH for
 gas. One benchmark agent that never moves its capital runs alongside. Every unit runs on the same single chain at the same time.
 
-> **All of that is the competition's scoring, not this repository's.** `npm run backtest` and
-> `summary.json` still score the old way: `mean − 0.25 × std` of the excess log return over 12-block
-> intervals, then a z-score within the scenario and an equal-weight mean over regimes. Weighting later epochs is **not implemented**
-> locally. **Local numbers are for comparing your own versions against each other, not for predicting
-> where you will place.**
+> **A local `npm run backtest -- --scenarios` ranks with the same rule as the competition** (one scenario = one epoch, P → deviation score T → the later-weighted average; `standings.json`). What differs is the field: locally the population is your roster, in the competition it is every participant. **Local numbers are for comparing your own versions against each other, not for predicting where you will place.**
 
 ### Vocabulary (read this)
 
@@ -61,7 +57,7 @@ remember.
 |---|---|---|
 | epoch | run | one `runs/<id>/` — one `summary.json` |
 | scenario | scenario | `<regime>#<seed>`; regimes are defined in `config/regimes/*.yaml` |
-| evaluation interval | **epoch** / "round" in the dashboard | `epochScores` in `summary.json`, `run.epochBlocks: 12` |
+| evaluation interval | **epoch** / "round" in the dashboard | `valueSeries.epochSeries` in `summary.json`, `run.epochBlocks: 12`. Not used for scoring |
 
 **The code's `epoch` is not the rules' epoch.** The code's `epoch` is the rules' *evaluation
 interval*.

@@ -41,7 +41,7 @@ runs/
 | `blockTimeSec` / `blocksProcessed` / `elapsedMs` | 実行の実測 |
 | `finalFairPriceUsdcPerWeth` | 最終 fair price |
 | `valueSeries` | 価値系列のメタ（下記） |
-| `epochScores[<id>]` | エージェントごとの採点結果（下記） |
+| `agents[].pnlUsdc` / `baseline` | 規約 §4.4.1 の P（境界の両端）と、ベンチマークかどうか（下記） |
 | `violations` | 事後ルール検査の違反 |
 | `agents[]` | エージェントごとの集計（下記） |
 | `segment` / `fromBlock` / `toBlock` | セグメント run のみ |
@@ -55,7 +55,7 @@ runs/
 | `netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `alphaUsdc` | β 除去 PnL（**スキル比較はこちら**）。再構成が走らなかった run では欠落 |
 | `liquidatableValueUsdc` | マークと実現可能額が食い違ったエージェントにのみ付く |
-| `processExitedEarly` | プロセスが run 終了前に消えた理由。**シナリオ行列はこれを読んで失格にする** |
+| `processExitedEarly` | プロセスが run 終了前に消えた理由。**採点は変えない**（規約 §2.3 / §4.4.2: 残したポジションで他と同じく評価）。行列では `flags` として横に出る |
 | `includedTxCount` / `revertCount` | 取り込まれた tx 数 / うち revert した数 |
 | `unloggedTxCount` | 取り込まれたのに agent 自身の `submitted` ログに無い tx 数（規約 §8 の人為的介入の事後検出。coordinator が起動した agent のみ。判定ではなく報告 — 送信直後のクラッシュでも同じ痕跡が出る） |
 | `stderrTail` | エージェントプロセスの stderr 末尾（クラッシュ診断用） |
@@ -89,17 +89,16 @@ runs/
 
 **両方の系列が存在する run では live 側が権威になる**（`summary.json` のラウンドとスコアが同じオブジェクトを指すように）。sweep も走った run では `valueSeries.source` は sweep のままで、live のメタは `epochSeriesMeta` に**ネストして**入る（spread するとその run が「sweep していない」と名乗ることになる）。
 
-### `epochScores[<id>]`
+### `agents[].pnlUsdc`（規約 §4.4.1 の P）
 
 | フィールド | 内容 |
 |---|---|
-| `score` | `mean − λ·std` |
-| `meanLogReturn` / `stdLogReturn` | 内訳 |
-| `logReturns` | 実際に採点した E 個のリターン（フロア・凍結・持ち越し適用後） |
-| `bankruptAtEpoch` | フロアに最初に触れたエポック（1-based）。`null` なら破産していない |
-| `carriedForwardEpochs` | 値が欠けて持ち越したエポック（**環境の失敗であってエージェントの失敗ではない**ので明示する） |
-| `floorUsdc` / `lambda` | 適用したパラメータ |
-| `benchmarkApplied` | **false なら生収益**。超過収益として読んではいけない |
+| `pnlUsdc` | `V_K − V_0`。境界系列の最初と最後の値（両端ともその境界のマーク = §4.1 の 5 ブロック中央値）。境界系列が無い run には無い |
+| `pnlFinalBoundaryIndex` | 最終境界が読めず**読めた直近の境界**を V_K にしたときだけ出る（§4.4.2。環境側の事象） |
+| `baseline` | ベンチマーク（ロスターの `baseline: true`）。値付け・表示はするが母集団に入れない（§4.3） |
+| `netPnlUsdc` | 両端を**最終価格**でマークした差。全員同じ初期資本なら P と場全体で定数差 |
+
+スコア（T / Score）は `summary.json` には無い。1 run は 1 エポックで、T はその場の μ・σ に依るので、行列の `standings.json` と dashboard が `core/src/scoring/deviationScore.ts` で計算する。
 
 ## 8.3 `events.jsonl`
 
@@ -260,15 +259,14 @@ runs/
 
 `runDir` は**相対パス**なので、spot から回収した tarball を展開したディレクトリでもそのまま読める。
 
-`standings.json` は**派生物**：`matrix.json` から `computeStandings` で再計算できる。順位の規則は将来見直す前提（ADR 0017 §4）。
+`standings.json` は**派生物**：`matrix.json` から `computeStandings` で再計算できる（ADR 0017 §4）。規則は規約 §4.4 の偏差値方式で確定（ADR 0022）。
 
 | `standings.json` | 内容 |
 |---|---|
-| `metric` | どの指標で順位付けしたか |
-| `agents[]` | `id` / `total` / `byRegime` / `scenariosScored` / `disqualifications` |
-| `regimes` | レジーム順（行列を走らせた順） |
-| `scenarios[]` | シナリオごとの `scores` / `z` / `disqualified` |
-| `excludedScenarios[]` | **summary が無かったシナリオ**（環境の失敗なので参加者に負わせない） |
+| `k` / `S` | 予定エポック数と、最終スコアに入ったエポックの回次（規約 §4.4.1） |
+| `epochs[]` | 回次ごとの `regime` / `seed` / `w` / `n` / `mu` / `sigma` / `excluded`（`invalid` / `sigma-zero` / `empty`）/ `tByAgent` / `benchmarkPnl` |
+| `agents[]` | 順位順。`rank` / `tied` / `score`（2 桁）/ `scoreRaw` / `epochs`（s・pnl・t・w）/ `tStd` / `worstT` / `flags` |
+| `benchmarks[]` | ベンチマークの回次別 P（参考表示。母集団外） |
 
 ### セグメント索引（`core/src/segments.ts`）
 

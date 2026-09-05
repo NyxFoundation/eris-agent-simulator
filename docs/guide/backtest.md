@@ -97,18 +97,18 @@ Two artifacts land in `runs/matrix-<id>/`:
 
 | file | what it is |
 |---|---|
-| `matrix.json` | raw per-scenario, per-agent scores — **all four metrics** (`netPnlUsdc` / `alphaUsdc` / `excessLogGrowth` / `score`, the last two where the run has an epoch series), plus `resetUnit`, disqualifications and run directories |
+| `matrix.json` | raw per-scenario, per-agent results — P (`pnlUsdc`, with `pnlSource`), `netPnlUsdc` / `alphaUsdc`, the endpoints, `baseline`, `flags` — plus the ordinal `s`, `k`, `resetUnit` and run directories (schema 2) |
 | `standings.json` | the ranking derived from them |
 
-The ranking is a derived view on purpose. The scoring rule is expected to change (ADR 0017 leaves both the metric and the formula open), and keeping the raw matrix means a new rule can be applied to a finished competition without re-running anything — which is what `npm run metrics -- --matrix <dir>` does ([Scoring](scoring.md)).
+The ranking is a derived view on purpose: `standings.json` recomputes from `matrix.json` alone, so a finished matrix can be re-read without re-running anything (ADR 0017 §4). The rule itself is the competition's (rules §4.4, ADR 0022).
 
-Ranking today: score each scenario with `--metric` (default `netPnlUsdc`), normalize to a z-score **across the agents within that scenario** — they all ran in the same world, so that is the one comparison the design guarantees is fair — then average within a regime and average the regimes with equal weight. Equal weight per regime is what stops a big-opportunity regime like `crash` from deciding the ranking on its own, and it makes the result insensitive to how many seeds each regime got.
+Ranking: each scenario is one epoch. An agent's P = V_K − V_0 becomes a deviation score T = 50 + 10 (P − μ) / σ **over the agents in that scenario** — they all ran in the same world, so that is the one comparison the design guarantees is fair — and the score is the average of T over the scenarios, weighted linearly from 1 to 1.5 on the scenario's position (its ordinal `s`). The benchmark is valued but not in the population.
 
-> **A matrix run is `scenario` mode** (ADR 0020): the world is rebuilt per (regime, seed), and `matrix.json` records `resetUnit: "scenario"` to say so. That is the competition's shape, and the matrix runner is the only thing allowed to declare it — a `sim:realtime` config that writes `resetUnit: scenario` fails fast at startup. `npm run metrics` refuses to aggregate a set that mixes the two.
+> **A matrix run is `scenario` mode** (ADR 0020): the world is rebuilt per (regime, seed), and `matrix.json` records `resetUnit: "scenario"` to say so. That is the competition's shape, and the matrix runner is the only thing allowed to declare it — a `sim:realtime` config that writes `resetUnit: scenario` fails fast at startup. Do not read a continuous run and a scenario run into one standing.
 
-> **`--metric` picks which of the four the standings rank on.** `netPnlUsdc` stays the default because it is the one figure every stored matrix has, so it is the only metric comparable against older runs. `excessLogGrowth` (M4) and `score` (M9) are read off the epoch series in `summary.json`, not from the endpoints — M4 is the sum of the same series M9 scores, so the two differ by exactly `λ·std` and a rank moves only when an agent's per-epoch Sharpe crosses λ. Which one the competition uses is open ([#56](https://github.com/NyxFoundation/eris-agent-simulator/issues/56)); see [Scoring](scoring.md).
+> **`--scenarios` takes two shapes.** `{regimes, seeds}` is the cartesian product, run and numbered in that order; `{k, epochs: [{s, regime, seed}]}` is an ordered plan as `npm run competition -- plan` writes it from the lottery seed (rules §3.3), with `k` the schedule length the weights are taken over.
 
-An agent that broke a rule (priority fee cap), whose process died mid-run, or that never reported is **disqualified for that scenario and placed below every finisher** — scoring it zero would make crashing a viable tactic. A scenario that produced no result at all is excluded from the aggregation entirely: an environment failure is not charged to the participants.
+Nothing disqualifies. An agent whose process died is scored on what it left behind (rules §2.3, §4.4.2), a fee-cap violation is a §8 matter for the operator, and both appear as `flags` beside the number. An agent absent from a scenario's summary was not placed in it and is simply not in that population. A scenario that produced no summary at all is an invalid epoch for everyone (§4.4.2).
 
 ## Repetition and reproducibility
 
@@ -120,7 +120,7 @@ An agent that broke a rule (priority fee cap), whose process died mid-run, or th
 ## What the competition actually scores (ADR 0017 §6)
 
 Every participant runs in the **same world at the same time** — one scenario is one run with the
-whole field co-located on one chain. That is not a convenience: the score is a z-score computed
+whole field co-located on one chain. That is not a convenience: the score is a deviation score computed
 across the agents *within a scenario*, so "who did better" only means anything because everybody met
 the same market on the same blocks. It also means three things are part of the competition whether
 you engage with them or not:
@@ -175,7 +175,7 @@ agents:
 | `--regime <name\|path>` | `config/regimes/<name>.yaml` (or a YAML path). Requires `--seed` |
 | `--seed <N>` | The scenario's seed. Regimes carry none, so this is not optional |
 | `--scenarios <path>` | Replay a whole set (regimes x seeds) and write `matrix.json` + `standings.json`. Mutually exclusive with `--regime` |
-| `--metric <name>` | Metric the standings rank on: `netPnlUsdc` (default) / `alphaUsdc` / `excessLogGrowth` (M4) / `score` (M9). The last two need an epoch series ([Scoring](scoring.md)) |
+| `--scenarios <path>` (plan form) | `{k, epochs: [{s, regime, seed}]}` from `npm run competition -- plan`; replayed in order with those ordinals |
 | `--agents <roster>` | Swap the regime's default agents with a roster file (YAML/JSON) |
 | `--repeat <N>` | Repeat each scenario N times (default 1). A calibration diagnostic; standings take the median |
 | `--port <N>` | Port for the backtest-dedicated anvil (default 8547; use a different port for parallel runs) |
