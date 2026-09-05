@@ -1,0 +1,8 @@
+# config/competition/lottery-seed.example.yaml — the SHAPE of the lottery seed (rules §3.3).
+#
+# One secret string. Its commitment (`npm run competition -- commit <file>`) is published when the
+# submission period closes; the file itself after the results. From it and the hidden set,
+# `npm run competition -- plan` derives the epoch order — every regime the same number of times,
+# the order decided by nobody.
+salt: replace-with-a-random-string
+lotterySeed: replace-with-a-secret-string
