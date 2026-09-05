@@ -103,6 +103,7 @@ Things to watch when reading:
   rejects every unwind while letting every buy through, which leaves you holding a position you cannot close
 - `history` is the pool/fair series for the last ~20 blocks (for gauging momentum and the persistence of a gap)
 - **`blocksRemaining` is how many blocks are left**, counted from the first block you observed (absent when the run has no block limit). An exit that takes longer than that cannot complete inside the run — which is what makes the LST withdrawal queue a decision rather than a formality. Approximate by a block or two
+- **`discoveredPools` lists the pools the environment adds mid-epoch** (rules §3.2 regime 7): address, tokens, fee, reserves, an implied quote and the code hash. Whether a pool is rigged is not disclosed — the source is in the run's `disclosures/<address>.json` and a dry-run `eth_call` of `swap` shows what it really does. A quote from an unfunded pool is `null`, not a price
 - `limits` holds the per-round trade limits and the default/max fees. **Cap your size here** (actions over the limit
   are rejected by validation)
 - The shape of `protocols.<venue>` differs per venue. **It's safest not to read it directly, but to normalize it with a

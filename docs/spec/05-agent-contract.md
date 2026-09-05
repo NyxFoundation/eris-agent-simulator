@@ -80,6 +80,7 @@ type AgentContext = {
 | `fairPricesUsd` / `baseBalances` / `baseDecimals` / `markets` | マルチアセット。WETH のみの run では既存フィールドと一致する |
 | `blocksRemaining` | **このエージェントが最初に観測したブロックから数えた**残りブロック数。run に上限が無ければ undefined |
 | `enabledProtocols` | この run で有効な venue |
+| `discoveredPools` | 環境がエポック途中に配置したプール（規約 §3.2 レジーム 7、ADR 0014）: address / token0 / token1 / decimals / feeBps / createdAtBlock / reserves / 含意価格 / codehash。**rigged かどうかは出さない**（検査は参加者の判断）。factory の無い run では undefined |
 | `balances` | `ethWei` / `wethWei` / `usdcUnits` / `stables{}` |
 | `inventory` | `valueUsdc` ほか。**評価はこちら**（`balances` は予算） |
 | `history` | 直近 20 ラウンドの pool 価格と fair 価格 |

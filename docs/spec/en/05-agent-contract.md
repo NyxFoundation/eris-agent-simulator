@@ -80,6 +80,7 @@ Built by `observationFor` (`sdk/src/observation.ts`). The point is that **the en
 | `fairPricesUsd` / `baseBalances` / `baseDecimals` / `markets` | Multi-asset. In a WETH-only run these agree with the legacy fields |
 | `blocksRemaining` | Blocks left, **counted from the first block this agent observed**. Undefined when the run has no block limit |
 | `enabledProtocols` | The venues this run turned on |
+| `discoveredPools` | Pools the environment placed mid-epoch (rules §3.2 regime 7, ADR 0014): address / token0 / token1 / decimals / feeBps / createdAtBlock / reserves / implied price / codehash. **Whether a pool is rigged is not disclosed** (inspecting it is the participant's call). Undefined in a run without the factory |
 | `balances` | `ethWei` / `wethWei` / `usdcUnits` / `stables{}` |
 | `inventory` | `valueUsdc` and friends. **This is the valuation**; `balances` is a budget |
 | `history` | The last 20 rounds of pool and fair price |

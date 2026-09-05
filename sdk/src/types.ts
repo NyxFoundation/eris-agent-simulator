@@ -721,6 +721,11 @@ export type AgentObservation = {
     >;
   };
   protocols: ProtocolObservations;
+  // Pools the environment placed on the chain after the epoch started (rules §3.2 regime 7,
+  // ADR 0014): address, tokens, fee, reserves, an implied quote and the code hash. Whether a pool
+  // is rigged is NOT disclosed -- inspecting it is the participant's call (§3.2). Present only in a
+  // run that deploys the factory; an empty array means none has appeared yet.
+  discoveredPools?: import("./discoveredPools.js").DiscoveredPool[];
   // Competition signals (ADR 0011. Observations that make the priority-fee auction skill-based under
   // economicGas). In direct mode the agent self-derives them from the most recent block (not an env
   // privilege, but the same as a real MEV searcher watching recent blocks). undefined in relay mode or early in observation.
