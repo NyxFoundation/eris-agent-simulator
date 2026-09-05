@@ -65,6 +65,7 @@ RPC URL や chain id が秘密情報側にあるのは、**それらが regime �
 | `segmentHours` | 0 | 1 セグメントの時間（0 = 単一ディレクトリ） |
 | `segmentName` | "" | 期間全体の表示名 |
 | `markMedianBlocks` | 5 | G7 の median 窓 |
+| `agentSandbox` | `process` | `process` / `docker`。docker は `infra/docker-agent/run-agent.sh` 経由で規約 §2.3 の 2 vCPU / 4 GiB を掛ける唯一の経路。公式レジームは `docker`、ローカルは `--agent-sandbox process` |
 | `blockGasLimit` | 30000000 | setup 完了後・mining 開始前に coordinator が設定するブロックガスリミット（規約 §2.6。0 = ノードの値のまま） |
 | `reportDir` | `./runs` | 出力ルート |
 | `flashArb` | false | FlashArb コントラクトのデプロイ |

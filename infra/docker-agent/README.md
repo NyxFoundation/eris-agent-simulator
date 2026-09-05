@@ -80,10 +80,19 @@ Caps: `ERIS_DOCKER_MEM` (default `4g`), `ERIS_DOCKER_CPUS` (default `2`) — the
 competition rules promise a participant. The headroom is nominal rather than reserved: the 100-
 container run below measured ~190 MiB of host memory per agent.
 
+## The coordinator's standard path
+
+The official regimes set `run.agentSandbox: docker`, so `npm run backtest` launches every agent through
+`run-agent.sh` (the coordinator records `agent_sandbox` in events.jsonl either way). Image mode expects
+`eris-agent:<id>`; `ERIS_AGENT_BINDMOUNT=1` runs the stock node image over a bind mount instead. Without
+docker at all, pass `--agent-sandbox process` — no caps, and the event says so. Every `ERIS_*` variable
+the coordinator sets is forwarded into the container; inference API keys are forwarded only when no
+inference proxy (`ERIS_INFERENCE_BASE_URL`) is named.
+
 ## Isolation caveat (egress)
 
-Containers run with `--network host`, so they share the host network — **run-time egress is NOT
-contained by these scripts.** For the live competition, egress blocking (competition rules) must be
+Containers join `ERIS_AGENT_NETWORK` (default `host`, sharing the host network) — **with the default,
+run-time egress is NOT contained by these scripts.** For the live competition, egress blocking (competition rules) must be
 enforced by the operator's host/network policy (firewall, or a bridge network with no NAT); it is
 not provided by `--network host`. Deps are resolved at build time precisely so run time needs no
 outbound access.

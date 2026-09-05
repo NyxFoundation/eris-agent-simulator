@@ -65,6 +65,7 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 | `segmentHours` | 0 | Hours per output segment (0 = one directory) |
 | `segmentName` | "" | Display name for the whole period |
 | `markMedianBlocks` | 5 | The G7 median window |
+| `agentSandbox` | `process` | `process` / `docker`. docker launches through `infra/docker-agent/run-agent.sh`, the only path that applies the rules §2.3 caps (2 vCPU / 4 GiB). Official regimes say `docker`; locally pass `--agent-sandbox process` |
 | `blockGasLimit` | 30000000 | Block gas limit the coordinator sets after setup, before mining starts (rules §2.6; 0 = leave the node's) |
 | `reportDir` | `./runs` | Output root |
 | `flashArb` | false | Deploy the FlashArb contract |

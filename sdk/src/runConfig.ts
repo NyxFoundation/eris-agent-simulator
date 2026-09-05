@@ -96,6 +96,8 @@ const SCHEMA: Record<string, string> = {
   "run.markMedianBlocks": "ERIS_MARK_MEDIAN_BLOCKS",
   // Rules §2.6: the block gas limit the coordinator sets once setup is done (0 = leave the node's).
   "run.blockGasLimit": "ERIS_BLOCK_GAS_LIMIT",
+  // process | docker: how the coordinator launches each agent (rules §2.3 caps apply only under docker).
+  "run.agentSandbox": "ERIS_AGENT_SANDBOX",
   "run.reportDir": "REPORT_DIR",
   "run.flashArb": "ERIS_FLASH_ARB",
   "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",

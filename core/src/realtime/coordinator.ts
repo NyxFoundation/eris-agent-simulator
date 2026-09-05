@@ -26,6 +26,7 @@ import {
   setIntervalMining,
   transferEth,
 } from "@eris/sdk/chain.js";
+import { spawnSync } from "node:child_process";
 import { RunLogger, type RunArtifactWriter } from "../logger.js";
 import { SegmentedRun, sliceEpochSeries } from "../segments.js";
 import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
@@ -1331,6 +1332,36 @@ export async function runRealtimeSimulation(
     }
 
     // ---- launch agent processes (ADR 0015 §5: uniformly runtime/bot.ts; pass the private key and PriceFeed via env) ----
+    // Under `docker` every agent goes through infra/docker-agent/run-agent.sh, the one path that
+    // applies the rules §2.3 caps. Checked once here rather than discovered per agent: a missing
+    // docker would otherwise surface as N `spawn error` early exits that read like agent bugs.
+    if (config.agentSandbox === "docker") {
+      const probe = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], {
+        encoding: "utf8",
+      });
+      if (probe.status !== 0)
+        throw new Error(
+          "run.agentSandbox is docker but `docker version` failed " +
+            `(${probe.error?.message ?? probe.stderr?.trim() ?? `exit ${probe.status}`}). ` +
+            "The official regimes launch every agent in a capped container (rules §2.3). For a local run " +
+            "without docker pass --agent-sandbox process (backtest) or set run.agentSandbox: process; " +
+            "with docker but no per-agent image, set ERIS_AGENT_BINDMOUNT=1 (infra/docker-agent/README.md)",
+        );
+      logger.event({
+        type: "agent_sandbox",
+        sandbox: "docker",
+        dockerServerVersion: probe.stdout.trim(),
+        memory: process.env.ERIS_DOCKER_MEM ?? "4g",
+        cpus: process.env.ERIS_DOCKER_CPUS ?? "2",
+        network: process.env.ERIS_AGENT_NETWORK ?? "host",
+      });
+    } else {
+      logger.event({
+        type: "agent_sandbox",
+        sandbox: "process",
+        note: "agents run as plain child processes: no CPU/memory caps and no egress control (rules §2.3 are not enforced here)",
+      });
+    }
     for (const agent of agentRuntimes) {
       if (agent.external || !agent.privateKey) {
         // ADR 0021 §2: registered, funded, scored -- and started by whoever registered it. Recorded
@@ -1353,6 +1384,7 @@ export async function runRealtimeSimulation(
         config.agentsDir,
         config.runBlocks,
         agentExtraEnv,
+        { sandbox: config.agentSandbox },
       );
       // An agent that dies mid-run silently stops trading, which reads in summary.json exactly like
       // an agent that chose not to trade. Record it so the two can be told apart.

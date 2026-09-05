@@ -343,6 +343,10 @@ npm run agent:build -- team my-strategy     # build the submission image
 npm run agent:selftest -- my-strategy       # short run under the same caps; reports whether you fit
 ```
 
+The competition, and `npm run backtest` on the official regimes, launch agents through this container
+(`run.agentSandbox: docker`). Without docker, `--agent-sandbox process` runs them as plain processes — with
+no caps.
+
 An agent over the cap is **OOM-killed** (`--memory-swap` is pinned to `--memory`, so there is no
 swapping out of it) and reaches the coordinator as an early exit with code 137. **That is
 indistinguishable from a record of choosing not to trade**, so check before you submit. Details in

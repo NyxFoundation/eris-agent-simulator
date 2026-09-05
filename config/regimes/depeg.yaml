@@ -38,6 +38,10 @@ run:
   # agent cannot reprice a pool at the close and book the move. Unset means 0 = mark live off a
   # single block, which leaves that open; the metric-* regimes have carried 5 all along.
   markMedianBlocks: 5
+  # Rules §2.3: every agent runs in a 2 vCPU / 4 GiB container. Only the docker path applies the
+  # caps (infra/docker-agent/run-agent.sh), so the official regimes name it. A local run without
+  # docker: `--agent-sandbox process` (no caps, and it says so in events.jsonl as agent_sandbox).
+  agentSandbox: docker
 
 funding:
   # An ETH/BTC/USDC basket rather than USDC only. The score is excess over the do-nothing

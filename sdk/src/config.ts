@@ -126,6 +126,11 @@ export type SimConfig = {
   // The run's execution mode (a label stamped into summary.json's mode. ADR 0016 §6). The backtest CLI
   // injects ERIS_RUN_MODE=backtest. Does not affect scoring or behavior.
   runMode: "realtime" | "backtest";
+  // How the coordinator launches an agent it runs itself (ERIS_AGENT_SANDBOX). `process` spawns
+  // bot.ts directly; `docker` goes through infra/docker-agent/run-agent.sh, which is the only path
+  // that applies the 2 vCPU / 4 GiB caps of rules §2.3 and can be given a network without egress.
+  // The official regimes say `docker`; a local run without docker passes --agent-sandbox process.
+  agentSandbox: "process" | "docker";
   // The world's reset unit (ERIS_RESET_UNIT / `run.resetUnit`. ADR 0020 §1). `continuous` is one world
   // for the whole run (what sim:realtime does); `scenario` is a fresh world per (regime, seed), which
   // only the scenario-matrix runner can produce -- the competition itself runs in `scenario` (ADR 0020 §2).
@@ -387,6 +392,7 @@ export function loadConfig(env = process.env): SimConfig {
     localDeploy: env.ERIS_LOCAL_DEPLOY === "1",
     localSnapshotFile: env.ERIS_LOCAL_SNAPSHOT_FILE ?? ".local-snapshot",
     runMode: env.ERIS_RUN_MODE === "backtest" ? "backtest" : "realtime",
+    agentSandbox: agentSandboxEnv(env.ERIS_AGENT_SANDBOX),
     resetUnit: resetUnitEnv(env.ERIS_RESET_UNIT),
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     ou: readOuParams(env),
@@ -607,6 +613,16 @@ function parseEnabledProtocols(value: string | undefined): ProtocolId[] {
 
 function deriveRoleKey(role: string): Hex {
   return keccak256(stringToBytes(`eris-role:${role}`));
+}
+
+// A misspelt sandbox must not fall back to `process`: the official regimes rely on `docker` for the
+// caps, and a silent fallback would run the whole field uncapped while every log looked normal.
+function agentSandboxEnv(value: string | undefined): "process" | "docker" {
+  if (value === undefined || value === "" || value === "process") return "process";
+  if (value === "docker") return "docker";
+  throw new Error(
+    `run.agentSandbox must be "process" or "docker" (got ${JSON.stringify(value)})`,
+  );
 }
 
 function intEnv(value: string | undefined, fallback: number): number {

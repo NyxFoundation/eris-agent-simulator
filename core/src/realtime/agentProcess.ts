@@ -78,6 +78,10 @@ export class RealtimeAgentProcess {
     // Extra env the environment injects into all agents (e.g. ADR 0009 stress victim addresses).
     // If spec.env specifies a value it takes precedence (extraEnv acts as the default).
     extraEnv?: Record<string, string>,
+    // `docker` launches through infra/docker-agent/run-agent.sh (rules §2.3 caps; ADR 0022 task M5);
+    // `process` (default) spawns bot.ts directly. A roster `command` override is used as given
+    // either way -- it is the participant's own launcher.
+    options: { sandbox?: "process" | "docker" } = {},
   ) {
     // The child is participant code that the operator executes, so its environment is BUILT rather
     // than inherited. `{ ...process.env }` handed every submitted agent the operator's whole
@@ -134,8 +138,18 @@ export class RealtimeAgentProcess {
         );
       }
       childEnv.ERIS_AGENT_DIR = agentDir;
-      command = "node";
-      args = ["--import", "tsx", join(agentsDir, "runtime", "bot.ts")];
+      if (options.sandbox === "docker") {
+        // The wrapper reads everything it needs from env (ERIS_AGENT_ID / ERIS_AGENT_DIR / ...) and
+        // remaps host paths into the image itself. The repo root is two levels above agentsDir
+        // (<root>/example/agents); ERIS_REPO tells the script so, in case it was symlinked.
+        const repoRoot = resolve(agentsDir, "..", "..");
+        childEnv.ERIS_REPO = repoRoot;
+        command = "bash";
+        args = [join(repoRoot, "infra", "docker-agent", "run-agent.sh")];
+      } else {
+        command = "node";
+        args = ["--import", "tsx", join(agentsDir, "runtime", "bot.ts")];
+      }
     }
 
     this.child = spawn(command, args, {

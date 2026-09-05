@@ -288,6 +288,8 @@ npm run agent:build -- team my-strategy     # 提出用イメージを作る
 npm run agent:selftest -- my-strategy       # 同じ上限で短い run を回し、超過していないか見る
 ```
 
+本番と公式レジームの `npm run backtest` は、このコンテナ経由でエージェントを起動します（`run.agentSandbox: docker`）。docker の無い環境では `--agent-sandbox process` を付けると素のプロセスで走りますが、上限は掛かりません。
+
 上限を超えたエージェントは **OOM-kill** され（`--memory-swap` が `--memory` に固定されているので swap に逃げません）、coordinator には終了コード 137 の早期終了として出ます。**これは「取引しないことを選んだ」記録と区別できません**ので、提出前に確認してください。詳細は [infra/docker-agent/README.md](../infra/docker-agent/README.md)。
 
 `bundle-my-strategy.zip` ができます（ランタイム + sdk + 共有 lib + あなたのエージェントディレクトリ）。

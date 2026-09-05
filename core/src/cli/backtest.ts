@@ -67,6 +67,9 @@ const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --s
   --port <N>             port for the backtest-only anvil (default 8547)
   --state <dir>          state dump directory (default ${STATE_DIR_DEFAULT})
   --keep-anvil           keep anvil running after exit (for debugging)
+  --agent-sandbox <process|docker>
+                         how agents are launched. The official regimes say docker (the rules §2.3 caps live there);
+                         pass process for a local run without docker
   --blocks/--seconds/--protocols/--economic-gas/--score-every
                          one-off overrides of regime values (for smoke tests. runs you read results from use regime defaults)`;
 
@@ -407,6 +410,11 @@ async function main(): Promise<void> {
   if (flags["economic-gas"] !== undefined)
     runOverrides.economicGas =
       flags["economic-gas"] === "1" || flags["economic-gas"] === "true";
+  if (flags["agent-sandbox"] !== undefined) {
+    if (flags["agent-sandbox"] !== "process" && flags["agent-sandbox"] !== "docker")
+      throw new Error(`--agent-sandbox must be process or docker (got ${flags["agent-sandbox"]})`);
+    runOverrides.agentSandbox = flags["agent-sandbox"];
+  }
 
   let rosterAgents: unknown;
   if (flags.agents !== undefined) {

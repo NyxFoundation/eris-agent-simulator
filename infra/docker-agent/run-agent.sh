@@ -36,20 +36,34 @@ MEM="${ERIS_DOCKER_MEM:-4g}"
 CPUS="${ERIS_DOCKER_CPUS:-2}"
 NAME="eris-${ERIS_AGENT_ID:?ERIS_AGENT_ID is required (set by the coordinator)}"
 
+# The network the container joins. `host` shares the host's (no egress control); the operator's
+# internal network -- with the RPC gateway and the inference proxy attached to it -- is what makes
+# rules §2.3's "no direct external connection" true.
+NET="${ERIS_AGENT_NETWORK:-host}"
 # Shared cap/runtime flags, so the two modes cannot drift.
-CAPS=( --rm --network host --name "$NAME" --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS" )
+CAPS=( --rm --network "$NET" --name "$NAME" --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS" )
 
 # Env forwarded by name. Two are silent if lost under command-override:
 #   ERIS_AGENT_DIR    -- command-override skips the directory convention; set it in the roster env:.
 #   ERIS_LOCAL_DEPLOY -- from the operator process env; without it constants.local is ignored and
 #                        Multicall3 + every venue address fall back to the fork chain, so all reads
 #                        and tx builds fail while docker stats still looks healthy.
-COMMON_ENV=(
-  -e ERIS_AGENT_ID -e ERIS_RPC_URL -e ERIS_AGENT_ADDRESS -e ERIS_AGENT_PRIVATE_KEY
-  -e ERIS_PRICE_FEED_ADDRESS -e ERIS_RUN_ID -e ERIS_RUN_BLOCKS -e ERIS_AGENT_FROZEN
-  -e ERIS_LLM_MODEL -e ERIS_LOCAL_DEPLOY -e ERIS_OLLAMA_BASE_URL -e ERIS_OLLAMA_API_KEY
-  -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY
-)
+# Every ERIS_* the coordinator set is forwarded by name, except the three host paths that each
+# mode maps itself below (ERIS_RUN_DIR / ERIS_AGENT_DIR / ERIS_CONFIG) and ERIS_REPO. A fixed list
+# here used to drop whatever the coordinator added later (the vulnerability factory, the segment
+# pointer, the liquidation victims), and an agent missing one of those fails quietly.
+COMMON_ENV=()
+while IFS= read -r name; do
+  case "$name" in
+    ERIS_RUN_DIR|ERIS_AGENT_DIR|ERIS_CONFIG|ERIS_REPO) ;;
+    *) COMMON_ENV+=( -e "$name" ) ;;
+  esac
+done < <(compgen -e | grep '^ERIS_' || true)
+# Inference credentials reach the agent only when no inference proxy is named: with a proxy
+# (ERIS_INFERENCE_BASE_URL) the keys live in the proxy and the agent holds a per-agent token instead.
+if [ -z "${ERIS_INFERENCE_BASE_URL:-}" ]; then
+  COMMON_ENV+=( -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e OPENAI_BASE_URL )
+fi
 
 if [ "${ERIS_AGENT_BINDMOUNT:-0}" = "1" ]; then
   # Bind-mount mode: same host path inside the container, so coordinator paths resolve as-is.
