@@ -39,8 +39,6 @@ import {
   scenarioId,
   type AgentScore,
   type ScenarioResult,
-  SCORING_METRICS,
-  type ScoringMetric,
 } from "../backtest/standings.js";
 import {
   gitHead,
@@ -60,14 +58,12 @@ const ROOT = process.cwd(); // npm scripts run at the repo root
 const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [options]
   --regime <name|path>   config/regimes/<name>.yaml (or a YAML path). requires --seed
   --seed <N>             the scenario's seed. regimes no longer carry one (ADR 0017 §1)
-  --scenarios <path>     scenario set (regimes x seeds) to replay as a matrix, e.g. config/scenarios/public.yaml
+  --scenarios <path>     scenario set to replay as a matrix, in one of two shapes:
+                           { regimes: [...], seeds: [...] }         the cartesian product, run in that order
+                           { k?: N, epochs: [{ s?, regime, seed }] }  an ordered plan (npm run competition -- plan)
+                         each scenario is one epoch of the rules; the standings are the deviation score (§4.4)
   --agents <roster>      replace the regime's default agents with a roster file (YAML/JSON)
-  --metric <name>        scoring metric for standings (default netPnlUsdc):
-                           netPnlUsdc      end value - start value, in USDC
-                           alphaUsdc       the same with free-inventory beta removed
-                           excessLogGrowth M4 - sum of the epoch excess log returns
-                           score           M9 - mean - lambda*std over the same series (ADR 0019)
-  --repeat <N>           repeat each scenario N times (calibration diagnostic; standings take the median. default 1)
+  --repeat <N>           repeat each scenario N times (calibration diagnostic; standings take the median P. default 1)
   --port <N>             port for the backtest-only anvil (default 8547)
   --state <dir>          state dump directory (default ${STATE_DIR_DEFAULT})
   --keep-anvil           keep anvil running after exit (for debugging)
@@ -76,24 +72,21 @@ const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --s
 
 type AgentSummary = {
   id: string;
+  baseline?: boolean;
+  // Rules §4.4.1's P, off the epoch boundaries (coordinator; absent on a run recorded before it).
+  pnlUsdc?: number;
   alphaUsdc?: number;
   netPnlUsdc?: number;
   initialValueUsdc?: number;
   finalValueUsdc?: number;
   processExitedEarly?: string;
-};
-// The per-agent epoch score the coordinator writes (ADR 0019). Only the fields the standings need.
-type EpochScoreSummary = {
-  score?: number;
-  logReturns?: number[];
-  benchmarkApplied?: boolean;
+  unloggedTxCount?: number;
 };
 type RunSummary = {
   runDir: string;
   blocksProcessed?: number;
   agents: AgentSummary[];
   violations: Array<{ ownerId?: string }>;
-  epochScores?: Record<string, EpochScoreSummary>;
 };
 
 function readRunSummary(runDir: string): RunSummary | undefined {
@@ -103,20 +96,19 @@ function readRunSummary(runDir: string): RunSummary | undefined {
     blocksProcessed?: number;
     agents?: AgentSummary[];
     violations?: Array<{ ownerId?: string }>;
-    epochScores?: Record<string, EpochScoreSummary>;
   };
   return {
     runDir,
     blocksProcessed: parsed.blocksProcessed,
     agents: parsed.agents ?? [],
     violations: parsed.violations ?? [],
-    ...(parsed.epochScores ? { epochScores: parsed.epochScores } : {}),
   };
 }
 
-// summary.json -> the scores the aggregation consumes, applying ADR 0017 §4's disqualification rules.
-// Disqualification is deliberately not "score 0": a zero would place a crashed agent mid-pack in a
-// scenario where everyone lost money, which makes dying a viable tactic.
+// summary.json -> one epoch's P per agent (rules §4.4.1), plus the facts a reader should see next
+// to it. Nothing here disqualifies: after the 2026-09-06 amendment a stopped agent is scored on what
+// it left behind (§2.3, §4.4.2), and a §8 matter is the operator's to judge. An agent the summary
+// does not know at all was not placed in the epoch, so it carries no P and is not in the population.
 function scoresFromSummary(
   summary: RunSummary,
   expectedAgentIds: string[],
@@ -132,34 +124,39 @@ function scoresFromSummary(
   return ids.map((id) => {
     const agent = reported.get(id);
     if (!agent)
-      return { id, disqualified: "absent from summary.json (did not run)" };
-    const disqualified = offenders.has(id)
-      ? "priority fee cap violation"
-      : agent.processExitedEarly !== undefined
-        ? `process exited early: ${agent.processExitedEarly}`
-        : undefined;
-    // M9 straight out of the epoch scorer, and M4 as the sum of the very series it scored. Taking
-    // M4 from the same returns rather than from the endpoints is deliberate: the series has already
-    // had ADR 0019's floor, freeze and gap-carry applied, so the two metrics stay exactly
-    // `lambda*std` apart and a bankrupt agent's M4 reflects the rule that froze it.
-    const epoch = summary.epochScores?.[id];
-    const excessLogGrowth = epoch?.logReturns?.reduce((a, b) => a + b, 0);
+      return { id, flags: ["absent from summary.json (was not placed)"] };
+    const flags: string[] = [];
+    if (offenders.has(id))
+      flags.push("priority fee cap violation (rules §8; for the operator to judge)");
+    if (agent.processExitedEarly !== undefined)
+      flags.push(`process exited early: ${agent.processExitedEarly}`);
+    if ((agent.unloggedTxCount ?? 0) > 0)
+      flags.push(
+        `${agent.unloggedTxCount} on-chain tx(s) absent from the agent's submitted log`,
+      );
+    // P off the epoch boundaries when the run recorded it; a run from before that field marks both
+    // ends at the final prices, which differs by a per-run constant and is said so.
+    const pnl: Pick<AgentScore, "pnlUsdc" | "pnlSource"> =
+      agent.pnlUsdc !== undefined
+        ? { pnlUsdc: agent.pnlUsdc, pnlSource: "epoch-boundaries" }
+        : agent.netPnlUsdc !== undefined
+          ? { pnlUsdc: agent.netPnlUsdc, pnlSource: "endpoints" }
+          : {};
+    if (pnl.pnlUsdc === undefined) flags.push("no P in summary.json");
     return {
       id,
+      ...pnl,
       netPnlUsdc: agent.netPnlUsdc,
       alphaUsdc: agent.alphaUsdc,
-      ...(epoch?.score !== undefined ? { score: epoch.score } : {}),
-      ...(excessLogGrowth !== undefined ? { excessLogGrowth } : {}),
-      // The endpoints behind those two, so a stored matrix can be rescored after the run directory
-      // is gone. Copied even for a disqualified agent: the disqualification is a ranking rule, and
-      // erasing what it actually did would make the rule unauditable.
+      baseline: agent.baseline ?? false,
+      // The endpoints behind P, so a stored matrix can be rescored after the run directory is gone.
       ...(agent.initialValueUsdc !== undefined
         ? { initialValueUsdc: agent.initialValueUsdc }
         : {}),
       ...(agent.finalValueUsdc !== undefined
         ? { finalValueUsdc: agent.finalValueUsdc }
         : {}),
-      ...(disqualified !== undefined ? { disqualified } : {}),
+      ...(flags.length > 0 ? { flags } : {}),
     };
   });
 }
@@ -171,10 +168,7 @@ function scoresFromSummary(
 // a pair that no single run produced, and then the run directory recorded alongside explains
 // neither. Since --repeat exists so a calibration number can be traced back to a run, the reported
 // numbers have to come from one.
-function foldRepeats(
-  runs: AgentScore[][],
-  metric: ScoringMetric,
-): AgentScore[] {
+function foldRepeats(runs: AgentScore[][]): AgentScore[] {
   if (runs.length === 1) return runs[0];
   const ids: string[] = [];
   for (const run of runs)
@@ -183,22 +177,22 @@ function foldRepeats(
     const entries = runs
       .map((run) => run.find((a) => a.id === id))
       .filter((a): a is AgentScore => a !== undefined);
-    // Disqualified in any repeat means disqualified: the failure is a property of the agent, and
-    // letting a lucky repeat wash it out would defeat the point of detecting it.
-    const failed = entries.find((a) => a.disqualified !== undefined);
+    // A flag raised in any repeat is kept: the failure is a property of the agent, and letting a
+    // lucky repeat wash it out would defeat the point of recording it.
+    const flags = [...new Set(entries.flatMap((a) => a.flags ?? []))];
     const scored = entries.filter(
-      (a) => typeof a[metric] === "number" && Number.isFinite(a[metric]),
+      (a) => typeof a.pnlUsdc === "number" && Number.isFinite(a.pnlUsdc),
     );
     const chosen =
       scored.length > 0
-        ? scored.sort((a, b) => (a[metric] as number) - (b[metric] as number))[
+        ? scored.sort((a, b) => (a.pnlUsdc as number) - (b.pnlUsdc as number))[
             Math.floor((scored.length - 1) / 2)
           ]
         : entries[0];
     return {
       ...chosen,
       id,
-      ...(failed ? { disqualified: failed.disqualified } : {}),
+      ...(flags.length > 0 ? { flags } : {}),
     };
   });
 }
@@ -235,37 +229,79 @@ async function syncConstants(
 
 // One cell of the evaluation matrix. `<regime>#<seed>` is the address used in every report
 // (ADR 0017 §1); the regime supplies the market conditions and the seed picks the realization.
-type Scenario = { regime: string; seed: number; regimePath: string };
+// `s` is the scheduled ordinal (rules §4.4.1): the epoch's weight is a function of it.
+type Scenario = { s: number; regime: string; seed: number; regimePath: string };
 
-// --scenarios <path>: { regimes: string[], seeds: number[] } expanded as a cartesian product.
-function loadScenarioSet(root: string, path: string): Scenario[] {
+// --scenarios <path>, in one of two shapes:
+//   { regimes: string[], seeds: number[] }         the cartesian product, ordinals in that order
+//   { k?: number, epochs: [{ s?, regime, seed }] }  an ordered plan (core/src/competition/schedule.ts)
+// Both resolve every regime now rather than at run time: a typo in the set should fail before anvil
+// starts, not three hours into a matrix.
+function loadScenarioSet(
+  root: string,
+  path: string,
+): { scenarios: Scenario[]; k: number } {
   const abs = resolve(root, path);
   if (!existsSync(abs))
     throw new Error(`scenario set not found: ${abs} (--scenarios)`);
   const doc = parseYaml(readFileSync(abs, "utf8")) as {
     regimes?: unknown;
     seeds?: unknown;
+    epochs?: unknown;
+    k?: unknown;
   };
-  const regimes = doc?.regimes;
-  const seeds = doc?.seeds;
-  if (!Array.isArray(regimes) || regimes.length === 0)
-    throw new Error(`${abs} must contain a non-empty "regimes" array`);
-  if (!Array.isArray(seeds) || seeds.length === 0)
-    throw new Error(`${abs} must contain a non-empty "seeds" array`);
   const out: Scenario[] = [];
-  for (const regime of regimes) {
-    if (typeof regime !== "string")
-      throw new Error(`${abs}: every entry of "regimes" must be a string`);
-    // Resolve now rather than at run time: a typo in the set should fail before anvil starts, not
-    // three hours into a matrix.
-    const regimePath = resolveRegimePath(root, regime);
-    for (const seed of seeds) {
-      if (!Number.isInteger(seed))
-        throw new Error(`${abs}: every entry of "seeds" must be an integer`);
-      out.push({ regime, seed: seed as number, regimePath });
+  if (Array.isArray(doc?.epochs)) {
+    if (doc.epochs.length === 0)
+      throw new Error(`${abs}: "epochs" must be a non-empty array`);
+    doc.epochs.forEach((entry, i) => {
+      const e = entry as { s?: unknown; regime?: unknown; seed?: unknown };
+      if (typeof e?.regime !== "string" || !Number.isInteger(e?.seed))
+        throw new Error(
+          `${abs}: epochs[${i}] needs a string "regime" and an integer "seed"`,
+        );
+      const s = e.s === undefined ? i + 1 : e.s;
+      if (!Number.isInteger(s) || (s as number) < 1)
+        throw new Error(`${abs}: epochs[${i}].s must be a positive integer`);
+      out.push({
+        s: s as number,
+        regime: e.regime,
+        seed: e.seed as number,
+        regimePath: resolveRegimePath(root, e.regime),
+      });
+    });
+    const ordinals = new Set(out.map((x) => x.s));
+    if (ordinals.size !== out.length)
+      throw new Error(`${abs}: epoch ordinals "s" must be unique`);
+  } else {
+    const regimes = doc?.regimes;
+    const seeds = doc?.seeds;
+    if (!Array.isArray(regimes) || regimes.length === 0)
+      throw new Error(
+        `${abs} must contain a non-empty "regimes" array (or an "epochs" plan)`,
+      );
+    if (!Array.isArray(seeds) || seeds.length === 0)
+      throw new Error(`${abs} must contain a non-empty "seeds" array`);
+    for (const regime of regimes) {
+      if (typeof regime !== "string")
+        throw new Error(`${abs}: every entry of "regimes" must be a string`);
+      const regimePath = resolveRegimePath(root, regime);
+      for (const seed of seeds) {
+        if (!Number.isInteger(seed))
+          throw new Error(`${abs}: every entry of "seeds" must be an integer`);
+        out.push({ s: out.length + 1, regime, seed: seed as number, regimePath });
+      }
     }
   }
-  return out;
+  // k: the schedule's length (§4.4.1). A plan may state it explicitly -- a partial rehearsal of a
+  // 40-epoch schedule still weights its epochs on the 40 -- otherwise it is the set's size.
+  const maxS = Math.max(...out.map((x) => x.s));
+  const k = doc?.k === undefined ? maxS : doc.k;
+  if (!Number.isInteger(k) || (k as number) < maxS)
+    throw new Error(
+      `${abs}: "k" must be an integer >= the largest ordinal (${maxS}); got ${String(doc?.k)}`,
+    );
+  return { scenarios: out, k: k as number };
 }
 
 async function main(): Promise<void> {
@@ -285,18 +321,11 @@ async function main(): Promise<void> {
       "--seed does not apply to --scenarios (the set supplies the seeds)",
     );
 
-  // netPnlUsdc stays the default: it is the one metric every stored matrix has, so leaving it alone
-  // keeps old runs comparable. The epoch metrics (M4/M9) are the ones the decision is between and
-  // are selectable while it is open (issue #56).
-  const metric: ScoringMetric = ((): ScoringMetric => {
-    if (flags.metric === undefined) return "netPnlUsdc";
-    const found = SCORING_METRICS.find((m) => m === flags.metric);
-    if (!found)
-      throw new Error(
-        `--metric must be one of ${SCORING_METRICS.join(" | ")} (got ${flags.metric})`,
-      );
-    return found;
-  })();
+  if (flags.metric !== undefined)
+    throw new Error(
+      "--metric is retired: the standings are the rules' deviation score (§4.4, ADR 0022) and " +
+        "there is no second metric to rank by",
+    );
 
   const repeat = Number(flags.repeat ?? "1");
   if (!Number.isInteger(repeat) || repeat < 1)
@@ -309,8 +338,9 @@ async function main(): Promise<void> {
 
   const matrixMode = flags.scenarios !== undefined;
   let scenarios: Scenario[];
+  let k = 1;
   if (matrixMode) {
-    scenarios = loadScenarioSet(ROOT, flags.scenarios);
+    ({ scenarios, k } = loadScenarioSet(ROOT, flags.scenarios));
   } else {
     // Regimes no longer carry a seed (ADR 0017 §1), so an omitted --seed used to mean "silently
     // score seed 1". Fail instead: a scenario without a seed is not a scenario.
@@ -325,6 +355,7 @@ async function main(): Promise<void> {
     const regimePath = resolveRegimePath(ROOT, flags.regime);
     scenarios = [
       {
+        s: 1,
         regime: basename(regimePath).replace(/\.ya?ml$/, ""),
         seed,
         regimePath,
@@ -594,14 +625,17 @@ async function main(): Promise<void> {
         join(outDir, "matrix.json"),
         `${JSON.stringify(
           {
-            schema: 1,
+            // schema 2 (ADR 0022): scenarios carry the ordinal `s` and per-agent P (`pnlUsdc`);
+            // the M4/M9 fields and `metric` are gone with the metric they belonged to.
+            schema: 2,
             createdAt: new Date().toISOString(),
             sourceCommit: gitHead(ROOT) ?? "unknown",
             scenarioSet: flags.scenarios,
             // A matrix is a scenario-mode run by construction (ADR 0020 §1). Written out so a later
             // comparison against a continuous run is refused rather than silently averaged.
             resetUnit: "scenario",
-            metric,
+            // The schedule length the weights are taken over (rules §4.4.1).
+            k,
             repeat,
             // Complete only once every scenario has run; until then this is a partial matrix.
             scenariosPlanned: scenarios.length,
@@ -615,7 +649,7 @@ async function main(): Promise<void> {
       );
       writeFileSync(
         join(outDir, "standings.json"),
-        `${JSON.stringify(computeStandings(results, metric), null, 2)}\n`,
+        `${JSON.stringify(computeStandings(results, k), null, 2)}\n`,
       );
     };
     let index = 0;
@@ -667,11 +701,10 @@ async function main(): Promise<void> {
       repeatsByScenario.push(perRepeat);
       blocksByScenario.push(blocksPerRepeat);
       results.push({
+        s: scenario.s,
         regime: scenario.regime,
         seed: scenario.seed,
-        ...(perRepeat.length > 0
-          ? { agents: foldRepeats(perRepeat, metric) }
-          : {}),
+        ...(perRepeat.length > 0 ? { agents: foldRepeats(perRepeat) } : {}),
         ...(runDirs.length > 0 ? { runDir: runDirs[runDirs.length - 1] } : {}),
         ...(perRepeat.length === 0 && lastError !== undefined
           ? { error: lastError }
@@ -681,7 +714,7 @@ async function main(): Promise<void> {
     }
 
     // ---- Report ----
-    const standings = computeStandings(results, metric);
+    const standings = computeStandings(results, k);
     console.log("");
     // With --repeat, show each run rather than only the fold. The point of repeating a scenario is
     // to see how far it moves run to run (ADR 0005 says to read results as a distribution), and a
@@ -699,7 +732,7 @@ async function main(): Promise<void> {
               run
                 .map(
                   (a) =>
-                    `${a.id}=${a[metric]?.toFixed(2) ?? "-"}${a.disqualified ? "(DQ)" : ""}`,
+                    `${a.id}=${a.pnlUsdc?.toFixed(2) ?? "-"}${a.flags ? "(!)" : ""}`,
                 )
                 .join("  "),
           );
@@ -712,13 +745,20 @@ async function main(): Promise<void> {
         console.log(`  ${label}: FAILED (${result.error})`);
         continue;
       }
+      const epoch = standings.epochs.find((e) => e.s === result.s);
       const line = result.agents
         .map(
           (a) =>
-            `${a.id}=${a[metric]?.toFixed(2) ?? "-"}${a.disqualified ? "(DQ)" : ""}`,
+            `${a.id}=${a.pnlUsdc?.toFixed(2) ?? "-"}` +
+            (epoch?.tByAgent[a.id] !== undefined
+              ? `(T ${epoch.tByAgent[a.id].toFixed(1)})`
+              : "") +
+            (a.flags ? "(!)" : ""),
         )
         .join("  ");
-      console.log(`  ${label}: ${line}`);
+      console.log(
+        `  s=${result.s} ${label}${epoch?.excluded ? ` [out of S: ${epoch.excluded}]` : ""}: ${line}`,
+      );
     }
 
     if (matrixMode && outDir) {
@@ -726,24 +766,29 @@ async function main(): Promise<void> {
       flush();
       console.log("");
       console.log(
-        `standings (${metric}, regime-internal z-score, equal weight per regime):`,
+        `standings (rules §4.4 deviation score, k=${standings.k}, S=[${standings.S.join(",")}]):`,
       );
-      for (const [rank, agent] of standings.agents.entries())
+      for (const agent of standings.agents)
         console.log(
-          `  ${String(rank + 1).padStart(2)}. ${agent.id.padEnd(20)} ${agent.total.toFixed(3)}` +
-            `  [${standings.regimes
-              .map((r) => `${r}=${agent.byRegime[r]?.toFixed(2) ?? "-"}`)
-              .join(" ")}]` +
-            (agent.disqualifications > 0
-              ? `  DQ x${agent.disqualifications}`
-              : ""),
+          `  ${String(agent.rank).padStart(2)}${agent.tied ? "=" : "."} ${agent.id.padEnd(20)} ` +
+            `${agent.score === null ? "-" : agent.score.toFixed(2)}` +
+            `  [${agent.epochs.map((e) => `s${e.s}:${e.t.toFixed(1)}`).join(" ")}]` +
+            (agent.flags.length > 0 ? `  ! ${agent.flags.length} flag(s)` : ""),
         );
-      if (standings.excludedScenarios.length > 0)
+      const excluded = standings.epochs.filter((e) => e.excluded !== undefined);
+      if (excluded.length > 0)
         console.log(
-          `  excluded ${standings.excludedScenarios.length} scenario(s) that produced no result: ` +
-            standings.excludedScenarios
-              .map((s) => scenarioId(s.regime, s.seed))
+          `  out of S: ` +
+            excluded
+              .map((e) => `s=${e.s} ${scenarioId(e.regime, e.seed)} (${e.excluded})`)
               .join(", "),
+        );
+      for (const b of standings.benchmarks)
+        console.log(
+          `  benchmark ${b.id}: ` +
+            Object.entries(b.pnlByEpoch)
+              .map(([s, p]) => `s${s}:${p.toFixed(2)}`)
+              .join(" "),
         );
       console.log("");
       console.log(`wrote ${outDir}/matrix.json and standings.json`);

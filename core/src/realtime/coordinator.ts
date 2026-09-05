@@ -97,10 +97,7 @@ import {
   deploymentMismatchMessage,
 } from "@eris/sdk/deploymentCheck.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
-import {
-  scoreEpochSeriesByAgent,
-  type EpochScore,
-} from "../scoring/epochScore.js";
+import { epochPnlFromSeries } from "../scoring/epochPnl.js";
 import {
   NoArbMonitor,
   noArbFindings,
@@ -351,8 +348,8 @@ type RealtimeAgentRuntime = {
   reverted: number; // of those, the number that reverted
   // Why the agent process went away before the run ended, if it did. Set from onExit, which only
   // fires on an early exit or a spawn failure. Surfaced in summary.json because the alternative is
-  // grepping events.jsonl, and because scenario-matrix standings treat an agent that died as
-  // disqualified for that scenario rather than as one that chose to sit still (ADR 0017 §4).
+  // grepping events.jsonl. It does not change the score -- rules §2.3 / §4.4.2 value a stopped agent
+  // on what it left behind -- but the standings carry it as a flag next to the number.
   exitedEarly?: string;
 };
 
@@ -1593,9 +1590,6 @@ export async function runRealtimeSimulation(
     });
     if (segments) segments.noteFirstBlock(runStartBlock);
 
-    // ADR 0019 §2's benchmark, resolved once: every segment's score is excess over the same entry.
-    const baselineId = agentRuntimes.find((a) => a.spec.baseline)?.id;
-
     // Close a segment: write it a summary.json holding the epochs that fell inside it, so each
     // segment is an ordinary run directory that every existing tool can read. The slice carries the
     // boundary immediately before the segment's start as its own boundary 0 (see sliceEpochSeries),
@@ -1606,30 +1600,26 @@ export async function runRealtimeSimulation(
       const sliced = whole
         ? sliceEpochSeries(whole, segments.currentSegmentStartBlock, atBlock)
         : undefined;
-      const scores =
-        sliced && sliced.boundaryBlocks.length > 1
-          ? scoreEpochSeriesByAgent(sliced.valuesByAgent, {
-              ...(baselineId !== undefined ? { benchmarkId: baselineId } : {}),
-            })
-          : undefined;
-      const agents = agentRuntimes.map((a) => ({
-        id: a.id,
-        address: a.address,
+      const agents = agentRuntimes.map((a) => {
         // Segment endpoints, from the boundaries the segment covers. Deliberately not the run's
         // opening balances: a segment is a window on a continuous economy, and an agent's PnL for
-        // Tuesday is what changed on Tuesday.
-        initialValueUsdc: sliced?.valuesByAgent[a.id]?.[0] ?? 0,
-        finalValueUsdc:
-          sliced?.valuesByAgent[a.id]?.[
-            (sliced.boundaryBlocks.length ?? 1) - 1
-          ] ?? 0,
-        netPnlUsdc:
-          (sliced?.valuesByAgent[a.id]?.[
-            (sliced.boundaryBlocks.length ?? 1) - 1
-          ] ?? 0) - (sliced?.valuesByAgent[a.id]?.[0] ?? 0),
-        includedTxCount: a.included,
-        revertCount: a.reverted,
-      }));
+        // Tuesday is what changed on Tuesday. P is the rules' V_K − V_0 (§4.4.1), each end at its
+        // own marks; a final boundary that did not report falls back to the last that did (§4.4.2).
+        const pnl = sliced
+          ? epochPnlFromSeries(sliced.valuesByAgent[a.id] ?? [])
+          : null;
+        return {
+          id: a.id,
+          address: a.address,
+          baseline: a.spec.baseline ?? false,
+          initialValueUsdc: pnl?.initialValueUsdc ?? 0,
+          finalValueUsdc: pnl?.finalValueUsdc ?? 0,
+          netPnlUsdc: pnl?.pnlUsdc ?? 0,
+          ...(pnl ? { pnlUsdc: pnl.pnlUsdc } : {}),
+          includedTxCount: a.included,
+          revertCount: a.reverted,
+        };
+      });
       logger.summary({
         runId: `${runId}/segment-${segments.currentSegment}`,
         mode: config.runMode,
@@ -1649,7 +1639,6 @@ export async function runRealtimeSimulation(
               },
             }
           : { source: "live-epoch-boundaries", failed: true },
-        ...(scores ? { epochScores: scores } : {}),
         violations: [],
         agents,
       });
@@ -1657,15 +1646,12 @@ export async function runRealtimeSimulation(
       // same code either way), so it carries the score rather than only the balances.
       return agents.map((a) => ({
         id: a.id,
+        baseline: a.baseline,
         netPnlUsdc: a.netPnlUsdc,
         // Alpha needs the fixed-reference sweep, which a segment of a continuous chain does not get.
         // Reported as 0 rather than omitted, because the field is what the standings read.
         alphaUsdc: 0,
-        score: scores?.[a.id]?.score ?? 0,
-        excessLogGrowth: (scores?.[a.id]?.logReturns ?? []).reduce(
-          (x, y) => x + y,
-          0,
-        ),
+        ...(a.pnlUsdc !== undefined ? { pnlUsdc: a.pnlUsdc } : {}),
         initialValueUsdc: a.initialValueUsdc,
         finalValueUsdc: a.finalValueUsdc,
       }));
@@ -2467,9 +2453,7 @@ export async function runRealtimeSimulation(
     // agent -> realizable value at the last cross-section, where it differs from the mark
     // (issue #38: an LST redemption still in the queue when the run ends).
     let liquidatableValueByAgent: Record<string, number> = {};
-    let epochScores: Record<string, EpochScore> | undefined;
-
-    // ---- the score (ADR 0019), from the series read at the boundaries (ADR 0021 §3) ----
+    // ---- the boundary series (ADR 0021 §3): P(a, s) is its two ends (rules §4.4.1) ----
     // Taken here rather than out of the post-run sweep below, because this is the series that
     // exists on a chain the sweep cannot cover: too long for the node's history, and with no end to
     // start sweeping from. On a short run the two are the same numbers -- the same reader, the same
@@ -2499,17 +2483,6 @@ export async function runRealtimeSimulation(
       };
     })();
     if (liveEpochSeries) {
-      // ADR 0019 §2: the score is excess over the roster's baseline entry. Without one the returns
-      // stay raw and every agent is charged for the drift of the ETH gas reserve it had to hold --
-      // measured at 93% of an active agent's dispersion, so this is not a detail.
-      if (baselineId === undefined)
-        console.warn(
-          "[scoring] no roster agent is marked `baseline: true`; epoch scores are raw returns, " +
-            "not excess over a benchmark (ADR 0019 §2)",
-        );
-      epochScores = scoreEpochSeriesByAgent(liveEpochSeries.valuesByAgent, {
-        ...(baselineId !== undefined ? { benchmarkId: baselineId } : {}),
-      });
       logger.event({
         type: "epoch_series_scored",
         ...liveScorer.meta(),
@@ -2745,12 +2718,29 @@ export async function runRealtimeSimulation(
         protocolValues[adapter.id] = v;
         finalValue += v;
       }
+      // Rules §4.4.1: P = V_K − V_0 with each end at its own marks (the 5-block median of §4.1),
+      // read off the boundary series. netPnlUsdc below marks both ends at the final prices; when
+      // everyone starts with the same basket the two differ by a constant across the field, so the
+      // deviation score is the same either way -- this is the number the rules name.
+      const rulesPnl = liveEpochSeries
+        ? epochPnlFromSeries(liveEpochSeries.valuesByAgent[agent.id] ?? [])
+        : null;
       agentsSummary.push({
         id: agent.id,
         address: agent.address,
+        // §4.3: the benchmark is placed and valued like everyone else and kept out of the population.
+        baseline: agent.spec.baseline ?? false,
         initialValueUsdc: initialValue,
         finalValueUsdc: finalValue,
         netPnlUsdc: finalValue - initialValue,
+        ...(rulesPnl
+          ? {
+              pnlUsdc: rulesPnl.pnlUsdc,
+              ...(rulesPnl.carriedFinal
+                ? { pnlFinalBoundaryIndex: rulesPnl.finalBoundaryIndex }
+                : {}),
+            }
+          : {}),
         // alphaUsdc: β-removed PnL versus fair at execution (the trade's take; equivalent to the amm-challenge
         // edge; ADR 0015 Notes). netPnlUsdc is the gross total including price drift β, so look at this for skill
         // comparison. undefined when reconstruction did not run (finalBlock<runStartBlock).
@@ -2793,11 +2783,6 @@ export async function runRealtimeSimulation(
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
       valueSeries,
-      // ADR 0019's score, derived from the epoch series in the same summary so it can be recomputed
-      // when lambda or the epoch length changes. The denominator is this run's epoch count: every
-      // agent shares the boundaries here, which is what "fixed across the field" asks for (the live
-      // competition pins it at 42 because a participant can join or die mid-week).
-      ...(epochScores ? { epochScores } : {}),
       violations,
       agents: agentsSummary,
     });
@@ -2811,9 +2796,10 @@ export async function runRealtimeSimulation(
         agentsSummary.map((a) => ({
           id: a.id,
           address: a.address,
+          baseline: a.baseline,
           netPnlUsdc: a.netPnlUsdc,
           alphaUsdc: a.alphaUsdc ?? 0,
-          score: epochScores?.[a.id]?.score ?? 0,
+          ...(a.pnlUsdc !== undefined ? { pnlUsdc: a.pnlUsdc } : {}),
           initialValueUsdc: a.initialValueUsdc,
           finalValueUsdc: a.finalValueUsdc,
         })),

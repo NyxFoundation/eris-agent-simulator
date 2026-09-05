@@ -14,7 +14,6 @@
     "anvil": "tsx core/src/cli/anvil.ts",
     "sim:realtime": "tsx core/src/cli/sim-realtime.ts",
     "backtest": "tsx core/src/cli/backtest.ts",
-    "metrics": "tsx core/src/cli/metrics.ts",
     "gen:local-constants": "tsx scripts/genLocalConstants.ts",
     "gen:method-selectors": "tsx scripts/genMethodSelectors.ts",
     "gen:state-dump": "tsx scripts/genStateDump.ts",
