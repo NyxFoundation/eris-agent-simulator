@@ -33,7 +33,7 @@ The chapter that exists so nothing undecided gets written as decided ([README](R
 | Candidates | `zscore` / `borda` / `mean` ([06 §6.6](06-scoring.md)); `npm run metrics -- --matrix` compares them exhaustively |
 | Today | The dashboard displays `zscore` and nothing else; rescoring is a CLI job |
 
-### What an LST is scored at (par or realizable)
+### ~~What an LST is scored at (par or realizable)~~ — settled
 
 | | |
 |---|---|

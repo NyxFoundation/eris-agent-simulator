@@ -86,26 +86,42 @@ COMMON_ENV=(
 #
 # Both modes go through here. The bind-mount path used to have its own `exec` and its own hole.
 supervise() {
+  # The trap is installed *before* the container starts. Installing it after backgrounding leaves a
+  # window in which a TERM terminates the wrapper normally and the container survives -- small, but
+  # this whole function exists because of a window exactly that shape.
+  trap stop TERM INT
   "$@" &
   CHILD=$!
-  trap stop TERM INT
   wait "$CHILD"
+}
+
+# Is the container gone? "yes" only when docker answered and said so. A daemon that will not answer
+# is not evidence of absence, and treating it as such is how the container this function exists to
+# remove ends up surviving it.
+gone() {
+  local out
+  out=$(docker ps -q --filter "name=^${NAME}$" 2>/dev/null) || return 1
+  [ -z "$out" ]
 }
 
 stop() {
   # Removal, then verification. A failed `docker rm -f` that is shrugged off leaves exactly the
-  # container this function exists to remove, so retry briefly and say so if it survives -- an agent
+  # container this handler exists to remove, so retry briefly and say so if it survives -- an agent
   # that outlives the run still holds its key and its RPC connection.
   for _ in 1 2 3; do
     docker rm -f "$NAME" >/dev/null 2>&1 || true
-    docker ps -q --filter "name=^${NAME}$" | grep -q . || break
+    gone && break
     sleep 1
   done
-  if docker ps -q --filter "name=^${NAME}$" | grep -q .; then
-    echo "run-agent: FAILED to remove container $NAME; it is still running" >&2
+  if ! gone; then
+    echo "run-agent: could not confirm container $NAME is gone; it may still be running" >&2
   fi
-  kill "$CHILD" 2>/dev/null || true
-  wait "$CHILD" 2>/dev/null || true
+  # CHILD is unset if the signal arrived before the container was backgrounded, which is exactly the
+  # case the removal above covers.
+  if [ -n "${CHILD:-}" ]; then
+    kill "$CHILD" 2>/dev/null || true
+    wait "$CHILD" 2>/dev/null || true
+  fi
   exit 0
 }
 

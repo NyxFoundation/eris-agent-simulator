@@ -222,6 +222,5 @@ Details in [09](09-dashboard.md).
 | **λ for `scenario` mode** | The known values (0.25 in ADR 0019, 0.15 recommended by the measurements) were both measured on **a continuous economy with 12-block epochs**. Epochs per scenario depend on the scenario count S, and S is undecided |
 | **The metric (M4 vs M9)** | Whether a higher-earning, choppier agent should outrank a steadier one is not settled by recomputation. ADR 0019 chose a risk-adjusted metric; issue #56 is open |
 | **The aggregator** | ADR 0019 declared the incumbent z-score retired without naming a replacement |
-| **What an LST is scored at** | The implementation uses par; issue #38's intent was realizable. To be decided before `lst` enters the competition set |
 
 → [12 Known limits and open questions](12-open-issues.md)
