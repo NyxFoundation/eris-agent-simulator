@@ -202,7 +202,7 @@ model: <モデル名>          # 任意（ロスターの ERIS_LLM_MODEL より�
 | 段 | 内容 |
 |---|---|
 | 発火 | `obs.round − lastRevisionBlock >= reviseEvery`。**最初の観測ではベースラインを設定するだけで発火しない**（`obs.round` は絶対ブロック番号なので、0 起点だと最初の観測が即座に「期限超過」になる） |
-| 上限 | **1 run あたり 12 回**（`MAX_REVISIONS_PER_RUN`）。参加者の宣言が `runBlocks/12` より短ければ clamp し、**clamp したことをログに残す**（同居 run は 1 つの LLM 予算を共有するため） |
+| 上限 | **無し**。以前は 1 run あたり 12 回（`MAX_REVISIONS_PER_RUN`）で宣言を clamp していたが、それは同居 run が 1 つの LLM 予算を共有していた頃の措置。参加者が自分の認証情報で推論する今（規約 §2.5）、間隔（`reviseEveryBlocks`、規約 付録A）と費用は参加者のもの |
 | 入力 | 現在の戦略ソース・版履歴・各版インストール時の価値・直近 32 件の判断・最新 observation・**この run で有効な venue のアクション語彙** |
 | 出力 | `{notes, executorTs}` か `{notes, revertTo: <version>}`。`executorTs: null` は「今の戦略を維持」 |
 

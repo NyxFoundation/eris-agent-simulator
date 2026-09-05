@@ -202,7 +202,7 @@ The body: the improvement policy (when, on what evidence, and how to change it)
 | Stage | Contents |
 |---|---|
 | Trigger | `obs.round − lastRevisionBlock >= reviseEvery`. **The first observation only seeds the baseline** — `obs.round` is an absolute block number, so starting from 0 made the first observation instantly overdue |
-| Ceiling | **12 per run** (`MAX_REVISIONS_PER_RUN`). A declaration shorter than `runBlocks/12` is clamped, **and the clamp is recorded** (a co-located run shares one LLM budget) |
+| Ceiling | **None.** There used to be one (12 per run, `MAX_REVISIONS_PER_RUN`, clamping the declaration) while a co-located run shared one LLM budget; participants now bring their own inference credentials (rules §2.5), so the cadence (`reviseEveryBlocks`, rules appendix A) and its cost are theirs |
 | Input | The current source, the version history, the value at each install, the last 32 decisions, the latest observation, and **the action vocabulary this run offers** |
 | Output | `{notes, executorTs}` or `{notes, revertTo: <version>}`. `executorTs: null` means "keep the current strategy" |
 

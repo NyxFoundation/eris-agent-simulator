@@ -55,10 +55,8 @@ import {
   buildRevisionContext,
   buildRevisionSystem,
   compileExecutor,
-  effectiveReviseInterval,
   improvePolicyState,
   loadImproveAgent,
-  MAX_REVISIONS_PER_RUN,
   parseRevision,
   type RevisionOutcome,
   type StrategyVersion,
@@ -537,16 +535,10 @@ async function main(): Promise<void> {
       process.env.ERIS_IMPROVE_LOG_CALLS === "1"
         ? createJsonlAppender(runDir, agentId, ".llm")
         : undefined;
-    const { blocks: reviseEvery, clamped } = effectiveReviseInterval(
-      improveAgent.reviseEveryBlocks,
-      config.runBlocks,
-    );
-    if (clamped)
-      agentLog({
-        reason:
-          `revision cadence clamped from ${improveAgent.reviseEveryBlocks} to ${reviseEvery} blocks ` +
-          `(a co-located run shares one LLM budget; ADR 0018 §4)`,
-      });
+    // The declared cadence, as declared. It used to be clamped to 12 revisions per run while every
+    // agent drew on one shared LLM budget; participants now bring their own credentials (rules
+    // §2.5), so the interval and its cost are theirs.
+    const reviseEvery = improveAgent.reviseEveryBlocks;
 
     // Every version that has run, version 0 being the strategy the participant shipped. Kept whole so
     // the model can revert to any of them by number rather than by reproducing source, and so the
@@ -564,7 +556,6 @@ async function main(): Promise<void> {
       ];
     const current = () => versions[versions.length - 1];
     let currentVersion = 0;
-    let revisions = 0;
     // Block of the last revision opportunity. Seeded from the first observation, not 0: obs.round is
     // the absolute chain block (read.ts passes `round: bn`), so starting at 0 made the very first
     // observation satisfy `block - lastBlock >= reviseEvery` and fire a revision before the strategy
@@ -597,7 +588,7 @@ async function main(): Promise<void> {
 
     let revising = false;
     const maybeRevise = async (block: number): Promise<void> => {
-      if (revising || revisions >= MAX_REVISIONS_PER_RUN) return;
+      if (revising) return;
       revising = true;
       try {
         // Nothing is judged here. Whether a revision helped, and whether to undo it, is the model's
@@ -622,7 +613,6 @@ async function main(): Promise<void> {
           recent: recentDecisions,
           observation: latestObservation,
         });
-        revisions++;
         let raw: string;
         try {
           raw = await callLlm({

@@ -90,7 +90,6 @@ the previous strategy keeps running and the reason is logged.
 | cheatcode static check on generated code | an LLM-authored strategy is not trusted code, and the submission gate cannot see code that does not exist yet |
 | compile / call failure is never installed | a broken rewrite must not stop the agent trading |
 | `revertTo` in the model's hands, not a threshold | whether a dip is the strategy or the market is a judgment; a fixed rule is either never right or always wrong (§5) |
-| revision cadence clamped | a co-located run shares one LLM budget; "revise every block" from one agent would starve the field |
 | every outcome logged | the previous attempt at self-improvement shipped a rollback that never once fired and nobody noticed |
 
 **Always run a frozen control.** `ERIS_AGENT_FROZEN: "1"` runs the same directory with the

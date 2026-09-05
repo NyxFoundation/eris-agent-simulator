@@ -34,10 +34,10 @@ export const DEFAULT_REVISE_EVERY_BLOCKS = 60;
 // Wall-clock bound on one call into a generated strategy. Blocks are 2 s in production, so a
 // strategy that has not answered in this long has already missed its block.
 export const EXECUTOR_TIMEOUT_MS = 2000;
-// Ceiling the operator puts on the participant's declaration. A co-located run shares one LLM
-// budget, so "revise every block" from one participant would starve the field; a declaration below
-// this is honored as-is, above it is clamped and the clamp is recorded.
-export const MAX_REVISIONS_PER_RUN = 12;
+// There is no per-run ceiling on revisions. One existed (12 per run, clamping the declared cadence
+// up to runBlocks/12) while every agent in a co-located run drew on one shared LLM budget.
+// Participants now bring their own inference credentials (rules §2.5), so the cadence
+// (`reviseEveryBlocks` in prompt.md, rules appendix A) is theirs to set and theirs to pay for.
 
 export type ImproveAgent = {
   name: string;
@@ -152,23 +152,6 @@ export function loadImproveAgent(agentDir: string): ImproveAgent {
     model: typeof fm.model === "string" ? fm.model : undefined,
     body: m[2].trim(),
   };
-}
-
-// The participant's declared cadence, clamped so one agent cannot consume the shared LLM budget.
-// Returns the effective interval and whether it was clamped, so the caller can record the clamp
-// rather than silently overriding what the participant asked for.
-export function effectiveReviseInterval(
-  declaredBlocks: number,
-  runBlocks: number,
-  maxRevisions = MAX_REVISIONS_PER_RUN,
-): { blocks: number; clamped: boolean } {
-  // runBlocks 0 means "run until the time limit", so there is no total to divide up; honor the
-  // declaration and let the per-run counter do the capping.
-  if (runBlocks <= 0) return { blocks: declaredBlocks, clamped: false };
-  const floor = Math.ceil(runBlocks / maxRevisions);
-  return declaredBlocks >= floor
-    ? { blocks: declaredBlocks, clamped: false }
-    : { blocks: floor, clamped: true };
 }
 
 export type ParseResult =
