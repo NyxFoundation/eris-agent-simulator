@@ -12,7 +12,7 @@ A normative reference for what the current implementation **is**. It is written 
 | [docs/guide/](../../guide/) | How do I use it? | Task guides |
 | [docs/adr/](../../adr/) | Why was it built this way? | Decision history (**includes decisions that were later overturned**) |
 | **docs/spec/ (this)** | **What is it?** | **Normative description of the present** |
-| [docs/competition-rules.md](../../competition-rules.md) | What rules do participants follow? | Competition rules (legal draft, Japanese) |
+| [ascon.dev/rules](https://ascon.dev/rules) | What rules do participants follow? | The competition rules (a legal document; the Japanese text governs). **Outside this repository**, and the only source for them |
 
 ADRs are a history, so overturned text survives in them — ADR 0002 → 0018, the continuous economy → ADR 0020. This document describes only the present, and links out to the ADR where the history matters.
 

@@ -1,5 +1,10 @@
 [← README](../../README.md)
 
+> **Entering the competition?** Start at [Getting Started](../competition-start.en.md)
+> ([日本語](../competition-start.md)) instead. The rules require every submitted agent to carry a
+> `prompt.md` alongside `agent.ts`, so the rule-only strategy this page opens with is a teaching
+> step, not a submittable agent. Everything here still applies — it is the same `decide()`.
+
 # Writing a Strategy (agent authoring tutorial)
 
 A new strategy runs by creating **one directory at `example/agents/<id>/`** and adding the id to a roster

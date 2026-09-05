@@ -12,7 +12,7 @@ English: [`docs/spec/en/`](en/README.md)
 | [docs/guide/](../guide/) | どう使うか | 手順書 |
 | [docs/adr/](../adr/) | なぜそうしたか | 意思決定の履歴（**覆った決定を含む**） |
 | **docs/spec/（本書）** | **何であるか** | **現状の規範的記述** |
-| [docs/competition-rules.md](../competition-rules.md) | 参加者が従う規則は何か | 競技規約（法務文書・日本語） |
+| [ascon.dev/rules](https://ascon.dev/rules) | 参加者が従う規則は何か | 競技規約（法務文書・日本語正文）。**本 repo の外**にあり、そちらが唯一の出典 |
 
 ADR は履歴なので、ADR 0002 → 0018、連続経済 → ADR 0020 のように**後から覆った記述が残っている**。本書は現状のみを書き、経緯が必要な箇所から ADR へリンクする。
 

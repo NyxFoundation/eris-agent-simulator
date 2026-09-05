@@ -50,7 +50,11 @@ LLM の手掛かりは現在の戦略コードだけになり、**一度も swap
 知りようがない**（実測: USDC-only 配布で `lp-provider` が 18/18 シナリオ無取引 =
 `docs/scoring-metric-measurements.md` §5.8）。「持っていないことは何もしない理由にならない」も明記する。
 改訂は `{notes, executorTs}` か `{notes, revertTo: <version>}` を返し、`executorTs: null` は
-「今の戦略を維持」。生成コードは **cheatcode 静的検査 → コンパイル → 2 秒の実行上限**を通ってから設置。
+「今の戦略を維持」。生成コードは **cheatcode 静的検査 → vm コンパイル**（関数式の *評価* に 1 秒
+= `runInContext(..., {timeout: 1000})`）を通ってから設置される。**設置前に試運転はしない** — vm の
+timeout は式の評価しか覆わないので、無限ループする本体は評価を通ってしまう。だから設置後、
+`decide` の**呼び出しごと**に `Promise.race` で 2 秒（`EXECUTOR_TIMEOUT_MS`）を掛ける
+（`example/agents/runtime/improve.ts:36,272,296`）。
 **自動 rollback は無い**（閾値に妥当な値が無いため。旧実装は 18 run 中 0 件発火、逆に「少しでも負けたら」
 だと全員が負けるレジームで毎回巻き戻る）。戻すかどうかはモデルの判断で、版履歴を渡して `revertTo` で行う。
 LLM バックエンドが無くても run は完走し、改訂失敗が記録されて戦略は無改変で走り続ける。

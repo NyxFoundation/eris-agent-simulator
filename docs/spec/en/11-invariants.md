@@ -90,7 +90,7 @@ Checked on every run that has both, and emitted as `epoch_series_agreement` (`bo
 
 `npm run check:strategy` (the cheatcode static check, [05 §5.8](05-agent-contract.md)) and `npm run check:boundaries` (the workspace dependency direction).
 
-LLM-generated code passes **the same static check plus a vm compile plus a 2-second wall-clock bound** before installation ([05 §5.7](05-agent-contract.md)).
+LLM-generated code passes **the same static check plus a vm compile** before installation ([05 §5.7](05-agent-contract.md)). The vm's timeout is 1 second, but it covers **only evaluating the function expression** — the generated body is never trial-run (`example/agents/runtime/improve.ts:272`). The wall-clock bound applies **after** installation instead: every call to `decide` is raced against 2 seconds (`EXECUTOR_TIMEOUT_MS`, `improve.ts:36,296`). Exceeding it is recorded as that round's `decide error:`, which is what stops a body that loops forever from wedging the agent permanently.
 
 ## 11.5 Unit tests
 

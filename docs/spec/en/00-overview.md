@@ -30,7 +30,7 @@ The environment and the scorer live in one process (the coordinator), but **the 
 
 ### Out
 
-- **Running the competition itself.** Submission, judging and prizes belong to the [competition rules](../../competition-rules.md); this system provides only the execution substrate
+- **Running the competition itself.** Submission, judging and prizes belong to the [competition rules](https://ascon.dev/rules); this system provides only the execution substrate
 - **Any claim of correspondence to a real market.** The oracles are mocks and the fair price is a synthetic path ([README, Disclaimer](../../../README.md))
 - **Agent strategy.** `example/agents/` is reference material, not specification
 - **The chain client.** Either anvil or an external OP Stack devnet is assumed

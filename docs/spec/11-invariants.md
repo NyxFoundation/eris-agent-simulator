@@ -90,7 +90,7 @@
 
 `npm run check:strategy`（cheatcode 静的検査、[05 §5.8](05-agent-contract.md)）と `npm run check:boundaries`（workspace 依存方向）。
 
-LLM 生成コードは設置前に**同じ静的検査 + vm コンパイル + 2 秒の実行上限**を通る（[05 §5.7](05-agent-contract.md)）。
+LLM 生成コードは設置前に**同じ静的検査 + vm コンパイル**を通る（[05 §5.7](05-agent-contract.md)）。vm の timeout は 1 秒だが、それが覆うのは**関数式の評価だけ**で、生成された本体の試運転は行わない（`example/agents/runtime/improve.ts:272`）。実行時間の上限は設置**後**にかかる — `decide` の呼び出しごとに `Promise.race` で 2 秒（`EXECUTOR_TIMEOUT_MS`、`improve.ts:36,296`）。超過は当該ラウンドの `decide error:` として記録され、無限ループする本体がエージェントを恒久的に固めることを防ぐ。
 
 ## 11.5 ユニットテスト
 
