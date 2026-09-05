@@ -767,3 +767,47 @@ test("the Aave borrower is NOT floored, because nothing takes the other side", (
   assert.doesNotMatch(source, /Math\.max\(0, Number\(net\)/);
   assert.match(source, /Not floored at zero, deliberately/);
 });
+
+test("a run with no lending venue has no lending observation at all", async () => {
+  // Not present-and-empty. Every caller guards with `if (!lending?.singleton)`, and the zero address
+  // passes that guard because it is a non-empty string -- so returning it made "there is no venue"
+  // read as "the venue is at 0x0". Measured: a 32-agent bench registered no lending markets for
+  // exactly this reason, and the run looked like one where nobody chose to create any.
+  const { observeLending } = await import("../sdk/src/protocols/lending.js");
+  const observation = await observeLending(
+    {} as never,
+    {
+      singleton: undefined,
+      marketIds: [],
+      paramsById: {},
+      totalsById: {},
+      priceById: {},
+      oracleOwnerById: {},
+      dropped: 0,
+    },
+    AGENT,
+  );
+  assert.equal(observation, undefined);
+});
+
+test("the container wrapper forwards every env the capability needs", () => {
+  // A containerised agent that cannot see the registry or the venue fails *quietly*: it reads an
+  // empty registry and an absent venue, which is what a run where nobody deployed anything looks
+  // like. The omission cost a whole load test before it was noticed.
+  const wrapper = readFileSync(
+    new URL("../infra/docker-agent/run-agent.sh", import.meta.url),
+    "utf8",
+  );
+  for (const name of [
+    "ERIS_MARKET_REGISTRY_ADDRESS",
+    "ERIS_LENDING_ADDRESS",
+    "ERIS_MARKET_REGISTRY_FROM_BLOCK",
+    "ERIS_MAX_TX_GAS",
+    "ERIS_MAX_AGENT_BLOCK_GAS",
+  ]) {
+    assert.ok(
+      wrapper.includes(`-e ${name}`),
+      `run-agent.sh does not forward ${name}`,
+    );
+  }
+});

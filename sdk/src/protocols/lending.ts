@@ -659,13 +659,22 @@ const ownerAbi = [
   },
 ] as const satisfies Abi;
 
+// Undefined when the run has no lending singleton, so `obs.protocols.lending` is *absent* rather
+// than present-and-empty.
+//
+// It used to return the zero address, and every caller's guard is `if (!lending?.singleton)` --
+// which the zero address passes, because it is a non-empty string. So "this run has no lending
+// venue" read as "the venue is at 0x0", every agent walked past its own idle check, and the
+// failure surfaced one step later as a build-time rejection nobody was looking at. Measured
+// 2026-09-05: a 32-agent bench registered no lending markets at all for this reason, and the run
+// looked exactly like one where nobody chose to create any.
 export async function observeLending(
   ctx: SimContext,
   state: LendingState,
   agent: Address,
-): Promise<LendingObservation> {
+): Promise<LendingObservation | undefined> {
   const singleton = state.singleton;
-  if (!singleton) return { singleton: ZERO_ADDRESS, markets: [], dropped: 0 };
+  if (!singleton) return undefined;
   if (state.marketIds.length === 0)
     return { singleton, markets: [], dropped: state.dropped };
   const ids = state.marketIds.filter((id) => state.paramsById[id]);
@@ -1232,7 +1241,7 @@ export const lendingAdapter: ProtocolAdapter = {
     return readLendingState(ctx);
   },
 
-  async observe(ctx, state, agent): Promise<LendingObservation> {
+  async observe(ctx, state, agent): Promise<LendingObservation | undefined> {
     return observeLending(ctx, (state as LendingState) ?? EMPTY_STATE, agent);
   },
 

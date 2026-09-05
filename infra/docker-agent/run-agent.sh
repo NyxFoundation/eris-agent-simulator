@@ -73,7 +73,17 @@ COMMON_ENV=(
   -e ERIS_PRICE_FEED_ADDRESS -e ERIS_RUN_ID -e ERIS_RUN_BLOCKS -e ERIS_AGENT_FROZEN
   -e ERIS_LLM_MODEL -e ERIS_LOCAL_DEPLOY -e ERIS_OLLAMA_BASE_URL -e ERIS_OLLAMA_API_KEY
   -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e HOME=/tmp
-  -e ERIS_MAX_TXS_PER_ROUND -e ERIS_MAX_TX_GAS
+  -e ERIS_MAX_TXS_PER_ROUND -e ERIS_MAX_TX_GAS -e ERIS_MAX_AGENT_BLOCK_GAS
+  # Issue #40. Without these a containerised agent cannot see the registry or the lending venue at
+  # all -- and the failure is quiet: it reads an empty registry and an absent venue, which is
+  # exactly what a run where nobody deployed anything looks like. Measured 2026-09-05: a 32-agent
+  # bench registered seven ERC-20s and thirteen unknown contracts and **not one lending market**,
+  # because every `createLendingMarket` was rejected at build time inside the container.
+  -e ERIS_MARKET_REGISTRY_ADDRESS -e ERIS_LENDING_ADDRESS
+  -e ERIS_MARKET_REGISTRY_FROM_BLOCK
+  # ADR 0014 / ADR 0009: the same class of omission, checked while I was here.
+  -e ERIS_VULN_FACTORY -e ERIS_VULN_FROM_BLOCK -e ERIS_VULN_LLM
+  -e ERIS_LIQUIDATION_VICTIMS -e ERIS_CONFIG -e ERIS_RUN_DIR_POINTER
 )
 
 # Run the container with this wrapper supervising it, and make sure the *container* dies when the
