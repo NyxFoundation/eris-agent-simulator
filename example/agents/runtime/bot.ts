@@ -52,18 +52,21 @@ import type {
 } from "@eris/sdk/types.js";
 import { createAgentLog, createJsonlAppender } from "./agentLog.js";
 import { DecideTimeoutError, withDecideTimeout } from "./decideTimeout.js";
+import { MarketHistory, TradeLedger } from "./evidence.js";
 import { callLlm } from "./llm.js";
 import {
   buildRevisionContext,
   buildRevisionSystem,
   compileExecutor,
+  DEFAULT_REVISE_EVERY_BLOCKS,
   improvePolicyState,
   loadImproveAgent,
   parseRevision,
   type RevisionOutcome,
   type StrategyVersion,
 } from "./improve.js";
-import { createMempoolLog, Sender } from "./send.js";
+import { createMempoolLog, type MempoolLog, Sender } from "./send.js";
+import { AgentStateStore, capBytesFromEnv, STATE_DIR_ENV } from "./state.js";
 import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
 
@@ -224,9 +227,87 @@ async function main(): Promise<void> {
     },
   };
 
+  // ---- latest state (updated by the read loop, referenced by decide/submit) ----
+  //
+  // Declared before the logs and the sender that close over them. They were declared further down,
+  // which worked only because nothing called those closures until the block loop had started -- an
+  // ordering the next edit to this file would have had no way to know about.
+  let latestObservation: AgentObservation | null = null;
+  let latestBalances: BalanceSnapshot | null = null;
+  let latestStateById = new Map<ProtocolId, unknown>();
+  let lastBlock = 0;
+  const subscribers = new Set<(obs: AgentObservation) => void>();
+
+  // What the strategy actually did recently. The self-improvement loop shows this to the model as
+  // the evidence for a rewrite, so it has to hold the decisions themselves -- recording only that a
+  // block happened rendered every entry as "no action" and left the model with nothing to reason
+  // about. Populated from the decide path rather than from the observation stream because that is
+  // where the outcome of a decision (an action, an error, a send-stage rejection) actually exists.
+  const recentDecisions: Array<{
+    round: number;
+    action?: unknown;
+    reason?: string;
+  }> = [];
+  // Deep enough to hold a whole revision interval of decisions *and* the send-stage rejections that
+  // now sit beside them. A strategy failing at the send stage produces one of each per block, so at
+  // 32 the rejections evicted every decision the model needed to compare them against -- and the
+  // interval can be 60 blocks or more.
+  const RECENT_DECISIONS_KEPT = 256;
+  const rememberDecision = (entry: {
+    round: number;
+    action?: unknown;
+    reason?: string;
+  }): void => {
+    recentDecisions.push(entry);
+    if (recentDecisions.length > RECENT_DECISIONS_KEPT) recentDecisions.shift();
+  };
+
+  // Issue #76: one sample per observed block -- fair prices, every venue's gap, the venue
+  // discounts, the market-priced stables, the marked value. Handed to the model as a digest, never
+  // as rows. Sized for the default interval here and grown once prompt.md has been read, because
+  // the first block has to have somewhere to go before the policy has been parsed.
+  const marketHistory = new MarketHistory(DEFAULT_REVISE_EVERY_BLOCKS);
+  // Every transaction this agent sends, from the block the strategy decided on to what the position
+  // was worth once it had landed. Fed by the sender and by the receipts computeCompetition already
+  // resolves, so it costs no extra chain call.
+  const tradeLedger = new TradeLedger({
+    gapAt: (block, protocol, base) =>
+      marketHistory.gapAt(block, protocol, base),
+  });
+
   const logMempool = createMempoolLog(runDir, agentId);
   const agentLog = createAgentLog();
-  const sender = new Sender({ ctx: simCtx, adapters, privateKey, logMempool });
+  // A send-stage rejection is the strategy proposing something it could not do -- the single most
+  // actionable thing a revision can be handed. It went to the agent log as `kind: "mempool"` and
+  // nowhere else, so the revision context never saw it: the model was shown "swap" and had no way
+  // to learn the swap never left the process. Mirror those three events into the decision ring,
+  // next to the decision that caused them.
+  const logMempoolWithRejections: MempoolLog = (entry) => {
+    logMempool(entry);
+    const event = entry.event;
+    if (
+      event !== "rejected" &&
+      event !== "submit_failed" &&
+      event !== "bad_action"
+    )
+      return;
+    const round = Number(
+      entry.blockSeen ?? latestObservation?.round ?? lastBlock,
+    );
+    const what =
+      entry.actionType !== undefined
+        ? String(entry.actionType)
+        : ((entry.action as { type?: string } | undefined)?.type ?? "action");
+    const why = String(entry.reason ?? entry.error ?? event);
+    rememberDecision({ round, reason: `${event} (${what}): ${why}` });
+  };
+  const sender = new Sender({
+    ctx: simCtx,
+    adapters,
+    privateKey,
+    logMempool: logMempoolWithRejections,
+    ledger: tradeLedger,
+  });
   // The scorer's valuation context has no SimContext, and the improve loop's sandbox runs the same
   // adapters -- so the singleton is published module-side too, exactly as the coordinator does it.
   setLendingSingleton(lending);
@@ -311,6 +392,11 @@ async function main(): Promise<void> {
   // malformed or unmarked prompt.md was only discovered once the agent was already trading, which
   // makes a configuration error look like a mid-run crash.
   const improveAgent = mode === "improve" ? loadImproveAgent(agentDir) : null;
+  // The evidence buffer has to cover a whole revision interval, and it has to be that size before
+  // the first block is observed -- a buffer shorter than the interval hands the model a window that
+  // stops before the event it is being asked about. The cadence is the participant's to declare and
+  // to pay for (rules §2.5), so this follows whatever they declared.
+  if (improveAgent) marketHistory.ensureCapacity(improveAgent.reviseEveryBlocks);
   if (hasImprove && typeof agentModule.run === "function") {
     // run(ctx) owns its own loop, so there is no decide to swap out.
     process.stderr.write(
@@ -377,12 +463,6 @@ async function main(): Promise<void> {
     logMempool({ event: "approvals_granted", count: pending.length });
   };
 
-  // ---- latest state (updated by the read loop, referenced by decide/submit) ----
-  let latestObservation: AgentObservation | null = null;
-  let latestBalances: BalanceSnapshot | null = null;
-  let latestStateById = new Map<ProtocolId, unknown>();
-  const subscribers = new Set<(obs: AgentObservation) => void>();
-
   const ctx: AgentContext = {
     agentId,
     address,
@@ -405,24 +485,6 @@ async function main(): Promise<void> {
   // strategy underneath a running agent (ADR 0018). In every other mode this is just agentModule.decide.
   let activeDecide = agentModule.decide;
   let deciding = false;
-  // What the strategy actually did recently. The self-improvement loop shows this to the model as
-  // the evidence for a rewrite, so it has to hold the decisions themselves -- recording only that a
-  // block happened rendered every entry as "no action" and left the model with nothing to reason
-  // about. Populated here rather than from the observation stream because that is where the outcome
-  // of a decision (an action, or an error) actually exists.
-  const recentDecisions: Array<{
-    round: number;
-    action?: unknown;
-    reason?: string;
-  }> = [];
-  const rememberDecision = (entry: {
-    round: number;
-    action?: unknown;
-    reason?: string;
-  }): void => {
-    recentDecisions.push(entry);
-    if (recentDecisions.length > 32) recentDecisions.shift();
-  };
   const invokeDecide = async (obs: AgentObservation): Promise<void> => {
     if (!activeDecide || deciding) return;
     deciding = true;
@@ -467,7 +529,6 @@ async function main(): Promise<void> {
   const intervalMs = agentModule?.config?.intervalMs;
   const offsetMs = agentModule?.config?.offsetMs ?? 0;
   let processing = false;
-  let lastBlock = 0;
   const onBlock = async (bn: number): Promise<void> => {
     if (processing || bn <= lastBlock) return;
     processing = true;
@@ -482,6 +543,11 @@ async function main(): Promise<void> {
       latestBalances = snap.balances;
       latestStateById = snap.stateById;
       lastBlock = bn;
+      // Issue #76. Both are pure bookkeeping over what the block loop already read: the trajectory
+      // the revision context reports, and the marked value each landed transaction is judged
+      // against a few blocks later.
+      marketHistory.push(snap.observation);
+      tradeLedger.mark(bn, snap.observation.inventory?.valueUsdc ?? null);
       // gas manager: after the observation is settled, check the ETH balance and if low enqueue a refill tx (economicGas only).
       void sender.maybeRefillGas(
         bn,
@@ -580,25 +646,147 @@ async function main(): Promise<void> {
     // Every version that has run, version 0 being the strategy the participant shipped. Kept whole so
     // the model can revert to any of them by number rather than by reproducing source, and so the
     // log can be read back afterwards.
-    const versions: Array<StrategyVersion & { executor: typeof activeDecide }> =
-      [
-        {
-          version: 0,
-          source: readFileSync(agentTsPath, "utf8"),
-          notes: "the strategy as submitted",
-          installedAtBlock: 0,
-          valueAtInstall: null,
-          executor: activeDecide,
+    type LiveVersion = StrategyVersion & { executor: typeof activeDecide };
+    const shipped: LiveVersion = {
+      version: 0,
+      source: readFileSync(agentTsPath, "utf8"),
+      notes: "the strategy as submitted",
+      installedAtBlock: 0,
+      valueAtInstall: null,
+      executor: activeDecide,
+    };
+    const versions: LiveVersion[] = [shipped];
+    // The version the trading loop is actually running. Not `versions[last]`: a resume whose newest
+    // persisted version fails re-validation runs the shipped strategy while keeping the older
+    // versions as revert targets, and reporting the newest as current would then hand the model the
+    // source of a strategy that is not running.
+    let active: LiveVersion = shipped;
+    const current = () => active;
+    // The highest version number ever allocated, which is what the next one counts from. Not the
+    // version that is *running*: a resume whose newest persisted version fails re-validation runs
+    // the shipped strategy while the numbering carries on from the version that failed, and telling
+    // the model "strategy version: 3" while it is looking at the source of version 0 is a lie it
+    // has no way to catch.
+    let highestVersion = 0;
+
+    // ---- cross-epoch state (issue #77) ----
+    //
+    // Absent for every path that existed before it: a single backtest, a practice devnet, a matrix
+    // without --agent-state-root. Absent is not an error, it is "this run does not persist".
+    // ERIS_AGENT_FROZEN never reaches here at all -- a frozen control is `mode: "decide"`, so it
+    // starts from agent.ts every epoch, which is what makes it the control.
+    const epochId = runId;
+    const stateStore = AgentStateStore.open({
+      dir: process.env[STATE_DIR_ENV],
+      capBytes: capBytesFromEnv(process.env.ERIS_AGENT_STATE_CAP_BYTES),
+      onProblem: (reason) => {
+        agentLog({ reason: `agent state: ${reason}` });
+        logMempool({ event: "agent_state_problem", reason });
+      },
+    });
+    const epochs: string[] = [];
+    // The model's note to its next self, carried next to the versions.
+    let memory: string | null = null;
+    const persist = (): void => {
+      stateStore?.save({
+        schema: 1,
+        epochs,
+        // Version 0's `source` is the whole of agent.ts, not a decide body -- it is there so the
+        // model can read what it was shipped, and it is not something the resume could compile.
+        // Every epoch reconstructs it from the file it already has.
+        versions: versions
+          .filter((v) => v.version > 0)
+          .map(({ executor: _executor, ...v }) => ({
+            ...v,
+            epochId: v.epochId ?? epochId,
+          })),
+        ...(memory ? { memory } : {}),
+      });
+    };
+
+    const loaded = stateStore?.load();
+    if (loaded && loaded.ok === false) {
+      // Corrupt or foreign: start from agent.ts rather than from a guess. Recorded, because an
+      // agent that silently forgot everything looks exactly like one that had nothing to remember.
+      agentLog({
+        reason: "revision_resume_failed",
+        state: { error: loaded.reason },
+      });
+    }
+    let resumeFailures = 0;
+    if (loaded && loaded.ok === true) {
+      epochs.push(...loaded.state.epochs);
+      memory = loaded.state.memory ?? null;
+      const persistedVersions = loaded.state.versions;
+      const newest = persistedVersions[persistedVersions.length - 1];
+      for (const v of persistedVersions) {
+        // Untrusted input, every epoch. It compiled last epoch under a check that may since have
+        // been tightened, and "it was fine yesterday" is not a property of generated code.
+        const compiled = compileExecutor(v.source);
+        if (!compiled.ok) {
+          resumeFailures += 1;
+          agentLog({
+            reason: "revision_resume_failed",
+            state: {
+              version: v.version,
+              epochId: v.epochId,
+              error: compiled.reason,
+            },
+          });
+          continue;
+        }
+        versions.push({ ...v, executor: compiled.executor });
+      }
+      // Version numbering continues across the boundary even for versions that did not survive
+      // re-validation, so a number in the log means one thing for the life of the agent.
+      highestVersion = Math.max(0, newest?.version ?? 0);
+      const resumed = versions[versions.length - 1];
+      // Only the newest decides what runs. If it did not survive, the shipped strategy does -- an
+      // older revision might be worse than what the participant submitted, and picking one for the
+      // model would be the harness making a judgment ADR 0018 §5 says it must not make.
+      if (newest !== undefined && resumed.version === newest.version) {
+        active = resumed;
+        activeDecide = resumed.executor;
+      }
+      agentLog({
+        reason: "revision_resumed",
+        state: {
+          epochsBefore: loaded.state.epochs.length,
+          versionsCarried: versions.length - 1,
+          // Counted in the summary too. "0 versions carried, running version 0" is also what a
+          // first epoch looks like, and the difference between nothing to carry and everything
+          // refused is the whole diagnosis.
+          versionsRefused: resumeFailures,
+          runningVersion: active.version,
+          hasMemory: memory !== null,
         },
-      ];
-    const current = () => versions[versions.length - 1];
-    let currentVersion = 0;
+      });
+    }
+    if (stateStore && loaded && loaded.ok === "absent")
+      // A configured but empty directory is the first epoch, and saying so is the difference
+      // between "nothing to carry" and "the carry did not work" -- which look identical from
+      // outside and have opposite fixes.
+      agentLog({ reason: "revision_resume_empty", state: { dir: stateStore.dir } });
+    // Only when there is somewhere to carry it. Without persistence every run is epoch 1 of 1, and
+    // telling the model so would put a line in every existing run's context that means nothing.
+    if (stateStore) {
+      epochs.push(epochId);
+      // Written before the first block: the epoch has to be on record even if it ends without a
+      // single revision, or a re-run cannot tell how many epochs the state has already seen.
+      persist();
+    }
+
     // Block of the last revision opportunity. Seeded from the first observation, not 0: obs.round is
     // the absolute chain block (read.ts passes `round: bn`), so starting at 0 made the very first
     // observation satisfy `block - lastBlock >= reviseEvery` and fire a revision before the strategy
     // had traded a single block -- with no performance to reason about, burning one of the
     // participant's revisions on nothing.
     let lastRevisionBlock: number | null = null;
+    // The block the model was last shown a context for, as opposed to the block the cadence was
+    // last measured from. `lastRevisionBlock` is reseeded from the first observation and then on
+    // every cadence tick whether or not the call got through, so it is the wrong window to report
+    // evidence over. Null means "everything so far", which is what the first revision gets.
+    let lastRevisionAt: number | null = null;
     // Value at the moment of the last revision, to judge whether that revision helped.
     let valueAtRevision: number | null = null;
     let initialValue: number | null = null;
@@ -637,6 +825,9 @@ async function main(): Promise<void> {
           current().source,
           Object.keys(latestObservation?.protocols ?? {}) as ProtocolId[],
         );
+        // The interval the model is being asked to judge. Null on the first revision, which is the
+        // whole run so far -- not an empty window.
+        const since = lastRevisionAt;
         const context = buildRevisionContext({
           block,
           valueUsdc: value ?? 0,
@@ -645,10 +836,18 @@ async function main(): Promise<void> {
             valueAtRevision !== null && value !== null
               ? value - valueAtRevision
               : null,
-          currentVersion,
+          // What is *running*, not what has been numbered.
+          currentVersion: active.version,
           history: versions.map(({ executor: _executor, ...v }) => v),
           recent: recentDecisions,
           observation: latestObservation,
+          sinceBlock: since,
+          market: marketHistory.since(since),
+          trades: tradeLedger.aggregate(since),
+          outcomes: tradeLedger.outcomesByBlock(since),
+          epochs,
+          memory,
+          epochId,
         });
         let raw: string;
         try {
@@ -692,6 +891,11 @@ async function main(): Promise<void> {
           record({ kind: "rejected", reason: parsed.reason }, block);
           return;
         }
+        // The evidence window closes here and nowhere earlier. A call that threw, or came back as
+        // something that is not a revision, means the model never acted on the interval -- and
+        // advancing the window then would hide that interval from the next revision for good, which
+        // is the failure this whole issue is about.
+        lastRevisionAt = block;
         if (parsed.revision.revertTo !== null) {
           const target = versions.find(
             (v) => v.version === parsed.revision.revertTo,
@@ -711,21 +915,26 @@ async function main(): Promise<void> {
           // Re-installed as a new version rather than by rewinding the list: the history is a record
           // of what ran and when, and rewinding it would erase the fact that the reverted version
           // ever did.
-          currentVersion += 1;
-          activeDecide = target.executor;
-          versions.push({
+          highestVersion += 1;
+          const reinstalled = {
             ...target,
-            version: currentVersion,
+            version: highestVersion,
             notes: `reverted to v${target.version}: ${parsed.revision.notes}`,
             installedAtBlock: block,
             valueAtInstall: value,
-          });
+            epochId,
+          };
+          activeDecide = target.executor;
+          versions.push(reinstalled);
+          active = reinstalled;
+          if (parsed.revision.memory !== null) memory = parsed.revision.memory;
+          persist();
           valueAtRevision = value;
           record(
             {
               kind: "reverted",
               to: target.version,
-              from: currentVersion - 1,
+              from: highestVersion - 1,
               notes: parsed.revision.notes,
             },
             block,
@@ -733,6 +942,12 @@ async function main(): Promise<void> {
           return;
         }
         if (parsed.revision.executorTs === null) {
+          // A decision not to touch the strategy is still a conclusion, and it is the one most
+          // worth carrying: "I looked at this and it is working" saves the next epoch a rewrite.
+          if (parsed.revision.memory !== null) {
+            memory = parsed.revision.memory;
+            persist();
+          }
           record({ kind: "declined", notes: parsed.revision.notes }, block);
           return;
         }
@@ -741,21 +956,26 @@ async function main(): Promise<void> {
           record({ kind: "rejected", reason: compiled.reason }, block);
           return;
         }
-        currentVersion += 1;
-        activeDecide = compiled.executor;
-        versions.push({
-          version: currentVersion,
+        highestVersion += 1;
+        const installed = {
+          version: highestVersion,
           source: parsed.revision.executorTs,
           notes: parsed.revision.notes,
           installedAtBlock: block,
           valueAtInstall: value,
+          epochId,
           executor: compiled.executor,
-        });
+        };
+        activeDecide = compiled.executor;
+        versions.push(installed);
+        active = installed;
+        if (parsed.revision.memory !== null) memory = parsed.revision.memory;
+        persist();
         valueAtRevision = value;
         record(
           {
             kind: "installed",
-            version: currentVersion,
+            version: highestVersion,
             notes: parsed.revision.notes,
           },
           block,

@@ -84,6 +84,7 @@ import {
 import { FlowProcess, type FlowOrderWire } from "../flowProcess.js";
 import { deployFlashArb, FLASH_ARB_ADDRESS } from "../flashArbDemo.js";
 import { RealtimeAgentProcess } from "./agentProcess.js";
+import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
 import {
   deployPriceFeed,
@@ -1564,6 +1565,7 @@ export async function runRealtimeSimulation(
         note: "agents run as plain child processes: no CPU/memory caps and no egress control (rules §2.3 are not enforced here)",
       });
     }
+    const agentStateRoot = agentStateRootFromEnv();
     for (const agent of agentRuntimes) {
       if (agent.external || !agent.privateKey) {
         // ADR 0021 §2: registered, funded, scored -- and started by whoever registered it. Recorded
@@ -1577,6 +1579,19 @@ export async function runRealtimeSimulation(
         });
         continue;
       }
+      // Issue #77: the per-agent area that survives epochs, plus the snapshot this epoch started
+      // from. Absent unless a root is configured, which keeps every existing run byte-identical.
+      // A failure here is fatal rather than silent: an agent that was promised its memory and
+      // silently started from agent.ts is scored as if it had chosen to forget.
+      const stateDir = agentStateRoot
+        ? prepareAgentState(agentStateRoot, agent.id, runId)
+        : undefined;
+      if (stateDir)
+        logger.event({
+          type: "agent_state_dir",
+          agentId: agent.id,
+          dir: stateDir,
+        });
       agent.process = new RealtimeAgentProcess(
         agent.spec,
         config.rpcUrl,
@@ -1586,7 +1601,7 @@ export async function runRealtimeSimulation(
         config.agentsDir,
         config.runBlocks,
         agentExtraEnv,
-        { sandbox: config.agentSandbox },
+        { sandbox: config.agentSandbox, ...(stateDir ? { stateDir } : {}) },
       );
       // An agent that dies mid-run silently stops trading, which reads in summary.json exactly like
       // an agent that chose not to trade. Record it so the two can be told apart.

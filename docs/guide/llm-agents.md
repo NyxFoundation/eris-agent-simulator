@@ -72,6 +72,58 @@ is no defensible one: the previous implementation's never fired in 18 runs, and 
 (any loss at all) reverts every revision in a regime where everyone is losing. Whether a dip is the
 strategy or the market is a judgment, so `prompt.md` is where you state how to make it.
 
+## What the model is shown (the revision context)
+
+Until issue #76 the context was a **snapshot**: the PnL since the run started and since the last
+revision, the version history, the last twelve decisions as `action` + `reason`, and one
+observation — the latest. Nothing said what the market had done across the interval, and nothing
+connected a decision to what happened to its transaction. So "I lost money during the depeg" and
+"my arbitrage does not win" both arrived as a dip, and every bundled `prompt.md` correctly answered
+"leave it alone".
+
+The reference runtime now does the reading. Four sections, all of them derived from things the
+agent could already see — no new chain call, and no privilege:
+
+| section | what it carries | where it comes from |
+|---|---|---|
+| `transactions since the last revision` | the transactions as a partition (succeeded / mined-but-reverted / never mined), mean inclusion latency in blocks, mean `txIndex`, the mean venue gap the strategy fired on, and the marked-value change across trades that have had time to settle | `runtime/evidence.ts` `TradeLedger`, fed by `send.ts` and by the receipts `computeCompetition` already resolves (ADR 0011) |
+| `market history, blocks A..B` | per base: fair price high/low/now; per venue and base: the gap against fair in bps with high/low/now, how many blocks it spent over 5 / 10 / 25 / 50 bps, and the widest round-trip cost the venue quoted; per market-priced stable: departures from par as **signed windows**, with the worst price and whether the window is still open; and the discount venues (`lst:market-vs-redemption`, `liquity:EUSD-vs-par`) as windows of their own | `runtime/evidence.ts` `MarketHistory`, one sample per observed block |
+| `recent decisions` | the last 24, each annotated with what its transaction did — `[swap: included @+1 idx 3, value +12.40 after 3b, decided on a 31.0 bps gap]`, `[swap: reverted @+2 idx 9]` — plus send-stage failures as `rejected (...)` / `submit_failed (...)` | the decision ring in `bot.ts`, joined to the ledger by the block the strategy decided on |
+| `latest observation` | the current block in full | unchanged |
+
+Two design choices worth knowing, because a participant replacing the runtime inherits them:
+
+- **It is a digest, not the rows.** Sixty whole observations would be the entire token budget.
+  Context size is your inference cost (rules §2.5) and the proxy records every call (§2.3), so the
+  history is reported as extremes, bucket counts and windows.
+- **No threshold is assumed.** The runtime does not know the strategy's entry threshold, so the gap
+  series is counted into a fixed ladder (5 / 10 / 25 / 50 bps) instead of against a guess. A
+  strategy that fires at 10 bps can read its own threshold off the counts, and so can one that
+  should move it.
+
+### Where to do the reading
+
+`ctx.publicClient` is handed to `decide()` **and** to generated executors — the vm sandbox removes
+ambient capability (`require`, `process`, `fetch`), not the trading interface, so generated code can
+read the chain exactly as your hand-written strategy can. Reads through it are ordinary RPC and are
+not cheatcodes.
+
+**Do the reading in the runtime, not inside `decide()`.** Every decision is raced against
+`DECIDE_TIMEOUT_MS` (5,000 ms, `runtime/decideTimeout.ts`; rules §2.3), and generated executors are
+bounded tighter still at `EXECUTOR_TIMEOUT_MS` (2,000 ms, `runtime/improve.ts`). Past the bound the
+block is no action and the late answer is dropped. But the bound is not the binding constraint:
+blocks are two seconds long, so a decision that takes three has already missed its block without
+timing out, and the miss reaches the model as a gap in the decisions rather than as an error. An RPC
+round trip inside `decide` on a loaded node is the usual way in. The reference runtime reads once
+per block in the observation loop and hands `decide` a finished observation; the evidence above is
+bookkeeping over that same read.
+
+### What this does not add
+
+No failure-driven revision trigger. The cadence stays `reviseEveryBlocks`, which is yours to set and
+to pay for (rules §2.5, appendix A). A window that opens and closes inside one interval is still
+missed by the *revision* — that is the cadence trade-off, and it is the participant's.
+
 ## What the generated code may do
 
 The body runs in a `node:vm` context with `obs` and `ctx` in scope and nothing ambient — no
@@ -105,6 +157,78 @@ Revision outcomes (installed / declined / rejected / reverted, with the model's 
 `ERIS_IMPROVE_LOG_CALLS: "1"` additionally writes the raw exchange — the system prompt, the context
 that was sent, and the response — to `runs/<id>/agents/<agentId>.llm.jsonl`. Off by default because
 it holds every generated strategy in full. It is the log to turn on when tuning `prompt.md`.
+
+## Carrying a strategy between epochs
+
+Until issue #77 every epoch started the agent from `agent.ts` as version 0. Self-improvement was
+therefore worth at most the remainder of one epoch and was thrown away k times over a competition —
+the model relearned the same lesson forty times and was never allowed to keep it.
+
+An agent can now be given a **persistent directory that only it can see**, at
+`ERIS_AGENT_STATE_DIR`, created empty at the start of the competition and surviving every epoch.
+
+```
+<state dir>/
+  versions.json      what the reference runtime keeps: the installed versions with their
+                     notes, the epoch each went in, and the model's `memory` note
+```
+
+The reference runtime (`runtime/state.ts`) writes that file atomically on every accept and revert,
+and on start it:
+
+1. loads it, and **re-runs the cheatcode static check and the vm compile on every carried version**.
+   A strategy that compiled last epoch is untrusted input this epoch;
+2. starts from the newest version that survived re-validation, or from `agent.ts` if the newest did
+   not — logging `revision_resume_failed` with the reason, because an agent that silently forgot
+   everything looks exactly like one that had nothing to remember;
+3. continues the version numbering, so a version number means one thing for the life of the agent
+   and `revertTo` works across an epoch boundary.
+
+The directory is yours beyond that. Write whatever your runtime wants in it, within the cap
+(`ERIS_AGENT_STATE_CAP_BYTES`, 64 MiB total). Running out never stops the agent: persistence turns
+itself off, says so in the agent log, and the strategy keeps trading.
+
+### What the model sees differently
+
+Two lines are added to the revision context when state is being carried:
+
+```
+epochs this agent has run: 4 (this one is 2026-09-06-s03). The PnL above is this epoch only;
+the strategy history below spans all of them.
+your note from the last revision:
+  the depeg window closed before I could size up; the entry threshold is not the problem
+```
+
+and every version in the history says which epoch it was installed in. Without that the model reads
+four epochs of versions as one run and attributes this epoch's loss to a change made two epochs ago.
+
+`"memory"` is an optional field on any revision reply — alongside `executorTs`, `null`, or
+`revertTo` — capped at 4,000 characters.
+
+### Measuring it, and the control
+
+```bash
+npm run backtest -- --scenarios config/scenarios/public.yaml --agent-state-root runs/state
+```
+
+`--agent-state-root` carries each agent's directory across the scenarios of the matrix **in list
+order**, which is the ordering the live competition has. Off by default, so every stored matrix
+stays comparable with the ones taken before it.
+
+Run three arms of the same agent: frozen (`ERIS_AGENT_FROZEN: "1"`), improving without persistence
+(no `--agent-state-root`), improving with it. **`ERIS_AGENT_FROZEN` ignores the state directory as
+well as `prompt.md`** — a control that resumed would not be a control. Persistent below frozen means
+the carried strategy is drifting rather than learning, which is the failure this feature has to be
+watched for.
+
+### It is also a rules change
+
+§4.7.1 says every participating unit starts each epoch from identical initial conditions and does
+not mention agent state. Carrying it needs that clause reworded, plus §2.5, §4.4.2, §7 and appendix
+A. The rules live in a different repository (ascon-web, `content/legal/rules.md`); the proposed
+wording and the five decisions behind it are in
+[Cross-epoch learning: the rules amendment](../proposals/cross-epoch-learning-rules.md). **Nothing
+there is in force until it lands in ascon-web.**
 
 ## Backends (runtime/llm.ts)
 

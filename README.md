@@ -164,6 +164,7 @@ For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/
 | [Dashboard and Explorer](docs/guide/dashboard.md) | Watching a run live and reading a finished one; the local Blockscout explorer and its lifecycle |
 | [The Practice Devnet](docs/guide/practice-devnet.md) | Running a period: registering participants, handing out the manifest, the real-chain mode, hosting the dashboard |
 | [Repository Layout](docs/guide/repository-layout.md) | Quick reference for the directory layout |
+| [Cross-epoch learning: the rules amendment](docs/proposals/cross-epoch-learning-rules.md) | Proposal (issue #77): the §4.7.1 / §2.5 / §4.4.2 / §7 wording that carrying an agent's state between epochs needs, and the decisions behind it |
 | [Specification (as-built)](docs/spec/en/) | Normative reference for what the system *is*: runtime lifecycle, data contracts, invariants, and what is still undecided ([日本語](docs/spec/)) |
 
 **Background**: [architecture decision records](docs/adr/) (ADR 0001–0021) hold the reasoning behind

@@ -13,15 +13,24 @@
 //   1. Generated code passes the cheatcode static check before it is installed. An LLM-authored
 //      strategy is not trusted code.
 //   2. A revision that fails to compile, or throws on its first call, is not installed at all.
-//   3. A revision that performs worse than what it replaced is rolled back, and every accept,
-//      reject and rollback is written to the agent log so "did self-improvement do anything" is
-//      answerable from a single run rather than from a study.
+//   3. Every accept, decline, rejection and revert is written to the agent log, so "did
+//      self-improvement do anything" is answerable from a single run rather than from a study.
+//      Note what this is *not*: nothing rolls back on its own. An automatic "revert when value went
+//      down" needs a threshold and there is no defensible one (ADR 0018 §5) -- the previous
+//      implementation's never fired in 18 runs. Reverting is the model's call, via `revertTo`.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createContext, Script } from "node:vm";
 import { parse as parseYaml } from "yaml";
 import { DECIDE_TIMEOUT_MS } from "./decideTimeout.js";
 import { findCheatcodeUsage } from "@eris/sdk/strategyStaticCheck.js";
+import {
+  digestMarketHistory,
+  digestTrades,
+  type MarketSample,
+  type TradeAggregate,
+} from "./evidence.js";
+import { clampMemory } from "./state.js";
 import { ACTION_TYPES_BY_PROTOCOL } from "@eris/sdk/action.js";
 import type { AgentContext } from "@eris/sdk/agent.js";
 import type {
@@ -66,6 +75,10 @@ export type StrategyRevision = {
   notes: string;
   executorTs: string | null;
   revertTo: number | null;
+  // Issue #77: a note the model writes to its next self, carried across the epoch boundary next to
+  // the versions. Cheap, and it gives the model somewhere to put "what I concluded last epoch" that
+  // is not code -- a conclusion that has to be re-derived from the source every epoch mostly is not.
+  memory: string | null;
 };
 
 // One installed strategy and what happened after it. Handed to the model so a revert is an informed
@@ -76,6 +89,10 @@ export type StrategyVersion = {
   notes: string;
   installedAtBlock: number;
   valueAtInstall: number | null;
+  // The epoch this version was installed in (issue #77). Absent means this run, which is what every
+  // version looked like before agent state survived an epoch. With it, "this version has now lost
+  // two epochs in a row" is visible rather than inferred.
+  epochId?: string;
 };
 
 export type RevisionOutcome =
@@ -187,6 +204,16 @@ export function parseRevision(raw: unknown): ParseResult {
       ok: false,
       reason: "give either executorTs or revertTo, not both",
     };
+  // Optional, and a non-string is dropped rather than refused: a model that puts an object here
+  // has still given a usable revision, and rejecting the whole reply over a note would throw away
+  // the strategy with it.
+  // Bounded here rather than at persist time: an unbounded note is fed straight back into the next
+  // revision context, so the model would inflate its own context for the rest of the epoch and only
+  // meet the limit after a restart.
+  const memory =
+    typeof o.memory === "string" && o.memory.trim() !== ""
+      ? clampMemory(o.memory)
+      : null;
   const version = Number(o.version);
   return {
     ok: true,
@@ -195,6 +222,7 @@ export function parseRevision(raw: unknown): ParseResult {
       notes: o.notes,
       executorTs: executor,
       revertTo: revertRaw,
+      memory,
     },
   };
 }
@@ -349,6 +377,10 @@ export function buildRevisionSystem(
     `{ "notes": "why", "revertTo": 1 }                // go back to an earlier version`,
     "```",
     ``,
+    `Any of the three may also carry \`"memory": "..."\` — a short note to your next self. It is`,
+    `kept next to the version history and handed back to you at the next revision, including in a`,
+    `later epoch, so it is where a conclusion goes that is not worth re-deriving from the source.`,
+    ``,
     `Leaving it alone is often right: a strategy that is working does not need to be touched, and a`,
     `rewrite that turns out worse costs you a revision to undo.`,
     ``,
@@ -377,9 +409,25 @@ export function buildRevisionSystem(
   ].join("\n");
 }
 
-// The performance context handed to the model alongside the prompt. Deliberately small: the recent
-// decisions and how value has moved, not the whole history, so the model reasons about the current
-// regime rather than pattern-matching the run.
+// How many recent decisions the context carries. Twelve was the number when a decision was an
+// action and a reason and nothing else; with an outcome attached to each one there is more to read
+// per line, and the three faults behind "the arbitrage does not win" only separate over a run of
+// them.
+export const RECENT_DECISIONS_SHOWN = 24;
+
+// The performance context handed to the model alongside the prompt.
+//
+// Before issue #76 this was a snapshot: two PnL numbers, twelve bare decisions and the latest
+// observation. A model asked "why did you lose money during the depeg" could see that it had lost
+// money and that DAI is 0.99 *now* -- not when the window opened, not what it bought at, not
+// whether its transactions were even getting into blocks. Every bundled prompt answered "leave it
+// alone", which was the right answer to the evidence it had.
+//
+// So the context now carries the interval as well as the instant: what the market did since the
+// last revision (a digest, not the rows), what the agent's own transactions did (aggregates), and
+// each decision annotated with the fate of the transaction it produced. It is still deliberately
+// small -- context size is the participant's inference cost (rules §2.5) -- and it is still the
+// same clause of the rules: "the trading records so far, and the PnL".
 export function buildRevisionContext(opts: {
   block: number;
   valueUsdc: number;
@@ -389,6 +437,23 @@ export function buildRevisionContext(opts: {
   history: StrategyVersion[];
   recent: Array<{ round: number; reason?: string; action?: unknown }>;
   observation: AgentObservation | null;
+  // The block the last revision happened on, so the interval can be named rather than implied.
+  sinceBlock?: number | null;
+  // One sample per observed block of the interval (issue #76). Digested here rather than by the
+  // caller so there is one place that decides what the model is shown.
+  market?: MarketSample[];
+  trades?: TradeAggregate | null;
+  // Decision block -> what the transactions decided on that block did. The join that turns "swap"
+  // into "swap, included two blocks late at index 7, value -3.20 after 3b".
+  outcomes?: Map<number, string[]> | null;
+  // Issue #77. `epochs` is every epoch this agent has run, oldest first, when its state survives
+  // between them; `memory` is the note it left itself last time.
+  epochs?: string[];
+  memory?: string | null;
+  // The epoch this run is. A version installed in an earlier one was worth what it was worth
+  // *then*, against that epoch's funding — differencing it against this run's start produces a
+  // number in the hundreds of thousands that means nothing.
+  epochId?: string;
 }): string {
   const pnl = opts.valueUsdc - opts.initialValueUsdc;
   const lines = [
@@ -400,31 +465,76 @@ export function buildRevisionContext(opts: {
     lines.push(
       `PnL since the last revision: ${opts.sinceLastRevisionUsdc.toFixed(2)} USDC`,
     );
+  // Issue #77: the epoch count is the frame for everything below it. The PnL and the history are
+  // this epoch's; the versions and the memory are not, and a model that reads them as one run will
+  // attribute an epoch's loss to a version that was installed two epochs ago.
+  if (opts.epochs && opts.epochs.length > 0)
+    lines.push(
+      `epochs this agent has run: ${opts.epochs.length} (this one is ${
+        opts.epochs[opts.epochs.length - 1]
+      }). The PnL above is this epoch only; the strategy history below spans all of them.`,
+    );
+  if (opts.memory)
+    lines.push(``, `your note from the last revision:`, opts.memory);
   // The history is what makes `revertTo` an informed choice rather than a guess: each version's
   // stated intent, and the value the agent was carrying when it went in.
   if (opts.history.length > 0) {
+    // Epoch ids are run ids -- timestamps. Printing one next to a version tells the model when, not
+    // how long ago, and "this version has now lost two epochs in a row" is a count. So the ordinal
+    // is what is shown, with the id after it for anyone reading the log alongside.
+    const ordinalOf = (epochId: string | undefined): string => {
+      if (!epochId) return "";
+      const at = opts.epochs?.indexOf(epochId) ?? -1;
+      return at >= 0
+        ? ` in epoch ${at + 1} of ${opts.epochs!.length} (${epochId})`
+        : ` in epoch ${epochId}`;
+    };
     lines.push(``, `strategy history (version 0 is the one you were shipped):`);
     for (const v of opts.history) {
+      // A version from an earlier epoch is reported at its own absolute value. The run-start
+      // baseline below it belongs to *this* epoch: every epoch is funded afresh, so subtracting one
+      // from the other compares two different worlds and lands on a number the model will read as a
+      // catastrophic loss that never happened.
+      const carriedIn =
+        v.epochId !== undefined &&
+        opts.epochId !== undefined &&
+        v.epochId !== opts.epochId;
       const value =
         v.valueAtInstall === null
           ? "unknown"
-          : `${(v.valueAtInstall - opts.initialValueUsdc).toFixed(2)} USDC vs the run start`;
+          : carriedIn
+            ? `${v.valueAtInstall.toFixed(2)} USDC, in that epoch`
+            : `${(v.valueAtInstall - opts.initialValueUsdc).toFixed(2)} USDC vs the run start`;
       lines.push(
-        `  v${v.version} @ block ${v.installedAtBlock} (value then: ${value}) — ${v.notes}`,
+        `  v${v.version} @ block ${v.installedAtBlock}${ordinalOf(v.epochId)}` +
+          ` (value then: ${value}) — ${v.notes}`,
       );
     }
   }
-  lines.push(
-    ``,
-    `recent decisions (newest last):`,
-    ...opts.recent
-      .slice(-12)
-      .map(
-        (r) =>
-          `  block ${r.round}: ${r.action ? JSON.stringify(r.action) : "no action"}` +
-          (r.reason ? ` — ${r.reason}` : ""),
-      ),
-  );
+
+  // ---- since the last revision (issue #76) ----
+  const interval =
+    opts.sinceBlock === undefined || opts.sinceBlock === null
+      ? `since the run started`
+      : `since the last revision at block ${opts.sinceBlock}`;
+  if (opts.trades) lines.push(``, ...digestTrades(opts.trades));
+  const market = digestMarketHistory(opts.market ?? []);
+  if (market.length > 0) lines.push(``, ...market);
+  if (opts.trades || market.length > 0)
+    lines.push(
+      `(the two sections above cover ${interval}. A gap that never opened is not a threshold ` +
+        `problem; a gap that opened and was not traded is.)`,
+    );
+
+  lines.push(``, `recent decisions (newest last):`);
+  for (const r of opts.recent.slice(-RECENT_DECISIONS_SHOWN)) {
+    const outcome = opts.outcomes?.get(r.round);
+    lines.push(
+      `  block ${r.round}: ${r.action ? JSON.stringify(r.action) : "no action"}` +
+        (r.reason ? ` — ${r.reason}` : "") +
+        (outcome && outcome.length > 0 ? ` [${outcome.join("; ")}]` : ""),
+    );
+  }
   if (opts.observation)
     lines.push(``, `latest observation:`, JSON.stringify(opts.observation));
   return lines.join("\n");

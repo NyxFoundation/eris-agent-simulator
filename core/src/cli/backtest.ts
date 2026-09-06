@@ -63,6 +63,11 @@ import {
   STATE_DIR_DEFAULT,
   waitUntilAnvilUp,
 } from "../backtest/shared.js";
+import {
+  AGENT_STATE_ROOT_ENV,
+  restoreAllAgentState,
+  snapshotAllAgentState,
+} from "../realtime/agentState.js";
 
 const ROOT = process.cwd(); // npm scripts run at the repo root
 
@@ -85,6 +90,10 @@ const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --s
   --agent-sandbox <process|docker>
                          how agents are launched. The official regimes say docker (the rules §2.3 caps live there);
                          pass process for a local run without docker
+  --agent-state-root <d> carry each agent's persistent state across the scenarios of the run, in the
+                         order they are listed — which for a plan from npm run competition -- plan
+                         is the competition's own epoch order (issue #77). Off by default; without
+                         it every scenario restarts each agent at version 0
   --blocks/--seconds/--protocols/--economic-gas/--score-every
                          one-off overrides of regime values (for smoke tests. runs you read results from use regime defaults)`;
 
@@ -249,6 +258,22 @@ async function main(): Promise<void> {
   const port = Number(flags.port ?? "8547");
   const rpcUrl = `http://127.0.0.1:${port}`;
   const stateDirAbs = resolve(ROOT, flags.state ?? STATE_DIR_DEFAULT);
+  // Issue #77. Off by default, so every stored matrix stays comparable with the ones before it.
+  // The scenarios of a matrix run in list order and the coordinator runs in this process, so
+  // exporting the root once is enough for the state to travel from one scenario to the next --
+  // which is exactly the ordering the live competition has, one epoch after another.
+  const agentStateRoot =
+    flags["agent-state-root"] === undefined
+      ? undefined
+      : resolve(ROOT, flags["agent-state-root"]);
+  if (agentStateRoot !== undefined) {
+    mkdirSync(agentStateRoot, { recursive: true });
+    process.env[AGENT_STATE_ROOT_ENV] = agentStateRoot;
+    console.error(
+      `[backtest] agents keep state across scenarios in ${agentStateRoot} ` +
+        `(issue #77; a frozen control ignores it)`,
+    );
+  }
 
   const matrixMode = flags.scenarios !== undefined;
   // --resume: continue an existing matrix directory (rules §4.7.1). Only a matrix can be resumed;
@@ -660,7 +685,17 @@ async function main(): Promise<void> {
       const runDirs: string[] = [];
       const blocksPerRepeat: Array<number | undefined> = [];
       let lastError: string | undefined;
+      // With state carrying, the repeats of one scenario are not repeats unless each starts from
+      // the same place: repeat 2 would otherwise begin from what repeat 1 left behind, and the
+      // spread across repeats -- the reason the flag exists -- would be measuring a sequence.
+      // Keyed by the epoch ordinal, not by (regime, seed): a plan may schedule the same pair twice
+      // and the two are different epochs with different state behind them.
+      const repeatLabel = `repeat-base-s${scenario.s}`;
       for (let i = 0; i < repeat; i++) {
+        if (agentStateRoot !== undefined && repeat > 1) {
+          if (i === 0) snapshotAllAgentState(agentStateRoot, repeatLabel);
+          else restoreAllAgentState(agentStateRoot, repeatLabel);
+        }
         console.error(
           `[backtest] scenario ${index}/${scenarios.length} ${label}` +
             (repeat > 1 ? ` (repeat ${i + 1}/${repeat})` : ""),
