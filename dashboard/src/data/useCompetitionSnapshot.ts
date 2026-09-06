@@ -39,6 +39,8 @@ export interface CompetitionSnapshot {
   liveRunIds: string[];
   /** Epochs the plan announced, when the competition index says (a partial matrix). */
   scenariosPlanned: number | null;
+  /** When the competition's index was last written (matrix.json's mtime), for "updated at". */
+  updatedAtMs: number | null;
 }
 
 /**
@@ -92,6 +94,8 @@ export function useCompetitionSnapshot() {
         schedules,
         missingRounds: competition.file.scenarios.length - rounds.size,
         liveRunIds: index.filter((r) => r.live).map((r) => r.id),
+        updatedAtMs:
+          index.find((r) => r.id === competition.id)?.mtimeMs ?? null,
         scenariosPlanned:
           typeof competition.file.scenariosPlanned === "number"
             ? competition.file.scenariosPlanned

@@ -674,6 +674,33 @@ const en = {
   "market.standingsOff": "not posted in this environment (rules §4.7)",
   "live.noChainReads":
     "Block heights come from the environment's log; the public view does not read the chain directly.",
+  // ---- the standings as a live leaderboard: status line, score-by-epoch chart, form, pin ----
+  "home.status.epochs": "{done} of {planned} epochs scored",
+  "home.status.epochsAll": "{n} epochs scored",
+  "home.status.updated": "updated {time}",
+  "home.status.next": "next epoch starts {time}",
+  "home.status.live": "an epoch is running now",
+  "home.chart.title": "Score by epoch",
+  "home.chart.subtitle":
+    "Cumulative score after each completed epoch — the same number as the table, replayed epoch by epoch. The top {n} are drawn in colour, the rest in grey; 50 is the field's average. Click a name to follow it.",
+  "home.chart.mean": "field average",
+  "home.chart.empty": "The chart appears once two epochs have been scored.",
+  "home.chart.legend": "top {n}",
+  "home.col.delta": "Δ",
+  "home.deltaTitle": "Rank change since the previous completed epoch",
+  "home.col.form": "form",
+  "home.formTitle": "T per epoch, oldest to newest — {n} scored, latest {latest}",
+  "home.col.txs": "txs",
+  "home.col.reverts": "reverted",
+  "home.txsTitle": "Transactions included across the scored scenarios, and how many reverted",
+  "home.details": "details",
+  "home.pin": "follow",
+  "home.unpin": "unfollow",
+  "home.pinTitle": "Highlight this agent in the table and the chart on this browser",
+  "home.pinned": "following",
+  "home.about": "About this competition",
+  "home.aboutHint":
+    "How the units nest, what the environment does, how the score is computed, where the data comes from.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1300,6 +1327,33 @@ const ja: Record<MessageKey, string> = {
   "market.standingsOff": "この環境では掲示しません（規約 §4.7）",
   "live.noChainReads":
     "ブロック高は環境のログから取得しています。公開ビューではチェーンを直接読みません。",
+  // ---- 順位表をライブの掲示板として: 状態行・エポック別スコアの推移・フォーム・ピン留め ----
+  "home.status.epochs": "{planned} エポック中 {done} 本を採点済み",
+  "home.status.epochsAll": "{n} エポックを採点済み",
+  "home.status.updated": "最終更新 {time}",
+  "home.status.next": "次のエポックは {time} 開始予定",
+  "home.status.live": "エポックを実行中",
+  "home.chart.title": "エポックごとのスコア",
+  "home.chart.subtitle":
+    "完走したエポックごとの累積スコア。表と同じ数字をエポック単位で再生したもので、上位 {n} 体を色付き、他は灰色で描きます。50 が場の平均です。名前をクリックすると追跡します。",
+  "home.chart.mean": "場の平均",
+  "home.chart.empty": "2 エポック採点されるとグラフが出ます。",
+  "home.chart.legend": "上位 {n}",
+  "home.col.delta": "Δ",
+  "home.deltaTitle": "直前の完走エポックからの順位変動",
+  "home.col.form": "フォーム",
+  "home.formTitle": "エポックごとの T（古い順）— {n} 本採点、直近 {latest}",
+  "home.col.txs": "tx",
+  "home.col.reverts": "revert",
+  "home.txsTitle": "採点済みシナリオでブロックに入った tx の数と、そのうち revert した数",
+  "home.details": "詳細",
+  "home.pin": "追跡",
+  "home.unpin": "追跡をやめる",
+  "home.pinTitle": "このブラウザで、表とグラフの中でこのエージェントを強調します",
+  "home.pinned": "追跡中",
+  "home.about": "この競技について",
+  "home.aboutHint":
+    "単位の入れ子・環境が何をするか・スコアの計算・データの出所。",
 };
 
 const MESSAGES: Record<"en" | "ja", Record<MessageKey, string>> = { en, ja };

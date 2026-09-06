@@ -1,14 +1,19 @@
-// The home: the competition standings.
+// The home: the competition standings, as a leaderboard people come back to.
 //
 // One table, under the one rule the competition is scored by (rules §4.4): per epoch a deviation
-// score T over the field, across epochs a weighted average of T. The regime columns are the
-// agent's mean T per regime -- an explanation, not a second ranking. A row opens the agent's page,
-// where the per-epoch series behind its place lives. Everything obeys the round cursor, so
-// scrubbing the bar replays the competition from here.
+// score T over the field, across epochs a weighted average of T. Around it, the things a returning
+// reader needs before the numbers: how far the competition has got and when it moves next (§4.7.1),
+// the shape of the race so far (score by epoch), and the change since the last epoch beside each
+// rank. The explanation of the units and the environment is one click away rather than in the
+// scroll path -- a first-time reader opens it, a daily reader never sees it.
+//
+// Everything obeys the round cursor: scrubbing the bar replays the competition round by round, and
+// the Δ column switches from "since the previous epoch" to "since the previous round" while it does.
 
 import { useEffect, useMemo, useState } from "react";
 import { InfoTabs } from "@/components/InfoTabs";
 import { RoundCursorBar } from "@/components/RoundCursorBar";
+import { ScoreRaceChart } from "@/components/ScoreRaceChart";
 import { Sidebar } from "@/components/Sidebar";
 import { MoveCell, Panel, Stat, toneColor } from "@/components/competitionUi";
 import {
@@ -20,10 +25,14 @@ import { windowsAtRound } from "@/data/schedule";
 import { buildScenarioList, type ScenarioListRow } from "@/data/scenarioList";
 import {
   buildStandings,
+  completedOrdinals,
+  epochRankMoves,
   participantStandings,
   rankMoves,
+  scoreRace,
 } from "@/data/standings";
 import { useMode } from "@/data/mode";
+import { setPinnedAgent, usePinnedAgent } from "@/data/pinnedAgent";
 import { setCursorRange, useCursor } from "@/data/roundCursor";
 import { setSelectedRound } from "@/data/roundSelection";
 import { getSelectedRunId, setSelectedRunId } from "@/data/runSelection";
@@ -31,6 +40,7 @@ import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { useLocale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
 import { formatPnlUsdc, formatScore } from "@/lib/format";
+import { useMediaQuery } from "@/lib/useMediaQuery";
 import { navigate } from "@/navigation";
 import { ScenarioPage } from "./ScenarioPage";
 
@@ -69,6 +79,7 @@ const TABLE_ROW: React.CSSProperties = {
   padding: "10px 16px",
   borderBottom: "1px solid var(--border-subtle)",
   font: "var(--text-sm) var(--font-mono)",
+  alignItems: "center",
 };
 const VIEW_BUTTON: React.CSSProperties = {
   font: "var(--text-xs) var(--font-mono)",
@@ -87,6 +98,15 @@ const VIEW_BUTTON_ACTIVE: React.CSSProperties = {
 const SHOW_MORE_BUTTON: React.CSSProperties = {
   ...VIEW_BUTTON,
   margin: "10px 16px",
+};
+const BADGE: React.CSSProperties = {
+  font: "var(--weight-medium) 10px var(--font-mono)",
+  letterSpacing: "var(--tracking-widest)",
+  textTransform: "uppercase",
+  color: "var(--text-tertiary)",
+  border: "1px solid var(--border-subtle)",
+  borderRadius: "var(--radius-sm)",
+  padding: "3px 7px",
 };
 
 /**
@@ -150,6 +170,73 @@ function UnitLadder() {
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * T per epoch as a 64px line, oldest to newest, with 50 as the dotted reference. The sports
+ * "form" column: the score says where an agent is, this says whether it got there by being
+ * steadily above the field or by one big epoch.
+ */
+function FormCell({ epochs }: { epochs: { s: number; t: number }[] }) {
+  const sorted = [...epochs].sort((a, b) => a.s - b.s);
+  if (sorted.length === 0)
+    return <span style={{ color: "var(--text-disabled)" }}>—</span>;
+  const w = 64;
+  const h = 18;
+  const ts = sorted.map((e) => e.t);
+  const lo = Math.min(50, ...ts);
+  const hi = Math.max(50, ...ts);
+  const span = Math.max(hi - lo, 4);
+  const y = (v: number) => h - 2 - ((v - lo) / span) * (h - 4);
+  const x = (i: number) =>
+    sorted.length === 1 ? w / 2 : (i / (sorted.length - 1)) * (w - 4) + 2;
+  const d = ts
+    .map(
+      (v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`,
+    )
+    .join(" ");
+  const latest = ts[ts.length - 1];
+  return (
+    <span
+      title={t("home.formTitle", {
+        n: sorted.length,
+        latest: formatScore(latest),
+      })}
+      style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+    >
+      <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden>
+        <line
+          x1={0}
+          x2={w}
+          y1={y(50)}
+          y2={y(50)}
+          stroke="var(--border-subtle)"
+          strokeDasharray="2 3"
+        />
+        <path
+          d={d}
+          fill="none"
+          stroke="var(--text-secondary)"
+          strokeWidth={1.3}
+          strokeLinejoin="round"
+        />
+        <circle
+          cx={x(sorted.length - 1)}
+          cy={y(latest)}
+          r={2.2}
+          fill={toneColor(latest - 50)}
+        />
+      </svg>
+      <span
+        style={{
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-tertiary)",
+        }}
+      >
+        {sorted.length}
+      </span>
+    </span>
   );
 }
 
@@ -281,16 +368,32 @@ function ScenarioRow({
   );
 }
 
+function clock(ms: number, locale: string): string {
+  const tag = locale === "ja" ? "ja-JP" : "en-US";
+  const d = new Date(ms);
+  const sameDay = new Date().toDateString() === d.toDateString();
+  const time = d.toLocaleTimeString(tag, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return sameDay
+    ? time
+    : `${d.toLocaleDateString(tag, { month: "numeric", day: "numeric" })} ${time}`;
+}
+
 export function HomePage() {
   const { data, loading, error } = useCompetitionSnapshot();
   const cursor = useCursor();
   const locale = useLocale();
   const mode = useMode();
-  // A field of hundreds (the live week) is not a table to scroll blind: a filter, a first page, and
-  // the participant-unit fold of rules §2.2.
+  const pinned = usePinnedAgent();
+  const narrow = useMediaQuery("(max-width: 720px)");
+  // A field of hundreds (the live week) is not a table to scroll blind: a filter, a first page, the
+  // participant-unit fold of rules §2.2, and the activity columns behind a switch.
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
   const [view, setView] = useState<"agents" | "participants">("agents");
+  const [details, setDetails] = useState(false);
 
   // The cursor's range is the longest scenario in the competition. Shorter scenarios end early
   // rather than being excluded — see buildStandings.
@@ -312,9 +415,18 @@ export function HomePage() {
     return buildStandings(data.competition, data.rounds, cursor.round);
   }, [data, cursor.round]);
 
+  // Δ: since the previous round while the cursor scrubs; since the previous completed epoch
+  // otherwise (rules §4.7.1 — the live week moves one epoch at a time).
   const moves = useMemo(() => {
     if (!data || !standings) return new Map<string, number | null>();
-    return rankMoves(data.competition, data.rounds, standings);
+    return cursor.round === null
+      ? epochRankMoves(data.competition, data.rounds, standings)
+      : rankMoves(data.competition, data.rounds, standings);
+  }, [data, standings, cursor.round]);
+
+  const race = useMemo(() => {
+    if (!data || !standings || data.competition.fromSingleRun) return null;
+    return scoreRace(data.competition, data.rounds, standings);
   }, [data, standings]);
 
   const scenarioRows = useMemo(() => {
@@ -405,7 +517,8 @@ export function HomePage() {
   // Labelling them practice would be the same kind of error in the opposite direction.
   const practice = data.competition.file.resetUnit === "continuous";
   // A single run has one scenario labelled "run": its regime column would repeat the total.
-  const regimes = standings.regimes.length > 1 ? standings.regimes : [];
+  const regimes =
+    narrow || standings.regimes.length <= 1 ? [] : standings.regimes;
   const scrubbing = at !== null;
   const recordedAt =
     file.createdAt && !Number.isNaN(new Date(file.createdAt).getTime())
@@ -418,6 +531,7 @@ export function HomePage() {
   // the participant fold (rules §2.2) a toggle only when the roster names participants.
   const hasFlags = Object.keys(standings.flagsByAgent).length > 0;
   const hasParticipants = Object.keys(standings.participantOf).length > 0;
+  const hasActivity = Object.keys(standings.txCountByAgent).length > 0;
   const q = query.trim().toLowerCase();
   const matches = (id: string) =>
     !q ||
@@ -442,29 +556,63 @@ export function HomePage() {
   const visibleCount = showingParticipants
     ? visibleParticipants.length
     : visibleRows.length;
-  // Rules §4.7.1: a matrix in progress. `scenariosPlanned` is written with every flush, and a live
-  // run that is not one of the recorded scenarios is the epoch running now.
-  const done = file.scenarios.filter((s) => s.agents.length > 0).length;
+
+  // The status line (rules §4.7.1): how many epochs are scored, when the table last changed, and
+  // when it changes next. One sentence, because it is read every time and the numbers are what
+  // matters.
+  const done = completedOrdinals(data.competition, data.rounds);
   const planned = data.scenariosPlanned;
-  const running = data.liveRunIds.length > 0;
-  // Only while the plan is short of epochs: once every planned epoch has a result, a live run in
-  // runs/ is somebody else's world (a practice period's day, a local replay), not this
-  // competition's next epoch.
-  const progress =
-    !data.competition.fromSingleRun && planned !== null && done < planned
-      ? { done, planned, running }
-      : null;
+  const nextStart = (() => {
+    const scored = new Set(done);
+    const upcoming = (file.schedule ?? [])
+      .filter((e) => !scored.has(e.s) && typeof e.startsAt === "string")
+      .map((e) => Date.parse(e.startsAt as string))
+      .filter((ms) => Number.isFinite(ms))
+      .sort((a, b) => a - b);
+    return upcoming[0] ?? null;
+  })();
+  const statusParts: string[] = [];
+  if (!data.competition.fromSingleRun) {
+    statusParts.push(
+      planned !== null && done.length < planned
+        ? t("home.status.epochs", { done: done.length, planned })
+        : t("home.status.epochsAll", { n: done.length }),
+    );
+    if (data.updatedAtMs !== null)
+      statusParts.push(
+        t("home.status.updated", { time: clock(data.updatedAtMs, locale) }),
+      );
+    if (planned !== null && done.length < planned && data.liveRunIds.length > 0)
+      statusParts.push(t("home.status.live"));
+    if (nextStart !== null && (planned === null || done.length < planned))
+      statusParts.push(
+        t("home.status.next", { time: clock(nextStart, locale) }),
+      );
+  }
+  const inProgress =
+    !data.competition.fromSingleRun &&
+    planned !== null &&
+    done.length < planned;
+
+  const togglePin = (id: string) => setPinnedAgent(pinned === id ? null : id);
+
   // Built without repeat(): `repeat(0, ...)` is invalid CSS and would break the whole grid for a
   // single-run competition, which has no regime columns.
   const columns = [
     "30px",
-    ...(scrubbing ? ["44px"] : []),
+    "44px",
     "minmax(140px, 1fr)",
     "96px",
+    ...(narrow ? [] : ["92px"]),
     ...regimes.map(() => "minmax(66px, 92px)"),
     ...(hasFlags ? ["56px"] : []),
-    "104px",
+    ...(details && hasActivity ? ["64px", "64px"] : []),
+    ...(narrow ? [] : ["104px"]),
+    "34px",
   ].join(" ");
+  const tableMinWidth = narrow
+    ? 0
+    : 480 + regimes.length * 74 + (hasFlags ? 60 : 0) + (details ? 136 : 0);
 
   return (
     <div
@@ -495,7 +643,7 @@ export function HomePage() {
             width: "100%",
             minWidth: 0,
             margin: "0 auto",
-            padding: "32px 32px 64px",
+            padding: narrow ? "20px 14px 48px" : "32px 32px 64px",
             display: "flex",
             flexDirection: "column",
             gap: "18px",
@@ -505,7 +653,14 @@ export function HomePage() {
           <header
             style={{ display: "flex", flexDirection: "column", gap: "10px" }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                flexWrap: "wrap",
+              }}
+            >
               <h1
                 title={data.competition.id}
                 style={{
@@ -517,38 +672,29 @@ export function HomePage() {
                 {competitionName(data.competition)}
               </h1>
               {practice && (
-                <span
-                  title={t("home.practiceNote")}
-                  style={{
-                    font: "var(--weight-medium) 10px var(--font-mono)",
-                    letterSpacing: "var(--tracking-widest)",
-                    textTransform: "uppercase",
-                    color: "var(--text-tertiary)",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "3px 7px",
-                  }}
-                >
+                <span title={t("home.practiceNote")} style={BADGE}>
                   {t("home.practiceBadge")}
                 </span>
               )}
               {mode.audience && (
-                <span
-                  title={t("mode.audienceNote")}
-                  style={{
-                    font: "var(--weight-medium) 10px var(--font-mono)",
-                    letterSpacing: "var(--tracking-widest)",
-                    textTransform: "uppercase",
-                    color: "var(--text-tertiary)",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "3px 7px",
-                  }}
-                >
+                <span title={t("mode.audienceNote")} style={BADGE}>
                   {t("mode.audienceBadge")}
                 </span>
               )}
             </div>
+            {statusParts.length > 0 && (
+              <p
+                style={{
+                  margin: 0,
+                  font: "var(--text-sm) var(--font-mono)",
+                  color: inProgress
+                    ? "var(--warning-text)"
+                    : "var(--text-secondary)",
+                }}
+              >
+                {statusParts.join(" · ")}
+              </p>
+            )}
             <div
               style={{
                 display: "grid",
@@ -560,10 +706,10 @@ export function HomePage() {
                 label={t("home.stat.scenarios")}
                 value={String(file.scenarios.length)}
               />
-              {regimes.length > 0 && (
+              {standings.regimes.length > 1 && (
                 <Stat
                   label={t("home.stat.regimes")}
-                  value={String(regimes.length)}
+                  value={String(standings.regimes.length)}
                 />
               )}
               <Stat
@@ -582,23 +728,6 @@ export function HomePage() {
                 <Stat label={t("home.stat.recorded")} value={recordedAt} />
               )}
             </div>
-            {/* Rules §4.7.1: the live week is k epochs run one after another and the standings
-                update as each completes. Until the last one, this is a partial result, and the
-                table has to say so or three finished epochs read like forty. */}
-            {progress && (
-              <span
-                style={{
-                  font: "var(--text-xs) var(--font-mono)",
-                  color: "var(--warning-text)",
-                }}
-              >
-                {t("home.progress", {
-                  done: progress.done,
-                  planned: progress.planned,
-                })}
-                {progress.running && ` · ${t("home.progressRunning")}`}
-              </span>
-            )}
             {mode.audience && (
               <span
                 style={{
@@ -639,355 +768,488 @@ export function HomePage() {
               </p>
             </Panel>
           ) : (
-            <Panel
-              title={
-                at === null
-                  ? t("home.standingsFinal")
-                  : t("home.standingsThrough", { at })
-              }
-              subtitle={
-                practice
-                  ? `${t("home.practiceNote")} ${t("home.subtitle")}`
-                  : t("home.subtitle")
-              }
-            >
-              <div
-                style={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                  gap: "10px",
-                  padding: "10px 16px",
-                  borderBottom: "1px solid var(--border-subtle)",
-                }}
-              >
-                <input
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    setShowAll(false);
-                  }}
-                  placeholder={t("home.search")}
-                  aria-label={t("home.search")}
-                  style={{
-                    flex: "1 1 220px",
-                    minWidth: 0,
-                    padding: "6px 10px",
-                    font: "var(--text-sm) var(--font-mono)",
-                    color: "var(--text-primary)",
-                    background: "var(--bg-surface)",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-sm)",
-                  }}
-                />
-                {hasParticipants && (
-                  <div style={{ display: "flex", gap: "4px" }}>
-                    {(["agents", "participants"] as const).map((v) => (
-                      <button
-                        key={v}
-                        type="button"
-                        onClick={() => setView(v)}
-                        style={{
-                          ...VIEW_BUTTON,
-                          ...(view === v ? VIEW_BUTTON_ACTIVE : {}),
-                        }}
-                      >
-                        {v === "agents"
-                          ? t("home.view.agents")
-                          : t("home.view.participants")}
-                      </button>
-                    ))}
+            <>
+              {race && (
+                <Panel
+                  title={t("home.chart.title")}
+                  subtitle={t("home.chart.subtitle", {
+                    n: Math.min(10, race.order.length),
+                  })}
+                >
+                  <div style={{ padding: "12px 12px 0" }}>
+                    <ScoreRaceChart
+                      race={race}
+                      pinned={pinned}
+                      onPick={togglePin}
+                    />
                   </div>
-                )}
-                <span
-                  style={{
-                    marginLeft: "auto",
-                    font: "var(--text-xs) var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  {`${visibleCount} / ${filteredCount}`}
-                </span>
-              </div>
-              {showingParticipants && (
-                <p
-                  style={{
-                    margin: 0,
-                    padding: "8px 16px 0",
-                    font: "var(--text-xs) var(--font-sans)",
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  {t("home.participantsNote")}
-                </p>
+                </Panel>
               )}
-              <div
-                style={{
-                  overflowX: "auto",
-                  maxHeight: showAll ? "72vh" : undefined,
-                  overflowY: showAll ? "auto" : undefined,
-                }}
+
+              <Panel
+                title={
+                  at === null
+                    ? t("home.standingsFinal")
+                    : t("home.standingsThrough", { at })
+                }
+                subtitle={
+                  practice
+                    ? `${t("home.practiceNote")} ${t("home.subtitle")}`
+                    : t("home.subtitle")
+                }
               >
-                {showingParticipants ? (
-                  <div style={{ minWidth: "640px" }}>
-                    <div
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: "10px",
+                    padding: "10px 16px",
+                    borderBottom: "1px solid var(--border-subtle)",
+                  }}
+                >
+                  <input
+                    value={query}
+                    onChange={(e) => {
+                      setQuery(e.target.value);
+                      setShowAll(false);
+                    }}
+                    placeholder={t("home.search")}
+                    aria-label={t("home.search")}
+                    style={{
+                      flex: "1 1 220px",
+                      minWidth: 0,
+                      padding: "6px 10px",
+                      font: "var(--text-sm) var(--font-mono)",
+                      color: "var(--text-primary)",
+                      background: "var(--bg-surface)",
+                      border: "1px solid var(--border-subtle)",
+                      borderRadius: "var(--radius-sm)",
+                    }}
+                  />
+                  {hasParticipants && (
+                    <div style={{ display: "flex", gap: "4px" }}>
+                      {(["agents", "participants"] as const).map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => setView(v)}
+                          style={{
+                            ...VIEW_BUTTON,
+                            ...(view === v ? VIEW_BUTTON_ACTIVE : {}),
+                          }}
+                        >
+                          {v === "agents"
+                            ? t("home.view.agents")
+                            : t("home.view.participants")}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {hasActivity && !showingParticipants && (
+                    <button
+                      type="button"
+                      onClick={() => setDetails((v) => !v)}
+                      title={t("home.txsTitle")}
                       style={{
-                        ...TABLE_HEAD,
-                        gridTemplateColumns: PARTICIPANT_GRID,
-                        position: "sticky",
-                        top: 0,
-                        background: "var(--bg-surface-raised)",
-                        zIndex: 1,
+                        ...VIEW_BUTTON,
+                        ...(details ? VIEW_BUTTON_ACTIVE : {}),
                       }}
                     >
-                      <span>#</span>
-                      <span>{t("home.col.participant")}</span>
-                      <span>{t("home.col.countedAgent")}</span>
-                      <span style={{ textAlign: "right" }}>
-                        {t("home.col.score")}
-                      </span>
-                      <span>{t("home.col.agents")}</span>
-                    </div>
-                    {visibleParticipants.map((row) => (
-                      <div
-                        key={row.participant}
-                        style={{
-                          ...TABLE_ROW,
-                          gridTemplateColumns: PARTICIPANT_GRID,
-                        }}
-                      >
-                        <span style={{ color: "var(--text-tertiary)" }}>
-                          {row.rank}
-                        </span>
-                        <span
-                          style={{
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                          title={row.participant}
-                        >
-                          {row.participant}
-                        </span>
-                        <span
-                          className="row-link"
-                          onClick={() =>
-                            navigate(
-                              `/agent/${encodeURIComponent(row.counted.id)}`,
-                            )
-                          }
-                          style={{
-                            color: "var(--text-link)",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            cursor: "pointer",
-                          }}
-                          title={row.counted.id}
-                        >
-                          {row.counted.id}
-                        </span>
-                        <span
-                          style={{
-                            textAlign: "right",
-                            color: toneColor((row.counted.score ?? 50) - 50),
-                            fontWeight: "var(--weight-semibold)" as never,
-                          }}
-                        >
-                          {formatScore(row.counted.score)}
-                        </span>
-                        <span
-                          style={{
-                            font: "var(--text-xs) var(--font-mono)",
-                            color: "var(--text-secondary)",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                        >
-                          {row.agents
-                            .map((a) => `${a.id} ${formatScore(a.score)}`)
-                            .join(" · ")}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div
+                      {t("home.details")}
+                    </button>
+                  )}
+                  {pinned && (
+                    <button
+                      type="button"
+                      onClick={() => setPinnedAgent(null)}
+                      title={t("home.unpin")}
+                      style={{
+                        ...VIEW_BUTTON,
+                        color: "var(--pink-500)",
+                        borderColor: "var(--pink-500)",
+                      }}
+                    >
+                      {`${t("home.pinned")} ${pinned}`}
+                    </button>
+                  )}
+                  <span
                     style={{
-                      minWidth: `${380 + regimes.length * 74 + (hasFlags ? 60 : 0)}px`,
+                      marginLeft: "auto",
+                      font: "var(--text-xs) var(--font-mono)",
+                      color: "var(--text-tertiary)",
                     }}
                   >
-                    <div
-                      style={{
-                        ...TABLE_HEAD,
-                        gridTemplateColumns: columns,
-                        position: "sticky",
-                        top: 0,
-                        background: "var(--bg-surface-raised)",
-                        zIndex: 1,
-                      }}
-                    >
-                      <span>#</span>
-                      {scrubbing && (
-                        <span style={{ textAlign: "center" }}>
-                          {t("home.col.move")}
-                        </span>
-                      )}
-                      <span>{t("home.col.agent")}</span>
-                      <span style={{ textAlign: "right" }}>
-                        {t("home.col.score")}
-                      </span>
-                      {regimes.map((r) => (
-                        <span
-                          key={r}
-                          style={{
-                            textAlign: "right",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                          title={r}
-                        >
-                          {shortRegime(r)}
-                        </span>
-                      ))}
-                      {hasFlags && (
-                        <span style={{ textAlign: "center" }}>
-                          {t("home.col.flags")}
-                        </span>
-                      )}
-                      <span
-                        style={{ textAlign: "right" }}
-                        title={t("home.netPnlTitle")}
+                    {`${visibleCount} / ${filteredCount}`}
+                  </span>
+                </div>
+                {showingParticipants && (
+                  <p
+                    style={{
+                      margin: 0,
+                      padding: "8px 16px 0",
+                      font: "var(--text-xs) var(--font-sans)",
+                      color: "var(--text-tertiary)",
+                    }}
+                  >
+                    {t("home.participantsNote")}
+                  </p>
+                )}
+                <div
+                  style={{
+                    overflowX: "auto",
+                    maxHeight: showAll ? "72vh" : undefined,
+                    overflowY: showAll ? "auto" : undefined,
+                  }}
+                >
+                  {showingParticipants ? (
+                    <div style={{ minWidth: narrow ? 0 : "640px" }}>
+                      <div
+                        style={{
+                          ...TABLE_HEAD,
+                          gridTemplateColumns: PARTICIPANT_GRID,
+                          position: "sticky",
+                          top: 0,
+                          background: "var(--bg-surface-raised)",
+                          zIndex: 1,
+                        }}
                       >
-                        {t("home.col.netPnl")}
-                      </span>
-                    </div>
-
-                    {visibleRows.map((row) => {
-                      const byRegime = standings.tByRegime[row.id] ?? {};
-                      const flags = standings.flagsByAgent[row.id] ?? [];
-                      return (
+                        <span>#</span>
+                        <span>{t("home.col.participant")}</span>
+                        <span>{t("home.col.countedAgent")}</span>
+                        <span style={{ textAlign: "right" }}>
+                          {t("home.col.score")}
+                        </span>
+                        <span>{t("home.col.agents")}</span>
+                      </div>
+                      {visibleParticipants.map((row) => (
                         <div
-                          key={row.id}
-                          className="row-link"
-                          onClick={() =>
-                            navigate(`/agent/${encodeURIComponent(row.id)}`)
-                          }
-                          style={{ ...TABLE_ROW, gridTemplateColumns: columns }}
+                          key={row.participant}
+                          style={{
+                            ...TABLE_ROW,
+                            gridTemplateColumns: PARTICIPANT_GRID,
+                          }}
                         >
                           <span style={{ color: "var(--text-tertiary)" }}>
                             {row.rank}
-                            {row.tied ? "=" : ""}
                           </span>
-                          {scrubbing && (
-                            <MoveCell move={moves.get(row.id) ?? null} />
-                          )}
                           <span
+                            style={{
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                            title={row.participant}
+                          >
+                            {row.participant}
+                          </span>
+                          <span
+                            className="row-link"
+                            onClick={() =>
+                              navigate(
+                                `/agent/${encodeURIComponent(row.counted.id)}`,
+                              )
+                            }
                             style={{
                               color: "var(--text-link)",
                               overflow: "hidden",
                               textOverflow: "ellipsis",
+                              cursor: "pointer",
                             }}
-                            title={
-                              standings.participantOf[row.id]
-                                ? `${row.id} · ${standings.participantOf[row.id]}`
-                                : row.id
-                            }
+                            title={row.counted.id}
                           >
-                            {row.id}
+                            {row.counted.id}
                           </span>
                           <span
-                            title={t("home.scoreTitle", {
-                              n: row.epochs.length,
-                              std:
-                                row.tStd === null ? "—" : row.tStd.toFixed(2),
-                              worst: formatScore(row.worstT),
-                            })}
                             style={{
                               textAlign: "right",
-                              color: toneColor((row.score ?? 50) - 50),
+                              color: toneColor((row.counted.score ?? 50) - 50),
                               fontWeight: "var(--weight-semibold)" as never,
                             }}
                           >
-                            {formatScore(row.score)}
+                            {formatScore(row.counted.score)}
                           </span>
-                          {regimes.map((r) => {
-                            const v = byRegime[r];
-                            return (
+                          <span
+                            style={{
+                              font: "var(--text-xs) var(--font-mono)",
+                              color: "var(--text-secondary)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {row.agents
+                              .map((a) => `${a.id} ${formatScore(a.score)}`)
+                              .join(" · ")}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        minWidth: tableMinWidth ? `${tableMinWidth}px` : 0,
+                      }}
+                    >
+                      <div
+                        style={{
+                          ...TABLE_HEAD,
+                          gridTemplateColumns: columns,
+                          position: "sticky",
+                          top: 0,
+                          background: "var(--bg-surface-raised)",
+                          zIndex: 1,
+                        }}
+                      >
+                        <span>#</span>
+                        <span
+                          style={{ textAlign: "center" }}
+                          title={scrubbing ? undefined : t("home.deltaTitle")}
+                        >
+                          {scrubbing ? t("home.col.move") : t("home.col.delta")}
+                        </span>
+                        <span>{t("home.col.agent")}</span>
+                        <span style={{ textAlign: "right" }}>
+                          {t("home.col.score")}
+                        </span>
+                        {!narrow && <span>{t("home.col.form")}</span>}
+                        {regimes.map((r) => (
+                          <span
+                            key={r}
+                            style={{
+                              textAlign: "right",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                            title={r}
+                          >
+                            {shortRegime(r)}
+                          </span>
+                        ))}
+                        {hasFlags && (
+                          <span style={{ textAlign: "center" }}>
+                            {t("home.col.flags")}
+                          </span>
+                        )}
+                        {details && hasActivity && (
+                          <>
+                            <span
+                              style={{ textAlign: "right" }}
+                              title={t("home.txsTitle")}
+                            >
+                              {t("home.col.txs")}
+                            </span>
+                            <span
+                              style={{ textAlign: "right" }}
+                              title={t("home.txsTitle")}
+                            >
+                              {t("home.col.reverts")}
+                            </span>
+                          </>
+                        )}
+                        {!narrow && (
+                          <span
+                            style={{ textAlign: "right" }}
+                            title={t("home.netPnlTitle")}
+                          >
+                            {t("home.col.netPnl")}
+                          </span>
+                        )}
+                        <span />
+                      </div>
+
+                      {visibleRows.map((row) => {
+                        const byRegime = standings.tByRegime[row.id] ?? {};
+                        const flags = standings.flagsByAgent[row.id] ?? [];
+                        const isPinned = row.id === pinned;
+                        return (
+                          <div
+                            key={row.id}
+                            className="row-link"
+                            onClick={() =>
+                              navigate(`/agent/${encodeURIComponent(row.id)}`)
+                            }
+                            style={{
+                              ...TABLE_ROW,
+                              gridTemplateColumns: columns,
+                              ...(isPinned
+                                ? {
+                                    background:
+                                      "color-mix(in oklch, var(--pink-500) 12%, transparent)",
+                                    boxShadow: "inset 3px 0 0 var(--pink-500)",
+                                  }
+                                : {}),
+                            }}
+                          >
+                            <span style={{ color: "var(--text-tertiary)" }}>
+                              {row.rank}
+                              {row.tied ? "=" : ""}
+                            </span>
+                            <MoveCell move={moves.get(row.id) ?? null} />
+                            <span
+                              style={{
+                                color: "var(--text-link)",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                              title={
+                                standings.participantOf[row.id]
+                                  ? `${row.id} · ${standings.participantOf[row.id]}`
+                                  : row.id
+                              }
+                            >
+                              {row.id}
+                            </span>
+                            <span
+                              title={t("home.scoreTitle", {
+                                n: row.epochs.length,
+                                std:
+                                  row.tStd === null ? "—" : row.tStd.toFixed(2),
+                                worst: formatScore(row.worstT),
+                              })}
+                              style={{
+                                textAlign: "right",
+                                color: toneColor((row.score ?? 50) - 50),
+                                fontWeight: "var(--weight-semibold)" as never,
+                              }}
+                            >
+                              {formatScore(row.score)}
+                            </span>
+                            {!narrow && <FormCell epochs={row.epochs} />}
+                            {regimes.map((r) => {
+                              const v = byRegime[r];
+                              return (
+                                <span
+                                  key={r}
+                                  style={{
+                                    textAlign: "right",
+                                    font: "var(--text-xs) var(--font-mono)",
+                                    color:
+                                      v === undefined
+                                        ? "var(--text-disabled)"
+                                        : toneColor(v - 50),
+                                  }}
+                                >
+                                  {formatScore(v)}
+                                </span>
+                              );
+                            })}
+                            {hasFlags && (
+                              <span style={{ textAlign: "center" }}>
+                                {flags.length > 0 && (
+                                  <span
+                                    title={t("home.flagsTitle", {
+                                      flags: flags.join("; "),
+                                    })}
+                                    style={{
+                                      display: "inline-block",
+                                      minWidth: "18px",
+                                      padding: "0 5px",
+                                      borderRadius: "var(--radius-sm)",
+                                      border: "1px solid var(--warning-text)",
+                                      color: "var(--warning-text)",
+                                      font: "var(--text-xs) var(--font-mono)",
+                                    }}
+                                  >
+                                    !{flags.length}
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                            {details && hasActivity && (
+                              <>
+                                <span
+                                  style={{
+                                    textAlign: "right",
+                                    font: "var(--text-xs) var(--font-mono)",
+                                    color: "var(--text-secondary)",
+                                  }}
+                                >
+                                  {(
+                                    standings.txCountByAgent[row.id] ?? 0
+                                  ).toLocaleString("en-US")}
+                                </span>
+                                <span
+                                  style={{
+                                    textAlign: "right",
+                                    font: "var(--text-xs) var(--font-mono)",
+                                    color:
+                                      (standings.revertCountByAgent[row.id] ??
+                                        0) > 0
+                                        ? "var(--danger)"
+                                        : "var(--text-disabled)",
+                                  }}
+                                >
+                                  {(
+                                    standings.revertCountByAgent[row.id] ?? 0
+                                  ).toLocaleString("en-US")}
+                                </span>
+                              </>
+                            )}
+                            {/* Net PnL prices both ends at the run's final marks, so it has no value
+                                "at round k" — while the cursor is mid-competition the finished number
+                                is shown dimmed rather than under a round label. */}
+                            {!narrow && (
                               <span
-                                key={r}
+                                title={
+                                  scrubbing ? t("home.netPnlScrub") : undefined
+                                }
                                 style={{
                                   textAlign: "right",
                                   font: "var(--text-xs) var(--font-mono)",
-                                  color:
-                                    v === undefined
-                                      ? "var(--text-disabled)"
-                                      : toneColor(v - 50),
+                                  color: scrubbing
+                                    ? "var(--text-disabled)"
+                                    : toneColor(
+                                        standings.netPnlByAgent[row.id] ?? 0,
+                                      ),
                                 }}
                               >
-                                {formatScore(v)}
+                                {formatPnlUsdc(
+                                  standings.netPnlByAgent[row.id] ?? 0,
+                                )}
                               </span>
-                            );
-                          })}
-                          {hasFlags && (
-                            <span style={{ textAlign: "center" }}>
-                              {flags.length > 0 && (
-                                <span
-                                  title={t("home.flagsTitle", {
-                                    flags: flags.join("; "),
-                                  })}
-                                  style={{
-                                    display: "inline-block",
-                                    minWidth: "18px",
-                                    padding: "0 5px",
-                                    borderRadius: "var(--radius-sm)",
-                                    border: "1px solid var(--warning-text)",
-                                    color: "var(--warning-text)",
-                                    font: "var(--text-xs) var(--font-mono)",
-                                  }}
-                                >
-                                  !{flags.length}
-                                </span>
-                              )}
-                            </span>
-                          )}
-                          {/* Net PnL prices both ends at the run's final marks, so it has no value
-                              "at round k" — while the cursor is mid-competition the finished number
-                              is shown dimmed rather than under a round label. */}
-                          <span
-                            title={
-                              scrubbing ? t("home.netPnlScrub") : undefined
-                            }
-                            style={{
-                              textAlign: "right",
-                              font: "var(--text-xs) var(--font-mono)",
-                              color: scrubbing
-                                ? "var(--text-disabled)"
-                                : toneColor(
-                                    standings.netPnlByAgent[row.id] ?? 0,
-                                  ),
-                            }}
-                          >
-                            {formatPnlUsdc(
-                              standings.netPnlByAgent[row.id] ?? 0,
                             )}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
+                            <button
+                              type="button"
+                              aria-pressed={isPinned}
+                              title={
+                                isPinned ? t("home.unpin") : t("home.pinTitle")
+                              }
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                togglePin(row.id);
+                              }}
+                              style={{
+                                border: "none",
+                                background: "transparent",
+                                cursor: "pointer",
+                                padding: "2px 4px",
+                                font: "14px var(--font-sans)",
+                                lineHeight: 1,
+                                color: isPinned
+                                  ? "var(--pink-500)"
+                                  : "var(--text-disabled)",
+                              }}
+                            >
+                              {isPinned ? "★" : "☆"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                {filteredCount > PAGE_SIZE && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAll((v) => !v)}
+                    style={SHOW_MORE_BUTTON}
+                  >
+                    {showAll
+                      ? t("home.showLess", { n: PAGE_SIZE })
+                      : t("home.showMore", { n: filteredCount })}
+                  </button>
                 )}
-              </div>
-              {filteredCount > PAGE_SIZE && (
-                <button
-                  type="button"
-                  onClick={() => setShowAll((v) => !v)}
-                  style={SHOW_MORE_BUTTON}
-                >
-                  {showAll
-                    ? t("home.showLess", { n: PAGE_SIZE })
-                    : t("home.showMore", { n: filteredCount })}
-                </button>
-              )}
-            </Panel>
+              </Panel>
+            </>
           )}
 
           {/* Choosing a world to look at, from the list rather than from a dropdown of names. */}
@@ -1000,7 +1262,7 @@ export function HomePage() {
             }
           >
             <div style={{ overflowX: "auto" }}>
-              <div style={{ minWidth: "560px" }}>
+              <div style={{ minWidth: narrow ? 0 : "560px" }}>
                 <div
                   style={{
                     display: "grid",
@@ -1016,7 +1278,9 @@ export function HomePage() {
                 >
                   <span>{t("home.scenarios.col.scenario")}</span>
                   <span>{t("home.scenarios.col.rounds")}</span>
-                  <span>{t("home.scenarios.col.leader")}</span>
+                  <span>
+                    {mode.standings ? t("home.scenarios.col.leader") : ""}
+                  </span>
                   <span title={t("home.scenarios.eventsTitle")}>
                     {t("home.scenarios.col.events")}
                   </span>
@@ -1033,13 +1297,61 @@ export function HomePage() {
             </div>
           </Panel>
 
-          <Panel title={t("units.title")}>
-            <UnitLadder />
-          </Panel>
-
-          {/* Overview / Environment / Scoring / Data. It lived at the bottom of a single scenario,
-              where the explanation of what a scenario is could only be found by first picking one. */}
-          <InfoTabs />
+          {/* The explanation of what a competition is — the units, the environment, the scoring,
+              the data. Folded, because a reader who comes back every epoch has read it, and a
+              first-time reader is told exactly where it is. */}
+          <details
+            style={{
+              border: "1px solid var(--border-subtle)",
+              borderRadius: "var(--radius-sm)",
+              background: "var(--bg-surface)",
+            }}
+          >
+            <summary
+              style={{
+                cursor: "pointer",
+                padding: "13px 16px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "3px",
+                listStyle: "none",
+              }}
+            >
+              <span
+                style={{
+                  font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+                  letterSpacing: "var(--tracking-widest)",
+                  textTransform: "uppercase",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {t("home.about")}
+              </span>
+              <span
+                style={{
+                  font: "var(--text-xs) var(--font-sans)",
+                  color: "var(--text-tertiary)",
+                  lineHeight: 1.5,
+                }}
+              >
+                {t("home.aboutHint")}
+              </span>
+            </summary>
+            <div
+              style={{
+                borderTop: "1px solid var(--border-subtle)",
+                padding: "16px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "18px",
+              }}
+            >
+              <Panel title={t("units.title")}>
+                <UnitLadder />
+              </Panel>
+              <InfoTabs />
+            </div>
+          </details>
         </main>
       </div>
     </div>

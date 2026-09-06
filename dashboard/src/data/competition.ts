@@ -50,6 +50,8 @@ export interface CompetitionScenario {
   agents: ScenarioAgentResult[];
   /** Path to that scenario's run dir, relative to the poc root that produced it. */
   runDir: string;
+  /** The plan's intended start for this epoch (ISO 8601), when the plan had a timetable. */
+  startsAt?: string;
   /**
    * What to call this instead of "regime#seed". A scenario matrix has no use for it — "crash#303"
    * already names a distribution and a draw. A practice period's segments do: they are cuts of one
@@ -71,6 +73,12 @@ export interface CompetitionFile {
   k?: number;
   repeat?: number;
   scenariosPlanned?: number;
+  /**
+   * The plan's timetable, when it had one: every planned ordinal with its intended start. Written
+   * by the backtest runner for the epochs not run yet, so the standings can say when the next one
+   * starts (rules §4.7.1). Ordinal and time only — no scenario.
+   */
+  schedule?: { s: number; startsAt?: string }[];
   scenarios: CompetitionScenario[];
 }
 

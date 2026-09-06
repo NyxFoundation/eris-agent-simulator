@@ -53,6 +53,8 @@ export type ScenarioResult = {
   agents?: AgentScore[];
   runDir?: string;
   error?: string;
+  // The plan's intended start for this epoch (ISO 8601), when the plan had a timetable.
+  startsAt?: string;
 };
 
 export type EpochStanding = EpochResult & {

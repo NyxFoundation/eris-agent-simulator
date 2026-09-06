@@ -36,6 +36,9 @@ export interface ScenarioRounds {
   valuesByAgent: Record<string, Array<number | null>>;
   /** Agents the summary marks as the benchmark (§4.3): valued, shown, never in the population. */
   baselineIds: string[];
+  /** Transactions included per agent in this run, and how many of them reverted (summary.json). */
+  txByAgent: Record<string, number>;
+  revertsByAgent: Record<string, number>;
 }
 
 /**
@@ -129,12 +132,14 @@ export async function loadCompetitionRounds(
   const entries = await Promise.all(
     competition.file.scenarios.map(async (s) => {
       const runId = scenarioRunId(competition.id, s.runDir);
-      const empty = {
+      const empty: ScenarioRounds = {
         regime: s.regime,
         seed: s.seed,
         runId,
         valuesByAgent: {},
         baselineIds: [],
+        txByAgent: {},
+        revertsByAgent: {},
       };
       try {
         const res = await fetch(
@@ -152,9 +157,23 @@ export async function loadCompetitionRounds(
         const baselineIds = (summary.agents ?? [])
           .filter((a) => a.baseline)
           .map((a) => a.id);
+        const txByAgent: Record<string, number> = {};
+        const revertsByAgent: Record<string, number> = {};
+        for (const a of summary.agents ?? []) {
+          txByAgent[a.id] = a.includedTxCount ?? 0;
+          revertsByAgent[a.id] = a.revertCount ?? 0;
+        }
         return [
           scenarioKey(s),
-          { regime: s.regime, seed: s.seed, runId, valuesByAgent, baselineIds },
+          {
+            regime: s.regime,
+            seed: s.seed,
+            runId,
+            valuesByAgent,
+            baselineIds,
+            txByAgent,
+            revertsByAgent,
+          },
         ] as const;
       } catch {
         // A scenario whose run dir was not collected has no series. Its stored P still ranks it —
@@ -259,6 +278,9 @@ export interface Standings {
   flagsByAgent: Record<string, string[]>;
   /** Rules §2.2: which participant unit each agent is a submission of. Empty when the roster has none. */
   participantOf: Record<string, string>;
+  /** Activity, summed over the scenarios that have a summary: included transactions, and reverts. */
+  txCountByAgent: Record<string, number>;
+  revertCountByAgent: Record<string, number>;
 }
 
 /** A participant unit's row (rules §2.2): its agents, and the one whose score counts. */
@@ -340,6 +362,16 @@ export function buildStandings(
   // A field that only exists in a live series (the practice devnet's current day) is still a field.
   for (const row of scored.agents)
     if (!agentIds.includes(row.id)) agentIds.push(row.id);
+  const txCountByAgent: Record<string, number> = {};
+  const revertCountByAgent: Record<string, number> = {};
+  for (const s of scenarios) {
+    const series = rounds.get(scenarioKey(s));
+    if (!series) continue;
+    for (const [id, n] of Object.entries(series.txByAgent))
+      txCountByAgent[id] = (txCountByAgent[id] ?? 0) + n;
+    for (const [id, n] of Object.entries(series.revertsByAgent))
+      revertCountByAgent[id] = (revertCountByAgent[id] ?? 0) + n;
+  }
 
   const byOrdinal = new Map(scenarios.map((s, i) => [ordinalOf(s, i), s]));
   const regimeOf = new Map([...byOrdinal].map(([o, s]) => [o, s.regime]));
@@ -382,7 +414,102 @@ export function buildStandings(
     benchmarkPnl,
     flagsByAgent,
     participantOf,
+    txCountByAgent,
+    revertCountByAgent,
   };
+}
+
+// ---------------------------------------------------------------------------
+// the epoch axis: the standings as they stood after each completed epoch
+//
+// The round cursor replays a competition round by round inside every scenario at once. The live
+// week's unit of change is the epoch (rules §4.7.1: the standings update as each one completes), so
+// the standings also have to be readable "after epoch s": that is where the rank change since the
+// previous epoch and the score-by-epoch chart come from. Same arithmetic, a prefix of the epochs.
+
+/** Ordinals of the scenarios that have a result to score (a summary, or a live series). */
+export function completedOrdinals(
+  competition: Competition,
+  rounds: Map<string, ScenarioRounds>,
+): number[] {
+  return competition.file.scenarios
+    .map((s, i) => ({ s, ordinal: ordinalOf(s, i) }))
+    .filter(
+      ({ s }) =>
+        s.agents.length > 0 ||
+        Object.keys(rounds.get(scenarioKey(s))?.valuesByAgent ?? {}).length > 0,
+    )
+    .map(({ ordinal }) => ordinal)
+    .sort((a, b) => a - b);
+}
+
+/** The standings over the epochs with ordinal ≤ s. k is kept, so the weights do not move. */
+export function standingsThroughEpoch(
+  competition: Competition,
+  rounds: Map<string, ScenarioRounds>,
+  s: number,
+): Standings {
+  const scenarios = competition.file.scenarios.filter(
+    (sc, i) => ordinalOf(sc, i) <= s,
+  );
+  return buildStandings(
+    { ...competition, file: { ...competition.file, scenarios } },
+    rounds,
+    null,
+  );
+}
+
+/**
+ * Rank change since the previous completed epoch (positive = moved up). Null when there is no
+ * previous epoch, or the agent was not ranked in it. This is the standings' default Δ; the
+ * round-cursor Δ (`rankMoves`) takes over while the cursor is scrubbing.
+ */
+export function epochRankMoves(
+  competition: Competition,
+  rounds: Map<string, ScenarioRounds>,
+  standings: Standings,
+): Map<string, number | null> {
+  const out = new Map<string, number | null>();
+  const done = completedOrdinals(competition, rounds);
+  if (done.length < 2) {
+    for (const row of standings.rows) out.set(row.id, null);
+    return out;
+  }
+  const before = standingsThroughEpoch(competition, rounds, done[done.length - 2]);
+  const wasAt = new Map(before.rows.map((r) => [r.id, r.rank]));
+  for (const row of standings.rows) {
+    const was = wasAt.get(row.id);
+    out.set(row.id, was === undefined ? null : was - row.rank);
+  }
+  return out;
+}
+
+export interface ScoreRace {
+  /** Completed ordinals, ascending: the x axis. */
+  ordinals: number[];
+  /** agent -> Score after each ordinal (null where the agent had not been placed yet). */
+  series: Record<string, Array<number | null>>;
+  /** Agents in final rank order, for choosing which lines to emphasise. */
+  order: string[];
+}
+
+/** Cumulative Score after each completed epoch, for the score-by-epoch chart. */
+export function scoreRace(
+  competition: Competition,
+  rounds: Map<string, ScenarioRounds>,
+  standings: Standings,
+): ScoreRace {
+  const ordinals = completedOrdinals(competition, rounds);
+  const series: Record<string, Array<number | null>> = {};
+  for (const row of standings.rows) series[row.id] = ordinals.map(() => null);
+  ordinals.forEach((s, i) => {
+    const at = standingsThroughEpoch(competition, rounds, s);
+    for (const row of at.rows) {
+      if (!series[row.id]) series[row.id] = ordinals.map(() => null);
+      series[row.id][i] = row.score;
+    }
+  });
+  return { ordinals, series, order: standings.rows.map((r) => r.id) };
 }
 
 /**

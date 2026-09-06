@@ -140,6 +140,35 @@ not the ranking: it prices both ends at the run's last prices, so β cancels and
 — it is the raw number a trader reads first, and it greys out while the cursor is mid-competition
 (it has no per-round value).
 
+#### The standings as a leaderboard people come back to
+
+Compared against the leaderboards of Kaggle, Hyperliquid, Alpha Arena, CTFd and IMC Prosperity
+(2026-09-06), the standings carry the conventions a returning reader expects:
+
+- **A status line** under the title: epochs scored out of the plan, when the table last changed
+  (the matrix directory's mtime), whether an epoch is running, and when the next one starts. The
+  start comes from the plan's timetable — `npm run competition -- plan … --starts-at <ISO 8601>
+  --every-minutes <N>` stamps every epoch with `startsAt`, and the backtest runner writes the
+  planned ordinals with their times into `matrix.json` as `schedule` (ordinal and time only; which
+  scenario an epoch is stays hidden). Without a timetable the line simply has no "next" part.
+- **Score by epoch**: every agent's cumulative Score after each completed epoch, on one chart. The
+  lines are `standingsThroughEpoch` at each ordinal — the same arithmetic as the table, so the last
+  point of every line is the number in the table. The top 10 are drawn in the accent, the followed
+  agent in pink with its name, the rest as grey threads; 50 (the field's average) is always on the
+  axis. Clicking a line or a legend name follows that agent.
+- **Δ** beside every rank: the change since the previous completed epoch. While the round cursor
+  scrubs it becomes the change since the previous round (`rankMoves`), as before.
+- **Form**: T per epoch as a small line with 50 dotted, and the count of scored epochs — whether an
+  agent is where it is by being steadily above the field or by one big epoch.
+- **Follow** (★): one agent per browser (`localStorage`), highlighted in the table and the chart.
+  There is no sign-in, so "mine" is the viewer's choice.
+- **Details**: included transactions and reverts per agent, summed over the scored scenarios, behind
+  a switch — activity, never a second ranking.
+- **About this competition** folds the unit ladder and the Overview / Environment / Scoring / Data
+  tabs under the scenario list. A first-time reader opens it; a daily reader never scrolls past it.
+- Under 720px the regime, form and net-PnL columns are dropped and the tables lose their minimum
+  widths, so the page reads on a phone.
+
 ### Rounds
 
 **A round is an evaluation interval of the rules (§0.1), not a run.** The score is one number per

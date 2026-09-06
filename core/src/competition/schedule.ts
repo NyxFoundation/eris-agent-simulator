@@ -29,7 +29,20 @@ export type LotterySeed = {
   salt?: string;
 };
 
-export type EpochPlan = { s: number; regime: string; seed: number };
+export type EpochPlan = {
+  s: number;
+  regime: string;
+  seed: number;
+  /**
+   * When the operator intends to start this epoch (ISO 8601). Not part of the commitment: the
+   * lottery fixes the order, the timetable is logistics (rules §4.7.1 lets the live week run as
+   * several sessions). The dashboard shows the next start from it; nothing scores on it.
+   */
+  startsAt?: string;
+};
+
+/** A timetable for the plan: the first epoch's start and the spacing between starts. */
+export type Timetable = { startsAt: string; everyMinutes: number };
 
 export type CompetitionPlan = {
   schema: 1;
@@ -135,12 +148,34 @@ export function buildPlan(
   hidden: HiddenSet,
   lottery: LotterySeed,
   k: number,
+  timetable?: Timetable,
 ): CompetitionPlan {
+  const epochs = deriveSchedule(hidden, lottery.lotterySeed, k);
   return {
     schema: 1,
     k,
     hiddenSetCommitment: commitmentOf(hidden),
     lotterySeedCommitment: commitmentOf(lottery),
-    epochs: deriveSchedule(hidden, lottery.lotterySeed, k),
+    epochs: timetable ? withTimetable(epochs, timetable) : epochs,
   };
+}
+
+/** Stamp each epoch with its intended start: the first at `startsAt`, then every `everyMinutes`. */
+export function withTimetable(
+  epochs: EpochPlan[],
+  timetable: Timetable,
+): EpochPlan[] {
+  const start = Date.parse(timetable.startsAt);
+  if (Number.isNaN(start))
+    throw new Error(`timetable.startsAt is not a date: ${timetable.startsAt}`);
+  if (!Number.isFinite(timetable.everyMinutes) || timetable.everyMinutes <= 0)
+    throw new Error(
+      `timetable.everyMinutes must be positive: ${timetable.everyMinutes}`,
+    );
+  return epochs.map((e) => ({
+    ...e,
+    startsAt: new Date(
+      start + (e.s - 1) * timetable.everyMinutes * 60_000,
+    ).toISOString(),
+  }));
 }

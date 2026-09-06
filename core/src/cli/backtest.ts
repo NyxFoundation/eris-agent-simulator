@@ -121,7 +121,14 @@ async function syncConstants(
 // One cell of the evaluation matrix. `<regime>#<seed>` is the address used in every report
 // (ADR 0017 §1); the regime supplies the market conditions and the seed picks the realization.
 // `s` is the scheduled ordinal (rules §4.4.1): the epoch's weight is a function of it.
-type Scenario = { s: number; regime: string; seed: number; regimePath: string };
+type Scenario = {
+  s: number;
+  regime: string;
+  seed: number;
+  regimePath: string;
+  /** The plan's intended start (ISO 8601), when it states one. Shown, never scored. */
+  startsAt?: string;
+};
 
 // --scenarios <path>, in one of two shapes:
 //   { regimes: string[], seeds: number[] }         the cartesian product, ordinals in that order
@@ -146,7 +153,12 @@ function loadScenarioSet(
     if (doc.epochs.length === 0)
       throw new Error(`${abs}: "epochs" must be a non-empty array`);
     doc.epochs.forEach((entry, i) => {
-      const e = entry as { s?: unknown; regime?: unknown; seed?: unknown };
+      const e = entry as {
+        s?: unknown;
+        regime?: unknown;
+        seed?: unknown;
+        startsAt?: unknown;
+      };
       if (typeof e?.regime !== "string" || !Number.isInteger(e?.seed))
         throw new Error(
           `${abs}: epochs[${i}] needs a string "regime" and an integer "seed"`,
@@ -154,11 +166,17 @@ function loadScenarioSet(
       const s = e.s === undefined ? i + 1 : e.s;
       if (!Number.isInteger(s) || (s as number) < 1)
         throw new Error(`${abs}: epochs[${i}].s must be a positive integer`);
+      if (
+        e.startsAt !== undefined &&
+        (typeof e.startsAt !== "string" || Number.isNaN(Date.parse(e.startsAt)))
+      )
+        throw new Error(`${abs}: epochs[${i}].startsAt must be an ISO 8601 date`);
       out.push({
         s: s as number,
         regime: e.regime,
         seed: e.seed as number,
         regimePath: resolveRegimePath(root, e.regime),
+        ...(typeof e.startsAt === "string" ? { startsAt: e.startsAt } : {}),
       });
     });
     const ordinals = new Set(out.map((x) => x.s));
@@ -599,6 +617,16 @@ async function main(): Promise<void> {
             repeat,
             // Complete only once every scenario has run; until then this is a partial matrix.
             scenariosPlanned: scenarios.length,
+            // The plan's timetable, for the epochs not run yet: the dashboard's "next epoch starts
+            // at". Ordinal and time only -- which scenario an epoch is stays with the results.
+            ...(scenarios.some((sc) => sc.startsAt)
+              ? {
+                  schedule: scenarios.map((sc) => ({
+                    s: sc.s,
+                    ...(sc.startsAt ? { startsAt: sc.startsAt } : {}),
+                  })),
+                }
+              : {}),
             // Both metrics are stored regardless of which one ranks, so the standings can be
             // recomputed under a different scoring rule without re-running anything (ADR 0017 §4).
             scenarios: ordered(),
@@ -672,6 +700,7 @@ async function main(): Promise<void> {
         s: scenario.s,
         regime: scenario.regime,
         seed: scenario.seed,
+        ...(scenario.startsAt ? { startsAt: scenario.startsAt } : {}),
         ...(perRepeat.length > 0 ? { agents: foldRepeats(perRepeat) } : {}),
         ...(runDirs.length > 0 ? { runDir: runDirs[runDirs.length - 1] } : {}),
         ...(perRepeat.length === 0 && lastError !== undefined

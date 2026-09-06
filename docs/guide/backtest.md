@@ -97,7 +97,7 @@ Two artifacts land in `runs/matrix-<id>/`:
 
 | file | what it is |
 |---|---|
-| `matrix.json` | raw per-scenario, per-agent results — P (`pnlUsdc`, with `pnlSource`), `netPnlUsdc` / `alphaUsdc`, the endpoints, `baseline`, `participant` (the rules §2.2 unit, when the roster states one), `flags` — plus the ordinal `s`, `k`, `resetUnit` and run directories (schema 2) |
+| `matrix.json` | raw per-scenario, per-agent results — P (`pnlUsdc`, with `pnlSource`), `netPnlUsdc` / `alphaUsdc`, the endpoints, `baseline`, `participant` (the rules §2.2 unit, when the roster states one), `flags` — plus the ordinal `s`, `k`, `resetUnit`, run directories and, when the plan carried a timetable (`npm run competition -- plan … --starts-at --every-minutes`), a `schedule` of planned ordinals with their `startsAt` — the dashboard's "next epoch starts at" (schema 2) |
 | `standings.json` | the ranking derived from them |
 
 The ranking is a derived view on purpose: `standings.json` recomputes from `matrix.json` alone, so a finished matrix can be re-read without re-running anything (ADR 0017 §4). The rule itself is the competition's (rules §4.4, ADR 0023).

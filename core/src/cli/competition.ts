@@ -25,7 +25,8 @@ import { parseFlags } from "../backtest/shared.js";
 
 const USAGE = `usage:
   npm run competition -- commit <file>
-  npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k <N> [--out <plan.yaml>]`;
+  npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k <N> [--out <plan.yaml>]
+      [--starts-at <ISO 8601> --every-minutes <N>]   stamp each epoch with its intended start (the dashboard shows the next one)`;
 
 function readDoc(path: string): unknown {
   const abs = resolve(process.cwd(), path);
@@ -52,7 +53,19 @@ function main(): void {
     if (!lottery || typeof lottery.lotterySeed !== "string")
       throw new Error(`${flags.lottery}: expected { lotterySeed: "<string>" }`);
     const k = Number(flags.k);
-    const plan = buildPlan(hidden, lottery, k);
+    // Optional timetable (rules §4.7.1: the week is several sessions). Both or neither.
+    if ((flags["starts-at"] === undefined) !== (flags["every-minutes"] === undefined))
+      throw new Error(
+        "--starts-at <ISO 8601> and --every-minutes <N> go together (the first epoch's start and the spacing)",
+      );
+    const timetable =
+      flags["starts-at"] !== undefined
+        ? {
+            startsAt: flags["starts-at"],
+            everyMinutes: Number(flags["every-minutes"]),
+          }
+        : undefined;
+    const plan = buildPlan(hidden, lottery, k, timetable);
     const text = stringifyYaml(plan);
     if (flags.out) {
       writeFileSync(resolve(process.cwd(), flags.out), text);
