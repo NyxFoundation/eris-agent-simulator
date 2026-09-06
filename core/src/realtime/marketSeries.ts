@@ -1217,6 +1217,14 @@ async function sampleBlock(opts: {
     // at 30 decimals (sign = longs pay shorts when positive). A failed funding read leaves the
     // field absent rather than printing 0.00bps — a zero here is not a measurement (issue #44's
     // discipline applies to reporting too).
+    //
+    // savedFundingFactorPerSecond is the *adaptive* funding path's stored state: MarketUtils
+    // returns early and never writes it when fundingIncreaseFactorPerSecond is 0, so on a GMX
+    // deploy without adaptive funding this key reads 0 forever no matter how skewed the book is.
+    // That was true of every run before the localhost market config gained funding parameters
+    // (deployer/vendor/gmx-localhost.patch), and it is still true of any run replayed from a state
+    // dump baked before that — a 0 from such a dump means "this deploy has no funding", not
+    // "the book is balanced". Rebake the dump (`npm run gen:state-dump`) to get a real rate.
     gmx[entry.market.base] = {
       longOiUsd: round2(Number(longA + longB) / 1e30),
       shortOiUsd: round2(Number(shortA + shortB) / 1e30),

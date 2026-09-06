@@ -39,6 +39,7 @@ import {
 } from "@eris/sdk/stables.js";
 import {
   checkRunFeeViolations,
+  checkRunGasViolations,
   countRunRevertedTxs,
   reconcileRunAgentTxs,
 } from "../postRunCheck.js";
@@ -92,6 +93,13 @@ import {
   writePriceFeedStorageFor,
 } from "./priceFeed.js";
 import { reconstructValueSeries, type EpochSeries } from "./reconstruct.js";
+import {
+  deployAgentMarketVenues,
+  registerPending,
+  sweepMarkets,
+  type MarketRegistryRuntime,
+} from "./marketRegistry.js";
+import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { LiveScorer } from "./liveScoring.js";
 import {
   checkDeployment,
@@ -106,6 +114,13 @@ import {
   STARTUP_WARN_BPS,
 } from "./noArb.js";
 import { EventSchedule, withOuOverride } from "./events.js";
+import {
+  auditOwnerGuards,
+  guardFailureMessage,
+  guardProbesFor,
+  logGuardAudit,
+  unprotectedFindings,
+} from "./ownerGuards.js";
 import { buildWhaleOrder, whaleFunding, WHALE_WALLET_KEY } from "./whale.js";
 import {
   accrueLst,
@@ -1042,6 +1057,85 @@ export async function runRealtimeSimulation(
     const priceFeedAddress = await deployPriceFeed(ctx, latestFairPrice);
     logger.event({ type: "price_feed_deployed", address: priceFeedAddress });
 
+    // ---- agent-created markets (issue #40): the discovery registry and the lending singleton ----
+    // Both are per-*run* contracts, like the PriceFeed: they are deployed here rather than living in
+    // constants.local.ts, and their addresses reach the agents through env and the manifest.
+    //
+    // The registrar has its own key. The oracle update sends from admin every block, and two
+    // concurrent senders on one key race on the nonce -- which is how the LST redemption rate once
+    // froze for a whole run.
+    let marketRegistry: MarketRegistryRuntime | undefined;
+    if (config.agentMarkets) {
+      // The registrar's key has to be nobody else's, and "has to" is not the same as "is".
+      //
+      // Two separate reasons, and the second is the serious one:
+      //   - nonce. The oracle update sends from admin every block and the registry write sends from
+      //     the registrar in the same Promise.all. On one key they resolve the same pending nonce
+      //     and one silently replaces the other, which is how the LST redemption rate once froze
+      //     for a whole run.
+      //   - authority. `MarketRegistry`'s owner is whoever deployed it, and the owner is the only
+      //     address that can publish an entry. A *participant* holding that key could publish
+      //     anything it liked as `verified` -- the one claim the environment makes about a
+      //     contract, made by the party the claim is supposed to protect everyone from.
+      //
+      // Compared by address rather than by key, so an externally-registered participant (ADR 0021
+      // §2 -- the environment holds no key for them, only an address) is covered too.
+      const registrarPk = config.privateKeys.setup;
+      const registrarAddress = accountAddress(registrarPk).toLowerCase();
+      const claimed = new Map<string, string>([
+        [accountAddress(config.privateKeys.admin).toLowerCase(), "the admin wallet"],
+        [accountAddress(config.privateKeys.keeper).toLowerCase(), "the keeper wallet"],
+        ...[...flowWalletMap.values()].map(
+          (w) => [w.address.toLowerCase(), `flow wallet ${w.id}`] as const,
+        ),
+        ...agentRuntimes.map(
+          (a) => [a.address.toLowerCase(), `participant ${a.id}`] as const,
+        ),
+      ]);
+      const collision = claimed.get(registrarAddress);
+      if (collision)
+        throw new Error(
+          `the market registrar's address (${registrarAddress}, from SETUP_PRIVATE_KEY) is also ` +
+            `${collision}. The registrar deploys and owns MarketRegistry, and its owner is the only ` +
+            "address that can publish an entry -- so a participant holding it could publish its own " +
+            "trap as `verified`. It also writes every block alongside the oracle update, and two " +
+            "senders on one key race on the nonce (issue #40 T0). Give the registrar an address " +
+            "nothing else in the run uses, or run with agentMarkets.enabled: false.",
+        );
+      marketRegistry = await deployAgentMarketVenues(
+        ctx,
+        registrarPk,
+        config.agentMarketsPerBlockCap,
+        logger,
+      );
+      ctx.marketRegistry = marketRegistry.address;
+      ctx.lending = marketRegistry.lending;
+      // The scorer's valuation context has no SimContext, so the singleton reaches it here.
+      setLendingSingleton(marketRegistry.lending);
+    } else if (enabledIds.includes("lending")) {
+      throw new Error(
+        "run.protocols includes `lending` but agentMarkets.enabled is false. The lending venue is a " +
+          "singleton the environment deploys as part of the agent-created-market capability " +
+          "(issue #40); without it every lending action would be rejected at build time and the " +
+          "roster would look like it chose not to lend. Set `agentMarkets: { enabled: true }`.",
+      );
+    }
+
+    // Contracts the environment owns. The CREATE scan only covers the competition window and every
+    // environment deploy happens in setup, so this is belt and braces -- but publishing an
+    // environment contract as an "agent-created market" would tell the field the environment is a
+    // participant, and that is worth being sure about.
+    const environmentAddresses = new Set<string>(
+      [
+        priceFeedAddress as string,
+        marketRegistry?.address as string | undefined,
+        marketRegistry?.lending as string | undefined,
+        FLASH_ARB_ADDRESS as string,
+      ]
+        .filter((a): a is string => typeof a === "string")
+        .map((a) => a.toLowerCase()),
+    );
+
     // ---- flash arb demo (GitHub #3, env gate): deploy FlashArb (same gate as the synchronous coordinator) ----
     // Deploy the FlashArb that the flasharb base (ADR 0012) invokes via rawTx here. A one-time setup-phase deploy
     // that does not affect interval mining / mempool ordering (same nature as deployPriceFeed). Without deploying,
@@ -1084,10 +1178,31 @@ export async function runRealtimeSimulation(
     const segmentEnv = segments
       ? { ERIS_RUN_DIR_POINTER: segments.pointerPath }
       : undefined;
-    const agentExtraEnv =
-      victimEnv || vulnEnv || segmentEnv
-        ? { ...victimEnv, ...vulnEnv, ...segmentEnv }
-        : undefined;
+    // Issue #40: where the registry and the lending singleton are. Per-run contracts, so they
+    // cannot come from constants.local.ts the way a venue address does; a self-hosted participant
+    // reads them from the manifest instead (ADR 0021 §2).
+    const registryEnv = marketRegistry
+      ? {
+          ERIS_MARKET_REGISTRY_ADDRESS: marketRegistry.address,
+          ERIS_LENDING_ADDRESS: marketRegistry.lending,
+          ERIS_MARKET_REGISTRY_FROM_BLOCK: String(marketRegistry.deployBlock),
+        }
+      : undefined;
+    // The gas budget the run is actually enforcing (issue #40 T0). Handed to the agents so the
+    // runtime self-limits to the same number the post-run check judges by -- three copies of a
+    // ceiling is three chances for them to disagree, and the one that matters is the one that
+    // disqualifies.
+    const gasBudgetEnv = {
+      ERIS_MAX_TX_GAS: config.maxTxGas.toString(),
+      ERIS_MAX_AGENT_BLOCK_GAS: config.maxAgentBlockGas.toString(),
+    };
+    const agentExtraEnv = {
+      ...victimEnv,
+      ...vulnEnv,
+      ...segmentEnv,
+      ...registryEnv,
+      ...gasBudgetEnv,
+    };
 
     // Emit the agent registry in one line (ADR 0008 P0). The dashboard can grasp all agents (id/address/
     // classification hint) immediately from a file tail alone (closes the gap for agents that never act or are
@@ -1114,6 +1229,13 @@ export async function runRealtimeSimulation(
       buildManifest({
         config,
         priceFeed: priceFeedAddress,
+        ...(marketRegistry
+          ? {
+              marketRegistry: marketRegistry.address,
+              lending: marketRegistry.lending,
+              marketRegistryFromBlock: marketRegistry.deployBlock,
+            }
+          : {}),
         participants: agentRuntimes.map((a) => ({
           id: a.id,
           address: a.address,
@@ -1331,6 +1453,34 @@ export async function runRealtimeSimulation(
       }
     }
 
+    // ---- owner guards on the environment's own contracts (issue #40 T0) ----
+    //
+    // Measured, not asserted: every privileged write is simulated from an address with no role, and
+    // a call that does not revert is a missing guard. Run here, after every venue is wired and
+    // before any agent process exists, so the answer describes the world the agents are about to
+    // enter.
+    {
+      const probes = guardProbesFor({
+        priceFeed: priceFeedAddress,
+        marketRegistry: marketRegistry?.address,
+        aaveAggregators: ctx.oracle.aaveAggregators,
+        lstVault: lstRuntime?.vault,
+        gmxOracleProvider: ctx.gmx.mockProvider,
+      });
+      const findings = await auditOwnerGuards(publicClient, probes);
+      logGuardAudit(logger, findings);
+      const unprotected = unprotectedFindings(findings, probes);
+      if (unprotected.length > 0) {
+        const message = guardFailureMessage(unprotected);
+        // Fatal only when participants can actually send arbitrary transactions. Without
+        // agent-created markets the same hole exists and has no reachable exploit -- the only
+        // senders are wallets the environment derives -- so it is reported and the run continues,
+        // which is what keeps every pre-existing regime running unchanged.
+        if (config.agentMarkets) throw new Error(message);
+        console.warn(`${message}\n(not fatal: agentMarkets is off in this run)`);
+      }
+    }
+
     // ---- launch agent processes (ADR 0015 §5: uniformly runtime/bot.ts; pass the private key and PriceFeed via env) ----
     // Under `docker` every agent goes through infra/docker-agent/run-agent.sh, the one path that
     // applies the rules §2.3 caps. Checked once here rather than discovered per agent: a missing
@@ -1353,7 +1503,8 @@ export async function runRealtimeSimulation(
         dockerServerVersion: probe.stdout.trim(),
         memory: process.env.ERIS_DOCKER_MEM ?? "4g",
         cpus: process.env.ERIS_DOCKER_CPUS ?? "2",
-        network: process.env.ERIS_AGENT_NETWORK ?? "host",
+        network: process.env.ERIS_AGENT_ISOLATE === "1" ? "per-agent (ERIS_AGENT_ISOLATE)" : (process.env.ERIS_AGENT_NET ?? "host"),
+        egress: process.env.ERIS_AGENT_INTERNAL === "1" ? "closed (--internal)" : "open",
       });
     } else {
       logger.event({
@@ -1456,18 +1607,25 @@ export async function runRealtimeSimulation(
       );
       // Note: bulk fetch via eth_getBlockReceipts cannot be used because it hits "Failed to decode receipt" on
       // anvil's Arbitrum fork. Issue per-tx fetches in parallel (the batch transport bundles them into one HTTP).
-      const statuses = await Promise.all(
+      // The receipt carries both the status and the gas actually burned (issue #40 T0). The gas is
+      // read here rather than estimated anywhere else: it is the chain's number, which is what makes
+      // the post-run gas-budget check as untamperable as the fee check beside it.
+      const receipts = await Promise.all(
         txs.map(async (tx) => {
           try {
             const receipt = await publicClient.getTransactionReceipt({
               hash: tx.hash,
             });
-            return receipt.status as string;
+            return {
+              status: receipt.status as string,
+              gasUsed: receipt.gasUsed as bigint | undefined,
+            };
           } catch {
-            return "mined"; // fallback when receipt fetch fails
+            return { status: "mined", gasUsed: undefined }; // fallback when receipt fetch fails
           }
         }),
       );
+      const statuses = receipts.map((r) => r.status);
       txs.forEach((tx, i) => {
         const meta = submittedByHash.get(tx.hash.toLowerCase());
         const owner = meta ?? ownerByAddress.get(tx.from.toLowerCase());
@@ -1497,6 +1655,9 @@ export async function runRealtimeSimulation(
           // explorer used to name a participant's methods by joining their self-reported log, and a
           // participant who runs their own agent files no such log with anyone.
           method: methodNameForCalldata(tx.input) ?? "",
+          ...(receipts[i].gasUsed === undefined
+            ? {}
+            : { gasUsed: receipts[i].gasUsed }),
         });
       });
     };
@@ -1732,6 +1893,13 @@ export async function runRealtimeSimulation(
         buildManifest({
           config,
           priceFeed: priceFeedAddress,
+          ...(marketRegistry
+            ? {
+                marketRegistry: marketRegistry.address,
+                lending: marketRegistry.lending,
+                marketRegistryFromBlock: marketRegistry.deployBlock,
+              }
+            : {}),
           participants: agentRuntimes.map((a) => ({
             id: a.id,
             address: a.address,
@@ -2227,6 +2395,43 @@ export async function runRealtimeSimulation(
             }
           };
 
+          // Agent-created markets (issue #40): find what appeared in the caught-up range and
+          // publish it. Its own task because the write is on the registrar key, not admin -- and
+          // sequential inside itself, because the sweep decides what the write publishes.
+          const registryTask = async (): Promise<void> => {
+            if (!marketRegistry) return;
+            try {
+              await sweepMarkets(
+                ctx,
+                marketRegistry,
+                fromBlock,
+                bn,
+                environmentAddresses,
+                logger,
+              );
+              const hash = await registerPending(
+                ctx,
+                marketRegistry,
+                bn,
+                oracleFee,
+                logger,
+              );
+              if (hash)
+                submittedByHash.set(hash.toLowerCase(), {
+                  ownerId: "registry",
+                  role: "system",
+                  priorityFeeWei: oracleFee,
+                  actionType: "marketRegister",
+                });
+            } catch (error) {
+              logger.event({
+                type: "market_registry_task_failed",
+                blockNumber: bn,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          };
+
           // Liquidity-pull stress event (issue #52): move each seeded pool toward the depth this
           // block's trapezoid asks for. Its own task rather than riding inside oracleTask because it
           // sends from the LP owner key, not the admin key, so the two cannot collide on a nonce.
@@ -2332,6 +2537,7 @@ export async function runRealtimeSimulation(
           ];
           if (stressVictims.length > 0) tasks.push(timed(victimTask));
           if (vulnRuntime) tasks.push(timed(vulnTask));
+          if (marketRegistry) tasks.push(timed(registryTask));
           // One task for both, actually rather than by comment. Every one of these sends from the
           // deployer key, and `sendNoMine` resolves the nonce per call -- two of them in the same
           // Promise.all resolve the same pending nonce and one silently replaces the other. The
@@ -2372,6 +2578,7 @@ export async function runRealtimeSimulation(
           const victimMs =
             stressVictims.length > 0 ? results[taskIdx++] : undefined;
           const vulnMs = vulnRuntime ? results[taskIdx++] : undefined;
+          const registryMs = marketRegistry ? results[taskIdx++] : undefined;
           // One measurement now that both share a task; reported under both names so the existing
           // round_timing readers keep working.
           const deployerKeyMs =
@@ -2390,6 +2597,7 @@ export async function runRealtimeSimulation(
             stateFlowMs,
             ...(victimMs !== undefined ? { victimMs } : {}),
             ...(vulnMs !== undefined ? { vulnMs } : {}),
+            ...(registryMs !== undefined ? { registryMs } : {}),
             ...(liquidityMs !== undefined ? { liquidityMs } : {}),
             ...(depegMs !== undefined ? { depegMs } : {}),
             ...(liquityMs !== undefined ? { liquityMs } : {}),
@@ -2484,7 +2692,7 @@ export async function runRealtimeSimulation(
     let alphaByAgent: Record<string, number> = {};
     // agent -> realizable value at the last cross-section, where it differs from the mark
     // (issue #38: an LST redemption still in the queue when the run ends).
-    let liquidatableValueByAgent: Record<string, number> = {};
+    let markedValueByAgent: Record<string, number> = {};
     // ---- the boundary series (ADR 0021 §3): P(a, s) is its two ends (rules §4.4.1) ----
     // Taken here rather than out of the post-run sweep below, because this is the series that
     // exists on a chain the sweep cannot cover: too long for the node's history, and with no end to
@@ -2566,10 +2774,11 @@ export async function runRealtimeSimulation(
           scoreEvery: config.scoreEvery,
           epochBlocks: config.epochBlocks,
           markMedianBlocks: config.markMedianBlocks,
+          ...(marketRegistry ? { marketRegistry: marketRegistry.address } : {}),
         });
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;
-        liquidatableValueByAgent = meta.liquidatableValueByAgent;
+        markedValueByAgent = meta.markedValueByAgent;
         logger.event({ type: "value_series_reconstructed", ...meta });
         // The claim that live scoring *replaces* the sweep rests on the two producing the same
         // number at the same boundary. On a run short enough to have both, check it rather than
@@ -2673,6 +2882,23 @@ export async function runRealtimeSimulation(
       });
     } else if (violations.length > 0) {
       logger.event({ type: "rule_violations_detected", violations });
+    }
+
+    // Gas budget (issue #40 T0). Checked whatever the fee profile is: the fee cap is about ordering
+    // and is deliberately unenforced under economic gas, but starving the block is about capacity
+    // and is a disqualifying offence either way (rules §6 / §8).
+    const gasViolations = checkRunGasViolations(logger.runDir, {
+      maxTxGas: config.maxTxGas,
+      maxAgentBlockGas: config.maxAgentBlockGas,
+    });
+    if (gasViolations.length > 0) {
+      logger.event({ type: "gas_budget_violations", violations: gasViolations });
+      const offenders = [...new Set(gasViolations.map((v) => v.ownerId))];
+      console.error(
+        `[rules] ${gasViolations.length} gas-budget violation(s) by ${offenders.join(", ")} ` +
+          `(per-tx ${config.maxTxGas}, per-agent-per-block ${config.maxAgentBlockGas}); ` +
+          "see gas_budget_violations in events.jsonl",
+      );
     }
 
     // ---- on-chain txs the agent's own runtime never reported sending (rules §8) ----
@@ -2779,12 +3005,14 @@ export async function runRealtimeSimulation(
         ...(agent.id in alphaByAgent
           ? { alphaUsdc: alphaByAgent[agent.id] }
           : {}),
-        // What the position could actually be exited for at the run's last block, when the
-        // reconstruction found that it differs from the mark at that same cross-section (issue
-        // #38: an LST redemption whose queue outlives the run). Absent for every venue that exits
-        // at par, which is all of them today.
-        ...(agent.id in liquidatableValueByAgent
-          ? { liquidatableValueUsdc: liquidatableValueByAgent[agent.id] }
+        // The face mark at the run's last block, when the reconstruction found it above the value
+        // that was actually scored at that same cross-section. The score is the recoverable value
+        // (issue #40 axiom 3), so an entry here says the position was carried above what it could
+        // have been exited for -- an LST redemption whose queue outlives the run, a lending supply
+        // whose collateral is worthless, a borrower under water. Absent when the two agreed, which
+        // is the normal case.
+        ...(agent.id in markedValueByAgent
+          ? { markedValueUsdc: markedValueByAgent[agent.id] }
           : {}),
         // Present only when the agent process went away before the run ended (ADR 0017 §4 reads this
         // to disqualify the agent for that scenario instead of scoring its frozen position).
@@ -2816,6 +3044,11 @@ export async function runRealtimeSimulation(
       finalFairPriceUsdcPerWeth: finalFairPrice,
       valueSeries,
       violations,
+      // Kept apart from `violations` rather than merged into it: the fee cap is about ordering and
+      // the gas budget is about capacity, they have different enforcement and different remedies,
+      // and a reader counting "violations" across old and new runs must not see the number change
+      // meaning (issue #40 T0).
+      ...(gasViolations.length > 0 ? { gasViolations } : {}),
       agents: agentsSummary,
     });
     // The last segment closes with the same index entry every other one got, so a period that ended

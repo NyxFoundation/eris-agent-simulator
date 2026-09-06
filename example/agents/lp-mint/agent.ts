@@ -16,8 +16,10 @@ export function decide(obs: AgentObservation): AgentAction | null {
     type: "mintLiquidity",
     tickLower: center - spacing * 20,
     tickUpper: center + spacing * 20,
-    amountWethDesired: (BigInt(obs.limits.maxLpWethWei) / 10n).toString(),
-    amountUsdcDesired: (BigInt(obs.limits.maxLpUsdcUnits) / 10n).toString(),
+    // A tenth of the wallet on each side. There is no LP size cap any more, so the fraction is
+    // this agent's own statement of how much inventory it is willing to tie up in a range.
+    amountWethDesired: (BigInt(obs.balances.wethWei) / 10n).toString(),
+    amountUsdcDesired: (BigInt(obs.balances.usdcUnits) / 10n).toString(),
     maxPriorityFeePerGasWei: obs.limits.defaultPriorityFeePerGasWei,
     slippageBps: 100,
   };

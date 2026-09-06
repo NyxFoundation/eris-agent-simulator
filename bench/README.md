@@ -15,6 +15,19 @@ Options: `--agents N`, `--blocks B`, `--block-time S`, `--mode frozen|llm` (llm 
 loop against Ollama Cloud — needs `OLLAMA_API_KEY`), `--mem 1g`, `--out DIR`. `ANVIL_PORT` (default
 8545) isolates the chain — set a dedicated port when a monitoring/production anvil is already running.
 
+`--markets N` (issue #40) puts N agent-created-market participants in the field instead of N
+venue-arb clones, cycling through the four reference roles, with the registry and the permissionless
+lending singleton on. It is a different load: the AMM roster never touches the per-block discovery
+sweep, the registry write, or the registry read every agent does every block, and those are what
+this capability added to the loop.
+
+```bash
+ANVIL_PORT=8555 bench/run.sh --markets 32 --blocks 200 --block-time 2
+```
+
+Container cleanup matches `--label eris.role=agent`, not the `eris-` name prefix — that prefix also
+matches `eris-explorer-*`, so a bench reset used to take the local Blockscout stack down with it.
+
 ## Layout
 
 | path | role |
@@ -28,6 +41,15 @@ loop against Ollama Cloud — needs `OLLAMA_API_KEY`), `--mem 1g`, `--out DIR`. 
 
 The container execution itself is `infra/docker-agent/run-agent.sh` (bind-mount mode by default here,
 so no per-team image build is needed for a bench).
+
+## Known: the sim does not always exit
+
+Measured 2026-09-05. The coordinator prints `realtime simulation completed`, writes `summary.json`,
+and then sits at 0% CPU without exiting — reproduced with the stock `--agents 4` roster, so it is not
+about any one agent. `run.sh` therefore bounds the sim with a generous `timeout` and says so in
+`run.log` when it trips; the run's own artifacts are complete either way. Left as a separate defect:
+it also means CI never reaches the log line it greps for, and a practice-devnet segment roll would
+inherit it.
 
 ## CI
 

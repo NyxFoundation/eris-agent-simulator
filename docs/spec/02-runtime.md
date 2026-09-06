@@ -180,7 +180,7 @@
 | `scenario` | シナリオごとに world を作り直した中の 1 本 | **シナリオ行列ランナーのみ** |
 
 - `summary.json` の `resetUnit` と `matrix.json` の `resetUnit` に必ず出る。
-- `resetUnit` は `summary.json` と `matrix.json` に必ず出る。連続経済の run と scenario の run を 1 つの順位に混ぜてはいけない（1 world あたりのエポック数が違う）。混在を拒否していた `npm run metrics` は退役した（ADR 0022）ので、混ぜないのは読む側の規律。
+- `resetUnit` は `summary.json` と `matrix.json` に必ず出る。連続経済の run と scenario の run を 1 つの順位に混ぜてはいけない（1 world あたりのエポック数が違う）。混在を拒否していた `npm run metrics` は退役した（ADR 0023）ので、混ぜないのは読む側の規律。
 - フィールドを持たない過去 run は `continuous` として読む。
 - 綴り間違いも fail-fast（`sdk/src/config.ts:42`）。黙って `continuous` に落ちると matrix 全体が continuous を名乗る。
 

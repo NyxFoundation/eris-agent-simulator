@@ -293,8 +293,6 @@ test("empty hands with a posted position is not treated as an unusable venue", (
     fairPriceUsdcPerWeth: 3000,
     round: 1,
     limits: {
-      maxWethInWei: WAD.toString(),
-      maxLstDepositWethWei: (5n * WAD).toString(),
       defaultPriorityFeePerGasWei: "100000000",
     },
     protocols: {

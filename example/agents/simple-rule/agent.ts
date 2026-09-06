@@ -8,14 +8,17 @@ export function decide(obs: AgentObservation): AgentAction | null {
     return { type: "noop", reason: "gap too small" };
   }
   const tokenIn = gap > 0 ? "USDC" : "WETH";
-  const max = BigInt(
-    tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits,
+  // Size against the balance: nothing else bounds an order, so how much of the stack to commit is
+  // the strategy's call.
+  const held = BigInt(
+    tokenIn === "WETH" ? obs.balances.wethWei : obs.balances.usdcUnits,
   );
   const sizeBps = Math.min(
     2500,
     Math.max(250, Math.floor(Math.abs(gap) * 200_000)),
   );
-  const amountIn = (max * BigInt(sizeBps)) / 10_000n;
+  const amountIn = (held * BigInt(sizeBps)) / 10_000n;
+  if (amountIn <= 0n) return { type: "noop", reason: "nothing to trade with" };
   return {
     type: "swap",
     tokenIn,

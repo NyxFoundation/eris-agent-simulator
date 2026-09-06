@@ -78,8 +78,7 @@ flowchart LR
                                        "priceUsdc": 0.991, "marketQuoted": true } } },
   "inventory": { "valueUsdc": 339290.8, "weth": 0, "usdc": 25000, "eth": 105.0 },
   "history": [ { "round": 608, "poolPriceUsdcPerWeth": 3000.0, "fairPriceUsdcPerWeth": 3000 }, … ],
-  "limits": { "maxWethInWei": "1000000000000000000", "maxUsdcInUnits": "5000000000",
-              "defaultPriorityFeePerGasWei": "100000000", "defaultSlippageBps": 50, … },
+  "limits": { "defaultPriorityFeePerGasWei": "100000000", "maxPriorityFeePerGasWei": "…", "defaultSlippageBps": 50 },
   "protocols": { "uniswap": { "pool": { "priceUsdcPerWeth": 3000.0, "fee": 3000, "liquidity": "54772255750516611", … } },
                  "balancer": { "priceUsdcPerWeth": 2991.0 }, "curve": { … }, "aave": { … } },
   "competition": { "maxCompetitorPriorityFeeWei": "0", "recentRevertRate": 0, … }
@@ -98,13 +97,13 @@ Things to watch when reading:
   in an LP leg alike — so holding a depegged one is a real loss, and buying one below par is a real position with a
   real downside. `marketQuoted: false` means `priceUsdc: 1` is par by assumption (no market, or the pool would not
   quote): **do not read a `1` there as "the peg is holding"**. Trade the pair with `stableSwap`
-- **Per-round limits are denominated in USDC's six decimals.** `maxUsdcInUnits` bounds both legs of a `stableSwap`,
-  so for an 18-decimal stable you have to scale it (`limit * 10n ** 12n`) before sizing a sell. Getting this wrong
-  rejects every unwind while letting every buy through, which leaves you holding a position you cannot close
+- **There is no per-order size cap** (`maxUsdcInUnits`/`maxWethInWei` were removed from `limits`). The only bounds on
+  a trade are your wallet balance and the venue depth you are willing to move — **size yourself**. Oversizing is bounded
+  by your balance and by slippage, not by a validator size cap
 - `history` is the pool/fair series for the last ~20 blocks (for gauging momentum and the persistence of a gap)
 - **`blocksRemaining` is how many blocks are left**, counted from the first block you observed (absent when the run has no block limit). An exit that takes longer than that cannot complete inside the run — which is what makes the LST withdrawal queue a decision rather than a formality. Approximate by a block or two
 - **`discoveredPools` lists the pools the environment adds mid-epoch** (rules §3.2 regime 7): address, tokens, fee, reserves, an implied quote and the code hash. Whether a pool is rigged is not disclosed — the source is in the run's `disclosures/<address>.json` and a dry-run `eth_call` of `swap` shows what it really does. A quote from an unfunded pool is `null`, not a price
-- `limits` holds the per-round trade limits and the default/max fees. **Cap your size here** (actions over the limit
+- `limits` holds only the default/max **fees** and default slippage (no size caps). **Fee-cap your action here** (actions over the fee limit
   are rejected by validation)
 - The shape of `protocols.<venue>` differs per venue. **It's safest not to read it directly, but to normalize it with a
   shared helper** (Step 4). Reading `obs.pool` directly has repeatedly caused a TypeError → noop for every round
@@ -207,13 +206,57 @@ for (const view of marketViews(obs)) {
    "persistence" of the gap with `history` before moving
 3. **Initial funding is USDC-only by default** (`funding.wethWei: "0"`). A strategy that starts by selling WETH has no
    inventory in the first round. Decide direction after checking `obs.balances`
-4. **Follow `obs.limits` for size and fee**. Overruns are rejected by validation, wasting that round
+4. **Use `obs.limits` for the fee/slippage defaults; size the trade yourself** (there is no size cap in `limits`). Fee overruns are rejected by validation, wasting that round
+
+## Deploying your own contracts
+
+Permitted (issue #40). Deployment is a `rawTx` with **no `to`**, whose `data` is the creation
+bytecode, so it goes through the runtime like every other transaction — sharing the nonce manager,
+the per-block transaction cap and the gas budget. Signing your own deploys instead puts a second
+sender on your key, and two senders on one key race on the nonce.
+
+```ts
+import { deployAction, currentNonce, findDeployedContracts } from "../lib/deployContract.js";
+
+const nonce = await currentNonce(ctx.publicClient, ctx.address);
+ctx.submit(deployAction("MyContract", [constructorArg]));
+// the runtime owns the nonce, so find the address afterwards rather than predicting it
+const found = await findDeployedContracts(ctx.publicClient, ctx.address, {
+  fromNonce: nonce,
+  toNonce: nonce + 2,
+});
+```
+
+Three things follow from the rules rather than from the code:
+
+- **What you deploy is `unknown` to everybody else.** The environment publishes it to the
+  `MarketRegistry` and makes no claim about it. Under the round-trip rule (rules §4.1) **value left
+  inside a contract the environment cannot value is worth zero at the epoch's final block** — your
+  own contract included. Profit taken *through* it counts in full.
+- **Gas is capped** at 30,000,000 per transaction and 90,000,000 per agent per block (rules §2.6).
+  The gateway refuses an over-cap transaction up front; exceeding it is a §8 offence, because a
+  contract that eats the block starves the environment's price update as well as your rivals.
+- **The bundle carries the artifacts.** `bundle:agent` scans your `.ts` for the contract names you
+  hand to `deployAction` / `readForgeArtifact` and ships `out/<Name>.sol/<Name>.json` for each. Run
+  `npm run build:contracts` first, and check the bundler's output — it prints what it shipped.
+
+  A scan cannot see through an alias, a variable or a template. If you build the name at runtime,
+  declare it instead: **`artifacts.json` in your agent directory**, a JSON array of contract names,
+  always wins over the scan.
+
+  ```json
+  ["MyOracle", "MyToken"]
+  ```
+
+  Getting this wrong is not a build error. It is a deployment that throws on the operator's machine
+  at the first block it is attempted, and nobody is there to fix it.
 
 ## Submission
 
 ```bash
+npm run build:contracts       # only if your agent deploys its own contracts
 npm run check:strategy        # static cheatcode check (entry gate)
-npm run bundle:agent my-strategy   # submission zip (runtime + sdk + lib + target agent)
+npm run bundle:agent my-strategy   # submission zip (runtime + sdk + lib + target agent + artifacts)
 ```
 
 The bundled strategies in `example/agents/` (noop = minimal form / arb-bot = a model with a decision log / multi-arb =

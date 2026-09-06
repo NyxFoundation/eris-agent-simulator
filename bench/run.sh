@@ -5,6 +5,8 @@
 # Markdown summary (consumed by CI to comment on the PR).
 #
 #   bench/run.sh [--agents N] [--blocks B] [--block-time S] [--mode frozen|llm] [--mem 1g] [--out DIR]
+#   bench/run.sh --markets N ...   # issue #40: load-test the agent-created-market path instead of
+#                                  # the AMM path -- registry sweep, lending singleton, N creators
 #
 # Env: ANVIL_PORT (default 8545). For CI on a shared host, set a dedicated port so it won't touch a
 # running monitoring/production anvil.
@@ -16,6 +18,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --agents) AGENTS=$2; shift 2;; --blocks) BLOCKS=$2; shift 2;; --block-time) BT=$2; shift 2;;
   --mode) MODE=$2; shift 2;; --mem) MEM=$2; shift 2;; --out) OUT=$2; shift 2;;
   --each) ROSTER=each; shift;;                 # one container per example agent (per-agent compare)
+  --markets) ROSTER="markets:$2"; AGENTS=$2; shift 2;;   # issue #40: N agent-created-market participants
   --agent) ROSTER="agent:$2"; shift 2;;        # just this agent + a venue-arb reference
   *) echo "unknown arg: $1" >&2; exit 1;; esac; done
 ROSTER="${ROSTER:-$AGENTS}"                     # default: N venue-arb clones (load test)
@@ -35,7 +38,17 @@ echo "[3/5] sampler";      setsid python3 "$REPO/bench/lib/sampler.py" "$OUT/sta
 echo "[4/5] sim ($AGENTS agents, $BLOCKS blocks, ${BT}s block, mem $MEM)"
 # bind-mount mode: stock node:24 + this checkout mounted (no per-team image build needed for a bench).
 export ERIS_AGENT_BINDMOUNT="${ERIS_AGENT_BINDMOUNT:-1}"
-ERIS_LOCAL_DEPLOY=1 ERIS_DOCKER_MEM="$MEM" npm run sim:realtime -- --config "$CFG" >"$OUT/run.log" 2>&1 || true
+# Bounded, because the coordinator does not always exit after it finishes. Measured 2026-09-05:
+# `realtime simulation completed` is printed, the summary is written, and the process then sits at
+# 0% CPU holding something open -- reproduced with the stock `--agents 4` roster, so it is not the
+# agent-created-market path. Without a bound the bench never reaches its own aggregate step and CI
+# never gets to grep the log it is waiting for. The budget is generous (1.5x the run plus ten
+# minutes), and tripping it is announced rather than swallowed.
+SIM_BUDGET=$(( BLOCKS * BT * 3 / 2 + 600 ))
+ERIS_LOCAL_DEPLOY=1 ERIS_DOCKER_MEM="$MEM" timeout "$SIM_BUDGET" npm run sim:realtime -- --config "$CFG" >"$OUT/run.log" 2>&1 || {
+  code=$?
+  [ "$code" = 124 ] && echo "[bench] sim did not exit within ${SIM_BUDGET}s; killed. The run itself may still have completed -- check run.log" | tee -a "$OUT/run.log"
+}
 bash "$REPO/infra/docker-agent/reap.sh" >/dev/null 2>&1 || true      # sweep any orphaned containers
 kill "$SAMP" 2>/dev/null || true
 echo "[5/5] aggregate"

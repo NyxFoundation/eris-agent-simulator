@@ -1,4 +1,4 @@
-// Scenario-matrix standings under the competition rules (§4.4, §4.6; ADR 0022).
+// Scenario-matrix standings under the competition rules (§4.4, §4.6; ADR 0023).
 //
 // A matrix run is a rehearsal of the live competition: every scenario is one epoch, run in the
 // order given, and the standings are what the live leaderboard would show -- P per agent per epoch,

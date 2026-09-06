@@ -23,8 +23,9 @@
 # held to. The headroom is nominal, not reserved: 100 containers measured ~19 GB of host memory in
 # total (~190 MiB each), so raising the ceiling costs nothing until an agent actually misbehaves.
 #
-# NOTE on isolation: --network host means the container shares the host network, so run-time egress
-# is NOT contained here -- it must be enforced by the operator's host/network policy. See README.
+# NOTE on isolation: the default --network host shares the host network, so nothing is contained.
+# ERIS_AGENT_ISOLATE=1 gives each agent its own network with the RPC gateway as the hub, and
+# ERIS_AGENT_INTERNAL=1 makes that network egress-free (see below and ISOLATION.md).
 #
 # Cleanup: this execs `docker run --rm`, which removes the container on graceful exit (the client
 # forwards SIGTERM/SIGINT). The coordinator may SIGKILL this wrapper at run end (uncatchable, and
@@ -36,23 +37,66 @@ MEM="${ERIS_DOCKER_MEM:-4g}"
 CPUS="${ERIS_DOCKER_CPUS:-2}"
 NAME="eris-${ERIS_AGENT_ID:?ERIS_AGENT_ID is required (set by the coordinator)}"
 
-# The network the container joins. `host` shares the host's (no egress control); the operator's
-# internal network -- with the RPC gateway and the inference proxy attached to it -- is what makes
-# rules §2.3's "no direct external connection" true.
-NET="${ERIS_AGENT_NETWORK:-host}"
+# Agent-to-agent isolation (ISOLATION.md, verified): put each agent on its OWN docker network that
+# only the hub also joins. Agents cannot reach each other (separate L2) and reach the chain only
+# through the hub. Opt-in; needs the hub running as a bridge container.
+#   ERIS_AGENT_HUB        the container agents may reach: default the RPC gateway, so they get the
+#                         cheatcode filter + rate limit and cannot reach anvil directly
+#                         (set ERIS_RPC_URL=http://<hub>:8546). ascon-anvil exposes anvil (no filter).
+#   ERIS_AGENT_INTERNAL=1 create the network with --internal: no NAT, no egress at all. This is what
+#                         makes rules §2.3 ("no direct external connection") true. Inference then goes
+#                         through the operator's proxy (core/src/inference/proxy.ts), which has to be
+#                         on the network too -- name its container in ERIS_INFERENCE_HUB and point
+#                         ERIS_INFERENCE_BASE_URL at it. Unset = NAT egress (the 2026-09-04 own-LLM
+#                         variant, kept as the verified fallback).
+if [ "${ERIS_AGENT_ISOLATE:-0}" = "1" ]; then
+  HUB_CT="${ERIS_AGENT_HUB:-ascon-rpc-gateway-live}"
+  ISONET="ag-${ERIS_AGENT_ID}"
+  if [ "${ERIS_AGENT_INTERNAL:-0}" = "1" ]; then
+    docker network create --internal "$ISONET" >/dev/null 2>&1 || true
+  else
+    docker network create "$ISONET" >/dev/null 2>&1 || true
+  fi
+  docker network connect "$ISONET" "$HUB_CT" >/dev/null 2>&1 || true   # idempotent; hub multi-homes
+  if [ -n "${ERIS_INFERENCE_HUB:-}" ]; then
+    docker network connect "$ISONET" "$ERIS_INFERENCE_HUB" >/dev/null 2>&1 || true
+  fi
+  export ERIS_AGENT_NET="$ISONET"
+fi
+
 # Shared cap/runtime flags, so the two modes cannot drift.
-CAPS=( --rm --network "$NET" --name "$NAME" --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS" )
+# Hardening (verified not to break the agent): fork-bomb (pids), fd cap (ulimit), no privilege
+# escalation, read-only rootfs + a size-capped tmpfs /tmp for scratch. NOTE: --cap-drop=ALL was
+# tried and SILENTLY breaks the agent (reads/tx fail -> all noop, container looks healthy), so it
+# is intentionally omitted; a targeted cap-drop is a follow-up. Egress is still open (host net) --
+# agent<->agent isolation is a separate network stage.
+# `--label eris.role=agent` is what the sweepers match on. Matching on the `eris-` name prefix looked
+# equivalent and is not: `eris-explorer-*` is the local Blockscout stack, so a bench reset on a box
+# that had the explorer running tore it down as collateral.
+# `--init` runs tini as PID 1. Without it the agent's node process *is* PID 1, and Linux does not
+# deliver a signal with its default disposition to PID 1 — node installs no SIGTERM handler, so the
+# agent ignored the coordinator's stop entirely, `docker run` waited for a container that was never
+# going to stop, and the environment's own process never exited (measured 2026-09-05: it printed
+# `realtime simulation completed`, wrote summary.json, and then sat at 0% CPU forever). tini
+# forwards the signal to the real process, which then stops the way it always should have.
+CAPS=( --rm --init --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label eris.role=agent
+  --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
+  --pids-limit="${ERIS_DOCKER_PIDS:-256}" --ulimit nofile=2048:2048 --security-opt=no-new-privileges
+  --read-only --tmpfs /tmp:rw,size=512m,mode=1777 )
 
 # Env forwarded by name. Two are silent if lost under command-override:
 #   ERIS_AGENT_DIR    -- command-override skips the directory convention; set it in the roster env:.
 #   ERIS_LOCAL_DEPLOY -- from the operator process env; without it constants.local is ignored and
 #                        Multicall3 + every venue address fall back to the fork chain, so all reads
 #                        and tx builds fail while docker stats still looks healthy.
-# Every ERIS_* the coordinator set is forwarded by name, except the three host paths that each
-# mode maps itself below (ERIS_RUN_DIR / ERIS_AGENT_DIR / ERIS_CONFIG) and ERIS_REPO. A fixed list
-# here used to drop whatever the coordinator added later (the vulnerability factory, the segment
-# pointer, the liquidation victims), and an agent missing one of those fails quietly.
-COMMON_ENV=()
+# Every ERIS_* the coordinator set is forwarded by name, except the host paths each mode maps itself
+# below (ERIS_RUN_DIR / ERIS_AGENT_DIR / ERIS_CONFIG) and ERIS_REPO. A fixed list here used to drop
+# whatever the coordinator added later (the vulnerability factory, the market registry, the segment
+# pointer, the liquidation victims), and an agent missing one of those fails quietly -- it reads an
+# empty registry and an absent venue, which is exactly what a run where nobody deployed anything looks
+# like. HOME=/tmp because the rootfs is read-only; NODE_ENV / REPORT_DIR are set by the coordinator
+# for every child and the image has no useful default for either.
+COMMON_ENV=( -e HOME=/tmp -e NODE_ENV -e REPORT_DIR )
 while IFS= read -r name; do
   case "$name" in
     ERIS_RUN_DIR|ERIS_AGENT_DIR|ERIS_CONFIG|ERIS_REPO) ;;
@@ -65,13 +109,63 @@ if [ -z "${ERIS_INFERENCE_BASE_URL:-}" ]; then
   COMMON_ENV+=( -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e OPENAI_BASE_URL )
 fi
 
+# Run the container with this wrapper supervising it, and make sure the *container* dies when the
+# wrapper is asked to stop.
+#
+# Not `exec`: killing the docker **client** does not stop a daemon-managed container, so an `exec`d
+# wrapper left the agent running with its key and its RPC connection after the run had ended and
+# been scored. `--init` above fixes the graceful path (tini forwards the signal to a process that is
+# otherwise PID 1 and therefore ignores it); this is what fixes the ungraceful one.
+#
+# Both modes go through here. The bind-mount path used to have its own `exec` and its own hole.
+supervise() {
+  # The trap is installed *before* the container starts. Installing it after backgrounding leaves a
+  # window in which a TERM terminates the wrapper normally and the container survives -- small, but
+  # this whole function exists because of a window exactly that shape.
+  trap stop TERM INT
+  "$@" &
+  CHILD=$!
+  wait "$CHILD"
+}
+
+# Is the container gone? "yes" only when docker answered and said so. A daemon that will not answer
+# is not evidence of absence, and treating it as such is how the container this function exists to
+# remove ends up surviving it.
+gone() {
+  local out
+  out=$(docker ps -q --filter "name=^${NAME}$" 2>/dev/null) || return 1
+  [ -z "$out" ]
+}
+
+stop() {
+  # Removal, then verification. A failed `docker rm -f` that is shrugged off leaves exactly the
+  # container this handler exists to remove, so retry briefly and say so if it survives -- an agent
+  # that outlives the run still holds its key and its RPC connection.
+  for _ in 1 2 3; do
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    gone && break
+    sleep 1
+  done
+  if ! gone; then
+    echo "run-agent: could not confirm container $NAME is gone; it may still be running" >&2
+  fi
+  # CHILD is unset if the signal arrived before the container was backgrounded, which is exactly the
+  # case the removal above covers.
+  if [ -n "${CHILD:-}" ]; then
+    kill "$CHILD" 2>/dev/null || true
+    wait "$CHILD" 2>/dev/null || true
+  fi
+  exit 0
+}
+
 if [ "${ERIS_AGENT_BINDMOUNT:-0}" = "1" ]; then
   # Bind-mount mode: same host path inside the container, so coordinator paths resolve as-is.
-  exec docker run "${CAPS[@]}" "${COMMON_ENV[@]}" \
+  supervise docker run "${CAPS[@]}" "${COMMON_ENV[@]}" \
     -e ERIS_RUN_DIR -e ERIS_AGENT_DIR -e ERIS_CONFIG \
     -v "$REPO:$REPO:ro" -v "$REPO/runs:$REPO/runs" -w "$REPO" \
     "${ERIS_AGENT_IMAGE:-node:24-bookworm-slim}" \
     node --import tsx "$REPO/example/agents/runtime/bot.ts"
+  exit $?
 fi
 
 # Image mode: remap the coordinator's host paths ($REPO/...) onto the image's /eris.
@@ -96,4 +190,4 @@ if [ -n "${ERIS_CONFIG:-}" ]; then
   MOUNTS+=( -v "$CFG_HOST:$CFG_IMG:ro" )
 fi
 
-exec docker run "${CAPS[@]}" "${COMMON_ENV[@]}" "${ENVS[@]}" "${MOUNTS[@]}" "$IMG"
+supervise docker run "${CAPS[@]}" "${COMMON_ENV[@]}" "${ENVS[@]}" "${MOUNTS[@]}" "$IMG"

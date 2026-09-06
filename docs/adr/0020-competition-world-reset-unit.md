@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted（2026-08-19）。**§5（シナリオ横断の集約方式の候補比較）は [ADR 0022](0022-competition-scoring-deviation-score.md) が置き換えた（2026-09-06）** — 規約 §4.4 の偏差値方式に集約の選択は無く、`aggregate.ts` と `npm run metrics -- --matrix` は削除された。§1〜§4（`run.resetUnit` 軸）はそのまま有効。
+Accepted（2026-08-19）。**§5（シナリオ横断の集約方式の候補比較）は [ADR 0023](0023-competition-scoring-deviation-score.md) が置き換えた（2026-09-06）** — 規約 §4.4 の偏差値方式に集約の選択は無く、`aggregate.ts` と `npm run metrics -- --matrix` は削除された。§1〜§4（`run.resetUnit` 軸）はそのまま有効。
 
 **実装済み（同日）**: `run.resetUnit` 軸（`sdk/src/config.ts` / `sdk/src/runConfig.ts` の `SCHEMA`）、
 matrix runner だけが `scenario` を宣言できる起動時 fail-fast（`core/src/realtime/coordinator.ts`）、

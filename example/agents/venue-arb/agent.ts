@@ -6,7 +6,7 @@
 // cheap venue instead and only sells once it is holding inventory. Taking the largest gap
 // unconditionally is what made this agent self-reject every action it produced (issue #54).
 import type { AgentAction, AgentObservation } from "@eris/sdk";
-import { affordable, canFund } from "../lib/affordable.js";
+import { canFund, sized } from "../lib/affordable.js";
 
 type Venue = {
   id: "uniswap" | "balancer" | "curve";
@@ -68,17 +68,11 @@ export function decide(obs: AgentObservation): AgentAction | null {
 
   const tokenIn = best.price < fair ? "USDC" : "WETH";
   const sizeBps = Math.min(2500, Math.max(250, Math.floor(bestGap * 200_000)));
-  const amountIn = affordable(
-    obs,
-    tokenIn,
-    (BigInt(
-      tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits,
-    ) *
-      BigInt(sizeBps)) /
-      10_000n,
-  );
-  // canFund said the wallet clears the dust floor, but the rule cap or the gap-derived size can
-  // still land under it. Proposing it anyway would just be rejected.
+  // A fraction of what the wallet holds of the token being spent. There is no rule cap to size
+  // against any more, so the fraction is the decision.
+  const amountIn = sized(obs, tokenIn, sizeBps);
+  // canFund said the wallet clears the dust floor, but the gap-derived fraction of it can still
+  // land under it. Proposing it anyway would just be rejected.
   if (amountIn === 0n)
     return { type: "noop", reason: "affordable size is below the dust floor" };
 
@@ -117,12 +111,10 @@ function acquireInventory(
 
   // Size it to the leg that has to close: buying more than the rich venue can absorb leaves the
   // remainder as inventory this agent has no plan for.
-  const amountIn = affordable(
+  const amountIn = sized(
     obs,
     "USDC",
-    (BigInt(obs.limits.maxUsdcInUnits) *
-      BigInt(Math.min(2500, Math.floor(spread * 200_000)))) /
-      10_000n,
+    Math.min(2500, Math.floor(spread * 200_000)),
   );
   if (amountIn === 0n) return null;
   return {

@@ -665,8 +665,8 @@ function validate(
   const sizeDeltaUsd = BigInt(a.sizeDeltaUsd);
   if (sizeDeltaUsd <= 0n)
     return { ok: false, reason: "sizeDeltaUsd must be positive" };
-  if (sizeDeltaUsd > BigInt(obs.limits.maxGmxSizeUsd))
-    return { ok: false, reason: "sizeDeltaUsd exceeds configured max" };
+  // No configured size cap. What bounds the position is the collateral behind it and GMX's own
+  // reserve/open-interest configuration, which the venue enforces on chain.
   if (a.type === "gmxIncrease") {
     const collateralAmount = BigInt(a.collateralAmount ?? "0");
     if (collateralAmount <= 0n)

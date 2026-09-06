@@ -7,7 +7,6 @@
 // env:
 //   CROSS_VENUE_SPREAD_BPS  minimum spread to trade (bps, default 10)
 import type { AgentAction, AgentObservation } from "@eris/sdk";
-import { limitFor } from "../lib/affordable.js";
 import { marketViews } from "../lib/markets.js";
 
 const SPREAD_BPS = intEnv("CROSS_VENUE_SPREAD_BPS", 10);
@@ -62,18 +61,14 @@ export function decide(
       SIZE_BPS_MAX,
       Math.max(SIZE_BPS_MIN, Math.floor(spread * 200_000)),
     );
-    // Delta neutralization: capping the buy leg and sell leg with independent USDC/base limits leaves
-    // the base amounts mismatched, so a residual (directional) position accumulates every round.
-    // Instead, cap the buy leg by "the USDC needed to buy the sellable base limit" and sell exactly
-    // what was bought (buy==sell so net delta~0).
-    const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
-    const maxBase = limitFor(obs, pick.base);
+    // Delta neutralization: buy with USDC and sell exactly what was bought, so net delta ~ 0. The
+    // buy leg is sized as a fraction of the USDC balance -- there is no per-order cap to size
+    // against, and the sell leg follows the buy rather than being capped independently (capping the
+    // two separately is what used to leave a residual directional position every round).
+    const usdcBal = BigInt(obs.balances.usdcUnits || "0");
     const baseScale = 10n ** BigInt(pick.decimals);
     const priceScaled = BigInt(Math.max(1, Math.round(lo.price * 100))); // USDC*100/base
-    // USDC (1e6) needed to buy maxBase at lo.price
-    const usdcForBaseCap = (maxBase * priceScaled * 1_000_000n) / (100n * baseScale);
-    const usdcCap = maxUsdc < usdcForBaseCap ? maxUsdc : usdcForBaseCap;
-    const usdcIn = (usdcCap * BigInt(sizeBps)) / 10_000n;
+    const usdcIn = (usdcBal * BigInt(sizeBps)) / 10_000n;
     // base acquired by the buy leg at lo.price
     const boughtBase = (usdcIn * 100n * baseScale) / (priceScaled * 1_000_000n);
     // Sell 98% since slippage shrinks the received amount (matches delta while avoiding a naked

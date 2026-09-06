@@ -28,17 +28,14 @@ asset has two prices at once: `protocols.lst` reports the vault's `redemptionRat
 only through a withdrawal queue that takes `withdrawalDelayBlocks`) and the pool's
 `marketPriceWeth` (instant, at whatever discount it trades) separately.
 
-**Scoring marks the position at par**, not at the exit it could realize: `valueUsdc` is face value —
-what the vault owes — which is also the number Aave's oracle uses. What an exit would actually have
-returned (the better of selling into the pool at your own size and a queued redemption that
-*finalizes before the run ends*) is computed as `liquidatableValueUsdc` and reported in
-`summary.json` only for the agents where the two differ. Pending WETH that finalizes after the run is
-excluded from the realizable figure and reported under `scoring_unpriced_holdings` with
-`reason: "unrealizable"`, while still counting toward par. **Which of the two should be the scored
-mark is not settled**: issue #38's intent was the realizable mark, the implementation marks at par
-(following ADR 0019's choice of an ordinary live mark as the basis of scoring), and it has to be
-decided before `lst` joins the competition set. `obs.blocksRemaining` is what lets a strategy tell
-which exits can still complete.
+**Scoring marks the position at what an exit would realize**, not at par (issue #40 axiom 3 /
+ADR 0022 Amendment 1). Realizable is the better of selling into the pool at your own size and a
+queued redemption that *finalizes before the run ends*. Face value — what the vault owes, which is
+also the number Aave's oracle uses — is reported as `markedValueUsdc` in `summary.json` for the
+agents where the two differ, so the gap is legible rather than silent. Pending WETH that finalizes
+after the run is excluded and reported under `scoring_unpriced_holdings` with
+`reason: "unrealizable"`. `obs.blocksRemaining` is what lets a strategy tell which exits can still
+complete — and under this rule that is a scoring question, not a preference.
 
 The table shows the default WETH markets. If a WBTC leg (`MARKET_LEGS`) is deployed in the local deploy, add `base: "WBTC"` to the same actions to also trade the WBTC/USDC spot, GMX WBTC market, and Aave WBTC reserve (multi-asset; ADR 0013).
 

@@ -178,7 +178,7 @@ The order matters.
 | `scenario` | One world out of a set rebuilt per (regime, seed) | **The scenario-matrix runner only** |
 
 - It always appears in `summary.json` and in `matrix.json`.
-- `resetUnit` is always written to `summary.json` and `matrix.json`. Continuous and scenario runs must not be mixed into one standing (a world holds a different number of epochs in each mode). `npm run metrics`, which refused a mixed set, is retired (ADR 0022), so not mixing them is the reader's discipline.
+- `resetUnit` is always written to `summary.json` and `matrix.json`. Continuous and scenario runs must not be mixed into one standing (a world holds a different number of epochs in each mode). `npm run metrics`, which refused a mixed set, is retired (ADR 0023), so not mixing them is the reader's discipline.
 - Older runs without the field are read as `continuous`.
 - A misspelling fails fast (`sdk/src/config.ts:42`) — falling silently back to `continuous` would make a whole matrix claim to be continuous.
 

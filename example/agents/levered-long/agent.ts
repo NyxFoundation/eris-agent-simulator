@@ -50,6 +50,10 @@ const BASE = (process.env.ERIS_LEVER_BASE ?? "WETH") as TokenSymbol;
 const BASE_UNIT = 1e8;
 // Below this there is nothing worth a transaction, and acting anyway just burns gas on dust.
 const DUST_USD = 25;
+// Base held back from collateral so step 1 always has something to sell for repayment cash. The
+// environment used to supply this number as a per-round cap; with the caps gone it has to be the
+// agent's own, and stating it here makes it a leverage decision rather than an inherited constant.
+const ESCAPE_RESERVE_WEI = 1_000_000_000_000_000_000n; // 1 WETH
 
 function health(aave: AaveObservation | undefined): {
   collateralUsd: number;
@@ -118,8 +122,9 @@ export function decide(
     // No cash to repay with: sell the free base for some. If there is none of that either, the
     // position is already in the liquidator's hands and saying so is more useful than a silent noop.
     if (baseBalanceWei > 0n) {
-      const cap = BigInt(obs.limits.maxWethInWei);
-      const amountIn = baseBalanceWei < cap ? baseBalanceWei : cap;
+      // Sell all the free base: this is the deleveraging path, and holding some back to respect a
+      // size cap that no longer exists would just leave the position closer to liquidation.
+      const amountIn = baseBalanceWei;
       log(
         `hf ${state.hf.toFixed(3)} below ${MIN_HF}: selling ${BASE} to raise cash`,
       );
@@ -138,14 +143,10 @@ export function decide(
 
   // 2. Put idle base to work as collateral. Held in the wallet it is the same exposure with none of
   //    the borrowing power, so there is no reason to leave it there.
-  const reserveWei = BigInt(obs.limits.maxWethInWei); // one round's worth, kept for step 1's escape
-  if (baseBalanceWei > reserveWei) {
-    // Capped per round like every other action. Supplying the whole balance at once is rejected
-    // outright rather than trimmed, so an agent that ignores the cap does nothing at all, forever --
-    // which is exactly what this one did on its first run.
-    const supplyCap = BigInt(obs.limits.maxAaveSupplyWethWei);
-    const free = baseBalanceWei - reserveWei;
-    const supplyWei = free < supplyCap ? free : supplyCap;
+  if (baseBalanceWei > ESCAPE_RESERVE_WEI) {
+    // Everything above the escape reserve goes in at once. There is no supply cap to trim against,
+    // so the only judgement left is how much to hold back, which ESCAPE_RESERVE_WEI states.
+    const supplyWei = baseBalanceWei - ESCAPE_RESERVE_WEI;
     log(`supplying ${BASE} as collateral`, { supplyWei: supplyWei.toString() });
     return {
       type: "aaveSupply",
@@ -177,10 +178,10 @@ export function decide(
       state.availableUsd,
     );
     if (borrowUsd > DUST_USD) {
-      // The borrow has its own cap, separate from the swap cap used below.
-      const capUnits = BigInt(obs.limits.maxAaveBorrowUsdcUnits);
-      const wanted = BigInt(Math.floor(borrowUsd * 1e6));
-      const amount = wanted < capUnits ? wanted : capUnits;
+      // Borrow exactly what lands on the target health factor. Nothing caps this but Aave's own
+      // collateral rules, which is the point of the probe: G6 declined to add a leverage cap on the
+      // grounds that those rules are enough, and this is what tests that claim.
+      const amount = BigInt(Math.floor(borrowUsd * 1e6));
       log(`borrowing toward hf ${TARGET_HF}`, {
         borrowUsd: Math.round(borrowUsd),
         ...(impliedLt === null
@@ -199,8 +200,7 @@ export function decide(
   // 4. Turn borrowed cash into exposure. This is the step that makes it a leveraged long rather than
   //    a loan nobody spent, and it feeds step 2 on the next round.
   if (usdcUnits > 0n && basePriceUsd > 0) {
-    const capUnits = BigInt(obs.limits.maxUsdcInUnits);
-    const amountIn = usdcUnits < capUnits ? usdcUnits : capUnits;
+    const amountIn = usdcUnits;
     if (Number(amountIn) / 1e6 > DUST_USD) {
       log(`buying ${BASE} with borrowed cash`, {
         amountInUsdc: Number(amountIn) / 1e6,

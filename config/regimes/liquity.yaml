@@ -28,10 +28,6 @@ funding:
   wethWei: "0" # USDC-only: netPnlUsdc carries β, so nobody may start already exposed
   usdcUnits: "25000000000"
 
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
-
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"

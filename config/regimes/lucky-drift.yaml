@@ -41,22 +41,6 @@ funding:
   wethWei: "20000000000000000000"
   usdcUnits: "100000000000" # 100,000 USDC
 
-limits:
-  # 4x the practice regimes', and the reason is not the one first written here. They were raised on
-  # 2026-08-15 on the theory that these caps were the environment's real leverage limit; that was
-  # wrong (the leveraged agent's borrows were reverting for lack of Aave liquidity -- see
-  # docs/scoring-metric-measurements.md §9.4), and the theory is retracted.
-  #
-  # They stay raised for a different and smaller reason: the three peg-arb entries below differ only
-  # in the fraction of balance they trade, and that comparison is only meaningful while every size
-  # stays under the cap. At the practice regimes' 5,000 USDC the 5% and 10% twins both clamp to the
-  # same number and measure nothing -- which is how the first attempt at this was wasted.
-  #
-  # Note this makes the harness's runs incomparable with the ones before 2026-08-15, and with the
-  # seven official regimes, which keep their own caps.
-  agentWethWei: "4000000000000000000"
-  agentUsdcUnits: "20000000000"
-
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"

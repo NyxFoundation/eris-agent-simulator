@@ -34,7 +34,7 @@ LP tokens are valued as **a proportional share of the pool's reserves** (`poolSh
 
 ### Venues (the adapter's `valueAtBlock`)
 
-The staged generator from [01 §1.4](01-architecture.md). An adapter returns `valueUsdc` (the mark) and `liquidatableValueUsdc` (what an exit would realize). **Scoring sums the first.**
+The staged generator from [01 §1.4](01-architecture.md). An adapter returns `valueUsdc` (the face mark) and `liquidatableValueUsdc` (what an exit would realize). **Scoring sums the second** (issue #40 axiom 3 / ADR 0022 Amendment 1); the face mark is reported as `markedValueUsdc` only where the two differ.
 
 ### Reporting what fell out of the value
 
@@ -91,7 +91,7 @@ Each epoch boundary is valued at **the median over the preceding `markMedianBloc
 |---|---|---|
 | Market-priced stables (spot, Trove debt, SP deposits) | **Yes** | The pool quote **is** the mark of a holding whose cost basis sits elsewhere, so moving the pool moves the score |
 | LP shares | No | Valued by composition (reserves × the environment's fair price). Pushing the pool moves value between the agent's own two buckets |
-| LST | No | The scored mark is face value (redemption rate × WETH fair) and reads no pool at all |
+| LST | No | Since issue #40 axiom 3 the scored mark is the realizable one, so the pool quote is in it — but pushing that pool moves value between the agent's own two buckets, exactly as with LP shares. What it can move is the discount, and the median window covers that |
 
 Live and sweep use the same window. How much the rule actually moved is reported in `valueSeries.markMedian.maxDeviationBps`.
 
@@ -101,7 +101,7 @@ Only the sweep produces it. Free inventory is valued at **a reference fair price
 
 **α removes β only from free inventory.** Venue positions (an LST holding, say) are live-marked, so under USDC-denominated scoring an LST-holding strategy is structurally penalised by β (measured: noop 0 > lst-carry −203 > lst-carry-wide −233, while venue-arb, which holds no WETH, was +115).
 
-## 6.4 Layer 3: the score (the deviation score of rules §4.4; ADR 0022)
+## 6.4 Layer 3: the score (the deviation score of rules §4.4; ADR 0023)
 
 Source: `core/src/scoring/deviationScore.ts`. **One number per epoch (= one run)**; the intra-run interval series is not used.
 
@@ -152,6 +152,5 @@ Details in [09](09-dashboard.md).
 |---|---|
 | **The value of k** | Published in Appendix A before the submission period opens. Recommended 40 (8 regimes × 5) |
 | **The actual hidden set and lottery seed** | Generating them and publishing the commitments is operator work (`npm run competition -- commit`) |
-| **What an LST is scored at** | The implementation marks at par; issue #38 intends realizable. To be decided before `lst` enters the competition set |
 
 → [12 Known limits and open questions](12-open-issues.md)

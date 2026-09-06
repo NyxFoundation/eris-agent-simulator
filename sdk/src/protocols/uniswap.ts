@@ -120,6 +120,25 @@ export function poolPriceFromSqrtX96(
   return baseIsToken0 ? rawToken1PerToken0 * scale : scale / rawToken1PerToken0;
 }
 
+// The inverse, for `createPool` (issue #40): the sqrtPriceX96 that initializes a pool at a given
+// price. `humanPrice` is whole units of token1 per one whole token0, with the pair already sorted
+// (the lower address is token0), so the decimal difference is applied here rather than by the
+// caller. A pool initialized at the wrong price is not a bug the environment can catch -- seeding a
+// market away from fair is a legitimate thing to do -- so the arithmetic being obvious matters.
+export function sqrtPriceX96For(opts: {
+  humanPrice: number;
+  token0Decimals: number;
+  token1Decimals: number;
+}): bigint {
+  const raw =
+    opts.humanPrice *
+    10 ** (opts.token1Decimals - opts.token0Decimals);
+  if (!(raw > 0)) throw new Error("sqrtPriceX96For: price must be positive");
+  // Float sqrt then a single conversion. Uniswap re-derives the tick from this value, so the last
+  // few bits do not survive initialization anyway; what matters is landing in the right tick.
+  return BigInt(Math.floor(Math.sqrt(raw) * 2 ** 96));
+}
+
 // Backward compatible: WETH/USDC sqrtPriceX96 -> USDC per WETH. Shared by reconstruct/dashboard.
 export function poolPriceUsdcPerWethFromSqrtX96(sqrtPriceX96: bigint): number {
   return poolPriceFromSqrtX96(sqrtPriceX96, wethMarket());
@@ -407,16 +426,75 @@ export async function getLpPositions(
     ),
   );
 
+  // Issue #40: positions in pools the environment did not deploy. An agent that creates its own
+  // pool and provides liquidity to it used to see *nothing* here -- the position was dropped for
+  // having no MARKET_LEGS entry -- so it could not read its own holding and `removeLiquidity` would
+  // not even accept the tokenId, because validation checks the observation. Under the round-trip
+  // rule that is the whole position lost at the bell, for want of being able to see it.
+  //
+  // Resolved through the factory, exactly as the scorer already does (issue #41), and only when the
+  // agent actually holds such a position: no position, no reads.
+  const unregistered = new Map<string, { token0: Address; token1: Address; fee: number }>();
+  for (const raw of rawPositions) {
+    const [, , token0, token1, fee] = raw;
+    if (positionMarketOf(token0, token1, fee, markets)) continue;
+    unregistered.set(positionPoolKey(token0, token1, fee), { token0, token1, fee });
+  }
+  const poolByKey: Record<string, Address> = {};
+  if (unregistered.size > 0) {
+    const factory = await uniswapFactory(publicClient);
+    if (factory) {
+      const entries = [...unregistered.entries()];
+      const resolved = await Promise.all(
+        entries.map(([, p]) =>
+          publicClient
+            .readContract({
+              address: factory,
+              abi: uniswapV3FactoryAbi,
+              functionName: "getPool",
+              args: [p.token0, p.token1, p.fee],
+            })
+            .catch(() => undefined),
+        ),
+      );
+      const ticks = await Promise.all(
+        resolved.map((pool) =>
+          pool && pool !== ZERO_ADDRESS
+            ? publicClient
+                .readContract({
+                  address: pool as Address,
+                  abi: poolAbi,
+                  functionName: "slot0",
+                })
+                .catch(() => undefined)
+            : undefined,
+        ),
+      );
+      entries.forEach(([key], i) => {
+        const pool = resolved[i] as Address | undefined;
+        if (!pool || pool === ZERO_ADDRESS) return;
+        poolByKey[key] = pool;
+        const slot0 = ticks[i];
+        if (slot0) tickByPool[pool.toLowerCase()] = Number(slot0[1]);
+      });
+    }
+  }
+
   // Issue #21: fees earned since the last checkpoint sit in the pool, not in tokensOwed, so a
   // narrow-range position looks flat until it collects. Read the pool fee growth for every boundary
   // an owned position touches so the observation shows the fees as they accrue.
+  //
+  // Agent-created pools are in this read too. Leaving them out understated the position by exactly
+  // the fees it had earned -- and a creator's whole return on providing liquidity is the fees.
   const ticksByPool = new Map<Address, Set<number>>();
   for (const raw of rawPositions) {
     const [, , token0, token1, fee, tickLower, tickUpper, liquidity] = raw;
     if (liquidity <= 0n) continue;
     const market = positionMarketOf(token0, token1, fee, markets);
-    if (!market) continue;
-    const pool = legOf(market).pool;
+    const pool = market
+      ? legOf(market).pool
+      : poolByKey[positionPoolKey(token0, token1, fee)];
+    if (!pool) continue;
     const ticks = ticksByPool.get(pool) ?? new Set<number>();
     ticks.add(tickLower).add(tickUpper);
     ticksByPool.set(pool, ticks);
@@ -444,7 +522,50 @@ export async function getLpPositions(
       tokensOwed1,
     ] = rawPositions[i];
     const market = positionMarketOf(token0, token1, fee, markets);
-    if (!market) continue;
+    if (!market) {
+      // An agent-created pool. Reported with the raw pair as its key, and valued the way every
+      // other unknown holding is: each leg at the environment's price, or nothing when the
+      // environment does not price it (an agent-issued token is worth zero to everyone).
+      const resolved = poolByKey[positionPoolKey(token0, token1, fee)];
+      const unknownTick =
+        resolved === undefined ? undefined : tickByPool[resolved.toLowerCase()];
+      if (unknownTick === undefined) continue; // the pool could not be resolved; not "worth zero"
+      const amounts = liquidityToTokenAmounts({
+        liquidity,
+        tick: unknownTick,
+        tickLower,
+        tickUpper,
+      });
+      const fees = uncollectedFees({
+        liquidity,
+        tick: unknownTick,
+        tickLower,
+        tickUpper,
+        feeGrowthInside0LastX128,
+        feeGrowthInside1LastX128,
+        pool: feeGrowthByPool[resolved.toLowerCase()],
+      });
+      const amount0 = amounts.amount0 + tokensOwed0 + fees.fees0;
+      const amount1 = amounts.amount1 + tokensOwed1 + fees.fees1;
+      positions.push({
+        tokenId: tokenId.toString(),
+        tickLower,
+        tickUpper,
+        liquidity: liquidity.toString(),
+        tokensOwedWethWei: tokensOwed0.toString(),
+        tokensOwedUsdcUnits: tokensOwed1.toString(),
+        uncollectedFeesWethWei: fees.fees0.toString(),
+        uncollectedFeesUsdcUnits: fees.fees1.toString(),
+        amountWethWei: amounts.amount0.toString(),
+        amountUsdcUnits: amounts.amount1.toString(),
+        valueUsdc:
+          (tokenAmountUsd(token0, amount0, fairPriceByBase) ?? 0) +
+          (tokenAmountUsd(token1, amount1, fairPriceByBase) ?? 0),
+        // The raw pair, because there is no registry name for it.
+        market: `${token0}/${token1}#${fee}`,
+      });
+      continue;
+    }
     const { baseIsToken0 } = sortedTokensFor(market);
     const pool = legOf(market).pool.toLowerCase();
     const tick = tickByPool[pool] ?? 0;
@@ -1005,7 +1126,39 @@ function parseBase(obj: Record<string, unknown>): {
   return { base, market };
 }
 
+const HEX_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+
+// Issue #40: the fee tiers the environment's factory enables. A pool at an unenabled tier reverts on
+// chain, which costs the creator a block and the gas — cheap, but a rejection here is cheaper.
+const ENABLED_FEE_TIERS = new Set([100, 500, 3000, 10000]);
+
 function parse(obj: Record<string, unknown>): LeafAction | null {
+  if (obj.type === "createPool") {
+    for (const key of ["tokenA", "tokenB"] as const) {
+      if (typeof obj[key] !== "string" || !HEX_ADDRESS_PATTERN.test(obj[key]))
+        throw new Error(`${key} must be a 20-byte hex address`);
+    }
+    const fee = requireInteger(obj.fee, "fee");
+    if (!ENABLED_FEE_TIERS.has(fee))
+      throw new Error(
+        `fee must be one of ${[...ENABLED_FEE_TIERS].join(" / ")} (pips)`,
+      );
+    requireDecimalString(obj.sqrtPriceX96, "sqrtPriceX96");
+    if (
+      (obj.tokenA as string).toLowerCase() ===
+      (obj.tokenB as string).toLowerCase()
+    )
+      throw new Error("tokenA and tokenB must differ");
+    const action: LeafAction = {
+      type: "createPool",
+      tokenA: obj.tokenA as string,
+      tokenB: obj.tokenB as string,
+      fee,
+      sqrtPriceX96: obj.sqrtPriceX96,
+    };
+    addPriorityFee(action, obj);
+    return action;
+  }
   if (obj.type === "swap") {
     const { base, market } = parseBase(obj);
     if (obj.tokenIn !== market.base && obj.tokenIn !== market.quote)
@@ -1088,6 +1241,14 @@ function validate(
 ): ValidationResult {
   const uni = obs.protocols.uniswap;
   if (!uni) return { ok: false, reason: "uniswap not enabled" };
+  // Creating a market costs gas and nothing else. Whether the pair is worth having, whether the
+  // price is sane and whether anyone will trade it are the creator's problem — that is the decision
+  // the capability exists to hand over (issue #40).
+  if (action.type === "createPool") {
+    if (BigInt(action.sqrtPriceX96) <= 0n)
+      return { ok: false, reason: "sqrtPriceX96 must be positive" };
+    return { ok: true };
+  }
   if (action.type === "swap") {
     const amountIn = BigInt(action.amountIn);
     if (amountIn <= 0n)
@@ -1096,25 +1257,8 @@ function validate(
     const market = marketFor("uniswap", base);
     if (!market) return { ok: false, reason: `no uniswap market for ${base}` };
     const inIsBase = action.tokenIn === market.base;
-    // ADR 0013: apply the per-round limit to every base. The base-input side uses per-base limits (WETH=maxWethInWei;
-    // additional bases use limits.baseLimits[base]; "0"=no limit=balance bound). The quote-input side uses the shared
-    // maxUsdcInUnits. WETH behaves identically to before since maxWethInWei is always >0 (byte-compatible).
-    if (inIsBase) {
-      const maxBaseIn =
-        base === "WETH"
-          ? BigInt(obs.limits.maxWethInWei)
-          : BigInt(obs.limits.baseLimits?.[base]?.maxSwapInBaseWei ?? "0");
-      if (maxBaseIn > 0n && amountIn > maxBaseIn)
-        return {
-          ok: false,
-          reason: "amountIn exceeds configured per-round limit",
-        };
-    } else if (amountIn > BigInt(obs.limits.maxUsdcInUnits)) {
-      return {
-        ok: false,
-        reason: "amountIn exceeds configured per-round limit",
-      };
-    }
+    // The balance is the only cap. There is no per-order size limit on any venue any more, so a
+    // swap is bounded by what the wallet actually holds and by what the pool gives back for it.
     const balance = inIsBase
       ? (balances.bases?.[market.base] ?? balances.wethWei)
       : stableBalanceOf(balances, TOKENS.USDC.address);
@@ -1140,31 +1284,13 @@ function validate(
     ) {
       return { ok: false, reason: "ticks must align to pool tick spacing" };
     }
-    // ADR 0013: apply the LP limit to every base. The base side uses per-base limits (WETH=maxLpWethWei;
-    // additional bases use limits.baseLimits[base]; "0"=no limit). The quote side uses the shared maxLpUsdcUnits. WETH is byte-compatible.
-    const maxLpBase =
-      base === "WETH"
-        ? BigInt(obs.limits.maxLpWethWei)
-        : BigInt(obs.limits.baseLimits?.[base]?.maxLpBaseWei ?? "0");
-    if (
-      (maxLpBase > 0n && baseAmt > maxLpBase) ||
-      quoteAmt > BigInt(obs.limits.maxLpUsdcUnits)
-    )
-      return {
-        ok: false,
-        reason: "LP desired amounts exceed configured LP limits",
-      };
+    // Balance only -- no LP size cap and no cap on how many positions may be open at once.
     const baseBal = balances.bases?.[base] ?? balances.wethWei;
     if (
       baseAmt > baseBal ||
       quoteAmt > stableBalanceOf(balances, TOKENS.USDC.address)
     )
       return { ok: false, reason: "LP desired amounts exceed balance" };
-    if (uni.positions.length >= obs.limits.maxOpenPositions)
-      return {
-        ok: false,
-        reason: "open LP position count exceeds configured max",
-      };
     return { ok: true };
   }
   const position = uni.positions.find(
@@ -1244,6 +1370,27 @@ export const uniswapAdapter: ProtocolAdapter = {
   },
 
   async buildTxs(ctx, owner, action): Promise<BuiltTx[]> {
+    if (action.type === "createPool") {
+      // createAndInitializePoolIfNecessary on the position manager, not the raw factory: it creates
+      // and initializes in one call, and it is idempotent, so a creator racing another agent for the
+      // same pair does not lose the block to a revert. Liquidity is a separate decision and comes
+      // from mintLiquidity — a pool with no reserves is discoverable and useless, which is exactly
+      // what a creator wants for the one block before it seeds.
+      const [token0, token1] =
+        action.tokenA.toLowerCase() < action.tokenB.toLowerCase()
+          ? [action.tokenA as Address, action.tokenB as Address]
+          : [action.tokenB as Address, action.tokenA as Address];
+      return [
+        {
+          to: UNISWAP.nonfungiblePositionManager,
+          data: encodeFunctionData({
+            abi: nonfungiblePositionManagerAbi,
+            functionName: "createAndInitializePoolIfNecessary",
+            args: [token0, token1, action.fee, BigInt(action.sqrtPriceX96)],
+          }),
+        },
+      ];
+    }
     if (action.type === "swap") {
       const market = resolveMarket("uniswap", action as SwapAction);
       const slippageBps = (action as SwapAction).slippageBps ?? 50;

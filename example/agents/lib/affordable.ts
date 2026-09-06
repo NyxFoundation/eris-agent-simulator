@@ -1,7 +1,7 @@
 // Sizing a swap you can actually pay for.
 //
 // Every bundled arbitrage agent used to pick its direction purely from the price gap and its size
-// purely from `obs.limits`, with no reference to what the wallet held. Under the competition's
+// purely from `obs.limits` (a cap that no longer exists), with no reference to what the wallet held. Under the competition's
 // USDC-only funding (`funding.wethWei: "0"`, so that nobody starts exposed to price drift) that
 // meant an agent seeing a rich pool proposed selling WETH it did not have. The runtime rejected the
 // action, the agent proposed it again the next block, and the run ended with the agent having never
@@ -41,18 +41,13 @@ export function balanceOf(obs: AgentObservation, tokenIn: string): bigint {
   return raw === undefined ? 0n : BigInt(raw);
 }
 
-// The per-round rule cap for this token.
-export function limitFor(obs: AgentObservation, tokenIn: string): bigint {
-  if (tokenIn === "USDC") return BigInt(obs.limits.maxUsdcInUnits);
-  if (tokenIn === "WETH") return BigInt(obs.limits.maxWethInWei);
-  const perBase = (
-    obs.limits as unknown as { maxBaseInUnits?: Record<string, string> }
-  ).maxBaseInUnits;
-  const raw = perBase?.[tokenIn];
-  return raw === undefined ? 0n : BigInt(raw);
-}
-
-// The amount actually spendable: the smaller of what the rules allow and what the wallet holds.
+// The amount actually spendable: what the wallet holds, capped at what the caller wanted.
+//
+// There used to be a third term here -- the rules' per-round cap -- and every agent leaned on it
+// for sizing. The competition has no order-size cap any more, so the balance is the only bound the
+// environment supplies and how much of it to commit is the strategy's own decision. `sized()` below
+// is where an agent states that decision explicitly rather than inheriting it from a rule.
+//
 // Returns 0n when the leg is not worth doing, which callers should treat as "pick another leg or
 // do nothing" -- never as "send it anyway and let the runtime reject it".
 export function affordable(
@@ -60,11 +55,28 @@ export function affordable(
   tokenIn: string,
   desired: bigint,
 ): bigint {
-  const capped =
-    desired < limitFor(obs, tokenIn) ? desired : limitFor(obs, tokenIn);
   const held = balanceOf(obs, tokenIn);
-  const spendable = capped < held ? capped : held;
+  const spendable = desired < held ? desired : held;
   return spendable >= minimumFor(tokenIn) ? spendable : 0n;
+}
+
+/**
+ * How much of a holding to put behind one order, in basis points of the balance.
+ *
+ * This is the replacement for reading a cap out of `obs.limits`, and the difference matters: the
+ * cap was a fixed number the environment handed to everyone, so every agent traded the same size
+ * regardless of how much it held or how good the opportunity was. A fraction of the balance
+ * compounds with the agent's own results and shrinks when it loses, which is what sizing is for.
+ *
+ * Returns 0n below the dust floor, same as `affordable`.
+ */
+export function sized(
+  obs: AgentObservation,
+  tokenIn: string,
+  fractionBps: number,
+): bigint {
+  const bps = BigInt(Math.max(0, Math.min(10_000, Math.round(fractionBps))));
+  return affordable(obs, tokenIn, (balanceOf(obs, tokenIn) * bps) / 10_000n);
 }
 
 export function canFund(obs: AgentObservation, tokenIn: string): boolean {

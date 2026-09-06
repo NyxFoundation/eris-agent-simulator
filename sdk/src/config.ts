@@ -5,11 +5,7 @@
 // Environment-only config (stress/vuln event schedule definitions, the agent roster) is extended on
 // the core side (RealtimeConfig / validateAgentsFile in core/src/config.ts).
 import { keccak256, stringToBytes, type Hex } from "viem";
-import {
-  CHAIN_ID,
-  DEFAULT_ANVIL_PRIVATE_KEYS,
-  MAX_BUNDLE_ACTIONS,
-} from "./constants.js";
+import { CHAIN_ID, DEFAULT_ANVIL_PRIVATE_KEYS } from "./constants.js";
 import type { ProtocolId } from "./types.js";
 import type { OuParams } from "./rng.js";
 import { baseTokens } from "./markets.js";
@@ -26,7 +22,10 @@ const ALL_PROTOCOLS: ProtocolId[] = [
 ];
 
 // Protocols that can be named in run.protocols but are not in the default set.
-const OPT_IN_PROTOCOLS: ProtocolId[] = ["lst", "liquity"];
+// Venues a run only gets when it names them. `lending` joins lst/liquity for the same reason -- the
+// singleton is ours, so there is nothing to point at on a fork -- and for one more: it only exists
+// at all when `agentMarkets.enabled` is on, which the coordinator checks and fails fast on.
+const OPT_IN_PROTOCOLS: ProtocolId[] = ["lst", "liquity", "lending"];
 
 export type OuConfig = {
   global: OuParams;
@@ -104,6 +103,23 @@ export type SimConfig = {
   // (a stub that scans source for keywords). The coordinator distributes it to discovery-arb-verify via ERIS_VULN_LLM.
   // Scoring uses the environment's ground truth, so the LLM is auxiliary (its verdict is a reference log). The dry-run is the primary check.
   vulnLlm: string;
+  // ---- agent-created markets (issue #40) ----
+  // Whether the environment deploys the MarketRegistry + the permissionless lending singleton and
+  // sweeps for agent-deployed contracts. Off by default: it adds a per-block getLogs and a block
+  // fetch, and a run that nobody deploys into should not pay for them.
+  agentMarkets: boolean;
+  // How many discoveries the environment publishes per block. The deploy is paid by the agent
+  // (ADR 0011) but the registry write is paid by the environment, so without a cap a deploy-spam
+  // agent inflates that cost without bound. The overflow carries into the next block rather than
+  // being dropped, factory-made kinds first.
+  agentMarketsPerBlockCap: number;
+  // Gas ceiling on a single agent transaction, and on one agent's transactions within one block
+  // (issue #40 T0). Rules section 5 caps the *number* of transactions per block, not their gas, so a
+  // contract that eats the block gas limit can starve other participants and the environment's own
+  // oracle update. 0 disables the check. Detection is post-run over blocks.csv, the same mechanical
+  // shape as the priority-fee cap; the RPC gateway refuses over-cap transactions up front.
+  maxTxGas: bigint;
+  maxAgentBlockGas: bigint;
   // Flash arb demo (GitHub #3). With ERIS_FLASH_ARB=1 the coordinator deploys the FlashArb contract
   // and makes it available to the flash-arb agent. Requires uniswap+balancer+aave enabled. Default off.
   flashArbDemo: boolean;
@@ -210,19 +226,6 @@ export type SimConfig = {
   // values it highest fills first (realistic priority gas auction). Default false fully reproduces
   // the ADR 0010 profile (the rollback target). Per-run switch (ERIS_ECONOMIC_GAS).
   economicGas: boolean;
-  maxAgentWethInWei: bigint;
-  maxAgentUsdcInUnits: bigint;
-  // ADR 0013: base symbol -> per-round swap cap (token units). WETH equals maxAgentWethInWei for
-  // compatibility. Additional bases are MAX_AGENT_<SYM>_<UNIT> (e.g. MAX_AGENT_WBTC_IN_SATS).
-  // Unset is 0 (= no per-round cap on that base; limits work is out of scope for Phase 8).
-  maxAgentBaseIn: Record<string, bigint>;
-  maxBundleActions: number;
-  maxLpWethWei: bigint;
-  maxLpUsdcUnits: bigint;
-  // ADR 0013: base symbol -> LP mint cap. WETH equals maxLpWethWei for compatibility.
-  // Additional bases are MAX_LP_<SYM>_<UNIT> (e.g. MAX_LP_WBTC_SATS). Unset is 0.
-  maxLpBase: Record<string, bigint>;
-  maxOpenPositions: number;
   uninformedFlowMaxWethWei: bigint;
   // Uninformed flow count per block per venue (default 1). >1 gives hybrid alpha.
   uninformedFlowCount: number;
@@ -235,12 +238,11 @@ export type SimConfig = {
   uninformedFlowTrendCorrelation: number;
   informedFlowMaxWethWei: bigint;
   enabledProtocols: ProtocolId[];
-  maxGmxSizeUsd: bigint;
-  maxAaveSupplyWethWei: bigint;
-  // ADR 0013: base symbol -> Aave supply cap. WETH equals maxAaveSupplyWethWei for compatibility.
-  // Additional bases are MAX_AAVE_SUPPLY_<SYM>_<UNIT> (e.g. MAX_AAVE_SUPPLY_WBTC_SATS). Unset is 0.
-  maxAaveSupplyBase: Record<string, bigint>;
-  maxAaveBorrowUsdcUnits: bigint;
+  // Size of the Aave borrower pool's target debt (USDC units). Environment machinery, not an agent
+  // rule: the flow actors size their positions off it. It used to be `limits.aaveBorrowUsdcUnits`,
+  // doing double duty as the agent cap; when the agent caps went away it moved into `flow` so that
+  // removing a rule did not silently re-calibrate the background market.
+  aaveFlowBorrowUsdcUnits: bigint;
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
   gmxFlowMaxSizeUsd: bigint;
@@ -295,8 +297,6 @@ export type SimConfig = {
   // Blocks between requesting a redemption and being able to claim it (the queue's time cost).
   // 0 leaves whatever the deploy baked in.
   lstWithdrawalDelayBlocks: number;
-  // Per-agent cap on a single stake, in wei. 0 = uncapped (bounded by balance).
-  lstMaxDepositWethWei: bigint;
   // Launch command and deterministic seed for the orderflow bot (a separate process).
   flowBotCommand: string;
   flowBotArgs: string[];
@@ -332,18 +332,6 @@ export function loadConfig(env = process.env): SimConfig {
   const initialWethWei = bigintEnv(
     env.INITIAL_WETH_WEI,
     10_000_000_000_000_000_000n,
-  );
-  const maxAgentWethInWei = bigintEnv(
-    env.MAX_AGENT_WETH_IN_WEI,
-    1_000_000_000_000_000_000n,
-  );
-  const maxLpWethWei = bigintEnv(
-    env.MAX_LP_WETH_WEI,
-    1_000_000_000_000_000_000n,
-  );
-  const maxAaveSupplyWethWei = bigintEnv(
-    env.MAX_AAVE_SUPPLY_WETH_WEI,
-    5_000_000_000_000_000_000n,
   );
   const rpcUrl = env.ANVIL_RPC_URL ?? `http://127.0.0.1:${anvilPort}`;
   const blockTimeSec = intEnv(env.ERIS_BLOCK_TIME_SEC, 2);
@@ -383,6 +371,17 @@ export function loadConfig(env = process.env): SimConfig {
     ),
     vulnPoolFeeBps: intEnv(env.ERIS_VULN_POOL_FEE_BPS, 30),
     vulnLlm: env.ERIS_VULN_LLM ?? "0",
+    agentMarkets: env.ERIS_AGENT_MARKETS === "1",
+    agentMarketsPerBlockCap: intEnv(env.ERIS_AGENT_MARKETS_CAP, 8),
+    // 30,000,000: the number the agent runtime has always self-limited to (send.ts), promoted to
+    // the config so the runtime, the RPC gateway and the post-run check all read one value instead
+    // of three that can drift apart. It is ~10x the heaviest real operation and well under the
+    // 320,000,000 block gas limit the rules fix.
+    maxTxGas: bigintEnv(env.ERIS_MAX_TX_GAS, 30_000_000n),
+    // One block's worth (rules §2.6: a 30M block, no per-agent tx count). There is no count cap since
+    // 2026-09-06 -- inclusion is the priority-fee auction -- so the gas budget is what stops one agent
+    // from starving the block.
+    maxAgentBlockGas: bigintEnv(env.ERIS_MAX_AGENT_BLOCK_GAS, 30_000_000n),
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
     // Real-time mode settings.
     blockTimeSec,
@@ -427,20 +426,6 @@ export function loadConfig(env = process.env): SimConfig {
     ),
     maxPriorityFeeWei: bigintEnv(env.MAX_PRIORITY_FEE_WEI, 5_000_000_000n),
     economicGas,
-    maxAgentWethInWei,
-    maxAgentUsdcInUnits: bigintEnv(env.MAX_AGENT_USDC_IN_UNITS, 5_000_000_000n),
-    // The per-round swap cap for additional bases is MAX_AGENT_<SYM>_IN_<UNIT> (WETH reuses the existing WEI value).
-    maxAgentBaseIn: readBaseAmounts(
-      env,
-      "MAX_AGENT",
-      { WETH: maxAgentWethInWei },
-      "IN",
-    ),
-    maxBundleActions: intEnv(env.MAX_BUNDLE_ACTIONS, MAX_BUNDLE_ACTIONS),
-    maxLpWethWei,
-    maxLpUsdcUnits: bigintEnv(env.MAX_LP_USDC_UNITS, 5_000_000_000n),
-    maxLpBase: readBaseAmounts(env, "MAX_LP", { WETH: maxLpWethWei }),
-    maxOpenPositions: intEnv(env.MAX_OPEN_POSITIONS, 10),
     uninformedFlowMaxWethWei: bigintEnv(
       env.UNINFORMED_FLOW_MAX_WETH_WEI,
       1_000_000_000_000_000_000n,
@@ -456,13 +441,8 @@ export function loadConfig(env = process.env): SimConfig {
       2_000_000_000_000_000_000n,
     ),
     enabledProtocols: parseEnabledProtocols(env.ENABLED_PROTOCOLS),
-    maxGmxSizeUsd: bigintEnv(env.MAX_GMX_SIZE_USD, 50_000n * 10n ** 30n),
-    maxAaveSupplyWethWei,
-    maxAaveSupplyBase: readBaseAmounts(env, "MAX_AAVE_SUPPLY", {
-      WETH: maxAaveSupplyWethWei,
-    }),
-    maxAaveBorrowUsdcUnits: bigintEnv(
-      env.MAX_AAVE_BORROW_USDC_UNITS,
+    aaveFlowBorrowUsdcUnits: bigintEnv(
+      env.AAVE_FLOW_BORROW_USDC_UNITS,
       5_000_000_000n,
     ),
     balancerFlowMaxWethWei: bigintEnv(
@@ -532,10 +512,6 @@ export function loadConfig(env = process.env): SimConfig {
     lstWithdrawalDelayBlocks: Math.max(
       0,
       intEnv(env.ERIS_LST_WITHDRAWAL_DELAY_BLOCKS, 0),
-    ),
-    lstMaxDepositWethWei: bigintEnv(
-      env.ERIS_LST_MAX_DEPOSIT_WETH_WEI,
-      5_000_000_000_000_000_000n,
     ),
     flowBotCommand: env.FLOW_BOT_COMMAND ?? "node",
     flowBotArgs:

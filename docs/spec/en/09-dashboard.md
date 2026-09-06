@@ -54,7 +54,7 @@ Block-level movement inside one scenario stays in `replay.ts`. It is a **refinem
 
 ### The rule is fixed (for participants)
 
-The metric × aggregator controls, the λ/ρ sliders, the disagreement panel and the #55 exposure were removed on 2026-08-31, and on 2026-09-06 the rule itself was fixed as the deviation score of rules §4.4 (ADR 0022). There is no metric to vary.
+The metric × aggregator controls, the λ/ρ sliders, the disagreement panel and the #55 exposure were removed on 2026-08-31, and on 2026-09-06 the rule itself was fixed as the deviation score of rules §4.4 (ADR 0023). There is no metric to vary.
 
 ```
 per scenario (= epoch)   P = V_K − V_0 → T = 50 + 10 (P − μ) / σ over the field

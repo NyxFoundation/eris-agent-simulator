@@ -326,7 +326,7 @@ async function main(): Promise<void> {
 
   if (flags.metric !== undefined)
     throw new Error(
-      "--metric is retired: the standings are the rules' deviation score (§4.4, ADR 0022) and " +
+      "--metric is retired: the standings are the rules' deviation score (§4.4, ADR 0023) and " +
         "there is no second metric to rank by",
     );
 
@@ -633,7 +633,7 @@ async function main(): Promise<void> {
         join(outDir, "matrix.json"),
         `${JSON.stringify(
           {
-            // schema 2 (ADR 0022): scenarios carry the ordinal `s` and per-agent P (`pnlUsdc`);
+            // schema 2 (ADR 0023): scenarios carry the ordinal `s` and per-agent P (`pnlUsdc`);
             // the M4/M9 fields and `metric` are gone with the metric they belonged to.
             schema: 2,
             createdAt: new Date().toISOString(),

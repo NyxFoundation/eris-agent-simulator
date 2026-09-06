@@ -54,7 +54,7 @@ runs/
 | `initialValueUsdc` / `finalValueUsdc` | run 開始 / 終了時の総価値（venue ポジションの評価を含む） |
 | `netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `alphaUsdc` | β 除去 PnL（**スキル比較はこちら**）。再構成が走らなかった run では欠落 |
-| `liquidatableValueUsdc` | マークと実現可能額が食い違ったエージェントにのみ付く |
+| `markedValueUsdc` | **額面**。採点値（回収可能額）と食い違ったエージェントにのみ付く。issue #40 公理 3 以降、採点は回収可能額なので、これは「使われなかったほうの数字」 |
 | `processExitedEarly` | プロセスが run 終了前に消えた理由。**採点は変えない**（規約 §2.3 / §4.4.2: 残したポジションで他と同じく評価）。行列では `flags` として横に出る |
 | `includedTxCount` / `revertCount` | 取り込まれた tx 数 / うち revert した数 |
 | `unloggedTxCount` | 取り込まれたのに agent 自身の `submitted` ログに無い tx 数（規約 §8 の人為的介入の事後検出。coordinator が起動した agent のみ。判定ではなく報告 — 送信直後のクラッシュでも同じ痕跡が出る） |
@@ -70,7 +70,7 @@ runs/
 | `granularityBlocks` / `fromBlock` / `toBlock` / `blocks` / `windowBlocks` | 読み取り範囲 |
 | `failedReads` / `failedReadTargets` | 読めなかった横断面の数と、**どのコントラクトのどの関数か** |
 | `alphaRefFairUsdcPerWeth` / `alphaByAgent` | α の固定参照とその値 |
-| `liquidatableValueByAgent` | マークと差が出たエージェントのみ |
+| `markedValueByAgent` | 額面。採点値と差が出たエージェントのみ |
 | `unpricedHoldings` | 値付けできなかった / 読めなかった / 換金不能 / par 仮置きの保有（[06 §6.2](06-scoring.md)） |
 | `epochSeries` | **採点の元になる境界値**（下記） |
 | `epochSeriesMeta` | live 採点のメタ（`boundaries` / `failedBoundaries` / `epochBlocks` / `markMedianBlocks`） |
@@ -259,7 +259,7 @@ runs/
 
 `runDir` は**相対パス**なので、spot から回収した tarball を展開したディレクトリでもそのまま読める。
 
-`standings.json` は**派生物**：`matrix.json` から `computeStandings` で再計算できる（ADR 0017 §4）。規則は規約 §4.4 の偏差値方式で確定（ADR 0022）。
+`standings.json` は**派生物**：`matrix.json` から `computeStandings` で再計算できる（ADR 0017 §4）。規則は規約 §4.4 の偏差値方式で確定（ADR 0023）。
 
 | `standings.json` | 内容 |
 |---|---|

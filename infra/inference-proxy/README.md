@@ -47,12 +47,14 @@ knowing about rather than a silent divergence.
 
 ## Network
 
-Create an internal network and attach the proxy and the RPC gateway to it; agents join it through
-`ERIS_AGENT_NETWORK` (see `infra/docker-agent/run-agent.sh`). An `--internal` docker network has no
-route out, which is what makes "no direct external connection" true rather than promised:
+Each agent runs on its own docker network with the RPC gateway as the hub (`ERIS_AGENT_ISOLATE=1`,
+`infra/docker-agent/ISOLATION.md`). `ERIS_AGENT_INTERNAL=1` creates that network `--internal` — no route
+out — and `ERIS_INFERENCE_HUB=<proxy container>` attaches this proxy to it, so the agent can reach
+exactly two things: the gateway and the proxy. That is what makes "no direct external connection"
+true rather than promised:
 
 ```bash
-docker network create --internal eris-agents
-# run the proxy and the rpc gateway as containers attached to both eris-agents and the default bridge
-ERIS_AGENT_NETWORK=eris-agents ERIS_INFERENCE_BASE_URL=http://inference-proxy:8790 ...
+docker run -d --name ascon-inference-proxy ... npm run inference-proxy -- --models ... --listen 0.0.0.0:8790
+ERIS_AGENT_ISOLATE=1 ERIS_AGENT_INTERNAL=1 ERIS_INFERENCE_HUB=ascon-inference-proxy \
+ERIS_INFERENCE_BASE_URL=http://ascon-inference-proxy:8790 ERIS_RPC_URL=http://ascon-rpc-gateway-live:8546 ...
 ```

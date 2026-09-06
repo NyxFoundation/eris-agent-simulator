@@ -9,6 +9,7 @@ import { aaveAdapter } from "./aave.js";
 import { gmxAdapter } from "./gmx.js";
 import { lstAdapter } from "./lst.js";
 import { liquityAdapter } from "./liquity.js";
+import { lendingAdapter } from "./lending.js";
 import { activeBaseSymbols, tokenInfo } from "../markets.js";
 import { setEnabledProtocolIds } from "./enabled.js";
 import { stablesForProtocols } from "../stables.js";
@@ -22,6 +23,7 @@ const ALL_ADAPTERS: ProtocolAdapter[] = [
   gmxAdapter,
   lstAdapter,
   liquityAdapter,
+  lendingAdapter,
 ];
 
 const ALL_BY_ID = new Map<ProtocolId, ProtocolAdapter>(
@@ -33,7 +35,9 @@ export const ALL_PROTOCOL_IDS: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id);
 // The venues a run gets when it does not say. lst and liquity are left out because they exist only
 // under local deploy (issues #38 / #39) -- defaulting either on would break every fork run at the
 // first read.
-const LOCAL_ONLY_PROTOCOL_IDS: ProtocolId[] = ["lst", "liquity"];
+// `lending` joins them for the same reason: the singleton is ours, so there is nothing to point at
+// on a fork (issue #40).
+const LOCAL_ONLY_PROTOCOL_IDS: ProtocolId[] = ["lst", "liquity", "lending"];
 const DEFAULT_PROTOCOL_IDS: ProtocolId[] = ALL_ADAPTERS.map((a) => a.id).filter(
   (id) => !LOCAL_ONLY_PROTOCOL_IDS.includes(id),
 );

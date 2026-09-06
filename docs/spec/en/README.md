@@ -37,7 +37,7 @@ ADRs are a history, so overturned text survives in them — ADR 0002 → 0018, t
 ## How this is written
 
 1. **The code is the source.** Numbers, schemas and conditions cite `file:line`. A guarantee that is not in the code is not written here.
-2. **Undecided means undecided.** Questions the ADRs leave open — λ for the `scenario` mode, the number of scenarios S, what an LST is scored at — are not written as settled.
+2. **Undecided means undecided.** Questions the ADRs leave open — λ for the `scenario` mode, the number of scenarios S — are not written as settled.
 3. **Units always.** wei / units (6 decimals) / bps / USDC / blocks / seconds.
 4. **Identifiers stay verbatim.** File names, type names, event names, config keys and action names appear exactly as they do in the code.
 

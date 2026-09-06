@@ -91,11 +91,12 @@ inference proxy (`ERIS_INFERENCE_BASE_URL`) is named.
 
 ## Isolation caveat (egress)
 
-Containers join `ERIS_AGENT_NETWORK` (default `host`, sharing the host network) — **with the default,
-run-time egress is NOT contained by these scripts.** For the live competition, egress blocking (competition rules) must be
-enforced by the operator's host/network policy (firewall, or a bridge network with no NAT); it is
-not provided by `--network host`. Deps are resolved at build time precisely so run time needs no
-outbound access.
+Containers join `ERIS_AGENT_NET` (default `host`, sharing the host network) — **with the default,
+nothing is contained.** `ERIS_AGENT_ISOLATE=1` gives each agent its own network with the RPC gateway
+as the hub ([ISOLATION.md](ISOLATION.md)); `ERIS_AGENT_INTERNAL=1` creates that network without a route
+out and `ERIS_INFERENCE_HUB` attaches the inference proxy to it, which is how rules §2.3's "no direct
+external connection" holds in the competition. Deps are resolved at build time precisely so run time
+needs no outbound access.
 
 ## Env contract (two silent traps)
 

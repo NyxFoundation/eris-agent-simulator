@@ -149,7 +149,6 @@ export const WETH_USDC_FEE = UNISWAP.fee;
 export const WETH_USDC_TICK_SPACING = UNISWAP.tickSpacing;
 export const WETH_DECIMALS = 18;
 export const USDC_DECIMALS = 6;
-export const MAX_BUNDLE_ACTIONS = 5;
 
 // ---------------------------------------------------------------------------
 // Balancer v2. 33/33/34 weighted pool [WETH, native USDC, USDT] (poolId confirmed).

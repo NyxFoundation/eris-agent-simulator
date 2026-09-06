@@ -1,4 +1,4 @@
-// The competition schedule: commitments and the plan (rules §3.3, §7.1, §7.2; ADR 0022).
+// The competition schedule: commitments and the plan (rules §3.3, §7.1, §7.2; ADR 0023).
 //
 //   npm run competition -- commit <file.yaml>
 //       print the commitment (sha256 over canonical JSON) of a hidden-set or lottery-seed file.

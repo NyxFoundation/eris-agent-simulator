@@ -1,4 +1,4 @@
-// Scenario-matrix standings under rules §4.4 (ADR 0022). The properties worth pinning are the ones
+// Scenario-matrix standings under rules §4.4 (ADR 0023). The properties worth pinning are the ones
 // that decide a competition: the benchmark never enters the population, an epoch the environment
 // lost is never charged to some participants only, and a stopped agent is scored on what it left
 // behind rather than disqualified.

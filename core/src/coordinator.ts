@@ -200,7 +200,7 @@ export async function buildFlowContext(
       gmxFlowActivityProb: String(ctx.config.gmxFlowActivityProb),
       gmxFlowMaxBurst: String(ctx.config.gmxFlowMaxBurst),
       aaveFlowMaxWethWei: ctx.config.aaveFlowMaxWethWei.toString(),
-      maxAaveBorrowUsdcUnits: ctx.config.maxAaveBorrowUsdcUnits.toString(),
+      aaveFlowBorrowUsdcUnits: ctx.config.aaveFlowBorrowUsdcUnits.toString(),
       aaveFlowActivityProb: String(ctx.config.aaveFlowActivityProb),
       informedArbFeeBps: String(ctx.config.informedArbFeeBps),
       uninformedArrivalRate: String(ctx.config.uninformedFlowArrivalRate),

@@ -17,7 +17,7 @@ flowchart LR
   BND -.->|"rounds: progress, not score"| DASH["dashboard round bar"]
 ```
 
-## The rule (competition rules §4.4, ADR 0022)
+## The rule (competition rules §4.4, ADR 0023)
 
 ```
 P(a, s)   = V_K − V_0                      USDC profit over epoch s, each end at its own marks
@@ -59,8 +59,8 @@ largest deviation seen.
 | `valueSeries.epochSeries` | `epochBlocks` / `epochs` / `boundaryBlocks` / `valuesByAgent` (`null` = a boundary that did not report, never a zero) |
 | `valueSeries.markMedian` | `windowBlocks` / `surfaces` / `maxDeviationBps` per stable |
 | `valueSeries.alphaByAgent` | β-removed PnL per agent (`alphaUsdc` is the last minus the first) — context, not the score |
-| `valueSeries.liquidatableValueByAgent` | what an exit would actually have returned, where a venue marks a position at something other than that (LST; see [Protocols](protocols-and-actions.md)) |
-| `valueSeries.unpricedHoldings` | holdings the scorer could not price, reported rather than silently zeroed |
+| `valueSeries.markedValueByAgent` | the **face mark**, where a venue carried a position above what it could have realized. Every venue is scored at recoverable value (issue #40 axiom 3), so this is the number that was not used — an LST redemption whose queue outlives the run, a lending supply whose collateral is worthless, a Trove under 100% ICR |
+| `valueSeries.unpricedHoldings` | holdings the scorer could not price, reported rather than silently zeroed (`reason: "unrealizable"` / `erc20-unaccounted`) |
 | `valueSeries.failedReads` | cross-sections that could not be read (`0` if healthy) |
 
 ## A matrix is a rehearsal of the competition
@@ -102,8 +102,8 @@ scenario out of a set that rebuilt the world per (regime, seed)** — the field 
 
 | | |
 |---|---|
-| **Decided** | Shared cross-sections at the epoch boundaries (ADR 0006 / 0021). The deviation score with a linear 1 → 1.5 weight and no free parameter (rules §4.4, ADR 0022). The benchmark out of the population. No floor, no freeze, no disqualification. The epoch order from the lottery seed. |
-| **Open** | The value of k (Appendix A; 40 recommended). The actual hidden set and lottery seed. Whether an LST position is scored at par or at what an exit would return ([#38](https://github.com/NyxFoundation/eris-agent-simulator/issues/38)). |
+| **Decided** | Shared cross-sections at the epoch boundaries (ADR 0006 / 0021). The deviation score with a linear 1 → 1.5 weight and no free parameter (rules §4.4, ADR 0022). The benchmark out of the population. No floor, no freeze, no disqualification. The epoch order from the lottery seed. Every venue scored at recoverable value (issue #40 axiom 3). |
+| **Open** | The value of k (Appendix A; 40 recommended). The actual hidden set and lottery seed. |
 
 Measured results from the metric selection that preceded this rule are kept for the record in
 [docs/scoring-metric-measurements.md](../scoring-metric-measurements.md); they are superseded.

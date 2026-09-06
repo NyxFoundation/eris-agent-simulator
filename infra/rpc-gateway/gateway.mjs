@@ -14,6 +14,8 @@ import http from "node:http";
 import { createWriteStream, writeFileSync, renameSync } from "node:fs";
 import { URL } from "node:url";
 
+import { txGasLimit } from "./txGas.mjs";
+
 const PORT = Number(process.env.PORT || 8546);
 const UPSTREAM = new URL(process.env.UPSTREAM || "http://127.0.0.1:8545");
 const ENV_NAME = process.env.ENV_NAME || "live";
@@ -35,6 +37,74 @@ let batchSum = 0, batchCount = 0;
 const batchB = new Map();                                 // le -> count  (batch size histogram)
 const BATCH_BUCKETS = [1, 2, 5, 10, 20, 50, 100];
 let inFlight = 0, upstreamUp = 1;
+
+// ---- per-client rate limit (anti-abuse C): token bucket, heavy methods cost more (simulateTx spam) ----
+const RATE_REFILL = Number(process.env.RPC_RATE_REFILL ?? "100");   // tokens/sec/client (0 disables)
+const RATE_BURST = Number(process.env.RPC_RATE_BURST ?? "300");     // bucket capacity
+const HEAVY_WEIGHT = Number(process.env.RPC_HEAVY_WEIGHT ?? "5");   // cost of an EVM-executing read
+const HEAVY = /^(eth_call|eth_estimateGas|eth_createAccessList|eth_getLogs|debug_|trace_|arbtrace_)/;
+const weight = (m) => (m && HEAVY.test(m) ? HEAVY_WEIGHT : 1);
+
+// ---- method allowlist (4.22: make the dev anvil cheatcode-free for callers via the gateway) ----
+// Default-deny: only standard eth_/net_/web3_ pass. Blocks anvil_/evm_/hardhat_ (setBalance, mine,
+// setStorageAt, impersonate, snapshot...), debug_/trace_ control+trace, txpool_ (mempool spying),
+// miner_/admin_/personal_. The operator hits anvil directly (not the gateway) for setup, so its
+// cheatcodes still work. Set RPC_FILTER=0 to disable (e.g. an internal all-access gateway).
+const METHOD_ALLOW = new RegExp(process.env.RPC_METHOD_ALLOW ?? "^(eth_|net_|web3_)");
+// Deny-list checked even for eth_* (allow-list is namespace-level, this is method-level): block the
+// methods that ride on the node's own/unlocked accounts. anvil boots deterministic prefunded UNLOCKED
+// accounts, so eth_sendTransaction/eth_accounts/eth_sign* would let a caller move funds without signing.
+// Participants must sign locally and use eth_sendRawTransaction. Set RPC_METHOD_DENY to override.
+const METHOD_DENY = new RegExp(process.env.RPC_METHOD_DENY ?? "^(eth_accounts|eth_sendTransaction|eth_sign)");
+const FILTER_METHODS = (process.env.RPC_FILTER ?? "1") !== "0";
+let methodDenied = 0;
+// ---- per-tx gas cap (issue #40 T0) ----
+// Rules §5 caps how MANY transactions an agent may put in a block, not how much gas each one burns.
+// That is enough while every transaction is a swap; it stops being enough once agents deploy their
+// own contracts, because one call into deliberately expensive code can eat the block gas limit and
+// starve every other participant -- and the environment's own oracle update, which is what makes it
+// an attack on the competition rather than a trade against a counterparty.
+//
+// The gas limit is a signed field of the transaction, so it can be read here without executing
+// anything and without trusting the sender. Refusing up front is strictly better than detecting
+// afterwards: by the time blocks.csv shows it, the block it starved is gone. The post-run check in
+// core/src/postRunCheck.ts stays as the authority (a self-hosted participant can bypass a gateway).
+const MAX_TX_GAS = BigInt(process.env.RPC_MAX_TX_GAS ?? "30000000");   // 0 disables. Same number as SimConfig.maxTxGas / ERIS_MAX_TX_GAS
+let gasDenied = 0;
+
+// The over-cap transaction in a request, if any. Returns its gas limit; null when everything is fine.
+// Returns the offending gas limit, the string "unreadable" when a submission's gas could not be
+// read, or null when everything is within the cap.
+//
+// Fail closed. A transaction whose gas limit this cannot read is refused rather than forwarded: a
+// cap that passes what it does not understand is bypassed by using a transaction type it does not
+// understand, and the post-run check only sees it after the block it starved is over.
+function overCapGas(parsed) {
+  if (MAX_TX_GAS <= 0n) return null;
+  const calls = Array.isArray(parsed) ? parsed : [parsed];
+  for (const c of calls) {
+    if (!c || c.method !== "eth_sendRawTransaction") continue;
+    const raw = Array.isArray(c.params) ? c.params[0] : undefined;
+    if (typeof raw !== "string") return "unreadable";
+    const gas = txGasLimit(raw);
+    if (gas === null) return "unreadable";
+    if (gas > MAX_TX_GAS) return gas;
+  }
+  return null;
+}
+
+const buckets = new Map();                                          // client -> {tokens, last}
+let rateLimited = 0;
+function allow(client, cost) {
+  if (RATE_REFILL <= 0) return true;
+  const now = Date.now();
+  let b = buckets.get(client);
+  if (!b) { b = { tokens: RATE_BURST, last: now }; buckets.set(client, b); }
+  b.tokens = Math.min(RATE_BURST, b.tokens + ((now - b.last) / 1000) * RATE_REFILL);
+  b.last = now;
+  if (b.tokens < cost) return false;
+  b.tokens -= cost; return true;
+}
 
 const methodLabel = (m) => (hist.size >= MAX_METHODS && !hist.has(m)) ? "_other" : (m || "_unknown");
 // rpc_requests_total counts every JSON-RPC *call* (a batch expands to its members); the duration
@@ -71,6 +141,9 @@ function metricsText() {
   o += `rpc_batch_size_count{${L}} ${batchCount}\n`;
   o += `# TYPE rpc_in_flight gauge\nrpc_in_flight{${L}} ${inFlight}\n`;
   o += `# TYPE rpc_upstream_up gauge\nrpc_upstream_up{${L}} ${upstreamUp}\n`;
+  o += `# TYPE rpc_ratelimited_total counter\nrpc_ratelimited_total{${L}} ${rateLimited}\n`;
+  o += `# TYPE rpc_gas_denied_total counter\nrpc_gas_denied_total{${L}} ${gasDenied}\n`;
+  o += `# TYPE rpc_method_denied_total counter\nrpc_method_denied_total{${L}} ${methodDenied}\n`;
   return o;
 }
 
@@ -118,6 +191,38 @@ const server = http.createServer((req, res) => {
     // verified the signature), so a plain base64url decode of the payload is enough.
     const client = clientFromReq(req);
     const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "";
+
+    // method allowlist (4.22): reject cheatcodes / privileged methods before anvil is touched
+    if (FILTER_METHODS && methods.length) {
+      const bad = methods.find((m) => !METHOD_ALLOW.test(m) || METHOD_DENY.test(m));
+      if (bad) {
+        methodDenied++;
+        logline({ ts: new Date().toISOString(), env: ENV_NAME, method: bad, status: "method_denied", client, ip });
+        res.writeHead(403, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32601, message: `method not permitted: ${bad}` } }));
+      }
+    }
+
+    // per-tx gas cap (issue #40 T0) -> refuse before the transaction can starve a block
+    const overCap = overCapGas(parsed);
+    if (overCap !== null) {
+      gasDenied++;
+      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: "eth_sendRawTransaction", status: "gas_denied", gas: String(overCap), limit: String(MAX_TX_GAS), client, ip });
+      const message = overCap === "unreadable"
+        ? `could not read the transaction's gas limit; refusing it (the per-transaction cap is ${MAX_TX_GAS})`
+        : `transaction gas limit ${overCap} exceeds the per-transaction cap ${MAX_TX_GAS}`;
+      res.writeHead(403, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32003, message } }));
+    }
+
+    // per-client rate limit (heavy EVM-executing reads cost more) -> 429 before touching anvil
+    const cost = (methods.length ? methods : [label]).reduce((s, m) => s + weight(m), 0) || 1;
+    if (!allow(client || ip || "anon", cost)) {
+      rateLimited++;
+      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "rate_limited", client, ip });
+      res.writeHead(429, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32005, message: "rate limited" } }));
+    }
 
     inFlight++;
     forward(bodyBuf, (err, status, upBody, dur) => {

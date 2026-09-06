@@ -25,7 +25,7 @@
  */
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { RollingStats } from "../lib/rolling-stats.js";
-import { affordable, limitFor } from "../lib/affordable.js";
+import { sized } from "../lib/affordable.js";
 import { marketViews } from "../lib/markets.js";
 
 const WINDOW = Math.max(
@@ -190,7 +190,6 @@ export function decide(obs: AgentObservation): AgentAction | null {
   let skippedUnfundable = false;
   for (const c of candidates) {
     const tokenIn = c.bestGap > 0 ? "USDC" : c.base;
-    const max = limitFor(obs, tokenIn);
 
     // Linear ramp: SIZE_FLOOR_BPS at |z| = Z_ENTER, SIZE_CAP_BPS at |z| >= Z_AGGRESSIVE.
     const span = Math.max(0.0001, Z_AGGRESSIVE - Z_ENTER);
@@ -202,9 +201,9 @@ export function decide(obs: AgentObservation): AgentAction | null {
         Math.floor(SIZE_FLOOR_BPS + (SIZE_CAP_BPS - SIZE_FLOOR_BPS) * t),
       ),
     );
-    // Capped by the wallet as well as by the rule limit: proposing an unfundable leg is a
+    // Bounded by the wallet, which is now the only bound there is: proposing an unfundable leg is a
     // self-reject, indistinguishable in the score from choosing not to trade (issue #54).
-    const amountIn = affordable(obs, tokenIn, (max * BigInt(sizeBps)) / 10_000n);
+    const amountIn = sized(obs, tokenIn, sizeBps);
     if (amountIn <= 0n) {
       skippedUnfundable = true;
       continue;

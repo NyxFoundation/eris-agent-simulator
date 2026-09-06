@@ -25,7 +25,7 @@ core/src/           environment daemon + scoring (participants do not touch this
   realtime/           coordinator / priceFeed / events(stress) / liquidity(+Venues) / stableDepeg /
                       whale / lst / liquity / vulnEvents / noArb / reconstruct / marketSeries /
                       agentProcess / flowProcess
-  scoring/            deviationScore.ts (rules §4.4: T and Score, ADR 0022) / epochPnl.ts (P off the boundaries)
+  scoring/            deviationScore.ts (rules §4.4: T and Score, ADR 0023) / epochPnl.ts (P off the boundaries)
   competition/        schedule.ts (epoch order from the lottery seed, commitments; rules §3.3)
   flow/               orderflow bot (logic.ts = pure functions / market-maker.ts = independent process)
   backtest/           backtest shared helpers (state dump manifest / fingerprint / regime resolution;

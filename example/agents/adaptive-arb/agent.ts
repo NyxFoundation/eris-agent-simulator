@@ -12,7 +12,7 @@
  *   ADAPT_CEIL_FRACTION  fraction of the opportunity value allocated to the bid ceiling (default 0.8; the rest is kept as net profit)
  */
 import type { AgentAction, AgentContext, AgentObservation } from "@eris/sdk";
-import { affordable, limitFor } from "../lib/affordable.js";
+import { sized } from "../lib/affordable.js";
 import { marketViews } from "../lib/markets.js";
 
 const CEIL_FRACTION = Number(process.env.ADAPT_CEIL_FRACTION ?? "0.8");
@@ -77,14 +77,10 @@ export function decide(
   for (const candidate of ranked) {
     if (Math.abs(candidate.gap) < GAP_THRESHOLD) break;
     const token = candidate.gap > 0 ? "USDC" : candidate.base;
-    const cap = limitFor(obs, token);
-    // Cap by the wallet, not just by the rule limit. Proposing an unfundable leg is a self-reject
-    // that reads in the score exactly like choosing not to trade (issue #54).
-    const amount = affordable(
-      obs,
-      token,
-      (cap * BigInt(sizeFor(candidate.gap))) / 10_000n,
-    );
+    // A fraction of the wallet. Proposing an unfundable leg is a self-reject that reads in the
+    // score exactly like choosing not to trade (issue #54), and with no rule cap left the wallet is
+    // the only thing that bounds the order anyway.
+    const amount = sized(obs, token, sizeFor(candidate.gap));
     if (amount === 0n) {
       skippedUnfundable = true;
       continue;

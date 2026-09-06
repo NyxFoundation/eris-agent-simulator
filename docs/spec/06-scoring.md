@@ -34,7 +34,7 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 
 ### venue（アダプタの `valueAtBlock`）
 
-[01 §1.4](01-architecture.md) の段階生成器。アダプタは `valueUsdc`（マーク）と `liquidatableValueUsdc`（実現可能額）を返す。**採点が合計するのは前者**。
+[01 §1.4](01-architecture.md) の段階生成器。アダプタは `valueUsdc`（額面）と `liquidatableValueUsdc`（実現可能額）を返す。**採点が合計するのは後者**（issue #40 公理 3 / ADR 0022 Amendment 1）。額面のほうは、差が出たエージェントについてだけ `markedValueUsdc` として報告される。
 
 ### 値付けから外れた保有の報告
 
@@ -101,7 +101,7 @@ sweep のみが作る。**固定した参照 fair price**（`alphaRefFairUsdcPer
 
 **α が除去するのは free inventory の β だけ**である。venue ポジション（LST など）は live mark なので、USDC 建て採点では LST 保有戦略は構造的に β で不利になる（実測：noop 0 > lst-carry −203 > lst-carry-wide −233、一方 WETH を持たない venue-arb は +115）。
 
-## 6.4 層 3：スコア（規約 §4.4 の偏差値。ADR 0022）
+## 6.4 層 3：スコア（規約 §4.4 の偏差値。ADR 0023）
 
 出典 `core/src/scoring/deviationScore.ts`。**1 エポック（= 1 run）につき数字は 1 つ**で、run 内の区間系列は使わない。
 
@@ -152,6 +152,5 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = 有効かつ σ_s
 |---|---|
 | **k の値** | 付録A で提出期間の開始までに公表。推奨 40（8 レジーム × 5） |
 | **非公開 seed / 抽選 seed の実物** | 生成と commit の公表は運営作業（`npm run competition -- commit`） |
-| **LST の採点基礎** | 現行実装は par（額面）。issue #38 の意図は realizable。`lst` が競技セットに入る前に決める |
 
 → [12 既知の制約・未決事項](12-open-issues.md)

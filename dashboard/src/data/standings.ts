@@ -1,4 +1,4 @@
-// The competition standings, under the rule the competition is scored by (rules §4.4, ADR 0022):
+// The competition standings, under the rule the competition is scored by (rules §4.4, ADR 0023):
 //
 //   per epoch (one scenario run)   P = V_K − V_0;   T = 50 + 10 (P − μ) / σ over the field
 //   across epochs                  Score = Σ w_s T / Σ w_s,  w_s linear 1 → 1.5 on the epoch's order

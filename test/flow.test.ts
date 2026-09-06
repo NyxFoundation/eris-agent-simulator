@@ -24,7 +24,7 @@ function ctx(round: number): FlowContextWire {
       // fire every block (prob=1) to keep the existing structural assertions deterministic. The gate itself is a separate test.
       gmxFlowActivityProb: "1",
       aaveFlowMaxWethWei: "2000000000000000000",
-      maxAaveBorrowUsdcUnits: "5000000000",
+      aaveFlowBorrowUsdcUnits: "5000000000",
       aaveFlowActivityProb: "1",
       defaultPriorityFeeWei: "100000000",
     },

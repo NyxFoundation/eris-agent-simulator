@@ -7,8 +7,9 @@
  * distributed on-chain (ADR 0006 §3), so the information is one block behind (applies to everyone equally; by design).
  */
 import type { Address } from "viem";
-import { getBalances } from "@eris/sdk/chain.js";
-import { tokenInfo } from "@eris/sdk/markets.js";
+import { activeStables, getBalances } from "@eris/sdk/chain.js";
+import { MarketRegistryWatcher } from "@eris/sdk/agentMarkets.js";
+import { baseTokens, tokenInfo } from "@eris/sdk/markets.js";
 import { observationFor } from "@eris/sdk/observation.js";
 import { PoolDiscovery } from "@eris/sdk/discoveredPools.js";
 import { readFairPrice, readFairPriceFor } from "@eris/sdk/priceFeed.js";
@@ -48,6 +49,11 @@ export class Reader {
   private readonly startedAtMs = Date.now();
   private firstSeenAtMs: number | null = null;
 
+  // Issue #40: absent when the run has no registry, which is the ordinary case for a run without
+  // agent-created markets. `observation.registry` is then absent too, rather than empty — "nobody
+  // deployed anything" and "this run has no registry" are different facts.
+  private readonly registryWatcher: MarketRegistryWatcher | undefined;
+
   constructor(opts: {
     ctx: SimContext;
     adapters: ProtocolAdapter[];
@@ -55,6 +61,7 @@ export class Reader {
     address: Address;
     runId: string;
     extraBaseSymbols: string[];
+    registry?: { address: Address; fromBlock: number };
   }) {
     this.ctx = opts.ctx;
     this.adapters = opts.adapters;
@@ -63,6 +70,21 @@ export class Reader {
     this.address = opts.address;
     this.runId = opts.runId;
     this.extraBaseSymbols = opts.extraBaseSymbols;
+    this.registryWatcher = opts.registry
+      ? new MarketRegistryWatcher(
+          opts.registry.address,
+          opts.address,
+          opts.registry.fromBlock,
+          // Tokens the environment prices. A holding of anything else is worth zero wherever it
+          // sits, so tracking where it went would report a number nobody scores.
+          new Set(
+            [
+              ...baseTokens().map((t) => t.address),
+              ...activeStables(),
+            ].map((a) => a.toLowerCase()),
+          ),
+        )
+      : undefined;
     const factory = process.env.ERIS_VULN_FACTORY;
     this.discovery = factory
       ? new PoolDiscovery(
@@ -97,6 +119,10 @@ export class Reader {
       });
     }
     this.ctx.fairPrices = fairPrices;
+    // Issue #40: the registry read is several round trips (the entry list, every entry's current
+    // codehash, the oracle owners, the block's transfers) and the block is two seconds long, so it
+    // is issued alongside the venue reads rather than after them.
+    const registryPromise = this.registryWatcher?.observe(publicClient, bn);
     const states = await Promise.all(
       this.adapters.map((adapter) => adapter.readState(this.ctx, fairPrice)),
     );
@@ -112,6 +138,7 @@ export class Reader {
     });
     if (this.history.length > 20)
       this.history.splice(0, this.history.length - 20);
+    const registry = await registryPromise;
     const observation = await observationFor(
       this.ctx,
       this.adapters,
@@ -125,6 +152,7 @@ export class Reader {
       this.history,
       this.ctx.config,
       this.enabledIds,
+      registry,
     );
     this.firstBlock ??= bn;
     this.firstSeenAtMs ??= Date.now();

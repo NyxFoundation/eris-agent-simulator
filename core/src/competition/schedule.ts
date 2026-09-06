@@ -1,4 +1,4 @@
-// The live competition's schedule, derived from the lottery seed (rules §3.3, §7.1, §7.2; ADR 0022).
+// The live competition's schedule, derived from the lottery seed (rules §3.3, §7.1, §7.2; ADR 0023).
 //
 // Two things are committed to before they are used and revealed after the results:
 //

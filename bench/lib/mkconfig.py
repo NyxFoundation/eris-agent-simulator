@@ -6,6 +6,10 @@ container via infra/docker-agent/run-agent.sh; a host-run noop is the baseline.
              each         -> one container per example/agents/<dir> (per-agent comparison; a new
                              agent added in a PR is picked up automatically)
              agent:<name> -> just that agent + a venue-arb reference
+             markets:<N>  -> N agent-created-market participants (issue #40), cycling through the
+                             four reference roles. Turns the registry, the lending singleton and
+                             the per-block discovery sweep on, which is what makes this a load test
+                             of that capability rather than of the AMM path
   MODE = frozen (coded, no LLM) | llm (improve loop -> Ollama gpt-oss:20b)
 Container name is eris-<id> and id == the agent dir, so the sampler/agg break down per agent.
 """
@@ -23,12 +27,21 @@ head = re.sub(r"^(\s*)blocks:\s*\d+", rf"\g<1>blocks: {BLOCKS}", head, flags=re.
 secs = int(int(BLOCKS) * int(BT) * 1.5) + 300
 head = re.sub(r"^(\s*)seconds:\s*\d+", rf"\g<1>seconds: {secs}", head, flags=re.M)
 head = re.sub(r"^(\s*)blockTimeSec:\s*\d+", rf"\g<1>blockTimeSec: {BT}", head, flags=re.M)
-head = head.replace("protocols: [uniswap, balancer, curve, lst, liquity]",
-                    "protocols: [uniswap, balancer, curve, gmx, aave]")
+AGENT_MARKETS = ROSTER.startswith("markets:")
+PROTOCOLS = ("[uniswap, balancer, curve, gmx, aave, lending]" if AGENT_MARKETS
+             else "[uniswap, balancer, curve, gmx, aave]")
+head = re.sub(r"protocols: \[[^\]]*\]", "protocols: " + PROTOCOLS, head)
 m = re.search(r"\nstress:.*?(?=\n[a-z]|\Z)", head, flags=re.S)
 crash = ("\nstress:\n  events:\n    - { type: crash, magnitudeRange: [0.12, 0.16], "
          "windowFrac: [0.3, 0.7], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }")
 head = head[:m.start()] + crash + head[m.end():] if m else head + crash
+
+if AGENT_MARKETS:
+    # The capability under test. `registrationsPerBlock` and the gas budget are the production
+    # values from config/regimes/agent-markets.yaml -- a load test that relaxes the thing it is
+    # measuring measures nothing.
+    head += ("\nagentMarkets:\n  enabled: true\n  registrationsPerBlock: 8\n"
+             '  maxTxGas: "30000000"\n  maxAgentBlockGas: "90000000"\n')
 
 wrapper = os.path.join(REPO, "infra/docker-agent/run-agent.sh")
 def env_for(dirname):
@@ -52,6 +65,15 @@ elif ROSTER.startswith("agent:"):
     if not os.path.isdir(os.path.join("example/agents", name)):
         sys.exit("no such agent: example/agents/" + name)
     roster = [(name, name), ("venue-arb-ref", "venue-arb")]
+elif AGENT_MARKETS:
+    # Every side of the mechanism, cycled so the count scales without the mix changing: a market
+    # that gets created, one that gets found and used, a trap that gets set, an agent that walks
+    # into it, and one that does not.
+    roles = ["market-launcher", "market-taker", "trap-launcher",
+             "discovery-arb", "discovery-arb-verify"]
+    n = int(ROSTER.split(":", 1)[1])
+    roster = [("%s-%03d" % (roles[k % len(roles)], k), roles[k % len(roles)])
+              for k in range(2, n + 1)]
 else:
     n = int(ROSTER)
     roster = [("arb-%03d" % k, "venue-arb") for k in range(2, n + 1)]
@@ -62,5 +84,6 @@ open(OUT, "w").write(head + ag)
 
 chk = open(OUT).read()
 assert "gmx, aave" in chk and ("blockTimeSec: " + BT) in chk and chk.count("command: ") == len(roster)
+assert (not AGENT_MARKETS) or ("enabled: true" in chk and "lending]" in chk)
 print("%s: %d containers (%s), blocks=%s bt=%s mode=%s" %
       (OUT, len(roster), ROSTER, BLOCKS, BT, MODE))

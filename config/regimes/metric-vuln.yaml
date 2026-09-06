@@ -33,11 +33,6 @@ funding:
   wethWei: "0"
   usdcUnits: "100000000000"
   ethWei: "1000000000000000000"
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
-  agentBase:
-    WBTC: "5000000"
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"
@@ -73,8 +68,8 @@ vuln:
         - 3000
         - 6000
       rugThresholdFrac:
-        - 0.2
-        - 0.4
+        - 0.04
+        - 0.08
     - type: rigged-pool
       windowFrac:
         - 0.6
@@ -92,8 +87,8 @@ vuln:
         - 3000
         - 6000
       rugThresholdFrac:
-        - 0.2
-        - 0.4
+        - 0.04
+        - 0.08
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY

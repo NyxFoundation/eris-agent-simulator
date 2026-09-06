@@ -55,6 +55,16 @@ export const nonfungiblePositionManagerAbi = parseAbi([
   "function multicall(bytes[] data) payable returns (bytes[] results)",
   // Issue #41: positions may sit in pools outside the registered market set; the factory resolves them.
   "function factory() view returns (address)",
+  // Issue #40: an agent creating its own market. Create-and-initialize in one call, and idempotent,
+  // so two agents racing for the same pair do not both lose the block to a revert.
+  "function createAndInitializePoolIfNecessary(address token0, address token1, uint24 fee, uint160 sqrtPriceX96) payable returns (address pool)",
+]);
+
+// Issue #40: the factory's own creation log, which is how the environment discovers a pool an agent
+// made. Kept apart from the read-only `uniswapV3FactoryAbi` above because this one is subscribed to
+// rather than called.
+export const uniswapV3FactoryEventsAbi = parseAbi([
+  "event PoolCreated(address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool)",
 ]);
 
 export const uniswapV3FactoryAbi = parseAbi([

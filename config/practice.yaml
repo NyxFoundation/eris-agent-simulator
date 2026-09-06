@@ -58,10 +58,6 @@ funding:
   wethWei: "0"
   usdcUnits: "100000000000" # 100k USDC
 
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
-
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"

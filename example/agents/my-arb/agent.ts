@@ -10,7 +10,7 @@
 // it, the runtime rejects the action, and the agent scores exactly like one that chose not to trade
 // (issue #54 -- four bundled agents shipped with that bug).
 import type { AgentAction, AgentObservation } from "@eris/sdk";
-import { affordable, canFund } from "../lib/affordable.js";
+import { canFund, sized } from "../lib/affordable.js";
 
 // Only trade when a venue is this far from fair. Too low and fees eat the edge; too high and the
 // agent sits out the run. A good first thing to tune.
@@ -52,15 +52,7 @@ export function decide(obs: AgentObservation): AgentAction | null {
   if (!best) return { type: "noop", reason: "no fundable gap worth taking" };
 
   const tokenIn = best.price < fair ? "USDC" : "WETH";
-  const amountIn = affordable(
-    obs,
-    tokenIn,
-    (BigInt(
-      tokenIn === "WETH" ? obs.limits.maxWethInWei : obs.limits.maxUsdcInUnits,
-    ) *
-      SIZE_BPS) /
-      10_000n,
-  );
+  const amountIn = sized(obs, tokenIn, Number(SIZE_BPS));
   if (amountIn === 0n) return { type: "noop", reason: "size below the floor" };
 
   return {

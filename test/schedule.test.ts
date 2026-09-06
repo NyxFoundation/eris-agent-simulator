@@ -1,4 +1,4 @@
-// The epoch schedule of rules §3.3 (ADR 0022): a pure function of (hidden set, lottery seed, k).
+// The epoch schedule of rules §3.3 (ADR 0023): a pure function of (hidden set, lottery seed, k).
 import test from "node:test";
 import assert from "node:assert/strict";
 import {

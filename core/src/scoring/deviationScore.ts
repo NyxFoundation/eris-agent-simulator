@@ -1,4 +1,4 @@
-// The competition score (rules §4.4, in force from 2026-09-22; ADR 0022).
+// The competition score (rules §4.4, in force from 2026-09-22; ADR 0023).
 //
 //   P(a, s)   = V_K − V_0                       USDC profit and loss over epoch s (§4.4.1)
 //   μ_s, σ_s  = mean and population std of P over every agent placed in epoch s, benchmark excluded

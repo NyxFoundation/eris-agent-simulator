@@ -74,8 +74,9 @@ run の設定値とエージェントロスターは **`config/local.yaml` 一�
 **雛形は `run.localDeploy: true` 既定**（README Quick Start と config/regimes/* に揃えた。fork 用フラグは不要になり
 `npm run sim:realtime` だけで走る）。fork に戻すには `localDeploy: false` + `run.protocols` から `lst` を外す
 （LST の vault は自作で Arbitrum に対応物が無い）+ `ARB_RPC_URL` + 別端末で `npm run anvil`。
-キーは**ネスト lowercase**（`run` / `funding` / `limits` / `flow` / `stress` / `vuln` + `agents`）で
-`sdk/src/runConfig.ts` の `SCHEMA` が内部キーへ写す。ロスターは規約解決（ADR 0015 §6）:
+キーは**ネスト lowercase**（`run` / `funding` / `fees` / `flow` / `stress` / `vuln` + `agents`）で
+`sdk/src/runConfig.ts` の `SCHEMA` が内部キーへ写す。**`limits` セクションは廃止**（下の「発注上限は無い」）。
+ロスターは規約解決（ADR 0015 §6）:
 
 ```yaml
 agents:
@@ -92,6 +93,41 @@ agents:
 （`ERIS_CONFIG`）のみ**。run ノブは CLI フラグ（`--seed` / `--blocks` / `--protocols` / `--agents` 等）で
 一回限り上書きできる。
 
+### 発注上限は無い（`limits` セクションは撤廃）
+
+**どの venue にも 1 件あたりの金額上限が無い。**swap 1 WETH / 5,000 USDC、GMX 50,000 USD、Aave supply 5 WETH、
+LP 建玉 10、bundle 内 action 5 — 全部消した。**引き上げではなく撤廃**なのは、(a) 「無制限」と書かれた数値は
+いずれ誰かが設定するから、(b) その上限が規則であると同時に**参照戦略 19 ファイルのサイズ決定式の入力**
+だったから。`clean-arb` の 1 取引は `maxUsdcInUnits` の一定割合、`lp-mint` は `maxLpWethWei` の 1/10、
+`levered-long` は `maxWethInWei` を supply チャンクと退避準備金の両方に使っていた。**全員が、保有額とも
+機会の良さとも無関係に同じサイズで張っていた**（環境がその数値を配っていたので）。
+
+- 今 1 件の取引を縛るのは**自分の残高**と**相手プールの厚み**（大きく出すほど不利な約定）だけ
+- `observation.limits` に残るのは fee/slippage の既定値のみ。**サイズの予算は入っていない**
+- 各 agent は自分でサイズ比率を宣言する。共通ヘルパは `example/agents/lib/affordable.ts` の
+  `sized(obs, token, bps)`（旧 `limitFor` は削除）。`levered-long` は `ESCAPE_RESERVE_WEI` を自分で名前付け
+- **上限をスケールとして使っていた非 agent 側 2 箇所**は、今も存在する量へ移した:
+  vuln プールの rug 閾値は**配布 USDC の割合**（config の frac を 1/5 にして絶対値 1,000〜2,000 USDC を維持）、
+  Aave フローの目標債務は `flow.aaveBorrowUsdcUnits`（agent の規則を消したついでに背景市場を較正し直さないため）
+- `npm run manifest` は**「上限は無い」と明記**する（節ごと省くと「未公開」と区別が付かない）
+- **CLAUDE.md と `docs/scoring-metric-measurements.md` の実測値は全部上限下で取ったもの**。数字は変わる
+
+### GMX の funding は localhost でも動く
+
+以前は**構造的に 0** だった。upstream の hardhat 用マーケット設定（localhost はこれを通る）は
+`maxFundingFactorPerSecond` しか置かず、`fundingFactor` も `fundingIncreaseFactorPerSecond` も 0 のまま。
+実測（485 ブロック）で long OI 74,651 / short 54,752 の偏りに対し全ブロック 0.000 だった。
+`deployer/vendor/gmx-localhost.patch` が arbitrum 側と同じ値（100% スキューで年率 ~63%）を入れて解消。
+
+- **2 層あって 1 つの変更で両方直る**: レートが 0 だったのは `fundingFactor` が 0 だから。加えて
+  読み側（`marketSeries.ts`）は `savedFundingFactorPerSecond` を読むが、これは**適応 funding 経路の保存値**で、
+  `fundingIncreaseFactorPerSecond == 0` だと MarketUtils が早期 return して**永久に 0**。適応 funding を
+  有効にすると読んでいるキーがそのまま埋まる
+- **値を盛らないこと**。盛ると perp だけ Aave の借入金利と違う時計で回る（LST の APY で一度やった失敗）。
+  よって**レートは実物・符号も偏り追随**だが、**数百ブロックで積む額は小さい**（Aave の利息と同じ理由。EVM 時間は warp しない）
+- **これ以前に焼いた state dump は旧設定を持つ**ので、そこからの replay は今も 0 を返す。
+  その 0 は「板が均衡している」ではなく「この deploy に funding が無い」。`npm run gen:state-dump` で焼き直す
+
 ### `run.resetUnit` — world のリセット単位（ADR 0020）
 
 `continuous`（既定）/ `scenario` の 2 値。**この run が 1 つの world なのか、(regime, seed) ごとに
@@ -106,7 +142,7 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
 - `summary.json` の `resetUnit` と `matrix.json` の `resetUnit` に必ず出る。連続経済の run と scenario の
   run を 1 つの順位に混ぜない（1 world あたりの epoch 数が違う）。フィールドが無い過去 run は
   `continuous` として読む（軸ができる前の run は全部 1 world だった）
-- **採点は規約 §4.4 の偏差値方式で確定**（ADR 0022、2026-09-06）。λ の較正も集約方式の選択も無い
+- **採点は規約 §4.4 の偏差値方式で確定**（ADR 0023、2026-09-06）。λ の較正も集約方式の選択も無い
 
 ### `run.chainMode` — ノードを誰が持っているか（ADR 0021 §7 / issue #33）
 
@@ -183,7 +219,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積（実行順が回次 s）か、`{k, epochs: [{s, regime, seed}]}` の順序付きプラン（`npm run competition -- plan` の出力）を受ける。シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（schema 2: シナリオ × agent の P = `pnlUsdc` / `pnlSource` / `netPnlUsdc` / `alphaUsdc` / 端点 / `baseline` / `flags`）と `standings.json`（`computeStandings` の出力）を書く。順位は派生物で matrix.json から再計算できる。`--repeat N`（較正の診断用。採点は 1 回が既定。P の中央値の repeat を採る）
   - **公式レジームは `agentSandbox: docker`**（規約 §2.3 の 2 vCPU / 4 GiB は `infra/docker-agent/run-agent.sh` でしか掛からない）。docker が無ければ `--agent-sandbox process`（無制限。`agent_sandbox` イベントにそう出る）。綴り間違いは fail-fast
-  - **採点は規約 §4.4 の偏差値方式**（ADR 0022。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
+  - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 40`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジーム等回数、seed が決めるのは順序だけ）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 10/31 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
   - **公式レジーム（8 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）
   - **`cex-drift` / `informed-flow` は窓イベント**（`cexDrift` / `flowTrend`）で表現する（issue #56）。run 全体設定だった頃の `cex-drift` は**宣言長 360 ブロックで壊れていた** — 実測でプール乖離が平均 1,055bps（10%）に居座り fair が +34.6% 暴走、venue-arb が +8,458 を無条件に得ていた。60 ブロックでは 55bps に見えるので発覚が遅れた。窓化後は 461bps・+1,191（calm 基準は 39bps・−289）。`informed-flow` は窓化しても 45.0 → 42.7bps でほぼ中立（この regime はもともと calm と識別しにくい）
@@ -205,6 +241,14 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     `/run` エイリアスは削除した。`/markets` と `/explorer` は 1 world の中でしか意味を持たないので
     scenario 層のまま。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
     書かれるので結果がまだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
+  - **トップページ（`/`）が「この競技とは何か」を全部持つ**。順位表の下に 3 つ:
+    **シナリオ一覧**（1 行 1 世界 = `regime#seed` / ラウンド数 / 首位 / 環境イベント種別。行クリックで開く。
+    `dashboard/src/data/scenarioList.ts`）、**単位の梯子**（競技 › シナリオ › ラウンド › ブロック）、
+    **Info タブ**（overview / environment / scoring / data = `components/InfoTabs.tsx`）。
+    3 つとも以前は「まずシナリオを 1 つ選ばないと読めない」位置にあった。特に Info タブは
+    35 世界のうち 1 つの末尾にあったので、**「シナリオとは何か」の説明がシナリオを開かないと読めず、
+    しかもその世界固有の説明に読めた**。イベント列の空欄は「予定なし」であって「calm」ではない
+    （cex-drift は窓を開けず run 全体を曲げるし、窓化以前の run はそもそも schedule を持たない）
   - **ラウンドは UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
     スコアも順位変動も環境イベントも全部エポック単位なので、全ビューはこの軸に対して読む。
     **以前はラウンド軸を 3 回別々に実装していた**（ラウンド選択 / replay head / live head）。
@@ -222,7 +266,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
       その座を奪う crash 窓はまだ開いていない
     - ブロック単位の細かい移動（1 シナリオ内）は `replay.ts` に残る。これはこの位置の**細分**であって
       対立する概念ではなく、シナリオを 1 本開いているときにだけ存在する
-  - **順位表はルール固定**（参加者向け）。規約 §4.4 の偏差値方式そのもの（ADR 0022）: シナリオ = エポックごとに
+  - **順位表はルール固定**（参加者向け）。規約 §4.4 の偏差値方式そのもの（ADR 0023）: シナリオ = エポックごとに
     P = V_K − V_0 → 場全体で T → 回次に線形な w で加重平均した Score を 2 桁で表示し、tooltip に採点エポック数と
     §4.6 のタイブレーク（T の標準偏差・最悪エポック）。レジーム列はそのレジームでの T の平均（説明であって別の
     順位ではない）。参考列として net PnL(final marks) の合計を 1 列だけ併記（β が相殺され `noop` がきっかり 0 に
@@ -349,8 +393,11 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   できない pending は realizable 側からは外れて `reason:"unrealizable"` で `scoring_unpriced_holdings` に
   報告されるが、**採点側の par には含まれている**。#41 の staged-read インターフェース
   （`valueAtBlock` / `liquidatableValueUsdc` / `ValuationContext.horizonBlock`）の最初の消費者。
-  **どちらを採点に使うかは未決**: #38 の意図は realizable、現行実装は par（ADR 0019 §3 が採点の基礎に
-  「通常の live mark」を選んだ結果でもある）。`lst` が競技セットに入る前に決める
+  **決着済み（issue #40 / ADR 0022 Amendment 1）: 採点は realizable**。#38 の意図どおり。
+  ADR 0019 §3 が par を選んでいたのは「決める場が無かった」からで、issue #40 の公理 3
+  （額面で評価すると攻撃が捏造された価値として記録される）がその場を作った。
+  **採点系列は全 venue で `liquidatableValueUsdc` を合計する**。報告の向きは反転し、
+  額面のほうが `markedValueUsdc` として出る
 - **Phase 2（選択を非自明にする）実装済み**。`config/lst.yaml` の `lst:` / `stress:` に較正例:
   - **APY 変動** — `lst.apyRangeBps` + `apyStepBlocks` で seed 由来 Rng（独立 salt）から N ブロックごとに再サンプル
     → coordinator が `setRewardRate`。固定利回りだと「block 0 で全ステーク」が恒久最適になるため
@@ -450,6 +497,76 @@ ours なのは 2 つだけ（core は無改変）:
   両方積め」と書いているが、その理由（既定ロスターが prompt モード = LLM が毎判断する）は ADR 0018 で
   消えている。今の prompt.md は改訂方針であって毎判断プロンプトではない
 
+### エージェントが作る市場（MarketRegistry + 許可不要レンディング。issue #40 / ADR 0022。既定 off・**ローカルデプロイ専用**）
+
+参加者が**自分のコントラクトをデプロイでき**、環境がそれを検出して全員に配る。`agentMarkets.enabled: true`
+で有効（既定 off。毎ブロックの getLogs と block 取得が増えるので、誰もデプロイしない run に払わせない）。
+`run.protocols` に `lending` を入れるなら必須で、入れて false だと**起動時 fail-fast**。
+
+- **採点はラウンドトリップ規則**（ADR 0022 §1）。**環境が評価できないコントラクトの中に残った価値は
+  エポック最終ブロックで 0。ただし通り抜けた利益は満額数える。** deposit 10,000 → withdraw 11,000 なら
+  +1,000 は計上され、計上されないのは鐘が鳴った時点でまだ中にあるものだけ。**あらゆる罠クラスが
+  「時間内に抜け出せなかった」1 つに潰れる**ので、honeypot にも proxy 差し替えにも個別の防御機構が要らない
+  - **「0 にした」のではなく「報告するようにした」**。EOA 掃引はもともとそこを見ず、どのアダプタも
+    請求しないので値は元から 0 だった。`scoring_unpriced_holdings` に `reason:"unrealizable"` で出す
+    （`unknown-contract:<addr>`）。出さないと「置き忘れ」と「取引の損」が summary.json で区別できない
+  - 数え方は **Transfer ログのネット**（`sdk/src/agentMarkets.ts` の `StrandedLedger`）。残高ではない —
+    プールの 1,000 USDC は LP 保有者のものなので、預けた側にも足すと同じリザーブを 2 回数える
+- **`MarketRegistry` は PriceFeed パターンの 2 例目**（`contracts/MarketRegistry.sol`）。owner-gated write、
+  1 エントリ 1 イベント、`count`/`all`/`isRegistered`。**1 ブロックの配布遅延を継承する**ので作った本人が
+  1 ブロック早く知る＝作る誘因。**dedup キーは `(market, extra)` の対**（貸出市場は全部シングルトンの
+  アドレスに乗り、`extra` = marketId で区別する）
+  - **codehash は登録時のものだけ。更新しない。**ラウンドトリップ規則の下では差し替え proxy は
+    「抜け出せなかった」の一形態なので環境が取り締まる必要がなく、気づくかどうかが技能差になる
+  - **登録は毎ブロック上限つき・環境負担**（`agentMarkets.registrationsPerBlock`、既定 8）。あふれは
+    次ブロックへ繰り越し、factory 由来を先に。**書き込みは admin ではなく setup 鍵**（oracle 更新が
+    毎ブロック admin から出ているので、同じ鍵に 2 送信者を置くと nonce を奪い合う）
+  - 発見は **factory ログ + `to === null` の top-level CREATE スキャン**。**内部 CREATE は取りこぼす**
+    （対称なので受容。誰にも見えないものは誰も釣れない）。ERC-20 判定は name/symbol/decimals の
+    static call ヒューリスティック
+- **`SimpleLending.sol` = 許可不要の貸出シングルトン**（Morpho Blue 風。`ProtocolId: "lending"`）。
+  市場は `(loanToken, collateralToken, oracle, irm, lltv)` で `createMarket` は誰でも呼べる。
+  **Aave にできないのはここ** — reserve を開くのは `PoolConfigurator` で `POOL_ADMIN` 専用だから、
+  Aave をエージェントへ開くには admin を渡すしかない
+  - **オラクルは任意アドレス。作成者が握っていてよい**（ADR 0014 が先送りした偽オラクルクラス）。
+    Verifier の仕事は `owner()` を読むこと。`ConfigurableOracle`（owner あり＝罠）と
+    `PriceFeedOracle`（owner なし・immutable＝正直）を両方同梱してあるので、
+    「オラクルが動かせるか」は本物の識別子になる
+  - **採点は回収可能額**（`backedFraction`）。供給側は「残っている loan token ＋ **環境価格**で見た担保」
+    への持分、借り手側は `max(0, 担保 − 債務)` で**床は 0**（担保を捨てて歩き去れる＝Liquity の
+    ICR<100% clamp と同じ規則）。**市場自身のオラクルは清算だけを決め、マークは書かない**
+  - **金利は装飾**。エポック 12 分で 3%/年は 0.00007%。効く餌は**レバレッジ（高 LLTV）と清算ボーナス**で、
+    貸出の罠の被害者は**借り手か清算人**であって供給側ではない。IRM は正直にそう書いて同梱
+- **アクション**: `createPool`（uniswap 所有。NPM の `createAndInitializePoolIfNecessary`）/
+  `createLendingMarket` + `lendingSupply`/`Withdraw`/`SupplyCollateral`/`WithdrawCollateral`/`Borrow`/
+  `Repay`/`Liquidate`（lending 所有）。**デプロイは `to` を省いた `rawTx`** — ランタイム経由なので
+  nonce 管理・本数上限・ガス予算を取引と共有する（自前署名すると同じ鍵に 2 送信者ができる）。
+  ヘルパは `example/agents/lib/deployContract.ts`
+- **承認は必要額ちょうど**（`exactApproveTx`）。無制限 approve で抜くコントラクトは規約の範囲内なので、
+  参照ランタイム自身がその穴になってはいけない。observation は registry エントリへの未消化 allowance を出す
+- **ガス予算（T0）**: **per-tx 30,000,000 / per-agent-per-block 90,000,000**。規約 §5 は tx の**本数**しか
+  縛っていないので、自分で書いた高価なコードへの 1 呼び出しでブロックを飢えさせられる —
+  他参加者だけでなく**環境のオラクル更新**も。1 つの数字を 3 か所が読む（ゲートウェイが RLP で
+  gas limit を読んで **403 入口拒否** / ランタイムが自己制限 / run 後に blocks.csv の `gasUsed` 列で検出）
+- **owner ガードは実測する**（`core/src/realtime/ownerGuards.ts`）。役割のないアドレスから特権書き込みを
+  `eth_call` で模擬し、**revert しなければ穴**。`agentMarkets` が on の run では 1 つでも残れば起動時に落とす。
+  **実際に 2 件見つかって塞いだ**: `MockAggregator.setAnswer` と `MockOracleProvider.setPrice` が
+  permissionless だった（＝ Aave 全借り手の清算と GMX 全建玉のマークが誰でも動かせた）。
+  owner は `immutable` なのでスロット 0 は `_answer` のままで economic-gas の直書きは不変
+- **環境はエージェント製市場に手を出さない。**`noArb` は有効アダプタの state（= `MARKET_LEGS`）しか
+  読まないので構造的に対象外で、`test/agentCreatedMarkets.test.ts` がその境界を検査する。
+  帰結: **罠を仕掛ける者は他のエージェントからしか収穫できない**
+- 参照 agent は 6 体: `market-launcher`（正直な作成者。immutable オラクルで作って鐘の前に withdraw）/
+  `market-taker`（利用者。`oracleOwner` を読んでから入る）/ `trap-launcher`（自分が握るオラクルで
+  90% LLTV の市場を作り、供給された分を借り出す）/ **`vault-keeper`**（正直だがバグ持ちの作成者。
+  `rescue()` を gate し忘れた `LeakyVault` を deploy して USDC を入れる）/ **`exploit-hunter`**
+  （Hacker。他人の `unknown` コントラクトのバイトコードから selector を復元し、`Exploiter` 経由で
+  atomic に drain する）＋ `discovery-arb` / `discovery-arb-verify` を registry からも引くよう拡張。
+  レジームは `config/regimes/agent-markets.yaml`（**公式セット外**。`lst`/`liquity` と同じ venue 単体
+  検証用）。**hunter は「honest but buggy」を狙う**（trap-launcher の敵対コントラクトではなく）。
+  実測: hunter +9,999.9 / vault-keeper −10,000.2 の移転（10,000 USDC の預けを丸ごと。sum ≈ ガス）
+- **公式セットは 7 本のまま。**8 本目にするかは live run を見てから
+
 ### 市場価格 stable（レジストリの stable を $1 断定でなく市場から値付ける。issue #27）
 
 **「stable = $1」はコードがそう書いていたから**だった。`chain.ts` が active stable を全部足して
@@ -489,9 +606,9 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   あって行使できる請求権ではない = 別のスキル
 - **`stableSwap` action**（curve アダプタ所有。プールが Curve stableswap-ng だから）—
   `{type, stable, tokenIn, amountIn, slippageBps?}`。無いとデペグは「見えるだけ」になる
-  （#39 が `liquitySwapEusd` を足したのと同じ理由）。**per-round 上限は USDC の 6 decimals 建てなので
-  18 decimals の stable では換算が要る**（実測でこれを忘れると sell が毎回 reject され、買いだけ通って
-  「閉じられないポジションの含み益」になる: 42 reject / 6 accept）
+  （#39 が `liquitySwapEusd` を足したのと同じ理由）。発注上限の撤廃前は、この上限が USDC の 6 decimals 建て
+  だったため 18 decimals の stable で換算漏れを起こし、sell だけ毎回 reject されて「閉じられないポジションの
+  含み益」になっていた（42 reject / 6 accept）。上限そのものが無くなったのでこの罠は消えた
 - **`depeg` ストレスイベント**（`stress.events`。`stable:` 必須）— 環境が窓の間だけその stable を
   プールへ売り、閉じたら買い戻す。機構は `core/src/realtime/stableDepeg.ts` に共通化してあり、
   `eusdDepeg` も同じ実装を通る（イベント名は #39 の `stress_eusd_depeg*` のまま。他の stable は

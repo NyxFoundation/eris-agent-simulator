@@ -71,11 +71,6 @@ funding:
   usdcUnits: "25000000000"
   # base: { WBTC: "0" }   # initial inventory of additional bases (default 0)
 
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000"
-  # agentBase: { WBTC: "0" }   # per-round cap for additional bases
-
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"

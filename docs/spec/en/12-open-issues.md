@@ -6,7 +6,7 @@ The chapter that exists so nothing undecided gets written as decided ([README](R
 
 ## 12.1 Open questions in scoring
 
-### The scoring rule (decided → ADR 0022)
+### The scoring rule (decided → ADR 0023)
 
 | | |
 |---|---|
@@ -15,14 +15,14 @@ The chapter that exists so nothing undecided gets written as decided ([README](R
 | Questions that went away | λ for `scenario` mode, M4 vs M9, the cross-scenario aggregator (zscore / borda / mean and the #55 exposure). The code and `npm run metrics` were deleted |
 | Still open | The value of k (Appendix A; 40 recommended), the actual hidden set and lottery seed with their commitments, a load test of 500 agents on one chain (measured so far: 100 agents at a 4 s block) |
 
-### What an LST is scored at (par or realizable)
+### ~~What an LST is scored at (par or realizable)~~ — settled
 
 | | |
 |---|---|
-| State | **Undecided** |
-| What | Scoring sums `valueUsdc` = **face value, the par the vault owes**. `realizableWethWei` goes to `liquidatableValueUsdc` as a diagnostic |
-| The tension | Issue #38's intent was realizable; the implementation uses par (partly a consequence of ADR 0019 §3 choosing the ordinary live mark as the basis) |
-| Deadline | **Before `lst` enters the competition set** |
+| State | **Settled (2026-09-05)** |
+| What | **Settled 2026-09-05 (issue #40 / ADR 0022 Amendment 1): realizable.** Scoring sums `liquidatableValueUsdc` for every venue; the face mark is reported as `markedValueUsdc` where it differs |
+| Why it took this long | It was not undecided because nobody knew which was right — there was no occasion to decide it. Issue #40 axiom 3 is that occasion: marking at par records an attack as fabricated value, and the argument carries to the LST queue unchanged |
+| Side effect | The reporting direction reverses: the face mark is what gets reported, as `markedValueUsdc` |
 
 ### ETH-denominated scoring
 

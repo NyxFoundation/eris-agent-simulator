@@ -40,7 +40,15 @@ function stableMarketBySymbol(symbol: string) {
 // name listed is still owned by an adapter, so renames and removals break, but an omitted addition
 // only shows up as an action the model never learns about.
 export const ACTION_TYPES_BY_PROTOCOL: Record<ProtocolId, readonly string[]> = {
-  uniswap: ["swap", "mintLiquidity", "removeLiquidity", "collectFees"],
+  uniswap: [
+    "swap",
+    "mintLiquidity",
+    "removeLiquidity",
+    "collectFees",
+    // Issue #40: create a market the environment did not deploy. The pool is `verified` in the
+    // registry because its implementation is the factory's, which says nothing about its contents.
+    "createPool",
+  ],
   balancer: ["balancerSwap"],
   curve: ["curveSwap", "stableSwap"],
   gmx: ["gmxIncrease", "gmxDecrease"],
@@ -55,6 +63,20 @@ export const ACTION_TYPES_BY_PROTOCOL: Record<ProtocolId, readonly string[]> = {
     "liquityWithdrawFromSP",
     "liquityLiquidate",
     "liquitySwapEusd",
+  ],
+  // Issue #40. `createPool` is Uniswap's (it goes through that factory) and lives under `uniswap`;
+  // everything here is the permissionless lending singleton's. Deploying an arbitrary contract is
+  // not in this table at all — it is a runtime capability rather than a venue action, and it is
+  // named separately in the revision prompt for the same reason `bundle` and `noop` are.
+  lending: [
+    "createLendingMarket",
+    "lendingSupply",
+    "lendingWithdraw",
+    "lendingSupplyCollateral",
+    "lendingWithdrawCollateral",
+    "lendingBorrow",
+    "lendingRepay",
+    "lendingLiquidate",
   ],
 };
 
@@ -171,11 +193,21 @@ function parseRawBundleAction(obj: Record<string, unknown>): AgentAction {
 }
 
 function parseRawTx(obj: Record<string, unknown>): RawTx {
-  if (typeof obj.to !== "string" || !HEX_PATTERN.test(obj.to))
-    throw new Error("raw tx to must be a hex string");
+  // `to` omitted (or explicitly null) is a contract deployment (issue #40 T5). Deployment is
+  // permitted in the competition; what bounds it is the gas budget, and what makes it safe for
+  // everyone else is that whatever lands is unverified and carries no safety claim to anybody who
+  // decides to touch it.
+  const isDeploy = obj.to === undefined || obj.to === null;
+  if (!isDeploy && (typeof obj.to !== "string" || !HEX_PATTERN.test(obj.to)))
+    throw new Error("raw tx to must be a hex string (omit it to deploy)");
   if (typeof obj.data !== "string" || !HEX_PATTERN.test(obj.data))
     throw new Error("raw tx data must be a hex string");
-  const tx: RawTx = { to: obj.to, data: obj.data };
+  if (isDeploy && obj.data.length <= 2)
+    throw new Error("a deployment needs creation bytecode in data");
+  const tx: RawTx = {
+    ...(isDeploy ? {} : { to: obj.to as string }),
+    data: obj.data,
+  };
   if (obj.value !== undefined) {
     requireDecimalString(obj.value, "raw tx value");
     tx.value = obj.value;
@@ -207,11 +239,6 @@ export function validateAction(
   if (action.type === "bundle") {
     if (action.actions.length === 0)
       return { ok: false, reason: "bundle actions must not be empty" };
-    if (action.actions.length > observation.limits.maxBundleActions)
-      return {
-        ok: false,
-        reason: "bundle action count exceeds configured max",
-      };
     const bundlePriority = action.maxPriorityFeePerGasWei;
     const bundleId = `${observation.runId}:${observation.round}:${hashAction(action)}`;
     return validateLeafItems(
@@ -246,9 +273,10 @@ function validateLeafItems(
     return { ok: false, reason: "priority fee exceeds configured max" };
   }
 
-  // Enforce cumulative balances/position counts across the bundle. Validate each leaf against
-  // "the balance minus what earlier leaves already consumed", preventing multiple leaves from
-  // collectively exceeding the wallet balance or maxOpenPositions (no effect on single actions).
+  // Enforce cumulative balances across the bundle. Validate each leaf against "the balance minus
+  // what earlier leaves already consumed", preventing multiple leaves from collectively exceeding
+  // the wallet balance (no effect on single actions). The balance is now the only bound: the
+  // order-size and position-count caps were removed with the rest of the limits.
   const work: BalanceSnapshot = {
     ethWei: balances.ethWei,
     wethWei: balances.wethWei,
@@ -260,9 +288,6 @@ function validateLeafItems(
     // it in sync with wethWei and stays byte-compatible.
     ...(balances.bases ? { bases: { ...balances.bases } } : {}),
   };
-  const baseLpPositions = observation.protocols.uniswap?.positions.length ?? 0;
-  let newLpPositions = 0;
-
   const intents: ValidatedIntent[] = [];
   for (let i = 0; i < actions.length; i++) {
     const item = actions[i];
@@ -280,18 +305,6 @@ function validateLeafItems(
     const result = adapter.validate(item, observation, work);
     if (!result.ok) return result;
 
-    if (item.type === "mintLiquidity") {
-      if (
-        baseLpPositions + newLpPositions >=
-        observation.limits.maxOpenPositions
-      ) {
-        return {
-          ok: false,
-          reason: "open LP position count exceeds configured max",
-        };
-      }
-      newLpPositions++;
-    }
     applyLeafSpend(work, item, observation, adapter.stableToken);
 
     intents.push({
@@ -514,9 +527,6 @@ function validateRawBundleAction(
   action: Extract<AgentAction, { type: "rawBundle" }>,
   observation: AgentObservation,
 ): ActionValidation {
-  if (action.txs.length > observation.limits.maxBundleActions) {
-    return { ok: false, reason: "rawBundle tx count exceeds configured max" };
-  }
   const priorityFeeWei = BigInt(
     action.maxPriorityFeePerGasWei ??
       observation.limits.defaultPriorityFeePerGasWei,

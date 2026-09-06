@@ -179,6 +179,8 @@ test("the manifest publishes what a self-hosted agent needs to connect", () => {
     "mintLiquidity",
     "removeLiquidity",
     "collectFees",
+    // Issue #40: creating a market is a Uniswap action because it goes through that factory.
+    "createPool",
   ]);
   assert.equal(m.round.epochBlocks, 12);
   assert.equal(m.round.approxSeconds, 24);

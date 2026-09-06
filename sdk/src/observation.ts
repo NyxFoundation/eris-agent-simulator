@@ -33,6 +33,10 @@ export async function observationFor(
   history: AgentObservation["history"],
   config: SimConfig,
   enabledIds: ProtocolId[],
+  // Issue #40: what other agents have deployed, already assembled by the caller. It is passed in
+  // rather than read here because it is *stateful* -- the stranded-holdings ledger is a running net
+  // over the whole run -- and this function is a pure projection of one block's reads.
+  registry?: AgentObservation["registry"],
 ): Promise<AgentObservation> {
   // Per-protocol observations are independent reads, so issue them in parallel. With the agent client
   // (batch=true), same-tick reads are auto-aggregated into a single Multicall3, so parallel issuance directly reduces round-trip count.
@@ -51,7 +55,13 @@ export async function observationFor(
         agentAddress,
         fairPrice,
       );
-      (protocols as Record<string, unknown>)[adapter.id] = obs;
+      // An adapter that returns undefined is saying its venue is not there in this run, and the key
+      // has to be *absent* rather than present-and-undefined: `Object.keys(obs.protocols)` is what
+      // the revision prompt reads to tell a model which venues exist (ADR 0018), and a key whose
+      // value is undefined still appears there. The model would be told it can trade a venue that
+      // does not exist, write a strategy around it, and have every action rejected at build time.
+      if (obs !== undefined)
+        (protocols as Record<string, unknown>)[adapter.id] = obs;
     }),
   );
   const stablePrices = await stablePricesPromise;
@@ -91,9 +101,10 @@ export async function observationFor(
     },
     inventory: balanceToInventory(balances, fairPrice, stablePrices),
     history: history.slice(-20),
+    // No order-size caps: the competition removed them outright rather than raising them, so the
+    // only thing bounding a trade is the balance behind it. What is left here is the fee/slippage
+    // defaults the runtime needs when the action does not name its own.
     limits: {
-      maxWethInWei: config.maxAgentWethInWei.toString(),
-      maxUsdcInUnits: config.maxAgentUsdcInUnits.toString(),
       defaultPriorityFeePerGasWei: config.defaultPriorityFeeWei.toString(),
       // Economization (ADR 0011 §2): since priority-fee cap enforcement is retired, effectively drop
       // the cap presented to the agent too (bids self-limit by opportunity value = realistic priority
@@ -105,52 +116,10 @@ export async function observationFor(
         : config.maxPriorityFeeWei
       ).toString(),
       defaultSlippageBps: 50,
-      maxBundleActions: config.maxBundleActions,
-      maxLpWethWei: config.maxLpWethWei.toString(),
-      maxLpUsdcUnits: config.maxLpUsdcUnits.toString(),
-      maxOpenPositions: config.maxOpenPositions,
-      maxGmxSizeUsd: config.maxGmxSizeUsd.toString(),
-      maxAaveSupplyWethWei: config.maxAaveSupplyWethWei.toString(),
-      maxAaveBorrowUsdcUnits: config.maxAaveBorrowUsdcUnits.toString(),
-      // Issue #38: per-stake cap for the LST venue.
-      maxLstDepositWethWei: config.lstMaxDepositWethWei.toString(),
-      // ADR 0013: expose per-base caps. WETH is the existing value; additional bases come from config's per-base map (default 0).
-      baseLimits: buildBaseLimits(config),
     },
     protocols,
+    ...(registry ? { registry } : {}),
   };
-}
-
-// ADR 0013: build the base symbol -> per-round cap map from config. WETH reuses the existing
-// WETH-specific caps (byte-compatible); additional bases use the per-base values of MAX_AGENT/MAX_LP/MAX_AAVE_SUPPLY (default 0).
-function buildBaseLimits(
-  config: SimConfig,
-): NonNullable<AgentObservation["limits"]["baseLimits"]> {
-  const out: NonNullable<AgentObservation["limits"]["baseLimits"]> = {};
-  const bases = new Set<string>([
-    "WETH",
-    ...Object.keys(config.maxAgentBaseIn),
-    ...Object.keys(config.maxLpBase),
-    ...Object.keys(config.maxAaveSupplyBase),
-  ]);
-  for (const base of bases) {
-    const maxSwap =
-      base === "WETH"
-        ? config.maxAgentWethInWei
-        : (config.maxAgentBaseIn[base] ?? 0n);
-    const maxLp =
-      base === "WETH" ? config.maxLpWethWei : (config.maxLpBase[base] ?? 0n);
-    const maxAave =
-      base === "WETH"
-        ? config.maxAaveSupplyWethWei
-        : (config.maxAaveSupplyBase[base] ?? 0n);
-    out[base] = {
-      maxSwapInBaseWei: maxSwap.toString(),
-      maxLpBaseWei: maxLp.toString(),
-      maxAaveSupplyBaseWei: maxAave.toString(),
-    };
-  }
-  return out;
 }
 
 // The per-stable breakdown an agent sizes and marks against (issue #27 (a) step 1). Keyed by
@@ -161,9 +130,7 @@ function buildStableBalances(
   prices: StablePrices,
 ): NonNullable<AgentObservation["balances"]["stables"]> {
   const quoted = new Set(
-    prices.quotes
-      .filter((q) => q.quoted)
-      .map((q) => q.token.toLowerCase()),
+    prices.quotes.filter((q) => q.quoted).map((q) => q.token.toLowerCase()),
   );
   const out: NonNullable<AgentObservation["balances"]["stables"]> = {};
   for (const [token, balance] of Object.entries(stables)) {

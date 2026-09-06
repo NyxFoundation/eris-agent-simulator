@@ -54,7 +54,7 @@ runs/
 | `initialValueUsdc` / `finalValueUsdc` | Total value at start / end (including venue positions) |
 | `netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `alphaUsdc` | PnL with β removed (**look here for skill**). Absent when no reconstruction ran |
-| `liquidatableValueUsdc` | Present only for agents whose mark and realizable value diverged |
+| `markedValueUsdc` | The **face mark**, present only for agents whose mark sat above the scored value. Scoring is at recoverable value (issue #40 axiom 3), so this is the number that was not used |
 | `processExitedEarly` | Why the process went away before the run ended. **Does not change the score** (rules §2.3 / §4.4.2: valued on what it left behind, like everyone else); the matrix carries it as a flag |
 | `includedTxCount` / `revertCount` | Transactions included / of those, reverted |
 | `unloggedTxCount` | Included transactions absent from the agent's own `submitted` log (post-hoc detection of the human intervention rules §8 forbids; only for agents the coordinator started; a report, not a verdict -- a crash between send and log leaves the same mark) |
@@ -70,7 +70,7 @@ runs/
 | `granularityBlocks` / `fromBlock` / `toBlock` / `blocks` / `windowBlocks` | The read window |
 | `failedReads` / `failedReadTargets` | How many cross-sections failed, and **which contract and function** |
 | `alphaRefFairUsdcPerWeth` / `alphaByAgent` | The fixed α reference and the values |
-| `liquidatableValueByAgent` | Only agents whose mark diverged |
+| `markedValueByAgent` | The face mark, only for agents where it diverged from the scored value |
 | `unpricedHoldings` | Holdings that could not be priced, could not be read, cannot be realized, or fell back to par ([06 §6.2](06-scoring.md)) |
 | `epochSeries` | **The boundary values every score is computed from** (below) |
 | `epochSeriesMeta` | Live scoring metadata (`boundaries` / `failedBoundaries` / `epochBlocks` / `markMedianBlocks`) |
@@ -259,7 +259,7 @@ The only document handed to self-hosted participants (ADR 0021 §2). Built by `b
 
 `runDir` is **relative**, so a tarball collected from a remote box unpacks and reads as-is.
 
-`standings.json` is **a derivative**: `computeStandings` recomputes it from `matrix.json` (ADR 0017 §4). The rule is fixed: the deviation score of rules §4.4 (ADR 0022).
+`standings.json` is **a derivative**: `computeStandings` recomputes it from `matrix.json` (ADR 0017 §4). The rule is fixed: the deviation score of rules §4.4 (ADR 0023).
 
 | `standings.json` | Contents |
 |---|---|

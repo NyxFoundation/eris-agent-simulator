@@ -113,7 +113,7 @@ A broken calibration, an event pointing at a venue that is not enabled, a key co
 
 ### P5. Store everything a score is derived from; the score is a derivative
 
-`summary.json` holds the score's inputs (the value at every boundary, and P), and the standings are a derivative of `matrix.json` (`standings.json`, recomputable by `computeStandings`; ADR 0017 §4). The scoring rule itself is fixed by rules §4.4 (ADR 0022). → [06](06-scoring.md)
+`summary.json` holds the score's inputs (the value at every boundary, and P), and the standings are a derivative of `matrix.json` (`standings.json`, recomputable by `computeStandings`; ADR 0017 §4). The scoring rule itself is fixed by rules §4.4 (ADR 0023). → [06](06-scoring.md)
 
 ### P6. One YAML for configuration; env holds only secrets
 
@@ -133,7 +133,7 @@ Run knobs and the roster live in `config/local.yaml`. What remains in env is **s
 | base / stable / lst | Token kinds. Valuation takes three different routes (`sdk/src/types.ts:13`) |
 | α (alphaUsdc) | PnL with β removed, measured against the fair price at fill time |
 | β | The part of PnL that comes from price drift — what moves whether or not you trade |
-| T / Score | The competition score: an epoch's deviation score T = 50 + 10 (P − μ) / σ and its weighted average (rules §4.4, ADR 0022) |
+| T / Score | The competition score: an epoch's deviation score T = 50 + 10 (P − μ) / σ and its weighted average (rules §4.4, ADR 0023) |
 | Bankruptcy | Asset value ≤ 0. No floor and no freeze; the negative value enters P as is (rules §4.5) |
 | segment | A time-sliced unit of output on a chain that never stops. The chain stays continuous |
 | external agent | A registered agent the participant runs on their own machine; the environment never starts it |

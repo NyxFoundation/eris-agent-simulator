@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
-import { t, type MessageKey } from "@/i18n/messages";
+import { t } from "@/i18n/messages";
 import { Sidebar } from "@/components/Sidebar";
 import { Sparkline } from "@/design-system/Sparkline";
 import { blockscoutBlockUrl, useBlockscoutBase } from "@/data/blockscout";
@@ -29,24 +29,6 @@ const TAPE_COLORS: Record<TapeEvent["tone"], string> = {
   purple: "var(--purple-200)",
   neutral: "var(--text-primary)",
 };
-
-interface InfoTab {
-  key: string;
-  num: string;
-  label: MessageKey;
-  body: MessageKey[];
-}
-
-// The learning layer: what this simulator is, in the viewer's language. Keys resolve through the
-// dictionary so the copy exists in both languages and in exactly one place.
-const INFO_TAB_KEYS = ["overview", "environment", "scoring", "artifacts"] as const;
-
-const INFO_TABS: InfoTab[] = INFO_TAB_KEYS.map((key, i) => ({
-  key,
-  num: String(i + 1).padStart(2, "0"),
-  label: `scenario.info.${key}.label` as MessageKey,
-  body: [1, 2, 3, 4].map((n) => `scenario.info.${key}.p${n}` as MessageKey),
-}));
 
 function MarketTile({ market }: { market: MarketTicker }) {
   const tone = market.direction === "up" ? "success" : "danger";
@@ -261,111 +243,6 @@ function TapeItem({ item }: { item: TapeEvent }) {
   );
 }
 
-function InfoTabs() {
-  const [activeKey, setActiveKey] = useState(INFO_TABS[0].key);
-  const active = INFO_TABS.find((tab) => tab.key === activeKey) ?? INFO_TABS[0];
-
-  return (
-    <div
-      style={{
-        borderTop: "1px solid var(--border-subtle)",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, minmax(0,1fr))",
-          gap: "1px",
-          background: "var(--border-subtle)",
-        }}
-      >
-        {INFO_TABS.map((tab) => {
-          const isActive = tab.key === activeKey;
-          return (
-            <div
-              key={tab.key}
-              onClick={() => setActiveKey(tab.key)}
-              style={{
-                background: isActive
-                  ? "var(--bg-surface-raised)"
-                  : "var(--bg-canvas)",
-                borderTop: `3px solid ${isActive ? "var(--pink-500)" : "transparent"}`,
-                padding: "var(--space-3) var(--space-4)",
-                display: "flex",
-                flexDirection: "column",
-                gap: "5px",
-                cursor: "pointer",
-                minWidth: 0,
-              }}
-            >
-              <span
-                style={{
-                  font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-                  letterSpacing: "var(--tracking-widest)",
-                  color: isActive ? "var(--pink-300)" : "var(--text-disabled)",
-                }}
-              >
-                {tab.num}
-              </span>
-              <span
-                style={{
-                  fontSize: "var(--text-lg)",
-                  fontWeight: "var(--weight-bold)",
-                  letterSpacing: "var(--tracking-tight)",
-                  textTransform: "uppercase",
-                  color: isActive
-                    ? "var(--text-primary)"
-                    : "var(--text-tertiary)",
-                  lineHeight: 1,
-                }}
-              >
-                {t(tab.label)}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-      <div
-        style={{
-          borderTop: "1px solid var(--border-subtle)",
-          borderBottom: "1px solid var(--border-subtle)",
-          height: "300px",
-          overflowY: "auto",
-          padding: "var(--space-6) var(--space-4)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "var(--space-5)",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "var(--space-4)",
-            maxWidth: "80ch",
-          }}
-        >
-          {active.body.map((key) => (
-            <p
-              key={key}
-              style={{
-                margin: 0,
-                fontSize: "var(--text-base)",
-                lineHeight: 1.65,
-                color: "var(--text-secondary)",
-              }}
-            >
-              {t(key)}
-            </p>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function SectionPanel({
   title,
   path,
@@ -451,7 +328,9 @@ export function ScenarioPage() {
             color: "var(--danger-text)",
           }}
         >
-          {t("common.loadFailed", { detail: error ? `: ${error.message}` : "" })}
+          {t("common.loadFailed", {
+            detail: error ? `: ${error.message}` : "",
+          })}
         </span>
       </div>
     );
@@ -490,6 +369,26 @@ export function ScenarioPage() {
             gap: "var(--space-3)",
           }}
         >
+          {/* Which unit is on screen, and what it sits inside. A scenario opened from the
+              standings otherwise looks like a page in its own right, and "round 14" on it reads as
+              a round of the competition rather than of this one world. */}
+          <a
+            onClick={() => navigate("/")}
+            style={{
+              font: "var(--text-xs) var(--font-mono)",
+              letterSpacing: "var(--tracking-wide)",
+              textTransform: "uppercase",
+              color: "var(--text-tertiary)",
+              cursor: "pointer",
+              textDecoration: "none",
+            }}
+          >
+            <span style={{ color: "var(--text-link)" }}>
+              {t("units.competition")}
+            </span>
+            {"  ›  "}
+            {t("units.scenario")}
+          </a>
           {/* The scenario names itself. This used to be the ERIS wordmark, which made every
               scenario look like the application's front page and said nothing about which of the
               35 worlds was on screen. */}
@@ -503,7 +402,8 @@ export function ScenarioPage() {
               color: "var(--text-primary)",
             }}
           >
-            {scenario.name?.replace(/^full-/, "") ?? t("scenario.fallbackTitle")}
+            {scenario.name?.replace(/^full-/, "") ??
+              t("scenario.fallbackTitle")}
           </h1>
           <span
             style={{
@@ -657,8 +557,6 @@ export function ScenarioPage() {
             </SectionPanel>
           </div>
         </div>
-
-        <InfoTabs />
 
         <div
           style={{

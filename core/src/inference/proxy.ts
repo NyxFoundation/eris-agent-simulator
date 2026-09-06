@@ -1,5 +1,5 @@
 // The inference proxy: the one door between an agent and a model (rules §2.3 "external
-// communication", §2.5; ADR 0022 task 3 / memory inference-proxy-design).
+// communication", §2.5; ADR 0023 task 3 / memory inference-proxy-design).
 //
 // An agent's process may not reach the outside network. Its strategy revisions still need a model,
 // so the operator runs this proxy on the agents' network and the agent talks to it instead of to

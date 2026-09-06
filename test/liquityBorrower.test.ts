@@ -249,8 +249,6 @@ function spInput(
     ethWei: WAD,
     ethBaselineWei: WAD,
     wethBaselineWei: 0n,
-    maxUsdcPerRound: 5000n * USDC,
-    maxWethPerRound: 5n * WAD,
     canSellEth: true,
     ...overrides,
   };
@@ -285,7 +283,8 @@ test("a Trove under MCR is liquidated, and one at the line is not", () => {
 test("underwriting is built from eUSD bought at or below par, never at a premium", () => {
   const d = decideUnderwriting(spInput());
   assert.equal(d.kind, "buy");
-  if (d.kind === "buy") assert.equal(d.usdcIn, 5000n * USDC); // the per-round cap binds
+  // 50% of the 25,000 balance: UNDERWRITE_BPS, with no per-round cap left to bind ahead of it.
+  if (d.kind === "buy") assert.equal(d.usdcIn, 12_500n * USDC);
 
   const premium = decideUnderwriting(
     spInput({ liquity: liquity({ discountBps: -30 }) }),

@@ -20,11 +20,6 @@ funding:
   usdcUnits: "25000000000" # 25,000 USDC (enough to trade several pools)
   base: { WBTC: "0" }
 
-limits:
-  agentWethWei: "1000000000000000000"
-  agentUsdcUnits: "5000000000" # per-round 5,000 USDC (rug threshold = frac x this)
-  agentBase: { WBTC: "5000000" }
-
 # Vulnerability events (ranges, not values. fixed by SEED -> suppresses overfitting).
 vuln:
   poolLiquidityUsdcUnits: "2000000000000" # ~$2M per side of each pool (deep = bait becomes realized profit)
@@ -37,7 +32,7 @@ vuln:
       riggedFrac: [0.5, 0.7] # fraction that is rigged (the rest are safe genuine arb)
       baitBps: [300, 600] # shown 3-6% cheaper than fair (the lure)
       rugBps: [3000, 6000] # fraction the rigged pool skims (30-60%)
-      rugThresholdFrac: [0.2, 0.4] # skim threshold relative to per-round cap (skims above it)
+      rugThresholdFrac: [0.04, 0.08] # of the agent's funded USDC (skims above it)
 
 agents:
   - id: noop

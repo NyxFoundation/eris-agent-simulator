@@ -212,34 +212,13 @@ function validate(
   if (a.amount !== "max") {
     const amount = BigInt(a.amount);
     if (amount <= 0n) return { ok: false, reason: "amount must be positive" };
-    if (a.type === "aaveSupply") {
-      if (amount > assetBalance())
-        return { ok: false, reason: "supply amount exceeds balance" };
-      // ADR 0013: apply the supply limit to every base. WETH=maxAaveSupplyWethWei; additional bases use
-      // limits.baseLimits[asset] ("0"=no limit). Stable assets have no supply limit (as before).
-      // The LST's own cap is the per-stake one on the venue itself, so it is not re-capped here.
-      if (a.asset !== AAVE_STABLE_SYMBOL && a.asset !== LST_SYMBOL) {
-        const maxSupply =
-          a.asset === "WETH"
-            ? BigInt(obs.limits.maxAaveSupplyWethWei)
-            : BigInt(
-                obs.limits.baseLimits?.[a.asset]?.maxAaveSupplyBaseWei ?? "0",
-              );
-        if (maxSupply > 0n && amount > maxSupply)
-          return { ok: false, reason: "supply exceeds configured limit" };
-      }
-    }
-    if (a.type === "aaveRepay") {
-      if (amount > assetBalance())
-        return { ok: false, reason: "repay amount exceeds balance" };
-    }
-    if (
-      a.type === "aaveBorrow" &&
-      a.asset === "USDC" &&
-      amount > BigInt(obs.limits.maxAaveBorrowUsdcUnits)
-    ) {
-      return { ok: false, reason: "borrow exceeds configured USDC limit" };
-    }
+    // Balance for what you put in; the reserve's own collateral rules for what you take out. There
+    // is no configured supply or borrow cap any more -- an over-borrow is answered by the health
+    // factor and a liquidator, not by a validation error.
+    if (a.type === "aaveSupply" && amount > assetBalance())
+      return { ok: false, reason: "supply amount exceeds balance" };
+    if (a.type === "aaveRepay" && amount > assetBalance())
+      return { ok: false, reason: "repay amount exceeds balance" };
   }
   return { ok: true };
 }
@@ -643,6 +622,25 @@ export const aaveAdapter: ProtocolAdapter = {
           read: "MockLSTVault.estimateDelayBlocks",
         });
       }
+      // **Not floored at zero, deliberately** -- unlike Liquity below 100% ICR and unlike
+      // SimpleLending's own borrowers (issue #40 axiom 3).
+      //
+      // The walk-away floor is only sound as one half of a pair. It says a borrower keeps the
+      // borrowed asset and abandons collateral worth less than the debt; the other half is that
+      // somebody eats that shortfall, and in Liquity and in SimpleLending somebody does -- the
+      // Stability Pool absorbs it, and SimpleLending socializes bad debt onto its suppliers, so the
+      // adapters see the loss on the other side and the books balance.
+      //
+      // Aave has no such mechanism here and this adapter models none: a supplier's aTokens stay 1:1
+      // whatever happens to a borrower. Flooring the borrower alone would create score out of
+      // nothing -- the field's total would rise by the shortfall -- which is precisely the failure
+      // axiom 3 exists to prevent, arrived at from the opposite direction. So the position stays at
+      // collateral minus debt, which is negative while under water and exactly offsets the borrowed
+      // asset sitting in the wallet.
+      //
+      // What this leaves unmodelled is Aave bad debt, and that is stated rather than hidden: see
+      // docs/adr/0022 and the note in the rules. Closing it means marking the supplier side down by
+      // the unbacked share, which needs per-reserve backing that getUserAccountData does not carry.
       out[agent.id] = {
         valueUsdc: usd,
         liquidatableValueUsdc: liquidatableUsdc,

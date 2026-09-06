@@ -6,7 +6,7 @@
 
 ## 12.1 採点の未決事項
 
-### 採点方式（決定済み → ADR 0022）
+### 採点方式（決定済み → ADR 0023）
 
 | | |
 |---|---|
@@ -15,14 +15,14 @@
 | 消えた論点 | λ の `scenario` 側較正、M4 vs M9、シナリオ横断の集約（zscore / borda / mean、issue #55 の露出）。該当コードと `npm run metrics` は削除 |
 | 残る論点 | k の値（付録A、推奨 40）、非公開 seed / 抽選 seed の実物と commit、500 体を 1 チェーンで走らせる負荷試験（実測は 100 体・4 秒ブロック） |
 
-### LST の採点基礎（par か realizable か）
+### ~~LST の採点基礎（par か realizable か）~~ — 決着済み
 
 | | |
 |---|---|
-| 状態 | **未決** |
-| 内容 | 採点が合計するのは `valueUsdc` = **face value（vault が負う par）**。`realizableWethWei` は `liquidatableValueUsdc` に入る診断値 |
-| 対立 | issue #38 の意図は realizable、現行実装は par（ADR 0019 §3 が採点の基礎に「通常の live mark」を選んだ結果でもある） |
-| 期限 | **`lst` が競技セットに入る前に決める** |
+| 状態 | **決着（2026-09-05・issue #40 / ADR 0022 Amendment 1）** |
+| 結論 | **realizable**。採点系列は全 venue で `liquidatableValueUsdc` を合計する |
+| 理由 | 未決だったのは正しさが不明だったからではなく、決める場が無かったから。issue #40 の公理 3（額面で評価すると攻撃が捏造された価値として記録される）がその場を作り、同じ議論が LST のキュー滞留にもそのまま通る |
+| 副作用 | 報告の向きが反転し、額面が `markedValueUsdc` として出る |
 
 ### ETH 建て採点
 

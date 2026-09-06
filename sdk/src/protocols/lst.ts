@@ -342,12 +342,6 @@ function validate(
       const wethBalance = balances.bases?.WETH ?? balances.wethWei;
       if (amount > wethBalance)
         return { ok: false, reason: "amountWethWei exceeds WETH balance" };
-      const cap = BigInt(obs.limits.maxLstDepositWethWei ?? "0");
-      if (cap > 0n && amount > cap)
-        return {
-          ok: false,
-          reason: "amountWethWei exceeds configured per-action limit",
-        };
       return { ok: true };
     }
     case "lstSwap": {
@@ -358,12 +352,6 @@ function validate(
         const wethBalance = balances.bases?.WETH ?? balances.wethWei;
         if (amount > wethBalance)
           return { ok: false, reason: "amountIn exceeds WETH balance" };
-        const maxWethIn = BigInt(obs.limits.maxWethInWei);
-        if (maxWethIn > 0n && amount > maxWethIn)
-          return {
-            ok: false,
-            reason: "amountIn exceeds configured per-round limit",
-          };
         return { ok: true };
       }
       // The LST balance is not part of BalanceSnapshot (the token is not in the base registry --
@@ -709,7 +697,11 @@ export async function* lstValuationRun(
     // undefined if its read failed, and undefined stays undefined: see the marking below.
     delayByIndex.set(
       i,
-      typeof d === "bigint" ? Number(d) : rateLimited ? undefined : floorDelayBlocks,
+      typeof d === "bigint"
+        ? Number(d)
+        : rateLimited
+          ? undefined
+          : floorDelayBlocks,
     );
   });
 

@@ -41,6 +41,15 @@ import type {
 } from "@eris/sdk/protocols/types.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
+import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
+import {
+  allocateToBalances,
+  fetchAgentTransfers,
+  readHeldBalances,
+  StrandedLedger,
+  type StrandedFlow,
+  type TransferLogLike,
+} from "@eris/sdk/agentMarkets.js";
 
 // Measured upper bound of anvil's historical state retention depth (~1,050; ADR 0006 Risks). Warn if likely to exceed it.
 const HISTORY_DEPTH_LIMIT = 1000;
@@ -72,10 +81,11 @@ export type ReconstructionMeta = {
   alphaRefFairUsdcPerWeth: number;
   // agent -> α (= value at the fixed reference fair, toBlock − fromBlock; β-removed trade-derived PnL).
   alphaByAgent: Record<string, number>;
-  // agent -> realizable value at the run's last cross-section, for the agents where it differs
-  // from the mark (issue #38: a redemption still in the queue when the run ends). Absent entries
+  // agent -> the *face mark* at the run's last cross-section, for the agents where it differs from
+  // the scored value. The score is the recoverable value (issue #40 axiom 3), so an entry here says
+  // "this position was carried above what it could have realized, by this much". Absent entries
   // mean the two agreed, which is the normal case.
-  liquidatableValueByAgent: Record<string, number>;
+  markedValueByAgent: Record<string, number>;
   // Holdings excluded from the value series because they could not be priced (issue #41) or could not
   // be read (issue #44).
   unpricedHoldings: UnpricedHolding[];
@@ -174,11 +184,11 @@ export type AgentValueSnapshot = {
   id: string;
   valueUsdc: number;
   alphaValueUsdc: number;
-  // What the agent could actually realize at this cross-section: free inventory plus each venue's
-  // exit value rather than its face mark. Equal to valueUsdc for every venue that exits at par,
-  // which is all of them except the LST queue (issue #38) -- so past runs compare unchanged, and
-  // the two only separate where a position genuinely cannot be liquidated for its mark.
-  liquidatableValueUsdc: number;
+  // The face mark: free inventory plus each venue's *stated* value rather than its exit value.
+  // `valueUsdc` above is the scored one and is the recoverable value (issue #40 axiom 3); this is
+  // kept so the gap between the two can be reported. Equal for every venue that exits at par, which
+  // is most of them most of the time.
+  markedValueUsdc: number;
 };
 
 // A holding excluded from an agent's value: the scorer cannot price it, nothing sums it (issue #41),
@@ -511,16 +521,30 @@ export async function readValueSnapshotAtBlock(opts: {
     // (fundWallet grants only the par ones), so every unit of the exposure was chosen.
     let total = valueUsdc(balance, fairByBase, stablePrices);
     let alphaTotal = valueUsdc(balance, refFairByBase, stablePrices);
-    // Free inventory is realizable by definition, so the liquidatable series starts from the same
-    // live mark and only the venues diverge.
-    let liquidatableTotal = valueUsdc(balance, fairByBase, stablePrices);
-    // Protocol positions are a live mark in both evaluations (β removal applies to free inventory only).
+    // The face mark, kept only to report where it sits above the scored value. Free inventory is
+    // realizable by definition, so the two start equal and only the venues separate them.
+    let markedTotal = valueUsdc(balance, fairByBase, stablePrices);
+    // **Venue positions are scored at recoverable value, not at par** (issue #40 axiom 3, extended
+    // to every venue). Which is a change: until now the scored series took `valueUsdc`, the face
+    // mark, and `liquidatableValueUsdc` was a reported diagnostic.
+    //
+    // The reason it cannot stay a diagnostic is that par manufactures value. A lending market whose
+    // collateral is worthless still marks its supplier at par, so an attacker who drains it gains
+    // without anybody losing and the field's total rises — the attack does not exist as far as the
+    // score is concerned. That argument does not stop at the venue the attack was demonstrated in:
+    // an LST redemption stuck in the queue at the bell, a Trove under 100% ICR, and an Aave
+    // position underwater are all "marked above what it could realize", and scoring them two
+    // different ways depending on which venue they sit in is the inconsistency, not the fix.
+    //
+    // For the environment's own venues recoverable is *usually* par — real collateral, environment
+    // oracles — so this moves nothing in a calm run. Where it moves, it moves for a reason, and the
+    // face mark is reported alongside so the gap is legible rather than silent.
     for (const [id, byAgent] of protocolValues) {
       const value = byAgent[agent.id];
       if (!value) continue;
-      total += value.valueUsdc;
-      alphaTotal += value.valueUsdc;
-      liquidatableTotal += value.liquidatableValueUsdc;
+      total += value.liquidatableValueUsdc;
+      alphaTotal += value.liquidatableValueUsdc;
+      markedTotal += value.valueUsdc;
       for (const holding of value.unpriced) {
         unpriced.push({
           ...holding,
@@ -533,7 +557,7 @@ export async function readValueSnapshotAtBlock(opts: {
       id: agent.id,
       valueUsdc: total,
       alphaValueUsdc: alphaTotal,
-      liquidatableValueUsdc: liquidatableTotal,
+      markedValueUsdc: markedTotal,
     });
   });
 
@@ -652,6 +676,100 @@ export async function findUnaccountedTokens(opts: {
   return out;
 }
 
+// Known tokens an agent moved into a registry entry the environment cannot value, netted against
+// what came back out (issue #40 axiom 1).
+//
+// Netted, not "the contract's balance": a pool holding 1,000 USDC owes it to whoever holds the LP,
+// and crediting the depositor as well would count the same reserves twice. Profit taken *through*
+// an unknown contract already counts in full through ordinary spot accounting — deposit 10,000 at
+// block 100, withdraw 11,000 at block 500, and the +1,000 is in the wallet. What this finds is only
+// what is still inside when the bell rings.
+export async function findStrandedInUnknownContracts(opts: {
+  publicClient: PublicClient;
+  agents: ReconstructionAgent[];
+  activeStables: Address[];
+  marketRegistry: Address;
+  fromBlock: number;
+  toBlock: number;
+}): Promise<UnpricedHolding[]> {
+  const { publicClient, agents, marketRegistry, fromBlock, toBlock } = opts;
+  let entries: Awaited<ReturnType<typeof readRegistryEntries>>;
+  try {
+    entries = await readRegistryEntries(publicClient, marketRegistry);
+  } catch {
+    return []; // best effort; never fail a run's scoring over a diagnostic
+  }
+  // Only the entries carrying no safety claim. A verified venue is valued by its adapter, and
+  // double-reporting it would say a scored position went missing.
+  const unknown = new Set(
+    entries.filter((e) => !e.verified).map((e) => e.market.toLowerCase()),
+  );
+  if (unknown.size === 0) return [];
+  const priced = new Set<string>([
+    ...baseTokens().map((t) => t.address.toLowerCase()),
+    ...opts.activeStables.map((a) => a.toLowerCase()),
+  ]);
+
+  // Every agent's flows first, then one allocation across all of them. Capping each agent against
+  // the same contract balance separately reports the same tokens once per agent: A and B each put
+  // 100 into C, C forwards 100 away and keeps 100, and both are told 100 is theirs.
+  const byAgent: Array<{ agent: ReconstructionAgent; flows: StrandedFlow[] }> = [];
+  for (const agent of agents) {
+    let logs: TransferLogLike[];
+    try {
+      logs = await fetchAgentTransfers(
+        publicClient,
+        agent.address,
+        BigInt(fromBlock),
+        BigInt(toBlock),
+      );
+    } catch {
+      continue;
+    }
+    const ledger = new StrandedLedger();
+    ledger.apply(logs, agent.address, unknown);
+    byAgent.push({
+      agent,
+      flows: ledger
+        .outstanding()
+        .filter((f) => priced.has(f.token.toLowerCase())),
+    });
+  }
+
+  // What each contract still holds at the terminal block. The net alone overclaims: a contract that
+  // pulled tokens from an agent and forwarded them straight on holds none of them, and the loss --
+  // which the agent's own spot balance already records -- did not stay here.
+  const pairs = new Map<string, { holder: Address; token: Address }>();
+  for (const { flows } of byAgent) {
+    for (const f of flows)
+      pairs.set(`${f.market.toLowerCase()}|${f.token.toLowerCase()}`, {
+        holder: f.market,
+        token: f.token,
+      });
+  }
+  const held = await readHeldBalances(
+    publicClient,
+    [...pairs.values()],
+    BigInt(toBlock),
+  );
+
+  const out: UnpricedHolding[] = [];
+  for (const { agent, flows } of allocateToBalances(byAgent, held)) {
+    for (const flow of flows) {
+      out.push({
+        agentId: agent.id,
+        source: `unknown-contract:${flow.market}`,
+        token: flow.token,
+        amountRaw: flow.amountRaw.toString(),
+        // Not "unpriced": the token has a price. What it does not have is a way out, which is
+        // exactly what the round-trip rule scores at zero.
+        reason: "unrealizable",
+      });
+    }
+  }
+  return out;
+}
+
 type MulticallFn = (
   contracts: MulticallContract[],
   blockNumber: bigint,
@@ -713,9 +831,11 @@ export function epochBoundaryBlocks(
 //   pool gains, and the agent gets back only its share of it. A wash if it owns the whole pool, a
 //   loss otherwise.
 //
-//   The LST venue's scored mark is face value (vault redemption rate x the WETH fair), which reads
-//   no pool at all. Its pool quote feeds liquidatableValueUsdc, a reported diagnostic that the value
-//   series does not sum.
+//   The LST venue reads its pool for the realizable side, and since issue #40 axiom 3 the realizable
+//   side is what the value series sums -- so the pool quote *is* in the score there. It is still not
+//   a manipulation surface for the same reason the LP shares above are not: pushing the LST/WETH
+//   pool moves value between the agent's own two buckets. What it can do is lower the *discount*,
+//   and a lower discount is a higher mark, so the median window covers it like everything else.
 //
 // What makes the stables different is that there the pool quote *is* the mark of a holding whose
 // cost basis sits somewhere else, so moving the pool moves the score.
@@ -807,6 +927,11 @@ export async function reconstructValueSeries(opts: {
   // G7 window: how many blocks each epoch boundary's manipulable marks are medianed over, the
   // boundary block included (config.markMedianBlocks). <= 1 marks boundaries live.
   markMedianBlocks?: number;
+  // Issue #40: where agent-created contracts are published. Given, the scorer additionally reports
+  // known tokens the agent left *inside* an entry it cannot value. Those are already worth zero to
+  // the value series -- an EOA sweep does not see them and no adapter claims them -- and the whole
+  // point of reporting them is that a zero must never be mistaken for a trading loss.
+  marketRegistry?: Address;
 }): Promise<ReconstructionMeta> {
   const {
     publicClient,
@@ -820,6 +945,7 @@ export async function reconstructValueSeries(opts: {
     scoreEvery = 1,
     epochBlocks = 0,
     markMedianBlocks = 0,
+    marketRegistry,
   } = opts;
   const started = Date.now();
   let failedReads = 0;
@@ -859,7 +985,7 @@ export async function reconstructValueSeries(opts: {
   const alphaLast = new Map<string, number>();
   // Realizable value at the run's last cross-section, and the mark from that same cross-section to
   // compare it against (issue #38). Reported alongside the mark rather than replacing it.
-  const liquidatableLast = new Map<string, number>();
+  const scoredLast = new Map<string, number>();
   const markedLast = new Map<string, number>();
   // Holdings the scorer could not price (issue #41) or could not read (issue #44). Deduplicated
   // across the run window (they persist block to block) and emitted once at the end, so a zero in
@@ -922,12 +1048,12 @@ export async function reconstructValueSeries(opts: {
       id,
       valueUsdc: total,
       alphaValueUsdc,
-      liquidatableValueUsdc,
+      markedValueUsdc,
     } of snapshot.values) {
       if (!alphaFirst.has(id)) alphaFirst.set(id, alphaValueUsdc);
       alphaLast.set(id, alphaValueUsdc);
-      liquidatableLast.set(id, liquidatableValueUsdc);
-      markedLast.set(id, total);
+      scoredLast.set(id, total);
+      markedLast.set(id, markedValueUsdc);
       // ADR 0019 §3: the epoch series is the ordinary live mark, not alphaValueUsdc. Its β removal is
       // partial (free inventory is held at the reference fair while protocol positions stay live), so
       // scoring on it would price the same bet differently depending on the instrument.
@@ -952,10 +1078,10 @@ export async function reconstructValueSeries(opts: {
           inventory: {
             valueUsdc: total,
             alphaValueUsdc,
-            // Only worth a field when it says something the mark does not.
-            ...(liquidatableValueUsdc !== total
-              ? { liquidatableValueUsdc }
-              : {}),
+            // The face mark, when it says something the scored value does not. `valueUsdc` above
+            // is the recoverable one now (issue #40 axiom 3), so a `markedValueUsdc` above it is
+            // the venue holding something this agent could not have got out.
+            ...(markedValueUsdc !== total ? { markedValueUsdc } : {}),
           },
         },
       });
@@ -965,19 +1091,23 @@ export async function reconstructValueSeries(opts: {
   const alphaByAgent: Record<string, number> = {};
   for (const { id } of agents)
     alphaByAgent[id] = (alphaLast.get(id) ?? 0) - (alphaFirst.get(id) ?? 0);
-  // Only agents whose realizable value actually diverged from the mark. Comparing against the
-  // mark from the *same* cross-section matters: the coordinator's end-of-run PnL is computed at a
-  // different block by a different path, so comparing against that would flag every agent.
-  const liquidatableValueByAgent: Record<string, number> = {};
+  // Only agents whose face mark actually diverged from the scored value. Comparing within the
+  // *same* cross-section matters: the coordinator's end-of-run PnL is computed at a different block
+  // by a different path, so comparing against that would flag every agent.
+  //
+  // The direction reversed with the rule. The score is the recoverable value now, so what is worth
+  // reporting is the mark *above* it: this agent's position was carried at a number it could not
+  // have realized, and here is that number.
+  const markedValueByAgent: Record<string, number> = {};
   for (const { id } of agents) {
-    const liquidatable = liquidatableLast.get(id);
+    const scored = scoredLast.get(id);
     const marked = markedLast.get(id);
     if (
-      liquidatable !== undefined &&
+      scored !== undefined &&
       marked !== undefined &&
-      Math.abs(liquidatable - marked) > 1e-9
+      Math.abs(marked - scored) > 1e-9
     ) {
-      liquidatableValueByAgent[id] = liquidatable;
+      markedValueByAgent[id] = marked;
     }
   }
 
@@ -992,6 +1122,24 @@ export async function reconstructValueSeries(opts: {
     toBlock,
   })) {
     unpriced.set(unpricedKey(holding), holding);
+  }
+
+  // Issue #40 axiom 1: value left inside a contract the environment cannot value is worth 0 at the
+  // epoch's final block. It already *is* zero -- nothing sweeps it and no adapter claims it -- so
+  // this reports it rather than changing it. Reporting is the load-bearing half: an agent that
+  // deposited 10,000 USDC into an unknown contract and never got it back shows a value series
+  // indistinguishable from one that lost 10,000 trading, and the two are different findings.
+  if (marketRegistry) {
+    for (const holding of await findStrandedInUnknownContracts({
+      publicClient,
+      agents,
+      activeStables,
+      marketRegistry,
+      fromBlock,
+      toBlock,
+    })) {
+      unpriced.set(unpricedKey(holding), holding);
+    }
   }
 
   // Default the reason once, here, so every site upstream can leave it off when it only ever reports
@@ -1059,7 +1207,7 @@ export async function reconstructValueSeries(opts: {
     elapsedMs: Date.now() - started,
     alphaRefFairUsdcPerWeth: refFairByBase.WETH,
     alphaByAgent,
-    liquidatableValueByAgent,
+    markedValueByAgent,
     unpricedHoldings,
     ...(epochSeries ? { epochSeries } : {}),
     ...(markMedian.summary() ? { markMedian: markMedian.summary() } : {}),

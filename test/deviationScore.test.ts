@@ -1,4 +1,4 @@
-// Rules §4.4 / §4.6 as code (ADR 0022). Every number here is checked against the formulas, not
+// Rules §4.4 / §4.6 as code (ADR 0023). Every number here is checked against the formulas, not
 // against a previous run of the implementation.
 import test from "node:test";
 import assert from "node:assert/strict";

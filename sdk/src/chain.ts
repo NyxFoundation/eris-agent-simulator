@@ -41,10 +41,28 @@ export function makeClients(
   // (2) Multicall3 auto-aggregation of readContract. A direct-mode agent issues a dozen-plus reads
   // per block, so without batching anvil's round-trip count becomes the bottleneck
   // (ADR 0006 Risks "anvil bottleneck", lever 1).
+  // Self-hosted agents (trial period) reach the chain through the operator RPC gateway behind
+  // Cloudflare Access. Inject the service-token headers (and any extra headers) from the env so
+  // viems fetch carries them. Unset in the operators internal sim (direct anvil) -> no headers.
+  const headers: Record<string, string> = {};
+  const cfId = process.env.CF_ACCESS_CLIENT_ID;
+  const cfSecret = process.env.CF_ACCESS_CLIENT_SECRET;
+  if (cfId && cfSecret) {
+    headers["CF-Access-Client-Id"] = cfId;
+    headers["CF-Access-Client-Secret"] = cfSecret;
+  }
+  if (process.env.ERIS_RPC_HEADERS) {
+    try {
+      Object.assign(headers, JSON.parse(process.env.ERIS_RPC_HEADERS));
+    } catch {
+      // ERIS_RPC_HEADERS must be a JSON object of header name -> value; ignore if malformed
+    }
+  }
   const transport = http(rpcUrl, {
     timeout: 120_000,
     retryCount: 2,
     batch: opts.batch ? true : undefined,
+    fetchOptions: Object.keys(headers).length ? { headers } : undefined,
   });
   return {
     chain,

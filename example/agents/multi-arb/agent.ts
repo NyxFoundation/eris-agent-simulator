@@ -28,9 +28,6 @@ const GAP_GAIN = 200_000;
 const LEG_SLIPPAGE_BPS = 120; // slightly loose for 2-leg to account for cross-venue movement
 const SINGLE_SLIPPAGE_BPS = 75;
 
-function minBI(a: bigint, b: bigint): bigint {
-  return a < b ? a : b;
-}
 
 // Convert a base amount (base units) to a number by dividing by decimals (for USD conversion; an estimate is enough).
 function baseToFloat(amountBaseWei: bigint, decimals: number): number {
@@ -61,9 +58,9 @@ export function decide(
   obs: AgentObservation,
 ): AgentAction | Record<string, unknown> | null {
   const views = marketViews(obs);
+  // The balance is the capital. With the per-order caps gone, `sizeBps` is the whole of this
+  // agent's sizing decision: a fraction of the stack, scaled by how good the edge looks.
   const usdcBal = BigInt(obs.balances.usdcUnits || "0");
-  const maxUsdc = BigInt(obs.limits.maxUsdcInUnits);
-  const maxWeth = BigInt(obs.limits.maxWethInWei);
   const fee = obs.limits.defaultPriorityFeePerGasWei;
 
   // ---- 1) 2-leg cross-venue arbitrage (pick the base with the largest cross-venue spread) ----
@@ -83,21 +80,17 @@ export function decide(
       (cheap.feeBps + rich.feeBps + SAFETY_MARGIN_BPS) / 10000;
     if (spread <= roundtripCost) continue;
     // USDC size of the buy leg (proportional to net edge = spread - cost; bet small on marginal spreads).
-    const usdcCap = minBI(usdcBal, maxUsdc);
-    if (usdcCap <= 0n) continue;
+    if (usdcBal <= 0n) continue;
     const netEdge = spread - roundtripCost;
     const sizeBps = Math.min(
       MAX_SIZE_BPS,
       Math.max(MIN_SIZE_BPS, Math.floor(netEdge * SPREAD_GAIN)),
     );
-    const usdcIn = (usdcCap * BigInt(sizeBps)) / 10000n;
+    const usdcIn = (usdcBal * BigInt(sizeBps)) / 10000n;
     if (usdcIn <= 0n) continue;
     // Approx. buy-output base = (USDCin / cheapPrice). The sell leg is 98% of that (floor/slippage margin).
     const boughtBase = baseToFloat(usdcIn, 6) / cheap.price;
-    let baseSell = floatToBase(boughtBase * 0.98, view.baseDecimals);
-    // Cap by the per-base limit ("0" = no limit).
-    const maxBaseIn = BigInt(view.maxSwapInBaseWei || "0");
-    if (maxBaseIn > 0n) baseSell = minBI(baseSell, maxBaseIn);
+    const baseSell = floatToBase(boughtBase * 0.98, view.baseDecimals);
     if (baseSell <= 0n) continue;
     if (!bestTwo || spread > bestTwo.spread)
       bestTwo = { base: view.base, spread, cheap, rich, usdcIn, baseSell };
@@ -140,15 +133,7 @@ export function decide(
       if (gapAbs <= singleLegCost) continue;
       const buyBase = gap > 0;
       const tokenIn = buyBase ? "USDC" : view.base;
-      let cap: bigint;
-      if (buyBase) {
-        cap = minBI(usdcBal, maxUsdc);
-      } else {
-        const baseBal = BigInt(view.baseBalanceWei || "0");
-        const maxBaseIn = BigInt(view.maxSwapInBaseWei || "0");
-        cap = view.base === "WETH" ? minBI(baseBal, maxWeth) : baseBal;
-        if (maxBaseIn > 0n) cap = minBI(cap, maxBaseIn);
-      }
+      const cap = buyBase ? usdcBal : BigInt(view.baseBalanceWei || "0");
       if (cap <= 0n) continue;
       const sizeBps = Math.min(
         MAX_SIZE_BPS,

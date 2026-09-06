@@ -81,6 +81,12 @@ const CLOSE_BPS = Number(process.env.ERIS_BASIS_CLOSE_BPS ?? "10");
 // the gate at all. 0 removes it; the roster carries a copy at 0 so the choice is measured.
 const DELAY_MULT = Number(process.env.ERIS_BASIS_DELAY_MULT ?? "1");
 const HEDGE_TOL_USD = Number(process.env.ERIS_BASIS_HEDGE_TOL_USD ?? "200");
+// Largest single perp order, USD. The environment stopped publishing order-size limits (PR #71:
+// sizing is the strategy's own business against its wallet), so the cap that used to come from
+// obs.limits.maxGmxSizeUsd is this strategy's own choice; the old default was $50k per order.
+const HEDGE_MAX_ORDER_USD = Number(
+  process.env.ERIS_BASIS_MAX_ORDER_USD ?? "50000",
+);
 const HEDGE_LEVERAGE = Math.max(
   1,
   Number(process.env.ERIS_BASIS_HEDGE_LEVERAGE ?? "2"),
@@ -295,10 +301,10 @@ export function decide(
   const gapUsd = targetSignedUsd - currentSignedUsd;
 
   const usdcBal = BigInt(obs.balances.usdcUnits || "0");
-  const usdcCap = minBI(usdcBal, BigInt(obs.limits.maxUsdcInUnits));
+  // No environment-imposed size caps since PR #71: the wallet is the cap.
+  const usdcCap = usdcBal;
   const baseBal = BigInt(view.baseBalanceWei || "0");
-  const maxBaseIn = BigInt(view.maxSwapInBaseWei || "0");
-  const baseCap = maxBaseIn > 0n ? minBI(baseBal, maxBaseIn) : baseBal;
+  const baseCap = baseBal;
 
   if (Math.abs(gapUsd) > HEDGE_TOL_USD) {
     const action = hedgeAction(obs, currentSignedUsd, gapUsd, fee);
@@ -434,8 +440,7 @@ function closeLeg(
       if (quoteOf(v).sell > quoteOf(bestV).sell) bestV = v;
     const q = quoteOf(bestV);
     if (q.sell < view.fair * (1 - near)) return null; // still dislocated: hold the pair
-    const maxIn = BigInt(view.maxSwapInBaseWei || "0");
-    const amountIn = maxIn > 0n ? minBI(acquiredWei, maxIn) : acquiredWei;
+    const amountIn = acquiredWei;
     const notionalUsd = (Number(amountIn) / 10 ** BASE_DECIMALS) * view.fair;
     if (notionalUsd < MIN_LEG_USD) return null;
     return {
@@ -516,7 +521,7 @@ function hedgeAction(
   gapUsd: number,
   fee: string,
 ): Record<string, unknown> | null {
-  const maxSizeUsd = Number(obs.limits.maxGmxSizeUsd) / USD_1E30;
+  const maxSizeUsd = HEDGE_MAX_ORDER_USD;
   const holdingLong = currentSignedUsd > 0;
   const holdingSize = Math.abs(currentSignedUsd);
 
@@ -530,7 +535,7 @@ function hedgeAction(
 
   if (flipping || reducing) {
     // Clip first, then derive everything from the clipped size. Flipping wants the whole position
-    // closed, but maxGmxSizeUsd caps one order, so a position larger than the cap closes in parts --
+    // closed, but HEDGE_MAX_ORDER_USD caps one order, so a position larger than the cap closes in parts --
     // and a collateral fraction computed from the intended size would withdraw 100% of the
     // collateral against a partial close, leaving the remainder of the position uncollateralized.
     const sizeUsd = Math.min(

@@ -46,7 +46,7 @@ timestamp):
 | `/markets`, `/explorer` | scenario | venue state and blocks — they only mean anything inside one world |
 | `/agent/<id>` | both | the agent's competition standing (its **Standing** tab) and its scenario-level detail |
 
-The ranking rule is fixed on the page and is the competition's (rules §4.4, ADR 0022); there is no
+The ranking rule is fixed on the page and is the competition's (rules §4.4, ADR 0023); there is no
 metric to vary — the dashboard is what competition participants read, and a headline that quietly
 depends on a control is the thing it exists to avoid.
 
@@ -122,7 +122,7 @@ scenario is open.
 
 ### Standings
 
-One table, under the one rule the competition is scored by (rules §4.4, ADR 0022): per scenario
+One table, under the one rule the competition is scored by (rules §4.4, ADR 0023): per scenario
 (= one epoch) every agent's P = V_K − V_0 becomes a deviation score T = 50 + 10 (P − μ) / σ over
 the field, and the score is the average of T across epochs with a weight rising linearly from 1 to
 1.5 on the epoch's order. The benchmark is valued but never in the population. A scenario whose run

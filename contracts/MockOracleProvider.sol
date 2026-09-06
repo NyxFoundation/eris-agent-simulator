@@ -16,17 +16,27 @@ contract MockOracleProvider is IOracleProvider {
         bool set;
     }
 
+    /// Issue #40 T0: the same reasoning as MockAggregator. GMX marks positions off this provider,
+    /// so an open setter is a free liquidation of every perp position in the run.
+    address public immutable owner;
+
     mapping(address token => Price) public prices;
 
     event PriceSet(address indexed token, uint256 min, uint256 max);
 
+    constructor() {
+        owner = msg.sender;
+    }
+
     function setPrice(address token, uint256 min, uint256 max) external {
+        require(msg.sender == owner, "MockOracleProvider: not owner");
         require(min <= max, "min>max");
         prices[token] = Price({min: min, max: max, set: true});
         emit PriceSet(token, min, max);
     }
 
     function setPrice(address token, uint256 price) external {
+        require(msg.sender == owner, "MockOracleProvider: not owner");
         prices[token] = Price({min: price, max: price, set: true});
         emit PriceSet(token, price, price);
     }

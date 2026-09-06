@@ -53,20 +53,6 @@ const MIN_DOLLARS = 1n;
 const MIN_USDC_UNITS = MIN_DOLLARS * 1_000_000n;
 const SLIPPAGE_BPS = 100;
 
-function minBI(a: bigint, b: bigint): bigint {
-  return a < b ? a : b;
-}
-
-// limits.maxUsdcInUnits is in USDC's six decimals; a stable need not share them. Both are dollars,
-// so the conversion is the decimal difference and nothing else.
-const USDC_DECIMALS = 6;
-function scaleUsdcLimit(limitUsdcUnits: bigint, decimals: number): bigint {
-  if (decimals === USDC_DECIMALS) return limitUsdcUnits;
-  return decimals > USDC_DECIMALS
-    ? limitUsdcUnits * 10n ** BigInt(decimals - USDC_DECIMALS)
-    : limitUsdcUnits / 10n ** BigInt(USDC_DECIMALS - decimals);
-}
-
 type StableView = {
   symbol: string;
   balance: bigint;
@@ -130,14 +116,10 @@ export function decide(
     )
     .sort((a, b) => a.discountBps - b.discountBps)[0];
   if (rich) {
-    // Bounded by the per-round cap, restated in this stable's decimals. Asking for the whole
-    // balance is how a position becomes unclosable: the runtime rejects the oversized leg and the
-    // agent proposes the same thing again next block, which scores the same as never trying.
-    const cap = scaleUsdcLimit(
-      BigInt(obs.limits.maxUsdcInUnits || "0"),
-      rich.decimals,
-    );
-    const size = cap > 0n ? minBI(rich.balance, cap) : rich.balance;
+    // Sell the whole holding of a stable that has come back above par. There is no cap to trim it
+    // against, and this is the exit: leaving part of it behind is holding a position whose thesis
+    // has already played out.
+    const size = rich.balance;
     return {
       type: "stableSwap",
       stable: rich.symbol,
@@ -153,9 +135,7 @@ export function decide(
     .sort((a, b) => b.discountBps - a.discountBps)[0];
   if (!cheap) return null;
   const usdc = BigInt(obs.balances.usdcUnits || "0");
-  const cap = BigInt(obs.limits.maxUsdcInUnits || "0");
-  let size = (usdc * SIZE_BPS) / 10_000n;
-  if (cap > 0n) size = minBI(size, cap);
+  const size = (usdc * SIZE_BPS) / 10_000n;
   if (size < MIN_USDC_UNITS) return null;
   return {
     type: "stableSwap",

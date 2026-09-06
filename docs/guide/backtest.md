@@ -100,7 +100,7 @@ Two artifacts land in `runs/matrix-<id>/`:
 | `matrix.json` | raw per-scenario, per-agent results — P (`pnlUsdc`, with `pnlSource`), `netPnlUsdc` / `alphaUsdc`, the endpoints, `baseline`, `flags` — plus the ordinal `s`, `k`, `resetUnit` and run directories (schema 2) |
 | `standings.json` | the ranking derived from them |
 
-The ranking is a derived view on purpose: `standings.json` recomputes from `matrix.json` alone, so a finished matrix can be re-read without re-running anything (ADR 0017 §4). The rule itself is the competition's (rules §4.4, ADR 0022).
+The ranking is a derived view on purpose: `standings.json` recomputes from `matrix.json` alone, so a finished matrix can be re-read without re-running anything (ADR 0017 §4). The rule itself is the competition's (rules §4.4, ADR 0023).
 
 Ranking: each scenario is one epoch. An agent's P = V_K − V_0 becomes a deviation score T = 50 + 10 (P − μ) / σ **over the agents in that scenario** — they all ran in the same world, so that is the one comparison the design guarantees is fair — and the score is the average of T over the scenarios, weighted linearly from 1 to 1.5 on the scenario's position (its ordinal `s`). The benchmark is valued but not in the population.
 

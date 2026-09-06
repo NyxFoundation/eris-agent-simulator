@@ -36,10 +36,43 @@ index 3d0be7c..ebefff4 100644
        endpoint: "0x1a44076050125825900e736c501f859c50fE728c",
      },
 diff --git a/config/markets.ts b/config/markets.ts
-index 8fad779..30a4634 100644
+index 8fad779..a561681 100644
 --- a/config/markets.ts
 +++ b/config/markets.ts
-@@ -5046,6 +5046,11 @@ const config: {
+@@ -433,6 +433,32 @@ const hardhatBaseMarketConfig: Partial<BaseMarketConfig> = {
+   negativeMaxPositionImpactFactor: decimalToFloat(2, 2), // 2%
+   maxPositionImpactFactorForLiquidations: percentageToFloat("1%"), // 1%
+ 
++  // Funding. Upstream's hardhat profile sets only the ceiling, leaving fundingFactor and
++  // fundingIncreaseFactorPerSecond at 0 -- so a market with any skew still reports and charges a
++  // funding rate of exactly zero. Measured on a 485-block run: 74,651 USD of long open interest
++  // against 54,752 short, and savedFundingFactorPerSecond zero on every block of it. A perp whose
++  // funding is structurally zero is not a perp: the crowded side pays nothing for being crowded.
++  //
++  // These are baseMarketConfig's values -- what the arbitrum profile deploys -- rather than larger
++  // ones. Two reasons not to scale them up: the rate would stop being comparable to Aave's borrow
++  // rate, which is the venue an agent is actually choosing between, and the LST venue already
++  // showed what happens when one venue's clock runs faster than the others (issue #38 phase 2).
++  //
++  // Note what this does and does not fix. The *rate* becomes real, signed by the skew, and
++  // readable: it is adaptive funding that populates savedFundingFactorPerSecond, which is the key
++  // the market series reads, and with fundingIncreaseFactorPerSecond at 0 that key stays 0 no
++  // matter what fundingFactor says. The *accrued amount* over a few hundred blocks of a 2s chain
++  // is still small, for the same reason Aave's interest is: EVM time is not warped.
++  fundingFactor: exponentToFloat("2e-8"), // ~63% per year for a 100% skew
++  fundingExponentFactor: decimalToFloat(1),
++  minFundingFactorPerSecond: percentageToFloat("1%").div(SECONDS_PER_YEAR),
++  fundingIncreaseFactorPerSecond: percentageToFloat("90%")
++    .div(SECONDS_PER_YEAR)
++    .div(SECONDS_PER_HOUR * 3),
++  fundingDecreaseFactorPerSecond: decimalToFloat(0),
++  thresholdForStableFunding: percentageToFloat("4%"),
++  thresholdForDecreaseFunding: decimalToFloat(0),
++
+   maxFundingFactorPerSecond: "100000000000000000000000",
+ };
+ 
+@@ -5046,6 +5072,11 @@ const config: {
      {
        tokens: { indexToken: "WETH", longToken: "WETH", shortToken: "USDC" },
      },
@@ -51,7 +84,7 @@ index 8fad779..30a4634 100644
      {
        tokens: { indexToken: "GMX", longToken: "GMX", shortToken: "USDC" },
      },
-@@ -5072,7 +5077,7 @@ function fillLongShortValues(market, key, longKey, shortKey) {
+@@ -5072,7 +5103,7 @@ function fillLongShortValues(market, key, longKey, shortKey) {
  export default async function (hre: HardhatRuntimeEnvironment) {
    const markets = config[hre.network.name];
    const tokens = await hre.gmx.getTokens();
@@ -417,7 +450,7 @@ index a4ac8b4..baff5d8 100644
  
  const func = async ({ getNamedAccounts, deployments }: HardhatRuntimeEnvironment) => {
 diff --git a/hardhat.config.ts b/hardhat.config.ts
-index 8ca5e8c..8d1e66c 100644
+index 8ca5e8c..3c8db08 100644
 --- a/hardhat.config.ts
 +++ b/hardhat.config.ts
 @@ -200,6 +200,12 @@ const config: HardhatUserConfig = {

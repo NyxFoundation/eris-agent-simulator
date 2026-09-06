@@ -23,6 +23,7 @@ export const METHOD_SELECTORS: Record<string, string> = {
   "0x0e704d50": "closeTrove",
   "0x1184e5f8": "withdrawLUSD",
   "0x13e7c9d8": "operators",
+  "0x13ead562": "createAndInitializePoolIfNecessary",
   "0x14f6c3be": "getETH",
   "0x18160ddd": "totalSupply",
   "0x1afdbce4": "accrueRewards",

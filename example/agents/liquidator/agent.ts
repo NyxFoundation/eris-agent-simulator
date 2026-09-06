@@ -84,9 +84,10 @@ export async function run(ctx: AgentContext): Promise<void> {
         // 2) Settle by swapping the WETH gained from liquidation back to USDC (sell roughly the amount above the initial WETH)
         const wethWei = BigInt(obs.balances.wethWei);
         if (wethWei > WETH_REALIZE_THRESHOLD_WEI) {
-          const maxIn = BigInt(obs.limits.maxWethInWei);
-          const excess = wethWei - 10_000_000_000_000_000_000n; // amount above the initial 10 WETH
-          const amountIn = excess < maxIn ? excess : maxIn;
+          // Sell the whole seized excess in one go. It used to be dribbled out a cap's worth per
+          // round, which left the agent holding WETH it had already decided to be rid of -- pure
+          // directional exposure, on a strategy whose edge is the liquidation bonus.
+          const amountIn = wethWei - 10_000_000_000_000_000_000n; // above the initial 10 WETH
           if (amountIn > 0n) {
             const action = {
               type: "swap",
