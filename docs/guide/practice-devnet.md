@@ -132,10 +132,60 @@ agents:
   - id: bob
     external: true
     wallet: AUTO                 # the operator issues a funded key and hands it over
+    participant: team-b          # rules §2.2: the unit this agent is one submission of (optional)
 ```
 
 `command` / `args` / `dir` / `env` on an external entry are **refused**, not ignored: a roster that
 silently kept them would read as if the operator were running the agent.
+
+`participant` names the **participant unit** of rules §2.2 — a person or a team that may enter two
+agents and is scored on the higher. Two entries with the same value are that unit's two submissions.
+It travels with the agent into `agents_registered`, the manifest, `summary.json` and `matrix.json`;
+the standings still rank agents, and collapsing a unit to its better one is the reader's step.
+
+### Registering during the period
+
+The roster is read once, at startup. A period runs for weeks and participants register throughout,
+and restarting the coordinator to add one opens a **new competition directory** — the standings
+split in two. So the config can name a second list that is re-read while the chain runs:
+
+```yaml
+run:
+  registrationsFile: config/registrations.yaml      # see config/registrations.example.yaml
+```
+
+```yaml
+# config/registrations.yaml — a list of external registrations, YAML or JSON
+- id: carol
+  address: "0x…"
+  participant: team-c          # optional
+  description: joined day 12   # optional
+```
+
+The file is polled every ~30 blocks (a minute at the practice cadence). Each new entry goes through
+exactly what the setup path does for an `external: true` + `address` roster entry: a runtime without
+a key, attribution by address, the same endowment (cheatcode on anvil, treasury transfer on a real
+chain), live scoring from the **next** round boundary, and the roster republished
+(`agents_registered` again, `manifest.json` rewritten, plus `agent_external_registered`).
+
+- Entries already in the roster are a no-op. A duplicate id or address is ignored with a
+  `registration_ignored` event that says why — an address is one agent, and a registration is not
+  how an agent moves to a new key.
+- A malformed file is reported once per edit (`registrations_reload_failed`) and never stops the run;
+  fix the file and the next poll picks it up. A path that does not exist yet is said once
+  (`registrations_file_missing`) and polled until it does.
+- An agent registered mid-day has **no P for that day**: there is no round it was measured at the
+  start of, and the series does not invent one. It is scored from the next day's segment. Its
+  transactions are recorded from the block it was registered.
+
+### Transactions from addresses nobody registered
+
+On this chain those are participants too — whoever sends before their registration is read, or
+without registering. Their transactions used to be dropped from `blocks.csv` as "outside the run",
+which made them invisible in the one artifact that could show them. They are now recorded with the
+sender address as the owner and the role `external`: `method` still comes from the calldata, nothing
+scores or rule-checks them, and the row answers "did my transaction land?" for a participant who has
+not yet appeared in the roster.
 
 ### Switching between a local node and the devnet
 
@@ -253,6 +303,12 @@ Each segment is an ordinary run directory that every existing tool reads. The ch
 across them, and the epochs partition exactly: a segment carries the previous boundary when it
 starts mid-epoch, and does not when it starts on one — so no round is lost at a seam and none is
 counted twice.
+
+Every segment opens with the same header the first one did — `run_started_realtime`,
+`agents_registered`, `manifest.json` and, when the period has episodes, the `stress_schedule` — so
+a viewer landing on Thursday does not have to read Monday. The schedule is written complete,
+resolved windows included, because the on-disk record is what the period is audited from (rules
+§7.2); keeping future windows from the public is the hosted dashboard's job, not the writer's.
 
 Scores come from cross-sections taken **at** each epoch boundary rather than swept up afterwards
 (ADR 0021 §3), which is what makes standings exist during the period at all — and what removes the

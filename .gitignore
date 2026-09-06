@@ -15,6 +15,9 @@ config/*.yaml
 # The practice period's worked example (ADR 0021). A template like the others -- it names no node
 # and holds no key; the endpoints and the treasury live in .env.local.
 !config/practice.yaml
+# The registrations file the practice coordinator hot-reloads (ADR 0021 §2, rules §2.7) -- the
+# committed example only; the live config/registrations.yaml stays ignored like every other live file.
+!config/registrations.example.yaml
 runs/
 cache/
 out/

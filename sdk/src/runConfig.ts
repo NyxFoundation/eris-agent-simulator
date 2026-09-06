@@ -103,6 +103,8 @@ const SCHEMA: Record<string, string> = {
   "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",
   "run.agentTimeoutMs": "AGENT_TIMEOUT_MS",
   "run.agentsConfig": "AGENTS_CONFIG", // roster file path when there are no inline agents
+  // ADR 0021 §2: external registrations the coordinator hot-reloads during a period (rules §2.7).
+  "run.registrationsFile": "ERIS_REGISTRATIONS_FILE",
   "run.agentsDir": "ERIS_AGENTS_DIR", // root of the agent directory convention (ADR 0015 §6)
   // market (the fair-price OU process. ADR 0017 regime 1 "cex-drift" needs these per regime, and
   // until now they were only reachable through raw env, which a regime YAML cannot set)

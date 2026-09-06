@@ -992,6 +992,13 @@ export type AgentSpec = {
   // alternative -- `wallet`, with the environment deriving and handing over a key -- stays available
   // because a practice devnet issuing funded keys is a legitimate way to run one.
   address?: string;
+  // Rules §2.2: the participant unit (a person or a team of up to five) this agent belongs to. A unit
+  // may put two submissions into the final evaluation and is scored on the higher of the two, so the
+  // standings need to know which agents are the same unit -- an agent id alone cannot say. Optional
+  // because every reference roster is one agent per unit; when omitted the agent is its own unit.
+  // Carried through every place the coordinator publishes agent identity (agents_registered, the
+  // manifest, summary.json, matrix.json) and never read by the scoring arithmetic itself.
+  participant?: string;
 };
 
 export type AgentsFile = {

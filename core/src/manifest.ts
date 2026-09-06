@@ -46,6 +46,11 @@ export type ManifestParticipant = {
   /** ADR 0019 §2's benchmark entry, whose returns every score is measured as excess over. */
   baseline: boolean;
   description?: string;
+  /**
+   * Rules §2.2: the participant unit. Two agents with the same value are the same unit's two
+   * submissions, of which only the higher-scoring counts. Absent = the agent is its own unit.
+   */
+  participant?: string;
 };
 
 export type EnvironmentManifest = {

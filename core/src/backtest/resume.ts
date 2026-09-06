@@ -1,0 +1,140 @@
+// Resuming a scenario matrix across invocations (rules §4.7.1).
+//
+// The live week is k epochs, and nothing says they run in one process: an anvil dies, a machine is
+// rebooted, the operator runs the mornings and the evenings separately. Each `npm run backtest --
+// --scenarios` used to open a fresh `runs/matrix-<timestamp>/`, so the standings of one competition
+// were spread over as many directories as there were invocations, and no single standings.json
+// ranked the whole week. `--resume <matrix-dir>` continues the stored matrix instead: the scenarios
+// already complete are kept and skipped, the missing and failed ones are run, and flush() keeps
+// writing into the same directory.
+//
+// Pure apart from the one file read, so the merge can be tested without anvil. What is refused is
+// anything that would make the stored and the new epochs a different competition: another scenario
+// set, another k (the weights of §4.4.1 are a function of it), another reset unit, another repeat.
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ScenarioResult } from "./standings.js";
+
+/** matrix.json as the CLI writes it (schema 2), read back defensively. */
+export type StoredMatrix = {
+  schema?: unknown;
+  createdAt?: string;
+  resumedAt?: string;
+  sourceCommit?: string;
+  scenarioSet?: string;
+  resetUnit?: string;
+  k?: number;
+  repeat?: number;
+  scenariosPlanned?: number;
+  scenarios?: ScenarioResult[];
+};
+
+export function readStoredMatrix(dir: string): StoredMatrix {
+  const path = join(dir, "matrix.json");
+  if (!existsSync(path))
+    throw new Error(
+      `--resume: ${path} not found. Point --resume at a directory a previous ` +
+        "`npm run backtest -- --scenarios` wrote (runs/matrix-<timestamp>/)",
+    );
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    throw new Error(`--resume: ${path} is not a JSON object`);
+  const m = parsed as StoredMatrix;
+  if (m.schema !== 2)
+    throw new Error(
+      `--resume: ${path} has schema ${String(m.schema)}; only schema 2 matrices can be resumed`,
+    );
+  if (m.scenarios !== undefined && !Array.isArray(m.scenarios))
+    throw new Error(`--resume: ${path} "scenarios" is not an array`);
+  return m;
+}
+
+export type ResumeTarget = {
+  scenarioSet: string;
+  k: number;
+  resetUnit: string;
+  repeat: number;
+};
+
+/**
+ * Refuse to append epochs of a different competition to a stored one. Paths are compared resolved,
+ * so `./config/x.yaml` and `config/x.yaml` are the same set; a set whose *content* changed under the
+ * same path is caught by mergeStoredResults, ordinal by ordinal.
+ */
+export function assertResumable(
+  stored: StoredMatrix,
+  current: ResumeTarget,
+  resolvePath: (p: string) => string = (p) => p,
+): void {
+  const problems: string[] = [];
+  if (
+    stored.scenarioSet === undefined ||
+    resolvePath(stored.scenarioSet) !== resolvePath(current.scenarioSet)
+  )
+    problems.push(
+      `scenarioSet: stored ${String(stored.scenarioSet)}, now ${current.scenarioSet}`,
+    );
+  if (stored.k !== current.k)
+    problems.push(`k: stored ${String(stored.k)}, now ${current.k}`);
+  if (stored.resetUnit !== current.resetUnit)
+    problems.push(
+      `resetUnit: stored ${String(stored.resetUnit)}, now ${current.resetUnit}`,
+    );
+  // Stored before --repeat was recorded reads as 1, which is what every scored matrix ran with.
+  if ((stored.repeat ?? 1) !== current.repeat)
+    problems.push(
+      `repeat: stored ${stored.repeat ?? 1}, now ${current.repeat}`,
+    );
+  if (problems.length > 0)
+    throw new Error(
+      `--resume: the stored matrix is a different competition (${problems.join("; ")}). ` +
+        "A resumed run has to continue the same scenario set with the same k, reset unit and " +
+        "repeat, or its standings would average two competitions (rules §4.4.1 / §4.7.1)",
+    );
+}
+
+export type ResumePlan = {
+  /** Stored results kept as they are: they have agents, so the epoch is complete. */
+  preloaded: ScenarioResult[];
+  /** Ordinals of those, for the run loop to skip. */
+  complete: Set<number>;
+  /** Ordinals the loop still has to run: never run, or stored without agents (an error). */
+  rerun: number[];
+};
+
+/**
+ * Merge the stored results into the current plan. A stored ordinal has to be the same (regime, seed)
+ * as the plan's; anything else means the set file changed under the same path, and appending to it
+ * would rank epochs of two different schedules as one -- so that is refused rather than merged.
+ */
+export function mergeStoredResults(
+  plan: ReadonlyArray<{ s: number; regime: string; seed: number }>,
+  stored: ReadonlyArray<ScenarioResult>,
+): ResumePlan {
+  const byOrdinal = new Map(plan.map((p) => [p.s, p]));
+  const preloaded: ScenarioResult[] = [];
+  const complete = new Set<number>();
+  for (const r of stored) {
+    const planned = byOrdinal.get(r.s);
+    if (!planned)
+      throw new Error(
+        `--resume: stored s=${r.s} (${r.regime}#${r.seed}) is not in the current plan; ` +
+          "the scenario set changed under the same path",
+      );
+    if (planned.regime !== r.regime || planned.seed !== r.seed)
+      throw new Error(
+        `--resume: stored s=${r.s} is ${r.regime}#${r.seed} but the plan says ` +
+          `${planned.regime}#${planned.seed}; the scenario set changed under the same path`,
+      );
+    if (Array.isArray(r.agents) && r.agents.length > 0) {
+      if (complete.has(r.s))
+        throw new Error(`--resume: stored matrix has s=${r.s} twice`);
+      preloaded.push(r);
+      complete.add(r.s);
+    }
+    // Stored with an error and no agents: the epoch never produced a summary. It is re-run rather
+    // than kept as an invalid epoch, because §4.4.2's re-execution is the remedy for exactly that.
+  }
+  const rerun = plan.filter((p) => !complete.has(p.s)).map((p) => p.s);
+  return { preloaded, complete, rerun };
+}

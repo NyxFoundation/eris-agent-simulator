@@ -1,0 +1,31 @@
+# Registrations the coordinator picks up while the period is running (ADR 0021 §2, rules §2.7).
+#
+#   run.registrationsFile: config/registrations.yaml      # in config/practice.yaml
+#
+# The roster in the config file is read once, at startup. This file is re-read every ~30 blocks
+# (about a minute at the practice cadence), so a participant who registers on day 12 is funded,
+# attributed and scored from the next round on -- without restarting the coordinator, which would
+# open a new competition directory and split the standings.
+#
+# An entry has the same shape as an `external: true` + `address` roster entry: the participant holds
+# the key, the environment holds none. `wallet`, `command`, `args`, `dir` and `env` are refused for
+# the same reason the roster refuses them on an external entry.
+#
+#   - entries already in the roster (same id, same address) are a no-op
+#   - an id or address that is already taken is ignored, with a `registration_ignored` event naming why
+#   - a malformed file is reported once per edit (`registrations_reload_failed`) and never stops the run
+#   - an agent registered mid-day has no P for that day (there is no round it was measured at the
+#     start of) and is scored from the next day's segment; its transactions are recorded from the
+#     block it was registered
+#
+# `participant` is the rules §2.2 unit: two entries sharing it are one unit's two submissions.
+
+- id: alice
+  address: "0x1111111111111111111111111111111111111111"
+  participant: team-alice
+  description: registered 2026-09-24
+
+- id: alice-2
+  address: "0x2222222222222222222222222222222222222222"
+  participant: team-alice
+  description: the same team's second submission

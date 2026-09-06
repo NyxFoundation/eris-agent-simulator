@@ -51,6 +51,15 @@ run:
   segmentName: practice
   reportDir: ./runs
 
+  # Registrations that arrive while the period is running (ADR 0021 §2, rules §2.7). The roster
+  # below is read once, at startup; this file is re-read every ~30 blocks, and each new entry is
+  # funded, attributed and scored from the next round on -- without a restart, which would open a new
+  # competition directory and split the standings. Same entry shape as an `external: true` + `address`
+  # roster entry; see config/registrations.example.yaml. Entries already in the roster are a no-op; a
+  # duplicate id or address is ignored with a `registration_ignored` event; a malformed file is
+  # reported once per edit (`registrations_reload_failed`) and never stops the run.
+  # registrationsFile: config/registrations.yaml
+
 funding:
   # USDC-only, so nothing anybody did not choose shows up in their score as price drift. WETH has to
   # be bought, which is what makes holding it a decision (the same argument #27 makes for a
@@ -106,6 +115,9 @@ stress:
 # prefunded dev accounts once started a run with $3.0bn against a fresh address's $34k, and their
 # scores were a report on one large ETH holding. The run records `initial_endowment` and warns above
 # a 2x spread, but a level field starts with fresh addresses.
+# `participant` is the rules §2.2 unit (a person or a team). A unit may enter two agents and is
+# scored on the higher; two entries with the same `participant` are that unit's two submissions.
+# Optional -- an entry without one is its own unit.
 agents:
   - id: noop
     wallet: AUTO
@@ -114,4 +126,5 @@ agents:
   # - id: alice
   #   external: true
   #   address: "0x..."
+  #   participant: team-alice
   #   description: a registered participant

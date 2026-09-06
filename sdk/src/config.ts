@@ -201,6 +201,12 @@ export type SimConfig = {
   runDirRoot: string;
   agentTimeoutMs: number;
   agentsConfigPath: string;
+  // ADR 0021 §2 / rules §2.7: a file of external registrations the coordinator re-reads while the
+  // run is going (ERIS_REGISTRATIONS_FILE / `run.registrationsFile`; undefined = the roster is the
+  // whole field). The trial devnet runs for weeks and participants register throughout; restarting
+  // the coordinator to pick one up opens a new competition directory, which splits the standings.
+  // Same entry shape as an `external: true` + `address` roster entry.
+  registrationsFile?: string;
   // Root of the agent directory convention (ADR 0015 §2/§6). A roster id corresponds to a directory
   // name directly under this, and spawn is always <agentsDir>/runtime/bot.ts (explicit command overrides).
   agentsDir: string;
@@ -405,6 +411,10 @@ export function loadConfig(env = process.env): SimConfig {
     runDirRoot: env.REPORT_DIR ?? "./runs",
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),
     agentsConfigPath: env.AGENTS_CONFIG ?? "config/example.yaml",
+    registrationsFile:
+      env.ERIS_REGISTRATIONS_FILE && env.ERIS_REGISTRATIONS_FILE.trim() !== ""
+        ? env.ERIS_REGISTRATIONS_FILE.trim()
+        : undefined,
     agentsDir: env.ERIS_AGENTS_DIR ?? "example/agents",
     initialEthWei: bigintEnv(env.INITIAL_ETH_WEI, initialEthWeiDefault),
     // Background orderflow is environment machinery, not a competitor. Give it
@@ -594,7 +604,8 @@ function deriveRoleKey(role: string): Hex {
 // A misspelt sandbox must not fall back to `process`: the official regimes rely on `docker` for the
 // caps, and a silent fallback would run the whole field uncapped while every log looked normal.
 function agentSandboxEnv(value: string | undefined): "process" | "docker" {
-  if (value === undefined || value === "" || value === "process") return "process";
+  if (value === undefined || value === "" || value === "process")
+    return "process";
   if (value === "docker") return "docker";
   throw new Error(
     `run.agentSandbox must be "process" or "docker" (got ${JSON.stringify(value)})`,

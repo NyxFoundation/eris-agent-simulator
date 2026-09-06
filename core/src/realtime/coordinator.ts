@@ -102,6 +102,11 @@ import {
 import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { LiveScorer } from "./liveScoring.js";
 import {
+  diffRegistrations,
+  RegistrationsWatcher,
+  type Registration,
+} from "./registrations.js";
+import {
   checkDeployment,
   deploymentMismatchMessage,
 } from "@eris/sdk/deploymentCheck.js";
@@ -369,12 +374,23 @@ type RealtimeAgentRuntime = {
   exitedEarly?: string;
 };
 
-type SubmittedMeta = {
+// Who a mined transaction is attributed to in blocks.csv. `external` is a sender the run does not
+// know at all: on the trial devnet (rules §2.7) that is a participant who has sent a transaction
+// before being registered, and the row is the only place the operator can see them.
+type TxOwner = {
   ownerId: string;
-  role: WalletRole | "system";
+  role: WalletRole | "system" | "external";
+};
+
+type SubmittedMeta = TxOwner & {
   priorityFeeWei: bigint;
   actionType: string;
 };
+
+// How often the registrations file is polled (ADR 0021 §2). A stat every thirty blocks -- about a
+// minute at the practice cadence -- is nothing against the loop, and a participant who registers
+// waits a minute rather than a restart.
+const REGISTRATIONS_POLL_BLOCKS = 30;
 
 // The realtime-mode orchestrator (reduced to "environment daemon + scorer" in ADR 0006).
 //
@@ -693,10 +709,7 @@ export async function runRealtimeSimulation(
 
   // tx attribution is primarily by from-address lookup (ADR 0006 §4; keeps blocks.csv even for direct sends).
   // submittedByHash is used only to supplement actionType/fee for txs the environment/relay submitted itself.
-  const ownerByAddress = new Map<
-    string,
-    { ownerId: string; role: WalletRole | "system" }
-  >();
+  const ownerByAddress = new Map<string, TxOwner>();
   for (const agent of agentRuntimes) {
     ownerByAddress.set(agent.address.toLowerCase(), {
       ownerId: agent.id,
@@ -1083,8 +1096,14 @@ export async function runRealtimeSimulation(
       const registrarPk = config.privateKeys.setup;
       const registrarAddress = accountAddress(registrarPk).toLowerCase();
       const claimed = new Map<string, string>([
-        [accountAddress(config.privateKeys.admin).toLowerCase(), "the admin wallet"],
-        [accountAddress(config.privateKeys.keeper).toLowerCase(), "the keeper wallet"],
+        [
+          accountAddress(config.privateKeys.admin).toLowerCase(),
+          "the admin wallet",
+        ],
+        [
+          accountAddress(config.privateKeys.keeper).toLowerCase(),
+          "the keeper wallet",
+        ],
         ...[...flowWalletMap.values()].map(
           (w) => [w.address.toLowerCase(), `flow wallet ${w.id}`] as const,
         ),
@@ -1204,47 +1223,62 @@ export async function runRealtimeSimulation(
       ...gasBudgetEnv,
     };
 
-    // Emit the agent registry in one line (ADR 0008 P0). The dashboard can grasp all agents (id/address/
-    // classification hint) immediately from a file tail alone (closes the gap for agents that never act or are
-    // missed right after startup). Zero impact on the evaluation/scoring pipeline (an event that is not read).
-    logger.event({
-      type: "agents_registered",
-      agents: agentRuntimes.map((a) => ({
-        id: a.id,
-        address: a.address,
-        baseline: a.spec.baseline ?? false,
-        description: a.spec.description,
-        // ADR 0021 §4: the dashboard hides the decision-log and mempool panels for these, because
-        // those artifacts are on the participant's machine and nothing here can show them. An empty
-        // panel and an absent one say different things.
-        external: a.external,
-      })),
-    });
-
-    // ---- environment manifest (ADR 0021 §2) ----
-    // Written once the PriceFeed exists, because that address is the one piece a participant cannot
-    // look up anywhere else. It carries no keys and no stress timings -- see core/src/manifest.ts.
-    logger.artifact(
-      MANIFEST_FILENAME,
-      buildManifest({
-        config,
-        priceFeed: priceFeedAddress,
-        ...(marketRegistry
-          ? {
-              marketRegistry: marketRegistry.address,
-              lending: marketRegistry.lending,
-              marketRegistryFromBlock: marketRegistry.deployBlock,
-            }
-          : {}),
-        participants: agentRuntimes.map((a) => ({
+    // The roster as the world sees it, in two artifacts written by one function because they are
+    // re-published: on every segment roll so a day stands alone (ADR 0021 §6), and on every
+    // registration that arrives mid-period (§2) -- a list written once at startup is a list missing
+    // whoever joined after it. Both read `agentRuntimes` at call time for that reason.
+    //
+    //   agents_registered  one event line (ADR 0008 P0), so the dashboard has every agent
+    //                      (id / address / classification hint) from a file tail alone. Not read by
+    //                      scoring.
+    //   manifest.json      what a self-hosted participant reads instead of a coordinator's env
+    //                      (ADR 0021 §2). Written once the PriceFeed exists, because that address is
+    //                      the one piece a participant cannot look up anywhere else. No keys, no
+    //                      stress timings -- see core/src/manifest.ts.
+    const publishRoster = (): void => {
+      logger.event({
+        type: "agents_registered",
+        agents: agentRuntimes.map((a) => ({
           id: a.id,
           address: a.address,
-          external: a.external,
           baseline: a.spec.baseline ?? false,
           description: a.spec.description,
+          // ADR 0021 §4: the dashboard hides the decision-log and mempool panels for these, because
+          // those artifacts are on the participant's machine and nothing here can show them. An
+          // empty panel and an absent one say different things.
+          external: a.external,
+          // Rules §2.2: the unit this agent is one submission of, when the roster stated it.
+          ...(a.spec.participant !== undefined
+            ? { participant: a.spec.participant }
+            : {}),
         })),
-      }),
-    );
+      });
+      logger.artifact(
+        MANIFEST_FILENAME,
+        buildManifest({
+          config,
+          priceFeed: priceFeedAddress,
+          ...(marketRegistry
+            ? {
+                marketRegistry: marketRegistry.address,
+                lending: marketRegistry.lending,
+                marketRegistryFromBlock: marketRegistry.deployBlock,
+              }
+            : {}),
+          participants: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            external: a.external,
+            baseline: a.spec.baseline ?? false,
+            description: a.spec.description,
+            ...(a.spec.participant !== undefined
+              ? { participant: a.spec.participant }
+              : {}),
+          })),
+        }),
+      );
+    };
+    publishRoster();
 
     // ---- pre-warm (anvil cold fetch mitigation of ADR 0006 Risks; see prewarmWorkingSet) ----
     if (config.prewarmBlocks > 0) {
@@ -1477,7 +1511,9 @@ export async function runRealtimeSimulation(
         // senders are wallets the environment derives -- so it is reported and the run continues,
         // which is what keeps every pre-existing regime running unchanged.
         if (config.agentMarkets) throw new Error(message);
-        console.warn(`${message}\n(not fatal: agentMarkets is off in this run)`);
+        console.warn(
+          `${message}\n(not fatal: agentMarkets is off in this run)`,
+        );
       }
     }
 
@@ -1486,9 +1522,13 @@ export async function runRealtimeSimulation(
     // applies the rules §2.3 caps. Checked once here rather than discovered per agent: a missing
     // docker would otherwise surface as N `spawn error` early exits that read like agent bugs.
     if (config.agentSandbox === "docker") {
-      const probe = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], {
-        encoding: "utf8",
-      });
+      const probe = spawnSync(
+        "docker",
+        ["version", "--format", "{{.Server.Version}}"],
+        {
+          encoding: "utf8",
+        },
+      );
       if (probe.status !== 0)
         throw new Error(
           "run.agentSandbox is docker but `docker version` failed " +
@@ -1503,8 +1543,14 @@ export async function runRealtimeSimulation(
         dockerServerVersion: probe.stdout.trim(),
         memory: process.env.ERIS_DOCKER_MEM ?? "4g",
         cpus: process.env.ERIS_DOCKER_CPUS ?? "2",
-        network: process.env.ERIS_AGENT_ISOLATE === "1" ? "per-agent (ERIS_AGENT_ISOLATE)" : (process.env.ERIS_AGENT_NET ?? "host"),
-        egress: process.env.ERIS_AGENT_INTERNAL === "1" ? "closed (--internal)" : "open",
+        network:
+          process.env.ERIS_AGENT_ISOLATE === "1"
+            ? "per-agent (ERIS_AGENT_ISOLATE)"
+            : (process.env.ERIS_AGENT_NET ?? "host"),
+        egress:
+          process.env.ERIS_AGENT_INTERNAL === "1"
+            ? "closed (--internal)"
+            : "open",
       });
     } else {
       logger.event({
@@ -1628,8 +1674,18 @@ export async function runRealtimeSimulation(
       const statuses = receipts.map((r) => r.status);
       txs.forEach((tx, i) => {
         const meta = submittedByHash.get(tx.hash.toLowerCase());
-        const owner = meta ?? ownerByAddress.get(tx.from.toLowerCase());
-        if (!owner) return; // tx outside the run (an unexpected external sender)
+        // A sender the run does not know is recorded, not dropped (ADR 0021 §2, rules §2.7). On the
+        // trial devnet these are exactly the participants' transactions: whoever sends before their
+        // registration is read, or without registering at all. Dropping the row made them invisible
+        // in the one artifact that could show them -- a participant asking "did my tx land?" got
+        // nothing, and the operator could not tell an empty chain from an unregistered field. The
+        // owner is the address itself under role `external`; nothing here scores or rule-checks it
+        // (postRunCheck reads `agent` rows only), and `method` still comes from the calldata.
+        const owner: TxOwner = meta ??
+          ownerByAddress.get(tx.from.toLowerCase()) ?? {
+            ownerId: tx.from.toLowerCase(),
+            role: "external",
+          };
         const status = statuses[i];
         if (owner.role === "agent") {
           const runtime = agentById.get(owner.ownerId);
@@ -1783,6 +1839,155 @@ export async function runRealtimeSimulation(
     });
     if (segments) segments.noteFirstBlock(runStartBlock);
 
+    // ---- registrations that arrive mid-period (ADR 0021 §2, rules §2.7) ----
+    // The trial devnet runs for weeks and participants register throughout. Restarting the
+    // coordinator to add one opens a new competition directory, which splits the standings -- so
+    // `run.registrationsFile` is re-read during the loop (see registrations.ts for the file), and a
+    // new entry goes through the same steps the setup path takes for an `external: true` + `address`
+    // roster entry: a runtime without a key, attribution by address, the same endowment, live scoring
+    // from the next boundary, and the roster republished.
+    const registerExternalAgent = async (reg: Registration): Promise<void> => {
+      const spec: AgentSpec = {
+        id: reg.id,
+        external: true,
+        address: reg.address,
+        ...(reg.participant !== undefined
+          ? { participant: reg.participant }
+          : {}),
+        ...(reg.description !== undefined
+          ? { description: reg.description }
+          : {}),
+      };
+      const runtime: RealtimeAgentRuntime = {
+        id: reg.id,
+        spec,
+        privateKey: null,
+        address: reg.address,
+        external: true,
+        process: null,
+        initial: { ethWei: 0n, wethWei: 0n, usdcUnits: 0n },
+        included: 0,
+        reverted: 0,
+      };
+      // Same endowment the setup loop grants an agent (cheatcode on anvil, treasury transfer on an
+      // external chain -- fundAddress picks), without the venue approvals only the key holder can
+      // sign. Funded before it is attributed, so a failure here leaves nothing half-registered.
+      await fundAddress(
+        publicClient,
+        walletClient,
+        chain,
+        reg.address,
+        config.initialEthWei,
+        config.initialWethWei,
+        config.initialUsdcUnits,
+        config.initialBaseAmounts,
+        0n,
+      );
+      runtime.initial = await getBalances(publicClient, reg.address);
+      agentRuntimes.push(runtime);
+      agentById.set(runtime.id, runtime);
+      ownerByAddress.set(reg.address.toLowerCase(), {
+        ownerId: reg.id,
+        role: "agent",
+      });
+      liveScorer.addAgent({ id: runtime.id, address: runtime.address });
+      logger.event({
+        type: "agent_external_registered",
+        agentId: runtime.id,
+        address: runtime.address,
+        ...(reg.participant !== undefined
+          ? { participant: reg.participant }
+          : {}),
+        source: "registrationsFile",
+        note:
+          "registered mid-period from run.registrationsFile; funded now, valued from the next " +
+          "epoch boundary; the participant runs this agent and its decision log stays on their machine",
+      });
+    };
+    const registrations = config.registrationsFile
+      ? new RegistrationsWatcher(config.registrationsFile)
+      : null;
+    let registrationsCheckedAtBlock = -Infinity;
+    let registrationsFileMissingWarned = false;
+    const pollRegistrations = async (bn: number): Promise<void> => {
+      if (!registrations) return;
+      if (bn - registrationsCheckedAtBlock < REGISTRATIONS_POLL_BLOCKS) return;
+      registrationsCheckedAtBlock = bn;
+      let read: ReturnType<RegistrationsWatcher["read"]>;
+      try {
+        read = registrations.read();
+      } catch (error) {
+        // A malformed file is reported and the run goes on: the operator fixes the file, the next
+        // poll picks it up. Once per edit, not once per poll (the watcher takes the mtime first).
+        const message = error instanceof Error ? error.message : String(error);
+        logger.event({
+          type: "registrations_reload_failed",
+          path: registrations.path,
+          blockNumber: bn,
+          error: message,
+        });
+        console.error(`[registrations] ${message}`);
+        return;
+      }
+      if (read.kind === "missing") {
+        // Said once. A missing file is legitimate before the first participant, and a mistyped
+        // path would otherwise register nobody for five weeks in perfect silence.
+        if (registrationsFileMissingWarned) return;
+        registrationsFileMissingWarned = true;
+        logger.event({
+          type: "registrations_file_missing",
+          path: registrations.path,
+          note: "run.registrationsFile does not exist yet; polled until it does",
+        });
+        console.error(
+          `[registrations] ${registrations.path} does not exist yet (run.registrationsFile); polling`,
+        );
+        return;
+      }
+      registrationsFileMissingWarned = false;
+      if (read.kind === "unchanged") return;
+      const { added, ignored } = diffRegistrations(read.entries, {
+        ids: new Set(agentRuntimes.map((a) => a.id)),
+        addresses: new Map(
+          [...ownerByAddress].map(([address, owner]) => [
+            address,
+            owner.ownerId,
+          ]),
+        ),
+      });
+      for (const entry of ignored)
+        logger.event({
+          type: "registration_ignored",
+          blockNumber: bn,
+          ...entry,
+        });
+      for (const reg of added) {
+        try {
+          await registerExternalAgent(reg);
+          console.error(
+            `[registrations] registered ${reg.id} (${reg.address}) at block ${bn}`,
+          );
+        } catch (error) {
+          logger.event({
+            type: "registration_failed",
+            blockNumber: bn,
+            id: reg.id,
+            address: reg.address,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (added.length > 0) publishRoster();
+      logger.event({
+        type: "registrations_reloaded",
+        path: registrations.path,
+        blockNumber: bn,
+        entries: read.entries.length,
+        added: added.map((r) => r.id),
+        ignored: ignored.length,
+      });
+    };
+
     // Close a segment: write it a summary.json holding the epochs that fell inside it, so each
     // segment is an ordinary run directory that every existing tool can read. The slice carries the
     // boundary immediately before the segment's start as its own boundary 0 (see sliceEpochSeries),
@@ -1805,6 +2010,9 @@ export async function runRealtimeSimulation(
           id: a.id,
           address: a.address,
           baseline: a.spec.baseline ?? false,
+          ...(a.spec.participant !== undefined
+            ? { participant: a.spec.participant }
+            : {}),
           initialValueUsdc: pnl?.initialValueUsdc ?? 0,
           finalValueUsdc: pnl?.finalValueUsdc ?? 0,
           netPnlUsdc: pnl?.pnlUsdc ?? 0,
@@ -1878,37 +2086,18 @@ export async function runRealtimeSimulation(
         blockGasLimit: config.blockGasLimit,
         fromBlock: atBlock,
       });
-      logger.event({
-        type: "agents_registered",
-        agents: agentRuntimes.map((a) => ({
-          id: a.id,
-          address: a.address,
-          baseline: a.spec.baseline ?? false,
-          description: a.spec.description,
-          external: a.external,
-        })),
-      });
-      logger.artifact(
-        MANIFEST_FILENAME,
-        buildManifest({
-          config,
-          priceFeed: priceFeedAddress,
-          ...(marketRegistry
-            ? {
-                marketRegistry: marketRegistry.address,
-                lending: marketRegistry.lending,
-                marketRegistryFromBlock: marketRegistry.deployBlock,
-              }
-            : {}),
-          participants: agentRuntimes.map((a) => ({
-            id: a.id,
-            address: a.address,
-            external: a.external,
-            baseline: a.spec.baseline ?? false,
-            description: a.spec.description,
-          })),
-        }),
-      );
+      // The plan too (ADR 0021 §6): a segment without it reads as a period with no episodes, and
+      // from day two every segment was one -- the dashboard showed "no plan" for the rest of the
+      // week. Same payload as the first segment's, resolved windows included. Withholding future
+      // windows from the public is the runs API's job (audience mode, dashboard side), not this
+      // writer's: the on-disk record stays complete so the period can be audited afterwards (§7.2).
+      if (schedule.hasEvents())
+        logger.event({
+          type: "stress_schedule",
+          runStartBlock,
+          events: schedule.events,
+        });
+      publishRoster();
       console.error(
         `[segment] rolled to ${logger.runDir} at block ${atBlock} (ADR 0021 §6)`,
       );
@@ -2557,6 +2746,12 @@ export async function runRealtimeSimulation(
           // put a cross-section read on the critical path of every block instead of one in twelve.
           const epochMs = await timed(() => liveScorer.onBlock(bn));
 
+          // After the boundary read, so an agent registered here is valued from the *next* boundary
+          // rather than appearing in one it was not funded at. A stat on most blocks; a poll that
+          // finds an entry funds it (cheatcode on anvil, treasury transfer -- a few blocks -- on an
+          // external chain), which the loop absorbs the way it absorbs any slow block: by catching up.
+          await pollRegistrations(bn);
+
           // Only while segmenting: keep blocks.csv within a block of the head, so a roll is a
           // boundary rather than a bulk scan of a whole day stalling the environment loop. A run
           // with an end keeps the single pass at the end, byte-identical to before.
@@ -2892,7 +3087,10 @@ export async function runRealtimeSimulation(
       maxAgentBlockGas: config.maxAgentBlockGas,
     });
     if (gasViolations.length > 0) {
-      logger.event({ type: "gas_budget_violations", violations: gasViolations });
+      logger.event({
+        type: "gas_budget_violations",
+        violations: gasViolations,
+      });
       const offenders = [...new Set(gasViolations.map((v) => v.ownerId))];
       console.error(
         `[rules] ${gasViolations.length} gas-budget violation(s) by ${offenders.join(", ")} ` +
@@ -2905,9 +3103,14 @@ export async function runRealtimeSimulation(
     // Reconciled only for the agents this coordinator started: an external participant's log is
     // on their machine. Reported per agent and in the summary; the verdict is the operator's
     // (postRunCheck.ts says why a runtime crash can leave the same mark).
+    //
+    // `!== null`, not `!== undefined`: `process` is null until spawned and stays null for an
+    // external agent, so the previous test admitted every external participant, found no log for
+    // any of them, and flagged every one of their transactions as unlogged -- on the trial devnet,
+    // the whole field (rules §2.7).
     const unloggedTxs = reconcileRunAgentTxs(
       logger.runDir,
-      agentRuntimes.filter((a) => a.process !== undefined).map((a) => a.id),
+      agentRuntimes.filter((a) => a.process !== null).map((a) => a.id),
     );
     const unloggedTxCountByAgent: Record<string, number> = {};
     for (const tx of unloggedTxs)
@@ -2988,6 +3191,11 @@ export async function runRealtimeSimulation(
         address: agent.address,
         // §4.3: the benchmark is placed and valued like everyone else and kept out of the population.
         baseline: agent.spec.baseline ?? false,
+        // Rules §2.2: the participant unit, so matrix.json can say which agents are one unit's two
+        // submissions. Absent when the roster did not state one (the agent is its own unit).
+        ...(agent.spec.participant !== undefined
+          ? { participant: agent.spec.participant }
+          : {}),
         initialValueUsdc: initialValue,
         finalValueUsdc: finalValue,
         netPnlUsdc: finalValue - initialValue,
@@ -3024,7 +3232,7 @@ export async function runRealtimeSimulation(
         revertCount: agent.reverted,
         // Included txs the agent's runtime never reported sending (rules §8; see postRunCheck.ts).
         // Only for agents this coordinator started -- an external participant has no log here.
-        ...(agent.process !== undefined
+        ...(agent.process !== null
           ? { unloggedTxCount: unloggedTxCountByAgent[agent.id] ?? 0 }
           : {}),
         stderrTail: agent.process?.getStderr() ?? "",
@@ -3062,6 +3270,9 @@ export async function runRealtimeSimulation(
           id: a.id,
           address: a.address,
           baseline: a.baseline,
+          ...(a.participant !== undefined
+            ? { participant: a.participant }
+            : {}),
           netPnlUsdc: a.netPnlUsdc,
           alphaUsdc: a.alphaUsdc ?? 0,
           ...(a.pnlUsdc !== undefined ? { pnlUsdc: a.pnlUsdc } : {}),

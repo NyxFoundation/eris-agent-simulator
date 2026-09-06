@@ -31,6 +31,11 @@ export type AgentScore = {
   finalValueUsdc?: number;
   // §4.3: placed and valued, kept out of the population.
   baseline?: boolean;
+  // Rules §2.2: the participant unit this agent is one submission of. Two agents sharing it are the
+  // same unit, scored on the higher of the two. Carried, not used: the arithmetic below ranks
+  // agents, and collapsing a unit's two entries is the reader's step (the dashboard's), so it stays
+  // visible in matrix.json for anyone re-deriving the ranking (ADR 0017 §4).
+  participant?: string;
   // Facts a reader should see next to the number: a fee-cap violation, a process that exited early,
   // transactions the runtime never reported. None of them changes P (rules §2.3 and §4.4.2 after the
   // 2026-09-06 amendment: a stopped agent is scored on what it left behind); §8 matters are the
@@ -61,8 +66,9 @@ export type Standings = {
   // The ordinals the final score was computed from (§4.4.1: published with the ranking).
   S: number[];
   epochs: EpochStanding[];
-  // Sorted by rank (§4.6).
-  agents: Array<AgentResult & { flags: string[] }>;
+  // Sorted by rank (§4.6). `participant` is the rules §2.2 unit when the roster stated one; the
+  // ranking is still per agent, and collapsing a unit to its higher submission is the reader's step.
+  agents: Array<AgentResult & { flags: string[]; participant?: string }>;
   // Placed in every epoch, shown for reference, never in the population (§4.3).
   benchmarks: Array<{ id: string; pnlByEpoch: Record<number, number> }>;
 };
@@ -95,8 +101,11 @@ export function computeStandings(
 
   const flagsByAgent = new Map<string, string[]>();
   const benchmarkPnl = new Map<string, Record<number, number>>();
+  const participantByAgent = new Map<string, string>();
   for (const r of results) {
     for (const a of r.agents ?? []) {
+      if (a.participant !== undefined)
+        participantByAgent.set(a.id, a.participant);
       for (const f of a.flags ?? []) {
         const list = flagsByAgent.get(a.id) ?? [];
         list.push(`${scenarioId(r.regime, r.seed)}: ${f}`);
@@ -125,6 +134,9 @@ export function computeStandings(
     agents: scored.agents.map((a) => ({
       ...a,
       flags: flagsByAgent.get(a.id) ?? [],
+      ...(participantByAgent.has(a.id)
+        ? { participant: participantByAgent.get(a.id) }
+        : {}),
     })),
     benchmarks: [...benchmarkPnl.entries()].map(([id, pnlByEpoch]) => ({
       id,

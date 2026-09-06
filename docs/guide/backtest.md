@@ -97,7 +97,7 @@ Two artifacts land in `runs/matrix-<id>/`:
 
 | file | what it is |
 |---|---|
-| `matrix.json` | raw per-scenario, per-agent results — P (`pnlUsdc`, with `pnlSource`), `netPnlUsdc` / `alphaUsdc`, the endpoints, `baseline`, `flags` — plus the ordinal `s`, `k`, `resetUnit` and run directories (schema 2) |
+| `matrix.json` | raw per-scenario, per-agent results — P (`pnlUsdc`, with `pnlSource`), `netPnlUsdc` / `alphaUsdc`, the endpoints, `baseline`, `participant` (the rules §2.2 unit, when the roster states one), `flags` — plus the ordinal `s`, `k`, `resetUnit` and run directories (schema 2) |
 | `standings.json` | the ranking derived from them |
 
 The ranking is a derived view on purpose: `standings.json` recomputes from `matrix.json` alone, so a finished matrix can be re-read without re-running anything (ADR 0017 §4). The rule itself is the competition's (rules §4.4, ADR 0023).
@@ -109,6 +109,28 @@ Ranking: each scenario is one epoch. An agent's P = V_K − V_0 becomes a deviat
 > **`--scenarios` takes two shapes.** `{regimes, seeds}` is the cartesian product, run and numbered in that order; `{k, epochs: [{s, regime, seed}]}` is an ordered plan as `npm run competition -- plan` writes it from the lottery seed (rules §3.3), with `k` the schedule length the weights are taken over.
 
 Nothing disqualifies. An agent whose process died is scored on what it left behind (rules §2.3, §4.4.2), a fee-cap violation is a §8 matter for the operator, and both appear as `flags` beside the number. An agent absent from a scenario's summary was not placed in it and is simply not in that population. A scenario that produced no summary at all is an invalid epoch for everyone (§4.4.2).
+
+### One competition across several invocations (`--resume`)
+
+The live week is k epochs (rules §4.7.1), and nothing says they run in one process: an anvil dies,
+a machine is rebooted, the mornings and the evenings run separately. Each `--scenarios` invocation
+opens a fresh `runs/matrix-<timestamp>/`, so left alone the week's standings would be spread over as
+many directories as there were invocations. `--resume` continues one instead:
+
+```bash
+npm run backtest -- --scenarios plan.yaml --agents field.yaml                      # day 1: writes runs/matrix-<id>/
+npm run backtest -- --scenarios plan.yaml --agents field.yaml --resume runs/matrix-<id>   # day 2 onward
+```
+
+- Scenarios whose stored record has agents are **complete and skipped** (`skipping s=…, already
+  complete`). The missing ones run, and so do the ones stored with an `error` and no agents — a lost
+  epoch's remedy is re-execution (§4.4.2), not carrying it as invalid.
+- `matrix.json` and `standings.json` are rewritten in place, in ordinal order, keeping the original
+  `createdAt` and stamping `resumedAt`.
+- It is **refused** when the stored matrix is a different competition: another `scenarioSet`, `k`
+  (the weights are a function of it), `resetUnit` or `repeat`; and when the set's content changed
+  under the same path (a stored ordinal that is not the plan's `(regime, seed)`). A different source
+  commit is a warning, not a refusal.
 
 ## Repetition and reproducibility
 
@@ -177,6 +199,7 @@ agents:
 | `--scenarios <path>` | Replay a whole set (regimes x seeds) and write `matrix.json` + `standings.json`. Mutually exclusive with `--regime` |
 | `--scenarios <path>` (plan form) | `{k, epochs: [{s, regime, seed}]}` from `npm run competition -- plan`; replayed in order with those ordinals |
 | `--agents <roster>` | Swap the regime's default agents with a roster file (YAML/JSON) |
+| `--resume <matrix-dir>` | Continue a stored `runs/matrix-<id>/` instead of opening a new one: complete scenarios are skipped, missing and failed ones run, the artifacts are rewritten in place. Refused when `scenarioSet` / `k` / `resetUnit` / `repeat` differ. `--scenarios` only |
 | `--repeat <N>` | Repeat each scenario N times (default 1). A calibration diagnostic; standings take the median |
 | `--port <N>` | Port for the backtest-dedicated anvil (default 8547; use a different port for parallel runs) |
 | `--state <dir>` | State dump directory (default `backtest/state`) |

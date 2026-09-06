@@ -33,6 +33,9 @@ export function runManifestCli(): void {
     external: spec.external === true,
     baseline: spec.baseline ?? false,
     description: spec.description,
+    ...(spec.participant !== undefined
+      ? { participant: spec.participant }
+      : {}),
   }));
 
   if (flags.participant) {

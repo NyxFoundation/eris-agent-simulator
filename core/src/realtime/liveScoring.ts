@@ -98,6 +98,22 @@ export class LiveScorer {
     return this.boundaries.length;
   }
 
+  /**
+   * An agent registered after the run started (ADR 0021 §2: a registration that arrived
+   * mid-period). Valued from the next boundary on. The boundaries already recorded get null, which
+   * the series reads as "no value here" rather than as zero (issue #44) -- so a segment the agent
+   * joined in the middle of has no P for it (there is no V_0 it was measured at), and the first
+   * segment it starts on a boundary does. Idempotent, because the registrations file is re-read.
+   */
+  addAgent(agent: ReconstructionAgent): void {
+    if (this.valuesByAgent.has(agent.id)) return;
+    this.opts.agents.push(agent);
+    this.valuesByAgent.set(
+      agent.id,
+      this.boundaries.map(() => null),
+    );
+  }
+
   // Called once per processed block. Catches up rather than matching an index exactly: the
   // coordinator's block handler skips notifications while it is busy, and a boundary that fell in a
   // skipped block would otherwise be lost -- the same failure that once swallowed a whole stress

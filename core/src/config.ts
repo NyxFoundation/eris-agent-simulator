@@ -199,6 +199,16 @@ export function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
     if (agent.baseline !== undefined && typeof agent.baseline !== "boolean") {
       throw new Error(`${label}.baseline must be a boolean when present`);
     }
+    // Rules §2.2: which participant unit the agent belongs to. Free-form, because it is the
+    // operator's registration key (a team name, a registration number) and nothing here resolves it.
+    if (
+      agent.participant !== undefined &&
+      (typeof agent.participant !== "string" || agent.participant.trim() === "")
+    ) {
+      throw new Error(
+        `${label}.participant must be a non-empty string when present (rules §2.2)`,
+      );
+    }
     if (agent.env !== undefined) {
       if (
         !agent.env ||
@@ -226,6 +236,7 @@ export function validateAgentsFile(parsed: unknown, path: string): AgentSpec[] {
       baseline: agent.baseline,
       external: agent.external,
       address: agent.address,
+      participant: agent.participant,
     };
   });
 }
