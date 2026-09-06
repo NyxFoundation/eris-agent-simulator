@@ -25,6 +25,12 @@ import { setLocale, useLocale, type Locale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
 import { navigate } from "@/navigation";
 import { useMode } from "@/data/mode";
+import { isHiddenScenario } from "@/data/competition";
+import { useCursor } from "@/data/roundCursor";
+import { buildScenarioList } from "@/data/scenarioList";
+import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
+import { toneColor } from "@/components/competitionUi";
+import { formatPnlUsdc } from "@/lib/format";
 
 export type SidebarNavKey = "home" | "scenario" | "explorer" | "markets";
 
@@ -95,7 +101,7 @@ function PickerBlock({
   );
 }
 
-function Picker() {
+function Picker({ activePage }: { activePage?: SidebarNavKey }) {
   const selectedRun = useSelectedRunId();
   const locale = useLocale();
   const [entries, setEntries] = useState<RunIndexEntry[] | null>(null);
@@ -267,7 +273,22 @@ function Picker() {
           />
         </PickerBlock>
       )}
-      {options.length > 0 && (
+      {/* Inside a competition the standings page opens a world from its scenario list -- the
+          list has the leader and the episodes, a dropdown of names has neither -- so no second
+          selector here. The scenario-level pages show the world they are on, and let a reader step
+          to a sibling from that spot. Outside a competition (single runs) the run picker stays. */}
+      {inCompetition && activePage !== "home" && (
+        <WorldBlock
+          competition={
+            competitionValue
+              ? (competitionNames.get(competitionValue) ?? competitionValue)
+              : ""
+          }
+          runValue={runValue}
+          liveOutside={liveRuns}
+        />
+      )}
+      {!inCompetition && options.length > 0 && (
         <PickerBlock
           label={
             liveSelected ? t("sidebar.scenarioLive") : t("sidebar.scenario")
@@ -292,6 +313,233 @@ function Picker() {
         </PickerBlock>
       )}
     </>
+  );
+}
+
+/**
+ * The world a scenario-level page is on, in the picker's place: its name, where it sits among the
+ * competition's worlds, who leads it and what the environment scheduled there -- the same facts the
+ * standings page's scenario list shows -- and, on request, that list, so stepping to a sibling is
+ * one click without leaving the page. Rows come from the same builder as the standings page.
+ */
+function WorldBlock({
+  competition,
+  runValue,
+  liveOutside,
+}: {
+  competition: string;
+  runValue: string;
+  /** Live runs that are not (yet) in the competition's index: the epoch running now. */
+  liveOutside: RunIndexEntry[];
+}) {
+  const { data } = useCompetitionSnapshot();
+  const cursor = useCursor();
+  const mode = useMode();
+  const [open, setOpen] = useState(false);
+  const rows = useMemo(
+    () =>
+      data
+        ? buildScenarioList(
+            data.competition,
+            data.rounds,
+            data.schedules,
+            cursor.round,
+          )
+        : [],
+    [data, cursor.round],
+  );
+  const index = rows.findIndex((r) => r.runId === runValue);
+  const current = index >= 0 ? rows[index] : null;
+  const liveCurrent = liveOutside.find((r) => r.id === runValue);
+  const pick = (runId: string) => {
+    setSelectedRound(null);
+    setSelectedRunId(runId);
+    setOpen(false);
+  };
+  const line: React.CSSProperties = {
+    font: "var(--text-xs) var(--font-mono)",
+    color: "var(--text-tertiary)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  };
+  return (
+    <div style={{ borderTop: "1px solid var(--border-subtle)" }}>
+      <div
+        style={{
+          padding: "var(--space-4)",
+          display: "flex",
+          flexDirection: "column",
+          gap: "5px",
+        }}
+      >
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: liveCurrent ? "var(--pink-300)" : "var(--text-tertiary)",
+            letterSpacing: "var(--tracking-wide)",
+            textTransform: "uppercase",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={competition}
+        >
+          {liveCurrent ? t("sidebar.scenarioLive") : t("sidebar.world")}
+        </span>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            gap: "8px",
+          }}
+        >
+          <span
+            style={{
+              font: "var(--weight-semibold) var(--text-sm) var(--font-sans)",
+              color: "var(--text-primary)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={runValue}
+          >
+            {current?.label ?? (liveCurrent ? runLabel(liveCurrent.id) : runLabel(runValue))}
+          </span>
+          {(rows.length > 1 || liveOutside.length > 0) && (
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+              style={{
+                border: "none",
+                background: "transparent",
+                padding: 0,
+                cursor: "pointer",
+                font: "var(--text-xs) var(--font-mono)",
+                color: "var(--text-link)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {open ? t("sidebar.close") : t("sidebar.change")}
+            </button>
+          )}
+        </div>
+        {current && (
+          <>
+            <span style={line}>
+              {t("sidebar.worldOf", { i: index + 1, n: rows.length })}
+              {" · "}
+              {t("sidebar.worldRounds", { n: current.rounds })}
+              {current.ended ? ` · ${t("home.scenarios.ended")}` : ""}
+            </span>
+            {mode.standings && current.leader && (
+              <span style={line}>
+                {t("sidebar.worldLeader", { id: current.leader.id })}{" "}
+                <span style={{ color: toneColor(current.leader.pnlUsdc) }}>
+                  {formatPnlUsdc(current.leader.pnlUsdc)}
+                </span>
+              </span>
+            )}
+            <span style={line}>
+              {isHiddenScenario(current)
+                ? t("home.scenarios.eventsWithheld")
+                : current.events.length > 0
+                  ? t("sidebar.worldEvents", { list: current.events.join(", ") })
+                  : t("sidebar.worldNoEvents")}
+            </span>
+          </>
+        )}
+      </div>
+      {open && (
+        <div
+          style={{
+            borderTop: "1px solid var(--border-subtle)",
+            maxHeight: "40vh",
+            overflowY: "auto",
+          }}
+        >
+          {liveOutside.map((r) => (
+            <SiblingRow
+              key={r.id}
+              current={r.id === runValue}
+              name={`● ${runLabel(r.id)}`}
+              detail={t("common.live")}
+              onPick={() => pick(r.id)}
+            />
+          ))}
+          {rows.map((r) => (
+            <SiblingRow
+              key={r.key}
+              current={r.runId === runValue}
+              name={r.label}
+              leader={mode.standings ? r.leader?.id : undefined}
+              detail={[
+                t("sidebar.worldRounds", { n: r.rounds }),
+                isHiddenScenario(r)
+                  ? t("home.scenarios.eventsWithheld")
+                  : r.events.length > 0
+                    ? r.events.join(", ")
+                    : t("sidebar.worldNoEvents"),
+              ].join(" · ")}
+              onPick={() => pick(r.runId)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SiblingRow({
+  current,
+  name,
+  leader,
+  detail,
+  onPick,
+}: {
+  current: boolean;
+  name: string;
+  leader?: string;
+  detail: string;
+  onPick: () => void;
+}) {
+  return (
+    <div
+      className="row-link"
+      onClick={onPick}
+      style={{
+        padding: "7px var(--space-4)",
+        display: "grid",
+        gridTemplateColumns: "1fr auto",
+        gap: "1px 8px",
+        borderBottom: "1px solid var(--border-subtle)",
+        font: "var(--text-xs) var(--font-mono)",
+        ...(current
+          ? {
+              background: "color-mix(in oklch, var(--pink-500) 14%, transparent)",
+              boxShadow: "inset 2px 0 0 var(--pink-500)",
+            }
+          : {}),
+      }}
+    >
+      <span style={{ color: "var(--text-link)", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {name}
+      </span>
+      <span style={{ color: "var(--text-secondary)" }}>{leader ?? ""}</span>
+      <span
+        style={{
+          gridColumn: "1 / -1",
+          color: "var(--text-tertiary)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {detail}
+      </span>
+    </div>
   );
 }
 
@@ -443,7 +691,9 @@ export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
         })}
       </div>
 
-      <div style={{ marginTop: "auto" }}>{!isSeedProvider && <Picker />}</div>
+      <div style={{ marginTop: "auto" }}>
+        {!isSeedProvider && <Picker activePage={activePage} />}
+      </div>
 
       <div
         style={{

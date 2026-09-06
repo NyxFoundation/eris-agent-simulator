@@ -30,6 +30,16 @@ const en = {
   "sidebar.scenario": "Scenario",
   "sidebar.scenarioLive": "Scenario · live",
   "sidebar.singleRun": "— single run —",
+  // The world a scenario-level page is on, in the picker's place (the standings page opens worlds
+  // from its scenario list instead of a dropdown of names).
+  "sidebar.world": "Viewing",
+  "sidebar.worldOf": "{i} of {n} worlds",
+  "sidebar.worldRounds": "{n} rounds",
+  "sidebar.worldLeader": "leads: {id}",
+  "sidebar.worldEvents": "episodes: {list}",
+  "sidebar.worldNoEvents": "no episodes scheduled",
+  "sidebar.change": "change",
+  "sidebar.close": "close",
   "sidebar.readOnly": "Read-only view",
   "sidebar.noSignIn": "no sign-in required",
 
@@ -722,6 +732,14 @@ const ja: Record<MessageKey, string> = {
   "sidebar.scenario": "シナリオ",
   "sidebar.scenarioLive": "シナリオ · ライブ",
   "sidebar.singleRun": "— 単発 run —",
+  "sidebar.world": "見ている世界",
+  "sidebar.worldOf": "{n} 世界中 {i} 番目",
+  "sidebar.worldRounds": "{n} ラウンド",
+  "sidebar.worldLeader": "首位 {id}",
+  "sidebar.worldEvents": "イベント: {list}",
+  "sidebar.worldNoEvents": "イベントの予定なし",
+  "sidebar.change": "変更",
+  "sidebar.close": "閉じる",
   "sidebar.readOnly": "閲覧専用ビュー",
   "sidebar.noSignIn": "ログイン不要",
 
