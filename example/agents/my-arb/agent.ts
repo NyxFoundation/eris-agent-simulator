@@ -15,8 +15,8 @@ import { canFund, sized } from "../lib/affordable.js";
 // Only trade when a venue is this far from fair. Too low and fees eat the edge; too high and the
 // agent sits out the run. A good first thing to tune.
 const MIN_GAP = 0.001; // 10 bps
-// Fraction of the per-round limit to send. Flat on purpose -- scaling this with the gap is an
-// obvious improvement.
+// Fraction of the balance to send (there is no per-order cap to size off). Flat on purpose --
+// scaling this with the gap is an obvious improvement.
 const SIZE_BPS = 1000n; // 10%
 
 type Venue = {

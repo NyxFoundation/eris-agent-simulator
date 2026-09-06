@@ -9,7 +9,7 @@ You are maintaining a cross-venue arbitrage strategy. It runs on every block wit
 whether the code should change, and if so, what to change it to.
 
 The strategy you were shipped is deliberately naive: it takes the widest gap above a fixed
-threshold, in whichever direction it can fund, at a flat fraction of the limit. It ignores fees, it
+threshold, in whichever direction it can fund, at a flat fraction of its balance. It ignores fees, it
 ignores how much the pool will move against it, and it never plans a round trip. Those are the
 obvious things to improve — but improve them because the evidence says so, not because the list
 above says so.
@@ -38,7 +38,9 @@ stops taking the trades that pay for the run. Doing nothing is also a way to los
 - Only `obs`, `ctx` and standard JavaScript. No `require`, `import`, `process` or `fetch`.
 - **Check balances before choosing a direction.** `obs.balances.wethWei` starts at zero. An action
   the runtime rejects scores the same as doing nothing.
-- Respect `obs.limits`.
+- There is no order-size cap. `obs.limits` holds only the priority-fee bounds and the default
+  slippage; size off the balance (`sized`) and let the pool's depth, not a validator, be what
+  punishes oversizing.
 - Return one action object or `null`. `ctx.log({ reason })` records why, and you will read it back.
 
 ## Undoing a change

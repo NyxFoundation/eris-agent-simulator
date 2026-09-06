@@ -25,6 +25,8 @@
                        採点には使わない
 ```
 
+> **360 / 12 / 29 は現行コードの値です。** 規約の付録 A は「1 エポックあたりのブロック数」「評価区間のブロック数」「k」「ガス用 ETH」を**提出期間の開始（2026-09-23）までに公表**としています。ここに書いた数字は公式レジーム（`config/regimes/*.yaml` の `blocks: 360`）と sdk の既定値（評価区間 12 ブロック）で、公表値と食い違ったら規約が正です。
+
 **採点は 1 エポックにつき数字 1 つだけです。**
 
 ```
@@ -48,7 +50,7 @@
 |---|---|---|
 | エポック | run | `runs/<id>/` 1 個 ＝ `summary.json` 1 枚 |
 | シナリオ | scenario | `<regime>#<seed>`。`config/regimes/*.yaml` が regime の定義 |
-| 評価区間 | **epoch** / ダッシュボードの「ラウンド」 | `summary.json` の `valueSeries.epochSeries`、`run.epochBlocks: 12`。採点には使わない |
+| 評価区間 | **epoch** / ダッシュボードの「ラウンド」 | `summary.json` の `valueSeries.epochSeries`、`run.epochBlocks`（既定 12）。採点には使わない |
 
 **コードの `epoch` は規約の「エポック」ではありません。** コードの `epoch` は規約の「評価区間」です。
 
@@ -142,7 +144,7 @@ export function decide(obs: AgentObservation): AgentAction | null {
 > **提出するエージェントは `decide()` で書いてください。** ランタイムには `decide` の代わりに
 > `run(ctx)` を export して自前のループを回す形式もありますが（例: `liquidator`）、
 > **`run(ctx)` と `prompt.md` は共存できません** — 自己改善は `decide` を差し替える仕組みなので、
-> 両方あると起動時に exit 1 します（`example/agents/runtime/bot.ts:287`）。規約 §2.5 が
+> 両方あると起動時に exit 1 します（`example/agents/runtime/bot.ts` がその旨のエラーを出します）。規約 §2.5 が
 > `prompt.md` を必須にしている以上、`run(ctx)` 形式は現状では提出できません。
 
 ### `prompt.md` — 改訂方針
@@ -180,21 +182,23 @@ reviseEveryBlocks: 60
 obs.fairPriceUsdcPerWeth        // 環境が配布する参照価格（オンチェーンの PriceFeed 経由）
 obs.protocols.uniswap.pool      // venue ごとの状態
 obs.balances                    // 自分の残高。stables は内訳付き
-obs.limits                      // 1 ラウンドの上限、建玉数の上限
+obs.limits                      // priority fee の既定値と上限、slippage の既定値。サイズの上限は入っていない
 ```
 
 **observation に入らないもの**: 未確定の注文、次のブロック、イベント窓の位置。全員が同じ遅延で同じものを見ます（`PriceFeed` への書き込みは次ブロック着弾なので、参照価格は常に 1 ブロック遅れます）。
 
 ただし 2 つ補足があります。**直近ブロックで他者が払った最大 priority fee は observation に入ります**（`obs.competition.maxCompetitorPriorityFeeWei`。確定済みブロックの履歴であって、未確定の注文ではありません）。また `decide(obs, ctx)` の `ctx` には `publicClient` / `walletClient` が渡されるので、**ノードを直接叩くこと自体は禁止されていません**。何が許されるかは規約 §8（禁止行為）が定めます。
 
+**取引サイズの上限はありません。** どの venue にも 1 件あたりの金額上限・バンドル内のアクション数の上限・建玉数の上限は無く、`obs.limits` にもサイズの予算は入っていません（以前あった `maxWethInWei` / `maxUsdcInUnits` / `maxBundleActions` / `maxOpenPositions` は 2026-09-02 に撤廃されました。引き上げではなく撤廃です）。1 件の取引を縛るのは**自分の残高**と**相手プールの厚み**だけで、大きく出すほど不利な約定になります。サイズは自分で決めてください。共有ヘルパは `example/agents/lib/affordable.ts` の `sized(obs, token, bps)`（残高の割合で切る）です。
+
 **制限は 2 種類あり、効き方が違います。**
 
 | どこから来るか | 何が制限されるか | 破るとどうなるか |
 |---|---|---|
-| `obs.limits`（ランタイムが検証する） | 1 ラウンドの取引サイズ（`maxWethInWei` / `maxUsdcInUnits` / base ごとの上限）、バンドル内のアクション数（`maxBundleActions`）、建玉数（`maxOpenPositions`）、priority fee | 送信前に**拒否**され、`agents/<id>.jsonl` に `rejected` が残る。チェーンには届かない |
-| 規約 §2.3・§2.6（運営が課す） | **1 ブロックあたり 3 本**（バンドルを含む。§2.6）、判断ごと **5,000 ミリ秒**、**2 vCPU / メモリ 4 GB**（§2.3） | 規約の定めによる。**`obs.limits` には出ません** |
+| ランタイム（送信前に検証する） | アクションの形と中身（schema・在庫の無い側の leg）、priority fee（`obs.limits.maxPriorityFeePerGasWei`）、**ガス**（tx 1 本 30,000,000 gas、1 エージェント 1 ブロック合計 30,000,000 gas） | 送信前に**拒否**され、`agents/<id>.jsonl` に `rejected` が理由付きで残る（ガスは `tx gas cap` / `per-block gas budget`）。チェーンには届かない |
+| 規約 §2.3・§2.6（運営が課す） | 判断ごと **5,000 ミリ秒**、**2 vCPU / メモリ 4 GB**（§2.3）。**1 ブロックあたりの tx 本数に上限は無い**（§2.6。ブロックに入るかは priority fee のオークションで決まり、ブロックのガスリミットは 30,000,000） | タイムアウトはそのブロックが行動なし、異常終了はエポックの残りが行動なし（再起動しない）。**`obs.limits` には出ません** |
 
-`obs.limits` を読めば前者は自動的に守れますが、**後者は自分で守る必要があります**。
+前者はランタイムが止めます。**後者は自分で守る必要があります**。
 
 アクションの一覧と各 venue の詳細は [protocols-and-actions.md](guide/protocols-and-actions.md)、`obs` の全フィールドは [writing-agents.md](guide/writing-agents.md) にあります。
 
@@ -224,9 +228,8 @@ agents:
 | `codex` / `codex:<model>` | `codex exec` を起動 | ChatGPT サブスク（`codex login`） |
 | `claude-cli` / `claude-cli:<model>` | `claude -p` を起動 | Claude サブスク |
 | `claude...`（`claude` で始まるモデル名） | Anthropic API | `ANTHROPIC_API_KEY` |
-| それ以外（既定） | Ollama 系 | `ERIS_OLLAMA_BASE_URL`（既定 Ollama Cloud）+ `OLLAMA_API_KEY` |
-
 | `openai:<model>` または `gpt-` / `o1` / `o3` / `o4` で始まるモデル名 | OpenAI 互換 chat completions | `OPENAI_API_KEY`（互換エンドポイントは `OPENAI_BASE_URL`） |
+| それ以外（既定） | Ollama 系 | `ERIS_OLLAMA_BASE_URL`（既定 Ollama Cloud）+ `OLLAMA_API_KEY` |
 
 > **本番では鍵はエージェントに渡りません。** 推論は運営のプロキシ経由で（規約 §2.3・§2.5）、使えるモデルはプロキシの一覧（§2.5 で公表）に限られ、全ての往復が記録されます。ローカルで `ERIS_INFERENCE_BASE_URL` を設定すると同じ経路を試せます（`infra/inference-proxy/README.md`）。
 
@@ -264,7 +267,7 @@ npm run backtest -- --scenarios config/scenarios/public.yaml --agents <あなた
 
 止まらないチェーンに、自分のマシンからエージェントを繋いで走らせられます。**公式採点ではありません** — 練習期間の結果は順位に一切反映されません。
 
-運営が配る `manifest.json`（RPC・チェーン ID・全 venue アドレス・ラウンド長・アクション語彙・制限）と、自分のウォレットだけで参加します。判断ログは**あなたのマシンにしか残りません**。手順は [practice-devnet.md](guide/practice-devnet.md)。
+運営が配る `manifest.json`（RPC・チェーン ID・全 venue アドレス・ラウンド長・アクション語彙・手数料の既定値。**発注上限は無いと明記されています**）と、自分のウォレットだけで参加します。判断ログは**あなたのマシンにしか残りません**。手順は [practice-devnet.md](guide/practice-devnet.md)。
 
 練習で身につくのは執行と観測の扱いです。**エポックのリセットと偏差値による採点は練習には存在しません**。そこは本番だけの構造です。
 
@@ -302,7 +305,7 @@ npm run agent:selftest -- my-strategy       # 同じ上限で短い run を回�
 
 ## 9. よくある失敗（すべて実測）
 
-**在庫の無い側の leg を送る。** USDC しか持っていない状態で売りを出すと、ランタイムが検証で弾き、`rejected` が残ります。チェーンには何も届かないので、**「取引しないことを選んだエージェント」と結果が同一になります**。過去に 4 体がこのバグを抱えたまま出荷されました。`example/agents/lib/affordable.ts` の `canFund` / `affordable` を使ってください。
+**在庫の無い側の leg を送る。** USDC しか持っていない状態で売りを出すと、ランタイムが検証で弾き、`rejected` が残ります。チェーンには何も届かないので、**「取引しないことを選んだエージェント」と結果が同一になります**。過去に 4 体がこのバグを抱えたまま出荷されました。`example/agents/lib/affordable.ts` の `canFund` / `affordable` を使ってください。サイズは `sized` で自分の残高の割合として決めます（環境が配るサイズの上限はもう無いので、`obs.limits` から読めるものはありません）。
 
 **`prompt.md` に `kind: improve` が無い。** 起動時に落ちます。エラーメッセージがそう言います。
 

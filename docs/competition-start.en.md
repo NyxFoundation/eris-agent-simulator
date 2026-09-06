@@ -30,6 +30,12 @@ the competition
                                 progress. NOT used for scoring.
 ```
 
+> **360 / 12 / 29 are the code's current values.** Appendix A of the rules lists the blocks per
+> epoch, the blocks per evaluation interval, `k` and the gas ETH as **published by the start of the
+> submission period (2026-09-23)**. The numbers here come from the official regimes (`blocks: 360`
+> in `config/regimes/*.yaml`) and the sdk default (12-block intervals); where the published values
+> differ, the rules win.
+
 **Scoring takes exactly one number per epoch.**
 
 ```
@@ -57,7 +63,7 @@ remember.
 |---|---|---|
 | epoch | run | one `runs/<id>/` — one `summary.json` |
 | scenario | scenario | `<regime>#<seed>`; regimes are defined in `config/regimes/*.yaml` |
-| evaluation interval | **epoch** / "round" in the dashboard | `valueSeries.epochSeries` in `summary.json`, `run.epochBlocks: 12`. Not used for scoring |
+| evaluation interval | **epoch** / "round" in the dashboard | `valueSeries.epochSeries` in `summary.json`, `run.epochBlocks` (default 12). Not used for scoring |
 
 **The code's `epoch` is not the rules' epoch.** The code's `epoch` is the rules' *evaluation
 interval*.
@@ -160,7 +166,7 @@ That is the whole contract.
 > **Write a submission as `decide()`.** The runtime also accepts `run(ctx)` in place of `decide`, for
 > an agent that owns its own loop (see `liquidator`) — but **`run(ctx)` and `prompt.md` cannot
 > coexist**: self-improvement works by swapping out `decide`, so an agent with both exits 1 at
-> startup (`example/agents/runtime/bot.ts:287`). Since rules §2.5 makes `prompt.md` mandatory, the
+> startup (`example/agents/runtime/bot.ts` says so in its error). Since rules §2.5 makes `prompt.md` mandatory, the
 > `run(ctx)` form cannot currently be submitted.
 
 ### `prompt.md` — the revision policy
@@ -206,7 +212,7 @@ yourself.
 obs.fairPriceUsdcPerWeth        // the reference price the environment publishes (on-chain PriceFeed)
 obs.protocols.uniswap.pool      // per-venue state
 obs.balances                    // your balances; stables come itemised
-obs.limits                      // per-round caps, open-position cap
+obs.limits                      // default/max priority fee and default slippage. No size caps in here
 ```
 
 **What the observation does not carry**: unconfirmed orders, the next block, where the event windows
@@ -218,15 +224,21 @@ observation** (`obs.competition.maxCompetitorPriorityFeeWei`) — that is the hi
 not anyone's pending order. And `decide(obs, ctx)` hands you `ctx.publicClient` / `ctx.walletClient`,
 so **querying the node directly is not itself forbidden**. What is allowed is set by rules §8 (prohibited conduct).
 
+**There is no order-size cap.** No venue has a per-order amount cap, a bundle-length cap or an
+open-position cap, and `obs.limits` carries no size budget (the former `maxWethInWei` /
+`maxUsdcInUnits` / `maxBundleActions` / `maxOpenPositions` were removed on 2026-09-02 — removed,
+not raised). The only bounds on a trade are **your balance** and **the depth of the pool you trade
+into**; the bigger you go, the worse the fill. Size yourself. The shared helper is
+`sized(obs, token, bps)` in `example/agents/lib/affordable.ts`, a fraction of what you hold.
+
 **There are two kinds of limit and they bite differently.**
 
 | Where it comes from | What it caps | What happens if you exceed it |
 |---|---|---|
-| `obs.limits` (the runtime validates it) | per-round trade size (`maxWethInWei` / `maxUsdcInUnits` / a cap per base), actions in a bundle (`maxBundleActions`), open positions (`maxOpenPositions`), priority fee | **rejected** before signing, with a `rejected` entry in `agents/<id>.jsonl`. Nothing reaches the chain |
-| rules §2.3 and §2.6 (the operator imposes it) | **3 transactions per block** (bundles included, §2.6), **5,000 ms** per decision, **2 vCPU / 4 GB** of memory (§2.3) | as the rules provide. **These are not in `obs.limits`** |
+| the runtime (validates before sending) | the action's shape and content (schema; a leg you hold no inventory for), the priority fee (`obs.limits.maxPriorityFeePerGasWei`), **gas** (30,000,000 per transaction, 30,000,000 per agent per block in total) | **rejected** before signing, with a `rejected` entry and its reason in `agents/<id>.jsonl` (for gas: `tx gas cap` / `per-block gas budget`). Nothing reaches the chain |
+| rules §2.3 and §2.6 (the operator imposes it) | **5,000 ms** per decision, **2 vCPU / 4 GB** of memory (§2.3). **No cap on transactions per block** (§2.6: inclusion is decided by the priority-fee auction, and the block gas limit is 30,000,000) | a timeout is no action for that block; a crash is no action for the rest of the epoch (no restart). **None of this is in `obs.limits`** |
 
-Reading `obs.limits` keeps you inside the first set automatically. **The second set is yours to
-respect.**
+The runtime stops the first kind for you. **The second is yours to respect.**
 
 The action catalogue is in [protocols-and-actions.md](guide/protocols-and-actions.md); every field of
 `obs` is in [writing-agents.md](guide/writing-agents.md).
@@ -264,9 +276,8 @@ agents:
 | `codex` / `codex:<model>` | spawns `codex exec` | ChatGPT subscription (`codex login`) |
 | `claude-cli` / `claude-cli:<model>` | spawns `claude -p` | Claude subscription |
 | `claude…` (a model name starting with `claude`) | the Anthropic API | `ANTHROPIC_API_KEY` |
-| anything else (default) | the ollama family | `ERIS_OLLAMA_BASE_URL` (Ollama Cloud by default) + `OLLAMA_API_KEY` |
-
 | `openai:<model>`, or a name starting with `gpt-` / `o1` / `o3` / `o4` | OpenAI-compatible chat completions | `OPENAI_API_KEY` (`OPENAI_BASE_URL` for a compatible endpoint) |
+| anything else (default) | the ollama family | `ERIS_OLLAMA_BASE_URL` (Ollama Cloud by default) + `OLLAMA_API_KEY` |
 
 > **In the competition no key reaches your agent.** Inference goes through the operator's proxy
 > (rules §2.3, §2.5); the models you may use are the proxy's published list (§2.5) and every exchange
@@ -313,7 +324,8 @@ A chain that does not stop, which you can point your own agent at from your own 
 official scoring** — nothing from the practice period counts toward the standings.
 
 You need the `manifest.json` the operator publishes (RPC, chain id, every venue address, round
-length, action vocabulary, limits) and your own wallet. Your decision log stays **on your machine and
+length, action vocabulary, fee defaults, and an explicit statement that **there is no order-size
+cap**) and your own wallet. Your decision log stays **on your machine and
 nowhere else**. Steps are in [practice-devnet.md](guide/practice-devnet.md).
 
 Practice teaches you execution and how to read observations. **Epoch resets and deviation scoring do not
@@ -367,7 +379,9 @@ your agent is frozen, and only the in-epoch LLM revision keeps running.
 **Sending the leg you have no inventory for.** Selling while you hold only USDC is rejected by the
 runtime's validation and leaves a `rejected` entry. Nothing reaches the chain, so the result is
 **identical to an agent that chose not to trade**. Four bundled agents once shipped with this bug.
-Use `canFund` / `affordable` from `example/agents/lib/affordable.ts`.
+Use `canFund` / `affordable` from `example/agents/lib/affordable.ts`, and size with `sized` as a
+fraction of your own balance (the environment no longer hands out a size cap, so there is nothing
+to read out of `obs.limits`).
 
 **`prompt.md` without `kind: improve`.** Startup fails, and the error message says so.
 

@@ -544,8 +544,8 @@ ours なのは 2 つだけ（core は無改変）:
   ヘルパは `example/agents/lib/deployContract.ts`
 - **承認は必要額ちょうど**（`exactApproveTx`）。無制限 approve で抜くコントラクトは規約の範囲内なので、
   参照ランタイム自身がその穴になってはいけない。observation は registry エントリへの未消化 allowance を出す
-- **ガス予算（T0）**: **per-tx 30,000,000 / per-agent-per-block 90,000,000**。規約 §5 は tx の**本数**しか
-  縛っていないので、自分で書いた高価なコードへの 1 呼び出しでブロックを飢えさせられる —
+- **ガス予算（T0）**: **per-tx 30,000,000 / per-agent-per-block 30,000,000**（2026-09-06 の決定。90M から下げた）。
+  規約 §2.6 は tx の**本数**を縛らないので、自分で書いた高価なコードへの 1 呼び出しでブロックを飢えさせられる —
   他参加者だけでなく**環境のオラクル更新**も。1 つの数字を 3 か所が読む（ゲートウェイが RLP で
   gas limit を読んで **403 入口拒否** / ランタイムが自己制限 / run 後に blocks.csv の `gasUsed` 列で検出）
 - **owner ガードは実測する**（`core/src/realtime/ownerGuards.ts`）。役割のないアドレスから特権書き込みを
