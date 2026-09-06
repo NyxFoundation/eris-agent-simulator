@@ -558,6 +558,11 @@ export async function runRealtimeSimulation(
     // moment the agents are somebody else's processes on somebody else's machine. Reads go to
     // readRpcUrl, which is the sequencer unless a replica is configured (#36).
     rpcUrl: config.readRpcUrl,
+    // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
+    // hosted dashboard's public view reads it before summary.json exists, to decide how much of
+    // the stress schedule an audience may see (none for a scenario: a window's kind names the
+    // regime rules §3.3 does not announce).
+    resetUnit: config.resetUnit,
     chainId: config.chainId,
     chainMode: config.chainMode,
     // Rules §2.6. 0 means the node's own limit was left in place.
@@ -2081,6 +2086,11 @@ export async function runRealtimeSimulation(
         seed: config.seed,
         flowSeed: config.flowSeed,
         rpcUrl: config.readRpcUrl,
+        // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
+        // hosted dashboard's public view reads it before summary.json exists, to decide how much of
+        // the stress schedule an audience may see (none for a scenario: a window's kind names the
+        // regime rules §3.3 does not announce).
+        resetUnit: config.resetUnit,
         chainId: config.chainId,
         chainMode: config.chainMode,
         blockGasLimit: config.blockGasLimit,

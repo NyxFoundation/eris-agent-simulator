@@ -188,9 +188,18 @@ const REDACTED_JSON: Record<string, (file: Json) => Json> = {
  * One events.jsonl line for the audience, or null to drop it. `currentBlock` is the chain height the
  * run has reached (null when unknown), which decides how much of the stress schedule is history.
  */
+export type SchedulePolicy =
+  /** Keep windows that have closed by `currentBlock` (a practice period: the past is public). */
+  | { kind: "past"; currentBlock: number | null }
+  /**
+   * Drop the schedule entirely: the run is one epoch of a scenario matrix, and even a closed
+   * window's kind ("crash", "whale") names the regime rules §3.3 does not announce.
+   */
+  | { kind: "none" };
+
 export function redactEventLine(
   line: string,
-  currentBlock: number | null,
+  policy: SchedulePolicy,
 ): string | null {
   let event: Json;
   try {
@@ -206,8 +215,12 @@ export function redactEventLine(
       return JSON.stringify(rest);
     }
     case "stress_schedule": {
-      // The plan is drawn from the seed before block one. What has already happened is public in
-      // the price series anyway; what has not is exactly what the manifest withholds (ADR 0021 §1).
+      // The plan is drawn from the seed before block one. On a practice period what has already
+      // happened is public in the price series anyway, and what has not is exactly what the
+      // manifest withholds (ADR 0021 §1). In a scenario matrix the kind of a window names the
+      // regime, which is what §3.3 keeps from the audience, so nothing of the plan is served.
+      if (policy.kind === "none") return null;
+      const currentBlock = policy.currentBlock;
       if (currentBlock === null || !Array.isArray(event.events)) return null;
       const start =
         typeof event.runStartBlock === "number" ? event.runStartBlock : 0;
@@ -384,6 +397,44 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     }
   }
 
+  /**
+   * Which run this file belongs to, and how much of its stress schedule the audience may see. A
+   * scenario matrix's epoch (`resetUnit: scenario`, recorded in summary.json at the end and in
+   * run_started_realtime from the start) gets none of it; a continuous world (a practice period)
+   * gets the windows that have closed. A run that says neither is treated as a scenario: the
+   * cautious default, since the cost of the other mistake is a published regime.
+   */
+  function schedulePolicyOf(file: string): SchedulePolicy {
+    const dir = path.dirname(file);
+    let resetUnit: string | undefined;
+    try {
+      const summary = JSON.parse(
+        fs.readFileSync(path.join(dir, "summary.json"), "utf8"),
+      ) as Json;
+      if (typeof summary.resetUnit === "string") resetUnit = summary.resetUnit;
+    } catch {
+      // no summary yet (live), or unreadable: fall through to the events header
+    }
+    if (resetUnit === undefined) {
+      try {
+        const fd = fs.openSync(path.join(dir, "events.jsonl"), "r");
+        try {
+          const buf = Buffer.alloc(64 * 1024);
+          const n = fs.readSync(fd, buf, 0, buf.length, 0);
+          const m = /"resetUnit":"([a-z]+)"/.exec(buf.subarray(0, n).toString("utf8"));
+          if (m) resetUnit = m[1];
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch {
+        // no events file either
+      }
+    }
+    return resetUnit === "continuous"
+      ? { kind: "past", currentBlock: currentBlockOf(file) }
+      : { kind: "none" };
+  }
+
   function acceptsGzip(req: IncomingMessage): boolean {
     const accept = req.headers["accept-encoding"];
     const value = Array.isArray(accept) ? accept.join(",") : (accept ?? "");
@@ -416,7 +467,7 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
 
   /** events.jsonl for the audience: the file, line by line, through the redaction. */
   function redactedEventsStream(file: string): NodeJS.ReadableStream {
-    const currentBlock = currentBlockOf(file);
+    const policy = schedulePolicyOf(file);
     let carry = "";
     const transform = new Transform({
       transform(chunk: Buffer, _enc, cb) {
@@ -426,14 +477,14 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
         const out: string[] = [];
         for (const line of lines) {
           if (!line.trim()) continue;
-          const kept = redactEventLine(line, currentBlock);
+          const kept = redactEventLine(line, policy);
           if (kept !== null) out.push(kept);
         }
         cb(null, out.length > 0 ? `${out.join("\n")}\n` : "");
       },
       flush(cb) {
         if (carry.trim()) {
-          const kept = redactEventLine(carry, currentBlock);
+          const kept = redactEventLine(carry, policy);
           cb(null, kept !== null ? `${kept}\n` : "");
         } else cb(null, "");
       },
@@ -526,14 +577,14 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
               res.end(JSON.stringify({ offset: start, text: "" }));
               return;
             }
-            const currentBlock = currentBlockOf(file);
+            const policy = schedulePolicyOf(file);
             const kept: string[] = [];
             for (const line of raw
               .subarray(0, cut)
               .toString("utf8")
               .split("\n")) {
               if (!line.trim()) continue;
-              const out = redactEventLine(line, currentBlock);
+              const out = redactEventLine(line, policy);
               if (out !== null) kept.push(out);
             }
             res.end(

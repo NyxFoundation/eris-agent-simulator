@@ -315,9 +315,13 @@ With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
 - rewrites `events.jsonl` line by line: `seed` / `flowSeed` leave `run_started_realtime`, the
   `stress_calibration_warning` (it names crash magnitudes) and `vulnerability_exploited` (regime-7
   ground truth) lines go, `pool_created` loses `rigged` / `rugBps` / `rugThresholdUnits` /
-  `baitBps`, any `stderrTail` goes, and `stress_schedule` keeps only the windows that have **already
-  closed** by the run's current block (read off the end of `blocks.csv`). Past windows happened to
-  everyone; future ones are what the manifest withholds (ADR 0021 §1)
+  `baitBps`, any `stderrTail` goes, and `stress_schedule` depends on what the run is: for a
+  **continuous** world (a practice period) it keeps only the windows that have **already closed** by
+  the run's current block (read off the end of `blocks.csv`) — past windows happened to everyone,
+  future ones are what the manifest withholds (ADR 0021 §1); for one epoch of a **scenario**
+  matrix it is dropped entirely, because even a closed window's kind ("crash", "whale") names the
+  regime §3.3 does not announce. The run's kind is read from `summary.json`, or from
+  `run_started_realtime` while the run is live; a run that states neither is treated as a scenario
 - rewrites `matrix.json` / `standings.json` of a **scenario** matrix so every scenario is
   `regime: "hidden"`, `seed: 0` — the pages call it "epoch s" (§3.3: an epoch's scenario is not
   announced, and with equal regime counts the ones already run would give away the rest). A practice

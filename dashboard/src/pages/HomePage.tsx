@@ -11,7 +11,11 @@ import { InfoTabs } from "@/components/InfoTabs";
 import { RoundCursorBar } from "@/components/RoundCursorBar";
 import { Sidebar } from "@/components/Sidebar";
 import { MoveCell, Panel, Stat, toneColor } from "@/components/competitionUi";
-import { competitionName, scenarioRunId } from "@/data/competition";
+import {
+  competitionName,
+  isHiddenScenario,
+  scenarioRunId,
+} from "@/data/competition";
 import { windowsAtRound } from "@/data/schedule";
 import { buildScenarioList, type ScenarioListRow } from "@/data/scenarioList";
 import {
@@ -247,7 +251,13 @@ function ScenarioRow({
           font: "var(--text-xs) var(--font-mono)",
         }}
       >
-        {row.events.length === 0 ? (
+        {isHiddenScenario(row) ? (
+          // The kind of an episode ("crash", "whale") names the regime, which is what the public
+          // view of a scenario matrix withholds (rules §3.3) — so this is "withheld", not "none".
+          <span style={{ color: "var(--text-disabled)" }}>
+            {t("home.scenarios.eventsWithheld")}
+          </span>
+        ) : row.events.length === 0 ? (
           <span style={{ color: "var(--text-disabled)" }}>
             {t("home.scenarios.noEvents")}
           </span>
@@ -437,10 +447,11 @@ export function HomePage() {
   const done = file.scenarios.filter((s) => s.agents.length > 0).length;
   const planned = data.scenariosPlanned;
   const running = data.liveRunIds.length > 0;
+  // Only while the plan is short of epochs: once every planned epoch has a result, a live run in
+  // runs/ is somebody else's world (a practice period's day, a local replay), not this
+  // competition's next epoch.
   const progress =
-    !data.competition.fromSingleRun &&
-    planned !== null &&
-    (done < planned || running)
+    !data.competition.fromSingleRun && planned !== null && done < planned
       ? { done, planned, running }
       : null;
   // Built without repeat(): `repeat(0, ...)` is invalid CSS and would break the whole grid for a
@@ -749,7 +760,10 @@ export function HomePage() {
                           {row.rank}
                         </span>
                         <span
-                          style={{ overflow: "hidden", textOverflow: "ellipsis" }}
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
                           title={row.participant}
                         >
                           {row.participant}
@@ -939,16 +953,22 @@ export function HomePage() {
                               "at round k" — while the cursor is mid-competition the finished number
                               is shown dimmed rather than under a round label. */}
                           <span
-                            title={scrubbing ? t("home.netPnlScrub") : undefined}
+                            title={
+                              scrubbing ? t("home.netPnlScrub") : undefined
+                            }
                             style={{
                               textAlign: "right",
                               font: "var(--text-xs) var(--font-mono)",
                               color: scrubbing
                                 ? "var(--text-disabled)"
-                                : toneColor(standings.netPnlByAgent[row.id] ?? 0),
+                                : toneColor(
+                                    standings.netPnlByAgent[row.id] ?? 0,
+                                  ),
                             }}
                           >
-                            {formatPnlUsdc(standings.netPnlByAgent[row.id] ?? 0)}
+                            {formatPnlUsdc(
+                              standings.netPnlByAgent[row.id] ?? 0,
+                            )}
                           </span>
                         </div>
                       );

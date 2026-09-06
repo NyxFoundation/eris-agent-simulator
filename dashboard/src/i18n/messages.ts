@@ -664,6 +664,7 @@ const en = {
   "home.scenarios.audienceEvents":
     "Public view: only episodes that have already opened are listed; upcoming windows are withheld while the competition runs.",
   "scenario.hidden": "epoch {s}",
+  "home.scenarios.eventsWithheld": "withheld while the competition runs",
   "agent.audienceLog": "Not shown while the competition runs",
   "agent.audienceLogNote":
     "The decision log is the participant's own reasoning, and its mempool self-reports are bids not yet included in a block (rules §2.6). Both stay unpublished until the results (rules §7.2).",
@@ -1289,6 +1290,7 @@ const ja: Record<MessageKey, string> = {
   "home.scenarios.audienceEvents":
     "公開ビュー: 既に開いたイベントだけを表示し、これから開く窓は競技中は伏せます。",
   "scenario.hidden": "エポック {s}",
+  "home.scenarios.eventsWithheld": "競技中は非表示",
   "agent.audienceLog": "競技中は表示しません",
   "agent.audienceLogNote":
     "判断ログは参加者自身の推論で、mempool の自己申告はまだブロックに入っていない入札です（規約 §2.6）。どちらも結果発表までは公開しません（規約 §7.2）。",

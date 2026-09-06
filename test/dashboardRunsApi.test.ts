@@ -81,6 +81,7 @@ function fixtureRuns(): string {
       runId: "r",
       seed: 4242,
       flowSeed: 7,
+      resetUnit: "continuous",
       agents: [
         {
           id: "a1",
@@ -95,6 +96,29 @@ function fixtureRuns(): string {
   writeFileSync(join(run, "agents", "a1.llm.jsonl"), '{"prompt":"x"}\n');
   writeFileSync(join(run, "disclosures", "0xabc.json"), '{"source":"..."}\n');
   writeFileSync(join(run, "market.json"), '{"ok":true}\n');
+
+  // One epoch of a scenario matrix, still running: no summary.json, resetUnit in the header only.
+  const epoch = join(root, "2026-11-02T10-00-00-000Z");
+  mkdirSync(epoch, { recursive: true });
+  writeFileSync(
+    join(epoch, "events.jsonl"),
+    [
+      { type: "run_started_realtime", runId: "e", seed: 99, resetUnit: "scenario", epochBlocks: 12 },
+      {
+        type: "stress_schedule",
+        runStartBlock: 100,
+        events: [{ type: "crash", magnitude: 0.14, startBlock: 30, endBlock: 47 }],
+      },
+      { type: "stress_liquidation", blockNumber: 140, victim: "0xdef" },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join("\n") + "\n",
+  );
+  writeFileSync(
+    join(epoch, "blocks.csv"),
+    "round,blockNumber,txIndex,hash,from,priorityFeeWei,status,ownerId,role,actionType,bundleId,bundleIndex,method,gasUsed\n" +
+      "300,300,0,0x9,0xa,0,success,oracle,system,,,,setPrice,50000\n",
+  );
 
   const matrix = join(root, "matrix-2026-11-01");
   mkdirSync(matrix);
@@ -230,6 +254,16 @@ test("audience mode strips seeds, future windows, rigged ground truth and stderr
       assert.equal(exited.code, 137);
       assert.ok(types.includes("stress_liquidation"), "realized events stay");
     }
+    // A scenario matrix's epoch: the window closed at block 147 and the run is at 300, and still
+    // nothing of the plan is served -- its kind would name the regime (rules §3.3).
+    const epoch = await get("/2026-11-02T10-00-00-000Z/events.jsonl");
+    const epochTypes = epoch.text
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => (JSON.parse(l) as { type: string }).type);
+    assert.ok(!epochTypes.includes("stress_schedule"), "no schedule for a scenario epoch");
+    assert.ok(epochTypes.includes("stress_liquidation"));
+    assert.ok(!epoch.text.includes('"seed"'));
   } finally {
     await close();
     rmSync(root, { recursive: true, force: true });
@@ -301,16 +335,19 @@ test("operator mode serves everything as before, with cache headers", async () =
   }
 });
 
-test("redactEventLine drops the whole schedule when the run's block is unknown", () => {
+test("redactEventLine: past windows for a continuous world, nothing for a scenario epoch", () => {
   const line = JSON.stringify({
     type: "stress_schedule",
     runStartBlock: 100,
     events: [{ type: "crash", startBlock: 30, endBlock: 47 }],
   });
-  assert.equal(redactEventLine(line, null), null);
-  assert.equal(redactEventLine(line, 146), null, "endBlock not yet reached");
-  assert.ok(redactEventLine(line, 147)?.includes('"crash"'));
-  assert.equal(redactEventLine("not json", 1), "not json");
+  const past = (currentBlock: number | null) =>
+    ({ kind: "past", currentBlock }) as const;
+  assert.equal(redactEventLine(line, past(null)), null);
+  assert.equal(redactEventLine(line, past(146)), null, "endBlock not yet reached");
+  assert.ok(redactEventLine(line, past(147))?.includes('"crash"'));
+  assert.equal(redactEventLine(line, { kind: "none" }), null, "a scenario epoch: never");
+  assert.equal(redactEventLine("not json", past(1)), "not json");
 });
 
 test("modeFromEnv reads the two switches", () => {
