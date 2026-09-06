@@ -221,9 +221,16 @@ function buildAmmPanel(
     stats,
     charts: charts.filter((c): c is VenueChart => c !== null),
     tables,
-    ...(depths.length === 0 && !market
-      ? { note: t("vp.amm.note") }
-      : {}),
+    ...(market?.source === "sampled"
+      ? {
+          note: t("vp.amm.sampledNote", {
+            n: market.series.length,
+            every: market.granularityBlocks,
+          }),
+        }
+      : depths.length === 0 && !market
+        ? { note: t("vp.amm.note") }
+        : {}),
   };
 }
 

@@ -410,6 +410,8 @@ const en = {
   "vp.col.depth": "Depth",
   "vp.amm.quotesEmpty": "no venue quotes recorded in this run",
   "vp.amm.note": "per-venue depth appears once the run finishes",
+  "vp.amm.sampledNote":
+    "Venue series sampled at each round boundary ({n} points, every {every} blocks) while the run was going. Per-transaction volume and the trade markers need the post-run sweep, which a period's closed day does not get.",
   "vp.amm.swapsTitle": "Agent swaps · {base}",
   "vp.col.block": "Block",
   "vp.col.agent": "Agent",
@@ -1070,6 +1072,8 @@ const ja: Record<MessageKey, string> = {
   "vp.col.depth": "深度",
   "vp.amm.quotesEmpty": "この run に venue クォートの記録がありません",
   "vp.amm.note": "venue 別の深度は run 終了後に表示されます",
+  "vp.amm.sampledNote":
+    "venue の系列は run 中にラウンド境界ごとに記録したサンプルです（{n} 点、{every} ブロックごと）。tx 単位の出来高と取引マーカーは run 終了後の再構成が要るため、期間の閉じた日には出ません。",
   "vp.amm.swapsTitle": "エージェントのスワップ · {base}",
   "vp.col.block": "ブロック",
   "vp.col.agent": "エージェント",

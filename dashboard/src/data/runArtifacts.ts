@@ -198,6 +198,42 @@ export interface MarketSeriesFile {
   lstPositionsAtEnd?: LstPositionAtEnd[];
   liquityPositionsAtEnd?: LiquityPositionAtEnd[];
   notionals: Record<string, TxNotional>;
+  /**
+   * Where the series came from. `reconstructed` is market.json, the post-run sweep over every
+   * block. `sampled` is market.jsonl, the rows the coordinator writes at each epoch boundary while
+   * the run is going (core/src/realtime/liveScoring.ts) -- the only market series a practice
+   * period's closed segments have, since the sweep needs a node history a day-long segment does not
+   * fit in (ADR 0021 §3). Same row shape, coarser cadence, and no per-transaction notionals.
+   */
+  source?: "reconstructed" | "sampled";
+}
+
+/** A market series built from the boundary samples, for a run that has no market.json. */
+function marketFromSamples(text: string): MarketSeriesFile | null {
+  const rows = parseJsonl<MarketSeriesRow>(text).filter(
+    (r) => typeof r.block === "number",
+  );
+  if (rows.length === 0) return null;
+  rows.sort((a, b) => a.block - b.block);
+  const venues = new Set<string>();
+  const bases = new Set<string>();
+  for (const r of rows) {
+    for (const v of Object.keys(r.venues ?? {})) venues.add(v);
+    for (const b of Object.keys(r.fair ?? {})) bases.add(b);
+  }
+  return {
+    fromBlock: rows[0].block,
+    toBlock: rows[rows.length - 1].block,
+    granularityBlocks: rows.length > 1 ? rows[1].block - rows[0].block : 0,
+    failedReads: 0,
+    bases: [...bases],
+    venues: [...venues],
+    series: rows,
+    gmxPositionsAtEnd: [],
+    aaveAccountsAtEnd: [],
+    notionals: {},
+    source: "sampled",
+  };
 }
 
 // Present only on a live run's synthetic LoadedRun (issue #63 Phase 3): what the current-block RPC
@@ -288,22 +324,28 @@ export function loadRun(runId: string): Promise<LoadedRun> {
 
   const loading = (async (): Promise<LoadedRun> => {
     const base = `/runs/${encodeURIComponent(runId)}`;
-    const [summaryText, eventsText, blocksText, marketText] = await Promise.all(
-      [
+    const [summaryText, eventsText, blocksText, marketText, samplesText] =
+      await Promise.all([
         fetchText(`${base}/summary.json`),
         fetchText(`${base}/events.jsonl`).catch(() => ""),
         fetchText(`${base}/blocks.csv`).catch(() => ""),
         fetchText(`${base}/market.json`).catch(() => null),
-      ],
-    );
+        fetchText(`${base}/market.jsonl`).catch(() => null),
+      ]);
     let market: MarketSeriesFile | null = null;
     if (marketText) {
       try {
-        market = JSON.parse(marketText) as MarketSeriesFile;
+        market = {
+          ...(JSON.parse(marketText) as MarketSeriesFile),
+          source: "reconstructed",
+        };
       } catch {
         // a torn artifact from a killed run; the Phase 1 fallback still renders
       }
     }
+    // A practice period's closed segments never get market.json (the post-run sweep needs more node
+    // history than a day holds); the boundary samples are their market series.
+    if (!market && samplesText) market = marketFromSamples(samplesText);
     return {
       id: runId,
       summary: JSON.parse(summaryText) as RunSummary,
