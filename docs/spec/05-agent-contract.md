@@ -80,6 +80,7 @@ type AgentContext = {
 | `fairPricesUsd` / `baseBalances` / `baseDecimals` / `markets` | マルチアセット。WETH のみの run では既存フィールドと一致する |
 | `blocksRemaining` | **このエージェントが最初に観測したブロックから数えた**残りブロック数。run に上限が無ければ undefined |
 | `enabledProtocols` | この run で有効な venue |
+| `discoveredPools` | 環境がエポック途中に配置したプール（規約 §3.2 レジーム 7、ADR 0014）: address / token0 / token1 / decimals / feeBps / createdAtBlock / reserves / 含意価格 / codehash。**rigged かどうかは出さない**（検査は参加者の判断）。factory の無い run では undefined |
 | `balances` | `ethWei` / `wethWei` / `usdcUnits` / `stables{}` |
 | `inventory` | `valueUsdc` ほか。**評価はこちら**（`balances` は予算） |
 | `history` | 直近 20 ラウンドの pool 価格と fair 価格 |
@@ -202,7 +203,7 @@ model: <モデル名>          # 任意（ロスターの ERIS_LLM_MODEL より�
 | 段 | 内容 |
 |---|---|
 | 発火 | `obs.round − lastRevisionBlock >= reviseEvery`。**最初の観測ではベースラインを設定するだけで発火しない**（`obs.round` は絶対ブロック番号なので、0 起点だと最初の観測が即座に「期限超過」になる） |
-| 上限 | **1 run あたり 12 回**（`MAX_REVISIONS_PER_RUN`）。参加者の宣言が `runBlocks/12` より短ければ clamp し、**clamp したことをログに残す**（同居 run は 1 つの LLM 予算を共有するため） |
+| 上限 | **無し**。以前は 1 run あたり 12 回（`MAX_REVISIONS_PER_RUN`）で宣言を clamp していたが、それは同居 run が 1 つの LLM 予算を共有していた頃の措置。参加者が自分の認証情報で推論する今（規約 §2.5）、間隔（`reviseEveryBlocks`、規約 付録A）と費用は参加者のもの |
 | 入力 | 現在の戦略ソース・版履歴・各版インストール時の価値・直近 32 件の判断・最新 observation・**この run で有効な venue のアクション語彙** |
 | 出力 | `{notes, executorTs}` か `{notes, revertTo: <version>}`。`executorTs: null` は「今の戦略を維持」 |
 
@@ -260,4 +261,4 @@ ADR 0021 §2。環境がプロセスを起動しない登録エントリ。
 
 ## 5.10 提出
 
-`npm run bundle:agent <id>` が提出用 zip を作る（runtime + sdk + lib + 対象エージェント。ADR 0015 §7）。**エージェントディレクトリがコピーと提出の単位**であり、バンドルされた戦略はその参加者のものになる（[README](../../README.md) の License 節）。
+`npm run bundle:agent <id>` が提出用 zip を作る（runtime + sdk + lib + 対象エージェント。ADR 0015 §7）。**`kind: improve` の prompt.md を持たないディレクトリは拒否する**（規約 §2.5 は全提出エージェントに戦略の改訂を求める。起動時に要求しないのは、example の 17 エージェントが prompt.md 無しの教材で、ロスターにそのまま載るため。検査は bot.ts が起動時に使う `loadImproveAgent` と同一）。**エージェントディレクトリがコピーと提出の単位**であり、バンドルされた戦略はその参加者のものになる（[README](../../README.md) の License 節）。

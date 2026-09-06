@@ -80,6 +80,7 @@ Built by `observationFor` (`sdk/src/observation.ts`). The point is that **the en
 | `fairPricesUsd` / `baseBalances` / `baseDecimals` / `markets` | Multi-asset. In a WETH-only run these agree with the legacy fields |
 | `blocksRemaining` | Blocks left, **counted from the first block this agent observed**. Undefined when the run has no block limit |
 | `enabledProtocols` | The venues this run turned on |
+| `discoveredPools` | Pools the environment placed mid-epoch (rules §3.2 regime 7, ADR 0014): address / token0 / token1 / decimals / feeBps / createdAtBlock / reserves / implied price / codehash. **Whether a pool is rigged is not disclosed** (inspecting it is the participant's call). Undefined in a run without the factory |
 | `balances` | `ethWei` / `wethWei` / `usdcUnits` / `stables{}` |
 | `inventory` | `valueUsdc` and friends. **This is the valuation**; `balances` is a budget |
 | `history` | The last 20 rounds of pool and fair price |
@@ -202,7 +203,7 @@ The body: the improvement policy (when, on what evidence, and how to change it)
 | Stage | Contents |
 |---|---|
 | Trigger | `obs.round − lastRevisionBlock >= reviseEvery`. **The first observation only seeds the baseline** — `obs.round` is an absolute block number, so starting from 0 made the first observation instantly overdue |
-| Ceiling | **12 per run** (`MAX_REVISIONS_PER_RUN`). A declaration shorter than `runBlocks/12` is clamped, **and the clamp is recorded** (a co-located run shares one LLM budget) |
+| Ceiling | **None.** There used to be one (12 per run, `MAX_REVISIONS_PER_RUN`, clamping the declaration) while a co-located run shared one LLM budget; participants now bring their own inference credentials (rules §2.5), so the cadence (`reviseEveryBlocks`, rules appendix A) and its cost are theirs |
 | Input | The current source, the version history, the value at each install, the last 32 decisions, the latest observation, and **the action vocabulary this run offers** |
 | Output | `{notes, executorTs}` or `{notes, revertTo: <version>}`. `executorTs: null` means "keep the current strategy" |
 
@@ -260,4 +261,4 @@ ADR 0021 §2. A registered entry the environment never starts.
 
 ## 5.10 Submission
 
-`npm run bundle:agent <id>` produces the submission zip (runtime + sdk + lib + the agent; ADR 0015 §7). **The agent directory is the unit of copying and submission**, and a strategy built from one of the bundled agents is the participant's ([README](../../../README.md), License).
+`npm run bundle:agent <id>` produces the submission zip (runtime + sdk + lib + the agent; ADR 0015 §7). **A directory without a `kind: improve` prompt.md is refused** (rules §2.5 require every submitted agent to revise its strategy; start-up does not require it because 17 of the example agents are prompt.md-less teaching steps that rosters run as they are. The check is the same `loadImproveAgent` bot.ts applies at start). **The agent directory is the unit of copying and submission**, and a strategy built from one of the bundled agents is the participant's ([README](../../../README.md), License).

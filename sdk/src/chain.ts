@@ -356,6 +356,25 @@ export async function setAutomine(
   } as AnvilRequest);
 }
 
+// Block gas limit. The coordinator sets it once setup is done and before interval mining starts
+// (rules §2.6 publish 30,000,000): setup runs at whatever the node was started with -- the
+// deployer's anvil needs 3,000,000,000 to deploy GMX and a state dump carries that forward -- and
+// the competition phase runs at the published block size, which is what makes the priority-fee
+// auction exist. Sizing the block to fit every agent's every transaction would remove it.
+export async function setBlockGasLimit(
+  publicClient: PublicClient,
+  gasLimit: number,
+): Promise<void> {
+  requireDevNode(
+    "setBlockGasLimit",
+    "the block gas limit belongs to the chain's genesis / rollup config; set it there",
+  );
+  await publicClient.request({
+    method: "anvil_setBlockGasLimit",
+    params: [`0x${gasLimit.toString(16)}`],
+  } as AnvilRequest);
+}
+
 export type ResetForkOptions = {
   // Upstream fork RPC (ARB_RPC_URL). When set, anvil_reset with forking rebuilds the fork from
   // scratch, fully discarding the previous run/seed's local changes (Aave positions, reserve

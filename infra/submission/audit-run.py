@@ -4,9 +4,10 @@
 Reads a finished run's artifacts and checks that the on-chain enforcement actually held, and flags
 abuse signals for review. Runs after a scored run (docs/24 §4 "後処理の機械チェック", docs/21).
 
-HARD violations (exit 2 — the run should be invalidated): the operator-side enforcement was bypassed.
-  - tx cap:        an agent submitted more than N tx in a single round (§2.6, default N=3).
+HARD violations (exit 2 — the run should be invalidated): the chain did not do what the rules say.
   - priority-fee:  agent tx within a block are not ordered by priority fee (§2.6 auction failed).
+There is no per-agent tx-count rule since 2026-09-06 (rules §2.6): inclusion is the fee auction, and a
+mechanical cap, if any, lives on the RPC gateway as load protection, not in the rulebook.
 WARN signals (exit 0 — for manual review, not auto-invalidation):
   - revert spam:   an agent's tx revert rate is high (resource abuse).
   - collusion:     a pair of agents repeatedly make opposing swaps in the same round (wash/collusion
@@ -14,7 +15,7 @@ WARN signals (exit 0 — for manual review, not auto-invalidation):
                    reviewer at pairs to inspect. Full inter-team detection needs the registration
                    team->wallet map + net value-flow, which live outside a single run's artifacts.
 
-Usage: audit-run.py <run_dir> [--max-tx 3] [--revert-warn 0.5] [--collusion-warn 0.6] [--json]
+Usage: audit-run.py <run_dir> [--revert-warn 0.5] [--collusion-warn 0.6] [--json]
 """
 import csv, json, sys, os, glob, argparse
 from collections import defaultdict
@@ -26,17 +27,6 @@ def load_blocks(run_dir):
         raise SystemExit(f"no blocks.csv in {run_dir} (run not finished / wrong dir)")
     with open(p, newline="") as f:
         return list(csv.DictReader(f))
-
-
-def check_tx_cap(rows, max_tx):
-    txs = defaultdict(set)  # (round, owner) -> {hash}  (a bundle is one hash = one tx)
-    for r in rows:
-        if r.get("role") == "agent":
-            txs[(r["round"], r["ownerId"])].add(r["hash"])
-    return [
-        f"tx-cap: agent '{owner}' sent {len(h)} tx in round {rnd} (limit {max_tx})"
-        for (rnd, owner), h in sorted(txs.items()) if len(h) > max_tx
-    ]
 
 
 def check_priority_fee(rows):
@@ -118,14 +108,13 @@ def check_collusion(run_dir, warn):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir")
-    ap.add_argument("--max-tx", type=int, default=int(os.environ.get("ERIS_MAX_TXS_PER_ROUND", "3")))
     ap.add_argument("--revert-warn", type=float, default=0.5)
     ap.add_argument("--collusion-warn", type=float, default=0.6)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
 
     rows = load_blocks(a.run_dir)
-    hard = check_tx_cap(rows, a.max_tx) + check_priority_fee(rows)
+    hard = check_priority_fee(rows)
     warn = check_revert(rows, a.revert_warn) + check_collusion(a.run_dir, a.collusion_warn)
 
     if a.json:

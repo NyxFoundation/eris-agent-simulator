@@ -12,11 +12,20 @@
 #   bind-mount       -- ERIS_AGENT_BINDMOUNT=1: stock node:24 with the repo bind-mounted at its own
 #                       host path (no build; handy for iterating on runtime code on the same host).
 #
-# Caps default to 1 GiB / 0.5 vCPU (ERIS_DOCKER_MEM / ERIS_DOCKER_CPUS). --memory-swap is pinned to
-# --memory so the limit is a hard ceiling (over-budget agents OOM-kill instead of swapping).
+# Caps default to what the competition rules promise a participant: 4 GiB / 2 vCPU
+# (ERIS_DOCKER_MEM / ERIS_DOCKER_CPUS). --memory-swap is pinned to --memory so the limit is a hard
+# ceiling (over-budget agents OOM-kill instead of swapping).
 #
-# NOTE on isolation: --network host means the container shares the host network, so run-time egress
-# is NOT contained here -- it must be enforced by the operator's host/network policy. See README.
+# The defaults used to be 1 GiB / 0.5 vCPU, which is a quarter of the promise on both axes. That is
+# the wrong direction to be wrong in twice over: an agent sized against the published budget gets
+# OOM-killed here (code 137, which the coordinator reports as an early exit), and a participant
+# self-testing with this script -- which is what it is for -- tunes against a budget they were never
+# held to. The headroom is nominal, not reserved: 100 containers measured ~19 GB of host memory in
+# total (~190 MiB each), so raising the ceiling costs nothing until an agent actually misbehaves.
+#
+# NOTE on isolation: the default --network host shares the host network, so nothing is contained.
+# ERIS_AGENT_ISOLATE=1 gives each agent its own network with the RPC gateway as the hub, and
+# ERIS_AGENT_INTERNAL=1 makes that network egress-free (see below and ISOLATION.md).
 #
 # Cleanup: this execs `docker run --rm`, which removes the container on graceful exit (the client
 # forwards SIGTERM/SIGINT). The coordinator may SIGKILL this wrapper at run end (uncatchable, and
@@ -24,22 +33,34 @@
 set -euo pipefail
 
 REPO="${ERIS_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-MEM="${ERIS_DOCKER_MEM:-1g}"
-CPUS="${ERIS_DOCKER_CPUS:-0.5}"
+MEM="${ERIS_DOCKER_MEM:-4g}"
+CPUS="${ERIS_DOCKER_CPUS:-2}"
 NAME="eris-${ERIS_AGENT_ID:?ERIS_AGENT_ID is required (set by the coordinator)}"
 
 # Agent-to-agent isolation (ISOLATION.md, verified): put each agent on its OWN docker network that
-# only anvil also joins. Agents cannot reach each other (separate L2), can reach anvil by name, and
-# still egress (NAT) so a team may use its own LLM. Opt-in; needs anvil running as a bridge
-# container (ERIS_ANVIL_CONTAINER, default ascon-anvil) and ERIS_RPC_URL=http://<that>:8545.
+# only the hub also joins. Agents cannot reach each other (separate L2) and reach the chain only
+# through the hub. Opt-in; needs the hub running as a bridge container.
+#   ERIS_AGENT_HUB        the container agents may reach: default the RPC gateway, so they get the
+#                         cheatcode filter + rate limit and cannot reach anvil directly
+#                         (set ERIS_RPC_URL=http://<hub>:8546). ascon-anvil exposes anvil (no filter).
+#   ERIS_AGENT_INTERNAL=1 create the network with --internal: no NAT, no egress at all. This is what
+#                         makes rules §2.3 ("no direct external connection") true. Inference then goes
+#                         through the operator's proxy (core/src/inference/proxy.ts), which has to be
+#                         on the network too -- name its container in ERIS_INFERENCE_HUB and point
+#                         ERIS_INFERENCE_BASE_URL at it. Unset = NAT egress (the 2026-09-04 own-LLM
+#                         variant, kept as the verified fallback).
 if [ "${ERIS_AGENT_ISOLATE:-0}" = "1" ]; then
-  # Hub = the container agents may reach on their private net. Default the RPC gateway so agents get the
-  # cheatcode filter + rate limit and CANNOT reach anvil directly (set ERIS_RPC_URL=http://<hub>:8546).
-  # Set ERIS_AGENT_HUB=ascon-anvil to expose anvil directly instead (no filter).
   HUB_CT="${ERIS_AGENT_HUB:-ascon-rpc-gateway-live}"
   ISONET="ag-${ERIS_AGENT_ID}"
-  docker network create "$ISONET" >/dev/null 2>&1 || true
+  if [ "${ERIS_AGENT_INTERNAL:-0}" = "1" ]; then
+    docker network create --internal "$ISONET" >/dev/null 2>&1 || true
+  else
+    docker network create "$ISONET" >/dev/null 2>&1 || true
+  fi
   docker network connect "$ISONET" "$HUB_CT" >/dev/null 2>&1 || true   # idempotent; hub multi-homes
+  if [ -n "${ERIS_INFERENCE_HUB:-}" ]; then
+    docker network connect "$ISONET" "$ERIS_INFERENCE_HUB" >/dev/null 2>&1 || true
+  fi
   export ERIS_AGENT_NET="$ISONET"
 fi
 
@@ -68,26 +89,25 @@ CAPS=( --rm --init --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label er
 #   ERIS_LOCAL_DEPLOY -- from the operator process env; without it constants.local is ignored and
 #                        Multicall3 + every venue address fall back to the fork chain, so all reads
 #                        and tx builds fail while docker stats still looks healthy.
-COMMON_ENV=(
-  -e ERIS_AGENT_ID -e ERIS_RPC_URL -e ERIS_AGENT_ADDRESS -e ERIS_AGENT_PRIVATE_KEY
-  -e ERIS_PRICE_FEED_ADDRESS -e ERIS_RUN_ID -e ERIS_RUN_BLOCKS -e ERIS_AGENT_FROZEN
-  -e ERIS_LLM_MODEL -e ERIS_LOCAL_DEPLOY -e ERIS_OLLAMA_BASE_URL -e ERIS_OLLAMA_API_KEY
-  -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e HOME=/tmp
-  # Set by the coordinator for every child (agentProcess.ts). Without them the container falls back
-  # to the image's NODE_ENV and to no REPORT_DIR at all.
-  -e NODE_ENV -e REPORT_DIR
-  -e ERIS_MAX_TXS_PER_ROUND -e ERIS_MAX_TX_GAS -e ERIS_MAX_AGENT_BLOCK_GAS
-  # Issue #40. Without these a containerised agent cannot see the registry or the lending venue at
-  # all -- and the failure is quiet: it reads an empty registry and an absent venue, which is
-  # exactly what a run where nobody deployed anything looks like. Measured 2026-09-05: a 32-agent
-  # bench registered seven ERC-20s and thirteen unknown contracts and **not one lending market**,
-  # because every `createLendingMarket` was rejected at build time inside the container.
-  -e ERIS_MARKET_REGISTRY_ADDRESS -e ERIS_LENDING_ADDRESS
-  -e ERIS_MARKET_REGISTRY_FROM_BLOCK
-  # ADR 0014 / ADR 0009: the same class of omission, checked while I was here.
-  -e ERIS_VULN_FACTORY -e ERIS_VULN_FROM_BLOCK -e ERIS_VULN_LLM
-  -e ERIS_LIQUIDATION_VICTIMS -e ERIS_CONFIG -e ERIS_RUN_DIR_POINTER
-)
+# Every ERIS_* the coordinator set is forwarded by name, except the host paths each mode maps itself
+# below (ERIS_RUN_DIR / ERIS_AGENT_DIR / ERIS_CONFIG) and ERIS_REPO. A fixed list here used to drop
+# whatever the coordinator added later (the vulnerability factory, the market registry, the segment
+# pointer, the liquidation victims), and an agent missing one of those fails quietly -- it reads an
+# empty registry and an absent venue, which is exactly what a run where nobody deployed anything looks
+# like. HOME=/tmp because the rootfs is read-only; NODE_ENV / REPORT_DIR are set by the coordinator
+# for every child and the image has no useful default for either.
+COMMON_ENV=( -e HOME=/tmp -e NODE_ENV -e REPORT_DIR )
+while IFS= read -r name; do
+  case "$name" in
+    ERIS_RUN_DIR|ERIS_AGENT_DIR|ERIS_CONFIG|ERIS_REPO) ;;
+    *) COMMON_ENV+=( -e "$name" ) ;;
+  esac
+done < <(compgen -e | grep '^ERIS_' || true)
+# Inference credentials reach the agent only when no inference proxy is named: with a proxy
+# (ERIS_INFERENCE_BASE_URL) the keys live in the proxy and the agent holds a per-agent token instead.
+if [ -z "${ERIS_INFERENCE_BASE_URL:-}" ]; then
+  COMMON_ENV+=( -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e OPENAI_BASE_URL )
+fi
 
 # Run the container with this wrapper supervising it, and make sure the *container* dies when the
 # wrapper is asked to stop.

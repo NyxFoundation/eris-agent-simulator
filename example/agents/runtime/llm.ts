@@ -4,6 +4,8 @@
  * - ollama family (default): JSON mode (format:"json"). The Hermes JSON mode pattern used
  *   together with the system prompt's <schema> (NousResearch/Hermes-Function-Calling)
  * - claude family (model starts with "claude"): structured output via the Anthropic SDK's tool use
+ * - openai-compatible family ("openai:<model>", or a model starting with gpt-/o1/o3/o4): chat
+ *   completions with response_format json_object
  * - codex CLI (model "codex" or "codex:<model>"): spawns `codex exec` — runs on a ChatGPT
  *   subscription (codex login), no API key
  * - claude CLI (model "claude-cli" or "claude-cli:<model>"): spawns `claude -p` — runs on a
@@ -12,7 +14,12 @@
  *   which is why this spawns the CLI directly.
  *
  * Environment variables (same conventions as the old ollamaStrategist):
+ *   ERIS_INFERENCE_BASE_URL  the operator's inference proxy (rules §2.3 / §2.5). When set, the
+ *                            ollama / openai / anthropic families all go through it and no API key
+ *                            is needed here: ERIS_INFERENCE_TOKEN (per agent, handed out by the
+ *                            coordinator) and ERIS_AGENT_ID identify the caller
  *   ERIS_OLLAMA_BASE_URL  default https://ollama.com/api (local is http://127.0.0.1:11434/api)
+ *   OPENAI_BASE_URL / OPENAI_API_KEY  the openai family without a proxy (default https://api.openai.com/v1)
  *   ERIS_OLLAMA_API_KEY / OLLAMA_API_KEY  Ollama Cloud Bearer token (not needed locally)
  *   ANTHROPIC_API_KEY     required for the claude family (SDK; ignored by claude-cli)
  *   ERIS_CLAUDE_BIN / ERIS_CODEX_BIN  CLI binary override (default "claude" / "codex")
@@ -40,8 +47,23 @@ const CLI_CALL_TIMEOUT_MS = Number(
 );
 
 export type LlmProvider =
-  | { kind: "ollama" | "anthropic" }
+  | { kind: "ollama" | "anthropic" | "openai" }
   | { kind: "codex" | "claude-cli"; model?: string };
+
+// The operator's inference proxy, when the run has one. Every HTTP provider routes through it and
+// authenticates with the per-agent token; the upstream key lives in the proxy, not here.
+function inferenceBase(): string | undefined {
+  const base = process.env.ERIS_INFERENCE_BASE_URL;
+  return base && base.trim() !== "" ? base.trim().replace(/\/$/, "") : undefined;
+}
+function proxyHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const token = process.env.ERIS_INFERENCE_TOKEN;
+  if (token) headers.authorization = `Bearer ${token}`;
+  const agentId = process.env.ERIS_AGENT_ID;
+  if (agentId) headers["x-eris-agent"] = agentId;
+  return headers;
+}
 
 // Model name → provider. "codex[:<model>]" / "claude-cli[:<model>]" select the subscription CLIs
 // (an empty model defers to the CLI's own configured default). "claude..." selects the Anthropic SDK.
@@ -53,8 +75,17 @@ export function resolveLlmProvider(model: string): LlmProvider {
       return rest === "" ? { kind } : { kind, model: rest };
     }
   }
+  if (model.startsWith("openai:")) return { kind: "openai" };
+  // OpenAI's own names: gpt-<digit>... and the o-series. NOT gpt-oss, which is an open-weights
+  // model served by Ollama and the default here.
+  if (/^(gpt-\d|o[134](-|$))/.test(model)) return { kind: "openai" };
   if (model.startsWith("claude")) return { kind: "anthropic" };
   return { kind: "ollama" };
+}
+
+// "openai:<model>" is the explicit form; the bare model name goes upstream.
+function openAiModelName(model: string): string {
+  return model.startsWith("openai:") ? model.slice("openai:".length) : model;
 }
 
 // A single LLM call. Returns the response text (a JSON string is expected). Parsing/validation is the caller's job (bot.ts).
@@ -63,19 +94,63 @@ export async function callLlm(req: LlmRequest): Promise<string> {
   if (provider.kind === "codex") return callCodexCli(provider.model, req);
   if (provider.kind === "claude-cli") return callClaudeCli(provider.model, req);
   if (provider.kind === "anthropic") return callClaude(req);
+  if (provider.kind === "openai") return callOpenAi(req);
   return callOllama(req);
 }
 
+async function callOpenAi(req: LlmRequest): Promise<string> {
+  const proxy = inferenceBase();
+  const base = proxy
+    ? `${proxy}/v1`
+    : (process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (proxy) Object.assign(headers, proxyHeaders());
+  else {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key)
+      throw new Error(
+        "OPENAI_API_KEY is not set (or point the run at an inference proxy with ERIS_INFERENCE_BASE_URL)",
+      );
+    headers.authorization = `Bearer ${key}`;
+  }
+  const res = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    headers,
+    signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+    body: JSON.stringify({
+      model: openAiModelName(req.model),
+      messages: [{ role: "system", content: req.system }, ...req.messages],
+      ...(req.json === false ? {} : { response_format: { type: "json_object" } }),
+    }),
+  });
+  if (!res.ok)
+    throw new Error(`openai chat failed: ${res.status} ${await res.text()}`);
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string | null } }>;
+  };
+  const content = data.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || content.trim() === "")
+    throw new Error("openai chat returned empty content");
+  return content;
+}
+
 async function callOllama(req: LlmRequest): Promise<string> {
-  const baseUrl = (
-    process.env.ERIS_OLLAMA_BASE_URL ?? DEFAULT_OLLAMA_BASE_URL
-  ).replace(/\/$/, "");
-  const apiKey =
-    process.env.ERIS_OLLAMA_API_KEY ?? process.env.OLLAMA_API_KEY ?? "";
+  const proxy = inferenceBase();
+  const baseUrl = proxy
+    ? `${proxy}/api`
+    : (process.env.ERIS_OLLAMA_BASE_URL ?? DEFAULT_OLLAMA_BASE_URL).replace(
+        /\/$/,
+        "",
+      );
   const headers: Record<string, string> = {
     "content-type": "application/json",
   };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  if (proxy) Object.assign(headers, proxyHeaders());
+  else {
+    const apiKey =
+      process.env.ERIS_OLLAMA_API_KEY ?? process.env.OLLAMA_API_KEY ?? "";
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  }
   const res = await fetch(`${baseUrl}/chat`, {
     method: "POST",
     headers,
@@ -106,7 +181,17 @@ async function callClaude(req: LlmRequest): Promise<string> {
   // The Anthropic SDK is an optional dependency (don't load it in an environment that only uses the ollama family).
   if (!anthropicClient) {
     const { default: Anthropic } = await import("@anthropic-ai/sdk");
-    anthropicClient = new Anthropic();
+    const proxy = inferenceBase();
+    // Through the proxy the SDK's x-api-key is meaningless (the proxy attaches the real one); the
+    // per-agent bearer token in defaultHeaders is what authenticates. The SDK still insists on a
+    // non-empty apiKey, so it gets the token.
+    anthropicClient = proxy
+      ? new Anthropic({
+          baseURL: proxy,
+          apiKey: process.env.ERIS_INFERENCE_TOKEN ?? "proxy",
+          defaultHeaders: proxyHeaders(),
+        })
+      : new Anthropic();
   }
   const client = anthropicClient;
   const useTool = req.jsonSchema !== undefined;

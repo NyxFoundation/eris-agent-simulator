@@ -56,7 +56,7 @@ numbers in Grafana (they should agree, minus the CF edge round-trip that only th
 
 Answers "how many participants can we hold?" by measuring how many **transactions** the chain mines per
 block at the competition block time. Runs against a DEDICATED anvil (default `:8555`) so it never
-touches the live chain, sets the block gas limit to the competition's 320M (`--load-state` otherwise
+touches the live chain, sets the block gas limit to the competition's 30M (`--load-state` otherwise
 leaves it at the state's 3B — the same gotcha `reset.sh` guards), funds throwaway accounts, and blasts
 signed txs. Signing is CPU-bound, so it is spread across `worker_threads` to actually saturate anvil; a
 SharedArrayBuffer bounds the unmined backlog. Two tx types, equal volume per contract: `transfer` (ETH,

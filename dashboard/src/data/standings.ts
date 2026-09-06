@@ -1,63 +1,58 @@
-// The competition standings, under the one rule the competition is scored by:
+// The competition standings, under the rule the competition is scored by (rules §4.4, ADR 0023):
 //
-//   per scenario   score = mean − λ·std of per-round excess log returns
-//   across scenarios   z-score within each scenario's field, averaged with equal weight per regime
+//   per epoch (one scenario run)   P = V_K − V_0;   T = 50 + 10 (P − μ) / σ over the field
+//   across epochs                  Score = Σ w_s T / Σ w_s,  w_s linear 1 → 1.5 on the epoch's order
 //
-// The aggregation is imported from core rather than reimplemented — two implementations of one
+// The arithmetic is imported from core rather than reimplemented — two implementations of one
 // ranking is two answers to "who won" with no way to tell which is the real one (see the vite
-// alias note). Re-ranking a stored competition under other metrics is a CLI job:
-// `npm run metrics -- --matrix <dir>`.
+// alias note). What this file owns is the mapping from a competition's artifacts onto P.
 
 import {
-  aggregateScenarios,
-  type AggregateRow,
-  type ScenarioRow,
-} from "@core/scoring/aggregate";
+  scoreCompetition,
+  type AgentEpoch,
+  type AgentResult,
+  type EpochInput,
+  type EpochResult,
+} from "@core/scoring/deviationScore";
+import { epochPnlFromSeries } from "@core/scoring/epochPnl";
 import type { Competition, CompetitionScenario } from "./competition";
 import { scenarioLabel, scenarioRunId } from "./competition";
 import { listRuns } from "./runArtifacts";
-import type { EpochScore, RunSummary } from "./runArtifacts";
-
-/** The λ every stored run was scored with. */
-export const LAMBDA = 0.25;
+import type { RunSummary } from "./runArtifacts";
 
 // ---------------------------------------------------------------------------
-// per-scenario round series
+// per-scenario boundary series
 
-/** One scenario's per-epoch excess log returns, by agent. Absent when its summary could not load. */
+/** One scenario's value at every epoch boundary, by agent. Absent when its summary could not load. */
 export interface ScenarioRounds {
   regime: string;
   seed: number;
   runId: string;
-  byAgent: Record<string, number[]>;
-  /** 1-based epoch at which each agent hit the bankruptcy floor. */
-  bankruptAtEpoch: Record<string, number | null>;
+  /** agent -> value at each boundary, index 0 the epoch's start. Empty for a run still in progress. */
+  valuesByAgent: Record<string, Array<number | null>>;
+  /** Agents the summary marks as the benchmark (§4.3): valued, shown, never in the population. */
+  baselineIds: string[];
 }
 
 /**
  * Identity, not display. `runDir` is the one field guaranteed unique across a competition's
  * scenarios — a matrix can repeat (regime, seed) under `--repeat`, and a practice period's segments
- * (ADR 0021 §6) can share a label when several fall in the same hour. Keying on the label collapsed
- * six segments into one and pooled their rounds together.
+ * (ADR 0021 §6) can share a label when several fall in the same hour.
  */
 function scenarioKey(s: { runDir: string }): string {
   return s.runDir;
 }
 
 /**
- * Load the epoch series behind every scenario of a competition.
- *
- * summary.json stores `logReturns` already floored, already in excess of the baseline and already
- * frozen at bankruptcy — every part of the scoring construction except λ. So a standing "through
- * round k" is exactly mean − λ·std over the first k entries, not an approximation of it.
+ * Load the boundary series behind every scenario of a competition. A standing "through round k"
+ * is P = V_k − V_0 on exactly these values, so scrubbing replays the score rather than
+ * approximating it.
  */
 export async function loadCompetitionRounds(
   competition: Competition,
 ): Promise<Map<string, ScenarioRounds>> {
   // A period's current segment has no summary.json until it rolls (ADR 0021 §6), so on a live
-  // period one scenario always 404s. That is "still running", not "never collected", and telling a
-  // viewer their day was missing — every day, for the whole period — is the wrong statement. The
-  // runs index already marks a run in progress; consult it rather than inferring from the 404.
+  // period one scenario always 404s. That is "still running", not "never collected".
   const live = new Set(
     await listRuns()
       .then((index) => index.filter((r) => r.live).map((r) => r.id))
@@ -66,44 +61,32 @@ export async function loadCompetitionRounds(
   const entries = await Promise.all(
     competition.file.scenarios.map(async (s) => {
       const runId = scenarioRunId(competition.id, s.runDir);
+      const empty = {
+        regime: s.regime,
+        seed: s.seed,
+        runId,
+        valuesByAgent: {},
+        baselineIds: [],
+      };
       try {
         const res = await fetch(
           `/runs/${encodeURIComponent(runId)}/summary.json`,
         );
         if (!res.ok)
-          return live.has(runId)
-            ? ([
-                scenarioKey(s),
-                {
-                  regime: s.regime,
-                  seed: s.seed,
-                  runId,
-                  byAgent: {},
-                  bankruptAtEpoch: {},
-                },
-              ] as const)
-            : null;
+          return live.has(runId) ? ([scenarioKey(s), empty] as const) : null;
         const summary = (await res.json()) as RunSummary;
-        const scores = summary.epochScores ?? {};
-        const byAgent: Record<string, number[]> = {};
-        const bankruptAtEpoch: Record<string, number | null> = {};
-        for (const [id, entry] of Object.entries(scores)) {
-          const e = entry as EpochScore;
-          if (!Array.isArray(e.logReturns)) continue;
-          byAgent[id] = e.logReturns;
-          bankruptAtEpoch[id] = e.bankruptAtEpoch ?? null;
-        }
-        // A scenario whose summary is present but holds no scored round yet is a *result pending*,
-        // not a missing file. A practice period's current segment is always in that state (ADR 0021
-        // §6): its first epoch has not closed. Reported as an empty series rather than as absent, so
-        // the page does not tell a viewer their day was "not collected" every day.
+        const valuesByAgent =
+          summary.valueSeries?.epochSeries?.valuesByAgent ?? {};
+        const baselineIds = (summary.agents ?? [])
+          .filter((a) => a.baseline)
+          .map((a) => a.id);
         return [
           scenarioKey(s),
-          { regime: s.regime, seed: s.seed, runId, byAgent, bankruptAtEpoch },
+          { regime: s.regime, seed: s.seed, runId, valuesByAgent, baselineIds },
         ] as const;
       } catch {
-        // A scenario whose run dir was not collected genuinely has no round detail. Its stored score
-        // still ranks it — dropping the scenario instead would silently change the standings.
+        // A scenario whose run dir was not collected has no series. Its stored P still ranks it —
+        // dropping the scenario instead would silently change the standings.
         return null;
       }
     }),
@@ -112,103 +95,83 @@ export async function loadCompetitionRounds(
 }
 
 // ---------------------------------------------------------------------------
-// the score
-
-function populationStd(values: number[], mu: number): number {
-  if (values.length === 0) return 0;
-  const variance =
-    values.reduce((sum, v) => sum + (v - mu) ** 2, 0) / values.length;
-  return Math.sqrt(variance);
-}
-
-export interface RoundStats {
-  mean: number;
-  std: number;
-  /** mean − λ·std. */
-  score: number;
-  epochs: number;
-  bankruptAtEpoch: number | null;
-}
-
-export function statsOf(
-  logReturns: number[],
-  bankruptAtEpoch: number | null = null,
-): RoundStats {
-  const epochs = logReturns.length;
-  const mean = epochs > 0 ? logReturns.reduce((a, b) => a + b, 0) / epochs : 0;
-  const std = populationStd(logReturns, mean);
-  return { mean, std, score: mean - LAMBDA * std, epochs, bankruptAtEpoch };
-}
+// P per scenario
 
 /**
- * One scenario's score per agent, optionally as of a round rather than at the end.
+ * One scenario's P per agent, optionally as of a round rather than at the end.
  *
- * `throughRound` truncates the stored series, which is what makes the standings scrubbable: at
- * round k the series is the first k entries and the score is recomputed over exactly those. A
- * scenario shorter than k is *not* dropped — its world ended, so its final value is its result and
- * removing it would move the standings for a reason that is not a result. `endedScenarios` counts
- * them so the bar can say which.
+ * `throughRound` reads V_k off the boundary series, which is what makes the standings scrubbable:
+ * at round k the epoch's P is V_k − V_0 and the field is standardised on exactly that. A scenario
+ * shorter than k is *not* dropped — its world ended, so its final value is its result and removing
+ * it would move the standings for a reason that is not a result. `ended` says so.
  *
- * A scenario with no collected run falls back to the score matrix.json stored (the same rule, at
- * the same λ) at the end, and contributes nothing mid-scrub — there is no series to truncate, and
- * showing the finished number under a round label would be showing the future.
+ * At the end, P is the summary's own figure (`pnlUsdc`, each end at its own marks; falling back to
+ * the series' ends, then to netPnlUsdc for a run recorded before either existed).
  */
-function scenarioScores(
+function scenarioPnl(
   scenario: CompetitionScenario,
   rounds: Map<string, ScenarioRounds>,
   throughRound: number | null,
-): { byAgent: Record<string, number>; ended: boolean } {
-  const byAgent: Record<string, number> = {};
+): { pnlByAgent: Record<string, number>; benchmarkIds: string[]; ended: boolean } {
   const series = rounds.get(scenarioKey(scenario));
+  const pnlByAgent: Record<string, number> = {};
+  const benchmarkIds = new Set<string>(series?.baselineIds ?? []);
+  for (const a of scenario.agents) if (a.baseline) benchmarkIds.add(a.id);
   let ended = false;
 
-  if (series) {
+  if (throughRound !== null) {
+    if (!series) return { pnlByAgent, benchmarkIds: [...benchmarkIds], ended };
     for (const agent of scenario.agents) {
-      const full = series.byAgent[agent.id];
-      if (!full) continue;
-      if (throughRound !== null && full.length <= throughRound) ended = true;
-      const upTo =
-        throughRound === null
-          ? full.length
-          : Math.min(throughRound, full.length);
+      const values = series.valuesByAgent[agent.id];
+      if (!values || values.length < 2) continue;
+      const last = values.length - 1;
+      if (last <= throughRound) ended = true;
+      const upTo = Math.min(throughRound, last);
       if (upTo <= 0) continue;
-      const returns = upTo === full.length ? full : full.slice(0, upTo);
-      byAgent[agent.id] = statsOf(returns).score;
+      const start = values[0];
+      const now = values[upTo];
+      if (start === null || now === null) continue;
+      pnlByAgent[agent.id] = now - start;
     }
-    if (Object.keys(byAgent).length > 0) return { byAgent, ended };
+    return { pnlByAgent, benchmarkIds: [...benchmarkIds], ended };
   }
 
-  if (throughRound !== null) return { byAgent: {}, ended: false };
   for (const agent of scenario.agents) {
-    if (Number.isFinite(agent.score)) byAgent[agent.id] = agent.score;
+    const fromSeries = series
+      ? epochPnlFromSeries(series.valuesByAgent[agent.id] ?? [])?.pnlUsdc
+      : undefined;
+    const p = agent.pnlUsdc ?? fromSeries ?? agent.netPnlUsdc;
+    if (Number.isFinite(p)) pnlByAgent[agent.id] = p;
   }
-  return { byAgent, ended: false };
+  return { pnlByAgent, benchmarkIds: [...benchmarkIds], ended };
 }
 
 // ---------------------------------------------------------------------------
 // standings
 
 export interface Standings {
-  rows: AggregateRow[];
+  k: number;
+  /** Ordinals that entered the score (σ > 0 and valid). */
+  S: number[];
+  /** Sorted by rank (§4.6). */
+  rows: AgentResult[];
+  epochs: Array<EpochResult & { regime: string; seed: number; label: string }>;
   regimes: string[];
   agentIds: string[];
   /** The round these standings are as of, or null for the finished result. */
   throughRound: number | null;
   /** Scenarios whose world had already ended at that round — counted, never silently dropped. */
   endedScenarios: number;
-  /** Net PnL (final marks) summed across every scenario. Defined only at a run's end — both ends
-   * are priced at the final marks, so there is no "value at round k" to take. */
+  /** Net PnL (final marks) summed across every scenario. Defined only at a run's end. */
   netPnlByAgent: Record<string, number>;
-  /**
-   * The score in its own units (raw log return per round; display ×10⁴ as bps): per-scenario
-   * scores averaged per regime, then across regimes with equal weight. This is what the standings
-   * table shows — the rank itself still comes from `rows` (the official z aggregation), and the
-   * two can disagree in order; that difference is the aggregation choice, stated, not hidden.
-   */
-  scoreByAgent: Record<
-    string,
-    { overall: number; byRegime: Record<string, number> }
-  >;
+  /** Mean T per regime, per agent — the regime columns. Not a second ranking: an explanation. */
+  tByRegime: Record<string, Record<string, number>>;
+  /** The benchmark's P per epoch ordinal (§4.3: shown, never scored). */
+  benchmarkPnl: Record<string, Record<number, number>>;
+}
+
+function ordinalOf(scenario: CompetitionScenario, index: number): number {
+  return scenario.s ?? index + 1;
 }
 
 export function buildStandings(
@@ -216,57 +179,69 @@ export function buildStandings(
   rounds: Map<string, ScenarioRounds>,
   throughRound: number | null = null,
 ): Standings {
+  const scenarios = competition.file.scenarios;
+  const k = Math.max(
+    competition.file.k ?? 0,
+    ...scenarios.map((s, i) => ordinalOf(s, i)),
+    1,
+  );
   let endedScenarios = 0;
-  const scenarioRows: ScenarioRow[] = competition.file.scenarios.map((s) => {
-    const { byAgent, ended } = scenarioScores(s, rounds, throughRound);
+  const epochs: EpochInput[] = scenarios.map((s, i) => {
+    const { pnlByAgent, benchmarkIds, ended } = scenarioPnl(s, rounds, throughRound);
     if (ended) endedScenarios += 1;
-    return { regime: s.regime, seed: s.seed, byAgent };
+    return { s: ordinalOf(s, i), pnlByAgent, benchmarkIds };
   });
+  const scored = scoreCompetition({ epochs, k });
 
   const regimes: string[] = [];
   const agentIds: string[] = [];
   const netPnlByAgent: Record<string, number> = {};
-  for (const s of competition.file.scenarios) {
+  for (const s of scenarios) {
     if (!regimes.includes(s.regime)) regimes.push(s.regime);
     for (const agent of s.agents) {
+      if (agent.baseline) continue;
       if (!agentIds.includes(agent.id)) agentIds.push(agent.id);
       netPnlByAgent[agent.id] =
         (netPnlByAgent[agent.id] ?? 0) + agent.netPnlUsdc;
     }
   }
 
-  // Regime-equal means of the raw scores, from exactly the rows the ranking aggregates.
-  const perRegime = new Map<string, Map<string, number[]>>(); // agent -> regime -> scores
-  for (const row of scenarioRows) {
-    for (const [id, value] of Object.entries(row.byAgent)) {
-      const byRegime = perRegime.get(id) ?? new Map<string, number[]>();
-      const list = byRegime.get(row.regime) ?? [];
-      list.push(value);
-      byRegime.set(row.regime, list);
-      perRegime.set(id, byRegime);
+  const byOrdinal = new Map(scenarios.map((s, i) => [ordinalOf(s, i), s]));
+  const regimeOf = new Map([...byOrdinal].map(([o, s]) => [o, s.regime]));
+  const tByRegime: Standings["tByRegime"] = {};
+  for (const row of scored.agents) {
+    const lists = new Map<string, number[]>();
+    for (const e of row.epochs) {
+      const regime = regimeOf.get(e.s) ?? "?";
+      lists.set(regime, [...(lists.get(regime) ?? []), e.t]);
     }
-  }
-  const scoreByAgent: Standings["scoreByAgent"] = {};
-  for (const [id, byRegimeLists] of perRegime) {
-    const byRegime: Record<string, number> = {};
-    for (const [regime, values] of byRegimeLists) {
-      byRegime[regime] = values.reduce((a, b) => a + b, 0) / values.length;
-    }
-    const regimeMeans = Object.values(byRegime);
-    scoreByAgent[id] = {
-      overall: regimeMeans.reduce((a, b) => a + b, 0) / regimeMeans.length,
-      byRegime,
-    };
+    tByRegime[row.id] = Object.fromEntries(
+      [...lists].map(([r, ts]) => [r, ts.reduce((a, b) => a + b, 0) / ts.length]),
+    );
   }
 
+  const benchmarkPnl: Standings["benchmarkPnl"] = {};
+  for (const e of scored.epochs)
+    for (const [id, p] of Object.entries(e.benchmarkPnl)) {
+      benchmarkPnl[id] = { ...(benchmarkPnl[id] ?? {}), [e.s]: p };
+    }
+
   return {
-    rows: aggregateScenarios(scenarioRows, "zscore"),
+    k,
+    S: scored.S,
+    rows: scored.agents,
+    // scoreCompetition returns the epochs sorted by ordinal, which need not be the scenarios' order.
+    epochs: scored.epochs.map((e) => {
+      const s = byOrdinal.get(e.s)!;
+      return { ...e, regime: s.regime, seed: s.seed, label: scenarioLabel(s) };
+    }),
     regimes,
     agentIds,
     throughRound,
     endedScenarios,
     netPnlByAgent,
-    scoreByAgent,
+    tByRegime,
+    benchmarkPnl,
   };
 }
 
@@ -288,74 +263,82 @@ export function rankMoves(
     return out;
   }
   const before = buildStandings(competition, rounds, at - 1);
-  const wasAt = new Map(before.rows.map((r, i) => [r.id, i]));
-  standings.rows.forEach((row, i) => {
+  const wasAt = new Map(before.rows.map((r) => [r.id, r.rank]));
+  for (const row of standings.rows) {
     const was = wasAt.get(row.id);
-    // Positive = moved up the table (a smaller index).
-    out.set(row.id, was === undefined ? null : was - i);
-  });
+    // Positive = moved up the table (a smaller rank).
+    out.set(row.id, was === undefined ? null : was - row.rank);
+  }
   return out;
 }
 
 // ---------------------------------------------------------------------------
-// round decomposition — why an agent sits where it does
+// the standing explained — why an agent sits where it does
 
-export interface AgentRoundDecomposition {
+export interface AgentStandingDetail {
   id: string;
-  /** Every epoch return the agent produced, across every scenario in the competition. */
-  pooled: number[];
-  stats: RoundStats;
-  /** Per-regime stats, so a strategy that only works in one regime is visible as such. */
-  byRegime: { regime: string; stats: RoundStats; scenarios: number }[];
-  /**
-   * Scenarios in which the agent hit the bankruptcy floor, named the way the picker names them.
-   * `regime#seed` is right for a matrix and wrong for a practice period, whose scenarios are
-   * segments — a participant should not be told they went bankrupt in "segment#1" (ADR 0021 §6:
-   * the word is an implementation detail of where files are written).
-   */
-  bankruptIn: { label: string; epoch: number }[];
+  /** Every epoch the agent was scored in, with the scenario's name. */
+  epochs: Array<AgentEpoch & { label: string; regime: string }>;
+  tMean: number;
+  /** The first tie-break (§4.6): the spread of the agent's own T series. */
+  tStd: number;
+  /** The second tie-break: the agent's worst epoch. */
+  worstT: number;
+  byRegime: { regime: string; epochs: number; tMean: number; tStd: number }[];
+  /** Scenarios the agent ended with an asset value of zero or below (§4.5: bankrupt, no floor). */
+  bankruptIn: { label: string; finalValueUsdc: number }[];
 }
 
-/**
- * Pooling every scenario's epochs into one distribution.
- *
- * This is NOT how the standings are computed — the score is per scenario, then averaged per
- * regime — and it is not an alternative ranking. It answers the one question the standings cannot:
- * *why* an agent sits where it does. An agent can earn far more per round than the winner and still
- * place last, and the difference is entirely in the spread that λ charges for.
- */
+function meanOf(xs: number[]): number {
+  return xs.reduce((a, b) => a + b, 0) / xs.length;
+}
+function stdOf(xs: number[]): number {
+  const m = meanOf(xs);
+  return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / xs.length);
+}
+
 export function decomposeAgent(
   agentId: string,
   competition: Competition,
   rounds: Map<string, ScenarioRounds>,
-): AgentRoundDecomposition | null {
-  const pooled: number[] = [];
-  const perRegime = new Map<string, { returns: number[]; scenarios: number }>();
-  const bankruptIn: { label: string; epoch: number }[] = [];
-
-  for (const s of competition.file.scenarios) {
-    const series = rounds.get(scenarioKey(s));
-    const returns = series?.byAgent[agentId];
-    if (!series || !returns) continue;
-    pooled.push(...returns);
-    const bucket = perRegime.get(s.regime) ?? { returns: [], scenarios: 0 };
-    bucket.returns.push(...returns);
-    bucket.scenarios += 1;
-    perRegime.set(s.regime, bucket);
-    const bankrupt = series.bankruptAtEpoch[agentId];
-    if (typeof bankrupt === "number")
-      bankruptIn.push({ label: scenarioLabel(s), epoch: bankrupt });
+  standings: Standings,
+): AgentStandingDetail | null {
+  const row = standings.rows.find((r) => r.id === agentId);
+  if (!row || row.epochs.length === 0) return null;
+  const scenarios = competition.file.scenarios;
+  const byOrdinal = new Map(scenarios.map((s, i) => [ordinalOf(s, i), s]));
+  const epochs = row.epochs.map((e) => {
+    const s = byOrdinal.get(e.s);
+    return {
+      ...e,
+      label: s ? scenarioLabel(s) : `s${e.s}`,
+      regime: s?.regime ?? "?",
+    };
+  });
+  const perRegime = new Map<string, number[]>();
+  for (const e of epochs)
+    perRegime.set(e.regime, [...(perRegime.get(e.regime) ?? []), e.t]);
+  const bankruptIn: AgentStandingDetail["bankruptIn"] = [];
+  for (const s of scenarios) {
+    const values = rounds.get(scenarioKey(s))?.valuesByAgent[agentId];
+    const final = values
+      ? epochPnlFromSeries(values)?.finalValueUsdc
+      : s.agents.find((a) => a.id === agentId)?.finalValueUsdc;
+    if (typeof final === "number" && final <= 0)
+      bankruptIn.push({ label: scenarioLabel(s), finalValueUsdc: final });
   }
-
-  if (pooled.length === 0) return null;
+  const ts = epochs.map((e) => e.t);
   return {
     id: agentId,
-    pooled,
-    stats: statsOf(pooled),
-    byRegime: [...perRegime.entries()].map(([regime, b]) => ({
+    epochs,
+    tMean: meanOf(ts),
+    tStd: stdOf(ts),
+    worstT: Math.min(...ts),
+    byRegime: [...perRegime.entries()].map(([regime, list]) => ({
       regime,
-      stats: statsOf(b.returns),
-      scenarios: b.scenarios,
+      epochs: list.length,
+      tMean: meanOf(list),
+      tStd: stdOf(list),
     })),
     bankruptIn,
   };

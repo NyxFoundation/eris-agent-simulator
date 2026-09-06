@@ -142,6 +142,11 @@ export type SimConfig = {
   // The run's execution mode (a label stamped into summary.json's mode. ADR 0016 §6). The backtest CLI
   // injects ERIS_RUN_MODE=backtest. Does not affect scoring or behavior.
   runMode: "realtime" | "backtest";
+  // How the coordinator launches an agent it runs itself (ERIS_AGENT_SANDBOX). `process` spawns
+  // bot.ts directly; `docker` goes through infra/docker-agent/run-agent.sh, which is the only path
+  // that applies the 2 vCPU / 4 GiB caps of rules §2.3 and can be given a network without egress.
+  // The official regimes say `docker`; a local run without docker passes --agent-sandbox process.
+  agentSandbox: "process" | "docker";
   // The world's reset unit (ERIS_RESET_UNIT / `run.resetUnit`. ADR 0020 §1). `continuous` is one world
   // for the whole run (what sim:realtime does); `scenario` is a fresh world per (regime, seed), which
   // only the scenario-matrix runner can produce -- the competition itself runs in `scenario` (ADR 0020 §2).
@@ -186,6 +191,12 @@ export type SimConfig = {
   // the harness has run (ADR 0019 "not yet decided"). Longer resists a held push better but drags
   // legitimate late-epoch moves into the mark.
   markMedianBlocks: number;
+  // Block gas limit the coordinator applies once setup is done and before interval mining starts
+  // (ERIS_BLOCK_GAS_LIMIT; the rules publish 30,000,000 in §2.6). Setup runs at whatever the node
+  // was started with -- the deployer's anvil needs 3,000,000,000 to deploy GMX and a state dump
+  // carries that forward -- and the competition phase runs at the published block size, which is
+  // what makes the priority-fee auction of §2.6 exist. 0 leaves the node's limit alone.
+  blockGasLimit: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -367,10 +378,10 @@ export function loadConfig(env = process.env): SimConfig {
     // of three that can drift apart. It is ~10x the heaviest real operation and well under the
     // 320,000,000 block gas limit the rules fix.
     maxTxGas: bigintEnv(env.ERIS_MAX_TX_GAS, 30_000_000n),
-    // 3 x maxTxGas: the per-block transaction cap (rules §2.6) times the per-transaction ceiling.
-    // An agent that uses its whole allowance can therefore take at most 90/320 of a block, which
-    // leaves room for the environment's oracle write and for everybody else.
-    maxAgentBlockGas: bigintEnv(env.ERIS_MAX_AGENT_BLOCK_GAS, 90_000_000n),
+    // One block's worth (rules §2.6: a 30M block, no per-agent tx count). There is no count cap since
+    // 2026-09-06 -- inclusion is the priority-fee auction -- so the gas budget is what stops one agent
+    // from starving the block.
+    maxAgentBlockGas: bigintEnv(env.ERIS_MAX_AGENT_BLOCK_GAS, 30_000_000n),
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
     // Real-time mode settings.
     blockTimeSec,
@@ -380,6 +391,7 @@ export function loadConfig(env = process.env): SimConfig {
     localDeploy: env.ERIS_LOCAL_DEPLOY === "1",
     localSnapshotFile: env.ERIS_LOCAL_SNAPSHOT_FILE ?? ".local-snapshot",
     runMode: env.ERIS_RUN_MODE === "backtest" ? "backtest" : "realtime",
+    agentSandbox: agentSandboxEnv(env.ERIS_AGENT_SANDBOX),
     resetUnit: resetUnitEnv(env.ERIS_RESET_UNIT),
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     ou: readOuParams(env),
@@ -388,6 +400,7 @@ export function loadConfig(env = process.env): SimConfig {
     segmentHours: Math.max(0, floatEnv(env.ERIS_SEGMENT_HOURS, 0)),
     segmentName: env.ERIS_SEGMENT_NAME ?? "",
     markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
+    blockGasLimit: Math.max(0, intEnv(env.ERIS_BLOCK_GAS_LIMIT, 30_000_000)),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),
@@ -576,6 +589,16 @@ function parseEnabledProtocols(value: string | undefined): ProtocolId[] {
 
 function deriveRoleKey(role: string): Hex {
   return keccak256(stringToBytes(`eris-role:${role}`));
+}
+
+// A misspelt sandbox must not fall back to `process`: the official regimes rely on `docker` for the
+// caps, and a silent fallback would run the whole field uncapped while every log looked normal.
+function agentSandboxEnv(value: string | undefined): "process" | "docker" {
+  if (value === undefined || value === "" || value === "process") return "process";
+  if (value === "docker") return "docker";
+  throw new Error(
+    `run.agentSandbox must be "process" or "docker" (got ${JSON.stringify(value)})`,
+  );
 }
 
 function intEnv(value: string | undefined, fallback: number): number {

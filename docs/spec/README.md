@@ -12,7 +12,7 @@ English: [`docs/spec/en/`](en/README.md)
 | [docs/guide/](../guide/) | どう使うか | 手順書 |
 | [docs/adr/](../adr/) | なぜそうしたか | 意思決定の履歴（**覆った決定を含む**） |
 | **docs/spec/（本書）** | **何であるか** | **現状の規範的記述** |
-| [docs/competition-rules.md](../competition-rules.md) | 参加者が従う規則は何か | 競技規約（法務文書・日本語） |
+| [ascon.dev/rules](https://ascon.dev/rules) | 参加者が従う規則は何か | 競技規約（法務文書・日本語正文）。**本 repo の外**にあり、そちらが唯一の出典 |
 
 ADR は履歴なので、ADR 0002 → 0018、連続経済 → ADR 0020 のように**後から覆った記述が残っている**。本書は現状のみを書き、経緯が必要な箇所から ADR へリンクする。
 
@@ -26,7 +26,7 @@ ADR は履歴なので、ADR 0002 → 0018、連続経済 → ADR 0020 のよう
 | [03 市場環境](03-market.md) | fair price の生成と伝播、orderflow、venue 一覧 |
 | [04 ストレスイベント](04-stress-events.md) | 9 種のイベント型、スケジュール決定則、victim |
 | [05 エージェント契約](05-agent-contract.md) | 3 つの実行契約、observation、アクション 25 種、limits、自己改善 |
-| [06 採点](06-scoring.md) | 評価、エポック系列、M9 の式と G1/G2、候補指標、シナリオ集約 |
+| [06 採点](06-scoring.md) | 評価、エポック境界の系列、P と偏差値 T / Score（規約 §4.4）、行列の順位、エポック順序の抽選 |
 | [07 設定](07-configuration.md) | YAML スキーマ全キー、解決順、CLI フラグ、ロスター |
 | [08 成果物](08-artifacts.md) | `runs/<id>/` の全ファイルとフィールド、イベント型カタログ |
 | [09 ダッシュボード](09-dashboard.md) | 情報階層、ルート、ラウンドカーソル、順位表の表示規則 |

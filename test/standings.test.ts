@@ -1,213 +1,95 @@
-// Scenario-matrix aggregation (ADR 0017 §4).
-//
-// The properties worth pinning are the ones that decide a competition: a regime with a bigger
-// opportunity must not dominate the ranking, a crashed agent must not out-rank a finisher, and an
-// environment failure must not be charged to the participants.
+// Scenario-matrix standings under rules §4.4 (ADR 0023). The properties worth pinning are the ones
+// that decide a competition: the benchmark never enters the population, an epoch the environment
+// lost is never charged to some participants only, and a stopped agent is scored on what it left
+// behind rather than disqualified.
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
   computeStandings,
-  scenarioZScores,
-  DISQUALIFIED_Z_PENALTY,
   type ScenarioResult,
 } from "../core/src/backtest/standings.js";
+import { weightOf } from "../core/src/scoring/deviationScore.js";
 
-const agent = (id: string, netPnlUsdc: number, disqualified?: string) => ({
-  id,
-  netPnlUsdc,
-  ...(disqualified !== undefined ? { disqualified } : {}),
-});
+const agent = (
+  id: string,
+  pnlUsdc: number,
+  extra: Partial<{ baseline: boolean; flags: string[] }> = {},
+) => ({ id, pnlUsdc, pnlSource: "epoch-boundaries" as const, ...extra });
 
-test("z-scores are centered on the scenario's finishers", () => {
-  const { z } = scenarioZScores(
-    [agent("a", 800), agent("b", 200), agent("c", -100)],
-    "netPnlUsdc",
-  );
-  // mean 300, population sd sqrt(140000) ~ 374.17
-  assert.ok(Math.abs(z.a - 1.336) < 0.01, `z.a=${z.a}`);
-  assert.ok(Math.abs(z.b - -0.267) < 0.01, `z.b=${z.b}`);
-  assert.ok(Math.abs(z.c - -1.069) < 0.01, `z.c=${z.c}`);
-  // Centering means they sum to zero: nobody gains ground without someone losing it.
-  assert.ok(Math.abs(z.a + z.b + z.c) < 1e-9);
-});
-
-test("a tie gives everyone zero rather than dividing by zero", () => {
-  const { z } = scenarioZScores(
-    [agent("a", 0), agent("b", 0), agent("c", 0)],
-    "netPnlUsdc",
-  );
-  assert.deepEqual(z, { a: 0, b: 0, c: 0 });
-});
-
-test("a lone finisher scores zero (there is nobody to be better than)", () => {
-  const { z } = scenarioZScores([agent("a", 500)], "netPnlUsdc");
-  assert.deepEqual(z, { a: 0 });
-});
-
-test("a disqualified agent lands below the worst finisher", () => {
-  const { z, disqualified } = scenarioZScores(
-    [agent("a", 800), agent("b", 200), agent("c", 9999, "process died")],
-    "netPnlUsdc",
-  );
-  assert.equal(disqualified.c, "process died");
-  const worstFinisher = Math.min(z.a, z.b);
-  assert.equal(z.c, worstFinisher - DISQUALIFIED_Z_PENALTY);
-  // Crucially: a huge raw score does not rescue it.
-  assert.ok(z.c < z.a && z.c < z.b);
-});
-
-test("an agent with no readable metric is disqualified, not scored as zero", () => {
-  // Scoring it as 0 would place it mid-pack in a scenario where everyone lost money.
-  const { z, disqualified } = scenarioZScores(
-    [agent("a", -500), agent("b", -300), { id: "c" }],
-    "netPnlUsdc",
-  );
-  assert.match(disqualified.c, /no netPnlUsdc/);
-  assert.ok(z.c < z.a && z.c < z.b);
-});
-
-test("regime equal weighting stops the big-opportunity regime from deciding the ranking", () => {
-  // crash pays in the hundreds, calm in the tens. On a raw sum a wins; the ranking should say b.
-  const results: ScenarioResult[] = [
-    {
-      regime: "crash",
-      seed: 1,
-      agents: [agent("a", 800), agent("b", 200), agent("c", -100)],
-    },
-    {
-      regime: "calm",
-      seed: 1,
-      agents: [agent("a", 10), agent("b", 40), agent("c", 25)],
-    },
-  ];
-  const rawSum = { a: 810, b: 240, c: -75 };
-  assert.ok(rawSum.a > rawSum.b, "precondition: a wins on the raw sum");
-
-  const standings = computeStandings(results, "netPnlUsdc");
-  assert.deepEqual(
-    standings.agents.map((x) => x.id),
-    ["b", "a", "c"],
-  );
-});
-
-test("seed count inside a regime does not change that regime's weight", () => {
-  // calm is run three times and crash once. calm must still be worth exactly half the total.
-  const calm = (seed: number): ScenarioResult => ({
-    regime: "calm",
-    seed,
-    agents: [agent("a", 10), agent("b", 40)],
-  });
-  const many = computeStandings(
-    [
-      { regime: "crash", seed: 1, agents: [agent("a", 800), agent("b", 200)] },
-      calm(1),
-      calm(2),
-      calm(3),
-    ],
-    "netPnlUsdc",
-  );
-  const one = computeStandings(
-    [
-      { regime: "crash", seed: 1, agents: [agent("a", 800), agent("b", 200)] },
-      calm(1),
-    ],
-    "netPnlUsdc",
-  );
-  const totalOf = (s: typeof many, id: string) =>
-    s.agents.find((x) => x.id === id)?.total ?? NaN;
-  assert.ok(Math.abs(totalOf(many, "a") - totalOf(one, "a")) < 1e-9);
-  assert.ok(Math.abs(totalOf(many, "b") - totalOf(one, "b")) < 1e-9);
-});
-
-test("a scenario with no summary is excluded, not scored as a row of zeros", () => {
-  const standings = computeStandings(
-    [
-      { regime: "calm", seed: 1, agents: [agent("a", 100), agent("b", -100)] },
-      { regime: "calm", seed: 2, error: "anvil died" },
-    ],
-    "netPnlUsdc",
-  );
-  assert.equal(standings.scenarios.length, 1);
-  assert.deepEqual(standings.excludedScenarios, [
-    { regime: "calm", seed: 2, error: "anvil died" },
-  ]);
-  // The surviving scenario alone decides the ranking; the dead one dilutes nothing.
-  const a = standings.agents.find((x) => x.id === "a");
-  assert.equal(a?.scenariosScored, 1);
-  assert.ok((a?.total ?? 0) > 0);
-});
-
-test("disqualifications are counted per agent", () => {
-  const standings = computeStandings(
+test("the benchmark is valued and reported but never in the population", () => {
+  const s = computeStandings(
     [
       {
-        regime: "crash",
+        s: 1,
+        regime: "calm",
         seed: 1,
-        agents: [agent("a", 100), agent("b", 0, "fee cap violation")],
-      },
-      {
-        regime: "crash",
-        seed: 2,
-        agents: [agent("a", 100), agent("b", 50)],
+        agents: [agent("a", 100), agent("b", -100), agent("noop", 0, { baseline: true })],
       },
     ],
-    "netPnlUsdc",
+    1,
   );
-  const b = standings.agents.find((x) => x.id === "b");
-  assert.equal(b?.disqualifications, 1);
-  assert.equal(b?.scenariosScored, 2);
+  assert.equal(s.epochs[0].n, 2);
+  assert.deepEqual(s.agents.map((a) => a.id), ["a", "b"]);
+  assert.deepEqual(s.benchmarks, [{ id: "noop", pnlByEpoch: { 1: 0 } }]);
+  assert.equal(s.agents[0].score, 60);
+  assert.equal(s.agents[1].score, 40);
 });
 
-test("the metric is selectable, and the two can disagree on the winner", () => {
-  // a is up on gross PnL purely by holding a rising asset; b took the edge.
+test("an epoch with no summary is invalid for everyone and leaves the other weights alone", () => {
   const results: ScenarioResult[] = [
-    {
-      regime: "calm",
-      seed: 1,
-      agents: [
-        { id: "a", netPnlUsdc: 1000, alphaUsdc: 0 },
-        { id: "b", netPnlUsdc: 200, alphaUsdc: 200 },
-      ],
-    },
+    { s: 1, regime: "calm", seed: 1, agents: [agent("a", 10), agent("b", -10)] },
+    { s: 2, regime: "crash", seed: 1, error: "anvil died" },
+    { s: 3, regime: "whale", seed: 1, agents: [agent("a", 10), agent("b", -10)] },
   ];
-  assert.equal(computeStandings(results, "netPnlUsdc").agents[0].id, "a");
-  assert.equal(computeStandings(results, "alphaUsdc").agents[0].id, "b");
+  const s = computeStandings(results, 3);
+  assert.deepEqual(s.S, [1, 3]);
+  assert.equal(s.epochs[1].excluded, "invalid");
+  assert.equal(s.epochs[1].invalidReason, "anvil died");
+  assert.equal(s.epochs[2].w, weightOf(3, 3));
+  assert.equal(s.agents[0].id, "a");
+  assert.equal(s.agents[0].score, 60);
 });
 
-test("M4 and M9 are selectable, and lambda*std is the only thing between them", () => {
-  // The case the whole metric decision turns on (issue #56): `steady` earns less in total but on a
-  // smooth path, `swingy` earns more with the variance to match. M4 sees only the totals, M9 charges
-  // for the path -- so they disagree about which one won.
-  const results: ScenarioResult[] = [
-    {
-      regime: "calm",
-      seed: 1,
-      agents: [
-        { id: "swingy", excessLogGrowth: 0.1, score: 0.001 },
-        { id: "steady", excessLogGrowth: 0.08, score: 0.002 },
-      ],
-    },
-  ];
-  assert.equal(computeStandings(results, "excessLogGrowth").agents[0].id, "swingy");
-  assert.equal(computeStandings(results, "score").agents[0].id, "steady");
+test("a stopped agent keeps its P and its flags; it is not disqualified", () => {
+  const s = computeStandings(
+    [
+      {
+        s: 1,
+        regime: "calm",
+        seed: 1,
+        agents: [
+          agent("a", 50),
+          agent("crashed", -50, { flags: ["process exited early: code 137"] }),
+        ],
+      },
+    ],
+    1,
+  );
+  const crashed = s.agents.find((a) => a.id === "crashed")!;
+  assert.equal(crashed.score, 40);
+  assert.deepEqual(crashed.flags, ["calm#1: process exited early: code 137"]);
 });
 
-test("an agent with no epoch score is disqualified for that scenario, not scored zero", () => {
-  // A run stored before the epoch series existed, or one whose reconstruction produced no
-  // boundaries. Zero is a real result here -- it is what a benchmark earns -- so spending it on a
-  // missing measurement would place the agent mid-pack.
-  const results: ScenarioResult[] = [
-    {
-      regime: "calm",
-      seed: 1,
-      agents: [
-        { id: "a", excessLogGrowth: -0.5, score: -0.5 },
-        { id: "b", excessLogGrowth: -0.4, score: -0.4 },
-        { id: "gap", netPnlUsdc: 10 },
-      ],
-    },
-  ];
-  const standings = computeStandings(results, "score");
-  assert.equal(standings.agents.at(-1)?.id, "gap");
-  assert.equal(standings.scenarios[0].disqualified.gap, "no score in summary");
+test("an agent without a P for an epoch was not placed in it and is scored on the rest", () => {
+  const s = computeStandings(
+    [
+      { s: 1, regime: "calm", seed: 1, agents: [agent("a", 10), agent("b", -10), { id: "c" }] },
+      { s: 2, regime: "calm", seed: 2, agents: [agent("a", 10), agent("b", -10), agent("c", 0)] },
+    ],
+    2,
+  );
+  const c = s.agents.find((a) => a.id === "c")!;
+  assert.equal(c.epochs.length, 1);
+  assert.equal(c.score, 50);
+  assert.equal(s.epochs[0].n, 2);
+});
+
+test("epochs carry their scenario identity and run directory back out", () => {
+  const s = computeStandings(
+    [{ s: 1, regime: "depeg", seed: 701, runDir: "runs/x", agents: [agent("a", 1), agent("b", 2)] }],
+    1,
+  );
+  assert.equal(s.epochs[0].regime, "depeg");
+  assert.equal(s.epochs[0].seed, 701);
+  assert.equal(s.epochs[0].runDir, "runs/x");
 });

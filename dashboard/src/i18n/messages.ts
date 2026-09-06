@@ -67,13 +67,14 @@ const en = {
   "home.standingsFinal": "Standings · final",
   "home.standingsThrough": "Standings · through round {at}",
   "home.subtitle":
-    "Score: the agent's average per-round return in a scenario, minus a penalty for its swings (mean − λ·std, λ = 0.25). Rank: its standing within every scenario's field, averaged with equal weight per regime. Click a row for the full breakdown.",
+    "Score: each epoch (one scenario run) gives every agent a deviation score T = 50 + 10 × (P − μ) / σ, where P is its USDC profit over the epoch and μ, σ are the field's. The score is the average of T over the epochs, later epochs weighted up to 1.5×. Regime columns are the agent's mean T in that regime. Click a row for the epoch-by-epoch breakdown.",
   "home.col.move": "move",
   "home.col.agent": "agent",
-  "home.col.score": "score",
+  "home.col.score":
+    "score",
   "home.col.netPnl": "net PnL",
   "home.scoreTitle":
-    "average per-round score. Ranked by the official aggregate (z): {z}",
+    "{n} epoch(s) scored · tie-breaks: std of T {std}, worst epoch T {worst}",
   "home.netPnlTitle": "USDC, both ends priced at the run's final marks",
   "home.netPnlScrub": "final value — net PnL only exists at a run's end",
   "home.noteOpens": "{types} opens in {n} scenarios",
@@ -108,7 +109,7 @@ const en = {
   "home.scenarios.missing":
     "round detail was not collected for this scenario",
   "home.scenarios.leaderTitle":
-    "leads through the selected round, by mean − λ·std of per-round excess log returns",
+    "leads through the selected round, by P = V_k − V_0 (USDC) — the quantity the epoch's deviation score is taken over",
 
   // ---- how the units nest ----
   // "Round" means three different things to three different readers: a block, a scoring window, or
@@ -159,9 +160,9 @@ const en = {
   "scenario.info.scoring.p1":
     "Scoring happens after the run, not during it. The environment walks back over historical chain state and values every agent at identical block cross-sections, so the live loop pays nothing for it and no agent can game a snapshot phase.",
   "scenario.info.scoring.p2":
-    "Score is mean − λ·std of per-round log returns of total account value, measured in excess of a do-nothing baseline agent.",
+    "The score is one number per epoch: P = V_K − V_0, the change in total account value over the run (each end at its own 5-block-median marks), standardised over the field as T = 50 + 10 (P − μ) / σ. The benchmark is valued but not in the population.",
   "scenario.info.scoring.p3":
-    "PnL, Sharpe (mean/std of the same per-round returns) and max drawdown come from the same reconstructed series and are shown for context; rank is by score.",
+    "Net PnL and max drawdown come from the same reconstructed series and are shown for context; the rounds inside a run are the leaderboard's running progress, not part of the score.",
   "scenario.info.scoring.p4":
     "Holdings the scorer cannot price are reported, never silently zeroed — a zero that is really a read failure would be indistinguishable from a trading loss.",
   "scenario.info.artifacts.p1":
@@ -189,7 +190,8 @@ const en = {
   "rounds.col.delta": "Δ value",
   "rounds.col.logReturn": "Log return",
   "rounds.col.rank": "Rank",
-  "rounds.bankrupt": "score frozen at the bankruptcy floor",
+  "rounds.bankrupt":
+    "asset value at or below zero (bankrupt — no floor, no freeze)",
   "rounds.deltaNote":
     "Δ value is the raw change in account value, market exposure included — a do-nothing agent still moves with the price. Log return is the same round measured against the do-nothing baseline, and is the series the score averages. Rank is cumulative since the first round; the arrow is its change over this round.",
   "rounds.envDid": "What the environment did",
@@ -217,37 +219,51 @@ const en = {
   "agent.tab.log": "Decision log",
   "agent.back": "← back",
   "agent.rank": "Rank {n}",
-  "agent.stat.score": "Score",
+  "agent.stat.score":
+    "T (this epoch)",
   "agent.stat.pnl": "PnL (USDC)",
-  "agent.stat.sharpe": "Sharpe",
   "agent.stat.drawdown": "Max drawdown",
   "agent.standing.rank": "rank",
   "agent.standing.rankValue": "{r} of {n}",
-  "agent.standing.score": "score / round",
-  "agent.standing.scoreTitle": "official ranking value (z aggregate): {z}",
+  "agent.standing.score":
+    "score",
+  "agent.standing.scoreTitle":
+    "tie-breaks (§4.6): std of T {std}, worst epoch T {worst}",
   "agent.standing.netPnl": "net PnL (USDC)",
-  "agent.standing.rounds": "rounds",
+  "agent.standing.rounds":
+    "epochs scored",
   "agent.standing.explain":
-    "Every round this agent produced, pooled across the whole competition. An agent can earn several times more per round than the winner and still place last — the difference is the swing penalty (λ·std).",
+    "Every epoch this agent was scored in. T is where its profit sat in that epoch's field (50 = the field's mean, ±10 = one standard deviation); the score is the weighted average of T, so a strategy that wins big in one regime and loses in the rest can place below a steady one — the std of T is also the first tie-break.",
   "agent.standing.noSeries":
     "No round detail for this agent — the scenario runs behind this competition were not collected, so the standing can be shown but not explained.",
-  "agent.standing.mean": "mean / round",
-  "agent.standing.std": "std / round",
-  "agent.standing.lambdaStd": "λ·std (λ={lambda})",
-  "agent.standing.scoreLine": "mean − λ·std",
+  "agent.standing.mean":
+    "mean T",
+  "agent.standing.std":
+    "std of T (tie-break 1)",
+  "agent.standing.scoreLine":
+    "score (Σ w·T / Σ w)",
+  "agent.standing.worst":
+    "worst epoch T (tie-break 2)",
   "agent.standing.byRegime": "by regime",
+  "agent.standing.byEpoch":
+    "by epoch",
   "agent.standing.col.regime": "regime",
-  "agent.standing.col.rounds": "rounds",
-  "agent.standing.col.mean": "mean",
-  "agent.standing.col.std": "std",
+  "agent.standing.col.scenario":
+    "scenario",
+  "agent.standing.col.rounds":
+    "epochs",
+  "agent.standing.col.mean":
+    "mean T",
+  "agent.standing.col.std":
+    "std of T",
   "agent.standing.bankrupt":
-    "Hit the bankruptcy floor in {n} scenarios — every later round is frozen at a return of 0: {list}",
+    "Ended {n} scenarios with an asset value at or below zero (bankrupt, rules §4.5 — no floor, the negative value counts): {list}",
   "agent.standing.bankruptOne":
-    "Hit the bankruptcy floor in 1 scenario — every later round is frozen at a return of 0: {list}",
+    "Ended 1 scenario with an asset value at or below zero (bankrupt, rules §4.5 — no floor, the negative value counts): {list}",
   "agent.histogram.clipped":
-    "0 · {n} rounds past the edge, stacked into the end bins",
+    "0 · {n} epochs past the edge, stacked into the end bins",
   "agent.histogram.clippedOne":
-    "0 · 1 round past the edge, stacked into the end bin",
+    "0 · 1 epoch past the edge, stacked into the end bin",
   "agent.openPositions": "Open positions",
   "agent.positions.empty":
     "no venue position open at the final block — this agent ended flat, or the run predates per-venue position tracking",
@@ -267,7 +283,7 @@ const en = {
   "agent.noRounds":
     "no scored rounds yet — the per-round series is built when the run finishes",
   "agent.roundsNote":
-    "A round is a scoring window. Log return is this agent's excess over the do-nothing baseline for that round — the series the score (mean − λ·std) is computed from.",
+    "A round is an evaluation interval — the leaderboard's running progress inside an epoch. Log return is the raw change of this agent's account value over the round. The score is one number for the whole epoch (P = V_K − V_0, standardised over the field), not a function of these rounds.",
   "agent.portfolio": "Portfolio value",
   "agent.portfolioRange": "Portfolio value · {from} → {to}",
   "agent.yLabel": "account value (USDC)",
@@ -668,13 +684,14 @@ const ja: Record<MessageKey, string> = {
   "home.standingsFinal": "順位表 · 最終",
   "home.standingsThrough": "順位表 · ラウンド {at} 時点",
   "home.subtitle":
-    "スコア: シナリオ内の 1 ラウンドあたり平均リターンから、ぶれの大きさに応じたペナルティを引いた値（mean − λ·std、λ = 0.25）。順位: 各シナリオの場内での相対位置を、レジーム等重みで平均して決定。行をクリックすると内訳が見られます。",
+    "スコア: 各エポック（1 シナリオの run）で、エポック中の USDC 損益 P から偏差値 T = 50 + 10 × (P − μ) / σ を全員横断で出し（μ・σ は場全体）、T をエポック通しで平均した値（後のエポックほど重みが大きく、最大 1.5 倍）。レジーム列はそのレジームでの T の平均。行をクリックするとエポックごとの内訳が見られます。",
   "home.col.move": "変動",
   "home.col.agent": "エージェント",
-  "home.col.score": "スコア",
+  "home.col.score":
+    "スコア",
   "home.col.netPnl": "純損益",
   "home.scoreTitle":
-    "1 ラウンドあたり平均スコア。順位は公式集約値 (z) で決定: {z}",
+    "採点エポック {n} · タイブレーク: T の標準偏差 {std}、最悪エポックの T {worst}",
   "home.netPnlTitle": "USDC 建て。両端とも run の最終価格で評価",
   "home.netPnlScrub": "最終値 — 純損益は run 終了時にのみ定義されます",
   "home.noteOpens": "{types} の窓が {n} シナリオで開始",
@@ -702,7 +719,7 @@ const ja: Record<MessageKey, string> = {
   "home.scenarios.noLeader": "結果はまだありません",
   "home.scenarios.missing": "このシナリオのラウンド詳細は回収されていません",
   "home.scenarios.leaderTitle":
-    "選択中のラウンドまでの首位。ラウンドごとの超過対数リターンの mean − λ·std で判定",
+    "選択中のラウンドまでの首位。P = V_k − V_0（USDC）で判定 — このエポックの偏差値が取られる量",
 
   "units.title": "単位の関係",
   "units.competition": "競技",
@@ -748,9 +765,9 @@ const ja: Record<MessageKey, string> = {
   "scenario.info.scoring.p1":
     "採点は run の最中ではなく終了後に行われます。環境が過去のチェーン状態を遡り、全エージェントを同一ブロック断面で評価するので、実行ループは採点コストを払わず、スナップショット時刻を狙った操作もできません。",
   "scenario.info.scoring.p2":
-    "スコアは総資産価値の 1 ラウンドごと対数リターン（何もしないベースライン超過分）の mean − λ·std です。",
+    "スコアは 1 エポックにつき 1 つの数字です。P = V_K − V_0（run 全体での総資産価値の変化。両端ともその時点の 5 ブロック中央値マーク）を、場全体で T = 50 + 10 (P − μ) / σ に標準化します。ベンチマークは評価されますが母集団には入りません。",
   "scenario.info.scoring.p3":
-    "損益・シャープ（同じ系列の mean/std）・最大ドローダウンは同じ再構成系列から出す参考値で、順位はスコアで決まります。",
+    "純損益と最大ドローダウンは同じ再構成系列から出す参考値です。run 内のラウンドはリーダーボードの途中経過であって、スコアの一部ではありません。",
   "scenario.info.scoring.p4":
     "採点者が値付けできない保有は必ず報告され、黙って 0 になることはありません — 読み取り失敗の 0 は取引の損失と見分けが付かなくなるからです。",
   "scenario.info.artifacts.p1":
@@ -777,7 +794,8 @@ const ja: Record<MessageKey, string> = {
   "rounds.col.delta": "Δ資産",
   "rounds.col.logReturn": "対数リターン",
   "rounds.col.rank": "順位",
-  "rounds.bankrupt": "破産フロアでスコア凍結",
+  "rounds.bankrupt":
+    "資産価値がゼロ以下（破産。床処理も凍結も無し）",
   "rounds.deltaNote":
     "Δ資産は市場エクスポージャー込みの生の資産変化で、何もしないエージェントでも価格と一緒に動きます。対数リターンは同じラウンドを「何もしない」ベースライン超過で測ったもので、スコアが平均するのはこちらの系列です。順位は初回ラウンドからの累積、矢印はこのラウンドでの変動です。",
   "rounds.envDid": "環境が行ったこと",
@@ -804,35 +822,51 @@ const ja: Record<MessageKey, string> = {
   "agent.tab.log": "判断ログ",
   "agent.back": "← 戻る",
   "agent.rank": "{n} 位",
-  "agent.stat.score": "スコア",
+  "agent.stat.score":
+    "T（このエポック）",
   "agent.stat.pnl": "損益 (USDC)",
-  "agent.stat.sharpe": "シャープ",
   "agent.stat.drawdown": "最大ドローダウン",
   "agent.standing.rank": "順位",
   "agent.standing.rankValue": "{n} 体中 {r} 位",
-  "agent.standing.score": "スコア / ラウンド",
-  "agent.standing.scoreTitle": "公式の順位決定値 (z 集約): {z}",
+  "agent.standing.score":
+    "スコア",
+  "agent.standing.scoreTitle":
+    "タイブレーク（§4.6）: T の標準偏差 {std}、最悪エポックの T {worst}",
   "agent.standing.netPnl": "純損益 (USDC)",
-  "agent.standing.rounds": "ラウンド数",
+  "agent.standing.rounds":
+    "採点エポック数",
   "agent.standing.explain":
-    "このエージェントの全ラウンドを競技全体からプールしたものです。1 ラウンドあたり勝者の数倍稼いでいても最下位になり得ます — 差はぶれへのペナルティ（λ·std）です。",
+    "このエージェントが採点された全エポックです。T はそのエポックの場の中での損益の位置（50 = 場の平均、±10 = 標準偏差 1 つ分）。スコアは T の加重平均なので、1 つのレジームで大勝ちして他で負ける戦略は、安定した戦略より下に来ることがあります。T の標準偏差は最初のタイブレークでもあります。",
   "agent.standing.noSeries":
     "このエージェントのラウンド詳細がありません — 競技のシナリオ run が未回収のため、順位は示せても説明はできません。",
-  "agent.standing.mean": "平均 / ラウンド",
-  "agent.standing.std": "ぶれ (std) / ラウンド",
-  "agent.standing.lambdaStd": "λ·std (λ={lambda})",
-  "agent.standing.scoreLine": "mean − λ·std",
+  "agent.standing.mean":
+    "T の平均",
+  "agent.standing.std":
+    "T の標準偏差（タイブレーク 1）",
+  "agent.standing.scoreLine":
+    "スコア（Σ w·T / Σ w）",
+  "agent.standing.worst":
+    "最悪エポックの T（タイブレーク 2）",
   "agent.standing.byRegime": "レジーム別",
+  "agent.standing.byEpoch":
+    "エポック別",
   "agent.standing.col.regime": "レジーム",
-  "agent.standing.col.rounds": "ラウンド",
-  "agent.standing.col.mean": "平均",
-  "agent.standing.col.std": "ぶれ",
+  "agent.standing.col.scenario":
+    "シナリオ",
+  "agent.standing.col.rounds":
+    "エポック",
+  "agent.standing.col.mean":
+    "T の平均",
+  "agent.standing.col.std":
+    "T の標準偏差",
   "agent.standing.bankrupt":
-    "{n} 本のシナリオで破産フロアに到達 — 以降のラウンドはリターン 0 で凍結: {list}",
+    "{n} シナリオで資産価値がゼロ以下で終了（破産。規約 §4.5 により床処理なし、負の値がそのまま算入）: {list}",
   "agent.standing.bankruptOne":
-    "1 本のシナリオで破産フロアに到達 — 以降のラウンドはリターン 0 で凍結: {list}",
-  "agent.histogram.clipped": "0 · {n} ラウンドが表示範囲外（両端のビンに積算）",
-  "agent.histogram.clippedOne": "0 · 1 ラウンドが表示範囲外（端のビンに積算）",
+    "1 シナリオで資産価値がゼロ以下で終了（破産。規約 §4.5 により床処理なし、負の値がそのまま算入）: {list}",
+  "agent.histogram.clipped":
+    "0 · {n} エポックが表示範囲外（両端のビンに積算）",
+  "agent.histogram.clippedOne":
+    "0 · 1 エポックが表示範囲外（端のビンに積算）",
   "agent.openPositions": "建玉",
   "agent.positions.empty":
     "最終ブロック時点で建玉なし — フラットで終えたか、venue 別記録が始まる前の run です",
@@ -850,7 +884,7 @@ const ja: Record<MessageKey, string> = {
   "agent.noRounds":
     "採点済みラウンドはまだありません — ラウンド系列は run 終了時に作られます",
   "agent.roundsNote":
-    "ラウンドは採点の単位窓です。対数リターンは「何もしない」ベースラインに対するこのエージェントの超過分で、スコア（mean − λ·std）が計算される系列です。",
+    "ラウンドは評価区間で、エポック内でのリーダーボードの途中経過です。対数リターンはそのラウンドでのこのエージェントの総資産価値の変化そのものです。スコアはエポック全体で 1 つの数字（P = V_K − V_0 を場全体で標準化）で、ラウンドの関数ではありません。",
   "agent.portfolio": "資産推移",
   "agent.portfolioRange": "資産推移 · {from} → {to}",
   "agent.yLabel": "資産評価額 (USDC)",

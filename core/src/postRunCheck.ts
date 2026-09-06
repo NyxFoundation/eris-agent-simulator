@@ -178,3 +178,79 @@ export function countRunRevertedTxs(
   if (!existsSync(path)) return { total: 0, reverted: 0 };
   return countRevertedTxs(readFileSync(path, "utf8"), ownerId);
 }
+
+// On-chain transactions from an agent's wallet that the agent's own runtime never reported sending.
+//
+// The runtime self-reports every send to agents/<id>.jsonl (`kind: "mempool", event: "submitted"`,
+// with the hash; ADR 0006 §5), and blocks.csv records what the chain included, attributed to the
+// agent by its wallet address. A tx in the second and not in the first was sent by something other
+// than the process the coordinator started: a participant driving the wallet by hand, or a second
+// process holding the key. Both are the human intervention the rules forbid after the freeze (§8),
+// and neither leaves any other trace -- the tx is signed by the right key and lands like any other.
+//
+// A report, not a verdict. A runtime that dies between sendRawTransaction returning and the log
+// line being appended leaves the same mark, so the operator reads this next to the agent's exit
+// record and stderr. Only agents that have an entry in `submittedByOwner` are checked: an external
+// participant (ADR 0021) keeps its log on its own machine, so there is nothing to reconcile against.
+export type UnloggedAgentTx = {
+  ownerId: string;
+  hash: string;
+  blockNumber: number;
+};
+
+export function findUnloggedAgentTxs(
+  blocksCsv: string,
+  submittedByOwner: ReadonlyMap<string, ReadonlySet<string>>,
+): UnloggedAgentTx[] {
+  const I = BLOCKS_CSV_INDEX;
+  const found: UnloggedAgentTx[] = [];
+  for (const line of blocksCsv.split("\n").slice(1)) {
+    if (line.length === 0) continue;
+    const cols = line.split(",");
+    if (cols[I.role] !== "agent") continue;
+    const submitted = submittedByOwner.get(cols[I.ownerId]);
+    if (submitted === undefined) continue;
+    const hash = cols[I.hash].toLowerCase();
+    if (submitted.has(hash)) continue;
+    found.push({
+      ownerId: cols[I.ownerId],
+      hash,
+      blockNumber: Number(cols[I.blockNumber]),
+    });
+  }
+  return found;
+}
+
+// The hashes an agent's runtime reported sending, from its own log. A missing log is an empty set:
+// an agent that never wrote a line and still has transactions on chain is exactly the case above.
+export function readSubmittedHashes(runDir: string, agentId: string): Set<string> {
+  const path = join(runDir, "agents", `${agentId}.jsonl`);
+  const hashes = new Set<string>();
+  if (!existsSync(path)) return hashes;
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (line.length === 0) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    if (e.kind !== "mempool" || e.event !== "submitted") continue;
+    if (typeof e.hash === "string") hashes.add(e.hash.toLowerCase());
+  }
+  return hashes;
+}
+
+export function reconcileRunAgentTxs(
+  runDir: string,
+  agentIds: readonly string[],
+): UnloggedAgentTx[] {
+  const path = join(runDir, "blocks.csv");
+  if (!existsSync(path)) return [];
+  const submittedByOwner = new Map<string, Set<string>>();
+  for (const id of agentIds)
+    submittedByOwner.set(id, readSubmittedHashes(runDir, id));
+  return findUnloggedAgentTxs(readFileSync(path, "utf8"), submittedByOwner);
+}

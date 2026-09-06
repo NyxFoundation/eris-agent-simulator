@@ -23,13 +23,11 @@ export function formatPnlUsdc(value: number): string {
   })}`;
 }
 
-/** The competition score (M9), already scaled to bps of log growth per epoch. Precision follows the
- * magnitude so a small score stays visible instead of rounding to 0.0. */
-export function formatScore(value: number): string {
-  const abs = Math.abs(value);
-  if (abs >= 10) return value.toFixed(1);
-  if (abs >= 1) return value.toFixed(2);
-  return value.toFixed(3);
+/** A deviation score — an epoch's T or the weighted Score — at the two decimals rules §4.6 rank
+ * on. Null is "not scored": the benchmark, or a field with no spread. */
+export function formatScore(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return value.toFixed(2);
 }
 
 /** A score or per-round log return, ×10⁴ (bps scale) but displayed without a unit suffix — the

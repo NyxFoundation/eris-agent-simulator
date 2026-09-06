@@ -1,3 +1,5 @@
+> **Superseded (2026-09-06).** The competition is scored by the deviation score of rules §4.4 (ADR 0023); the candidate metrics measured here (M1…M27, λ, the aggregators) are no longer computed by the repository. Kept as the record of how the choice was narrowed.
+
 # 採点メトリクスの実測記録
 
 **この文書は何か**: DeFi トレード競技の順位をどの数式で決めるかを選ぶための測定記録です。候補が複数あり

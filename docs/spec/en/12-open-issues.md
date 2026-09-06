@@ -6,32 +6,14 @@ The chapter that exists so nothing undecided gets written as decided ([README](R
 
 ## 12.1 Open questions in scoring
 
-### λ for `scenario` mode
+### The scoring rule (decided → ADR 0023)
 
 | | |
 |---|---|
-| State | **Uncalibrated** |
-| What | The known values (0.25 in ADR 0019, 0.15 recommended by [the measurements](../../scoring-metric-measurements.md)) were **both measured on a continuous economy with 12-block epochs** |
-| Why it matters | λ's effective severity moves as `λ/√(epoch length)`. Epochs per scenario depend on the scenario count S, and **S is undecided** (waiting on issue #36) |
-| Consequence | `npm run metrics` refuses a set of runs with mixed `resetUnit` ([02 §2.4](02-runtime.md)). Mixing them and taking a Borda averages two different competitions |
-
-### The metric (M4 vs M9)
-
-| | |
-|---|---|
-| State | **Open** (issue #56) |
-| What | M4 (excess log growth) and M9 (`mean − λ·std`) disagree about whether a higher-earning, choppier agent should outrank a steadier one |
-| Not settled by recomputation | They differ by exactly `λ·std`, and **a rank moves only when that agent's per-epoch Sharpe crosses λ**. Which is correct is a design judgement, not a calculation |
-| Today | ADR 0019 chose the risk-adjusted metric (M9). `backtest` still defaults to `netPnlUsdc` because it is **the only metric comparable with older matrices** |
-
-### The cross-scenario aggregator
-
-| | |
-|---|---|
-| State | **No successor named** |
-| What | ADR 0019 declared the incumbent z-score retired without naming a replacement. Issue #55 is the reason: one entry at −1,113 USDC took the field's sd from 20.9 to 181.5 and compressed everyone else by 8.7× |
-| Candidates | `zscore` / `borda` / `mean` ([06 §6.6](06-scoring.md)); `npm run metrics -- --matrix` compares them exhaustively |
-| Today | The dashboard displays `zscore` and nothing else; rescoring is a CLI job |
+| Status | **Decided** (2026-09-06, rules §4.4) |
+| What | The deviation score. Per epoch (= one run) P = V_K − V_0, standardised over the whole field as T = 50 + 10 (P − μ) / σ, weighted-averaged with w_s linear from 1 to 1.5. No λ, no aggregator |
+| Questions that went away | λ for `scenario` mode, M4 vs M9, the cross-scenario aggregator (zscore / borda / mean and the #55 exposure). The code and `npm run metrics` were deleted |
+| Still open | The value of k (Appendix A; 40 recommended), the actual hidden set and lottery seed with their commitments, a load test of 500 agents on one chain (measured so far: 100 agents at a 4 s block) |
 
 ### ~~What an LST is scored at (par or realizable)~~ — settled
 
@@ -121,4 +103,4 @@ These are not open questions. They are decisions.
 
 - The primary measurement record: [`docs/scoring-metric-measurements.md`](../../scoring-metric-measurements.md)
 - The decision history: [`docs/adr/`](../../adr/) (ADR 0001–0021)
-- The participant-facing rules: [`docs/competition-rules.md`](../../competition-rules.md)
+- The participant-facing rules: [ascon.dev/rules](https://ascon.dev/rules) (outside this repository, and its vocabulary differs from this document's — the rules' "epoch" is one run here, and the rules' "evaluation interval" is what this document calls an epoch)

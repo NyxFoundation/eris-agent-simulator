@@ -5,15 +5,18 @@
 //
 // Two things this file owns that are worth naming:
 //
-//   rounds       A round is a scoring epoch (ADR 0019), not a run. summary.json's
+//   rounds       A round is an evaluation interval of the rules (§0.1), not a run. summary.json's
 //                valueSeries.epochSeries carries the boundaries and the per-agent value at each,
-//                and epochScores[agent].logReturns carries the excess return the score averages —
-//                so a per-round result is a read of the scoring artifact, not a re-derivation.
+//                so a per-round result is a read of the recorded series, not a re-derivation. The
+//                score itself is one number per run (rules §4.4.1: P = V_K − V_0, standardised
+//                over the field), imported from core.
 //   venue panels What each deployed application is doing. The AMM quotes and depth, GMX open
 //                interest and funding, and the Aave reserve totals come from market.json; the LST
 //                vault and the Liquity system are emitted per block by the coordinator into
 //                events.jsonl (lst_block / liquity_block) and are read from there.
 
+import { scoreEpoch } from "@core/scoring/deviationScore";
+import { epochPnlFromSeries } from "@core/scoring/epochPnl";
 import { liveAgentLog, loadLiveRun } from "./liveRun";
 import {
   loadAllAgentLogs,
@@ -271,7 +274,6 @@ function buildEpochs(
 
   if (boundaries.length >= 2) {
     const valuesByAgent = epochSeries?.valuesByAgent ?? {};
-    const epochScores = run.summary.epochScores ?? {};
     const ids = (run.summary.agents ?? []).map((a) => a.id);
     const valueAt = (id: string, boundary: number): number | null =>
       valuesByAgent[id]?.[boundary] ?? null;
@@ -287,21 +289,26 @@ function buildEpochs(
     return boundaries.slice(1).map((toBlock, i) => {
       const fromBlock = boundaries[i];
       const index = i + 1;
-      const roundRank = rankBy(
-        ids,
-        (id) => epochScores[id]?.logReturns?.[i] ?? null,
-      );
+      const roundRank = rankBy(ids, (id) => {
+        const before = valueAt(id, i);
+        const after = valueAt(id, index);
+        return before === null || after === null ? null : after - before;
+      });
       const results: RoundAgentResult[] = ids.map((id) => {
         const before = valueAt(id, i);
         const after = valueAt(id, index);
-        const bankruptAt = epochScores[id]?.bankruptAtEpoch ?? null;
         const previousRank = cumulativeRanks[i].get(id);
         const currentRank = cumulativeRanks[index].get(id);
+        // Context, not the score: the raw log return of account value over this round.
+        const logReturn =
+          before !== null && after !== null && before > 0 && after > 0
+            ? Math.log(after / before)
+            : 0;
         return {
           agent: id,
           rank: roundRank.get(id) ?? ids.length,
           deltaUsdc: before !== null && after !== null ? after - before : 0,
-          logReturnBps: (epochScores[id]?.logReturns?.[i] ?? 0) * 10_000,
+          logReturnBps: logReturn * 10_000,
           cumulativeRank: currentRank ?? ids.length,
           // The first round has no previous close to move against, and the boundary-0 ranking is
           // an all-zero tie — reporting a move off it would be an artifact of the sort order.
@@ -309,7 +316,9 @@ function buildEpochs(
             index > 1 && previousRank !== undefined && currentRank !== undefined
               ? previousRank - currentRank
               : 0,
-          bankrupt: bankruptAt !== null && bankruptAt <= index,
+          // Rules §4.5: asset value at or below zero. No floor and no freeze -- the agent keeps
+          // trading and its later rounds count.
+          bankrupt: after !== null && after <= 0,
         };
       });
       results.sort((a, b) => a.rank - b.rank);
@@ -453,91 +462,76 @@ function categorize(id: string, description: string): StrategyCategory {
   return "dir";
 }
 
-function mean(values: number[]): number {
-  return values.length === 0
-    ? 0
-    : values.reduce((a, b) => a + b, 0) / values.length;
-}
-
-/** Population std, matching core/src/scoring/epochScore.ts. */
-function std(values: number[]): number {
-  if (values.length === 0) return 0;
-  const m = mean(values);
-  return Math.sqrt(mean(values.map((v) => (v - m) ** 2)));
-}
-
 function buildStandings(
   run: LoadedRun,
   epochs: RoundEpoch[],
-  // Replay: the standings are recomputed from the returns up to this many closed rounds. Reading
-  // the finished run's score instead would show the outcome before the walk reaches it.
+  // Replay: P is read through this many closed rounds, and the field is standardised on that.
+  // Reading the finished run's figure instead would show the outcome before the walk reaches it.
   replaying = false,
 ): AgentStanding[] {
   const registered = registeredAgents(run);
-  const epochScores = run.summary.epochScores ?? {};
   const valuesByAgent =
     run.summary.valueSeries?.epochSeries?.valuesByAgent ?? {};
   const agents = run.summary.agents ?? [];
 
   const closed = epochs.filter((e) => e.status === "done").length;
 
-  // The rank move over the last closed round — the same unit the score is computed over. There is
-  // no cross-run concept here: one run is one competition.
+  // The rank move over the last closed round. There is no cross-run concept here: one run is one
+  // epoch of the competition.
   const lastClosed = epochs.filter((e) => e.status === "done").pop();
   const moves = new Map(
     (lastClosed?.results ?? []).map((r) => [r.agent, r.move]),
   );
 
-  const rows = agents.map((agent) => {
-    const epochScore = epochScores[agent.id];
-    const description = registered.get(agent.id)?.description ?? agent.id;
+  // P for this epoch (rules §4.4.1): the summary's own figure for the whole run, or V_closed − V_0
+  // while replaying.
+  const pnlByAgent: Record<string, number> = {};
+  const netPnl = new Map<string, number>();
+  const drawdown = new Map<string, Array<number | null>>();
+  for (const agent of agents) {
     const values = valuesByAgent[agent.id] ?? [];
-
-    // Whole run: read the scorer's own figures. Replay: recompute over the closed rounds only.
-    let score = (epochScore?.score ?? 0) * 10_000;
-    let sharpe =
-      (epochScore?.stdLogReturn ?? 0) > 0
-        ? (epochScore?.meanLogReturn ?? 0) / (epochScore?.stdLogReturn ?? 1)
-        : 0;
-    let netPnlUsdc = agent.netPnlUsdc;
-    let drawdownValues: Array<number | null> = values;
-
+    let p: number | undefined;
+    let net = agent.netPnlUsdc;
+    let dd: Array<number | null> = values;
     if (replaying) {
-      const returns = (epochScore?.logReturns ?? []).slice(0, closed);
-      const m = mean(returns);
-      const sd = std(returns);
-      // λ is recorded per agent by the scorer; 0.25 is ADR 0019's value for runs that predate it.
-      const lambda = epochScore?.lambda ?? 0.25;
-      score = returns.length > 0 ? (m - lambda * sd) * 10_000 : 0;
-      sharpe = sd > 0 ? m / sd : 0;
       const start = values[0];
       const now = values[closed];
-      netPnlUsdc =
-        start != null && now != null
-          ? now - start
-          : closed === 0
-            ? 0
-            : netPnlUsdc;
-      drawdownValues = values.slice(0, closed + 1);
+      if (start != null && now != null) {
+        p = now - start;
+        net = p;
+      } else if (closed === 0) net = 0;
+      dd = values.slice(0, closed + 1);
+    } else {
+      p = agent.pnlUsdc ?? epochPnlFromSeries(values)?.pnlUsdc ?? agent.netPnlUsdc;
     }
+    if (p !== undefined && Number.isFinite(p)) pnlByAgent[agent.id] = p;
+    netPnl.set(agent.id, net);
+    drawdown.set(agent.id, dd);
+  }
+  const benchmarkIds = agents.filter((a) => a.baseline).map((a) => a.id);
+  // One run is one epoch, so T over its own field is exactly the rules' figure for it (§4.4.1).
+  // The benchmark is valued and shown but not in the population (§4.3): its T is null.
+  const epoch = scoreEpoch({ s: 1, pnlByAgent, benchmarkIds }, 1);
 
+  const rows = agents.map((agent) => {
+    const description = registered.get(agent.id)?.description ?? agent.id;
     return {
       rank: 0,
       agent: agent.id,
-      // the run's official metric (M9: mean − λ·std of epoch log returns), scaled
-      // to bps of log growth per epoch. Formatted by formatScore, not toFixed(1):
-      // a real score is often a few hundredths of a bp and rounds away at one decimal.
-      score,
-      netPnlUsdc,
-      sharpe,
+      score: epoch.tByAgent[agent.id] ?? null,
+      netPnlUsdc: netPnl.get(agent.id) ?? agent.netPnlUsdc,
       strategy: description,
       strategyCategory: categorize(agent.id, description),
-      maxDrawdownPercent: maxDrawdownPercent(drawdownValues),
+      maxDrawdownPercent: maxDrawdownPercent(drawdown.get(agent.id) ?? []),
       move: moves.get(agent.id) ?? 0,
     };
   });
 
-  rows.sort((a, b) => b.score - a.score || b.netPnlUsdc - a.netPnlUsdc);
+  rows.sort(
+    (a, b) =>
+      (b.score ?? -Infinity) - (a.score ?? -Infinity) ||
+      b.netPnlUsdc - a.netPnlUsdc,
+  );
   return rows.map((row, i) => ({ ...row, rank: i + 1 }));
 }
 
@@ -1704,7 +1698,6 @@ export async function fetchAgentDetailSnapshot(
     strategy: standing.strategy,
     score: standing.score,
     netPnlUsdc: standing.netPnlUsdc,
-    sharpe: standing.sharpe,
     maxDrawdownPercent: standing.maxDrawdownPercent,
     portfolioSeries,
     positions,

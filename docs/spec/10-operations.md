@@ -30,8 +30,7 @@
 
 | コマンド | 役割 |
 |---|---|
-| `npm run metrics -- <runDir...>` | 保存済み run を全候補指標で採点し直す |
-| `npm run metrics -- --matrix runs/matrix-<id>` | 行列を「指標 × 集約」の総当たりで採点し直す |
+| `npm run competition -- commit <file>` / `plan --hidden --lottery --k` | 非公開 seed・抽選 seed の commit と、エポック順序プランの導出（規約 §3.3） |
 | `npm run dashboard` | 開発サーバー（:5173） |
 | `npm run dashboard:build` / `dashboard:serve` | 運営 hosted ダッシュボード（:5174） |
 | `npm run explorer` / `explorer:down` / `explorer:reset` / `explorer:tag` | ローカル Blockscout |
@@ -91,7 +90,7 @@ fork に戻すには `run.localDeploy: false` + `run.protocols` から `lst` / `
 ```
 npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [options]
   --agents <roster>    regime 既定ロスターの差し替え
-  --metric <name>      standings の指標（既定 netPnlUsdc）
+  --scenarios <path>   {regimes, seeds} の直積か {k, epochs: [{s, regime, seed}]} のプラン
   --repeat <N>         各シナリオを N 回（較正の診断用。standings は中央値）
   --port <N>           backtest 専用 anvil のポート（既定 8547）
   --state <dir>        state dump ディレクトリ
@@ -207,6 +206,6 @@ ADR 0021。**止まらないチェーン + 自己ホスト参加者。**
 
 ## 10.8 撤去済みのコマンド
 
-以下は存在しない。run 後の解析は `runs/<id>/` を直接読むか、`npm run metrics` / ダッシュボードを使う。
+以下は存在しない。run 後の解析は `runs/<id>/` を直接読むか、ダッシュボードを使う（`npm run metrics` も 2026-09-06 に退役）。
 
 `sim`（同期ラウンド）/ `evaluate` / `gate` / `discrimination` / `leaderboard` / `stress-report`

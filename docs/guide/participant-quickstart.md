@@ -1,7 +1,7 @@
 # ASCON Participant Quickstart
 
 The shortest path from clone to a submittable agent. For the full authoring tutorial see
-[Writing a Strategy](writing-agents.md); for the rules see `docs/competition-rules.md`.
+[Writing a Strategy](writing-agents.md); for the rules see [ascon.dev/rules](https://ascon.dev/rules).
 
 Your entry is **one function**, `decide(obs, ctx)`, called once per block. It reads a snapshot of
 confirmed state and returns one action (or a `bundle`), or `null` to sit out. Invalid actions are
@@ -40,16 +40,16 @@ runtime leaves. See [Run Output and Analysis](run-output.md).
 
 ## 4. The competition constraints (know these before you optimize)
 
-**権威ある制約は `docs/competition-rules.md` です**（§2.3/§2.5/§2.6・2026-09-04 確定）。下表は要点で、規約が優先します。
+**権威ある制約は [ascon.dev/rules](https://ascon.dev/rules) です**（§2.3/§2.5/§2.6。2026-09-22 発効版）。下表は要点で、規約が優先します。
 
 | 制約 | 値 | 出典 |
 |---|---|---|
-| 1ブロックの tx 本数 | **最大 3 本**（超過は operator が送信前に reject。1 tx のガス上限も課します） | 規約 §2.6 |
-| ブロックガスリミット | **320,000,000 gas** | 規約 §2.6 |
+| 1ブロックの tx 本数 | **上限なし**。ブロックに入るかは優先手数料のオークションで決まる。1 tx と 1 agent・1 ブロックのガス上限（ブロック 1 本分）は課す。ノード保護の機械的上限をゲートウェイに置く場合は 9/23 までに公表 | 規約 §2.6 |
+| ブロックガスリミット | **30,000,000 gas** | 規約 §2.6 |
 | ブロック内の順序 | **priority fee の高い順**（到着時刻ではない） | 規約 §2.6 |
 | ブロックタイム | **2秒**（確定・2026-09-04）。**1ブロックが1回の判断機会**（「ラウンド＝評価区間」は複数ブロック・規約 §0.1） | 規約 §2.6・§2.6.1 |
 | 計算資源 | **2 vCPU / メモリ 4 GB を上限**（割当保証ではなく上限。他参加者と共有） | 規約 §2.3 |
-| 推論・外部通信 | **外部通信は可・推論は自前 LLM**（運営の共有プロキシは無し）。ただし**推論・外部通信は「改訂ループ」だけ**で、**各ブロックの取引判断 `decide()` は観測とシード乱数のみの決定論**（外部通信・時刻に依存禁止＝リプレイのため） | 規約 §2.3/§2.4/§2.5 |
+| 推論・外部通信 | **外部通信は不可・推論は運営のプロキシ経由**（規約 §2.3・§2.5。認証情報は登録時に提出し鍵はプロキシが保持、使えるモデルは公表一覧、全往復を記録）。**推論は「改訂ループ」だけ**で、**各ブロックの取引判断 `decide()` は観測とシード乱数のみの決定論** | 規約 §2.3/§2.4/§2.5 |
 | チェーン | **cheatcode 不可**（`anvil_*`/`evm_*`/`eth_sendTransaction`/`eth_accounts`/`eth_sign*` はゲートウェイが 403）。**自分の鍵でローカル署名し `eth_sendRawTransaction`** で送ります | 規約 §2.3 |
 | 他エージェント／anvil 直叩き | 不可（各エージェントは隔離ネットでゲートウェイ経由のみ） | 規約 §2.3 |
 
@@ -82,4 +82,4 @@ CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
 
 ## 7. Cost
 
-推論は**参加者が自前の LLM を使い**、費用は参加者負担です（運営プロキシは無し・規約 §2.5）。呼び出し回数は **エポック長と k に依存**します（おおよそ k × 1エポックのブロック数 ÷ reviseEveryBlocks。k とエポック長は確定後に公表）。**上限設定を強くおすすめします。**
+推論は**運営のプロキシ経由で参加者自身の認証情報を使い**、費用は参加者負担です（規約 §2.5）。呼び出し回数は **エポック長と k に依存**します（おおよそ k × 1エポックのブロック数 ÷ reviseEveryBlocks。k とエポック長は確定後に公表）。**上限設定を強くおすすめします。**

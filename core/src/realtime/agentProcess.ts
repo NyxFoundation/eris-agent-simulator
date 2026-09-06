@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { agentToken } from "../inference/proxy.js";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AgentSpec } from "@eris/sdk/types.js";
@@ -14,6 +15,48 @@ export type DirectAccess = {
   priceFeedAddress: string;
   runId: string;
 };
+
+// Names the child needs to run at all -- node, tsx, and the subscription CLIs the self-improving
+// runtime shells out to (`codex exec` / `claude -p` read their login from HOME). Deliberately short:
+// anything else is either the runtime's own ERIS_* namespace or a secret belonging to the operator
+// or to another participant.
+const OS_PASSTHROUGH = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TERM",
+  "NODE_ENV",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "NODE_EXTRA_CA_CERTS",
+  // Windows cannot spawn a process without these.
+  "SystemRoot",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "windir",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "USERPROFILE",
+]);
+
+// Inference credentials and endpoints (example/agents/runtime/llm.ts). Not secrets belonging to
+// other participants -- these are the operator's own defaults, overridable per agent by the roster.
+const INFERENCE_ENV = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OLLAMA_API_KEY",
+];
 
 // Agent process in realtime mode (ADR 0015 §5).
 // spawn is always `node --import tsx <agentsDir>/runtime/bot.ts` (the agent directory is passed via
@@ -41,19 +84,48 @@ export class RealtimeAgentProcess {
     // Extra env the environment injects into all agents (e.g. ADR 0009 stress victim addresses).
     // If spec.env specifies a value it takes precedence (extraEnv acts as the default).
     extraEnv?: Record<string, string>,
+    // `docker` launches through infra/docker-agent/run-agent.sh (rules §2.3 caps; ADR 0023 task M5);
+    // `process` (default) spawns bot.ts directly. A roster `command` override is used as given
+    // either way -- it is the participant's own launcher.
+    options: { sandbox?: "process" | "docker" } = {},
   ) {
-    const childEnv: NodeJS.ProcessEnv = { ...process.env };
-    // Remove the parent Claude Code session markers (prevents a hang from nesting detection).
-    for (const k of Object.keys(childEnv)) {
+    // The child is participant code that the operator executes, so its environment is BUILT rather
+    // than inherited. `{ ...process.env }` handed every submitted agent the operator's whole
+    // environment: every other agent's wallet key, TREASURY_PRIVATE_KEY, the fork RPC URL, and --
+    // now that participants supply their own inference credentials -- one API key per participant.
+    // Nothing the runtime reads needs any of that (example/agents/runtime/*.ts reads ERIS_* plus the
+    // inference names below), and the child does not load .env.local: that is bootstrapEnv.ts, on
+    // this side of the spawn. The allowlist also drops CLAUDE_CODE_* / CLAUDECODE / AI_AGENT, which
+    // used to be deleted by name here to stop `claude -p` hanging on nesting detection.
+    const childEnv: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v === undefined) continue;
+      // ERIS_* is the runtime's own namespace. The private key is excluded because it is per-agent
+      // and injected below -- inheriting the parent's would be the leak this list exists to stop.
+      // ERIS_INFERENCE_SECRET is the operator's: the child gets a token derived from it below.
       if (
-        k.startsWith("CLAUDE_CODE_") ||
-        k === "CLAUDECODE" ||
-        k === "AI_AGENT"
+        k.startsWith("ERIS_") &&
+        k !== "ERIS_AGENT_PRIVATE_KEY" &&
+        k !== "ERIS_INFERENCE_SECRET"
       )
-        delete childEnv[k];
+        childEnv[k] = v;
+      else if (OS_PASSTHROUGH.has(k)) childEnv[k] = v;
+    }
+    // Inference credentials are forwarded as a DEFAULT, so a single-operator local run keeps working
+    // with one key in .env.local. A roster entry's `env` is applied after this and overrides them,
+    // which is how each participant gets its own; an agent never sees another agent's, because
+    // another agent's key only ever exists in that other agent's spec.
+    for (const k of INFERENCE_ENV) {
+      const v = process.env[k];
+      if (v !== undefined) childEnv[k] = v;
     }
     Object.assign(childEnv, extraEnv ?? {});
     Object.assign(childEnv, spec.env ?? {});
+    // Rules §2.3 / §2.5: inference goes through the operator's proxy. The agent authenticates to it
+    // with a token that is a function of its id and a secret only the coordinator and the proxy
+    // hold, so one agent cannot present itself as another and no agent holds an upstream key.
+    const inferenceSecret = process.env.ERIS_INFERENCE_SECRET;
+    if (inferenceSecret) childEnv.ERIS_INFERENCE_TOKEN = agentToken(inferenceSecret, spec.id);
     childEnv.NODE_ENV = process.env.NODE_ENV ?? "development";
     childEnv.ERIS_AGENT_ID = spec.id;
     childEnv.ERIS_RPC_URL = rpcUrl;
@@ -82,8 +154,18 @@ export class RealtimeAgentProcess {
         );
       }
       childEnv.ERIS_AGENT_DIR = agentDir;
-      command = "node";
-      args = ["--import", "tsx", join(agentsDir, "runtime", "bot.ts")];
+      if (options.sandbox === "docker") {
+        // The wrapper reads everything it needs from env (ERIS_AGENT_ID / ERIS_AGENT_DIR / ...) and
+        // remaps host paths into the image itself. The repo root is two levels above agentsDir
+        // (<root>/example/agents); ERIS_REPO tells the script so, in case it was symlinked.
+        const repoRoot = resolve(agentsDir, "..", "..");
+        childEnv.ERIS_REPO = repoRoot;
+        command = "bash";
+        args = [join(repoRoot, "infra", "docker-agent", "run-agent.sh")];
+      } else {
+        command = "node";
+        args = ["--import", "tsx", join(agentsDir, "runtime", "bot.ts")];
+      }
     }
 
     this.child = spawn(command, args, {

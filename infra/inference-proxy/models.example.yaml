@@ -1,0 +1,28 @@
+# infra/inference-proxy/models.example.yaml — the model list the inference proxy enforces.
+#
+# Every entry is a model participants may name in prompt.md (rules §2.5 publishes this list). The
+# proxy refuses any other `model`, and any request that names something it cannot pin at the freeze
+# (a stored prompt, a previous response, tools, a container). Upstream keys are read from the proxy
+# process's environment, never handed to an agent.
+#
+#   npm run inference-proxy -- --models infra/inference-proxy/models.yaml --listen 0.0.0.0:8790 \
+#       --record runs/<competition>/inference
+#
+# `upstreamModel` lets the published name differ from the provider's (pin a dated snapshot behind a
+# stable name, so the list does not change when the provider rotates aliases).
+maxCallsPerMinute: 30
+upstreamTimeoutMs: 120000
+models:
+  - name: gpt-4o-mini
+    provider: openai
+    upstream: https://api.openai.com/v1
+    apiKeyEnv: OPENAI_API_KEY
+    upstreamModel: gpt-4o-mini-2024-07-18
+  - name: claude-sonnet-4-5
+    provider: anthropic
+    upstream: https://api.anthropic.com/v1
+    apiKeyEnv: ANTHROPIC_API_KEY
+  - name: gpt-oss:120b
+    provider: ollama
+    upstream: https://ollama.com/api
+    apiKeyEnv: OLLAMA_API_KEY

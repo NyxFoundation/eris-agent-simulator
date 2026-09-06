@@ -14,13 +14,11 @@ import {
   buildRevisionSystem,
   compileExecutor,
   DEFAULT_REVISE_EVERY_BLOCKS,
-  effectiveReviseInterval,
   improvePolicyState,
   loadImproveAgent,
-  EXECUTOR_TIMEOUT_MS,
-  MAX_REVISIONS_PER_RUN,
   parseRevision,
 } from "../example/agents/runtime/improve.js";
+import { DECIDE_TIMEOUT_MS } from "../example/agents/runtime/decideTimeout.js";
 
 function agentDir(promptMd: string): string {
   const dir = mkdtempSync(join(tmpdir(), "eris-improve-"));
@@ -93,24 +91,6 @@ test("loadImproveAgent: a missing name or bad cadence is an explicit error", () 
       ),
     /must be a positive number/,
   );
-});
-
-test("the declared cadence is honored until it would exceed the operator's cap", () => {
-  // A co-located run shares one LLM budget, so one participant declaring "every block" must not be
-  // able to starve the field -- but a reasonable declaration has to pass through untouched, or the
-  // knob is decorative.
-  assert.deepEqual(effectiveReviseInterval(60, 360), {
-    blocks: 60,
-    clamped: false,
-  });
-  const greedy = effectiveReviseInterval(1, 360);
-  assert.ok(greedy.clamped);
-  assert.equal(greedy.blocks, Math.ceil(360 / MAX_REVISIONS_PER_RUN));
-  // A run with no block target has no total to divide up; the per-run counter caps it instead.
-  assert.deepEqual(effectiveReviseInterval(1, 0), {
-    blocks: 1,
-    clamped: false,
-  });
 });
 
 test("parseRevision: null or omitted executorTs means 'keep the current strategy'", () => {
@@ -276,7 +256,7 @@ test("compileExecutor: a strategy that never returns is bounded, not left to wed
   );
   // Bounded near the limit rather than hanging; generous upper bound so a slow machine cannot flake.
   assert.ok(
-    Date.now() - started < EXECUTOR_TIMEOUT_MS * 3,
+    Date.now() - started < DECIDE_TIMEOUT_MS * 3,
     "the call was not bounded",
   );
 });

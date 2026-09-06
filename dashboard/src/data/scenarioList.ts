@@ -14,7 +14,7 @@
 import type { Competition } from "./competition";
 import { scenarioLabel, scenarioRunId } from "./competition";
 import type { ScenarioSchedule } from "./schedule";
-import { statsOf, type ScenarioRounds } from "./standings";
+import type { ScenarioRounds } from "./standings";
 
 export interface ScenarioListRow {
   /** Unique per scenario: a matrix may repeat (regime, seed) under --repeat. */
@@ -30,8 +30,9 @@ export interface ScenarioListRow {
   roundsSoFar: number;
   /** True once the cursor has passed this scenario's last round: its world has ended. */
   ended: boolean;
-  /** Who leads it through the cursor's round, and by what score (raw log return per round). */
-  leader: { id: string; score: number } | null;
+  /** Who leads it through the cursor's round, and by what P (USDC). Within one scenario the
+   * deviation score is monotone in P, so the leader by P is the leader by T. */
+  leader: { id: string; pnlUsdc: number } | null;
   /** Distinct environment episode types scheduled in this world, in the order they open. */
   events: string[];
   /** No round series was collected for this scenario. */
@@ -60,31 +61,37 @@ export function buildScenarioList(
 
     let total = 0;
     if (series)
-      for (const returns of Object.values(series.byAgent))
-        total = Math.max(total, returns.length);
+      for (const values of Object.values(series.valuesByAgent))
+        total = Math.max(total, values.length - 1);
 
     const roundsSoFar =
       throughRound === null ? total : Math.min(throughRound, total);
     const ended = throughRound !== null && total > 0 && total <= throughRound;
 
-    // The leader by the same rule the standings use inside a scenario: mean − λ·std over the rounds
-    // counted so far. Not the z-aggregated rank, which only exists across scenarios.
+    // The leader by the same quantity the standings standardise inside a scenario: P = V_k − V_0
+    // through the rounds counted so far (rules §4.4.1). The benchmark is not a leader (§4.3).
+    const benchmarks = new Set(series?.baselineIds ?? []);
+    for (const a of s.agents) if (a.baseline) benchmarks.add(a.id);
     let leader: ScenarioListRow["leader"] = null;
     if (series && roundsSoFar > 0) {
-      for (const [id, full] of Object.entries(series.byAgent)) {
-        const upTo = Math.min(roundsSoFar, full.length);
+      for (const [id, values] of Object.entries(series.valuesByAgent)) {
+        if (benchmarks.has(id)) continue;
+        const upTo = Math.min(roundsSoFar, values.length - 1);
         if (upTo <= 0) continue;
-        const { score } = statsOf(
-          upTo === full.length ? full : full.slice(0, upTo),
-        );
-        if (!leader || score > leader.score) leader = { id, score };
+        const start = values[0];
+        const now = values[upTo];
+        if (start === null || now === null) continue;
+        const pnlUsdc = now - start;
+        if (!leader || pnlUsdc > leader.pnlUsdc) leader = { id, pnlUsdc };
       }
     } else if (throughRound === null) {
-      // No series collected, but matrix.json stored each agent's final score under the same rule.
+      // No series collected, but matrix.json stored each agent's P (or, for an older matrix, the
+      // final-marks net PnL, a per-run constant away from it).
       for (const agent of s.agents) {
-        if (!Number.isFinite(agent.score)) continue;
-        if (!leader || agent.score > leader.score)
-          leader = { id: agent.id, score: agent.score };
+        if (benchmarks.has(agent.id)) continue;
+        const p = agent.pnlUsdc ?? agent.netPnlUsdc;
+        if (!Number.isFinite(p)) continue;
+        if (!leader || p > leader.pnlUsdc) leader = { id: agent.id, pnlUsdc: p };
       }
     }
 

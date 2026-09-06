@@ -41,7 +41,11 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
 - `ERIS_AGENT_FROZEN: "1"` — prompt.md を無視して戦略を固定。**ADR 0018 §5 が要求する frozen 対照**
   （自己改善が効いたかを毎 run 見えるようにする）をディレクトリ複製なしで作る
 - `ERIS_LLM_MODEL: "<model>"` — 改訂呼び出しのバックエンド（prompt.md の frontmatter が優先）。
-  API キー無しでも `codex[:<m>]` / `claude-cli[:<m>]` でサブスク CLI 実行可 = docs/guide/llm-agents.md
+  API キー無しでも `codex[:<m>]` / `claude-cli[:<m>]` でサブスク CLI 実行可 = docs/guide/llm-agents.md。
+  `openai:<m>` / `gpt-*` は OpenAI 互換 chat completions。**本番は運営の推論プロキシ経由**
+  （`ERIS_INFERENCE_BASE_URL` + agent ごとの `ERIS_INFERENCE_TOKEN` = HMAC(ERIS_INFERENCE_SECRET, agentId)。
+  agent は鍵を持たない。`npm run inference-proxy`、`core/src/inference/proxy.ts`、規約 §2.3/§2.5。
+  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）
 - `ERIS_IMPROVE_LOG_CALLS: "1"` — 改訂の生のやり取りを `agents/<id>.llm.jsonl` に残す（既定 off）
 
 改訂プロンプトは**その run で有効な venue の action 名を列挙する**（`ACTION_TYPES_BY_PROTOCOL`。
@@ -50,7 +54,14 @@ LLM の手掛かりは現在の戦略コードだけになり、**一度も swap
 知りようがない**（実測: USDC-only 配布で `lp-provider` が 18/18 シナリオ無取引 =
 `docs/scoring-metric-measurements.md` §5.8）。「持っていないことは何もしない理由にならない」も明記する。
 改訂は `{notes, executorTs}` か `{notes, revertTo: <version>}` を返し、`executorTs: null` は
-「今の戦略を維持」。生成コードは **cheatcode 静的検査 → コンパイル → 2 秒の実行上限**を通ってから設置。
+「今の戦略を維持」。生成コードは **cheatcode 静的検査 → vm コンパイル**（関数式の *評価* に 1 秒
+= `runInContext(..., {timeout: 1000})`）を通ってから設置される。**設置前に試運転はしない** — vm の
+timeout は式の評価しか覆わないので、無限ループする本体は評価を通ってしまう。だから設置後、
+`decide` の**呼び出しごと**に `Promise.race` で 5 秒（`DECIDE_TIMEOUT_MS` = 規約 §2.3 の応答タイムアウト。
+`example/agents/runtime/decideTimeout.ts`）を掛ける。**手書きの `decide()` も bot.ts が同じ 1 本で見切る**。
+超過はそのブロックが行動なし（`decide timeout:` で記録）。**再起動も凍結も無い**（規約 §2.3 の 2026-09-06 改定）。
+覆うのは await が返らない型で、同期の無限ループはイベントループごと止まるので中からは止められず、
+その agent はエポックの残りを無言で過ごす。
 **自動 rollback は無い**（閾値に妥当な値が無いため。旧実装は 18 run 中 0 件発火、逆に「少しでも負けたら」
 だと全員が負けるレジームで毎回巻き戻る）。戻すかどうかはモデルの判断で、版履歴を渡して `revertTo` で行う。
 LLM バックエンドが無くても run は完走し、改訂失敗が記録されて戦略は無改変で走り続ける。
@@ -128,12 +139,10 @@ drawdown からの回復・レジームをまたぐ資本配分は競技の対�
 - **`scenario` を宣言できるのは matrix runner だけ**。config に書いて `sim:realtime` を叩くと
   **起動時 fail-fast**（1 つの world を「多数」と名乗る summary.json は、後から検出できない嘘になる）。
   値の綴り間違いも fail-fast（黙って continuous に落ちると、matrix 全体が continuous と名乗る）
-- `summary.json` の `resetUnit` と `matrix.json` の `resetUnit` に必ず出る。`npm run metrics` は
-  **モードが混ざった run 集合を拒否**する（1 world あたりの epoch 数が違い、λ の実効的な厳しさが
-  `λ/√(epoch 長)` で動くので、Borda を取ると別々の競技を平均したものになる）。フィールドが無い
-  過去 run は `continuous` として読む（軸ができる前の run は全部 1 world だった）
-- **λ は `scenario` 側が未較正**。既知値（ADR 0019 の 0.25 / 測定記録の推奨 0.15）はどちらも
-  連続経済 × 12 ブロック epoch のもの。1 シナリオの epoch 数はシナリオ数 S に依存し、S は未決（#36 待ち）
+- `summary.json` の `resetUnit` と `matrix.json` の `resetUnit` に必ず出る。連続経済の run と scenario の
+  run を 1 つの順位に混ぜない（1 world あたりの epoch 数が違う）。フィールドが無い過去 run は
+  `continuous` として読む（軸ができる前の run は全部 1 world だった）
+- **採点は規約 §4.4 の偏差値方式で確定**（ADR 0023、2026-09-06）。λ の較正も集約方式の選択も無い
 
 ### `run.chainMode` — ノードを誰が持っているか（ADR 0021 §7 / issue #33）
 
@@ -208,15 +217,15 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run gen:local-constants` — deployments.json → `sdk/src/constants.local.ts` 生成（同梱 `deployer/` のローカルデプロイ出力を読む）
 - `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
 - `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
-- `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積で、シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（シナリオ × agent の生スコア。**4 指標すべて**）と `standings.json`（レジーム内 z-score → レジーム等重み平均）を書く。順位は派生物で、採点方法は将来見直す前提（matrix.json から再計算できる）。`--metric netPnlUsdc|alphaUsdc|excessLogGrowth|score` / `--repeat N`（較正の診断用。採点は 1 回が既定）
-  - **`excessLogGrowth`(M4) と `score`(M9) は epoch 系列から採る**（`summary.json` の `epochScores`）。M4 は M9 が採点したのと**同じ系列の合計**で取る（端点から取らない）ので、両者の差はきっかり `λ·std` になり、破産した agent の M4 は G1/G2 が凍結した後の系列を反映する。**順位が動くのはその agent の 1 epoch あたり Sharpe が λ を跨いだときだけ**。#56 の判断が開いている間、どちらも選べるようにしてある（既定は `netPnlUsdc` = 過去の行列と比較可能な唯一の指標）
+- `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積（実行順が回次 s）か、`{k, epochs: [{s, regime, seed}]}` の順序付きプラン（`npm run competition -- plan` の出力）を受ける。シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（schema 2: シナリオ × agent の P = `pnlUsdc` / `pnlSource` / `netPnlUsdc` / `alphaUsdc` / 端点 / `baseline` / `flags`）と `standings.json`（`computeStandings` の出力）を書く。順位は派生物で matrix.json から再計算できる。`--repeat N`（較正の診断用。採点は 1 回が既定。P の中央値の repeat を採る）
+  - **公式レジームは `agentSandbox: docker`**（規約 §2.3 の 2 vCPU / 4 GiB は `infra/docker-agent/run-agent.sh` でしか掛からない）。docker が無ければ `--agent-sandbox process`（無制限。`agent_sandbox` イベントにそう出る）。綴り間違いは fail-fast
+  - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
+  - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 40`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジーム等回数、seed が決めるのは順序だけ）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 10/31 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
   - **公式レジーム（8 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）
   - **`cex-drift` / `informed-flow` は窓イベント**（`cexDrift` / `flowTrend`）で表現する（issue #56）。run 全体設定だった頃の `cex-drift` は**宣言長 360 ブロックで壊れていた** — 実測でプール乖離が平均 1,055bps（10%）に居座り fair が +34.6% 暴走、venue-arb が +8,458 を無条件に得ていた。60 ブロックでは 55bps に見えるので発覚が遅れた。窓化後は 461bps・+1,191（calm 基準は 39bps・−289）。`informed-flow` は窓化しても 45.0 → 42.7bps でほぼ中立（この regime はもともと calm と識別しにくい）
   - **`vuln` を公式化するにはフィールド側の追加が要る** — 悪意あるプールは factory 購読で発見するので、`discovery-arb` / `discovery-arb-verify` を `config/rosters/full-field.yaml` に入れないと**誰も見つけられず何も測れない**（`liquidator` が victim 無しでは遊ぶのと同じ形）。実測: 無検証は −5,306、検証側は +721、新プールを見ない venue-arb は −220（calm と同じ）
   - **7 本とも全 venue（`lst` / `liquity` 含む）をデプロイし、配布は ETH/BTC/USDC バスケット**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）。以前は 5 venue・USDC-only 版と `full-*` の 7 venue 版が並立していたが、**5 venue 版は撤去した**（「競技とは何か」に 2 つ目の答えを残さないため）。`full-8h` / `full-boxA` は `public.yaml` と同内容になったので統合済み。`config/regimes/{lst,liquity,liquity-crash}.yaml` は venue 単体検証用として競技セット外に残る。USDC-only を保つのは `metric-*` だけで、理由は別（ADR 0019 §6。`genMetricRegimes.ts` が `funding.base` ごと落とす）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
-- `npm run metrics -- <runDir...>` — 保存済み run を**全候補指標で採点し直す**（issue #56。M1 PnL / M4 超過対数成長 / M7 MPPM / M9 `mean−λ·std` / M13 Sharpe と、run 集合に対する M27 Borda）。チェーン不要・再 run 不要で `summary.json` の epoch 系列だけを読む。`--lambda` / `--rho` / `--out <path>`。**`resetUnit` が混ざった run 集合は拒否**する（ADR 0020 §1）。実測の記録は `docs/scoring-metric-measurements.md`
-- `npm run metrics -- --matrix runs/matrix-<id>` — **シナリオ行列を「指標 × 集約」の総当たりで採点し直す**（ADR 0020 §5）。連続経済では「どの指標か」だけが問いだが、`scenario` モードでは**シナリオ横断の集約**という第 2 の選択が要る（`core/src/scoring/aggregate.ts` = `zscore` 現行 / `borda` 順位 / `mean` 絶対量。どれもレジーム等重み）。出力は各組み合わせの順位、M9×zscore との一致/不一致、そして **#55 の露出**（1 体が場の sd を何倍に膨らませているか。1.0 = 誰も場のスケールを決めていない）。matrix.json の `runDir` は相対なので、spot から回収した tarball を展開したディレクトリでもそのまま読める
 - `npm run explorer` — sim anvil を索引するローカル Blockscout（issue #31。stock イメージ pin、`infra/blockscout/`）。UI は http://localhost:3100。**チェーンをリセットしたら `npm run explorer:reset`**（resetFork/snapshot-revert の巻き戻しに indexer は追従できないので DB を消して再索引するのが正規のライフサイクル）。`npm run explorer:tag` が最新 run の `summary.json` から agent アドレスに名前タグを付ける（reset で消えるので run ごと）。接続先・chain id・fork 用 `FIRST_BLOCK` は `infra/blockscout/explorer.env`
 - `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
   - **選択は `competition ⊃ scenario ⊃ round`**（UI から "matrix" という語は消した。ディスク上の
@@ -257,17 +266,13 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
       その座を奪う crash 窓はまだ開いていない
     - ブロック単位の細かい移動（1 シナリオ内）は `replay.ts` に残る。これはこの位置の**細分**であって
       対立する概念ではなく、シナリオを 1 本開いているときにだけ存在する
-  - **順位表はルール固定**（参加者向け。指標 × 集約のコントロール・λ/ρ スライダ・不一致パネル・
-    #55 露出は 2026-08-31 に撤去した）。順位はシナリオごと M9 `mean − λ·std`（λ=0.25）→
-    シナリオ内 z-score → レジーム等重み平均で決まるが、**スコア列に表示するのは M9 の
-    レジーム等重み平均そのもの（×10⁴ スケール・単位表記なし = 2026-08-31 ユーザー指示）**で、
-    z 集約値はスコアセルの tooltip に降格
-    （無単位の z は「どれだけ差があるか」を答えられないため。表示値と順位は稀に前後し得るが、
-    それは集約方式の差そのものでキャプションに明記）。参考列として net PnL(final marks) の合計を
-    1 列だけ併記（β が相殺され `noop` がきっかり 0 になる方の量。ラウンドスクラブ中は灰色）。
-    **集約は `core/src/scoring/aggregate.ts` を dashboard が直接 import する**（`@core/*` alias。
-    採点ロジックを 2 箇所に置くと CLI と画面で順位が食い違ったとき、どちらが本物か分からなくなる）。
-    指標・集約・λ/ρ を振った再採点は `npm run metrics -- --matrix` の仕事で、UI には出さない
+  - **順位表はルール固定**（参加者向け）。規約 §4.4 の偏差値方式そのもの（ADR 0023）: シナリオ = エポックごとに
+    P = V_K − V_0 → 場全体で T → 回次に線形な w で加重平均した Score を 2 桁で表示し、tooltip に採点エポック数と
+    §4.6 のタイブレーク（T の標準偏差・最悪エポック）。レジーム列はそのレジームでの T の平均（説明であって別の
+    順位ではない）。参考列として net PnL(final marks) の合計を 1 列だけ併記（β が相殺され `noop` がきっかり 0 に
+    なる方の量。ラウンドスクラブ中は灰色）。**採点は `core/src/scoring/deviationScore.ts` を dashboard が直接
+    import する**（`@core/*` alias。採点ロジックを 2 箇所に置くと CLI と画面で順位が食い違ったとき、どちらが本物か
+    分からなくなる）。振る指標は無い（`npm run metrics` は削除）
   - **表示名の原則**: 内部 ID を UI に出さない。競技名は scenarioSet + 実施日から自動導出
     （`dashboard/src/data/competition.ts` の `competitionName`。h1 に `full-8h`、picker に
     `full-8h · 8/29`、生の ID は tooltip）。シナリオは常に `regime#seed`（表示では `full-` 接頭辞を
@@ -278,13 +283,11 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     言語切替でスナップショットを再構築する。文言の規律: 実装語彙（ファイル名・ADR 番号）は
     学習層（scenario ページの Info タブ）以外に出さない / 単位は必ず添える（bps・USDC）/
     状態語は live・finished の 2 語 / `npm run` コマンドは explorer 起動などローカル運用文脈のみ
-  - **順位の理由は agent ページの Standing タブ**（順位表の行クリックで飛ぶ既定タブ）。その agent の
-    全エポックを competition 横断でプールした mean / std / λ·std / 分布 / レジーム別内訳を出す
-    （M9 自体はシナリオごと→レジーム平均なので、これは別の順位ではなく説明）。実測: `clean-arb` は
-    1 ラウンド +0.32bp・std 1.78bp で 1 位、`levered-long-max` は **+4.90bp**・std **78.60bp** で
-    最下位。**15 倍稼いでいる方が最下位**で、差は全部 std。レジーム別に割ると `cex-drift` だけ
-    +48.3bp で他 6 本は負け＝レジーム適合の話だと分かる
-  - **「ラウンド」= 採点エポック**（ADR 0019。run ではない）。上部の帯は選択中 run の epoch 系列そのもの
+  - **順位の理由は agent ページの Standing タブ**（順位表の行クリックで飛ぶ既定タブ）。その agent が採点された
+    全エポック（s / シナリオ / P / T / w）、T の平均・標準偏差・最悪値（= §4.6 のタイブレーク）、T の分布、
+    レジーム別内訳、破産（≤ 0 で終えたシナリオ）を出す（Score が順位を決めるので、これは別の順位ではなく説明）。
+    1 つのレジームで大勝ちして他で負ける戦略が安定した戦略の下に来る理由が、レジーム別 T で見える
+  - **「ラウンド」= 規約の評価区間**（run ではない。採点はエポック = run につき 1 つ、ラウンドは途中経過）。上部の帯は選択中 run の epoch 系列そのもの
     （`valueSeries.epochSeries.boundaryBlocks`）で、セグメントを押すとその round の per-agent 結果
     （Δ value / 超過対数リターン / 順位と変動 / その窓に落ちた環境イベント）が開き、`/explorer` の
     ブロック窓もそこに絞られる。**`Δ value` と `log return` は別物**（前者は β 込みの生の資産変化なので
@@ -300,7 +303,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     サーバーのファイルシステム、チェーン読取は agent の anvil）ので、**完走済み run と spot で回して
     回収した run を観るにはこれが唯一の手段**。archived は live より情報が多い（market.json・採点済み
     epoch・完全な blocks.csv）ので、劣化版ではなく上位互換。**未来を見せないのが要件**で、閉じていない
-    ラウンドは結果を持たず、順位も閉じたラウンドまでの `mean−λ·std` で計算し直す（完走時のスコアを
+    ラウンドは結果を持たず、順位も閉じたラウンドまでの P = V_k − V_0 から T を計算し直す（完走時の数字を
     読むと毎フレームに答えが出てしまう）。run 終端の建玉断面も head が終端に届くまで落とす。
     **spot から回収した run はそのまま開ける** — `spot-run` は box の `runs/` 丸ごとを tar で持ち帰り
     `runs/<回収ID>/runs/<runID>/` に展開するので、dev サーバーの index は 2 階層下まで走査し、
@@ -331,7 +334,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
 - `npm run check:boundaries` — workspace 依存方向（example → sdk ← core）の検査
-- `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）
+- `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）。**`kind: improve` の prompt.md が無いディレクトリは拒否**（規約 §2.5 が全提出 agent に戦略改訂を要求する。起動時ではなく提出物の段で止めるのは、example の 17 agent が prompt.md 無しの教材だから）
 
 > **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
 

@@ -11,6 +11,7 @@ import { activeStables, getBalances } from "@eris/sdk/chain.js";
 import { MarketRegistryWatcher } from "@eris/sdk/agentMarkets.js";
 import { baseTokens, tokenInfo } from "@eris/sdk/markets.js";
 import { observationFor } from "@eris/sdk/observation.js";
+import { PoolDiscovery } from "@eris/sdk/discoveredPools.js";
 import { readFairPrice, readFairPriceFor } from "@eris/sdk/priceFeed.js";
 import type { ProtocolAdapter, SimContext } from "@eris/sdk/protocols/types.js";
 import type {
@@ -28,6 +29,9 @@ export type ChainSnapshot = {
 
 export class Reader {
   private readonly ctx: SimContext;
+  // Rules §3.2 regime 7: the pools the environment adds mid-epoch, read off the factory the
+  // coordinator names in ERIS_VULN_FACTORY. Absent in a run without one.
+  private readonly discovery: PoolDiscovery | null;
   private readonly adapters: ProtocolAdapter[];
   private readonly enabledIds: ProtocolId[];
   private readonly priceFeed: Address;
@@ -81,6 +85,14 @@ export class Reader {
           ),
         )
       : undefined;
+    const factory = process.env.ERIS_VULN_FACTORY;
+    this.discovery = factory
+      ? new PoolDiscovery(
+          this.ctx.publicClient,
+          factory as `0x${string}`,
+          BigInt(process.env.ERIS_VULN_FROM_BLOCK ?? "0"),
+        )
+      : null;
   }
 
   // Reconstruct the observation from this block's chain snapshot.
@@ -177,6 +189,17 @@ export class Reader {
     if (budgets.length > 0) {
       // Whichever terminator comes first is the one that ends the run.
       observation.blocksRemaining = Math.max(0, Math.min(...budgets));
+    }
+    if (this.discovery) {
+      try {
+        observation.discoveredPools = await this.discovery.observe(BigInt(bn));
+      } catch (error) {
+        // A failed scan must not cost the block: the rest of the observation is intact and the
+        // pools will be picked up on the next one. Said, not swallowed.
+        process.stderr.write(
+          `[read] discovered-pool scan failed at block ${bn}: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
     }
     return { observation, balances, stateById, fairPrice };
   }

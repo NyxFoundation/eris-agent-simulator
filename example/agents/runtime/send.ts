@@ -47,17 +47,15 @@ const GAS_REFILL_TX_HEADROOM = BigInt(
 const GAS_LIMIT_ESTIMATE = 1_500_000n; // gas cap estimate for one tx
 const GAS_REFILL_COOLDOWN_BLOCKS = 3; // wait for the refill tx to be mined and reflected in the balance
 
-// Anti-abuse (rules §2.6): cap on-chain txs per block per agent, and cap one tx's gas so no single tx
-// can hog the 320M block (gas bomb). Both are enforced operator-side here, before the tx is sent.
-const MAX_TXS_PER_ROUND = Number(process.env.ERIS_MAX_TXS_PER_ROUND ?? "3");
 // The run's gas budget (issue #40 T0). The environment hands both numbers down so the runtime
 // self-limits to exactly what the post-run check judges by; a participant running self-hosted gets
-// the same defaults. Rules §5 caps how many transactions an agent may put in a block, not their gas,
-// and once agents deploy their own contracts one expensive call can starve the block for everyone.
-const MAX_TX_GAS = BigInt(process.env.ERIS_MAX_TX_GAS ?? "30000000"); // ~10x the heaviest real op, << 320M block
+// the same defaults. There is no cap on how many transactions an agent puts in a block (rules §2.6,
+// 2026-09-06: inclusion is the priority-fee auction), but once agents deploy their own contracts one
+// expensive call can starve the 30M block for everyone, so gas is budgeted per tx and per block.
+const MAX_TX_GAS = BigInt(process.env.ERIS_MAX_TX_GAS ?? "30000000"); // = the block (rules §2.6)
 const MAX_AGENT_BLOCK_GAS = BigInt(
-  process.env.ERIS_MAX_AGENT_BLOCK_GAS ?? "90000000",
-); // 3 x MAX_TX_GAS = the per-block tx cap times the per-tx ceiling
+  process.env.ERIS_MAX_AGENT_BLOCK_GAS ?? "30000000",
+); // one agent may not take more than a block's worth of gas in one block
 
 export class Sender {
   private readonly ctx: SimContext;
@@ -70,8 +68,6 @@ export class Sender {
   private nextNonce: number | null = null;
   private sendQueue: Promise<void> = Promise.resolve();
 
-  // ---- anti-abuse: on-chain txs sent per round (keyed by blockSeen) for the per-block cap ----
-  private readonly txByRound = new Map<number, number>();
   // Gas committed per round, for the per-block gas budget. Counted from the gas *limit* the
   // transaction carries rather than from what it burns: the limit is what reserves block space, and
   // it is the only number available before the transaction is sent.
@@ -123,15 +119,8 @@ export class Sender {
     meta: Record<string, unknown>,
   ): Promise<void> {
     const { publicClient, walletClient, chain } = this.ctx;
-    // Per-block tx cap (rules §2.6): count on-chain txs by the round the agent acted on (blockSeen).
+    // The round the agent acted on (blockSeen): the key of the per-block gas budget below.
     const round = Number(meta.blockSeen ?? -1);
-    const sentThisRound = this.txByRound.get(round) ?? 0;
-    if (sentThisRound >= MAX_TXS_PER_ROUND) {
-      this.logMempool({ event: "rejected", reason: `per-block tx cap (${MAX_TXS_PER_ROUND})`, ...meta });
-      return;
-    }
-    this.txByRound.set(round, sentThisRound + 1);
-    for (const k of this.txByRound.keys()) if (k < round - 4) this.txByRound.delete(k); // prune old rounds
     try {
       const block = await publicClient.getBlock();
       const baseFee = block.baseFeePerGas ?? 0n;
@@ -163,9 +152,6 @@ export class Sender {
       if (gas !== undefined && MAX_AGENT_BLOCK_GAS > 0n) {
         const usedThisRound = this.gasByRound.get(round) ?? 0n;
         if (usedThisRound + gas > MAX_AGENT_BLOCK_GAS) {
-          // Refunded, not consumed: the transaction is not going out, so it must not count against
-          // the per-block transaction cap either.
-          this.txByRound.set(round, (this.txByRound.get(round) ?? 1) - 1);
           this.logMempool({
             event: "rejected",
             reason: `per-block gas budget (${MAX_AGENT_BLOCK_GAS})`,

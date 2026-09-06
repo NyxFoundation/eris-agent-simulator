@@ -131,7 +131,7 @@ Once you bake a state dump from a deployed anvil, you can **replay official regi
 npm run gen:state-dump                                # bake once from the running deployer anvil
 npm run backtest -- --regime calm --seed 101         # one scenario (regime + seed)
 npm run backtest -- --scenarios config/scenarios/public.yaml   # the whole public set + standings
-npm run metrics -- runs/<id>                          # rescore a finished run under every candidate metric
+npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 40 --out plan.yaml   # the epoch order (rules §3.3)
 ```
 
 For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/scoring.md).
@@ -144,12 +144,13 @@ For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/
 
 | Document | Contents |
 |---|---|
+| **[Getting Started](docs/competition-start.en.md)** / **[日本語](docs/competition-start.md)** | **Start here if you are entering the competition.** The shape of an epoch, the vocabulary the rules use versus the code, setup, the smallest submittable agent, and how to submit |
 | [Local Realtime Simulation](docs/guide/local-deploy.md) | Setup: prerequisites, steps, and troubleshooting for non-fork local deploy mode |
 | [Writing Agents](docs/guide/writing-agents.md) | Agent authoring tutorial: minimal agent → reading observations → actions → logging → verification → submission |
 | [Backtesting](docs/guide/backtest.md) | Replaying state dump + official regimes, iterating with `--repeat`, sparring, what is and isn't measurable |
 | [Run Output and Analysis](docs/guide/run-output.md) | The output files under `runs/<id>/` and how to analyze a run afterwards |
 | [Protocols and Actions](docs/guide/protocols-and-actions.md) | Reference: actions per venue, stablecoin accounting, oracle control |
-| [Scoring](docs/guide/scoring.md) | What is scored and how: the epoch value series, `mean − λ·std`, rescoring a stored run with `npm run metrics`, the world reset unit |
+| [Scoring](docs/guide/scoring.md) | What is scored and how: P per epoch off the boundary series, the deviation score T and its weighted average (rules §4.4), the matrix as a rehearsal, the world reset unit |
 | [Self-improving Agents](docs/guide/llm-agents.md) | agent.ts + prompt.md (in-run strategy rewriting, sandbox, rollback, frozen control) |
 | [The Practice Devnet](docs/guide/practice-devnet.md) | Connecting your own agent to a chain that never stops, and what the practice standings are (and are not) |
 

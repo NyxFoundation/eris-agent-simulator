@@ -799,7 +799,11 @@ test("the container wrapper forwards every env the capability needs", () => {
     "utf8",
   );
   // Every name the coordinator sets for a child (agentProcess.ts + agentExtraEnv), except the ones
-  // run-agent.sh remaps itself (ERIS_RUN_DIR / ERIS_AGENT_DIR / ERIS_CONFIG).
+  // run-agent.sh remaps itself (ERIS_RUN_DIR / ERIS_AGENT_DIR / ERIS_CONFIG). The wrapper forwards
+  // every ERIS_* it finds in its environment (a compgen loop) rather than a hand-kept list -- the
+  // list is how these were dropped in the first place -- so an ERIS_* name is covered by the loop
+  // and the rest must be named.
+  const forwardsAllEris = /compgen -e \| grep '\^ERIS_'/.test(wrapper);
   for (const name of [
     "ERIS_MARKET_REGISTRY_ADDRESS",
     "ERIS_LENDING_ADDRESS",
@@ -812,7 +816,8 @@ test("the container wrapper forwards every env the capability needs", () => {
     "REPORT_DIR",
   ]) {
     assert.ok(
-      wrapper.includes(`-e ${name}`),
+      wrapper.includes(`-e ${name}`) ||
+        (name.startsWith("ERIS_") && forwardsAllEris),
       `run-agent.sh does not forward ${name}`,
     );
   }

@@ -67,6 +67,8 @@ export type EnvironmentManifest = {
     chainId: number;
     chainMode: string;
     blockTimeSec: number;
+    // Rules §2.6. 0 = the node's own limit.
+    blockGasLimit: number;
   };
   round: {
     epochBlocks: number;
@@ -167,6 +169,7 @@ export function buildManifest(opts: {
       chainId: config.chainId,
       chainMode: config.chainMode,
       blockTimeSec: config.blockTimeSec,
+      blockGasLimit: config.blockGasLimit,
     },
     round: {
       epochBlocks: config.epochBlocks,

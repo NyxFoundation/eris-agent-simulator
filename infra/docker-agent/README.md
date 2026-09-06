@@ -38,7 +38,7 @@ cd deployer && npm run deploy -- --keep-fresh
 
 # Terminal 2 — once Terminal 1 has printed the deployed addresses:
 npm run gen:local-constants                        # import the deployed addresses
-npm run agent:selftest -- my-agent                 # memory cap: ERIS_DOCKER_MEM (default 1g)
+npm run agent:selftest -- my-agent                 # memory cap: ERIS_DOCKER_MEM (default 4g)
 ```
 (`npm run anvil` is fork-mode only and refuses under `ERIS_LOCAL_DEPLOY=1`. Don't run
 `gen:local-constants` until the deploy has finished — `--keep-fresh` resets `deployments.json` first.)
@@ -76,15 +76,27 @@ sweep any survivors: `npm run agent:reap`.
 - **bind-mount** (`ERIS_AGENT_BINDMOUNT=1`) — stock `node:24` with the repo bind-mounted at its own
   host path; no build, for iterating on runtime code.
 
-Caps: `ERIS_DOCKER_MEM` (default `1g`), `ERIS_DOCKER_CPUS` (default `0.5`).
+Caps: `ERIS_DOCKER_MEM` (default `4g`), `ERIS_DOCKER_CPUS` (default `2`) — the budget the
+competition rules promise a participant. The headroom is nominal rather than reserved: the 100-
+container run below measured ~190 MiB of host memory per agent.
+
+## The coordinator's standard path
+
+The official regimes set `run.agentSandbox: docker`, so `npm run backtest` launches every agent through
+`run-agent.sh` (the coordinator records `agent_sandbox` in events.jsonl either way). Image mode expects
+`eris-agent:<id>`; `ERIS_AGENT_BINDMOUNT=1` runs the stock node image over a bind mount instead. Without
+docker at all, pass `--agent-sandbox process` — no caps, and the event says so. Every `ERIS_*` variable
+the coordinator sets is forwarded into the container; inference API keys are forwarded only when no
+inference proxy (`ERIS_INFERENCE_BASE_URL`) is named.
 
 ## Isolation caveat (egress)
 
-Containers run with `--network host`, so they share the host network — **run-time egress is NOT
-contained by these scripts.** For the live competition, egress blocking (competition rules) must be
-enforced by the operator's host/network policy (firewall, or a bridge network with no NAT); it is
-not provided by `--network host`. Deps are resolved at build time precisely so run time needs no
-outbound access.
+Containers join `ERIS_AGENT_NET` (default `host`, sharing the host network) — **with the default,
+nothing is contained.** `ERIS_AGENT_ISOLATE=1` gives each agent its own network with the RPC gateway
+as the hub ([ISOLATION.md](ISOLATION.md)); `ERIS_AGENT_INTERNAL=1` creates that network without a route
+out and `ERIS_INFERENCE_HUB` attaches the inference proxy to it, which is how rules §2.3's "no direct
+external connection" holds in the competition. Deps are resolved at build time precisely so run time
+needs no outbound access.
 
 ## Env contract (two silent traps)
 

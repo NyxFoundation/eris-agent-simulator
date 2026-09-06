@@ -2,8 +2,10 @@
 
 `--network host` (the default) puts every agent in the host network namespace, so agents can see each
 other and every host service (anvil, monitoring). Requirement: **block agent↔agent**, while keeping
-agent→anvil and agent→internet (a team may bring its own LLM, so egress can't be fully cut and there is
-no operator LLM proxy).
+agent→chain. Egress: **closed** in the competition (rules §2.3, decided 2026-09-06) — `ERIS_AGENT_INTERNAL=1`
+creates the per-agent network `--internal` and the operator's inference proxy joins it as a second hub
+(`ERIS_INFERENCE_HUB`; `core/src/inference/proxy.ts`). The NAT-egress variant below (2026-09-04, own LLM)
+stays as the verified fallback when `ERIS_AGENT_INTERNAL` is unset.
 
 ## Verified mechanism (no sudo, no firewall)
 
@@ -17,7 +19,7 @@ Prototyped and confirmed (2026-09-03):
 |---|---|
 | anvil (`t-anvil:8545`, multi-homed) | **REACHABLE** ✅ |
 | agent B (net ag-2) | **blocked** ✅ |
-| internet (1.1.1.1:443) | **REACHABLE** ✅ (own LLM ok) |
+| internet (1.1.1.1:443) | **REACHABLE** ✅ (only while `ERIS_AGENT_INTERNAL` is unset; the competition sets it) |
 
 Also tested: a single ICC-disabled bridge (`ascon-agents`, created) blocks agent↔agent and allows
 egress too, but agent→anvil is then blocked by the host firewall (bridge→host is dropped — the same

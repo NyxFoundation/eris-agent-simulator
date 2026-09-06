@@ -80,8 +80,9 @@ hand-written strategy (it is handed the same `ctx`), and the same prohibitions: 
 run through the cheatcode static check before it is installed**, so `anvil_*` / `evm_*` /
 `hardhat_*` and the privileged chain helpers are refused exactly as they are in a submission.
 
-Code that fails the check, fails to compile, or does not return within 2 seconds is not installed —
-the previous strategy keeps running and the reason is logged.
+Code that fails the check or fails to compile is not installed — the previous strategy keeps running
+and the reason is logged. Once installed, every call is bounded at 5 seconds (rules §2.3, the same
+bound a hand-written `decide()` gets); past it the block is no action.
 
 ## Guards
 
@@ -90,7 +91,6 @@ the previous strategy keeps running and the reason is logged.
 | cheatcode static check on generated code | an LLM-authored strategy is not trusted code, and the submission gate cannot see code that does not exist yet |
 | compile / call failure is never installed | a broken rewrite must not stop the agent trading |
 | `revertTo` in the model's hands, not a threshold | whether a dip is the strategy or the market is a judgment; a fixed rule is either never right or always wrong (§5) |
-| revision cadence clamped | a co-located run shares one LLM budget; "revise every block" from one agent would starve the field |
 | every outcome logged | the previous attempt at self-improvement shipped a rollback that never once fired and nobody noticed |
 
 **Always run a frozen control.** `ERIS_AGENT_FROZEN: "1"` runs the same directory with the
@@ -114,12 +114,20 @@ The provider is selected by the frontmatter `model` name:
 |---|---|---|
 | `gpt-oss:120b` etc. (default) | Ollama (default Ollama Cloud `https://ollama.com/api`; point at local `http://127.0.0.1:11434/api` via `ERIS_OLLAMA_BASE_URL`) | `OLLAMA_API_KEY` / `ERIS_OLLAMA_API_KEY` (not needed for local ollama) |
 | starts with `claude...` | Anthropic SDK (structured output via tool use) | `ANTHROPIC_API_KEY` |
+| `openai:<model>`, or starts with `gpt-` / `o1` / `o3` / `o4` | OpenAI-compatible chat completions (`response_format: json_object`) | `OPENAI_API_KEY` (+ `OPENAI_BASE_URL` for a compatible endpoint) |
 | `codex` / `codex:<model>` | Codex CLI (spawns `codex exec` in a read-only sandbox) | ChatGPT subscription (`codex login`; **no API key**) |
 | `claude-cli` / `claude-cli:<model>` | Claude Code CLI (spawns `claude -p` with all built-in tools disallowed) | Claude subscription (Claude Code OAuth login; **no API key**) |
 
 The per-call timeout is `ERIS_LLM_CALL_TIMEOUT_MS` (default 60000; the CLI providers default to
 120000 because each call pays process startup). Put the secret API keys in `.env.local`
 ([Configuration](configuration.md)).
+
+**In the competition there is no key in the agent at all.** The coordinator sets
+`ERIS_INFERENCE_BASE_URL` (the operator's inference proxy, rules §2.3 / §2.5) and a per-agent
+`ERIS_INFERENCE_TOKEN`; the Ollama, OpenAI-compatible and Anthropic families then all route through
+the proxy, which holds the upstream keys, enforces the published model list and records every
+exchange for replay (`infra/inference-proxy/README.md`). The CLI providers are a local-development
+convenience: an agent container has no `codex` or `claude` binary and no network to log in with.
 
 **Latency no longer bounds the strategy.** Under prompt mode a slow backend meant a slow trader; now
 it only means fewer revision opportunities, and the strategy trades at full speed throughout. A

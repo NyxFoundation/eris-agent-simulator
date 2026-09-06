@@ -60,7 +60,7 @@ if (isMainThread) {
   console.log(`writeload type=${TYPE} senders=${SENDERS} workers=${WORKERS} ${SECONDS}s blocktime=${BT}s`);
   await rpc("evm_setAutomine", [false]);
   await rpc("evm_setIntervalMining", [BT]);
-  await rpc("anvil_setBlockGasLimit", ["0x1312D000"]); // 320M — match the competition (reset.sh sets this AFTER load-state)
+  await rpc("anvil_setBlockGasLimit", ["0x1c9c380"]); // 30M — match the competition (rules §2.6; reset.sh sets this AFTER load-state)
   const big = "0x21e19e0c9bab2400000"; // 10000 ETH
   await Promise.all(Array.from({ length: SENDERS }, (_, i) => rpc("anvil_setBalance", [privateKeyToAccount(key(i)).address, big])));
 

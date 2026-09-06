@@ -119,10 +119,10 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - |
-        anvil --host 0.0.0.0 --port 8545 --code-size-limit 50000 --base-fee 0 --gas-limit 320000000 --accounts 10 --balance 1000000 --load-state /state.json &
+        anvil --host 0.0.0.0 --port 8545 --code-size-limit 50000 --base-fee 0 --gas-limit 30000000 --accounts 10 --balance 1000000 --load-state /state.json &
         ANVILPID=$$!
         sleep 4
-        cast rpc --rpc-url http://127.0.0.1:8545 anvil_setBlockGasLimit 0x1312D000 || true
+        cast rpc --rpc-url http://127.0.0.1:8545 anvil_setBlockGasLimit 0x1c9c380 || true
         wait $$ANVILPID
 
   rpc-gateway-live:

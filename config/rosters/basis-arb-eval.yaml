@@ -1,0 +1,65 @@
+# config/rosters/basis-arb-eval.yaml — the field for measuring basis-arb (issue #30).
+#
+# Not the competition field. This roster exists to answer three questions that no run in this repo
+# has ever been able to answer, because no agent has ever traded the GMX venue:
+#
+#   1. Does the perp leg execute at all? The keeper runs inside the block loop, the execution fee is
+#      0.03 ETH per order and GasUtils refunds the unspent part -- all of that is untested from an
+#      agent's side.
+#   2. What does a hedged single AMM leg earn against the two-legged AMM round trip that the field
+#      currently consists of? `clean-arb` and `venue-arb` are the incumbents to beat, and `noop` is
+#      the hurdle both have to clear.
+#   3. Does the LLM revision loop help or hurt a two-leg strategy? A revision that breaks the hedge
+#      leaves a naked delta, and nothing rolls it back. That is what the frozen twin is for
+#      (ADR 0018 §5): same code, same wallet policy, revision off.
+#
+# Deliberately *not* constrained: basis-arb takes no self-imposed cap on the perp leg. GMX here has
+# positionFeeFactor, priceImpactFactor, fundingFactor and borrowingFactor all at zero and no open
+# interest cap -- the deployer sets none of them -- so the only limits are `maxGmxSizeUsd` ($50k per
+# order) and collateral. Measuring how far that goes is the point; capping it first would hide it.
+#
+# Run:
+#   npm run backtest -- --regime calm      --seed 101 --agents config/rosters/basis-arb-eval.yaml
+#   npm run backtest -- --regime cex-drift --seed 101 --agents config/rosters/basis-arb-eval.yaml
+# (repeat for seeds 102 and 103; calm is the 39bps-dislocation end and cex-drift the 461bps end)
+agents:
+  # --- controls --------------------------------------------------------------
+  - id: noop
+    wallet: AUTO
+    baseline: true
+    description: does nothing (baseline). Its score is the hurdle every other agent has to clear
+
+  # --- the incumbents: two-legged arbitrage inside the AMMs -------------------
+  - id: clean-arb
+    wallet: AUTO
+    description: two-leg AMM round trip priced against fees, impact and expected adverse move
+  - id: venue-arb
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: WETH-only cross-venue arbitrage, swapping toward fair on the most deviated pool
+
+  # --- issue #30: one AMM leg against fair, delta hedged on the perp ----------
+  # The frozen twin comes first because it is the reference: whatever the revising one does has to
+  # be read against this, not against the incumbents.
+  - id: basis-arb
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: buys the base below fair (or sells above) and shorts the delta back out on GMX
+  # The same strategy with the keeper-delay term removed from the cost gate. That term is one
+  # standard deviation of a symmetric price move charged as if it were an expected loss, and it is
+  # what decides whether a calm-regime dislocation clears the gate at all. Two copies of one
+  # strategy in one world is the cheapest way to find out whether it earns its place.
+  - id: basis-arb-nodelay
+    dir: basis-arb
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1", ERIS_BASIS_DELAY_MULT: "0" }
+    description: the same, not charging keeper-delay volatility as a cost
+  # The backend is named rather than left to the default: an unset one falls back to a provider that
+  # needs an API key, and a revision that fails is recorded and the strategy runs on unchanged --
+  # which is indistinguishable from the frozen twin. That would turn this pair into frozen vs
+  # frozen without saying so. codex runs on the subscription CLI and needs no key.
+  - id: basis-arb-improve
+    dir: basis-arb
+    wallet: AUTO
+    env: { ERIS_IMPROVE_LOG_CALLS: "1", ERIS_LLM_MODEL: "codex" }
+    description: the same strategy with the LLM revising it in-run — the ADR 0018 §5 pair

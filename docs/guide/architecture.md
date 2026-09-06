@@ -76,6 +76,6 @@ The same coordinator is used from two entry points:
 - **`npm run backtest -- --regime <name> --seed <N>`** — participant backtest (ADR 0016). It replays one scenario on top of a dedicated anvil loaded with the distributed state dump, repeated via `--repeat`.
 - **`npm run backtest -- --scenarios <path>`** — the scenario matrix (ADR 0017): the whole set on one anvil with snapshot/revert between scenarios, writing `matrix.json` + `standings.json`. This is the competition's shape and the only mode that may declare `resetUnit: scenario` (ADR 0020). See [Backtest](backtest.md).
 
-Neither entry point has to decide the scoring rule at run time. Both store the raw value series, so
-`npm run metrics` can rescore a finished run or a finished matrix under any candidate metric and
-aggregator ([Scoring](scoring.md)).
+Neither entry point scores anything beyond P per agent. Both store the raw boundary series, and the
+standings (`computeStandings`, the deviation score of rules §4.4) are recomputed from `matrix.json`
+([Scoring](scoring.md)).

@@ -1,233 +1,134 @@
-// Scenario-matrix aggregation (ADR 0017 §4).
+// Scenario-matrix standings under the competition rules (§4.4, §4.6; ADR 0023).
 //
-// Turns a scenario x agent score matrix into standings in three layers:
-//   1. scenario score  -- the raw metric from that scenario's single run
-//   2. scenario z      -- normalized across agents *within the scenario*
-//   3. total           -- mean over scenarios inside a regime, then mean over regimes (equal weight)
+// A matrix run is a rehearsal of the live competition: every scenario is one epoch, run in the
+// order given, and the standings are what the live leaderboard would show -- P per agent per epoch,
+// standardised within the epoch, weighted by the scheduled ordinal, averaged. The arithmetic lives
+// in scoring/deviationScore.ts; this file maps run summaries onto its input and back.
 //
-// Why normalize per scenario rather than per regime: every agent in a scenario ran in the same world
-// (ADR 0017 §1 co-location), so comparing them to each other is the one comparison the design
-// actually guarantees is fair. Doing it per scenario also flattens the seed-to-seed scale spread
-// inside a regime, not just the regime-to-regime spread, which is a strict improvement over
-// normalizing the regime as one pool.
-//
-// Pure. No filesystem, no chain. The CLI collects summaries and hands them here, so the aggregation
-// rule can be re-run over a stored matrix.json when the scoring method changes (it is expected to --
-// ADR 0017 leaves the metric and the formula open).
+// Pure. No filesystem, no chain. The CLI collects summaries and hands them here, so the standings
+// can be recomputed from a stored matrix.json without re-running anything (ADR 0017 §4).
 
-// How far below the worst finisher a disqualified agent lands, in z units (standard deviations).
-// Being disqualified has to be worse than finishing last, or crashing becomes a strategy; and it has
-// to be a bounded penalty rather than -Infinity, or one bad scenario decides the whole competition.
-export const DISQUALIFIED_Z_PENALTY = 1;
+import {
+  scoreCompetition,
+  type AgentResult,
+  type EpochInput,
+  type EpochResult,
+} from "../scoring/deviationScore.js";
 
-// The four metrics a matrix can be ranked on. The first two are endpoint differences in USDC; the
-// last two come from the epoch series ADR 0019 scores on, and are the pair the metric decision is
-// actually between (issue #56):
-//
-//   excessLogGrowth  M4 — the sum of the epoch excess log returns
-//   score            M9 — mean(x_e) - lambda*std(x_e) over the same series
-//
-// They differ by exactly `lambda*std`, because log returns telescope: sum(x_e) = E*mean(x_e). So an
-// agent's rank moves between them if and only if its per-epoch Sharpe crosses lambda -- which is why
-// both are selectable rather than one being hard-coded while the choice is open.
-export type ScoringMetric =
-  "netPnlUsdc" | "alphaUsdc" | "excessLogGrowth" | "score";
-
-export const SCORING_METRICS: ScoringMetric[] = [
-  "netPnlUsdc",
-  "alphaUsdc",
-  "excessLogGrowth",
-  "score",
-];
+export type PnlSource = "epoch-boundaries" | "endpoints";
 
 export type AgentScore = {
   id: string;
+  // P(a, s): the rules' V_K − V_0 read off the epoch boundaries (summary.json `pnlUsdc`) or, for a
+  // run recorded before that field existed, netPnlUsdc (both ends at the final marks, which differs
+  // by a per-run constant when everyone starts with the same basket). `pnlSource` says which.
+  // Absent when the agent was not placed in the epoch: it is then not in the population.
+  pnlUsdc?: number;
+  pnlSource?: PnlSource;
   netPnlUsdc?: number;
   alphaUsdc?: number;
-  // From summary.json's epochScores (ADR 0019). Absent for a run stored before the epoch series
-  // existed, or one whose reconstruction produced no boundaries -- which disqualifies the agent for
-  // that scenario under an epoch metric rather than scoring it zero.
-  excessLogGrowth?: number;
-  score?: number;
-  // The two cross-sections the metrics above are differences of. Carried into matrix.json because
-  // the run directories do not survive: of the 30 runs in the 2026-08-09 sweep, 5 had already lost
-  // theirs, and with only the differences stored there was no way to recompute a score under a
-  // changed rule -- which is the whole premise of standings.json being a derivative (ADR 0017 §4).
   initialValueUsdc?: number;
   finalValueUsdc?: number;
-  // Set when the agent must not be credited with a score for this scenario: it broke a rule, its
-  // process died, or it never reported. The reason is carried through to the report.
-  disqualified?: string;
+  // §4.3: placed and valued, kept out of the population.
+  baseline?: boolean;
+  // Facts a reader should see next to the number: a fee-cap violation, a process that exited early,
+  // transactions the runtime never reported. None of them changes P (rules §2.3 and §4.4.2 after the
+  // 2026-09-06 amendment: a stopped agent is scored on what it left behind); §8 matters are the
+  // operator's to judge, not the scorer's.
+  flags?: string[];
 };
 
 export type ScenarioResult = {
+  // Scheduled ordinal, 1-based (§4.4.1).
+  s: number;
   regime: string;
   seed: number;
-  // Absent when the run produced no summary at all. Such scenarios are excluded from the
-  // aggregation and reported separately -- a failure of the environment must not be charged to the
-  // participants, and a row of zeros would silently dilute everyone's average.
+  // Absent when the run produced no summary at all. Such an epoch is invalid for everyone (§4.4.2);
+  // it is never charged to some participants and not others.
   agents?: AgentScore[];
   runDir?: string;
   error?: string;
 };
 
-export type ScenarioStanding = {
+export type EpochStanding = EpochResult & {
   regime: string;
   seed: number;
-  scores: Record<string, number>;
-  z: Record<string, number>;
-  disqualified: Record<string, string>;
+  runDir?: string;
 };
 
 export type Standings = {
-  metric: ScoringMetric;
-  agents: Array<{
-    id: string;
-    total: number;
-    byRegime: Record<string, number>;
-    scenariosScored: number;
-    disqualifications: number;
-  }>;
-  regimes: string[];
-  scenarios: ScenarioStanding[];
-  excludedScenarios: Array<{ regime: string; seed: number; error?: string }>;
+  k: number;
+  // The ordinals the final score was computed from (§4.4.1: published with the ranking).
+  S: number[];
+  epochs: EpochStanding[];
+  // Sorted by rank (§4.6).
+  agents: Array<AgentResult & { flags: string[] }>;
+  // Placed in every epoch, shown for reference, never in the population (§4.3).
+  benchmarks: Array<{ id: string; pnlByEpoch: Record<number, number> }>;
 };
 
 export function scenarioId(regime: string, seed: number): string {
   return `${regime}#${seed}`;
 }
 
-function mean(values: number[]): number {
-  return values.reduce((a, b) => a + b, 0) / values.length;
-}
-
-// Population standard deviation: the agents in a scenario are the whole set being compared, not a
-// sample drawn from a larger one.
-function stdev(values: number[], mu: number): number {
-  return Math.sqrt(mean(values.map((v) => (v - mu) ** 2)));
-}
-
-function metricOf(
-  agent: AgentScore,
-  metric: ScoringMetric,
-): number | undefined {
-  const raw = agent[metric];
-  return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
-}
-
-// z-scores for one scenario. Agents that finished are normalized against each other; agents that did
-// not are placed below all of them.
-export function scenarioZScores(
-  agents: AgentScore[],
-  metric: ScoringMetric,
-): {
-  z: Record<string, number>;
-  scores: Record<string, number>;
-  disqualified: Record<string, string>;
-} {
-  const scores: Record<string, number> = {};
-  const disqualified: Record<string, string> = {};
-  const finishers: string[] = [];
-
-  for (const agent of agents) {
-    const value = metricOf(agent, metric);
-    if (agent.disqualified !== undefined) {
-      disqualified[agent.id] = agent.disqualified;
-      // Keep the raw number when there is one: the report should still show what the agent was
-      // holding when it was disqualified, even though the number does not earn it any z.
-      if (value !== undefined) scores[agent.id] = value;
-      continue;
-    }
-    if (value === undefined) {
-      // A finisher with no readable metric is a reporting failure, not a zero. Treat it the same as
-      // any other agent we cannot score rather than crediting it with an average result.
-      disqualified[agent.id] = `no ${metric} in summary`;
-      continue;
-    }
-    scores[agent.id] = value;
-    finishers.push(agent.id);
-  }
-
-  const z: Record<string, number> = {};
-  const values = finishers.map((id) => scores[id]);
-  if (finishers.length > 0) {
-    const mu = mean(values);
-    const sd = stdev(values, mu);
-    // sd === 0 means every finisher tied. No one out-traded anyone, so no one gains ground.
-    for (const id of finishers) z[id] = sd > 0 ? (scores[id] - mu) / sd : 0;
-  }
-  const worst =
-    finishers.length > 0 ? Math.min(...finishers.map((id) => z[id])) : 0;
-  for (const id of Object.keys(disqualified))
-    z[id] = finishers.length > 0 ? worst - DISQUALIFIED_Z_PENALTY : 0;
-
-  return { z, scores, disqualified };
-}
-
 export function computeStandings(
   results: ScenarioResult[],
-  metric: ScoringMetric,
+  k: number,
 ): Standings {
-  const scored: ScenarioStanding[] = [];
-  const excluded: Standings["excludedScenarios"] = [];
-
-  for (const result of results) {
-    if (!result.agents || result.agents.length === 0) {
-      excluded.push({
-        regime: result.regime,
-        seed: result.seed,
-        error: result.error ?? "no summary.json",
-      });
-      continue;
+  const epochs: EpochInput[] = results.map((r) => {
+    if (!r.agents || r.agents.length === 0)
+      return {
+        s: r.s,
+        pnlByAgent: {},
+        invalid: r.error ?? "no summary.json",
+      };
+    const pnlByAgent: Record<string, number> = {};
+    const benchmarkIds: string[] = [];
+    for (const a of r.agents) {
+      if (a.pnlUsdc === undefined) continue;
+      pnlByAgent[a.id] = a.pnlUsdc;
+      if (a.baseline) benchmarkIds.push(a.id);
     }
-    const { z, scores, disqualified } = scenarioZScores(result.agents, metric);
-    scored.push({
-      regime: result.regime,
-      seed: result.seed,
-      scores,
-      z,
-      disqualified,
-    });
-  }
-
-  // Regime order follows first appearance so the report reads in the order the matrix was run.
-  const regimes: string[] = [];
-  for (const s of scored)
-    if (!regimes.includes(s.regime)) regimes.push(s.regime);
-
-  const agentIds: string[] = [];
-  for (const s of scored)
-    for (const id of Object.keys(s.z))
-      if (!agentIds.includes(id)) agentIds.push(id);
-
-  const agents = agentIds.map((id) => {
-    const byRegime: Record<string, number> = {};
-    let scenariosScored = 0;
-    let disqualifications = 0;
-    for (const regime of regimes) {
-      const inRegime = scored.filter((s) => s.regime === regime && id in s.z);
-      if (inRegime.length === 0) continue;
-      byRegime[regime] = mean(inRegime.map((s) => s.z[id]));
-      scenariosScored += inRegime.length;
-      disqualifications += inRegime.filter((s) => id in s.disqualified).length;
-    }
-    const present = regimes.filter((r) => r in byRegime);
-    return {
-      id,
-      // Equal weight per regime, so a regime with more seeds does not carry more of the total.
-      total: present.length > 0 ? mean(present.map((r) => byRegime[r])) : 0,
-      byRegime,
-      scenariosScored,
-      disqualifications,
-    };
+    return { s: r.s, pnlByAgent, benchmarkIds };
   });
+  const scored = scoreCompetition({ epochs, k });
 
-  agents.sort((a, b) => b.total - a.total);
+  const flagsByAgent = new Map<string, string[]>();
+  const benchmarkPnl = new Map<string, Record<number, number>>();
+  for (const r of results) {
+    for (const a of r.agents ?? []) {
+      for (const f of a.flags ?? []) {
+        const list = flagsByAgent.get(a.id) ?? [];
+        list.push(`${scenarioId(r.regime, r.seed)}: ${f}`);
+        flagsByAgent.set(a.id, list);
+      }
+      if (a.baseline && a.pnlUsdc !== undefined) {
+        const by = benchmarkPnl.get(a.id) ?? {};
+        by[r.s] = a.pnlUsdc;
+        benchmarkPnl.set(a.id, by);
+      }
+    }
+  }
+  const byOrdinal = new Map(results.map((r) => [r.s, r]));
   return {
-    metric,
-    agents,
-    regimes,
-    scenarios: scored,
-    excludedScenarios: excluded,
+    k,
+    S: scored.S,
+    epochs: scored.epochs.map((e) => {
+      const r = byOrdinal.get(e.s)!;
+      return {
+        ...e,
+        regime: r.regime,
+        seed: r.seed,
+        ...(r.runDir !== undefined ? { runDir: r.runDir } : {}),
+      };
+    }),
+    agents: scored.agents.map((a) => ({
+      ...a,
+      flags: flagsByAgent.get(a.id) ?? [],
+    })),
+    benchmarks: [...benchmarkPnl.entries()].map(([id, pnlByEpoch]) => ({
+      id,
+      pnlByEpoch,
+    })),
   };
 }

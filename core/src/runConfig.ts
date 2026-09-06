@@ -155,6 +155,8 @@ const CLI_ALIAS: Record<string, string> = {
   "local-deploy": "ERIS_LOCAL_DEPLOY",
   "score-every": "ERIS_SCORE_EVERY",
   "chain-mode": "ERIS_CHAIN_MODE",
+  // process | docker (rules §2.3 caps live on the docker path; the official regimes say docker)
+  "agent-sandbox": "ERIS_AGENT_SANDBOX",
 };
 function cliOverrides(argv: string[]): Record<string, string> {
   const flags = parseCliFlags(argv);
