@@ -311,6 +311,44 @@ run 時間制限のタイマーは `finish()` で clear されているので、
 残っている。**CI の `grep -q "simulation completed"` はそこまで到達しない**し、練習 devnet の
 セグメント切り替えにも効くので、別 issue に分けて追う。
 
+### exploit-hunter（Hacker。phase 4）
+
+trap-launcher の裏返し。罠を仕掛けて待つのではなく、**他人の `unknown` コントラクトを読んで、
+バグのあるものを drain する**。§8 が認めている「他の参加者のコントラクトの弱点を突く」の実体。
+
+難しいのは、エージェント製コントラクトが **ABI を公表しない**こと。hunter が持つのはアドレスと
+バイトコードだけ。なので実際のバイトコード専用スキャナと同じ手順を踏む:
+
+1. `eth_getCode` でランタイムバイトコードを読む
+2. dispatcher から **selector を復元**する（`PUSH4` 定数を拾う。push データ内の `0x63` を
+   PUSH4 オペコードと取り違えないよう、軽くディスアセンブルして push データをスキップする）
+3. no-arg のものを `Exploiter`（atomic な drain ヘルパ。FlashArb と同じ形）越しに試す。
+   値が出れば hunter のウォレットへ転送し、出なければ revert —— 外れの selector はガスだけ
+
+狙う脆弱性クラスは**ガードし忘れた値引き出し関数**（`rescue()` / `sweep()`）。実際のvault が
+drain される最頻の形で、この環境の言う「honest」——コードのミスであって、意図ではない。
+
+対の victim は `vault-keeper`（`LeakyVault` を deploy して USDC を入れ、鐘の前に引き出すつもりの
+正直な作成者。`rescue()` が un-gate なのを知らない）。
+
+**実測（seed 101・360 ブロック）**: `exploit-hunter` **+9,999.9** / `vault-keeper` **−10,000.2**。
+keeper が入れた 10,000 USDC がまるごと移転し、場の合計は −2.9（＝全員のガス）。keeper は退出を
+試みたが（"round-tripping out"）、その時点で vault は既に空で、shares を焼いても 0 しか戻らず
+"could not exit: the vault was drained before the bell" になった。**これは移転であって捏造された
+価値ではない** —— keeper の損は預け入れ時点で（stranded holding が 0 採点になって）計上済み、
+hunter の利得は drain 時点。run 全体で相殺する。トラップの被害者と同じ形で、跨ぐエポックが違うだけ。
+
+> レビューはこれを「移転として相殺しない」と High で挙げたが、**誤読**だった（採点を変えずに
+> 実測で確認した）。keeper の −10,000 と hunter の +10,000 は run の netPnl で相殺し、場の総和は
+> ガスしか動かない。lending の罠と同一の構造で、損と利得が別ブロックに出るだけである。
+
+hunter が見つけたバグ（実装後）: 最初の live run では drain が 0 だった。「攻略不可」を
+**codehash でキャッシュ**していたが、vault に USDC を入れてもコードは変わらないので、空のうちに
+一度見た vault は満杯になっても二度と見なかった。drain 機構自体は単独検証で動いていた（満杯の
+`LeakyVault` を simulate すると預入額ちょうどを返した）ので、このキャッシュだけが原因。
+「関数が無い（コード由来なので codehash でキャッシュ）」と「今は取るものが無い（数ブロックの
+クールダウンで再挑戦）」を分けて直した。
+
 ### 実測が見つけた欠陥（実装後・レビュー前）
 
 live run を回さなければ出なかったものが 3 件あった。記録として残す:

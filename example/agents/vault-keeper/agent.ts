@@ -42,6 +42,16 @@ const erc20ApproveAbi = [
   },
 ] as const;
 
+const erc20BalanceAbi = [
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+] as const;
+
 const vaultAbi = [
   {
     type: "function",
@@ -181,15 +191,23 @@ export async function run(ctx: AgentContext): Promise<void> {
           phase = "done";
           return;
         }
-        const owned = (await ctx.publicClient
-          .readContract({
-            address: vault,
-            abi: vaultAbi,
-            functionName: "shares",
-            args: [self],
-          })
-          .catch(() => 0n)) as bigint;
-        if (owned > 0n && blocksLeft(obs) > 1) {
+        // What the vault holds is the honest question, not what shares the keeper has. If a hunter
+        // drained it the keeper still holds shares, but `withdrawAll` would burn them for nothing --
+        // so a `shares > 0` check would call that a successful exit. Read the vault's balance too.
+        const [owned, vaultBal] = (await Promise.all([
+          ctx.publicClient
+            .readContract({ address: vault, abi: vaultAbi, functionName: "shares", args: [self] })
+            .catch(() => 0n),
+          ctx.publicClient
+            .readContract({
+              address: TOKENS.USDC.address,
+              abi: erc20BalanceAbi,
+              functionName: "balanceOf",
+              args: [vault],
+            })
+            .catch(() => 0n),
+        ])) as [bigint, bigint];
+        if (owned > 0n && vaultBal > 0n && blocksLeft(obs) > 1) {
           ctx.submit({
             type: "rawTx",
             tx: {
@@ -209,16 +227,21 @@ export async function run(ctx: AgentContext): Promise<void> {
           });
           return;
         }
+        // "exited" only when there was something to exit *with*. Shares against an empty vault means
+        // it was drained -- the keeper is left at the zero-scored stranded deposit, which is the
+        // loss, and the finding.
+        const drained = owned > 0n && vaultBal === 0n;
         ctx.log({
           round: obs.round,
-          // "exited" only when it did. If a hunter drained the vault, the shares are still here but
-          // the assets are gone, so withdrawAll returns nothing and the keeper is left at the
-          // zero-scored stranded holding -- which is the loss, and the finding.
-          reason:
-            owned > 0n
-              ? "could not exit: the vault held no assets at the bell (drained?)"
-              : "exited",
-          state: { kind: "vault_keeper_done", vault, strandedShares: owned.toString() },
+          reason: drained
+            ? "could not exit: the vault was drained before the bell"
+            : "exited",
+          state: {
+            kind: "vault_keeper_done",
+            vault,
+            drained,
+            strandedShares: owned.toString(),
+          },
         });
         phase = "done";
         return;

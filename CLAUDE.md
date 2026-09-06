@@ -553,11 +553,15 @@ ours なのは 2 つだけ（core は無改変）:
 - **環境はエージェント製市場に手を出さない。**`noArb` は有効アダプタの state（= `MARKET_LEGS`）しか
   読まないので構造的に対象外で、`test/agentCreatedMarkets.test.ts` がその境界を検査する。
   帰結: **罠を仕掛ける者は他のエージェントからしか収穫できない**
-- 参照 agent は 4 体: `market-launcher`（正直な作成者。immutable オラクルで作って鐘の前に withdraw）/
+- 参照 agent は 6 体: `market-launcher`（正直な作成者。immutable オラクルで作って鐘の前に withdraw）/
   `market-taker`（利用者。`oracleOwner` を読んでから入る）/ `trap-launcher`（自分が握るオラクルで
-  90% LLTV の市場を作り、供給された分を借り出す）＋ `discovery-arb` / `discovery-arb-verify` を
-  registry からも引くよう拡張。レジームは `config/regimes/agent-markets.yaml`（**公式セット外**。
-  `lst`/`liquity` と同じ venue 単体検証用）
+  90% LLTV の市場を作り、供給された分を借り出す）/ **`vault-keeper`**（正直だがバグ持ちの作成者。
+  `rescue()` を gate し忘れた `LeakyVault` を deploy して USDC を入れる）/ **`exploit-hunter`**
+  （Hacker。他人の `unknown` コントラクトのバイトコードから selector を復元し、`Exploiter` 経由で
+  atomic に drain する）＋ `discovery-arb` / `discovery-arb-verify` を registry からも引くよう拡張。
+  レジームは `config/regimes/agent-markets.yaml`（**公式セット外**。`lst`/`liquity` と同じ venue 単体
+  検証用）。**hunter は「honest but buggy」を狙う**（trap-launcher の敵対コントラクトではなく）。
+  実測: hunter +9,999.9 / vault-keeper −10,000.2 の移転（10,000 USDC の預けを丸ごと。sum ≈ ガス）
 - **公式セットは 7 本のまま。**8 本目にするかは live run を見てから
 
 ### 市場価格 stable（レジストリの stable を $1 断定でなく市場から値付ける。issue #27）
