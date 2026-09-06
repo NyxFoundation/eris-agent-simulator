@@ -90,7 +90,9 @@ jobs:
       # A scenario is (regime, seed) and the regime YAML carries no seed, so --seed is required
       # (ADR 0017 §1). --blocks shortens the run for CI; the regime's own 360 would take 12 minutes.
       - name: Backtest against the dump
-        run: npm run backtest -- --regime calm --seed 101 --blocks 12 --seconds 90
+        # --agent-sandbox process: the official regimes launch agents in capped containers
+        # (run.agentSandbox: docker), which needs per-agent images this runner does not have.
+        run: npm run backtest -- --regime calm --seed 101 --blocks 12 --seconds 90 --agent-sandbox process
 
       # The liquidity pull (issue #52) is the one part of the stress overlay that writes to the
       # venues instead of to the price, and `calm` does not carry it. It is also the part most
@@ -103,7 +105,7 @@ jobs:
       # rather than silently mis-composing the pair (see EventSchedule's alignWith check).
       - name: Replay the crash regime (liquidity pull across all three venues)
         run: |
-          npm run backtest -- --regime crash --seed 606 --blocks 80
+          npm run backtest -- --regime crash --seed 606 --blocks 80 --agent-sandbox process
           node -e '
             const { readdirSync, readFileSync } = require("node:fs");
             const dir = readdirSync("runs").filter((d) => /^\d{4}-/.test(d)).sort().at(-1);
