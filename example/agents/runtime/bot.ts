@@ -847,6 +847,7 @@ async function main(): Promise<void> {
           outcomes: tradeLedger.outcomesByBlock(since),
           epochs,
           memory,
+          epochId,
         });
         let raw: string;
         try {

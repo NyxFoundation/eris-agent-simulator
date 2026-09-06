@@ -450,6 +450,10 @@ export function buildRevisionContext(opts: {
   // between them; `memory` is the note it left itself last time.
   epochs?: string[];
   memory?: string | null;
+  // The epoch this run is. A version installed in an earlier one was worth what it was worth
+  // *then*, against that epoch's funding — differencing it against this run's start produces a
+  // number in the hundreds of thousands that means nothing.
+  epochId?: string;
 }): string {
   const pnl = opts.valueUsdc - opts.initialValueUsdc;
   const lines = [
@@ -487,10 +491,20 @@ export function buildRevisionContext(opts: {
     };
     lines.push(``, `strategy history (version 0 is the one you were shipped):`);
     for (const v of opts.history) {
+      // A version from an earlier epoch is reported at its own absolute value. The run-start
+      // baseline below it belongs to *this* epoch: every epoch is funded afresh, so subtracting one
+      // from the other compares two different worlds and lands on a number the model will read as a
+      // catastrophic loss that never happened.
+      const carriedIn =
+        v.epochId !== undefined &&
+        opts.epochId !== undefined &&
+        v.epochId !== opts.epochId;
       const value =
         v.valueAtInstall === null
           ? "unknown"
-          : `${(v.valueAtInstall - opts.initialValueUsdc).toFixed(2)} USDC vs the run start`;
+          : carriedIn
+            ? `${v.valueAtInstall.toFixed(2)} USDC, in that epoch`
+            : `${(v.valueAtInstall - opts.initialValueUsdc).toFixed(2)} USDC vs the run start`;
       lines.push(
         `  v${v.version} @ block ${v.installedAtBlock}${ordinalOf(v.epochId)}` +
           ` (value then: ${value}) — ${v.notes}`,

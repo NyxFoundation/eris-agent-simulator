@@ -488,3 +488,43 @@ test("TradeLedger: a quoted gap is only attributed to an action a venue gap was 
   assert.equal(agg.quotedOnRichVenue, 1);
   assert.equal(agg.quotedOnCheapVenue, 0);
 });
+
+
+test("buildRevisionContext: a version carried in from another epoch is not differenced against this one", () => {
+  // Found in a live smoke run: a version installed at 25,000 USDC in a seeded epoch was rendered as
+  // "-323,996.08 USDC vs the run start" against an epoch funded at ~349,000. Every epoch is funded
+  // afresh, so the subtraction compares two different worlds and reads as a catastrophe that never
+  // happened.
+  const context = buildRevisionContext({
+    block: 1245,
+    valueUsdc: 343_527,
+    initialValueUsdc: 349_000,
+    sinceLastRevisionUsdc: null,
+    currentVersion: 1,
+    epochId: "this-epoch",
+    epochs: ["last-epoch", "this-epoch"],
+    history: [
+      {
+        version: 1,
+        source: "return null;",
+        notes: "carried in",
+        installedAtBlock: 12,
+        valueAtInstall: 25_000,
+        epochId: "last-epoch",
+      },
+      {
+        version: 2,
+        source: "return null;",
+        notes: "installed here",
+        installedAtBlock: 1200,
+        valueAtInstall: 348_000,
+        epochId: "this-epoch",
+      },
+    ],
+    recent: [],
+    observation: null,
+  });
+  assert.match(context, /v1 @ block 12 in epoch 1 of 2 \(last-epoch\) \(value then: 25000\.00 USDC, in that epoch\)/);
+  // This epoch's own version keeps the relative frame, which is the one the model reasons in.
+  assert.match(context, /v2 @ block 1200 in epoch 2 of 2 \(this-epoch\) \(value then: -1000\.00 USDC vs the run start\)/);
+});
