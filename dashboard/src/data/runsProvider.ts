@@ -1581,6 +1581,29 @@ export async function fetchMarketSnapshot(
 
 const LOG_LIMIT = 120;
 
+/**
+ * The block a log line belongs to: a decision or a revision record carries the chain block as
+ * `round` (runtime/read.ts passes `round: bn`), a mempool self-report the block it was seen in.
+ * Startup lines (runtime_start, preflight) carry neither and precede every block.
+ */
+function logEntryBlock(entry: AgentLogEntry): number | null {
+  if (typeof entry.round === "number") return entry.round;
+  if (typeof entry.blockSeen === "number") return entry.blockSeen;
+  return null;
+}
+
+/** The log as it stood at the replay head; unchanged when the run is not being replayed. */
+function clampLogToHead(
+  entries: AgentLogEntry[],
+  head: number | null,
+): AgentLogEntry[] {
+  if (head === null) return entries;
+  return entries.filter((e) => {
+    const block = logEntryBlock(e);
+    return block === null || block <= head;
+  });
+}
+
 function buildAgentLogLines(entries: AgentLogEntry[]): AgentLogLine[] {
   const lines: AgentLogLine[] = [];
   for (const entry of entries) {
@@ -1650,7 +1673,14 @@ export async function fetchAgentDetailSnapshot(
     240,
   );
   const infoByHash = await txInfoByHash(run);
-  const logEntries = (await agentLogsFor(run)).get(agentId) ?? [];
+  // The decision log obeys the replay head like everything else on the page: a replay that shows
+  // the trades as of block B but the reasons the agent wrote after B is a slideshow with the
+  // answer printed on every frame (see replay.ts, "never show the future").
+  const head = replayHeadFor(run.id);
+  const logEntries = clampLogToHead(
+    (await agentLogsFor(run)).get(agentId) ?? [],
+    head,
+  );
 
   const trades: AgentTrade[] = run.blockRows
     .filter((row) => row.from === address)
