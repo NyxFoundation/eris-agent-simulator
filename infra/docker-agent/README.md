@@ -72,7 +72,7 @@ sweep any survivors: `npm run agent:reap`.
 `ERIS_AGENT_ID` must be the same `<id>`, or you get a confusing "image not found". It has two modes:
 
 - **image (default)** — the per-team image; the coordinator's absolute host paths are remapped onto
-  the image's `/eris`, and the config file + `runs/` dir are mounted in.
+  the image's `/eris`, and the config file + the agent's log directory are mounted in.
 - **bind-mount** (`ERIS_AGENT_BINDMOUNT=1`) — stock `node:24` with the repo bind-mounted at its own
   host path; no build, for iterating on runtime code.
 
@@ -88,6 +88,29 @@ The official regimes set `run.agentSandbox: docker`, so `npm run backtest` launc
 docker at all, pass `--agent-sandbox process` — no caps, and the event says so. Every `ERIS_*` variable
 the coordinator sets is forwarded into the container; inference API keys are forwarded only when no
 inference proxy (`ERIS_INFERENCE_BASE_URL`) is named.
+
+## What is writable inside the container (issue #77)
+
+The rootfs is read-only. Three things are not:
+
+| path | what it is |
+|---|---|
+| `/tmp` | tmpfs, 512 MiB, per container, gone at exit |
+| the run's log directory | where `runs/<id>/agents/<agentId>.jsonl` is written |
+| `/eris/state` | the agent's persistent area, when the run provides one |
+
+The log mount used to be the whole of `runs/`, which is every run of every epoch. Two consequences
+nobody had asked for: an agent could read another epoch's `events.jsonl`, and it could keep state
+anywhere under it — cross-epoch carry-over through the one mount that was meant for logs. It is now
+the run the agent is actually in (or, when the period is segmented and the current-segment pointer
+lives one level up, the competition directory — the narrowest mount that still lets a segment roll
+work).
+
+`ERIS_AGENT_STATE_DIR` is the persistent area. The coordinator creates one per agent under
+`ERIS_AGENT_STATE_ROOT` and passes the path; `run-agent.sh` mounts it at `/eris/state` in image mode
+and at its own host path in bind-mount mode. `ERIS_AGENT_STATE_CAP_BYTES` (default 64 MiB) is the
+cap the runtime enforces on itself. Absent means this run does not persist, which is every run that
+does not ask for it.
 
 ## Isolation caveat (egress)
 

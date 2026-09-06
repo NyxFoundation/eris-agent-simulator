@@ -3,6 +3,7 @@ import { agentToken } from "../inference/proxy.js";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AgentSpec } from "@eris/sdk/types.js";
+import { AGENT_STATE_DIR_ENV } from "./agentState.js";
 
 // How long a stopped agent gets to exit before it is killed outright. Short: by the time close() is
 // called the run is over and scored, and every extra second is one the environment spends waiting
@@ -87,7 +88,15 @@ export class RealtimeAgentProcess {
     // `docker` launches through infra/docker-agent/run-agent.sh (rules §2.3 caps; ADR 0023 task M5);
     // `process` (default) spawns bot.ts directly. A roster `command` override is used as given
     // either way -- it is the participant's own launcher.
-    options: { sandbox?: "process" | "docker" } = {},
+    //
+    // `stateDir` is the per-agent area that survives epochs (issue #77), when the run provides one.
+    // It rides in the same options object as the sandbox because it is the same decision: what the
+    // environment gives this agent to run in. Absent means this run does not persist, which is
+    // every path that existed before it.
+    options: {
+      sandbox?: "process" | "docker";
+      stateDir?: string;
+    } = {},
   ) {
     // The child is participant code that the operator executes, so its environment is BUILT rather
     // than inherited. `{ ...process.env }` handed every submitted agent the operator's whole
@@ -136,6 +145,10 @@ export class RealtimeAgentProcess {
     childEnv.ERIS_PRICE_FEED_ADDRESS = direct.priceFeedAddress;
     childEnv.ERIS_RUN_ID = direct.runId;
     if (runBlocks > 0) childEnv.ERIS_RUN_BLOCKS = String(runBlocks);
+    // Set after spec.env is merged, deliberately: which directory an agent gets is the
+    // environment's decision, and a roster that names its own would be pointing at somebody else's.
+    if (options.stateDir !== undefined)
+      childEnv[AGENT_STATE_DIR_ENV] = options.stateDir;
 
     let command: string;
     let args: string[];

@@ -14,6 +14,7 @@ import { wethAbi } from "@eris/sdk/abis.js";
 import { parseAction, validateAction } from "@eris/sdk/action.js";
 import { TOKENS } from "@eris/sdk/constants.js";
 import { createJsonlAppender } from "./agentLog.js";
+import type { TradeLedger } from "./evidence.js";
 import type { ProtocolAdapter, SimContext } from "@eris/sdk/protocols/types.js";
 import type {
   AgentAction,
@@ -38,6 +39,10 @@ type OwnTx = {
   actionType?: string;
   status?: "success" | "reverted";
   txIndex?: number;
+  // The block the receipt landed in (issue #76). computeCompetition already had it in hand and
+  // dropped it; inclusion latency is unrecoverable afterwards, because a hash does not say which
+  // block the strategy was looking at when it asked for the trade.
+  blockNumber?: number;
 };
 
 // ETH headroom to maintain (in tx count). Tune alongside the endowment during calibration (ERIS_GAS_REFILL_TX_HEADROOM).
@@ -47,6 +52,12 @@ const GAS_REFILL_TX_HEADROOM = BigInt(
 const GAS_LIMIT_ESTIMATE = 1_500_000n; // gas cap estimate for one tx
 const GAS_REFILL_COOLDOWN_BLOCKS = 3; // wait for the refill tx to be mined and reflected in the balance
 
+// How many of this agent's own transactions are kept for receipt resolution (issue #76). The
+// per-block transaction cap is gone (rules §2.6, 2026-09-06: inclusion is the priority-fee auction),
+// so the depth is set by what the gas budget allows rather than by a count -- and unresolved entries
+// are never evicted before resolved ones, so the ring is sized for the competition signal and the
+// eviction rule covers the transactions still in flight.
+const OWN_TX_RING = 64;
 // The run's gas budget (issue #40 T0). The environment hands both numbers down so the runtime
 // self-limits to exactly what the post-run check judges by; a participant running self-hosted gets
 // the same defaults. There is no cap on how many transactions an agent puts in a block (rules §2.6,
@@ -63,6 +74,7 @@ export class Sender {
   private readonly account: ReturnType<typeof privateKeyToAccount>;
   readonly address: Address;
   private readonly logMempool: MempoolLog;
+  private readonly ledger: TradeLedger | undefined;
 
   // ---- self-managed nonce + serialized sending ----
   private nextNonce: number | null = null;
@@ -83,12 +95,18 @@ export class Sender {
     adapters: ProtocolAdapter[];
     privateKey: Hex;
     logMempool: MempoolLog;
+    // Issue #76: where each transaction is attributed back to the decision that produced it. The
+    // sender is the only place that knows a hash and the block the strategy was looking at when it
+    // asked for the trade; without the join here, "included two blocks late" and "reverted on the
+    // slippage bound" reach the revision loop as the same swap.
+    ledger?: TradeLedger;
   }) {
     this.ctx = opts.ctx;
     this.adapters = opts.adapters;
     this.account = privateKeyToAccount(opts.privateKey);
     this.address = this.account.address;
     this.logMempool = opts.logMempool;
+    this.ledger = opts.ledger;
   }
 
   private async allocNonce(): Promise<number> {
@@ -107,7 +125,13 @@ export class Sender {
 
   private pushOwnTx(hash: Hex, actionType?: string): void {
     this.ownTxs.push({ hash, actionType });
-    if (this.ownTxs.length > 24) this.ownTxs.shift();
+    if (this.ownTxs.length <= OWN_TX_RING) return;
+    // Drop a *resolved* transaction first. computeCompetition only chases receipts for entries
+    // still in this ring, so evicting an unresolved one is how a transaction that was mined a block
+    // later stays "not mined yet" for the rest of the run -- and issue #76 reports that state to the
+    // model, where it reads as a strategy that cannot get into blocks.
+    const victim = this.ownTxs.findIndex((t) => t.status !== undefined);
+    this.ownTxs.splice(victim === -1 ? 0 : victim, 1);
   }
 
   private async sendBuiltTx(
@@ -178,6 +202,18 @@ export class Sender {
         maxPriorityFeePerGas: priorityFeeWei,
       });
       this.pushOwnTx(hash, meta.actionType as string | undefined);
+      this.ledger?.submitted({
+        hash,
+        decidedAtBlock: round,
+        ...(meta.actionType !== undefined
+          ? { actionType: String(meta.actionType) }
+          : {}),
+        ...(meta.protocol !== undefined
+          ? { protocol: String(meta.protocol) }
+          : {}),
+        ...(meta.base !== undefined ? { base: String(meta.base) } : {}),
+        ...(meta.amount !== undefined ? { amount: String(meta.amount) } : {}),
+      });
       this.logMempool({
         event: "submitted",
         hash,
@@ -250,6 +286,11 @@ export class Sender {
           await this.sendBuiltTx(tx, intent.priorityFeeWei, {
             actionType: intent.action.type,
             protocol: intent.protocol,
+            // Issue #76: the principal the action asked for. Which field carries it depends on the
+            // action, and an action that has none (a claim, a poke) reports none rather than zero.
+            amount:
+              (intent.action as { amountIn?: string }).amountIn ??
+              (intent.action as { amount?: string }).amount,
             // ADR 0013: record in the log which market (e.g. WBTC) was traded (WETH is undefined and omitted).
             base: (intent.action as { base?: string }).base,
             bundleId: intent.bundleId,
@@ -382,6 +423,12 @@ export class Sender {
             });
             t.status = r.status === "success" ? "success" : "reverted";
             t.txIndex = r.transactionIndex;
+            t.blockNumber = Number(r.blockNumber);
+            this.ledger?.resolved(t.hash, {
+              status: t.status,
+              txIndex: t.txIndex,
+              blockNumber: t.blockNumber,
+            });
           } catch {
             // not yet mined
           }

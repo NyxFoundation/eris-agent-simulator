@@ -99,7 +99,10 @@ CAPS=( --rm --init --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label er
 COMMON_ENV=( -e HOME=/tmp -e NODE_ENV -e REPORT_DIR )
 while IFS= read -r name; do
   case "$name" in
-    ERIS_RUN_DIR|ERIS_AGENT_DIR|ERIS_CONFIG|ERIS_REPO) ;;
+    # ERIS_AGENT_STATE_DIR is a host path too (issue #77): the image maps it to /eris/state and the
+    # bind mount keeps it where it is, so each mode sets it itself alongside the mount rather than
+    # forwarding a path that does not exist inside the image.
+    ERIS_RUN_DIR|ERIS_AGENT_DIR|ERIS_CONFIG|ERIS_REPO|ERIS_AGENT_STATE_DIR) ;;
     *) COMMON_ENV+=( -e "$name" ) ;;
   esac
 done < <(compgen -e | grep '^ERIS_' || true)
@@ -107,6 +110,26 @@ done < <(compgen -e | grep '^ERIS_' || true)
 # (ERIS_INFERENCE_BASE_URL) the keys live in the proxy and the agent holds a per-agent token instead.
 if [ -z "${ERIS_INFERENCE_BASE_URL:-}" ]; then
   COMMON_ENV+=( -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e OPENAI_BASE_URL )
+fi
+
+# The narrowest directory the agent still needs write access to (issue #77).
+#
+# It used to be the whole of `runs/`, which is every run of every epoch: an agent could read another
+# epoch's events.jsonl, and could keep its own state anywhere under it -- a carry-over path nobody
+# designed, through the one mount that was meant for logs. Narrow it to the run the agent is
+# actually in, and give persistence its own directory.
+#
+# When the period is segmented (ADR 0021 §6) the run directory rolls underneath a running agent and
+# the pointer file naming the current segment lives one level up, so the competition directory is
+# the narrowest mount that still works -- which means a segmented period *does* let an agent read
+# the earlier segments of that period. That is a knowing trade: the alternative is a segment roll
+# that writes into a directory the container cannot see, and the only thing that runs segmented is
+# the practice devnet, which participants self-host anyway (ADR 0021). The live competition is one
+# coordinator per epoch and takes the branch below.
+if [ -n "${ERIS_RUN_DIR_POINTER:-}" ]; then
+  LOG_HOST="$(dirname "$ERIS_RUN_DIR_POINTER")"
+else
+  LOG_HOST="${ERIS_RUN_DIR:-$REPO/runs}"
 fi
 
 # Run the container with this wrapper supervising it, and make sure the *container* dies when the
@@ -160,9 +183,18 @@ stop() {
 
 if [ "${ERIS_AGENT_BINDMOUNT:-0}" = "1" ]; then
   # Bind-mount mode: same host path inside the container, so coordinator paths resolve as-is.
+  BIND_MOUNTS=( -v "$REPO:$REPO:ro" -v "$LOG_HOST:$LOG_HOST" )
+  BIND_ENVS=( -e ERIS_RUN_DIR -e ERIS_AGENT_DIR -e ERIS_CONFIG -e ERIS_RUN_DIR_POINTER )
+  # Same host path inside the container, so the coordinator's paths resolve as-is -- including the
+  # state directory, which the coordinator names per agent.
+  if [ -n "${ERIS_AGENT_STATE_DIR:-}" ]; then
+    mkdir -p "$ERIS_AGENT_STATE_DIR"
+    BIND_MOUNTS+=( -v "$ERIS_AGENT_STATE_DIR:$ERIS_AGENT_STATE_DIR" )
+    BIND_ENVS+=( -e ERIS_AGENT_STATE_DIR )
+  fi
   supervise docker run "${CAPS[@]}" "${COMMON_ENV[@]}" \
-    -e ERIS_RUN_DIR -e ERIS_AGENT_DIR -e ERIS_CONFIG \
-    -v "$REPO:$REPO:ro" -v "$REPO/runs:$REPO/runs" -w "$REPO" \
+    "${BIND_ENVS[@]}" \
+    "${BIND_MOUNTS[@]}" -w "$REPO" \
     "${ERIS_AGENT_IMAGE:-node:24-bookworm-slim}" \
     node --import tsx "$REPO/example/agents/runtime/bot.ts"
   exit $?
@@ -174,8 +206,16 @@ remap() { printf '%s' "${1/$REPO//eris}"; }
 # build.sh team <id>, the ERIS_AGENT_DIR basename, and ERIS_AGENT_ID must all be the same <id>.
 # Override with ERIS_AGENT_IMAGE.
 IMG="${ERIS_AGENT_IMAGE:-eris-agent:$(basename "${ERIS_AGENT_DIR:?ERIS_AGENT_DIR is required in image mode (set it in the roster env)}")}"
-MOUNTS=( -v "$REPO/runs:/eris/runs" )
+MOUNTS=( -v "$LOG_HOST:$(remap "$LOG_HOST")" )
 ENVS=( -e "ERIS_RUN_DIR=$(remap "${ERIS_RUN_DIR:-$REPO/runs}")" )
+[ -n "${ERIS_RUN_DIR_POINTER:-}" ] && ENVS+=( -e "ERIS_RUN_DIR_POINTER=$(remap "$ERIS_RUN_DIR_POINTER")" )
+# Issue #77: one directory per agent, at a fixed path inside the container so a participant's
+# runtime can hard-code it. It is the only writable place that outlives the epoch.
+if [ -n "${ERIS_AGENT_STATE_DIR:-}" ]; then
+  mkdir -p "$ERIS_AGENT_STATE_DIR"
+  MOUNTS+=( -v "$ERIS_AGENT_STATE_DIR:/eris/state" )
+  ENVS+=( -e "ERIS_AGENT_STATE_DIR=/eris/state" )
+fi
 [ -n "${ERIS_AGENT_DIR:-}" ] && ENVS+=( -e "ERIS_AGENT_DIR=$(remap "$ERIS_AGENT_DIR")" )
 # The config is generated at run time and may not be baked in the image; mount the file in. The
 # coordinator passes ERIS_CONFIG verbatim from --config, which is usually RELATIVE -- resolve it

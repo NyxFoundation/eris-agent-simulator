@@ -1,26 +1,30 @@
 ---
 kind: improve
-name: redemption-arb
-description: CDP stablecoin arb — buy eUSD below par and redeem it against the riskiest Trove. The LLM tunes the strategy in-run.
+name: peg-arb
+description: Market-priced stable peg arbitrage — buy a stable below a dollar and sell it back as the peg recovers.
 reviseEveryBlocks: 60
 ---
 
-You are maintaining a redemption-arbitrage strategy on a Liquity-style CDP. It runs on every block
-without you.
+You are maintaining a peg-arbitrage strategy on the run's market-priced stables. It runs on every
+block without you. It had no improvement policy before issue #76, which meant the `depeg` regime —
+the one regime whose whole event is a diagnosable dislocation — had no self-improving agent trading
+it at all.
 
-The venue's guarantee is that eUSD can always be exchanged for $1 of collateral against the riskiest
-Trove, minus a redemption fee. So a discount on the eUSD/USDC pool is not a price forecast — it is a
-gap against something the protocol enforces. What makes it a decision rather than a formula:
+The strategy buys a stable that trades below a dollar and sells it back as the peg recovers. Two
+thresholds and a size:
 
-- **The fee moves, and inside a run it effectively only rises.** `redemptionRateBps` is driven by
-  `baseRate`, which every redemption raises and which decays on a ~12h half-life. Whoever redeems
-  first pays 50bps; whoever follows pays more.
-- **Taking the discount closes it.** Buying eUSD pushes the pool back toward par. `poolReserves`
-  says how much depth there is to trade against.
-- **The exit is not free.** Redemption pays *native ETH*, and turning that back into USDC costs an
-  AMM fee. The comparison is discount vs (redemption fee + exit cost), never discount vs fee.
-- **Collateral and gas come out of the same balance.** `ethBalanceWei` pays for transactions.
-  `suggestedGasReserveWei` is what to keep back.
+  below par by more than `ERIS_PEG_ARB_BUY_BPS`   spend USDC to buy the stable
+  within `ERIS_PEG_ARB_SELL_BPS` of par           sell the holding back for USDC
+
+**This is an opinion, not a claim.** eUSD has a floor — a CDP will always exchange it for $1 of
+collateral, which is what `redemption-arb` trades. A plain stable has no such thing. All this
+strategy has is the belief that the dislocation is a window rather than a repricing, and an agent
+still holding at the last block is marked at whatever the pool pays then, not at par. `EUSD` is
+deliberately excluded here: redeeming it enforces par and this strategy would take the strictly
+worse side of the same event.
+
+`marketQuoted: false` means the price is par by assumption, not an observation. There is nothing to
+trade against it.
 
 ## When to leave it alone
 
@@ -80,16 +84,21 @@ the threshold is the failure mode that loses to a frozen strategy.
 
 ### For this strategy in particular
 
-- **`liquity:EUSD-vs-par` in the discounts section is the whole subject**, and `EUSD` appears in the
-  stables section as well. Both report the interval's departures as windows with a widest point and
-  a block. That is the answer to "did the discount open and did
-  the agent take it": a window with no decisions inside it is a margin that is too wide, and a
-  window the agent traded into and lost on is an exit cost that is understated.
-- A window still marked `STILL OUTSIDE` at the moment of the revision is live. A strategy that
-  waits for a wider one is choosing to; make sure it chose.
-- Redemption competes. `mean position in the block` rising across an interval where the discount was
-  open means somebody else is redeeming first and paying the lower `baseRate` — that is a
-  priority-fee decision, not a threshold one.
+The stables section of the market history is this strategy's entire subject. Read it first.
+
+- **A window with no decisions inside it** — `DAI: outside b141..b167 (27 blocks), worst 0.9820` and
+  `no action` throughout — means `BUY_BPS` sits outside where the dislocation actually went. The
+  `worst` price is the number to set it against, not the current one.
+- **A window the strategy bought into and lost on** means the exit was wrong, not the entry.
+  Compare the block it bought against `back inside`: selling after the window closed is selling at
+  par into a pool that has already moved.
+- **`STILL OUTSIDE` at the moment of the revision** is the case that matters most, because the run
+  ends and an unsold position is marked at the pool price. If `blocksRemaining` in the latest
+  observation is small and the window is open, the revision to make is about the exit, not the entry.
+- **Buying into a window that keeps deepening** is what the fractional size is for. One fill at the
+  first threshold, at the worst price of the interval, is the sizing failure this venue produces.
+- A recovery that never comes is a legitimate loss. Do not rewrite the strategy into one that holds
+  through anything because one window did not close.
 
 ## Constraints
 
