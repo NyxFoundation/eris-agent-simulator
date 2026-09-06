@@ -6,6 +6,7 @@ import { Sparkline } from "@/design-system/Sparkline";
 import { blockscoutBlockUrl, useBlockscoutBase } from "@/data/blockscout";
 import { useScenarioLabel } from "@/data/useScenarioLabel";
 import { useTopPageSnapshot } from "@/data/useTopPageSnapshot";
+import { useMode } from "@/data/mode";
 import { navigate } from "@/navigation";
 import { formatScore } from "@/lib/format";
 import type {
@@ -287,6 +288,7 @@ export function ScenarioPage() {
   const scenario = useScenarioLabel();
   const { data, loading, error } = useTopPageSnapshot();
   const blockscout = useBlockscoutBase();
+  const mode = useMode();
 
   if (loading) {
     return (
@@ -492,53 +494,70 @@ export function ScenarioPage() {
           </SectionPanel>
 
           <div style={{ borderLeft: "1px solid var(--border-subtle)" }}>
-            <SectionPanel title={t("scenario.standings")}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: LEADERBOARD_GRID,
-                  background: "var(--bg-surface-raised)",
-                  borderBottom: "1px solid var(--border-subtle)",
-                  padding: "7px 14px",
-                }}
-              >
-                <span
+            {/* Rules §4.7: the trial environment posts no standings; the per-run ranking is one. */}
+            {mode.standings ? (
+              <SectionPanel title={t("scenario.standings")}>
+                <div
                   style={{
-                    font: "var(--text-xs) var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                    letterSpacing: "var(--tracking-wide)",
-                    textTransform: "uppercase",
+                    display: "grid",
+                    gridTemplateColumns: LEADERBOARD_GRID,
+                    background: "var(--bg-surface-raised)",
+                    borderBottom: "1px solid var(--border-subtle)",
+                    padding: "7px 14px",
                   }}
                 >
-                  {t("rounds.col.rank")}
-                </span>
-                <span
+                  <span
+                    style={{
+                      font: "var(--text-xs) var(--font-mono)",
+                      color: "var(--text-tertiary)",
+                      letterSpacing: "var(--tracking-wide)",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {t("rounds.col.rank")}
+                  </span>
+                  <span
+                    style={{
+                      font: "var(--text-xs) var(--font-mono)",
+                      color: "var(--text-tertiary)",
+                      letterSpacing: "var(--tracking-wide)",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {t("home.col.agent")}
+                  </span>
+                  <span
+                    title={t("agent.standing.score")}
+                    style={{
+                      font: "var(--text-xs) var(--font-mono)",
+                      color: "var(--text-tertiary)",
+                      letterSpacing: "var(--tracking-wide)",
+                      textAlign: "right",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {t("home.col.score")}
+                  </span>
+                </div>
+                {leaderboard.map((row) => (
+                  <LeaderboardPreviewRow key={row.rank} row={row} />
+                ))}
+              </SectionPanel>
+            ) : (
+              <SectionPanel title={t("scenario.standings")}>
+                <p
                   style={{
-                    font: "var(--text-xs) var(--font-mono)",
+                    margin: 0,
+                    padding: "12px 14px",
+                    font: "var(--text-xs) var(--font-sans)",
+                    lineHeight: 1.6,
                     color: "var(--text-tertiary)",
-                    letterSpacing: "var(--tracking-wide)",
-                    textTransform: "uppercase",
                   }}
                 >
-                  {t("home.col.agent")}
-                </span>
-                <span
-                  title={t("agent.standing.score")}
-                  style={{
-                    font: "var(--text-xs) var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                    letterSpacing: "var(--tracking-wide)",
-                    textAlign: "right",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {t("home.col.score")}
-                </span>
-              </div>
-              {leaderboard.map((row) => (
-                <LeaderboardPreviewRow key={row.rank} row={row} />
-              ))}
-            </SectionPanel>
+                  {t("home.standingsOff")}
+                </p>
+              </SectionPanel>
+            )}
           </div>
 
           <div style={{ borderLeft: "1px solid var(--border-subtle)" }}>

@@ -17,6 +17,7 @@ import type {
   RunSummary,
   SummaryAgent,
 } from "./runArtifacts";
+import { getMode } from "./mode";
 
 const EVENT_LIMIT = 5_000;
 const AGENT_LOG_LIMIT = 500;
@@ -229,6 +230,10 @@ class LiveRunState {
     chainHeight: number | null;
     recentBlocks: RpcBlock[];
   }> {
+    // The public view does not touch the chain: the RPC an audience would need is the competition
+    // node itself (issue #74 keeps it closed), and the environment's log already says how far the
+    // run is. Heights fall back to the latest round_timing event.
+    if (getMode().audience) return { chainHeight: null, recentBlocks: [] };
     const url = this.meta.rpcUrl;
     if (!url) return { chainHeight: null, recentBlocks: [] };
     const heightHex = await rpc<string>(url, "eth_blockNumber", []);
@@ -299,7 +304,9 @@ class LiveRunState {
     const text = await tail(this.runId, "events.jsonl", this.eventsTail);
     if (text)
       this.foldEvents(parseJsonlChunk<RunEvent>(text, this.eventsCarry));
-    await this.refreshAgentLogs();
+    // Decision logs are not served to the public view (server/runsApi.ts), so there is nothing to
+    // tail -- and one 404 per agent per refresh for a field of hundreds is not nothing.
+    if (!getMode().audience) await this.refreshAgentLogs();
     const [{ chainHeight, recentBlocks }, indexerHeight] = await Promise.all([
       this.readChain(),
       this.readIndexerHeight(),

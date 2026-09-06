@@ -18,6 +18,7 @@
 import { scoreEpoch } from "@core/scoring/deviationScore";
 import { epochPnlFromSeries } from "@core/scoring/epochPnl";
 import { liveAgentLog, loadLiveRun } from "./liveRun";
+import { getMode } from "./mode";
 import {
   loadAllAgentLogs,
   loadRun,
@@ -32,6 +33,7 @@ import {
   downsample,
   enabledProtocols,
   eventOfType,
+  lastEventOfType,
   formatUsd,
   fromWei,
   num,
@@ -102,6 +104,11 @@ async function agentLogsFor(
   run: LoadedRun,
 ): Promise<Map<string, AgentLogEntry[]>> {
   const ids = (run.summary.agents ?? []).map((a) => a.id);
+  // The public view is not served decision logs (server/runsApi.ts audience mode), and a field of
+  // hundreds of agents would be hundreds of 404s per snapshot. Everything built off the logs -- the
+  // venue label on a trade, the arbitrage markers -- degrades to nothing, as it already does for a
+  // self-hosted participant.
+  if (getMode().audience) return new Map(ids.map((id) => [id, []]));
   if (run.live) return new Map(ids.map((id) => [id, liveAgentLog(run.id, id)]));
   return loadAllAgentLogs(run.id, ids);
 }
@@ -123,7 +130,8 @@ interface RegisteredAgent {
 }
 
 function registeredAgents(run: LoadedRun): Map<string, RegisteredAgent> {
-  const event = eventOfType(run.events, "agents_registered");
+  // The last one: registrations that arrive mid-period re-emit the full roster (ADR 0021 §2).
+  const event = lastEventOfType(run.events, "agents_registered");
   const list = (event?.agents as RegisteredAgent[] | undefined) ?? [];
   return new Map(list.map((a) => [a.id, a]));
 }
@@ -502,7 +510,10 @@ function buildStandings(
       } else if (closed === 0) net = 0;
       dd = values.slice(0, closed + 1);
     } else {
-      p = agent.pnlUsdc ?? epochPnlFromSeries(values)?.pnlUsdc ?? agent.netPnlUsdc;
+      p =
+        agent.pnlUsdc ??
+        epochPnlFromSeries(values)?.pnlUsdc ??
+        agent.netPnlUsdc;
     }
     if (p !== undefined && Number.isFinite(p)) pnlByAgent[agent.id] = p;
     netPnl.set(agent.id, net);
@@ -826,7 +837,13 @@ function buildTransactions(
         fullHash: row.hash,
         fullAddress: row.from,
         blockNumber: row.blockNumber,
-        agent: row.ownerId,
+        // A sender the coordinator does not know (a participant on the trial devnet who is not on
+        // the roster) is recorded under its address (role "external"); shown short, the way the
+        // live view already shows an unattributed sender.
+        agent:
+          row.role === "external"
+            ? `${row.from.slice(0, 6)}…${row.from.slice(-4)}`
+            : row.ownerId,
         method,
         amount: notionalAmount(run, row.hash),
         time: `blk ${row.blockNumber.toLocaleString("en-US")}`,

@@ -31,6 +31,20 @@ export function eventOfType(
   return events.find((e) => e.type === type);
 }
 
+/**
+ * The most recent event of a type. `agents_registered` is re-emitted with the full roster whenever a
+ * participant registers mid-period (ADR 0021 §2, run.registrationsFile) and at every segment
+ * rollover, so the first occurrence is the roster as it was at startup, not as it is.
+ */
+export function lastEventOfType(
+  events: RunEvent[],
+  type: string,
+): RunEvent | undefined {
+  for (let i = events.length - 1; i >= 0; i--)
+    if (events[i].type === type) return events[i];
+  return undefined;
+}
+
 export function eventsOfType(events: RunEvent[], type: string): RunEvent[] {
   return events.filter((e) => e.type === type);
 }

@@ -635,6 +635,44 @@ const en = {
   // ---- errors ----
   "err.noRuns":
     "no runs found under runs/ — finish one `npm run sim:realtime` first",
+
+  // ---- the public view (server/runsApi.ts audience mode) and the trial environment ----
+  // What is absent is said, because an empty panel makes a claim of its own: an empty decision log
+  // says the agent never thought, an empty schedule says nothing was planned.
+  "mode.audienceBadge": "public view",
+  "mode.audienceNote":
+    "Public view. While the competition runs, each epoch's scenario, the environment episodes still to come, the agents' decision logs and their pending bids are withheld (rules §3.3, §2.6). They are published with the results (rules §7.2).",
+  "home.progress": "{done} of {planned} epochs complete",
+  "home.progressRunning": "next epoch running",
+  "home.progressPreparing":
+    "The competition has started and its first epoch is running. Standings appear once it completes.",
+  "home.standingsOff":
+    "Standings are not posted in this environment (rules §4.7: the trial environment posts no standings). Scenarios, markets and the explorer stay available.",
+  "home.col.flags": "notes",
+  "home.flagsTitle":
+    "Recorded facts, not penalties (rules §4.4.2 — a stopped agent is scored on what it left behind): {flags}",
+  "home.search": "filter by agent or participant…",
+  "home.showMore": "show all {n} rows",
+  "home.showLess": "show the top {n}",
+  "home.view.agents": "agents",
+  "home.view.participants": "participant units",
+  "home.participantsNote":
+    "Rules §2.2: a participant unit may enter up to two submissions and its final score is the higher of the two. Each row names the agent that counted.",
+  "home.col.participant": "participant unit",
+  "home.col.countedAgent": "counted agent",
+  "home.col.agents": "agents",
+  "home.scenarios.audienceEvents":
+    "Public view: only episodes that have already opened are listed; upcoming windows are withheld while the competition runs.",
+  "scenario.hidden": "epoch {s}",
+  "agent.audienceLog": "Not shown while the competition runs",
+  "agent.audienceLogNote":
+    "The decision log is the participant's own reasoning, and its mempool self-reports are bids not yet included in a block (rules §2.6). Both stay unpublished until the results (rules §7.2).",
+  "agent.flags": "Recorded facts (rules §4.4.2; no score penalty)",
+  "market.submissionsAudience":
+    "Pending bids are not shown while the competition runs (rules §2.6: inclusion is a priority-fee auction).",
+  "market.standingsOff": "not posted in this environment (rules §4.7)",
+  "live.noChainReads":
+    "Block heights come from the environment's log; the public view does not read the chain directly.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1224,6 +1262,42 @@ const ja: Record<MessageKey, string> = {
 
   "err.noRuns":
     "runs/ に run が見つかりません — まず `npm run sim:realtime` を 1 回完走させてください",
+
+  // ---- 公開ビュー（server/runsApi.ts の audience モード）と試行環境 ----
+  "mode.audienceBadge": "公開ビュー",
+  "mode.audienceNote":
+    "公開ビューです。競技中は、各エポックのシナリオ・これから開く環境イベント・エージェントの判断ログ・未確定の入札を表示しません（規約 §3.3・§2.6）。結果発表とともに公開されます（規約 §7.2）。",
+  "home.progress": "{planned} エポック中 {done} 本が完了",
+  "home.progressRunning": "次のエポックを実行中",
+  "home.progressPreparing":
+    "競技は開始済みで、1 本目のエポックを実行中です。完走すると順位が出ます。",
+  "home.standingsOff":
+    "この環境では順位を掲示しません（規約 §4.7: 試行環境は順位を掲示しない）。シナリオ・市場・エクスプローラは閲覧できます。",
+  "home.col.flags": "注記",
+  "home.flagsTitle":
+    "採点上のペナルティではなく記録された事実です（規約 §4.4.2: 止まった agent も残したポジションで採点される）: {flags}",
+  "home.search": "エージェント名・参加単位で絞り込み…",
+  "home.showMore": "全 {n} 行を表示",
+  "home.showLess": "上位 {n} 行だけ表示",
+  "home.view.agents": "エージェント",
+  "home.view.participants": "参加単位",
+  "home.participantsNote":
+    "規約 §2.2: 参加単位は 2 提出まで選べ、最終スコアは高い方です。各行に採点された agent を示します。",
+  "home.col.participant": "参加単位",
+  "home.col.countedAgent": "採点 agent",
+  "home.col.agents": "エージェント",
+  "home.scenarios.audienceEvents":
+    "公開ビュー: 既に開いたイベントだけを表示し、これから開く窓は競技中は伏せます。",
+  "scenario.hidden": "エポック {s}",
+  "agent.audienceLog": "競技中は表示しません",
+  "agent.audienceLogNote":
+    "判断ログは参加者自身の推論で、mempool の自己申告はまだブロックに入っていない入札です（規約 §2.6）。どちらも結果発表までは公開しません（規約 §7.2）。",
+  "agent.flags": "記録された事実（規約 §4.4.2。採点上のペナルティは無い）",
+  "market.submissionsAudience":
+    "競技中は未確定の入札を表示しません（規約 §2.6: ブロックに入るかは priority fee のオークションで決まる）。",
+  "market.standingsOff": "この環境では掲示しません（規約 §4.7）",
+  "live.noChainReads":
+    "ブロック高は環境のログから取得しています。公開ビューではチェーンを直接読みません。",
 };
 
 const MESSAGES: Record<"en" | "ja", Record<MessageKey, string>> = { en, ja };

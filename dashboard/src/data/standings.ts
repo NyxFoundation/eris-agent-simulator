@@ -15,7 +15,11 @@ import {
   type EpochResult,
 } from "@core/scoring/deviationScore";
 import { epochPnlFromSeries } from "@core/scoring/epochPnl";
-import type { Competition, CompetitionScenario } from "./competition";
+import type {
+  Competition,
+  CompetitionScenario,
+  ScenarioAgentResult,
+} from "./competition";
 import { scenarioLabel, scenarioRunId } from "./competition";
 import { listRuns } from "./runArtifacts";
 import type { RunSummary } from "./runArtifacts";
@@ -41,6 +45,70 @@ export interface ScenarioRounds {
  */
 function scenarioKey(s: { runDir: string }): string {
   return s.runDir;
+}
+
+// The head of events.jsonl holds agents_registered; enough to learn who the benchmark is.
+const HEAD_BYTES = 128 * 1024;
+
+/**
+ * The boundary series of a run still in progress, off the artifacts the coordinator writes *as*
+ * boundaries are read (core/src/realtime/liveScoring.ts): epochs.jsonl, one line per boundary with
+ * every agent's value. summary.json only exists at the end, and on the practice devnet the end of
+ * a segment is midnight -- without this the whole day would be empty until then (ADR 0021 §3 is
+ * what makes the values exist live in the first place).
+ *
+ * A segment's own epochs.jsonl starts at its first boundary, so the epoch that straddles the
+ * rollover is not in it until the segment closes and summary.json carries the previous boundary in.
+ */
+async function loadLiveSeries(
+  runId: string,
+): Promise<Pick<ScenarioRounds, "valuesByAgent" | "baselineIds">> {
+  const base = `/runs/${encodeURIComponent(runId)}`;
+  const [epochsText, headText] = await Promise.all([
+    fetch(`${base}/epochs.jsonl`)
+      .then((r) => (r.ok ? r.text() : ""))
+      .catch(() => ""),
+    fetch(`${base}/tail/events.jsonl?offset=0&limit=${HEAD_BYTES}`)
+      .then((r) => (r.ok ? r.json() : { text: "" }))
+      .then((b) => (b as { text?: string }).text ?? "")
+      .catch(() => ""),
+  ]);
+  const boundaries: Record<string, number | null>[] = [];
+  for (const line of epochsText.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as {
+        values?: Record<string, number | null>;
+      };
+      if (row.values && typeof row.values === "object")
+        boundaries.push(row.values);
+    } catch {
+      // the last line may still be being written
+    }
+  }
+  const ids = new Set<string>();
+  for (const b of boundaries) for (const id of Object.keys(b)) ids.add(id);
+  const valuesByAgent: Record<string, Array<number | null>> = {};
+  for (const id of ids)
+    valuesByAgent[id] = boundaries.map((b) =>
+      typeof b[id] === "number" ? (b[id] as number) : null,
+    );
+  const baselineIds: string[] = [];
+  for (const line of headText.split("\n")) {
+    if (!line.includes('"agents_registered"')) continue;
+    try {
+      const event = JSON.parse(line) as {
+        type?: string;
+        agents?: { id: string; baseline?: boolean }[];
+      };
+      if (event.type === "agents_registered")
+        for (const a of event.agents ?? [])
+          if (a.baseline) baselineIds.push(a.id);
+    } catch {
+      // torn line
+    }
+  }
+  return { valuesByAgent, baselineIds };
 }
 
 /**
@@ -72,8 +140,12 @@ export async function loadCompetitionRounds(
         const res = await fetch(
           `/runs/${encodeURIComponent(runId)}/summary.json`,
         );
-        if (!res.ok)
-          return live.has(runId) ? ([scenarioKey(s), empty] as const) : null;
+        if (!res.ok) {
+          if (!live.has(runId)) return null;
+          // Still running: the boundaries read so far are its series, and today's rounds count.
+          const series = await loadLiveSeries(runId);
+          return [scenarioKey(s), { ...empty, ...series }] as const;
+        }
         const summary = (await res.json()) as RunSummary;
         const valuesByAgent =
           summary.valueSeries?.epochSeries?.valuesByAgent ?? {};
@@ -112,16 +184,28 @@ function scenarioPnl(
   scenario: CompetitionScenario,
   rounds: Map<string, ScenarioRounds>,
   throughRound: number | null,
-): { pnlByAgent: Record<string, number>; benchmarkIds: string[]; ended: boolean } {
+): {
+  pnlByAgent: Record<string, number>;
+  benchmarkIds: string[];
+  ended: boolean;
+} {
   const series = rounds.get(scenarioKey(scenario));
   const pnlByAgent: Record<string, number> = {};
   const benchmarkIds = new Set<string>(series?.baselineIds ?? []);
   for (const a of scenario.agents) if (a.baseline) benchmarkIds.add(a.id);
   let ended = false;
+  // A scenario still running has no agents in the index yet (a segment's entry is closed at
+  // rollover), so the field is whoever has a value in the live series.
+  const agents: Array<
+    Pick<ScenarioAgentResult, "id"> & Partial<ScenarioAgentResult>
+  > =
+    scenario.agents.length > 0
+      ? scenario.agents
+      : Object.keys(series?.valuesByAgent ?? {}).map((id) => ({ id }));
 
   if (throughRound !== null) {
     if (!series) return { pnlByAgent, benchmarkIds: [...benchmarkIds], ended };
-    for (const agent of scenario.agents) {
+    for (const agent of agents) {
       const values = series.valuesByAgent[agent.id];
       if (!values || values.length < 2) continue;
       const last = values.length - 1;
@@ -136,12 +220,12 @@ function scenarioPnl(
     return { pnlByAgent, benchmarkIds: [...benchmarkIds], ended };
   }
 
-  for (const agent of scenario.agents) {
+  for (const agent of agents) {
     const fromSeries = series
       ? epochPnlFromSeries(series.valuesByAgent[agent.id] ?? [])?.pnlUsdc
       : undefined;
     const p = agent.pnlUsdc ?? fromSeries ?? agent.netPnlUsdc;
-    if (Number.isFinite(p)) pnlByAgent[agent.id] = p;
+    if (typeof p === "number" && Number.isFinite(p)) pnlByAgent[agent.id] = p;
   }
   return { pnlByAgent, benchmarkIds: [...benchmarkIds], ended };
 }
@@ -168,6 +252,42 @@ export interface Standings {
   tByRegime: Record<string, Record<string, number>>;
   /** The benchmark's P per epoch ordinal (§4.3: shown, never scored). */
   benchmarkPnl: Record<string, Record<number, number>>;
+  /**
+   * Facts the runner recorded beside an agent's numbers, over every scenario (rules §4.4.2: a
+   * process that exited early, a fee-cap violation, unlogged transactions). Shown, never scored.
+   */
+  flagsByAgent: Record<string, string[]>;
+  /** Rules §2.2: which participant unit each agent is a submission of. Empty when the roster has none. */
+  participantOf: Record<string, string>;
+}
+
+/** A participant unit's row (rules §2.2): its agents, and the one whose score counts. */
+export interface ParticipantRow {
+  participant: string;
+  rank: number;
+  /** The higher-scoring submission; its score is the unit's. */
+  counted: AgentResult;
+  agents: AgentResult[];
+}
+
+/**
+ * The standings folded to participant units: a unit that entered two submissions is ranked on the
+ * higher of the two (rules §2.2, "両者を平均することはありません"). Agents with no participant
+ * recorded are units of their own. Ties keep the agents' order, which is already the §4.6 order.
+ */
+export function participantStandings(standings: Standings): ParticipantRow[] {
+  const groups = new Map<string, AgentResult[]>();
+  for (const row of standings.rows) {
+    const unit = standings.participantOf[row.id] ?? row.id;
+    groups.set(unit, [...(groups.get(unit) ?? []), row]);
+  }
+  const rows = [...groups].map(([participant, agents]) => {
+    // rows are in rank order, so the first agent of a unit is its best.
+    const counted = agents[0];
+    return { participant, counted, agents };
+  });
+  rows.sort((a, b) => a.counted.rank - b.counted.rank);
+  return rows.map((r, i) => ({ ...r, rank: i + 1 }));
 }
 
 function ordinalOf(scenario: CompetitionScenario, index: number): number {
@@ -187,7 +307,11 @@ export function buildStandings(
   );
   let endedScenarios = 0;
   const epochs: EpochInput[] = scenarios.map((s, i) => {
-    const { pnlByAgent, benchmarkIds, ended } = scenarioPnl(s, rounds, throughRound);
+    const { pnlByAgent, benchmarkIds, ended } = scenarioPnl(
+      s,
+      rounds,
+      throughRound,
+    );
     if (ended) endedScenarios += 1;
     return { s: ordinalOf(s, i), pnlByAgent, benchmarkIds };
   });
@@ -196,6 +320,8 @@ export function buildStandings(
   const regimes: string[] = [];
   const agentIds: string[] = [];
   const netPnlByAgent: Record<string, number> = {};
+  const flagsByAgent: Record<string, string[]> = {};
+  const participantOf: Record<string, string> = {};
   for (const s of scenarios) {
     if (!regimes.includes(s.regime)) regimes.push(s.regime);
     for (const agent of s.agents) {
@@ -203,8 +329,17 @@ export function buildStandings(
       if (!agentIds.includes(agent.id)) agentIds.push(agent.id);
       netPnlByAgent[agent.id] =
         (netPnlByAgent[agent.id] ?? 0) + agent.netPnlUsdc;
+      for (const flag of agent.flags ?? []) {
+        const list = flagsByAgent[agent.id] ?? [];
+        if (!list.includes(flag)) list.push(flag);
+        flagsByAgent[agent.id] = list;
+      }
+      if (agent.participant) participantOf[agent.id] = agent.participant;
     }
   }
+  // A field that only exists in a live series (the practice devnet's current day) is still a field.
+  for (const row of scored.agents)
+    if (!agentIds.includes(row.id)) agentIds.push(row.id);
 
   const byOrdinal = new Map(scenarios.map((s, i) => [ordinalOf(s, i), s]));
   const regimeOf = new Map([...byOrdinal].map(([o, s]) => [o, s.regime]));
@@ -216,7 +351,10 @@ export function buildStandings(
       lists.set(regime, [...(lists.get(regime) ?? []), e.t]);
     }
     tByRegime[row.id] = Object.fromEntries(
-      [...lists].map(([r, ts]) => [r, ts.reduce((a, b) => a + b, 0) / ts.length]),
+      [...lists].map(([r, ts]) => [
+        r,
+        ts.reduce((a, b) => a + b, 0) / ts.length,
+      ]),
     );
   }
 
@@ -242,6 +380,8 @@ export function buildStandings(
     netPnlByAgent,
     tByRegime,
     benchmarkPnl,
+    flagsByAgent,
+    participantOf,
   };
 }
 

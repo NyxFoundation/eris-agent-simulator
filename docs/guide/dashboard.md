@@ -294,6 +294,53 @@ views switch to the archived rendering on the next poll, no reload needed.
 `VITE_DATA_PROVIDER=seed` falls back to the IndexedDB seed provider for UI development against no
 run at all.
 
+### Public view (audience mode)
+
+The dashboard is public during the trial period (rules §2.7) and the live week (§4.7.1). The run
+directory is the complete record and stays complete — it is what §7.2 publishes after the results —
+so what a competition in progress must not publish is withheld **by the server**, not by the pages:
+a panel that does not render a file is not the same as a file nobody can fetch.
+
+```bash
+ERIS_DASHBOARD_AUDIENCE=1 npm run dashboard:serve          # the live week
+ERIS_DASHBOARD_AUDIENCE=1 ERIS_DASHBOARD_STANDINGS=0 npm run dashboard:serve   # the trial environment
+```
+
+With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
+
+- serves only `summary.json`, `matrix.json`, `standings.json`, `market.json(l)`, `blocks.csv`,
+  `events.jsonl`, `epochs.jsonl`, `manifest.json`. Decision logs (`agents/*.jsonl` — a participant's
+  own reasoning and their not-yet-included bids, §2.6), raw LLM exchanges (`*.llm.jsonl`) and
+  `disclosures/` return 404
+- rewrites `events.jsonl` line by line: `seed` / `flowSeed` leave `run_started_realtime`, the
+  `stress_calibration_warning` (it names crash magnitudes) and `vulnerability_exploited` (regime-7
+  ground truth) lines go, `pool_created` loses `rigged` / `rugBps` / `rugThresholdUnits` /
+  `baitBps`, any `stderrTail` goes, and `stress_schedule` keeps only the windows that have **already
+  closed** by the run's current block (read off the end of `blocks.csv`). Past windows happened to
+  everyone; future ones are what the manifest withholds (ADR 0021 §1)
+- rewrites `matrix.json` / `standings.json` of a **scenario** matrix so every scenario is
+  `regime: "hidden"`, `seed: 0` — the pages call it "epoch s" (§3.3: an epoch's scenario is not
+  announced, and with equal regime counts the ones already run would give away the rest). A practice
+  period (`resetUnit: continuous`) keeps its day labels: days are not scenarios
+- drops `seed` / `flowSeed` and each agent's `stderrTail` from `summary.json`
+
+`/runs/mode.json` reports the switches, and the pages say what is absent rather than rendering it
+empty: the decision-log tab and the mempool feed are replaced by a sentence, the scenario list's
+episode column carries a note, the regime columns are gone, and live mode stops reading the chain
+(the RPC an audience would need is the competition node itself; block heights come from the log).
+`ERIS_DASHBOARD_STANDINGS=0` is rules §4.7 — the trial environment posts no standings — and hides the
+standings table, the scenario list's leader column and the per-run rankings on `/scenario` and
+`/markets`; the venue state, the episode history and the explorer stay.
+
+Switching the flags off after the results are announced is the §7.2 publication: the same
+directories, served whole.
+
+The same handler mounts on the dev server, so `ERIS_DASHBOARD_AUDIENCE=1 npm run dashboard` shows
+exactly what the public will see. Responses carry `Cache-Control` (a finished run's artifacts are
+immutable; competition indexes and live files are `max-age=5`; the tail is `no-store`) and gzip, and
+the index is held for three seconds between directory walks — enough for a CDN or nginx in front to
+do the rest.
+
 ## Explorer (local Blockscout)
 
 ```bash

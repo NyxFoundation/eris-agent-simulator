@@ -7,10 +7,32 @@
 // the same thing with one scenario in it — `competitionFromRun` wraps it into the identical shape,
 // so every page downstream of this file processes exactly one kind of object.
 
+import { t } from "@/i18n/messages";
+
+/**
+ * The regime name the server substitutes while a competition is in progress and being shown to the
+ * public (server/runsApi.ts audience mode): rules §3.3 does not announce an epoch's scenario, and
+ * with equal regime counts the ones already run would give away the ones left. Such a scenario is
+ * named by its ordinal instead.
+ */
+export const HIDDEN_REGIME = "hidden";
+
+export function isHiddenScenario(s: { regime: string }): boolean {
+  return s.regime === HIDDEN_REGIME;
+}
+
 export interface ScenarioAgentResult {
   id: string;
   netPnlUsdc: number;
   alphaUsdc: number;
+  /** Rules §2.2: the participant unit this agent is one submission of. Absent on older matrices. */
+  participant?: string;
+  /**
+   * Facts recorded beside the number by the backtest runner (core/src/cli/backtest.ts): a fee-cap
+   * violation, a process that exited early, transactions the runtime never logged. None of them
+   * changes P (rules §4.4.2); §8 matters are the operator's to judge.
+   */
+  flags?: string[];
   /** P(a, s) of rules §4.4.1: V_K − V_0, each end at its own marks. Absent on a matrix recorded
    * before it existed, where netPnlUsdc (both ends at the final marks) stands in. */
   pnlUsdc?: number;
@@ -161,8 +183,14 @@ export function scenarioLabel(s: {
   regime: string;
   seed: number;
   label?: string;
+  s?: number;
 }): string {
-  return s.label ?? `${s.regime}#${s.seed}`;
+  if (s.label) return s.label;
+  // The public view of a competition in progress: the epoch is named by its ordinal, because which
+  // scenario it was is exactly what is not announced (rules §3.3).
+  if (isHiddenScenario(s))
+    return t("scenario.hidden", { s: String(s.s ?? "?") });
+  return `${s.regime}#${s.seed}`;
 }
 
 /** The competition's human name. A single-run competition is named by its run's timestamp. */
@@ -173,13 +201,33 @@ export function competitionName(c: Competition): string {
   return c.id.split("/").filter(Boolean).pop() ?? c.id;
 }
 
-/** "full-8h · 8/29" — the picker label; the date separates re-runs of the same set. */
-export function competitionLabel(c: Competition, locale: string): string {
+/**
+ * "full-8h · 8/29" — the picker label; the date separates re-runs of the same set. `withTime` adds
+ * the clock ("practice · 9/25 14:02") for the case the date does not separate: a practice period
+ * restarted the same day opens a new competition directory (ADR 0021 §6), and two entries called
+ * "practice · 9/25" tell a reader nothing about which is which.
+ */
+export function competitionLabel(
+  c: Competition,
+  locale: string,
+  options: { withTime?: boolean } = {},
+): string {
   const name = competitionName(c);
   if (!c.file.createdAt) return name;
   const date = new Date(c.file.createdAt);
   if (Number.isNaN(date.getTime())) return name;
-  return `${name} · ${date.toLocaleDateString(locale === "ja" ? "ja-JP" : "en-US", { month: "numeric", day: "numeric" })}`;
+  const tag = locale === "ja" ? "ja-JP" : "en-US";
+  const day = date.toLocaleDateString(tag, {
+    month: "numeric",
+    day: "numeric",
+  });
+  if (!options.withTime) return `${name} · ${day}`;
+  const time = date.toLocaleTimeString(tag, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return `${name} · ${day} ${time}`;
 }
 
 const cache = new Map<string, Promise<Competition>>();

@@ -19,7 +19,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { existsSync, createReadStream, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRunsApi } from "./runsApi.js";
+import { createRunsApi, modeFromEnv } from "./runsApi.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DIST =
@@ -53,7 +53,11 @@ if (!existsSync(path.join(DIST, "index.html"))) {
   process.exit(1);
 }
 
-const handleRuns = createRunsApi(RUNS);
+// ERIS_DASHBOARD_AUDIENCE=1 for anyone who is not the operator (the trial period and the live
+// week are both public, 2026-09-06); ERIS_DASHBOARD_STANDINGS=0 for the trial environment, which
+// posts no standings (rules §4.7). What each switch withholds is documented in runsApi.ts.
+const MODE = modeFromEnv();
+const handleRuns = createRunsApi(RUNS, MODE);
 
 // Resolve a request path inside dist/, or null. Same realpath discipline as the runs API: a symlink
 // under dist/ must not become a way to read the rest of the disk.
@@ -109,6 +113,14 @@ const server = createServer((req, res) => {
     "content-type",
     MIME[path.extname(target)] ?? "application/octet-stream",
   );
+  // Vite names bundled assets by content hash, so they can be cached forever; index.html is the
+  // one file whose content changes under a fixed name.
+  res.setHeader(
+    "cache-control",
+    target.includes(`${path.sep}assets${path.sep}`)
+      ? "public, max-age=31536000, immutable"
+      : "no-cache",
+  );
   createReadStream(target).pipe(res);
 });
 
@@ -116,6 +128,8 @@ server.listen(PORT, () => {
   console.error(
     `[dashboard] serving ${DIST} on http://localhost:${PORT}\n` +
       `[dashboard]   runs:       ${RUNS}\n` +
-      `[dashboard]   blockscout: ${BLOCKSCOUT} (optional)`,
+      `[dashboard]   blockscout: ${BLOCKSCOUT} (optional)\n` +
+      `[dashboard]   mode:       ${MODE.audience ? "audience (public view: scenarios, upcoming windows, decision logs and pending bids withheld)" : "operator (everything under runs/ is served)"}` +
+      `${MODE.standings ? "" : ", standings not posted (rules §4.7)"}`,
   );
 });

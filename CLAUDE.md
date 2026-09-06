@@ -188,7 +188,24 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 
 - **ロスターは登録リストであって起動リストではない**。`external: true` + `address`（参加者が鍵を持つ。**運営が
   作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env`
-  は**黙殺せず拒否**する（黙って落とすと「運営が動かしている」ように読めるロスターになる）
+  は**黙殺せず拒否**する（黙って落とすと「運営が動かしている」ように読めるロスターになる）。
+  `participant`（任意）は規約 §2.2 の**参加単位**で、同じ値の 2 体はその単位の 2 提出（高い方が最終スコア）。
+  `agents_registered` / manifest / summary.json / matrix.json の agent レコードに**そのまま載る**だけで、
+  採点の算術は agent 単位のまま（単位への畳み込みは読む側 = dashboard の仕事）
+- **登録は再起動なしで追加する**（`run.registrationsFile`。ADR 0021 §2 / 規約 §2.7）。ロスターは起動時に 1 回しか
+  読まず、再起動は新しい competition ディレクトリを開いて順位表を割る。ファイル（YAML/JSON。`external: true` +
+  `address` エントリと同形。`config/registrations.example.yaml`）を **~30 ブロックごとに stat** し、変わっていれば
+  読み直して新規分を setup と同じ経路で登録する（鍵なし runtime・address 帰属・同額 funding = `fundAddress`・
+  `LiveScorer.addAgent` で**次の境界から**評価・`agents_registered` と manifest を再発行 + `agent_external_registered`）。
+  純関数は `core/src/realtime/registrations.ts`。重複 id/address は `registration_ignored`、壊れたファイルは
+  編集 1 回につき 1 回 `registrations_reload_failed`（run は止まらない）。**日の途中で登録された agent はその日の
+  P を持たない**（測られた V_0 が無い。翌セグメントから）
+- **未登録の送信者も blocks.csv に残す**（role `external`、ownerId = 送信者アドレス小文字）。以前は
+  「run の外の tx」として捨てていたが、試行環境ではそれが参加者の tx そのもので、「自分の tx は載ったか」に
+  答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外
+- **セグメントを切るたびに `stress_schedule` も再発行する**（`run_started_realtime` / `agents_registered` /
+  manifest と同じ扱い。ADR 0021 §6）。以前は 2 日目以降の全セグメントが「予定なし」に見えた。ディスク上の記録は
+  窓込みで完全（規約 §7.2 の監査用）。**未来の窓を公開側から隠すのは runs API（dashboard 側の audience mode）の仕事**
 - **判断ログは参加者のマシンにしか無い**。dashboard は agent ページの判断ログタブを external では**出さず**、
   そう書く（空パネルは「このエージェントは何も考えなかった」という別の主張になる）。送信フィードは「何名が
   ここに出ないか」を明示する。**submitted-but-not-included は諦める**（運営が動かしていない agent では元々検証不能）
@@ -218,6 +235,11 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
 - `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積（実行順が回次 s）か、`{k, epochs: [{s, regime, seed}]}` の順序付きプラン（`npm run competition -- plan` の出力）を受ける。シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（schema 2: シナリオ × agent の P = `pnlUsdc` / `pnlSource` / `netPnlUsdc` / `alphaUsdc` / 端点 / `baseline` / `flags`）と `standings.json`（`computeStandings` の出力）を書く。順位は派生物で matrix.json から再計算できる。`--repeat N`（較正の診断用。採点は 1 回が既定。P の中央値の repeat を採る）
+  - **`--resume <matrix-dir>` で同じ行列を続ける**（規約 §4.7.1。ライブ週の k エポックは複数回の起動にまたがる）。
+    格納済みの `agents` を持つシナリオは skip（`skipping s=…, already complete`）、無い・`error` のものだけ再実行し、
+    `matrix.json` / `standings.json` を**同じディレクトリに**回次順で書き直す（`createdAt` は初回のまま、`resumedAt` を追加）。
+    `scenarioSet` / `k` / `resetUnit` / `repeat` が違えば fail-fast、同じパスで中身が変わったセットも回次単位で拒否
+    （`core/src/backtest/resume.ts`）。summary.json → AgentScore の変換は `core/src/backtest/scenarioScores.ts` に分離
   - **公式レジームは `agentSandbox: docker`**（規約 §2.3 の 2 vCPU / 4 GiB は `infra/docker-agent/run-agent.sh` でしか掛からない）。docker が無ければ `--agent-sandbox process`（無制限。`agent_sandbox` イベントにそう出る）。綴り間違いは fail-fast
   - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 40`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジーム等回数、seed が決めるのは順序だけ）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 10/31 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
@@ -329,7 +351,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/ラウンド長/action 語彙/limits/登録アドレス）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
 - `npm run check:ordering -- --live` — **ビルダーが手数料順に並べるかを自分で入札して測る**（#35 の load-bearing assumption）。既定プロファイルは oracle を全員より高く積んで txIndex 0 に置くので、順序が守られないチェーンでは環境の価格が front-run 可能になる。**入札は昇順に送る**ので到着順と手数料順が逆になり、到着順を保つだけのビルダーは降順プローブなら通ってこれで落ちる。引数なしは従来どおり blocks.csv の事後検査
 - `npm run stress:rpc` — **Eris 形状の read 負荷**で RPC 容量を測る（#36）。`reconstruct.ts` と同じ read 集合の Multicall3 を agent × block で撃ち、cold/warm 別の p50/p99・ブロック間隔ジッタ（負荷有無）・`eth_call` の到達可能深度・sequencer-only か replica かの判定を出す。**読む対象が無いチェーンでは測る前に落ちる**（空アドレスへの call はノードが実残高より速く断るので、全滅が巨大な容量に見える。実際に「何もデプロイされていない anvil に 3,360 obs/s・sequencer-only で十分」と報告した）
-- `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**read-only だがアクセス境界ではない** — `runs/` 配下は全部公開になる
+- `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**既定は運営ビューで `runs/` 配下が全部公開になる。**試行期間・ライブ週の公開（2026-09-06 決定）は **`ERIS_DASHBOARD_AUDIENCE=1`**（allowlist 配信 + `events.jsonl` の seed / 未来の `stress_schedule` / calibration warning / vuln 正解 / stderrTail を落とし、scenario matrix の `regime` / `seed` を `hidden` に。`agents/*.jsonl`・`.llm.jsonl`・`disclosures/` は 404）、試行環境はさらに **`ERIS_DASHBOARD_STANDINGS=0`**（規約 §4.7）。`/runs/mode.json` で UI が理由を表示する。結果発表後はフラグを外すだけで §7.2 の全量公開。Cache-Control / gzip / index 3 秒キャッシュ付き（`docs/guide/dashboard.md` "Public view"）
 - `npm run gen:method-selectors` — venue ABI から selector→関数名テーブルを再生成（ADR 0021 §4）。生成物にしてあるのはブラウザに ABI パーサと keccak を積まないため（実測 +15kB gzip）。ABI とのズレは `test/methodNames.test.ts` が落とす
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）

@@ -24,6 +24,7 @@ import { Select } from "@/design-system/Select";
 import { setLocale, useLocale, type Locale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
 import { navigate } from "@/navigation";
+import { useMode } from "@/data/mode";
 
 export type SidebarNavKey = "home" | "scenario" | "explorer" | "markets";
 
@@ -139,14 +140,30 @@ function Picker() {
     Promise.all(
       competitions.map(async (entry) => {
         try {
-          const c = await loadCompetition(entry.id);
-          return [entry.id, competitionLabel(c, locale)] as const;
+          return [entry.id, await loadCompetition(entry.id)] as const;
         } catch {
-          return [entry.id, entry.id] as const;
+          return [entry.id, null] as const;
         }
       }),
-    ).then((pairs) => {
-      if (!cancelled) setCompetitionNames(new Map(pairs));
+    ).then((loaded) => {
+      if (cancelled) return;
+      // Two competitions that come out with the same label (a practice period restarted the same
+      // day) get the clock appended, so the picker never shows two identical rows.
+      const labels = loaded.map(([id, c]) =>
+        c ? competitionLabel(c, locale) : id,
+      );
+      const seen = new Map<string, number>();
+      for (const label of labels) seen.set(label, (seen.get(label) ?? 0) + 1);
+      setCompetitionNames(
+        new Map(
+          loaded.map(([id, c], i) => [
+            id,
+            c && (seen.get(labels[i]) ?? 0) > 1
+              ? competitionLabel(c, locale, { withTime: true })
+              : labels[i],
+          ]),
+        ),
+      );
     });
     return () => {
       cancelled = true;
@@ -275,6 +292,18 @@ function Picker() {
         </PickerBlock>
       )}
     </>
+  );
+}
+
+/** " · public view" when the server withholds what a competition in progress must not publish. */
+function ModeBadge() {
+  const mode = useMode();
+  if (!mode.audience) return null;
+  return (
+    <span title={t("mode.audienceNote")}>
+      {" · "}
+      {t("mode.audienceBadge")}
+    </span>
   );
 }
 
@@ -433,6 +462,7 @@ export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
           }}
         >
           {t("sidebar.readOnly")} · {t("sidebar.noSignIn")}
+          <ModeBadge />
         </span>
       </div>
     </div>

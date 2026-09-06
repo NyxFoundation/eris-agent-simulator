@@ -20,6 +20,7 @@ import { navigate } from "@/navigation";
 import { t } from "@/i18n/messages";
 import { formatPnlUsdc } from "@/lib/format";
 import { useMarketSnapshot } from "@/data/useMarketSnapshot";
+import { useMode } from "@/data/mode";
 import type {
   AgentStanding,
   StatTone,
@@ -426,6 +427,7 @@ function CenteredMessage({ text, tone }: { text: string; tone?: "danger" }) {
 export function MarketPage() {
   const [selectedBase, setSelectedBase] = useState("WETH");
   const { data, loading, error } = useMarketSnapshot(selectedBase);
+  const mode = useMode();
   // Empty until the run says which panels it has: the first tab is the run's own lead (Scenario),
   // and hard-coding "amm" made the default disagree with the tab order.
   const [panelId, setPanelId] = useState("");
@@ -760,10 +762,22 @@ export function MarketPage() {
               }}
             >
               <span style={SECTION_LABEL_STYLE}>{t("market.standings")}</span>
+              {/* Rules §4.7: the trial environment posts no standings, this preview included. */}
+              {!mode.standings && (
+                <span
+                  style={{
+                    font: "11px var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                  }}
+                >
+                  {t("market.standingsOff")}
+                </span>
+              )}
             </div>
-            {leaderboard.slice(0, 8).map((row) => (
-              <LeaderboardMiniRow key={row.rank} row={row} />
-            ))}
+            {mode.standings &&
+              leaderboard
+                .slice(0, 8)
+                .map((row) => <LeaderboardMiniRow key={row.rank} row={row} />)}
 
             <div
               style={{
@@ -773,7 +787,21 @@ export function MarketPage() {
               }}
             >
               <span style={SECTION_LABEL_STYLE}>{t("market.submissions")}</span>
-              {feedSelfHosted > 0 && (
+              {/* The feed is submitted-but-not-yet-included, with the bid on it (#69). The server
+                  does not serve the self-reports in audience mode, and the panel says why. */}
+              {mode.audience && (
+                <p
+                  style={{
+                    margin: "6px 0 0",
+                    font: "11px var(--font-mono)",
+                    lineHeight: 1.5,
+                    color: "var(--text-tertiary)",
+                  }}
+                >
+                  {t("market.submissionsAudience")}
+                </p>
+              )}
+              {!mode.audience && feedSelfHosted > 0 && (
                 <p
                   style={{
                     margin: "6px 0 0",
@@ -795,7 +823,7 @@ export function MarketPage() {
                 padding: "0 16px 16px",
               }}
             >
-              {feed.length === 0 && (
+              {!mode.audience && feed.length === 0 && (
                 <span
                   style={{
                     font: "11px var(--font-mono)",
@@ -806,19 +834,20 @@ export function MarketPage() {
                   {t("market.noSubmissions")}
                 </span>
               )}
-              {feed.map((item) => (
-                <div
-                  key={item.id}
-                  style={{
-                    padding: "6px 0",
-                    borderBottom: "1px solid var(--border-subtle)",
-                    font: "11px var(--font-mono)",
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  {item.text}
-                </div>
-              ))}
+              {!mode.audience &&
+                feed.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      padding: "6px 0",
+                      borderBottom: "1px solid var(--border-subtle)",
+                      font: "11px var(--font-mono)",
+                      color: "var(--text-secondary)",
+                    }}
+                  >
+                    {item.text}
+                  </div>
+                ))}
             </div>
           </div>
         </main>

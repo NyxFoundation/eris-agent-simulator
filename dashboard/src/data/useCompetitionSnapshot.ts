@@ -30,6 +30,15 @@ export interface CompetitionSnapshot {
   schedules: Map<string, ScenarioSchedule>;
   /** Scenarios whose run dir was not collected, so they have no round detail. */
   missingRounds: number;
+  /**
+   * Runs in progress right now (rules §4.7.1: the live week is k epochs run one after another, and
+   * the standings update as each one completes). A live run that is one of this competition's
+   * scenarios is a day of a practice period still being written; one that is not is the next
+   * epoch of a matrix, whose result is not in matrix.json yet.
+   */
+  liveRunIds: string[];
+  /** Epochs the plan announced, when the competition index says (a partial matrix). */
+  scenariosPlanned: number | null;
 }
 
 /**
@@ -82,9 +91,19 @@ export function useCompetitionSnapshot() {
         rounds,
         schedules,
         missingRounds: competition.file.scenarios.length - rounds.size,
+        liveRunIds: index.filter((r) => r.live).map((r) => r.id),
+        scenariosPlanned:
+          typeof competition.file.scenariosPlanned === "number"
+            ? competition.file.scenariosPlanned
+            : typeof competition.file.k === "number"
+              ? competition.file.k
+              : null,
       };
     },
-    () => false,
+    // Something is still running: today's rounds keep arriving, or the next epoch's result will.
+    // Refreshing in place is what makes the standings a live leaderboard rather than a page to
+    // reload (rules §4.4.3: "各エポックの損益と偏差値は、当該エポックの終了後にリーダーボードで公開").
+    (data) => (data?.liveRunIds.length ?? 0) > 0,
   );
 
   return useMemo(() => state, [state]);

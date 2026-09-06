@@ -19,6 +19,7 @@ import {
 } from "@/data/standings";
 import { useAgentDetailSnapshot } from "@/data/useAgentDetailSnapshot";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
+import { useMode } from "@/data/mode";
 import { t } from "@/i18n/messages";
 import {
   formatBps,
@@ -256,6 +257,40 @@ interface CompetitionStanding {
   epochsScored: number;
   regimes: { regime: string; value: number | undefined }[];
   detail: AgentStandingDetail | null;
+  /** Rules §4.4.2: facts recorded beside the number (early exit, fee cap, unlogged txs). */
+  flags: string[];
+}
+
+/** The recorded facts, next to the standing they did not change. */
+function FlagsNote({ flags }: { flags: string[] }) {
+  if (flags.length === 0) return null;
+  return (
+    <div
+      style={{
+        border: "1px solid var(--warning-text)",
+        borderRadius: "var(--radius-lg)",
+        padding: "12px 16px",
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px",
+      }}
+    >
+      <span style={{ ...SECTION_LABEL_STYLE, color: "var(--warning-text)" }}>
+        {t("agent.flags")}
+      </span>
+      {flags.map((flag) => (
+        <span
+          key={flag}
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          {flag}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function useCompetitionStanding(agentId: string): CompetitionStanding | null {
@@ -278,6 +313,7 @@ function useCompetitionStanding(agentId: string): CompetitionStanding | null {
         value: byRegime[regime],
       })),
       detail: decomposeAgent(agentId, data.competition, data.rounds, standings),
+      flags: standings.flagsByAgent[agentId] ?? [],
     };
   }, [data, agentId]);
 }
@@ -394,7 +430,9 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
           <ReturnHistogram values={d.epochs.map((e) => e.t)} />
 
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-            <span style={SECTION_LABEL_STYLE}>{t("agent.standing.byEpoch")}</span>
+            <span style={SECTION_LABEL_STYLE}>
+              {t("agent.standing.byEpoch")}
+            </span>
             <div style={{ overflowX: "auto" }}>
               <div style={{ minWidth: "520px" }}>
                 <div
@@ -427,14 +465,25 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                     }}
                   >
                     <span style={{ color: "var(--text-tertiary)" }}>{e.s}</span>
-                    <span style={{ color: "var(--text-secondary)" }}>{e.label}</span>
-                    <span style={{ textAlign: "right", color: toneColor(e.pnl) }}>
+                    <span style={{ color: "var(--text-secondary)" }}>
+                      {e.label}
+                    </span>
+                    <span
+                      style={{ textAlign: "right", color: toneColor(e.pnl) }}
+                    >
                       {formatPnlUsdc(e.pnl)}
                     </span>
-                    <span style={{ textAlign: "right", color: toneColor(e.t - 50) }}>
+                    <span
+                      style={{ textAlign: "right", color: toneColor(e.t - 50) }}
+                    >
                       {formatScore(e.t)}
                     </span>
-                    <span style={{ textAlign: "right", color: "var(--text-tertiary)" }}>
+                    <span
+                      style={{
+                        textAlign: "right",
+                        color: "var(--text-tertiary)",
+                      }}
+                    >
                       {e.w.toFixed(3)}
                     </span>
                   </div>
@@ -531,13 +580,19 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
               {d.bankruptIn.length === 1
                 ? t("agent.standing.bankruptOne", {
                     list: d.bankruptIn
-                      .map((b) => `${b.label} (${formatPnlUsdc(b.finalValueUsdc)})`)
+                      .map(
+                        (b) =>
+                          `${b.label} (${formatPnlUsdc(b.finalValueUsdc)})`,
+                      )
                       .join(", "),
                   })
                 : t("agent.standing.bankrupt", {
                     n: d.bankruptIn.length,
                     list: d.bankruptIn
-                      .map((b) => `${b.label} (${formatPnlUsdc(b.finalValueUsdc)})`)
+                      .map(
+                        (b) =>
+                          `${b.label} (${formatPnlUsdc(b.finalValueUsdc)})`,
+                      )
                       .join(", "),
                   })}
             </span>
@@ -555,14 +610,19 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   // null = "not chosen yet": land on the standing when the agent ranks in a competition, on the
   // scenario overview otherwise (seed mode, live runs).
   const [chosenTab, setChosenTab] = useState<string | null>(null);
+  const mode = useMode();
   const external = data?.agent.external === true;
+  // No decision log to show: it is on the participant's machine (self-hosted), or the server does
+  // not serve it while the competition runs (audience mode -- it is the participant's reasoning and
+  // their pending bids). Either way the tab goes, with the reason said in its place.
+  const hideLog = external || mode.audience;
   const tab = chosenTab ?? (standing ? "standing" : "overview");
   const tabs = standing
     ? [
         { label: t("agent.tab.standing"), value: "standing" },
-        ...scenarioTabs(external),
+        ...scenarioTabs(hideLog),
       ]
-    : scenarioTabs(external);
+    : scenarioTabs(hideLog);
 
   if (loading) {
     return (
@@ -787,7 +847,12 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
           )}
 
           {tab === "standing" && standing && (
-            <StandingTab standing={standing} />
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "16px" }}
+            >
+              <FlagsNote flags={standing.flags} />
+              <StandingTab standing={standing} />
+            </div>
           )}
 
           {tab === "overview" && (
@@ -875,9 +940,13 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                     marginBottom: "10px",
                   }}
                 >
-                  {external ? t("agent.selfHosted") : t("agent.decisionLive")}
+                  {external
+                    ? t("agent.selfHosted")
+                    : mode.audience
+                      ? t("agent.audienceLog")
+                      : t("agent.decisionLive")}
                 </span>
-                {external ? (
+                {hideLog ? (
                   <p
                     style={{
                       margin: 0,
@@ -886,7 +955,9 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                       color: "var(--text-secondary)",
                     }}
                   >
-                    {t("agent.selfHostedLog")}
+                    {external
+                      ? t("agent.selfHostedLog")
+                      : t("agent.audienceLogNote")}
                   </p>
                 ) : (
                   <LogStream lines={agent.recentLog} height={320} />
