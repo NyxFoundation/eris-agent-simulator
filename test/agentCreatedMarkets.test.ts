@@ -829,3 +829,50 @@ test("a venue that is not there is absent from protocols, not undefined in it", 
   );
   assert.match(source, /if \(obs !== undefined\)/);
 });
+
+// ---------------------------------------------------------------------------
+// exploit-hunter (issue #40 phase 4): bytecode-only discovery
+// ---------------------------------------------------------------------------
+
+test("selector recovery finds an un-gated rescue() from runtime bytecode alone", async () => {
+  // The hunter has no ABI -- only the bytecode. The whole approach rests on recovering the
+  // dispatcher's selectors from it, so if this heuristic drifts the hunter goes blind.
+  const { toFunctionSelector } = await import("viem");
+  const { selectorsFromBytecode, noArgAttempts } = await import(
+    "../example/agents/lib/exploit.js"
+  );
+  const art = JSON.parse(
+    readFileSync(new URL("../out/LeakyVault.sol/LeakyVault.json", import.meta.url), "utf8"),
+  );
+  const runtime = art.deployedBytecode.object as `0x${string}`;
+  const sels = selectorsFromBytecode(runtime);
+  for (const sig of [
+    "deposit(uint256)",
+    "withdraw(uint256)",
+    "withdrawAll()",
+    "rescue()",
+    "owner()",
+  ]) {
+    assert.ok(
+      sels.includes(toFunctionSelector(sig)),
+      `selector for ${sig} not recovered`,
+    );
+  }
+  // rescue() is a no-arg call and must survive the attempt filter; owner() is ignored (it moves no
+  // value and every contract has it).
+  const attempts = noArgAttempts(runtime).map((s) => s.toLowerCase());
+  assert.ok(attempts.includes(toFunctionSelector("rescue()")));
+  assert.ok(!attempts.includes(toFunctionSelector("owner()")));
+  assert.ok(!attempts.includes(toFunctionSelector("transfer(address,uint256)")));
+});
+
+test("push-data that looks like PUSH4 is not mistaken for a selector", async () => {
+  const { selectorsFromBytecode } = await import("../example/agents/lib/exploit.js");
+  // PUSH32 whose data contains the byte 0x63 (the PUSH4 opcode) followed by four bytes. A scanner
+  // that did not skip push data would report 0xdeadbeef as a selector; a disassembling one does not.
+  // 0x7f <32 data bytes: 00..00 63 deadbeef 00..00> then STOP.
+  const data =
+    "00".repeat(20) + "63deadbeef" + "00".repeat(32 - 25);
+  const code = (`0x7f` + data + "00") as `0x${string}`;
+  assert.ok(!selectorsFromBytecode(code).includes("0xdeadbeef"));
+});

@@ -85,3 +85,9 @@ agents:
   - id: discovery-arb-verify
     wallet: AGENT6_PRIVATE_KEY
     description: reads the oracle owner and the codehash first (the careful side)
+  - id: vault-keeper
+    wallet: AUTO
+    description: deploys an honest vault with an un-gated rescue(), and does not know it (the buggy creator)
+  - id: exploit-hunter
+    wallet: AUTO
+    description: reads other agents' bytecode and drains the ones with a bug (the Hacker)
