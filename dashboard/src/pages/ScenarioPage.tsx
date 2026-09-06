@@ -355,20 +355,17 @@ export function ScenarioPage() {
       <div style={{ flex: 1, minWidth: 0 }}>
         <RoundsBar round={round} />
 
-        <div
+        {/* The page header, in the standings page's grammar: the scenario's name at heading size,
+            one meta line, nothing decorative. It used to be a 340px hero over a background image
+            with a display-size timestamp and "See what's happening" beneath it -- a poster in a
+            monitoring tool, and the only page that had one. The three panels below are the page. */}
+        <header
           style={{
-            width: "100%",
-            minHeight: "340px",
-            backgroundImage:
-              "linear-gradient(90deg, rgba(8,6,16,0.92) 0%, rgba(8,6,16,0.55) 42%, rgba(8,6,16,0.15) 100%), url('/assets/eris-bg.png')",
-            backgroundSize: "cover, cover",
-            backgroundPosition: "center, center",
             borderBottom: "1px solid var(--border-subtle)",
-            padding: "var(--space-8) var(--space-6)",
+            padding: "var(--space-6) var(--space-6) var(--space-4)",
             display: "flex",
             flexDirection: "column",
-            justifyContent: "center",
-            gap: "var(--space-3)",
+            gap: "8px",
           }}
         >
           {/* Which unit is on screen, and what it sits inside. A scenario opened from the
@@ -391,15 +388,12 @@ export function ScenarioPage() {
             {"  ›  "}
             {t("units.scenario")}
           </a>
-          {/* The scenario names itself. This used to be the ERIS wordmark, which made every
-              scenario look like the application's front page and said nothing about which of the
-              35 worlds was on screen. */}
+          {/* The scenario names itself (regime#seed, or a practice period's day). */}
           <h1
+            title={round.runId}
             style={{
               margin: 0,
-              fontSize: "52px",
-              lineHeight: 0.95,
-              fontWeight: "var(--weight-bold)",
+              font: "var(--weight-bold) 21px var(--font-sans)",
               letterSpacing: "var(--tracking-tight)",
               color: "var(--text-primary)",
             }}
@@ -409,11 +403,8 @@ export function ScenarioPage() {
           </h1>
           <span
             style={{
-              font: "var(--font-mono)",
-              fontSize: "var(--text-xs)",
-              letterSpacing: "var(--tracking-widest)",
-              color: "var(--text-tertiary)",
-              textTransform: "uppercase",
+              font: "var(--text-sm) var(--font-mono)",
+              color: "var(--text-secondary)",
             }}
           >
             {[
@@ -428,46 +419,15 @@ export function ScenarioPage() {
                 : null,
               scenario.competition,
               scenario.name === null ? round.runId : null,
+              t("scenario.heroMeta", {
+                agents: leaderboard.length,
+                block: round.blockNumber.toLocaleString("en-US"),
+              }),
             ]
               .filter(Boolean)
-              .join("  \u00b7  ")}
+              .join(" · ")}
           </span>
-        </div>
-
-        <div
-          style={{
-            padding: "var(--space-3) var(--space-6)",
-            display: "flex",
-            alignItems: "baseline",
-            justifyContent: "space-between",
-            gap: "var(--space-4)",
-          }}
-        >
-          <h2
-            style={{
-              margin: 0,
-              fontSize: "var(--text-xl)",
-              fontWeight: "var(--weight-bold)",
-              letterSpacing: "var(--tracking-tight)",
-              lineHeight: 1,
-              textTransform: "uppercase",
-            }}
-          >
-            {t("scenario.hero")}
-          </h2>
-          <span
-            style={{
-              font: "var(--text-xs) var(--font-mono)",
-              color: "var(--text-tertiary)",
-              letterSpacing: "var(--tracking-wide)",
-            }}
-          >
-            {t("scenario.heroMeta", {
-              agents: leaderboard.length,
-              block: round.blockNumber.toLocaleString("en-US"),
-            })}
-          </span>
-        </div>
+        </header>
 
         <div
           style={{
