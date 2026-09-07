@@ -743,7 +743,7 @@ const en = {
   "world.chip.balance": "balance {usd} USDC",
   "world.chip.pnl": "gain {pnl}",
   "world.chip.unscored": "no scored mark yet",
-  "world.thinking": "What this agent is doing, and why",
+  "world.thinking": "Agent Log",
   "world.openAgent": "{id}'s page →",
   "world.pickAgent": "Pick a wallet on the board to follow its own account of the run — the action it chose each block, and the reason it gave.",
   "world.logsWithheld":
@@ -1464,7 +1464,7 @@ const ja: Record<MessageKey, string> = {
   "world.chip.balance": "残高 {usd} USDC",
   "world.chip.pnl": "損益 {pnl}",
   "world.chip.unscored": "まだ採点されていません",
-  "world.thinking": "このエージェントが何をして、なぜそうしたか",
+  "world.thinking": "Agent Log",
   "world.openAgent": "{id} のページ →",
   "world.pickAgent": "盤面のウォレットを選ぶと、そのエージェント自身の記録が出ます。毎ブロックどの行動を選び、どういう理由だったかです。",
   "world.logsWithheld":
