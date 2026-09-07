@@ -27,6 +27,8 @@ export type StoredMatrix = {
   repeat?: number;
   scenariosPlanned?: number;
   scenarios?: ScenarioResult[];
+  /** The --agent-state-root the matrix was run with, if any (issue #77). */
+  agentStateRoot?: string;
 };
 
 export function readStoredMatrix(dir: string): StoredMatrix {
@@ -54,6 +56,7 @@ export type ResumeTarget = {
   k: number;
   resetUnit: string;
   repeat: number;
+  agentStateRoot?: string;
 };
 
 /**
@@ -85,11 +88,23 @@ export function assertResumable(
     problems.push(
       `repeat: stored ${stored.repeat ?? 1}, now ${current.repeat}`,
     );
+  // State carrying is part of what the competition is: an epoch run with a carried strategy and
+  // one run from version 0 are different experiments, and a resume that switched the root would
+  // continue the epochs on top of some other matrix's state (or none).
+  const storedRoot =
+    stored.agentStateRoot === undefined ? undefined : resolvePath(stored.agentStateRoot);
+  const currentRoot =
+    current.agentStateRoot === undefined ? undefined : resolvePath(current.agentStateRoot);
+  if (storedRoot !== currentRoot)
+    problems.push(
+      `agentStateRoot: stored ${storedRoot ?? "(none)"}, now ${currentRoot ?? "(none)"}`,
+    );
   if (problems.length > 0)
     throw new Error(
       `--resume: the stored matrix is a different competition (${problems.join("; ")}). ` +
-        "A resumed run has to continue the same scenario set with the same k, reset unit and " +
-        "repeat, or its standings would average two competitions (rules §4.4.1 / §4.7.1)",
+        "A resumed run has to continue the same scenario set with the same k, reset unit, " +
+        "repeat and agent state root, or its standings would average two competitions " +
+        "(rules §4.4.1 / §4.7.1)",
     );
 }
 
@@ -137,4 +152,41 @@ export function mergeStoredResults(
   }
   const rerun = plan.filter((p) => !complete.has(p.s)).map((p) => p.s);
   return { preloaded, complete, rerun };
+}
+
+// ---- agent state across a resumed matrix (issue #77) ----
+//
+// With --agent-state-root the state travels from one scenario to the next in plan order, which is
+// only right while the scenarios run in that order in one invocation. A resume re-runs the missing
+// and failed ordinals, and a scenario re-run out of order must start from the state the plan says
+// it starts from -- what the epoch before it ended with -- not from whatever the last thing that
+// happened to run left behind. So every completed scenario snapshots the root under a label, and
+// before running s the root is put back to the label of the latest complete ordinal below s, or to
+// the matrix's initial (empty) state when there is none. Labels are never pruned (agentState.ts).
+//
+// What this does not do: re-run the scenarios *after* a re-run one. If s=3 was voided and 4 and 5
+// completed on the state the first attempt of 3 left, they stay as they are; rules §4.4.2 re-runs
+// the voided epoch, not the ones that followed it, and whether that is acceptable is the
+// organizer's call to make, not the runner's.
+
+/** The label under which the root is snapshotted before any scenario has run. */
+export const STATE_LABEL_INITIAL = "initial";
+
+/** The label of the state every agent ended ordinal `s` with. */
+export function stateLabelAfter(s: number): string {
+  return `end-s${s}`;
+}
+
+/**
+ * The label ordinal `s` has to start from: the end of the latest complete ordinal below it, or the
+ * initial state when nothing below it is complete.
+ */
+export function stateLabelBefore(
+  s: number,
+  complete: ReadonlySet<number>,
+): string {
+  let latest: number | undefined;
+  for (const done of complete)
+    if (done < s && (latest === undefined || done > latest)) latest = done;
+  return latest === undefined ? STATE_LABEL_INITIAL : stateLabelAfter(latest);
 }

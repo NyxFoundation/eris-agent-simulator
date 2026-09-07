@@ -50,6 +50,9 @@ import {
   mergeStoredResults,
   readStoredMatrix,
   type StoredMatrix,
+  STATE_LABEL_INITIAL,
+  stateLabelAfter,
+  stateLabelBefore,
 } from "../backtest/resume.js";
 import {
   gitHead,
@@ -82,7 +85,10 @@ const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --s
   --resume <matrix-dir>  continue a stored matrix (runs/matrix-<id>/) instead of opening a new one: scenarios
                          already complete there are skipped, the missing and failed ones run, and matrix.json /
                          standings.json are rewritten in place. The live week is k epochs across several
-                         invocations (rules §4.7.1); refused when scenarioSet / k / resetUnit / repeat differ
+                         invocations (rules §4.7.1); refused when scenarioSet / k / resetUnit / repeat /
+                         agent-state-root differ. With --agent-state-root, each re-run starts from the
+                         state the latest complete ordinal before it ended with (checkpoints under
+                         <root>/.snapshots/end-s<N>), not from whatever ran last
   --repeat <N>           repeat each scenario N times (calibration diagnostic; standings take the median P. default 1)
   --port <N>             port for the backtest-only anvil (default 8547)
   --state <dir>          state dump directory (default ${STATE_DIR_DEFAULT})
@@ -576,7 +582,13 @@ async function main(): Promise<void> {
       stored = readStoredMatrix(resumeDir);
       assertResumable(
         stored,
-        { scenarioSet: flags.scenarios, k, resetUnit: "scenario", repeat },
+        {
+          scenarioSet: flags.scenarios,
+          k,
+          resetUnit: "scenario",
+          repeat,
+          ...(agentStateRoot !== undefined ? { agentStateRoot } : {}),
+        },
         (p) => resolve(ROOT, p),
       );
       const now = gitHead(ROOT);
@@ -637,6 +649,7 @@ async function main(): Promise<void> {
             // A matrix is a scenario-mode run by construction (ADR 0020 §1). Written out so a later
             // comparison against a continuous run is refused rather than silently averaged.
             resetUnit: "scenario",
+            ...(agentStateRoot !== undefined ? { agentStateRoot } : {}),
             // The schedule length the weights are taken over (rules §4.4.1).
             k,
             repeat,
@@ -665,6 +678,11 @@ async function main(): Promise<void> {
         `${JSON.stringify(computeStandings(ordered(), k), null, 2)}\n`,
       );
     };
+    // Issue #77: the state every scenario starts from is a function of the plan, not of what ran
+    // last (backtest/resume.ts). A fresh matrix records its empty starting point; a resumed one
+    // puts the root back to the end of the latest complete ordinal before each re-run.
+    if (agentStateRoot !== undefined && matrixMode && !resumeDir)
+      snapshotAllAgentState(agentStateRoot, STATE_LABEL_INITIAL);
     let index = 0;
     for (const scenario of scenarios) {
       index++;
@@ -676,6 +694,19 @@ async function main(): Promise<void> {
         repeatsByScenario.push([]);
         blocksByScenario.push([]);
         continue;
+      }
+      if (agentStateRoot !== undefined && resumeDir) {
+        const from = stateLabelBefore(scenario.s, complete);
+        if (!restoreAllAgentState(agentStateRoot, from))
+          throw new Error(
+            `--resume: s=${scenario.s} has to start from agent state "${from}", but ` +
+              `${join(agentStateRoot, ".snapshots", from)} does not exist. The matrix being ` +
+              "resumed was run before state checkpoints were written, or the checkpoint was " +
+              "deleted; re-run it as a new matrix rather than continuing this one",
+          );
+        console.error(
+          `[backtest] s=${scenario.s}: agent state restored from "${from}"`,
+        );
       }
       const expectedAgents = rosterOf(loadRegimeDoc(scenario));
       // Have both the coordinator and the agent processes read this scenario's effective regime.
@@ -694,7 +725,12 @@ async function main(): Promise<void> {
       for (let i = 0; i < repeat; i++) {
         if (agentStateRoot !== undefined && repeat > 1) {
           if (i === 0) snapshotAllAgentState(agentStateRoot, repeatLabel);
-          else restoreAllAgentState(agentStateRoot, repeatLabel);
+          else if (!restoreAllAgentState(agentStateRoot, repeatLabel))
+            // A repeat that silently kept the previous repeat's state would report a sequence as
+            // a spread, which is the one thing the flag must not do.
+            throw new Error(
+              `--repeat: agent state label "${repeatLabel}" vanished between repeats`,
+            );
         }
         console.error(
           `[backtest] scenario ${index}/${scenarios.length} ${label}` +
@@ -728,6 +764,11 @@ async function main(): Promise<void> {
           lastError = error instanceof Error ? error.message : String(error);
           console.error(`[backtest] scenario ${label} failed: ${lastError}`);
         }
+      }
+      if (agentStateRoot !== undefined && matrixMode && perRepeat.length > 0) {
+        // The checkpoint a resume restores before the ordinal after this one.
+        snapshotAllAgentState(agentStateRoot, stateLabelAfter(scenario.s));
+        complete.add(scenario.s);
       }
       repeatsByScenario.push(perRepeat);
       blocksByScenario.push(blocksPerRepeat);
