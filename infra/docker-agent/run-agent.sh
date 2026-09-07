@@ -96,6 +96,19 @@ CAPS=( --rm --init --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label er
 # empty registry and an absent venue, which is exactly what a run where nobody deployed anything looks
 # like. HOME=/tmp because the rootfs is read-only; NODE_ENV / REPORT_DIR are set by the coordinator
 # for every child and the image has no useful default for either.
+# Docker Desktop on macOS does not share the host's network namespace under --network host (a
+# container's 127.0.0.1 is the container; measured ECONNREFUSED on 2026-09-07 while the same probe
+# through host.docker.internal on the bridge answered eth_chainId). The agent's preflight then exits
+# 1 on purpose. On Darwin, unless the operator named a network, use the bridge and point the
+# loopback URLs the coordinator handed us at the host instead.
+if [ "$(uname -s)" = "Darwin" ]; then
+  : "${ERIS_AGENT_NET:=bridge}"
+  for v in ERIS_RPC_URL ERIS_INFERENCE_BASE_URL; do
+    val="${!v:-}"; [ -n "$val" ] || continue
+    val="${val//127.0.0.1/host.docker.internal}"; val="${val//localhost/host.docker.internal}"
+    export "$v=$val"
+  done
+fi
 COMMON_ENV=( -e HOME=/tmp -e NODE_ENV -e REPORT_DIR )
 while IFS= read -r name; do
   case "$name" in
@@ -126,6 +139,19 @@ fi
 # that writes into a directory the container cannot see, and the only thing that runs segmented is
 # the practice devnet, which participants self-host anyway (ADR 0021). The live competition is one
 # coordinator per epoch and takes the branch below.
+# The coordinator passes ERIS_RUN_DIR verbatim from the config's reportDir, which every regime
+# writes RELATIVE (`reportDir: ./runs`), and the process launches from the repo root. Resolve both
+# run-dir variables against $REPO before they reach a mount or a remap: docker -v refuses a relative
+# source ("mount path must be absolute"), and with 32 agents that was 32 exit-125s and a run that
+# still completed and wrote summary.json as if it had been contested.
+case "${ERIS_RUN_DIR:-}" in
+  ""|/*) ;;
+  *) export ERIS_RUN_DIR="$REPO/$ERIS_RUN_DIR" ;;
+esac
+case "${ERIS_RUN_DIR_POINTER:-}" in
+  ""|/*) ;;
+  *) export ERIS_RUN_DIR_POINTER="$REPO/$ERIS_RUN_DIR_POINTER" ;;
+esac
 if [ -n "${ERIS_RUN_DIR_POINTER:-}" ]; then
   LOG_HOST="$(dirname "$ERIS_RUN_DIR_POINTER")"
 else
