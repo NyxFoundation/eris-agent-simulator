@@ -75,6 +75,8 @@ const en = {
   "home.practiceNote":
     "Practice standings, not the official scoring. The competition is scored separately, from submitted bundles replayed over a scenario matrix — nothing here feeds into it.",
   "home.standingsFinal": "Standings · final",
+  // The heading over the §4.7 notice, where there is no result to be final or provisional about.
+  "home.standingsTitle": "Standings",
   "home.standingsThrough": "Standings · through round {at}",
   "home.subtitle":
     "Score: each epoch (one scenario run) gives every agent a deviation score T = 50 + 10 × (P − μ) / σ, where P is its USDC profit over the epoch and μ, σ are the field's. The score is the average of T over the epochs, later epochs weighted up to 1.5×. Regime columns are the agent's mean T in that regime. Click a row for the epoch-by-epoch breakdown.",
@@ -900,6 +902,7 @@ const ja: Record<MessageKey, string> = {
   "home.practiceNote":
     "これは練習順位で、公式採点ではありません。公式競技は提出バンドルをシナリオ行列で再生して別途採点され、ここの結果は一切反映されません。",
   "home.standingsFinal": "順位表 · 最終",
+  "home.standingsTitle": "順位表",
   "home.standingsThrough": "順位表 · ラウンド {at} 時点",
   "home.subtitle":
     "スコア: 各エポック（1 シナリオの run）で、エポック中の USDC 損益 P から偏差値 T = 50 + 10 × (P − μ) / σ を全員横断で出し（μ・σ は場全体）、T をエポック通しで平均した値（後のエポックほど重みが大きく、最大 1.5 倍）。レジーム列はそのレジームでの T の平均。行をクリックするとエポックごとの内訳が見られます。",

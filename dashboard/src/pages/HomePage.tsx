@@ -342,9 +342,13 @@ function ScenarioRow({
             color: "var(--text-disabled)",
           }}
         >
-          {row.missing
-            ? t("home.scenarios.missing")
-            : t("home.scenarios.noLeader")}
+          {/* An epoch that never ran has no leader for a reason the next column already gives;
+              blaming collection for it would name the wrong cause. */}
+          {row.runId === null
+            ? "—"
+            : row.missing
+              ? t("home.scenarios.missing")
+              : t("home.scenarios.noLeader")}
         </span>
       )}
       <span
@@ -836,7 +840,8 @@ export function HomePage() {
           </header>
 
           {!mode.standings ? (
-            <Panel title={t("home.standingsFinal")}>
+            // Neither final nor provisional: there is no standing here to be either (issue #84 C).
+            <Panel title={t("home.standingsTitle")}>
               <p
                 style={{
                   margin: 0,

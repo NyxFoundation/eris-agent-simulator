@@ -155,6 +155,8 @@ class LiveRunState {
   private readonly blocksCarry = { partial: "" };
   private readonly marketTail: TailState = { offset: 0 };
   private readonly marketCarry = { partial: "" };
+  private readonly epochsTail: TailState = { offset: 0 };
+  private readonly epochsCarry = { partial: "" };
   private readonly agentTails = new Map<
     string,
     { state: TailState; carry: { partial: string } }
@@ -168,11 +170,23 @@ class LiveRunState {
    * rounds bar was empty for the rest of the day.
    */
   private readonly header = new Map<string, RunEvent>();
+  /**
+   * The run's own first block, pinned the moment it is seen.
+   *
+   * It cannot be recovered from the event stream later: the tail is capped, and on a day-long
+   * segment the earliest lines are evicted long before anyone opens the page — leaving the oldest
+   * *surviving* `round_timing` looking like the first block. That is not a missing answer but a
+   * plausible wrong one: every round boundary is laid out from it, so the header reported "round 14
+   * of 20" on a segment sitting at its twentieth.
+   */
+  private firstBlockSeen: number | null = null;
   /** blocks.csv rows, oldest first, capped at BLOCK_ROW_LIMIT (the newest are kept). */
   private csvRows: BlockRow[] = [];
   /** The first block blocks.csv covered, kept even after the row that carried it was capped off. */
   private csvFrom: number | null = null;
   private marketRows: MarketSeriesRow[] = [];
+  /** One row per epoch boundary the live scorer has read (ADR 0021 §3), oldest first. */
+  private boundaries: { blockNumber: number; values: Record<string, number | null> }[] = [];
   private refreshes = 0;
   private agentLogs = new Map<string, AgentLogEntry[]>();
   private agents: RegisteredAgent[] = [];
@@ -228,8 +242,24 @@ class LiveRunState {
             this.agents = event.agents as RegisteredAgent[];
           break;
         case "round_timing":
-          if (typeof event.blockNumber === "number")
+          if (typeof event.blockNumber === "number") {
             this.latestEventBlock = event.blockNumber;
+            if (
+              this.firstBlockSeen === null ||
+              event.blockNumber < this.firstBlockSeen
+            )
+              this.firstBlockSeen = event.blockNumber;
+          }
+          break;
+        case "epoch_boundary":
+          // Boundary 0 sits on the run's first block, and a segment that opens on a boundary has
+          // one even before its first `round_timing`.
+          if (event.index === 0 && typeof event.blockNumber === "number")
+            if (
+              this.firstBlockSeen === null ||
+              event.blockNumber < this.firstBlockSeen
+            )
+              this.firstBlockSeen = event.blockNumber;
           break;
       }
     }
@@ -370,6 +400,21 @@ class LiveRunState {
       merged.length > BLOCK_ROW_LIMIT ? merged.slice(-BLOCK_ROW_LIMIT) : merged;
   }
 
+  private async refreshEpochs(): Promise<void> {
+    const text = await tail(this.runId, "epochs.jsonl", this.epochsTail);
+    if (!text) return;
+    const fresh = parseJsonlChunk<{
+      blockNumber?: number;
+      values?: Record<string, number | null>;
+    }>(text, this.epochsCarry);
+    for (const row of fresh)
+      if (typeof row.blockNumber === "number" && row.values)
+        this.boundaries.push({
+          blockNumber: row.blockNumber,
+          values: row.values,
+        });
+  }
+
   private async refreshMarket(): Promise<void> {
     const text = await tail(this.runId, "market.jsonl", this.marketTail);
     if (!text) return;
@@ -404,6 +449,7 @@ class LiveRunState {
       this.readIndexerHeight(),
       this.refreshBlocks(),
       this.refreshMarket(),
+      this.refreshEpochs(),
     ]);
 
     // tx attribution: agents by wallet address, methods/venues from tx_submitted events
@@ -484,22 +530,45 @@ class LiveRunState {
       chainFrom,
     });
 
+    // No value, rather than a value of zero. These are the fields a run produces when it ends --
+    // net PnL prices both ends at the final marks, and there is no final mark yet -- and writing 0
+    // into them made a live agent page report "+0.00" for an agent that had traded all day, which
+    // is the same claim an agent that made nothing would leave (issue #84 X2's shape, on the live
+    // page). What *does* exist live is the boundary series below.
     const summaryAgents: SummaryAgent[] = this.agents.map((a) => ({
       id: a.id,
       address: a.address,
-      initialValueUsdc: 0,
-      finalValueUsdc: 0,
-      netPnlUsdc: 0,
-      alphaUsdc: 0,
+      ...(a.baseline ? { baseline: true } : {}),
       includedTxCount: 0,
       revertCount: 0,
     }));
+    // The boundaries the live scorer has read so far (ADR 0021 §3): the same series summary.json
+    // carries at the end, so everything downstream scores a run in progress the way it scores a
+    // finished one -- from V_k − V_0 at cross-sections the environment actually read.
+    const ids = new Set<string>();
+    for (const b of this.boundaries) for (const id of Object.keys(b.values)) ids.add(id);
+    const valuesByAgent: Record<string, Array<number | null>> = {};
+    for (const id of ids)
+      valuesByAgent[id] = this.boundaries.map((b) =>
+        typeof b.values[id] === "number" ? (b.values[id] as number) : null,
+      );
     const summary: RunSummary = {
       runId: this.runId,
       mode: "live",
       blockTimeSec: this.meta.blockTimeSec,
       finalFairPriceUsdcPerWeth:
         this.fairSamples[this.fairSamples.length - 1]?.fair,
+      ...(this.boundaries.length >= 2
+        ? {
+            valueSeries: {
+              epochSeries: {
+                epochs: this.boundaries.length - 1,
+                boundaryBlocks: this.boundaries.map((b) => b.blockNumber),
+                valuesByAgent,
+              },
+            },
+          }
+        : {}),
       agents: summaryAgents,
     };
 
@@ -519,6 +588,8 @@ class LiveRunState {
       market: marketFromSampleRows(this.marketRows),
       live: {
         chainHeight: chainHeight ?? (filesHeight > 0 ? filesHeight : null),
+        firstBlock:
+          this.firstBlockSeen ?? blockRows[0]?.blockNumber ?? null,
         blocksFrom,
         indexerHeight,
         fairSamples: this.fairSamples,

@@ -214,6 +214,7 @@ function firstBlock(run: LoadedRun): number {
     run.summary.valueSeries?.fromBlock ??
     run.summary.fromBlock ??
     segmentStart(run) ??
+    run.live?.firstBlock ??
     firstEventBlock(run) ??
     run.blockRows[0]?.blockNumber ??
     0
@@ -311,7 +312,10 @@ function buildEpochs(
   const epochSeries = run.summary.valueSeries?.epochSeries;
   const boundaries = epochSeries?.boundaryBlocks ?? [];
 
-  if (boundaries.length >= 2) {
+  // A live run now carries the boundaries read so far, which is what scores it -- but the bar is
+  // laid out from the run's configured length, so a day shows its whole shape rather than only the
+  // rounds that have closed.
+  if (!run.live && boundaries.length >= 2) {
     const valuesByAgent = epochSeries?.valuesByAgent ?? {};
     const ids = (run.summary.agents ?? []).map((a) => a.id);
     const valueAt = (id: string, boundary: number): number | null =>
@@ -390,7 +394,11 @@ function buildEpochs(
   const started = eventOfType(run.events, "run_started_realtime");
   const epochBlocks = Number(started?.epochBlocks ?? 0);
   const runBlocks = Number(started?.runBlocks ?? 0);
-  const start = firstEventBlock(run);
+  // Every boundary below is measured from this block, so it has to be the run's own first block and
+  // not the oldest one still in a capped event tail: on a day-long segment the two differ by
+  // however much has been evicted, and the whole round axis slides with it (the header read
+  // "round 14 of 20" on a segment sitting at its twentieth).
+  const start = run.live?.firstBlock ?? firstEventBlock(run);
   if (!(epochBlocks >= 1) || !(runBlocks >= epochBlocks) || start === null)
     return [];
   const count = Math.floor(runBlocks / epochBlocks);

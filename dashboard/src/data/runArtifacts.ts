@@ -261,6 +261,12 @@ export function marketFromSampleRows(
 export interface LiveExtras {
   chainHeight: number | null;
   /**
+   * The run's first competition block, pinned when it was first seen rather than re-derived. A
+   * capped event tail loses the earliest lines on a long run, and re-deriving would answer with
+   * the oldest surviving one — which lays every round boundary out from the wrong place.
+   */
+  firstBlock: number | null;
+  /**
    * The lowest block the live block rows cover, or null when they cover none. Decides which rounds
    * have a transaction count: a round that starts before this block is outside what the view
    * holds, and its count is "not counted" rather than 0 (issue #84 A/I). Off the fetched range,

@@ -905,9 +905,12 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               competition-level ones — mixing the two scales on one row invites misreading. */}
           {tab !== "standing" && (
             <div
+              // The card count varies with the mode (rules §4.7 removes two of them), so the row is
+              // laid out by how many there are -- and capped, so two cards do not stretch to the
+              // width three used to fill.
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                gridTemplateColumns: "repeat(auto-fit, minmax(190px, 280px))",
                 gap: "16px",
               }}
             >
@@ -923,10 +926,17 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                         ? `${t("agent.rankScenario")} · ${scenario.name.replace(/^full-/, "")}`
                         : t("agent.rankScenario")
                     }
-                    value={t("agent.rankOf", {
-                      n: agent.rank,
-                      m: agent.fieldSize,
-                    })}
+                    // An agent this run did not place has no rank in it. The table sorts it to the
+                    // bottom to have somewhere to draw it, and printing that position as a rank
+                    // would make "not measured" look like "measured, and last".
+                    value={
+                      agent.unscored
+                        ? "—"
+                        : t("agent.rankOf", {
+                            n: agent.rank,
+                            m: agent.fieldSize,
+                          })
+                    }
                   />
                 </>
               )}
