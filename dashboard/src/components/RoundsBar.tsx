@@ -337,12 +337,23 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
 
 // Replay transport. An archived run is a complete record, so walking it forward is a matter of
 // clamping what the views derive from -- the control here only moves the head.
-function ReplayControls({ round }: { round: RoundInfo }) {
+//
+// Without `transport` the bar offers no replay and moves no head: the scenario page walks blocks on
+// its own axis, and a second scrubber there would be a second clock. An armed replay still shows,
+// with the way out of it, because it clamps that page's frames too.
+function ReplayControls({
+  round,
+  transport,
+}: {
+  round: RoundInfo;
+  transport: boolean;
+}) {
   const replay = round.replay;
   const first = round.epochs[0]?.fromBlock;
   const last = round.epochs[round.epochs.length - 1]?.toBlock;
 
   if (!replay) {
+    if (!transport) return null;
     // Replay needs a finished run with rounds to walk: a live run is already moving, and a run with
     // no epoch series has no boundaries to step between.
     if (
@@ -365,6 +376,34 @@ function ReplayControls({ round }: { round: RoundInfo }) {
       </span>
     );
   }
+
+  if (!transport)
+    return (
+      <span style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--text-secondary)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {t("rounds.blk", {
+            b: replay.block.toLocaleString("en-US"),
+            to: replay.toBlock.toLocaleString("en-US"),
+          })}
+        </span>
+        <span
+          onClick={stopReplay}
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--text-link)",
+            cursor: "pointer",
+          }}
+        >
+          {t("rounds.replayExit")}
+        </span>
+      </span>
+    );
 
   const done = replay.block >= replay.toBlock;
   return (
@@ -439,7 +478,14 @@ function ReplayControls({ round }: { round: RoundInfo }) {
   );
 }
 
-export function RoundsBar({ round }: { round: RoundInfo }) {
+export function RoundsBar({
+  round,
+  transport = true,
+}: {
+  round: RoundInfo;
+  /** Offer replay and its scrubber. Off on the page that has a block axis of its own. */
+  transport?: boolean;
+}) {
   const now = useNow();
   const selectedRound = useSelectedRound();
   const scenario = useScenarioLabel();
@@ -558,7 +604,7 @@ export function RoundsBar({ round }: { round: RoundInfo }) {
             </>
           )}
         </span>
-        <ReplayControls round={round} />
+        <ReplayControls round={round} transport={transport} />
         <span
           style={{
             font: "var(--weight-bold) var(--text-lg) var(--font-mono)",

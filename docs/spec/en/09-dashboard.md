@@ -104,18 +104,22 @@ Both land on the scenario view and say so.
 
 ## 9.4 The scenario page
 
-Stacked sections rather than tabs (`dashboard/src/pages/ScenarioPage.tsx`).
+One world as **a board you can walk block by block** (`dashboard/src/pages/ScenarioPage.tsx`). Every other page answers "what happened"; this one answers "what does it look like while it happens".
 
 ```
-RoundsBar     the round axis
-hero          the scenario's name (regime#seed, with the `full-` prefix stripped) + seed + rounds/blocks
-leaderboard   the ranking within this scenario
-market tickers / blocks / tape (the event stream)
-SectionPanel  Markets (→ /markets) / Standings / Explorer (→ /explorer)
-InfoTabs      overview / environment / scoring / artifacts (the learning layer)
+RoundsBar      the round axis (the competition cursor; no replay transport here)
+header         the scenario's name (regime#seed, with the `full-` prefix stripped) + seed + rounds/blocks + agents, venues and the block window on screen
+WorldTimeline  the block axis: click, drag or ← → to move, 0.5x–4x to play; round boundaries are ticked
+WorldMap       wallets on the left, the chain in the middle, contracts on the right; one frame per block (past 900 frames a frame is a labelled group of blocks)
+This block     transactions / reverts / agents trading / what the environment did there
+3 panels       the ranking within this scenario (a row picks that wallet on the board) / Agent Log (the picked wallet's decisions, up to the head) / venue price against fair and account value at each scored boundary
 ```
 
-**The hero names the scenario itself.** It used to be the ERIS wordmark, which made every scenario look like the application's front page and said nothing about which of the 35 worlds was on screen.
+**It used to be a landing page of three previews (Markets / Standings / Explorer) with the board on a separate `/world` tab** (merged 2026-09-07). The previews were the board's numbers without the time axis, so the board became the page. A link to `/world` lands on `/scenario`.
+
+**Two clocks meet here; one is the page's.** The rounds bar is the competition cursor (round k of every world) and the selected round is the block axis's window. The block axis's head is local state, not the replay head: the replay head is in every fetch key, so moving it refetches every snapshot per step, whereas the board only walks frames its snapshot already holds. **Leaving the page mid-walk hands the head to the replay store once** (arming replay on an archived run, seeking if one is already armed), so `/markets` and `/explorer` open at the block the board was on. A walk that reached the end hands over nothing: the other pages default to the whole run, and a replay parked at the last block would only label the same view "replay". The other way round, opening the page with a replay armed for this run starts the walk at the head. **The board's frames are never clamped by replay** (they always span the run; cutting them at the head would show the blocks past it as a future with no transactions). Keeping the future out is the walk's own head: the log, the charts and the ranking beside the board read up to it. The ranking is **the standings through the rounds closed at that block** (`standingsThroughRound` — `buildStandings` called once per closed-round count, so there is still one scoring path), and says "not scored yet" while no round has closed.
+
+**The header names the scenario itself.** It used to be the ERIS wordmark, which made every scenario look like the application's front page and said nothing about which of the 35 worlds was on screen.
 
 **Implementation vocabulary (file names, ADR numbers) may appear only in the InfoTabs** (§9.10).
 
@@ -188,7 +192,7 @@ A run in progress appears as `● (live)`.
 
 ### Replay
 
-Walk a finished run forward as "at block B" (`▶ replay` on the rounds bar).
+Walk a finished run forward as "at block B" (`▶ replay` on the rounds bar). The scenario page alone shows no transport: it has a block axis of its own (§9.4), and leaving it mid-walk hands the head to replay.
 
 **Live mode only works on the machine that ran the run** (the tail is the dev server's filesystem and the chain reads go to the agents' anvil), so **replay is the only way to watch a finished run, or one collected from a spot box**.
 

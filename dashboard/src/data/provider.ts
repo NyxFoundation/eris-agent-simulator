@@ -10,7 +10,6 @@ export const isSeedProvider = import.meta.env.VITE_DATA_PROVIDER === "seed";
 const provider = isSeedProvider ? seedProvider : runsProvider;
 
 export const {
-  fetchTopPageSnapshot,
   fetchExplorerSnapshot,
   fetchMarketSnapshot,
   fetchAgentDetailSnapshot,

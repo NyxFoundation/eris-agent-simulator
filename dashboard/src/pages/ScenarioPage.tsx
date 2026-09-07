@@ -1,29 +1,40 @@
-import type { ReactNode } from "react";
+// One scenario: a world you can walk.
+//
+// This is the scenario level of the dashboard (competition ⊃ scenario ⊃ round). Every page above
+// and beside it answers "what happened" — the standings, a venue's state, a block range. This one
+// answers "what does it look like while it happens": the wallets on the left, the chain they all go
+// through, the contracts they move, and one block at a time passing between them. It is the view
+// the demo film is staged in, with the film's one missing affordance — you can stop it, and you can
+// go back. It used to be a landing page of previews (market tiles, a ranking, seven blocks) with the
+// board on a tab of its own; the previews were the board's numbers without the time axis, so the
+// board is the page.
+//
+// Two clocks meet here and only one is the page's. The rounds bar is the competition cursor —
+// round k of every world — and the block axis walks the frames inside the selected round, or the
+// whole run. The walk's head is local state rather than the replay head: the replay head refetches
+// every snapshot on every step, and a walk over frames the snapshot already holds needs no fetch.
+// When the reader leaves the page mid-walk the head is handed to the replay store once, so /markets
+// and /explorer open at the block the board was on rather than at the end of the run.
+
+import { useEffect, useMemo, useRef, useState } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
-import { t } from "@/i18n/messages";
 import { Sidebar } from "@/components/Sidebar";
-import { Sparkline } from "@/design-system/Sparkline";
-import { blockscoutBlockUrl, useBlockscoutBase } from "@/data/blockscout";
-import { useScenarioLabel } from "@/data/useScenarioLabel";
-import { useTopPageSnapshot } from "@/data/useTopPageSnapshot";
+import { WorldMap } from "@/components/WorldMap";
+import { AgentLogPanel, WorldCharts } from "@/components/WorldPanels";
+import { WorldTimeline, type WorldSpeed } from "@/components/WorldTimeline";
 import { useMode } from "@/data/mode";
-import { navigate } from "@/navigation";
+import { getReplay, replayHeadFor, seekReplay, startReplay } from "@/data/replay";
+import { useScenarioLabel } from "@/data/useScenarioLabel";
+import { useWorldSnapshot } from "@/data/useWorldSnapshot";
+import { t } from "@/i18n/messages";
 import { formatScore } from "@/lib/format";
-import type {
-  AgentStanding,
-  ExplorerBlock,
-  MarketTicker,
-  TapeEvent,
-} from "@/data/types";
+import { navigate } from "@/navigation";
+import type { AgentStanding, RoundInfo, TapeTone } from "@/data/types";
 
-const SECTION_LABEL_STYLE = {
-  font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-  letterSpacing: "var(--tracking-widest)",
-  textTransform: "uppercase" as const,
-  color: "var(--text-secondary)",
-};
+/** One frame at 1x. A run's blocks are two seconds apart; the walk is a little quicker than real. */
+const FRAME_MS = 1100;
 
-const TAPE_COLORS: Record<TapeEvent["tone"], string> = {
+const TONE_COLOR: Record<TapeTone, string> = {
   up: "var(--success-text)",
   down: "var(--danger-text)",
   accent: "var(--pink-300)",
@@ -31,315 +42,370 @@ const TAPE_COLORS: Record<TapeEvent["tone"], string> = {
   neutral: "var(--text-primary)",
 };
 
-function MarketTile({ market }: { market: MarketTicker }) {
-  const tone = market.direction === "up" ? "success" : "danger";
-  const color =
-    market.direction === "up" ? "var(--success-text)" : "var(--danger-text)";
+const PANEL_TITLE = {
+  font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+  letterSpacing: "var(--tracking-widest)",
+  textTransform: "uppercase" as const,
+  color: "var(--text-secondary)",
+};
+
+const COLUMN_LABEL = {
+  font: "var(--text-xs) var(--font-mono)",
+  color: "var(--text-tertiary)",
+  letterSpacing: "var(--tracking-wide)",
+  textTransform: "uppercase" as const,
+};
+
+/** Where the replay head goes when the reader leaves mid-walk. */
+interface Handover {
+  runId: string;
+  status: RoundInfo["status"];
+  fromBlock: number | undefined;
+  toBlock: number | undefined;
+  block: number;
+  atEnd: boolean;
+}
+
+function Centered({ text, tone }: { text: string; tone?: string }) {
   return (
     <div
       style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
         background: "var(--bg-canvas)",
-        padding: "8px 10px",
+      }}
+    >
+      <span
+        style={{
+          font: "var(--text-sm) var(--font-mono)",
+          color: tone ?? "var(--text-tertiary)",
+        }}
+      >
+        {text}
+      </span>
+    </div>
+  );
+}
+
+const STANDINGS_GRID = "44px minmax(0,1fr) 72px";
+
+/**
+ * The ranking within this world, beside the board. A row picks that wallet on the board — its log
+ * and its line in the charts follow — and the agent's own page is one link away in the log panel.
+ */
+function ScenarioStandings({
+  rows,
+  closedRounds,
+  selected,
+  onSelect,
+  shown,
+}: {
+  rows: AgentStanding[];
+  /** How many rounds had closed at the walk's block: the rounds the ranking is through. */
+  closedRounds: number;
+  selected: string | null;
+  onSelect: (agent: string) => void;
+  /** Rules §4.7: the trial environment posts no standings, and a per-world ranking is one. */
+  shown: boolean;
+}) {
+  return (
+    <div
+      style={{
         display: "flex",
         flexDirection: "column",
-        gap: "2px",
         minWidth: 0,
-      }}
-    >
-      <span
-        style={{
-          font: "var(--text-xs) var(--font-mono)",
-          color: "var(--text-tertiary)",
-          letterSpacing: "var(--tracking-wide)",
-        }}
-      >
-        {market.symbol}
-      </span>
-      <span
-        style={{
-          font: "var(--weight-semibold) var(--text-base) var(--font-mono)",
-          color: "var(--text-primary)",
-        }}
-      >
-        {market.price}
-      </span>
-      <span style={{ font: "var(--text-xs) var(--font-mono)", color }}>
-        {market.delta}
-      </span>
-      <div style={{ marginTop: "2px" }}>
-        <Sparkline points={market.points} width={100} height={20} tone={tone} />
-      </div>
-    </div>
-  );
-}
-
-function BlockPreviewRow({
-  block,
-  href,
-}: {
-  block: ExplorerBlock;
-  href?: string;
-}) {
-  const numberStyle = {
-    font: "var(--text-sm) var(--font-mono)",
-    color: "var(--text-link)",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-  } as const;
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "78px 1fr auto",
-        alignItems: "baseline",
-        gap: "6px",
-        padding: "5px 10px",
-        borderBottom: "1px solid var(--border-subtle)",
-      }}
-    >
-      {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          title="Open block in Blockscout"
-          style={{ ...numberStyle, textDecoration: "none" }}
-        >
-          {block.number}
-        </a>
-      ) : (
-        <span style={numberStyle}>{block.number}</span>
-      )}
-      <span
-        style={{
-          font: "var(--text-xs) var(--font-mono)",
-          color: "var(--text-tertiary)",
-        }}
-      >
-        {block.time}
-      </span>
-      <span
-        style={{
-          font: "var(--text-xs) var(--font-mono)",
-          color: "var(--text-secondary)",
-          textAlign: "right",
-        }}
-      >
-        {block.txCount} tx
-      </span>
-    </div>
-  );
-}
-
-const LEADERBOARD_GRID = "56px minmax(0,1fr) 86px";
-
-function LeaderboardPreviewRow({ row }: { row: AgentStanding }) {
-  const rankColor = row.rank <= 3 ? "var(--pink-300)" : "var(--text-secondary)";
-  const moveColor =
-    row.move === 0
-      ? "var(--text-disabled)"
-      : row.move > 0
-        ? "var(--success-text)"
-        : "var(--danger-text)";
-  const moveLabel =
-    row.move === 0 ? "—" : row.move > 0 ? `+${row.move}` : String(row.move);
-  return (
-    <div
-      onClick={() => navigate(`/agent/${row.agent}`)}
-      style={{
-        display: "grid",
-        gridTemplateColumns: LEADERBOARD_GRID,
-        alignItems: "center",
-        padding: "6px 14px",
-        borderBottom: "1px solid var(--border-subtle)",
-        cursor: "pointer",
-      }}
-    >
-      <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
-        <span
-          style={{
-            font: "var(--weight-bold) 20px var(--font-mono)",
-            color: rankColor,
-            lineHeight: 1,
-          }}
-        >
-          {String(row.rank).padStart(2, "0")}
-        </span>
-        <span
-          style={{
-            font: "var(--text-xs) var(--font-mono)",
-            color: moveColor,
-            lineHeight: 1,
-          }}
-        >
-          {moveLabel}
-        </span>
-      </div>
-      <span
-        style={{
-          font: "var(--text-base) var(--font-mono)",
-          color: "var(--text-primary)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {row.agent}
-      </span>
-      <span
-        style={{
-          font: "var(--weight-bold) 17px var(--font-mono)",
-          color: "var(--text-primary)",
-          textAlign: "right",
-        }}
-      >
-        {formatScore(row.score)}
-      </span>
-    </div>
-  );
-}
-
-function TapeItem({ item }: { item: TapeEvent }) {
-  const color = TAPE_COLORS[item.tone];
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: "8px",
-        padding: "0 var(--space-4)",
+        height: "320px",
+        padding: "var(--space-4) var(--space-6)",
+        boxSizing: "border-box",
         borderRight: "1px solid var(--border-subtle)",
-        whiteSpace: "nowrap",
       }}
     >
-      <span
-        style={{
-          font: "var(--text-xs) var(--font-mono)",
-          color: "var(--text-disabled)",
-        }}
-      >
-        {item.time}
+      <span style={PANEL_TITLE}>
+        {closedRounds > 0
+          ? t("home.standingsThrough", { at: closedRounds })
+          : t("scenario.standings")}
       </span>
-      <span
-        style={{
-          font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-          letterSpacing: "var(--tracking-wide)",
-          color,
-        }}
-      >
-        {item.kind}
-      </span>
-      <span
-        style={{
-          font: "var(--text-xs) var(--font-mono)",
-          color: "var(--text-secondary)",
-        }}
-      >
-        {item.body}
-      </span>
-      <span style={{ font: "var(--text-xs) var(--font-mono)", color }}>
-        {item.value}
-      </span>
-    </div>
-  );
-}
-
-function SectionPanel({
-  title,
-  path,
-  children,
-}: {
-  title: string;
-  path?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
       <div
         style={{
-          display: "flex",
-          alignItems: "baseline",
-          justifyContent: "space-between",
-          padding: "6px 10px",
-          borderBottom: "1px solid var(--border-subtle)",
+          flex: 1,
+          marginTop: "8px",
+          overflowY: "auto",
+          border: "1px solid var(--border-subtle)",
+          borderRadius: "var(--radius-sm)",
+          background: "var(--bg-surface)",
         }}
       >
-        <span style={SECTION_LABEL_STYLE}>{title}</span>
-        {path && (
-          <span
-            onClick={() => navigate(path)}
+        {!shown ? (
+          <p
             style={{
-              font: "var(--text-xs) var(--font-mono)",
-              color: "var(--text-link)",
-              letterSpacing: "var(--tracking-wide)",
-              cursor: "pointer",
+              margin: 0,
+              padding: "12px 14px",
+              font: "var(--text-xs) var(--font-sans)",
+              lineHeight: 1.6,
+              color: "var(--text-tertiary)",
             }}
           >
-            {t("common.seeAll")}
-          </span>
+            {t("home.standingsOff")}
+          </p>
+        ) : closedRounds === 0 ? (
+          <p
+            style={{
+              margin: 0,
+              padding: "12px 14px",
+              font: "var(--text-xs) var(--font-sans)",
+              lineHeight: 1.6,
+              color: "var(--text-tertiary)",
+            }}
+          >
+            {t("world.chart.noBalance")}
+          </p>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: STANDINGS_GRID,
+                gap: "6px",
+                padding: "6px 12px",
+                background: "var(--bg-surface-raised)",
+                borderBottom: "1px solid var(--border-subtle)",
+                position: "sticky",
+                top: 0,
+              }}
+            >
+              <span style={COLUMN_LABEL}>{t("rounds.col.rank")}</span>
+              <span style={COLUMN_LABEL}>{t("home.col.agent")}</span>
+              <span
+                title={t("agent.standing.score")}
+                style={{ ...COLUMN_LABEL, textAlign: "right" }}
+              >
+                {t("home.col.score")}
+              </span>
+            </div>
+            {rows.map((row) => {
+              const picked = row.agent === selected;
+              const moveColor =
+                row.move === 0
+                  ? "var(--text-disabled)"
+                  : row.move > 0
+                    ? "var(--success-text)"
+                    : "var(--danger-text)";
+              const moveLabel =
+                row.move === 0
+                  ? "—"
+                  : row.move > 0
+                    ? `+${row.move}`
+                    : String(row.move);
+              return (
+                <div
+                  key={row.agent}
+                  onClick={() => onSelect(row.agent)}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: STANDINGS_GRID,
+                    gap: "6px",
+                    alignItems: "center",
+                    padding: "5px 12px",
+                    borderBottom: "1px solid var(--border-subtle)",
+                    cursor: "pointer",
+                    background: picked ? "var(--bg-surface-raised)" : "transparent",
+                    boxShadow: picked ? "inset 2px 0 0 var(--pink-300)" : undefined,
+                  }}
+                >
+                  <span style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
+                    <span
+                      style={{
+                        font: "var(--weight-bold) var(--text-md) var(--font-mono)",
+                        color: row.rank <= 3 ? "var(--pink-300)" : "var(--text-secondary)",
+                        lineHeight: 1,
+                      }}
+                    >
+                      {String(row.rank).padStart(2, "0")}
+                    </span>
+                    <span
+                      style={{
+                        font: "10px var(--font-mono)",
+                        color: moveColor,
+                        lineHeight: 1,
+                      }}
+                    >
+                      {moveLabel}
+                    </span>
+                  </span>
+                  <span
+                    style={{
+                      font: "var(--text-sm) var(--font-mono)",
+                      color: picked ? "var(--text-primary)" : "var(--text-link)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {row.agent}
+                  </span>
+                  <span
+                    style={{
+                      font: "var(--weight-semibold) var(--text-sm) var(--font-mono)",
+                      color: "var(--text-primary)",
+                      textAlign: "right",
+                    }}
+                  >
+                    {formatScore(row.score)}
+                  </span>
+                </div>
+              );
+            })}
+          </>
         )}
       </div>
-      {children}
     </div>
   );
 }
 
 export function ScenarioPage() {
+  const { data, loading, error } = useWorldSnapshot();
   const scenario = useScenarioLabel();
-  const { data, loading, error } = useTopPageSnapshot();
-  const blockscout = useBlockscoutBase();
   const mode = useMode();
+  const [index, setIndex] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState<WorldSpeed>(1);
+  const [picked, setPicked] = useState<string | null>(null);
+  // Whether the reader has moved the walk at all. A page left where it opened hands nothing over.
+  const movedRef = useRef(false);
 
-  if (loading) {
+  const frames = useMemo(() => data?.frames ?? [], [data]);
+  const last = Math.max(0, frames.length - 1);
+  // Read by the walk-reset effect below without being one of its dependencies: a live run's
+  // snapshot refreshes every few seconds, and a refresh must not send the walk back to the start.
+  const framesRef = useRef(frames);
+  framesRef.current = frames;
+
+  // A different run, or a different round of one, is a different walk: it starts at its own first
+  // block rather than wherever the previous one had been left — unless a replay is armed for this
+  // run, which marks where the reader left the board, and the walk opens there.
+  const runId = data?.round.runId ?? null;
+  const walkKey = `${runId ?? ""}:${data?.scope.roundIndex ?? "all"}`;
+  useEffect(() => {
+    const head = runId === null ? null : replayHeadFor(runId);
+    const list = framesRef.current;
+    let start = 0;
+    if (head !== null) {
+      const i = list.findIndex((f) => f.block >= head);
+      start = i < 0 ? Math.max(0, list.length - 1) : i;
+    }
+    setIndex(start);
+    setPlaying(false);
+    setPicked(null);
+    movedRef.current = false;
+  }, [walkKey, runId]);
+
+  useEffect(() => {
+    if (!playing || frames.length === 0) return;
+    movedRef.current = true;
+    const timer = window.setInterval(() => {
+      setIndex((at) => {
+        if (at >= last) {
+          // Stop at the end rather than looping. A walk that silently restarts reads as a chain
+          // that rewound, and this one never does.
+          setPlaying(false);
+          return last;
+        }
+        return at + 1;
+      });
+    }, FRAME_MS / speed);
+    return () => window.clearInterval(timer);
+  }, [playing, speed, last, frames.length]);
+
+  const at = Math.min(index, last);
+  const frame = frames[at] ?? null;
+
+  // The hand-over, on the way out. An archived run gets the replay armed at the walk's block; a
+  // run already being replayed has its head moved. A walk that reached the end hands over nothing:
+  // the other pages' default is the whole run, and arming a replay parked at its last block would
+  // only label the same view "replay".
+  const handoverRef = useRef<Handover | null>(null);
+  handoverRef.current =
+    data && frame
+      ? {
+          runId: data.round.runId,
+          status: data.round.status,
+          fromBlock: data.round.epochs[0]?.fromBlock,
+          toBlock: data.round.epochs[data.round.epochs.length - 1]?.toBlock,
+          block: frame.block,
+          atEnd: at >= last,
+        }
+      : null;
+  useEffect(
+    () => () => {
+      const h = handoverRef.current;
+      if (!h || !movedRef.current || h.atEnd) return;
+      if (h.status === "archived") {
+        if (h.fromBlock === undefined || h.toBlock === undefined) return;
+        startReplay(h.runId, h.fromBlock, h.toBlock);
+        seekReplay(h.block);
+      } else if (h.status === "replay" && getReplay().runId === h.runId) {
+        seekReplay(h.block);
+      }
+    },
+    [],
+  );
+
+  // The last scored cross-section at or before the head. Between boundaries an agent's figure is
+  // the one it was last scored at, never an interpolation: nothing is scored inside a round.
+  const marks = useMemo(() => {
+    if (!data || !frame) return { valueUsdc: {}, pnlUsdc: {} };
+    let chosen = { valueUsdc: {}, pnlUsdc: {} } as {
+      valueUsdc: Record<string, number>;
+      pnlUsdc: Record<string, number>;
+    };
+    for (const boundary of data.boundaries) {
+      if (boundary.block > frame.block) break;
+      chosen = { valueUsdc: boundary.valueUsdc, pnlUsdc: boundary.pnlUsdc };
+    }
+    return chosen;
+  }, [data, frame]);
+
+  // Whose reasoning the panel follows. Nobody has picked yet on first load, so it opens on the
+  // agent that traded most in this window -- the one whose log has something in it.
+  const busiest = useMemo(() => {
+    if (!data) return null;
+    const counts = new Map<string, number>();
+    for (const f of data.frames)
+      for (const tx of f.txs)
+        if (tx.kind === "agent")
+          counts.set(tx.agent, (counts.get(tx.agent) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  }, [data]);
+  const selected = picked ?? busiest;
+
+  if (loading) return <Centered text={t("common.loading")} />;
+  if (error || !data)
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "var(--bg-canvas)",
-        }}
-      >
-        <span
-          style={{
-            font: "var(--text-sm) var(--font-mono)",
-            color: "var(--text-tertiary)",
-          }}
-        >
-          {t("common.loading")}
-        </span>
-      </div>
+      <Centered
+        text={t("common.loadFailed", {
+          detail: error ? `: ${error.message}` : "",
+        })}
+        tone="var(--danger-text)"
+      />
     );
-  }
 
-  if (error || !data) {
-    return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "var(--bg-canvas)",
-        }}
-      >
-        <span
-          style={{
-            font: "var(--text-sm) var(--font-mono)",
-            color: "var(--danger-text)",
-          }}
-        >
-          {t("common.loadFailed", {
-            detail: error ? `: ${error.message}` : "",
-          })}
-        </span>
-      </div>
-    );
-  }
+  const { round } = data;
+  const seek = (i: number) => {
+    movedRef.current = true;
+    setIndex(i);
+  };
 
-  const { round, leaderboard, marketTickers, blocks, tape } = data;
-  const tapeLoop = tape.concat(tape);
+  // The standings beside the board are the field through the rounds closed by the walk's block.
+  // The finished run's ranking beside a walk would be the answer printed on every frame.
+  const closedAtHead = frame
+    ? round.epochs.filter((e) => e.toBlock <= frame.block).length
+    : round.epochs.filter((e) => e.status === "done").length;
+  const standings =
+    data.standingsThroughRound[
+      Math.min(closedAtHead, data.standingsThroughRound.length - 1)
+    ] ?? [];
 
   return (
     <div
@@ -353,12 +419,12 @@ export function ScenarioPage() {
       <Sidebar activePage="scenario" />
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <RoundsBar round={round} />
+        {/* The competition's clock: which round this world is scoped to. Its replay transport is
+            off here, because the block axis below is this page's own. */}
+        <RoundsBar round={round} transport={false} />
 
         {/* The page header, in the standings page's grammar: the scenario's name at heading size,
-            one meta line, nothing decorative. It used to be a 340px hero over a background image
-            with a display-size timestamp and "See what's happening" beneath it -- a poster in a
-            monitoring tool, and the only page that had one. The three panels below are the page. */}
+            one meta line, nothing decorative. */}
         <header
           style={{
             borderBottom: "1px solid var(--border-subtle)",
@@ -398,8 +464,7 @@ export function ScenarioPage() {
               color: "var(--text-primary)",
             }}
           >
-            {scenario.name?.replace(/^full-/, "") ??
-              t("scenario.fallbackTitle")}
+            {scenario.name?.replace(/^full-/, "") ?? t("scenario.fallbackTitle")}
           </h1>
           <span
             style={{
@@ -419,148 +484,196 @@ export function ScenarioPage() {
                 : null,
               scenario.competition,
               scenario.name === null ? round.runId : null,
-              t("scenario.heroMeta", {
-                agents: leaderboard.length,
-                block: round.blockNumber.toLocaleString("en-US"),
-              }),
+              t("world.meta.agents", { n: data.agents.length }),
+              t("world.meta.venues", { n: data.venues.length }),
+              data.scope.roundIndex === null
+                ? t("world.meta.wholeRun", {
+                    from: data.scope.fromBlock.toLocaleString("en-US"),
+                    to: data.scope.toBlock.toLocaleString("en-US"),
+                  })
+                : t("world.meta.round", { n: data.scope.roundIndex }),
+              data.blocksPerFrame > 1
+                ? t("world.meta.grouped", { n: data.blocksPerFrame })
+                : null,
             ]
               .filter(Boolean)
               .join(" · ")}
           </span>
         </header>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              "minmax(0,0.8fr) minmax(0,1.5fr) minmax(0,0.68fr)",
-            borderTop: "1px solid var(--border-subtle)",
-          }}
-        >
-          <SectionPanel title={t("scenario.markets")} path="/markets">
-            <div
+        {frames.length === 0 ? (
+          <>
+            <p
               style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(148px, 1fr))",
-                gap: "1px",
-                background: "var(--border-subtle)",
-                borderBottom: "1px solid var(--border-subtle)",
+                margin: 0,
+                padding: "var(--space-6)",
+                font: "var(--text-sm) var(--font-sans)",
+                color: "var(--text-tertiary)",
+                lineHeight: 1.6,
               }}
             >
-              {marketTickers.map((market) => (
-                <MarketTile key={market.symbol} market={market} />
-              ))}
+              {t("world.empty")}
+            </p>
+            <div style={{ borderTop: "1px solid var(--border-subtle)" }}>
+              <ScenarioStandings
+                rows={standings}
+                closedRounds={closedAtHead}
+                selected={selected}
+                onSelect={setPicked}
+                shown={mode.standings}
+              />
             </div>
-          </SectionPanel>
+          </>
+        ) : (
+          <>
+            <WorldTimeline
+              frames={frames}
+              index={at}
+              playing={playing}
+              speed={speed}
+              onSeek={seek}
+              onPlaying={setPlaying}
+              onSpeed={setSpeed}
+            />
 
-          <div style={{ borderLeft: "1px solid var(--border-subtle)" }}>
-            {/* Rules §4.7: the trial environment posts no standings; the per-run ranking is one. */}
-            {mode.standings ? (
-              <SectionPanel title={t("scenario.standings")}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: LEADERBOARD_GRID,
-                    background: "var(--bg-surface-raised)",
-                    borderBottom: "1px solid var(--border-subtle)",
-                    padding: "7px 14px",
-                  }}
-                >
+            <div style={{ padding: "var(--space-4) var(--space-6)" }}>
+              <WorldMap
+                agents={data.agents}
+                venues={data.venues}
+                frame={frame}
+                valueByAgent={marks.valueUsdc}
+                pnlByAgent={marks.pnlUsdc}
+                selected={selected}
+                onSelect={setPicked}
+                frameMs={FRAME_MS / speed}
+                fair={frame?.fair ?? null}
+              />
+            </div>
+
+            {/* One strip for what this block was, then the three panels the board's numbers come
+                from: where everyone stands in this world, why one agent is doing this, and what the
+                run has done to the prices and the balances so far. */}
+            <div
+              style={{
+                borderTop: "1px solid var(--border-subtle)",
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--space-6)",
+                flexWrap: "wrap",
+                padding: "10px var(--space-6)",
+              }}
+            >
+              <span style={PANEL_TITLE}>{t("world.thisBlock")}</span>
+              <Stat label={t("world.stat.txs")} value={String(frame?.txCount ?? 0)} />
+              <Stat
+                label={t("world.stat.reverts")}
+                value={String(frame?.reverts ?? 0)}
+                tone={(frame?.reverts ?? 0) > 0 ? "var(--danger-text)" : undefined}
+              />
+              <Stat
+                label={t("world.stat.senders")}
+                value={String(frame?.senderCount ?? 0)}
+              />
+              <span
+                style={{
+                  marginLeft: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "2px",
+                  minWidth: 0,
+                  textAlign: "right",
+                }}
+              >
+                <span style={COLUMN_LABEL}>{t("world.environment")}</span>
+                {frame && frame.events.length > 0 ? (
+                  frame.events.map((event, i) => (
+                    <span
+                      key={i}
+                      style={{
+                        font: "var(--text-xs) var(--font-mono)",
+                        color: TONE_COLOR[event.tone],
+                      }}
+                    >
+                      {event.kind} · {event.text}
+                    </span>
+                  ))
+                ) : (
                   <span
                     style={{
                       font: "var(--text-xs) var(--font-mono)",
-                      color: "var(--text-tertiary)",
-                      letterSpacing: "var(--tracking-wide)",
-                      textTransform: "uppercase",
+                      color: "var(--text-disabled)",
                     }}
                   >
-                    {t("rounds.col.rank")}
+                    {t("world.quiet")}
                   </span>
-                  <span
-                    style={{
-                      font: "var(--text-xs) var(--font-mono)",
-                      color: "var(--text-tertiary)",
-                      letterSpacing: "var(--tracking-wide)",
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    {t("home.col.agent")}
-                  </span>
-                  <span
-                    title={t("agent.standing.score")}
-                    style={{
-                      font: "var(--text-xs) var(--font-mono)",
-                      color: "var(--text-tertiary)",
-                      letterSpacing: "var(--tracking-wide)",
-                      textAlign: "right",
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    {t("home.col.score")}
-                  </span>
-                </div>
-                {leaderboard.map((row) => (
-                  <LeaderboardPreviewRow key={row.rank} row={row} />
-                ))}
-              </SectionPanel>
-            ) : (
-              <SectionPanel title={t("scenario.standings")}>
-                <p
-                  style={{
-                    margin: 0,
-                    padding: "12px 14px",
-                    font: "var(--text-xs) var(--font-sans)",
-                    lineHeight: 1.6,
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  {t("home.standingsOff")}
-                </p>
-              </SectionPanel>
-            )}
-          </div>
+                )}
+              </span>
+            </div>
 
-          <div style={{ borderLeft: "1px solid var(--border-subtle)" }}>
-            <SectionPanel title={t("scenario.explorer")} path="/explorer">
-              {blocks.map((block) => (
-                <BlockPreviewRow
-                  key={block.number}
-                  block={block}
-                  href={
-                    blockscout && block.blockNumber !== undefined
-                      ? blockscoutBlockUrl(blockscout, block.blockNumber)
-                      : undefined
-                  }
-                />
-              ))}
-            </SectionPanel>
-          </div>
-        </div>
-
-        <div
-          style={{
-            borderTop: "1px solid var(--border-subtle)",
-            borderBottom: "1px solid var(--border-subtle)",
-            background: "var(--bg-sunken)",
-            overflow: "hidden",
-            height: "44px",
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              width: "max-content",
-              animation: "ticker-tape 48s linear infinite",
-            }}
-          >
-            {tapeLoop.map((item, i) => (
-              <TapeItem key={`${item.id}-${i}`} item={item} />
-            ))}
-          </div>
-        </div>
+            <div
+              style={{
+                borderTop: "1px solid var(--border-subtle)",
+                display: "grid",
+                gridTemplateColumns:
+                  "minmax(0,0.72fr) minmax(0,1fr) minmax(0,1.15fr)",
+              }}
+            >
+              <ScenarioStandings
+                rows={standings}
+                closedRounds={closedAtHead}
+                selected={selected}
+                onSelect={setPicked}
+                shown={mode.standings}
+              />
+              <AgentLogPanel
+                agent={selected}
+                agents={data.agents}
+                lines={selected ? data.agentLog[selected] : undefined}
+                headBlock={frame?.block ?? null}
+                withheld={data.logsWithheld}
+              />
+              <WorldCharts
+                frames={frames}
+                index={at}
+                venues={data.venues}
+                boundaries={data.boundaries}
+                agents={data.agents}
+                selected={selected}
+              />
+            </div>
+          </>
+        )}
       </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        gap: "7px",
+      }}
+    >
+      <span style={COLUMN_LABEL}>{label}</span>
+      <span
+        style={{
+          font: "var(--weight-semibold) var(--text-sm) var(--font-mono)",
+          color: tone ?? "var(--text-primary)",
+        }}
+      >
+        {value}
+      </span>
     </div>
   );
 }

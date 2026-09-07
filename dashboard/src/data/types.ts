@@ -84,32 +84,7 @@ export interface AgentStanding {
   move: number;
 }
 
-export interface MarketTicker {
-  symbol: string;
-  price: string;
-  delta: string;
-  direction: "up" | "down";
-  points: number[];
-}
-
 export type TapeTone = "up" | "down" | "accent" | "purple" | "neutral";
-
-export interface TapeEvent {
-  id: number;
-  time: string;
-  kind: string;
-  body: string;
-  value: string;
-  tone: TapeTone;
-}
-
-export interface TopPageSnapshot {
-  round: RoundInfo;
-  leaderboard: AgentStanding[];
-  marketTickers: MarketTicker[];
-  blocks: ExplorerBlock[];
-  tape: TapeEvent[];
-}
 
 export interface ExplorerBlock {
   number: string;
@@ -540,6 +515,13 @@ export interface WorldLogLine {
 
 export interface WorldSnapshot {
   round: RoundInfo;
+  /**
+   * The ranking within this scenario after each closed round: index k is the field through k
+   * closed rounds (k = 0 is the start, where nobody has a score yet), T(a, s) over this epoch's
+   * field (rules §4.4.1) read through those rounds exactly as replay reads it. The page shows the
+   * entry for the rounds closed by the walk's block, never the finished run's beside a walk.
+   */
+  standingsThroughRound: AgentStanding[][];
   /** The block window the frames cover: one round, or the whole run. */
   scope: BlockScope;
   agents: WorldAgentNode[];

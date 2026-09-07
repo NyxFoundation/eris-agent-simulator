@@ -104,18 +104,22 @@ full-8h では depeg が 9 ラウンド、他は 29 ラウンド。**最終ラ�
 
 ## 9.4 scenario ページ
 
-タブ形式ではなく縦に積んだ構成（`dashboard/src/pages/ScenarioPage.tsx`）。
+1 つの world を**ブロック単位で歩ける盤面**として出す（`dashboard/src/pages/ScenarioPage.tsx`）。他のページが「何が起きたか」に答えるのに対し、ここは「起きている最中はどう見えるか」に答える。
 
 ```
-RoundsBar（ラウンド軸）
-hero        シナリオ名（regime#seed、`full-` 接頭辞は剥がす）+ seed + ラウンド数/ブロック数
-leaderboard  シナリオ内の順位
-market tickers / blocks / tape（イベント列）
-SectionPanel  Markets（→ /markets）/ Standings / Explorer（→ /explorer）
-InfoTabs      overview / environment / scoring / artifacts（学習層）
+RoundsBar      ラウンド軸（競技のカーソル。replay の transport はここでは出さない）
+header         シナリオ名（regime#seed、`full-` 接頭辞は剥がす）+ seed + ラウンド数/ブロック数 + agent 数・venue 数・表示中のブロック窓
+WorldTimeline  ブロック軸。クリック・ドラッグ・← → で移動、0.5x〜4x 再生。ラウンド境界が目盛り
+WorldMap       左に wallet、中央にチェーン、右に contract。1 フレーム = 1 ブロック（900 フレーム超は複数ブロックを束ねて範囲表示）
+This block     取引数 / revert / 取引した agent 数 / その場で環境がしたこと
+3 パネル       シナリオ内順位（行クリックで盤面の wallet を選ぶ）/ Agent Log（選んだ wallet の判断ログ、head まで）/ 各 venue の価格 vs fair と採点境界ごとの口座評価額
 ```
 
-**hero がシナリオ自身を名乗る**。以前はここが ERIS のワードマークで、35 の world のどれが画面に出ているのかを何も言わずに全シナリオがアプリの表紙のように見えていた。
+**以前は Markets / Standings / Explorer のプレビュー 3 枚を並べたランディングで、盤面は `/world` という別タブだった**（2026-09-07 に統合）。プレビューは盤面が持つ数字から時間軸を抜いたものだったので、盤面をページ本体にした。`/world` へのリンクは `/scenario` に着地する。
+
+**時計は 2 本あるが、ページのものは 1 本**。RoundsBar は競技のカーソル（全 world の round k）で、選んだラウンドがブロック軸の窓になる。ブロック軸の head はページのローカル状態であって replay head ではない — replay head はフェッチキーに入っているので一歩ごとに全 snapshot を再取得するが、盤面は snapshot が持つフレームを歩くだけで再取得が要らない。**歩いた途中でページを離れると、その時点で 1 回だけ head を replay store に渡す**（archived なら replay を arm、replay 中なら seek）。`/markets` と `/explorer` が盤面のいたブロックで開くためで、末尾まで歩き切っていれば渡さない（他ページの既定は run 全体で、末尾に停めた replay は同じ表示に「replay」と付けるだけ）。逆に、この run の replay が armed の状態でページを開くと盤面はその head から始まる。**盤面のフレーム自体は replay で clamp しない**（フレームは常に run 全体。replay head で切ると head 以降が「取引の無い未来」として見える）。未来を見せない責務は walk の head が負い、Agent Log・チャート・順位パネルは head までしか読まない。順位パネルは **head 時点で閉じたラウンドまでの順位**（`standingsThroughRound`。`buildStandings` を閉じたラウンド数ごとに呼ぶだけで、採点経路は 1 本のまま）で、閉じたラウンドが無ければ「まだ採点されていません」と出す。
+
+**header がシナリオ自身を名乗る**。以前はここが ERIS のワードマークで、35 の world のどれが画面に出ているのかを何も言わずに全シナリオがアプリの表紙のように見えていた。
 
 **実装語彙（ファイル名・ADR 番号）を出してよいのは InfoTabs だけ**（§9.10）。
 
@@ -188,7 +192,7 @@ LST / Liquity を events から読むのは、coordinator が毎ブロック出�
 
 ### replay
 
-完走した run を「ブロック B 時点」として前に歩かせる（rounds bar の `▶ replay`）。
+完走した run を「ブロック B 時点」として前に歩かせる（rounds bar の `▶ replay`）。scenario ページだけは transport を出さない（ブロック軸を自前で持つ。§9.4）。そこを歩いた途中で離れると head が replay に渡る。
 
 **live モードは run したマシンでしか成立しない**（tail は dev サーバーのファイルシステム、チェーン読取はエージェントの anvil）ので、**完走済み run と spot で回して回収した run を観るにはこれが唯一の手段**。
 

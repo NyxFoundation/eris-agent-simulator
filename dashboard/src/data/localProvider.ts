@@ -9,8 +9,6 @@ import {
   seedCandles,
   seedExplorerStats,
   seedFeed,
-  seedMarketTickers,
-  seedTape,
   seedTransactions,
   seedVenuePanels,
 } from "./seed";
@@ -22,11 +20,8 @@ import type {
   ExplorerStats,
   ExplorerTransaction,
   MarketSnapshot,
-  MarketTicker,
   RoundInfo,
   LogTone,
-  TapeEvent,
-  TopPageSnapshot,
   WorldFrame,
   WorldSnapshot,
   WorldTx,
@@ -37,18 +32,11 @@ import { t } from "@/i18n/messages";
 const ROUND_KEY = "current";
 const EXPLORER_STATS_KEY = "current";
 const MARKET_SNAPSHOT_KEY = "current";
-const TOP_EXTRAS_KEY = "current";
-
-interface TopExtras {
-  marketTickers: MarketTicker[];
-  tape: TapeEvent[];
-}
 
 async function ensureSeeded(): Promise<void> {
-  const [existingRound, agentCount, existingExtras] = await Promise.all([
+  const [existingRound, agentCount] = await Promise.all([
     getValue<RoundInfo>(STORES.round, ROUND_KEY),
     countValues(STORES.agents),
-    getValue<TopExtras>(STORES.topExtras, TOP_EXTRAS_KEY),
   ]);
 
   const tasks: Promise<void>[] = [];
@@ -56,42 +44,7 @@ async function ensureSeeded(): Promise<void> {
     tasks.push(putValue(STORES.round, createSeedRound(), ROUND_KEY));
   if (!agentCount)
     tasks.push(...seedAgents.map((a) => putValue(STORES.agents, a)));
-  if (!existingExtras) {
-    const extras: TopExtras = {
-      marketTickers: seedMarketTickers,
-      tape: seedTape,
-    };
-    tasks.push(putValue(STORES.topExtras, extras, TOP_EXTRAS_KEY));
-  }
   await Promise.all(tasks);
-}
-
-/**
- * Mock data provider backed by IndexedDB. Seeds once on first run so the
- * round countdown, leaderboard, market tickers, and event tape persist
- * across reloads. Reuses the explorer's block store for the "See what's
- * happening" preview so the top page and explorer never disagree.
- */
-export async function fetchTopPageSnapshot(): Promise<TopPageSnapshot> {
-  await Promise.all([ensureSeeded(), ensureExplorerSeeded()]);
-  const [round, agents, extras, blocks] = await Promise.all([
-    getValue<RoundInfo>(STORES.round, ROUND_KEY),
-    getAll<AgentStanding>(STORES.agents),
-    getValue<TopExtras>(STORES.topExtras, TOP_EXTRAS_KEY),
-    getAll<ExplorerBlock>(STORES.blocks),
-  ]);
-
-  if (!round || !extras) {
-    throw new Error("Round data missing after seeding");
-  }
-
-  return {
-    round,
-    leaderboard: agents.sort((a, b) => a.rank - b.rank),
-    marketTickers: extras.marketTickers,
-    blocks: blocks.sort((a, b) => b.number.localeCompare(a.number)).slice(0, 7),
-    tape: extras.tape,
-  };
 }
 
 /**
@@ -326,6 +279,10 @@ export async function fetchWorldSnapshot(
 
   return {
     round,
+    standingsThroughRound: Array.from(
+      { length: round.epochs.length + 1 },
+      () => [...seedAgents].sort((a, b) => a.rank - b.rank),
+    ),
     scope: { roundIndex: null, fromBlock: from, toBlock: to },
     agents,
     venues,

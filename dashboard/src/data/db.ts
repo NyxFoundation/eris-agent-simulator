@@ -1,10 +1,9 @@
 const DB_NAME = "eris-dashboard";
-const DB_VERSION = 9;
+const DB_VERSION = 10;
 
 export const STORES = {
   round: "round",
   agents: "agents",
-  topExtras: "topExtras",
   explorerStats: "explorerStats",
   blocks: "blocks",
   transactions: "transactions",
@@ -28,7 +27,7 @@ function openDatabase(): Promise<IDBDatabase> {
         if (db.objectStoreNames.contains(STORES.transactions)) {
           db.deleteObjectStore(STORES.transactions);
         }
-        for (const legacyStore of ["markets", "events", "ticker", "archive"]) {
+        for (const legacyStore of ["markets", "events", "ticker", "archive", "topExtras"]) {
           if (db.objectStoreNames.contains(legacyStore)) {
             db.deleteObjectStore(legacyStore);
           }
@@ -42,9 +41,6 @@ function openDatabase(): Promise<IDBDatabase> {
         }
         db.createObjectStore(STORES.round);
         db.createObjectStore(STORES.agents, { keyPath: "rank" });
-        if (!db.objectStoreNames.contains(STORES.topExtras)) {
-          db.createObjectStore(STORES.topExtras);
-        }
         if (!db.objectStoreNames.contains(STORES.explorerStats)) {
           db.createObjectStore(STORES.explorerStats);
         }
