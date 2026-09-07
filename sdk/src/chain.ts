@@ -343,6 +343,79 @@ export async function setIntervalMining(
   } as AnvilRequest);
 }
 
+// What waitForMiningToSettle saw. `burstBlocks` is the part that arrived faster than any block time
+// (the flush); `blocksMined` also counts an interval block that landed while it waited.
+export type MiningSettleResult = {
+  startBlock: number;
+  endBlock: number;
+  blocksMined: number;
+  burstBlocks: number;
+  waitedMs: number;
+  settled: boolean;
+};
+
+// Wait for the chain to go quiet after the mining mode changes.
+//
+// Anvil's automine keeps one block-production entry per transaction that became ready and works
+// through them on the node's own task. A setup that pushes transactions faster than that task
+// produces blocks -- every sendAndMine adds an anvil_mine on top of the automine block -- leaves a
+// backlog behind when automine is switched off, and the node flushes it the moment the mining mode
+// changes again: dozens to hundreds of empty blocks in one wall-clock second, right after
+// setIntervalMining. Measured on anvil 1.7.1 (2026-09-07, backtest depeg#701): 71 empty blocks =
+// 565 setup transactions − 494 automine blocks; a noop-only roster gave 7 = 481 − 474; after an
+// evm_revert between scenarios, 260. The blocks carry no transactions -- each entry's transaction
+// list was fixed when it was queued and those were long since mined -- so as chain history they are
+// harmless, but the coordinator took them as the first N blocks of the run, and a depeg whose ramp
+// was scheduled at relative blocks 37..49 fired all at once at block 68.
+//
+// No RPC exposes the backlog, so this waits for the symptom: blocks stop arriving milliseconds
+// apart. A gap of `quietMs` -- far longer than the flush cadence, shorter than a block time -- means
+// it is gone; the interval miner's own block resets the gap at most once per block time. Bounded by
+// `maxWaitMs`, and it reports what it saw rather than absorbing it, so the run records the
+// phenomenon (`settled: false` is "the chain never went quiet", which is a different problem).
+// Takes the reader as a function so the logic is testable without a node.
+export async function waitForMiningToSettle(
+  getBlockNumber: () => Promise<number>,
+  opts: {
+    quietMs: number;
+    maxWaitMs: number;
+    pollMs?: number;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<MiningSettleResult> {
+  const pollMs = opts.pollMs ?? 50;
+  const now = opts.now ?? (() => Date.now());
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const startBlock = await getBlockNumber();
+  const t0 = now();
+  let last = startBlock;
+  let lastChangeAt = t0;
+  let burstBlocks = 0;
+  for (;;) {
+    await sleep(pollMs);
+    const bn = await getBlockNumber();
+    const t = now();
+    if (bn !== last) {
+      // Faster than the quiet gap is the flush; anything slower is the interval miner's own block.
+      if (t - lastChangeAt < opts.quietMs) burstBlocks += bn - last;
+      last = bn;
+      lastChangeAt = t;
+    }
+    const result = (settled: boolean): MiningSettleResult => ({
+      startBlock,
+      endBlock: last,
+      blocksMined: last - startBlock,
+      burstBlocks,
+      waitedMs: t - t0,
+      settled,
+    });
+    if (t - lastChangeAt >= opts.quietMs) return result(true);
+    if (t - t0 >= opts.maxWaitMs) return result(false);
+  }
+}
+
 // Enable/disable automine. When true, each tx is mined immediately and in-block fee competition
 // stops working (each tx becomes its own block). In real-time mode keep it false and use interval mining.
 export async function setAutomine(
@@ -1003,13 +1076,20 @@ export async function fundAddress(
   const held = await publicClient.getBalance({ address });
   // Topped up to the target rather than assigned it -- a real chain cannot set a balance, and the
   // practice devnet funds the same wallet again on a later segment (ADR 0021 §6).
-  if (targetEth > held)
-    txs.push({ to: address, value: targetEth - held });
+  if (targetEth > held) txs.push({ to: address, value: targetEth - held });
   if (wethWei > 0n)
-    txs.push(...(await wethGrantTxs(publicClient, treasuryPk, address, wethWei)));
+    txs.push(
+      ...(await wethGrantTxs(publicClient, treasuryPk, address, wethWei)),
+    );
   for (const g of grants)
     txs.push(
-      ...(await tokenGrantTxs(publicClient, treasuryPk, g.token, address, g.amount)),
+      ...(await tokenGrantTxs(
+        publicClient,
+        treasuryPk,
+        g.token,
+        address,
+        g.amount,
+      )),
     );
   await sendBatch(publicClient, walletClient, chain, treasuryPk, txs);
 }

@@ -25,6 +25,7 @@ import {
   setEthBalance,
   setIntervalMining,
   transferEth,
+  waitForMiningToSettle,
 } from "@eris/sdk/chain.js";
 import { spawnSync } from "node:child_process";
 import { RunLogger, type RunArtifactWriter } from "../logger.js";
@@ -1808,9 +1809,41 @@ export async function runRealtimeSimulation(
         });
       }
       await setIntervalMining(publicClient, config.blockTimeSec);
+      // The mode change flushes whatever block-production backlog automine left behind (see
+      // waitForMiningToSettle): a burst of empty blocks, milliseconds apart, that the block loop
+      // below would otherwise count as the first N blocks of the run -- the stress schedule is
+      // relative to runStartBlock, and a depeg ramp scheduled 37 blocks in was skipped whole by
+      // a 68-block burst. So the run starts once the chain is quiet, and what was flushed is on
+      // the record. A quarter block time is far above the flush cadence and below the interval.
+      // cacheTime 0: viem serves getBlockNumber from a cache for the client's pollingInterval
+      // (4 s by default), which is longer than the whole flush -- the first attempt at this wait
+      // read the same number for 500 ms while 71 blocks went past.
+      const settle = await waitForMiningToSettle(
+        async () => Number(await publicClient.getBlockNumber({ cacheTime: 0 })),
+        {
+          quietMs: Math.max(
+            200,
+            Math.min(500, Math.floor((config.blockTimeSec * 1000) / 4)),
+          ),
+          maxWaitMs: 60_000,
+        },
+      );
+      if (settle.burstBlocks > 0 || !settle.settled) {
+        logger.event({
+          type: "mining_backlog_flushed",
+          ...settle,
+          note: settle.settled
+            ? "empty blocks anvil mined in a burst right after the mining mode changed; they " +
+              "precede runStartBlock and are not part of the run"
+            : "the chain did not go quiet within maxWaitMs; the run starts anyway, and its first " +
+              "blocks may be that burst",
+        });
+      }
       logger.event({
         type: "interval_mining_started",
         blockTimeSec: config.blockTimeSec,
+        settledAfterMs: settle.waitedMs,
+        flushedBlocks: settle.burstBlocks,
       });
     }
     const startTime = Date.now();
@@ -1835,7 +1868,11 @@ export async function runRealtimeSimulation(
     }
     let processedBlocks = 0;
     let processing = false;
-    let lastProcessedBlock = Number(await publicClient.getBlockNumber());
+    // Fresh, not viem's 4 s cache: this is what runStartBlock is derived from, and a value from
+    // before the flush above would put the flushed blocks inside the run.
+    let lastProcessedBlock = Number(
+      await publicClient.getBlockNumber({ cacheTime: 0 }),
+    );
     const runStartBlock = lastProcessedBlock + 1;
 
     // ---- live scoring (ADR 0021 §3) ----
@@ -2865,7 +2902,10 @@ export async function runRealtimeSimulation(
     // unwound would be marked at par and holding through the end would cost nothing -- which is
     // exactly the risk the regime exists to create. Nothing agents did lands after this point,
     // because they were stopped one line above.
-    const finalBlock = Number(await publicClient.getBlockNumber());
+    // Fresh for the same reason as runStartBlock: viem's cached read can be a block or two old.
+    const finalBlock = Number(
+      await publicClient.getBlockNumber({ cacheTime: 0 }),
+    );
 
     // ---- liquidity-pull teardown (issue #52): the run can end with a window still open, since the
     // schedule may place it against the last block and the time limit can cut in mid-window. Restore
