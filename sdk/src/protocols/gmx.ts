@@ -22,6 +22,16 @@ import {
 } from "../markets.js";
 import { baseFairPrice } from "./marketHelpers.js";
 import {
+  gmxDataStoreReadAbi,
+  gmxFundingFeeAmount,
+  gmxFundingFeeAmountPerSizeKey,
+  gmxFundingFields,
+  gmxFundingIncreaseFactorKey,
+  gmxOpenInterestKey,
+  gmxSavedFundingKey,
+  type GmxFundingFields,
+} from "./gmxKeys.js";
+import {
   accountAddress,
   increaseTime,
   isExternalChain,
@@ -33,6 +43,7 @@ import {
 import type {
   AgentObservation,
   BalanceSnapshot,
+  GmxMarketObservation,
   GmxObservation,
   GmxPositionObservation,
   LeafAction,
@@ -406,6 +417,10 @@ type Position = {
     sizeInUsd: bigint;
     sizeInTokens: bigint;
     collateralAmount: bigint;
+    // The position's snapshot of the market's funding accumulator. Decoded by the ABI all along;
+    // named here since issue #78, because the difference against the market's current value is
+    // what the position has accrued.
+    fundingFeeAmountPerSize: bigint;
   };
   flags: { isLong: boolean };
 };
@@ -778,6 +793,195 @@ function gmxPositionObservation(
 }
 
 // ---------------------------------------------------------------------------
+// Funding / open interest (issue #78)
+//
+// GMX charges the crowded side and pays the thin one, and it publishes both the rate and the skew
+// that sets it in the DataStore. Until now none of that reached an agent: GmxObservation carried
+// the mark and the agent's own position, so a strategy hedging on this venue had to price its carry
+// at a constant. The keys are derived in the sdk (gmxKeys.ts) and read here at the same block as
+// the rest of the observation, so the agent and the post-run market series see one number.
+//
+// On magnitude, so nobody builds a carry trade on this: funding runs on EVM time, which is not
+// warped. At the deployed factor a whole 360-block epoch accrues ~0.14bps of notional on a fully
+// one-sided book and ~0.02bps at a realistic skew, against the 30bps a spot leg pays the pool. It
+// is a cost term and a skew signal, not income.
+
+// Market.Props is immutable for a deployment, so the long/short token lookup is resolved once per
+// process — the same treatment aave gives its reserve token addresses. Only successes are cached:
+// a market that has not resolved yet costs one read per block, and caching the miss instead would
+// silently drop funding for the rest of a run that merely observed a block too early.
+const marketPropsCache = new Map<string, MarketProps>();
+
+async function resolveMarketProps(
+  publicClient: PublicClient,
+  markets: readonly Address[],
+): Promise<Map<string, MarketProps>> {
+  const missing = markets.filter(
+    (m) => !marketPropsCache.has(m.toLowerCase()) && m !== zeroAddress,
+  );
+  if (missing.length > 0) {
+    const results = (await publicClient.multicall({
+      contracts: missing.map((market) => ({
+        address: GMX.Reader,
+        abi: readerAbi,
+        functionName: "getMarket",
+        args: [GMX.DataStore, market],
+      })) as never,
+      allowFailure: true,
+    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+    missing.forEach((market, i) => {
+      const r = results[i];
+      if (r?.status === "success")
+        marketPropsCache.set(market.toLowerCase(), r.result as MarketProps);
+    });
+  }
+  const out = new Map<string, MarketProps>();
+  for (const market of markets) {
+    const props = marketPropsCache.get(market.toLowerCase());
+    if (props) out.set(market.toLowerCase(), props);
+  }
+  return out;
+}
+
+/**
+ * Open interest, funding rate and whether this deploy models funding at all, per market.
+ *
+ * Reads never throw out of here. The observation is what an agent trades on every block, and a
+ * transport hiccup on a reporting field must not take the mark and the position down with it — the
+ * fields are simply absent, which is exactly what they mean (issue #44: a zero is a measurement).
+ */
+async function readMarketFunding(
+  publicClient: PublicClient,
+  markets: readonly Address[],
+): Promise<Map<string, GmxFundingFields>> {
+  const out = new Map<string, GmxFundingFields>();
+  let props: Map<string, MarketProps>;
+  try {
+    props = await resolveMarketProps(publicClient, markets);
+  } catch {
+    return out;
+  }
+  const layout: Array<{ market: Address; props: MarketProps }> = [];
+  for (const market of markets) {
+    const p = props.get(market.toLowerCase());
+    if (p) layout.push({ market, props: p });
+  }
+  if (layout.length === 0) return out;
+  // Six reads per market, in this order: the four open-interest cells, the saved funding factor,
+  // and the increase factor that says whether the saved one is even written.
+  const contracts = layout.flatMap(({ props: p }) => [
+    ...[
+      gmxOpenInterestKey(p.marketToken, p.longToken, true),
+      gmxOpenInterestKey(p.marketToken, p.shortToken, true),
+      gmxOpenInterestKey(p.marketToken, p.longToken, false),
+      gmxOpenInterestKey(p.marketToken, p.shortToken, false),
+    ].map((key) => ({
+      address: GMX.DataStore,
+      abi: gmxDataStoreReadAbi,
+      functionName: "getUint",
+      args: [key],
+    })),
+    {
+      address: GMX.DataStore,
+      abi: gmxDataStoreReadAbi,
+      functionName: "getInt",
+      args: [gmxSavedFundingKey(p.marketToken)],
+    },
+    {
+      address: GMX.DataStore,
+      abi: gmxDataStoreReadAbi,
+      functionName: "getUint",
+      args: [gmxFundingIncreaseFactorKey(p.marketToken)],
+    },
+  ]);
+  let results: Array<{ status: "success" | "failure"; result?: unknown }>;
+  try {
+    results = (await publicClient.multicall({
+      contracts: contracts as never,
+      allowFailure: true,
+    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+  } catch {
+    return out;
+  }
+  const value = (i: number): bigint | undefined => {
+    const r = results[i];
+    return r?.status === "success" && typeof r.result === "bigint"
+      ? r.result
+      : undefined;
+  };
+  layout.forEach(({ market }, i) => {
+    const at = i * 6;
+    const saved = value(at + 4);
+    const increase = value(at + 5);
+    out.set(
+      market.toLowerCase(),
+      gmxFundingFields({
+        openInterest: [value(at), value(at + 1), value(at + 2), value(at + 3)],
+        ...(saved !== undefined ? { savedFundingFactorPerSecond: saved } : {}),
+        ...(increase !== undefined
+          ? { fundingIncreaseFactorPerSecond: increase }
+          : {}),
+      }),
+    );
+  });
+  return out;
+}
+
+/**
+ * What each of the agent's open positions has accrued in funding, in USD, keyed by market.
+ *
+ * A second stage because the key needs the position's own (collateral, side) — but only when there
+ * is a position at all, so an agent holding no perp pays nothing for this.
+ */
+async function readPositionFundingOwed(
+  publicClient: PublicClient,
+  positions: readonly Position[],
+  wethPrice: number,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const open = positions.filter((p) => p.numbers.sizeInUsd > 0n);
+  if (open.length === 0) return out;
+  let results: Array<{ status: "success" | "failure"; result?: unknown }>;
+  try {
+    results = (await publicClient.multicall({
+      contracts: open.map((p) => ({
+        address: GMX.DataStore,
+        abi: gmxDataStoreReadAbi,
+        functionName: "getUint",
+        args: [
+          gmxFundingFeeAmountPerSizeKey(
+            p.addresses.market,
+            p.addresses.collateralToken,
+            p.flags.isLong,
+          ),
+        ],
+      })) as never,
+      allowFailure: true,
+    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+  } catch {
+    return out;
+  }
+  open.forEach((p, i) => {
+    const r = results[i];
+    if (r?.status !== "success" || typeof r.result !== "bigint") return;
+    const amount = gmxFundingFeeAmount(
+      r.result,
+      p.numbers.fundingFeeAmountPerSize ?? 0n,
+      p.numbers.sizeInUsd,
+    );
+    // The fee is denominated in the position's collateral token.
+    const isWeth =
+      p.addresses.collateralToken.toLowerCase() ===
+      TOKENS.WETH.address.toLowerCase();
+    const usd = isWeth
+      ? (Number(amount) / 1e18) * wethPrice
+      : Number(amount) / 1e6;
+    out.set(p.addresses.market.toLowerCase(), usd);
+  });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Historical-block reconstruction (ADR 0006 §4): the read descriptor used by the blockNumber-pinned
 // multicall, plus a pure function that derives position value from its result using the same formula as valueUsdc.
 // ---------------------------------------------------------------------------
@@ -882,30 +1086,61 @@ export const gmxAdapter: ProtocolAdapter = {
   },
 
   async observe(ctx, _state, agent, fairPrice): Promise<GmxObservation> {
-    const positions = await getAccountPositions(ctx.publicClient, agent);
+    const entries = gmxMarketEntries(ctx);
+    const wethPrice = baseFairPrice(ctx, "WETH", fairPrice);
+    // The venue state (skew, funding rate) rides the same block and the same batch as the
+    // positions: an agent comparing its own position against the book must not be told about the
+    // two at different blocks.
+    const [positions, funding] = await Promise.all([
+      getAccountPositions(ctx.publicClient, agent),
+      readMarketFunding(
+        ctx.publicClient,
+        entries.map((e) => e.market),
+      ),
+    ]);
+    const owed = await readPositionFundingOwed(
+      ctx.publicClient,
+      positions,
+      wethPrice,
+    );
+
+    const positionObs = (
+      pos: Position,
+      market: Address,
+      price: number,
+      base: TokenSymbol,
+    ): GmxPositionObservation => {
+      const fundingOwedUsd = owed.get(market.toLowerCase());
+      return {
+        ...gmxPositionObservation(pos, price, base),
+        ...(fundingOwedUsd !== undefined ? { fundingOwedUsd } : {}),
+      };
+    };
+
     // Keep the WETH (ETH/USD) market at the top level as before (byte-compatible).
     const wethMarketAddr = resolveGmxMarket(ctx, "WETH");
     const wethPos = positionForMarket(positions, wethMarketAddr);
     const obs: GmxObservation = {
       marketPriceUsd: fairPrice,
       ...(wethPos
-        ? { position: gmxPositionObservation(wethPos, fairPrice, "WETH") }
+        ? {
+            position: positionObs(wethPos, wethMarketAddr, fairPrice, "WETH"),
+          }
         : {}),
+      ...(funding.get(wethMarketAddr.toLowerCase()) ?? {}),
     };
 
     // Add non-WETH index markets (WBTC etc.) to markets. Empty on the default fork.
-    const extra: Record<
-      string,
-      { marketPriceUsd: number; position?: GmxPositionObservation }
-    > = {};
-    for (const { base, market } of gmxMarketEntries(ctx)) {
+    const extra: Record<string, GmxMarketObservation> = {};
+    for (const { base, market } of entries) {
       if (base === "WETH") continue;
       const price = baseFairPrice(ctx, base, fairPrice);
       const pos = positionForMarket(positions, market);
       const key = marketFor("gmx", base)?.key ?? `${base}/USDC`;
       extra[key] = {
         marketPriceUsd: price,
-        ...(pos ? { position: gmxPositionObservation(pos, price, base) } : {}),
+        ...(pos ? { position: positionObs(pos, market, price, base) } : {}),
+        ...(funding.get(market.toLowerCase()) ?? {}),
       };
     }
     if (Object.keys(extra).length > 0) obs.markets = extra;

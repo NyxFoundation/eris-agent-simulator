@@ -15,10 +15,14 @@
  *     That is why the hedge is checked *before* looking for a new opportunity: an unhedged delta is
  *     a risk the agent is already carrying, and a new opportunity is one it merely might take.
  *
- * The funding leg of issue #30 is not implemented: the deployment leaves fundingFactor and
- * borrowingFactor at zero, so there is no funding to harvest and no carry to price. Holding the
- * cheap side costs nothing and earns nothing. When the environment models funding, it belongs on
- * top of the hedge sizing below rather than as a separate strategy.
+ * The funding leg of issue #30 is wired but is not a carry trade (issue #78). The environment now
+ * models GMX funding and the observation carries the rate and the skew that sets it, so the hedge's
+ * carry is priced from what the venue actually charges instead of from a constant. What it is not
+ * is income: funding accrues on EVM time and EVM time is not warped here, so a 360-block epoch at
+ * 2s/block is twelve minutes and the deployed factor (~63%/yr at a 100% skew) accrues ~0.14bps of
+ * notional over all of it -- ~0.02bps at a realistic skew, against the 30bps the spot leg pays the
+ * pool. Holding the paid side to collect is not a strategy on this clock. What the number is good
+ * for is the sign on the cost gate and the skew it reveals.
  *
  * Baseline (what "delta-neutral" is measured against):
  *   The run hands every agent an inventory basket. That beta is not a position anyone chose, and
@@ -42,16 +46,17 @@
  *   ERIS_BASIS_HEDGE_LEVERAGE    perp size / collateral (default 2). The perp is liquidated on its
  *                                own numbers -- GMX cannot see that the spot leg offsets it.
  *   ERIS_BASIS_HEDGE_INVENTORY   "1" = also hedge the funded basket, not just what was acquired
+ *   ERIS_BASIS_BLOCK_SECONDS     seconds per block, for the funding rate conversion (default 2)
  */
 import type { AgentAction, AgentObservation } from "@eris/sdk";
 import { marketViews, type MarketView } from "../lib/markets.js";
 
 // Safety margin on top of the *measured* costs below, for what the cost model does not name.
 const SAFETY_BPS = Number(process.env.ERIS_BASIS_EDGE_BPS ?? "15");
-// The GMX round trip, in bps of notional. Read off the chain rather than assumed: the deployer
-// writes no market config beyond the oracle, so POSITION_FEE_FACTOR, POSITION_IMPACT_FACTOR,
-// FUNDING_FACTOR and BORROWING_FACTOR are all 0 in the DataStore. Opening and closing the perp
-// costs nothing but the execution fee, which is priced separately because it is flat.
+// The GMX round trip, in bps of notional. Read off the chain rather than assumed: POSITION_FEE_FACTOR
+// and POSITION_IMPACT_FACTOR are 0 in the DataStore, so opening and closing the perp costs nothing
+// but the execution fee, which is priced separately because it is flat. (FUNDING_FACTOR is no
+// longer 0 -- it is priced per block by fundingCarryBpsPerBlock, not here, because it is a rate.)
 const GMX_ROUNDTRIP_BPS = Number(process.env.ERIS_BASIS_GMX_COST_BPS ?? "0");
 // What one GMX order actually costs, in ETH. The order carries a 0.03 ETH execution fee, but
 // GasUtils.payExecutionFee pays the keeper only its gas and refunds the remainder, so almost none
@@ -197,15 +202,38 @@ type Quote = {
 /**
  * Funding carry on the side the hedge holds, in bps per block. Positive = the hedge is paid.
  *
- * Zero by construction today: the deployment leaves fundingFactor and borrowingFactor at 0, and
- * GmxObservation carries no funding or open-interest fields, so there is nothing to read. This is
- * the seam issue #30 asks for -- the one place to change when the environment models funding. It
- * feeds the cost gate, so a carry that pays the hedge lowers the edge needed to open a pair and one
- * that charges it raises the bar, which is what an FR signal has to do to be worth anything.
+ * The seam issue #30 asked for, now reading a real rate (issue #78). obs.protocols.gmx publishes
+ * fundingPerHourBps signed so that positive means longs pay shorts, so the hedge is paid whenever
+ * it sits on the thin side of the book. It feeds the cost gate: a carry that pays the hedge lowers
+ * the edge needed to open a pair, and one that charges it raises the bar.
+ *
+ * Three ways this returns 0, and only one of them is a measurement:
+ *   - the observed perp is flat: there is no side to be paid on. The gate runs before a leg is
+ *     chosen, so the sign the *next* hedge would carry is not known yet; charging a guessed one
+ *     would let the gate open a pair on a carry that never existed.
+ *   - fundingModeled === false: this deploy does not model funding at all (any state dump baked
+ *     before deployer/vendor/gmx-localhost.patch). The 0 says nothing about the book.
+ *   - the field is absent: the read failed. Not the same as a flat book either.
+ * All three are treated the same way -- charge nothing, credit nothing -- because on this clock the
+ * term is worth ~0.02bps over an epoch and guessing at it would be worse than dropping it.
  */
-function fundingCarryBpsPerBlock(): number {
-  return 0;
+export function fundingCarryBpsPerBlock(obs: AgentObservation): number {
+  const gmx = obs.protocols?.gmx;
+  if (!gmx || gmx.fundingModeled === false) return 0;
+  const perHourBps = gmx.fundingPerHourBps;
+  if (perHourBps === undefined || !Number.isFinite(perHourBps)) return 0;
+  const signedUsd = perpSignedUsd(obs);
+  if (signedUsd === 0) return 0;
+  // Positive rate = longs pay shorts, so a short is paid and a long pays.
+  const paid = signedUsd < 0 ? perHourBps : -perHourBps;
+  return (paid * BLOCK_SECONDS) / 3600;
 }
+
+// Seconds per block, for turning an hourly rate into a per-block one. The observation does not
+// carry the run's block time (nothing else needed it), so this mirrors run.blockTimeSec's default
+// and is overridable for a run configured otherwise. The conversion is not worth more precision
+// than that: the whole term is ~0.02bps over an epoch.
+const BLOCK_SECONDS = Number(process.env.ERIS_BASIS_BLOCK_SECONDS ?? "2");
 
 /**
  * What it costs to run this pair, in bps of the leg's notional, beyond the AMM quote.
@@ -218,7 +246,9 @@ function fundingCarryBpsPerBlock(): number {
  *   - the keeper delay: the hedge lands about two blocks after the AMM leg, and the fair price
  *     moves in between. Estimated from the run's own recent fair prices rather than assumed, so a
  *     quiet regime does not pay a volatile regime's premium
- *   - funding over the blocks the pair is expected to be held (0 today, see above)
+ *   - funding on the hedged side over the blocks between the legs. Signed: it subtracts when the
+ *     hedge sits on the paid side of the skew and adds when it sits on the crowded one. Tiny on
+ *     this clock (see fundingCarryBpsPerBlock) -- correctness, not edge
  */
 function costBps(
   obs: AgentObservation,
@@ -228,7 +258,7 @@ function costBps(
   const execBps =
     notionalUsd > 0 ? ((ORDER_COST_ETH * fair) / notionalUsd) * 10_000 : 0;
   const delayBps = keeperDelayBps(obs) * DELAY_MULT;
-  const carryBps = fundingCarryBpsPerBlock() * HEDGE_DELAY_BLOCKS;
+  const carryBps = fundingCarryBpsPerBlock(obs) * HEDGE_DELAY_BLOCKS;
   return GMX_ROUNDTRIP_BPS + execBps + delayBps - carryBps + SAFETY_BPS;
 }
 
