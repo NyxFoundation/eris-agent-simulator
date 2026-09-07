@@ -505,15 +505,37 @@ export interface WorldFrame {
   venueValues: Record<string, string>;
   /** Fair price at this frame, formatted; null where the run has no observation for it. */
   fair: string | null;
+  /** The same two, unformatted, for the charts — which need a scale, not a label. Only the venues
+   * quoted in a price are here; a node whose number is a utilisation or a discount is not a line. */
+  priceUsd: Record<string, number>;
+  fairUsd: number | null;
   /** What the environment did at this frame — the tape's events, placed on the block axis. */
   events: { kind: string; text: string; tone: TapeTone }[];
 }
 
-/** An epoch boundary's scored cross-section: what each agent had made by then. */
+/**
+ * An epoch boundary's scored cross-section: what every agent was worth at that block.
+ *
+ * This is the only account value a run records — nothing is marked between boundaries, and the
+ * board says so by holding the last one rather than drawing a line through the gap.
+ */
 export interface WorldBoundary {
   block: number;
-  /** agent id -> cumulative USDC gain since the run's first boundary. */
+  /** agent id -> account value in USDC at this boundary. */
+  valueUsdc: Record<string, number>;
+  /** agent id -> gain since the run's first boundary. */
   pnlUsdc: Record<string, number>;
+}
+
+/** One line an agent wrote, placed on the block axis so the panel can follow the head. */
+export interface WorldLogLine {
+  /** The block the agent was deciding about. */
+  block: number;
+  /** What it did: an action type, or the mempool event when the transaction itself is the story. */
+  event: string;
+  /** Why, in the agent's own words — the `reason` it logged, or the revert it got back. */
+  text: string;
+  tone: LogTone;
 }
 
 export interface WorldSnapshot {
@@ -524,6 +546,14 @@ export interface WorldSnapshot {
   venues: WorldVenueNode[];
   frames: WorldFrame[];
   boundaries: WorldBoundary[];
+  /**
+   * agent id -> what it wrote, in block order. Absent for an agent that wrote nothing, and empty
+   * for every agent in the public view, where decision logs are a participant's own and the server
+   * does not serve them (ADR 0021 §4).
+   */
+  agentLog: Record<string, WorldLogLine[]>;
+  /** True when the logs were withheld rather than absent, so the panel can say which. */
+  logsWithheld: boolean;
   /** Blocks per frame. 1 unless the window was longer than the frame cap. */
   blocksPerFrame: number;
 }

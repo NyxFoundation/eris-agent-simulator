@@ -78,6 +78,7 @@ import type {
   WorldAgentNode,
   WorldBoundary,
   WorldFrame,
+  WorldLogLine,
   WorldSnapshot,
   WorldTx,
   WorldVenueNode,
@@ -1786,6 +1787,8 @@ const WORLD_MAX_FRAMES = 900;
 const WORLD_MAX_TXS_PER_FRAME = 24;
 /** Environment events placed on the block axis. */
 const WORLD_MAX_EVENTS = 200;
+/** Log lines carried per agent. The panel scrolls; the snapshot is not an archive of the run. */
+const WORLD_MAX_LOG_LINES = 1000;
 
 /** The last sample at or before `block`, over a series already in block order. */
 function sampleAt<T extends { block: number }>(
@@ -1848,20 +1851,83 @@ function worldAgents(run: LoadedRun): WorldAgentNode[] {
   });
 }
 
-/** What each epoch boundary's scored cross-section says every agent had made by then. */
+/** What each epoch boundary's scored cross-section says every agent was worth, and had made. */
 function worldBoundaries(run: LoadedRun): WorldBoundary[] {
   const series = run.summary.valueSeries?.epochSeries;
   const blocks = series?.boundaryBlocks ?? [];
   const values = series?.valuesByAgent ?? {};
   return blocks.map((block, i) => {
+    const valueUsdc: Record<string, number> = {};
     const pnlUsdc: Record<string, number> = {};
     for (const [id, points] of Object.entries(values)) {
       const start = points[0];
       const now = points[i];
+      // A boundary the scorer could not read is null, not 0: it is a missing mark, and carrying it
+      // as a value would draw a wallet emptying itself.
+      if (now != null) valueUsdc[id] = now;
       if (start != null && now != null) pnlUsdc[id] = now - start;
     }
-    return { block, pnlUsdc };
+    return { block, valueUsdc, pnlUsdc };
   });
+}
+
+/**
+ * What each agent wrote, on the block axis.
+ *
+ * The runtime splits an agent's account of itself across two kinds of line, and the panel needs
+ * both: a *decision* entry is written when the strategy stood down (`{action: noop, reason: "spread
+ * too small"}` — the reason is the whole point of it), while an action it actually took is a
+ * *mempool* entry naming the action type and the venue. Reading only the decisions, as this did at
+ * first, shows an agent that spends the entire run declining to trade while the board behind it is
+ * full of its transactions.
+ */
+function worldAgentLog(logs: Map<string, AgentLogEntry[]>, from: number, to: number): {
+  byAgent: Record<string, WorldLogLine[]>;
+  withheld: boolean;
+} {
+  const byAgent: Record<string, WorldLogLine[]> = {};
+  for (const [id, entries] of logs) {
+    const lines: WorldLogLine[] = [];
+    for (const entry of entries) {
+      const block = Number(entry.round ?? entry.blockSeen);
+      if (!Number.isFinite(block) || block < from || block > to) continue;
+      if (entry.kind === "mempool") {
+        if (entry.event === "submitted") {
+          lines.push({
+            block,
+            event: str(entry.actionType) || "submit",
+            text: str(entry.protocol),
+            tone: "success",
+          });
+        } else if (entry.event === "submit_failed") {
+          lines.push({
+            block,
+            event: str(entry.actionType) || "submit",
+            // The revert arrives as a viem error with the whole request dumped under it; the first
+            // line is the reason, and the rest is calldata nobody reads off a panel this size.
+            text: str(entry.error).split("\n")[0],
+            tone: "danger",
+          });
+        }
+        continue;
+      }
+      const action = (entry.action as { type?: string } | undefined)?.type;
+      if (!action) continue;
+      lines.push({
+        block,
+        event: action,
+        text: str(entry.reason),
+        tone: action === "noop" ? "info" : "success",
+      });
+    }
+    // The tail, not the head, if an agent wrote more than the cap. Keeping the first N would leave
+    // the panel silent for the whole back half of the run, which reads as an agent that stopped.
+    if (lines.length > 0)
+      byAgent[id] = lines.slice(-WORLD_MAX_LOG_LINES);
+  }
+  // Audience mode serves no decision logs at all (agentLogsFor returns empty lists), which is a
+  // different fact from an agent that logged nothing, and the panel has to be able to say which.
+  return { byAgent, withheld: getMode().audience };
 }
 
 /** The tape's events, kept on the block axis instead of collapsed into a ticker. */
@@ -1897,7 +1963,10 @@ export async function fetchWorldSnapshot(
   const full = await resolveRun();
   const round = buildRound(full);
   const run = clampToReplay(full);
-  const infoByHash = await txInfoByHash(run);
+  const [infoByHash, logs] = await Promise.all([
+    txInfoByHash(run),
+    agentLogsFor(run),
+  ]);
 
   // Scoped like the explorer: a selected round is that round's block window, and no selection is
   // the whole run. A round the run does not have falls back to the run rather than to nothing.
@@ -1984,10 +2053,13 @@ export async function fetchWorldSnapshot(
 
     const market = sampleAt(marketSeries, block, marketCursor);
     const venueValues: Record<string, string> = {};
+    const priceUsd: Record<string, number> = {};
     for (const venue of market ? Object.keys(market.venues ?? {}) : []) {
       const mid = market?.venues?.[venue]?.[base]?.mid;
-      if (mid !== undefined && mid > 0 && venueIds.has(venue))
+      if (mid !== undefined && mid > 0 && venueIds.has(venue)) {
         venueValues[venue] = worldPrice(mid);
+        priceUsd[venue] = mid;
+      }
     }
     if (venueIds.has("gmx") && market?.gmx?.[base]) {
       const gmx = market.gmx[base];
@@ -2048,6 +2120,8 @@ export async function fetchWorldSnapshot(
       txs,
       reverts: rows.filter((r) => r.status !== "success").length,
       venueValues,
+      priceUsd,
+      fairUsd: fairValue,
       fair: fairValue === null ? null : worldPrice(fairValue),
       events,
     });
@@ -2060,6 +2134,10 @@ export async function fetchWorldSnapshot(
     venues,
     frames,
     boundaries: worldBoundaries(run),
+    ...(() => {
+      const { byAgent, withheld } = worldAgentLog(logs, from, to);
+      return { agentLog: byAgent, logsWithheld: withheld };
+    })(),
     blocksPerFrame,
   };
 }

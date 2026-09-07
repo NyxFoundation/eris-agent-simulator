@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { WorldMap } from "@/components/WorldMap";
+import { AgentLogPanel, WorldCharts } from "@/components/WorldPanels";
 import {
   WorldTimeline,
   type WorldSpeed,
@@ -63,6 +64,7 @@ export function WorldPage() {
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<WorldSpeed>(1);
+  const [picked, setPicked] = useState<string | null>(null);
 
   const frames = useMemo(() => data?.frames ?? [], [data]);
   const last = Math.max(0, frames.length - 1);
@@ -73,6 +75,7 @@ export function WorldPage() {
   useEffect(() => {
     setIndex(0);
     setPlaying(false);
+    setPicked(null);
   }, [walkKey]);
 
   useEffect(() => {
@@ -96,15 +99,31 @@ export function WorldPage() {
 
   // The last scored cross-section at or before the head. Between boundaries an agent's figure is
   // the one it was last scored at, never an interpolation: nothing is scored inside a round.
-  const pnlByAgent = useMemo(() => {
-    if (!data || !frame) return {};
-    let chosen: Record<string, number> = {};
+  const marks = useMemo(() => {
+    if (!data || !frame) return { valueUsdc: {}, pnlUsdc: {} };
+    let chosen = { valueUsdc: {}, pnlUsdc: {} } as {
+      valueUsdc: Record<string, number>;
+      pnlUsdc: Record<string, number>;
+    };
     for (const boundary of data.boundaries) {
       if (boundary.block > frame.block) break;
-      chosen = boundary.pnlUsdc;
+      chosen = { valueUsdc: boundary.valueUsdc, pnlUsdc: boundary.pnlUsdc };
     }
     return chosen;
   }, [data, frame]);
+
+  // Whose reasoning the panel follows. Nobody has picked yet on first load, so it opens on the
+  // agent that traded most in this window -- the one whose log has something in it.
+  const busiest = useMemo(() => {
+    if (!data) return null;
+    const counts = new Map<string, number>();
+    for (const f of data.frames)
+      for (const tx of f.txs)
+        if (tx.kind === "agent")
+          counts.set(tx.agent, (counts.get(tx.agent) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  }, [data]);
+  const selected = picked ?? busiest;
 
   if (loading) return <Centered text={t("common.loading")} />;
   if (error || !data)
@@ -219,111 +238,115 @@ export function WorldPage() {
                 agents={data.agents}
                 venues={data.venues}
                 frame={frame}
-                pnlByAgent={pnlByAgent}
+                valueByAgent={marks.valueUsdc}
+                pnlByAgent={marks.pnlUsdc}
+                selected={selected}
+                onSelect={setPicked}
                 frameMs={FRAME_MS / speed}
                 fair={frame?.fair ?? null}
               />
+            </div>
+
+            {/* One strip for what this block was, then the two panels the board's numbers come
+                from: why one agent is doing this, and what the run has done to the prices and the
+                balances so far. */}
+            <div
+              style={{
+                borderTop: "1px solid var(--border-subtle)",
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--space-6)",
+                flexWrap: "wrap",
+                padding: "10px var(--space-6)",
+              }}
+            >
+              <span
+                style={{
+                  font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+                  letterSpacing: "var(--tracking-widest)",
+                  textTransform: "uppercase",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {t("world.thisBlock")}
+              </span>
+              <Stat label={t("world.stat.txs")} value={String(frame?.txCount ?? 0)} />
+              <Stat
+                label={t("world.stat.reverts")}
+                value={String(frame?.reverts ?? 0)}
+                tone={(frame?.reverts ?? 0) > 0 ? "var(--danger-text)" : undefined}
+              />
+              <Stat
+                label={t("world.stat.senders")}
+                value={String(frame?.senderCount ?? 0)}
+              />
+              <span
+                style={{
+                  marginLeft: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "2px",
+                  minWidth: 0,
+                  textAlign: "right",
+                }}
+              >
+                <span
+                  style={{
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                    letterSpacing: "var(--tracking-wide)",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {t("world.environment")}
+                </span>
+                {frame && frame.events.length > 0 ? (
+                  frame.events.map((event, i) => (
+                    <span
+                      key={i}
+                      style={{
+                        font: "var(--text-xs) var(--font-mono)",
+                        color: TONE_COLOR[event.tone],
+                      }}
+                    >
+                      {event.kind} · {event.text}
+                    </span>
+                  ))
+                ) : (
+                  <span
+                    style={{
+                      font: "var(--text-xs) var(--font-mono)",
+                      color: "var(--text-disabled)",
+                    }}
+                  >
+                    {t("world.quiet")}
+                  </span>
+                )}
+              </span>
             </div>
 
             <div
               style={{
                 borderTop: "1px solid var(--border-subtle)",
                 display: "grid",
-                gridTemplateColumns: "minmax(0,1fr) minmax(0,1.4fr)",
+                gridTemplateColumns: "minmax(0,1fr) minmax(0,1.15fr)",
               }}
             >
-              <div style={{ padding: "var(--space-4) var(--space-6)" }}>
-                <span
-                  style={{
-                    font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-                    letterSpacing: "var(--tracking-widest)",
-                    textTransform: "uppercase",
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  {t("world.thisBlock")}
-                </span>
-                <div
-                  style={{
-                    marginTop: "10px",
-                    display: "grid",
-                    gridTemplateColumns: "repeat(3, minmax(0,1fr))",
-                    gap: "10px",
-                  }}
-                >
-                  <Stat
-                    label={t("world.stat.txs")}
-                    value={String(frame?.txCount ?? 0)}
-                  />
-                  <Stat
-                    label={t("world.stat.reverts")}
-                    value={String(frame?.reverts ?? 0)}
-                    tone={
-                      (frame?.reverts ?? 0) > 0
-                        ? "var(--danger-text)"
-                        : undefined
-                    }
-                  />
-                  <Stat
-                    label={t("world.stat.senders")}
-                    value={String(frame?.senderCount ?? 0)}
-                  />
-                </div>
-              </div>
-
-              <div
-                style={{
-                  borderLeft: "1px solid var(--border-subtle)",
-                  padding: "var(--space-4) var(--space-6)",
-                }}
-              >
-                <span
-                  style={{
-                    font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-                    letterSpacing: "var(--tracking-widest)",
-                    textTransform: "uppercase",
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  {t("world.environment")}
-                </span>
-                <div style={{ marginTop: "10px" }}>
-                  {frame && frame.events.length > 0 ? (
-                    frame.events.map((event, i) => (
-                      <div
-                        key={i}
-                        style={{
-                          display: "flex",
-                          gap: "10px",
-                          padding: "4px 0",
-                          font: "var(--text-xs) var(--font-mono)",
-                        }}
-                      >
-                        <span
-                          style={{
-                            color: TONE_COLOR[event.tone],
-                            minWidth: "88px",
-                          }}
-                        >
-                          {event.kind}
-                        </span>
-                        <span style={{ color: "var(--text-secondary)" }}>
-                          {event.text}
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <span
-                      style={{
-                        font: "var(--text-xs) var(--font-mono)",
-                        color: "var(--text-disabled)",
-                      }}
-                    >
-                      {t("world.quiet")}
-                    </span>
-                  )}
-                </div>
-              </div>
+              <AgentLogPanel
+                agent={selected}
+                agents={data.agents}
+                lines={selected ? data.agentLog[selected] : undefined}
+                headBlock={frame?.block ?? null}
+                withheld={data.logsWithheld}
+              />
+              <WorldCharts
+                frames={frames}
+                index={at}
+                venues={data.venues}
+                boundaries={data.boundaries}
+                agents={data.agents}
+                selected={selected}
+              />
             </div>
           </>
         )}
@@ -344,13 +367,9 @@ function Stat({
   return (
     <div
       style={{
-        background: "var(--bg-surface)",
-        border: "1px solid var(--border-subtle)",
-        borderRadius: "var(--radius-sm)",
-        padding: "8px 10px",
         display: "flex",
-        flexDirection: "column",
-        gap: "3px",
+        alignItems: "baseline",
+        gap: "7px",
       }}
     >
       <span
@@ -365,7 +384,7 @@ function Stat({
       </span>
       <span
         style={{
-          font: "var(--weight-semibold) var(--text-base) var(--font-mono)",
+          font: "var(--weight-semibold) var(--text-sm) var(--font-mono)",
           color: tone ?? "var(--text-primary)",
         }}
       >

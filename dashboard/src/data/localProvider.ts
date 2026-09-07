@@ -24,6 +24,7 @@ import type {
   MarketSnapshot,
   MarketTicker,
   RoundInfo,
+  LogTone,
   TapeEvent,
   TopPageSnapshot,
   WorldFrame,
@@ -312,6 +313,12 @@ export async function fetchWorldSnapshot(
         gmx: "$1.2M",
         aave: "42.0%",
       },
+      priceUsd: {
+        uniswap: price,
+        balancer: price * 1.001,
+        curve: price * 0.999,
+      },
+      fairUsd: price,
       fair: `$${price.toFixed(2)}`,
       events: [],
     });
@@ -323,7 +330,32 @@ export async function fetchWorldSnapshot(
     agents,
     venues,
     frames,
-    boundaries: [],
+    // One boundary per 60 blocks of the fixture, so the balance panel has a series to draw.
+    boundaries: frames
+      .filter((_, i) => i % 60 === 0)
+      .map((frame, i) => ({
+        block: frame.block,
+        valueUsdc: Object.fromEntries(
+          agents.map((a, j) => [a.id, 25_000 + i * (j % 5) * 40 - i * 60]),
+        ),
+        pnlUsdc: Object.fromEntries(
+          agents.map((a, j) => [a.id, i * (j % 5) * 40 - i * 60]),
+        ),
+      })),
+    agentLog: Object.fromEntries(
+      agents.slice(0, 4).map((a) => [
+        a.id,
+        frames
+          .filter((_, i) => i % 7 === 0)
+          .map((f, i) => ({
+            block: f.block,
+            event: i % 3 === 0 ? "noop" : "swap",
+            text: i % 3 === 0 ? "spread too small" : "gap 42 bps over round-trip cost",
+            tone: (i % 3 === 0 ? "info" : "success") as LogTone,
+          })),
+      ]),
+    ),
+    logsWithheld: false,
     blocksPerFrame: 1,
   };
 }

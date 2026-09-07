@@ -17,28 +17,32 @@ export interface Point {
   y: number;
 }
 
-export const MAP_W = 1320;
+// The board is sized by its text, not the other way round. A node carries a name at the type
+// scale's 13px -- an identity somebody reads across a room, or across a wide monitor -- and
+// `cross-venue-arb` at 13px monospace is 117px before the glyph and the number beside it. Squeezing
+// the name to 11px to keep the board narrow is how a map ends up legible only to whoever built it.
+export const MAP_W = 1450;
 
-const CHIP_W = 186;
-const CHIP_H = 30;
-const CHIP_PITCH = 34;
+const CHIP_W = 232;
+const CHIP_H = 34;
+const CHIP_PITCH = 38;
 const CHIP_GAP = 14;
 const TOP = 28;
 
-const CHAIN_X = 470;
-const CHAIN_W = 430;
+const CHAIN_X = 534;
+const CHAIN_W = 440;
 // Tall enough for the six transactions the panel lists and no taller: the block is one object, and
 // a panel stretched to the height of a 32-wallet column reads as a container waiting to be filled.
-const CHAIN_H = 250;
+const CHAIN_H = 258;
 
-const VENUE_X = 980;
-const VENUE_W = 316;
-const VENUE_H = 62;
-const VENUE_PITCH = 78;
+const VENUE_X = 1054;
+const VENUE_W = 356;
+const VENUE_H = 66;
+const VENUE_PITCH = 84;
 
 /** The elbow of an agent→chain wire, and of a chain→venue one. */
-export const AGENT_MID_X = 440;
-export const VENUE_MID_X = 940;
+export const AGENT_MID_X = 500;
+export const VENUE_MID_X = 1014;
 
 export interface WorldLayout {
   width: number;

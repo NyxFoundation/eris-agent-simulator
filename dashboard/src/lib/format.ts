@@ -54,3 +54,15 @@ export function formatUsd(value: number): string {
     return `$${(value / 1_000_000).toLocaleString("en-US", { maximumFractionDigits: 2 })}M`;
   return `$${value.toLocaleString("en-US", { maximumFractionDigits: abs >= 1000 ? 0 : 2 })}`;
 }
+
+/** USD narrow enough to sit on a map node beside a name: "$372.5K", "$1.24M", "$948". Three
+ * significant figures is the most a 60px column can carry, and an account value read off a board is
+ * a magnitude — the exact figure is one click away on the agent's own page. */
+export function formatCompactUsd(value: number): string {
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 10_000) return `${sign}$${(abs / 1000).toFixed(1)}K`;
+  if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(2)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
+}

@@ -19,9 +19,14 @@ import {
   wirePoints,
   type Point,
 } from "@/components/worldLayout";
+import {
+  agentIcon,
+  venueIcon,
+  WorldIcon,
+  WorldSprite,
+} from "@/components/WorldGlyphs";
 import { t } from "@/i18n/messages";
-import { formatPnlUsdc } from "@/lib/format";
-import { navigate } from "@/navigation";
+import { formatCompactUsd, formatPnlUsdc } from "@/lib/format";
 import type { WorldAgentNode, WorldFrame, WorldVenueNode } from "@/data/types";
 
 /** Dots in flight at once. A block with more transactions than this shows the busiest of them. */
@@ -47,15 +52,23 @@ export function WorldMap({
   agents,
   venues,
   frame,
+  valueByAgent,
   pnlByAgent,
+  selected,
+  onSelect,
   frameMs,
   fair,
 }: {
   agents: WorldAgentNode[];
   venues: WorldVenueNode[];
   frame: WorldFrame | null;
-  /** Cumulative USDC gain per agent at the last scored boundary at or before this frame. */
+  /** Account value per agent at the last scored boundary at or before this frame. */
+  valueByAgent: Record<string, number>;
+  /** Gain per agent at that same boundary — the colour on the balance, not a second number. */
   pnlByAgent: Record<string, number>;
+  /** Whose reasoning the panel below is following. */
+  selected: string | null;
+  onSelect: (agent: string) => void;
   /** How long one frame lasts on screen. Flights are timed against it. */
   frameMs: number;
   fair: string | null;
@@ -190,11 +203,25 @@ export function WorldMap({
     };
   }, [frame, frameMs, layout]);
 
-  const listed = (frame?.txs ?? []).slice(0, MEMPOOL_ROWS);
+  // Six of the block, and which six matters: the environment writes the price at the top of every
+  // block and pays the most for it, so the first six by block order are six identical oracle rows
+  // and the competition is exactly the part that falls off. Pick the field first, then put the
+  // chosen rows back in block order -- the panel is a sample of the block, never a re-ordering of it.
+  const listed = useMemo(() => {
+    const txs = frame?.txs ?? [];
+    const pick = new Set(
+      [
+        ...txs.filter((tx) => tx.kind === "agent"),
+        ...txs.filter((tx) => tx.kind !== "agent"),
+      ].slice(0, MEMPOOL_ROWS),
+    );
+    return txs.filter((tx) => pick.has(tx));
+  }, [frame]);
   const hidden = (frame?.txCount ?? 0) - listed.length;
 
   return (
     <div ref={hostRef} style={{ width: "100%", overflow: "hidden" }}>
+      <WorldSprite />
       <div
         style={{
           position: "relative",
@@ -266,13 +293,28 @@ export function WorldMap({
         {agents.map((agent) => {
           const box = layout.agents.get(agent.id);
           if (!box) return null;
+          const value = valueByAgent[agent.id];
           const pnl = pnlByAgent[agent.id];
+          const isSelected = agent.id === selected;
           return (
             <div
               key={agent.id}
               className="row-link"
-              onClick={() => navigate(`/agent/${agent.id}`)}
-              title={`${agent.id}${agent.address ? ` · ${agent.address}` : ""}`}
+              onClick={() => onSelect(agent.id)}
+              title={[
+                agent.id,
+                agent.address,
+                value === undefined
+                  ? t("world.chip.unscored")
+                  : t("world.chip.balance", {
+                      usd: value.toLocaleString("en-US", {
+                        maximumFractionDigits: 2,
+                      }),
+                    }),
+                pnl === undefined ? null : t("world.chip.pnl", { pnl: formatPnlUsdc(pnl) }),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
               style={{
                 position: "absolute",
                 left: `${box.x}px`,
@@ -280,30 +322,33 @@ export function WorldMap({
                 width: `${box.w}px`,
                 height: `${box.h}px`,
                 display: "grid",
-                gridTemplateColumns: "8px minmax(0,1fr) auto",
+                gridTemplateColumns: "13px minmax(0,1fr) auto",
                 alignItems: "center",
-                gap: "7px",
-                padding: "0 8px",
+                gap: "8px",
+                padding: "0 9px",
                 boxSizing: "border-box",
-                border: `1px solid ${senders.has(agent.id) ? "var(--purple-400)" : "var(--border-subtle)"}`,
+                border: `1px solid ${
+                  isSelected
+                    ? "var(--pink-500)"
+                    : senders.has(agent.id)
+                      ? "var(--purple-400)"
+                      : "var(--border-subtle)"
+                }`,
                 borderRadius: "var(--radius-sm)",
                 background: senders.has(agent.id)
                   ? "var(--bg-surface-raised)"
                   : "var(--bg-surface)",
+                boxShadow: isSelected ? "inset 2px 0 0 var(--pink-500)" : undefined,
               }}
             >
-              <span
-                style={{
-                  width: "7px",
-                  height: "7px",
-                  borderRadius: agent.baseline ? "2px" : "50%",
-                  background:
-                    CATEGORY_COLOR[agent.strategyCategory] ?? "var(--gray-300)",
-                }}
+              <WorldIcon
+                name={agentIcon(agent.strategyCategory, agent.baseline)}
+                size={13}
+                color={CATEGORY_COLOR[agent.strategyCategory] ?? "var(--gray-300)"}
               />
               <span
                 style={{
-                  font: "var(--text-xs) var(--font-mono)",
+                  font: "var(--text-sm) var(--font-mono)",
                   color: "var(--text-primary)",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
@@ -312,18 +357,23 @@ export function WorldMap({
               >
                 {agent.id}
               </span>
+              {/* The balance, coloured by whether the run has been kind to it. Two numbers on a
+                  node is a dashboard, and the eye stops following the motion — the gain is on the
+                  hover and in the chart below. */}
               <span
                 style={{
-                  font: "var(--text-xs) var(--font-mono)",
+                  font: "var(--weight-semibold) var(--text-sm) var(--font-mono)",
                   color:
-                    pnl === undefined
+                    value === undefined
                       ? "var(--text-disabled)"
-                      : pnl >= 0
-                        ? "var(--success-text)"
-                        : "var(--danger-text)",
+                      : pnl === undefined || pnl === 0
+                        ? "var(--text-secondary)"
+                        : pnl > 0
+                          ? "var(--success-text)"
+                          : "var(--danger-text)",
                 }}
               >
-                {pnl === undefined ? "·" : formatPnlUsdc(pnl)}
+                {value === undefined ? "·" : formatCompactUsd(value)}
               </span>
             </div>
           );
@@ -350,14 +400,15 @@ export function WorldMap({
               display: "flex",
               justifyContent: "space-between",
               alignItems: "baseline",
-              padding: "8px 10px 6px",
-              font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+              padding: "9px 11px 7px",
+              font: "var(--weight-semibold) var(--text-sm) var(--font-mono)",
               letterSpacing: "var(--tracking-wide)",
               textTransform: "uppercase",
               color: "var(--text-secondary)",
             }}
           >
-            <span>
+            <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <WorldIcon name="chain" size={14} color="var(--purple-200)" />
               {frame
                 ? frame.fromBlock === frame.block
                   ? t("world.block", { n: frame.block.toLocaleString("en-US") })
@@ -407,9 +458,9 @@ export function WorldMap({
                   gridTemplateColumns: "minmax(0,1.1fr) minmax(0,1fr) 62px",
                   gap: "8px",
                   alignItems: "baseline",
-                  padding: "4px 10px",
+                  padding: "5px 11px",
                   borderBottom: "1px solid var(--border-subtle)",
-                  font: "var(--text-xs) var(--font-mono)",
+                  font: "var(--text-sm) var(--font-mono)",
                   opacity: tx.ok ? 1 : 0.65,
                 }}
               >
@@ -429,6 +480,7 @@ export function WorldMap({
                 </span>
                 <span
                   style={{
+                    font: "var(--text-xs) var(--font-mono)",
                     color: "var(--text-tertiary)",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -439,6 +491,7 @@ export function WorldMap({
                 </span>
                 <span
                   style={{
+                    font: "var(--text-xs) var(--font-mono)",
                     color: "var(--text-tertiary)",
                     textAlign: "right",
                   }}
@@ -498,19 +551,12 @@ export function WorldMap({
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: "7px",
-                  font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+                  gap: "8px",
+                  font: "var(--weight-semibold) var(--text-sm) var(--font-mono)",
                   color: "var(--text-primary)",
                 }}
               >
-                <span
-                  style={{
-                    width: "8px",
-                    height: "8px",
-                    background: venue.color,
-                    borderRadius: venue.kind === "pool" ? "50%" : "2px",
-                  }}
-                />
+                <WorldIcon name={venueIcon(venue.kind)} size={14} color={venue.color} />
                 {venue.label}
               </span>
               <span
@@ -525,7 +571,7 @@ export function WorldMap({
                 <span>{venue.metric}</span>
                 <span
                   style={{
-                    font: "var(--weight-semibold) var(--text-sm) var(--font-mono)",
+                    font: "var(--weight-semibold) var(--text-base) var(--font-mono)",
                     color: value
                       ? "var(--text-primary)"
                       : "var(--text-disabled)",
