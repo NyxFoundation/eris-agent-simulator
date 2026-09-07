@@ -50,6 +50,25 @@ That is the entire contract:
   opportunity is the right answer)
 - Throwing does not crash the run (that round is skipped and `decide error:` is left in the log)
 
+All sends share the runtime's nonce allocator and `submitted` / `rejected` / `submit_failed` log.
+`ctx.walletClient` has been removed; migrate calls to `ctx.submit({ type: "rawTx", tx })` (use viem's
+`encodeFunctionData` to encode a contract call, and omit `tx.to` to deploy). `ctx.publicClient` is
+read-only, including its `request()` transport. A separately constructed sender on the same key can
+collide with the runtime nonce and omit submission records.
+
+`decide()` runs in a worker with a 5,000 ms deadline enforced by the parent thread. Even a synchronous
+infinite loop becomes `decide timeout:` with no actions from that call. `ctx.submit()` queues actions
+until the decision succeeds; returning `null` still commits queued submissions, while throwing or
+timing out discards them. Do not submit from callbacks after `decide()` has returned. `ctx.log()`
+streams diagnostics to the parent while the call is active. Each observation and result is structured
+cloned (including bigint); the worker's `latestObservation()` returns that call's snapshot.
+
+The worker is reused on normal blocks, preserving module variables. On timeout/failure or revision
+replacement, it reloads the selected source and resets worker-local variables. The parent retains
+nonce, logs, revision history and persisted state. `onObservation()` is for self-driven `run(ctx)`
+agents; a `decide()` strategy receives observations through its arguments. Self-driven agents keep
+their existing process lifecycle and immediate `ctx.submit()` behavior.
+
 ```mermaid
 flowchart LR
   READ["runtime/read.ts<br/>observation of finalized state"] --> DECIDE["decide(obs, ctx)"]

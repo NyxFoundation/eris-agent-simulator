@@ -4,7 +4,7 @@
 //   - run(ctx): self-driven (liquidator etc.). bot.ts does not loop and delegates by passing ctx
 // A self-improving agent (agent.ts + prompt.md) exports decide like any rule agent; the LLM swaps
 // that function out of band rather than producing actions itself (ADR 0018).
-import type { Address, PublicClient, WalletClient } from "viem";
+import type { Address, PublicClient } from "viem";
 import type { SimConfig } from "./config.js";
 import type { AgentAction, AgentObservation } from "./types.js";
 
@@ -25,14 +25,15 @@ export type AgentLogEntry = {
 export type AgentContext = {
   agentId: string;
   address: Address;
+  // Read-only RPC. Send all transactions (including deployments) through submit().
   publicClient: PublicClient;
-  walletClient: WalletClient;
   config: SimConfig;
-  // Latest observation (the read loop updates it every block). null if none yet.
+  // Latest observation for run(ctx); the current call's snapshot for decide(). null before the first read.
   latestObservation(): AgentObservation | null;
-  // Subscription called on every new observation (for run(ctx)-style agents). Returns an unsubscribe function.
+  // Subscription for run(ctx) agents only; decide strategies receive obs as an argument. Returns unsubscribe.
   onObservation(cb: (obs: AgentObservation) => void): () => void;
-  // Validate the action and send it to the mempool (the runtime handles signing, nonce, and self-reported logging).
+  // Validate and send via the runtime (signing, nonce, self-reported logging). In decide(), submissions
+  // are buffered until the call succeeds; errors/timeouts discard them. Late callbacks cannot submit.
   // If validation rejects it, a rejected entry is left in the mempool log (it never hits the chain = fail-closed).
   submit(action: AgentAction | Record<string, unknown>): void;
   // Append to the action log (runs/<id>/agents/<id>.jsonl).

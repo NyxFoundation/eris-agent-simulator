@@ -2,7 +2,7 @@
 
 # Getting Started (competition entrants)
 
-**A straight line from nothing to a submittable agent.** About 30 minutes to something running.
+**A straight line from nothing to a submittable agent.** §2–§3 get something running in about 30 minutes; §6 onwards is where you keep coming back while you build.
 
 The rules themselves live at [ascon.dev/rules](https://ascon.dev/rules) and are the only source for
 them; the Japanese text governs. Where this guide and the rules disagree, the rules win. This guide
@@ -13,6 +13,8 @@ one is a reference translation.
 (`forge` and `anvil`), `git`, and `zip` (used to build the submission archive).
 
 ---
+
+**Contents**: [1. The shape of the competition](#1-the-shape-of-the-competition) ([the 8 regimes](#the-8-regimes) / [timeline](#the-competition-timeline) / [what does not happen](#what-does-not-happen-here) / [what you can do](#what-you-can-do-here-examples)) · [2. Setup](#2-setup) · [3. The smallest agent](#3-the-smallest-submittable-agent) · [4. Observations and actions](#4-observations-and-actions) · [5. LLM strategy revision](#5-llm-strategy-revision) · [6. The development loop](#6-the-development-loop-run-read-fix) · [7. The dashboard](#7-reading-your-results-on-the-dashboard) · [8. Reference agents](#8-the-reference-agents) · [9. Practice devnet](#9-the-practice-devnet-optional) · [10. Submitting](#10-submitting) · [11. Ways people break this](#11-ways-people-actually-break-this) · [12. What to read next](#12-what-to-read-next)
 
 ## 1. The shape of the competition
 
@@ -68,6 +70,57 @@ remember.
 **The code's `epoch` is not the rules' epoch.** The code's `epoch` is the rules' *evaluation
 interval*.
 
+### The 8 regimes
+
+These are the eight kinds rules §3.2 publishes. Which epoch is which regime is never announced, but
+**the kinds themselves and their generators are public**: `config/regimes/<name>.yaml`. The public set
+`config/scenarios/public.yaml` is 8 regimes × 5 seeds = 40 scenarios; the non-public set is drawn from
+the same family, of which only the perturbation ranges are published (rules §3.3). The numbers in the
+table are the current YAML ranges; where the published values differ, the rules win.
+
+| # | Regime | What the environment does | Reference agents written for it (§8) |
+|---|---|---|---|
+| 0 | Calm `calm` | No events. The reference price is a mean-reverting walk, the order flow neutral | `venue-arb` / `multi-arb` / `stat-arb`. The baseline for arbitrage: a strategy that loses here loses everywhere |
+| 1 | CEX drift `cex-drift` | While a window is open the reference price carries a drift (0.1–0.2% per block) and mean reversion weakens. Three windows; one of them does not give the level back when it closes. Pool prices keep diverging from the reference | The cross-venue arbitrageurs get work. A directional `levered-long` swings hard on β |
+| 2 | Informed flow `informed-flow` | The environment's order flow leans one way while a window is open (2–3× size, correlation 1.0, 12-block persistence; two windows). Hard to tell from calm | `stat-arb` / `multi-arb` |
+| 3 | Whale `whale` | A single 25–60 WETH order knocks a pool's mid. Four of them, two pinned to Balancer / Curve. The reference price does not move | `venue-arb` / `multi-arb` / `max-profit-arb`. Whoever takes the dislocation first wins it, so bidding priority fee matters |
+| 4 | Lending incident `lending-incident` | The reference price falls 12–16%, in the same window every AMM loses 40–60% of its depth, and two victim accounts opened at HF 1.10 become liquidatable on Aave | `liquidator` (the one liquidating) / `levered-long` (managing not to be the one liquidated) |
+| 5 | Stablecoin depeg `depeg` | The environment sells DAI into the USDC/DAI pool (35–60% of its depth; ramp 12 / hold 36 / decay 45 blocks) and opens a discount. **The only regime without GMX** | `peg-arb`. DAI has no redemption floor, so the question is whether you believe it comes back |
+| 6 | Crash `crash` | The reference price gaps 15–22% and liquidity is pulled 40–60% in the same window. No victims are opened | Everyone. Arbitrage shrinks in a thin book and leverage crosses its HF. `trove-manager` / `sp-underwriter` handle the same moment on the Liquity side |
+| 7 | New pools `vuln` | Mid-epoch, 4–6 pools appear, twice; 50–70% of them skim assets from any trade above a size (4–8% of the USDC endowment). The bait is a 3–6% discount | `discovery-arb-verify` (dry-runs before taking) / `discovery-arb` (the unverified control) |
+
+Three notes.
+
+- **The seed decides where an event lands.** `windowFrac` is a range for where in the epoch it falls, so
+  the same regime lands in different places under different seeds. The observation does not carry the
+  window positions (§4)
+- **Fitting one regime is paid for in the others.** The deviation score absorbs the difference in
+  roughness between regimes, so all eight weigh about equally on the score. A strategy that wins big in
+  `lending-incident` and loses in the other seven places below a steady one. The regime columns of the
+  standings and the per-regime table on an agent's page show exactly that (§7)
+- **In regime 7, neither "never look" nor "take everything" is optimal** (the note under rules §3.2). Some
+  of the pools that appear are honest and the discount is real
+
+### The competition timeline
+
+The schedule of rules §1 (Japan Standard Time), with what you do at each stage.
+
+| When | What happens | What you do |
+|---|---|---|
+| 9/1 – 10/24 | Registration period | Join the ASCON channel on the Discord and submit the registration form |
+| 9/23 | The submission period opens. Appendix A's values (epoch length, evaluation interval, k, gas ETH), the inference proxy's model list and the list of permitted exploit targets are published **by this day** (rules §7.1) | Work through §2–§6 of this guide |
+| 9/23 – 10/31 | **Submission period.** Evaluate yourself on the 40 public scenarios and replace your submission **up to 5 times a day**. In the same period the operator's **trial environment** (rules §2.7) is open: the same configuration as the competition, take any transaction you like, but **no standings are posted** and nothing counts | Build → run → fix (§6). Submit the `bundle:agent` zip (§10) |
+| 10/31 | **Submission deadline = the agent is frozen.** Nominate up to 2 submissions for final evaluation. The hash of the lottery seed is published | No more code changes |
+| 11/1 – 11/7 | **Live competition.** One epoch is one unit; k of them, the world reinitialised each time, every unit starting at once. Score and cumulative standings update after every epoch | **You operate nothing.** Your agent runs in the operator's container and the only thing that moves is the in-epoch LLM revision. Watch the standings on the dashboard (§7) |
+| 11/8 | Reserve day, for the same-seed re-run of an epoch that failed on the operator's side (rules §4.4.2) | — |
+| 11/9 – 11/30 | Review period: audit of violations, review of the report track (entries due 11/21), the standings are finalised. No new epochs run | Enter the report track by 11/21 if you want to |
+| 12/7 | Results. After a 7-day objection period the run directories, decision logs and the lottery seed's original are published in full (rules §7.2) | — |
+
+**What you see during the live week** is whatever part of the standings, the scenario page and the agent
+pages can be shown without breaking a competition in progress. Which epoch is which regime is withheld
+(it says only `epoch s`), decision logs and raw LLM exchanges are 404, the event schedule and the seed
+are dropped. The table at the end of §7 lists it.
+
 ### What does not happen here
 
 The more mainnet experience you have, the more you design around things that this environment does
@@ -82,6 +135,11 @@ not have. None of the following exists here.
 - **An edge from arriving first.** Order within a block is by priority fee, highest first (rules §2.6;
   Anvil runs with `--order fees`). A faster line or an earlier call wins nothing — if you want the
   position, bid for it
+- **Enumerating pending orders through RPC.** With `RPC_FILTER=1`, the participant gateway refuses
+  pending transaction lists/filters and block, transaction and receipt reads with the `pending` tag.
+  `eth_getTransactionCount(address, "pending")` remains available for sender nonce management.
+  See the [gateway policy and measurements](../infra/rpc-gateway/README.md). This applies at the
+  gateway; local runs pointed directly at Anvil do not get this filter.
 - **Rewriting the reference price or an oracle.** `PriceFeed`, the Aave aggregators and the GMX oracle
   provider are owner-gated, and at startup every privileged write is simulated by `eth_call` from an
   address with no role to measure that the gate holds (`core/src/realtime/ownerGuards.ts`). Move a
@@ -297,10 +355,21 @@ obs.limits                      // default/max priority fee and default slippage
 are. Everyone sees the same things with the same delay (writes to `PriceFeed` land in the next block,
 so the reference price is always one block behind).
 
-Two qualifications. **The highest priority fee anyone else paid in the most recent block is in the
-observation** (`obs.competition.maxCompetitorPriorityFeeWei`) — that is the history of a mined block,
-not anyone's pending order. And `decide(obs, ctx)` hands you `ctx.publicClient` / `ctx.walletClient`,
-so **querying the node directly is not itself forbidden**. What is allowed is set by rules §8 (prohibited conduct).
+**The highest competitor priority fee in the most recent block is observable**
+(`obs.competition.maxCompetitorPriorityFeeWei`); it is mined history. `ctx.publicClient` permits
+additional read-only chain queries. There is no `ctx.walletClient`: return an action or use
+`ctx.submit({ type: "rawTx", tx })` for transactions. Sending through a separate client on the same
+key races the runtime's nonce and bypasses its `submitted` records. Keep all sends in the runtime.
+Rules §8 define prohibited conduct.
+
+`decide()` runs in a worker thread with a **5-second parent-owned deadline**. Synchronous infinite
+loops and unresolved awaits both produce `decide timeout:`; the result and all queued `ctx.submit`
+actions from that call are discarded. The next decision reloads the selected strategy in a new
+worker. Worker-local variables reset; the parent observation and revision loops, nonce, logs,
+version history and state directory continue. **The no-restart provision in rules §2.3 concerns a
+terminated agent process.** Replacing computation inside a live process neither restarts that agent
+nor automatically rolls its strategy back. Self-driven `run(ctx)` agents retain their own lifecycle
+and do not have a per-decision deadline.
 
 **There is no order-size cap.** No venue has a per-order amount cap, a bundle-length cap or an
 open-position cap, and `obs.limits` carries no size budget (the former `maxWethInWei` /
@@ -316,7 +385,8 @@ into**; the bigger you go, the worse the fill. Size yourself. The shared helper 
 | the runtime (validates before sending) | the action's shape and content (schema; a leg you hold no inventory for), the priority fee (`obs.limits.maxPriorityFeePerGasWei`), **gas** (30,000,000 per transaction, 30,000,000 per agent per block in total) | **rejected** before signing, with a `rejected` entry and its reason in `agents/<id>.jsonl` (for gas: `tx gas cap` / `per-block gas budget`). Nothing reaches the chain |
 | rules §2.3 and §2.6 (the operator imposes it) | **5,000 ms** per decision, **2 vCPU / 4 GB** of memory (§2.3). **No cap on transactions per block** (§2.6: inclusion is decided by the priority-fee auction, and the block gas limit is 30,000,000) | a timeout is no action for that block; a crash is no action for the rest of the epoch (no restart). **None of this is in `obs.limits`** |
 
-The runtime stops the first kind for you. **The second is yours to respect.**
+The runtime enforces send validation and the decision deadline. Design your agent to operate within
+the CPU and memory allocation.
 
 The action catalogue is in [protocols-and-actions.md](guide/protocols-and-actions.md); every field of
 `obs` is in [writing-agents.md](guide/writing-agents.md).
@@ -332,7 +402,7 @@ code and decides whether to rewrite it.
 Generated code passes a **cheatcode static check → compilation** (evaluating the function expression
 is capped at 1 second) before it is installed. **It is not trial-run first.** Once installed, every
 call to `decide` is capped at **5 seconds** (`DECIDE_TIMEOUT_MS`, rules §2.3), the same bound a
-hand-written strategy gets; exceeding it records that round as no action (`decide timeout:`). A revision that fails is not installed; the failure is recorded and the
+hand-written strategy gets; exceeding it records that round as no action (`decide timeout:`). A revision that fails static checking or compilation is not installed; the failure is recorded and the
 strategy keeps trading unchanged. There is no automatic rollback — reverting is the model's decision, made
 with the version history and `revertTo`.
 
@@ -367,36 +437,208 @@ trading unchanged. Details in [llm-agents.md](guide/llm-agents.md).
 
 ---
 
-## 6. Checking your own work
+## 6. The development loop: run, read, fix
 
-**Replay one scenario.** `--seed` is required: a scenario is (regime, seed), so a regime alone does
-not name one.
-
-```bash
-npm run backtest -- --regime crash --seed 101 --agents config/rosters/full-field.yaml
-```
-
-**Run the whole public set and get a standing.**
+Once §2–§3 have run once, the daily routine is these three moves, repeated. **Keep one lap short**: a
+360-block scenario takes 12 minutes.
 
 ```bash
+# 1. Check the wiring on a short run (40 blocks ≈ 80 s; every submission, rejection and exception shows)
+npm run sim:realtime -- --blocks 40 --agents <your roster>
+
+# 2. Replay one scenario (--seed is required: a scenario is (regime, seed), a regime alone names none)
+npm run backtest -- --regime crash --seed 101 --agents <your roster>
+
+# 3. Run the whole public set and get a standing (40 scenarios × 12 min; run it overnight)
 npm run backtest -- --scenarios config/scenarios/public.yaml --agents <your roster>
 ```
 
-The public set is **a handful of draws from a distribution, not the target**. The generator is open,
-so **sample your own seeds**. Tuning to the published seeds falls apart the moment the non-public set
-hands you a different draw.
+**Always put opponents in the roster.** A deviation score is a position within a field, so with only
+yourself T is undefined (an epoch with σ = 0 is dropped from the score). `config/rosters/full-field.yaml`
+is the field of every reference agent, and `noop` in the roster lets you read the difference from doing
+nothing.
 
-What to read:
+```yaml
+# my-roster.yaml
+agents:
+  - id: noop                 # the do-nothing baseline
+    wallet: AUTO
+  - id: my-strategy
+    wallet: AUTO
+  - id: multi-arb            # a bundled opponent (§8)
+    wallet: AUTO
+```
 
-| Where | What it tells you |
-|---|---|
-| `runs/<id>/agents/<id>.jsonl` | every round's reasoning, submissions and rejections. **Start here** |
-| `runs/<id>/summary.json` | PnL, violations, per-agent results |
-| `npm run dashboard` | standings, per-round movement, venue state, replay |
+The public set is **a handful of draws from a distribution, not the target**. The generator is open, so
+**sample your own seeds**. Tuning to the published seeds falls apart the moment the non-public set hands
+you a different draw. Judge by the **distribution across seeds**, not by one run (transaction order
+varies even within a scenario).
+
+**The reading order is fixed.** First `runs/<id>/agents/<id>.jsonl`, then `summary.json`, then the
+dashboard (§7). Read backwards and all you learn is "the rank is bad".
+
+### Reading `agents/<id>.jsonl`
+
+One JSON per line, three kinds of line mixed together.
+
+| How to tell the line | Who writes it | What it means |
+|---|---|---|
+| `round` + `action` + `reason` (no `kind`) | your `ctx.log(...)`, or the runtime recording what `decide()` returned | The decision for that block. Put anything you like in `signals` / `state`. **A log without `reason` cannot be read afterwards** — write it from the start |
+| `reason: "decide error: …"` | the runtime | `decide()` threw. No action that block. Guessing the shape of `obs` (§11) is the usual cause |
+| `reason: "decide timeout: …"` | the runtime | Over 5 seconds (rules §2.3). No action. Counted separately from errors |
+| `kind: "mempool"`, `event: "runtime_start"` | the runtime | Started, with `address` / `rpcUrl` / `mode`. **If this line is missing, the pre-flight (RPC, chain id, venue bytecode) failed** |
+| `kind: "mempool"`, `event: "bad_action"` | the runtime | The returned action failed the schema. Nothing reaches the chain |
+| `kind: "mempool"`, `event: "rejected"` | the runtime | It parsed but failed validation; `reason` says why (a leg with no inventory / priority fee over the cap / `tx gas cap` / `per-block gas budget`). Nothing reaches the chain |
+| `kind: "mempool"`, `event: "submitted"` | the runtime | Signed and sent: `hash` / `nonce` / `priorityFeeWei` / `actionType` / `protocol` / `blockSeen`. **Whether it was mined is a separate question** — match `hash` against `blocks.csv` |
+| `kind: "mempool"`, `event: "submit_failed"` | the runtime | The send itself failed (node refusal, nonce out of step); `error` carries the raw text |
+| `reason: "revision installed"` / `"revision rejected"` / `"revision reverted"` / `"revision declined"` | the runtime (§5) | The outcome of an LLM revision; `state` holds the model's notes or the rejection reason. With `ERIS_IMPROVE_LOG_CALLS: "1"` the raw exchange is also in `<id>.llm.jsonl` |
+
+Count first.
+
+```bash
+L=runs/<id>/agents/my-strategy.jsonl
+grep -c '"event":"submitted"' $L        # how often you sent
+grep -c '"event":"rejected"'  $L        # how often you were stopped before sending
+grep -c 'decide error'        $L        # how often you threw
+grep '"event":"rejected"' $L | jq -r .reason | sort | uniq -c   # why you were stopped
+```
+
+Zero `submitted` and a column of `rejected` is a **size or inventory** problem, not a strategy problem
+(§11). `submitted` lines but `includedTxCount: 0` in `summary.json` means the priority fee was too low to
+get into a block.
+
+**`summary.json`** has one record per agent. Read `initialValueUsdc` / `finalValueUsdc` (the two ends of
+P), `netPnlUsdc`, `includedTxCount` (mined transactions), `revertCount` (mined but reverted — gas paid for
+nothing), `stderrTail` (the last output of a process that died), and the run-level `violations`.
+**`blocks.csv`** is the full record of mined transactions (block, `txIndex`, sender, `priorityFeeWei`,
+`status`); where in the block your transaction landed is read here.
+
+When you fix something, change **one thing** and rerun the same seed. Change two at once and the
+distribution cannot tell you which one worked.
 
 ---
 
-## 7. The practice devnet (optional)
+## 7. Reading your results on the dashboard
+
+```bash
+npm run dashboard        # http://localhost:5173
+```
+
+Pick a competition from **Competition** in the left sidebar (one `--scenarios` run = one competition; a
+single `sim:realtime` run appears as a one-scenario competition). EN / 日本語 switches the language. The
+pages are three layers that follow the ladder **competition › scenario › round**.
+
+### Standings (`/`)
+
+![standings](img/dashboard-standings.en.png)
+
+This is the formula of rules §4.4 and nothing else. The columns:
+
+- **score** — the weighted mean of the deviation score T, at two decimals, the precision rules §4.6 ranks
+  on. The tooltip carries the number of scored epochs and the tie-breaks (std of T, worst epoch)
+- **Δ** — the rank change since the previous completed epoch
+- **form** — T per epoch as a small line (the dotted line is 50, the field's mean), with the count of
+  scored epochs beside it. Whether an agent is "steadily above the field" or "one big epoch" is visible in
+  the shape
+- **regime columns** (CALM … DEPEG) — the agent's mean T within that regime. **An explanation, not a second
+  ranking.** A row with one high column and the rest under 50 is a strategy that bet on that regime
+- **details** — mined transactions and reverts (activity, not a ranking)
+- **score by epoch**, above the table — every agent's cumulative score after each completed epoch. The
+  last point of each line is the number in the table
+
+The bar across the top is the **rounds** (the rules' evaluation intervals); **click one and the standings
+rewind to that point** ("Standings · through round k"). The rank at round k is not a preview of the final
+rank — the arbitrageurs may be leading only because the crash window has not opened yet.
+
+The **scenario list** below the table is one row per world (`regime#seed`): rounds, leader, and the kinds
+of environment event. "none scheduled" means no window event in that epoch, not that the regime is calm.
+Click a row to open that world.
+
+### The scenario page (`/scenario`)
+
+![scenario](img/dashboard-scenario.en.png)
+
+The board of one world. The bar at the top is that world's rounds; the **block axis** below it walks the
+world block by block (play, single-step, speed). The board reads left to right: **wallets** (each agent's
+account value), **the chain** (the transactions in that block and their priority fees), **contracts**
+(each venue's state: pool price, GMX open interest, Aave utilisation, LST discount, eUSD price). Below:
+the **standings within this world** (through round k), the picked wallet's **agent log** (mined
+transactions, method and venue), **venue price against fair** (the gap to fair is what arbitrage is made
+of), and **account value at each scored boundary** (you against the field).
+
+It never shows the future. No transaction or ranking past the block axis's head appears, so "what was
+visible at this point" is reproduced as it was. The **Markets** tab is per-venue state (AMM / Perp /
+Lending / Stablecoin / LST); **Explorer** lists blocks and transactions and deep-links into Blockscout
+(`npm run explorer`) when it is running.
+
+### An agent's page (`/agent/<id>`)
+
+![agent](img/dashboard-agent.en.png)
+
+Click a standings row to open it. The **Standing** tab answers "why this rank": rank, score, net PnL,
+epochs scored; mean, std (tie-break 1) and worst epoch (tie-break 2) of T; the distribution of T; **by
+epoch** (s / scenario / P / T / w); **by regime** (epochs / mean T / std of T).
+
+`liquidator` in the picture is the textbook case. Only the five `lending-incident` epochs have T between
+70 and 89; the other thirty sit between 45 and 53. Cumulatively it is 4th, but in every regime without a
+liquidation it is below the field's mean. Why a strategy that wins big in one regime and loses in the rest
+places below a steady one is visible in the per-regime rows.
+
+The rank badge at the top right is **the rank within the world (scenario) currently open**; the
+competition rank is the "k of n" in the Standing tab. The other tabs: **Overview** (the account value
+curve and end-of-run positions), **Rounds** (this agent's Δ value / log return / rank per round),
+**Positions** (every venue: GMX perps, Aave accounts with HF, LST queues, Trove ICR), **Trade history**,
+**Decision log** (the contents of `agents/<id>.jsonl`).
+
+### What is visible in the competition and the trial environment
+
+The operator-hosted dashboard is public, but whatever would break a competition in progress is dropped on
+the server. `ERIS_DASHBOARD_AUDIENCE=1 npm run dashboard` shows you the same view locally.
+
+| | Local (`npm run dashboard`) | Trial environment (9/23 – 10/31) | Live week (11/1 – 11/7) | After the results |
+|---|---|---|---|---|
+| Standings | shown | **not shown** (rules §4.7) | shown, updated per epoch | shown |
+| A scenario's regime and seed | shown | — (a continuous chain, no regimes) | **not shown** (only `epoch s`) | shown |
+| Environment event schedule | shown | closed windows only | not shown | shown |
+| Decision logs, LLM exchanges | shown | not shown (they are on your machine) | not shown | shown (rules §7.2) |
+| Venue state, transactions, explorer | shown | shown | shown | shown |
+
+---
+
+## 8. The reference agents
+
+From `example/agents/`, the ones **worth copying from** (benchmarks and internal measurement agents left
+out). Any of them goes straight into a roster as an opponent. A "yes" in the `prompt.md` column means the
+directory is in submittable form (`kind: improve`) and is a worked example of a revision policy. "Where
+it works" is the regime whose environment gives the strategy something to do (§1), not a measured PnL.
+
+| Group | Agent | What it does | Main venue | Where it works | prompt.md |
+|---|---|---|---|---|---|
+| Starting point | `my-arb` | The template you copy. A naive arbitrage that swaps toward fair on the venue furthest from it. Sizing, fees and two-leg execution are deliberately left out | Uniswap / Balancer / Curve | all | yes |
+| Benchmark | `noop` | Does nothing. In a roster it shows the difference from not moving (the competition's benchmark is this) | — | — | no |
+| Arbitrage | `venue-arb` | Cross-venue WETH arbitrage; takes only gaps above fee + safety margin | the 3 AMMs | calm / whale / cex-drift | yes |
+| Arbitrage | `multi-arb` | Base-agnostic (WBTC too) cross-venue arbitrage; two-leg and single-leg | the 3 AMMs | same | yes |
+| Arbitrage | `stat-arb` | A z-score per base over the gap's own history; bets on mean reversion | AMMs | calm / informed-flow | no |
+| Arbitrage | `max-profit-arb` | Derives a priority-fee ceiling from the expected profit and bids for position in the block | AMMs | whale | no |
+| Arbitrage | `flash-arb` | An Aave flash loan for arbitrage beyond its own capital, in one transaction (`rawTx`) | Aave + AMMs | whale / crash | no |
+| Arbitrage | `basis-arb` | One AMM leg hedged on the GMX perp (spot against futures) | AMMs + GMX | cex-drift | yes |
+| LP | `lp-provider` | Holds a Uniswap V3 position for fees, pulls it when the gap gets large | Uniswap | calm | no |
+| Leverage | `levered-long` | Collateral → borrow leverage on Aave; keeps HF inside a band and repays below it | Aave | cex-drift (direction) / lending-incident, crash (defence) | no |
+| Leverage | `lst-carry` | Stakes the LST for yield or trades the redemption-rate / market-price gap. The Aave collateral loop is opt-in via `ERIS_LST_LEVERAGE_TARGET_HF` | LST + Aave | calm | yes |
+| Liquidation | `liquidator` | Aave `liquidationCall`; idle until victims appear. The example of the **`run(ctx)` form** (§3, not submittable) | Aave | lending-incident | no |
+| CDP | `redemption-arb` | Buys eUSD at a discount and redeems it against the riskiest Trove | Liquity + the eUSD pool | when eUSD trades below par; the dedicated verification regime is `config/regimes/liquity.yaml` | yes |
+| CDP | `trove-manager` | A borrower that opens a Trove and holds it through the price path, defending against liquidation, redemption and Recovery Mode | Liquity | crash / lending-incident | yes |
+| CDP | `sp-underwriter` | Deposits eUSD in the Stability Pool to absorb liquidations and calls `liquityLiquidate` itself | Liquity | crash / lending-incident | yes |
+| Stablecoin | `peg-arb` | Buys a market-priced stable (DAI) below a dollar and sells when it returns | Curve | depeg | yes |
+| Regime 7 | `discovery-arb-verify` | Dry-runs a pool that appeared mid-epoch before taking it | new pools | vuln | no |
+| Regime 7 | `discovery-arb` | Takes the same pools without checking (the control; the one that gets skimmed) | new pools | vuln | no |
+| Attack / defence | `vault-keeper` | The honest but buggy creator: deploys a `LeakyVault` whose `rescue()` was left ungated and puts USDC in it | own contracts | all | no |
+| Attack / defence | `exploit-hunter` | Recovers selectors from the bytecode of someone else's unknown contract and drains it atomically through an `Exploiter` | own contracts | all | no |
+| Verification only | `market-launcher` / `market-taker` / `trap-launcher` | Create, use and trap a permissionless lending market. Not in the official regimes; only `config/regimes/agent-markets.yaml` | lending | outside the official set | no |
+
+---
+
+## 9. The practice devnet (optional)
 
 A chain that does not stop, which you can point your own agent at from your own machine. **It is not
 official scoring** — nothing from the practice period counts toward the standings.
@@ -411,7 +653,7 @@ exist there** — that structure only exists in the real thing.
 
 ---
 
-## 8. Submitting
+## 10. Submitting
 
 Run all of these before you send anything.
 
@@ -452,7 +694,7 @@ your agent is frozen, and only the in-epoch LLM revision keeps running.
 
 ---
 
-## 9. Ways people actually break this
+## 11. Ways people actually break this
 
 **Sending the leg you have no inventory for.** Selling while you hold only USDC is rejected by the
 runtime's validation and leaves a `rejected` entry. Nothing reaches the chain, so the result is
@@ -476,7 +718,7 @@ scored. A position you cannot close is valued as a position you cannot close.
 
 ---
 
-## 10. What to read next
+## 12. What to read next
 
 | Document | Contents |
 |---|---|

@@ -9,7 +9,7 @@
 // This is a reporting artifact, not scoring: a failed read degrades a sample instead of failing the
 // run, and failedReads/failedReadTargets carry the same accountability as valueSeries.
 import type { Address, Hex, PublicClient } from "viem";
-import { encodeAbiParameters, keccak256, parseAbi, zeroAddress } from "viem";
+import { parseAbi, zeroAddress } from "viem";
 import {
   balancerQueriesAbi,
   curveTricryptoAbi,
@@ -35,6 +35,12 @@ import {
   tokenInfoByAddress,
 } from "@eris/sdk/markets.js";
 import { aaveReserveDataAbi } from "@eris/sdk/protocols/aave.js";
+import {
+  gmxDataStoreReadAbi,
+  gmxFundingFields,
+  gmxOpenInterestKey,
+  gmxSavedFundingKey,
+} from "@eris/sdk/protocols/gmxKeys.js";
 import { twoSidedQuote } from "@eris/sdk/protocols/marketHelpers.js";
 import {
   decodeStableProbes,
@@ -210,11 +216,6 @@ export function marketSeriesMeta(a: MarketSeriesArtifact): MarketSeriesMeta {
 // ---------------------------------------------------------------------------
 // ABIs / GMX DataStore keys
 
-const dataStoreReadAbi = parseAbi([
-  "function getUint(bytes32 key) view returns (uint256)",
-  "function getInt(bytes32 key) view returns (int256)",
-]);
-
 const vaultAbi = parseAbi([
   "function getPoolTokens(bytes32 poolId) view returns (address[] tokens, uint256[] balances, uint256 lastChangeBlock)",
 ]);
@@ -284,41 +285,8 @@ const aavePoolAccountAbi = parseAbi([
   "function getUserAccountData(address user) view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)",
 ]);
 
-// Keys.sol derivations (deployer/vendor/gmx-src/contracts/data/Keys.sol).
-function hashString(s: string): Hex {
-  return keccak256(encodeAbiParameters([{ type: "string" }], [s]));
-}
-const OPEN_INTEREST = hashString("OPEN_INTEREST");
-const SAVED_FUNDING_FACTOR_PER_SECOND = hashString(
-  "SAVED_FUNDING_FACTOR_PER_SECOND",
-);
-
-export function gmxOpenInterestKey(
-  market: Address,
-  collateralToken: Address,
-  isLong: boolean,
-): Hex {
-  return keccak256(
-    encodeAbiParameters(
-      [
-        { type: "bytes32" },
-        { type: "address" },
-        { type: "address" },
-        { type: "bool" },
-      ],
-      [OPEN_INTEREST, market, collateralToken, isLong],
-    ),
-  );
-}
-
-function gmxSavedFundingKey(market: Address): Hex {
-  return keccak256(
-    encodeAbiParameters(
-      [{ type: "bytes32" }, { type: "address" }],
-      [SAVED_FUNDING_FACTOR_PER_SECOND, market],
-    ),
-  );
-}
+// The GMX DataStore key derivations live in the sdk (sdk/src/protocols/gmxKeys.ts) so that the
+// agent-facing observation reads the same keys as this reporter (issue #78).
 
 // ---------------------------------------------------------------------------
 // multicall plumbing (mirrors reconstruct.ts, kept local: this artifact must degrade, not fail)
@@ -1021,14 +989,14 @@ async function sampleBlock(opts: {
     ].map((key) =>
       batch.push({
         address: GMX.DataStore,
-        abi: dataStoreReadAbi,
+        abi: gmxDataStoreReadAbi,
         functionName: "getUint",
         args: [key],
       }),
     ),
     funding: batch.push({
       address: GMX.DataStore,
-      abi: dataStoreReadAbi,
+      abi: gmxDataStoreReadAbi,
       functionName: "getInt",
       args: [gmxSavedFundingKey(m.marketToken)],
     }),
@@ -1209,31 +1177,35 @@ async function sampleBlock(opts: {
 
   const gmx: NonNullable<MarketSeriesRow["gmx"]> = {};
   for (const entry of gmxIdx) {
-    const oi = entry.oi.map((idx) => stage0[idx]);
-    if (oi.some((v) => typeof v !== "bigint")) continue;
-    const [longA, longB, shortA, shortB] = oi as bigint[];
     const fundingRaw = stage0[entry.funding];
-    // OI is stored in USD with 30 decimals; savedFundingFactorPerSecond is a per-second fraction
-    // at 30 decimals (sign = longs pay shorts when positive). A failed funding read leaves the
-    // field absent rather than printing 0.00bps — a zero here is not a measurement (issue #44's
-    // discipline applies to reporting too).
+    // Decoded by the sdk's shared formula so this artifact and the agent-facing observation cannot
+    // drift apart (issue #78). OI is USD at 30 decimals; savedFundingFactorPerSecond is a
+    // per-second fraction at 30 decimals, positive when longs pay shorts. A failed funding read
+    // leaves the field absent rather than printing 0.00bps — a zero here is not a measurement
+    // (issue #44's discipline applies to reporting too).
     //
-    // savedFundingFactorPerSecond is the *adaptive* funding path's stored state: MarketUtils
-    // returns early and never writes it when fundingIncreaseFactorPerSecond is 0, so on a GMX
-    // deploy without adaptive funding this key reads 0 forever no matter how skewed the book is.
-    // That was true of every run before the localhost market config gained funding parameters
-    // (deployer/vendor/gmx-localhost.patch), and it is still true of any run replayed from a state
-    // dump baked before that — a 0 from such a dump means "this deploy has no funding", not
-    // "the book is balanced". Rebake the dump (`npm run gen:state-dump`) to get a real rate.
-    gmx[entry.market.base] = {
-      longOiUsd: round2(Number(longA + longB) / 1e30),
-      shortOiUsd: round2(Number(shortA + shortB) / 1e30),
+    // savedFundingFactorPerSecond is the *adaptive* funding path's stored state, so it reads 0
+    // forever on a deploy whose fundingIncreaseFactorPerSecond is 0 — every run before
+    // deployer/vendor/gmx-localhost.patch gained funding parameters, and any run replayed from a
+    // state dump baked before it. Such a 0 means "this deploy has no funding", not "the book is
+    // balanced"; rebake the dump (`npm run gen:state-dump`) to get a real rate. The observation
+    // says which it is with fundingModeled; this row does not carry the flag, so the dashboard
+    // reads the same 0 either way.
+    const fields = gmxFundingFields({
+      openInterest: entry.oi.map((idx) => stage0[idx]) as (
+        bigint | undefined
+      )[],
       ...(typeof fundingRaw === "bigint"
-        ? {
-            fundingPerHourBps: round6(
-              (Number(fundingRaw) / 1e30) * 3600 * 10_000,
-            ),
-          }
+        ? { savedFundingFactorPerSecond: fundingRaw }
+        : {}),
+    });
+    if (fields.longOiUsd === undefined || fields.shortOiUsd === undefined)
+      continue;
+    gmx[entry.market.base] = {
+      longOiUsd: fields.longOiUsd,
+      shortOiUsd: fields.shortOiUsd,
+      ...(fields.fundingPerHourBps !== undefined
+        ? { fundingPerHourBps: fields.fundingPerHourBps }
         : {}),
     };
   }

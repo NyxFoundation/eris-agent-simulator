@@ -1,14 +1,10 @@
 // The per-decision response bound (competition rules §2.3: 5,000 milliseconds).
-//
-// bot.ts races every call into decide() against it, whether the strategy is the one the participant
-// shipped or one the model installed in-run. Past the bound the block is no action; a late answer, if
-// one ever comes, is dropped -- the block it was for has closed. There is no restart and no freeze
-// (§2.3): the agent simply goes on to the next block.
-//
-// What this can and cannot stop. A decide() that awaits something that never resolves is caught
-// here. A decide() that spins synchronously blocks the event loop itself, so no timer inside this
-// process fires until it returns -- nothing in-process can interrupt it, and that agent is silent for
-// the rest of the epoch. That is the trade the rules make by stopping at "no action".
+// StrategyRunner enforces it on the parent event loop and terminates the worker on expiry, so both
+// synchronous loops and unresolved awaits cost only that decision. Submissions are committed only
+// with an on-time result. The next call reloads the selected strategy; the agent process, revision
+// history and state directory continue. Worker-local variables reset; no automatic rollback occurs.
+// withDecideTimeout also bounds standalone async executors. It alone cannot interrupt synchronous
+// JavaScript; production decisions must run through StrategyRunner.
 export const DECIDE_TIMEOUT_MS = 5000;
 
 export class DecideTimeoutError extends Error {

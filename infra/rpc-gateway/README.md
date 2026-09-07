@@ -105,3 +105,40 @@ Denied methods get HTTP 403 + a JSON-RPC error and are counted in `rpc_method_de
 `anvil_setBalance`/`evm_mine`/`hardhat_setBalance`/`txpool_content`/`debug_traceTransaction` → 403,
 `eth_blockNumber`/`eth_call` → 200, both locally and over the external `ascon-rpc` tunnel (closing the
 prior exposure where an Access-authenticated caller could call cheatcodes).
+
+### Pending-transaction visibility (issue #87)
+
+The default filter keeps the priority-fee auction sealed at this RPC boundary. It refuses
+`eth_pendingTransactions`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`,
+`eth_getFilterLogs`, and `eth_subscribe`. Filter reads are refused even for filters created through
+another connection; otherwise an existing pending filter would bypass the creation ban. Use
+`eth_getLogs` for mined logs and `eth_blockNumber` for block polling.
+
+The `pending` tag is refused on `eth_getBlockByNumber`, `eth_getBlockTransactionCountByNumber`,
+`eth_getTransactionByBlockNumberAndIndex`, `eth_getRawTransactionByBlockNumberAndIndex`, and
+`eth_getBlockReceipts`. A mixed batch containing a forbidden call is rejected in full before being
+forwarded. Mined block reads and **`eth_getTransactionCount(address, "pending")` remain available**:
+`Sender` seeds its nonce with the latter and must account for already pending submissions.
+`eth_sendRawTransaction` remains available subject to the existing gas cap.
+
+`RPC_METHOD_DENY` overrides the default method-deny regex; replacing it is an operator policy
+change and must preserve these bans on participant endpoints. Parameter checks still apply while
+`RPC_FILTER=1`. `RPC_FILTER=0` is an internal all-access endpoint. Direct access to the upstream node
+also bypasses filtering; the operator must keep it private.
+
+Measured locally **before the fix**, 2026-09-07, Anvil **v1.7.1**, `--no-mining`, `RPC_FILTER=1`,
+with one transaction in the pool and the latest block still at 0:
+
+| Gateway call | Before | After |
+|---|---|---|
+| `eth_pendingTransactions` | HTTP 200, upstream `-32601 Method not found` in this Anvil version | HTTP 403 |
+| `eth_newPendingTransactionFilter` then `eth_getFilterChanges` | HTTP 200, pending transaction hash returned | HTTP 403 on both |
+| `eth_getBlockByNumber("pending", true)` | HTTP 200, full pending transaction including calldata and fees | HTTP 403 |
+| `eth_getBlockTransactionCountByNumber("pending")` | HTTP 200, `0x1` | HTTP 403 |
+| `eth_getTransactionByBlockNumberAndIndex("pending", "0x0")` | HTTP 200, `null` in this Anvil version | HTTP 403 (do not rely on upstream behavior) |
+| `eth_getTransactionCount(sender, "pending")` | HTTP 200, `0x1` | HTTP 200, `0x1` |
+
+Reproduce the regression against a real Anvil with
+`node --import tsx --test test/rpcGateway.test.ts test/runtimeSender.test.ts`. The sender test also
+submits two actions through the gateway on top of an existing pending transaction, checks consecutive
+nonces and submission records, and mines all three. These tests need Anvil, already installed in CI.

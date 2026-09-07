@@ -56,7 +56,7 @@ type DecideFn = (obs: AgentObservation, ctx: AgentContext) =>
 type AgentContext = {
   agentId: string;
   address: Address;
-  publicClient / walletClient;      // viem クライアント
+  publicClient;                     // 読取専用 viem クライアント。送信は submit
   config: SimConfig;                // 同じ YAML から再構築したもの
   latestObservation(): AgentObservation | null;
   onObservation(cb): () => void;    // 購読解除関数を返す

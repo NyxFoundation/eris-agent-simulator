@@ -79,13 +79,15 @@ Three intervals where the right revision is none:
   code is wrong.
 - **Too little happened.** A handful of decisions and no gaps in the history is noise.
 
-Three more that are this strategy's own:
+Four more that are this strategy's own:
 
 - **The fair price moved and the strategy was carrying a hedge.** That is what the hedge is for.
 - **`protocols.gmx` is absent.** A run without the venue leaves no hedge instrument, and `noop` with
   a reason is the honest action, not an unhedged spot trade.
 - **Mostly hedge adjustments and few opportunities.** Read `HEDGE_TOL_USD` before the edge
   threshold: a band that is too tight spends the strategy's rounds on maintenance.
+- **The funding rate or the skew changed.** Both are now in the observation, and neither is worth a
+  revision on this clock — see "Funding is observable now" below for the magnitude.
 
 ## What you are shown, and where to look
 
@@ -147,6 +149,21 @@ the threshold is the failure mode that loses to a frozen strategy.
   than how wide the code assumes it is.
 - **The dust loop reads as many small settled trades.** If `MIN_LEG_USD` is too low the aggregate
   shows a high `sent` with `the trades themselves made` near zero.
+- **Funding is observable now, and it is not a trade.** `protocols.gmx` carries `longOiUsd` /
+  `shortOiUsd` (the skew) and `fundingPerHourBps` (the rate, positive when longs pay shorts), and
+  the position carries `fundingOwedUsd`. The cost model already reads the rate: it credits the hedge
+  when it sits on the thin side and charges it when it sits on the crowded one. **Do not build a
+  carry trade on top of it.** Funding accrues on EVM time and EVM time is not warped here, so a
+  360-block round is twelve minutes: a fully one-sided book pays ~0.14 bps of notional over all of
+  it, and a realistic skew ~0.02 bps, against the ~30 bps the AMM leg pays the pool. There is no
+  interval in which holding the paid side pays for a pool fee. Deciding *which side to hedge on*
+  from funding is the same mistake wearing a hat — the side is set by the delta the AMM leg created,
+  and that is invariant 1.
+- **A zero funding rate has two meanings and the observation tells them apart.**
+  `fundingModeled: false` means this deploy does not model funding at all (a state dump baked before
+  the environment gained funding parameters), so the 0 says nothing about the book. `true` with a 0
+  rate means the book is flat. An absent field means the read failed. None of the three is evidence
+  for a code change.
 
 ## Constraints
 

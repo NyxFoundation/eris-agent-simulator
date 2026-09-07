@@ -57,11 +57,16 @@ LLM の手掛かりは現在の戦略コードだけになり、**一度も swap
 「今の戦略を維持」。生成コードは **cheatcode 静的検査 → vm コンパイル**（関数式の *評価* に 1 秒
 = `runInContext(..., {timeout: 1000})`）を通ってから設置される。**設置前に試運転はしない** — vm の
 timeout は式の評価しか覆わないので、無限ループする本体は評価を通ってしまう。だから設置後、
-`decide` の**呼び出しごと**に `Promise.race` で 5 秒（`DECIDE_TIMEOUT_MS` = 規約 §2.3 の応答タイムアウト。
-`example/agents/runtime/decideTimeout.ts`）を掛ける。**手書きの `decide()` も bot.ts が同じ 1 本で見切る**。
-超過はそのブロックが行動なし（`decide timeout:` で記録）。**再起動も凍結も無い**（規約 §2.3 の 2026-09-06 改定）。
-覆うのは await が返らない型で、同期の無限ループはイベントループごと止まるので中からは止められず、
-その agent はエポックの残りを無言で過ごす。
+`decide` を **worker thread** で実行し、親スレッドが呼び出しごとに 5 秒を計測する
+（`DECIDE_TIMEOUT_MS` = 規約 §2.3、`runtime/strategyRunner.ts` / `decideTimeout.ts`）。
+**手書き・生成済みの両戦略に同じ上限**がかかり、await が返らない場合も同期の無限ループも
+`decide timeout:` として記録し、その判断の送信予約と返り値を捨てる。次の判断は同じ選択中の戦略を
+新しい worker にロードする。worker 内の変数は初期化されるが、親の観測・改訂ループ、nonce、ログ、
+版履歴、状態ディレクトリは継続する。これは生きている agent 内の計算の破棄であり、規約 §2.3 が禁じる
+**異常終了した agent プロセスの再起動ではない**。プロセスの異常終了後は従来どおりエポックの残りが行動なし。
+`ctx.publicClient` は読取専用、`walletClient` は公開しない（issue #85）。取引は戻り値か `ctx.submit()` に
+集約し、`decide` 中の submit は正常完了まで保留する。`run(ctx)` の自走型は従来のライフサイクルを維持し、
+`onObservation` は自走型専用。詳しくは ADR 0024。
 **自動 rollback は無い**（閾値に妥当な値が無いため。旧実装は 18 run 中 0 件発火、逆に「少しでも負けたら」
 だと全員が負けるレジームで毎回巻き戻る）。戻すかどうかはモデルの判断で、版履歴を渡して `revertTo` で行う。
 LLM バックエンドが無くても run は完走し、改訂失敗が記録されて戦略は無改変で走り続ける。
@@ -127,6 +132,15 @@ LP 建玉 10、bundle 内 action 5 — 全部消した。**引き上げではな
   よって**レートは実物・符号も偏り追随**だが、**数百ブロックで積む額は小さい**（Aave の利息と同じ理由。EVM 時間は warp しない）
 - **これ以前に焼いた state dump は旧設定を持つ**ので、そこからの replay は今も 0 を返す。
   その 0 は「板が均衡している」ではなく「この deploy に funding が無い」。`npm run gen:state-dump` で焼き直す
+- **observation にも出る**（issue #78）。`protocols.gmx` の `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`
+  （正 = long が short に払う）/ `fundingModeled`、建玉があれば `position.fundingOwedUsd`。
+  以前は「チェーン上にも market.json にもあるのに、どの agent からも見えない」状態だった。
+  DataStore のキー導出は **`sdk/src/protocols/gmxKeys.ts` が単一の出典**で、marketSeries（報告）と
+  gmx アダプタ（観測）が同じキー・同じ式を読む（`example → sdk ← core` なのでアダプタは core を読めない）。
+  **読取失敗は 0 ではなく欠落**、`fundingModeled: false` が「この deploy に funding が無い」側の 0。
+  **額は取引にならない**: 360 ブロック(2s/block = 12 分)で 100% スキューでも建玉の 0.14bps、
+  実測スキューなら ~0.02bps で、AMM 側の 30bps に対して 3 桁小さい。**符号付きのコスト項と偏りシグナル**であって
+  carry ではない（`basis-arb` の `fundingCarryBpsPerBlock` がヘッジ側の符号で cost gate に入れる）
 
 ### `run.resetUnit` — world のリセット単位（ADR 0020）
 
