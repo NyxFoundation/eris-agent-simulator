@@ -9,7 +9,7 @@ uses). Memory limits are only trustworthy if you develop against the environment
 
 | image | contents | built by |
 |---|---|---|
-| **`eris-agent-base`** | the shared runtime — sdk + core + `example/agents/{runtime,lib}` + toolchain (`npm ci`). **No team code.** | `npm run agent:build` |
+| **`eris-agent-base`** | TypeScript/Python SDKs + `example/agents/{runtime,lib}` + Node/Python toolchain and dependencies. **No team code.** | `npm run agent:build` |
 | **`eris-agent:<id>`** | `FROM base` + only that one team's `example/agents/<id>/` (and its own deps) | `npm run agent:build -- team <id>` |
 
 **Why per-team, not one shared image:** a single image with every agent baked in would put every
@@ -18,8 +18,8 @@ in a prize competition. Per-team images also let a team bring its own dependenci
 build time), and give a pinned artifact (`eris-agent:<id>` digest) for the replay audit. The base
 layer is shared on disk, so 100 team images cost ~one base plus small per-team deltas.
 
-> **Build-time supply chain:** `build.sh team` runs the team's `npm install` (postinstall scripts
-> execute). Build team images in a throwaway/sandboxed builder.
+> **Build-time supply chain:** `build.sh team` runs the team's `npm install` and `pip install`
+> (package build/install hooks execute). Build team images in a throwaway/sandboxed builder.
 
 ```bash
 npm run agent:build              # base (once)
@@ -34,6 +34,9 @@ requirements before the root filesystem becomes read-only. Revisions are compile
 Node, Python, NumPy and every other team dependency share the same 4 GiB container cap.
 `npm run agent:selftest -- my-arb-py` exercises this path. Set `ERIS_SELFTEST_CONFIG` to choose a
 short local config; the default uses `config/local.yaml`, or `config/example.yaml` if absent.
+The wrapper selects container `python3` independently of a host `ERIS_PYTHON` venv path;
+`ERIS_DOCKER_PYTHON` overrides the executable inside the image. Python bind-mount mode defaults
+to the shared Python base (build it first), or your `ERIS_AGENT_IMAGE` with team dependencies.
 
 `self-test.sh` builds the team image and runs a short live environment (funds wallets + deploys
 venues) with only that agent + a noop baseline, each capped. An agent that exceeds the cap is

@@ -109,13 +109,16 @@ if [ "$(uname -s)" = "Darwin" ]; then
     export "$v=$val"
   done
 fi
-COMMON_ENV=( -e HOME=/tmp -e NODE_ENV -e REPORT_DIR )
+# A local venv path is not a container executable. Keep interpreter selection independent so
+# exporting ERIS_PYTHON for local development does not break agent:selftest / Docker backtests.
+COMMON_ENV=( -e HOME=/tmp -e NODE_ENV -e REPORT_DIR
+  -e "ERIS_PYTHON=${ERIS_DOCKER_PYTHON:-python3}" )
 while IFS= read -r name; do
   case "$name" in
     # ERIS_AGENT_STATE_DIR is a host path too (issue #77): the image maps it to /eris/state and the
     # bind mount keeps it where it is, so each mode sets it itself alongside the mount rather than
     # forwarding a path that does not exist inside the image.
-    ERIS_RUN_DIR|ERIS_AGENT_DIR|ERIS_CONFIG|ERIS_REPO|ERIS_AGENT_STATE_DIR) ;;
+    ERIS_RUN_DIR|ERIS_AGENT_DIR|ERIS_CONFIG|ERIS_REPO|ERIS_AGENT_STATE_DIR|ERIS_PYTHON) ;;
     *) COMMON_ENV+=( -e "$name" ) ;;
   esac
 done < <(compgen -e | grep '^ERIS_' || true)
@@ -208,6 +211,10 @@ stop() {
 }
 
 if [ "${ERIS_AGENT_BINDMOUNT:-0}" = "1" ]; then
+  DEFAULT_BIND_IMAGE=node:24-bookworm-slim
+  if [ -f "${ERIS_AGENT_DIR:-}/strategy.py" ]; then
+    DEFAULT_BIND_IMAGE="${ERIS_BASE_IMAGE:-eris-agent-base:local}"
+  fi
   # Bind-mount mode: same host path inside the container, so coordinator paths resolve as-is.
   BIND_MOUNTS=( -v "$REPO:$REPO:ro" -v "$LOG_HOST:$LOG_HOST" )
   BIND_ENVS=( -e ERIS_RUN_DIR -e ERIS_AGENT_DIR -e ERIS_CONFIG -e ERIS_RUN_DIR_POINTER )
@@ -220,9 +227,9 @@ if [ "${ERIS_AGENT_BINDMOUNT:-0}" = "1" ]; then
   fi
   supervise docker run "${CAPS[@]}" "${COMMON_ENV[@]}" \
     "${BIND_ENVS[@]}" \
-    "${BIND_MOUNTS[@]}" -w "$REPO" \
-    "${ERIS_AGENT_IMAGE:-node:24-bookworm-slim}" \
-    node --import tsx "$REPO/example/agents/runtime/bot.ts"
+    "${BIND_MOUNTS[@]}" -w "$REPO" --entrypoint node \
+    "${ERIS_AGENT_IMAGE:-$DEFAULT_BIND_IMAGE}" \
+    --import tsx "$REPO/example/agents/runtime/bot.ts"
   exit $?
 fi
 

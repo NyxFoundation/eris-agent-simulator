@@ -20,6 +20,8 @@ cp -r example/agents/my-arb-py example/agents/my-python
 Declare additional dependencies, with versions, in `example/agents/my-python/requirements.txt`.
 Install that file in the local venv. `agent:build -- team my-python` installs it at **build time**;
 the running container has a read-only root filesystem. Installing a package is not part of an LLM revision.
+The container wrapper uses its own `python3`, even when `ERIS_PYTHON` points at a host venv.
+Use `ERIS_DOCKER_PYTHON` only to select a different executable installed inside a team image.
 
 Use the ordinary roster and commands; no Python-specific coordinator or simulator is involved:
 
