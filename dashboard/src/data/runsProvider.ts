@@ -1952,14 +1952,25 @@ export async function fetchWorldSnapshot(
     const fromBlock = from + slot * blocksPerFrame;
     const block = Math.min(to, fromBlock + blocksPerFrame - 1);
     const rows = rowsByFrame.get(slot) ?? [];
+    // Which rows the board carries, when a block has more than it can fly. Not the first N: the
+    // environment's oracle writes the price at the top of every block and pays the most for it, so
+    // "the first six" is six identical rows and the competition is the part that gets cut. The
+    // sample prefers the field and keeps block order inside it; the counts below stay the block's.
+    const sampled = new Set(
+      [
+        ...rows.filter((r) => r.role === "agent"),
+        ...rows.filter((r) => r.role !== "agent"),
+      ].slice(0, WORLD_MAX_TXS_PER_FRAME),
+    );
     const txs: WorldTx[] = rows
-      .slice(0, WORLD_MAX_TXS_PER_FRAME)
+      .filter((r) => sampled.has(r))
       .map((row) => ({
         hash: shortHash(row.hash),
         agent:
           row.role === "external"
             ? shortAddress(row.from)
             : (row.ownerId ?? row.from),
+        kind: row.role === "agent" ? ("agent" as const) : ("environment" as const),
         method: methodOf(row, infoByHash),
         venue: venueOfTx({
           protocol: infoByHash.get(row.hash.toLowerCase())?.protocol,
@@ -1983,9 +1994,17 @@ export async function fetchWorldSnapshot(
       venueValues.gmx = formatUsd(gmx.longOiUsd + gmx.shortOiUsd);
     }
     if (venueIds.has("aave") && market?.aave) {
-      const reserve = Object.values(market.aave)[0];
-      if (reserve)
-        venueValues.aave = `${(reserve.utilization * 100).toFixed(1)}%`;
+      // Across the reserves, not whichever one comes first out of the object. A run can supply WETH
+      // and borrow only USDC, and reading the first key then reports a lending market at 0%
+      // utilisation while its USDC side is being borrowed against all run.
+      let supplied = 0;
+      let borrowed = 0;
+      for (const reserve of Object.values(market.aave)) {
+        supplied += reserve.suppliedUsd;
+        borrowed += reserve.borrowedUsd;
+      }
+      if (supplied > 0)
+        venueValues.aave = `${((borrowed / supplied) * 100).toFixed(1)}%`;
     }
     if (venueIds.has("lst")) {
       const lst = sampleAt(lstSeries, block, lstCursor);
@@ -2023,7 +2042,9 @@ export async function fetchWorldSnapshot(
         round.epochs.find((e) => block > e.fromBlock && block <= e.toBlock)
           ?.index ?? 0,
       txCount: rows.length,
-      senderCount: new Set(rows.map((r) => r.ownerId || r.from)).size,
+      senderCount: new Set(
+        rows.filter((r) => r.role === "agent").map((r) => r.ownerId || r.from),
+      ).size,
       txs,
       reverts: rows.filter((r) => r.status !== "success").length,
       venueValues,

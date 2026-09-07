@@ -288,6 +288,7 @@ export async function fetchWorldSnapshot(
       txs.push({
         hash: `0xseed${block}${i}`,
         agent: agent.id,
+        kind: "agent",
         method,
         venue: venues[Math.floor(rnd() * venues.length)].id,
         fee: (0.8 + rnd() * 7).toFixed(2),

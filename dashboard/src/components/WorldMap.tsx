@@ -415,9 +415,11 @@ export function WorldMap({
               >
                 <span
                   style={{
-                    color: tx.ok
-                      ? "var(--text-primary)"
-                      : "var(--danger-text)",
+                    color: !tx.ok
+                      ? "var(--danger-text)"
+                      : tx.kind === "environment"
+                        ? "var(--text-tertiary)"
+                        : "var(--text-primary)",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",

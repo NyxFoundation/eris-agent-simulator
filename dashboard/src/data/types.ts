@@ -469,6 +469,12 @@ export interface WorldTx {
   hash: string;
   /** Agent id, or a short address for a sender the roster does not know (role "external"). */
   agent: string;
+  /**
+   * Whether a competitor sent this, or the world did. The environment's own traffic — the oracle's
+   * price writes, the background order flow — is most of every block and is not a decision anybody
+   * is scored on, so the board has to be able to tell them apart.
+   */
+  kind: "agent" | "environment";
   method: string;
   /** The venue node this transaction reached; null when nothing on it names one. */
   venue: string | null;
@@ -488,7 +494,8 @@ export interface WorldFrame {
   round: number;
   /** Every transaction in the frame, counted. */
   txCount: number;
-  /** Distinct senders in the frame, counted. */
+  /** Distinct competing agents that sent in the frame. The environment's own senders are not
+   * counted: they are the world, not the field. */
   senderCount: number;
   /** The transactions the board animates and the chain panel lists — a sample once a frame carries
    * more than the dot pool can fly, which is why the counts above are separate from its length. */
