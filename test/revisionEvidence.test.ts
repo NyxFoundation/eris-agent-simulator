@@ -17,6 +17,7 @@ import {
   MarketHistory,
   sampleObservation,
   TradeLedger,
+  marketMoveUsdc,
   VALUE_MARK_DELAY_BLOCKS,
 } from "../example/agents/runtime/evidence.js";
 import {
@@ -33,8 +34,12 @@ type ObsOpts = {
   uniWbtc?: number;
   value?: number;
   dai?: { priceUsdc: number; marketQuoted?: boolean };
+  eusd?: { priceUsdc: number; marketQuoted?: boolean };
   lstDiscountBps?: number;
   eusdDiscountBps?: number;
+  // Spot holdings in whole units. Sets the raw fields the sampler reads (wethWei / baseBalances /
+  // baseDecimals), because that is the shape a real observation has.
+  holdings?: { WETH?: number; WBTC?: number };
 };
 
 // Only the fields the sampler reads. Cast at the boundary: an AgentObservation carries thirty
@@ -48,7 +53,26 @@ function obs(o: ObsOpts): AgentObservation {
       ? { fairPricesUsd: { WETH: fair, WBTC: o.fairWbtc } }
       : {}),
     inventory: { valueUsdc: o.value ?? 25_000 },
+    ...(o.holdings
+      ? {
+          baseBalances: {
+            ...(o.holdings.WETH !== undefined
+              ? { WETH: BigInt(Math.round(o.holdings.WETH * 1e18)).toString() }
+              : {}),
+            ...(o.holdings.WBTC !== undefined
+              ? { WBTC: BigInt(Math.round(o.holdings.WBTC * 1e8)).toString() }
+              : {}),
+          },
+          baseDecimals: { WETH: 18, WBTC: 8 },
+        }
+      : {}),
     balances: {
+      ...(o.holdings?.WETH !== undefined
+        ? {
+            ethWei: "0",
+            wethWei: BigInt(Math.round(o.holdings.WETH * 1e18)).toString(),
+          }
+        : {}),
       stables: {
         USDC: { priceUsdc: 1, marketQuoted: false },
         ...(o.dai
@@ -56,6 +80,14 @@ function obs(o: ObsOpts): AgentObservation {
               DAI: {
                 priceUsdc: o.dai.priceUsdc,
                 marketQuoted: o.dai.marketQuoted !== false,
+              },
+            }
+          : {}),
+        ...(o.eusd
+          ? {
+              EUSD: {
+                priceUsdc: o.eusd.priceUsdc,
+                marketQuoted: o.eusd.marketQuoted !== false,
               },
             }
           : {}),
@@ -208,7 +240,7 @@ test("TradeLedger: a decision is joined to inclusion latency, ordering and what 
   assert.equal(agg.reverted, 0);
   assert.equal(agg.meanInclusionLatencyBlocks, 2);
   assert.equal(agg.meanTxIndex, 7);
-  assert.equal(agg.attributedValueDeltaUsdc, -10);
+  assert.equal(agg.rawValueDeltaUsdc, -10);
 
   const outcomes = ledger.outcomesByBlock(null).get(40);
   assert.ok(outcomes);
@@ -439,7 +471,7 @@ test("TradeLedger: a baseline taken long after inclusion is refused, not used", 
   ledger.mark(23, 24_000);
   const agg = ledger.aggregate(null);
   assert.equal(agg.attributedTrades, 0);
-  assert.equal(agg.attributedValueDeltaUsdc, null);
+  assert.equal(agg.rawValueDeltaUsdc, null);
   assert.match(
     digestTrades(agg).join("\n"),
     /the block they landed in was not observed/,
@@ -457,7 +489,7 @@ test("TradeLedger: a baseline one block late is still a baseline", () => {
   ledger.mark(11 + 1 + VALUE_MARK_DELAY_BLOCKS, 25_050);
   const agg = ledger.aggregate(null);
   assert.equal(agg.attributedTrades, 1);
-  assert.equal(agg.attributedValueDeltaUsdc, 50);
+  assert.equal(agg.rawValueDeltaUsdc, 50);
 });
 
 test("TradeLedger: a quoted gap is only attributed to an action a venue gap was the reason for", () => {
@@ -527,4 +559,148 @@ test("buildRevisionContext: a version carried in from another epoch is not diffe
   assert.match(context, /v1 @ block 12 in epoch 1 of 2 \(last-epoch\) \(value then: 25000\.00 USDC, in that epoch\)/);
   // This epoch's own version keeps the relative frame, which is the one the model reasons in.
   assert.match(context, /v2 @ block 1200 in epoch 2 of 2 \(this-epoch\) \(value then: -1000\.00 USDC vs the run start\)/);
+});
+
+test("sampleObservation: spot holdings are read in whole units, native ETH folded into WETH", () => {
+  const sample = sampleObservation(
+    obs({ block: 1, holdings: { WETH: 8, WBTC: 0.4 } }),
+  );
+  assert.equal(sample.holdings.WETH, 8);
+  assert.equal(sample.holdings.WBTC, 0.4);
+  // A base without decimals is left out, not guessed at eighteen.
+  const noDecimals = obs({ block: 2, holdings: { WBTC: 1 } });
+  delete (noDecimals as unknown as { baseDecimals?: unknown }).baseDecimals;
+  assert.equal(sampleObservation(noDecimals).holdings.WBTC, undefined);
+});
+
+test("marketMoveUsdc: what the inventory would have done at fair prices, or null when nothing is priced", () => {
+  assert.equal(
+    marketMoveUsdc({ WETH: 8, WBTC: 0.4 }, { WETH: 3000, WBTC: 60000 }, { WETH: 3010, WBTC: 59900 }),
+    8 * 10 + 0.4 * -100,
+  );
+  assert.equal(marketMoveUsdc({ WETH: 8 }, {}, { WETH: 3010 }), null);
+  assert.equal(marketMoveUsdc({}, { WETH: 3000 }, { WETH: 3010 }), null);
+  // A feed that read zero at either end is unpublished, not a price: the live run of 2026-09-07
+  // started observing while WBTC's feed was still 0, and the whole 0.4 WBTC became a "market move"
+  // of +24,176 USDC the block the feed came alive.
+  assert.equal(
+    marketMoveUsdc({ WETH: 8, WBTC: 0.4 }, { WETH: 3000, WBTC: 0 }, { WETH: 3010, WBTC: 60440 }),
+    80,
+  );
+  const unpublished = sampleObservation(
+    obs({ block: 1, fairWeth: 3000, fairWbtc: 0, holdings: { WETH: 8, WBTC: 0.4 } }),
+  );
+  assert.equal(unpublished.fair.WBTC, undefined);
+});
+
+test("TradeLedger: the market's move on held inventory is separated from what the trade did", () => {
+  // The smoke run of 2026-09-07: a do-nothing agent was credited with +6,562 USDC over the trading
+  // agent's own windows, because the delta was the whole portfolio's mark. The counterfactual is
+  // the pre-trade inventory at the settled block's fair prices; what is left is the trade.
+  const history = new MarketHistory(64);
+  history.push(obs({ block: 40, fairWeth: 3000, value: 25_000, holdings: { WETH: 8 } }));
+  history.push(obs({ block: 42, fairWeth: 3005, value: 25_040, holdings: { WETH: 8 } }));
+  history.push(obs({ block: 45, fairWeth: 3010, value: 25_100, holdings: { WETH: 8 } }));
+  const ledger = new TradeLedger({ sampleAt: (b) => history.at(b) });
+  ledger.submitted({ hash: "0xb", decidedAtBlock: 40, actionType: "swap", base: "WETH" });
+  ledger.resolved("0xb", { status: "success", txIndex: 2, blockNumber: 42 });
+  for (const b of [42, 45]) ledger.mark(b, history.at(b)!.valueUsdc, history.at(b));
+
+  const agg = ledger.aggregate(null);
+  // Baseline is the decision block (25,000), not the inclusion mark (25,040): the fill itself is
+  // part of what the trade did.
+  assert.equal(agg.rawValueDeltaUsdc, 100);
+  assert.equal(agg.marketValueDeltaUsdc, 80); // 8 WETH x (3010 - 3000)
+  assert.equal(agg.tradeValueDeltaUsdc, 20);
+  assert.equal(agg.splitTrades, 1);
+  const outcome = ledger.outcomesByBlock(null).get(40)![0];
+  assert.match(outcome, /value \+100\.00 after 3b \(market \+80\.00, trade \+20\.00\)/);
+  const digest = digestTrades(agg).join("\n");
+  assert.match(digest, /holding that inventory at fair prices would have made \+80\.00 USDC/);
+  assert.match(digest, /the trades themselves made \+20\.00 USDC/);
+  assert.doesNotMatch(digest, /not what the market did/);
+});
+
+test("TradeLedger: an agent whose value only tracks its holdings shows the trades doing nothing", () => {
+  // The invariant the fix is for: if the mark moves exactly with holdings x fair, the trade figure
+  // is zero however large the raw delta is.
+  const history = new MarketHistory(64);
+  const held = 8;
+  for (const [block, fair] of [[10, 3000], [12, 3100], [15, 3250]] as const)
+    history.push(
+      obs({ block, fairWeth: fair, value: 1_000 + held * fair, holdings: { WETH: held } }),
+    );
+  const ledger = new TradeLedger({ sampleAt: (b) => history.at(b) });
+  ledger.submitted({ hash: "0xn", decidedAtBlock: 10, actionType: "swap" });
+  ledger.resolved("0xn", { status: "success", blockNumber: 12 });
+  for (const b of [12, 15]) ledger.mark(b, history.at(b)!.valueUsdc, history.at(b));
+  const agg = ledger.aggregate(null);
+  assert.equal(agg.rawValueDeltaUsdc, held * 250);
+  assert.equal(agg.marketValueDeltaUsdc, held * 250);
+  assert.equal(Math.abs(agg.tradeValueDeltaUsdc ?? 1) < 1e-6, true);
+});
+
+test("TradeLedger: without holdings the raw figure is kept but labelled as unseparated", () => {
+  const ledger = new TradeLedger();
+  ledger.submitted({ hash: "0xu", decidedAtBlock: 40, actionType: "swap" });
+  ledger.resolved("0xu", { status: "success", blockNumber: 42 });
+  ledger.mark(42, 25_000);
+  ledger.mark(45, 25_100);
+  const agg = ledger.aggregate(null);
+  assert.equal(agg.rawValueDeltaUsdc, 100);
+  assert.equal(agg.marketValueDeltaUsdc, null);
+  assert.equal(agg.tradeValueDeltaUsdc, null);
+  assert.match(ledger.outcomesByBlock(null).get(40)![0], /market share unknown; baseline taken after inclusion/);
+  assert.match(digestTrades(agg).join("\n"), /could not be separated/);
+});
+
+test("buildRevisionContext: the PnL lines carry the do-nothing counterfactual next to them", () => {
+  const context = buildRevisionContext({
+    block: 120,
+    valueUsdc: 27_196.79,
+    initialValueUsdc: 25_000,
+    sinceLastRevisionUsdc: -90,
+    holdSinceStartUsdc: 2_100.12,
+    holdSinceLastRevisionUsdc: -180.5,
+    currentVersion: 0,
+    history: [],
+    recent: [],
+    observation: null,
+  });
+  assert.match(
+    context,
+    /PnL since the run started: 2196\.79 USDC \(holding the inventory you had then would be \+2100\.12 USDC; the difference, \+96\.67 USDC, is what trading did\)/,
+  );
+  assert.match(
+    context,
+    /PnL since the last revision: -90\.00 USDC \(holding the inventory you had then would be -180\.50 USDC; the difference, \+90\.50 USDC, is what trading did\)/,
+  );
+  // Without the counterfactual the line is what it always was.
+  const plain = buildRevisionContext({
+    block: 120,
+    valueUsdc: 24_900,
+    initialValueUsdc: 25_000,
+    sinceLastRevisionUsdc: null,
+    currentVersion: 0,
+    history: [],
+    recent: [],
+    observation: null,
+  });
+  assert.match(plain, /PnL since the run started: -100\.00 USDC\n/);
+});
+
+test("digestMarketHistory: eUSD is reported once, in the stables section, when the registry prices it", () => {
+  // The registry prices eUSD as a stable since #27 (negative = below a dollar). The liquity adapter
+  // reports the same price as a discount with the sign flipped (positive = below par), and a live
+  // context showed one depeg as "-90 bps" in one section and "+90 bps" in the next.
+  const history = new MarketHistory(8);
+  history.push(obs({ block: 1, eusd: { priceUsdc: 0.991 }, eusdDiscountBps: 90 }));
+  history.push(obs({ block: 2, eusd: { priceUsdc: 0.991 }, eusdDiscountBps: 90 }));
+  const text = digestMarketHistory(history.since(null)).join("\n");
+  assert.match(text, /EUSD: outside b1\.\.b2 .*worst -90\.0 bps/);
+  assert.doesNotMatch(text, /liquity:EUSD-vs-par/);
+  // Without a registry entry the adapter's figure is the only one there is, and it is kept.
+  const bare = new MarketHistory(8);
+  bare.push(obs({ block: 1, eusdDiscountBps: 90 }));
+  assert.match(digestMarketHistory(bare.since(null)).join("\n"), /liquity:EUSD-vs-par/);
 });

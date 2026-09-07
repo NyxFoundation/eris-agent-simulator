@@ -32,19 +32,24 @@ name them rather than asking you to infer anything:
 - **`transactions since the last revision`** — the transactions as a partition
   (`N sent = a succeeded + b mined-but-reverted + c never mined`), the mean inclusion latency in
   blocks, the mean position within the block, **the mean gap the strategy fired on**, and the
-  marked-value change across the trades that have had time to settle. The last two are what it
-  expected against what it got. Neither is the PnL above them: that is what the *run* did, and in a
-  moving market the run and the trades are different questions.
+  marked-value change across the trades that have had time to settle, **split in two**: what
+  holding the pre-trade inventory at fair prices would have made over the same windows (the
+  market's share), and what is left, which is what the trades themselves did. The gap is what it
+  expected; `the trades themselves made` is what it got. The raw figure and the PnL above it both
+  contain the market's move on inventory the strategy was holding anyway — a rising market is not
+  evidence the strategy works, and the `holding the inventory you had then` figure next to each
+  PnL line is there to take it out.
 - **`market history, blocks A..B`** — the interval, not the instant. Each base's fair price with
   its high and low and the blocks they happened on; each venue's gap against fair in bps with the
   same, plus how many blocks the gap spent above 5 / 10 / 25 / 50 bps and the widest round-trip cost
   the venue quoted; every market-priced stable's departures from par as **signed** windows
   (`outside b141..b167 ... worst -180.0 bps (0.9820)`, negative being below a dollar); and the
-  venues whose opportunity is a discount rather than a gap — `lst:market-vs-redemption` and
-  `liquity:EUSD-vs-par` — as windows of their own. A window still open at the moment of the
-  revision says so.
+  LST's market price against its redemption rate — `lst:market-vs-redemption` — as a window of
+  its own. eUSD is a market-priced stable, so its departures are in the stables section and
+  nowhere else (negative is below par: a redemption is worth taking; positive is a premium). A
+  window still open at the moment of the revision says so.
 - **`recent decisions`** — each one annotated with what its transaction did:
-  `[swap: included @+1 idx 3, value +12.40 after 3b, decided on a 31.0 bps gap]`,
+  `[swap: included @+1 idx 3, value +12.40 after 3b (market +11.90, trade +0.50), decided on a 31.0 bps gap]`,
   `[swap: reverted @+2 idx 9]`, `[swap: not mined yet]`. Send-stage failures appear here too, as
   `rejected (swap): ...` and `submit_failed (swap): ...`.
 - **`latest observation`** — the current block in full, as before.
@@ -60,10 +65,10 @@ the threshold is the failure mode that loses to a frozen strategy.
 | decisions annotated `reverted` | `[... reverted @+n idx k]`, and `reverted` in the transaction counts | the trade was built and then lost at execution — slippage bound, or state that moved | widen the slippage bound or size down. Not the entry threshold |
 | `included @+2` or later, mean index high | `mean inclusion latency`, `mean position in the block` | late or outbid, not wrong | bid more priority fee, or decide on cheaper evidence so the transaction goes out sooner |
 | gaps were there and nothing fired | `over: a/b/c/d` with real counts, against a run of `no action` | the entry threshold sits above where the market actually lived | lower it toward the bucket that has counts. This is the row where a threshold change is right |
-| `mean gap the strategy fired on` is small and the settled figure is negative | the transaction aggregate, against `round trip cost up to N bps` in the market history | fee bleed: the edge does not cover the round trip | raise the margin to clear the quoted round-trip cost. Not the size |
+| `mean gap the strategy fired on` is small and `the trades themselves made` is negative | the transaction aggregate, against `round trip cost up to N bps` in the market history | fee bleed: the edge does not cover the round trip | raise the margin to clear the quoted round-trip cost. Not the size |
 | `over: 0/0/0/0` and a quiet market | the market history | there was nothing to trade | **return `"executorTs": null`.** A strategy that correctly sat out is not broken |
 | a window is open *now* (`STILL OUTSIDE` / `STILL OPEN`) and the agent holds nothing | the stables or discounts section | the opportunity has not closed yet | act on the open window, not on the interval average |
-| the marked value fell but the settled trades are positive | PnL vs the trade aggregate | the market moved against inventory the strategy was right to hold | leave it alone |
+| the PnL fell but `the trades themselves made` is positive | the `holding the inventory you had then` figure next to the PnL, and the trade split | the market moved against inventory the strategy was right to hold | leave it alone |
 
 ### For this strategy in particular
 

@@ -52,7 +52,12 @@ import type {
 } from "@eris/sdk/types.js";
 import { createAgentLog, createJsonlAppender } from "./agentLog.js";
 import { DecideTimeoutError, withDecideTimeout } from "./decideTimeout.js";
-import { MarketHistory, TradeLedger } from "./evidence.js";
+import {
+  MarketHistory,
+  type MarketSample,
+  TradeLedger,
+  marketMoveUsdc,
+} from "./evidence.js";
 import { callLlm } from "./llm.js";
 import {
   buildRevisionContext,
@@ -273,6 +278,8 @@ async function main(): Promise<void> {
   const tradeLedger = new TradeLedger({
     gapAt: (block, protocol, base) =>
       marketHistory.gapAt(block, protocol, base),
+    // The pre-trade baseline and the holdings that separate the market's move from the trade's.
+    sampleAt: (block) => marketHistory.at(block),
   });
 
   const logMempool = createMempoolLog(runDir, agentId);
@@ -547,7 +554,11 @@ async function main(): Promise<void> {
       // the revision context reports, and the marked value each landed transaction is judged
       // against a few blocks later.
       marketHistory.push(snap.observation);
-      tradeLedger.mark(bn, snap.observation.inventory?.valueUsdc ?? null);
+      tradeLedger.mark(
+        bn,
+        snap.observation.inventory?.valueUsdc ?? null,
+        marketHistory.at(bn),
+      );
       // gas manager: after the observation is settled, check the ETH balance and if low enqueue a refill tx (economicGas only).
       void sender.maybeRefillGas(
         bn,
@@ -790,10 +801,17 @@ async function main(): Promise<void> {
     // Value at the moment of the last revision, to judge whether that revision helped.
     let valueAtRevision: number | null = null;
     let initialValue: number | null = null;
+    // The sample the PnL baseline was taken from, so the do-nothing counterfactual on the same line
+    // starts from the same observation. The block loop's first sample can be dozens of blocks
+    // earlier (it runs before this loop subscribes), and a counterfactual from there against a PnL
+    // from here is a difference between two different starts.
+    let initialSample: MarketSample | null = null;
     ctx.onObservation((obs) => {
       const value = obs.inventory?.valueUsdc;
-      if (typeof value === "number" && initialValue === null)
+      if (typeof value === "number" && initialValue === null) {
         initialValue = value;
+        initialSample = marketHistory.at(obs.round) ?? null;
+      }
     });
 
     const valueNow = (): number | null => {
@@ -828,6 +846,13 @@ async function main(): Promise<void> {
         // The interval the model is being asked to judge. Null on the first revision, which is the
         // whole run so far -- not an empty window.
         const since = lastRevisionAt;
+        // The do-nothing counterfactual for each PnL line: the inventory at that point, marked at
+        // today's fair prices instead of then's. Null when either end has no sample.
+        const latestSample = marketHistory.latest();
+        const holdFrom = (from: MarketSample | null | undefined): number | null =>
+          from && latestSample
+            ? marketMoveUsdc(from.holdings, from.fair, latestSample.fair)
+            : null;
         const context = buildRevisionContext({
           block,
           valueUsdc: value ?? 0,
@@ -836,6 +861,9 @@ async function main(): Promise<void> {
             valueAtRevision !== null && value !== null
               ? value - valueAtRevision
               : null,
+          holdSinceStartUsdc: holdFrom(initialSample),
+          holdSinceLastRevisionUsdc:
+            since === null ? null : holdFrom(marketHistory.at(since)),
           // What is *running*, not what has been numbered.
           currentVersion: active.version,
           history: versions.map(({ executor: _executor, ...v }) => v),
