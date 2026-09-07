@@ -48,3 +48,9 @@ It fast-forwards and builds, and stops short of anything that would decide somet
 
 Each of those exits 0 with a line saying which one happened. A sync that "did nothing" is a fact
 worth reading in the journal, not a failure worth alerting on.
+
+One structural note, because it looks like an accident: the pull and the build run as two processes,
+the first handing over to the second with `exec`. A pull can rewrite `sync-main.sh` itself, and bash
+reads a script as it executes — carrying on in the same process would run the tail of the new file
+from the old byte offset. The handover means the build always comes from the version that was just
+pulled.
