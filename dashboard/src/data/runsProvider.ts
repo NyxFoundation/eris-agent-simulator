@@ -30,6 +30,7 @@ import {
   type RunEvent,
 } from "./runArtifacts";
 import {
+  blockSeriesOf,
   downsample,
   enabledProtocols,
   eventOfType,
@@ -47,6 +48,7 @@ import {
 import { t } from "@/i18n/messages";
 import { buildScenarioPanel, buildVenuePanels } from "./venuePanels";
 import { getReplay, replayHeadFor } from "./replay";
+import { venueOfTx, WORLD_VENUES } from "./worldVenues";
 import { getSelectedRound } from "./roundSelection";
 import { getSelectedRunId } from "./runSelection";
 import type {
@@ -73,6 +75,13 @@ import type {
   TapeEvent,
   TopPageSnapshot,
   VenueDepthView,
+  WorldAgentNode,
+  WorldBoundary,
+  WorldFrame,
+  WorldLogLine,
+  WorldSnapshot,
+  WorldTx,
+  WorldVenueNode,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -1756,4 +1765,379 @@ export async function fetchAgentDetailSnapshot(
   };
 
   return { round, agent };
+}
+
+// ---------------------------------------------------------------------------
+// world (the competition map)
+//
+// The demo's three columns, read off the run instead of scripted: the agents, the chain they all
+// go through, the contracts holding state. What this builder owes the page is a *walkable* run —
+// one frame per block, each carrying that block's transactions and every venue's number at it — so
+// the page can move a head over the frames and never has to ask the data layer for a moment again.
+//
+// Two things it will not do. It does not skip quiet blocks: a timeline whose steps are "blocks that
+// happened to have traffic" is not a clock, and the pauses between bursts are the shape of a
+// strategy. And it does not truncate a long window — past the frame cap the frames become groups of
+// blocks, which the page labels as a range, because a walk that silently stops at block 900 of 14,400
+// is a walk that lies about where the run ended.
+
+/** The most frames one walk carries. Beyond this, a frame is a group of blocks. */
+const WORLD_MAX_FRAMES = 900;
+/** Transactions carried per frame. The rest are counted in the frame's total, not listed. */
+const WORLD_MAX_TXS_PER_FRAME = 24;
+/** Environment events placed on the block axis. */
+const WORLD_MAX_EVENTS = 200;
+/** Log lines carried per agent. The panel scrolls; the snapshot is not an archive of the run. */
+const WORLD_MAX_LOG_LINES = 1000;
+
+/** The last sample at or before `block`, over a series already in block order. */
+function sampleAt<T extends { block: number }>(
+  series: T[],
+  block: number,
+  cursor: { i: number },
+): T | undefined {
+  while (cursor.i + 1 < series.length && series[cursor.i + 1].block <= block)
+    cursor.i += 1;
+  const row = series[cursor.i];
+  return row && row.block <= block ? row : undefined;
+}
+
+function worldPrice(value: number): string {
+  return `$${value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/**
+ * The venue nodes this run has: every protocol the coordinator enabled, plus any the transactions
+ * name. A venue an agent deployed a market on (the lending singleton, issue #40) is in the second
+ * group only — the environment never announced it.
+ */
+function worldVenues(run: LoadedRun, targeted: Set<string>): WorldVenueNode[] {
+  const metrics: Record<string, () => string> = {
+    uniswap: () => t("world.metric.price"),
+    balancer: () => t("world.metric.price"),
+    curve: () => t("world.metric.price"),
+    gmx: () => t("world.metric.oi"),
+    aave: () => t("world.metric.utilisation"),
+    lst: () => t("world.metric.discount"),
+    liquity: () => t("world.metric.peg"),
+    lending: () => t("world.metric.markets"),
+  };
+  const ids = new Set<string>([...enabledProtocols(run), ...targeted]);
+  return [...Object.keys(WORLD_VENUES)]
+    .filter((id) => ids.has(id))
+    .map((id) => ({
+      id,
+      label: VENUE_LABELS[id] ?? id,
+      kind: WORLD_VENUES[id].kind,
+      color: VENUE_COLORS[id] ?? WORLD_VENUES[id].color,
+      metric: metrics[id](),
+    }));
+}
+
+function worldAgents(run: LoadedRun): WorldAgentNode[] {
+  const registered = registeredAgents(run);
+  return (run.summary.agents ?? []).map((agent) => {
+    const entry = registered.get(agent.id);
+    return {
+      id: agent.id,
+      address: shortAddress(agent.address ?? ""),
+      strategyCategory: categorize(agent.id, entry?.description ?? agent.id),
+      baseline: agent.baseline === true,
+      external: entry?.external === true,
+    };
+  });
+}
+
+/** What each epoch boundary's scored cross-section says every agent was worth, and had made. */
+function worldBoundaries(run: LoadedRun): WorldBoundary[] {
+  const series = run.summary.valueSeries?.epochSeries;
+  const blocks = series?.boundaryBlocks ?? [];
+  const values = series?.valuesByAgent ?? {};
+  return blocks.map((block, i) => {
+    const valueUsdc: Record<string, number> = {};
+    const pnlUsdc: Record<string, number> = {};
+    for (const [id, points] of Object.entries(values)) {
+      const start = points[0];
+      const now = points[i];
+      // A boundary the scorer could not read is null, not 0: it is a missing mark, and carrying it
+      // as a value would draw a wallet emptying itself.
+      if (now != null) valueUsdc[id] = now;
+      if (start != null && now != null) pnlUsdc[id] = now - start;
+    }
+    return { block, valueUsdc, pnlUsdc };
+  });
+}
+
+/**
+ * What each agent wrote, on the block axis.
+ *
+ * The runtime splits an agent's account of itself across two kinds of line, and the panel needs
+ * both: a *decision* entry is written when the strategy stood down (`{action: noop, reason: "spread
+ * too small"}` — the reason is the whole point of it), while an action it actually took is a
+ * *mempool* entry naming the action type and the venue. Reading only the decisions, as this did at
+ * first, shows an agent that spends the entire run declining to trade while the board behind it is
+ * full of its transactions.
+ */
+function worldAgentLog(logs: Map<string, AgentLogEntry[]>, from: number, to: number): {
+  byAgent: Record<string, WorldLogLine[]>;
+  withheld: boolean;
+} {
+  const byAgent: Record<string, WorldLogLine[]> = {};
+  for (const [id, entries] of logs) {
+    const lines: WorldLogLine[] = [];
+    for (const entry of entries) {
+      const block = Number(entry.round ?? entry.blockSeen);
+      if (!Number.isFinite(block) || block < from || block > to) continue;
+      if (entry.kind === "mempool") {
+        if (entry.event === "submitted") {
+          lines.push({
+            block,
+            event: str(entry.actionType) || "submit",
+            text: str(entry.protocol),
+            tone: "success",
+          });
+        } else if (entry.event === "submit_failed") {
+          lines.push({
+            block,
+            event: str(entry.actionType) || "submit",
+            // The revert arrives as a viem error with the whole request dumped under it; the first
+            // line is the reason, and the rest is calldata nobody reads off a panel this size.
+            text: str(entry.error).split("\n")[0],
+            tone: "danger",
+          });
+        }
+        continue;
+      }
+      const action = (entry.action as { type?: string } | undefined)?.type;
+      if (!action) continue;
+      lines.push({
+        block,
+        event: action,
+        text: str(entry.reason),
+        tone: action === "noop" ? "info" : "success",
+      });
+    }
+    // The tail, not the head, if an agent wrote more than the cap. Keeping the first N would leave
+    // the panel silent for the whole back half of the run, which reads as an agent that stopped.
+    if (lines.length > 0)
+      byAgent[id] = lines.slice(-WORLD_MAX_LOG_LINES);
+  }
+  // Audience mode serves no decision logs at all (agentLogsFor returns empty lists), which is a
+  // different fact from an agent that logged nothing, and the panel has to be able to say which.
+  return { byAgent, withheld: getMode().audience };
+}
+
+/** The tape's events, kept on the block axis instead of collapsed into a ticker. */
+function worldEvents(
+  run: LoadedRun,
+): Map<number, { kind: string; text: string; tone: TapeEvent["tone"] }[]> {
+  const byBlock = new Map<
+    number,
+    { kind: string; text: string; tone: TapeEvent["tone"] }[]
+  >();
+  let taken = 0;
+  for (const event of run.events) {
+    if (taken >= WORLD_MAX_EVENTS) break;
+    const rule = TAPE_RULES[event.type];
+    if (!rule) continue;
+    const block = Number(event.blockNumber);
+    if (!Number.isFinite(block)) continue;
+    const list = byBlock.get(block) ?? [];
+    list.push({
+      kind: rule.kind(),
+      text: `${rule.body(event)} · ${rule.value(event)}`,
+      tone: rule.tone,
+    });
+    byBlock.set(block, list);
+    taken += 1;
+  }
+  return byBlock;
+}
+
+export async function fetchWorldSnapshot(
+  base = "WETH",
+): Promise<WorldSnapshot> {
+  const full = await resolveRun();
+  const round = buildRound(full);
+  const run = clampToReplay(full);
+  const [infoByHash, logs] = await Promise.all([
+    txInfoByHash(run),
+    agentLogsFor(run),
+  ]);
+
+  // Scoped like the explorer: a selected round is that round's block window, and no selection is
+  // the whole run. A round the run does not have falls back to the run rather than to nothing.
+  const selected = getSelectedRound();
+  const epoch = round.epochs.find((e) => e.index === selected);
+  const from = epoch ? epoch.fromBlock + 1 : firstBlock(run);
+  const to = epoch ? epoch.toBlock : lastBlock(run);
+  const span = Math.max(1, to - from + 1);
+  const blocksPerFrame = Math.max(1, Math.ceil(span / WORLD_MAX_FRAMES));
+
+  // Transactions, bucketed onto the frame their block falls in.
+  const rowsByFrame = new Map<number, LoadedRun["blockRows"]>();
+  const targeted = new Set<string>();
+  for (const row of run.blockRows) {
+    if (row.blockNumber < from || row.blockNumber > to) continue;
+    const slot = Math.floor((row.blockNumber - from) / blocksPerFrame);
+    const list = rowsByFrame.get(slot) ?? [];
+    list.push(row);
+    rowsByFrame.set(slot, list);
+    const venue = venueOfTx({
+      protocol: infoByHash.get(row.hash.toLowerCase())?.protocol,
+      actionType: row.actionType,
+      method: row.method,
+    });
+    if (venue) targeted.add(venue);
+  }
+
+  const venues = worldVenues(run, targeted);
+  const venueIds = new Set(venues.map((v) => v.id));
+  const marketSeries = (run.market?.series ?? []).filter((r) =>
+    Number.isFinite(r.block),
+  );
+  const lstSeries = blockSeriesOf(run, "lst_block").map((e) => ({
+    block: Number(e.blockNumber),
+    discountBps: num(e.discountBps),
+  }));
+  const liquitySeries = blockSeriesOf(run, "liquity_block").map((e) => ({
+    block: Number(e.blockNumber),
+    tcr: num(e.tcr),
+  }));
+  const fairPoints = fairSeries(run);
+  const eventsByBlock = worldEvents(run);
+
+  const marketCursor = { i: 0 };
+  const lstCursor = { i: 0 };
+  const liquityCursor = { i: 0 };
+  const fairCursor = { i: 0 };
+
+  const frameCount = Math.ceil(span / blocksPerFrame);
+  const frames: WorldFrame[] = [];
+  for (let slot = 0; slot < frameCount; slot++) {
+    const fromBlock = from + slot * blocksPerFrame;
+    const block = Math.min(to, fromBlock + blocksPerFrame - 1);
+    const rows = rowsByFrame.get(slot) ?? [];
+    // Which rows the board carries, when a block has more than it can fly. Not the first N: the
+    // environment's oracle writes the price at the top of every block and pays the most for it, so
+    // "the first six" is six identical rows and the competition is the part that gets cut. The
+    // sample prefers the field and keeps block order inside it; the counts below stay the block's.
+    const sampled = new Set(
+      [
+        ...rows.filter((r) => r.role === "agent"),
+        ...rows.filter((r) => r.role !== "agent"),
+      ].slice(0, WORLD_MAX_TXS_PER_FRAME),
+    );
+    const txs: WorldTx[] = rows
+      .filter((r) => sampled.has(r))
+      .map((row) => ({
+        hash: shortHash(row.hash),
+        agent:
+          row.role === "external"
+            ? shortAddress(row.from)
+            : (row.ownerId ?? row.from),
+        kind: row.role === "agent" ? ("agent" as const) : ("environment" as const),
+        method: methodOf(row, infoByHash),
+        venue: venueOfTx({
+          protocol: infoByHash.get(row.hash.toLowerCase())?.protocol,
+          actionType: row.actionType,
+          method: row.method,
+        }),
+        // blocks.csv carries the priority fee in wei; the chain panel reads it in gwei.
+        fee: ((Number(row.priorityFeeWei) || 0) / 1e9).toFixed(2),
+        ok: row.status === "success",
+      }));
+
+    const market = sampleAt(marketSeries, block, marketCursor);
+    const venueValues: Record<string, string> = {};
+    const priceUsd: Record<string, number> = {};
+    for (const venue of market ? Object.keys(market.venues ?? {}) : []) {
+      const mid = market?.venues?.[venue]?.[base]?.mid;
+      if (mid !== undefined && mid > 0 && venueIds.has(venue)) {
+        venueValues[venue] = worldPrice(mid);
+        priceUsd[venue] = mid;
+      }
+    }
+    if (venueIds.has("gmx") && market?.gmx?.[base]) {
+      const gmx = market.gmx[base];
+      venueValues.gmx = formatUsd(gmx.longOiUsd + gmx.shortOiUsd);
+    }
+    if (venueIds.has("aave") && market?.aave) {
+      // Across the reserves, not whichever one comes first out of the object. A run can supply WETH
+      // and borrow only USDC, and reading the first key then reports a lending market at 0%
+      // utilisation while its USDC side is being borrowed against all run.
+      let supplied = 0;
+      let borrowed = 0;
+      for (const reserve of Object.values(market.aave)) {
+        supplied += reserve.suppliedUsd;
+        borrowed += reserve.borrowedUsd;
+      }
+      if (supplied > 0)
+        venueValues.aave = `${((borrowed / supplied) * 100).toFixed(1)}%`;
+    }
+    if (venueIds.has("lst")) {
+      const lst = sampleAt(lstSeries, block, lstCursor);
+      if (lst) venueValues.lst = `${lst.discountBps.toFixed(0)} bps`;
+    }
+    if (venueIds.has("liquity")) {
+      const stable = market?.stables;
+      const first = stable ? Object.values(stable)[0] : undefined;
+      if (first?.quoted)
+        venueValues.liquity = `$${first.priceUsdc.toFixed(4)}`;
+      else {
+        // A pool that would not quote leaves priceUsdc at par by fallback — rendering that as the
+        // peg holding is the one thing this number must never claim (issue #27). The system's
+        // collateral ratio is a real read, so it stands in.
+        const liquity = sampleAt(liquitySeries, block, liquityCursor);
+        if (liquity) venueValues.liquity = `TCR ${liquity.tcr.toFixed(2)}`;
+      }
+    }
+
+    // The reconstructed series carries the fair price beside the venue quotes; the observations
+    // the agents were handed are the fallback, for a run recorded before market.json existed.
+    const observed = sampleAt(fairPoints, block, fairCursor);
+    const fairValue = market?.fair?.[base] ?? observed?.fair ?? null;
+
+    // Events land on their own block, which inside a grouped frame is not the frame's last one.
+    const events: WorldFrame["events"] = [];
+    for (let b = fromBlock; b <= block; b++)
+      for (const e of eventsByBlock.get(b) ?? []) events.push(e);
+
+    frames.push({
+      block,
+      fromBlock,
+      clock: blockClock(run, block),
+      round:
+        round.epochs.find((e) => block > e.fromBlock && block <= e.toBlock)
+          ?.index ?? 0,
+      txCount: rows.length,
+      senderCount: new Set(
+        rows.filter((r) => r.role === "agent").map((r) => r.ownerId || r.from),
+      ).size,
+      txs,
+      reverts: rows.filter((r) => r.status !== "success").length,
+      venueValues,
+      priceUsd,
+      fairUsd: fairValue,
+      fair: fairValue === null ? null : worldPrice(fairValue),
+      events,
+    });
+  }
+
+  return {
+    round,
+    scope: { roundIndex: epoch ? epoch.index : null, fromBlock: from, toBlock: to },
+    agents: worldAgents(run),
+    venues,
+    frames,
+    boundaries: worldBoundaries(run),
+    ...(() => {
+      const { byAgent, withheld } = worldAgentLog(logs, from, to);
+      return { agentLog: byAgent, logsWithheld: withheld };
+    })(),
+    blocksPerFrame,
+  };
 }

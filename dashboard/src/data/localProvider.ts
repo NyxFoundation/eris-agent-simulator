@@ -24,9 +24,15 @@ import type {
   MarketSnapshot,
   MarketTicker,
   RoundInfo,
+  LogTone,
   TapeEvent,
   TopPageSnapshot,
+  WorldFrame,
+  WorldSnapshot,
+  WorldTx,
+  WorldVenueNode,
 } from "./types";
+import { t } from "@/i18n/messages";
 
 const ROUND_KEY = "current";
 const EXPLORER_STATS_KEY = "current";
@@ -237,5 +243,119 @@ export async function fetchMarketSnapshot(
     pairs: [{ label: "WETH/USDC", value: "WETH" }],
     // Fixture data has no registered participants, self-hosted or otherwise.
     feedSelfHosted: 0,
+  };
+}
+
+/**
+ * Fixture world for UI development: the same shape the run provider builds, over the seed round's
+ * block range. Deterministic (one seeded generator, no clock), so a reload shows the same walk and
+ * a layout change is visible as a layout change.
+ */
+export async function fetchWorldSnapshot(
+  _base?: string,
+): Promise<WorldSnapshot> {
+  await ensureSeeded();
+  const round = await getValue<RoundInfo>(STORES.round, ROUND_KEY);
+  if (!round) throw new Error("Round data missing after seeding");
+
+  const agents = seedAgents.map((a) => ({
+    id: a.agent,
+    address: "0x0000…0000",
+    strategyCategory: a.strategyCategory,
+    baseline: false,
+    external: false,
+  }));
+  const venues: WorldVenueNode[] = [
+    { id: "uniswap", label: "Uniswap v3", kind: "pool", color: "#7c9eff", metric: t("world.metric.price") },
+    { id: "balancer", label: "Balancer", kind: "pool", color: "#f5a623", metric: t("world.metric.price") },
+    { id: "curve", label: "Curve", kind: "pool", color: "#4fd1a5", metric: t("world.metric.price") },
+    { id: "gmx", label: "GMX v2", kind: "perp", color: "#b18cf0", metric: t("world.metric.oi") },
+    { id: "aave", label: "Aave v3", kind: "lending", color: "#6dd3e0", metric: t("world.metric.utilisation") },
+  ];
+
+  const from = round.epochs[0]?.fromBlock ?? 0;
+  const to = Math.min(round.blockNumber, from + 240);
+  let seed = 101;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const methods = ["swap", "balancerSwap", "curveSwap", "aaveSupply", "gmxIncrease"];
+
+  const frames: WorldFrame[] = [];
+  for (let block = from + 1; block <= to; block++) {
+    const n = Math.floor(rnd() * 6);
+    const txs: WorldTx[] = [];
+    for (let i = 0; i < n; i++) {
+      const agent = agents[Math.floor(rnd() * agents.length)];
+      const method = methods[Math.floor(rnd() * methods.length)];
+      txs.push({
+        hash: `0xseed${block}${i}`,
+        agent: agent.id,
+        kind: "agent",
+        method,
+        venue: venues[Math.floor(rnd() * venues.length)].id,
+        fee: (0.8 + rnd() * 7).toFixed(2),
+        ok: rnd() > 0.12,
+      });
+    }
+    const price = 3000 * (1 + Math.sin(block / 37) * 0.01);
+    frames.push({
+      block,
+      fromBlock: block,
+      clock: `t+${(block - from) * 2}s`,
+      round: 1,
+      txCount: txs.length,
+      senderCount: new Set(txs.map((tx) => tx.agent)).size,
+      txs,
+      reverts: txs.filter((tx) => !tx.ok).length,
+      venueValues: {
+        uniswap: `$${price.toFixed(2)}`,
+        balancer: `$${(price * 1.001).toFixed(2)}`,
+        curve: `$${(price * 0.999).toFixed(2)}`,
+        gmx: "$1.2M",
+        aave: "42.0%",
+      },
+      priceUsd: {
+        uniswap: price,
+        balancer: price * 1.001,
+        curve: price * 0.999,
+      },
+      fairUsd: price,
+      fair: `$${price.toFixed(2)}`,
+      events: [],
+    });
+  }
+
+  return {
+    round,
+    scope: { roundIndex: null, fromBlock: from, toBlock: to },
+    agents,
+    venues,
+    frames,
+    // One boundary per 60 blocks of the fixture, so the balance panel has a series to draw.
+    boundaries: frames
+      .filter((_, i) => i % 60 === 0)
+      .map((frame, i) => ({
+        block: frame.block,
+        valueUsdc: Object.fromEntries(
+          agents.map((a, j) => [a.id, 25_000 + i * (j % 5) * 40 - i * 60]),
+        ),
+        pnlUsdc: Object.fromEntries(
+          agents.map((a, j) => [a.id, i * (j % 5) * 40 - i * 60]),
+        ),
+      })),
+    agentLog: Object.fromEntries(
+      agents.slice(0, 4).map((a) => [
+        a.id,
+        frames
+          .filter((_, i) => i % 7 === 0)
+          .map((f, i) => ({
+            block: f.block,
+            event: i % 3 === 0 ? "noop" : "swap",
+            text: i % 3 === 0 ? "spread too small" : "gap 42 bps over round-trip cost",
+            tone: (i % 3 === 0 ? "info" : "success") as LogTone,
+          })),
+      ]),
+    ),
+    logsWithheld: false,
+    blocksPerFrame: 1,
   };
 }
