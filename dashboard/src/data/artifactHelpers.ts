@@ -133,10 +133,17 @@ export const VENUE_COLORS: Record<string, string> = {
   curve: "#4fd1a5",
 };
 
+// The AMM venues a price series is quoted by, plus the rest of the deployed applications — the
+// world map names every node it draws, and a node labelled "gmx" is the config key, not the venue.
 export const VENUE_LABELS: Record<string, string> = {
   uniswap: "Uniswap v3",
   balancer: "Balancer",
   curve: "Curve",
+  gmx: "GMX v2",
+  aave: "Aave v3",
+  lst: "LST vault",
+  liquity: "Liquity · eUSD",
+  lending: "Lending singleton",
 };
 
 // A stable palette for the venue-state charts, used wherever a series has no venue colour of its own.

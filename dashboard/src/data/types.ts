@@ -435,3 +435,88 @@ export interface AgentDetailSnapshot {
   round: RoundInfo;
   agent: AgentDetail;
 }
+
+// ---------------------------------------------------------------------------
+// world (the competition map)
+//
+// The same three columns the conference demo is staged in — the agents on the left, the one thing
+// they all have to go through in the middle, the contracts holding state on the right — but read
+// off the run's own artifacts rather than scripted. A frame is a position on the block axis: which
+// transactions were in that block, which of them reverted, and what each venue's number was there.
+// The page walks the frames; nothing in here knows about playback.
+
+export interface WorldAgentNode {
+  id: string;
+  /** Wallet address, short. Empty for a sender with none recorded. */
+  address: string;
+  strategyCategory: StrategyCategory;
+  /** The benchmark (rules §4.3): valued, shown, never in the population. */
+  baseline: boolean;
+  /** ADR 0021 §2: the participant runs this agent themselves, so its self-reports never arrive. */
+  external: boolean;
+}
+
+export interface WorldVenueNode {
+  id: string;
+  label: string;
+  kind: "pool" | "perp" | "lending" | "stake" | "cdp";
+  color: string;
+  /** What the one number under the name measures ("pool price", "utilisation"). */
+  metric: string;
+}
+
+export interface WorldTx {
+  hash: string;
+  /** Agent id, or a short address for a sender the roster does not know (role "external"). */
+  agent: string;
+  method: string;
+  /** The venue node this transaction reached; null when nothing on it names one. */
+  venue: string | null;
+  /** Priority fee, gwei, as the block recorded it. */
+  fee: string;
+  /** Mined and succeeded. A reverted transaction is still in the block — it paid and did nothing. */
+  ok: boolean;
+}
+
+export interface WorldFrame {
+  /** The block this frame is at; `fromBlock` differs only when frames were grouped to fit the cap. */
+  block: number;
+  fromBlock: number;
+  /** Chain time from the run's first block ("t+42s"). */
+  clock: string;
+  /** 1-based round this frame falls in; 0 when the run recorded no epoch series. */
+  round: number;
+  /** Every transaction in the frame, counted. */
+  txCount: number;
+  /** Distinct senders in the frame, counted. */
+  senderCount: number;
+  /** The transactions the board animates and the chain panel lists — a sample once a frame carries
+   * more than the dot pool can fly, which is why the counts above are separate from its length. */
+  txs: WorldTx[];
+  reverts: number;
+  /** venue id -> the number that node shows here, already formatted. */
+  venueValues: Record<string, string>;
+  /** Fair price at this frame, formatted; null where the run has no observation for it. */
+  fair: string | null;
+  /** What the environment did at this frame — the tape's events, placed on the block axis. */
+  events: { kind: string; text: string; tone: TapeTone }[];
+}
+
+/** An epoch boundary's scored cross-section: what each agent had made by then. */
+export interface WorldBoundary {
+  block: number;
+  /** agent id -> cumulative USDC gain since the run's first boundary. */
+  pnlUsdc: Record<string, number>;
+}
+
+export interface WorldSnapshot {
+  round: RoundInfo;
+  /** The block window the frames cover: one round, or the whole run. */
+  scope: BlockScope;
+  agents: WorldAgentNode[];
+  venues: WorldVenueNode[];
+  frames: WorldFrame[];
+  boundaries: WorldBoundary[];
+  /** Blocks per frame. 1 unless the window was longer than the frame cap. */
+  blocksPerFrame: number;
+}
