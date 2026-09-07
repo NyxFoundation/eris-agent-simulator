@@ -68,6 +68,84 @@ remember.
 **The code's `epoch` is not the rules' epoch.** The code's `epoch` is the rules' *evaluation
 interval*.
 
+### What does not happen here
+
+The more mainnet experience you have, the more you design around things that this environment does
+not have. None of the following exists here.
+
+- **Reorgs and unconfirmed blocks.** The chain is a single Anvil node on interval mining. A block is
+  final the moment it is mined; it does not roll back and a mined transaction does not disappear. The
+  world is rebuilt only at the start of an epoch (rules §4.7.1) — that is an initialization, not a reorg
+- **Gas price spikes.** The base fee is pinned at 0. What you pay is the priority fee you choose to
+  stack (default 0.1 gwei, capped by `obs.limits.maxPriorityFeePerGasWei`); other people's congestion
+  never raises your bill. Gas ETH is part of your asset value (rules §4.2), so fees do reach the PnL
+- **An edge from arriving first.** Order within a block is by priority fee, highest first (rules §2.6;
+  Anvil runs with `--order fees`). A faster line or an earlier call wins nothing — if you want the
+  position, bid for it
+- **Rewriting the reference price or an oracle.** `PriceFeed`, the Aave aggregators and the GMX oracle
+  provider are owner-gated, and at startup every privileged write is simulated by `eth_call` from an
+  address with no role to measure that the gate holds (`core/src/realtime/ownerGuards.ts`). Move a
+  pool as far as you like: the marks for WETH / WBTC and the liquidation prices at Aave and GMX do not
+  follow (they come from the environment's price). Assets marked from a market — stablecoins, the LST,
+  eUSD — can be moved, but the mark is the median over the previous 5 blocks (rules §4.1), and trading
+  to distort a mark is a prohibited act (rules §8)
+- **Direct manipulation of chain state.** The RPC gateway answers 403 to every method outside `eth_` /
+  `net_` / `web3_` (`anvil_*` / `evm_*` / `hardhat_*` / `txpool_*` / `debug_*`;
+  `infra/rpc-gateway/README.md`). There is no way to write a balance or a storage slot, and no
+  `eth_sendTransaction` either — you sign locally
+- **Operator intervention mid-epoch.** During an epoch the environment does exactly this: the
+  per-block reference price update, the background order flow, execution of GMX orders, and the
+  events the regime defines (the 8 kinds in rules §3.2). The only other hand on the wheel is the
+  voiding and same-seed re-run of an epoch that failed on the operator's side (rules §4.4.2), and the
+  PnL of an epoch that did not finish never reaches the standings
+- **Disqualification or penalties for going bust, timing out or crashing.** Each of those is just a
+  PnL that becomes a deviation score (rules §4.4.2, §4.5). Blocks do not wait for an agent's answer
+  (rules §2.3), so a slow strategy never stalls the chain either
+- **Real-world losses.** Every asset exists only inside the competition environment and has no value
+  or convertibility outside it (rules §0.2)
+
+### What you can do here (examples)
+
+Conversely, things that capital or permissions make hard to try on mainnet are ordinary here. The
+reference agents live in `example/agents/`.
+
+- **Deploy your own contracts.** A `rawTx` with `to` omitted is a deployment
+  (`example/agents/lib/deployContract.ts`; the forge artifacts ship inside the submission zip). An
+  atomic arbitrage across several venues is written as your own contract this way (rules §0.1: a
+  bundle guarantees no atomicity). Aave flash loans are enabled (`flash-arb` calls `flashLoanSimple`
+  through `rawTx`). **But whatever is still inside your contract when the epoch ends is valued at 0**
+  (what the environment cannot price is 0; rules §4.1). Profit that passed through counts in full, so
+  withdraw before the bell
+- **Make a market, provide liquidity.** You can create a new Uniswap V3 pool (`createPool`). Adding to
+  an existing pool works the same way (`mintLiquidity` / `removeLiquidity` / `collectFees`; see
+  `lp-provider`). The environment's order flow never visits a pool you made, so your counterparties are
+  other participants only. The official regimes carry no registry (`obs.registry`), so another
+  participant finds your pool only by reading the chain themselves. Permissionless lending
+  (`createLendingMarket`) exists only in the verification regime
+  (`config/regimes/agent-markets.yaml`)
+- **Deploy a vulnerable contract on purpose, attack someone else's.** Exploiting weaknesses in other
+  participants' agents, contracts and the market structure is part of the competition (rules §8; the
+  permitted targets are the operator's protocols and other participating units — rules §3.1). See
+  `vault-keeper` (deploys a `LeakyVault` whose `rescue()` was left ungated and puts USDC in it) and
+  `exploit-hunter` (recovers selectors from the bytecode of someone else's unknown contract and drains
+  it atomically). Measured: hunter +9,999.9 / vault-keeper −10,000.2 — the whole 10,000 USDC deposit
+  moved. With no registry in the official regimes, the hunting side scans the chain itself. The
+  environment's own contracts, by contrast, are measured at startup for closed owner gates. Moving
+  assets between your own two submissions is self-dealing and prohibited (rules §8)
+- **Liquidate and redeem other people's positions.** Aave's `liquidationCall` through `rawTx`
+  (`liquidator`), Liquity's `liquityLiquidate` and Stability Pool underwriting (`sp-underwriter`),
+  eUSD redemption (`liquityRedeem`; `redemption-arb`)
+- **Use leverage.** GMX perps (`gmxIncrease` / `gmxDecrease`; orders are executed by the environment's
+  keeper from the next block on), Aave borrowing, a Liquity Trove, borrowing ETH against the LST
+  (`lst-carry`)
+- **Buy your position in the block.** Bid with `maxPriorityFeePerGasWei` on the action. The highest fee
+  anyone else paid in the most recent block is `obs.competition.maxCompetitorPriorityFeeWei`
+- **Inspect a pool that appears mid-epoch before touching it.** In regime 7 the operator places pools
+  during the epoch, some of which skim assets (rules §3.2). `obs.discoveredPools` carries the address,
+  the code hash and a quote. `discovery-arb-verify` dry-runs before taking; `discovery-arb` takes
+  without checking. Measured: unverified −5,306 / verified +721
+- **Rewrite the strategy while it runs.** As in §5, the LLM revises the code outside the trade path
+
 ---
 
 ## 2. Setup
