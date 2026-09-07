@@ -1,0 +1,11 @@
+[Unit]
+Description=Rebuild the hosted Eris dashboard from origin/main
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/eris-agent-simulator
+ExecStart=%h/workspace/eris-agent-simulator/infra/dashboard/sync-main.sh
+# The build is short (a Vite bundle, a couple of hundred ms) but npm start-up is not; a run that
+# hangs must not sit on the box until the next one.
+TimeoutStartSec=600

@@ -1,0 +1,13 @@
+[Unit]
+Description=Check origin/main for the hosted Eris dashboard
+
+[Timer]
+# Five minutes is the interval a push should be visible within, and the check is one `git fetch`
+# when nothing moved. Persistent so a box that was asleep at the boundary catches up on wake rather
+# than waiting for the next tick.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
