@@ -41,8 +41,10 @@ It fast-forwards and builds, and stops short of anything that would decide somet
   competition is not the place to find out what a merge commit does to it
 - **no build over a dirty tree** — modified *tracked* files would ship into the bundle. Untracked
   ones are fine: a scratch config and a run writing under `runs/` are the normal state of the box
-- **no rebuild when the commit has not moved** — the bundle is content-hashed, so rebuilding at the
-  same commit hands every open browser a new filename for the same page
+- **no rebuild when `dist` already matches HEAD** — the bundle is content-hashed, so rebuilding at
+  the same commit hands every open browser a new filename for the same page. The comparison is
+  against `dashboard/dist/.built-at`, not against what this run pulled: a commit somebody had
+  already pulled by hand would otherwise never get built
 
 Each of those exits 0 with a line saying which one happened. A sync that "did nothing" is a fact
 worth reading in the journal, not a failure worth alerting on.
