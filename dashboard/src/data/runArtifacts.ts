@@ -50,13 +50,24 @@ export interface SummaryAgent {
   address: string;
   /** The benchmark (rules §4.3): valued and shown, never in the population. */
   baseline?: boolean;
-  initialValueUsdc: number;
-  finalValueUsdc: number;
-  netPnlUsdc: number;
+  /** Rules §2.2: the participant unit this agent is one submission of. */
+  participant?: string;
+  /**
+   * ADR 0021 §2: the participant runs the agent themselves (the coordinator's roster says so).
+   * Absent on a run recorded before the field, and on agents the coordinator started.
+   */
+  external?: boolean;
+  /** Absent for an agent a segment did not place: no V_0 in it (issue #84 X2). */
+  initialValueUsdc?: number;
+  finalValueUsdc?: number;
+  netPnlUsdc?: number;
   /** P of rules §4.4.1 — V_K − V_0 off the epoch boundaries, each end at its own marks. Absent on
-   * a run recorded before the coordinator wrote it. */
+   * a run recorded before the coordinator wrote it, and on an agent the run did not place. */
   pnlUsdc?: number;
-  alphaUsdc: number;
+  /** Written by the segment writer (core/src/segments.ts): false = in the record, not placed. */
+  scored?: boolean;
+  unscoredReason?: string;
+  alphaUsdc?: number;
   includedTxCount: number;
   revertCount: number;
 }
@@ -65,6 +76,10 @@ export interface RunSummary {
   runId: string;
   mode?: string;
   resetUnit?: string;
+  /** A period's segment: its index and block window (core/src/realtime/coordinator.ts). */
+  segment?: number;
+  fromBlock?: number;
+  toBlock?: number;
   blockTimeSec?: number;
   blocksProcessed?: number;
   finalFairPriceUsdcPerWeth?: number;
@@ -209,10 +224,15 @@ export interface MarketSeriesFile {
 }
 
 /** A market series built from the boundary samples, for a run that has no market.json. */
-function marketFromSamples(text: string): MarketSeriesFile | null {
-  const rows = parseJsonl<MarketSeriesRow>(text).filter(
-    (r) => typeof r.block === "number",
-  );
+export function marketFromSamples(text: string): MarketSeriesFile | null {
+  return marketFromSampleRows(parseJsonl<MarketSeriesRow>(text));
+}
+
+/** The same, from rows already parsed (the live tail of market.jsonl). */
+export function marketFromSampleRows(
+  parsed: MarketSeriesRow[],
+): MarketSeriesFile | null {
+  const rows = parsed.filter((r) => typeof r.block === "number");
   if (rows.length === 0) return null;
   rows.sort((a, b) => a.block - b.block);
   const venues = new Set<string>();
@@ -240,6 +260,13 @@ function marketFromSamples(text: string): MarketSeriesFile | null {
 // reads reflect, so every live panel can carry the height it renders.
 export interface LiveExtras {
   chainHeight: number | null;
+  /**
+   * The lowest block the live block rows cover, or null when they cover none. Decides which rounds
+   * have a transaction count: a round that starts before this block is outside what the view
+   * holds, and its count is "not counted" rather than 0 (issue #84 A/I). Off the fetched range,
+   * not off the first row's block -- a block with no transaction in it is still covered.
+   */
+  blocksFrom: number | null;
   /** Blockscout's indexed height when the explorer answers — the indexer lag stays visible. */
   indexerHeight: number | null;
   /** Fair-price samples accumulated while the page watches (one PriceFeed read per refresh). */
@@ -275,7 +302,7 @@ export async function listRuns(): Promise<RunIndexEntry[]> {
   return (await res.json()) as RunIndexEntry[];
 }
 
-function parseJsonl<T>(text: string): T[] {
+export function parseJsonl<T>(text: string): T[] {
   const out: T[] = [];
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -292,7 +319,7 @@ function parseJsonl<T>(text: string): T[] {
 // blocks.csv columns: round,blockNumber,txIndex,hash,from,priorityFeeWei,status,ownerId,role,actionType,bundleId,bundleIndex,method
 // No field is quoted, so a plain split is safe. Header (and any repeated header) rows
 // are dropped by the numeric blockNumber check.
-function parseBlocksCsv(text: string): BlockRow[] {
+export function parseBlocksCsv(text: string): BlockRow[] {
   const rows: BlockRow[] = [];
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
@@ -313,6 +340,29 @@ function parseBlocksCsv(text: string): BlockRow[] {
     });
   }
   return rows;
+}
+
+// The run-start and roster events are written before the first block, so they sit in the first
+// few KB of events.jsonl. Reading 128KB of a file instead of the file costs nothing a competition
+// of 35 scenarios would notice.
+const HEAD_BYTES = 128 * 1024;
+
+/**
+ * The head of a run's event stream: enough for `run_started_realtime`, `agents_registered` and
+ * `stress_schedule`. Works on a run in progress (no summary.json yet) and through the audience
+ * redaction alike, and reads only the head. Empty when the run has no events file.
+ */
+export async function loadRunHeader(runId: string): Promise<RunEvent[]> {
+  try {
+    const res = await fetch(
+      `/runs/${encodeURIComponent(runId)}/tail/events.jsonl?offset=0&limit=${HEAD_BYTES}`,
+    );
+    if (!res.ok) return [];
+    const body = (await res.json()) as { text?: string };
+    return parseJsonl<RunEvent>(body.text ?? "");
+  } catch {
+    return [];
+  }
 }
 
 const MAX_CACHED_RUNS = 2;

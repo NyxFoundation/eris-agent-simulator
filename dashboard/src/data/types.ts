@@ -75,8 +75,12 @@ export interface AgentStanding {
   score: number | null;
   /** summary.json's netPnlUsdc, in USDC rather than as a share of starting value. The share is not
    * a useful figure here: the gas endowment (100 ETH by default, ~78% of an agent's mark) sits in
-   * the denominator, so every real trading result rounds to 0.0% however many decimals it is given. */
-  netPnlUsdc: number;
+   * the denominator, so every real trading result rounds to 0.0% however many decimals it is given.
+   * Null for an agent this run did not place (no V_0 -- registered mid-way), which has no PnL here
+   * rather than a PnL of zero. */
+  netPnlUsdc: number | null;
+  /** True when the agent is in the record but not in this epoch's population (rules §4.4.2). */
+  unscored: boolean;
   strategy: string;
   strategyCategory: StrategyCategory;
   maxDrawdownPercent: number;
@@ -135,7 +139,13 @@ export interface ExplorerSnapshot {
   scope: BlockScope;
   stats: ExplorerStats;
   blocks: ExplorerBlock[];
+  /** Every transaction in scope, newest first. The page pages them; a search runs over all. */
   transactions: ExplorerTransaction[];
+  /**
+   * Live: the lowest block the transaction list covers, or null when it covers none. A search that
+   * finds nothing in a list that starts at block 1,400 has not shown the transaction is absent.
+   */
+  txCoveredFrom: number | null;
   /** Every agent in the run, so a name search can resolve to a wallet address. */
   agents: { id: string; address?: string }[];
 }
@@ -380,7 +390,10 @@ export interface AgentRoundResult {
 }
 
 export interface AgentDetail {
+  /** Rank within the selected scenario (this epoch's field). The competition rank is the standings'. */
   rank: number;
+  /** How many agents the scenario placed, so the rank reads as "N of M". */
+  fieldSize: number;
   agent: string;
   address: string;
   /** Full wallet address for explorer deep links (absent in seed data). */
@@ -388,7 +401,9 @@ export interface AgentDetail {
   strategy: string;
   /** T(a, s) for this epoch; see AgentStanding.score. */
   score: number | null;
-  netPnlUsdc: number;
+  /** Null when this epoch did not place the agent; see AgentStanding.netPnlUsdc. */
+  netPnlUsdc: number | null;
+  unscored: boolean;
   maxDrawdownPercent: number;
   /** Account value at each scored block — the same cross-sections the score is computed from.
    * Carries the block so the chart can label its x axis with what it actually is. */

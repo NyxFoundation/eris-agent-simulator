@@ -8,7 +8,13 @@
 // for the round series or the schedules, and loading them for a title would refetch 35 summaries.
 
 import { useEffect, useState } from "react";
-import { competitionName, loadCompetition, scenarioLabel, scenarioRunId } from "./competition";
+import {
+  competitionName,
+  displaySeed,
+  loadCompetition,
+  scenarioLabel,
+  scenarioRunId,
+} from "./competition";
 import {
   resolveCompetitionId,
   useSelectedCompetitionId,
@@ -46,14 +52,17 @@ export function useScenarioLabel(): ScenarioLabel {
       .then((m) => {
         if (cancelled) return;
         const scenario = m.file.scenarios.find(
-          (s) => scenarioRunId(m.id, s.runDir) === runId,
+          (s) =>
+            typeof s.runDir === "string" &&
+            scenarioRunId(m.id, s.runDir) === runId,
         );
         setLabel(
           scenario
             ? {
                 name: scenarioLabel(scenario),
                 competition: competitionName(m),
-                seed: scenario.seed,
+                // Null when there is nothing to show: withheld, or a segment's placeholder.
+                seed: displaySeed(scenario),
               }
             : EMPTY,
         );

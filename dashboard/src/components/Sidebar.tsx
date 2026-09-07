@@ -194,10 +194,17 @@ function Picker({ activePage }: { activePage?: SidebarNavKey }) {
         if (cancelled) return;
         setScenarioNames(
           new Map(
-            m.file.scenarios.map((s) => [
-              scenarioRunId(m.id, s.runDir),
-              shortScenario(scenarioLabel(s)),
-            ]),
+            // An epoch the runner never ran has no directory and so no run to name.
+            m.file.scenarios.flatMap((s) =>
+              typeof s.runDir === "string"
+                ? [
+                    [
+                      scenarioRunId(m.id, s.runDir),
+                      shortScenario(scenarioLabel(s)),
+                    ] as const,
+                  ]
+                : [],
+            ),
           ),
         );
       })
@@ -260,8 +267,10 @@ function Picker({ activePage }: { activePage?: SidebarNavKey }) {
               if (picked !== SINGLE_RUNS_OPTION) {
                 loadCompetition(picked)
                   .then((m) => {
-                    const first = m.file.scenarios[0];
-                    if (first)
+                    const first = m.file.scenarios.find(
+                      (s) => typeof s.runDir === "string",
+                    );
+                    if (first?.runDir)
                       setSelectedRunId(scenarioRunId(m.id, first.runDir));
                   })
                   .catch(() => {
@@ -472,18 +481,25 @@ function WorldBlock({
           {rows.map((r) => (
             <SiblingRow
               key={r.key}
-              current={r.runId === runValue}
+              current={r.runId !== null && r.runId === runValue}
               name={r.label}
               leader={mode.standings ? r.leader?.id : undefined}
-              detail={[
-                t("sidebar.worldRounds", { n: r.rounds }),
-                isHiddenScenario(r)
-                  ? t("home.scenarios.eventsWithheld")
-                  : r.events.length > 0
-                    ? r.events.join(", ")
-                    : t("sidebar.worldNoEvents"),
-              ].join(" · ")}
-              onPick={() => pick(r.runId)}
+              detail={
+                // An epoch that never ran has no world to step into, and says why instead.
+                r.runId === null
+                  ? t("home.scenarios.failed", {
+                      reason: r.error ?? t("home.scenarios.noLeader"),
+                    })
+                  : [
+                      t("sidebar.worldRounds", { n: r.rounds }),
+                      isHiddenScenario(r)
+                        ? t("home.scenarios.eventsWithheld")
+                        : r.events.length > 0
+                          ? r.events.join(", ")
+                          : t("sidebar.worldNoEvents"),
+                    ].join(" · ")
+              }
+              onPick={r.runId === null ? undefined : () => pick(r.runId!)}
             />
           ))}
         </div>
@@ -503,11 +519,12 @@ function SiblingRow({
   name: string;
   leader?: string;
   detail: string;
-  onPick: () => void;
+  /** Absent for a row with nothing to open (an epoch that never ran). */
+  onPick?: () => void;
 }) {
   return (
     <div
-      className="row-link"
+      className={onPick ? "row-link" : undefined}
       onClick={onPick}
       style={{
         padding: "7px var(--space-4)",
@@ -524,7 +541,13 @@ function SiblingRow({
           : {}),
       }}
     >
-      <span style={{ color: "var(--text-link)", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <span
+        style={{
+          color: onPick ? "var(--text-link)" : "var(--text-disabled)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
         {name}
       </span>
       <span style={{ color: "var(--text-secondary)" }}>{leader ?? ""}</span>
@@ -543,12 +566,18 @@ function SiblingRow({
   );
 }
 
-/** " · public view" when the server withholds what a competition in progress must not publish. */
+/**
+ * " · public view" when the server withholds what a competition in progress must not publish.
+ *
+ * The label only. What the public view withholds is explained once, in a paragraph on the landing
+ * page; saying it again in two badge tooltips beside it made the same sentence the answer to three
+ * different gestures (issue #84 M).
+ */
 function ModeBadge() {
   const mode = useMode();
   if (!mode.audience) return null;
   return (
-    <span title={t("mode.audienceNote")}>
+    <span>
       {" · "}
       {t("mode.audienceBadge")}
     </span>

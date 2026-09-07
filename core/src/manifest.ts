@@ -71,6 +71,13 @@ export type EnvironmentManifest = {
     readRpcUrl: string;
     chainId: number;
     chainMode: string;
+    /**
+     * Whether the venues are the bundled deployer's (the address overlay in
+     * sdk/src/constants.local.ts) rather than a fork of Arbitrum. The runtime reads this and
+     * chainId at start-up, before its first import of the sdk, so a self-hosted agent started with
+     * ERIS_MANIFEST alone targets the right chain and the right address table (issue #84 X3).
+     */
+    localDeploy: boolean;
     blockTimeSec: number;
     // Rules §2.6. 0 = the node's own limit.
     blockGasLimit: number;
@@ -173,6 +180,7 @@ export function buildManifest(opts: {
       readRpcUrl: config.readRpcUrl,
       chainId: config.chainId,
       chainMode: config.chainMode,
+      localDeploy: config.localDeploy,
       blockTimeSec: config.blockTimeSec,
       blockGasLimit: config.blockGasLimit,
     },

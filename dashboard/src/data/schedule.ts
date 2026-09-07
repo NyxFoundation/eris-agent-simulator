@@ -25,7 +25,7 @@ export interface ScheduledWindow {
 
 export interface ScenarioSchedule {
   regime: string;
-  seed: number;
+  seed: number | null;
   runId: string;
   epochBlocks: number;
   windows: ScheduledWindow[];
@@ -49,6 +49,8 @@ export async function loadSchedules(
 ): Promise<Map<string, ScenarioSchedule>> {
   const entries = await Promise.all(
     competition.file.scenarios.map(async (s) => {
+      // A failed epoch has no run directory, and so no schedule to read.
+      if (typeof s.runDir !== "string") return null;
       const runId = scenarioRunId(competition.id, s.runDir);
       // Keyed by runDir, which is the only unique field: a matrix can repeat (regime, seed) under
       // --repeat, and a practice period's segments can share a display label (ADR 0021 §6).
@@ -109,7 +111,7 @@ export async function loadSchedules(
 export interface OpenWindow {
   key: string;
   regime: string;
-  seed: number;
+  seed: number | null;
   runId: string;
   window: ScheduledWindow;
   /** True on the round the window opens, which is the one worth calling out. */

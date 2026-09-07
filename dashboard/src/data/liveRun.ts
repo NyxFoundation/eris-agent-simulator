@@ -1,27 +1,58 @@
 // Live mode (issue #63 Phase 3): while a run is in progress, runs/<id>/ has no summary.json and no
 // reconstructed observations yet — those are post-run artifacts. What does exist live:
 //   - events.jsonl, appended every block (run meta, round_timing heights, tx_submitted, stress events)
+//   - blocks.csv, appended within a block of the head while the run is segmented (a practice
+//     period, ADR 0021 §6); written in one pass at the end otherwise
+//   - epochs.jsonl / market.jsonl, one row per epoch boundary (the live scorer, ADR 0021 §3)
 //   - agents/<id>.jsonl, appended per decision (reasons + submitted-tx self-reports, incl. rpcUrl)
 //   - the chain itself (current-block state via JSON-RPC; anvil answers the browser directly)
 // This module tails the files incrementally through the dev server's /runs/<id>/tail endpoint,
-// reads current-block state over RPC, and assembles a synthetic LoadedRun so the ordinary snapshot
-// builders render it. Every reader is best-effort: a live view may be seconds behind and says so
-// (each panel carries the block height it reflects).
+// reads current-block state over RPC where it may, and assembles a synthetic LoadedRun so the
+// ordinary snapshot builders render it. Every reader is best-effort: a live view may be seconds
+// behind and says so (each panel carries the block height it reflects).
+//
+// The public view reads no chain (the RPC an audience would need is the competition node, issue
+// #74), and it used to read nothing else either: the explorer showed `blocks 0–0` and every venue
+// `—` for the whole period, which is exactly when a self-hosted participant wants to know whether
+// their transaction landed (issue #84 A). blocks.csv and market.jsonl are served to everyone and
+// answer both, so they are tailed in every mode; the chain, where it can be read, only adds the
+// last few blocks the coordinator has not flushed yet.
 
 import { methodNameForCalldata } from "@sdk/methodSelectors";
-import type {
-  AgentLogEntry,
-  BlockRow,
-  LoadedRun,
-  RunEvent,
-  RunSummary,
-  SummaryAgent,
+import { mergeLiveBlocks } from "./liveBlocks";
+import {
+  loadRunHeader,
+  marketFromSampleRows,
+  parseBlocksCsv,
+  type AgentLogEntry,
+  type BlockRow,
+  type LoadedRun,
+  type MarketSeriesRow,
+  type RunEvent,
+  type RunSummary,
+  type SummaryAgent,
 } from "./runArtifacts";
 import { getMode } from "./mode";
 
 const EVENT_LIMIT = 5_000;
 const AGENT_LOG_LIMIT = 500;
 const RECENT_BLOCKS = 30;
+// Rows of blocks.csv held for a live run. A day-long segment writes ~200k rows; the newest are
+// what the explorer, the board and the round counts read, and the cap keeps the page's memory
+// bounded. What falls off the front is reported as "not covered" (`blocksFrom`), never as empty.
+const BLOCK_ROW_LIMIT = 60_000;
+// How often the public view re-reads the head of events.jsonl for the stress schedule. The server
+// serves a window only once it has closed, and the tail moves past the line the first time it is
+// read -- so a schedule that was withheld at first was never seen again when its windows closed,
+// and the landing said "nothing happened" for the rest of the period (issue #84 S).
+const SCHEDULE_REFRESH_EVERY = 10;
+// Written before the first block and read by every builder: kept whatever the cap does.
+const HEADER_TYPES = new Set([
+  "run_started_realtime",
+  "agents_registered",
+  "stress_schedule",
+  "price_feed_deployed",
+]);
 
 interface TailState {
   offset: number;
@@ -120,12 +151,29 @@ interface RegisteredAgent {
 class LiveRunState {
   private readonly eventsTail: TailState = { offset: 0 };
   private readonly eventsCarry = { partial: "" };
+  private readonly blocksTail: TailState = { offset: 0 };
+  private readonly blocksCarry = { partial: "" };
+  private readonly marketTail: TailState = { offset: 0 };
+  private readonly marketCarry = { partial: "" };
   private readonly agentTails = new Map<
     string,
     { state: TailState; carry: { partial: string } }
   >();
 
   private events: RunEvent[] = [];
+  /**
+   * The run's header events, held apart from the capped stream. They are the first lines of the
+   * file, and a viewer who opens a day-long segment at 15:00 folds forty thousand events at once;
+   * with the cap keeping the newest, the header went first -- and with it the epoch length, so the
+   * rounds bar was empty for the rest of the day.
+   */
+  private readonly header = new Map<string, RunEvent>();
+  /** blocks.csv rows, oldest first, capped at BLOCK_ROW_LIMIT (the newest are kept). */
+  private csvRows: BlockRow[] = [];
+  /** The first block blocks.csv covered, kept even after the row that carried it was capped off. */
+  private csvFrom: number | null = null;
+  private marketRows: MarketSeriesRow[] = [];
+  private refreshes = 0;
   private agentLogs = new Map<string, AgentLogEntry[]>();
   private agents: RegisteredAgent[] = [];
   private meta: {
@@ -153,6 +201,7 @@ class LiveRunState {
 
   private foldEvents(fresh: RunEvent[]): void {
     for (const event of fresh) {
+      if (HEADER_TYPES.has(event.type)) this.header.set(event.type, event);
       switch (event.type) {
         case "run_started_realtime":
           this.meta.startedAtMs = event.ts ? Date.parse(event.ts) : Date.now();
@@ -184,9 +233,14 @@ class LiveRunState {
           break;
       }
     }
-    this.events.push(...fresh);
+    this.events.push(...fresh.filter((e) => !HEADER_TYPES.has(e.type)));
     if (this.events.length > EVENT_LIMIT)
       this.events = this.events.slice(-EVENT_LIMIT);
+  }
+
+  /** The stream as the builders read it: the header first, then the capped tail. */
+  private allEvents(): RunEvent[] {
+    return [...this.header.values(), ...this.events];
   }
 
   private async refreshAgentLogs(): Promise<void> {
@@ -300,16 +354,56 @@ class LiveRunState {
 
   // One refresh = tail the files, read the chain, assemble a synthetic LoadedRun the ordinary
   // snapshot builders can render.
+  private async refreshBlocks(): Promise<void> {
+    const text = await tail(this.runId, "blocks.csv", this.blocksTail);
+    if (!text) return;
+    const combined = this.blocksCarry.partial + text;
+    const cut = combined.lastIndexOf("\n");
+    // Whole rows only; a row still being written is carried into the next chunk.
+    this.blocksCarry.partial = cut < 0 ? combined : combined.slice(cut + 1);
+    if (cut < 0) return;
+    const fresh = parseBlocksCsv(combined.slice(0, cut));
+    if (fresh.length === 0) return;
+    if (this.csvFrom === null) this.csvFrom = fresh[0].blockNumber;
+    const merged = [...this.csvRows, ...fresh];
+    this.csvRows =
+      merged.length > BLOCK_ROW_LIMIT ? merged.slice(-BLOCK_ROW_LIMIT) : merged;
+  }
+
+  private async refreshMarket(): Promise<void> {
+    const text = await tail(this.runId, "market.jsonl", this.marketTail);
+    if (!text) return;
+    const fresh = parseJsonlChunk<MarketSeriesRow>(text, this.marketCarry);
+    if (fresh.length > 0) this.marketRows = [...this.marketRows, ...fresh];
+  }
+
+  /**
+   * The public view's stress schedule, re-read from the head of the file: the server serves a
+   * window only once it has closed, so the line changes under a reader who tailed past it.
+   */
+  private async refreshSchedule(): Promise<void> {
+    const head = await loadRunHeader(this.runId);
+    const served = head.filter((e) => e.type === "stress_schedule");
+    if (served.length === 0) return;
+    this.header.set("stress_schedule", served[served.length - 1]);
+  }
+
   private async refreshOnce(): Promise<LoadedRun> {
     const text = await tail(this.runId, "events.jsonl", this.eventsTail);
     if (text)
       this.foldEvents(parseJsonlChunk<RunEvent>(text, this.eventsCarry));
+    const audience = getMode().audience;
+    this.refreshes += 1;
+    if (audience && this.refreshes % SCHEDULE_REFRESH_EVERY === 1)
+      await this.refreshSchedule();
     // Decision logs are not served to the public view (server/runsApi.ts), so there is nothing to
     // tail -- and one 404 per agent per refresh for a field of hundreds is not nothing.
-    if (!getMode().audience) await this.refreshAgentLogs();
+    if (!audience) await this.refreshAgentLogs();
     const [{ chainHeight, recentBlocks }, indexerHeight] = await Promise.all([
       this.readChain(),
       this.readIndexerHeight(),
+      this.refreshBlocks(),
+      this.refreshMarket(),
     ]);
 
     // tx attribution: agents by wallet address, methods/venues from tx_submitted events
@@ -320,7 +414,8 @@ class LiveRunState {
       string,
       { ownerId: string; role: string; actionType: string }
     >();
-    for (const event of this.events) {
+    const events = this.allEvents();
+    for (const event of events) {
       if (event.type !== "tx_submitted") continue;
       if (typeof event.hash !== "string") continue;
       submittedByHash.set(event.hash.toLowerCase(), {
@@ -348,16 +443,20 @@ class LiveRunState {
       }
     }
 
-    // BlockRow synthesis from the chain's recent blocks. status is "success" optimistically —
-    // receipts per tx are too chatty for a poll loop; the archived view corrects it after the run.
-    const blockRows: BlockRow[] = [];
+    // BlockRow synthesis from the chain's recent blocks, for the blocks blocks.csv has not flushed
+    // yet (the coordinator writes it a block behind the head while segmenting, and in bulk at the
+    // end otherwise). status is "success" optimistically — receipts per tx are too chatty for a
+    // poll loop; the csv row, once written, carries the real one and replaces this.
+    const chainRows: BlockRow[] = [];
+    let chainFrom: number | null = null;
     for (const block of [...recentBlocks].reverse()) {
       const blockNumber = Number(BigInt(block.number));
+      if (chainFrom === null || blockNumber < chainFrom) chainFrom = blockNumber;
       block.transactions.forEach((tx, txIndex) => {
         const submitted = submittedByHash.get(tx.hash.toLowerCase());
         const from = tx.from.toLowerCase();
         const agentId = agentByAddress.get(from);
-        blockRows.push({
+        chainRows.push({
           blockNumber,
           txIndex,
           hash: tx.hash,
@@ -370,13 +469,20 @@ class LiveRunState {
             `${from.slice(0, 6)}…${from.slice(-4)}`,
           role: submitted?.role ?? (agentId ? "agent" : "system"),
           actionType: submitted?.actionType ?? "",
-          // Decoded here rather than waiting for blocks.csv, which the coordinator writes in bulk
-          // after the run (ADR 0021 §4). Same table, so a tx named live keeps its name once the run
-          // is archived.
+          // Decoded here rather than waiting for blocks.csv (ADR 0021 §4). Same table, so a tx
+          // named live keeps its name once the csv row arrives.
           method: methodNameForCalldata(tx.input) ?? "",
         });
       });
     }
+    // The csv rows first (they are the record), then whatever the chain adds past them.
+    const { rows: blockRows, blocksFrom } = mergeLiveBlocks<BlockRow>({
+      csvRows: this.csvRows,
+      csvFrom: this.csvFrom,
+      csvCapped: this.csvRows.length >= BLOCK_ROW_LIMIT,
+      chainRows,
+      chainFrom,
+    });
 
     const summaryAgents: SummaryAgent[] = this.agents.map((a) => ({
       id: a.id,
@@ -397,14 +503,23 @@ class LiveRunState {
       agents: summaryAgents,
     };
 
+    // The height the view reflects: the chain when it may be read, else the newest block the files
+    // mention -- the last csv row, or the last round_timing.
+    const filesHeight = Math.max(
+      this.latestEventBlock ?? 0,
+      blockRows[blockRows.length - 1]?.blockNumber ?? 0,
+    );
     return {
       id: this.runId,
       summary,
-      events: this.events,
+      events,
       blockRows,
-      market: null,
+      // The boundary samples the live scorer writes: coarser than the post-run sweep, but the
+      // venue prices the board and the markets page need exist from the first boundary on.
+      market: marketFromSampleRows(this.marketRows),
       live: {
-        chainHeight: chainHeight ?? this.latestEventBlock,
+        chainHeight: chainHeight ?? (filesHeight > 0 ? filesHeight : null),
+        blocksFrom,
         indexerHeight,
         fairSamples: this.fairSamples,
         startedAtMs: this.meta.startedAtMs,

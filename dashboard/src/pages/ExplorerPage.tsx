@@ -5,7 +5,7 @@
 // Second, it is a front door to the local Blockscout instance rather than a dead end: the
 // connection state is visible, search resolves a hash / block / address / agent name into a real
 // deep link, and when the explorer is down the page says so and still filters what it holds itself.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
 import { Sidebar } from "@/components/Sidebar";
 import { Input } from "@/design-system/Input";
@@ -22,9 +22,16 @@ import {
 import { setSelectedRound, useSelectedRound } from "@/data/roundSelection";
 import { runDisplayName } from "@/data/competition";
 import { useExplorerSnapshot } from "@/data/useExplorerSnapshot";
+import { useMode } from "@/data/mode";
 import { useScenarioLabel } from "@/data/useScenarioLabel";
 import { t } from "@/i18n/messages";
+import { queryParam } from "@/navigation";
 import type { ExplorerBlock, ExplorerTransaction } from "@/data/types";
+
+// A page of the transaction list. The search runs over every row in scope (issue #84 P: cutting to
+// the newest sixty before filtering made a transaction older than that unfindable by its own hash);
+// this is only how many of the matches are drawn at once.
+const TX_PAGE = 60;
 
 const SECTION_LABEL_STYLE = {
   font: "var(--weight-medium) 9px var(--font-mono)",
@@ -64,10 +71,19 @@ function StatTile({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BlockRow({ block, href }: { block: ExplorerBlock; href?: string }) {
+function BlockRow({
+  block,
+  href,
+  noLinkTitle,
+}: {
+  block: ExplorerBlock;
+  href?: string;
+  /** What to say when there is no deep link. The audience does not run this deployment (§84 H). */
+  noLinkTitle: string;
+}) {
   return (
     <div
-      title={href ? t("explorer.openBlock") : t("explorer.startToOpen")}
+      title={href ? t("explorer.openBlock") : noLinkTitle}
       onClick={href ? () => window.open(href, "_blank", "noopener") : undefined}
       style={{
         display: "flex",
@@ -257,7 +273,16 @@ export function ExplorerPage() {
   const blockscout = useBlockscoutStatus();
   const selectedRound = useSelectedRound();
   const scenario = useScenarioLabel();
-  const [search, setSearch] = useState("");
+  const mode = useMode();
+  // Opened from the participant lookup on the landing page ("/explorer?q=0x…"), which is where a
+  // sender the roster does not know ends up.
+  const [search, setSearch] = useState(() => queryParam("q") ?? "");
+  const [shown, setShown] = useState(TX_PAGE);
+  useEffect(() => {
+    const fromUrl = () => setSearch(queryParam("q") ?? "");
+    window.addEventListener("popstate", fromUrl);
+    return () => window.removeEventListener("popstate", fromUrl);
+  }, []);
 
   const target = useMemo(
     () => classifySearch(search, data?.agents ?? []),
@@ -275,6 +300,7 @@ export function ExplorerPage() {
       b.number.replace(/,/g, "").includes(digits),
     );
   }, [data, term]);
+  // Over every transaction in scope, not over a page of them.
   const transactions = useMemo(() => {
     if (!data) return [];
     if (!term) return data.transactions;
@@ -284,6 +310,8 @@ export function ExplorerPage() {
         .some((v) => v.toLowerCase().includes(term)),
     );
   }, [data, term]);
+  // A new search starts at the first page of its own matches.
+  useEffect(() => setShown(TX_PAGE), [term, selectedRound]);
 
   // Whether the deep links work is answered by asking the indexer for one of this run's own
   // transactions, not by comparing heights: an indexer that never followed the chain rewind can sit
@@ -414,7 +442,11 @@ export function ExplorerPage() {
                 )}
               </>
             ) : blockscout.probed ? (
-              <span>{t("explorer.offline")}</span>
+              <span>
+                {mode.audience
+                  ? t("explorer.offlineAudience")
+                  : t("explorer.offline")}
+              </span>
             ) : (
               <span>{t("explorer.probing")}</span>
             )}
@@ -645,6 +677,11 @@ export function ExplorerPage() {
               <BlockRow
                 key={block.number}
                 block={block}
+                noLinkTitle={
+                  mode.audience
+                    ? t("explorer.blockNoLink")
+                    : t("explorer.startToOpen")
+                }
                 href={
                   base && block.blockNumber !== undefined
                     ? blockscoutBlockUrl(base, block.blockNumber)
@@ -684,9 +721,37 @@ export function ExplorerPage() {
                   color: "var(--text-tertiary)",
                 }}
               >
-                {t("explorer.shown", { n: transactions.length })}
+                {t("explorer.shown", {
+                  n: Math.min(shown, transactions.length),
+                })}
+                {transactions.length > shown ? ` / ${transactions.length}` : ""}
               </span>
             </div>
+            {/* What a search covered, and what it did not: a live view holds a range of blocks, and
+                "no match" inside it is not "not on the chain" (issue #84 P). */}
+            {(term || data.txCoveredFrom !== null) && (
+              <div
+                style={{
+                  padding: "8px 18px",
+                  borderBottom: "1px solid var(--border-subtle)",
+                  font: "var(--text-xs) var(--font-mono)",
+                  color: "var(--text-tertiary)",
+                }}
+              >
+                {[
+                  term
+                    ? t("explorer.searchAll", { n: data.transactions.length })
+                    : null,
+                  data.txCoveredFrom !== null
+                    ? t("explorer.coveredFrom", {
+                        from: data.txCoveredFrom.toLocaleString("en-US"),
+                      })
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+            )}
             {transactions.length === 0 && (
               <div
                 style={{
@@ -698,7 +763,7 @@ export function ExplorerPage() {
                 {t("explorer.noTx")}
               </div>
             )}
-            {transactions.map((tx) => (
+            {transactions.slice(0, shown).map((tx) => (
               <TransactionRow
                 key={tx.fullHash ?? tx.hash}
                 tx={tx}
@@ -714,6 +779,26 @@ export function ExplorerPage() {
                 }
               />
             ))}
+            {transactions.length > shown && (
+              <button
+                type="button"
+                onClick={() => setShown((n) => n + TX_PAGE)}
+                style={{
+                  margin: "10px 18px",
+                  font: "var(--text-xs) var(--font-mono)",
+                  padding: "5px 10px",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: "var(--radius-sm)",
+                  background: "transparent",
+                  color: "var(--text-secondary)",
+                  cursor: "pointer",
+                }}
+              >
+                {t("explorer.showMore", {
+                  n: Math.min(TX_PAGE, transactions.length - shown),
+                })}
+              </button>
+            )}
           </div>
         </main>
       </div>

@@ -28,7 +28,12 @@ import {
 } from "@eris/sdk/chain.js";
 import { spawnSync } from "node:child_process";
 import { RunLogger, type RunArtifactWriter } from "../logger.js";
-import { SegmentedRun, sliceEpochSeries } from "../segments.js";
+import {
+  SegmentedRun,
+  segmentAgentRecord,
+  segmentIndexAgent,
+  sliceEpochSeries,
+} from "../segments.js";
 import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
 import { methodNameForCalldata } from "@eris/sdk/methodSelectors.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
@@ -2023,23 +2028,23 @@ export async function runRealtimeSimulation(
         // opening balances: a segment is a window on a continuous economy, and an agent's PnL for
         // Tuesday is what changed on Tuesday. P is the rules' V_K − V_0 (§4.4.1), each end at its
         // own marks; a final boundary that did not report falls back to the last that did (§4.4.2).
+        // No V_0 (a mid-segment registration) is no P, recorded as such -- never as 0 (issue #84 X2).
         const pnl = sliced
           ? epochPnlFromSeries(sliced.valuesByAgent[a.id] ?? [])
           : null;
-        return {
-          id: a.id,
-          address: a.address,
-          baseline: a.spec.baseline ?? false,
-          ...(a.spec.participant !== undefined
-            ? { participant: a.spec.participant }
-            : {}),
-          initialValueUsdc: pnl?.initialValueUsdc ?? 0,
-          finalValueUsdc: pnl?.finalValueUsdc ?? 0,
-          netPnlUsdc: pnl?.pnlUsdc ?? 0,
-          ...(pnl ? { pnlUsdc: pnl.pnlUsdc } : {}),
-          includedTxCount: a.included,
-          revertCount: a.reverted,
-        };
+        return segmentAgentRecord(
+          {
+            id: a.id,
+            address: a.address,
+            baseline: a.spec.baseline ?? false,
+            ...(a.spec.participant !== undefined
+              ? { participant: a.spec.participant }
+              : {}),
+            includedTxCount: a.included,
+            revertCount: a.reverted,
+          },
+          pnl,
+        );
       });
       logger.summary({
         runId: `${runId}/segment-${segments.currentSegment}`,
@@ -2065,17 +2070,7 @@ export async function runRealtimeSimulation(
       });
       // The index entry is standings-shaped (the dashboard reads a competition's scenarios with the
       // same code either way), so it carries the score rather than only the balances.
-      return agents.map((a) => ({
-        id: a.id,
-        baseline: a.baseline,
-        netPnlUsdc: a.netPnlUsdc,
-        // Alpha needs the fixed-reference sweep, which a segment of a continuous chain does not get.
-        // Reported as 0 rather than omitted, because the field is what the standings read.
-        alphaUsdc: 0,
-        ...(a.pnlUsdc !== undefined ? { pnlUsdc: a.pnlUsdc } : {}),
-        initialValueUsdc: a.initialValueUsdc,
-        finalValueUsdc: a.finalValueUsdc,
-      }));
+      return agents.map(segmentIndexAgent);
     };
 
     const rollSegment = async (atBlock: number): Promise<void> => {
@@ -3291,19 +3286,35 @@ export async function runRealtimeSimulation(
     if (segments)
       segments.finish(
         finalBlock,
-        agentsSummary.map((a) => ({
-          id: a.id,
-          address: a.address,
-          baseline: a.baseline,
-          ...(a.participant !== undefined
-            ? { participant: a.participant }
-            : {}),
-          netPnlUsdc: a.netPnlUsdc,
-          alphaUsdc: a.alphaUsdc ?? 0,
-          ...(a.pnlUsdc !== undefined ? { pnlUsdc: a.pnlUsdc } : {}),
-          initialValueUsdc: a.initialValueUsdc,
-          finalValueUsdc: a.finalValueUsdc,
-        })),
+        agentsSummary.map((a) => {
+          // The same record every other segment got. The whole-run figures above are the run's
+          // (an agent registered mid-period has a real netPnlUsdc since it was funded), but the
+          // final segment's index entry is scored on this segment's boundaries alone, and an agent
+          // with no V_0 in it is unscored here too (issue #84 X2).
+          // No boundary series at all means the run never reached two boundaries, so this segment
+          // contains no epoch and scores nobody -- P is V_K − V_0 and there is no V_0 to take.
+          // Substituting the whole-run figures here would hand the segment a number that is not
+          // its own, which is the same mistake in a smaller corner (issue #84 X2).
+          const pnl =
+            liveEpochSeries === undefined
+              ? null
+              : epochPnlFromSeries(liveEpochSeries.valuesByAgent[a.id] ?? []);
+          return segmentIndexAgent(
+            segmentAgentRecord(
+              {
+                id: a.id,
+                address: a.address,
+                baseline: a.baseline,
+                ...(a.participant !== undefined
+                  ? { participant: a.participant }
+                  : {}),
+                includedTxCount: a.includedTxCount,
+                revertCount: a.revertCount,
+              },
+              pnl,
+            ),
+          );
+        }),
       );
     logger.event({ type: "run_completed", runId, runDir: logger.runDir });
     console.error(
