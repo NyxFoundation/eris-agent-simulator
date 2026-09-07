@@ -28,6 +28,13 @@ npm run agent:build -- team foo  # per team (auto-builds base if missing) -> eri
 
 ## Self-test the memory budget
 
+The shared image includes Python 3.11.16 and the generated `eris` SDK. A Python team ships
+`strategy.py`, `prompt.md` and optionally pinned `requirements.txt`; the team build installs
+requirements before the root filesystem becomes read-only. Revisions are compiled into `/tmp`.
+Node, Python, NumPy and every other team dependency share the same 4 GiB container cap.
+`npm run agent:selftest -- my-arb-py` exercises this path. Set `ERIS_SELFTEST_CONFIG` to choose a
+short local config; the default uses `config/local.yaml`, or `config/example.yaml` if absent.
+
 `self-test.sh` builds the team image and runs a short live environment (funds wallets + deploys
 venues) with only that agent + a noop baseline, each capped. An agent that exceeds the cap is
 OOM-killed and reported as an early exit (code 137).

@@ -1,0 +1,1291 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/AgentObservation",
+  "definitions": {
+    "AgentObservation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "observation"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        },
+        "blockNumber": {
+          "type": "string"
+        },
+        "agentAddress": {
+          "type": "string"
+        },
+        "fairPriceUsdcPerWeth": {
+          "type": "number"
+        },
+        "oraclePrices": {
+          "type": "object",
+          "properties": {
+            "wethUsd": {
+              "type": "number"
+            },
+            "usdcUsd": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "wethUsd",
+            "usdcUsd"
+          ],
+          "additionalProperties": false
+        },
+        "fairPricesUsd": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "baseBalances": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "baseDecimals": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "markets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blocksRemaining": {
+          "type": "number"
+        },
+        "enabledProtocols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ProtocolId"
+          }
+        },
+        "balances": {
+          "type": "object",
+          "properties": {
+            "ethWei": {
+              "type": "string"
+            },
+            "wethWei": {
+              "type": "string"
+            },
+            "usdcUnits": {
+              "type": "string"
+            },
+            "stables": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "token": {
+                    "type": "string"
+                  },
+                  "decimals": {
+                    "type": "number"
+                  },
+                  "balance": {
+                    "type": "string"
+                  },
+                  "priceUsdc": {
+                    "type": "number"
+                  },
+                  "marketQuoted": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "token",
+                  "decimals",
+                  "balance",
+                  "priceUsdc",
+                  "marketQuoted"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "ethWei",
+            "wethWei",
+            "usdcUnits"
+          ],
+          "additionalProperties": false
+        },
+        "inventory": {
+          "type": "object",
+          "properties": {
+            "valueUsdc": {
+              "type": "number"
+            },
+            "weth": {
+              "type": "number"
+            },
+            "usdc": {
+              "type": "number"
+            },
+            "eth": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "valueUsdc",
+            "weth",
+            "usdc",
+            "eth"
+          ],
+          "additionalProperties": false
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "round": {
+                "type": "number"
+              },
+              "poolPriceUsdcPerWeth": {
+                "type": "number"
+              },
+              "fairPriceUsdcPerWeth": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "round",
+              "poolPriceUsdcPerWeth",
+              "fairPriceUsdcPerWeth"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "defaultPriorityFeePerGasWei": {
+              "type": "string"
+            },
+            "maxPriorityFeePerGasWei": {
+              "type": "string"
+            },
+            "defaultSlippageBps": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "defaultPriorityFeePerGasWei",
+            "maxPriorityFeePerGasWei",
+            "defaultSlippageBps"
+          ],
+          "additionalProperties": false
+        },
+        "protocols": {
+          "$ref": "#/definitions/ProtocolObservations"
+        },
+        "registry": {
+          "$ref": "#/definitions/RegistryObservation"
+        },
+        "discoveredPools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DiscoveredPool"
+          }
+        },
+        "competition": {
+          "type": "object",
+          "properties": {
+            "maxCompetitorPriorityFeeWei": {
+              "type": "string"
+            },
+            "maxBlockPriorityFeeWei": {
+              "type": "string"
+            },
+            "lastTxIndex": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "recentRevertRate": {
+              "type": "number"
+            },
+            "recentSampleSize": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "maxCompetitorPriorityFeeWei",
+            "maxBlockPriorityFeeWei",
+            "lastTxIndex",
+            "recentRevertRate",
+            "recentSampleSize"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "kind",
+        "runId",
+        "round",
+        "blockNumber",
+        "agentAddress",
+        "fairPriceUsdcPerWeth",
+        "oraclePrices",
+        "enabledProtocols",
+        "balances",
+        "inventory",
+        "history",
+        "limits",
+        "protocols"
+      ],
+      "additionalProperties": false
+    },
+    "ProtocolId": {
+      "type": "string",
+      "enum": [
+        "uniswap",
+        "balancer",
+        "curve",
+        "gmx",
+        "aave",
+        "lst",
+        "liquity",
+        "lending"
+      ]
+    },
+    "ProtocolObservations": {
+      "type": "object",
+      "properties": {
+        "uniswap": {
+          "$ref": "#/definitions/UniswapObservation"
+        },
+        "balancer": {
+          "$ref": "#/definitions/AmmObservation"
+        },
+        "curve": {
+          "$ref": "#/definitions/AmmObservation"
+        },
+        "gmx": {
+          "$ref": "#/definitions/GmxObservation"
+        },
+        "aave": {
+          "$ref": "#/definitions/AaveObservation"
+        },
+        "lst": {
+          "$ref": "#/definitions/LstObservation"
+        },
+        "liquity": {
+          "$ref": "#/definitions/LiquityObservation"
+        },
+        "lending": {
+          "$ref": "#/definitions/LendingObservation"
+        }
+      },
+      "additionalProperties": false
+    },
+    "UniswapObservation": {
+      "type": "object",
+      "properties": {
+        "pool": {
+          "type": "object",
+          "properties": {
+            "pair": {
+              "type": "string",
+              "const": "WETH/USDC"
+            },
+            "fee": {
+              "type": "number"
+            },
+            "priceUsdcPerWeth": {
+              "type": "number"
+            },
+            "tick": {
+              "type": "number"
+            },
+            "tickSpacing": {
+              "type": "number"
+            },
+            "liquidity": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pair",
+            "fee",
+            "priceUsdcPerWeth",
+            "tick",
+            "tickSpacing"
+          ],
+          "additionalProperties": false
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LpPositionObservation"
+          }
+        },
+        "markets": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/UniswapMarketObservation"
+          }
+        }
+      },
+      "required": [
+        "pool",
+        "positions"
+      ],
+      "additionalProperties": false
+    },
+    "LpPositionObservation": {
+      "type": "object",
+      "properties": {
+        "tokenId": {
+          "type": "string"
+        },
+        "tickLower": {
+          "type": "number"
+        },
+        "tickUpper": {
+          "type": "number"
+        },
+        "liquidity": {
+          "type": "string"
+        },
+        "tokensOwedWethWei": {
+          "type": "string"
+        },
+        "tokensOwedUsdcUnits": {
+          "type": "string"
+        },
+        "uncollectedFeesWethWei": {
+          "type": "string"
+        },
+        "uncollectedFeesUsdcUnits": {
+          "type": "string"
+        },
+        "amountWethWei": {
+          "type": "string"
+        },
+        "amountUsdcUnits": {
+          "type": "string"
+        },
+        "valueUsdc": {
+          "type": "number"
+        },
+        "market": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tokenId",
+        "tickLower",
+        "tickUpper",
+        "liquidity",
+        "tokensOwedWethWei",
+        "tokensOwedUsdcUnits",
+        "uncollectedFeesWethWei",
+        "uncollectedFeesUsdcUnits",
+        "amountWethWei",
+        "amountUsdcUnits",
+        "valueUsdc"
+      ],
+      "additionalProperties": false
+    },
+    "UniswapMarketObservation": {
+      "type": "object",
+      "properties": {
+        "pair": {
+          "type": "string"
+        },
+        "fee": {
+          "type": "number"
+        },
+        "priceUsdcPerWeth": {
+          "type": "number"
+        },
+        "tick": {
+          "type": "number"
+        },
+        "tickSpacing": {
+          "type": "number"
+        },
+        "liquidity": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pair",
+        "fee",
+        "priceUsdcPerWeth",
+        "tick",
+        "tickSpacing"
+      ],
+      "additionalProperties": false
+    },
+    "AmmObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "priceUsdcPerWeth": {
+          "type": "number"
+        },
+        "reserves": {
+          "type": "object",
+          "properties": {
+            "weth": {
+              "type": "string"
+            },
+            "usdc": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "weth",
+            "usdc"
+          ],
+          "additionalProperties": false
+        },
+        "markets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "priceUsdcPerWeth": {
+                "type": "number"
+              },
+              "reserves": {
+                "type": "object",
+                "properties": {
+                  "weth": {
+                    "type": "string"
+                  },
+                  "usdc": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "weth",
+                  "usdc"
+                ],
+                "additionalProperties": false
+              },
+              "sellPriceUsdcPerWeth": {
+                "type": "number"
+              },
+              "buyPriceUsdcPerWeth": {
+                "type": "number"
+              },
+              "effectiveHalfSpreadBps": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "priceUsdcPerWeth"
+            ]
+          }
+        },
+        "sellPriceUsdcPerWeth": {
+          "type": "number"
+        },
+        "buyPriceUsdcPerWeth": {
+          "type": "number"
+        },
+        "effectiveHalfSpreadBps": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "priceUsdcPerWeth"
+      ]
+    },
+    "GmxObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "markets": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/GmxMarketObservation"
+          }
+        },
+        "marketPriceUsd": {
+          "type": "number"
+        },
+        "position": {
+          "$ref": "#/definitions/GmxPositionObservation"
+        },
+        "longOiUsd": {
+          "type": "number"
+        },
+        "shortOiUsd": {
+          "type": "number"
+        },
+        "fundingPerHourBps": {
+          "type": "number"
+        },
+        "fundingModeled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "marketPriceUsd"
+      ]
+    },
+    "GmxMarketObservation": {
+      "type": "object",
+      "properties": {
+        "marketPriceUsd": {
+          "type": "number"
+        },
+        "position": {
+          "$ref": "#/definitions/GmxPositionObservation"
+        },
+        "longOiUsd": {
+          "type": "number"
+        },
+        "shortOiUsd": {
+          "type": "number"
+        },
+        "fundingPerHourBps": {
+          "type": "number"
+        },
+        "fundingModeled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "marketPriceUsd"
+      ],
+      "additionalProperties": false
+    },
+    "GmxPositionObservation": {
+      "type": "object",
+      "properties": {
+        "isLong": {
+          "type": "boolean"
+        },
+        "sizeUsd": {
+          "type": "string"
+        },
+        "sizeInTokens": {
+          "type": "string"
+        },
+        "collateral": {
+          "$ref": "#/definitions/TokenSymbol"
+        },
+        "collateralAmount": {
+          "type": "string"
+        },
+        "entryPriceUsd": {
+          "type": "number"
+        },
+        "pnlUsd": {
+          "type": "number"
+        },
+        "fundingOwedUsd": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "isLong",
+        "sizeUsd",
+        "sizeInTokens",
+        "collateral",
+        "collateralAmount",
+        "entryPriceUsd",
+        "pnlUsd"
+      ],
+      "additionalProperties": false
+    },
+    "TokenSymbol": {
+      "type": "string"
+    },
+    "AaveObservation": {
+      "type": "object",
+      "properties": {
+        "healthFactor": {
+          "type": "string"
+        },
+        "totalCollateralBase": {
+          "type": "string"
+        },
+        "totalDebtBase": {
+          "type": "string"
+        },
+        "availableBorrowsBase": {
+          "type": "string"
+        },
+        "supplied": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "borrowed": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "poolLiquidity": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "healthFactor",
+        "totalCollateralBase",
+        "totalDebtBase",
+        "availableBorrowsBase",
+        "supplied",
+        "borrowed"
+      ],
+      "additionalProperties": false
+    },
+    "LstObservation": {
+      "type": "object",
+      "properties": {
+        "redemptionRateWeth": {
+          "type": "number"
+        },
+        "marketPriceWeth": {
+          "type": "number"
+        },
+        "marketSellPriceWeth": {
+          "type": "number"
+        },
+        "marketBuyPriceWeth": {
+          "type": "number"
+        },
+        "discountBps": {
+          "type": "number"
+        },
+        "marketQuoted": {
+          "type": "boolean"
+        },
+        "apyBps": {
+          "type": "number"
+        },
+        "yieldPerBlockBps": {
+          "type": "number"
+        },
+        "withdrawalDelayBlocks": {
+          "type": "number"
+        },
+        "estimatedQueueDelayBlocks": {
+          "type": "number"
+        },
+        "queueDelayPerWethBlocks": {
+          "type": "number"
+        },
+        "queueThroughputWeiPerBlock": {
+          "type": "string"
+        },
+        "queueLength": {
+          "type": "number"
+        },
+        "rewardReserveWei": {
+          "type": "string"
+        },
+        "lstBalanceWei": {
+          "type": "string"
+        },
+        "lstRedemptionValueWethWei": {
+          "type": "string"
+        },
+        "instantExitWethWei": {
+          "type": "string"
+        },
+        "pendingWithdrawals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LstWithdrawalObservation"
+          }
+        },
+        "pendingWithdrawalWethWei": {
+          "type": "string"
+        },
+        "claimableWithdrawalWethWei": {
+          "type": "string"
+        },
+        "poolReserves": {
+          "type": "object",
+          "properties": {
+            "weth": {
+              "type": "string"
+            },
+            "lst": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "weth",
+            "lst"
+          ],
+          "additionalProperties": false
+        },
+        "aaveCollateral": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "redemptionRateWeth",
+        "marketPriceWeth",
+        "discountBps",
+        "apyBps",
+        "yieldPerBlockBps",
+        "withdrawalDelayBlocks",
+        "estimatedQueueDelayBlocks",
+        "queueLength",
+        "rewardReserveWei",
+        "lstBalanceWei",
+        "lstRedemptionValueWethWei",
+        "instantExitWethWei",
+        "pendingWithdrawals",
+        "pendingWithdrawalWethWei",
+        "claimableWithdrawalWethWei"
+      ],
+      "additionalProperties": false
+    },
+    "LstWithdrawalObservation": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string"
+        },
+        "assetsWethWei": {
+          "type": "string"
+        },
+        "claimableAtBlock": {
+          "type": "string"
+        },
+        "claimable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "requestId",
+        "assetsWethWei",
+        "claimableAtBlock",
+        "claimable"
+      ],
+      "additionalProperties": false
+    },
+    "LiquityObservation": {
+      "type": "object",
+      "properties": {
+        "priceUsd": {
+          "type": "number"
+        },
+        "tcr": {
+          "type": "number"
+        },
+        "recoveryMode": {
+          "type": "boolean"
+        },
+        "mcr": {
+          "type": "number"
+        },
+        "ccr": {
+          "type": "number"
+        },
+        "troveCount": {
+          "type": "number"
+        },
+        "totalCollWei": {
+          "type": "string"
+        },
+        "totalDebtEusdWei": {
+          "type": "string"
+        },
+        "borrowingRateBps": {
+          "type": "number"
+        },
+        "redemptionRateBps": {
+          "type": "number"
+        },
+        "baseRateBps": {
+          "type": "number"
+        },
+        "minNetDebtEusdWei": {
+          "type": "string"
+        },
+        "gasCompensationEusdWei": {
+          "type": "string"
+        },
+        "eusdBalanceWei": {
+          "type": "string"
+        },
+        "marketPriceUsdc": {
+          "type": "number"
+        },
+        "marketSellPriceUsdc": {
+          "type": "number"
+        },
+        "marketBuyPriceUsdc": {
+          "type": "number"
+        },
+        "marketQuoted": {
+          "type": "boolean"
+        },
+        "discountBps": {
+          "type": "number"
+        },
+        "redemptionEdgeBps": {
+          "type": "number"
+        },
+        "poolReserves": {
+          "type": "object",
+          "properties": {
+            "eusd": {
+              "type": "string"
+            },
+            "usdc": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "eusd",
+            "usdc"
+          ],
+          "additionalProperties": false
+        },
+        "trove": {
+          "$ref": "#/definitions/LiquityTroveObservation"
+        },
+        "riskiestTrove": {
+          "type": "object",
+          "properties": {
+            "owner": {
+              "type": "string"
+            },
+            "icr": {
+              "type": "number"
+            },
+            "netDebtEusdWei": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "owner",
+            "icr",
+            "netDebtEusdWei"
+          ],
+          "additionalProperties": false
+        },
+        "spDepositEusdWei": {
+          "type": "string"
+        },
+        "spEthGainWei": {
+          "type": "string"
+        },
+        "spLqtyGainWei": {
+          "type": "string"
+        },
+        "spTotalDepositsEusdWei": {
+          "type": "string"
+        },
+        "spShareBps": {
+          "type": "number"
+        },
+        "ethBalanceWei": {
+          "type": "string"
+        },
+        "suggestedGasReserveWei": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "priceUsd",
+        "tcr",
+        "recoveryMode",
+        "mcr",
+        "ccr",
+        "troveCount",
+        "totalCollWei",
+        "totalDebtEusdWei",
+        "borrowingRateBps",
+        "redemptionRateBps",
+        "baseRateBps",
+        "minNetDebtEusdWei",
+        "gasCompensationEusdWei",
+        "eusdBalanceWei",
+        "marketPriceUsdc",
+        "marketQuoted",
+        "discountBps",
+        "redemptionEdgeBps",
+        "spDepositEusdWei",
+        "spEthGainWei",
+        "spLqtyGainWei",
+        "spTotalDepositsEusdWei",
+        "spShareBps",
+        "ethBalanceWei",
+        "suggestedGasReserveWei"
+      ],
+      "additionalProperties": false
+    },
+    "LiquityTroveObservation": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "number"
+        },
+        "collWei": {
+          "type": "string"
+        },
+        "debtEusdWei": {
+          "type": "string"
+        },
+        "netDebtEusdWei": {
+          "type": "string"
+        },
+        "icr": {
+          "type": "number"
+        },
+        "liquidationPriceUsd": {
+          "type": "number"
+        },
+        "positionFromRiskiest": {
+          "type": "number"
+        },
+        "redeemedAheadEusdWei": {
+          "type": "string"
+        },
+        "positionKnown": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "status",
+        "collWei",
+        "debtEusdWei",
+        "netDebtEusdWei",
+        "icr",
+        "liquidationPriceUsd",
+        "positionFromRiskiest",
+        "redeemedAheadEusdWei",
+        "positionKnown"
+      ],
+      "additionalProperties": false
+    },
+    "LendingObservation": {
+      "type": "object",
+      "properties": {
+        "singleton": {
+          "type": "string"
+        },
+        "markets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/LendingPositionObservation"
+          }
+        },
+        "dropped": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "singleton",
+        "markets",
+        "dropped"
+      ],
+      "additionalProperties": false
+    },
+    "LendingPositionObservation": {
+      "type": "object",
+      "properties": {
+        "marketId": {
+          "type": "string"
+        },
+        "loanToken": {
+          "type": "string"
+        },
+        "collateralToken": {
+          "type": "string"
+        },
+        "oracle": {
+          "type": "string"
+        },
+        "oracleOwner": {
+          "type": "string"
+        },
+        "irm": {
+          "type": "string"
+        },
+        "lltv": {
+          "type": "string"
+        },
+        "liquidationIncentiveFactor": {
+          "type": "string"
+        },
+        "price": {
+          "type": "string"
+        },
+        "supplyAssets": {
+          "type": "string"
+        },
+        "borrowAssets": {
+          "type": "string"
+        },
+        "collateral": {
+          "type": "string"
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "totalSupplyAssets": {
+          "type": "string"
+        },
+        "totalBorrowAssets": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "marketId",
+        "loanToken",
+        "collateralToken",
+        "oracle",
+        "irm",
+        "lltv",
+        "liquidationIncentiveFactor",
+        "price",
+        "supplyAssets",
+        "borrowAssets",
+        "collateral",
+        "healthy",
+        "totalSupplyAssets",
+        "totalBorrowAssets"
+      ],
+      "additionalProperties": false
+    },
+    "RegistryObservation": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RegistryEntryObservation"
+          }
+        },
+        "allowances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "spender": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              },
+              "symbol": {
+                "type": "string"
+              },
+              "amount": {
+                "type": "string"
+              },
+              "unlimited": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "spender",
+              "token",
+              "amount",
+              "unlimited"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "strandedUnknown": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StrandedHoldingObservation"
+          }
+        },
+        "dropped": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "address",
+        "entries",
+        "allowances",
+        "strandedUnknown",
+        "dropped"
+      ],
+      "additionalProperties": false
+    },
+    "RegistryEntryObservation": {
+      "type": "object",
+      "properties": {
+        "market": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/RegistryKind"
+        },
+        "creator": {
+          "type": "string"
+        },
+        "mine": {
+          "type": "boolean"
+        },
+        "token0": {
+          "type": "string"
+        },
+        "token1": {
+          "type": "string"
+        },
+        "oracle": {
+          "type": "string"
+        },
+        "oracleOwner": {
+          "type": "string"
+        },
+        "codehashAtRegistration": {
+          "type": "string"
+        },
+        "codehashNow": {
+          "type": "string"
+        },
+        "verified": {
+          "type": "boolean"
+        },
+        "registeredAtBlock": {
+          "type": "string"
+        },
+        "extra": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "market",
+        "kind",
+        "creator",
+        "mine",
+        "codehashAtRegistration",
+        "verified",
+        "registeredAtBlock"
+      ],
+      "additionalProperties": false
+    },
+    "RegistryKind": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "uniswapV3Pool",
+        "balancerWeightedPool",
+        "curvePlainPool",
+        "curveTwocryptoPool",
+        "lendingMarket",
+        "erc20"
+      ]
+    },
+    "StrandedHoldingObservation": {
+      "type": "object",
+      "properties": {
+        "market": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "amountRaw": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "market",
+        "token",
+        "amountRaw"
+      ],
+      "additionalProperties": false
+    },
+    "DiscoveredPool": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "$ref": "#/definitions/Address"
+        },
+        "token0": {
+          "$ref": "#/definitions/Address"
+        },
+        "token1": {
+          "$ref": "#/definitions/Address"
+        },
+        "token0Decimals": {
+          "type": "number"
+        },
+        "token1Decimals": {
+          "type": "number"
+        },
+        "feeBps": {
+          "type": "number"
+        },
+        "createdAtBlock": {
+          "type": "number"
+        },
+        "reserve0": {
+          "type": "string"
+        },
+        "reserve1": {
+          "type": "string"
+        },
+        "impliedPriceToken1PerToken0": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "codehash": {
+          "$ref": "#/definitions/Hex"
+        }
+      },
+      "required": [
+        "address",
+        "token0",
+        "token1",
+        "token0Decimals",
+        "token1Decimals",
+        "feeBps",
+        "createdAtBlock",
+        "reserve0",
+        "reserve1",
+        "impliedPriceToken1PerToken0",
+        "codehash"
+      ],
+      "additionalProperties": false
+    },
+    "Address": {
+      "type": "string",
+      "description": "TypeScript type to use for `address` values",
+      "default": "`0x${string}`"
+    },
+    "Hex": {
+      "type": "string"
+    }
+  }
+}

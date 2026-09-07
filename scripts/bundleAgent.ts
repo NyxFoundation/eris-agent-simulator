@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { loadImproveAgent } from "../example/agents/runtime/improve.js";
 
 const AGENTS_DIR = "example/agents";
@@ -43,9 +43,10 @@ const ARTIFACT_MANIFEST = "artifacts.json";
 // README happens to name as an example, which is a submission carrying code it does not use.
 function collectSources(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
+    if (["node_modules", ".venv", "__pycache__"].includes(name)) continue;
     const p = join(dir, name);
     if (statSync(p).isDirectory()) collectSources(p, out);
-    else if (p.endsWith(".ts")) out.push(p);
+    else if (/\.(ts|py)$/.test(p)) out.push(p);
   }
   return out;
 }
@@ -87,6 +88,7 @@ function main(): void {
     outIdx >= 0 && args[outIdx + 1] ? args[outIdx + 1] : `bundle-${id}.zip`,
   );
   const agentDir = join(AGENTS_DIR, id);
+  const python = existsSync(join(agentDir, "strategy.py"));
   if (!existsSync(agentDir)) {
     console.error(`agent directory not found: ${agentDir}`);
     process.exitCode = 1;
@@ -99,6 +101,8 @@ function main(): void {
   // submitted, and not at start-up. loadImproveAgent is the same check bot.ts applies when it
   // starts, so a bundle that passes here is one that will start.
   try {
+    if (python === existsSync(join(agentDir, "agent.ts")))
+      throw new Error("ship exactly one entry point: agent.ts or strategy.py");
     loadImproveAgent(agentDir);
   } catch (error) {
     console.error(
@@ -121,7 +125,15 @@ function main(): void {
       cpSync(join(AGENTS_DIR, "lib"), join(stage, "agents", "lib"), {
         recursive: true,
       });
-    cpSync(agentDir, join(stage, "agents", id), { recursive: true });
+    const cleanCopy = {
+      recursive: true,
+      filter: (src: string) => !["node_modules", ".venv", "__pycache__"].includes(basename(src)) && !src.endsWith(".pyc") && !src.endsWith(".egg-info"),
+    };
+    cpSync(agentDir, join(stage, "agents", id), cleanCopy);
+    if (python) cpSync("sdk-py", join(stage, "sdk-py"), {
+      ...cleanCopy,
+      filter: src => cleanCopy.filter(src) && basename(src) !== "build",
+    });
     cpSync("sdk", join(stage, "sdk"), { recursive: true });
     rmSync(join(stage, "sdk", "node_modules"), {
       recursive: true,
@@ -189,6 +201,12 @@ function main(): void {
         "",
         "```sh",
         "npm install",
+        ...(python ? [
+          "python3 -m venv .venv",
+          ".venv/bin/python -m pip install ./sdk-py",
+          ...(existsSync(join(agentDir, "requirements.txt")) ? [`.venv/bin/python -m pip install -r agents/${id}/requirements.txt`] : []),
+          "export ERIS_PYTHON=\"$PWD/.venv/bin/python\"",
+        ] : []),
         `ERIS_AGENT_DIR=agents/${id} node --import tsx agents/runtime/bot.ts`,
         "```",
         "",

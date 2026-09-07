@@ -37,12 +37,12 @@ if (data.source.kind === "module") {
     metadata = { mode: "decide", config: module.config };
   } else
     throw new Error(`${data.source.path} must export decide() or run(ctx)`);
-} else {
+} else if (data.source.kind === "executor") {
   const compiled = compileExecutor(data.source.source);
   if (!compiled.ok) throw new Error(compiled.reason);
   decide = compiled.executor;
   metadata = { mode: "decide" };
-}
+} else throw new Error("Python sources must run through PyBridge");
 
 port.on("message", async ({ id, observation }: StrategyRequest) => {
   // Each context has its own lifetime. A timer/async continuation from a completed call must not

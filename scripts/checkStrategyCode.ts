@@ -17,14 +17,19 @@ import {
 function defaultTargets(): string[] {
   const root = "example/agents";
   const targets: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if ([".venv", "__pycache__", "node_modules"].includes(entry.name)) continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && /\.(ts|py)$/.test(path)) targets.push(path);
+    }
+  };
   for (const name of readdirSync(root)) {
     if (name === "runtime") continue;
     const dir = join(root, name);
     if (!statSync(dir).isDirectory()) continue;
-    for (const file of readdirSync(dir)) {
-      const p = join(dir, file);
-      if (statSync(p).isFile() && p.endsWith(".ts")) targets.push(p);
-    }
+    walk(dir);
   }
   return targets;
 }

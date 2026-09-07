@@ -22,6 +22,12 @@ There are 3 types (details in [Architecture](architecture.md)). This page follow
 
 ## Step 1: The minimal agent
 
+Python authors can start with `example/agents/my-arb-py/strategy.py` and its `prompt.md`.
+The generated `eris` SDK provides typed observations/actions and the same sizing/market helpers.
+The host retains the single sender and five-second deadline. See [Python strategies](python-agents.md)
+for local setup, a complete example, revision policy and packaging. Ship either `agent.ts` or
+`strategy.py` in one agent directory.
+
 ```bash
 mkdir example/agents/my-strategy
 ```

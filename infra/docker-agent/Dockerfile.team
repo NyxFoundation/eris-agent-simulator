@@ -12,3 +12,7 @@ COPY example/agents/${AGENT_ID}/ /eris/example/agents/${AGENT_ID}/
 RUN if [ -f "/eris/example/agents/${AGENT_ID}/package.json" ]; then \
       cd "/eris/example/agents/${AGENT_ID}" && npm install --no-audit --no-fund; \
     fi
+RUN if [ -f "/eris/example/agents/${AGENT_ID}/requirements.txt" ]; then \
+      cd "/eris/example/agents/${AGENT_ID}" && \
+      python3 -m pip install --no-cache-dir -r requirements.txt && python3 -m pip check; \
+    fi

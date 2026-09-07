@@ -1,0 +1,4 @@
+datamodel-code-generator==0.34.0
+pydantic==2.11.9
+black==26.5.1
+isort==6.1.0

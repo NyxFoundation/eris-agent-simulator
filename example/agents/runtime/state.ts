@@ -84,6 +84,7 @@ export function capBytesFromEnv(raw: string | undefined): number {
 /// version has now lost two epochs in a row, which is the case `revertTo` exists for and which is
 /// invisible if the versions all look like they were installed in one run.
 export type PersistedVersion = {
+  language?: "typescript" | "python";
   version: number;
   source: string;
   notes: string;
@@ -156,7 +157,9 @@ function parseState(raw: string): PersistedState | null {
     // silently -- the model would see every version as belonging to no epoch and nothing would say
     // why.
     if (typeof r.epochId !== "string" || r.epochId === "") return null;
+    if (r.language !== undefined && r.language !== "typescript" && r.language !== "python") return null;
     versions.push({
+      ...(r.language !== undefined ? { language: r.language } : {}),
       version: r.version as number,
       source: r.source,
       notes: typeof r.notes === "string" ? r.notes : "",

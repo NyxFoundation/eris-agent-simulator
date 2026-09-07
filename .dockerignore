@@ -3,6 +3,10 @@
 # (3.6 GB gmx hardhat vendor). Dockerfile.base uses its own Dockerfile.base.dockerignore, which also
 # strips team agent code from the base.
 **/node_modules
+**/.venv
+**/__pycache__
+**/*.egg-info
+sdk-py/build
 .git
 runs
 cache

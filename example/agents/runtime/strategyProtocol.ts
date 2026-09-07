@@ -8,6 +8,7 @@ import type { AgentObservation } from "@eris/sdk/types.js";
 import type { Address } from "viem";
 
 export type StrategySource =
+  | { kind: "python"; path: string }
   | { kind: "module"; path: string }
   | { kind: "executor"; source: string };
 export type StrategyContext = Pick<
@@ -15,6 +16,7 @@ export type StrategyContext = Pick<
   "agentId" | "address" | "config"
 > & {
   rpcUrl: string;
+  agentDir?: string;
   lending?: Address;
 };
 export type StrategyMetadata = {
