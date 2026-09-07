@@ -127,6 +127,15 @@ LP 建玉 10、bundle 内 action 5 — 全部消した。**引き上げではな
   よって**レートは実物・符号も偏り追随**だが、**数百ブロックで積む額は小さい**（Aave の利息と同じ理由。EVM 時間は warp しない）
 - **これ以前に焼いた state dump は旧設定を持つ**ので、そこからの replay は今も 0 を返す。
   その 0 は「板が均衡している」ではなく「この deploy に funding が無い」。`npm run gen:state-dump` で焼き直す
+- **observation にも出る**（issue #78）。`protocols.gmx` の `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`
+  （正 = long が short に払う）/ `fundingModeled`、建玉があれば `position.fundingOwedUsd`。
+  以前は「チェーン上にも market.json にもあるのに、どの agent からも見えない」状態だった。
+  DataStore のキー導出は **`sdk/src/protocols/gmxKeys.ts` が単一の出典**で、marketSeries（報告）と
+  gmx アダプタ（観測）が同じキー・同じ式を読む（`example → sdk ← core` なのでアダプタは core を読めない）。
+  **読取失敗は 0 ではなく欠落**、`fundingModeled: false` が「この deploy に funding が無い」側の 0。
+  **額は取引にならない**: 360 ブロック(2s/block = 12 分)で 100% スキューでも建玉の 0.14bps、
+  実測スキューなら ~0.02bps で、AMM 側の 30bps に対して 3 桁小さい。**符号付きのコスト項と偏りシグナル**であって
+  carry ではない（`basis-arb` の `fundingCarryBpsPerBlock` がヘッジ側の符号で cost gate に入れる）
 
 ### `run.resetUnit` — world のリセット単位（ADR 0020）
 

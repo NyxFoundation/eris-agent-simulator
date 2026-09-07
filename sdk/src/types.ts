@@ -538,16 +538,41 @@ export type GmxPositionObservation = {
   collateralAmount: string;
   entryPriceUsd: number;
   pnlUsd: number;
+  // Funding this position has accrued since it was last touched, in USD, as a *cost*: positive
+  // means it owes that much. Only the crowded side accrues here — GMX credits the paid side
+  // through separate claimable accumulators, which are not read — so a 0 on the paid side is not
+  // a statement that funding is zero. Absent when the read failed (issue #78).
+  fundingOwedUsd?: number;
 };
 
-export type GmxObservation = {
+// One GMX market as an agent sees it: the mark, its own position, and the venue-wide state that
+// decides who pays whom (issue #78).
+export type GmxMarketObservation = {
   marketPriceUsd: number;
   position?: GmxPositionObservation;
+  // Open interest on each side, USD. The skew between them is what sets the funding rate's sign
+  // and size, and it is public state no agent could see before.
+  longOiUsd?: number;
+  shortOiUsd?: number;
+  // The current funding rate per hour, in bps of notional. Positive = longs pay shorts.
+  //
+  // Read the magnitude before building anything on it: funding runs on EVM time and EVM time is
+  // not warped here, so a 360-block epoch at 2s/block is 12 minutes. At the deployed factor
+  // (2e-8/s, ~63%/yr at a 100% skew) that is 0.14bps of notional over a whole epoch on a
+  // one-sided book, and ~0.02bps at a realistic skew — three orders of magnitude under the 30bps
+  // pool fee a spot leg pays. It is a cost/credit term and a skew signal, not a carry to harvest.
+  fundingPerHourBps?: number;
+  // Whether this deploy models funding at all. `false` means the rate is structurally 0 (adaptive
+  // funding disabled) and reads nothing about the book; `true` with a 0 rate means the book is
+  // flat. Absent means the read failed. Without this the two zeros are indistinguishable, and a
+  // strategy — or the revision loop — would draw the wrong conclusion from a pre-funding state
+  // dump.
+  fundingModeled?: boolean;
+};
+
+export type GmxObservation = GmxMarketObservation & {
   // ADR 0013: non-WETH index markets (BTC/USD etc.).
-  markets?: Record<
-    string,
-    { marketPriceUsd: number; position?: GmxPositionObservation }
-  >;
+  markets?: Record<string, GmxMarketObservation>;
 };
 
 export type AaveObservation = {

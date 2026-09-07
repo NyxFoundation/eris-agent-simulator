@@ -3,10 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Address } from "viem";
 import { TOKENS } from "@eris/sdk/constants.js";
-import {
-  gmxOpenInterestKey,
-  summarizeTransfers,
-} from "../core/src/realtime/marketSeries.js";
+import { summarizeTransfers } from "../core/src/realtime/marketSeries.js";
 
 const AGENT = "0x00000000000000000000000000000000000a9e17" as Address;
 const OTHER = "0x000000000000000000000000000000000000beef" as Address;
@@ -19,18 +16,8 @@ const FAIR = { WETH: 3000 };
 const weth = (units: number) => BigInt(Math.round(units * 1e6)) * 10n ** 12n;
 const usdc = (units: number) => BigInt(Math.round(units * 1e6));
 
-test("gmxOpenInterestKey matches the Keys.sol derivation", () => {
-  // Expected values computed independently with `cast keccak` / `cast abi-encode`
-  // over deployer/vendor/gmx-src/contracts/data/Keys.sol's formula.
-  assert.equal(
-    gmxOpenInterestKey(
-      "0x1111111111111111111111111111111111111111",
-      "0x2222222222222222222222222222222222222222",
-      true,
-    ),
-    "0xe9b069bb2833eb4c6757fe3e2aec8f60b75f0f7a3b89a787f90542c579dd5e0b",
-  );
-});
+// The GMX DataStore key derivations moved to the sdk (issue #78); they are covered by
+// test/gmxFunding.test.ts, alongside the funding fields that read them.
 
 test("summarizeTransfers: a sell swap reports side/base and the larger leg in USD", () => {
   const notional = summarizeTransfers({
