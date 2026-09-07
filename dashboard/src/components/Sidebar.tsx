@@ -32,12 +32,7 @@ import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { toneColor } from "@/components/competitionUi";
 import { formatPnlUsdc } from "@/lib/format";
 
-export type SidebarNavKey =
-  | "home"
-  | "scenario"
-  | "world"
-  | "explorer"
-  | "markets";
+export type SidebarNavKey = "home" | "scenario" | "explorer" | "markets";
 
 /**
  * Two-level picker: competition, then scenario (one world inside it).
@@ -603,14 +598,12 @@ export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
     isSeedProvider
       ? [
           { key: "home", label: t("nav.top"), path: "/" },
-          { key: "world", label: t("nav.world"), path: "/world" },
           { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
           { key: "markets", label: t("nav.markets"), path: "/markets" },
         ]
       : [
           { key: "home", label: t("nav.standings"), path: "/" },
           { key: "scenario", label: t("nav.scenario"), path: "/scenario" },
-          { key: "world", label: t("nav.world"), path: "/world" },
           { key: "markets", label: t("nav.markets"), path: "/markets" },
           { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
         ];

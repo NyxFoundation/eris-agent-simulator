@@ -42,7 +42,7 @@ timestamp):
 | route | level | what it is |
 |---|---|---|
 | `/` | competition | **Standings** — ranked by the competition rule; the score column shows the score itself (×10⁴, no unit suffix), plus one reference net-PnL column. A row opens the agent's page |
-| `/scenario` | scenario | one world: its markets, its ranking, its blocks. Titled by what it is a draw of (`full-crash#303`), not by when the file was written |
+| `/scenario` | scenario | one world as a board walked block by block: its wallets, the chain, its contracts, with the ranking inside it, the picked agent's log and the venue/balance history beside it. Titled by what it is a draw of (`full-crash#303`), not by when the file was written |
 | `/markets`, `/explorer` | scenario | venue state and blocks — they only mean anything inside one world |
 | `/agent/<id>` | both | the agent's competition standing (its **Standing** tab) and its scenario-level detail |
 
@@ -118,7 +118,9 @@ what makes 35 independent worlds watchable as one competition. Pressing play adv
 
 Sub-round movement — walking the individual blocks inside one scenario — stays in `replay.ts`. It is
 a refinement of this position, not a competing notion of it, and it only exists once a single
-scenario is open.
+scenario is open. The scenario page walks blocks on an axis of its own, over frames it already
+holds, and hands its position to `replay.ts` once when you leave it mid-walk, so the other pages
+open at the same block.
 
 ### Standings
 
@@ -296,6 +298,14 @@ cross-sections are dropped for the same reason until the head reaches the end: t
 read taken when the run finished and are not knowable earlier.
 
 Replay is per-browser and in-memory: it survives moving between pages, and a page reload ends it.
+
+The scenario page does not use the transport: its block axis walks the frames its snapshot already
+holds (a replay head there would refetch on every step). Leaving that page mid-walk arms replay at
+the board's block — or moves the head, if one is already armed — so `/markets`, `/explorer` and an
+agent's page open where the board was. Its rounds bar shows an armed replay and the way out of it,
+nothing more. Coming back with a replay armed, the board opens at the head; its frames are never
+clamped by replay — the walk's own head is what keeps the future out of the log, the charts and the
+ranking beside the board, which is the standings through the rounds closed by that block.
 
 **Runs collected from a remote box work unchanged.** `spot-run` brings back the box's whole `runs/`
 as a tarball, which lands at `runs/<collection>/runs/<id>/` — every artifact present, one or two

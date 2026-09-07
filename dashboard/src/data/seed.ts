@@ -12,11 +12,9 @@ import type {
   ExplorerTransaction,
   AgentRoundResult,
   MarketFeedItem,
-  MarketTicker,
   RoundAgentResult,
   RoundEpoch,
   RoundInfo,
-  TapeEvent,
   VenuePanel,
   VenueDepthView,
   VenueSeries,
@@ -177,153 +175,6 @@ export const seedAgents: AgentStanding[] = [
     netPnlUsdc: -640.9,
     maxDrawdownPercent: -18.7,
     move: -1,
-  },
-];
-
-const up = "up" as const;
-const down = "down" as const;
-
-export const seedMarketTickers: MarketTicker[] = [
-  {
-    symbol: "ETH-USD",
-    price: "$3,412.60",
-    delta: "+1.84%",
-    direction: up,
-    points: [3180, 3220, 3190, 3260, 3300, 3280, 3350, 3412],
-  },
-  {
-    symbol: "BTC-USD",
-    price: "$61,204",
-    delta: "-0.62%",
-    direction: down,
-    points: [61800, 61950, 61700, 61500, 61350, 61600, 61300, 61204],
-  },
-  {
-    symbol: "SOL-USD",
-    price: "$148.22",
-    delta: "+4.10%",
-    direction: up,
-    points: [138, 141, 139, 144, 146, 145, 147, 148.2],
-  },
-  {
-    symbol: "USDX-USD",
-    price: "$0.9942",
-    delta: "-0.58%",
-    direction: down,
-    points: [1.0, 0.999, 0.998, 0.9975, 0.996, 0.9955, 0.995, 0.9942],
-  },
-  {
-    symbol: "ARB-USD",
-    price: "$1.084",
-    delta: "+2.31%",
-    direction: up,
-    points: [1.03, 1.04, 1.035, 1.05, 1.06, 1.055, 1.07, 1.084],
-  },
-  {
-    symbol: "stETH-ETH",
-    price: "0.9968",
-    delta: "-0.11%",
-    direction: down,
-    points: [0.9985, 0.998, 0.9979, 0.9974, 0.9972, 0.997, 0.9969, 0.9968],
-  },
-  {
-    symbol: "Funding APR",
-    price: "11.4%",
-    delta: "+0.9pp",
-    direction: up,
-    points: [9.8, 10.1, 10.5, 10.3, 10.9, 11.0, 11.2, 11.4],
-  },
-  {
-    symbol: "Borrow util.",
-    price: "78.2%",
-    delta: "+3.4pp",
-    direction: up,
-    points: [70, 71, 73, 72, 75, 76, 77, 78.2],
-  },
-  {
-    symbol: "Pool TVL",
-    price: "$284.7M",
-    delta: "+2.1%",
-    direction: up,
-    points: [268, 271, 274, 270, 277, 280, 282, 284.7],
-  },
-];
-
-const TAPE_TONES: Record<string, TapeEvent["tone"]> = {
-  DEPEG: "down",
-  LIQUIDATION: "down",
-  REVERT: "down",
-  FILL: "up",
-  FLASHLOAN: "up",
-  WHALE: "purple",
-  SCENARIO: "accent",
-  ORACLE: "purple",
-};
-
-export const seedTape: TapeEvent[] = [
-  {
-    id: 1,
-    time: "14:02:11",
-    kind: "DEPEG",
-    body: "USDX pool imbalance",
-    value: "-0.58%",
-    tone: TAPE_TONES.DEPEG,
-  },
-  {
-    id: 2,
-    time: "14:01:47",
-    kind: "LIQUIDATION",
-    body: "agent-55aa position closed",
-    value: "-12.4 ETH",
-    tone: TAPE_TONES.LIQUIDATION,
-  },
-  {
-    id: 3,
-    time: "14:01:20",
-    kind: "WHALE",
-    body: "AMM swap ETH → USDC",
-    value: "4,200 ETH",
-    tone: TAPE_TONES.WHALE,
-  },
-  {
-    id: 4,
-    time: "14:00:58",
-    kind: "FILL",
-    body: "agent-9a12 opened perp long",
-    value: "+1.8x",
-    tone: TAPE_TONES.FILL,
-  },
-  {
-    id: 5,
-    time: "14:00:31",
-    kind: "SCENARIO",
-    body: "CEX drift injected",
-    value: "sigma 2.4",
-    tone: TAPE_TONES.SCENARIO,
-  },
-  {
-    id: 6,
-    time: "13:59:52",
-    kind: "ORACLE",
-    body: "stETH-ETH feed updated",
-    value: "0.9968",
-    tone: TAPE_TONES.ORACLE,
-  },
-  {
-    id: 7,
-    time: "13:59:04",
-    kind: "FLASHLOAN",
-    body: "agent-21cd arb executed",
-    value: "+8.6k USDC",
-    tone: TAPE_TONES.FLASHLOAN,
-  },
-  {
-    id: 8,
-    time: "13:58:22",
-    kind: "REVERT",
-    body: "agent-7788 tx reverted",
-    value: "gas 214k",
-    tone: TAPE_TONES.REVERT,
   },
 ];
 

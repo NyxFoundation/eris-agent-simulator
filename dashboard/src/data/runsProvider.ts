@@ -39,7 +39,6 @@ import {
   fromWei,
   num,
   shortAddress,
-  stableSymbols,
   str,
   VENUE_COLORS,
   VENUE_LABELS,
@@ -67,13 +66,11 @@ import type {
   ExplorerTransaction,
   MarketFeedItem,
   MarketSnapshot,
-  MarketTicker,
   RoundAgentResult,
   RoundEpoch,
   RoundInfo,
   StrategyCategory,
-  TapeEvent,
-  TopPageSnapshot,
+  TapeTone,
   VenueDepthView,
   WorldAgentNode,
   WorldBoundary,
@@ -558,17 +555,6 @@ function buildStandings(
 // ---------------------------------------------------------------------------
 // formatting helpers
 
-function formatDeltaPercent(
-  from: number,
-  to: number,
-): { delta: string; direction: "up" | "down" } {
-  const pct = from !== 0 ? ((to - from) / from) * 100 : 0;
-  return {
-    delta: `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`,
-    direction: pct >= 0 ? "up" : "down",
-  };
-}
-
 function clockTime(ts: string | undefined): string {
   return ts ? ts.slice(11, 19) : "—";
 }
@@ -589,7 +575,7 @@ function blockClock(run: LoadedRun, blockNumber: number): string {
 interface TapeRule {
   /** Resolved lazily so the ticker follows the current language. */
   kind: () => string;
-  tone: TapeEvent["tone"];
+  tone: TapeTone;
   body: (e: RunEvent) => string;
   value: (e: RunEvent) => string;
 }
@@ -724,6 +710,7 @@ const TAPE_RULES: Record<string, TapeRule> = {
 const TAPE_PER_TYPE = 6;
 const TAPE_TOTAL = 32;
 
+/** The run's notable environment events, a few per kind: what a round's result panel lists. */
 function notableEvents(run: LoadedRun): RunEvent[] {
   const perType = new Map<string, number>();
   const picked: RunEvent[] = [];
@@ -735,20 +722,6 @@ function notableEvents(run: LoadedRun): RunEvent[] {
     picked.push(event);
   }
   return picked.slice(0, TAPE_TOTAL);
-}
-
-function buildTape(run: LoadedRun): TapeEvent[] {
-  return notableEvents(run).map((event, i) => {
-    const rule = TAPE_RULES[event.type];
-    return {
-      id: i + 1,
-      time: clockTime(event.ts),
-      kind: rule.kind(),
-      body: rule.body(event),
-      value: rule.value(event),
-      tone: rule.tone,
-    };
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,111 +976,6 @@ function buildArbitrage(
     thresholdBps: ARB_THRESHOLD_BPS,
     trades: [],
   };
-}
-
-function buildTickers(
-  run: LoadedRun,
-  // Replay: how many rounds have closed. The agent-value totals below come straight off
-  // summary.json, which scoping does not touch — without this the one ticker built from the scored
-  // series would show the finished run's growth on the first frame of the walk.
-  closedRounds?: number,
-): MarketTicker[] {
-  const { prices } = observationSeries(run);
-  const tickers: MarketTicker[] = [];
-
-  if (prices.length >= 2) {
-    const first = prices[0];
-    const last = prices[prices.length - 1];
-    const fairPoints = downsample(prices, 40).map((p) => p.fair);
-    const poolPoints = downsample(prices, 40).map((p) => p.pool);
-    tickers.push({
-      symbol: "WETH/USDC FAIR",
-      price: formatUsd(last.fair),
-      ...formatDeltaPercent(first.fair, last.fair),
-      points: fairPoints,
-    });
-    tickers.push({
-      symbol: "WETH/USDC POOL",
-      price: formatUsd(last.pool),
-      ...formatDeltaPercent(first.pool, last.pool),
-      points: poolPoints,
-    });
-  } else if (run.live && run.live.fairSamples.length >= 2) {
-    // live: the PriceFeed samples accumulated while the page watches
-    const samples = run.live.fairSamples;
-    const first = samples[0];
-    const last = samples[samples.length - 1];
-    tickers.push({
-      symbol: `WETH/USDC FAIR · blk ${last.block.toLocaleString("en-US")}`,
-      price: formatUsd(last.fair),
-      ...formatDeltaPercent(first.fair, last.fair),
-      points: downsample(samples, 40).map((p) => p.fair),
-    });
-  }
-
-  // Extra bases (WBTC, …) come from the reconstructed market series — the observation events only
-  // carry the WETH pair.
-  if (run.market) {
-    const extraBases = run.market.bases.filter((b) => b !== "WETH");
-    for (const base of extraBases) {
-      const rows = run.market.series.filter((r) => (r.fair[base] ?? 0) > 0);
-      if (rows.length < 2) continue;
-      const firstFair = rows[0].fair[base];
-      const lastFair = rows[rows.length - 1].fair[base];
-      tickers.push({
-        symbol: `${base}/USDC FAIR`,
-        price: formatUsd(lastFair),
-        ...formatDeltaPercent(firstFair, lastFair),
-        points: downsample(rows, 40).map((r) => r.fair[base]),
-      });
-    }
-    // Market-priced stables (issue #27): a stable's price is a measurement here, not a $1 axiom.
-    for (const symbol of stableSymbols(run.market)) {
-      const rows = run.market.series.flatMap((r) => {
-        const sample = r.stables?.[symbol];
-        return sample ? [{ block: r.block, price: sample.priceUsdc }] : [];
-      });
-      if (rows.length < 2) continue;
-      tickers.push({
-        symbol: `${symbol}/USDC`,
-        price: rows[rows.length - 1].price.toFixed(4),
-        ...formatDeltaPercent(rows[0].price, rows[rows.length - 1].price),
-        points: downsample(rows, 40).map((r) => r.price),
-      });
-    }
-  }
-
-  const boundaryValues =
-    run.summary.valueSeries?.epochSeries?.valuesByAgent ?? {};
-  const agentSeries = Object.values(boundaryValues).map((series) =>
-    closedRounds === undefined ? series : series.slice(0, closedRounds + 1),
-  );
-  if (agentSeries.length > 0 && agentSeries[0].length >= 2) {
-    const totals = agentSeries[0].map((_, i) =>
-      agentSeries.reduce((sum, s) => sum + (s[i] ?? 0), 0),
-    );
-    tickers.push({
-      symbol: "Σ AGENT VALUE",
-      price: formatUsd(totals[totals.length - 1]),
-      ...formatDeltaPercent(totals[0], totals[totals.length - 1]),
-      points: downsample(totals, 40),
-    });
-  }
-
-  const blocks = groupBlocks(run.blockRows);
-  if (blocks.length >= 2) {
-    const perBlock = [...blocks].reverse().map((b) => b.txCount);
-    const avg = perBlock.reduce((a, b) => a + b, 0) / perBlock.length;
-    tickers.push({
-      symbol: "TX / BLOCK",
-      price: avg.toFixed(1),
-      delta: `${run.blockRows.length.toLocaleString("en-US")} tx`,
-      direction: "up",
-      points: downsample(perBlock, 40),
-    });
-  }
-
-  return tickers;
 }
 
 function buildFeed(
@@ -1435,26 +1303,6 @@ function clampToReplay(run: ResolvedRun): ResolvedRun {
 
 // ---------------------------------------------------------------------------
 // snapshots
-
-export async function fetchTopPageSnapshot(): Promise<TopPageSnapshot> {
-  const full = await resolveRun();
-  const round = buildRound(full);
-  const run = clampToReplay(full);
-  return {
-    round,
-    leaderboard: buildStandings(full, round.epochs, round.status === "replay"),
-    marketTickers: buildTickers(
-      run,
-      round.status === "replay"
-        ? round.epochs.filter((e) => e.status === "done").length
-        : undefined,
-    ),
-    blocks: groupBlocks(run.blockRows)
-      .slice(0, 7)
-      .map((b) => toExplorerBlock(run, b)),
-    tape: buildTape(run),
-  };
-}
 
 export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
   const full = await resolveRun();
@@ -1933,10 +1781,10 @@ function worldAgentLog(logs: Map<string, AgentLogEntry[]>, from: number, to: num
 /** The tape's events, kept on the block axis instead of collapsed into a ticker. */
 function worldEvents(
   run: LoadedRun,
-): Map<number, { kind: string; text: string; tone: TapeEvent["tone"] }[]> {
+): Map<number, { kind: string; text: string; tone: TapeTone }[]> {
   const byBlock = new Map<
     number,
-    { kind: string; text: string; tone: TapeEvent["tone"] }[]
+    { kind: string; text: string; tone: TapeTone }[]
   >();
   let taken = 0;
   for (const event of run.events) {
@@ -1962,7 +1810,11 @@ export async function fetchWorldSnapshot(
 ): Promise<WorldSnapshot> {
   const full = await resolveRun();
   const round = buildRound(full);
-  const run = clampToReplay(full);
+  // Not clamped to the replay head. The board has a head of its own — the walk — and everything on
+  // it reads up to that block; a run cut at the replay head would give the walk frames past it
+  // with no transactions in them, a future that looks empty rather than unknown. A replay armed
+  // for this run only tells the page where to open.
+  const run = full;
   const [infoByHash, logs] = await Promise.all([
     txInfoByHash(run),
     agentLogsFor(run),
@@ -2127,8 +1979,25 @@ export async function fetchWorldSnapshot(
     });
   }
 
+  // One field per closed-round count, so the panel beside the board can show the standings through
+  // the walk's block. The same buildStandings reads P through the first k rounds as replay does;
+  // there is no second scoring path here.
+  const standingsThroughRound = Array.from(
+    { length: round.epochs.length + 1 },
+    (_, k) =>
+      buildStandings(
+        full,
+        round.epochs.map((e, i) => ({
+          ...e,
+          status: (i < k ? "done" : "upcoming") as RoundEpoch["status"],
+        })),
+        true,
+      ),
+  );
+
   return {
     round,
+    standingsThroughRound,
     scope: { roundIndex: epoch ? epoch.index : null, fromBlock: from, toBlock: to },
     agents: worldAgents(run),
     venues,

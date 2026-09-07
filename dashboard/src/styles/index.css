@@ -18,11 +18,6 @@
   50% { opacity: 0.4; }
 }
 
-@keyframes ticker-tape {
-  from { transform: translateX(0); }
-  to { transform: translateX(-50%); }
-}
-
 /* The world map's block gauge: one frame of wall clock, filling. Remounted per frame (keyed on the
    block) so the animation restarts from 0 instead of being coalesced into a bar that sits full. */
 @keyframes world-slot {

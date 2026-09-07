@@ -261,7 +261,12 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     **ルートは `/`（= Standings）と `/scenario` の 2 本 + `/agent/<id>`**。参加者向けに整理した際
     `/standings`・`/leaderboard`（scenario 内順位と重複）・`/archive`（未到達の seed 遺物）・
     `/run` エイリアスは削除した。`/markets` と `/explorer` は 1 world の中でしか意味を持たないので
-    scenario 層のまま。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
+    scenario 層のまま。**`/scenario` は world の盤面そのもの**（2026-09-07。旧 `/world` タブを統合し、`/world` は
+    `/scenario` に着地する）: RoundsBar（replay transport 無し）+ ブロック軸 + 盤面 + シナリオ内順位 / Agent Log /
+    venue 価格・口座価値の履歴。ブロック軸の head はページのローカル状態で、**途中で離れるときだけ replay head に
+    1 回渡す**（`/markets` `/explorer` が同じブロックで開く。armed で開けばその head から始まる）。盤面のフレームは
+    replay で clamp せず、順位パネルは head 時点で閉じたラウンドまでの順位（`standingsThroughRound`）。旧 top-page
+    snapshot（ティッカー・テープ・ブロックプレビュー）は削除。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
     書かれるので結果がまだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
   - **トップページ（`/`）が「この競技とは何か」を全部持つ**。順位表の下に 3 つ:
     **シナリオ一覧**（1 行 1 世界 = `regime#seed` / ラウンド数 / 首位 / 環境イベント種別。行クリックで開く。
