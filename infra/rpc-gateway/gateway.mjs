@@ -55,7 +55,14 @@ const METHOD_ALLOW = new RegExp(process.env.RPC_METHOD_ALLOW ?? "^(eth_|net_|web
 // methods that ride on the node's own/unlocked accounts. anvil boots deterministic prefunded UNLOCKED
 // accounts, so eth_sendTransaction/eth_accounts/eth_sign* would let a caller move funds without signing.
 // Participants must sign locally and use eth_sendRawTransaction. Set RPC_METHOD_DENY to override.
-const METHOD_DENY = new RegExp(process.env.RPC_METHOD_DENY ?? "^(eth_accounts|eth_sendTransaction|eth_sign)");
+const METHOD_DENY = new RegExp(process.env.RPC_METHOD_DENY ?? "^(eth_accounts|eth_sendTransaction|eth_sign|eth_pendingTransactions$|eth_newPendingTransactionFilter$|eth_getFilterChanges$|eth_getFilterLogs$|eth_subscribe$)");
+// Block enumeration is another view of the pool. Do not ban the tag globally: the sender needs
+// eth_getTransactionCount(address, "pending") to allocate a nonce after earlier submissions.
+const PENDING_BLOCK_METHODS = new Set([
+  "eth_getBlockByNumber", "eth_getBlockTransactionCountByNumber",
+  "eth_getTransactionByBlockNumberAndIndex", "eth_getRawTransactionByBlockNumberAndIndex",
+  "eth_getBlockReceipts",
+]);
 const FILTER_METHODS = (process.env.RPC_FILTER ?? "1") !== "0";
 let methodDenied = 0;
 // ---- per-tx gas cap (issue #40 T0) ----
@@ -194,12 +201,16 @@ const server = http.createServer((req, res) => {
 
     // method allowlist (4.22): reject cheatcodes / privileged methods before anvil is touched
     if (FILTER_METHODS && methods.length) {
-      const bad = methods.find((m) => !METHOD_ALLOW.test(m) || METHOD_DENY.test(m));
+      const calls = isBatch ? parsed : [parsed];
+      const bad = calls.find((c) => c && c.method && (
+        !METHOD_ALLOW.test(c.method) || METHOD_DENY.test(c.method) ||
+        (PENDING_BLOCK_METHODS.has(c.method) && c.params?.[0] === "pending")
+      ))?.method;
       if (bad) {
         methodDenied++;
         logline({ ts: new Date().toISOString(), env: ENV_NAME, method: bad, status: "method_denied", client, ip });
         res.writeHead(403, { "content-type": "application/json" });
-        return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32601, message: `method not permitted: ${bad}` } }));
+        return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed.id ?? null), error: { code: -32601, message: `method not permitted: ${bad}` } }));
       }
     }
 

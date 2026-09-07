@@ -108,10 +108,11 @@ ambient capability (`require`, `process`, `fetch`), not the trading interface, s
 read the chain exactly as your hand-written strategy can. Reads through it are ordinary RPC and are
 not cheatcodes.
 
-**Do the reading in the runtime, not inside `decide()`.** Every decision is raced against
-`DECIDE_TIMEOUT_MS` (5,000 ms, `runtime/decideTimeout.ts`; rules §2.3), and generated executors are
-bounded tighter still at `EXECUTOR_TIMEOUT_MS` (2,000 ms, `runtime/improve.ts`). Past the bound the
-block is no action and the late answer is dropped. But the bound is not the binding constraint:
+**Do the reading in the runtime, not inside `decide()`.** Every decision runs in a worker under
+`DECIDE_TIMEOUT_MS` (5,000 ms, `runtime/strategyRunner.ts`; rules §2.3), for both shipped and generated
+strategies. Past the bound, the parent terminates the worker and discards its answer and queued
+submissions. The next decision reloads the selected source; synchronous loops cannot block the
+parent observation or revision loop. But the bound is not the binding constraint:
 blocks are two seconds long, so a decision that takes three has already missed its block without
 timing out, and the miss reaches the model as a gap in the decisions rather than as an error. An RPC
 round trip inside `decide` on a loaded node is the usual way in. The reference runtime reads once

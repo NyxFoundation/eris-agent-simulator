@@ -56,7 +56,7 @@ Process lifetime equals run lifetime. bot.ts does not loop; it passes ctx. Signi
 type AgentContext = {
   agentId: string;
   address: Address;
-  publicClient / walletClient;      // viem clients
+  publicClient;                     // read-only viem client; send via submit
   config: SimConfig;                // rebuilt from the same YAML
   latestObservation(): AgentObservation | null;
   onObservation(cb): () => void;    // returns an unsubscribe

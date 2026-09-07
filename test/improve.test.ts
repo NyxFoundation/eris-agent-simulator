@@ -252,7 +252,7 @@ test("compileExecutor: a strategy that never returns is bounded, not left to wed
   const started = Date.now();
   await assert.rejects(
     async () => await r.executor({ round: 1 } as never, {} as never),
-    /is not returning/,
+    /decide timeout:/,
   );
   // Bounded near the limit rather than hanging; generous upper bound so a slow machine cannot flake.
   assert.ok(
