@@ -10,6 +10,7 @@ import {
 } from "viem";
 import {
   bigintToStorageWord,
+  sendAndMine,
   sendNoMine,
   setStorageAt,
 } from "@eris/sdk/chain.js";
@@ -34,6 +35,68 @@ export async function deployPriceFeed(
 
 // Fixed gas for a simple setter. Specifying it explicitly skips estimateGas (which waits on EVM execution).
 const SETTER_GAS = 300_000n;
+
+// ---------------------------------------------------------------------------
+// Setup-time writes: every base's opening fair is on the feed before the first boundary is marked
+// (issue #94, decided 2026-09-07 from #92's scorer row).
+//
+// The constructor carries WETH's opening fair, and every other base used to get its first value
+// from the per-block oracle write -- which lands one block *after* the first epoch boundary is
+// marked. Measured (calm, 60 blocks, 2026-09-07): noop's V_0 was 348,996 and V_K 365,839 on the
+// same holdings; the difference was 0.4 WBTC marked at 0 and then at ~60k. Every agent got the
+// same +24k in P, so T was untouched, but V_0 was short by the WBTC leg, noop's netPnlUsdc was
+// not the 0 the guide promises, `scoring_unpriced_holdings` listed spot WBTC for everyone at the
+// first boundary, and every value chart opened on a step.
+//
+// Ordinary mined setter transactions from the admin key: the same mechanism on anvil and on an
+// external chain (the storage write is a cheatcode, and updateOracles takes the same route for
+// Aave in external mode). Sent before any agent process exists, so nothing can front-run them.
+// ---------------------------------------------------------------------------
+
+// WETH's opening fair, re-written after a prewarm moved the pools (the constructor value predates it).
+export async function setPriceFeedOpening(
+  ctx: SimContext,
+  address: Address,
+  fairPrice: number,
+): Promise<Hex> {
+  return sendAndMine(
+    ctx.publicClient,
+    ctx.walletClient,
+    ctx.chain,
+    ctx.adminPk,
+    {
+      to: address,
+      data: encodeFunctionData({
+        abi: priceFeedAbi,
+        functionName: "setPrice",
+        args: [toPriceFeedAnswer(fairPrice)],
+      }),
+    },
+  );
+}
+
+// An extra base's opening fair (setPriceFor), mined. The per-block path is updatePriceFeedForMempool.
+export async function setPriceFeedOpeningFor(
+  ctx: SimContext,
+  address: Address,
+  token: Address,
+  price: number,
+): Promise<Hex> {
+  return sendAndMine(
+    ctx.publicClient,
+    ctx.walletClient,
+    ctx.chain,
+    ctx.adminPk,
+    {
+      to: address,
+      data: encodeFunctionData({
+        abi: priceFeedAbi,
+        functionName: "setPriceFor",
+        args: [token, toPriceFeedAnswer(price)],
+      }),
+    },
+  );
+}
 
 // Per-block fair price write (mempool submit; like the oracle, placed first with a fee above the agent cap).
 export async function updatePriceFeedMempool(

@@ -67,6 +67,7 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 | `markMedianBlocks` | 5 | The G7 median window |
 | `agentSandbox` | `process` | `process` / `docker`. docker launches through `infra/docker-agent/run-agent.sh`, the only path that applies the rules §2.3 caps (2 vCPU / 4 GiB). Official regimes say `docker`; locally pass `--agent-sandbox process` |
 | `blockGasLimit` | 30000000 | Block gas limit the coordinator sets after setup, before mining starts (rules §2.6; 0 = leave the node's) |
+| `agentsReadyTimeoutSec` | 60 | Longest the epoch clock is held for every launched agent to write `runtime_start` (issue #94; 0 = do not wait). A local check with 32 docker agents takes 86–99 s, so raise it there |
 | `reportDir` | `./runs` | Output root |
 | `flashArb` | false | Deploy the FlashArb contract |
 | `localSnapshotFile` | `.local-snapshot` | Where the snapshot id lives |
