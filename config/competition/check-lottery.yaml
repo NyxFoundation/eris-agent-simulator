@@ -1,0 +1,3 @@
+# The pre-9/23 check's lottery seed (#91 / #94). Not secret; see check-hidden.yaml.
+salt: check-2026-09
+lotterySeed: check-2026-09-lottery
