@@ -4,6 +4,7 @@
 //     so live mode updates in place instead of flashing "Loading…" every few seconds
 import { useEffect, useRef, useState } from "react";
 import { useLocale } from "@/i18n/locale";
+import { useMode, getModeGeneration } from "./mode";
 
 const LIVE_REFRESH_MS = 3_000;
 
@@ -30,7 +31,12 @@ export function useSnapshot<T>(
   // Snapshots carry display strings built in the data layer (via t()), so a language switch is a
   // view change: the key includes the locale and the snapshot rebuilds in the new language.
   const locale = useLocale();
-  key = `${locale}:${key}`;
+  // And they are built against the server's mode -- which files may be read at all, which panels
+  // may be drawn. Until /runs/mode.json answers, the restricted reading applies; when a retry
+  // finally gets an answer, what was built under the restricted assumption is a stale view of a
+  // different question, so it is keyed on the answer's generation too.
+  useMode();
+  key = `${locale}:${getModeGeneration()}:${key}`;
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
   const isLiveRef = useRef(isLive);

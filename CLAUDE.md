@@ -184,8 +184,16 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   config ファイル自体は共通。**アドレス overlay は同時に 1 つ**なので、deployment を移るたびに再生成が要る。
   片方だけ動かすと以前は setup の数分後に `Cannot decode zero data ("0x")` と生アドレスが出るだけだったので、
   **起動時に deployment の有無を実測して落とす**（`deployment_check`。何が無いかと再生成コマンドを出す）
+- **`ERIS_MANIFEST` は chainId と localDeploy も運ぶ**（issue #84 X3）。`sdk/src/constants.ts` は
+  **import 時**にアドレス overlay を決め、config は `CHAIN_ID` を読むので、マニフェストの値は
+  sdk が 1 つも読み込まれる前に env へ入れる必要がある。よって `example/agents/runtime/bot.ts` は
+  **prelude だけ**（`manifestEnv.ts` を呼んで `botMain.ts` を動的 import する。sim-realtime.ts と同じ形）で、
+  ランタイム本体は `botMain.ts`。env が優先なので coordinator 起動は無改変。これが無いとガイド記載の
+  コマンドが chain id（`configured for 42161`）→ アドレス（`7 of 7 contracts hold no code`）の順で 2 回落ちた
 - **agent プロセスも取引前に同じことを確かめる**（`example/agents/runtime/preflight.ts`。検査本体は
   `sdk/src/deploymentCheck.ts` = coordinator と同じ 1 本。`example → core` は禁止なので sdk に置いてある）。
+  **失敗メッセージは「誰が指したか」で変わる**（`via: "manifest" | "env"`）: 自己ホスト参加者は
+  `ANVIL_RPC_URL` も `gen:local-constants` も持っていないので、運営語彙で答えるのは行き止まり。
   RPC 疎通（5 回リトライ = 自己ホストの起動レース用）→ chain id が `run.chainId` と一致するか →
   venue アドレスに bytecode があるか、の順に見て、駄目なら **exit 1**。coordinator は `onExit` で拾い
   `agent_process_exited` と summary の `processExitedEarly` / `stderrTail` に残す。
@@ -213,7 +221,13 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `LiveScorer.addAgent` で**次の境界から**評価・`agents_registered` と manifest を再発行 + `agent_external_registered`）。
   純関数は `core/src/realtime/registrations.ts`。重複 id/address は `registration_ignored`、壊れたファイルは
   編集 1 回につき 1 回 `registrations_reload_failed`（run は止まらない）。**日の途中で登録された agent はその日の
-  P を持たない**（測られた V_0 が無い。翌セグメントから）
+  P を持たない**（測られた V_0 が無い。翌セグメントから）。**それを「持たない」まま記録する**（issue #84 X2）:
+  segment の summary.json / 期間 index の agent レコードは `scored: false` + `unscoredReason` を持ち、
+  `netPnlUsdc` / `pnlUsdc` の**フィールド自体が無い**。以前は欠損 P を `netPnlUsdc: 0` に潰しており、
+  採点側はそれを P = 0 として読んで**負けた全員に勝っていた**（実測: 期中登録の carol が 5 体中 4 位）。
+  書き手は `core/src/segments.ts` の `segmentAgentRecord` / `segmentIndexAgent`、読み手は
+  `dashboard/src/data/scenarioP.ts` の 1 本（**境界系列が agent を持つならそれが答え、
+  「系列はあるが P が作れない」は「系列が無い」とは別**）
 - **未登録の送信者も blocks.csv に残す**（role `external`、ownerId = 送信者アドレス小文字）。以前は
   「run の外の tx」として捨てていたが、試行環境ではそれが参加者の tx そのもので、「自分の tx は載ったか」に
   答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外
@@ -370,7 +384,17 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/ラウンド長/action 語彙/limits/登録アドレス）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
 - `npm run check:ordering -- --live` — **ビルダーが手数料順に並べるかを自分で入札して測る**（#35 の load-bearing assumption）。既定プロファイルは oracle を全員より高く積んで txIndex 0 に置くので、順序が守られないチェーンでは環境の価格が front-run 可能になる。**入札は昇順に送る**ので到着順と手数料順が逆になり、到着順を保つだけのビルダーは降順プローブなら通ってこれで落ちる。引数なしは従来どおり blocks.csv の事後検査
 - `npm run stress:rpc` — **Eris 形状の read 負荷**で RPC 容量を測る（#36）。`reconstruct.ts` と同じ read 集合の Multicall3 を agent × block で撃ち、cold/warm 別の p50/p99・ブロック間隔ジッタ（負荷有無）・`eth_call` の到達可能深度・sequencer-only か replica かの判定を出す。**読む対象が無いチェーンでは測る前に落ちる**（空アドレスへの call はノードが実残高より速く断るので、全滅が巨大な容量に見える。実際に「何もデプロイされていない anvil に 3,360 obs/s・sequencer-only で十分」と報告した）
-- `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**既定は運営ビューで `runs/` 配下が全部公開になる。**試行期間・ライブ週の公開（2026-09-06 決定）は **`ERIS_DASHBOARD_AUDIENCE=1`**（allowlist 配信 + `events.jsonl` の seed / `stress_schedule`（continuous な run は未来の窓だけ、scenario の run は全部）/ calibration warning / vuln 正解 / stderrTail を落とし、scenario matrix の `regime` / `seed` を `hidden` に。`agents/*.jsonl`・`.llm.jsonl`・`disclosures/` は 404）、試行環境はさらに **`ERIS_DASHBOARD_STANDINGS=0`**（規約 §4.7）。`/runs/mode.json` で UI が理由を表示する。結果発表後はフラグを外すだけで §7.2 の全量公開。Cache-Control / gzip / index 3 秒キャッシュ付き（`docs/guide/dashboard.md` "Public view"）
+- `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**既定は運営ビューで `runs/` 配下が全部公開になる。**試行期間・ライブ週の公開（2026-09-06 決定）は **`ERIS_DASHBOARD_AUDIENCE=1`**（allowlist 配信 + `events.jsonl` の seed / `stress_schedule`（continuous な run は未来の窓だけ、scenario の run は全部）/ calibration warning / vuln 正解 / stderrTail を落とし、scenario matrix の `regime` を `hidden`・**`seed` を `null`** に。`agents/*.jsonl`・`.llm.jsonl`・`disclosures/` は 404）、試行環境はさらに **`ERIS_DASHBOARD_STANDINGS=0`**（規約 §4.7）。`/runs/mode.json` で UI が理由を表示する。結果発表後はフラグを外すだけで §7.2 の全量公開。Cache-Control / gzip / index 3 秒キャッシュ付き（`docs/guide/dashboard.md` "Public view"）
+  - **`ERIS_DASHBOARD_COMPETITIONS=<id>[,<id>…]` で配信する competition を限定する**（issue #84 K）。運営 box の `runs/` には smoke / test run が全部残っており、picker はそれを内部名のまま参加者に並べていた。通すのは **listed な competition と、その `matrix.json` が指す run と、その配下だけ**（index・ファイル・tail すべて）。未設定なら全部。
+    **「今 live なもの」は通さない** — 実行中のエポックは完走まで matrix.json に入らないので、そこを推測で通すと
+    「未完了の matrix がある間は runs/ 配下の live な run が全部通る」= 競技期間中ずっと運営の smoke run まで
+    公開される（レビューで実証。40 エポックの matrix は最初から最後まで「未完了」）。練習期間は影響なし
+    （segment は competition ディレクトリの**中**にあるので包含で通る）。scenario matrix の実行中エポックだけが
+    完走まで出ない。「進行中」の表示はプランのエポック数から出しており、live run を見つけたかどうかではない
+  - **`seed` の伏せ方は `null`**（`0` ではない）。伏せた seed・segment の連番プレースホルダ・本当に seed 0 の run は別物で、`seed 0` と印字するのは誰も引いていない draw を名乗ること
+  - **mode 未取得中は両方の制限を掛ける**（issue #84 U）。`/runs/mode.json` が取れないブラウザに運営ビューを既定で見せると、試行環境で順位が出る
+  - **公開ビューも run 中に読むものがある**: `blocks.csv` / `epochs.jsonl` / `market.jsonl`（どれも coordinator が逐次追記し、サーバーも配信済み）。これを読まなかったせいで `/explorer` と盤面が期間中ずっと `blocks 0–0`・venue 全部 `—` だった（issue #84 A）。**ブロック行は coordinator の記録が先、チェーンはその先だけ**で、**カバーしている範囲を一緒に運ぶ** — 範囲より前に始まるラウンドは tx 数が「0」ではなく**「数えていない」**
+  - **schedule の非公開はサーバーと同じ規則で表示する**（issue #84 D）。scenario の 1 エポックは「§3.3 により非公開」、continuous な run は「既に閉じた窓」。`0 件` と描くのはサーバーがしていない主張。公開ビューは `events.jsonl` の head を定期的に読み直す（閉じた窓は後から配信されるので、tail が通り過ぎていると二度と見えない）
 - `npm run gen:method-selectors` — venue ABI から selector→関数名テーブルを再生成（ADR 0021 §4）。生成物にしてあるのはブラウザに ABI パーサと keccak を積まないため（実測 +15kB gzip）。ABI とのズレは `test/methodNames.test.ts` が落とす
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）

@@ -13,6 +13,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  competitionsFromEnv,
   createRunsApi,
   modeFromEnv,
   redactEventLine,
@@ -169,8 +170,16 @@ function fixtureRuns(): string {
   return root;
 }
 
-async function serve(root: string, audience: boolean) {
-  const handle = createRunsApi(root, { audience, standings: !audience });
+async function serve(
+  root: string,
+  audience: boolean,
+  competitions?: string[],
+) {
+  const handle = createRunsApi(root, {
+    audience,
+    standings: !audience,
+    ...(competitions ? { competitions } : {}),
+  });
   const server = createServer((req, res) => {
     const [p, q] = (req.url ?? "/").split("?");
     if (!handle(p, q, req, res)) {
@@ -278,7 +287,9 @@ test("audience mode hides regime and seed of a scenario matrix but not a practic
       (await get("/matrix-2026-11-01/matrix.json")).text,
     );
     assert.equal(matrix.scenarios[0].regime, "hidden");
-    assert.equal(matrix.scenarios[0].seed, 0);
+    // Null, not 0: a redacted seed, a practice segment's placeholder and a real seed 0 are three
+    // different things, and only the server knows which one it is serving (issue #84 E).
+    assert.equal(matrix.scenarios[0].seed, null);
     assert.equal(matrix.scenarios[0].s, 3);
     assert.deepEqual(
       matrix.scenarios[0].agents[0].flags,
@@ -290,6 +301,7 @@ test("audience mode hides regime and seed of a scenario matrix but not a practic
       (await get("/matrix-2026-11-01/standings.json")).text,
     );
     assert.equal(standings.epochs[0].regime, "hidden");
+    assert.equal(standings.epochs[0].seed, null);
     const period = JSON.parse((await get("/practice-period/matrix.json")).text);
     assert.equal(period.scenarios[0].label, "2026-09-25");
     assert.equal(period.scenarios[0].regime, "segment");
@@ -348,6 +360,100 @@ test("redactEventLine: past windows for a continuous world, nothing for a scenar
   assert.ok(redactEventLine(line, past(147))?.includes('"crash"'));
   assert.equal(redactEventLine(line, { kind: "none" }), null, "a scenario epoch: never");
   assert.equal(redactEventLine("not json", past(1)), "not json");
+});
+
+
+// A hosted box keeps every smoke and test run its operator ever made under runs/, and the picker
+// offered all of them to participants under their internal names. The allowlist is the server's
+// answer, so it has to hold for the index, for direct fetches and for tails alike (issue #84 K).
+test("an allowlisted competition is served with its scenarios, and nothing else is", async () => {
+  const root = fixtureRuns();
+  const { get, close } = await serve(root, true, ["matrix-2026-11-01"]);
+  try {
+    const index = JSON.parse((await get("/index.json")).text) as {
+      id: string;
+      live?: boolean;
+    }[];
+    const ids = index.map((e) => e.id);
+    assert.ok(ids.includes("matrix-2026-11-01"), "the competition itself");
+    assert.ok(
+      ids.includes("2026-11-01T10-00-00-000Z"),
+      "the run its matrix.json names, resolved as a sibling",
+    );
+    assert.ok(!ids.includes("practice-period"), "another competition");
+    // Membership is what the competition names or contains, never what happens to be running. A
+    // live directory nothing connects to this matrix stays out: admitting it would have admitted
+    // every live run under runs/ for as long as the matrix was incomplete, which is the whole
+    // competition — the operator's own smoke run included.
+    assert.ok(
+      !ids.includes("2026-11-02T10-00-00-000Z"),
+      "a live run the matrix does not name",
+    );
+    assert.equal(
+      (await get("/2026-11-02T10-00-00-000Z/events.jsonl")).status,
+      404,
+      "and its files are not served either",
+    );
+    assert.equal((await get("/practice-period/matrix.json")).status, 404);
+    assert.equal(
+      (await get("/2026-11-01T10-00-00-000Z/summary.json")).status,
+      200,
+    );
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a practice period admits everything inside it, and nothing outside", async () => {
+  const root = fixtureRuns();
+  const { get, close } = await serve(root, true, ["practice-period"]);
+  try {
+    const ids = (
+      JSON.parse((await get("/index.json")).text) as { id: string }[]
+    ).map((e) => e.id);
+    assert.deepEqual(ids, ["practice-period"]);
+    // A period's own days live inside its directory, so they are admitted by containment — which
+    // is why a practice period's live segment keeps working with no exception for "what is
+    // running". A run outside it is not admitted, as a file or as a tail.
+    assert.equal(
+      (await get("/2026-11-02T10-00-00-000Z/tail/events.jsonl?offset=0")).status,
+      404,
+      "a tail is withheld the same way a file is",
+    );
+    assert.equal((await get("/practice-period/matrix.json")).status, 200);
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("no allowlist serves everything, which is the operator's own view", async () => {
+  const root = fixtureRuns();
+  const { get, close } = await serve(root, false);
+  try {
+    const ids = (
+      JSON.parse((await get("/index.json")).text) as { id: string }[]
+    ).map((e) => e.id);
+    assert.ok(ids.includes("practice-period"));
+    assert.ok(ids.includes("matrix-2026-11-01"));
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("competitionsFromEnv reads a list, and treats an empty one as unset", () => {
+  assert.equal(competitionsFromEnv({}), undefined);
+  assert.deepEqual(
+    competitionsFromEnv({ ERIS_DASHBOARD_COMPETITIONS: "a, b/c ,/d/" }),
+    ["a", "b/c", "d"],
+  );
+  assert.equal(
+    competitionsFromEnv({ ERIS_DASHBOARD_COMPETITIONS: "  ," }),
+    undefined,
+    "an empty list is not a list of nothing",
+  );
 });
 
 test("modeFromEnv reads the two switches", () => {

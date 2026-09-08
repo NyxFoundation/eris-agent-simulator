@@ -25,6 +25,98 @@ import {
   type BlockRowInput,
   type RunArtifactWriter,
 } from "./logger.js";
+import type { EpochPnl } from "./scoring/epochPnl.js";
+
+/** What every agent's record in a segment carries, scored or not. */
+export type SegmentAgentIdentity = {
+  id: string;
+  address: string;
+  baseline: boolean;
+  /** Rules §2.2: the participant unit, when the roster stated one. */
+  participant?: string;
+  includedTxCount: number;
+  revertCount: number;
+};
+
+/** One agent's record in a segment's summary.json (and, minus the tx counts, in the period index). */
+export type SegmentAgentRecord = SegmentAgentIdentity &
+  (
+    | {
+        scored: true;
+        initialValueUsdc: number;
+        finalValueUsdc: number;
+        netPnlUsdc: number;
+        /** P of rules §4.4.1 -- V_K − V_0 over this segment's boundaries. */
+        pnlUsdc: number;
+      }
+    | {
+        scored: false;
+        /** Why there is no P here, in words a reader of the file can act on. */
+        unscoredReason: string;
+      }
+  );
+
+/**
+ * One agent's record for a segment, from the P the segment's boundary series yields for it.
+ *
+ * An agent with no V_0 in this segment -- registered mid-segment (ADR 0021 §2), or absent from every
+ * boundary that reported -- has no P for it, and the record says so instead of writing 0. The
+ * writer used to collapse a missing P into `netPnlUsdc: 0`, which the standings read as a P of
+ * exactly zero: a zero beats every agent that lost, so a participant who joined at 14:00 outranked
+ * everyone below par on a day they were never measured in (issue #84 X2). The agent stays in the
+ * record -- the transaction views and the participant lookup need it -- and only the scored fields
+ * are missing, which every reader treats as "not placed in this epoch" (§4.4.2).
+ */
+export function segmentAgentRecord(
+  agent: SegmentAgentIdentity,
+  /** The epoch's P and its two ends, or null when the segment did not place the agent. */
+  pnl: Pick<
+    EpochPnl,
+    "pnlUsdc" | "initialValueUsdc" | "finalValueUsdc"
+  > | null,
+): SegmentAgentRecord {
+  if (!pnl)
+    return {
+      ...agent,
+      scored: false,
+      unscoredReason:
+        "no P for this segment: the agent has no value at the segment's first boundary " +
+        "(registered mid-segment, or unpriced at every boundary that reported)",
+    };
+  return {
+    ...agent,
+    scored: true,
+    initialValueUsdc: pnl.initialValueUsdc,
+    finalValueUsdc: pnl.finalValueUsdc,
+    netPnlUsdc: pnl.pnlUsdc,
+    pnlUsdc: pnl.pnlUsdc,
+  };
+}
+
+/** The period index's entry for a segment record: the standings-shaped subset. */
+export function segmentIndexAgent(
+  a: SegmentAgentRecord,
+): Record<string, unknown> {
+  const base = {
+    id: a.id,
+    address: a.address,
+    baseline: a.baseline,
+    ...(a.participant !== undefined ? { participant: a.participant } : {}),
+  };
+  if (!a.scored)
+    return { ...base, scored: false, unscoredReason: a.unscoredReason };
+  return {
+    ...base,
+    scored: true,
+    netPnlUsdc: a.netPnlUsdc,
+    // Alpha needs the fixed-reference sweep, which a segment of a continuous chain does not get.
+    // Reported as 0 rather than omitted, because the field is what the standings read.
+    alphaUsdc: 0,
+    pnlUsdc: a.pnlUsdc,
+    initialValueUsdc: a.initialValueUsdc,
+    finalValueUsdc: a.finalValueUsdc,
+  };
+}
 
 /** The file inside a competition directory naming the segment that is current right now. */
 export const CURRENT_SEGMENT_FILE = "current-segment";

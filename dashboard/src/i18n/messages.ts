@@ -75,6 +75,8 @@ const en = {
   "home.practiceNote":
     "Practice standings, not the official scoring. The competition is scored separately, from submitted bundles replayed over a scenario matrix — nothing here feeds into it.",
   "home.standingsFinal": "Standings · final",
+  // The heading over the §4.7 notice, where there is no result to be final or provisional about.
+  "home.standingsTitle": "Standings",
   "home.standingsThrough": "Standings · through round {at}",
   "home.subtitle":
     "Score: each epoch (one scenario run) gives every agent a deviation score T = 50 + 10 × (P − μ) / σ, where P is its USDC profit over the epoch and μ, σ are the field's. The score is the average of T over the epochs, later epochs weighted up to 1.5×. Regime columns are the agent's mean T in that regime. Click a row for the epoch-by-epoch breakdown.",
@@ -148,13 +150,13 @@ const en = {
   "scenario.info.scoring.label": "Scoring",
   "scenario.info.artifacts.label": "Data",
   "scenario.info.overview.p1":
-    "Eris is a DeFi trading-competition simulator. Autonomous agents compete on a multi-protocol venue set — Uniswap v3, Balancer, Curve, GMX v2 and Aave v3, plus optional LST and CDP-stablecoin venues — all deployed on a local anvil chain.",
+    "Eris is a DeFi trading-competition simulator. Autonomous agents compete on a set of real DeFi venues — automated market makers, a perpetual-futures exchange, a lending market, a liquid-staking vault, a collateralised stablecoin — deployed together on one chain. Which of them a given world runs is on its Markets page and on its board.",
   "scenario.info.overview.p2":
     "Agents run as fully independent processes and see only finalized on-chain state: no privileged RPC, no pending transactions, no other agent's orders. Each block they observe, decide, and sign their own transactions; in-block ordering is by priority fee, so priority is something you bid for.",
   "scenario.info.overview.p3":
     "The environment daemon drives the market: a seed-derived fair price written on-chain every block, uninformed and informed order flow, a perp keeper, and scheduled stress events — crashes, liquidity pulls, stablecoin depegs, whale orders — that agents cannot opt out of.",
   "scenario.info.overview.p4":
-    "Self-improving agents pair a rule strategy with an LLM that rewrites the strategy code mid-run. The LLM is never in the trade path: the rules trade every block on their own, and revisions install only after a static check, compilation, and a sandboxed test run.",
+    "Self-improving agents pair a rule strategy with an LLM that rewrites the strategy code mid-run. The LLM is never in the trade path: the rules trade every block on their own, and a revision installs only after a static check and a compile. Once installed it is held to the same limit as any strategy — a decision that has not returned within five seconds is that block passed up.",
   "scenario.info.environment.p1":
     "A seed is a label for market conditions. The fair-price path is reproducible per (regime, seed), but transaction timing and in-block ordering are not — the same scenario replayed twice gives different fills, which is why the competition measures over many scenarios.",
   "scenario.info.environment.p2":
@@ -164,11 +166,11 @@ const en = {
   "scenario.info.environment.p4":
     "The fair price is distributed on-chain through a price feed and lands one block late for everyone equally — reacting to information a block after it exists is part of the game.",
   "scenario.info.scoring.p1":
-    "Scoring happens after the run, not during it. The environment walks back over historical chain state and values every agent at identical block cross-sections, so the live loop pays nothing for it and no agent can game a snapshot phase.",
+    "Every agent is valued at the same block cross-sections, never at a moment of its own choosing. A scenario run is scored from chain history once it finishes; a practice period, which has no end, is scored at each round boundary as it passes. Both read the same venues at the same blocks, so the two produce the same number.",
   "scenario.info.scoring.p2":
     "The score is one number per epoch: P = V_K − V_0, the change in total account value over the run (each end at its own 5-block-median marks), standardised over the field as T = 50 + 10 (P − μ) / σ. The benchmark is valued but not in the population.",
   "scenario.info.scoring.p3":
-    "Net PnL and max drawdown come from the same reconstructed series and are shown for context; the rounds inside a run are the leaderboard's running progress, not part of the score.",
+    "Across epochs the score is a weighted average of T. The competition fixes how many epochs it runs before it starts, and later epochs weigh more — the first counts 1, the last 1.5, rising evenly in between. Equal scores are separated by the spread of the agent's own T values (steadier first), then by its worst epoch, then by submission time. Net PnL and max drawdown come from the same series and are context, not the score; the rounds inside a run are its running progress.",
   "scenario.info.scoring.p4":
     "Holdings the scorer cannot price are reported, never silently zeroed — a zero that is really a read failure would be indistinguishable from a trading loss.",
   "scenario.info.artifacts.p1":
@@ -182,7 +184,8 @@ const en = {
 
   // ---- rounds bar (one scenario's clock) ----
   "rounds.segmentTitle": "Round {i} · blocks {from}–{to} · {tx}",
-  "rounds.txOutside": "tx count outside the live window",
+  "rounds.txOutside": "transactions not counted — this view does not cover these blocks",
+  "rounds.txNotStarted": "not started",
   "rounds.txN": "{n} tx",
   "rounds.heading": "Round {i}",
   "rounds.blocks": "blocks {from}–{to}",
@@ -224,7 +227,6 @@ const en = {
   "agent.tab.trades": "Trade history",
   "agent.tab.log": "Decision log",
   "agent.back": "← back",
-  "agent.rank": "Rank {n}",
   "agent.stat.score":
     "T (this epoch)",
   "agent.stat.pnl": "PnL (USDC)",
@@ -339,6 +341,10 @@ const en = {
   "explorer.indexedPct": " · {p}% indexed",
   "explorer.offline":
     "Blockscout is not running — start it with `npm run explorer` to open transactions, blocks and addresses here (after a chain reset: `npm run explorer:reset`)",
+  // The audience does not operate this deployment, so a failed probe is stated as a missing
+  // capability rather than as a command to run (issue #84 H).
+  "explorer.offlineAudience":
+    "Block-explorer links are unavailable. Everything below is this run's own record of what was included.",
   "explorer.probing": "probing the local explorer…",
   "explorer.notIndexed":
     "this run's transactions are not indexed — the explorer holds a different chain; run `npm run explorer:reset`",
@@ -369,6 +375,7 @@ const en = {
   "explorer.noTx": "no transaction in this scope matches",
   "explorer.openBlock": "Open block in Blockscout",
   "explorer.startToOpen": "start `npm run explorer` to open blocks",
+  "explorer.blockNoLink": "block explorer unavailable",
 
   // ---- environment events, as the scenario board's "what the environment did here" strip reads them ----
   "tape.kind.run": "RUN",
@@ -711,7 +718,8 @@ const en = {
   // ---- world (the competition map) ----
   // The board the demo film is staged on, walked a block at a time. Every string here names either
   // a position on the block axis or a thing standing on the board.
-  "world.col.agents": "{n} wallets · one process each, deciding every block",
+  "world.col.agents":
+    "{n} wallets · one process each, deciding every block · the benchmark included",
   "world.col.chain": "the chain · every transaction goes through it",
   "world.col.contracts": "contracts · state",
   "world.block": "block {n}",
@@ -769,6 +777,76 @@ const en = {
     "This run recorded no blocks to walk. A run in progress on another machine is read over its files, and the block log is written as it goes \u2014 the board fills in as the blocks arrive.",
   "home.aboutHint":
     "How the units nest, what the environment does, how the score is computed, where the data comes from.",
+
+  // ---- what the walk-through found: a live competition, a withheld schedule, an unplaced agent,
+  // and the lookups a participant needs (issue #84 A/C/D/F/G/L/P/R/T/X2) ----
+  "home.status.liveRound":
+    "live · {label} · round {round} of {rounds}",
+  "home.status.liveRoundIn": "next round in {t}",
+  "home.status.liveBlock": "block {n}",
+  "home.status.epochsAllOne": "1 epoch scored",
+  "home.roundsSoFar": "{n} · so far",
+  "home.standingsSoFar": "Standings · so far",
+  "cursor.soFar": "So far · {n} rounds",
+  "home.unscoredTitle":
+    "In the record for {n} epoch(s) that did not score it: it had no starting value there (it registered part-way through). Rules §4.4.2 leaves such an epoch out of its score rather than counting it as zero.",
+  "home.unscoredBadge": "not placed in {n}",
+  "home.netPnlUnscored": "no PnL for an epoch this agent was not placed in",
+
+  // the standings could not be built — said, rather than falling through to a world's board
+  "home.noStandings.title": "No standings yet",
+  "home.noStandings.pending":
+    "No epoch of this competition has been scored yet. The standings appear when the first one completes; until then the scenario below is what there is to watch.",
+  "home.noStandings.failed":
+    "The standings for this competition could not be built: {detail}. Its scenarios are still readable one at a time.",
+
+  // find your own agent (there is no row to click when standings are not posted)
+  "home.find.title": "Find your agent",
+  "home.find.subtitle":
+    "Your agent's name, or the wallet address you send from. An address the roster knows opens that agent's page; one it does not opens the transaction list filtered to it.",
+  "home.find.placeholder": "agent name or 0x… address",
+  "home.find.go": "open →",
+  "home.find.noMatch":
+    "No registered agent by that name or address. Press open to search the transactions for it.",
+  "home.find.address": "{id} — registered to this address",
+
+  // a scenario the runner never ran
+  "home.scenarios.failed": "not run: {reason}",
+  "home.scenarios.failedTitle":
+    "This epoch did not complete, so it scores nobody (rules §4.4.2) and has no world to open. The other epochs keep their weights.",
+
+  // agent page
+  "agent.rankOf": "Rank {n} of {m}",
+  "agent.rankScenario": "rank in this scenario",
+  "agent.standingOffBadge": "standings not posted",
+  "agent.standing.throughRound": "through round {at}",
+  "agent.standing.finalNote": "final result",
+  "agent.standing.unscored":
+    "Not placed in {n} epoch(s) of this competition: no starting value there, which is what a registration part-way through leaves behind. Those epochs are left out of the score rather than counted as zero (rules §4.4.2).",
+  "agent.unscoredHere":
+    "This run did not place this agent: it has no value at the run's first boundary, so there is no profit to compute over it. Its transactions and positions are below.",
+
+  // explorer: search the whole list, show a page of it
+  "explorer.showMore": "show {n} more",
+  "explorer.searchAll": "searching all {n} transactions in scope",
+  "explorer.coveredFrom":
+    "the list covers blocks {from} and later — earlier ones are not held by this view",
+
+  // the score-by-epoch legend: following an agent and opening its page are different acts
+  "home.chart.openAgent": "open {id}'s page",
+
+  // the environment's plan, in the public view
+  "vp.scenario.scheduledWithheld":
+    "withheld while the competition runs (rules §3.3) — this is not a claim that nothing was scheduled",
+  "vp.scenario.scheduledNonePast":
+    "no episode has opened yet — later windows are not published while the period runs",
+  "vp.scenario.scheduledPast": "windows that have already closed",
+  "vp.scenario.windowRounds": "{rounds} rounds",
+  "vp.scenario.scheduleTitlePast": "Episodes that have already closed",
+  "vp.scenario.scheduleWithheld":
+    "Which episodes this epoch contains is not published while the competition runs (rules §3.3). It is published with the results (rules §7.2).",
+  "vp.scenario.scheduleEmptyPast":
+    "no episode of this period has closed yet — one that is open now, or still to come, is not listed",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -824,6 +902,7 @@ const ja: Record<MessageKey, string> = {
   "home.practiceNote":
     "これは練習順位で、公式採点ではありません。公式競技は提出バンドルをシナリオ行列で再生して別途採点され、ここの結果は一切反映されません。",
   "home.standingsFinal": "順位表 · 最終",
+  "home.standingsTitle": "順位表",
   "home.standingsThrough": "順位表 · ラウンド {at} 時点",
   "home.subtitle":
     "スコア: 各エポック（1 シナリオの run）で、エポック中の USDC 損益 P から偏差値 T = 50 + 10 × (P − μ) / σ を全員横断で出し（μ・σ は場全体）、T をエポック通しで平均した値（後のエポックほど重みが大きく、最大 1.5 倍）。レジーム列はそのレジームでの T の平均。行をクリックするとエポックごとの内訳が見られます。",
@@ -885,13 +964,13 @@ const ja: Record<MessageKey, string> = {
   "scenario.info.scoring.label": "採点",
   "scenario.info.artifacts.label": "データ",
   "scenario.info.overview.p1":
-    "Eris は DeFi トレード競技のシミュレータです。自律エージェントが複数プロトコルの venue 群 — Uniswap v3・Balancer・Curve・GMX v2・Aave v3、加えてオプションの LST・CDP ステーブルコイン venue — で競います。全 venue はローカルの anvil チェーン上にデプロイされます。",
+    "Eris は DeFi トレード競技のシミュレータです。自律エージェントが実在の DeFi venue 群 — 自動マーケットメイカー、無期限先物取引所、レンディング市場、リキッドステーキング vault、担保付きステーブルコイン — の上で競います。どの venue がその世界で動いているかは、Markets ページと盤面に出ています。",
   "scenario.info.overview.p2":
     "エージェントは完全に独立したプロセスとして動き、確定済みのオンチェーン状態だけを見ます。特権 RPC も、ペンディング tx も、他エージェントの注文も見えません。毎ブロック、観測・判断・署名を自分で行い、ブロック内の順序は priority fee 順 — 優先度は入札で買うものです。",
   "scenario.info.overview.p3":
     "環境デーモンが市場を動かします: シードから導かれるフェア価格を毎ブロックオンチェーンに書き込み、無情報・有情報のオーダーフロー、perp のキーパー、そして暴落・流動性引き抜き・ステーブルのデペグ・大口注文といったストレスイベントをスケジュールします。エージェントはこれらから逃れられません。",
   "scenario.info.overview.p4":
-    "自己改善型エージェントは、ルール戦略と、run 中に戦略コードを書き換える LLM の組み合わせです。LLM は取引経路には入りません: ルールが毎ブロック自力で取引し、改訂は静的検査・コンパイル・サンドボックス実行を通ってはじめて反映されます。",
+    "自己改善型エージェントは、ルール戦略と、run 中に戦略コードを書き換える LLM の組み合わせです。LLM は取引経路には入りません: ルールが毎ブロック自力で取引し、改訂は静的検査とコンパイルを通ってはじめて反映されます。反映後はどの戦略とも同じ制限を受け、5 秒以内に判断が返らなければそのブロックは行動なしです。",
   "scenario.info.environment.p1":
     "シードは市場条件のラベルです。フェア価格の経路は (レジーム, シード) ごとに再現可能ですが、tx のタイミングと着順は再現されません — 同じシナリオを 2 回再生しても約定は変わります。だから競技は多数のシナリオで測ります。",
   "scenario.info.environment.p2":
@@ -901,11 +980,11 @@ const ja: Record<MessageKey, string> = {
   "scenario.info.environment.p4":
     "フェア価格はオンチェーンの価格フィードで配布され、全員に等しく 1 ブロック遅れて届きます — 情報が生まれた 1 ブロック後に反応することはゲームの一部です。",
   "scenario.info.scoring.p1":
-    "採点は run の最中ではなく終了後に行われます。環境が過去のチェーン状態を遡り、全エージェントを同一ブロック断面で評価するので、実行ループは採点コストを払わず、スナップショット時刻を狙った操作もできません。",
+    "全エージェントは同一のブロック断面で評価され、各自が選んだ時点で評価されることはありません。シナリオの run は終了後にチェーン履歴から採点し、終わりのない練習期間はラウンド境界を通過するたびにその場で採点します。どちらも同じ venue を同じブロックで読むので、結果は一致します。",
   "scenario.info.scoring.p2":
     "スコアは 1 エポックにつき 1 つの数字です。P = V_K − V_0（run 全体での総資産価値の変化。両端ともその時点の 5 ブロック中央値マーク）を、場全体で T = 50 + 10 (P − μ) / σ に標準化します。ベンチマークは評価されますが母集団には入りません。",
   "scenario.info.scoring.p3":
-    "純損益と最大ドローダウンは同じ再構成系列から出す参考値です。run 内のラウンドはリーダーボードの途中経過であって、スコアの一部ではありません。",
+    "エポックをまたぐスコアは T の加重平均です。競技は開始前にエポック数を確定し、後のエポックほど重みが大きくなります（最初が 1、最後が 1.5、その間は等間隔）。同点は、そのエージェント自身の T のばらつき（小さい方が上）、次に最悪エポックの T、次に提出時刻で分けます。純損益と最大ドローダウンは同じ系列から出す参考値で、スコアではありません。run 内のラウンドは途中経過です。",
   "scenario.info.scoring.p4":
     "採点者が値付けできない保有は必ず報告され、黙って 0 になることはありません — 読み取り失敗の 0 は取引の損失と見分けが付かなくなるからです。",
   "scenario.info.artifacts.p1":
@@ -918,7 +997,8 @@ const ja: Record<MessageKey, string> = {
     "ローカルの Blockscout エクスプローラ（npm run explorer）が深掘り用ツールです。起動していれば、ページ上の全トランザクション・アドレス・ブロックがリンクになります。",
 
   "rounds.segmentTitle": "ラウンド {i} · ブロック {from}–{to} · {tx}",
-  "rounds.txOutside": "ライブ表示の範囲外（tx 数は不明）",
+  "rounds.txOutside": "tx 数は数えていません — この表示はこれらのブロックを含みません",
+  "rounds.txNotStarted": "未開始",
   "rounds.txN": "{n} tx",
   "rounds.heading": "ラウンド {i}",
   "rounds.blocks": "ブロック {from}–{to}",
@@ -959,7 +1039,6 @@ const ja: Record<MessageKey, string> = {
   "agent.tab.trades": "取引履歴",
   "agent.tab.log": "判断ログ",
   "agent.back": "← 戻る",
-  "agent.rank": "{n} 位",
   "agent.stat.score":
     "T（このエポック）",
   "agent.stat.pnl": "損益 (USDC)",
@@ -1068,6 +1147,8 @@ const ja: Record<MessageKey, string> = {
   "explorer.indexedPct": " · 索引 {p}%",
   "explorer.offline":
     "Blockscout が起動していません — `npm run explorer` で起動すると tx・ブロック・アドレスをここから開けます（チェーンをリセットした後は `npm run explorer:reset`）",
+  "explorer.offlineAudience":
+    "ブロックエクスプローラへのリンクは利用できません。以下はすべて、この run 自身が記録した「ブロックに入った内容」です。",
   "explorer.probing": "ローカルエクスプローラを確認中…",
   "explorer.notIndexed":
     "この run のトランザクションが索引されていません — エクスプローラが別のチェーンを保持しています。`npm run explorer:reset` を実行してください",
@@ -1098,6 +1179,7 @@ const ja: Record<MessageKey, string> = {
   "explorer.noTx": "この範囲に一致するトランザクションはありません",
   "explorer.openBlock": "Blockscout でブロックを開く",
   "explorer.startToOpen": "`npm run explorer` を起動するとブロックを開けます",
+  "explorer.blockNoLink": "ブロックエクスプローラは利用できません",
 
   "tape.kind.run": "RUN",
   "tape.kind.scenario": "シナリオ",
@@ -1428,7 +1510,8 @@ const ja: Record<MessageKey, string> = {
   "home.about": "この競技について",
 
   // ---- ワールド（競技の盤面）----
-  "world.col.agents": "{n} ウォレット · それぞれ別プロセスで毎ブロック判断する",
+  "world.col.agents":
+    "{n} ウォレット · それぞれ別プロセスで毎ブロック判断する · ベンチマークを含む",
   "world.col.chain": "チェーン · 取引はすべてここを通る",
   "world.col.contracts": "コントラクト · 状態",
   "world.block": "ブロック {n}",
@@ -1486,6 +1569,67 @@ const ja: Record<MessageKey, string> = {
     "この run にはたどれるブロックがありません。別のマシンで進行中の run はファイル越しに読むので、ブロックログは書かれた分だけ届きます。ブロックが届けば盤面も埋まります。",
   "home.aboutHint":
     "単位の入れ子・環境が何をするか・スコアの計算・データの出所。",
+
+  // ---- 参加者ウォークスルーで見つかった点（issue #84 A/C/D/F/G/L/P/R/T/X2）----
+  "home.status.liveRound": "ライブ · {label} · ラウンド {round} / {rounds}",
+  "home.status.liveRoundIn": "次のラウンドまで {t}",
+  "home.status.liveBlock": "ブロック {n}",
+  "home.status.epochsAllOne": "1 エポックを採点済み",
+  "home.roundsSoFar": "{n} · ここまで",
+  "home.standingsSoFar": "順位表 · ここまで",
+  "cursor.soFar": "ここまで · {n} ラウンド",
+  "home.unscoredTitle":
+    "{n} 個のエポックに記録はありますが、そこでは採点されていません。開始時点の資産評価額が無いためです（途中から登録された場合にこうなります）。規約 §4.4.2 では、そのエポックは 0 として数えるのではなくスコアから外します。",
+  "home.unscoredBadge": "{n} エポックで未採点",
+  "home.netPnlUnscored": "採点対象外のエポックには損益がありません",
+
+  "home.noStandings.title": "順位はまだありません",
+  "home.noStandings.pending":
+    "この競技はまだ 1 つもエポックを採点していません。最初のエポックが完走すると順位が出ます。それまでは下のシナリオが見られるものです。",
+  "home.noStandings.failed":
+    "この競技の順位を計算できませんでした: {detail}。シナリオは 1 本ずつなら読めます。",
+
+  "home.find.title": "自分のエージェントを探す",
+  "home.find.subtitle":
+    "エージェント名か、送信元のウォレットアドレスを入力してください。登録済みのアドレスならそのエージェントのページへ、未登録ならそのアドレスで絞り込んだトランザクション一覧へ移動します。",
+  "home.find.placeholder": "エージェント名 または 0x… アドレス",
+  "home.find.go": "開く →",
+  "home.find.noMatch":
+    "その名前・アドレスの登録エージェントはいません。「開く」でトランザクションを検索できます。",
+  "home.find.address": "{id} — このアドレスで登録されています",
+
+  "home.scenarios.failed": "未実施: {reason}",
+  "home.scenarios.failedTitle":
+    "このエポックは完走しなかったため誰も採点されず（規約 §4.4.2）、開ける世界もありません。他のエポックの重みは変わりません。",
+
+  "agent.rankOf": "{m} 体中 {n} 位",
+  "agent.rankScenario": "このシナリオ内の順位",
+  "agent.standingOffBadge": "順位は掲示しません",
+  "agent.standing.throughRound": "ラウンド {at} 時点",
+  "agent.standing.finalNote": "最終結果",
+  "agent.standing.unscored":
+    "この競技の {n} 個のエポックでは採点されていません。そこでは開始時点の資産評価額が無いためで、途中から登録するとこうなります。該当エポックは 0 として数えるのではなくスコアから外します（規約 §4.4.2）。",
+  "agent.unscoredHere":
+    "この run はこのエージェントを採点していません。run の最初の境界時点の評価額が無く、その区間の損益を計算できないためです。取引と建玉は下に出ています。",
+
+  "explorer.showMore": "さらに {n} 件表示",
+  "explorer.searchAll": "範囲内の全 {n} 件から検索しています",
+  "explorer.coveredFrom":
+    "この一覧はブロック {from} 以降を含みます。それ以前はこの表示では保持していません",
+
+  "home.chart.openAgent": "{id} のページを開く",
+
+  "vp.scenario.scheduledWithheld":
+    "競技中は非表示です（規約 §3.3）。予定が無かったという意味ではありません",
+  "vp.scenario.scheduledNonePast":
+    "まだ開いたイベントはありません。この先の窓は期間中は公開しません",
+  "vp.scenario.scheduledPast": "既に閉じた窓",
+  "vp.scenario.windowRounds": "{rounds} ラウンド",
+  "vp.scenario.scheduleTitlePast": "既に閉じたイベント",
+  "vp.scenario.scheduleWithheld":
+    "このエポックにどのイベントが含まれるかは、競技中は公開しません（規約 §3.3）。結果発表とともに公開されます（規約 §7.2）。",
+  "vp.scenario.scheduleEmptyPast":
+    "この期間ではまだ閉じたイベントがありません。現在開いている窓やこれからの窓は一覧に出ません",
 };
 
 const MESSAGES: Record<"en" | "ja", Record<MessageKey, string>> = { en, ja };

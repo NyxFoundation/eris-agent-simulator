@@ -74,8 +74,12 @@ CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
   node --import tsx example/agents/runtime/bot.ts
 ```
 
-- `ERIS_MANIFEST` supplies the RPC URL and the PriceFeed address. Everything else still comes from
-  your config file (`ERIS_CONFIG`, defaulting to `config/local.yaml`).
+- `ERIS_MANIFEST` supplies the RPC URL, the PriceFeed address, the chain id and which address table
+  to use. Those last two are applied before anything else loads, because the address table is chosen
+  at import time — so the command above is enough on its own, and setting `CHAIN_ID` or
+  `ERIS_LOCAL_DEPLOY` in your shell overrides the manifest rather than the other way round.
+  Everything else still comes from your config file (`ERIS_CONFIG`, defaulting to
+  `config/local.yaml`).
 - `ERIS_RUN_DIR` is **your** directory. Your decision log lands there and nowhere else — the
   dashboard cannot show it, and says so rather than rendering an empty panel.
 - On the first start the runtime grants its own venue approvals, because an approval is your

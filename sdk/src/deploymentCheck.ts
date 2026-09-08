@@ -117,6 +117,12 @@ export async function checkDeployment(opts: {
 export function deploymentMismatchMessage(
   check: DeploymentCheck,
   rpcUrl: string,
+  /**
+   * Who pointed this process at the chain. A self-hosted participant (ADR 0021) did it with
+   * ERIS_MANIFEST and is told what the manifest is for; the operator is told about the two
+   * settings they own.
+   */
+  via: "manifest" | "env" = "env",
 ): string {
   const named = check.missing
     .slice(0, 6)
@@ -124,9 +130,21 @@ export function deploymentMismatchMessage(
     .join(", ");
   const more =
     check.missing.length > 6 ? ` and ${check.missing.length - 6} more` : "";
-  return (
+  const head =
     `the deployment this run names is not on ${rpcUrl} (chainId ${check.chainId}): ` +
-    `${check.missing.length} of ${check.checked} contracts hold no code — ${named}${more}.\n` +
+    `${check.missing.length} of ${check.checked} contracts hold no code — ${named}${more}.\n`;
+  if (via === "manifest")
+    return (
+      head +
+      "  The venue addresses this runtime uses are its bundled address table, and the manifest's\n" +
+      "  `contracts` section is the deployment it should match. Compare the two: if they differ,\n" +
+      "  regenerate the table from the deployments.json the operator published with the manifest\n" +
+      "  (DEPLOYMENTS_JSON=<that file> npm run gen:local-constants). If ERIS_LOCAL_DEPLOY is set in\n" +
+      "  your shell, it overrides the manifest's `chain.localDeploy` — unset it and let the\n" +
+      "  manifest decide."
+    );
+  return (
+    head +
     "  Two things pick a target and they are set in different places: the chain comes from " +
     "ANVIL_RPC_URL / CHAIN_ID, and the addresses come from sdk/src/constants.local.ts.\n" +
     "  Point them at the same deployment:\n" +
