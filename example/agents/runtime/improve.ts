@@ -12,7 +12,7 @@
 //
 //   1. Generated code passes the cheatcode static check before it is installed. An LLM-authored
 //      strategy is not trusted code.
-//   2. A revision that fails to compile, or throws on its first call, is not installed at all.
+//   2. A revision that fails static validation or compilation is not installed. Runtime errors are logged.
 //   3. Every accept, decline, rejection and revert is written to the agent log, so "did
 //      self-improvement do anything" is answerable from a single run rather than from a study.
 //      Note what this is *not*: nothing rolls back on its own. An automatic "revert when value went
@@ -22,7 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createContext, Script } from "node:vm";
 import { parse as parseYaml } from "yaml";
-import { DECIDE_TIMEOUT_MS } from "./decideTimeout.js";
+import { withDecideTimeout } from "./decideTimeout.js";
 import { findCheatcodeUsage } from "@eris/sdk/strategyStaticCheck.js";
 import {
   digestMarketHistory,
@@ -241,7 +241,7 @@ export type CompileResult =
 //
 // Be clear about what this does and does not contain. The vm removes *ambient* capability: there is
 // no require, no process, no fs, no fetch in scope. It does not sandbox the agent from the chain,
-// because `ctx` is passed in and carries publicClient / walletClient -- generated code can trade
+// because `ctx` is passed in and carries a read-only publicClient and submit() -- generated code can trade
 // exactly as freely as the hand-written strategy it replaces. That is intentional (it is the same
 // capability, not an escalation), but it means the vm is a guard against a model reaching for
 // something outside the trading interface, not a containment boundary. The cheatcode check below is
@@ -291,27 +291,10 @@ export function compileExecutor(source: string): CompileResult {
     // from its cause, in validation or logging, rather than at the boundary. Actions are plain data
     // by contract, so a structural clone loses nothing; anything unclonable was not a valid action.
     //
-    // The Script timeout above covers only *evaluating* the function expression, not calling it, so
-    // a generated body that loops or awaits forever would wedge the agent permanently: the caller's
-    // `deciding` guard blocks every later decision and the process never exits. Racing the call
-    // bounds that. It does not kill the runaway work -- vm cannot interrupt an async body -- but it
-    // frees the loop, and the throw is recorded as a decide error.
+    // Standalone callers still get the async timeout. Production calls execute in a worker with
+    // the same parent-owned deadline, which can also terminate synchronous loops and callbacks.
     const normalized: Executor = async (obs, ctx) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const result = await Promise.race([
-        Promise.resolve(fn(obs, ctx)),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `executor exceeded ${DECIDE_TIMEOUT_MS}ms; the strategy is not returning`,
-                ),
-              ),
-            DECIDE_TIMEOUT_MS,
-          );
-        }),
-      ]).finally(() => clearTimeout(timer));
+      const result = await withDecideTimeout(fn(obs, ctx), obs.round);
       if (result === null || result === undefined) return null;
       try {
         return structuredClone(result);

@@ -148,7 +148,6 @@ export class Sender {
     try {
       const block = await publicClient.getBlock();
       const baseFee = block.baseFeePerGas ?? 0n;
-      const nonce = await this.allocNonce();
       let gas = tx.gas;
       if (gas === undefined) {
         try {
@@ -185,10 +184,9 @@ export class Sender {
           });
           return;
         }
-        this.gasByRound.set(round, usedThisRound + gas);
-        for (const k of this.gasByRound.keys())
-          if (k < round - 4) this.gasByRound.delete(k);
       }
+      // Allocate only after every local rejection check; a rejected proposal consumes no nonce.
+      const nonce = await this.allocNonce();
       const hash = await walletClient.sendTransaction({
         account: this.account,
         chain,
@@ -201,6 +199,11 @@ export class Sender {
         maxFeePerGas: baseFee * 2n + priorityFeeWei,
         maxPriorityFeePerGas: priorityFeeWei,
       });
+      if (gas !== undefined && MAX_AGENT_BLOCK_GAS > 0n) {
+        this.gasByRound.set(round, (this.gasByRound.get(round) ?? 0n) + gas);
+        for (const k of this.gasByRound.keys())
+          if (k < round - 4) this.gasByRound.delete(k);
+      }
       this.pushOwnTx(hash, meta.actionType as string | undefined);
       this.ledger?.submitted({
         hash,
@@ -223,7 +226,9 @@ export class Sender {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/nonce/i.test(message)) this.nextNonce = null; // resync from pending next time
+      // A transport failure can mean either rejected or accepted with a lost response. Read the
+      // pending nonce again in both cases instead of leaving a gap after a failed submission.
+      this.nextNonce = null;
       this.logMempool({ event: "submit_failed", error: message, ...meta });
     }
   }

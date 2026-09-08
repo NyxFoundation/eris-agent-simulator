@@ -54,7 +54,7 @@ import type {
   ProtocolId,
 } from "@eris/sdk/types.js";
 import { createAgentLog, createJsonlAppender } from "./agentLog.js";
-import { DecideTimeoutError, withDecideTimeout } from "./decideTimeout.js";
+import { DecideTimeoutError } from "./decideTimeout.js";
 import { MarketHistory, TradeLedger } from "./evidence.js";
 import { callLlm } from "./llm.js";
 import {
@@ -72,6 +72,9 @@ import { createMempoolLog, type MempoolLog, Sender } from "./send.js";
 import { AgentStateStore, capBytesFromEnv, STATE_DIR_ENV } from "./state.js";
 import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
+import { readOnlyClient } from "./readOnlyClient.js";
+import { StrategyRunner } from "./strategyRunner.js";
+import type { StrategySource } from "./strategyProtocol.js";
 
 // Backend for the revision call when neither prompt.md nor the roster names one.
 const DEFAULT_IMPROVE_MODEL = "gpt-oss:120b";
@@ -385,19 +388,18 @@ async function main(): Promise<void> {
     process.exit(1);
     return;
   }
-  const agentModule = (await import(
-    pathToFileURL(agentTsPath).href
-  )) as AgentModule;
-  let mode: "run" | "decide" | "improve";
-  if (typeof agentModule.run === "function") mode = "run";
-  else if (typeof agentModule.decide === "function")
-    mode = hasImprove && !frozen ? "improve" : "decide";
-  else {
-    process.stderr.write(
-      `[bot] ${agentTsPath} must export decide() or run(ctx)\n`,
-    );
-    process.exit(1);
-    return;
+  const shippedSource: StrategySource = { kind: "module", path: agentTsPath };
+  const strategy = new StrategyRunner(shippedSource, {
+    agentId, address, config, rpcUrl, ...(lending ? { lending } : {}),
+  }, agentLog);
+  // Import decide modules only in the worker, including their top-level initialization.
+  const metadata = await strategy.start();
+  const mode = metadata.mode === "run" ? "run" : hasImprove && !frozen ? "improve" : "decide";
+  let agentModule: AgentModule | undefined;
+  if (mode === "run") {
+    await strategy.close();
+    // Self-driven agents retain their existing lifecycle; the per-decision bound applies to decide.
+    agentModule = await import(pathToFileURL(agentTsPath).href) as AgentModule;
   }
   // Read the policy before a single block is traded. Loading it inside the improvement loop meant a
   // malformed or unmarked prompt.md was only discovered once the agent was already trading, which
@@ -408,7 +410,7 @@ async function main(): Promise<void> {
   // stops before the event it is being asked about. The cadence is the participant's to declare and
   // to pay for (rules §2.5), so this follows whatever they declared.
   if (improveAgent) marketHistory.ensureCapacity(improveAgent.reviseEveryBlocks);
-  if (hasImprove && typeof agentModule.run === "function") {
+  if (hasImprove && mode === "run") {
     // run(ctx) owns its own loop, so there is no decide to swap out.
     process.stderr.write(
       `[bot] ${agentDir} has prompt.md but exports run(ctx); self-improvement applies to ` +
@@ -477,8 +479,7 @@ async function main(): Promise<void> {
   const ctx: AgentContext = {
     agentId,
     address,
-    publicClient,
-    walletClient,
+    publicClient: readOnlyClient(publicClient),
     config,
     latestObservation: () => latestObservation,
     onObservation(cb) {
@@ -492,28 +493,30 @@ async function main(): Promise<void> {
   };
 
   // ---- driving decide (rule strategy) ----
-  // Held in a variable rather than called through agentModule so the improvement loop can swap the
-  // strategy underneath a running agent (ADR 0018). In every other mode this is just agentModule.decide.
-  let activeDecide = agentModule.decide;
   let deciding = false;
   const invokeDecide = async (obs: AgentObservation): Promise<void> => {
-    if (!activeDecide || deciding) return;
+    if (mode === "run" || deciding) return;
     deciding = true;
+    const balancesAtDecision = latestBalances;
+    const stateAtDecision = latestStateById;
     try {
-      // Rules §2.3: 5,000 ms per decision, then the block is no action (decideTimeout.ts says what
-      // that does and does not cover). The same bound for the shipped strategy and for one the model
-      // installed -- improve.ts races its executors too, so a generated body is bounded either way.
-      const action = await withDecideTimeout(activeDecide(obs, ctx), obs.round);
-      if (action) ctx.submit(action);
-      rememberDecision({ round: obs.round, action: action ?? undefined });
+      // ctx.submit is buffered with the result. A timed-out decision contributes no transactions,
+      // including submissions made before it got stuck; the parent remains the only sender/logger.
+      const { action, submitted } = await strategy.decide(obs);
+      for (const submittedAction of submitted) {
+        rememberDecision({ round: obs.round, action: submittedAction });
+        sender.submit(submittedAction, obs, balancesAtDecision, stateAtDecision);
+      }
+      if (action) sender.submit(action, obs, balancesAtDecision, stateAtDecision);
+      if (action || submitted.length === 0)
+        rememberDecision({ round: obs.round, action: action ?? undefined });
       // Record the decision not to trade, with its reason. send.ts drops noops before they reach
       // the log, so a strategy that passes every block used to leave nothing behind at all -- and an
       // empty agent log cannot distinguish "never started" from "looked and declined". Both happened
       // during this branch's calibration runs and both cost time to diagnose.
       const declined =
-        action === null ||
-        action === undefined ||
-        (action as { type?: string }).type === "noop";
+        submitted.every((entry) => entry.type === "noop") &&
+        (action === null || action === undefined || action.type === "noop");
       if (declined)
         agentLog({
           round: obs.round,
@@ -537,8 +540,8 @@ async function main(): Promise<void> {
   };
 
   // ---- self-driven observation loop: reconstruct the observation from the chain each new block ----
-  const intervalMs = agentModule?.config?.intervalMs;
-  const offsetMs = agentModule?.config?.offsetMs ?? 0;
+  const intervalMs = metadata.config?.intervalMs;
+  const offsetMs = metadata.config?.offsetMs ?? 0;
   let processing = false;
   const onBlock = async (bn: number): Promise<void> => {
     if (processing || bn <= lastBlock) return;
@@ -634,8 +637,8 @@ async function main(): Promise<void> {
 
   // ---- self-improving type: the LLM rewrites the strategy, out of the trade path (ADR 0018) ----
   //
-  // The block loop above already drives activeDecide every block. All this does is periodically hand
-  // the model the current source plus how it has been doing, and swap activeDecide if what comes
+  // The block loop above already drives the worker every block. All this does is periodically hand
+  // the model the current source plus how it has been doing, and select a new worker source if what comes
   // back is better. Every accept, decline, rejection and rollback is logged, because the previous
   // attempt at this (deleted src/llm) shipped a rollback that never once fired and nobody noticed.
   async function runImproveLoop(): Promise<void> {
@@ -657,14 +660,14 @@ async function main(): Promise<void> {
     // Every version that has run, version 0 being the strategy the participant shipped. Kept whole so
     // the model can revert to any of them by number rather than by reproducing source, and so the
     // log can be read back afterwards.
-    type LiveVersion = StrategyVersion & { executor: typeof activeDecide };
+    type LiveVersion = StrategyVersion & { executor: StrategySource };
     const shipped: LiveVersion = {
       version: 0,
       source: readFileSync(agentTsPath, "utf8"),
       notes: "the strategy as submitted",
       installedAtBlock: 0,
       valueAtInstall: null,
-      executor: activeDecide,
+      executor: shippedSource,
     };
     const versions: LiveVersion[] = [shipped];
     // The version the trading loop is actually running. Not `versions[last]`: a resume whose newest
@@ -746,7 +749,7 @@ async function main(): Promise<void> {
           });
           continue;
         }
-        versions.push({ ...v, executor: compiled.executor });
+        versions.push({ ...v, executor: { kind: "executor", source: v.source } });
       }
       // Version numbering continues across the boundary even for versions that did not survive
       // re-validation, so a number in the log means one thing for the life of the agent.
@@ -757,7 +760,7 @@ async function main(): Promise<void> {
       // model would be the harness making a judgment ADR 0018 §5 says it must not make.
       if (newest !== undefined && resumed.version === newest.version) {
         active = resumed;
-        activeDecide = resumed.executor;
+        strategy.setSource(resumed.executor);
       }
       agentLog({
         reason: "revision_resumed",
@@ -935,7 +938,7 @@ async function main(): Promise<void> {
             valueAtInstall: value,
             epochId,
           };
-          activeDecide = target.executor;
+          strategy.setSource(target.executor);
           versions.push(reinstalled);
           active = reinstalled;
           if (parsed.revision.memory !== null) memory = parsed.revision.memory;
@@ -968,16 +971,16 @@ async function main(): Promise<void> {
           return;
         }
         highestVersion += 1;
-        const installed = {
+        const installed: LiveVersion = {
           version: highestVersion,
           source: parsed.revision.executorTs,
           notes: parsed.revision.notes,
           installedAtBlock: block,
           valueAtInstall: value,
           epochId,
-          executor: compiled.executor,
+          executor: { kind: "executor", source: parsed.revision.executorTs },
         };
-        activeDecide = compiled.executor;
+        strategy.setSource(installed.executor);
         versions.push(installed);
         active = installed;
         if (parsed.revision.memory !== null) memory = parsed.revision.memory;

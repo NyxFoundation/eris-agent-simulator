@@ -135,6 +135,11 @@ not have. None of the following exists here.
 - **An edge from arriving first.** Order within a block is by priority fee, highest first (rules §2.6;
   Anvil runs with `--order fees`). A faster line or an earlier call wins nothing — if you want the
   position, bid for it
+- **Enumerating pending orders through RPC.** With `RPC_FILTER=1`, the participant gateway refuses
+  pending transaction lists/filters and block, transaction and receipt reads with the `pending` tag.
+  `eth_getTransactionCount(address, "pending")` remains available for sender nonce management.
+  See the [gateway policy and measurements](../infra/rpc-gateway/README.md). This applies at the
+  gateway; local runs pointed directly at Anvil do not get this filter.
 - **Rewriting the reference price or an oracle.** `PriceFeed`, the Aave aggregators and the GMX oracle
   provider are owner-gated, and at startup every privileged write is simulated by `eth_call` from an
   address with no role to measure that the gate holds (`core/src/realtime/ownerGuards.ts`). Move a
@@ -350,10 +355,21 @@ obs.limits                      // default/max priority fee and default slippage
 are. Everyone sees the same things with the same delay (writes to `PriceFeed` land in the next block,
 so the reference price is always one block behind).
 
-Two qualifications. **The highest priority fee anyone else paid in the most recent block is in the
-observation** (`obs.competition.maxCompetitorPriorityFeeWei`) — that is the history of a mined block,
-not anyone's pending order. And `decide(obs, ctx)` hands you `ctx.publicClient` / `ctx.walletClient`,
-so **querying the node directly is not itself forbidden**. What is allowed is set by rules §8 (prohibited conduct).
+**The highest competitor priority fee in the most recent block is observable**
+(`obs.competition.maxCompetitorPriorityFeeWei`); it is mined history. `ctx.publicClient` permits
+additional read-only chain queries. There is no `ctx.walletClient`: return an action or use
+`ctx.submit({ type: "rawTx", tx })` for transactions. Sending through a separate client on the same
+key races the runtime's nonce and bypasses its `submitted` records. Keep all sends in the runtime.
+Rules §8 define prohibited conduct.
+
+`decide()` runs in a worker thread with a **5-second parent-owned deadline**. Synchronous infinite
+loops and unresolved awaits both produce `decide timeout:`; the result and all queued `ctx.submit`
+actions from that call are discarded. The next decision reloads the selected strategy in a new
+worker. Worker-local variables reset; the parent observation and revision loops, nonce, logs,
+version history and state directory continue. **The no-restart provision in rules §2.3 concerns a
+terminated agent process.** Replacing computation inside a live process neither restarts that agent
+nor automatically rolls its strategy back. Self-driven `run(ctx)` agents retain their own lifecycle
+and do not have a per-decision deadline.
 
 **There is no order-size cap.** No venue has a per-order amount cap, a bundle-length cap or an
 open-position cap, and `obs.limits` carries no size budget (the former `maxWethInWei` /
@@ -369,7 +385,8 @@ into**; the bigger you go, the worse the fill. Size yourself. The shared helper 
 | the runtime (validates before sending) | the action's shape and content (schema; a leg you hold no inventory for), the priority fee (`obs.limits.maxPriorityFeePerGasWei`), **gas** (30,000,000 per transaction, 30,000,000 per agent per block in total) | **rejected** before signing, with a `rejected` entry and its reason in `agents/<id>.jsonl` (for gas: `tx gas cap` / `per-block gas budget`). Nothing reaches the chain |
 | rules §2.3 and §2.6 (the operator imposes it) | **5,000 ms** per decision, **2 vCPU / 4 GB** of memory (§2.3). **No cap on transactions per block** (§2.6: inclusion is decided by the priority-fee auction, and the block gas limit is 30,000,000) | a timeout is no action for that block; a crash is no action for the rest of the epoch (no restart). **None of this is in `obs.limits`** |
 
-The runtime stops the first kind for you. **The second is yours to respect.**
+The runtime enforces send validation and the decision deadline. Design your agent to operate within
+the CPU and memory allocation.
 
 The action catalogue is in [protocols-and-actions.md](guide/protocols-and-actions.md); every field of
 `obs` is in [writing-agents.md](guide/writing-agents.md).
@@ -385,7 +402,7 @@ code and decides whether to rewrite it.
 Generated code passes a **cheatcode static check → compilation** (evaluating the function expression
 is capped at 1 second) before it is installed. **It is not trial-run first.** Once installed, every
 call to `decide` is capped at **5 seconds** (`DECIDE_TIMEOUT_MS`, rules §2.3), the same bound a
-hand-written strategy gets; exceeding it records that round as no action (`decide timeout:`). A revision that fails is not installed; the failure is recorded and the
+hand-written strategy gets; exceeding it records that round as no action (`decide timeout:`). A revision that fails static checking or compilation is not installed; the failure is recorded and the
 strategy keeps trading unchanged. There is no automatic rollback — reverting is the model's decision, made
 with the version history and `revertTo`.
 
