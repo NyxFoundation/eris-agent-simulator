@@ -78,7 +78,13 @@ export type FlowContextWire = {
     wethWei: string;
     usdcUnits: string;
   }>;
-  flowBalances?: Record<string, { wethWei: string; usdcUnits: string }>;
+  // Per flow wallet: what it can sell. `bases` is the wallet's balance of every base symbol (WETH
+  // included); `wethWei` is kept for the wire's older readers. A base absent from `bases` reads as
+  // unheld, so its sell side flips to a buy rather than being submitted against nothing.
+  flowBalances?: Record<
+    string,
+    { wethWei: string; usdcUnits: string; bases?: Record<string, string> }
+  >;
   usdcOnlyFlow?: boolean;
   // ADR 0013 Phase 8: AMM flow per non-WETH base. Unset in a WETH-only run (off by default), in which
   // case buildFlowOrders doesn't enter the extra-base loop and consumes no RNG at all (byte-compatible).
@@ -137,7 +143,21 @@ function minBI(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
 }
 
-type FlowBalance = { wethWei: bigint; usdcUnits: bigint };
+type FlowBalance = {
+  wethWei: bigint;
+  usdcUnits: bigint;
+  bases?: Record<string, bigint>;
+};
+
+// The wallet's balance of the base a sell would spend. Every guard below used to compare
+// `wethWei` whatever the base was, so with base = WBTC a wallet holding WETH and no WBTC passed
+// the check and the WBTC sell went out against a zero balance: ~90 % of the WBTC informed rows
+// reverted in every official epoch, and the WBTC pools sat 110 bps above fair because the flow
+// could only buy (issue #99, #92 F-B). WETH keeps reading `wethWei`, so the WETH path is unchanged.
+function baseHeld(balance: FlowBalance, base: TokenSymbol): bigint {
+  if (base === "WETH") return balance.wethWei;
+  return balance.bases?.[base] ?? 0n;
+}
 
 // Clamp a probability string to [0,1] (unset/non-numeric fall back). Used for the activity gate.
 function clampProb(value: string | undefined, fallback: number): number {
@@ -205,6 +225,13 @@ function flowBalance(
   return {
     wethWei: BigInt(raw.wethWei),
     usdcUnits: BigInt(raw.usdcUnits),
+    ...(raw.bases
+      ? {
+          bases: Object.fromEntries(
+            Object.entries(raw.bases).map(([sym, v]) => [sym, BigInt(v)]),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -355,7 +382,7 @@ export function buildAmmFlow(
       uninformedTokenIn === base &&
       (usdcOnlyFlow ||
         (balances?.uninformed &&
-          balances.uninformed.wethWei < uninformedWethEquiv))
+          baseHeld(balances.uninformed, base) < uninformedWethEquiv))
     ) {
       uninformedTokenIn = "USDC";
     }
@@ -403,7 +430,8 @@ export function buildAmmFlow(
   if (
     informedTokenIn === base &&
     (usdcOnlyFlow ||
-      (balances?.informed && balances.informed.wethWei < informedWethEquiv))
+      (balances?.informed &&
+        baseHeld(balances.informed, base) < informedWethEquiv))
   ) {
     // USDC-only runs start flow wallets with no base token. Buy base first so a later
     // sell-side informed flow can use the same wallet instead of reverting.

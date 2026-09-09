@@ -24,7 +24,7 @@ Committed templates in `config/`: `example.yaml` (the default roster) / `lst.yam
 |---|---|---|
 | `run` | run knobs (SEED, block count, realtime cap, enabled venues, mode, world reset unit) | `protocols: [uniswap, balancer, curve]` |
 | `market` | the fair-price OU parameters (volatility / kappa / drift, and their per-base forms) | `kappa: "0.004"` |
-| `funding` | initial distribution (a USDC-only distribution can eliminate initial directional exposure) | `wethWei: "0"` |
+| `funding` | initial distribution (a USDC-only distribution can eliminate initial directional exposure); `flowBase` is the flow wallets' own inventory of the non-WETH bases, so the background flow can sell them as well as buy them | `wethWei: "0"`, `flowBase: { WBTC: "50000000" }` |
 | `limits` | per-round caps for agents | `agentWethWei: "1000000000000000000"` |
 | `flow` | orderflow bot intensity (how much it moves the market) | `uninformedMaxWethWei: "1000000000000000000"` |
 | `stress` | market stress events (default off) | [stress-events.md](stress-events.md) |

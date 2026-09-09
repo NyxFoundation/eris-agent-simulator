@@ -1,4 +1,5 @@
 import type { AgentAction, AgentObservation } from "@eris/sdk";
+import { sized } from "../lib/affordable.js";
 
 // The normalized flat shape the existing logic assumes (top-level pool / positions).
 // AgentObservation is nested (protocols.uniswap.pool / .positions), so we project it inside decide.
@@ -23,17 +24,23 @@ type Observation = {
   }>;
   limits: {
     defaultPriorityFeePerGasWei: string;
-    maxLpWethWei: string;
-    maxLpUsdcUnits: string;
-    maxOpenPositions: number;
-    // Per-round cap on USDC spent in one swap. Bounds how fast inventory can be acquired.
-    maxUsdcInUnits: string;
   };
 };
 
 const RANGE_WIDTH_MULTIPLIER = 60;
 const EDGE_BUFFER_MULTIPLIER = 8;
+// Sizing is this agent's own decision, stated here. It used to read `obs.limits.maxLpWethWei` /
+// `maxLpUsdcUnits` / `maxUsdcInUnits` / `maxOpenPositions`, which the order-size retirement removed
+// from the observation -- and `BigInt(undefined)` then threw on every decision, so the agent was
+// dead in every epoch without a single transaction to show for it (issue #101, #93 F-D).
+//
+// The fraction of each holding that goes into one position. Half stays out so a rebalance can be
+// re-minted without first having to sell the other leg.
 const MINT_BUDGET_BPS = 3500;
+// How much of the USDC balance may be spent per block buying the WETH leg.
+const ACQUIRE_BUDGET_BPS = 2500;
+// Positions held at once. Everything past the first is a stale range waiting to be collected.
+const MAX_OPEN_POSITIONS = 3;
 const MIN_WETH_MINT_WEI = 10_000_000_000_000_000n;
 const MIN_USDC_MINT_UNITS = 25_000_000n;
 
@@ -46,10 +53,13 @@ export function decide(obs: AgentObservation): AgentAction | null {
     pool: uni.pool,
     positions: uni.positions,
   } as unknown as Observation;
-  return decideAction(observation);
+  return decideAction(observation, obs);
 }
 
-function decideAction(observation: Observation): AgentAction {
+function decideAction(
+  observation: Observation,
+  obs: AgentObservation,
+): AgentAction {
   const priorityFee = observation.limits.defaultPriorityFeePerGasWei;
   const managedPosition = observation.positions.find(
     (position) => BigInt(position.liquidity) > 0n,
@@ -95,23 +105,17 @@ function decideAction(observation: Observation): AgentAction {
     };
   }
 
-  if (observation.positions.length >= observation.limits.maxOpenPositions) {
+  if (observation.positions.length >= MAX_OPEN_POSITIONS) {
     return { type: "noop", reason: "max open LP positions reached" };
   }
 
-  const amountWethDesired = budgetAmount(
-    BigInt(observation.balances.wethWei),
-    BigInt(observation.limits.maxLpWethWei),
-  );
-  const amountUsdcDesired = budgetAmount(
-    BigInt(observation.balances.usdcUnits),
-    BigInt(observation.limits.maxLpUsdcUnits),
-  );
+  const amountWethDesired = sized(obs, "WETH", MINT_BUDGET_BPS);
+  const amountUsdcDesired = sized(obs, "USDC", MINT_BUDGET_BPS);
   if (
     amountWethDesired < MIN_WETH_MINT_WEI ||
     amountUsdcDesired < MIN_USDC_MINT_UNITS
   ) {
-    return acquireInventory(observation, priorityFee);
+    return acquireInventory(observation, obs, priorityFee);
   }
 
   const { tickLower, tickUpper } = chooseRange(observation);
@@ -137,24 +141,25 @@ function decideAction(observation: Observation): AgentAction {
 // straight loss under `mean - lambda*std`.
 function acquireInventory(
   observation: Observation,
+  obs: AgentObservation,
   priorityFee: string,
 ): AgentAction {
   const wethBalance = BigInt(observation.balances.wethWei);
-  const usdcBalance = BigInt(observation.balances.usdcUnits);
-  // Enough WETH for the WETH leg to match a full-size USDC leg. Not more.
+  // Enough WETH for the WETH leg to match the USDC leg a mint would commit. Not more.
   const targetWethWei = weiForUsdc(
     observation,
-    BigInt(observation.limits.maxLpUsdcUnits),
+    sized(obs, "USDC", MINT_BUDGET_BPS),
   );
   if (wethBalance >= targetWethWei) {
     // Holding the inventory and still unable to mint means the USDC side is what is short.
     return { type: "noop", reason: "insufficient LP budget" };
   }
   const shortfallUsdc = usdcForWeth(observation, targetWethWei - wethBalance);
+  // Bounded by this block's acquisition budget, and by half the balance so the USDC leg stays
+  // fundable: spending everything on WETH would just move the shortage to the other side.
   const spend = minBig(
-    minBig(shortfallUsdc, BigInt(observation.limits.maxUsdcInUnits)),
-    // Keep the other leg fundable: spending everything on WETH would just move the shortage.
-    usdcBalance / 2n,
+    minBig(shortfallUsdc, sized(obs, "USDC", ACQUIRE_BUDGET_BPS)),
+    sized(obs, "USDC", 5000),
   );
   if (spend < MIN_USDC_MINT_UNITS) {
     return { type: "noop", reason: "not enough USDC to buy LP inventory" };
@@ -208,11 +213,6 @@ function hasCollectableFees(
     BigInt(position.tokensOwedWethWei) > 0n ||
     BigInt(position.tokensOwedUsdcUnits) > 0n
   );
-}
-
-function budgetAmount(balance: bigint, limit: bigint): bigint {
-  const capped = balance < limit ? balance : limit;
-  return (capped * BigInt(MINT_BUDGET_BPS)) / 10_000n;
 }
 
 function chooseRange(observation: Observation): {
