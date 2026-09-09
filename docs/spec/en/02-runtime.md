@@ -61,17 +61,17 @@ Source: `core/src/realtime/coordinator.ts` (`runRealtimeSimulation`, L390–2761
 
 | # | Step | Note |
 |---|---|---|
-| 1 | Settle `initialFairPrice` | Everything below refers to it |
+| 1 | Settle `initialFairPrice`, and every other base's opening fair into `ctx.fairPrices` | Everything below refers to it: the calibration, the victims, the whale, `initial_endowment`, the PriceFeed. **WBTC and the rest are settled here too** (issue #94; they used to be read for the first time after mining started, so every valuation between here and the first block saw WETH only) |
 | 2 | Calibrate the Aave oracle (local deploy) | A storage write on anvil, a mined admin tx on external. Both land before any agent starts, so neither is front-runnable |
 | 3 | Endow the whale | Size is denominated against the fair price. **Throws if the venue is not enabled** (L904) |
 | 4 | Stage stress victims | Requires `aave` and fresh state (below) |
 | 5 | Read each agent's opening balance, emit `initial_endowment` | Warns when max/min exceeds 2× |
-| 6 | Deploy the PriceFeed → `price_feed_deployed` | The one address a participant cannot look up elsewhere |
+| 6 | Deploy the PriceFeed → write the other bases' opening fair with `setPriceFor` (mined) → `price_feed_deployed` (with `openingFair`) | The one address a participant cannot look up elsewhere. **Every base's fair is on the feed before the first boundary is marked** (issue #94: WBTC's used to land with the first oracle tx, one block after the first boundary, so V_0 was short by the WBTC leg — 24k at the basket — for everyone and noop's `netPnlUsdc` was not 0) |
 | 7 | Deploy FlashArb (`run.flashArb` with aave+uniswap+balancer) | |
 | 8 | Deploy vuln pools (ADR 0014) | Funding happens when each window opens |
 | 9 | Emit `agents_registered` | id / address / baseline / external |
 | 10 | **Write the environment manifest** | Holds no keys → [10](10-operations.md) |
-| 11 | Prewarm (`run.prewarmBlocks > 0`) | A short flow-bot-only loop that warms anvil's working set. It does not consume the price series (separate Rng) |
+| 11 | Prewarm (`run.prewarmBlocks > 0`) | A short flow-bot-only loop that warms anvil's working set. It does not consume the price series (separate Rng). Afterwards every base's fair is re-read and re-written to the PriceFeed (the values written at deploy predate the warmup's trading) |
 | 12 | LST setup | Aligns the economic clock and verifies the rate-oracle wiring (>200bps divergence fails fast) |
 | 13 | Liquity setup | Points the permanent oracle adapter at this run's PriceFeed. Opening in Recovery Mode or on a depegged pool fails fast |
 | 14 | Check for deployer-key collisions | liquidityPull and depeg trade as the deployer account (below) |
@@ -90,6 +90,7 @@ Source: `core/src/realtime/coordinator.ts` (`runRealtimeSimulation`, L390–2761
 
 - An entry that is `external: true`, or has no key, **is not started**. `agent_external_registered` is emitted instead. Without it, "the participants never connected" and "the coordinator failed to launch them" look identical — both are an agent that made no trades.
 - Launched processes get an `onExit` handler. **An agent that dies mid-run silently stops trading**, which in `summary.json` reads exactly like an agent that chose not to. It is recorded as `agent_process_exited` and `processExitedEarly`.
+- **The epoch clock waits for the field** (issue #94; `core/src/realtime/agentsReady.ts`). After automine is switched off and before interval mining starts, the coordinator waits until every agent it launched has written `runtime_start` to its own log (`run.agentsReadyTimeoutSec`, 60 s by default). Measured 2026-09-07 with 32 docker agents: `interval_mining_started` at +24 s, `runtime_start` at +86–99 s, so the first ~45 blocks of a 360-block epoch and a `windowFrac 0.10` window went by with nobody watching. Anvil produces no block while it waits (nothing an agent does before `runtime_start` needs one: the preflight reads, and the approvals were granted at funding); on an external chain the sequencer's blocks simply precede `runStartBlock`. External participants are not waited for — nothing here started them. The outcome is `agents_ready` (`ready[].afterMs` / `late` / `exited` / `timedOut`); when the bound cuts the wait short, the record says which agents did not see the first block.
 
 ### [F] The block loop
 

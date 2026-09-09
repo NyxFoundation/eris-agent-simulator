@@ -89,10 +89,13 @@ import {
 import { FlowProcess, type FlowOrderWire } from "../flowProcess.js";
 import { deployFlashArb, FLASH_ARB_ADDRESS } from "../flashArbDemo.js";
 import { RealtimeAgentProcess } from "./agentProcess.js";
+import { waitForAgentsReady } from "./agentsReady.js";
 import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
 import {
   deployPriceFeed,
+  setPriceFeedOpening,
+  setPriceFeedOpeningFor,
   updatePriceFeedForMempool,
   updatePriceFeedMempool,
   writePriceFeedStorage,
@@ -917,6 +920,22 @@ export async function runRealtimeSimulation(
     // The initial fair price is finalized here (used by the local oracle calibration and victim setup below).
     latestFairPrice = await initialFairPrice(ctx, enabledIds);
 
+    // Every other base's opening fair, settled here with WETH's rather than after mining starts
+    // (issue #94). Until this existed the extra bases were first read after `interval_mining_started`,
+    // so everything between here and the first block that valued a holding through
+    // `ctx.fairPrices ?? {}` saw WETH only: the Aave calibration below (the WBTC aggregator kept the
+    // deployer's seed price until the first oracle tx), the whale's endowment, `initial_endowment`,
+    // and -- the one that reached the score -- the PriceFeed's opening state, which is what the
+    // first epoch boundary marks V_0 against. `openingFair` is the number every one of those reads,
+    // and the OU walk in the block loop starts from it, so the mark and the walk agree.
+    const extraBaseSymbols = baseTokens()
+      .map((t) => t.symbol)
+      .filter((s) => s !== "WETH");
+    const openingFair: Record<string, number> = { WETH: latestFairPrice };
+    for (const b of extraBaseSymbols)
+      openingFair[b] = await initialFairPriceFor(ctx, b, enabledIds);
+    ctx.fairPrices = { ...openingFair };
+
     // [Calibration] Local deploy aligns the Aave oracle to the run's initial fair price. On a fork,
     // "oracle ≈ spot ≈ fair0" holds implicitly, but locally the deployer's seed price and fair0 can diverge (a
     // miscalibration measured where a victim's HF0 breaks at run start and it becomes liquidatable before the
@@ -1078,8 +1097,22 @@ export async function runRealtimeSimulation(
     }
 
     // ---- On-chain distribution path for the fair price (ADR 0006 §3). Kept permanent and written every block ----
+    // The constructor carries WETH's opening fair; the other bases are written right behind it,
+    // before the first boundary is marked (issue #94 -- see setPriceFeedOpeningFor for what V_0
+    // looked like when they were left to the first per-block oracle tx).
     const priceFeedAddress = await deployPriceFeed(ctx, latestFairPrice);
-    logger.event({ type: "price_feed_deployed", address: priceFeedAddress });
+    for (const b of extraBaseSymbols)
+      await setPriceFeedOpeningFor(
+        ctx,
+        priceFeedAddress,
+        tokenInfo(b).address,
+        openingFair[b],
+      );
+    logger.event({
+      type: "price_feed_deployed",
+      address: priceFeedAddress,
+      openingFair,
+    });
 
     // ---- agent-created markets (issue #40): the discovery registry and the lending singleton ----
     // Both are per-*run* contracts, like the PriceFeed: they are deployed here rather than living in
@@ -1302,8 +1335,26 @@ export async function runRealtimeSimulation(
         logger.runDir,
       );
       // Re-read the fair price to match the competition's starting point (reflects pools moved during warmup).
+      // And put the re-read numbers on the PriceFeed: the values written at deploy predate the
+      // warmup's trading, and the first boundary is marked against the feed (issue #94).
       latestFairPrice = await initialFairPrice(ctx, enabledIds);
-      logger.event({ type: "prewarm_completed", blocks: config.prewarmBlocks });
+      openingFair.WETH = latestFairPrice;
+      await setPriceFeedOpening(ctx, priceFeedAddress, latestFairPrice);
+      for (const b of extraBaseSymbols) {
+        openingFair[b] = await initialFairPriceFor(ctx, b, enabledIds);
+        await setPriceFeedOpeningFor(
+          ctx,
+          priceFeedAddress,
+          tokenInfo(b).address,
+          openingFair[b],
+        );
+      }
+      ctx.fairPrices = { ...openingFair };
+      logger.event({
+        type: "prewarm_completed",
+        blocks: config.prewarmBlocks,
+        openingFair,
+      });
     }
 
     // ---- LST venue (issue #38): align the deployed vault with this run's economic clock, and
@@ -1628,6 +1679,8 @@ export async function runRealtimeSimulation(
         );
       };
     }
+    // What `agents_ready` measures boot time from (issue #94).
+    const agentsSpawnedAt = Date.now();
 
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<void> => {
@@ -1784,6 +1837,60 @@ export async function runRealtimeSimulation(
     if (config.localDeploy && !external) {
       await setAutomine(publicClient, false);
     }
+
+    // ---- the epoch clock waits for the field (issue #94; #91 F5) ----
+    // From here to interval mining no block is produced on anvil, and on an external chain the
+    // sequencer's blocks precede runStartBlock -- either way the epoch's first block, its first
+    // boundary (V_0) and its first stress window wait until every agent this coordinator launched
+    // has written `runtime_start`, bounded by run.agentsReadyTimeoutSec. Nothing an agent does
+    // before that line needs a new block: the preflight only reads, and the venue approvals were
+    // granted at funding (an agent that still has to send one mines its own on anvil). External
+    // participants are not waited for: nothing here started them. See agentsReady.ts.
+    {
+      const launched = agentRuntimes.filter((a) => a.process !== null);
+      if (launched.length > 0 && config.agentsReadyTimeoutSec > 0) {
+        console.error(
+          `[agents] waiting for ${launched.length} agent(s) to write runtime_start ` +
+            `before the first block (bound ${config.agentsReadyTimeoutSec} s)`,
+        );
+        const report = await waitForAgentsReady({
+          agents: launched.map((a) => ({
+            id: a.id,
+            isAlive: () =>
+              a.exitedEarly === undefined && (a.process?.isAlive() ?? false),
+          })),
+          runDir: logger.runDir,
+          spawnedAt: agentsSpawnedAt,
+          timeoutMs: config.agentsReadyTimeoutSec * 1000,
+        });
+        logger.event({
+          type: "agents_ready",
+          ...report,
+          launched: launched.length,
+          note: report.timedOut
+            ? "the bound was reached with agents still booting: the epoch starts without them " +
+              "watching, and the blocks they miss are on their own account"
+            : report.exited.length > 0
+              ? "every agent still running wrote runtime_start before the first block; the " +
+                "exited ones are in agent_process_exited"
+              : "every launched agent wrote runtime_start before the first block",
+        });
+        const slowest = report.ready.reduce(
+          (m, r) => Math.max(m, r.afterMs),
+          0,
+        );
+        console.error(
+          `[agents] ${report.ready.length}/${launched.length} ready ` +
+            `(slowest ${(slowest / 1000).toFixed(1)} s after spawn, waited ${(report.waitedMs / 1000).toFixed(1)} s)` +
+            (report.late.length > 0
+              ? `; still booting at the ${config.agentsReadyTimeoutSec} s bound: ${report.late.join(", ")}`
+              : "") +
+            (report.exited.length > 0
+              ? `; exited before runtime_start: ${report.exited.join(", ")}`
+              : ""),
+        );
+      }
+    }
     if (external) {
       // The sequencer has been producing blocks the whole time; there is no phase change to make.
       // What the environment does have to know is the real cadence, because the block loop's
@@ -1826,17 +1933,16 @@ export async function runRealtimeSimulation(
     const fairAnchor = baseFair;
     // ADR 0013: independent OU prices for extra bases (WBTC etc.). Each base advances with its own Rng, so the
     // WETH price path is unchanged (under the fork default, extraBaseSymbols=[] → exactly matches prior = byte-compatible).
-    const extraBaseSymbols = baseTokens()
-      .map((t) => t.symbol)
-      .filter((s) => s !== "WETH");
+    // `extraBaseSymbols` and each base's opening fair were settled at setup, next to WETH's, and
+    // are what the PriceFeed already carries (issue #94): the walk starts from the number V_0 was
+    // marked at, not from a re-read of the pool after the LST / Liquity setup traded on it.
     const extraPriceRng: Record<string, Rng> = {};
     const extraBaseFair: Record<string, number> = {};
     const extraAnchor: Record<string, number> = {};
     for (const b of extraBaseSymbols) {
       extraPriceRng[b] = priceRngForAsset(config.seed, b);
-      const p0 = await initialFairPriceFor(ctx, b, enabledIds);
-      extraBaseFair[b] = p0;
-      extraAnchor[b] = p0;
+      extraBaseFair[b] = openingFair[b];
+      extraAnchor[b] = openingFair[b];
     }
     let processedBlocks = 0;
     let processing = false;

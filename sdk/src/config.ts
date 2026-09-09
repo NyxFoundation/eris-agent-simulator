@@ -197,6 +197,13 @@ export type SimConfig = {
   // carries that forward -- and the competition phase runs at the published block size, which is
   // what makes the priority-fee auction of §2.6 exist. 0 leaves the node's limit alone.
   blockGasLimit: number;
+  // How long the coordinator holds the epoch clock for the field (ERIS_AGENTS_READY_TIMEOUT_SEC /
+  // `run.agentsReadyTimeoutSec`; issue #94). Interval mining starts once every agent the
+  // coordinator launched has written `runtime_start`, or after this many seconds, whichever is
+  // first; who was still booting at the bound is recorded in `agents_ready`. 60 is the decided
+  // bound (2026-09-07). Measured on an 8-core Mac with 32 docker agents the field takes 86-99 s,
+  // so a local check of that size raises it; the production box is faster. 0 disables the wait.
+  agentsReadyTimeoutSec: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -407,6 +414,10 @@ export function loadConfig(env = process.env): SimConfig {
     segmentName: env.ERIS_SEGMENT_NAME ?? "",
     markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
     blockGasLimit: Math.max(0, intEnv(env.ERIS_BLOCK_GAS_LIMIT, 30_000_000)),
+    agentsReadyTimeoutSec: Math.max(
+      0,
+      intEnv(env.ERIS_AGENTS_READY_TIMEOUT_SEC, 60),
+    ),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
     agentTimeoutMs: intEnv(env.AGENT_TIMEOUT_MS, 5000),

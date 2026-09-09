@@ -96,6 +96,8 @@ const SCHEMA: Record<string, string> = {
   "run.markMedianBlocks": "ERIS_MARK_MEDIAN_BLOCKS",
   // Rules §2.6: the block gas limit the coordinator sets once setup is done (0 = leave the node's).
   "run.blockGasLimit": "ERIS_BLOCK_GAS_LIMIT",
+  // Issue #94: seconds the epoch clock waits for every launched agent's `runtime_start` (0 = no wait).
+  "run.agentsReadyTimeoutSec": "ERIS_AGENTS_READY_TIMEOUT_SEC",
   // process | docker: how the coordinator launches each agent (rules §2.3 caps apply only under docker).
   "run.agentSandbox": "ERIS_AGENT_SANDBOX",
   "run.reportDir": "REPORT_DIR",

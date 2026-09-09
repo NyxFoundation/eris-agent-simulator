@@ -704,6 +704,14 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
 
 - **fair price はオンチェーン配布**（`contracts/PriceFeed.sol`。読取は `sdk/src/priceFeed.ts`、書込は
   `core/src/realtime/priceFeed.ts`）。書込 tx は次ブロック着弾なので情報は 1 ブロック遅れる（全員等しく作用。仕様）。
+  **全 base の開始 fair は setup で feed に載せる**（issue #94）。constructor は WETH だけで、WBTC は最初の
+  oracle tx（= 最初の境界の 1 ブロック後）で初めて載っていたので、V_0 が全員 WBTC 分（バスケットで 24k）短く
+  noop の `netPnlUsdc` が 0 にならなかった。`ctx.fairPrices` も同じ場所で確定するので whale endowment /
+  `initial_endowment` / Aave の WBTC aggregator 較正も全 base を見る。OU の walk はその値から始まる
+- **エポックの時計は場が揃うまで待つ**（issue #94 / #91 F5。`core/src/realtime/agentsReady.ts`）。automine を
+  切った後・interval mining の前に、起動した全 agent の `runtime_start` を `run.agentsReadyTimeoutSec`
+  （既定 60 秒、0 = 待たない）まで待ち `agents_ready` に ready/late/exited を残す。実測 docker 32 体で
+  `runtime_start` は +86〜99 秒なので、その検証では上げる。外部参加者は待たない
 - **採点は run 後再構成**（`core/src/realtime/reconstruct.ts`）: blockNumber 指定の Multicall3 で全 agent 同一断面の
   価値系列を events.jsonl に observation 形で書く（`runs/<id>/summary.json` に集計）。
   resetFork で歴史が消えるため**次 run の前に必ず再構成を終える**（anvil の保持深度 ~1,050 ブロックに注意）。
