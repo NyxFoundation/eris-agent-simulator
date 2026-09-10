@@ -207,6 +207,7 @@ in `agents/<id>.jsonl` — the agent log is the primary source.
 | regime | what it holds |
 |---|---|
 | `config/regimes/crash.yaml` | a price gap plus a `liquidityPull` on the same window via `alignWith` |
+| `config/regimes/spike.yaml` | the same trapezoid upward (`spike`), with the pull aligned to it — the tail that rewards holding the basket (issue #105) |
 | `config/regimes/lending-incident.yaml` | the same crash, plus victims, a liquidator slot, and thinned books |
 | `config/regimes/cex-drift.yaml` / `informed-flow.yaml` | the calibration the `cexDrift` / `flowTrend` windows were derived from |
 | `config/regimes/whale.yaml` | single large orders against an unchanged fair |

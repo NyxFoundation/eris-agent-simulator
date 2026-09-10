@@ -707,6 +707,35 @@ test("a cexDrift without repriceAnchor leaves the anchor alone", () => {
   assert.equal(schedule.anchorMultiplierAt(99), 1);
 });
 
+// Issue #105: the spike regime is crash's mirror -- the same trapezoid with the sign flipped and the
+// liquidity pull aligned to it. Read off the committed YAML so a drift in the file is a failing test.
+test("config/regimes/spike.yaml: an upward gap with the pull on the same window", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { parse } = await import("yaml");
+  const doc = parse(readFileSync("config/regimes/spike.yaml", "utf8")) as {
+    run: { blocks: number };
+    stress: { events: unknown[] };
+  };
+  const configs = parseStressEvents(JSON.stringify(doc.stress.events));
+  assert.deepEqual(
+    configs.map((c) => c.type),
+    ["spike", "liquidityPull"],
+  );
+  assert.equal(configs[1].alignWith, "spike");
+  const s = new EventSchedule(configs, 101, doc.run.blocks);
+  const [spike, pull] = s.events;
+  assert.equal(spike.type, "spike");
+  assert.equal(pull.startBlock, spike.startBlock, "the pull opens on the spike's block");
+  const frac = spike.startBlock / doc.run.blocks;
+  assert.ok(frac >= 0.25 && frac <= 0.7, `window frac ${frac} inside [0.25, 0.7]`);
+  assert.ok(spike.magnitude >= 0.15 && spike.magnitude <= 0.22);
+  // Up, not down: at the hold the effective price is base × (1 + m).
+  const hold = spike.startBlock + spike.rampBlocks;
+  assert.ok(Math.abs(s.at(hold).wethMult - (1 + spike.magnitude)) < 1e-9);
+  assert.equal(s.at(spike.startBlock - 1).wethMult, 1);
+  assert.equal(s.at(spike.endBlock).wethMult, 1);
+});
+
 // Issue #106: depeg-persist is depeg.yaml with `persist: true` -- the dislocation ramps, holds, and
 // then never closes: the state target stays at full magnitude from the end of the hold to the last
 // block, and the file has to say decayBlocks: 0 or the parser refuses it.
