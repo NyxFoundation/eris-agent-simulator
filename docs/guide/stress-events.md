@@ -195,10 +195,40 @@ Victim addresses are handed to the liquidator agent via `ERIS_LIQUIDATION_VICTIM
 cross-reference `stress_liquidation` in `events.jsonl` against each agent's `liquidationCall` (rawTx)
 in `agents/<id>.jsonl` — the agent log is the primary source.
 
+## Liquity liquidation victims
+
+`liquityVictimCount` (default 0 = off) is the CDP counterpart of the Aave cohort (issue #107):
+seed-derived accounts (`eris-liquity-victim:<seed>:<i>`) that each open one Trove with
+`liquityVictimCollWethWei` of collateral at `liquityVictimIcr` (default 1.20), through the same
+`liquityOpenTrove` builder an agent uses (hints, WETH unwrap). The debt is sized so the Trove *lands*
+at that ICR once Liquity has added the borrowing fee and the 200 eUSD gas compensation, and the
+coordinator reads it back and refuses a cohort that did not. They hold the eUSD they minted and
+never trade; they are not scored.
+
+- **Needs `liquity` and fresh state**, as the Aave cohort does — a Trove left over from a previous run
+  sits in the sorted list at an ICR nobody configured.
+- **Cannot open the epoch in Recovery Mode**: the coordinator refuses a cohort that pushes the system
+  TCR under CCR.
+- **Calibration**: a Trove at ICR₀ goes under MCR (1.10) at a crash of m > 1 − MCR/ICR₀ — 8.3 % at
+  1.20 — and `stress_calibration_warning` (`crash magnitude may not breach victim ICR`) says when a
+  drawn crash cannot.
+- Records: `stress_liquity_victims_setup` (ICR, debt, collateral, and the system's MCR / CCR / TCR),
+  `stress_liquity_victim_icr` on every block a window is open, `stress_liquity_liquidation` when a
+  victim's Trove is closed by liquidation, `stress_liquity_redemption` when its debt falls (or it is
+  closed) by a redemption. The venue's own `liquity_liquidation` / `liquity_redemption` keep firing.
+- `ERIS_LIQUITY_VICTIMS` carries the addresses to every agent, for symmetry with
+  `ERIS_LIQUIDATION_VICTIMS`; the reference agents find Troves through `riskiestTrove` in the
+  observation and do not need it.
+
+`config/regimes/cdp-incident.yaml` puts the cohort under a crash with the pull and an `eusdDepeg`
+aligned to it: liquidation for the Stability Pool, redemption against the victims for redemption arb,
+and a redemption path a borrower has to stay out of.
+
 ## Events emitted
 
 `stress_schedule` (the resolved schedule, once) / `stress_victims_setup` / `stress_victim_hf` /
-`stress_liquidation` / `stress_calibration_warning` / `stress_run_time_limit_disabled` /
+`stress_liquidation` / `stress_liquity_victims_setup` / `stress_liquity_victim_icr` /
+`stress_liquity_liquidation` / `stress_liquity_redemption` / `stress_calibration_warning` / `stress_run_time_limit_disabled` /
 `stress_whale*` / `stress_liquidity_pull*` / `stress_liquidity_teardown*` / `stress_eusd_depeg*` /
 `stress_depeg*` / `lst_slash*`. See [Run Output and Analysis](run-output.md) for reading them.
 
@@ -208,6 +238,7 @@ in `agents/<id>.jsonl` — the agent log is the primary source.
 |---|---|
 | `config/regimes/crash.yaml` | a price gap plus a `liquidityPull` on the same window via `alignWith` |
 | `config/regimes/lending-incident.yaml` | the same crash, plus victims, a liquidator slot, and thinned books |
+| `config/regimes/cdp-incident.yaml` | the CDP side of the same incident: Liquity victim Troves at ICR 1.20, the crash, and an `eusdDepeg` on the same window (issue #107) |
 | `config/regimes/cex-drift.yaml` / `informed-flow.yaml` | the calibration the `cexDrift` / `flowTrend` windows were derived from |
 | `config/regimes/whale.yaml` | single large orders against an unchanged fair |
 | `config/regimes/depeg.yaml` | a registry stable off par (issue #27) |

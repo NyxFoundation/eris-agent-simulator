@@ -93,6 +93,14 @@ export type SimConfig = {
   stressVictimCount: number; // ERIS_STRESS_VICTIM_COUNT
   stressVictimHf0: number; // ERIS_STRESS_VICTIM_HF0 (target initial HF. default 1.10. must exceed LT/(0.97·LTV)≈1.08)
   stressVictimSupplyWethWei: bigint; // ERIS_STRESS_VICTIM_WETH_WEI (supply per victim. default 5)
+  // Issue #107: the CDP counterpart -- seed-derived Liquity Troves opened near MCR so a crash
+  // liquidates them (Stability Pool work) and a depeg redeems against them (redemption work).
+  // Count (ERIS_STRESS_LIQUITY_VICTIM_COUNT, default 0 = off), the ICR each Trove is opened at
+  // (ERIS_STRESS_LIQUITY_VICTIM_ICR, default 1.20: MCR is 1.10, so a 12-16 % crash breaks it) and
+  // the collateral per Trove (ERIS_STRESS_LIQUITY_VICTIM_COLL_WETH_WEI, default 5 WETH). Not scored.
+  stressLiquityVictimCount: number;
+  stressLiquityVictimIcr: number;
+  stressLiquityVictimCollWethWei: bigint;
   // Approximate one-sided liquidity to seed each vuln pool with (in USDC-denominated units). The deeper it is,
   // the less an agent's trade moves the price, so the bait becomes realized profit. ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS (default 2,000,000 USDC).
   vulnPoolLiquidityUsdcUnits: bigint;
@@ -376,6 +384,12 @@ export function loadConfig(env = process.env): SimConfig {
     stressVictimHf0: floatEnv(env.ERIS_STRESS_VICTIM_HF0, 1.1),
     stressVictimSupplyWethWei: bigintEnv(
       env.ERIS_STRESS_VICTIM_WETH_WEI,
+      5_000_000_000_000_000_000n,
+    ),
+    stressLiquityVictimCount: Math.max(0, intEnv(env.ERIS_STRESS_LIQUITY_VICTIM_COUNT, 0)),
+    stressLiquityVictimIcr: floatEnv(env.ERIS_STRESS_LIQUITY_VICTIM_ICR, 1.2),
+    stressLiquityVictimCollWethWei: bigintEnv(
+      env.ERIS_STRESS_LIQUITY_VICTIM_COLL_WETH_WEI,
       5_000_000_000_000_000_000n,
     ),
     vulnPoolLiquidityUsdcUnits: bigintEnv(

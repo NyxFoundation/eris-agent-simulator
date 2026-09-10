@@ -205,7 +205,8 @@ soft-reset だと前 run の victim ポジションが残留して HF が壊れ�
 | イベント | 意味 |
 |---|---|
 | `stress_schedule` | 解決済みスケジュール全体 + `runStartBlock`（絶対ブロックで窓を判定できる） |
-| `stress_calibration_warning` | crash の magnitude が victim HF を割れない可能性 |
+| `stress_calibration_warning` | crash の magnitude が victim HF（Aave）/ ICR（Liquity）を割れない可能性 |
+| `stress_liquity_victims_setup` / `stress_liquity_victim_icr` / `stress_liquity_liquidation` / `stress_liquity_redemption` | Liquity victim（issue #107）: 建てた Trove、窓内の毎ブロック ICR、清算で閉じた・償還で債務が減った |
 | `stress_victims_setup` / `stress_victim_hf` | victim の初期 HF / 窓の間の HF 推移 |
 | `stress_liquidation` | victim の債務減少を清算として検出 |
 | `stress_whale_funded` / `stress_whale` / `stress_whale_failed` / `stress_whale_reverted` | whale の資金配布・発火・失敗・**オンチェーン revert** |
@@ -232,6 +233,7 @@ soft-reset だと前 run の victim ポジションが残留して HF が壊れ�
 | `crash` | 価格ギャップ + 同じ窓での引き抜き（3 venue が同時に薄くなる） |
 | `depeg` | レジストリの stable が $1 でなくなる |
 | `vuln` | run 途中でプールが湧き、過半が rigged（ADR 0014） |
+| `cdp-incident` | Liquity victim（ICR 1.20 の Trove）+ 暴落 + 同じ窓の eUSD デペグと引き抜き。清算・償還・借り手防御の 3 skill（issue #107） |
 
 `cex-drift` と `informed-flow` は **run 全体設定ではなく窓イベント**（`cexDrift` / `flowTrend`）で表現する。実測（seed 101 / 360 ブロック / プール乖離の平均 bps）:
 
@@ -242,6 +244,6 @@ soft-reset だと前 run の victim ポジションが残留して HF が壊れ�
 
 **`cex-drift` の run 全体版は自身の宣言長で壊れていた** — 60 ブロックでは 55bps に見えるので長らく発覚しなかった。窓化は非公開スケジュール化であると同時に、この暴走を台形で有界にする修正でもある。
 
-**8 本とも全 venue（`lst` / `liquity` 含む）をデプロイする。** 以前は 5 venue 版と `full-*` の 7 venue 版が並立していたが、5 venue 版は「競技とは何か」への 2 つ目の答えを残さないために撤去した。`config/regimes/{lst,liquity,liquity-crash}.yaml` は**venue 単体の検証用**として競技セットの外に残る（レジームであって venue の有無ではない）。
+**9 本とも全 venue（`lst` / `liquity` 含む）をデプロイする。** 以前は 5 venue 版と `full-*` の 7 venue 版が並立していたが、5 venue 版は「競技とは何か」への 2 つ目の答えを残さないために撤去した。`config/regimes/{lst,liquity,liquity-crash}.yaml` は**venue 単体の検証用**として競技セットの外に残る（レジームであって venue の有無ではない）。
 
 **単一種のイベントで埋めた週は特定の戦略にしか仕事を作らない。** 実測で、depeg だけの週では venue-arb が 5 seed 中 3 本で無取引だった（[`docs/scoring-metric-measurements.md`](../scoring-metric-measurements.md)）。`cexDrift` / `flowTrend` が窓イベント化されているのはこのためで、連続経済では「run 全体がドリフトしている週」を注入できない（週は 1 本で、その中に複数のエピソードが非公開スケジュールで入る）。

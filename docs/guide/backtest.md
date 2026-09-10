@@ -38,7 +38,7 @@ flowchart LR
 
 A regime is **a YAML in the existing config schema** (same format as [Configuration](configuration.md)) describing a family of market conditions: the fair-price OU parameters, flow intensity, and the stress event ranges. It carries no seed. Given one, the fair-price path, flow orders, and stress event schedule all replay deterministically.
 
-The **seven official regimes** are the competition set (ADR 0017 §1, completed by issue #27):
+The **nine official regimes** are the competition set (ADR 0017 §1, completed by issue #27; `vuln` by ADR 0014, `cdp-incident` by issue #107):
 
 | regime | market condition |
 |---|---|
@@ -49,6 +49,8 @@ The **seven official regimes** are the competition set (ADR 0017 §1, completed 
 | `lending-incident` | collateral crash + victims + liquidations + books thinned on the same window |
 | `crash` | a price gap plus a `liquidityPull` on the same window, so uniswap, balancer and curve all thin exactly while the price moves ([#52](https://github.com/NyxFoundation/eris-agent-simulator/issues/52)). At a 50% pull the cost of taking 10 WETH roughly doubles (uniswap/balancer) to quadruples (curve), while the price a small trade sees is unchanged |
 | `depeg` | a registry stable stops being a dollar ([#27](https://github.com/NyxFoundation/eris-agent-simulator/issues/27)) |
+| `vuln` | pools appear mid-run, most of them rigged (ADR 0014) |
+| `cdp-incident` | Liquity victim Troves at ICR 1.20, a 12–16% crash with the pull, and an eUSD depeg on the same window ([#107](https://github.com/NyxFoundation/eris-agent-simulator/issues/107)) |
 
 Also in `config/regimes/`, outside the competition set: `lst` and `liquity` / `liquity-crash` (single
 venues, for verifying them on their own), and the `b-harness` / `metric-*` / `ruin-test` /
@@ -64,7 +66,7 @@ For what each regime's events actually do, see [Market Stress Events](stress-eve
 
 ```yaml
 # config/scenarios/public.yaml — the cartesian product of the two lists
-regimes: [calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg]
+regimes: [calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg, vuln, cdp-incident]
 seeds: [101, 202, 303, 404, 505]
 ```
 
