@@ -706,3 +706,45 @@ test("a cexDrift without repriceAnchor leaves the anchor alone", () => {
   assert.equal(schedule.anchorMultiplierAt(50), 1);
   assert.equal(schedule.anchorMultiplierAt(99), 1);
 });
+
+// Issue #106: depeg-persist is depeg.yaml with `persist: true` -- the dislocation ramps, holds, and
+// then never closes: the state target stays at full magnitude from the end of the hold to the last
+// block, and the file has to say decayBlocks: 0 or the parser refuses it.
+test("config/regimes/depeg-persist.yaml: the DAI discount holds to the end of the run", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { parse } = await import("yaml");
+  const doc = parse(readFileSync("config/regimes/depeg-persist.yaml", "utf8")) as {
+    run: { blocks: number };
+    stress: { events: unknown[] };
+  };
+  const configs = parseStressEvents(JSON.stringify(doc.stress.events));
+  assert.equal(configs.length, 1);
+  assert.equal(configs[0].type, "depeg");
+  assert.equal(configs[0].stable, "DAI");
+  assert.equal(configs[0].persist, true);
+  assert.equal(configs[0].decayBlocks, 0);
+  const s = new EventSchedule(configs, 101, doc.run.blocks);
+  const ev = s.events[0];
+  const frac = ev.startBlock / doc.run.blocks;
+  assert.ok(frac >= 0.25 && frac <= 0.6, `window frac ${frac} inside [0.25, 0.6]`);
+  assert.equal(ev.endBlock, ev.startBlock + ev.rampBlocks + ev.holdBlocks);
+  // The sold fraction: 0 before, ramping, the full magnitude through the hold, and -- the point --
+  // still the full magnitude at endBlock and on the run's last block.
+  const m = ev.magnitude;
+  assert.equal(s.depegFractionAt("DAI", ev.startBlock - 1), 0);
+  assert.ok(Math.abs(s.depegFractionAt("DAI", ev.startBlock + ev.rampBlocks) - m) < 1e-12);
+  assert.ok(Math.abs(s.depegFractionAt("DAI", ev.endBlock) - m) < 1e-12);
+  assert.ok(Math.abs(s.depegFractionAt("DAI", doc.run.blocks - 1) - m) < 1e-12);
+  // depeg.yaml's own shape, for contrast: its fraction is back to 0 once the window has closed.
+  const closing = new EventSchedule(
+    parseStressEvents(JSON.stringify((parse(readFileSync("config/regimes/depeg.yaml", "utf8")) as { stress: { events: unknown[] } }).stress.events)),
+    101,
+    doc.run.blocks,
+  );
+  assert.equal(closing.depegFractionAt("DAI", closing.events[0].endBlock), 0);
+  // And the same ranges with a decay are what depeg.yaml declares: only the closing differs.
+  const base = parse(readFileSync("config/regimes/depeg.yaml", "utf8")) as { stress: { events: Array<Record<string, unknown>> } };
+  const b = base.stress.events[0];
+  for (const k of ["magnitudeRange", "windowFrac", "rampBlocks", "holdBlocks"] as const)
+    assert.deepEqual((doc.stress.events[0] as Record<string, unknown>)[k], b[k], k);
+});

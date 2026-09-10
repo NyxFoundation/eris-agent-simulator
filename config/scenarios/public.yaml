@@ -69,5 +69,6 @@ regimes:
   - crash
   - depeg
   - vuln
+  - depeg-persist
 
 seeds: [101, 202, 303, 404, 505]
