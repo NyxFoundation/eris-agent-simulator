@@ -207,6 +207,7 @@ soft-reset だと前 run の victim ポジションが残留して HF が壊れ�
 | `stress_schedule` | 解決済みスケジュール全体 + `runStartBlock`（絶対ブロックで窓を判定できる） |
 | `stress_calibration_warning` | crash の magnitude が victim HF（Aave）/ ICR（Liquity）を割れない可能性 |
 | `stress_liquity_victims_setup` / `stress_liquity_victim_icr` / `stress_liquity_liquidation` / `stress_liquity_redemption` | Liquity victim（issue #107）: 建てた Trove、窓内の毎ブロック ICR、清算で閉じた・償還で債務が減った |
+| `liquity_bootstrap_warped` / `liquity_bootstrap_active` | state dump を新しい anvil に load すると時計が実時間に戻り Liquity の 14 日 bootstrap 期間内に逆戻りする（償還が全部 revert）。setup で warp した / external で warp できない（issue #107 で発見） |
 | `stress_victims_setup` / `stress_victim_hf` | victim の初期 HF / 窓の間の HF 推移 |
 | `stress_liquidation` | victim の債務減少を清算として検出 |
 | `stress_whale_funded` / `stress_whale` / `stress_whale_failed` / `stress_whale_reverted` | whale の資金配布・発火・失敗・**オンチェーン revert** |
