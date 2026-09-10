@@ -94,8 +94,12 @@ import {
   liquityBreachMagnitude,
   LIQUITY_VICTIM_ENV,
   openLiquityVictimTroves,
+  readLiquitySystem,
   readLiquityVictimTroves,
+  recoveryCohortCollateralWei,
+  seedStabilityPool,
   setupLiquityVictims,
+  tcrAtCrashBottom,
   type LiquityVictim,
   type LiquityVictimTrove,
 } from "../liquityVictims.js";
@@ -1397,6 +1401,15 @@ export async function runRealtimeSimulation(
     );
     let minLiquityVictimIcr0: number | null = null;
     let liquityVictimMcr: number | null = null;
+    // Issue #59: when the regime declares the TCR it wants at the crash bottom, the cohort's
+    // collateral is sized from the drawn crash rather than taken from config, and the record
+    // says what that sizing expects.
+    let liquityRecovery: {
+      targetTcr: number;
+      crashMagnitude: number;
+      collWei: bigint;
+      expectedTcrAtBottom: number;
+    } | null = null;
     if (liquityVictims.length > 0) {
       if (!liquityRuntime)
         throw new Error(
@@ -1410,16 +1423,58 @@ export async function runRealtimeSimulation(
             "and do not set ERIS_SKIP_RESET -- a Trove left over from a previous run sits in the sorted " +
             "list at an ICR nobody configured (issue #107; ADR 0009 §4 / ADR 0016 §2)",
         );
-      await setupLiquityVictims(
-        ctx,
-        liquityVictims,
-        config.stressLiquityVictimCollWethWei,
-      );
+      let victimCollWei = config.stressLiquityVictimCollWethWei;
+      if (config.stressLiquityRecoveryTcr > 0) {
+        const crash = schedule.events.find((e) => e.type === "crash");
+        if (!crash)
+          throw new Error(
+            "stress.liquityRecoveryTcr needs a crash event: the cohort is sized from its drawn magnitude (issue #59)",
+          );
+        const system = await readLiquitySystem(ctx);
+        const priceWad =
+          BigInt(Math.round(latestFairPrice * 1e6)) * (10n ** 18n / 1_000_000n);
+        const sized = recoveryCohortCollateralWei({
+          systemCollWei: system.collWei,
+          systemDebtWei: system.debtWei,
+          priceWad,
+          crashMagnitude: crash.magnitude,
+          icr0: config.stressLiquityVictimIcr,
+          count: liquityVictims.length,
+          targetTcr: config.stressLiquityRecoveryTcr,
+        });
+        if (sized === null)
+          throw new Error(
+            `no cohort of ${liquityVictims.length} Troves at ICR ${config.stressLiquityVictimIcr} reaches ` +
+              `TCR ${config.stressLiquityRecoveryTcr} on a ${(crash.magnitude * 100).toFixed(1)} % crash: the ` +
+              "cohort's own post-crash ICR has to be above the target and the system above it before the " +
+              "cohort (issue #59). Lower the target, raise the ICR, or widen the crash",
+          );
+        victimCollWei = sized;
+        const debtEach = (sized * priceWad) / (BigInt(Math.round(config.stressLiquityVictimIcr * 1e6)) * (10n ** 18n / 1_000_000n));
+        liquityRecovery = {
+          targetTcr: config.stressLiquityRecoveryTcr,
+          crashMagnitude: crash.magnitude,
+          collWei: sized,
+          expectedTcrAtBottom: tcrAtCrashBottom({
+            systemCollWei: system.collWei + BigInt(liquityVictims.length) * sized,
+            systemDebtWei: system.debtWei + BigInt(liquityVictims.length) * debtEach,
+            priceWad,
+            crashMagnitude: crash.magnitude,
+          }),
+        };
+      }
+      await setupLiquityVictims(ctx, liquityVictims, victimCollWei);
       const cohort = await openLiquityVictimTroves(ctx, liquityVictims, {
         icr0: config.stressLiquityVictimIcr,
-        collWei: config.stressLiquityVictimCollWethWei,
+        collWei: victimCollWei,
         priceUsd: latestFairPrice,
       });
+      if (config.stressLiquitySpSeedEusdWei > 0n)
+        await seedStabilityPool(
+          ctx,
+          DEFAULT_ANVIL_PRIVATE_KEYS[0],
+          config.stressLiquitySpSeedEusdWei,
+        );
       liquityVictimMcr = cohort.mcr;
       for (const t of cohort.troves)
         if (
@@ -1433,6 +1488,17 @@ export async function runRealtimeSimulation(
         mcr: cohort.mcr,
         ccr: cohort.ccr,
         tcr: cohort.tcr,
+        collWeiPerVictim: victimCollWei.toString(),
+        spSeedEusdWei: config.stressLiquitySpSeedEusdWei.toString(),
+        ...(liquityRecovery
+          ? {
+              recovery: {
+                targetTcr: liquityRecovery.targetTcr,
+                crashMagnitude: liquityRecovery.crashMagnitude,
+                expectedTcrAtBottom: liquityRecovery.expectedTcrAtBottom,
+              },
+            }
+          : {}),
         victims: cohort.troves.map((t) => ({
           id: t.id,
           address: t.address,
@@ -2324,7 +2390,18 @@ export async function runRealtimeSimulation(
       }
       // The same check for the Liquity cohort (issue #107): a Trove at ICR₀ goes under MCR at
       // m > 1 − MCR/ICR₀.
-      if (minLiquityVictimIcr0 !== null && liquityVictimMcr !== null) {
+      if (liquityRecovery !== null) {
+        // The cohort was sized so the drawn crash lands the system on the target; the warning here
+        // is for a target that is not Recovery Mode at all (issue #59).
+        if (liquityRecovery.expectedTcrAtBottom >= 1.5)
+          logger.event({
+            type: "stress_calibration_warning",
+            reason: "crash magnitude may not reach Recovery Mode",
+            targetTcr: liquityRecovery.targetTcr,
+            expectedTcrAtBottom: liquityRecovery.expectedTcrAtBottom,
+            crashMagnitude: liquityRecovery.crashMagnitude,
+          });
+      } else if (minLiquityVictimIcr0 !== null && liquityVictimMcr !== null) {
         const breachThreshold = liquityBreachMagnitude(
           minLiquityVictimIcr0,
           liquityVictimMcr,

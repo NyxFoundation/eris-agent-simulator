@@ -160,6 +160,9 @@ const SCHEMA: Record<string, string> = {
   "stress.liquityVictimCount": "ERIS_STRESS_LIQUITY_VICTIM_COUNT",
   "stress.liquityVictimIcr": "ERIS_STRESS_LIQUITY_VICTIM_ICR",
   "stress.liquityVictimCollWethWei": "ERIS_STRESS_LIQUITY_VICTIM_COLL_WETH_WEI",
+  // Issue #59: the TCR the cohort has to reach at the crash bottom, and an environment SP seed.
+  "stress.liquityRecoveryTcr": "ERIS_STRESS_LIQUITY_RECOVERY_TCR",
+  "stress.liquitySpSeedEusdWei": "ERIS_STRESS_LIQUITY_SP_SEED_EUSD_WEI",
   // lst (issue #38: liquid staking venue)
   "lst.simulatedSecondsPerBlock": "ERIS_LST_SIMULATED_SECONDS_PER_BLOCK",
   "lst.apyBps": "ERIS_LST_APY_BPS",

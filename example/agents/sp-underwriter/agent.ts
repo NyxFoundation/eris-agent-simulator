@@ -93,8 +93,18 @@ export function decideUnderwriting(input: {
   // 1. Somebody is under water. Nothing in the pool pays out until this call is made, and whoever
   //    makes it also takes the gas compensation.
   const riskiest = l.riskiestTrove;
-  if (riskiest && riskiest.icr < l.mcr - LIQUIDATION_MARGIN) {
-    return { kind: "liquidate", borrower: riskiest.owner, icr: riskiest.icr };
+  if (riskiest) {
+    // Normal mode: under MCR. Recovery Mode (issue #59): every Trove under the system TCR is
+    // liquidatable too, but Liquity executes that band only when the pool can absorb the Trove's
+    // whole debt (gas compensation included) -- otherwise the call reverts and pays gas for it.
+    const underMcr = riskiest.icr < l.mcr - LIQUIDATION_MARGIN;
+    const entireDebt = BigInt(riskiest.netDebtEusdWei) + 200n * 10n ** 18n;
+    const underTcrInRecovery =
+      l.recoveryMode &&
+      riskiest.icr < l.tcr - LIQUIDATION_MARGIN &&
+      entireDebt <= BigInt(l.spTotalDepositsEusdWei);
+    if (underMcr || underTcrInRecovery)
+      return { kind: "liquidate", borrower: riskiest.owner, icr: riskiest.icr };
   }
 
   // 2. Convert what the last liquidation paid back into the unit this is scored in.
