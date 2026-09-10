@@ -1,0 +1,13 @@
+# The pre-9/23 check's "hidden" set (#91 / #94): the eight official regimes at seed 101, the
+# seed whose windows CLAUDE.md already records. Not secret -- it is the fixture, committed so the
+# check can be re-run on the same plan.
+salt: check-2026-09
+regimes:
+  calm: [101]
+  cex-drift: [101]
+  informed-flow: [101]
+  whale: [101]
+  lending-incident: [101]
+  crash: [101]
+  depeg: [101]
+  vuln: [101]
