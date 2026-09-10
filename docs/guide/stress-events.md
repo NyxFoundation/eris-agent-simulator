@@ -159,7 +159,7 @@ ramp" is not a weaker version of the regime, it is a different regime. Calibrate
 | key | applies to | what it does |
 |---|---|---|
 | `alignWith: <type>` | any | Start where the first event of that type starts. Required because *same range is not same window*: two events sampling `[0.25, 0.7]` of a 360-block run land ~160 blocks apart on average. Chained alignment and self-alignment are rejected |
-| `persist: true` | `depeg` `eusdDepeg` | The dislocation holds to the end of the run. **Requires `decayBlocks: 0`** — a decay that never runs would read as a window that closes. The teardown still buys back *after* the last scored block, because the startup check refuses to begin on a depegged pool |
+| `persist: true` | `depeg` `eusdDepeg` | The dislocation holds to the end of the run. **Requires `decayBlocks: 0`** — a decay that never runs would read as a window that closes. The teardown still buys back *after* the last scored block, because the startup check refuses to begin on a depegged pool. `config/regimes/depeg-persist.yaml` is the official regime built on it: without one, every dislocation in the set heals and "buy the discount and hold" is right by construction (issue #106) |
 | `repriceAnchor: true` | `cexDrift` | The OU anchor moves with the drift (above) |
 | `venue` | `whale` `liquidityPull` | `uniswap` / `balancer` / `curve` |
 | `stable` | `depeg` | Which registry stable is pushed off par (required) |
@@ -237,10 +237,12 @@ and a redemption path a borrower has to stay out of.
 | regime | what it holds |
 |---|---|
 | `config/regimes/crash.yaml` | a price gap plus a `liquidityPull` on the same window via `alignWith` |
+| `config/regimes/spike.yaml` | the same trapezoid upward (`spike`), with the pull aligned to it — the tail that rewards holding the basket (issue #105) |
 | `config/regimes/lending-incident.yaml` | the same crash, plus victims, a liquidator slot, and thinned books |
 | `config/regimes/cdp-incident.yaml` | the CDP side of the same incident: Liquity victim Troves at ICR 1.20, the crash, and an `eusdDepeg` on the same window (issue #107) |
 | `config/regimes/cex-drift.yaml` / `informed-flow.yaml` | the calibration the `cexDrift` / `flowTrend` windows were derived from |
 | `config/regimes/whale.yaml` | single large orders against an unchanged fair |
 | `config/regimes/depeg.yaml` | a registry stable off par (issue #27) |
+| `config/regimes/depeg-persist.yaml` | the same depeg that never closes (`persist: true`), so the final mark is taken at the discount (issue #106) |
 | `config/example.yaml` | an `eusdDepeg` window, on by default — the CDP venue is correctly inert at par, so without it redemption arb has nothing to do |
 | `config/lst.yaml` | `lstSlash` alongside the LST calibration knobs |
