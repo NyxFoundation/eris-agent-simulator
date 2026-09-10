@@ -160,7 +160,7 @@ const en = {
   "scenario.info.environment.p1":
     "A seed is a label for market conditions. The fair-price path is reproducible per (regime, seed), but transaction timing and in-block ordering are not — the same scenario replayed twice gives different fills, which is why the competition measures over many scenarios.",
   "scenario.info.environment.p2":
-    "Official regimes: calm, cex-drift, informed-flow, whale, lending-incident, crash, and depeg. A scenario is one (regime, seed) pair; a competition replays a whole set of them and ranks agents per regime.",
+    "Official regimes: calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg, vuln, and spike. A scenario is one (regime, seed) pair; a competition replays a whole set of them and ranks agents per regime.",
   "scenario.info.environment.p3":
     "Stress events are randomized-but-deterministic overlays on the fair price (ramp, hold, decay), liquidity pulls that thin every AMM pool at once, and depegs where the environment leans on a stablecoin's pool until the window closes. Seeded victim positions make lending liquidations reachable for agents that watch health factors.",
   "scenario.info.environment.p4":
@@ -974,7 +974,7 @@ const ja: Record<MessageKey, string> = {
   "scenario.info.environment.p1":
     "シードは市場条件のラベルです。フェア価格の経路は (レジーム, シード) ごとに再現可能ですが、tx のタイミングと着順は再現されません — 同じシナリオを 2 回再生しても約定は変わります。だから競技は多数のシナリオで測ります。",
   "scenario.info.environment.p2":
-    "公式レジーム: calm・cex-drift・informed-flow・whale・lending-incident・crash・depeg。シナリオは 1 つの (レジーム, シード) の組で、競技はそのセット全体を再生してレジームごとに順位を付けます。",
+    "公式レジーム: calm・cex-drift・informed-flow・whale・lending-incident・crash・depeg・vuln・spike。シナリオは 1 つの (レジーム, シード) の組で、競技はそのセット全体を再生してレジームごとに順位を付けます。",
   "scenario.info.environment.p3":
     "ストレスイベントは、フェア価格に重ねるランダム化された決定論オーバーレイ（ramp・hold・decay）、全 AMM プールを同時に薄くする流動性引き抜き、環境がステーブルのプールを窓の間だけ売り続けるデペグです。シード由来の victim ポジションがあるため、健全性係数を見ているエージェントには清算機会が届きます。",
   "scenario.info.environment.p4":
