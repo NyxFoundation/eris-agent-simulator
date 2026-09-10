@@ -1,0 +1,37 @@
+schema: 1
+k: 8
+hiddenSetCommitment: sha256:925c4425e8fffc1601db00f7bfb1482c91f5a7b92ba93547b38ee6a9b42dd15f
+lotterySeedCommitment: sha256:9288752fab601561d4ab54661f4fab5511c2597ac43099d61eafecad998c60c2
+epochs:
+  - s: 1
+    regime: cex-drift
+    seed: 101
+    startsAt: 2026-09-08T11:02:46.000Z
+  - s: 2
+    regime: crash
+    seed: 101
+    startsAt: 2026-09-08T11:22:46.000Z
+  - s: 3
+    regime: lending-incident
+    seed: 101
+    startsAt: 2026-09-08T11:42:46.000Z
+  - s: 4
+    regime: vuln
+    seed: 101
+    startsAt: 2026-09-08T12:02:46.000Z
+  - s: 5
+    regime: whale
+    seed: 101
+    startsAt: 2026-09-08T12:22:46.000Z
+  - s: 6
+    regime: informed-flow
+    seed: 101
+    startsAt: 2026-09-08T12:42:46.000Z
+  - s: 7
+    regime: depeg
+    seed: 101
+    startsAt: 2026-09-08T13:02:46.000Z
+  - s: 8
+    regime: calm
+    seed: 101
+    startsAt: 2026-09-08T13:22:46.000Z
