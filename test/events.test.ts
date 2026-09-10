@@ -777,3 +777,32 @@ test("config/regimes/depeg-persist.yaml: the DAI discount holds to the end of th
   for (const k of ["magnitudeRange", "windowFrac", "rampBlocks", "holdBlocks"] as const)
     assert.deepEqual((doc.stress.events[0] as Record<string, unknown>)[k], b[k], k);
 });
+
+// Issue #107: cdp-incident puts the crash, the pull and the eUSD depeg on one window, over Liquity
+// victims opened at ICR 1.20. Read off the committed YAML.
+test("config/regimes/cdp-incident.yaml: crash, pull and eUSD depeg on one window over Liquity victims", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { parse } = await import("yaml");
+  const doc = parse(readFileSync("config/regimes/cdp-incident.yaml", "utf8")) as {
+    run: { blocks: number; protocols: string[] };
+    stress: { events: unknown[]; liquityVictimCount: number; liquityVictimIcr: number; victimCount?: number };
+  };
+  assert.ok(doc.run.protocols.includes("liquity"));
+  assert.equal(doc.stress.liquityVictimCount, 2);
+  assert.equal(doc.stress.liquityVictimIcr, 1.2);
+  assert.equal(doc.stress.victimCount, undefined, "no Aave cohort: that is lending-incident's axis");
+  const configs = parseStressEvents(JSON.stringify(doc.stress.events));
+  assert.deepEqual(configs.map((c) => c.type), ["crash", "liquidityPull", "eusdDepeg"]);
+  assert.equal(configs[1].alignWith, "crash");
+  assert.equal(configs[2].alignWith, "crash");
+  // Every drawn crash breaches a 1.20 Trove: the magnitude floor is above 1 − 1.10/1.20.
+  assert.ok(configs[0].magnitudeRange[0] > 1 - 1.1 / 1.2);
+  const s = new EventSchedule(configs, 101, doc.run.blocks);
+  const [crash, pull, depeg] = s.events;
+  assert.equal(pull.startBlock, crash.startBlock);
+  assert.equal(depeg.startBlock, crash.startBlock);
+  const frac = crash.startBlock / doc.run.blocks;
+  assert.ok(frac >= 0.3 && frac <= 0.7, `window frac ${frac}`);
+  assert.ok(s.hasEusdDepeg());
+  assert.ok(s.eusdDepegFractionAt(depeg.startBlock + depeg.rampBlocks) > 0);
+});

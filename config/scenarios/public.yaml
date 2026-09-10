@@ -71,5 +71,6 @@ regimes:
   - vuln
   - spike
   - depeg-persist
+  - cdp-incident
 
 seeds: [101, 202, 303, 404, 505]

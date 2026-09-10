@@ -206,6 +206,7 @@ The coordinator adds its own startup checks ([02](02-runtime.md)):
 |---|---|
 | `stress_schedule` | The whole resolved schedule plus `runStartBlock` (so windows can be judged in absolute blocks) |
 | `stress_calibration_warning` | The crash magnitude may not breach a victim's health factor |
+| `stress_liquity_victims_setup` / `stress_liquity_victim_icr` / `stress_liquity_liquidation` / `stress_liquity_redemption` | Liquity victims (issue #107): the Troves opened, their ICR every block inside a window, one closed by liquidation, debt taken by a redemption |
 | `stress_victims_setup` / `stress_victim_hf` | Victim opening health factors / their movement inside a window |
 | `stress_liquidation` | A drop in victim debt, detected as a liquidation |
 | `stress_whale_funded` / `stress_whale` / `stress_whale_failed` / `stress_whale_reverted` | Funding, firing, failure, and **on-chain revert** |
@@ -234,6 +235,7 @@ In `config/regimes/`, referenced by the scenario matrix.
 | `vuln` | Pools appear mid-run, most of them rigged (ADR 0014) |
 | `spike` | An upward price gap with a pull in the same window (crash's mirror; issue #105) |
 | `depeg-persist` | `depeg` with `persist: true`: the discount holds to the last scored block (issue #106) |
+| `cdp-incident` | Liquity victims (Troves at ICR 1.20) + a crash + an eUSD depeg and a pull in the same window: liquidation, redemption and borrower defence (issue #107) |
 
 `cex-drift` and `informed-flow` are expressed as **windowed events** (`cexDrift` / `flowTrend`) rather than run-wide settings. Measured (seed 101, 360 blocks, mean pool-to-fair gap in bps):
 
@@ -244,6 +246,6 @@ In `config/regimes/`, referenced by the scenario matrix.
 
 **Run-wide, `cex-drift` was broken at the length it declares** — over 60 blocks the same settings read as a sane 55bps, which is how it survived unnoticed. Windowing is both the undisclosed schedule and the fix that bounds the runaway inside a trapezoid.
 
-**All ten deploy every venue, `lst` and `liquity` included.** A five-venue variant of each used to sit beside a seven-venue `full-*` one; the five-venue set was retired rather than kept as a second answer to what the competition is. `config/regimes/{lst,liquity,liquity-crash}.yaml` remain outside the set for **single-venue verification** — that is about regimes, not about which venues exist.
+**All eleven deploy every venue, `lst` and `liquity` included.** A five-venue variant of each used to sit beside a seven-venue `full-*` one; the five-venue set was retired rather than kept as a second answer to what the competition is. `config/regimes/{lst,liquity,liquity-crash}.yaml` remain outside the set for **single-venue verification** — that is about regimes, not about which venues exist.
 
 **A week built from one kind of event only makes work for one kind of strategy.** Measured: in a depeg-only week, venue-arb made no trades in three of five seeds ([`docs/scoring-metric-measurements.md`](../../scoring-metric-measurements.md)). That is why `cexDrift` and `flowTrend` became windowed events at all — a continuous economy cannot inject "a week that drifts", because the week is one run containing several episodes on an undisclosed schedule.

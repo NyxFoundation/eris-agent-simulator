@@ -156,6 +156,10 @@ const SCHEMA: Record<string, string> = {
   "stress.victimCount": "ERIS_STRESS_VICTIM_COUNT",
   "stress.victimHf0": "ERIS_STRESS_VICTIM_HF0",
   "stress.victimWethWei": "ERIS_STRESS_VICTIM_WETH_WEI",
+  // Issue #107: Liquity victim Troves (the CDP counterpart of the Aave cohort).
+  "stress.liquityVictimCount": "ERIS_STRESS_LIQUITY_VICTIM_COUNT",
+  "stress.liquityVictimIcr": "ERIS_STRESS_LIQUITY_VICTIM_ICR",
+  "stress.liquityVictimCollWethWei": "ERIS_STRESS_LIQUITY_VICTIM_COLL_WETH_WEI",
   // lst (issue #38: liquid staking venue)
   "lst.simulatedSecondsPerBlock": "ERIS_LST_SIMULATED_SECONDS_PER_BLOCK",
   "lst.apyBps": "ERIS_LST_APY_BPS",
