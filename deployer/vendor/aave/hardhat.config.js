@@ -19,7 +19,16 @@ module.exports = {
       chainId: 31337,
       live: false,
       saveDeployments: true,
-      // Use anvil's unlocked accounts (signing happens on the node side)
+      // Sign locally from the same mnemonic as the rest of the deploy, rather than relying on the
+      // node's unlocked accounts. DEFAULT_NAMED_ACCOUNTS maps every Aave role (deployer, aclAdmin,
+      // poolAdmin ...) to an account *index*, so with remote signing those roles follow whichever
+      // mnemonic anvil happens to hold -- which is not necessarily the one this deploy uses
+      // (issue #74).
+      accounts: {
+        mnemonic:
+          process.env.MNEMONIC ||
+          "test test test test test test test test test test test junk",
+      },
     },
   },
   namedAccounts: { ...DEFAULT_NAMED_ACCOUNTS },

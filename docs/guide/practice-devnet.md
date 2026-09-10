@@ -118,6 +118,43 @@ npm run manifest -- --config config/practice.yaml --participant alice
 npm run dashboard:build && npm run dashboard:serve     # :5174
 ```
 
+### The chain's own keys (issue #74)
+
+A chain participants can send transactions to must not run on anvil's public test mnemonic. The
+gateway allows `eth_sendRawTransaction`, so with the default words every prefunded account —
+including the deployer, which holds Aave's `POOL_ADMIN`, GMX's `CONFIG_KEEPER`, the LST vault's
+owner and every seeded LP position — belongs to whoever reads anvil's banner. Draining the ETH is
+the least of it; the roles are the exposure.
+
+The fix is a redeploy under a secret mnemonic, not an allowlist in front of the RPC: the key is
+public, so any path that reaches the chain reaches it.
+
+```bash
+# on the box that owns the chain, with the mnemonic never written into the repository
+cd deployer
+MNEMONIC="$(cat ~/.ascon-secret-mnemonic)" npm run deploy -- --keep-fresh
+cd ..
+npm run gen:local-constants          # every address is CREATE(deployer, nonce), so all of them moved
+npm run gen:state-dump               # the dump the chain is restarted from
+
+# .env.local, for the stress events that trade as the environment
+#   DEPLOYER_PRIVATE_KEY=0x…         (index 0 of that mnemonic)
+```
+
+Restart the chain from the new dump **with the same mnemonic** — `--load-state` restores the
+contracts, but the dev accounts still come from the mnemonic anvil was started with, and the
+addresses in the dump are the ones the secret deployer created:
+
+```bash
+anvil --port 8545 --code-size-limit 50000 --base-fee 0 --gas-limit 320000000 \
+  --accounts 10 --balance 1000000 --mnemonic "$(cat ~/.ascon-secret-mnemonic)" \
+  --load-state backtest/state/venues-state.json
+```
+
+A dump baked before the rotation is a default-mnemonic chain in a file: reloading it puts the
+public deployer back in charge of every venue, whatever mnemonic the node was started with.
+Rotate the two together.
+
 ### Registering a participant
 
 A roster entry is a registration, not a launch instruction:

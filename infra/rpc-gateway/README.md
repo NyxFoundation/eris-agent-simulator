@@ -106,6 +106,18 @@ Denied methods get HTTP 403 + a JSON-RPC error and are counted in `rpc_method_de
 `eth_blockNumber`/`eth_call` → 200, both locally and over the external `ascon-rpc` tunnel (closing the
 prior exposure where an Access-authenticated caller could call cheatcodes).
 
+### What the allowlist cannot cover: the chain's own keys (issue #74)
+
+`eth_sendRawTransaction` is on the permitted side, and it has to be — it is how a participant trades.
+So the filter cannot protect an account whose key is public, and on a chain deployed from anvil's
+default mnemonic every prefunded account is exactly that, including the deployer that holds Aave's
+`POOL_ADMIN`, GMX's `CONFIG_KEEPER` and every seeded LP position. Narrowing the allowlist does not
+help: the key is the credential, not the method.
+
+The fix is on the chain, not at this boundary — redeploy from a secret mnemonic and restart anvil
+with it (`deployer/README.md` → "Deploying with a secret mnemonic", and the rotation runbook in
+`docs/guide/practice-devnet.md`).
+
 ### Pending-transaction visibility (issue #87)
 
 The default filter keeps the priority-fee auction sealed at this RPC boundary. It refuses

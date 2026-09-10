@@ -34,6 +34,9 @@ export const SECRET_ENV_KEYS = [
   "ADMIN_PRIVATE_KEY",
   "KEEPER_PRIVATE_KEY",
   "SETUP_PRIVATE_KEY",
+  // The key that deployed the venues (issue #74). Per-deployment rather than per-config, and on a
+  // chain deployed under a secret mnemonic it is a secret.
+  "DEPLOYER_PRIVATE_KEY",
   "FLOW_UNINFORMED_PRIVATE_KEY",
   "FLOW_INFORMED_PRIVATE_KEY",
   "AGENT0_PRIVATE_KEY",

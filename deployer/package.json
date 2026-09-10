@@ -6,14 +6,16 @@
   "type": "module",
   "description": "Orchestrator that deploys Uniswap V3 / Balancer V2 / Aave V3 / Curve / GMX V2 from scratch onto an empty anvil chain",
   "scripts": {
-    "anvil": "anvil --code-size-limit 50000 --base-fee 0 --gas-limit 3000000000 --port 8545 --accounts 10 --balance 1000000",
+    "anvil": "tsx src/anvil-cli.ts",
     "build:contracts": "forge build",
     "clean:vendors": "./scripts/clean-vendors.sh",
     "deploy": "tsx src/index.ts",
     "test:e2e": "vitest run",
+    "test:unit": "vitest run test/unit",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@scure/bip39": "^1.6.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
     "viem": "^2.21.0"

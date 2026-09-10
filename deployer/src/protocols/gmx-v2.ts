@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { getAddress, type Abi, type Address } from "viem";
 import { publicClient } from "../clients.js";
 import { ROOT, ok, info, assert, loadForgeArtifact } from "../util.js";
-import { CHAIN_ID, RPC_URL } from "../config.js";
+import { CHAIN_ID, MNEMONIC, RPC_URL } from "../config.js";
 import { setProtocol, getRegistry } from "../registry.js";
 import { seedGmLiquidity, type GmDepositCore } from "./gmx-deposit.js";
 
@@ -103,9 +103,13 @@ export async function deployGmxV2({ seed }: { seed: boolean }) {
         ...process.env,
         SKIP_AUTO_HANDLER_REDEPLOYMENT: "true",
         RPC_URL,
-        // The vendor's `localhost` network reads both (patched in gmx-localhost.patch), so the
-        // child targets the same node and chain id this process resolved (issue #33 (4)).
+        // The vendor's `localhost` network reads all three (patched in gmx-localhost.patch), so the
+        // child targets the same node and chain id this process resolved (issue #33 (4)) and signs
+        // as the same deployer (issue #74). Passed explicitly rather than left to the spread above,
+        // because what this process derives from is the *normalized* mnemonic -- process.env still
+        // holds whatever whitespace came out of .env.
         CHAIN_ID: String(CHAIN_ID),
+        MNEMONIC,
       },
       stdio: ["ignore", "inherit", "inherit"],
     },
@@ -233,6 +237,26 @@ async function recordMarkets(): Promise<GmMarketRecord[]> {
   info("GMX V2: reading the created markets");
   const reader = dep("Reader");
   const dataStore = dep("DataStore").address;
+
+  // Read the code before reading the markets. Every GMX address is CREATE(deployer, nonce), so a
+  // deployments/localhost written by a different deployer -- or against a chain that has since been
+  // restarted -- names addresses that hold nothing. `getMarkets` on an empty address returns "0x",
+  // and viem reports that as a decoding failure, which reads like a GMX bug rather than a stale
+  // artifact (issue #74).
+  for (const [name, address] of [
+    ["Reader", reader.address],
+    ["DataStore", dataStore],
+  ] as const) {
+    const code = await publicClient.getCode({ address });
+    if (!code || code === "0x") {
+      throw new Error(
+        `GMX ${name} at ${address} holds no code on ${RPC_URL}. deployments/localhost describes a ` +
+          "different chain than the one this deploy is talking to: it was written by another " +
+          "deployer account (a changed MNEMONIC moves every address) or against an anvil that has " +
+          "since restarted. Redeploy with `npm run deploy -- --keep-fresh` against a fresh anvil.",
+      );
+    }
+  }
 
   const markets = (await publicClient.readContract({
     address: reader.address,

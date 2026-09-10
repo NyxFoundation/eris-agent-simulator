@@ -94,6 +94,84 @@ If anvil is already running in another terminal, set `MANAGE_ANVIL=false` in `.e
 Start anvil with `--code-size-limit 50000` to support large contracts
 (`npm run anvil` starts with this setting).
 
+## Deploying with a secret mnemonic (issue #74)
+
+Everything here is deployed by account index 0 of `MNEMONIC`, which defaults to anvil's **public**
+test mnemonic (`test test … junk`). That account is not just the payer:
+
+- Aave's `POOL_ADMIN` / `ACL_ADMIN`, GMX's `CONFIG_KEEPER` and `MARKET_KEEPER`, the LST vault's
+  owner, the admin key of the Liquity price-feed adapter;
+- the owner of every seeded LP position and the holder of the genesis Trove's surplus eUSD;
+- and, because each address is `CREATE(deployer, nonce)`, the account that decides where all of the
+  contracts land.
+
+On a chain that accepts transactions from participants, that key has to be one they do not have —
+anvil prints the default mnemonic in its banner, so with it "the deployer" is a role anyone can
+assume. Keep the default for local work and CI; use a secret one for anything reachable.
+
+```bash
+# .env is gitignored, so a secret in it never reaches the repository
+echo 'MNEMONIC="<twelve secret words>"' >> .env
+
+# or keep it out of the filesystem of this repo entirely
+export MNEMONIC="$(cat ~/.ascon-secret-mnemonic)"
+```
+
+Then redeploy. Both entry points read the same value, so anvil and the deploy agree:
+
+```bash
+npm run anvil                      # separate terminal; MANAGE_ANVIL=false in .env
+npm run deploy -- --keep-fresh
+```
+
+Two things follow from a changed mnemonic, and neither is optional:
+
+1. **Every address moves.** `deployments/deployments.json` is rewritten by the deploy, and the poc
+   has to be regenerated from it (`npm run gen:local-constants`, then `npm run gen:state-dump` if a
+   state dump is in use). A consumer left on the old addresses reads empty accounts — `getMarkets`
+   answering `0x` is what that looks like from GMX, and the deploy now says so by name rather than
+   letting viem report it as a decoding failure.
+2. **The deployer's key is now a secret the simulator needs.** The stress events that trade as the
+   environment (`liquidityPull`, `depeg`, `eusdDepeg`) send from the deployer account, so the poc's
+   `.env.local` has to carry `DEPLOYER_PRIVATE_KEY=0x…` for it. Without it those events fail fast
+   rather than finding nothing to pull.
+
+Guards, so that a half-rotated setup fails at the start instead of in the middle:
+
+- an invalid mnemonic (one word wrong fails the BIP-39 checksum) is rejected before anvil starts;
+- reusing an already-running anvil is refused when its first account is not the one `MNEMONIC`
+  derives, in either direction — deploying a default-mnemonic chain over a secret one is the same
+  bug with the ownership reversed.
+
+### Verifying a rotation
+
+The deploy is the test — a mnemonic that does not reach GMX shows up as a missing market rather
+than as an error about keys. After redeploying, three reads say whether it took:
+
+```bash
+# 1. the registry names the account that actually deployed
+node -e 'console.log(require("./deployments/deployments.json").accounts)'
+
+# 2. GMX has markets (the failure mode: `getMarkets returned no data ("0x")`, which used to mean
+#    a stale deployments/localhost rather than anything about GMX)
+node -e '
+  const r = require("./deployments/deployments.json").protocols.gmxV2;
+  console.log(`markets: ${r.marketCount}`, r.markets.map((m) => m.marketToken));
+'
+
+# 3. the Aave admin role sits on that same account, not on Hardhat account 0
+cast call "$(node -e 'console.log(require("./deployments/deployments.json").protocols.aaveV3.aclManager)')" \
+  "isPoolAdmin(address)(bool)" \
+  "$(node -e 'console.log(require("./deployments/deployments.json").accounts.deployer)')" \
+  --rpc-url http://127.0.0.1:8545
+```
+
+> Changing `MNEMONIC` also changes what the two hardhat subprojects sign with: both
+> `vendor/aave/hardhat.config.js` and the `localhost` network in `vendor/gmx-localhost.patch`
+> derive their accounts from it. After pulling a new patch, reset the vendor tree
+> (`npm run clean:vendors && ./scripts/setup-vendors.sh`) — an old tree keeps hardhat's
+> `accounts: "remote"` default and signs as whatever the node has unlocked.
+
 ## Output
 
 All addresses are aggregated into `deployments/deployments.json`:
@@ -119,7 +197,8 @@ All addresses are aggregated into `deployments/deployments.json`:
 ```
 src/
 ├── index.ts           orchestrator (CLI)
-├── anvil.ts           anvil process start/wait
+├── anvil.ts           anvil process start/wait + the flag list (including --mnemonic)
+├── anvil-cli.ts       `npm run anvil` (same flags, foreground)
 ├── clients.ts         viem clients + accounts
 ├── config.ts          chain / token definitions
 ├── tokens.ts          deployment of shared mock tokens

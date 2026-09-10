@@ -23,12 +23,19 @@ import { deploymentsFingerprint } from "../core/src/backtest/shared.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 
-// index0 of anvil's default mnemonic = deployer. Aave's ACL admin = deployer.
-const DEPLOYER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as Address;
+// index 0 of anvil's public test mnemonic. Aave's ACL admin is the deployer, and this is the
+// deployer for as long as the chain runs on that mnemonic. A deploy under a secret MNEMONIC
+// (issue #74) moves it, which is why it is only the fallback: the deployer now writes the address
+// it actually used into deployments.json, and files written before it did are all default-mnemonic
+// ones by construction.
+const DEFAULT_MNEMONIC_DEPLOYER =
+  "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as Address;
 
 type Deployments = {
   chainId: number;
   tokens: Record<string, string>;
+  // Written since issue #74; absent in deployments.json files generated before it.
+  accounts?: { deployer?: string; keeper?: string; trader?: string };
   protocols: {
     common?: { multicall3?: string };
     uniswapV3?: Record<string, string>;
@@ -220,6 +227,9 @@ export function generateLocalConstants(deploymentsPath?: string): {
   const { path, data } = loadDeployments(deploymentsPath);
   const t = data.tokens;
   const p = data.protocols;
+  const deployer = data.accounts?.deployer
+    ? getAddress(data.accounts.deployer)
+    : DEFAULT_MNEMONIC_DEPLOYER;
 
   const weth = ca(t.WETH, "tokens.WETH");
   const usdc = ca(t.USDC, "tokens.USDC");
@@ -369,7 +379,7 @@ export function generateLocalConstants(deploymentsPath?: string): {
       ),
       Pool: ca(aave.pool, "aaveV3.pool"),
       AaveOracle: ca(aave.aaveOracle, "aaveV3.aaveOracle"),
-      AclAdmin: DEPLOYER,
+      AclAdmin: deployer,
       AclManager: ca(aave.aclManager, "aaveV3.aclManager"),
       PoolDataProvider: ca(aave.poolDataProvider, "aaveV3.poolDataProvider"),
     },

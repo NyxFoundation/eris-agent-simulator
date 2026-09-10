@@ -68,11 +68,7 @@ import {
   updateOraclesMempool,
   writeAaveOraclesStorage,
 } from "@eris/sdk/protocols/oracles.js";
-import {
-  DEFAULT_ANVIL_PRIVATE_KEYS,
-  GMX_MARKETS,
-  TOKENS,
-} from "@eris/sdk/constants.js";
+import { GMX_MARKETS, TOKENS } from "@eris/sdk/constants.js";
 import {
   baseTokens,
   gmxMarketAddresses,
@@ -1377,11 +1373,12 @@ export async function runRealtimeSimulation(
         )
       : null;
 
-    // The environment's depth and its eUSD both belong to the deployer, which is the anvil default
-    // account 0 (ADR 0016 §4). An agent bound to AGENT0_PRIVATE_KEY is that same account, and two
-    // senders on one key race on the nonce — the failure mode that once froze the LST redemption
-    // rate for a whole run. Checked once for both events, since they share the key.
-    const deployerPk = DEFAULT_ANVIL_PRIVATE_KEYS[0];
+    // The environment's depth and its eUSD both belong to the deployer -- anvil account 0 on a
+    // chain deployed from the default mnemonic (ADR 0016 §4), whatever DEPLOYER_PRIVATE_KEY names
+    // on a chain deployed from a secret one (issue #74). An agent bound to that same key is the
+    // same account, and two senders on one key race on the nonce — the failure mode that once froze
+    // the LST redemption rate for a whole run. Checked once for both events, since they share it.
+    const deployerPk = config.privateKeys.deployer;
     if (
       schedule.hasLiquidityPull() ||
       schedule.hasEusdDepeg() ||
@@ -1395,9 +1392,8 @@ export async function runRealtimeSimulation(
       );
       if (clash) {
         throw new Error(
-          `a stress event trades as the deployer account, but agent "${clash.id}" is bound to the ` +
-            "same key (AGENT0_PRIVATE_KEY = anvil account 0). Move that agent to another wallet, " +
-            "or to AUTO",
+          `a stress event trades as the deployer account (${deployerAddress}), but agent ` +
+            `"${clash.id}" is bound to the same key. Move that agent to another wallet, or to AUTO`,
         );
       }
     }
