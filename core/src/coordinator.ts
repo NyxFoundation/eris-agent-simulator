@@ -114,6 +114,15 @@ export async function buildFlowContext(
     flowBalances[`${protocol}:${kind}`] = {
       wethWei: b.wethWei.toString(),
       usdcUnits: venueStableUnits(protocol, b).toString(),
+      // Every base the wallet holds, so the sell-side guard reads the base it is about to sell
+      // rather than WETH for all of them (issue #99).
+      ...(b.bases
+        ? {
+            bases: Object.fromEntries(
+              Object.entries(b.bases).map(([sym, v]) => [sym, v.toString()]),
+            ),
+          }
+        : {}),
     };
   });
 

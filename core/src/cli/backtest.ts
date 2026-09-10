@@ -43,12 +43,14 @@ import {
 import {
   foldRepeats,
   readRunSummary,
+  scenarioFlags,
   scoresFromSummary,
 } from "../backtest/scenarioScores.js";
 import {
   assertResumable,
   mergeStoredResults,
   readStoredMatrix,
+  rosterFingerprint,
   type StoredMatrix,
 } from "../backtest/resume.js";
 import {
@@ -179,7 +181,9 @@ function loadScenarioSet(
         e.startsAt !== undefined &&
         (typeof e.startsAt !== "string" || Number.isNaN(Date.parse(e.startsAt)))
       )
-        throw new Error(`${abs}: epochs[${i}].startsAt must be an ISO 8601 date`);
+        throw new Error(
+          `${abs}: epochs[${i}].startsAt must be an ISO 8601 date`,
+        );
       out.push({
         s: s as number,
         regime: e.regime,
@@ -571,14 +575,34 @@ async function main(): Promise<void> {
     // standings.json for the competition rather than one per invocation. Refused up front when the
     // stored matrix is a different competition (set / k / reset unit / repeat), and when the set's
     // content changed under the same path (ordinal by ordinal, in mergeStoredResults).
+    // The field this matrix ranks, as one value: the --agents roster, or the regimes' own rosters
+    // keyed by regime when none was passed. Stored in matrix.json and checked on --resume, so the
+    // epochs of one matrix cannot be run on two different fields (issue #102).
+    const fieldFingerprint = rosterFingerprint(
+      rosterAgents ??
+        Object.fromEntries(
+          scenarios.map((sc) => [sc.regime, loadRegimeDoc(sc).agents ?? []]),
+        ),
+    );
     let stored: StoredMatrix | undefined;
     if (resumeDir) {
       stored = readStoredMatrix(resumeDir);
       assertResumable(
         stored,
-        { scenarioSet: flags.scenarios, k, resetUnit: "scenario", repeat },
+        {
+          scenarioSet: flags.scenarios,
+          k,
+          resetUnit: "scenario",
+          repeat,
+          rosterFingerprint: fieldFingerprint,
+        },
         (p) => resolve(ROOT, p),
       );
+      if (stored.rosterFingerprint === undefined)
+        console.error(
+          "[backtest] warning: the stored matrix does not record its roster (written before " +
+            "issue #102); the resume cannot check that the field is the same one",
+        );
       const now = gitHead(ROOT);
       if (stored.sourceCommit && now && stored.sourceCommit !== now)
         console.error(
@@ -613,10 +637,14 @@ async function main(): Promise<void> {
         ))
       : undefined;
     if (outDir) mkdirSync(outDir, { recursive: true });
-    // The first invocation's, so a resumed matrix keeps the date the competition began; each
-    // resume stamps when it continued.
+    // The first invocation's, so a resumed matrix keeps the date the competition began; a resume
+    // that runs at least one epoch stamps when it continued. A resume with nothing to run leaves
+    // the stored stamp alone: it executed nothing, so it did not continue anything (issue #102).
     const createdAt = stored?.createdAt ?? new Date().toISOString();
-    const resumedAt = resumeDir ? new Date().toISOString() : undefined;
+    const resumedAt =
+      resumeDir && (merged?.rerun.length ?? 0) > 0
+        ? new Date().toISOString()
+        : stored?.resumedAt;
     // In ordinal order whatever order they were computed in, so a resumed matrix reads like an
     // uninterrupted one. computeStandings keys by `s` and does not care.
     const ordered = (): ScenarioResult[] =>
@@ -640,6 +668,8 @@ async function main(): Promise<void> {
             // The schedule length the weights are taken over (rules §4.4.1).
             k,
             repeat,
+            // The field, so a --resume on a different roster is refused (issue #102).
+            rosterFingerprint: fieldFingerprint,
             // Complete only once every scenario has run; until then this is a partial matrix.
             scenariosPlanned: scenarios.length,
             // The plan's timetable, for the epochs not run yet: the dashboard's "next epoch starts
@@ -742,6 +772,18 @@ async function main(): Promise<void> {
           ? { error: lastError }
           : {}),
       });
+      // An epoch nobody contested is said so at the epoch level, where a reader of the standings
+      // looks, not only on each dead agent's record (issue #102).
+      const last = results[results.length - 1];
+      if (last.agents) {
+        const epochFlags = scenarioFlags(last.agents);
+        if (epochFlags.length > 0) {
+          last.flags = epochFlags;
+          console.error(
+            `[backtest] s=${last.s} ${label}: ${epochFlags.join("; ")}`,
+          );
+        }
+      }
       flush();
     }
 

@@ -55,12 +55,19 @@ export type ScenarioResult = {
   error?: string;
   // The plan's intended start for this epoch (ISO 8601), when the plan had a timetable.
   startsAt?: string;
+  // Facts about the epoch as a whole that a reader of the standings must see next to it: every
+  // non-baseline agent exited before trading, so the epoch was uncontested and its P are the
+  // endowment's drift, not a result (issue #102, #91 F2). Nothing here changes the arithmetic --
+  // §4.4.2's remedy for a lost epoch is re-execution, which is the operator's call, and this is what
+  // tells them to make it.
+  flags?: string[];
 };
 
 export type EpochStanding = EpochResult & {
   regime: string;
   seed: number;
   runDir?: string;
+  flags?: string[];
 };
 
 export type Standings = {
@@ -131,6 +138,9 @@ export function computeStandings(
         regime: r.regime,
         seed: r.seed,
         ...(r.runDir !== undefined ? { runDir: r.runDir } : {}),
+        ...(r.flags !== undefined && r.flags.length > 0
+          ? { flags: r.flags }
+          : {}),
       };
     }),
     agents: scored.agents.map((a) => ({
