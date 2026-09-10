@@ -70,5 +70,6 @@ regimes:
   - depeg
   - vuln
   - spike
+  - depeg-persist
 
 seeds: [101, 202, 303, 404, 505]

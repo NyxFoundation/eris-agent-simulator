@@ -38,7 +38,7 @@ flowchart LR
 
 A regime is **a YAML in the existing config schema** (same format as [Configuration](configuration.md)) describing a family of market conditions: the fair-price OU parameters, flow intensity, and the stress event ranges. It carries no seed. Given one, the fair-price path, flow orders, and stress event schedule all replay deterministically.
 
-The **nine official regimes** are the competition set (ADR 0017 §1, completed by issue #27; `vuln` by ADR 0014, `spike` by issue #105):
+The **ten official regimes** are the competition set (ADR 0017 §1, completed by issue #27; `vuln` by ADR 0014, `spike` by issue #105, `depeg-persist` by issue #106):
 
 | regime | market condition |
 |---|---|
@@ -51,6 +51,7 @@ The **nine official regimes** are the competition set (ADR 0017 §1, completed b
 | `depeg` | a registry stable stops being a dollar ([#27](https://github.com/NyxFoundation/eris-agent-simulator/issues/27)) |
 | `vuln` | pools appear mid-run, most of them rigged (ADR 0014) |
 | `spike` | crash's mirror: the fair price gaps 15–22% *up* with the same aligned pull ([#105](https://github.com/NyxFoundation/eris-agent-simulator/issues/105)) |
+| `depeg-persist` | the same depeg with `persist: true`: the discount never closes inside the epoch, so holding for par is a bet rather than a wait ([#106](https://github.com/NyxFoundation/eris-agent-simulator/issues/106)) |
 
 Also in `config/regimes/`, outside the competition set: `lst` and `liquity` / `liquity-crash` (single
 venues, for verifying them on their own), and the `b-harness` / `metric-*` / `ruin-test` /
@@ -66,7 +67,7 @@ For what each regime's events actually do, see [Market Stress Events](stress-eve
 
 ```yaml
 # config/scenarios/public.yaml — the cartesian product of the two lists
-regimes: [calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg, vuln, spike]
+regimes: [calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg, vuln, spike, depeg-persist]
 seeds: [101, 202, 303, 404, 505]
 ```
 
