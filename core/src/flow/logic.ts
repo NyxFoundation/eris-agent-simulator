@@ -35,6 +35,14 @@ export type FlowLimits = {
   informedFlowMaxWethWei: bigint;
   balancerFlowMaxWethWei: bigint;
   curveFlowMaxWethWei: bigint;
+  // The uninformed leg's cap on the two venues that otherwise share one cap for both legs. A
+  // flowTrend window scales the uninformed size (issue #56), and until issue #112 that scaling only
+  // reached uniswap, whose uninformed leg reads `uninformedFlowMaxWethWei`: balancer and curve read
+  // their shared cap, which the coordinator sent unscaled, so two of the three venues sat at x1.0
+  // through every window (measured: uniswap x2.98, balancer x1.05, curve x1.00). Defaults to the
+  // venue cap when the wire omits it.
+  balancerUninformedFlowMaxWethWei: bigint;
+  curveUninformedFlowMaxWethWei: bigint;
   gmxFlowMaxSizeUsd: bigint;
   // Per-block probability of emitting gmx flow (0..1, default 0.5). Decided by rng each block and sent sporadically.
   gmxFlowActivityProb: number;
@@ -108,6 +116,10 @@ export type FlowContextWire = {
     informedFlowMaxWethWei: string;
     balancerFlowMaxWethWei: string;
     curveFlowMaxWethWei: string;
+    // Issue #112: the uninformed leg's cap on balancer/curve, scaled by the flowTrend window like
+    // uninformedFlowMaxWethWei. Absent = the venue cap (the pre-#112 wire).
+    balancerUninformedFlowMaxWethWei?: string;
+    curveUninformedFlowMaxWethWei?: string;
     gmxFlowMaxSizeUsd: string;
     gmxFlowActivityProb?: string;
     gmxFlowMaxBurst?: string;
@@ -760,6 +772,12 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
     informedFlowMaxWethWei: BigInt(wire.informedFlowMaxWethWei),
     balancerFlowMaxWethWei: BigInt(wire.balancerFlowMaxWethWei),
     curveFlowMaxWethWei: BigInt(wire.curveFlowMaxWethWei),
+    balancerUninformedFlowMaxWethWei: BigInt(
+      wire.balancerUninformedFlowMaxWethWei ?? wire.balancerFlowMaxWethWei,
+    ),
+    curveUninformedFlowMaxWethWei: BigInt(
+      wire.curveUninformedFlowMaxWethWei ?? wire.curveFlowMaxWethWei,
+    ),
     gmxFlowMaxSizeUsd: BigInt(wire.gmxFlowMaxSizeUsd),
     gmxFlowActivityProb: clampProb(wire.gmxFlowActivityProb, 0.5),
     gmxFlowMaxBurst: Math.max(1, Number(wire.gmxFlowMaxBurst ?? "1")),
@@ -792,11 +810,15 @@ export function buildFlowOrders(
   };
 
   // [uninformedMax, informedMax] per AMM (uniswap/balancer/curve).
-  // balancer/curve use a single cap for both.
+  // balancer/curve configure a single cap for both legs; the uninformed leg reads its own copy so
+  // a flowTrend window can scale it without scaling the informed leg (issue #112).
   const ammMax: Record<"uniswap" | "balancer" | "curve", [bigint, bigint]> = {
     uniswap: [limits.uninformedFlowMaxWethWei, limits.informedFlowMaxWethWei],
-    balancer: [limits.balancerFlowMaxWethWei, limits.balancerFlowMaxWethWei],
-    curve: [limits.curveFlowMaxWethWei, limits.curveFlowMaxWethWei],
+    balancer: [
+      limits.balancerUninformedFlowMaxWethWei,
+      limits.balancerFlowMaxWethWei,
+    ],
+    curve: [limits.curveUninformedFlowMaxWethWei, limits.curveFlowMaxWethWei],
   };
 
   for (const protocol of ctx.protocols) {

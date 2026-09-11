@@ -52,8 +52,8 @@
    | 対象 | ETH | base | stable |
    |---|---|---|---|
    | agent | `funding.ethWei`（**ガスバッファ 0**） | `funding.wethWei` / `funding.base` | `funding.usdcUnits` |
-   | flow ウォレット | `funding.flowEthWei` | `funding.flowWethWei` / `funding.flowBase` | 同上 |
-   | aave actor | 同上 | `flow.aaveMaxWethWei × 6` | 同上 |
+   | flow ウォレット | `funding.flowEthWei` | `funding.flowWethWei` / `funding.flowBase` | `funding.flowUsdcUnits`（既定は agent と同額） |
+   | aave actor | 同上 | `flow.aaveMaxWethWei × 6` | `funding.flowUsdcUnits` |
 
    エージェントのガスバッファを 0 にするのは、既定バッファが**選んでいない β** としてエポック系列に乗るため（ADR 0019 §6）。flow ウォレットは機械なのでバッファを持つ。
    鍵を持たない登録参加者へは `fundAddress` で配る（approve は本人しか出せないので付かない）。

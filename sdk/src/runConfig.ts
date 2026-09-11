@@ -119,6 +119,7 @@ const SCHEMA: Record<string, string> = {
   "funding.usdcUnits": "INITIAL_USDC_UNITS",
   "funding.flowEthWei": "ERIS_FLOW_ETH_WEI",
   "funding.flowWethWei": "FLOW_WETH_WEI",
+  "funding.flowUsdcUnits": "FLOW_USDC_UNITS",
   // fees. What used to be the `limits` section -- per-order size caps for every venue, plus the
   // bundle-length and open-position counts -- is gone: the competition has no order-size cap, and
   // a knob that only ever reads "unlimited" is a knob someone will eventually set.
