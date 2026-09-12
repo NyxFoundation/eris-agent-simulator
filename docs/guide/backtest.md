@@ -38,7 +38,7 @@ flowchart LR
 
 A regime is **a YAML in the existing config schema** (same format as [Configuration](configuration.md)) describing a family of market conditions: the fair-price OU parameters, flow intensity, and the stress event ranges. It carries no seed. Given one, the fair-price path, flow orders, and stress event schedule all replay deterministically.
 
-The **eleven official regimes** are the competition set (ADR 0017 §1, completed by issue #27; `vuln` by ADR 0014, `spike` by issue #105, `depeg-persist` by issue #106, `cdp-incident` by issue #107):
+The **twelve official regimes** are the competition set (ADR 0017 §1, completed by issue #27; `vuln` by ADR 0014, `spike` by issue #105, `depeg-persist` by issue #106, `cdp-incident` by issue #107, `launch` by issue #29):
 
 | regime | market condition |
 |---|---|
@@ -53,6 +53,7 @@ The **eleven official regimes** are the competition set (ADR 0017 §1, completed
 | `spike` | crash's mirror: the fair price gaps 15–22% *up* with the same aligned pull ([#105](https://github.com/NyxFoundation/eris-agent-simulator/issues/105)) |
 | `depeg-persist` | the same depeg with `persist: true`: the discount never closes inside the epoch, so holding for par is a bet rather than a wait ([#106](https://github.com/NyxFoundation/eris-agent-simulator/issues/106)) |
 | `cdp-incident` | Liquity victim Troves at ICR 1.20, a 12–16% crash with the pull, and an eUSD depeg on the same window ([#107](https://github.com/NyxFoundation/eris-agent-simulator/issues/107)) |
+| `launch` | 2–3 new tokens list mid-run in thin USDC pools through the environment's Uniswap V3 factory; per token a demand wave follows or does not (a dud), and holdings at the bell are worth zero ([#29](https://github.com/NyxFoundation/eris-agent-simulator/issues/29)) |
 
 Also in `config/regimes/`, outside the competition set: `lst` and `liquity` / `liquity-crash` (single
 venues, for verifying them on their own), and the `b-harness` / `metric-*` / `ruin-test` /
@@ -68,7 +69,7 @@ For what each regime's events actually do, see [Market Stress Events](stress-eve
 
 ```yaml
 # config/scenarios/public.yaml — the cartesian product of the two lists
-regimes: [calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg, vuln, spike, depeg-persist, cdp-incident]
+regimes: [calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg, vuln, spike, depeg-persist, cdp-incident, launch]
 seeds: [101, 202, 303, 404, 505]
 ```
 

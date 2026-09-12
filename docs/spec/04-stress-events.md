@@ -237,6 +237,7 @@ soft-reset だと前 run の victim ポジションが残留して HF が壊れ�
 | `spike` | 上方向の価格ギャップ + 同じ窓での引き抜き（crash の鏡像。issue #105） |
 | `depeg-persist` | `depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らない（issue #106） |
 | `cdp-incident` | Liquity victim（ICR 1.20 の Trove）+ 暴落 + 同じ窓の eUSD デペグと引き抜き。清算・償還・借り手防御の 3 skill（issue #107） |
+| `launch` | run 途中に 2〜3 の新トークンが USDC の薄いプールに上場し、トークンごとに需要の波が来るか来ない（dud）かをシードが決める。鐘の時点の保有は 0（issue #29） |
 
 `cex-drift` と `informed-flow` は **run 全体設定ではなく窓イベント**（`cexDrift` / `flowTrend`）で表現する。実測（seed 101 / 360 ブロック / プール乖離の平均 bps）:
 

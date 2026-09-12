@@ -210,7 +210,10 @@ export async function decide(
       watches.size === 0
         ? "no launch pool on the registry yet"
         : `watching ${watches.size} pool(s): ${notes.join("; ")}`,
-    signals: { launchPools: watches.size },
+    signals: {
+      launchPools: watches.size,
+      blocksRemaining: Number.isFinite(remaining) ? remaining : -1,
+    },
   });
   return { type: "noop", reason: "no confirmed demand" };
 }

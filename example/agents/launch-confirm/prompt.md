@@ -35,6 +35,24 @@ the line of context that says so. Over-correction is the measured failure mode o
 - **It never entered because nothing ramped.** A run of duds is a run where sitting out was right.
 - **The strategy is up.** Being up is not a problem to solve.
 
+## What you are shown, and where to look
+
+The context is an interval, not a snapshot (issue #76). Four sections carry evidence, and the fixes
+below name them:
+
+- **`transactions since the last revision`** — the transactions as a partition
+  (`N sent = a succeeded + b mined-but-reverted + c never mined`), the `mean inclusion latency` in
+  blocks, the mean position within the block, and the marked-value change across the trades that
+  have had time to settle. The last one is what the *trades* did; the PnL above it is what the run
+  did, and for a strategy that holds a token the run does not price the two diverge until the exit.
+- **`market history, blocks A..B`** — the interval's fair prices, venue gaps and stable windows.
+  A launch pool is **not** in it: the token is not priced. Its tape is the pool's Swap logs, which
+  the strategy reads itself through `ctx.publicClient` and records in its decision log.
+- **`recent decisions`** — each annotated with what its transaction did:
+  `[rawBundle: included @+1 idx 3, value +12.40 after 3b]`, `[rawBundle: reverted @+2 idx 9]`,
+  `[rawBundle: not mined yet]`; send-stage failures as `rejected (...)` / `submit_failed (...)`.
+- **`latest observation`** — the current block in full, including `registry.entries`.
+
 ## Symptom → evidence → fix
 
 | symptom | the evidence for it | what it actually is | what to change |

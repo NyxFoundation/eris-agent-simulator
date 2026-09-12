@@ -1113,6 +1113,13 @@ const SCENARIO_FIRING: Record<string, string[]> = {
   depeg: ["stress_depeg"],
   lstSlash: ["lst_slash"],
   whale: ["stress_whale"],
+  // Issue #29: the listing itself, then the wave's buys and the decay's sell-backs. A dud lists
+  // and then records nothing else, which is the outcome, not a failure.
+  tokenLaunch: [
+    "stress_token_launch",
+    "stress_token_launch_wave",
+    "stress_token_launch_sellback",
+  ],
 };
 
 /** How a schedule type shows up in the run, for the types that leave no per-block trace. */

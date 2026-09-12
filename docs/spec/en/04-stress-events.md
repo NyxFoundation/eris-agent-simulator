@@ -236,6 +236,7 @@ In `config/regimes/`, referenced by the scenario matrix.
 | `spike` | An upward price gap with a pull in the same window (crash's mirror; issue #105) |
 | `depeg-persist` | `depeg` with `persist: true`: the discount holds to the last scored block (issue #106) |
 | `cdp-incident` | Liquity victims (Troves at ICR 1.20) + a crash + an eUSD depeg and a pull in the same window: liquidation, redemption and borrower defence (issue #107) |
+| `launch` | 2–3 new tokens list mid-run in thin USDC pools; per token the seed decides whether a demand wave follows or not (a dud). Holdings at the bell are worth zero (issue #29) |
 
 `cex-drift` and `informed-flow` are expressed as **windowed events** (`cexDrift` / `flowTrend`) rather than run-wide settings. Measured (seed 101, 360 blocks, mean pool-to-fair gap in bps):
 
