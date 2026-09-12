@@ -129,12 +129,13 @@ USDC-only を維持しているのは **`metric-*` レジームだけ**で、こ
 | `uninformedTrendCorrelation` | 0 | 市場共通方向に従う確率 |
 | `informedMaxWethWei` | 2 WETH | informed のサイズ基準 |
 | `balancerMaxWethWei` / `curveMaxWethWei` | 1 WETH | venue 別 |
-| `gmxMaxSizeUsd` | 20,000 USD | |
+| `gmxMaxSizeUsd` | 100,000 USD | issue #79（旧 20,000）。注文は $500 / 平均 $2,500 / 最大 $10,000 |
 | `gmxActivityProb` / `gmxMaxBurst` | 0.5 / 2 | legacy モード用 |
 | `aaveMaxWethWei` | 2 WETH | |
 | `aaveActivityProb` / `aaveActorCount` | 0.5 / 4 | アクタープール |
 | `informedArbFeeBps` | **30** | 裁定の手数料帯（0 で無効） |
-| `uninformedArrivalRate` / `uninformedSizeSigma` | **0.9 / 1.0** | Poisson 到着 / lognormal サイズ |
+| `uninformedArrivalRate` / `uninformedSizeSigma` | **0.45 / 1.5** | Poisson 到着 / lognormal サイズ（issue #79 で Base 実測に較正。旧 0.9 / 1.0） |
+| `uninformedSizeClampMult` | 3（レジームは 10） | lognormal サイズの上限（uninformedMax の倍率。issue #79） |
 | `gmxArrivalRate` / `gmxSizeSigma` | **0.75 / 1.0** | 同上（GMX） |
 | `aaveActorSizeSigma` | **1.0** | アクターの担保サイズ分布 |
 | `baseMax` | `{WETH: 0}` | 追加 base の AMM フロー上限（0 = そのbaseのフロー無効） |

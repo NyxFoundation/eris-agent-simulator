@@ -52,8 +52,9 @@ flow:
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
   informedArbFeeBps: 30
-  uninformedArrivalRate: "0.9"
-  uninformedSizeSigma: "1.0"
+  uninformedArrivalRate: "0.45" # issue #79: Base measures 0.41-0.44 swaps per 2 s block on its two main WETH/USDC venues
+  uninformedSizeSigma: "1.5" # issue #79: mean-preserving; median 0.30 -> 0.16 WETH, mean / median 1.65 -> 3.1 (measured 3-11)
+  uninformedSizeClampMult: "10" # issue #79: was a constant 3. ~4 prints > 3 WETH per venue per epoch, ~1 > 10 WETH every two epochs
   # No LST flow bot yet, so the secondary market moves only when agents trade it: from an at-par
   # start the discount stays near zero and the carry path does not fire. That is phase 2's
   # remaining gap, not a property of this regime.

@@ -48,13 +48,22 @@ const GENESIS_PRICE_USD = 3000n;
 /// It mints more than the market and the Stability Pool need, and the surplus is the point: eUSD
 /// only exists if it came out of a Trove, so the environment's own inventory -- what the `eusdDepeg`
 /// stress event sells to push the peg off par (issue #39 phase 5) -- has to be minted here too.
-const GENESIS_COLL_ETH = 250n;
-const GENESIS_DEBT_EUSD = 250_000n; // 250 * 3000 / 250000 = 300% ICR
+///
+/// Issue #79 grew it from 250 ETH / 250,000 eUSD with the Stability Pool: the surplus after the
+/// market (100k) and the pool (125k) has to stay >= the largest eusdDepeg draw (cdp-incident sells
+/// up to 85 % of the 100k pool depth) and >= cdp-recovery's 100k `liquitySpSeedEusdWei`, or the
+/// event caps (`stress_eusd_depeg_capped`) on every seed. 350k leaves 125k. Side effects, written
+/// into the regime comments: the redemption fee curve softens (baseRate per 5k redeemed ~ +100 bps
+/// at 250k supply -> ~ +71 bps at 350k), Recovery Mode moves further away (#59 reaches it through
+/// the victim cohort, not the genesis Trove), and sp-underwriter's pro-rata share of a liquidation
+/// for a 25k deposit falls from 33 % to 17 %.
+const GENESIS_COLL_ETH = 350n;
+const GENESIS_DEBT_EUSD = 350_000n; // 350 * 3000 / 350000 = 300% ICR
 
 /// How the minted supply is placed. What is left stays with the deployer, which is where the
 /// coordinator can draw from if a run needs to top anything up.
 const POOL_EUSD = 100_000n; // eUSD/USDC curve pool, matched with USDC
-const STABILITY_POOL_EUSD = 50_000n; // pre-seeded underwriting depth
+const STABILITY_POOL_EUSD = 125_000n; // pre-seeded underwriting depth: 50 % of supply, as on Liquity (issue #79; was 50k)
 
 /// Redemptions revert during Liquity's 14-day BOOTSTRAP_PERIOD, measured from a constructor-set
 /// deployment timestamp. Warping past it costs nothing and keeps the fork diff at zero -- the

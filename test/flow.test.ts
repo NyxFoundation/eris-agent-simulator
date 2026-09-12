@@ -363,6 +363,52 @@ test("uninformedArrivalRate: Poisson mode also produces zero-count blocks (count
   assert.ok(counts.size > 1, "with Poisson the count varies (not fixed)");
 });
 
+// Issue #79: the upper clamp on a lognormal uninformed size is a knob. Unset it is the constant 3
+// the clamp used to be, so no order ever exceeds 3 x uninformedMax; at 10 the same draws produce
+// prints between 3x and 10x -- the tail that stands in for the halved arrival count.
+test("uninformedSizeClampMult: unset clamps at 3x (byte-compatible), 10 lets the tail through", () => {
+  const MAX = 1_000_000_000_000_000_000n;
+  const sizes = (clamp: string | undefined): bigint[] => {
+    const c = ctx(1);
+    c.protocols = ["uniswap"];
+    c.limits.uninformedArrivalRate = "2";
+    c.limits.uninformedSizeSigma = "1.5";
+    if (clamp !== undefined) c.limits.uninformedSizeClampMult = clamp;
+    const rng = new Rng(5);
+    const out: bigint[] = [];
+    for (let round = 1; round <= 300; round++) {
+      for (const o of buildFlowOrders(rng, { ...c, round })) {
+        if (o.kind !== "uninformed" || o.protocol !== "uniswap") continue;
+        if (o.action.type !== "swap" || o.action.tokenIn !== "WETH") continue;
+        out.push(BigInt(o.action.amountIn));
+      }
+    }
+    return out;
+  };
+  const legacy = sizes(undefined);
+  const explicit3 = sizes("3");
+  const wide = sizes("10");
+  assert.ok(legacy.length > 100, "enough WETH-side uninformed orders to read the tail");
+  assert.deepEqual(explicit3, legacy, "an explicit 3 is the unset behaviour");
+  assert.ok(
+    legacy.every((s) => s <= 3n * MAX),
+    "unset: no order exceeds 3 x uninformedMax",
+  );
+  assert.ok(
+    legacy.some((s) => s === 3n * MAX),
+    "unset: with sigma 1.5 the 3x clamp is actually hit",
+  );
+  assert.ok(
+    wide.some((s) => s > 3n * MAX),
+    "clamp 10: prints above 3 x uninformedMax exist",
+  );
+  assert.ok(
+    wide.every((s) => s <= 10n * MAX),
+    "clamp 10: no order exceeds 10 x uninformedMax",
+  );
+  assert.equal(wide.length, legacy.length, "the clamp changes sizes, not the arrival count");
+});
+
 test("gmxArrivalRate: the GMX position count varies in Poisson mode", () => {
   const c = ctx(1);
   c.protocols = ["gmx"]; // narrow to gmx only

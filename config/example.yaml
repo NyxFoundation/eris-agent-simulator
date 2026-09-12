@@ -80,12 +80,14 @@ flow:
   #   informedArbFeeBps: makes the environment's arbitrage (informed flow) fee-aware. Closes the
   #     excess only when the gap exceeds the fee band (default 30bps), leaving a residual = fee (does
   #     not fully close to fair every block). 0 for the legacy behavior.
-  #   uninformedArrivalRate: makes uninformed flow Poisson-arriving (lambda, default 0.9). 0 reverts to a fixed count.
-  #   uninformedSizeSigma: makes uninformed flow size lognormal (sigma, default 1.0. heavy tail = occasional large orders).
+  #   uninformedArrivalRate: makes uninformed flow Poisson-arriving (lambda, default 0.45). 0 reverts to a fixed count.
+  #   uninformedSizeSigma: makes uninformed flow size lognormal (sigma, default 1.5. heavy tail = occasional large orders).
+  #   uninformedSizeClampMult: upper clamp on a lognormal size as a multiple of uninformedMax (default 3; the regimes set 10).
   # Note: Poisson/lognormal increase variance, so read run comparisons as aggregates over multiple seeds. Disable with 0.
   informedArbFeeBps: 30
-  uninformedArrivalRate: "0.9"
-  uninformedSizeSigma: "1.0"
+  uninformedArrivalRate: "0.45" # issue #79: Base measures 0.41-0.44 swaps per 2 s block on its two main WETH/USDC venues
+  uninformedSizeSigma: "1.5" # issue #79: mean-preserving; median 0.30 -> 0.16 WETH, mean / median 1.65 -> 3.1 (measured 3-11)
+  uninformedSizeClampMult: "10" # issue #79: was a constant 3. ~4 prints > 3 WETH per venue per epoch, ~1 > 10 WETH every two epochs
   # Extend the same realistic flow to GMX / Aave (enabled by default. ADR 0015 Notes / amm-challenge).
   #   gmxArrivalRate: makes GMX position count Poisson(lambda) and size lognormal (default 0.75). 0
   #     reverts to the legacy Bernoulli(gmxActivityProb)+uniform burst+uniform size. gmxSizeSigma is the lognormal sigma (default 1.0).

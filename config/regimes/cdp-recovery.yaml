@@ -5,7 +5,7 @@
 # field has agents that act inside Recovery Mode.
 # Run: npm run backtest -- --regime cdp-recovery --seed 101 [--agents <roster>]
 #
-# The genesis Trove (250 ETH / 250,000 eUSD, 300 %) dominates the system ratio, so no crash the
+# The genesis Trove (350 ETH / 350,000 eUSD, 300 %; 250 / 250k before issue #79) dominates the system ratio, so no crash the
 # regimes use reaches CCR 1.5 (issue #59 measured a minimum TCR of 2.24 on a 15-22 % crash). Lowering
 # the genesis Trove would invert the redemption order and thin the Stability Pool for every regime
 # (the issue's three reasons), so the debt that breaks the system comes from the environment's
@@ -63,8 +63,9 @@ flow:
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
   informedArbFeeBps: 30
-  uninformedArrivalRate: "0.9"
-  uninformedSizeSigma: "1.0"
+  uninformedArrivalRate: "0.45" # issue #79: Base measures 0.41-0.44 swaps per 2 s block on its two main WETH/USDC venues
+  uninformedSizeSigma: "1.5" # issue #79: mean-preserving; median 0.30 -> 0.16 WETH, mean / median 1.65 -> 3.1 (measured 3-11)
+  uninformedSizeClampMult: "10" # issue #79: was a constant 3. ~4 prints > 3 WETH per venue per epoch, ~1 > 10 WETH every two epochs
   gmxArrivalRate: "0.75"
   gmxSizeSigma: "1.0"
   aaveActorSizeSigma: "1.0"

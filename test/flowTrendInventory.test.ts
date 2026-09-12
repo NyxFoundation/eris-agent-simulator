@@ -66,9 +66,12 @@ function worstCaseOneWayWeth(doc: Doc): number {
   return total;
 }
 
-test("informed-flow's two x3 windows are ~103 WETH of one-way flow per venue wallet", () => {
+// ~103 WETH before issue #79 halved the arrival rate (0.9 -> 0.45); the mean order is unchanged
+// (lognormal is mean-preserving in sigma) so the bound scales with the rate alone. The funding
+// stays at 150 WETH: the 10x size clamp the same issue added means a single tail print is 10 WETH.
+test("informed-flow's two x3 windows are ~51 WETH of one-way flow per venue wallet", () => {
   const w = worstCaseOneWayWeth(load("informed-flow"));
-  assert.ok(w > 100 && w < 106, `one-way WETH ${w}`);
+  assert.ok(w > 50 && w < 53, `one-way WETH ${w}`);
 });
 
 for (const name of OFFICIAL) {
