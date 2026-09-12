@@ -36,8 +36,13 @@ const SIZE_BPS = numberEnv("ERIS_LAUNCH_SIZE_BPS", 2000);
 // the hold is selling into the wave's own bid.
 const HOLD_BLOCKS = numberEnv("ERIS_LAUNCH_HOLD_BLOCKS", 30);
 // Sell everything when this many blocks remain, hold or no hold: a token at the bell is worth zero.
+// 0 turns the guard off (the hold alone decides), which is also what makes the strategy readable on
+// a chain whose `blocksRemaining` is wrong -- the first measured run had it counting the block
+// backlog anvil flushes at the start of a backtest as run blocks, and every exit fired early.
 const EXIT_BEFORE_END_BLOCKS = numberEnv("ERIS_LAUNCH_EXIT_BLOCKS", 12);
-const SLIPPAGE_BPS = numberEnv("ERIS_LAUNCH_SLIPPAGE_BPS", 300);
+// A launch pool is thin and the wave moves it several percent per block, and this agent's swap
+// lands in the block *after* the quote. 3% (the venues' default) lost every entry during a ramp.
+const SLIPPAGE_BPS = numberEnv("ERIS_LAUNCH_SLIPPAGE_BPS", 1000);
 // Below this the position is dust; selling it costs more gas than it returns.
 const MIN_USDC_UNITS = 1_000_000n;
 
@@ -60,7 +65,10 @@ export async function decide(
   const fee = obs.limits.defaultPriorityFeePerGasWei;
   const self = ctx.address as Address;
   const pools = launchPools(obs).filter((p) => !p.mine);
-  const remaining = obs.blocksRemaining ?? Number.POSITIVE_INFINITY;
+  const remaining =
+    EXIT_BEFORE_END_BLOCKS > 0
+      ? (obs.blocksRemaining ?? Number.POSITIVE_INFINITY)
+      : Number.POSITIVE_INFINITY;
 
   // ---- exits first: a sale that is due matters more than a new entry ----
   for (const pos of positions.values()) {
