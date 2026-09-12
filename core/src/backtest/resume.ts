@@ -124,6 +124,7 @@ export function assertResumable(
   if (storedRoot !== currentRoot)
     problems.push(
       `agentStateRoot: stored ${storedRoot ?? "(none)"}, now ${currentRoot ?? "(none)"}`,
+    );
   if (
     stored.rosterFingerprint !== undefined &&
     current.rosterFingerprint !== undefined &&
