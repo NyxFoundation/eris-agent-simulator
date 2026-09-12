@@ -278,7 +278,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - **公式レジームは `agentSandbox: docker`**（規約 §2.3 の 2 vCPU / 4 GiB は `infra/docker-agent/run-agent.sh` でしか掛からない）。docker が無ければ `--agent-sandbox process`（無制限。`agent_sandbox` イベントにそう出る）。綴り間違いは fail-fast
   - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 40`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジーム等回数、seed が決めるのは順序だけ。`--starts-at <ISO> --every-minutes <N>` で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出す。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 10/31 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
-  - **公式レジーム（11 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選は k をレジーム数の倍数に要求する**（`schedule.ts`）ので、本数を変えたら k も変える
+  - **公式レジーム（12 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）/ `launch`（run 途中に 2〜3 の新トークンが環境の Uniswap V3 factory 経由で USDC の薄いプールに上場し、トークンごとに需要の波が来るか dud かをシードが決める。鐘の時点の保有は 0 = ADR 0022 公理 2。issue #29。下の「新規トークンの上場」節）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選は k をレジーム数の倍数に要求する**（`schedule.ts`）ので、本数を変えたら k も変える
   - **`cex-drift` / `informed-flow` は窓イベント**（`cexDrift` / `flowTrend`）で表現する（issue #56）。run 全体設定だった頃の `cex-drift` は**宣言長 360 ブロックで壊れていた** — 実測でプール乖離が平均 1,055bps（10%）に居座り fair が +34.6% 暴走、venue-arb が +8,458 を無条件に得ていた。60 ブロックでは 55bps に見えるので発覚が遅れた。窓化後は 461bps・+1,191（calm 基準は 39bps・−289）。`informed-flow` は窓化しても 45.0 → 42.7bps でほぼ中立（この regime はもともと calm と識別しにくい）
   - **`vuln` を公式化するにはフィールド側の追加が要る** — 悪意あるプールは factory 購読で発見するので、`discovery-arb` / `discovery-arb-verify` を `config/rosters/full-field.yaml` に入れないと**誰も見つけられず何も測れない**（`liquidator` が victim 無しでは遊ぶのと同じ形）。実測: 無検証は −5,306、検証側は +721、新プールを見ない venue-arb は −220（calm と同じ）
   - **7 本とも全 venue（`lst` / `liquity` 含む）をデプロイし、配布は ETH/BTC/USDC バスケット**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）。**flow wallet には 0.5 WBTC も配る**（`funding.flowBase`。issue #99）— 以前は flow の財布に WBTC が無く、しかも `flow/logic.ts` の売り側ガードが全 base で `wethWei` を見ていたので、WBTC の売り注文が残高 0 に対して送られて informed 行の 27〜38% が revert し、WBTC プールが fair の +110bps に張り付いていた。ガードは base ごとの残高（`flowBalances[*].bases`）を読むようになった。WETH は従来どおり flow が買って調達する（1,012/1,012 成功の実測があるので触らない）。以前は 5 venue・USDC-only 版と `full-*` の 7 venue 版が並立していたが、**5 venue 版は撤去した**（「競技とは何か」に 2 つ目の答えを残さないため）。`full-8h` / `full-boxA` は `public.yaml` と同内容になったので統合済み。`config/regimes/{lst,liquity,liquity-crash}.yaml` は venue 単体検証用として競技セット外に残る。USDC-only を保つのは `metric-*` だけで、理由は別（ADR 0019 §6。`genMetricRegimes.ts` が `funding.base` ごと落とす）
@@ -656,7 +656,39 @@ ours なのは 2 つだけ（core は無改変）:
   レジームは `config/regimes/agent-markets.yaml`（**公式セット外**。`lst`/`liquity` と同じ venue 単体
   検証用）。**hunter は「honest but buggy」を狙う**（trap-launcher の敵対コントラクトではなく）。
   実測: hunter +9,999.9 / vault-keeper −10,000.2 の移転（10,000 USDC の預けを丸ごと。sum ≈ ガス）
-- **公式セットは 7 本のまま。**8 本目にするかは live run を見てから
+- **公式セットは 7 本のまま。**8 本目にするかは live run を見てから（→ その後 `vuln` / `spike` / `depeg-persist` /
+  `cdp-incident` / `launch` が入って 12 本。上の「公式レジーム」）
+
+### 新規トークンの上場（`launch` レジーム = `tokenLaunch` イベント。issue #29。**ローカルデプロイ + `agentMarkets.enabled` 必須**）
+
+#40 の上に載る。環境が窓の開始ブロックで **2〜3 の新 ERC-20 を自分の Uniswap V3 factory 経由で上場**
+（`AgentERC20` を deploy → NPM へ approve → `createAndInitializePoolIfNecessary` を 1.00 USDC で → full-range
+mint。**1 鍵から nonce 連番の 5 tx を 1 ブロックに積む**。approve は存在しないトークン宛に署名するので
+gas は全部 pin する = `eth_estimateGas` は今の state で失敗する）。翌ブロックにレジストリへ `uniswapV3Pool` +
+`erc20`（`creator` = launch wallet。隠さない = 決定 3「常に正直」）。
+
+- **需要はトークンごとに独立に引く**（`core/src/realtime/events.ts` の `drawTokenLaunches`）: 本数 1 回 +
+  トークンあたり固定 5 回（liquidityUsdc / dudProb / dud の目 / waveUsdcMult / sellBackFrac）で、**dud でも
+  waveUsdcMult を引く**ので RNG 消費が事象列の純関数のまま。dud は **0 の質量**（`dudDraw < dudProb`）。
+  連続分布の下端 0 は 0 に当たらない
+- **目標は累積で毎ブロック reconcile**（`tokenLaunchTargetsAt`）: 買いは ramp で 0→1 に上がって以後 1 のまま
+  （波は買い戻さない）、売り戻しは decay で 0→sellBackFrac に上がって以後そのまま。driver は
+  `core/src/realtime/tokenLaunch.ts`。wave wallet は USDC → token を SwapRouter `exactInputSingle` で、
+  QuoterV2 の見積もりに 15% の slippage 枠。**settled した tx から集計**（`grossBuyUsdc` / `tokensSold` /
+  `sellUsdcReceived`）し、`stress_token_launch_summary` で帳簿を閉じる
+- **wallet は launch / wave をトークンごとに 1 つずつ** flow map に載せる（`launch:<e>:<i>` /
+  `launch-wave:<e>:<i>`。whale と同じく funding ループの後に正確な額を入れ直す = launch は USDC 片側ちょうど、
+  wave は倍率分、dud は 0）。blocks.csv では role `uninformed-flow`・ownerId `flow-launch…`
+- **評価は ADR 0022 公理 2 のまま**: 鐘の時点のトークン残高は全員 0（`erc20-unaccounted`）。通り抜けた USDC
+  だけが数える。**環境側の teardown は無い**（プールは snapshot revert で消え、残りは採点外の flow wallet）
+- 参加者側は `example/agents/lib/launchSwap.ts`（USDC と未価格トークンの registry プール抽出 / slot0 価格 /
+  Swap ログの純フロー / QuoterV2 / **exact approve + exactInputSingle の rawBundle**。登録 `swap` action は
+  market set の外に届かない）。参照 agent は `launch-sniper`（見た瞬間に買い固定ホールド）と
+  `launch-confirm`（連続 N ブロックの純買いで入り純売りで出る）。`full-field.yaml` に frozen で入っている
+  （vuln の教訓: 読める agent が居ない regime は何も測れない）
+- **実測（seed 101, 2026-09-12, main + PR #81 の burst 吸収を手元適用）**は PR #29 の本文。**main の anvil backlog
+  burst（PR #81 で修正中）がある環境では最初の ~200 ブロックが 1 秒で流れて窓ごと飛ぶ**。この regime だけの
+  問題ではなく windowFrac を持つ全イベントが同じ目に遭う
 
 ### 市場価格 stable（レジストリの stable を $1 断定でなく市場から値付ける。issue #27）
 

@@ -70,11 +70,11 @@ remember.
 **The code's `epoch` is not the rules' epoch.** The code's `epoch` is the rules' *evaluation
 interval*.
 
-### The 11 regimes
+### The 12 regimes
 
-These are the eight kinds rules §3.2 publishes plus `spike` (issue #105), `depeg-persist` (issue #106) and `cdp-incident` (issue #107); the rules' list needs all three additions. Which epoch is which regime is never announced, but
+These are the eight kinds rules §3.2 publishes plus `spike` (issue #105), `depeg-persist` (issue #106), `cdp-incident` (issue #107) and `launch` (issue #29); the rules' list needs all four additions. Which epoch is which regime is never announced, but
 **the kinds themselves and their generators are public**: `config/regimes/<name>.yaml`. The public set
-`config/scenarios/public.yaml` is 11 regimes × 5 seeds = 55 scenarios; the non-public set is drawn from
+`config/scenarios/public.yaml` is 12 regimes × 5 seeds = 60 scenarios; the non-public set is drawn from
 
 the same family, of which only the perturbation ranges are published (rules §3.3). The numbers in the
 table are the current YAML ranges; where the published values differ, the rules win.
@@ -92,6 +92,7 @@ table are the current YAML ranges; where the published values differ, the rules 
 | 8 | Spike `spike` | The reference price gaps 15–22% **up** and liquidity is pulled 40–60% in the same window. Crash's mirror; no victims are opened | Everyone. The one regime where merely holding the basket is rewarded and a hedge or a short pays; the arbitrage runs the other way round from crash, so it needs USDC inventory |
 | 9 | Persistent depeg `depeg-persist` | The environment sells DAI as in `depeg` (35–60% of depth; ramp 12 / hold 36) and then **does not buy it back**: the discount stands through the last scored block, the buy-back comes after scoring | `peg-arb`. In `depeg` waiting for par was right by construction; here whatever was bought on the belief that par returns is marked at the discount. The one regime that separates judging the return from assuming it |
 | 10 | CDP incident `cdp-incident` | The environment opens two Troves at ICR 1.20, the reference price falls 12–16% (depth pulled 40–60% in the same window), and in the same window it sells eUSD into its pool. The Troves cross MCR 1.10 and eUSD trades below par | `sp-underwriter` (absorbs through the Stability Pool and liquidates), `redemption-arb` (buys cheap eUSD and redeems against the victims), `trove-manager` (keeps its own Trove out of the redemption path and above MCR) |
+| 11 | New listings `launch` | Mid-epoch (0.2–0.5) the environment lists 2–3 new tokens at 1.00 USDC in USDC pools (20k–100k USDC a side); they appear on the registry as `uniswapV3Pool` + `erc20` a block later. Per token, independently, a demand wave follows (0.5–2× the pool's USDC bought over a 9-block ramp, held 30, 50–100% sold back over a 30-block decay) or, with 30–50% probability, does not (a dud). Nothing is announced; the ramp's first blocks are the only signal. **Token holdings at the bell are worth zero** (rules §4.1) | `launch-confirm` (enters after consecutive blocks of net buying, exits on net selling) / `launch-sniper` (buys at first sight and sells after a fixed hold — the control) |
 
 Three notes.
 
@@ -649,6 +650,8 @@ it works" is the regime whose environment gives the strategy something to do (§
 | CDP | `sp-underwriter` | Deposits eUSD in the Stability Pool to absorb liquidations and calls `liquityLiquidate` itself | Liquity | crash / lending-incident | yes |
 | Stablecoin | `peg-arb` | Buys a market-priced stable (DAI) below a dollar and sells when it returns | Curve | depeg | yes |
 | Regime 7 | `discovery-arb-verify` | Dry-runs a pool that appeared mid-epoch before taking it | new pools | vuln | no |
+| Regime 11 | `launch-confirm` | Enters a listed token's pool after consecutive blocks of net buying, exits on the first block of net selling | new listings | launch | yes |
+| Regime 11 | `launch-sniper` | Buys a listing at first sight and sells after a fixed hold (the no-judgment control) | new listings | launch | yes |
 | Regime 7 | `discovery-arb` | Takes the same pools without checking (the control; the one that gets skimmed) | new pools | vuln | no |
 | Attack / defence | `vault-keeper` | The honest but buggy creator: deploys a `LeakyVault` whose `rescue()` was left ungated and puts USDC in it | own contracts | all | no |
 | Attack / defence | `exploit-hunter` | Recovers selectors from the bytecode of someone else's unknown contract and drains it atomically through an `Exploiter` | own contracts | all | no |

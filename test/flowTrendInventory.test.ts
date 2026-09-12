@@ -25,6 +25,7 @@ const OFFICIAL = [
   "vuln",
   "whale",
   "cdp-incident",
+  "launch",
 ];
 
 // The state dump's opening fair (backtest/state, market.json `fair.WETH`); the USDC side of a
