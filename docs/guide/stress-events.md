@@ -239,6 +239,19 @@ never trade; they are not scored.
 aligned to it: liquidation for the Stability Pool, redemption against the victims for redemption arb,
 and a redemption path a borrower has to stay out of.
 
+### Recovery Mode (issue #59)
+
+`liquityRecoveryTcr` makes the same cohort the thing that breaks the *system*: the regime declares the
+TCR it wants at the bottom of its crash, and the coordinator sizes each victim's collateral from the
+crash magnitude the seed drew, the system as it stands and the cohort's ICR (`recoveryCohortCollateralWei`),
+failing fast at setup when no cohort can reach it. The record (`stress_liquity_victims_setup.recovery`)
+says what the sizing expects, and `liquity_block` shows `recoveryMode` / `tcr` as it happens. Recovery
+Mode liquidates a Trove between MCR and TCR only when the Stability Pool can absorb its whole debt, so
+`liquitySpSeedEusdWei` lets the environment put the deployer's eUSD surplus into the pool. The genesis
+Trove is left alone on purpose: lowering it would invert the redemption order and thin the pool for
+every regime (the issue's three reasons). `config/regimes/cdp-recovery.yaml` is the worked example,
+outside the official set.
+
 ## Events emitted
 
 `stress_schedule` (the resolved schedule, once) / `stress_victims_setup` / `stress_victim_hf` /

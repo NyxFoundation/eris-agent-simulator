@@ -150,6 +150,7 @@ USDC-only を維持しているのは **`metric-*` レジームだけ**で、こ
 | `stress.events` | [] | イベント配列（[04](04-stress-events.md)） |
 | `stress.victimCount` / `victimHf0` / `victimWethWei` | 0 / 1.10 / 5 WETH | 清算 victim |
 | `stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei` | 0 / 1.20 / 5 WETH | Liquity victim Trove（issue #107。`liquity` 必須、fresh state 必須） |
+| `stress.liquityRecoveryTcr` / `liquitySpSeedEusdWei` | 0（無効）/ 0 | 暴落の底で system TCR をこの値に落とすよう cohort の担保を setup で逆算する（届かなければ fail-fast）/ 環境が Stability Pool に入れる eUSD（issue #59） |
 | `vuln.events` / `poolLiquidityUsdcUnits` / `poolFeeBps` / `llm` | [] / 2M USDC / 30 / "0" | 脆弱性イベント（ADR 0014） |
 | `lst.simulatedSecondsPerBlock` | 3600 | 経済クロック（1 ブロック = 1 時間） |
 | `lst.apyBps` | 300 | 3%/yr |

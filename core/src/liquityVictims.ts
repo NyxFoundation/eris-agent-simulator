@@ -12,8 +12,14 @@
 // and are never scored (not in agentRuntimes). The same hard requirement as the Aave cohort applies
 // -- fresh state per run, checked by the caller -- because a Trove that lingers from a previous run
 // would sit in the sorted list at an ICR nobody configured.
-import { keccak256, stringToBytes, type Address, type Hex } from "viem";
-import { troveManagerAbi } from "@eris/sdk/abis.js";
+import {
+  encodeFunctionData,
+  keccak256,
+  stringToBytes,
+  type Address,
+  type Hex,
+} from "viem";
+import { stabilityPoolAbi, troveManagerAbi } from "@eris/sdk/abis.js";
 import { accountAddress, fundWallet, sendAndMine } from "@eris/sdk/chain.js";
 import { LIQUITY } from "@eris/sdk/constants.js";
 import { liquityAdapter } from "@eris/sdk/protocols/liquity.js";
@@ -59,6 +65,56 @@ export function victimDebtForIcr(input: {
   const totalDebt = (input.collWei * input.priceWad) / icrWad;
   if (totalDebt <= input.gasCompensationWei) return 0n;
   return ((totalDebt - input.gasCompensationWei) * WAD) / (WAD + input.borrowingRateWad);
+}
+
+// Issue #59: the collateral per victim that drags the system TCR to `targetTcr` at the bottom of
+// a crash of magnitude m, given the system as it stands (the genesis Trove and whatever else is
+// open) and a cohort of `count` Troves opened at ICR₀. Every Trove's collateral is ETH, so at the
+// bottom the numerator is (G_c + N·c)·P·(1 − m) and the denominator G_d + N·c·P/ICR₀; solving
+// TCR' = target for c:
+//   c = (target·G_d − P(1 − m)·G_c) / (N·P·((1 − m) − target/ICR₀))
+// Both sides are negative when the cohort's own post-crash ICR (ICR₀(1 − m)) is under the target --
+// which is the normal case: the cohort is what pulls the system down -- and the quotient is what
+// the run needs. null when no finite cohort reaches the target: the system is already there, or
+// the cohort's post-crash ICR is above the target so adding it can only raise TCR.
+export function recoveryCohortCollateralWei(input: {
+  systemCollWei: bigint;
+  systemDebtWei: bigint;
+  priceWad: bigint;
+  crashMagnitude: number;
+  icr0: number;
+  count: number;
+  targetTcr: number;
+}): bigint | null {
+  const { systemCollWei: gc, systemDebtWei: gd, priceWad: p, count: n } = input;
+  if (n <= 0 || input.crashMagnitude <= 0 || input.crashMagnitude >= 1) return null;
+  const SCALE = 1_000_000n;
+  const oneMinusM = BigInt(Math.round((1 - input.crashMagnitude) * 1e6)); // ×1e6
+  const target = BigInt(Math.round(input.targetTcr * 1e6)); // ×1e6
+  const icr0 = BigInt(Math.round(input.icr0 * 1e6)); // ×1e6
+  // numerator ×1e6·WAD·? -- keep everything in (1e6-scaled) × wei units
+  const num = target * gd - ((p * oneMinusM) / WAD) * gc; // ×1e6 · wei-of-debt
+  // denominator: N · P · ((1−m) − target/ICR₀), ×1e6 scale on the ratio
+  const ratio = oneMinusM - (target * SCALE) / icr0; // ×1e6
+  const den = (BigInt(n) * p * ratio) / WAD; // ×1e6 · (USD per ETH)
+  if (den === 0n) return null;
+  // num is (1e6 · wei-USD), den is (1e6 · USD per ETH): the quotient is ETH × 1e18 = wei.
+  const c = num / den;
+  if (c <= 0n) return null;
+  return c;
+}
+
+// The system TCR at the bottom of a crash once a cohort is in, for the calibration record.
+export function tcrAtCrashBottom(input: {
+  systemCollWei: bigint;
+  systemDebtWei: bigint;
+  priceWad: bigint;
+  crashMagnitude: number;
+}): number {
+  const coll = Number(input.systemCollWei) / 1e18;
+  const debt = Number(input.systemDebtWei) / 1e18;
+  const price = (Number(input.priceWad) / 1e18) * (1 - input.crashMagnitude);
+  return debt > 0 ? (coll * price) / debt : Number.POSITIVE_INFINITY;
 }
 
 // The crash magnitude that puts a Trove opened at ICR₀ below MCR: ICR₀·(1 − m) < MCR ⇔ m > 1 − MCR/ICR₀.
@@ -248,6 +304,46 @@ export async function openLiquityVictimTroves(
         "would open in Recovery Mode. Fewer or smaller victims, or a higher ICR (issue #107; Recovery Mode is #59)",
     );
   return { troves: out, mcr, ccr, tcr };
+}
+
+// The system as it stands, for sizing a Recovery Mode cohort (issue #59).
+export async function readLiquitySystem(
+  ctx: SimContext,
+): Promise<{ collWei: bigint; debtWei: bigint }> {
+  const d = LIQUITY!;
+  const [collWei, debtWei] = (await Promise.all([
+    ctx.publicClient.readContract({
+      address: d.troveManager,
+      abi: troveManagerAbi,
+      functionName: "getEntireSystemColl",
+    }),
+    ctx.publicClient.readContract({
+      address: d.troveManager,
+      abi: troveManagerAbi,
+      functionName: "getEntireSystemDebt",
+    }),
+  ])) as [bigint, bigint];
+  return { collWei, debtWei };
+}
+
+// Issue #59: eUSD the environment puts into the Stability Pool at setup, from the deployer (the
+// holder of the genesis Trove's surplus). Recovery Mode liquidates a Trove between MCR and TCR
+// only when the pool can absorb its whole debt, so a cohort sized for Recovery Mode needs a pool
+// sized for at least one of its Troves, or the branch never executes.
+export async function seedStabilityPool(
+  ctx: SimContext,
+  fromPk: Hex,
+  amountWei: bigint,
+): Promise<void> {
+  const d = LIQUITY!;
+  await sendAndMine(ctx.publicClient, ctx.walletClient, ctx.chain, fromPk, {
+    to: d.stabilityPool,
+    data: encodeFunctionData({
+      abi: stabilityPoolAbi,
+      functionName: "provideToSP",
+      args: [amountWei, "0x0000000000000000000000000000000000000000"],
+    }),
+  });
 }
 
 // The env name the cohort's addresses travel under, for symmetry with ERIS_LIQUIDATION_VICTIMS.

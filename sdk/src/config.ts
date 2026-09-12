@@ -101,6 +101,16 @@ export type SimConfig = {
   stressLiquityVictimCount: number;
   stressLiquityVictimIcr: number;
   stressLiquityVictimCollWethWei: bigint;
+  // Issue #59: a regime declares the system TCR it wants at the bottom of its crash
+  // (ERIS_STRESS_LIQUITY_RECOVERY_TCR, 0 = off). The coordinator then sizes each victim's
+  // collateral from the drawn crash magnitude so the cohort drags TCR under that value -- under
+  // CCR (1.5) is Recovery Mode -- and fails fast at setup if no cohort can. Overrides
+  // stressLiquityVictimCollWethWei.
+  stressLiquityRecoveryTcr: number;
+  // Issue #59: eUSD the environment (the deployer, holder of the genesis Trove's surplus) puts
+  // into the Stability Pool at setup (ERIS_STRESS_LIQUITY_SP_SEED_EUSD_WEI, 0 = none). Recovery
+  // Mode liquidates a Trove between MCR and TCR only when the pool can absorb its whole debt.
+  stressLiquitySpSeedEusdWei: bigint;
   // Approximate one-sided liquidity to seed each vuln pool with (in USDC-denominated units). The deeper it is,
   // the less an agent's trade moves the price, so the bait becomes realized profit. ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS (default 2,000,000 USDC).
   vulnPoolLiquidityUsdcUnits: bigint;
@@ -396,6 +406,11 @@ export function loadConfig(env = process.env): SimConfig {
     stressLiquityVictimCollWethWei: bigintEnv(
       env.ERIS_STRESS_LIQUITY_VICTIM_COLL_WETH_WEI,
       5_000_000_000_000_000_000n,
+    ),
+    stressLiquityRecoveryTcr: floatEnv(env.ERIS_STRESS_LIQUITY_RECOVERY_TCR, 0),
+    stressLiquitySpSeedEusdWei: bigintEnv(
+      env.ERIS_STRESS_LIQUITY_SP_SEED_EUSD_WEI,
+      0n,
     ),
     vulnPoolLiquidityUsdcUnits: bigintEnv(
       env.ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS,
