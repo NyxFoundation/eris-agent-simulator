@@ -72,5 +72,6 @@ regimes:
   - spike
   - depeg-persist
   - cdp-incident
+  - launch
 
 seeds: [101, 202, 303, 404, 505]

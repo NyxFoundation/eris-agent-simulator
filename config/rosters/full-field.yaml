@@ -131,3 +131,16 @@ agents:
   - id: discovery-arb-verify
     wallet: AUTO
     description: discovers the same pools and checks the contract before trading — the careful side
+
+  # --- tokens that list mid-run: buying blind against waiting for the tape (issue #29) ---------
+  # Idle in every regime but `launch`, for the same reason as the two above: a listing reaches an
+  # agent only through the registry, and a field with nobody reading it would leave the regime
+  # measuring nothing. Frozen like the other prompt.md strategies.
+  - id: launch-sniper
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: buys every new listing at first sight and sells after a fixed hold — the naive side
+  - id: launch-confirm
+    env: { ERIS_AGENT_FROZEN: "1" }
+    wallet: AUTO
+    description: buys a listing only after the tape shows sustained net buying — the judgment side
