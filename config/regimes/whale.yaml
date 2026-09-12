@@ -49,13 +49,15 @@ funding:
   wethWei: "8000000000000000000" # 8 WETH
   base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
   # The flow wallets' own inventory, sized so a flowTrend hold can be delivered rather than declared
-  # (issue #112). A x3 lean held for 30 blocks is ~51 WETH of one-way flow per venue wallet
-  # (0.5 WETH mean x 3 x 0.9 arrivals/block x 38 effective blocks), and informed-flow holds two such
-  # windows (~103 WETH); a wallet funded like an agent (0 WETH / 25k USDC = ~8 WETH at $3,000) runs dry within
+  # (issue #112). A x3 lean held for 30 blocks is ~26 WETH of one-way flow per venue wallet
+  # (0.5 WETH mean x 3 x 0.45 arrivals/block x 38 effective blocks; ~51 WETH before issue #79 halved
+  # the arrival rate), and informed-flow holds two such windows (~51 WETH); a wallet funded like an
+  # agent (0 WETH / 25k USDC = ~8 WETH at $3,000) runs dry within
   # the ramp on either side -- sells flip to buys once the WETH bought earlier in the window is gone,
   # buys are capped at the USDC left -- and the measured lean was x1.4 for 3 blocks against the
   # declared x2-3 for 12. 150 WETH and its USDC equivalent cover two same-direction windows with
-  # margin; against ~$6M of depth per venue that is a 7.5 % depth question, not a fairness one (the
+  # margin (kept at the pre-#79 size: the 10x size clamp means a single tail print can be 10 WETH);
+  # against ~$6M of depth per venue that is a 7.5 % depth question, not a fairness one (the
   # flow is machinery and unscored). WBTC is the same fix one issue earlier (#99: every WBTC sell was
   # submitted against a zero balance, ~90 % of the WBTC informed rows reverted).
   flowWethWei: "150000000000000000000" # 150 WETH per flow wallet
@@ -69,8 +71,9 @@ flow:
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
   informedArbFeeBps: 30
-  uninformedArrivalRate: "0.9"
-  uninformedSizeSigma: "1.0"
+  uninformedArrivalRate: "0.45" # issue #79: Base measures 0.41-0.44 swaps per 2 s block on its two main WETH/USDC venues
+  uninformedSizeSigma: "1.5" # issue #79: mean-preserving; median 0.30 -> 0.16 WETH, mean / median 1.65 -> 3.1 (measured 3-11)
+  uninformedSizeClampMult: "10" # issue #79: was a constant 3. ~4 prints > 3 WETH per venue per epoch, ~1 > 10 WETH every two epochs
   gmxArrivalRate: "0.75"
   gmxSizeSigma: "1.0"
   aaveActorSizeSigma: "1.0"
@@ -84,6 +87,11 @@ flow:
 stress:
   # Ranges, not values: the seed samples both the size and the block (ADR 0009). The windows are
   # disjoint so the four prints land spread out rather than clustering into one shock.
+  #
+  # The magnitude is WETH and is meaningful only against the pool's depth (events.ts says so):
+  # 25-60 WETH is 2.5-6 % of a 1,000 WETH full-range side. Issue #79 left spot depth at 1,000 WETH
+  # + 3M USDC per venue and left this range alone; if depth ever changes, scale the range with it
+  # so a print stays 2.5-6 % of a side rather than a fixed number of WETH.
   events:
     - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.10, 0.25] }
     - {

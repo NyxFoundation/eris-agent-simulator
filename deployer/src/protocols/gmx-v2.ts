@@ -163,7 +163,11 @@ async function seedGmMarket(
     DepositHandler: core.DepositHandler,
   };
 
-  // WETH/USDC: at $3000/WETH, seed 200 WETH + 600k USDC ($1.2M, consistent with the AMM venue)
+  // WETH/USDC: at $3000/WETH, seed 1,500 WETH + 4.5M USDC ($9M). Issue #79: the pool used to be
+  // 200 WETH + 600k USDC, 0.2x the spot pool, where Arbitrum's GM pool measures 1.7x its main spot
+  // pool; this puts it at 1.5x. Position impact is 0 on this deploy, so fills do not change -- what
+  // changes is OI / pool, hence the funding skew (smaller; #78 reads it from chain either way). The
+  // WBTC market below already takes a 3M USDC deposit, so the hardhat-profile pool caps do not bind.
   const wethMarket = markets.find(
     (m) =>
       m.longToken.toLowerCase() === weth.toLowerCase() &&
@@ -179,8 +183,8 @@ async function seedGmMarket(
         longToken: wethMarket.longToken,
         shortToken: wethMarket.shortToken,
       },
-      200n * 10n ** 18n,
-      600_000n * 10n ** 6n,
+      1_500n * 10n ** 18n,
+      4_500_000n * 10n ** 6n,
       [
         { token: weth, usd: 3000, decimals: 18 },
         { token: usdc, usd: 1, decimals: 6 },

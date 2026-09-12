@@ -1,3 +1,5 @@
+> **Calibration note (2026-09-13, issue #79).** Every figure in this document was taken under the pre-#79 flow and depth (uninformed 0.9 arrivals/block, σ 1.0, size clamp 3, GM pool 200 WETH + 600k USDC, Aave seed 9k USDC + 10 WETH, Stability Pool 50k eUSD). The official regimes now run 0.45 / 1.5 / clamp 10 and the deployer seeds 1,500 WETH + 4.5M USDC / 5M USDC + 2,000 WETH / 125k eUSD. Numbers here are the record of the choice, not the current environment.
+>
 > **Superseded (2026-09-06).** The competition is scored by the deviation score of rules §4.4 (ADR 0023); the candidate metrics measured here (M1…M27, λ, the aggregators) are no longer computed by the repository. Kept as the record of how the choice was narrowed.
 
 # 採点メトリクスの実測記録

@@ -123,6 +123,37 @@ LP 建玉 10、bundle 内 action 5 — 全部消した。**引き上げではな
 - `npm run manifest` は**「上限は無い」と明記**する（節ごと省くと「未公開」と区別が付かない）
 - **CLAUDE.md と `docs/scoring-metric-measurements.md` の実測値は全部上限下で取ったもの**。数字は変わる
 
+### 背景フローと venue 深度の較正（issue #79。2026-09-07 実測の Base / Ethereum / Arbitrum に合わせた）
+
+**2026-09-13 以前に取った実測値は全部旧較正下のもの**（uninformed 0.9/block・σ 1.0・clamp 3・GM pool 200 WETH・
+Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.md` の数字は再計測まで読み替える。
+
+- **config 側（regime YAML + sdk 既定。dump 焼き直し不要）**: `flow.uninformedArrivalRate` 0.9 → **0.45**
+  （Base の主要 2 venue が 2 s あたり 0.41〜0.44 swap）/ `uninformedSizeSigma` 1.0 → **1.5**（`Rng.lognormal` は
+  平均保存なので平均 0.5 WETH は不変、median 0.30 → 0.16、mean/median 1.65 → 3.1 = 実測 3〜11 の内側）/
+  **`uninformedSizeClampMult`**（新設。`Math.min(3, …)` の定数をノブ化、既定 3 = バイト互換、レジームは 10。
+  σ 1.5 × 0.45/block で 3 WETH 超が venue・epoch あたり ~4 本、10 WETH 超が 2 epoch に 1 本。**到着を半減した分の
+  dislocation をこの tail が肩代わりする**）/ `flow.gmxMaxSizeUsd` 既定 $20k → **$100k**（注文 $500 / 平均 $2.5k /
+  最大 $10k = perp は spot の 1 桁上）。whale・Aave actor は据え置き（whale は「プール深度に対する割合」の規則を
+  値の隣に書いた）
+- **deployer 側（`npm run gen:state-dump` で焼き直し必須）**: GM pool 200 WETH + 600k → **1,500 WETH + 4.5M USDC**
+  （spot 比 0.2× → 1.5×。Arbitrum 実測 1.7×。impact factor 0 なので約定は不変、OI/pool = funding skew が小さくなる）/
+  Aave shared seed 9k USDC + 10 WETH → **5M USDC + 2,000 WETH**（Base の 20× は採らない。12 分のエポックで
+  利用率と金利カーブは効かず、agent 規模の借入が空リザーブに当たらない深さがあれば足りる）/
+  Stability Pool 50k → **125k eUSD** + genesis Trove **350 ETH / 350k eUSD**（上の Liquity 節）。
+  WETH 予算は tokens.ts の wrap 10,000 に対し 3,000 + 1,500 + 2,010 = 6,510 で収まる
+- **spot 深度（1,000 WETH + 3M USDC / venue）と価格アンカー（$3,000 / $60,000）は据え置き**。深度を倍にして
+  件数を半分にすると dislocation は 1/4 になり calm の 39bps が 30bps の informed 帯に入ってしまう
+- **受け入れは「レジームが発火する」**（α 予算の保存ではない）。8 regime × 5 seed を rule-based ロスターで 1 回。
+  calm の平均乖離と venue-arb の P は報告のみ。乖離が帯の内側に潰れたら clamp か σ を動かす（決定は動かさない）
+- **初回実測（2026-09-13、新 dump で calm#101 / crash#101 を 1 本ずつ、regime 既定ロスター noop / venue-arb / multi-arb）**:
+  calm の venue 乖離は平均 **40.1bps**（旧較正の 39bps と同水準。中央値 39.0、30bps 帯超が 61%）で、
+  到着を半減しても tail が dislocation を保った。uninformed は venue あたり **~0.9/block**（WETH 0.45 + WBTC 0.45 = base
+  ごとに Poisson を引くので 2 倍。360 ブロックで base あたり ~162）。venue-arb は net −136 / P −1,105（noop −863）、
+  multi-arb は net +23。crash#101 は 15.6% の gap + 59% の liquidityPull が発火・復元し、`stress_calibration_warning` /
+  `_capped` は 0。crash 後 ~100 ブロック、WBTC の curve が fair 比 +100〜250bps に居座り `no_arb_persistent_warning`
+  （balancer 買い / curve 売り 120bps × 10 ブロック）が 11 回出た。旧較正の crash#101 とは未比較なので、#79 由来かは未確定
+
 ### GMX の funding は localhost でも動く
 
 以前は**構造的に 0** だった。upstream の hardhat 用マーケット設定（localhost はこれを通る）は
@@ -543,7 +574,10 @@ ours なのは 2 つだけ（core は無改変）:
 - **較正**（実測。100k/100k・A=100 のプール）: 40k 売却で 114bps / 50k で 175bps / 60k で 282bps。
   償還手数料 floor 50bps + 償還 ETH を USDC に戻す ~30bps を超えて初めて α になる。
   プールの A は 2000 ではなく **100**（A=2000 だと半分売っても 4.4bps しか動かず、償還手数料を永久に超えない）。
-  eUSD 供給 250k に対し baseRate は 5k 償還ごとに約 +100bps 上がるので、**先に償還した者が後続の価格を決める**
+  eUSD 供給 350k に対し baseRate は 5k 償還ごとに約 +71bps 上がるので、**先に償還した者が後続の価格を決める**
+  （issue #79 以前は供給 250k・+100bps。genesis Trove 250 ETH / 250k eUSD → 350 ETH / 350k eUSD、Stability Pool
+  50k → 125k = Liquity 実測の供給比 50%。deployer の余剰 = 環境が `eusdDepeg` で売る在庫は 100k → 125k で、
+  cdp-incident の 85% 売却も cdp-recovery の `liquitySpSeedEusdWei` 100k も cap されない）
 - coordinator は `liquity_setup`（オラクル差し替えと drift 検証。Recovery Mode 開幕やデペグ済みチェーンは fail-fast）/
   `liquity_block`（毎ブロックの peg・TCR・手数料・最下位 ICR）/ `stress_eusd_depeg`（+ `_setup` / `_capped` /
   `_failed` / `_restored`）を emit する
@@ -558,7 +592,7 @@ ours なのは 2 つだけ（core は無改変）:
   借り手の防御が効くかは**借りた eUSD を使ったかどうか**で決まる（`ERIS_TROVE_SPEND_DEBT`）。実測で
   200% 保持組は無傷、125% で全額 post して eUSD を売った組は清算され −13,140（担保 20 ETH を失い USDC を残す）
 - **Recovery Mode は公式レジームの較正では到達不能**（実測: seed 501 で最小 TCR 2.244 対 CCR 1.5）。genesis Trove
-  が 250 ETH / 250k eUSD（300%）で TCR を支配するため。**到達させるのは victim cohort の仕事**（issue #59 →
+  が 350 ETH / 350k eUSD（300%。#79 以前は 250 / 250k）で TCR を支配するため。**到達させるのは victim cohort の仕事**（issue #59 →
   `config/regimes/cdp-recovery.yaml`、公式セット外）: `stress.liquityRecoveryTcr` を書くと coordinator が seed の引いた
   crash magnitude と現状の system から各 victim の担保を逆算し（`recoveryCohortCollateralWei`）、届かなければ setup で
   fail-fast。RM の清算（MCR〜TCR 帯）は SP が債務を全額吸収できる場合しか執行されないので `stress.liquitySpSeedEusdWei`

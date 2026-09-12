@@ -75,6 +75,33 @@ test("market.*: the OU parameters reach SimConfig from YAML (ADR 0017 regime 1)"
   assert.deepEqual(config.ou.perBase.WETH, config.ou.global);
 });
 
+test("flow.*: the issue #79 knobs reach SimConfig from YAML, and unset gives the calibrated defaults", () => {
+  const source = buildSource({
+    flow: {
+      uninformedArrivalRate: "0.45",
+      uninformedSizeSigma: "1.5",
+      uninformedSizeClampMult: "10",
+      gmxMaxSizeUsd: (100_000n * 10n ** 30n).toString(),
+    },
+  });
+  assert.equal(source.ERIS_UNINFORMED_ARRIVAL_RATE, "0.45");
+  assert.equal(source.ERIS_UNINFORMED_SIZE_SIGMA, "1.5");
+  assert.equal(source.ERIS_UNINFORMED_SIZE_CLAMP_MULT, "10");
+  const config = loadConfig(source);
+  assert.equal(config.uninformedFlowArrivalRate, 0.45);
+  assert.equal(config.uninformedFlowSizeSigma, 1.5);
+  assert.equal(config.uninformedFlowSizeClampMult, 10);
+  assert.equal(config.gmxFlowMaxSizeUsd, 100_000n * 10n ** 30n);
+
+  // Defaults: arrival and sigma are the Base-anchored values; the clamp default is the constant it
+  // replaced (3), so a config that never heard of the knob generates the same sizes as before.
+  const bare = loadConfig(buildSource({}));
+  assert.equal(bare.uninformedFlowArrivalRate, 0.45);
+  assert.equal(bare.uninformedFlowSizeSigma, 1.5);
+  assert.equal(bare.uninformedFlowSizeClampMult, 3);
+  assert.equal(bare.gmxFlowMaxSizeUsd, 100_000n * 10n ** 30n);
+});
+
 test("market.*: unset falls back to the calm defaults", () => {
   const config = loadConfig(buildSource({ run: { seed: 1 } }));
   assert.deepEqual(config.ou.global, {
