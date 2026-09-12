@@ -183,7 +183,11 @@ export async function decide(
       pools.length === 0
         ? "no launch pool on the registry yet"
         : `${pools.length} launch pool(s), ${open} position(s) held, none due`,
-    signals: { launchPools: pools.length, openPositions: open },
+    signals: {
+      launchPools: pools.length,
+      openPositions: open,
+      blocksRemaining: Number.isFinite(remaining) ? remaining : -1,
+    },
   });
   return { type: "noop", reason: "nothing due" };
 }

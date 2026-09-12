@@ -60,6 +60,11 @@
 # mid-run from the seed, a majority rigged to skim above a size threshold, and reaching them at all
 # means subscribing to the factory rather than reading a price. Adding it redistributes the weights
 # again -- the z-score is per regime and the regimes are averaged with equal weight (ADR 0017 §3).
+# `launch` is the twelfth (issue #29): 2-3 new tokens list mid-run in thin USDC pools through the
+# environment's own factory, and per token the seed decides whether a demand wave follows or not.
+# Holdings at the bell are worth zero, so it measures judgment under one leading signal -- the
+# ramp's first blocks -- rather than any price relation the other regimes reward. Twelve regimes
+# make the public set 60 scenarios and the lottery's k a multiple of 12 (schedule.ts).
 regimes:
   - calm
   - cex-drift
