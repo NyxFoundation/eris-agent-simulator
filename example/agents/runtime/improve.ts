@@ -416,6 +416,12 @@ export function buildRevisionContext(opts: {
   valueUsdc: number;
   initialValueUsdc: number;
   sinceLastRevisionUsdc: number | null;
+  // What holding the inventory of the run's first observation would be worth now, less what it was
+  // worth then, at fair prices: the do-nothing counterfactual for the PnL above. The PnL is the
+  // market's move on that inventory plus what trading did, and without this line a model reads a
+  // rising market as its own doing (or a falling one as its fault). Same for the last revision.
+  holdSinceStartUsdc?: number | null;
+  holdSinceLastRevisionUsdc?: number | null;
   currentVersion: number;
   history: StrategyVersion[];
   recent: Array<{ round: number; reason?: string; action?: unknown }>;
@@ -439,14 +445,26 @@ export function buildRevisionContext(opts: {
   epochId?: string;
 }): string {
   const pnl = opts.valueUsdc - opts.initialValueUsdc;
+  const withHold = (actual: number, hold: number | null | undefined): string => {
+    if (hold === null || hold === undefined) return `${actual.toFixed(2)} USDC`;
+    const trading = actual - hold;
+    return (
+      `${actual.toFixed(2)} USDC (holding the inventory you had then would be ` +
+      `${hold >= 0 ? "+" : ""}${hold.toFixed(2)} USDC; ` +
+      `the difference, ${trading >= 0 ? "+" : ""}${trading.toFixed(2)} USDC, is what trading did)`
+    );
+  };
   const lines = [
     `block: ${opts.block}`,
     `strategy version: ${opts.currentVersion}`,
-    `PnL since the run started: ${pnl.toFixed(2)} USDC`,
+    `PnL since the run started: ${withHold(pnl, opts.holdSinceStartUsdc)}`,
   ];
   if (opts.sinceLastRevisionUsdc !== null)
     lines.push(
-      `PnL since the last revision: ${opts.sinceLastRevisionUsdc.toFixed(2)} USDC`,
+      `PnL since the last revision: ${withHold(
+        opts.sinceLastRevisionUsdc,
+        opts.holdSinceLastRevisionUsdc,
+      )}`,
     );
   // Issue #77: the epoch count is the frame for everything below it. The PnL and the history are
   // this epoch's; the versions and the memory are not, and a model that reads them as one run will

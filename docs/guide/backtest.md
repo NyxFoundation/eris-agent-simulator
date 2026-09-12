@@ -133,11 +133,18 @@ npm run backtest -- --scenarios plan.yaml --agents field.yaml --resume runs/matr
   `createdAt` and stamping `resumedAt` — only when at least one epoch actually ran. A resume with
   nothing left to run leaves the stamp alone.
 - It is **refused** when the stored matrix is a different competition: another `scenarioSet`, `k`
-  (the weights are a function of it), `resetUnit`, `repeat` or **roster** (`rosterFingerprint`, the
-  sha256 of the field the matrix was run with — two fields across one matrix would average two
-  competitions); and when the set's content changed under the same path (a stored ordinal that is
-  not the plan's `(regime, seed)`). A different source commit is a warning, not a refusal; so is a
-  stored matrix written before the roster was recorded.
+  (the weights are a function of it), `resetUnit`, `repeat`, `--agent-state-root` or **roster**
+  (`rosterFingerprint`, the sha256 of the field the matrix was run with — two fields across one
+  matrix would average two competitions); and when the set's content changed under the same path
+  (a stored ordinal that is not the plan's `(regime, seed)`). A different source commit is a
+  warning, not a refusal; so is a stored matrix written before the roster was recorded.
+- With `--agent-state-root` (issue #77), **each re-run starts from the state the plan says it
+  starts from**: the root is put back to the checkpoint of the latest complete ordinal below it
+  (`<root>/.snapshots/end-s<N>`, written after every completed scenario; `initial` before the
+  first), not left as whatever ran last. Re-running s=3 does not re-run the s=4 and s=5 that already
+  completed on the state the first attempt of s=3 left behind — rules §4.4.2 re-runs the voided
+  epoch, and whether the ones after it stand is the organizer's call. A matrix run before these
+  checkpoints existed cannot be resumed under a state root; it says so and stops.
 
 ## Repetition and reproducibility
 
@@ -206,7 +213,8 @@ agents:
 | `--scenarios <path>` | Replay a whole set (regimes x seeds) and write `matrix.json` + `standings.json`. Mutually exclusive with `--regime` |
 | `--scenarios <path>` (plan form) | `{k, epochs: [{s, regime, seed}]}` from `npm run competition -- plan`; replayed in order with those ordinals |
 | `--agents <roster>` | Swap the regime's default agents with a roster file (YAML/JSON) |
-| `--resume <matrix-dir>` | Continue a stored `runs/matrix-<id>/` instead of opening a new one: complete scenarios are skipped, missing and failed ones run, the artifacts are rewritten in place. Refused when `scenarioSet` / `k` / `resetUnit` / `repeat` differ. `--scenarios` only |
+| `--resume <matrix-dir>` | Continue a stored `runs/matrix-<id>/` instead of opening a new one: complete scenarios are skipped, missing and failed ones run, the artifacts are rewritten in place. Refused when `scenarioSet` / `k` / `resetUnit` / `repeat` / `--agent-state-root` differ. `--scenarios` only |
+| `--agent-state-root <dir>` | Carry each agent's persistent state across the scenarios, in list order (issue #77). Off by default. Checkpoints the root after every completed scenario so a resume can restore the right starting point |
 | `--repeat <N>` | Repeat each scenario N times (default 1). A calibration diagnostic; standings take the median |
 | `--port <N>` | Port for the backtest-dedicated anvil (default 8547; use a different port for parallel runs) |
 | `--state <dir>` | State dump directory (default `backtest/state`) |

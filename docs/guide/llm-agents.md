@@ -86,9 +86,9 @@ agent could already see — no new chain call, and no privilege:
 
 | section | what it carries | where it comes from |
 |---|---|---|
-| `transactions since the last revision` | the transactions as a partition (succeeded / mined-but-reverted / never mined), mean inclusion latency in blocks, mean `txIndex`, the mean venue gap the strategy fired on, and the marked-value change across trades that have had time to settle | `runtime/evidence.ts` `TradeLedger`, fed by `send.ts` and by the receipts `computeCompetition` already resolves (ADR 0011) |
-| `market history, blocks A..B` | per base: fair price high/low/now; per venue and base: the gap against fair in bps with high/low/now, how many blocks it spent over 5 / 10 / 25 / 50 bps, and the widest round-trip cost the venue quoted; per market-priced stable: departures from par as **signed windows**, with the worst price and whether the window is still open; and the discount venues (`lst:market-vs-redemption`, `liquity:EUSD-vs-par`) as windows of their own | `runtime/evidence.ts` `MarketHistory`, one sample per observed block |
-| `recent decisions` | the last 24, each annotated with what its transaction did — `[swap: included @+1 idx 3, value +12.40 after 3b, decided on a 31.0 bps gap]`, `[swap: reverted @+2 idx 9]` — plus send-stage failures as `rejected (...)` / `submit_failed (...)` | the decision ring in `bot.ts`, joined to the ledger by the block the strategy decided on |
+| `transactions since the last revision` | the transactions as a partition (succeeded / mined-but-reverted / never mined), mean inclusion latency in blocks, mean `txIndex`, the mean venue gap the strategy fired on, and the marked-value change across trades that have had time to settle — split into what holding the pre-trade inventory would have made at fair prices (the market's share) and what the trades themselves did | `runtime/evidence.ts` `TradeLedger`, fed by `send.ts` and by the receipts `computeCompetition` already resolves (ADR 0011) |
+| `market history, blocks A..B` | per base: fair price high/low/now; per venue and base: the gap against fair in bps with high/low/now, how many blocks it spent over 5 / 10 / 25 / 50 bps, and the widest round-trip cost the venue quoted; per market-priced stable: departures from par as **signed windows**, with the worst price and whether the window is still open; and the LST's discount against its redemption rate (`lst:market-vs-redemption`) as a window of its own — eUSD is a market-priced stable and is reported once, under the stables | `runtime/evidence.ts` `MarketHistory`, one sample per observed block |
+| `recent decisions` | the last 24, each annotated with what its transaction did — `[swap: included @+1 idx 3, value +12.40 after 3b (market +11.90, trade +0.50), decided on a 31.0 bps gap]`, `[swap: reverted @+2 idx 9]` — plus send-stage failures as `rejected (...)` / `submit_failed (...)` | the decision ring in `bot.ts`, joined to the ledger by the block the strategy decided on |
 | `latest observation` | the current block in full | unchanged |
 
 Two design choices worth knowing, because a participant replacing the runtime inherits them:
@@ -100,6 +100,19 @@ Two design choices worth knowing, because a participant replacing the runtime in
   series is counted into a fixed ladder (5 / 10 / 25 / 50 bps) instead of against a guess. A
   strategy that fires at 10 bps can read its own threshold off the counts, and so can one that
   should move it.
+- **The market's move is taken out before a number is called the trade's.** Every marked-value
+  delta — per trade, and the PnL lines at the top — is shown next to what holding the inventory of
+  its baseline would have made at fair prices over the same window, and the remainder is what the
+  trade (or trading) did. The basket everyone is funded with (8 WETH + 0.4 WBTC) moves by hundreds
+  of USDC in three blocks; without the split, the smoke run of 2026-09-07 credited a trading agent
+  with +6,877 USDC over windows in which a do-nothing agent "made" +6,562 by the same measure, and
+  the model kept a strategy on the strength of it. The competition's deviation score removes the
+  same component by subtracting the field's mean (rules §4.4); inside one agent there is no field,
+  so its own do-nothing is the baseline. Spot WETH/WBTC only in this cut: a perp, lending or LST
+  position's market move is still inside the trade figure, and the line says so.
+- **The baseline is the mark the strategy decided on**, not the first mark after inclusion. An
+  arbitrage earns its edge at the fill; a baseline taken after the fill had already banked it and
+  measured three blocks of drift instead.
 
 ### Where to do the reading
 
@@ -218,7 +231,10 @@ npm run backtest -- --scenarios config/scenarios/public.yaml --agent-state-root 
 
 `--agent-state-root` carries each agent's directory across the scenarios of the matrix **in list
 order**, which is the ordering the live competition has. Off by default, so every stored matrix
-stays comparable with the ones taken before it.
+stays comparable with the ones taken before it. The root is checkpointed after every completed
+scenario (`<root>/.snapshots/end-s<N>`), so a `--resume` re-runs a missing or failed ordinal from
+the state the plan says it starts from rather than from whatever ran last; the checkpoints are the
+operator's to delete once the matrix is final.
 
 Run three arms of the same agent: frozen (`ERIS_AGENT_FROZEN: "1"`), improving without persistence
 (no `--agent-state-root`), improving with it. **`ERIS_AGENT_FROZEN` ignores the state directory as

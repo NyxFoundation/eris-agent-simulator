@@ -11,6 +11,9 @@ import {
   assertResumable,
   mergeStoredResults,
   readStoredMatrix,
+  STATE_LABEL_INITIAL,
+  stateLabelAfter,
+  stateLabelBefore,
 } from "../core/src/backtest/resume.js";
 import type { ScenarioResult } from "../core/src/backtest/standings.js";
 
@@ -136,6 +139,41 @@ test("readStoredMatrix wants a schema-2 matrix.json in the directory", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("stateLabelBefore: a re-run starts from the end of the latest complete ordinal below it", () => {
+  // Issue #77. With state carried across scenarios, a resume that re-ran s=3 from whatever the
+  // root held after s=5 would be continuing a different competition. The plan, not the run order,
+  // says what s=3 starts from.
+  const complete = new Set([1, 2, 4, 5]);
+  assert.equal(stateLabelBefore(3, complete), stateLabelAfter(2));
+  assert.equal(stateLabelBefore(6, complete), stateLabelAfter(5));
+  assert.equal(stateLabelBefore(1, complete), STATE_LABEL_INITIAL);
+  assert.equal(stateLabelBefore(2, new Set()), STATE_LABEL_INITIAL);
+  assert.equal(stateLabelAfter(12), "end-s12");
+});
+
+test("assertResumable: a matrix run with a different agent state root is a different competition", () => {
+  const stored = {
+    schema: 2,
+    scenarioSet: "config/scenarios/public.yaml",
+    k: 4,
+    resetUnit: "scenario",
+    repeat: 1,
+    agentStateRoot: "/state/a",
+  };
+  const base = { scenarioSet: "config/scenarios/public.yaml", k: 4, resetUnit: "scenario", repeat: 1 };
+  assertResumable(stored, { ...base, agentStateRoot: "/state/a" });
+  assert.throws(
+    () => assertResumable(stored, { ...base, agentStateRoot: "/state/b" }),
+    /agentStateRoot: stored \/state\/a, now \/state\/b/,
+  );
+  // Dropping the flag on resume is the same mistake in the other direction, and so is adding it.
+  assert.throws(() => assertResumable(stored, base), /agentStateRoot: stored \/state\/a, now \(none\)/);
+  assert.throws(
+    () => assertResumable({ ...stored, agentStateRoot: undefined }, { ...base, agentStateRoot: "/state/a" }),
+    /agentStateRoot: stored \(none\), now \/state\/a/,
+  );
 });
 
 // Issue #102 (#91 F9): a resume on a different roster used to exit 0 and rewrite the artifact.

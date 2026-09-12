@@ -294,13 +294,32 @@ test("clampMemory bounds the note where it is set, not only where it is written"
 test("snapshots are pruned, so a competition of them cannot fill the disk", () => {
   // One copy of a 64 MiB directory per agent per epoch is tens of gigabytes over k = 40, and §4.4.2
   // voids an epoch and re-runs it promptly or not at all.
+  // Run ids are what the coordinator names them by (ISO timestamps with the punctuation replaced);
+  // only those are pruned, see the labelled-checkpoint test below.
   const root = tmp();
-  for (let i = 0; i < 12; i++) prepareAgentState(root, "venue-arb", `epoch-${String(i).padStart(2, "0")}`);
+  const runId = (i: number): string => `2026-09-07T00-00-${String(i).padStart(2, "0")}-000Z`;
+  for (let i = 0; i < 12; i++) prepareAgentState(root, "venue-arb", runId(i));
   const kept = readdirSync(join(root, SNAPSHOT_DIR));
   assert.equal(kept.length, 8);
   // The newest survive: an old epoch is the one nobody is going to re-run.
-  assert.ok(kept.includes("epoch-11"));
-  assert.ok(!kept.includes("epoch-00"));
+  assert.ok(kept.includes(runId(11)));
+  assert.ok(!kept.includes(runId(0)));
+});
+
+test("a labelled checkpoint is never pruned, however many epochs follow it", () => {
+  // Labels are what a resumed matrix restores before re-running an ordinal (backtest/resume.ts);
+  // pruning one turns that restore into a silent no-op halfway through the competition.
+  const root = tmp();
+  prepareAgentState(root, "venue-arb", "2026-09-07T00-00-00-000Z");
+  snapshotAllAgentState(root, "initial");
+  snapshotAllAgentState(root, "end-s1");
+  for (let i = 1; i < 14; i++)
+    prepareAgentState(root, "venue-arb", `2026-09-07T00-00-${String(i).padStart(2, "0")}-000Z`);
+  const kept = readdirSync(join(root, SNAPSHOT_DIR));
+  assert.ok(kept.includes("initial"));
+  assert.ok(kept.includes("end-s1"));
+  assert.equal(kept.filter((n) => n.startsWith("2026-")).length, 8);
+  assert.equal(restoreAllAgentState(root, "end-s1"), true);
 });
 
 test("a restore leaves no half-copied directory behind under its own name", () => {
