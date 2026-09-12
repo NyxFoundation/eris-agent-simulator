@@ -382,7 +382,9 @@ With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
   competition is in progress; that comes from the plan's epoch count, not from finding a live run
 
 `/runs/mode.json` reports the switches, and the pages say what is absent rather than rendering it
-empty: the decision-log tab and the mempool feed are replaced by a sentence, the scenario list's
+empty: the decision-log tab and the mempool feed are replaced by a sentence (for operator-run agents
+too — in the live week nothing is `external`, and the withholding is the audience switch's, not the
+agent's; issue #69, rule in `dashboard/src/data/logVisibility.ts`), the scenario list's
 episode column carries a note, the regime columns are gone, and live mode stops reading the chain
 (the RPC an audience would need is the competition node itself). Until that endpoint answers, the
 pages hold **both** restrictions on: a browser that could not reach it must not render what either
