@@ -85,6 +85,20 @@ import {
 import { FlowProcess, type FlowOrderWire } from "../flowProcess.js";
 import { deployFlashArb, FLASH_ARB_ADDRESS } from "../flashArbDemo.js";
 import { RealtimeAgentProcess } from "./agentProcess.js";
+import {
+  deriveLiquityVictims,
+  liquityBreachMagnitude,
+  LIQUITY_VICTIM_ENV,
+  openLiquityVictimTroves,
+  readLiquitySystem,
+  readLiquityVictimTroves,
+  recoveryCohortCollateralWei,
+  seedStabilityPool,
+  setupLiquityVictims,
+  tcrAtCrashBottom,
+  type LiquityVictim,
+  type LiquityVictimTrove,
+} from "../liquityVictims.js";
 import { waitForAgentsReady } from "./agentsReady.js";
 import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
@@ -863,6 +877,10 @@ export async function runRealtimeSimulation(
       // they are machinery, and a dry flow bot removes market activity from everyone.
       const gasBuffer = isFlow ? undefined : 0n;
       const ethWei = isFlow ? config.flowEthWei : config.initialEthWei;
+      // Both sides of the flow's inventory are the regime's to size (issue #112): a flowTrend hold
+      // that leans one way for 30 blocks spends the wallet's whole balance on that side, and a
+      // wallet funded like an agent delivers x1.4 of a declared x2-3 lean.
+      const usdcUnits = isFlow ? config.flowUsdcUnits : config.initialUsdcUnits;
       if (!t.privateKey) {
         // A participant's own address (ADR 0021 §2). Same endowment, reached without signing as
         // them -- and therefore without the venue approvals below, which only they can grant.
@@ -873,7 +891,7 @@ export async function runRealtimeSimulation(
           t.address,
           ethWei,
           wethWei,
-          config.initialUsdcUnits,
+          usdcUnits,
           baseAmounts,
           gasBuffer,
         );
@@ -886,7 +904,7 @@ export async function runRealtimeSimulation(
         t.privateKey,
         ethWei,
         wethWei,
-        config.initialUsdcUnits,
+        usdcUnits,
         baseAmounts,
         gasBuffer,
       );
@@ -1379,6 +1397,129 @@ export async function runRealtimeSimulation(
     // same account, and two senders on one key race on the nonce — the failure mode that once froze
     // the LST redemption rate for a whole run. Checked once for both events, since they share it.
     const deployerPk = config.privateKeys.deployer;
+
+    // ---- Liquity victims (issue #107): the CDP counterpart of the Aave cohort above ----
+    // Opened here, after the venue's oracle points at this run's PriceFeed, so the ICR they land
+    // at is the one the chain computes. Not scored; the crash liquidates them (the Stability Pool's
+    // work) and the eUSD depeg redeems against them (redemption arb's work).
+    const liquityVictims: LiquityVictim[] = deriveLiquityVictims(
+      config.seed,
+      config.stressLiquityVictimCount,
+    );
+    let minLiquityVictimIcr0: number | null = null;
+    let liquityVictimMcr: number | null = null;
+    // Issue #59: when the regime declares the TCR it wants at the crash bottom, the cohort's
+    // collateral is sized from the drawn crash rather than taken from config, and the record
+    // says what that sizing expects.
+    let liquityRecovery: {
+      targetTcr: number;
+      crashMagnitude: number;
+      collWei: bigint;
+      expectedTcrAtBottom: number;
+    } | null = null;
+    if (liquityVictims.length > 0) {
+      if (!liquityRuntime)
+        throw new Error(
+          "stress.liquityVictimCount > 0 requires the liquity protocol enabled (issue #107)",
+        );
+      const freshState =
+        !config.skipReset && (config.localDeploy || Boolean(config.forkUrl));
+      if (!freshState)
+        throw new Error(
+          "Liquity victims require a fresh state: full re-fork (set ARB_RPC_URL) or local deploy mode, " +
+            "and do not set ERIS_SKIP_RESET -- a Trove left over from a previous run sits in the sorted " +
+            "list at an ICR nobody configured (issue #107; ADR 0009 §4 / ADR 0016 §2)",
+        );
+      let victimCollWei = config.stressLiquityVictimCollWethWei;
+      if (config.stressLiquityRecoveryTcr > 0) {
+        const crash = schedule.events.find((e) => e.type === "crash");
+        if (!crash)
+          throw new Error(
+            "stress.liquityRecoveryTcr needs a crash event: the cohort is sized from its drawn magnitude (issue #59)",
+          );
+        const system = await readLiquitySystem(ctx);
+        const priceWad =
+          BigInt(Math.round(latestFairPrice * 1e6)) * (10n ** 18n / 1_000_000n);
+        const sized = recoveryCohortCollateralWei({
+          systemCollWei: system.collWei,
+          systemDebtWei: system.debtWei,
+          priceWad,
+          crashMagnitude: crash.magnitude,
+          icr0: config.stressLiquityVictimIcr,
+          count: liquityVictims.length,
+          targetTcr: config.stressLiquityRecoveryTcr,
+        });
+        if (sized === null)
+          throw new Error(
+            `no cohort of ${liquityVictims.length} Troves at ICR ${config.stressLiquityVictimIcr} reaches ` +
+              `TCR ${config.stressLiquityRecoveryTcr} on a ${(crash.magnitude * 100).toFixed(1)} % crash: the ` +
+              "cohort's own post-crash ICR has to be above the target and the system above it before the " +
+              "cohort (issue #59). Lower the target, raise the ICR, or widen the crash",
+          );
+        victimCollWei = sized;
+        const debtEach = (sized * priceWad) / (BigInt(Math.round(config.stressLiquityVictimIcr * 1e6)) * (10n ** 18n / 1_000_000n));
+        liquityRecovery = {
+          targetTcr: config.stressLiquityRecoveryTcr,
+          crashMagnitude: crash.magnitude,
+          collWei: sized,
+          expectedTcrAtBottom: tcrAtCrashBottom({
+            systemCollWei: system.collWei + BigInt(liquityVictims.length) * sized,
+            systemDebtWei: system.debtWei + BigInt(liquityVictims.length) * debtEach,
+            priceWad,
+            crashMagnitude: crash.magnitude,
+          }),
+        };
+      }
+      await setupLiquityVictims(ctx, liquityVictims, victimCollWei);
+      const cohort = await openLiquityVictimTroves(ctx, liquityVictims, {
+        icr0: config.stressLiquityVictimIcr,
+        collWei: victimCollWei,
+        priceUsd: latestFairPrice,
+      });
+      if (config.stressLiquitySpSeedEusdWei > 0n)
+        await seedStabilityPool(
+          ctx,
+          deployerPk,
+          config.stressLiquitySpSeedEusdWei,
+        );
+      liquityVictimMcr = cohort.mcr;
+      for (const t of cohort.troves)
+        if (
+          Number.isFinite(t.icr) &&
+          (minLiquityVictimIcr0 === null || t.icr < minLiquityVictimIcr0)
+        )
+          minLiquityVictimIcr0 = t.icr;
+      logger.event({
+        type: "stress_liquity_victims_setup",
+        icr0: config.stressLiquityVictimIcr,
+        mcr: cohort.mcr,
+        ccr: cohort.ccr,
+        tcr: cohort.tcr,
+        collWeiPerVictim: victimCollWei.toString(),
+        spSeedEusdWei: config.stressLiquitySpSeedEusdWei.toString(),
+        ...(liquityRecovery
+          ? {
+              recovery: {
+                targetTcr: liquityRecovery.targetTcr,
+                crashMagnitude: liquityRecovery.crashMagnitude,
+                expectedTcrAtBottom: liquityRecovery.expectedTcrAtBottom,
+              },
+            }
+          : {}),
+        victims: cohort.troves.map((t) => ({
+          id: t.id,
+          address: t.address,
+          icr: t.icr,
+          debtEusdWei: t.debtEusdWei.toString(),
+          collWei: t.collWei.toString(),
+        })),
+      });
+      // Addresses are public on-chain information; handing them out adds no bidding game (the
+      // reference agents find Troves through the observation's sorted list anyway).
+      Object.assign(agentExtraEnv, {
+        [LIQUITY_VICTIM_ENV]: liquityVictims.map((v) => v.address).join(","),
+      });
+    }
     if (
       schedule.hasLiquidityPull() ||
       schedule.hasEusdDepeg() ||
@@ -2247,10 +2388,43 @@ export async function runRealtimeSimulation(
           }
         }
       }
+      // The same check for the Liquity cohort (issue #107): a Trove at ICR₀ goes under MCR at
+      // m > 1 − MCR/ICR₀.
+      if (liquityRecovery !== null) {
+        // The cohort was sized so the drawn crash lands the system on the target; the warning here
+        // is for a target that is not Recovery Mode at all (issue #59).
+        if (liquityRecovery.expectedTcrAtBottom >= 1.5)
+          logger.event({
+            type: "stress_calibration_warning",
+            reason: "crash magnitude may not reach Recovery Mode",
+            targetTcr: liquityRecovery.targetTcr,
+            expectedTcrAtBottom: liquityRecovery.expectedTcrAtBottom,
+            crashMagnitude: liquityRecovery.crashMagnitude,
+          });
+      } else if (minLiquityVictimIcr0 !== null && liquityVictimMcr !== null) {
+        const breachThreshold = liquityBreachMagnitude(
+          minLiquityVictimIcr0,
+          liquityVictimMcr,
+        );
+        for (const ev of schedule.events) {
+          if (ev.type === "crash" && ev.magnitude <= breachThreshold) {
+            logger.event({
+              type: "stress_calibration_warning",
+              reason: "crash magnitude may not breach victim ICR",
+              minLiquityVictimIcr0,
+              mcr: liquityVictimMcr,
+              breachThreshold,
+              crashMagnitude: ev.magnitude,
+            });
+          }
+        }
+      }
     }
     // Keep each victim's latest debt (USD 8-decimals) for liquidation detection. Debt decreases only via a
     // liquidationCall (victims are passive) → emit stress_liquidation with the decrease as a liquidation signal.
     const victimLastDebt = new Map<string, bigint>();
+    // The Liquity cohort's last-seen Trove, for liquidation / redemption detection (issue #107).
+    const liquityVictimLast = new Map<string, LiquityVictimTrove>();
     // Cross-venue no-arbitrage monitor (phantom-spread guard; see noArb.ts). Persistent executable
     // arb = structural pricing breakage; transient arb is the alpha agents are meant to capture.
     const noArbMonitor = new NoArbMonitor();
@@ -2690,6 +2864,62 @@ export async function runRealtimeSimulation(
             }
           };
 
+          // Liquity victims (issue #107): read the cohort's Troves while any window is open -- the
+          // crash is what breaks them, the depeg outlasts it and is when redemptions reach them --
+          // and record the ICR path, a Trove closed by liquidation, and debt taken by redemption.
+          const liquityVictimTask = async (): Promise<void> => {
+            if (liquityVictims.length === 0) return;
+            const active = schedule.activeEventAt(blockIndex);
+            if (!active && overlay.wethMult === 1) return;
+            const troves = await readLiquityVictimTroves(
+              ctx,
+              liquityVictims,
+              latestFairPrice,
+            );
+            logger.event({
+              type: "stress_liquity_victim_icr",
+              blockNumber: bn,
+              blockIndex,
+              wethMult: overlay.wethMult,
+              victims: troves.map((t) => ({
+                id: t.id,
+                status: t.status,
+                icr: Number.isFinite(t.icr) ? t.icr : null,
+                debtEusdWei: t.debtEusdWei.toString(),
+                collWei: t.collWei.toString(),
+              })),
+            });
+            for (const t of troves) {
+              const last = liquityVictimLast.get(t.id);
+              if (last && last.status === 1) {
+                if (t.status === 3) {
+                  logger.event({
+                    type: "stress_liquity_liquidation",
+                    blockNumber: bn,
+                    blockIndex,
+                    victimId: t.id,
+                    victimAddress: t.address,
+                    debtEusdWei: last.debtEusdWei.toString(),
+                    collWei: last.collWei.toString(),
+                    icrBefore: Number.isFinite(last.icr) ? last.icr : null,
+                  });
+                } else if (t.status === 4 || t.debtEusdWei < last.debtEusdWei) {
+                  logger.event({
+                    type: "stress_liquity_redemption",
+                    blockNumber: bn,
+                    blockIndex,
+                    victimId: t.id,
+                    victimAddress: t.address,
+                    redeemedEusdWei: (last.debtEusdWei - t.debtEusdWei).toString(),
+                    remainingDebtEusdWei: t.debtEusdWei.toString(),
+                    closed: t.status === 4,
+                  });
+                }
+              }
+              liquityVictimLast.set(t.id, t);
+            }
+          };
+
           // vulnerability pool hit/execution detection (ADR 0014 §6): scan funded pools' Swap logs as ground-truth
           // and emit vulnerability_exploited / safe_pool_captured.
           // Run only during a vuln run (do not add a per-block getLogs to the default run).
@@ -2847,6 +3077,7 @@ export async function runRealtimeSimulation(
             timed(stateAndFlowTask),
           ];
           if (stressVictims.length > 0) tasks.push(timed(victimTask));
+          if (liquityVictims.length > 0) tasks.push(timed(liquityVictimTask));
           if (vulnRuntime) tasks.push(timed(vulnTask));
           if (marketRegistry) tasks.push(timed(registryTask));
           // One task for both, actually rather than by comment. Every one of these sends from the
@@ -2894,6 +3125,8 @@ export async function runRealtimeSimulation(
           let taskIdx = 3;
           const victimMs =
             stressVictims.length > 0 ? results[taskIdx++] : undefined;
+          const liquityVictimMs =
+            liquityVictims.length > 0 ? results[taskIdx++] : undefined;
           const vulnMs = vulnRuntime ? results[taskIdx++] : undefined;
           const registryMs = marketRegistry ? results[taskIdx++] : undefined;
           // One measurement now that both share a task; reported under both names so the existing
@@ -2913,6 +3146,7 @@ export async function runRealtimeSimulation(
             oracleMs,
             stateFlowMs,
             ...(victimMs !== undefined ? { victimMs } : {}),
+            ...(liquityVictimMs !== undefined ? { liquityVictimMs } : {}),
             ...(vulnMs !== undefined ? { vulnMs } : {}),
             ...(registryMs !== undefined ? { registryMs } : {}),
             ...(liquidityMs !== undefined ? { liquidityMs } : {}),

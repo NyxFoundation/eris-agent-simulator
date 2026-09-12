@@ -1,7 +1,13 @@
 import { Worker } from "node:worker_threads";
 import type { AgentContext } from "@eris/sdk/agent.js";
 import type { AgentObservation } from "@eris/sdk/types.js";
-import { DECIDE_TIMEOUT_MS, DecideTimeoutError } from "./decideTimeout.js";
+import {
+  DECIDE_TIMEOUT_MS,
+  DecideTimeoutError,
+  STRATEGY_BACKOFF_AFTER,
+  STRATEGY_BACKOFF_MAX_BLOCKS,
+  STRATEGY_STARTUP_TIMEOUT_MS,
+} from "./decideTimeout.js";
 import type {
   StrategyContext,
   StrategyMetadata,
@@ -39,12 +45,16 @@ export class StrategyRunner {
   private id = 0;
   private busy = false;
   private closed = false;
+  // Failed decisions in a row, and the block the next attempt waits for (see decideTimeout.ts).
+  private consecutiveFailures = 0;
+  private backoffUntilRound = -Infinity;
 
   constructor(
     private source: StrategySource,
     private readonly context: StrategyContext,
     private readonly log: AgentContext["log"],
     private readonly timeoutMs = DECIDE_TIMEOUT_MS,
+    private readonly startupTimeoutMs = STRATEGY_STARTUP_TIMEOUT_MS,
   ) {}
 
   // An in-flight decision finishes under its own version. The next one reloads the selected source.
@@ -83,14 +93,17 @@ export class StrategyRunner {
       resolveReady = resolve;
       rejectReady = reject;
     });
-    // Loading a module can itself spin. Bound startup as well as decide, on the parent event loop.
+    // Loading a module can itself spin. Bound startup as well as decide, on the parent event loop
+    // -- with its own bound: a compile on a loaded host is slow, not stuck (issue #100).
     let initialized = false;
     const startup = setTimeout(
       () =>
         instance.fail(
-          new Error(`strategy worker startup exceeded ${DECIDE_TIMEOUT_MS}ms`),
+          new Error(
+            `strategy worker startup exceeded ${this.startupTimeoutMs}ms`,
+          ),
         ),
-      DECIDE_TIMEOUT_MS,
+      this.startupTimeoutMs,
     );
     const instance: Instance = {
       worker,
@@ -154,12 +167,22 @@ export class StrategyRunner {
 
   async decide(observation: AgentObservation): Promise<Decision> {
     if (this.busy) throw new Error("strategy decision already in progress");
+    if (observation.round < this.backoffUntilRound)
+      return {
+        action: {
+          type: "noop",
+          reason:
+            `backing off after ${this.consecutiveFailures} consecutive failed decisions; ` +
+            `next attempt at block ${this.backoffUntilRound}`,
+        },
+        submitted: [],
+      };
     this.busy = true;
     try {
       await this.start();
       const instance = this.instance!;
       const id = ++this.id;
-      return await new Promise<Decision>((resolve, reject) => {
+      const decision = await new Promise<Decision>((resolve, reject) => {
         const timer = setTimeout(() => {
           instance.pending = undefined;
           reject(new DecideTimeoutError(observation.round));
@@ -181,10 +204,27 @@ export class StrategyRunner {
           );
         }
       });
+      this.consecutiveFailures = 0;
+      return decision;
     } catch (error) {
       // Also discard workers that threw or crashed: outstanding callbacks from that decision must
-      // never be allowed to trade later. start() reconstructs the same selected source next block.
+      // never be allowed to trade later. start() reconstructs the same selected source next block
+      // -- unless this is one failure too many, in which case the next attempts wait (the spawn is
+      // what a strategy that throws every block makes expensive; see decideTimeout.ts).
       await this.discard();
+      this.consecutiveFailures++;
+      const over = this.consecutiveFailures - STRATEGY_BACKOFF_AFTER;
+      if (over >= 0) {
+        const skip = Math.min(2 ** over, STRATEGY_BACKOFF_MAX_BLOCKS);
+        this.backoffUntilRound = observation.round + skip + 1;
+        this.log({
+          round: observation.round,
+          reason:
+            `strategy failed ${this.consecutiveFailures} times in a row; the worker is not ` +
+            `replaced for the next ${skip} block(s), and each further failure doubles that ` +
+            `(up to ${STRATEGY_BACKOFF_MAX_BLOCKS})`,
+        });
+      }
       throw error;
     } finally {
       this.busy = false;

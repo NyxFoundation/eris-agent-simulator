@@ -108,6 +108,32 @@ export function scoresFromSummary(
   });
 }
 
+export const EXITED_EARLY_FLAG = /^process exited early:/;
+
+// What a reader of matrix.json / standings.json has to see about the epoch as a whole. The
+// per-agent flags say who died; they do not say that *everyone* did, and an epoch in which every
+// agent exited at boot was written up as a scored epoch -- reconstruction ran, P ≈ 0 for all, the
+// standings moved (issue #102, #91 F2; 32 × `agent_process_exited` at +41 s in the docker fixture,
+// 13 of 31 at boot in the check matrix's s=6). The baseline is not counted: it is placed and valued
+// but never in the population, so it cannot make an epoch contested.
+export function scenarioFlags(agents: readonly AgentScore[]): string[] {
+  const field = agents.filter((a) => !a.baseline);
+  if (field.length === 0) return [];
+  const exited = field.filter((a) =>
+    (a.flags ?? []).some((f) => EXITED_EARLY_FLAG.test(f)),
+  );
+  if (exited.length === 0) return [];
+  if (exited.length === field.length)
+    return [
+      `uncontested: every non-baseline agent (${field.length}) exited early; ` +
+        "the P of this epoch are the endowment's drift, not a result (rules §4.4.2: re-execution " +
+        "is the remedy, and it is the operator's call)",
+    ];
+  return [
+    `${exited.length} of ${field.length} non-baseline agents exited early`,
+  ];
+}
+
 // Fold N repeats of one scenario into a single per-agent record by picking, for each agent, the
 // repeat whose ranking metric is the median and reporting *that repeat's whole record*.
 //

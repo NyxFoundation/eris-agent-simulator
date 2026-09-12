@@ -93,6 +93,24 @@ export type SimConfig = {
   stressVictimCount: number; // ERIS_STRESS_VICTIM_COUNT
   stressVictimHf0: number; // ERIS_STRESS_VICTIM_HF0 (target initial HF. default 1.10. must exceed LT/(0.97·LTV)≈1.08)
   stressVictimSupplyWethWei: bigint; // ERIS_STRESS_VICTIM_WETH_WEI (supply per victim. default 5)
+  // Issue #107: the CDP counterpart -- seed-derived Liquity Troves opened near MCR so a crash
+  // liquidates them (Stability Pool work) and a depeg redeems against them (redemption work).
+  // Count (ERIS_STRESS_LIQUITY_VICTIM_COUNT, default 0 = off), the ICR each Trove is opened at
+  // (ERIS_STRESS_LIQUITY_VICTIM_ICR, default 1.20: MCR is 1.10, so a 12-16 % crash breaks it) and
+  // the collateral per Trove (ERIS_STRESS_LIQUITY_VICTIM_COLL_WETH_WEI, default 5 WETH). Not scored.
+  stressLiquityVictimCount: number;
+  stressLiquityVictimIcr: number;
+  stressLiquityVictimCollWethWei: bigint;
+  // Issue #59: a regime declares the system TCR it wants at the bottom of its crash
+  // (ERIS_STRESS_LIQUITY_RECOVERY_TCR, 0 = off). The coordinator then sizes each victim's
+  // collateral from the drawn crash magnitude so the cohort drags TCR under that value -- under
+  // CCR (1.5) is Recovery Mode -- and fails fast at setup if no cohort can. Overrides
+  // stressLiquityVictimCollWethWei.
+  stressLiquityRecoveryTcr: number;
+  // Issue #59: eUSD the environment (the deployer, holder of the genesis Trove's surplus) puts
+  // into the Stability Pool at setup (ERIS_STRESS_LIQUITY_SP_SEED_EUSD_WEI, 0 = none). Recovery
+  // Mode liquidates a Trove between MCR and TCR only when the pool can absorb its whole debt.
+  stressLiquitySpSeedEusdWei: bigint;
   // Approximate one-sided liquidity to seed each vuln pool with (in USDC-denominated units). The deeper it is,
   // the less an agent's trade moves the price, so the bait becomes realized profit. ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS (default 2,000,000 USDC).
   vulnPoolLiquidityUsdcUnits: bigint;
@@ -224,6 +242,11 @@ export type SimConfig = {
   // Default 0 = as before (flow also has no base).
   flowWethWei: bigint;
   flowBaseAmounts: Record<string, bigint>;
+  // The flow wallets' USDC. Used to be the agents' `initialUsdcUnits` with no knob of its own,
+  // which capped the buy side of a flowTrend hold the same way a missing WETH balance capped the
+  // sell side (issue #112: 25k USDC is ~8 WETH at $3,000, and a x3 hold buys ~50 WETH per venue).
+  // Default = initialUsdcUnits, so a config that does not set it funds the flow as before.
+  flowUsdcUnits: bigint;
   initialWethWei: bigint;
   // ADR 0013: base symbol -> initial distribution amount (token units). WETH equals initialWethWei
   // for compatibility. Additional bases are read from INITIAL_<SYM>_<UNIT> (e.g. INITIAL_WBTC_SATS),
@@ -384,6 +407,17 @@ export function loadConfig(env = process.env): SimConfig {
       env.ERIS_STRESS_VICTIM_WETH_WEI,
       5_000_000_000_000_000_000n,
     ),
+    stressLiquityVictimCount: Math.max(0, intEnv(env.ERIS_STRESS_LIQUITY_VICTIM_COUNT, 0)),
+    stressLiquityVictimIcr: floatEnv(env.ERIS_STRESS_LIQUITY_VICTIM_ICR, 1.2),
+    stressLiquityVictimCollWethWei: bigintEnv(
+      env.ERIS_STRESS_LIQUITY_VICTIM_COLL_WETH_WEI,
+      5_000_000_000_000_000_000n,
+    ),
+    stressLiquityRecoveryTcr: floatEnv(env.ERIS_STRESS_LIQUITY_RECOVERY_TCR, 0),
+    stressLiquitySpSeedEusdWei: bigintEnv(
+      env.ERIS_STRESS_LIQUITY_SP_SEED_EUSD_WEI,
+      0n,
+    ),
     vulnPoolLiquidityUsdcUnits: bigintEnv(
       env.ERIS_VULN_POOL_LIQUIDITY_USDC_UNITS,
       2_000_000_000_000n,
@@ -447,6 +481,10 @@ export function loadConfig(env = process.env): SimConfig {
       WETH: initialWethWei,
     }),
     initialUsdcUnits: bigintEnv(env.INITIAL_USDC_UNITS, 25_000_000_000n),
+    flowUsdcUnits: bigintEnv(
+      env.FLOW_USDC_UNITS,
+      bigintEnv(env.INITIAL_USDC_UNITS, 25_000_000_000n),
+    ),
     defaultPriorityFeeWei: bigintEnv(
       env.DEFAULT_PRIORITY_FEE_WEI,
       100_000_000n,

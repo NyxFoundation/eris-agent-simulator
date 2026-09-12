@@ -16,7 +16,8 @@
 # Funding is WETH-heavy because a Trove needs collateral. That reintroduces price drift into
 # netPnlUsdc; read alphaUsdc, and read scores within a run rather than across price paths.
 #
-# **Recovery Mode is not reachable here** and the regime does not pretend otherwise. The genesis
+# **Recovery Mode is not reachable here** and the regime does not pretend otherwise (it is in
+# config/regimes/cdp-recovery.yaml, where the environment's victim cohort supplies the debt -- issue #59). The genesis
 # Trove is 250 ETH against 250k eUSD (300% ICR) and dwarfs anything agents can open with this
 # funding: measured at seed 501, the system TCR bottoms at 2.244 against a CCR of 1.5. Reaching it
 # needs the system's debt roughly tripled, which dilutes the redemption fee curve and the Stability

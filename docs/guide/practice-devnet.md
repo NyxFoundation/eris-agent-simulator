@@ -107,7 +107,7 @@ leaves no trace anyone but you can verify.
 npm run check:ordering -- --live --rounds 5      # issue #35: does the builder order by fee?
 npm run stress:rpc -- --agents 30 --seconds 60 --write   # issue #36: does the read load fit?
 
-# 3. the period
+# 3. the period — in the foreground while you watch it start
 npm run sim:realtime -- --config config/practice.yaml
 
 # 4. hand out credentials, one participant at a time
@@ -116,6 +116,14 @@ npm run manifest -- --config config/practice.yaml --participant alice
 
 # 5. serve the dashboard
 npm run dashboard:build && npm run dashboard:serve     # :5174
+```
+
+A period runs for a week, so step 3 does not stay in a terminal. On the box that hosts it, run the
+coordinator under systemd instead — `infra/devnet/` has the unit, what it needs, why a restart
+begins a new competition, and the Slack alert that fires when the chain stops moving.
+
+```bash
+systemctl --user enable --now ascon-devnet.service
 ```
 
 ### The chain's own keys (issue #74)

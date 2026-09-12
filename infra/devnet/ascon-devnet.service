@@ -1,0 +1,46 @@
+[Unit]
+Description=ASCON practice devnet coordinator
+Documentation=https://github.com/NyxFoundation/eris-agent-simulator/blob/main/infra/devnet/README.md
+After=network-online.target
+Wants=network-online.target
+
+# A restart does not resume: `competitionId` is the process start time (core/src/realtime/
+# coordinator.ts), so every start opens a NEW competition directory and the standings begin again.
+# That is tolerable once. It is not tolerable in a loop, which would shard a week-long period into
+# dozens of directories nobody can read. Three starts an hour, then the unit stays failed and the
+# stall alert (infra/monitoring) says so in Slack.
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/eris-agent-simulator
+
+# `.env.local` is read in-process (core/src/cli/bootstrapEnv.ts) relative to WorkingDirectory, so
+# ANVIL_RPC_URL / CHAIN_ID / TREASURY_PRIVATE_KEY stay there and never appear in this file.
+# systemd gives no login shell, so PATH has to be stated.
+Environment=PATH=%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin
+
+# The chain is a container that may still be starting at boot. Waiting here rather than failing
+# keeps the restart budget above for real faults.
+ExecStartPre=%h/workspace/eris-agent-simulator/infra/devnet/wait-for-chain.sh
+
+# The config is the period. Every `run.*` key in it WINS over the environment (sdk/src/runConfig.ts),
+# so overriding the block count or the report directory from here silently does nothing — copy the
+# config and point at the copy instead.
+ExecStart=/usr/bin/env npm run sim:realtime -- --config config/practice.yaml
+
+Restart=on-failure
+RestartSec=30
+
+# The coordinator installs no SIGTERM handler. A stop is abrupt: events.jsonl / blocks.csv /
+# epochs.jsonl are append-only and survive, summary.json is not written. Stopping ends the period.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ascon-devnet
+
+[Install]
+WantedBy=default.target

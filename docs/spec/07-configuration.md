@@ -94,7 +94,8 @@ RPC URL や chain id が秘密情報側にあるのは、**それらが regime �
 | `usdcUnits` | 25,000 USDC | 初期 USDC |
 | `base` | `{WETH: wethWei}` | 追加 base の初期在庫 |
 | `flowEthWei` | 1,000 ETH | flow ウォレットの native |
-| `flowWethWei` | 0 | flow ウォレットの WETH |
+| `flowWethWei` | 0 | flow ウォレットの WETH（公式レジームは 150 WETH。`flowTrend` の hold に売り側の在庫を持たせる。issue #112） |
+| `flowUsdcUnits` | `usdcUnits` | flow ウォレットの USDC（公式レジームは 450,000 USDC = $3,000 換算で 150 WETH。同じ hold の買い側） |
 | `flowBase` | {} | flow ウォレットの追加 base |
 
 **公式レジームは ETH / BTC / USDC のバスケットを配る**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）。当初は USDC-only（`wethWei: "0"`）で初期 β を消していたが（ADR 0017 §4）、**LST vault と Trove は WETH/ETH 建てなので、USDC-only では各戦略の売り側に在庫が無く構造的に死ぬ**ことが分かった。β はベンチマークも同じ配布を持つので M9 からは相殺される — USDC-only が守っていたのは報告値である `netPnlUsdc` の方だった。
@@ -148,6 +149,8 @@ USDC-only を維持しているのは **`metric-*` レジームだけ**で、こ
 |---|---|---|
 | `stress.events` | [] | イベント配列（[04](04-stress-events.md)） |
 | `stress.victimCount` / `victimHf0` / `victimWethWei` | 0 / 1.10 / 5 WETH | 清算 victim |
+| `stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei` | 0 / 1.20 / 5 WETH | Liquity victim Trove（issue #107。`liquity` 必須、fresh state 必須） |
+| `stress.liquityRecoveryTcr` / `liquitySpSeedEusdWei` | 0（無効）/ 0 | 暴落の底で system TCR をこの値に落とすよう cohort の担保を setup で逆算する（届かなければ fail-fast）/ 環境が Stability Pool に入れる eUSD（issue #59） |
 | `vuln.events` / `poolLiquidityUsdcUnits` / `poolFeeBps` / `llm` | [] / 2M USDC / 30 / "0" | 脆弱性イベント（ADR 0014） |
 | `lst.simulatedSecondsPerBlock` | 3600 | 経済クロック（1 ブロック = 1 時間） |
 | `lst.apyBps` | 300 | 3%/yr |

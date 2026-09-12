@@ -38,7 +38,7 @@ flowchart LR
 
 A regime is **a YAML in the existing config schema** (same format as [Configuration](configuration.md)) describing a family of market conditions: the fair-price OU parameters, flow intensity, and the stress event ranges. It carries no seed. Given one, the fair-price path, flow orders, and stress event schedule all replay deterministically.
 
-The **seven official regimes** are the competition set (ADR 0017 §1, completed by issue #27):
+The **eleven official regimes** are the competition set (ADR 0017 §1, completed by issue #27; `vuln` by ADR 0014, `spike` by issue #105, `depeg-persist` by issue #106, `cdp-incident` by issue #107):
 
 | regime | market condition |
 |---|---|
@@ -49,6 +49,10 @@ The **seven official regimes** are the competition set (ADR 0017 §1, completed 
 | `lending-incident` | collateral crash + victims + liquidations + books thinned on the same window |
 | `crash` | a price gap plus a `liquidityPull` on the same window, so uniswap, balancer and curve all thin exactly while the price moves ([#52](https://github.com/NyxFoundation/eris-agent-simulator/issues/52)). At a 50% pull the cost of taking 10 WETH roughly doubles (uniswap/balancer) to quadruples (curve), while the price a small trade sees is unchanged |
 | `depeg` | a registry stable stops being a dollar ([#27](https://github.com/NyxFoundation/eris-agent-simulator/issues/27)) |
+| `vuln` | pools appear mid-run, most of them rigged (ADR 0014) |
+| `spike` | crash's mirror: the fair price gaps 15–22% *up* with the same aligned pull ([#105](https://github.com/NyxFoundation/eris-agent-simulator/issues/105)) |
+| `depeg-persist` | the same depeg with `persist: true`: the discount never closes inside the epoch, so holding for par is a bet rather than a wait ([#106](https://github.com/NyxFoundation/eris-agent-simulator/issues/106)) |
+| `cdp-incident` | Liquity victim Troves at ICR 1.20, a 12–16% crash with the pull, and an eUSD depeg on the same window ([#107](https://github.com/NyxFoundation/eris-agent-simulator/issues/107)) |
 
 Also in `config/regimes/`, outside the competition set: `lst` and `liquity` / `liquity-crash` (single
 venues, for verifying them on their own), and the `b-harness` / `metric-*` / `ruin-test` /
@@ -64,7 +68,7 @@ For what each regime's events actually do, see [Market Stress Events](stress-eve
 
 ```yaml
 # config/scenarios/public.yaml — the cartesian product of the two lists
-regimes: [calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg]
+regimes: [calm, cex-drift, informed-flow, whale, lending-incident, crash, depeg, vuln, spike, depeg-persist, cdp-incident]
 seeds: [101, 202, 303, 404, 505]
 ```
 
@@ -97,7 +101,7 @@ Two artifacts land in `runs/matrix-<id>/`:
 
 | file | what it is |
 |---|---|
-| `matrix.json` | raw per-scenario, per-agent results — P (`pnlUsdc`, with `pnlSource`), `netPnlUsdc` / `alphaUsdc`, the endpoints, `baseline`, `participant` (the rules §2.2 unit, when the roster states one), `flags` — plus the ordinal `s`, `k`, `resetUnit`, run directories and, when the plan carried a timetable (`npm run competition -- plan … --starts-at --every-minutes`), a `schedule` of planned ordinals with their `startsAt` — the dashboard's "next epoch starts at" (schema 2) |
+| `matrix.json` | raw per-scenario, per-agent results — P (`pnlUsdc`, with `pnlSource`), `netPnlUsdc` / `alphaUsdc`, the endpoints, `baseline`, `participant` (the rules §2.2 unit, when the roster states one), `flags` — plus the ordinal `s`, `k`, `resetUnit`, `rosterFingerprint` (the field, for `--resume`), run directories and, when the plan carried a timetable (`npm run competition -- plan … --starts-at --every-minutes`), a `schedule` of planned ordinals with their `startsAt` — the dashboard's "next epoch starts at" (schema 2). A scenario record carries its own `flags` when the epoch as a whole needs saying: `uncontested: every non-baseline agent (N) exited early` when nobody was left to trade, or `n of N non-baseline agents exited early` |
 | `standings.json` | the ranking derived from them |
 
 The ranking is a derived view on purpose: `standings.json` recomputes from `matrix.json` alone, so a finished matrix can be re-read without re-running anything (ADR 0017 §4). The rule itself is the competition's (rules §4.4, ADR 0023).
@@ -108,7 +112,7 @@ Ranking: each scenario is one epoch. An agent's P = V_K − V_0 becomes a deviat
 
 > **`--scenarios` takes two shapes.** `{regimes, seeds}` is the cartesian product, run and numbered in that order; `{k, epochs: [{s, regime, seed}]}` is an ordered plan as `npm run competition -- plan` writes it from the lottery seed (rules §3.3), with `k` the schedule length the weights are taken over.
 
-Nothing disqualifies. An agent whose process died is scored on what it left behind (rules §2.3, §4.4.2), a fee-cap violation is a §8 matter for the operator, and both appear as `flags` beside the number. An agent absent from a scenario's summary was not placed in it and is simply not in that population. A scenario that produced no summary at all is an invalid epoch for everyone (§4.4.2).
+Nothing disqualifies. An agent whose process died is scored on what it left behind (rules §2.3, §4.4.2), a fee-cap violation is a §8 matter for the operator, and both appear as `flags` beside the number. An agent absent from a scenario's summary was not placed in it and is simply not in that population. A scenario that produced no summary at all is an invalid epoch for everyone (§4.4.2). An epoch in which **every** non-baseline agent exited early is still scored — the arithmetic does not change — but the scenario record and its `standings.json` epoch carry an `uncontested` flag, because the P of such an epoch are the endowment's drift and re-execution (§4.4.2) is the operator's call to make, not the scorer's.
 
 ### One competition across several invocations (`--resume`)
 
@@ -126,11 +130,14 @@ npm run backtest -- --scenarios plan.yaml --agents field.yaml --resume runs/matr
   complete`). The missing ones run, and so do the ones stored with an `error` and no agents — a lost
   epoch's remedy is re-execution (§4.4.2), not carrying it as invalid.
 - `matrix.json` and `standings.json` are rewritten in place, in ordinal order, keeping the original
-  `createdAt` and stamping `resumedAt`.
+  `createdAt` and stamping `resumedAt` — only when at least one epoch actually ran. A resume with
+  nothing left to run leaves the stamp alone.
 - It is **refused** when the stored matrix is a different competition: another `scenarioSet`, `k`
-  (the weights are a function of it), `resetUnit` or `repeat`; and when the set's content changed
-  under the same path (a stored ordinal that is not the plan's `(regime, seed)`). A different source
-  commit is a warning, not a refusal.
+  (the weights are a function of it), `resetUnit`, `repeat` or **roster** (`rosterFingerprint`, the
+  sha256 of the field the matrix was run with — two fields across one matrix would average two
+  competitions); and when the set's content changed under the same path (a stored ordinal that is
+  not the plan's `(regime, seed)`). A different source commit is a warning, not a refusal; so is a
+  stored matrix written before the roster was recorded.
 
 ## Repetition and reproducibility
 

@@ -1,9 +1,20 @@
-# config/regimes/whale.yaml — official regime 3: single large orders that move the mid. ADR 0017 §1
+# config/regimes/depeg-persist.yaml — official regime: the dislocation that does not close. Issue #106
 #
 # regime = this file (market conditions), seed = supplied at run time. This file defines the OU fair
 # price / flow intensity / stress; the seed picks the realized path out of that family.
-# Run: npm run backtest -- --regime whale --seed 101 [--agents <roster>]
+# Run: npm run backtest -- --regime depeg-persist --seed 101 [--agents <roster>]
 # Or as part of a scenario matrix: npm run backtest -- --scenarios config/scenarios/public.yaml
+#
+# depeg.yaml with `persist: true`. Every dislocation in the official set heals inside the epoch: a
+# crash decays, a pull is restored, DAI is bought back. So "buy the discount and hold" is right by
+# construction, and a strategy that *judges* whether par returns cannot be told from one that
+# merely assumes it -- CLAUDE.md records this as the reason `persist` exists. Here the environment
+# sells DAI over the ramp, holds, and then leaves the level where it is until the epoch's last
+# scoring block; the buy-back happens in the teardown, after the final boundary, so the final mark
+# is taken at the discount. DAI has no redemption floor, so the discount is a belief rather than a
+# claim, which is exactly what this regime prices. Measured on the 2026-09-08 fixture (#94):
+# peg-arb booked +46.7 on depeg#101 by waiting for the buy-back; under this regime the same code
+# books the discount as a loss.
 #
 # Note:
 #   - There is deliberately no `run.seed` here (ADR 0017 §1). The seed is the second axis of a
@@ -12,22 +23,24 @@
 #   - blockTimeSec and blocks are part of the regime (fixed to the production values). Shortening is
 #     an explicit override for behavior checks and smoke tests only; runs whose scores you read must
 #     use these defaults (ADR 0016 §3).
-#   - every venue is deployed, `lst` and `liquity` included. That is not merely a wider set: liquity
-#     promotes eUSD into the market-priced stable registry, so a stable that can lose its peg exists
-#     in every regime rather than only in depeg, and a liquidityPull with no `venue:` thins every
-#     enabled venue. This file used to be full-whale.yaml, a separate set beside a five-venue one;
-#     the five-venue set was retired rather than kept as a second answer to what the competition is.
-#   - funding is an ETH/BTC/USDC basket, not USDC-only (issue #54) -- the reasoning is on the
-#     funding block itself.
+#   - `persist: true` requires `decayBlocks: 0` (core/src/realtime/events.ts refuses a decay on a
+#     dislocation that does not close). The state trapezoid returns the full magnitude from the end
+#     of the hold onward, and the depeg reconciler keeps the pool there block by block.
+#   - every venue is deployed, `lst` and `liquity` included; funding is the ETH/BTC/USDC basket
+#     (issue #54) -- see depeg.yaml for the reasoning on both.
 # The roster is the default for pre-submission verification. Replaceable via --agents <roster.yaml|json>.
-
 run:
-  blocks: 360 # R: ADR 0017 §1
-  seconds: 1800 # a stress run auto-disables the time limit and ends by block count (ADR 0009)
+  # 360, the same as every other official regime. The rules publish one block count for an epoch
+  # (§4.7.1), and this file used to be the one exception at 120. A deviation score standardises
+  # inside each epoch, so unequal lengths were never a scoring problem -- what they were is a
+  # second answer to "how long is an epoch", which the rules cannot state.
+  blocks: 360
+  seconds: 1800 # a stress run ends by block count (ADR 0009); must stay well above 360 x 2 = 720s
   blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
-  protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
+  # curve is not optional: it owns the stableSwap action, which is the only way to trade the pair.
+  protocols: [uniswap, balancer, curve, aave, lst, liquity]
   economicGas: false
-  localDeploy: true
+  localDeploy: true # the DAI/USDC pool is one the deployer seeded; a fork has no such thing
   reportDir: ./runs
   # Rules §4.1: a mark is the median over the 5 blocks ending at the valuation block, so an
   # agent cannot reprice a pool at the close and book the move. Unset means 0 = mark live off a
@@ -71,9 +84,9 @@ flow:
   informedArbFeeBps: 30
   uninformedArrivalRate: "0.9"
   uninformedSizeSigma: "1.0"
-  gmxArrivalRate: "0.75"
-  gmxSizeSigma: "1.0"
-  aaveActorSizeSigma: "1.0"
+  # There is no DAI flow bot. The pair sits at par unless the event below pushes it or an agent
+  # trades it, which is the same arrangement the liquity regime uses and for the same reason: an
+  # emergent depeg would make the regime's character a function of who entered.
   # WBTC orderflow. Without it nothing exogenous moves the WBTC pools: the fair price walks and
   # the pool sits still, so the funded WBTC leg is inventory nobody trades against (measured on a
   # 60-block calm run: 390 WETH base-leg txs against 7 WBTC, all 7 from one agent, and a pool that
@@ -82,32 +95,46 @@ flow:
   baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
 
 stress:
-  # Ranges, not values: the seed samples both the size and the block (ADR 0009). The windows are
-  # disjoint so the four prints land spread out rather than clustering into one shock.
   events:
-    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.10, 0.25] }
+    # magnitude is the fraction of the pool's seeded DAI depth the environment has sold at the top
+    # of the trapezoid. The pool is 100k/100k at A=100, the same shape #39 calibrated the eUSD pool
+    # to, so the measured curve carries over: ~40% sold is ~114bps below par, 50% is ~175bps, 60%
+    # is ~282bps.
+    #
+    # The cost to clear is lower here than in the liquity regime -- there is no 50bps redemption
+    # fee, only the pool's 0.01% on each leg -- but so is the certainty, because nothing forces the
+    # price back except the window closing. The range spans "barely worth it" to "obviously worth
+    # it" on purpose, and the ramp passes through every level in between where waiting is right.
+    # The trapezoid is scaled x3 with the run (was 4/12/15 in 120 blocks). It is the *fraction of
+    # the epoch that is off par* that gives this regime its character -- 31 of 120 blocks, so 93 of
+    # 360 -- not the absolute block counts. magnitude is a level, not a rate, so it does not scale.
+    # NOT RE-MEASURED: the published calibration (seed 701: 89.5bps peak, peg-arb +139.6,
+    # peg-arb-eager +195.7) was taken at 120 blocks. The ramp now takes 12 blocks instead of 4, so
+    # there is more time to act inside it; re-run before treating those numbers as current.
     - {
-        type: whale,
-        magnitudeRange: [25, 60],
-        windowFrac: [0.3, 0.45],
-        venue: balancer,
+        type: depeg,
+        stable: DAI,
+        magnitudeRange: [0.35, 0.6],
+        windowFrac: [0.25, 0.6],
+        rampBlocks: 12,
+        holdBlocks: 36,
+        decayBlocks: 0, # persist: no decay -- the level holds to the last scoring block
+        persist: true,
       }
-    - {
-        type: whale,
-        magnitudeRange: [25, 60],
-        windowFrac: [0.5, 0.65],
-        venue: curve,
-      }
-    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.7, 0.85] }
 
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
     description: does nothing (baseline)
-  - id: venue-arb
+  - id: peg-arb
     wallet: AGENT2_PRIVATE_KEY
-    description: WETH-only cross-venue arbitrage
-  - id: multi-arb
+    description: buys DAI below par and sells it back as the peg recovers
+  - id: peg-arb-eager
+    dir: peg-arb
     wallet: AGENT3_PRIVATE_KEY
-    description: base-agnostic cross-venue arbitrage (all active bases x all venues)
+    description: the same strategy that buys a shallower discount and holds for par
+    env: { ERIS_PEG_ARB_BUY_BPS: "10", ERIS_PEG_ARB_SELL_BPS: "0" }
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage (keeps the AMM venues honest)
