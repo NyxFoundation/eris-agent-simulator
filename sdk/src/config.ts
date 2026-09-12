@@ -350,6 +350,12 @@ export type SimConfig = {
     setup: Hex;
     admin: Hex;
     keeper: Hex;
+    // The account that deployed the venues, which is also the one that owns the seeded LP
+    // positions, the environment's eUSD float and every venue's admin role. Only the stress
+    // events that trade *as the environment* need it. It defaults to anvil account 0 because
+    // that is index 0 of the deployer's default mnemonic (ADR 0016 §4); a chain deployed under a
+    // secret mnemonic (issue #74) has to name the key here, or those events find nothing to pull.
+    deployer: Hex;
   };
 };
 
@@ -596,6 +602,10 @@ export function loadConfig(env = process.env): SimConfig {
         DEFAULT_ANVIL_PRIVATE_KEYS[8],
       ),
       setup: hexEnv(env.SETUP_PRIVATE_KEY, DEFAULT_ANVIL_PRIVATE_KEYS[9]),
+      deployer: hexEnv(
+        env.DEPLOYER_PRIVATE_KEY,
+        DEFAULT_ANVIL_PRIVATE_KEYS[0],
+      ),
       admin: hexEnv(env.ADMIN_PRIVATE_KEY, deriveRoleKey("admin")),
       keeper: hexEnv(env.KEEPER_PRIVATE_KEY, deriveRoleKey("keeper")),
     },

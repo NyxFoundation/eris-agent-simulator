@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Address } from "viem";
 import { ROOT } from "./util.js";
+import { accounts } from "./clients.js";
 import { CHAIN_ID, RPC_URL } from "./config.js";
 
 const OUT_DIR = resolve(ROOT, "deployments");
@@ -13,6 +14,11 @@ export type Deployments = {
   updatedAt: string;
   tokens: Record<string, Address>;
   protocols: Record<string, Record<string, unknown>>;
+  // Who deployed this chain. Written out because consumers used to hardcode anvil's default
+  // account 0 for it -- which is only right while the chain runs on the public test mnemonic
+  // (issue #74). Aave's ACL admin, the owner of every seeded LP position and the holder of the
+  // genesis Trove's eUSD are all this address.
+  accounts: { deployer: Address; keeper: Address; trader: Address };
 };
 
 function empty(): Deployments {
@@ -22,6 +28,7 @@ function empty(): Deployments {
     updatedAt: new Date().toISOString(),
     tokens: {},
     protocols: {},
+    accounts: currentAccounts(),
   };
 }
 
@@ -58,9 +65,21 @@ export function token(key: string): Address {
   return a;
 }
 
+function currentAccounts(): Deployments["accounts"] {
+  return {
+    deployer: accounts.deployer.address,
+    keeper: accounts.keeper.address,
+    trader: accounts.trader.address,
+  };
+}
+
 export function flush() {
   mkdirSync(OUT_DIR, { recursive: true });
   state.updatedAt = new Date().toISOString();
+  // Rewritten on every flush rather than only on reset: a registry loaded from an older file (or
+  // from a run under a different MNEMONIC) would otherwise keep naming accounts that no longer own
+  // anything on this chain.
+  state.accounts = currentAccounts();
   writeFileSync(OUT_FILE, JSON.stringify(state, null, 2));
 }
 

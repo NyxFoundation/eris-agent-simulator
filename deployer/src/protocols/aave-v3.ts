@@ -3,7 +3,7 @@ import { readFileSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Abi, Address } from "viem";
 import { accounts, deployerWallet, publicClient } from "../clients.js";
-import { anvilChain, RPC_URL } from "../config.js";
+import { anvilChain, MNEMONIC, RPC_URL } from "../config.js";
 import { ROOT, waitTx, ok, info, assert } from "../util.js";
 import { setProtocol, getRegistry } from "../registry.js";
 
@@ -47,7 +47,10 @@ export async function deployAaveV3({ seed }: { seed: boolean }) {
     ],
     {
       cwd: AAVE_DIR,
-      env: { ...process.env, MARKET_NAME: "Aave", RPC_URL },
+      // MNEMONIC: vendor/aave/hardhat.config.js derives its accounts from it, so every Aave role
+      // (deployer / aclAdmin / poolAdmin) lands on the same account this process signs with
+      // (issue #74). Explicit rather than inherited, because this is the normalized form.
+      env: { ...process.env, MARKET_NAME: "Aave", RPC_URL, MNEMONIC },
       stdio: ["ignore", "inherit", "inherit"],
     },
   );

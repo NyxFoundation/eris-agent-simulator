@@ -453,7 +453,7 @@ diff --git a/hardhat.config.ts b/hardhat.config.ts
 index 8ca5e8c..3c8db08 100644
 --- a/hardhat.config.ts
 +++ b/hardhat.config.ts
-@@ -200,6 +200,12 @@ const config: HardhatUserConfig = {
+@@ -200,6 +200,21 @@ const config: HardhatUserConfig = {
        chainId: Number(process.env.FORK_ID) || 42161, // default to Arbitrum One
      },
      localhost: {
@@ -463,9 +463,19 @@ index 8ca5e8c..3c8db08 100644
 +      url: process.env.RPC_URL || "http://127.0.0.1:8545",
 +      // anvil default; chainId is required for synthetic token address computation
 +      chainId: Number(process.env.CHAIN_ID) || 31337,
++      // Sign locally, from the same mnemonic the rest of the deploy uses. hardhat's default for
++      // an http network is `accounts: "remote"` -- sign on the node, as whatever the node has
++      // unlocked -- which works only while that node is a dev anvil, and makes hardhat-deploy's
++      // `deployer` whoever *that* chain's mnemonic derives. GMX is the one venue deployed by a
++      // subprocess, so remote signing is also the one place where a secret MNEMONIC could reach
++      // every viem-deployed venue and miss this one (issue #74).
++      accounts: {
++        mnemonic: process.env.MNEMONIC || "test test test test test test test test test test test junk",
++      },
        saveDeployments: true,
      },
      arbitrum: {
+
 diff --git a/scripts/updateGeneralConfigUtils.ts b/scripts/updateGeneralConfigUtils.ts
 index fc0adfe..73860c1 100644
 --- a/scripts/updateGeneralConfigUtils.ts

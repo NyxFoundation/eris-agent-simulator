@@ -410,6 +410,21 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 
 > **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
 
+> **deploy 鍵は `MNEMONIC`**（既定は anvil の**公開**テスト mnemonic。issue #74）。index 0 の deployer は Aave の
+> POOL_ADMIN・GMX の CONFIG_KEEPER・LST vault の owner・seed した LP 全部・genesis Trove の余剰 eUSD を持ち、
+> しかも全アドレスが `CREATE(deployer, nonce)`。**参加者が tx を送れるチェーンでこの既定を使ってはいけない**
+> （mnemonic は anvil のバナーに出るので「deployer」は全員が持つ鍵になる。gateway の allowlist では塞がらない）。
+> 秘密 mnemonic は `deployer/.env`（gitignore 済み）か `MNEMONIC="$(cat ~/…)" npm run deploy -- --keep-fresh`。
+> `npm run anvil` も同じ値を読む（`src/anvil-cli.ts` 経由で `--mnemonic` を渡す）。**鍵を変えると全アドレスが動く**ので
+> `npm run gen:local-constants` → 必要なら `npm run gen:state-dump` まで必ずやる（古いアドレスを読むと GMX が
+> `getMarkets returned no data ("0x")`。deploy 側がそう名指しで落とすようにした）。**deployer の鍵は poc 側の秘密にもなる** —
+> 環境として売買する stress（`liquidityPull` / `depeg` / `eusdDepeg`）は deployer から送るので `.env.local` に
+> `DEPLOYER_PRIVATE_KEY`（既定 = anvil account 0）。**既に起動している anvil の第 1 アカウントが `MNEMONIC` の派生と
+> 違えば deploy は起動時に落ちる**（既定 mnemonic の deploy で秘密チェーンを上書きする逆向きも同じ穴）。
+> hardhat 側 2 本（`vendor/aave/hardhat.config.js` と `gmx-localhost.patch` の localhost）も同じ `MNEMONIC` から
+> accounts を引く（既定の `accounts: "remote"` はノードが unlock している鍵で署名するので、この 2 venue だけ
+> 別の owner になる）。patch を更新したら `npm run clean:vendors && ./scripts/setup-vendors.sh`。
+
 > 評価・採点・可視化系コマンド（`sim` 同期ラウンド / `evaluate` / `gate` / `discrimination` / `leaderboard` / `stress-report`）は撤去済み。run は `sim:realtime` 一本。run 後の解析は `runs/<id>/` の `summary.json` / `events.jsonl` / `blocks.csv` / `market.json`（venue 別価格・depth・GMX OI・Aave 残高・tx notional。採点には不使用の報告用 = issue #63 Phase 2）を直接読む。可視化は `npm run dashboard`（`dashboard/` workspace。run picker で run を選ぶ。seed データに戻すには `VITE_DATA_PROVIDER=seed`）。
 
 ### 市場ストレスイベント（spike/crash + Aave 清算。ADR 0009。既定 off）

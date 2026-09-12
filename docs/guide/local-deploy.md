@@ -69,6 +69,38 @@ flowchart LR
 
    > **The `--local-deploy` flag alone (or config `run.localDeploy: true`) is enough.** `sdk/src/constants.ts` reads `process.env.ERIS_LOCAL_DEPLOY` at import time to overlay the locally-deployed addresses (WETH/USDC/WBTC etc.), but the CLI entry (`core/src/cli/sim-realtime.ts`) peeks at the flag/config before loading the coordinator and sets `ERIS_LOCAL_DEPLOY=1` internally, so there is no need to pass the env by hand (the child agent / flow processes inherit `process.env`).
 
+## Deploy keys (and how to use a secret mnemonic)
+
+Everything the deployer creates is created by account index 0 of `MNEMONIC`, which defaults to
+anvil's **public** test mnemonic. On a local machine that is the point: the addresses are the same
+everywhere, `sdk/src/constants.local.ts` is reproducible, and CI needs no secrets. On a chain
+participants can reach it is the vulnerability of issue #74 — that account holds Aave's
+`POOL_ADMIN`, GMX's `CONFIG_KEEPER`, the LST vault's owner, every seeded LP position and the
+environment's eUSD float, and its key is printed in anvil's banner.
+
+To redeploy under a secret mnemonic (see `deployer/README.md` for the full description):
+
+```bash
+cd deployer
+MNEMONIC="$(cat ~/.ascon-secret-mnemonic)" npm run deploy -- --keep-fresh   # or put it in deployer/.env (gitignored)
+cd ..
+npm run gen:local-constants     # every address moved: CREATE(deployer, nonce)
+npm run gen:state-dump          # only if a state dump is in use (backtest / a preloaded chain)
+```
+
+Never commit the mnemonic. `deployer/.env` is gitignored; `deployer/.env.example` documents the
+shape and keeps the public default.
+
+Two consequences on the poc side:
+
+- **The addresses change.** Regenerating `constants.local.ts` is not an optimization here — it is
+  the step that makes the run point at the venues that exist. Skipping it produces reads against
+  empty accounts (`Cannot decode zero data ("0x")`, or GMX's `getMarkets returned no data`).
+- **The deployer's key becomes a secret the run needs.** The stress events that trade as the
+  environment (`liquidityPull`, `depeg`, `eusdDepeg`) send from the deployer account. Put
+  `DEPLOYER_PRIVATE_KEY=0x…` in `.env.local`; it defaults to anvil account 0, which is right only
+  while the chain runs on the default mnemonic.
+
 ## Key settings (CLI flags / config/local.yaml keys)
 
 | CLI flag | config key | description |

@@ -117,10 +117,10 @@ export async function setupLiquidityPull(
   if (misses.length > 0) {
     throw new Error(
       `stress event liquidityPull found no environment-owned liquidity for ${misses.join(", ")} ` +
-        `(owner ${owner}). The seeded positions belong to the deployer account (ADR 0016 §4 assumes ` +
-        "the anvil default keys hold them); a custom MNEMONIC in deployer/.env would put them " +
-        "somewhere this run cannot reach. Narrow the event with `venue:` if a venue is meant to be " +
-        "left alone",
+        `(owner ${owner}). The seeded positions belong to the account that deployed the venues; ` +
+        "ADR 0016 §4 assumes anvil's default keys hold them, so a chain deployed from a secret " +
+        "MNEMONIC (issue #74) has to name that key in DEPLOYER_PRIVATE_KEY. Narrow the event with " +
+        "`venue:` if a venue is meant to be left alone",
     );
   }
 
