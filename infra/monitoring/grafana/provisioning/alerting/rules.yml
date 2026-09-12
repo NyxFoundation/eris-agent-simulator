@@ -124,3 +124,39 @@ groups:
                 - evaluator: { type: lt, params: [1] }
         labels: { severity: critical, kind: chain }
         annotations: { summary: "the chain RPC is unreachable (ascon_chain_up=0)" }
+
+      # The chain answering is not the chain living. anvil keeps serving eth_blockNumber forever
+      # with nobody driving it, so `ascon_chain_down` stays green while the devnet is, in fact,
+      # frozen — which is exactly what a dead coordinator (infra/devnet) looks like from outside.
+      # The block number is the thing that stops moving.
+      #
+      # `and ascon_chain_up == 1` keeps this quiet when the node itself is gone; that is the other
+      # rule's alert, and two pages for one fault is how a channel gets muted.
+      - uid: ascon_devnet_stalled
+        title: Devnet stalled (no new blocks)
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-rpc
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: "(delta(ascon_chain_block_number[10m]) < bool 1) and (ascon_chain_up == 1)"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        labels: { severity: critical, kind: chain }
+        annotations:
+          summary: "the chain is reachable but has not produced a block in 10 minutes — the coordinator (ascon-devnet.service) is probably down; `systemctl --user status ascon-devnet`"
