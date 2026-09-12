@@ -62,7 +62,14 @@ export type StressEventType =
   // arbitrageur nothing to do, so calibrating the scoring metric on it measures one kind of skill
   // (docs/scoring-metric-measurements.md §10).
   | "cexDrift"
-  | "flowTrend";
+  | "flowTrend"
+  // A new token and its market appear mid-run (issue #29). The environment lists 2-3 tokens through
+  // its own Uniswap V3 factory at the window's start, so they surface through the #40 registry like
+  // any agent-made market; then, per token, a demand wave drawn from a range whose lower bound is
+  // zero (a dud) buys it over the ramp, holds, and sells a fraction back during the decay. The
+  // holdings are worth nothing at the bell (ADR 0022 axiom 2), so the only way to score is to buy
+  // before the wave, sell before the sell-back, and to have picked a token that got a wave.
+  | "tokenLaunch";
 
 // How the run consumes each type:
 //   overlay  a multiplier layered on the fair price every block of its window (`at()`)
@@ -91,6 +98,11 @@ const EVENT_KIND: Record<
   depeg: "state",
   cexDrift: "process",
   flowTrend: "process",
+  // The coordinator drives transactions from it every block of the window (list, buy, sell back),
+  // the way depeg / liquidityPull do -- but nothing in the existing venues changes, so it is not a
+  // `state` either. It is its own process: the schedule says what the wave wallets should have done
+  // by this block and the driver reconciles toward it.
+  tokenLaunch: "process",
 };
 
 const isPointEvent = (type: StressEventType): boolean =>
@@ -155,6 +167,20 @@ export type StressEventConfig = {
   // liquidityPull: the venue whose book thins. **Default is every enabled venue** -- thinning one
   // while the others keep block-0 depth just moves execution elsewhere, so narrowing is opt-in.
   venue?: "uniswap" | "balancer" | "curve";
+  // tokenLaunch only (issue #29). Every range is sampled by the seed; the wave is drawn *per token*,
+  // the window once per event. `magnitudeRange` does not apply (there is no single magnitude: each
+  // token has its own wave) and is rejected if present.
+  //   tokenCount      how many tokens list on this window (integer range, inclusive)
+  //   liquidityUsdc   USDC seeded per pool, whole dollars; the token side is priced at 1.00 USDC
+  //   waveUsdcMult    the wave's total buying as a multiple of the pool's USDC side
+  //   dudProb         probability that a token's wave is zero. A continuous draw on a range whose
+  //                   lower bound is 0 never actually lands on 0, so the dud needs a mass of its own
+  //   sellBackFrac    share of the tokens the wave bought that it sells back during the decay
+  tokenCount?: [number, number];
+  liquidityUsdc?: [number, number];
+  waveUsdcMult?: [number, number];
+  dudProb?: [number, number];
+  sellBackFrac?: [number, number];
   // Fraction of run length for the event start position [min,max]. The seed picks.
   windowFrac: [number, number];
   // Start where the first event of this type starts, instead of drawing an independent position.
@@ -194,11 +220,45 @@ export type ResolvedStressEvent = {
   trendCorrelation?: number;
   persistBlocks?: number;
   venue?: "uniswap" | "balancer" | "curve";
+  // tokenLaunch: one entry per token the window lists, each with its own wave.
+  launches?: ResolvedTokenLaunch[];
   startBlock: number;
   rampBlocks: number;
   holdBlocks: number;
   decayBlocks: number;
   endBlock: number; // startBlock + ramp + hold + decay (this value is not included in the window)
+};
+
+// One token of a tokenLaunch window (issue #29). `dud` is the seed's answer to "does demand arrive":
+// when it is true the wave never buys, whatever `waveUsdcMult` says (it is drawn regardless so the
+// RNG consumption per token is constant).
+export type ResolvedTokenLaunch = {
+  index: number;
+  // Whole USDC seeded on the pool's USDC side; the token side is the same number of tokens.
+  liquidityUsdc: number;
+  // Total USDC the wave wallet spends over the ramp, as a multiple of liquidityUsdc. 0 for a dud.
+  waveUsdcMult: number;
+  dud: boolean;
+  // Share of the tokens the wave bought that it sells back during the decay.
+  sellBackFrac: number;
+};
+
+// What the launch driver should have done by a given block, per token (issue #29). Both are
+// cumulative targets so a dropped block costs a block of lag rather than a missed step -- the same
+// reconcile-to-target discipline as depeg / liquidityPull.
+export type TokenLaunchTarget = {
+  eventIndex: number;
+  launch: ResolvedTokenLaunch;
+  // The window has opened (the token should be listed).
+  listed: boolean;
+  // Fraction of the wave's total USDC that should have been spent by now: rises over the ramp,
+  // then 1 for the rest of the run (a wave does not un-buy; the decay is the sell-back).
+  buyFrac: number;
+  // Fraction of the tokens bought that should have been sold back by now: 0 until the decay
+  // starts, rising to sellBackFrac at its end and holding there.
+  sellBackFrac: number;
+  // The window has closed, this block being the first one past it.
+  justClosed: boolean;
 };
 
 // The overlay returned by at(blockIndex). effective[base] = baseFair[base] * baseMults[base].
@@ -296,6 +356,11 @@ export class EventSchedule {
         c.type === "cexDrift" && c.kappaMultRange !== undefined
           ? lerp(c.kappaMultRange[0], c.kappaMultRange[1], kappaDraw as number)
           : undefined;
+      // tokenLaunch (issue #29): the count once, then a fixed four draws per token whatever the
+      // outcome -- the wave multiplier is drawn even for a dud -- so the RNG consumption is a pure
+      // function of the event list and the count, not of which tokens happened to get demand.
+      const launches =
+        c.type === "tokenLaunch" ? drawTokenLaunches(c, rng) : undefined;
       return {
         type: c.type,
         base: c.base ?? "WETH",
@@ -317,6 +382,7 @@ export class EventSchedule {
         ...(c.type === "liquidityPull" && c.venue !== undefined
           ? { venue: c.venue }
           : {}),
+        ...(launches !== undefined ? { launches } : {}),
         startBlock,
         rampBlocks: c.rampBlocks,
         holdBlocks: c.holdBlocks,
@@ -577,6 +643,61 @@ export class EventSchedule {
     };
   }
 
+  // Whether the run needs the token-launch machinery at all (issue #29). Like the pull and the
+  // depeg, the coordinator only stages the launch wallets and their inventory when this is true.
+  hasTokenLaunch(): boolean {
+    return this.events.some((ev) => ev.type === "tokenLaunch");
+  }
+
+  // Every token the run lists, with the window it lists on. The coordinator needs this at setup to
+  // size the launch and wave wallets' endowments before any window opens.
+  tokenLaunches(): Array<{
+    eventIndex: number;
+    event: ResolvedStressEvent;
+    launch: ResolvedTokenLaunch;
+  }> {
+    const out: Array<{
+      eventIndex: number;
+      event: ResolvedStressEvent;
+      launch: ResolvedTokenLaunch;
+    }> = [];
+    this.events.forEach((event, eventIndex) => {
+      if (event.type !== "tokenLaunch") return;
+      for (const launch of event.launches ?? [])
+        out.push({ eventIndex, event, launch });
+    });
+    return out;
+  }
+
+  // What the launch driver should have done by this block, per token. Cumulative targets, for the
+  // same reason the depeg fraction is: a dropped block must not leave the wave behind.
+  tokenLaunchTargetsAt(blockIndex: number): TokenLaunchTarget[] {
+    const out: TokenLaunchTarget[] = [];
+    this.events.forEach((ev, eventIndex) => {
+      if (ev.type !== "tokenLaunch") return;
+      const t = blockIndex - ev.startBlock;
+      const { rampBlocks: r, holdBlocks: h, decayBlocks: d } = ev;
+      const listed = t >= 0;
+      // The buy side is the rising half of the trapezoid and then stays up: the wave's USDC is
+      // spent by the end of the ramp and never comes back (the decay is a token sale, not a refund).
+      const buyFrac = !listed ? 0 : t < r ? (r === 0 ? 1 : (t + 1) / r) : 1;
+      const decayT = t - (r + h);
+      const decayFrac =
+        !listed || decayT < 0 ? 0 : d === 0 ? 1 : Math.min(1, (decayT + 1) / d);
+      for (const launch of ev.launches ?? []) {
+        out.push({
+          eventIndex,
+          launch,
+          listed,
+          buyFrac: launch.dud ? 0 : buyFrac,
+          sellBackFrac: launch.dud ? 0 : launch.sellBackFrac * decayFrac,
+          justClosed: blockIndex === ev.endBlock,
+        });
+      }
+    });
+    return out;
+  }
+
   at(blockIndex: number): OverlayState {
     const baseMults: Record<string, number> = {};
     for (const ev of this.events) {
@@ -594,6 +715,47 @@ export class EventSchedule {
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+// The per-token draws of a tokenLaunch window (issue #29). Exactly one draw for the count and four
+// per token, in a fixed order, so the schedule of every event after this one does not depend on
+// how many tokens got demand.
+function drawTokenLaunches(
+  c: StressEventConfig,
+  rng: Rng,
+): ResolvedTokenLaunch[] {
+  const [countLo, countHi] = c.tokenCount ?? [1, 1];
+  // Integer-uniform on the inclusive range: floor over [lo, hi + 1), clamped so a draw of exactly
+  // 1.0 (which Rng never returns, but the clamp costs nothing) cannot overshoot.
+  const count = Math.min(
+    countHi,
+    Math.max(countLo, Math.floor(lerp(countLo, countHi + 1, rng.next()))),
+  );
+  const launches: ResolvedTokenLaunch[] = [];
+  for (let i = 0; i < count; i++) {
+    const liquidity = c.liquidityUsdc ?? [0, 0];
+    const wave = c.waveUsdcMult ?? [0, 0];
+    const dudP = c.dudProb ?? [0, 0];
+    const sellBack = c.sellBackFrac ?? [0, 0];
+    const liquidityUsdc = Math.round(
+      lerp(liquidity[0], liquidity[1], rng.next()),
+    );
+    const dudProb = lerp(dudP[0], dudP[1], rng.next());
+    const dudDraw = rng.next();
+    const waveUsdcMult = lerp(wave[0], wave[1], rng.next());
+    const sellBackFrac = lerp(sellBack[0], sellBack[1], rng.next());
+    // A dud is a mass at zero, not the bottom of the range: `dudDraw < dudProb` is the coin, and
+    // a wave multiplier that came out at exactly 0 is a dud as well (nothing would be bought).
+    const dud = dudDraw < dudProb || waveUsdcMult <= 0;
+    launches.push({
+      index: i,
+      liquidityUsdc,
+      waveUsdcMult: dud ? 0 : waveUsdcMult,
+      dud,
+      sellBackFrac,
+    });
+  }
+  return launches;
 }
 
 // Apply a cexDrift episode to one base's OU parameters. Kept here next to the envelope rather than
@@ -646,11 +808,64 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     o.type !== "eusdDepeg" &&
     o.type !== "depeg" &&
     o.type !== "cexDrift" &&
-    o.type !== "flowTrend"
+    o.type !== "flowTrend" &&
+    o.type !== "tokenLaunch"
   ) {
     throw new Error(
-      `${label}.type must be "spike", "crash", "lstSlash", "whale", "liquidityPull", "eusdDepeg", "depeg", "cexDrift" or "flowTrend"`,
+      `${label}.type must be "spike", "crash", "lstSlash", "whale", "liquidityPull", "eusdDepeg", "depeg", "cexDrift", "flowTrend" or "tokenLaunch"`,
     );
+  }
+  // tokenLaunch (issue #29) carries its own ranges and no magnitude: each token draws its own wave,
+  // so a single magnitudeRange would either be ignored or mean something nobody wrote down.
+  const LAUNCH_RANGES = [
+    "tokenCount",
+    "liquidityUsdc",
+    "waveUsdcMult",
+    "dudProb",
+    "sellBackFrac",
+  ] as const;
+  if (o.type === "tokenLaunch") {
+    if (o.magnitudeRange !== undefined)
+      throw new Error(
+        `${label}.magnitudeRange does not apply to type "tokenLaunch": the wave is drawn per token from waveUsdcMult`,
+      );
+    for (const key of LAUNCH_RANGES)
+      if (o[key] === undefined)
+        throw new Error(`${label}.${key} is required for type "tokenLaunch"`);
+  } else {
+    for (const key of LAUNCH_RANGES)
+      if (o[key] !== undefined)
+        throw new Error(`${label}.${key} only applies to type "tokenLaunch"`);
+  }
+  const launchRanges =
+    o.type === "tokenLaunch"
+      ? {
+          tokenCount: parseRange(o.tokenCount, `${label}.tokenCount`, {
+            min: 1,
+          }),
+          liquidityUsdc: parseRange(o.liquidityUsdc, `${label}.liquidityUsdc`, {
+            min: 0,
+            exclusiveMin: true,
+          }),
+          // 0 is allowed on purpose: a range whose lower bound is 0 is how "some launches are duds"
+          // is written, on top of the explicit dud probability.
+          waveUsdcMult: parseRange(o.waveUsdcMult, `${label}.waveUsdcMult`, {
+            min: 0,
+          }),
+          dudProb: parseRange(o.dudProb, `${label}.dudProb`, {
+            min: 0,
+            max: 1,
+          }),
+          sellBackFrac: parseRange(o.sellBackFrac, `${label}.sellBackFrac`, {
+            min: 0,
+            max: 1,
+          }),
+        }
+      : undefined;
+  if (launchRanges !== undefined) {
+    const [lo, hi] = launchRanges.tokenCount;
+    if (!Number.isInteger(lo) || !Number.isInteger(hi))
+      throw new Error(`${label}.tokenCount must be an integer range`);
   }
   if (o.type === "depeg") {
     // Which stable is not a default anyone could guess: a run can have several, and picking one
@@ -672,7 +887,8 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       o.alignWith !== "eusdDepeg" &&
       o.alignWith !== "depeg" &&
       o.alignWith !== "cexDrift" &&
-      o.alignWith !== "flowTrend"
+      o.alignWith !== "flowTrend" &&
+      o.alignWith !== "tokenLaunch"
     ) {
       throw new Error(`${label}.alignWith must be a stress event type`);
     }
@@ -765,32 +981,33 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
   if (o.base !== undefined && typeof o.base !== "string") {
     throw new Error(`${label}.base must be a token symbol string`);
   }
-  const magnitudeRange = parseRange(
-    o.magnitudeRange,
-    `${label}.magnitudeRange`,
-    {
-      min: 0,
-      exclusiveMin: true,
-      // A slash is a fraction of the pool, and wiping it out entirely is not a stress event: at
-      // 100% totalPooledWeth hits zero, convertToAssets falls back to its 1:1 branch, the pool's
-      // rate oracle snaps back to par, and every staker is silently erased while the discount
-      // reads 0. Exclusive, matching the sentence above it.
-      //
-      // A liquidityPull is bounded the same way and for the same reason: at 100% the pool has no
-      // depth at all, every swap reverts, and the venue stops existing for the window. That is not
-      // a thin book an agent has to size against -- it is an outage, and the regime is about the
-      // former (issue #52: "how much of the gap can I actually take").
-      //
-      // An eusdDepeg is bounded the same way once more: selling the pool's entire eUSD side leaves
-      // nothing to buy, so the discount stops being a price and becomes an outage.
-      ...(o.type === "lstSlash" ||
-      o.type === "liquidityPull" ||
-      o.type === "eusdDepeg" ||
-      o.type === "depeg"
-        ? { max: 1, exclusiveMax: true }
-        : {}),
-    },
-  );
+  // A launch has no magnitude of its own (see above); the resolved event carries 0 so the shared
+  // schedule shape stays total.
+  const magnitudeRange: [number, number] =
+    o.type === "tokenLaunch"
+      ? [0, 0]
+      : parseRange(o.magnitudeRange, `${label}.magnitudeRange`, {
+          min: 0,
+          exclusiveMin: true,
+          // A slash is a fraction of the pool, and wiping it out entirely is not a stress event: at
+          // 100% totalPooledWeth hits zero, convertToAssets falls back to its 1:1 branch, the pool's
+          // rate oracle snaps back to par, and every staker is silently erased while the discount
+          // reads 0. Exclusive, matching the sentence above it.
+          //
+          // A liquidityPull is bounded the same way and for the same reason: at 100% the pool has no
+          // depth at all, every swap reverts, and the venue stops existing for the window. That is not
+          // a thin book an agent has to size against -- it is an outage, and the regime is about the
+          // former (issue #52: "how much of the gap can I actually take").
+          //
+          // An eusdDepeg is bounded the same way once more: selling the pool's entire eUSD side leaves
+          // nothing to buy, so the discount stops being a price and becomes an outage.
+          ...(o.type === "lstSlash" ||
+          o.type === "liquidityPull" ||
+          o.type === "eusdDepeg" ||
+          o.type === "depeg"
+            ? { max: 1, exclusiveMax: true }
+            : {}),
+        });
   const windowFrac = parseRange(o.windowFrac, `${label}.windowFrac`, {
     min: 0,
     max: 1,
@@ -836,6 +1053,7 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     ...(o.persistBlocks !== undefined
       ? { persistBlocks: o.persistBlocks as number }
       : {}),
+    ...(launchRanges ?? {}),
     magnitudeRange,
     windowFrac,
     rampBlocks,
