@@ -44,8 +44,11 @@ const MAX_RESERVE_BPS = numberEnv("ERIS_LAUNCH_MAX_RESERVE_BPS", 1000);
 const EXIT_FLOW_BPS = numberEnv("ERIS_LAUNCH_EXIT_FLOW_BPS", 10);
 // Sell anyway after this many blocks, and when this many remain.
 const MAX_HOLD_BLOCKS = numberEnv("ERIS_LAUNCH_MAX_HOLD_BLOCKS", 60);
+// 0 turns the end-of-run guard off (see launch-sniper for why that has to be possible).
 const EXIT_BEFORE_END_BLOCKS = numberEnv("ERIS_LAUNCH_EXIT_BLOCKS", 12);
-const SLIPPAGE_BPS = numberEnv("ERIS_LAUNCH_SLIPPAGE_BPS", 300);
+// The wave moves a thin pool several percent per block and the swap lands the block after the
+// quote; 3% lost the entry on the first measured run.
+const SLIPPAGE_BPS = numberEnv("ERIS_LAUNCH_SLIPPAGE_BPS", 1000);
 const MIN_USDC_UNITS = 1_000_000n;
 
 type Watch = {
@@ -66,7 +69,10 @@ export async function decide(
   const block = Number(obs.blockNumber);
   const fee = obs.limits.defaultPriorityFeePerGasWei;
   const self = ctx.address as Address;
-  const remaining = obs.blocksRemaining ?? Number.POSITIVE_INFINITY;
+  const remaining =
+    EXIT_BEFORE_END_BLOCKS > 0
+      ? (obs.blocksRemaining ?? Number.POSITIVE_INFINITY)
+      : Number.POSITIVE_INFINITY;
 
   // ---- register every launch pool the registry shows ----
   for (const pool of launchPools(obs)) {
