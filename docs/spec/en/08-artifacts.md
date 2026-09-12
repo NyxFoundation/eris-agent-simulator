@@ -114,8 +114,9 @@ One event per line, each carrying an ISO `ts`. The catalogue below is what the c
 | `agents_registered` | The whole roster (id / address / baseline / description / external) |
 | `agent_external_registered` | An external registration the environment did not start |
 | `agent_process_exited` | An agent process ending early |
-| `initial_endowment` | Each agent's opening value and the max/min ratio |
-| `price_feed_deployed` / `flash_arb_deployed` | |
+| `agents_ready` | Whether the field was up before interval mining (issue #94): `ready[]` (id and `afterMs` since the spawn) / `late` (no `runtime_start` at the bound) / `exited` (died before `runtime_start`) / `waitedMs` / `timedOut` |
+| `initial_endowment` | Each agent's opening value and the max/min ratio (every base valued; issue #94) |
+| `price_feed_deployed` / `flash_arb_deployed` | The former carries `openingFair` (each base's opening fair, on the feed before the first boundary) |
 | `interval_mining_started` / `block_gas_limit_set` / `fork_reset_skipped` / `prewarm_completed` | |
 | `external_chain_block_time` / `external_chain_mint_guard` / `treasury_funded_roles` | External mode |
 | `economic_gas_enabled` / `fee_cap_enforcement_disabled` | The economicGas profile |

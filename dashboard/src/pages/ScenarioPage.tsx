@@ -123,9 +123,11 @@ function ScenarioStandings({
       }}
     >
       <span style={PANEL_TITLE}>
-        {closedRounds > 0
-          ? t("home.standingsThrough", { at: closedRounds })
-          : t("scenario.standings")}
+        {!shown
+          ? t("home.standingsTitle")
+          : closedRounds > 0
+            ? t("home.standingsThrough", { at: closedRounds })
+            : t("scenario.standings")}
       </span>
       <div
         style={{

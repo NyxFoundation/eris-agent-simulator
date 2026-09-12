@@ -101,10 +101,18 @@ export function prepareAgentState(
   return dir;
 }
 
-// Keep the most recent epoch snapshots and drop the rest. Ordered by directory name where that is a
-// run id (they are timestamps and sort chronologically) and by mtime otherwise, so a label written
-// by snapshotAllAgentState is treated the same way. Labels the operator wants to keep are the
-// operator's to move out of here.
+// A snapshot directory named by a run id, as prepareAgentState writes them. Run ids are ISO
+// timestamps with the punctuation replaced (2026-09-07T02-52-31-293Z).
+export function isRunIdSnapshot(name: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}/.test(name);
+}
+
+// Keep the most recent epoch snapshots and drop the rest. Only the per-epoch ones, named by run id:
+// a label written by snapshotAllAgentState is a caller's checkpoint -- the state a scenario ended
+// with, which a resumed matrix restores before re-running the one after it (backtest/resume.ts),
+// or the base a --repeat returns to -- and pruning one of those turns a restore into a silent
+// no-op halfway through a competition. Labels are bounded by the plan (one per ordinal) and are the
+// operator's to delete once the matrix is final.
 function pruneSnapshots(root: string, keep = SNAPSHOTS_KEPT): void {
   if (!Number.isFinite(keep) || keep <= 0) return;
   const base = join(root, SNAPSHOT_DIR);
@@ -112,7 +120,7 @@ function pruneSnapshots(root: string, keep = SNAPSHOTS_KEPT): void {
   let entries: string[];
   try {
     entries = readdirSync(base, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
+      .filter((e) => e.isDirectory() && isRunIdSnapshot(e.name))
       .map((e) => e.name);
   } catch {
     return;
@@ -187,8 +195,6 @@ export function snapshotAllAgentState(root: string, label: string): void {
   mkdirSync(target, { recursive: true });
   for (const agentId of agentDirs(root))
     cpSync(join(root, agentId), join(target, agentId), { recursive: true });
-  // Touched last so the prune above orders it as the newest, and a label in active use is not the
-  // first thing dropped.
   utimesSync(target, new Date(), new Date());
 }
 

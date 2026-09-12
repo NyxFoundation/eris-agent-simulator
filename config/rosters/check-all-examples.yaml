@@ -1,0 +1,42 @@
+# config/rosters/check-all-examples.yaml — the fixture roster for the pre-9/23 hand checks (#91, #94).
+#
+# Every directory under example/agents/ except lib/ and runtime/, every wallet AUTO, and the nine
+# that ship a prompt.md frozen (ERIS_AGENT_FROZEN: "1") so the run reads the rule strategies and
+# not what a model wrote. bench-max stays in on purpose: its own header says it must never be in a
+# production roster, and this run is where that gets confirmed (#93).
+#
+# #91 lists 32 ids. `starter-template` is not in the tree (no example/agents/starter-template/ on
+# main and none in the history), so it is left out here rather than failing the launch -- the
+# coordinator refuses a roster id with no directory. Recorded as a finding on #91.
+agents:
+  - { id: adaptive-arb, wallet: AUTO }
+  - { id: arb-bot, wallet: AUTO }
+  - { id: basis-arb, wallet: AUTO, env: { ERIS_AGENT_FROZEN: "1" } }
+  - { id: bench-max, wallet: AUTO }
+  - { id: clean-arb, wallet: AUTO }
+  - { id: cross-venue-arb, wallet: AUTO }
+  - { id: discovery-arb, wallet: AUTO }
+  - { id: discovery-arb-verify, wallet: AUTO }
+  - { id: exploit-hunter, wallet: AUTO }
+  - { id: flash-arb, wallet: AUTO }
+  - { id: levered-long, wallet: AUTO }
+  - { id: liquidator, wallet: AUTO }
+  - { id: lp-mint, wallet: AUTO }
+  - { id: lp-provider, wallet: AUTO }
+  - { id: lst-carry, wallet: AUTO, env: { ERIS_AGENT_FROZEN: "1" } }
+  - { id: market-launcher, wallet: AUTO }
+  - { id: market-taker, wallet: AUTO }
+  - { id: max-profit-arb, wallet: AUTO }
+  - { id: multi-arb, wallet: AUTO, env: { ERIS_AGENT_FROZEN: "1" } }
+  - { id: my-arb, wallet: AUTO, env: { ERIS_AGENT_FROZEN: "1" } }
+  - { id: noop, wallet: AUTO, baseline: true }
+  - { id: peg-arb, wallet: AUTO, env: { ERIS_AGENT_FROZEN: "1" } }
+  - { id: random, wallet: AUTO }
+  - { id: redemption-arb, wallet: AUTO, env: { ERIS_AGENT_FROZEN: "1" } }
+  - { id: simple-rule, wallet: AUTO }
+  - { id: sp-underwriter, wallet: AUTO, env: { ERIS_AGENT_FROZEN: "1" } }
+  - { id: stat-arb, wallet: AUTO }
+  - { id: trap-launcher, wallet: AUTO }
+  - { id: trove-manager, wallet: AUTO, env: { ERIS_AGENT_FROZEN: "1" } }
+  - { id: vault-keeper, wallet: AUTO }
+  - { id: venue-arb, wallet: AUTO, env: { ERIS_AGENT_FROZEN: "1" } }

@@ -84,6 +84,7 @@ export const seedAgents: AgentStanding[] = [
     score: 92.4,
     netPnlUsdc: 6120,
     maxDrawdownPercent: -4.1,
+    unscored: false,
     move: 0,
   },
   {
@@ -94,6 +95,7 @@ export const seedAgents: AgentStanding[] = [
     score: 88.1,
     netPnlUsdc: 4890,
     maxDrawdownPercent: -3.0,
+    unscored: false,
     move: 2,
   },
   {
@@ -104,6 +106,7 @@ export const seedAgents: AgentStanding[] = [
     score: 81.6,
     netPnlUsdc: 3340,
     maxDrawdownPercent: -5.6,
+    unscored: false,
     move: -1,
   },
   {
@@ -114,6 +117,7 @@ export const seedAgents: AgentStanding[] = [
     score: 74.9,
     netPnlUsdc: 1840,
     maxDrawdownPercent: -6.2,
+    unscored: false,
     move: 1,
   },
   {
@@ -124,6 +128,7 @@ export const seedAgents: AgentStanding[] = [
     score: 70.2,
     netPnlUsdc: 1500,
     maxDrawdownPercent: -8.9,
+    unscored: false,
     move: -2,
   },
   {
@@ -134,6 +139,7 @@ export const seedAgents: AgentStanding[] = [
     score: 65.8,
     netPnlUsdc: 970.25,
     maxDrawdownPercent: -7.3,
+    unscored: false,
     move: 0,
   },
   {
@@ -144,6 +150,7 @@ export const seedAgents: AgentStanding[] = [
     score: 61.0,
     netPnlUsdc: 720.5,
     maxDrawdownPercent: -2.1,
+    unscored: false,
     move: 3,
   },
   {
@@ -154,6 +161,7 @@ export const seedAgents: AgentStanding[] = [
     score: 55.4,
     netPnlUsdc: 490.75,
     maxDrawdownPercent: -11.4,
+    unscored: false,
     move: -3,
   },
   {
@@ -164,6 +172,7 @@ export const seedAgents: AgentStanding[] = [
     score: 48.7,
     netPnlUsdc: -180.4,
     maxDrawdownPercent: -14.0,
+    unscored: false,
     move: 1,
   },
   {
@@ -174,6 +183,7 @@ export const seedAgents: AgentStanding[] = [
     score: 41.2,
     netPnlUsdc: -640.9,
     maxDrawdownPercent: -18.7,
+    unscored: false,
     move: -1,
   },
 ];
@@ -540,7 +550,7 @@ function shortHexAddress(seedText: string): string {
  */
 export function buildAgentDetail(standing: AgentStanding): AgentDetail {
   const seed = standing.rank;
-  const trendUp = standing.netPnlUsdc >= 0;
+  const trendUp = (standing.netPnlUsdc ?? 0) >= 0;
 
   const portfolioSeries = Array.from({ length: 14 }, (_, i) => {
     const drift = (trendUp ? 1 : -1) * i * (1.5 + (seed % 3) * 0.6);
@@ -633,11 +643,13 @@ export function buildAgentDetail(standing: AgentStanding): AgentDetail {
 
   return {
     rank: standing.rank,
+    fieldSize: seedAgents.length,
     agent: standing.agent,
     address: shortHexAddress(standing.agent),
     strategy: standing.strategy,
     score: standing.score,
     netPnlUsdc: standing.netPnlUsdc,
+    unscored: standing.unscored,
     maxDrawdownPercent: standing.maxDrawdownPercent,
     portfolioSeries,
     positions,

@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { InfoTabs } from "@/components/InfoTabs";
+import { FindAgent } from "@/components/FindAgent";
 import { RoundCursorBar } from "@/components/RoundCursorBar";
 import { ScoreRaceChart } from "@/components/ScoreRaceChart";
 import { Sidebar } from "@/components/Sidebar";
@@ -250,16 +251,21 @@ function ScenarioRow({
   /** Rules §4.7: the trial environment posts no standings, and a leader per world is one. */
   hideLeader?: boolean;
 }) {
-  const open = () => {
-    // A round index belongs to one run; carrying it into another scopes the next explorer view to a
-    // block window that means nothing there.
-    setSelectedRound(null);
-    setSelectedRunId(row.runId);
-    navigate("/scenario");
-  };
+  // An epoch the runner never ran has no world to open: the row states why instead of pretending
+  // to be a link (issue #84 L).
+  const open =
+    row.runId === null
+      ? undefined
+      : () => {
+          // A round index belongs to one run; carrying it into another scopes the next explorer
+          // view to a block window that means nothing there.
+          setSelectedRound(null);
+          setSelectedRunId(row.runId as string);
+          navigate("/scenario");
+        };
   return (
     <div
-      className="row-link"
+      className={open ? "row-link" : undefined}
       onClick={open}
       style={{
         display: "grid",
@@ -273,28 +279,39 @@ function ScenarioRow({
     >
       <span
         style={{
-          color: "var(--text-link)",
+          color: open ? "var(--text-link)" : "var(--text-disabled)",
           overflow: "hidden",
           textOverflow: "ellipsis",
         }}
-        title={row.runId}
+        title={row.runId ?? undefined}
       >
         {row.label}
       </span>
       <span
         style={{
           font: "var(--text-xs) var(--font-mono)",
-          color: row.ended ? "var(--text-disabled)" : "var(--text-secondary)",
+          color:
+            row.ended || row.runId === null
+              ? "var(--text-disabled)"
+              : "var(--text-secondary)",
         }}
-        title={row.ended ? t("home.scenarios.endedTitle") : undefined}
+        title={
+          row.runId === null
+            ? t("home.scenarios.failedTitle")
+            : row.ended
+              ? t("home.scenarios.endedTitle")
+              : undefined
+        }
       >
-        {scrubbing
-          ? t("home.scenarios.roundsAt", {
-              at: row.roundsSoFar,
-              n: row.rounds,
-            })
-          : String(row.rounds)}
-        {row.ended && ` · ${t("home.scenarios.ended")}`}
+        {row.runId === null
+          ? "—"
+          : scrubbing
+            ? t("home.scenarios.roundsAt", {
+                at: row.roundsSoFar,
+                n: row.rounds,
+              })
+            : String(row.rounds)}
+        {row.ended && row.runId !== null && ` · ${t("home.scenarios.ended")}`}
       </span>
       {hideLeader ? (
         <span style={{ color: "var(--text-disabled)" }}>—</span>
@@ -325,9 +342,13 @@ function ScenarioRow({
             color: "var(--text-disabled)",
           }}
         >
-          {row.missing
-            ? t("home.scenarios.missing")
-            : t("home.scenarios.noLeader")}
+          {/* An epoch that never ran has no leader for a reason the next column already gives;
+              blaming collection for it would name the wrong cause. */}
+          {row.runId === null
+            ? "—"
+            : row.missing
+              ? t("home.scenarios.missing")
+              : t("home.scenarios.noLeader")}
         </span>
       )}
       <span
@@ -338,7 +359,16 @@ function ScenarioRow({
           font: "var(--text-xs) var(--font-mono)",
         }}
       >
-        {isHiddenScenario(row) ? (
+        {row.runId === null ? (
+          <span
+            style={{ color: "var(--text-disabled)" }}
+            title={t("home.scenarios.failedTitle")}
+          >
+            {t("home.scenarios.failed", {
+              reason: row.error ?? t("home.scenarios.noLeader"),
+            })}
+          </span>
+        ) : isHiddenScenario(row) ? (
           // The kind of an episode ("crash", "whale") names the regime, which is what the public
           // view of a scenario matrix withholds (rules §3.3) — so this is "withheld", not "none".
           <span style={{ color: "var(--text-disabled)" }}>
@@ -368,6 +398,11 @@ function ScenarioRow({
   );
 }
 
+/**
+ * A wall-clock time with its zone. The zone is not decoration: the audience of a hosted dashboard
+ * is in several of them, and "updated 06:01 PM" told a reader in another one nothing they could
+ * act on (issue #84 N). The date is added whenever it is not today's.
+ */
 function clock(ms: number, locale: string): string {
   const tag = locale === "ja" ? "ja-JP" : "en-US";
   const d = new Date(ms);
@@ -375,10 +410,32 @@ function clock(ms: number, locale: string): string {
   const time = d.toLocaleTimeString(tag, {
     hour: "2-digit",
     minute: "2-digit",
+    timeZoneName: "short",
   });
   return sameDay
     ? time
     : `${d.toLocaleDateString(tag, { month: "numeric", day: "numeric" })} ${time}`;
+}
+
+/** "mm:ss" from now until `ms`, for the countdown to the next round boundary. */
+function countdown(ms: number, nowMs: number): string {
+  const total = Math.max(0, Math.round((ms - nowMs) / 1000));
+  const mm = String(Math.floor(total / 60)).padStart(2, "0");
+  const ss = String(total % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+/**
+ * The one number on this page that moves between snapshots, in a component of its own so that it
+ * is the only thing re-rendering every second — the standings table below it is hundreds of rows.
+ */
+function Countdown({ at }: { at: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <>{t("home.status.liveRoundIn", { t: countdown(at, now) })}</>;
 }
 
 export function HomePage() {
@@ -474,8 +531,10 @@ export function HomePage() {
   // Explorer never lands on a world belonging to a different competition.
   useEffect(() => {
     if (!data) return;
-    const ids = data.competition.file.scenarios.map((s) =>
-      scenarioRunId(data.competition.id, s.runDir),
+    const ids = data.competition.file.scenarios.flatMap((s) =>
+      typeof s.runDir === "string"
+        ? [scenarioRunId(data.competition.id, s.runDir)]
+        : [],
     );
     const current = getSelectedRunId();
     if (current && ids.includes(current)) return;
@@ -500,10 +559,11 @@ export function HomePage() {
     );
   }
 
-  // Nothing to rank: seed-provider mode, an empty runs/, or a run still in progress — a live run's
-  // results are written when it finishes. The scenario view is the right home for all three.
-  if (error || !data || !standings || standings.rows.length === 0)
-    return <ScenarioPage />;
+  // Nothing to be the top page of: seed-provider mode, or an empty runs/. A competition that
+  // exists but has scored nothing yet keeps its landing — the rules, the scenario list and the
+  // participant lookup are what a reader needs most before the first result, and dropping the
+  // whole page took them away exactly then (issue #84 T).
+  if (error || !data || !standings) return <ScenarioPage />;
 
   const file = data.competition.file;
   const at = standings.throughRound;
@@ -576,23 +636,42 @@ export function HomePage() {
     statusParts.push(
       planned !== null && done.length < planned
         ? t("home.status.epochs", { done: done.length, planned })
-        : t("home.status.epochsAll", { n: done.length }),
+        : done.length === 1
+          ? t("home.status.epochsAllOne")
+          : t("home.status.epochsAll", { n: done.length }),
     );
     if (data.updatedAtMs !== null)
       statusParts.push(
         t("home.status.updated", { time: clock(data.updatedAtMs, locale) }),
       );
-    if (planned !== null && done.length < planned && data.liveRunIds.length > 0)
-      statusParts.push(t("home.status.live"));
+    // What is running *in this competition*, and where it is. The old line said only that some run
+    // somewhere was live, and only while the plan had epochs left — so a practice period, whose
+    // plan grows a segment at a time, never said anything at all (issue #84 C).
+    if (data.live) {
+      statusParts.push(
+        data.live.round !== null && data.live.rounds !== null
+          ? t("home.status.liveRound", {
+              label: data.live.label,
+              round: data.live.round,
+              rounds: data.live.rounds,
+            })
+          : t("home.status.live"),
+      );
+      if (data.live.blockNumber !== null)
+        statusParts.push(
+          t("home.status.liveBlock", {
+            n: data.live.blockNumber.toLocaleString("en-US"),
+          }),
+        );
+    }
     if (nextStart !== null && (planned === null || done.length < planned))
       statusParts.push(
         t("home.status.next", { time: clock(nextStart, locale) }),
       );
   }
-  const inProgress =
-    !data.competition.fromSingleRun &&
-    planned !== null &&
-    done.length < planned;
+  // More results are coming. Not "the plan has epochs left" alone: a practice period has no plan
+  // beyond the segments it has written, and it is the case where "Final" was most wrong.
+  const inProgress = data.inProgress;
 
   const togglePin = (id: string) => setPinnedAgent(pinned === id ? null : id);
 
@@ -635,6 +714,7 @@ export function HomePage() {
           cursor={cursor}
           scenarioCount={file.scenarios.length}
           endedScenarios={standings.endedScenarios}
+          inProgress={inProgress}
           note={note}
         />
         <main
@@ -676,11 +756,9 @@ export function HomePage() {
                   {t("home.practiceBadge")}
                 </span>
               )}
-              {mode.audience && (
-                <span title={t("mode.audienceNote")} style={BADGE}>
-                  {t("mode.audienceBadge")}
-                </span>
-              )}
+              {/* The label only: the paragraph below this header is where the public view is
+                  explained, and saying it in three places at once said it in none (issue #84 M). */}
+              {mode.audience && <span style={BADGE}>{t("mode.audienceBadge")}</span>}
             </div>
             {statusParts.length > 0 && (
               <p
@@ -693,6 +771,12 @@ export function HomePage() {
                 }}
               >
                 {statusParts.join(" · ")}
+                {data.live?.roundEndsAtMs != null && (
+                  <>
+                    {" · "}
+                    <Countdown at={data.live.roundEndsAtMs} />
+                  </>
+                )}
               </p>
             )}
             <div
@@ -719,9 +803,11 @@ export function HomePage() {
               <Stat
                 label={t("home.stat.rounds")}
                 value={
-                  at === null
-                    ? t("home.roundsFinal", { n: maxRound })
-                    : t("home.roundsAt", { at, n: maxRound })
+                  at !== null
+                    ? t("home.roundsAt", { at, n: maxRound })
+                    : inProgress
+                      ? t("home.roundsSoFar", { n: maxRound })
+                      : t("home.roundsFinal", { n: maxRound })
                 }
               />
               {recordedAt && (
@@ -754,7 +840,8 @@ export function HomePage() {
           </header>
 
           {!mode.standings ? (
-            <Panel title={t("home.standingsFinal")}>
+            // Neither final nor provisional: there is no standing here to be either (issue #84 C).
+            <Panel title={t("home.standingsTitle")}>
               <p
                 style={{
                   margin: 0,
@@ -765,6 +852,32 @@ export function HomePage() {
                 }}
               >
                 {t("home.standingsOff")}
+              </p>
+            </Panel>
+          ) : standings.rows.length === 0 ? (
+            // A competition with nothing scored yet, or one every epoch of which failed. Which of
+            // the two it is decides what to say (issue #84 L); either way the page stays.
+            <Panel title={t("home.noStandings.title")}>
+              <p
+                style={{
+                  margin: 0,
+                  padding: "16px",
+                  font: "var(--text-sm) var(--font-sans)",
+                  lineHeight: 1.6,
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {(() => {
+                  const failures = file.scenarios.filter(
+                    (sc) => typeof sc.error === "string",
+                  );
+                  return failures.length > 0 &&
+                    failures.length === file.scenarios.length
+                    ? t("home.noStandings.failed", {
+                        detail: failures[0].error as string,
+                      })
+                    : t("home.noStandings.pending");
+                })()}
               </p>
             </Panel>
           ) : (
@@ -788,9 +901,11 @@ export function HomePage() {
 
               <Panel
                 title={
-                  at === null
-                    ? t("home.standingsFinal")
-                    : t("home.standingsThrough", { at })
+                  at !== null
+                    ? t("home.standingsThrough", { at })
+                    : inProgress
+                      ? t("home.standingsSoFar")
+                      : t("home.standingsFinal")
                 }
                 subtitle={
                   practice
@@ -1251,6 +1366,11 @@ export function HomePage() {
               </Panel>
             </>
           )}
+
+          {/* The one thing a participant needs that no ranking provides: their own agent. With
+              standings not posted there is no row to click, and the only routes to an agent page
+              were a wallet on the board or a typed URL (issue #84 G). */}
+          <FindAgent addressByAgent={standings.addressByAgent} />
 
           {/* Choosing a world to look at, from the list rather than from a dropdown of names. */}
           <Panel

@@ -343,6 +343,7 @@ a panel that does not render a file is not the same as a file nobody can fetch.
 ```bash
 ERIS_DASHBOARD_AUDIENCE=1 npm run dashboard:serve          # the live week
 ERIS_DASHBOARD_AUDIENCE=1 ERIS_DASHBOARD_STANDINGS=0 npm run dashboard:serve   # the trial environment
+ERIS_DASHBOARD_COMPETITIONS=practice-2026-09-23 …          # …and only this competition
 ```
 
 With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
@@ -362,18 +363,52 @@ With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
   regime §3.3 does not announce. The run's kind is read from `summary.json`, or from
   `run_started_realtime` while the run is live; a run that states neither is treated as a scenario
 - rewrites `matrix.json` / `standings.json` of a **scenario** matrix so every scenario is
-  `regime: "hidden"`, `seed: 0` — the pages call it "epoch s" (§3.3: an epoch's scenario is not
+  `regime: "hidden"`, `seed: null` — the pages call it "epoch s" (§3.3: an epoch's scenario is not
   announced, and with equal regime counts the ones already run would give away the rest). A practice
-  period (`resetUnit: continuous`) keeps its day labels: days are not scenarios
+  period (`resetUnit: continuous`) keeps its day labels: days are not scenarios. **Null, not 0**: a
+  withheld seed, a segment's placeholder and a real seed 0 are three different things, and printing
+  `seed 0` claimed a draw nobody made
 - drops `seed` / `flowSeed` and each agent's `stderrTail` from `summary.json`
+- **serves only the competitions `ERIS_DASHBOARD_COMPETITIONS` lists**, when it is set: a
+  comma-separated list of directories under `runs/`. What belongs to one is what its `matrix.json`
+  names and what its directory contains — never what happens to be running. Applies to the index,
+  to direct fetches and to tails alike. Unset serves everything under `runs/`, which on an
+  operator's box is every smoke and test run they ever made.
+  A **practice period** is fully covered, current segment included, because its segments live
+  inside the period's own directory. A **scenario matrix's running epoch** is not served until it
+  completes: it is a sibling directory that nothing on disk yet connects to the matrix, and
+  admitting "whatever is live" instead would admit every live directory under `runs/` for as long
+  as the matrix was incomplete — which is the entire competition. The standings still say the
+  competition is in progress; that comes from the plan's epoch count, not from finding a live run
 
 `/runs/mode.json` reports the switches, and the pages say what is absent rather than rendering it
 empty: the decision-log tab and the mempool feed are replaced by a sentence, the scenario list's
 episode column carries a note, the regime columns are gone, and live mode stops reading the chain
-(the RPC an audience would need is the competition node itself; block heights come from the log).
+(the RPC an audience would need is the competition node itself). Until that endpoint answers, the
+pages hold **both** restrictions on: a browser that could not reach it must not render what either
+switch withholds, and defaulting to the operator's view meant a failed fetch posted trial standings.
+
+What the public view *does* read while a run is going: `blocks.csv`, `epochs.jsonl` and
+`market.jsonl`, all of which the coordinator appends as it goes and all of which the server already
+serves. Without them the explorer and the board reported `blocks 0–0` and every venue `—` for a
+whole practice period — which is exactly when a self-hosted participant is asking whether their
+transaction landed. The block rows are the coordinator's record first and the chain (where it can be
+read at all) only past them, and the range they cover is carried with them: a round that starts
+before it has **no** transaction count rather than a count of zero.
+
+The scenario panel's schedule follows the same rule as the server: for one epoch of a scenario
+matrix it says the plan is withheld (§3.3) rather than reporting "0 scheduled", and for a practice
+period it says the windows listed are the ones that have already closed. The public view also
+re-reads the head of `events.jsonl` periodically, because a window the server withheld at first is
+served once it closes, and a tail that had already read past that line would never see it.
+
 `ERIS_DASHBOARD_STANDINGS=0` is rules §4.7 — the trial environment posts no standings — and hides the
-standings table, the scenario list's leader column and the per-run rankings on `/scenario` and
-`/markets`; the venue state, the episode history and the explorer stay.
+standings table, the scenario list's leader column, the per-run rankings on `/scenario` and
+`/markets`, the rounds bar's per-round ranking, and on an agent's page its Standing tab, its rank
+badge, its deviation score and the rank column of its Rounds tab (the page opens on Overview
+instead). The venue state, the episode history, the transactions and the explorer stay — and so does
+the participant lookup on the landing page, which is how someone reaches their own agent when there
+is no table to click.
 
 Switching the flags off after the results are announced is the §7.2 publication: the same
 directories, served whole.

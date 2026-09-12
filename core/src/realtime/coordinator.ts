@@ -25,10 +25,16 @@ import {
   setEthBalance,
   setIntervalMining,
   transferEth,
+  waitForMiningToSettle,
 } from "@eris/sdk/chain.js";
 import { spawnSync } from "node:child_process";
 import { RunLogger, type RunArtifactWriter } from "../logger.js";
-import { SegmentedRun, sliceEpochSeries } from "../segments.js";
+import {
+  SegmentedRun,
+  segmentAgentRecord,
+  segmentIndexAgent,
+  sliceEpochSeries,
+} from "../segments.js";
 import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
 import { methodNameForCalldata } from "@eris/sdk/methodSelectors.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
@@ -84,10 +90,27 @@ import {
 import { FlowProcess, type FlowOrderWire } from "../flowProcess.js";
 import { deployFlashArb, FLASH_ARB_ADDRESS } from "../flashArbDemo.js";
 import { RealtimeAgentProcess } from "./agentProcess.js";
+import {
+  deriveLiquityVictims,
+  liquityBreachMagnitude,
+  LIQUITY_VICTIM_ENV,
+  openLiquityVictimTroves,
+  readLiquitySystem,
+  readLiquityVictimTroves,
+  recoveryCohortCollateralWei,
+  seedStabilityPool,
+  setupLiquityVictims,
+  tcrAtCrashBottom,
+  type LiquityVictim,
+  type LiquityVictimTrove,
+} from "../liquityVictims.js";
+import { waitForAgentsReady } from "./agentsReady.js";
 import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
 import {
   deployPriceFeed,
+  setPriceFeedOpening,
+  setPriceFeedOpeningFor,
   updatePriceFeedForMempool,
   updatePriceFeedMempool,
   writePriceFeedStorage,
@@ -859,6 +882,10 @@ export async function runRealtimeSimulation(
       // they are machinery, and a dry flow bot removes market activity from everyone.
       const gasBuffer = isFlow ? undefined : 0n;
       const ethWei = isFlow ? config.flowEthWei : config.initialEthWei;
+      // Both sides of the flow's inventory are the regime's to size (issue #112): a flowTrend hold
+      // that leans one way for 30 blocks spends the wallet's whole balance on that side, and a
+      // wallet funded like an agent delivers x1.4 of a declared x2-3 lean.
+      const usdcUnits = isFlow ? config.flowUsdcUnits : config.initialUsdcUnits;
       if (!t.privateKey) {
         // A participant's own address (ADR 0021 §2). Same endowment, reached without signing as
         // them -- and therefore without the venue approvals below, which only they can grant.
@@ -869,7 +896,7 @@ export async function runRealtimeSimulation(
           t.address,
           ethWei,
           wethWei,
-          config.initialUsdcUnits,
+          usdcUnits,
           baseAmounts,
           gasBuffer,
         );
@@ -882,7 +909,7 @@ export async function runRealtimeSimulation(
         t.privateKey,
         ethWei,
         wethWei,
-        config.initialUsdcUnits,
+        usdcUnits,
         baseAmounts,
         gasBuffer,
       );
@@ -911,6 +938,22 @@ export async function runRealtimeSimulation(
 
     // The initial fair price is finalized here (used by the local oracle calibration and victim setup below).
     latestFairPrice = await initialFairPrice(ctx, enabledIds);
+
+    // Every other base's opening fair, settled here with WETH's rather than after mining starts
+    // (issue #94). Until this existed the extra bases were first read after `interval_mining_started`,
+    // so everything between here and the first block that valued a holding through
+    // `ctx.fairPrices ?? {}` saw WETH only: the Aave calibration below (the WBTC aggregator kept the
+    // deployer's seed price until the first oracle tx), the whale's endowment, `initial_endowment`,
+    // and -- the one that reached the score -- the PriceFeed's opening state, which is what the
+    // first epoch boundary marks V_0 against. `openingFair` is the number every one of those reads,
+    // and the OU walk in the block loop starts from it, so the mark and the walk agree.
+    const extraBaseSymbols = baseTokens()
+      .map((t) => t.symbol)
+      .filter((s) => s !== "WETH");
+    const openingFair: Record<string, number> = { WETH: latestFairPrice };
+    for (const b of extraBaseSymbols)
+      openingFair[b] = await initialFairPriceFor(ctx, b, enabledIds);
+    ctx.fairPrices = { ...openingFair };
 
     // [Calibration] Local deploy aligns the Aave oracle to the run's initial fair price. On a fork,
     // "oracle ≈ spot ≈ fair0" holds implicitly, but locally the deployer's seed price and fair0 can diverge (a
@@ -1073,8 +1116,22 @@ export async function runRealtimeSimulation(
     }
 
     // ---- On-chain distribution path for the fair price (ADR 0006 §3). Kept permanent and written every block ----
+    // The constructor carries WETH's opening fair; the other bases are written right behind it,
+    // before the first boundary is marked (issue #94 -- see setPriceFeedOpeningFor for what V_0
+    // looked like when they were left to the first per-block oracle tx).
     const priceFeedAddress = await deployPriceFeed(ctx, latestFairPrice);
-    logger.event({ type: "price_feed_deployed", address: priceFeedAddress });
+    for (const b of extraBaseSymbols)
+      await setPriceFeedOpeningFor(
+        ctx,
+        priceFeedAddress,
+        tokenInfo(b).address,
+        openingFair[b],
+      );
+    logger.event({
+      type: "price_feed_deployed",
+      address: priceFeedAddress,
+      openingFair,
+    });
 
     // ---- agent-created markets (issue #40): the discovery registry and the lending singleton ----
     // Both are per-*run* contracts, like the PriceFeed: they are deployed here rather than living in
@@ -1297,8 +1354,26 @@ export async function runRealtimeSimulation(
         logger.runDir,
       );
       // Re-read the fair price to match the competition's starting point (reflects pools moved during warmup).
+      // And put the re-read numbers on the PriceFeed: the values written at deploy predate the
+      // warmup's trading, and the first boundary is marked against the feed (issue #94).
       latestFairPrice = await initialFairPrice(ctx, enabledIds);
-      logger.event({ type: "prewarm_completed", blocks: config.prewarmBlocks });
+      openingFair.WETH = latestFairPrice;
+      await setPriceFeedOpening(ctx, priceFeedAddress, latestFairPrice);
+      for (const b of extraBaseSymbols) {
+        openingFair[b] = await initialFairPriceFor(ctx, b, enabledIds);
+        await setPriceFeedOpeningFor(
+          ctx,
+          priceFeedAddress,
+          tokenInfo(b).address,
+          openingFair[b],
+        );
+      }
+      ctx.fairPrices = { ...openingFair };
+      logger.event({
+        type: "prewarm_completed",
+        blocks: config.prewarmBlocks,
+        openingFair,
+      });
     }
 
     // ---- LST venue (issue #38): align the deployed vault with this run's economic clock, and
@@ -1320,6 +1395,129 @@ export async function runRealtimeSimulation(
           logger,
         )
       : null;
+
+    // ---- Liquity victims (issue #107): the CDP counterpart of the Aave cohort above ----
+    // Opened here, after the venue's oracle points at this run's PriceFeed, so the ICR they land
+    // at is the one the chain computes. Not scored; the crash liquidates them (the Stability Pool's
+    // work) and the eUSD depeg redeems against them (redemption arb's work).
+    const liquityVictims: LiquityVictim[] = deriveLiquityVictims(
+      config.seed,
+      config.stressLiquityVictimCount,
+    );
+    let minLiquityVictimIcr0: number | null = null;
+    let liquityVictimMcr: number | null = null;
+    // Issue #59: when the regime declares the TCR it wants at the crash bottom, the cohort's
+    // collateral is sized from the drawn crash rather than taken from config, and the record
+    // says what that sizing expects.
+    let liquityRecovery: {
+      targetTcr: number;
+      crashMagnitude: number;
+      collWei: bigint;
+      expectedTcrAtBottom: number;
+    } | null = null;
+    if (liquityVictims.length > 0) {
+      if (!liquityRuntime)
+        throw new Error(
+          "stress.liquityVictimCount > 0 requires the liquity protocol enabled (issue #107)",
+        );
+      const freshState =
+        !config.skipReset && (config.localDeploy || Boolean(config.forkUrl));
+      if (!freshState)
+        throw new Error(
+          "Liquity victims require a fresh state: full re-fork (set ARB_RPC_URL) or local deploy mode, " +
+            "and do not set ERIS_SKIP_RESET -- a Trove left over from a previous run sits in the sorted " +
+            "list at an ICR nobody configured (issue #107; ADR 0009 §4 / ADR 0016 §2)",
+        );
+      let victimCollWei = config.stressLiquityVictimCollWethWei;
+      if (config.stressLiquityRecoveryTcr > 0) {
+        const crash = schedule.events.find((e) => e.type === "crash");
+        if (!crash)
+          throw new Error(
+            "stress.liquityRecoveryTcr needs a crash event: the cohort is sized from its drawn magnitude (issue #59)",
+          );
+        const system = await readLiquitySystem(ctx);
+        const priceWad =
+          BigInt(Math.round(latestFairPrice * 1e6)) * (10n ** 18n / 1_000_000n);
+        const sized = recoveryCohortCollateralWei({
+          systemCollWei: system.collWei,
+          systemDebtWei: system.debtWei,
+          priceWad,
+          crashMagnitude: crash.magnitude,
+          icr0: config.stressLiquityVictimIcr,
+          count: liquityVictims.length,
+          targetTcr: config.stressLiquityRecoveryTcr,
+        });
+        if (sized === null)
+          throw new Error(
+            `no cohort of ${liquityVictims.length} Troves at ICR ${config.stressLiquityVictimIcr} reaches ` +
+              `TCR ${config.stressLiquityRecoveryTcr} on a ${(crash.magnitude * 100).toFixed(1)} % crash: the ` +
+              "cohort's own post-crash ICR has to be above the target and the system above it before the " +
+              "cohort (issue #59). Lower the target, raise the ICR, or widen the crash",
+          );
+        victimCollWei = sized;
+        const debtEach = (sized * priceWad) / (BigInt(Math.round(config.stressLiquityVictimIcr * 1e6)) * (10n ** 18n / 1_000_000n));
+        liquityRecovery = {
+          targetTcr: config.stressLiquityRecoveryTcr,
+          crashMagnitude: crash.magnitude,
+          collWei: sized,
+          expectedTcrAtBottom: tcrAtCrashBottom({
+            systemCollWei: system.collWei + BigInt(liquityVictims.length) * sized,
+            systemDebtWei: system.debtWei + BigInt(liquityVictims.length) * debtEach,
+            priceWad,
+            crashMagnitude: crash.magnitude,
+          }),
+        };
+      }
+      await setupLiquityVictims(ctx, liquityVictims, victimCollWei);
+      const cohort = await openLiquityVictimTroves(ctx, liquityVictims, {
+        icr0: config.stressLiquityVictimIcr,
+        collWei: victimCollWei,
+        priceUsd: latestFairPrice,
+      });
+      if (config.stressLiquitySpSeedEusdWei > 0n)
+        await seedStabilityPool(
+          ctx,
+          DEFAULT_ANVIL_PRIVATE_KEYS[0],
+          config.stressLiquitySpSeedEusdWei,
+        );
+      liquityVictimMcr = cohort.mcr;
+      for (const t of cohort.troves)
+        if (
+          Number.isFinite(t.icr) &&
+          (minLiquityVictimIcr0 === null || t.icr < minLiquityVictimIcr0)
+        )
+          minLiquityVictimIcr0 = t.icr;
+      logger.event({
+        type: "stress_liquity_victims_setup",
+        icr0: config.stressLiquityVictimIcr,
+        mcr: cohort.mcr,
+        ccr: cohort.ccr,
+        tcr: cohort.tcr,
+        collWeiPerVictim: victimCollWei.toString(),
+        spSeedEusdWei: config.stressLiquitySpSeedEusdWei.toString(),
+        ...(liquityRecovery
+          ? {
+              recovery: {
+                targetTcr: liquityRecovery.targetTcr,
+                crashMagnitude: liquityRecovery.crashMagnitude,
+                expectedTcrAtBottom: liquityRecovery.expectedTcrAtBottom,
+              },
+            }
+          : {}),
+        victims: cohort.troves.map((t) => ({
+          id: t.id,
+          address: t.address,
+          icr: t.icr,
+          debtEusdWei: t.debtEusdWei.toString(),
+          collWei: t.collWei.toString(),
+        })),
+      });
+      // Addresses are public on-chain information; handing them out adds no bidding game (the
+      // reference agents find Troves through the observation's sorted list anyway).
+      Object.assign(agentExtraEnv, {
+        [LIQUITY_VICTIM_ENV]: liquityVictims.map((v) => v.address).join(","),
+      });
+    }
 
     // The environment's depth and its eUSD both belong to the deployer, which is the anvil default
     // account 0 (ADR 0016 §4). An agent bound to AGENT0_PRIVATE_KEY is that same account, and two
@@ -1623,6 +1821,8 @@ export async function runRealtimeSimulation(
         );
       };
     }
+    // What `agents_ready` measures boot time from (issue #94).
+    const agentsSpawnedAt = Date.now();
 
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<void> => {
@@ -1779,6 +1979,60 @@ export async function runRealtimeSimulation(
     if (config.localDeploy && !external) {
       await setAutomine(publicClient, false);
     }
+
+    // ---- the epoch clock waits for the field (issue #94; #91 F5) ----
+    // From here to interval mining no block is produced on anvil, and on an external chain the
+    // sequencer's blocks precede runStartBlock -- either way the epoch's first block, its first
+    // boundary (V_0) and its first stress window wait until every agent this coordinator launched
+    // has written `runtime_start`, bounded by run.agentsReadyTimeoutSec. Nothing an agent does
+    // before that line needs a new block: the preflight only reads, and the venue approvals were
+    // granted at funding (an agent that still has to send one mines its own on anvil). External
+    // participants are not waited for: nothing here started them. See agentsReady.ts.
+    {
+      const launched = agentRuntimes.filter((a) => a.process !== null);
+      if (launched.length > 0 && config.agentsReadyTimeoutSec > 0) {
+        console.error(
+          `[agents] waiting for ${launched.length} agent(s) to write runtime_start ` +
+            `before the first block (bound ${config.agentsReadyTimeoutSec} s)`,
+        );
+        const report = await waitForAgentsReady({
+          agents: launched.map((a) => ({
+            id: a.id,
+            isAlive: () =>
+              a.exitedEarly === undefined && (a.process?.isAlive() ?? false),
+          })),
+          runDir: logger.runDir,
+          spawnedAt: agentsSpawnedAt,
+          timeoutMs: config.agentsReadyTimeoutSec * 1000,
+        });
+        logger.event({
+          type: "agents_ready",
+          ...report,
+          launched: launched.length,
+          note: report.timedOut
+            ? "the bound was reached with agents still booting: the epoch starts without them " +
+              "watching, and the blocks they miss are on their own account"
+            : report.exited.length > 0
+              ? "every agent still running wrote runtime_start before the first block; the " +
+                "exited ones are in agent_process_exited"
+              : "every launched agent wrote runtime_start before the first block",
+        });
+        const slowest = report.ready.reduce(
+          (m, r) => Math.max(m, r.afterMs),
+          0,
+        );
+        console.error(
+          `[agents] ${report.ready.length}/${launched.length} ready ` +
+            `(slowest ${(slowest / 1000).toFixed(1)} s after spawn, waited ${(report.waitedMs / 1000).toFixed(1)} s)` +
+            (report.late.length > 0
+              ? `; still booting at the ${config.agentsReadyTimeoutSec} s bound: ${report.late.join(", ")}`
+              : "") +
+            (report.exited.length > 0
+              ? `; exited before runtime_start: ${report.exited.join(", ")}`
+              : ""),
+        );
+      }
+    }
     if (external) {
       // The sequencer has been producing blocks the whole time; there is no phase change to make.
       // What the environment does have to know is the real cadence, because the block loop's
@@ -1808,9 +2062,41 @@ export async function runRealtimeSimulation(
         });
       }
       await setIntervalMining(publicClient, config.blockTimeSec);
+      // The mode change flushes whatever block-production backlog automine left behind (see
+      // waitForMiningToSettle): a burst of empty blocks, milliseconds apart, that the block loop
+      // below would otherwise count as the first N blocks of the run -- the stress schedule is
+      // relative to runStartBlock, and a depeg ramp scheduled 37 blocks in was skipped whole by
+      // a 68-block burst. So the run starts once the chain is quiet, and what was flushed is on
+      // the record. A quarter block time is far above the flush cadence and below the interval.
+      // cacheTime 0: viem serves getBlockNumber from a cache for the client's pollingInterval
+      // (4 s by default), which is longer than the whole flush -- the first attempt at this wait
+      // read the same number for 500 ms while 71 blocks went past.
+      const settle = await waitForMiningToSettle(
+        async () => Number(await publicClient.getBlockNumber({ cacheTime: 0 })),
+        {
+          quietMs: Math.max(
+            200,
+            Math.min(500, Math.floor((config.blockTimeSec * 1000) / 4)),
+          ),
+          maxWaitMs: 60_000,
+        },
+      );
+      if (settle.burstBlocks > 0 || !settle.settled) {
+        logger.event({
+          type: "mining_backlog_flushed",
+          ...settle,
+          note: settle.settled
+            ? "empty blocks anvil mined in a burst right after the mining mode changed; they " +
+              "precede runStartBlock and are not part of the run"
+            : "the chain did not go quiet within maxWaitMs; the run starts anyway, and its first " +
+              "blocks may be that burst",
+        });
+      }
       logger.event({
         type: "interval_mining_started",
         blockTimeSec: config.blockTimeSec,
+        settledAfterMs: settle.waitedMs,
+        flushedBlocks: settle.burstBlocks,
       });
     }
     const startTime = Date.now();
@@ -1821,21 +2107,24 @@ export async function runRealtimeSimulation(
     const fairAnchor = baseFair;
     // ADR 0013: independent OU prices for extra bases (WBTC etc.). Each base advances with its own Rng, so the
     // WETH price path is unchanged (under the fork default, extraBaseSymbols=[] → exactly matches prior = byte-compatible).
-    const extraBaseSymbols = baseTokens()
-      .map((t) => t.symbol)
-      .filter((s) => s !== "WETH");
+    // `extraBaseSymbols` and each base's opening fair were settled at setup, next to WETH's, and
+    // are what the PriceFeed already carries (issue #94): the walk starts from the number V_0 was
+    // marked at, not from a re-read of the pool after the LST / Liquity setup traded on it.
     const extraPriceRng: Record<string, Rng> = {};
     const extraBaseFair: Record<string, number> = {};
     const extraAnchor: Record<string, number> = {};
     for (const b of extraBaseSymbols) {
       extraPriceRng[b] = priceRngForAsset(config.seed, b);
-      const p0 = await initialFairPriceFor(ctx, b, enabledIds);
-      extraBaseFair[b] = p0;
-      extraAnchor[b] = p0;
+      extraBaseFair[b] = openingFair[b];
+      extraAnchor[b] = openingFair[b];
     }
     let processedBlocks = 0;
     let processing = false;
-    let lastProcessedBlock = Number(await publicClient.getBlockNumber());
+    // Fresh, not viem's 4 s cache: this is what runStartBlock is derived from, and a value from
+    // before the flush above would put the flushed blocks inside the run.
+    let lastProcessedBlock = Number(
+      await publicClient.getBlockNumber({ cacheTime: 0 }),
+    );
     const runStartBlock = lastProcessedBlock + 1;
 
     // ---- live scoring (ADR 0021 §3) ----
@@ -2023,23 +2312,23 @@ export async function runRealtimeSimulation(
         // opening balances: a segment is a window on a continuous economy, and an agent's PnL for
         // Tuesday is what changed on Tuesday. P is the rules' V_K − V_0 (§4.4.1), each end at its
         // own marks; a final boundary that did not report falls back to the last that did (§4.4.2).
+        // No V_0 (a mid-segment registration) is no P, recorded as such -- never as 0 (issue #84 X2).
         const pnl = sliced
           ? epochPnlFromSeries(sliced.valuesByAgent[a.id] ?? [])
           : null;
-        return {
-          id: a.id,
-          address: a.address,
-          baseline: a.spec.baseline ?? false,
-          ...(a.spec.participant !== undefined
-            ? { participant: a.spec.participant }
-            : {}),
-          initialValueUsdc: pnl?.initialValueUsdc ?? 0,
-          finalValueUsdc: pnl?.finalValueUsdc ?? 0,
-          netPnlUsdc: pnl?.pnlUsdc ?? 0,
-          ...(pnl ? { pnlUsdc: pnl.pnlUsdc } : {}),
-          includedTxCount: a.included,
-          revertCount: a.reverted,
-        };
+        return segmentAgentRecord(
+          {
+            id: a.id,
+            address: a.address,
+            baseline: a.spec.baseline ?? false,
+            ...(a.spec.participant !== undefined
+              ? { participant: a.spec.participant }
+              : {}),
+            includedTxCount: a.included,
+            revertCount: a.reverted,
+          },
+          pnl,
+        );
       });
       logger.summary({
         runId: `${runId}/segment-${segments.currentSegment}`,
@@ -2065,17 +2354,7 @@ export async function runRealtimeSimulation(
       });
       // The index entry is standings-shaped (the dashboard reads a competition's scenarios with the
       // same code either way), so it carries the score rather than only the balances.
-      return agents.map((a) => ({
-        id: a.id,
-        baseline: a.baseline,
-        netPnlUsdc: a.netPnlUsdc,
-        // Alpha needs the fixed-reference sweep, which a segment of a continuous chain does not get.
-        // Reported as 0 rather than omitted, because the field is what the standings read.
-        alphaUsdc: 0,
-        ...(a.pnlUsdc !== undefined ? { pnlUsdc: a.pnlUsdc } : {}),
-        initialValueUsdc: a.initialValueUsdc,
-        finalValueUsdc: a.finalValueUsdc,
-      }));
+      return agents.map(segmentIndexAgent);
     };
 
     const rollSegment = async (atBlock: number): Promise<void> => {
@@ -2150,10 +2429,43 @@ export async function runRealtimeSimulation(
           }
         }
       }
+      // The same check for the Liquity cohort (issue #107): a Trove at ICR₀ goes under MCR at
+      // m > 1 − MCR/ICR₀.
+      if (liquityRecovery !== null) {
+        // The cohort was sized so the drawn crash lands the system on the target; the warning here
+        // is for a target that is not Recovery Mode at all (issue #59).
+        if (liquityRecovery.expectedTcrAtBottom >= 1.5)
+          logger.event({
+            type: "stress_calibration_warning",
+            reason: "crash magnitude may not reach Recovery Mode",
+            targetTcr: liquityRecovery.targetTcr,
+            expectedTcrAtBottom: liquityRecovery.expectedTcrAtBottom,
+            crashMagnitude: liquityRecovery.crashMagnitude,
+          });
+      } else if (minLiquityVictimIcr0 !== null && liquityVictimMcr !== null) {
+        const breachThreshold = liquityBreachMagnitude(
+          minLiquityVictimIcr0,
+          liquityVictimMcr,
+        );
+        for (const ev of schedule.events) {
+          if (ev.type === "crash" && ev.magnitude <= breachThreshold) {
+            logger.event({
+              type: "stress_calibration_warning",
+              reason: "crash magnitude may not breach victim ICR",
+              minLiquityVictimIcr0,
+              mcr: liquityVictimMcr,
+              breachThreshold,
+              crashMagnitude: ev.magnitude,
+            });
+          }
+        }
+      }
     }
     // Keep each victim's latest debt (USD 8-decimals) for liquidation detection. Debt decreases only via a
     // liquidationCall (victims are passive) → emit stress_liquidation with the decrease as a liquidation signal.
     const victimLastDebt = new Map<string, bigint>();
+    // The Liquity cohort's last-seen Trove, for liquidation / redemption detection (issue #107).
+    const liquityVictimLast = new Map<string, LiquityVictimTrove>();
     // Cross-venue no-arbitrage monitor (phantom-spread guard; see noArb.ts). Persistent executable
     // arb = structural pricing breakage; transient arb is the alpha agents are meant to capture.
     const noArbMonitor = new NoArbMonitor();
@@ -2593,6 +2905,62 @@ export async function runRealtimeSimulation(
             }
           };
 
+          // Liquity victims (issue #107): read the cohort's Troves while any window is open -- the
+          // crash is what breaks them, the depeg outlasts it and is when redemptions reach them --
+          // and record the ICR path, a Trove closed by liquidation, and debt taken by redemption.
+          const liquityVictimTask = async (): Promise<void> => {
+            if (liquityVictims.length === 0) return;
+            const active = schedule.activeEventAt(blockIndex);
+            if (!active && overlay.wethMult === 1) return;
+            const troves = await readLiquityVictimTroves(
+              ctx,
+              liquityVictims,
+              latestFairPrice,
+            );
+            logger.event({
+              type: "stress_liquity_victim_icr",
+              blockNumber: bn,
+              blockIndex,
+              wethMult: overlay.wethMult,
+              victims: troves.map((t) => ({
+                id: t.id,
+                status: t.status,
+                icr: Number.isFinite(t.icr) ? t.icr : null,
+                debtEusdWei: t.debtEusdWei.toString(),
+                collWei: t.collWei.toString(),
+              })),
+            });
+            for (const t of troves) {
+              const last = liquityVictimLast.get(t.id);
+              if (last && last.status === 1) {
+                if (t.status === 3) {
+                  logger.event({
+                    type: "stress_liquity_liquidation",
+                    blockNumber: bn,
+                    blockIndex,
+                    victimId: t.id,
+                    victimAddress: t.address,
+                    debtEusdWei: last.debtEusdWei.toString(),
+                    collWei: last.collWei.toString(),
+                    icrBefore: Number.isFinite(last.icr) ? last.icr : null,
+                  });
+                } else if (t.status === 4 || t.debtEusdWei < last.debtEusdWei) {
+                  logger.event({
+                    type: "stress_liquity_redemption",
+                    blockNumber: bn,
+                    blockIndex,
+                    victimId: t.id,
+                    victimAddress: t.address,
+                    redeemedEusdWei: (last.debtEusdWei - t.debtEusdWei).toString(),
+                    remainingDebtEusdWei: t.debtEusdWei.toString(),
+                    closed: t.status === 4,
+                  });
+                }
+              }
+              liquityVictimLast.set(t.id, t);
+            }
+          };
+
           // vulnerability pool hit/execution detection (ADR 0014 §6): scan funded pools' Swap logs as ground-truth
           // and emit vulnerability_exploited / safe_pool_captured.
           // Run only during a vuln run (do not add a per-block getLogs to the default run).
@@ -2750,6 +3118,7 @@ export async function runRealtimeSimulation(
             timed(stateAndFlowTask),
           ];
           if (stressVictims.length > 0) tasks.push(timed(victimTask));
+          if (liquityVictims.length > 0) tasks.push(timed(liquityVictimTask));
           if (vulnRuntime) tasks.push(timed(vulnTask));
           if (marketRegistry) tasks.push(timed(registryTask));
           // One task for both, actually rather than by comment. Every one of these sends from the
@@ -2797,6 +3166,8 @@ export async function runRealtimeSimulation(
           let taskIdx = 3;
           const victimMs =
             stressVictims.length > 0 ? results[taskIdx++] : undefined;
+          const liquityVictimMs =
+            liquityVictims.length > 0 ? results[taskIdx++] : undefined;
           const vulnMs = vulnRuntime ? results[taskIdx++] : undefined;
           const registryMs = marketRegistry ? results[taskIdx++] : undefined;
           // One measurement now that both share a task; reported under both names so the existing
@@ -2816,6 +3187,7 @@ export async function runRealtimeSimulation(
             oracleMs,
             stateFlowMs,
             ...(victimMs !== undefined ? { victimMs } : {}),
+            ...(liquityVictimMs !== undefined ? { liquityVictimMs } : {}),
             ...(vulnMs !== undefined ? { vulnMs } : {}),
             ...(registryMs !== undefined ? { registryMs } : {}),
             ...(liquidityMs !== undefined ? { liquidityMs } : {}),
@@ -2865,7 +3237,10 @@ export async function runRealtimeSimulation(
     // unwound would be marked at par and holding through the end would cost nothing -- which is
     // exactly the risk the regime exists to create. Nothing agents did lands after this point,
     // because they were stopped one line above.
-    const finalBlock = Number(await publicClient.getBlockNumber());
+    // Fresh for the same reason as runStartBlock: viem's cached read can be a block or two old.
+    const finalBlock = Number(
+      await publicClient.getBlockNumber({ cacheTime: 0 }),
+    );
 
     // ---- liquidity-pull teardown (issue #52): the run can end with a window still open, since the
     // schedule may place it against the last block and the time limit can cut in mid-window. Restore
@@ -3291,19 +3666,35 @@ export async function runRealtimeSimulation(
     if (segments)
       segments.finish(
         finalBlock,
-        agentsSummary.map((a) => ({
-          id: a.id,
-          address: a.address,
-          baseline: a.baseline,
-          ...(a.participant !== undefined
-            ? { participant: a.participant }
-            : {}),
-          netPnlUsdc: a.netPnlUsdc,
-          alphaUsdc: a.alphaUsdc ?? 0,
-          ...(a.pnlUsdc !== undefined ? { pnlUsdc: a.pnlUsdc } : {}),
-          initialValueUsdc: a.initialValueUsdc,
-          finalValueUsdc: a.finalValueUsdc,
-        })),
+        agentsSummary.map((a) => {
+          // The same record every other segment got. The whole-run figures above are the run's
+          // (an agent registered mid-period has a real netPnlUsdc since it was funded), but the
+          // final segment's index entry is scored on this segment's boundaries alone, and an agent
+          // with no V_0 in it is unscored here too (issue #84 X2).
+          // No boundary series at all means the run never reached two boundaries, so this segment
+          // contains no epoch and scores nobody -- P is V_K − V_0 and there is no V_0 to take.
+          // Substituting the whole-run figures here would hand the segment a number that is not
+          // its own, which is the same mistake in a smaller corner (issue #84 X2).
+          const pnl =
+            liveEpochSeries === undefined
+              ? null
+              : epochPnlFromSeries(liveEpochSeries.valuesByAgent[a.id] ?? []);
+          return segmentIndexAgent(
+            segmentAgentRecord(
+              {
+                id: a.id,
+                address: a.address,
+                baseline: a.baseline,
+                ...(a.participant !== undefined
+                  ? { participant: a.participant }
+                  : {}),
+                includedTxCount: a.includedTxCount,
+                revertCount: a.revertCount,
+              },
+              pnl,
+            ),
+          );
+        }),
       );
     logger.event({ type: "run_completed", runId, runDir: logger.runDir });
     console.error(

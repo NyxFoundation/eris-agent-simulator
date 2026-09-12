@@ -17,6 +17,7 @@ import {
 import { setCursorRange } from "@/data/roundCursor";
 import { setSelectedRound, useSelectedRound } from "@/data/roundSelection";
 import { runDisplayName } from "@/data/competition";
+import { useMode } from "@/data/mode";
 import { useScenarioLabel } from "@/data/useScenarioLabel";
 import { t } from "@/i18n/messages";
 import { navigate } from "@/navigation";
@@ -40,10 +41,19 @@ function formatCountdown(remainingMs: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
-/** A live view only holds a recent window of the chain, so an older round has no count to report —
- * which is not the same statement as "no transactions", and must not print as one. */
-function formatTxCount(txCount: number | null): string {
-  return txCount === null ? t("rounds.txOutside") : t("rounds.txN", { n: txCount });
+/**
+ * A round's transaction count, or why there is not one.
+ *
+ * Three states, and the difference between them is the whole point. A round that has not begun has
+ * no transactions and says so in words rather than as "0 tx", which reads as a round that happened
+ * and was quiet. A round the view does not cover has no count to report at all. Everything else has
+ * a number (issue #84 I).
+ */
+function formatTxCount(epoch: RoundEpoch): string {
+  if (epoch.status === "upcoming") return t("rounds.txNotStarted");
+  return epoch.txCount === null
+    ? t("rounds.txOutside")
+    : t("rounds.txN", { n: epoch.txCount });
 }
 
 const LABEL_STYLE = {
@@ -83,7 +93,7 @@ function RoundSegment({
         i: epoch.index,
         from: epoch.fromBlock.toLocaleString("en-US"),
         to: epoch.toBlock.toLocaleString("en-US"),
-        tx: formatTxCount(epoch.txCount),
+        tx: formatTxCount(epoch),
       })}
       style={{
         flex: 1,
@@ -147,6 +157,10 @@ function RoundSegment({
 const RESULT_GRID = "28px minmax(0,1fr) 96px 90px 70px";
 
 function RoundResults({ epoch }: { epoch: RoundEpoch }) {
+  // Rules §4.7: a per-round ranking is a standing, so where standings are not posted this panel
+  // keeps the round's window, its transaction count and what the environment did, and says why the
+  // table is absent instead of printing ranks (issue #84 B).
+  const mode = useMode();
   return (
     <div
       style={{
@@ -184,7 +198,7 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
             from: epoch.fromBlock.toLocaleString("en-US"),
             to: epoch.toBlock.toLocaleString("en-US"),
           })}{" "}
-          · {formatTxCount(epoch.txCount)}
+          · {formatTxCount(epoch)}
         </span>
         <span
           onClick={() => {
@@ -211,7 +225,17 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
         </span>
       </div>
 
-      {epoch.results.length === 0 ? (
+      {!mode.standings ? (
+        <span
+          style={{
+            font: "var(--text-sm) var(--font-sans)",
+            color: "var(--text-tertiary)",
+            lineHeight: 1.6,
+          }}
+        >
+          {t("home.standingsOff")}
+        </span>
+      ) : epoch.results.length === 0 ? (
         <span
           style={{
             font: "var(--text-sm) var(--font-mono)",

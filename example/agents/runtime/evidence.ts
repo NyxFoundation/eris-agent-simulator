@@ -56,14 +56,22 @@ export type MarketSample = {
   valueUsdc: number | null;
   // Base symbol -> fair price in USD, as the PriceFeed published it.
   fair: Record<string, number>;
+  // Base symbol -> how much of it the wallet held at this block, in whole units (8.0 WETH, not
+  // wei). Spot only: WETH counts the native ETH next to it, since the two are the same exposure.
+  // This is what turns "the marked value moved" into two numbers -- what the market did to what the
+  // agent was already holding, and what the trade did -- and without it the first is reported as
+  // the second (the smoke run of 2026-09-07 showed a do-nothing agent "earning" +6,562 USDC over the
+  // same windows in which the trading agent was credited with +6,877).
+  holdings: Record<string, number>;
   venues: Record<string, VenueSample>;
   // Stable symbol -> what the market says it is worth. `marketQuoted: false` means par by
   // convention or by fallback, which must not be read as "the peg is holding".
   stables: Record<string, { priceUsdc: number; marketQuoted: boolean }>;
   // Venues whose opportunity is a discount rather than a gap against a fair price: the LST's market
-  // price against what the vault owes, and eUSD's pool price against the dollar a redemption
-  // enforces. They were missing from the first cut of this file, which left `lst-carry` and
-  // `redemption-arb` reading prompts that pointed at evidence the digest never produced.
+  // price against what the vault owes (and eUSD's pool price against par, only when the registry
+  // does not already price eUSD as a stable -- see sampleObservation). They were missing from the
+  // first cut of this file, which left `lst-carry` and `redemption-arb` reading prompts that
+  // pointed at evidence the digest never produced.
   discounts: Record<string, { bps: number; quoted: boolean }>;
 };
 
@@ -79,11 +87,15 @@ function bps(actual: number, reference: number): number {
 // ADR 0013 added -- a WBTC dislocation is invisible if only the WETH pool is read, and the thin
 // bases are where the gaps live.
 export function sampleObservation(obs: AgentObservation): MarketSample {
+  // A fair price of zero is a feed that has not been published yet (the first observations of a
+  // run can land while setup is still writing it), not a base worth nothing. Marking against it
+  // would turn the whole holding into a "market move" the moment the feed comes alive.
   const fair: Record<string, number> = {};
-  if (Number.isFinite(obs.fairPriceUsdcPerWeth))
+  if (Number.isFinite(obs.fairPriceUsdcPerWeth) && obs.fairPriceUsdcPerWeth > 0)
     fair.WETH = obs.fairPriceUsdcPerWeth;
   for (const [base, price] of Object.entries(obs.fairPricesUsd ?? {}))
-    if (typeof price === "number" && Number.isFinite(price)) fair[base] = price;
+    if (typeof price === "number" && Number.isFinite(price) && price > 0)
+      fair[base] = price;
 
   const venues: Record<string, VenueSample> = {};
   const add = (
@@ -124,20 +136,6 @@ export function sampleObservation(obs: AgentObservation): MarketSample {
       add("gmx", base, m.marketPriceUsd);
   }
 
-  const discounts: MarketSample["discounts"] = {};
-  if (p.lst && Number.isFinite(p.lst.discountBps))
-    discounts["lst:market-vs-redemption"] = {
-      bps: p.lst.discountBps,
-      // Undefined predates the flag and meant "quoted"; false means the pool refused, and a refusal
-      // is not a 100% discount.
-      quoted: p.lst.marketQuoted !== false,
-    };
-  if (p.liquity && Number.isFinite(p.liquity.discountBps))
-    discounts["liquity:EUSD-vs-par"] = {
-      bps: p.liquity.discountBps,
-      quoted: p.liquity.marketQuoted === true,
-    };
-
   const stables: MarketSample["stables"] = {};
   for (const [symbol, s] of Object.entries(obs.balances?.stables ?? {})) {
     if (typeof s?.priceUsdc !== "number" || !Number.isFinite(s.priceUsdc))
@@ -148,15 +146,88 @@ export function sampleObservation(obs: AgentObservation): MarketSample {
     };
   }
 
+  const discounts: MarketSample["discounts"] = {};
+  if (p.lst && Number.isFinite(p.lst.discountBps))
+    discounts["lst:market-vs-redemption"] = {
+      bps: p.lst.discountBps,
+      // Undefined predates the flag and meant "quoted"; false means the pool refused, and a refusal
+      // is not a 100% discount.
+      quoted: p.lst.marketQuoted !== false,
+    };
+  // eUSD is reported once. Since issue #27 it is a market-priced stable in the registry, so its
+  // price already arrives in `stables` with the stables' sign (negative = below a dollar). The
+  // liquity adapter's discount is the same price with the sign flipped (positive = below par), and
+  // a run that showed both put "-90 bps" and "+90 bps" for one depeg in two sections of the same
+  // context. The adapter's figure is used only when the registry has no entry for it.
+  if (
+    !("EUSD" in stables) &&
+    p.liquity &&
+    Number.isFinite(p.liquity.discountBps)
+  )
+    discounts["liquity:EUSD-vs-par"] = {
+      bps: p.liquity.discountBps,
+      quoted: p.liquity.marketQuoted === true,
+    };
+
+  const holdings: Record<string, number> = {};
+  const units = (raw: unknown, decimals: number): number | null => {
+    if (typeof raw !== "string" || !/^\d+$/.test(raw)) return null;
+    const n = Number(raw) / 10 ** decimals;
+    return Number.isFinite(n) ? n : null;
+  };
+  for (const [base, raw] of Object.entries(obs.baseBalances ?? {})) {
+    // No decimals means no way to read the figure; a guessed 18 on an 8-decimal token is a
+    // ten-billion-fold error, which is worse than leaving that base's share of the move unexplained.
+    const decimals = obs.baseDecimals?.[base];
+    if (typeof decimals !== "number") continue;
+    const n = units(raw, decimals);
+    if (n !== null) holdings[base] = n;
+  }
+  const weth = units(obs.balances?.wethWei, 18);
+  const eth = units(obs.balances?.ethWei, 18);
+  if (weth !== null || eth !== null)
+    holdings.WETH = (holdings.WETH ?? weth ?? 0) + (eth ?? 0);
+
   const value = obs.inventory?.valueUsdc;
   return {
     block: obs.round,
     valueUsdc: typeof value === "number" ? value : null,
     fair,
+    holdings,
     venues,
     stables,
     discounts,
   };
+}
+
+/// What holding `holdings` would have gained or lost between two fair-price marks, in USDC.
+///
+/// The counterfactual behind every attribution in this file: the agent could always have done
+/// nothing, and "nothing" is worth this much. Only the bases priced at both ends count; a base
+/// missing from either side is left out rather than priced at zero. Null when no base could be
+/// priced, which the caller reports as "the market's share is unknown" rather than as zero.
+export function marketMoveUsdc(
+  holdings: Record<string, number>,
+  fairFrom: Record<string, number>,
+  fairTo: Record<string, number>,
+): number | null {
+  let sum = 0;
+  let priced = 0;
+  for (const [base, held] of Object.entries(holdings)) {
+    const from = fairFrom[base];
+    const to = fairTo[base];
+    if (
+      !Number.isFinite(held) ||
+      from === undefined ||
+      to === undefined ||
+      from <= 0 ||
+      to <= 0
+    )
+      continue;
+    sum += held * (to - from);
+    priced += 1;
+  }
+  return priced === 0 ? null : sum;
 }
 
 /// One sample per observed block, kept for as long as the revision interval needs it.
@@ -203,6 +274,15 @@ export class MarketHistory {
 
   get size(): number {
     return this.samples.length;
+  }
+
+  /// The sample taken at one block, if that block was observed and is still in the ring.
+  at(block: number): MarketSample | undefined {
+    return this.byBlock.get(block);
+  }
+
+  latest(): MarketSample | null {
+    return this.samples[this.samples.length - 1] ?? null;
   }
 
   /// The gap this agent saw on one venue at one block, in bps.
@@ -308,6 +388,10 @@ function departures(
 
 function fmt(n: number, digits = 2): string {
   return Number.isFinite(n) ? n.toFixed(digits) : "n/a";
+}
+
+function signed(n: number, digits = 2): string {
+  return `${n >= 0 ? "+" : ""}${fmt(n, digits)}`;
 }
 
 /// The interval's price history, as lines for the revision context.
@@ -474,15 +558,22 @@ export type TradeRecord = {
   status?: "success" | "reverted";
   includedAtBlock?: number;
   txIndex?: number;
-  // Marked value at the first observation at or after the block the transaction landed, and again
-  // once VALUE_MARK_DELAY_BLOCKS have passed. The difference is what the trade did -- which is not
-  // the same question as what the run did. "At or after": the block loop can miss a block under
-  // load, and a baseline taken one block late is better than no attribution at all, so the block it
-  // was actually taken on is recorded next to it.
-  valueAtInclusion?: number;
-  valueAtInclusionBlock?: number;
+  // Marked value before the trade and VALUE_MARK_DELAY_BLOCKS after it landed. The baseline is the
+  // observation the strategy decided on -- the last mark that does not yet contain the trade -- so
+  // the difference includes the trade's own execution: an arbitrage earns its edge *at* the fill,
+  // and a baseline taken after inclusion had already banked it and measured three blocks of drift
+  // instead. When the decision block's sample is gone (a missed block, or a ring that has rolled),
+  // the first mark at or after inclusion is used and `baselineAfterInclusion` says so.
+  valueBefore?: number;
+  valueBeforeBlock?: number;
+  baselineAfterInclusion?: boolean;
   valueAfter?: number;
   markedAtBlock?: number;
+  // What the inventory held at the baseline would have done over the same window at fair prices.
+  // The raw difference above is the market's move on that inventory plus whatever the trade did;
+  // this is the first of those two, so the second can be shown on its own. Undefined when the
+  // baseline sample carried no holdings or the fair prices were missing at either end.
+  marketValueDeltaUsdc?: number;
 };
 
 export type TradeAggregate = {
@@ -503,10 +594,19 @@ export type TradeAggregate = {
   // which is a different fault from bleeding fees.
   quotedOnCheapVenue: number;
   quotedOnRichVenue: number;
-  // Sum of the per-trade marked-value deltas that have had time to settle. Not the run's PnL: it
-  // excludes everything that happened while the agent was not trading.
-  attributedValueDeltaUsdc: number | null;
+  // Sum of the per-trade marked-value deltas that have had time to settle, as marked: the market's
+  // move on the inventory held plus whatever the trades did. Not the run's PnL (it excludes the
+  // blocks in which nothing was trading), and not the trades' own figure either -- that is
+  // `tradeValueDeltaUsdc` below.
+  rawValueDeltaUsdc: number | null;
   attributedTrades: number;
+  // The raw figure split in two, over the settled trades whose baseline carried holdings: what
+  // holding the baseline inventory at fair prices would have done over the same windows, and the
+  // remainder, which is what the trades themselves did. The second is the number to judge a
+  // strategy on. Both null when no settled trade could be split.
+  marketValueDeltaUsdc: number | null;
+  tradeValueDeltaUsdc: number | null;
+  splitTrades: number;
 };
 
 // Blocks to wait after inclusion before marking a trade's value delta. Small: an arbitrage that has
@@ -535,6 +635,13 @@ const GAP_TRADING_ACTIONS = new Set(["swap", "balancerSwap", "curveSwap"]);
 export class TradeLedger {
   private readonly records: TradeRecord[] = [];
   private readonly byHash = new Map<string, TradeRecord>();
+  // Holdings and fair prices at each open trade's baseline, held until the settled mark computes
+  // the market's share. Not on the record: a record is what the digest reads, and two price maps
+  // per trade are working state, not evidence.
+  private readonly baselineMarket = new Map<
+    string,
+    { holdings: Record<string, number>; fair: Record<string, number> }
+  >();
   private readonly capacity: number;
   // Looks up the venue gap this agent saw at a given block. Supplied by the runtime, which owns the
   // market history; the ledger only knows hashes and blocks. Optional, so a participant runtime
@@ -542,6 +649,9 @@ export class TradeLedger {
   private readonly gapAt:
     | ((block: number, protocol?: string, base?: string) => number | undefined)
     | undefined;
+  // The market sample at a block, for the pre-trade baseline. Same owner as `gapAt`; a runtime
+  // without a history falls back to the first mark after inclusion, as before.
+  private readonly sampleAt: ((block: number) => MarketSample | undefined) | undefined;
 
   constructor(
     opts: {
@@ -551,10 +661,12 @@ export class TradeLedger {
         protocol?: string,
         base?: string,
       ) => number | undefined;
+      sampleAt?: (block: number) => MarketSample | undefined;
     } = {},
   ) {
     this.capacity = opts.capacity ?? 128;
     this.gapAt = opts.gapAt;
+    this.sampleAt = opts.sampleAt;
   }
 
   submitted(record: TradeRecord): void {
@@ -565,7 +677,10 @@ export class TradeLedger {
         0,
         this.records.length - this.capacity,
       );
-      for (const d of dropped) this.byHash.delete(d.hash);
+      for (const d of dropped) {
+        this.byHash.delete(d.hash);
+        this.baselineMarket.delete(d.hash);
+      }
     }
   }
 
@@ -587,9 +702,11 @@ export class TradeLedger {
     if (info.blockNumber !== undefined) record.includedAtBlock = info.blockNumber;
   }
 
-  /// A fresh marked value for this block. Fills the at-inclusion and the settled figures for any
-  /// transaction the block is the right moment for, so nothing here has to look backwards.
-  mark(block: number, valueUsdc: number | null): void {
+  /// A fresh marked value for this block. Fills the baseline and the settled figures for any
+  /// transaction the block is the right moment for. `sample` is this block's market sample when the
+  /// runtime keeps one; it supplies the holdings and fair prices that separate the market's share
+  /// of each delta from the trade's.
+  mark(block: number, valueUsdc: number | null, sample?: MarketSample): void {
     // The quoted edge is resolved here rather than at submit time: a transaction is built and sent
     // asynchronously, so at `submitted` the block it was decided on may not yet be in the history.
     if (this.gapAt)
@@ -605,13 +722,35 @@ export class TradeLedger {
     if (valueUsdc === null || !Number.isFinite(valueUsdc)) return;
     for (const r of this.records) {
       if (r.includedAtBlock === undefined) continue;
-      if (
-        r.valueAtInclusion === undefined &&
-        block >= r.includedAtBlock &&
-        block <= r.includedAtBlock + VALUE_BASELINE_SLACK_BLOCKS
-      ) {
-        r.valueAtInclusion = valueUsdc;
-        r.valueAtInclusionBlock = block;
+      if (r.valueBefore === undefined) {
+        // Preferred: the mark the strategy decided on, which predates the trade. Looked up here
+        // rather than at submit time because a transaction is built asynchronously and the decision
+        // block's sample may not have been pushed yet when `submitted` ran.
+        const before =
+          r.decidedAtBlock < r.includedAtBlock
+            ? this.sampleAt?.(r.decidedAtBlock)
+            : undefined;
+        if (before && before.valueUsdc !== null) {
+          r.valueBefore = before.valueUsdc;
+          r.valueBeforeBlock = before.block;
+          r.baselineAfterInclusion = false;
+          this.baselineMarket.set(r.hash, {
+            holdings: before.holdings,
+            fair: before.fair,
+          });
+        } else if (
+          block >= r.includedAtBlock &&
+          block <= r.includedAtBlock + VALUE_BASELINE_SLACK_BLOCKS
+        ) {
+          r.valueBefore = valueUsdc;
+          r.valueBeforeBlock = block;
+          r.baselineAfterInclusion = true;
+          if (sample)
+            this.baselineMarket.set(r.hash, {
+              holdings: sample.holdings,
+              fair: sample.fair,
+            });
+        }
       }
       if (
         r.valueAfter === undefined &&
@@ -619,6 +758,12 @@ export class TradeLedger {
       ) {
         r.valueAfter = valueUsdc;
         r.markedAtBlock = block;
+        const baseline = this.baselineMarket.get(r.hash);
+        if (baseline && sample) {
+          const move = marketMoveUsdc(baseline.holdings, baseline.fair, sample.fair);
+          if (move !== null) r.marketValueDeltaUsdc = move;
+        }
+        this.baselineMarket.delete(r.hash);
       }
     }
   }
@@ -645,8 +790,9 @@ export class TradeLedger {
       .filter((r) => r.txIndex !== undefined)
       .map((r) => r.txIndex!);
     const attributed = rows.filter(
-      (r) => r.valueAtInclusion !== undefined && r.valueAfter !== undefined,
+      (r) => r.valueBefore !== undefined && r.valueAfter !== undefined,
     );
+    const split = attributed.filter((r) => r.marketValueDeltaUsdc !== undefined);
     const quoted = rows
       .map((r) => r.quotedGapBps)
       .filter((v): v is number => typeof v === "number");
@@ -662,14 +808,27 @@ export class TradeLedger {
       meanQuotedGapBps: mean(quoted.map((v) => Math.abs(v))),
       quotedOnCheapVenue: quoted.filter((v) => v < 0).length,
       quotedOnRichVenue: quoted.filter((v) => v > 0).length,
-      attributedValueDeltaUsdc:
+      rawValueDeltaUsdc:
         attributed.length === 0
           ? null
           : attributed.reduce(
-              (sum, r) => sum + (r.valueAfter! - r.valueAtInclusion!),
+              (sum, r) => sum + (r.valueAfter! - r.valueBefore!),
               0,
             ),
       attributedTrades: attributed.length,
+      marketValueDeltaUsdc:
+        split.length === 0
+          ? null
+          : split.reduce((sum, r) => sum + r.marketValueDeltaUsdc!, 0),
+      tradeValueDeltaUsdc:
+        split.length === 0
+          ? null
+          : split.reduce(
+              (sum, r) =>
+                sum + (r.valueAfter! - r.valueBefore! - r.marketValueDeltaUsdc!),
+              0,
+            ),
+      splitTrades: split.length,
     };
   }
 
@@ -695,12 +854,19 @@ export class TradeLedger {
             : `included${late}${idx}`,
         );
       }
-      if (r.valueAtInclusion !== undefined && r.valueAfter !== undefined)
+      if (r.valueBefore !== undefined && r.valueAfter !== undefined) {
+        const raw = r.valueAfter - r.valueBefore;
+        const split =
+          r.marketValueDeltaUsdc === undefined
+            ? "market share unknown"
+            : `market ${signed(r.marketValueDeltaUsdc)}, trade ${signed(
+                raw - r.marketValueDeltaUsdc,
+              )}`;
         parts.push(
-          `value ${r.valueAfter - r.valueAtInclusion >= 0 ? "+" : ""}${fmt(
-            r.valueAfter - r.valueAtInclusion,
-          )} after ${VALUE_MARK_DELAY_BLOCKS}b`,
+          `value ${signed(raw)} after ${VALUE_MARK_DELAY_BLOCKS}b (${split}` +
+            `${r.baselineAfterInclusion ? "; baseline taken after inclusion" : ""})`,
         );
+      }
       if (r.quotedGapBps !== undefined)
         parts.push(`decided on a ${fmt(r.quotedGapBps, 1)} bps gap`);
       const label =
@@ -741,13 +907,31 @@ export function digestTrades(agg: TradeAggregate): string[] {
         `(${agg.quotedOnCheapVenue} on a cheap venue, ${agg.quotedOnRichVenue} on a rich one). ` +
         `That is what it expected; the settled figure below is what it got`,
     );
-  if (agg.attributedValueDeltaUsdc !== null)
+  if (agg.rawValueDeltaUsdc !== null) {
     lines.push(
       `  marked value across the ${agg.attributedTrades} settled trades: ` +
-        `${agg.attributedValueDeltaUsdc >= 0 ? "+" : ""}${fmt(agg.attributedValueDeltaUsdc)} USDC ` +
-        `(each measured ${VALUE_MARK_DELAY_BLOCKS} blocks after it landed, so this is what the ` +
-        `trades did, not what the market did)`,
+        `${signed(agg.rawValueDeltaUsdc)} USDC, from the mark before each trade to ` +
+        `${VALUE_MARK_DELAY_BLOCKS} blocks after it landed. That figure contains the market's ` +
+        `move on the inventory the strategy was already holding, and is not what the trades did.`,
     );
+    if (agg.marketValueDeltaUsdc !== null && agg.tradeValueDeltaUsdc !== null)
+      lines.push(
+        `  split over the ${agg.splitTrades} of them whose baseline carried holdings: ` +
+          `holding that inventory at fair prices would have made ${signed(
+            agg.marketValueDeltaUsdc,
+          )} USDC; ` +
+          `the trades themselves made ${signed(agg.tradeValueDeltaUsdc)} USDC. ` +
+          `Judge the strategy on the second number (spot WETH/WBTC only; a perp, lending or ` +
+          `staking position's market move is still inside it). Consecutive trades have ` +
+          `overlapping windows, so this sum is per trade, not the interval's total -- that is ` +
+          `the "what trading did" figure on the PnL line above.`,
+      );
+    else
+      lines.push(
+        `  the market's share of that could not be separated (no holdings were sampled), so read ` +
+          `it against the fair-price move in the market history before crediting it to the trades.`,
+      );
+  }
   if (agg.included > 0 && agg.attributedTrades < agg.included)
     lines.push(
       `  ${agg.included - agg.attributedTrades} of the mined transactions are not in that figure: ` +

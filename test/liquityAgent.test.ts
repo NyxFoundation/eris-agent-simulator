@@ -270,3 +270,35 @@ test("a rising fee curve closes the trade that was open a moment ago", () => {
   );
   assert.equal(d.kind, "hold");
 });
+
+// Issue #59: sp-underwriter liquidates inside Recovery Mode's band (MCR ≤ ICR < TCR) -- but only
+// when the Stability Pool can absorb the Trove's whole debt, because Liquity executes that branch
+// on no other condition and a call that cannot is a reverted transaction.
+test("sp-underwriter: Recovery Mode liquidates under the TCR when the pool covers the debt, and not otherwise", async () => {
+  const { decideUnderwriting } = await import("../example/agents/sp-underwriter/agent.js");
+  const base = {
+    usdcUnits: 25_000n * USDC,
+    wethWei: 8n * WAD,
+    ethWei: WAD,
+    ethBaselineWei: WAD,
+    wethBaselineWei: 8n * WAD,
+    canSellEth: true,
+  };
+  const riskiest = {
+    owner: "0x1111111111111111111111111111111111111111",
+    icr: 1.3,
+    netDebtEusdWei: (40_000n * WAD).toString(),
+  };
+  // Normal mode, ICR 1.3 above MCR: nothing to liquidate.
+  const normal = decideUnderwriting({ ...base, liquity: liquity({ riskiestTrove: riskiest, spDepositEusdWei: (10_000n * WAD).toString() }) });
+  assert.notEqual(normal.kind, "liquidate");
+  // Recovery Mode with TCR 1.45 and a pool of 50,000 eUSD: the 40,200 eUSD Trove is liquidatable.
+  const recovery = decideUnderwriting({ ...base, liquity: liquity({ recoveryMode: true, tcr: 1.45, riskiestTrove: riskiest, spDepositEusdWei: (10_000n * WAD).toString() }) });
+  assert.equal(recovery.kind, "liquidate");
+  // The same Trove with a pool too small for its whole debt: the branch would revert, so no call.
+  const thin = decideUnderwriting({ ...base, liquity: liquity({ recoveryMode: true, tcr: 1.45, riskiestTrove: riskiest, spTotalDepositsEusdWei: (30_000n * WAD).toString(), spDepositEusdWei: (10_000n * WAD).toString() }) });
+  assert.notEqual(thin.kind, "liquidate");
+  // Under MCR the pool size does not matter (offset plus redistribution).
+  const underMcr = decideUnderwriting({ ...base, liquity: liquity({ recoveryMode: true, tcr: 1.45, riskiestTrove: { ...riskiest, icr: 1.05 }, spTotalDepositsEusdWei: (30_000n * WAD).toString(), spDepositEusdWei: (10_000n * WAD).toString() }) });
+  assert.equal(underMcr.kind, "liquidate");
+});

@@ -8,8 +8,12 @@
 // without a lot of setup.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PublicClient } from "viem";
 import { MULTICALL3 } from "@eris/sdk/constants.js";
+import { applyManifestEnv } from "../example/agents/runtime/manifestEnv.js";
 import { preflightChain } from "../example/agents/runtime/preflight.js";
 
 const LOCAL_CHAIN_ID = 31337;
@@ -100,4 +104,97 @@ test("one missing contract is enough — a partial deployment is not a usable ch
   const failure = await run(client);
   assert.equal(failure?.kind, "deployment");
   assert.match(failure!.message, /Multicall3/);
+});
+
+// A self-hosted participant (ADR 0021) is pointed at the chain by the manifest and has never heard
+// of ANVIL_RPC_URL or gen:local-constants. Both failures used to answer them in the operator's
+// vocabulary, which is a dead end for the one reader who cannot act on it (issue #84 X3).
+test("a chain-id mismatch is explained to whoever pointed the agent", async () => {
+  const { client } = fakeClient({ chainId: 42161 });
+  const operator = await run(client);
+  assert.match(operator!.message, /ANVIL_RPC_URL/);
+
+  // The walk-through's own failure: the manifest says 31337, the node is 31337, and something in
+  // the shell or the config file has the agent signing for 42161.
+  const { client: local } = fakeClient({ chainId: 31337 });
+  const overridden = await run(local, {
+    expectedChainId: 42161,
+    via: "manifest",
+    manifestChainId: 31337,
+  });
+  assert.equal(overridden?.kind, "chain-id");
+  assert.match(overridden!.message, /manifest says chainId 31337/);
+  assert.match(overridden!.message, /overrides it with 42161/);
+  assert.ok(
+    !overridden!.message.includes("ANVIL_RPC_URL"),
+    "no operator settings in a participant's error",
+  );
+
+  // The manifest agrees with the config and the node does not: the file names another chain.
+  const disagreeing = await run(client, {
+    via: "manifest",
+    manifestChainId: LOCAL_CHAIN_ID,
+  });
+  assert.match(disagreeing!.message, /Use the manifest the operator issued/);
+});
+
+test("a missing deployment is explained to whoever pointed the agent", async () => {
+  const { client } = fakeClient({ code: () => "0x" });
+  const operator = await run(client);
+  assert.match(operator!.message, /gen:local-constants/);
+  assert.match(operator!.message, /run\.localDeploy/);
+
+  const participant = await run(client, { via: "manifest" });
+  assert.equal(participant?.kind, "deployment");
+  assert.match(participant!.message, /hold no code/);
+  assert.match(participant!.message, /manifest/);
+  assert.ok(
+    !participant!.message.includes("ANVIL_RPC_URL"),
+    "the participant sets no such variable",
+  );
+});
+
+test("the manifest supplies the chain id and the address overlay, and env still wins", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-manifest-"));
+  const path = join(dir, "manifest.json");
+  writeFileSync(
+    path,
+    JSON.stringify({ chain: { chainId: 31337, localDeploy: true } }),
+  );
+  try {
+    // The guide's command: ERIS_MANIFEST alone. Both settings come from the file, which is what
+    // makes the difference between an agent that trades and one that fails preflight twice.
+    const fresh: NodeJS.ProcessEnv = {};
+    applyManifestEnv(path, fresh);
+    assert.equal(fresh.CHAIN_ID, "31337");
+    assert.equal(fresh.ERIS_LOCAL_DEPLOY, "1");
+
+    // A coordinator-spawned run is unchanged: what the environment set stays set.
+    const spawned: NodeJS.ProcessEnv = {
+      CHAIN_ID: "42161",
+      ERIS_LOCAL_DEPLOY: "0",
+    };
+    applyManifestEnv(path, spawned);
+    assert.equal(spawned.CHAIN_ID, "42161");
+    assert.equal(spawned.ERIS_LOCAL_DEPLOY, "0");
+
+    // A fork manifest turns the overlay off rather than leaving it to whatever was inherited.
+    writeFileSync(
+      path,
+      JSON.stringify({ chain: { chainId: 42161, localDeploy: false } }),
+    );
+    const fork: NodeJS.ProcessEnv = {};
+    applyManifestEnv(path, fork);
+    assert.equal(fork.ERIS_LOCAL_DEPLOY, "0");
+
+    // A file that is not there, or not JSON, is left to the runtime to refuse with its own message.
+    const untouched: NodeJS.ProcessEnv = {};
+    applyManifestEnv(join(dir, "absent.json"), untouched);
+    writeFileSync(join(dir, "torn.json"), "{ not json");
+    applyManifestEnv(join(dir, "torn.json"), untouched);
+    applyManifestEnv(undefined, untouched);
+    assert.deepEqual(untouched, {});
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

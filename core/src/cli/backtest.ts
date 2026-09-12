@@ -43,13 +43,18 @@ import {
 import {
   foldRepeats,
   readRunSummary,
+  scenarioFlags,
   scoresFromSummary,
 } from "../backtest/scenarioScores.js";
 import {
   assertResumable,
   mergeStoredResults,
   readStoredMatrix,
+  rosterFingerprint,
   type StoredMatrix,
+  STATE_LABEL_INITIAL,
+  stateLabelAfter,
+  stateLabelBefore,
 } from "../backtest/resume.js";
 import {
   gitHead,
@@ -82,7 +87,10 @@ const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --s
   --resume <matrix-dir>  continue a stored matrix (runs/matrix-<id>/) instead of opening a new one: scenarios
                          already complete there are skipped, the missing and failed ones run, and matrix.json /
                          standings.json are rewritten in place. The live week is k epochs across several
-                         invocations (rules §4.7.1); refused when scenarioSet / k / resetUnit / repeat differ
+                         invocations (rules §4.7.1); refused when scenarioSet / k / resetUnit / repeat /
+                         agent-state-root differ. With --agent-state-root, each re-run starts from the
+                         state the latest complete ordinal before it ended with (checkpoints under
+                         <root>/.snapshots/end-s<N>), not from whatever ran last
   --repeat <N>           repeat each scenario N times (calibration diagnostic; standings take the median P. default 1)
   --port <N>             port for the backtest-only anvil (default 8547)
   --state <dir>          state dump directory (default ${STATE_DIR_DEFAULT})
@@ -179,7 +187,9 @@ function loadScenarioSet(
         e.startsAt !== undefined &&
         (typeof e.startsAt !== "string" || Number.isNaN(Date.parse(e.startsAt)))
       )
-        throw new Error(`${abs}: epochs[${i}].startsAt must be an ISO 8601 date`);
+        throw new Error(
+          `${abs}: epochs[${i}].startsAt must be an ISO 8601 date`,
+        );
       out.push({
         s: s as number,
         regime: e.regime,
@@ -571,14 +581,35 @@ async function main(): Promise<void> {
     // standings.json for the competition rather than one per invocation. Refused up front when the
     // stored matrix is a different competition (set / k / reset unit / repeat), and when the set's
     // content changed under the same path (ordinal by ordinal, in mergeStoredResults).
+    // The field this matrix ranks, as one value: the --agents roster, or the regimes' own rosters
+    // keyed by regime when none was passed. Stored in matrix.json and checked on --resume, so the
+    // epochs of one matrix cannot be run on two different fields (issue #102).
+    const fieldFingerprint = rosterFingerprint(
+      rosterAgents ??
+        Object.fromEntries(
+          scenarios.map((sc) => [sc.regime, loadRegimeDoc(sc).agents ?? []]),
+        ),
+    );
     let stored: StoredMatrix | undefined;
     if (resumeDir) {
       stored = readStoredMatrix(resumeDir);
       assertResumable(
         stored,
-        { scenarioSet: flags.scenarios, k, resetUnit: "scenario", repeat },
+        {
+          scenarioSet: flags.scenarios,
+          k,
+          resetUnit: "scenario",
+          repeat,
+          ...(agentStateRoot !== undefined ? { agentStateRoot } : {}),
+          rosterFingerprint: fieldFingerprint,
+        },
         (p) => resolve(ROOT, p),
       );
+      if (stored.rosterFingerprint === undefined)
+        console.error(
+          "[backtest] warning: the stored matrix does not record its roster (written before " +
+            "issue #102); the resume cannot check that the field is the same one",
+        );
       const now = gitHead(ROOT);
       if (stored.sourceCommit && now && stored.sourceCommit !== now)
         console.error(
@@ -613,10 +644,14 @@ async function main(): Promise<void> {
         ))
       : undefined;
     if (outDir) mkdirSync(outDir, { recursive: true });
-    // The first invocation's, so a resumed matrix keeps the date the competition began; each
-    // resume stamps when it continued.
+    // The first invocation's, so a resumed matrix keeps the date the competition began; a resume
+    // that runs at least one epoch stamps when it continued. A resume with nothing to run leaves
+    // the stored stamp alone: it executed nothing, so it did not continue anything (issue #102).
     const createdAt = stored?.createdAt ?? new Date().toISOString();
-    const resumedAt = resumeDir ? new Date().toISOString() : undefined;
+    const resumedAt =
+      resumeDir && (merged?.rerun.length ?? 0) > 0
+        ? new Date().toISOString()
+        : stored?.resumedAt;
     // In ordinal order whatever order they were computed in, so a resumed matrix reads like an
     // uninterrupted one. computeStandings keys by `s` and does not care.
     const ordered = (): ScenarioResult[] =>
@@ -637,9 +672,12 @@ async function main(): Promise<void> {
             // A matrix is a scenario-mode run by construction (ADR 0020 §1). Written out so a later
             // comparison against a continuous run is refused rather than silently averaged.
             resetUnit: "scenario",
+            ...(agentStateRoot !== undefined ? { agentStateRoot } : {}),
             // The schedule length the weights are taken over (rules §4.4.1).
             k,
             repeat,
+            // The field, so a --resume on a different roster is refused (issue #102).
+            rosterFingerprint: fieldFingerprint,
             // Complete only once every scenario has run; until then this is a partial matrix.
             scenariosPlanned: scenarios.length,
             // The plan's timetable, for the epochs not run yet: the dashboard's "next epoch starts
@@ -665,6 +703,11 @@ async function main(): Promise<void> {
         `${JSON.stringify(computeStandings(ordered(), k), null, 2)}\n`,
       );
     };
+    // Issue #77: the state every scenario starts from is a function of the plan, not of what ran
+    // last (backtest/resume.ts). A fresh matrix records its empty starting point; a resumed one
+    // puts the root back to the end of the latest complete ordinal before each re-run.
+    if (agentStateRoot !== undefined && matrixMode && !resumeDir)
+      snapshotAllAgentState(agentStateRoot, STATE_LABEL_INITIAL);
     let index = 0;
     for (const scenario of scenarios) {
       index++;
@@ -676,6 +719,19 @@ async function main(): Promise<void> {
         repeatsByScenario.push([]);
         blocksByScenario.push([]);
         continue;
+      }
+      if (agentStateRoot !== undefined && resumeDir) {
+        const from = stateLabelBefore(scenario.s, complete);
+        if (!restoreAllAgentState(agentStateRoot, from))
+          throw new Error(
+            `--resume: s=${scenario.s} has to start from agent state "${from}", but ` +
+              `${join(agentStateRoot, ".snapshots", from)} does not exist. The matrix being ` +
+              "resumed was run before state checkpoints were written, or the checkpoint was " +
+              "deleted; re-run it as a new matrix rather than continuing this one",
+          );
+        console.error(
+          `[backtest] s=${scenario.s}: agent state restored from "${from}"`,
+        );
       }
       const expectedAgents = rosterOf(loadRegimeDoc(scenario));
       // Have both the coordinator and the agent processes read this scenario's effective regime.
@@ -694,7 +750,12 @@ async function main(): Promise<void> {
       for (let i = 0; i < repeat; i++) {
         if (agentStateRoot !== undefined && repeat > 1) {
           if (i === 0) snapshotAllAgentState(agentStateRoot, repeatLabel);
-          else restoreAllAgentState(agentStateRoot, repeatLabel);
+          else if (!restoreAllAgentState(agentStateRoot, repeatLabel))
+            // A repeat that silently kept the previous repeat's state would report a sequence as
+            // a spread, which is the one thing the flag must not do.
+            throw new Error(
+              `--repeat: agent state label "${repeatLabel}" vanished between repeats`,
+            );
         }
         console.error(
           `[backtest] scenario ${index}/${scenarios.length} ${label}` +
@@ -729,6 +790,11 @@ async function main(): Promise<void> {
           console.error(`[backtest] scenario ${label} failed: ${lastError}`);
         }
       }
+      if (agentStateRoot !== undefined && matrixMode && perRepeat.length > 0) {
+        // The checkpoint a resume restores before the ordinal after this one.
+        snapshotAllAgentState(agentStateRoot, stateLabelAfter(scenario.s));
+        complete.add(scenario.s);
+      }
       repeatsByScenario.push(perRepeat);
       blocksByScenario.push(blocksPerRepeat);
       results.push({
@@ -742,6 +808,18 @@ async function main(): Promise<void> {
           ? { error: lastError }
           : {}),
       });
+      // An epoch nobody contested is said so at the epoch level, where a reader of the standings
+      // looks, not only on each dead agent's record (issue #102).
+      const last = results[results.length - 1];
+      if (last.agents) {
+        const epochFlags = scenarioFlags(last.agents);
+        if (epochFlags.length > 0) {
+          last.flags = epochFlags;
+          console.error(
+            `[backtest] s=${last.s} ${label}: ${epochFlags.join("; ")}`,
+          );
+        }
+      }
       flush();
     }
 

@@ -64,11 +64,18 @@ export function RoundCursorBar({
   cursor,
   scenarioCount,
   endedScenarios,
+  inProgress = false,
   note,
 }: {
   cursor: CursorState;
   scenarioCount: number;
   endedScenarios: number;
+  /**
+   * More results are coming: a run of this competition is live, or the plan has epochs left. The
+   * end of the cursor is then the newest round, not the final one — labelling it "Final" told a
+   * reader watching a period in progress that it had finished (issue #84 C).
+   */
+  inProgress?: boolean;
   /** Extra context for the current position, e.g. what landed in this round. */
   note?: string;
 }) {
@@ -115,7 +122,9 @@ export function RoundCursorBar({
           }}
         >
           {atEnd
-            ? t("cursor.final", { n: maxRound })
+            ? inProgress
+              ? t("cursor.soFar", { n: maxRound })
+              : t("cursor.final", { n: maxRound })
             : t("cursor.at", { at: String(at).padStart(2, "0"), max: maxRound })}
         </span>
 
@@ -177,19 +186,23 @@ export function RoundCursorBar({
         )}
 
         <span style={{ ...LABEL, marginLeft: "auto", textAlign: "right" }}>
-          {atEnd
+          {atEnd && inProgress
             ? scenarioCount === 1
-              ? t("cursor.completeOne")
-              : t("cursor.complete", { n: scenarioCount })
-            : endedScenarios > 0
-              ? t("cursor.running", {
-                  running: scenarioCount - endedScenarios,
-                  total: scenarioCount,
-                  ended: endedScenarios,
-                })
-              : scenarioCount === 1
-                ? t("cursor.atRoundOne", { at })
-                : t("cursor.atRound", { n: scenarioCount, at })}
+              ? t("cursor.atRoundOne", { at: maxRound })
+              : t("cursor.atRound", { n: scenarioCount, at: maxRound })
+            : atEnd
+              ? scenarioCount === 1
+                ? t("cursor.completeOne")
+                : t("cursor.complete", { n: scenarioCount })
+              : endedScenarios > 0
+                ? t("cursor.running", {
+                    running: scenarioCount - endedScenarios,
+                    total: scenarioCount,
+                    ended: endedScenarios,
+                  })
+                : scenarioCount === 1
+                  ? t("cursor.atRoundOne", { at })
+                  : t("cursor.atRound", { n: scenarioCount, at })}
         </span>
       </div>
 

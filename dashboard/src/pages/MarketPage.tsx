@@ -87,8 +87,13 @@ function CrownIcon({ color }: { color: string }) {
 
 function LeaderboardMiniRow({ row }: { row: AgentStanding }) {
   const isTop3 = row.rank <= 3;
+  // Null = this run did not place the agent (no starting value), which is not a PnL of zero.
   const pnlColor =
-    row.netPnlUsdc >= 0 ? "var(--success-text)" : "var(--danger-text)";
+    row.netPnlUsdc === null
+      ? "var(--text-disabled)"
+      : row.netPnlUsdc >= 0
+        ? "var(--success-text)"
+        : "var(--danger-text)";
   return (
     <div
       onClick={() => navigate(`/agent/${row.agent}`)}
@@ -115,8 +120,11 @@ function LeaderboardMiniRow({ row }: { row: AgentStanding }) {
       >
         {row.agent}
       </span>
-      <span style={{ textAlign: "right", color: pnlColor }}>
-        {formatPnlUsdc(row.netPnlUsdc)}
+      <span
+        style={{ textAlign: "right", color: pnlColor }}
+        title={row.netPnlUsdc === null ? t("home.netPnlUnscored") : undefined}
+      >
+        {row.netPnlUsdc === null ? "—" : formatPnlUsdc(row.netPnlUsdc)}
       </span>
     </div>
   );

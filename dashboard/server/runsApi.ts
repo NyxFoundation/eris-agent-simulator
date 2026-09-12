@@ -23,10 +23,20 @@
 //     ground truth of regime-7 pools (§3.2: whether a pool is rigged is the participant's to find
 //     out), a participant's stderr, and the *future* half of the stress schedule are stripped. Past
 //     windows stay: they already happened to everyone
-//   - matrix.json / standings.json / summary.json: regime and seed become "hidden" while the
+//   - matrix.json / standings.json / summary.json: regime becomes "hidden" and seed null while the
 //     competition is a scenario matrix (§3.3: the scenario of an epoch is not announced; equal
 //     regime counts would let the remaining ones be inferred). A practice period's segments are not
-//     scenarios and keep their date labels
+//     scenarios and keep their date labels. Null, not 0: a redacted seed, a segment's placeholder
+//     seed and a real published seed 0 have to stay tellable apart, and only the server knows which
+//     one it is serving
+//   - the index: with ERIS_DASHBOARD_COMPETITIONS set, only the listed competitions and the runs
+//     that belong to them are served -- as index entries, as files and as tails alike. A hosted
+//     box keeps every smoke and test run the operator ever made under runs/, and without the list
+//     the picker offered all of them to participants under their internal names (issue #84 K).
+//     Membership is what the competition's own index names or contains, never a guess: an earlier
+//     draft also admitted "whatever is live" while a listed matrix had epochs left, which admitted
+//     every live directory under runs/ -- including the operator's smoke run -- for as long as the
+//     competition was in progress, which is the whole event
 // `standings: false` is the trial environment's rule §4.7 ("posts no standings"); the server only
 // reports it and the UI honours it, because the numbers behind a standing are the same numbers
 // the scenario pages show.
@@ -88,7 +98,13 @@ export type DashboardMode = {
   standings: boolean;
 };
 
-export type RunsApiOptions = Partial<DashboardMode>;
+export type RunsApiOptions = Partial<DashboardMode> & {
+  /**
+   * Competition ids (directories under runs/) to serve, and nothing else. Undefined or empty =
+   * everything under runs/ (the operator's own view). See `competitionsFromEnv`.
+   */
+  competitions?: readonly string[];
+};
 
 /**
  * ERIS_DASHBOARD_AUDIENCE=1   serve for people who are not the operator (default: off — a local
@@ -104,6 +120,25 @@ export function modeFromEnv(
     audience: on(env.ERIS_DASHBOARD_AUDIENCE),
     standings: !off(env.ERIS_DASHBOARD_STANDINGS),
   };
+}
+
+/**
+ * ERIS_DASHBOARD_COMPETITIONS=<id>[,<id>...]   the competitions a hosted server offers. An id is a
+ * directory under runs/ holding a matrix.json (a scenario matrix, or a practice period). A run is
+ * served when it is one of a listed competition's scenarios or segments, or a run in progress
+ * while a listed scenario matrix is still being run (the epoch running now is not in matrix.json
+ * until it completes). Unset = everything under runs/.
+ */
+export function competitionsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] | undefined {
+  const raw = env.ERIS_DASHBOARD_COMPETITIONS;
+  if (raw === undefined) return undefined;
+  const ids = raw
+    .split(",")
+    .map((s) => s.trim().replace(/^\/+|\/+$/g, ""))
+    .filter((s) => s.length > 0);
+  return ids.length > 0 ? ids : undefined;
 }
 
 // The artifacts the pages read. Everything else under a run dir is either a participant's
@@ -141,7 +176,7 @@ function hidesScenarios(file: Json): boolean {
 function redactScenario(s: Json, index: number): Json {
   const ordinal = typeof s.s === "number" ? s.s : index + 1;
   const { label: _label, ...rest } = s;
-  return { ...rest, regime: HIDDEN_REGIME, seed: 0, s: ordinal };
+  return { ...rest, regime: HIDDEN_REGIME, seed: null, s: ordinal };
 }
 
 /** matrix.json for the audience: the epochs, without which scenario each one was. */
@@ -161,7 +196,7 @@ function redactStandings(file: Json): Json {
     epochs: (file.epochs as Json[]).map((e) => ({
       ...e,
       regime: HIDDEN_REGIME,
-      seed: 0,
+      seed: null,
     })),
   };
 }
@@ -264,6 +299,10 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     audience: options.audience ?? false,
     standings: options.standings ?? true,
   };
+  const allowlist =
+    options.competitions && options.competitions.length > 0
+      ? [...new Set(options.competitions)]
+      : null;
 
   // Resolve a request path to a real file inside runs/, or null. The prefix check alone would let a
   // symlink under runs/ point anywhere on disk; realpath closes that.
@@ -336,19 +375,87 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     });
   }
 
+  /**
+   * The run dir a competition's scenario resolves to, relative to runs/. The same two layouts the
+   * dashboard's `scenarioRunId` knows: a matrix writes its scenarios beside its index
+   * (`runs/<scenario>`), a practice period writes its segments inside it (`runs/<period>/<day>`).
+   */
+  function scenarioRunIdOf(competitionId: string, runDir: string): string {
+    const rel = runDir.replace(/^\.?\/?runs\//, "").replace(/^\/+/, "");
+    if (rel.startsWith(`${competitionId}/`)) return rel;
+    const name = rel.split("/").filter(Boolean).pop() ?? rel;
+    const cut = competitionId.lastIndexOf("/");
+    return `${cut === -1 ? "" : competitionId.slice(0, cut + 1)}${name}`;
+  }
+
+  /**
+   * Which entries the allowlist admits: a listed competition, every run its matrix.json names, and
+   * anything nested inside its directory (a practice period's segments, its `current-segment`
+   * pointer). Nothing else, and in particular nothing chosen by inference.
+   *
+   * A scenario matrix's *running* epoch is therefore not served until it completes, because it is a
+   * sibling directory that nothing yet connects to the matrix -- `matrix.json` gains the entry when
+   * the scenario finishes (core/src/cli/backtest.ts flushes after each one). Admitting "whatever is
+   * live" instead would admit every live directory under runs/, since a 40-epoch matrix is
+   * incomplete for the entire competition. A practice period is unaffected: its current segment
+   * lives inside the period's own directory, so it is admitted by containment and the live view
+   * works exactly as before.
+   *
+   * Read alongside the index walk, so it is held for the same three seconds.
+   */
+  function admitted(entries: RunEntry[]): RunEntry[] {
+    if (!allowlist) return entries;
+    const ids = new Set<string>();
+    for (const comp of allowlist) {
+      ids.add(comp);
+      let file: Json;
+      try {
+        file = JSON.parse(
+          fs.readFileSync(path.join(root, comp, "matrix.json"), "utf8"),
+        ) as Json;
+      } catch {
+        // not a competition (yet): the id itself stays admitted, so a period whose first segment
+        // has not opened is not a 404 for the seconds before it does
+        continue;
+      }
+      const scenarios = Array.isArray(file.scenarios)
+        ? (file.scenarios as Json[])
+        : [];
+      for (const s of scenarios)
+        if (typeof s.runDir === "string")
+          ids.add(scenarioRunIdOf(comp, s.runDir));
+    }
+    return entries.filter(
+      (e) =>
+        ids.has(e.id) ||
+        allowlist.some((comp) => e.id.startsWith(`${comp}/`)),
+    );
+  }
+
   let indexCache: { at: number; entries: RunEntry[] } | null = null;
   function index(): RunEntry[] {
     if (indexCache && Date.now() - indexCache.at < INDEX_CACHE_MS)
       return indexCache.entries;
     let entries: RunEntry[];
     try {
-      entries = collect("", 0).sort((a, b) => b.mtimeMs - a.mtimeMs);
+      entries = admitted(
+        collect("", 0).sort((a, b) => b.mtimeMs - a.mtimeMs),
+      );
     } catch {
       // no runs/ directory yet — an empty index is the honest answer
       entries = [];
     }
     indexCache = { at: Date.now(), entries };
     return entries;
+  }
+
+  /** Whether a file path (relative to runs/) belongs to a run or competition the index admits. */
+  function admitsPath(rel: string): boolean {
+    if (!allowlist) return true;
+    const clean = rel.replace(/^\/+/, "");
+    return index().some(
+      (e) => clean === e.id || clean.startsWith(`${e.id}/`),
+    );
   }
 
   /** The run dir a file belongs to: the nearest ancestor that is a run or a competition. */
@@ -525,12 +632,14 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
         urlPath.slice(tailAt + "/tail/".length),
       )}`;
       const file = resolveInside(rel);
+      const admitted = admitsPath(rel);
       if (
         !file ||
         !/\.(jsonl|csv)$/.test(file) ||
-        (mode.audience && !audienceAllows(rel))
+        (mode.audience && !audienceAllows(rel)) ||
+        !admitted
       ) {
-        res.statusCode = mode.audience ? 404 : 403;
+        res.statusCode = mode.audience || !admitted ? 404 : 403;
         res.end();
         return true;
       }
@@ -608,9 +717,10 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
       res.end();
       return true;
     }
-    if (mode.audience && !audienceAllows(rel)) {
+    if ((mode.audience && !audienceAllows(rel)) || !admitsPath(rel)) {
       // 404, not 403: for the audience an unpublished file does not exist, and a different status
-      // for "exists but withheld" would confirm what is there to withhold.
+      // for "exists but withheld" would confirm what is there to withhold. The same for a run
+      // outside the allowlist: it is not on this server as far as a reader can tell.
       res.statusCode = 404;
       res.end();
       return true;

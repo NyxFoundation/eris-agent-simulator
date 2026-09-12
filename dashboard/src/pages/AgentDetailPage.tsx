@@ -19,7 +19,9 @@ import {
 } from "@/data/standings";
 import { useAgentDetailSnapshot } from "@/data/useAgentDetailSnapshot";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
+import { useCursor } from "@/data/roundCursor";
 import { useMode } from "@/data/mode";
+import { useScenarioLabel } from "@/data/useScenarioLabel";
 import { t } from "@/i18n/messages";
 import {
   formatBps,
@@ -39,9 +41,11 @@ const SECTION_LABEL_STYLE = {
 };
 
 /**
- * The scenario-level tabs. "Standing" is prepended when the agent ranks in a competition, and the
- * decision log is dropped for a self-hosted participant: that log is on their machine and nothing
- * here can show it (ADR 0021 §4). An empty tab would read as "this agent thought nothing".
+ * The scenario-level tabs. "Standing" is prepended when the agent ranks in a competition *and* the
+ * environment posts standings (rules §4.7: the trial environment does not, and a per-agent standing
+ * is one — issue #84 B). The decision log is dropped for a self-hosted participant: that log is on
+ * their machine and nothing here can show it (ADR 0021 §4). An empty tab would read as "this agent
+ * thought nothing".
  */
 const scenarioTabs = (external: boolean) => [
   { label: t("agent.tab.overview"), value: "overview" },
@@ -52,6 +56,8 @@ const scenarioTabs = (external: boolean) => [
 ];
 
 const ROUNDS_GRID = "60px 150px 70px 110px 100px 90px";
+// Rules §4.7: without standings there is no rank column, and the row is one cell narrower.
+const ROUNDS_GRID_NO_RANK = "60px 150px 70px 110px 100px";
 
 const POSITIONS_GRID = "150px 70px 120px 130px minmax(0,1fr)";
 const TRADES_GRID = "120px 90px 1fr 100px 90px";
@@ -255,6 +261,14 @@ interface CompetitionStanding {
   score: number | null;
   netPnlUsdc: number;
   epochsScored: number;
+  /**
+   * Epochs the record holds this agent in but did not place it in: no starting value there, which
+   * is what a registration part-way through leaves behind (issue #84 X2). Left out of the score
+   * rather than counted as zero (rules §4.4.2).
+   */
+  epochsUnscored: number;
+  /** The round the standing is read through, or null for the finished result. */
+  throughRound: number | null;
   regimes: { regime: string; value: number | undefined }[];
   detail: AgentStandingDetail | null;
   /** Rules §4.4.2: facts recorded beside the number (early exit, fee cap, unlogged txs). */
@@ -293,11 +307,23 @@ function FlagsNote({ flags }: { flags: string[] }) {
   );
 }
 
+/**
+ * The agent's competition standing, read at the shared round cursor.
+ *
+ * At the cursor, not at the end: the standings page ranks through round k while it is scrubbed, and
+ * opening an agent from a row that says rank 4 used to land on a page that said rank 7, because
+ * this recomputed the finished result (issue #84 R). One cursor, one answer.
+ */
 function useCompetitionStanding(agentId: string): CompetitionStanding | null {
   const { data } = useCompetitionSnapshot();
+  const cursor = useCursor();
   return useMemo(() => {
     if (!data) return null;
-    const standings = buildStandings(data.competition, data.rounds);
+    const standings = buildStandings(
+      data.competition,
+      data.rounds,
+      cursor.round,
+    );
     const row = standings.rows.find((r) => r.id === agentId);
     if (!row) return null;
     const byRegime = standings.tByRegime[agentId] ?? {};
@@ -308,6 +334,8 @@ function useCompetitionStanding(agentId: string): CompetitionStanding | null {
       score: row.score,
       netPnlUsdc: standings.netPnlByAgent[agentId] ?? 0,
       epochsScored: row.epochs.length,
+      epochsUnscored: (standings.unscoredByAgent[agentId] ?? []).length,
+      throughRound: standings.throughRound,
       regimes: standings.regimes.map((regime) => ({
         regime,
         value: byRegime[regime],
@@ -315,7 +343,7 @@ function useCompetitionStanding(agentId: string): CompetitionStanding | null {
       detail: decomposeAgent(agentId, data.competition, data.rounds, standings),
       flags: standings.flagsByAgent[agentId] ?? [],
     };
-  }, [data, agentId]);
+  }, [data, agentId, cursor.round]);
 }
 
 function StandingTab({ standing }: { standing: CompetitionStanding }) {
@@ -368,11 +396,51 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
           label={t("agent.standing.netPnl")}
           value={formatPnlUsdc(standing.netPnlUsdc)}
         />
-        <Stat
-          label={t("agent.standing.rounds")}
-          value={String(standing.epochsScored)}
-        />
+        <div
+          title={
+            standing.epochsUnscored > 0
+              ? t("home.unscoredTitle", { n: standing.epochsUnscored })
+              : undefined
+          }
+        >
+          <Stat
+            label={t("agent.standing.rounds")}
+            value={
+              standing.epochsUnscored > 0
+                ? `${standing.epochsScored} · ${t("home.unscoredBadge", {
+                    n: standing.epochsUnscored,
+                  })}`
+                : String(standing.epochsScored)
+            }
+            caps={standing.epochsUnscored === 0}
+          />
+        </div>
       </div>
+
+      {/* Which moment this is: the finished result, or the same round the standings are scrubbed
+          to. Without it the numbers here and the row that was clicked look like a contradiction. */}
+      <span
+        style={{
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-tertiary)",
+        }}
+      >
+        {standing.throughRound === null
+          ? t("agent.standing.finalNote")
+          : t("agent.standing.throughRound", { at: standing.throughRound })}
+      </span>
+
+      {standing.epochsUnscored > 0 && (
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-sans)",
+            color: "var(--text-secondary)",
+            lineHeight: 1.6,
+          }}
+        >
+          {t("agent.standing.unscored", { n: standing.epochsUnscored })}
+        </span>
+      )}
 
       {!d ? (
         <span
@@ -611,13 +679,18 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   // scenario overview otherwise (seed mode, live runs).
   const [chosenTab, setChosenTab] = useState<string | null>(null);
   const mode = useMode();
+  const scenario = useScenarioLabel();
   const external = data?.agent.external === true;
   // No decision log to show: it is on the participant's machine (self-hosted), or the server does
   // not serve it while the competition runs (audience mode -- it is the participant's reasoning and
   // their pending bids). Either way the tab goes, with the reason said in its place.
   const hideLog = external || mode.audience;
-  const tab = chosenTab ?? (standing ? "standing" : "overview");
-  const tabs = standing
+  // Rules §4.7: where standings are not posted, this page posts none either — not the tab, not the
+  // header badge, not the score card, not the per-round rank column (issue #84 B). The page opens
+  // on Overview instead, and everything the chain says about the agent stays.
+  const showStanding = mode.standings && standing !== null;
+  const tab = chosenTab ?? (showStanding ? "standing" : "overview");
+  const tabs = showStanding
     ? [
         { label: t("agent.tab.standing"), value: "standing" },
         ...scenarioTabs(hideLog),
@@ -808,8 +881,21 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                 — {agent.strategy}
               </div>
             </div>
+            {/* The competition rank owns the header; the rank inside the selected scenario is a
+                different number and sits with the scenario's own figures below (issue #84 F). */}
             <span style={{ marginLeft: "auto" }}>
-              <Badge tone="success">{t("agent.rank", { n: agent.rank })}</Badge>
+              {!mode.standings ? (
+                <span title={t("home.standingsOff")}>
+                  <Badge tone="neutral">{t("agent.standingOffBadge")}</Badge>
+                </span>
+              ) : standing ? (
+                <Badge tone="success">
+                  {t("agent.rankOf", {
+                    n: standing.rank,
+                    m: standing.fieldSize,
+                  }) + (standing.tied ? " =" : "")}
+                </Badge>
+              ) : null}
             </span>
           </div>
 
@@ -819,23 +905,62 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               competition-level ones — mixing the two scales on one row invites misreading. */}
           {tab !== "standing" && (
             <div
+              // The card count varies with the mode (rules §4.7 removes two of them), so the row is
+              // laid out by how many there are -- and capped, so two cards do not stretch to the
+              // width three used to fill.
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(3,1fr)",
+                gridTemplateColumns: "repeat(auto-fit, minmax(190px, 280px))",
                 gap: "16px",
               }}
             >
-              <StatCard
-                label={t("agent.stat.score")}
-                value={formatScore(agent.score)}
-              />
+              {mode.standings && (
+                <>
+                  <StatCard
+                    label={t("agent.stat.score")}
+                    value={formatScore(agent.score)}
+                  />
+                  <StatCard
+                    label={
+                      scenario.name
+                        ? `${t("agent.rankScenario")} · ${scenario.name.replace(/^full-/, "")}`
+                        : t("agent.rankScenario")
+                    }
+                    // An agent this run did not place has no rank in it. The table sorts it to the
+                    // bottom to have somewhere to draw it, and printing that position as a rank
+                    // would make "not measured" look like "measured, and last".
+                    value={
+                      agent.unscored
+                        ? "—"
+                        : t("agent.rankOf", {
+                            n: agent.rank,
+                            m: agent.fieldSize,
+                          })
+                    }
+                  />
+                </>
+              )}
               <StatCard
                 label={t("agent.stat.pnl")}
-                value={formatPnlUsdc(agent.netPnlUsdc)}
+                value={
+                  agent.netPnlUsdc === null
+                    ? "—"
+                    : formatPnlUsdc(agent.netPnlUsdc)
+                }
                 // The card only tints its delta line, so the sign is echoed there to keep the
                 // red/green signal -- the same shape the Max drawdown card uses.
-                tone={agent.netPnlUsdc >= 0 ? "success" : "danger"}
-                delta={formatPnlUsdc(agent.netPnlUsdc)}
+                tone={
+                  agent.netPnlUsdc === null
+                    ? undefined
+                    : agent.netPnlUsdc >= 0
+                      ? "success"
+                      : "danger"
+                }
+                delta={
+                  agent.netPnlUsdc === null
+                    ? undefined
+                    : formatPnlUsdc(agent.netPnlUsdc)
+                }
               />
               <StatCard
                 label={t("agent.stat.drawdown")}
@@ -846,7 +971,24 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
             </div>
           )}
 
-          {tab === "standing" && standing && (
+          {/* An agent this run never placed: its numbers are absent for a reason, not missing. */}
+          {tab !== "standing" && agent.unscored && (
+            <p
+              style={{
+                margin: 0,
+                padding: "12px 16px",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-lg)",
+                font: "var(--text-xs) var(--font-sans)",
+                lineHeight: 1.6,
+                color: "var(--text-secondary)",
+              }}
+            >
+              {t("agent.unscoredHere")}
+            </p>
+          )}
+
+          {tab === "standing" && showStanding && standing && (
             <div
               style={{ display: "flex", flexDirection: "column", gap: "16px" }}
             >
@@ -978,7 +1120,9 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: ROUNDS_GRID,
+                  gridTemplateColumns: mode.standings
+                    ? ROUNDS_GRID
+                    : ROUNDS_GRID_NO_RANK,
                   padding: "10px 16px",
                   background: "var(--bg-surface)",
                   font: "9px var(--font-mono)",
@@ -997,9 +1141,11 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                 <span style={{ textAlign: "right" }}>
                   {t("rounds.col.logReturn")}
                 </span>
-                <span style={{ textAlign: "right" }}>
-                  {t("rounds.col.rank")}
-                </span>
+                {mode.standings && (
+                  <span style={{ textAlign: "right" }}>
+                    {t("rounds.col.rank")}
+                  </span>
+                )}
               </div>
               {agent.rounds.length === 0 && (
                 <div
@@ -1030,7 +1176,9 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                     key={r.index}
                     style={{
                       display: "grid",
-                      gridTemplateColumns: ROUNDS_GRID,
+                      gridTemplateColumns: mode.standings
+                        ? ROUNDS_GRID
+                        : ROUNDS_GRID_NO_RANK,
                       padding: "10px 16px",
                       borderBottom: "1px solid var(--border-subtle)",
                       font: "var(--text-sm) var(--font-mono)",
@@ -1057,17 +1205,19 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                     <span style={{ textAlign: "right", color: gainColor }}>
                       {formatBps(r.logReturnBps)}
                     </span>
-                    <span
-                      style={{
-                        textAlign: "right",
-                        color: "var(--text-secondary)",
-                      }}
-                    >
-                      {r.cumulativeRank}{" "}
-                      <span style={{ color: moveColor }}>
-                        {formatMove(r.move)}
+                    {mode.standings && (
+                      <span
+                        style={{
+                          textAlign: "right",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        {r.cumulativeRank}{" "}
+                        <span style={{ color: moveColor }}>
+                          {formatMove(r.move)}
+                        </span>
                       </span>
-                    </span>
+                    )}
                   </div>
                 );
               })}

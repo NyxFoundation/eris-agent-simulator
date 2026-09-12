@@ -104,7 +104,15 @@ export function decide(
       ]),
     ),
   });
-  if (stables.length === 0) return null;
+  // Every "no trade" path returns an explicit noop with its reason. A bare `null` is recorded by the
+  // runtime as "decide returned nothing" -- 351 identical lines per epoch that say nothing about
+  // the discount this agent measured against its threshold (issue #101, #93 F-L). The template
+  // participants copy has to show the habit the guide asks for: a reason on every block.
+  if (stables.length === 0)
+    return {
+      type: "noop",
+      reason: "no market-priced stable quoted this block",
+    };
 
   // Sell first. Holding through the end of the run is the one way this strategy loses money it
   // never had to lose, so unwinding takes priority over adding.
@@ -133,10 +141,20 @@ export function decide(
   const cheap = stables
     .filter((s) => s.discountBps >= BUY_BPS)
     .sort((a, b) => b.discountBps - a.discountBps)[0];
-  if (!cheap) return null;
+  if (!cheap)
+    return {
+      type: "noop",
+      reason: widest
+        ? `${widest.symbol} ${widest.discountBps.toFixed(1)}bps from par, under the ${BUY_BPS}bps buy threshold`
+        : "no discount to buy",
+    };
   const usdc = BigInt(obs.balances.usdcUnits || "0");
   const size = (usdc * SIZE_BPS) / 10_000n;
-  if (size < MIN_USDC_UNITS) return null;
+  if (size < MIN_USDC_UNITS)
+    return {
+      type: "noop",
+      reason: `${cheap.symbol} ${cheap.discountBps.toFixed(1)}bps from par but the USDC budget is under the dust floor`,
+    };
   return {
     type: "stableSwap",
     stable: cheap.symbol,

@@ -12,6 +12,7 @@
 
 import type { ScoreRace } from "@/data/standings";
 import { t } from "@/i18n/messages";
+import { navigate } from "@/navigation";
 
 const WIDTH = 720;
 const HEIGHT = 240;
@@ -227,37 +228,60 @@ export function ScoreRaceChart({
           {t("home.chart.legend", { n: Math.min(TOP_N, order.length) })}
         </span>
         {top.map((id, i) => (
-          <button
+          // Two acts, two controls. Clicking the name follows the line on this chart; the arrow
+          // opens the agent's page. They were one control, and a reader looking for the page
+          // clicked the first name on the screen and nothing navigated (issue #84 O).
+          <span
             key={id}
-            type="button"
-            onClick={() => onPick(id)}
-            title={t("home.pinTitle")}
-            style={{
-              border: "none",
-              background: "transparent",
-              padding: 0,
-              cursor: "pointer",
-              font: "inherit",
-              color:
-                id === pinned ? "var(--pink-500)" : "var(--text-secondary)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "5px",
-            }}
+            style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}
           >
-            <span
-              aria-hidden
+            <button
+              type="button"
+              onClick={() => onPick(id)}
+              title={t("home.pinTitle")}
               style={{
-                display: "inline-block",
-                width: "14px",
-                height: "2px",
-                background:
-                  id === pinned ? "var(--pink-500)" : "var(--accent-primary)",
-                opacity: id === pinned ? 1 : 0.95 - i * 0.07,
+                border: "none",
+                background: "transparent",
+                padding: 0,
+                cursor: "pointer",
+                font: "inherit",
+                color:
+                  id === pinned ? "var(--pink-500)" : "var(--text-secondary)",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px",
               }}
-            />
-            {id}
-          </button>
+            >
+              <span
+                aria-hidden
+                style={{
+                  display: "inline-block",
+                  width: "14px",
+                  height: "2px",
+                  background:
+                    id === pinned ? "var(--pink-500)" : "var(--accent-primary)",
+                  opacity: id === pinned ? 1 : 0.95 - i * 0.07,
+                }}
+              />
+              {id}
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate(`/agent/${encodeURIComponent(id)}`)}
+              title={t("home.chart.openAgent", { id })}
+              aria-label={t("home.chart.openAgent", { id })}
+              style={{
+                border: "none",
+                background: "transparent",
+                padding: 0,
+                cursor: "pointer",
+                font: "inherit",
+                color: "var(--text-link)",
+              }}
+            >
+              ↗
+            </button>
+          </span>
         ))}
       </div>
     </div>

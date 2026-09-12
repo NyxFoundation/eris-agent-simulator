@@ -392,14 +392,42 @@ async function enableLocalFlashLoaning(ctx: SimContext): Promise<void> {
   }
 }
 
-async function seedLocalFlashLoanLiquidity(ctx: SimContext): Promise<void> {
-  if (!ctx.config.localDeploy) return;
-  const current = (await ctx.publicClient.readContract({
-    address: AAVE_STABLE,
+// What a flash loan of `asset` can draw on: the underlying held by the reserve's aToken. In Aave V3
+// the Pool contract itself holds nothing -- `supply` moves the tokens to the aToken -- so reading
+// the Pool's balance answers 0 whatever was supplied. That is what this used to read, and it kept
+// `flash-arb` out of every epoch ("flash liquidity too low: 0.00 USDC" while 2,009,000 USDC sat in
+// the reserve) and had setup re-seed the local flash liquidity on every run (issue #101, #93 F-E).
+// The aToken of each reserve is immutable for a deployment, so it is read once per process rather
+// than once per agent per block (observe runs for every agent on every block).
+const aTokenCache = new Map<string, Address>();
+export async function reserveAvailableLiquidity(
+  publicClient: PublicClient,
+  asset: Address,
+): Promise<bigint> {
+  let aToken = aTokenCache.get(asset.toLowerCase());
+  if (!aToken) {
+    [aToken] = (await publicClient.readContract({
+      address: AAVE.PoolDataProvider,
+      abi: poolDataProviderAbi,
+      functionName: "getReserveTokensAddresses",
+      args: [asset],
+    })) as readonly [Address, Address, Address];
+    aTokenCache.set(asset.toLowerCase(), aToken);
+  }
+  return (await publicClient.readContract({
+    address: asset,
     abi: erc20Abi,
     functionName: "balanceOf",
-    args: [AAVE.Pool],
+    args: [aToken],
   })) as bigint;
+}
+
+async function seedLocalFlashLoanLiquidity(ctx: SimContext): Promise<void> {
+  if (!ctx.config.localDeploy) return;
+  const current = await reserveAvailableLiquidity(
+    ctx.publicClient,
+    AAVE_STABLE,
+  );
   if (current >= LOCAL_FLASH_LIQUIDITY_USDC_UNITS) return;
   const missing = LOCAL_FLASH_LIQUIDITY_USDC_UNITS - current;
 
@@ -468,12 +496,7 @@ export const aaveAdapter: ProtocolAdapter = {
           userReserve(ctx.publicClient, aaveAsset(sym), agent),
         ),
       ),
-      ctx.publicClient.readContract({
-        address: AAVE_STABLE,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [AAVE.Pool],
-      }) as Promise<bigint>,
+      reserveAvailableLiquidity(ctx.publicClient, AAVE_STABLE),
     ]);
     const supplied: Partial<Record<TokenSymbol, string>> = {};
     const borrowed: Partial<Record<TokenSymbol, string>> = {};

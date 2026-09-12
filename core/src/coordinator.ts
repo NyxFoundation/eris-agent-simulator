@@ -114,6 +114,15 @@ export async function buildFlowContext(
     flowBalances[`${protocol}:${kind}`] = {
       wethWei: b.wethWei.toString(),
       usdcUnits: venueStableUnits(protocol, b).toString(),
+      // Every base the wallet holds, so the sell-side guard reads the base it is about to sell
+      // rather than WETH for all of them (issue #99).
+      ...(b.bases
+        ? {
+            bases: Object.fromEntries(
+              Object.entries(b.bases).map(([sym, v]) => [sym, v.toString()]),
+            ),
+          }
+        : {}),
     };
   });
 
@@ -196,6 +205,17 @@ export async function buildFlowContext(
       informedFlowMaxWethWei: ctx.config.informedFlowMaxWethWei.toString(),
       balancerFlowMaxWethWei: ctx.config.balancerFlowMaxWethWei.toString(),
       curveFlowMaxWethWei: ctx.config.curveFlowMaxWethWei.toString(),
+      // The same window scales the uninformed leg on the two venues whose cap is shared by both
+      // legs (issue #112). Without these the lean reached uniswap only, and the measured size in a
+      // declared x2-3 window was x1.3: one venue at x3, two at x1.
+      balancerUninformedFlowMaxWethWei: scaleWei(
+        ctx.config.balancerFlowMaxWethWei,
+        flowTrend?.sizeMult ?? 1,
+      ).toString(),
+      curveUninformedFlowMaxWethWei: scaleWei(
+        ctx.config.curveFlowMaxWethWei,
+        flowTrend?.sizeMult ?? 1,
+      ).toString(),
       gmxFlowMaxSizeUsd: ctx.config.gmxFlowMaxSizeUsd.toString(),
       gmxFlowActivityProb: String(ctx.config.gmxFlowActivityProb),
       gmxFlowMaxBurst: String(ctx.config.gmxFlowMaxBurst),
