@@ -23,8 +23,16 @@ export function isHiddenScenario(s: { regime: string }): boolean {
 
 export interface ScenarioAgentResult {
   id: string;
-  netPnlUsdc: number;
-  alphaUsdc: number;
+  /**
+   * Both ends at the final marks. Absent for an agent the segment did not score -- registered
+   * mid-segment, with no V_0 to measure from (core/src/segments.ts `segmentAgentRecord`). Such an
+   * agent was not placed in the epoch and carries no P (issue #84 X2).
+   */
+  netPnlUsdc?: number;
+  alphaUsdc?: number;
+  /** Written by the segment writer: false says "in the record, not in this epoch's population". */
+  scored?: boolean;
+  unscoredReason?: string;
   /** Rules §2.2: the participant unit this agent is one submission of. Absent on older matrices. */
   participant?: string;
   /**
@@ -38,18 +46,30 @@ export interface ScenarioAgentResult {
   pnlUsdc?: number;
   /** The benchmark (§4.3): valued and shown, never in the population. */
   baseline?: boolean;
-  initialValueUsdc: number;
-  finalValueUsdc: number;
+  initialValueUsdc?: number;
+  finalValueUsdc?: number;
 }
 
 export interface CompetitionScenario {
   /** Scheduled ordinal (rules §4.4.1); the epoch's weight is a function of it. Position + 1 when absent. */
   s?: number;
   regime: string;
-  seed: number;
-  agents: ScenarioAgentResult[];
-  /** Path to that scenario's run dir, relative to the poc root that produced it. */
-  runDir: string;
+  /**
+   * The draw's seed. Null when the server withholds it (audience mode, rules §3.3) -- never 0,
+   * which is a seed a run can really have. A practice period's segments carry their ordinal here
+   * as a placeholder and are named by `label` instead.
+   */
+  seed: number | null;
+  /** Absent on an epoch the runner recorded as failed (`error`), which was never placed. */
+  agents?: ScenarioAgentResult[];
+  /**
+   * Path to that scenario's run dir, relative to the poc root that produced it. Absent on an epoch
+   * that failed before it had one -- the backtest runner writes the row with `error` and no
+   * directory, and a loader that assumes the field fell over on such a matrix (issue #84 L).
+   */
+  runDir?: string;
+  /** Why the epoch has no result (core/src/cli/backtest.ts): out of S for everyone (§4.4.2). */
+  error?: string;
   /** The plan's intended start for this epoch (ISO 8601), when the plan had a timetable. */
   startsAt?: string;
   /**
@@ -128,24 +148,35 @@ export function competitionFromRun(
     resetUnit?: string;
     agents?: {
       id: string;
-      initialValueUsdc: number;
-      finalValueUsdc: number;
-      netPnlUsdc: number;
+      initialValueUsdc?: number;
+      finalValueUsdc?: number;
+      netPnlUsdc?: number;
       alphaUsdc?: number;
       pnlUsdc?: number;
       baseline?: boolean;
+      scored?: boolean;
+      unscoredReason?: string;
     }[];
   },
-  seed: number,
+  /** The run's own seed, or null when it is withheld (the audience's summary.json has none). */
+  seed: number | null,
 ): Competition {
   const agents: ScenarioAgentResult[] = (summary.agents ?? []).map((a) => ({
     id: a.id,
-    netPnlUsdc: a.netPnlUsdc,
+    ...(a.netPnlUsdc !== undefined ? { netPnlUsdc: a.netPnlUsdc } : {}),
     alphaUsdc: a.alphaUsdc ?? 0,
     ...(a.pnlUsdc !== undefined ? { pnlUsdc: a.pnlUsdc } : {}),
     ...(a.baseline ? { baseline: true } : {}),
-    initialValueUsdc: a.initialValueUsdc,
-    finalValueUsdc: a.finalValueUsdc,
+    ...(a.scored !== undefined ? { scored: a.scored } : {}),
+    ...(a.unscoredReason !== undefined
+      ? { unscoredReason: a.unscoredReason }
+      : {}),
+    ...(a.initialValueUsdc !== undefined
+      ? { initialValueUsdc: a.initialValueUsdc }
+      : {}),
+    ...(a.finalValueUsdc !== undefined
+      ? { finalValueUsdc: a.finalValueUsdc }
+      : {}),
   }));
   return {
     id: runId,
@@ -189,16 +220,35 @@ export function runDisplayName(runId: string): string {
  */
 export function scenarioLabel(s: {
   regime: string;
-  seed: number;
+  seed: number | null;
   label?: string;
   s?: number;
 }): string {
   if (s.label) return s.label;
   // The public view of a competition in progress: the epoch is named by its ordinal, because which
   // scenario it was is exactly what is not announced (rules §3.3).
-  if (isHiddenScenario(s))
+  if (isHiddenScenario(s) || s.seed === null)
     return t("scenario.hidden", { s: String(s.s ?? "?") });
   return `${s.regime}#${s.seed}`;
+}
+
+/**
+ * The seed a scenario is shown with, or null when there is none to show: withheld by the server,
+ * or a practice segment whose `seed` field is a placeholder ordinal under a date label. "seed 0"
+ * on a segment or on a redacted epoch was a number nobody drew (issue #84 E).
+ */
+export function displaySeed(s: {
+  regime: string;
+  seed: number | null;
+  label?: string;
+}): number | null {
+  if (s.label || isHiddenScenario(s)) return null;
+  return s.seed;
+}
+
+/** The agents an epoch placed. An epoch the runner recorded as failed has none. */
+export function scenarioAgents(s: CompetitionScenario): ScenarioAgentResult[] {
+  return s.agents ?? [];
 }
 
 /** The competition's human name. A single-run competition is named by its run's timestamp. */
@@ -238,14 +288,26 @@ export function competitionLabel(
   return `${name} · ${day} ${time}`;
 }
 
-const cache = new Map<string, Promise<Competition>>();
+// Keyed by the index's mtime for the competition, when the caller has it: a matrix.json is
+// rewritten after every epoch and a period's index after every segment (rules §4.7.1: the
+// standings update as each one completes), and a cache that held the first successful read for
+// good never showed the next epoch or the next day without a reload (issue #84 Q). A caller without
+// the mtime (a title, the picker) takes whatever version is cached.
+const cache = new Map<string, { mtimeMs: number | null; loading: Promise<Competition> }>();
 
-export function loadCompetition(id: string): Promise<Competition> {
+export function loadCompetition(
+  id: string,
+  options: { mtimeMs?: number | null } = {},
+): Promise<Competition> {
+  const mtimeMs = options.mtimeMs ?? null;
   const cached = cache.get(id);
-  if (cached) return cached;
+  if (cached && (mtimeMs === null || cached.mtimeMs === mtimeMs))
+    return cached.loading;
 
   const loading = (async (): Promise<Competition> => {
-    const res = await fetch(`/runs/${encodeURIComponent(id)}/matrix.json`);
+    const res = await fetch(`/runs/${encodeURIComponent(id)}/matrix.json`, {
+      cache: "no-cache",
+    });
     if (!res.ok) throw new Error(`matrix.json ${res.status} for ${id}`);
     const file = (await res.json()) as CompetitionFile;
     if (!Array.isArray(file.scenarios)) {
@@ -254,7 +316,9 @@ export function loadCompetition(id: string): Promise<Competition> {
     return { id, file };
   })();
 
-  loading.catch(() => cache.delete(id));
-  cache.set(id, loading);
+  loading.catch(() => {
+    if (cache.get(id)?.loading === loading) cache.delete(id);
+  });
+  cache.set(id, { mtimeMs, loading });
   return loading;
 }

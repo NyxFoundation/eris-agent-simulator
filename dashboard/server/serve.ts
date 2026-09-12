@@ -19,7 +19,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { existsSync, createReadStream, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRunsApi, modeFromEnv } from "./runsApi.js";
+import { competitionsFromEnv, createRunsApi, modeFromEnv } from "./runsApi.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DIST =
@@ -55,9 +55,15 @@ if (!existsSync(path.join(DIST, "index.html"))) {
 
 // ERIS_DASHBOARD_AUDIENCE=1 for anyone who is not the operator (the trial period and the live
 // week are both public, 2026-09-06); ERIS_DASHBOARD_STANDINGS=0 for the trial environment, which
-// posts no standings (rules §4.7). What each switch withholds is documented in runsApi.ts.
+// posts no standings (rules §4.7); ERIS_DASHBOARD_COMPETITIONS=<ids> to offer only those
+// competitions (a hosted box keeps every smoke run the operator made). What each switch
+// withholds is documented in runsApi.ts.
 const MODE = modeFromEnv();
-const handleRuns = createRunsApi(RUNS, MODE);
+const COMPETITIONS = competitionsFromEnv();
+const handleRuns = createRunsApi(RUNS, {
+  ...MODE,
+  ...(COMPETITIONS ? { competitions: COMPETITIONS } : {}),
+});
 
 // Resolve a request path inside dist/, or null. Same realpath discipline as the runs API: a symlink
 // under dist/ must not become a way to read the rest of the disk.
@@ -130,6 +136,7 @@ server.listen(PORT, () => {
       `[dashboard]   runs:       ${RUNS}\n` +
       `[dashboard]   blockscout: ${BLOCKSCOUT} (optional)\n` +
       `[dashboard]   mode:       ${MODE.audience ? "audience (public view: scenarios, upcoming windows, decision logs and pending bids withheld)" : "operator (everything under runs/ is served)"}` +
-      `${MODE.standings ? "" : ", standings not posted (rules §4.7)"}`,
+      `${MODE.standings ? "" : ", standings not posted (rules §4.7)"}\n` +
+      `[dashboard]   competitions: ${COMPETITIONS ? COMPETITIONS.join(", ") : "all under runs/ (set ERIS_DASHBOARD_COMPETITIONS to restrict)"}`,
   );
 });

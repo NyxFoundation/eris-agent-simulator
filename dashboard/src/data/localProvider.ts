@@ -125,6 +125,7 @@ export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
     stats,
     blocks: blocks.sort((a, b) => b.number.localeCompare(a.number)),
     transactions: transactions.sort((a, b) => a.seq - b.seq),
+    txCoveredFrom: null,
     agents: seedAgents.map((a) => ({ id: a.agent })),
   };
 }

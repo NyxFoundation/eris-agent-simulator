@@ -23,7 +23,13 @@ const obs = (round: number) =>
     nested: { amount: 123n },
   }) as unknown as AgentObservation;
 
-function fixture(t: test.TestContext, source: string, timeoutMs = 100) {
+function fixture(
+  t: test.TestContext,
+  source: string,
+  timeoutMs = 100,
+  // The module-load bound is its own number (issue #100); tests that exercise it pass one.
+  startupTimeoutMs = 5000,
+) {
   const dir = mkdtempSync(join(tmpdir(), "eris-worker-"));
   const path = join(dir, "agent.ts");
   writeFileSync(path, source);
@@ -33,6 +39,7 @@ function fixture(t: test.TestContext, source: string, timeoutMs = 100) {
     workerContext,
     (entry) => logs.push(entry),
     timeoutMs,
+    startupTimeoutMs,
   );
   t.after(async () => {
     await runner.close();
@@ -218,8 +225,13 @@ test(
     const { runner } = fixture(
       t,
       `while (true) {} export function decide() { return null; }`,
+      100,
+      1500,
     );
-    await assert.rejects(runner.start(), /strategy worker startup exceeded/);
+    await assert.rejects(
+      runner.start(),
+      /strategy worker startup exceeded 1500ms/,
+    );
     runner.setSource({
       kind: "executor",
       source: `return { type: 'noop', reason: 'replacement' };`,
@@ -250,3 +262,71 @@ test("an idle worker crash is logged and reloaded before the next decision", asy
     reason: "alive",
   });
 });
+
+// Issue #100 (#93 F-J): the module load has its own bound. Reusing the 5 s decision bound for it
+// killed 13 of 31 agents at boot on a loaded host -- a compile that is slow, not stuck.
+test(
+  "a module that loads slower than the decision bound still starts (startup has its own bound)",
+  { timeout: 15_000 },
+  async (t) => {
+    const { runner } = fixture(
+      t,
+      `const t0 = Date.now(); while (Date.now() - t0 < 300) {}
+       export function decide() { return { type: 'noop', reason: 'loaded' }; }`,
+      100,
+      5000,
+    );
+    assert.deepEqual(await runner.start(), {
+      mode: "decide",
+      config: undefined,
+    });
+    assert.deepEqual((await runner.decide(obs(1))).action, {
+      type: "noop",
+      reason: "loaded",
+    });
+  },
+);
+
+// Issue #100 (#93 F-H): a strategy that fails every block used to cost a worker spawn every block.
+test(
+  "consecutive failures back off instead of replacing the worker every block, and a working revision resets it",
+  { timeout: 30_000 },
+  async (t) => {
+    const { runner, logs } = fixture(
+      t,
+      `export function decide() { throw new Error('always'); }`,
+      1000,
+    );
+    for (const round of [1, 2, 3])
+      await assert.rejects(runner.decide(obs(round)), /always/);
+    // The third failure opens a 1-block back-off, said once.
+    assert.equal(
+      logs.filter((l) => /failed 3 times in a row/.test(l.reason ?? "")).length,
+      1,
+    );
+    assert.match(
+      ((await runner.decide(obs(4))).action as { reason: string }).reason,
+      /backing off after 3 consecutive failed decisions; next attempt at block 5/,
+    );
+    // Block 5 is attempted; it fails again, and the back-off doubles to 2 blocks.
+    await assert.rejects(runner.decide(obs(5)), /always/);
+    for (const round of [6, 7])
+      assert.match(
+        ((await runner.decide(obs(round))).action as { reason: string }).reason,
+        /backing off after 4 consecutive/,
+      );
+    // A revision installed meanwhile is picked up at the next attempt and resets the counter.
+    runner.setSource({
+      kind: "executor",
+      source: `return { type: 'noop', reason: 'fixed' };`,
+    });
+    assert.deepEqual((await runner.decide(obs(8))).action, {
+      type: "noop",
+      reason: "fixed",
+    });
+    assert.deepEqual((await runner.decide(obs(9))).action, {
+      type: "noop",
+      reason: "fixed",
+    });
+  },
+);

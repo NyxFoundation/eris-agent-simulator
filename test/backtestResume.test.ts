@@ -175,3 +175,52 @@ test("assertResumable: a matrix run with a different agent state root is a diffe
     /agentStateRoot: stored \(none\), now \/state\/a/,
   );
 });
+
+// Issue #102 (#91 F9): a resume on a different roster used to exit 0 and rewrite the artifact.
+import { rosterFingerprint } from "../core/src/backtest/resume.js";
+
+test("the roster fingerprint is order-insensitive and sensitive to the field's content", () => {
+  const a = [
+    { id: "noop", wallet: "AUTO", baseline: true },
+    { id: "venue-arb", wallet: "AUTO", env: { ERIS_AGENT_FROZEN: "1" } },
+  ];
+  const b = [a[1], a[0]];
+  assert.equal(rosterFingerprint(a), rosterFingerprint(b));
+  assert.match(rosterFingerprint(a), /^sha256:[0-9a-f]{64}$/);
+  assert.notEqual(
+    rosterFingerprint(a),
+    rosterFingerprint([a[0], { ...a[1], env: { ERIS_AGENT_FROZEN: "0" } }]),
+  );
+  assert.notEqual(rosterFingerprint(a), rosterFingerprint([a[0]]));
+});
+
+test("a stored matrix run on a different field is refused; one that predates the record is not", () => {
+  const stored = {
+    schema: 2,
+    scenarioSet: "plan.yaml",
+    k: 8,
+    resetUnit: "scenario",
+    repeat: 1,
+    rosterFingerprint: rosterFingerprint([{ id: "a" }, { id: "b" }]),
+  };
+  const current = {
+    scenarioSet: "plan.yaml",
+    k: 8,
+    resetUnit: "scenario",
+    repeat: 1,
+    rosterFingerprint: rosterFingerprint([{ id: "b" }, { id: "a" }]),
+  };
+  assert.doesNotThrow(() => assertResumable(stored, current));
+  assert.throws(
+    () =>
+      assertResumable(stored, {
+        ...current,
+        rosterFingerprint: rosterFingerprint([{ id: "a" }, { id: "c" }]),
+      }),
+    /roster: stored sha256:.* \(a different field\)/,
+  );
+  // Written before the fingerprint existed: nothing to compare, so not refused.
+  assert.doesNotThrow(() =>
+    assertResumable({ ...stored, rosterFingerprint: undefined }, current),
+  );
+});

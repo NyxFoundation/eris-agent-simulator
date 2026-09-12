@@ -16,9 +16,10 @@
 //                events.jsonl (lst_block / liquity_block) and are read from there.
 
 import { scoreEpoch } from "@core/scoring/deviationScore";
-import { epochPnlFromSeries } from "@core/scoring/epochPnl";
+import { coversWindow } from "./liveBlocks";
 import { liveAgentLog, loadLiveRun } from "./liveRun";
-import { getMode } from "./mode";
+import { getMode, loadMode } from "./mode";
+import { scenarioAgentP } from "./scenarioP";
 import {
   loadAllAgentLogs,
   loadRun,
@@ -87,6 +88,10 @@ import type {
 type ResolvedRun = LoadedRun;
 
 async function resolveRun(): Promise<ResolvedRun> {
+  // The mode decides what the builders below may read (decision logs, the chain); until the server
+  // has said, the restricted reading applies, and a first snapshot built under it would carry a
+  // stale answer for as long as its key lasts.
+  await loadMode();
   // Matrix dirs share the index with runs but hold no run artifacts, so they are never a candidate
   // here — loading one as a run would 404 on summary.json.
   const runs = runEntries(await listRuns());
@@ -195,15 +200,39 @@ function observationSeries(run: LoadedRun): ObservationSeries {
   return result;
 }
 
+/**
+ * The run's first competition block.
+ *
+ * Order matters, because a live run has none of the first three. A scored run says so in its value
+ * series; a closed segment in its summary; a segment that is not the first in its own header. A run
+ * still going has only what it has already written -- the first block its event stream mentions --
+ * and its block rows, which a live view may hold only the newest of. The old fall-through to 0 is
+ * what printed `blocks 0-0` across the explorer and the board for a whole period (issue #84 A).
+ */
 function firstBlock(run: LoadedRun): number {
   return (
-    run.summary.valueSeries?.fromBlock ?? run.blockRows[0]?.blockNumber ?? 0
+    run.summary.valueSeries?.fromBlock ??
+    run.summary.fromBlock ??
+    segmentStart(run) ??
+    run.live?.firstBlock ??
+    firstEventBlock(run) ??
+    run.blockRows[0]?.blockNumber ??
+    0
   );
+}
+
+/** The block a segment opened at, from its own header (absent on a run's first segment). */
+function segmentStart(run: LoadedRun): number | undefined {
+  const started = eventOfType(run.events, "run_started_realtime");
+  const from = Number(started?.fromBlock);
+  return Number.isFinite(from) && from > 0 ? from : undefined;
 }
 
 function lastBlock(run: LoadedRun): number {
   return (
     run.summary.valueSeries?.toBlock ??
+    run.summary.toBlock ??
+    run.live?.chainHeight ??
     run.blockRows[run.blockRows.length - 1]?.blockNumber ??
     0
   );
@@ -241,25 +270,22 @@ function buildEpochs(
   const txPerBlock = new Map<number, number>();
   for (const row of run.blockRows)
     txPerBlock.set(row.blockNumber, (txPerBlock.get(row.blockNumber) ?? 0) + 1);
-  // A live run's blockRows are synthesized from a recent RPC window, not from blocks.csv, so they
-  // start partway into the run. A round older than that window has no count to report — reporting
-  // 0 would say "nothing happened here", which is a different claim from "this view cannot see it".
+  // A live run's block rows cover a range -- the tail of blocks.csv, or a recent RPC window -- and
+  // a round that starts before it has no count to report: reporting 0 would say "nothing happened
+  // here", which is a different claim from "this view cannot see it". The range is what the view
+  // fetched, not where its first transaction happens to sit (issue #84 I).
   //
-  // Empty blockRows on a live run means the browser reached no chain at all (watching a run on
-  // another machine over synced files, say), so *no* round has a count — not that every round was
-  // quiet. Infinity puts every window before the held one.
-  const heldFrom = run.live
-    ? run.blockRows.length > 0
-      ? Math.min(...run.blockRows.map((r) => r.blockNumber))
-      : Number.POSITIVE_INFINITY
-    : null;
+  // No range at all on a live run (nothing flushed yet, no chain reachable) means *no* round has a
+  // count — not that every round was quiet. Infinity puts every window before the held one.
+  const covered = (fromBlock: number) =>
+    coversWindow(fromBlock, run.live?.blocksFrom ?? null, run.live !== undefined);
   const txBetween = (
     from: number,
     to: number,
     started: boolean,
   ): number | null => {
     if (!started) return 0; // a round that has not begun really has no transactions
-    if (heldFrom !== null && from < heldFrom - 1) return null;
+    if (!covered(from)) return null;
     let count = 0;
     for (const [block, n] of txPerBlock)
       if (block > from && block <= to) count += n;
@@ -286,7 +312,10 @@ function buildEpochs(
   const epochSeries = run.summary.valueSeries?.epochSeries;
   const boundaries = epochSeries?.boundaryBlocks ?? [];
 
-  if (boundaries.length >= 2) {
+  // A live run now carries the boundaries read so far, which is what scores it -- but the bar is
+  // laid out from the run's configured length, so a day shows its whole shape rather than only the
+  // rounds that have closed.
+  if (!run.live && boundaries.length >= 2) {
     const valuesByAgent = epochSeries?.valuesByAgent ?? {};
     const ids = (run.summary.agents ?? []).map((a) => a.id);
     const valueAt = (id: string, boundary: number): number | null =>
@@ -365,7 +394,11 @@ function buildEpochs(
   const started = eventOfType(run.events, "run_started_realtime");
   const epochBlocks = Number(started?.epochBlocks ?? 0);
   const runBlocks = Number(started?.runBlocks ?? 0);
-  const start = firstEventBlock(run);
+  // Every boundary below is measured from this block, so it has to be the run's own first block and
+  // not the oldest one still in a capped event tail: on a day-long segment the two differ by
+  // however much has been evicted, and the whole round axis slides with it (the header read
+  // "round 14 of 20" on a segment sitting at its twentieth).
+  const start = run.live?.firstBlock ?? firstEventBlock(run);
   if (!(epochBlocks >= 1) || !(runBlocks >= epochBlocks) || start === null)
     return [];
   const count = Math.floor(runBlocks / epochBlocks);
@@ -391,12 +424,23 @@ function buildEpochs(
   });
 }
 
-/** The first block the run's own event stream mentions — the live stand-in for valueSeries.fromBlock. */
+/**
+ * The first block the run's own event stream mentions — the live stand-in for valueSeries.fromBlock.
+ *
+ * `round_timing` is written once per processed block from the first one on, so its earliest entry
+ * is the run's first block. An epoch boundary is the fallback for a stream long enough that the
+ * early lines have fallen off the tail's cap: boundary 0 sits on the run's first block.
+ */
 function firstEventBlock(run: LoadedRun): number | null {
   for (const event of run.events) {
     if (event.type !== "round_timing") continue;
     const block = Number(event.blockNumber);
     if (Number.isFinite(block)) return block;
+  }
+  for (const event of run.events) {
+    if (event.type !== "epoch_boundary") continue;
+    const block = Number(event.blockNumber);
+    if (Number.isFinite(block) && Number(event.index) === 0) return block;
   }
   const first = run.blockRows[0]?.blockNumber;
   return first ?? null;
@@ -498,14 +542,16 @@ function buildStandings(
   );
 
   // P for this epoch (rules §4.4.1): the summary's own figure for the whole run, or V_closed − V_0
-  // while replaying.
+  // while replaying. An agent the run did not place -- no V_0, a mid-segment registration -- has
+  // no P and no net PnL to show, and is not in the population (issue #84 X2).
   const pnlByAgent: Record<string, number> = {};
-  const netPnl = new Map<string, number>();
+  const netPnl = new Map<string, number | null>();
   const drawdown = new Map<string, Array<number | null>>();
   for (const agent of agents) {
     const values = valuesByAgent[agent.id] ?? [];
     let p: number | undefined;
-    let net = agent.netPnlUsdc;
+    let net: number | null =
+      agent.scored === false ? null : (agent.netPnlUsdc ?? null);
     let dd: Array<number | null> = values;
     if (replaying) {
       const start = values[0];
@@ -513,13 +559,12 @@ function buildStandings(
       if (start != null && now != null) {
         p = now - start;
         net = p;
-      } else if (closed === 0) net = 0;
+      } else if (closed === 0) net = start == null ? null : 0;
+      else net = null;
       dd = values.slice(0, closed + 1);
     } else {
-      p =
-        agent.pnlUsdc ??
-        epochPnlFromSeries(values)?.pnlUsdc ??
-        agent.netPnlUsdc;
+      p = scenarioAgentP(agent, values.length >= 2 ? values : undefined);
+      if (p === undefined) net = null;
     }
     if (p !== undefined && Number.isFinite(p)) pnlByAgent[agent.id] = p;
     netPnl.set(agent.id, net);
@@ -536,7 +581,8 @@ function buildStandings(
       rank: 0,
       agent: agent.id,
       score: epoch.tByAgent[agent.id] ?? null,
-      netPnlUsdc: netPnl.get(agent.id) ?? agent.netPnlUsdc,
+      netPnlUsdc: netPnl.get(agent.id) ?? null,
+      unscored: agent.scored === false || !(agent.id in pnlByAgent),
       strategy: description,
       strategyCategory: categorize(agent.id, description),
       maxDrawdownPercent: maxDrawdownPercent(drawdown.get(agent.id) ?? []),
@@ -547,9 +593,39 @@ function buildStandings(
   rows.sort(
     (a, b) =>
       (b.score ?? -Infinity) - (a.score ?? -Infinity) ||
-      b.netPnlUsdc - a.netPnlUsdc,
+      (b.netPnlUsdc ?? -Infinity) - (a.netPnlUsdc ?? -Infinity),
   );
   return rows.map((row, i) => ({ ...row, rank: i + 1 }));
+}
+
+/**
+ * Where a live run is in its rounds, for the competition header (issue #84 C): the round in
+ * progress, how many the run has, and when the current one closes at the chain's cadence.
+ */
+export function liveProgress(run: LoadedRun): {
+  round: number;
+  rounds: number;
+  /** Wall-clock estimate of the current round's close, from the chain height and cadence. */
+  roundEndsAtMs: number | null;
+  blockNumber: number;
+} | null {
+  if (!run.live) return null;
+  const chainHeight = run.live.chainHeight;
+  const epochs = buildEpochs(run, chainHeight, null);
+  if (epochs.length === 0) return null;
+  const current =
+    epochs.find((e) => e.status === "live") ??
+    epochs.filter((e) => e.status === "done").pop() ??
+    epochs[0];
+  const blockNumber = chainHeight ?? lastBlock(run);
+  const blockTimeSec = run.summary.blockTimeSec ?? 2;
+  const remaining = Math.max(0, current.toBlock - blockNumber);
+  return {
+    round: current.index,
+    rounds: epochs.length,
+    roundEndsAtMs: Date.now() + remaining * blockTimeSec * 1000,
+    blockNumber,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1324,24 +1400,19 @@ export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
       )
     : run.blockRows;
 
-  // Live: blockRows only cover the recent chain window, so the round's tx count comes from the
-  // coordinator's tx_submitted stream instead; the indexer height rides along so its lag is visible.
-  // Live: blockRows are synthesized from a recent RPC window. Without a round selected the count
-  // comes from the coordinator's own tx_submitted stream (which the tail holds in full); with one
-  // selected, a round that starts before the held window has no count to report — 0 would read as
-  // "this round was quiet".
-  const heldFrom = run.live
-    ? run.blockRows.length > 0
-      ? Math.min(...run.blockRows.map((r) => r.blockNumber))
-      : Number.POSITIVE_INFINITY
-    : null;
+  // Live: the block rows cover a range (the tail of blocks.csv, or a recent RPC window). A window
+  // that starts before it has no count to report -- 0 would read as "this round was quiet". Without
+  // a round selected and a range that does not reach the run's start, the coordinator's own
+  // tx_submitted stream stands in.
+  const covers = (fromBlock: number) =>
+    coversWindow(fromBlock, run.live?.blocksFrom ?? null, run.live !== undefined);
   const txCountThisRound = !epoch
-    ? run.live
+    ? run.live && !covers(from)
       ? run.events.filter((e) => e.type === "tx_submitted").length
       : rows.length
-    : heldFrom !== null && epoch.fromBlock < heldFrom - 1
-      ? null
-      : rows.length;
+    : covers(epoch.fromBlock)
+      ? rows.length
+      : null;
 
   return {
     round,
@@ -1364,7 +1435,11 @@ export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
     blocks: groupBlocks(rows)
       .slice(0, 30)
       .map((b) => toExplorerBlock(run, b)),
-    transactions: buildTransactions(run, rows, infoByHash, 60),
+    // Every row in scope, newest first: the page searches over all of them and shows a page at a
+    // time. Cutting to the newest sixty here put a transaction older than that out of reach of a
+    // search by its own hash (issue #84 P).
+    transactions: buildTransactions(run, rows, infoByHash, rows.length),
+    txCoveredFrom: run.live ? run.live.blocksFrom : null,
     agents: (run.summary.agents ?? []).map((a) => ({
       id: a.id,
       ...(a.address ? { address: a.address } : {}),
@@ -1596,12 +1671,14 @@ export async function fetchAgentDetailSnapshot(
 
   const agent: AgentDetail = {
     rank: standing.rank,
+    fieldSize: (run.summary.agents ?? []).length,
     agent: standing.agent,
     address: shortAddress(summaryAgent?.address ?? ""),
     fullAddress: summaryAgent?.address,
     strategy: standing.strategy,
     score: standing.score,
     netPnlUsdc: standing.netPnlUsdc,
+    unscored: standing.unscored,
     maxDrawdownPercent: standing.maxDrawdownPercent,
     portfolioSeries,
     positions,

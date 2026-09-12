@@ -15,9 +15,15 @@
 // same reconcile-to-a-target shape as the liquidity pull (issue #52) and for the same reason: the
 // coordinator drops block notifications while it is busy, so a state that is re-derived every block
 // costs a block of lag where a one-shot would strand the pool.
-import { encodeFunctionData, type Address, type Hex } from "viem";
+import { encodeFunctionData, parseAbi, type Address, type Hex } from "viem";
 import { troveManagerAbi } from "@eris/sdk/abis.js";
-import { accountAddress, sendAndMine } from "@eris/sdk/chain.js";
+import {
+  accountAddress,
+  increaseTime,
+  isExternalChain,
+  mine,
+  sendAndMine,
+} from "@eris/sdk/chain.js";
 import { liquityPriceFeedAdapterAbi } from "@eris/sdk/abis.js";
 import {
   LIQUITY,
@@ -132,6 +138,8 @@ export async function setupLiquity(
     );
   }
 
+  await skipBootstrapPeriod(ctx, logger);
+
   const state = await getLiquityState(ctx, opts.fairPrice);
   logger.event({
     type: "liquity_setup",
@@ -187,6 +195,72 @@ export async function setupLiquity(
     priceFeedAdapter: LIQUITY.priceFeed,
     oracleRepointed: true,
   };
+}
+
+// Liquity V1 refuses every redemption for BOOTSTRAP_PERIOD (14 days) after the LQTY token's
+// deployment. The deployer warps its own anvil past it (deployer/src/protocols/liquity.ts), but a
+// state dump loaded into a fresh anvil comes back on wall-clock time: `anvil --load-state` restores
+// storage, not the clock, so on every backtest run the venue is inside the bootstrap again and
+// `liquityRedeem` reverts with "Redemptions are not allowed during bootstrap phase" -- found on the
+// cdp-incident smoke (issue #107), where redemption-arb decided to redeem eight blocks in a row and
+// every transaction reverted. Warp once, before the first block; no agent exists yet.
+const bootstrapAbi = parseAbi([
+  "function BOOTSTRAP_PERIOD() view returns (uint256)",
+  "function lqtyToken() view returns (address)",
+  "function getDeploymentStartTime() view returns (uint256)",
+]);
+
+async function skipBootstrapPeriod(
+  ctx: SimContext,
+  logger: RunLogger,
+): Promise<void> {
+  const l = LIQUITY!;
+  const [period, lqty, latest] = await Promise.all([
+    ctx.publicClient.readContract({
+      address: l.troveManager,
+      abi: bootstrapAbi,
+      functionName: "BOOTSTRAP_PERIOD",
+    }) as Promise<bigint>,
+    ctx.publicClient.readContract({
+      address: l.troveManager,
+      abi: bootstrapAbi,
+      functionName: "lqtyToken",
+    }) as Promise<Address>,
+    ctx.publicClient.getBlock(),
+  ]);
+  const start = (await ctx.publicClient.readContract({
+    address: lqty,
+    abi: bootstrapAbi,
+    functionName: "getDeploymentStartTime",
+  })) as bigint;
+  const opensAt = start + period;
+  if (latest.timestamp >= opensAt) return;
+  const shortfall = Number(opensAt - latest.timestamp);
+  if (isExternalChain()) {
+    // Cannot move a real chain's clock; say what the venue will refuse rather than let every
+    // redemption revert with the agents none the wiser.
+    logger.event({
+      type: "liquity_bootstrap_active",
+      opensAtUnix: Number(opensAt),
+      secondsRemaining: shortfall,
+      note: "redemptions revert until the bootstrap period ends; the clock cannot be warped on an external chain",
+    });
+    return;
+  }
+  // One hour of margin: the next block's timestamp is wall clock plus the offset, and the
+  // deployer used the same margin.
+  const warp = shortfall + 3600;
+  await increaseTime(ctx.publicClient, warp);
+  await mine(ctx.publicClient);
+  const after = await ctx.publicClient.getBlock();
+  logger.event({
+    type: "liquity_bootstrap_warped",
+    fromUnix: Number(latest.timestamp),
+    toUnix: Number(after.timestamp),
+    warpedSeconds: warp,
+    opensAtUnix: Number(opensAt),
+    note: "a state dump loaded into a fresh anvil is back on wall-clock time, inside Liquity's 14-day bootstrap; warped past it before the first block",
+  });
 }
 
 /// Per-block telemetry. Cheap (the coordinator already reads this state) and the primary post-run

@@ -67,6 +67,7 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 | `markMedianBlocks` | 5 | The G7 median window |
 | `agentSandbox` | `process` | `process` / `docker`. docker launches through `infra/docker-agent/run-agent.sh`, the only path that applies the rules §2.3 caps (2 vCPU / 4 GiB). Official regimes say `docker`; locally pass `--agent-sandbox process` |
 | `blockGasLimit` | 30000000 | Block gas limit the coordinator sets after setup, before mining starts (rules §2.6; 0 = leave the node's) |
+| `agentsReadyTimeoutSec` | 60 | Longest the epoch clock is held for every launched agent to write `runtime_start` (issue #94; 0 = do not wait). A local check with 32 docker agents takes 86–99 s, so raise it there |
 | `reportDir` | `./runs` | Output root |
 | `flashArb` | false | Deploy the FlashArb contract |
 | `localSnapshotFile` | `.local-snapshot` | Where the snapshot id lives |
@@ -93,7 +94,8 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 | `usdcUnits` | 25,000 USDC | Opening USDC |
 | `base` | `{WETH: wethWei}` | Opening inventory for other bases |
 | `flowEthWei` | 1,000 ETH | Flow wallets' native balance |
-| `flowWethWei` | 0 | Flow wallets' WETH |
+| `flowWethWei` | 0 | Flow wallets' WETH (the official regimes: 150 WETH, so a `flowTrend` hold has a sell side; issue #112) |
+| `flowUsdcUnits` | `usdcUnits` | Flow wallets' USDC (the official regimes: 450,000 USDC = 150 WETH at $3,000, the buy side of the same hold) |
 | `flowBase` | {} | Flow wallets' other bases |
 
 **The official regimes hand out an ETH/BTC/USDC basket** (8 WETH + 0.4 WBTC + 25k USDC, issue #54). They began as USDC-only (`wethWei: "0"`) to remove opening β (ADR 0017 §4), until it turned out that **the LST vault and the Trove are WETH/ETH denominated, so under USDC-only the sell side of every strategy had no inventory behind it**. The β cancels out of M9 because the benchmark holds the same funding — what USDC-only was protecting was `netPnlUsdc`, a reporting figure.
@@ -147,6 +149,8 @@ The template (`config/example.yaml`) hands out WETH for the same reason — it i
 |---|---|---|
 | `stress.events` | [] | The event list ([04](04-stress-events.md)) |
 | `stress.victimCount` / `victimHf0` / `victimWethWei` | 0 / 1.10 / 5 WETH | Liquidation victims |
+| `stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei` | 0 / 1.20 / 5 WETH | Liquity victim Troves (issue #107; needs `liquity` and fresh state) |
+| `stress.liquityRecoveryTcr` / `liquitySpSeedEusdWei` | 0 (off) / 0 | Size the cohort's collateral at setup so the system TCR lands on this value at the crash bottom (fail-fast if unreachable) / eUSD the environment puts into the Stability Pool (issue #59) |
 | `vuln.events` / `poolLiquidityUsdcUnits` / `poolFeeBps` / `llm` | [] / 2M USDC / 30 / "0" | Vulnerability events (ADR 0014) |
 | `lst.simulatedSecondsPerBlock` | 3600 | The economic clock (one block = one hour) |
 | `lst.apyBps` | 300 | 3%/yr |

@@ -74,8 +74,12 @@ CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
   node --import tsx example/agents/runtime/bot.ts
 ```
 
-- `ERIS_MANIFEST` supplies the RPC URL and the PriceFeed address. Everything else still comes from
-  your config file (`ERIS_CONFIG`, defaulting to `config/local.yaml`).
+- `ERIS_MANIFEST` supplies the RPC URL, the PriceFeed address, the chain id and which address table
+  to use. Those last two are applied before anything else loads, because the address table is chosen
+  at import time — so the command above is enough on its own, and setting `CHAIN_ID` or
+  `ERIS_LOCAL_DEPLOY` in your shell overrides the manifest rather than the other way round.
+  Everything else still comes from your config file (`ERIS_CONFIG`, defaulting to
+  `config/local.yaml`).
 - `ERIS_RUN_DIR` is **your** directory. Your decision log lands there and nowhere else — the
   dashboard cannot show it, and says so rather than rendering an empty panel.
 - On the first start the runtime grants its own venue approvals, because an approval is your
@@ -103,7 +107,7 @@ leaves no trace anyone but you can verify.
 npm run check:ordering -- --live --rounds 5      # issue #35: does the builder order by fee?
 npm run stress:rpc -- --agents 30 --seconds 60 --write   # issue #36: does the read load fit?
 
-# 3. the period
+# 3. the period — in the foreground while you watch it start
 npm run sim:realtime -- --config config/practice.yaml
 
 # 4. hand out credentials, one participant at a time
@@ -112,6 +116,14 @@ npm run manifest -- --config config/practice.yaml --participant alice
 
 # 5. serve the dashboard
 npm run dashboard:build && npm run dashboard:serve     # :5174
+```
+
+A period runs for a week, so step 3 does not stay in a terminal. On the box that hosts it, run the
+coordinator under systemd instead — `infra/devnet/` has the unit, what it needs, why a restart
+begins a new competition, and the Slack alert that fires when the chain stops moving.
+
+```bash
+systemctl --user enable --now ascon-devnet.service
 ```
 
 ### Registering a participant

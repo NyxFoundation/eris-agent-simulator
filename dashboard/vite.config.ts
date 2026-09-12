@@ -2,7 +2,11 @@ import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
-import { createRunsApi, modeFromEnv } from "./server/runsApi";
+import {
+  competitionsFromEnv,
+  createRunsApi,
+  modeFromEnv,
+} from "./server/runsApi";
 
 const RUNS_DIR = fileURLToPath(new URL("../runs", import.meta.url));
 
@@ -12,9 +16,13 @@ const RUNS_DIR = fileURLToPath(new URL("../runs", import.meta.url));
  * output, and a practice period is served by whoever the coordinator runs on.
  */
 function runsPlugin(): Plugin {
-  // The same ERIS_DASHBOARD_AUDIENCE / ERIS_DASHBOARD_STANDINGS switches as the hosted server, so
-  // the public view can be exercised locally before it is exposed.
-  const handle = createRunsApi(RUNS_DIR, modeFromEnv());
+  // The same ERIS_DASHBOARD_AUDIENCE / ERIS_DASHBOARD_STANDINGS / ERIS_DASHBOARD_COMPETITIONS
+  // switches as the hosted server, so the public view can be exercised locally before it is exposed.
+  const competitions = competitionsFromEnv();
+  const handle = createRunsApi(RUNS_DIR, {
+    ...modeFromEnv(),
+    ...(competitions ? { competitions } : {}),
+  });
   return {
     name: "eris-runs",
     configureServer(server) {

@@ -10,6 +10,7 @@
 // decision about what a venue's state *is* is made here.
 
 import { t } from "@/i18n/messages";
+import { getMode } from "./mode";
 import type { LoadedRun } from "./runArtifacts";
 import {
   blockSeriesOf,
@@ -1144,19 +1145,42 @@ function roundsSpanned(
     : `${hit[0]}–${hit[hit.length - 1]}`;
 }
 
+/**
+ * How much of the schedule the reader may see. The server withholds the plan from the audience --
+ * all of it for one epoch of a scenario matrix (a window's kind names the regime, rules §3.3), the
+ * windows still to come for a continuous world (ADR 0021 §1) -- and a panel that renders the
+ * absence as "none" makes a claim the server never made (issue #84 D). A run that says neither
+ * follows the server's own default and is treated as a scenario.
+ */
+function scheduleDisclosure(run: LoadedRun): "full" | "past" | "withheld" {
+  if (!getMode().audience) return "full";
+  const started = eventOfType(run.events, "run_started_realtime");
+  const resetUnit = run.summary.resetUnit ?? started?.resetUnit;
+  return resetUnit === "continuous" ? "past" : "withheld";
+}
+
 export function buildScenarioPanel(
   run: LoadedRun,
   epochs: { index: number; fromBlock: number; toBlock: number }[],
 ): VenuePanel {
   const started = eventOfType(run.events, "run_started_realtime");
   const schedule = eventOfType(run.events, "stress_schedule");
-  const runStart = Number(schedule?.runStartBlock ?? started?.blockNumber ?? 0);
+  const disclosure = scheduleDisclosure(run);
+  // The run's first block: the schedule's own anchor, else the first published round boundary,
+  // else the segment header. The old `?? 0` printed `RUN WINDOW 0 → 130` on every redacted epoch.
+  const runStartCandidates = [
+    num(schedule?.runStartBlock),
+    epochs[0]?.fromBlock,
+    num(started?.fromBlock),
+    num(started?.blockNumber),
+  ].filter((v): v is number => typeof v === "number" && v > 0);
+  const runStart = runStartCandidates[0] ?? null;
   const scheduled = (schedule?.events as ScheduledEvent[] | undefined) ?? [];
 
   const stats: VenueStat[] = [];
   const tables: VenueTable[] = [];
 
-  // The seed is what makes a run reproducible, so it leads.
+  // The seed is what makes a run reproducible, so it leads. Absent in the public view (§3.3).
   if (started?.seed !== undefined) {
     stats.push({
       label: t("vp.scenario.seed"),
@@ -1164,23 +1188,44 @@ export function buildScenarioPanel(
       sub: t("vp.scenario.seedSub", { flow: num(started.flowSeed) }),
     });
   }
-  stats.push({
-    label: t("vp.scenario.scheduled"),
-    value: String(scheduled.length),
-    tone: scheduled.length === 0 ? "neutral" : "warn",
-    sub:
-      scheduled.length === 0
-        ? t("vp.scenario.scheduledNone")
-        : scheduled.map((e) => str(e.type)).join(", "),
-  });
-  stats.push({
-    label: t("vp.scenario.window"),
-    value: `${runStart.toLocaleString("en-US")} → ${(runStart + num(started?.runBlocks)).toLocaleString("en-US")}`,
-    sub: t("vp.scenario.windowSub", {
-      blocks: num(started?.runBlocks),
-      rounds: epochs.length,
-    }),
-  });
+  if (disclosure === "withheld") {
+    stats.push({
+      label: t("vp.scenario.scheduled"),
+      value: "—",
+      tone: "neutral",
+      sub: t("vp.scenario.scheduledWithheld"),
+    });
+  } else {
+    stats.push({
+      label: t("vp.scenario.scheduled"),
+      value: String(scheduled.length),
+      tone: scheduled.length === 0 ? "neutral" : "warn",
+      sub:
+        scheduled.length === 0
+          ? disclosure === "past"
+            ? t("vp.scenario.scheduledNonePast")
+            : t("vp.scenario.scheduledNone")
+          : `${scheduled.map((e) => str(e.type)).join(", ")}${
+              disclosure === "past" ? ` · ${t("vp.scenario.scheduledPast")}` : ""
+            }`,
+    });
+  }
+  if (runStart !== null) {
+    const runBlocks = num(started?.runBlocks);
+    stats.push({
+      label: t("vp.scenario.window"),
+      value:
+        runBlocks > 0
+          ? `${runStart.toLocaleString("en-US")} → ${(runStart + runBlocks).toLocaleString("en-US")}`
+          : epochs.length > 0
+            ? `${runStart.toLocaleString("en-US")} → ${epochs[epochs.length - 1].toBlock.toLocaleString("en-US")}`
+            : runStart.toLocaleString("en-US"),
+      sub:
+        runBlocks > 0
+          ? t("vp.scenario.windowSub", { blocks: runBlocks, rounds: epochs.length })
+          : t("vp.scenario.windowRounds", { rounds: epochs.length }),
+    });
+  }
 
   // --- the plan, and what became of it ---
   const scheduleRows: VenueTableCell[][] = scheduled.map((event) => {
@@ -1240,7 +1285,10 @@ export function buildScenarioPanel(
 
   tables.push({
     id: "scenario-schedule",
-    title: t("vp.scenario.scheduleTitle"),
+    title:
+      disclosure === "past"
+        ? t("vp.scenario.scheduleTitlePast")
+        : t("vp.scenario.scheduleTitle"),
     columns: [
       { label: t("vp.col.event"), width: "110px" },
       { label: t("vp.col.windowShape"), width: "205px" },
@@ -1248,8 +1296,13 @@ export function buildScenarioPanel(
       { label: t("vp.col.mag"), align: "right", width: "60px" },
       { label: t("vp.col.outcome"), width: "minmax(0,1fr)" },
     ],
-    rows: scheduleRows,
-    empty: t("vp.scenario.scheduleEmpty"),
+    rows: disclosure === "withheld" ? [] : scheduleRows,
+    empty:
+      disclosure === "withheld"
+        ? t("vp.scenario.scheduleWithheld")
+        : disclosure === "past"
+          ? t("vp.scenario.scheduleEmptyPast")
+          : t("vp.scenario.scheduleEmpty"),
   });
 
   // --- everything else the environment or the venues did, in block order ---

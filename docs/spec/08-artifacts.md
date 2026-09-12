@@ -114,8 +114,9 @@ runs/
 | `agents_registered` | ロスター全体（id / address / baseline / description / external） |
 | `agent_external_registered` | 外部参加者の登録（環境は起動しない） |
 | `agent_process_exited` | エージェントプロセスの異常終了 |
-| `initial_endowment` | 各エージェントの初期価値と最大/最小比 |
-| `price_feed_deployed` / `flash_arb_deployed` | |
+| `agents_ready` | interval mining の前に場が揃ったか（issue #94）。`ready[]`（id と spawn からの `afterMs`）/ `late`（上限時点で `runtime_start` 未達）/ `exited`（`runtime_start` 前に死んだ）/ `waitedMs` / `timedOut` |
+| `initial_endowment` | 各エージェントの初期価値と最大/最小比（全 base を評価。issue #94） |
+| `price_feed_deployed` / `flash_arb_deployed` | 前者は `openingFair`（base ごとの開始 fair。最初の境界より前に feed に載っている値）を持つ |
 | `interval_mining_started` / `block_gas_limit_set` / `fork_reset_skipped` / `prewarm_completed` | |
 | `external_chain_block_time` / `external_chain_mint_guard` / `treasury_funded_roles` | external モード |
 | `economic_gas_enabled` / `fee_cap_enforcement_disabled` | economicGas プロファイル |

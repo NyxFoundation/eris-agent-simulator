@@ -52,8 +52,8 @@
    | 対象 | ETH | base | stable |
    |---|---|---|---|
    | agent | `funding.ethWei`（**ガスバッファ 0**） | `funding.wethWei` / `funding.base` | `funding.usdcUnits` |
-   | flow ウォレット | `funding.flowEthWei` | `funding.flowWethWei` / `funding.flowBase` | 同上 |
-   | aave actor | 同上 | `flow.aaveMaxWethWei × 6` | 同上 |
+   | flow ウォレット | `funding.flowEthWei` | `funding.flowWethWei` / `funding.flowBase` | `funding.flowUsdcUnits`（既定は agent と同額） |
+   | aave actor | 同上 | `flow.aaveMaxWethWei × 6` | `funding.flowUsdcUnits` |
 
    エージェントのガスバッファを 0 にするのは、既定バッファが**選んでいない β** としてエポック系列に乗るため（ADR 0019 §6）。flow ウォレットは機械なのでバッファを持つ。
    鍵を持たない登録参加者へは `fundAddress` で配る（approve は本人しか出せないので付かない）。
@@ -63,17 +63,17 @@
 
 | 順序 | 処理 | 備考 |
 |---|---|---|
-| 1 | `initialFairPrice` 確定 | 以降の較正・victim・whale が参照する |
+| 1 | `initialFairPrice` 確定 + 他 base の opening fair を `ctx.fairPrices` に | 以降の較正・victim・whale・`initial_endowment`・PriceFeed が参照する。**WBTC 等もここで確定する**（issue #94。以前は mining 開始後に初めて読んでいたので、ここから最初のブロックまでの評価は WETH だけを見ていた） |
 | 2 | Aave オラクル較正（localDeploy 時） | anvil なら storage 書き込み、external なら admin の mined tx。どちらも agent 起動前なので front-run 不可 |
 | 3 | whale endowment | サイズは fair price 建て。**venue が無効なら throw**（L904） |
 | 4 | stress victim 構築 | `aave` 必須 / fresh state 必須（下記） |
 | 5 | 各 agent の初期残高取得 + `initial_endowment` | 最大/最小が 2 倍超なら警告 |
-| 6 | PriceFeed デプロイ → `price_feed_deployed` | このアドレスだけは参加者が他から引けない |
+| 6 | PriceFeed デプロイ → 他 base の opening fair を `setPriceFor`（mined tx）→ `price_feed_deployed`（`openingFair` 付き） | このアドレスだけは参加者が他から引けない。**全 base の fair が最初の境界より前に feed に載る**（issue #94。以前は WBTC の値が最初の oracle tx = 最初の境界の 1 ブロック後に着き、V_0 が全員 WBTC 分（バスケットで 24k）短く、noop の `netPnlUsdc` が 0 にならなかった） |
 | 7 | FlashArb デプロイ（`run.flashArb` かつ aave+uniswap+balancer） | |
 | 8 | vuln pool デプロイ（ADR 0014） | 資金投入は窓が開くブロックで行う |
 | 9 | `agents_registered` emit | id / address / baseline / external |
 | 10 | **環境マニフェスト書き出し** | 鍵は入らない。→ [10](10-operations.md) |
-| 11 | prewarm（`run.prewarmBlocks > 0`） | flow bot だけの短いループで anvil の working set を温める。価格の主系列は消費しない（別 Rng） |
+| 11 | prewarm（`run.prewarmBlocks > 0`） | flow bot だけの短いループで anvil の working set を温める。価格の主系列は消費しない（別 Rng）。終わったら全 base の fair を読み直して PriceFeed にも書き直す（deploy 時の値は暖機前の価格） |
 | 12 | LST setup | 経済クロックの整合 + rate oracle 配線の検証（乖離 200bps 超で fail-fast） |
 | 13 | Liquity setup | オラクルアダプタを今回の PriceFeed に差し替え。Recovery Mode 開幕・デペグ済みチェーンは fail-fast |
 | 14 | deployer 鍵の衝突検査 | liquidityPull / depeg が deployer 口座で取引するため（下記） |
@@ -92,6 +92,7 @@
 
 - `external: true` または鍵なしのエントリは**起動しない**。代わりに `agent_external_registered` を emit する。これが無いと「参加者が接続しなかった run」と「coordinator が起動に失敗した run」が区別できない（どちらも無取引に見える）。
 - 起動したプロセスには `onExit` を付ける。**途中で死んだエージェントは黙って取引をやめる**ので、`summary.json` 上は「動かないことを選んだ」エージェントと見分けがつかない。`agent_process_exited` と `processExitedEarly` に残す。
+- **エポックの時計は場が揃うまで待つ**（issue #94。`core/src/realtime/agentsReady.ts`）。automine を切った後・interval mining を始める前に、起動した全 agent が自分のログに `runtime_start` を書くまで待つ（`run.agentsReadyTimeoutSec`、既定 60 秒）。実測（2026-09-07、docker 32 体）では `interval_mining_started` が +24 s、`runtime_start` が +86〜99 s で、360 ブロックのエポックの先頭 ~45 ブロックと `windowFrac 0.10` の窓が誰も見ていないうちに過ぎていた。待っている間 anvil はブロックを作らない（agent が `runtime_start` までに必要とするのは read だけ。approve は funding で済んでいる）。external チェーンではシーケンサのブロックが `runStartBlock` の前に流れるだけ。外部参加者は待たない（こちらが起動していない）。結果は `agents_ready`（`ready[].afterMs` / `late` / `exited` / `timedOut`）に残り、上限で打ち切ったときは late の agent が最初のブロックを見ていないことが記録になる
 
 ### [F] ブロックループ
 

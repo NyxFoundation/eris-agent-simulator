@@ -125,7 +125,11 @@ not cheatcodes.
 `DECIDE_TIMEOUT_MS` (5,000 ms, `runtime/strategyRunner.ts`; rules §2.3), for both shipped and generated
 strategies. Past the bound, the parent terminates the worker and discards its answer and queued
 submissions. The next decision reloads the selected source; synchronous loops cannot block the
-parent observation or revision loop. But the bound is not the binding constraint:
+parent observation or revision loop. Loading the module has its own, looser bound
+(`STRATEGY_STARTUP_TIMEOUT_MS`, 60 s): a compile on a loaded host is slow, not stuck, and the
+decision bound is not applied to it. A strategy that fails three decisions in a row is backed off
+(1, 2, 4 … up to 64 blocks between attempts, said once in the log) rather than reloaded every
+block; one decision that returns clears it. But the bound is not the binding constraint:
 blocks are two seconds long, so a decision that takes three has already missed its block without
 timing out, and the miss reaches the model as a gap in the decisions rather than as an error. An RPC
 round trip inside `decide` on a loaded node is the usual way in. The reference runtime reads once

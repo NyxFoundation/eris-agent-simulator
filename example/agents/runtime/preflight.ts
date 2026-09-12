@@ -46,10 +46,19 @@ export async function preflightChain(opts: {
   /** The id transactions will be signed for (config.chainId), not the one the node reports. */
   expectedChainId: number;
   enabledIds: ProtocolId[];
+  /**
+   * Where the chain and the addresses were configured from, for the wording of a failure. A
+   * self-hosted participant (ADR 0021) is pointed by ERIS_MANIFEST and has never heard of
+   * ANVIL_RPC_URL or gen:local-constants; the operator's own agents are pointed by env and config.
+   */
+  via?: "manifest" | "env";
+  /** The chain id the manifest states, when there is one -- to name what overrode it. */
+  manifestChainId?: number;
   attempts?: number;
   delayMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<PreflightFailure | null> {
+  const via = opts.via ?? "env";
   const attempts = opts.attempts ?? 5;
   const delayMs = opts.delayMs ?? 400;
   const sleep = opts.sleep ?? sleepMs;
@@ -78,7 +87,19 @@ export async function preflightChain(opts: {
         "  Running in a container? 127.0.0.1 is the container, not the host.",
     };
 
-  if (chainId !== opts.expectedChainId)
+  if (chainId !== opts.expectedChainId) {
+    const where =
+      via === "manifest"
+        ? opts.manifestChainId !== undefined &&
+          opts.manifestChainId !== opts.expectedChainId
+          ? `  The manifest says chainId ${opts.manifestChainId}; something in your environment or\n` +
+            `  config file (CHAIN_ID, or run.chainId in ERIS_CONFIG) overrides it with ${opts.expectedChainId}.\n` +
+            "  Unset that override, or point ERIS_MANIFEST at the manifest for this chain."
+          : "  The manifest's RPC URL and chainId disagree with each other, or ERIS_RPC_URL points\n" +
+            "  at a different node than the manifest names. Use the manifest the operator issued for\n" +
+            "  this chain, and let it supply both."
+        : "  The chain comes from ANVIL_RPC_URL / CHAIN_ID, the id from run.chainId (or the address\n" +
+          "  overlay in sdk/src/constants.local.ts). Point both at the same chain.";
     return {
       kind: "chain-id",
       message:
@@ -86,9 +107,9 @@ export async function preflightChain(opts: {
         `configured for ${opts.expectedChainId}\n` +
         `  Transactions are signed for ${opts.expectedChainId}, so every send would be rejected\n` +
         "  while reads kept working — the agent would look alive and place nothing.\n" +
-        "  The chain comes from ANVIL_RPC_URL / CHAIN_ID, the id from run.chainId (or the address\n" +
-        "  overlay in sdk/src/constants.local.ts). Point both at the same chain.",
+        where,
     };
+  }
 
   const check = await checkDeployment({
     publicClient: opts.publicClient,
@@ -98,7 +119,7 @@ export async function preflightChain(opts: {
   if (check.missing.length > 0)
     return {
       kind: "deployment",
-      message: deploymentMismatchMessage(check, opts.rpcUrl),
+      message: deploymentMismatchMessage(check, opts.rpcUrl, via),
     };
 
   return null;

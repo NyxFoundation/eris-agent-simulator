@@ -62,7 +62,13 @@ timeout は式の評価しか覆わないので、無限ループする本体は
 **手書き・生成済みの両戦略に同じ上限**がかかり、await が返らない場合も同期の無限ループも
 `decide timeout:` として記録し、その判断の送信予約と返り値を捨てる。次の判断は同じ選択中の戦略を
 新しい worker にロードする。worker 内の変数は初期化されるが、親の観測・改訂ループ、nonce、ログ、
-版履歴、状態ディレクトリは継続する。これは生きている agent 内の計算の破棄であり、規約 §2.3 が禁じる
+版履歴、状態ディレクトリは継続する。**モジュールのロードには別の上限**（`STRATEGY_STARTUP_TIMEOUT_MS`
+= 60 秒 = coordinator の agents-ready 上限と同じ）を掛ける。以前は判断の 5 秒をロードにも使っていて、
+負荷の高いホストでは tsx のコンパイルがそれを超え、**31 体中 13 体が起動時に exit 1** した
+（issue #100）。また**失敗が 3 回続いたら worker を毎ブロック作り直さない**（1 → 2 → 4 … 最大 64 ブロック
+の back-off、1 回だけログ、返る判断が 1 つあれば解除）。throw するたびに discard → 次ブロック spawn は
+不変条件（失敗した判断のコールバックに取引させない）なので残すが、毎ブロック throw する戦略が
+2 秒ごとに tsx を起動して 1 コアを占有していた（`lp-provider`、#93 F-H）。これは生きている agent 内の計算の破棄であり、規約 §2.3 が禁じる
 **異常終了した agent プロセスの再起動ではない**。プロセスの異常終了後は従来どおりエポックの残りが行動なし。
 `ctx.publicClient` は読取専用、`walletClient` は公開しない（issue #85）。取引は戻り値か `ctx.submit()` に
 集約し、`decide` 中の submit は正常完了まで保留する。`run(ctx)` の自走型は従来のライフサイクルを維持し、
@@ -184,8 +190,16 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   config ファイル自体は共通。**アドレス overlay は同時に 1 つ**なので、deployment を移るたびに再生成が要る。
   片方だけ動かすと以前は setup の数分後に `Cannot decode zero data ("0x")` と生アドレスが出るだけだったので、
   **起動時に deployment の有無を実測して落とす**（`deployment_check`。何が無いかと再生成コマンドを出す）
+- **`ERIS_MANIFEST` は chainId と localDeploy も運ぶ**（issue #84 X3）。`sdk/src/constants.ts` は
+  **import 時**にアドレス overlay を決め、config は `CHAIN_ID` を読むので、マニフェストの値は
+  sdk が 1 つも読み込まれる前に env へ入れる必要がある。よって `example/agents/runtime/bot.ts` は
+  **prelude だけ**（`manifestEnv.ts` を呼んで `botMain.ts` を動的 import する。sim-realtime.ts と同じ形）で、
+  ランタイム本体は `botMain.ts`。env が優先なので coordinator 起動は無改変。これが無いとガイド記載の
+  コマンドが chain id（`configured for 42161`）→ アドレス（`7 of 7 contracts hold no code`）の順で 2 回落ちた
 - **agent プロセスも取引前に同じことを確かめる**（`example/agents/runtime/preflight.ts`。検査本体は
   `sdk/src/deploymentCheck.ts` = coordinator と同じ 1 本。`example → core` は禁止なので sdk に置いてある）。
+  **失敗メッセージは「誰が指したか」で変わる**（`via: "manifest" | "env"`）: 自己ホスト参加者は
+  `ANVIL_RPC_URL` も `gen:local-constants` も持っていないので、運営語彙で答えるのは行き止まり。
   RPC 疎通（5 回リトライ = 自己ホストの起動レース用）→ chain id が `run.chainId` と一致するか →
   venue アドレスに bytecode があるか、の順に見て、駄目なら **exit 1**。coordinator は `onExit` で拾い
   `agent_process_exited` と summary の `processExitedEarly` / `stderrTail` に残す。
@@ -213,7 +227,13 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `LiveScorer.addAgent` で**次の境界から**評価・`agents_registered` と manifest を再発行 + `agent_external_registered`）。
   純関数は `core/src/realtime/registrations.ts`。重複 id/address は `registration_ignored`、壊れたファイルは
   編集 1 回につき 1 回 `registrations_reload_failed`（run は止まらない）。**日の途中で登録された agent はその日の
-  P を持たない**（測られた V_0 が無い。翌セグメントから）
+  P を持たない**（測られた V_0 が無い。翌セグメントから）。**それを「持たない」まま記録する**（issue #84 X2）:
+  segment の summary.json / 期間 index の agent レコードは `scored: false` + `unscoredReason` を持ち、
+  `netPnlUsdc` / `pnlUsdc` の**フィールド自体が無い**。以前は欠損 P を `netPnlUsdc: 0` に潰しており、
+  採点側はそれを P = 0 として読んで**負けた全員に勝っていた**（実測: 期中登録の carol が 5 体中 4 位）。
+  書き手は `core/src/segments.ts` の `segmentAgentRecord` / `segmentIndexAgent`、読み手は
+  `dashboard/src/data/scenarioP.ts` の 1 本（**境界系列が agent を持つならそれが答え、
+  「系列はあるが P が作れない」は「系列が無い」とは別**）
 - **未登録の送信者も blocks.csv に残す**（role `external`、ownerId = 送信者アドレス小文字）。以前は
   「run の外の tx」として捨てていたが、試行環境ではそれが参加者の tx そのもので、「自分の tx は載ったか」に
   答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外
@@ -247,6 +267,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run build:contracts` — モックオラクル + PriceFeed を forge build（sim:realtime の前提。`out/` 未生成なら最低 1 回）
 - `npm run gen:local-constants` — deployments.json → `sdk/src/constants.local.ts` 生成（同梱 `deployer/` のローカルデプロイ出力を読む）
 - `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
+- **anvil はブロックごとの state を `~/.foundry/anvil/tmp/anvil-state-*/` に ~2 MB ずつ書く**（`--load-state` の run で実測: 360 ブロック run 1 本で 3,600 ファイル ≈ 7 GB、プロセス終了後も残る）。2026-09-10 にこれが 61 GB 溜まってディスクが満杯になり、run が `ENOSPC` で落ちた。run の後は `rm -rf ~/.foundry/anvil/tmp/anvil-state-*`（動いている anvil が無いとき）。本番 box でも同じ
 - `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積（実行順が回次 s）か、`{k, epochs: [{s, regime, seed}]}` の順序付きプラン（`npm run competition -- plan` の出力）を受ける。シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（schema 2: シナリオ × agent の P = `pnlUsdc` / `pnlSource` / `netPnlUsdc` / `alphaUsdc` / 端点 / `baseline` / `flags`）と `standings.json`（`computeStandings` の出力）を書く。順位は派生物で matrix.json から再計算できる。`--repeat N`（較正の診断用。採点は 1 回が既定。P の中央値の repeat を採る）
   - **`--resume <matrix-dir>` で同じ行列を続ける**（規約 §4.7.1。ライブ週の k エポックは複数回の起動にまたがる）。
@@ -257,10 +278,10 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - **公式レジームは `agentSandbox: docker`**（規約 §2.3 の 2 vCPU / 4 GiB は `infra/docker-agent/run-agent.sh` でしか掛からない）。docker が無ければ `--agent-sandbox process`（無制限。`agent_sandbox` イベントにそう出る）。綴り間違いは fail-fast
   - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 40`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジーム等回数、seed が決めるのは順序だけ。`--starts-at <ISO> --every-minutes <N>` で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出す。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 10/31 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
-  - **公式レジーム（8 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）
+  - **公式レジーム（11 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選は k をレジーム数の倍数に要求する**（`schedule.ts`）ので、本数を変えたら k も変える
   - **`cex-drift` / `informed-flow` は窓イベント**（`cexDrift` / `flowTrend`）で表現する（issue #56）。run 全体設定だった頃の `cex-drift` は**宣言長 360 ブロックで壊れていた** — 実測でプール乖離が平均 1,055bps（10%）に居座り fair が +34.6% 暴走、venue-arb が +8,458 を無条件に得ていた。60 ブロックでは 55bps に見えるので発覚が遅れた。窓化後は 461bps・+1,191（calm 基準は 39bps・−289）。`informed-flow` は窓化しても 45.0 → 42.7bps でほぼ中立（この regime はもともと calm と識別しにくい）
   - **`vuln` を公式化するにはフィールド側の追加が要る** — 悪意あるプールは factory 購読で発見するので、`discovery-arb` / `discovery-arb-verify` を `config/rosters/full-field.yaml` に入れないと**誰も見つけられず何も測れない**（`liquidator` が victim 無しでは遊ぶのと同じ形）。実測: 無検証は −5,306、検証側は +721、新プールを見ない venue-arb は −220（calm と同じ）
-  - **7 本とも全 venue（`lst` / `liquity` 含む）をデプロイし、配布は ETH/BTC/USDC バスケット**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）。以前は 5 venue・USDC-only 版と `full-*` の 7 venue 版が並立していたが、**5 venue 版は撤去した**（「競技とは何か」に 2 つ目の答えを残さないため）。`full-8h` / `full-boxA` は `public.yaml` と同内容になったので統合済み。`config/regimes/{lst,liquity,liquity-crash}.yaml` は venue 単体検証用として競技セット外に残る。USDC-only を保つのは `metric-*` だけで、理由は別（ADR 0019 §6。`genMetricRegimes.ts` が `funding.base` ごと落とす）
+  - **7 本とも全 venue（`lst` / `liquity` 含む）をデプロイし、配布は ETH/BTC/USDC バスケット**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）。**flow wallet には 0.5 WBTC も配る**（`funding.flowBase`。issue #99）— 以前は flow の財布に WBTC が無く、しかも `flow/logic.ts` の売り側ガードが全 base で `wethWei` を見ていたので、WBTC の売り注文が残高 0 に対して送られて informed 行の 27〜38% が revert し、WBTC プールが fair の +110bps に張り付いていた。ガードは base ごとの残高（`flowBalances[*].bases`）を読むようになった。WETH は従来どおり flow が買って調達する（1,012/1,012 成功の実測があるので触らない）。以前は 5 venue・USDC-only 版と `full-*` の 7 venue 版が並立していたが、**5 venue 版は撤去した**（「競技とは何か」に 2 つ目の答えを残さないため）。`full-8h` / `full-boxA` は `public.yaml` と同内容になったので統合済み。`config/regimes/{lst,liquity,liquity-crash}.yaml` は venue 単体検証用として競技セット外に残る。USDC-only を保つのは `metric-*` だけで、理由は別（ADR 0019 §6。`genMetricRegimes.ts` が `funding.base` ごと落とす）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
 - `npm run explorer` — sim anvil を索引するローカル Blockscout（issue #31。stock イメージ pin、`infra/blockscout/`）。UI は http://localhost:3100。**チェーンをリセットしたら `npm run explorer:reset`**（resetFork/snapshot-revert の巻き戻しに indexer は追従できないので DB を消して再索引するのが正規のライフサイクル）。`npm run explorer:tag` が最新 run の `summary.json` から agent アドレスに名前タグを付ける（reset で消えるので run ごと）。接続先・chain id・fork 用 `FIRST_BLOCK` は `infra/blockscout/explorer.env`
 - `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
@@ -370,7 +391,17 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/ラウンド長/action 語彙/limits/登録アドレス）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
 - `npm run check:ordering -- --live` — **ビルダーが手数料順に並べるかを自分で入札して測る**（#35 の load-bearing assumption）。既定プロファイルは oracle を全員より高く積んで txIndex 0 に置くので、順序が守られないチェーンでは環境の価格が front-run 可能になる。**入札は昇順に送る**ので到着順と手数料順が逆になり、到着順を保つだけのビルダーは降順プローブなら通ってこれで落ちる。引数なしは従来どおり blocks.csv の事後検査
 - `npm run stress:rpc` — **Eris 形状の read 負荷**で RPC 容量を測る（#36）。`reconstruct.ts` と同じ read 集合の Multicall3 を agent × block で撃ち、cold/warm 別の p50/p99・ブロック間隔ジッタ（負荷有無）・`eth_call` の到達可能深度・sequencer-only か replica かの判定を出す。**読む対象が無いチェーンでは測る前に落ちる**（空アドレスへの call はノードが実残高より速く断るので、全滅が巨大な容量に見える。実際に「何もデプロイされていない anvil に 3,360 obs/s・sequencer-only で十分」と報告した）
-- `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**既定は運営ビューで `runs/` 配下が全部公開になる。**試行期間・ライブ週の公開（2026-09-06 決定）は **`ERIS_DASHBOARD_AUDIENCE=1`**（allowlist 配信 + `events.jsonl` の seed / `stress_schedule`（continuous な run は未来の窓だけ、scenario の run は全部）/ calibration warning / vuln 正解 / stderrTail を落とし、scenario matrix の `regime` / `seed` を `hidden` に。`agents/*.jsonl`・`.llm.jsonl`・`disclosures/` は 404）、試行環境はさらに **`ERIS_DASHBOARD_STANDINGS=0`**（規約 §4.7）。`/runs/mode.json` で UI が理由を表示する。結果発表後はフラグを外すだけで §7.2 の全量公開。Cache-Control / gzip / index 3 秒キャッシュ付き（`docs/guide/dashboard.md` "Public view"）
+- `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**既定は運営ビューで `runs/` 配下が全部公開になる。**試行期間・ライブ週の公開（2026-09-06 決定）は **`ERIS_DASHBOARD_AUDIENCE=1`**（allowlist 配信 + `events.jsonl` の seed / `stress_schedule`（continuous な run は未来の窓だけ、scenario の run は全部）/ calibration warning / vuln 正解 / stderrTail を落とし、scenario matrix の `regime` を `hidden`・**`seed` を `null`** に。`agents/*.jsonl`・`.llm.jsonl`・`disclosures/` は 404）、試行環境はさらに **`ERIS_DASHBOARD_STANDINGS=0`**（規約 §4.7）。`/runs/mode.json` で UI が理由を表示する。結果発表後はフラグを外すだけで §7.2 の全量公開。Cache-Control / gzip / index 3 秒キャッシュ付き（`docs/guide/dashboard.md` "Public view"）
+  - **`ERIS_DASHBOARD_COMPETITIONS=<id>[,<id>…]` で配信する competition を限定する**（issue #84 K）。運営 box の `runs/` には smoke / test run が全部残っており、picker はそれを内部名のまま参加者に並べていた。通すのは **listed な competition と、その `matrix.json` が指す run と、その配下だけ**（index・ファイル・tail すべて）。未設定なら全部。
+    **「今 live なもの」は通さない** — 実行中のエポックは完走まで matrix.json に入らないので、そこを推測で通すと
+    「未完了の matrix がある間は runs/ 配下の live な run が全部通る」= 競技期間中ずっと運営の smoke run まで
+    公開される（レビューで実証。40 エポックの matrix は最初から最後まで「未完了」）。練習期間は影響なし
+    （segment は competition ディレクトリの**中**にあるので包含で通る）。scenario matrix の実行中エポックだけが
+    完走まで出ない。「進行中」の表示はプランのエポック数から出しており、live run を見つけたかどうかではない
+  - **`seed` の伏せ方は `null`**（`0` ではない）。伏せた seed・segment の連番プレースホルダ・本当に seed 0 の run は別物で、`seed 0` と印字するのは誰も引いていない draw を名乗ること
+  - **mode 未取得中は両方の制限を掛ける**（issue #84 U）。`/runs/mode.json` が取れないブラウザに運営ビューを既定で見せると、試行環境で順位が出る
+  - **公開ビューも run 中に読むものがある**: `blocks.csv` / `epochs.jsonl` / `market.jsonl`（どれも coordinator が逐次追記し、サーバーも配信済み）。これを読まなかったせいで `/explorer` と盤面が期間中ずっと `blocks 0–0`・venue 全部 `—` だった（issue #84 A）。**ブロック行は coordinator の記録が先、チェーンはその先だけ**で、**カバーしている範囲を一緒に運ぶ** — 範囲より前に始まるラウンドは tx 数が「0」ではなく**「数えていない」**
+  - **schedule の非公開はサーバーと同じ規則で表示する**（issue #84 D）。scenario の 1 エポックは「§3.3 により非公開」、continuous な run は「既に閉じた窓」。`0 件` と描くのはサーバーがしていない主張。公開ビューは `events.jsonl` の head を定期的に読み直す（閉じた窓は後から配信されるので、tail が通り過ぎていると二度と見えない）
 - `npm run gen:method-selectors` — venue ABI から selector→関数名テーブルを再生成（ADR 0021 §4）。生成物にしてあるのはブラウザに ABI パーサと keccak を積まないため（実測 +15kB gzip）。ABI とのズレは `test/methodNames.test.ts` が落とす
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト
 - `npm run check:strategy` — 戦略コードの cheatcode 静的検査（入口ゲート）
@@ -526,10 +557,14 @@ ours なのは 2 つだけ（core は無改変）:
   対する防御）/ `sp-underwriter`（Stability Pool で清算を吸収し、自分で `liquidate` を叩いて担保を取る）。
   借り手の防御が効くかは**借りた eUSD を使ったかどうか**で決まる（`ERIS_TROVE_SPEND_DEBT`）。実測で
   200% 保持組は無傷、125% で全額 post して eUSD を売った組は清算され −13,140（担保 20 ETH を失い USDC を残す）
-- **Recovery Mode は現状の較正では到達不能**（実測: seed 501 で最小 TCR 2.244 対 CCR 1.5）。genesis Trove
-  が 250 ETH / 250k eUSD（300%）で TCR を支配するため。到達させるには system 債務を約 3 倍にする必要があり、
-  それは償還手数料カーブ（供給に反比例。250k で 5k 償還あたり +100bps → 700k なら +36bps）と SP の相対深度
-  （RM の清算は SP が債務を全額吸収できる場合のみ成立）を必ず薄める。**issue #59** に分離
+- **Recovery Mode は公式レジームの較正では到達不能**（実測: seed 501 で最小 TCR 2.244 対 CCR 1.5）。genesis Trove
+  が 250 ETH / 250k eUSD（300%）で TCR を支配するため。**到達させるのは victim cohort の仕事**（issue #59 →
+  `config/regimes/cdp-recovery.yaml`、公式セット外）: `stress.liquityRecoveryTcr` を書くと coordinator が seed の引いた
+  crash magnitude と現状の system から各 victim の担保を逆算し（`recoveryCohortCollateralWei`）、届かなければ setup で
+  fail-fast。RM の清算（MCR〜TCR 帯）は SP が債務を全額吸収できる場合しか執行されないので `stress.liquitySpSeedEusdWei`
+  で環境が deployer の eUSD を SP に入れる。genesis を下げないのは償還順序と SP 相対深度を全レジームで壊すから。
+  手数料カーブの希釈（供給に反比例）は不可避で、この regime の償還較正は別に測る。sp-underwriter は RM 帯でも
+  清算する分岐を持つ（SP が全額吸収できる Trove だけ）
 - **LQTY は意図どおり「値付けしないが見える」**: SP 預入で LQTY gain が付き、run 後に
   `scoring_unpriced_holdings` に `erc20-unaccounted` として 61.3 LQTY が報告された（黙って 0 にしていない）
 - 設定例は `config/liquity.yaml`、レジームは `config/regimes/liquity.yaml`（α 側）と
@@ -680,6 +715,14 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
 
 - **fair price はオンチェーン配布**（`contracts/PriceFeed.sol`。読取は `sdk/src/priceFeed.ts`、書込は
   `core/src/realtime/priceFeed.ts`）。書込 tx は次ブロック着弾なので情報は 1 ブロック遅れる（全員等しく作用。仕様）。
+  **全 base の開始 fair は setup で feed に載せる**（issue #94）。constructor は WETH だけで、WBTC は最初の
+  oracle tx（= 最初の境界の 1 ブロック後）で初めて載っていたので、V_0 が全員 WBTC 分（バスケットで 24k）短く
+  noop の `netPnlUsdc` が 0 にならなかった。`ctx.fairPrices` も同じ場所で確定するので whale endowment /
+  `initial_endowment` / Aave の WBTC aggregator 較正も全 base を見る。OU の walk はその値から始まる
+- **エポックの時計は場が揃うまで待つ**（issue #94 / #91 F5。`core/src/realtime/agentsReady.ts`）。automine を
+  切った後・interval mining の前に、起動した全 agent の `runtime_start` を `run.agentsReadyTimeoutSec`
+  （既定 60 秒、0 = 待たない）まで待ち `agents_ready` に ready/late/exited を残す。実測 docker 32 体で
+  `runtime_start` は +86〜99 秒なので、その検証では上げる。外部参加者は待たない
 - **採点は run 後再構成**（`core/src/realtime/reconstruct.ts`）: blockNumber 指定の Multicall3 で全 agent 同一断面の
   価値系列を events.jsonl に observation 形で書く（`runs/<id>/summary.json` に集計）。
   resetFork で歴史が消えるため**次 run の前に必ず再構成を終える**（anvil の保持深度 ~1,050 ブロックに注意）。

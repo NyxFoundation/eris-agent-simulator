@@ -10,9 +10,14 @@
 //
 // Pure apart from the one file read, so the merge can be tested without anvil. What is refused is
 // anything that would make the stored and the new epochs a different competition: another scenario
-// set, another k (the weights of §4.4.1 are a function of it), another reset unit, another repeat.
+// set, another k (the weights of §4.4.1 are a function of it), another reset unit, another repeat,
+// another field (issue #102, #91 F9: `--resume` with a different roster used to exit 0 and rewrite
+// the artifact -- two fields across the epochs of one matrix average two competitions, which is the
+// thing the guard's own message describes).
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { canonicalJson } from "./shared.js";
 import type { ScenarioResult } from "./standings.js";
 
 /** matrix.json as the CLI writes it (schema 2), read back defensively. */
@@ -25,11 +30,31 @@ export type StoredMatrix = {
   resetUnit?: string;
   k?: number;
   repeat?: number;
+  // sha256 of the field the matrix was run with (rosterFingerprint). Absent on a matrix written
+  // before it was recorded; such a matrix resumes with a warning rather than a refusal.
+  rosterFingerprint?: string;
   scenariosPlanned?: number;
   scenarios?: ScenarioResult[];
   /** The --agent-state-root the matrix was run with, if any (issue #77). */
   agentStateRoot?: string;
 };
+
+/**
+ * One value for "the field this matrix ranks": the roster entries in canonical JSON, sorted by id,
+ * hashed. A roster names wallets by env-variable name or `AUTO` and never holds a key, so the whole
+ * entry goes in -- an agent's `dir`, `env` and `baseline` are part of what was placed. When the
+ * matrix ran on the regimes' own rosters (no --agents), the input is the map of regime -> roster.
+ */
+export function rosterFingerprint(roster: unknown): string {
+  const normalized = Array.isArray(roster)
+    ? [...roster].sort((a, b) => {
+        const ia = String((a as { id?: unknown })?.id ?? "");
+        const ib = String((b as { id?: unknown })?.id ?? "");
+        return ia < ib ? -1 : ia > ib ? 1 : 0;
+      })
+    : roster;
+  return `sha256:${createHash("sha256").update(canonicalJson(normalized)).digest("hex")}`;
+}
 
 export function readStoredMatrix(dir: string): StoredMatrix {
   const path = join(dir, "matrix.json");
@@ -57,6 +82,7 @@ export type ResumeTarget = {
   resetUnit: string;
   repeat: number;
   agentStateRoot?: string;
+  rosterFingerprint?: string;
 };
 
 /**
@@ -98,12 +124,20 @@ export function assertResumable(
   if (storedRoot !== currentRoot)
     problems.push(
       `agentStateRoot: stored ${storedRoot ?? "(none)"}, now ${currentRoot ?? "(none)"}`,
+  if (
+    stored.rosterFingerprint !== undefined &&
+    current.rosterFingerprint !== undefined &&
+    stored.rosterFingerprint !== current.rosterFingerprint
+  )
+    problems.push(
+      `roster: stored ${stored.rosterFingerprint.slice(0, 19)}…, now ` +
+        `${current.rosterFingerprint.slice(0, 19)}… (a different field)`,
     );
   if (problems.length > 0)
     throw new Error(
       `--resume: the stored matrix is a different competition (${problems.join("; ")}). ` +
         "A resumed run has to continue the same scenario set with the same k, reset unit, " +
-        "repeat and agent state root, or its standings would average two competitions " +
+        "repeat, agent state root and roster, or its standings would average two competitions " +
         "(rules §4.4.1 / §4.7.1)",
     );
 }

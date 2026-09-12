@@ -12,16 +12,20 @@
 // scenario.
 
 import type { Competition } from "./competition";
-import { scenarioLabel, scenarioRunId } from "./competition";
+import { scenarioAgents, scenarioLabel, scenarioRunId } from "./competition";
+import { scenarioAgentP } from "./scenarioP";
 import type { ScenarioSchedule } from "./schedule";
 import type { ScenarioRounds } from "./standings";
 
 export interface ScenarioListRow {
   /** Unique per scenario: a matrix may repeat (regime, seed) under --repeat. */
   key: string;
-  runId: string;
+  /** Null for an epoch that failed before it had a run directory (out of S, §4.4.2). */
+  runId: string | null;
   regime: string;
-  seed: number;
+  seed: number | null;
+  /** Why the epoch has no world to open, when the runner recorded one. */
+  error?: string;
   /** `regime#seed`, with the shared `full-` prefix stripped. */
   label: string;
   /** Rounds this scenario has, at the full series length. */
@@ -54,10 +58,11 @@ export function buildScenarioList(
   schedules: Map<string, ScenarioSchedule>,
   throughRound: number | null,
 ): ScenarioListRow[] {
-  return competition.file.scenarios.map((s) => {
-    const key = s.runDir;
+  return competition.file.scenarios.map((s, i) => {
+    const key = s.runDir ?? `#${s.s ?? i + 1}`;
     const series = rounds.get(key);
     const schedule = schedules.get(key);
+    const agents = scenarioAgents(s);
 
     let total = 0;
     if (series)
@@ -71,7 +76,7 @@ export function buildScenarioList(
     // The leader by the same quantity the standings standardise inside a scenario: P = V_k − V_0
     // through the rounds counted so far (rules §4.4.1). The benchmark is not a leader (§4.3).
     const benchmarks = new Set(series?.baselineIds ?? []);
-    for (const a of s.agents) if (a.baseline) benchmarks.add(a.id);
+    for (const a of agents) if (a.baseline) benchmarks.add(a.id);
     let leader: ScenarioListRow["leader"] = null;
     if (series && roundsSoFar > 0) {
       for (const [id, values] of Object.entries(series.valuesByAgent)) {
@@ -87,10 +92,10 @@ export function buildScenarioList(
     } else if (throughRound === null) {
       // No series collected, but matrix.json stored each agent's P (or, for an older matrix, the
       // final-marks net PnL, a per-run constant away from it).
-      for (const agent of s.agents) {
+      for (const agent of agents) {
         if (benchmarks.has(agent.id)) continue;
-        const p = agent.pnlUsdc ?? agent.netPnlUsdc;
-        if (!Number.isFinite(p)) continue;
+        const p = scenarioAgentP(agent, undefined);
+        if (p === undefined) continue;
         if (!leader || p > leader.pnlUsdc) leader = { id: agent.id, pnlUsdc: p };
       }
     }
@@ -101,9 +106,13 @@ export function buildScenarioList(
 
     return {
       key,
-      runId: scenarioRunId(competition.id, s.runDir),
+      runId:
+        typeof s.runDir === "string"
+          ? scenarioRunId(competition.id, s.runDir)
+          : null,
       regime: s.regime,
       seed: s.seed,
+      ...(s.error !== undefined ? { error: s.error } : {}),
       label: shortLabel(scenarioLabel(s)),
       rounds: total,
       roundsSoFar,
