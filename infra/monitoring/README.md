@@ -49,7 +49,7 @@ tunnel (`ascon-monitor.nyx.foundation`) / registered-users only, per the ASCON `
 |---|---|---|
 | CPU load high | `node_load1 > cores` | node-exporter |
 | Host memory high | host mem used > 85% | node-exporter |
-| Agent container near OOM | container mem > 90% of cap | cadvisor |
+| Agent container near OOM | capped agent container mem > 90% of cap | cadvisor (`eris.role=agent`) |
 | Agent crashed | `increase(ascon_agent_crashes_total[2m]) > 0` (OOM=137 etc.) | eris-exporter (events.jsonl `agent_process_exited`) |
 | Chain RPC down | `ascon_chain_up == 0` | eris-exporter (eth_blockNumber probe) |
 | Devnet stalled | reachable but no new block in 10m | eris-exporter (`ascon_chain_block_number`) |
@@ -96,6 +96,13 @@ caller's Access `common_name`). See `infra/rpc-gateway/README.md`; load-test it 
 ## Notes
 
 - `cadvisor` uses host port 8081 (8080 is taken on gohanserver).
+- **Agent series are selected by `container_label_eris_role="agent"`, never by the `eris-` name
+  prefix.** The prefix also matches `eris-explorer-*`, the local Blockscout stack, which runs
+  uncapped — and cadvisor reports `container_spec_memory_limit_bytes=0` for an uncapped container,
+  so `working_set / limit` is `+Inf` and the OOM rule fired permanently against five containers that
+  are not agents. The fleet panels had the same collision and were charting the explorer as the
+  agent fleet. `run-agent.sh` and the sweepers already matched on the label; the dashboards and the
+  rule did not.
 - Per-epoch stats (blocks/tx/tx-per-block/standings) are intentionally NOT pushed to Slack (too
   verbose); they live in the Grafana dashboard / Loki. Slack carries only spikes and faults.
 - Thresholds are set for a 16-core / 187 GB host; adjust the rule params in

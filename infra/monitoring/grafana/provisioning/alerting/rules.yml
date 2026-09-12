@@ -65,7 +65,20 @@ groups:
           - refId: A
             relativeTimeRange: { from: 600, to: 0 }
             datasourceUid: prometheus
-            model: { refId: A, expr: "max(container_memory_working_set_bytes{name=~\"eris-.*\"} / container_spec_memory_limit_bytes) * 100", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+            model:
+              refId: A
+              # `eris.role=agent`, not the `eris-` name prefix. The prefix also matches the local
+              # Blockscout stack (`eris-explorer-*`), which runs uncapped — and an uncapped container
+              # reports container_spec_memory_limit_bytes=0, so the ratio was +Inf and this rule fired
+              # forever against five containers that are not agents. run-agent.sh and the sweepers
+              # (infra/docker-agent/reap.sh, bench/lib/reset-chain.sh) already match on the label.
+              #
+              # `> 0` on the denominator drops anything without a cap rather than dividing by it.
+              # `by (name)` keeps the container name, so the alert says which agent.
+              expr: "max by (name) (container_memory_working_set_bytes{container_label_eris_role=\"agent\"} / (container_spec_memory_limit_bytes{container_label_eris_role=\"agent\"} > 0)) * 100"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
           - refId: C
             datasourceUid: __expr__
             model:
@@ -75,7 +88,7 @@ groups:
               conditions:
                 - evaluator: { type: gt, params: [90] }
         labels: { severity: critical, kind: container-mem }
-        annotations: { summary: "an agent container is above 90% of its memory cap" }
+        annotations: { summary: "agent container {{ $labels.name }} is above 90% of its memory cap (OOM kill is next)" }
 
       - uid: ascon_agent_crash
         title: Agent crashed
