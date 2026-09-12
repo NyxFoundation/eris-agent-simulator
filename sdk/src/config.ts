@@ -232,6 +232,11 @@ export type SimConfig = {
   // Default 0 = as before (flow also has no base).
   flowWethWei: bigint;
   flowBaseAmounts: Record<string, bigint>;
+  // The flow wallets' USDC. Used to be the agents' `initialUsdcUnits` with no knob of its own,
+  // which capped the buy side of a flowTrend hold the same way a missing WETH balance capped the
+  // sell side (issue #112: 25k USDC is ~8 WETH at $3,000, and a x3 hold buys ~50 WETH per venue).
+  // Default = initialUsdcUnits, so a config that does not set it funds the flow as before.
+  flowUsdcUnits: bigint;
   initialWethWei: bigint;
   // ADR 0013: base symbol -> initial distribution amount (token units). WETH equals initialWethWei
   // for compatibility. Additional bases are read from INITIAL_<SYM>_<UNIT> (e.g. INITIAL_WBTC_SATS),
@@ -455,6 +460,10 @@ export function loadConfig(env = process.env): SimConfig {
       WETH: initialWethWei,
     }),
     initialUsdcUnits: bigintEnv(env.INITIAL_USDC_UNITS, 25_000_000_000n),
+    flowUsdcUnits: bigintEnv(
+      env.FLOW_USDC_UNITS,
+      bigintEnv(env.INITIAL_USDC_UNITS, 25_000_000_000n),
+    ),
     defaultPriorityFeeWei: bigintEnv(
       env.DEFAULT_PRIORITY_FEE_WEI,
       100_000_000n,

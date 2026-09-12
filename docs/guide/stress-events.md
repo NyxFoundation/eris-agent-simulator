@@ -154,6 +154,21 @@ The other `process` event: while the window is open, uninformed order flow is sc
 ramp" is not a weaker version of the regime, it is a different regime. Calibrated from
 `config/regimes/informed-flow.yaml`: size 3x, persist 12, correlation 1.0.
 
+**The lean is only as large as the flow wallets' inventory.** An uninformed sell larger than the
+wallet's base balance flips to a buy, and a buy is capped at the wallet's USDC, so a 30-block hold in
+one direction spends whatever the wallet holds on that side: a x3 hold is ~51 WETH of one-way flow
+per venue wallet (0.5 WETH mean x 3 x 0.9 arrivals/block x 38 effective blocks). With the wallets
+funded like agents (0 WETH / 25k USDC) the measured lean on `informed-flow#101` was x1.37 for 3 blocks
+against the declared x2-3 for 12; with 10 WETH, x1.67 for 8.6 blocks (issue #112). The official
+regimes therefore give every flow wallet `funding.flowWethWei` 150 WETH and `funding.flowUsdcUnits`
+450,000 USDC -- two same-direction windows with margin, 7.5 % of a venue's depth -- and a regime that
+declares a `flowTrend` without that inventory delivers a smaller, shorter lean than it says.
+
+The size multiplier reaches every AMM venue. Balancer and curve configure one cap for both flow legs
+(`flow.balancerMaxWethWei` / `curveMaxWethWei`); the window scales the uninformed leg's copy of it and
+leaves the informed leg -- the force pushing back -- where it was. Until issue #112 only uniswap's leg
+was scaled (measured x2.98 / x1.05 / x1.00 across the three venues).
+
 ## Options that cut across types
 
 | key | applies to | what it does |

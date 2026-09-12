@@ -50,8 +50,8 @@ Source: `core/src/realtime/coordinator.ts` (`runRealtimeSimulation`, L390–2761
    | Target | ETH | base | stable |
    |---|---|---|---|
    | agent | `funding.ethWei` (**no gas buffer**) | `funding.wethWei` / `funding.base` | `funding.usdcUnits` |
-   | flow wallet | `funding.flowEthWei` | `funding.flowWethWei` / `funding.flowBase` | same |
-   | aave actor | same | `flow.aaveMaxWethWei × 6` | same |
+   | flow wallet | `funding.flowEthWei` | `funding.flowWethWei` / `funding.flowBase` | `funding.flowUsdcUnits` (defaults to the agents') |
+   | aave actor | same | `flow.aaveMaxWethWei × 6` | `funding.flowUsdcUnits` |
 
    Agents get no gas buffer because the default buffer would ride the epoch series as **β nobody chose** (ADR 0019 §6). Flow wallets keep theirs — they are machinery, and a dry flow bot removes market activity from everyone.
    A registered address with no key is funded through `fundAddress` (it gets no approvals, since only the holder can grant them).

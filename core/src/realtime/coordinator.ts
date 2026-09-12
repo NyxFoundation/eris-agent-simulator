@@ -877,6 +877,10 @@ export async function runRealtimeSimulation(
       // they are machinery, and a dry flow bot removes market activity from everyone.
       const gasBuffer = isFlow ? undefined : 0n;
       const ethWei = isFlow ? config.flowEthWei : config.initialEthWei;
+      // Both sides of the flow's inventory are the regime's to size (issue #112): a flowTrend hold
+      // that leans one way for 30 blocks spends the wallet's whole balance on that side, and a
+      // wallet funded like an agent delivers x1.4 of a declared x2-3 lean.
+      const usdcUnits = isFlow ? config.flowUsdcUnits : config.initialUsdcUnits;
       if (!t.privateKey) {
         // A participant's own address (ADR 0021 §2). Same endowment, reached without signing as
         // them -- and therefore without the venue approvals below, which only they can grant.
@@ -887,7 +891,7 @@ export async function runRealtimeSimulation(
           t.address,
           ethWei,
           wethWei,
-          config.initialUsdcUnits,
+          usdcUnits,
           baseAmounts,
           gasBuffer,
         );
@@ -900,7 +904,7 @@ export async function runRealtimeSimulation(
         t.privateKey,
         ethWei,
         wethWei,
-        config.initialUsdcUnits,
+        usdcUnits,
         baseAmounts,
         gasBuffer,
       );

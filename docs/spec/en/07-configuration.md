@@ -94,7 +94,8 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 | `usdcUnits` | 25,000 USDC | Opening USDC |
 | `base` | `{WETH: wethWei}` | Opening inventory for other bases |
 | `flowEthWei` | 1,000 ETH | Flow wallets' native balance |
-| `flowWethWei` | 0 | Flow wallets' WETH |
+| `flowWethWei` | 0 | Flow wallets' WETH (the official regimes: 150 WETH, so a `flowTrend` hold has a sell side; issue #112) |
+| `flowUsdcUnits` | `usdcUnits` | Flow wallets' USDC (the official regimes: 450,000 USDC = 150 WETH at $3,000, the buy side of the same hold) |
 | `flowBase` | {} | Flow wallets' other bases |
 
 **The official regimes hand out an ETH/BTC/USDC basket** (8 WETH + 0.4 WBTC + 25k USDC, issue #54). They began as USDC-only (`wethWei: "0"`) to remove opening β (ADR 0017 §4), until it turned out that **the LST vault and the Trove are WETH/ETH denominated, so under USDC-only the sell side of every strategy had no inventory behind it**. The β cancels out of M9 because the benchmark holds the same funding — what USDC-only was protecting was `netPnlUsdc`, a reporting figure.
