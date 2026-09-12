@@ -29,6 +29,13 @@ jobs:
 
       - run: npm ci
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.16'
+      - run: python -m pip install ./sdk-py -r sdk-py/requirements-dev.txt
+      - run: npm run gen:python-sdk && git diff --exit-code -- sdk-py sdk/src/pythonVocabulary.ts
+      - run: npm run test:python-sdk
+
       # test/vulnPools.integration.test.ts checks ADR 0014's load-bearing mechanism against a real
       # chain and skips itself when anvil is absent -- a skipped test looks green while guarding
       # nothing, so foundry is installed rather than letting it opt out.

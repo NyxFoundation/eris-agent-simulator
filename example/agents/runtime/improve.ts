@@ -20,6 +20,7 @@
 //      implementation's never fired in 18 runs. Reverting is the model's call, via `revertTo`.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { PYTHON_ACTION_VOCABULARY } from "@eris/sdk/pythonVocabulary.js";
 import { createContext, Script } from "node:vm";
 import { parse as parseYaml } from "yaml";
 import { withDecideTimeout } from "./decideTimeout.js";
@@ -50,6 +51,7 @@ export const DEFAULT_REVISE_EVERY_BLOCKS = 60;
 // (`reviseEveryBlocks` in prompt.md, rules appendix A) is theirs to set and theirs to pay for.
 
 export type ImproveAgent = {
+  language?: "typescript" | "python";
   name: string;
   description: string;
   // Blocks between revision opportunities. The participant's lever over cadence -- declarative, so
@@ -71,6 +73,7 @@ export type ImproveAgent = {
 // wrote at the time, so the judgment belongs there -- and prompt.md is where a participant states
 // how to make it. Timing is unchanged either way: both fire at a revision opportunity.
 export type StrategyRevision = {
+  executorPy?: string | null;
   version: number;
   notes: string;
   executorTs: string | null;
@@ -84,6 +87,7 @@ export type StrategyRevision = {
 // One installed strategy and what happened after it. Handed to the model so a revert is an informed
 // choice rather than a guess, and kept in the log so a run can be read back.
 export type StrategyVersion = {
+  language?: "typescript" | "python";
   version: number;
   source: string;
   notes: string;
@@ -163,7 +167,13 @@ export function loadImproveAgent(agentDir: string): ImproveAgent {
   if (!(Number.isFinite(declared) && declared > 0))
     throw new Error(`${path}: reviseEveryBlocks must be a positive number`);
 
+  const inferred = existsSync(join(agentDir, "strategy.py")) ? "python" : "typescript";
+  if (fm.language !== undefined && fm.language !== "python" && fm.language !== "typescript")
+    throw new Error(`${path}: language must be python or typescript`);
+  if (fm.language !== undefined && fm.language !== inferred)
+    throw new Error(`${path}: language does not match the strategy entry point`);
   return {
+    ...(inferred === "python" || fm.language ? { language: inferred } : {}),
     name: fm.name,
     description: fm.description,
     reviseEveryBlocks: Math.floor(declared),
@@ -177,21 +187,25 @@ export type ParseResult =
 
 // Parse the LLM's reply. Deliberately strict: a malformed revision is rejected rather than coerced,
 // because the alternative is installing something the model did not mean.
-export function parseRevision(raw: unknown): ParseResult {
+export function parseRevision(raw: unknown, language: "typescript" | "python" = "typescript"): ParseResult {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     return { ok: false, reason: "response must be a JSON object" };
   const o = raw as Record<string, unknown>;
+  const field = language === "python" ? "executorPy" : "executorTs";
+  const otherField = language === "python" ? "executorTs" : "executorPy";
+  if (o[otherField] !== undefined && o[otherField] !== null)
+    return { ok: false, reason: `${otherField} is not valid for a ${language} strategy` };
   if (typeof o.notes !== "string" || o.notes.trim() === "")
     return { ok: false, reason: "notes must be a non-empty string" };
   // Both an explicit null and an omitted field mean "no change" -- models express it either way.
   const executor =
-    o.executorTs === null || o.executorTs === undefined ? null : o.executorTs;
+    o[field] === null || o[field] === undefined ? null : o[field];
   if (executor !== null && typeof executor !== "string")
-    return { ok: false, reason: "executorTs must be a string or null" };
+    return { ok: false, reason: `${field} must be a string or null` };
   if (executor !== null && executor.trim() === "")
     return {
       ok: false,
-      reason: "executorTs was empty; use null to keep the current strategy",
+      reason: `${field} was empty; use null to keep the current strategy`,
     };
   const revertRaw =
     o.revertTo === null || o.revertTo === undefined ? null : Number(o.revertTo);
@@ -202,7 +216,7 @@ export function parseRevision(raw: unknown): ParseResult {
   if (executor !== null && revertRaw !== null)
     return {
       ok: false,
-      reason: "give either executorTs or revertTo, not both",
+      reason: `give either ${field} or revertTo, not both`,
     };
   // Optional, and a non-string is dropped rather than refused: a model that puts an object here
   // has still given a usable revision, and rejecting the whole reply over a note would throw away
@@ -220,7 +234,8 @@ export function parseRevision(raw: unknown): ParseResult {
     revision: {
       version: Number.isFinite(version) ? version : 0,
       notes: o.notes,
-      executorTs: executor,
+      executorTs: language === "typescript" ? executor as string | null : null,
+      ...(language === "python" ? { executorPy: executor as string | null } : {}),
       revertTo: revertRaw,
       memory,
     },
@@ -328,9 +343,16 @@ export function buildRevisionSystem(
   // (docs/scoring-metric-measurements.md §5.8 (f)).
   enabledProtocols: readonly ProtocolId[] = [],
 ): string {
+  const python = agent.language === "python";
+  const field = python ? "executorPy" : "executorTs";
   const vocabulary = enabledProtocols
     .filter((id) => ACTION_TYPES_BY_PROTOCOL[id]?.length)
     .map((id) => `  ${id}: ${ACTION_TYPES_BY_PROTOCOL[id].join(", ")}`);
+  const pythonVocabulary = python ? [
+    "Python constructors (from eris.actions; omit optional arguments, use keyword arguments):",
+    ...[...enabledProtocols.flatMap(id => [...ACTION_TYPES_BY_PROTOCOL[id]]), "bundle", "noop", "rawTx", "rawBundle"]
+      .map(type => PYTHON_ACTION_VOCABULARY[type]).filter(Boolean),
+  ] : [];
   return [
     `You maintain the trading strategy of an autonomous agent in a DeFi simulation.`,
     ``,
@@ -343,10 +365,17 @@ export function buildRevisionSystem(
     ``,
     `## Current strategy`,
     ``,
-    `It is the body of \`async function decide(obs, ctx)\`. It returns one action object, or null to`,
-    `do nothing this block. \`ctx.log({ reason })\` records why.`,
+    ...(python ? [
+      `This is a complete strategy.py file. It defines decide(obs, ctx) and ends with run(decide).`,
+      `Return an eris.actions model, a JSON-compatible action dict, or None. ctx.log({"reason": "..."}) records why.`,
+      `Observation attributes and constructor arguments use snake_case; action dicts use the original camelCase wire keys.`,
+      `Use Python integers for amounts and str(amount) for action amount fields.`,
+    ] : [
+      `It is the body of \`async function decide(obs, ctx)\`. It returns one action object, or null to`,
+      `do nothing this block. \`ctx.log({ reason })\` records why.`,
+    ]),
     ``,
-    "```js",
+    python ? "```python" : "```js",
     currentExecutor,
     "```",
     ``,
@@ -355,8 +384,8 @@ export function buildRevisionSystem(
     `Exactly one JSON object, no prose around it. Three answers are available:`,
     ``,
     "```json",
-    `{ "notes": "why", "executorTs": "<new body>" }   // install this as the strategy`,
-    `{ "notes": "why", "executorTs": null }           // leave it alone`,
+    `{ "notes": "why", "${field}": "<${python ? "complete strategy.py" : "new body"}>" }   // install this as the strategy`,
+    `{ "notes": "why", "${field}": null }           // leave it alone`,
     `{ "notes": "why", "revertTo": 1 }                // go back to an earlier version`,
     "```",
     ``,
@@ -370,9 +399,17 @@ export function buildRevisionSystem(
     `**Nothing reverts automatically.** If a change you made has hurt, you have to say so — use`,
     `\`revertTo\` with the version you want back. The history below records what each version did.`,
     ``,
-    `The body may use only: obs, ctx, and the standard JavaScript built-ins. There is no require,`,
-    `no import, no process, no network. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
+    ...(python ? [
+      `Import from eris (Observation, Context, run), eris.actions, eris.affordable (sized, can_fund),`,
+      `eris.markets (market_views), the standard library and dependencies already installed by the team.`,
+      `Do not install packages during a revision. ctx exposes agent_id, address, log and submit; no viem client or wallet.`,
+      `The host signs all returned/submitted actions. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
+    ] : [
+      `The body may use only: obs, ctx, and the standard JavaScript built-ins. There is no require,`,
+      `no import, no process, no network. Privileged RPC calls (anvil_*, evm_*, hardhat_*) are`,
+    ]),
     `rejected before installation.`,
+    ...pythonVocabulary,
     ...(vocabulary.length > 0
       ? [
           ``,

@@ -256,6 +256,12 @@ A `runs/<id>/` directory appears; if `summary.json` holds a result per agent, yo
 
 ## 3. The smallest submittable agent
 
+For Python, copy `example/agents/my-arb-py`: `strategy.py` plus `prompt.md` (`kind: improve`,
+`language: python`) uses the same runtime and submission ZIP as TypeScript below. Locally run
+`python3 -m venv .venv`, then `.venv/bin/python -m pip install ./sdk-py`, and set
+`ERIS_PYTHON="$PWD/.venv/bin/python"`. The container includes Python 3.11.16. See the
+[Python guide](guide/python-agents.md) for the SDK, dependencies and protocol.
+
 **One agent is one directory.** Copy the template.
 
 ```bash
@@ -398,6 +404,13 @@ The action catalogue is in [protocols-and-actions.md](guide/protocols-and-action
 ---
 
 ## 5. LLM strategy revision
+
+Python revisions return the **complete strategy.py** in `executorPy`. The host runs the static
+check and a one-second `python3 -m py_compile` before installation; the next decision selects the
+new process. `executorPy: null` keeps the strategy, and `revertTo` explicitly restores a version.
+History, memory and epoch persistence are shared with TypeScript. Python constructor vocabulary is
+generated from the same Action schemas and included in the revision prompt. Both languages use
+the same inference model list and access policy (§2.5).
 
 The rules require **every agent to be configured for strategy revision**. The LLM sits outside the
 trading path: every `reviseEveryBlocks`, it looks at the strategy's own track record and its current
@@ -619,6 +632,7 @@ it works" is the regime whose environment gives the strategy something to do (§
 | Group | Agent | What it does | Main venue | Where it works | prompt.md |
 |---|---|---|---|---|---|
 | Starting point | `my-arb` | The template you copy. A naive arbitrage that swaps toward fair on the venue furthest from it. Sizing, fees and two-leg execution are deliberately left out | Uniswap / Balancer / Curve | all | yes |
+| Python starting point | `my-arb-py` | The same decisions as `my-arb`, using the generated Python SDK and a revision policy | Uniswap / Balancer / Curve | all | yes |
 | Benchmark | `noop` | Does nothing. In a roster it shows the difference from not moving (the competition's benchmark is this) | — | — | no |
 | Arbitrage | `venue-arb` | Cross-venue WETH arbitrage; takes only gaps above fee + safety margin | the 3 AMMs | calm / whale / cex-drift | yes |
 | Arbitrage | `multi-arb` | Base-agnostic (WBTC too) cross-venue arbitrage; two-leg and single-leg | the 3 AMMs | same | yes |

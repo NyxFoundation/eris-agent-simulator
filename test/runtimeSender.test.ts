@@ -12,6 +12,7 @@ import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { AgentObservation, BalanceSnapshot } from "@eris/sdk/types.js";
 import { Sender } from "../example/agents/runtime/send.js";
 import { StrategyRunner } from "../example/agents/runtime/strategyRunner.js";
+import { PyBridge } from "../example/agents/runtime/pyBridge.js";
 import { rpc, startAnvil, startGateway } from "./helpers/localRpc.js";
 
 async function until(predicate: () => boolean) {
@@ -22,8 +23,8 @@ async function until(predicate: () => boolean) {
   assert.fail("sender did not finish");
 }
 
-test(
-  "ctx.submit and returned actions share pending nonces and one submitted record per transaction",
+for (const language of ["typescript", "python"] as const) test(
+  `${language}: ctx.submit and returned actions share pending nonces and one submitted record per transaction`,
   { timeout: 20_000 },
   async (t) => {
     const upstream = await startAnvil(t);
@@ -80,10 +81,16 @@ test(
     } as AgentObservation;
     const balances = {} as BalanceSnapshot;
     const dir = mkdtempSync(join(tmpdir(), "eris-sender-"));
-    const path = join(dir, "agent.ts");
+    const path = join(dir, language === "python" ? "strategy.py" : "agent.ts");
     writeFileSync(
       path,
-      `export async function decide(obs, ctx) {
+      language === "python" ? `import json, sys
+for line in sys.stdin:
+    r = json.loads(line)
+    action = {"type": "rawTx", "tx": {"to": r["address"], "data": "0x"}}
+    print(json.dumps({"id": r["id"], "submit": action}), flush=True)
+    print(json.dumps({"id": r["id"], "action": action}), flush=True)
+` : `export async function decide(obs, ctx) {
     if ('walletClient' in ctx) throw new Error('second sender exposed');
     if (await ctx.publicClient.getChainId() !== 31337) throw new Error('read RPC failed');
     for (const method of ['eth_sendTransaction', 'eth_sendRawTransaction', 'eth_sign']) {
@@ -96,8 +103,9 @@ test(
     return { type: 'rawTx', tx: { to: ctx.address, data: '0x' } };
   }`,
     );
-    const runner = new StrategyRunner(
-      { kind: "module", path },
+    const Runner = language === "python" ? PyBridge : StrategyRunner;
+    const runner = new Runner(
+      { kind: language === "python" ? "python" : "module", path },
       {
         agentId: "test",
         address: account.address,

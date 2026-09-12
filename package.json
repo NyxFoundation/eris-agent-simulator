@@ -38,6 +38,8 @@
     "explorer:reset": "infra/blockscout/explorer.sh reset",
     "explorer:tag": "infra/blockscout/explorer.sh tag",
     "build:contracts": "forge build",
+    "gen:python-sdk": "tsx scripts/genPythonSdk.ts",
+    "test:python-sdk": "node scripts/testPythonSdk.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts"
   },
@@ -49,6 +51,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "ts-json-schema-generator": "2.9.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }

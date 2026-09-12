@@ -1,6 +1,15 @@
 [← README](../../README.md)
 
-# Self-improving agents (agent.ts + prompt.md)
+# Self-improving agents (agent.ts / strategy.py + prompt.md)
+
+Python uses `strategy.py` and `language: python` in the policy (also inferred from the filename).
+The model returns `executorPy` containing the complete file; `None` in strategy code means no
+action, while JSON `executorPy: null` means no revision. Static checking and a one-second
+`py_compile` precede installation. Python versions persist with language metadata and are
+rechecked before the first observation of each epoch; `revertTo` selects a saved full file.
+The generated system prompt supplies Python constructor names and fields for the same enabled
+actions. All inference backends, credentials/proxy rules, evidence, memory and revision logs below
+are shared. See [Python strategies](python-agents.md) for executable examples and SDK generation.
 
 An LLM in this simulator **rewrites the strategy; it does not make the trades**. Put a `prompt.md`
 beside your `agent.ts` and the agent becomes self-improving: `decide()` runs every block exactly as

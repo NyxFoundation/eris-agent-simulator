@@ -351,7 +351,7 @@ test("every bundled prompt.md loads, and names the evidence it is told to read",
       "transactions since the last revision",
       "market history",
       "mean inclusion latency",
-      "executorTs",
+      agent.language === "python" ? "executorPy" : "executorTs",
       "revertTo",
     ])
       assert.ok(

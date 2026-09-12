@@ -172,6 +172,12 @@ npm run sim:realtime
 
 ## 3. 提出できる最小のエージェント
 
+Pythonを使う場合は `example/agents/my-arb-py` を複製します。`strategy.py` と `prompt.md`
+（`kind: improve`, `language: python`）の組で、以下のTypeScript版と同じランタイム・提出ZIPを使えます。
+ローカルでは `python3 -m venv .venv` → `.venv/bin/python -m pip install ./sdk-py` を実行し、
+`ERIS_PYTHON="$PWD/.venv/bin/python"` を設定してください。コンテナはPython 3.11.16を同梱します。
+詳細と追加依存の指定方法は [Pythonガイド](guide/python-agents.md) にあります。
+
 **1 エージェント = 1 ディレクトリ**です。テンプレートを複製してください。
 
 ```bash
@@ -278,6 +284,12 @@ obs.limits                      // priority fee の既定値と上限、slippage
 ---
 
 ## 5. LLM による戦略改訂
+
+Python版の改訂は `executorPy` に **strategy.py全体**を返します。静的検査と1秒上限の
+`python3 -m py_compile` を通してから適用し、次の判断でPythonプロセスを切り替えます。
+`executorPy: null` は維持、`revertTo` は明示的な差し戻しです。版履歴・メモリ・エポック間の
+引き継ぎはTypeScript版と共通です。Python用のActionコンストラクタ一覧も同じスキーマから生成し、
+LLMへ渡します。推論モデルの利用条件・一覧（§2.5）は両言語で共通です。
 
 規約は**全エージェントに戦略改訂の構成を要求します**。LLM は取引経路の外にいて、`reviseEveryBlocks` ごとに自分の戦績と現在のコードを見て、書き換えるかどうかを決めます。
 
@@ -440,6 +452,7 @@ npm run dashboard        # http://localhost:5173
 | 分類 | エージェント | 何をするか | 主な venue | 出番 | prompt.md |
 |---|---|---|---|---|---|
 | 出発点 | `my-arb` | 複製元。参照価格から最も乖離した venue へ swap するだけの素朴な裁定。サイズ・手数料・二段執行は意図的に省いてある | Uniswap / Balancer / Curve | 全部 | 有 |
+| Pythonの出発点 | `my-arb-py` | `my-arb`と同じ判断を行うPython版。生成SDKと改訂方針を含む | Uniswap / Balancer / Curve | 全部 | 有 |
 | ベンチマーク | `noop` | 何もしない。ロスターに入れると「動かないこと」との差が読める（本番のベンチマークもこれ） | — | — | 無 |
 | 裁定 | `venue-arb` | WETH の venue 間裁定。手数料 + 安全域を超えた乖離だけ取る | AMM 3 venue | calm / whale / cex-drift | 有 |
 | 裁定 | `multi-arb` | base 非依存（WBTC も）の venue 間裁定。2-leg と片 leg を使い分ける | AMM 3 venue | 同上 | 有 |

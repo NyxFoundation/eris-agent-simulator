@@ -1,0 +1,1512 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/NoopAction"
+    },
+    {
+      "$ref": "#/$defs/SwapAction"
+    },
+    {
+      "$ref": "#/$defs/MintLiquidityAction"
+    },
+    {
+      "$ref": "#/$defs/RemoveLiquidityAction"
+    },
+    {
+      "$ref": "#/$defs/CollectFeesAction"
+    },
+    {
+      "$ref": "#/$defs/CreatePoolAction"
+    },
+    {
+      "$ref": "#/$defs/BalancerSwapAction"
+    },
+    {
+      "$ref": "#/$defs/CurveSwapAction"
+    },
+    {
+      "$ref": "#/$defs/StableSwapAction"
+    },
+    {
+      "$ref": "#/$defs/GmxIncreaseAction"
+    },
+    {
+      "$ref": "#/$defs/GmxDecreaseAction"
+    },
+    {
+      "$ref": "#/$defs/AaveSupplyAction"
+    },
+    {
+      "$ref": "#/$defs/AaveWithdrawAction"
+    },
+    {
+      "$ref": "#/$defs/AaveBorrowAction"
+    },
+    {
+      "$ref": "#/$defs/AaveRepayAction"
+    },
+    {
+      "$ref": "#/$defs/LstDepositAction"
+    },
+    {
+      "$ref": "#/$defs/LstSwapAction"
+    },
+    {
+      "$ref": "#/$defs/LstRequestWithdrawAction"
+    },
+    {
+      "$ref": "#/$defs/LstClaimWithdrawAction"
+    },
+    {
+      "$ref": "#/$defs/LiquityOpenTroveAction"
+    },
+    {
+      "$ref": "#/$defs/LiquityAdjustTroveAction"
+    },
+    {
+      "$ref": "#/$defs/LiquityCloseTroveAction"
+    },
+    {
+      "$ref": "#/$defs/LiquityRedeemAction"
+    },
+    {
+      "$ref": "#/$defs/LiquityProvideToSPAction"
+    },
+    {
+      "$ref": "#/$defs/LiquityWithdrawFromSPAction"
+    },
+    {
+      "$ref": "#/$defs/LiquityLiquidateAction"
+    },
+    {
+      "$ref": "#/$defs/LiquitySwapEusdAction"
+    },
+    {
+      "$ref": "#/$defs/CreateLendingMarketAction"
+    },
+    {
+      "$ref": "#/$defs/LendingSupplyAction"
+    },
+    {
+      "$ref": "#/$defs/LendingWithdrawAction"
+    },
+    {
+      "$ref": "#/$defs/LendingSupplyCollateralAction"
+    },
+    {
+      "$ref": "#/$defs/LendingWithdrawCollateralAction"
+    },
+    {
+      "$ref": "#/$defs/LendingBorrowAction"
+    },
+    {
+      "$ref": "#/$defs/LendingRepayAction"
+    },
+    {
+      "$ref": "#/$defs/LendingLiquidateAction"
+    },
+    {
+      "$ref": "#/$defs/BundleAction"
+    },
+    {
+      "$ref": "#/$defs/RawTxAction"
+    },
+    {
+      "$ref": "#/$defs/RawBundleAction"
+    }
+  ],
+  "title": "Action",
+  "$defs": {
+    "NoopAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "noop"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "title": "NoopAction"
+    },
+    "SwapAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "swap"
+        },
+        "tokenIn": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "base": {
+          "description": "market selector: the base asset of the base/USDC market to trade (e.g. \"WBTC\"). Omit for the default WETH/USDC market. NOT the input token — use tokenIn for that (tokenIn is the base symbol to sell, or \"USDC\" to buy).",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "amountIn": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "slippageBps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tokenIn",
+        "amountIn"
+      ],
+      "additionalProperties": false,
+      "title": "SwapAction"
+    },
+    "MintLiquidityAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "mintLiquidity"
+        },
+        "base": {
+          "description": "market selector: the base asset of the base/USDC market to trade (e.g. \"WBTC\"). Omit for the default WETH/USDC market. NOT the input token — use tokenIn for that (tokenIn is the base symbol to sell, or \"USDC\" to buy).",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "tickLower": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "tickUpper": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "amountWethDesired": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "amountUsdcDesired": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "amountBaseDesired": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "amountQuoteDesired": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "slippageBps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tickLower",
+        "tickUpper",
+        "amountWethDesired",
+        "amountUsdcDesired"
+      ],
+      "additionalProperties": false,
+      "title": "MintLiquidityAction"
+    },
+    "RemoveLiquidityAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "removeLiquidity"
+        },
+        "base": {
+          "description": "market selector: the base asset of the base/USDC market to trade (e.g. \"WBTC\"). Omit for the default WETH/USDC market. NOT the input token — use tokenIn for that (tokenIn is the base symbol to sell, or \"USDC\" to buy).",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "tokenId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "liquidity": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "amountWethMin": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "amountUsdcMin": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tokenId",
+        "liquidity"
+      ],
+      "additionalProperties": false,
+      "title": "RemoveLiquidityAction"
+    },
+    "CollectFeesAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "collectFees"
+        },
+        "base": {
+          "description": "market selector: the base asset of the base/USDC market to trade (e.g. \"WBTC\"). Omit for the default WETH/USDC market. NOT the input token — use tokenIn for that (tokenIn is the base symbol to sell, or \"USDC\" to buy).",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "tokenId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tokenId"
+      ],
+      "additionalProperties": false,
+      "title": "CollectFeesAction"
+    },
+    "CreatePoolAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "createPool"
+        },
+        "tokenA": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{40}$"
+        },
+        "tokenB": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{40}$"
+        },
+        "fee": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "Uniswap V3 fee in pips: 100, 500, 3000 or 10000"
+        },
+        "sqrtPriceX96": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "initial price as sqrt(token1/token0) * 2^96, computed against the sorted pair (the lower address is token0)"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tokenA",
+        "tokenB",
+        "fee",
+        "sqrtPriceX96"
+      ],
+      "additionalProperties": false,
+      "title": "CreatePoolAction"
+    },
+    "BalancerSwapAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "balancerSwap"
+        },
+        "tokenIn": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "base": {
+          "description": "market selector: the base asset of the base/USDC market to trade (e.g. \"WBTC\"). Omit for the default WETH/USDC market. NOT the input token — use tokenIn for that (tokenIn is the base symbol to sell, or \"USDC\" to buy).",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "amountIn": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "slippageBps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tokenIn",
+        "amountIn"
+      ],
+      "additionalProperties": false,
+      "title": "BalancerSwapAction"
+    },
+    "CurveSwapAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "curveSwap"
+        },
+        "tokenIn": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "base": {
+          "description": "market selector: the base asset of the base/USDC market to trade (e.g. \"WBTC\"). Omit for the default WETH/USDC market. NOT the input token — use tokenIn for that (tokenIn is the base symbol to sell, or \"USDC\" to buy).",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "amountIn": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "slippageBps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tokenIn",
+        "amountIn"
+      ],
+      "additionalProperties": false,
+      "title": "CurveSwapAction"
+    },
+    "StableSwapAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "stableSwap"
+        },
+        "stable": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "tokenIn": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "amountIn": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "slippageBps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "stable",
+        "tokenIn",
+        "amountIn"
+      ],
+      "additionalProperties": false,
+      "title": "StableSwapAction"
+    },
+    "GmxIncreaseAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "gmxIncrease"
+        },
+        "isLong": {
+          "type": "boolean"
+        },
+        "base": {
+          "description": "market selector: the base asset of the base/USDC market to trade (e.g. \"WBTC\"). Omit for the default WETH/USDC market. NOT the input token — use tokenIn for that (tokenIn is the base symbol to sell, or \"USDC\" to buy).",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "collateral": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "collateralAmount": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "sizeDeltaUsd": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "acceptablePrice": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "isLong",
+        "collateral",
+        "collateralAmount",
+        "sizeDeltaUsd"
+      ],
+      "additionalProperties": false,
+      "title": "GmxIncreaseAction"
+    },
+    "GmxDecreaseAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "gmxDecrease"
+        },
+        "isLong": {
+          "type": "boolean"
+        },
+        "base": {
+          "description": "market selector: the base asset of the base/USDC market to trade (e.g. \"WBTC\"). Omit for the default WETH/USDC market. NOT the input token — use tokenIn for that (tokenIn is the base symbol to sell, or \"USDC\" to buy).",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "collateral": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "collateralDeltaAmount": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "sizeDeltaUsd": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "acceptablePrice": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "isLong",
+        "collateral",
+        "collateralDeltaAmount",
+        "sizeDeltaUsd"
+      ],
+      "additionalProperties": false,
+      "title": "GmxDecreaseAction"
+    },
+    "AaveSupplyAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "aaveSupply"
+        },
+        "asset": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "amount": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "asset",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "AaveSupplyAction"
+    },
+    "AaveWithdrawAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "aaveWithdraw"
+        },
+        "asset": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            },
+            {
+              "type": "string",
+              "const": "max"
+            }
+          ]
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "asset",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "AaveWithdrawAction"
+    },
+    "AaveBorrowAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "aaveBorrow"
+        },
+        "asset": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "amount": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "asset",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "AaveBorrowAction"
+    },
+    "AaveRepayAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "aaveRepay"
+        },
+        "asset": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            },
+            {
+              "type": "string",
+              "const": "max"
+            }
+          ]
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "asset",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "AaveRepayAction"
+    },
+    "LstDepositAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lstDeposit"
+        },
+        "amountWethWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "WETH to stake (wei). Mints LST at the vault's current redemption rate."
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "amountWethWei"
+      ],
+      "additionalProperties": false,
+      "title": "LstDepositAction"
+    },
+    "LstSwapAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lstSwap"
+        },
+        "tokenIn": {
+          "type": "string",
+          "enum": [
+            "WETH",
+            "LST"
+          ],
+          "description": "the token you are sending: \"WETH\" buys LST from the secondary market, \"LST\" sells into it (the instant exit, at the pool's discount)."
+        },
+        "amountIn": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "wei of tokenIn (both are 18-decimal)"
+        },
+        "slippageBps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tokenIn",
+        "amountIn"
+      ],
+      "additionalProperties": false,
+      "title": "LstSwapAction"
+    },
+    "LstRequestWithdrawAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lstRequestWithdraw"
+        },
+        "amountLstWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "LST shares to queue for redemption at par (wei). Claimable after withdrawalDelayBlocks; this is the slow, full-value exit."
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "amountLstWei"
+      ],
+      "additionalProperties": false,
+      "title": "LstRequestWithdrawAction"
+    },
+    "LstClaimWithdrawAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lstClaimWithdraw"
+        },
+        "requestId": {
+          "description": "a specific queued request id. Omit to claim every request that has finalized.",
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "title": "LstClaimWithdrawAction"
+    },
+    "LiquityOpenTroveAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "liquityOpenTrove"
+        },
+        "collateralWethWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "WETH to unwrap and post as collateral (wei). It also has to leave enough native ETH behind to pay for gas."
+        },
+        "debtEusdWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "eUSD to draw (wei). Booked debt is this plus the borrowing fee plus 200 eUSD of gas compensation, and the total must clear MIN_NET_DEBT (1,800 eUSD)."
+        },
+        "maxFeeBps": {
+          "description": "slippage bound on the protocol fee, in bps. Both fee curves rise with use, so a bound that is too tight reverts. Default 500 (5%).",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 10000
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "collateralWethWei",
+        "debtEusdWei"
+      ],
+      "additionalProperties": false,
+      "title": "LiquityOpenTroveAction"
+    },
+    "LiquityAdjustTroveAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "liquityAdjustTrove"
+        },
+        "addCollateralWethWei": {
+          "description": "WETH to unwrap and add as collateral (wei).",
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "withdrawCollateralWei": {
+          "description": "collateral to take back out, paid in native ETH (wei).",
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "debtChangeEusdWei": {
+          "description": "eUSD to draw or repay (wei); set isDebtIncrease to say which.",
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "isDebtIncrease": {
+          "description": "true draws more eUSD, false repays. Required with a debt change.",
+          "type": "boolean"
+        },
+        "maxFeeBps": {
+          "description": "slippage bound on the protocol fee, in bps. Both fee curves rise with use, so a bound that is too tight reverts. Default 500 (5%).",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 10000
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "title": "LiquityAdjustTroveAction"
+    },
+    "LiquityCloseTroveAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "liquityCloseTrove"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "title": "LiquityCloseTroveAction"
+    },
+    "LiquityRedeemAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "liquityRedeem"
+        },
+        "amountEusdWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "eUSD to redeem for collateral at the oracle price (wei). Worth doing when eUSD trades below par by more than redemptionRateBps."
+        },
+        "maxIterations": {
+          "description": "cap on how many Troves the redemption walks. 0 = no cap.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxFeeBps": {
+          "description": "slippage bound on the protocol fee, in bps. Both fee curves rise with use, so a bound that is too tight reverts. Default 500 (5%).",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 10000
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "amountEusdWei"
+      ],
+      "additionalProperties": false,
+      "title": "LiquityRedeemAction"
+    },
+    "LiquityProvideToSPAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "liquityProvideToSP"
+        },
+        "amountEusdWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "eUSD to deposit into the Stability Pool (wei). It absorbs liquidated debt and pays out the collateral at a discount."
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "amountEusdWei"
+      ],
+      "additionalProperties": false,
+      "title": "LiquityProvideToSPAction"
+    },
+    "LiquityWithdrawFromSPAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "liquityWithdrawFromSP"
+        },
+        "amountEusdWei": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            },
+            {
+              "type": "string",
+              "const": "max"
+            }
+          ],
+          "description": "eUSD to withdraw (wei), or \"max\". \"0\" claims the accrued ETH gain without touching the deposit."
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "amountEusdWei"
+      ],
+      "additionalProperties": false,
+      "title": "LiquityWithdrawFromSPAction"
+    },
+    "LiquityLiquidateAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "liquityLiquidate"
+        },
+        "borrowers": {
+          "description": "specific Trove owners to liquidate.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]*$"
+          }
+        },
+        "maxTroves": {
+          "description": "instead of naming owners, sweep this many of the riskiest Troves.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "title": "LiquityLiquidateAction"
+    },
+    "LiquitySwapEusdAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "liquitySwapEusd"
+        },
+        "tokenIn": {
+          "type": "string",
+          "enum": [
+            "USDC",
+            "EUSD"
+          ],
+          "description": "the token you are sending: \"USDC\" buys eUSD from the pool, \"EUSD\" sells into it."
+        },
+        "amountIn": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "units of tokenIn (USDC is 6-decimal, eUSD is 18-decimal)"
+        },
+        "slippageBps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tokenIn",
+        "amountIn"
+      ],
+      "additionalProperties": false,
+      "title": "LiquitySwapEusdAction"
+    },
+    "CreateLendingMarketAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "createLendingMarket"
+        },
+        "loanToken": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{40}$"
+        },
+        "collateralToken": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{40}$"
+        },
+        "oracle": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{40}$",
+          "description": "any address implementing price(). It may be one you control -- and a counterparty is expected to read owner() and decide what that means"
+        },
+        "irm": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{40}$",
+          "description": "any address implementing borrowRatePerSecond. The zero address means no interest"
+        },
+        "lltv": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "liquidation LTV in WAD, below 1e18 (0.9e18 = 90%)"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "loanToken",
+        "collateralToken",
+        "oracle",
+        "irm",
+        "lltv"
+      ],
+      "additionalProperties": false,
+      "title": "CreateLendingMarketAction"
+    },
+    "LendingSupplyAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lendingSupply"
+        },
+        "marketId": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{64}$"
+        },
+        "amount": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "marketId",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "LendingSupplyAction"
+    },
+    "LendingWithdrawAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lendingWithdraw"
+        },
+        "marketId": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{64}$"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            },
+            {
+              "type": "string",
+              "const": "max"
+            }
+          ]
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "marketId",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "LendingWithdrawAction"
+    },
+    "LendingSupplyCollateralAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lendingSupplyCollateral"
+        },
+        "marketId": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{64}$"
+        },
+        "amount": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "marketId",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "LendingSupplyCollateralAction"
+    },
+    "LendingWithdrawCollateralAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lendingWithdrawCollateral"
+        },
+        "marketId": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{64}$"
+        },
+        "amount": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "marketId",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "LendingWithdrawCollateralAction"
+    },
+    "LendingBorrowAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lendingBorrow"
+        },
+        "marketId": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{64}$"
+        },
+        "amount": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "marketId",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "LendingBorrowAction"
+    },
+    "LendingRepayAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lendingRepay"
+        },
+        "marketId": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{64}$"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            },
+            {
+              "type": "string",
+              "const": "max"
+            }
+          ]
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "marketId",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "title": "LendingRepayAction"
+    },
+    "LendingLiquidateAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "lendingLiquidate"
+        },
+        "marketId": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{64}$"
+        },
+        "borrower": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{40}$"
+        },
+        "seizedAssets": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "marketId",
+        "borrower",
+        "seizedAssets"
+      ],
+      "additionalProperties": false,
+      "title": "LendingLiquidateAction"
+    },
+    "BundleAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "bundle"
+        },
+        "actions": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SwapAction"
+              },
+              {
+                "$ref": "#/$defs/MintLiquidityAction"
+              },
+              {
+                "$ref": "#/$defs/RemoveLiquidityAction"
+              },
+              {
+                "$ref": "#/$defs/CollectFeesAction"
+              },
+              {
+                "$ref": "#/$defs/CreatePoolAction"
+              },
+              {
+                "$ref": "#/$defs/BalancerSwapAction"
+              },
+              {
+                "$ref": "#/$defs/CurveSwapAction"
+              },
+              {
+                "$ref": "#/$defs/StableSwapAction"
+              },
+              {
+                "$ref": "#/$defs/AaveSupplyAction"
+              },
+              {
+                "$ref": "#/$defs/AaveWithdrawAction"
+              },
+              {
+                "$ref": "#/$defs/AaveBorrowAction"
+              },
+              {
+                "$ref": "#/$defs/AaveRepayAction"
+              },
+              {
+                "$ref": "#/$defs/LstDepositAction"
+              },
+              {
+                "$ref": "#/$defs/LstSwapAction"
+              },
+              {
+                "$ref": "#/$defs/LstRequestWithdrawAction"
+              },
+              {
+                "$ref": "#/$defs/LstClaimWithdrawAction"
+              },
+              {
+                "$ref": "#/$defs/CreateLendingMarketAction"
+              },
+              {
+                "$ref": "#/$defs/LendingSupplyAction"
+              },
+              {
+                "$ref": "#/$defs/LendingWithdrawAction"
+              },
+              {
+                "$ref": "#/$defs/LendingSupplyCollateralAction"
+              },
+              {
+                "$ref": "#/$defs/LendingWithdrawCollateralAction"
+              },
+              {
+                "$ref": "#/$defs/LendingBorrowAction"
+              },
+              {
+                "$ref": "#/$defs/LendingRepayAction"
+              },
+              {
+                "$ref": "#/$defs/LendingLiquidateAction"
+              }
+            ]
+          }
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "actions"
+      ],
+      "additionalProperties": false,
+      "title": "BundleAction"
+    },
+    "RawTxAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "rawTx"
+        },
+        "tx": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string",
+              "pattern": "^0x[0-9a-fA-F]*$"
+            },
+            "data": {
+              "type": "string",
+              "pattern": "^0x[0-9a-fA-F]*$"
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          },
+          "required": [
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "tx"
+      ],
+      "additionalProperties": false,
+      "title": "RawTxAction"
+    },
+    "RawBundleAction": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "rawBundle"
+        },
+        "txs": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "to": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]*$"
+              },
+              "data": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]*$"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              }
+            },
+            "required": [
+              "data"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "maxPriorityFeePerGasWei": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      },
+      "required": [
+        "type",
+        "txs"
+      ],
+      "additionalProperties": false,
+      "title": "RawBundleAction"
+    }
+  }
+}

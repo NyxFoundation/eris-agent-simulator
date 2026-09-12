@@ -22,6 +22,11 @@ runs/
 cache/
 out/
 node_modules/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+/sdk-py/build/
 dist/
 probe_tmp.mts
 .serena/

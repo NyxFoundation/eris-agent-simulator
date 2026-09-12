@@ -79,6 +79,7 @@ import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
 import { readOnlyClient } from "./readOnlyClient.js";
 import { StrategyRunner } from "./strategyRunner.js";
+import { PyBridge } from "./pyBridge.js";
 import type { StrategySource } from "./strategyProtocol.js";
 
 // Backend for the revision call when neither prompt.md nor the roster names one.
@@ -368,6 +369,11 @@ async function main(): Promise<void> {
   }
   const agentTsPath = join(agentDir, "agent.ts");
   const hasAgentTs = existsSync(agentTsPath);
+  const pythonPath = join(agentDir, "strategy.py");
+  const hasPython = existsSync(pythonPath);
+  if (hasPython && hasAgentTs) throw new Error(`${agentDir}: ship either strategy.py or agent.ts, not both`);
+  const language = hasPython ? "python" : "typescript";
+  const strategyPath = hasPython ? pythonPath : agentTsPath;
   const policy = improvePolicyState(agentDir);
   const hasImprove = policy === "present";
   // The improvement policy was called improve.md until ADR 0018 Amendment 1. A directory still
@@ -385,20 +391,32 @@ async function main(): Promise<void> {
   // Opt out of the improvement loop while keeping the same directory: the frozen control that
   // ADR 0018 §5 requires in every roster is this flag, not a second copy of the agent.
   const frozen = process.env.ERIS_AGENT_FROZEN === "1";
-  if (!hasAgentTs) {
+  if (!hasAgentTs && !hasPython) {
     process.stderr.write(
       existsSync(join(agentDir, "prompt.md"))
-        ? `[bot] ${agentDir} has prompt.md but no agent.ts. Prompt mode was removed (ADR 0018): ` +
-            `an agent is agent.ts, and prompt.md is the policy for revising it, not a strategy\n`
-        : `[bot] ${agentDir} has no agent.ts (ADR 0015 §2 / ADR 0018 §1)\n`,
+        ? `[bot] ${agentDir} has prompt.md but no agent.ts or strategy.py. ` +
+            `prompt.md is the policy for revising the strategy; add a strategy entry point\n`
+        : `[bot] ${agentDir} has no agent.ts or strategy.py\n`,
     );
     process.exit(1);
     return;
   }
-  const shippedSource: StrategySource = { kind: "module", path: agentTsPath };
-  const strategy = new StrategyRunner(shippedSource, {
-    agentId, address, config, rpcUrl, ...(lending ? { lending } : {}),
+  const shippedSource: StrategySource = { kind: hasPython ? "python" : "module", path: strategyPath };
+  const Runner = hasPython ? PyBridge : StrategyRunner;
+  const strategy = new Runner(shippedSource, {
+    agentId, address, config, rpcUrl, agentDir, ...(lending ? { lending } : {}),
   }, agentLog);
+  if (hasPython) {
+    for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const)
+      process.once(signal, () => { void strategy.close().finally(() => process.exit(code)); });
+  }
+  const prepareSource = async (source: string) => {
+    if (strategy instanceof PyBridge) return strategy.prepareSource(source);
+    const compiled = compileExecutor(source);
+    return compiled.ok
+      ? { ok: true as const, source: { kind: "executor" as const, source } }
+      : compiled;
+  };
   // Import decide modules only in the worker, including their top-level initialization.
   const metadata = await strategy.start();
   const mode = metadata.mode === "run" ? "run" : hasImprove && !frozen ? "improve" : "decide";
@@ -612,6 +630,10 @@ async function main(): Promise<void> {
   // in the participant's log for a reason that had nothing to do with their strategy.
   await ensureVenueApprovals();
 
+  // Python compile validation is asynchronous. Complete resume and register revision observers
+  // before the first observation, so a new epoch cannot trade the shipped version during resume.
+  if (mode === "improve") await runImproveLoop();
+
   publicClient.watchBlockNumber({
     emitOnBegin: true,
     pollingInterval: Math.max(
@@ -642,9 +664,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (mode === "improve") {
-    await runImproveLoop();
-  }
 
   // ---- self-improving type: the LLM rewrites the strategy, out of the trade path (ADR 0018) ----
   //
@@ -674,7 +693,8 @@ async function main(): Promise<void> {
     type LiveVersion = StrategyVersion & { executor: StrategySource };
     const shipped: LiveVersion = {
       version: 0,
-      source: readFileSync(agentTsPath, "utf8"),
+      source: readFileSync(strategyPath, "utf8"),
+      language,
       notes: "the strategy as submitted",
       installedAtBlock: 0,
       valueAtInstall: null,
@@ -747,7 +767,9 @@ async function main(): Promise<void> {
       for (const v of persistedVersions) {
         // Untrusted input, every epoch. It compiled last epoch under a check that may since have
         // been tightened, and "it was fine yesterday" is not a property of generated code.
-        const compiled = compileExecutor(v.source);
+        const compiled = (v.language ?? "typescript") === language
+          ? await prepareSource(v.source)
+          : { ok: false as const, reason: `persisted language ${v.language ?? "typescript"} does not match ${language}` };
         if (!compiled.ok) {
           resumeFailures += 1;
           agentLog({
@@ -760,7 +782,7 @@ async function main(): Promise<void> {
           });
           continue;
         }
-        versions.push({ ...v, executor: { kind: "executor", source: v.source } });
+        versions.push({ ...v, language, executor: compiled.source });
       }
       // Version numbering continues across the boundary even for versions that did not survive
       // re-validation, so a number in the log means one thing for the life of the agent.
@@ -928,7 +950,7 @@ async function main(): Promise<void> {
           );
           return;
         }
-        const parsed = parseRevision(parsedJson);
+        const parsed = parseRevision(parsedJson, language);
         if (!parsed.ok) {
           record({ kind: "rejected", reason: parsed.reason }, block);
           return;
@@ -983,7 +1005,8 @@ async function main(): Promise<void> {
           );
           return;
         }
-        if (parsed.revision.executorTs === null) {
+        const revisionSource = language === "python" ? parsed.revision.executorPy ?? null : parsed.revision.executorTs;
+        if (revisionSource === null) {
           // A decision not to touch the strategy is still a conclusion, and it is the one most
           // worth carrying: "I looked at this and it is working" saves the next epoch a rewrite.
           if (parsed.revision.memory !== null) {
@@ -993,7 +1016,7 @@ async function main(): Promise<void> {
           record({ kind: "declined", notes: parsed.revision.notes }, block);
           return;
         }
-        const compiled = compileExecutor(parsed.revision.executorTs);
+        const compiled = await prepareSource(revisionSource);
         if (!compiled.ok) {
           record({ kind: "rejected", reason: compiled.reason }, block);
           return;
@@ -1001,12 +1024,13 @@ async function main(): Promise<void> {
         highestVersion += 1;
         const installed: LiveVersion = {
           version: highestVersion,
-          source: parsed.revision.executorTs,
+          source: revisionSource,
+          language,
           notes: parsed.revision.notes,
           installedAtBlock: block,
           valueAtInstall: value,
           epochId,
-          executor: { kind: "executor", source: parsed.revision.executorTs },
+          executor: compiled.source,
         };
         strategy.setSource(installed.executor);
         versions.push(installed);

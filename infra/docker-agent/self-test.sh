@@ -39,7 +39,9 @@ infra/docker-agent/build.sh team "$ID"
 echo "[2/3] generate a 2-agent self-test config (noop + $ID)"
 CFG="config/_selftest-$ID.yaml"
 trap 'rm -f "$CFG"' EXIT
-sed '/^agents:/,$d' config/local.yaml > "$CFG"
+BASE_CONFIG="${ERIS_SELFTEST_CONFIG:-config/local.yaml}"
+[ -f "$BASE_CONFIG" ] || BASE_CONFIG=config/example.yaml
+sed '/^agents:/,$d' "$BASE_CONFIG" > "$CFG"
 cat >> "$CFG" <<YAML
 agents:
   - id: noop

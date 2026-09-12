@@ -140,6 +140,13 @@ For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/
 
 ## Documentation
 
+| Submission starter | Strategy | Revision policy |
+|---|---|---|
+| [`my-arb`](example/agents/my-arb) | TypeScript `agent.ts` | `prompt.md`, `executorTs` |
+| [`my-arb-py`](example/agents/my-arb-py) | Python `strategy.py`, generated `eris` SDK | `prompt.md`, `executorPy` |
+
+Both run through the same observation, validation and signing path. See [Python setup and submission](docs/guide/python-agents.md).
+
 **Writing strategies (for participants)** — reading order:
 
 | Document | Contents |

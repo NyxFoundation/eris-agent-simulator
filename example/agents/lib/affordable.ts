@@ -37,7 +37,7 @@ export function balanceOf(obs: AgentObservation, tokenIn: string): bigint {
   if (stable) return BigInt(stable.balance);
   const bases = (obs.balances as unknown as { bases?: Record<string, string> })
     .bases;
-  const raw = bases?.[tokenIn];
+  const raw = obs.baseBalances?.[tokenIn] ?? bases?.[tokenIn];
   return raw === undefined ? 0n : BigInt(raw);
 }
 
