@@ -52,6 +52,7 @@ tunnel (`ascon-monitor.nyx.foundation`) / registered-users only, per the ASCON `
 | Agent container near OOM | container mem > 90% of cap | cadvisor |
 | Agent crashed | `increase(ascon_agent_crashes_total[2m]) > 0` (OOM=137 etc.) | eris-exporter (events.jsonl `agent_process_exited`) |
 | Chain RPC down | `ascon_chain_up == 0` | eris-exporter (eth_blockNumber probe) |
+| Devnet stalled | reachable but no new block in 10m | eris-exporter (`ascon_chain_block_number`) |
 
 **Chart images.** Grafana renders the alert's linked dashboard panel (via the renderer) and uploads
 it to Slack using the bot token. This needs a recent Grafana: older versions fail — Slack retired the
@@ -63,6 +64,12 @@ upload; verified end-to-end). Requirements, all set here:
   (renderer), same value, in `secret.env` — Grafana 13 refuses the default.
 
 Crash alerts also point to Grafana Explore → Loki for the recent logs.
+
+**Why "devnet stalled" is a separate rule from "chain RPC down".** anvil answers `eth_blockNumber`
+forever with nobody driving it, so a dead coordinator leaves `ascon_chain_up` at 1 while the market
+is frozen — the fault the operator actually cares about is invisible to the liveness probe. The rule
+watches the block number instead, guarded on `ascon_chain_up == 1` so a genuinely dead node pages
+once rather than twice. The unit it names is `ascon-devnet.service` (`infra/devnet`).
 
 ## eris-exporter (domain + chain metrics)
 
