@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { agentIcon, WorldIcon } from "@/components/WorldGlyphs";
+import { decisionLogAbsence } from "@/data/logVisibility";
 import { t } from "@/i18n/messages";
 import { formatCompactUsd, formatPnlUsdc } from "@/lib/format";
 import { navigate } from "@/navigation";
@@ -56,6 +57,8 @@ export function AgentLogPanel({
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const node = agents.find((a) => a.id === agent);
+  // Which reason to give when there is nothing to list: the same rule as the agent page (#69).
+  const absence = decisionLogAbsence(node?.external === true, withheld);
 
   // Only what has happened by the head. A log scrolled past the block the board is showing would
   // be telling the viewer what the agent is about to do.
@@ -130,10 +133,10 @@ export function AgentLogPanel({
       >
         {!agent ? (
           <Empty text={t("world.pickAgent")} />
-        ) : withheld ? (
+        ) : absence === "audience" ? (
           <Empty text={t("world.logsWithheld")} />
-        ) : node?.external ? (
-          <Empty text={t("world.logExternal", { id: node.id })} />
+        ) : absence === "self-hosted" ? (
+          <Empty text={t("world.logExternal", { id: node?.id ?? "" })} />
         ) : upToHead.length === 0 ? (
           <Empty
             text={

@@ -21,6 +21,7 @@ import { useAgentDetailSnapshot } from "@/data/useAgentDetailSnapshot";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { useCursor } from "@/data/roundCursor";
 import { useMode } from "@/data/mode";
+import { decisionLogAbsence } from "@/data/logVisibility";
 import { useScenarioLabel } from "@/data/useScenarioLabel";
 import { t } from "@/i18n/messages";
 import {
@@ -681,10 +682,12 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   const mode = useMode();
   const scenario = useScenarioLabel();
   const external = data?.agent.external === true;
-  // No decision log to show: it is on the participant's machine (self-hosted), or the server does
-  // not serve it while the competition runs (audience mode -- it is the participant's reasoning and
-  // their pending bids). Either way the tab goes, with the reason said in its place.
-  const hideLog = external || mode.audience;
+  // No decision log to show: the server does not serve it while the competition runs (audience
+  // mode -- it is the participant's reasoning and their pending bids), or it is on the participant's
+  // machine (self-hosted). Either way the tab goes, with the reason said in its place; which reason
+  // is one rule shared with the board (data/logVisibility.ts, issue #69).
+  const logAbsence = decisionLogAbsence(external, mode.audience);
+  const hideLog = logAbsence !== null;
   // Rules §4.7: where standings are not posted, this page posts none either — not the tab, not the
   // header badge, not the score card, not the per-round rank column (issue #84 B). The page opens
   // on Overview instead, and everything the chain says about the agent stays.
@@ -1082,10 +1085,10 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                     marginBottom: "10px",
                   }}
                 >
-                  {external
-                    ? t("agent.selfHosted")
-                    : mode.audience
-                      ? t("agent.audienceLog")
+                  {logAbsence === "audience"
+                    ? t("agent.audienceLog")
+                    : logAbsence === "self-hosted"
+                      ? t("agent.selfHosted")
                       : t("agent.decisionLive")}
                 </span>
                 {hideLog ? (
@@ -1097,9 +1100,9 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                       color: "var(--text-secondary)",
                     }}
                   >
-                    {external
-                      ? t("agent.selfHostedLog")
-                      : t("agent.audienceLogNote")}
+                    {logAbsence === "audience"
+                      ? t("agent.audienceLogNote")
+                      : t("agent.selfHostedLog")}
                   </p>
                 ) : (
                   <LogStream lines={agent.recentLog} height={320} />
