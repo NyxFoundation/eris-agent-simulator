@@ -24,7 +24,7 @@ expire before the window is ever reached (recorded as `stress_run_time_limit_dis
 The fastest way to see one is an official regime through [Backtest](backtest.md):
 `npm run backtest -- --regime lending-incident --seed 202`.
 
-## The nine event types
+## The ten event types
 
 They differ in *kind*, not just in parameters, and the kind decides how the run consumes them:
 
@@ -33,7 +33,7 @@ They differ in *kind*, not just in parameters, and the kind decides how the run 
 | `overlay` | a multiplier layered on the fair price every block of the window | `spike` `crash` |
 | `point` | executed once, on the block it lands on | `lstSlash` `whale` |
 | `state` | a target the coordinator holds the venue at, reconciled every block | `liquidityPull` `eusdDepeg` `depeg` |
-| `process` | a parameter the generator itself reads while the window is open | `cexDrift` `flowTrend` |
+| `process` | a parameter the generator itself reads while the window is open | `cexDrift` `flowTrend` `tokenLaunch` |
 
 `rampBlocks` / `holdBlocks` / `decayBlocks` describe a trapezoid and are required for every kind
 except `point`, which lands on a single block and takes them as optional.
@@ -169,6 +169,39 @@ The size multiplier reaches every AMM venue. Balancer and curve configure one ca
 leaves the informed leg -- the force pushing back -- where it was. Until issue #112 only uniswap's leg
 was scaled (measured x2.98 / x1.05 / x1.00 across the three venues).
 
+### `tokenLaunch` — new tokens list, and demand may or may not follow
+
+The third `process` event (issue #29, the `launch` regime). At the window's start the environment
+lists `tokenCount` new ERC-20 tokens, each in its own Uniswap V3 pool against USDC (0.3% tier,
+initialized at 1.00 USDC, `liquidityUsdc` seeded on each side) through the environment's own
+factory — so they surface through the [agent-created-market registry](../adr/0022-agent-created-markets-and-round-trip-scoring.md)
+one block later as a `uniswapV3Pool` plus an `erc20` entry, `creator` = the launch wallet.
+`agentMarkets.enabled: true` is required; the coordinator refuses the event without it.
+
+Then, **per token and independently**, a demand wave: a dedicated wave wallet buys the token with
+`waveUsdcMult × liquidityUsdc` of USDC over the ramp, holds, and sells `sellBackFrac` of what it
+bought back during the decay. With probability `dudProb` the wave is zero — a dud — and the draw is a
+mass at zero on purpose: a continuous range whose lower bound is 0 never lands on 0. The wave is
+drawn even for a dud so the RNG consumption per token is constant and the events after this one do
+not move. `magnitudeRange` does not apply and is rejected.
+
+Both targets are cumulative and reconciled every block like a `state` event: the buy fraction rises
+over the ramp and stays at 1 (a wave does not un-buy), the sell-back fraction rises over the decay
+and stays. Nothing is announced in advance; the ramp's first blocks are the only signal. Holdings at
+the bell are worth zero (ADR 0022 axiom 2, unchanged), so the only way to score is to buy before the
+wave, sell before the sell-back, and to have picked a token that got one. Always honest: no rigged
+launches (trap identification stays with `vuln`).
+
+Trading a launch pool is a `rawBundle` (exact approve + the router's `exactInputSingle`); the
+registered `swap` action cannot reach a pool outside the market set. `example/agents/lib/launchSwap.ts`
+has the reads (registry pools paired with USDC and an unpriced token, slot0 price, Swap-log flow,
+QuoterV2) and the two transactions; `launch-sniper` buys at first sight, `launch-confirm` waits for
+consecutive blocks of net buying.
+
+No teardown: the pools stay for the scenario snapshot to revert, and the environment's leftovers
+sit in flow wallets nobody scores. `stress_token_launch_summary` closes the books per token (gross
+USDC the wave paid, USDC it took back).
+
 ## Options that cut across types
 
 | key | applies to | what it does |
@@ -258,7 +291,8 @@ outside the official set.
 `stress_liquidation` / `stress_liquity_victims_setup` / `stress_liquity_victim_icr` /
 `stress_liquity_liquidation` / `stress_liquity_redemption` / `stress_calibration_warning` / `stress_run_time_limit_disabled` /
 `stress_whale*` / `stress_liquidity_pull*` / `stress_liquidity_teardown*` / `stress_eusd_depeg*` /
-`stress_depeg*` / `lst_slash*`. See [Run Output and Analysis](run-output.md) for reading them.
+`stress_depeg*` / `lst_slash*` / `stress_token_launch*` (`_setup` / `_funded` / `_listing` / the listing itself /
+`_wave` / `_sellback` / `_dud` / `_closed` / `_reverted` / `_stuck` / `_failed` / `_summary`). See [Run Output and Analysis](run-output.md) for reading them.
 
 ## Where the calibrated examples live
 
@@ -272,5 +306,6 @@ outside the official set.
 | `config/regimes/whale.yaml` | single large orders against an unchanged fair |
 | `config/regimes/depeg.yaml` | a registry stable off par (issue #27) |
 | `config/regimes/depeg-persist.yaml` | the same depeg that never closes (`persist: true`), so the final mark is taken at the discount (issue #106) |
+| `config/regimes/launch.yaml` | a `tokenLaunch` window: 2–3 listings, a wave or a dud per token (issue #29) |
 | `config/example.yaml` | an `eusdDepeg` window, on by default — the CDP venue is correctly inert at par, so without it redemption arb has nothing to do |
 | `config/lst.yaml` | `lstSlash` alongside the LST calibration knobs |

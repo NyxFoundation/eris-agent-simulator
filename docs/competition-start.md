@@ -56,9 +56,9 @@
 
 **コードの `epoch` は規約の「エポック」ではありません。** コードの `epoch` は規約の「評価区間」です。
 
-### 11 つのレジーム
+### 12 のレジーム
 
-規約 §3.2 が公表している 8 種類に、issue #105 の `spike`・issue #106 の `depeg-persist`・issue #107 の `cdp-incident` を足した 11 種類です（規約側の一覧は要更新）。どのエポックがどのレジームかは事前に知らされませんが、**種類そのものと生成器は公開**で、`config/regimes/<name>.yaml` にあります。公開セット `config/scenarios/public.yaml` は 11 レジーム × 5 シード = 55 シナリオ、非公開セットは同じ族から摂動幅だけ公表して引かれます（規約 §3.3）。表の数値は現行 YAML のレンジで、公表値と食い違ったら規約が正です。
+規約 §3.2 が公表している 8 種類に、issue #105 の `spike`・issue #106 の `depeg-persist`・issue #107 の `cdp-incident`・issue #29 の `launch` を足した 12 種類です（規約側の一覧は要更新）。どのエポックがどのレジームかは事前に知らされませんが、**種類そのものと生成器は公開**で、`config/regimes/<name>.yaml` にあります。公開セット `config/scenarios/public.yaml` は 12 レジーム × 5 シード = 60 シナリオ、非公開セットは同じ族から摂動幅だけ公表して引かれます（規約 §3.3）。表の数値は現行 YAML のレンジで、公表値と食い違ったら規約が正です。
 
 
 | # | レジーム | 環境が何をするか | それを狙って書かれた参照エージェント（§8） |
@@ -74,6 +74,7 @@
 | 8 | 上方ギャップ `spike` | 参照価格が 15〜22% **上に**ギャップし、同じ窓で流動性が 40〜60% 抜かれる。crash の鏡像で、victim は建てない | 全員。バスケットを持っているだけの側が報われ、ヘッジや short が払う唯一のレジーム。裁定の売買が crash と逆向きになるので USDC 在庫が要る |
 | 9 | 戻らないデペッグ `depeg-persist` | `depeg` と同じく環境が DAI を売ってディスカウントを作るが（depth の 35〜60%、ramp 12 / hold 36）、**買い戻さない**。ディスカウントは最終採点ブロックまで残り、買い戻しは採点後 | `peg-arb`。`depeg` では「待てば戻る」が構造で正解だったが、ここでは par に戻ると信じた分だけ最終マークで損をする。戻るかどうかを判断しているかが分かれる唯一のレジーム |
 | 10 | CDP インシデント `cdp-incident` | 運営が ICR 1.20 の Trove を 2 本建て、参照価格が 12〜16% 暴落し（同じ窓で depth も 40〜60% 抜ける）、同じ窓で環境が eUSD を売ってデペグさせる。Trove は MCR 1.10 を割り、eUSD は割安になる | `sp-underwriter`（Stability Pool で吸収し自分で清算）/ `redemption-arb`（割安 eUSD を買って victim に対して償還）/ `trove-manager`（自分の Trove を償還経路と清算から守る） |
+| 11 | 新規トークンの上場 `launch` | エポックの途中（0.2〜0.5）で運営が 2〜3 の新トークンを 1.00 USDC で USDC プール（片側 2 万〜10 万 USDC）に上場する。レジストリに `uniswapV3Pool` + `erc20` として翌ブロックに現れる。トークンごとに独立に、需要の波（プール USDC の 0.5〜2 倍を ramp 9 ブロックで買い、30 ブロック持ち、decay 30 ブロックで 50〜100% を売り戻す）が来るか、30〜50% の確率で来ない（dud）。事前告知は無く、ramp の最初の数ブロックが唯一の手掛かり。**鐘の時点のトークン保有は 0 評価**（規約 §4.1） | `launch-confirm`（連続する純買いを見てから入り、純売りで出る）/ `launch-sniper`（見た瞬間に買い、一定ブロック後に売る対照） |
 
 3 つ補足します。
 
@@ -469,6 +470,8 @@ npm run dashboard        # http://localhost:5173
 | CDP | `sp-underwriter` | Stability Pool に eUSD を預けて清算を吸収し、自分でも `liquityLiquidate` を叩く | Liquity | crash / lending-incident | 有 |
 | ステーブル | `peg-arb` | 市場価格 stable（DAI）が $1 を割ったら買い、戻ったら売る | Curve | depeg | 有 |
 | レジーム 7 | `discovery-arb-verify` | エポック中に湧いたプールを dry-run で検証してから取る | 新規プール | vuln | 無 |
+| レジーム 11 | `launch-confirm` | 上場したトークンのプールで純買いが連続してから入り、純売りの最初のブロックで出る | 新規上場 | launch | 有 |
+| レジーム 11 | `launch-sniper` | 上場を見た瞬間に買い、固定ブロック後に売る（無判断の対照） | 新規上場 | launch | 有 |
 | レジーム 7 | `discovery-arb` | 同じプールを検証せずに取る（対照。差し引かれる側） | 新規プール | vuln | 無 |
 | 攻防 | `vault-keeper` | `rescue()` を gate し忘れた `LeakyVault` を deploy して USDC を入れる、正直だがバグ持ちの作成者 | 自作コントラクト | 全部 | 無 |
 | 攻防 | `exploit-hunter` | 他人の未知コントラクトの bytecode から selector を復元し、`Exploiter` 経由で atomic に抜く | 自作コントラクト | 全部 | 無 |

@@ -148,6 +148,13 @@ import {
 } from "./ownerGuards.js";
 import { buildWhaleOrder, whaleFunding, WHALE_WALLET_KEY } from "./whale.js";
 import {
+  setupTokenLaunch,
+  stepTokenLaunch,
+  summarizeTokenLaunch,
+  tokenLaunchEndowments,
+  type TokenLaunchRuntime,
+} from "./tokenLaunch.js";
+import {
   accrueLst,
   lstBlockEvent,
   setupLst,
@@ -705,6 +712,20 @@ export async function runRealtimeSimulation(
       privateKey,
     });
   }
+  // Token launches (issue #29): one wallet that lists each token and one that buys it. On the flow
+  // map so they are funded, approved and attributed as flow like the whale; their sizes are set
+  // below once the pools have been read, for the same reason the whale's are.
+  const launchEndowments = tokenLaunchEndowments(schedule);
+  for (const e of launchEndowments) {
+    for (const key of [e.launchKey, e.waveKey]) {
+      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      flowWalletMap.set(key, {
+        id: `flow-${key}`,
+        address: accountAddress(privateKey),
+        privateKey,
+      });
+    }
+  }
 
   const adminPk = config.privateKeys.admin;
   const keeperPk = config.privateKeys.keeper;
@@ -1008,6 +1029,45 @@ export async function runRealtimeSimulation(
         ),
         usdcUnits: funding.usdcUnits.toString(),
         events: whaleEvents.length,
+      });
+    }
+
+    // ---- token-launch endowment (issue #29) ----
+    // The launch wallet holds exactly the USDC side it seeds, the wave wallet exactly what the seed
+    // drew for it to spend (nothing for a dud). Flow-sized funding would list a thinner pool than
+    // the schedule says and cap the wave at the flow wallet's balance, silently turning the regime
+    // into a smaller one for that seed.
+    for (const e of launchEndowments) {
+      const launchWallet = flowWalletMap.get(e.launchKey);
+      const waveWallet = flowWalletMap.get(e.waveKey);
+      if (!launchWallet || !waveWallet)
+        throw new Error("token launch wallet missing from flowWalletMap");
+      await fundWallet(
+        publicClient,
+        walletClient,
+        chain,
+        launchWallet.privateKey,
+        config.flowEthWei,
+        0n,
+        e.liquidityUsdcUnits,
+      );
+      await fundWallet(
+        publicClient,
+        walletClient,
+        chain,
+        waveWallet.privateKey,
+        config.flowEthWei,
+        0n,
+        e.waveUsdcUnits,
+      );
+      logger.event({
+        type: "stress_token_launch_funded",
+        eventIndex: e.eventIndex,
+        index: e.index,
+        launchWallet: launchWallet.address,
+        waveWallet: waveWallet.address,
+        liquidityUsdcUnits: e.liquidityUsdcUnits.toString(),
+        waveUsdcUnits: e.waveUsdcUnits.toString(),
       });
     }
 
@@ -1458,14 +1518,19 @@ export async function runRealtimeSimulation(
               "cohort (issue #59). Lower the target, raise the ICR, or widen the crash",
           );
         victimCollWei = sized;
-        const debtEach = (sized * priceWad) / (BigInt(Math.round(config.stressLiquityVictimIcr * 1e6)) * (10n ** 18n / 1_000_000n));
+        const debtEach =
+          (sized * priceWad) /
+          (BigInt(Math.round(config.stressLiquityVictimIcr * 1e6)) *
+            (10n ** 18n / 1_000_000n));
         liquityRecovery = {
           targetTcr: config.stressLiquityRecoveryTcr,
           crashMagnitude: crash.magnitude,
           collWei: sized,
           expectedTcrAtBottom: tcrAtCrashBottom({
-            systemCollWei: system.collWei + BigInt(liquityVictims.length) * sized,
-            systemDebtWei: system.debtWei + BigInt(liquityVictims.length) * debtEach,
+            systemCollWei:
+              system.collWei + BigInt(liquityVictims.length) * sized,
+            systemDebtWei:
+              system.debtWei + BigInt(liquityVictims.length) * debtEach,
             priceWad,
             crashMagnitude: crash.magnitude,
           }),
@@ -1656,6 +1721,28 @@ export async function runRealtimeSimulation(
         ownerId: "liquidity",
         role: "system",
       });
+    }
+
+    // ---- token launches (issue #29): stage the listings and refuse a deployment that cannot host
+    // them. The wallets are already on the flow map (funded, approved, attributed as flow above);
+    // this resolves the factory and the artifact so a missing build fails here, not on the window.
+    let tokenLaunchRuntime: TokenLaunchRuntime | null = null;
+    if (schedule.hasTokenLaunch()) {
+      tokenLaunchRuntime = await setupTokenLaunch(
+        ctx,
+        schedule,
+        {
+          localDeploy: config.localDeploy,
+          agentMarkets: config.agentMarkets,
+          uniswapEnabled: enabledIds.includes("uniswap"),
+          walletByKey: (key) => {
+            const w = flowWalletMap.get(key);
+            if (!w) throw new Error(`token launch wallet missing: ${key}`);
+            return { address: w.address, privateKey: w.privateKey };
+          },
+        },
+        logger,
+      );
     }
 
     // ---- cross-venue no-arbitrage check at startup (phantom-spread guard; see noArb.ts) ----
@@ -2947,7 +3034,9 @@ export async function runRealtimeSimulation(
                     blockIndex,
                     victimId: t.id,
                     victimAddress: t.address,
-                    redeemedEusdWei: (last.debtEusdWei - t.debtEusdWei).toString(),
+                    redeemedEusdWei: (
+                      last.debtEusdWei - t.debtEusdWei
+                    ).toString(),
                     remainingDebtEusdWei: t.debtEusdWei.toString(),
                     closed: t.status === 4,
                   });
@@ -3087,6 +3176,40 @@ export async function runRealtimeSimulation(
           // the issue leaves -- whether Liquity's ordering sensitivity needs special handling when
           // the oracle is rewritten every block ahead of every agent -- is about liquidations, so
           // they have to be counted rather than inferred from the block state.
+          // Token launches (issue #29): list, buy and sell back toward this block's targets. Its
+          // own keys (one launch wallet and one wave wallet per token), so it runs beside the
+          // deployer-key task rather than inside it.
+          const launchTask = async (): Promise<void> => {
+            if (!tokenLaunchRuntime) return;
+            try {
+              const sends = await stepTokenLaunch(
+                ctx,
+                tokenLaunchRuntime,
+                schedule,
+                blockIndex,
+                bn,
+                { priorityFeeWei: oracleFee },
+                logger,
+              );
+              for (const s of sends) {
+                const wallet = flowWalletMap.get(s.ownerKey);
+                submittedByHash.set(s.hash.toLowerCase(), {
+                  ownerId: wallet?.id ?? `flow-${s.ownerKey}`,
+                  role: flowRole(s.ownerKey),
+                  priorityFeeWei: oracleFee,
+                  actionType: s.actionType,
+                });
+              }
+            } catch (error) {
+              logger.event({
+                type: "stress_token_launch_task_failed",
+                blockIndex,
+                blockNumber: bn,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          };
+
           const liquityWatchTask = async (): Promise<void> => {
             if (!liquityRuntime || fromBlock > bn) return;
             try {
@@ -3128,6 +3251,7 @@ export async function runRealtimeSimulation(
           };
           if (liquidityPullRuntime || depegRuntimes.length > 0)
             tasks.push(timed(deployerKeyTask));
+          if (tokenLaunchRuntime) tasks.push(timed(launchTask));
           if (liquityRuntime) tasks.push(timed(liquityWatchTask));
           const results = await Promise.all(tasks);
 
@@ -3174,6 +3298,7 @@ export async function runRealtimeSimulation(
               : undefined;
           const liquidityMs = liquidityPullRuntime ? deployerKeyMs : undefined;
           const depegMs = depegRuntimes.length > 0 ? deployerKeyMs : undefined;
+          const launchMs = tokenLaunchRuntime ? results[taskIdx++] : undefined;
           const liquityMs = liquityRuntime ? results[taskIdx++] : undefined;
           logger.event({
             type: "round_timing",
@@ -3188,6 +3313,7 @@ export async function runRealtimeSimulation(
             ...(registryMs !== undefined ? { registryMs } : {}),
             ...(liquidityMs !== undefined ? { liquidityMs } : {}),
             ...(depegMs !== undefined ? { depegMs } : {}),
+            ...(launchMs !== undefined ? { launchMs } : {}),
             ...(liquityMs !== undefined ? { liquityMs } : {}),
             // Zero on the eleven blocks in twelve that are not a boundary; the non-zero ones are
             // what live scoring costs the loop.
@@ -3272,6 +3398,11 @@ export async function runRealtimeSimulation(
     // The whole window for a run with an end (unchanged), the final segment's tail for a period
     // that has been flushing as it went. Finishes before resetFork erases history, and before the
     // violation check and the summary.
+    // ---- token-launch summary (issue #29): no teardown -- the pools stay for the snapshot to
+    // revert, and the leftovers sit in flow wallets nobody scores -- only the record of what each
+    // wave paid and took back, which is what closes the books against the agents' P.
+    if (tokenLaunchRuntime) summarizeTokenLaunch(tokenLaunchRuntime, logger);
+
     await flushBlocks(finalBlock);
 
     // ---- scoring: batch-reconstruct the per-agent value series from historical blocks (ADR 0006 §4) ----

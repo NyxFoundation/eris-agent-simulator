@@ -1,0 +1,141 @@
+# config/regimes/launch.yaml — official regime: launch (new tokens list mid-run). Issue #29
+#
+# regime = this file (market conditions), seed = supplied at run time. This file defines the OU fair
+# price / flow intensity / stress; the seed picks the realized path out of that family.
+# Run: npm run backtest -- --regime launch --seed 101 [--agents <roster>]
+# Or as part of a scenario matrix: npm run backtest -- --scenarios config/scenarios/public.yaml
+#
+# Note:
+#   - There is deliberately no `run.seed` here (ADR 0017 §1). The seed is the second axis of a
+#     scenario, not a property of the regime, so it must be given explicitly and a run cannot
+#     silently inherit one.
+#   - blockTimeSec and blocks are part of the regime (fixed to the production values). Shortening is
+#     an explicit override for behavior checks and smoke tests only; runs whose scores you read must
+#     use these defaults (ADR 0016 §3).
+#   - every venue is deployed, `lst` and `liquity` included.
+#   - funding is an ETH/BTC/USDC basket, not USDC-only (issue #54).
+#   - `agentMarkets.enabled: true` is required: the registry (issue #40) is how a listing reaches
+#     the agents. The coordinator refuses to start a `tokenLaunch` without it.
+# The roster is the default for pre-submission verification. Replaceable via --agents <roster.yaml|json>.
+#
+# What this regime asks that no other one does: judgment under a single leading signal. At a
+# seed-drawn window the environment lists 2-3 new ERC-20 tokens, each in a thin Uniswap V3 pool
+# against USDC created through the environment's own factory, so they surface through the #40
+# registry like any agent-made market (`uniswapV3Pool` + `erc20`, one block after creation). For
+# each token, independently, a demand wave is drawn: a dedicated wallet buys the token over the
+# ramp, holds, and sells a seeded fraction back during the decay -- or, with `dudProb`, buys
+# nothing at all. Nothing announces which. The first blocks of a ramp are the only evidence.
+#
+# Holdings at the bell are worth zero (ADR 0022 axiom 2, unchanged): the only way to score is to
+# buy before the wave, sell before the sell-back, and to have picked a token that got a wave.
+# Entering on confirmation forgoes the first part of the move; entering blind eats the duds.
+# Sizing against a $20k-$100k pool and exiting before the environment does are the execution half.
+#
+# Always honest (issue #29 decision 3): no rigged launches. Trap identification stays with `vuln`.
+# The registry records the launch wallet as `creator`; that is not hidden.
+#
+# The field needs agents that can trade a registry pool at all. `launch-sniper` (buys at first
+# sight) and `launch-confirm` (waits for net buying) are in config/rosters/full-field.yaml for
+# that reason -- the `vuln` lesson: a regime nobody's agent can act in measures nothing.
+
+run:
+  blocks: 360 # R: ADR 0017 §1, matching the other regimes so scenario lengths stay comparable
+  seconds: 1800 # end by block count (must stay well above blocks x blockTimeSec = 720s)
+  blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
+  protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
+  economicGas: false
+  localDeploy: true
+  reportDir: ./runs
+  # Rules §4.1: a mark is the median over the 5 blocks ending at the valuation block, so an
+  # agent cannot reprice a pool at the close and book the move. Unset means 0 = mark live off a
+  # single block, which leaves that open; the metric-* regimes have carried 5 all along.
+  markMedianBlocks: 5
+  # Rules §2.3: every agent runs in a 2 vCPU / 4 GiB container. Only the docker path applies the
+  # caps (infra/docker-agent/run-agent.sh), so the official regimes name it. A local run without
+  # docker: `--agent-sandbox process` (no caps, and it says so in events.jsonl as agent_sandbox).
+  agentSandbox: docker
+
+market:
+  volatility: 0.004 # calm's: the regime is the pools, not the price
+  kappa: 0.02
+
+funding:
+  # The same ETH/BTC/USDC basket as every other regime (issue #54).
+  wethWei: "8000000000000000000" # 8 WETH
+  base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
+  # The flow wallets' own inventory, sized so a flowTrend hold can be delivered rather than declared
+  # (issue #112). A x3 lean held for 30 blocks is ~51 WETH of one-way flow per venue wallet
+  # (0.5 WETH mean x 3 x 0.9 arrivals/block x 38 effective blocks), and informed-flow holds two such
+  # windows (~103 WETH); a wallet funded like an agent (0 WETH / 25k USDC = ~8 WETH at $3,000) runs dry within
+  # the ramp on either side -- sells flip to buys once the WETH bought earlier in the window is gone,
+  # buys are capped at the USDC left -- and the measured lean was x1.4 for 3 blocks against the
+  # declared x2-3 for 12. 150 WETH and its USDC equivalent cover two same-direction windows with
+  # margin; against ~$6M of depth per venue that is a 7.5 % depth question, not a fairness one (the
+  # flow is machinery and unscored). WBTC is the same fix one issue earlier (#99: every WBTC sell was
+  # submitted against a zero balance, ~90 % of the WBTC informed rows reverted).
+  flowWethWei: "150000000000000000000" # 150 WETH per flow wallet
+  flowUsdcUnits: "450000000000" # 450,000 USDC per flow wallet (= 150 WETH at $3,000)
+  flowBase: { WBTC: "50000000" } # 0.5 WBTC per flow wallet
+  usdcUnits: "25000000000"
+
+flow:
+  uninformedMaxWethWei: "1000000000000000000"
+  informedMaxWethWei: "2000000000000000000"
+  balancerMaxWethWei: "1000000000000000000"
+  curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.9"
+  uninformedSizeSigma: "1.0"
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+  baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
+
+# Ranges rather than values, fixed by the seed, for the same reason every other stress event is
+# (ADR 0009 / ADR 0004): a published regime whose wave is always 1.5x is a constant to memorise.
+stress:
+  events:
+    # One window per epoch, drawn from [0.2, 0.5] of the run: early enough that a wave's decay and
+    # an agent's exit both fit before the last scored block (window = 9 + 30 + 30 = 69 blocks; the
+    # latest start is block 180 of 360, leaving ~110 blocks after the window closes).
+    #
+    # Per token, independently: the USDC side seeded (the token side is the same number of tokens
+    # at 1.00 USDC), the wave as a multiple of that USDC side, the dud coin, and the share of what
+    # the wave bought that it sells back during the decay. `magnitudeRange` does not apply.
+    #
+    # NOT YET CALIBRATED against the five public seeds (issue #29 acceptance): the ranges are the
+    # issue's proposals. The trapezoid is fixed per event like every other type's (ramp 9 / hold
+    # 30 / decay 30 blocks, inside the issue's 6-12 / 20-40 / 20-40).
+    - {
+        type: tokenLaunch,
+        windowFrac: [0.2, 0.5],
+        tokenCount: [2, 3],
+        liquidityUsdc: [20000, 100000],
+        waveUsdcMult: [0.5, 2],
+        dudProb: [0.3, 0.5],
+        sellBackFrac: [0.5, 1.0],
+        rampBlocks: 9,
+        holdBlocks: 30,
+        decayBlocks: 30,
+      }
+
+agentMarkets:
+  enabled: true
+  registrationsPerBlock: 8
+  maxTxGas: "30000000"
+  maxAgentBlockGas: "30000000"
+
+agents:
+  - id: noop
+    wallet: AGENT1_PRIVATE_KEY
+    baseline: true
+    description: does nothing (baseline)
+  - id: launch-sniper
+    wallet: AGENT2_PRIVATE_KEY
+    description: buys every new listing at first sight and sells after a fixed hold (the naive side)
+  - id: launch-confirm
+    wallet: AGENT3_PRIVATE_KEY
+    description: buys a listing only after the tape shows sustained net buying, exits on net selling (the judgment side)
+  - id: venue-arb
+    wallet: AGENT4_PRIVATE_KEY
+    description: WETH-only cross-venue arbitrage, which never looks at a new pool at all
