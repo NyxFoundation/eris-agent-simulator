@@ -294,7 +294,7 @@ const STRESS_SEED_SALT = 0x53_54_52_53; // "STRS"
 //   decay: 1 → 0 (returns over decayBlocks)
 //   outside window: 0
 // spike is wethMult = 1 + m·e, crash is 1 − m·e. At e=1 the deviation is at most ±m.
-function envelope(ev: ResolvedStressEvent, blockIndex: number): number {
+export function stressEnvelope(ev: ResolvedStressEvent, blockIndex: number): number {
   const t = blockIndex - ev.startBlock;
   if (t < 0) return 0;
   const { rampBlocks: r, holdBlocks: h, decayBlocks: d } = ev;
@@ -468,7 +468,7 @@ export class EventSchedule {
     let sold = 0;
     for (const ev of this.events) {
       if (ev.type !== "depeg" || ev.stable !== stable) continue;
-      const e = envelope(ev, blockIndex);
+      const e = stressEnvelope(ev, blockIndex);
       if (e === 0) continue;
       sold += ev.magnitude * e;
     }
@@ -483,7 +483,7 @@ export class EventSchedule {
     let sold = 0;
     for (const ev of this.events) {
       if (ev.type !== "eusdDepeg") continue;
-      const e = envelope(ev, blockIndex);
+      const e = stressEnvelope(ev, blockIndex);
       if (e === 0) continue;
       // Additive rather than multiplicative: two overlapping dumps sell two amounts of eUSD.
       sold += ev.magnitude * e;
@@ -570,7 +570,7 @@ export class EventSchedule {
     const byBase: Record<string, number> = {};
     for (const ev of this.events) {
       if (ev.type !== "liquidityPull") continue;
-      const e = envelope(ev, blockIndex);
+      const e = stressEnvelope(ev, blockIndex);
       if (e === 0) continue;
       const cur = byBase[ev.base] ?? 1;
       byBase[ev.base] = cur * (1 - ev.magnitude * e);
@@ -590,7 +590,7 @@ export class EventSchedule {
     let kappaMult = 1;
     for (const ev of this.events) {
       if (ev.type !== "cexDrift" || ev.base !== base) continue;
-      const e = envelope(ev, blockIndex);
+      const e = stressEnvelope(ev, blockIndex);
       if (e === 0) continue;
       driftAdd += (ev.side === "sell" ? -1 : 1) * ev.magnitude * e;
       // Interpolated from 1, so the pull weakens as the episode ramps in.
@@ -613,7 +613,7 @@ export class EventSchedule {
       const sign = ev.side === "sell" ? -1 : 1;
       const last = Math.min(blockIndex, ev.endBlock - 1);
       for (let t = ev.startBlock; t <= last; t++) {
-        mult *= 1 + sign * ev.magnitude * envelope(ev, t);
+        mult *= 1 + sign * ev.magnitude * stressEnvelope(ev, t);
       }
     }
     return mult;
@@ -628,7 +628,7 @@ export class EventSchedule {
     let persistBlocks: number | undefined;
     for (const ev of this.events) {
       if (ev.type !== "flowTrend") continue;
-      const e = envelope(ev, blockIndex);
+      const e = stressEnvelope(ev, blockIndex);
       if (e === 0) continue;
       sizeMult *= 1 + (ev.magnitude - 1) * e;
       if (ev.trendCorrelation !== undefined)
@@ -702,7 +702,7 @@ export class EventSchedule {
     const baseMults: Record<string, number> = {};
     for (const ev of this.events) {
       if (!isPriceOverlay(ev.type)) continue; // executed, not a price distortion
-      const e = envelope(ev, blockIndex);
+      const e = stressEnvelope(ev, blockIndex);
       if (e === 0) continue;
       const sign = ev.type === "crash" ? -1 : 1;
       const cur = baseMults[ev.base] ?? 1;

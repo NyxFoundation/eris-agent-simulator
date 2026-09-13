@@ -103,6 +103,7 @@ import {
 import { waitForAgentsReady } from "./agentsReady.js";
 import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
+import { StressAudit } from "./stressAudit.js";
 import {
   deployPriceFeed,
   setPriceFeedOpening,
@@ -451,6 +452,9 @@ const SEGMENT_ADVISORY_BLOCKS = 20_000;
 export async function runRealtimeSimulation(
   // Evaluation tools inject per-regime SEED etc. programmatically (without mutating env).
   overrides: Record<string, string | number | boolean> = {},
+  // Embedded callers pass their effective config explicitly; their own CLI flags have already
+  // been resolved (backtest bakes --agents into YAML, so parsing it again creates a conflict).
+  argv: string[] = process.argv,
   // The return value is the run's location (so callers like the backtest CLI can read results without scanning runs/).
 ): Promise<{ runId: string; runDir: string }> {
   // ADR 0013: config resolves from YAML (config/local.yaml / --config) as the single source. If there is no YAML,
@@ -460,7 +464,7 @@ export async function runRealtimeSimulation(
     config,
     agents: agentSpecs,
     configPath,
-  } = resolveRunInputs(process.argv, overrides);
+  } = resolveRunInputs(argv, overrides);
   if (configPath) process.env.ERIS_CONFIG = configPath;
 
   // ADR 0020 §1 fail-fast. `resetUnit: scenario` describes a world per (regime, seed), and only the
@@ -699,6 +703,7 @@ export async function runRealtimeSimulation(
     config.seed,
     config.runBlocks,
   );
+  const stressAudit = new StressAudit(schedule.events, event => logger.event(event));
   // A dedicated wallet so a whale order does not drain the ordinary flow wallets mid-run (which
   // would quietly change the flow bot's behavior for the rest of the run) and so blocks.csv
   // attributes the print to the event rather than to background flow.
@@ -1908,11 +1913,13 @@ export async function runRealtimeSimulation(
     const agentsSpawnedAt = Date.now();
 
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
-    const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<void> => {
+    const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
+      const submitted: Hex[] = [];
       const intents = flowOrdersToIntents(ctx, orders);
       for (const intent of intents) {
         try {
           const hashes = await submitIntent(ctx, intent, latestStateById);
+          submitted.push(...hashes);
           for (const hash of hashes) {
             submittedByHash.set(hash.toLowerCase(), {
               ownerId: intent.ownerId,
@@ -1939,6 +1946,7 @@ export async function runRealtimeSimulation(
           });
         }
       }
+      return submitted;
     };
     flowProcess.onOrders((orders) => void handleFlowOrders(orders));
 
@@ -2607,6 +2615,7 @@ export async function runRealtimeSimulation(
           // an overlay would leave the base path where it was and let mean reversion erase the
           // episode the moment the window closed. Identity outside every window, so a run without
           // one steps exactly as before.
+          const beforeFair: Record<string, number> = { WETH: baseFair, ...extraBaseFair };
           const ouWeth = withOuOverride(
             config.ou.perBase.WETH ?? config.ou.global,
             schedule.ouOverrideAt(blockIndex, "WETH"),
@@ -2636,6 +2645,12 @@ export async function runRealtimeSimulation(
             fairPrices[b] = extraBaseFair[b] * (overlay.baseMults[b] ?? 1);
           }
           ctx.fairPrices = fairPrices;
+          const auditPrice = (base: string, stage: "price_submitted" | "storage_written", hashes?: string[]) =>
+            stressAudit.price(base, blockIndex, bn, {
+              before: beforeFair[base],
+              unoverlaid: base === "WETH" ? baseFair : extraBaseFair[base],
+              fair: fairPrices[base],
+            }, { stage, hashes });
 
           // Fund vulnerability pools (ADR 0014): burn reserve into the pools that entered their window (cheatcode;
           // no mine needed), making the bait-laden opportunity appear on this block. Done synchronously after
@@ -2680,6 +2695,7 @@ export async function runRealtimeSimulation(
                     logger,
                     oracleFee,
                   );
+                  stressAudit.record(ev, blockIndex, bn, { stage: "applied" });
                 } catch (error) {
                   logger.event({
                     type: "lst_slash_failed",
@@ -2710,7 +2726,8 @@ export async function runRealtimeSimulation(
                     base: ev.base,
                     magnitude: ev.magnitude,
                   });
-                  await handleFlowOrders([order]);
+                  const hashes = await handleFlowOrders([order]);
+                  if (hashes.length > 0) stressAudit.record(ev, blockIndex, bn, { stage: "tx_submitted", hashes });
                 } catch (error) {
                   logger.event({
                     type: "stress_whale_failed",
@@ -2836,6 +2853,7 @@ export async function runRealtimeSimulation(
                     await accrueLstTask();
                   })(),
                 ]);
+                for (const base of ["WETH", ...extraBaseSymbols]) auditPrice(base, "storage_written");
                 return;
               }
               const feedHash = await updatePriceFeedMempool(
@@ -2844,6 +2862,7 @@ export async function runRealtimeSimulation(
                 latestFairPrice,
                 oracleFee,
               );
+              auditPrice("WETH", "price_submitted", [feedHash]);
               submittedByHash.set(feedHash.toLowerCase(), {
                 ownerId: "oracle",
                 role: "system",
@@ -2858,6 +2877,7 @@ export async function runRealtimeSimulation(
                   fairPrices[b],
                   oracleFee,
                 );
+                auditPrice(b, "price_submitted", [extraHash]);
                 submittedByHash.set(extraHash.toLowerCase(), {
                   ownerId: "oracle",
                   role: "system",
@@ -2944,7 +2964,12 @@ export async function runRealtimeSimulation(
                 // copies of it that can disagree.
                 schedule.flowTrendAt(bn - runStartBlock),
               );
-              flowProcess.pushContext(flowContext);
+              if (flowProcess.pushContext(flowContext)) {
+                for (const event of stressAudit.active(blockIndex, e => e.type === "flowTrend"))
+                  stressAudit.record(event, blockIndex, bn, {
+                    stage: "flow_context_queued", sizeMult: schedule.flowTrendAt(blockIndex).sizeMult,
+                  });
+              }
             }
           };
 
@@ -3114,6 +3139,10 @@ export async function runRealtimeSimulation(
                 { priorityFeeWei: oracleFee },
                 logger,
               );
+              if (hashes.length > 0) {
+                for (const event of stressAudit.active(blockIndex, e => e.type === "liquidityPull"))
+                  stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
+              }
               for (const hash of hashes) {
                 submittedByHash.set(hash.toLowerCase(), {
                   ownerId: "liquidity",
@@ -3151,6 +3180,12 @@ export async function runRealtimeSimulation(
                   { priorityFeeWei: oracleFee },
                   logger,
                 );
+                if (hashes.length > 0) {
+                  for (const event of stressAudit.active(blockIndex, e =>
+                    (e.type === "eusdDepeg" && runtime.symbol === "EUSD") ||
+                    (e.type === "depeg" && e.stable === runtime.symbol)))
+                    stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
+                }
                 for (const hash of hashes) {
                   submittedByHash.set(hash.toLowerCase(), {
                     ownerId,
@@ -3191,6 +3226,10 @@ export async function runRealtimeSimulation(
                 { priorityFeeWei: oracleFee },
                 logger,
               );
+              if (sends.length > 0) {
+                for (const event of stressAudit.active(blockIndex, e => e.type === "tokenLaunch"))
+                  stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes: sends.map(s => s.hash) });
+              }
               for (const s of sends) {
                 const wallet = flowWalletMap.get(s.ownerKey);
                 submittedByHash.set(s.hash.toLowerCase(), {
@@ -3346,6 +3385,7 @@ export async function runRealtimeSimulation(
       });
     });
 
+    stressAudit.finish();
     const elapsedMs = Date.now() - startTime;
 
     // ---- competition end: stop the agents before scoring (a direct agent keeps placing orders unless stopped) ----
@@ -3775,6 +3815,7 @@ export async function runRealtimeSimulation(
       resetUnit: config.resetUnit,
       blockTimeSec: config.blockTimeSec,
       blocksProcessed: processedBlocks,
+      ...(schedule.hasEvents() ? { stressEvents: stressAudit.summaries() } : {}),
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
       valueSeries,

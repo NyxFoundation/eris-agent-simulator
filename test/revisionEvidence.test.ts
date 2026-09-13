@@ -7,7 +7,8 @@
 // difference survives into the context, not about the formatting.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentObservation } from "@eris/sdk/types.js";
@@ -704,3 +705,19 @@ test("digestMarketHistory: eUSD is reported once, in the stables section, when t
   bare.push(obs({ block: 1, eusdDiscountBps: 90 }));
   assert.match(digestMarketHistory(bare.since(null)).join("\n"), /liquity:EUSD-vs-par/);
 });
+
+for (const guide of ["competition-start.md", "competition-start.en.md"]) {
+  test(`${guide}: the copied prompt template loads and teaches evidence and reply shapes`, t => {
+    const source = readFileSync(new URL(`../docs/${guide}`, import.meta.url), "utf8");
+    const template = source.match(/```markdown\n(---\nkind: improve\n[\s\S]*?)\n```/)?.[1];
+    assert.ok(template, "starter prompt template is missing");
+    const dir = mkdtempSync(join(tmpdir(), "eris-starter-prompt-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    writeFileSync(join(dir, "prompt.md"), template);
+    const policy = loadImproveAgent(dir);
+    assert.equal(policy.name, "my-strategy");
+    for (const section of ["transactions since the last revision", "market history",
+      "mean inclusion latency", "recent decisions", "latest observation", "executorTs", "revertTo"])
+      assert.ok(policy.body.includes(section), `${guide}: missing ${section}`);
+  });
+}

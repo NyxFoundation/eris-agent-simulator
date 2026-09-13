@@ -309,3 +309,12 @@ outside the official set.
 | `config/regimes/launch.yaml` | a `tokenLaunch` window: 2–3 listings, a wave or a dud per token (issue #29) |
 | `config/example.yaml` | an `eusdDepeg` window, on by default — the CDP venue is correctly inert at par, so without it redemption arb has nothing to do |
 | `config/lst.yaml` | `lstSlash` alongside the LST calibration knobs |
+
+
+### Application audit
+
+The resolved schedule is a plan, not proof that its windows fired. `stress_event_applied` now records
+per-entry execution/publication evidence, including price overlays and drift/flow process inputs.
+`stress_event_summary` and `stress_application_warning` expose skipped windows and price overlays
+that missed their configured peak. See [Run Output and Analysis](run-output.md#was-the-scheduled-event-applied)
+for stages, hashes and the distinction between submission and on-chain execution.

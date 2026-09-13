@@ -23,7 +23,7 @@ layer is shared on disk, so 100 team images cost ~one base plus small per-team d
 
 ```bash
 npm run agent:build              # base (once)
-npm run agent:build -- team foo  # per team (auto-builds base if missing) -> eris-agent:foo
+npm run agent:build -- team foo  # per team (refreshes base, reusing unchanged layers) -> eris-agent:foo
 ```
 
 ## Self-test the memory budget
@@ -38,9 +38,17 @@ The wrapper selects container `python3` independently of a host `ERIS_PYTHON` ve
 `ERIS_DOCKER_PYTHON` overrides the executable inside the image. Python bind-mount mode defaults
 to the shared Python base (build it first), or your `ERIS_AGENT_IMAGE` with team dependencies.
 
-`self-test.sh` builds the team image and runs a short live environment (funds wallets + deploys
-venues) with only that agent + a noop baseline, each capped. An agent that exceeds the cap is
-OOM-killed and reported as an early exit (code 137).
+`self-test.sh` builds the team image, refreshing its runtime base from the current sources, then
+runs the configured local environment with that agent and a noop baseline, both in Docker.
+It reads the exact run's `summary.json` and prints `PASS` with included/reverted counts, or `FAIL`
+with the early-exit reason and stderr. A failed run, absent/invalid summary or surviving container
+also exits nonzero. Code 137 means SIGKILL (possibly OOM); it alone does not prove an OOM kill.
+A pass proves completion at the stated cap for this run; it is not a peak-memory measurement.
+
+Team images are immutable: after pulling runtime/SDK changes, rebuild **every** roster directory's
+image. `agent:build -- team` refreshes the shared base first and prints its digest/build time;
+Docker caches unchanged layers. Already-built teams and externally submitted bundles retain the
+runtime they were built with until rebuilt. Updating the base tag alone cannot update them.
 
 ```bash
 # Terminal 1 — local-deploy chain (anvil + all venues); leave it running:

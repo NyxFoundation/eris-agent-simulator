@@ -52,7 +52,12 @@ market-wide move is absorbed into everyone's mean, so **you neither gain from a 
 a selloff.**
 
 Every unit is handed the same initial capital: **8 WETH + 0.4 WBTC + 25,000 USDC**, plus ETH for
-gas. One benchmark agent that never moves its capital runs alongside. Every unit runs on the same single chain at the same time.
+gas. The current official regimes use `economicGas: false`, so that gas endowment is **100 ETH** and is included in scoring.
+At ETH=$3,000 / BTC=$60,000 the whole portfolio is about $373,000, roughly 80% of it native ETH;
+its market moves therefore contribute heavily to P. ETH is spendable via `rawTx.value`, including
+wrapping it or using it as Trove collateral. `sized(obs, "WETH", 1000)` spends **10% of the WETH
+balance (initially 0.8 WETH)**, not 10% of portfolio value (about 0.64% at these prices).
+One benchmark agent that never moves its capital runs alongside. Every unit runs on the same single chain at the same time.
 
 > **A local `npm run backtest -- --scenarios` ranks with the same rule as the competition** (one scenario = one epoch, P → deviation score T → the later-weighted average; `standings.json`). What differs is the field: locally the population is your roster, in the competition it is every participant. **Local numbers are for comparing your own versions against each other, not for predicting where you will place.**
 
@@ -245,6 +250,7 @@ Once it logs that the deploy finished, carry on in **a second terminal**.
 ```bash
 # --- terminal B ---
 npm run gen:local-constants               # deployments.json → sdk/src/constants.local.ts
+npm run gen:state-dump                    # create backtest/state/ for §6 (not included in git)
 npm run sim:realtime
 ```
 
@@ -316,6 +322,10 @@ That is the whole contract.
 > startup (`example/agents/runtime/bot.ts` says so in its error). Since rules §2.5 makes `prompt.md` mandatory, the
 > `run(ctx)` form cannot currently be submitted.
 
+Pools are not pinned to fair. Background arbitrage stops inside the `informedArbFeeBps: 30` cost
+band; sizing, liquidity, ordering and inventory can leave wider residuals. Tens of bps from fair
+alone do not establish profit: include round-trip fees, price impact and inclusion delay.
+
 ### `prompt.md` — the revision policy
 
 **The frontmatter needs `kind: improve`. Without it the run fails at startup.**
@@ -336,6 +346,18 @@ strategy code should change**.
 
 ## What may change, and what may not
 (thresholds and sizing yes; the ordering of a two-leg execution no)
+
+## Evidence for a revision
+- `transactions since the last revision`: separate successes, reverts and unmined transactions; read mean inclusion latency, position in the block, and trading gains separately from market moves on inventory.
+- `market history`: check each venue's gaps, fees and event windows across the interval.
+- `recent decisions`: match decisions to rejected, failed and included transactions.
+- `latest observation`: check current inventory and executable opportunities.
+Leave the strategy alone if evidence is insufficient or the loss is only a market move.
+
+## Reply
+Return JSON only. Keep the code with {"notes":"evidence", "executorTs":null}.
+To revise it, put the decide function body in executorTs as a string.
+To undo a revision, select a version from the history, e.g. {"notes":"evidence", "revertTo":0}.
 ```
 
 > **Why the marker exists.** There used to be a `prompt.md` under the same name that said "what to do
@@ -431,7 +453,7 @@ agents:
   - id: my-strategy
     wallet: AUTO
     env:
-      ERIS_LLM_MODEL: "claude-cli"       # a subscription CLI works for local development
+      ERIS_LLM_MODEL: "claude-cli"       # only with --agent-sandbox process
       ERIS_IMPROVE_LOG_CALLS: "1"        # log the raw exchange to agents/<id>.llm.jsonl
 ```
 
@@ -450,6 +472,13 @@ agents:
 > is recorded. Set `ERIS_INFERENCE_BASE_URL` locally to exercise the same path
 > (`infra/inference-proxy/README.md`).
 
+**`claude-cli` / `codex` require process mode and an installed, authenticated CLI on the host.**
+The official Docker image contains neither CLI. In Docker, use an API backend with the required
+environment variables, or a reachable inference proxy (`ERIS_INFERENCE_BASE_URL`). The URL must
+be reachable from the container; on macOS, address a host service through `host.docker.internal`.
+Check revision success/failure and version history in `agents/<id>.jsonl`; completing a run does not
+prove that self-improvement worked.
+
 A run completes with no backend at all: the revision is recorded as failed and the strategy keeps
 trading unchanged. Details in [llm-agents.md](guide/llm-agents.md).
 
@@ -457,12 +486,28 @@ trading unchanged. Details in [llm-agents.md](guide/llm-agents.md).
 
 ## 6. The development loop: run, read, fix
 
+After `git pull`, rerun `npm install`. For realtime, pass `--config config/local.yaml` with the
+inline roster from §3. For backtest, `--agents` accepts a separate file with an `agents:` list
+(`my-roster.yaml` below). Combining inline `agents:` with `--agents` is an error.
+
+Official regimes use Docker. Start the Docker daemon and **build an image for every agent directory
+in the roster before the first backtest**. A frozen twin sharing `dir:` uses the same image. For the
+roster below:
+
+```bash
+for id in noop my-strategy multi-arb; do npm run agent:build -- team "$id"; done
+```
+
+Repeat after runtime updates (each build checks the base source and reuses unchanged layers).
+If `backtest/state/manifest.json` is absent, finish §2's deploy and `npm run gen:state-dump` first.
+For development without Docker, add `--agent-sandbox process` to backtest; this does not check the CPU or memory caps.
+
 Once §2–§3 have run once, the daily routine is these three moves, repeated. **Keep one lap short**: a
 360-block scenario takes 12 minutes.
 
 ```bash
 # 1. Check the wiring on a short run (40 blocks ≈ 80 s; every submission, rejection and exception shows)
-npm run sim:realtime -- --blocks 40 --agents <your roster>
+npm run sim:realtime -- --config config/local.yaml --blocks 40
 
 # 2. Replay one scenario (--seed is required: a scenario is (regime, seed), a regime alone names none)
 npm run backtest -- --regime crash --seed 101 --agents <your roster>
@@ -483,9 +528,19 @@ agents:
     wallet: AUTO
   - id: my-strategy
     wallet: AUTO
+  - id: my-strategy-frozen
+    dir: my-strategy
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1" }
   - id: multi-arb            # a bundled opponent (§8)
     wallet: AUTO
 ```
+
+Keep a **frozen twin** sharing the same code through `dir:` in the same field, and use its difference
+as a control for execution-order noise, even for a rule strategy with no LLM. In #118's measurements,
+identical code with zero installed revisions differed by ΔP≈26 USDC in calm#101 and ΔP≈2,873 USDC
+(ΔT≈9.24) in whale#101. These are observations, not a guaranteed noise bound. Repeat across seeds
+and assess improvements against the variation you measure.
 
 The public set is **a handful of draws from a distribution, not the target**. The generator is open, so
 **sample your own seeds**. Tuning to the published seeds falls apart the moment the non-public set hands
@@ -525,11 +580,17 @@ Zero `submitted` and a column of `rejected` is a **size or inventory** problem, 
 (§11). `submitted` lines but `includedTxCount: 0` in `summary.json` means the priority fee was too low to
 get into a block.
 
-**`summary.json`** has one record per agent. Read `initialValueUsdc` / `finalValueUsdc` (the two ends of
-P), `netPnlUsdc`, `includedTxCount` (mined transactions), `revertCount` (mined but reverted — gas paid for
+**`summary.json`** has one record per agent. Read `pnlUsdc` (P, the final minus initial boundary of `valueSeries.epochSeries`, each at its own marks).
+`initialValueUsdc` / `finalValueUsdc` are both valued at the final marks; their difference is
+`netPnlUsdc`, a different metric that can disagree with P in sign. Also read `includedTxCount` (mined transactions), `revertCount` (mined but reverted — gas paid for
 nothing), `stderrTail` (the last output of a process that died), and the run-level `violations`.
 **`blocks.csv`** is the full record of mined transactions (block, `txIndex`, sender, `priorityFeeWei`,
 `status`); where in the block your transaction landed is read here.
+
+`stress_schedule` in `events.jsonl` is the plan; `stress_event_applied` records actual application or submission. At run end, `stress_event_summary` / `stress_application_warning` (also `summary.json.stressEvents`) identify unobserved windows and price overlays that missed their peak. Match submitted hashes to `blocks.csv` to verify execution.
+
+**Check your priority-fee bid in `blocks.csv`.** Find the submitted hash and compare its
+`priorityFeeWei` and `txIndex` with other transactions in the same block.
 
 When you fix something, change **one thing** and rerun the same seed. Change two at once and the
 distribution cannot tell you which one worked.
@@ -679,6 +740,7 @@ exist there** — that structure only exists in the real thing.
 Run all of these before you send anything.
 
 ```bash
+npm install                    # refresh dependencies after git pull too
 npm run typecheck
 npm run check:strategy          # cheatcode static check (the entry gate)
 npm run backtest -- --scenarios config/scenarios/public.yaml --agents <your roster>
@@ -698,6 +760,8 @@ locally.
 npm run agent:build -- team my-strategy     # build the submission image
 npm run agent:selftest -- my-strategy       # short run under the same caps; reports whether you fit
 ```
+
+`agent:selftest` prints `PASS` / `FAIL` and the exact `summary.json` path. Early exits, missing results and surviving containers also return a nonzero exit code. `PASS` means completion under the cap for that run, not a peak-memory measurement or a guarantee for every scenario.
 
 The competition, and `npm run backtest` on the official regimes, launch agents through this container
 (`run.agentSandbox: docker`). Without docker, `--agent-sandbox process` runs them as plain processes — with

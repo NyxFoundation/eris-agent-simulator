@@ -18,9 +18,9 @@ Each adapter (`sdk/src/protocols/<name>.ts`) implements parse/validate, calldata
 `{"type":"stableSwap","stable":"DAI","tokenIn":"USDC","amountIn":"…"}`. It lives on the Curve
 adapter because those pools come off the Curve factory, so a run has to enable `curve` to reach any
 of them — and a stable whose owning venue is disabled is not tradable, not swept and not priced,
-which is the only combination that leaves nothing to fall through the cracks. Both legs are bounded
-by `limits.maxUsdcInUnits`, which is denominated in USDC's six decimals: an 18-decimal stable needs
-that scaled (`limit * 10n ** 12n`) before you size a sell against it.
+which is the only combination that leaves nothing to fall through the cracks. There is no order-size
+cap. Size each leg against the token's actual balance and decimals (USDC has six; DAI/eUSD have
+eighteen), then account for pool depth, fees and slippage.
 
 The LST venue (issue #38) is the one venue with no fork counterpart — the vault is deployed by
 `deployer/`, so a fork run that lists `lst` fails fast at startup. It is also the one venue where an
@@ -41,7 +41,7 @@ The table shows the default WETH markets. If a WBTC leg (`MARKET_LEGS`) is deplo
 
 In addition there are the protocol-agnostic `noop` / `bundle` (multiple bundleable leaves in a single tx) / `rawTx` / `rawBundle`.
 
-> Actions are expressed as JSON. `bundle` groups bundleable leaves into a single tx (GMX is async, so it can only be sent alone). `rawTx` / `rawBundle` also let you send raw calldata. The per-round trade size limits (config's `limits`: `agentWethWei` / `agentUsdcUnits` / `agentBase`) are applied as **pre-validation of semantic actions** — `rawTx` / `rawBundle` do not interpret calldata and so are exempt from the amount limits (only priority fee and bundle count are validated; fee violations are detected after the fact = recorded in `violations` by `postRunCheck`).
+> Actions are expressed as JSON. `bundle` groups bundleable leaves into a single tx (GMX is async, so it can only be sent alone). `rawTx` / `rawBundle` also let you send raw calldata. There are no per-order amount caps. Semantic actions validate inventory and action fields; raw calldata is not decoded for semantic inventory checks. Both paths enforce priority-fee and gas bounds, including the per-agent block gas budget. Post-run checks record violations in `summary.json`.
 
 ## Stablecoin Accounting
 

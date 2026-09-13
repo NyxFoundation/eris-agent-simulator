@@ -229,8 +229,9 @@ for (const view of marketViews(obs)) {
 2. **The fair price is 1 block late** (a property of on-chain distribution; everyone is delayed equally). In windows
    where fair moves a lot each block, execution based on a stale fair steps the wrong way. It's safer to confirm the
    "persistence" of the gap with `history` before moving
-3. **Initial funding is USDC-only by default** (`funding.wethWei: "0"`). A strategy that starts by selling WETH has no
-   inventory in the first round. Decide direction after checking `obs.balances`
+3. **Read balances rather than assuming the funding.** Official regimes start with 8 WETH, 0.4 WBTC,
+   25,000 USDC and 100 ETH for gas (also scored). Custom configs can still be USDC-only, and trades
+   consume inventory. Decide direction after checking `obs.balances` and `obs.baseBalances`.
 4. **Use `obs.limits` for the fee/slippage defaults; size the trade yourself** (there is no size cap in `limits`). Fee overruns are rejected by validation, wasting that round
 
 ## Deploying your own contracts
