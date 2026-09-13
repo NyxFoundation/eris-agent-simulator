@@ -27,6 +27,7 @@ import {
   transferEth,
   waitForMiningToSettle,
 } from "@eris/sdk/chain.js";
+import { RUN_START_FILE, writeRunStart } from "@eris/sdk/runStart.js";
 import { spawnSync } from "node:child_process";
 import { RunLogger, type RunArtifactWriter } from "../logger.js";
 import {
@@ -2209,6 +2210,23 @@ export async function runRealtimeSimulation(
       await publicClient.getBlockNumber({ cacheTime: 0 }),
     );
     const runStartBlock = lastProcessedBlock + 1;
+    // Issue #117: tell the agents. Their env was built before this block existed, so the run
+    // directory (which they already hold as ERIS_RUN_DIR and write their logs to) carries it. An
+    // agent that counts `blocksRemaining` from the first block *it* saw charged the backlog flush
+    // above against the run and exited inside the stress window; counted from here, a jump in
+    // block numbers is not run time. logger.runDir is the directory the agents were spawned with:
+    // segments roll only inside the block loop below.
+    const runStartRecord = writeRunStart(logger.runDir, {
+      runStartBlock,
+      runBlocks: config.runBlocks,
+    });
+    logger.event({
+      type: "run_start_declared",
+      runStartBlock,
+      runBlocks: config.runBlocks,
+      file: RUN_START_FILE,
+      writtenAt: runStartRecord.writtenAt,
+    });
 
     // ---- live scoring (ADR 0021 §3) ----
     // The epoch boundary is read as it goes past rather than swept up afterwards. On a chain that

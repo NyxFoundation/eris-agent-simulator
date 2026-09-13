@@ -343,6 +343,8 @@ async function main(): Promise<void> {
     ...(marketRegistry
       ? { registry: { address: marketRegistry, fromBlock: registryFromBlock } }
       : {}),
+    // Issue #117: the coordinator declares the run's first block here once it knows it.
+    ...(runDir ? { runDir } : {}),
   });
 
   // ---- resolve the agent module (1 agent = 1 directory) ----
