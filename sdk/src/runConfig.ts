@@ -149,6 +149,7 @@ const SCHEMA: Record<string, string> = {
   "flow.informedArbFeeBps": "ERIS_INFORMED_ARB_FEE_BPS",
   "flow.uninformedArrivalRate": "ERIS_UNINFORMED_ARRIVAL_RATE",
   "flow.uninformedSizeSigma": "ERIS_UNINFORMED_SIZE_SIGMA",
+  "flow.uninformedSizeClampMult": "ERIS_UNINFORMED_SIZE_CLAMP_MULT",
   "flow.gmxArrivalRate": "ERIS_GMX_ARRIVAL_RATE",
   "flow.gmxSizeSigma": "ERIS_GMX_SIZE_SIGMA",
   "flow.aaveActorSizeSigma": "ERIS_AAVE_ACTOR_SIZE_SIGMA",

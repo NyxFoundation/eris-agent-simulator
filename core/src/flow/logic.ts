@@ -60,6 +60,10 @@ export type FlowLimits = {
   // λ=0=off (fixed count + uniform).
   uninformedArrivalRate: number;
   uninformedSizeSigma: number;
+  // Issue #79: the upper clamp on a lognormal uninformed size, as a multiple of uninformedMax.
+  // 3 is the constant the clamp used to be (byte-compatible); the official regimes set 10 so
+  // the tail prints that replace the halved arrival count as the source of dislocations exist.
+  uninformedSizeClampMult: number;
   // ADR 0015 Notes: extend the above to GMX/Aave. gmxArrivalRate=0 / aaveActorSizeSigma=0 is the legacy behavior.
   gmxArrivalRate: number;
   gmxSizeSigma: number;
@@ -131,6 +135,8 @@ export type FlowContextWire = {
     // ADR 0015 Notes / amm-challenge retail: uninformed arrivals Poisson(λ) / lognormal σ. unset/"0"=off.
     uninformedArrivalRate?: string;
     uninformedSizeSigma?: string;
+    // Issue #79: size clamp multiple. unset = 3 (the old constant).
+    uninformedSizeClampMult?: string;
     // ADR 0015 Notes: GMX/Aave extension. unset/"0"=off (legacy behavior).
     gmxArrivalRate?: string;
     gmxSizeSigma?: string;
@@ -321,6 +327,10 @@ export function buildAmmFlow(
   // Seed the persisted trend so its direction is not a pure function of the block window (see
   // trendBit). Comes from FlowContextWire.flowSeed; 0 is only reached by a direct unit-test call.
   trendSeed = 0,
+  // Issue #79: the lognormal size clamp as a multiple of uninformedMax. 3 = the constant this
+  // used to be. Only the upper clamp is a knob; the 2% floor stays (it keeps a size from rounding
+  // to nothing, not the pool from breaking).
+  uninformedSizeClampMult = 3,
 ): FlowOrder[] {
   const orders: FlowOrder[] = [];
   const swapType =
@@ -379,13 +389,17 @@ export function buildAmmFlow(
     let uninformedTokenIn: TokenSymbol =
       trendTokenIn ?? (rng.bool() ? base : "USDC");
     // Poisson mode makes size lognormal (heavy-tailed = occasionally large). Mean = uninformedMax×0.5,
-    // about the same level as the old uniform (mean ~52.5%). Outliers are clamped to [2%, 300%] so the pool isn't broken.
+    // about the same level as the old uniform (mean ~52.5%). Outliers are clamped to
+    // [2%, uninformedSizeClampMult × 100%]. The clamp used to be a constant 3; with the calibrated
+    // σ = 1.5 and 0.45 arrivals/block (issue #79) a 10× clamp lets ~4 prints per venue per epoch
+    // exceed 3 WETH (~60 bps of impact each on a 1,000 WETH full-range side) and about one every two
+    // epochs exceed 10 WETH -- the tail that stands in for the halved count.
     const uninformedWethEquiv =
       uninformedArrivalRate > 0
         ? scaleFraction(
             uninformedMaxWethWei,
             Math.min(
-              3,
+              uninformedSizeClampMult,
               Math.max(0.02, rng.lognormal(0.5, uninformedSizeSigma)),
             ),
           )
@@ -790,6 +804,10 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
       Number(wire.uninformedArrivalRate ?? "0"),
     ),
     uninformedSizeSigma: Math.max(0, Number(wire.uninformedSizeSigma ?? "1")),
+    uninformedSizeClampMult: Math.max(
+      0.02,
+      Number(wire.uninformedSizeClampMult ?? "3"),
+    ),
     gmxArrivalRate: Math.max(0, Number(wire.gmxArrivalRate ?? "0")),
     gmxSizeSigma: Math.max(0, Number(wire.gmxSizeSigma ?? "1")),
     aaveActorSizeSigma: Math.max(0, Number(wire.aaveActorSizeSigma ?? "0")),
@@ -852,6 +870,7 @@ export function buildFlowOrders(
           limits.uninformedSizeSigma,
           limits.uninformedFlowTrendCorrelation,
           ctx.flowSeed ?? 0,
+          limits.uninformedSizeClampMult,
         ),
       );
     } else if (protocol === "aave") {
@@ -961,6 +980,7 @@ export function buildFlowOrders(
           limits.uninformedSizeSigma,
           limits.uninformedFlowTrendCorrelation,
           ctx.flowSeed ?? 0,
+          limits.uninformedSizeClampMult,
         ),
       );
     }

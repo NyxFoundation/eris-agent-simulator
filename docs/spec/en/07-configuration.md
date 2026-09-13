@@ -129,12 +129,13 @@ The template (`config/example.yaml`) hands out WETH for the same reason — it i
 | `uninformedTrendCorrelation` | 0 | Probability of following the market-wide direction |
 | `informedMaxWethWei` | 2 WETH | Size basis for the informed side |
 | `balancerMaxWethWei` / `curveMaxWethWei` | 1 WETH | Per venue |
-| `gmxMaxSizeUsd` | 20,000 USD | |
+| `gmxMaxSizeUsd` | 100,000 USD | issue #79 (was 20,000); orders run $500 / $2,500 mean / $10,000 max |
 | `gmxActivityProb` / `gmxMaxBurst` | 0.5 / 2 | Legacy mode |
 | `aaveMaxWethWei` | 2 WETH | |
 | `aaveActivityProb` / `aaveActorCount` | 0.5 / 4 | The actor pool |
 | `informedArbFeeBps` | **30** | The arbitrage fee band (0 disables) |
-| `uninformedArrivalRate` / `uninformedSizeSigma` | **0.9 / 1.0** | Poisson arrivals / lognormal sizes |
+| `uninformedArrivalRate` / `uninformedSizeSigma` | **0.45 / 1.5** | Poisson arrivals / lognormal sizes (calibrated to Base in issue #79; were 0.9 / 1.0) |
+| `uninformedSizeClampMult` | 3 (regimes set 10) | Upper clamp on a lognormal size, as a multiple of uninformedMax (issue #79) |
 | `gmxArrivalRate` / `gmxSizeSigma` | **0.75 / 1.0** | Same for GMX |
 | `aaveActorSizeSigma` | **1.0** | Spread of actor collateral |
 | `baseMax` | `{WETH: 0}` | AMM flow cap for other bases (0 = no flow for that base) |

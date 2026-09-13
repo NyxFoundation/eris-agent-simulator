@@ -225,6 +225,7 @@ export async function buildFlowContext(
       informedArbFeeBps: String(ctx.config.informedArbFeeBps),
       uninformedArrivalRate: String(ctx.config.uninformedFlowArrivalRate),
       uninformedSizeSigma: String(ctx.config.uninformedFlowSizeSigma),
+      uninformedSizeClampMult: String(ctx.config.uninformedFlowSizeClampMult),
       gmxArrivalRate: String(ctx.config.gmxFlowArrivalRate),
       gmxSizeSigma: String(ctx.config.gmxFlowSizeSigma),
       aaveActorSizeSigma: String(ctx.config.aaveFlowActorSizeSigma),

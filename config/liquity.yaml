@@ -53,8 +53,9 @@ flow:
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
   informedArbFeeBps: 30
-  uninformedArrivalRate: "0.9"
-  uninformedSizeSigma: "1.0"
+  uninformedArrivalRate: "0.45" # issue #79: Base measures 0.41-0.44 swaps per 2 s block on its two main WETH/USDC venues
+  uninformedSizeSigma: "1.5" # issue #79: mean-preserving; median 0.30 -> 0.16 WETH, mean / median 1.65 -> 3.1 (measured 3-11)
+  uninformedSizeClampMult: "10" # issue #79: was a constant 3. ~4 prints > 3 WETH per venue per epoch, ~1 > 10 WETH every two epochs
 
 stress:
   events:
@@ -71,9 +72,12 @@ stress:
     # where the right move is to wait. A range where every draw pays would measure reaction time
     # rather than judgement.
     #
-    # One more thing this scale makes sharp: with a 250k eUSD supply, Liquity's baseRate rises about
-    # 100bps per 5k redeemed, so the *first* redemption is cheap and the next one may not clear at
-    # all. That is the venue's own timing pressure, not a calibration artefact.
+    # One more thing this scale makes sharp: with a 350k eUSD supply (issue #79 grew the genesis
+    # Trove from 250k with the Stability Pool, 50k -> 125k), Liquity's baseRate rises about 71bps per
+    # 5k redeemed (it was ~100bps at 250k), so the *first* redemption is cheap and the next one may
+    # not clear at all. That is the venue's own timing pressure, not a calibration artefact. The
+    # depeg calibration above is per 100k pool and does not move; what moved is the environment's
+    # sell inventory (the genesis surplus, 100k -> 125k), which is what keeps the 0.6 draw uncapped.
     - {
         type: eusdDepeg,
         magnitudeRange: [0.4, 0.6],

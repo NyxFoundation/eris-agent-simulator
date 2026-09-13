@@ -615,8 +615,17 @@ async function supplySharedAsset(
 }
 
 /**
- * Sanity-check the shared mock token (WETH/USDC) reserves with one supply -> borrow round trip.
+ * Seed the shared mock token (WETH/USDC) reserves and sanity-check them with one borrow.
  * No faucet needed: the deployer holds WETH (wrap) and USDC (mint) balances from deployTokens.
+ *
+ * Issue #79: 5M USDC + 2,000 WETH supplied (was 9,000 USDC + 10 WETH, 0.005x the spot pool
+ * against 20-50x on Base / Ethereum). Deliberately not the Base ratio: utilization and the rate
+ * curve do nothing inside a 12-minute epoch (EVM time is not warped), so depth only has to make
+ * agent-scale draws execute -- a 25k-100k USDC borrow, levered-long's supply loop -- instead of
+ * hitting an empty reserve. The 1,000 USDC borrow stays as the sanity check.
+ *
+ * WETH budget: tokens.ts wraps 10,000 WETH at deploy. The venues take 1,000 each on uniswap /
+ * balancer / curve, 1,500 on the GM pool (#79) and 2,010 here (#79) = 6,510; lst.ts wraps its own.
  */
 async function seedSharedSupplyBorrow() {
   const reg = getRegistry();
@@ -629,10 +638,14 @@ async function seedSharedSupplyBorrow() {
   info("Aave V3: supply shared USDC/WETH -> borrow shared USDC");
   await supplySharedAsset(
     usdc,
-    9000n * 10n ** 6n,
-    "9000 USDC (liquidity+collateral)",
+    5_000_000n * 10n ** 6n,
+    "5,000,000 USDC (liquidity+collateral)",
   );
-  await supplySharedAsset(weth, 10n * 10n ** 18n, "10 WETH (collateral)");
+  await supplySharedAsset(
+    weth,
+    2_000n * 10n ** 18n,
+    "2,000 WETH (liquidity+collateral)",
+  );
   await borrowAsset(usdc, 1000n * 10n ** 6n, "1000 USDC");
 
   const acct = await accountData();

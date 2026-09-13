@@ -298,11 +298,18 @@ export type SimConfig = {
   // 0 reverts to the legacy gap-linear informed flow.
   informedArbFeeBps: number;
   // ADR 0015 Notes / amm-challenge retail: Poisson(λ) uninformed arrivals with lognormal sizes.
-  // Default λ=0.9 = on (count per block is Poisson(λ), each size is lognormal (mean = uninformedMax×0.5,
+  // Default λ=0.45 = on (count per block is Poisson(λ), each size is lognormal (mean = uninformedMax×0.5,
   // σ=uninformedFlowSizeSigma) = bursty, heavy-tailed realistic flow). 0 reverts to the legacy fixed count + uniform.
+  // Issue #79 anchored the defaults to measured venues (2026-09-07): Base's two main WETH/USDC pools
+  // see 0.41-0.44 swaps per 2 s block, and the swap-size distribution has mean ÷ median of 3-11
+  // (σ = 1.5 gives 3.1; the old 1.0 gave 1.65). `Rng.lognormal` is mean-preserving, so the mean
+  // order stays 0.5 × uninformedMax and only the tail moves.
   // Note: variance rises, so read run comparisons as an aggregate over multiple seeds.
   uninformedFlowArrivalRate: number;
   uninformedFlowSizeSigma: number;
+  // Upper clamp on a lognormal uninformed size, as a multiple of uninformedMax (issue #79). 3 is
+  // what the clamp was as a constant; the regimes set 10 so the tail exists.
+  uninformedFlowSizeClampMult: number;
   // Extends amm-challenge retail to GMX/Aave.
   // gmxFlowArrivalRate: >0 makes GMX open counts Poisson(λ) and sizes lognormal (default 0.75=on). 0 = legacy.
   // gmxFlowSizeSigma: σ of the GMX lognormal size (default 1.0).
@@ -518,9 +525,12 @@ export function loadConfig(env = process.env): SimConfig {
       env.CURVE_FLOW_MAX_WETH_WEI,
       1_000_000_000_000_000_000n,
     ),
+    // Issue #79: $100,000 (was $20,000). The lognormal size is 2.5% of max, clamped to [0.5%, 10%],
+    // so orders run $500 / $2,500 mean / $10,000 max -- an order of magnitude above spot swaps,
+    // which is what every perp venue measured shows.
     gmxFlowMaxSizeUsd: bigintEnv(
       env.GMX_FLOW_MAX_SIZE_USD,
-      20_000n * 10n ** 30n,
+      100_000n * 10n ** 30n,
     ),
     // Per-block probability of emitting gmx flow (default 0.5). Decided each block via rng, sent sporadically.
     gmxFlowActivityProb: floatEnv(env.GMX_FLOW_ACTIVITY_PROB, 0.5),
@@ -537,15 +547,20 @@ export function loadConfig(env = process.env): SimConfig {
     // amm-challenge arbitrage fee boundary (default 30bps = on. Real arbitrage does not take a gap
     // below the fee; matched to the venue fee ~30bps). 0 disables it = revert to the legacy gap-linear informed flow.
     informedArbFeeBps: Math.max(0, intEnv(env.ERIS_INFORMED_ARB_FEE_BPS, 30)),
-    // amm-challenge retail arrivals (default λ=0.9 = on. Poisson arrivals + lognormal sizes = bursty,
-    // heavy-tailed realistic flow. Calibrated to roughly the same mean as the legacy fixed count). 0 disables it = revert to fixed count + uniform.
+    // amm-challenge retail arrivals (default λ=0.45 = on. Poisson arrivals + lognormal sizes = bursty,
+    // heavy-tailed realistic flow; issue #79 anchored λ and σ to Base). 0 disables it = revert to fixed count + uniform.
     uninformedFlowArrivalRate: Math.max(
       0,
-      floatEnv(env.ERIS_UNINFORMED_ARRIVAL_RATE, 0.9),
+      floatEnv(env.ERIS_UNINFORMED_ARRIVAL_RATE, 0.45),
     ),
     uninformedFlowSizeSigma: Math.max(
       0,
-      floatEnv(env.ERIS_UNINFORMED_SIZE_SIGMA, 1),
+      floatEnv(env.ERIS_UNINFORMED_SIZE_SIGMA, 1.5),
+    ),
+    // Default 3 = the constant the clamp used to be; the regime YAMLs set 10.
+    uninformedFlowSizeClampMult: Math.max(
+      0.02,
+      floatEnv(env.ERIS_UNINFORMED_SIZE_CLAMP_MULT, 3),
     ),
     // Extends amm-challenge retail to GMX/Aave (default on. 0 reverts to legacy behavior).
     gmxFlowArrivalRate: Math.max(0, floatEnv(env.ERIS_GMX_ARRIVAL_RATE, 0.75)),
