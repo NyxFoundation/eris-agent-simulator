@@ -77,9 +77,9 @@ flow:
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
   # Realistic flow (from ADR 0015 Notes / amm-challenge). The following are defaults and take effect even if omitted.
-  #   informedArbFeeBps: makes the environment's arbitrage (informed flow) fee-aware. Closes the
-  #     excess only when the gap exceeds the fee band (default 30bps), leaving a residual = fee (does
-  #     not fully close to fair every block). 0 for the legacy behavior.
+  #   informedArbFeeBps: makes informed flow fee-aware. Sizes against the excess past the fee band
+  #     (default 30bps), bounded by inventory and order caps. The realized residual also depends on
+  #     depth, noise flow and inclusion timing; it is not guaranteed to equal the fee. 0 is legacy.
   #   uninformedArrivalRate: makes uninformed flow Poisson-arriving (lambda, default 0.45). 0 reverts to a fixed count.
   #   uninformedSizeSigma: makes uninformed flow size lognormal (sigma, default 1.5. heavy tail = occasional large orders).
   #   uninformedSizeClampMult: upper clamp on a lognormal size as a multiple of uninformedMax (default 3; the regimes set 10).

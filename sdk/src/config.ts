@@ -294,7 +294,7 @@ export type SimConfig = {
   aaveFlowActorCount: number;
   // ADR 0015 Notes / amm-challenge: threshold (bps) that makes informed (arbitrage) flow fee-aware.
   // Default 30bps = on (emit informed flow only when the gap exceeds the fee band, and only for the
-  // excess; the remainder = fee. Same economics as real arbitrage, so the market is not over-tightened).
+  // excess. Inventory, order-size limits and venue depth determine how much gap actually closes).
   // 0 reverts to the legacy gap-linear informed flow.
   informedArbFeeBps: number;
   // ADR 0015 Notes / amm-challenge retail: Poisson(λ) uninformed arrivals with lognormal sizes.
@@ -319,6 +319,9 @@ export type SimConfig = {
   aaveFlowActorSizeSigma: number;
   // ADR 0013: per-leg AMM flow cap for non-WETH bases (base units). Empty/0 default = WBTC flow off.
   baseFlowMax: Record<string, bigint>;
+  // Optional non-WETH Uniswap informed cap; absent per-base values inherit baseFlowMax.
+  // Balancer/Curve retain the shared base cap, matching their WETH leg semantics.
+  baseInformedFlowMax: Record<string, bigint>;
   // ---- LST venue (issue #38) ----
   // Yield runs on a compressed *economic* clock rather than EVM time: one block stands for this
   // many seconds of staking. EVM time is deliberately not warped for it (that would also move
@@ -573,6 +576,7 @@ export function loadConfig(env = process.env): SimConfig {
     // (e.g. FLOW_MAX_WBTC_SATS). Default 0 = flow off for WBTC etc. → extraBases do not consume RNG = byte-compatible.
     // WETH flow keeps using uninformed/balancer/curve FlowMaxWethWei (not listed here).
     baseFlowMax: readBaseAmounts(env, "FLOW_MAX", { WETH: 0n }),
+    baseInformedFlowMax: readBaseAmounts(env, "FLOW_INFORMED_MAX", {}, undefined, "omit"),
     // LST venue (issue #38). The defaults mirror what the deployer bakes into the state dump, so a
     // run that says nothing about lst behaves exactly as deployed.
     lstSimulatedSecondsPerBlock: Math.max(
@@ -745,15 +749,18 @@ function readBaseAmounts(
   prefix: string,
   wethSeed: Record<string, bigint>,
   infix?: string,
+  unset: "zero" | "omit" = "zero",
 ): Record<string, bigint> {
   const out: Record<string, bigint> = {};
   for (const t of baseTokens()) {
     if (t.symbol === "WETH") {
-      out.WETH = wethSeed.WETH ?? 0n;
+      if (unset === "zero") out.WETH = wethSeed.WETH ?? 0n;
       continue;
     }
     const unit = unitSuffixFor(t.decimals);
     const key = [prefix, t.symbol, infix, unit].filter(Boolean).join("_");
+    // Optional overrides must distinguish absent (inherit the shared cap) from explicit zero (off).
+    if (unset === "omit" && !env[key]?.trim()) continue;
     out[t.symbol] = bigintEnv(env[key], 0n);
   }
   return out;

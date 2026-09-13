@@ -98,8 +98,8 @@ flow bot は**独立プロセス**（`core/src/flow/market-maker.ts`）で、生
 
 | 要素 | 規則 | 既定 |
 |---|---|---|
-| 到着数 | `Poisson(λ)`。λ=0 なら固定 `uninformedCount` 件 | λ = 0.9 |
-| サイズ | `lognormal(mean = max×0.5, σ)` を `[2%, 300%]` に clamp。λ=0 なら `max/20 .. max` の一様 | σ = 1.0 |
+| 到着数 | `Poisson(λ)`。λ=0 なら固定 `uninformedCount` 件 | λ = 0.45 |
+| サイズ | `lognormal(mean = max×0.5, σ)` を `[2%, clampMult×100%]` に clamp。λ=0 なら `max/20 .. max` の一様 | σ = 1.5、clampMult = 3（公式 regime は 10） |
 | 方向 | `persistBlocks > 1` なら `floor(round/persistBlocks)` の窓ごとに `trendBit(flowSeed, window, venue)` で固定。それ以外は毎回 `rng.bool()` | persist = 1 |
 | 相関 | `trendCorrelation` の確率で venue 個別のビットではなく**市場共通のビット**に従う | 0 |
 | priority fee | `default + [1,50) × 10⁶ wei` | |
@@ -115,9 +115,11 @@ effectiveDeviation = max(0, rawDeviation − feeBps/10000)
 size = informedMax × min(1, effectiveDeviation × 20)
 ```
 
-`flow.informedArbFeeBps`（既定 30bps）が「手数料帯の中は裁定が成り立たないので閉じない」を表現する。**残差 = 手数料帯**が残るので、毎ブロック fair まで完全に閉じることはない = エージェント側に取り分が残る。priority fee は `default + [50,100) × 10⁶ wei` で uninformed より高い。
+`flow.informedArbFeeBps`（既定 30bps）は注文を出す閾値であり、超過した乖離に応じてサイズ・在庫の範囲内で注文する。**残差が 30bps になる保証ではない。** 実際の乖離は板の深さ、noise flow、fair price の変化、着弾時刻で決まる。priority fee は `default + [50,100) × 10⁶ wei` で uninformed より高い。
 
-USDC-only 配布の run では flow ウォレットも base 在庫を持たないため、base 売りの注文は自動的に USDC 買いへ倒れる。
+informed の売りは base 在庫内に制限し、在庫ゼロなら買い自体が fair に近づく機会を待つ。補充のために割高な pool を買う方向へ反転しない。uninformed は在庫不足時に反転することがある。agent と flow の初期資金は別設定である。
+
+WETH 以外の base は `flow.baseMax` が共通上限となる。任意の `flow.baseInformedMax` は Uniswap の informed 上限だけを上書きし、未指定なら共通値を継承、明示的な 0 ならその leg を停止する。公式 12 regime は flow ウォレットに 7.5 WBTC を配り、Uniswap informed 上限を 0.1 WBTC とする。開始 fair（$60,000/$3,000）で 150 WETH の資金・2 WETH の上限と USD 換算額が一致し、他の WBTC 上限は 0.05 のまま。[#124 の実測](../verification/wbtc-residual-124.md)を参照。観測された残差は一定の裁定利益を意味しない。
 
 ### 3.2.3 GMX フロー
 
@@ -142,7 +144,7 @@ USDC-only 配布の run では flow ウォレットも base 在庫を持たな�
 |---|---|
 | 価格パス（seed の純関数） | tx の到着タイミング |
 | ストレススケジュール（seed の純関数） | ブロック内の着順（手数料が同じ場合） |
-| flow bot の注文列（flowSeed の純関数） | 実際に約定するかどうか（板の状態に依存） |
+| 同じ RNG 状態・context からの flow 生成 | context（価格・在庫）と実際に約定するかどうか |
 
 したがって**同一 seed でも run の結果はぶれる**（[00 §0.5 P3](00-overview.md)）。
 

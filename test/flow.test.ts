@@ -107,7 +107,7 @@ test("USDC-only flow: aave emits a USDC->WETH swap from the same wallet before t
   );
 });
 
-test("USDC-only flow: WETH-in AMM flow is flipped to USDC-in to avoid an insufficient-balance revert", () => {
+test("USDC-only flow emits only funded buys and never reverses an informed sell", () => {
   const orders = buildFlowOrders(new Rng(7), usdcOnlyCtx(1));
   for (const order of orders.filter(
     (o) =>

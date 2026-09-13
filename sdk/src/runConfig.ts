@@ -192,6 +192,7 @@ const BASE_SECTIONS: Record<string, { prefix: string; infix?: string }> = {
   "funding.base": { prefix: "INITIAL" },
   "funding.flowBase": { prefix: "FLOW_BASE" },
   "flow.baseMax": { prefix: "FLOW_MAX" },
+  "flow.baseInformedMax": { prefix: "FLOW_INFORMED_MAX" },
 };
 // Per-base overrides whose env name is `<PREFIX>_<SYMBOL>` with no unit suffix. Distinct from
 // BASE_SECTIONS, whose names carry one (`MAX_AGENT_WBTC_IN_SATS`): a volatility has no unit.

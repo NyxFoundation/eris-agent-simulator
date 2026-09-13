@@ -75,7 +75,7 @@ funding:
   # submitted against a zero balance, ~90 % of the WBTC informed rows reverted).
   flowWethWei: "150000000000000000000" # 150 WETH per flow wallet
   flowUsdcUnits: "450000000000" # 450,000 USDC per flow wallet (= 150 WETH at $3,000)
-  flowBase: { WBTC: "50000000" } # 0.5 WBTC per flow wallet
+  flowBase: { WBTC: "750000000" } # 7.5 WBTC: same opening notional as 150 WETH (#124)
   usdcUnits: "25000000000"
 
 flow:
@@ -90,6 +90,7 @@ flow:
   gmxSizeSigma: "1.0"
   aaveActorSizeSigma: "1.0"
   baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
+  baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
 # Ranges rather than values, fixed by the seed, for the same reason every other stress event is
 # (ADR 0009 / ADR 0004): a published regime whose wave is always 1.5x is a constant to memorise.

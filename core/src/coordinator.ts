@@ -126,14 +126,14 @@ export async function buildFlowContext(
     };
   });
 
-  // ADR 0013 Phase 8: AMM flow context for non-WETH bases. Only include bases whose flow max > 0 and
-  // whose price is available (omit when max=0/unset -> buildFlowOrders doesn't iterate that base and
-  // consumes no RNG = byte-compatible).
+  // ADR 0013 Phase 8: AMM flow context for non-WETH bases. Omit bases with no positive flow cap or
+  // available price; buildFlowOrders then consumes no RNG for that base (byte-compatible).
   const extraBases: NonNullable<FlowContextWire["extraBases"]> = [];
   for (const t of baseTokens()) {
     if (t.symbol === "WETH") continue;
     const max = ctx.config.baseFlowMax?.[t.symbol] ?? 0n;
-    if (max <= 0n) continue;
+    const informedMax = ctx.config.baseInformedFlowMax?.[t.symbol] ?? max;
+    if (max <= 0n && informedMax <= 0n) continue;
     const basePoolPrices: NonNullable<
       FlowContextWire["extraBases"]
     >[number]["poolPrices"] = {};
@@ -163,7 +163,7 @@ export async function buildFlowContext(
       poolPrices: basePoolPrices,
       fairPriceUsd,
       uninformedFlowMaxBaseWei: maxStr,
-      informedFlowMaxBaseWei: maxStr,
+      informedFlowMaxBaseWei: informedMax.toString(),
       balancerFlowMaxBaseWei: maxStr,
       curveFlowMaxBaseWei: maxStr,
     });
