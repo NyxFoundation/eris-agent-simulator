@@ -48,6 +48,9 @@ The participant-facing corrections are in both `docs/competition-start.md` and
 
 ## Independent re-walk
 
+The subsequent [Docker validation](docker-118-124.md) covers TypeScript/Python self-tests,
+a four-agent Docker backtest, resource limits, image freshness and early-exit reporting.
+
 The post-merge walk requested by #118 should use a different reviewer and start without state or
 images. Check local deployment and state generation, Docker builds, both TypeScript and Python,
 fork-mode instructions, and a reachable inference backend that installs a revision. These changes

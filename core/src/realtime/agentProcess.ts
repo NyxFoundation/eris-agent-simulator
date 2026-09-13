@@ -203,7 +203,11 @@ export class RealtimeAgentProcess {
         this.onExit?.({
           code: code ?? undefined,
           signal: signal ?? undefined,
-          reason: "exited before the run ended",
+          // The coordinator persists this reason in summary.json. Keep the termination details
+          // here too so report consumers can diagnose the exit without reading events.jsonl.
+          reason: "exited before the run ended" +
+            (code !== null ? ` (code ${code})` : "") +
+            (signal !== null ? ` (signal ${signal})` : ""),
         });
       }
     });

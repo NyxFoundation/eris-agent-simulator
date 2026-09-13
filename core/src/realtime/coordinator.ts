@@ -1902,11 +1902,7 @@ export async function runRealtimeSimulation(
           ...info,
           stderrTail: child.getStderr().slice(-2000),
         });
-        console.error(
-          `[agent] ${runtime.id} ${info.reason}` +
-            (info.code !== undefined ? ` (code ${info.code})` : "") +
-            (info.signal ? ` (signal ${info.signal})` : ""),
-        );
+        console.error(`[agent] ${runtime.id} ${info.reason}`);
       };
     }
     // What `agents_ready` measures boot time from (issue #94).

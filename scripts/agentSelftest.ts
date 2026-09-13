@@ -31,7 +31,7 @@ export function selftestVerdict(summary: unknown, id: string, memory: string): {
   const agent = matches[0];
   if (agent.processExitedEarly !== undefined && agent.processExitedEarly !== false) {
     const oom = /(?:code|exit)\s+137\b|SIGKILL/.test(agent.processExitedEarly)
-      ? ` (SIGKILL; possible OOM at memory cap ${memory})` : "";
+      ? ` (possible OOM at memory cap ${memory}; exit status alone does not prove OOM)` : "";
     return {
       passed: false,
       message: `FAIL ${id}: ${agent.processExitedEarly}${oom}\n${agent.stderrTail}`.trimEnd(),
