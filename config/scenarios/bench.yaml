@@ -1,0 +1,3 @@
+# 負荷試験用の最小シナリオセット（2シナリオ）。本番の評価には使わない。
+regimes: [metric-calm, metric-crash]
+seeds: [101]
