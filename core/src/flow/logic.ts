@@ -311,7 +311,7 @@ export function buildAmmFlow(
   // ADR 0015 Notes / amm-challenge: have informed (arbitrage) flow fill "only the gap beyond the fee band".
   // 0 (default) = the old linear gap (disabled. byte-compatible). >0 is fee-aware:
   //   - |gap| <= feeBps is a no-arb band and is skipped (arb isn't profitable, so don't over-tighten the market)
-  //   - beyond that, close only the excess past the fee band (residual = fee. same as real arbitrage)
+  //   - beyond that, size against the excess past the fee band; inventory and depth still bound the response
   // Our venues are Uniswap v3 / weighted / crypto, not pure CPMM, so we port only the "fee-boundary
   // economics" rather than closed-form coefficients (depth uses the existing informedMax as a proxy).
   informedArbFeeBps = 0,
@@ -440,7 +440,8 @@ export function buildAmmFlow(
   // Align both sides at informedMaxWethWei × gap, and control the USDC side by the base cap too.
   // Lowering informedMaxWethWei makes the flow bot close the gap less, increasing the arb's take.
   // fee-aware (informedArbFeeBps>0): if |gap| is within the fee band, arbitrage is unprofitable so don't
-  // emit informed; beyond it, close only the excess past the fee band (residual = fee. same economics as amm-challenge arb).
+  // emit informed; beyond it, size against the excess past the fee band. This is a bounded response,
+  // not a guarantee that the next pool mid will finish at the fee boundary.
   const rawDeviation = Math.abs(fairPrice / poolPrice - 1);
   if (informedArbFeeBps > 0 && rawDeviation * 10_000 <= informedArbFeeBps) {
     return orders; // no-arb band: don't over-tighten the market (leave the arb agent's take)
@@ -449,19 +450,18 @@ export function buildAmmFlow(
     informedArbFeeBps > 0
       ? Math.max(0, rawDeviation - informedArbFeeBps / 10_000)
       : rawDeviation;
-  let informedTokenIn: TokenSymbol = poolPrice < fairPrice ? "USDC" : base;
+  const informedTokenIn: TokenSymbol = poolPrice < fairPrice ? "USDC" : base;
   const gap = Math.min(1, effectiveDeviation * 20);
-  const informedWethEquiv =
+  let informedWethEquiv =
     (informedMaxWethWei * BigInt(Math.max(1, Math.floor(gap * 100)))) / 100n;
-  if (
-    informedTokenIn === base &&
-    (usdcOnlyFlow ||
-      (balances?.informed &&
-        baseHeld(balances.informed, base) < informedWethEquiv))
-  ) {
-    // USDC-only runs start flow wallets with no base token. Buy base first so a later
-    // sell-side informed flow can use the same wallet instead of reverting.
-    informedTokenIn = "USDC";
+  if (informedTokenIn === base) {
+    // A depleted arbitrage wallet must not buy an already overpriced pool to restock (#124).
+    // Sell only what is held; when empty, wait until buying is itself toward fair. Keep the
+    // priority-fee RNG draw below even for a zero-size order so later flow draws do not shift.
+    if (balances?.informed) {
+      const held = baseHeld(balances.informed, base);
+      if (held < informedWethEquiv) informedWethEquiv = held;
+    } else if (usdcOnlyFlow) informedWethEquiv = 0n;
   }
   const informedAmount =
     informedTokenIn === base

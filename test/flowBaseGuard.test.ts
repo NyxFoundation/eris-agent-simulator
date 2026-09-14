@@ -75,6 +75,7 @@ test("a flow wallet with WETH but no WBTC never sells WBTC (the guard reads the 
   for (const round of [1, 2, 3, 4, 5]) {
     const orders = wbtcOrders(buildFlowOrders(new Rng(round), wbtcCtx(round, undefined)));
     assert.ok(orders.length > 0, "the WBTC leg is on");
+    assert.equal(orders.filter(o => o.kind === "informed").length, 0, "an empty informed wallet waits rather than buying above fair");
     for (const o of orders)
       assert.equal((o.action as { tokenIn: string }).tokenIn, "USDC");
     // Same with the base listed and empty.
@@ -108,4 +109,50 @@ test("the WETH path still reads wethWei, with or without a bases map", () => {
     (o) => (o.action as { base?: string }).base === undefined,
   );
   assert.deepEqual(withBases, without);
+});
+
+test("an inventory-limited informed sell is capped, never reversed into a buy above fair", () => {
+  for (const held of ["0", "1", "10000", "100000", "50000000"]) {
+    const context = wbtcCtx(1, { WBTC: held });
+    const informed = wbtcOrders(buildFlowOrders(new Rng(1), context)).filter(o => o.kind === "informed");
+    if (held === "0") assert.equal(informed.length, 0);
+    else {
+      assert.equal(informed.length, 3);
+      for (const order of informed) {
+        const action = order.action as { tokenIn: string; amountIn: string };
+        assert.equal(action.tokenIn, "WBTC");
+        assert.ok(BigInt(action.amountIn) <= BigInt(held));
+      }
+    }
+  }
+});
+
+test("an empty informed wallet can buy below fair, and a depleted quote balance cannot fund a buy", () => {
+  const context = wbtcCtx(1, { WBTC: "0" });
+  context.extraBases![0].poolPrices = { uniswap: 59000, balancer: 59000, curve: 59000 };
+  const buys = wbtcOrders(buildFlowOrders(new Rng(1), context)).filter(o => o.kind === "informed");
+  assert.equal(buys.length, 3);
+  for (const order of buys) assert.equal((order.action as { tokenIn: string }).tokenIn, "USDC");
+  for (const balance of Object.values(context.flowBalances!)) balance.usdcUnits = "0";
+  assert.equal(wbtcOrders(buildFlowOrders(new Rng(1), context)).filter(o => o.kind === "informed").length, 0);
+});
+
+test("capping a sell preserves the random stream used by subsequent flow", () => {
+  const empty = new Rng(123);
+  const funded = new Rng(123);
+  buildFlowOrders(empty, wbtcCtx(1, { WBTC: "0" }));
+  buildFlowOrders(funded, wbtcCtx(1, { WBTC: "50000000" }));
+  assert.equal(empty.next(), funded.next());
+});
+
+test("an initially USDC-only wallet can sell acquired base inventory toward fair", () => {
+  const context = wbtcCtx(1, { WBTC: "100000" });
+  context.usdcOnlyFlow = true;
+  const informed = wbtcOrders(buildFlowOrders(new Rng(1), context)).filter(o => o.kind === "informed");
+  assert.equal(informed.length, 3);
+  for (const order of informed) {
+    const action = order.action as { tokenIn: string; amountIn: string };
+    assert.equal(action.tokenIn, "WBTC");
+    assert.equal(action.amountIn, "100000");
+  }
 });

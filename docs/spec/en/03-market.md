@@ -98,8 +98,8 @@ The flow bot is an **independent process** (`core/src/flow/market-maker.ts`) who
 
 | Element | Rule | Default |
 |---|---|---|
-| Arrivals | `Poisson(λ)`; with λ=0, a fixed `uninformedCount` | λ = 0.9 |
-| Size | `lognormal(mean = max×0.5, σ)` clamped to `[2%, 300%]`; with λ=0, uniform over `max/20 .. max` | σ = 1.0 |
+| Arrivals | `Poisson(λ)`; with λ=0, a fixed `uninformedCount` | λ = 0.45 |
+| Size | `lognormal(mean = max×0.5, σ)` clamped to `[2%, clampMult×100%]`; with λ=0, uniform over `max/20 .. max` | σ = 1.5; clampMult = 3 (official regimes: 10) |
 | Direction | With `persistBlocks > 1`, fixed per window of `floor(round/persistBlocks)` by `trendBit(flowSeed, window, venue)`; otherwise `rng.bool()` each time | persist = 1 |
 | Correlation | With probability `trendCorrelation`, follow a **market-wide** bit instead of the per-venue one | 0 |
 | Priority fee | `default + [1,50) × 10⁶ wei` | |
@@ -115,9 +115,11 @@ effectiveDeviation = max(0, rawDeviation − feeBps/10000)
 size = informedMax × min(1, effectiveDeviation × 20)
 ```
 
-`flow.informedArbFeeBps` (30bps by default) expresses "inside the fee band arbitrage does not pay, so do not close it". **A residual equal to the fee band is left standing**, so the market is never fully closed to fair each block — which is what leaves agents something to take. The priority fee is `default + [50,100) × 10⁶ wei`, above the uninformed side.
+`flow.informedArbFeeBps` (30bps by default) is an entry threshold. Orders beyond it respond to the excess gap, subject to size and inventory limits. **It does not guarantee a 30bps residual:** pool depth, noise flow, changing fair prices and inclusion timing determine the observed gap. The priority fee is `default + [50,100) × 10⁶ wei`, above the uninformed side.
 
-Under USDC-only funding the flow wallets hold no base either, so base-selling orders fall over to buying with USDC.
+An informed sell is capped to the wallet's base inventory; at zero inventory it waits until buying itself moves toward fair. It never reverses into buying an overpriced pool to restock. Uninformed flow may still switch sides when inventory is unavailable. Agent funding and flow funding are configured separately.
+
+For non-WETH bases, `flow.baseMax` sets the shared cap. Optional `flow.baseInformedMax` overrides only Uniswap's informed cap; omission inherits the shared cap and explicit zero disables that leg. All twelve official regimes fund each flow wallet with 7.5 WBTC and use a 0.1 WBTC Uniswap informed cap, matching 150 WETH funding and a 2 WETH cap at opening fair ($60,000/$3,000). Other WBTC caps remain 0.05. See the [#124 measurements](../../verification/wbtc-residual-124.md); residuals remain observations, not a fixed arbitrage profit.
 
 ### 3.2.3 GMX flow
 
@@ -142,7 +144,7 @@ Actors are endowed with collateral WETH directly: a USDC→WETH preparation swap
 |---|---|
 | The price path (a pure function of the seed) | Transaction arrival timing |
 | The stress schedule (likewise) | In-block order among equal fees |
-| The flow bot's orders (a pure function of flowSeed) | Whether an order actually fills (depends on the book) |
+| Flow generation given the same RNG state and context | The context (prices, balances) and whether an order fills |
 
 So **the same seed still produces different results** ([00 §0.5 P3](00-overview.md)).
 

@@ -1,0 +1,112 @@
+{
+  "before": {
+    "run": "2026-09-13T15-27-08-248Z",
+    "fromBlock": 1154,
+    "toBlock": 1512,
+    "granularityBlocks": 1,
+    "failedReads": 0,
+    "residuals": {
+      "WETH/uniswap": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": 4.711815303227726,
+        "stddevBps": 66.11524817137133,
+        "absAbove80BpsFraction": 0.2200557103064067
+      },
+      "WETH/balancer": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": -34.46211894336405,
+        "stddevBps": 91.28645429985673,
+        "absAbove80BpsFraction": 0.40947075208913647
+      },
+      "WETH/curve": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": 10.702215621775563,
+        "stddevBps": 67.881069202203,
+        "absAbove80BpsFraction": 0.22562674094707522
+      },
+      "WBTC/uniswap": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": -160.35608082723255,
+        "stddevBps": 121.08775769686972,
+        "absAbove80BpsFraction": 0.7186629526462396
+      },
+      "WBTC/balancer": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": -8.273040005511675,
+        "stddevBps": 87.56669304405284,
+        "absAbove80BpsFraction": 0.4623955431754875
+      },
+      "WBTC/curve": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": -15.776268741448279,
+        "stddevBps": 70.47371387332917,
+        "absAbove80BpsFraction": 0.34540389972144847
+      }
+    },
+    "informedCompared": 1584,
+    "informedMissingSamples": 3,
+    "directionMismatchVsPreviousMid": {
+      "WBTC/uniswap/buy": 113
+    }
+  },
+  "after": {
+    "run": "2026-09-13T15-45-38-190Z",
+    "fromBlock": 1154,
+    "toBlock": 1512,
+    "granularityBlocks": 1,
+    "failedReads": 0,
+    "residuals": {
+      "WETH/uniswap": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": 16.919020311844648,
+        "stddevBps": 58.33465720023903,
+        "absAbove80BpsFraction": 0.20891364902506965
+      },
+      "WETH/balancer": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": 51.32554341363549,
+        "stddevBps": 121.98374037759237,
+        "absAbove80BpsFraction": 0.6518105849582173
+      },
+      "WETH/curve": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": 4.284080207846033,
+        "stddevBps": 76.06678703924385,
+        "absAbove80BpsFraction": 0.2841225626740947
+      },
+      "WBTC/uniswap": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": -9.996804061587564,
+        "stddevBps": 65.74019299217976,
+        "absAbove80BpsFraction": 0.24233983286908078
+      },
+      "WBTC/balancer": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": -11.103270666812202,
+        "stddevBps": 85.47247709854545,
+        "absAbove80BpsFraction": 0.3342618384401114
+      },
+      "WBTC/curve": {
+        "samples": 359,
+        "missingOrInvalid": 0,
+        "meanBps": -41.25049567260972,
+        "stddevBps": 75.10554551377054,
+        "absAbove80BpsFraction": 0.3983286908077994
+      }
+    },
+    "informedCompared": 1553,
+    "informedMissingSamples": 3,
+    "directionMismatchVsPreviousMid": {}
+  }
+}

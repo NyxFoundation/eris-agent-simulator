@@ -62,7 +62,7 @@ funding:
   # submitted against a zero balance, ~90 % of the WBTC informed rows reverted).
   flowWethWei: "150000000000000000000" # 150 WETH per flow wallet
   flowUsdcUnits: "450000000000" # 450,000 USDC per flow wallet (= 150 WETH at $3,000)
-  flowBase: { WBTC: "50000000" } # 0.5 WBTC per flow wallet
+  flowBase: { WBTC: "750000000" } # 7.5 WBTC: same opening notional as 150 WETH (#124)
   usdcUnits: "25000000000"
 
 flow:
@@ -81,8 +81,9 @@ flow:
   # the pool sits still, so the funded WBTC leg is inventory nobody trades against (measured on a
   # 60-block calm run: 390 WETH base-leg txs against 7 WBTC, all 7 from one agent, and a pool that
   # moved +0.07% while its fair moved -1.17%). Sized to the WETH flow by notional; one value covers
-  # the uninformed and informed legs on all three venues, where WETH splits them 1x and 2x.
+  # uninformed flow and Balancer/Curve; Uniswap informed flow has its own 2x cap (#124).
   baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
+  baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
 stress:
   # Give ranges, not values (the seed samples them) = suppresses overfitting to a specific path (ADR 0009)
