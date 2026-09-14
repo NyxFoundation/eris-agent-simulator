@@ -201,6 +201,14 @@ export type StressEventConfig = {
 
 // A slash is instantaneous, so its window is the single block it lands on.
 const POINT_EVENT_SPAN = 1;
+// A tokenLaunch window opens with the listing, and the listing is not tradable the block it is
+// sent: the five transactions land the next block, and the registry publishes the pool the block
+// after that (1-block distribution lag, ADR 0022). Measured on launch#101 (issue #29 acceptance,
+// 2026-09-13): with the ramp counted from the window's first block, the wave's first buy landed
+// in the same block the pool went live -- two ramp steps at once, +32% on the pool -- one block
+// before any agent could see the pool. The ramp therefore starts this many blocks after the
+// window opens, so the first visible block of the pool is also the first block of the tape.
+export const TOKEN_LAUNCH_LEAD_BLOCKS = 2;
 
 // Event resolved by the seed (blockIndex is 0-based from runStart).
 export type ResolvedStressEvent = {
@@ -329,7 +337,10 @@ export class EventSchedule {
       const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], rng.next());
       const span = isPointEvent(c.type)
         ? POINT_EVENT_SPAN
-        : c.rampBlocks + c.holdBlocks + c.decayBlocks;
+        : (c.type === "tokenLaunch" ? TOKEN_LAUNCH_LEAD_BLOCKS : 0) +
+          c.rampBlocks +
+          c.holdBlocks +
+          c.decayBlocks;
       // Clamp startBlock so the window fits inside the run window (scoring history depth; event window ⊂ run window).
       const maxStart = Math.max(0, runBlocks - span);
       const startBlock = Math.max(
@@ -675,15 +686,17 @@ export class EventSchedule {
     const out: TokenLaunchTarget[] = [];
     this.events.forEach((ev, eventIndex) => {
       if (ev.type !== "tokenLaunch") return;
-      const t = blockIndex - ev.startBlock;
       const { rampBlocks: r, holdBlocks: h, decayBlocks: d } = ev;
-      const listed = t >= 0;
+      const listed = blockIndex >= ev.startBlock;
+      // The ramp is counted from the block the pool is visible, not from the listing (see
+      // TOKEN_LAUNCH_LEAD_BLOCKS): before that the wave has nothing to buy and nobody to show.
+      const t = blockIndex - ev.startBlock - TOKEN_LAUNCH_LEAD_BLOCKS;
       // The buy side is the rising half of the trapezoid and then stays up: the wave's USDC is
       // spent by the end of the ramp and never comes back (the decay is a token sale, not a refund).
-      const buyFrac = !listed ? 0 : t < r ? (r === 0 ? 1 : (t + 1) / r) : 1;
+      const buyFrac = t < 0 ? 0 : t < r ? (r === 0 ? 1 : (t + 1) / r) : 1;
       const decayT = t - (r + h);
       const decayFrac =
-        !listed || decayT < 0 ? 0 : d === 0 ? 1 : Math.min(1, (decayT + 1) / d);
+        decayT < 0 ? 0 : d === 0 ? 1 : Math.min(1, (decayT + 1) / d);
       for (const launch of ev.launches ?? []) {
         out.push({
           eventIndex,

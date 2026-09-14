@@ -103,18 +103,26 @@ stress:
     # at 1.00 USDC), the wave as a multiple of that USDC side, the dud coin, and the share of what
     # the wave bought that it sells back during the decay. `magnitudeRange` does not apply.
     #
-    # NOT YET CALIBRATED against the five public seeds (issue #29 acceptance): the ranges are the
-    # issue's proposals. The trapezoid is fixed per event like every other type's (ramp 9 / hold
-    # 30 / decay 30 blocks, inside the issue's 6-12 / 20-40 / 20-40).
+    # Calibrated on the five public seeds (issue #29 acceptance, 2026-09-13/14). The issue's
+    # proposal (waveUsdcMult [0.5, 2] over a 9-block ramp) put up to 2/9 of the pool's USDC side
+    # into one block: measured first steps of +32% / +84% / +100% on the pool price, and the first
+    # of them landed in the block the pool went live, one block before the registry published it.
+    # A 10% slippage buy could not fill against that (every launch-sniper / launch-confirm entry
+    # reverted "Too little received" on seed 202), so the tape was unreadable by construction.
+    # Now the ramp starts two blocks after the listing (core TOKEN_LAUNCH_LEAD_BLOCKS: listing +
+    # registry publication) and a block of the ramp is at most 1/20 of the USDC side, about +10%
+    # on the price (full range, equal sides: (1 + x)^2 - 1) at the top of the range and +2.5% at
+    # the bottom. The window is 2 + 20 + 30 + 30 = 82 blocks; the latest start is block 180, so it
+    # closes by 262 with ~100 blocks left for exits.
     - {
         type: tokenLaunch,
         windowFrac: [0.2, 0.5],
         tokenCount: [2, 3],
         liquidityUsdc: [20000, 100000],
-        waveUsdcMult: [0.5, 2],
+        waveUsdcMult: [0.25, 1.0],
         dudProb: [0.3, 0.5],
         sellBackFrac: [0.5, 1.0],
-        rampBlocks: 9,
+        rampBlocks: 20,
         holdBlocks: 30,
         decayBlocks: 30,
       }
@@ -130,12 +138,22 @@ agents:
     wallet: AGENT1_PRIVATE_KEY
     baseline: true
     description: does nothing (baseline)
+  # ERIS_LAUNCH_EXIT_BLOCKS=0 switches off both agents' "exit N blocks before the end" guard. It
+  # reads `obs.blocksRemaining`, which the runtime counts from the first block the agent process
+  # saw -- and on the backtest anvil that block can sit hundreds of blocks below the run's first
+  # block (the automine backlog flushes while the agents boot: on launch#404 the agents observed
+  # blocks 933-1443 before the run's first block 1444, so blocksRemaining hit 0 before the window
+  # and neither agent traded all run). Issue #117 moves the count to the coordinator's declared
+  # first block; until it lands, the guard is off here. The window closes by block 262 and both
+  # agents exit on their own rules (fixed hold / net selling / max hold) long before block 360.
   - id: launch-sniper
     wallet: AGENT2_PRIVATE_KEY
     description: buys every new listing at first sight and sells after a fixed hold (the naive side)
+    env: { ERIS_LAUNCH_EXIT_BLOCKS: "0" }
   - id: launch-confirm
     wallet: AGENT3_PRIVATE_KEY
     description: buys a listing only after the tape shows sustained net buying, exits on net selling (the judgment side)
+    env: { ERIS_LAUNCH_EXIT_BLOCKS: "0" }
   - id: venue-arb
     wallet: AGENT4_PRIVATE_KEY
     description: WETH-only cross-venue arbitrage, which never looks at a new pool at all

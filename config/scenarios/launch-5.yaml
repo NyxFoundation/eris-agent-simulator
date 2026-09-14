@@ -1,0 +1,4 @@
+# launch × the five public seeds (issue #29 acceptance). Same shape as config/scenarios/public.yaml. Run: npm run backtest -- --scenarios config/scenarios/launch-5.yaml
+regimes:
+  - launch
+seeds: [101, 202, 303, 404, 505]
