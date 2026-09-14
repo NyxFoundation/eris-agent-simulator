@@ -772,7 +772,7 @@ async function main(): Promise<void> {
             // the only thing allowed to declare the mode. A single --regime replay stays `continuous`
             // -- it is one world, whatever the snapshot/revert around it does for the *next* scenario.
             ...(matrixMode ? { ERIS_RESET_UNIT: "scenario" } : {}),
-          });
+          }, [process.execPath, "sim-realtime", "--config", effectivePathFor(scenario)]);
           runDirs.push(runDir);
           const summary = readRunSummary(runDir);
           if (summary) {

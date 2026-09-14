@@ -68,12 +68,14 @@ export class RealtimeFlowProcess {
     this.handler = handler;
   }
 
-  pushContext(context: FlowContextWire): void {
-    if (!this.alive || this.child.killed) return;
+  pushContext(context: FlowContextWire): boolean {
+    if (!this.alive || this.child.killed) return false;
     try {
       this.child.stdin.write(`${safeStringify(context)}\n`);
+      return true;
     } catch {
       this.alive = false;
+      return false;
     }
   }
 

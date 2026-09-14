@@ -90,7 +90,7 @@ the threshold is the failure mode that loses to a frozen strategy.
 ## Constraints
 
 - Only `obs`, `ctx` and standard JavaScript. No `require`, `import`, `process` or `fetch`.
-- **Check balances before choosing a direction.** `obs.balances.wethWei` starts at zero. An action
+- **Check balances before choosing a direction.** Read `obs.balances` and `obs.baseBalances`: funding varies by config and earlier trades. An action
   the runtime rejects scores the same as doing nothing — and now it says so, as a `rejected (...)`
   line among the decisions.
 - There is no order-size cap. `obs.limits` holds only the priority-fee bounds and the default

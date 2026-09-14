@@ -137,7 +137,7 @@ jobs:
           regimes: [calm]
           seeds: [101, 202]
           YAML
-          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-scenarios.yaml" --blocks 12 --seconds 90
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-scenarios.yaml" --blocks 12 --seconds 90 --agent-sandbox process
           node -e '
             const { readdirSync, readFileSync } = require("node:fs");
             const dir = readdirSync("runs").filter((d) => d.startsWith("matrix-")).sort().at(-1);

@@ -41,7 +41,7 @@
     "gen:python-sdk": "tsx scripts/genPythonSdk.ts",
     "test:python-sdk": "node scripts/testPythonSdk.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test --test-concurrency=4 test/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

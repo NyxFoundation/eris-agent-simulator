@@ -64,6 +64,14 @@ export function loadRunConfig(
   // Roster: use inline `agents:` if present, otherwise read the AGENTS_CONFIG file.
   // (backtest's --agents replacement is realized by the backtest CLI baking the roster into the
   // effective regime YAML's inline agents = don't add a priority branch here. ADR 0016)
+  if (Array.isArray(doc.agents) && source.AGENTS_CONFIG) {
+    throw new Error(
+      `roster conflict: ${configPath} has inline agents: but AGENTS_CONFIG ` +
+        `(${source.AGENTS_CONFIG}, from --agents or run.agentsConfig) is also set. ` +
+        `For sim:realtime, put the desired roster in a run config and pass --config <path>, ` +
+        `or remove inline agents: before using --agents.`,
+    );
+  }
   const agents = Array.isArray(doc.agents)
     ? validateAgentsFile({ agents: doc.agents }, path)
     : loadAgents(realtimeConfig.agentsConfigPath);

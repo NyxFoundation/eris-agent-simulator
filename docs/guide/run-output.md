@@ -28,7 +28,7 @@ npm run check:strategy -- <file>          # static cheatcode check of strategy c
 |---|---|
 | `mode` | `"realtime"` / `"backtest"` (which entry point the run came from) |
 | `resetUnit` | `"continuous"` / `"scenario"` — one world, or one scenario out of a set that rebuilt the world per (regime, seed). ADR 0020 |
-| `agents[].initialValueUsdc` / `finalValueUsdc` | total value at run start / end (USDC-equivalent, including the valuation of venue positions) |
+| `agents[].initialValueUsdc` / `finalValueUsdc` | start / end holdings both valued at the run’s final prices (USDC-equivalent, including venue positions); these are netPnlUsdc’s endpoints, not P’s |
 | `agents[].alphaUsdc` | β-removed PnL relative to the fair price at fill time (look here for skill comparison) |
 | `agents[].netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `agents[].includedTxCount` / `revertCount` | number of included / reverted txs |
@@ -44,6 +44,27 @@ npm run check:strategy -- <file>          # static cheatcode check of strategy c
 Everything the score is derived from is stored: P per agent and the boundary series behind it. The
 score itself (T, Score) needs the field, so it lives in a matrix's `standings.json` and on the
 dashboard, both computed by `core/src/scoring/deviationScore.ts` ([Scoring](scoring.md)).
+
+## Was the scheduled event applied?
+
+`stress_schedule` in `events.jsonl` is the plan. `stress_event_applied` is application evidence,
+joined by `eventIndex` (the zero-based position in that plan) and `eventType`. Its `stage` distinguishes
+`price_submitted` / `tx_submitted` (hashes queued for mining), `storage_written` / `applied`
+(synchronous effects), and `flow_context_queued` (the flow process was sent the override).
+Submission alone is not a successful transaction: match the hashes to `blocks.csv` and inspect
+existing `*_failed` / `*_reverted` records too.
+
+Price events record the prior price, the new unoverlaid price, the effective fair price, and the
+individual overlay multiplier and `realizedMagnitude`. Overlapping overlays multiply; their final
+fair price is shared, while each event keeps its own contribution. `cexDrift` records the actual
+drift/kappa inputs rather than attributing OU noise to the event; `flowTrend` records the size
+multiplier dispatched to flow.
+
+At run end, `stress_event_summary` (also `summary.json.stressEvents`) accounts for **every scheduled
+entry**: `observed`, `not_observed`, or `partial` (a price overlay that never reached its planned
+peak), with application counts and first/last blocks. `stress_application_warning` makes missing
+or partial windows searchable without reconstructing the price chart. These are diagnostics, not
+automatic score invalidations; an `observed` submission still needs its execution receipt checked.
 
 ## Liquidation Attribution (stress runs)
 

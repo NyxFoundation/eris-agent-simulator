@@ -140,6 +140,8 @@ For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/
 
 ## Documentation
 
+For the complete local test prerequisites and repeatability checks, see [Running the test suite](docs/guide/testing.md).
+
 | Submission starter | Strategy | Revision policy |
 |---|---|---|
 | [`my-arb`](example/agents/my-arb) | TypeScript `agent.ts` | `prompt.md`, `executorTs` |

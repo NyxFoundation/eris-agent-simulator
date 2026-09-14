@@ -39,7 +39,11 @@
 
 つまり **「その回、他の全員と比べてどうだったか」を k 回積み上げる**競技です。エポックの途中でいくら含み益が出ても、終了時の資産価値にしか意味がありません。相場全体の値動きは全員の平均に吸収されるので、**上げ相場で得をすることも下げ相場で損をすることもありません**。
 
-初期資本は全参加単位に同じものが配られます: **8 WETH + 0.4 WBTC + 25,000 USDC**、加えてガス用の ETH。何も動かさない参照エージェント（ベンチマーク）が 1 体置かれます。全参加単位は同じ 1 本のチェーンで同時に走ります。
+初期資本は全参加単位に同じものが配られます: **8 WETH + 0.4 WBTC + 25,000 USDC**、加えてガス用の ETH。現行の公式レジームは `economicGas: false` なので **100 ETH** が配られ、ガス用 ETH も採点対象です。
+ETH=$3,000 / BTC=$60,000 なら総額は約 $373,000、うち ETH が約80%を占め、保有中の値動きが P に大きく効きます。
+ETH は `rawTx` の `value` で wrap や Trove の担保にも使えます。
+`sized(obs, "WETH", 1000)` は **WETH 残高の10%（初期0.8 WETH）**で、総資産の10%ではありません（この価格なら約0.64%）。
+何も動かさない参照エージェント（ベンチマーク）が 1 体置かれます。全参加単位は同じ 1 本のチェーンで同時に走ります。
 
 > **ローカルの `npm run backtest -- --scenarios` は本番と同じ式で順位を出します**（1 シナリオ = 1 エポック、P → 偏差値 T → 後半ほど重い加重平均。`standings.json`）。違うのは場です:
 > ローカルの母集団は自分のロスターで、本番は全参加者。**ローカルの数字は「自分の版どうしを比べる」ためのもので、本番の順位の予測ではありません。**
@@ -162,6 +166,7 @@ cd deployer && npm run deploy -- --keep-fresh
 ```bash
 # --- ターミナル B ---
 npm run gen:local-constants               # deployments.json → sdk/src/constants.local.ts
+npm run gen:state-dump                    # §6 用の backtest/state/ を生成（git には含まれない）
 npm run sim:realtime
 ```
 
@@ -225,6 +230,10 @@ export function decide(obs: AgentObservation): AgentAction | null {
 > 両方あると起動時に exit 1 します（`example/agents/runtime/bot.ts` がその旨のエラーを出します）。規約 §2.5 が
 > `prompt.md` を必須にしている以上、`run(ctx)` 形式は現状では提出できません。
 
+プールは参照価格に固定されていません。背景裁定は `informedArbFeeBps: 30` の費用帯内では止まり、
+帯の外でもサイズ・流動性・着順・在庫によって乖離が残ります。数十 bps の乖離だけで利益機会と判断せず、
+往復手数料・価格影響と、実際に着弾するまでの遅延を見積もってください。
+
 ### `prompt.md` — 改訂方針
 
 **frontmatter の `kind: improve` が必須です。無いと起動時に落ちます。**
@@ -244,6 +253,18 @@ reviseEveryBlocks: 60
 
 ## 直してよいところ / 直してはいけないところ
 （閾値やサイズは可、二段執行の順序は不可、など）
+
+## 改訂の根拠
+- `transactions since the last revision`: 成功・revert・未着弾を分け、mean inclusion latency とブロック内順位、取引損益と保有中の市場変動を確認する。
+- `market history`: 各市場の乖離・手数料・イベント窓を区間全体で確認する。
+- `recent decisions`: どの判断が拒否・失敗・着弾したかを突き合わせる。
+- `latest observation`: 今の在庫と実行可能な機会を確認する。
+根拠が不足する、または損失が市場変動だけなら変更しない。
+
+## 返答
+JSON だけを返す。変更しないなら {"notes":"根拠", "executorTs":null}。
+変更するときは executorTs に decide の関数本体を文字列で入れる。
+改訂を取り消すなら {"notes":"根拠", "revertTo":0} のように履歴の版を指定する。
 ```
 
 > **なぜマーカーが要るか。** 過去に「この観測でどう動くか」を書く同名の `prompt.md` があり、frontmatter のキーまで同じでした。区別できるのは `kind: improve` だけなので、無いものは黙って読まずに落とします。読んでしまうと、取引指示が「改訂方針」として system prompt に入ります。
@@ -303,7 +324,7 @@ agents:
   - id: my-strategy
     wallet: AUTO
     env:
-      ERIS_LLM_MODEL: "claude-cli"       # ローカル開発ではサブスクの CLI が使える
+      ERIS_LLM_MODEL: "claude-cli"       # --agent-sandbox process のときだけ
       ERIS_IMPROVE_LOG_CALLS: "1"        # 生のやり取りを agents/<id>.llm.jsonl に残す
 ```
 
@@ -319,17 +340,39 @@ agents:
 
 > **本番では鍵はエージェントに渡りません。** 推論は運営のプロキシ経由で（規約 §2.3・§2.5）、使えるモデルはプロキシの一覧（§2.5 で公表）に限られ、全ての往復が記録されます。ローカルで `ERIS_INFERENCE_BASE_URL` を設定すると同じ経路を試せます（`infra/inference-proxy/README.md`）。
 
+**`claude-cli` / `codex` はホストにインストール・ログイン済みの CLI を使う process モード専用です。**
+公式の Docker イメージには CLI がありません。Docker では API バックエンドと必要な環境変数、
+または到達可能な推論プロキシ（`ERIS_INFERENCE_BASE_URL`）を使ってください。
+コンテナから到達できる URL が必要です。macOS ではホストのサービスを `host.docker.internal` で指定します。
+`agents/<id>.jsonl` の改訂成功・失敗と版履歴を確認し、完走だけを自己改善成功と判断しないでください。
+
 バックエンドが無くても run は完走します。改訂の失敗が記録され、戦略は無改変で走り続けます。詳細は [llm-agents.md](guide/llm-agents.md)。
 
 ---
 
 ## 6. 開発の反復: 回す・読む・直す
 
+`git pull` 後は `npm install` を再実行してください。realtime は §3 のロスターを入れた
+`config/local.yaml` を `--config` で指定します。backtest の `--agents` には `agents:` を持つ
+別ファイル（以下の `my-roster.yaml`）を渡します。inline `agents:` と `--agents` の併用はエラーです。
+
+公式レジームは Docker を使います。Docker daemon を起動し、**ロスター内の各ディレクトリの
+イメージを最初の backtest より前に**作ります。`dir:` を共有する frozen twin は同じイメージを使います。
+以下のロスターなら:
+
+```bash
+for id in noop my-strategy multi-arb; do npm run agent:build -- team "$id"; done
+```
+
+ランタイム更新後もこのビルドを繰り返します（base は毎回ソースを確認し、変更のないレイヤーは再利用）。
+`backtest/state/manifest.json` がなければ §2 のデプロイと `npm run gen:state-dump` を先に完了してください。
+Docker を使わない開発では backtest に `--agent-sandbox process` を追加できますが、CPU・メモリ上限の確認にはなりません。
+
 §2〜§3 で 1 回動いたあとの日常はこの 3 手の繰り返しです。**1 周を短くする**のが要で、360 ブロックのシナリオは 1 本 12 分かかります。
 
 ```bash
 # 1. 配線の確認は短く（40 ブロック ≈ 80 秒。送信・拒否・例外は全部出る）
-npm run sim:realtime -- --blocks 40 --agents <あなたのロスター>
+npm run sim:realtime -- --config config/local.yaml --blocks 40
 
 # 2. 1 本のシナリオを再生する（--seed は必須。シナリオ =（レジーム, シード）でレジームだけでは決まらない）
 npm run backtest -- --regime crash --seed 101 --agents <あなたのロスター>
@@ -347,9 +390,18 @@ agents:
     wallet: AUTO
   - id: my-strategy
     wallet: AUTO
+  - id: my-strategy-frozen
+    dir: my-strategy
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1" }
   - id: multi-arb            # 同梱の対戦相手（§8）
     wallet: AUTO
 ```
+
+同じコードを `dir:` で共有する **frozen twin** を同じ場に入れ、その差を実行順の揺れの目安にします。
+LLM を使わないルール戦略にも有効です。#118 の測定では改訂ゼロの同一コード間でも
+calm#101 で ΔP≈26 USDC、whale#101 で ΔP≈2,873 USDC（ΔT≈9.24）でした。
+これは保証された誤差幅ではありません。シード・反復を増やし、改善幅がこの揺れに対して十分か見てください。
 
 公開セットは**分布からの数本のドローであって、目標ではありません**。生成器は公開されているので、**自分でシードを引いて確かめてください**。公開シードに合わせ込むと、非公開セットで別のドローに当たった瞬間に崩れます。1 本の結果ではなく**シードをまたいだ分布**で判断してください（tx の着順は同じシナリオでも揺れます）。
 
@@ -383,7 +435,11 @@ grep '"event":"rejected"' $L | jq -r .reason | sort | uniq -c   # 止められ�
 
 `submitted` が 0 で `rejected` が並ぶなら、戦略ではなく**サイズか在庫**の問題です（§11）。`submitted` があるのに `summary.json` の `includedTxCount` が 0 なら、priority fee が低くてブロックに載っていません。
 
-**`summary.json`** はエージェントごとに 1 レコードです。見るのは `initialValueUsdc` / `finalValueUsdc`（P の両端）、`netPnlUsdc`、`includedTxCount`（載った tx 数）、`revertCount`（載ったが revert した数 = ガスだけ払った）、`stderrTail`（プロセスが落ちたときの最後の出力）、run 全体の `violations`。**`blocks.csv`** は載った tx の全記録（ブロック・`txIndex`・送信者・`priorityFeeWei`・`status`）で、自分の tx がブロックの何番目に入ったかはここで読みます。
+**`summary.json`** はエージェントごとに 1 レコードです。見るのは `pnlUsdc`（P = `valueSeries.epochSeries` の最終値 − 初期値。各境界をその時点の価格で評価）、`initialValueUsdc` / `finalValueUsdc` とその差 `netPnlUsdc`（両端とも終了時の価格で評価し直した別の指標。P と符号が異なる場合もある）、`includedTxCount`（載った tx 数）、`revertCount`（載ったが revert した数 = ガスだけ払った）、`stderrTail`（プロセスが落ちたときの最後の出力）、run 全体の `violations`。**`blocks.csv`** は載った tx の全記録（ブロック・`txIndex`・送信者・`priorityFeeWei`・`status`）で、自分の tx がブロックの何番目に入ったかはここで読みます。
+
+`events.jsonl` の `stress_schedule` は予定、`stress_event_applied` は実際の適用・送信記録です。run 終了時の `stress_event_summary` / `stress_application_warning`（`summary.json.stressEvents` にも格納）で未適用の窓と価格変動幅の不足を確認できます。送信段階の記録は hash を `blocks.csv` と照合してください。
+
+**priority fee の入札を確かめる場所は `blocks.csv` です。** `submitted` の hash を引き、同じブロックの他の tx と `priorityFeeWei`・`txIndex` を比較してください。
 
 直すときは**1 つずつ**変えて同じシードで回します。同時に 2 つ変えると、どちらが効いたかを分布から読み分けられません。
 
@@ -494,6 +550,7 @@ npm run dashboard        # http://localhost:5173
 送信前に必ず通してください。
 
 ```bash
+npm install                    # git pull 後も依存を更新する
 npm run typecheck
 npm run check:strategy          # cheatcode の静的検査（入口ゲート）
 npm run backtest -- --scenarios config/scenarios/public.yaml --agents <あなたのロスター>
@@ -508,6 +565,8 @@ npm run bundle:agent my-strategy
 npm run agent:build -- team my-strategy     # 提出用イメージを作る
 npm run agent:selftest -- my-strategy       # 同じ上限で短い run を回し、超過していないか見る
 ```
+
+`agent:selftest` は実行した `summary.json` の場所と `PASS` / `FAIL` を表示します。早期終了、結果欠落、コンテナの残存は終了コードも非0です。`PASS` はその run で上限内に完走したことを表し、全シナリオの保証や最大メモリの測定ではありません。
 
 本番と公式レジームの `npm run backtest` は、このコンテナ経由でエージェントを起動します（`run.agentSandbox: docker`）。docker の無い環境では `--agent-sandbox process` を付けると素のプロセスで走りますが、上限は掛かりません。
 

@@ -195,3 +195,34 @@ test("loadRunConfig: resolves config + inline roster from a YAML file", () => {
 test("loadRunConfig: a nonexistent path is an explicit error", () => {
   assert.throws(() => loadRunConfig("/no/such/eris.config.yaml"), /not found/);
 });
+
+test("inline roster conflicts with an explicit roster override instead of silently ignoring it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-roster-conflict-"));
+  const path = join(dir, "run.yaml");
+  writeFileSync(path, "agents:\n  - id: noop\n    wallet: AUTO\n");
+  assert.throws(() => loadRunConfig(path, { AGENTS_CONFIG: "my-roster.yaml" }),
+    error => error instanceof Error && error.message.includes(path) &&
+      /my-roster.yaml.*--agents.*--config/s.test(error.message));
+  writeFileSync(path, "run:\n  agentsConfig: my-roster.yaml\nagents: []\n");
+  assert.throws(() => loadRunConfig(path), /roster conflict/);
+});
+
+test("a config without inline agents still accepts the explicit roster file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-roster-override-"));
+  const path = join(dir, "run.yaml");
+  const roster = join(dir, "roster.yaml");
+  writeFileSync(path, "run:\n  blocks: 40\n");
+  writeFileSync(roster, "agents:\n  - id: my-strategy\n    wallet: AUTO\n");
+  assert.deepEqual(loadRunConfig(path, { AGENTS_CONFIG: roster }).agents.map(a => a.id), ["my-strategy"]);
+});
+
+test("the realtime CLI rejects --agents with inline agents for both flag spellings", async () => {
+  const { resolveRunInputs } = await import("../core/src/runConfig.js");
+  const dir = mkdtempSync(join(tmpdir(), "eris-realtime-roster-"));
+  const path = join(dir, "run.yaml");
+  writeFileSync(path, "agents:\n  - id: noop\n    wallet: AUTO\n");
+  for (const flags of [["--agents", "other.yaml"], ["--agents=other.yaml"]])
+    assert.throws(() => resolveRunInputs(["node", "sim-realtime", "--config", path, ...flags]), /roster conflict/);
+  // Backtest passes just its baked config; its original --agents must not be parsed a second time.
+  assert.deepEqual(resolveRunInputs(["node", "sim-realtime", "--config", path], { ERIS_RUN_MODE: "backtest" }).agents.map(a => a.id), ["noop"]);
+});
