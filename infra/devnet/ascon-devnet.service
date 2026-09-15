@@ -18,8 +18,11 @@ WorkingDirectory=%h/workspace/eris-agent-simulator
 
 # `.env.local` is read in-process (core/src/cli/bootstrapEnv.ts) relative to WorkingDirectory, so
 # ANVIL_RPC_URL / CHAIN_ID / TREASURY_PRIVATE_KEY stay there and never appear in this file.
-# systemd gives no login shell, so PATH has to be stated.
-Environment=PATH=%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin
+# systemd gives no login shell, so PATH has to be stated. Both layouts are listed because this unit
+# has to serve the NixOS box it was written on and the Ubuntu box it now runs on: `~/.foundry/bin`
+# is where foundryup puts anvil/cast, the nix paths are inert on Ubuntu and vice versa.
+# infra/provision/bootstrap.sh rewrites this line when it installs the unit.
+Environment=PATH=%h/.foundry/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # The chain is a container that may still be starting at boot. Waiting here rather than failing
 # keeps the restart budget above for real faults.

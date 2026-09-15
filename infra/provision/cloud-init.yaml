@@ -1,0 +1,38 @@
+#cloud-config
+# Vendor-agnostic first boot. Any provider that accepts user-data can use this verbatim
+# (Cherry Servers, OVH, Hetzner, Vultr, ...). The Terraform next to this file passes it as
+# `user_data`; with a vendor that has no usable provider, paste it into the portal instead.
+#
+# Everything vendor-specific lives in terraform/, not here.
+
+package_update: true
+
+users:
+  - name: ascon
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    ssh_authorized_keys:
+      # replaced by Terraform (var.ssh_public_keys); leave as-is for a manual paste
+      - ssh-ed25519 AAAA_REPLACE_ME
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-ascon.conf
+    permissions: "0644"
+    content: |
+      # The box has no inbound ports open for the stack itself: Cloudflare Tunnel reaches the
+      # services by hostname (ASCON docs/20 §3, docs/27 §5). SSH is the only listener, so it gets
+      # keys only.
+      PasswordAuthentication no
+      PermitRootLogin prohibit-password
+
+runcmd:
+  - [ systemctl, restart, ssh ]
+  - |
+    set -eux
+    cd /root
+    git clone --depth 1 https://github.com/NyxFoundation/eris-agent-simulator.git eris-bootstrap \
+      || (cd eris-bootstrap && git pull --ff-only)
+    ASCON_USER=ascon bash /root/eris-bootstrap/infra/provision/bootstrap.sh 2>&1 | tee /var/log/ascon-bootstrap.log
+
+final_message: "ascon bootstrap finished after $UPTIME s - see /var/log/ascon-bootstrap.log, then infra/provision/README.md step 2 onward"

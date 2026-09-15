@@ -89,8 +89,8 @@ services:
     command: -config.file=/etc/promtail/config.yml
     volumes:
       - ./promtail/config.yml:/etc/promtail/config.yml:ro
-      - /home/gohan/ascon-logs:/logs:ro
-      - /home/gohan/workspace/eris-agent-simulator/runs:/runs:ro
+      - ${ASCON_LOGS:?set ASCON_LOGS in infra/monitoring/.env}:/logs:ro
+      - ${ERIS_ROOT:?set ERIS_ROOT in infra/monitoring/.env}/runs:/runs:ro
     depends_on: [loki]
 
   eris-exporter:
@@ -105,8 +105,45 @@ services:
       - ASCON_TEXTFILE=/textfile/ascon.prom
     volumes:
       - ./exporter:/app:ro
-      - /home/gohan/workspace/eris-agent-simulator/runs:/runs:ro
+      - ${ERIS_ROOT:?set ERIS_ROOT in infra/monitoring/.env}/runs:/runs:ro
       - ascon-textfile:/textfile
+
+  # One-shot. Two jobs, both of which anvil cannot do for itself because it runs as uid 1000:
+  #   1. a named volume is created root-owned, so anvil could not write its dump into it;
+  #   2. seed the live chain from the venues snapshot, once.
+  anvil-state-init:
+    image: ghcr.io/foundry-rs/foundry:stable
+    container_name: ascon-anvil-state-init
+    user: "0:0"
+    restart: "no"
+    volumes:
+      - type: bind
+        source: ${ERIS_ROOT:?set ERIS_ROOT in infra/monitoring/.env}/backtest/state/venues-state.json
+        target: /seed.json
+        read_only: true
+        bind:
+          # Do NOT let compose invent the path. Without this it creates an empty DIRECTORY when the
+          # snapshot has not been generated yet, and the chain then starts with no venues at all and
+          # no error anywhere. Run `npm run gen:state-dump` first.
+          create_host_path: false
+      - ascon-chain-state:/chainstate
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ -d /seed.json ]; then
+          echo "FATAL: backtest/state/venues-state.json is a directory, not a state dump." >&2
+          echo "       Run 'npm run gen:state-dump' on this box before starting the stack." >&2
+          exit 1
+        fi
+        chown -R 1000:1000 /chainstate
+        if [ ! -f /chainstate/state.json ]; then
+          cp /seed.json /chainstate/state.json
+          chown 1000:1000 /chainstate/state.json
+          echo "seeded /chainstate/state.json from the venues snapshot"
+        else
+          echo "existing chain kept: $$(wc -c < /chainstate/state.json) bytes"
+        fi
 
   anvil:
     image: ghcr.io/foundry-rs/foundry:stable
@@ -114,15 +151,35 @@ services:
     restart: unless-stopped
     networks: [ascon-chain]
     ports: ["127.0.0.1:8545:8545"]
+    depends_on:
+      anvil-state-init:
+        condition: service_completed_successfully
     volumes:
-      - /home/gohan/workspace/eris-agent-simulator/backtest/state/venues-state.json:/state.json:ro
+      # The live chain. Survives `docker compose restart`, a crash, and a reboot.
+      - ascon-chain-state:/chainstate
+    # anvil's dump can take a while once the practice chain has grown; do not SIGKILL through it.
+    stop_grace_period: 120s
     entrypoint: ["sh", "-c"]
     command:
       - |
-        anvil --host 0.0.0.0 --port 8545 --code-size-limit 50000 --base-fee 0 --gas-limit 30000000 --accounts 10 --balance 1000000 --load-state /state.json &
+        # /chainstate/state.json IS the chain (anvil-state-init seeded it). Restarting must not
+        # rewind the practice period to day one (docs/20 §1 runs it with resetUnit: continuous for
+        # 39 days). To start the period over on purpose, drop the volume:
+        #   docker compose down && docker volume rm ascon-monitoring_ascon-chain-state
+        # --state is --load-state + --dump-state on the same file; --state-interval also flushes
+        # periodically, so an unclean kill loses minutes, not the period.
+        anvil --host 0.0.0.0 --port 8545 --code-size-limit 50000 --base-fee 0 \
+              --gas-limit 320000000 --accounts 10 --balance 1000000 \
+              --state /chainstate/state.json --state-interval 300 &
         ANVILPID=$$!
+        # PID 1 here is this shell. Without the trap, SIGTERM stops the shell, anvil is orphaned and
+        # then SIGKILLed, and the dump is never written (verified A/B: no trap -> 0 bytes + orphan;
+        # trap -> dump written, clean exit).
+        trap 'kill -TERM $$ANVILPID 2>/dev/null; wait $$ANVILPID' TERM INT
         sleep 4
-        cast rpc --rpc-url http://127.0.0.1:8545 anvil_setBlockGasLimit 0x1c9c380 || true
+        # --load-state restores the block environment, gas limit included, so --gas-limit above does
+        # not stick (ASCON docs/18 §1). 0x1312D000 = 320,000,000 = the decided limit (docs/18 §12).
+        cast rpc --rpc-url http://127.0.0.1:8545 anvil_setBlockGasLimit 0x1312D000 || true
         wait $$ANVILPID
 
   rpc-gateway-live:
@@ -141,7 +198,7 @@ services:
       - METRICS_FILE=/textfile/rpc-gateway-live.prom
     volumes:
       - ../rpc-gateway:/app:ro
-      - /home/gohan/ascon-logs:/var/log/ascon
+      - ${ASCON_LOGS:?set ASCON_LOGS in infra/monitoring/.env}:/var/log/ascon
       - ascon-textfile:/textfile
 
   rpc-gateway-test:
@@ -159,7 +216,7 @@ services:
       - METRICS_FILE=/textfile/rpc-gateway-test.prom
     volumes:
       - ../rpc-gateway:/app:ro
-      - /home/gohan/ascon-logs:/var/log/ascon
+      - ${ASCON_LOGS:?set ASCON_LOGS in infra/monitoring/.env}:/var/log/ascon
       - ascon-textfile:/textfile
 
   dashboard:
@@ -180,13 +237,14 @@ services:
     tmpfs:
       - /tmp
     volumes:
-      - /home/gohan/workspace/eris-agent-simulator:/eris:ro
+      - ${ERIS_ROOT:?set ERIS_ROOT in infra/monitoring/.env}:/eris:ro
 
 networks:
   ascon-chain:
     driver: bridge
 
 volumes:
+  ascon-chain-state:
   ascon-prom-data:
   ascon-grafana-data:
   ascon-textfile:
