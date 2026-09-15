@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import {
   EventSchedule,
+  TOKEN_LAUNCH_LEAD_BLOCKS,
   parseStressEvents,
   type StressEventConfig,
 } from "../core/src/realtime/events.js";
@@ -42,7 +43,8 @@ test("a launch window lists between tokenCount tokens, all on one start block", 
       `${ev.launches.length}`,
     );
     assert.equal(ev.startBlock, 108); // round(0.3 * 360)
-    assert.equal(ev.endBlock, 108 + 69);
+    // lead 2 (listing + registry publication) + ramp 9 + hold 30 + decay 30
+    assert.equal(ev.endBlock, 108 + TOKEN_LAUNCH_LEAD_BLOCKS + 69);
     for (const l of ev.launches) {
       assert.ok(l.liquidityUsdc >= 20_000 && l.liquidityUsdc <= 100_000);
       assert.ok(l.sellBackFrac >= 0.5 && l.sellBackFrac <= 1);
@@ -116,11 +118,17 @@ test("targets: buy rises over the ramp and stays, sell-back rises over the decay
   assert.equal(s.tokenLaunchTargetsAt(ev.startBlock - 1)[0].listed, false);
   assert.equal(at(ev.startBlock - 1).buyFrac, 0);
   assert.equal(at(ev.startBlock).listed, true);
-  assert.ok(Math.abs(at(ev.startBlock).buyFrac - 1 / 9) < 1e-12);
-  assert.equal(at(ev.startBlock + 8).buyFrac, 1);
-  assert.equal(at(ev.startBlock + 20).buyFrac, 1);
-  assert.equal(at(ev.startBlock + 20).sellBackFrac, 0);
-  const decayStart = ev.startBlock + 9 + 30;
+  // The listing block and the registry's publication block carry no buying: the ramp starts when
+  // the pool is visible (TOKEN_LAUNCH_LEAD_BLOCKS = 2), so the tape's first print is one agents
+  // could have watched for.
+  assert.equal(at(ev.startBlock).buyFrac, 0);
+  assert.equal(at(ev.startBlock + 1).buyFrac, 0);
+  const ramp0 = ev.startBlock + TOKEN_LAUNCH_LEAD_BLOCKS;
+  assert.ok(Math.abs(at(ramp0).buyFrac - 1 / 9) < 1e-12);
+  assert.equal(at(ramp0 + 8).buyFrac, 1);
+  assert.equal(at(ramp0 + 20).buyFrac, 1);
+  assert.equal(at(ramp0 + 20).sellBackFrac, 0);
+  const decayStart = ramp0 + 9 + 30;
   assert.ok(
     Math.abs(at(decayStart).sellBackFrac - l.sellBackFrac / 30) < 1e-12,
   );
