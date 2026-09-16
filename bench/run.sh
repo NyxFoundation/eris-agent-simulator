@@ -5,6 +5,10 @@
 # Markdown summary (consumed by CI to comment on the PR).
 #
 #   bench/run.sh [--agents N] [--blocks B] [--block-time S] [--mode frozen|llm] [--mem 1g] [--out DIR]
+#   bench/run.sh --clones bench-max --agents N ...   # docs/18 §12's saturating roster: every agent
+#                                  # spends its three-tx allowance every block (the measurement the
+#                                  # 2s block time was decided on). Plain --agents N is venue-arb
+#                                  # clones, which mostly noop.
 #   bench/run.sh --markets N ...   # issue #40: load-test the agent-created-market path instead of
 #                                  # the AMM path -- registry sweep, lending singleton, N creators
 #
@@ -13,14 +17,16 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$REPO"
 
-AGENTS=12; BLOCKS=200; BT=2; MODE=frozen; MEM="${ERIS_DOCKER_MEM:-1g}"; OUT=""; ROSTER=""
+AGENTS=12; BLOCKS=200; BT=2; MODE=frozen; MEM="${ERIS_DOCKER_MEM:-1g}"; OUT=""; ROSTER=""; CLONES=""
 while [ $# -gt 0 ]; do case "$1" in
   --agents) AGENTS=$2; shift 2;; --blocks) BLOCKS=$2; shift 2;; --block-time) BT=$2; shift 2;;
   --mode) MODE=$2; shift 2;; --mem) MEM=$2; shift 2;; --out) OUT=$2; shift 2;;
   --each) ROSTER=each; shift;;                 # one container per example agent (per-agent compare)
   --markets) ROSTER="markets:$2"; AGENTS=$2; shift 2;;   # issue #40: N agent-created-market participants
   --agent) ROSTER="agent:$2"; shift 2;;        # just this agent + a venue-arb reference
+  --clones) CLONES=$2; shift 2;;               # N copies of ONE agent: --clones bench-max --agents 100
   *) echo "unknown arg: $1" >&2; exit 1;; esac; done
+[ -n "$CLONES" ] && ROSTER="clones:$CLONES:$AGENTS"   # --clones bench-max = the docs/18 §12 roster
 ROSTER="${ROSTER:-$AGENTS}"                     # default: N venue-arb clones (load test)
 OUT="${OUT:-$REPO/bench/results/$(date +%Y%m%d-%H%M%S)-${AGENTS}${MODE}}"
 mkdir -p "$OUT"

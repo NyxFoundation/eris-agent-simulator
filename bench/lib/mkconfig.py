@@ -6,6 +6,8 @@ container via infra/docker-agent/run-agent.sh; a host-run noop is the baseline.
              each         -> one container per example/agents/<dir> (per-agent comparison; a new
                              agent added in a PR is picked up automatically)
              agent:<name> -> just that agent + a venue-arb reference
+             clones:<name>:<N> -> N copies of one agent. Use clones:bench-max:<N> to reproduce
+                             the saturating roster docs/18 §12 based the 2s block time on
              markets:<N>  -> N agent-created-market participants (issue #40), cycling through the
                              four reference roles. Turns the registry, the lending singleton and
                              the per-block discovery sweep on, which is what makes this a load test
@@ -60,6 +62,16 @@ if ROSTER == "each":
         if d in skip or not os.path.isdir(os.path.join("example/agents", d)):
             continue
         roster.append((d, d))                       # id == dir -> container eris-<agent>
+elif ROSTER.startswith("clones:"):
+    # N copies of ONE agent. This is what docs/18 §12 calls bench-max: example/agents/bench-max
+    # spends the §2.6 three-tx allowance every single block, so the roster saturates the block
+    # budget instead of idling. `<N>` (venue-arb clones) does NOT do this -- venue-arb noops when
+    # there is no arbitrage, and with N identical clones the first one takes it and the rest sit
+    # out, which is how a 100-agent run came in at 21 tx/round instead of 300.
+    _, name, n = ROSTER.split(":", 2)
+    if not os.path.isdir(os.path.join("example/agents", name)):
+        sys.exit("no such agent: example/agents/" + name)
+    roster = [("%s-%03d" % (name, k), name) for k in range(2, int(n) + 1)]
 elif ROSTER.startswith("agent:"):
     name = ROSTER.split(":", 1)[1]
     if not os.path.isdir(os.path.join("example/agents", name)):
