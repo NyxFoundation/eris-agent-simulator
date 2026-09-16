@@ -20,6 +20,35 @@ clicking through a portal during an incident.**
 | `cloud-init.yaml` | first boot: user, SSH hardening, then calls `bootstrap.sh` | no |
 | `terraform/` | orders the machine and passes `cloud-init.yaml` as user-data | **yes** (Cherry Servers) |
 
+## The API key
+
+The provider reads `CHERRY_API_KEY` from the environment, which is the path to prefer: nothing
+lands in the working directory. On the ASCON workstation the machine-local secret file is
+`~/.hermes/.env` (mode 0600, outside every checkout), so append it there without putting it through
+shell history:
+
+```bash
+(umask 077; printf 'Cherry API key: '; read -rs K; printf 'CHERRY_API_KEY=%s\n' "$K" >> ~/.hermes/.env; unset K; echo)
+```
+
+Then let direnv export just that one variable for this directory (`.envrc` holds no secret itself,
+and is gitignored anyway):
+
+```bash
+cat > terraform/.envrc <<'ENVRC'
+export CHERRY_API_KEY="$(sed -n 's/^CHERRY_API_KEY=//p' ~/.hermes/.env | head -1)"
+ENVRC
+direnv allow terraform
+```
+
+Do not put the key in `terraform.tfvars` (gitignored, but it puts a plaintext key in the working
+tree for no gain) and do not `export` it from a shell rc file (it then reaches every process,
+including anything that dumps its environment into a crash report).
+
+**`terraform.tfstate` holds secrets** — `user_data` is sensitive and is stored in the state in the
+clear. It is gitignored, but keep it out of Drive/Dropbox sync folders too. Sharing state across
+people later means an encrypted backend, not a synced file.
+
 ## Order of operations
 
 ```bash
