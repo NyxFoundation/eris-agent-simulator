@@ -53,13 +53,24 @@ variable "role" {
   default     = "standby"
 }
 
-variable "ssh_key_ids" {
-  description = "SSH key ids already registered in the Cherry Servers portal."
+variable "ssh_key_name" {
+  description = "Label for the SSH key this config registers with Cherry Servers."
+  type        = string
+  default     = "ascon"
+}
+
+variable "extra_ssh_key_ids" {
+  description = "Additional SSH key ids already registered in the portal (teammates)."
   type        = set(string)
   default     = []
 }
 
-variable "ssh_public_key" {
-  description = "Public key substituted into cloud-init.yaml for the ascon user."
+variable "ssh_public_key_path" {
+  description = <<-EOT
+    Path to the PUBLIC key. Its contents are registered with Cherry (root access) and substituted
+    into cloud-init.yaml for the `ascon` user. A path, not the contents: .tfvars files cannot call
+    file().
+  EOT
   type        = string
+  default     = "~/.ssh/id_ed25519.pub"
 }

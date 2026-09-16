@@ -33,13 +33,22 @@ provider "cherryservers" {
   api_key = var.cherry_api_key
 }
 
+# Registered with Cherry so that root access exists even if cloud-init fails. cloud-init separately
+# puts the same key on the `ascon` user, which is the account to actually use.
+resource "cherryservers_ssh_key" "ascon" {
+  name       = var.ssh_key_name
+  public_key = local.ssh_public_key
+}
+
 locals {
+  ssh_public_key = trimspace(file(pathexpand(var.ssh_public_key_path)))
+
   # cloud-init is shared with every other vendor verbatim; only the SSH key is substituted.
   user_data = base64encode(
     replace(
       file("${path.module}/../cloud-init.yaml"),
       "ssh-ed25519 AAAA_REPLACE_ME",
-      var.ssh_public_key,
+      local.ssh_public_key,
     )
   )
 }
@@ -56,7 +65,7 @@ resource "cherryservers_server" "ascon" {
   # monthly rate is 583 hours (~24 days), and a standby should live for the live week only.
   cycle = var.cycle
 
-  ssh_key_ids = var.ssh_key_ids
+  ssh_key_ids = concat([cherryservers_ssh_key.ascon.id], tolist(var.extra_ssh_key_ids))
   user_data   = local.user_data
 
   # Changing image/ssh_key_ids/user_data silently REINSTALLS the machine. Left false so that an

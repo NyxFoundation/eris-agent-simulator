@@ -1,7 +1,7 @@
 # cp terraform.tfvars.example terraform.tfvars   (terraform.tfvars is gitignored)
 project_id     = 000000
-ssh_public_key = "ssh-ed25519 AAAA... you@example.com"
-ssh_key_ids    = ["12345"]
+# ssh_public_key_path = "~/.ssh/id_ed25519.pub"   # this is the default
+# extra_ssh_key_ids = ["12345"]   # teammates' keys already in the portal
 
 # The live-week standby: hourly, destroy when the week is over.
 hostname = "ascon-standby"
