@@ -112,15 +112,32 @@ chmod 0644 /etc/cron.d/ascon-anvil-tmp
 log "done"
 cat <<DONEEOF
 
-Still to do by hand on this box:
+Still to do by hand on this box. This order is the one that works on a machine with nothing
+cached -- every step below was a separate failure the first time, because gohanserver had all of
+it left over from earlier runs and none of it was written down:
+
   1. cd ${ERIS_ROOT} && npm ci && (cd deployer && npm ci)
   2. deployer/scripts/setup-vendors.sh     # clones GMX (~1.1 GB) + Liquity, yarn/npm install
-     #  It exits non-zero after a SUCCESSFUL compile (docs/18), so check artefacts, not \$?:
+     #  Exits non-zero in BOTH directions -- 127 on a missing tool (having already cloned GMX, so
+     #  the tree looks complete) and non-zero after a SUCCESSFUL compile (docs/18). Check artefacts:
      #    deployer/vendor/gmx-src/node_modules, deployer/vendor/aave/node_modules,
      #    deployer/vendor/liquity-src, deployer/vendor/curve
-  3. (cd deployer && npm run deploy -- --keep-fresh) &   # leaves an anvil on :8545
-     npm run gen:state-dump                              # writes backtest/state/venues-state.json
-     #  the monitoring stack REFUSES to start without it (anvil-state-init)
+  3. (cd deployer && npm run build:contracts)   # the deployer's own contracts
+     npm run build:contracts                    # AND the root's -- gmx.ts setupGlobal reads
+     #  out/MockOracleProvider.sol/... even when gmx is not in run.protocols
+  4. cp config/example.yaml config/local.yaml
+     #  bench/lib/mkconfig.py opens config/local.yaml directly; unlike the rest of the codebase it
+     #  does not fall back to example.yaml
+  5. (cd deployer && npm run deploy -- --keep-fresh) &   # leaves an anvil on :8545; ~25 min, GMX is most of it
+     #  WAIT for it: gmxV2 must appear in deployer/deployments/deployments.json AND deploy.log must
+     #  stop growing for 90s. Block-number-stops-moving is NOT a completion signal.
+     rm -f .local-snapshot                                # gen:state-dump reverts to it -- see README
+     npm run gen:state-dump                               # writes backtest/state/venues-state.json
+     #  ~32 MB with all eight protocols. The monitoring stack REFUSES to start without it.
+  6. sanity-check the box before trusting any measurement:
+     bench/run.sh --clones bench-max --agents 100 --blocks 200 --block-time 2
+     #  round_timing.totalMs max must stay under 2000 ms, and blocks.csv should show ~190 tx/round.
+     #  Plain `--agents 100` is venue-arb clones: 21 tx/round, passes trivially, measures nothing.
   4. infra/monitoring/grafana/secret.env   (Slack token, Grafana admin pw, renderer token)
   5. .env.local                            (ANVIL_RPC_URL / CHAIN_ID / TREASURY_PRIVATE_KEY)
   6. cloudflared: install, then put the tunnel credentials in place and copy
