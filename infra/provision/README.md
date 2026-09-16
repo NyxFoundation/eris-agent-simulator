@@ -104,6 +104,54 @@ compose's `create_host_path` silently creates an empty *directory* at a missing 
 anvil then comes up with no venues at all and no error anywhere — which is exactly what happens the
 first time you `docker compose up` on a fresh box.
 
+## Two traps when generating the venues snapshot
+
+Both of these cost an hour on the first box and neither is in ASCON docs/16 or docs/18.
+
+### `npm run gen:state-dump` is destructive to the running chain
+
+It calls `resetFork`, which in local mode **reverts the chain to `.local-snapshot`** before dumping
+(`scripts/genStateDump.ts` says so in its header, but it reads as an implementation note rather than
+a warning). Two consequences:
+
+- Run it while the deploy is still going and the snapshot is pinned at that moment.
+- Run it **again** and the chain is rolled back to that pin. A completed GMX deploy disappeared this
+  way: every `gmxV2` address went to `code=0x`, the chain went back to block 210, and the new dump
+  came out **byte-identical** to the premature one (11,466,613 bytes both times).
+
+The byte-identical size is what exposed it. Without that coincidence the second dump would have
+looked like a normal eight-protocol snapshot.
+
+**So: delete `.local-snapshot` before dumping, and only dump once the deploy has finished.**
+
+### `deployments.json` and the manifest prove nothing about the chain
+
+Both are files. After the rollback above, `deployments.json` still listed all eight protocols and
+`gen:state-dump` happily wrote a manifest echoing `['aaveV3', 'balancerV2', 'common', 'curve',
+'gmxV2', 'liquity', 'lst', 'uniswapV3']` — for a chain that no longer had GMX on it.
+
+Check the chain, then check the dump:
+
+```bash
+G=$(python3 -c "import json;print(json.load(open('deployer/deployments/deployments.json'))['protocols']['gmxV2']['DataStore'])")
+cast code "$G" --rpc-url http://127.0.0.1:8545 | wc -c      # >100 before dumping
+python3 -c "
+import json;d=json.load(open('backtest/state/venues-state.json'))
+a={k.lower():v for k,v in (d.get('accounts') or {}).items()}
+print('with-code:', sum(1 for v in a.values() if (v.get('code') or '0x') != '0x'))
+print('gmx code len:', len((a.get('$G'.lower()) or {}).get('code','0x')))"
+```
+
+### Knowing when the deploy has finished
+
+There is no completion marker to grep, and **block-number-stops-moving is not one** — GMX synthetics
+pushes hundreds of `DataStore.setAddress/setBool/setUint` transactions with lulls long enough to
+look finished. Use two independent signals: `gmxV2` (the last protocol) appears in
+`deployments.json`, **and** `deploy.log` stops growing for 90 seconds. `infra/provision/prepare.sh`
+patterns this.
+
+Budget ~25-30 minutes for a full eight-protocol deploy on an 8-core box; GMX is most of it.
+
 ## The chain survives restarts now
 
 The live chain is the named volume `ascon-chain-state`, not the venues snapshot. The snapshot is only
