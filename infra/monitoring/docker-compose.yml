@@ -111,8 +111,13 @@ services:
   # One-shot. Two jobs, both of which anvil cannot do for itself because it runs as uid 1000:
   #   1. a named volume is created root-owned, so anvil could not write its dump into it;
   #   2. seed the live chain from the venues snapshot, once.
+  # PINNED, not :stable. An anvil state dump is version-coupled: `npm run gen:state-dump` runs with
+  # whatever foundryup put on the HOST, and :stable lagged it (1.5.1 vs the host's 1.8.3), so the
+  # container rejected the dump it was handed -- "data did not match any variant of untagged enum
+  # SerializableTransactionType". Keep this tag and the host's foundry on the same version; ASCON
+  # docs/18 says to pin foundry to stable but only means the host, which is not sufficient.
   anvil-state-init:
-    image: ghcr.io/foundry-rs/foundry:stable
+    image: ghcr.io/foundry-rs/foundry:v1.8.3
     container_name: ascon-anvil-state-init
     user: "0:0"
     restart: "no"
@@ -146,7 +151,7 @@ services:
         fi
 
   anvil:
-    image: ghcr.io/foundry-rs/foundry:stable
+    image: ghcr.io/foundry-rs/foundry:v1.8.3
     container_name: ascon-anvil
     restart: unless-stopped
     networks: [ascon-chain]
@@ -166,11 +171,17 @@ services:
         # rewind the practice period to day one (docs/20 §1 runs it with resetUnit: continuous for
         # 39 days). To start the period over on purpose, drop the volume:
         #   docker compose down && docker volume rm ascon-monitoring_ascon-chain-state
-        # --state is --load-state + --dump-state on the same file; --state-interval also flushes
-        # periodically, so an unclean kill loses minutes, not the period.
+        # --load-state + --dump-state on the same path, NOT --state. They are documented as the
+        # same thing, but --state parses far more strictly and rejects what `npm run gen:state-dump`
+        # writes: "data did not match any variant of untagged enum SerializableTransactionType".
+        # --load-state accepts it (it is what this service always used) and --dump-state then writes
+        # anvil's own format, which --load-state reads back. Verified on the 32.8 MB venues dump:
+        # load -> block 522 with GMX code present -> mine -> dump 34.4 MB -> reload -> block 525.
+        # --state-interval also flushes periodically, so an unclean kill loses minutes, not the period.
         anvil --host 0.0.0.0 --port 8545 --code-size-limit 50000 --base-fee 0 \
               --gas-limit 320000000 --accounts 10 --balance 1000000 \
-              --state /chainstate/state.json --state-interval 300 &
+              --load-state /chainstate/state.json --dump-state /chainstate/state.json \
+              --state-interval 300 &
         ANVILPID=$$!
         # PID 1 here is this shell. Without the trap, SIGTERM stops the shell, anvil is orphaned and
         # then SIGKILLed, and the dump is never written (verified A/B: no trap -> 0 bytes + orphan;
