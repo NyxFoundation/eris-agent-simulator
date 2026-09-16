@@ -53,6 +53,12 @@ if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'process.versions.node.spli
   apt-get install -y -qq nodejs >/dev/null
 fi
 
+log "yarn (classic)"
+# deployer/scripts/setup-vendors.sh runs `yarn install` for GMX and `npm install` for Aave. Without
+# yarn it exits 127 having already cloned 1.1 GB of GMX, so the tree LOOKS set up -- the vendor
+# directories all exist -- and the failure only surfaces later as a deploy that cannot compile.
+command -v yarn >/dev/null 2>&1 || npm install -g yarn >/dev/null
+
 log "foundry (stable, NOT nightly)"
 # docs/18: on a dev build `setup-vendors.sh` exits 1 because the new solar parser rejects Liquity V1
 # (compilation itself succeeds; it is the lint that fails). Pin stable and keep the escape hatch.
@@ -107,12 +113,17 @@ log "done"
 cat <<DONEEOF
 
 Still to do by hand on this box:
-  1. cd ${ERIS_ROOT} && npm ci
-  2. npm run gen:state-dump           # writes backtest/state/venues-state.json
-                                      # the stack REFUSES to start without it (anvil-state-init)
-  3. infra/monitoring/grafana/secret.env   (Slack token, Grafana admin pw, renderer token)
-  4. .env.local                            (ANVIL_RPC_URL / CHAIN_ID / TREASURY_PRIVATE_KEY)
-  5. cloudflared: install, then put the tunnel credentials in place and copy
+  1. cd ${ERIS_ROOT} && npm ci && (cd deployer && npm ci)
+  2. deployer/scripts/setup-vendors.sh     # clones GMX (~1.1 GB) + Liquity, yarn/npm install
+     #  It exits non-zero after a SUCCESSFUL compile (docs/18), so check artefacts, not \$?:
+     #    deployer/vendor/gmx-src/node_modules, deployer/vendor/aave/node_modules,
+     #    deployer/vendor/liquity-src, deployer/vendor/curve
+  3. (cd deployer && npm run deploy -- --keep-fresh) &   # leaves an anvil on :8545
+     npm run gen:state-dump                              # writes backtest/state/venues-state.json
+     #  the monitoring stack REFUSES to start without it (anvil-state-init)
+  4. infra/monitoring/grafana/secret.env   (Slack token, Grafana admin pw, renderer token)
+  5. .env.local                            (ANVIL_RPC_URL / CHAIN_ID / TREASURY_PRIVATE_KEY)
+  6. cloudflared: install, then put the tunnel credentials in place and copy
      infra/cloudflared/config.yml to /etc/cloudflared/config.yml  (see infra/provision/README.md)
-  6. cd infra/monitoring && docker compose up -d
+  7. cd infra/monitoring && docker compose up -d
 DONEEOF

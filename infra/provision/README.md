@@ -60,8 +60,10 @@ terraform init && terraform apply
 
 # 2. the rest, on the box, as the `ascon` user
 cd ~/workspace/eris-agent-simulator
-npm ci
-npm run gen:state-dump          # writes backtest/state/venues-state.json
+npm ci && (cd deployer && npm ci)
+deployer/scripts/setup-vendors.sh        # clones GMX (~1.1 GB) + Liquity, then yarn/npm install
+(cd deployer && npm run deploy -- --keep-fresh) &   # leaves an anvil on :8545
+npm run gen:state-dump                   # writes backtest/state/venues-state.json
 
 # 3. secrets (both gitignored, neither can be baked into an image)
 #    infra/monitoring/grafana/secret.env   Slack bot token, Grafana admin pw, renderer token
@@ -81,6 +83,19 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST https://ascon-rpc.nyx.foundatio
   -H "CF-Access-Client-Id: $ID" -H "CF-Access-Client-Secret: $SECRET" \
   -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"anvil_setBalance","params":[]}'     # 403
+```
+
+**`setup-vendors.sh` reports success badly — check artefacts, not `$?`.** It is known to exit
+non-zero after a *successful* compile (docs/18: the dev solar parser rejects Liquity V1 at the lint
+stage). It also exits 127 if `yarn` is missing, and by then it has already cloned 1.1 GB of GMX, so
+every vendor directory exists and the tree looks finished; the failure only shows up much later as a
+deploy that cannot compile. The four things that actually have to be there:
+
+```
+deployer/vendor/gmx-src/node_modules
+deployer/vendor/aave/node_modules
+deployer/vendor/liquity-src
+deployer/vendor/curve
 ```
 
 **Step 2 is not optional and the stack will not paper over it.** `anvil-state-init` refuses to start
