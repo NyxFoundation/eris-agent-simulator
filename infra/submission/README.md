@@ -71,3 +71,44 @@ is how a tampered runtime would walk in the back door after passing the front on
 Verified: a stock bundle accepts and produces `eris-agent:team-demo`; a bundle with a modified
 `sdk/src/config.ts` is rejected at step 1 with **no directory and no image created**; a second
 submission for a team that already exists stops rather than overwriting.
+
+## The whole path, exercised end to end (2026-09-17)
+
+Each piece had been tested; the path had not. It was walked once with an agent the pipeline had
+never seen — a fee-aware cross-venue arb written for the purpose, `team-kappa` — from a
+participant's directory to a scored agent on the chain:
+
+```sh
+npm run bundle:agent team-kappa                        # participant: 88 files, ~1.0 MB
+rm -rf example/agents/team-kappa                       # the operator does NOT have the source
+infra/submission/accept-submission.sh bundle.zip team-kappa
+```
+
+The scan accepted with one WARN (`non-registry dependency '@eris/sdk': file:./sdk`, which is what
+`bundleAgent` writes), extraction took **2 files** — the participant's own directory and nothing
+else — `check:strategy` passed, and the build printed a digest.
+
+Then the accepted **image** was run in a scenario (`spike#202`, 120 blocks, image mode — not
+bindmount, because this is the submission path):
+
+| what was checked | result |
+|---|---|
+| digest at acceptance | `sha256:a5134302048deb55fc5a6aed640e72bf138179ef2362ea5a2056cb152139251c` |
+| digest in `runs/<id>/images.jsonl` at spawn | **the same string** |
+| `mode` recorded | `image` |
+| blocks the agent acted on | 102 submitted, 8 `submit_failed`, 10 `noop`, of 120 |
+| baseline in the same run | 120 `noop`, as it should be |
+
+The digest match is the point: acceptance and spawn are the two ends of the replay audit, and this
+is the first run in which both ends were recorded and compared.
+
+**A scored run is not evidence that an agent traded.** `team-kappa` scored above the baseline
+(-3298.32 against -3585.58) with `T 40.0`, which says nothing about whether it ever submitted
+anything — and `events.jsonl`'s `tx_submitted` carries *flow wallets only*, so counting agent
+transactions there returns zero for every agent in every run. The agents' own transactions are in
+`runs/<id>/agents/<id>.jsonl` as `event: "submitted"` / `"submit_failed"`. Count them there.
+
+The eight failures were `Execution reverted with reason: Slippage.` — the agent asks for
+`slippageBps: 30`, and its own `prompt.md` names that as the first thing to look at if fills are
+being rejected. That is a strategy result, not a pipeline defect, and it is what a working
+submission path is supposed to surface.

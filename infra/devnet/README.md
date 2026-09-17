@@ -229,3 +229,68 @@ pkill -f 'core/src/flow/market-maker'      # the children that keep it open
 The artifacts are trustworthy either way — they are written before the hang, and `matrix.json`
 carries `scenariosPlanned` next to the actual count, so a truncated matrix is visible rather than
 silent.
+
+
+## Running the scenario matrix
+
+The matrix is what ADR 0017 calls an epoch: for each `(regime, seed)` in the plan the coordinator
+snapshots the chain, runs the scenario, reconstructs the agents' value at the epoch boundaries, and
+reverts. `resetUnit: "scenario"` in `matrix.json` names the unit; the proof it actually happened is
+that **block numbers go backwards between scenarios** — measured 2026-09-17, scenario 1 ended at
+block 1222 and scenario 2 started at 1163. Nothing but a revert does that.
+
+```sh
+export PATH="$HOME/.foundry/bin:$PATH"     # anvil is not on a non-interactive PATH
+export ERIS_AGENT_BINDMOUNT=1              # see below — without it most of the field cannot start
+timeout 5h npm run backtest -- --scenarios <plan.yaml> --port 8547
+```
+
+### Four ways this run produces a green result that means nothing
+
+**Do not shorten `--blocks`.** The regimes are 360 blocks because their stress events are windowed:
+`cdp-incident`'s eUSD depeg alone is ramp 4 + hold 20 + decay 12 = 36 blocks inside a window at
+`windowFrac [0.3, 0.7]`. At `--blocks 40` that window cannot exist, and the 2026-09-17 matrix
+recorded `cdp-incident#101` with **`agents: []`** — a scenario that ran, reported nothing, and left
+`scenariosPlanned: 12` next to 11 usable entries. At the regime's own 360 the same scenario scores
+all five agents (`sp-underwriter` 1383.95, `redemption-arb` 581.54), which is the behaviour the
+regime exists to exercise and which had never fired before. The config says this already: shortening
+is "for behavior checks and smoke tests only" (ADR 0016 §3).
+
+**Set `ERIS_AGENT_BINDMOUNT=1` for the operator's own field.** Image mode is the default and it
+expects `eris-agent:<id>` for *every* roster entry. The twelve official regimes name thirteen
+distinct agents; a box provisioned for the competition has the two or three that were built on it.
+The rest exit `125` before `runtime_start` — docker's "could not start the container at all", with
+no line saying which image was missing. `runs/<id>/images.jsonl` is where to look: a missing image
+is logged as `"digest": "unresolved"`. Image mode is the *submission* path (see
+`infra/submission/README.md`), not the path for agents that are this repository's own code.
+
+**Sweep leftover containers first.** `run-agent.sh` removes its container from a signal handler, so
+a coordinator killed with SIGKILL — or a `timeout` that fires — leaves `eris-<id>` running. The next
+run's `docker run --name eris-<id>` then fails with a bare `125` that looks identical to the missing
+image above. Measured twice on 2026-09-17.
+
+```sh
+docker ps -aq --filter 'name=^eris-' | xargs -r docker rm -f
+```
+
+**Two matrices at once collide on agent ids, not on ports.** The container name is the roster `id`
+(`eris-<id>`); the image comes from `dir`. Separate `--port` values are not enough — a second run
+whose roster also contains `noop` kills the first one's `noop` or fails to start its own. Alias the
+ids when you need a concurrent run, which costs nothing because `dir` still points at the shared
+image:
+
+```yaml
+- { id: kappa-noop, dir: noop,      wallet: AUTO, baseline: true }
+- { id: kappa-ref,  dir: venue-arb, wallet: AUTO }
+```
+
+### Reading progress
+
+`blocks.csv` is written when the run ends, so it sits at one header line for the whole run and is
+**not** a progress indicator. What moves: `events.jsonl`, `epochs.jsonl`, and the chain's own block
+number (`eth_blockNumber` against the backtest's port, read twice a few seconds apart).
+
+A run proceeds at `blockTimeSec`, not as fast as the box can mine: 360 blocks took **718 s** twice,
+which is 2.00 s/block, on a 16-core box at load 0.05. So the wall clock is
+`blocks x blockTimeSec x scenarios` and adding CPU does not change it — a 12 x 360 matrix is ~2.4 h
+whatever the hardware. It also means a second run alongside it is nearly free.
