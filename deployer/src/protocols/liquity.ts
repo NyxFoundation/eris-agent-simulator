@@ -169,9 +169,15 @@ export async function deployLiquityVenue({ seed }: { seed: boolean }) {
   );
   const hintHelpers = await deployLiquity("HintHelpers", "HintHelpers");
 
-  // LQTY exists only because core address-wiring requires it. It gets no market and no valuation:
-  // CommunityIssuance pays out on a one-year half-life, so emission over a few hundred blocks is
-  // indistinguishable from zero.
+  // LQTY exists only because core address-wiring requires it. It gets no market and no valuation.
+  //
+  // The reason that is safe is the market, not the size. It is listed on no venue here, so it
+  // cannot be sold and has no price to value it at; rules §4.1 is what covers it, the same clause
+  // that zeroes anything else the environment cannot value. The emission is not negligible on the
+  // way: measured 2026-09-17 on cdp-incident#101, the sole Stability Pool depositor accrued
+  // **30.31 LQTY over 360 blocks**, and the run says so — `scoring_unpriced_holdings` names the
+  // holder, the token and the amount rather than dropping it silently. Nobody had seen that line
+  // before, because this is the regime whose agents had never started.
   const communityIssuance = await deployLiquity(
     "CommunityIssuance",
     "CommunityIssuance",
