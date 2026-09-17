@@ -34,6 +34,22 @@ apt-get install -y -qq ca-certificates curl git jq unzip sysstat ripgrep >/dev/n
 log "user ${ASCON_USER}"
 id -u "$ASCON_USER" >/dev/null 2>&1 || useradd -m -s /bin/bash "$ASCON_USER"
 
+log "docker address pools"
+# The default pools yield ~27 networks. ERIS_AGENT_ISOLATE=1 takes one per agent, so the 28th
+# participant onward cannot start -- and run-agent.sh swallows the create error, so what surfaces is
+# "network ag-<id> not found" from docker run. Measured on ascon-live 2026-09-17.
+install -d /etc/docker
+if ! grep -q default-address-pools /etc/docker/daemon.json 2>/dev/null; then
+  python3 - <<'PY'
+import json, os
+p = "/etc/docker/daemon.json"
+d = json.load(open(p)) if os.path.exists(p) and os.path.getsize(p) else {}
+d["default-address-pools"] = [{"base": "10.200.0.0/12", "size": 24}]   # 4096 networks
+json.dump(d, open(p, "w"), indent=2)
+PY
+  DOCKER_POOLS_CHANGED=1
+fi
+
 log "docker engine + compose plugin"
 if ! command -v docker >/dev/null 2>&1; then
   install -m 0755 -d /etc/apt/keyrings
@@ -46,6 +62,8 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 usermod -aG docker "$ASCON_USER"
 systemctl enable --now docker
+# the pool change only takes effect on a daemon restart
+[ "${DOCKER_POOLS_CHANGED:-0}" = 1 ] && systemctl restart docker && sleep 5 || true
 
 log "node ${NODE_MAJOR}"
 if ! command -v node >/dev/null 2>&1 || [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -lt "$NODE_MAJOR" ]; then
