@@ -48,3 +48,26 @@ tampering. Verified: a stock bundle accepts (0 BLOCK); the same bundle with a sh
 `sdk/src/config.ts` rejects; adding `agents/runtime/backdoor.ts` rejects.
 
 `ERIS_REPO` overrides the reference checkout (default: this script's repo root).
+
+
+## From an accepted ZIP to a runnable image
+
+`scan-submission.py` screens a ZIP and `infra/docker-agent/build.sh team <id>` builds from
+`example/agents/<id>`, but nothing moved a ZIP into that shape — the pipeline had a gap exactly
+where a competition needs an audit trail. `accept-submission.sh` closes it:
+
+```sh
+./accept-submission.sh submissions/team-alice.zip team-alice
+```
+
+Four steps, stopping at the first failure: scan → extract → `check:strategy` → build, ending with
+the image digest the replay audit compares against `runs/<id>/images.jsonl`.
+
+**Extraction takes the participant's agent directory and nothing else.** The bundle also carries
+`sdk/`, `agents/runtime/` and `agents/lib/`; those belong to the operator, the scan has already
+proved they are byte-identical to this repo's, and copying a participant's copy over the operator's
+is how a tampered runtime would walk in the back door after passing the front one.
+
+Verified: a stock bundle accepts and produces `eris-agent:team-demo`; a bundle with a modified
+`sdk/src/config.ts` is rejected at step 1 with **no directory and no image created**; a second
+submission for a team that already exists stops rather than overwriting.
