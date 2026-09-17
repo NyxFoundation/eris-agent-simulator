@@ -170,3 +170,35 @@ SIM_CONFIG=config/competition.yaml \
 
 `restart: "no"` is deliberate: a competition run ending is an event someone should see, not
 something to paper over.
+
+
+## Resetting the chain under a running coordinator wedges it, silently
+
+The README opens by saying an undriven anvil "looks alive from outside; it is frozen". There is a
+second way to reach exactly that state, and it is easier to hit: **drop the chain volume while the
+coordinator is running.**
+
+```sh
+# with ascon-devnet active:
+cd ../monitoring && docker compose down && docker volume rm ascon-monitoring_ascon-chain-state && docker compose up -d
+```
+
+The chain comes back at the venues snapshot. The coordinator does not notice: the unit stays
+`active`, the process tree is intact and burning ~1% CPU, a run directory and `matrix.json` exist —
+and **no block is ever produced again**. Measured 2026-09-17: three hours of `active` with the chain
+pinned at the snapshot block.
+
+`systemctl --user start ascon-devnet` does **not** fix it. Start on an already-active unit is a
+no-op, so the obvious reflex looks like it worked and changes nothing. It has to be `stop` then
+`start` (or `restart`).
+
+So: **stop the coordinator before touching the chain volume, and restart it after.**
+
+```sh
+systemctl --user stop ascon-devnet
+# ... reset the chain ...
+systemctl --user start ascon-devnet
+```
+
+The only check that means anything is the one this README already gives — read the block number
+twice, a few seconds apart. `is-active` will lie to you.
