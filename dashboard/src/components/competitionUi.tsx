@@ -61,6 +61,10 @@ export function Panel({
                 font: "var(--text-xs) var(--font-sans)",
                 color: "var(--text-tertiary)",
                 lineHeight: 1.5,
+                // A panel is as wide as its table; its explanation is not. Widening the page for a
+                // 1556px standings table would otherwise have set this paragraph on a 1700px
+                // measure, which nobody can track back to the start of the next line.
+                maxWidth: "76ch",
               }}
             >
               {subtitle}

@@ -8,7 +8,8 @@
 // market price. One tab per application, each built from that run's own artifacts.
 import { useEffect, useState, type ReactNode } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
-import { Sidebar } from "@/components/Sidebar";
+import { AppShell } from "@/components/AppShell";
+import { useIsMobile } from "@/lib/breakpoints";
 import { CandleChart } from "@/components/CandleChart";
 import { ArbitrageChart } from "@/components/ArbitrageChart";
 import { StateChart } from "@/components/StateChart";
@@ -182,7 +183,9 @@ function PanelTable({ table }: { table: VenueTable }) {
         style={{
           border: "1px solid var(--border-subtle)",
           borderRadius: "var(--radius-md)",
-          overflow: "hidden",
+          // Columns with a fixed width outgrow a phone, and `hidden` cut the last one off with
+          // nothing to say it was there. The cells still ellipsize; the table scrolls.
+          overflowX: "auto",
         }}
       >
         <div
@@ -191,6 +194,7 @@ function PanelTable({ table }: { table: VenueTable }) {
             gridTemplateColumns: grid,
             gap: "8px",
             padding: "8px 12px",
+            minWidth: "fit-content",
             background: "var(--bg-surface)",
             borderBottom: "1px solid var(--border-subtle)",
           }}
@@ -226,6 +230,7 @@ function PanelTable({ table }: { table: VenueTable }) {
                 gridTemplateColumns: grid,
                 gap: "8px",
                 padding: "8px 12px",
+                minWidth: "fit-content",
                 borderBottom: "1px solid var(--border-subtle)",
                 font: "var(--text-sm) var(--font-mono)",
               }}
@@ -416,6 +421,8 @@ function CenteredMessage({ text, tone }: { text: string; tone?: "danger" }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        textAlign: "center",
+        padding: "var(--space-8) var(--page-pad-x)",
         background: "var(--bg-canvas)",
       }}
     >
@@ -433,6 +440,7 @@ function CenteredMessage({ text, tone }: { text: string; tone?: "danger" }) {
 }
 
 export function MarketPage() {
+  const mobile = useIsMobile();
   const [selectedBase, setSelectedBase] = useState("WETH");
   const { data, loading, error } = useMarketSnapshot(selectedBase);
   const mode = useMode();
@@ -483,383 +491,368 @@ export function MarketPage() {
     fairDirection === "up" ? "var(--success-text)" : "var(--danger-text)";
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        background: "var(--bg-canvas)",
-      }}
-    >
-      <Sidebar activePage="markets" />
+    <AppShell activePage="markets">
+      <RoundsBar round={round} />
 
       <div
         style={{
-          flex: 1,
-          minWidth: 0,
           display: "flex",
-          flexDirection: "column",
+          alignItems: "center",
+          gap: "24px",
+          padding: "12px 20px",
+          borderBottom: "1px solid var(--border-subtle)",
+          flexWrap: "wrap",
         }}
       >
-        <RoundsBar round={round} />
-
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "24px",
-            padding: "12px 20px",
-            borderBottom: "1px solid var(--border-subtle)",
-            flexWrap: "wrap",
-          }}
-        >
-          <Select
-            value={base}
-            options={
-              pairs.length > 0
-                ? pairs
-                : [{ label: `${base}/USDC`, value: base }]
-            }
-            onChange={(e) => setSelectedBase(e.target.value)}
-            style={{ minWidth: "150px" }}
-          />
-          <div>
-            <div style={SECTION_LABEL_STYLE}>{t("market.fair")}</div>
-            <div
-              style={{
-                font: "var(--weight-semibold) var(--text-lg) var(--font-mono)",
-                color: priceColor,
-              }}
-            >
-              {fairPrice.toLocaleString("en-US", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}
-            </div>
-          </div>
-          <div style={{ marginLeft: "auto" }}>
-            <div style={SECTION_LABEL_STYLE}>{t("market.venuesInRun")}</div>
-            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-              {protocols.length === 0 && (
-                <span
-                  style={{
-                    font: "var(--text-xs) var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  {t("market.notRecorded")}
-                </span>
-              )}
-              {protocols.map((p) => (
-                <span
-                  key={p}
-                  style={{
-                    font: "10px var(--font-mono)",
-                    letterSpacing: "var(--tracking-wide)",
-                    textTransform: "uppercase",
-                    color: "var(--text-secondary)",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "2px 6px",
-                  }}
-                >
-                  {p}
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Which blocks everything below covers. Selecting a round in the bar above narrows every
-            series, stat and table on this page — the end-of-run position tables say so in their
-            own titles, because those are the run's close whatever window is selected. */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "12px",
-            padding: "8px 20px",
-            borderBottom: "1px solid var(--border-subtle)",
-            background:
-              scope.roundIndex === null ? "transparent" : "var(--bg-surface)",
-            flexWrap: "wrap",
-          }}
-        >
-          <span style={SECTION_LABEL_STYLE}>{t("market.scope")}</span>
-          <span
+        <Select
+          value={base}
+          options={
+            pairs.length > 0
+              ? pairs
+              : [{ label: `${base}/USDC`, value: base }]
+          }
+          onChange={(e) => setSelectedBase(e.target.value)}
+          style={{ minWidth: "150px" }}
+        />
+        <div>
+          <div style={SECTION_LABEL_STYLE}>{t("market.fair")}</div>
+          <div
             style={{
-              font: "var(--text-xs) var(--font-mono)",
-              color:
-                scope.roundIndex === null || panel?.runWide
-                  ? "var(--text-tertiary)"
-                  : "var(--pink-300)",
+              font: "var(--weight-semibold) var(--text-lg) var(--font-mono)",
+              color: priceColor,
             }}
           >
-            {panel?.runWide
-              ? t("market.runWide", {
-                  from:
-                    round.epochs[0]?.fromBlock.toLocaleString("en-US") ?? "—",
-                  to: round.blockNumber.toLocaleString("en-US"),
-                })
-              : scope.roundIndex === null
-                ? t("market.wholeRun", {
-                    from: scope.fromBlock.toLocaleString("en-US"),
-                    to: scope.toBlock.toLocaleString("en-US"),
-                  })
-                : t("market.roundScope", {
-                    i: String(scope.roundIndex).padStart(2, "0"),
-                    from: scope.fromBlock.toLocaleString("en-US"),
-                    to: scope.toBlock.toLocaleString("en-US"),
-                  })}
-          </span>
-          {scope.roundIndex === null || panel?.runWide ? (
-            <span
-              style={{
-                font: "var(--text-xs) var(--font-mono)",
-                color: "var(--text-tertiary)",
-              }}
-            >
-              {t("market.scopeHint")}
-            </span>
-          ) : (
-            <span
-              onClick={() => setSelectedRound(null)}
-              style={{
-                font: "var(--text-xs) var(--font-mono)",
-                color: "var(--text-link)",
-                cursor: "pointer",
-              }}
-            >
-              {t("market.backToRun")}
-            </span>
-          )}
+            {fairPrice.toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </div>
         </div>
-
-        <main
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(0,1fr) 300px",
-            flex: 1,
-            width: "100%",
-            boxSizing: "border-box",
-            minHeight: 0,
-          }}
-        >
-          <div
-            style={{ display: "flex", flexDirection: "column", minWidth: 0 }}
-          >
-            <div style={{ padding: "0 20px" }}>
-              <Tabs
-                tabs={panels.map((p) => ({ label: p.label, value: p.id }))}
-                value={panel?.id ?? ""}
-                onChange={setPanelId}
-              />
-            </div>
-
-            {panel ? (
-              <PanelBody panel={panel}>
-                {panel.id === "amm" && (
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: "10px",
-                    }}
-                  >
-                    <div style={{ maxWidth: "340px" }}>
-                      <Tabs
-                        tabs={chartViews()}
-                        value={chartView}
-                        onChange={setChartView}
-                      />
-                    </div>
-                    {chartView === "arb" ? (
-                      <div>
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: "16px",
-                            padding: "0 0 10px",
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          {arbitrage.venues.map((v) => (
-                            <span
-                              key={v.id}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "6px",
-                                font: "11px var(--font-mono)",
-                                color: "var(--text-secondary)",
-                              }}
-                            >
-                              <span
-                                style={{
-                                  width: "8px",
-                                  height: "8px",
-                                  borderRadius: "50%",
-                                  background: v.color,
-                                  display: "inline-block",
-                                }}
-                              />
-                              {v.label}
-                            </span>
-                          ))}
-                          <span
-                            style={{
-                              marginLeft: "auto",
-                              font: "11px var(--font-mono)",
-                              color: "var(--text-tertiary)",
-                            }}
-                          >
-                            {t("market.arbLegend", {
-                              n: arbitrage.thresholdBps,
-                            })}
-                          </span>
-                        </div>
-                        <ArbitrageChart data={arbitrage} height={380} />
-                      </div>
-                    ) : (
-                      <CandleChart candles={candles} height={300} />
-                    )}
-                    {venueDepths.length > 0 && (
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns:
-                            "repeat(auto-fit, minmax(240px, 1fr))",
-                          gap: "16px",
-                          paddingTop: "8px",
-                        }}
-                      >
-                        {venueDepths.map((venue) => (
-                          <VenueDepthRow key={venue.id} venue={venue} />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </PanelBody>
-            ) : (
-              <div
+        <div style={{ marginLeft: "auto" }}>
+          <div style={SECTION_LABEL_STYLE}>{t("market.venuesInRun")}</div>
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+            {protocols.length === 0 && (
+              <span
                 style={{
-                  padding: "24px 20px",
-                  font: "var(--text-sm) var(--font-mono)",
+                  font: "var(--text-xs) var(--font-mono)",
                   color: "var(--text-tertiary)",
                 }}
               >
-                {t("market.noVenue")}
-              </div>
+                {t("market.notRecorded")}
+              </span>
+            )}
+            {protocols.map((p) => (
+              <span
+                key={p}
+                style={{
+                  font: "10px var(--font-mono)",
+                  letterSpacing: "var(--tracking-wide)",
+                  textTransform: "uppercase",
+                  color: "var(--text-secondary)",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: "var(--radius-sm)",
+                  padding: "2px 6px",
+                }}
+              >
+                {p}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Which blocks everything below covers. Selecting a round in the bar above narrows every
+          series, stat and table on this page — the end-of-run position tables say so in their
+          own titles, because those are the run's close whatever window is selected. */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          padding: "8px 20px",
+          borderBottom: "1px solid var(--border-subtle)",
+          background:
+            scope.roundIndex === null ? "transparent" : "var(--bg-surface)",
+          flexWrap: "wrap",
+        }}
+      >
+        <span style={SECTION_LABEL_STYLE}>{t("market.scope")}</span>
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color:
+              scope.roundIndex === null || panel?.runWide
+                ? "var(--text-tertiary)"
+                : "var(--pink-300)",
+          }}
+        >
+          {panel?.runWide
+            ? t("market.runWide", {
+                from:
+                  round.epochs[0]?.fromBlock.toLocaleString("en-US") ?? "—",
+                to: round.blockNumber.toLocaleString("en-US"),
+              })
+            : scope.roundIndex === null
+              ? t("market.wholeRun", {
+                  from: scope.fromBlock.toLocaleString("en-US"),
+                  to: scope.toBlock.toLocaleString("en-US"),
+                })
+              : t("market.roundScope", {
+                  i: String(scope.roundIndex).padStart(2, "0"),
+                  from: scope.fromBlock.toLocaleString("en-US"),
+                  to: scope.toBlock.toLocaleString("en-US"),
+                })}
+        </span>
+        {scope.roundIndex === null || panel?.runWide ? (
+          <span
+            style={{
+              font: "var(--text-xs) var(--font-mono)",
+              color: "var(--text-tertiary)",
+            }}
+          >
+            {t("market.scopeHint")}
+          </span>
+        ) : (
+          <span
+            onClick={() => setSelectedRound(null)}
+            style={{
+              font: "var(--text-xs) var(--font-mono)",
+              color: "var(--text-link)",
+              cursor: "pointer",
+            }}
+          >
+            {t("market.backToRun")}
+          </span>
+        )}
+      </div>
+
+      <main
+        style={{
+          display: "grid",
+          // The venue rail sits beside the chart on a desktop and under it on a
+          // phone, where 300px of rail left the chart 90px wide.
+          gridTemplateColumns: mobile ? "minmax(0,1fr)" : "minmax(0,1fr) 300px",
+          flex: 1,
+          width: "100%",
+          boxSizing: "border-box",
+          minHeight: 0,
+        }}
+      >
+        <div
+          style={{ display: "flex", flexDirection: "column", minWidth: 0 }}
+        >
+          <div style={{ padding: "0 20px" }}>
+            <Tabs
+              tabs={panels.map((p) => ({ label: p.label, value: p.id }))}
+              value={panel?.id ?? ""}
+              onChange={setPanelId}
+            />
+          </div>
+
+          {panel ? (
+            <PanelBody panel={panel}>
+              {panel.id === "amm" && (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "10px",
+                  }}
+                >
+                  <div style={{ maxWidth: "340px" }}>
+                    <Tabs
+                      tabs={chartViews()}
+                      value={chartView}
+                      onChange={setChartView}
+                    />
+                  </div>
+                  {chartView === "arb" ? (
+                    <div>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: "16px",
+                          padding: "0 0 10px",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        {arbitrage.venues.map((v) => (
+                          <span
+                            key={v.id}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              font: "11px var(--font-mono)",
+                              color: "var(--text-secondary)",
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: "8px",
+                                height: "8px",
+                                borderRadius: "50%",
+                                background: v.color,
+                                display: "inline-block",
+                              }}
+                            />
+                            {v.label}
+                          </span>
+                        ))}
+                        <span
+                          style={{
+                            marginLeft: "auto",
+                            font: "11px var(--font-mono)",
+                            color: "var(--text-tertiary)",
+                          }}
+                        >
+                          {t("market.arbLegend", {
+                            n: arbitrage.thresholdBps,
+                          })}
+                        </span>
+                      </div>
+                      <ArbitrageChart data={arbitrage} height={380} />
+                    </div>
+                  ) : (
+                    <CandleChart candles={candles} height={300} />
+                  )}
+                  {venueDepths.length > 0 && (
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns:
+                          "repeat(auto-fit, minmax(240px, 1fr))",
+                        gap: "16px",
+                        paddingTop: "8px",
+                      }}
+                    >
+                      {venueDepths.map((venue) => (
+                        <VenueDepthRow key={venue.id} venue={venue} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </PanelBody>
+          ) : (
+            <div
+              style={{
+                padding: "24px 20px",
+                font: "var(--text-sm) var(--font-mono)",
+                color: "var(--text-tertiary)",
+              }}
+            >
+              {t("market.noVenue")}
+            </div>
+          )}
+        </div>
+
+        <div
+          style={{
+            borderLeft: "1px solid var(--border-subtle)",
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 0,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              padding: "14px 16px 10px",
+            }}
+          >
+            <span style={SECTION_LABEL_STYLE}>{t("market.standings")}</span>
+            {/* Rules §4.7: the trial environment posts no standings, this preview included. */}
+            {!mode.standings && (
+              <span
+                style={{
+                  font: "11px var(--font-mono)",
+                  color: "var(--text-tertiary)",
+                }}
+              >
+                {t("market.standingsOff")}
+              </span>
             )}
           </div>
+          {mode.standings &&
+            leaderboard
+              .slice(0, 8)
+              .map((row) => <LeaderboardMiniRow key={row.rank} row={row} />)}
 
           <div
             style={{
-              borderLeft: "1px solid var(--border-subtle)",
-              display: "flex",
-              flexDirection: "column",
-              minWidth: 0,
+              padding: "16px 16px 6px",
+              borderTop: "1px solid var(--border-subtle)",
+              marginTop: "12px",
             }}
           >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                padding: "14px 16px 10px",
-              }}
-            >
-              <span style={SECTION_LABEL_STYLE}>{t("market.standings")}</span>
-              {/* Rules §4.7: the trial environment posts no standings, this preview included. */}
-              {!mode.standings && (
-                <span
-                  style={{
-                    font: "11px var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  {t("market.standingsOff")}
-                </span>
-              )}
-            </div>
-            {mode.standings &&
-              leaderboard
-                .slice(0, 8)
-                .map((row) => <LeaderboardMiniRow key={row.rank} row={row} />)}
-
-            <div
-              style={{
-                padding: "16px 16px 6px",
-                borderTop: "1px solid var(--border-subtle)",
-                marginTop: "12px",
-              }}
-            >
-              <span style={SECTION_LABEL_STYLE}>{t("market.submissions")}</span>
-              {/* The feed is submitted-but-not-yet-included, with the bid on it (#69). The server
-                  does not serve the self-reports in audience mode, and the panel says why. */}
-              {mode.audience && (
-                <p
-                  style={{
-                    margin: "6px 0 0",
-                    font: "11px var(--font-mono)",
-                    lineHeight: 1.5,
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  {t("market.submissionsAudience")}
-                </p>
-              )}
-              {!mode.audience && feedSelfHosted > 0 && (
-                <p
-                  style={{
-                    margin: "6px 0 0",
-                    font: "11px var(--font-mono)",
-                    lineHeight: 1.5,
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  {t("market.submissionsSelfHosted", {
-                    count: String(feedSelfHosted),
-                  })}
-                </p>
-              )}
-            </div>
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                padding: "0 16px 16px",
-              }}
-            >
-              {!mode.audience && feed.length === 0 && (
-                <span
-                  style={{
-                    font: "11px var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                    paddingTop: "6px",
-                  }}
-                >
-                  {t("market.noSubmissions")}
-                </span>
-              )}
-              {!mode.audience &&
-                feed.map((item) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      padding: "6px 0",
-                      borderBottom: "1px solid var(--border-subtle)",
-                      font: "11px var(--font-mono)",
-                      color: "var(--text-secondary)",
-                    }}
-                  >
-                    {item.text}
-                  </div>
-                ))}
-            </div>
+            <span style={SECTION_LABEL_STYLE}>{t("market.submissions")}</span>
+            {/* The feed is submitted-but-not-yet-included, with the bid on it (#69). The server
+                does not serve the self-reports in audience mode, and the panel says why. */}
+            {mode.audience && (
+              <p
+                style={{
+                  margin: "6px 0 0",
+                  font: "11px var(--font-mono)",
+                  lineHeight: 1.5,
+                  color: "var(--text-tertiary)",
+                }}
+              >
+                {t("market.submissionsAudience")}
+              </p>
+            )}
+            {!mode.audience && feedSelfHosted > 0 && (
+              <p
+                style={{
+                  margin: "6px 0 0",
+                  font: "11px var(--font-mono)",
+                  lineHeight: 1.5,
+                  color: "var(--text-tertiary)",
+                }}
+              >
+                {t("market.submissionsSelfHosted", {
+                  count: String(feedSelfHosted),
+                })}
+              </p>
+            )}
           </div>
-        </main>
-      </div>
-    </div>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              padding: "0 16px 16px",
+            }}
+          >
+            {!mode.audience && feed.length === 0 && (
+              <span
+                style={{
+                  font: "11px var(--font-mono)",
+                  color: "var(--text-tertiary)",
+                  paddingTop: "6px",
+                }}
+              >
+                {t("market.noSubmissions")}
+              </span>
+            )}
+            {!mode.audience &&
+              feed.map((item) => (
+                <div
+                  key={item.id}
+                  style={{
+                    padding: "6px 0",
+                    borderBottom: "1px solid var(--border-subtle)",
+                    font: "11px var(--font-mono)",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {item.text}
+                </div>
+              ))}
+          </div>
+        </div>
+      </main>
+    </AppShell>
   );
 }

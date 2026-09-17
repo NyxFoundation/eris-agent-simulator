@@ -18,7 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
-import { Sidebar } from "@/components/Sidebar";
+import { AppShell } from "@/components/AppShell";
 import { WorldMap } from "@/components/WorldMap";
 import { AgentLogPanel, WorldCharts } from "@/components/WorldPanels";
 import { WorldTimeline, type WorldSpeed } from "@/components/WorldTimeline";
@@ -74,6 +74,8 @@ function Centered({ text, tone }: { text: string; tone?: string }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        textAlign: "center",
+        padding: "var(--space-8) var(--page-pad-x)",
         background: "var(--bg-canvas)",
       }}
     >
@@ -410,243 +412,232 @@ export function ScenarioPage() {
     ] ?? [];
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "var(--bg-canvas)",
-        display: "flex",
-        alignItems: "stretch",
-      }}
-    >
-      <Sidebar activePage="scenario" />
+    <AppShell activePage="scenario">
+      {/* The competition's clock: which round this world is scoped to. Its replay transport is
+          off here, because the block axis below is this page's own. */}
+      <RoundsBar round={round} transport={false} />
 
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {/* The competition's clock: which round this world is scoped to. Its replay transport is
-            off here, because the block axis below is this page's own. */}
-        <RoundsBar round={round} transport={false} />
-
-        {/* The page header, in the standings page's grammar: the scenario's name at heading size,
-            one meta line, nothing decorative. */}
-        <header
+      {/* The page header, in the standings page's grammar: the scenario's name at heading size,
+          one meta line, nothing decorative. */}
+      <header
+        style={{
+          borderBottom: "1px solid var(--border-subtle)",
+          padding: "var(--space-6) var(--space-6) var(--space-4)",
+          display: "flex",
+          flexDirection: "column",
+          gap: "8px",
+        }}
+      >
+        {/* Which unit is on screen, and what it sits inside. A scenario opened from the
+            standings otherwise looks like a page in its own right, and "round 14" on it reads as
+            a round of the competition rather than of this one world. */}
+        <a
+          onClick={() => navigate("/")}
           style={{
-            borderBottom: "1px solid var(--border-subtle)",
-            padding: "var(--space-6) var(--space-6) var(--space-4)",
-            display: "flex",
-            flexDirection: "column",
-            gap: "8px",
+            font: "var(--text-xs) var(--font-mono)",
+            letterSpacing: "var(--tracking-wide)",
+            textTransform: "uppercase",
+            color: "var(--text-tertiary)",
+            cursor: "pointer",
+            textDecoration: "none",
           }}
         >
-          {/* Which unit is on screen, and what it sits inside. A scenario opened from the
-              standings otherwise looks like a page in its own right, and "round 14" on it reads as
-              a round of the competition rather than of this one world. */}
-          <a
-            onClick={() => navigate("/")}
-            style={{
-              font: "var(--text-xs) var(--font-mono)",
-              letterSpacing: "var(--tracking-wide)",
-              textTransform: "uppercase",
-              color: "var(--text-tertiary)",
-              cursor: "pointer",
-              textDecoration: "none",
-            }}
-          >
-            <span style={{ color: "var(--text-link)" }}>
-              {t("units.competition")}
-            </span>
-            {"  ›  "}
-            {t("units.scenario")}
-          </a>
-          {/* The scenario names itself (regime#seed, or a practice period's day). */}
-          <h1
-            title={round.runId}
+          <span style={{ color: "var(--text-link)" }}>
+            {t("units.competition")}
+          </span>
+          {"  ›  "}
+          {t("units.scenario")}
+        </a>
+        {/* The scenario names itself (regime#seed, or a practice period's day). */}
+        <h1
+          title={round.runId}
+          style={{
+            margin: 0,
+            font: "var(--weight-bold) 21px var(--font-sans)",
+            letterSpacing: "var(--tracking-tight)",
+            color: "var(--text-primary)",
+          }}
+        >
+          {scenario.name?.replace(/^full-/, "") ?? t("scenario.fallbackTitle")}
+        </h1>
+        <span
+          style={{
+            font: "var(--text-sm) var(--font-mono)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          {[
+            scenario.seed !== null
+              ? t("scenario.seed", { n: scenario.seed })
+              : null,
+            round.epochs.length > 0
+              ? t("scenario.roundsBlocks", {
+                  rounds: round.epochs.length,
+                  blocks: round.epochBlocks,
+                })
+              : null,
+            scenario.competition,
+            scenario.name === null ? round.runId : null,
+            t("world.meta.agents", { n: data.agents.length }),
+            t("world.meta.venues", { n: data.venues.length }),
+            data.scope.roundIndex === null
+              ? t("world.meta.wholeRun", {
+                  from: data.scope.fromBlock.toLocaleString("en-US"),
+                  to: data.scope.toBlock.toLocaleString("en-US"),
+                })
+              : t("world.meta.round", { n: data.scope.roundIndex }),
+            data.blocksPerFrame > 1
+              ? t("world.meta.grouped", { n: data.blocksPerFrame })
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
+      </header>
+
+      {frames.length === 0 ? (
+        <>
+          <p
             style={{
               margin: 0,
-              font: "var(--weight-bold) 21px var(--font-sans)",
-              letterSpacing: "var(--tracking-tight)",
-              color: "var(--text-primary)",
+              padding: "var(--space-6)",
+              font: "var(--text-sm) var(--font-sans)",
+              color: "var(--text-tertiary)",
+              lineHeight: 1.6,
             }}
           >
-            {scenario.name?.replace(/^full-/, "") ?? t("scenario.fallbackTitle")}
-          </h1>
-          <span
-            style={{
-              font: "var(--text-sm) var(--font-mono)",
-              color: "var(--text-secondary)",
-            }}
-          >
-            {[
-              scenario.seed !== null
-                ? t("scenario.seed", { n: scenario.seed })
-                : null,
-              round.epochs.length > 0
-                ? t("scenario.roundsBlocks", {
-                    rounds: round.epochs.length,
-                    blocks: round.epochBlocks,
-                  })
-                : null,
-              scenario.competition,
-              scenario.name === null ? round.runId : null,
-              t("world.meta.agents", { n: data.agents.length }),
-              t("world.meta.venues", { n: data.venues.length }),
-              data.scope.roundIndex === null
-                ? t("world.meta.wholeRun", {
-                    from: data.scope.fromBlock.toLocaleString("en-US"),
-                    to: data.scope.toBlock.toLocaleString("en-US"),
-                  })
-                : t("world.meta.round", { n: data.scope.roundIndex }),
-              data.blocksPerFrame > 1
-                ? t("world.meta.grouped", { n: data.blocksPerFrame })
-                : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </span>
-        </header>
-
-        {frames.length === 0 ? (
-          <>
-            <p
-              style={{
-                margin: 0,
-                padding: "var(--space-6)",
-                font: "var(--text-sm) var(--font-sans)",
-                color: "var(--text-tertiary)",
-                lineHeight: 1.6,
-              }}
-            >
-              {t("world.empty")}
-            </p>
-            <div style={{ borderTop: "1px solid var(--border-subtle)" }}>
-              <ScenarioStandings
-                rows={standings}
-                closedRounds={closedAtHead}
-                selected={selected}
-                onSelect={setPicked}
-                shown={mode.standings}
-              />
-            </div>
-          </>
-        ) : (
-          <>
-            <WorldTimeline
-              frames={frames}
-              index={at}
-              playing={playing}
-              speed={speed}
-              onSeek={seek}
-              onPlaying={setPlaying}
-              onSpeed={setSpeed}
+            {t("world.empty")}
+          </p>
+          <div style={{ borderTop: "1px solid var(--border-subtle)" }}>
+            <ScenarioStandings
+              rows={standings}
+              closedRounds={closedAtHead}
+              selected={selected}
+              onSelect={setPicked}
+              shown={mode.standings}
             />
+          </div>
+        </>
+      ) : (
+        <>
+          <WorldTimeline
+            frames={frames}
+            index={at}
+            playing={playing}
+            speed={speed}
+            onSeek={seek}
+            onPlaying={setPlaying}
+            onSpeed={setSpeed}
+          />
 
-            <div style={{ padding: "var(--space-4) var(--space-6)" }}>
-              <WorldMap
-                agents={data.agents}
-                venues={data.venues}
-                frame={frame}
-                valueByAgent={marks.valueUsdc}
-                pnlByAgent={marks.pnlUsdc}
-                selected={selected}
-                onSelect={setPicked}
-                frameMs={FRAME_MS / speed}
-                fair={frame?.fair ?? null}
-              />
-            </div>
+          <div style={{ padding: "var(--space-4) var(--space-6)" }}>
+            <WorldMap
+              agents={data.agents}
+              venues={data.venues}
+              frame={frame}
+              valueByAgent={marks.valueUsdc}
+              pnlByAgent={marks.pnlUsdc}
+              selected={selected}
+              onSelect={setPicked}
+              frameMs={FRAME_MS / speed}
+              fair={frame?.fair ?? null}
+            />
+          </div>
 
-            {/* One strip for what this block was, then the three panels the board's numbers come
-                from: where everyone stands in this world, why one agent is doing this, and what the
-                run has done to the prices and the balances so far. */}
-            <div
+          {/* One strip for what this block was, then the three panels the board's numbers come
+              from: where everyone stands in this world, why one agent is doing this, and what the
+              run has done to the prices and the balances so far. */}
+          <div
+            style={{
+              borderTop: "1px solid var(--border-subtle)",
+              display: "flex",
+              alignItems: "center",
+              gap: "var(--space-6)",
+              flexWrap: "wrap",
+              padding: "10px var(--space-6)",
+            }}
+          >
+            <span style={PANEL_TITLE}>{t("world.thisBlock")}</span>
+            <Stat label={t("world.stat.txs")} value={String(frame?.txCount ?? 0)} />
+            <Stat
+              label={t("world.stat.reverts")}
+              value={String(frame?.reverts ?? 0)}
+              tone={(frame?.reverts ?? 0) > 0 ? "var(--danger-text)" : undefined}
+            />
+            <Stat
+              label={t("world.stat.senders")}
+              value={String(frame?.senderCount ?? 0)}
+            />
+            <span
               style={{
-                borderTop: "1px solid var(--border-subtle)",
+                marginLeft: "auto",
                 display: "flex",
-                alignItems: "center",
-                gap: "var(--space-6)",
-                flexWrap: "wrap",
-                padding: "10px var(--space-6)",
+                flexDirection: "column",
+                gap: "2px",
+                minWidth: 0,
+                textAlign: "right",
               }}
             >
-              <span style={PANEL_TITLE}>{t("world.thisBlock")}</span>
-              <Stat label={t("world.stat.txs")} value={String(frame?.txCount ?? 0)} />
-              <Stat
-                label={t("world.stat.reverts")}
-                value={String(frame?.reverts ?? 0)}
-                tone={(frame?.reverts ?? 0) > 0 ? "var(--danger-text)" : undefined}
-              />
-              <Stat
-                label={t("world.stat.senders")}
-                value={String(frame?.senderCount ?? 0)}
-              />
-              <span
-                style={{
-                  marginLeft: "auto",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "2px",
-                  minWidth: 0,
-                  textAlign: "right",
-                }}
-              >
-                <span style={COLUMN_LABEL}>{t("world.environment")}</span>
-                {frame && frame.events.length > 0 ? (
-                  frame.events.map((event, i) => (
-                    <span
-                      key={i}
-                      style={{
-                        font: "var(--text-xs) var(--font-mono)",
-                        color: TONE_COLOR[event.tone],
-                      }}
-                    >
-                      {event.kind} · {event.text}
-                    </span>
-                  ))
-                ) : (
+              <span style={COLUMN_LABEL}>{t("world.environment")}</span>
+              {frame && frame.events.length > 0 ? (
+                frame.events.map((event, i) => (
                   <span
+                    key={i}
                     style={{
                       font: "var(--text-xs) var(--font-mono)",
-                      color: "var(--text-disabled)",
+                      color: TONE_COLOR[event.tone],
                     }}
                   >
-                    {t("world.quiet")}
+                    {event.kind} · {event.text}
                   </span>
-                )}
-              </span>
-            </div>
+                ))
+              ) : (
+                <span
+                  style={{
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-disabled)",
+                  }}
+                >
+                  {t("world.quiet")}
+                </span>
+              )}
+            </span>
+          </div>
 
-            <div
-              style={{
-                borderTop: "1px solid var(--border-subtle)",
-                display: "grid",
-                gridTemplateColumns:
-                  "minmax(0,0.72fr) minmax(0,1fr) minmax(0,1.15fr)",
-              }}
-            >
-              <ScenarioStandings
-                rows={standings}
-                closedRounds={closedAtHead}
-                selected={selected}
-                onSelect={setPicked}
-                shown={mode.standings}
-              />
-              <AgentLogPanel
-                agent={selected}
-                agents={data.agents}
-                lines={selected ? data.agentLog[selected] : undefined}
-                headBlock={frame?.block ?? null}
-                withheld={data.logsWithheld}
-              />
-              <WorldCharts
-                frames={frames}
-                index={at}
-                venues={data.venues}
-                boundaries={data.boundaries}
-                agents={data.agents}
-                selected={selected}
-              />
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+          <div
+            style={{
+              borderTop: "1px solid var(--border-subtle)",
+              display: "grid",
+              gridTemplateColumns:
+                "minmax(0,0.72fr) minmax(0,1fr) minmax(0,1.15fr)",
+            }}
+          >
+            <ScenarioStandings
+              rows={standings}
+              closedRounds={closedAtHead}
+              selected={selected}
+              onSelect={setPicked}
+              shown={mode.standings}
+            />
+            <AgentLogPanel
+              agent={selected}
+              agents={data.agents}
+              lines={selected ? data.agentLog[selected] : undefined}
+              headBlock={frame?.block ?? null}
+              withheld={data.logsWithheld}
+            />
+            <WorldCharts
+              frames={frames}
+              index={at}
+              venues={data.venues}
+              boundaries={data.boundaries}
+              agents={data.agents}
+              selected={selected}
+            />
+          </div>
+        </>
+      )}
+    </AppShell>
   );
 }
 

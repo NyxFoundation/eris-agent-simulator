@@ -7,7 +7,8 @@
 // deep link, and when the explorer is down the page says so and still filters what it holds itself.
 import { useEffect, useMemo, useState } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
-import { Sidebar } from "@/components/Sidebar";
+import { AppShell, PAGE_MAIN } from "@/components/AppShell";
+import { useIsMobile } from "@/lib/breakpoints";
 import { Input } from "@/design-system/Input";
 import { Select } from "@/design-system/Select";
 import {
@@ -252,6 +253,8 @@ function CenteredMessage({ text, tone }: { text: string; tone?: "danger" }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        textAlign: "center",
+        padding: "var(--space-8) var(--page-pad-x)",
         background: "var(--bg-canvas)",
       }}
     >
@@ -269,6 +272,7 @@ function CenteredMessage({ text, tone }: { text: string; tone?: "danger" }) {
 }
 
 export function ExplorerPage() {
+  const mobile = useIsMobile();
   const { data, loading, error } = useExplorerSnapshot();
   const blockscout = useBlockscoutStatus();
   const selectedRound = useSelectedRound();
@@ -354,454 +358,435 @@ export function ExplorerPage() {
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        background: "var(--bg-canvas)",
-      }}
-    >
-      <Sidebar activePage="explorer" />
-
+    <AppShell activePage="explorer">
+      <RoundsBar round={round} />
       <div
         style={{
-          flex: 1,
-          minWidth: 0,
           display: "flex",
           flexDirection: "column",
+          alignItems: "center",
+          gap: "14px",
+          padding: "36px 32px 28px",
+          background: "var(--bg-surface)",
+          borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        <RoundsBar round={round} />
+        <span
+          style={{
+            font: "var(--weight-bold) var(--text-2xl) var(--font-sans)",
+            color: "var(--text-primary)",
+            letterSpacing: "var(--tracking-tight)",
+          }}
+        >
+          {t("explorer.title")}
+        </span>
+
+        {/* Connection state. The dashboard reads run artifacts; Blockscout indexes the same
+            anvil and is the deep-dive tool — when it is down that is a fact about the tooling,
+            not about the run, so it is stated rather than hidden. */}
         <div
           style={{
             display: "flex",
-            flexDirection: "column",
             alignItems: "center",
-            gap: "14px",
-            padding: "36px 32px 28px",
-            background: "var(--bg-surface)",
-            borderBottom: "1px solid var(--border-subtle)",
+            gap: "8px",
+            font: "var(--text-xs) var(--font-mono)",
+            color: base ? "var(--success-text)" : "var(--text-tertiary)",
           }}
         >
           <span
             style={{
-              font: "var(--weight-bold) var(--text-2xl) var(--font-sans)",
-              color: "var(--text-primary)",
-              letterSpacing: "var(--tracking-tight)",
+              width: "7px",
+              height: "7px",
+              borderRadius: "50%",
+              background: base
+                ? "var(--success)"
+                : blockscout.probed
+                  ? "var(--danger)"
+                  : "var(--text-disabled)",
             }}
-          >
-            {t("explorer.title")}
-          </span>
+          />
+          {base ? (
+            <>
+              <a
+                href={base}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "var(--text-link)", textDecoration: "none" }}
+              >
+                {t("explorer.connected")}
+              </a>
+              <span style={{ color: "var(--text-tertiary)" }}>
+                {t("explorer.indexed", {
+                  n: blockscout.indexedHeight?.toLocaleString("en-US") ?? "—",
+                })}
+                {blockscout.indexedPercent !== null &&
+                  blockscout.indexedPercent < 100 &&
+                  t("explorer.indexedPct", {
+                    p: blockscout.indexedPercent.toFixed(1),
+                  })}
+              </span>
+              {indexerNote && (
+                <span style={{ color: "var(--warning)" }}>{indexerNote}</span>
+              )}
+            </>
+          ) : blockscout.probed ? (
+            <span>
+              {mode.audience
+                ? t("explorer.offlineAudience")
+                : t("explorer.offline")}
+            </span>
+          ) : (
+            <span>{t("explorer.probing")}</span>
+          )}
+        </div>
 
-          {/* Connection state. The dashboard reads run artifacts; Blockscout indexes the same
-              anvil and is the deep-dive tool — when it is down that is a fact about the tooling,
-              not about the run, so it is stated rather than hidden. */}
+        <div
+          style={{
+            width: "100%",
+            maxWidth: "680px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "6px",
+          }}
+        >
+          <Input
+            placeholder={t("explorer.search")}
+            mono
+            suffix="⌕"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") openTarget();
+            }}
+          />
+          {search.trim() && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                font: "var(--text-xs) var(--font-mono)",
+                color: "var(--text-tertiary)",
+              }}
+            >
+              <span>
+                {searchHint(target.kind)}
+                {target.agentId ? ` · ${target.value}` : ""}
+              </span>
+              <span style={{ marginLeft: "auto" }}>
+                {targetUrl ? (
+                  <span
+                    onClick={openTarget}
+                    style={{
+                      color: "var(--text-link)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {t("explorer.open")}
+                  </span>
+                ) : (
+                  <span>
+                    {blockscout.probed ? t("explorer.localOnly") : "…"}
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Round scope: the explorer's window. Selecting a round here and clicking a segment in
+          the rounds bar are the same action. */}
+      <div
+        style={{
+          padding: "12px 32px",
+          borderBottom: "1px solid var(--border-subtle)",
+          display: "flex",
+          alignItems: "center",
+          gap: "16px",
+          flexWrap: "wrap",
+        }}
+      >
+        <span style={SECTION_LABEL_STYLE}>{t("market.scope")}</span>
+        <Select
+          value={selectedRound === null ? "all" : String(selectedRound)}
+          options={[
+            {
+              label: t("explorer.wholeRun", { n: round.epochs.length }),
+              value: "all",
+            },
+            ...round.epochs.map((e) => ({
+              label: t("explorer.roundOption", {
+                i: String(e.index).padStart(2, "0"),
+                from: e.fromBlock.toLocaleString("en-US"),
+                to: e.toBlock.toLocaleString("en-US"),
+              }),
+              value: String(e.index),
+            })),
+          ]}
+          onChange={(e) =>
+            setSelectedRound(
+              e.target.value === "all" ? null : Number(e.target.value),
+            )
+          }
+          style={{ minWidth: "300px" }}
+        />
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--text-tertiary)",
+          }}
+        >
+          {scope.roundIndex === null
+            ? t("explorer.scopeBlocks", {
+                from: scope.fromBlock.toLocaleString("en-US"),
+                to: scope.toBlock.toLocaleString("en-US"),
+              })
+            : t("explorer.scopeRound", {
+                i: scope.roundIndex,
+                from: scope.fromBlock.toLocaleString("en-US"),
+                to: scope.toBlock.toLocaleString("en-US"),
+              })}
+        </span>
+      </div>
+
+      <div
+        style={{
+          padding: "16px 32px",
+          borderBottom: "1px solid var(--border-subtle)",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            gap: "48px",
+            flexWrap: "wrap",
+            maxWidth: "900px",
+            margin: "0 auto",
+          }}
+        >
+          <StatTile
+            label={t("explorer.stat.scenario")}
+            value={`${worldName} · ${round.status === "live" ? t("common.live") : t("common.finished")}`}
+          />
+          <StatTile
+            label={t("explorer.stat.latest")}
+            value={stats.latestBlockNumber}
+          />
+          {stats.indexerBlockNumber !== undefined && (
+            <StatTile
+              label={t("explorer.stat.indexed")}
+              value={stats.indexerBlockNumber}
+            />
+          )}
+          <StatTile
+            label={
+              scope.roundIndex === null
+                ? t("explorer.stat.txRun")
+                : t("explorer.stat.txRound")
+            }
+            // null = the live view does not hold this round's blocks; "0" would be a claim.
+            value={
+              stats.txCountThisRound === null
+                ? "—"
+                : stats.txCountThisRound.toLocaleString("en-US")
+            }
+          />
+          <StatTile
+            label={t("explorer.stat.agents")}
+            value={String(stats.activeAgents)}
+          />
+          <StatTile
+            label={t("explorer.stat.blockTime")}
+            value={`${stats.avgBlockTimeSeconds}s`}
+          />
+        </div>
+      </div>
+
+      <main
+        style={{
+          ...PAGE_MAIN,
+          display: "grid",
+          // Two equal halves on a desktop; stacked below MOBILE, where two 170px columns of
+          // transaction hashes were unreadable.
+          gridTemplateColumns: mobile ? "1fr" : "1fr 1fr",
+          gap: "24px",
+          flex: 1,
+        }}
+      >
+        <div
+          style={{
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-lg)",
+            overflow: "hidden",
+          }}
+        >
           <div
             style={{
               display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              font: "var(--text-xs) var(--font-mono)",
-              color: base ? "var(--success-text)" : "var(--text-tertiary)",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              padding: "14px 18px",
+              borderBottom: "1px solid var(--border-subtle)",
             }}
           >
             <span
               style={{
-                width: "7px",
-                height: "7px",
-                borderRadius: "50%",
-                background: base
-                  ? "var(--success)"
-                  : blockscout.probed
-                    ? "var(--danger)"
-                    : "var(--text-disabled)",
+                font: "var(--weight-semibold) var(--text-base) var(--font-sans)",
+                color: "var(--text-primary)",
               }}
-            />
-            {base ? (
-              <>
-                <a
-                  href={base}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: "var(--text-link)", textDecoration: "none" }}
-                >
-                  {t("explorer.connected")}
-                </a>
-                <span style={{ color: "var(--text-tertiary)" }}>
-                  {t("explorer.indexed", {
-                    n: blockscout.indexedHeight?.toLocaleString("en-US") ?? "—",
-                  })}
-                  {blockscout.indexedPercent !== null &&
-                    blockscout.indexedPercent < 100 &&
-                    t("explorer.indexedPct", {
-                      p: blockscout.indexedPercent.toFixed(1),
-                    })}
-                </span>
-                {indexerNote && (
-                  <span style={{ color: "var(--warning)" }}>{indexerNote}</span>
-                )}
-              </>
-            ) : blockscout.probed ? (
-              <span>
-                {mode.audience
-                  ? t("explorer.offlineAudience")
-                  : t("explorer.offline")}
-              </span>
-            ) : (
-              <span>{t("explorer.probing")}</span>
-            )}
-          </div>
-
-          <div
-            style={{
-              width: "100%",
-              maxWidth: "680px",
-              display: "flex",
-              flexDirection: "column",
-              gap: "6px",
-            }}
-          >
-            <Input
-              placeholder={t("explorer.search")}
-              mono
-              suffix="⌕"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") openTarget();
+            >
+              {t("explorer.blocks")}
+            </span>
+            <span
+              style={{
+                font: "var(--text-xs) var(--font-mono)",
+                color: "var(--text-tertiary)",
               }}
-            />
-            {search.trim() && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "10px",
-                  font: "var(--text-xs) var(--font-mono)",
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                <span>
-                  {searchHint(target.kind)}
-                  {target.agentId ? ` · ${target.value}` : ""}
-                </span>
-                <span style={{ marginLeft: "auto" }}>
-                  {targetUrl ? (
-                    <span
-                      onClick={openTarget}
-                      style={{
-                        color: "var(--text-link)",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {t("explorer.open")}
-                    </span>
-                  ) : (
-                    <span>
-                      {blockscout.probed ? t("explorer.localOnly") : "…"}
-                    </span>
-                  )}
-                </span>
-              </div>
-            )}
+            >
+              {t("explorer.shown", { n: blocks.length })}
+            </span>
           </div>
-        </div>
-
-        {/* Round scope: the explorer's window. Selecting a round here and clicking a segment in
-            the rounds bar are the same action. */}
-        <div
-          style={{
-            padding: "12px 32px",
-            borderBottom: "1px solid var(--border-subtle)",
-            display: "flex",
-            alignItems: "center",
-            gap: "16px",
-            flexWrap: "wrap",
-          }}
-        >
-          <span style={SECTION_LABEL_STYLE}>{t("market.scope")}</span>
-          <Select
-            value={selectedRound === null ? "all" : String(selectedRound)}
-            options={[
-              {
-                label: t("explorer.wholeRun", { n: round.epochs.length }),
-                value: "all",
-              },
-              ...round.epochs.map((e) => ({
-                label: t("explorer.roundOption", {
-                  i: String(e.index).padStart(2, "0"),
-                  from: e.fromBlock.toLocaleString("en-US"),
-                  to: e.toBlock.toLocaleString("en-US"),
-                }),
-                value: String(e.index),
-              })),
-            ]}
-            onChange={(e) =>
-              setSelectedRound(
-                e.target.value === "all" ? null : Number(e.target.value),
-              )
-            }
-            style={{ minWidth: "300px" }}
-          />
-          <span
-            style={{
-              font: "var(--text-xs) var(--font-mono)",
-              color: "var(--text-tertiary)",
-            }}
-          >
-            {scope.roundIndex === null
-              ? t("explorer.scopeBlocks", {
-                  from: scope.fromBlock.toLocaleString("en-US"),
-                  to: scope.toBlock.toLocaleString("en-US"),
-                })
-              : t("explorer.scopeRound", {
-                  i: scope.roundIndex,
-                  from: scope.fromBlock.toLocaleString("en-US"),
-                  to: scope.toBlock.toLocaleString("en-US"),
-                })}
-          </span>
+          {blocks.length === 0 && (
+            <div
+              style={{
+                padding: "16px 18px",
+                font: "var(--text-sm) var(--font-mono)",
+                color: "var(--text-tertiary)",
+              }}
+            >
+              {t("explorer.noBlocks")}
+            </div>
+          )}
+          {blocks.map((block) => (
+            <BlockRow
+              key={block.number}
+              block={block}
+              noLinkTitle={
+                mode.audience
+                  ? t("explorer.blockNoLink")
+                  : t("explorer.startToOpen")
+              }
+              href={
+                base && block.blockNumber !== undefined
+                  ? blockscoutBlockUrl(base, block.blockNumber)
+                  : undefined
+              }
+            />
+          ))}
         </div>
 
         <div
           style={{
-            padding: "16px 32px",
-            borderBottom: "1px solid var(--border-subtle)",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-lg)",
+            overflow: "hidden",
           }}
         >
           <div
             style={{
               display: "flex",
-              justifyContent: "center",
-              gap: "48px",
-              flexWrap: "wrap",
-              maxWidth: "900px",
-              margin: "0 auto",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              padding: "14px 18px",
+              borderBottom: "1px solid var(--border-subtle)",
             }}
           >
-            <StatTile
-              label={t("explorer.stat.scenario")}
-              value={`${worldName} · ${round.status === "live" ? t("common.live") : t("common.finished")}`}
-            />
-            <StatTile
-              label={t("explorer.stat.latest")}
-              value={stats.latestBlockNumber}
-            />
-            {stats.indexerBlockNumber !== undefined && (
-              <StatTile
-                label={t("explorer.stat.indexed")}
-                value={stats.indexerBlockNumber}
-              />
-            )}
-            <StatTile
-              label={
-                scope.roundIndex === null
-                  ? t("explorer.stat.txRun")
-                  : t("explorer.stat.txRound")
-              }
-              // null = the live view does not hold this round's blocks; "0" would be a claim.
-              value={
-                stats.txCountThisRound === null
-                  ? "—"
-                  : stats.txCountThisRound.toLocaleString("en-US")
-              }
-            />
-            <StatTile
-              label={t("explorer.stat.agents")}
-              value={String(stats.activeAgents)}
-            />
-            <StatTile
-              label={t("explorer.stat.blockTime")}
-              value={`${stats.avgBlockTimeSeconds}s`}
-            />
+            <span
+              style={{
+                font: "var(--weight-semibold) var(--text-base) var(--font-sans)",
+                color: "var(--text-primary)",
+              }}
+            >
+              {t("explorer.transactions")}
+            </span>
+            <span
+              style={{
+                font: "var(--text-xs) var(--font-mono)",
+                color: "var(--text-tertiary)",
+              }}
+            >
+              {t("explorer.shown", {
+                n: Math.min(shown, transactions.length),
+              })}
+              {transactions.length > shown ? ` / ${transactions.length}` : ""}
+            </span>
           </div>
+          {/* What a search covered, and what it did not: a live view holds a range of blocks, and
+              "no match" inside it is not "not on the chain" (issue #84 P). */}
+          {(term || data.txCoveredFrom !== null) && (
+            <div
+              style={{
+                padding: "8px 18px",
+                borderBottom: "1px solid var(--border-subtle)",
+                font: "var(--text-xs) var(--font-mono)",
+                color: "var(--text-tertiary)",
+              }}
+            >
+              {[
+                term
+                  ? t("explorer.searchAll", { n: data.transactions.length })
+                  : null,
+                data.txCoveredFrom !== null
+                  ? t("explorer.coveredFrom", {
+                      from: data.txCoveredFrom.toLocaleString("en-US"),
+                    })
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </div>
+          )}
+          {transactions.length === 0 && (
+            <div
+              style={{
+                padding: "16px 18px",
+                font: "var(--text-sm) var(--font-mono)",
+                color: "var(--text-tertiary)",
+              }}
+            >
+              {t("explorer.noTx")}
+            </div>
+          )}
+          {transactions.slice(0, shown).map((tx) => (
+            <TransactionRow
+              key={tx.fullHash ?? tx.hash}
+              tx={tx}
+              href={
+                base && tx.fullHash
+                  ? blockscoutTxUrl(base, tx.fullHash)
+                  : undefined
+              }
+              addressHref={
+                base && tx.fullAddress
+                  ? blockscoutAddressUrl(base, tx.fullAddress)
+                  : undefined
+              }
+            />
+          ))}
+          {transactions.length > shown && (
+            <button
+              type="button"
+              onClick={() => setShown((n) => n + TX_PAGE)}
+              style={{
+                margin: "10px 18px",
+                font: "var(--text-xs) var(--font-mono)",
+                padding: "5px 10px",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-sm)",
+                background: "transparent",
+                color: "var(--text-secondary)",
+                cursor: "pointer",
+              }}
+            >
+              {t("explorer.showMore", {
+                n: Math.min(TX_PAGE, transactions.length - shown),
+              })}
+            </button>
+          )}
         </div>
-
-        <main
-          style={{
-            maxWidth: "1240px",
-            width: "100%",
-            margin: "0 auto",
-            padding: "28px 32px 64px",
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: "24px",
-            flex: 1,
-            boxSizing: "border-box",
-          }}
-        >
-          <div
-            style={{
-              border: "1px solid var(--border-subtle)",
-              borderRadius: "var(--radius-lg)",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                padding: "14px 18px",
-                borderBottom: "1px solid var(--border-subtle)",
-              }}
-            >
-              <span
-                style={{
-                  font: "var(--weight-semibold) var(--text-base) var(--font-sans)",
-                  color: "var(--text-primary)",
-                }}
-              >
-                {t("explorer.blocks")}
-              </span>
-              <span
-                style={{
-                  font: "var(--text-xs) var(--font-mono)",
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                {t("explorer.shown", { n: blocks.length })}
-              </span>
-            </div>
-            {blocks.length === 0 && (
-              <div
-                style={{
-                  padding: "16px 18px",
-                  font: "var(--text-sm) var(--font-mono)",
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                {t("explorer.noBlocks")}
-              </div>
-            )}
-            {blocks.map((block) => (
-              <BlockRow
-                key={block.number}
-                block={block}
-                noLinkTitle={
-                  mode.audience
-                    ? t("explorer.blockNoLink")
-                    : t("explorer.startToOpen")
-                }
-                href={
-                  base && block.blockNumber !== undefined
-                    ? blockscoutBlockUrl(base, block.blockNumber)
-                    : undefined
-                }
-              />
-            ))}
-          </div>
-
-          <div
-            style={{
-              border: "1px solid var(--border-subtle)",
-              borderRadius: "var(--radius-lg)",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                padding: "14px 18px",
-                borderBottom: "1px solid var(--border-subtle)",
-              }}
-            >
-              <span
-                style={{
-                  font: "var(--weight-semibold) var(--text-base) var(--font-sans)",
-                  color: "var(--text-primary)",
-                }}
-              >
-                {t("explorer.transactions")}
-              </span>
-              <span
-                style={{
-                  font: "var(--text-xs) var(--font-mono)",
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                {t("explorer.shown", {
-                  n: Math.min(shown, transactions.length),
-                })}
-                {transactions.length > shown ? ` / ${transactions.length}` : ""}
-              </span>
-            </div>
-            {/* What a search covered, and what it did not: a live view holds a range of blocks, and
-                "no match" inside it is not "not on the chain" (issue #84 P). */}
-            {(term || data.txCoveredFrom !== null) && (
-              <div
-                style={{
-                  padding: "8px 18px",
-                  borderBottom: "1px solid var(--border-subtle)",
-                  font: "var(--text-xs) var(--font-mono)",
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                {[
-                  term
-                    ? t("explorer.searchAll", { n: data.transactions.length })
-                    : null,
-                  data.txCoveredFrom !== null
-                    ? t("explorer.coveredFrom", {
-                        from: data.txCoveredFrom.toLocaleString("en-US"),
-                      })
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </div>
-            )}
-            {transactions.length === 0 && (
-              <div
-                style={{
-                  padding: "16px 18px",
-                  font: "var(--text-sm) var(--font-mono)",
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                {t("explorer.noTx")}
-              </div>
-            )}
-            {transactions.slice(0, shown).map((tx) => (
-              <TransactionRow
-                key={tx.fullHash ?? tx.hash}
-                tx={tx}
-                href={
-                  base && tx.fullHash
-                    ? blockscoutTxUrl(base, tx.fullHash)
-                    : undefined
-                }
-                addressHref={
-                  base && tx.fullAddress
-                    ? blockscoutAddressUrl(base, tx.fullAddress)
-                    : undefined
-                }
-              />
-            ))}
-            {transactions.length > shown && (
-              <button
-                type="button"
-                onClick={() => setShown((n) => n + TX_PAGE)}
-                style={{
-                  margin: "10px 18px",
-                  font: "var(--text-xs) var(--font-mono)",
-                  padding: "5px 10px",
-                  border: "1px solid var(--border-subtle)",
-                  borderRadius: "var(--radius-sm)",
-                  background: "transparent",
-                  color: "var(--text-secondary)",
-                  cursor: "pointer",
-                }}
-              >
-                {t("explorer.showMore", {
-                  n: Math.min(TX_PAGE, transactions.length - shown),
-                })}
-              </button>
-            )}
-          </div>
-        </main>
-      </div>
-    </div>
+      </main>
+    </AppShell>
   );
 }

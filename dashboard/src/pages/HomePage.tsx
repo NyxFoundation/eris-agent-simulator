@@ -15,7 +15,7 @@ import { InfoTabs } from "@/components/InfoTabs";
 import { FindAgent } from "@/components/FindAgent";
 import { RoundCursorBar } from "@/components/RoundCursorBar";
 import { ScoreRaceChart } from "@/components/ScoreRaceChart";
-import { Sidebar } from "@/components/Sidebar";
+import { AppShell, PAGE_MAIN } from "@/components/AppShell";
 import { MoveCell, Panel, Stat, toneColor } from "@/components/competitionUi";
 import {
   competitionName,
@@ -42,10 +42,9 @@ import { useLocale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
 import { formatPnlUsdc, formatScore } from "@/lib/format";
 import { useMediaQuery } from "@/lib/useMediaQuery";
+import { MOBILE } from "@/lib/breakpoints";
 import { navigate } from "@/navigation";
 import { ScenarioPage } from "./ScenarioPage";
-
-const PAGE_MAX_WIDTH = "1180px";
 
 /**
  * "full-calm" reads as noise once every column is a regime; the shared prefix goes.
@@ -444,7 +443,9 @@ export function HomePage() {
   const locale = useLocale();
   const mode = useMode();
   const pinned = usePinnedAgent();
-  const narrow = useMediaQuery("(max-width: 720px)");
+  // The standings drop their optional columns on the same screens where the sidebar becomes a
+  // top bar, so "narrow" means one thing across the app rather than two.
+  const narrow = useMediaQuery(MOBILE);
   // A field of hundreds (the live week) is not a table to scroll blind: a filter, a first page, the
   // participant-unit fold of rules §2.2, and the activity columns behind a switch.
   const [query, setQuery] = useState("");
@@ -549,6 +550,8 @@ export function HomePage() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
+          textAlign: "center",
+          padding: "var(--space-8) var(--page-pad-x)",
           background: "var(--bg-canvas)",
           font: "var(--text-sm) var(--font-mono)",
           color: "var(--text-tertiary)",
@@ -694,786 +697,766 @@ export function HomePage() {
     : 480 + regimes.length * 74 + (hasFlags ? 60 : 0) + (details ? 136 : 0);
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        background: "var(--bg-canvas)",
-      }}
-    >
-      <Sidebar activePage="home" />
-      <div
+    <AppShell activePage="home">
+      <RoundCursorBar
+        cursor={cursor}
+        scenarioCount={file.scenarios.length}
+        endedScenarios={standings.endedScenarios}
+        inProgress={inProgress}
+        note={note}
+      />
+      <main
         style={{
-          flex: 1,
-          minWidth: 0,
+          ...PAGE_MAIN,
           display: "flex",
           flexDirection: "column",
+          gap: "18px",
+          boxSizing: "border-box",
         }}
       >
-        <RoundCursorBar
-          cursor={cursor}
-          scenarioCount={file.scenarios.length}
-          endedScenarios={standings.endedScenarios}
-          inProgress={inProgress}
-          note={note}
-        />
-        <main
-          style={{
-            maxWidth: PAGE_MAX_WIDTH,
-            width: "100%",
-            minWidth: 0,
-            margin: "0 auto",
-            padding: narrow ? "20px 14px 48px" : "32px 32px 64px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "18px",
-            boxSizing: "border-box",
-          }}
+        <header
+          style={{ display: "flex", flexDirection: "column", gap: "10px" }}
         >
-          <header
-            style={{ display: "flex", flexDirection: "column", gap: "10px" }}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              flexWrap: "wrap",
+            }}
           >
-            <div
+            <h1
+              title={data.competition.id}
               style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "10px",
-                flexWrap: "wrap",
+                margin: 0,
+                font: "var(--weight-bold) 21px var(--font-sans)",
+                letterSpacing: "var(--tracking-tight)",
               }}
             >
-              <h1
-                title={data.competition.id}
-                style={{
-                  margin: 0,
-                  font: "var(--weight-bold) 21px var(--font-sans)",
-                  letterSpacing: "var(--tracking-tight)",
-                }}
-              >
-                {competitionName(data.competition)}
-              </h1>
-              {practice && (
-                <span title={t("home.practiceNote")} style={BADGE}>
-                  {t("home.practiceBadge")}
-                </span>
-              )}
-              {/* The label only: the paragraph below this header is where the public view is
-                  explained, and saying it in three places at once said it in none (issue #84 M). */}
-              {mode.audience && <span style={BADGE}>{t("mode.audienceBadge")}</span>}
-            </div>
-            {statusParts.length > 0 && (
-              <p
-                style={{
-                  margin: 0,
-                  font: "var(--text-sm) var(--font-mono)",
-                  color: inProgress
-                    ? "var(--warning-text)"
-                    : "var(--text-secondary)",
-                }}
-              >
-                {statusParts.join(" · ")}
-                {data.live?.roundEndsAtMs != null && (
-                  <>
-                    {" · "}
-                    <Countdown at={data.live.roundEndsAtMs} />
-                  </>
-                )}
-              </p>
+              {competitionName(data.competition)}
+            </h1>
+            {practice && (
+              <span title={t("home.practiceNote")} style={BADGE}>
+                {t("home.practiceBadge")}
+              </span>
             )}
-            <div
+            {/* The label only: the paragraph below this header is where the public view is
+                explained, and saying it in three places at once said it in none (issue #84 M). */}
+            {mode.audience && <span style={BADGE}>{t("mode.audienceBadge")}</span>}
+          </div>
+          {statusParts.length > 0 && (
+            <p
               style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(120px, 160px))",
-                gap: "14px",
+                margin: 0,
+                font: "var(--text-sm) var(--font-mono)",
+                color: inProgress
+                  ? "var(--warning-text)"
+                  : "var(--text-secondary)",
               }}
             >
-              <Stat
-                label={t("home.stat.scenarios")}
-                value={String(file.scenarios.length)}
-              />
-              {standings.regimes.length > 1 && (
-                <Stat
-                  label={t("home.stat.regimes")}
-                  value={String(standings.regimes.length)}
-                />
+              {statusParts.join(" · ")}
+              {data.live?.roundEndsAtMs != null && (
+                <>
+                  {" · "}
+                  <Countdown at={data.live.roundEndsAtMs} />
+                </>
               )}
+            </p>
+          )}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(120px, 160px))",
+              gap: "14px",
+            }}
+          >
+            <Stat
+              label={t("home.stat.scenarios")}
+              value={String(file.scenarios.length)}
+            />
+            {standings.regimes.length > 1 && (
               <Stat
-                label={t("home.stat.agents")}
-                value={String(standings.agentIds.length)}
+                label={t("home.stat.regimes")}
+                value={String(standings.regimes.length)}
               />
-              <Stat
-                label={t("home.stat.rounds")}
-                value={
-                  at !== null
-                    ? t("home.roundsAt", { at, n: maxRound })
-                    : inProgress
-                      ? t("home.roundsSoFar", { n: maxRound })
-                      : t("home.roundsFinal", { n: maxRound })
-                }
-              />
-              {recordedAt && (
-                <Stat label={t("home.stat.recorded")} value={recordedAt} />
-              )}
-            </div>
-            {mode.audience && (
-              <span
-                style={{
-                  font: "var(--text-xs) var(--font-sans)",
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                {t("mode.audienceNote")}
-              </span>
             )}
-            {data.missingRounds > 0 && (
-              <span
-                style={{
-                  font: "var(--text-xs) var(--font-sans)",
-                  color: "var(--warning-text)",
-                }}
-              >
-                {t("home.missingRounds", {
-                  missing: data.missingRounds,
-                  total: file.scenarios.length,
-                })}
-              </span>
+            <Stat
+              label={t("home.stat.agents")}
+              value={String(standings.agentIds.length)}
+            />
+            <Stat
+              label={t("home.stat.rounds")}
+              value={
+                at !== null
+                  ? t("home.roundsAt", { at, n: maxRound })
+                  : inProgress
+                    ? t("home.roundsSoFar", { n: maxRound })
+                    : t("home.roundsFinal", { n: maxRound })
+              }
+            />
+            {recordedAt && (
+              <Stat label={t("home.stat.recorded")} value={recordedAt} />
             )}
-          </header>
+          </div>
+          {mode.audience && (
+            <span
+              style={{
+                font: "var(--text-xs) var(--font-sans)",
+                color: "var(--text-tertiary)",
+              }}
+            >
+              {t("mode.audienceNote")}
+            </span>
+          )}
+          {data.missingRounds > 0 && (
+            <span
+              style={{
+                font: "var(--text-xs) var(--font-sans)",
+                color: "var(--warning-text)",
+              }}
+            >
+              {t("home.missingRounds", {
+                missing: data.missingRounds,
+                total: file.scenarios.length,
+              })}
+            </span>
+          )}
+        </header>
 
-          {!mode.standings ? (
-            // Neither final nor provisional: there is no standing here to be either (issue #84 C).
-            <Panel title={t("home.standingsTitle")}>
-              <p
-                style={{
-                  margin: 0,
-                  padding: "16px",
-                  font: "var(--text-sm) var(--font-sans)",
-                  lineHeight: 1.6,
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {t("home.standingsOff")}
-              </p>
-            </Panel>
-          ) : standings.rows.length === 0 ? (
-            // A competition with nothing scored yet, or one every epoch of which failed. Which of
-            // the two it is decides what to say (issue #84 L); either way the page stays.
-            <Panel title={t("home.noStandings.title")}>
-              <p
-                style={{
-                  margin: 0,
-                  padding: "16px",
-                  font: "var(--text-sm) var(--font-sans)",
-                  lineHeight: 1.6,
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {(() => {
-                  const failures = file.scenarios.filter(
-                    (sc) => typeof sc.error === "string",
-                  );
-                  return failures.length > 0 &&
-                    failures.length === file.scenarios.length
-                    ? t("home.noStandings.failed", {
-                        detail: failures[0].error as string,
-                      })
-                    : t("home.noStandings.pending");
-                })()}
-              </p>
-            </Panel>
-          ) : (
-            <>
-              {race && (
-                <Panel
-                  title={t("home.chart.title")}
-                  subtitle={t("home.chart.subtitle", {
-                    n: Math.min(10, race.order.length),
-                  })}
-                >
-                  <div style={{ padding: "12px 12px 0" }}>
-                    <ScoreRaceChart
-                      race={race}
-                      pinned={pinned}
-                      onPick={togglePin}
-                    />
-                  </div>
-                </Panel>
-              )}
-
+        {!mode.standings ? (
+          // Neither final nor provisional: there is no standing here to be either (issue #84 C).
+          <Panel title={t("home.standingsTitle")}>
+            <p
+              style={{
+                margin: 0,
+                padding: "16px",
+                font: "var(--text-sm) var(--font-sans)",
+                lineHeight: 1.6,
+                color: "var(--text-secondary)",
+              }}
+            >
+              {t("home.standingsOff")}
+            </p>
+          </Panel>
+        ) : standings.rows.length === 0 ? (
+          // A competition with nothing scored yet, or one every epoch of which failed. Which of
+          // the two it is decides what to say (issue #84 L); either way the page stays.
+          <Panel title={t("home.noStandings.title")}>
+            <p
+              style={{
+                margin: 0,
+                padding: "16px",
+                font: "var(--text-sm) var(--font-sans)",
+                lineHeight: 1.6,
+                color: "var(--text-secondary)",
+              }}
+            >
+              {(() => {
+                const failures = file.scenarios.filter(
+                  (sc) => typeof sc.error === "string",
+                );
+                return failures.length > 0 &&
+                  failures.length === file.scenarios.length
+                  ? t("home.noStandings.failed", {
+                      detail: failures[0].error as string,
+                    })
+                  : t("home.noStandings.pending");
+              })()}
+            </p>
+          </Panel>
+        ) : (
+          <>
+            {race && (
               <Panel
-                title={
-                  at !== null
-                    ? t("home.standingsThrough", { at })
-                    : inProgress
-                      ? t("home.standingsSoFar")
-                      : t("home.standingsFinal")
-                }
-                subtitle={
-                  practice
-                    ? `${t("home.practiceNote")} ${t("home.subtitle")}`
-                    : t("home.subtitle")
-                }
+                title={t("home.chart.title")}
+                subtitle={t("home.chart.subtitle", {
+                  n: Math.min(10, race.order.length),
+                })}
               >
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    alignItems: "center",
-                    gap: "10px",
-                    padding: "10px 16px",
-                    borderBottom: "1px solid var(--border-subtle)",
-                  }}
-                >
-                  <input
-                    value={query}
-                    onChange={(e) => {
-                      setQuery(e.target.value);
-                      setShowAll(false);
-                    }}
-                    placeholder={t("home.search")}
-                    aria-label={t("home.search")}
-                    style={{
-                      flex: "1 1 220px",
-                      minWidth: 0,
-                      padding: "6px 10px",
-                      font: "var(--text-sm) var(--font-mono)",
-                      color: "var(--text-primary)",
-                      background: "var(--bg-surface)",
-                      border: "1px solid var(--border-subtle)",
-                      borderRadius: "var(--radius-sm)",
-                    }}
+                <div style={{ padding: "12px 12px 0" }}>
+                  <ScoreRaceChart
+                    race={race}
+                    pinned={pinned}
+                    onPick={togglePin}
                   />
-                  {hasParticipants && (
-                    <div style={{ display: "flex", gap: "4px" }}>
-                      {(["agents", "participants"] as const).map((v) => (
-                        <button
-                          key={v}
-                          type="button"
-                          onClick={() => setView(v)}
-                          style={{
-                            ...VIEW_BUTTON,
-                            ...(view === v ? VIEW_BUTTON_ACTIVE : {}),
-                          }}
-                        >
-                          {v === "agents"
-                            ? t("home.view.agents")
-                            : t("home.view.participants")}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {hasActivity && !showingParticipants && (
-                    <button
-                      type="button"
-                      onClick={() => setDetails((v) => !v)}
-                      title={t("home.txsTitle")}
-                      style={{
-                        ...VIEW_BUTTON,
-                        ...(details ? VIEW_BUTTON_ACTIVE : {}),
-                      }}
-                    >
-                      {t("home.details")}
-                    </button>
-                  )}
-                  {pinned && (
-                    <button
-                      type="button"
-                      onClick={() => setPinnedAgent(null)}
-                      title={t("home.unpin")}
-                      style={{
-                        ...VIEW_BUTTON,
-                        color: "var(--pink-500)",
-                        borderColor: "var(--pink-500)",
-                      }}
-                    >
-                      {`${t("home.pinned")} ${pinned}`}
-                    </button>
-                  )}
-                  <span
-                    style={{
-                      marginLeft: "auto",
-                      font: "var(--text-xs) var(--font-mono)",
-                      color: "var(--text-tertiary)",
-                    }}
-                  >
-                    {`${visibleCount} / ${filteredCount}`}
-                  </span>
                 </div>
-                {showingParticipants && (
-                  <p
-                    style={{
-                      margin: 0,
-                      padding: "8px 16px 0",
-                      font: "var(--text-xs) var(--font-sans)",
-                      color: "var(--text-tertiary)",
-                    }}
-                  >
-                    {t("home.participantsNote")}
-                  </p>
-                )}
-                <div
-                  style={{
-                    overflowX: "auto",
-                    maxHeight: showAll ? "72vh" : undefined,
-                    overflowY: showAll ? "auto" : undefined,
+              </Panel>
+            )}
+
+            <Panel
+              title={
+                at !== null
+                  ? t("home.standingsThrough", { at })
+                  : inProgress
+                    ? t("home.standingsSoFar")
+                    : t("home.standingsFinal")
+              }
+              subtitle={
+                practice
+                  ? `${t("home.practiceNote")} ${t("home.subtitle")}`
+                  : t("home.subtitle")
+              }
+            >
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: "10px",
+                  padding: "10px 16px",
+                  borderBottom: "1px solid var(--border-subtle)",
+                }}
+              >
+                <input
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setShowAll(false);
                   }}
-                >
-                  {showingParticipants ? (
-                    <div style={{ minWidth: narrow ? 0 : "640px" }}>
-                      <div
+                  placeholder={t("home.search")}
+                  aria-label={t("home.search")}
+                  style={{
+                    flex: "1 1 220px",
+                    minWidth: 0,
+                    padding: "6px 10px",
+                    font: "var(--text-sm) var(--font-mono)",
+                    color: "var(--text-primary)",
+                    background: "var(--bg-surface)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-sm)",
+                  }}
+                />
+                {hasParticipants && (
+                  <div style={{ display: "flex", gap: "4px" }}>
+                    {(["agents", "participants"] as const).map((v) => (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => setView(v)}
                         style={{
-                          ...TABLE_HEAD,
-                          gridTemplateColumns: PARTICIPANT_GRID,
-                          position: "sticky",
-                          top: 0,
-                          background: "var(--bg-surface-raised)",
-                          zIndex: 1,
+                          ...VIEW_BUTTON,
+                          ...(view === v ? VIEW_BUTTON_ACTIVE : {}),
                         }}
                       >
-                        <span>#</span>
-                        <span>{t("home.col.participant")}</span>
-                        <span>{t("home.col.countedAgent")}</span>
-                        <span style={{ textAlign: "right" }}>
-                          {t("home.col.score")}
+                        {v === "agents"
+                          ? t("home.view.agents")
+                          : t("home.view.participants")}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {hasActivity && !showingParticipants && (
+                  <button
+                    type="button"
+                    onClick={() => setDetails((v) => !v)}
+                    title={t("home.txsTitle")}
+                    style={{
+                      ...VIEW_BUTTON,
+                      ...(details ? VIEW_BUTTON_ACTIVE : {}),
+                    }}
+                  >
+                    {t("home.details")}
+                  </button>
+                )}
+                {pinned && (
+                  <button
+                    type="button"
+                    onClick={() => setPinnedAgent(null)}
+                    title={t("home.unpin")}
+                    style={{
+                      ...VIEW_BUTTON,
+                      color: "var(--pink-500)",
+                      borderColor: "var(--pink-500)",
+                    }}
+                  >
+                    {`${t("home.pinned")} ${pinned}`}
+                  </button>
+                )}
+                <span
+                  style={{
+                    marginLeft: "auto",
+                    font: "var(--text-xs) var(--font-mono)",
+                    color: "var(--text-tertiary)",
+                  }}
+                >
+                  {`${visibleCount} / ${filteredCount}`}
+                </span>
+              </div>
+              {showingParticipants && (
+                <p
+                  style={{
+                    margin: 0,
+                    padding: "8px 16px 0",
+                    font: "var(--text-xs) var(--font-sans)",
+                    color: "var(--text-tertiary)",
+                  }}
+                >
+                  {t("home.participantsNote")}
+                </p>
+              )}
+              <div
+                style={{
+                  overflowX: "auto",
+                  maxHeight: showAll ? "72vh" : undefined,
+                  overflowY: showAll ? "auto" : undefined,
+                }}
+              >
+                {showingParticipants ? (
+                  <div style={{ minWidth: narrow ? 0 : "640px" }}>
+                    <div
+                      style={{
+                        ...TABLE_HEAD,
+                        gridTemplateColumns: PARTICIPANT_GRID,
+                        position: "sticky",
+                        top: 0,
+                        background: "var(--bg-surface-raised)",
+                        zIndex: 1,
+                      }}
+                    >
+                      <span>#</span>
+                      <span>{t("home.col.participant")}</span>
+                      <span>{t("home.col.countedAgent")}</span>
+                      <span style={{ textAlign: "right" }}>
+                        {t("home.col.score")}
+                      </span>
+                      <span>{t("home.col.agents")}</span>
+                    </div>
+                    {visibleParticipants.map((row) => (
+                      <div
+                        key={row.participant}
+                        style={{
+                          ...TABLE_ROW,
+                          gridTemplateColumns: PARTICIPANT_GRID,
+                        }}
+                      >
+                        <span style={{ color: "var(--text-tertiary)" }}>
+                          {row.rank}
                         </span>
-                        <span>{t("home.col.agents")}</span>
+                        <span
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                          title={row.participant}
+                        >
+                          {row.participant}
+                        </span>
+                        <span
+                          className="row-link"
+                          onClick={() =>
+                            navigate(
+                              `/agent/${encodeURIComponent(row.counted.id)}`,
+                            )
+                          }
+                          style={{
+                            color: "var(--text-link)",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            cursor: "pointer",
+                          }}
+                          title={row.counted.id}
+                        >
+                          {row.counted.id}
+                        </span>
+                        <span
+                          style={{
+                            textAlign: "right",
+                            color: toneColor((row.counted.score ?? 50) - 50),
+                            fontWeight: "var(--weight-semibold)" as never,
+                          }}
+                        >
+                          {formatScore(row.counted.score)}
+                        </span>
+                        <span
+                          style={{
+                            font: "var(--text-xs) var(--font-mono)",
+                            color: "var(--text-secondary)",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {row.agents
+                            .map((a) => `${a.id} ${formatScore(a.score)}`)
+                            .join(" · ")}
+                        </span>
                       </div>
-                      {visibleParticipants.map((row) => (
+                    ))}
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      minWidth: tableMinWidth ? `${tableMinWidth}px` : 0,
+                    }}
+                  >
+                    <div
+                      style={{
+                        ...TABLE_HEAD,
+                        gridTemplateColumns: columns,
+                        position: "sticky",
+                        top: 0,
+                        background: "var(--bg-surface-raised)",
+                        zIndex: 1,
+                      }}
+                    >
+                      <span>#</span>
+                      <span
+                        style={{ textAlign: "center" }}
+                        title={scrubbing ? undefined : t("home.deltaTitle")}
+                      >
+                        {scrubbing ? t("home.col.move") : t("home.col.delta")}
+                      </span>
+                      <span>{t("home.col.agent")}</span>
+                      <span style={{ textAlign: "right" }}>
+                        {t("home.col.score")}
+                      </span>
+                      {!narrow && <span>{t("home.col.form")}</span>}
+                      {regimes.map((r) => (
+                        <span
+                          key={r}
+                          style={{
+                            textAlign: "right",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                          title={r}
+                        >
+                          {shortRegime(r)}
+                        </span>
+                      ))}
+                      {hasFlags && (
+                        <span style={{ textAlign: "center" }}>
+                          {t("home.col.flags")}
+                        </span>
+                      )}
+                      {details && hasActivity && (
+                        <>
+                          <span
+                            style={{ textAlign: "right" }}
+                            title={t("home.txsTitle")}
+                          >
+                            {t("home.col.txs")}
+                          </span>
+                          <span
+                            style={{ textAlign: "right" }}
+                            title={t("home.txsTitle")}
+                          >
+                            {t("home.col.reverts")}
+                          </span>
+                        </>
+                      )}
+                      {!narrow && (
+                        <span
+                          style={{ textAlign: "right" }}
+                          title={t("home.netPnlTitle")}
+                        >
+                          {t("home.col.netPnl")}
+                        </span>
+                      )}
+                      <span />
+                    </div>
+
+                    {visibleRows.map((row) => {
+                      const byRegime = standings.tByRegime[row.id] ?? {};
+                      const flags = standings.flagsByAgent[row.id] ?? [];
+                      const isPinned = row.id === pinned;
+                      return (
                         <div
-                          key={row.participant}
+                          key={row.id}
+                          className="row-link"
+                          onClick={() =>
+                            navigate(`/agent/${encodeURIComponent(row.id)}`)
+                          }
                           style={{
                             ...TABLE_ROW,
-                            gridTemplateColumns: PARTICIPANT_GRID,
+                            gridTemplateColumns: columns,
+                            ...(isPinned
+                              ? {
+                                  background:
+                                    "color-mix(in oklch, var(--pink-500) 12%, transparent)",
+                                  boxShadow: "inset 3px 0 0 var(--pink-500)",
+                                }
+                              : {}),
                           }}
                         >
                           <span style={{ color: "var(--text-tertiary)" }}>
                             {row.rank}
+                            {row.tied ? "=" : ""}
                           </span>
+                          <MoveCell move={moves.get(row.id) ?? null} />
                           <span
-                            style={{
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                            title={row.participant}
-                          >
-                            {row.participant}
-                          </span>
-                          <span
-                            className="row-link"
-                            onClick={() =>
-                              navigate(
-                                `/agent/${encodeURIComponent(row.counted.id)}`,
-                              )
-                            }
                             style={{
                               color: "var(--text-link)",
                               overflow: "hidden",
                               textOverflow: "ellipsis",
-                              cursor: "pointer",
                             }}
-                            title={row.counted.id}
+                            title={
+                              standings.participantOf[row.id]
+                                ? `${row.id} · ${standings.participantOf[row.id]}`
+                                : row.id
+                            }
                           >
-                            {row.counted.id}
+                            {row.id}
                           </span>
                           <span
+                            title={t("home.scoreTitle", {
+                              n: row.epochs.length,
+                              std:
+                                row.tStd === null ? "—" : row.tStd.toFixed(2),
+                              worst: formatScore(row.worstT),
+                            })}
                             style={{
                               textAlign: "right",
-                              color: toneColor((row.counted.score ?? 50) - 50),
+                              color: toneColor((row.score ?? 50) - 50),
                               fontWeight: "var(--weight-semibold)" as never,
                             }}
                           >
-                            {formatScore(row.counted.score)}
+                            {formatScore(row.score)}
                           </span>
-                          <span
-                            style={{
-                              font: "var(--text-xs) var(--font-mono)",
-                              color: "var(--text-secondary)",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {row.agents
-                              .map((a) => `${a.id} ${formatScore(a.score)}`)
-                              .join(" · ")}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div
-                      style={{
-                        minWidth: tableMinWidth ? `${tableMinWidth}px` : 0,
-                      }}
-                    >
-                      <div
-                        style={{
-                          ...TABLE_HEAD,
-                          gridTemplateColumns: columns,
-                          position: "sticky",
-                          top: 0,
-                          background: "var(--bg-surface-raised)",
-                          zIndex: 1,
-                        }}
-                      >
-                        <span>#</span>
-                        <span
-                          style={{ textAlign: "center" }}
-                          title={scrubbing ? undefined : t("home.deltaTitle")}
-                        >
-                          {scrubbing ? t("home.col.move") : t("home.col.delta")}
-                        </span>
-                        <span>{t("home.col.agent")}</span>
-                        <span style={{ textAlign: "right" }}>
-                          {t("home.col.score")}
-                        </span>
-                        {!narrow && <span>{t("home.col.form")}</span>}
-                        {regimes.map((r) => (
-                          <span
-                            key={r}
-                            style={{
-                              textAlign: "right",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                            title={r}
-                          >
-                            {shortRegime(r)}
-                          </span>
-                        ))}
-                        {hasFlags && (
-                          <span style={{ textAlign: "center" }}>
-                            {t("home.col.flags")}
-                          </span>
-                        )}
-                        {details && hasActivity && (
-                          <>
-                            <span
-                              style={{ textAlign: "right" }}
-                              title={t("home.txsTitle")}
-                            >
-                              {t("home.col.txs")}
-                            </span>
-                            <span
-                              style={{ textAlign: "right" }}
-                              title={t("home.txsTitle")}
-                            >
-                              {t("home.col.reverts")}
-                            </span>
-                          </>
-                        )}
-                        {!narrow && (
-                          <span
-                            style={{ textAlign: "right" }}
-                            title={t("home.netPnlTitle")}
-                          >
-                            {t("home.col.netPnl")}
-                          </span>
-                        )}
-                        <span />
-                      </div>
-
-                      {visibleRows.map((row) => {
-                        const byRegime = standings.tByRegime[row.id] ?? {};
-                        const flags = standings.flagsByAgent[row.id] ?? [];
-                        const isPinned = row.id === pinned;
-                        return (
-                          <div
-                            key={row.id}
-                            className="row-link"
-                            onClick={() =>
-                              navigate(`/agent/${encodeURIComponent(row.id)}`)
-                            }
-                            style={{
-                              ...TABLE_ROW,
-                              gridTemplateColumns: columns,
-                              ...(isPinned
-                                ? {
-                                    background:
-                                      "color-mix(in oklch, var(--pink-500) 12%, transparent)",
-                                    boxShadow: "inset 3px 0 0 var(--pink-500)",
-                                  }
-                                : {}),
-                            }}
-                          >
-                            <span style={{ color: "var(--text-tertiary)" }}>
-                              {row.rank}
-                              {row.tied ? "=" : ""}
-                            </span>
-                            <MoveCell move={moves.get(row.id) ?? null} />
-                            <span
-                              style={{
-                                color: "var(--text-link)",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}
-                              title={
-                                standings.participantOf[row.id]
-                                  ? `${row.id} · ${standings.participantOf[row.id]}`
-                                  : row.id
-                              }
-                            >
-                              {row.id}
-                            </span>
-                            <span
-                              title={t("home.scoreTitle", {
-                                n: row.epochs.length,
-                                std:
-                                  row.tStd === null ? "—" : row.tStd.toFixed(2),
-                                worst: formatScore(row.worstT),
-                              })}
-                              style={{
-                                textAlign: "right",
-                                color: toneColor((row.score ?? 50) - 50),
-                                fontWeight: "var(--weight-semibold)" as never,
-                              }}
-                            >
-                              {formatScore(row.score)}
-                            </span>
-                            {!narrow && <FormCell epochs={row.epochs} />}
-                            {regimes.map((r) => {
-                              const v = byRegime[r];
-                              return (
-                                <span
-                                  key={r}
-                                  style={{
-                                    textAlign: "right",
-                                    font: "var(--text-xs) var(--font-mono)",
-                                    color:
-                                      v === undefined
-                                        ? "var(--text-disabled)"
-                                        : toneColor(v - 50),
-                                  }}
-                                >
-                                  {formatScore(v)}
-                                </span>
-                              );
-                            })}
-                            {hasFlags && (
-                              <span style={{ textAlign: "center" }}>
-                                {flags.length > 0 && (
-                                  <span
-                                    title={t("home.flagsTitle", {
-                                      flags: flags.join("; "),
-                                    })}
-                                    style={{
-                                      display: "inline-block",
-                                      minWidth: "18px",
-                                      padding: "0 5px",
-                                      borderRadius: "var(--radius-sm)",
-                                      border: "1px solid var(--warning-text)",
-                                      color: "var(--warning-text)",
-                                      font: "var(--text-xs) var(--font-mono)",
-                                    }}
-                                  >
-                                    !{flags.length}
-                                  </span>
-                                )}
-                              </span>
-                            )}
-                            {details && hasActivity && (
-                              <>
-                                <span
-                                  style={{
-                                    textAlign: "right",
-                                    font: "var(--text-xs) var(--font-mono)",
-                                    color: "var(--text-secondary)",
-                                  }}
-                                >
-                                  {(
-                                    standings.txCountByAgent[row.id] ?? 0
-                                  ).toLocaleString("en-US")}
-                                </span>
-                                <span
-                                  style={{
-                                    textAlign: "right",
-                                    font: "var(--text-xs) var(--font-mono)",
-                                    color:
-                                      (standings.revertCountByAgent[row.id] ??
-                                        0) > 0
-                                        ? "var(--danger)"
-                                        : "var(--text-disabled)",
-                                  }}
-                                >
-                                  {(
-                                    standings.revertCountByAgent[row.id] ?? 0
-                                  ).toLocaleString("en-US")}
-                                </span>
-                              </>
-                            )}
-                            {/* Net PnL prices both ends at the run's final marks, so it has no value
-                                "at round k" — while the cursor is mid-competition the finished number
-                                is shown dimmed rather than under a round label. */}
-                            {!narrow && (
+                          {!narrow && <FormCell epochs={row.epochs} />}
+                          {regimes.map((r) => {
+                            const v = byRegime[r];
+                            return (
                               <span
-                                title={
-                                  scrubbing ? t("home.netPnlScrub") : undefined
-                                }
+                                key={r}
                                 style={{
                                   textAlign: "right",
                                   font: "var(--text-xs) var(--font-mono)",
-                                  color: scrubbing
-                                    ? "var(--text-disabled)"
-                                    : toneColor(
-                                        standings.netPnlByAgent[row.id] ?? 0,
-                                      ),
+                                  color:
+                                    v === undefined
+                                      ? "var(--text-disabled)"
+                                      : toneColor(v - 50),
                                 }}
                               >
-                                {formatPnlUsdc(
-                                  standings.netPnlByAgent[row.id] ?? 0,
-                                )}
+                                {formatScore(v)}
                               </span>
-                            )}
-                            <button
-                              type="button"
-                              aria-pressed={isPinned}
+                            );
+                          })}
+                          {hasFlags && (
+                            <span style={{ textAlign: "center" }}>
+                              {flags.length > 0 && (
+                                <span
+                                  title={t("home.flagsTitle", {
+                                    flags: flags.join("; "),
+                                  })}
+                                  style={{
+                                    display: "inline-block",
+                                    minWidth: "18px",
+                                    padding: "0 5px",
+                                    borderRadius: "var(--radius-sm)",
+                                    border: "1px solid var(--warning-text)",
+                                    color: "var(--warning-text)",
+                                    font: "var(--text-xs) var(--font-mono)",
+                                  }}
+                                >
+                                  !{flags.length}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                          {details && hasActivity && (
+                            <>
+                              <span
+                                style={{
+                                  textAlign: "right",
+                                  font: "var(--text-xs) var(--font-mono)",
+                                  color: "var(--text-secondary)",
+                                }}
+                              >
+                                {(
+                                  standings.txCountByAgent[row.id] ?? 0
+                                ).toLocaleString("en-US")}
+                              </span>
+                              <span
+                                style={{
+                                  textAlign: "right",
+                                  font: "var(--text-xs) var(--font-mono)",
+                                  color:
+                                    (standings.revertCountByAgent[row.id] ??
+                                      0) > 0
+                                      ? "var(--danger)"
+                                      : "var(--text-disabled)",
+                                }}
+                              >
+                                {(
+                                  standings.revertCountByAgent[row.id] ?? 0
+                                ).toLocaleString("en-US")}
+                              </span>
+                            </>
+                          )}
+                          {/* Net PnL prices both ends at the run's final marks, so it has no value
+                              "at round k" — while the cursor is mid-competition the finished number
+                              is shown dimmed rather than under a round label. */}
+                          {!narrow && (
+                            <span
                               title={
-                                isPinned ? t("home.unpin") : t("home.pinTitle")
+                                scrubbing ? t("home.netPnlScrub") : undefined
                               }
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                togglePin(row.id);
-                              }}
                               style={{
-                                border: "none",
-                                background: "transparent",
-                                cursor: "pointer",
-                                padding: "2px 4px",
-                                font: "14px var(--font-sans)",
-                                lineHeight: 1,
-                                color: isPinned
-                                  ? "var(--pink-500)"
-                                  : "var(--text-disabled)",
+                                textAlign: "right",
+                                font: "var(--text-xs) var(--font-mono)",
+                                color: scrubbing
+                                  ? "var(--text-disabled)"
+                                  : toneColor(
+                                      standings.netPnlByAgent[row.id] ?? 0,
+                                    ),
                               }}
                             >
-                              {isPinned ? "★" : "☆"}
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-                {filteredCount > PAGE_SIZE && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAll((v) => !v)}
-                    style={SHOW_MORE_BUTTON}
-                  >
-                    {showAll
-                      ? t("home.showLess", { n: PAGE_SIZE })
-                      : t("home.showMore", { n: filteredCount })}
-                  </button>
+                              {formatPnlUsdc(
+                                standings.netPnlByAgent[row.id] ?? 0,
+                              )}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            aria-pressed={isPinned}
+                            title={
+                              isPinned ? t("home.unpin") : t("home.pinTitle")
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              togglePin(row.id);
+                            }}
+                            style={{
+                              border: "none",
+                              background: "transparent",
+                              cursor: "pointer",
+                              padding: "2px 4px",
+                              font: "14px var(--font-sans)",
+                              lineHeight: 1,
+                              color: isPinned
+                                ? "var(--pink-500)"
+                                : "var(--text-disabled)",
+                            }}
+                          >
+                            {isPinned ? "★" : "☆"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
-              </Panel>
-            </>
-          )}
-
-          {/* The one thing a participant needs that no ranking provides: their own agent. With
-              standings not posted there is no row to click, and the only routes to an agent page
-              were a wallet on the board or a typed URL (issue #84 G). */}
-          <FindAgent addressByAgent={standings.addressByAgent} />
-
-          {/* Choosing a world to look at, from the list rather than from a dropdown of names. */}
-          <Panel
-            title={t("home.scenarios.title")}
-            subtitle={
-              mode.audience
-                ? `${t("home.scenarios.subtitle")} ${t("home.scenarios.audienceEvents")}`
-                : t("home.scenarios.subtitle")
-            }
-          >
-            <div style={{ overflowX: "auto" }}>
-              <div style={{ minWidth: narrow ? 0 : "560px" }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: SCENARIO_GRID,
-                    columnGap: "8px",
-                    padding: "9px 16px",
-                    borderBottom: "1px solid var(--border-subtle)",
-                    font: "var(--text-xs) var(--font-mono)",
-                    color: "var(--text-tertiary)",
-                    letterSpacing: "var(--tracking-wide)",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  <span>{t("home.scenarios.col.scenario")}</span>
-                  <span>{t("home.scenarios.col.rounds")}</span>
-                  <span>
-                    {mode.standings ? t("home.scenarios.col.leader") : ""}
-                  </span>
-                  <span title={t("home.scenarios.eventsTitle")}>
-                    {t("home.scenarios.col.events")}
-                  </span>
-                </div>
-                {scenarioRows.map((row) => (
-                  <ScenarioRow
-                    key={row.key}
-                    row={row}
-                    scrubbing={scrubbing}
-                    hideLeader={!mode.standings}
-                  />
-                ))}
               </div>
-            </div>
-          </Panel>
+              {filteredCount > PAGE_SIZE && (
+                <button
+                  type="button"
+                  onClick={() => setShowAll((v) => !v)}
+                  style={SHOW_MORE_BUTTON}
+                >
+                  {showAll
+                    ? t("home.showLess", { n: PAGE_SIZE })
+                    : t("home.showMore", { n: filteredCount })}
+                </button>
+              )}
+            </Panel>
+          </>
+        )}
 
-          {/* The explanation of what a competition is — the units, the environment, the scoring,
-              the data. Folded, because a reader who comes back every epoch has read it, and a
-              first-time reader is told exactly where it is. */}
-          <details
+        {/* The one thing a participant needs that no ranking provides: their own agent. With
+            standings not posted there is no row to click, and the only routes to an agent page
+            were a wallet on the board or a typed URL (issue #84 G). */}
+        <FindAgent addressByAgent={standings.addressByAgent} />
+
+        {/* Choosing a world to look at, from the list rather than from a dropdown of names. */}
+        <Panel
+          title={t("home.scenarios.title")}
+          subtitle={
+            mode.audience
+              ? `${t("home.scenarios.subtitle")} ${t("home.scenarios.audienceEvents")}`
+              : t("home.scenarios.subtitle")
+          }
+        >
+          <div style={{ overflowX: "auto" }}>
+            <div style={{ minWidth: narrow ? 0 : "560px" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: SCENARIO_GRID,
+                  columnGap: "8px",
+                  padding: "9px 16px",
+                  borderBottom: "1px solid var(--border-subtle)",
+                  font: "var(--text-xs) var(--font-mono)",
+                  color: "var(--text-tertiary)",
+                  letterSpacing: "var(--tracking-wide)",
+                  textTransform: "uppercase",
+                }}
+              >
+                <span>{t("home.scenarios.col.scenario")}</span>
+                <span>{t("home.scenarios.col.rounds")}</span>
+                <span>
+                  {mode.standings ? t("home.scenarios.col.leader") : ""}
+                </span>
+                <span title={t("home.scenarios.eventsTitle")}>
+                  {t("home.scenarios.col.events")}
+                </span>
+              </div>
+              {scenarioRows.map((row) => (
+                <ScenarioRow
+                  key={row.key}
+                  row={row}
+                  scrubbing={scrubbing}
+                  hideLeader={!mode.standings}
+                />
+              ))}
+            </div>
+          </div>
+        </Panel>
+
+        {/* The explanation of what a competition is — the units, the environment, the scoring,
+            the data. Folded, because a reader who comes back every epoch has read it, and a
+            first-time reader is told exactly where it is. */}
+        <details
+          style={{
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-sm)",
+            background: "var(--bg-surface)",
+          }}
+        >
+          <summary
             style={{
-              border: "1px solid var(--border-subtle)",
-              borderRadius: "var(--radius-sm)",
-              background: "var(--bg-surface)",
+              cursor: "pointer",
+              padding: "13px 16px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "3px",
+              listStyle: "none",
             }}
           >
-            <summary
+            <span
               style={{
-                cursor: "pointer",
-                padding: "13px 16px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "3px",
-                listStyle: "none",
+                font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+                letterSpacing: "var(--tracking-widest)",
+                textTransform: "uppercase",
+                color: "var(--text-secondary)",
               }}
             >
-              <span
-                style={{
-                  font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-                  letterSpacing: "var(--tracking-widest)",
-                  textTransform: "uppercase",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {t("home.about")}
-              </span>
-              <span
-                style={{
-                  font: "var(--text-xs) var(--font-sans)",
-                  color: "var(--text-tertiary)",
-                  lineHeight: 1.5,
-                }}
-              >
-                {t("home.aboutHint")}
-              </span>
-            </summary>
-            <div
+              {t("home.about")}
+            </span>
+            <span
               style={{
-                borderTop: "1px solid var(--border-subtle)",
-                padding: "16px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "18px",
+                font: "var(--text-xs) var(--font-sans)",
+                color: "var(--text-tertiary)",
+                lineHeight: 1.5,
               }}
             >
-              <Panel title={t("units.title")}>
-                <UnitLadder />
-              </Panel>
-              <InfoTabs />
-            </div>
-          </details>
-        </main>
-      </div>
-    </div>
+              {t("home.aboutHint")}
+            </span>
+          </summary>
+          <div
+            style={{
+              borderTop: "1px solid var(--border-subtle)",
+              padding: "16px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "18px",
+            }}
+          >
+            <Panel title={t("units.title")}>
+              <UnitLadder />
+            </Panel>
+            <InfoTabs />
+          </div>
+        </details>
+      </main>
+    </AppShell>
   );
 }

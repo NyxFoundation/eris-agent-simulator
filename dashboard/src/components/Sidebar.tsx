@@ -31,6 +31,7 @@ import { buildScenarioList } from "@/data/scenarioList";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { toneColor } from "@/components/competitionUi";
 import { formatPnlUsdc } from "@/lib/format";
+import { useIsMobile } from "@/lib/breakpoints";
 
 export type SidebarNavKey = "home" | "scenario" | "explorer" | "markets";
 
@@ -618,112 +619,114 @@ function LanguageToggle() {
   );
 }
 
-export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
-  // Read so the whole sidebar re-renders (nav labels, picker labels) when the language changes.
-  useLocale();
-
-  // In seed-provider mode there are no competitions, so "/" renders the scenario view.
-  const nav: { key: SidebarNavKey; label: string; path: string }[] =
-    isSeedProvider
-      ? [
-          { key: "home", label: t("nav.top"), path: "/" },
-          { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
-          { key: "markets", label: t("nav.markets"), path: "/markets" },
-        ]
-      : [
-          { key: "home", label: t("nav.standings"), path: "/" },
-          { key: "scenario", label: t("nav.scenario"), path: "/scenario" },
-          { key: "markets", label: t("nav.markets"), path: "/markets" },
-          { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
-        ];
-
+/** The brand block: 26px mark plus the wordmark, sized to whichever bar it sits in. */
+function Brand({ height }: { height: string }) {
   return (
     <div
       style={{
-        width: "212px",
+        height,
         flexShrink: 0,
-        borderRight: "1px solid var(--border-subtle)",
-        background: "var(--bg-sunken)",
         display: "flex",
-        flexDirection: "column",
-        position: "sticky",
-        top: 0,
-        alignSelf: "flex-start",
-        height: "100vh",
+        alignItems: "center",
+        gap: "10px",
+        padding: "0 var(--space-4)",
+        cursor: "pointer",
       }}
+      onClick={() => navigate("/")}
     >
-      <div
+      <span
         style={{
-          height: "76px",
-          flexShrink: 0,
-          borderBottom: "1px solid var(--border-subtle)",
+          width: "26px",
+          height: "26px",
+          borderRadius: "7px",
+          background: "var(--accent-primary)",
           display: "flex",
           alignItems: "center",
-          padding: "0 var(--space-4)",
-          gap: "10px",
-          cursor: "pointer",
+          justifyContent: "center",
+          color: "var(--text-on-accent)",
+          font: "var(--weight-bold) 13px var(--font-sans)",
+          flexShrink: 0,
         }}
-        onClick={() => navigate("/")}
       >
-        <span
-          style={{
-            width: "26px",
-            height: "26px",
-            borderRadius: "7px",
-            background: "var(--accent-primary)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--text-on-accent)",
-            font: "var(--weight-bold) 13px var(--font-sans)",
-          }}
-        >
-          E
-        </span>
-        <span
-          style={{
-            font: "var(--weight-bold) var(--text-base) var(--font-sans)",
-            letterSpacing: "var(--tracking-tight)",
-            textTransform: "uppercase",
-          }}
-        >
-          Eris
-        </span>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column" }}>
-        {nav.map((item) => {
-          const isActive = item.key === activePage;
-          return (
-            <div
-              key={item.path}
-              onClick={isActive ? undefined : () => navigate(item.path)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                height: "52px",
-                padding: "0 var(--space-4)",
-                background: isActive ? "var(--pink-500)" : "transparent",
-                borderBottom: "1px solid var(--border-subtle)",
-                borderLeft: `3px solid ${isActive ? "var(--gray-950)" : "transparent"}`,
-                color: isActive ? "var(--gray-950)" : "var(--text-secondary)",
-                font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-                letterSpacing: "var(--tracking-widest)",
-                textTransform: "uppercase",
-                cursor: isActive ? "default" : "pointer",
-              }}
-            >
-              <span>{item.label}</span>
-              {isActive && <span>/</span>}
-            </div>
-          );
-        })}
-      </div>
+        E
+      </span>
+      <span
+        style={{
+          font: "var(--weight-bold) var(--text-base) var(--font-sans)",
+          letterSpacing: "var(--tracking-tight)",
+          textTransform: "uppercase",
+        }}
+      >
+        Eris
+      </span>
+    </div>
+  );
+}
 
-      <div style={{ marginTop: "auto" }}>
+type NavItem = { key: SidebarNavKey; label: string; path: string };
+
+function NavList({
+  nav,
+  activePage,
+  onNavigate,
+}: {
+  nav: NavItem[];
+  activePage?: SidebarNavKey;
+  onNavigate?: () => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      {nav.map((item) => {
+        const isActive = item.key === activePage;
+        return (
+          <div
+            key={item.path}
+            onClick={
+              isActive
+                ? onNavigate
+                : () => {
+                    navigate(item.path);
+                    onNavigate?.();
+                  }
+            }
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              height: "52px",
+              padding: "0 var(--space-4)",
+              background: isActive ? "var(--pink-500)" : "transparent",
+              borderBottom: "1px solid var(--border-subtle)",
+              borderLeft: `3px solid ${isActive ? "var(--gray-950)" : "transparent"}`,
+              color: isActive ? "var(--gray-950)" : "var(--text-secondary)",
+              font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+              letterSpacing: "var(--tracking-widest)",
+              textTransform: "uppercase",
+              cursor: isActive && !onNavigate ? "default" : "pointer",
+            }}
+          >
+            <span>{item.label}</span>
+            {isActive && <span>/</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Picker + language + the read-only note: everything below the nav, in either arrangement. */
+function SidebarFooter({
+  activePage,
+  fill,
+}: {
+  activePage?: SidebarNavKey;
+  fill: boolean;
+}) {
+  return (
+    <>
+      <div style={fill ? { marginTop: "auto" } : undefined}>
         {!isSeedProvider && <Picker activePage={activePage} />}
       </div>
-
       <div
         style={{
           padding: "var(--space-4)",
@@ -744,6 +747,230 @@ export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
           <ModeBadge />
         </span>
       </div>
-    </div>
+    </>
   );
 }
+
+/**
+ * The navigation, in the two shapes a screen can ask for.
+ *
+ * Wide: the column it has always been — 212px, sticky, its own scroll.
+ *
+ * Narrow (≤860px, `MOBILE`): a 56px top bar with the brand, the current page's name and a menu
+ * button, and the column itself as a drawer over a scrim. A 212px column on a 390px phone left the
+ * page 178px to render a standings table in, which is why every route scrolled sideways; the drawer
+ * gives the content the whole width back.
+ */
+export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
+  // Read so the whole sidebar re-renders (nav labels, picker labels) when the language changes.
+  useLocale();
+  const mobile = useIsMobile();
+  const [open, setOpen] = useState(false);
+
+  // In seed-provider mode there are no competitions, so "/" renders the scenario view.
+  const nav: NavItem[] = isSeedProvider
+    ? [
+        { key: "home", label: t("nav.top"), path: "/" },
+        { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
+        { key: "markets", label: t("nav.markets"), path: "/markets" },
+      ]
+    : [
+        { key: "home", label: t("nav.standings"), path: "/" },
+        { key: "scenario", label: t("nav.scenario"), path: "/scenario" },
+        { key: "markets", label: t("nav.markets"), path: "/markets" },
+        { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
+      ];
+
+  // Growing the window past the breakpoint while the drawer is open would otherwise leave the
+  // scrim over a sidebar that is a column again.
+  useEffect(() => {
+    if (!mobile) setOpen(false);
+  }, [mobile]);
+
+  // Escape closes it, and the page behind it does not scroll while it is up.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  if (!mobile) {
+    return (
+      <div
+        style={{
+          width: "var(--sidebar-w)",
+          flexShrink: 0,
+          borderRight: "1px solid var(--border-subtle)",
+          background: "var(--bg-sunken)",
+          display: "flex",
+          flexDirection: "column",
+          position: "sticky",
+          top: 0,
+          alignSelf: "flex-start",
+          height: "100vh",
+          overflowY: "auto",
+        }}
+      >
+        <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+          <Brand height="76px" />
+        </div>
+        <NavList nav={nav} activePage={activePage} />
+        <SidebarFooter activePage={activePage} fill />
+      </div>
+    );
+  }
+
+  const current = nav.find((n) => n.key === activePage);
+
+  return (
+    <>
+      <div
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 30,
+          height: "var(--topbar-h)",
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "8px",
+          borderBottom: "1px solid var(--border-subtle)",
+          background: "var(--bg-sunken)",
+        }}
+      >
+        <Brand height="var(--topbar-h)" />
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            textAlign: "right",
+            font: "var(--text-xs) var(--font-mono)",
+            color: "var(--text-tertiary)",
+            letterSpacing: "var(--tracking-wide)",
+            textTransform: "uppercase",
+          }}
+        >
+          {current?.label}
+        </span>
+        <button
+          type="button"
+          aria-label={t("nav.menu")}
+          aria-expanded={open}
+          onClick={() => setOpen(true)}
+          style={{
+            flexShrink: 0,
+            margin: "0 var(--space-4) 0 0",
+            height: "34px",
+            padding: "0 12px",
+            display: "flex",
+            alignItems: "center",
+            gap: "7px",
+            border: "1px solid var(--border-default)",
+            borderRadius: "var(--radius-sm)",
+            background: "var(--bg-surface-raised)",
+            color: "var(--text-primary)",
+            font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+            letterSpacing: "var(--tracking-wide)",
+            textTransform: "uppercase",
+            cursor: "pointer",
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "3px",
+              width: "13px",
+            }}
+          >
+            <span style={BURGER_BAR} />
+            <span style={BURGER_BAR} />
+            <span style={BURGER_BAR} />
+          </span>
+          {t("nav.menu")}
+        </button>
+      </div>
+
+      {open && (
+        <>
+          <div className="nav-scrim" onClick={() => setOpen(false)} />
+          <div
+            className="nav-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("nav.menu")}
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              bottom: 0,
+              zIndex: 41,
+              width: "min(286px, 86vw)",
+              background: "var(--bg-sunken)",
+              borderRight: "1px solid var(--border-subtle)",
+              display: "flex",
+              flexDirection: "column",
+              overflowY: "auto",
+              overscrollBehavior: "contain",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                borderBottom: "1px solid var(--border-subtle)",
+              }}
+            >
+              <Brand height="var(--topbar-h)" />
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-label={t("sidebar.close")}
+                style={{
+                  margin: "0 var(--space-3) 0 0",
+                  width: "34px",
+                  height: "34px",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: "var(--radius-sm)",
+                  background: "transparent",
+                  color: "var(--text-secondary)",
+                  font: "var(--text-base) var(--font-mono)",
+                  lineHeight: 1,
+                  cursor: "pointer",
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <NavList
+              nav={nav}
+              activePage={activePage}
+              onNavigate={() => setOpen(false)}
+            />
+            <SidebarFooter activePage={activePage} fill={false} />
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+const BURGER_BAR: React.CSSProperties = {
+  height: "1.5px",
+  background: "currentColor",
+  borderRadius: "1px",
+};

@@ -49,7 +49,9 @@ export function InfoTabs() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(4, minmax(0,1fr))",
+          // Four across where they fit, two by two on a phone. Four 97px columns turned every
+          // label into three wrapped lines.
+          gridTemplateColumns: "repeat(auto-fit, minmax(148px, 1fr))",
           gap: "1px",
           background: "var(--border-subtle)",
         }}

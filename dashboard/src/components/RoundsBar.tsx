@@ -558,7 +558,10 @@ export function RoundsBar({
       }}
     >
       {round.epochs.length > 0 ? (
-        <div style={{ display: "flex", width: "100%" }}>
+        // A 2016-round live run gives each segment ~0.2px, and the round number inside it — an
+        // absolutely positioned 34px label — then reaches past the last segment. The segment
+        // clips it, but the strip has to own the clip too, or those few pixels scroll the page.
+        <div style={{ display: "flex", width: "100%", overflow: "hidden" }}>
           {round.epochs.map((epoch) => (
             <RoundSegment
               key={epoch.index}

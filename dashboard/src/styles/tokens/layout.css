@@ -1,0 +1,65 @@
+/* The one place the layout knows about screen size.
+ *
+ * The pages style inline, so each of them used to carry its own idea of how wide a page may be —
+ * 1180px on the standings, 1200px on an agent, 1240px on the explorer — and none of them grew on a
+ * display wider than that. On a 2560px monitor that left ~700px of empty canvas on either side
+ * while the standings table, which wants ~1500px once a competition has twelve regime columns,
+ * scrolled sideways inside its 1116px box. So the cap is a variable, and it opens up on a wide
+ * display instead of holding one laptop's width forever.
+ *
+ * The cap is still a cap: past ~1800px a line of body copy gets too long to track, so the last
+ * step is deliberately smaller than the screen.
+ */
+:root {
+  --sidebar-w: 212px;
+  --page-max: 1180px;
+  /* Gutters shrink on a phone, where 32px of padding is a twelfth of the screen. */
+  --page-pad-x: clamp(14px, 2.4vw, 32px);
+  --page-pad-top: clamp(18px, 2vw, 32px);
+  --topbar-h: 56px;
+}
+
+/* Laptops and small desktops: the historical layout, unchanged. */
+
+@media (min-width: 1700px) {
+  :root { --page-max: 1640px; }
+}
+@media (min-width: 2200px) {
+  :root { --page-max: 1840px; }
+}
+
+/* Below this the sidebar stops being a column and becomes a top bar with a drawer; see
+   `src/lib/breakpoints.ts`, which holds the same number for the JS side. */
+@media (max-width: 860px) {
+  :root { --sidebar-w: 0px; }
+}
+
+/* The drawer, and the scrim behind it. Inline styles cannot express a transition on mount, and the
+   scrim needs to cover a sticky sidebar, so both live here. */
+.nav-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 40;
+  animation: nav-scrim-in var(--duration-fast) var(--ease-standard);
+}
+@keyframes nav-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.nav-drawer {
+  animation: nav-drawer-in var(--duration-normal) var(--ease-standard);
+}
+@keyframes nav-drawer-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nav-scrim, .nav-drawer { animation: none; }
+}
+
+/* Touch targets. A 26px control is fine for a mouse and too small for a thumb; the pages set their
+   own heights inline, so this only raises the ones that would otherwise fall under the floor. */
+@media (pointer: coarse) {
+  button, select, [role="button"] { min-height: 32px; }
+}

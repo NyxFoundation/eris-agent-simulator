@@ -32,6 +32,9 @@ import type { WorldAgentNode, WorldFrame, WorldVenueNode } from "@/data/types";
 /** Dots in flight at once. A block with more transactions than this shows the busiest of them. */
 const DOT_POOL = 24;
 /** Rows the chain panel lists. The rest are counted under it. */
+/** Below this the board scrolls rather than shrinking; 13px names land at ~8px. */
+const MIN_SCALE = 0.62;
+
 const MEMPOOL_ROWS = 6;
 
 const CATEGORY_COLOR: Record<string, string> = {
@@ -88,11 +91,16 @@ export function WorldMap({
 
   // The board is drawn at map scale and shrunk to the column it is given; it never grows past 1:1,
   // where the chip text would start outrunning the type scale.
+  //
+  // It does not shrink without limit either. The board is 1450px of named nodes, so fitting it into
+  // a 360px phone meant scaling to 0.25 — a 13px agent name rendered at 3px, a picture of a board
+  // rather than a board. Below MIN_SCALE it stops shrinking and the host scrolls instead: the same
+  // board, legible, reached by dragging sideways.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const measure = () =>
-      setScale(Math.min(1, host.clientWidth / MAP_W) || 1);
+      setScale(Math.max(MIN_SCALE, Math.min(1, host.clientWidth / MAP_W) || 1));
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(host);
@@ -220,7 +228,10 @@ export function WorldMap({
   const hidden = (frame?.txCount ?? 0) - listed.length;
 
   return (
-    <div ref={hostRef} style={{ width: "100%", overflow: "hidden" }}>
+    <div
+      ref={hostRef}
+      style={{ width: "100%", overflowX: "auto", overflowY: "hidden" }}
+    >
       <WorldSprite />
       <div
         style={{
@@ -229,7 +240,10 @@ export function WorldMap({
           height: `${layout.height}px`,
           transform: `scale(${scale})`,
           transformOrigin: "top left",
+          // A transform does not shrink the layout box, so both axes are given back by hand —
+          // otherwise the host would report 1450px of content at every scale and always scroll.
           marginBottom: `${-(1 - scale) * layout.height}px`,
+          marginRight: `${-(1 - scale) * layout.width}px`,
         }}
       >
         <svg
