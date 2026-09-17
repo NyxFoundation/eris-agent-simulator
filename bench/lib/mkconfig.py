@@ -45,10 +45,30 @@ if AGENT_MARKETS:
     head += ("\nagentMarkets:\n  enabled: true\n  registrationsPerBlock: 8\n"
              '  maxTxGas: "30000000"\n  maxAgentBlockGas: "90000000"\n')
 
+# run.sh's contract is "each competing agent runs in a memory/CPU-capped container", and that only
+# happens when the CONFIG says so. run.agentSandbox defaults to `process`, config/example.yaml does
+# not set it (the regimes under config/regimes/ all do), and ERIS_AGENT_SANDBOX is one of the retired
+# env knobs the loader ignores -- so every bench built from example.yaml silently ran its agents as
+# plain host processes: no caps, no egress control, and ERIS_AGENT_ISOLATE has nothing to act on.
+if "agentSandbox" not in head:
+    # Must go INSIDE the `run:` block. Appending at the end lands it under `stress:` (the crash event
+    # is spliced in last) and the loader drops it as an unknown key -- silently, apart from one line
+    # in each agent's stderr.
+    head = re.sub(r"^(run:\n)", r"\g<1>  agentSandbox: docker\n", head, count=1, flags=re.M)
+
 wrapper = os.path.join(REPO, "infra/docker-agent/run-agent.sh")
+# The agent's own view of the chain. bench/run.sh points ERIS_RPC_URL at the host anvil, which is
+# right for host-network agents and WRONG for ERIS_AGENT_ISOLATE=1: inside a per-agent network
+# 127.0.0.1 is the container, so every bot dies with "cannot reach the chain" (it refuses to run
+# chainless on purpose -- a silent 0-tx run looks the same as an agent that sat still).
+# For the live topology set ERIS_AGENT_RPC_URL=http://ascon-rpc-gateway-live:8546
+AGENT_RPC = os.environ.get("ERIS_AGENT_RPC_URL", "")
+
 def env_for(dirname):
     d = os.path.join(REPO, "example/agents", dirname)
     extra = ', ERIS_AGENT_FROZEN: "1"' if MODE == "frozen" else ', ERIS_LLM_MODEL: "gpt-oss:20b"'
+    if AGENT_RPC:
+        extra += ', ERIS_RPC_URL: "' + AGENT_RPC + '"'
     return '{ ERIS_AGENT_DIR: "' + d + '"' + extra + ' }'
 def entry(agent_id, dirname):
     return (f"  - id: {agent_id}\n    dir: {dirname}\n    wallet: AUTO\n"

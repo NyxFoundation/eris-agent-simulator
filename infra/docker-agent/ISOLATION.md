@@ -77,3 +77,30 @@ to each `ag-<id>` net; set `ERIS_RPC_URL=http://ascon-rpc-gateway-live:8546`. `r
 
 Not applied to the live stack yet: the topology is proven and the code is ready; the cutover recreates
 the running anvil+gateway, so run it over wired ethernet (WiFi drops mid-cutover risk breaking the stack).
+
+## Four things the live topology needs that nothing sets for you (measured 2026-09-17)
+
+Trying to reproduce the live topology on the replacement box took six runs. Every failed attempt
+still printed `判定: PASS` from the block-budget check, because the agents were not trading at all
+and an empty run is trivially fast. The tell was always `mined tx / round`: ~12.8 when the
+environment's own oracle and flow traffic is all there is, ~193 when 100 bench-max agents are really
+spending their three-tx allowance.
+
+| # | needed | what happens without it |
+|---|---|---|
+| 1 | `default-address-pools` widened in `/etc/docker/daemon.json` | **the 28th agent onward cannot start.** Docker's default pools yield ~27 networks and `ERIS_AGENT_ISOLATE=1` takes one per agent. `run-agent.sh` swallows the create error (`2>&1 \|\| true`), so what surfaces is `docker run ... network ag-<id> not found` |
+| 2 | `run.agentSandbox: docker` **in the config** | agents run as plain host processes: no CPU/memory caps, no egress control, rules §2.3 unenforced, and `ERIS_AGENT_ISOLATE` has nothing to act on. `config/example.yaml` and `config/practice.yaml` do not set it (every `config/regimes/*.yaml` does), and `ERIS_AGENT_SANDBOX` is one of the retired env knobs the loader ignores |
+| 3 | the agent's `ERIS_RPC_URL` pointing at the hub | inside a per-agent network `127.0.0.1` is the container. The bot refuses to run chainless and exits 1 — deliberately, because a silent 0-tx run looks identical to an agent that sat still |
+| 4 | a chain at the venues snapshot | `flashArb: true` deploys at a deterministic address, so a chain that has already been used fails setup with `FlashArb address mismatch`. **A live run cannot be started on a chain that has been running** — which also constrains the "move to the cloud under load" escape hatch in 競技規約 §2.6.1 |
+
+A config key in the wrong block is silent too: appending `agentSandbox: docker` after the stress
+section made it `stress.agentSandbox`, and the only evidence was one `unknown config keys (ignored)`
+line inside each agent's stderr.
+
+`/etc/docker/daemon.json` on ascon-live:
+
+```json
+{ "default-address-pools": [ { "base": "10.200.0.0/12", "size": 24 } ] }
+```
+
+4096 networks instead of 27. `docker network create` was verified past 130 after the change.
