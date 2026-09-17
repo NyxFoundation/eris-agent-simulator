@@ -98,7 +98,10 @@ services:
       BACK_PROXY_PASS: http://backend:4000
       FRONT_PROXY_PASS: http://frontend:3000
     ports:
-      - "${EXPLORER_PORT}:80"
+      # Loopback on purpose: reached through the Cloudflare tunnel (ASCON docs/20 §3), never by an
+      # open port. gohanserver sat behind NAT so 0.0.0.0 was harmless there; a box with a public IP
+      # and no firewall would publish the explorer the moment this starts.
+      - "127.0.0.1:${EXPLORER_PORT}:80"
 
 networks:
   default:

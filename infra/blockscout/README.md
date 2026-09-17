@@ -6,7 +6,7 @@ instead of raw `cast` calls, and gives the Eris dashboard (#32) a link target fo
 address detail pages.
 
 ```
-npm run explorer          # start → http://localhost:3100
+npm run explorer          # start → http://localhost:4000  (EXPLORER_PORT; 3100 is Loki)
 npm run explorer:reset    # wipe the indexer DB and reindex (run after every chain reset)
 npm run explorer:tag      # name agent wallets from the latest run's summary.json
 npm run explorer:down     # stop (indexer DB survives)

@@ -1,8 +1,18 @@
-tunnel: gohanserver
-credentials-file: /root/.cloudflared/e31472d7-6c2c-4744-a171-a9867b03ee66.json
+# Mirror of /etc/cloudflared/config.yml on ascon-live (gohanserver was sold; same tunnel, new origin).
+# The tunnel UUID and its DNS records survived the move -- `cloudflared tunnel token --cred-file` can
+# re-derive the credentials from cert.pem, so the tunnel did not have to be recreated.
+tunnel: e31472d7-6c2c-4744-a171-a9867b03ee66
+credentials-file: /etc/cloudflared/e31472d7-6c2c-4744-a171-a9867b03ee66.json
+originRequest:
+  connectTimeout: 10s
 ingress:
-  - hostname: ascon-monitor.nyx.foundation
-    service: http://localhost:3000
+  # RPC MUST point at the gateway (8546), never anvil (8545): the gateway is what 403s the cheatcodes.
   - hostname: ascon-rpc.nyx.foundation
-    service: http://localhost:8546
+    service: http://127.0.0.1:8546
+  - hostname: ascon-monitor.nyx.foundation
+    service: http://127.0.0.1:3000
+  - hostname: ascon-dash.nyx.foundation
+    service: http://127.0.0.1:5174
+  - hostname: ascon-explorer.nyx.foundation
+    service: http://127.0.0.1:4000
   - service: http_status:404
