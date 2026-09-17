@@ -25,11 +25,13 @@ run:
   # never-ending chain suggests: an episode's window is placed as a fraction of the run's *length*
   # (ADR 0009), so a run with no block count has nowhere to put one and fails at startup. One week
   # at a two-second cadence.
-  blocks: 302400
+  # 試行期間は 9/23〜10/31 の39日（docs/20 §2）。42日ぶんに設定してある（余裕3日）。
+  # 以前は blocks: 302400 = 7日ちょうどで、期間の途中で run が終わっていた。
+  blocks: 1814400
   # A ceiling, not the stop condition — a run with episodes ends on the block count so the time
   # limit cannot cut in before a window opens (ADR 0009 §4). Generous, so a chain running slightly
   # behind cadence is not truncated.
-  seconds: 900000
+  seconds: 3628800
   blockTimeSec: 2
   protocols: [uniswap, balancer, curve, lst, liquity]
   localDeploy: true

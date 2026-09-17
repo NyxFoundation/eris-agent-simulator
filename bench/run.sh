@@ -17,7 +17,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$REPO"
 
-AGENTS=12; BLOCKS=200; BT=2; MODE=frozen; MEM="${ERIS_DOCKER_MEM:-1g}"; OUT=""; ROSTER=""; CLONES=""
+AGENTS=12; BLOCKS=200; BT=2; MODE=frozen; MEM="${ERIS_DOCKER_MEM:-1g}"; OUT=""; ROSTER=""; CLONES=""; NORESET=0
 while [ $# -gt 0 ]; do case "$1" in
   --agents) AGENTS=$2; shift 2;; --blocks) BLOCKS=$2; shift 2;; --block-time) BT=$2; shift 2;;
   --mode) MODE=$2; shift 2;; --mem) MEM=$2; shift 2;; --out) OUT=$2; shift 2;;
@@ -25,6 +25,8 @@ while [ $# -gt 0 ]; do case "$1" in
   --markets) ROSTER="markets:$2"; AGENTS=$2; shift 2;;   # issue #40: N agent-created-market participants
   --agent) ROSTER="agent:$2"; shift 2;;        # just this agent + a venue-arb reference
   --clones) CLONES=$2; shift 2;;               # N copies of ONE agent: --clones bench-max --agents 100
+  --no-reset) NORESET=1; shift;;               # bench an ALREADY-RUNNING chain (the live stack), do
+                                               # not stop it and reload the venues snapshot
   *) echo "unknown arg: $1" >&2; exit 1;; esac; done
 [ -n "$CLONES" ] && ROSTER="clones:$CLONES:$AGENTS"   # --clones bench-max = the docs/18 §12 roster
 ROSTER="${ROSTER:-$AGENTS}"                     # default: N venue-arb clones (load test)
@@ -38,7 +40,15 @@ export ANVIL_PORT="${ANVIL_PORT:-8545}"
 export ANVIL_RPC_URL="http://127.0.0.1:${ANVIL_PORT}"
 export ERIS_RPC_URL="$ANVIL_RPC_URL"
 
-echo "[1/5] reset chain";  bash "$REPO/bench/lib/reset-chain.sh"
+# --no-reset is what lets this measure the LIVE topology: agents reaching a containerised anvil only
+# through the rpc-gateway (ERIS_AGENT_ISOLATE=1). reset-chain.sh kills whatever holds ANVIL_PORT and
+# starts a host anvil, which on a box running the monitoring stack would take down production.
+if [ "$NORESET" = 1 ]; then
+  echo "[1/5] reset chain: SKIPPED (--no-reset); using the chain already on :$ANVIL_PORT"
+  cast block-number --rpc-url "$ANVIL_RPC_URL" >/dev/null 2>&1 || { echo "no chain on $ANVIL_RPC_URL" >&2; exit 1; }
+else
+  echo "[1/5] reset chain";  bash "$REPO/bench/lib/reset-chain.sh"
+fi
 echo "[2/5] config ($ROSTER)"; python3 "$REPO/bench/lib/mkconfig.py" "$BLOCKS" "$BT" "$MODE" "$CFG" "$ROSTER"
 echo "[3/5] sampler";      setsid python3 "$REPO/bench/lib/sampler.py" "$OUT/stats.csv" 1800 >"$OUT/sampler.log" 2>&1 & SAMP=$!
 echo "[4/5] sim ($AGENTS agents, $BLOCKS blocks, ${BT}s block, mem $MEM)"
