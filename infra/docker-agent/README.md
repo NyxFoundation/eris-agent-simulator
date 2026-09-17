@@ -158,3 +158,27 @@ addressed by the parallel oracle writes in this PR and by a longer block time.
 
 `Dockerfile.base` (+ `Dockerfile.base.dockerignore`), `Dockerfile.team`, `build.sh`, `run-agent.sh`,
 `self-test.sh`, `reap.sh`. Exposed as `npm run agent:build` / `agent:selftest` / `agent:reap`.
+
+
+## The replay audit's "pinned artifact" is not actually pinned yet (measured 2026-09-17)
+
+The rationale above says per-team images "give a pinned artifact (`eris-agent:<id>` digest) for the
+replay audit". Verified against a real live-topology run on ascon-live: **the digest is not recorded
+anywhere the audit could read it.**
+
+| where you would look | what is there |
+|---|---|
+| `runs/<id>/events.jsonl` | `"sandbox":"docker"` and nothing else — no image, no digest |
+| `runs/<id>/manifest.json` | `participants`, `contracts`, `limits` … no image field |
+| the image itself | `eris-agent:bench-max` → `sha256:9e674344e9eb…` |
+
+`eris-agent:<id>` is a **local tag**, so rebuilding it after the run produces a different image under
+the same name and nothing in the run says which one actually executed. For an audit that has to
+answer "was this the code they submitted", the tag is not evidence; the digest is.
+
+The fix is small and belongs next to the `agent_sandbox` event: resolve
+`docker image inspect <image> --format '{{.Id}}'` per roster entry at spawn and log it. Worth doing
+before 11/1, because it cannot be reconstructed afterwards.
+
+Until then, the operator has to pin it out of band — record `docker images --digests` alongside each
+run, and do not rebuild team images between the run and the audit.
