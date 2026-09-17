@@ -126,3 +126,47 @@ cp config/practice.yaml config/practice-short.yaml   # edit run.blocks, run.segm
 
 Env still works for the keys the config deliberately leaves out — the chain endpoint and the keys,
 which belong to a deployment rather than to a period.
+
+
+## The live topology — a containerised coordinator
+
+The practice period runs the coordinator as a host process (the user unit above): participants
+self-host, so nothing the coordinator spawns needs containing. **The live period is different.**
+Participant code runs here, under `ERIS_AGENT_ISOLATE=1`, and may reach nothing but the rpc-gateway
+(ASCON docs/24 §4, `infra/docker-agent/ISOLATION.md`). That cannot be done from a host process:
+
+| | needs |
+|---|---|
+| the coordinator | anvil **directly** — funding and the block gas limit are cheatcodes, and the gateway 403s those |
+| each agent | the gateway **only**, by container name, from inside its own `ag-<id>` network |
+
+One process on the host cannot hand out a URL that satisfies both. `docker-compose.sim.yml` puts the
+coordinator on `ascon-chain` so it can use `ascon-anvil:8545` itself and give agents
+`ascon-rpc-gateway-live:8546` via `ERIS_AGENT_RPC_URL`.
+
+```sh
+cd infra/devnet
+ERIS_ROOT=$HOME/workspace/eris-agent-simulator \
+ASCON_LOGS=$HOME/ascon-logs \
+SIM_CONFIG=config/competition.yaml \
+  docker compose -f docker-compose.sim.yml --profile live up -d --build
+```
+
+### Things that are load-bearing and look like details
+
+- **The checkout is mounted at its host path, not `/app`.** `run-agent.sh` passes paths straight to
+  `docker run -v`, and the daemon resolves them on the host. Mount it anywhere else and every agent
+  gets mounts that silently point at nothing.
+- **The chain must be at the venues snapshot.** `flashArb: true` deploys at a deterministic address,
+  so a chain that has been running fails setup with `FlashArb address mismatch`. Restore first:
+  `cd ../monitoring && docker compose down && docker volume rm ascon-monitoring_ascon-chain-state && docker compose up -d`
+- **`run.agentSandbox: docker` must be in the config.** It defaults to `process`, `config/example.yaml`
+  does not set it, and `ERIS_AGENT_SANDBOX` is a retired env knob the loader ignores. Without it the
+  agents are plain host processes: no caps, no egress control, rules §2.3 unenforced.
+- **Docker's address pools must be widened.** Default pools give ~27 networks; isolation takes one per
+  agent. `/etc/docker/daemon.json`: `{"default-address-pools":[{"base":"10.200.0.0/12","size":24}]}`
+- **Production builds per-team images** (`npm run agent:build -- team <id>`), which is what pins the
+  artefact for the replay audit. `ERIS_AGENT_BINDMOUNT=1` is for rehearsing the topology only.
+
+`restart: "no"` is deliberate: a competition run ending is an event someone should see, not
+something to paper over.
