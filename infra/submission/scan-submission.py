@@ -9,6 +9,7 @@ Exit code 0 = accept (no BLOCK findings), 1 = reject (>=1 BLOCK). WARN/INFO neve
 for the operator to eyeball. Not a sandbox and not exhaustive -- the runtime caps are the real boundary;
 this just rejects the cheap, obvious stuff (zip bombs, native blobs, egress/exec, install hooks, secrets).
 """
+import hashlib
 import sys, os, re, zipfile, json, tempfile, shutil
 
 MAX_UNZIP_MB = 50
@@ -94,6 +95,43 @@ def scan_package_json(path, text):
             add("WARN", path, f"non-registry dependency '{d}': {v}")
     if len(deps) > 60: add("WARN", path, f"large dependency set ({len(deps)})")
 
+# --- operator-shipped code inside a submission -------------------------------------------------
+# `npm run bundle:agent` packs the SDK, the runtime and the shared lib alongside the participant's
+# agent ("the entire sdk + runtime + lib + one agent"). Scanning those bodies rejects every honest
+# submission: agents/runtime/llm.ts spawns processes, state.ts writes files, sdk/src/config.ts reads
+# env -- all of it operator code doing its job. Measured on a stock bundle: 20 BLOCK, every one of
+# them ours, none in the participant's directory.
+#
+# Skipping them outright would be worse: a participant can edit the vendored copy. So compare each
+# against the repo and skip only the bodies that are byte-identical; anything altered or unknown is
+# a BLOCK, which is the finding that actually matters here.
+VENDORED = (("sdk/", "sdk/"), ("agents/runtime/", "example/agents/runtime/"), ("agents/lib/", "example/agents/lib/"))
+REPO_ROOT = os.environ.get("ERIS_REPO") or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+def vendored_ref(rel):
+    """Repo path this bundled file should be identical to, or None if it is not operator code."""
+    r = rel.replace(os.sep, "/")
+    for prefix, repo_prefix in VENDORED:
+        if r.startswith(prefix):
+            return os.path.join(REPO_ROOT, repo_prefix + r[len(prefix):])
+    return None
+
+def check_vendored(rel, fp):
+    """True when this file is operator code and needs no body scan. Flags tampering."""
+    ref = vendored_ref(rel)
+    if ref is None:
+        return False
+    if not os.path.exists(ref):
+        add("BLOCK", rel, "file under an operator-shipped path that the repo does not have (added to the vendored runtime?)")
+        return True
+    h = lambda q: hashlib.sha256(open(q, "rb").read()).hexdigest()
+    try:
+        if h(fp) != h(ref):
+            add("BLOCK", rel, "operator-shipped file MODIFIED (the vendored sdk/runtime must be byte-identical to the distributed one)")
+    except OSError:
+        add("WARN", rel, "could not read operator-shipped file to compare")
+    return True
+
 def walk_dir(root):
     total = 0; nfiles = 0
     for dp, _, fns in os.walk(root):
@@ -104,6 +142,7 @@ def walk_dir(root):
             except OSError: continue
             total += sz
             low = fn.lower()
+            if check_vendored(rel, fp): continue
             if low.endswith(BINARY_EXT): add("BLOCK", rel, "binary/native artifact in submission")
             if sz > MAX_FILE_MB * 1024 * 1024: add("WARN", rel, f"large file ({sz//1024//1024} MB)")
             if fn == "package.json":
