@@ -1,0 +1,49 @@
+# The containerised coordinator. NOT started by default -- `--profile live`.
+#
+#   cd infra/devnet
+#   ERIS_ROOT=$PWD/../.. docker compose -f docker-compose.sim.yml --profile live up -d --build
+#
+# Pair it with the agent side:
+#   ERIS_AGENT_ISOLATE=1  (per-agent network, gateway as the only hub)
+# and a roster whose config sets run.agentSandbox: docker.
+name: ascon-sim
+
+services:
+  sim:
+    profiles: [live]
+    build:
+      context: .
+      dockerfile: Dockerfile.sim
+    container_name: ascon-sim
+    restart: "no"          # a competition run ending is an event, not something to paper over
+    networks: [chain]
+    working_dir: ${ERIS_ROOT:?set ERIS_ROOT to the checkout}
+    # Same path inside as outside. run-agent.sh hands these paths to `docker run -v`, and the daemon
+    # resolves them on the HOST -- so /app would produce mounts that silently point at nothing.
+    volumes:
+      - ${ERIS_ROOT:?}:${ERIS_ROOT:?}
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${ASCON_LOGS:-/home/ascon/ascon-logs}:/var/log/ascon
+    environment:
+      # The coordinator talks to anvil DIRECTLY: funding and the block gas limit are cheatcodes and
+      # the gateway 403s those by design. Container-to-container over ascon-chain, never published.
+      - ANVIL_RPC_URL=http://ascon-anvil:8545
+      - ERIS_RPC_URL=http://ascon-anvil:8545
+      # What the AGENTS get instead (agentProcess.ts honours this over the coordinator's own URL).
+      # Resolvable from every ag-<id> network because run-agent.sh multi-homes the hub into each.
+      - ERIS_AGENT_RPC_URL=http://ascon-rpc-gateway-live:8546
+      - ERIS_AGENT_ISOLATE=1
+      - ERIS_AGENT_HUB=ascon-rpc-gateway-live
+      - ERIS_DOCKER_MEM=${ERIS_DOCKER_MEM:-4g}
+      - ERIS_DOCKER_CPUS=${ERIS_DOCKER_CPUS:-2}
+      - REPORT_DIR=./runs
+      # Production builds a per-team image (`npm run agent:build -- team <id>`), which is what pins
+      # the artefact for the replay audit. ERIS_AGENT_BINDMOUNT=1 runs stock node:24 with the
+      # checkout mounted instead -- fine for rehearsing the topology, not for the competition.
+      - ERIS_AGENT_BINDMOUNT=${ERIS_AGENT_BINDMOUNT:-0}
+    command: ["npm", "run", "sim:realtime", "--", "--config", "${SIM_CONFIG:-config/practice.yaml}"]
+
+networks:
+  chain:
+    external: true
+    name: ascon-monitoring_ascon-chain

@@ -137,7 +137,13 @@ export class RealtimeAgentProcess {
     if (inferenceSecret) childEnv.ERIS_INFERENCE_TOKEN = agentToken(inferenceSecret, spec.id);
     childEnv.NODE_ENV = process.env.NODE_ENV ?? "development";
     childEnv.ERIS_AGENT_ID = spec.id;
-    childEnv.ERIS_RPC_URL = rpcUrl;
+    // The agent's view of the chain is not always the coordinator's. Under ERIS_AGENT_ISOLATE the
+    // agent sits in its own network and may only reach the rpc-gateway, while the coordinator must
+    // reach anvil DIRECTLY -- funding and the block gas limit are cheatcodes, which the gateway
+    // 403s by design (docs/24 §4). One URL cannot serve both, and deriving the agent's from the
+    // coordinator's silently forces them to be the same. ERIS_AGENT_RPC_URL splits them, which is
+    // what infra/docker-agent/ISOLATION.md already tells operators to set.
+    childEnv.ERIS_RPC_URL = process.env.ERIS_AGENT_RPC_URL || rpcUrl;
     childEnv.ERIS_AGENT_ADDRESS = agentAddress;
     childEnv.REPORT_DIR = process.env.REPORT_DIR ?? "./runs";
     childEnv.ERIS_RUN_DIR = runDir;

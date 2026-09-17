@@ -1,0 +1,20 @@
+# The coordinator, containerised, for the LIVE topology only.
+#
+# Why this exists: core/src/realtime/agentProcess.ts sets childEnv.ERIS_RPC_URL from the
+# coordinator's own rpcUrl -- after merging the roster env, deliberately. So one URL has to resolve
+# for the coordinator AND inside every ag-<id> network. With the coordinator on the host no value
+# does: 127.0.0.1 is the container from inside, and ascon-rpc-gateway-live does not resolve outside.
+# Put the coordinator on ascon-chain and both sides agree on the hub name.
+#
+# It needs the docker CLI because run-agent.sh execs `docker run`, and the socket to reach the
+# daemon. The repo is bind-mounted at its HOST path (not /app): run-agent.sh passes paths straight
+# to `docker run -v`, and those are resolved by the daemon on the host, not inside this container.
+FROM node:24-bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg git \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+ && chmod a+r /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+ && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+ && rm -rf /var/lib/apt/lists/*
