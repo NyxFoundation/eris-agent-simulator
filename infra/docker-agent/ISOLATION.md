@@ -104,3 +104,40 @@ line inside each agent's stderr.
 ```
 
 4096 networks instead of 27. `docker network create` was verified past 130 after the change.
+
+### 5. The coordinator has to be inside the network too — and `bench/run.sh` cannot put it there
+
+Condition 3 above cannot actually be satisfied from the bench harness, and the reason is structural:
+
+```
+core/src/realtime/agentProcess.ts:140
+  childEnv.ERIS_RPC_URL = rpcUrl;      // overwrites whatever the roster env said
+```
+
+The coordinator injects its own chain URL into every agent, so one value has to be reachable from
+**both** sides at once:
+
+| who | needs |
+|---|---|
+| the coordinator (host process) | a URL that resolves on the host — `http://127.0.0.1:8545` |
+| the agents (inside `ag-<id>`) | a URL that resolves in the network — `http://ascon-rpc-gateway-live:8546` |
+
+No single value satisfies both while the coordinator runs on the host. `run-agent.sh` carries a
+Darwin-only branch that rewrites `127.0.0.1` to `host.docker.internal` for exactly this reason;
+Linux isolation has no equivalent, and pointing at `host.docker.internal` would bypass the gateway
+anyway, which is the whole thing being tested.
+
+**So the live topology implies a containerised coordinator** — one joined to `ascon-chain`, handing
+agents the hub name and using it itself. That is not what `infra/devnet/ascon-devnet.service` does
+today (it runs `npm run sim:realtime` as a host process against `ANVIL_RPC_URL`).
+
+This is the concrete shape of the open item in ASCON docs/24 §4 — "参加者 agent を起動する導線で必ず
+`ERIS_AGENT_ISOLATE=1`（＝gateway 経由）を強制することの運用担保". The enforcement point is not a flag
+on the wrapper; it is where the coordinator runs.
+
+**Consequently the live topology has never been measured end to end** — not here, and (given the
+host-process service unit) not on gohanserver either. What *is* measured is the same 100 agents on
+the host network reaching anvil directly: `bench-max` at 2s blocks, totalMs max 1,270 ms = 63.5% of
+budget, 193 tx/round (ASCON docs/18 §12, 2026-09-16 addendum). The gateway's own cost is known
+separately and is small — server-side p95 ≤ 1 ms under 281 req/s (docs/18 §16 addendum) — but "small
+per call" is not the same as "fine with 100 agents behind it", and that gap is still open.
