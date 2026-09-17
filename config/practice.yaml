@@ -33,6 +33,10 @@ run:
   # behind cadence is not truncated.
   seconds: 3628800
   blockTimeSec: 2
+  # 規約 §2.6 の確定値（docs/18 §12）。指定しないとコーディネータが既定の 30M でチェーンを
+  # 上書きするので、anvil 側で 320M にしてあっても効かない。試行と本番でガス上限が違うと、
+  # 参加者は本番に無いガス制約に合わせて調整することになる。
+  blockGasLimit: 320000000
   protocols: [uniswap, balancer, curve, lst, liquity]
   localDeploy: true
   # One world from start to finish, which is what a practice period is. The official competition
