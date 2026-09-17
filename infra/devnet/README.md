@@ -202,3 +202,30 @@ systemctl --user start ascon-devnet
 
 The only check that means anything is the one this README already gives — read the block number
 twice, a few seconds apart. `is-active` will lie to you.
+
+
+## `backtest --scenarios` finishes without exiting
+
+Measured 2026-09-17 on a 12-epoch matrix: `matrix.json` and `standings.json` were complete, the
+backtest's own anvil on :8547 was already down — and the process tree was still alive 32 minutes
+later at 0% CPU, with two orphaned `core/src/flow/market-maker.ts` children (one of them 2h24m old).
+
+This is the behaviour `bench/run.sh` already documents and works around:
+
+> the coordinator does not always exit after it finishes … the summary is written, and the process
+> then sits at 0% CPU holding something open
+
+`bench/run.sh` wraps the sim in `timeout` for exactly this reason. **`backtest --scenarios` has no
+such bound**, and `docs/05` puts 105 scenarios through it for the post-competition verification. One
+hung process and a stray flow bot per scenario is a hundred of each by the end.
+
+Until the root cause is fixed, bound it and sweep afterwards:
+
+```sh
+timeout 3h npm run backtest -- --scenarios plan.yaml --port 8547
+pkill -f 'core/src/flow/market-maker'      # the children that keep it open
+```
+
+The artifacts are trustworthy either way — they are written before the hang, and `matrix.json`
+carries `scenariosPlanned` next to the actual count, so a truncated matrix is visible rather than
+silent.
