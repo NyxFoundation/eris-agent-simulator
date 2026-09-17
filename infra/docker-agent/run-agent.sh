@@ -79,6 +79,22 @@ fi
 # going to stop, and the environment's own process never exited (measured 2026-09-05: it printed
 # `realtime simulation completed`, wrote summary.json, and then sat at 0% CPU forever). tini
 # forwards the signal to the real process, which then stops the way it always should have.
+
+# Provenance for the replay audit (infra/docker-agent/README.md). `eris-agent:<id>` is a LOCAL tag:
+# rebuild it after the run and the same name is a different image, with nothing in the run saying
+# which one executed. The digest is the only thing an audit asking "was this the code they
+# submitted" can check, and it cannot be reconstructed afterwards -- so record it at spawn.
+# Appends one short line per agent; concurrent appends of a single short line are atomic on Linux.
+record_image() {
+  local img="$1" dir="${ERIS_RUN_DIR:-}" id digest
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  id="${ERIS_AGENT_ID:-unknown}"
+  digest="$(docker image inspect "$img" --format '{{.Id}}' 2>/dev/null)" || digest=""
+  printf '{"ts":"%s","agentId":"%s","image":"%s","digest":"%s","mode":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$id" "$img" "${digest:-unresolved}" "$2" \
+    >> "$dir/images.jsonl" 2>/dev/null || true
+}
+
 CAPS=( --rm --init --network "${ERIS_AGENT_NET:-host}" --name "$NAME" --label eris.role=agent
   --memory="$MEM" --memory-swap="$MEM" --cpus="$CPUS"
   --pids-limit="${ERIS_DOCKER_PIDS:-256}" --ulimit nofile=2048:2048 --security-opt=no-new-privileges
@@ -225,6 +241,7 @@ if [ "${ERIS_AGENT_BINDMOUNT:-0}" = "1" ]; then
     BIND_MOUNTS+=( -v "$ERIS_AGENT_STATE_DIR:$ERIS_AGENT_STATE_DIR" )
     BIND_ENVS+=( -e ERIS_AGENT_STATE_DIR )
   fi
+  record_image "${ERIS_AGENT_IMAGE:-$DEFAULT_BIND_IMAGE}" bindmount
   supervise docker run "${CAPS[@]}" "${COMMON_ENV[@]}" \
     "${BIND_ENVS[@]}" \
     "${BIND_MOUNTS[@]}" -w "$REPO" --entrypoint node \
@@ -263,4 +280,5 @@ if [ -n "${ERIS_CONFIG:-}" ]; then
   MOUNTS+=( -v "$CFG_HOST:$CFG_IMG:ro" )
 fi
 
+record_image "$IMG" image
 supervise docker run "${CAPS[@]}" "${COMMON_ENV[@]}" "${ENVS[@]}" "${MOUNTS[@]}" "$IMG"

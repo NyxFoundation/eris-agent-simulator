@@ -176,9 +176,15 @@ anywhere the audit could read it.**
 the same name and nothing in the run says which one actually executed. For an audit that has to
 answer "was this the code they submitted", the tag is not evidence; the digest is.
 
-The fix is small and belongs next to the `agent_sandbox` event: resolve
-`docker image inspect <image> --format '{{.Id}}'` per roster entry at spawn and log it. Worth doing
-before 11/1, because it cannot be reconstructed afterwards.
+**Fixed 2026-09-17.** `run-agent.sh` resolves the digest at spawn and appends one line per agent to
+`runs/<id>/images.jsonl`:
 
-Until then, the operator has to pin it out of band — record `docker images --digests` alongside each
-run, and do not rebuild team images between the run and the audit.
+```json
+{"ts":"…","agentId":"bench-max-002","image":"eris-agent:bench-max","digest":"sha256:9e674344e9eb…","mode":"image"}
+```
+
+`mode` distinguishes `image` (the competition path) from `bindmount` (rehearsal), so a run cannot
+later be mistaken for the other. Writing is best-effort — a failed `docker image inspect` records
+`"digest":"unresolved"` rather than failing the spawn, because losing an agent to a provenance
+problem would be the worse trade. Verified on ascon-live: four roster entries, four lines, digests
+matching `docker image inspect`.
