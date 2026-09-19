@@ -706,7 +706,12 @@ gas は全部 pin する = `eth_estimateGas` は今の state で失敗する）�
   waveUsdcMult を引く**ので RNG 消費が事象列の純関数のまま。dud は **0 の質量**（`dudDraw < dudProb`）。
   連続分布の下端 0 は 0 に当たらない
 - **目標は累積で毎ブロック reconcile**（`tokenLaunchTargetsAt`）: 買いは ramp で 0→1 に上がって以後 1 のまま
-  （波は買い戻さない）、売り戻しは decay で 0→sellBackFrac に上がって以後そのまま。driver は
+  （波は買い戻さない）、売り戻しは decay で 0→sellBackFrac に上がって以後そのまま。**ramp は窓の開始から
+  `TOKEN_LAUNCH_LEAD_BLOCKS`（= 2、上場 tx の着弾 1 + レジストリ公開 1）だけ遅れて始まる**。5 seed の受け入れ
+  （2026-09-13）で、窓の先頭から数えていた頃は波の初手がプールが live になった同じブロックに 2 段分まとめて
+  落ち（+32%〜+100%）、agent が見る前に板が動いていた。**レンジも較正済み**: `waveUsdcMult` [0.25, 1.0]・
+  ramp 20 ブロック（issue の提案 [0.5, 2] / 9 ブロックでは 1 ブロックに片側の 2/9 が入り、10% slippage の
+  買いが全部 `Too little received` で revert した）。1 ブロックの上げ幅は最大で片側の 1/20 ≈ +10%。driver は
   `core/src/realtime/tokenLaunch.ts`。wave wallet は USDC → token を SwapRouter `exactInputSingle` で、
   QuoterV2 の見積もりに 15% の slippage 枠。**settled した tx から集計**（`grossBuyUsdc` / `tokensSold` /
   `sellUsdcReceived`）し、`stress_token_launch_summary` で帳簿を閉じる
