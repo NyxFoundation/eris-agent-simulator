@@ -2,6 +2,7 @@
 # Issue the per-participant RPC keys this gateway authenticates on.
 #
 #   ./issue-key.sh --generate 120 [--out <keys.json>]   mint N keys + the gateway's lookup file
+#   ./issue-key.sh --add 380                            mint N more, keeping every existing key
 #   ./issue-key.sh --revoke team-007                    drop one (the gateway re-reads within 15 s)
 #   ./issue-key.sh --list
 #
@@ -58,6 +59,36 @@ json.dump(d, open(path,"w"), indent=1, ensure_ascii=False)
 print(f"revoked {pid} ({len(hit)} key(s)); the gateway re-reads within 15 s")
 PY
     exit $? ;;
+  --add)
+    N="${2:?usage: $0 --add <count>}"
+    echo "$N" | grep -qE '^[0-9]+$' || die "count must be a number"
+    [ -f "$OUT" ] || die "no keys file at $OUT — use --generate first"
+    umask 077
+    python3 - "$OUT" "$SECRETS" "$N" "$PREFIX" <<'ADDPY'
+import json, secrets, hashlib, sys, datetime, re
+out, sec, n, prefix = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+d = json.load(open(out)); keys = d["keys"]
+# Continue the numbering rather than restarting it: a second `team-007` would make the ledger and
+# the gateway log disagree about who that is.
+pat = re.compile(re.escape(prefix) + r"-(\d+)$")
+used = [int(m.group(1)) for i in keys.values() for m in [pat.fullmatch(i)] if m]
+start = max(used, default=0) + 1
+today = datetime.date.today().isoformat()
+rows = []
+for i in range(start, start + n):
+    pid = "%s-%03d" % (prefix, i)
+    key = "ascon_" + secrets.token_urlsafe(32)
+    keys[hashlib.sha256(key.encode()).hexdigest()] = pid
+    rows.append((pid, key, today))
+json.dump(d, open(out, "w"), indent=1)
+with open(sec, "a") as f:
+    for r in rows: f.write(",".join(r) + "\n")
+print("  added %d: %s .. %s" % (n, rows[0][0], rows[-1][0]))
+print("  total %d keys in %s" % (len(keys), out))
+ADDPY
+    echo "  the gateway re-reads within 15 s — no restart"
+    exit 0 ;;
+
   --generate)
     N="${2:?usage: $0 --generate <count>}"
     echo "$N" | grep -qE '^[0-9]+$' || die "count must be a number"
