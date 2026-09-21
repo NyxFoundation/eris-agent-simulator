@@ -124,11 +124,52 @@ stress:
 # `participant` is the rules §2.2 unit (a person or a team). A unit may enter two agents and is
 # scored on the higher; two entries with the same `participant` are that unit's two submissions.
 # Optional -- an entry without one is its own unit.
+# The resident field. A practice period whose standings are one flat line teaches nobody anything:
+# a participant needs to see that the number moves, in both directions, and to have something to be
+# above or below. These are the operator's own reference strategies, running continuously for the
+# whole period, and they are what a newly registered agent lands among.
+#
+# Every one that ships a prompt.md is FROZEN. Two reasons, and the second is the expensive one:
+#   - a benchmark that rewrites itself is not a benchmark; the line a participant compares against
+#     has to be the same strategy on day 39 as on day 1
+#   - the improve loop calls a model every `reviseEveryBlocks`. Over a 39-day period at 2 s blocks
+#     that is a continuous inference bill for agents nobody is scoring.
+#
+# Venue coverage follows run.protocols above (uniswap, balancer, curve, lst, liquity). Strategies
+# whose venue is not deployed here would idle, so they are not in the list — aave-side liquidator
+# and the gmx basis trades are the live period's field, not this one.
 agents:
   - id: noop
     wallet: AUTO
     baseline: true
     description: does nothing — the benchmark every score is excess over
+  - id: random
+    wallet: AUTO
+    description: trades at random, deterministically seeded — the lower control, so "below the
+      baseline" is visibly reachable and not just a rounding artefact
+  - id: venue-arb
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1" }
+    description: WETH-only cross-venue arbitrage — the simplest thing that works, and the line most
+      first submissions are really competing with
+  - id: clean-arb
+    wallet: AUTO
+    description: two-leg round trip priced against fees, impact and expected adverse move (no
+      prompt.md — a pure rule strategy, nothing to freeze)
+  - id: multi-arb
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1" }
+    description: base-agnostic cross-venue arbitrage (all active bases × all venues)
+  - id: peg-arb
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1" }
+    description: stablecoin peg arbitrage — the EUSD/DAI side, which the liquity venue supplies
+  - id: lst-carry
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1" }
+    description: the LST vault's carry, so the lst venue has someone reading it
+
+  # A participant registers here, or (without a restart) in config/registrations.yaml:
   # - id: alice
   #   external: true
   #   address: "0x..."
