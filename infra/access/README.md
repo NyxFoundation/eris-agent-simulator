@@ -63,3 +63,56 @@ npm run manifest -- --participant team-alice
 
 The manifest carries the RPC URL, chain id and venue addresses; the `.env` carries the credentials.
 Same granularity, so issue them together.
+
+## Onboarding one participant, start to finish
+
+Three commands, in this order. None of them restarts the coordinator — a restart opens a new
+competition directory and the standings start from zero (`infra/devnet/README.md`), which is the
+one thing that must not happen once a period is running.
+
+```sh
+# 1. register the address they sent you. Re-read every ~30 blocks (about a minute).
+$EDITOR config/registrations.yaml        # on the box: ~/workspace/eris-agent-simulator
+#   - id: alice
+#     address: "0x…"          # their key, their custody — the operator holds none (規約 第8条の2)
+#     participant: team-alice
+
+# 2. issue their service token
+infra/access/issue-token.sh alice        # -> ~/ascon-participant-tokens/alice.env (0600)
+
+# 3. build the handout manifest — --public-rpc or it names *their* loopback
+npm run manifest -- --config config/practice.yaml \
+  --public-rpc https://ascon-rpc.nyx.foundation/ --out ~/ascon-handout/manifest.json
+```
+
+Hand over `alice.env` + `manifest.json`. They use them as:
+
+```sh
+set -a; . alice.env; set +a                 # CF_ACCESS_CLIENT_ID / _SECRET
+ERIS_MANIFEST=manifest.json node --import tsx example/agents/runtime/bot.ts
+```
+
+### Confirm it took, rather than assuming
+
+```sh
+# the registration landed (the event is only written when something changes)
+journalctl --user -u ascon-devnet --since "5 min ago" | grep registrations
+#   [registrations] registered alice (0x…) at block 866
+
+# the token reaches the chain and cheatcodes still do not
+curl -s -X POST -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+  https://ascon-rpc.nyx.foundation/          # -> {"result":"0x…"}
+#   anvil_setBalance on the same URL must answer 403 "method not permitted"
+```
+
+Measured 2026-09-21 on the running practice devnet: `eth_blockNumber` / `eth_chainId` /
+`eth_getBalance` returned 200, and `anvil_setBalance` / `evm_mine` / `anvil_impersonateAccount`
+each returned 403 `method not permitted`.
+
+### Revoking
+
+`issue-token.sh --revoke alice` deletes the token; the next call from it is a 403 at the edge. The
+registration stays — the address is still funded and still in the standings. Remove the entry from
+`config/registrations.yaml` as well if the intent is that they leave the period.
