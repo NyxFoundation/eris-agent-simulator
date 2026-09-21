@@ -1,4 +1,54 @@
-# infra/access — one service token per participant
+# infra/access — one credential per participant
+
+> **2026-09-21: the credential is no longer a Cloudflare service token.** They cap at **50 per
+> account**, which a 100+ participant field cannot fit. Measured, not read from the docs: with 50
+> in existence the 51st create fails `org_has_exceeded_allowed_token_count`, and revoking one frees
+> a slot immediately — so it caps tokens *existing*, not a rate. The docs offer only "may be
+> increased on Enterprise accounts", which is a sales call rather than a price.
+>
+> Participants now carry **two** headers:
+>
+> | | issued by | purpose |
+> |---|---|---|
+> | `X-ASCON-Key` | `issue-key.sh` (this repo) | **who** — the rate-limit bucket, the log line, the thing you revoke |
+> | `CF-Access-Client-Id` / `-Secret` | one **shared** Cloudflare service token | the edge gate, so unauthenticated junk dies at Cloudflare rather than at our box |
+>
+> The three properties the per-participant design existed for are unchanged, and were re-verified
+> in production on 2026-09-21: per-key rate limiting (team-001 burst to empty, team-002 then got a
+> full bucket of its own), per-key revocation (a file edit, picked up within 15 s), per-key
+> attribution (`client=team-001` in the gateway log). The gateway stores sha256 digests only, so
+> what is deployed to the box cannot be turned back into a key.
+>
+> `issue-token.sh` below still issues Cloudflare service tokens, and is still how the **shared**
+> edge token and the operator's own are made. It is no longer how participants are identified.
+
+## Issuing participant keys
+
+```sh
+infra/access/issue-key.sh --generate 120     # -> rpc-keys.json (digests) + .secrets.csv (handout)
+infra/access/issue-key.sh --revoke team-007  # gateway re-reads within 15 s; no restart
+infra/access/issue-key.sh --list
+```
+
+Point the gateway at the digest map (`ASCON_KEYS_FILE` in `infra/monitoring/.env`). Setting it
+makes `X-ASCON-Key` mandatory — there is no separate enable flag, because a flag is a thing to
+forget and the cost of forgetting it is an open chain.
+
+### The four checks that mean it is working
+
+```
+valid key            -> 200
+no key / wrong key   -> 403 {"code":-32001,"message":"missing or unknown X-ASCON-Key"}
+anvil_setBalance     -> 403 "method not permitted"
+no CF headers        -> 403 at the Cloudflare edge
+```
+
+All four verified through `https://ascon-rpc.nyx.foundation/` on 2026-09-21, and the gateway log
+after the cutover contains zero successful unauthenticated calls.
+
+---
+
+## (historical) one service token per participant
 
 `ascon-rpc.nyx.foundation` is behind Cloudflare Access, and agents authenticate with a **service
 token** (a program cannot complete an email redirect — ASCON docs/16 §10.3). This directory issues
