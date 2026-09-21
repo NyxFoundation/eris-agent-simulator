@@ -213,8 +213,14 @@ services:
       - ENV_NAME=live
       - LOG_FILE=/var/log/ascon/rpc/rpc-gateway-live.log
       - METRICS_FILE=/textfile/rpc-gateway-live.prom
+      # Per-participant keys, issued by infra/access/issue-key.sh. Setting this makes X-ASCON-Key
+      # mandatory: Cloudflare Access service tokens cap at 50 per account (measured), so the
+      # credential a 100+ field is gated on cannot be one of them. The file holds sha256 digests
+      # only -- no key material ever reaches this container.
+      - RPC_KEYS_FILE=/keys/rpc-keys.json
     volumes:
       - ../rpc-gateway:/app:ro
+      - ${ASCON_KEYS_FILE:?set ASCON_KEYS_FILE in infra/monitoring/.env}:/keys/rpc-keys.json:ro
       - ${ASCON_LOGS:?set ASCON_LOGS in infra/monitoring/.env}:/var/log/ascon
       - ascon-textfile:/textfile
 
