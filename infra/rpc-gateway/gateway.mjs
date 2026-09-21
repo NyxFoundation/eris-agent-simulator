@@ -10,8 +10,10 @@
 // plus one JSON line per call (method, dur_ms, status, client) for a Loki "who called what when" view.
 //
 // Env: PORT (8546) UPSTREAM (http://127.0.0.1:8545) ENV_NAME (live) LOG_FILE (append; else stdout)
+//      RPC_KEYS_FILE (per-participant keys; setting it makes X-ASCON-Key mandatory)
 import http from "node:http";
-import { createWriteStream, writeFileSync, renameSync } from "node:fs";
+import { createWriteStream, writeFileSync, renameSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { URL } from "node:url";
 
 import { txGasLimit } from "./txGas.mjs";
@@ -37,6 +39,54 @@ let batchSum = 0, batchCount = 0;
 const batchB = new Map();                                 // le -> count  (batch size histogram)
 const BATCH_BUCKETS = [1, 2, 5, 10, 20, 50, 100];
 let inFlight = 0, upstreamUp = 1;
+
+// ---- per-participant keys (the identity this gateway rate-limits and attributes on) ----
+//
+// Cloudflare Access service tokens were that identity, and they cap at 50 per account -- measured,
+// not read: with 50 in existence the 51st create fails `org_has_exceeded_allowed_token_count`, and
+// revoking one frees a slot immediately (so it is a concurrent-count cap, not a rate limit). A
+// competition expecting more than 50 participants cannot be gated by them.
+//
+// So the credential is issued here instead. RPC_KEYS_FILE names a JSON file of
+// `{"keys": {"<sha256 of the key, hex>": "<participant id>"}}`; a request carries the key in
+// `X-ASCON-Key`, and the id it maps to becomes `client` -- the same string the bucket and the log
+// line already key on, so nothing downstream changes.
+//
+// Setting the file turns enforcement ON. There is no separate flag, because a flag is a thing to
+// forget: if keys are configured, a request without a valid one is 403, full stop. The `|| ip`
+// fallback further down is unreachable in that mode by construction, which is the point -- an
+// unknown key must not quietly become an IP-keyed bucket with access to the chain.
+//
+// The file is re-read when its mtime changes, so revoking is a file edit, not a restart.
+const KEYS_FILE = process.env.RPC_KEYS_FILE || "";
+let keyMap = new Map();          // sha256(key) hex -> participant id
+let keysMtime = 0;
+let keyDenied = 0;
+
+function loadKeys(reason) {
+  if (!KEYS_FILE) return;
+  try {
+    const st = statSync(KEYS_FILE);
+    if (st.mtimeMs === keysMtime) return;
+    const doc = JSON.parse(readFileSync(KEYS_FILE, "utf8"));
+    const next = new Map(Object.entries(doc.keys || {}));
+    keysMtime = st.mtimeMs;
+    keyMap = next;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "keys_loaded", count: keyMap.size, reason });
+  } catch (e) {
+    // Keep serving with the keys already in memory. A truncated write (an operator mid-edit) must
+    // not lock every participant out; a genuinely broken file surfaces as this line repeating.
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "keys_load_failed", error: String(e && e.message).slice(0, 200) });
+  }
+}
+loadKeys("startup");
+if (KEYS_FILE) setInterval(() => loadKeys("reload"), 15_000).unref();
+
+/** The participant id a key maps to, or null. Never returns, logs or compares the key itself. */
+function idForKey(key) {
+  if (typeof key !== "string" || key.length < 16 || key.length > 256) return null;
+  return keyMap.get(createHash("sha256").update(key).digest("hex")) ?? null;
+}
 
 // ---- per-client rate limit (anti-abuse C): token bucket, heavy methods cost more (simulateTx spam) ----
 const RATE_REFILL = Number(process.env.RPC_RATE_REFILL ?? "100");   // tokens/sec/client (0 disables)
@@ -151,10 +201,15 @@ function metricsText() {
   o += `# TYPE rpc_ratelimited_total counter\nrpc_ratelimited_total{${L}} ${rateLimited}\n`;
   o += `# TYPE rpc_gas_denied_total counter\nrpc_gas_denied_total{${L}} ${gasDenied}\n`;
   o += `# TYPE rpc_method_denied_total counter\nrpc_method_denied_total{${L}} ${methodDenied}\n`;
+  o += `# TYPE rpc_key_denied_total counter\nrpc_key_denied_total{${L}} ${keyDenied}\n`;
+  o += `# TYPE rpc_keys_loaded gauge\nrpc_keys_loaded{${L}} ${keyMap.size}\n`;
   return o;
 }
 
 function clientFromReq(req) {
+  // The issued key wins where it is configured; Access is then only the outer gate and no longer
+  // the thing that says *who* this is.
+  if (KEYS_FILE) return idForKey(req.headers["x-ascon-key"]);
   const jwt = req.headers["cf-access-jwt-assertion"];
   if (jwt) {
     try {
@@ -198,6 +253,16 @@ const server = http.createServer((req, res) => {
     // verified the signature), so a plain base64url decode of the payload is enough.
     const client = clientFromReq(req);
     const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "";
+
+    // No valid key, no chain. Checked before the allowlist so an unauthenticated caller cannot use
+    // the difference between "method not permitted" and "rate limited" to map the gateway.
+    if (KEYS_FILE && !client) {
+      keyDenied++;
+      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "key_denied", ip });
+      res.writeHead(403, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null),
+        error: { code: -32001, message: "missing or unknown X-ASCON-Key" } }));
+    }
 
     // method allowlist (4.22): reject cheatcodes / privileged methods before anvil is touched
     if (FILTER_METHODS && methods.length) {
