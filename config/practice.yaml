@@ -64,7 +64,7 @@ run:
   # roster entry; see config/registrations.example.yaml. Entries already in the roster are a no-op; a
   # duplicate id or address is ignored with a `registration_ignored` event; a malformed file is
   # reported once per edit (`registrations_reload_failed`) and never stops the run.
-  # registrationsFile: config/registrations.yaml
+  registrationsFile: config/registrations.yaml
 
 funding:
   # USDC-only, so nothing anybody did not choose shows up in their score as price drift. WETH has to
