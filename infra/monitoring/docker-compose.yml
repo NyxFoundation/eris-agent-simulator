@@ -220,7 +220,14 @@ services:
       - RPC_KEYS_FILE=/keys/rpc-keys.json
     volumes:
       - ../rpc-gateway:/app:ro
-      - ${ASCON_KEYS_FILE:?set ASCON_KEYS_FILE in infra/monitoring/.env}:/keys/rpc-keys.json:ro
+      # The DIRECTORY, not the file. A single-file bind mount pins the inode it was created with,
+      # so replacing rpc-keys.json on the host (scp, install, mv -- anything that writes a new
+      # file rather than truncating in place) leaves the container reading the old one forever.
+      # Measured 2026-09-21: host inode 3145990 / 501 keys, container inode 47697 / 121 keys, with
+      # no error anywhere. For a credential file that failure mode is revocation silently not
+      # working, which is worse than it not being implemented. Mounting the directory makes the
+      # replacement visible, which is what the 15 s mtime reload is for.
+      - ${ASCON_KEYS_DIR:?set ASCON_KEYS_DIR in infra/monitoring/.env}:/keys:ro
       - ${ASCON_LOGS:?set ASCON_LOGS in infra/monitoring/.env}:/var/log/ascon
       - ascon-textfile:/textfile
 
