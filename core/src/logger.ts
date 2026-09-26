@@ -35,6 +35,14 @@ export const BLOCKS_CSV_COLUMNS = [
   // cap is enforced up front by the RPC gateway and detected afterwards from this column, the same
   // mechanical shape as the priority-fee cap (the value comes from the receipt, not self-reported).
   "gasUsed",
+  // The signed maxFeePerGas (for a legacy / 0x01 tx, its gasPrice). Appended last, so every reader
+  // keyed on BLOCKS_CSV_INDEX keeps working against runs recorded before it existed.
+  //
+  // anvil `--order fees` sorts the block on this field, not on the tip, while at base fee 0 a tx
+  // pays min(maxFeePerGas, tip). A tx signed with maxFeePerGas above its tip is ordered ahead of bids
+  // that pay more (measured 2026-09-27: ahead of the oracle update's 6/6 gwei, paying 0.1 gwei/gas),
+  // and `priorityFeeWei` alone cannot show it. postRunCheck reads the pair (sdk/src/feeRule.ts).
+  "maxFeePerGasWei",
 ] as const;
 
 export const BLOCKS_CSV_INDEX = Object.fromEntries(
@@ -67,7 +75,33 @@ export type BlockRowInput = {
   bundleIndex?: number;
   method?: string;
   gasUsed?: bigint;
+  maxFeePerGasWei?: bigint;
 };
+
+// The two fee columns of a mined transaction, from its own on-chain fields (not self-reported).
+// A typed tx records its tip and maxFeePerGas. A legacy / 0x01 tx has neither: its gasPrice is both
+// the order key and, at base fee 0, the priority fee paid, so it goes in both columns. It used to
+// fall through to 0 (viem returns no maxPriorityFeePerGas for legacy), which exempted every legacy
+// tx from the fee cap whatever its gasPrice. `fallbackPriorityFeeWei` is what the environment
+// recorded when it sent the tx itself, for a transaction that carries no fee field at all.
+export function txFeeColumns(
+  tx: {
+    type?: string;
+    maxFeePerGas?: bigint | null;
+    maxPriorityFeePerGas?: bigint | null;
+    gasPrice?: bigint | null;
+  },
+  fallbackPriorityFeeWei?: bigint,
+): { priorityFeeWei: bigint; maxFeePerGasWei?: bigint } {
+  const priced = tx.type === "legacy" || tx.type === "eip2930";
+  const tip =
+    tx.maxPriorityFeePerGas ?? (priced ? tx.gasPrice : undefined) ?? undefined;
+  const maxFee = tx.maxFeePerGas ?? (priced ? tx.gasPrice : undefined) ?? undefined;
+  return {
+    priorityFeeWei: tip ?? fallbackPriorityFeeWei ?? 0n,
+    ...(maxFee === undefined ? {} : { maxFeePerGasWei: maxFee }),
+  };
+}
 
 export class RunLogger implements RunArtifactWriter {
   readonly runDir: string;
@@ -92,7 +126,7 @@ export class RunLogger implements RunArtifactWriter {
   blockRow(row: BlockRowInput): void {
     appendFileSync(
       join(this.runDir, "blocks.csv"),
-      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""},${row.gasUsed?.toString() ?? ""}\n`,
+      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""},${row.gasUsed?.toString() ?? ""},${row.maxFeePerGasWei?.toString() ?? ""}\n`,
     );
   }
 

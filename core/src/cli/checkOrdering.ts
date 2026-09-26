@@ -52,6 +52,8 @@ type BlockRow = {
   blockNumber: string;
   txIndex: number;
   priorityFeeWei: bigint;
+  // blocks.csv's maxFeePerGasWei, where the run recorded it (the key anvil sorts on).
+  maxFeePerGasWei?: bigint;
   hash: string;
   ownerId: string;
 };
@@ -395,6 +397,9 @@ function parseBlocksCsv(csv: string): BlockRow[] {
         blockNumber: row.blockNumber,
         txIndex: Number(row.txIndex),
         priorityFeeWei: BigInt(row.priorityFeeWei),
+        ...(row.maxFeePerGasWei
+          ? { maxFeePerGasWei: BigInt(row.maxFeePerGasWei) }
+          : {}),
         hash: row.hash,
         ownerId: row.ownerId,
       };
@@ -426,8 +431,18 @@ function checkOrdering(rows: BlockRow[]): string[] {
         previous.priorityFeeWei < current.priorityFeeWei &&
         previous.ownerId !== current.ownerId
       ) {
+        // Whose inversion it is. When the builder's own key (maxFeePerGas) was in order, the
+        // builder did its job and the earlier sender bought the position with a maxFeePerGas above
+        // its tip -- a fee-rule breach, which postRunCheck reports as max-fee-above-tip.
+        const byKey =
+          previous.maxFeePerGasWei !== undefined &&
+          current.maxFeePerGasWei !== undefined &&
+          previous.maxFeePerGasWei >= current.maxFeePerGasWei
+            ? ` (ordered on maxFeePerGas ${previous.maxFeePerGasWei} >= ${current.maxFeePerGasWei}: ` +
+              `${previous.ownerId} signed maxFeePerGas above its tip, a fee-rule breach)`
+            : "";
         failures.push(
-          `priority fee ordering violation in ${key}: txIndex ${previous.txIndex} ${previous.ownerId} ${previous.priorityFeeWei} < txIndex ${current.txIndex} ${current.ownerId} ${current.priorityFeeWei}`,
+          `priority fee ordering violation in ${key}: txIndex ${previous.txIndex} ${previous.ownerId} ${previous.priorityFeeWei} < txIndex ${current.txIndex} ${current.ownerId} ${current.priorityFeeWei}${byKey}`,
         );
       }
     }
