@@ -32,6 +32,7 @@ import {
 } from "@eris/sdk/stables.js";
 import { poolPriceUsdcPerWethFromSqrtX96 } from "@eris/sdk/protocols/uniswap.js";
 import { getAdapter, hasAdapter } from "@eris/sdk/protocols/registry.js";
+import { enabledProtocolIds } from "@eris/sdk/protocols/enabled.js";
 import type {
   AgentProtocolValue,
   ProtocolAdapter,
@@ -282,6 +283,9 @@ export async function readValueSnapshotAtBlock(opts: {
   // into a thin pool does not become the score). The probe at this block still runs -- the caller
   // compares the two to report how far the mark was moved.
   stablePricesOverride?: StablePrices;
+  // Rules §4.1: the earlier blocks of this boundary's median window (MarkMedian.window). Every venue
+  // that marks a position off a market re-reads that price there; empty = mark live.
+  medianWindow?: readonly number[];
 }): Promise<ValueSnapshot> {
   const { publicClient, agents, enabledIds, activeStables, priceFeed } = opts;
   let failedReads = 0;
@@ -389,6 +393,9 @@ export async function readValueSnapshotAtBlock(opts: {
     activeStables,
     fairByBase: () => fairByBase,
     stablePrices: () => stablePrices,
+    medianWindow: opts.medianWindow ?? [],
+    readAt: (reads, block) =>
+      call(reads as MulticallContract[], BigInt(block)),
   };
   const protocolValues = await runValuations({
     runs: adaptersForIds(enabledIds)
@@ -815,30 +822,24 @@ export function epochBoundaryBlocks(
   return Array.from({ length: epochs + 1 }, (_, i) => fromBlock + i * step);
 }
 
-// G7 (ADR 0019 §5): mark each epoch boundary at the median of the blocks leading up to it, so that
-// pushing a pool for one block does not become the score. It has to hold for most of the window to
-// count, which turns a spread-cost round trip into a position.
+// G7 (ADR 0019 §5) / rules §4.1: mark each epoch boundary at the median of the blocks leading up to
+// it, so that pushing a pool for one block does not become the score. It has to hold for most of the
+// window to count, which turns a spread-cost round trip into a position.
 //
-// Scope is the market-priced stables, and that turns out to be the whole surface. It is one seam,
-// not one venue: spot registry stables (#27) and the Liquity venue's Trove debt / Stability Pool
-// deposit both price off ctx.stablePrices() (protocols/liquity.ts).
+// The rule covers every market-derived price, not only the ones worth pushing. It used to cover the
+// stables' probe alone, on the argument that the other pool reads (LP composition, the LST pool
+// sale) only move value between an agent's own two buckets. That is an argument about incentives;
+// §4.1 is a valuation rule, and it names no exception. So the scope is now every mark a venue reads
+// off a market, each venue deciding what its market-derived price is (ProtocolAdapter
+// .medianSurfaces, ValuationContext.medianWindow):
 //
-// The ADR's G7 originally named two more, and both fall out on inspection:
+//   stables          the two-sided probe (spot registry stables, and through ctx.stablePrices()
+//                    the Liquity mid and every stable leg an LP or lending mark prices)
+//   venue surfaces   re-read by the adapter at the window's earlier blocks with the position held
+//                    at the boundary -- the median is over the price, never over holdings
 //
-//   LP shares are valued by composition -- reserves x the environment's fair price -- never by the
-//   pool's own price, and the agent's spot side is marked at those same external prices. So a push
-//   moves value between the agent's two buckets rather than creating any: what the trader loses, the
-//   pool gains, and the agent gets back only its share of it. A wash if it owns the whole pool, a
-//   loss otherwise.
-//
-//   The LST venue reads its pool for the realizable side, and since issue #40 axiom 3 the realizable
-//   side is what the value series sums -- so the pool quote *is* in the score there. It is still not
-//   a manipulation surface for the same reason the LP shares above are not: pushing the LST/WETH
-//   pool moves value between the agent's own two buckets. What it can do is lower the *discount*,
-//   and a lower discount is a higher mark, so the median window covers it like everything else.
-//
-// What makes the stables different is that there the pool quote *is* the mark of a holding whose
-// cost basis sits somewhere else, so moving the pool moves the score.
+// Reference prices -- the environment's fair for the bases and the oracles it feeds (Aave, GMX) --
+// are not market-derived and are never medianed.
 export class MarkMedian {
   private readonly maxDeviationBps = new Map<string, number>();
   private boundaries = 0;
@@ -849,28 +850,38 @@ export class MarkMedian {
       activeStables: Address[];
       windowBlocks: number;
       // The run's first block: earlier boundaries get a shorter window rather than reads of blocks
-      // that predate the run.
+      // that predate the run (§4.4.2: fewer than five blocks of history -> the median of those there
+      // are).
       floorBlock: number;
     },
   ) {}
 
-  private get enabled(): boolean {
-    return (
-      this.opts.windowBlocks > 1 &&
-      marketPricedStables(this.opts.activeStables).length > 0
-    );
-  }
-
-  // The prices to value the boundary at, or undefined to keep the live mark (nothing to median).
-  async at(block: number): Promise<StablePrices | undefined> {
-    if (!this.enabled) return undefined;
+  // The window's earlier blocks for this boundary, oldest first, the boundary itself excluded. What
+  // the venue adapters re-read their market-derived prices at. Empty when the window is off or the
+  // boundary has no history before it.
+  window(block: number): number[] {
+    if (this.opts.windowBlocks <= 1) return [];
     const first = Math.max(
       this.opts.floorBlock,
       block - this.opts.windowBlocks + 1,
     );
-    const window: number[] = [];
-    for (let b = first; b <= block; b++) window.push(b);
-    if (window.length <= 1) return undefined;
+    const earlier: number[] = [];
+    for (let b = first; b < block; b++) earlier.push(b);
+    return earlier;
+  }
+
+  private hasStables(): boolean {
+    return marketPricedStables(this.opts.activeStables).length > 0;
+  }
+
+  // The stable prices to value the boundary at, or undefined to keep the live probe (no window, or
+  // no market-priced stable in the run). Called once per boundary, which is also what it counts.
+  async at(block: number): Promise<StablePrices | undefined> {
+    const earlier = this.window(block);
+    if (earlier.length === 0) return undefined;
+    this.boundaries++;
+    if (!this.hasStables()) return undefined;
+    const window = [...earlier, block];
     // N x 2 reads per stable per boundary. The client folds them into multicalls, and only the ~43
     // boundaries pay it -- the equity curve does not.
     const samples = await Promise.all(
@@ -893,7 +904,6 @@ export class MarkMedian {
         Math.max(this.maxDeviationBps.get(quote.symbol) ?? 0, bps),
       );
     }
-    this.boundaries++;
     return median;
   }
 
@@ -905,7 +915,12 @@ export class MarkMedian {
     return {
       windowBlocks: this.opts.windowBlocks,
       boundaries: this.boundaries,
-      surfaces: ["stables"],
+      surfaces: [
+        ...(this.hasStables() ? ["stables"] : []),
+        ...enabledProtocolIds()
+          .filter(hasAdapter)
+          .flatMap((id) => getAdapter(id).medianSurfaces ?? []),
+      ],
       maxDeviationBps: Object.fromEntries(this.maxDeviationBps),
     };
   }
@@ -1027,9 +1042,8 @@ export async function reconstructValueSeries(opts: {
     floorBlock: fromBlock,
   });
   for (const b of blocks) {
-    const stablePricesOverride = boundaryIndex.has(b)
-      ? await markMedian.at(b)
-      : undefined;
+    const isBoundary = boundaryIndex.has(b);
+    const stablePricesOverride = isBoundary ? await markMedian.at(b) : undefined;
     const snapshot = await readValueSnapshotAtBlock({
       publicClient,
       agents,
@@ -1039,6 +1053,7 @@ export async function reconstructValueSeries(opts: {
       blockNumber: b,
       horizonBlock: toBlock,
       refFairByBase,
+      ...(isBoundary ? { medianWindow: markMedian.window(b) } : {}),
       ...(stablePricesOverride ? { stablePricesOverride } : {}),
     });
     failedReads += snapshot.failedReads;

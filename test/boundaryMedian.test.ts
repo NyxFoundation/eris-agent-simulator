@@ -137,6 +137,91 @@ test("uniswap: an LP position splits at the boundary block's tick", async () => 
   assert.ok(Math.abs(v.valueUsdc - direct.valueUsdc) < 1e-6);
 });
 
+// The window's earlier blocks, answered per block by the fixture. `asked` records which blocks the
+// adapter actually went back to.
+function windowed(
+  blocks: number[],
+  answerAt: (block: number) => (read: ValuationRead) => unknown,
+  asked: number[] = [],
+): Pick<ValuationContext, "medianWindow" | "readAt"> {
+  return {
+    medianWindow: blocks,
+    readAt: async (reads, block) => {
+      asked.push(block);
+      return reads.map(answerAt(block));
+    },
+  };
+}
+
+const WINDOW = [106, 107, 108, 109];
+const TICK_STEADY = -200300;
+const TICK_PUSHED = -199500;
+
+test("uniswap: at a boundary the principal splits at the median tick, not a one-block push", async () => {
+  const asked: number[] = [];
+  const { values } = await driveValuation(
+    uniswapAdapter.valueAtBlock!(
+      ctx(windowed(WINDOW, () => uniAnswer(TICK_STEADY), asked)),
+    ),
+    uniAnswer(TICK_PUSHED),
+  );
+  assert.ok(
+    Math.abs(values[AGENT.id].valueUsdc - principalAt(TICK_STEADY)) < 1e-6,
+  );
+  assert.notEqual(principalAt(TICK_STEADY), principalAt(TICK_PUSHED));
+  assert.deepEqual(asked, WINDOW);
+});
+
+test("uniswap: a move held across most of the window does move the split", async () => {
+  const tickAt = (b: number) => (b >= 108 ? TICK_PUSHED : TICK_STEADY);
+  const { values } = await driveValuation(
+    uniswapAdapter.valueAtBlock!(
+      ctx(windowed(WINDOW, (b) => uniAnswer(tickAt(b)))),
+    ),
+    uniAnswer(TICK_PUSHED),
+  );
+  assert.ok(
+    Math.abs(values[AGENT.id].valueUsdc - principalAt(TICK_PUSHED)) < 1e-6,
+  );
+});
+
+test("uniswap: uncollected fees stay at the boundary block's tick", async () => {
+  // Fee growth only counts inside the range at the tick the pool actually has. With the window
+  // above the range the median split is all USDC, but the fees were earned in range at the boundary
+  // and are still owed.
+  const above = -198000; // > TICK_UPPER
+  const feeUsdc = 100n * USDC_UNIT;
+  const global1 = (feeUsdc << 128n) / LIQUIDITY;
+  const withFees = (tick: number) => (read: ValuationRead) =>
+    is(read, "feeGrowthGlobal1X128") ? global1 : uniAnswer(tick)(read);
+  const { values } = await driveValuation(
+    uniswapAdapter.valueAtBlock!(ctx(windowed(WINDOW, () => withFees(above)))),
+    withFees(TICK_STEADY),
+  );
+  const fees = Number((global1 * LIQUIDITY) >> 128n) / 1e6;
+  assert.ok(fees > 99.99);
+  assert.ok(
+    Math.abs(values[AGENT.id].valueUsdc - (principalAt(above) + fees)) < 1e-6,
+  );
+});
+
+test("uniswap: off a boundary nothing earlier is read", async () => {
+  const { values } = await driveValuation(
+    uniswapAdapter.valueAtBlock!(
+      ctx({
+        medianWindow: [],
+        readAt: async () => {
+          throw new Error("read outside a boundary");
+        },
+      }),
+    ),
+    uniAnswer(TICK_PUSHED),
+  );
+  assert.ok(
+    Math.abs(values[AGENT.id].valueUsdc - principalAt(TICK_PUSHED)) < 1e-6,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Balancer BPT / Curve LP: a share of the pool's reserves, valued at the reference prices
 // ---------------------------------------------------------------------------
@@ -327,7 +412,7 @@ const parProbeClient = {
   },
 } as never;
 
-test("the window: with no market-priced stable, the boundary is marked live (PINS CURRENT BUG)", async () => {
+test("the window: every boundary gets one, stables or not", async () => {
   setEnabledProtocolIds(["uniswap", "balancer", "lst", "liquity", "aave"]);
   try {
     const median = new MarkMedian({
@@ -336,16 +421,18 @@ test("the window: with no market-priced stable, the boundary is marked live (PIN
       windowBlocks: 5,
       floorBlock: 100,
     });
-    // §4.1 applies to every market-derived price, but until now the window existed only for the
-    // stables' probe: with none of those in the run, no boundary was medianed at all.
+    // No stable to probe, so no stable override -- but the window still exists, and it is what the
+    // venues re-read their own market-derived prices at.
     assert.equal(await median.at(BOUNDARY), undefined);
-    assert.equal(median.summary(), undefined);
+    assert.deepEqual(median.window(BOUNDARY), [106, 107, 108, 109]);
+    assert.deepEqual(median.summary()?.surfaces, ["uniswap-lp"]);
+    assert.equal(median.summary()?.boundaries, 1);
   } finally {
     setEnabledProtocolIds([]);
   }
 });
 
-test("the window: the stables' probe is medianed and named as the only surface (PINS CURRENT BUG)", async () => {
+test("the window: the stables' probe is medianed alongside the venue surfaces", async () => {
   setEnabledProtocolIds(["uniswap", "curve"]);
   try {
     const median = new MarkMedian({
@@ -356,7 +443,121 @@ test("the window: the stables' probe is medianed and named as the only surface (
     });
     const prices = await median.at(BOUNDARY);
     assert.ok(prices);
-    assert.deepEqual(median.summary()?.surfaces, ["stables"]);
+    assert.deepEqual(median.summary()?.surfaces, ["stables", "uniswap-lp"]);
+  } finally {
+    setEnabledProtocolIds([]);
+  }
+});
+
+test("the window: short near the run's start, empty on its first block and when switched off", () => {
+  const median = (windowBlocks: number) =>
+    new MarkMedian({
+      publicClient: parProbeClient,
+      activeStables: [USDC],
+      windowBlocks,
+      floorBlock: 100,
+    });
+  // §4.4.2: fewer than five blocks of history -> the median of those there are.
+  assert.deepEqual(median(5).window(102), [100, 101]);
+  assert.deepEqual(median(5).window(100), []);
+  assert.deepEqual(median(1).window(BOUNDARY), []);
+  assert.deepEqual(median(0).window(BOUNDARY), []);
+});
+
+// ---------------------------------------------------------------------------
+// Live and swept boundaries read the same window
+// ---------------------------------------------------------------------------
+
+const { LiveScorer } = await import("../core/src/realtime/liveScoring.js");
+const { reconstructValueSeries } = await import(
+  "../core/src/realtime/reconstruct.js"
+);
+const { compareEpochSeries } = await import(
+  "../core/src/realtime/coordinator.js"
+);
+const { RunLogger } = await import("../core/src/logger.js");
+const { toPriceFeedAnswer } = await import("@eris/sdk/priceFeed.js");
+const { UNISWAP } = await import("@eris/sdk/constants.js");
+const { mkdtempSync } = await import("node:fs");
+const { tmpdir } = await import("node:os");
+const { join } = await import("node:path");
+
+// A chain where the agent holds one LP position and every epoch boundary block carries a push the
+// pool does not keep: the tick is TICK_PUSHED on each boundary after the first and TICK_STEADY
+// everywhere else.
+function lpChain() {
+  const tickAt = (b: number) =>
+    b > 100 && b % 4 === 0 ? TICK_PUSHED : TICK_STEADY;
+  const answer = (c: ValuationRead, block: number): unknown => {
+    if (c.functionName === "latestAnswer") return toPriceFeedAnswer(FAIR);
+    if (c.functionName === "answerOf") return 0n;
+    if (c.functionName === "getEthBalance") return 0n;
+    if (is(c, "balanceOf", UNISWAP.nonfungiblePositionManager)) return 1n;
+    if (c.functionName === "balanceOf") return 0n;
+    if (c.functionName === "slot0")
+      return is(c, "slot0", UNI_WETH.pool)
+        ? [0n, tickAt(block), 0, 0, 0, 0, true]
+        : [0n, 0, 0, 0, 0, 0, true];
+    return uniAnswer(tickAt(block))(c);
+  };
+  return {
+    multicall: async ({
+      contracts,
+      blockNumber,
+    }: {
+      contracts: ValuationRead[];
+      blockNumber: bigint;
+    }) =>
+      contracts.map((c) => {
+        const result = answer(c, Number(blockNumber));
+        return result === undefined
+          ? { status: "failure" as const }
+          : { status: "success" as const, result };
+      }),
+    readContract: async (c: ValuationRead & { blockNumber?: bigint }) =>
+      answer(c, Number(c.blockNumber ?? 0n)),
+    getLogs: async () => [],
+  } as never;
+}
+
+test("live and swept boundaries agree, and both are the window's median", async () => {
+  setEnabledProtocolIds(["uniswap"]);
+  try {
+    const publicClient = lpChain();
+    const common = {
+      publicClient,
+      agents: [AGENT],
+      enabledIds: ["uniswap" as const],
+      activeStables: [USDC],
+      priceFeed: "0x00000000000000000000000000000000feed0001" as Address,
+      markMedianBlocks: 5,
+    };
+    const root = mkdtempSync(join(tmpdir(), "eris-median-"));
+    const live = new LiveScorer({
+      ...common,
+      logger: new RunLogger(root, "live"),
+      runStartBlock: 100,
+      epochBlocks: 4,
+      sampleMarket: false,
+    });
+    for (let b = 100; b <= 112; b++) await live.onBlock(b);
+    const swept = await reconstructValueSeries({
+      ...common,
+      logger: new RunLogger(root, "swept"),
+      fromBlock: 100,
+      toBlock: 112,
+      epochBlocks: 4,
+    });
+    const liveSeries = live.series();
+    assert.ok(liveSeries && swept.epochSeries);
+    assert.deepEqual(liveSeries.boundaryBlocks, [100, 104, 108, 112]);
+    const agreement = compareEpochSeries(liveSeries, swept.epochSeries);
+    assert.equal(agreement.compared, 4);
+    assert.equal(agreement.maxAbsDiffUsdc, 0);
+    // No boundary took the push.
+    for (const v of liveSeries.valuesByAgent[AGENT.id])
+      assert.ok(Math.abs((v ?? 0) - principalAt(TICK_STEADY)) < 1e-6);
+    assert.deepEqual(swept.markMedian?.surfaces, ["uniswap-lp"]);
   } finally {
     setEnabledProtocolIds([]);
   }
