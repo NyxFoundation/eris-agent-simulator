@@ -4,15 +4,23 @@
 
 Each adapter (`sdk/src/protocols/<name>.ts`) implements parse/validate, calldata construction (buildTxs), observation (readState / observe), PnL valuation (valueUsdc), and a setup hook (orderflow generation is the environment's job in `core/src/flow/`). Active protocols are chosen per run via the config's `run.protocols` (YAML array) or the CLI flag `--protocols uniswap,balancer,curve,aave,gmx,lst,liquity`. `sdk/src/action.ts`'s `ACTION_TYPES_BY_PROTOCOL` is the single source for which actions a given run offers — it is also what the strategy-revision prompt enumerates, so a strategy is never left unaware of an action it has simply never used. Agent JSON actions:
 
-| Protocol | Actions | venue (fork = Arbitrum / local = deployer-deployed) |
+| Protocol | Actions | Markets (local deploy = the competition) |
 |---|---|---|
-| Uniswap V3 | `swap`, `mintLiquidity`, `removeLiquidity`, `collectFees` | fork: WETH/USDC 0.05% pool / local: WETH/USDC 0.3% pool |
-| Balancer v2 | `balancerSwap` | fork: 33/33/34 WETH/USDC/USDT weighted (seeded at fork time) / local: 50/50 WETH/USDC |
-| Curve | `curveSwap`, `stableSwap` | fork: tricrypto WETH↔USDT / local: twocrypto-ng WETH/USDC, plus the stableswap-ng pools that quote each market-priced stable |
-| Aave v3 | `aaveSupply`, `aaveWithdraw`, `aaveBorrow`, `aaveRepay` | native USDC / WETH reserves |
-| GMX v2 | `gmxIncrease`, `gmxDecrease` | ETH/USD perp market |
-| LST | `lstDeposit`, `lstSwap`, `lstRequestWithdraw`, `lstClaimWithdraw` | **local only**: a wstETH-style vault plus its LST/WETH stableswap-ng market |
-| Liquity (eUSD) | `liquityOpenTrove`, `liquityAdjustTrove`, `liquityCloseTrove`, `liquityRedeem`, `liquityProvideToSP`, `liquityWithdrawFromSP`, `liquityLiquidate`, `liquitySwapEusd` | **local only**: a Liquity V1 fork issuing eUSD, plus its eUSD/USDC stableswap-ng market |
+| Uniswap V3 | `swap`, `mintLiquidity`, `removeLiquidity`, `collectFees` | WETH/USDC and WBTC/USDC, 0.3% fee, full-range liquidity (about 1,000 WETH / 50 WBTC + 3M USDC each at the start) |
+| Balancer v2 | `balancerSwap` | 50/50 weighted WETH/USDC and WBTC/USDC, 0.3% fee, same starting depth |
+| Curve | `curveSwap`, `stableSwap` | twocrypto-ng WETH/USDC and WBTC/USDC (dynamic fee 0.26–0.45%, same starting depth), plus the stableswap-ng pools that quote each market-priced stable (USDC/DAI 100k/100k) |
+| Aave v3 | `aaveSupply`, `aaveWithdraw`, `aaveBorrow`, `aaveRepay` | WETH / USDC / WBTC reserves; the LST as a collateral-only reserve (LTV 70% / LT 75%) |
+| GMX v2 | `gmxIncrease`, `gmxDecrease` | ETH/USD and BTC/USD perp markets, WETH or USDC collateral |
+| LST | `lstDeposit`, `lstSwap`, `lstRequestWithdraw`, `lstClaimWithdraw` | a wstETH-style vault (ERLST) plus its LST/WETH stableswap-ng market |
+| Liquity (eUSD) | `liquityOpenTrove`, `liquityAdjustTrove`, `liquityCloseTrove`, `liquityRedeem`, `liquityProvideToSP`, `liquityWithdrawFromSP`, `liquityLiquidate`, `liquitySwapEusd` | a Liquity V1 fork issuing eUSD, plus its eUSD/USDC stableswap-ng market (100k/100k) |
+
+The competition and every official regime run on the local deploy (`run.localDeploy: true`), with
+all seven protocols enabled except that `depeg` and `depeg-persist` leave out GMX. The Arbitrum fork
+mode (`localDeploy: false`) is a development path with different pools (Uniswap WETH/USDC 0.05%,
+Balancer 33/33/34 WETH/USDC/USDT, Curve tricrypto WETH↔USDT), and it cannot run `lst` or `liquity`,
+which have no Arbitrum counterpart. For what each protocol is and how it works, written for readers
+new to DeFi, see the "seven protocols" section of the
+[participant guide](../competition-start.en.md#the-seven-protocols).
 
 `stableSwap` (issue #27) trades a **market-priced stable** against USDC on the pool that quotes it:
 `{"type":"stableSwap","stable":"DAI","tokenIn":"USDC","amountIn":"…"}`. It lives on the Curve
@@ -22,8 +30,8 @@ which is the only combination that leaves nothing to fall through the cracks. Th
 cap. Size each leg against the token's actual balance and decimals (USDC has six; DAI/eUSD have
 eighteen), then account for pool depth, fees and slippage.
 
-The LST venue (issue #38) is the one venue with no fork counterpart — the vault is deployed by
-`deployer/`, so a fork run that lists `lst` fails fast at startup. It is also the one venue where an
+The LST venue (issue #38) has no fork counterpart (Liquity has none either) — the vault is deployed
+by `deployer/`, so a fork run that lists `lst` fails fast at startup. It is also the one venue where an
 asset has two prices at once: `protocols.lst` reports the vault's `redemptionRateWeth` (reachable
 only through a withdrawal queue that takes `withdrawalDelayBlocks`) and the pool's
 `marketPriceWeth` (instant, at whatever discount it trades) separately.
@@ -37,7 +45,7 @@ after the run is excluded and reported under `scoring_unpriced_holdings` with
 `reason: "unrealizable"`. `obs.blocksRemaining` is what lets a strategy tell which exits can still
 complete — and under this rule that is a scoring question, not a preference.
 
-The table shows the default WETH markets. If a WBTC leg (`MARKET_LEGS`) is deployed in the local deploy, add `base: "WBTC"` to the same actions to also trade the WBTC/USDC spot, GMX WBTC market, and Aave WBTC reserve (multi-asset; ADR 0013).
+Actions default to the WETH market. Add `base: "WBTC"` to the same actions to trade the WBTC/USDC spot pools, the GMX BTC/USD market and the Aave WBTC reserve instead (multi-asset; ADR 0013; the legs are listed in `MARKET_LEGS`).
 
 In addition there are the protocol-agnostic `noop` / `bundle` (multiple bundleable leaves in a single tx) / `rawTx` / `rawBundle`.
 
@@ -45,10 +53,10 @@ In addition there are the protocol-agnostic `noop` / `bundle` (multiple bundleab
 
 ## Stablecoin Accounting
 
-Arbitrum's deep WETH/stable liquidity lives in the USDC.e / USDT pools, so native USDC, USDC.e and
-USDT are all treated as **USDC-equivalent** at `$1` and 6 decimals (`setActiveStables` /
-`getBalances` in `sdk/src/chain.ts`). Uniswap / Aave / GMX use native USDC, Balancer uses native
-USDC (its pool is seeded at fork time), and Curve uses USDT on fork and USDC on local.
+In the local deploy every venue quotes USDC, and USDC is the numéraire: `$1` by definition, 6
+decimals (`setActiveStables` / `getBalances` in `sdk/src/chain.ts`). The Arbitrum fork mode also
+treats USDC.e and USDT as **USDC-equivalent** at `$1`, because Arbitrum's deep WETH/stable liquidity
+lives in those pools (there Curve uses USDT, and Balancer's pool is seeded at fork time).
 
 Two things changed in issue #27, and both are visible to agents:
 
