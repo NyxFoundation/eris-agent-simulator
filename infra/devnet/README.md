@@ -18,6 +18,13 @@ eris-dashboard-sync.timer     rebuilds the hosted dashboard           (infra/das
 ## Install (once, on the box that hosts it)
 
 ```sh
+# The period's seed. Not the one in config/practice.yaml: that file is public, and the price walk, the
+# flow and every event window follow from the seed, so the committed one publishes all of them. Draw
+# a new one per period and keep it off the repo (.env.practice is gitignored). The unit refuses to
+# start without it.
+echo "ERIS_PRACTICE_SEED=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')" > ~/workspace/eris-agent-simulator/.env.practice
+chmod 600 ~/workspace/eris-agent-simulator/.env.practice
+
 mkdir -p ~/.config/systemd/user
 ln -sf ~/workspace/eris-agent-simulator/infra/devnet/ascon-devnet.service ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -49,6 +56,7 @@ cast block-number --rpc-url http://127.0.0.1:8545   # twice, a few seconds apart
 | `CHAIN_ID` | `.env.local` | must match the node |
 | `TREASURY_PRIVATE_KEY` | `.env.local` | only on a real chain; on anvil the endowment is a cheatcode |
 | the period | `config/practice.yaml` | the roster, the episodes, the round length |
+| the seed | `.env.practice` (`ERIS_PRACTICE_SEED=`) | **gitignored; the unit will not start without it.** Publish it after the period (rules §7.2) |
 | venue state | `backtest/state/venues-state.json` | **gitignored, and the chain container mounts it** |
 
 `.env.local` is read in-process (`core/src/cli/bootstrapEnv.ts`) relative to the working directory,
