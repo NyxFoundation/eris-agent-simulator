@@ -159,6 +159,8 @@ import {
 import {
   accrueLst,
   lstBlockEvent,
+  lstReserveExhausted,
+  lstReserveExhaustedEvent,
   setupLst,
   slashLst,
   stepLstApy,
@@ -812,6 +814,9 @@ export async function runRealtimeSimulation(
 
   // Realtime shared latest state (referenced by the relay's async action handler and flow context)
   let latestStateById = new Map<ProtocolId, unknown>();
+  // Whether the LST reserve was already reported exhausted (issue #129), so the event fires once per
+  // exhaustion rather than every block after it.
+  let lstExhaustedReported = false;
   let latestFairPrice = 0;
   const latestHistory: AgentObservation["history"] = [];
 
@@ -2956,7 +2961,15 @@ export async function runRealtimeSimulation(
             // redemption, and whether the reward reserve is running dry. The primary post-run
             // source for whether the venue behaved (issue #38).
             const lstState = stateById.get("lst") as LstState | undefined;
-            if (lstState) logger.event(lstBlockEvent(lstState, bn));
+            if (lstState) {
+              logger.event(lstBlockEvent(lstState, bn));
+              // Issue #129: the block the reserve stops paying, once per exhaustion (anyone can
+              // refund it -- fundRewards is permissionless -- so it can end more than once).
+              const exhausted = lstReserveExhausted(lstState);
+              if (exhausted && !lstExhaustedReported)
+                logger.event(lstReserveExhaustedEvent(lstState, bn));
+              lstExhaustedReported = exhausted;
+            }
             // Liquity telemetry rides on the same read: where the peg sat, how the fee curves moved
             // and whether the system ever entered Recovery Mode (issue #39).
             const liquityState = stateById.get("liquity") as

@@ -623,6 +623,10 @@ export type LstObservation = {
   // Yield per block as a fraction, so an agent can compare "wait N blocks" against a discount
   // without re-deriving it from the APY.
   yieldPerBlockBps: number;
+  // How many more blocks the reward reserve pays at the current pool size and rate (issue #129);
+  // null when nothing accrues. apyBps / yieldPerBlockBps are what the reserve can pay -- 0 once it
+  // cannot cover another block -- not the rate the environment configured.
+  rewardRunwayBlocks?: number | null;
   // Floor on the wait between requesting a redemption and being able to claim it.
   withdrawalDelayBlocks: number;
   // What the wait would *actually* be if you queued your whole share balance right now: the floor

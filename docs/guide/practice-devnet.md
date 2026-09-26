@@ -356,6 +356,18 @@ not). `seconds` stays a generous ceiling rather than the stop condition. `run.bl
 `run.endsAt` together are refused; for a short smoke run of the practice config, `--blocks N` on the
 command line replaces the date.
 
+**The length bounds the LST venue.** The vault pays yield out of a fixed reward reserve (50 WETH in
+the state dump), and the default economic clock counts a block as an hour of staking — the clock the
+360-block official regimes are calibrated on. Over a month-long period that is over a century of
+yield, and the reserve ran dry after ~3.3 days (issue #129). `config/practice.yaml` sets
+`lst.simulatedSecondsPerBlock: 30`, which keeps one scoring day at the same 15 days of yield as one
+official epoch and needs ~4.4 WETH for the whole period on the seeded pool: the reserve lasts the
+period with up to ~1,000 WETH staked. If participants stake more, the reserve runs out early, and the
+venue says so rather than going quiet: `apyBps` / `yieldPerBlockBps` drop to 0,
+`rewardRunwayBlocks` (the blocks the reserve still pays) counts down to it in every observation, the
+run records `lst_reward_reserve_exhausted`, and `lst_setup` records whether the reserve covered the
+run at the start (`reserveCoversRun`).
+
 The seed is **not** the one in `config/practice.yaml`. The price walk, the flow and every episode
 window are pure functions of the seed, and the file is public — with its `seed: 1`, anyone can compute
 the block each crash lands on. The hosted period reads its seed from `.env.practice` (gitignored) and

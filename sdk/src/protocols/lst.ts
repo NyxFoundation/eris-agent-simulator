@@ -69,8 +69,16 @@ export type LstState = {
   // Whether the pool actually quoted. False means there is no market leg right now (it reverted,
   // or there is no liquidity at probe size), not that the market is worthless.
   marketQuoted: boolean;
+  // The yield the vault can actually pay: the configured rate while the reward reserve covers at
+  // least one more block's accrual, 0 once it does not (issue #129). configuredApyBps is what the
+  // environment set, reported beside it so an exhausted venue does not read as a retuned one.
   apyBps: number;
   yieldPerBlockBps: number;
+  configuredApyBps: number;
+  // How many more blocks the reserve pays at the current pool size and rate; null when nothing is
+  // accruing (no rate, or no shares to accrue to). A strategy holding for the carry reads this
+  // against blocksRemaining.
+  rewardRunwayBlocks: number | null;
   withdrawalDelayBlocks: number;
   queueLength: number;
   rewardReserveWei: bigint;
@@ -101,6 +109,27 @@ export function apyBpsFrom(
   if (simulatedSecondsPerBlock <= 0) return 0;
   const blocksPerYear = SECONDS_PER_YEAR / simulatedSecondsPerBlock;
   return (Number(ratePerBlockRay) / Number(RAY)) * blocksPerYear * 10_000;
+}
+
+/// What one block's accrual would pay (issue #129). The vault clamps accrual to the reward reserve
+/// and stops raising the redemption rate once the reserve is empty, so the configured rate is a
+/// promise only while the reserve can keep it. Mirrors MockLSTVault.accrueRewards.
+export function rewardRunway(
+  ratePerBlockRay: bigint,
+  rewardReserveWei: bigint,
+  pooledWeth: bigint,
+  shareSupply: bigint,
+): { payableRatePerBlockRay: bigint; runwayBlocks: number | null } {
+  if (ratePerBlockRay === 0n || shareSupply === 0n || pooledWeth === 0n)
+    return { payableRatePerBlockRay: ratePerBlockRay, runwayBlocks: null };
+  const perBlock = (pooledWeth * ratePerBlockRay) / RAY;
+  if (perBlock === 0n)
+    return { payableRatePerBlockRay: ratePerBlockRay, runwayBlocks: null };
+  const runwayBlocks = Number(rewardReserveWei / perBlock);
+  return {
+    payableRatePerBlockRay: runwayBlocks >= 1 ? ratePerBlockRay : 0n,
+    runwayBlocks,
+  };
 }
 
 /// Ray per-block rate for a target APY on a given economic clock. The environment uses this to
@@ -228,6 +257,12 @@ export async function getLstState(ctx: SimContext): Promise<LstState> {
   // wallet into a market that just told us it could not fill, and setupLst would blame the rate
   // oracle for it.
   const marketQuoted = midPriceWeth > 0;
+  const { payableRatePerBlockRay, runwayBlocks } = rewardRunway(
+    ratePerBlockRay,
+    rewardReserveWei,
+    pooledWeth,
+    shareSupply,
+  );
   return {
     deployment,
     redemptionRateWeth,
@@ -239,8 +274,16 @@ export async function getLstState(ctx: SimContext): Promise<LstState> {
     discountBps: marketQuoted
       ? discountBpsFrom(redemptionRateWeth, midPriceWeth)
       : 0,
-    apyBps: apyBpsFrom(ratePerBlockRay, ctx.config.lstSimulatedSecondsPerBlock),
-    yieldPerBlockBps: yieldPerBlockBpsFrom(ratePerBlockRay),
+    apyBps: apyBpsFrom(
+      payableRatePerBlockRay,
+      ctx.config.lstSimulatedSecondsPerBlock,
+    ),
+    yieldPerBlockBps: yieldPerBlockBpsFrom(payableRatePerBlockRay),
+    configuredApyBps: apyBpsFrom(
+      ratePerBlockRay,
+      ctx.config.lstSimulatedSecondsPerBlock,
+    ),
+    rewardRunwayBlocks: runwayBlocks,
     withdrawalDelayBlocks: Number(delayBlocks),
     queueLength: Number(queueLength),
     rewardReserveWei,
@@ -464,6 +507,7 @@ async function observe(
     marketQuoted: state.marketQuoted,
     apyBps: state.apyBps,
     yieldPerBlockBps: state.yieldPerBlockBps,
+    rewardRunwayBlocks: state.rewardRunwayBlocks,
     withdrawalDelayBlocks: state.withdrawalDelayBlocks,
     estimatedQueueDelayBlocks,
     queueDelayPerWethBlocks,

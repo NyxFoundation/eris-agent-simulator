@@ -108,6 +108,17 @@ flow:
   baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC
 
+# The LST's economic clock (issue #129). The default counts a block as an hour of staking, which the
+# official 360-block regimes were calibrated on: an epoch is 15 days of yield, ~0.12% at 3%/yr. Over
+# a 35-day period at 2 s a block that clock is ~170 years; the vault's 50 WETH reward reserve ran dry
+# after ~3.3 days, and the redemption rate froze for the rest of the period. 30 s a block keeps the
+# official ratio where it matters here -- one scoring day (43,200 blocks) is the same 15 days of
+# yield as one official epoch -- and the whole period is ~1.4 years of it, ~4.4 WETH of rewards on
+# the seeded 100 WETH: the reserve covers the period with ~1,000 WETH staked. Stake more and it runs
+# out early; the observation then reports apyBps 0 and the run records lst_reward_reserve_exhausted.
+lst:
+  simulatedSecondsPerBlock: 30
+
 # What the period contains. ADR 0021 §1 publishes the *kinds* and how many, and withholds when each
 # window opens — the manifest is built from this list and carries neither the windows nor the seed
 # they were drawn from.
