@@ -559,8 +559,8 @@ export function gmxKeeperOracleParams(ctx: Pick<SimContext, "gmx">): {
 
 // USD per whole unit of a position's collateral token, with its decimals. USDC is the numéraire; a
 // base is marked by `basePrice`. Undefined when the registry cannot place the token or the base has
-// no price -- the callers report that rather than value it at a guess (it used to be valued at $1
-// per 1e-6 unit, which put 0.05 WBTC of collateral at $50 instead of $3,000).
+// no price -- the callers report that rather than value it at a guess (every non-WETH collateral
+// used to be read at USDC's scale, $1e-6 per raw unit, which put 0.05 WBTC at $5 instead of $3,000).
 function collateralUnit(
   token: Address,
   basePrice: (symbol: TokenSymbol) => number | undefined,
