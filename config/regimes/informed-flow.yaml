@@ -88,7 +88,7 @@ flow:
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
 stress:
-  # The lean is two episodes rather than a run-wide setting (issue #56). Run-wide, the whole run was
+  # The lean is episodes rather than a run-wide setting (issue #56). Run-wide, the whole run was
   # one long push in one direction, which a participant can read off the regime's name; as windows,
   # when the pressure arrives is drawn from the seed and a run can hold other kinds of episode too.
   #
@@ -101,26 +101,21 @@ stress:
   # Measured for scale, run-wide at 360 blocks: a mean pool-to-fair gap of 45.0bps against calm's
   # 31.1, which is the whole signature -- this regime is a modest, sustained pressure rather than a
   # dislocation, and at 60 blocks it was indistinguishable from calm (32.9 against 31.1).
+  #
+  # The number of episodes (1-3) and each one's length (38-56 blocks) are drawn too. Two episodes in
+  # two fixed bands meant the first one told an agent the second was coming and roughly when.
   events:
     - {
         type: flowTrend,
+        count: [1, 3],
+        minGapBlocks: 10,
         magnitudeRange: [2.0, 3.0],
         trendCorrelation: 1.0,
         persistBlocks: 12,
-        windowFrac: [0.15, 0.3],
-        rampBlocks: 6,
-        holdBlocks: 30,
-        decayBlocks: 10,
-      }
-    - {
-        type: flowTrend,
-        magnitudeRange: [2.0, 3.0],
-        trendCorrelation: 1.0,
-        persistBlocks: 12,
-        windowFrac: [0.55, 0.75],
-        rampBlocks: 6,
-        holdBlocks: 30,
-        decayBlocks: 10,
+        windowFrac: [0.15, 0.75],
+        rampBlocks: [4, 8],
+        holdBlocks: [24, 36],
+        decayBlocks: [8, 12],
       }
 
 agents:

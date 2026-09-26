@@ -525,6 +525,14 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   OU の anchor をドリフト分だけ動かして新しい水準を常態にする。**teardown の買い戻しは残る**
   （起動チェックがデペグ済みプールを拒否するので、次の run が始められなくなる。最終採点ブロックより後）
 - **`alignWith: <type>`** — 窓の開始位置を他イベントと共有する。**同じ `windowFrac` レンジでも draw は独立**なので、360 ブロック run では crash と liquidityPull が平均 ~160 ブロック離れて落ちる。「gap の最中に板が薄い」は組み合わせの性質なので明示が要る（`config/regimes/crash.yaml` が使用例）
+- **窓の数・形・向き・戻り方も seed が引く**（2026-09-27）。以前は magnitude と開始位置しか引いておらず、本数・バンド・台形の長さ・crash の向き・必ず全部戻ることは YAML に書いてあった。
+  `count: [min, max]`（0 可。重ならず、開始は `windowFrac` 内で一様。follower は anchor の本数を窓ごとに対で継ぐ）/ `minGapBlocks` /
+  `rampBlocks` 等の `[min, max]` / `flipProb`（crash・spike。解決済みは `type: spike, flippedFrom: crash`。victim のあるレジームでは使わない）/
+  `recoverFrac`（crash・spike。戻らない分は run 終了まで残る = 「急変に逆張りして窓で手仕舞う」の構造的正解を消す。**練習期間では使わない**。残差が複利になる）/
+  `venue: random`（whale）/ `repriceAnchorProb`（cexDrift）。公式 10 本に適用済み（calm・vuln は無変更。lending-incident / cdp-incident は暴落 1 本・下落固定で、形と回復だけ）。
+  **これらを 1 つでも使うスケジュールは seed を fmix32 でハッシュする**。`Rng` は LCG で初回出力が近い seed 間でほぼ動かず、
+  公開 seed 101〜505 の 5 本すべてで最初のイベントの magnitude がレンジ下位 1/4 だった。使わない config（`practice.yaml` 等）は
+  生の seed のままバイト互換（24 config × 300 seed で旧実装と一致を確認）。**公式レジームの実現値は全部変わった**ので、それ以前の matrix とは比べられない
 - `stress.victimCount`(既定 0=無効) / `stress.victimHf0`(既定 1.10) / `stress.victimWethWei`(victim 1 体の supply)。**較正の連動**: 建てるには `HF0 ≳ LT/(0.97·LTV)`（実測 Arbitrum WETH の LT=0.84/LTV=0.80 で ≈1.08。これ未満は borrow が LTV 縁に張り付くため fail-fast）。割るには crash magnitude `m > (HF0−1)/HF0`（HF0=1.10 なら m>9.1% → 例の [0.12,0.16] で確実に割れる）。breach 不能な設定は `stress_calibration_warning` を emit。borrow がサイレント revert したら setup で fail-fast(debt 検証)
 - **victim を建てるには fresh state 必須**（soft-reset だと前 run の victim ポジが残留して HF が壊れる。未満は fail-fast）: fork は full re-fork（`ARB_RPC_URL` 設定 + `ERIS_SKIP_RESET` 不可）、ローカルデプロイは resetFork の snapshot/revert クリーン断面で満たす（ADR 0016。backtest で実証済み）。ローカルでは victim を建てる前に Aave オラクルを初期 fair price へ較正する（fork の「オラクル≈実勢≈fair0」が成立しないため。coordinator が自動実行）
 - stress run（events かつ `ERIS_RUN_BLOCKS>0`）は**時間制限を自動無効化**しブロック数で終了する（`ERIS_RUN_SECONDS` が先に切れて crash 窓へ到達しない事故を回避。override は `stress_run_time_limit_disabled` で記録）

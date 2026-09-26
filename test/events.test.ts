@@ -17,6 +17,9 @@ const FIXED_CRASH: StressEventConfig = {
   decayBlocks: 2,
 };
 
+// Enough seeds that every outcome a small range allows shows up.
+const SEEDS = Array.from({ length: 200 }, (_, i) => i + 1);
+
 test("crash overlay is a trapezoid (1 outside the window, max deviation 1-m during hold)", () => {
   const s = new EventSchedule([FIXED_CRASH], 1, 20);
   assert.equal(s.events.length, 1);
@@ -739,7 +742,9 @@ test("a cexDrift without repriceAnchor leaves the anchor alone", () => {
 
 // Issue #105: the spike regime is crash's mirror -- the same trapezoid with the sign flipped and the
 // liquidity pull aligned to it. Read off the committed YAML so a drift in the file is a failing test.
-test("config/regimes/spike.yaml: an upward gap with the pull on the same window", async () => {
+// Since the variation keys, "the same" is a distribution: 1-2 gaps, drawn trapezoids, a quarter of
+// them going down, and 40-100% of each one recovering.
+test("config/regimes/spike.yaml: upward gaps with the pull on the same windows", async () => {
   const { readFileSync } = await import("node:fs");
   const { parse } = await import("yaml");
   const doc = parse(readFileSync("config/regimes/spike.yaml", "utf8")) as {
@@ -752,18 +757,38 @@ test("config/regimes/spike.yaml: an upward gap with the pull on the same window"
     ["spike", "liquidityPull"],
   );
   assert.equal(configs[1].alignWith, "spike");
-  const s = new EventSchedule(configs, 101, doc.run.blocks);
-  const [spike, pull] = s.events;
-  assert.equal(spike.type, "spike");
-  assert.equal(pull.startBlock, spike.startBlock, "the pull opens on the spike's block");
-  const frac = spike.startBlock / doc.run.blocks;
-  assert.ok(frac >= 0.25 && frac <= 0.7, `window frac ${frac} inside [0.25, 0.7]`);
-  assert.ok(spike.magnitude >= 0.15 && spike.magnitude <= 0.22);
-  // Up, not down: at the hold the effective price is base × (1 + m).
-  const hold = spike.startBlock + spike.rampBlocks;
-  assert.ok(Math.abs(s.at(hold).wethMult - (1 + spike.magnitude)) < 1e-9);
-  assert.equal(s.at(spike.startBlock - 1).wethMult, 1);
-  assert.equal(s.at(spike.endBlock).wethMult, 1);
+  // The crash regime is the same file with the sign flipped.
+  const crash = parseStressEvents(
+    JSON.stringify((parse(readFileSync("config/regimes/crash.yaml", "utf8")) as { stress: { events: unknown[] } }).stress.events),
+  );
+  assert.deepEqual(crash.map((c) => ({ ...c, type: "x", alignWith: undefined })), configs.map((c) => ({ ...c, type: "x", alignWith: undefined })));
+  let up = 0;
+  let gaps = 0;
+  const counts = new Set<number>();
+  for (const seed of SEEDS) {
+    const s = new EventSchedule(configs, seed, doc.run.blocks);
+    const shocks = s.events.filter((e) => e.type === "spike" || e.type === "crash");
+    const pulls = s.events.filter((e) => e.type === "liquidityPull");
+    counts.add(shocks.length);
+    assert.equal(pulls.length, shocks.length);
+    let residual = 1;
+    for (const [k, g] of shocks.entries()) {
+      gaps++;
+      if (g.type === "spike") up++;
+      else assert.equal(g.flippedFrom, "spike");
+      assert.equal(pulls[k].startBlock, g.startBlock, "the pull opens on the gap's block");
+      const frac = g.startBlock / doc.run.blocks;
+      assert.ok(frac >= 0.25 && frac <= 0.7, `window frac ${frac} inside [0.25, 0.7]`);
+      assert.ok(g.magnitude >= 0.15 && g.magnitude <= 0.22);
+      assert.ok(g.recoverFrac! >= 0.4 && g.recoverFrac! <= 1);
+      if (k > 0) assert.ok(g.startBlock >= pulls[k - 1].endBlock + 20, "the next gap waits out the last pull");
+      residual *= 1 + (g.type === "spike" ? 1 : -1) * g.magnitude * (1 - g.recoverFrac!);
+    }
+    // What did not recover is still there on the last block.
+    assert.ok(Math.abs(s.at(doc.run.blocks - 1).wethMult - residual) < 1e-9, `seed ${seed}`);
+  }
+  assert.deepEqual([...counts].sort(), [1, 2]);
+  assert.ok(up / gaps > 0.65 && up / gaps < 0.85, `${up}/${gaps} went up`);
 });
 
 // Issue #106: depeg-persist is depeg.yaml with `persist: true` -- the dislocation ramps, holds, and
@@ -835,4 +860,205 @@ test("config/regimes/cdp-incident.yaml: crash, pull and eUSD depeg on one window
   assert.ok(frac >= 0.3 && frac <= 0.7, `window frac ${frac}`);
   assert.ok(s.hasEusdDepeg());
   assert.ok(s.eusdDepegFractionAt(depeg.startBlock + depeg.rampBlocks) > 0);
+});
+
+// ---- variation: count / drawn trapezoids / flipProb / recoverFrac / random venue ----
+// The regime YAMLs used to fix everything but magnitude and start: how many windows, which band
+// each one sat in, how long its ramp/hold/decay ran, which way a crash went and that it always
+// healed. These pin the knobs that let the seed decide those as well.
+
+test("count opens a drawn number of windows that never overlap and all start inside windowFrac", () => {
+  const cfg: StressEventConfig = {
+    type: "crash",
+    count: [2, 4],
+    minGapBlocks: 5,
+    magnitudeRange: [0.1, 0.2],
+    windowFrac: [0.1, 0.8],
+    rampBlocks: [2, 4],
+    holdBlocks: [3, 6],
+    decayBlocks: [4, 8],
+  };
+  const seen = new Set<number>();
+  for (const seed of SEEDS) {
+    const s = new EventSchedule([cfg], seed, 360);
+    const evs = s.events;
+    seen.add(evs.length);
+    assert.ok(evs.length >= 2 && evs.length <= 4, `count ${evs.length}`);
+    for (const [k, ev] of evs.entries()) {
+      assert.ok(ev.startBlock >= Math.round(0.1 * 360) && ev.startBlock <= Math.round(0.8 * 360), `start ${ev.startBlock}`);
+      assert.ok(ev.rampBlocks >= 2 && ev.rampBlocks <= 4);
+      assert.ok(ev.holdBlocks >= 3 && ev.holdBlocks <= 6);
+      assert.ok(ev.decayBlocks >= 4 && ev.decayBlocks <= 8);
+      assert.equal(ev.endBlock, ev.startBlock + ev.rampBlocks + ev.holdBlocks + ev.decayBlocks);
+      if (k > 0) assert.ok(ev.startBlock >= evs[k - 1].endBlock + 5, `seed ${seed}: window ${k} overlaps`);
+    }
+    assert.deepEqual(new EventSchedule([cfg], seed, 360).events, evs, "same seed, same schedule");
+  }
+  assert.deepEqual([...seen].sort(), [2, 3, 4], "every count in the range occurs");
+});
+
+test("count: [0, 1] is an entry that may not happen at all", () => {
+  const cfg: StressEventConfig = { ...FIXED_CRASH, count: [0, 1], windowFrac: [0.2, 0.6] };
+  const lengths = new Set(SEEDS.map((seed) => new EventSchedule([cfg], seed, 60).events.length));
+  assert.deepEqual([...lengths].sort(), [0, 1]);
+});
+
+test("a follower pairs with its anchor window by window, and the pair's longer member sets the spacing", () => {
+  const configs: StressEventConfig[] = [
+    { ...FIXED_CRASH, count: [1, 3], windowFrac: [0.1, 0.8] },
+    // The pull outlasts the crash (span 14 against 6): the next crash must not open inside it.
+    { ...FIXED_PULL, alignWith: "crash", decayBlocks: [8, 10] },
+  ];
+  for (const seed of SEEDS) {
+    const s = new EventSchedule(configs, seed, 200);
+    const crashes = s.events.filter((e) => e.type === "crash");
+    const pulls = s.events.filter((e) => e.type === "liquidityPull");
+    assert.equal(pulls.length, crashes.length);
+    for (const [k, c] of crashes.entries()) {
+      assert.equal(pulls[k].startBlock, c.startBlock);
+      if (k > 0) assert.ok(c.startBlock >= pulls[k - 1].endBlock, `seed ${seed}: crash ${k} opens inside pull ${k - 1}`);
+    }
+  }
+  assert.throws(
+    () => new EventSchedule([FIXED_CRASH, { ...FIXED_PULL, alignWith: "crash", count: [1, 2] }], 1, 60),
+    /a follower takes its anchor's count/,
+  );
+});
+
+test("a count that cannot fit is refused for every seed, not only the unlucky ones", () => {
+  // Four 6-block windows need 18 blocks of start range between the first start and the last.
+  assert.throws(
+    () => new EventSchedule([{ ...FIXED_CRASH, count: [1, 4], windowFrac: [0.4, 0.5] }], 1, 100),
+    /4 windows of up to 6 blocks \(\+0 gap\) do not fit between the starts windowFrac allows/,
+  );
+  // Fits the start range, not the run: the last window has nowhere to end.
+  assert.throws(
+    () => new EventSchedule([{ ...FIXED_CRASH, count: [3, 3], windowFrac: [0, 1] }], 1, 16),
+    /do not fit in a 16-block run/,
+  );
+});
+
+test("flipProb turns a shock the other way and records what it was", () => {
+  const never = new EventSchedule([{ ...FIXED_CRASH, flipProb: 0 }], 1, 20).events[0];
+  assert.equal(never.type, "crash");
+  assert.equal(never.flippedFrom, undefined);
+  const always = new EventSchedule([{ ...FIXED_CRASH, flipProb: 1 }], 1, 20);
+  assert.equal(always.events[0].type, "spike");
+  assert.equal(always.events[0].flippedFrom, "crash");
+  assert.ok(Math.abs(always.at(12).wethMult - 1.1) < 1e-9, "a flipped crash moves the price up");
+  // A quarter of the draws, give or take.
+  const flipped = SEEDS.filter(
+    (seed) => new EventSchedule([{ ...FIXED_CRASH, flipProb: 0.25 }], seed, 20).events[0].type === "spike",
+  ).length;
+  assert.ok(flipped > 25 && flipped < 75, `${flipped}/200 flipped`);
+  // The pull still pairs with a crash that went up: alignment reads the configured type.
+  const s = new EventSchedule([{ ...FIXED_CRASH, flipProb: 1 }, { ...FIXED_PULL, alignWith: "crash" }], 1, 20);
+  assert.equal(s.events[1].startBlock, s.events[0].startBlock);
+});
+
+test("recoverFrac closes only part of the gap and leaves the rest to the end of the run", () => {
+  const cfg: StressEventConfig = { ...FIXED_CRASH, recoverFrac: [0.6, 0.6] };
+  const s = new EventSchedule([cfg], 1, 40);
+  const ev = s.events[0];
+  assert.equal(ev.recoverFrac, 0.6);
+  // Same ramp and hold as ever.
+  assert.ok(Math.abs(s.at(ev.startBlock + ev.rampBlocks).wethMult - 0.9) < 1e-9);
+  // The decay lands on 1 − m·(1 − r) = 1 − 0.1·0.4 and stays there.
+  assert.ok(Math.abs(s.at(ev.endBlock - 1).wethMult - 0.96) < 1e-9, `${s.at(ev.endBlock - 1).wethMult}`);
+  assert.ok(Math.abs(s.at(ev.endBlock).wethMult - 0.96) < 1e-9);
+  assert.ok(Math.abs(s.at(39).wethMult - 0.96) < 1e-9);
+  // The window itself still closes: nothing that means "is a shock happening now" sees a residual.
+  assert.equal(s.activeEventAt(ev.endBlock), null);
+  assert.equal(s.activePriceEventAt(ev.endBlock), null);
+  // A full recovery is the old trapezoid exactly.
+  const full = new EventSchedule([{ ...FIXED_CRASH, recoverFrac: [1, 1] }], 1, 40);
+  const plain = new EventSchedule([FIXED_CRASH], 1, 40);
+  for (let t = 0; t < 40; t++) assert.equal(full.at(t).wethMult, plain.at(t).wethMult, `t=${t}`);
+});
+
+test("a residual that stays is not reported as further applications", async () => {
+  const { StressAudit } = await import("../core/src/realtime/stressAudit.js");
+  const s = new EventSchedule([{ ...FIXED_CRASH, recoverFrac: [0.5, 0.5] }], 1, 40);
+  const ev = s.events[0];
+  const audit = new StressAudit(s.events, () => {});
+  for (let t = 0; t < 40; t++)
+    audit.price("WETH", t, 1000 + t, { before: 3000, unoverlaid: 3000, fair: 3000 * s.at(t).wethMult }, { stage: "price_submitted" });
+  const [summary] = audit.summaries();
+  assert.equal(summary.applications, ev.endBlock - ev.startBlock);
+  assert.equal(summary.lastBlock, 1000 + ev.endBlock - 1);
+});
+
+test("venue: random spreads a whale over all three books", () => {
+  const venues = new Set(
+    SEEDS.map(
+      (seed) =>
+        new EventSchedule([{ type: "whale", venue: "random", magnitudeRange: [30, 30], windowFrac: [0.5, 0.5], rampBlocks: 0, holdBlocks: 0, decayBlocks: 0 }], seed, 100).events[0].venue,
+    ),
+  );
+  assert.deepEqual([...venues].sort(), ["balancer", "curve", "uniswap"]);
+});
+
+test("repriceAnchorProb decides per window whether the drift stays", () => {
+  const cfg: StressEventConfig = {
+    type: "cexDrift",
+    count: [3, 3],
+    repriceAnchorProb: 0.5,
+    magnitudeRange: [0.001, 0.001],
+    windowFrac: [0.1, 0.8],
+    rampBlocks: 2,
+    holdBlocks: 4,
+    decayBlocks: 2,
+  };
+  const perSchedule = SEEDS.map((seed) => new EventSchedule([cfg], seed, 200).events.filter((e) => e.repriceAnchor).length);
+  assert.ok(perSchedule.includes(0) && perSchedule.includes(3), "some weeks never reprice, some always");
+});
+
+test("the new keys are refused where they do not apply", () => {
+  const one = (extra: Record<string, unknown>, type = "crash") =>
+    parseStressEvents(JSON.stringify([{ type, magnitudeRange: [0.1, 0.2], windowFrac: [0.3, 0.7], rampBlocks: 1, holdBlocks: 1, decayBlocks: 1, ...extra }]));
+  assert.throws(() => one({ flipProb: 0.2 }, "liquidityPull"), /flipProb only applies/);
+  assert.throws(() => one({ flipProb: 1.5 }), /probability between 0 and 1/);
+  assert.throws(() => one({ recoverFrac: [0.5, 1] }, "depeg"), /stable is required|recoverFrac only applies/);
+  assert.throws(() => one({ recoverFrac: [0.5, 1.2] }), /recoverFrac max must be <= 1/);
+  assert.throws(() => one({ venue: "random" }, "liquidityPull"), /"random" only applies to type "whale"/);
+  assert.throws(() => one({ repriceAnchorProb: 0.3 }), /repriceAnchorProb only applies/);
+  assert.throws(() => one({ repriceAnchorProb: 0.3, repriceAnchor: true }, "cexDrift"), /pick one/);
+  assert.throws(() => one({ count: [1.5, 2] }), /count must be an integer range/);
+  assert.throws(() => one({ count: [1, 2], alignWith: "spike" }), /a follower takes its anchor's count/);
+  assert.throws(() => one({ minGapBlocks: 4 }), /minGapBlocks only applies with count/);
+  assert.throws(() => one({ rampBlocks: [3, 1] }), /min <= max/);
+  assert.throws(() => one({ rampBlocks: [0, 1], holdBlocks: 0, decayBlocks: [0, 2] }), /positive total window/);
+  const parsed = one({ count: [1, 3], minGapBlocks: 4, rampBlocks: [1, 3], flipProb: 0.25, recoverFrac: [0.4, 1] })[0];
+  assert.deepEqual(parsed.count, [1, 3]);
+  assert.deepEqual(parsed.rampBlocks, [1, 3]);
+  assert.equal(parsed.flipProb, 0.25);
+});
+
+// The LCG's first output moves by a·Δ/2³² between seeds Δ apart. On the published seeds 101-505
+// that put the first event's magnitude in the bottom quarter of its range five times out of five.
+test("with variation keys, nearby seeds spread the first draw over its whole range", () => {
+  const cfg: StressEventConfig = {
+    type: "crash",
+    magnitudeRange: [0, 1],
+    windowFrac: [0.25, 0.7],
+    rampBlocks: [2, 4],
+    holdBlocks: 6,
+    decayBlocks: 8,
+  };
+  const u = [101, 202, 303, 404, 505, ...SEEDS].map((seed) => new EventSchedule([cfg], seed, 360).events[0].magnitude);
+  assert.ok(Math.min(...u) < 0.1 && Math.max(...u) > 0.9, `range ${Math.min(...u)}-${Math.max(...u)}`);
+  const pub = u.slice(0, 5);
+  assert.ok(Math.max(...pub) - Math.min(...pub) > 0.3, `published seeds ${pub.map((x) => x.toFixed(2)).join(" ")}`);
+});
+
+test("a schedule without variation keys is the one it always was", () => {
+  // Pinned from the implementation before the keys existed: the practice period's windows are a
+  // function of its seed, and must not move on an upgrade.
+  const cfg: StressEventConfig = { type: "crash", magnitudeRange: [0.15, 0.22], windowFrac: [0.25, 0.7], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 };
+  const a = new EventSchedule([cfg], 101, 360).events[0];
+  assert.equal(a.startBlock, 159);
+  assert.equal(a.magnitude, 0.15649268912849948);
+  const b = new EventSchedule([cfg], 202, 360).events[0];
+  assert.equal(b.startBlock, 156);
+  assert.equal(b.magnitude, 0.15917842744849622);
 });

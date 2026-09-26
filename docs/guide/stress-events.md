@@ -206,13 +206,27 @@ USDC the wave paid, USDC it took back).
 
 | key | applies to | what it does |
 |---|---|---|
-| `alignWith: <type>` | any | Start where the first event of that type starts. Required because *same range is not same window*: two events sampling `[0.25, 0.7]` of a 360-block run land ~160 blocks apart on average. Chained alignment and self-alignment are rejected |
+| `alignWith: <type>` | any | Start where the nearest event of that type starts (window by window when it has a `count`). Required because *same range is not same window*: two events sampling `[0.25, 0.7]` of a 360-block run land ~160 blocks apart on average. Chained alignment and self-alignment are rejected |
 | `persist: true` | `depeg` `eusdDepeg` | The dislocation holds to the end of the run. **Requires `decayBlocks: 0`** — a decay that never runs would read as a window that closes. The teardown still buys back *after* the last scored block, because the startup check refuses to begin on a depegged pool. `config/regimes/depeg-persist.yaml` is the official regime built on it: without one, every dislocation in the set heals and "buy the discount and hold" is right by construction (issue #106) |
 | `repriceAnchor: true` | `cexDrift` | The OU anchor moves with the drift (above) |
-| `venue` | `whale` `liquidityPull` | `uniswap` / `balancer` / `curve` |
+| `repriceAnchorProb: p` | `cexDrift` | `repriceAnchor` decided per window by the seed, with probability `p`. Exclusive with `repriceAnchor` |
+| `venue` | `whale` `liquidityPull` | `uniswap` / `balancer` / `curve`; `random` (whale only) lets the seed pick one per window |
 | `stable` | `depeg` | Which registry stable is pushed off par (required) |
 | `side` | `whale` `cexDrift` | `buy` / `sell` / `random` (default) |
 | `base` | overlays | Which asset the price event targets (default WETH; ADR 0013) |
+| `count: [min, max]` | any | How many windows the entry opens (inclusive integers; `0` allowed, so an entry can be "maybe"). Omitted = one, placed as always. The windows never overlap, every *start* falls inside `windowFrac`, and they are spread uniformly over the placements that fit. A follower (`alignWith`) takes its anchor's count and pairs window by window, so it cannot set its own. A count that cannot fit at the *longest* draws is refused at startup, not on the unlucky seed |
+| `minGapBlocks` | with `count` | The fewest blocks between one window's end (its followers' included) and the next one's start |
+| `rampBlocks` / `holdBlocks` / `decayBlocks: [min, max]` | trapezoids | Drawn per window instead of fixed, so the start of a shock no longer gives away the block it ends on |
+| `flipProb: p` | `crash` `spike` | The seed turns the shock the other way with probability `p`; the resolved event reads `type: spike, flippedFrom: crash`. The regime keeps its lean; its name no longer says which side to stand on. Leave it unset where victims are configured (an upward crash breaches nobody; the coordinator warns when no crash resolves) |
+| `recoverFrac: [min, max]` | `crash` `spike` | Share of the gap the decay closes; the rest stays to the end of the run. Without it every gap heals on a fixed clock and "fade any move, close it when the window does" is right by construction -- the hole `persist` closed for depeg. **Not for a continuous economy**: a residual there stays for weeks and compounds with the next one (the same reason `persist` and `repriceAnchor` stay out of `config/practice.yaml`) |
+
+**The seed is hashed once a schedule asks it for more.** A schedule that uses any of `count`, a
+drawn trapezoid, `flipProb`, `recoverFrac`, `venue: random` or `repriceAnchorProb` seeds its Rng
+from a hashed seed. The Rng is an LCG whose *first* output barely moves between nearby seeds: on the
+published seeds 101-505 the first event's magnitude drew from the bottom quarter of its range five
+times out of five, in every regime (a crash of 15.6-16.8% out of [15%, 22%]). A schedule that uses
+none of them keeps the raw seed, byte for byte, so a running practice period's windows do not move
+on an upgrade.
 
 Every one of these is validated at parse time and **rejected rather than ignored** when it does not
 apply to the type — an option silently dropped is a regime that logs itself and then does something
@@ -298,12 +312,12 @@ outside the official set.
 
 | regime | what it holds |
 |---|---|
-| `config/regimes/crash.yaml` | a price gap plus a `liquidityPull` on the same window via `alignWith` |
-| `config/regimes/spike.yaml` | the same trapezoid upward (`spike`), with the pull aligned to it — the tail that rewards holding the basket (issue #105) |
+| `config/regimes/crash.yaml` | 1-2 price gaps (a quarter of them upward, 40-100% of each recovering) plus a `liquidityPull` on each gap's window via `alignWith` |
+| `config/regimes/spike.yaml` | the same distribution leaning upward (`spike`), with the pull aligned to it — the tail that rewards holding the basket (issue #105) |
 | `config/regimes/lending-incident.yaml` | the same crash, plus victims, a liquidator slot, and thinned books |
 | `config/regimes/cdp-incident.yaml` | the CDP side of the same incident: Liquity victim Troves at ICR 1.20, the crash, and an `eusdDepeg` on the same window (issue #107) |
 | `config/regimes/cex-drift.yaml` / `informed-flow.yaml` | the calibration the `cexDrift` / `flowTrend` windows were derived from |
-| `config/regimes/whale.yaml` | single large orders against an unchanged fair |
+| `config/regimes/whale.yaml` | 3-5 single large orders against an unchanged fair, each on a venue the seed picks |
 | `config/regimes/depeg.yaml` | a registry stable off par (issue #27) |
 | `config/regimes/depeg-persist.yaml` | the same depeg that never closes (`persist: true`), so the final mark is taken at the discount (issue #106) |
 | `config/regimes/launch.yaml` | a `tokenLaunch` window: 2–3 listings, a wave or a dud per token (issue #29) |

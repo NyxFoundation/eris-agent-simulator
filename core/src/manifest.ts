@@ -34,6 +34,7 @@ import { ACTION_TYPES_BY_PROTOCOL } from "@eris/sdk/action.js";
 import { baseTokens, stableTokens } from "@eris/sdk/markets.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
 import type { RealtimeConfig } from "./config.js";
+import { resolveAnchor } from "./realtime/events.js";
 
 export const MANIFEST_SCHEMA = "eris-environment-manifest/1";
 export const MANIFEST_FILENAME = "manifest.json";
@@ -99,8 +100,14 @@ export type EnvironmentManifest = {
   tokens: Record<string, { address: string; decimals: number; kind: string }>;
   limits: Record<string, string | number>;
   funding: Record<string, string>;
-  /** Types and counts only -- never windows. See the header. */
-  episodes: { kinds: Array<{ type: string; count: number }>; note: string };
+  /**
+   * Types and counts only -- never windows. See the header. `maxCount` is present when the seed
+   * decides how many (a `count` range): `count` is then the fewest the period can hold.
+   */
+  episodes: {
+    kinds: Array<{ type: string; count: number; maxCount?: number }>;
+    note: string;
+  };
   participants: ManifestParticipant[];
 };
 
@@ -164,9 +171,17 @@ export function buildManifest(opts: {
 
   // Counted by type. A period that contains four crashes says so; when the four open is the thing
   // being withheld (ADR 0021 §1).
-  const kinds = new Map<string, number>();
-  for (const ev of config.stressEvents)
-    kinds.set(ev.type, (kinds.get(ev.type) ?? 0) + 1);
+  // A follower opens as many windows as its anchor, and an entry with `count` as many as the seed
+  // draws, so a range is the honest answer. A flipProb can turn a crash into a spike; the kind here
+  // is the configured one.
+  const kinds = new Map<string, { count: number; maxCount: number }>();
+  for (const [i, ev] of config.stressEvents.entries()) {
+    const anchor = resolveAnchor(config.stressEvents, i);
+    const lead = anchor < 0 ? ev : config.stressEvents[anchor];
+    const [lo, hi] = lead.count ?? [1, 1];
+    const cur = kinds.get(ev.type) ?? { count: 0, maxCount: 0 };
+    kinds.set(ev.type, { count: cur.count + lo, maxCount: cur.maxCount + hi });
+  }
 
   return {
     schema: MANIFEST_SCHEMA,
@@ -247,7 +262,11 @@ export function buildManifest(opts: {
       ),
     },
     episodes: {
-      kinds: [...kinds].map(([type, count]) => ({ type, count })),
+      kinds: [...kinds].map(([type, { count, maxCount }]) => ({
+        type,
+        count,
+        ...(maxCount !== count ? { maxCount } : {}),
+      })),
       note:
         "Kinds and counts are published; when each window opens is not (ADR 0021 §1). Read the " +
         "chain, not this list, to know whether one is open now.",

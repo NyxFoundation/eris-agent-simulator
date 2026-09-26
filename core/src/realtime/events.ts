@@ -157,16 +157,32 @@ export type StressEventConfig = {
   // in the system can express "the price moved and stayed there" -- which is the case that decides
   // whether betting on a return is skill or habit.
   repriceAnchor?: boolean;
+  // cexDrift only: repriceAnchor decided per window by the seed, with this probability. A regime
+  // whose second episode always reprices and the others never do answers "does this one stay?" by
+  // counting. Exclusive with repriceAnchor.
+  repriceAnchorProb?: number;
+  // crash / spike only: probability that the seed turns the shock the other way (a crash that
+  // resolves to a spike, and vice versa). The regime keeps its lean -- a crash regime still mostly
+  // falls -- but the name no longer tells an agent which side to stand on. A regime that liquidates
+  // victims must leave it unset: a crash that went up breaches nobody.
+  flipProb?: number;
+  // crash / spike only: share of the gap the decay closes, drawn per window [min, max]. 1 (the
+  // default, and the only behaviour before this existed) returns the price to its base path; below
+  // 1 the rest of the gap stays to the end of the run. Without it every shock heals on a fixed
+  // clock, and "fade any move and close it 17 blocks later" is right by construction -- the same
+  // hole issue #106 closed for depeg. Not for a continuous economy: a residual there stays for weeks
+  // and compounds with the next one (the reason persist and repriceAnchor stay out of practice.yaml).
+  recoverFrac?: [number, number];
   // flowTrend only: how the uninformed flow leans while the window is open. `magnitudeRange` is the
   // multiplier on its size (the `informed-flow` regime used 3x), and these two are the shape of the
   // lean the multiplier is applied to. Omitted values leave the run's own setting in place.
   trendCorrelation?: number;
   persistBlocks?: number;
   // whale: the venue it prints on. Default "uniswap" (the deepest pool, so the size has to be real
-  // to move it).
+  // to move it). "random" lets the seed pick one of the three per window.
   // liquidityPull: the venue whose book thins. **Default is every enabled venue** -- thinning one
   // while the others keep block-0 depth just moves execution elsewhere, so narrowing is opt-in.
-  venue?: "uniswap" | "balancer" | "curve";
+  venue?: WhaleVenue | "random";
   // tokenLaunch only (issue #29). Every range is sampled by the seed; the wave is drawn *per token*,
   // the window once per event. `magnitudeRange` does not apply (there is no single magnitude: each
   // token has its own wave) and is rejected if present.
@@ -192,12 +208,28 @@ export type StressEventConfig = {
   // would almost never thin the book while the price is gapping. Issue #52's composition is a
   // property of the pair, not of either event, and it has to be stated rather than hoped for.
   alignWith?: StressEventType;
-  // Length of each trapezoid segment (block count; fixed). Not applicable to lstSlash, which is
-  // instantaneous, so they default to 0 there.
-  rampBlocks: number;
-  holdBlocks: number;
-  decayBlocks: number;
+  // How many windows this entry opens, drawn [min, max] (inclusive integers; 0 allowed, so an entry
+  // can be "maybe"). Omitted = exactly one, placed as before. The windows share windowFrac as the
+  // range their *starts* fall in (pulled in, as a single window is, when the last one would run past
+  // the end of the run), never overlap, and are spread uniformly over the placements that fit -- so a regime no longer says how many episodes it has, or that the third follows the second
+  // by a fixed band. A follower (alignWith) takes its anchor's count and pairs window by window, so
+  // it must not set its own.
+  count?: [number, number];
+  // With count: the fewest blocks between one window's end and the next one's start (default 0).
+  minGapBlocks?: number;
+  // Length of each trapezoid segment (block count). A number is fixed; [min, max] is drawn per
+  // window (inclusive integers), so the start of a shock no longer gives away the block it ends on.
+  // Not applicable to lstSlash, which is instantaneous, so they default to 0 there.
+  rampBlocks: BlockCount;
+  holdBlocks: BlockCount;
+  decayBlocks: BlockCount;
 };
+
+// A trapezoid segment: fixed, or an inclusive integer range the seed draws from per window.
+export type BlockCount = number | [number, number];
+
+type WhaleVenue = "uniswap" | "balancer" | "curve";
+const WHALE_VENUES: readonly WhaleVenue[] = ["uniswap", "balancer", "curve"];
 
 // A slash is instantaneous, so its window is the single block it lands on.
 const POINT_EVENT_SPAN = 1;
@@ -235,6 +267,11 @@ export type ResolvedStressEvent = {
   holdBlocks: number;
   decayBlocks: number;
   endBlock: number; // startBlock + ramp + hold + decay (this value is not included in the window)
+  // crash / spike: the configured type when flipProb turned the shock the other way. `type` is what
+  // the price did; this is what the regime asked for, kept so the audit can tell the two apart.
+  flippedFrom?: "crash" | "spike";
+  // crash / spike: share of the gap the decay closed. Absent = all of it.
+  recoverFrac?: number;
 };
 
 // One token of a tokenLaunch window (issue #29). `dud` is the seed's answer to "does demand arrive":
@@ -299,8 +336,8 @@ const STRESS_SEED_SALT = 0x53_54_52_53; // "STRS"
 // Trapezoid envelope e(blockIndex) ∈ [0,1]:
 //   ramp:  0 → 1 (rises over rampBlocks)
 //   hold:  1 (holdBlocks)
-//   decay: 1 → 0 (returns over decayBlocks)
-//   outside window: 0
+//   decay: 1 → 1 − recoverFrac (returns over decayBlocks; to 0 when recoverFrac is absent)
+//   outside window: 0 before it; 1 − recoverFrac from endBlock on (the part of the gap that stays)
 // spike is wethMult = 1 + m·e, crash is 1 − m·e. At e=1 the deviation is at most ±m.
 export function stressEnvelope(ev: ResolvedStressEvent, blockIndex: number): number {
   const t = blockIndex - ev.startBlock;
@@ -310,8 +347,10 @@ export function stressEnvelope(ev: ResolvedStressEvent, blockIndex: number): num
   if (t < r + h) return 1; // hold
   // A dislocation that does not close: the level it reached is where the run leaves it (issue #56).
   if (ev.persist) return 1;
-  if (t < r + h + d) return d === 0 ? 1 : 1 - (t - (r + h) + 1) / d; // decay
-  return 0; // outside window (from endBlock onward)
+  const residual = ev.recoverFrac === undefined ? 0 : 1 - ev.recoverFrac;
+  if (t < r + h + d)
+    return d === 0 ? 1 : 1 - ((1 - residual) * (t - (r + h) + 1)) / d; // decay
+  return residual; // from endBlock onward
 }
 
 // Pure-function deterministic schedule (config + seed + runBlocks → at(blockIndex)).
@@ -326,133 +365,99 @@ export class EventSchedule {
         "ERIS_STRESS_EVENTS requires a fixed-length run: set ERIS_RUN_BLOCKS > 0 (ADR 0009)",
       );
     }
+    // Which entry each follower pairs with, resolved before any draw: a follower draws once per
+    // window its anchor can open, so the anchor's count range has to be known first.
+    const anchorOf = configs.map((c, i) => resolveAnchor(configs, i));
     // An Rng independent of the price main path and flow. The same SEED deterministically yields the same schedule.
-    const rng = new Rng((seed ^ STRESS_SEED_SALT) >>> 0);
-    this.events = configs.map((c) => {
-      const magnitude = lerp(
-        c.magnitudeRange[0],
-        c.magnitudeRange[1],
-        rng.next(),
+    //
+    // The Rng is an LCG, and its *first* output barely moves between nearby seeds: seeds Δ apart
+    // start a·Δ/2³² apart, so seeds 1-200 all land inside ~10% of [0, 1). Measured on the published
+    // seeds 101-505: the first event's magnitude drew u = 0.09-0.25 on all five, in every regime
+    // (a crash of 15.6-16.8% out of [15%, 22%], five times). A schedule that uses any of the
+    // variation keys (count, drawn trapezoids, flipProb, recoverFrac, venue: random,
+    // repriceAnchorProb) is a new schedule anyway, so it takes a hashed seed. One that uses none
+    // keeps the raw one, byte for byte -- the practice period's windows are a function of its
+    // secret seed, and an upgrade must not move them.
+    const salted = (seed ^ STRESS_SEED_SALT) >>> 0;
+    const rng = new Rng(configs.some(usesVariation) ? mix32(salted) : salted);
+    // First pass: every draw, in list order. How many draws an entry makes is a function of the
+    // config alone -- a count draws its maximum number of windows, not the number it landed on -- so
+    // one entry's outcome never shifts the schedule of the entries after it.
+    const drawn = configs.map((c, i) => {
+      const count = c.count === undefined ? undefined : drawInt(rng, c.count);
+      const lead = anchorOf[i] < 0 ? c : configs[anchorOf[i]];
+      const slots = lead.count === undefined ? 1 : lead.count[1];
+      const windows: DrawnWindow[] = [];
+      for (let k = 0; k < slots; k++) windows.push(drawWindow(c, rng));
+      return { count, windows };
+    });
+    // A follower opens exactly as many windows as its anchor drew.
+    const counts = configs.map(
+      (_, i) => drawn[anchorOf[i] < 0 ? i : anchorOf[i]].count ?? 1,
+    );
+
+    // Second pass: place every entry that follows nothing.
+    const starts: number[][] = configs.map((c, i) => {
+      if (anchorOf[i] >= 0) return [];
+      const windows = drawn[i].windows.slice(0, counts[i]);
+      if (c.count === undefined) {
+        // One window, placed the way it always was. Clamp startBlock so the window fits inside the
+        // run window (scoring history depth; event window ⊂ run window).
+        const w = windows[0];
+        const maxStart = Math.max(0, runBlocks - w.span);
+        const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], w.startU);
+        return [
+          Math.max(0, Math.min(Math.round(startFrac * runBlocks), maxStart)),
+        ];
+      }
+      const followers = configs
+        .map((_, j) => j)
+        .filter((j) => anchorOf[j] === i);
+      return placeWindows(
+        i,
+        c,
+        followers.map((j) => configs[j]),
+        // Each window claims the blocks of its longest member, so a pull that outlasts its crash
+        // still ends before the next crash begins.
+        windows.map((w, k) =>
+          Math.max(w.span, ...followers.map((j) => drawn[j].windows[k].span)),
+        ),
+        windows.map((w) => w.startU),
+        runBlocks,
       );
-      const startFrac = lerp(c.windowFrac[0], c.windowFrac[1], rng.next());
-      const span = isPointEvent(c.type)
-        ? POINT_EVENT_SPAN
-        : (c.type === "tokenLaunch" ? TOKEN_LAUNCH_LEAD_BLOCKS : 0) +
-          c.rampBlocks +
-          c.holdBlocks +
-          c.decayBlocks;
-      // Clamp startBlock so the window fits inside the run window (scoring history depth; event window ⊂ run window).
-      const maxStart = Math.max(0, runBlocks - span);
-      const startBlock = Math.max(
-        0,
-        Math.min(Math.round(startFrac * runBlocks), maxStart),
-      );
-      // Draw the side for every whale regardless of config so the RNG consumption stays a pure
-      // function of the event list -- making it conditional would let one event's `side: buy` shift
-      // the schedule of every event after it.
-      const sideDraw =
-        c.type === "whale" || c.type === "cexDrift" ? rng.next() : undefined;
-      const side =
-        c.type === "whale" || c.type === "cexDrift"
-          ? c.side === undefined || c.side === "random"
-            ? sideDraw! < 0.5
-              ? ("buy" as const)
-              : ("sell" as const)
-            : c.side
-          : undefined;
-      // Drawn for every cexDrift whether or not the range is set, for the same reason as the side:
-      // the RNG consumption has to stay a pure function of the event list.
-      const kappaDraw = c.type === "cexDrift" ? rng.next() : undefined;
-      const kappaMult =
-        c.type === "cexDrift" && c.kappaMultRange !== undefined
-          ? lerp(c.kappaMultRange[0], c.kappaMultRange[1], kappaDraw as number)
-          : undefined;
-      // tokenLaunch (issue #29): the count once, then a fixed four draws per token whatever the
-      // outcome -- the wave multiplier is drawn even for a dud -- so the RNG consumption is a pure
-      // function of the event list and the count, not of which tokens happened to get demand.
-      const launches =
-        c.type === "tokenLaunch" ? drawTokenLaunches(c, rng) : undefined;
-      return {
-        type: c.type,
-        base: c.base ?? "WETH",
-        ...(c.stable !== undefined ? { stable: c.stable } : {}),
-        magnitude,
-        ...(side !== undefined ? { side } : {}),
-        ...(kappaMult !== undefined ? { kappaMult } : {}),
-        ...(c.persist === true ? { persist: true } : {}),
-        ...(c.repriceAnchor === true ? { repriceAnchor: true } : {}),
-        ...(c.type === "flowTrend" && c.trendCorrelation !== undefined
-          ? { trendCorrelation: c.trendCorrelation }
-          : {}),
-        ...(c.type === "flowTrend" && c.persistBlocks !== undefined
-          ? { persistBlocks: c.persistBlocks }
-          : {}),
-        ...(c.type === "whale" ? { venue: c.venue ?? "uniswap" } : {}),
-        // liquidityPull keeps `venue` undefined when unset: that means "all enabled", which the
-        // schedule cannot resolve on its own (it does not know which protocols the run turned on).
-        ...(c.type === "liquidityPull" && c.venue !== undefined
-          ? { venue: c.venue }
-          : {}),
-        ...(launches !== undefined ? { launches } : {}),
-        startBlock,
-        rampBlocks: c.rampBlocks,
-        holdBlocks: c.holdBlocks,
-        decayBlocks: c.decayBlocks,
-        endBlock: startBlock + span,
-      };
     });
 
-    // Second pass: move the events that follow another one onto its start. Done after every draw so
-    // the RNG consumption stays a pure function of the event list -- an alignment must not shift the
-    // schedule of the events around it.
+    // Third pass: move the events that follow another one onto its starts, window by window. Done
+    // after every draw so the RNG consumption stays a pure function of the event list -- an alignment
+    // must not shift the schedule of the events around it.
     configs.forEach((c, i) => {
-      if (c.alignWith === undefined) return;
-      // The nearest entry of that type *above* this one in the list, else the first below it. With
-      // one anchor in the list that is the same event either way; with several (a practice period
-      // that schedules a crash every week, each with its own pull) each follower pairs with the
-      // anchor written just before it. Taking the first match instead put every pull of the period
-      // on week one's crash.
-      let anchorIndex = -1;
-      for (let j = i - 1; j >= 0; j--)
-        if (this.events[j].type === c.alignWith) {
-          anchorIndex = j;
-          break;
+      const anchorIndex = anchorOf[i];
+      if (anchorIndex < 0) return;
+      starts[i] = starts[anchorIndex].map((start, k) => {
+        const span = drawn[i].windows[k].span;
+        // A follower with a longer trapezoid than its anchor cannot start where the anchor does when
+        // the anchor sits near the end of the run. Silently sliding it earlier would un-align the
+        // pair -- which is the single thing alignWith exists to guarantee -- so this is a config error.
+        if (start + span > runBlocks) {
+          throw new Error(
+            `stress event[${i}] aligns with a ${c.alignWith} at block ${start}, but its own ` +
+              `window is ${span} blocks and the run is ${runBlocks}: shorten it, or lower windowFrac's ` +
+              "upper bound (a heavily shortened run, e.g. --blocks on a smoke test, can hit this on " +
+              "some seeds where the regime's own length does not)",
+          );
         }
-      if (anchorIndex < 0)
-        anchorIndex = this.events.findIndex((ev, j) => j > i && ev.type === c.alignWith);
-      if (anchorIndex < 0) {
-        throw new Error(
-          `stress event[${i}] has alignWith: "${c.alignWith}", but no event of that type is configured`,
-        );
-      }
-      // Chains would depend on the order this pass happens to visit the events (following an anchor
-      // that is itself moved later reads its pre-alignment start), so they are refused rather than
-      // resolved half the time.
-      if (configs[anchorIndex].alignWith !== undefined) {
-        throw new Error(
-          `stress event[${i}] aligns with event[${anchorIndex}], which is itself aligned; chained alignWith is not supported`,
-        );
-      }
-      const anchor = this.events[anchorIndex];
-      const ev = this.events[i];
-      const span = ev.endBlock - ev.startBlock;
-      // A follower with a longer trapezoid than its anchor cannot start where the anchor does when
-      // the anchor sits near the end of the run. Silently sliding it earlier would un-align the pair
-      // -- which is the single thing alignWith exists to guarantee -- so this is a config error.
-      if (anchor.startBlock + span > runBlocks) {
-        throw new Error(
-          `stress event[${i}] aligns with a ${c.alignWith} at block ${anchor.startBlock}, but its own ` +
-            `window is ${span} blocks and the run is ${runBlocks}: shorten it, or lower windowFrac's ` +
-            "upper bound (a heavily shortened run, e.g. --blocks on a smoke test, can hit this on " +
-            "some seeds where the regime's own length does not)",
-        );
-      }
-      this.events[i] = {
-        ...ev,
-        startBlock: anchor.startBlock,
-        endBlock: anchor.startBlock + span,
-      };
+        return start;
+      });
     });
+
+    // One resolved event per window, in list order and, within an entry, in time order. An entry
+    // without `count` is exactly one event, so event indexes match the list whenever nobody asks
+    // for more.
+    this.events = configs.flatMap((c, i) =>
+      starts[i].map((startBlock, k) =>
+        resolveWindow(c, drawn[i].windows[k], startBlock),
+      ),
+    );
   }
 
   hasEvents(): boolean {
@@ -740,6 +745,297 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
+// Whether an entry asks the seed for anything beyond magnitude, start and side.
+function usesVariation(c: StressEventConfig): boolean {
+  return (
+    c.count !== undefined ||
+    Array.isArray(c.rampBlocks) ||
+    Array.isArray(c.holdBlocks) ||
+    Array.isArray(c.decayBlocks) ||
+    c.flipProb !== undefined ||
+    c.recoverFrac !== undefined ||
+    c.venue === "random" ||
+    c.repriceAnchorProb !== undefined
+  );
+}
+
+// murmur3's 32-bit finalizer: every input bit reaches every output bit, so seeds 1 apart start
+// the Rng in unrelated places.
+function mix32(x: number): number {
+  let h = x >>> 0;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+// Integer-uniform on the inclusive range: floor over [lo, hi + 1), clamped so a draw of exactly
+// 1.0 (which Rng never returns, but the clamp costs nothing) cannot overshoot.
+function drawInt(rng: Rng, [lo, hi]: [number, number]): number {
+  return Math.min(hi, Math.max(lo, Math.floor(lerp(lo, hi + 1, rng.next()))));
+}
+
+// A trapezoid segment's length: fixed, or drawn from its range. A fixed length draws nothing.
+function drawBlockCount(value: BlockCount, rng: Rng): number {
+  return Array.isArray(value) ? drawInt(rng, value) : value;
+}
+
+const blockCountMax = (value: BlockCount): number =>
+  Array.isArray(value) ? value[1] : value;
+
+// The longest window an entry can draw -- what placement has to leave room for whatever the seed.
+function maxSpan(c: StressEventConfig): number {
+  if (isPointEvent(c.type)) return POINT_EVENT_SPAN;
+  return (
+    (c.type === "tokenLaunch" ? TOKEN_LAUNCH_LEAD_BLOCKS : 0) +
+    blockCountMax(c.rampBlocks) +
+    blockCountMax(c.holdBlocks) +
+    blockCountMax(c.decayBlocks)
+  );
+}
+
+// The entry a follower pairs with, or -1 for an entry that follows nothing. The nearest entry of
+// that type *above* this one in the list, else the first below it. With one anchor in the list that
+// is the same event either way; with several (a practice period that schedules a crash every week,
+// each with its own pull) each follower pairs with the anchor written just before it. Taking the
+// first match instead put every pull of the period on week one's crash.
+//
+// Matched on the configured type, not the resolved one: a crash that flipProb turned upwards is
+// still the crash its pull was written against.
+export function resolveAnchor(
+  configs: StressEventConfig[],
+  i: number,
+): number {
+  const c = configs[i];
+  if (c.alignWith === undefined) return -1;
+  let anchorIndex = -1;
+  for (let j = i - 1; j >= 0; j--)
+    if (configs[j].type === c.alignWith) {
+      anchorIndex = j;
+      break;
+    }
+  if (anchorIndex < 0)
+    anchorIndex = configs.findIndex(
+      (other, j) => j > i && other.type === c.alignWith,
+    );
+  if (anchorIndex < 0) {
+    throw new Error(
+      `stress event[${i}] has alignWith: "${c.alignWith}", but no event of that type is configured`,
+    );
+  }
+  // Chains would depend on the order the alignment pass happens to visit the events (following an
+  // anchor that is itself moved later reads its pre-alignment start), so they are refused rather
+  // than resolved half the time.
+  if (configs[anchorIndex].alignWith !== undefined) {
+    throw new Error(
+      `stress event[${i}] aligns with event[${anchorIndex}], which is itself aligned; chained alignWith is not supported`,
+    );
+  }
+  // A follower opens one window per window of its anchor; a count of its own would say a second,
+  // different number of times the pair happened.
+  if (c.count !== undefined) {
+    throw new Error(
+      `stress event[${i}] sets both count and alignWith: a follower takes its anchor's count`,
+    );
+  }
+  return anchorIndex;
+}
+
+// Everything the seed decides about one window, before it is placed.
+type DrawnWindow = {
+  magnitude: number;
+  startU: number;
+  side?: "buy" | "sell";
+  kappaMult?: number;
+  launches?: ResolvedTokenLaunch[];
+  flipped: boolean;
+  recoverFrac?: number;
+  venue?: WhaleVenue;
+  repriceAnchor: boolean;
+  rampBlocks: number;
+  holdBlocks: number;
+  decayBlocks: number;
+  span: number;
+};
+
+function drawWindow(c: StressEventConfig, rng: Rng): DrawnWindow {
+  const magnitude = lerp(c.magnitudeRange[0], c.magnitudeRange[1], rng.next());
+  const startU = rng.next();
+  // Draw the side for every whale regardless of config so the RNG consumption stays a pure
+  // function of the event list -- making it conditional would let one event's `side: buy` shift
+  // the schedule of every event after it.
+  const sideDraw =
+    c.type === "whale" || c.type === "cexDrift" ? rng.next() : undefined;
+  const side =
+    c.type === "whale" || c.type === "cexDrift"
+      ? c.side === undefined || c.side === "random"
+        ? sideDraw! < 0.5
+          ? ("buy" as const)
+          : ("sell" as const)
+        : c.side
+      : undefined;
+  // Drawn for every cexDrift whether or not the range is set, for the same reason as the side:
+  // the RNG consumption has to stay a pure function of the event list.
+  const kappaDraw = c.type === "cexDrift" ? rng.next() : undefined;
+  const kappaMult =
+    c.type === "cexDrift" && c.kappaMultRange !== undefined
+      ? lerp(c.kappaMultRange[0], c.kappaMultRange[1], kappaDraw as number)
+      : undefined;
+  // tokenLaunch (issue #29): the count once, then a fixed four draws per token whatever the
+  // outcome -- the wave multiplier is drawn even for a dud -- so the RNG consumption is a pure
+  // function of the event list and the count, not of which tokens happened to get demand.
+  const launches =
+    c.type === "tokenLaunch" ? drawTokenLaunches(c, rng) : undefined;
+  // Draws that exist only when their key is written, after every draw above, so a config that
+  // writes none of them consumes exactly the sequence it did before they existed -- the practice
+  // period's schedule is a function of its secret seed, and an upgrade must not move it.
+  const flipDraw = c.flipProb !== undefined ? rng.next() : undefined;
+  const recoverFrac =
+    c.recoverFrac !== undefined
+      ? lerp(c.recoverFrac[0], c.recoverFrac[1], rng.next())
+      : undefined;
+  const venueDraw = c.venue === "random" ? rng.next() : undefined;
+  const repriceDraw =
+    c.repriceAnchorProb !== undefined ? rng.next() : undefined;
+  const rampBlocks = drawBlockCount(c.rampBlocks, rng);
+  const holdBlocks = drawBlockCount(c.holdBlocks, rng);
+  const decayBlocks = drawBlockCount(c.decayBlocks, rng);
+  const span = isPointEvent(c.type)
+    ? POINT_EVENT_SPAN
+    : (c.type === "tokenLaunch" ? TOKEN_LAUNCH_LEAD_BLOCKS : 0) +
+      rampBlocks +
+      holdBlocks +
+      decayBlocks;
+  return {
+    magnitude,
+    startU,
+    ...(side !== undefined ? { side } : {}),
+    ...(kappaMult !== undefined ? { kappaMult } : {}),
+    ...(launches !== undefined ? { launches } : {}),
+    flipped: flipDraw !== undefined && flipDraw < (c.flipProb as number),
+    ...(recoverFrac !== undefined ? { recoverFrac } : {}),
+    ...(venueDraw !== undefined
+      ? {
+          venue:
+            WHALE_VENUES[
+              Math.min(
+                WHALE_VENUES.length - 1,
+                Math.floor(venueDraw * WHALE_VENUES.length),
+              )
+            ],
+        }
+      : {}),
+    repriceAnchor:
+      c.repriceAnchor === true ||
+      (repriceDraw !== undefined &&
+        repriceDraw < (c.repriceAnchorProb as number)),
+    rampBlocks,
+    holdBlocks,
+    decayBlocks,
+    span,
+  };
+}
+
+// Starts for an entry with `count`: the windows never overlap (each one's blocks, plus the gap,
+// before the next one's start), every start falls inside windowFrac, and the placement is uniform
+// over all the ways that fits -- sorted uniform draws spread over the slack that is left once the
+// windows themselves are laid end to end. Checked against the longest windows the entry can draw,
+// so a regime that fits on one seed fits on all of them.
+function placeWindows(
+  index: number,
+  c: StressEventConfig,
+  followers: StressEventConfig[],
+  reach: number[],
+  startUs: number[],
+  runBlocks: number,
+): number[] {
+  const gap = c.minGapBlocks ?? 0;
+  const most = (c.count as [number, number])[1];
+  const longest = Math.max(maxSpan(c), ...followers.map(maxSpan));
+  const lo = c.windowFrac[0] * runBlocks;
+  const hi = c.windowFrac[1] * runBlocks;
+  if ((most - 1) * (longest + gap) > hi - lo) {
+    throw new Error(
+      `stress event[${index}]: ${most} windows of up to ${longest} blocks (+${gap} gap) do not fit ` +
+        `between the starts windowFrac allows (blocks ${Math.round(lo)}-${Math.round(hi)}): widen ` +
+        "windowFrac, or lower the count's maximum or the window lengths (a heavily shortened run, " +
+        "e.g. --blocks on a smoke test, hits this where the regime's own length does not)",
+    );
+  }
+  if (most * longest + (most - 1) * gap > runBlocks) {
+    throw new Error(
+      `stress event[${index}]: ${most} windows of up to ${longest} blocks (+${gap} gap) do not fit ` +
+        `in a ${runBlocks}-block run (a shortened run, e.g. --blocks on a smoke test?)`,
+    );
+  }
+  const n = reach.length;
+  if (n === 0) return [];
+  // What each window occupies before the next may start.
+  const step = reach.map((r, k) => (k < n - 1 ? r + gap : r));
+  const slack = hi - lo - step.slice(0, n - 1).reduce((a, b) => a + b, 0);
+  const u = [...startUs].sort((a, b) => a - b);
+  const starts: number[] = [];
+  let laid = 0;
+  for (let k = 0; k < n; k++) {
+    starts.push(Math.round(lo + u[k] * slack + laid));
+    laid += step[k];
+  }
+  // A window near the end of windowFrac can run past the run. Pull the last one in and the rest
+  // with it, keeping their spacing, rather than cutting a window short.
+  let limit = runBlocks - reach[n - 1];
+  for (let k = n - 1; k >= 0; k--) {
+    starts[k] = Math.min(starts[k], limit);
+    if (k > 0) limit = starts[k] - step[k - 1];
+  }
+  return starts;
+}
+
+function resolveWindow(
+  c: StressEventConfig,
+  w: DrawnWindow,
+  startBlock: number,
+): ResolvedStressEvent {
+  const type: StressEventType = w.flipped
+    ? c.type === "crash"
+      ? "spike"
+      : "crash"
+    : c.type;
+  return {
+    type,
+    base: c.base ?? "WETH",
+    ...(c.stable !== undefined ? { stable: c.stable } : {}),
+    magnitude: w.magnitude,
+    ...(w.side !== undefined ? { side: w.side } : {}),
+    ...(w.kappaMult !== undefined ? { kappaMult: w.kappaMult } : {}),
+    ...(c.persist === true ? { persist: true } : {}),
+    ...(w.repriceAnchor ? { repriceAnchor: true } : {}),
+    ...(c.type === "flowTrend" && c.trendCorrelation !== undefined
+      ? { trendCorrelation: c.trendCorrelation }
+      : {}),
+    ...(c.type === "flowTrend" && c.persistBlocks !== undefined
+      ? { persistBlocks: c.persistBlocks }
+      : {}),
+    ...(c.type === "whale"
+      ? { venue: w.venue ?? (c.venue as WhaleVenue | undefined) ?? "uniswap" }
+      : {}),
+    // liquidityPull keeps `venue` undefined when unset: that means "all enabled", which the
+    // schedule cannot resolve on its own (it does not know which protocols the run turned on).
+    ...(c.type === "liquidityPull" && c.venue !== undefined
+      ? { venue: c.venue as WhaleVenue }
+      : {}),
+    ...(w.launches !== undefined ? { launches: w.launches } : {}),
+    startBlock,
+    rampBlocks: w.rampBlocks,
+    holdBlocks: w.holdBlocks,
+    decayBlocks: w.decayBlocks,
+    endBlock: startBlock + w.span,
+    ...(w.flipped ? { flippedFrom: c.type as "crash" | "spike" } : {}),
+    ...(w.recoverFrac !== undefined ? { recoverFrac: w.recoverFrac } : {}),
+  };
+}
+
 // The per-token draws of a tokenLaunch window (issue #29). Exactly one draw for the count and four
 // per token, in a fixed order, so the schedule of every event after this one does not depend on
 // how many tokens got demand.
@@ -747,13 +1043,7 @@ function drawTokenLaunches(
   c: StressEventConfig,
   rng: Rng,
 ): ResolvedTokenLaunch[] {
-  const [countLo, countHi] = c.tokenCount ?? [1, 1];
-  // Integer-uniform on the inclusive range: floor over [lo, hi + 1), clamped so a draw of exactly
-  // 1.0 (which Rng never returns, but the clamp costs nothing) cannot overshoot.
-  const count = Math.min(
-    countHi,
-    Math.max(countLo, Math.floor(lerp(countLo, countHi + 1, rng.next()))),
-  );
+  const count = drawInt(rng, c.tokenCount ?? [1, 1]);
   const launches: ResolvedTokenLaunch[] = [];
   for (let i = 0; i < count; i++) {
     const liquidity = c.liquidityUsdc ?? [0, 0];
@@ -947,6 +1237,47 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     if (typeof o.repriceAnchor !== "boolean")
       throw new Error(`${label}.repriceAnchor must be a boolean`);
   }
+  if (o.repriceAnchorProb !== undefined) {
+    if (o.type !== "cexDrift")
+      throw new Error(
+        `${label}.repriceAnchorProb only applies to type "cexDrift"`,
+      );
+    if (o.repriceAnchor !== undefined)
+      throw new Error(
+        `${label} sets both repriceAnchor and repriceAnchorProb: pick one`,
+      );
+    parseProbability(o.repriceAnchorProb, `${label}.repriceAnchorProb`);
+  }
+  if (o.flipProb !== undefined) {
+    if (o.type !== "crash" && o.type !== "spike")
+      throw new Error(
+        `${label}.flipProb only applies to types "crash" and "spike"`,
+      );
+    parseProbability(o.flipProb, `${label}.flipProb`);
+  }
+  if (o.recoverFrac !== undefined) {
+    if (o.type !== "crash" && o.type !== "spike")
+      throw new Error(
+        `${label}.recoverFrac only applies to types "crash" and "spike"`,
+      );
+    parseRange(o.recoverFrac, `${label}.recoverFrac`, { min: 0, max: 1 });
+  }
+  if (o.count !== undefined) {
+    const [lo, hi] = parseRange(o.count, `${label}.count`, { min: 0 });
+    if (!Number.isInteger(lo) || !Number.isInteger(hi))
+      throw new Error(`${label}.count must be an integer range`);
+    if (o.alignWith !== undefined)
+      throw new Error(
+        `${label} sets both count and alignWith: a follower takes its anchor's count`,
+      );
+  }
+  if (o.minGapBlocks !== undefined) {
+    if (o.count === undefined)
+      throw new Error(
+        `${label}.minGapBlocks only applies with count (it is the spacing between its windows)`,
+      );
+    parseNonNegInt(o.minGapBlocks, `${label}.minGapBlocks`);
+  }
   if (o.kappaMultRange !== undefined) {
     if (o.type !== "cexDrift")
       throw new Error(
@@ -996,9 +1327,18 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
       throw new Error(
         `${label}.venue only applies to types "whale" and "liquidityPull"`,
       );
-    if (o.venue !== "uniswap" && o.venue !== "balancer" && o.venue !== "curve")
+    // "random" is a whale's: which book a pull thins is a question of which venues the run has,
+    // and the schedule does not know that.
+    if (o.venue === "random" && o.type !== "whale")
+      throw new Error(`${label}.venue "random" only applies to type "whale"`);
+    if (
+      o.venue !== "uniswap" &&
+      o.venue !== "balancer" &&
+      o.venue !== "curve" &&
+      o.venue !== "random"
+    )
       throw new Error(
-        `${label}.venue must be "uniswap", "balancer" or "curve"`,
+        `${label}.venue must be "uniswap", "balancer", "curve" or "random"`,
       );
   }
   if (o.base !== undefined && typeof o.base !== "string") {
@@ -1037,19 +1377,24 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
   });
   // A point event lands on one block, so the trapezoid fields do not apply and are optional there.
   const isPoint = isPointEvent(o.type);
-  const rampBlocks = parseNonNegInt(
+  const rampBlocks = parseBlockCount(
     isPoint ? (o.rampBlocks ?? 0) : o.rampBlocks,
     `${label}.rampBlocks`,
   );
-  const holdBlocks = parseNonNegInt(
+  const holdBlocks = parseBlockCount(
     isPoint ? (o.holdBlocks ?? 0) : o.holdBlocks,
     `${label}.holdBlocks`,
   );
-  const decayBlocks = parseNonNegInt(
+  const decayBlocks = parseBlockCount(
     isPoint ? (o.decayBlocks ?? 0) : o.decayBlocks,
     `${label}.decayBlocks`,
   );
-  if (!isPoint && rampBlocks + holdBlocks + decayBlocks <= 0) {
+  // The shortest window the seed can draw has to exist, not just the longest.
+  const shortest = (v: BlockCount) => (Array.isArray(v) ? v[0] : v);
+  if (
+    !isPoint &&
+    shortest(rampBlocks) + shortest(holdBlocks) + shortest(decayBlocks) <= 0
+  ) {
     throw new Error(
       `${label} must have a positive total window (ramp+hold+decay)`,
     );
@@ -1060,7 +1405,18 @@ function parseOne(raw: unknown, i: number): StressEventConfig {
     ...(typeof o.stable === "string" ? { stable: o.stable } : {}),
     ...(o.side !== undefined ? { side: o.side as WhaleSide } : {}),
     ...(o.venue !== undefined
-      ? { venue: o.venue as "uniswap" | "balancer" | "curve" }
+      ? { venue: o.venue as StressEventConfig["venue"] }
+      : {}),
+    ...(o.repriceAnchorProb !== undefined
+      ? { repriceAnchorProb: o.repriceAnchorProb as number }
+      : {}),
+    ...(o.flipProb !== undefined ? { flipProb: o.flipProb as number } : {}),
+    ...(o.recoverFrac !== undefined
+      ? { recoverFrac: o.recoverFrac as [number, number] }
+      : {}),
+    ...(o.count !== undefined ? { count: o.count as [number, number] } : {}),
+    ...(o.minGapBlocks !== undefined
+      ? { minGapBlocks: o.minGapBlocks as number }
       : {}),
     ...(o.alignWith !== undefined
       ? { alignWith: o.alignWith as StressEventType }
@@ -1115,6 +1471,23 @@ function parseRange(
       );
   }
   return [lo, hi];
+}
+
+// A trapezoid segment: a non-negative integer, or an inclusive [min, max] range of them.
+function parseBlockCount(value: unknown, label: string): BlockCount {
+  if (!Array.isArray(value)) return parseNonNegInt(value, label);
+  const [lo, hi] = parseRange(value, label, { min: 0 });
+  if (!Number.isInteger(lo) || !Number.isInteger(hi))
+    throw new Error(
+      `${label} must be a non-negative integer or an integer [min, max] range`,
+    );
+  return [lo, hi];
+}
+
+function parseProbability(value: unknown, label: string): number {
+  if (typeof value !== "number" || !(value >= 0 && value <= 1))
+    throw new Error(`${label} must be a probability between 0 and 1`);
+  return value;
 }
 
 function parseNonNegInt(value: unknown, label: string): number {

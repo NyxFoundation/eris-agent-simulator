@@ -88,29 +88,46 @@ flow:
 stress:
   # Ranges, not values: the seed samples them (ADR 0009). Deeper than lending-incident's crash because
   # nothing here has to stay inside a victim's health-factor calibration.
+  #
+  # Beyond size and start, the seed decides four more things, each of which a participant could
+  # otherwise read off this file:
+  #   count        1-2 gaps, at least 20 blocks apart (counted from the end of the pull's decay)
+  #   trapezoid    ramp 2-4 / hold 4-8 / decay 6-10 blocks, so the start of a gap no longer gives
+  #                away the block it bottoms out on or the one it is over by
+  #   flipProb     a quarter of the gaps go the other way. The regime keeps its lean; its name no
+  #                longer says which side to stand on
+  #   recoverFrac  the decay closes 40-100% of the gap and the rest stays to the end of the epoch.
+  #                When every gap healed in full on a fixed clock, "fade any 15% move and close it
+  #                17 blocks later" was right by construction -- the hole depeg-persist closed for
+  #                stables (issue #106). What stays is a loss for everyone who holds the base, noop
+  #                included, and a gain for whoever read it.
   events:
     - {
         type: crash,
+        count: [1, 2],
+        minGapBlocks: 20,
+        flipProb: 0.25,
+        recoverFrac: [0.4, 1.0],
         magnitudeRange: [0.15, 0.22],
         windowFrac: [0.25, 0.7],
-        rampBlocks: 3,
-        holdBlocks: 6,
-        decayBlocks: 8,
+        rampBlocks: [2, 4],
+        holdBlocks: [4, 8],
+        decayBlocks: [6, 10],
       }
     # Depth leaves the pools while the price gaps (issue #52). The withdrawal is proportional, so the
     # mid does not move and no risk-free edge opens -- what changes is the cost of size.
     # windowFrac is still required (and still drawn) but alignWith is what places it: this event only
-    # means anything on the crash's window.
-    # The decay is longer than the crash's on purpose: depth comes back slower than price does, so an
+    # means anything on the gap's window, and it opens once per gap.
+    # The decay is longer than the gap's on purpose: depth comes back slower than price does, so an
     # agent that waited out the gap still trades a thinner book for a while afterwards.
     - {
         type: liquidityPull,
         magnitudeRange: [0.4, 0.6],
         windowFrac: [0.25, 0.7],
         alignWith: crash,
-        rampBlocks: 3,
-        holdBlocks: 6,
-        decayBlocks: 12,
+        rampBlocks: [2, 4],
+        holdBlocks: [6, 10],
+        decayBlocks: [10, 14],
       }
 
 agents:

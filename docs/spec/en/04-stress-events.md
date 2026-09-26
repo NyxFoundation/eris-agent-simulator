@@ -138,6 +138,24 @@ Constraints:
 - **Chains are refused** (throwing if the anchor is itself aligned) rather than resolved correctly half the time depending on visit order
 - If the anchor sits late in the run and the follower's trapezoid is longer, it throws. Silently sliding it earlier would break **the one thing alignWith exists to guarantee**
 - `windowFrac` is still required and still drawn (just unused), keeping RNG consumption a pure function of the event list
+- When the anchor has a `count`, the follower opens **the same number of windows, paired window by window**, and cannot set a `count` of its own (throws)
+
+### How many windows, how long, which way
+
+The official regimes used to leave only the magnitude and the start to the seed. How many windows, which band each fell in, how long each trapezoid ran, which way a crash went and that it always healed were written in the YAML, so a participant could read the answer off the file. These keys hand them to the seed (each one omitted = the old behaviour).
+
+| Key | Applies to | Effect |
+|---|---|---|
+| `count: [min, max]` | any | How many windows (inclusive integers; 0 allowed = "may not happen"). They never overlap, every **start** falls inside `windowFrac`, and the placement is uniform over the arrangements that fit (sorted uniform draws spread over the slack) |
+| `minGapBlocks` | with `count` | The fewest blocks between one window's end (followers included) and the next start |
+| `rampBlocks` / `holdBlocks` / `decayBlocks: [min, max]` | trapezoids | Drawn per window, so the start no longer gives away the block it ends on |
+| `flipProb: p` | `crash` / `spike` | Turns the shock the other way with probability p; the resolved event reads e.g. `type: spike, flippedFrom: crash`. Not for regimes with victims (an upward crash breaches nobody; the coordinator emits `stress_calibration_warning` when no crash resolves) |
+| `recoverFrac: [min, max]` | `crash` / `spike` | Share of the gap the decay closes; the rest stays to the end of the run (4.7 below) |
+| `venue: random` | `whale` | One of the three venues per window |
+| `repriceAnchorProb: p` | `cexDrift` | `repriceAnchor` per window with probability p; exclusive with `repriceAnchor` |
+
+- **A `count` that cannot fit is refused at startup whatever the seed** (checked at the longest draws, so no config fails only on unlucky seeds)
+- **A schedule that uses any of these keys hashes the seed (murmur3 fmix32) before the Rng.** The Rng is an LCG whose **first output barely moves between nearby seeds** (seeds Δ apart start a·Δ/2³² apart; seeds 1-200 fit in ~10% of [0, 1)). Measured: on all five published seeds 101-505 the first event's magnitude drew from the bottom quarter of its range (u = 0.09-0.25; a crash of 15.6-16.8% out of [15%, 22%], five times). A schedule that uses none of them keeps the raw seed, **byte for byte**, so a running practice period's windows do not move on an upgrade
 
 ## 4.7 The two flags that do not restore
 
@@ -147,6 +165,10 @@ By default the environment buys back when a window closes and the OU pulls back 
 |---|---|---|---|
 | `persist: true` | `depeg` / `eusdDepeg` | Holds the level to the end of the run | **`decayBlocks: 0` required** (silently ignoring a decay would read as a window that closes, so it throws) |
 | `repriceAnchor: true` | `cexDrift` | Moves the OU anchor by the drift applied | — |
+| `repriceAnchorProb: p` | `cexDrift` | The above, per window with probability p | Exclusive with `repriceAnchor` |
+| `recoverFrac: [min, max]` | `crash` / `spike` | The decay closes only part of the gap; the rest holds to the end of the run | **Not for a continuous economy (the practice period)**: the residual stays for weeks and compounds with the next crash (the reason `persist` / `repriceAnchor` stay out of `config/practice.yaml`) |
+
+When every `crash` / `spike` heals in full, "fade a 15% move and close when the window does" is right by construction -- the hole `persist` closed for depeg. `recoverFrac` turns it back into a judgement. What does not recover is a loss for everyone who merely holds the base, noop included.
 
 **The teardown buy-back still happens.** The startup check refuses to begin on a depegged pool, so leaving it dislocated would stop the *next* run from starting. That restore happens **after the last scored block** ([02 §2.1 G](02-runtime.md)).
 
@@ -186,10 +208,14 @@ Locally, the Aave oracle is calibrated to the initial fair price before victims 
 | `persist` | `depeg` / `eusdDepeg` only, and `decayBlocks: 0` |
 | `repriceAnchor` / `kappaMultRange` | `cexDrift` only |
 | `trendCorrelation` (0..1) / `persistBlocks` (integer ≥1) | `flowTrend` only |
-| `venue` | `whale` / `liquidityPull` only; one of the three AMMs |
+| `venue` | `whale` / `liquidityPull` only; one of the three AMMs (`random`: `whale` only) |
+| `count` | Integer range, `min >= 0`; not with `alignWith` |
+| `minGapBlocks` | Only with `count`; non-negative integer |
+| `flipProb` / `recoverFrac` | `crash` / `spike` only; a probability / a range in `[0,1]` |
+| `repriceAnchorProb` | `cexDrift` only; a probability; exclusive with `repriceAnchor` |
 | `magnitudeRange` | `min > 0`; `max < 1` for `lstSlash` / `liquidityPull` / `eusdDepeg` / `depeg` |
 | `windowFrac` | Within `[0,1]` |
-| ramp/hold/decay | Non-negative integers; a positive total for non-point events |
+| ramp/hold/decay | Non-negative integers or `[min, max]` of them; a positive total at the shortest draw for non-point events |
 | `alignWith` | A real type, a different type, and not itself aligned |
 
 The coordinator adds its own startup checks ([02](02-runtime.md)):
@@ -226,16 +252,16 @@ In `config/regimes/`, referenced by the scenario matrix.
 | Regime | Contents |
 |---|---|
 | `calm` | No events |
-| `cex-drift` | Drift on the OU, weakened mean reversion |
-| `informed-flow` | Correlated directional flow |
-| `whale` | A single large point event |
-| `lending-incident` | A crash plus victims plus liquidations plus a pull in the same window |
-| `crash` | A price gap with a pull in the same window (three venues thin at once) |
+| `cex-drift` | Drift on the OU, weakened mean reversion (2-4 windows, each repricing with p = 0.35) |
+| `informed-flow` | Correlated directional flow (1-3 windows) |
+| `whale` | Single large point events (3-5, each on a venue the seed picks) |
+| `lending-incident` | A crash plus victims plus liquidations plus a pull in the same window (one crash, always down, 40-100% recovering) |
+| `crash` | A price gap with a pull in the same window (three venues thin at once). 1-2 gaps, a quarter upward, 40-100% recovering |
 | `depeg` | A registry stable stops being worth $1 |
 | `vuln` | Pools appear mid-run, most of them rigged (ADR 0014) |
-| `spike` | An upward price gap with a pull in the same window (crash's mirror; issue #105) |
+| `spike` | An upward price gap with a pull in the same window (crash's mirror; issue #105). 1-2 gaps, a quarter downward, 40-100% recovering |
 | `depeg-persist` | `depeg` with `persist: true`: the discount holds to the last scored block (issue #106) |
-| `cdp-incident` | Liquity victims (Troves at ICR 1.20) + a crash + an eUSD depeg and a pull in the same window: liquidation, redemption and borrower defence (issue #107) |
+| `cdp-incident` | Liquity victims (Troves at ICR 1.20) + a crash + an eUSD depeg and a pull in the same window: liquidation, redemption and borrower defence (issue #107). One crash, always down, 40-100% recovering |
 | `launch` | 2–3 new tokens list mid-run in thin USDC pools; per token the seed decides whether a demand wave follows or not (a dud). Holdings at the bell are worth zero (issue #29) |
 
 `cex-drift` and `informed-flow` are expressed as **windowed events** (`cexDrift` / `flowTrend`) rather than run-wide settings. Measured (seed 101, 360 blocks, mean pool-to-fair gap in bps):
