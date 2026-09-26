@@ -175,9 +175,15 @@ ERIS_AGENT_DIR=example/agents/my-strategy \
 ERIS_AGENT_PRIVATE_KEY=0x… \
 ERIS_RUN_DIR=./my-logs \
 CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
+ERIS_RPC_HEADERS='{"X-ASCON-Key":"…"}' \
   node --import tsx example/agents/runtime/bot.ts
 ```
 
+- The RPC takes the same three credentials as the `curl` in step 1. The runtime sends the two
+  Cloudflare headers from `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`, and any other header
+  from `ERIS_RPC_HEADERS`, a JSON object (`sdk/src/chain.ts`). Without the key the gateway answers
+  every call with `missing or unknown X-ASCON-Key`. Keep the single quotes: without them the shell
+  strips the double quotes, and what is left is not JSON.
 - `ERIS_MANIFEST` supplies the RPC URL, the PriceFeed address, the chain id and which address table
   to use. Those last two are applied before anything else loads, because the address table is chosen
   at import time — so the command above is enough on its own, and setting `CHAIN_ID` or
