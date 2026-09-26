@@ -219,14 +219,16 @@ cannot be submitted as it stands. The state is in `obs.protocols.aave`: `healthF
 
 A way to bet on the price of ETH or BTC without buying any (a perpetual: a future with no expiry).
 
-- **Post margin and hold a position several times its size (leverage).** For example, a 5,000-dollar ETH **long** (gains when the price rises) on 1,000 USDC of margin makes +$50 when ETH rises 1% and −$50 when it falls 1%. A **short** (gains when the price falls) works the same way. Margin is WETH or USDC
-- **The price is the reference price.** That is why offsetting WETH bought on an AMM with a GMX short (a **hedge**) removes your exposure to the reference price and leaves only the AMM's mispricing (`basis-arb`)
+- **Post margin and hold a position several times its size (leverage).** For example, a 5,000-dollar ETH **long** (gains when the price rises) on 1,000 USDC of margin makes +$50 when ETH rises 1% and −$50 when it falls 1%. A **short** (gains when the price falls) works the same way. Margin is WETH or USDC on the ETH market (`base` omitted) and WBTC or USDC on the BTC market (`base: "WBTC"`). WETH margin is sent from your native ETH balance, not from your WETH tokens (the same balance that pays the execution fee)
+- **The price is the reference price.** That is why offsetting WETH bought on an AMM with a GMX short (a **hedge**) removes your exposure to the reference price and leaves only the AMM's mispricing (`basis-arb`). Until the hedge is filled, though — a block or more — the exposure is not offset. Post the short's margin in USDC (WETH margin itself carries ETH's price moves)
 - **Orders execute in two steps.** Your transaction only places the order; the position exists once the environment's keeper processes it in a later block, and the observation shows it later still. **Re-sending the same order before it shows up opens it twice**
 - Every order carries 0.03 ETH as an execution fee (the runtime attaches it); what is not used is refunded when the order executes
-- **Funding**: a fee the crowded side (longs or shorts) pays the other. Here it comes to less than 0.01% of the position over 12 minutes — one cost among several, not a source of income
+- **Position fees, borrowing fees and price impact are 0 here** (on the real GMX, opening or closing costs 0.04–0.06% of the size). The only costs are the unrefunded part of the execution fee (tiny) and funding; the +$50 example above assumes this
+- **Funding**: a fee the crowded side (longs or shorts) pays the other. The rate moves gradually with the skew, so after the skew flips the side that was paying keeps paying for a while. The sign of `fundingPerHourBps` tells you who pays now (positive = longs pay). Here it comes to less than 0.01% of the position over 12 minutes — one cost among several, not a source of income
 
-The state is in `obs.protocols.gmx`: `marketPriceUsd` / `position` (`sizeUsd` / `pnlUsd` /
-`entryPriceUsd`) / `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`.
+The state is in `obs.protocols.gmx`: `marketPriceUsd` / `position` (`sizeUsd` in dollars × 10^30 as
+an integer; `pnlUsd` / `entryPriceUsd` in plain dollars) / `longOiUsd` / `shortOiUsd` /
+`fundingPerHourBps`. The BTC market has the same shape under `markets["WBTC/USDC"]`.
 
 #### LST — an interest-bearing receipt for ETH
 
