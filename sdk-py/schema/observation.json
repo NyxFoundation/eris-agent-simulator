@@ -685,6 +685,12 @@
         "yieldPerBlockBps": {
           "type": "number"
         },
+        "rewardRunwayBlocks": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "withdrawalDelayBlocks": {
           "type": "number"
         },

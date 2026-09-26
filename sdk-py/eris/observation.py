@@ -322,6 +322,7 @@ class LstObservation(BaseModel):
     market_quoted: bool | None = Field(None, alias='marketQuoted')
     apy_bps: float = Field(..., alias='apyBps')
     yield_per_block_bps: float = Field(..., alias='yieldPerBlockBps')
+    reward_runway_blocks: float | None = Field(None, alias='rewardRunwayBlocks')
     withdrawal_delay_blocks: float = Field(..., alias='withdrawalDelayBlocks')
     estimated_queue_delay_blocks: float = Field(..., alias='estimatedQueueDelayBlocks')
     queue_delay_per_weth_blocks: float | None = Field(
