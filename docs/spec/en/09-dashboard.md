@@ -9,7 +9,7 @@ Sources: `dashboard/src/{App.tsx,navigation.ts}`, `dashboard/src/data/*`, `dashb
 ## 9.1 The information hierarchy
 
 ```
-competition  ⊃  scenario (one world, "regime#seed")  ⊃  round (one scoring epoch)
+competition  ⊃  scenario (one world = one epoch of the rules, "regime#seed")  ⊃  round (one evaluation interval: interim progress, not the scoring unit)
 ```
 
 Defined once, in `dashboard/src/data/competition.ts:1-8`.

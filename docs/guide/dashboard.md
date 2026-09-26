@@ -19,7 +19,7 @@ npm run dashboard        # Vite dev server at http://localhost:5173
 The dashboard's selection has three nested levels, the same three the data has:
 
 ```
-competition  ⊃  scenario (= one run, "regime#seed")  ⊃  round (= one scoring epoch)
+competition  ⊃  scenario (= one run = one epoch of the rules, "regime#seed")  ⊃  round (= one evaluation interval)
 ```
 
 **The landing page is the competition's standings**, because that is the unit the competition is
@@ -84,9 +84,10 @@ work for runs recorded before `market.json` grew any of its fields.
 
 ### The round cursor
 
-**The round is the dashboard's clock.** Everything in this system is measured in scoring epochs — the
-score is the mean and spread of per-epoch returns, ranks change at epoch boundaries, an environment
-window opens in one — so the round axis is what every view is read against, and there is exactly one
+**The round is the dashboard's clock.** A round is the rules' evaluation interval (§0.1): every agent's
+value is recorded at each boundary and shown as interim progress, the standings "through round k" are
+recomputed from those values, and an environment window opens in one. The score itself uses only a
+run's first and last boundary (ADR 0023). So the round axis is what every view is read against, and there is exactly one
 position on it (`src/data/roundCursor.ts`). Selecting a round on a scenario page and scrubbing the
 competition are the same act; they used to be separate stores that could disagree.
 

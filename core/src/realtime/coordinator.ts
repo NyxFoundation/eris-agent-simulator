@@ -576,8 +576,10 @@ export async function runRealtimeSimulation(
     blockTimeSec: config.blockTimeSec,
     runSeconds: config.runSeconds,
     runBlocks: config.runBlocks,
-    // The scoring epoch (ADR 0019) is the competition's round. summary.json carries the boundaries,
-    // but only after the run ends -- a live viewer needs the length up front to lay the rounds out.
+    // The round: an evaluation interval (rules §0.1), interim progress only -- the score uses the
+    // run's first and last boundary (ADR 0023). The identifier still says "epoch" from ADR 0019,
+    // when the round was the scoring unit. summary.json carries the boundaries, but only after the run
+    // ends -- a live viewer needs the length up front to lay the rounds out.
     epochBlocks: config.epochBlocks,
     scoreEvery: config.scoreEvery,
     // SEED is the label for this run's market conditions (ADR 0005): the fair-price path and the

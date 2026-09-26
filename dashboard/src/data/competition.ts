@@ -1,6 +1,7 @@
 // The competition: the outer unit everything on the dashboard belongs to.
 //
-//   competition ⊃ scenario (one run, "regime#seed") ⊃ round (one scoring epoch)
+//   competition ⊃ scenario (one run = one epoch of the rules, "regime#seed") ⊃ round (one
+//   evaluation interval: interim progress, not scored)
 //
 // A competition is normally a scenario matrix written by `npm run backtest -- --scenarios ...`
 // (runs/<id>/matrix.json), whose scenarios are sibling run dirs. A standalone `sim:realtime` run is
