@@ -194,8 +194,10 @@ export function buildManifest(opts: {
       markMedianBlocks: config.markMedianBlocks,
       scoreEvery: config.scoreEvery,
       note:
-        "A round is the scoring epoch (ADR 0019): scores, rank moves and environment episodes are " +
-        "all read against it.",
+        "A round is an evaluation interval (rules §0.1): every agent's value is recorded at each " +
+        "boundary and shown as interim progress. It is not what the score is computed over -- that " +
+        "is the epoch, whose first and last boundary give P (in the practice period, one day; see " +
+        "docs/guide/practice-devnet.md, Standings).",
     },
     protocols,
     actions: Object.fromEntries(
@@ -219,6 +221,14 @@ export function buildManifest(opts: {
       ethWei: config.initialEthWei.toString(),
       wethWei: config.initialWethWei.toString(),
       usdcUnits: config.initialUsdcUnits.toString(),
+      // The rest of the basket (`funding.base`), in the token's own units like usdcUnits -- decimals
+      // are in `tokens`. Without it a participant reading this for "what will I receive" was told
+      // WETH and USDC and then found 0.4 WBTC in the wallet.
+      ...Object.fromEntries(
+        Object.entries(config.initialBaseAmounts)
+          .filter(([symbol, amount]) => symbol !== "WETH" && amount > 0n)
+          .map(([symbol, amount]) => [`${symbol.toLowerCase()}Units`, amount.toString()]),
+      ),
     },
     episodes: {
       kinds: [...kinds].map(([type, count]) => ({ type, count })),

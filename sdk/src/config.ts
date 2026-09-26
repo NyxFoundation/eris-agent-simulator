@@ -190,8 +190,10 @@ export type SimConfig = {
   // events.jsonl. The first and last blocks are always read. 1 (default) = every block.
   // Used to cut reconstruction cost when replaying a whole scenario matrix (ADR 0017 §3).
   scoreEvery: number;
-  // Length of a scoring epoch in blocks (ERIS_EPOCH_BLOCKS; 0 disables the series). ADR 0019 scores a
-  // log-return series sampled at epoch boundaries rather than the run's endpoints. On the live chain a
+  // Length of a round in blocks (ERIS_EPOCH_BLOCKS; 0 disables the series): the rules'
+  // evaluation interval (§0.1), recorded for interim progress. Not the scoring unit -- the score
+  // takes P from the series' first and last boundary (ADR 0023) -- although ADR 0019, which named
+  // it, scored a log-return series sampled at these boundaries. On the live chain a
   // boundary is a real-time 4h mark, but an anvil run has no simulated clock, so the calibration
   // harness counts blocks: 12/epoch, which leaves room for G7's per-boundary median window and keeps a
   // 42-epoch week (504 blocks) inside anvil's ~1,050 block history retention (ADR 0019 §8).
@@ -641,9 +643,9 @@ export function loadConfig(env = process.env): SimConfig {
   };
 }
 
-// Blocks per scoring epoch. Stated in real time when `run.epochSeconds` is set (ADR 0021 §3), in
-// blocks otherwise -- and refusing to accept both, because two answers to "how long is a round" is
-// exactly the ambiguity the axis was introduced to remove.
+// Blocks per round (evaluation interval, rules §0.1). Stated in real time when `run.epochSeconds`
+// is set (ADR 0021 §3), in blocks otherwise -- and refusing to accept both, because two answers to
+// "how long is a round" is exactly the ambiguity the axis was introduced to remove.
 //
 // ADR 0021 §3 settles the *unit*: a round on a chain that runs for a week is 30 minutes to an hour,
 // so that standings move several times a day without the series growing far past what the metric has

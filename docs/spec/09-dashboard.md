@@ -9,7 +9,7 @@
 ## 9.1 情報階層
 
 ```
-competition  ⊃  scenario（1 world = "regime#seed"）  ⊃  round（1 採点エポック）
+competition  ⊃  scenario（1 world = 規約の 1 エポック = "regime#seed"）  ⊃  round（1 評価区間。途中経過で、採点の単位ではない）
 ```
 
 `dashboard/src/data/competition.ts:1-8` が定義する唯一のモデル。

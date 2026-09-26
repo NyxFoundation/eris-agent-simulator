@@ -1,6 +1,8 @@
-// The run's rounds. A round is a scoring epoch (ADR 0019) — the unit the competition score is
-// actually computed over — so the bar is the run's own epoch series, not a season of runs: one
-// segment per epoch, filled by progress, and clicking one opens that round's result.
+// The run's rounds. A round is an evaluation interval (rules §0.1): the run's value series is
+// recorded at every boundary and shown as interim progress, while the score itself uses only the
+// first and last boundary (ADR 0023; ADR 0019, which named the series "epochs", scored every
+// round). The bar is the run's own boundary series, not a season of runs: one segment per round,
+// filled by progress, and clicking one opens that round's result.
 import { useEffect, useState } from "react";
 import {
   REPLAY_SPEEDS,

@@ -239,7 +239,7 @@ function lastBlock(run: LoadedRun): number {
 }
 
 // ---------------------------------------------------------------------------
-// rounds (= scoring epochs)
+// rounds (evaluation intervals, rules §0.1 -- interim progress, not the scoring unit)
 
 /** Rank ids by a value, descending; ids without a value are left out. */
 function rankBy(
