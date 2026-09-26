@@ -54,6 +54,10 @@ export interface SimContext {
     mockProvider?: Address;
     market: Address; // WETH (ETH/USD) market. Kept for backward compatibility (= markets["WETH"]).
     markets?: Record<string, Address>; // ADR 0013: base -> GMX market (WBTC etc.)
+    // Every token an order on any of those markets can need a price for (index, long and short
+    // token of each), resolved from chain by gmx.setupGlobal. The keeper hands the oracle exactly
+    // this list and the per-block oracle update writes exactly this list, so the two cannot drift.
+    oracleTokens?: Address[];
   };
   // ADR 0013: fair price (USD) for all bases. When unset or WETH-only, adapters fall back to the single
   // fairPrice. Adapters that handle the WBTC market use ctx.fairPrices?.[base].

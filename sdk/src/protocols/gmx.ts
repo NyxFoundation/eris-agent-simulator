@@ -436,8 +436,141 @@ const GMX_DEBUG_EVENT_HASHES: Record<string, string> = {
   PositionDecrease: keccak256(toBytes("PositionDecrease")),
 };
 
-function gmxCollateral(symbol: TokenSymbol): Address {
-  return symbol === "WETH" ? TOKENS.WETH.address : TOKENS.USDC.address;
+// ---------------------------------------------------------------------------
+// Collateral and oracle tokens per market
+//
+// Every GMX market this environment deploys or forks is [base-base-USDC]: the index and long token
+// are the market's base and the short token is USDC (ETH/USD = [WETH-WETH-USDC], BTC/USD =
+// [WBTC-WBTC-USDC]). setupGlobal reads the markets from chain and refuses to start on one that is
+// not, because both rules below are derived from that shape.
+//
+// Collateral: GMX takes either of a market's pool tokens. The adapter used to map every symbol
+// that was not "WETH" to USDC, so WBTC collateral was impossible and WETH collateral on the BTC
+// market produced an order GMX could not fill.
+
+/** The collateral a gmx market accepts: its long token (= its base) or USDC. */
+export function gmxAllowedCollateral(base: TokenSymbol): TokenSymbol[] {
+  return base === "USDC" ? ["USDC"] : [base, "USDC"];
+}
+
+/** Why `collateral` cannot be posted on the `base` market, or undefined when it can. */
+export function gmxCollateralRejection(
+  base: TokenSymbol,
+  collateral: TokenSymbol,
+): string | undefined {
+  const allowed = gmxAllowedCollateral(base);
+  if (allowed.includes(collateral)) return undefined;
+  return (
+    `collateral ${collateral} is not accepted on the gmx ${base}/USD market: ` +
+    `it takes ${allowed.join(" or ")} (the market's long token or USDC)`
+  );
+}
+
+function gmxCollateral(base: TokenSymbol, symbol: TokenSymbol): Address {
+  // Enforced again here, not only in validate: the environment's own flow submits without going
+  // through the agent runtime's validation, and a wrong token here is an order GMX cannot fill,
+  // whose collateral and execution fee then sit in the OrderVault.
+  const rejection = gmxCollateralRejection(base, symbol);
+  if (rejection) throw new Error(rejection);
+  return tokenInfo(symbol).address;
+}
+
+type GmxMarketTokens = Pick<
+  MarketProps,
+  "indexToken" | "longToken" | "shortToken"
+>;
+
+/**
+ * Every token the keeper has to price for an order on any of these markets: each market's index,
+ * long and short token, deduplicated, in market order (WETH, USDC, WBTC on the local deploy).
+ *
+ * GMX reads the primary price of all three while executing an order, and a token missing from the
+ * keeper's oracle params is `EmptyPrimaryPrice(token)`: the whole executeOrder reverts (it does not
+ * cancel), the keeper only scans new logs so it never retries, and the collateral plus the 0.03 ETH
+ * execution fee stay in the OrderVault. The keeper used to pass WETH and USDC only, which is exactly
+ * that failure for every BTC/USD order. A swap-only market has a zero index token, skipped here.
+ */
+export function gmxOracleTokens(
+  markets: readonly GmxMarketTokens[],
+): Address[] {
+  const out: Address[] = [];
+  const seen = new Set<string>();
+  for (const m of markets) {
+    for (const token of [m.indexToken, m.longToken, m.shortToken]) {
+      const key = token.toLowerCase();
+      if (token === zeroAddress || seen.has(key)) continue;
+      seen.add(key);
+      out.push(token);
+    }
+  }
+  return out;
+}
+
+/**
+ * Why a configured market does not have the [base-base-USDC] shape the collateral rule and the
+ * oracle prices assume, one line per market. Empty when every market fits.
+ */
+export function gmxMarketLayoutProblems(
+  layouts: ReadonlyArray<{
+    base: TokenSymbol;
+    market: Address;
+    props: GmxMarketTokens;
+  }>,
+): string[] {
+  const problems: string[] = [];
+  const usdc = TOKENS.USDC.address.toLowerCase();
+  for (const { base, market, props } of layouts) {
+    const baseToken = TOKENS[base]?.address.toLowerCase();
+    if (props.longToken === zeroAddress && props.shortToken === zeroAddress) {
+      problems.push(`${base} (${market}): not a market on this deployment`);
+      continue;
+    }
+    if (
+      !baseToken ||
+      props.indexToken.toLowerCase() !== baseToken ||
+      props.longToken.toLowerCase() !== baseToken ||
+      props.shortToken.toLowerCase() !== usdc
+    )
+      problems.push(
+        `${base} (${market}): expected [${base}-${base}-USDC], found ` +
+          `index=${props.indexToken} long=${props.longToken} short=${props.shortToken}`,
+      );
+  }
+  return problems;
+}
+
+/** The oracle params the keeper passes to executeOrder: one mock-provider entry per oracle token. */
+export function gmxKeeperOracleParams(ctx: Pick<SimContext, "gmx">): {
+  tokens: Address[];
+  providers: Address[];
+  data: Hex[];
+} {
+  const provider = ctx.gmx.mockProvider;
+  if (!provider) throw new Error("gmx: the mock oracle provider is not set up");
+  const tokens = [
+    ...(ctx.gmx.oracleTokens ?? [TOKENS.WETH.address, TOKENS.USDC.address]),
+  ];
+  return {
+    tokens,
+    providers: tokens.map(() => provider),
+    data: tokens.map(() => "0x" as Hex),
+  };
+}
+
+// USD per whole unit of a position's collateral token, with its decimals. USDC is the numéraire; a
+// base is marked by `basePrice`. Undefined when the registry cannot place the token or the base has
+// no price -- the callers report that rather than value it at a guess (it used to be valued at $1
+// per 1e-6 unit, which put 0.05 WBTC of collateral at $50 instead of $3,000).
+function collateralUnit(
+  token: Address,
+  basePrice: (symbol: TokenSymbol) => number | undefined,
+): { usd: number; decimals: number } | undefined {
+  const info = tokenInfoByAddress(token);
+  if (!info) return undefined;
+  if (info.kind === "stable") return { usd: 1, decimals: info.decimals };
+  const usd = basePrice(info.symbol);
+  if (usd === undefined || !Number.isFinite(usd)) return undefined;
+  return { usd, decimals: info.decimals };
 }
 
 // Resolve the index market address from the action's base (default WETH).
@@ -547,6 +680,7 @@ function enc(
 function buildOrderTx(
   owner: Address,
   market: Address,
+  base: TokenSymbol,
   action: LeafAction,
 ): BuiltTx {
   const isIncrease = action.type === "gmxIncrease";
@@ -558,7 +692,7 @@ function buildOrderTx(
     collateralAmount?: string;
     collateralDeltaAmount?: string;
   };
-  const collateralToken = gmxCollateral(a.collateral);
+  const collateralToken = gmxCollateral(base, a.collateral);
   const sizeDeltaUsd = BigInt(a.sizeDeltaUsd);
   const acceptablePrice = a.acceptablePrice
     ? BigInt(a.acceptablePrice)
@@ -583,6 +717,7 @@ function buildOrderTx(
       calls.push(enc("sendWnt", [GMX.OrderVault, wnt]));
       value = wnt;
     } else {
+      // USDC and WBTC alike: an ERC-20 pulled through the Router, which setupWallet approves.
       calls.push(enc("sendWnt", [GMX.OrderVault, EXECUTION_FEE]));
       calls.push(
         enc("sendTokens", [collateralToken, GMX.OrderVault, collateralAmount]),
@@ -628,8 +763,11 @@ function parse(obj: Record<string, unknown>): LeafAction | null {
   if (obj.type !== "gmxIncrease" && obj.type !== "gmxDecrease") return null;
   if (typeof obj.isLong !== "boolean")
     throw new Error("isLong must be boolean");
-  if (obj.collateral !== "WETH" && obj.collateral !== "USDC")
-    throw new Error("collateral must be WETH or USDC");
+  // Which symbol is right depends on the market, so that is validate's call (gmxCollateralRejection).
+  if (typeof obj.collateral !== "string" || obj.collateral.length === 0)
+    throw new Error(
+      "collateral must be a token symbol: the market's long token (WETH on ETH/USD, WBTC on BTC/USD) or USDC",
+    );
   requireDecimalString(obj.sizeDeltaUsd, "sizeDeltaUsd");
   // Base of the index market (default WETH = ETH/USD; ADR 0013). Non-WETH bases require a market.
   const base = typeof obj.base === "string" ? obj.base : "WETH";
@@ -672,11 +810,15 @@ function validate(
     return { ok: false, reason: "not a gmx action" };
   const a = action as {
     type: string;
+    base?: TokenSymbol;
     collateral: TokenSymbol;
     sizeDeltaUsd: string;
     collateralAmount?: string;
     collateralDeltaAmount?: string;
   };
+  // A decrease names its position by (market, collateral, side), so the same rule applies to it.
+  const rejection = gmxCollateralRejection(a.base ?? "WETH", a.collateral);
+  if (rejection) return { ok: false, reason: rejection };
   const sizeDeltaUsd = BigInt(a.sizeDeltaUsd);
   if (sizeDeltaUsd <= 0n)
     return { ok: false, reason: "sizeDeltaUsd must be positive" };
@@ -689,13 +831,19 @@ function validate(
     if (a.collateral === "USDC") {
       if (collateralAmount > stableBalanceOf(balances, TOKENS.USDC.address))
         return { ok: false, reason: "collateralAmount exceeds balance" };
-    } else {
+    } else if (a.collateral === "WETH") {
       // WETH collateral is sent by wrapping native ETH via sendWnt, so check collateral + execution fee against the ETH balance
       if (collateralAmount + EXECUTION_FEE > balances.ethWei)
         return {
           ok: false,
           reason: "collateralAmount + execution fee exceeds ETH balance",
         };
+    } else if (collateralAmount > (balances.bases?.[a.collateral] ?? 0n)) {
+      // Another base (WBTC on its own market) is an ERC-20 sent from the wallet.
+      return {
+        ok: false,
+        reason: `collateralAmount exceeds ${a.collateral} balance`,
+      };
     }
   }
   return { ok: true };
@@ -745,22 +893,21 @@ function positionPnlUsd(
 }
 const FLOAT_PRECISION_NUM = 1e30;
 
-// USD valuation of a position (collateral + PnL). markPrice is the index base's price; wethPrice is the
-// WETH price used to value WETH collateral (equal to markPrice on the WETH market). Collateral is valued
-// at the WETH price if WETH, or $1 if USDC. On the default fork (WETH market, WETH collateral, 1e18) this
-// is byte-identical to the prior formula (since markPrice===wethPrice, it matches (collateralAmount/1e18)*markPrice).
+// USD valuation of a position (collateral + PnL). markPrice is the index base's price; basePrice
+// marks a base-token collateral (WETH, WBTC) and USDC collateral is $1. On the default fork (WETH
+// market, WETH collateral, 1e18) this is the prior formula, (collateralAmount/1e18)*markPrice + PnL.
+// Undefined when the collateral token cannot be priced.
 function positionValueUsd(
   p: Position,
   markPrice: number,
   base: TokenSymbol,
-  wethPrice: number,
-): number {
+  basePrice: (symbol: TokenSymbol) => number | undefined,
+): number | undefined {
   if (p.numbers.sizeInUsd === 0n) return 0;
+  const unit = collateralUnit(p.addresses.collateralToken, basePrice);
+  if (!unit) return undefined;
   const collateralUsd =
-    p.addresses.collateralToken.toLowerCase() ===
-    TOKENS.WETH.address.toLowerCase()
-      ? (Number(p.numbers.collateralAmount) / 1e18) * wethPrice
-      : Number(p.numbers.collateralAmount) / 1e6;
+    (Number(p.numbers.collateralAmount) / 10 ** unit.decimals) * unit.usd;
   return collateralUsd + positionPnlUsd(p, markPrice, base);
 }
 
@@ -776,11 +923,10 @@ function gmxPositionObservation(
     sizeTokens > 0
       ? Number(p.numbers.sizeInUsd) / FLOAT_PRECISION_NUM / sizeTokens
       : 0;
+  // The collateral's registry symbol (WETH / WBTC / USDC). Anything else was reported as "USDC".
   const collateral: TokenSymbol =
-    p.addresses.collateralToken.toLowerCase() ===
-    TOKENS.WETH.address.toLowerCase()
-      ? "WETH"
-      : "USDC";
+    tokenInfoByAddress(p.addresses.collateralToken)?.symbol ??
+    p.addresses.collateralToken;
   return {
     isLong: p.flags.isLong,
     sizeUsd: p.numbers.sizeInUsd.toString(),
@@ -936,7 +1082,7 @@ async function readMarketFunding(
 async function readPositionFundingOwed(
   publicClient: PublicClient,
   positions: readonly Position[],
-  wethPrice: number,
+  basePrice: (symbol: TokenSymbol) => number | undefined,
 ): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   const open = positions.filter((p) => p.numbers.sizeInUsd > 0n);
@@ -970,12 +1116,9 @@ async function readPositionFundingOwed(
       p.numbers.sizeInUsd,
     );
     // The fee is denominated in the position's collateral token.
-    const isWeth =
-      p.addresses.collateralToken.toLowerCase() ===
-      TOKENS.WETH.address.toLowerCase();
-    const usd = isWeth
-      ? (Number(amount) / 1e18) * wethPrice
-      : Number(amount) / 1e6;
+    const unit = collateralUnit(p.addresses.collateralToken, basePrice);
+    if (!unit) return;
+    const usd = (Number(amount) / 10 ** unit.decimals) * unit.usd;
     out.set(p.addresses.market.toLowerCase(), usd);
   });
   return out;
@@ -1005,7 +1148,11 @@ export function gmxEthUsdPositionValueUsd(
     ? positionForMarket(positions, GMX_MARKETS.ETH_USD)
     : undefined;
   if (!pos) return 0;
-  return positionValueUsd(pos, markPrice, "WETH", markPrice);
+  return (
+    positionValueUsd(pos, markPrice, "WETH", (symbol) =>
+      symbol === "WETH" ? markPrice : undefined,
+    ) ?? 0
+  );
 }
 
 // Sum an account's perp positions across every configured gmx market, each at its own base's fair
@@ -1015,7 +1162,6 @@ export function gmxEthUsdPositionValueUsd(
 function perpValueUsd(
   positions: readonly Position[] | undefined,
   fairByBase: Record<string, number>,
-  wethPrice: number,
 ): { valueUsdc: number; unpriced: UnpricedHoldingDetail[] } {
   const unpriced: UnpricedHoldingDetail[] = [];
   if (!positions || positions.length === 0) return { valueUsdc: 0, unpriced };
@@ -1037,7 +1183,22 @@ function perpValueUsd(
       });
       continue;
     }
-    valueUsdc += positionValueUsd(position, markPrice, base, wethPrice);
+    const value = positionValueUsd(
+      position,
+      markPrice,
+      base,
+      (symbol) => fairByBase[symbol],
+    );
+    if (value === undefined) {
+      // The collateral token has no price (WBTC collateral on a run that did not price WBTC).
+      unpriced.push({
+        token: position.addresses.collateralToken,
+        amountRaw: position.numbers.collateralAmount.toString(),
+        source: "gmx-position",
+      });
+      continue;
+    }
+    valueUsdc += value;
   }
   return { valueUsdc, unpriced };
 }
@@ -1087,7 +1248,6 @@ export const gmxAdapter: ProtocolAdapter = {
 
   async observe(ctx, _state, agent, fairPrice): Promise<GmxObservation> {
     const entries = gmxMarketEntries(ctx);
-    const wethPrice = baseFairPrice(ctx, "WETH", fairPrice);
     // The venue state (skew, funding rate) rides the same block and the same batch as the
     // positions: an agent comparing its own position against the book must not be told about the
     // two at different blocks.
@@ -1101,7 +1261,7 @@ export const gmxAdapter: ProtocolAdapter = {
     const owed = await readPositionFundingOwed(
       ctx.publicClient,
       positions,
-      wethPrice,
+      (symbol) => baseFairPrice(ctx, symbol, fairPrice),
     );
 
     const positionObs = (
@@ -1149,7 +1309,7 @@ export const gmxAdapter: ProtocolAdapter = {
 
   async buildTxs(ctx, owner, action): Promise<BuiltTx[]> {
     const base = (action as { base?: TokenSymbol }).base ?? "WETH";
-    return [buildOrderTx(owner, resolveGmxMarket(ctx, base), action)];
+    return [buildOrderTx(owner, resolveGmxMarket(ctx, base), base, action)];
   },
 
   // The keeper fills orders created during the competition block
@@ -1186,11 +1346,9 @@ export const gmxAdapter: ProtocolAdapter = {
     if (keys.length === 0) return;
 
     const keeper = privateKeyToAccount(ctx.keeperPk);
-    const oracleParams = {
-      tokens: [TOKENS.WETH.address, TOKENS.USDC.address],
-      providers: [ctx.gmx.mockProvider, ctx.gmx.mockProvider],
-      data: ["0x", "0x"] as Hex[],
-    };
+    // Every token any configured market needs, not just the order's own: GMX reverts the whole
+    // execute on a missing price rather than cancelling, and nothing retries it (gmxOracleTokens).
+    const oracleParams = gmxKeeperOracleParams(ctx);
     const fee = opts?.priorityFeeWei ?? 1_000_000_000n;
     for (const key of keys) {
       try {
@@ -1284,16 +1442,21 @@ export const gmxAdapter: ProtocolAdapter = {
 
   async valueUsdc(ctx, agent, _state, fairPrice): Promise<number> {
     const positions = await getAccountPositions(ctx.publicClient, agent);
-    const wethPrice = baseFairPrice(ctx, "WETH", fairPrice);
-    // Sum position values across all gmx markets, each at its base's fair price.
-    // On the default fork (single WETH market) this is byte-identical to the prior formula (markPrice=wethPrice=fairPrice).
+    const price = (symbol: TokenSymbol): number =>
+      baseFairPrice(ctx, symbol, fairPrice);
+    // Sum every open position across all gmx markets, each at its base's fair price. Every one, not
+    // the first per market: a market holds a separate position per (collateral, side), so a
+    // WBTC-collateral and a USDC-collateral BTC long are two positions.
+    // On the default fork (single WETH market) this is the prior formula (markPrice=wethPrice=fairPrice).
+    const baseByMarket = new Map(
+      gmxMarketEntries(ctx).map((e) => [e.market.toLowerCase(), e.base]),
+    );
     let total = 0;
-    for (const { base, market } of gmxMarketEntries(ctx)) {
-      const pos = positionForMarket(positions, market);
-      if (!pos) continue;
-      const markPrice =
-        base === "WETH" ? wethPrice : baseFairPrice(ctx, base, fairPrice);
-      total += positionValueUsd(pos, markPrice, base, wethPrice);
+    for (const pos of positions) {
+      if (pos.numbers.sizeInUsd === 0n) continue;
+      const base = baseByMarket.get(pos.addresses.market.toLowerCase());
+      if (base === undefined) continue;
+      total += positionValueUsd(pos, price(base), base, price) ?? 0;
     }
     return total;
   },
@@ -1383,11 +1546,10 @@ export const gmxAdapter: ProtocolAdapter = {
       }
     }
 
-    const wethPrice = fairByBase.WETH ?? 0;
     const out: Record<string, AgentProtocolValue> = {};
     ctx.agents.forEach((agent, a) => {
       const positions = stage1[a] as readonly Position[] | undefined;
-      const perp = perpValueUsd(positions, fairByBase, wethPrice);
+      const perp = perpValueUsd(positions, fairByBase);
       let valueUsdc = perp.valueUsdc;
       const unpriced: UnpricedHoldingDetail[] = [...perp.unpriced];
       // An account with no perps decodes to an empty array, so undefined means the read failed.
@@ -1438,33 +1600,54 @@ export const gmxAdapter: ProtocolAdapter = {
   },
 
   async setupWallet(): Promise<BuiltTx[]> {
-    // Approve the Router for USDC collateral (not needed for WETH collateral, which is sent natively via sendWnt)
-    return [
-      {
-        to: TOKENS.USDC.address,
-        data: encodeFunctionData({
-          abi: [
-            {
-              type: "function",
-              name: "approve",
-              stateMutability: "nonpayable",
-              inputs: [
-                { name: "s", type: "address" },
-                { name: "a", type: "uint256" },
-              ],
-              outputs: [{ type: "bool" }],
-            },
-          ] as const,
-          functionName: "approve",
-          args: [GMX.Router, maxUint256],
-        }),
-      },
-    ];
+    // Approve the Router for every ERC-20 collateral: USDC, and each non-WETH market's long token
+    // (WBTC). WETH collateral needs none -- it is sent natively via sendWnt.
+    const tokens: Address[] = [TOKENS.USDC.address];
+    for (const m of marketsFor("gmx")) {
+      if (m.base === "WETH" || !m.gmx) continue;
+      const token = tokenInfo(m.base).address;
+      if (!tokens.some((t) => t.toLowerCase() === token.toLowerCase()))
+        tokens.push(token);
+    }
+    return tokens.map((token) => ({
+      to: token,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [GMX.Router, maxUint256],
+      }),
+    }));
   },
 
   async setupGlobal(ctx: SimContext): Promise<void> {
     const admin = accountAddress(ctx.adminPk);
     const keeper = accountAddress(ctx.keeperPk);
+
+    // The markets' tokens, from chain: they decide what the keeper must price and what collateral
+    // each market takes, so a market of another shape is refused here rather than discovered as
+    // orders that never fill.
+    const layouts: Array<{
+      base: TokenSymbol;
+      market: Address;
+      props: MarketProps;
+    }> = [];
+    for (const { base, market } of gmxMarketEntries(ctx)) {
+      const props = (await ctx.publicClient.readContract({
+        address: GMX.Reader,
+        abi: readerAbi,
+        functionName: "getMarket",
+        args: [GMX.DataStore, market],
+      })) as MarketProps;
+      layouts.push({ base, market, props });
+    }
+    const layoutProblems = gmxMarketLayoutProblems(layouts);
+    if (layoutProblems.length > 0)
+      throw new Error(
+        "gmx: a configured market does not have the [base-base-USDC] shape the adapter prices and " +
+          `takes collateral for:\n  ${layoutProblems.join("\n  ")}`,
+      );
+    const oracleTokens = gmxOracleTokens(layouts.map((l) => l.props));
+
     const mock = await deployContract(ctx, "MockOracleProvider", []);
 
     // Get ROLE_ADMIN and grant roles
@@ -1523,7 +1706,9 @@ export const gmxAdapter: ProtocolAdapter = {
         }),
       },
     );
-    for (const token of [TOKENS.WETH.address, TOKENS.USDC.address]) {
+    // Every token the keeper passes, WBTC included: GMX checks each price against the provider
+    // registered for that token, and WBTC's was left on the deploy's own provider.
+    for (const token of oracleTokens) {
       await sendAndMine(
         ctx.publicClient,
         ctx.walletClient,
@@ -1555,6 +1740,7 @@ export const gmxAdapter: ProtocolAdapter = {
     );
 
     ctx.gmx.mockProvider = mock;
+    ctx.gmx.oracleTokens = oracleTokens;
     ctx.oracle.gmxProvider = mock;
     ctx.updateGmxOracle = async (c, fairPrice, opts) => {
       const send = (tx: { to: Address; data: Hex }): Promise<unknown> =>
@@ -1569,42 +1755,25 @@ export const gmxAdapter: ProtocolAdapter = {
               opts.priorityFeeWei ?? 1_000_000_000n,
             )
           : sendAndMine(c.publicClient, c.walletClient, c.chain, c.adminPk, tx);
-      await send({
-        to: mock,
-        data: encodeFunctionData({
-          abi: mockOracleProviderAbi,
-          functionName: "setPrice",
-          args: [
-            TOKENS.WETH.address,
-            toGmxPrice(fairPrice, 18),
-            toGmxPrice(fairPrice, 18),
-          ],
-        }),
-      });
-      await send({
-        to: mock,
-        data: encodeFunctionData({
-          abi: mockOracleProviderAbi,
-          functionName: "setPrice",
-          args: [TOKENS.USDC.address, toGmxPrice(1, 6), toGmxPrice(1, 6)],
-        }),
-      });
-      // ADR 0013: also update the index token of additional bases (WBTC etc.). On the default fork,
-      // ctx.gmx.markets is unset or WETH-only, so this loop is empty and byte-identical to before.
-      // Price is ctx.fairPrices[base], falling back to fairPrice (WETH price) if absent.
-      for (const { base } of gmxMarketEntries(c)) {
-        if (base === "WETH") continue; // already updated above
-        const info = tokenInfo(base);
+      // Exactly the tokens the keeper passes (WETH, USDC, then WBTC on the local deploy), so a
+      // token the keeper names always has a price: the mock reverts on one that was never set. The
+      // layout check in setup guarantees each is USDC ($1, the numéraire) or a market's base.
+      for (const token of c.gmx.oracleTokens ?? oracleTokens) {
+        const info = tokenInfoByAddress(token);
+        if (!info) continue; // unreachable after the layout check
+        const usd =
+          info.kind === "stable"
+            ? 1
+            : info.symbol === "WETH"
+              ? fairPrice
+              : baseFairPrice(c, info.symbol, fairPrice);
+        const price = toGmxPrice(usd, info.decimals);
         await send({
           to: mock,
           data: encodeFunctionData({
             abi: mockOracleProviderAbi,
             functionName: "setPrice",
-            args: [
-              info.address,
-              toGmxPrice(baseFairPrice(c, base, fairPrice), info.decimals),
-              toGmxPrice(baseFairPrice(c, base, fairPrice), info.decimals),
-            ],
+            args: [token, price, price],
           }),
         });
       }
