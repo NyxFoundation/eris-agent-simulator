@@ -589,7 +589,7 @@ export function MarketPage() {
           {panel?.runWide
             ? t("market.runWide", {
                 from:
-                  round.epochs[0]?.fromBlock.toLocaleString("en-US") ?? "—",
+                  round.intervals[0]?.fromBlock.toLocaleString("en-US") ?? "—",
                 to: round.blockNumber.toLocaleString("en-US"),
               })
             : scope.roundIndex === null

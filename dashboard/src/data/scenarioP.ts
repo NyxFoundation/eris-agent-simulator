@@ -2,7 +2,7 @@
 //
 // Two sources, and which one speaks is the point:
 //
-//   the boundary series   summary.json's epoch series (or epochs.jsonl while the run goes). When it
+//   the boundary series   summary.json's interval series (or intervals.jsonl while the run goes). When it
 //                         has this agent, P is its two ends (core/src/scoring/epochPnl.ts) -- or
 //                         nothing. An agent whose V_0 is null was not measured at the epoch's start
 //                         (registered mid-segment, ADR 0021 §2) and has no P, however many later

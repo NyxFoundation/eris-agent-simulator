@@ -12,7 +12,8 @@ export type AgentSummary = {
   baseline?: boolean;
   // Rules §2.2: the participant unit (coordinator; absent on a roster that did not state one).
   participant?: string;
-  // Rules §4.4.1's P, off the epoch boundaries (coordinator; absent on a run recorded before it).
+  // Rules §4.4.1's P, off the interval series' first and last boundary (coordinator; absent on a
+  // run recorded before it).
   pnlUsdc?: number;
   alphaUsdc?: number;
   netPnlUsdc?: number;
@@ -77,8 +78,8 @@ export function scoresFromSummary(
       flags.push(
         `${agent.unloggedTxCount} on-chain tx(s) absent from the agent's submitted log`,
       );
-    // P off the epoch boundaries when the run recorded it; a run from before that field marks both
-    // ends at the final prices, which differs by a per-run constant and is said so.
+    // P off the epoch's two boundaries when the run recorded it; a run from before that field marks
+    // both ends at the final prices, which differs by a per-run constant and is said so.
     const pnl: Pick<AgentScore, "pnlUsdc" | "pnlSource"> =
       agent.pnlUsdc !== undefined
         ? { pnlUsdc: agent.pnlUsdc, pnlSource: "epoch-boundaries" }

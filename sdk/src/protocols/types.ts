@@ -129,7 +129,7 @@ export type ValuationContext = {
   // stable leg reads it from here, so nothing prices the same token twice or differently. Same
   // "populated after stage 0" contract as fairByBase.
   stablePrices(): StablePrices;
-  // Rules §4.1: at an epoch boundary every market-derived price is the median over the window of
+  // Rules §4.1: at an interval boundary every market-derived price is the median over the window of
   // blocks ending at this one. These are the window's *earlier* blocks, oldest first; blockNumber
   // itself is not repeated (its reads are the stage reads). Empty or absent at every other
   // cross-section and whenever the window is off -- the adapter then marks live, as it always did.

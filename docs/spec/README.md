@@ -26,10 +26,10 @@ ADR は履歴なので、ADR 0002 → 0018、連続経済 → ADR 0020 のよう
 | [03 市場環境](03-market.md) | fair price の生成と伝播、orderflow、venue 一覧 |
 | [04 ストレスイベント](04-stress-events.md) | 9 種のイベント型、スケジュール決定則、victim |
 | [05 エージェント契約](05-agent-contract.md) | 3 つの実行契約、observation、アクション 25 種、limits、自己改善 |
-| [06 採点](06-scoring.md) | 評価、エポック境界の系列、P と偏差値 T / Score（規約 §4.4）、行列の順位、エポック順序の抽選 |
+| [06 採点](06-scoring.md) | 評価、評価区間の境界の系列、P と偏差値 T / Score（規約 §4.4）、行列の順位、エポック順序の抽選 |
 | [07 設定](07-configuration.md) | YAML スキーマ全キー、解決順、CLI フラグ、ロスター |
 | [08 成果物](08-artifacts.md) | `runs/<id>/` の全ファイルとフィールド、イベント型カタログ |
-| [09 ダッシュボード](09-dashboard.md) | 情報階層、ルート、ラウンドカーソル、順位表の表示規則 |
+| [09 ダッシュボード](09-dashboard.md) | 情報階層、ルート、評価区間カーソル、順位表の表示規則 |
 | [10 運用](10-operations.md) | CLI 一覧、練習 devnet、explorer、state dump / backtest |
 | [11 品質保証と不変条件](11-invariants.md) | 起動時 assertion、実行時監視、事後検査、テストが守るもの |
 | [12 既知の制約・未決事項](12-open-issues.md) | 未較正・未決の論点、構造的な制約 |

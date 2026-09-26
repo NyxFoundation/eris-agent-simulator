@@ -214,7 +214,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   配れる**（`fundAddress`。WETH だけは本人しか `deposit` できないので treasury が wrap して送る）
 - **ブロックはシーケンサが作る**。`setIntervalMining`/`setAutomine` は無く、`sendAndMine` は receipt を待つだけ
   （setup の各段は自分が書いた state を読み返すので、着弾前に返すと前の世界を見て動く）。coordinator は
-  **実 cadence を計測**する（`run.blockTimeSec` とズレるとエポック長が全部狂う）
+  **実 cadence を計測**する（`run.blockTimeSec` とズレると評価区間の長さが全部狂う）
 - **リセットは無い**。練習場ではそれが設計（ADR 0021 §1）
 - **起動時に落とす組み合わせ**: treasury 鍵なし / `localDeploy: false` / `economicGas: true`（storage 書き込みで
   価格を確定する＝実チェーン不可）/ `stressVictimCount > 0`（victim は run ごとの fresh state が要る）/
@@ -295,16 +295,17 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   ここに出ないか」を明示する。**submitted-but-not-included は諦める**（運営が動かしていない agent では元々検証不能）
 - **メソッド名は calldata デコード**（`sdk/src/methodSelectors.ts`）。agent ログ join は coordinator が agent を
   起動している間しか成立せず、外部参加者の tx が全部 `direct` になる＝トラフィックが最も多いところで最も情報が無い
-- **採点はエポック境界をその場で読む**（`core/src/realtime/liveScoring.ts`）。事後 sweep は「終わり」が来ないチェーンと
+- **採点は評価区間の境界をその場で読む**（`core/src/realtime/liveScoring.ts`）。事後 sweep は「終わり」が来ないチェーンと
   ノードの履歴保持深度の両方に当たる。同じ reader・同じブロック・同じ G7 median 窓なので**一致する**ことを毎 run
-  検査する（`epoch_series_agreement`）。sweep は equity curve / alpha / market.json のために残るが、履歴深度を
+  検査する（`interval_series_agreement`）。sweep は equity curve / alpha / market.json のために残るが、履歴深度を
   超える窓では**明示的にスキップ**（そこで sweep すると 0 を読んで「崖のある完全な系列」になる）
 - **成果物は日次セグメント**（`run.segmentHours`）。チェーンは連続のまま、run ディレクトリだけを切る。
-  `competition ⊃ scenario` にセグメント列として載り、`resetUnit` は正直に `continuous`。**エポックは厳密に分割
+  `competition ⊃ scenario` にセグメント列として載り、`resetUnit` は正直に `continuous`。**評価区間は厳密に分割
   される** — 境界上で始まるセグメントは繰り越さず、途中で始まるものは直前の境界を繰り越す（前者を繰り越すと
-  同じエポックが 2 セグメントで採点され、後者を繰り越さないとセグメントごとに 1 エポック消える）
-- **エポック長は実時間で書く**（`run.epochSeconds`。ADR 0021 §3 が単位を確定した）。ブロック数は cadence から
-  導出。両方書くと fail-fast。設定例は `config/practice.yaml`、運用手順は `docs/guide/practice-devnet.md`
+  同じ評価区間が 2 セグメントで数えられ、後者を繰り越さないとセグメントごとに 1 区間消える）
+- **評価区間の長さは実時間で書く**（`run.intervalSeconds`。ADR 0021 §3 が単位を確定した）。ブロック数は cadence から
+  導出。秒とブロックを両方書くと fail-fast。旧名 `run.epochSeconds` / `run.epochBlocks` は結果発表まで警告付きで
+  読む（同じキーを新旧両方で書くと fail-fast。issue #140）。設定例は `config/practice.yaml`、運用手順は `docs/guide/practice-devnet.md`
 - **1 か月走る期間の 5 点**（issue #129/#130/#134/#135/#136。4 時間の EC2 soak で実測）: ①**期間の終わりは日時**
   （`run.endsAt`。起動時に残りブロックへ換算。`run.blocks` と両方は fail-fast、CLI の `--blocks` は上書き。
   以前は 42 日のブロック数で、9/23 起動なら本番週にはみ出し、再起動のたびに 42 日延びた）。42 日の `seconds`
@@ -318,9 +319,9 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   レシート・トレース込み）をメモリとダンプに持ち続け、**5 分ごとのダンプの間ブロック生成が止まる**（2 時間で
   18 秒、伸び続ける）。履歴は直近 10 分しか読めない。ブロックヘッダはどのフラグでも消えないので
   `ascon_anvil_mem_growth` が 1 週間先を予測して警告する
-- **ラウンド数はセグメントで頭打ちになる**（期間の長さでは増えない）。30 分ラウンド・24h セグメントで
-  **48 ラウンド/セグメント**が定常状態。dashboard はセグメントを読むのでバーもそこで止まる。
-  セグメントを切ると期間全体が 1 本になり、1 週間で 336 ラウンド・events.jsonl 435MB・blocks.csv 221MB
+- **評価区間の数はセグメントで頭打ちになる**（期間の長さでは増えない）。30 分の評価区間・24h セグメントで
+  **48 区間/セグメント**が定常状態。dashboard はセグメントを読むのでバーもそこで止まる。
+  セグメントを切ると期間全体が 1 本になり、1 週間で 336 区間・events.jsonl 435MB・blocks.csv 221MB
   （実測 1.4KB/block・0.7KB/block からの外挿）。**11 時間相当を超える非セグメント run は起動時に警告**する
 
 ## 実行コマンド
@@ -352,8 +353,10 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
 - `npm run explorer` — sim anvil を索引するローカル Blockscout（issue #31。stock イメージ pin、`infra/blockscout/`）。UI は http://localhost:3100。**チェーンをリセットしたら `npm run explorer:reset`**（resetFork/snapshot-revert の巻き戻しに indexer は追従できないので DB を消して再索引するのが正規のライフサイクル）。`npm run explorer:tag` が最新 run の `summary.json` から agent アドレスに名前タグを付ける（reset で消えるので run ごと）。接続先・chain id・fork 用 `FIRST_BLOCK` は `infra/blockscout/explorer.env`
 - `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
-  - **選択は `competition ⊃ scenario ⊃ round`**（UI から "matrix" という語は消した。ディスク上の
-    `matrix.json` は core の出力なのでそのまま）。既定の着地点は competition = `/` の順位表。
+  - **選択は `competition ⊃ scenario ⊃ interval`**（UI から "matrix" という語は消した。ディスク上の
+    `matrix.json` は core の出力なのでそのまま）。UI 表示は「評価区間」/ "Interval"（issue #140 までは
+    「ラウンド」/ "Round"）。dashboard のコード内の識別子（`roundCursor` / `RoundsBar` / `round`）は round のままで、
+    `dashboard/` の中では常に評価区間を指す。既定の着地点は competition = `/` の順位表。
     1 シナリオは分布からの 1 ドローであって結果ではない（`config/scenarios/public.yaml`:
     "the published seeds are five draws from it, **not the target**"）ので、そこを既定にすると
     「読んではいけない単位」を最初に見せることになる。picker は competition →（`regime#seed` 表示の）
@@ -367,31 +370,31 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     `/scenario` に着地する）: RoundsBar（replay transport 無し）+ ブロック軸 + 盤面 + シナリオ内順位 / Agent Log /
     venue 価格・口座価値の履歴。ブロック軸の head はページのローカル状態で、**途中で離れるときだけ replay head に
     1 回渡す**（`/markets` `/explorer` が同じブロックで開く。armed で開けばその head から始まる）。盤面のフレームは
-    replay で clamp せず、順位パネルは head 時点で閉じたラウンドまでの順位（`standingsThroughRound`）。旧 top-page
+    replay で clamp せず、順位パネルは head 時点で閉じた評価区間までの順位（`standingsThroughRound`）。旧 top-page
     snapshot（ティッカー・テープ・ブロックプレビュー）は削除。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
     書かれるので結果がまだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
   - **トップページ（`/`）が「この競技とは何か」を全部持つ**。順位表の下に 3 つ:
-    **シナリオ一覧**（1 行 1 世界 = `regime#seed` / ラウンド数 / 首位 / 環境イベント種別。行クリックで開く。
-    `dashboard/src/data/scenarioList.ts`）、**単位の梯子**（競技 › シナリオ › ラウンド › ブロック）、
+    **シナリオ一覧**（1 行 1 世界 = `regime#seed` / 評価区間の数 / 首位 / 環境イベント種別。行クリックで開く。
+    `dashboard/src/data/scenarioList.ts`）、**単位の梯子**（競技 › シナリオ › 評価区間 › ブロック）、
     **Info タブ**（overview / environment / scoring / data = `components/InfoTabs.tsx`）。
     3 つとも以前は「まずシナリオを 1 つ選ばないと読めない」位置にあった。特に Info タブは
     35 世界のうち 1 つの末尾にあったので、**「シナリオとは何か」の説明がシナリオを開かないと読めず、
     しかもその世界固有の説明に読めた**。イベント列の空欄は「予定なし」であって「calm」ではない
     （cex-drift は窓を開けず run 全体を曲げるし、窓化以前の run はそもそも schedule を持たない）
-  - **ラウンドは UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
-    スコアも順位変動も環境イベントも全部エポック単位なので、全ビューはこの軸に対して読む。
-    **以前はラウンド軸を 3 回別々に実装していた**（ラウンド選択 / replay head / live head）。
-    カーソルは competition 全体を張る = **round k では 35 シナリオが各自の round k にいる**。再生は
+  - **評価区間は UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
+    途中経過の価値も順位変動も環境イベントも評価区間単位なので、全ビューはこの軸に対して読む。
+    **以前はこの軸を 3 回別々に実装していた**（評価区間の選択 / replay head / live head）。
+    カーソルは competition 全体を張る = **評価区間 k では 35 シナリオが各自の評価区間 k にいる**。再生は
     カーソルを進めるだけで、独立した「リプレイモード」ではない
-    - **順位は "through round k"**（先頭 k ラウンドで再計算。完走結果を読まない）+ round k−1 からの移動
-    - **シナリオ長は揃っていない**（full-8h では depeg が 9、他は 29）。最終ラウンドを過ぎた
+    - **順位は "through interval k"**（先頭 k 評価区間で再計算。完走結果を読まない）+ 評価区間 k−1 からの移動
+    - **シナリオ長は揃っていない**（full-8h では depeg が 9、他は 29）。最終評価区間を過ぎた
       シナリオは**世界が終了した**扱いで順位に残す（除くと「結果でない理由」で場が動く）。
       帯に `30 of 35 still running · 5 ended earlier` と出す
-    - **net PnL はラウンド絞り不可**（両端を run 最終価格で評価するので round k の値が存在しない）。
-      順位表の参考列としてだけ出し、スクラブ中は灰色で提示して完走値をラウンド名で出さない
-    - **round k のパネルがその窓を出す**（seed から引かれた計画。実測 seed 101: whale r5/r13/r19/r24-25、
-      crash r14-15、lending-incident r15-16、depeg r4-7、calm/cex-drift/informed-flow は無し）。
-      **だから round 7 の順位は最終順位の予告ではない** — round 7 では裁定勢が首位で、
+    - **net PnL は評価区間で絞れない**（両端を run 最終価格で評価するので評価区間 k の値が存在しない）。
+      順位表の参考列としてだけ出し、スクラブ中は灰色で提示して完走値を評価区間名で出さない
+    - **評価区間 k のパネルがその窓を出す**（seed から引かれた計画。実測 seed 101: whale 5/13/19/24-25、
+      crash 14-15、lending-incident 15-16、depeg 4-7、calm/cex-drift/informed-flow は無し）。
+      **だから評価区間 7 の順位は最終順位の予告ではない** — 評価区間 7 では裁定勢が首位で、
       その座を奪う crash 窓はまだ開いていない
     - ブロック単位の細かい移動（1 シナリオ内）は `replay.ts` に残る。これはこの位置の**細分**であって
       対立する概念ではなく、シナリオを 1 本開いているときにだけ存在する
@@ -399,7 +402,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     P = V_K − V_0 → 場全体で T → 回次に線形な w で加重平均した Score を 2 桁で表示し、tooltip に採点エポック数と
     §4.6 のタイブレーク（T の標準偏差・最悪エポック）。レジーム列はそのレジームでの T の平均（説明であって別の
     順位ではない）。参考列として net PnL(final marks) の合計を 1 列だけ併記（β が相殺され `noop` がきっかり 0 に
-    なる方の量。ラウンドスクラブ中は灰色）。**採点は `core/src/scoring/deviationScore.ts` を dashboard が直接
+    なる方の量。評価区間のスクラブ中は灰色）。**採点は `core/src/scoring/deviationScore.ts` を dashboard が直接
     import する**（`@core/*` alias。採点ロジックを 2 箇所に置くと CLI と画面で順位が食い違ったとき、どちらが本物か
     分からなくなる）。振る指標は無い（`npm run metrics` は削除）
   - **表示名の原則**: 内部 ID を UI に出さない。競技名は scenarioSet + 実施日から自動導出
@@ -416,37 +419,37 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     全エポック（s / シナリオ / P / T / w）、T の平均・標準偏差・最悪値（= §4.6 のタイブレーク）、T の分布、
     レジーム別内訳、破産（≤ 0 で終えたシナリオ）を出す（Score が順位を決めるので、これは別の順位ではなく説明）。
     1 つのレジームで大勝ちして他で負ける戦略が安定した戦略の下に来る理由が、レジーム別 T で見える
-  - **「ラウンド」= 規約の評価区間**（run ではない。採点はエポック = run につき 1 つ、ラウンドは途中経過）。上部の帯は選択中 run の epoch 系列そのもの
-    （`valueSeries.epochSeries.boundaryBlocks`）で、セグメントを押すとその round の per-agent 結果
-    （Δ value / 超過対数リターン / 順位と変動 / その窓に落ちた環境イベント）が開き、`/explorer` の
+  - **評価区間 = 規約の評価区間**（run ではない。採点はエポック = run につき 1 つ、評価区間は途中経過）。上部の帯は選択中 run の評価区間の系列そのもの
+    （`valueSeries.intervalSeries.boundaryBlocks`。issue #140 以前の run は `epochSeries` で、どちらも読む）で、セグメントを押すとその評価区間の per-agent 結果
+    （Δ value / 対数リターン / 順位と変動 / その窓に落ちた環境イベント）が開き、`/explorer` の
     ブロック窓もそこに絞られる。**`Δ value` と `log return` は別物**（前者は β 込みの生の資産変化なので
-    noop も動く。後者は baseline 超過＝スコアが平均する系列）。live run は採点系列が無いので
-    `run_started_realtime.epochBlocks` から枠だけ引いて進捗を出し、結果は完走時に入る
+    noop も動く。後者は同じ変化を ln(後 / 前) で表したもの。**どちらもスコアではない** = スコアはエポックにつき P が 1 つ）。live run は採点系列が無いので
+    `run_started_realtime.intervalBlocks`（古い run は `epochBlocks`）から枠だけ引いて進捗を出し、結果は完走時に入る
   - **`/markets` は価格ではなく venue の状態**。有効な protocol ごとに 1 タブ（AMM / Perp / Lending /
     Stablecoin / LST）。AMM・Perp・Lending・stable 価格は `market.json`、**LST と Liquity の
     「市場全体の状態」は `events.jsonl` の `lst_block` / `liquity_block`**（coordinator が毎ブロック
     出しているので二重に再構成しない＝古い run でも描ける）。パネルの構築は
     `dashboard/src/data/venuePanels.ts`
-  - **リプレイ**: 完走した run を「ブロック B 時点」として前に歩かせる（rounds bar の `▶ replay`
+  - **リプレイ**: 完走した run を「ブロック B 時点」として前に歩かせる（評価区間バーの `▶ replay`
     → play/pause・スクラバ・1x/2x/4x）。live モードは run したマシンでしか成立しない（tail は dev
     サーバーのファイルシステム、チェーン読取は agent の anvil）ので、**完走済み run と spot で回して
     回収した run を観るにはこれが唯一の手段**。archived は live より情報が多い（market.json・採点済み
-    epoch・完全な blocks.csv）ので、劣化版ではなく上位互換。**未来を見せないのが要件**で、閉じていない
-    ラウンドは結果を持たず、順位も閉じたラウンドまでの P = V_k − V_0 から T を計算し直す（完走時の数字を
+    評価区間系列・完全な blocks.csv）ので、劣化版ではなく上位互換。**未来を見せないのが要件**で、閉じていない
+    評価区間は結果を持たず、順位も閉じた評価区間までの P = V_k − V_0 から T を計算し直す（完走時の数字を
     読むと毎フレームに答えが出てしまう）。run 終端の建玉断面も head が終端に届くまで落とす。
     **spot から回収した run はそのまま開ける** — `spot-run` は box の `runs/` 丸ごとを tar で持ち帰り
     `runs/<回収ID>/runs/<runID>/` に展開するので、dev サーバーの index は 2 階層下まで走査し、
     `runs/` からの相対パスを id にする（picker には `<runID> ← <回収ID>` と出る）
   - **`Scenario` タブが run の履歴**（既定タブ）。`stress_schedule`（seed から引かれた台形の計画）を
-    絶対ブロック窓・またがるラウンド・実際に発火したブロック・終わり方（restored / failed）に変換し、
+    絶対ブロック窓・またがる評価区間・実際に発火したブロック・終わり方（restored / failed）に変換し、
     清算・償還・slash・開いた arb 窓を時系列で並べる。**`crash`/`spike`/`cexDrift`/`flowTrend` は
     毎ブロックの記録を残さない**（価格の walk 自体を変えるので）ため「never fired」とは書かず
     「price chart を見よ」と出す。**seed は `run_started_realtime` に記録**（無い古い run は stat 自体を出さない）
-  - **パネルは選択中ラウンドにスコープされる**（`scopeRunToRound` が run 自体を窓で絞るので、
+  - **パネルは選択中の評価区間にスコープされる**（`scopeRunToRound` が run 自体を窓で絞るので、
     ビルダー側に第 2 の経路を作らない）。ヘッダに窓を明示し、全体に戻すリンクを出す。
     **例外は run 終端の 3 表**（GMX 建玉 / Aave 口座 / reserve）で、これは run 終了時の 1 断面なので
-    タイトルに "at the run's final block" と書く。ラウンド別 volume の合計が run 全体より小さいのは
-    正しい（scorer が末尾の端数エポックを落とすため、最終境界より後のブロックはどのラウンドにも属さない）
+    タイトルに "at the run's final block" と書く。評価区間別 volume の合計が run 全体より小さいのは
+    正しい（scorer が末尾の端数区間を落とすため、最終境界より後のブロックはどの評価区間にも属さない）
   - **agent の建玉は全 venue 分が `market.json` に入る**（`gmxPositionsAtEnd` / `aaveAccountsAtEnd` /
     `lstPositionsAtEnd` / `liquityPositionsAtEnd`）。**以前は GMX だけを見ていたので、run 中ずっと
     ステークや借入だけしていた agent は空表になり「壊れている」と見分けがつかなかった**。表は perp 形
@@ -455,7 +458,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - `/explorer` は Blockscout の接続状態を明示し（indexed 高さ併記 / 落ちていれば起動コマンド）、
     検索が tx hash・block・address・**agent 名**（→ wallet address。Blockscout は名前を知らない）を
     解決して deep link する。Blockscout が無くてもローカル一覧のフィルタとしては効く
-- `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/ラウンド長/action 語彙/limits/登録アドレス）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
+- `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/評価区間の長さ（`round.intervalBlocks`。旧名 `epochBlocks` を結果発表まで併記）/action 語彙/limits/登録アドレス）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
 - `npm run check:ordering -- --live` — **ビルダーが手数料順に並べるかを自分で入札して測る**（#35 の load-bearing assumption）。既定プロファイルは oracle を全員より高く積んで txIndex 0 に置くので、順序が守られないチェーンでは環境の価格が front-run 可能になる。**入札は昇順に送る**ので到着順と手数料順が逆になり、到着順を保つだけのビルダーは降順プローブなら通ってこれで落ちる。引数なしは従来どおり blocks.csv の事後検査。
   **anvil が並べるキーは tip ではなく maxFeePerGas**（1.7.1 で実測。base fee 0 で払うのは min(maxFee, tip)）なので、
   tip 0.1 / maxFee 7 gwei の tx が 6 gwei のオラクルより前に入って 0.1 しか払わなかった。**`maxFeePerGas ≤ tip ≤ 上限`**
@@ -472,7 +475,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     完走まで出ない。「進行中」の表示はプランのエポック数から出しており、live run を見つけたかどうかではない
   - **`seed` の伏せ方は `null`**（`0` ではない）。伏せた seed・segment の連番プレースホルダ・本当に seed 0 の run は別物で、`seed 0` と印字するのは誰も引いていない draw を名乗ること
   - **mode 未取得中は両方の制限を掛ける**（issue #84 U）。`/runs/mode.json` が取れないブラウザに運営ビューを既定で見せると、試行環境で順位が出る
-  - **公開ビューも run 中に読むものがある**: `blocks.csv` / `epochs.jsonl` / `market.jsonl`（どれも coordinator が逐次追記し、サーバーも配信済み）。これを読まなかったせいで `/explorer` と盤面が期間中ずっと `blocks 0–0`・venue 全部 `—` だった（issue #84 A）。**ブロック行は coordinator の記録が先、チェーンはその先だけ**で、**カバーしている範囲を一緒に運ぶ** — 範囲より前に始まるラウンドは tx 数が「0」ではなく**「数えていない」**
+  - **公開ビューも run 中に読むものがある**: `blocks.csv` / `intervals.jsonl`（issue #140 以前の coordinator は `epochs.jsonl`。どちらも読み・配信する）/ `market.jsonl`（どれも coordinator が逐次追記し、サーバーも配信済み）。これを読まなかったせいで `/explorer` と盤面が期間中ずっと `blocks 0–0`・venue 全部 `—` だった（issue #84 A）。**ブロック行は coordinator の記録が先、チェーンはその先だけ**で、**カバーしている範囲を一緒に運ぶ** — 範囲より前に始まる評価区間は tx 数が「0」ではなく**「数えていない」**
   - **schedule の非公開はサーバーと同じ規則で表示する**（issue #84 D）。scenario の 1 エポックは「§3.3 により非公開」、continuous な run は「既に閉じた窓」。`0 件` と描くのはサーバーがしていない主張。公開ビューは `events.jsonl` の head を定期的に読み直す（閉じた窓は後から配信されるので、tail が通り過ぎていると二度と見えない）
 - `npm run gen:method-selectors` — venue ABI から selector→関数名テーブルを再生成（ADR 0021 §4）。生成物にしてあるのはブラウザに ABI パーサと keccak を積まないため（実測 +15kB gzip）。ABI とのズレは `test/methodNames.test.ts` が落とす
 - `npm run typecheck` / `npm run test` — 型チェック / ユニットテスト

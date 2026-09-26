@@ -643,7 +643,7 @@ const { LiveScorer } = await import("../core/src/realtime/liveScoring.js");
 const { reconstructValueSeries } = await import(
   "../core/src/realtime/reconstruct.js"
 );
-const { compareEpochSeries } = await import(
+const { compareIntervalSeries } = await import(
   "../core/src/realtime/coordinator.js"
 );
 const { RunLogger } = await import("../core/src/logger.js");
@@ -653,7 +653,7 @@ const { mkdtempSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
-// A chain where the agent holds one LP position and every epoch boundary block carries a push the
+// A chain where the agent holds one LP position and every interval boundary block carries a push the
 // pool does not keep: the tick is TICK_PUSHED on each boundary after the first and TICK_STEADY
 // everywhere else.
 function lpChain() {
@@ -708,7 +708,7 @@ test("live and swept boundaries agree, and both are the window's median", async 
       ...common,
       logger: new RunLogger(root, "live"),
       runStartBlock: 100,
-      epochBlocks: 4,
+      intervalBlocks: 4,
       sampleMarket: false,
     });
     for (let b = 100; b <= 112; b++) await live.onBlock(b);
@@ -717,12 +717,12 @@ test("live and swept boundaries agree, and both are the window's median", async 
       logger: new RunLogger(root, "swept"),
       fromBlock: 100,
       toBlock: 112,
-      epochBlocks: 4,
+      intervalBlocks: 4,
     });
     const liveSeries = live.series();
-    assert.ok(liveSeries && swept.epochSeries);
+    assert.ok(liveSeries && swept.intervalSeries);
     assert.deepEqual(liveSeries.boundaryBlocks, [100, 104, 108, 112]);
-    const agreement = compareEpochSeries(liveSeries, swept.epochSeries);
+    const agreement = compareIntervalSeries(liveSeries, swept.intervalSeries);
     assert.equal(agreement.compared, 4);
     assert.equal(agreement.maxAbsDiffUsdc, 0);
     // No boundary took the push.

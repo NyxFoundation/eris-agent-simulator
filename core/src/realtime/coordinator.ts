@@ -39,7 +39,7 @@ import {
   SegmentedRun,
   segmentAgentRecord,
   segmentIndexAgent,
-  sliceEpochSeries,
+  sliceIntervalSeries,
 } from "../segments.js";
 import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
 import { methodNameForCalldata } from "@eris/sdk/methodSelectors.js";
@@ -119,7 +119,12 @@ import {
   writePriceFeedStorage,
   writePriceFeedStorageFor,
 } from "./priceFeed.js";
-import { reconstructValueSeries, type EpochSeries } from "./reconstruct.js";
+import { reconstructValueSeries } from "./reconstruct.js";
+import {
+  INTERVAL_EVENTS,
+  intervalSeriesFields,
+  type IntervalSeries,
+} from "../intervalSeries.js";
 import {
   deployAgentMarketVenues,
   registerPending,
@@ -232,7 +237,8 @@ function flowRole(key: string): WalletRole {
 
 // The chain's actual block cadence, from the last two blocks' timestamps. On anvil the environment
 // sets it; on an external chain the sequencer does, and a mismatch with run.blockTimeSec silently
-// mis-sizes every epoch (ADR 0021 §3 sets epoch length in real time, converted through this number).
+// mis-sizes every interval (ADR 0021 §3 sets interval length in real time, converted through this
+// number).
 async function observeBlockTimeSec(
   publicClient: PublicClient,
 ): Promise<number | null> {
@@ -250,9 +256,9 @@ async function observeBlockTimeSec(
 // How far apart the two ways of reading the same boundary came out (ADR 0021 §3). Reported per run
 // rather than asserted in a test, because the thing that could break them apart -- a venue whose
 // state depends on when it is read rather than on which block -- would only show up on a chain.
-export function compareEpochSeries(
-  live: EpochSeries,
-  swept: EpochSeries,
+export function compareIntervalSeries(
+  live: IntervalSeries,
+  swept: IntervalSeries,
 ): {
   boundaries: number;
   compared: number;
@@ -548,8 +554,8 @@ export async function runRealtimeSimulation(
   // unsegmented is a 435MB events.jsonl, a 221MB blocks.csv and 336 rounds in a single bar.
   if (config.segmentHours === 0 && config.runBlocks > SEGMENT_ADVISORY_BLOCKS) {
     const rounds =
-      config.epochBlocks > 0
-        ? Math.floor(config.runBlocks / config.epochBlocks)
+      config.intervalBlocks > 0
+        ? Math.floor(config.runBlocks / config.intervalBlocks)
         : 0;
     console.error(
       `[run] WARNING: ${config.runBlocks.toLocaleString("en-US")} blocks into one directory ` +
@@ -601,11 +607,12 @@ export async function runRealtimeSimulation(
     // Issue #136: when the run was stated as a date, the date it was converted from. runBlocks is
     // what that date came to at this cadence when this process started.
     ...(config.runEndsAt ? { runEndsAt: config.runEndsAt } : {}),
-    // The round: an evaluation interval (rules §0.1), interim progress only -- the score uses the
-    // run's first and last boundary (ADR 0023). The identifier still says "epoch" from ADR 0019,
-    // when the round was the scoring unit. summary.json carries the boundaries, but only after the run
-    // ends -- a live viewer needs the length up front to lay the rounds out.
-    epochBlocks: config.epochBlocks,
+    // The evaluation interval (rules §0.1), interim progress only -- the score uses the run's first
+    // and last boundary (ADR 0023). summary.json carries the boundaries, but only after the run
+    // ends -- a live viewer needs the length up front to lay the intervals out. `epochBlocks` is the
+    // same number under its name from before issue #140, for a dashboard that has not caught up.
+    intervalBlocks: config.intervalBlocks,
+    epochBlocks: config.intervalBlocks,
     scoreEvery: config.scoreEvery,
     // SEED is the label for this run's market conditions (ADR 0005): the fair-price path and the
     // stress schedule are both drawn from it. Nothing recorded it, so a stored run could not say
@@ -953,7 +960,7 @@ export async function runRealtimeSimulation(
         ? config.flowBaseAmounts
         : config.initialBaseAmounts;
       // Agents are scored, so `funding.ethWei` is their whole native balance: the default gas buffer
-      // would be unchosen β in the live-marked epoch series (ADR 0019 §6). Flow wallets keep it --
+      // would be unchosen β in the live-marked interval series (ADR 0019 §6). Flow wallets keep it --
       // they are machinery, and a dry flow bot removes market activity from everyone.
       const gasBuffer = isFlow ? undefined : 0n;
       const ethWei = isFlow ? config.flowEthWei : config.initialEthWei;
@@ -1020,7 +1027,7 @@ export async function runRealtimeSimulation(
     // `ctx.fairPrices ?? {}` saw WETH only: the Aave calibration below (the WBTC aggregator kept the
     // deployer's seed price until the first oracle tx), the whale's endowment, `initial_endowment`,
     // and -- the one that reached the score -- the PriceFeed's opening state, which is what the
-    // first epoch boundary marks V_0 against. `openingFair` is the number every one of those reads,
+    // first interval boundary marks V_0 against. `openingFair` is the number every one of those reads,
     // and the OU walk in the block loop starts from it, so the mark and the walk agree.
     const extraBaseSymbols = baseTokens()
       .map((t) => t.symbol)
@@ -2282,7 +2289,7 @@ export async function runRealtimeSimulation(
     if (external) {
       // The sequencer has been producing blocks the whole time; there is no phase change to make.
       // What the environment does have to know is the real cadence, because the block loop's
-      // polling interval and every "blocks per epoch" conversion are derived from it -- so measure
+      // polling interval and every "blocks per interval" conversion are derived from it -- so measure
       // it rather than trusting the configured value (issue #33 (2) / #35 genesis block time).
       const observed = await observeBlockTimeSec(publicClient);
       logger.event({
@@ -2291,7 +2298,7 @@ export async function runRealtimeSimulation(
         observedSec: observed,
         note:
           observed !== null && Math.abs(observed - config.blockTimeSec) > 0.5
-            ? "run.blockTimeSec disagrees with the chain; epoch lengths and the poll interval are " +
+            ? "run.blockTimeSec disagrees with the chain; interval lengths and the poll interval are " +
               "derived from the configured value, so align it with the sequencer"
             : undefined,
       });
@@ -2391,7 +2398,7 @@ export async function runRealtimeSimulation(
     });
 
     // ---- live scoring (ADR 0021 §3) ----
-    // The epoch boundary is read as it goes past rather than swept up afterwards. On a chain that
+    // The interval boundary is read as it goes past rather than swept up afterwards. On a chain that
     // never stops there is no afterwards, and on any chain the node's history depth is finite --
     // both of which the sweep hits at exactly the run lengths a practice period needs.
     const liveScorer = new LiveScorer({
@@ -2402,7 +2409,7 @@ export async function runRealtimeSimulation(
       activeStables: activeStables(),
       priceFeed: priceFeedAddress,
       runStartBlock,
-      epochBlocks: config.epochBlocks,
+      intervalBlocks: config.intervalBlocks,
       markMedianBlocks: config.markMedianBlocks,
       // Venue state at each boundary, so a live viewer has something to draw before market.json
       // exists. Off when the post-run reconstruction will cover it anyway *and* the run is short
@@ -2473,7 +2480,7 @@ export async function runRealtimeSimulation(
         source: "registrationsFile",
         note:
           "registered mid-period from run.registrationsFile; funded now, valued from the next " +
-          "epoch boundary; the participant runs this agent and its decision log stays on their machine",
+          "interval boundary; the participant runs this agent and its decision log stays on their machine",
       });
     };
     const registrations = config.registrationsFile
@@ -2560,15 +2567,16 @@ export async function runRealtimeSimulation(
       });
     };
 
-    // Close a segment: write it a summary.json holding the epochs that fell inside it, so each
+    // Close a segment: write it a summary.json holding the intervals that fell inside it, so each
     // segment is an ordinary run directory that every existing tool can read. The slice carries the
-    // boundary immediately before the segment's start as its own boundary 0 (see sliceEpochSeries),
-    // because a segment's first epoch ends inside it but begins in the one before.
+    // boundary immediately before the segment's start as its own boundary 0 (see
+    // sliceIntervalSeries), because a segment's first interval ends inside it but begins in the one
+    // before.
     const closeSegment = (atBlock: number): unknown[] => {
       if (!segments) return [];
       const whole = liveScorer.series();
       const sliced = whole
-        ? sliceEpochSeries(whole, segments.currentSegmentStartBlock, atBlock)
+        ? sliceIntervalSeries(whole, segments.currentSegmentStartBlock, atBlock)
         : undefined;
       const agents = agentRuntimes.map((a) => {
         // Segment endpoints, from the boundaries the segment covers. Deliberately not the run's
@@ -2604,14 +2612,14 @@ export async function runRealtimeSimulation(
         finalFairPriceUsdcPerWeth: latestFairPrice,
         valueSeries: sliced
           ? {
-              source: "live-epoch-boundaries",
-              epochSeries: {
-                epochBlocks: config.epochBlocks,
-                epochs: Math.max(0, sliced.boundaryBlocks.length - 1),
+              source: "live-interval-boundaries",
+              ...intervalSeriesFields({
+                intervalBlocks: config.intervalBlocks,
+                intervals: Math.max(0, sliced.boundaryBlocks.length - 1),
                 ...sliced,
-              },
+              }),
             }
-          : { source: "live-epoch-boundaries", failed: true },
+          : { source: "live-interval-boundaries", failed: true },
         violations: [],
         agents,
       });
@@ -2638,7 +2646,8 @@ export async function runRealtimeSimulation(
         blockTimeSec: config.blockTimeSec,
         runSeconds: config.runSeconds,
         runBlocks: config.runBlocks,
-        epochBlocks: config.epochBlocks,
+        intervalBlocks: config.intervalBlocks,
+        epochBlocks: config.intervalBlocks,
         scoreEvery: config.scoreEvery,
         seed: config.seed,
         flowSeed: config.flowSeed,
@@ -3483,7 +3492,7 @@ export async function runRealtimeSimulation(
           // After the block's own work, not beside it: this reads the block that has just been
           // mined, so it cannot race anything above, and running it inside the Promise.all would
           // put a cross-section read on the critical path of every block instead of one in twelve.
-          const epochMs = await timed(() => liveScorer.onBlock(bn));
+          const boundaryMs = await timed(() => liveScorer.onBlock(bn));
 
           // After the boundary read, so an agent registered here is valued from the *next* boundary
           // rather than appearing in one it was not funded at. A stat on most blocks; a poll that
@@ -3503,7 +3512,7 @@ export async function runRealtimeSimulation(
 
           // ADR 0021 §6: cut the output, never the chain. Checked after the boundary read so a
           // segment that ends on one keeps it -- the next segment carries it as its own first
-          // boundary, which is what stops each segment losing an epoch at the seam.
+          // boundary, which is what stops each segment losing an interval at the seam.
           if (bn >= runStartBlock && segments?.dueToRoll())
             await rollSegment(bn);
 
@@ -3542,7 +3551,7 @@ export async function runRealtimeSimulation(
             ...(liquityMs !== undefined ? { liquityMs } : {}),
             // Zero on the eleven blocks in twelve that are not a boundary; the non-zero ones are
             // what live scoring costs the loop.
-            ...(epochMs > 0 ? { epochMs } : {}),
+            ...(boundaryMs > 0 ? { boundaryMs } : {}),
             ...(blocksMs > 0 ? { blocksMs } : {}),
             totalMs: Date.now() - roundStart,
           });
@@ -3646,39 +3655,39 @@ export async function runRealtimeSimulation(
     // exists on a chain the sweep cannot cover: too long for the node's history, and with no end to
     // start sweeping from. On a short run the two are the same numbers -- the same reader, the same
     // blocks, the same median window -- so nothing about a bounded run changes.
-    const wholeEpochSeries = liveScorer.series();
+    const wholeIntervalSeries = liveScorer.series();
     // The summary written here belongs to whichever directory `logger` points at -- which, when
     // segmenting, is the *final segment*, not the whole period. Scoring it over the whole series
-    // gave the last day the week's epochs: every earlier segment's returns counted twice in any
+    // gave the last day the week's intervals: every earlier segment's returns counted twice in any
     // standings taken over the period, and the last day showed a score nothing that happened on it
-    // could explain (seen on a five-segment run: 9 epochs in the last segment against 1+3+2+3 in
+    // could explain (seen on a five-segment run: 9 intervals in the last segment against 1+3+2+3 in
     // the others).
-    const liveEpochSeries = ((): EpochSeries | undefined => {
-      if (!wholeEpochSeries || !segments) return wholeEpochSeries;
-      const cut = sliceEpochSeries(
-        wholeEpochSeries,
+    const liveIntervalSeries = ((): IntervalSeries | undefined => {
+      if (!wholeIntervalSeries || !segments) return wholeIntervalSeries;
+      const cut = sliceIntervalSeries(
+        wholeIntervalSeries,
         segments.currentSegmentStartBlock,
         finalBlock,
       );
-      // `epochs` has to be recomputed, not inherited. Spreading the slice over the whole series
+      // `intervals` has to be recomputed, not inherited. Spreading the slice over the whole series
       // replaced its blocks and values and left the period's count behind: the final segment's
-      // summary said `epochs: 9` while carrying five boundaries — four returns. An artifact that
+      // summary said 9 while carrying five boundaries — four returns. An artifact that
       // contradicts itself is worse than one that is missing a field.
       return {
-        ...wholeEpochSeries,
+        ...wholeIntervalSeries,
         ...cut,
-        epochs: Math.max(0, cut.boundaryBlocks.length - 1),
+        intervals: Math.max(0, cut.boundaryBlocks.length - 1),
       };
     })();
-    if (liveEpochSeries) {
+    if (liveIntervalSeries) {
       logger.event({
-        type: "epoch_series_scored",
+        type: INTERVAL_EVENTS.seriesScored,
         ...liveScorer.meta(),
         ...(segments
           ? {
               segment: segments.currentSegment,
-              boundaries: liveEpochSeries.boundaryBlocks.length,
-              periodBoundaries: wholeEpochSeries?.boundaryBlocks.length,
+              boundaries: liveIntervalSeries.boundaryBlocks.length,
+              periodBoundaries: wholeIntervalSeries?.boundaryBlocks.length,
             }
           : {}),
       });
@@ -3697,7 +3706,7 @@ export async function runRealtimeSimulation(
         type: "post_run_sweep_skipped",
         windowBlocks: sweepWindow,
         limit: HISTORY_SWEEP_LIMIT,
-        haveEpochSeries: liveEpochSeries !== undefined,
+        haveIntervalSeries: liveIntervalSeries !== undefined,
         note:
           "the run window is longer than the node retains state for, so a post-run sweep would " +
           "read zeros rather than history. The score comes from the boundaries read live (ADR 0021 §3); " +
@@ -3705,7 +3714,7 @@ export async function runRealtimeSimulation(
       });
       console.error(
         `[reconstruct] window ${sweepWindow} blocks exceeds the ~${HISTORY_SWEEP_LIMIT}-block sweep ` +
-          "limit; scoring used the live epoch boundaries and the equity curve was not rebuilt",
+          "limit; scoring used the live interval boundaries and the equity curve was not rebuilt",
       );
     }
     if (finalBlock >= runStartBlock && sweepFits) {
@@ -3720,7 +3729,7 @@ export async function runRealtimeSimulation(
           fromBlock: runStartBlock,
           toBlock: finalBlock,
           scoreEvery: config.scoreEvery,
-          epochBlocks: config.epochBlocks,
+          intervalBlocks: config.intervalBlocks,
           markMedianBlocks: config.markMedianBlocks,
           ...(marketRegistry ? { marketRegistry: marketRegistry.address } : {}),
         });
@@ -3732,10 +3741,10 @@ export async function runRealtimeSimulation(
         // number at the same boundary. On a run short enough to have both, check it rather than
         // assert it: a divergence means one of the two reads a different world, and the run that
         // discovers it should be the one that says so.
-        if (liveEpochSeries && meta.epochSeries)
+        if (liveIntervalSeries && meta.intervalSeries)
           logger.event({
-            type: "epoch_series_agreement",
-            ...compareEpochSeries(liveEpochSeries, meta.epochSeries),
+            type: INTERVAL_EVENTS.seriesAgreement,
+            ...compareIntervalSeries(liveIntervalSeries, meta.intervalSeries),
           });
       } catch (err) {
         // The reconstruction refuses a cross-section it cannot read rather than emitting a cliff in
@@ -3779,17 +3788,21 @@ export async function runRealtimeSimulation(
     }
 
     // The boundary series is the authoritative one wherever both exist, so that summary.json's
-    // rounds and its scores are the same object. They agree by construction on a run the sweep
+    // intervals and its scores are the same object. They agree by construction on a run the sweep
     // covers -- same reader, same blocks, same median window -- and only the live one exists on a
-    // run it does not.
-    if (liveEpochSeries) {
+    // run it does not. Written under both names (intervalSeriesFields; issue #140).
+    if (liveIntervalSeries) {
       valueSeries = {
         ...valueSeries,
-        epochSeries: liveEpochSeries,
         // Nested rather than spread. `valueSeries.source` describes where the *equity curve* came
         // from, and spreading the live meta over it renamed the sweep's own artifact to
-        // "live-epoch-boundaries" -- a run that did sweep, claiming it had not.
-        epochSeriesMeta: liveScorer.meta(),
+        // "live-interval-boundaries" -- a run that did sweep, claiming it had not.
+        ...intervalSeriesFields(liveIntervalSeries, liveScorer.meta()),
+      };
+    } else if (valueSeries.intervalSeries) {
+      valueSeries = {
+        ...valueSeries,
+        ...intervalSeriesFields(valueSeries.intervalSeries as IntervalSeries),
       };
     }
 
@@ -3947,8 +3960,8 @@ export async function runRealtimeSimulation(
       // read off the boundary series. netPnlUsdc below marks both ends at the final prices; when
       // everyone starts with the same basket the two differ by a constant across the field, so the
       // deviation score is the same either way -- this is the number the rules name.
-      const rulesPnl = liveEpochSeries
-        ? epochPnlFromSeries(liveEpochSeries.valuesByAgent[agent.id] ?? [])
+      const rulesPnl = liveIntervalSeries
+        ? epochPnlFromSeries(liveIntervalSeries.valuesByAgent[agent.id] ?? [])
         : null;
       agentsSummary.push({
         id: agent.id,
@@ -4037,13 +4050,15 @@ export async function runRealtimeSimulation(
           // final segment's index entry is scored on this segment's boundaries alone, and an agent
           // with no V_0 in it is unscored here too (issue #84 X2).
           // No boundary series at all means the run never reached two boundaries, so this segment
-          // contains no epoch and scores nobody -- P is V_K − V_0 and there is no V_0 to take.
+          // contains no interval and scores nobody -- P is V_K − V_0 and there is no V_0 to take.
           // Substituting the whole-run figures here would hand the segment a number that is not
           // its own, which is the same mistake in a smaller corner (issue #84 X2).
           const pnl =
-            liveEpochSeries === undefined
+            liveIntervalSeries === undefined
               ? null
-              : epochPnlFromSeries(liveEpochSeries.valuesByAgent[a.id] ?? []);
+              : epochPnlFromSeries(
+                  liveIntervalSeries.valuesByAgent[a.id] ?? [],
+                );
           return segmentIndexAgent(
             segmentAgentRecord(
               {

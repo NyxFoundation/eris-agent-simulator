@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import {
   segmentAgentRecord,
   segmentIndexAgent,
-  sliceEpochSeries,
+  sliceIntervalSeries,
 } from "../core/src/segments.js";
 import { epochPnlFromSeries } from "../core/src/scoring/epochPnl.js";
 import { scenarioAgentP } from "../dashboard/src/data/scenarioP.js";
@@ -118,7 +118,7 @@ test("an unplaced agent is out of the population, not at the top of it", () => {
 test("a segment that starts on a boundary still measures everyone who was there", () => {
   // The carry rule and the unplaced rule are different things: an agent present at the segment's
   // opening boundary has a P for it even when the slice carries no earlier boundary.
-  const cut = sliceEpochSeries(
+  const cut = sliceIntervalSeries(
     { boundaryBlocks: [100, 110, 120], valuesByAgent: { alice: [1, 2, 3] } },
     110,
     120,

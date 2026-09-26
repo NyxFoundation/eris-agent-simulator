@@ -60,8 +60,8 @@ RPC URL や chain id が秘密情報側にあるのは、**それらが regime �
 | `skipReset` | false | 診断用。前 run のフォークキャッシュを残す |
 | `prewarmBlocks` | 0 | 競技前の暖機ブロック数 |
 | `scoreEvery` | 1 | equity curve の間引き（**スコア不変**） |
-| `epochBlocks` | 12 | 1 エポックのブロック数 |
-| `epochSeconds` | 0 | 1 エポックの秒数（`epochBlocks` と併用は throw） |
+| `intervalBlocks` | 12 | 1 評価区間のブロック数（規約 §0.1。途中経過用で採点の単位ではない） |
+| `intervalSeconds` | 0 | 1 評価区間の秒数（`intervalBlocks` と併用は throw）。issue #140 以前の名前 `epochBlocks` / `epochSeconds` は結果発表まで警告付きで読む（同じキーの新旧併記は throw） |
 | `segmentHours` | 0 | 1 セグメントの時間（0 = 単一ディレクトリ） |
 | `segmentName` | "" | 期間全体の表示名 |
 | `markMedianBlocks` | 5 | G7 の median 窓 |
@@ -100,7 +100,7 @@ RPC URL や chain id が秘密情報側にあるのは、**それらが regime �
 
 **公式レジームは ETH / BTC / USDC のバスケットを配る**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）。当初は USDC-only（`wethWei: "0"`）で初期 β を消していたが（ADR 0017 §4）、**LST vault と Trove は WETH/ETH 建てなので、USDC-only では各戦略の売り側に在庫が無く構造的に死ぬ**ことが分かった。β はベンチマークも同じ配布を持つので M9 からは相殺される — USDC-only が守っていたのは報告値である `netPnlUsdc` の方だった。
 
-USDC-only を維持しているのは **`metric-*` レジームだけ**で、こちらは理由が違う（ADR 0019 §6：エポック系列は live mark なので、配った在庫のボラティリティが全員の `std_e` に乗る）。`scripts/genMetricRegimes.ts` が公式レジームから生成する際に `funding.base` ごと落とす。
+USDC-only を維持しているのは **`metric-*` レジームだけ**で、こちらは理由が違う（ADR 0019 §6：評価区間の系列は live mark なので、配った在庫のボラティリティが全員の `std_e` に乗る）。`scripts/genMetricRegimes.ts` が公式レジームから生成する際に `funding.base` ごと落とす。
 
 雛形（`config/example.yaml`）が WETH を配るのも同じ理由（探索用であり測定用ではない）。
 

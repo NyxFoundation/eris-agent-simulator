@@ -82,7 +82,11 @@ export type EnvironmentManifest = {
     // Rules §2.6. 0 = the node's own limit.
     blockGasLimit: number;
   };
+  // The evaluation interval (rules §0.1). The section keeps its name: runtimes read it.
   round: {
+    intervalBlocks: number;
+    // The same number under its name from before issue #140, kept for a runtime that reads it.
+    // Removed once the results are published.
     epochBlocks: number;
     approxSeconds: number;
     markMedianBlocks: number;
@@ -185,19 +189,21 @@ export function buildManifest(opts: {
       blockGasLimit: config.blockGasLimit,
     },
     round: {
-      epochBlocks: config.epochBlocks,
-      // Real time is the unit ADR 0021 §3 states a round in; blocks are what that comes to at this
-      // chain's cadence. Both are published, because a participant sizing an exit against
+      intervalBlocks: config.intervalBlocks,
+      epochBlocks: config.intervalBlocks,
+      // Real time is the unit ADR 0021 §3 states an interval in; blocks are what that comes to at
+      // this chain's cadence. Both are published, because a participant sizing an exit against
       // `blocksRemaining` needs the blocks and a participant deciding when to check the standings
       // needs the minutes.
-      approxSeconds: config.epochBlocks * config.blockTimeSec,
+      approxSeconds: config.intervalBlocks * config.blockTimeSec,
       markMedianBlocks: config.markMedianBlocks,
       scoreEvery: config.scoreEvery,
       note:
-        "A round is an evaluation interval (rules §0.1): every agent's value is recorded at each " +
+        "This is the evaluation interval (rules §0.1): every agent's value is recorded at each " +
         "boundary and shown as interim progress. It is not what the score is computed over -- that " +
         "is the epoch, whose first and last boundary give P (in the practice period, one day; see " +
-        "docs/guide/practice-devnet.md, Standings).",
+        "docs/guide/practice-devnet.md, Standings). `epochBlocks` is `intervalBlocks` under its " +
+        "old name, kept until the results are published.",
     },
     protocols,
     actions: Object.fromEntries(

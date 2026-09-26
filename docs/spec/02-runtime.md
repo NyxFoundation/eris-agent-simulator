@@ -40,7 +40,7 @@
 ### [B] チェーン準備（L491–871）
 
 1. `runId` = ISO 時刻文字列。`segmentHours > 0` なら `SegmentedRun`、でなければ `RunLogger` が成果物を書く。
-2. **`run_started_realtime`** を emit（L506）。seed / flowSeed / epochBlocks / rpcUrl / chainId / chainMode を含む。**seed を記録するのはここだけ**で、これが無い過去 run は「どの world だったか」を答えられない。
+2. **`run_started_realtime`** を emit（L506）。seed / flowSeed / intervalBlocks（旧名 `epochBlocks` も同じ値で併記）/ rpcUrl / chainId / chainMode を含む。**seed を記録するのはここだけ**で、これが無い過去 run は「どの world だったか」を答えられない。
 3. クライアント生成（`batch: true` = 同一 tick の read を JSON-RPC 配列バッチ / Multicall3 に自動集約）。
 4. **リセット**：`external` ならスキップして `fork_reset_skipped` を emit。`run.skipReset` でもスキップ。それ以外は `resetFork`（fork なら再 fork、ローカルなら snapshot/revert のクリーン断面）。
 5. ローカルデプロイかつ非 external なら **setup 中だけ automine を ON**（L563）。deployer anvil の automine 状態を引き継がないため。競技開始時に OFF に戻す（L1499）— automine のままだと 1 tx = 1 ブロックになり手数料競争が壊れる。
@@ -55,7 +55,7 @@
    | flow ウォレット | `funding.flowEthWei` | `funding.flowWethWei` / `funding.flowBase` | `funding.flowUsdcUnits`（既定は agent と同額） |
    | aave actor | 同上 | `flow.aaveMaxWethWei × 6` | `funding.flowUsdcUnits` |
 
-   エージェントのガスバッファを 0 にするのは、既定バッファが**選んでいない β** としてエポック系列に乗るため（ADR 0019 §6）。flow ウォレットは機械なのでバッファを持つ。
+   エージェントのガスバッファを 0 にするのは、既定バッファが**選んでいない β** として評価区間の系列に乗るため（ADR 0019 §6）。flow ウォレットは機械なのでバッファを持つ。
    鍵を持たない登録参加者へは `fundAddress` で配る（approve は本人しか出せないので付かない）。
    approve は venue 横断でまとめて 1 バッチ送信する（15 ウォレット × 18 tx を 1 ブロックずつ送ると 2 秒 cadence で 9 分かかる）。
 
@@ -111,11 +111,11 @@
 
 ### [H] 採点と成果物（L2421–2746）
 
-1. **live エポック系列**（`LiveScorer.series()`）を取得。セグメント時は**現在のセグメント分に切る**（切らないと最終セグメントに週全体のエポックが入り、二重計上になる）
-2. `scoreEpochSeriesByAgent` でスコア算出 → `epoch_series_scored`
+1. **live の評価区間系列**（`LiveScorer.series()`）を取得。セグメント時は**現在のセグメント分に切る**（切らないと最終セグメントに週全体の評価区間が入り、二重計上になる）
+2. `scoreEpochSeriesByAgent` でスコア算出 → `interval_series_scored`
 3. **事後 sweep**：`finalBlock - runStartBlock <= 1000` のときだけ実行する。超える場合は `post_run_sweep_skipped` を emit して**明示的にスキップ**する（歴史保持深度を超えると 0 を読み、「崖のある完全な系列」になる）
 4. sweep が走ったなら `market.json` も再構成（報告専用。失敗しても run は劣化しない）
-5. **`epoch_series_agreement`** — 両方存在する run では live と sweep の一致を検査する。同じ reader・同じブロック・同じ median 窓なので一致するはずで、しないなら片方が別の世界を読んでいる
+5. **`interval_series_agreement`** — 両方存在する run では live と sweep の一致を検査する。同じ reader・同じブロック・同じ median 窓なので一致するはずで、しないなら片方が別の世界を読んでいる
 6. `postRunCheck` で手数料上限違反を検査（`economicGas` 時は空）
 7. 最終 PnL 計算 → `summary.json` → `run_completed`
 
@@ -132,7 +132,7 @@
 | 3 | vuln pool funding | 窓に入ったプールへ準備金を投入（cheatcode） |
 | 4 | 点イベント | `lstSlash` / `whale` を**範囲**で拾って実行。ブロックの他の仕事より前に置くので、そのブロックの観測には既に反映されている |
 | 5 | **並列タスク群** | 下表 |
-| 6 | `liveScorer.onBlock(bn)` | 並列群の**後**に逐次。直前に確定したブロックを読むので競合しない。毎ブロックではなくエポック境界でのみ横断面を読む |
+| 6 | `liveScorer.onBlock(bn)` | 並列群の**後**に逐次。直前に確定したブロックを読むので競合しない。毎ブロックではなく評価区間の境界でのみ横断面を読む |
 | 7 | `flushBlocks(bn-1)` | セグメント時のみ。現在ブロックは環境の tx が飛行中なので `bn-1` まで |
 | 8 | セグメントの roll 判定 | **境界読み取りの後**。境界上で終わるセグメントはそれを保持し、次セグメントが自分の境界 0 として引き継ぐ |
 | 9 | `round_timing` emit | 各段の所要ミリ秒 |
@@ -164,12 +164,13 @@
 | `run.blockTimeSec` | ブロック間隔（秒） | 2 |
 | `run.blocks` | ブロック数で終了 | 0（= 無制限） |
 | `run.seconds` | 実時間で終了 | 20 |
-| `run.epochBlocks` | 1 エポックのブロック数 | 12 |
-| `run.epochSeconds` | 1 エポックの実時間（秒）。`blockTimeSec` で換算 | 0（未使用） |
+| `run.intervalBlocks` | 1 評価区間のブロック数 | 12 |
+| `run.intervalSeconds` | 1 評価区間の実時間（秒）。`blockTimeSec` で換算 | 0（未使用） |
 
-- **`epochSeconds` と `epochBlocks` の両方指定は throw**（`sdk/src/config.ts:576`）。「ラウンドの長さ」に 2 つの答えがある状態を排除する。
+- **`intervalSeconds` と `intervalBlocks` の両方指定は throw**（`sdk/src/config.ts:674`）。「評価区間の長さ」に 2 つの答えがある状態を排除する。
+- issue #140 以前の名前 `run.epochBlocks` / `run.epochSeconds` は結果発表（12 月）まで**警告付きで読む**（`run.epochBlocks is now run.intervalBlocks (issue #140)`）。同じキーを旧名と新名の両方で書くと throw（`sdk/src/config.ts:659`）。秒とブロックの併記は新旧どの組み合わせでも throw。
 - **ストレス run は時間制限を自動無効化する**（L1737）。`stress.events` があり `run.blocks > 0` なら `run.seconds` を 0 にして、時間切れで crash 窓に到達しない事故を防ぐ。override は `stress_run_time_limit_disabled` に記録する。
-- external では**実 cadence を計測**して `external_chain_block_time` に記録する。設定値とのズレは全エポック長を狂わせるため。
+- external では**実 cadence を計測**して `external_chain_block_time` に記録する。設定値とのズレは全評価区間の長さを狂わせるため。
 
 ## 2.4 world のリセット単位（`run.resetUnit`）
 
@@ -191,12 +192,12 @@
 
 - 1 セグメント = 通常の run ディレクトリ（同じファイル・同じ形）。競技ディレクトリ配下に `<日付>-s<NN>/` として並び、`matrix.json` がその索引になる。
 - 索引の `resetUnit` は正直に `continuous`。
-- **エポックは厳密に分割される**（`segments.ts:228` `sliceEpochSeries`）：
-  - セグメントの開始**直前**の境界を、そのセグメントの境界 0 として引き継ぐ（引き継がないとセグメントごとに 1 エポック失われる）
-  - ただし**境界の上で始まるセグメントは引き継がない**（引き継ぐと同じエポックが 2 セグメントで採点される）
+- **評価区間は厳密に分割される**（`segments.ts:343` `sliceIntervalSeries`）：
+  - セグメントの開始**直前**の境界を、そのセグメントの境界 0 として引き継ぐ（引き継がないとセグメントごとに 1 区間失われる）
+  - ただし**境界の上で始まるセグメントは引き継がない**（引き継ぐと同じ区間が 2 セグメントで数えられる）
 - セグメントの時計は**最初のブロックが来た時点**で始まる（`noteFirstBlock`）。実チェーンの setup は数分かかるので、それを最初のセグメントに数えると初日が短くなる。
 - 各セグメントの `summary.json` の PnL は**そのセグメントの端点**から取る（run の初期残高ではない）。連続経済における「火曜日の損益」は火曜日に変化した分。
-- ラウンド数はセグメントで頭打ちになる。30 分ラウンド × 24h セグメントで **48 ラウンド/セグメント**が定常状態。
+- 評価区間の数はセグメントで頭打ちになる。30 分の評価区間 × 24h セグメントで **48 区間/セグメント**が定常状態。
 
 ## 2.6 失敗の扱い
 
@@ -205,7 +206,7 @@
 | 起動時の較正・設定・デプロイの不整合 | **throw してチェーンに触れずに終了**（→ [11](11-invariants.md) に一覧） |
 | ブロック処理中の例外 | `realtime_block_error` を emit してループは継続 |
 | 個別タスクの失敗（keeper / oracle / liquidity / depeg / vuln / liquity watch） | 各々専用の `*_failed` イベントを emit して継続 |
-| エポック境界の読み取り失敗 | **境界を記録しない**（`null` で埋めない）。`epoch_boundary_failed` を emit |
+| 評価区間の境界の読み取り失敗 | **境界を記録しない**（`null` で埋めない）。`interval_boundary_failed` を emit |
 | 価値系列の再構成失敗 | `valueSeries.failed: true` として明示。他の成果物は残す |
 | market.json の再構成失敗 | ログして飲み込む（報告専用なので run は劣化しない） |
 | エージェントプロセスの異常終了 | `agent_process_exited` + `summary.agents[].processExitedEarly` |

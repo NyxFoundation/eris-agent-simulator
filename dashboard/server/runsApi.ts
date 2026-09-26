@@ -152,6 +152,8 @@ const AUDIENCE_FILES = new Set([
   "market.jsonl",
   "blocks.csv",
   "events.jsonl",
+  "intervals.jsonl",
+  // What intervals.jsonl was called before issue #140; a coordinator started earlier still writes it.
   "epochs.jsonl",
   "manifest.json",
   "current-segment",

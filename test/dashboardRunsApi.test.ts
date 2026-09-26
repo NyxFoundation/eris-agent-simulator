@@ -222,6 +222,37 @@ test("audience mode withholds the participants' files and everything not on the 
   }
 });
 
+test("the interval series is public under its name and under the old one (issue #140)", async () => {
+  // The hosted dashboard follows main while the practice coordinator writes the old name until it
+  // restarts, so the public view has to serve both -- and say "missing" for the one that is not
+  // there, which is how the client picks the one that is.
+  const root = fixtureRuns();
+  const run = "2026-11-01T10-00-00-000Z";
+  const line = `${JSON.stringify({ index: 0, blockNumber: 100, values: { a1: 1 } })}\n`;
+  writeFileSync(join(root, run, "epochs.jsonl"), line);
+  const { get, close } = await serve(root, true);
+  try {
+    assert.equal((await get(`/${run}/epochs.jsonl`)).status, 200);
+    const legacy = JSON.parse(
+      (await get(`/${run}/tail/epochs.jsonl?offset=0`)).text,
+    );
+    assert.equal(legacy.text, line);
+    const absent = JSON.parse(
+      (await get(`/${run}/tail/intervals.jsonl?offset=0`)).text,
+    );
+    assert.equal(absent.missing, true);
+    writeFileSync(join(root, run, "intervals.jsonl"), line);
+    assert.equal((await get(`/${run}/intervals.jsonl`)).status, 200);
+    const current = JSON.parse(
+      (await get(`/${run}/tail/intervals.jsonl?offset=0`)).text,
+    );
+    assert.equal(current.text, line);
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("audience mode strips seeds, future windows, rigged ground truth and stderr from events.jsonl", async () => {
   const root = fixtureRuns();
   const { get, close } = await serve(root, true);

@@ -3,7 +3,8 @@
 //   - events.jsonl, appended every block (run meta, round_timing heights, tx_submitted, stress events)
 //   - blocks.csv, appended within a block of the head while the run is segmented (a practice
 //     period, ADR 0021 §6); written in one pass at the end otherwise
-//   - epochs.jsonl / market.jsonl, one row per epoch boundary (the live scorer, ADR 0021 §3)
+//   - intervals.jsonl / market.jsonl, one row per interval boundary (the live scorer, ADR 0021 §3;
+//     epochs.jsonl from a coordinator started before issue #140)
 //   - agents/<id>.jsonl, appended per decision (reasons + submitted-tx self-reports, incl. rpcUrl)
 //   - the chain itself (current-block state via JSON-RPC; anvil answers the browser directly)
 // This module tails the files incrementally through the dev server's /runs/<id>/tail endpoint,
@@ -19,6 +20,12 @@
 // last few blocks the coordinator has not flushed yet.
 
 import { methodNameForCalldata } from "@sdk/methodSelectors";
+import {
+  INTERVAL_EVENTS,
+  INTERVALS_FILENAME,
+  LEGACY_INTERVAL_EVENTS,
+  LEGACY_INTERVALS_FILENAME,
+} from "@core/intervalSeries";
 import { mergeLiveBlocks } from "./liveBlocks";
 import {
   loadRunHeader,
@@ -56,6 +63,36 @@ const HEADER_TYPES = new Set([
 
 interface TailState {
   offset: number;
+}
+
+/**
+ * Tail the first of `files` that exists, and keep tailing that one. For the interval series, which
+ * a coordinator started before issue #140 writes as epochs.jsonl: the hosted dashboard follows
+ * `main` while a running coordinator changes only on a restart, so either name can be the live one.
+ * Nothing is chosen until one of them exists -- before the first boundary, neither does.
+ */
+async function tailFirstPresent(
+  runId: string,
+  files: readonly string[],
+  state: TailState & { file?: string },
+): Promise<string> {
+  if (state.file) return tail(runId, state.file, state);
+  for (const file of files) {
+    const res = await fetch(
+      `/runs/${encodeURIComponent(runId)}/tail/${file}?offset=${state.offset}`,
+    );
+    if (!res.ok) continue;
+    const body = (await res.json()) as {
+      offset: number;
+      text: string;
+      missing?: boolean;
+    };
+    if (body.missing) continue;
+    state.file = file;
+    state.offset = body.offset;
+    return body.text;
+  }
+  return "";
 }
 
 async function tail(
@@ -155,8 +192,10 @@ class LiveRunState {
   private readonly blocksCarry = { partial: "" };
   private readonly marketTail: TailState = { offset: 0 };
   private readonly marketCarry = { partial: "" };
-  private readonly epochsTail: TailState = { offset: 0 };
-  private readonly epochsCarry = { partial: "" };
+  private readonly intervalsTail: TailState & { file?: string } = {
+    offset: 0,
+  };
+  private readonly intervalsCarry = { partial: "" };
   private readonly agentTails = new Map<
     string,
     { state: TailState; carry: { partial: string } }
@@ -166,7 +205,7 @@ class LiveRunState {
   /**
    * The run's header events, held apart from the capped stream. They are the first lines of the
    * file, and a viewer who opens a day-long segment at 15:00 folds forty thousand events at once;
-   * with the cap keeping the newest, the header went first -- and with it the epoch length, so the
+   * with the cap keeping the newest, the header went first -- and with it the interval length, so the
    * rounds bar was empty for the rest of the day.
    */
   private readonly header = new Map<string, RunEvent>();
@@ -185,7 +224,7 @@ class LiveRunState {
   /** The first block blocks.csv covered, kept even after the row that carried it was capped off. */
   private csvFrom: number | null = null;
   private marketRows: MarketSeriesRow[] = [];
-  /** One row per epoch boundary the live scorer has read (ADR 0021 §3), oldest first. */
+  /** One row per interval boundary the live scorer has read (ADR 0021 §3), oldest first. */
   private boundaries: { blockNumber: number; values: Record<string, number | null> }[] = [];
   private refreshes = 0;
   private agentLogs = new Map<string, AgentLogEntry[]>();
@@ -251,7 +290,8 @@ class LiveRunState {
               this.firstBlockSeen = event.blockNumber;
           }
           break;
-        case "epoch_boundary":
+        case INTERVAL_EVENTS.boundary:
+        case LEGACY_INTERVAL_EVENTS.boundary:
           // Boundary 0 sits on the run's first block, and a segment that opens on a boundary has
           // one even before its first `round_timing`.
           if (event.index === 0 && typeof event.blockNumber === "number")
@@ -400,13 +440,17 @@ class LiveRunState {
       merged.length > BLOCK_ROW_LIMIT ? merged.slice(-BLOCK_ROW_LIMIT) : merged;
   }
 
-  private async refreshEpochs(): Promise<void> {
-    const text = await tail(this.runId, "epochs.jsonl", this.epochsTail);
+  private async refreshIntervals(): Promise<void> {
+    const text = await tailFirstPresent(
+      this.runId,
+      [INTERVALS_FILENAME, LEGACY_INTERVALS_FILENAME],
+      this.intervalsTail,
+    );
     if (!text) return;
     const fresh = parseJsonlChunk<{
       blockNumber?: number;
       values?: Record<string, number | null>;
-    }>(text, this.epochsCarry);
+    }>(text, this.intervalsCarry);
     for (const row of fresh)
       if (typeof row.blockNumber === "number" && row.values)
         this.boundaries.push({
@@ -449,7 +493,7 @@ class LiveRunState {
       this.readIndexerHeight(),
       this.refreshBlocks(),
       this.refreshMarket(),
-      this.refreshEpochs(),
+      this.refreshIntervals(),
     ]);
 
     // tx attribution: agents by wallet address, methods/venues from tx_submitted events
@@ -561,8 +605,8 @@ class LiveRunState {
       ...(this.boundaries.length >= 2
         ? {
             valueSeries: {
-              epochSeries: {
-                epochs: this.boundaries.length - 1,
+              intervalSeries: {
+                intervals: this.boundaries.length - 1,
                 boundaryBlocks: this.boundaries.map((b) => b.blockNumber),
                 valuesByAgent,
               },

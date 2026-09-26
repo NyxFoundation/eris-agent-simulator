@@ -23,7 +23,8 @@
 | `run.resetUnit: scenario` declared by anything but the matrix runner | `coordinator.ts:405` |
 | A misspelled `run.resetUnit` | `sdk/src/config.ts:42` |
 | A misspelled `run.chainMode` | `sdk/src/config.ts:55` |
-| Both `run.epochSeconds` and `run.epochBlocks` set | `sdk/src/config.ts:576` |
+| Both `run.intervalSeconds` and `run.intervalBlocks` set (the same with the old names `run.epochSeconds` / `run.epochBlocks` in any mix) | `sdk/src/config.ts:674` |
+| One key set under both its old and its new name (`run.epochBlocks` and `run.intervalBlocks`, …; issue #140) | `sdk/src/config.ts:659` |
 | `economicGas` with `funding.ethWei < 0.5 ETH` | `coordinator.ts:479` |
 | Roster validation (duplicate ids, reused wallets, contradictory external entries, …) | `core/src/config.ts:99` |
 
@@ -58,7 +59,7 @@ The list in [04 §4.9](04-stress-events.md). The coordinator adds venue availabi
 | Monitor | Contents |
 |---|---|
 | **`NoArbMonitor`** | Emits `no_arb_persistent_warning` when an executable arbitrage stays above `PERSIST_WARN_BPS = 50` for **`PERSIST_BLOCKS = 10` consecutive blocks**. **A transient arbitrage is the α agents are meant to take; a persistent one is structural breakage** |
-| **`epoch_boundary_failed`** | Records that a boundary could not be read, and **does not record the boundary** (never fills it with `null`) |
+| **`interval_boundary_failed`** | Records that an interval boundary could not be read, and **does not record the boundary** (never fills it with `null`) |
 | **`agent_process_exited`** | An agent process ending early. **An agent that dies silently stops trading**, which without this is indistinguishable from one that chose not to |
 | **`initial_endowment`** | Warns above a 2× spread. **Two-to-one is already a different competition** (on external, the endowment is a floor rather than an assignment, so a prefunded address keeps what it had) |
 | **`round_timing`** | Milliseconds per stage — the diagnosis for the environment loop's bottleneck |
@@ -83,9 +84,9 @@ The list in [04 §4.9](04-stress-events.md). The coordinator adds venue availabi
 
 **The environment's shocks must not fail quietly.** A whale goes through the ordinary relay, so a **submission** error is caught — but **an on-chain revert is not a submission error**. The transaction lands, the event log says the whale fired, and only blocks.csv shows it did nothing. A missing approval once turned this regime into calm with every log looking healthy.
 
-### Live scoring against the sweep (`compareEpochSeries`)
+### Live scoring against the sweep (`compareIntervalSeries`)
 
-Checked on every run that has both, and emitted as `epoch_series_agreement` (`boundaries` / `compared` / `maxAbsDiffUsdc` / `maxRelDiff` / `worst`).
+Checked on every run that has both, and emitted as `interval_series_agreement` (`boundaries` / `compared` / `maxAbsDiffUsdc` / `maxRelDiff` / `worst`).
 
 **It is a per-run measurement rather than a test** (`coordinator.ts:176-178`) because the thing that could pull them apart — a venue whose state depends on *when* it is read rather than on which block — would only show up on a chain.
 
@@ -102,7 +103,7 @@ LLM-generated code passes **the same static check plus a vm compile** before ins
 | Area | Tests |
 |---|---|
 | **Freezing the contract** | `actionVocabulary` (catches renamed/removed actions) / `actionSchema` / `action` / `methodNames` (the selector table against the ABIs) |
-| **Scoring correctness** | `epochScore` / `epochBoundaries` / `scoringBlocks` / `metrics` / `aggregate` / `standings` / `markMedian` / `liveScoring` / `scoringExclusions` / `summaryMultiBaseValuation` / `lpValuation` / `poolShareValuation` / `unaccountedTokens` |
+| **Scoring correctness** | `epochScore` / `intervalBoundaries` / `scoringBlocks` / `metrics` / `aggregate` / `standings` / `markMedian` / `liveScoring` / `scoringExclusions` / `summaryMultiBaseValuation` / `lpValuation` / `poolShareValuation` / `unaccountedTokens` |
 | **Determinism** | `rng` / `events` / `flow` / `flowTrendCorrelation` / `whale` |
 | **Mode consistency** | `resetUnit` / `chainMode` / `segments` / `externalAgents` / `config` / `run-config` |
 | **Venue behaviour** | `liquity*` / `lst*` / `uniswap` / `balancerSeed` / `gmxMarketToken` / `stables` / `two-sided-quote` / `no-arb` / `tickMath` |

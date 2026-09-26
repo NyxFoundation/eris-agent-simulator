@@ -14,7 +14,7 @@ runs/
     blocks.csv                      per-transaction records
     market.json                     venue-state series (reporting only)
     manifest.json                   the environment manifest
-    epochs.jsonl                    epoch boundaries (live scoring; appended)
+    intervals.jsonl                 evaluation-interval boundaries (live scoring; appended; epochs.jsonl from a coordinator before issue #140)
     market.jsonl                    venue state (live samples; appended)
     agents/<id>.jsonl               the agent's self-reported log
     agents/<id>.llm.jsonl           raw revision exchanges (opt-in)
@@ -66,28 +66,29 @@ runs/
 
 | Field | Contents |
 |---|---|
-| `source` | `"post-run-reconstruction"` / `"live-epoch-boundaries"` / `"live-observation"` |
+| `source` | `"post-run-reconstruction"` / `"live-interval-boundaries"` (`"live-epoch-boundaries"` before issue #140) / `"live-observation"` |
 | `granularityBlocks` / `fromBlock` / `toBlock` / `blocks` / `windowBlocks` | The read window |
 | `failedReads` / `failedReadTargets` | How many cross-sections failed, and **which contract and function** |
 | `alphaRefFairUsdcPerWeth` / `alphaByAgent` | The fixed α reference and the values |
 | `markedValueByAgent` | The face mark, only for agents where it diverged from the scored value |
 | `unpricedHoldings` | Holdings that could not be priced, could not be read, cannot be realized, or fell back to par ([06 §6.2](06-scoring.md)) |
-| `epochSeries` | **The boundary values every score is computed from** (below) |
-| `epochSeriesMeta` | Live scoring metadata (`boundaries` / `failedBoundaries` / `epochBlocks` / `markMedianBlocks`) |
+| `intervalSeries` | **The boundary values every score is computed from** (below) |
+| `intervalSeriesMeta` | Live scoring metadata (`source: "live-interval-boundaries"` / `boundaries` / `failedBoundaries` / `intervalBlocks` / `markMedianBlocks`) |
+| `epochSeries` / `epochSeriesMeta` | The two above under their names from before issue #140, **still written beside them in their old shape until the results are published (December)** (`epochBlocks` / `epochs`, `source: "live-epoch-boundaries"`). A reader looks for `intervalSeries` first and falls back to these (`intervalSeriesOf` in `core/src/intervalSeries.ts`) |
 | `markMedian` | G7 results (`windowBlocks` / `boundaries` / `surfaces` / `maxDeviationBps`) |
 | `failed` / `error` | When reconstruction failed |
 
-`epochSeries`:
+`intervalSeries`:
 
 ```json
-{ "epochBlocks": 12, "epochs": 29,
+{ "intervalBlocks": 12, "intervals": 29,
   "boundaryBlocks": [1001, 1013, ...],
   "valuesByAgent": { "venue-arb": [25000.0, 25003.4, null, ...] } }
 ```
 
 **`null` means "this agent did not report at this boundary", not zero.**
 
-**Where both series exist, the live one is authoritative**, so `summary.json`'s rounds and its scores are the same object. On a run that also swept, `valueSeries.source` stays the sweep's and the live metadata is **nested** under `epochSeriesMeta` — spreading it would rename the sweep's own artifact and make a run that did sweep claim it had not.
+**Where both series exist, the live one is authoritative**, so `summary.json`'s intervals and its scores are the same object. On a run that also swept, `valueSeries.source` stays the sweep's and the live metadata is **nested** under `intervalSeriesMeta` — spreading it would rename the sweep's own artifact and make a run that did sweep claim it had not.
 
 ### `agents[].pnlUsdc` (P of rules §4.4.1)
 
@@ -108,7 +109,7 @@ One event per line, each carrying an ISO `ts`. The catalogue below is what the c
 
 | type | Contents |
 |---|---|
-| `run_started_realtime` | Start of the run. **Carries seed / flowSeed / epochBlocks / rpcUrl / chainId / chainMode.** Repeated at the head of each segment |
+| `run_started_realtime` | Start of the run. **Carries seed / flowSeed / intervalBlocks / rpcUrl / chainId / chainMode** (and `epochBlocks`, the old name, with the same value). Repeated at the head of each segment |
 | `run_completed` | Completion |
 | `deployment_check` | Measured deployment (chainId / checked / missing) |
 | `gmx_funding_check` | Each GMX market's `FUNDING_INCREASE_FACTOR_PER_SECOND` and `fundingModeled` on a local deploy (ok / enforcement / markets). A deploy or state dump without funding (before gmx-localhost.patch a35cf3e) stops the run on anvil; on an external chain that is never reset (the practice devnet) it warns and continues |
@@ -122,16 +123,16 @@ One event per line, each carrying an ISO `ts`. The catalogue below is what the c
 | `external_chain_block_time` / `external_chain_mint_guard` / `treasury_funded_roles` | External mode |
 | `economic_gas_enabled` / `fee_cap_enforcement_disabled` | The economicGas profile |
 | `realtime_block_error` | An exception during block processing (the loop continues) |
-| `round_timing` | Milliseconds per stage (`keeperMs` / `oracleMs` / `stateFlowMs` / `epochMs` / `blocksMs` / `totalMs`, …) |
+| `round_timing` | Milliseconds per stage (`keeperMs` / `oracleMs` / `stateFlowMs` / `boundaryMs` (was `epochMs`) / `blocksMs` / `totalMs`, …) |
 
 ### Scoring
 
 | type | Contents |
 |---|---|
-| `epoch_boundary` | A boundary's values (the same content as `epochs.jsonl`) |
-| `epoch_boundary_failed` | A boundary that could not be read |
-| `epoch_series_scored` | Scoring metadata |
-| `epoch_series_agreement` | **The live/sweep agreement check** (`compared` / `maxAbsDiffUsdc` / `maxRelDiff` / `worst`) |
+| `interval_boundary` | An interval boundary's values (the same content as `intervals.jsonl`) |
+| `interval_boundary_failed` | A boundary that could not be read |
+| `interval_series_scored` | Scoring metadata |
+| `interval_series_agreement` | **The live/sweep agreement check** (`compared` / `maxAbsDiffUsdc` / `maxRelDiff` / `worst`) |
 | `value_series_reconstructed` / `value_series_reconstruction_failed` | The post-run sweep |
 | `post_run_sweep_skipped` | The window exceeded the node's retention, so the sweep was **explicitly skipped** |
 | `market_series_reconstructed` / `market_series_reconstruction_failed` | market.json |
@@ -227,11 +228,11 @@ A self-improving agent's revision outcomes land here as `reason: "revision <kind
 
 **An external participant's decision log exists only on their machine.**
 
-## 8.7 `epochs.jsonl` / `market.jsonl` (live append)
+## 8.7 `intervals.jsonl` / `market.jsonl` (live append)
 
 Kept out of `events.jsonl` deliberately. **Being tailable on their own is what makes live standings possible without reading a week of events** (ADR 0021 §3).
 
-One line of `epochs.jsonl` is `{index, blockNumber, fairPriceUsdcPerWeth, values: {agentId: number|null}, elapsedMs}`.
+One line of `intervals.jsonl` is `{index, blockNumber, fairPriceUsdcPerWeth, values: {agentId: number|null}, elapsedMs}`. A coordinator started before issue #140 writes the same lines to `epochs.jsonl`; the dashboard, the public runs API and the monitoring exporter read either.
 
 `market.jsonl` holds the same row shape as `market.json`'s `series[]`, sampled at boundaries rather than every block — a week of per-block venue rows is a file nobody can open.
 
@@ -244,7 +245,7 @@ The only document handed to self-hosted participants (ADR 0021 §2). Built by `b
 | `schema` / `generatedAt` | `eris-environment-manifest/1` |
 | `status` | `{scored: false, label: "practice", note}` — **stated in the document so a ranking's provenance does not travel separately from the ranking** |
 | `chain` | `rpcUrl` / `readRpcUrl` / `chainId` / `chainMode` / `blockTimeSec` |
-| `round` | `epochBlocks` / `approxSeconds` / `markMedianBlocks` / `scoreEvery` (**both blocks and minutes**) |
+| `round` | The evaluation interval: `intervalBlocks` / `approxSeconds` / `markMedianBlocks` / `scoreEvery` (**both blocks and minutes**). `epochBlocks` is `intervalBlocks` under its old name, kept with the same value until the results are published |
 | `protocols` / `actions` | The enabled venues and their action vocabulary |
 | `contracts` | **Only the enabled venues' addresses**, plus `priceFeed` and `stableMarkets` |
 | `tokens` | symbol → `{address, decimals, kind}` |
@@ -298,4 +299,4 @@ Measured on a 400-block run with five venues and three agents:
 | `events.jsonl` | ~1,437 B |
 | `blocks.csv` | ~731 B |
 
-A week unsegmented is a 435MB `events.jsonl`, a 221MB `blocks.csv`, and 336 rounds in a single bar. **An unsegmented run past 20,000 blocks (≈11 hours at a 2 s cadence) warns at startup** ([02 §2.1](02-runtime.md)).
+A week unsegmented is a 435MB `events.jsonl`, a 221MB `blocks.csv`, and 336 intervals in a single bar. **An unsegmented run past 20,000 blocks (≈11 hours at a 2 s cadence) warns at startup** ([02 §2.1](02-runtime.md)).

@@ -3,6 +3,11 @@
 // serves the raw artifact. Parsing is deliberately defensive — older runs predate
 // several summary.json fields and must degrade to empty views, not crash them.
 
+import type {
+  IntervalSeries,
+  LegacyEpochSeries,
+} from "@core/intervalSeries";
+
 export interface RunIndexEntry {
   id: string;
   mtimeMs: number;
@@ -61,7 +66,7 @@ export interface SummaryAgent {
   initialValueUsdc?: number;
   finalValueUsdc?: number;
   netPnlUsdc?: number;
-  /** P of rules §4.4.1 — V_K − V_0 off the epoch boundaries, each end at its own marks. Absent on
+  /** P of rules §4.4.1 — V_K − V_0 off the epoch's two boundaries, each end at its own marks. Absent on
    * a run recorded before the coordinator wrote it, and on an agent the run did not place. */
   pnlUsdc?: number;
   /** Written by the segment writer (core/src/segments.ts): false = in the record, not placed. */
@@ -87,13 +92,11 @@ export interface RunSummary {
     fromBlock?: number;
     toBlock?: number;
     failedReads?: number;
-    epochSeries?: {
-      epochBlocks?: number;
-      epochs?: number;
-      boundaryBlocks?: number[];
-      // A boundary the scorer could not read is null, not 0 — a failed read must not become a loss.
-      valuesByAgent?: Record<string, Array<number | null>>;
-    };
+    // The interval series (issue #140). A boundary the scorer could not read is null, not 0 — a
+    // failed read must not become a loss. Read through intervalSeriesOf, which also takes
+    // `epochSeries`, the name a run recorded before issue #140 stores it under.
+    intervalSeries?: Partial<IntervalSeries>;
+    epochSeries?: Partial<LegacyEpochSeries>;
   };
   agents?: SummaryAgent[];
   violations?: unknown[];
@@ -217,7 +220,7 @@ export interface MarketSeriesFile {
   notionals: Record<string, TxNotional>;
   /**
    * Where the series came from. `reconstructed` is market.json, the post-run sweep over every
-   * block. `sampled` is market.jsonl, the rows the coordinator writes at each epoch boundary while
+   * block. `sampled` is market.jsonl, the rows the coordinator writes at each interval boundary while
    * the run is going (core/src/realtime/liveScoring.ts) -- the only market series a practice
    * period's closed segments have, since the sweep needs a node history a day-long segment does not
    * fit in (ADR 0021 §3). Same row shape, coarser cadence, and no per-transaction notionals.

@@ -12,7 +12,7 @@ It has three parts.
 |---|---|
 | **The environment** | Chain lifecycle, fair-price generation and distribution, orderflow, the keeper, stress events |
 | **The agents** | Observe finalized state → decide → sign and send. Independent OS processes |
-| **Scoring** | Read a value cross-section at each epoch boundary, and compute a score from it |
+| **Scoring** | Read a value cross-section at each evaluation-interval boundary, and compute a score from the epoch's two ends |
 
 The environment and the scorer live in one process (the coordinator), but **the agents meet them nowhere except on the chain**.
 
@@ -71,7 +71,7 @@ One coordinator (`core/src/realtime/coordinator.ts:390`, `runRealtimeSimulation`
                                      │ finalized blocks
                     ┌────────────────┼────────────────┐
                     ▼                ▼                ▼
-              observation      epoch-boundary     blocks.csv /
+              observation    interval-boundary    blocks.csv /
           (agents rebuild it)  cross-sections     events.jsonl
                                      │
                                      ▼
@@ -82,7 +82,7 @@ One coordinator (`core/src/realtime/coordinator.ts:390`, `runRealtimeSimulation`
 |---|---|---|
 | **run** | One execution. Produces one `runs/<runId>/` (several when segmenting) | `coordinator.ts:491` |
 | **block** | The environment's smallest unit of time. 2 s by default (`run.blockTimeSec`) | `sdk/src/config.ts:338` |
-| **round (the code's epoch)** | The rules' **evaluation interval** (§0.1): values are recorded at each boundary for interim progress. **Not the scoring unit** — the score uses the first and last boundary of a run, which is the rules' epoch. 12 blocks by default (`run.epochBlocks`), or stated in real time (`run.epochSeconds`) | `sdk/src/config.ts:572` |
+| **evaluation interval (the code's interval)** | The rules' **evaluation interval** (§0.1): values are recorded at each boundary for interim progress. **Not the scoring unit** — the score uses the first and last boundary of a run, which is the rules' epoch. 12 blocks by default (`run.intervalBlocks`), or stated in real time (`run.intervalSeconds`). "Interval" in the dashboard. Until issue #140 the code called it `epoch` too (the old keys `run.epochBlocks` / `run.epochSeconds` are still read, with a warning, until the results are published) | `sdk/src/config.ts:649` |
 | **scenario** | A (regime, seed) pair — one replay of a market | ADR 0017 §1 |
 | **regime** | A kind of market condition. `config/regimes/<name>.yaml` holds the rules for price, flow and events | `config/regimes/` |
 | **fair price** | The reference price the environment generates and publishes to everyone through the PriceFeed | `core/src/realtime/priceFeed.ts` |

@@ -1,0 +1,229 @@
+{
+  "runId": "2026-09-06T09-39-38-498Z",
+  "mode": "backtest",
+  "resetUnit": "scenario",
+  "blockTimeSec": 2,
+  "blocksProcessed": 24,
+  "elapsedMs": 44499,
+  "finalFairPriceUsdcPerWeth": 3013.8538107609497,
+  "valueSeries": {
+    "source": "post-run-reconstruction",
+    "granularityBlocks": 1,
+    "fromBlock": 1070,
+    "toBlock": 1238,
+    "blocks": 169,
+    "windowBlocks": 169,
+    "failedReads": 0,
+    "failedReadTargets": [],
+    "elapsedMs": 1006,
+    "alphaRefFairUsdcPerWeth": 3002.49117384,
+    "alphaByAgent": {
+      "noop": 0,
+      "venue-arb": -65.39559444051702,
+      "my-arb": -56.71658794034738,
+      "clean-arb": 0
+    },
+    "markedValueByAgent": {},
+    "unpricedHoldings": [
+      {
+        "agentId": "noop",
+        "source": "spot-WBTC",
+        "token": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+        "amountRaw": "40000000",
+        "reason": "unpriced"
+      },
+      {
+        "agentId": "venue-arb",
+        "source": "spot-WBTC",
+        "token": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+        "amountRaw": "40000000",
+        "reason": "unpriced"
+      },
+      {
+        "agentId": "my-arb",
+        "source": "spot-WBTC",
+        "token": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+        "amountRaw": "40000000",
+        "reason": "unpriced"
+      },
+      {
+        "agentId": "clean-arb",
+        "source": "spot-WBTC",
+        "token": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+        "amountRaw": "40000000",
+        "reason": "unpriced"
+      }
+    ],
+    "epochSeries": {
+      "epochBlocks": 12,
+      "epochs": 14,
+      "boundaryBlocks": [
+        1070,
+        1082,
+        1094,
+        1106,
+        1118,
+        1130,
+        1142,
+        1154,
+        1166,
+        1178,
+        1190,
+        1202,
+        1214,
+        1226,
+        1238
+      ],
+      "valuesByAgent": {
+        "noop": [
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          373880.94850740157,
+          373005.70082810416
+        ],
+        "venue-arb": [
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          373853.4534430128,
+          372940.30523366365
+        ],
+        "my-arb": [
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          373856.9714673483,
+          372948.9842401638
+        ],
+        "clean-arb": [
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          348996.08056599996,
+          373880.94850740157,
+          373005.70082810416
+        ]
+      }
+    },
+    "markMedian": {
+      "windowBlocks": 5,
+      "boundaries": 14,
+      "surfaces": [
+        "stables"
+      ],
+      "maxDeviationBps": {
+        "EUSD": 0,
+        "DAI": 0
+      }
+    },
+    "epochSeriesMeta": {
+      "source": "live-epoch-boundaries",
+      "boundaries": 15,
+      "failedBoundaries": 0,
+      "epochBlocks": 12,
+      "markMedianBlocks": 5
+    }
+  },
+  "violations": [],
+  "agents": [
+    {
+      "id": "noop",
+      "address": "0x96340895E71423c68659B8fA901f44d94Da55F62",
+      "baseline": true,
+      "initialValueUsdc": 374270.49934933573,
+      "finalValueUsdc": 374270.49934933573,
+      "netPnlUsdc": 0,
+      "pnlUsdc": 24009.620262104203,
+      "alphaUsdc": 0,
+      "includedTxCount": 0,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "venue-arb",
+      "address": "0x63e1969942F2b2d78eF724906C699d07db2e7FA0",
+      "baseline": false,
+      "participant": "team-a",
+      "initialValueUsdc": 374270.49934933573,
+      "finalValueUsdc": 374182.0801977241,
+      "netPnlUsdc": -88.41915161162615,
+      "pnlUsdc": 23944.224667663686,
+      "alphaUsdc": -65.39559444051702,
+      "includedTxCount": 19,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "my-arb",
+      "address": "0x0D59b9F32C8657b3F360c489a5946C1b1aad6027",
+      "baseline": false,
+      "participant": "team-a",
+      "initialValueUsdc": 374270.49934933573,
+      "finalValueUsdc": 374183.700382207,
+      "netPnlUsdc": -86.79896712873597,
+      "pnlUsdc": 23952.903674163856,
+      "alphaUsdc": -56.71658794034738,
+      "includedTxCount": 19,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "clean-arb",
+      "address": "0x04Dd12151Df7955D0f248048f17408d62be80eF1",
+      "baseline": false,
+      "participant": "team-b",
+      "initialValueUsdc": 374270.49934933573,
+      "finalValueUsdc": 374270.49934933573,
+      "netPnlUsdc": 0,
+      "pnlUsdc": 24009.620262104203,
+      "alphaUsdc": 0,
+      "includedTxCount": 0,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    }
+  ]
+}

@@ -23,7 +23,8 @@
 | `run.resetUnit: scenario` を行列ランナー以外が宣言 | `coordinator.ts:405` |
 | `run.resetUnit` の綴り間違い | `sdk/src/config.ts:42` |
 | `run.chainMode` の綴り間違い | `sdk/src/config.ts:55` |
-| `run.epochSeconds` と `run.epochBlocks` の両方指定 | `sdk/src/config.ts:576` |
+| `run.intervalSeconds` と `run.intervalBlocks` の両方指定（旧名 `run.epochSeconds` / `run.epochBlocks` との組み合わせも同じ） | `sdk/src/config.ts:674` |
+| 同じキーを旧名と新名の両方で指定（`run.epochBlocks` と `run.intervalBlocks` など。issue #140） | `sdk/src/config.ts:659` |
 | `economicGas` かつ `funding.ethWei < 0.5 ETH` | `coordinator.ts:479` |
 | ロスターの検証（id 重複・ウォレット再利用・external の矛盾…） | `core/src/config.ts:99` |
 
@@ -58,7 +59,7 @@
 | 監視 | 内容 |
 |---|---|
 | **`NoArbMonitor`** | 実行可能な裁定が `PERSIST_WARN_BPS = 50` を **`PERSIST_BLOCKS = 10` 連続ブロック**超えたら `no_arb_persistent_warning`。**一過性の裁定はエージェントが取るべき α、持続する裁定は構造的な破綻** |
-| **`epoch_boundary_failed`** | 境界が読めなかったことを記録し、境界自体は**記録しない**（`null` で埋めない） |
+| **`interval_boundary_failed`** | 評価区間の境界が読めなかったことを記録し、境界自体は**記録しない**（`null` で埋めない） |
 | **`agent_process_exited`** | エージェントプロセスの異常終了。**途中で死んだエージェントは黙って取引をやめる**ので、これが無いと「動かないことを選んだ」と区別できない |
 | **`initial_endowment`** | 最大/最小が 2 倍を超えたら警告。**2 倍は既に別の競技**（external では endowment が代入でなく下限になるため、prefund 済みアドレスがそのまま残る） |
 | **`round_timing`** | 各段の所要時間。環境ループのボトルネック診断 |
@@ -83,9 +84,9 @@
 
 **環境の shock が黙って失敗してはならない。** whale は通常の relay を通るので**送信**エラーは捕捉されるが、**オンチェーンの revert はエラーではない** — tx は着弾し、イベントログは「whale が発火した」と言い、`blocks.csv` だけが何も起きなかったことを示す。approve 漏れで一度、この regime が全ログ健全なまま calm に退化した。
 
-### live 採点と sweep の一致（`compareEpochSeries`）
+### live 採点と sweep の一致（`compareIntervalSeries`）
 
-両方が存在する run で必ず検査し、`epoch_series_agreement` に出す（`boundaries` / `compared` / `maxAbsDiffUsdc` / `maxRelDiff` / `worst`）。
+両方が存在する run で必ず検査し、`interval_series_agreement` に出す（`boundaries` / `compared` / `maxAbsDiffUsdc` / `maxRelDiff` / `worst`）。
 
 **テストではなく run ごとの実測にしてある理由**（`coordinator.ts:176-178`）：両者を引き離しうるもの（「どのブロックか」ではなく「いつ読んだか」に依存する venue 状態）は、チェーン上でしか現れない。
 
@@ -102,7 +103,7 @@ LLM 生成コードは設置前に**同じ静的検査 + vm コンパイル**を
 | 領域 | テスト |
 |---|---|
 | **契約の凍結** | `actionVocabulary`（アクションの改名・削除を検出）/ `actionSchema` / `action` / `methodNames`（selector テーブルと ABI のズレ） |
-| **採点の正しさ** | `epochScore` / `epochBoundaries` / `scoringBlocks` / `metrics` / `aggregate` / `standings` / `markMedian` / `liveScoring` / `scoringExclusions` / `summaryMultiBaseValuation` / `lpValuation` / `poolShareValuation` / `unaccountedTokens` |
+| **採点の正しさ** | `epochScore` / `intervalBoundaries` / `scoringBlocks` / `metrics` / `aggregate` / `standings` / `markMedian` / `liveScoring` / `scoringExclusions` / `summaryMultiBaseValuation` / `lpValuation` / `poolShareValuation` / `unaccountedTokens` |
 | **決定論** | `rng` / `events` / `flow` / `flowTrendCorrelation` / `whale` |
 | **モードの整合** | `resetUnit` / `chainMode` / `segments` / `externalAgents` / `config` / `run-config` |
 | **venue の挙動** | `liquity*` / `lst*` / `uniswap` / `balancerSeed` / `gmxMarketToken` / `stables` / `two-sided-quote` / `no-arb` / `tickMath` |

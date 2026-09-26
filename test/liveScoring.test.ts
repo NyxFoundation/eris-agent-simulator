@@ -1,8 +1,8 @@
-// ADR 0021 §3: the epoch boundary is read as it goes past, not swept up when the run ends.
+// ADR 0021 §3: the interval boundary is read as it goes past, not swept up when the run ends.
 //
 // The chain-dependent half of this -- that a boundary read live and the same boundary read
 // afterwards produce the same number -- is checked by the coordinator on every run it can
-// (`epoch_series_agreement`), because what could break it is a venue whose state depends on when it
+// (`interval_series_agreement`), because what could break it is a venue whose state depends on when it
 // is read rather than on which block, and that only shows up on a chain. What is checked here is the
 // part that is pure: the boundary walk, the refusal to invent a value for a boundary that failed,
 // and the comparator that reports the agreement.
@@ -13,11 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   LiveScorer,
-  EPOCHS_FILENAME,
+  INTERVALS_FILENAME,
 } from "../core/src/realtime/liveScoring.js";
-import { compareEpochSeries } from "../core/src/realtime/coordinator.js";
+import { compareIntervalSeries } from "../core/src/realtime/coordinator.js";
 import { RunLogger } from "../core/src/logger.js";
-import type { EpochSeries } from "../core/src/realtime/reconstruct.js";
+import type { IntervalSeries } from "../core/src/intervalSeries.js";
 import { TOKENS } from "@eris/sdk/constants.js";
 
 const AGENTS = [
@@ -83,7 +83,7 @@ function scorerFixture(opts: {
     activeStables: [TOKENS.USDC.address],
     priceFeed: "0x3333333333333333333333333333333333333333",
     runStartBlock,
-    epochBlocks: 4,
+    intervalBlocks: 4,
     markMedianBlocks: 0,
     sampleMarket: false,
   });
@@ -93,14 +93,14 @@ function tmp(): string {
   return mkdtempSync(join(tmpdir(), "eris-live-"));
 }
 
-test("boundaries land on the epoch grid, from the run's first block", async () => {
+test("boundaries land on the interval grid, from the run's first block", async () => {
   const root = tmp();
   const scorer = scorerFixture({ runDir: root, valueAt: (b) => b });
   for (let b = 100; b <= 112; b++) await scorer.onBlock(b);
   const series = scorer.series();
   assert.ok(series);
   assert.deepEqual(series.boundaryBlocks, [100, 104, 108, 112]);
-  assert.equal(series.epochs, 3);
+  assert.equal(series.intervals, 3);
   assert.deepEqual(series.valuesByAgent.a, [100, 104, 108, 112]);
 });
 
@@ -117,7 +117,7 @@ test("a boundary inside a skipped block is still scored", async () => {
 
 test("a boundary that could not be read is dropped, never filled in", async () => {
   // A fabricated value is a fabricated return, and the metric averages returns. Leaving the boundary
-  // out costs one epoch; inventing one puts a number nobody measured into the score.
+  // out costs one interval; inventing one puts a number nobody measured into the score.
   const root = tmp();
   const scorer = scorerFixture({
     runDir: root,
@@ -135,8 +135,16 @@ test("each boundary is appended as it happens, for a live reader to tail", async
   const root = tmp();
   const scorer = scorerFixture({ runDir: root, valueAt: (b) => b });
   await scorer.onBlock(100);
-  const path = join(root, "run", EPOCHS_FILENAME);
-  assert.ok(existsSync(path), "epochs.jsonl exists after the first boundary");
+  const path = join(root, "run", INTERVALS_FILENAME);
+  assert.equal(INTERVALS_FILENAME, "intervals.jsonl");
+  assert.ok(
+    existsSync(path),
+    "intervals.jsonl exists after the first boundary",
+  );
+  assert.ok(
+    !existsSync(join(root, "run", "epochs.jsonl")),
+    "the old file name is read, not written",
+  );
   const first = JSON.parse(readFileSync(path, "utf8").trim());
   assert.equal(first.index, 0);
   assert.equal(first.blockNumber, 100);
@@ -153,22 +161,22 @@ test("one boundary is not a series: there is no return to score", async () => {
 });
 
 test("the agreement comparator reports the worst boundary, not just a verdict", () => {
-  const live: EpochSeries = {
-    epochBlocks: 4,
-    epochs: 2,
+  const live: IntervalSeries = {
+    intervalBlocks: 4,
+    intervals: 2,
     boundaryBlocks: [100, 104, 108],
     valuesByAgent: { a: [10, 20, 30], b: [1, 2, 3] },
   };
-  const same = compareEpochSeries(live, live);
+  const same = compareIntervalSeries(live, live);
   assert.equal(same.compared, 6);
   assert.equal(same.maxAbsDiffUsdc, 0);
   assert.equal(same.worst, undefined);
 
-  const drifted: EpochSeries = {
+  const drifted: IntervalSeries = {
     ...live,
     valuesByAgent: { a: [10, 20, 33], b: [1, 2, 3] },
   };
-  const diff = compareEpochSeries(live, drifted);
+  const diff = compareIntervalSeries(live, drifted);
   assert.equal(diff.maxAbsDiffUsdc, 3);
   assert.equal(diff.worst?.agentId, "a");
   assert.equal(diff.worst?.boundaryBlock, 108);
@@ -178,19 +186,19 @@ test("the agreement comparator reports the worst boundary, not just a verdict", 
 test("the comparator only compares boundaries both series hold", () => {
   // A live run that lost a boundary and a sweep that read every one are not misaligned; they simply
   // overlap on fewer blocks. Comparing by index rather than by block would offset the whole series.
-  const live: EpochSeries = {
-    epochBlocks: 4,
-    epochs: 1,
+  const live: IntervalSeries = {
+    intervalBlocks: 4,
+    intervals: 1,
     boundaryBlocks: [100, 108],
     valuesByAgent: { a: [10, 30] },
   };
-  const swept: EpochSeries = {
-    epochBlocks: 4,
-    epochs: 2,
+  const swept: IntervalSeries = {
+    intervalBlocks: 4,
+    intervals: 2,
     boundaryBlocks: [100, 104, 108],
     valuesByAgent: { a: [10, 20, 30] },
   };
-  const r = compareEpochSeries(live, swept);
+  const r = compareIntervalSeries(live, swept);
   assert.equal(r.compared, 2);
   assert.equal(r.maxAbsDiffUsdc, 0);
 });
