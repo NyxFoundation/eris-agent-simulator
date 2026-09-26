@@ -187,6 +187,7 @@ import { PULL_VENUES } from "./liquidityVenues.js";
 import type { LstState } from "@eris/sdk/protocols/lst.js";
 import type { LiquityState } from "@eris/sdk/protocols/liquity.js";
 import { VulnSchedule } from "./vulnEvents.js";
+import { SubmittedLedger } from "./submittedLedger.js";
 import {
   deployVulnPools,
   fundVulnPoolsAt,
@@ -782,7 +783,8 @@ export async function runRealtimeSimulation(
     ownerId: "keeper",
     role: "system",
   });
-  const submittedByHash = new Map<string, SubmittedMeta>();
+  // Read once, at the blocks.csv flush, and swept there too (issue #134).
+  const submittedByHash = new SubmittedLedger<SubmittedMeta>();
 
   // Top an environment wallet up to a target native balance from the treasury (issue #33 (1)).
   // "Up to", not "by": the practice devnet funds the same admin and keeper on every segment, and
@@ -1918,7 +1920,7 @@ export async function runRealtimeSimulation(
           const hashes = await submitIntent(ctx, intent, latestStateById);
           submitted.push(...hashes);
           for (const hash of hashes) {
-            submittedByHash.set(hash.toLowerCase(), {
+            submittedByHash.record(hash.toLowerCase(), {
               ownerId: intent.ownerId,
               role: intent.role,
               priorityFeeWei: intent.priorityFeeWei,
@@ -1981,7 +1983,7 @@ export async function runRealtimeSimulation(
       );
       const statuses = receipts.map((r) => r.status);
       txs.forEach((tx, i) => {
-        const meta = submittedByHash.get(tx.hash.toLowerCase());
+        const meta = submittedByHash.take(tx.hash);
         // A sender the run does not know is recorded, not dropped (ADR 0021 §2, rules §2.7). On the
         // trial devnet these are exactly the participants' transactions: whoever sends before their
         // registration is read, or without registering at all. Dropping the row made them invisible
@@ -2036,6 +2038,7 @@ export async function runRealtimeSimulation(
       if (loggedThroughBlock === 0) loggedThroughBlock = runStartBlock - 1;
       for (let b = loggedThroughBlock + 1; b <= upTo; b++) await logBlock(b);
       loggedThroughBlock = Math.max(loggedThroughBlock, upTo);
+      submittedByHash.sweep(loggedThroughBlock);
     };
 
     // ADR 0010 profile: set the oracle/PriceFeed update fee above the agent cap so --order fees places it at
@@ -2799,7 +2802,7 @@ export async function runRealtimeSimulation(
               const hash = await accrueLst(ctx, lstRuntime, {
                 priorityFeeWei: oracleFee,
               });
-              submittedByHash.set(hash.toLowerCase(), {
+              submittedByHash.record(hash.toLowerCase(), {
                 ownerId: "oracle",
                 role: "system",
                 priorityFeeWei: oracleFee,
@@ -2877,7 +2880,7 @@ export async function runRealtimeSimulation(
                 oracleFee,
               );
               auditPrice("WETH", "price_submitted", [feedHash]);
-              submittedByHash.set(feedHash.toLowerCase(), {
+              submittedByHash.record(feedHash.toLowerCase(), {
                 ownerId: "oracle",
                 role: "system",
                 priorityFeeWei: oracleFee,
@@ -2892,7 +2895,7 @@ export async function runRealtimeSimulation(
                   oracleFee,
                 );
                 auditPrice(b, "price_submitted", [extraHash]);
-                submittedByHash.set(extraHash.toLowerCase(), {
+                submittedByHash.record(extraHash.toLowerCase(), {
                   ownerId: "oracle",
                   role: "system",
                   priorityFeeWei: oracleFee,
@@ -2905,7 +2908,7 @@ export async function runRealtimeSimulation(
                 oracleFee,
               );
               for (const hash of oracleHashes) {
-                submittedByHash.set(hash.toLowerCase(), {
+                submittedByHash.record(hash.toLowerCase(), {
                   ownerId: "oracle",
                   role: "system",
                   priorityFeeWei: oracleFee,
@@ -3123,7 +3126,7 @@ export async function runRealtimeSimulation(
                 logger,
               );
               if (hash)
-                submittedByHash.set(hash.toLowerCase(), {
+                submittedByHash.record(hash.toLowerCase(), {
                   ownerId: "registry",
                   role: "system",
                   priorityFeeWei: oracleFee,
@@ -3158,7 +3161,7 @@ export async function runRealtimeSimulation(
                   stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
               }
               for (const hash of hashes) {
-                submittedByHash.set(hash.toLowerCase(), {
+                submittedByHash.record(hash.toLowerCase(), {
                   ownerId: "liquidity",
                   role: "system",
                   priorityFeeWei: oracleFee,
@@ -3201,7 +3204,7 @@ export async function runRealtimeSimulation(
                     stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
                 }
                 for (const hash of hashes) {
-                  submittedByHash.set(hash.toLowerCase(), {
+                  submittedByHash.record(hash.toLowerCase(), {
                     ownerId,
                     role: "system",
                     priorityFeeWei: oracleFee,
@@ -3246,7 +3249,7 @@ export async function runRealtimeSimulation(
               }
               for (const s of sends) {
                 const wallet = flowWalletMap.get(s.ownerKey);
-                submittedByHash.set(s.hash.toLowerCase(), {
+                submittedByHash.record(s.hash.toLowerCase(), {
                   ownerId: wallet?.id ?? `flow-${s.ownerKey}`,
                   role: flowRole(s.ownerKey),
                   priorityFeeWei: oracleFee,
