@@ -267,17 +267,20 @@ redemption fee; the cost of turning ETH back into USDC is not included) / `recov
 
 #### How holdings are valued in scoring
 
-The asset value at the end of an epoch (rules §4.1) counts each kind of holding like this.
+The scoring code counts the asset value of rules §4.1 for each kind of holding like this. "The end
+of the epoch" is the last evaluation-interval boundary (see the diagram in §1). Marks that come from
+a pool's price (DAI, eUSD, ERLST, Liquity) are the median over the 5 blocks up to and including the
+valuation block (rules §4.1). Rows the rules do not spell out say so.
 
 | Holding | Counted as |
 |---|---|
-| Token balances | ETH, WETH, WBTC at the reference price; USDC at $1; DAI and eUSD at their pool's market price |
-| Uniswap liquidity | What the position holds at that moment (two tokens) plus uncollected fees |
-| Aave | Collateral − debt; negative when the debt exceeds the collateral |
-| GMX | Margin + unrealised PnL (at the reference price) |
-| LST | The better of "sell into the pool now" and "withdrawals that complete before the end"; a withdrawal completing after the end is 0 |
-| Liquity | A Trove is collateral − the cost of buying back its debt (floored at 0, since you can walk away from the debt by abandoning the collateral). The Stability Pool is the eUSD deposited + the ETH received |
-| Assets inside a contract you deployed | 0 (the environment cannot price them; see "What you can do here") |
+| Token balances | ETH, WETH, WBTC at the reference price; USDC at $1. DAI and eUSD at the geometric mean of the pool's sell and buy quotes ($1 when no quote comes back). ERLST: see the LST row. Any other token (LQTY, the `launch` listings and so on) is 0 (rules §4.1) |
+| AMM liquidity | A Uniswap position is what it holds at that moment (two tokens) plus uncollected fees. LP tokens of the Balancer and Curve WETH/USDC and WBTC/USDC pools are your share of what the pool holds (stableswap LP tokens are 0) |
+| Aave | Collateral − debt at Aave's oracle prices; negative when the debt exceeds the collateral. ERLST collateral is re-counted like the LST row, at what selling it into the pool pays (capped at its value at the redemption rate) |
+| GMX | Margin + unrealised PnL from the price move (at the reference price). Accrued funding is not deducted. An order not yet executed counts as 0, its margin and execution fee included (an order placed just before the end is one) |
+| LST | ERLST in your wallet is what selling all of it into the pool pays at that moment. A requested withdrawal counts in full if it is claimable by then (you need not have claimed it), and as 0 if not (the rules do not spell this out; it is the scoring code's rule) |
+| Liquity | A Trove is its collateral (at the reference price) minus the cost of buying back its net debt (the debt without the 200 eUSD deposit) in the pool now, floored at 0 since you can walk away from the debt by abandoning the collateral. Surplus collateral left over from a redemption or liquidation counts at the reference price. The Stability Pool is what selling your eUSD balance after absorbed liquidations pays in the pool now, plus the ETH not yet withdrawn. LQTY is 0. Rules §4.1 does not name CDPs; this is the scoring code's rule |
+| Assets inside a contract you deployed | 0. Scoring counts only the balances and positions your agent's own address holds, so a contract's contents are not counted even when they are WETH. Profit that passed through counts in full (the rules do not spell this out; it is the scoring code's rule) |
 
 ### The 12 regimes
 
