@@ -178,6 +178,8 @@ export interface LiquityPositionAtEnd {
   icr: number | null;
   stabilityDepositEusd: number;
   eusdBalance: number;
+  /** Absent in runs recorded before CollSurplusPool was observed. */
+  collSurplusWeth?: number;
 }
 
 export interface AaveAccountAtEnd {

@@ -32,6 +32,7 @@ import type {
   ValidationResult,
 } from "./types.js";
 import { approveTx } from "./uniswap.js";
+import { medianQuotes, readAcrossWindow } from "./medianWindow.js";
 import { deployContract } from "./deploy.js";
 import { enabledProtocolIds } from "./enabled.js";
 
@@ -597,10 +598,32 @@ export const aaveAdapter: ProtocolAdapter = {
         },
       ]);
     }
+    // Rules §4.1: the pool sale is the one market-derived price here (the rest of the account is
+    // marked at the environment's oracles). At a scoring boundary it is the median of the same
+    // quote -- the boundary's collateral size -- over the window.
+    const exits =
+      haircutTargets.length > 0 && LST
+        ? medianQuotes(
+            haircutTargets.map((_, k) => haircutReads[k * 3]),
+            await readAcrossWindow(
+              ctx,
+              haircutTargets.map(([, shares]) => ({
+                address: LST!.pool,
+                abi: curveStableSwapNgAbi,
+                functionName: "get_dy",
+                args: [
+                  BigInt(LST!.poolLstIndex),
+                  BigInt(LST!.poolWethIndex),
+                  shares,
+                ],
+              })),
+            ),
+          )
+        : [];
     // agent -> WETH of par value that an exit could not actually recover.
     const shortfallWei = new Map<number, bigint>();
     haircutTargets.forEach(([agentIndex], k) => {
-      const exit = haircutReads[k * 3];
+      const exit = exits[k];
       const par = haircutReads[k * 3 + 1];
       const delay = haircutReads[k * 3 + 2];
       if (typeof par !== "bigint" || par === 0n) return;
@@ -676,6 +699,12 @@ export const aaveAdapter: ProtocolAdapter = {
   // a/stableDebt/variableDebt tokens are minted to the agent on supply/borrow, but their value
   // already arrives through getUserAccountData's aggregate -- reporting them would be a false
   // positive. Immutable for a deployment, so resolved once.
+  // Only the LST collateral haircut reads a market, and only where the LST is listed; the account
+  // itself is marked at the environment's oracles, which are reference prices.
+  get medianSurfaces(): readonly string[] {
+    return LST?.aaveAToken ? ["aave-lst-collateral"] : [];
+  },
+
   async accountedTokens(publicClient): Promise<Address[]> {
     if (reserveTokenCache) return reserveTokenCache;
     // Every reserve this venue trades, not just the ones in the token registry: the LST is listed

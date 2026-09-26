@@ -1253,6 +1253,16 @@ function buildAgentPositions(
         note: t("pos.spNote"),
       });
     }
+    if ((p.collSurplusWeth ?? 0) > 0) {
+      out.push({
+        market: t("pos.surplus"),
+        kind: t("pos.kind.claim"),
+        tone: "neutral",
+        size: `${(p.collSurplusWeth ?? 0).toFixed(4)} WETH`,
+        mark: t("pos.surplusMark"),
+        note: t("pos.surplusNote"),
+      });
+    }
     if (p.eusdBalance > 0) {
       out.push({
         market: t("pos.eusdSpot"),

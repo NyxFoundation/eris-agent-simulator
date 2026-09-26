@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import type { Address } from "viem";
 import type { LiquityDeployment } from "@eris/sdk/constants.js";
 import {
+  borrowingFeeEusdWei,
+  compositeDebtEusdWei,
   discountBpsFrom,
   icrOf,
   liquidationPriceUsd,
@@ -285,14 +287,21 @@ test("the historical mark prices eUSD off the registry and the Trove off the fai
     context({ stablePrices: () => eusdAt(0.99) }),
     [
       // stage 0: gas compensation, then the agent's three position reads
-      () => [GAS_COMPENSATION, entire(4200n * WAD, 2n * WAD), 1000n * WAD, 0n],
+      () => [
+        GAS_COMPENSATION,
+        entire(4200n * WAD, 2n * WAD),
+        1000n * WAD,
+        0n,
+        0n,
+      ],
       // stage 1: own-size quotes for the deposit and for buying the debt back
       () => [990n * USDC, 3960n * USDC],
     ],
   );
-  // Stage 0 asks for one read per agent position plus the one global. The market probe is gone: the
-  // wallet's eUSD is registry spot and its price comes off ctx (issue #27 (b)).
-  assert.equal(asked[0].length, 4);
+  // Stage 0 asks for four reads per agent (Trove, SP deposit, SP gain, CollSurplusPool) plus the one
+  // global. The market probe is gone: the wallet's eUSD is registry spot and its price comes off ctx
+  // (issue #27 (b)).
+  assert.equal(asked[0].length, 5);
   const v = values[AGENT.id];
   // Trove 6000 - 4000 x 0.99, plus a 1,000 eUSD deposit at 0.99.
   assert.equal(Math.round(v.valueUsdc), Math.round(6000 - 3960 + 990));
@@ -308,15 +317,67 @@ test("the wallet's eUSD is left to the registry, so nothing counts it twice", as
   // spot sweep to price; this adapter must contribute exactly zero.
   const { asked, values } = await drive(
     context({ stablePrices: () => eusdAt(0.9) }),
-    [() => [GAS_COMPENSATION, entire(0n, 0n), 0n, 0n]],
+    [() => [GAS_COMPENSATION, entire(0n, 0n), 0n, 0n, 0n]],
   );
   assert.equal(asked.length, 1);
   assert.equal(values[AGENT.id].valueUsdc, 0);
 });
 
+test("a closed Trove's claimable surplus is valued at the fair price, in both marks", async () => {
+  // Fully redeemed: the Trove is gone (0 / 0) and 0.4 ETH of collateral above the cancelled debt
+  // waits in CollSurplusPool until claimCollateral(). It is the owner's native ETH, so it is valued
+  // like the Stability Pool's ETH gain -- not zero until claimed.
+  const { asked, values } = await drive(context(), [
+    () => [GAS_COMPENSATION, entire(0n, 0n), 0n, 0n, (4n * WAD) / 10n],
+  ]);
+  const surplusRead = asked[0][4] as { address: string; functionName: string; args: unknown[] };
+  assert.equal(surplusRead.address, DEPLOYMENT.collSurplusPool);
+  assert.equal(surplusRead.functionName, "getCollateral");
+  assert.deepEqual(surplusRead.args, [AGENT.address]);
+  const v = values[AGENT.id];
+  assert.ok(Math.abs(v.valueUsdc - 0.4 * FAIR) < 1e-9);
+  assert.ok(Math.abs(v.liquidatableValueUsdc - 0.4 * FAIR) < 1e-9);
+  assert.deepEqual(v.unpriced, []);
+  // Nothing to quote: no second stage.
+  assert.equal(asked.length, 1);
+});
+
+test("an unreadable surplus is reported on its own; the rest of the position is still valued", async () => {
+  const { values } = await drive(context(), [
+    () => [GAS_COMPENSATION, entire(0n, 0n), 0n, WAD / 2n, undefined],
+  ]);
+  const v = values[AGENT.id];
+  assert.ok(Math.abs(v.valueUsdc - 0.5 * FAIR) < 1e-9);
+  assert.deepEqual(v.unpriced, [
+    {
+      source: "liquity-coll-surplus",
+      amountRaw: "",
+      reason: "read-failed",
+      read: "CollSurplusPool.getCollateral",
+    },
+  ]);
+});
+
+test("surplus adds to the Stability Pool gain and the Trove, never in place of them", () => {
+  const value = liquityPositionValue({
+    holdings: {
+      collWei: 2n * WAD,
+      debtEusdWei: 4200n * WAD,
+      netDebtEusdWei: 4000n * WAD,
+      spDepositEusdWei: 0n,
+      spEthGainWei: WAD / 10n,
+      collSurplusWei: WAD / 5n,
+    },
+    fairPriceUsd: FAIR,
+    eusdPriceUsdc: 1,
+  });
+  // Trove 6,000 - 4,000, SP gain 300, surplus 600.
+  assert.ok(Math.abs(value.valueUsdc - (2_000 + 300 + 600)) < 1e-9);
+});
+
 test("a failed position read is reported, not scored as zero", async () => {
   const { values } = await drive(context(), [
-    () => [GAS_COMPENSATION, undefined, undefined, undefined],
+    () => [GAS_COMPENSATION, undefined, undefined, undefined, undefined],
   ]);
   const v = values[AGENT.id];
   assert.equal(v.valueUsdc, 0);
@@ -328,7 +389,7 @@ test("a failed position read is reported, not scored as zero", async () => {
 test("a market that will not quote falls back to par and says so", async () => {
   const { values } = await drive(
     context({ stablePrices: () => eusdUnquoted() }),
-    [() => [GAS_COMPENSATION, entire(0n, 0n), 5000n * WAD, 0n]],
+    [() => [GAS_COMPENSATION, entire(0n, 0n), 5000n * WAD, 0n, 0n]],
   );
   const v = values[AGENT.id];
   // Par is the least wrong fallback -- it is the value the protocol enforces -- but silently
@@ -342,7 +403,7 @@ test("a market that will not quote falls back to par and says so", async () => {
 
 test("an agent with nothing on the venue costs no second-stage read", async () => {
   const { asked, values } = await drive(context(), [
-    () => [GAS_COMPENSATION, entire(0n, 0n), 0n, 0n],
+    () => [GAS_COMPENSATION, entire(0n, 0n), 0n, 0n, 0n],
   ]);
   assert.equal(asked.length, 1);
   assert.equal(values[AGENT.id].valueUsdc, 0);
@@ -357,7 +418,7 @@ test("a deployment without a market marks at par and says that too", async () =>
   };
   const { asked, values } = await drive(
     context(),
-    [() => [GAS_COMPENSATION, entire(0n, 0n), 2000n * WAD, 0n]],
+    [() => [GAS_COMPENSATION, entire(0n, 0n), 2000n * WAD, 0n, 0n]],
     noMarket,
   );
   // No market means no own-size quotes either, so there is no second stage to ask for.
@@ -395,6 +456,7 @@ function observation(
     spDepositEusdWei: "0",
     spEthGainWei: "0",
     spLqtyGainWei: "0",
+    collSurplusWei: "0",
     spTotalDepositsEusdWei: (50_000n * WAD).toString(),
     spShareBps: 0,
     ethBalanceWei: WAD.toString(),
@@ -498,6 +560,148 @@ test("a Trove that would open under MCR is refused, and under CCR in Recovery Mo
       .ok,
     false,
   );
+});
+
+test("an open near MCR is measured on the debt the chain books, not the request", () => {
+  // 2 ETH (6,000) against 5,400 eUSD requested is 111% -- over MCR on the request alone. The chain
+  // books 5,400 + the 0.5% borrowing fee (27) + 200 gas compensation = 5,627, i.e. 106.6%, and
+  // reverts (BorrowerOperations._computeCR(msg.value, compositeDebt, price)).
+  const nearMcr = {
+    type: "liquityOpenTrove" as const,
+    collateralWethWei: (2n * WAD).toString(),
+    debtEusdWei: (5400n * WAD).toString(),
+  };
+  const result = liquityAdapter.validate(nearMcr, observation(), BALANCES);
+  assert.equal(result.ok, false);
+  assert.match(result.ok === false ? result.reason : "", /ICR 1\.066/);
+  // 5,200 books 5,200 + 26 + 200 = 5,426: 110.6%, over MCR, and it passes.
+  assert.equal(
+    liquityAdapter.validate(
+      { ...nearMcr, debtEusdWei: (5200n * WAD).toString() },
+      observation(),
+      BALANCES,
+    ).ok,
+    true,
+  );
+});
+
+test("the borrowing fee is the observed rate in Normal Mode and nothing in Recovery Mode", () => {
+  const normal = { borrowingRateBps: 50, recoveryMode: false };
+  assert.equal(borrowingFeeEusdWei(5400n * WAD, normal), 27n * WAD);
+  assert.equal(
+    borrowingFeeEusdWei(5400n * WAD, { ...normal, recoveryMode: true }),
+    0n,
+  );
+  assert.equal(
+    compositeDebtEusdWei(5400n * WAD, {
+      ...normal,
+      gasCompensationEusdWei: GAS_COMPENSATION.toString(),
+    }),
+    5627n * WAD,
+  );
+  // 3,800 at 2 ETH is exactly 150% on 3,800 + 200 with no fee: the CCR floor Recovery Mode sets.
+  // Charging the Normal-Mode fee would push it under and refuse a Trove the chain opens.
+  assert.equal(
+    liquityAdapter.validate(
+      {
+        type: "liquityOpenTrove",
+        collateralWethWei: (2n * WAD).toString(),
+        debtEusdWei: (3800n * WAD).toString(),
+      },
+      observation({ recoveryMode: true }),
+      BALANCES,
+    ).ok,
+    true,
+  );
+});
+
+const TROVE = {
+  status: 1,
+  collWei: (2n * WAD).toString(),
+  debtEusdWei: (4200n * WAD).toString(),
+  netDebtEusdWei: (4000n * WAD).toString(),
+  icr: 6000 / 4200,
+  liquidationPriceUsd: 2310,
+  positionFromRiskiest: 0,
+  redeemedAheadEusdWei: "0",
+  positionKnown: true,
+};
+
+test("a debt increase is checked against the Trove's resulting ICR, fee included", () => {
+  // 2 ETH (6,000) owing 4,200: 143%. Borrowing 1,300 more books 1,300 + 6.5 fee, i.e. 5,506.5 of
+  // debt and 109% -- under MCR, so the chain reverts.
+  const borrow = (eusd: bigint) => ({
+    type: "liquityAdjustTrove" as const,
+    debtChangeEusdWei: (eusd * WAD).toString(),
+    isDebtIncrease: true,
+  });
+  const over = liquityAdapter.validate(
+    borrow(1300n),
+    observation({ trove: TROVE }),
+    BALANCES,
+  );
+  assert.equal(over.ok, false);
+  assert.match(over.ok === false ? over.reason : "", /below the MCR/);
+  // 1,200 more books 5,406 of debt: 111%, and passes.
+  assert.equal(
+    liquityAdapter.validate(borrow(1200n), observation({ trove: TROVE }), BALANCES)
+      .ok,
+    true,
+  );
+});
+
+test("Recovery Mode forbids collateral withdrawal and ICR-lowering borrows", () => {
+  const rm = observation({ trove: TROVE, recoveryMode: true });
+  assert.equal(
+    liquityAdapter.validate(
+      { type: "liquityAdjustTrove", withdrawCollateralWei: (WAD / 10n).toString() },
+      rm,
+      BALANCES,
+    ).ok,
+    false,
+  );
+  // Adding 1 ETH and borrowing 300 (no fee in Recovery Mode): 9,000 / 4,500 = 200%, above CCR and
+  // above the 143% it had. Allowed.
+  assert.equal(
+    liquityAdapter.validate(
+      {
+        type: "liquityAdjustTrove",
+        addCollateralWethWei: WAD.toString(),
+        debtChangeEusdWei: (300n * WAD).toString(),
+        isDebtIncrease: true,
+      },
+      rm,
+      BALANCES,
+    ).ok,
+    true,
+  );
+  // Borrowing without adding collateral lowers the ICR, which Recovery Mode refuses.
+  assert.equal(
+    liquityAdapter.validate(
+      {
+        type: "liquityAdjustTrove",
+        debtChangeEusdWei: (100n * WAD).toString(),
+        isDebtIncrease: true,
+      },
+      rm,
+      BALANCES,
+    ).ok,
+    false,
+  );
+});
+
+test("a repayment cannot exceed the Trove's net debt", () => {
+  const obs = observation({
+    trove: TROVE,
+    eusdBalanceWei: (5000n * WAD).toString(),
+  });
+  const repay = (eusd: bigint) => ({
+    type: "liquityAdjustTrove" as const,
+    debtChangeEusdWei: (eusd * WAD).toString(),
+    isDebtIncrease: false,
+  });
+  assert.equal(liquityAdapter.validate(repay(4100n), obs, BALANCES).ok, false);
+  assert.equal(liquityAdapter.validate(repay(1000n), obs, BALANCES).ok, true);
 });
 
 test("closing needs the eUSD to repay with, which the wallet may not have", () => {

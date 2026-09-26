@@ -85,13 +85,18 @@ All four are reported in `summary.json`'s `valueSeries.unpricedHoldings`. **A ze
 
 Each epoch boundary is valued at **the median over the preceding `markMedianBlocks` blocks** (5 by default). Pushing a pool for one block therefore does not become the score: it has to hold for most of the window to count, which turns a spread-cost round trip into a position.
 
-**The scope is market-priced stables, and that covers the whole surface.**
+**The scope is every market-derived price** (rules §4.1). Reference prices — the bases' fair and the Aave / GMX oracles fed from it — are not market-derived and are not medianed. Holdings stay at the boundary block; only the price is medianed (a position that changed inside the window is not valued as some other position). Each adapter re-reads its own market-derived price at the window's earlier blocks (`ValuationContext.medianWindow` / `readAt`, named in `ProtocolAdapter.medianSurfaces`).
 
-| Surface | Medianed? | Why |
-|---|---|---|
-| Market-priced stables (spot, Trove debt, SP deposits) | **Yes** | The pool quote **is** the mark of a holding whose cost basis sits elsewhere, so moving the pool moves the score |
-| LP shares | No | Valued by composition (reserves × the environment's fair price). Pushing the pool moves value between the agent's own two buckets |
-| LST | No | Since issue #40 axiom 3 the scored mark is the realizable one, so the pool quote is in it — but pushing that pool moves value between the agent's own two buckets, exactly as with LP shares. What it can move is the discount, and the median window covers that |
+| Surface | The price that is medianed |
+|---|---|
+| Market-priced stables (spot, the Trove-debt and SP-deposit mid, stable legs of LP and lending marks) | The geometric mean of the two-sided probe (`stables`) |
+| Uniswap V3 LP | The pool's tick. Principal splits into the two tokens at the median tick; uncollected fees stay at the boundary tick (fees are not a price, they are what the boundary owes) |
+| Balancer BPT / Curve LP | The value of one share (reserves at the boundary's reference prices ÷ supply). The boundary mark is rescaled by median ÷ boundary share price |
+| LST (the venue and Aave's collateral haircut) | The pool sale at the holder's own size (get_dy). The queue side (par, the wait) is the vault's and stays at the boundary |
+| Liquity | The Stability Pool deposit's sale (get_dy) and the debt's buyback (get_dx), both at the boundary's sizes |
+| Aave accounts / GMX / SimpleLending | Not medianed (marked at the environment's reference prices and oracles) |
+
+A block that did not quote is dropped (counted neither as zero nor as par). A boundary with fewer than five blocks of history uses the median of those there are (§4.4.2).
 
 Live and sweep use the same window. How much the rule actually moved is reported in `valueSeries.markMedian.maxDeviationBps`.
 

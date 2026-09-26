@@ -39,6 +39,7 @@ import type {
   ValuationRun,
 } from "./types.js";
 import { approveTx } from "./uniswap.js";
+import { medianQuotes, readAcrossWindow } from "./medianWindow.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
 const WAD = 10n ** 18n;
@@ -708,19 +709,20 @@ export async function* lstValuationRun(
     .filter((x): x is { row: NonNullable<typeof x.row>; i: number } =>
       Boolean(x.row && x.row.shares > 0n),
     );
+  const saleRead = (shares: bigint): ValuationRead => ({
+    address: deployment.pool,
+    abi: curveStableSwapNgAbi,
+    functionName: "get_dy",
+    args: [
+      BigInt(deployment.poolLstIndex),
+      BigInt(deployment.poolWethIndex),
+      shares,
+    ],
+  });
   let quotes: unknown[] = [];
   if (quoteTargets.length > 0) {
     quotes = yield [
-      ...quoteTargets.map(({ row }): ValuationRead => ({
-        address: deployment.pool,
-        abi: curveStableSwapNgAbi,
-        functionName: "get_dy",
-        args: [
-          BigInt(deployment.poolLstIndex),
-          BigInt(deployment.poolWethIndex),
-          row.shares,
-        ],
-      })),
+      ...quoteTargets.map(({ row }) => saleRead(row.shares)),
       ...(rateLimited
         ? quoteTargets.map(({ row }): ValuationRead => ({
             address: deployment.vault,
@@ -731,11 +733,20 @@ export async function* lstValuationRun(
         : []),
     ];
   }
+  // Rules §4.1: the pool sale is the market-derived price in the realizable mark. At a scoring
+  // boundary it is the median of that same quote -- same size, the boundary's holding -- over the
+  // window. The queue side (par, the wait) is the vault's, not a market's, and stays at the boundary.
+  const sales = medianQuotes(
+    quoteTargets.map((_, k) => quotes[k]),
+    await readAcrossWindow(
+      ctx,
+      quoteTargets.map(({ row }) => saleRead(row.shares)),
+    ),
+  );
   const quoteByIndex = new Map<number, bigint | undefined>();
   const delayByIndex = new Map<number, number | undefined>();
   quoteTargets.forEach(({ i }, k) => {
-    const q = quotes[k];
-    quoteByIndex.set(i, typeof q === "bigint" ? q : undefined);
+    quoteByIndex.set(i, sales[k]);
     const d = rateLimited ? quotes[quoteTargets.length + k] : undefined;
     // The size-aware wait when the queue is rate-limited, otherwise the floor. Either can be
     // undefined if its read failed, and undefined stays undefined: see the marking below.
@@ -912,6 +923,8 @@ export const lstAdapter: ProtocolAdapter = {
     }
     return lstValuationRun(LST, ctx);
   },
+
+  medianSurfaces: ["lst-pool-sale"],
 
   async accountedTokens(): Promise<Address[]> {
     // The share token is valued above. The pool's LP token deliberately is not listed: nothing

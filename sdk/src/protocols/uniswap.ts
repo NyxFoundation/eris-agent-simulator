@@ -27,6 +27,7 @@ import {
 import { tokenAmountUsd, type UnpricedAmount } from "../valuation.js";
 import type { StablePrices } from "../stables.js";
 import { resolveMarket } from "./marketHelpers.js";
+import { medianOf, readAcrossWindow } from "./medianWindow.js";
 import type {
   AgentObservation,
   BalanceSnapshot,
@@ -42,6 +43,7 @@ import type {
   BuiltTx,
   ProtocolAdapter,
   ValidationResult,
+  ValuationContext,
 } from "./types.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
@@ -970,6 +972,10 @@ export type LpValuationContext = {
   poolByKey?: Record<string, Address>;
   // Issue #21: pool fee growth keyed by lowercased pool address. Omitted -> fees are not marked.
   feeGrowthByPool?: Record<string, PoolFeeGrowth>;
+  // Rules §4.1: the tick the principal is split at, when it differs from the pool's tick at this
+  // block (the median over the scoring window). Omitted -> tickByPool. Fees always use tickByPool:
+  // fee growth inside the range is only defined against the tick the pool actually has.
+  markTickByPool?: Record<string, number>;
 };
 
 export type LpPositionValuation = {
@@ -1017,7 +1023,7 @@ export function lpPositionValuation(
 
   const amounts = liquidityToTokenAmounts({
     liquidity,
-    tick,
+    tick: (key === undefined ? undefined : ctx.markTickByPool?.[key]) ?? tick,
     tickLower,
     tickUpper,
   });
@@ -1063,6 +1069,36 @@ export function lpPositionValuation(
     valueUsdc += usd;
   }
   return { valueUsdc, unpriced };
+}
+
+// The tick each pool's principal is split at on a scoring boundary: the median of the pool's tick
+// over the window (rules §4.1), the boundary's own tick included. Pools whose tick could not be read
+// at the boundary keep no entry -- their positions are already reported as unreadable, and a mark
+// assembled from the earlier blocks alone would value a position the boundary could not see. A
+// window block whose slot0 failed is dropped. Outside a boundary the window is empty and this is
+// tickByPool unchanged.
+async function medianTickByPool(
+  ctx: ValuationContext,
+  pools: Address[],
+  tickByPool: Record<string, number>,
+): Promise<Record<string, number>> {
+  const live = pools.filter((p) => tickByPool[p.toLowerCase()] !== undefined);
+  const samples = await readAcrossWindow(
+    ctx,
+    live.map((pool) => ({ address: pool, abi: poolAbi, functionName: "slot0" })),
+  );
+  if (samples.length === 0) return tickByPool;
+  const out = { ...tickByPool };
+  live.forEach((pool, i) => {
+    const key = pool.toLowerCase();
+    const ticks = [tickByPool[key]];
+    for (const sample of samples) {
+      const slot0 = sample[i] as readonly [bigint, number] | undefined;
+      if (slot0) ticks.push(Number(slot0[1]));
+    }
+    out[key] = medianOf(ticks) ?? tickByPool[key];
+  });
+  return out;
 }
 
 // For reconstruct (scoring): resolve the position's market and derive an all-base LP value (WBTC/USDC etc.)
@@ -1594,6 +1630,16 @@ export const uniswapAdapter: ProtocolAdapter = {
       }
     }
 
+    // Rules §4.1: the pool's price is the market-derived price in an LP mark -- it decides how the
+    // liquidity splits into the two tokens, which are then valued at the reference prices. So at a
+    // scoring boundary the principal splits at the median tick over the window. Fees are not a
+    // price: what the position has earned is a fact of this block, so they stay at its tick.
+    const markTickByPool = await medianTickByPool(
+      ctx,
+      [...feePools.values()].map((p) => p.address),
+      tickByPool,
+    );
+
     const fairByBase = ctx.fairByBase();
     const stablePrices = ctx.stablePrices();
     const out = unreadableCount(zero());
@@ -1619,6 +1665,7 @@ export const uniswapAdapter: ProtocolAdapter = {
         stablePrices,
         poolByKey,
         feeGrowthByPool,
+        markTickByPool,
       });
       const agent = out[agentId];
       agent.valueUsdc += valuation.valueUsdc;
@@ -1630,6 +1677,8 @@ export const uniswapAdapter: ProtocolAdapter = {
     });
     return out;
   },
+
+  medianSurfaces: ["uniswap-lp"],
 
   // The position manager is an ERC-721 and its positions are valued by valueAtBlock.
   async accountedTokens(): Promise<Address[]> {

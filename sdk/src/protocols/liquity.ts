@@ -22,6 +22,14 @@
 // `WETH.withdraw` before the call. The scorer already prices loose native ETH, so this is not a
 // valuation gap -- but it is a gas interaction, and the observation surfaces the remaining headroom.
 //
+// *A closed Trove can leave collateral behind.* A full redemption returns what the collateral held
+// above the debt it cancelled, and a Recovery-Mode liquidation seizes at most 110% of the debt; in
+// both cases the rest waits in CollSurplusPool for the owner to claim with
+// BorrowerOperations.claimCollateral(). There is no action for that call (the venue's action set
+// stays at eight) -- an agent sends it as a `rawTx` to `borrowerOperations`. The observation
+// reports the balance (`collSurplusWei`) and the scorer values it at the WETH fair, because it is
+// native ETH its owner can take at any time; before this it read as zero until claimed.
+//
 // *eUSD is never worth $1 by assumption.* A CDP stablecoin trading at 0.97 marked at 1.00 hands
 // every holder phantom value, which is precisely what makes the redemption arb look profitable
 // before it has been done. eUSD used to be kept out of the token registry to guarantee that, because
@@ -39,6 +47,7 @@ import {
 } from "viem";
 import {
   borrowerOperationsAbi,
+  collSurplusPoolAbi,
   curveStableSwapNgAbi,
   erc20Abi,
   liquityRedemptionHelperAbi,
@@ -82,6 +91,7 @@ import type {
   ValuationRun,
 } from "./types.js";
 import { approveTx } from "./uniswap.js";
+import { medianQuotes, readAcrossWindow } from "./medianWindow.js";
 import { readStablePrices, stablePriceUsdc } from "../stables.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
@@ -674,6 +684,98 @@ function parse(obj: Record<string, unknown>): LeafAction | null {
   }
 }
 
+/// The borrowing fee the chain adds to `amountEusdWei` of new debt (BorrowerOperations
+/// ._triggerBorrowingFee): the borrowing rate in Normal Mode, nothing in Recovery Mode. The rate is
+/// the observation's `borrowingRateBps`, i.e. getBorrowingRateWithDecay -- what the chain charges
+/// after decayBaseRateFromBorrowing. The base rate only decays between observation and inclusion,
+/// so the fee charged is at most this one.
+export function borrowingFeeEusdWei(
+  amountEusdWei: bigint,
+  venue: Pick<LiquityObservation, "borrowingRateBps" | "recoveryMode">,
+): bigint {
+  if (venue.recoveryMode || amountEusdWei <= 0n) return 0n;
+  // bps -> 1e18 scale (1 bps = 1e14). borrowingRateBps carries 0.001 bps, so this is exact.
+  const rateWad = BigInt(Math.round(venue.borrowingRateBps * 1e14));
+  return (amountEusdWei * rateWad) / WAD;
+}
+
+/// The debt a new Trove is opened with, which is what its ICR is computed on
+/// (BorrowerOperations.openTrove: `_getCompositeDebt(netDebt)`): the requested eUSD, plus the
+/// borrowing fee, plus the gas compensation the Gas Pool holds.
+export function compositeDebtEusdWei(
+  requestedEusdWei: bigint,
+  venue: Pick<
+    LiquityObservation,
+    "borrowingRateBps" | "recoveryMode" | "gasCompensationEusdWei"
+  >,
+): bigint {
+  return (
+    requestedEusdWei +
+    borrowingFeeEusdWei(requestedEusdWei, venue) +
+    BigInt(venue.gasCompensationEusdWei)
+  );
+}
+
+function crOf(collWei: bigint, debtWei: bigint, priceUsd: number): number {
+  if (debtWei <= 0n) return NO_DEBT_RATIO;
+  return (
+    (Number(formatUnits(collWei, 18)) * priceUsd) /
+    Number(formatUnits(debtWei, 18))
+  );
+}
+
+/// What BorrowerOperations._adjustTrove requires of the Trove it leaves behind
+/// (_requireValidAdjustmentInCurrentMode), on the debt it would book: the Trove's entire debt
+/// (gas compensation and pending redistribution included, as getEntireDebtAndColl reports it) plus
+/// the change, plus the borrowing fee when the change is an increase in Normal Mode.
+///
+///   Normal Mode    the new ICR must be at least MCR
+///   Recovery Mode  no collateral withdrawal; a debt increase must leave the ICR at least CCR and
+///                  no lower than before
+function adjustedTroveCheck(
+  venue: LiquityObservation,
+  trove: NonNullable<LiquityObservation["trove"]>,
+  change: {
+    add: bigint;
+    withdraw: bigint;
+    debtChange: bigint;
+    isDebtIncrease: boolean;
+  },
+): ValidationResult {
+  const coll = BigInt(trove.collWei);
+  const debt = BigInt(trove.debtEusdWei);
+  const increase = change.isDebtIncrease ? change.debtChange : 0n;
+  const repay = change.isDebtIncrease ? 0n : change.debtChange;
+  if (repay > BigInt(trove.netDebtEusdWei))
+    return {
+      ok: false,
+      reason: `debtChangeEusdWei repays more than the Trove's net debt (${trove.netDebtEusdWei})`,
+    };
+  const newColl = coll + change.add - change.withdraw;
+  const newDebt = debt + increase + borrowingFeeEusdWei(increase, venue) - repay;
+  const oldIcr = crOf(coll, debt, venue.priceUsd);
+  const newIcr = crOf(newColl, newDebt, venue.priceUsd);
+  if (venue.recoveryMode) {
+    if (change.withdraw > 0n)
+      return {
+        ok: false,
+        reason: "Recovery Mode forbids withdrawing collateral from a Trove",
+      };
+    if (increase > 0n && (newIcr < venue.ccr || newIcr < oldIcr))
+      return {
+        ok: false,
+        reason: `in Recovery Mode a debt increase must leave the ICR at least the CCR of ${venue.ccr} and no lower than before (${oldIcr.toFixed(3)}); it would be ${newIcr.toFixed(3)}`,
+      };
+    return { ok: true };
+  }
+  if (newIcr < venue.mcr)
+    return {
+      ok: false,
+      reason: `resulting ICR ${newIcr.toFixed(3)} (on ${formatUnits(newDebt, 18)} eUSD of debt, borrowing fee included) is below the MCR of ${venue.mcr}`,
+    };
+  return { ok: true };
+}
+
 function validate(
   action: LeafAction,
   obs: AgentObservation,
@@ -695,6 +797,9 @@ function validate(
         return { ok: false, reason: "collateralWethWei must be positive" };
       if (coll > wethBalance)
         return { ok: false, reason: "collateralWethWei exceeds WETH balance" };
+      // On the request alone, deliberately: the chain checks request + fee, but the fee it charges
+      // can only be lower than the observed one (the base rate decays), so adding it here could
+      // pass a Trove the chain then refuses.
       if (debt < BigInt(liquity.minNetDebtEusdWei))
         return {
           ok: false,
@@ -703,15 +808,16 @@ function validate(
       if (liquity.trove && liquity.trove.status === 1)
         return { ok: false, reason: "this wallet already has an active Trove" };
       // Recovery Mode forbids opening below CCR, and the resulting ratio is knowable here, so say so
-      // now rather than paying gas to be told on chain.
-      const icr =
-        (Number(formatUnits(coll, 18)) * liquity.priceUsd) /
-        Number(formatUnits(debt, 18));
+      // now rather than paying gas to be told on chain. The ratio is on the debt the chain books --
+      // the request, the borrowing fee and the gas compensation -- not on the request alone, which
+      // passed Troves within a few percent of MCR that then reverted.
+      const composite = compositeDebtEusdWei(debt, liquity);
+      const icr = crOf(coll, composite, liquity.priceUsd);
       const floor = liquity.recoveryMode ? liquity.ccr : liquity.mcr;
       if (icr < floor)
         return {
           ok: false,
-          reason: `resulting ICR ${icr.toFixed(3)} is below the ${liquity.recoveryMode ? "CCR (Recovery Mode)" : "MCR"} of ${floor}`,
+          reason: `resulting ICR ${icr.toFixed(3)} (on ${formatUnits(composite, 18)} eUSD of debt: the request, the borrowing fee and the gas compensation) is below the ${liquity.recoveryMode ? "CCR (Recovery Mode)" : "MCR"} of ${floor}`,
         };
       return { ok: true };
     }
@@ -749,7 +855,12 @@ function validate(
           ok: false,
           reason: "withdrawCollateralWei exceeds the Trove's collateral",
         };
-      return { ok: true };
+      return adjustedTroveCheck(liquity, liquity.trove, {
+        add,
+        withdraw,
+        debtChange,
+        isDebtIncrease: action.isDebtIncrease === true,
+      });
     }
     case "liquityCloseTrove": {
       if (!liquity?.trove || liquity.trove.status !== 1)
@@ -844,6 +955,7 @@ async function observe(
     spEthGain,
     spLqtyGain,
     ethBalance,
+    collSurplus,
   ] = await Promise.all([
     read(
       publicClient,
@@ -880,6 +992,9 @@ async function observe(
       [agent],
     ) as Promise<bigint>,
     publicClient.getBalance({ address: agent }),
+    read(publicClient, d.collSurplusPool, collSurplusPoolAbi, "getCollateral", [
+      agent,
+    ]) as Promise<bigint>,
   ]);
 
   const [debt, coll] = entire;
@@ -942,6 +1057,7 @@ async function observe(
           },
         }
       : {}),
+    collSurplusWei: collSurplus.toString(),
     spDepositEusdWei: spDeposit.toString(),
     spEthGainWei: spEthGain.toString(),
     spLqtyGainWei: spLqtyGain.toString(),
@@ -1267,6 +1383,10 @@ type LiquityHoldings = {
   netDebtEusdWei: bigint;
   spDepositEusdWei: bigint;
   spEthGainWei: bigint;
+  // Collateral a closed Trove left in CollSurplusPool, claimable by this owner. Native ETH, valued
+  // like the Stability Pool's ETH gain. Never overlaps the Trove above: it only exists once the
+  // Trove is closed, and claiming it moves it into the wallet, where the spot sweep counts it.
+  collSurplusWei?: bigint;
 };
 
 /// Price a Liquity position, given what eUSD is worth.
@@ -1291,7 +1411,10 @@ export function liquityPositionValue(input: {
   const { holdings: h, fairPriceUsd, eusdPriceUsdc } = input;
   const longEusd = toFloat(h.spDepositEusdWei);
   const collUsd = toFloat(h.collWei) * fairPriceUsd;
-  const gainUsd = toFloat(h.spEthGainWei) * fairPriceUsd;
+  // ETH owed to the agent outright: the Stability Pool's liquidation gain and a closed Trove's
+  // surplus. Both at the reference price in both marks -- neither exits through a market.
+  const gainUsd =
+    toFloat(h.spEthGainWei + (h.collSurplusWei ?? 0n)) * fairPriceUsd;
   const netDebtEusd = toFloat(h.netDebtEusdWei);
 
   const troveMark = Math.max(0, collUsd - netDebtEusd * eusdPriceUsdc);
@@ -1313,8 +1436,8 @@ function usdcFloat(units: bigint): number {
 /// Historical valuation (issue #41's staged reads).
 ///
 /// Two stages, because the realizable mark depends on sizes the first stage returns:
-///   0. the market's two-sided probe, the gas compensation, and every agent's Trove / Stability Pool
-///      / eUSD position
+///   0. the gas compensation, and every agent's Trove, Stability Pool position and CollSurplusPool
+///      balance
 ///   1. for exactly the agents that hold eUSD or owe it: what their own size would sell for, and
 ///      what buying their debt back would cost
 ///
@@ -1357,20 +1480,31 @@ export async function* liquityValuationRun(
         functionName: "getDepositorETHGain",
         args: [a.address],
       },
+      {
+        address: deployment.collSurplusPool,
+        abi: collSurplusPoolAbi,
+        functionName: "getCollateral",
+        args: [a.address],
+      },
     ]),
   ];
   const results = yield stage0;
 
   const gasCompensation =
     typeof results[0] === "bigint" ? (results[0] as bigint) : 0n;
+  // Agents whose surplus read failed: the rest of the position is still known, so it is valued and
+  // the surplus alone is reported as unknown (issue #44) rather than the whole venue going missing.
+  const surplusUnread = new Set<number>();
   const holdings = ctx.agents.map((_agent, i) => {
-    const base = 1 + i * 3;
+    const base = 1 + i * 4;
     const entire = results[base] as
       readonly [bigint, bigint, bigint, bigint] | undefined;
     const spDeposit = results[base + 1];
     const spGain = results[base + 2];
+    const surplus = results[base + 3];
     if (!entire || typeof spDeposit !== "bigint" || typeof spGain !== "bigint")
       return undefined;
+    if (typeof surplus !== "bigint") surplusUnread.add(i);
     const [debt, coll] = entire;
     return {
       collWei: coll,
@@ -1378,6 +1512,7 @@ export async function* liquityValuationRun(
       netDebtEusdWei: debt > gasCompensation ? debt - gasCompensation : 0n,
       spDepositEusdWei: spDeposit,
       spEthGainWei: spGain,
+      collSurplusWei: typeof surplus === "bigint" ? surplus : 0n,
     } satisfies LiquityHoldings;
   });
 
@@ -1403,25 +1538,30 @@ export async function* liquityValuationRun(
     if (h.spDepositEusdWei > 0n) longTargets.push(i);
     if (h.netDebtEusdWei > 0n) debtTargets.push(i);
   });
+  const quoteReads: ValuationRead[] = [
+    ...longTargets.map((i): ValuationRead => ({
+      address: pool,
+      abi: curveStableSwapNgAbi,
+      functionName: "get_dy",
+      args: [eusdIndex, usdcIndex, holdings[i]!.spDepositEusdWei],
+    })),
+    ...debtTargets.map((i): ValuationRead => ({
+      address: pool,
+      abi: curveStableSwapNgAbi,
+      // What it costs to buy the debt back, which is not get_dy of anything: the size is fixed on
+      // the *output* side. Marking a liability off the wrong side of the book flatters it exactly
+      // when eUSD is dear, which is when a Trove is most expensive to close.
+      functionName: "get_dx",
+      args: [usdcIndex, eusdIndex, holdings[i]!.netDebtEusdWei],
+    })),
+  ];
   let quotes: unknown[] = [];
-  if (hasMarket && (longTargets.length > 0 || debtTargets.length > 0)) {
-    quotes = yield [
-      ...longTargets.map((i): ValuationRead => ({
-        address: pool,
-        abi: curveStableSwapNgAbi,
-        functionName: "get_dy",
-        args: [eusdIndex, usdcIndex, holdings[i]!.spDepositEusdWei],
-      })),
-      ...debtTargets.map((i): ValuationRead => ({
-        address: pool,
-        abi: curveStableSwapNgAbi,
-        // What it costs to buy the debt back, which is not get_dy of anything: the size is fixed on
-        // the *output* side. Marking a liability off the wrong side of the book flatters it exactly
-        // when eUSD is dear, which is when a Trove is most expensive to close.
-        functionName: "get_dx",
-        args: [usdcIndex, eusdIndex, holdings[i]!.netDebtEusdWei],
-      })),
-    ];
+  if (hasMarket && quoteReads.length > 0) {
+    quotes = yield quoteReads;
+    // Rules §4.1: both own-size quotes are market-derived prices. At a scoring boundary each is the
+    // median of the same quote (the boundary's sizes) over the window; blocks that did not quote
+    // are dropped. The mid above already comes medianed through ctx.stablePrices().
+    quotes = medianQuotes(quotes, await readAcrossWindow(ctx, quoteReads));
   }
   const longExitByIndex = new Map<number, number>();
   longTargets.forEach((agentIndex, k) => {
@@ -1456,6 +1596,13 @@ export async function* liquityValuationRun(
       return;
     }
     const unpriced: UnpricedHoldingDetail[] = [];
+    if (surplusUnread.has(i))
+      unpriced.push({
+        source: "liquity-coll-surplus",
+        amountRaw: "",
+        reason: "read-failed",
+        read: "CollSurplusPool.getCollateral",
+      });
     const exposure = h.spDepositEusdWei + h.netDebtEusdWei;
     if (!marketQuoted && exposure > 0n) {
       // Falling back to par is the least wrong choice -- par is the value the protocol itself
@@ -1512,7 +1659,8 @@ export const liquityAdapter: ProtocolAdapter = {
     const s = state as LiquityState | undefined;
     // The wallet's loose eUSD is not read here: it is registry spot now, swept and priced by the
     // caller (issue #27 (b)). What is left is the Trove and the Stability Pool.
-    const [entire, spDeposit, spGain, gasCompensation] = (await Promise.all([
+    const [entire, spDeposit, spGain, gasCompensation, collSurplus] =
+      (await Promise.all([
       read(
         ctx.publicClient,
         d.troveManager,
@@ -1540,7 +1688,20 @@ export const liquityAdapter: ProtocolAdapter = {
         troveManagerAbi,
         "LUSD_GAS_COMPENSATION",
       ),
-    ])) as [readonly [bigint, bigint, bigint, bigint], bigint, bigint, bigint];
+      read(
+        ctx.publicClient,
+        d.collSurplusPool,
+        collSurplusPoolAbi,
+        "getCollateral",
+        [agent],
+      ),
+    ])) as [
+      readonly [bigint, bigint, bigint, bigint],
+      bigint,
+      bigint,
+      bigint,
+      bigint,
+    ];
     const [debt, coll] = entire;
     const eusdPriceUsdc = s?.marketQuoted ? s.midPriceUsdc : 1;
     return liquityPositionValue({
@@ -1550,6 +1711,7 @@ export const liquityAdapter: ProtocolAdapter = {
         netDebtEusdWei: debt > gasCompensation ? debt - gasCompensation : 0n,
         spDepositEusdWei: spDeposit,
         spEthGainWei: spGain,
+        collSurplusWei: collSurplus,
       },
       fairPriceUsd: fairPrice,
       eusdPriceUsdc,
@@ -1567,6 +1729,8 @@ export const liquityAdapter: ProtocolAdapter = {
     }
     return liquityValuationRun(LIQUITY, ctx);
   },
+
+  medianSurfaces: ["liquity-own-size-quotes"],
 
   async accountedTokens(): Promise<Address[]> {
     // eUSD is swept as a registry stable and the Trove / Stability Pool legs are valued above. LQTY
