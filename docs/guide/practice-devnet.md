@@ -10,6 +10,49 @@ into it. The standings page says so permanently, and so does the manifest.
 What it is for: verifying that your agent connects, trades and survives against the real venues; and
 building a feel for the market before the competition runs.
 
+### What a good practice standing does — and does not — tell you
+
+The configuration is the competition's (rules §2.7): the same seven venues, the same basket, the same
+flow, and every kind of episode the official regimes run, every week. Doing well here means your agent
+works, and that it had an edge **in this field, in the situations this period produced**. It does not
+mean it will place the same way in the competition, for reasons no configuration can remove:
+
+| | here | in the competition |
+|---|---|---|
+| the world | one, for the whole period — inventory, positions and drawdowns carry over | reset every epoch; every agent starts from the same basket |
+| the situations | a few episodes a week in a mostly calm market; no victims, no mid-epoch pools | each epoch is one regime, drawn in equal numbers — including the ones this period cannot hold |
+| the field | whoever is practising, plus the operator's reference agents | every submission; an arbitrage shared by more agents pays each of them less |
+| where your code runs | your machine | the operator's container (2 vCPU / 4 GiB, 5 s per `decide`) |
+
+To estimate your competition result, run the public set the competition is drawn like, on your own
+machine — same regimes, same resets, same scoring:
+
+```bash
+npm run backtest -- --scenarios config/scenarios/public.yaml --agents my-roster.yaml --agent-sandbox docker
+```
+
+That removes the first two rows. The field is still your roster, not everyone's.
+
+### Standings
+
+The period posts standings, marked practice. They use the competition's deviation score (rules §4.4)
+with two changes, both forced by the world not resetting:
+
+- **One day is one epoch, and P is the day's return** — end value ÷ start value − 1 — not its USDC.
+  In the competition every agent starts each epoch from the same basket, and dividing everyone's P by
+  the same number moves no T: the two rank identically. Here the starting amounts drift apart, and on
+  USDC an agent that doubled its capital on day one would earn twice as much for the same decisions
+  on every day after. A return asks the competition's question — what did you do with what you
+  started the epoch with — of a world where that amount is no longer the same for everyone.
+- **Every day counts the same.** The competition weights later epochs up to 1.5× over a schedule
+  fixed in advance; a period's day count grows while it runs, and a linear weight over "days so far"
+  would re-weight every past day each midnight.
+
+An agent that starts a day with less than a tenth of the field's median value is not placed that day:
+a return on that little is decided by fees and rounding. Like a day you registered part-way through,
+it is left out of your score rather than counted as zero. The arithmetic is
+`core/src/scoring/practiceReturn.ts`.
+
 ```mermaid
 flowchart LR
   subgraph OP["operator"]
@@ -44,7 +87,7 @@ addresses are registered.
   "status": { "scored": false, "label": "practice", "note": "…not the official scoring…" },
   "chain":  { "rpcUrl": "…", "chainId": 42069, "blockTimeSec": 2 },
   "round":  { "epochBlocks": 900, "approxSeconds": 1800 },
-  "protocols": ["uniswap", "balancer", "curve", "lst", "liquity"],
+  "protocols": ["uniswap", "balancer", "curve", "gmx", "aave", "lst", "liquity"],
   "actions": { "uniswap": ["swap", "mintLiquidity", …], … },
   "contracts": { "priceFeed": "0x…", "uniswap": {…}, … },
   "episodes": { "kinds": [{ "type": "crash", "count": 1 }, …] }
@@ -298,8 +341,13 @@ progress, because an environment that is silent for ten minutes reads as one tha
 A period is bounded in **blocks**, not wall-clock seconds. An episode's window is placed as a
 fraction of the run's length (ADR 0009), so a run with no block count has nowhere to put one and
 fails at startup — `blocks: 0` with a week-long time limit is the shape a never-ending chain
-suggests and the one that does not start. `config/practice.yaml` states a week at a two-second
-cadence (302,400 blocks) and keeps `seconds` as a generous ceiling rather than the stop condition.
+suggests and the one that does not start. `config/practice.yaml` states six weeks at a two-second
+cadence (1,814,400 blocks) and keeps `seconds` as a generous ceiling rather than the stop condition.
+
+The seed is **not** the one in `config/practice.yaml`. The price walk, the flow and every episode
+window are pure functions of the seed, and the file is public — with its `seed: 1`, anyone can compute
+the block each crash lands on. The hosted period reads its seed from `.env.practice` (gitignored) and
+passes it as `--seed`; the unit refuses to start without one ([infra/devnet](../../infra/devnet/README.md)).
 
 ### Segments are an operator's word
 
@@ -309,9 +357,9 @@ agent — the word "segment" is in the config, the console and the directory nam
 screen. The manifest handed to participants does not contain it at all.
 
 That is the same discipline the rest of the UI follows (internal ids stay out of it), and it has one
-consequence worth stating: **segments are also the unit the standings average over**. Each scenario
-is one epoch of the deviation score (rules §4.4), so daily segments mean one epoch per day whatever
-each day's round count. Cutting the period differently changes that weighting — it does not change a
+consequence worth stating: **segments are also the unit the standings average over**. Each segment
+is one epoch of the practice score (its return, [Standings](#standings)), so daily segments mean one
+epoch per day whatever each day's round count. Cutting the period differently changes that weighting — it does not change a
 single round's return, which is placed on a fixed grid from the run's first block and is entirely
 independent of where the cuts fall.
 
