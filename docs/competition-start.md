@@ -196,14 +196,14 @@ WETH を vault（預かり用のコントラクト）に預けると（`lstDepos
 
 ETH を担保に預けて、新しく発行されるドル建てのトークン eUSD を借ります。この借入口座を **Trove** と呼びます（現実の Liquity V1 のコードを改変せずに使っています）。
 
-- **担保率（ICR = 担保の価値 ÷ 借りた eUSD）を 110% 以上に保つ必要があり**、割ると誰でも清算できます。担保の値段は参照価格です
-- **償還: 1 eUSD は、いつでも「1 ドル分の ETH」と交換できます。** 市場で eUSD が 1 ドルより安ければ、買って償還するだけで差額が利益になります（手数料は 0.5% 以上で、償還が続くと上がる）。償還で ETH を持っていかれるのは**担保率が最も低い Trove**です。借り手から見ると、担保の一部を 1 ドルで勝手に買い取られることになります（`redemption-arb` が取る側、`trove-manager` が守る側）
+- **担保率（ICR = 担保の価値 ÷ 借金の総額）を 110% 以上に保つ必要があり**、割ると誰でも清算できます。借金の総額は、受け取った eUSD に借入手数料と 200 eUSD の保証金を足したものです（2,000 eUSD 借りると約 2,210 eUSD）。担保の値段は参照価格です
+- **償還: 1 eUSD は、いつでも「1 ドル分の ETH」（参照価格で換算）と交換できます。** 市場で eUSD が 1 ドルより、償還手数料と ETH を USDC に戻す費用（合わせて 0.8% 強）以上に安ければ、買って償還した差額が利益になります。償還手数料は 0.5% 以上で、償還のたびに上がり、エポック中はほとんど下がりません。ETH を持っていかれるのは、**担保率 110% 以上の Trove のうち最も低いもの**からです（110% を割った Trove は飛ばされる）。借り手から見ると、eUSD 1 枚につき 1 ドル分の担保が同意なしに抜かれ、同じ額の借金が消えます。参照価格で見れば純資産は変わりませんが、採点は借金を eUSD の市場価格で数えるので、eUSD が割安なときに償還されると、その割安分だけ評価が下がります（`redemption-arb` が取る側、`trove-manager` が守る側）
 - **Stability Pool**: eUSD を預けておくと、清算された Trove の借金を肩代わりし、その代わりに担保の ETH を割安で受け取ります（`sp-underwriter`）
-- **Recovery Mode**: システム全体の担保率が 150% を割ると、清算の基準が 110% からその時点のシステム全体の担保率まで上がります。自分の担保率が変わらなくても、他人の動きで清算線が動きます
-- 担保は WETH ではなく ETH そのもので、ガス代と同じ財布から出ます。全部を担保に入れると、Trove を閉じる tx のガス代すら払えなくなります
+- **Recovery Mode**: システム全体の担保率（TCR）が 150% を割ると、担保率 110% 以上でも TCR を下回る Trove は、Stability Pool がその借金を全額肩代わりできる場合に限り清算されます。失うのは借金の 110% 分の担保までで、残りは後から請求できます（`rawTx` で BorrowerOperations の `claimCollateral()`）。Recovery Mode の間は借入手数料が 0 になり、Trove を閉じることも担保を引き出すこともできません。TCR は全員の Trove で決まるので、自分の担保率が変わらなくても清算線が動きます（`liquidationPriceUsd` は 110% 基準のまま）
+- Trove の中の担保は WETH ではなく ETH そのものです。アクションでは WETH の量で指定し、ランタイムが WETH を ETH に戻してから預けるので、ガス用の ETH は減りません。逆に、Trove を閉じる・担保を引き出す・償還する・Stability Pool の利益を受け取ると、**ETH で戻ってきます**。取引所で使うには WETH に戻す必要がありますが、そのアクションは無いので `rawTx` で WETH の `deposit()` を呼びます（`redemption-arb` / `sp-underwriter` と同じ）
 - 借りるときに 0.5% 以上の手数料がかかり、借金には 200 eUSD の保証金が上乗せされます（清算した人への謝礼に使われ、自分で閉じれば戻る）。最低借入額は `minNetDebtEusdWei` に出ます
 
-開始時には、運営の Trove（350 ETH / 35 万 eUSD、担保率 300%）、eUSD/USDC プール（10 万 / 10 万）、Stability Pool（12.5 万 eUSD）があります。レジーム `cdp-incident` では、運営が担保率 120% の Trove を 2 つ建ててから参照価格を下げ、同時に eUSD を売って割安にします。状態は `obs.protocols.liquity` の `trove`（`icr` / `liquidationPriceUsd` = 清算される ETH の値段）/ `marketPriceUsdc`（eUSD の市場価格）/ `redemptionEdgeBps` / `recoveryMode` で見られます。
+開始時には、運営の Trove（350 ETH / 35 万 eUSD、担保率 約 300%）、eUSD/USDC プール（10 万 / 10 万）、Stability Pool（12.5 万 eUSD）があります。レジーム `cdp-incident` では、運営が担保率 120% の Trove を 2 つ建ててから参照価格を下げ、同時に eUSD を売って割安にします。状態は `obs.protocols.liquity` の `trove`（`icr` / `liquidationPriceUsd` = 清算される ETH の値段）/ `marketPriceUsdc`（eUSD の市場価格）/ `redemptionEdgeBps`（ディスカウント − 償還手数料。ETH を USDC に戻す費用は含まない）/ `recoveryMode` で見られます。
 
 #### 採点での数え方
 

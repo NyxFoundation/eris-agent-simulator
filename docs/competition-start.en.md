@@ -251,18 +251,19 @@ hold) / `instantExitWethWei` (what selling into the pool pays right now).
 Deposit ETH as collateral and borrow newly issued eUSD, a dollar token. The borrowing account is a
 **Trove** (the real Liquity V1 code, unmodified).
 
-- **Your collateral ratio (ICR = collateral value ÷ eUSD borrowed) must stay at 110% or above**; below it, anyone can liquidate you. Collateral is priced at the reference price
-- **Redemption: 1 eUSD can always be exchanged for $1 worth of ETH.** If eUSD trades below $1, buying it and redeeming is profit (the fee is 0.5% or more and rises as redemptions continue). The ETH comes out of **the Trove with the lowest collateral ratio**; from the borrower's side, part of the collateral is bought off them at $1 without asking (`redemption-arb` takes, `trove-manager` defends)
+- **Your collateral ratio (ICR = collateral value ÷ total debt) must stay at 110% or above**; below it, anyone can liquidate you. The total debt is the eUSD you received plus the borrowing fee plus the 200 eUSD deposit (borrow 2,000 eUSD and it is about 2,210 eUSD). Collateral is priced at the reference price
+- **Redemption: 1 eUSD can always be exchanged for $1 worth of ETH (at the reference price).** If eUSD trades below $1 by more than the redemption fee plus the cost of turning the ETH back into USDC (together a little over 0.8%), buying it and redeeming is profit. The redemption fee is 0.5% or more, rises with every redemption and barely comes back down within an epoch. The ETH comes out of **the lowest-ratio Trove among those at 110% or above** (Troves below 110% are skipped). From the borrower's side, $1 of collateral is taken without asking for every eUSD redeemed, and the same amount of debt disappears. At the reference price the net worth is unchanged, but scoring counts the debt at eUSD's market price, so being redeemed while eUSD is cheap costs you exactly that discount (`redemption-arb` takes, `trove-manager` defends)
 - **Stability Pool**: deposit eUSD to absorb the debt of liquidated Troves, receiving their ETH collateral at a discount (`sp-underwriter`)
-- **Recovery Mode**: when the system-wide collateral ratio falls below 150%, the liquidation line rises from 110% to the system-wide ratio of that moment. Your line can move even when your own ratio does not
-- Collateral is ETH itself, not WETH, and comes out of the same balance as gas. Post all of it and you cannot pay the gas to close the Trove
+- **Recovery Mode**: when the system-wide collateral ratio (TCR) falls below 150%, a Trove at 110% or above but below the TCR can be liquidated, but only when the Stability Pool can absorb its whole debt. It loses collateral worth at most 110% of the debt, and the rest can be claimed afterwards (`claimCollateral()` on BorrowerOperations, through `rawTx`). During Recovery Mode the borrowing fee is 0, and you can neither close a Trove nor withdraw collateral. The TCR is set by everyone's Troves, so your line can move even when your own ratio does not (`liquidationPriceUsd` stays on the 110% basis)
+- The collateral inside a Trove is ETH itself, not WETH. Actions specify it as a WETH amount, and the runtime unwraps the WETH before posting it, so your gas ETH is untouched. The other way round, closing a Trove, withdrawing collateral, redeeming and Stability Pool gains all **pay out in ETH**. To use it on an exchange you have to wrap it back into WETH; there is no action for that, so call WETH's `deposit()` through `rawTx` (as `redemption-arb` / `sp-underwriter` do)
 - Borrowing costs a fee of 0.5% or more, and 200 eUSD is added to the debt as a deposit (it pays whoever liquidates you, and comes back if you close the Trove yourself). The minimum loan is in `minNetDebtEusdWei`
 
-At the start there is the organisers' Trove (350 ETH / 350k eUSD, a 300% ratio), the eUSD/USDC pool
+At the start there is the organisers' Trove (350 ETH / 350k eUSD, about a 300% ratio), the eUSD/USDC pool
 (100k / 100k) and the Stability Pool (125k eUSD). In `cdp-incident` the organisers open two Troves at
 120%, then lower the reference price and sell eUSD below $1 at the same time. The state is in
 `obs.protocols.liquity`: `trove` (`icr` / `liquidationPriceUsd` = the ETH price at which it gets
-liquidated) / `marketPriceUsdc` (eUSD's market price) / `redemptionEdgeBps` / `recoveryMode`.
+liquidated) / `marketPriceUsdc` (eUSD's market price) / `redemptionEdgeBps` (the discount minus the
+redemption fee; the cost of turning ETH back into USDC is not included) / `recoveryMode`.
 
 #### How holdings are valued in scoring
 
