@@ -313,6 +313,71 @@ test("curve: an LP token is its share of the boundary block's reserves", async (
   assert.ok(Math.abs(values[AGENT.id].valueUsdc - 2_500) < 1e-9);
 });
 
+const STEADY_POOL = { weth: 100n * WAD, usdc: 50_000n * USDC_UNIT, supply: 1_000n * WAD };
+// Somebody bought 10 WETH out of the pool in the boundary block: at the reference price the share
+// is worth less (1% of 90 WETH + 55,000 USDC = 2,350 against 2,500).
+const PUSHED_POOL = { weth: 90n * WAD, usdc: 55_000n * USDC_UNIT, supply: 1_000n * WAD };
+// A proportional join doubles reserves and supply alike: the share price does not move.
+const JOINED_POOL = { weth: 200n * WAD, usdc: 100_000n * USDC_UNIT, supply: 2_000n * WAD };
+
+test("balancer: at a boundary a BPT is marked at the median share price, not a one-block push", async () => {
+  const asked: number[] = [];
+  const { values } = await driveValuation(
+    balancerAdapter.valueAtBlock!(
+      ctx(windowed(WINDOW, () => balancerAnswer(STEADY_POOL), asked)),
+    ),
+    balancerAnswer(PUSHED_POOL),
+  );
+  assert.ok(Math.abs(values[AGENT.id].valueUsdc - 2_500) < 1e-9);
+  assert.deepEqual(asked, WINDOW);
+});
+
+test("balancer: the median is over the share price, so joins and exits in the window do not move it", async () => {
+  const { values } = await driveValuation(
+    balancerAdapter.valueAtBlock!(
+      ctx(windowed(WINDOW, (b) => balancerAnswer(b < 108 ? JOINED_POOL : STEADY_POOL))),
+    ),
+    balancerAnswer(STEADY_POOL),
+  );
+  assert.ok(Math.abs(values[AGENT.id].valueUsdc - 2_500) < 1e-9);
+});
+
+test("curve: at a boundary an LP token is marked at the median share price", async () => {
+  const { values } = await driveValuation(
+    curveAdapter.valueAtBlock!(
+      ctx({
+        publicClient: curveClient,
+        ...windowed(WINDOW, () => curveAnswer(STEADY_POOL)),
+      }),
+    ),
+    curveAnswer(PUSHED_POOL),
+  );
+  assert.ok(Math.abs(values[AGENT.id].valueUsdc - 2_500) < 1e-9);
+});
+
+test("pool shares: a held move is the price, and an unreadable window block is dropped", async () => {
+  // Three of five blocks at the pushed composition: that is the market now.
+  const held = await driveValuation(
+    balancerAdapter.valueAtBlock!(
+      ctx(windowed(WINDOW, (b) => balancerAnswer(b >= 108 ? PUSHED_POOL : STEADY_POOL))),
+    ),
+    balancerAnswer(PUSHED_POOL),
+  );
+  assert.ok(Math.abs(held.values[AGENT.id].valueUsdc - 2_350) < 1e-9);
+  // Two window blocks unreadable, two steady: the median of {pushed, steady, steady} is steady.
+  const gappy = await driveValuation(
+    balancerAdapter.valueAtBlock!(
+      ctx(
+        windowed(WINDOW, (b) =>
+          b < 108 ? () => undefined : balancerAnswer(STEADY_POOL),
+        ),
+      ),
+    ),
+    balancerAnswer(PUSHED_POOL),
+  );
+  assert.ok(Math.abs(gappy.values[AGENT.id].valueUsdc - 2_500) < 1e-9);
+});
+
 // ---------------------------------------------------------------------------
 // LST: the realizable mark is the better of the queue and a pool sale at the holder's own size
 // ---------------------------------------------------------------------------
@@ -425,7 +490,10 @@ test("the window: every boundary gets one, stables or not", async () => {
     // venues re-read their own market-derived prices at.
     assert.equal(await median.at(BOUNDARY), undefined);
     assert.deepEqual(median.window(BOUNDARY), [106, 107, 108, 109]);
-    assert.deepEqual(median.summary()?.surfaces, ["uniswap-lp"]);
+    assert.deepEqual(median.summary()?.surfaces, [
+      "uniswap-lp",
+      "balancer-bpt",
+    ]);
     assert.equal(median.summary()?.boundaries, 1);
   } finally {
     setEnabledProtocolIds([]);
@@ -443,7 +511,11 @@ test("the window: the stables' probe is medianed alongside the venue surfaces", 
     });
     const prices = await median.at(BOUNDARY);
     assert.ok(prices);
-    assert.deepEqual(median.summary()?.surfaces, ["stables", "uniswap-lp"]);
+    assert.deepEqual(median.summary()?.surfaces, [
+      "stables",
+      "uniswap-lp",
+      "curve-lp",
+    ]);
   } finally {
     setEnabledProtocolIds([]);
   }
