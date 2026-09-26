@@ -408,25 +408,85 @@ test("lst: with the queue out of reach, the mark is the boundary block's pool sa
   );
 });
 
-test("aave: LST collateral the queue cannot free is haircut to the boundary block's pool sale", async () => {
-  const answer = (read: ValuationRead): unknown => {
+function aaveAnswer(saleWei: bigint) {
+  return (read: ValuationRead): unknown => {
     // 30,000 USD of collateral (the aggregator's par), no debt.
     if (is(read, "getUserAccountData"))
       return [30_000n * 10n ** 8n, 0n, 0n, 0n, 0n, 0n];
     if (is(read, "balanceOf", LST!.aaveAToken)) return LST_SHARES;
-    if (is(read, "get_dy")) return (LST_SHARES * 98n) / 100n;
+    if (is(read, "get_dy")) return saleWei;
     if (is(read, "convertToAssets")) return LST_SHARES;
     if (is(read, "estimateDelayBlocks")) return 1_000n;
     return undefined;
   };
+}
+
+test("aave: LST collateral the queue cannot free is haircut to the boundary block's pool sale", async () => {
   const { values } = await driveValuation(
     aaveAdapter.valueAtBlock!(ctx()),
-    answer,
+    aaveAnswer((LST_SHARES * 98n) / 100n),
   );
   const v = values[AGENT.id];
   assert.equal(v.valueUsdc, 30_000);
   // 0.2 WETH of par the exit cannot recover, at the WETH fair.
   assert.ok(Math.abs(v.liquidatableValueUsdc - (30_000 - 0.2 * FAIR)) < 1e-6);
+});
+
+// A thin LST/WETH pool somebody leaned on in the boundary block: 99% of par there, 96% before.
+const SALE_STEADY = (LST_SHARES * 96n) / 100n;
+const SALE_PUSHED = (LST_SHARES * 99n) / 100n;
+
+test("lst: at a boundary the pool sale is the median of the same-size quote over the window", async () => {
+  const asked: ValuationRead[] = [];
+  const { values } = await driveValuation(
+    lstValuationRun(
+      LST!,
+      ctx({
+        medianWindow: WINDOW,
+        readAt: async (reads) => {
+          asked.push(...reads);
+          return reads.map(lstAnswer(SALE_STEADY));
+        },
+      }),
+    ),
+    lstAnswer(SALE_PUSHED),
+  );
+  assert.ok(
+    Math.abs(values[AGENT.id].liquidatableValueUsdc - 9.6 * FAIR) < 1e-6,
+  );
+  // Re-read at the boundary's size and nothing else: the queue is the vault's, not a market's.
+  assert.equal(asked.length, WINDOW.length);
+  for (const read of asked) {
+    assert.equal(read.functionName, "get_dy");
+    assert.equal(read.args?.[2], LST_SHARES);
+  }
+});
+
+test("lst: a window where only the boundary quoted keeps the boundary's quote", async () => {
+  const { values } = await driveValuation(
+    lstValuationRun(
+      LST!,
+      ctx(windowed(WINDOW, () => () => undefined)),
+    ),
+    lstAnswer(SALE_PUSHED),
+  );
+  assert.ok(
+    Math.abs(values[AGENT.id].liquidatableValueUsdc - 9.9 * FAIR) < 1e-6,
+  );
+});
+
+test("aave: the LST collateral haircut uses the median pool sale", async () => {
+  const { values } = await driveValuation(
+    aaveAdapter.valueAtBlock!(
+      ctx(windowed(WINDOW, () => aaveAnswer(SALE_STEADY))),
+    ),
+    aaveAnswer(SALE_PUSHED),
+  );
+  // 0.4 WETH short of par at the median, not the 0.1 of the pushed block.
+  assert.ok(
+    Math.abs(values[AGENT.id].liquidatableValueUsdc - (30_000 - 0.4 * FAIR)) <
+      1e-6,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -493,6 +553,8 @@ test("the window: every boundary gets one, stables or not", async () => {
     assert.deepEqual(median.summary()?.surfaces, [
       "uniswap-lp",
       "balancer-bpt",
+      "lst-pool-sale",
+      "aave-lst-collateral",
     ]);
     assert.equal(median.summary()?.boundaries, 1);
   } finally {
