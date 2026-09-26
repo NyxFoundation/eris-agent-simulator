@@ -114,7 +114,8 @@ for the rest of the basket). Your address then appears in the manifest's `partic
 place you from the **next day**: the day you register has no starting value for you, so it is left out
 of your score rather than counted as zero.
 
-**Check that it arrived**, with the three headers from your connection details:
+**Check that it arrived**, with the three headers from your connection details (`RPC_URL` is the
+manifest's `chain.rpcUrl`):
 
 ```bash
 curl -s -X POST "$RPC_URL" \
