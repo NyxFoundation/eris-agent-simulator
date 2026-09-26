@@ -160,24 +160,28 @@ them.
 
 An ordinary exchange matches orders: "buy at this price", "sell at that price". An AMM has no order
 book. Instead a **pool** holds two tokens (say WETH and USDC); you put one in and the other comes
-out, and how much comes out is a formula of the ratio between the two balances.
+out, and how much comes out is set by a formula of the balances in the pool (their ratio is the
+price, their size the depth).
 
 - **The bigger the trade, the worse the price.** Selling WETH adds WETH to the pool and removes USDC, so each WETH sold is cheaper than the last (price impact, or slippage). The WETH/USDC pools start with about 1,000 WETH + 3M USDC; selling 1 WETH on Uniswap or Balancer fills, before fees, about 0.1% below the pool's price before the trade and leaves the pool's price about 0.2% lower. For 10 WETH it is about 1% and 2%. This thickness of the pool is its **depth**
-- **Every trade pays a fee.** The fee stays in the pool and belongs to whoever provided the liquidity (the **LP**)
-- **Pool prices do not track the reference price by themselves.** The environment's order flow (background buying and selling) pushes pools around, and only traders pull them back. WETH has three exchange prices and a reference price at once, and **taking the gap between them when it is larger than the fees is arbitrage (arb)**. When a trade buys on one exchange and sells on another, each half is a **leg**
-- **You can provide liquidity too** (Uniswap only, `mintLiquidity`). You earn fees, but when the price moves your holdings drift towards the losing side
+- **Every trade pays a fee.** The fee pays whoever provided the liquidity (the **LP**), and at the start every LP is the environment. On Balancer the fee is added to the pool's balances. On Uniswap V3 it is not; it accrues to the positions whose price range contained the price when the trade happened (claimed with `collectFees`). On Curve half of the profit earned from fees goes to the pool's administrator (admin)
+- **Pool prices are not pinned to the reference price.** The environment's order flow (background buying and selling) has both random-direction trades (which push pools off the reference price) and trades that gradually pull back the part of a gap beyond about 0.3% (capped in size). WETH has three exchange prices and a reference price at once, and **taking the gap between them when it is larger than the fees is arbitrage (arb)**; the gap the environment does not close is what it lives on. When a trade buys on one exchange and sells on another, each half is a **leg**
+- **You can provide liquidity too.** The dedicated actions are Uniswap's `mintLiquidity` / `removeLiquidity` / `collectFees`. On Balancer and Curve's WETH/USDC and WBTC/USDC pools you can become an LP by depositing into the pool directly through `rawTx`, and the LP tokens you receive are valued in scoring as well. You earn fees, but when the price moves your holdings drift towards the losing side
 
 | | Uniswap V3 | Balancer v2 | Curve (twocrypto-ng) |
 |---|---|---|---|
-| Fee | 0.3% | 0.3% | 0.26–0.45% (higher when prices are volatile) |
+| Fee | 0.3% | 0.3% | 0.26–0.45% (higher the more lopsided the pool's holdings; a large trade tilts them itself, so it pays more) |
 | WETH/USDC depth at the start | about 1,000 WETH + 3M USDC | same | same |
 | WBTC/USDC depth at the start | about 50 WBTC + 3M USDC | same | same |
-| Shape of the formula | LPs choose a price range (concentrated liquidity); the starting liquidity covers every range evenly | 50/50 weighted pool, the same shape as Uniswap at the start | Pulls liquidity towards the current price, so the same depth gives less price impact |
+| Shape of the formula | LPs choose a price range (concentrated liquidity); the starting liquidity covers every range evenly | 50/50 weighted pool, the same shape as Uniswap at the start | Pulls liquidity towards the pool's internal reference price (`price_scale`). While the price is near it, the same depth gives much less price impact; away from it the effect fades and the fee rises. The reference follows the market with a lag |
 
-Curve also has three pools for assets that trade at close to 1:1 (stableswap). Their formula barely
-moves near 1:1 and moves sharply once the balance tilts far: USDC/DAI (100k / 100k), eUSD/USDC
-(100k / 100k) and ERLST/WETH (about 100 / 100 WETH). These pools set the market prices of DAI, eUSD
-and ERLST (the actions are `stableSwap`, `liquitySwapEusd` and `lstSwap` respectively).
+Curve also has three pools for assets that trade at close to parity (stableswap). Their formula
+barely moves near the reference exchange rate and moves sharply once the balance tilts far: USDC/DAI
+(100k / 100k), eUSD/USDC (100k / 100k) and ERLST/WETH (100 WETH / about 100 ERLST). The reference
+rate is 1:1 between the dollar stablecoins, and for ERLST/WETH it is the redemption rate (how much
+WETH one ERLST is worth; see the LST below). These pools set the market prices of DAI, eUSD and
+ERLST (the actions are `stableSwap`, `liquitySwapEusd` (or `stableSwap` with `stable: "EUSD"`) and
+`lstSwap` respectively).
 
 #### Aave v3 — a lender that takes collateral
 
