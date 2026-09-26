@@ -313,7 +313,7 @@ function median(values: readonly number[]): number {
 // the blocks before the boundary means a one-block push has to be held for most of the window to
 // count, which turns a spread-cost round trip into a position.
 //
-// Applied only at epoch boundaries. The rest of the value series keeps the live mark, because it is
+// Applied only at interval boundaries. The rest of the value series keeps the live mark, because it is
 // an equity curve, not a score.
 //
 // Samples are index-aligned: every sample comes from stableProbeReads(markets) over the same market

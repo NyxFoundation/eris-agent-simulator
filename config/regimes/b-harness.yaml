@@ -7,10 +7,10 @@
 # properties of a *series*, not of a run's endpoints.
 #
 #   lambda = 0.25       is it a hurdle that real strategies clear, or one nobody clears?
-#   epoch  = 4h         does an epoch contain enough activity for its return to mean anything?
+#   interval = 4h       does an interval contain enough activity for its return to mean anything?
 #   1 ETH of gas        does a week of trading fit inside the reserve?
 #
-# Shape: 42 epochs of 12 blocks = 504 blocks. The epoch length is blocks rather than hours because an
+# Shape: 42 intervals of 12 blocks = 504 blocks. The interval length is blocks rather than hours because an
 # anvil run has no simulated clock (ADR 0019 §8); 12 leaves room for G7's 5-block median window and
 # keeps the run inside anvil's ~1,050 block history retention, so the existing post-run
 # reconstruction still works.
@@ -30,10 +30,10 @@
 # the scenario rather than of this file.
 
 run:
-  blocks: 504 # 42 epochs x 12 blocks
+  blocks: 504 # 42 intervals x 12 blocks
   seconds: 2400 # a stress run ends by block count anyway (ADR 0009); this is only a backstop
   blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
-  epochBlocks: 12 # ADR 0019 §8
+  intervalBlocks: 12 # ADR 0019 §8
   markMedianBlocks: 5 # G7's window, ending at the boundary
   # curve is not optional: it owns the stableSwap action, which is the only way to trade the pair.
   protocols: [uniswap, balancer, curve, aave]
@@ -66,8 +66,8 @@ stress:
   events:
     # Same calibration as config/regimes/depeg.yaml: the pool is 100k/100k at A=100, where selling
     # ~40% of the seeded DAI depth is ~114bps below par, 50% is ~175bps and 60% is ~282bps. The
-    # windows are spread over the run so that the epochs between them are quiet -- a week where every
-    # epoch is an opportunity would not tell us whether lambda separates anyone.
+    # windows are spread over the run so that the intervals between them are quiet -- a week where
+    # every interval is an opportunity would not tell us whether lambda separates anyone.
     - {
         type: depeg,
         stable: DAI,

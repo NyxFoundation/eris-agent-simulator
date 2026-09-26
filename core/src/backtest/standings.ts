@@ -19,8 +19,8 @@ export type PnlSource = "epoch-boundaries" | "endpoints";
 
 export type AgentScore = {
   id: string;
-  // P(a, s): the rules' V_K − V_0 read off the epoch boundaries (summary.json `pnlUsdc`) or, for a
-  // run recorded before that field existed, netPnlUsdc (both ends at the final marks, which differs
+  // P(a, s): the rules' V_K − V_0 read off the epoch's two boundaries (summary.json `pnlUsdc`) or,
+  // for a run recorded before that field existed, netPnlUsdc (both ends at the final marks, which differs
   // by a per-run constant when everyone starts with the same basket). `pnlSource` says which.
   // Absent when the agent was not placed in the epoch: it is then not in the population.
   pnlUsdc?: number;

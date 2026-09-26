@@ -102,7 +102,7 @@ systemctl --user stop ascon-devnet     # ends the period
 ```
 
 The coordinator installs no `SIGTERM` handler, so this is abrupt. The append-only artifacts
-(`events.jsonl`, `blocks.csv`, `epochs.jsonl`, `agents/*.jsonl`) are all on disk and intact;
+(`events.jsonl`, `blocks.csv`, `intervals.jsonl`, `agents/*.jsonl`) are all on disk and intact;
 `summary.json` is written at the end of a run and will not exist. The segment is still readable —
 the dashboard reads the jsonl — but do not expect a closed book.
 
@@ -242,7 +242,7 @@ silent.
 ## Running the scenario matrix
 
 The matrix is what ADR 0017 calls an epoch: for each `(regime, seed)` in the plan the coordinator
-snapshots the chain, runs the scenario, reconstructs the agents' value at the epoch boundaries, and
+snapshots the chain, runs the scenario, reconstructs the agents' value at the interval boundaries, and
 reverts. `resetUnit: "scenario"` in `matrix.json` names the unit; the proof it actually happened is
 that **block numbers go backwards between scenarios** — measured 2026-09-17, scenario 1 ended at
 block 1222 and scenario 2 started at 1163. Nothing but a revert does that.
@@ -295,7 +295,7 @@ image:
 ### Reading progress
 
 `blocks.csv` is written when the run ends, so it sits at one header line for the whole run and is
-**not** a progress indicator. What moves: `events.jsonl`, `epochs.jsonl`, and the chain's own block
+**not** a progress indicator. What moves: `events.jsonl`, `intervals.jsonl`, and the chain's own block
 number (`eth_blockNumber` against the backtest's port, read twice a few seconds apart).
 
 A run proceeds at `blockTimeSec`, not as fast as the box can mine: 360 blocks took **718 s** twice,

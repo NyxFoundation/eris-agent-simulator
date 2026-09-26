@@ -74,12 +74,14 @@ once rather than twice. The unit it names is `ascon-devnet.service` (`infra/devn
 ## eris-exporter (domain + chain metrics)
 
 `exporter/exporter.py` reads the newest `runs/<id>/` (events.jsonl for flow tx + crashes + round
-lag; each `agents/<id>.jsonl` for that agent's submissions; epochs.jsonl) and probes the chain RPC,
+lag; each `agents/<id>.jsonl` for that agent's submissions; intervals.jsonl, or epochs.jsonl from a
+coordinator started before issue #140) and probes the chain RPC,
 writing a Prometheus textfile that node-exporter serves (delivering via a shared file avoids scraping
 this host-networked process across the host firewall; host networking is only needed so it can reach
 anvil on 127.0.0.1). Every metric carries an `env="live|test"` label (`ASCON_ENV`). Metrics:
 - domain: `ascon_tx_total`, `ascon_flow_tx_total`, `ascon_agent_tx_total`, `ascon_unique_users`,
-  `ascon_agents_active`, `ascon_agent_crashes_total`, `ascon_round_lag`, `ascon_epoch_index`
+  `ascon_agents_active`, `ascon_agent_crashes_total`, `ascon_round_lag`, `ascon_interval_index`
+  (also exported as `ascon_epoch_index`, its name before issue #140, until the results are published)
 - chain (erigon-style, straight off `eth_getBlockByNumber` / `eth_gasPrice`): `ascon_chain_up`,
   `ascon_chain_block_number`, `ascon_block_gas_used`, `ascon_block_gas_limit`,
   `ascon_block_fullness_ratio`, `ascon_block_tx_count`, `ascon_block_base_fee_gwei`,
@@ -103,7 +105,7 @@ caller's Access `common_name`). See `infra/rpc-gateway/README.md`; load-test it 
   are not agents. The fleet panels had the same collision and were charting the explorer as the
   agent fleet. `run-agent.sh` and the sweepers already matched on the label; the dashboards and the
   rule did not.
-- Per-epoch stats (blocks/tx/tx-per-block/standings) are intentionally NOT pushed to Slack (too
+- Per-interval stats (blocks/tx/tx-per-block/standings) are intentionally NOT pushed to Slack (too
   verbose); they live in the Grafana dashboard / Loki. Slack carries only spikes and faults.
 - Thresholds are set for a 16-core / 187 GB host; adjust the rule params in
   `grafana/provisioning/alerting/rules.yml` for other hardware.

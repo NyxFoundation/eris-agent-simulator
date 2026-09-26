@@ -186,17 +186,17 @@ export type SimConfig = {
   // events.jsonl. The first and last blocks are always read. 1 (default) = every block.
   // Used to cut reconstruction cost when replaying a whole scenario matrix (ADR 0017 §3).
   scoreEvery: number;
-  // Length of a round in blocks (ERIS_EPOCH_BLOCKS; 0 disables the series): the rules'
-  // evaluation interval (§0.1), recorded for interim progress. Not the scoring unit -- the score
-  // takes P from the series' first and last boundary (ADR 0023) -- although ADR 0019, which named
-  // it, scored a log-return series sampled at these boundaries. On the live chain a
-  // boundary is a real-time 4h mark, but an anvil run has no simulated clock, so the calibration
-  // harness counts blocks: 12/epoch, which leaves room for G7's per-boundary median window and keeps a
-  // 42-epoch week (504 blocks) inside anvil's ~1,050 block history retention (ADR 0019 §8).
-  epochBlocks: number;
-  // Note: `run.epochSeconds` has no field of its own. It is consumed where it is resolved, by
-  // resolveEpochBlocks below, and reaching this object as a second unread copy only invited a reader
-  // to use the wrong one.
+  // Length of an evaluation interval in blocks (`run.intervalBlocks` / ERIS_INTERVAL_BLOCKS; 0
+  // disables the series): the rules' §0.1, recorded for interim progress. Not the scoring unit --
+  // the score takes P from the series' first and last boundary (ADR 0023) -- although ADR 0019,
+  // which introduced it as `epochBlocks`, scored a log-return series sampled at these boundaries
+  // (the name changed in issue #140). An anvil run has no simulated clock, so the calibration
+  // harness counts blocks: 12/interval, which leaves room for G7's per-boundary median window and
+  // keeps a 42-interval week (504 blocks) inside anvil's ~1,050 block history retention (ADR 0019 §8).
+  intervalBlocks: number;
+  // Note: `run.intervalSeconds` has no field of its own. It is consumed where it is resolved, by
+  // resolveIntervalBlocks below, and reaching this object as a second unread copy only invited a
+  // reader to use the wrong one.
   //
   // Wall-clock hours per output segment (ERIS_SEGMENT_HOURS; 0 = one directory for the whole run,
   // which is every run today). ADR 0021 §6: the chain stays continuous and only the artifacts are
@@ -206,10 +206,10 @@ export type SimConfig = {
   // Display name for the segmented period ("practice week 1"). Falls back to the run id.
   segmentName: string;
   // G7 window (ERIS_MARK_MEDIAN_BLOCKS): how many blocks, the boundary included, the manipulable
-  // marks are medianed over when an epoch boundary is valued. <= 1 marks boundaries live.
-  // 5 of a 12-block epoch is provisional -- the ADR leaves N to be set against the epoch length once
-  // the harness has run (ADR 0019 "not yet decided"). Longer resists a held push better but drags
-  // legitimate late-epoch moves into the mark.
+  // marks are medianed over when an interval boundary is valued. <= 1 marks boundaries live.
+  // 5 of a 12-block interval is provisional -- the ADR leaves N to be set against the interval
+  // length once the harness has run (ADR 0019 "not yet decided"). Longer resists a held push better
+  // but drags legitimate late-interval moves into the mark.
   markMedianBlocks: number;
   // Block gas limit the coordinator applies once setup is done and before interval mining starts
   // (ERIS_BLOCK_GAS_LIMIT; the rules publish 30,000,000 in §2.6). Setup runs at whatever the node
@@ -461,7 +461,7 @@ export function loadConfig(env = process.env): SimConfig {
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
-    epochBlocks: resolveEpochBlocks(env, blockTimeSec),
+    intervalBlocks: resolveIntervalBlocks(env, blockTimeSec),
     segmentHours: Math.max(0, floatEnv(env.ERIS_SEGMENT_HOURS, 0)),
     segmentName: env.ERIS_SEGMENT_NAME ?? "",
     markMedianBlocks: Math.max(0, intEnv(env.ERIS_MARK_MEDIAN_BLOCKS, 5)),
@@ -633,34 +633,63 @@ export function loadConfig(env = process.env): SimConfig {
   };
 }
 
-// Blocks per round (evaluation interval, rules §0.1). Stated in real time when `run.epochSeconds`
-// is set (ADR 0021 §3), in blocks otherwise -- and refusing to accept both, because two answers to
-// "how long is a round" is exactly the ambiguity the axis was introduced to remove.
+// Blocks per evaluation interval (rules §0.1). Stated in real time when `run.intervalSeconds` is
+// set (ADR 0021 §3), in blocks otherwise -- and refusing to accept both, because two answers to "how
+// long is an interval" is exactly the ambiguity the axis was introduced to remove.
 //
-// ADR 0021 §3 settles the *unit*: a round on a chain that runs for a week is 30 minutes to an hour,
-// so that standings move several times a day without the series growing far past what the metric has
-// been calibrated on. Blocks are then whatever that comes to at this chain's cadence, which is the
-// right dependency direction -- an operator who changes the block time should not silently change
-// how long a round is. The block count it resolves to, and the lambda that goes with it, are the
-// pieces ADR 0021 leaves open and #56 decides.
-function resolveEpochBlocks(
+// ADR 0021 §3 settles the *unit*: an interval on a chain that runs for a week is 30 minutes to an
+// hour, so that standings move several times a day. Blocks are then whatever that comes to at this
+// chain's cadence, which is the right dependency direction -- an operator who changes the block time
+// should not silently change how long an interval is.
+//
+// `run.epochBlocks` / `run.epochSeconds` are the names from before issue #140 and are still read
+// (runConfig.ts warns), because a coordinator that is running reads its config file on the next
+// restart and the practice period's file said `epochSeconds`. One length under two names is the same
+// ambiguity as seconds beside blocks, so the old and the new name of one key cannot both be set.
+function resolveIntervalBlocks(
   env: NodeJS.ProcessEnv,
   blockTimeSec: number,
 ): number {
-  const seconds = Math.max(0, intEnv(env.ERIS_EPOCH_SECONDS, 0));
-  const blocks = Math.max(0, intEnv(env.ERIS_EPOCH_BLOCKS, 12));
+  const set = (name: string) => env[name] !== undefined && env[name] !== "";
+  for (const [current, legacy] of [
+    ["intervalBlocks", "epochBlocks"],
+    ["intervalSeconds", "epochSeconds"],
+  ] as const) {
+    if (set(INTERVAL_ENV[current]) && set(INTERVAL_ENV[legacy]))
+      throw new Error(
+        `run.${current} and run.${legacy} both set. run.${legacy} is the old name of ` +
+          `run.${current} (issue #140): keep run.${current} and delete the other`,
+      );
+  }
+  const secondsName = set(INTERVAL_ENV.intervalSeconds)
+    ? "intervalSeconds"
+    : "epochSeconds";
+  const blocksName = set(INTERVAL_ENV.intervalBlocks)
+    ? "intervalBlocks"
+    : "epochBlocks";
+  const seconds = Math.max(0, intEnv(env[INTERVAL_ENV[secondsName]], 0));
+  const blocks = Math.max(0, intEnv(env[INTERVAL_ENV[blocksName]], 12));
   if (seconds === 0) return blocks;
-  if (env.ERIS_EPOCH_BLOCKS !== undefined && env.ERIS_EPOCH_BLOCKS !== "")
+  if (set(INTERVAL_ENV[blocksName]))
     throw new Error(
-      "run.epochSeconds and run.epochBlocks both set. A round has one length: state it in seconds " +
-        "(which converts at run.blockTimeSec) or in blocks, not both (ADR 0021 §3)",
+      `run.${secondsName} and run.${blocksName} both set. An interval has one length: state it in ` +
+        "seconds (which converts at run.blockTimeSec) or in blocks, not both (ADR 0021 §3)",
     );
   if (!(blockTimeSec > 0))
     throw new Error(
-      "run.epochSeconds needs a positive run.blockTimeSec to convert into blocks",
+      `run.${secondsName} needs a positive run.blockTimeSec to convert into blocks`,
     );
   return Math.max(1, Math.round(seconds / blockTimeSec));
 }
+
+// The env names the interval length is read from, under its name and under the one it had before
+// issue #140 (runConfig.ts maps `run.<key>` onto these).
+export const INTERVAL_ENV = {
+  intervalBlocks: "ERIS_INTERVAL_BLOCKS",
+  intervalSeconds: "ERIS_INTERVAL_SECONDS",
+  epochBlocks: "ERIS_EPOCH_BLOCKS",
+  epochSeconds: "ERIS_EPOCH_SECONDS",
+} as const;
 
 function parseEnabledProtocols(value: string | undefined): ProtocolId[] {
   if (!value || value.trim() === "") return [...ALL_PROTOCOLS];

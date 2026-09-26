@@ -955,7 +955,7 @@ export async function grantErc20(
 // (flow bots, the whale, admin top-ups that pass ethWei=0 and pay for the grant out of this buffer):
 // running those dry silently removes market flow, so they get slack.
 //
-// Scored wallets must NOT take it. ADR 0019 §6: the epoch series is live-marked, so every wei of ETH
+// Scored wallets must NOT take it. ADR 0019 §6: the interval series is live-marked, so every wei of ETH
 // an agent did not ask for is unchosen β in its own std term. Under the endowment that ADR proposes
 // (1 ETH + 100k USDC) the buffer alone would be 5x the intended gas reserve -- 15.2% of the portfolio
 // in ETH instead of 2.9%. The coordinator therefore passes `gasBufferWei: 0n` for agent wallets, which

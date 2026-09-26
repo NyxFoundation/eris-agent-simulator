@@ -125,7 +125,7 @@ function manifestFixture() {
   const config = {
     ...loadConfig({
       ENABLED_PROTOCOLS: "uniswap",
-      ERIS_EPOCH_BLOCKS: "12",
+      ERIS_INTERVAL_BLOCKS: "12",
       ERIS_BLOCK_TIME_SEC: "2",
     }),
     stressEvents: parseStressEvents(
@@ -182,6 +182,8 @@ test("the manifest publishes what a self-hosted agent needs to connect", () => {
     // Issue #40: creating a market is a Uniswap action because it goes through that factory.
     "createPool",
   ]);
+  assert.equal(m.round.intervalBlocks, 12);
+  // Issue #140: a runtime that read the old key still finds it, with the same number.
   assert.equal(m.round.epochBlocks, 12);
   assert.equal(m.round.approxSeconds, 24);
   assert.equal(m.participants[0].external, true);

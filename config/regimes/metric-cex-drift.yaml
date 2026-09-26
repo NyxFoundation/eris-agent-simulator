@@ -2,7 +2,7 @@
 #
 # Same market conditions, ADR 0019 §6 funding (1 ETH gas reserve + 100k USDC, economicGas), and
 # no base inventory at all. The official regime hands out a native ETH reserve plus a WETH/WBTC
-# basket: netPnlUsdc nets those out (both ends are priced at the final price) but an epoch series
+# basket: netPnlUsdc nets those out (both ends are priced at the final price) but an interval series
 # marks them live, so every agent's std_e would be the market's volatility and M9's lambda term
 # would measure the market rather than the agent. Used only to compare M4 / M9 / M27 in scenario
 # mode (ADR 0020 §4); the competition's own regimes are the files this was generated from.
@@ -24,7 +24,7 @@ run:
   economicGas: true
   localDeploy: true
   reportDir: ./runs
-  epochBlocks: 12
+  intervalBlocks: 12
   markMedianBlocks: 5
 market:
   volatility: 0.004

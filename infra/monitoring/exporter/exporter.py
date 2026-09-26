@@ -2,7 +2,7 @@
 """ASCON domain exporter -> Prometheus. Turns the run's files + the chain RPC into metrics so the
 same Grafana/alerting stack that handles CPU/memory also handles ASCON-specific + chain signals:
   ascon_tx_total, ascon_unique_users, ascon_agents_active, ascon_agent_crashes_total,
-  ascon_round_lag, ascon_epoch_index, ascon_chain_up, ascon_chain_block_number,
+  ascon_round_lag, ascon_interval_index (ascon_epoch_index, its name before issue #140), ascon_chain_up, ascon_chain_block_number,
   and erigon-style per-block: ascon_block_gas_used/limit/fullness_ratio, ascon_block_tx_count,
   ascon_block_base_fee_gwei, ascon_gas_price_gwei, ascon_block_interval_seconds.
 Every metric carries an env="live|test" label so one dashboard can select between environments.
@@ -53,7 +53,7 @@ def chain():
 def collect():
     crashes = lag = flow_tx = agent_tx = 0
     agents = set()
-    epoch = -1
+    interval = -1
     run = latest_run()
     if run:
         # LIVE sources (blocks.csv trails). events.jsonl carries order-flow txs, crashes, round timing;
@@ -79,17 +79,23 @@ def collect():
             if n > 0:
                 agent_tx += n
                 agents.add(os.path.basename(af)[:-6])   # strip .jsonl
-        ep = os.path.join(run, "epochs.jsonl")
+        # intervals.jsonl since issue #140; a coordinator started before it still writes epochs.jsonl.
+        ep = os.path.join(run, "intervals.jsonl")
+        if not os.path.exists(ep):
+            ep = os.path.join(run, "epochs.jsonl")
         if os.path.exists(ep):
             with open(ep) as f:
                 for ln in f:
                     if ln.strip():
-                        try: epoch = json.loads(ln)["index"]
+                        try: interval = json.loads(ln)["index"]
                         except Exception: pass
     tx = flow_tx + agent_tx
     m = {"ascon_tx_total": tx, "ascon_flow_tx_total": flow_tx, "ascon_agent_tx_total": agent_tx,
          "ascon_unique_users": len(agents), "ascon_agents_active": len(agents),
-         "ascon_agent_crashes_total": crashes, "ascon_round_lag": lag, "ascon_epoch_index": epoch}
+         "ascon_agent_crashes_total": crashes, "ascon_round_lag": lag,
+         "ascon_interval_index": interval,
+         # The same number under its old name, for panels built before issue #140.
+         "ascon_epoch_index": interval}
     m.update(chain())
     return m
 
