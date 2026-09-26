@@ -29,7 +29,9 @@ the competition
     │                 regime is not announced in advance.
     │
     └ evaluation interval ×29   A 12-block slice. Used for the leaderboard's running
-                                progress. NOT used for scoring.
+                                progress. Scoring (P below) uses only the asset value at
+                                the first and the last boundary; blocks after the last
+                                boundary are not scored.
 ```
 
 > **360 / 12 / 29 are the code's current values.** Appendix A of the rules lists the blocks per
@@ -66,7 +68,8 @@ One benchmark agent that never moves its capital runs alongside. Every unit runs
 The code uses the rules' words. An **epoch** is `epoch` in the code too: one run, i.e. one
 `runs/<id>/` with one `summary.json`. An **evaluation interval** is `interval` in the code
 (`valueSeries.intervalSeries` in `summary.json`, `run.intervalBlocks` in the config, 12 blocks by
-default), and the dashboard shows it as "Interval". It is not used for scoring.
+default), and the dashboard shows it as "Interval". Scoring (P) uses only the account value at its
+first and last boundaries.
 
 The code used to call the evaluation interval an `epoch` as well (issue #140). Until the results
 are published, `summary.json` also carries the same series under its old name, `epochSeries`, and
@@ -85,16 +88,16 @@ trades on it at the same time. These are the only words the rest of this guide n
 | chain / block | A single ledger everyone shares. A page (= one block) is appended every 2 seconds, and a written page never changes. The block number is the competition's clock (360 blocks = 12 minutes) |
 | wallet | An account number (an **address**, starting with `0x`) together with the **private key** that signs transactions from it. One per agent. The runtime does the signing and sending |
 | token | An asset on the chain. Balances are entries in the ledger (table below) |
-| transaction (tx) | One instruction, such as "sell 1 WETH into this pool". You sign and send it, and **it only executes when it lands in the next block**. Someone else's transaction can land ahead of yours in between |
-| contract | A program deployed on the chain. Exchanges and lenders are contracts, and anyone can call their functions. **The rules are the code itself, not a legal agreement**: a call that does not meet the code's conditions does not execute |
-| revert | A transaction that fails a contract's condition (insufficient balance, a worse price than you allowed, …) and is undone. No assets move, but you still pay the fee |
-| gas / priority fee | The fee for having a transaction executed, paid in ETH. Here the base fee is 0; you pay only the extra you add to be executed earlier (the priority fee). **Within a block, transactions execute highest priority fee first** |
+| transaction (tx) | One instruction, such as "sell 1 WETH into this pool". You sign and send it, and **it only executes once it is included in a block** (usually the next one; when blocks are busy and your fee is low, a later one). Someone else's transaction can land ahead of yours in between |
+| contract | A program deployed on the chain. Exchanges and lenders are contracts, and anyone can call their functions. **The rules are the code itself, not a legal agreement**: a call that does not meet the code's conditions is undone partway through (a revert) |
+| revert | A transaction that fails a contract's condition (insufficient balance, a worse price than you allowed, …) and is undone. No assets move, but you still pay the fee (the gas used × your priority fee; tiny at the default 0.1 gwei). A transaction already known to fail is stopped by the runtime's simulation before sending and never reaches the chain (logged as `submit_failed`). A revert on chain is one whose conditions broke after it was sent, because of someone else's trade or a price change |
+| gas / priority fee | The fee for having a transaction executed, paid in ETH. Here the base fee is 0; you pay only the extra you add to be executed earlier (the priority fee). **Within a block, transactions execute highest priority fee first** (ties in arrival order; one wallet's transactions in nonce order). The environment's reference-price update is sent at a fee above the participants' cap, so it always comes first in the block |
 | hash | A transaction's ID (a long string starting with `0x`). Whether your transaction made it into a block is checked by this value |
 | nonce | A per-wallet sequence number for transactions. Only one transaction with a given number executes, so sending from the same key in two places makes the numbers collide. The runtime manages it |
 | mempool | Where transactions wait after being sent and before landing in a block |
 | RPC | The endpoint (a URL) for querying the chain and sending transactions to it. The runtime builds your observation for you, so you never need to call it |
-| cheatcode | An anvil-only command that writes chain state directly — balances, the clock and so on. Not available in the competition; strategy code that contains one fails the check (`npm run check:strategy`) |
-| reference price (fair price) | The environment's per-block "outside-world price" of ETH and BTC — the equivalent of a major exchange's quote. Prices on the chain's exchanges do not follow it automatically |
+| cheatcode | A special RPC command that only development nodes such as anvil have (`anvil_*` / `evm_*` / `hardhat_*`) and that writes chain state directly — balances, the clock and so on. Prohibited in the competition; strategy code that contains one fails the check (`npm run check:strategy`) |
+| reference price (fair price) | The environment's per-block "outside-world price" of ETH and BTC — the equivalent of a major exchange's quote. Prices on the chain's exchanges are not pinned to it and drift away from it (explained under the AMMs below) |
 | bps | Basis point, 0.01%. 30 bps = 0.3% |
 
 The tokens:
@@ -102,32 +105,40 @@ The tokens:
 | Token | What it is | What you start with | Decimals |
 |---|---|---|---|
 | ETH | The chain's native currency. Gas is paid in it | 100 ETH | 18 |
-| WETH | ETH in the same format as every other token. 1 WETH = 1 ETH, convertible either way at any time (wrap / unwrap). Exchanges trade this one | 8 WETH | 18 |
+| WETH | ETH in the same format as every other token. 1 WETH = 1 ETH, convertible either way at any time (wrap / unwrap; there is no dedicated action — call the WETH contract's `deposit` / `withdraw` through `rawTx`). Exchanges trade this one | 8 WETH | 18 |
 | WBTC | A token that moves with the price of BTC | 0.4 WBTC | 8 |
 | USDC | A token treated as worth exactly $1 (a stablecoin). **The scoring unit**; always counted at $1 | 25,000 USDC | 6 |
 | DAI | A stablecoin aiming for $1. Here its price is whatever its pool pays, and it can fall below $1 (regimes `depeg` / `depeg-persist`) | 0 (buy it to hold it) | 18 |
 | eUSD | The stablecoin Liquity (below) issues. Priced by its market | 0 (buy it, or borrow it from Liquity) | 18 |
-| ERLST | The receipt you get for depositing ETH into the LST (below) | 0 (deposit ETH to get it) | 18 |
+| ERLST | The receipt you get for depositing WETH into the LST (below) | 0 (deposit WETH, or buy it with `lstSwap`) | 18 |
 
 **Amounts are integers in each token's smallest unit.** The chain has no fractions, so 1 USDC is
 `1000000` (10^6) and 1 WETH is `1000000000000000000` (10^18); "Decimals" in the table is that
 exponent. Action amounts are passed as strings (`amountIn: "500000000"` is 500 USDC), and in
-observation field names a `Wei` suffix means 18 decimals and `Units` means USDC's 6. Mix them up and
-the amount is off by a factor of 10^12.
+observation field names a `Wei` suffix means 18 decimals and `Units` means USDC's 6. The exceptions:
+
+- An amount with no suffix (`amountIn`, `obs.baseBalances`, `aaveSupply`'s `amount`, GMX's `collateralAmount` and so on) is in the token's own decimals
+- A Uniswap LP position's `amountWethWei` / `tokensOwedWethWei` / `uncollectedFeesWethWei` are in WBTC's 8 decimals when the position is in the WBTC/USDC pool
+- GMX's `sizeUsd` / `sizeDeltaUsd` are dollars × 10^30 as an integer, and `acceptablePrice` is dollars × 10^(30 − the token's decimals) (10^12 for ETH, 10^22 for BTC). Other `…Usd` fields such as `pnlUsd` are plain dollars
+- Aave's `healthFactor` is scaled by 10^18 (1.0 is 10^18; with no debt it is the uint256 maximum), and `…Base` fields such as `availableBorrowsBase` are dollars with 8 decimals
+
+Mix them up and the amount is off by a factor of 10^12 between WETH and USDC, 10^2 between WBTC and
+USDC, and 10^10 between WBTC and WETH.
 
 ### The seven protocols
 
 A **protocol** is a financial service built out of contracts; the code calls it a **venue**. There
-are seven, and each is the code of a well-known real DeFi protocol deployed onto this chain (the LST
-alone was written by the organisers). They work exactly like the real ones, but the addresses and
-the money inside are separate, and nothing connects to the outside world.
+are seven, and each is the code of a well-known real DeFi protocol deployed onto this chain. The core
+contracts are the real code, unmodified (the LST alone was written by the organisers). The price
+supply (the oracles) and GMX's order execution (the keeper), however, are run by the organisers, and
+the addresses and the money inside are separate; nothing connects to the outside world.
 
 | Protocol | Real-world analogue | What you can do here | Main actions |
 |---|---|---|---|
-| Uniswap V3 / Balancer v2 / Curve | An exchange that prices itself (AMM) | Swap WETH and WBTC against USDC; provide liquidity | `swap` / `balancerSwap` / `curveSwap` / `stableSwap` / `mintLiquidity` and others |
-| Aave v3 | A lender that takes collateral | Deposit, borrow, liquidate other people's loans | `aaveSupply` / `aaveWithdraw` / `aaveBorrow` / `aaveRepay` |
+| Uniswap V3 / Balancer v2 / Curve | An exchange that prices itself (AMM) | Swap WETH and WBTC against USDC (all three); swap DAI and eUSD against USDC (`stableSwap`); provide liquidity | `swap` / `balancerSwap` / `curveSwap` / `stableSwap` / `mintLiquidity` and others |
+| Aave v3 | A lender that takes collateral | Deposit, borrow, liquidate other people's loans (liquidation is `liquidationCall` through `rawTx`) | `aaveSupply` / `aaveWithdraw` / `aaveBorrow` / `aaveRepay` |
 | GMX v2 | Margin trading (futures with no expiry) | Bet on ETH and BTC price moves with leverage | `gmxIncrease` / `gmxDecrease` |
-| LST | An interest-bearing receipt for ETH | Deposit ETH for yield; trade the receipt | `lstDeposit` / `lstSwap` / `lstRequestWithdraw` / `lstClaimWithdraw` |
+| LST | An interest-bearing receipt for ETH | Deposit WETH for yield; trade the receipt | `lstDeposit` / `lstSwap` / `lstRequestWithdraw` / `lstClaimWithdraw` |
 | Liquity | Issuing a dollar token against ETH collateral | Borrow eUSD, redeem it, underwrite liquidations | `liquityOpenTrove` and 7 others |
 
 All seven are available in the official regimes, except that `depeg` and `depeg-persist` have no
@@ -140,73 +151,94 @@ them.
 
 | Where the price comes from | Where it is used | How it behaves |
 |---|---|---|
-| The ratio of assets inside an exchange | Uniswap / Balancer / Curve (and the LST, eUSD and DAI pools) | Moves with every trade and drifts from the reference price. **A gap stays until someone trades it away** |
-| The environment's reference price (the oracle) | Collateral valuation and liquidation on Aave, GMX and Liquity; valuing ETH and BTC in scoring | No amount of pool trading moves it. It arrives one block late |
+| The ratio of assets inside an exchange | Trading on Uniswap / Balancer / Curve (and the LST, eUSD and DAI pools); valuing DAI, eUSD and ERLST in scoring | Moves with every trade and drifts from the reference price. The environment's order flow pulls part of a gap back, but not necessarily all of it |
+| The environment's reference price (the oracle) | Collateral valuation and liquidation on Aave; fills, margin and liquidation on GMX; collateral valuation, liquidation and redemption on Liquity; valuing ETH and BTC in scoring | No amount of pool trading moves it. It arrives one block late |
 
 #### AMMs (Uniswap V3 / Balancer v2 / Curve) — exchanges that price themselves
 
 An ordinary exchange matches orders: "buy at this price", "sell at that price". An AMM has no order
 book. Instead a **pool** holds two tokens (say WETH and USDC); you put one in and the other comes
-out, and how much comes out is a formula of the ratio between the two balances.
+out, and how much comes out is set by a formula of the balances in the pool (their ratio is the
+price, their size the depth).
 
 - **The bigger the trade, the worse the price.** Selling WETH adds WETH to the pool and removes USDC, so each WETH sold is cheaper than the last (price impact, or slippage). The WETH/USDC pools start with about 1,000 WETH + 3M USDC; selling 1 WETH on Uniswap or Balancer fills, before fees, about 0.1% below the pool's price before the trade and leaves the pool's price about 0.2% lower. For 10 WETH it is about 1% and 2%. This thickness of the pool is its **depth**
-- **Every trade pays a fee.** The fee stays in the pool and belongs to whoever provided the liquidity (the **LP**)
-- **Pool prices do not track the reference price by themselves.** The environment's order flow (background buying and selling) pushes pools around, and only traders pull them back. WETH has three exchange prices and a reference price at once, and **taking the gap between them when it is larger than the fees is arbitrage (arb)**. When a trade buys on one exchange and sells on another, each half is a **leg**
-- **You can provide liquidity too** (Uniswap only, `mintLiquidity`). You earn fees, but when the price moves your holdings drift towards the losing side
+- **Every trade pays a fee.** The fee pays whoever provided the liquidity (the **LP**), and at the start every LP is the environment. On Balancer the fee is added to the pool's balances. On Uniswap V3 it is not; it accrues to the positions whose price range contained the price when the trade happened (claimed with `collectFees`). On Curve half of the profit earned from fees goes to the pool's administrator (admin)
+- **Pool prices are not pinned to the reference price.** The environment's order flow (background buying and selling) has both random-direction trades (which push pools off the reference price) and trades that gradually pull back the part of a gap beyond about 0.3% (capped in size). WETH has three exchange prices and a reference price at once, and **taking the gap between them when it is larger than the fees is arbitrage (arb)**; what the environment leaves open is what arbitrage feeds on. When a trade buys on one exchange and sells on another, each half is a **leg**
+- **You can provide liquidity too.** The dedicated actions are Uniswap's `mintLiquidity` / `removeLiquidity` / `collectFees`. On Balancer and Curve's WETH/USDC and WBTC/USDC pools you can become an LP by depositing into the pool directly through `rawTx`, and the LP tokens you receive are valued in scoring as well. You earn fees, but when the price moves your holdings drift towards the losing side
 
 | | Uniswap V3 | Balancer v2 | Curve (twocrypto-ng) |
 |---|---|---|---|
-| Fee | 0.3% | 0.3% | 0.26–0.45% (higher when prices are volatile) |
+| Fee | 0.3% | 0.3% | 0.26–0.45% (higher the more lopsided the pool's holdings; a large trade tilts them itself, so it pays more) |
 | WETH/USDC depth at the start | about 1,000 WETH + 3M USDC | same | same |
 | WBTC/USDC depth at the start | about 50 WBTC + 3M USDC | same | same |
-| Shape of the formula | LPs choose a price range (concentrated liquidity); the starting liquidity covers every range evenly | 50/50 weighted pool, the same shape as Uniswap at the start | Pulls liquidity towards the current price, so the same depth gives less price impact |
+| Shape of the formula | LPs choose a price range (concentrated liquidity); the starting liquidity covers every range evenly | 50/50 weighted pool, the same shape as Uniswap at the start | Pulls liquidity towards the pool's internal reference price (`price_scale`). While the price is near it, the same depth gives much less price impact; away from it the effect fades and the fee rises. The reference follows the market with a lag |
 
-Curve also has three pools for assets that trade at close to 1:1 (stableswap). Their formula barely
-moves near 1:1 and moves sharply once the balance tilts far: USDC/DAI (100k / 100k), eUSD/USDC
-(100k / 100k) and ERLST/WETH (about 100 / 100 WETH). These pools set the market prices of DAI, eUSD
-and ERLST (the actions are `stableSwap`, `liquitySwapEusd` and `lstSwap` respectively).
+Curve also has three pools for assets that trade at close to parity (stableswap). Their formula
+barely moves near the reference exchange rate and moves sharply once the balance tilts far: USDC/DAI
+(100k / 100k), eUSD/USDC (100k / 100k) and ERLST/WETH (100 WETH / about 100 ERLST). The reference
+rate is 1:1 between the dollar stablecoins, and for ERLST/WETH it is the redemption rate (how much
+WETH one ERLST is worth; see the LST below). These pools set the market prices of DAI, eUSD and
+ERLST (the actions are `stableSwap`, `liquitySwapEusd` (or `stableSwap` with `stable: "EUSD"`) and
+`lstSwap` respectively).
 
 #### Aave v3 — a lender that takes collateral
 
 A bank deposit and a secured loan in one.
 
 - **Deposit (supply), and borrow another asset against what you deposited (borrow).** For example, deposit 10 WETH and borrow USDC up to a fraction of its value
-- **You can borrow only up to a fraction of your collateral's value (the LTV).** When the collateral falls in value and your **health factor (HF) drops below 1, you get liquidated**: a third party repays part of your debt and takes your collateral at a discount (the liquidation bonus). The liquidator gains and the liquidated account loses. This guide calls a liquidated account a **victim**
-- **Collateral is priced at the reference price**, not at any pool's price
-- **Flash loans**: borrow with no collateral at all, provided you repay within the same transaction (`flash-arb`). Borrowing, using and repaying all happen in one transaction, so you need your own contract
+- **You can borrow only up to a fraction of your collateral's value (the LTV).** Liquidation is judged against a second, slightly higher fraction (the liquidation threshold): the **health factor HF = collateral value × liquidation threshold ÷ debt value**, and once it drops below 1 the position can be liquidated. HF falls when the collateral loses value or the borrowed asset gains it. Borrowing the full LTV against WETH gives HF ≈ 1.03, so a move of about 3% reaches the threshold
+- **In a liquidation** a third party repays up to half of your debt (all of it once HF is 0.95 or lower) and receives collateral worth what it repaid plus the liquidation bonus. The liquidator gains and the liquidated account loses. This guide calls a liquidated account a **victim**. The environment never liquidates anyone; other participants do
+- **Collateral and debt are priced by the environment's oracle**: WETH and WBTC at the reference price, USDC fixed at $1, ERLST at the reference price × the redemption rate. None of it depends on any pool's price
+- **Flash loans**: borrow with no collateral at all, provided you repay the amount plus a 0.05% fee within the same transaction. You need your own contract with the function Aave calls back (`executeOperation`); deploy it with `example/agents/lib/deployContract.ts`. The reference `flash-arb` calls a receiver contract that the environment deploys only under the example config (`run.flashArb: true` in `config/example.yaml`). The official regimes do not deploy it, so there it reverts as it stands
 - **Interest over 12 minutes is practically zero.** The chain's clock runs in real time, so deposits do not grow and debts do not swell. The reason to use Aave is what you do with what you borrow, not the interest
 
-You can deposit WETH, USDC, WBTC and ERLST (ERLST is collateral only: LTV 70%, liquidation
-threshold 75%). Borrowing by itself does not change your asset value: what you borrowed is in your
-wallet and the same amount of debt is subtracted. In the `lending-incident` regime the organisers
-open two borrowers at HF 1.10 and then crash the reference price, which creates liquidations to take
-(`liquidator`). The state is in `obs.protocols.aave`: `healthFactor` / `supplied` / `borrowed` /
-`availableBorrowsBase`.
+You can deposit the four assets below. In actions ERLST is written `"LST"` (`aaveSupply` with
+`asset: "LST"`; the observation's `supplied` / `borrowed` use the key `LST` too).
+
+| Asset | LTV | Liquidation threshold | Liquidation bonus |
+|---|---|---|---|
+| WETH | 80% | 82.5% | 5% |
+| USDC | 80% | 85% | 5% |
+| WBTC | 70% | 75% | 10% |
+| ERLST (`"LST"`) | 70% | 75% | 7.5% |
+
+In practice you can borrow WETH and USDC. WBTC borrowing is enabled, but Aave holds no WBTC at the
+start, so there is nothing to borrow until someone deposits some. ERLST is collateral only and
+cannot be borrowed. Borrowing by itself does not change your asset value: what you borrowed is in
+your wallet and the same amount of debt is subtracted. In the `lending-incident` regime the
+organisers open two borrowers at HF 1.10 and then crash the reference price, which creates
+liquidations to take. Liquidation is not a dedicated action: send Aave's `liquidationCall` through
+`rawTx` (`example/agents/lib/aave-liquidation.ts`). The victims' addresses arrive in the environment
+variable `ERIS_LIQUIDATION_VICTIMS`. The reference `liquidator` is in the `run(ctx)` form, so it
+cannot be submitted as it stands. The state is in `obs.protocols.aave`: `healthFactor` (scaled by
+10^18) / `supplied` / `borrowed` / `availableBorrowsBase` (dollars with 8 decimals).
 
 #### GMX v2 — margin trading (perps)
 
 A way to bet on the price of ETH or BTC without buying any (a perpetual: a future with no expiry).
 
-- **Post margin and hold a position several times its size (leverage).** For example, a 5,000-dollar ETH **long** (gains when the price rises) on 1,000 USDC of margin makes +$50 when ETH rises 1% and −$50 when it falls 1%. A **short** (gains when the price falls) works the same way. Margin is WETH or USDC
-- **The price is the reference price.** That is why offsetting WETH bought on an AMM with a GMX short (a **hedge**) removes your exposure to the reference price and leaves only the AMM's mispricing (`basis-arb`)
+- **Post margin and hold a position several times its size (leverage).** For example, a 5,000-dollar ETH **long** (gains when the price rises) on 1,000 USDC of margin makes +$50 when ETH rises 1% and −$50 when it falls 1%. A **short** (gains when the price falls) works the same way. Margin is WETH or USDC on the ETH market (`base` omitted) and WBTC or USDC on the BTC market (`base: "WBTC"`). WETH margin is sent from your native ETH balance, not from your WETH tokens (the same balance that pays the execution fee)
+- **The price is the reference price.** That is why offsetting WETH bought on an AMM with a GMX short (a **hedge**) removes your exposure to the reference price and leaves only the AMM's mispricing (`basis-arb`). Until the hedge is filled, though — a block or more — the exposure is not offset. Post the short's margin in USDC (WETH margin itself carries ETH's price moves)
 - **Orders execute in two steps.** Your transaction only places the order; the position exists once the environment's keeper processes it in a later block, and the observation shows it later still. **Re-sending the same order before it shows up opens it twice**
 - Every order carries 0.03 ETH as an execution fee (the runtime attaches it); what is not used is refunded when the order executes
-- **Funding**: a fee the crowded side (longs or shorts) pays the other. Here it comes to less than 0.01% of the position over 12 minutes — one cost among several, not a source of income
+- **Position fees, borrowing fees and price impact are 0 here** (on the real GMX, opening or closing costs 0.04–0.06% of the size). The only costs are the unrefunded part of the execution fee (tiny) and funding; the +$50 example above assumes this
+- **Funding**: a fee the crowded side (longs or shorts) pays the other. The rate moves gradually with the skew, so after the skew flips the side that was paying keeps paying for a while. The sign of `fundingPerHourBps` tells you who pays now (positive = longs pay). Here it comes to less than 0.01% of the position over 12 minutes — one cost among several, not a source of income
 
-The state is in `obs.protocols.gmx`: `marketPriceUsd` / `position` (`sizeUsd` / `pnlUsd` /
-`entryPriceUsd`) / `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`.
+The state is in `obs.protocols.gmx`: `marketPriceUsd` / `position` (`sizeUsd` in dollars × 10^30 as
+an integer; `pnlUsd` / `entryPriceUsd` in plain dollars) / `longOiUsd` / `shortOiUsd` /
+`fundingPerHourBps`. The BTC market has the same shape under `markets["WBTC/USDC"]`.
 
 #### LST — an interest-bearing receipt for ETH
 
-Deposit ETH into the vault (the contract that holds it) and you receive the receipt token ERLST —
-the same design as Lido's wstETH in the real world.
+Deposit WETH into the vault (the contract that holds it; `lstDeposit`) and you receive the receipt
+token ERLST — the same design as Lido's wstETH in the real world.
 
-- **The ETH one receipt can be redeemed for (the redemption rate) grows slowly with interest.** The rate is 3% a year, and interest here counts each block as one hour, so one epoch (360 blocks = 15 days' worth) adds about 0.12%
+- **The WETH one receipt can be redeemed for (the redemption rate) grows slowly with interest.** The rate is 3% a year, and interest here counts each block as one hour, so one epoch (360 blocks = 15 days' worth) adds about 0.12%
 - **There are two ways to cash out, at two different prices.**
-  - Withdraw from the vault: the full redemption rate, but you join a queue and wait at least 24 blocks — longer the more is queued ahead of you and the more you withdraw (the queue moves about 1 WETH per block)
-  - Sell on Curve's ERLST/WETH pool: immediate, but usually below the redemption rate (the gap is the **discount**)
-- **A withdrawal you cannot collect before the epoch ends counts as 0 in scoring.** Scoring takes the better of "sell into the pool now" and "withdrawals that complete before the end". `obs.blocksRemaining` tells you how many blocks are left
-- You can also lever up: post ERLST on Aave, borrow ETH, deposit it again (`lst-carry`)
+  - Withdraw from the vault (request with `lstRequestWithdraw`, wait, then `lstClaimWithdraw`): the full amount, fixed at the redemption rate at the moment you request (no interest accrues while you wait). But you join a queue. The wait is the longer of 24 blocks and the time for the requests ahead of you to clear, plus one block per WETH of your own request, rounded up (32 blocks for 8 WETH even with an empty queue)
+  - Sell on Curve's ERLST/WETH pool (`lstSwap`): immediate, but the fee (0.04% and up) and price impact mean you receive less than the redemption rate. When the pool's mid sits below the redemption rate, the gap is the **discount** (`discountBps`). Only participants trade this pool, so the discount opens when someone sells a lot
+- **In scoring, ERLST still in your wallet when the epoch ends counts as what selling all of it into the pool pays at that moment. A withdrawal you requested counts in full if it is claimable by then (you need not have claimed it), and as 0 if it is not.** "The end" here is the last evaluation-interval boundary — with the current values, the block where `obs.blocksRemaining` reads 12, not where it reaches 0
+- You can also lever up: post ERLST on Aave, borrow WETH, deposit it into the vault for more ERLST (`lst-carry` does this only when `ERIS_LST_LEVERAGE_TARGET_HF` is set)
 
 The state is in `obs.protocols.lst`: `redemptionRateWeth` (the redemption rate) / `marketPriceWeth`
 (the pool's price) / `discountBps` / `estimatedQueueDelayBlocks` (the wait to withdraw everything you
@@ -217,32 +249,36 @@ hold) / `instantExitWethWei` (what selling into the pool pays right now).
 Deposit ETH as collateral and borrow newly issued eUSD, a dollar token. The borrowing account is a
 **Trove** (the real Liquity V1 code, unmodified).
 
-- **Your collateral ratio (ICR = collateral value ÷ eUSD borrowed) must stay at 110% or above**; below it, anyone can liquidate you. Collateral is priced at the reference price
-- **Redemption: 1 eUSD can always be exchanged for $1 worth of ETH.** If eUSD trades below $1, buying it and redeeming is profit (the fee is 0.5% or more and rises as redemptions continue). The ETH comes out of **the Trove with the lowest collateral ratio**; from the borrower's side, part of the collateral is bought off them at $1 without asking (`redemption-arb` takes, `trove-manager` defends)
+- **Your collateral ratio (ICR = collateral value ÷ total debt) must stay at 110% or above**; below it, anyone can liquidate you. The total debt is the eUSD you received plus the borrowing fee plus the 200 eUSD deposit (borrow 2,000 eUSD and it is about 2,210 eUSD). Collateral is priced at the reference price
+- **Redemption: 1 eUSD can always be exchanged for $1 worth of ETH (at the reference price).** If eUSD trades below $1 by more than the redemption fee plus the cost of turning the ETH back into USDC (together a little over 0.8%), buying it and redeeming is profit. The redemption fee is 0.5% or more, rises with every redemption and barely comes back down within an epoch. The ETH comes out of **the lowest-ratio Trove among those at 110% or above** (Troves below 110% are skipped). From the borrower's side, $1 of collateral is taken without asking for every eUSD redeemed, and the same amount of debt disappears. At the reference price the net worth is unchanged, but scoring counts the debt at eUSD's market price, so being redeemed while eUSD is cheap costs you exactly that discount (`redemption-arb` takes, `trove-manager` defends)
 - **Stability Pool**: deposit eUSD to absorb the debt of liquidated Troves, receiving their ETH collateral at a discount (`sp-underwriter`)
-- **Recovery Mode**: when the system-wide collateral ratio falls below 150%, the liquidation line rises from 110% to the system-wide ratio of that moment. Your line can move even when your own ratio does not
-- Collateral is ETH itself, not WETH, and comes out of the same balance as gas. Post all of it and you cannot pay the gas to close the Trove
+- **Recovery Mode**: when the system-wide collateral ratio (TCR) falls below 150%, a Trove at 110% or above but below the TCR can be liquidated, but only when the Stability Pool can absorb its whole debt. It loses collateral worth at most 110% of the debt, and the rest can be claimed afterwards (`claimCollateral()` on BorrowerOperations, through `rawTx`). During Recovery Mode the borrowing fee is 0, and you can neither close a Trove nor withdraw collateral. The TCR is set by everyone's Troves, so your line can move even when your own ratio does not (`liquidationPriceUsd` stays on the 110% basis)
+- The collateral inside a Trove is ETH itself, not WETH. Actions specify it as a WETH amount, and the runtime unwraps the WETH before posting it, so your gas ETH is untouched. The other way round, closing a Trove, withdrawing collateral, redeeming and Stability Pool gains all **pay out in ETH**. To use it on an exchange you have to wrap it back into WETH; there is no action for that, so call WETH's `deposit()` through `rawTx` (as `redemption-arb` / `sp-underwriter` do)
 - Borrowing costs a fee of 0.5% or more, and 200 eUSD is added to the debt as a deposit (it pays whoever liquidates you, and comes back if you close the Trove yourself). The minimum loan is in `minNetDebtEusdWei`
 
-At the start there is the organisers' Trove (350 ETH / 350k eUSD, a 300% ratio), the eUSD/USDC pool
+At the start there is the organisers' Trove (350 ETH / 350k eUSD, about a 300% ratio), the eUSD/USDC pool
 (100k / 100k) and the Stability Pool (125k eUSD). In `cdp-incident` the organisers open two Troves at
 120%, then lower the reference price and sell eUSD below $1 at the same time. The state is in
 `obs.protocols.liquity`: `trove` (`icr` / `liquidationPriceUsd` = the ETH price at which it gets
-liquidated) / `marketPriceUsdc` (eUSD's market price) / `redemptionEdgeBps` / `recoveryMode`.
+liquidated) / `marketPriceUsdc` (eUSD's market price) / `redemptionEdgeBps` (the discount minus the
+redemption fee; the cost of turning ETH back into USDC is not included) / `recoveryMode`.
 
 #### How holdings are valued in scoring
 
-The asset value at the end of an epoch (rules §4.1) counts each kind of holding like this.
+The scoring code counts the asset value of rules §4.1 for each kind of holding like this. "The end
+of the epoch" is the last evaluation-interval boundary (see the diagram in §1). Marks that come from
+a pool's price (DAI, eUSD, ERLST, Liquity) are the median over the 5 blocks up to and including the
+valuation block (rules §4.1). Rows the rules do not spell out say so.
 
 | Holding | Counted as |
 |---|---|
-| Token balances | ETH, WETH, WBTC at the reference price; USDC at $1; DAI and eUSD at their pool's market price |
-| Uniswap liquidity | What the position holds at that moment (two tokens) plus uncollected fees |
-| Aave | Collateral − debt; negative when the debt exceeds the collateral |
-| GMX | Margin + unrealised PnL (at the reference price) |
-| LST | The better of "sell into the pool now" and "withdrawals that complete before the end"; a withdrawal completing after the end is 0 |
-| Liquity | A Trove is collateral − the cost of buying back its debt (floored at 0, since you can walk away from the debt by abandoning the collateral). The Stability Pool is the eUSD deposited + the ETH received |
-| Assets inside a contract you deployed | 0 (the environment cannot price them; see "What you can do here") |
+| Token balances | ETH, WETH, WBTC at the reference price; USDC at $1. DAI and eUSD at the geometric mean of the pool's sell and buy quotes ($1 when no quote comes back). ERLST: see the LST row. Any other token (LQTY, the `launch` listings and so on) is 0 (rules §4.1) |
+| AMM liquidity | A Uniswap position is what it holds at that moment (two tokens) plus uncollected fees. LP tokens of the Balancer and Curve WETH/USDC and WBTC/USDC pools are your share of what the pool holds (stableswap LP tokens are 0) |
+| Aave | Collateral − debt at Aave's oracle prices; negative when the debt exceeds the collateral. ERLST collateral is re-counted like the LST row, at what selling it into the pool pays (capped at its value at the redemption rate) |
+| GMX | Margin + unrealised PnL from the price move (at the reference price). Accrued funding is not deducted. An order not yet executed counts as 0, its margin and execution fee included (an order placed just before the end is one) |
+| LST | ERLST in your wallet is what selling all of it into the pool pays at that moment. A requested withdrawal counts in full if it is claimable by then (you need not have claimed it), and as 0 if not (the rules do not spell this out; it is the scoring code's rule) |
+| Liquity | A Trove is its collateral (at the reference price) minus the cost of buying back its net debt (the debt without the 200 eUSD deposit) in the pool now, floored at 0 since you can walk away from the debt by abandoning the collateral. Surplus collateral left over from a redemption or liquidation counts at the reference price. The Stability Pool is what selling your eUSD balance after absorbed liquidations pays in the pool now, plus the ETH not yet withdrawn. LQTY is 0. Rules §4.1 does not name CDPs; this is the scoring code's rule |
+| Assets inside a contract you deployed | 0. Scoring counts only the balances and positions your agent's own address holds, so a contract's contents are not counted even when they are WETH. Profit that passed through counts in full (the rules do not spell this out; it is the scoring code's rule) |
 
 ### The 12 regimes
 
@@ -361,9 +397,10 @@ of them.**
   carrying compiled code (a forge artifact) is a deployment
   (`example/agents/lib/deployContract.ts`; the forge artifacts ship inside the submission zip). An
   atomic (either everything succeeds or everything is undone) arbitrage across several venues is written as your own contract this way (rules §0.1: a
-  bundle guarantees no atomicity). Aave flash loans are enabled (`flash-arb` calls `flashLoanSimple`
-  through `rawTx`). **But whatever is still inside your contract when the epoch ends is valued at 0**
-  (what the environment cannot price is 0; rules §4.1). Profit that passed through counts in full, so
+  bundle guarantees no atomicity). Aave flash loans are enabled (you deploy the receiving contract
+  yourself; the Aave section covers the reference `flash-arb`). **But whatever is still inside your
+  contract when the epoch ends is valued at 0** (scoring counts only the balances and positions your
+  agent's own address holds; the rules do not spell this out, it is the scoring code's rule). Profit that passed through counts in full, so
   withdraw before the epoch ends
 - **Make a market, provide liquidity.** You can create a new Uniswap V3 pool (`createPool`). Adding to
   an existing pool works the same way (`mintLiquidity` / `removeLiquidity` / `collectFees`; see
@@ -388,7 +425,7 @@ of them.**
   (`liquidator`), Liquity's `liquityLiquidate` and Stability Pool underwriting (`sp-underwriter`),
   eUSD redemption (`liquityRedeem`; `redemption-arb`)
 - **Use leverage.** GMX perps (`gmxIncrease` / `gmxDecrease`; orders are executed by the environment's
-  keeper from the next block on), Aave borrowing, a Liquity Trove, borrowing ETH against the LST
+  keeper from the next block on), Aave borrowing, a Liquity Trove, borrowing WETH against ERLST
   (`lst-carry`)
 - **Buy your position in the block.** Bid with `maxPriorityFeePerGasWei` on the action. The highest fee
   anyone else paid in the most recent block is `obs.competition.maxCompetitorPriorityFeeWei`
@@ -896,7 +933,7 @@ it works" is the regime whose environment gives the strategy something to do (§
 | Arbitrage | `multi-arb` | Cross-venue arbitrage on WETH or WBTC alike. Chooses between buying and selling on two exchanges at once (two-leg) and trading only the one venue that strays from the reference price (single-leg) | the 3 AMMs | same | yes |
 | Arbitrage | `stat-arb` | Tracks each asset's gap from the reference price, measures how unusual the current gap is against that history (a z-score) and bets on it closing | AMMs | calm / informed-flow | no |
 | Arbitrage | `max-profit-arb` | Derives a priority-fee ceiling from the expected profit and bids for position in the block | AMMs | whale | no |
-| Arbitrage | `flash-arb` | An Aave flash loan for arbitrage beyond its own capital, in one transaction (`rawTx`) | Aave + AMMs | whale / crash | no |
+| Arbitrage | `flash-arb` | An Aave flash loan for arbitrage beyond its own capital, in one transaction (`rawTx`). The receiver contract is deployed only under the example config (`run.flashArb: true`), so in the official regimes it reverts as it stands | Aave + AMMs | whale / crash (after pointing it at a receiver you deploy) | no |
 | Arbitrage | `basis-arb` | One AMM leg hedged on the GMX perp (spot against futures) | AMMs + GMX | cex-drift | yes |
 | LP | `lp-provider` | Holds a Uniswap V3 position for fees, pulls it when the gap gets large | Uniswap | calm | no |
 | Leverage | `levered-long` | Borrows on Aave against its own holdings to hold more WETH than it was given (leverage); keeps HF inside a chosen range and repays when it drops below | Aave | cex-drift (direction) / lending-incident, crash (defence) | no |
