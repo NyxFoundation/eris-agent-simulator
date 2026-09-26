@@ -77,6 +77,7 @@ const SCHEMA: Record<string, string> = {
   // run
   "run.seed": "SEED",
   "run.blocks": "ERIS_RUN_BLOCKS",
+  "run.endsAt": "ERIS_RUN_ENDS_AT", // issue #136: the run's end as a date; runBlocks is derived at load
   "run.seconds": "ERIS_RUN_SECONDS",
   "run.blockTimeSec": "ERIS_BLOCK_TIME_SEC",
   "run.protocols": "ENABLED_PROTOCOLS",

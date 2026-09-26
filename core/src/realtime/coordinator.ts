@@ -577,6 +577,9 @@ export async function runRealtimeSimulation(
     blockTimeSec: config.blockTimeSec,
     runSeconds: config.runSeconds,
     runBlocks: config.runBlocks,
+    // Issue #136: when the run was stated as a date, the date it was converted from. runBlocks is
+    // what that date came to at this cadence when this process started.
+    ...(config.runEndsAt ? { runEndsAt: config.runEndsAt } : {}),
     // The scoring epoch (ADR 0019) is the competition's round. summary.json carries the boundaries,
     // but only after the run ends -- a live viewer needs the length up front to lay the rounds out.
     epochBlocks: config.epochBlocks,

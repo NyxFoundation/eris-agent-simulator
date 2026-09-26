@@ -146,6 +146,10 @@ export type SimConfig = {
   blockTimeSec: number;
   runSeconds: number;
   runBlocks: number;
+  // The date the run ends, when it was stated as one (`run.endsAt`, issue #136). runBlocks is then
+  // derived from it at load time; this keeps the stated end so run_started_realtime can record both.
+  // null when the run was stated in blocks.
+  runEndsAt: string | null;
   // Skip the resetFork at run start (default false). Preserves anvil's fork fetch cache from the
   // previous run for diagnostics that isolate cold-fetch latency (upstream fetches during mining).
   // State persists from the previous run, so do not use for evaluation (ERIS_SKIP_RESET=1).
@@ -449,7 +453,7 @@ export function loadConfig(env = process.env): SimConfig {
     // Real-time mode settings.
     blockTimeSec,
     runSeconds: intEnv(env.ERIS_RUN_SECONDS, 20),
-    runBlocks: intEnv(env.ERIS_RUN_BLOCKS, 0),
+    ...resolveRunLength(env, blockTimeSec),
     skipReset: env.ERIS_SKIP_RESET === "1",
     localDeploy: env.ERIS_LOCAL_DEPLOY === "1",
     localSnapshotFile: env.ERIS_LOCAL_SNAPSHOT_FILE ?? ".local-snapshot",
@@ -658,6 +662,50 @@ function resolveEpochBlocks(
       "run.epochSeconds needs a positive run.blockTimeSec to convert into blocks",
     );
   return Math.max(1, Math.round(seconds / blockTimeSec));
+}
+
+// The run's length. Stated in blocks (`run.blocks`) or as the date it ends (`run.endsAt`, issue #136),
+// never both -- the `epochSeconds` / `epochBlocks` precedent.
+//
+// A practice period is a run whose end is a date on the calendar (rules §2.7: the trial ends on
+// 10/31), not a number of blocks. Stated in blocks, it ended N blocks after whenever the coordinator
+// happened to start: a period started on 9/23 ran into the live week, and every restart (a restart is
+// a new competition) got a fresh full length. Stated as a date, the block count is whatever remains
+// at this chain's cadence when the process starts, so a restart ends on the same day and the episode
+// windows (fractions of the run's length) spread over the time that actually remains.
+//
+// The run still stops on its block count, so a chain running behind its cadence ends a little after
+// the date -- and the last segment still gets its summary.json, which a stop by hand does not.
+export function resolveRunLength(
+  env: NodeJS.ProcessEnv,
+  blockTimeSec: number,
+  nowMs: number = Date.now(),
+): { runBlocks: number; runEndsAt: string | null } {
+  const endsAt = env.ERIS_RUN_ENDS_AT?.trim() ?? "";
+  if (endsAt === "") return { runBlocks: intEnv(env.ERIS_RUN_BLOCKS, 0), runEndsAt: null };
+  if (env.ERIS_RUN_BLOCKS !== undefined && env.ERIS_RUN_BLOCKS.trim() !== "")
+    throw new Error(
+      "run.endsAt and run.blocks both set. A run has one end: state it as a date (which converts at " +
+        "run.blockTimeSec when the run starts) or in blocks, not both (issue #136)",
+    );
+  // A date without a zone is read in whatever zone the box is in, which is a period that ends at a
+  // different hour on a different machine.
+  if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(endsAt))
+    throw new Error(
+      `run.endsAt must carry a time zone (e.g. 2026-10-31T23:59:59+09:00), got ${JSON.stringify(endsAt)}`,
+    );
+  const endMs = Date.parse(endsAt);
+  if (!Number.isFinite(endMs))
+    throw new Error(`run.endsAt is not an ISO 8601 date: ${JSON.stringify(endsAt)}`);
+  if (!(blockTimeSec > 0))
+    throw new Error("run.endsAt needs a positive run.blockTimeSec to convert into blocks");
+  const runBlocks = Math.floor((endMs - nowMs) / 1000 / blockTimeSec);
+  if (runBlocks <= 0)
+    throw new Error(
+      `run.endsAt (${new Date(endMs).toISOString()}) leaves no blocks to run at ${blockTimeSec}s a block: ` +
+        "the period is over, or the date is wrong",
+    );
+  return { runBlocks, runEndsAt: new Date(endMs).toISOString() };
 }
 
 function parseEnabledProtocols(value: string | undefined): ProtocolId[] {
