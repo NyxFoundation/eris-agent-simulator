@@ -13,12 +13,14 @@ import { baseTokens, tokenInfo } from "@eris/sdk/markets.js";
 import { observationFor } from "@eris/sdk/observation.js";
 import { PoolDiscovery } from "@eris/sdk/discoveredPools.js";
 import { readFairPrice, readFairPriceFor } from "@eris/sdk/priceFeed.js";
+import { readRunStart } from "@eris/sdk/runStart.js";
 import type { ProtocolAdapter, SimContext } from "@eris/sdk/protocols/types.js";
 import type {
   AgentObservation,
   BalanceSnapshot,
   ProtocolId,
 } from "@eris/sdk/types.js";
+import { blocksRemainingUnderBlockBudget } from "./blockBudget.js";
 
 export type ChainSnapshot = {
   observation: AgentObservation;
@@ -39,11 +41,16 @@ export class Reader {
   private readonly runId: string;
   private readonly extraBaseSymbols: string[];
   private readonly history: AgentObservation["history"] = [];
-  // The first block this agent saw, used to estimate how much of the run is left. The environment
-  // cannot pass the run's start block in env: agent processes are spawned before interval mining
-  // begins, so it does not exist yet. Everyone starts observing at the same point, so deriving it
-  // here costs at most a block or two of accuracy and gives no one an advantage.
+  // The first block this agent saw: the fallback origin for how much of the run is left. The
+  // environment cannot pass the run's start block in env (agent processes are spawned before
+  // interval mining begins, so it does not exist yet); it declares it in the run directory once it
+  // knows it (issue #117, `run-start.json`), and `declaredFirstBlock` takes over the moment that
+  // file is read. Until then -- and for a self-hosted agent with no run directory -- the budget is
+  // inferred from this block, and any jump in block numbers after boot is charged against the run.
   private firstBlock: number | null = null;
+  private declaredFirstBlock: number | null = null;
+  private readonly runDir: string | undefined;
+  private budgetOriginNoted = false;
   // When this process started, and when it first managed to observe a block. The gap between them
   // is startup lag the run has already spent.
   private readonly startedAtMs = Date.now();
@@ -62,7 +69,10 @@ export class Reader {
     runId: string;
     extraBaseSymbols: string[];
     registry?: { address: Address; fromBlock: number };
+    /** ERIS_RUN_DIR: where the coordinator declares the run's first block. Absent when self-hosted. */
+    runDir?: string;
   }) {
+    this.runDir = opts.runDir;
     this.ctx = opts.ctx;
     this.adapters = opts.adapters;
     this.enabledIds = opts.adapters.map((a) => a.id);
@@ -163,9 +173,30 @@ export class Reader {
     );
     const budgets: number[] = [];
     if (runBlocks > 0) {
-      // Counting from the first block *this* agent saw overstates the remaining run by however
-      // long the process took to boot -- and an agent told the run is longer than it is starts
-      // exits it cannot finish. Charge the startup lag against the budget.
+      // The coordinator's declaration arrives after the agent has booted (it is written when the
+      // chain has settled and counting starts), so look for it each block until it is there. One
+      // existsSync per block until then; nothing afterwards.
+      if (this.declaredFirstBlock === null) {
+        const declared = readRunStart(this.runDir);
+        if (declared) {
+          this.declaredFirstBlock = declared.runStartBlock;
+          process.stderr.write(
+            `[read] run start declared by the coordinator: block ${declared.runStartBlock}, ` +
+              `${declared.runBlocks} blocks (blocksRemaining is counted from it)\n`,
+          );
+        } else if (!this.budgetOriginNoted) {
+          this.budgetOriginNoted = true;
+          process.stderr.write(
+            `[read] blocksRemaining is inferred from the first block this process saw (${bn}) ` +
+              `until the coordinator's run-start.json appears` +
+              (this.runDir ? "" : " (no ERIS_RUN_DIR: it never will)") +
+              "\n",
+          );
+        }
+      }
+      // Inferred case only: counting from the first block *this* agent saw overstates the
+      // remaining run by however long the process took to boot -- and an agent told the run is
+      // longer than it is starts exits it cannot finish. Charge the startup lag against the budget.
       const startupLagBlocks = Math.max(
         0,
         Math.round(
@@ -174,7 +205,14 @@ export class Reader {
             Math.max(1, this.ctx.config.blockTimeSec),
         ),
       );
-      budgets.push(runBlocks - startupLagBlocks - (bn - this.firstBlock));
+      const budget = blocksRemainingUnderBlockBudget({
+        bn,
+        runBlocks,
+        declaredFirstBlock: this.declaredFirstBlock,
+        firstSeenBlock: this.firstBlock,
+        startupLagBlocks,
+      });
+      if (budget !== null) budgets.push(budget);
     }
     // A run without a block limit still ends on the wall clock, and nothing above accounts for it.
     const runSeconds = this.ctx.config.runSeconds;
