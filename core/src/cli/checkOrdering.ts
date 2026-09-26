@@ -16,6 +16,18 @@
 // The live probe sends its bids in *ascending* fee order, so arrival order and fee order disagree.
 // A builder that simply keeps txs in the order they arrived would pass a descending-order probe and
 // fail this one, which is the difference between measuring the property and confirming a coincidence.
+//
+// It then asks a second question the first cannot: *which field* is the bid. Every tx in the
+// ascending probe signs maxFeePerGas equal to its tip, so a builder sorting on maxFeePerGas and one
+// sorting on the tip produce the same order there. They do not agree once the two fields differ, and
+// anvil sorts on maxFeePerGas (foundry v1.7.1, crates/anvil/src/eth/pool/transactions.rs:
+// `TransactionPriority(tx.max_fee_per_gas())`) while, at base fee 0, a tx pays min(maxFeePerGas, tip).
+// Measured 2026-09-27 on anvil 1.7.1 `--order fees --base-fee 0`: a tx paying 0.1 gwei with
+// maxFeePerGas 7 gwei landed at txIndex 0, ahead of a 6 gwei/6 gwei tx shaped like the oracle
+// update. So the key probe pairs an honest bid (maxFee = tip) with an overbid (tip lower, maxFee
+// higher) and reports which one the builder put first. On a builder that sorts on maxFeePerGas the
+// participant rule "maxFeePerGas <= maxPriorityFeePerGas" (RPC gateway, runtime, postRunCheck) is
+// what keeps the order equal to what was paid -- the probe says whether that rule is load-bearing.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { keccak256, stringToBytes, type Address, type Hex } from "viem";
@@ -28,6 +40,7 @@ import {
   setChainMode,
 } from "@eris/sdk/chain.js";
 import { parseCliFlags, resolveRunInputs } from "../runConfig.js";
+import { classifyOrderingKey, type KeyProbePair } from "../orderingKey.js";
 
 // The live probe funds its bidders through the run's own funding path, which resolves token
 // addresses from the deployment. Nothing here reads a venue, but the env has to be settled before
@@ -139,8 +152,11 @@ async function runLiveProbe(): Promise<void> {
         to: addresses[i],
         value: 0n,
         gas: PROBE_GAS,
-        maxFeePerGas: baseFee * 2n + bids[i],
-        maxPriorityFeePerGas: bids[i],
+        // maxFeePerGas = maxPriorityFeePerGas: the shape the participant rule requires, so the
+        // ascending probe measures fee order and nothing else (the key probe below is the one that
+        // pulls the two fields apart).
+        maxFeePerGas: baseFee + bids[i],
+        maxPriorityFeePerGas: baseFee + bids[i],
       });
       sent.push({ hash, sender: addresses[i], bidWei: bids[i] });
     }
@@ -188,6 +204,17 @@ async function runLiveProbe(): Promise<void> {
   }
 
   for (const line of perRound) console.error(`[ordering] ${line}`);
+
+  const key = await probeOrderingKey(
+    publicClient,
+    walletClient,
+    chain,
+    [keys[0], keys[1]],
+    rounds,
+  );
+  console.error(`[ordering] key probe: ${key.summary}`);
+  for (const line of key.lines) console.error(`[ordering]   ${line}`);
+
   if (compared === 0) {
     // Not a pass. Every probe tx landing in its own block means the chain never had two bids to
     // choose between, so the property was never exercised -- reporting "ok" here would record a
@@ -209,8 +236,131 @@ async function runLiveProbe(): Promise<void> {
   }
   console.log(
     `priority fee ordering ok on a live ${config.chainMode} chain: ` +
-      `${compared} adjacent in-block pair(s) across ${rounds} round(s), 0 inversions`,
+      `${compared} adjacent in-block pair(s) across ${rounds} round(s), 0 inversions; ` +
+      `key probe: ${key.verdict}`,
   );
+}
+
+// The key probe (see the header). One honest bid and one overbid per round, from two independent
+// senders, sent back to back so they share a block. Arrival order alternates by round so the verdict
+// can tell "sorted on what was paid" from "kept in arrival order".
+//
+//   honest   maxPriorityFeePerGas = maxFeePerGas = baseFee + 2 gwei   pays 2 gwei of priority
+//   overbid  maxPriorityFeePerGas = 1 gwei, maxFeePerGas = baseFee + 3 gwei   pays 1 gwei of priority
+//
+// The overbid violates the participant rule (maxFeePerGas <= maxPriorityFeePerGas) on purpose, so run
+// this against the node, not through the RPC gateway: the gateway refuses it, and says so here.
+async function probeOrderingKey(
+  publicClient: ReturnType<typeof makeClients>["publicClient"],
+  walletClient: ReturnType<typeof makeClients>["walletClient"],
+  chain: ReturnType<typeof makeClients>["chain"],
+  keys: [Hex, Hex],
+  rounds: number,
+): Promise<{ verdict: string; summary: string; lines: string[] }> {
+  const GWEI = 1_000_000_000n;
+  const fmt = (wei: bigint) => `${Number(wei) / 1e9} gwei`;
+  const lines: string[] = [];
+  const pairs: KeyProbePair[] = [];
+  for (let round = 0; round < rounds; round++) {
+    const baseFee = (await publicClient.getBlock()).baseFeePerGas ?? 0n;
+    const bids = {
+      honest: {
+        key: keys[round % 2],
+        tip: baseFee + 2n * GWEI,
+        maxFee: baseFee + 2n * GWEI,
+      },
+      overbid: {
+        key: keys[(round + 1) % 2],
+        tip: GWEI,
+        maxFee: baseFee + 3n * GWEI,
+      },
+    };
+    const order: Array<"honest" | "overbid"> =
+      round % 2 === 0 ? ["honest", "overbid"] : ["overbid", "honest"];
+    const hashes: Partial<Record<"honest" | "overbid", Hex>> = {};
+    let refused: string | undefined;
+    for (const which of order) {
+      const bid = bids[which];
+      const account = privateKeyToAccount(bid.key);
+      try {
+        hashes[which] = await walletClient.sendTransaction({
+          account,
+          chain,
+          to: account.address,
+          value: 0n,
+          gas: PROBE_GAS,
+          maxFeePerGas: bid.maxFee,
+          maxPriorityFeePerGas: bid.tip,
+        });
+      } catch (error) {
+        refused = `${which} refused by the RPC: ${
+          error instanceof Error ? error.message.split("\n")[0] : String(error)
+        }`;
+      }
+    }
+    if (refused) {
+      lines.push(`round ${round + 1}: ${refused}`);
+      // Let whichever did go out land, so the next round starts from a clean pool.
+      for (const hash of Object.values(hashes))
+        if (hash)
+          await publicClient
+            .waitForTransactionReceipt({ hash, timeout: 120_000 })
+            .catch(() => undefined);
+      continue;
+    }
+    const [h, o] = await Promise.all(
+      (["honest", "overbid"] as const).map((which) =>
+        publicClient.waitForTransactionReceipt({
+          hash: hashes[which]!,
+          timeout: 120_000,
+        }),
+      ),
+    );
+    const describe = (which: "honest" | "overbid", r: typeof h): string =>
+      `txIndex ${r.transactionIndex} ${which} (tip ${fmt(bids[which].tip)}, maxFee ` +
+      `${fmt(bids[which].maxFee)}, paid ${fmt(r.effectiveGasPrice)}/gas)`;
+    if (h.blockNumber !== o.blockNumber) {
+      lines.push(
+        `round ${round + 1}: split across blocks ${h.blockNumber}/${o.blockNumber}, not compared`,
+      );
+      continue;
+    }
+    const ledBy =
+      o.transactionIndex < h.transactionIndex ? "overbid" : "honest";
+    pairs.push({ arrivedFirst: order[0], ledBy });
+    const [first, second] =
+      ledBy === "overbid"
+        ? ([
+            ["overbid", o],
+            ["honest", h],
+          ] as const)
+        : ([
+            ["honest", h],
+            ["overbid", o],
+          ] as const);
+    lines.push(
+      `round ${round + 1} (arrived ${order.join(" then ")}), block ${h.blockNumber}: ` +
+        `${describe(first[0], first[1])} before ${describe(second[0], second[1])}`,
+    );
+  }
+  const verdict = classifyOrderingKey(pairs);
+  const summary =
+    verdict.verdict === "max-fee"
+      ? `the builder sorts on maxFeePerGas (${pairs.length} pair(s)): an overbid paying less led every ` +
+        "time. On this chain the participant rule maxFeePerGas <= maxPriorityFeePerGas is what makes " +
+        "the order follow the fee paid -- keep it enforced at the RPC gateway and in postRunCheck"
+      : verdict.verdict === "paid"
+        ? `the builder sorts on the priority fee paid (${pairs.length} pair(s)): the honest bid led ` +
+          "every time, so maxFeePerGas above the tip buys nothing here"
+        : verdict.verdict === "arrival"
+          ? `the builder kept arrival order in all ${pairs.length} pair(s): no fee auction at all`
+          : verdict.verdict === "ambiguous"
+            ? `${pairs.length} pair(s) fit ${verdict.consistent.join(" or ")}; raise --rounds to ` +
+              "send the pair in both arrival orders"
+            : verdict.verdict === "mixed"
+              ? `no single key explains all ${pairs.length} pair(s)`
+              : "INCONCLUSIVE: no pair landed in one block (or the RPC refused the overbid)";
+  return { verdict: verdict.verdict, summary, lines };
 }
 
 function parseBlocksCsv(csv: string): BlockRow[] {
