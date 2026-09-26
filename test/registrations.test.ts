@@ -13,6 +13,7 @@ import {
   diffRegistrations,
   parseRegistrations,
   RegistrationsWatcher,
+  startupRegistrations,
 } from "../core/src/realtime/registrations.js";
 
 const A: Address = "0x1111111111111111111111111111111111111111";
@@ -190,4 +191,58 @@ test("run.registrationsFile reaches SimConfig from YAML", async () => {
       .registrationsFile,
     undefined,
   );
+});
+
+// A restart is a new competition, and every participant is on file. Registered by the loop, they
+// all came in after the first boundary and went unscored on day one; folded into the roster at
+// startup they are funded before mining and valued from boundary 0. What must not change is who
+// gets folded in: exactly what the loop's diff would add, so the loop's first poll is a no-op for
+// them and still the one place a collision is reported.
+test("registrations on file at startup join the roster as external address entries", () => {
+  const roster = [
+    { id: "noop", wallet: "AUTO", baseline: true },
+    { id: "carol", external: true, address: C },
+  ];
+  const onFile = startupRegistrations(
+    [
+      { id: "alice", address: A, participant: "team-a", description: "day 1" },
+      { id: "bob", address: B },
+    ],
+    roster,
+  );
+  assert.deepEqual(onFile, [
+    { id: "alice", external: true, address: A, participant: "team-a", description: "day 1" },
+    { id: "bob", external: true, address: B },
+  ]);
+});
+
+test("startup leaves the roster's own agents and every collision to the loop's first poll", () => {
+  const roster = [{ id: "carol", external: true, address: C }];
+  const onFile = startupRegistrations(
+    [
+      { id: "carol", address: C }, // already in the roster: nothing to do
+      { id: "carol", address: A }, // id taken by another address: the poll reports it
+      { id: "dave", address: C }, // address taken by carol: the poll reports it
+      { id: "erin", address: B },
+      { id: "erin", address: B }, // duplicate line in the file: the first one counts
+    ],
+    roster,
+  );
+  assert.deepEqual(
+    onFile.map((a) => a.id),
+    ["erin"],
+  );
+  // Once the startup entries are in the field, the loop's diff over the same file adds nothing.
+  const field = [...roster, ...onFile];
+  const again = diffRegistrations(
+    [
+      { id: "carol", address: C },
+      { id: "erin", address: B },
+    ],
+    {
+      ids: new Set(field.map((a) => a.id)),
+      addresses: new Map(field.map((a) => [String(a.address).toLowerCase(), a.id])),
+    },
+  );
+  assert.deepEqual(again, { added: [], ignored: [] });
 });

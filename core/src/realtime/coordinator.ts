@@ -30,11 +30,7 @@ import {
 } from "@eris/sdk/chain.js";
 import { RUN_START_FILE, writeRunStart } from "@eris/sdk/runStart.js";
 import { spawnSync } from "node:child_process";
-import {
-  RunLogger,
-  txFeeColumns,
-  type RunArtifactWriter,
-} from "../logger.js";
+import { RunLogger, txFeeColumns, type RunArtifactWriter } from "../logger.js";
 import {
   SegmentedRun,
   segmentAgentRecord,
@@ -136,6 +132,7 @@ import { LiveScorer } from "./liveScoring.js";
 import {
   diffRegistrations,
   RegistrationsWatcher,
+  startupRegistrations,
   type Registration,
 } from "./registrations.js";
 import {
@@ -671,8 +668,30 @@ export async function runRealtimeSimulation(
     await setAutomine(publicClient, true);
   }
 
+  // Registrations already on file join the roster here, before setup funds anyone, so they are
+  // valued from the first interval boundary like any roster entry. Left to the loop, they register
+  // after that boundary and go unscored on the first day -- every participant, after a restart
+  // (registrations.ts, startupRegistrations). A file that is missing or malformed right now is the
+  // loop's to report: its first poll reads the same file and records what is wrong with it.
+  let onFile: AgentSpec[] = [];
+  if (config.registrationsFile) {
+    try {
+      const read = new RegistrationsWatcher(config.registrationsFile).read();
+      if (read.kind === "changed")
+        onFile = startupRegistrations(read.entries, agentSpecs);
+    } catch {
+      onFile = [];
+    }
+    logger.event({
+      type: "registrations_read_at_start",
+      path: config.registrationsFile,
+      added: onFile.map((a) => a.id),
+    });
+  }
+  const rosterSpecs = [...agentSpecs, ...onFile];
+
   // ---- agent wallets (processes start after setup completes; agentSpecs is already resolved from YAML/env) ----
-  const agentRuntimes: RealtimeAgentRuntime[] = agentSpecs.map((spec) => {
+  const agentRuntimes: RealtimeAgentRuntime[] = rosterSpecs.map((spec) => {
     // An entry registered by address has no key here at all; one registered by wallet still does,
     // even when external, because a practice devnet that issues funded keys is a legitimate way to
     // run one (the manifest hands the key to that participant).
@@ -738,7 +757,9 @@ export async function runRealtimeSimulation(
     config.seed,
     config.runBlocks,
   );
-  const stressAudit = new StressAudit(schedule.events, event => logger.event(event));
+  const stressAudit = new StressAudit(schedule.events, (event) =>
+    logger.event(event),
+  );
   // A dedicated wallet so a whale order does not drain the ordinary flow wallets mid-run (which
   // would quietly change the flow bot's behavior for the rest of the run) and so blocks.csv
   // attributes the print to the event rather than to background flow.
@@ -2061,7 +2082,9 @@ export async function runRealtimeSimulation(
     };
 
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
-    const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
+    const handleFlowOrders = async (
+      orders: FlowOrderWire[],
+    ): Promise<Hex[]> => {
       const submitted: Hex[] = [];
       const intents = flowOrdersToIntents(ctx, orders);
       for (const intent of intents) {
@@ -2798,7 +2821,10 @@ export async function runRealtimeSimulation(
           // an overlay would leave the base path where it was and let mean reversion erase the
           // episode the moment the window closed. Identity outside every window, so a run without
           // one steps exactly as before.
-          const beforeFair: Record<string, number> = { WETH: baseFair, ...extraBaseFair };
+          const beforeFair: Record<string, number> = {
+            WETH: baseFair,
+            ...extraBaseFair,
+          };
           const ouWeth = withOuOverride(
             config.ou.perBase.WETH ?? config.ou.global,
             schedule.ouOverrideAt(blockIndex, "WETH"),
@@ -2828,12 +2854,22 @@ export async function runRealtimeSimulation(
             fairPrices[b] = extraBaseFair[b] * (overlay.baseMults[b] ?? 1);
           }
           ctx.fairPrices = fairPrices;
-          const auditPrice = (base: string, stage: "price_submitted" | "storage_written", hashes?: string[]) =>
-            stressAudit.price(base, blockIndex, bn, {
-              before: beforeFair[base],
-              unoverlaid: base === "WETH" ? baseFair : extraBaseFair[base],
-              fair: fairPrices[base],
-            }, { stage, hashes });
+          const auditPrice = (
+            base: string,
+            stage: "price_submitted" | "storage_written",
+            hashes?: string[],
+          ) =>
+            stressAudit.price(
+              base,
+              blockIndex,
+              bn,
+              {
+                before: beforeFair[base],
+                unoverlaid: base === "WETH" ? baseFair : extraBaseFair[base],
+                fair: fairPrices[base],
+              },
+              { stage, hashes },
+            );
 
           // Fund vulnerability pools (ADR 0014): burn reserve into the pools that entered their window (cheatcode;
           // no mine needed), making the bait-laden opportunity appear on this block. Done synchronously after
@@ -2910,7 +2946,11 @@ export async function runRealtimeSimulation(
                     magnitude: ev.magnitude,
                   });
                   const hashes = await handleFlowOrders([order]);
-                  if (hashes.length > 0) stressAudit.record(ev, blockIndex, bn, { stage: "tx_submitted", hashes });
+                  if (hashes.length > 0)
+                    stressAudit.record(ev, blockIndex, bn, {
+                      stage: "tx_submitted",
+                      hashes,
+                    });
                 } catch (error) {
                   logger.event({
                     type: "stress_whale_failed",
@@ -3036,7 +3076,8 @@ export async function runRealtimeSimulation(
                     await accrueLstTask();
                   })(),
                 ]);
-                for (const base of ["WETH", ...extraBaseSymbols]) auditPrice(base, "storage_written");
+                for (const base of ["WETH", ...extraBaseSymbols])
+                  auditPrice(base, "storage_written");
                 return;
               }
               const feedHash = await updatePriceFeedMempool(
@@ -3156,14 +3197,21 @@ export async function runRealtimeSimulation(
                 schedule.flowTrendAt(bn - runStartBlock),
               );
               if (flowProcess.pushContext(flowContext)) {
-                for (const event of stressAudit.active(blockIndex, e => e.type === "flowTrend"))
+                for (const event of stressAudit.active(
+                  blockIndex,
+                  (e) => e.type === "flowTrend",
+                ))
                   stressAudit.record(event, blockIndex, bn, {
-                    stage: "flow_context_queued", sizeMult: schedule.flowTrendAt(blockIndex).sizeMult,
+                    stage: "flow_context_queued",
+                    sizeMult: schedule.flowTrendAt(blockIndex).sizeMult,
                   });
               }
               // Issue #130: the flow wallets' balances into the run record (and refilled, when the
               // config asks), from the balances this context was just built on.
-              if (bn > runStartBlock && (bn - runStartBlock) % flowTelemetryEvery === 0)
+              if (
+                bn > runStartBlock &&
+                (bn - runStartBlock) % flowTelemetryEvery === 0
+              )
                 await flowWalletTelemetry(bn, flowContext);
             }
           };
@@ -3335,8 +3383,14 @@ export async function runRealtimeSimulation(
                 logger,
               );
               if (hashes.length > 0) {
-                for (const event of stressAudit.active(blockIndex, e => e.type === "liquidityPull"))
-                  stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
+                for (const event of stressAudit.active(
+                  blockIndex,
+                  (e) => e.type === "liquidityPull",
+                ))
+                  stressAudit.record(event, blockIndex, bn, {
+                    stage: "tx_submitted",
+                    hashes,
+                  });
               }
               for (const hash of hashes) {
                 submittedByHash.record(hash.toLowerCase(), {
@@ -3376,10 +3430,16 @@ export async function runRealtimeSimulation(
                   logger,
                 );
                 if (hashes.length > 0) {
-                  for (const event of stressAudit.active(blockIndex, e =>
-                    (e.type === "eusdDepeg" && runtime.symbol === "EUSD") ||
-                    (e.type === "depeg" && e.stable === runtime.symbol)))
-                    stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
+                  for (const event of stressAudit.active(
+                    blockIndex,
+                    (e) =>
+                      (e.type === "eusdDepeg" && runtime.symbol === "EUSD") ||
+                      (e.type === "depeg" && e.stable === runtime.symbol),
+                  ))
+                    stressAudit.record(event, blockIndex, bn, {
+                      stage: "tx_submitted",
+                      hashes,
+                    });
                 }
                 for (const hash of hashes) {
                   submittedByHash.record(hash.toLowerCase(), {
@@ -3422,8 +3482,14 @@ export async function runRealtimeSimulation(
                 logger,
               );
               if (sends.length > 0) {
-                for (const event of stressAudit.active(blockIndex, e => e.type === "tokenLaunch"))
-                  stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes: sends.map(s => s.hash) });
+                for (const event of stressAudit.active(
+                  blockIndex,
+                  (e) => e.type === "tokenLaunch",
+                ))
+                  stressAudit.record(event, blockIndex, bn, {
+                    stage: "tx_submitted",
+                    hashes: sends.map((s) => s.hash),
+                  });
               }
               for (const s of sends) {
                 const wallet = flowWalletMap.get(s.ownerKey);
@@ -4025,7 +4091,9 @@ export async function runRealtimeSimulation(
       resetUnit: config.resetUnit,
       blockTimeSec: config.blockTimeSec,
       blocksProcessed: processedBlocks,
-      ...(schedule.hasEvents() ? { stressEvents: stressAudit.summaries() } : {}),
+      ...(schedule.hasEvents()
+        ? { stressEvents: stressAudit.summaries() }
+        : {}),
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
       valueSeries,
