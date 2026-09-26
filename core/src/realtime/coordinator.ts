@@ -191,6 +191,7 @@ import type { LstState } from "@eris/sdk/protocols/lst.js";
 import type { LiquityState } from "@eris/sdk/protocols/liquity.js";
 import { VulnSchedule } from "./vulnEvents.js";
 import { SubmittedLedger } from "./submittedLedger.js";
+import { setLongTimeout } from "./longTimeout.js";
 import {
   FLOW_TELEMETRY_BLOCKS,
   FlowGuardLog,
@@ -2725,13 +2726,15 @@ export async function runRealtimeSimulation(
       const finish = (): void => {
         if (finished) return;
         finished = true;
-        if (timer) clearTimeout(timer);
+        cancelTimer?.();
         unwatch();
         resolve();
       };
-      const timer =
+      // Not setTimeout: the practice period's 42-day ceiling is past its 32-bit limit, which Node
+      // turns into 1 ms -- a run that kept its time limit ended before its first block.
+      const cancelTimer =
         effectiveRunSeconds > 0
-          ? setTimeout(finish, effectiveRunSeconds * 1000)
+          ? setLongTimeout(finish, effectiveRunSeconds * 1000)
           : undefined;
 
       const onBlock = async (bn: number): Promise<void> => {
