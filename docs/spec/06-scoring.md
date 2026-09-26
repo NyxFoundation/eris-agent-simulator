@@ -8,7 +8,7 @@
 
 ```
 [1] 保有 → USDC        トークン種別と venue アダプタが値付ける
-[2] 横断面 → 系列       エポック境界で全エージェントを同一ブロックで読む
+[2] 横断面 → 系列       評価区間の境界で全エージェントを同一ブロックで読む
 [3] 系列 → P            P = V_K − V_0（境界の両端。1 run につき 1 つ）
 [4] エポック → 順位     場全体で T = 50 + 10 (P − μ) / σ → Score = Σ w·T / Σ w（規約 §4.4）
 ```
@@ -59,21 +59,21 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 
 | 経路 | いつ | 何を作るか |
 |---|---|---|
-| **live**（`LiveScorer`） | エポック境界を通過するたび | 採点に使うエポック系列。`epochs.jsonl` と `epoch_boundary` イベント |
+| **live**（`LiveScorer`） | 評価区間の境界を通過するたび | 採点に使う評価区間の系列（`intervalSeries`）。`intervals.jsonl` と `interval_boundary` イベント |
 | **sweep**（`reconstructValueSeries`） | run 終了後（窓が 1,000 ブロック以内のとき） | equity curve・α・`unpricedHoldings`・`market.json` |
 
-**両者は同じ reader（`readValueSnapshotAtBlock`）・同じブロック・同じ G7 median 窓を使う**ので一致する。それが「live が sweep の代替になる」という主張の根拠であり、両方存在する run では毎回 `epoch_series_agreement` で検査する（[11](11-invariants.md)）。
+**両者は同じ reader（`readValueSnapshotAtBlock`）・同じブロック・同じ G7 median 窓を使う**ので一致する。それが「live が sweep の代替になる」という主張の根拠であり、両方存在する run では毎回 `interval_series_agreement` で検査する（[11](11-invariants.md)）。
 
 **live が必要な理由**（`liveScoring.ts:1-18`）：
 
 1. 止まらないチェーンには「あと」が来ない
 2. ノードの履歴保持深度は有限（anvil は約 1,050 ブロック）。「run を短くする」では 1 週間のチェーンに対処できない
 
-### エポック境界
+### 評価区間の境界
 
-`epochBoundaryBlocks(fromBlock, toBlock, epochBlocks)`。E エポックには E+1 個の境界が要り、run の開始が境界 0 になる。
+`intervalBoundaryBlocks(fromBlock, toBlock, intervalBlocks)`。E 区間には E+1 個の境界が要り、run の開始が境界 0 になる。
 
-**末尾の端数エポックは落とす。** 他より短い窓は構造的に小さい log return を生み、指標はそれを「エージェントが減速した」と読んでしまう。
+**末尾の端数区間は落とす。** 他より短い窓は構造的に小さい log return を生み、指標はそれを「エージェントが減速した」と読んでしまう。
 
 `--score-every N` は equity curve の間引きで、`fromBlock` と `toBlock` は必ず含む。**スコアは不変**（α は最初と最後の横断面しか使わない）。
 
@@ -83,7 +83,7 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 
 ### G7：マーク median（`MarkMedian`）
 
-エポック境界を、**その直前 `markMedianBlocks` ブロックの median で評価する**（既定 5）。1 ブロックだけプールを押した結果がスコアになるのを防ぐ。窓の大半で成立していなければ効かないので、スプレッドコストを払う往復が「ポジション」に変わる。
+評価区間の境界を、**その直前 `markMedianBlocks` ブロックの median で評価する**（既定 5）。1 ブロックだけプールを押した結果がスコアになるのを防ぐ。窓の大半で成立していなければ効かないので、スプレッドコストを払う往復が「ポジション」に変わる。
 
 **対象は市場価格 stable だけ**で、それで全面をカバーしている。
 
@@ -140,9 +140,9 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = 有効かつ σ_s
 
 - `dashboard/src/data/standings.ts` は `@core/scoring/deviationScore` を **import する**（2 箇所に置くと CLI と画面で順位が食い違ったときどちらが本物か分からなくなる）
 - スコア列 = Score（2 桁）。レジーム列 = そのレジームでの T の平均（説明であって別の順位ではない）。参考列 = net PnL（final marks）
-- ラウンドスクラブ中は P = V_k − V_0 を境界系列から取り直して T と Score を再計算する（**未来を見せない**）
+- 評価区間のスクラブ中は P = V_k − V_0 を境界系列から取り直して T と Score を再計算する（**未来を見せない**）
 - agent ページの Standing タブ: 採点エポック一覧（s / シナリオ / P / T / w）、T の平均・標準偏差・最悪値（= タイブレーク）、レジーム別、破産（≤ 0 で終えたシナリオ）
-- 1 run のリーダーボードはそのエポックの T（ベンチマークは —）。ラウンドの対数リターンは総資産価値の生の変化で、採点には使わない
+- 1 run のリーダーボードはそのエポックの T（ベンチマークは —）。評価区間の対数リターンは総資産価値の生の変化で、採点には使わない
 
 詳細は [09](09-dashboard.md)。
 

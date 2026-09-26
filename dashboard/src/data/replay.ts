@@ -6,7 +6,7 @@
 // read as a finished thing.
 //
 // Replay is the other direction: an archived run carries *more* than a live one (market.json, the
-// scored epoch series, the complete blocks.csv), so "show this run as of block B" is a stronger view
+// scored interval series, the complete blocks.csv), so "show this run as of block B" is a stronger view
 // than live, not a simulation of it. Everything the provider builds is already derived from block
 // ranges, so replay is one clamp applied before the derivations rather than a second rendering path.
 //

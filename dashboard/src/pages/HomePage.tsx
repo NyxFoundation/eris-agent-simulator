@@ -112,9 +112,10 @@ const BADGE: React.CSSProperties = {
 /**
  * How the units nest, stated once.
  *
- * "Round" carries three meanings across the material a participant reads: the rules draft used it
- * for a block, this dashboard uses it for the scoring window, and a run is a scenario. A reader who
- * has not been told which is which cannot interpret "rank moved at round 14".
+ * The interval (rules §0.1) is easy to mistake for the scoring unit, which is the epoch -- one
+ * scenario run. This dashboard called it a "round" until issue #140, a word the rules draft used
+ * for a block. A reader who has not been told which is which cannot interpret "rank moved at
+ * interval 14".
  */
 function UnitLadder() {
   const rungs = [

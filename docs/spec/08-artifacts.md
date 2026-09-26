@@ -14,7 +14,7 @@ runs/
     blocks.csv                      ブロック内 tx の記録
     market.json                     venue 状態の系列（報告専用）
     manifest.json                   環境マニフェスト
-    epochs.jsonl                    エポック境界（live 採点。逐次追記）
+    intervals.jsonl                 評価区間の境界（live 採点。逐次追記。issue #140 以前の coordinator は epochs.jsonl）
     market.jsonl                    venue 状態（live サンプル。逐次追記）
     agents/<id>.jsonl               エージェントの自己申告ログ
     agents/<id>.llm.jsonl           改訂の生のやり取り（opt-in）
@@ -66,28 +66,29 @@ runs/
 
 | フィールド | 内容 |
 |---|---|
-| `source` | `"post-run-reconstruction"` / `"live-epoch-boundaries"` / `"live-observation"` |
+| `source` | `"post-run-reconstruction"` / `"live-interval-boundaries"`（issue #140 以前は `"live-epoch-boundaries"`）/ `"live-observation"` |
 | `granularityBlocks` / `fromBlock` / `toBlock` / `blocks` / `windowBlocks` | 読み取り範囲 |
 | `failedReads` / `failedReadTargets` | 読めなかった横断面の数と、**どのコントラクトのどの関数か** |
 | `alphaRefFairUsdcPerWeth` / `alphaByAgent` | α の固定参照とその値 |
 | `markedValueByAgent` | 額面。採点値と差が出たエージェントのみ |
 | `unpricedHoldings` | 値付けできなかった / 読めなかった / 換金不能 / par 仮置きの保有（[06 §6.2](06-scoring.md)） |
-| `epochSeries` | **採点の元になる境界値**（下記） |
-| `epochSeriesMeta` | live 採点のメタ（`boundaries` / `failedBoundaries` / `epochBlocks` / `markMedianBlocks`） |
+| `intervalSeries` | **採点の元になる境界値**（下記） |
+| `intervalSeriesMeta` | live 採点のメタ（`source: "live-interval-boundaries"` / `boundaries` / `failedBoundaries` / `intervalBlocks` / `markMedianBlocks`） |
+| `epochSeries` / `epochSeriesMeta` | 上 2 つの issue #140 以前の名前。**結果発表（12 月）までは旧い形のまま併記する**（`epochBlocks` / `epochs`、`source: "live-epoch-boundaries"`）。読む側は `intervalSeries` を先に見て、無ければこちら（`core/src/intervalSeries.ts` の `intervalSeriesOf`） |
 | `markMedian` | G7 の適用結果（`windowBlocks` / `boundaries` / `surfaces` / `maxDeviationBps`） |
 | `failed` / `error` | 再構成が失敗したとき |
 
-`epochSeries`：
+`intervalSeries`：
 
 ```json
-{ "epochBlocks": 12, "epochs": 29,
+{ "intervalBlocks": 12, "intervals": 29,
   "boundaryBlocks": [1001, 1013, ...],
   "valuesByAgent": { "venue-arb": [25000.0, 25003.4, null, ...] } }
 ```
 
 **`null` は「その境界でこのエージェントが報告しなかった」であって 0 ではない。**
 
-**両方の系列が存在する run では live 側が権威になる**（`summary.json` のラウンドとスコアが同じオブジェクトを指すように）。sweep も走った run では `valueSeries.source` は sweep のままで、live のメタは `epochSeriesMeta` に**ネストして**入る（spread するとその run が「sweep していない」と名乗ることになる）。
+**両方の系列が存在する run では live 側が権威になる**（`summary.json` の評価区間とスコアが同じオブジェクトを指すように）。sweep も走った run では `valueSeries.source` は sweep のままで、live のメタは `intervalSeriesMeta` に**ネストして**入る（spread するとその run が「sweep していない」と名乗ることになる）。
 
 ### `agents[].pnlUsdc`（規約 §4.4.1 の P）
 
@@ -108,7 +109,7 @@ runs/
 
 | type | 内容 |
 |---|---|
-| `run_started_realtime` | run の開始。**seed / flowSeed / epochBlocks / rpcUrl / chainId / chainMode を含む**。セグメント時は各セグメント冒頭にも出る |
+| `run_started_realtime` | run の開始。**seed / flowSeed / intervalBlocks / rpcUrl / chainId / chainMode を含む**（`epochBlocks` も同じ値で併記。issue #140 以前の名前）。セグメント時は各セグメント冒頭にも出る |
 | `run_completed` | 完了 |
 | `deployment_check` | デプロイの実測（chainId / checked / missing） |
 | `agents_registered` | ロスター全体（id / address / baseline / description / external） |
@@ -121,16 +122,16 @@ runs/
 | `external_chain_block_time` / `external_chain_mint_guard` / `treasury_funded_roles` | external モード |
 | `economic_gas_enabled` / `fee_cap_enforcement_disabled` | economicGas プロファイル |
 | `realtime_block_error` | ブロック処理中の例外（ループは継続） |
-| `round_timing` | 各段の所要時間（`keeperMs` / `oracleMs` / `stateFlowMs` / `epochMs` / `blocksMs` / `totalMs` …） |
+| `round_timing` | 各段の所要時間（`keeperMs` / `oracleMs` / `stateFlowMs` / `boundaryMs`（旧 `epochMs`）/ `blocksMs` / `totalMs` …） |
 
 ### 採点
 
 | type | 内容 |
 |---|---|
-| `epoch_boundary` | 境界の値（`epochs.jsonl` と同じ内容） |
-| `epoch_boundary_failed` | 境界が読めなかった |
-| `epoch_series_scored` | スコア算出のメタ |
-| `epoch_series_agreement` | **live と sweep の一致検査**（`compared` / `maxAbsDiffUsdc` / `maxRelDiff` / `worst`） |
+| `interval_boundary` | 評価区間の境界の値（`intervals.jsonl` と同じ内容） |
+| `interval_boundary_failed` | 境界が読めなかった |
+| `interval_series_scored` | スコア算出のメタ |
+| `interval_series_agreement` | **live と sweep の一致検査**（`compared` / `maxAbsDiffUsdc` / `maxRelDiff` / `worst`） |
 | `value_series_reconstructed` / `value_series_reconstruction_failed` | 事後 sweep |
 | `post_run_sweep_skipped` | 窓が履歴保持深度を超えたので**明示的にスキップ**した |
 | `market_series_reconstructed` / `market_series_reconstruction_failed` | market.json |
@@ -222,11 +223,11 @@ runs/
 
 **外部参加者の判断ログは参加者のマシンにしか無い。**
 
-## 8.7 `epochs.jsonl` / `market.jsonl`（live 追記）
+## 8.7 `intervals.jsonl` / `market.jsonl`（live 追記）
 
 `events.jsonl` とは別ファイルにしてある。**独立に tail できることが、1 週間分のイベントを読まずにライブ順位を出せる条件**（ADR 0021 §3）。
 
-`epochs.jsonl` の 1 行 = `{index, blockNumber, fairPriceUsdcPerWeth, values: {agentId: number|null}, elapsedMs}`。
+`intervals.jsonl` の 1 行 = `{index, blockNumber, fairPriceUsdcPerWeth, values: {agentId: number|null}, elapsedMs}`。issue #140 以前に起動した coordinator は同じ形の行を `epochs.jsonl` に書く。ダッシュボード・公開 runs API・監視 exporter はどちらでも読む。
 
 `market.jsonl` は `market.json` の `series[]` と同じ行形式を境界ごとにサンプルしたもの（毎ブロックではない — 1 週間分の venue 行は誰も開けないファイルになる）。
 
@@ -239,7 +240,7 @@ runs/
 | `schema` / `generatedAt` | `eris-environment-manifest/1` |
 | `status` | `{scored: false, label: "practice", note}` — **順位の出自が順位と別々に流通しないよう文書自体に書く** |
 | `chain` | `rpcUrl` / `readRpcUrl` / `chainId` / `chainMode` / `blockTimeSec` |
-| `round` | `epochBlocks` / `approxSeconds` / `markMedianBlocks` / `scoreEvery`（ブロックと分の**両方**を出す） |
+| `round` | 評価区間。`intervalBlocks` / `approxSeconds` / `markMedianBlocks` / `scoreEvery`（ブロックと分の**両方**を出す）。`epochBlocks` は `intervalBlocks` の旧名で、結果発表まで同じ値で残す |
 | `protocols` / `actions` | 有効な venue と、その venue のアクション語彙 |
 | `contracts` | **有効な venue のアドレスのみ** + `priceFeed` + `stableMarkets` |
 | `tokens` | symbol → `{address, decimals, kind}` |
@@ -293,4 +294,4 @@ runs/
 | `events.jsonl` | 約 1,437 B |
 | `blocks.csv` | 約 731 B |
 
-1 週間を非分割で走らせると `events.jsonl` 435MB・`blocks.csv` 221MB・336 ラウンドが 1 本のバーになる。**20,000 ブロック（2 秒 cadence で約 11 時間）を超える非分割 run は起動時に警告する**（[02 §2.1](02-runtime.md)）。
+1 週間を非分割で走らせると `events.jsonl` 435MB・`blocks.csv` 221MB・336 評価区間が 1 本のバーになる。**20,000 ブロック（2 秒 cadence で約 11 時間）を超える非分割 run は起動時に警告する**（[02 §2.1](02-runtime.md)）。

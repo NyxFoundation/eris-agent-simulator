@@ -153,7 +153,7 @@ Both run through the same observation, validation and signing path. See [Python 
 
 | Document | Contents |
 |---|---|
-| **[Getting Started](docs/competition-start.en.md)** / **[日本語](docs/competition-start.md)** | **Start here if you are entering the competition.** The shape of an epoch, the 8 regimes and the timeline, the vocabulary the rules use versus the code, setup, the smallest submittable agent, the run-read-fix loop, how to read the dashboard, the reference agents, and how to submit |
+| **[Getting Started](docs/competition-start.en.md)** / **[日本語](docs/competition-start.md)** | **Start here if you are entering the competition.** The shape of an epoch, the 8 regimes and the timeline, what the code calls the rules' units, setup, the smallest submittable agent, the run-read-fix loop, how to read the dashboard, the reference agents, and how to submit |
 | [Local Realtime Simulation](docs/guide/local-deploy.md) | Setup: prerequisites, steps, and troubleshooting for non-fork local deploy mode |
 | [Writing Agents](docs/guide/writing-agents.md) | Agent authoring tutorial: minimal agent → reading observations → actions → logging → verification → submission |
 | [Backtesting](docs/guide/backtest.md) | Replaying state dump + official regimes, iterating with `--repeat`, sparring, what is and isn't measurable |

@@ -23,7 +23,7 @@
 # a pre-trade dry-run and a codehash comparison rather than a price calculation.
 #
 # The skim lands in the agent's own value, so the ordinary scoring picks it up: a rugged agent's
-# epoch series drops and M9 charges it. The environment's ground-truth events
+# interval series drops and its P with it. The environment's ground-truth events
 # (vulnerability_exploited / safe_pool_captured) are for attribution, not for scoring.
 #
 # The field needs agents that can see the pools at all. `discovery-arb` and `discovery-arb-verify`

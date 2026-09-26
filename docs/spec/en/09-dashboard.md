@@ -9,10 +9,12 @@ Sources: `dashboard/src/{App.tsx,navigation.ts}`, `dashboard/src/data/*`, `dashb
 ## 9.1 The information hierarchy
 
 ```
-competition  ⊃  scenario (one world = one epoch of the rules, "regime#seed")  ⊃  round (one evaluation interval: interim progress, not the scoring unit)
+competition  ⊃  scenario (one world = one epoch of the rules, "regime#seed")  ⊃  interval (one evaluation interval: interim progress, not the scoring unit)
 ```
 
 Defined once, in `dashboard/src/data/competition.ts:1-8`.
+
+The UI calls the evaluation interval "Interval" / 「評価区間」 ("Round" / 「ラウンド」 until issue #140). The dashboard's own identifiers (`roundCursor`, `RoundsBar`, `round`, …) keep the name: inside `dashboard/` they only ever meant the interval.
 
 - A competition is normally the `matrix.json` written by `npm run backtest -- --scenarios`. A segmented period has the same shape
 - **There is no second model for "a run outside a competition".** One `sim:realtime` run is "a competition of one scenario", and `competitionFromRun` wraps it into the identical shape. **Normalizing at one point in the data layer means every page downstream sees exactly one kind of object**
@@ -34,19 +36,19 @@ Defined once, in `dashboard/src/data/competition.ts:1-8`.
 
 **Removed routes**: `/standings` and `/leaderboard` (duplicated the in-scenario ranking), `/archive` (a relic that was never reached), `/run` (an alias).
 
-## 9.2 The round cursor (the UI's clock)
+## 9.2 The interval cursor (the UI's clock)
 
 `dashboard/src/data/roundCursor.ts`. **The position exists exactly once.**
 
-Scores, rank changes and environment events are all measured in epochs, so every view reads against this axis. **The round axis used to be reimplemented three times** (round selection, replay head, live head) — three stores, one concept.
+Interim values, rank changes and environment events are all measured in intervals, so every view reads against this axis. **The axis used to be reimplemented three times** (interval selection, replay head, live head) — three stores, one concept.
 
 | Property | Contents |
 |---|---|
 | `round` | **1-based and competition-relative.** `null` means the end, i.e. the finished result |
-| Meaning | **At round k, all 35 scenarios are at their own round k** — which is what makes 35 independent worlds watchable as one competition |
+| Meaning | **At interval k, all 35 scenarios are at their own interval k** — which is what makes 35 independent worlds watchable as one competition |
 | Playback | Advancing the cursor (not a separate "replay mode"). 1x/2x/4x, one tick every 700ms |
 | The end | **Parks rather than looping** (a cursor that silently restarts reads as a competition that rewound) |
-| Range changes | A position still inside the new range is kept. **A position past the end parks at the end** (round 20 of a nine-round scenario is not round 9) |
+| Range changes | A position still inside the new range is kept. **A position past the end parks at the end** (interval 20 of a nine-interval scenario is not interval 9) |
 
 Block-level movement inside one scenario stays in `replay.ts`. It is a **refinement** of this position, not a competing notion of it, and exists only while a single scenario is open. When armed, replay drives the cursor; the cursor never drives it back.
 
@@ -81,19 +83,19 @@ Shown permanently when `competition.file.resetUnit === "continuous"` (`HomePage.
 
 A ranking whose provenance travels separately from the ranking will be misread, so it is stated **on the standings itself**.
 
-### "Through round k"
+### "Through interval k"
 
-The ranking is **recomputed over the first k rounds** (it never reads the finished result), and the move from round k−1 is shown alongside.
+The ranking is **recomputed over the first k intervals** (it never reads the finished result), and the move from interval k−1 is shown alongside.
 
-"Through round k" re-reads P = V_k − V_0 from the boundary series and recomputes T and Score — **exactly** the rule, not an approximation (`scenarioPnl` in `dashboard/src/data/standings.ts`).
+"Through interval k" re-reads P = V_k − V_0 from the boundary series and recomputes T and Score — **exactly** the rule, not an approximation (`scenarioPnl` in `dashboard/src/data/standings.ts`).
 
 ### When scenarios have different lengths
 
-In full-8h, depeg runs 9 rounds and the others 29. **A scenario past its last round is treated as a world that ended and stays in the ranking** (removing it would move the field for a reason that is not a result). The band says `30 of 35 still running · 5 ended earlier`.
+In full-8h, depeg runs 9 intervals and the others 29. **A scenario past its last interval is treated as a world that ended and stays in the ranking** (removing it would move the field for a reason that is not a result). The band says `30 of 35 still running · 5 ended earlier`.
 
-### net PnL cannot be scoped to a round
+### net PnL cannot be scoped to an interval
 
-Both ends are priced at the run's final marks, so there is no value for round k. It appears only as a reference column, and **while scrubbing it is greyed out so a finished value is never labelled with a round**.
+Both ends are priced at the run's final marks, so there is no value for interval k. It appears only as a reference column, and **while scrubbing it is greyed out so a finished value is never labelled with an interval**.
 
 ### Two cases with no ranking
 
@@ -107,9 +109,9 @@ Both land on the scenario view and say so.
 One world as **a board you can walk block by block** (`dashboard/src/pages/ScenarioPage.tsx`). Every other page answers "what happened"; this one answers "what does it look like while it happens".
 
 ```
-RoundsBar      the round axis (the competition cursor; no replay transport here)
-header         the scenario's name (regime#seed, with the `full-` prefix stripped) + seed + rounds/blocks + agents, venues and the block window on screen
-WorldTimeline  the block axis: click, drag or ← → to move, 0.5x–4x to play; round boundaries are ticked
+RoundsBar      the interval axis (the competition cursor; no replay transport here)
+header         the scenario's name (regime#seed, with the `full-` prefix stripped) + seed + intervals/blocks + agents, venues and the block window on screen
+WorldTimeline  the block axis: click, drag or ← → to move, 0.5x–4x to play; interval boundaries are ticked
 WorldMap       wallets on the left, the chain in the middle, contracts on the right; one frame per block (past 900 frames a frame is a labelled group of blocks)
 This block     transactions / reverts / agents trading / what the environment did there
 3 panels       the ranking within this scenario (a row picks that wallet on the board) / Agent Log (the picked wallet's decisions, up to the head) / venue price against fair and account value at each scored boundary
@@ -117,19 +119,19 @@ This block     transactions / reverts / agents trading / what the environment di
 
 **It used to be a landing page of three previews (Markets / Standings / Explorer) with the board on a separate `/world` tab** (merged 2026-09-07). The previews were the board's numbers without the time axis, so the board became the page. A link to `/world` lands on `/scenario`.
 
-**Two clocks meet here; one is the page's.** The rounds bar is the competition cursor (round k of every world) and the selected round is the block axis's window. The block axis's head is local state, not the replay head: the replay head is in every fetch key, so moving it refetches every snapshot per step, whereas the board only walks frames its snapshot already holds. **Leaving the page mid-walk hands the head to the replay store once** (arming replay on an archived run, seeking if one is already armed), so `/markets` and `/explorer` open at the block the board was on. A walk that reached the end hands over nothing: the other pages default to the whole run, and a replay parked at the last block would only label the same view "replay". The other way round, opening the page with a replay armed for this run starts the walk at the head. **The board's frames are never clamped by replay** (they always span the run; cutting them at the head would show the blocks past it as a future with no transactions). Keeping the future out is the walk's own head: the log, the charts and the ranking beside the board read up to it. The ranking is **the standings through the rounds closed at that block** (`standingsThroughRound` — `buildStandings` called once per closed-round count, so there is still one scoring path), and says "not scored yet" while no round has closed.
+**Two clocks meet here; one is the page's.** The interval bar is the competition cursor (interval k of every world) and the selected interval is the block axis's window. The block axis's head is local state, not the replay head: the replay head is in every fetch key, so moving it refetches every snapshot per step, whereas the board only walks frames its snapshot already holds. **Leaving the page mid-walk hands the head to the replay store once** (arming replay on an archived run, seeking if one is already armed), so `/markets` and `/explorer` open at the block the board was on. A walk that reached the end hands over nothing: the other pages default to the whole run, and a replay parked at the last block would only label the same view "replay". The other way round, opening the page with a replay armed for this run starts the walk at the head. **The board's frames are never clamped by replay** (they always span the run; cutting them at the head would show the blocks past it as a future with no transactions). Keeping the future out is the walk's own head: the log, the charts and the ranking beside the board read up to it. The ranking is **the standings through the intervals closed at that block** (`standingsThroughRound` — `buildStandings` called once per closed-interval count, so there is still one scoring path), and says "not scored yet" while no interval has closed.
 
 **The header names the scenario itself.** It used to be the ERIS wordmark, which made every scenario look like the application's front page and said nothing about which of the 35 worlds was on screen.
 
 **Implementation vocabulary (file names, ADR numbers) may appear only in the InfoTabs** (§9.10).
 
-### Putting environment events on the round axis (`dashboard/src/data/schedule.ts`)
+### Putting environment events on the interval axis (`dashboard/src/data/schedule.ts`)
 
-`stress_schedule` is **the plan drawn from the seed**, in run-relative blocks. It is converted **onto the round axis** (`fromRound` / `toRound` = `ceil(block / epochBlocks)`), because the round is the axis everything else is on.
+`stress_schedule` is **the plan drawn from the seed**, in run-relative blocks. It is converted **onto the interval axis** (`fromRound` / `toRound` = `ceil(block / intervalBlocks)`), because the interval is the axis everything else is on.
 
 - The schedule is written before the first block, so **reading the first 128KB of events.jsonl is enough**: 4MB across 35 scenarios, against 102MB for the whole files
-- `windowsAtRound(schedules, round)` collects every window covering that round across the competition and **puts the ones that just opened first** (a window open for three rounds is context; one that just opened is the news)
-- The standings' round note prints that in one line
+- `windowsAtRound(schedules, round)` collects every window covering that interval across the competition and **puts the ones that just opened first** (a window open for three intervals is context; one that just opened is the news)
+- The standings' interval note prints that in one line
 
 **`crash` / `spike` / `cexDrift` / `flowTrend` leave no per-block record** (they change the price walk itself), so this is **the plan and is labelled as such**. It never says "never fired"; it says "look at the price chart".
 
@@ -137,18 +139,18 @@ This block     transactions / reverts / agents trading / what the environment di
 
 ### Panel scoping
 
-Panels are scoped to the selected round. **`scopeRunToBlocks` (`runsProvider.ts:1358`) narrows the run object itself by a block window**, so no builder grows a second code path. The header states the window and offers a link back to the whole run.
+Panels are scoped to the selected interval. **`scopeRunToBlocks` (`runsProvider.ts:1358`) narrows the run object itself by a block window**, so no builder grows a second code path. The header states the window and offers a link back to the whole run.
 
 **The exception is the end-of-run cross-section tables** (GMX positions / Aave accounts / reserves), which are a single snapshot at the end and say "at the run's final block" in the title. When an agent genuinely ended flat, the panel says so in prose — "no venue position open at the final block; this agent ended flat, or the run predates per-venue position tracking".
 
-**Per-round volumes summing to less than the whole run is correct**: the scorer drops the trailing partial epoch, so blocks after the last boundary belong to no round.
+**Per-interval volumes summing to less than the whole run is correct**: the scorer drops the trailing partial interval, so blocks after the last boundary belong to no interval.
 
-### The rounds bar
+### The interval bar (`RoundsBar`)
 
-The bar is the selected run's own epoch series (`valueSeries.epochSeries.boundaryBlocks`). Clicking a segment opens that round's per-agent result.
+The bar is the selected run's own interval series (`valueSeries.intervalSeries.boundaryBlocks`; `epochSeries` on a run from before issue #140, and either is read). Clicking a segment opens that interval's per-agent result.
 
-- **`Δ value` and `log return` are different quantities**: the first is the raw change including β (so even `noop` moves), the second is excess over the baseline — the series the score averages
-- A live run has no scored series, so the frame is drawn from `run_started_realtime.epochBlocks` to show progress, and the results arrive on completion
+- **`Δ value` and `log return` are different quantities**: the first is the raw change including β (so even `noop` moves), the second is the same change as a log growth rate, ln(after / before). **Neither is the score** (the score is one P per epoch)
+- A live run has no scored series, so the frame is drawn from `run_started_realtime.intervalBlocks` (`epochBlocks` on an older run) to show progress, and the results arrive on completion
 
 ## 9.5 `/markets`
 
@@ -173,7 +175,7 @@ The default tab is **Standing (why this rank)** — but only when the agent rank
 
 It lists every epoch the agent was scored in (s / scenario / P / T / w), the mean, std and worst of T (the §4.6 tie-breaks), the distribution and a per-regime breakdown. The rank is decided by Score, so this is **an explanation, not a second ranking**.
 
-Measured: `clean-arb` ranks first on +0.32bp per round with a std of 1.78bp; `levered-long-max` ranks last on **+4.90bp** with a std of **78.60bp**. **The agent earning fifteen times as much is last**, and the whole difference is std. Split by regime, it is +48.3bp in `cex-drift` and negative in the other six — i.e. a story about regime fit.
+Measured: `clean-arb` ranks first on +0.32bp per interval with a std of 1.78bp; `levered-long-max` ranks last on **+4.90bp** with a std of **78.60bp**. **The agent earning fifteen times as much is last**, and the whole difference is std. Split by regime, it is +48.3bp in `cex-drift` and negative in the other six — i.e. a story about regime fit.
 
 **The decision-log tab is hidden for external agents** ([05 §5.9](05-agent-contract.md)); an empty panel is a different claim. The submission feed states how many agents will not appear there.
 
@@ -192,16 +194,16 @@ A run in progress appears as `● (live)`.
 
 ### Replay
 
-Walk a finished run forward as "at block B" (`▶ replay` on the rounds bar). The scenario page alone shows no transport: it has a block axis of its own (§9.4), and leaving it mid-walk hands the head to replay.
+Walk a finished run forward as "at block B" (`▶ replay` on the interval bar). The scenario page alone shows no transport: it has a block axis of its own (§9.4), and leaving it mid-walk hands the head to replay.
 
 **Live mode only works on the machine that ran the run** (the tail is the dev server's filesystem and the chain reads go to the agents' anvil), so **replay is the only way to watch a finished run, or one collected from a spot box**.
 
-Archived carries *more* information than live (`market.json`, scored epochs, a complete `blocks.csv`), so it is a superset rather than a degraded mode.
+Archived carries *more* information than live (`market.json`, the scored interval series, a complete `blocks.csv`), so it is a superset rather than a degraded mode.
 
 **Not showing the future is a requirement**:
 
-- A round that has not closed has no result
-- The ranking is **recomputed from P = V_k − V_0 over closed rounds only** (reading the finished figure would print the answer on every frame)
+- An interval that has not closed has no result
+- The ranking is **recomputed from P = V_k − V_0 over closed intervals only** (reading the finished figure would print the answer on every frame)
 - The end-of-run position tables are withheld until the head reaches the end
 
 ## 9.8 Finding runs (the `/runs` API)
@@ -233,7 +235,7 @@ Archived carries *more* information than live (`market.json`, scored epochs, a c
 | Run | `2026-08-29 16:03` (the directory's timestamp, formatted) |
 | **"Run N" sequence numbers** | **Gone** — a coordinate on the developer's machine that means nothing to a participant |
 
-**Identity and display are separate**: a scenario is keyed by `runDir`, the only field guaranteed unique (a matrix can repeat (regime, seed) under `--repeat`, and segments can share a label). Keying on the label collapsed six segments into one and pooled their rounds.
+**Identity and display are separate**: a scenario is keyed by `runDir`, the only field guaranteed unique (a matrix can repeat (regime, seed) under `--repeat`, and segments can share a label). Keying on the label collapsed six segments into one and pooled their intervals.
 
 ## 9.10 i18n
 

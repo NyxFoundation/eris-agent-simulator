@@ -1139,11 +1139,11 @@ const scenarioUnrecorded = (type: string): string | undefined => {
 
 /** The rounds a block window overlaps, as "3–5" / "4" / "—". */
 function roundsSpanned(
-  epochs: { index: number; fromBlock: number; toBlock: number }[],
+  intervals: { index: number; fromBlock: number; toBlock: number }[],
   fromBlock: number,
   toBlock: number,
 ): string {
-  const hit = epochs
+  const hit = intervals
     .filter((e) => e.fromBlock < toBlock && e.toBlock > fromBlock)
     .map((e) => e.index);
   if (hit.length === 0) return "—";
@@ -1168,7 +1168,7 @@ function scheduleDisclosure(run: LoadedRun): "full" | "past" | "withheld" {
 
 export function buildScenarioPanel(
   run: LoadedRun,
-  epochs: { index: number; fromBlock: number; toBlock: number }[],
+  intervals: { index: number; fromBlock: number; toBlock: number }[],
 ): VenuePanel {
   const started = eventOfType(run.events, "run_started_realtime");
   const schedule = eventOfType(run.events, "stress_schedule");
@@ -1177,7 +1177,7 @@ export function buildScenarioPanel(
   // else the segment header. The old `?? 0` printed `RUN WINDOW 0 → 130` on every redacted epoch.
   const runStartCandidates = [
     num(schedule?.runStartBlock),
-    epochs[0]?.fromBlock,
+    intervals[0]?.fromBlock,
     num(started?.fromBlock),
     num(started?.blockNumber),
   ].filter((v): v is number => typeof v === "number" && v > 0);
@@ -1224,13 +1224,13 @@ export function buildScenarioPanel(
       value:
         runBlocks > 0
           ? `${runStart.toLocaleString("en-US")} → ${(runStart + runBlocks).toLocaleString("en-US")}`
-          : epochs.length > 0
-            ? `${runStart.toLocaleString("en-US")} → ${epochs[epochs.length - 1].toBlock.toLocaleString("en-US")}`
+          : intervals.length > 0
+            ? `${runStart.toLocaleString("en-US")} → ${intervals[intervals.length - 1].toBlock.toLocaleString("en-US")}`
             : runStart.toLocaleString("en-US"),
       sub:
         runBlocks > 0
-          ? t("vp.scenario.windowSub", { blocks: runBlocks, rounds: epochs.length })
-          : t("vp.scenario.windowRounds", { rounds: epochs.length }),
+          ? t("vp.scenario.windowSub", { blocks: runBlocks, rounds: intervals.length })
+          : t("vp.scenario.windowRounds", { rounds: intervals.length }),
     });
   }
 
@@ -1272,7 +1272,7 @@ export function buildScenarioPanel(
       cell(
         `${from.toLocaleString("en-US")}–${to.toLocaleString("en-US")} · r${num(event.rampBlocks)}/h${num(event.holdBlocks)}/d${num(event.decayBlocks)}`,
       ),
-      cell(roundsSpanned(epochs, from, to)),
+      cell(roundsSpanned(intervals, from, to)),
       cell(
         `${(num(event.magnitude) * 100).toFixed(1)}%`,
         num(event.magnitude) > 0 ? "warn" : "neutral",
@@ -1387,7 +1387,7 @@ export function buildScenarioPanel(
     ],
     rows: notable.slice(0, 40).map((n) => [
       cell(n.block.toLocaleString("en-US")),
-      cell(roundsSpanned(epochs, n.block - 1, n.block)),
+      cell(roundsSpanned(intervals, n.block - 1, n.block)),
       cell(n.kind, n.tone ?? "neutral"),
       cell(n.text),
     ]),

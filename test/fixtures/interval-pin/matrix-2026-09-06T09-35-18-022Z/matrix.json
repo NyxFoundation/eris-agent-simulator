@@ -1,0 +1,166 @@
+{
+  "schema": 2,
+  "createdAt": "2026-09-06T09:35:18.024Z",
+  "resumedAt": "2026-09-06T09:39:38.486Z",
+  "sourceCommit": "bd0c6be799b3251a407ce3a93d2cefcbad454633",
+  "scenarioSet": "fixture/e2e/plan.yaml",
+  "resetUnit": "scenario",
+  "k": 3,
+  "repeat": 1,
+  "scenariosPlanned": 3,
+  "scenarios": [
+    {
+      "s": 1,
+      "regime": "calm",
+      "seed": 101,
+      "agents": [
+        {
+          "id": "noop",
+          "pnlUsdc": 25393.807669317117,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": true,
+          "initialValueUsdc": 370105.61187596706,
+          "finalValueUsdc": 370105.61187596706
+        },
+        {
+          "id": "venue-arb",
+          "pnlUsdc": 25357.64152248716,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 70.38336059363792,
+          "alphaUsdc": 71.93919524922967,
+          "baseline": false,
+          "participant": "team-a",
+          "initialValueUsdc": 370105.61187596706,
+          "finalValueUsdc": 370175.9952365607
+        },
+        {
+          "id": "my-arb",
+          "pnlUsdc": 25324.597606405616,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 25.194639804016333,
+          "alphaUsdc": 26.71040392748546,
+          "baseline": false,
+          "participant": "team-a",
+          "initialValueUsdc": 370105.61187596706,
+          "finalValueUsdc": 370130.8065157711
+        },
+        {
+          "id": "clean-arb",
+          "pnlUsdc": 25393.807669317117,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": false,
+          "participant": "team-b",
+          "initialValueUsdc": 370105.61187596706,
+          "finalValueUsdc": 370105.61187596706
+        }
+      ],
+      "runDir": "runs/2026-09-06T09-35-18-035Z"
+    },
+    {
+      "s": 2,
+      "regime": "whale",
+      "seed": 202,
+      "agents": [
+        {
+          "id": "noop",
+          "pnlUsdc": -3104.2112076914054,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": true,
+          "initialValueUsdc": 369887.8555434266,
+          "finalValueUsdc": 369887.8555434266
+        },
+        {
+          "id": "venue-arb",
+          "pnlUsdc": -2002.2999247605912,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 3383.4559645152767,
+          "alphaUsdc": 3381.822450033389,
+          "baseline": false,
+          "participant": "team-a",
+          "initialValueUsdc": 369887.8555434266,
+          "finalValueUsdc": 373271.31150794186
+        },
+        {
+          "id": "my-arb",
+          "pnlUsdc": -2831.310836312361,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 803.2428201338626,
+          "alphaUsdc": 837.4601175654097,
+          "baseline": false,
+          "participant": "team-a",
+          "initialValueUsdc": 369887.8555434266,
+          "finalValueUsdc": 370691.09836356045
+        },
+        {
+          "id": "clean-arb",
+          "pnlUsdc": -2040.2408174761804,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 3982.23504796403,
+          "alphaUsdc": 3994.029993110802,
+          "baseline": false,
+          "participant": "team-b",
+          "initialValueUsdc": 369887.8555434266,
+          "finalValueUsdc": 373870.0905913906
+        }
+      ],
+      "runDir": "runs/2026-09-06T09-36-11-544Z"
+    },
+    {
+      "s": 3,
+      "regime": "calm",
+      "seed": 303,
+      "agents": [
+        {
+          "id": "noop",
+          "pnlUsdc": 24009.620262104203,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": true,
+          "initialValueUsdc": 374270.49934933573,
+          "finalValueUsdc": 374270.49934933573
+        },
+        {
+          "id": "venue-arb",
+          "pnlUsdc": 23944.224667663686,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": -88.41915161162615,
+          "alphaUsdc": -65.39559444051702,
+          "baseline": false,
+          "participant": "team-a",
+          "initialValueUsdc": 374270.49934933573,
+          "finalValueUsdc": 374182.0801977241
+        },
+        {
+          "id": "my-arb",
+          "pnlUsdc": 23952.903674163856,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": -86.79896712873597,
+          "alphaUsdc": -56.71658794034738,
+          "baseline": false,
+          "participant": "team-a",
+          "initialValueUsdc": 374270.49934933573,
+          "finalValueUsdc": 374183.700382207
+        },
+        {
+          "id": "clean-arb",
+          "pnlUsdc": 24009.620262104203,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": false,
+          "participant": "team-b",
+          "initialValueUsdc": 374270.49934933573,
+          "finalValueUsdc": 374270.49934933573
+        }
+      ],
+      "runDir": "runs/2026-09-06T09-39-38-498Z"
+    }
+  ]
+}

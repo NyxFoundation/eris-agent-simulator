@@ -1,0 +1,177 @@
+{
+  "runId": "2026-09-07T02-56-57-367Z",
+  "mode": "backtest",
+  "resetUnit": "scenario",
+  "blockTimeSec": 2,
+  "blocksProcessed": 130,
+  "elapsedMs": 258276,
+  "finalFairPriceUsdcPerWeth": 3001.036059718197,
+  "valueSeries": {
+    "source": "post-run-reconstruction",
+    "granularityBlocks": 1,
+    "fromBlock": 1218,
+    "toBlock": 1346,
+    "blocks": 129,
+    "windowBlocks": 129,
+    "failedReads": 0,
+    "failedReadTargets": [],
+    "elapsedMs": 786,
+    "alphaRefFairUsdcPerWeth": 2991.18908179,
+    "alphaByAgent": {
+      "noop": 0,
+      "peg-arb": 0,
+      "peg-arb-frozen": 0,
+      "venue-arb": 156.8306433125981
+    },
+    "markedValueByAgent": {},
+    "unpricedHoldings": [],
+    "epochSeries": {
+      "epochBlocks": 12,
+      "epochs": 10,
+      "boundaryBlocks": [
+        1218,
+        1230,
+        1242,
+        1254,
+        1266,
+        1278,
+        1290,
+        1302,
+        1314,
+        1326,
+        1338
+      ],
+      "valuesByAgent": {
+        "noop": [
+          372495.2028361285,
+          374389.8882353171,
+          371195.0546571026,
+          371412.225232945,
+          365999.82853949297,
+          367346.0555596972,
+          371842.38984388375,
+          372958.2402892118,
+          376295.7789649543,
+          374469.5122664296,
+          372306.80719308316
+        ],
+        "peg-arb": [
+          372495.2028361285,
+          374389.8882353171,
+          371195.0546571026,
+          371412.225232945,
+          365999.82853949297,
+          367346.0555596972,
+          371842.38984388375,
+          372958.2402892118,
+          376295.7789649543,
+          374469.5122664296,
+          372306.80719308316
+        ],
+        "peg-arb-frozen": [
+          372495.2028361285,
+          374389.8882353171,
+          371195.0546571026,
+          371412.225232945,
+          365999.82853949297,
+          367346.0555596972,
+          371842.38984388375,
+          372958.2402892118,
+          376295.7789649543,
+          374469.5122664296,
+          372306.80719308316
+        ],
+        "venue-arb": [
+          372495.2028361285,
+          374392.14579409454,
+          371239.3188904537,
+          371486.16236695036,
+          366194.5031593818,
+          367674.403330366,
+          371986.83253201045,
+          373027.99811861635,
+          376143.3072836453,
+          374444.69806626753,
+          372451.4261840943
+        ]
+      }
+    },
+    "markMedian": {
+      "windowBlocks": 5,
+      "boundaries": 10,
+      "surfaces": [
+        "stables"
+      ],
+      "maxDeviationBps": {
+        "EUSD": 0,
+        "DAI": 0
+      }
+    },
+    "epochSeriesMeta": {
+      "source": "live-epoch-boundaries",
+      "boundaries": 11,
+      "failedBoundaries": 0,
+      "epochBlocks": 12,
+      "markMedianBlocks": 5
+    }
+  },
+  "violations": [],
+  "agents": [
+    {
+      "id": "noop",
+      "address": "0x8BE96D2511d3D752969c6d15e63a6c164BA49e93",
+      "baseline": true,
+      "initialValueUsdc": 373053.65060511115,
+      "finalValueUsdc": 373053.65060511115,
+      "netPnlUsdc": 0,
+      "pnlUsdc": -188.39564304531086,
+      "alphaUsdc": 0,
+      "includedTxCount": 0,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "peg-arb",
+      "address": "0x48cEa57D9BaB204fD184a326995a9EF072D6073f",
+      "baseline": false,
+      "initialValueUsdc": 373053.65060511115,
+      "finalValueUsdc": 373053.65060511115,
+      "netPnlUsdc": 0,
+      "pnlUsdc": -188.39564304531086,
+      "alphaUsdc": 0,
+      "includedTxCount": 0,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "peg-arb-frozen",
+      "address": "0x7B387b2a79d4DA32f0EB39cc21E80727185aDa12",
+      "baseline": false,
+      "initialValueUsdc": 373053.65060511115,
+      "finalValueUsdc": 373053.65060511115,
+      "netPnlUsdc": 0,
+      "pnlUsdc": -188.39564304531086,
+      "alphaUsdc": 0,
+      "includedTxCount": 0,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "venue-arb",
+      "address": "0x6f0480615992C8D3c37789Fb22f9328DADC686f4",
+      "baseline": false,
+      "initialValueUsdc": 373053.65060511115,
+      "finalValueUsdc": 373138.941137485,
+      "netPnlUsdc": 85.29053237382323,
+      "pnlUsdc": -43.77665203419747,
+      "alphaUsdc": 156.8306433125981,
+      "includedTxCount": 11,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    }
+  ]
+}

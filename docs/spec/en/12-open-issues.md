@@ -103,4 +103,4 @@ These are not open questions. They are decisions.
 
 - The primary measurement record: [`docs/scoring-metric-measurements.md`](../../scoring-metric-measurements.md)
 - The decision history: [`docs/adr/`](../../adr/) (ADR 0001–0021)
-- The participant-facing rules: [ascon.dev/rules](https://ascon.dev/rules) (outside this repository, and its vocabulary differs from this document's — the rules' "epoch" is one run here, and the rules' "evaluation interval" is what this document calls an epoch)
+- The participant-facing rules: [ascon.dev/rules](https://ascon.dev/rules) (outside this repository; its vocabulary is this document's and the code's — the rules' "epoch" is one run (`epoch` in the code), and the rules' "evaluation interval" is `interval` in the code. Until issue #140 the code called the evaluation interval an `epoch` too)

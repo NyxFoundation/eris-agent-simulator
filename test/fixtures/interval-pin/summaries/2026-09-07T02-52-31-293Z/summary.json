@@ -1,0 +1,236 @@
+{
+  "runId": "2026-09-07T02-52-31-293Z",
+  "mode": "backtest",
+  "resetUnit": "scenario",
+  "blockTimeSec": 2,
+  "blocksProcessed": 130,
+  "elapsedMs": 256238,
+  "finalFairPriceUsdcPerWeth": 2971.1606707500678,
+  "valueSeries": {
+    "source": "post-run-reconstruction",
+    "granularityBlocks": 1,
+    "fromBlock": 1054,
+    "toBlock": 1250,
+    "blocks": 197,
+    "windowBlocks": 197,
+    "failedReads": 0,
+    "failedReadTargets": [],
+    "elapsedMs": 980,
+    "alphaRefFairUsdcPerWeth": 2971.10956394,
+    "alphaByAgent": {
+      "noop": 0,
+      "peg-arb": 35.636543682659976,
+      "peg-arb-frozen": 320.8889463430969,
+      "venue-arb": 46.896917238947935
+    },
+    "markedValueByAgent": {},
+    "unpricedHoldings": [
+      {
+        "agentId": "noop",
+        "source": "spot-WBTC",
+        "token": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+        "amountRaw": "40000000",
+        "reason": "unpriced"
+      },
+      {
+        "agentId": "peg-arb",
+        "source": "spot-WBTC",
+        "token": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+        "amountRaw": "40000000",
+        "reason": "unpriced"
+      },
+      {
+        "agentId": "peg-arb-frozen",
+        "source": "spot-WBTC",
+        "token": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+        "amountRaw": "40000000",
+        "reason": "unpriced"
+      },
+      {
+        "agentId": "venue-arb",
+        "source": "spot-WBTC",
+        "token": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+        "amountRaw": "40000000",
+        "reason": "unpriced"
+      }
+    ],
+    "epochSeries": {
+      "epochBlocks": 12,
+      "epochs": 16,
+      "boundaryBlocks": [
+        1054,
+        1066,
+        1078,
+        1090,
+        1102,
+        1114,
+        1126,
+        1138,
+        1150,
+        1162,
+        1174,
+        1186,
+        1198,
+        1210,
+        1222,
+        1234,
+        1246
+      ],
+      "valuesByAgent": {
+        "noop": [
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          374998.80525315093,
+          373481.9158552106,
+          372263.1148099352,
+          373217.7123546609,
+          376330.8102698129,
+          374484.60909221333,
+          375327.81831730786,
+          372378.2745518614,
+          371195.0003831636,
+          373753.54865382996,
+          372092.5091738964
+        ],
+        "peg-arb": [
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          375056.44095442415,
+          373636.6841636673,
+          372308.07957711985,
+          373281.709583958,
+          376366.4342395882,
+          374520.23682490585,
+          375363.4439805345,
+          372413.9068247701,
+          371230.63487761153,
+          373789.17783868255,
+          372128.142003105
+        ],
+        "peg-arb-frozen": [
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          375077.2769372808,
+          373656.0421811621,
+          372452.9958830718,
+          373521.939622938,
+          376651.68663858756,
+          374805.48922500096,
+          375648.696380027,
+          372699.1592261871,
+          371515.8872796754,
+          374074.43023920036,
+          372413.39440468396
+        ],
+        "venue-arb": [
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          348996.219967,
+          375019.74951120437,
+          373424.16005276126,
+          372248.6546866854,
+          373192.44247938145,
+          376361.1098638185,
+          374416.7305429963,
+          375266.6139742368,
+          372334.48135189543,
+          371177.2765125897,
+          373682.49136524904,
+          372079.8670299576
+        ]
+      }
+    },
+    "markMedian": {
+      "windowBlocks": 5,
+      "boundaries": 16,
+      "surfaces": [
+        "stables"
+      ],
+      "maxDeviationBps": {
+        "EUSD": 0,
+        "DAI": 122.47231016616698
+      }
+    },
+    "epochSeriesMeta": {
+      "source": "live-epoch-boundaries",
+      "boundaries": 17,
+      "failedBoundaries": 0,
+      "epochBlocks": 12,
+      "markMedianBlocks": 5
+    }
+  },
+  "violations": [],
+  "agents": [
+    {
+      "id": "noop",
+      "address": "0x2b4Da4d59b90b3fD681aDeE7560Cb297685f0141",
+      "baseline": true,
+      "initialValueUsdc": 370207.8097286692,
+      "finalValueUsdc": 370207.8097286692,
+      "netPnlUsdc": 0,
+      "pnlUsdc": 23096.289206896385,
+      "alphaUsdc": 0,
+      "includedTxCount": 0,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "peg-arb",
+      "address": "0x8a69028e1C740028bCb087Fd3748F4a356b97A5A",
+      "baseline": false,
+      "initialValueUsdc": 370207.8097286692,
+      "finalValueUsdc": 370243.4462610482,
+      "netPnlUsdc": 35.636532379023265,
+      "pnlUsdc": 23131.92203610501,
+      "alphaUsdc": 35.636543682659976,
+      "includedTxCount": 16,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "peg-arb-frozen",
+      "address": "0x24324B86B7c0469a7987A1184d562Dd626d3DD10",
+      "baseline": false,
+      "initialValueUsdc": 370207.8097286692,
+      "finalValueUsdc": 370528.69866370544,
+      "netPnlUsdc": 320.8889350362588,
+      "pnlUsdc": 23417.17443768395,
+      "alphaUsdc": 320.8889463430969,
+      "includedTxCount": 16,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "venue-arb",
+      "address": "0x81828f17ba6E0a75974C599ceef684ed6B077440",
+      "baseline": false,
+      "initialValueUsdc": 370207.8097286692,
+      "finalValueUsdc": 370254.52546091884,
+      "netPnlUsdc": 46.71573224966414,
+      "pnlUsdc": 23083.647062957578,
+      "alphaUsdc": 46.896917238947935,
+      "includedTxCount": 84,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    }
+  ]
+}

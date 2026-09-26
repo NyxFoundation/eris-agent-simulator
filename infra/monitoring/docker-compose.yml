@@ -3,7 +3,7 @@
 #   Prometheus                -> scrape + store + alert rules
 #   Grafana (+ image-renderer)-> dashboards + alerting -> Slack (chart images inline)
 #   Loki + Promtail           -> logs (crash context in alerts)
-#   eris-exporter             -> ASCON domain metrics (epoch/tx/unique-users/crashes/chain)
+#   eris-exporter             -> ASCON domain metrics (interval/tx/unique-users/crashes/chain)
 # Start:  cd infra/monitoring && docker compose up -d
 name: ascon-monitoring
 

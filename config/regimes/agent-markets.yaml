@@ -28,7 +28,7 @@ run:
   economicGas: false
   localDeploy: true
   reportDir: ./runs
-  epochBlocks: 360 # one epoch = one run, so "the epoch's final block" is the run's final block
+  intervalBlocks: 360 # one interval spans the run, so its last boundary is "the epoch's final block"
 
 market:
   volatility: 0.004 # calm's: the regime is the contracts, not the price

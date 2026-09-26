@@ -335,8 +335,8 @@ export function ScenarioPage() {
       ? {
           runId: data.round.runId,
           status: data.round.status,
-          fromBlock: data.round.epochs[0]?.fromBlock,
-          toBlock: data.round.epochs[data.round.epochs.length - 1]?.toBlock,
+          fromBlock: data.round.intervals[0]?.fromBlock,
+          toBlock: data.round.intervals[data.round.intervals.length - 1]?.toBlock,
           block: frame.block,
           atEnd: at >= last,
         }
@@ -404,8 +404,8 @@ export function ScenarioPage() {
   // The standings beside the board are the field through the rounds closed by the walk's block.
   // The finished run's ranking beside a walk would be the answer printed on every frame.
   const closedAtHead = frame
-    ? round.epochs.filter((e) => e.toBlock <= frame.block).length
-    : round.epochs.filter((e) => e.status === "done").length;
+    ? round.intervals.filter((e) => e.toBlock <= frame.block).length
+    : round.intervals.filter((e) => e.status === "done").length;
   const standings =
     data.standingsThroughRound[
       Math.min(closedAtHead, data.standingsThroughRound.length - 1)
@@ -470,10 +470,10 @@ export function ScenarioPage() {
             scenario.seed !== null
               ? t("scenario.seed", { n: scenario.seed })
               : null,
-            round.epochs.length > 0
+            round.intervals.length > 0
               ? t("scenario.roundsBlocks", {
-                  rounds: round.epochs.length,
-                  blocks: round.epochBlocks,
+                  rounds: round.intervals.length,
+                  blocks: round.intervalBlocks,
                 })
               : null,
             scenario.competition,

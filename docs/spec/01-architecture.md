@@ -39,7 +39,7 @@ example/  ──►  sdk/  ◄──  core/  ──►  runs/<id>/  ◄──  d
 │ flow bot 注文の中継送信                │      │ agent.ts: decide / run          │
 │ GMX keeper                             │      │ send.ts: 署名・直接送信         │
 │ ストレスイベントの注入                 │      │  （nonce は自己管理）           │
-│ エポック境界の採点 / 事後再構成        │      └────────────┬───────────────────┘
+│ 評価区間境界の採点 / 事後再構成        │      └────────────┬───────────────────┘
 └───────────────┬────────────────────────┘                   │
                 │  PriceFeed / flow / keeper tx               │ agent tx
                 ▼                                             ▼
@@ -149,7 +149,7 @@ sdk/src/
   constants*.ts       venue アドレス（fork: constants.ts / local: constants.local.ts = 生成物）
 core/src/
   realtime/coordinator.ts   環境デーモン本体（run のライフサイクル全体）
-  realtime/liveScoring.ts   エポック境界のその場採点
+  realtime/liveScoring.ts   評価区間の境界のその場採点
   realtime/reconstruct.ts   事後の価値系列再構成
   realtime/marketSeries.ts  market.json の再構成（報告専用）
   realtime/events.ts        ストレススケジュール（seed → 窓）

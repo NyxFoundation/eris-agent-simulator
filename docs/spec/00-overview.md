@@ -12,7 +12,7 @@
 |---|---|
 | **環境（environment）** | チェーンのライフサイクル、fair price の生成と配信、orderflow、keeper、ストレスイベントの注入 |
 | **エージェント（agent）** | 確定済み状態の観測 → 判断 → 署名・送信。環境とは独立した OS プロセス |
-| **採点（scoring）** | エポック境界での価値横断面の読み取りと、そこからのスコア算出 |
+| **採点（scoring）** | 評価区間の境界での価値横断面の読み取りと、エポックの両端からのスコア算出 |
 
 環境と採点は同一プロセス（coordinator）に同居するが、エージェントとは**チェーン以外で接点を持たない**。
 
@@ -71,7 +71,7 @@
                                      │ 確定ブロック
                     ┌────────────────┼────────────────┐
                     ▼                ▼                ▼
-              observation      epoch 境界の      blocks.csv /
+              observation    interval 境界の     blocks.csv /
               （agent が再構成）   価値横断面      events.jsonl
                                      │
                                      ▼
@@ -82,7 +82,7 @@
 |---|---|---|
 | **run** | 1 回の実行。`runs/<runId>/` を 1 つ（セグメント時は複数）生成する | `coordinator.ts:491` |
 | **ブロック** | 環境の時間の最小単位。既定 2 秒（`run.blockTimeSec`） | `sdk/src/config.ts:338` |
-| **ラウンド（コードの epoch）** | 規約の**評価区間**（§0.1）。境界ごとに資産価値を記録して途中経過に使う。**採点の単位ではない**（採点は run = 規約のエポックの最初と最後の境界）。既定 12 ブロック（`run.epochBlocks`）。実時間で書くこともできる（`run.epochSeconds`） | `sdk/src/config.ts:572` |
+| **評価区間（コードの interval）** | 規約の**評価区間**（§0.1）。境界ごとに資産価値を記録して途中経過に使う。**採点の単位ではない**（採点は run = 規約のエポックの最初と最後の境界）。既定 12 ブロック（`run.intervalBlocks`）。実時間で書くこともできる（`run.intervalSeconds`）。ダッシュボードの「評価区間」。issue #140 まではコードもこれを `epoch` と呼んでいた（旧キー `run.epochBlocks` / `run.epochSeconds` は結果発表まで警告付きで読む） | `sdk/src/config.ts:649` |
 | **シナリオ** | (regime, seed) の組。1 本の市場の再生 | ADR 0017 §1 |
 | **regime** | 市場条件の型。`config/regimes/<name>.yaml` が価格・フロー・イベントの生成規則を持つ | `config/regimes/` |
 | **fair price** | 環境が生成し PriceFeed 経由で全員に配る基準価格 | `core/src/realtime/priceFeed.ts` |

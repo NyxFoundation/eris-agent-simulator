@@ -41,7 +41,7 @@ const SETTER_GAS = 300_000n;
 // (issue #94, decided 2026-09-07 from #92's scorer row).
 //
 // The constructor carries WETH's opening fair, and every other base used to get its first value
-// from the per-block oracle write -- which lands one block *after* the first epoch boundary is
+// from the per-block oracle write -- which lands one block *after* the first interval boundary is
 // marked. Measured (calm, 60 blocks, 2026-09-07): noop's V_0 was 348,996 and V_K 365,839 on the
 // same holdings; the difference was 0.4 WBTC marked at 0 and then at ~60k. Every agent got the
 // same +24k in P, so T was untouched, but V_0 was short by the WBTC leg, noop's netPnlUsdc was

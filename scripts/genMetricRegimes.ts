@@ -1,6 +1,6 @@
 // Derive metric-comparison regimes from the official ones (ADR 0020 §4 re-comparison in scenario
 // mode). The official regimes stay untouched: they define the competition, and their funding was
-// calibrated for netPnlUsdc, which nets out the common ETH endowment. An epoch series is a live
+// calibrated for netPnlUsdc, which nets out the common ETH endowment. An interval series is a live
 // mark, so the same endowment would put ETH's volatility into every agent's std (ADR 0019 §6).
 import { readFileSync, writeFileSync } from "node:fs";
 import { parse, stringify } from "yaml";
@@ -22,7 +22,7 @@ for (const r of REGIMES) {
   doc.run = {
     ...(doc.run ?? {}),
     economicGas: true, // ADR 0011: gas is a real cost against the 1 ETH reserve
-    epochBlocks: 12, // ADR 0019 §8
+    intervalBlocks: 12, // ADR 0019 §8
     markMedianBlocks: 5, // G7's window, ending at the boundary
   };
   // USDC-only means every base, not just WETH. The official regimes hand out a WBTC leg as well
@@ -42,7 +42,7 @@ for (const r of REGIMES) {
     `#\n` +
     `# Same market conditions, ADR 0019 §6 funding (1 ETH gas reserve + 100k USDC, economicGas), and\n` +
     `# no base inventory at all. The official regime hands out a native ETH reserve plus a WETH/WBTC\n` +
-    `# basket: netPnlUsdc nets those out (both ends are priced at the final price) but an epoch series\n` +
+    `# basket: netPnlUsdc nets those out (both ends are priced at the final price) but an interval series\n` +
     `# marks them live, so every agent's std_e would be the market's volatility and M9's lambda term\n` +
     `# would measure the market rather than the agent. Used only to compare M4 / M9 / M27 in scenario\n` +
     `# mode (ADR 0020 §4); the competition's own regimes are the files this was generated from.\n` +

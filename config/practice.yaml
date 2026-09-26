@@ -55,13 +55,15 @@ run:
   # runs `scenario` (ADR 0020 §2), and only the matrix runner can declare it.
   resetUnit: continuous
 
-  # A round stated in real time (ADR 0021 §3). Half an hour is the short end of the band the ADR
-  # settles on: standings move roughly 48 times a day, which is often enough to watch and rare
-  # enough that a round is a position rather than a tick. The block count follows from
-  # blockTimeSec — an operator who changes the cadence should not silently change the round.
+  # The evaluation interval, stated in real time (ADR 0021 §3). Half an hour is the short end of
+  # the band the ADR settles on: standings move roughly 48 times a day, which is often enough to
+  # watch and rare enough that an interval is a position rather than a tick. The block count follows
+  # from blockTimeSec — an operator who changes the cadence should not silently change the interval.
+  # (Named `epochSeconds` before issue #140; a coordinator started on that name reads it until its
+  # next restart, and the new code still accepts it with a warning.)
   #
   # The value here and the lambda that goes with it are the piece ADR 0021 leaves open (#56).
-  epochSeconds: 1800
+  intervalSeconds: 1800
 
   # One directory per day (ADR 0021 §6). The chain stays continuous; only the artifacts are cut,
   # because a week of events.jsonl is a file nobody opens.

@@ -6,7 +6,8 @@
 // Two things this file owns that are worth naming:
 //
 //   rounds       A round is an evaluation interval of the rules (§0.1), not a run. summary.json's
-//                valueSeries.epochSeries carries the boundaries and the per-agent value at each,
+//                valueSeries.intervalSeries (epochSeries on a run recorded before issue #140;
+//                intervalSeriesOf reads either) carries the boundaries and the per-agent value at each,
 //                so a per-round result is a read of the recorded series, not a re-derivation. The
 //                score itself is one number per run (rules §4.4.1: P = V_K − V_0, standardised
 //                over the field), imported from core.
@@ -16,6 +17,11 @@
 //                events.jsonl (lst_block / liquity_block) and are read from there.
 
 import { scoreEpoch } from "@core/scoring/deviationScore";
+import {
+  intervalBlocksOf,
+  intervalSeriesOf,
+  isIntervalBoundaryEvent,
+} from "@core/intervalSeries";
 import { coversWindow } from "./liveBlocks";
 import { liveAgentLog, loadLiveRun } from "./liveRun";
 import { getMode, loadMode } from "./mode";
@@ -68,7 +74,7 @@ import type {
   MarketFeedItem,
   MarketSnapshot,
   RoundAgentResult,
-  RoundEpoch,
+  RoundInterval,
   RoundInfo,
   StrategyCategory,
   TapeTone,
@@ -255,18 +261,18 @@ function rankBy(
 }
 
 /**
- * The run's rounds. Archived runs read the scored epoch series; a live run only knows the epoch
- * length (the coordinator now records it at run start), so its rounds carry block ranges and a
+ * The run's rounds. Archived runs read the scored interval series; a live run only knows the
+ * interval length (the coordinator records it at run start), so its rounds carry block ranges and a
  * progress status but no results — those are post-run artifacts by design (ADR 0006 §4).
  */
-function buildEpochs(
+function buildIntervals(
   run: LoadedRun,
   chainHeight: number | null,
   // Replay head. When set, a round that has not closed by this block is not "done" and carries no
   // result: showing a scored round the replay has not reached yet would print the answer on every
   // frame of the walk.
   headBlock: number | null = null,
-): RoundEpoch[] {
+): RoundInterval[] {
   const txPerBlock = new Map<number, number>();
   for (const row of run.blockRows)
     txPerBlock.set(row.blockNumber, (txPerBlock.get(row.blockNumber) ?? 0) + 1);
@@ -309,14 +315,14 @@ function buildEpochs(
         };
       });
 
-  const epochSeries = run.summary.valueSeries?.epochSeries;
-  const boundaries = epochSeries?.boundaryBlocks ?? [];
+  const intervalSeries = intervalSeriesOf(run.summary.valueSeries);
+  const boundaries = intervalSeries?.boundaryBlocks ?? [];
 
   // A live run now carries the boundaries read so far, which is what scores it -- but the bar is
   // laid out from the run's configured length, so a day shows its whole shape rather than only the
   // rounds that have closed.
   if (!run.live && boundaries.length >= 2) {
-    const valuesByAgent = epochSeries?.valuesByAgent ?? {};
+    const valuesByAgent = intervalSeries?.valuesByAgent ?? {};
     const ids = (run.summary.agents ?? []).map((a) => a.id);
     const valueAt = (id: string, boundary: number): number | null =>
       valuesByAgent[id]?.[boundary] ?? null;
@@ -390,22 +396,22 @@ function buildEpochs(
     });
   }
 
-  // Live (or an unscored run): lay the rounds out from the configured epoch length.
+  // Live (or an unscored run): lay the rounds out from the configured interval length.
   const started = eventOfType(run.events, "run_started_realtime");
-  const epochBlocks = Number(started?.epochBlocks ?? 0);
+  const intervalBlocks = intervalBlocksOf(started);
   const runBlocks = Number(started?.runBlocks ?? 0);
   // Every boundary below is measured from this block, so it has to be the run's own first block and
   // not the oldest one still in a capped event tail: on a day-long segment the two differ by
   // however much has been evicted, and the whole round axis slides with it (the header read
   // "round 14 of 20" on a segment sitting at its twentieth).
   const start = run.live?.firstBlock ?? firstEventBlock(run);
-  if (!(epochBlocks >= 1) || !(runBlocks >= epochBlocks) || start === null)
+  if (!(intervalBlocks >= 1) || !(runBlocks >= intervalBlocks) || start === null)
     return [];
-  const count = Math.floor(runBlocks / epochBlocks);
+  const count = Math.floor(runBlocks / intervalBlocks);
   const height = chainHeight ?? lastBlock(run);
   return Array.from({ length: count }, (_, i) => {
-    const fromBlock = start + i * epochBlocks;
-    const toBlock = fromBlock + epochBlocks;
+    const fromBlock = start + i * intervalBlocks;
+    const toBlock = fromBlock + intervalBlocks;
     const status =
       height >= toBlock
         ? ("done" as const)
@@ -428,7 +434,7 @@ function buildEpochs(
  * The first block the run's own event stream mentions — the live stand-in for valueSeries.fromBlock.
  *
  * `round_timing` is written once per processed block from the first one on, so its earliest entry
- * is the run's first block. An epoch boundary is the fallback for a stream long enough that the
+ * is the run's first block. An interval boundary is the fallback for a stream long enough that the
  * early lines have fallen off the tail's cap: boundary 0 sits on the run's first block.
  */
 function firstEventBlock(run: LoadedRun): number | null {
@@ -438,7 +444,7 @@ function firstEventBlock(run: LoadedRun): number | null {
     if (Number.isFinite(block)) return block;
   }
   for (const event of run.events) {
-    if (event.type !== "epoch_boundary") continue;
+    if (!isIntervalBoundaryEvent(event.type)) continue;
     const block = Number(event.blockNumber);
     if (Number.isFinite(block) && Number(event.index) === 0) return block;
   }
@@ -449,10 +455,14 @@ function firstEventBlock(run: LoadedRun): number | null {
 function buildRound(run: ResolvedRun): RoundInfo {
   const chainHeight = run.live?.chainHeight ?? null;
   const replay = replayHeadFor(run.id) === null ? null : getReplay();
-  const epochs = buildEpochs(run, chainHeight, replay ? replay.block : null);
-  const epochBlocks =
-    run.summary.valueSeries?.epochSeries?.epochBlocks ??
-    Number(eventOfType(run.events, "run_started_realtime")?.epochBlocks ?? 0);
+  const intervals = buildIntervals(
+    run,
+    chainHeight,
+    replay ? replay.block : null,
+  );
+  const intervalBlocks =
+    intervalSeriesOf(run.summary.valueSeries)?.intervalBlocks ||
+    intervalBlocksOf(eventOfType(run.events, "run_started_realtime"));
 
   if (run.live) {
     const startsAt = run.live.startedAtMs ?? Date.now();
@@ -469,8 +479,8 @@ function buildRound(run: ResolvedRun): RoundInfo {
       startsAt,
       endsAt: startsAt + durationSec * 1000,
       blockNumber: chainHeight ?? lastBlock(run),
-      epochs,
-      epochBlocks,
+      intervals,
+      intervalBlocks,
     };
   }
   const started =
@@ -486,8 +496,8 @@ function buildRound(run: ResolvedRun): RoundInfo {
     startsAt,
     endsAt,
     blockNumber: replay ? replay.block : lastBlock(run),
-    epochs,
-    epochBlocks,
+    intervals,
+    intervalBlocks,
     ...(replay
       ? {
           replay: {
@@ -522,21 +532,21 @@ function categorize(id: string, description: string): StrategyCategory {
 
 function buildStandings(
   run: LoadedRun,
-  epochs: RoundEpoch[],
+  intervals: RoundInterval[],
   // Replay: P is read through this many closed rounds, and the field is standardised on that.
   // Reading the finished run's figure instead would show the outcome before the walk reaches it.
   replaying = false,
 ): AgentStanding[] {
   const registered = registeredAgents(run);
   const valuesByAgent =
-    run.summary.valueSeries?.epochSeries?.valuesByAgent ?? {};
+    intervalSeriesOf(run.summary.valueSeries)?.valuesByAgent ?? {};
   const agents = run.summary.agents ?? [];
 
-  const closed = epochs.filter((e) => e.status === "done").length;
+  const closed = intervals.filter((e) => e.status === "done").length;
 
   // The rank move over the last closed round. There is no cross-run concept here: one run is one
   // epoch of the competition.
-  const lastClosed = epochs.filter((e) => e.status === "done").pop();
+  const lastClosed = intervals.filter((e) => e.status === "done").pop();
   const moves = new Map(
     (lastClosed?.results ?? []).map((r) => [r.agent, r.move]),
   );
@@ -611,18 +621,18 @@ export function liveProgress(run: LoadedRun): {
 } | null {
   if (!run.live) return null;
   const chainHeight = run.live.chainHeight;
-  const epochs = buildEpochs(run, chainHeight, null);
-  if (epochs.length === 0) return null;
+  const intervals = buildIntervals(run, chainHeight, null);
+  if (intervals.length === 0) return null;
   const current =
-    epochs.find((e) => e.status === "live") ??
-    epochs.filter((e) => e.status === "done").pop() ??
-    epochs[0];
+    intervals.find((e) => e.status === "live") ??
+    intervals.filter((e) => e.status === "done").pop() ??
+    intervals[0];
   const blockNumber = chainHeight ?? lastBlock(run);
   const blockTimeSec = run.summary.blockTimeSec ?? 2;
   const remaining = Math.max(0, current.toBlock - blockNumber);
   return {
     round: current.index,
-    rounds: epochs.length,
+    rounds: intervals.length,
     roundEndsAtMs: Date.now() + remaining * blockTimeSec * 1000,
     blockNumber,
   };
@@ -1058,7 +1068,7 @@ function buildFeed(
   logs: Map<string, AgentLogEntry[]>,
   // The agent logs are not part of the scoped run (they are files, not events), so the round window
   // is applied here — otherwise the feed would be the only panel still showing the whole run.
-  epoch?: RoundEpoch,
+  interval?: RoundInterval,
   // Replay head: the same reason, for the same reason.
   headBlock?: number,
 ): MarketFeedItem[] {
@@ -1066,10 +1076,10 @@ function buildFeed(
   for (const [agentId, entries] of logs) {
     for (const entry of entries) {
       if (
-        epoch &&
+        interval &&
         (typeof entry.blockSeen !== "number" ||
-          entry.blockSeen <= epoch.fromBlock ||
-          entry.blockSeen > epoch.toBlock)
+          entry.blockSeen <= interval.fromBlock ||
+          entry.blockSeen > interval.toBlock)
       )
         continue;
       if (
@@ -1390,13 +1400,13 @@ export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
   // block window. Selecting a round that this run does not have falls back to the whole run rather
   // than showing an empty explorer.
   const selected = getSelectedRound();
-  const epoch = round.epochs.find((e) => e.index === selected);
-  const from = epoch ? epoch.fromBlock : firstBlock(run);
-  const to = epoch ? epoch.toBlock : lastBlock(run);
-  const rows = epoch
+  const interval = round.intervals.find((e) => e.index === selected);
+  const from = interval ? interval.fromBlock : firstBlock(run);
+  const to = interval ? interval.toBlock : lastBlock(run);
+  const rows = interval
     ? run.blockRows.filter(
         (r) =>
-          r.blockNumber > epoch.fromBlock && r.blockNumber <= epoch.toBlock,
+          r.blockNumber > interval.fromBlock && r.blockNumber <= interval.toBlock,
       )
     : run.blockRows;
 
@@ -1406,18 +1416,18 @@ export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
   // tx_submitted stream stands in.
   const covers = (fromBlock: number) =>
     coversWindow(fromBlock, run.live?.blocksFrom ?? null, run.live !== undefined);
-  const txCountThisRound = !epoch
+  const txCountThisRound = !interval
     ? run.live && !covers(from)
       ? run.events.filter((e) => e.type === "tx_submitted").length
       : rows.length
-    : covers(epoch.fromBlock)
+    : covers(interval.fromBlock)
       ? rows.length
       : null;
 
   return {
     round,
     scope: {
-      roundIndex: epoch ? epoch.index : null,
+      roundIndex: interval ? interval.index : null,
       fromBlock: from,
       toBlock: to,
     },
@@ -1455,13 +1465,13 @@ export async function fetchMarketSnapshot(
   // Replay wins over the round selection: the head is a prefix of the run and a round is a window
   // inside it, and showing a later round while the head is behind it would show the future.
   const replaying = round.status === "replay";
-  const epoch = replaying
+  const interval = replaying
     ? undefined
-    : round.epochs.find((e) => e.index === getSelectedRound());
+    : round.intervals.find((e) => e.index === getSelectedRound());
   const run = replaying
     ? clampToReplay(full)
-    : epoch
-      ? scopeRunToBlocks(full, epoch.fromBlock, epoch.toBlock)
+    : interval
+      ? scopeRunToBlocks(full, interval.fromBlock, interval.toBlock)
       : full;
   const prices = fairSeriesForBase(run, base);
   const first = prices[0];
@@ -1478,12 +1488,12 @@ export async function fetchMarketSnapshot(
   return {
     round,
     scope: {
-      roundIndex: epoch ? epoch.index : null,
-      fromBlock: epoch ? epoch.fromBlock : firstBlock(full),
+      roundIndex: interval ? interval.index : null,
+      fromBlock: interval ? interval.fromBlock : firstBlock(full),
       toBlock: replaying
         ? round.blockNumber
-        : epoch
-          ? epoch.toBlock
+        : interval
+          ? interval.toBlock
           : lastBlock(full),
     },
     protocols: enabledProtocols(full),
@@ -1501,10 +1511,10 @@ export async function fetchMarketSnapshot(
       venueDepths,
       infoByHash,
       // Built from `full`: the schedule is the run's, not the selected round's.
-      buildScenarioPanel(full, round.epochs),
+      buildScenarioPanel(full, round.intervals),
     ),
-    leaderboard: buildStandings(full, round.epochs, replaying),
-    feed: buildFeed(logs, epoch, replaying ? round.blockNumber : undefined),
+    leaderboard: buildStandings(full, round.intervals, replaying),
+    feed: buildFeed(logs, interval, replaying ? round.blockNumber : undefined),
     feedSelfHosted: [...registeredAgents(run).values()].filter(
       (a) => a.external,
     ).length,
@@ -1587,7 +1597,7 @@ export async function fetchAgentDetailSnapshot(
   const run = clampToReplay(full);
   const standing = buildStandings(
     full,
-    round.epochs,
+    round.intervals,
     round.status === "replay",
   ).find((s) => s.agent === agentId);
   if (!standing) throw new Error(`agent ${agentId} not found in run ${run.id}`);
@@ -1632,26 +1642,26 @@ export async function fetchAgentDetailSnapshot(
   const txByRound = new Map<number, number>();
   for (const row of run.blockRows) {
     if (row.from !== address) continue;
-    const epoch = round.epochs.find(
+    const interval = round.intervals.find(
       (e) => row.blockNumber > e.fromBlock && row.blockNumber <= e.toBlock,
     );
-    if (epoch)
-      txByRound.set(epoch.index, (txByRound.get(epoch.index) ?? 0) + 1);
+    if (interval)
+      txByRound.set(interval.index, (txByRound.get(interval.index) ?? 0) + 1);
   }
-  const rounds: AgentRoundResult[] = round.epochs.flatMap((epoch) => {
-    const result = epoch.results.find((r) => r.agent === agentId);
+  const rounds: AgentRoundResult[] = round.intervals.flatMap((interval) => {
+    const result = interval.results.find((r) => r.agent === agentId);
     if (!result) return [];
     return [
       {
-        index: epoch.index,
-        fromBlock: epoch.fromBlock,
-        toBlock: epoch.toBlock,
+        index: interval.index,
+        fromBlock: interval.fromBlock,
+        toBlock: interval.toBlock,
         deltaUsdc: result.deltaUsdc,
         logReturnBps: result.logReturnBps,
         rank: result.rank,
         cumulativeRank: result.cumulativeRank,
         move: result.move,
-        txCount: txByRound.get(epoch.index) ?? 0,
+        txCount: txByRound.get(interval.index) ?? 0,
       },
     ];
   });
@@ -1776,9 +1786,9 @@ function worldAgents(run: LoadedRun): WorldAgentNode[] {
   });
 }
 
-/** What each epoch boundary's scored cross-section says every agent was worth, and had made. */
+/** What each interval boundary's scored cross-section says every agent was worth, and had made. */
 function worldBoundaries(run: LoadedRun): WorldBoundary[] {
-  const series = run.summary.valueSeries?.epochSeries;
+  const series = intervalSeriesOf(run.summary.valueSeries);
   const blocks = series?.boundaryBlocks ?? [];
   const values = series?.valuesByAgent ?? {};
   return blocks.map((block, i) => {
@@ -1900,9 +1910,9 @@ export async function fetchWorldSnapshot(
   // Scoped like the explorer: a selected round is that round's block window, and no selection is
   // the whole run. A round the run does not have falls back to the run rather than to nothing.
   const selected = getSelectedRound();
-  const epoch = round.epochs.find((e) => e.index === selected);
-  const from = epoch ? epoch.fromBlock + 1 : firstBlock(run);
-  const to = epoch ? epoch.toBlock : lastBlock(run);
+  const interval = round.intervals.find((e) => e.index === selected);
+  const from = interval ? interval.fromBlock + 1 : firstBlock(run);
+  const to = interval ? interval.toBlock : lastBlock(run);
   const span = Math.max(1, to - from + 1);
   const blocksPerFrame = Math.max(1, Math.ceil(span / WORLD_MAX_FRAMES));
 
@@ -2040,7 +2050,7 @@ export async function fetchWorldSnapshot(
       fromBlock,
       clock: blockClock(run, block),
       round:
-        round.epochs.find((e) => block > e.fromBlock && block <= e.toBlock)
+        round.intervals.find((e) => block > e.fromBlock && block <= e.toBlock)
           ?.index ?? 0,
       txCount: rows.length,
       senderCount: new Set(
@@ -2060,13 +2070,13 @@ export async function fetchWorldSnapshot(
   // the walk's block. The same buildStandings reads P through the first k rounds as replay does;
   // there is no second scoring path here.
   const standingsThroughRound = Array.from(
-    { length: round.epochs.length + 1 },
+    { length: round.intervals.length + 1 },
     (_, k) =>
       buildStandings(
         full,
-        round.epochs.map((e, i) => ({
+        round.intervals.map((e, i) => ({
           ...e,
-          status: (i < k ? "done" : "upcoming") as RoundEpoch["status"],
+          status: (i < k ? "done" : "upcoming") as RoundInterval["status"],
         })),
         true,
       ),
@@ -2075,7 +2085,7 @@ export async function fetchWorldSnapshot(
   return {
     round,
     standingsThroughRound,
-    scope: { roundIndex: epoch ? epoch.index : null, fromBlock: from, toBlock: to },
+    scope: { roundIndex: interval ? interval.index : null, fromBlock: from, toBlock: to },
     agents: worldAgents(run),
     venues,
     frames,
