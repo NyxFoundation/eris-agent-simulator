@@ -68,7 +68,8 @@ One benchmark agent that never moves its capital runs alongside. Every unit runs
 The code uses the rules' words. An **epoch** is `epoch` in the code too: one run, i.e. one
 `runs/<id>/` with one `summary.json`. An **evaluation interval** is `interval` in the code
 (`valueSeries.intervalSeries` in `summary.json`, `run.intervalBlocks` in the config, 12 blocks by
-default), and the dashboard shows it as "Interval". It is not used for scoring.
+default), and the dashboard shows it as "Interval". Scoring (P) uses only the account value at its
+first and last boundaries.
 
 The code used to call the evaluation interval an `epoch` as well (issue #140). Until the results
 are published, `summary.json` also carries the same series under its old name, `epochSeries`, and

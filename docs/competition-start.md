@@ -51,7 +51,7 @@ ETH は `rawTx` の `value` で wrap や Trove の担保にも使えます。
 
 ### コードでの呼び名
 
-コードは規約と同じ言葉を使います。**エポック**はコードでも `epoch` で、1 回の run（`runs/<id>/` 1 個 ＝ `summary.json` 1 枚）です。**評価区間**はコードでは `interval` で（`summary.json` の `valueSeries.intervalSeries`、設定の `run.intervalBlocks`、既定 12 ブロック）、ダッシュボードには「評価区間」と出ます。採点には使いません。
+コードは規約と同じ言葉を使います。**エポック**はコードでも `epoch` で、1 回の run（`runs/<id>/` 1 個 ＝ `summary.json` 1 枚）です。**評価区間**はコードでは `interval` で（`summary.json` の `valueSeries.intervalSeries`、設定の `run.intervalBlocks`、既定 12 ブロック）、ダッシュボードには「評価区間」と出ます。採点（P）が使うのは最初と最後の境界の資産価値だけです。
 
 以前はコードが評価区間も `epoch` と呼んでいました（issue #140）。結果発表までは `summary.json` に同じ系列が旧名 `epochSeries` でも併記され、manifest の `round` にも `epochBlocks` が残ります。どちらも評価区間のことです。
 
