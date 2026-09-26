@@ -33,8 +33,8 @@ npm run check:strategy -- <file>          # static cheatcode check of strategy c
 | `agents[].netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `agents[].includedTxCount` / `revertCount` | number of included / reverted txs |
 | `agents[].stderrTail` | tail of the agent process's stderr (for crash diagnosis) |
-| `agents[].pnlUsdc` / `baseline` | P of rules §4.4.1 (V_K − V_0 off the epoch boundaries, each end at its own marks) and whether the agent is the benchmark ([Scoring](scoring.md)) |
-| `valueSeries.epochSeries` | the boundary values every score above is computed from (`boundaryBlocks` / `valuesByAgent`, `null` = a boundary that did not report) |
+| `agents[].pnlUsdc` / `baseline` | P of rules §4.4.1 (V_K − V_0 off the first and last interval boundary, each end at its own marks) and whether the agent is the benchmark ([Scoring](scoring.md)) |
+| `valueSeries.intervalSeries` | the evaluation-interval boundary values every score above is computed from (`intervalBlocks` / `boundaryBlocks` / `valuesByAgent`, `null` = a boundary that did not report). Also written as `epochSeries` (with `epochBlocks`), its name before issue #140, until the results are published |
 | `valueSeries.markMedian` | which manipulable marks were medianed at the boundaries, and the largest deviation seen |
 | `valueSeries.alphaByAgent` / `markedValueByAgent` | the β-removed series, and the **face mark** where a venue carried a position above what it could have realized. The scored value is the recoverable one (issue #40 axiom 3), so an entry here is the number that was *not* used |
 | `valueSeries.unpricedHoldings` | holdings the scorer could not price, reported rather than silently zeroed |

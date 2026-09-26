@@ -57,7 +57,7 @@ it is left out of your score rather than counted as zero. The arithmetic is
 flowchart LR
   subgraph OP["operator"]
     CHAIN[("devnet — never restarts<br/>oracle · flow · keeper · episodes")]
-    COORD["coordinator<br/>epoch boundaries scored live"]
+    COORD["coordinator<br/>interval boundaries scored live"]
     DASH["dashboard (hosted)<br/>practice standings"]
     CHAIN --> COORD --> DASH
   end
@@ -136,20 +136,24 @@ A non-zero `result` is your ETH. The dashboard's "Find your agent" takes the add
 ### 2. Read the manifest
 
 `manifest.json` is published by the operator and also written into every run directory. It carries
-where the chain is, what is deployed on it, how long a round is, what the limits are, and which
-addresses are registered.
+where the chain is, what is deployed on it, how long an evaluation interval is, what the limits are,
+and which addresses are registered.
 
 ```jsonc
 {
   "status": { "scored": false, "label": "practice", "note": "…not the official scoring…" },
   "chain":  { "rpcUrl": "…", "chainId": 42069, "blockTimeSec": 2 },
-  "round":  { "epochBlocks": 900, "approxSeconds": 1800 },
+  "round":  { "intervalBlocks": 900, "epochBlocks": 900, "approxSeconds": 1800 },
   "protocols": ["uniswap", "balancer", "curve", "gmx", "aave", "lst", "liquity"],
   "actions": { "uniswap": ["swap", "mintLiquidity", …], … },
   "contracts": { "priceFeed": "0x…", "uniswap": {…}, … },
   "episodes": { "kinds": [{ "type": "crash", "count": 1 }, …] }
 }
 ```
+
+`round` is the evaluation interval — interim progress, not what the score is taken over.
+`epochBlocks` is `intervalBlocks` under its name before issue #140, kept with the same value until
+the results are published; read `intervalBlocks`.
 
 `episodes` is deliberately partial. The **kinds** of shock the period contains and **how many** are
 published; **when each window opens is not** (ADR 0021 §1). Read the chain to know whether one is
@@ -189,7 +193,7 @@ CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
 ### 4. Watch
 
 The hosted dashboard shows everything the chain says about you: your transactions (named by
-decoding their calldata, not by anything you report), your positions, your per-round returns and
+decoding their calldata, not by anything you report), your positions, your per-interval returns and
 your standing. What it cannot show is what you *sent and lost* — a transaction that never landed
 leaves no trace anyone but you can verify.
 
@@ -319,7 +323,7 @@ run:
 The file is polled every ~30 blocks (a minute at the practice cadence). Each new entry goes through
 exactly what the setup path does for an `external: true` + `address` roster entry: a runtime without
 a key, attribution by address, the same endowment (cheatcode on anvil, treasury transfer on a real
-chain), live scoring from the **next** round boundary, and the roster republished
+chain), live scoring from the **next** interval boundary, and the roster republished
 (`agents_registered` again, `manifest.json` rewritten, plus `agent_external_registered`).
 
 - Entries already in the roster are a no-op. A duplicate id or address is ignored with a
@@ -328,7 +332,7 @@ chain), live scoring from the **next** round boundary, and the roster republishe
 - A malformed file is reported once per edit (`registrations_reload_failed`) and never stops the run;
   fix the file and the next poll picks it up. A path that does not exist yet is said once
   (`registrations_file_missing`) and polled until it does.
-- An agent registered mid-day has **no P for that day**: there is no round it was measured at the
+- An agent registered mid-day has **no P for that day**: there is no interval it was measured at the
   start of, and the series does not invent one. It is scored from the next day's segment. Its
   transactions are recorded from the block it was registered.
 
@@ -389,7 +393,7 @@ has to be rebuilt before external mode will start against it.
 **The endowment is a floor, not an equalizer.** A cheatcode *assigns* a balance; a treasury *adds* to
 one. So an address that already holds something keeps it — right for a chain that never resets, and a
 trap at the start of a period: the first external run had two agents on prefunded dev accounts start
-with $3.0bn against a fresh address's $34k, and their per-round returns were a report on one large
+with $3.0bn against a fresh address's $34k, and their per-interval returns were a report on one large
 ETH holding. Every run records `initial_endowment` and warns above a 2x spread; use fresh addresses
 for a fresh field. It is a warning rather than a refusal because mid-period a spread is real history.
 
@@ -421,19 +425,19 @@ screen. The manifest handed to participants does not contain it at all.
 That is the same discipline the rest of the UI follows (internal ids stay out of it), and it has one
 consequence worth stating: **segments are also the unit the standings average over**. Each segment
 is one epoch of the practice score (its return, [Standings](#standings)), so daily segments mean one
-epoch per day whatever each day's round count. Cutting the period differently changes that weighting — it does not change a
-single round's return, which is placed on a fixed grid from the run's first block and is entirely
+epoch per day whatever each day's interval count. Cutting the period differently changes that
+weighting — it does not change a single interval's return, which is placed on a fixed grid from the run's first block and is entirely
 independent of where the cuts fall.
 
-### How many rounds a period has
+### How many intervals a period has
 
-A round is a fixed length, so the count grows with the period — but the dashboard reads a **segment**,
+An interval is a fixed length, so the count grows with the period — but the dashboard reads a **segment**,
 not the period, so what it renders is bounded by the segment:
 
-| | 30-minute rounds |
+| | 30-minute intervals |
 |---|---|
-| per 24h segment | **48 rounds** — the steady state, whatever the period's length |
-| per week, unsegmented | 336 rounds in one bar |
+| per 24h segment | **48 intervals** — the steady state, whatever the period's length |
+| per week, unsegmented | 336 intervals in one bar |
 
 The artifacts follow the same split. Measured at ~1.4 KB of `events.jsonl` and ~0.7 KB of
 `blocks.csv` per block on a five-venue run, one week unsegmented is a **435 MB events.jsonl and a
@@ -442,8 +446,8 @@ longer than about eleven hours with `segmentHours: 0` says so at startup rather 
 later.
 
 Nothing grows without bound while segmenting. Every artifact is per segment (`events.jsonl`,
-`blocks.csv`, `epochs.jsonl`, `market.jsonl` all restart), and the only thing the coordinator holds
-across the whole period is the epoch series — one number per agent per round, which is 336 × N for a
+`blocks.csv`, `intervals.jsonl`, `market.jsonl` all restart), and the only thing the coordinator holds
+across the whole period is the interval series — one number per agent per interval, which is 336 × N for a
 week.
 
 ### What a period produces
@@ -453,15 +457,16 @@ One directory per day (`run.segmentHours`), under one competition:
 ```
 runs/<period>/
   matrix.json           the index — one entry per day
-  2026-09-01-s00/       summary.json · events.jsonl · blocks.csv · epochs.jsonl · market.jsonl · manifest.json
+  2026-09-01-s00/       summary.json · events.jsonl · blocks.csv · intervals.jsonl · market.jsonl · manifest.json
   2026-09-02-s01/
   …
 ```
 
 Each segment is an ordinary run directory that every existing tool reads. The chain is continuous
-across them, and the epochs partition exactly: a segment carries the previous boundary when it
-starts mid-epoch, and does not when it starts on one — so no round is lost at a seam and none is
-counted twice.
+across them, and the intervals partition exactly: a segment carries the previous boundary when it
+starts mid-interval, and does not when it starts on one — so no interval is lost at a seam and none
+is counted twice. (A coordinator started before issue #140 writes `epochs.jsonl` instead of
+`intervals.jsonl`; the dashboard and the exporter read either.)
 
 Every segment opens with the same header the first one did — `run_started_realtime`,
 `agents_registered`, `manifest.json` and, when the period has episodes, the `stress_schedule` — so
@@ -469,10 +474,10 @@ a viewer landing on Thursday does not have to read Monday. The schedule is writt
 resolved windows included, because the on-disk record is what the period is audited from (rules
 §7.2); keeping future windows from the public is the hosted dashboard's job, not the writer's.
 
-Scores come from cross-sections taken **at** each epoch boundary rather than swept up afterwards
+Scores come from cross-sections taken **at** each interval boundary rather than swept up afterwards
 (ADR 0021 §3), which is what makes standings exist during the period at all — and what removes the
 dependency on a node's history depth. A run short enough to have both checks the two against each
-other and reports the worst disagreement (`epoch_series_agreement`).
+other and reports the worst disagreement (`interval_series_agreement`).
 
 ---
 
@@ -483,7 +488,7 @@ other and reports the worst disagreement (`epoch_series_agreement`).
 - **Submitted-but-not-included transactions.** They were never verifiable for an agent the operator
   does not run; included transactions are on the chain and are counted there.
 - **`alphaUsdc` per segment.** Alpha needs the fixed-reference sweep over a whole run, and a segment
-  of a continuous chain is not one. Net PnL and the round scores are per segment.
+  of a continuous chain is not one. Net PnL and the interval results are per segment.
 
 ## See also
 

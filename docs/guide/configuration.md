@@ -39,7 +39,7 @@ unknown key rather than being silently applied.
 
 | key | default | what it does |
 |---|---|---|
-| `run.epochBlocks` | 12 | Spacing of the value-series boundaries the risk-adjusted score is computed over. `0` disables the epoch series |
+| `run.intervalBlocks` | 12 | Length of an evaluation interval (rules §0.1): the spacing of the value-series boundaries, recorded for interim progress. The score reads only the first and last boundary. `0` disables the interval series. `run.intervalSeconds` states it in real time instead (not both). The old names `run.epochBlocks` / `run.epochSeconds` are still read, with a warning, until the results are published |
 | `run.markMedianBlocks` | 5 | Window over which manipulable marks are taken as a median at each boundary, so a boundary cannot be moved by a trade placed on the boundary block |
 | `run.scoreEvery` | 1 | Reconstruct the value cross-section every Nth block. Score-neutral — it only coarsens the equity curve |
 | `run.resetUnit` | `continuous` | Whether this run is one world or one scenario out of a set. **Only the scenario-matrix runner may declare `scenario`**: writing it here and running `sim:realtime` fails fast at startup (ADR 0020 §1) |

@@ -3,18 +3,18 @@
 # Scoring (the value series, P per epoch, and the deviation score)
 
 Scoring never happens in the trading loop. The coordinator values every agent at the same block
-cross-sections — the epoch boundaries, read live as the run goes (ADR 0021 §3) — so nobody is scored
+cross-sections — the evaluation-interval boundaries, read live as the run goes (ADR 0021 §3) — so nobody is scored
 on a snapshot taken at a moment nobody else was measured at. Everything below is a reading of that
 one series, and all of it is stored in `summary.json`, which is what makes a finished run rescorable
 without re-running it (ADR 0017 §4).
 
 ```mermaid
 flowchart LR
-  RUN["run"] --> BND["value at every epoch boundary<br/>same block for every agent<br/>(5-block median marks, §4.1)"]
+  RUN["run"] --> BND["value at every interval boundary<br/>same block for every agent<br/>(5-block median marks, §4.1)"]
   BND --> P["P = V_K − V_0<br/>agents[].pnlUsdc"]
   P --> T["T = 50 + 10 (P − μ) / σ<br/>over the field of that epoch"]
   T --> S["Score = Σ w·T / Σ w<br/>w: 1 → 1.5 over the schedule"]
-  BND -.->|"rounds: progress, not score"| DASH["dashboard round bar"]
+  BND -.->|"intervals: progress, not score"| DASH["dashboard interval bar"]
 ```
 
 ## The rule (competition rules §4.4, ADR 0023)
@@ -30,8 +30,9 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s      S = valid epochs with �
 `core/src/scoring/deviationScore.ts` is the whole implementation; `epochPnl.ts` reads P off the
 boundary series. Five details are decisions, not formalities:
 
-- **One number per epoch.** An epoch is one run (360 blocks). The 12-block intervals inside it
-  ("rounds" on the dashboard) are the leaderboard's running progress, not an input to the score.
+- **One number per epoch.** An epoch is one run (360 blocks). The 12-block evaluation intervals inside
+  it (`interval` in the code, "Interval" on the dashboard) are the leaderboard's running progress;
+  the score reads only the first and last boundary.
 - **No floor, no freeze.** An agent that ends at or below zero counts at its negative value
   (§4.4.2), and one whose process died is scored on the positions it left behind (§2.3). Both are
   reported as `flags` next to the number; neither is a disqualification.
@@ -52,11 +53,11 @@ largest deviation seen.
 | field | contents |
 |---|---|
 | `resetUnit` | `continuous` / `scenario` — which world shape this run was (see below) |
-| `agents[].pnlUsdc` | P for this run: V_K − V_0 off the epoch boundaries (`pnlFinalBoundaryIndex` when the last boundary did not report and an earlier one was used) |
+| `agents[].pnlUsdc` | P for this run: V_K − V_0 off the first and last interval boundary (`pnlFinalBoundaryIndex` when the last boundary did not report and an earlier one was used) |
 | `agents[].baseline` | `true` for the benchmark — valued, shown, never in the population |
 | `agents[].netPnlUsdc` | `finalValueUsdc − initialValueUsdc`, both ends at the final marks. A per-run constant away from P when everyone starts with the same basket |
 | `agents[].unloggedTxCount` | included transactions the agent's own runtime never reported sending (a flag, rules §8) |
-| `valueSeries.epochSeries` | `epochBlocks` / `epochs` / `boundaryBlocks` / `valuesByAgent` (`null` = a boundary that did not report, never a zero) |
+| `valueSeries.intervalSeries` | `intervalBlocks` / `intervals` / `boundaryBlocks` / `valuesByAgent` (`null` = a boundary that did not report, never a zero). Until the results are published the same series is also written as `epochSeries` (`epochBlocks` / `epochs`), its name before issue #140 |
 | `valueSeries.markMedian` | `windowBlocks` / `surfaces` / `maxDeviationBps` per stable |
 | `valueSeries.alphaByAgent` | β-removed PnL per agent (`alphaUsdc` is the last minus the first) — context, not the score |
 | `valueSeries.markedValueByAgent` | the **face mark**, where a venue carried a position above what it could have realized. Every venue is scored at recoverable value (issue #40 axiom 3), so this is the number that was not used — an LST redemption whose queue outlives the run, a lending supply whose collateral is worthless, a Trove under 100% ICR |
@@ -102,7 +103,7 @@ scenario out of a set that rebuilt the world per (regime, seed)** — the field 
 
 | | |
 |---|---|
-| **Decided** | Shared cross-sections at the epoch boundaries (ADR 0006 / 0021). The deviation score with a linear 1 → 1.5 weight and no free parameter (rules §4.4, ADR 0022). The benchmark out of the population. No floor, no freeze, no disqualification. The epoch order from the lottery seed. Every venue scored at recoverable value (issue #40 axiom 3). |
+| **Decided** | Shared cross-sections at the interval boundaries (ADR 0006 / 0021). The deviation score with a linear 1 → 1.5 weight and no free parameter (rules §4.4, ADR 0022). The benchmark out of the population. No floor, no freeze, no disqualification. The epoch order from the lottery seed. Every venue scored at recoverable value (issue #40 axiom 3). |
 | **Open** | The value of k (Appendix A; 40 recommended). The actual hidden set and lottery seed. |
 
 Measured results from the metric selection that preceded this rule are kept for the record in

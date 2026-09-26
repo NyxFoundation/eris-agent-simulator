@@ -2,8 +2,8 @@
 
 The chain is a container and the tunnel publishes it, but neither of those makes a devnet. anvil
 with nobody driving it answers `eth_blockNumber` forever and never produces a block: the fair price
-does not move, no flow order is placed, the GMX keeper does not run, no episode opens and no round
-is ever scored. From outside it looks alive. It is frozen.
+does not move, no flow order is placed, the GMX keeper does not run, no episode opens and no interval
+boundary is ever scored. From outside it looks alive. It is frozen.
 
 The thing that makes it a market is the **coordinator** (`npm run sim:realtime`), and until now it
 was a foreground command in a document. This directory is the unit that runs it.
@@ -55,7 +55,7 @@ cast block-number --rpc-url http://127.0.0.1:8545   # twice, a few seconds apart
 | a chain | `ANVIL_RPC_URL` in `.env.local` | the `ascon-anvil` container of `infra/monitoring` |
 | `CHAIN_ID` | `.env.local` | must match the node |
 | `TREASURY_PRIVATE_KEY` | `.env.local` | only on a real chain; on anvil the endowment is a cheatcode |
-| the period | `config/practice.yaml` | the roster, the episodes, the round length |
+| the period | `config/practice.yaml` | the roster, the episodes, the evaluation-interval length (`intervalSeconds`) |
 | the seed | `.env.practice` (`ERIS_PRACTICE_SEED=`) | **gitignored; the unit will not start without it.** Publish it after the period (rules §7.2) |
 | venue state | `backtest/state/venues-state.json` | **gitignored, and the chain container mounts it** |
 

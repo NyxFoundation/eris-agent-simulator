@@ -8,7 +8,7 @@ Sources: `core/src/scoring/{epochScore,metrics,aggregate}.ts`, `core/src/realtim
 
 ```
 [1] holding → USDC        token kinds and venue adapters price it
-[2] cross-section → series  every agent read at the same block, at each epoch boundary
+[2] cross-section → series  every agent read at the same block, at each interval boundary
 [3] series → P              P = V_K − V_0 (the two ends of the boundaries; one per run)
 [4] epochs → standings      T = 50 + 10 (P − μ) / σ over the field → Score = Σ w·T / Σ w (rules §4.4)
 ```
@@ -59,21 +59,21 @@ All four are reported in `summary.json`'s `valueSeries.unpricedHoldings`. **A ze
 
 | Path | When | Produces |
 |---|---|---|
-| **live** (`LiveScorer`) | As each epoch boundary goes past | The epoch series used for scoring; `epochs.jsonl` and `epoch_boundary` events |
+| **live** (`LiveScorer`) | As each interval boundary goes past | The interval series used for scoring (`intervalSeries`); `intervals.jsonl` and `interval_boundary` events |
 | **sweep** (`reconstructValueSeries`) | After the run, if the window is ≤1000 blocks | The equity curve, α, `unpricedHoldings`, `market.json` |
 
-**They use the same reader (`readValueSnapshotAtBlock`), the same blocks and the same G7 median window**, so they agree. That is what makes live a replacement rather than a second scoring path — and it is checked on every run that has both, through `epoch_series_agreement` ([11](11-invariants.md)).
+**They use the same reader (`readValueSnapshotAtBlock`), the same blocks and the same G7 median window**, so they agree. That is what makes live a replacement rather than a second scoring path — and it is checked on every run that has both, through `interval_series_agreement` ([11](11-invariants.md)).
 
 **Why live is needed** (`liveScoring.ts:1-18`):
 
 1. On a chain that never stops, there is no "afterwards"
 2. A node's history is finite (anvil holds roughly 1,050 blocks), and "make the run shorter" is no answer for a week-long chain
 
-### Epoch boundaries
+### Interval boundaries
 
-`epochBoundaryBlocks(fromBlock, toBlock, epochBlocks)`. E epochs need E+1 boundaries, and the run's start is boundary 0.
+`intervalBoundaryBlocks(fromBlock, toBlock, intervalBlocks)`. E intervals need E+1 boundaries, and the run's start is boundary 0.
 
-**A trailing partial epoch is dropped rather than scored short.** A shorter window produces a smaller log return by construction, which the metric would read as the agent slowing down.
+**A trailing partial interval is dropped rather than scored short.** A shorter window produces a smaller log return by construction, which the metric would read as the agent slowing down.
 
 `--score-every N` thins the equity curve but always includes `fromBlock` and `toBlock`. **The score is unchanged** (α uses only the first and last cross-section).
 
@@ -83,7 +83,7 @@ All four are reported in `summary.json`'s `valueSeries.unpricedHoldings`. **A ze
 
 ### G7: median marks (`MarkMedian`)
 
-Each epoch boundary is valued at **the median over the preceding `markMedianBlocks` blocks** (5 by default). Pushing a pool for one block therefore does not become the score: it has to hold for most of the window to count, which turns a spread-cost round trip into a position.
+Each interval boundary is valued at **the median over the preceding `markMedianBlocks` blocks** (5 by default). Pushing a pool for one block therefore does not become the score: it has to hold for most of the window to count, which turns a spread-cost round trip into a position.
 
 **The scope is market-priced stables, and that covers the whole surface.**
 
@@ -140,9 +140,9 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = the valid epochs 
 
 - `dashboard/src/data/standings.ts` **imports** `@core/scoring/deviationScore` (two implementations of one ranking leave no way to tell which is real when the CLI and the screen disagree)
 - Score column = Score at two decimals. Regime columns = the agent's mean T in that regime (an explanation, not a second ranking). Reference column = net PnL (final marks)
-- While the round cursor is mid-competition, P = V_k − V_0 is re-read from the boundary series and T and Score recomputed (**never show the future**)
+- While the interval cursor is mid-competition, P = V_k − V_0 is re-read from the boundary series and T and Score recomputed (**never show the future**)
 - The agent page's Standing tab: every scored epoch (s / scenario / P / T / w), the mean, std and worst of T (the tie-breaks), a per-regime split, and bankruptcies (scenarios ended at or below zero)
-- A single run's leaderboard shows T for that epoch (the benchmark shows —). Per-round log returns are the raw change of account value and are not scored
+- A single run's leaderboard shows T for that epoch (the benchmark shows —). Per-interval log returns are the raw change of account value and are not scored
 
 Details in [09](09-dashboard.md).
 

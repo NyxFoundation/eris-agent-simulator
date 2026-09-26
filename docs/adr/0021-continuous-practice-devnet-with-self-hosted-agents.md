@@ -319,3 +319,14 @@ external モードのチェーン + 自己ホスト参加者 + セグメント�
 - issue #36: OP Stack devnet RPC stress test（read 容量・replica 判断）
 - issue #32 / #63: ダッシュボード（hosted 化・practice 表示は同 workspace 上の増分）
 - 2026-08-31 のレビュー: 4 軸（位置づけ / 基盤 / ログ / 公開）の選択を確認
+
+### 用語の変更（2026-09-27、issue #140）
+
+本 ADR が「エポック」「ラウンド」と呼んでいる 30 分〜1 時間の区切り（§3 の「エポック境界の逐次断面」、
+「決めていないこと」のエポック長）は、規約の**評価区間**（§0.1）である。境界ごとの値は途中経過で、
+採点はエポック（練習期間では 1 日）の最初と最後の境界だけを読む。コードは issue #140 でこの区切りを
+`interval` に改名した: `run.epochSeconds` → `run.intervalSeconds`、`epochs.jsonl` → `intervals.jsonl`、
+`epoch_boundary` / `epoch_series_agreement` → `interval_boundary` / `interval_series_agreement`、
+`summary.json` の `valueSeries.epochSeries` → `intervalSeries`、manifest の `round.epochBlocks` →
+`round.intervalBlocks`、ダッシュボードの「ラウンド」→「評価区間」。旧名は結果発表（12 月）まで読み込まれ
+（`summary.json` と manifest には新旧を併記する）、その後削除する。本文は決定時の記録として書き換えない。

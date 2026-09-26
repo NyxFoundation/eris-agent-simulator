@@ -9,10 +9,12 @@
 ## 9.1 情報階層
 
 ```
-competition  ⊃  scenario（1 world = 規約の 1 エポック = "regime#seed"）  ⊃  round（1 評価区間。途中経過で、採点の単位ではない）
+competition  ⊃  scenario（1 world = 規約の 1 エポック = "regime#seed"）  ⊃  interval（1 評価区間。途中経過で、採点の単位ではない）
 ```
 
 `dashboard/src/data/competition.ts:1-8` が定義する唯一のモデル。
+
+UI は評価区間を「評価区間」/ "Interval" と表示する（issue #140 までは「ラウンド」/ "Round"）。dashboard のコード内の識別子（`roundCursor` / `RoundsBar` / `round` など）は round のままで、`dashboard/` の中では常に評価区間を指す。
 
 - competition は通常 `npm run backtest -- --scenarios` が書く `matrix.json`。セグメント期間も同じ形
 - **「competition に属さない run」という第 2 のモデルは無い。** `sim:realtime` の 1 run は「1 シナリオの競技」であり、`competitionFromRun` が同一の形へ包む。**データ層の入口 1 箇所で正規化するので、以降のページは 1 種類の型しか見ない**
@@ -34,19 +36,19 @@ competition  ⊃  scenario（1 world = 規約の 1 エポック = "regime#seed"�
 
 **削除済みのルート**：`/standings`・`/leaderboard`（scenario 内順位と重複）・`/archive`（未到達の遺物）・`/run`（エイリアス）。
 
-## 9.2 ラウンドカーソル（UI の時計）
+## 9.2 評価区間カーソル（UI の時計）
 
 `dashboard/src/data/roundCursor.ts`。**位置が 1 つだけ存在する。**
 
-スコアも順位変動も環境イベントも全部エポック単位なので、全ビューはこの軸に対して読む。**以前はラウンド軸を 3 回別々に実装していた**（ラウンド選択 / replay head / live head）— 3 つのストア、1 つの概念。
+途中経過の価値も順位変動も環境イベントも評価区間単位なので、全ビューはこの軸に対して読む。**以前はこの軸を 3 回別々に実装していた**（評価区間の選択 / replay head / live head）— 3 つのストア、1 つの概念。
 
 | 性質 | 内容 |
 |---|---|
 | `round` | **1-based かつ competition 相対**。`null` は「終わり」= 完走結果 |
-| 意味 | **round k では 35 シナリオが各自の round k にいる**。だから 35 個の独立した world が 1 つの競技として観られる |
+| 意味 | **評価区間 k では 35 シナリオが各自の評価区間 k にいる**。だから 35 個の独立した world が 1 つの競技として観られる |
 | 再生 | カーソルを進めるだけ（独立した「リプレイモード」ではない）。1x/2x/4x、1 tick = 700ms |
 | 終端 | ループせず**終わりで停止**する（黙って巻き戻るカーソルは「競技が巻き戻った」と読める） |
-| 範囲変更 | 新しい範囲に収まる位置は保持する。**はみ出す位置は終端に寄せる**（9 ラウンドのシナリオの round 20 は round 9 ではない） |
+| 範囲変更 | 新しい範囲に収まる位置は保持する。**はみ出す位置は終端に寄せる**（9 区間のシナリオの評価区間 20 は評価区間 9 ではない） |
 
 ブロック単位の細かい移動（1 シナリオ内）は `replay.ts` に残る。これはこの位置の**細分**であって対立する概念ではなく、シナリオを 1 本開いているときにだけ存在する。armed のとき replay がカーソルを駆動し、カーソルが replay を駆動し返すことはない。
 
@@ -81,19 +83,19 @@ z を表に出さないのは、**無単位の z が「どれだけ差がある�
 
 順位の出自が順位と別々に流通すると誤読されるので、**順位表そのものに恒久的に書く**。
 
-### "through round k"
+### "through interval k"
 
-順位は**先頭 k ラウンドで再計算する**（完走結果を読まない）+ round k−1 からの移動を出す。
+順位は**先頭 k 評価区間で再計算する**（完走結果を読まない）+ 評価区間 k−1 からの移動を出す。
 
-「round k までの順位」は、境界系列から P = V_k − V_0 を取り直して T と Score を再計算したもの**そのもの**であって近似ではない（`dashboard/src/data/standings.ts` の `scenarioPnl`）。
+「評価区間 k までの順位」は、境界系列から P = V_k − V_0 を取り直して T と Score を再計算したもの**そのもの**であって近似ではない（`dashboard/src/data/standings.ts` の `scenarioPnl`）。
 
 ### シナリオ長が揃っていないとき
 
-full-8h では depeg が 9 ラウンド、他は 29 ラウンド。**最終ラウンドを過ぎたシナリオは「世界が終了した」扱いで順位に残す**（除くと「結果でない理由」で場が動く）。帯に `30 of 35 still running · 5 ended earlier` と出す。
+full-8h では depeg が 9 評価区間、他は 29 評価区間。**最終評価区間を過ぎたシナリオは「世界が終了した」扱いで順位に残す**（除くと「結果でない理由」で場が動く）。帯に `30 of 35 still running · 5 ended earlier` と出す。
 
-### net PnL はラウンド絞り不可
+### net PnL は評価区間で絞れない
 
-両端を run 最終価格で評価するので、round k の値が存在しない。順位表の参考列としてだけ出し、**スクラブ中は灰色で提示して完走値をラウンド名で出さない**。
+両端を run 最終価格で評価するので、評価区間 k の値が存在しない。順位表の参考列としてだけ出し、**スクラブ中は灰色で提示して完走値を評価区間名で出さない**。
 
 ### 順位が存在しない 2 ケース
 
@@ -107,9 +109,9 @@ full-8h では depeg が 9 ラウンド、他は 29 ラウンド。**最終ラ�
 1 つの world を**ブロック単位で歩ける盤面**として出す（`dashboard/src/pages/ScenarioPage.tsx`）。他のページが「何が起きたか」に答えるのに対し、ここは「起きている最中はどう見えるか」に答える。
 
 ```
-RoundsBar      ラウンド軸（競技のカーソル。replay の transport はここでは出さない）
-header         シナリオ名（regime#seed、`full-` 接頭辞は剥がす）+ seed + ラウンド数/ブロック数 + agent 数・venue 数・表示中のブロック窓
-WorldTimeline  ブロック軸。クリック・ドラッグ・← → で移動、0.5x〜4x 再生。ラウンド境界が目盛り
+RoundsBar      評価区間の軸（競技のカーソル。replay の transport はここでは出さない）
+header         シナリオ名（regime#seed、`full-` 接頭辞は剥がす）+ seed + 評価区間数/ブロック数 + agent 数・venue 数・表示中のブロック窓
+WorldTimeline  ブロック軸。クリック・ドラッグ・← → で移動、0.5x〜4x 再生。評価区間の境界が目盛り
 WorldMap       左に wallet、中央にチェーン、右に contract。1 フレーム = 1 ブロック（900 フレーム超は複数ブロックを束ねて範囲表示）
 This block     取引数 / revert / 取引した agent 数 / その場で環境がしたこと
 3 パネル       シナリオ内順位（行クリックで盤面の wallet を選ぶ）/ Agent Log（選んだ wallet の判断ログ、head まで）/ 各 venue の価格 vs fair と採点境界ごとの口座評価額
@@ -117,19 +119,19 @@ This block     取引数 / revert / 取引した agent 数 / その場で環境�
 
 **以前は Markets / Standings / Explorer のプレビュー 3 枚を並べたランディングで、盤面は `/world` という別タブだった**（2026-09-07 に統合）。プレビューは盤面が持つ数字から時間軸を抜いたものだったので、盤面をページ本体にした。`/world` へのリンクは `/scenario` に着地する。
 
-**時計は 2 本あるが、ページのものは 1 本**。RoundsBar は競技のカーソル（全 world の round k）で、選んだラウンドがブロック軸の窓になる。ブロック軸の head はページのローカル状態であって replay head ではない — replay head はフェッチキーに入っているので一歩ごとに全 snapshot を再取得するが、盤面は snapshot が持つフレームを歩くだけで再取得が要らない。**歩いた途中でページを離れると、その時点で 1 回だけ head を replay store に渡す**（archived なら replay を arm、replay 中なら seek）。`/markets` と `/explorer` が盤面のいたブロックで開くためで、末尾まで歩き切っていれば渡さない（他ページの既定は run 全体で、末尾に停めた replay は同じ表示に「replay」と付けるだけ）。逆に、この run の replay が armed の状態でページを開くと盤面はその head から始まる。**盤面のフレーム自体は replay で clamp しない**（フレームは常に run 全体。replay head で切ると head 以降が「取引の無い未来」として見える）。未来を見せない責務は walk の head が負い、Agent Log・チャート・順位パネルは head までしか読まない。順位パネルは **head 時点で閉じたラウンドまでの順位**（`standingsThroughRound`。`buildStandings` を閉じたラウンド数ごとに呼ぶだけで、採点経路は 1 本のまま）で、閉じたラウンドが無ければ「まだ採点されていません」と出す。
+**時計は 2 本あるが、ページのものは 1 本**。RoundsBar は競技のカーソル（全 world の評価区間 k）で、選んだ評価区間がブロック軸の窓になる。ブロック軸の head はページのローカル状態であって replay head ではない — replay head はフェッチキーに入っているので一歩ごとに全 snapshot を再取得するが、盤面は snapshot が持つフレームを歩くだけで再取得が要らない。**歩いた途中でページを離れると、その時点で 1 回だけ head を replay store に渡す**（archived なら replay を arm、replay 中なら seek）。`/markets` と `/explorer` が盤面のいたブロックで開くためで、末尾まで歩き切っていれば渡さない（他ページの既定は run 全体で、末尾に停めた replay は同じ表示に「replay」と付けるだけ）。逆に、この run の replay が armed の状態でページを開くと盤面はその head から始まる。**盤面のフレーム自体は replay で clamp しない**（フレームは常に run 全体。replay head で切ると head 以降が「取引の無い未来」として見える）。未来を見せない責務は walk の head が負い、Agent Log・チャート・順位パネルは head までしか読まない。順位パネルは **head 時点で閉じた評価区間までの順位**（`standingsThroughRound`。`buildStandings` を閉じた評価区間の数ごとに呼ぶだけで、採点経路は 1 本のまま）で、閉じた評価区間が無ければ「まだ採点されていません」と出す。
 
 **header がシナリオ自身を名乗る**。以前はここが ERIS のワードマークで、35 の world のどれが画面に出ているのかを何も言わずに全シナリオがアプリの表紙のように見えていた。
 
 **実装語彙（ファイル名・ADR 番号）を出してよいのは InfoTabs だけ**（§9.10）。
 
-### 環境イベントのラウンド化（`dashboard/src/data/schedule.ts`）
+### 環境イベントの評価区間への変換（`dashboard/src/data/schedule.ts`）
 
-`stress_schedule` は seed から引かれた**計画**であり、run-relative なブロック窓を持つ。これを**ラウンド軸へ変換する**（`fromRound` / `toRound` = `ceil(block / epochBlocks)`）。ラウンドが他のすべてが乗っている軸だから。
+`stress_schedule` は seed から引かれた**計画**であり、run-relative なブロック窓を持つ。これを**評価区間の軸へ変換する**（`fromRound` / `toRound` = `ceil(block / intervalBlocks)`）。評価区間が他のすべてが乗っている軸だから。
 
 - `stress_schedule` は最初のブロックより前に書かれるので、**events.jsonl の先頭 128KB を読むだけでよい**。35 シナリオで 4MB（全ファイルなら 102MB）
-- `windowsAtRound(schedules, round)` が競技全体からその round に掛かる窓を集め、**開いた瞬間の窓を先頭に並べる**（3 ラウンド開いている窓は文脈、いま開いた窓はニュース）
-- 順位表のラウンド注記がこれを 1 行で出す
+- `windowsAtRound(schedules, round)` が競技全体からその評価区間に掛かる窓を集め、**開いた瞬間の窓を先頭に並べる**（3 評価区間開いている窓は文脈、いま開いた窓はニュース）
+- 順位表の評価区間注記がこれを 1 行で出す
 
 **`crash` / `spike` / `cexDrift` / `flowTrend` は毎ブロックの記録を残さない**（価格の walk 自体を変えるため）ので、これは**「計画」であってそう明示する**。「never fired」とは書かず「price chart を見よ」と出す。
 
@@ -137,18 +139,18 @@ This block     取引数 / revert / 取引した agent 数 / その場で環境�
 
 ### パネルのスコープ
 
-選択中のラウンドで絞る。**`scopeRunToBlocks`（`runsProvider.ts:1358`）が run オブジェクト自体をブロック窓で絞る**ので、ビルダー側に第 2 の経路ができない。ヘッダに窓を明示し、全体に戻すリンクを出す。
+選択中の評価区間で絞る。**`scopeRunToBlocks`（`runsProvider.ts:1358`）が run オブジェクト自体をブロック窓で絞る**ので、ビルダー側に第 2 の経路ができない。ヘッダに窓を明示し、全体に戻すリンクを出す。
 
 **例外は run 終端の断面表**（GMX 建玉 / Aave 口座 / reserve）で、run 終了時の 1 断面なのでタイトルに "at the run's final block" と書く。建玉が本当にゼロだった場合は「この run では建玉が無かった、あるいはこの run が venue 別建玉の記録より古い」と文章で出す。
 
-**ラウンド別 volume の合計が run 全体より小さいのは正しい** — scorer が末尾の端数エポックを落とすので、最終境界より後のブロックはどのラウンドにも属さない。
+**評価区間別 volume の合計が run 全体より小さいのは正しい** — scorer が末尾の端数区間を落とすので、最終境界より後のブロックはどの評価区間にも属さない。
 
-### ラウンドバー
+### 評価区間バー（`RoundsBar`）
 
-上部の帯は選択中 run のエポック系列そのもの（`valueSeries.epochSeries.boundaryBlocks`）。セグメントを押すとその round の per-agent 結果が開く。
+上部の帯は選択中 run の評価区間の系列そのもの（`valueSeries.intervalSeries.boundaryBlocks`。issue #140 以前の run は `epochSeries`、どちらでも読む）。セグメントを押すとその評価区間の per-agent 結果が開く。
 
-- **`Δ value` と `log return` は別物**：前者は β 込みの生の資産変化（noop も動く）、後者は baseline 超過（= スコアが平均する系列）
-- live run は採点系列が無いので `run_started_realtime.epochBlocks` から枠だけ引いて進捗を出し、結果は完走時に入る
+- **`Δ value` と `log return` は別物**：前者は β 込みの生の資産変化（noop も動く）、後者は同じ変化を対数成長率 ln(後 / 前) で表したもの。**どちらもスコアではない**（スコアはエポックにつき 1 つの P）
+- live run は採点系列が無いので `run_started_realtime.intervalBlocks`（古い run は `epochBlocks`）から枠だけ引いて進捗を出し、結果は完走時に入る
 
 ## 9.5 `/markets`
 
@@ -173,7 +175,7 @@ LST / Liquity を events から読むのは、coordinator が毎ブロック出�
 
 そのエージェントが採点された全エポック（s / シナリオ / P / T / w）と、T の平均・標準偏差・最悪値（§4.6 のタイブレーク）、分布、レジーム別内訳を出す。順位は Score で決まるので、これは別の順位ではなく**説明**である。
 
-実測例：`clean-arb` は 1 ラウンド +0.32bp・std 1.78bp で 1 位、`levered-long-max` は **+4.90bp**・std **78.60bp** で最下位。**15 倍稼いでいる方が最下位**で、差は全部 std。レジーム別に割ると `cex-drift` だけ +48.3bp で他 6 本は負け＝レジーム適合の話だと分かる。
+実測例：`clean-arb` は 1 評価区間あたり +0.32bp・std 1.78bp で 1 位、`levered-long-max` は **+4.90bp**・std **78.60bp** で最下位。**15 倍稼いでいる方が最下位**で、差は全部 std。レジーム別に割ると `cex-drift` だけ +48.3bp で他 6 本は負け＝レジーム適合の話だと分かる。
 
 **判断ログタブは external エージェントでは出さない**（[05 §5.9](05-agent-contract.md)）。空パネルは「このエージェントは何も考えなかった」という別の主張になる。送信フィードは「何名がここに出ないか」を明示する。
 
@@ -192,16 +194,16 @@ LST / Liquity を events から読むのは、coordinator が毎ブロック出�
 
 ### replay
 
-完走した run を「ブロック B 時点」として前に歩かせる（rounds bar の `▶ replay`）。scenario ページだけは transport を出さない（ブロック軸を自前で持つ。§9.4）。そこを歩いた途中で離れると head が replay に渡る。
+完走した run を「ブロック B 時点」として前に歩かせる（評価区間バーの `▶ replay`）。scenario ページだけは transport を出さない（ブロック軸を自前で持つ。§9.4）。そこを歩いた途中で離れると head が replay に渡る。
 
 **live モードは run したマシンでしか成立しない**（tail は dev サーバーのファイルシステム、チェーン読取はエージェントの anvil）ので、**完走済み run と spot で回して回収した run を観るにはこれが唯一の手段**。
 
-archived は live より情報が多い（`market.json`・採点済みエポック・完全な `blocks.csv`）ので、劣化版ではなく**上位互換**。
+archived は live より情報が多い（`market.json`・採点済みの評価区間系列・完全な `blocks.csv`）ので、劣化版ではなく**上位互換**。
 
 **未来を見せないのが要件**：
 
-- 閉じていないラウンドは結果を持たない
-- 順位も**閉じたラウンドまでの P = V_k − V_0 から T を計算し直す**（完走時の数字を読むと毎フレームに答えが出てしまう）
+- 閉じていない評価区間は結果を持たない
+- 順位も**閉じた評価区間までの P = V_k − V_0 から T を計算し直す**（完走時の数字を読むと毎フレームに答えが出てしまう）
 - run 終端の建玉断面も head が終端に届くまで落とす
 
 ## 9.8 run の探索（`/runs` API）
@@ -233,7 +235,7 @@ archived は live より情報が多い（`market.json`・採点済みエポッ�
 | run | `2026-08-29 16:03`（ディレクトリ名のタイムスタンプを整形） |
 | **`runs/` の通し番号「Run N」** | **全廃**（開発機ローカルの座標で参加者に無意味） |
 
-**識別と表示は別**：シナリオのキーは `runDir`（`--repeat` で (regime, seed) が重複しうるし、セグメントは同じ時刻ラベルを共有しうる）。ラベルでキーにすると 6 セグメントが 1 つに潰れてラウンドが混ざる。
+**識別と表示は別**：シナリオのキーは `runDir`（`--repeat` で (regime, seed) が重複しうるし、セグメントは同じ時刻ラベルを共有しうる）。ラベルでキーにすると 6 セグメントが 1 つに潰れて評価区間が混ざる。
 
 ## 9.10 i18n
 
