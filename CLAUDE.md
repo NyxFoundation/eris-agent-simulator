@@ -299,6 +299,19 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   同じエポックが 2 セグメントで採点され、後者を繰り越さないとセグメントごとに 1 エポック消える）
 - **エポック長は実時間で書く**（`run.epochSeconds`。ADR 0021 §3 が単位を確定した）。ブロック数は cadence から
   導出。両方書くと fail-fast。設定例は `config/practice.yaml`、運用手順は `docs/guide/practice-devnet.md`
+- **1 か月走る期間の 5 点**（issue #129/#130/#134/#135/#136。4 時間の EC2 soak で実測）: ①**期間の終わりは日時**
+  （`run.endsAt`。起動時に残りブロックへ換算。`run.blocks` と両方は fail-fast、CLI の `--blocks` は上書き。
+  以前は 42 日のブロック数で、9/23 起動なら本番週にはみ出し、再起動のたびに 42 日延びた）。42 日の `seconds`
+  上限は `setTimeout` の 32bit を超えて 1ms に化けていた（イベント無しの run が 0 ブロックで終了）→ `setLongTimeout`。
+  ②**背景フローの財布は補充する**（`flow.topUpEveryBlocks`、練習は 300。公式は 0 = 1 回配り）。実測で
+  1 財布の在庫が 1 日に元の数倍揺れ、合計価値は 1 日 1 割強減る。`flow_balances` / `flow_guard` /
+  `flow_wallet_topped_up` が記録。③**LST の経済クロックは 30 秒/ブロック**（既定 1 時間だと 35 日が 170 年分、
+  原資 50 WETH が 3.3 日で尽きた）。尽きたら観測の `apyBps` は 0、`lst_reward_reserve_exhausted`。
+  ④**coordinator の送信記録は flush で消す**（`SubmittedLedger`。以前は 1 日 ~200MB 増えた。soak で 180MB 一定）。
+  ⑤**練習チェーンの anvil は `--transaction-block-keeper 300 --prune-history 300`**。無いと全 tx（1 件 ~37KB、
+  レシート・トレース込み）をメモリとダンプに持ち続け、**5 分ごとのダンプの間ブロック生成が止まる**（2 時間で
+  18 秒、伸び続ける）。履歴は直近 10 分しか読めない。ブロックヘッダはどのフラグでも消えないので
+  `ascon_anvil_mem_growth` が 1 週間先を予測して警告する
 - **ラウンド数はセグメントで頭打ちになる**（期間の長さでは増えない）。30 分ラウンド・24h セグメントで
   **48 ラウンド/セグメント**が定常状態。dashboard はセグメントを読むのでバーもそこで止まる。
   セグメントを切ると期間全体が 1 本になり、1 週間で 336 ラウンド・events.jsonl 435MB・blocks.csv 221MB
@@ -311,7 +324,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run build:contracts` — モックオラクル + PriceFeed を forge build（sim:realtime の前提。`out/` 未生成なら最低 1 回）
 - `npm run gen:local-constants` — deployments.json → `sdk/src/constants.local.ts` 生成（同梱 `deployer/` のローカルデプロイ出力を読む）
 - `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
-- **anvil はブロックごとの state を `~/.foundry/anvil/tmp/anvil-state-*/` に ~2 MB ずつ書く**（`--load-state` の run で実測: 360 ブロック run 1 本で 3,600 ファイル ≈ 7 GB、プロセス終了後も残る）。2026-09-10 にこれが 61 GB 溜まってディスクが満杯になり、run が `ENOSPC` で落ちた。run の後は `rm -rf ~/.foundry/anvil/tmp/anvil-state-*`（動いている anvil が無いとき）。本番 box でも同じ
+- **anvil はブロックごとの state を `~/.foundry/anvil/tmp/anvil-state-*/` に ~2 MB ずつ書く**（`--load-state` の run で実測: 360 ブロック run 1 本で 3,600 ファイル ≈ 7 GB、プロセス終了後も残る）。2026-09-10 にこれが 61 GB 溜まってディスクが満杯になり、run が `ENOSPC` で落ちた。run の後は `rm -rf ~/.foundry/anvil/tmp/anvil-state-*`（動いている anvil が無いとき）。本番 box でも同じ。**macOS の anvil 1.7.1 では 1 ブロック ~6 MB（2026-09-26 再測定）、Linux の 1.8.1 では同じ負荷で 1 ファイルも書かなかった**（issue #135）。`--prune-history` を付ければ版に関係なくディスクには書かない
 - `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積（実行順が回次 s）か、`{k, epochs: [{s, regime, seed}]}` の順序付きプラン（`npm run competition -- plan` の出力）を受ける。シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（schema 2: シナリオ × agent の P = `pnlUsdc` / `pnlSource` / `netPnlUsdc` / `alphaUsdc` / 端点 / `baseline` / `flags`）と `standings.json`（`computeStandings` の出力）を書く。順位は派生物で matrix.json から再計算できる。`--repeat N`（較正の診断用。採点は 1 回が既定。P の中央値の repeat を採る）
   - **`--resume <matrix-dir>` で同じ行列を続ける**（規約 §4.7.1。ライブ週の k エポックは複数回の起動にまたがる）。
