@@ -13,6 +13,7 @@ import {
   fundWallet,
   getBalances,
   fundAddress,
+  GAS_BUFFER_WEI,
   isPermissionlesslyMintable,
   makeClients,
   mine,
@@ -159,6 +160,8 @@ import {
 import {
   accrueLst,
   lstBlockEvent,
+  lstReserveExhausted,
+  lstReserveExhaustedEvent,
   setupLst,
   slashLst,
   stepLstApy,
@@ -187,6 +190,15 @@ import { PULL_VENUES } from "./liquidityVenues.js";
 import type { LstState } from "@eris/sdk/protocols/lst.js";
 import type { LiquityState } from "@eris/sdk/protocols/liquity.js";
 import { VulnSchedule } from "./vulnEvents.js";
+import { SubmittedLedger } from "./submittedLedger.js";
+import { setLongTimeout } from "./longTimeout.js";
+import {
+  FLOW_TELEMETRY_BLOCKS,
+  FlowGuardLog,
+  planFlowTopUp,
+  type FlowWalletHoldings,
+} from "./flowWallets.js";
+import type { FlowContextWire } from "../flow/logic.js";
 import {
   deployVulnPools,
   fundVulnPoolsAt,
@@ -576,6 +588,9 @@ export async function runRealtimeSimulation(
     blockTimeSec: config.blockTimeSec,
     runSeconds: config.runSeconds,
     runBlocks: config.runBlocks,
+    // Issue #136: when the run was stated as a date, the date it was converted from. runBlocks is
+    // what that date came to at this cadence when this process started.
+    ...(config.runEndsAt ? { runEndsAt: config.runEndsAt } : {}),
     // The round: an evaluation interval (rules §0.1), interim progress only -- the score uses the
     // run's first and last boundary (ADR 0023). The identifier still says "epoch" from ADR 0019,
     // when the round was the scoring unit. summary.json carries the boundaries, but only after the run
@@ -784,7 +799,8 @@ export async function runRealtimeSimulation(
     ownerId: "keeper",
     role: "system",
   });
-  const submittedByHash = new Map<string, SubmittedMeta>();
+  // Read once, at the blocks.csv flush, and swept there too (issue #134).
+  const submittedByHash = new SubmittedLedger<SubmittedMeta>();
 
   // Top an environment wallet up to a target native balance from the treasury (issue #33 (1)).
   // "Up to", not "by": the practice devnet funds the same admin and keeper on every segment, and
@@ -809,6 +825,9 @@ export async function runRealtimeSimulation(
 
   // Realtime shared latest state (referenced by the relay's async action handler and flow context)
   let latestStateById = new Map<ProtocolId, unknown>();
+  // Whether the LST reserve was already reported exhausted (issue #129), so the event fires once per
+  // exhaustion rather than every block after it.
+  let lstExhaustedReported = false;
   let latestFairPrice = 0;
   const latestHistory: AgentObservation["history"] = [];
 
@@ -1911,6 +1930,98 @@ export async function runRealtimeSimulation(
     // What `agents_ready` measures boot time from (issue #94).
     const agentsSpawnedAt = Date.now();
 
+    // ---- flow wallets over a long period (issue #130): guards, balances, top-ups ----
+    const flowGuardLog = new FlowGuardLog();
+    // The trading flow wallets (`<protocol>:<informed|uninformed>`): the ones the balance guards
+    // protect. The Aave borrower actors and the whale move their balances on purpose and are left out.
+    const tradingFlowWallets = [...flowWalletMap.entries()].filter(([key]) =>
+      /^[a-z]+:(informed|uninformed)$/.test(key),
+    );
+    const flowTelemetryEvery =
+      config.flowTopUpEveryBlocks > 0
+        ? config.flowTopUpEveryBlocks
+        : FLOW_TELEMETRY_BLOCKS;
+    const flowWalletTelemetry = async (
+      bn: number,
+      flowContext: FlowContextWire,
+    ): Promise<void> => {
+      const ethWei = await Promise.all(
+        tradingFlowWallets.map(([, w]) =>
+          publicClient.getBalance({ address: w.address }),
+        ),
+      );
+      const holdings = new Map<string, FlowWalletHoldings>();
+      const wallets: Record<string, unknown> = {};
+      tradingFlowWallets.forEach(([key], i) => {
+        const b = flowContext.flowBalances?.[key];
+        const h: FlowWalletHoldings = {
+          ethWei: ethWei[i],
+          wethWei: BigInt(b?.wethWei ?? "0"),
+          usdcUnits: BigInt(b?.usdcUnits ?? "0"),
+          bases: Object.fromEntries(
+            Object.entries(b?.bases ?? {}).map(([sym, v]) => [sym, BigInt(v)]),
+          ),
+        };
+        holdings.set(key, h);
+        wallets[key] = {
+          ethWei: h.ethWei.toString(),
+          wethWei: h.wethWei.toString(),
+          usdcUnits: h.usdcUnits.toString(),
+          ...(b?.bases ? { bases: b.bases } : {}),
+        };
+      });
+      logger.event({
+        type: "flow_balances",
+        blockNumber: bn,
+        wallets,
+        // How often each balance guard changed an order since the last row, per wallet and base.
+        guardCounts: flowGuardLog.drain(),
+        topUpEveryBlocks: config.flowTopUpEveryBlocks,
+      });
+      if (config.flowTopUpEveryBlocks <= 0) return;
+      const target = {
+        // fundAddress restores native ETH to flowEthWei + its gas buffer whenever it runs.
+        ethWei: config.flowEthWei + GAS_BUFFER_WEI,
+        wethWei: config.flowWethWei,
+        usdcUnits: config.flowUsdcUnits,
+        bases: config.flowBaseAmounts,
+      };
+      for (const [key, w] of tradingFlowWallets) {
+        const plan = planFlowTopUp(holdings.get(key)!, target);
+        if (!plan) continue;
+        try {
+          // Through the same path the setup funded them: a cheatcode grant on anvil, a treasury
+          // transfer of the shortfall on an external chain. Only the tokens below their floor are
+          // passed, so nothing above it is reset. ETH is passed every time on purpose: on anvil
+          // fundAddress *assigns* the native balance, and it only ever falls (gas), so this is a
+          // raise -- passing 0 would set it to the bare gas buffer.
+          await fundAddress(
+            publicClient,
+            walletClient,
+            chain,
+            w.address,
+            config.flowEthWei,
+            plan.wethWei,
+            plan.usdcUnits,
+            plan.bases,
+          );
+          logger.event({
+            type: "flow_wallet_topped_up",
+            blockNumber: bn,
+            wallet: key,
+            refilled: plan.refilled,
+          });
+        } catch (error) {
+          logger.event({
+            type: "flow_wallet_top_up_failed",
+            blockNumber: bn,
+            wallet: key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    };
+
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
       const submitted: Hex[] = [];
@@ -1920,7 +2031,7 @@ export async function runRealtimeSimulation(
           const hashes = await submitIntent(ctx, intent, latestStateById);
           submitted.push(...hashes);
           for (const hash of hashes) {
-            submittedByHash.set(hash.toLowerCase(), {
+            submittedByHash.record(hash.toLowerCase(), {
               ownerId: intent.ownerId,
               role: intent.role,
               priorityFeeWei: intent.priorityFeeWei,
@@ -1947,7 +2058,19 @@ export async function runRealtimeSimulation(
       }
       return submitted;
     };
-    flowProcess.onOrders((orders) => void handleFlowOrders(orders));
+    flowProcess.onOrders((orders, guards, round) => {
+      // Issue #130: the first time in a telemetry interval that a balance guard changes a wallet's
+      // order, say so; flow_balances carries the counts for the whole interval.
+      for (const n of flowGuardLog.record(guards))
+        logger.event({
+          type: "flow_guard",
+          blockNumber: round,
+          wallet: `${n.protocol}:${n.kind}`,
+          base: n.base,
+          guard: n.guard,
+        });
+      void handleFlowOrders(orders);
+    });
 
     // ---- write mined-block txs to blocks.csv (attribution by from-address lookup; ADR 0006 §4) ----
     // Removed from the realtime loop and scanned in bulk over all blocks after the run ends (the same "off the
@@ -1983,7 +2106,7 @@ export async function runRealtimeSimulation(
       );
       const statuses = receipts.map((r) => r.status);
       txs.forEach((tx, i) => {
-        const meta = submittedByHash.get(tx.hash.toLowerCase());
+        const meta = submittedByHash.take(tx.hash);
         // A sender the run does not know is recorded, not dropped (ADR 0021 §2, rules §2.7). On the
         // trial devnet these are exactly the participants' transactions: whoever sends before their
         // registration is read, or without registering at all. Dropping the row made them invisible
@@ -2038,6 +2161,7 @@ export async function runRealtimeSimulation(
       if (loggedThroughBlock === 0) loggedThroughBlock = runStartBlock - 1;
       for (let b = loggedThroughBlock + 1; b <= upTo; b++) await logBlock(b);
       loggedThroughBlock = Math.max(loggedThroughBlock, upTo);
+      submittedByHash.sweep(loggedThroughBlock);
     };
 
     // ADR 0010 profile: set the oracle/PriceFeed update fee above the agent cap so --order fees places it at
@@ -2604,13 +2728,15 @@ export async function runRealtimeSimulation(
       const finish = (): void => {
         if (finished) return;
         finished = true;
-        if (timer) clearTimeout(timer);
+        cancelTimer?.();
         unwatch();
         resolve();
       };
-      const timer =
+      // Not setTimeout: the practice period's 42-day ceiling is past its 32-bit limit, which Node
+      // turns into 1 ms -- a run that kept its time limit ended before its first block.
+      const cancelTimer =
         effectiveRunSeconds > 0
-          ? setTimeout(finish, effectiveRunSeconds * 1000)
+          ? setLongTimeout(finish, effectiveRunSeconds * 1000)
           : undefined;
 
       const onBlock = async (bn: number): Promise<void> => {
@@ -2801,7 +2927,7 @@ export async function runRealtimeSimulation(
               const hash = await accrueLst(ctx, lstRuntime, {
                 priorityFeeWei: oracleFee,
               });
-              submittedByHash.set(hash.toLowerCase(), {
+              submittedByHash.record(hash.toLowerCase(), {
                 ownerId: "oracle",
                 role: "system",
                 priorityFeeWei: oracleFee,
@@ -2879,7 +3005,7 @@ export async function runRealtimeSimulation(
                 oracleFee,
               );
               auditPrice("WETH", "price_submitted", [feedHash]);
-              submittedByHash.set(feedHash.toLowerCase(), {
+              submittedByHash.record(feedHash.toLowerCase(), {
                 ownerId: "oracle",
                 role: "system",
                 priorityFeeWei: oracleFee,
@@ -2894,7 +3020,7 @@ export async function runRealtimeSimulation(
                   oracleFee,
                 );
                 auditPrice(b, "price_submitted", [extraHash]);
-                submittedByHash.set(extraHash.toLowerCase(), {
+                submittedByHash.record(extraHash.toLowerCase(), {
                   ownerId: "oracle",
                   role: "system",
                   priorityFeeWei: oracleFee,
@@ -2907,7 +3033,7 @@ export async function runRealtimeSimulation(
                 oracleFee,
               );
               for (const hash of oracleHashes) {
-                submittedByHash.set(hash.toLowerCase(), {
+                submittedByHash.record(hash.toLowerCase(), {
                   ownerId: "oracle",
                   role: "system",
                   priorityFeeWei: oracleFee,
@@ -2952,7 +3078,15 @@ export async function runRealtimeSimulation(
             // redemption, and whether the reward reserve is running dry. The primary post-run
             // source for whether the venue behaved (issue #38).
             const lstState = stateById.get("lst") as LstState | undefined;
-            if (lstState) logger.event(lstBlockEvent(lstState, bn));
+            if (lstState) {
+              logger.event(lstBlockEvent(lstState, bn));
+              // Issue #129: the block the reserve stops paying, once per exhaustion (anyone can
+              // refund it -- fundRewards is permissionless -- so it can end more than once).
+              const exhausted = lstReserveExhausted(lstState);
+              if (exhausted && !lstExhaustedReported)
+                logger.event(lstReserveExhaustedEvent(lstState, bn));
+              lstExhaustedReported = exhausted;
+            }
             // Liquity telemetry rides on the same read: where the peg sat, how the fee curves moved
             // and whether the system ever entered Recovery Mode (issue #39).
             const liquityState = stateById.get("liquity") as
@@ -2986,6 +3120,10 @@ export async function runRealtimeSimulation(
                     stage: "flow_context_queued", sizeMult: schedule.flowTrendAt(blockIndex).sizeMult,
                   });
               }
+              // Issue #130: the flow wallets' balances into the run record (and refilled, when the
+              // config asks), from the balances this context was just built on.
+              if (bn > runStartBlock && (bn - runStartBlock) % flowTelemetryEvery === 0)
+                await flowWalletTelemetry(bn, flowContext);
             }
           };
 
@@ -3125,7 +3263,7 @@ export async function runRealtimeSimulation(
                 logger,
               );
               if (hash)
-                submittedByHash.set(hash.toLowerCase(), {
+                submittedByHash.record(hash.toLowerCase(), {
                   ownerId: "registry",
                   role: "system",
                   priorityFeeWei: oracleFee,
@@ -3160,7 +3298,7 @@ export async function runRealtimeSimulation(
                   stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
               }
               for (const hash of hashes) {
-                submittedByHash.set(hash.toLowerCase(), {
+                submittedByHash.record(hash.toLowerCase(), {
                   ownerId: "liquidity",
                   role: "system",
                   priorityFeeWei: oracleFee,
@@ -3203,7 +3341,7 @@ export async function runRealtimeSimulation(
                     stressAudit.record(event, blockIndex, bn, { stage: "tx_submitted", hashes });
                 }
                 for (const hash of hashes) {
-                  submittedByHash.set(hash.toLowerCase(), {
+                  submittedByHash.record(hash.toLowerCase(), {
                     ownerId,
                     role: "system",
                     priorityFeeWei: oracleFee,
@@ -3248,7 +3386,7 @@ export async function runRealtimeSimulation(
               }
               for (const s of sends) {
                 const wallet = flowWalletMap.get(s.ownerKey);
-                submittedByHash.set(s.hash.toLowerCase(), {
+                submittedByHash.record(s.hash.toLowerCase(), {
                   ownerId: wallet?.id ?? `flow-${s.ownerKey}`,
                   role: flowRole(s.ownerKey),
                   priorityFeeWei: oracleFee,

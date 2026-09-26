@@ -173,3 +173,39 @@ groups:
         labels: { severity: critical, kind: chain }
         annotations:
           summary: "the chain is reachable but has not produced a block in 10 minutes — the coordinator (ascon-devnet.service) is probably down; `systemctl --user status ascon-devnet`"
+
+      # The part of anvil's memory no flag bounds (issue #135). With --transaction-block-keeper and
+      # --prune-history the dump and most of the memory level off, but anvil still keeps a header
+      # for every block, so a month-long period grows it by a slope nothing else watches. This asks
+      # where the chain container is heading rather than where it is: its working set a week from
+      # now at the last six hours' slope, against the host's memory. A week of warning is enough to
+      # schedule the restart (a new period) or a bigger box; the host-memory rule is too late for
+      # either.
+      - uid: ascon_anvil_mem_growth
+        title: Chain memory on course to fill the host within a week
+        condition: C
+        for: 30m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        data:
+          - refId: A
+            relativeTimeRange: { from: 21600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: "100 * max(predict_linear(container_memory_working_set_bytes{name=\"ascon-anvil\"}[6h], 7 * 86400)) / max(node_memory_MemTotal_bytes)"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [80] }
+        labels: { severity: warning, kind: memory }
+        annotations:
+          summary: "ascon-anvil's memory, at its 6-hour slope, reaches {{ $values.A.Value | printf \"%.0f\" }}% of the host within 7 days (issue #135: block headers are not bounded by any anvil flag)"

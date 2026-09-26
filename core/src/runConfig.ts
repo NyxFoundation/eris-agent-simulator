@@ -156,6 +156,8 @@ function warnRetiredConfigEnv(): void {
 const CLI_ALIAS: Record<string, string> = {
   seed: "SEED",
   blocks: "ERIS_RUN_BLOCKS",
+  // The run's end as a date (issue #136), e.g. --ends-at 2026-10-31T23:59:59+09:00.
+  "ends-at": "ERIS_RUN_ENDS_AT",
   seconds: "ERIS_RUN_SECONDS",
   protocols: "ENABLED_PROTOCOLS",
   agents: "AGENTS_CONFIG",
@@ -171,6 +173,11 @@ function cliOverrides(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [alias, key] of Object.entries(CLI_ALIAS))
     if (flags[alias] !== undefined) out[key] = flags[alias];
+  // A run has one end (issue #136). A one-off --blocks replaces the file's run.endsAt rather than
+  // colliding with it -- a short smoke run of the practice config is the common case -- and a
+  // one-off --ends-at replaces the file's run.blocks the same way.
+  if (flags.blocks !== undefined && flags["ends-at"] === undefined) out.ERIS_RUN_ENDS_AT = "";
+  if (flags["ends-at"] !== undefined && flags.blocks === undefined) out.ERIS_RUN_BLOCKS = "";
   return out;
 }
 

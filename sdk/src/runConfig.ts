@@ -77,6 +77,7 @@ const SCHEMA: Record<string, string> = {
   // run
   "run.seed": "SEED",
   "run.blocks": "ERIS_RUN_BLOCKS",
+  "run.endsAt": "ERIS_RUN_ENDS_AT", // issue #136: the run's end as a date; runBlocks is derived at load
   "run.seconds": "ERIS_RUN_SECONDS",
   "run.blockTimeSec": "ERIS_BLOCK_TIME_SEC",
   "run.protocols": "ENABLED_PROTOCOLS",
@@ -154,6 +155,9 @@ const SCHEMA: Record<string, string> = {
   "flow.gmxSizeSigma": "ERIS_GMX_SIZE_SIGMA",
   "flow.aaveActorSizeSigma": "ERIS_AAVE_ACTOR_SIZE_SIGMA",
   "flow.seed": "FLOW_SEED",
+  // Issue #130: top the flow wallets back up every N blocks (0 = never, the default -- the official
+  // regimes are calibrated on wallets funded once). Balances are logged on the same cadence either way.
+  "flow.topUpEveryBlocks": "ERIS_FLOW_TOPUP_EVERY_BLOCKS",
   "flow.botCommand": "FLOW_BOT_COMMAND",
   "flow.botArgs": "FLOW_BOT_ARGS",
   // stress
