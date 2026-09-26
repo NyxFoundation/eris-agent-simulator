@@ -1,7 +1,8 @@
 // /explorer — the round explorer.
 //
-// Two things it owes the reader. First, it is scoped to a *round* (a scoring epoch) when one is
-// selected in the rounds bar, so "what happened in round 4" is a block window, not a whole run.
+// Two things it owes the reader. First, it is scoped to a *round* (an evaluation interval) when
+// one is selected in the rounds bar, so "what happened in round 4" is a block window, not a whole
+// run.
 // Second, it is a front door to the local Blockscout instance rather than a dead end: the
 // connection state is visible, search resolves a hash / block / address / agent name into a real
 // deep link, and when the explorer is down the page says so and still filters what it holds itself.

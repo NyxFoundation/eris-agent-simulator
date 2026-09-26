@@ -82,7 +82,7 @@
 |---|---|---|
 | **run** | 1 回の実行。`runs/<runId>/` を 1 つ（セグメント時は複数）生成する | `coordinator.ts:491` |
 | **ブロック** | 環境の時間の最小単位。既定 2 秒（`run.blockTimeSec`） | `sdk/src/config.ts:338` |
-| **エポック（ラウンド）** | 採点の単位。既定 12 ブロック（`run.epochBlocks`）。実時間で書くこともできる（`run.epochSeconds`） | `sdk/src/config.ts:572` |
+| **ラウンド（コードの epoch）** | 規約の**評価区間**（§0.1）。境界ごとに資産価値を記録して途中経過に使う。**採点の単位ではない**（採点は run = 規約のエポックの最初と最後の境界）。既定 12 ブロック（`run.epochBlocks`）。実時間で書くこともできる（`run.epochSeconds`） | `sdk/src/config.ts:572` |
 | **シナリオ** | (regime, seed) の組。1 本の市場の再生 | ADR 0017 §1 |
 | **regime** | 市場条件の型。`config/regimes/<name>.yaml` が価格・フロー・イベントの生成規則を持つ | `config/regimes/` |
 | **fair price** | 環境が生成し PriceFeed 経由で全員に配る基準価格 | `core/src/realtime/priceFeed.ts` |

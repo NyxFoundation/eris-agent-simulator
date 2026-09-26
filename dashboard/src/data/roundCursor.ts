@@ -1,7 +1,9 @@
 // The round cursor: the dashboard's clock.
 //
-// Everything in this system is measured in scoring epochs. The score is the mean and spread of
-// per-epoch returns, rank changes happen at epoch boundaries, and an environment event lands in one.
+// Everything a viewer watches moves on the round axis. A round is an evaluation interval (rules
+// §0.1): each boundary records every agent's value, the standings "through round k" are recomputed
+// from those values, and an environment event lands in one. The score itself uses a run's first and
+// last boundary only (ADR 0023) -- a round is where you are, not what is scored.
 // The UI nonetheless had no time axis — its spine was "which run am I looking at", which is a file
 // picker — so the round axis got reinvented locally three times over: a round selection for scoping,
 // a replay head for walking a finished run, and a live head for one in progress. Three stores, one

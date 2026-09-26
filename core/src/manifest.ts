@@ -194,8 +194,10 @@ export function buildManifest(opts: {
       markMedianBlocks: config.markMedianBlocks,
       scoreEvery: config.scoreEvery,
       note:
-        "A round is the scoring epoch (ADR 0019): scores, rank moves and environment episodes are " +
-        "all read against it.",
+        "A round is an evaluation interval (rules §0.1): every agent's value is recorded at each " +
+        "boundary and shown as interim progress. It is not what the score is computed over -- that " +
+        "is the epoch, whose first and last boundary give P (in the practice period, one day; see " +
+        "docs/guide/practice-devnet.md, Standings).",
     },
     protocols,
     actions: Object.fromEntries(

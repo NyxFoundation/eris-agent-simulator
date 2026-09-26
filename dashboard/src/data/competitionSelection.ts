@@ -1,8 +1,9 @@
 import { useSyncExternalStore } from "react";
 
 // The outer half of the two-level selection: competition contains scenario (one run), which
-// contains round (one scoring epoch). The scenario selection stays in runSelection.ts, so every
-// run-level page works the same whether the run came from a competition or stood alone.
+// contains round (one evaluation interval, interim progress). The scenario selection stays in
+// runSelection.ts, so every run-level page works the same whether the run came from a competition
+// or stood alone.
 
 const STORAGE_KEY = "eris.competition";
 
