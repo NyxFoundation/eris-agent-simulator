@@ -675,6 +675,98 @@ function parse(obj: Record<string, unknown>): LeafAction | null {
   }
 }
 
+/// The borrowing fee the chain adds to `amountEusdWei` of new debt (BorrowerOperations
+/// ._triggerBorrowingFee): the borrowing rate in Normal Mode, nothing in Recovery Mode. The rate is
+/// the observation's `borrowingRateBps`, i.e. getBorrowingRateWithDecay -- what the chain charges
+/// after decayBaseRateFromBorrowing. The base rate only decays between observation and inclusion,
+/// so the fee charged is at most this one.
+export function borrowingFeeEusdWei(
+  amountEusdWei: bigint,
+  venue: Pick<LiquityObservation, "borrowingRateBps" | "recoveryMode">,
+): bigint {
+  if (venue.recoveryMode || amountEusdWei <= 0n) return 0n;
+  // bps -> 1e18 scale (1 bps = 1e14). borrowingRateBps carries 0.001 bps, so this is exact.
+  const rateWad = BigInt(Math.round(venue.borrowingRateBps * 1e14));
+  return (amountEusdWei * rateWad) / WAD;
+}
+
+/// The debt a new Trove is opened with, which is what its ICR is computed on
+/// (BorrowerOperations.openTrove: `_getCompositeDebt(netDebt)`): the requested eUSD, plus the
+/// borrowing fee, plus the gas compensation the Gas Pool holds.
+export function compositeDebtEusdWei(
+  requestedEusdWei: bigint,
+  venue: Pick<
+    LiquityObservation,
+    "borrowingRateBps" | "recoveryMode" | "gasCompensationEusdWei"
+  >,
+): bigint {
+  return (
+    requestedEusdWei +
+    borrowingFeeEusdWei(requestedEusdWei, venue) +
+    BigInt(venue.gasCompensationEusdWei)
+  );
+}
+
+function crOf(collWei: bigint, debtWei: bigint, priceUsd: number): number {
+  if (debtWei <= 0n) return NO_DEBT_RATIO;
+  return (
+    (Number(formatUnits(collWei, 18)) * priceUsd) /
+    Number(formatUnits(debtWei, 18))
+  );
+}
+
+/// What BorrowerOperations._adjustTrove requires of the Trove it leaves behind
+/// (_requireValidAdjustmentInCurrentMode), on the debt it would book: the Trove's entire debt
+/// (gas compensation and pending redistribution included, as getEntireDebtAndColl reports it) plus
+/// the change, plus the borrowing fee when the change is an increase in Normal Mode.
+///
+///   Normal Mode    the new ICR must be at least MCR
+///   Recovery Mode  no collateral withdrawal; a debt increase must leave the ICR at least CCR and
+///                  no lower than before
+function adjustedTroveCheck(
+  venue: LiquityObservation,
+  trove: NonNullable<LiquityObservation["trove"]>,
+  change: {
+    add: bigint;
+    withdraw: bigint;
+    debtChange: bigint;
+    isDebtIncrease: boolean;
+  },
+): ValidationResult {
+  const coll = BigInt(trove.collWei);
+  const debt = BigInt(trove.debtEusdWei);
+  const increase = change.isDebtIncrease ? change.debtChange : 0n;
+  const repay = change.isDebtIncrease ? 0n : change.debtChange;
+  if (repay > BigInt(trove.netDebtEusdWei))
+    return {
+      ok: false,
+      reason: `debtChangeEusdWei repays more than the Trove's net debt (${trove.netDebtEusdWei})`,
+    };
+  const newColl = coll + change.add - change.withdraw;
+  const newDebt = debt + increase + borrowingFeeEusdWei(increase, venue) - repay;
+  const oldIcr = crOf(coll, debt, venue.priceUsd);
+  const newIcr = crOf(newColl, newDebt, venue.priceUsd);
+  if (venue.recoveryMode) {
+    if (change.withdraw > 0n)
+      return {
+        ok: false,
+        reason: "Recovery Mode forbids withdrawing collateral from a Trove",
+      };
+    if (increase > 0n && (newIcr < venue.ccr || newIcr < oldIcr))
+      return {
+        ok: false,
+        reason: `in Recovery Mode a debt increase must leave the ICR at least the CCR of ${venue.ccr} and no lower than before (${oldIcr.toFixed(3)}); it would be ${newIcr.toFixed(3)}`,
+      };
+    return { ok: true };
+  }
+  if (newIcr < venue.mcr)
+    return {
+      ok: false,
+      reason: `resulting ICR ${newIcr.toFixed(3)} (on ${formatUnits(newDebt, 18)} eUSD of debt, borrowing fee included) is below the MCR of ${venue.mcr}`,
+    };
+  return { ok: true };
+}
+
 function validate(
   action: LeafAction,
   obs: AgentObservation,
@@ -696,6 +788,9 @@ function validate(
         return { ok: false, reason: "collateralWethWei must be positive" };
       if (coll > wethBalance)
         return { ok: false, reason: "collateralWethWei exceeds WETH balance" };
+      // On the request alone, deliberately: the chain checks request + fee, but the fee it charges
+      // can only be lower than the observed one (the base rate decays), so adding it here could
+      // pass a Trove the chain then refuses.
       if (debt < BigInt(liquity.minNetDebtEusdWei))
         return {
           ok: false,
@@ -704,15 +799,16 @@ function validate(
       if (liquity.trove && liquity.trove.status === 1)
         return { ok: false, reason: "this wallet already has an active Trove" };
       // Recovery Mode forbids opening below CCR, and the resulting ratio is knowable here, so say so
-      // now rather than paying gas to be told on chain.
-      const icr =
-        (Number(formatUnits(coll, 18)) * liquity.priceUsd) /
-        Number(formatUnits(debt, 18));
+      // now rather than paying gas to be told on chain. The ratio is on the debt the chain books --
+      // the request, the borrowing fee and the gas compensation -- not on the request alone, which
+      // passed Troves within a few percent of MCR that then reverted.
+      const composite = compositeDebtEusdWei(debt, liquity);
+      const icr = crOf(coll, composite, liquity.priceUsd);
       const floor = liquity.recoveryMode ? liquity.ccr : liquity.mcr;
       if (icr < floor)
         return {
           ok: false,
-          reason: `resulting ICR ${icr.toFixed(3)} is below the ${liquity.recoveryMode ? "CCR (Recovery Mode)" : "MCR"} of ${floor}`,
+          reason: `resulting ICR ${icr.toFixed(3)} (on ${formatUnits(composite, 18)} eUSD of debt: the request, the borrowing fee and the gas compensation) is below the ${liquity.recoveryMode ? "CCR (Recovery Mode)" : "MCR"} of ${floor}`,
         };
       return { ok: true };
     }
@@ -750,7 +846,12 @@ function validate(
           ok: false,
           reason: "withdrawCollateralWei exceeds the Trove's collateral",
         };
-      return { ok: true };
+      return adjustedTroveCheck(liquity, liquity.trove, {
+        add,
+        withdraw,
+        debtChange,
+        isDebtIncrease: action.isDebtIncrease === true,
+      });
     }
     case "liquityCloseTrove": {
       if (!liquity?.trove || liquity.trove.status !== 1)

@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import type { Address } from "viem";
 import type { LiquityDeployment } from "@eris/sdk/constants.js";
 import {
+  borrowingFeeEusdWei,
+  compositeDebtEusdWei,
   discountBpsFrom,
   icrOf,
   liquidationPriceUsd,
@@ -500,47 +502,146 @@ test("a Trove that would open under MCR is refused, and under CCR in Recovery Mo
   );
 });
 
-test("an open near MCR is measured against the requested eUSD alone (PINS CURRENT BUG)", () => {
+test("an open near MCR is measured on the debt the chain books, not the request", () => {
   // 2 ETH (6,000) against 5,400 eUSD requested is 111% -- over MCR on the request alone. The chain
   // books 5,400 + the 0.5% borrowing fee (27) + 200 gas compensation = 5,627, i.e. 106.6%, and
-  // reverts. Validation passes it anyway.
+  // reverts (BorrowerOperations._computeCR(msg.value, compositeDebt, price)).
   const nearMcr = {
     type: "liquityOpenTrove" as const,
     collateralWethWei: (2n * WAD).toString(),
     debtEusdWei: (5400n * WAD).toString(),
   };
-  assert.equal(
-    liquityAdapter.validate(nearMcr, observation(), BALANCES).ok,
-    true,
-  );
-});
-
-test("a debt increase is not checked against the Trove's resulting ICR (PINS CURRENT BUG)", () => {
-  // 2 ETH (6,000) owing 4,200: 143%. Borrowing 1,300 more books 1,300 + 6.5 fee, i.e. 5,506.5 of
-  // debt and 109% -- under MCR, so the chain reverts. Validation does not look.
-  const trove = {
-    status: 1,
-    collWei: (2n * WAD).toString(),
-    debtEusdWei: (4200n * WAD).toString(),
-    netDebtEusdWei: (4000n * WAD).toString(),
-    icr: 6000 / 4200,
-    liquidationPriceUsd: 2310,
-    positionFromRiskiest: 0,
-    redeemedAheadEusdWei: "0",
-    positionKnown: true,
-  };
+  const result = liquityAdapter.validate(nearMcr, observation(), BALANCES);
+  assert.equal(result.ok, false);
+  assert.match(result.ok === false ? result.reason : "", /ICR 1\.066/);
+  // 5,200 books 5,200 + 26 + 200 = 5,426: 110.6%, over MCR, and it passes.
   assert.equal(
     liquityAdapter.validate(
-      {
-        type: "liquityAdjustTrove",
-        debtChangeEusdWei: (1300n * WAD).toString(),
-        isDebtIncrease: true,
-      },
-      observation({ trove }),
+      { ...nearMcr, debtEusdWei: (5200n * WAD).toString() },
+      observation(),
       BALANCES,
     ).ok,
     true,
   );
+});
+
+test("the borrowing fee is the observed rate in Normal Mode and nothing in Recovery Mode", () => {
+  const normal = { borrowingRateBps: 50, recoveryMode: false };
+  assert.equal(borrowingFeeEusdWei(5400n * WAD, normal), 27n * WAD);
+  assert.equal(
+    borrowingFeeEusdWei(5400n * WAD, { ...normal, recoveryMode: true }),
+    0n,
+  );
+  assert.equal(
+    compositeDebtEusdWei(5400n * WAD, {
+      ...normal,
+      gasCompensationEusdWei: GAS_COMPENSATION.toString(),
+    }),
+    5627n * WAD,
+  );
+  // 3,800 at 2 ETH is exactly 150% on 3,800 + 200 with no fee: the CCR floor Recovery Mode sets.
+  // Charging the Normal-Mode fee would push it under and refuse a Trove the chain opens.
+  assert.equal(
+    liquityAdapter.validate(
+      {
+        type: "liquityOpenTrove",
+        collateralWethWei: (2n * WAD).toString(),
+        debtEusdWei: (3800n * WAD).toString(),
+      },
+      observation({ recoveryMode: true }),
+      BALANCES,
+    ).ok,
+    true,
+  );
+});
+
+const TROVE = {
+  status: 1,
+  collWei: (2n * WAD).toString(),
+  debtEusdWei: (4200n * WAD).toString(),
+  netDebtEusdWei: (4000n * WAD).toString(),
+  icr: 6000 / 4200,
+  liquidationPriceUsd: 2310,
+  positionFromRiskiest: 0,
+  redeemedAheadEusdWei: "0",
+  positionKnown: true,
+};
+
+test("a debt increase is checked against the Trove's resulting ICR, fee included", () => {
+  // 2 ETH (6,000) owing 4,200: 143%. Borrowing 1,300 more books 1,300 + 6.5 fee, i.e. 5,506.5 of
+  // debt and 109% -- under MCR, so the chain reverts.
+  const borrow = (eusd: bigint) => ({
+    type: "liquityAdjustTrove" as const,
+    debtChangeEusdWei: (eusd * WAD).toString(),
+    isDebtIncrease: true,
+  });
+  const over = liquityAdapter.validate(
+    borrow(1300n),
+    observation({ trove: TROVE }),
+    BALANCES,
+  );
+  assert.equal(over.ok, false);
+  assert.match(over.ok === false ? over.reason : "", /below the MCR/);
+  // 1,200 more books 5,406 of debt: 111%, and passes.
+  assert.equal(
+    liquityAdapter.validate(borrow(1200n), observation({ trove: TROVE }), BALANCES)
+      .ok,
+    true,
+  );
+});
+
+test("Recovery Mode forbids collateral withdrawal and ICR-lowering borrows", () => {
+  const rm = observation({ trove: TROVE, recoveryMode: true });
+  assert.equal(
+    liquityAdapter.validate(
+      { type: "liquityAdjustTrove", withdrawCollateralWei: (WAD / 10n).toString() },
+      rm,
+      BALANCES,
+    ).ok,
+    false,
+  );
+  // Adding 1 ETH and borrowing 300 (no fee in Recovery Mode): 9,000 / 4,500 = 200%, above CCR and
+  // above the 143% it had. Allowed.
+  assert.equal(
+    liquityAdapter.validate(
+      {
+        type: "liquityAdjustTrove",
+        addCollateralWethWei: WAD.toString(),
+        debtChangeEusdWei: (300n * WAD).toString(),
+        isDebtIncrease: true,
+      },
+      rm,
+      BALANCES,
+    ).ok,
+    true,
+  );
+  // Borrowing without adding collateral lowers the ICR, which Recovery Mode refuses.
+  assert.equal(
+    liquityAdapter.validate(
+      {
+        type: "liquityAdjustTrove",
+        debtChangeEusdWei: (100n * WAD).toString(),
+        isDebtIncrease: true,
+      },
+      rm,
+      BALANCES,
+    ).ok,
+    false,
+  );
+});
+
+test("a repayment cannot exceed the Trove's net debt", () => {
+  const obs = observation({
+    trove: TROVE,
+    eusdBalanceWei: (5000n * WAD).toString(),
+  });
+  const repay = (eusd: bigint) => ({
+    type: "liquityAdjustTrove" as const,
+    debtChangeEusdWei: (eusd * WAD).toString(),
+    isDebtIncrease: false,
+  });
+  assert.equal(liquityAdapter.validate(repay(4100n), obs, BALANCES).ok, false);
+  assert.equal(liquityAdapter.validate(repay(1000n), obs, BALANCES).ok, true);
 });
 
 test("closing needs the eUSD to repay with, which the wallet may not have", () => {
