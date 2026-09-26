@@ -20,12 +20,16 @@
 // No aliases here (`@core`, `@/`): the rule is tested under node, which resolves only real paths.
 
 import { epochPnlFromSeries } from "../../../core/src/scoring/epochPnl.js";
+import type { PracticeEnds } from "../../../core/src/scoring/practiceReturn.js";
 
 export interface StoredAgentP {
   pnlUsdc?: number;
   netPnlUsdc?: number;
   /** Written false by the segment writer for an agent it did not place. */
   scored?: boolean;
+  /** The epoch's two ends, which the practice period's P is formed from (practiceReturn.ts). */
+  initialValueUsdc?: number;
+  finalValueUsdc?: number;
 }
 
 /**
@@ -43,4 +47,30 @@ export function scenarioAgentP(
   }
   const p = agent.pnlUsdc ?? agent.netPnlUsdc;
   return typeof p === "number" && Number.isFinite(p) ? p : undefined;
+}
+
+/**
+ * The epoch's two ends for the agent, or undefined when it was not placed -- the practice period's
+ * counterpart of scenarioAgentP, with the same precedence: the stored record, then the series, and
+ * the series' silence is final.
+ */
+export function scenarioAgentEnds(
+  agent: StoredAgentP,
+  seriesValues: ReadonlyArray<number | null | undefined> | undefined,
+): PracticeEnds | undefined {
+  if (agent.scored === false) return undefined;
+  const stored =
+    typeof agent.initialValueUsdc === "number" &&
+    typeof agent.finalValueUsdc === "number"
+      ? {
+          initialValueUsdc: agent.initialValueUsdc,
+          finalValueUsdc: agent.finalValueUsdc,
+        }
+      : undefined;
+  if (stored) return stored;
+  if (seriesValues === undefined || seriesValues.length < 2) return undefined;
+  const p = epochPnlFromSeries(seriesValues);
+  return p
+    ? { initialValueUsdc: p.initialValueUsdc, finalValueUsdc: p.finalValueUsdc }
+    : undefined;
 }

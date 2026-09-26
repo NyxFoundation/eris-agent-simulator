@@ -260,6 +260,11 @@ services:
       - ERIS_RUNS_DIR=/eris/runs
       - ERIS_DASHBOARD_DIST=/eris/dashboard/dist
       - ERIS_BLOCKSCOUT_URL=http://host.docker.internal:4000
+      # Everyone who opens this is a participant (rules §2.7), not the operator. Without it the runs
+      # API serves the operator's view: the resolved stress schedule of the period that is running
+      # (every window still to come), agent decision logs and stderr. Standings stay on -- the
+      # practice period posts them (docs/guide/practice-devnet.md "Standings").
+      - ERIS_DASHBOARD_AUDIENCE=1
       - HOME=/tmp
     ports: ["127.0.0.1:5174:5174"]
     extra_hosts:

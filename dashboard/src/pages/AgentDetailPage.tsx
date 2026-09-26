@@ -29,6 +29,7 @@ import {
   formatBps,
   formatMove,
   formatPnlUsdc,
+  formatReturnPct,
   formatScore,
   formatUsd,
 } from "@/lib/format";
@@ -271,6 +272,10 @@ interface CompetitionStanding {
    * rather than counted as zero (rules §4.4.2).
    */
   epochsUnscored: number;
+  /** Practice only: days left out for starting below the capital floor (practiceReturn.ts). */
+  epochsBelowFloor: number;
+  /** What an epoch's P is: USDC (the competition) or a return (a practice period). */
+  pnlUnit: "usdc" | "return";
   /** The round the standing is read through, or null for the finished result. */
   throughRound: number | null;
   regimes: { regime: string; value: number | undefined }[];
@@ -339,6 +344,8 @@ function useCompetitionStanding(agentId: string): CompetitionStanding | null {
       netPnlUsdc: standings.netPnlByAgent[agentId] ?? 0,
       epochsScored: row.epochs.length,
       epochsUnscored: (standings.unscoredByAgent[agentId] ?? []).length,
+      epochsBelowFloor: (standings.belowFloorByAgent[agentId] ?? []).length,
+      pnlUnit: standings.pnlUnit,
       throughRound: standings.throughRound,
       regimes: standings.regimes.map((regime) => ({
         regime,
@@ -446,6 +453,18 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
         </span>
       )}
 
+      {standing.epochsBelowFloor > 0 && (
+        <span
+          style={{
+            font: "var(--text-xs) var(--font-sans)",
+            color: "var(--text-secondary)",
+            lineHeight: 1.6,
+          }}
+        >
+          {t("agent.standing.belowFloor", { n: standing.epochsBelowFloor })}
+        </span>
+      )}
+
       {!d ? (
         <span
           style={{
@@ -467,7 +486,11 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
               maxWidth: "78ch",
             }}
           >
-            {t("agent.standing.explain")}
+            {t(
+              standing.pnlUnit === "return"
+                ? "agent.standing.explainPractice"
+                : "agent.standing.explain",
+            )}
           </p>
 
           <div
@@ -521,7 +544,9 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                 >
                   <span>s</span>
                   <span>{t("agent.standing.col.scenario")}</span>
-                  <span style={{ textAlign: "right" }}>P (USDC)</span>
+                  <span style={{ textAlign: "right" }}>
+                    {standing.pnlUnit === "return" ? "P (%)" : "P (USDC)"}
+                  </span>
                   <span style={{ textAlign: "right" }}>T</span>
                   <span style={{ textAlign: "right" }}>w</span>
                 </div>
@@ -543,7 +568,9 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                     <span
                       style={{ textAlign: "right", color: toneColor(e.pnl) }}
                     >
-                      {formatPnlUsdc(e.pnl)}
+                      {standing.pnlUnit === "return"
+                        ? formatReturnPct(e.pnl)
+                        : formatPnlUsdc(e.pnl)}
                     </span>
                     <span
                       style={{ textAlign: "right", color: toneColor(e.t - 50) }}

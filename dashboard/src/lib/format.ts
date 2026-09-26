@@ -23,6 +23,15 @@ export function formatPnlUsdc(value: number): string {
   })}`;
 }
 
+/** A return (V_K / V_0 − 1, the practice period's P) as a signed percent at two decimals. Same rule
+ * as the USDC figure: a non-zero return too small for two decimals is a bound, not "+0.00%". */
+export function formatReturnPct(value: number): string {
+  const pct = value * 100;
+  const abs = Math.abs(pct);
+  if (value !== 0 && abs < 0.005) return value > 0 ? "<+0.01%" : ">-0.01%";
+  return `${pct >= 0 ? "+" : "-"}${abs.toFixed(2)}%`;
+}
+
 /** A deviation score — an epoch's T or the weighted Score — at the two decimals rules §4.6 rank
  * on. Null is "not scored": the benchmark, or a field with no spread. */
 export function formatScore(value: number | null | undefined): string {

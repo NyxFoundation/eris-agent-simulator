@@ -2,6 +2,8 @@
 .env
 .env.local
 .env.keys
+# the practice period's seed (infra/devnet/ascon-devnet.service): public, it would publish every window
+.env.practice
 agents.local.json
 # Run settings are managed in config/. Ignore the local live files; commit the templates and scenario configs
 config/*.yaml

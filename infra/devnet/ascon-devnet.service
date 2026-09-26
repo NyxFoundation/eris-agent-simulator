@@ -28,10 +28,21 @@ Environment=PATH=%h/.foundry/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:
 # keeps the restart budget above for real faults.
 ExecStartPre=%h/workspace/eris-agent-simulator/infra/devnet/wait-for-chain.sh
 
+# The seed is the one run key that does not come from the config. config/practice.yaml is public, and
+# the price walk, the flow and every event window are pure functions of the seed: with the committed
+# `seed: 1` anyone can compute the block each crash lands on. `.env.practice` (gitignored, one line:
+# ERIS_PRACTICE_SEED=<a number nobody has seen>) is read by systemd, not by the coordinator -- the
+# value reaches the run as the `--seed` flag, which does override the file (core/src/runConfig.ts).
+# No `-` prefix: a missing file fails the start, and so does an empty value (below). Falling back
+# to the committed seed would be a period anyone can replay in advance, running as if nothing were
+# wrong.
+EnvironmentFile=%h/workspace/eris-agent-simulator/.env.practice
+ExecStartPre=/bin/sh -c 'test -n "$$ERIS_PRACTICE_SEED" || { echo "ERIS_PRACTICE_SEED is empty in .env.practice: refusing to start the period on the committed seed" >&2; exit 1; }'
+
 # The config is the period. Every `run.*` key in it WINS over the environment (sdk/src/runConfig.ts),
 # so overriding the block count or the report directory from here silently does nothing — copy the
-# config and point at the copy instead.
-ExecStart=/usr/bin/env npm run sim:realtime -- --config config/practice.yaml
+# config and point at the copy instead. The seed is the exception above: a CLI flag, not the env.
+ExecStart=/usr/bin/env npm run sim:realtime -- --config config/practice.yaml --seed ${ERIS_PRACTICE_SEED}
 
 Restart=on-failure
 RestartSec=30

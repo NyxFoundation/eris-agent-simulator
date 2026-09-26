@@ -245,6 +245,19 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 反映されない。順位表は `resetUnit === "continuous"` を見て `practice` バッジを常設する（**「scenario でない」
 ではなく「continuous である」で判定** — ADR 0020 以前の matrix.json は当該フィールドを持たず、あれは公式形だった）。
 
+- **練習期間の順位は日次リターンの偏差値**（`core/src/scoring/practiceReturn.ts`）。1 セグメント（1 日）= 1 エポック、
+  P = V_K / V_0 − 1、重みは全日 1（`scoreCompetition({ weighting: "equal" })`）、始値が場の中央値の 1/10 未満の
+  agent はその日 placed しない。**USDC の P をやめたのは world がリセットされないから** — 本番は全員同じ V_0 から
+  始まるので USDC と比率で T は完全に一致するが、連続経済では元手がずれ、USDC だと「序盤に稼いだ資本」を採点する。
+  判定は `isPracticePeriod`（`resetUnit: continuous` かつ `segmentHours > 0`）で、**単発の `sim:realtime` run は
+  従来どおり USDC**（全員同じ配布なので同じ順位になる）
+- **`config/practice.yaml` は競技環境と同等**（規約 §2.7）: 7 venue・バスケット配布・公式レジームの flow 較正・
+  毎週 7 種のエピソード（6 週 × crash/spike（各 pull 付き）/cexDrift/flowTrend/whale×2/DAI depeg/eusdDepeg = 60 件）。
+  入れられないのは victim・vuln・`persist`・`repriceAnchor`（1 world だと 6 週間残る/複利になる）。複数の crash に
+  pull を揃えるため、`alignWith` は**リスト上で直前の同種イベント**に揃う（以前は最初の 1 個に全部揃っていた）
+- **seed は公開 config に置かない**。価格 walk・flow・全イベント窓は seed の純関数なので、`seed: 1` が公開されて
+  いると crash のブロックを誰でも計算できる。hosted period は `.env.practice`（gitignore）の `ERIS_PRACTICE_SEED`
+  を systemd が `--seed` に渡し、無ければ起動しない
 - **ロスターは登録リストであって起動リストではない**。`external: true` + `address`（参加者が鍵を持つ。**運営が
   作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env`
   は**黙殺せず拒否**する（黙って落とすと「運営が動かしている」ように読めるロスターになる）。
@@ -422,7 +435,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/ラウンド長/action 語彙/limits/登録アドレス）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
 - `npm run check:ordering -- --live` — **ビルダーが手数料順に並べるかを自分で入札して測る**（#35 の load-bearing assumption）。既定プロファイルは oracle を全員より高く積んで txIndex 0 に置くので、順序が守られないチェーンでは環境の価格が front-run 可能になる。**入札は昇順に送る**ので到着順と手数料順が逆になり、到着順を保つだけのビルダーは降順プローブなら通ってこれで落ちる。引数なしは従来どおり blocks.csv の事後検査
 - `npm run stress:rpc` — **Eris 形状の read 負荷**で RPC 容量を測る（#36）。`reconstruct.ts` と同じ read 集合の Multicall3 を agent × block で撃ち、cold/warm 別の p50/p99・ブロック間隔ジッタ（負荷有無）・`eth_call` の到達可能深度・sequencer-only か replica かの判定を出す。**読む対象が無いチェーンでは測る前に落ちる**（空アドレスへの call はノードが実残高より速く断るので、全滅が巨大な容量に見える。実際に「何もデプロイされていない anvil に 3,360 obs/s・sequencer-only で十分」と報告した）
-- `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**既定は運営ビューで `runs/` 配下が全部公開になる。**試行期間・ライブ週の公開（2026-09-06 決定）は **`ERIS_DASHBOARD_AUDIENCE=1`**（allowlist 配信 + `events.jsonl` の seed / `stress_schedule`（continuous な run は未来の窓だけ、scenario の run は全部）/ calibration warning / vuln 正解 / stderrTail を落とし、scenario matrix の `regime` を `hidden`・**`seed` を `null`** に。`agents/*.jsonl`・`.llm.jsonl`・`disclosures/` は 404）、試行環境はさらに **`ERIS_DASHBOARD_STANDINGS=0`**（規約 §4.7）。`/runs/mode.json` で UI が理由を表示する。結果発表後はフラグを外すだけで §7.2 の全量公開。Cache-Control / gzip / index 3 秒キャッシュ付き（`docs/guide/dashboard.md` "Public view"）
+- `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**既定は運営ビューで `runs/` 配下が全部公開になる。**試行期間・ライブ週の公開（2026-09-06 決定）は **`ERIS_DASHBOARD_AUDIENCE=1`**（allowlist 配信 + `events.jsonl` の seed / `stress_schedule`（continuous な run は未来の窓だけ、scenario の run は全部）/ calibration warning / vuln 正解 / stderrTail を落とし、scenario matrix の `regime` を `hidden`・**`seed` を `null`** に。`agents/*.jsonl`・`.llm.jsonl`・`disclosures/` は 404）、`ERIS_DASHBOARD_STANDINGS=0` は順位を一切出さないスイッチ（規約 §4.7 の「試行環境は順位を掲示しない」用に作ったが、**練習期間は日次リターンの練習順位を出す方針に変えた**ので hosted period では付けない。規約側は ascon-web で改訂）。`/runs/mode.json` で UI が理由を表示する。結果発表後はフラグを外すだけで §7.2 の全量公開。Cache-Control / gzip / index 3 秒キャッシュ付き（`docs/guide/dashboard.md` "Public view"）
   - **`ERIS_DASHBOARD_COMPETITIONS=<id>[,<id>…]` で配信する competition を限定する**（issue #84 K）。運営 box の `runs/` には smoke / test run が全部残っており、picker はそれを内部名のまま参加者に並べていた。通すのは **listed な competition と、その `matrix.json` が指す run と、その配下だけ**（index・ファイル・tail すべて）。未設定なら全部。
     **「今 live なもの」は通さない** — 実行中のエポックは完走まで matrix.json に入らないので、そこを推測で通すと
     「未完了の matrix がある間は runs/ 配下の live な run が全部通る」= 競技期間中ずっと運営の smoke run まで

@@ -15,6 +15,10 @@ import {
   type EpochResult,
 } from "@core/scoring/deviationScore";
 import { epochPnlFromSeries } from "@core/scoring/epochPnl";
+import {
+  practiceReturns,
+  type PracticeEnds,
+} from "@core/scoring/practiceReturn";
 import type {
   Competition,
   CompetitionScenario,
@@ -23,7 +27,7 @@ import type {
 import { scenarioAgents, scenarioLabel, scenarioRunId } from "./competition";
 import { listRuns, loadRunHeader } from "./runArtifacts";
 import type { RunSummary } from "./runArtifacts";
-import { scenarioAgentP } from "./scenarioP";
+import { scenarioAgentEnds, scenarioAgentP } from "./scenarioP";
 
 // ---------------------------------------------------------------------------
 // per-scenario boundary series
@@ -214,10 +218,13 @@ function scenarioPnl(
   scenario: CompetitionScenario,
   rounds: Map<string, ScenarioRounds>,
   throughRound: number | null,
+  practice: boolean,
 ): {
   pnlByAgent: Record<string, number>;
   benchmarkIds: string[];
   ended: boolean;
+  /** Practice only: agents with ends on the day that the capital floor left out. */
+  belowFloor: string[];
 } {
   const series = rounds.get(scenarioKey(scenario));
   const pnlByAgent: Record<string, number> = {};
@@ -234,8 +241,30 @@ function scenarioPnl(
       ? stored
       : Object.keys(series?.valuesByAgent ?? {}).map((id) => ({ id }));
 
+  // The practice period ranks on each agent's return rather than its USDC (practiceReturn.ts): the
+  // same two ends, a different quotient, so both paths below collect ends and convert once.
+  const ends: Record<string, PracticeEnds> = {};
+  const settle = () => {
+    if (!practice)
+      return {
+        pnlByAgent,
+        benchmarkIds: [...benchmarkIds],
+        ended,
+        belowFloor: [],
+      };
+    const r = practiceReturns(ends, [...benchmarkIds]);
+    return {
+      pnlByAgent: r.returnByAgent,
+      benchmarkIds: [...benchmarkIds],
+      ended,
+      belowFloor: Object.entries(r.notPlaced)
+        .filter(([, why]) => why === "below-capital-floor")
+        .map(([id]) => id),
+    };
+  };
+
   if (throughRound !== null) {
-    if (!series) return { pnlByAgent, benchmarkIds: [...benchmarkIds], ended };
+    if (!series) return settle();
     for (const agent of agents) {
       const values = series.valuesByAgent[agent.id];
       if (!values || values.length < 2) continue;
@@ -247,17 +276,37 @@ function scenarioPnl(
       const now = values[upTo];
       if (start === null || now === null) continue;
       pnlByAgent[agent.id] = now - start;
+      ends[agent.id] = { initialValueUsdc: start, finalValueUsdc: now };
     }
-    return { pnlByAgent, benchmarkIds: [...benchmarkIds], ended };
+    return settle();
   }
 
   for (const agent of agents) {
     // The series, when it holds the agent, is the whole answer -- P or "not placed". Only a
     // scenario with no series reads the stored number (scenarioP.ts says why).
-    const p = scenarioAgentP(agent, series?.valuesByAgent[agent.id]);
+    const values = series?.valuesByAgent[agent.id];
+    if (practice) {
+      const e = scenarioAgentEnds(agent, values);
+      if (e !== undefined) ends[agent.id] = e;
+      continue;
+    }
+    const p = scenarioAgentP(agent, values);
     if (p !== undefined) pnlByAgent[agent.id] = p;
   }
-  return { pnlByAgent, benchmarkIds: [...benchmarkIds], ended };
+  return settle();
+}
+
+/**
+ * A practice period (ADR 0021): one continuous world cut into daily segments. Ranked on returns with
+ * every day weighted 1 (core/src/scoring/practiceReturn.ts). A single continuous run -- a local
+ * `sim:realtime` -- is not one: every agent in it starts from the same funding, where USDC and
+ * returns rank identically, and it keeps the competition's arithmetic.
+ */
+export function isPracticePeriod(file: {
+  resetUnit?: string;
+  segmentHours?: number;
+}): boolean {
+  return file.resetUnit === "continuous" && (file.segmentHours ?? 0) > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +314,16 @@ function scenarioPnl(
 
 export interface Standings {
   k: number;
+  /**
+   * What P is in `rows[].epochs[].pnl` and `benchmarkPnl`: USDC (the competition, §4.4.1), or a
+   * return, V_K / V_0 − 1 (a practice period, practiceReturn.ts).
+   */
+  pnlUnit: "usdc" | "return";
+  /**
+   * Practice only: agent -> ordinals it was left out of for starting the day with less than the
+   * capital floor. Separate from `unscoredByAgent`, whose reason is a different fact.
+   */
+  belowFloorByAgent: Record<string, number[]>;
   /** Ordinals that entered the score (σ > 0 and valid). */
   S: number[];
   /** Sorted by rank (§4.6). */
@@ -347,17 +406,26 @@ export function buildStandings(
     ...scenarios.map((s, i) => ordinalOf(s, i)),
     1,
   );
+  const practice = isPracticePeriod(competition.file);
   let endedScenarios = 0;
+  const belowFloorByAgent: Record<string, number[]> = {};
   const epochs: EpochInput[] = scenarios.map((s, i) => {
-    const { pnlByAgent, benchmarkIds, ended } = scenarioPnl(
+    const { pnlByAgent, benchmarkIds, ended, belowFloor } = scenarioPnl(
       s,
       rounds,
       throughRound,
+      practice,
     );
     if (ended) endedScenarios += 1;
+    for (const id of belowFloor)
+      belowFloorByAgent[id] = [...(belowFloorByAgent[id] ?? []), ordinalOf(s, i)];
     return { s: ordinalOf(s, i), pnlByAgent, benchmarkIds };
   });
-  const scored = scoreCompetition({ epochs, k });
+  const scored = scoreCompetition({
+    epochs,
+    k,
+    weighting: practice ? "equal" : "linear",
+  });
 
   const regimes: string[] = [];
   const agentIds: string[] = [];
@@ -428,6 +496,8 @@ export function buildStandings(
 
   return {
     k,
+    pnlUnit: practice ? "return" : "usdc",
+    belowFloorByAgent,
     S: scored.S,
     rows: scored.agents,
     // scoreCompetition returns the epochs sorted by ordinal, which need not be the scenarios' order.

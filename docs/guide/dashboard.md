@@ -341,8 +341,8 @@ so what a competition in progress must not publish is withheld **by the server**
 a panel that does not render a file is not the same as a file nobody can fetch.
 
 ```bash
-ERIS_DASHBOARD_AUDIENCE=1 npm run dashboard:serve          # the live week
-ERIS_DASHBOARD_AUDIENCE=1 ERIS_DASHBOARD_STANDINGS=0 npm run dashboard:serve   # the trial environment
+ERIS_DASHBOARD_AUDIENCE=1 npm run dashboard:serve          # the live week, and the practice period
+ERIS_DASHBOARD_AUDIENCE=1 ERIS_DASHBOARD_STANDINGS=0 npm run dashboard:serve   # no standings at all
 ERIS_DASHBOARD_COMPETITIONS=practice-2026-09-23 …          # …and only this competition
 ```
 
@@ -404,7 +404,10 @@ period it says the windows listed are the ones that have already closed. The pub
 re-reads the head of `events.jsonl` periodically, because a window the server withheld at first is
 served once it closes, and a tail that had already read past that line would never see it.
 
-`ERIS_DASHBOARD_STANDINGS=0` is rules §4.7 — the trial environment posts no standings — and hides the
+`ERIS_DASHBOARD_STANDINGS=0` withholds every ranking. It was written for rules §4.7's "the trial
+environment posts no standings"; the practice period now posts practice standings (ranked on daily
+returns, [practice devnet](practice-devnet.md#standings)), so the hosted period runs without it. It
+hides the
 standings table, the scenario list's leader column, the per-run rankings on `/scenario` and
 `/markets`, the rounds bar's per-round ranking, and on an agent's page its Standing tab, its rank
 badge, its deviation score and the rank column of its Rounds tab (the page opens on Overview

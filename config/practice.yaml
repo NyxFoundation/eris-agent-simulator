@@ -6,6 +6,17 @@
 # the standings are practice standings — the competition itself is scored separately, from submitted
 # bundles replayed over a scenario matrix (ADR 0017 / ADR 0020).
 #
+# Rules §2.7 promise "a configuration equivalent to the competition environment", so the venues, the
+# endowment and the flow below are the official regimes' (config/regimes/calm.yaml), and the events
+# are the official regimes' episodes, every kind every week. What cannot be equivalent is the reset:
+# this is one world for the whole period, so the standings rank each day's *return* rather than its
+# USDC (core/src/scoring/practiceReturn.ts has why), with every day weighted the same.
+#
+# The seed is not the one below. Every draw in the period -- the price walk, the flow, every event
+# window -- is a pure function of it, and this file is public: with `seed: 1` anyone can compute the
+# block each crash lands on. The hosted period passes `--seed` from a file that is not committed
+# (infra/devnet/ascon-devnet.service). `seed: 1` is what a local run of this file gets.
+#
 # Two things have to be true of the chain this points at, and neither is set here:
 #
 #   ANVIL_RPC_URL / CHAIN_ID / TREASURY_PRIVATE_KEY in .env.local. They belong to a deployment, not
@@ -23,7 +34,7 @@ run:
   seed: 1
   # The period's length, in blocks. Not `blocks: 0` with a wall-clock limit, which is the shape a
   # never-ending chain suggests: an episode's window is placed as a fraction of the run's *length*
-  # (ADR 0009), so a run with no block count has nowhere to put one and fails at startup. One week
+  # (ADR 0009), so a run with no block count has nowhere to put one and fails at startup. Six weeks
   # at a two-second cadence.
   # 試行期間は 9/23〜10/31 の39日（docs/20 §2）。42日ぶんに設定してある（余裕3日）。
   # 以前は blocks: 302400 = 7日ちょうどで、期間の途中で run が終わっていた。
@@ -37,7 +48,7 @@ run:
   # 上書きするので、anvil 側で 320M にしてあっても効かない。試行と本番でガス上限が違うと、
   # 参加者は本番に無いガス制約に合わせて調整することになる。
   blockGasLimit: 320000000
-  protocols: [uniswap, balancer, curve, lst, liquity]
+  protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
   localDeploy: true
   # One world from start to finish, which is what a practice period is. The official competition
   # runs `scenario` (ADR 0020 §2), and only the matrix runner can declare it.
@@ -66,47 +77,117 @@ run:
   # reported once per edit (`registrations_reload_failed`) and never stops the run.
   registrationsFile: config/registrations.yaml
 
+# The official regimes' endowment and flow, copied rather than referenced so a change there is a
+# decision here too. USDC-only was this file's earlier choice ("nothing anybody did not choose shows up
+# as price drift"); it is the competition's basket now because the rules promise the same
+# configuration, and because half of every strategy -- the sell side of an arbitrage, the WETH-
+# denominated vault and Trove -- has nothing behind it without base inventory (issue #54). The
+# basket's drift is also what the benchmark holds; on returns it is the same drift for everyone who
+# kept it.
 funding:
-  # USDC-only, so nothing anybody did not choose shows up in their score as price drift. WETH has to
-  # be bought, which is what makes holding it a decision (the same argument #27 makes for a
-  # market-priced stable).
-  wethWei: "0"
-  usdcUnits: "100000000000" # 100k USDC
+  wethWei: "8000000000000000000" # 8 WETH
+  base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
+  usdcUnits: "25000000000" # 25k USDC
+  flowWethWei: "150000000000000000000" # 150 WETH per flow wallet (issue #112)
+  flowUsdcUnits: "450000000000" # 450,000 USDC per flow wallet
+  flowBase: { WBTC: "750000000" } # 7.5 WBTC (#124)
 
 flow:
   uninformedMaxWethWei: "1000000000000000000"
   informedMaxWethWei: "2000000000000000000"
   balancerMaxWethWei: "1000000000000000000"
   curveMaxWethWei: "1000000000000000000"
+  informedArbFeeBps: 30
+  uninformedArrivalRate: "0.45" # issue #79
+  uninformedSizeSigma: "1.5" # issue #79
+  uninformedSizeClampMult: "10" # issue #79
+  gmxArrivalRate: "0.75"
+  gmxSizeSigma: "1.0"
+  aaveActorSizeSigma: "1.0"
+  baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
+  baseInformedMax: { WBTC: "10000000" } # 0.1 BTC
 
 # What the period contains. ADR 0021 §1 publishes the *kinds* and how many, and withholds when each
 # window opens — the manifest is built from this list and carries neither the windows nor the seed
 # they were drawn from.
 #
-# `windowFrac` is a fraction of the period, so on a week-long run these land days apart.
+# Every kind of episode the official regimes run, every week, at the official regimes' magnitudes
+# and shapes (config/regimes/{crash,spike,cex-drift,informed-flow,whale,depeg,cdp-incident}.yaml).
+# `windowFrac` is a fraction of the period, so each block below is one week of six; where in its week
+# each episode lands is the seed's, and the seed is not this file's (see the top).
+#
+# What the official set has and this cannot: victims (built once, at setup, and gone after the first
+# crash that breaks them), a pool that appears mid-epoch (vuln), and a depeg that never comes back
+# (`persist` holds to the end of the run, which here is six weeks). `repriceAnchor` is left off for
+# the same reason -- in one world it compounds across every drift of the period.
 stress:
   events:
-    - {
-        type: crash,
-        magnitudeRange: [0.12, 0.16],
-        windowFrac: [0.1, 0.25],
-        rampBlocks: 3,
-        holdBlocks: 6,
-        decayBlocks: 8,
-      }
-    - {
-        type: eusdDepeg,
-        magnitudeRange: [0.4, 0.6],
-        windowFrac: [0.35, 0.55],
-        rampBlocks: 4,
-        holdBlocks: 10,
-        decayBlocks: 12,
-      }
-    - {
-        type: whale,
-        magnitudeRange: [8, 20],
-        windowFrac: [0.6, 0.9],
-      }
+    # week 1
+    - { type: crash, magnitudeRange: [0.15, 0.22], windowFrac: [0.0050, 0.1617], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.0050, 0.1617], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: spike, magnitudeRange: [0.15, 0.22], windowFrac: [0.0050, 0.1617], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.0050, 0.1617], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: cexDrift, magnitudeRange: [0.001, 0.002], kappaMultRange: [0.15, 0.3], windowFrac: [0.0050, 0.1617], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: flowTrend, magnitudeRange: [2.0, 3.0], trendCorrelation: 1.0, persistBlocks: 12, windowFrac: [0.0050, 0.1617], rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.0050, 0.1617] }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.0050, 0.1617], venue: balancer }
+    - { type: depeg, stable: DAI, magnitudeRange: [0.35, 0.6], windowFrac: [0.0050, 0.1617], rampBlocks: 12, holdBlocks: 36, decayBlocks: 45 }
+    - { type: eusdDepeg, magnitudeRange: [0.4, 0.6], windowFrac: [0.0050, 0.1617], rampBlocks: 4, holdBlocks: 10, decayBlocks: 12 }
+    # week 2
+    - { type: crash, magnitudeRange: [0.15, 0.22], windowFrac: [0.1717, 0.3283], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.1717, 0.3283], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: spike, magnitudeRange: [0.15, 0.22], windowFrac: [0.1717, 0.3283], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.1717, 0.3283], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: cexDrift, magnitudeRange: [0.001, 0.002], kappaMultRange: [0.15, 0.3], windowFrac: [0.1717, 0.3283], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: flowTrend, magnitudeRange: [2.0, 3.0], trendCorrelation: 1.0, persistBlocks: 12, windowFrac: [0.1717, 0.3283], rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.1717, 0.3283] }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.1717, 0.3283], venue: curve }
+    - { type: depeg, stable: DAI, magnitudeRange: [0.35, 0.6], windowFrac: [0.1717, 0.3283], rampBlocks: 12, holdBlocks: 36, decayBlocks: 45 }
+    - { type: eusdDepeg, magnitudeRange: [0.4, 0.6], windowFrac: [0.1717, 0.3283], rampBlocks: 4, holdBlocks: 10, decayBlocks: 12 }
+    # week 3
+    - { type: crash, magnitudeRange: [0.15, 0.22], windowFrac: [0.3383, 0.4950], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.3383, 0.4950], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: spike, magnitudeRange: [0.15, 0.22], windowFrac: [0.3383, 0.4950], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.3383, 0.4950], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: cexDrift, magnitudeRange: [0.001, 0.002], kappaMultRange: [0.15, 0.3], windowFrac: [0.3383, 0.4950], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: flowTrend, magnitudeRange: [2.0, 3.0], trendCorrelation: 1.0, persistBlocks: 12, windowFrac: [0.3383, 0.4950], rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.3383, 0.4950] }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.3383, 0.4950], venue: balancer }
+    - { type: depeg, stable: DAI, magnitudeRange: [0.35, 0.6], windowFrac: [0.3383, 0.4950], rampBlocks: 12, holdBlocks: 36, decayBlocks: 45 }
+    - { type: eusdDepeg, magnitudeRange: [0.4, 0.6], windowFrac: [0.3383, 0.4950], rampBlocks: 4, holdBlocks: 10, decayBlocks: 12 }
+    # week 4
+    - { type: crash, magnitudeRange: [0.15, 0.22], windowFrac: [0.5050, 0.6617], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.5050, 0.6617], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: spike, magnitudeRange: [0.15, 0.22], windowFrac: [0.5050, 0.6617], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.5050, 0.6617], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: cexDrift, magnitudeRange: [0.001, 0.002], kappaMultRange: [0.15, 0.3], windowFrac: [0.5050, 0.6617], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: flowTrend, magnitudeRange: [2.0, 3.0], trendCorrelation: 1.0, persistBlocks: 12, windowFrac: [0.5050, 0.6617], rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.5050, 0.6617] }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.5050, 0.6617], venue: curve }
+    - { type: depeg, stable: DAI, magnitudeRange: [0.35, 0.6], windowFrac: [0.5050, 0.6617], rampBlocks: 12, holdBlocks: 36, decayBlocks: 45 }
+    - { type: eusdDepeg, magnitudeRange: [0.4, 0.6], windowFrac: [0.5050, 0.6617], rampBlocks: 4, holdBlocks: 10, decayBlocks: 12 }
+    # week 5
+    - { type: crash, magnitudeRange: [0.15, 0.22], windowFrac: [0.6717, 0.8283], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.6717, 0.8283], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: spike, magnitudeRange: [0.15, 0.22], windowFrac: [0.6717, 0.8283], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.6717, 0.8283], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: cexDrift, magnitudeRange: [0.001, 0.002], kappaMultRange: [0.15, 0.3], windowFrac: [0.6717, 0.8283], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: flowTrend, magnitudeRange: [2.0, 3.0], trendCorrelation: 1.0, persistBlocks: 12, windowFrac: [0.6717, 0.8283], rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.6717, 0.8283] }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.6717, 0.8283], venue: balancer }
+    - { type: depeg, stable: DAI, magnitudeRange: [0.35, 0.6], windowFrac: [0.6717, 0.8283], rampBlocks: 12, holdBlocks: 36, decayBlocks: 45 }
+    - { type: eusdDepeg, magnitudeRange: [0.4, 0.6], windowFrac: [0.6717, 0.8283], rampBlocks: 4, holdBlocks: 10, decayBlocks: 12 }
+    # week 6
+    - { type: crash, magnitudeRange: [0.15, 0.22], windowFrac: [0.8383, 0.9950], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.8383, 0.9950], alignWith: crash, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: spike, magnitudeRange: [0.15, 0.22], windowFrac: [0.8383, 0.9950], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 }
+    - { type: liquidityPull, magnitudeRange: [0.4, 0.6], windowFrac: [0.8383, 0.9950], alignWith: spike, rampBlocks: 3, holdBlocks: 6, decayBlocks: 12 }
+    - { type: cexDrift, magnitudeRange: [0.001, 0.002], kappaMultRange: [0.15, 0.3], windowFrac: [0.8383, 0.9950], rampBlocks: 6, holdBlocks: 24, decayBlocks: 12 }
+    - { type: flowTrend, magnitudeRange: [2.0, 3.0], trendCorrelation: 1.0, persistBlocks: 12, windowFrac: [0.8383, 0.9950], rampBlocks: 6, holdBlocks: 30, decayBlocks: 10 }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.8383, 0.9950] }
+    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.8383, 0.9950], venue: curve }
+    - { type: depeg, stable: DAI, magnitudeRange: [0.35, 0.6], windowFrac: [0.8383, 0.9950], rampBlocks: 12, holdBlocks: 36, decayBlocks: 45 }
+    - { type: eusdDepeg, magnitudeRange: [0.4, 0.6], windowFrac: [0.8383, 0.9950], rampBlocks: 4, holdBlocks: 10, decayBlocks: 12 }
 
 # The roster is a registration list, not a launch list (ADR 0021 §2).
 #
@@ -135,9 +216,8 @@ stress:
 #   - the improve loop calls a model every `reviseEveryBlocks`. Over a 39-day period at 2 s blocks
 #     that is a continuous inference bill for agents nobody is scoring.
 #
-# Venue coverage follows run.protocols above (uniswap, balancer, curve, lst, liquity). Strategies
-# whose venue is not deployed here would idle, so they are not in the list — aave-side liquidator
-# and the gmx basis trades are the live period's field, not this one.
+# Venue coverage follows run.protocols above. The liquidator is still not here: it acts on the
+# victims a regime seeds, and this period seeds none (see stress above), so it would idle.
 agents:
   - id: noop
     wallet: AUTO
@@ -168,6 +248,14 @@ agents:
     wallet: AUTO
     env: { ERIS_AGENT_FROZEN: "1" }
     description: the LST vault's carry, so the lst venue has someone reading it
+  - id: basis-arb
+    wallet: AUTO
+    env: { ERIS_AGENT_FROZEN: "1" }
+    description: spot against the GMX perp, so the gmx venue has someone reading it
+  - id: levered-long
+    wallet: AUTO
+    env: { ERIS_LEVER_TARGET_HF: "1.8" }
+    description: borrows on Aave against its collateral to hold more WETH than it was funded with
 
   # A participant registers here, or (without a restart) in config/registrations.yaml:
   # - id: alice

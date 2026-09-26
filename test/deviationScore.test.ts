@@ -92,6 +92,30 @@ test("scoreCompetition: Σ w T / Σ w over S; an excluded epoch leaves the other
   assert.deepEqual(a.epochs.map((e) => e.s), [1, 3]);
 });
 
+test("scoreCompetition: equal weighting averages T plainly, and still refuses an ordinal past k", () => {
+  const epochs = [
+    { s: 1, pnlByAgent: { a: 100, b: -100 } },
+    { s: 3, pnlByAgent: { a: -100, b: 100 } },
+  ];
+  const r = scoreCompetition({ k: 3, epochs, weighting: "equal" });
+  const a = r.agents.find((x) => x.id === "a")!;
+  // (60 + 40) / 2 -- the linear schedule above gives the same pair 48
+  assert.equal(a.score, 50);
+  assert.deepEqual(
+    a.epochs.map((e) => e.w),
+    [1, 1],
+  );
+  // The default is unchanged.
+  assert.equal(
+    scoreCompetition({ k: 3, epochs }).agents.find((x) => x.id === "a")!.score,
+    48,
+  );
+  assert.throws(
+    () => scoreCompetition({ k: 2, epochs, weighting: "equal" }),
+    /exceeds k/,
+  );
+});
+
 test("scoreCompetition: an agent absent from an epoch is averaged over the epochs it was placed in", () => {
   const r = scoreCompetition({
     k: 2,
