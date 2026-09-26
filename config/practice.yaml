@@ -32,15 +32,16 @@
 
 run:
   seed: 1
-  # The period's length, in blocks. Not `blocks: 0` with a wall-clock limit, which is the shape a
-  # never-ending chain suggests: an episode's window is placed as a fraction of the run's *length*
-  # (ADR 0009), so a run with no block count has nowhere to put one and fails at startup. Six weeks
-  # at a two-second cadence.
-  # 試行期間は 9/23〜10/31 の39日（docs/20 §2）。42日ぶんに設定してある（余裕3日）。
-  # 以前は blocks: 302400 = 7日ちょうどで、期間の途中で run が終わっていた。
-  blocks: 1814400
+  # The period ends on a date, not a block count (issue #136). Rules §2.7 end the trial on 10/31 and
+  # the live week starts 11/1. Stated as `blocks: 1814400` (42 days) it ended 42 days after the
+  # coordinator happened to start -- a start on 9/23 ran to ~11/4, into the live week -- and every
+  # restart (a restart is a new competition) got a fresh 42 days. The coordinator converts this date
+  # into the blocks that remain at blockTimeSec when it starts, so a restart ends on the same day.
+  # It still needs a length rather than `blocks: 0`: an episode's window is placed as a fraction of
+  # the run's length (ADR 0009). For a short smoke run of this file, `--blocks N` replaces the date.
+  endsAt: "2026-10-31T23:59:59+09:00"
   # A ceiling, not the stop condition — a run with episodes ends on the block count so the time
-  # limit cannot cut in before a window opens (ADR 0009 §4). Generous, so a chain running slightly
+  # limit cannot cut in before a window opens (ADR 0009 §4). Generous (42 days), so a chain running
   # behind cadence is not truncated.
   seconds: 3628800
   blockTimeSec: 2
@@ -108,6 +109,22 @@ flow:
   aaveActorSizeSigma: "1.0"
   baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC
+  # Issue #130: refill every flow wallet's token that fell below half its funded amount, every 300
+  # blocks (10 minutes). Funded once, a month of ~12 taker orders a block drains one side until the
+  # balance guards turn the flow one-way -- a market that looks like it is trending. The official
+  # regimes leave this off; their 360 blocks are calibrated on wallets funded once.
+  topUpEveryBlocks: 300
+
+# The LST's economic clock (issue #129). The default counts a block as an hour of staking, which the
+# official 360-block regimes were calibrated on: an epoch is 15 days of yield, ~0.12% at 3%/yr. Over
+# a 35-day period at 2 s a block that clock is ~170 years; the vault's 50 WETH reward reserve ran dry
+# after ~3.3 days, and the redemption rate froze for the rest of the period. 30 s a block keeps the
+# official ratio where it matters here -- one scoring day (43,200 blocks) is the same 15 days of
+# yield as one official epoch -- and the whole period is ~1.4 years of it, ~4.4 WETH of rewards on
+# the seeded 100 WETH: the reserve covers the period with ~1,000 WETH staked. Stake more and it runs
+# out early; the observation then reports apyBps 0 and the run records lst_reward_reserve_exhausted.
+lst:
+  simulatedSecondsPerBlock: 30
 
 # What the period contains. ADR 0021 §1 publishes the *kinds* and how many, and withholds when each
 # window opens — the manifest is built from this list and carries neither the windows nor the seed
@@ -115,12 +132,13 @@ flow:
 #
 # Every kind of episode the official regimes run, every week, at the official regimes' magnitudes
 # and shapes (config/regimes/{crash,spike,cex-drift,informed-flow,whale,depeg,cdp-incident}.yaml).
-# `windowFrac` is a fraction of the period, so each block below is one week of six; where in its week
+# `windowFrac` is a fraction of the period, so each block below is one sixth of it (a "week" was six
+# weeks' worth; from a 9/27 start to 10/31 it is ~5.8 days); where in its "week"
 # each episode lands is the seed's, and the seed is not this file's (see the top).
 #
 # What the official set has and this cannot: victims (built once, at setup, and gone after the first
 # crash that breaks them), a pool that appears mid-epoch (vuln), and a depeg that never comes back
-# (`persist` holds to the end of the run, which here is six weeks). `repriceAnchor` is left off for
+# (`persist` holds to the end of the run, which here is the whole period). `repriceAnchor` is left off for
 # the same reason -- in one world it compounds across every drift of the period.
 stress:
   events:

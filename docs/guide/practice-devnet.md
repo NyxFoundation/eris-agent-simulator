@@ -189,6 +189,12 @@ CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
 - On the first start the runtime grants its own venue approvals, because an approval is your
   signature and the operator does not hold your key. It skips the ones already in place, so a
   restart costs nothing.
+- **The chain keeps the last ten minutes of history** (300 blocks). Transactions, receipts, logs and
+  state older than that are pruned — unbounded, the chain froze for longer and longer while writing
+  its own backups, and a month of it would not fit anywhere (issue #135). Observations, your own
+  receipts and anything read at the head are unaffected; a strategy that scans `eth_getLogs` from
+  the start of the period, or calls a contract at an old block, gets nothing back. Keep what you need
+  as you see it.
 
 ### 4. Watch
 
@@ -404,11 +410,35 @@ progress, because an environment that is silent for ten minutes reads as one tha
 
 ### Length
 
-A period is bounded in **blocks**, not wall-clock seconds. An episode's window is placed as a
-fraction of the run's length (ADR 0009), so a run with no block count has nowhere to put one and
-fails at startup — `blocks: 0` with a week-long time limit is the shape a never-ending chain
-suggests and the one that does not start. `config/practice.yaml` states six weeks at a two-second
-cadence (1,814,400 blocks) and keeps `seconds` as a generous ceiling rather than the stop condition.
+A period ends on a **date**: `run.endsAt` (ISO 8601, with a time zone). `config/practice.yaml`
+states `2026-10-31T23:59:59+09:00`, the end of the trial in rules §2.7; the live week starts the next
+day. The coordinator converts the date into the blocks that remain at `blockTimeSec` when it starts
+and records both in `run_started_realtime` (`runEndsAt`, `runBlocks`). A restart — which is a new
+competition — therefore ends on the same day with fewer blocks, and the episode windows spread over
+the time that remains (issue #136). Stated as a block count instead, the period used to end 42 days
+after whenever the coordinator started: a start on 9/23 ran into the live week, and every restart
+got a fresh 42 days.
+
+It is still a length, not a wall-clock limit on an open-ended run: an episode's window is placed as a
+fraction of the run's length (ADR 0009), so a run with no length has nowhere to put one and fails at
+startup — `blocks: 0` with a week-long time limit is the shape a never-ending chain suggests and the
+one that does not start. The run stops on its block count, so a chain running behind its cadence ends
+a little after the date, and the last segment still gets its `summary.json` (a stop by hand does
+not). `seconds` stays a generous ceiling rather than the stop condition. `run.blocks` and
+`run.endsAt` together are refused; for a short smoke run of the practice config, `--blocks N` on the
+command line replaces the date.
+
+**The length bounds the LST venue.** The vault pays yield out of a fixed reward reserve (50 WETH in
+the state dump), and the default economic clock counts a block as an hour of staking — the clock the
+360-block official regimes are calibrated on. Over a month-long period that is over a century of
+yield, and the reserve ran dry after ~3.3 days (issue #129). `config/practice.yaml` sets
+`lst.simulatedSecondsPerBlock: 30`, which keeps one scoring day at the same 15 days of yield as one
+official epoch and needs ~4.4 WETH for the whole period on the seeded pool: the reserve lasts the
+period with up to ~1,000 WETH staked. If participants stake more, the reserve runs out early, and the
+venue says so rather than going quiet: `apyBps` / `yieldPerBlockBps` drop to 0,
+`rewardRunwayBlocks` (the blocks the reserve still pays) counts down to it in every observation, the
+run records `lst_reward_reserve_exhausted`, and `lst_setup` records whether the reserve covered the
+run at the start (`reserveCoversRun`).
 
 The seed is **not** the one in `config/practice.yaml`. The price walk, the flow and every episode
 window are pure functions of the seed, and the file is public — with its `seed: 1`, anyone can compute

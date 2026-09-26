@@ -157,6 +157,23 @@ export type FlowOrderOut = {
   priorityFeeWei: bigint;
 };
 
+// A balance guard changing what the flow would otherwise have sent (issue #130). The guards are
+// right -- a sell is not submitted against nothing -- but from outside, a wallet that can only buy is
+// indistinguishable from a market that happens to be trending, which is exactly what agents trade
+// against. The bot reports each one so the coordinator can put it in the run record. Collecting
+// these consumes no RNG: the orders are byte-identical with or without a collector.
+export type FlowGuardNote = {
+  protocol: "uniswap" | "balancer" | "curve";
+  kind: FlowKind;
+  base: TokenSymbol;
+  guard:
+    | "sell_flipped_to_buy" // the wallet lacked the base, so the sell became a buy
+    | "sell_capped" // sold only what the wallet held
+    | "sell_suppressed" // held none, so no sell went out
+    | "buy_capped" // spent only the USDC the wallet held
+    | "buy_suppressed"; // held no USDC, so no buy went out
+};
+
 function minBI(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
 }
@@ -331,8 +348,13 @@ export function buildAmmFlow(
   // used to be. Only the upper clamp is a knob; the 2% floor stays (it keeps a size from rounding
   // to nothing, not the pool from breaking).
   uninformedSizeClampMult = 3,
+  // Issue #130: where the balance guards below changed an order, noted for the run record.
+  guards?: FlowGuardNote[],
 ): FlowOrder[] {
   const orders: FlowOrder[] = [];
+  const note = (kind: FlowKind, guard: FlowGuardNote["guard"]): void => {
+    guards?.push({ protocol, kind, base, guard });
+  };
   const swapType =
     protocol === "uniswap"
       ? "swap"
@@ -410,15 +432,20 @@ export function buildAmmFlow(
         (balances?.uninformed &&
           baseHeld(balances.uninformed, base) < uninformedWethEquiv))
     ) {
+      // usdcOnlyFlow is the configuration, not a shortage; only the balance case is a guard.
+      if (!usdcOnlyFlow) note("uninformed", "sell_flipped_to_buy");
       uninformedTokenIn = "USDC";
     }
+    const uninformedWanted =
+      uninformedTokenIn === base
+        ? uninformedWethEquiv
+        : baseToQuoteUnits(uninformedWethEquiv, base, fairPrice);
     const uninformedAmount =
       uninformedTokenIn === base
         ? uninformedWethEquiv
-        : capUsdc(
-            baseToQuoteUnits(uninformedWethEquiv, base, fairPrice),
-            balances?.uninformed ?? null,
-          );
+        : capUsdc(uninformedWanted, balances?.uninformed ?? null);
+    if (uninformedTokenIn !== base && uninformedAmount < uninformedWanted)
+      note("uninformed", uninformedAmount > 0n ? "buy_capped" : "buy_suppressed");
     const uninformedFee =
       defaultPriorityFeeWei + BigInt(rng.int(1, 50)) * 1_000_000n;
     if (uninformedAmount > 0n) {
@@ -460,16 +487,22 @@ export function buildAmmFlow(
     // priority-fee RNG draw below even for a zero-size order so later flow draws do not shift.
     if (balances?.informed) {
       const held = baseHeld(balances.informed, base);
-      if (held < informedWethEquiv) informedWethEquiv = held;
+      if (held < informedWethEquiv) {
+        note("informed", held > 0n ? "sell_capped" : "sell_suppressed");
+        informedWethEquiv = held;
+      }
     } else if (usdcOnlyFlow) informedWethEquiv = 0n;
   }
+  const informedWanted =
+    informedTokenIn === base
+      ? informedWethEquiv
+      : baseToQuoteUnits(informedWethEquiv, base, fairPrice);
   const informedAmount =
     informedTokenIn === base
       ? informedWethEquiv
-      : capUsdc(
-          baseToQuoteUnits(informedWethEquiv, base, fairPrice),
-          balances?.informed ?? null,
-        );
+      : capUsdc(informedWanted, balances?.informed ?? null);
+  if (informedTokenIn !== base && informedAmount < informedWanted)
+    note("informed", informedAmount > 0n ? "buy_capped" : "buy_suppressed");
   const informedFee =
     defaultPriorityFeeWei + BigInt(rng.int(50, 100)) * 1_000_000n;
   if (informedAmount > 0n) {
@@ -820,6 +853,8 @@ export function decodeFlowLimits(wire: FlowContextWire["limits"]): FlowLimits {
 export function buildFlowOrders(
   rng: Rng,
   ctx: FlowContextWire,
+  // Issue #130: filled with every AMM order a balance guard changed. Optional and RNG-free.
+  guards?: FlowGuardNote[],
 ): FlowOrderOut[] {
   const limits = decodeFlowLimits(ctx.limits);
   const out: FlowOrderOut[] = [];
@@ -871,6 +906,7 @@ export function buildFlowOrders(
           limits.uninformedFlowTrendCorrelation,
           ctx.flowSeed ?? 0,
           limits.uninformedSizeClampMult,
+          guards,
         ),
       );
     } else if (protocol === "aave") {
@@ -981,6 +1017,7 @@ export function buildFlowOrders(
           limits.uninformedFlowTrendCorrelation,
           ctx.flowSeed ?? 0,
           limits.uninformedSizeClampMult,
+          guards,
         ),
       );
     }

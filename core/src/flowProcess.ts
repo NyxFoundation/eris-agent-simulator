@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { FlowKind } from "@eris/sdk/protocols/types.js";
 import type { LeafAction, ProtocolId } from "@eris/sdk/types.js";
-import type { FlowContextWire } from "./flow/logic.js";
+import type { FlowContextWire, FlowGuardNote } from "./flow/logic.js";
 import { safeStringify } from "./logger.js";
 
 // Wire form of a single order returned by the bot (priorityFeeWei is a string since it goes through JSON).
@@ -15,6 +15,30 @@ export type FlowOrderWire = {
   action: LeafAction;
   priorityFeeWei: string;
 };
+
+// One line from the flow bot: a bare order array, or `{orders, guards}` when a balance guard changed
+// an order that block (issue #130).
+export type FlowLine = {
+  orders: FlowOrderWire[];
+  guards: FlowGuardNote[];
+  // The block the context was for, sent with guards so the event can say when.
+  round?: number;
+};
+export function parseFlowLine(parsed: unknown): FlowLine | null {
+  if (Array.isArray(parsed)) return { orders: parsed as FlowOrderWire[], guards: [] };
+  if (parsed && typeof parsed === "object" && Array.isArray((parsed as FlowLine).orders)) {
+    const line = parsed as FlowLine;
+    return {
+      orders: line.orders,
+      guards: Array.isArray(line.guards) ? line.guards : [],
+      ...(typeof line.round === "number" ? { round: line.round } : {}),
+    };
+  }
+  return null;
+}
+function flowLineOrders(parsed: unknown): FlowOrderWire[] {
+  return parseFlowLine(parsed)?.orders ?? [];
+}
 
 // Launch the orderflow bot as an independent process, pass it a FlowContext each round,
 // and receive FlowOrder[] back. Same line-JSON protocol as AgentProcess.
@@ -85,7 +109,7 @@ export class FlowProcess {
       });
       const line = await Promise.race([linePromise, timeout]);
       const parsed = JSON.parse(line);
-      return Array.isArray(parsed) ? (parsed as FlowOrderWire[]) : [];
+      return flowLineOrders(parsed);
     } catch {
       // When the bot misbehaves, continue safely with "no market orders" (don't stop the sim).
       return [];

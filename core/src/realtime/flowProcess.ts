@@ -1,10 +1,15 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { FlowContextWire } from "../flow/logic.js";
-import type { FlowOrderWire } from "../flowProcess.js";
+import { parseFlowLine, type FlowOrderWire } from "../flowProcess.js";
+import type { FlowGuardNote } from "../flow/logic.js";
 import { safeStringify } from "../logger.js";
 
-export type FlowOrdersHandler = (orders: FlowOrderWire[]) => void;
+export type FlowOrdersHandler = (
+  orders: FlowOrderWire[],
+  guards: FlowGuardNote[],
+  round?: number,
+) => void;
 
 // flow-bot process in realtime mode. Same push/stream model as RealtimeAgentProcess.
 // coordinator -> child: push a FlowContext on every new block. child -> coordinator: each stdout line is
@@ -46,7 +51,8 @@ export class RealtimeFlowProcess {
         }\n`;
         return;
       }
-      if (Array.isArray(parsed)) this.handler(parsed as FlowOrderWire[]);
+      const flowLine = parseFlowLine(parsed);
+      if (flowLine) this.handler(flowLine.orders, flowLine.guards, flowLine.round);
     });
     this.child.stderr.on("data", (data) => {
       this.stderr += data.toString();

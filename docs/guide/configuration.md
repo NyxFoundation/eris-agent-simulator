@@ -84,7 +84,8 @@ Without editing the YAML, you can override values per run (CLI flags take highes
 |---|---|---|
 | `--config <path>` | (config file selection) | `--config config/vuln-test.yaml` |
 | `--seed` | `run.seed` | `--seed 7` |
-| `--blocks` | `run.blocks` | `--blocks 40` |
+| `--blocks` | `run.blocks` | `--blocks 40` (also replaces a file's `run.endsAt`) |
+| `--ends-at` | `run.endsAt` | `--ends-at 2026-10-31T23:59:59+09:00` (the run's end as a date, converted to the blocks that remain at `run.blockTimeSec` when the run starts; also replaces a file's `run.blocks`. Both keys in the file are refused. Issue #136) |
 | `--seconds` | `run.seconds` | `--seconds 120` |
 | `--protocols` | `run.protocols` | `--protocols uniswap,balancer,curve` |
 | `--agents` | `run.agentsConfig` | `--agents my-roster.yaml` (roster file. **Ignored if the config file has an inline `agents:`** = inline wins. See note below) |

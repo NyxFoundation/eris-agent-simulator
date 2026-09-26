@@ -167,7 +167,14 @@ export async function setupLst(
     // What the run asked for versus what the vault is actually running, so an inherited rate is
     // visible rather than silently different from the config.
     requestedApyBps: ctx.config.lstApyBps,
-    effectiveApyBps: state.apyBps,
+    effectiveApyBps: state.configuredApyBps,
+    // Issue #129: whether the reserve pays that rate for the whole run at today's pool size. A
+    // participant who stakes shortens it; the per-block lst_block rows track the rest.
+    rewardRunwayBlocks: state.rewardRunwayBlocks,
+    reserveCoversRun:
+      state.rewardRunwayBlocks === null || ctx.config.runBlocks <= 0
+        ? null
+        : state.rewardRunwayBlocks >= ctx.config.runBlocks,
     simulatedSecondsPerBlock: ctx.config.lstSimulatedSecondsPerBlock,
     withdrawalDelayBlocks: state.withdrawalDelayBlocks,
     rewardReserveWei: state.rewardReserveWei.toString(),
@@ -216,6 +223,19 @@ export async function setupLst(
       type: "lst_reward_reserve_empty",
       note: "the vault has no funded rewards left, so the redemption rate will not rise this run",
     });
+  } else if (
+    state.rewardRunwayBlocks !== null &&
+    ctx.config.runBlocks > 0 &&
+    state.rewardRunwayBlocks < ctx.config.runBlocks
+  ) {
+    // Not a refusal: the venue works until then, and a shorter run of the same config is fine. But a
+    // period that outlives its reserve is a venue that goes dead part-way, and that is the operator's
+    // to know before the start rather than a participant's to discover (issue #129).
+    console.warn(
+      `[lst] the reward reserve pays ${state.rewardRunwayBlocks} blocks at today's pool size, and the ` +
+        `run is ${ctx.config.runBlocks}: the yield stops ${Math.round((100 * state.rewardRunwayBlocks) / ctx.config.runBlocks)}% ` +
+        "of the way in (sooner if participants stake). Slow the economic clock (lst.simulatedSecondsPerBlock) for a long run.",
+    );
   }
 
   // Varying the yield needs operator rights (it is a setRewardRate per step). Without them the run
@@ -356,6 +376,37 @@ export function lstBlockEvent(
     discountBps: state.discountBps,
     queueLength: state.queueLength,
     rewardReserveWei: state.rewardReserveWei.toString(),
+    // Issue #129: blocks the reserve still pays, and the yield it can pay (0 once it cannot).
+    rewardRunwayBlocks: state.rewardRunwayBlocks,
+    apyBps: state.apyBps,
+  };
+}
+
+/// Whether the vault has stopped paying its configured yield: a rate is set, and the reserve cannot
+/// cover another block of it (issue #129). The redemption rate then freezes, silently, for the rest of
+/// the run; the coordinator emits `lst_reward_reserve_exhausted` on the block this turns true.
+export function lstReserveExhausted(
+  state: Awaited<ReturnType<typeof getLstState>>,
+): boolean {
+  if (!(state.configuredApyBps > 0)) return false;
+  if (state.rewardReserveWei === 0n) return true;
+  return state.rewardRunwayBlocks !== null && state.rewardRunwayBlocks < 1;
+}
+
+export function lstReserveExhaustedEvent(
+  state: Awaited<ReturnType<typeof getLstState>>,
+  blockNumber: number,
+): Record<string, unknown> {
+  return {
+    type: "lst_reward_reserve_exhausted",
+    blockNumber,
+    rewardReserveWei: state.rewardReserveWei.toString(),
+    pooledWeth: state.pooledWeth.toString(),
+    configuredApyBps: state.configuredApyBps,
+    redemptionRateWeth: state.redemptionRateWeth,
+    note:
+      "the reward reserve cannot pay another block: the redemption rate stops rising, and the " +
+      "observation now reports apyBps 0",
   };
 }
 

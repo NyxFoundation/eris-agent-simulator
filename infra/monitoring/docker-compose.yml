@@ -184,10 +184,26 @@ services:
         # anvil's own format, which --load-state reads back. Verified on the 32.8 MB venues dump:
         # load -> block 522 with GMX code present -> mine -> dump 34.4 MB -> reload -> block 525.
         # --state-interval also flushes periodically, so an unclean kill loses minutes, not the period.
+        #
+        # History bounds (issue #135). Unbounded, anvil keeps every mined transaction -- receipt,
+        # logs and call trace, ~37 KB each -- in memory and writes all of them into every dump. On
+        # the practice load (a 4-hour soak of config/practice.yaml, anvil 1.8.1, 16 vCPU) that grew
+        # the dump ~0.9 MB and memory ~1.7 MB a block, and mining stops while the dump is written:
+        # 9 s every 5 minutes after an hour, 18 s after two, and a month (~1.5M blocks) is a TB-sized
+        # dump written back to back. --transaction-block-keeper keeps the last 300 blocks (10 min)
+        # of transactions, --prune-history the last 300 states in memory and none on disk; both
+        # levelled the dump off in the soak (at 1,800 blocks it plateaued at 1.7 GB with a 13 s stall,
+        # which is why the window is 300). Every reader is well inside it: live scoring reads a
+        # boundary and the 5 blocks before it as they pass, the blocks.csv flush reads the block
+        # behind the head, runtimes read receipts of their own recent transactions. An explorer
+        # indexer that falls more than 10 minutes behind loses the transactions it has not read.
+        # Not bounded by any flag: block headers, which anvil keeps for every block. The
+        # ascon_anvil_mem_growth alert watches the slope that leaves (infra/devnet/README.md).
         anvil --host 0.0.0.0 --port 8545 --code-size-limit 50000 --base-fee 0 \
               --gas-limit 320000000 --accounts 10 --balance 1000000 \
               --load-state /chainstate/state.json --dump-state /chainstate/state.json \
-              --state-interval 300 &
+              --state-interval 300 \
+              --transaction-block-keeper 300 --prune-history 300 &
         ANVILPID=$$!
         # PID 1 here is this shell. Without the trap, SIGTERM stops the shell, anvil is orphaned and
         # then SIGKILLed, and the dump is never written (verified A/B: no trap -> 0 bytes + orphan;
