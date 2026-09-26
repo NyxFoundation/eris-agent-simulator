@@ -11,12 +11,13 @@
 //
 // Env: PORT (8546) UPSTREAM (http://127.0.0.1:8545) ENV_NAME (live) LOG_FILE (append; else stdout)
 //      RPC_KEYS_FILE (per-participant keys; setting it makes X-ASCON-Key mandatory)
+//      RPC_MAX_TX_GAS (30000000) RPC_MAX_PRIORITY_FEE_WEI (5000000000; 0 disables the fee cap only)
 import http from "node:http";
 import { createWriteStream, writeFileSync, renameSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { URL } from "node:url";
 
-import { txGasLimit } from "./txGas.mjs";
+import { feeRuleViolation, txFees, txGasLimit } from "./txGas.mjs";
 
 const PORT = Number(process.env.PORT || 8546);
 const UPSTREAM = new URL(process.env.UPSTREAM || "http://127.0.0.1:8545");
@@ -150,6 +151,38 @@ function overCapGas(parsed) {
   return null;
 }
 
+// ---- fee rule: the field the block is ordered by must be the price paid ----
+// anvil `--order fees` sorts the pool on maxFeePerGas (foundry v1.7.1: TransactionPriority(
+// tx.max_fee_per_gas())), and with base fee 0 a transaction pays min(maxFeePerGas, tip). So a
+// self-signed transaction with a high maxFeePerGas and a small tip is placed ahead of bids that pay
+// more -- measured 2026-09-27 ahead of the environment's own oracle update (6 gwei), paying 0.1
+// gwei/gas. Rules §2.6 order a block by the priority fee, so the gateway refuses what would make
+// the order and the payment disagree (txGas.mjs feeRuleViolation):
+//   typed (0x02/0x03/0x04):  maxFeePerGas <= maxPriorityFeePerGas <= RPC_MAX_PRIORITY_FEE_WEI
+//   0x01 / legacy:           gasPrice <= RPC_MAX_PRIORITY_FEE_WEI
+// RPC_MAX_PRIORITY_FEE_WEI is the same number as `fees.maxPriorityFeeWei` (5 gwei); 0 disables the
+// cap half for the economic gas profile (ADR 0011 §2). The maxFeePerGas half has no switch: there
+// is no configuration in which paying less than the position bought is the intended auction.
+// Like the gas cap, it fails closed on a fee field it cannot read, and the post-run check
+// (core/src/postRunCheck.ts) stays the authority for a participant who sends straight to a node.
+const MAX_PRIORITY_FEE = BigInt(process.env.RPC_MAX_PRIORITY_FEE_WEI ?? "5000000000");
+let feeDenied = 0;
+
+// The first submission in a request that breaks the fee rule: { kind, message }, or null.
+function feeViolation(parsed) {
+  const calls = Array.isArray(parsed) ? parsed : [parsed];
+  for (const c of calls) {
+    if (!c || c.method !== "eth_sendRawTransaction") continue;
+    const raw = Array.isArray(c.params) ? c.params[0] : undefined;
+    const fees = typeof raw === "string" ? txFees(raw) : null;
+    if (fees === null)
+      return { kind: "unreadable", message: "could not read the transaction's fee fields; refusing it" };
+    const v = feeRuleViolation(fees, MAX_PRIORITY_FEE);
+    if (v) return v;
+  }
+  return null;
+}
+
 const buckets = new Map();                                          // client -> {tokens, last}
 let rateLimited = 0;
 function allow(client, cost) {
@@ -200,6 +233,7 @@ function metricsText() {
   o += `# TYPE rpc_upstream_up gauge\nrpc_upstream_up{${L}} ${upstreamUp}\n`;
   o += `# TYPE rpc_ratelimited_total counter\nrpc_ratelimited_total{${L}} ${rateLimited}\n`;
   o += `# TYPE rpc_gas_denied_total counter\nrpc_gas_denied_total{${L}} ${gasDenied}\n`;
+  o += `# TYPE rpc_fee_denied_total counter\nrpc_fee_denied_total{${L}} ${feeDenied}\n`;
   o += `# TYPE rpc_method_denied_total counter\nrpc_method_denied_total{${L}} ${methodDenied}\n`;
   o += `# TYPE rpc_key_denied_total counter\nrpc_key_denied_total{${L}} ${keyDenied}\n`;
   o += `# TYPE rpc_keys_loaded gauge\nrpc_keys_loaded{${L}} ${keyMap.size}\n`;
@@ -289,6 +323,15 @@ const server = http.createServer((req, res) => {
         : `transaction gas limit ${overCap} exceeds the per-transaction cap ${MAX_TX_GAS}`;
       res.writeHead(403, { "content-type": "application/json" });
       return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32003, message } }));
+    }
+
+    // fee rule -> refuse a transaction whose order key would exceed what it pays (or the cap)
+    const badFee = feeViolation(parsed);
+    if (badFee !== null) {
+      feeDenied++;
+      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: "eth_sendRawTransaction", status: "fee_denied", kind: badFee.kind, cap: String(MAX_PRIORITY_FEE), client, ip });
+      res.writeHead(403, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null), error: { code: -32003, message: badFee.message } }));
     }
 
     // per-client rate limit (heavy EVM-executing reads cost more) -> 429 before touching anvil

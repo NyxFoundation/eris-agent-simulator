@@ -45,8 +45,9 @@ for (const language of ["typescript", "python"] as const) test(
       value: 0n,
       gas: 21_000n,
       nonce: 0,
+      // maxFeePerGas = tip: this goes through the gateway, which refuses maxFeePerGas above the tip.
       maxFeePerGas: 2_000_000_000n,
-      maxPriorityFeePerGas: 1n,
+      maxPriorityFeePerGas: 2_000_000_000n,
     });
     const events: Record<string, unknown>[] = [];
     const simContext: SimContext = {
@@ -201,4 +202,78 @@ test("local gas rejection and an RPC failure do not consume the next successful 
   await until(() => events.length === 3);
   assert.equal(events[2].event, "submitted");
   assert.deepEqual(nonces, [7]);
+});
+
+// The fee rule (sdk/src/feeRule.ts): the node orders on maxFeePerGas and the tx pays
+// min(maxFeePerGas, baseFee + tip), so the runtime must never sign maxFeePerGas above the tip. It
+// used to sign baseFee * 2 + tip -- equal to the tip at base fee 0, a free position boost anywhere else.
+test("the runtime signs maxFeePerGas equal to the tip, and no action field can raise it", async () => {
+  const signed: { maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint }[] = [];
+  let baseFee = 0n;
+  const config = { ...loadConfig(), economicGas: false, maxPriorityFeeWei: 5_000_000_000n };
+  const ctx = {
+    config,
+    publicClient: {
+      getBlock: async () => ({ baseFeePerGas: baseFee }),
+      getTransactionCount: async () => 0,
+      estimateGas: async () => 21_000n,
+    },
+    walletClient: {
+      sendTransaction: async (tx: { maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint }) => {
+        signed.push({ maxFeePerGas: tx.maxFeePerGas, maxPriorityFeePerGas: tx.maxPriorityFeePerGas });
+        return `0x${String(signed.length).padStart(64, "0")}`;
+      },
+    },
+  } as unknown as SimContext;
+  const events: Record<string, unknown>[] = [];
+  const sender = new Sender({
+    ctx,
+    adapters: [],
+    privateKey: generatePrivateKey(),
+    logMempool: (e) => events.push(e),
+  });
+  const observation = {
+    round: 1,
+    limits: {
+      defaultPriorityFeePerGasWei: "100000000",
+      maxPriorityFeePerGasWei: "5000000000",
+    },
+  } as AgentObservation;
+  const submit = (raw: Record<string, unknown>) =>
+    sender.submit(raw as never, observation, {} as BalanceSnapshot, new Map());
+
+  // Base fee 0 (the competition chain): both fields are the bid, and a maxFeePerGas smuggled into
+  // the action or its tx object is not an action field -- it never reaches the signer.
+  submit({
+    type: "rawTx",
+    tx: { to: sender.address, data: "0x", maxFeePerGas: "7000000000" },
+    maxPriorityFeePerGasWei: "1000000000",
+    maxFeePerGasWei: "7000000000",
+  });
+  await until(() => events.length === 1);
+  assert.deepEqual(signed[0], {
+    maxFeePerGas: 1_000_000_000n,
+    maxPriorityFeePerGas: 1_000_000_000n,
+  });
+
+  // Base fee 1 gwei: both fields baseFee + bid, so the priority paid is still the bid.
+  baseFee = 1_000_000_000n;
+  submit({ type: "rawTx", tx: { to: sender.address, data: "0x" }, maxPriorityFeePerGasWei: "2000000000" });
+  await until(() => events.length === 2);
+  assert.deepEqual(signed[1], {
+    maxFeePerGas: 3_000_000_000n,
+    maxPriorityFeePerGas: 3_000_000_000n,
+  });
+
+  // A bid at the cap on a chain with a base fee: clamped to the cap rather than signed above it.
+  submit({ type: "rawTx", tx: { to: sender.address, data: "0x" }, maxPriorityFeePerGasWei: "5000000000" });
+  await until(() => events.length === 3);
+  assert.deepEqual(signed[2], {
+    maxFeePerGas: 5_000_000_000n,
+    maxPriorityFeePerGas: 5_000_000_000n,
+  });
+  assert.deepEqual(
+    events.map((e) => e.event),
+    ["submitted", "submitted", "submitted"],
+  );
 });

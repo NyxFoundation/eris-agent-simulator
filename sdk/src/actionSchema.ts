@@ -143,11 +143,19 @@ export const aaveRepaySchema = z.object({
   ...priorityFee,
 });
 
+// GMX takes either of a market's pool tokens as collateral: its long token (= its base) or USDC.
+// Described in the generated <schema> because the right symbol depends on `base`, which a plain
+// token-symbol pattern cannot express (the adapter's validate enforces it).
+const gmxCollateral = tokenSymbol.describe(
+  "collateral token: the market's long token or USDC -- WETH or USDC on the default ETH/USD " +
+    'market, WBTC or USDC on the BTC/USD market (base "WBTC").',
+);
+
 export const gmxIncreaseSchema = z.object({
   type: z.literal("gmxIncrease"),
   isLong: z.boolean(),
   base: marketBase,
-  collateral: tokenSymbol,
+  collateral: gmxCollateral,
   collateralAmount: decimalString,
   sizeDeltaUsd: decimalString,
   acceptablePrice: decimalString.optional(),
@@ -158,7 +166,7 @@ export const gmxDecreaseSchema = z.object({
   type: z.literal("gmxDecrease"),
   isLong: z.boolean(),
   base: marketBase,
-  collateral: tokenSymbol,
+  collateral: gmxCollateral,
   collateralDeltaAmount: decimalString,
   sizeDeltaUsd: decimalString,
   acceptablePrice: decimalString.optional(),

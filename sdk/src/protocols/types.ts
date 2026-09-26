@@ -54,6 +54,10 @@ export interface SimContext {
     mockProvider?: Address;
     market: Address; // WETH (ETH/USD) market. Kept for backward compatibility (= markets["WETH"]).
     markets?: Record<string, Address>; // ADR 0013: base -> GMX market (WBTC etc.)
+    // Every token an order on any of those markets can need a price for (index, long and short
+    // token of each), resolved from chain by gmx.setupGlobal. The keeper hands the oracle exactly
+    // this list and the per-block oracle update writes exactly this list, so the two cannot drift.
+    oracleTokens?: Address[];
   };
   // ADR 0013: fair price (USD) for all bases. When unset or WETH-only, adapters fall back to the single
   // fairPrice. Adapters that handle the WBTC market use ctx.fairPrices?.[base].
@@ -125,6 +129,15 @@ export type ValuationContext = {
   // stable leg reads it from here, so nothing prices the same token twice or differently. Same
   // "populated after stage 0" contract as fairByBase.
   stablePrices(): StablePrices;
+  // Rules §4.1: at an interval boundary every market-derived price is the median over the window of
+  // blocks ending at this one. These are the window's *earlier* blocks, oldest first; blockNumber
+  // itself is not repeated (its reads are the stage reads). Empty or absent at every other
+  // cross-section and whenever the window is off -- the adapter then marks live, as it always did.
+  // Helpers: protocols/medianWindow.ts. Reference prices (fairByBase) are never medianed here.
+  medianWindow?: readonly number[];
+  // Issue reads at one of those earlier blocks, as one multicall. A failed read is undefined, as in
+  // a stage. Present whenever medianWindow is non-empty.
+  readAt?: (reads: ValuationRead[], blockNumber: number) => Promise<unknown[]>;
 };
 
 // A holding the adapter could not fold into its value, either because it cannot be priced (#41) or
@@ -221,6 +234,11 @@ export interface ProtocolAdapter {
   // ---- Historical valuation for post-run scoring (ADR 0006 §4) ----
   // Adapters without one contribute nothing to an agent's value at a block cross-section.
   valueAtBlock?(ctx: ValuationContext): ValuationRun;
+
+  // The market-derived prices valueAtBlock medians over ctx.medianWindow (rules §4.1), named so the
+  // run's summary says which surfaces the window covered rather than leaving it to be assumed. A
+  // venue that marks only at reference prices (the environment's oracles) declares none.
+  medianSurfaces?: readonly string[];
 
   // ---- Tokens this adapter already accounts for ----
   // The scorer reports ERC-20 holdings that nothing sums (issue #41). A token listed here is either

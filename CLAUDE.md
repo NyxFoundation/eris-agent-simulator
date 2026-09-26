@@ -168,7 +168,13 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
 - **値を盛らないこと**。盛ると perp だけ Aave の借入金利と違う時計で回る（LST の APY で一度やった失敗）。
   よって**レートは実物・符号も偏り追随**だが、**数百ブロックで積む額は小さい**（Aave の利息と同じ理由。EVM 時間は warp しない）
 - **これ以前に焼いた state dump は旧設定を持つ**ので、そこからの replay は今も 0 を返す。
-  その 0 は「板が均衡している」ではなく「この deploy に funding が無い」。`npm run gen:state-dump` で焼き直す
+  その 0 は「板が均衡している」ではなく「この deploy に funding が無い」。`npm run gen:state-dump` で焼き直す。
+  **起動時に実測して落とす**（`gmx_funding_check`。`core/src/realtime/gmxFunding.ts`）。anvil では fail-fast、
+  `chainMode: external`（練習 devnet）は巻き戻せないチェーンを止めないよう警告して続行
+- **BTC/USD 市場も執行される**。以前は keeper が WETH/USDC の価格しか渡さず、BTC 注文は `EmptyPrimaryPrice(WBTC)`
+  で執行 tx ごと revert し（GMX はキャンセルせず、keeper は再試行しない）証拠金と 0.03 ETH が OrderVault に残って 0 評価だった。
+  価格を渡すトークンは `setupGlobal` が全市場から作る 1 本（`ctx.gmx.oracleTokens`）を keeper・provider 登録・毎ブロックの
+  mock 書き込みが共有する。**証拠金は市場の long token か USDC**（ETH 市場 = WETH/USDC、BTC 市場 = WBTC/USDC）
 - **observation にも出る**（issue #78）。`protocols.gmx` の `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`
   （正 = long が short に払う）/ `fundingModeled`、建玉があれば `position.fundingOwedUsd`。
   以前は「チェーン上にも market.json にもあるのに、どの agent からも見えない」状態だった。
@@ -335,6 +341,10 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     （`core/src/backtest/resume.ts`）。summary.json → AgentScore の変換は `core/src/backtest/scenarioScores.ts` に分離
   - **公式レジームは `agentSandbox: docker`**（規約 §2.3 の 2 vCPU / 4 GiB は `infra/docker-agent/run-agent.sh` でしか掛からない）。docker が無ければ `--agent-sandbox process`（無制限。`agent_sandbox` イベントにそう出る）。綴り間違いは fail-fast
   - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
+  - **5 ブロック中央値は市場由来の全マークに掛かる**（規約 §4.1。以前は stable の probe だけで、LP・LST・Liquity は
+    境界 1 点だった）。対象は各アダプタが `medianSurfaces` で宣言し（uniswap-lp の tick / balancer・curve の持分価格 /
+    LST のプール売却 quote / Liquity の自分サイズ quote）、summary の `markMedian.surfaces` に出る。**保有量は境界で固定し
+    価格だけ中央値**。参照価格（fair と、それを配る Aave・GMX のオラクル）は市場由来ではないので対象外
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 40`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジーム等回数、seed が決めるのは順序だけ。`--starts-at <ISO> --every-minutes <N>` で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出す。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 10/31 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
   - **公式レジーム（12 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）/ `launch`（run 途中に 2〜3 の新トークンが環境の Uniswap V3 factory 経由で USDC の薄いプールに上場し、トークンごとに需要の波が来るか dud かをシードが決める。鐘の時点の保有は 0 = ADR 0022 公理 2。issue #29。下の「新規トークンの上場」節）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選は k をレジーム数の倍数に要求する**（`schedule.ts`）ので、本数を変えたら k も変える
   - **`cex-drift` / `informed-flow` は窓イベント**（`cexDrift` / `flowTrend`）で表現する（issue #56）。run 全体設定だった頃の `cex-drift` は**宣言長 360 ブロックで壊れていた** — 実測でプール乖離が平均 1,055bps（10%）に居座り fair が +34.6% 暴走、venue-arb が +8,458 を無条件に得ていた。60 ブロックでは 55bps に見えるので発覚が遅れた。窓化後は 461bps・+1,191（calm 基準は 39bps・−289）。`informed-flow` は窓化しても 45.0 → 42.7bps でほぼ中立（この regime はもともと calm と識別しにくい）
@@ -449,7 +459,12 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     検索が tx hash・block・address・**agent 名**（→ wallet address。Blockscout は名前を知らない）を
     解決して deep link する。Blockscout が無くてもローカル一覧のフィルタとしては効く
 - `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/評価区間の長さ（`round.intervalBlocks`。旧名 `epochBlocks` を結果発表まで併記）/action 語彙/limits/登録アドレス）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
-- `npm run check:ordering -- --live` — **ビルダーが手数料順に並べるかを自分で入札して測る**（#35 の load-bearing assumption）。既定プロファイルは oracle を全員より高く積んで txIndex 0 に置くので、順序が守られないチェーンでは環境の価格が front-run 可能になる。**入札は昇順に送る**ので到着順と手数料順が逆になり、到着順を保つだけのビルダーは降順プローブなら通ってこれで落ちる。引数なしは従来どおり blocks.csv の事後検査
+- `npm run check:ordering -- --live` — **ビルダーが手数料順に並べるかを自分で入札して測る**（#35 の load-bearing assumption）。既定プロファイルは oracle を全員より高く積んで txIndex 0 に置くので、順序が守られないチェーンでは環境の価格が front-run 可能になる。**入札は昇順に送る**ので到着順と手数料順が逆になり、到着順を保つだけのビルダーは降順プローブなら通ってこれで落ちる。引数なしは従来どおり blocks.csv の事後検査。
+  **anvil が並べるキーは tip ではなく maxFeePerGas**（1.7.1 で実測。base fee 0 で払うのは min(maxFee, tip)）なので、
+  tip 0.1 / maxFee 7 gwei の tx が 6 gwei のオラクルより前に入って 0.1 しか払わなかった。**`maxFeePerGas ≤ tip ≤ 上限`**
+  （legacy は `gasPrice ≤ 上限`）を 1 本のルール（`sdk/src/feeRule.ts`）でゲートウェイ（403）・ランタイム（maxFee = tip で署名）・
+  事後検査（blocks.csv 末尾の `maxFeePerGasWei` 列）が強制し、`--live` は maxFee ≠ tip のプローブで並べ替えのキーを判定する。
+  legacy tx は以前 `priorityFeeWei` が 0 と記録されて上限検査を素通りしていた（今は gasPrice を記録）
 - `npm run stress:rpc` — **Eris 形状の read 負荷**で RPC 容量を測る（#36）。`reconstruct.ts` と同じ read 集合の Multicall3 を agent × block で撃ち、cold/warm 別の p50/p99・ブロック間隔ジッタ（負荷有無）・`eth_call` の到達可能深度・sequencer-only か replica かの判定を出す。**読む対象が無いチェーンでは測る前に落ちる**（空アドレスへの call はノードが実残高より速く断るので、全滅が巨大な容量に見える。実際に「何もデプロイされていない anvil に 3,360 obs/s・sequencer-only で十分」と報告した）
 - `npm run dashboard:build` / `npm run dashboard:serve` — 運営 hosted のダッシュボード（ADR 0021 §5。既定 :5174）。`/runs` ハンドラは dev サーバーと共有（`dashboard/server/runsApi.ts`）。**既定は運営ビューで `runs/` 配下が全部公開になる。**試行期間・ライブ週の公開（2026-09-06 決定）は **`ERIS_DASHBOARD_AUDIENCE=1`**（allowlist 配信 + `events.jsonl` の seed / `stress_schedule`（continuous な run は未来の窓だけ、scenario の run は全部）/ calibration warning / vuln 正解 / stderrTail を落とし、scenario matrix の `regime` を `hidden`・**`seed` を `null`** に。`agents/*.jsonl`・`.llm.jsonl`・`disclosures/` は 404）、`ERIS_DASHBOARD_STANDINGS=0` は順位を一切出さないスイッチ（規約 §4.7 の「試行環境は順位を掲示しない」用に作ったが、**練習期間は日次リターンの練習順位を出す方針に変えた**ので hosted period では付けない。規約側は ascon-web で改訂）。`/runs/mode.json` で UI が理由を表示する。結果発表後はフラグを外すだけで §7.2 の全量公開。Cache-Control / gzip / index 3 秒キャッシュ付き（`docs/guide/dashboard.md` "Public view"）
   - **`ERIS_DASHBOARD_COMPETITIONS=<id>[,<id>…]` で配信する competition を限定する**（issue #84 K）。運営 box の `runs/` には smoke / test run が全部残っており、picker はそれを内部名のまま参加者に並べていた。通すのは **listed な competition と、その `matrix.json` が指す run と、その配下だけ**（index・ファイル・tail すべて）。未設定なら全部。
@@ -614,8 +629,15 @@ ours なのは 2 つだけ（core は無改変）:
   借り手の負債ではないので差し引く。ICR<100% の Trove は 0 で clamp（担保を捨てて歩き去れる = CDP の
   実際の性質）
 - **担保は native ETH**（core が `msg.value` で受ける）。action 側は WETH wei 建てで、`buildTxs` が
-  `WETH.withdraw` を前置する。ただし**ガスと同じ残高**なので、全部突っ込むと閉じる tx すら送れなくなる。
+  `WETH.withdraw` を前置する。**検査は WETH 残高に対して行い、unwrap した分だけを value に載せる**ので
+  ガス用の ETH は正味で減らない（以前ここに「ガスと同じ残高なので閉じる tx すら送れなくなる」と書いてあり、
+  それが参加者ガイドにそのまま写っていた）。逆向きが落とし穴で、閉じる・引き出す・償還・SP の gain は
+  **native ETH で戻る**（WETH に戻すアクションは無い = `rawTx` で `WETH.deposit()`）。
   observation に `ethBalanceWei` / `suggestedGasReserveWei` を出すが**強制はしない**（self-stranding は正当な負け）
+- **open/adjust の ICR 検査は composite debt**（要求額 + 借入手数料 + gas compensation 200。チェーンの
+  `_computeCR` と同じ分母）。要求額だけで割っていた頃は 110% 付近が検査を通ってチェーンで revert した
+- **CollSurplusPool の余剰担保も数える**（`liquity.collSurplusWei`。全額償還や RM の上限つき清算で残る分）。
+  claim すれば native ETH になるので realizable = WETH fair。請求は `rawTx` で `claimCollateral()`（action は足さない）
 - action は 8 つ: `liquityOpenTrove` / `liquityAdjustTrove` / `liquityCloseTrove` / `liquityRedeem` /
   `liquityProvideToSP` / `liquityWithdrawFromSP` / `liquityLiquidate` + `liquitySwapEusd`。
   最後の 1 つは issue #39 の列挙には無いが、**venue 自身の α（デペグを買って償還する）が届かなくなる**ため追加

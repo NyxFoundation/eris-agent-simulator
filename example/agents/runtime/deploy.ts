@@ -9,6 +9,7 @@
 import type { Address, Chain, Hex, PublicClient, WalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { readForgeArtifact } from "@eris/sdk/forge.js";
+import { participantFees } from "@eris/sdk/feeRule.js";
 
 // Deploy a contract with your own key and return the deployed address (waits for the receipt).
 export async function deployArtifact(opts: {
@@ -31,8 +32,9 @@ export async function deployArtifact(opts: {
     args: (opts.args ?? []) as never,
     account,
     chain: opts.chain,
-    maxFeePerGas: baseFee * 2n + tip,
-    maxPriorityFeePerGas: tip,
+    // maxFeePerGas = maxPriorityFeePerGas (sdk/src/feeRule.ts): anything above the tip buys block
+    // position without paying for it, and the RPC gateway refuses it.
+    ...participantFees(tip, baseFee),
   });
   const receipt = await opts.publicClient.waitForTransactionReceipt({ hash });
   if (!receipt.contractAddress)

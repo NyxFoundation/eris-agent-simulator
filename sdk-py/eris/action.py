@@ -211,7 +211,12 @@ class GmxIncreaseAction(BaseModel):
         min_length=1,
         pattern='^[A-Z0-9]+$',
     )
-    collateral: str = Field(..., min_length=1, pattern='^[A-Z0-9]+$')
+    collateral: str = Field(
+        ...,
+        description='collateral token: the market\'s long token or USDC -- WETH or USDC on the default ETH/USD market, WBTC or USDC on the BTC/USD market (base "WBTC").',
+        min_length=1,
+        pattern='^[A-Z0-9]+$',
+    )
     collateral_amount: str = Field(..., alias='collateralAmount', pattern='^[0-9]+$')
     size_delta_usd: str = Field(..., alias='sizeDeltaUsd', pattern='^[0-9]+$')
     acceptable_price: str | None = Field(
@@ -235,7 +240,12 @@ class GmxDecreaseAction(BaseModel):
         min_length=1,
         pattern='^[A-Z0-9]+$',
     )
-    collateral: str = Field(..., min_length=1, pattern='^[A-Z0-9]+$')
+    collateral: str = Field(
+        ...,
+        description='collateral token: the market\'s long token or USDC -- WETH or USDC on the default ETH/USD market, WBTC or USDC on the BTC/USD market (base "WBTC").',
+        min_length=1,
+        pattern='^[A-Z0-9]+$',
+    )
     collateral_delta_amount: str = Field(
         ..., alias='collateralDeltaAmount', pattern='^[0-9]+$'
     )

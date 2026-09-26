@@ -373,6 +373,7 @@ class LiquityObservation(BaseModel):
     pool_reserves: PoolReserves1 | None = Field(None, alias='poolReserves')
     trove: LiquityTroveObservation | None = None
     riskiest_trove: RiskiestTrove | None = Field(None, alias='riskiestTrove')
+    coll_surplus_wei: str = Field(..., alias='collSurplusWei')
     sp_deposit_eusd_wei: str = Field(..., alias='spDepositEusdWei')
     sp_eth_gain_wei: str = Field(..., alias='spEthGainWei')
     sp_lqty_gain_wei: str = Field(..., alias='spLqtyGainWei')

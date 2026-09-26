@@ -239,6 +239,13 @@ export const stabilityPoolAbi = parseAbi([
   "function getETH() view returns (uint256)",
 ]);
 
+// Where a closed Trove's leftover collateral waits for its owner (after a full redemption, or a
+// Recovery-Mode liquidation capped at 110% of the debt). Claimed through
+// BorrowerOperations.claimCollateral(), which has no action of its own -- agents send it as rawTx.
+export const collSurplusPoolAbi = parseAbi([
+  "function getCollateral(address account) view returns (uint256)",
+]);
+
 export const sortedTrovesAbi = parseAbi([
   // Sorted by nominal ICR, descending: the head is the safest Trove and the tail is the one a
   // redemption reaches first.

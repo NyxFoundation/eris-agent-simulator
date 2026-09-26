@@ -895,6 +895,9 @@
           ],
           "additionalProperties": false
         },
+        "collSurplusWei": {
+          "type": "string"
+        },
         "spDepositEusdWei": {
           "type": "string"
         },
@@ -936,6 +939,7 @@
         "marketQuoted",
         "discountBps",
         "redemptionEdgeBps",
+        "collSurplusWei",
         "spDepositEusdWei",
         "spEthGainWei",
         "spLqtyGainWei",

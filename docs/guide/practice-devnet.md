@@ -196,6 +196,42 @@ CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
   the start of the period, or calls a contract at an old block, gets nothing back. Keep what you need
   as you see it.
 
+### If you sign transactions yourself: the fee rule
+
+The runtime above signs every transaction for you, and signs its fees the way this chain requires.
+If your own code signs instead (a hand-written sender, `cast send`, a script), it has to follow the
+same rule, and the RPC gateway refuses what does not:
+
+| transaction type | requirement |
+|---|---|
+| EIP-1559 / 4844 / 7702 (`maxFeePerGas`, `maxPriorityFeePerGas`) | `maxFeePerGas` **equal to** (never above) `maxPriorityFeePerGas`, and that ≤ the manifest's `limits.maxPriorityFeeWei` (5 gwei) |
+| legacy / EIP-2930 (`gasPrice`) | `gasPrice` ≤ `limits.maxPriorityFeeWei` |
+| any | gas limit ≤ 30,000,000 |
+
+```ts
+// viem: name both fields, with the same value
+await walletClient.sendTransaction({ ...tx, maxFeePerGas: bid, maxPriorityFeePerGas: bid });
+```
+
+```bash
+# cast: --gas-price is maxFeePerGas for an EIP-1559 tx, --priority-gas-price its tip
+cast send … --gas-price 1gwei --priority-gas-price 1gwei
+```
+
+**Why maxFeePerGas and not just the tip.** The rules order a block by the priority fee, highest first
+(§2.6). The chain's node sorts its pool on **maxFeePerGas**, and with base fee 0 a transaction pays
+min(maxFeePerGas, tip) — so without the rule, a transaction signed with a high maxFeePerGas and a small
+tip is placed ahead of bids that pay more, including the environment's price update, which the cap
+exists to keep first. (Measured: tip 0.1 gwei + maxFeePerGas 7 gwei landed at the top of its block
+ahead of a 6 gwei transaction, paying 0.1 gwei.) With maxFeePerGas equal to the tip, the position you
+get is exactly the price you pay.
+
+A refused transaction comes back as HTTP 403 with JSON-RPC error `-32003` and a message naming the
+field; it never reached the chain and used no nonce. A transaction that reaches the chain another way
+is still recorded with both fee fields, and the operator's post-run check flags it as a violation
+(rules §8). Most libraries' defaults (`maxFeePerGas = 2 × baseFee + tip`) already equal the tip on a
+base-fee-0 chain — set both explicitly anyway, so a default never decides your standing.
+
 ### 4. Watch
 
 The hosted dashboard shows everything the chain says about you: your transactions (named by
@@ -214,7 +250,7 @@ leaves no trace anyone but you can verify.
 #    .env.local:  ANVIL_RPC_URL=… CHAIN_ID=… TREASURY_PRIVATE_KEY=0x…
 
 # 2. before anything else, confirm the two assumptions the design rests on
-npm run check:ordering -- --live --rounds 5      # issue #35: does the builder order by fee?
+npm run check:ordering -- --live --rounds 5      # issue #35: does the builder order by fee, and on which field?
 npm run stress:rpc -- --agents 30 --seconds 60 --write   # issue #36: does the read load fit?
 
 # 3. the period — in the foreground while you watch it start
@@ -235,6 +271,12 @@ begins a new competition, and the Slack alert that fires when the chain stops mo
 ```bash
 systemctl --user enable --now ascon-devnet.service
 ```
+
+On anvil, step 2's ordering probe reports `key probe: max-fee`: the node sorts on maxFeePerGas, not on
+the tip a transaction pays. That is safe only because participants may not sign maxFeePerGas above
+their tip ([the fee rule](#if-you-sign-transactions-yourself-the-fee-rule)), which the RPC gateway
+refuses at entry and `postRunCheck` flags afterwards. Keep the gateway's `RPC_MAX_PRIORITY_FEE_WEI`
+equal to the config's `fees.maxPriorityFeeWei` (both default to 5 gwei; `infra/rpc-gateway/README.md`).
 
 ### The chain's own keys (issue #74)
 

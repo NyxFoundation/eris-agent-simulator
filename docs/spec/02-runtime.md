@@ -155,7 +155,7 @@
 | プロファイル | oracle / PriceFeed | keeper | 上限強制 |
 |---|---|---|---|
 | 既定（ADR 0010） | `maxPriorityFee + 1 gwei` → `--order fees` で txIndex 0 | `maxPriorityFee + 0.5 gwei` | あり（事後検査） |
-| `economicGas: true`（ADR 0011） | `defaultPriorityFee`（価格確定は storage 書き込みなので front-run の的が消える） | 同左 | **なし**（自由入札） |
+| `economicGas: true`（ADR 0011） | `defaultPriorityFee`（価格確定は storage 書き込みなので front-run の的が消える） | 同左 | 上限は**なし**（自由入札）。maxFeePerGas ≤ tip は残る（[03 §3.1.6](03-market.md)） |
 
 ## 2.3 時間の扱い
 
