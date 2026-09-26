@@ -232,15 +232,15 @@ an integer; `pnlUsd` / `entryPriceUsd` in plain dollars) / `longOiUsd` / `shortO
 
 #### LST — an interest-bearing receipt for ETH
 
-Deposit ETH into the vault (the contract that holds it) and you receive the receipt token ERLST —
-the same design as Lido's wstETH in the real world.
+Deposit WETH into the vault (the contract that holds it; `lstDeposit`) and you receive the receipt
+token ERLST — the same design as Lido's wstETH in the real world.
 
-- **The ETH one receipt can be redeemed for (the redemption rate) grows slowly with interest.** The rate is 3% a year, and interest here counts each block as one hour, so one epoch (360 blocks = 15 days' worth) adds about 0.12%
+- **The WETH one receipt can be redeemed for (the redemption rate) grows slowly with interest.** The rate is 3% a year, and interest here counts each block as one hour, so one epoch (360 blocks = 15 days' worth) adds about 0.12%
 - **There are two ways to cash out, at two different prices.**
-  - Withdraw from the vault: the full redemption rate, but you join a queue and wait at least 24 blocks — longer the more is queued ahead of you and the more you withdraw (the queue moves about 1 WETH per block)
-  - Sell on Curve's ERLST/WETH pool: immediate, but usually below the redemption rate (the gap is the **discount**)
-- **A withdrawal you cannot collect before the epoch ends counts as 0 in scoring.** Scoring takes the better of "sell into the pool now" and "withdrawals that complete before the end". `obs.blocksRemaining` tells you how many blocks are left
-- You can also lever up: post ERLST on Aave, borrow ETH, deposit it again (`lst-carry`)
+  - Withdraw from the vault (request with `lstRequestWithdraw`, wait, then `lstClaimWithdraw`): the full amount, fixed at the redemption rate at the moment you request (no interest accrues while you wait). But you join a queue. The wait is the longer of 24 blocks and the time for the requests ahead of you to clear, plus one block per WETH of your own request, rounded up (32 blocks for 8 WETH even with an empty queue)
+  - Sell on Curve's ERLST/WETH pool (`lstSwap`): immediate, but the fee (0.04% and up) and price impact mean you receive less than the redemption rate. When the pool's mid sits below the redemption rate, the gap is the **discount** (`discountBps`). Only participants trade this pool, so the discount opens when someone sells a lot
+- **In scoring, ERLST still in your wallet when the epoch ends counts as what selling all of it into the pool pays at that moment. A withdrawal you requested counts in full if it is claimable by then (you need not have claimed it), and as 0 if it is not.** "The end" here is the last evaluation-interval boundary — with the current values, the block where `obs.blocksRemaining` reads 12, not where it reaches 0
+- You can also lever up: post ERLST on Aave, borrow WETH, deposit it into the vault for more ERLST (`lst-carry` does this only when `ERIS_LST_LEVERAGE_TARGET_HF` is set)
 
 The state is in `obs.protocols.lst`: `redemptionRateWeth` (the redemption rate) / `marketPriceWeth`
 (the pool's price) / `discountBps` / `estimatedQueueDelayBlocks` (the wait to withdraw everything you
