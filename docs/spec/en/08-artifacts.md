@@ -111,6 +111,7 @@ One event per line, each carrying an ISO `ts`. The catalogue below is what the c
 | `run_started_realtime` | Start of the run. **Carries seed / flowSeed / epochBlocks / rpcUrl / chainId / chainMode.** Repeated at the head of each segment |
 | `run_completed` | Completion |
 | `deployment_check` | Measured deployment (chainId / checked / missing) |
+| `gmx_funding_check` | Each GMX market's `FUNDING_INCREASE_FACTOR_PER_SECOND` and `fundingModeled` on a local deploy (ok / markets). A deploy or state dump without funding (before gmx-localhost.patch a35cf3e) stops the run here |
 | `agents_registered` | The whole roster (id / address / baseline / description / external) |
 | `agent_external_registered` | An external registration the environment did not start |
 | `agent_process_exited` | An agent process ending early |

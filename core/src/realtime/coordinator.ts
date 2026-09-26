@@ -133,6 +133,11 @@ import {
   checkDeployment,
   deploymentMismatchMessage,
 } from "@eris/sdk/deploymentCheck.js";
+import {
+  gmxFundingCheck,
+  gmxFundingMissingMessage,
+  readGmxFundingConfig,
+} from "./gmxFunding.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import { epochPnlFromSeries } from "../scoring/epochPnl.js";
 import {
@@ -847,6 +852,20 @@ export async function runRealtimeSimulation(
       });
       if (check.missing.length > 0)
         throw new Error(deploymentMismatchMessage(check, config.rpcUrl));
+    }
+
+    // And does it model GMX funding? A deploy or state dump baked before the funding patch runs and
+    // scores with a funding rate of exactly 0 on every block, and nothing else in the run says so.
+    if (config.localDeploy && enabledIds.includes("gmx")) {
+      const funding = gmxFundingCheck(
+        await readGmxFundingConfig(publicClient, gmxMarketAddresses()),
+      );
+      logger.event({
+        type: "gmx_funding_check",
+        ok: funding.ok,
+        markets: funding.markets,
+      });
+      if (!funding.ok) throw new Error(gmxFundingMissingMessage(funding));
     }
 
     // Then, on a chain participants can reach, a token anyone can mint makes the endowment
