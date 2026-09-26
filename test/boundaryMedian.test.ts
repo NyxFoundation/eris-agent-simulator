@@ -523,6 +523,41 @@ test("liquity: the realizable mark uses the boundary block's own-size quotes", a
   assert.ok(Math.abs(v.valueUsdc - (6_000 - 4_000 + 1_000)) < 1e-6);
 });
 
+test("liquity: at a boundary both own-size quotes are medians over the window", async () => {
+  // In the boundary block eUSD was bid up for the deposit's sale and offered down for the debt's
+  // buyback -- both flattering the position. Before it: 980 and 4,080.
+  const steady = liquityAnswer({
+    depositSale: 980n * USDC_UNIT,
+    debtBuyback: 4_080n * USDC_UNIT,
+  });
+  const asked: ValuationRead[] = [];
+  const { values } = await driveValuation(
+    liquityValuationRun(
+      LIQUITY!,
+      ctx({
+        medianWindow: WINDOW,
+        readAt: async (reads) => {
+          asked.push(...reads);
+          return reads.map(steady);
+        },
+      }),
+    ),
+    liquityAnswer({
+      depositSale: 999n * USDC_UNIT,
+      debtBuyback: 4_000n * USDC_UNIT,
+    }),
+  );
+  const v = values[AGENT.id];
+  assert.ok(Math.abs(v.liquidatableValueUsdc - (6_000 - 4_080 + 980)) < 1e-6);
+  // The face mark is the mid, which reaches this adapter already medianed (ctx.stablePrices()).
+  assert.ok(Math.abs(v.valueUsdc - (6_000 - 4_000 + 1_000)) < 1e-6);
+  // The boundary's sizes, re-quoted: one sale and one buyback per window block.
+  assert.deepEqual(
+    asked.map((r) => r.functionName).sort(),
+    [...WINDOW.map(() => "get_dx"), ...WINDOW.map(() => "get_dy")],
+  );
+});
+
 // ---------------------------------------------------------------------------
 // The window itself
 // ---------------------------------------------------------------------------
@@ -554,6 +589,7 @@ test("the window: every boundary gets one, stables or not", async () => {
       "uniswap-lp",
       "balancer-bpt",
       "lst-pool-sale",
+      "liquity-own-size-quotes",
       "aave-lst-collateral",
     ]);
     assert.equal(median.summary()?.boundaries, 1);

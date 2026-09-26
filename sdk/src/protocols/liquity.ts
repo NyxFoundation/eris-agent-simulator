@@ -82,6 +82,7 @@ import type {
   ValuationRun,
 } from "./types.js";
 import { approveTx } from "./uniswap.js";
+import { medianQuotes, readAcrossWindow } from "./medianWindow.js";
 import { readStablePrices, stablePriceUsdc } from "../stables.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
@@ -1403,25 +1404,30 @@ export async function* liquityValuationRun(
     if (h.spDepositEusdWei > 0n) longTargets.push(i);
     if (h.netDebtEusdWei > 0n) debtTargets.push(i);
   });
+  const quoteReads: ValuationRead[] = [
+    ...longTargets.map((i): ValuationRead => ({
+      address: pool,
+      abi: curveStableSwapNgAbi,
+      functionName: "get_dy",
+      args: [eusdIndex, usdcIndex, holdings[i]!.spDepositEusdWei],
+    })),
+    ...debtTargets.map((i): ValuationRead => ({
+      address: pool,
+      abi: curveStableSwapNgAbi,
+      // What it costs to buy the debt back, which is not get_dy of anything: the size is fixed on
+      // the *output* side. Marking a liability off the wrong side of the book flatters it exactly
+      // when eUSD is dear, which is when a Trove is most expensive to close.
+      functionName: "get_dx",
+      args: [usdcIndex, eusdIndex, holdings[i]!.netDebtEusdWei],
+    })),
+  ];
   let quotes: unknown[] = [];
-  if (hasMarket && (longTargets.length > 0 || debtTargets.length > 0)) {
-    quotes = yield [
-      ...longTargets.map((i): ValuationRead => ({
-        address: pool,
-        abi: curveStableSwapNgAbi,
-        functionName: "get_dy",
-        args: [eusdIndex, usdcIndex, holdings[i]!.spDepositEusdWei],
-      })),
-      ...debtTargets.map((i): ValuationRead => ({
-        address: pool,
-        abi: curveStableSwapNgAbi,
-        // What it costs to buy the debt back, which is not get_dy of anything: the size is fixed on
-        // the *output* side. Marking a liability off the wrong side of the book flatters it exactly
-        // when eUSD is dear, which is when a Trove is most expensive to close.
-        functionName: "get_dx",
-        args: [usdcIndex, eusdIndex, holdings[i]!.netDebtEusdWei],
-      })),
-    ];
+  if (hasMarket && quoteReads.length > 0) {
+    quotes = yield quoteReads;
+    // Rules §4.1: both own-size quotes are market-derived prices. At a scoring boundary each is the
+    // median of the same quote (the boundary's sizes) over the window; blocks that did not quote
+    // are dropped. The mid above already comes medianed through ctx.stablePrices().
+    quotes = medianQuotes(quotes, await readAcrossWindow(ctx, quoteReads));
   }
   const longExitByIndex = new Map<number, number>();
   longTargets.forEach((agentIndex, k) => {
@@ -1567,6 +1573,8 @@ export const liquityAdapter: ProtocolAdapter = {
     }
     return liquityValuationRun(LIQUITY, ctx);
   },
+
+  medianSurfaces: ["liquity-own-size-quotes"],
 
   async accountedTokens(): Promise<Address[]> {
     // eUSD is swept as a registry stable and the Trove / Stability Pool legs are valued above. LQTY
