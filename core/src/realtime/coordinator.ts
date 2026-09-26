@@ -133,6 +133,12 @@ import {
   checkDeployment,
   deploymentMismatchMessage,
 } from "@eris/sdk/deploymentCheck.js";
+import {
+  gmxFundingCheck,
+  gmxFundingEnforcement,
+  gmxFundingMissingMessage,
+  readGmxFundingConfig,
+} from "./gmxFunding.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import { epochPnlFromSeries } from "../scoring/epochPnl.js";
 import {
@@ -847,6 +853,27 @@ export async function runRealtimeSimulation(
       });
       if (check.missing.length > 0)
         throw new Error(deploymentMismatchMessage(check, config.rpcUrl));
+    }
+
+    // And does it model GMX funding? A deploy or state dump baked before the funding patch runs and
+    // scores with a funding rate of exactly 0 on every block, and nothing else in the run says so.
+    // Stops on anvil; on the never-reset practice chain it records and warns (gmxFundingEnforcement).
+    if (config.localDeploy && enabledIds.includes("gmx")) {
+      const funding = gmxFundingCheck(
+        await readGmxFundingConfig(publicClient, gmxMarketAddresses()),
+      );
+      const enforcement = gmxFundingEnforcement(funding, config.chainMode);
+      logger.event({
+        type: "gmx_funding_check",
+        ok: funding.ok,
+        enforcement,
+        markets: funding.markets,
+      });
+      const message = funding.ok
+        ? ""
+        : gmxFundingMissingMessage(funding, config.chainMode);
+      if (enforcement === "fail") throw new Error(message);
+      if (enforcement === "warn") console.warn(`[gmx] WARNING: ${message}`);
     }
 
     // Then, on a chain participants can reach, a token anyone can mint makes the endowment

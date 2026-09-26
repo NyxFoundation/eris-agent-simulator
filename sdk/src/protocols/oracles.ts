@@ -299,7 +299,7 @@ export async function updateOraclesMempool(
     );
   }
   if (ctx.oracle.gmxProvider && ctx.updateGmxOracle) {
-    // GMX submits two txs internally (WETH/USDC). The hashes can't be tracked but they land in the mempool.
+    // GMX submits one tx per oracle token internally (WETH/USDC/WBTC). The hashes can't be tracked but they land in the mempool.
     await ctx.updateGmxOracle(ctx, fairPrice, { noMine: true, priorityFeeWei });
   }
   return hashes;
