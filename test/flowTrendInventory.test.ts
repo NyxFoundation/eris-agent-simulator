@@ -38,10 +38,11 @@ type Doc = {
   stress?: {
     events?: {
       type: string;
+      count?: [number, number];
       magnitudeRange?: [number, number];
-      rampBlocks?: number;
-      holdBlocks?: number;
-      decayBlocks?: number;
+      rampBlocks?: number | [number, number];
+      holdBlocks?: number | [number, number];
+      decayBlocks?: number | [number, number];
     }[];
   };
 };
@@ -51,28 +52,31 @@ function load(name: string): Doc {
 }
 
 // One-way WETH a venue wallet sends through the sum of the regime's flowTrend windows, every window
-// drawn at its largest magnitude and all of them leaning the same way. The uninformed size is
-// lognormal with mean uninformedMax x 0.5 (logic.ts), arrivals are Poisson(rate) per block, and the
-// trapezoid's ramp and decay count half.
+// drawn at its largest magnitude, count and length, and all of them leaning the same way. The
+// uninformed size is lognormal with mean uninformedMax x 0.5 (logic.ts), arrivals are Poisson(rate)
+// per block, and the trapezoid's ramp and decay count half.
 function worstCaseOneWayWeth(doc: Doc): number {
   const meanWeth = (Number(doc.flow.uninformedMaxWethWei) / 1e18) * 0.5;
   const rate = Number(doc.flow.uninformedArrivalRate);
+  const longest = (v: number | [number, number] | undefined) => (Array.isArray(v) ? v[1] : (v ?? 0));
   let total = 0;
   for (const e of doc.stress?.events ?? []) {
     if (e.type !== "flowTrend") continue;
     const mag = Math.max(...(e.magnitudeRange ?? [1, 1]));
-    const blocks = (e.rampBlocks ?? 0) / 2 + (e.holdBlocks ?? 0) + (e.decayBlocks ?? 0) / 2;
-    total += meanWeth * mag * rate * blocks;
+    const windows = e.count?.[1] ?? 1;
+    const blocks = longest(e.rampBlocks) / 2 + longest(e.holdBlocks) + longest(e.decayBlocks) / 2;
+    total += meanWeth * mag * rate * blocks * windows;
   }
   return total;
 }
 
 // ~103 WETH before issue #79 halved the arrival rate (0.9 -> 0.45); the mean order is unchanged
-// (lognormal is mean-preserving in sigma) so the bound scales with the rate alone. The funding
-// stays at 150 WETH: the 10x size clamp the same issue added means a single tail print is 10 WETH.
-test("informed-flow's two x3 windows are ~51 WETH of one-way flow per venue wallet", () => {
+// (lognormal is mean-preserving in sigma) so the bound scales with the rate alone. ~51 WETH with two
+// fixed windows of 6/30/10 blocks; ~93 now that the seed can draw three of up to 8/36/12. The
+// funding stays at 150 WETH: the 10x size clamp #79 added means a single tail print is 10 WETH.
+test("informed-flow's longest draw (three x3 windows) is ~93 WETH of one-way flow per venue wallet", () => {
   const w = worstCaseOneWayWeth(load("informed-flow"));
-  assert.ok(w > 50 && w < 53, `one-way WETH ${w}`);
+  assert.ok(w > 92 && w < 94, `one-way WETH ${w}`);
 });
 
 for (const name of OFFICIAL) {

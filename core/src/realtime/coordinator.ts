@@ -2653,6 +2653,16 @@ export async function runRealtimeSimulation(
         runStartBlock,
         events: schedule.events,
       });
+      // A cohort with nothing to breach it: every crash drew count 0 or flipped upwards (flipProb).
+      // The per-crash checks below cannot see an absent crash, so say it here.
+      if (
+        (minVictimHf0 !== null || minLiquityVictimIcr0 !== null) &&
+        !schedule.events.some((ev) => ev.type === "crash")
+      )
+        logger.event({
+          type: "stress_calibration_warning",
+          reason: "victims are configured but the schedule resolved no crash",
+        });
       // Calibration check (§2): whether each crash's realized magnitude can breach a victim
       // (m > (HF0−1)/HF0). If not, warn (victims are not liquidated and the stress axis is empty).
       if (minVictimHf0 !== null) {

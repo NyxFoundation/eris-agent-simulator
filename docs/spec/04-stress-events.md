@@ -138,6 +138,24 @@ uninformed フローを窓の間だけ傾ける（`flowTrendAt`）。
 - **連鎖は禁止**（アンカー自身が aligned なら throw）。解決順に依存して半分の確率で正しくなる挙動を許さない
 - アンカーが run 終盤にあり、追随側の台形の方が長い場合は throw。黙って前へずらすと**alignWith が保証する唯一のことが崩れる**
 - `windowFrac` は指定必須で、draw も行われる（使わないだけ）。RNG 消費を設定リストの純関数に保つため
+- アンカーが `count` を持つとき、追随側は**同じ本数を窓ごとに対にして**開く。自分の `count` は書けない（throw）
+
+### 窓の数・形・向きのばらつき
+
+公式レジームは以前、magnitude と開始位置しか seed に引かせていなかった。窓の本数・どのバンドに落ちるか・台形の長さ・crash の向き・必ず全部戻ることは YAML に書いてあり、参加者はファイルを読めば答えが分かった。次のキーで seed に引かせる（どれも省略すれば従来どおり）。
+
+| キー | 対象 | 効果 |
+|---|---|---|
+| `count: [min, max]` | 全型 | 窓の本数（両端含む整数、0 可 =「起きないかもしれない」）。窓は重ならず、**開始**はすべて `windowFrac` の中、配置は収まる並べ方の上で一様（ソートした一様乱数を余り幅に散らす） |
+| `minGapBlocks` | `count` と併用 | 前の窓の終わり（追随側を含む）から次の開始までの最小ブロック数 |
+| `rampBlocks` / `holdBlocks` / `decayBlocks: [min, max]` | 台形 | 窓ごとに引く。始まりを見ても終わるブロックが分からない |
+| `flipProb: p` | `crash` / `spike` | 確率 p で向きを反転。解決済みイベントは `type: spike, flippedFrom: crash` のように記録される。victim を置くレジームでは使わない（上向きの crash は誰も割らない。crash が 1 本も解決されなければ coordinator が `stress_calibration_warning`） |
+| `recoverFrac: [min, max]` | `crash` / `spike` | decay が閉じるギャップの割合。残りは run の最後まで残る（下の 4.7） |
+| `venue: random` | `whale` | 窓ごとに 3 venue から引く |
+| `repriceAnchorProb: p` | `cexDrift` | `repriceAnchor` を窓ごとに確率 p で引く。`repriceAnchor` とは排他 |
+
+- **収まらない `count` は seed によらず起動時に落とす**（最長の draw で検査する。運の悪い seed でだけ落ちる設定は作らない）
+- **これらのキーを 1 つでも使うスケジュールは seed をハッシュ（murmur3 fmix32）してから Rng に渡す。** Rng は LCG で、**初回出力が近い seed の間でほとんど動かない**（Δ 違う seed の初回値は a·Δ/2³² しか離れず、seed 1〜200 は [0,1) の約 1 割に収まる）。実測: 公開 seed 101〜505 の 5 本すべてで、最初のイベントの magnitude がレンジの下位 1/4（u = 0.09〜0.25）を引いていた（crash なら 5 本とも [15%, 22%] のうち 15.6〜16.8%）。使わないスケジュールは生の seed のまま**バイト互換**（稼働中の練習期間の窓を更新で動かさないため）
 
 ## 4.7 「戻さない」2 つのフラグ
 
@@ -147,6 +165,10 @@ uninformed フローを窓の間だけ傾ける（`flowTrendAt`）。
 |---|---|---|---|
 | `persist: true` | `depeg` / `eusdDepeg` | 水準を run の最後まで保持 | **`decayBlocks: 0` 必須**（decay を黙って無視すると「閉じる窓」に読めるため throw） |
 | `repriceAnchor: true` | `cexDrift` | OU の anchor をドリフト分だけ動かす | — |
+| `repriceAnchorProb: p` | `cexDrift` | 上を窓ごとに確率 p で | `repriceAnchor` と排他 |
+| `recoverFrac: [min, max]` | `crash` / `spike` | decay がギャップの一部だけを閉じ、残りを run の最後まで保持 | **連続経済（練習期間）では使わない** — 残差が何週間も残り、次の crash と複利になる（`persist` / `repriceAnchor` を `config/practice.yaml` に入れないのと同じ理由） |
+
+`crash` / `spike` が必ず全部戻ると、「15% 動いたら逆に張って窓が閉じたら手仕舞う」が構造的な正解になる（depeg で `persist` が塞いだのと同じ穴）。`recoverFrac` はその答えを判断に戻す。戻らなかった分は base を持っているだけの側（noop 含む）の損になる。
 
 **teardown の買い戻しは残る。** 起動チェックがデペグ済みプールを拒否するので、放置すると次の run が始められなくなる。買い戻しは**最終採点ブロックより後**に行われる（[02 §2.1 G](02-runtime.md)）。
 
@@ -186,10 +208,14 @@ soft-reset だと前 run の victim ポジションが残留して HF が壊れ�
 | `persist` | `depeg` / `eusdDepeg` のみ、かつ `decayBlocks: 0` |
 | `repriceAnchor` / `kappaMultRange` | `cexDrift` のみ |
 | `trendCorrelation`（0..1）/ `persistBlocks`（整数 ≥1） | `flowTrend` のみ |
-| `venue` | `whale` / `liquidityPull` のみ。3 venue のいずれか |
+| `venue` | `whale` / `liquidityPull` のみ。3 venue のいずれか（`random` は `whale` のみ） |
+| `count` | 整数レンジ・`min ≥ 0`。`alignWith` と併用不可 |
+| `minGapBlocks` | `count` があるときのみ。非負整数 |
+| `flipProb` / `recoverFrac` | `crash` / `spike` のみ。確率 / `[0,1]` のレンジ |
+| `repriceAnchorProb` | `cexDrift` のみ。確率。`repriceAnchor` と排他 |
 | `magnitudeRange` | `min > 0`。`lstSlash` / `liquidityPull` / `eusdDepeg` / `depeg` は `max < 1` |
 | `windowFrac` | `[0,1]` の範囲 |
-| ramp/hold/decay | 非負整数。point 以外は合計が正 |
+| ramp/hold/decay | 非負整数か、その `[min, max]`。point 以外は最短の draw でも合計が正 |
 | `alignWith` | 型名であること・自分と違う型・連鎖でないこと |
 
 さらに coordinator 側の起動時検査（[02](02-runtime.md)）：
@@ -227,16 +253,16 @@ soft-reset だと前 run の victim ポジションが残留して HF が壊れ�
 | regime | 内容 |
 |---|---|
 | `calm` | イベント無し |
-| `cex-drift` | OU に drift、kappa 弱化 |
-| `informed-flow` | 相関した方向性フロー |
-| `whale` | 単発大口の点イベント |
-| `lending-incident` | 暴落 + victim + 清算 + 同じ窓の引き抜き |
-| `crash` | 価格ギャップ + 同じ窓での引き抜き（3 venue が同時に薄くなる） |
+| `cex-drift` | OU に drift、kappa 弱化（2〜4 窓、各窓 35% で repriceAnchor） |
+| `informed-flow` | 相関した方向性フロー（1〜3 窓） |
+| `whale` | 単発大口の点イベント（3〜5 回、会場は seed が選ぶ） |
+| `lending-incident` | 暴落 + victim + 清算 + 同じ窓の引き抜き（暴落は 1 本・下落固定、回復 40〜100%） |
+| `crash` | 価格ギャップ + 同じ窓での引き抜き（3 venue が同時に薄くなる）。1〜2 本、25% で上向き、回復 40〜100% |
 | `depeg` | レジストリの stable が $1 でなくなる |
 | `vuln` | run 途中でプールが湧き、過半が rigged（ADR 0014） |
-| `spike` | 上方向の価格ギャップ + 同じ窓での引き抜き（crash の鏡像。issue #105） |
+| `spike` | 上方向の価格ギャップ + 同じ窓での引き抜き（crash の鏡像。issue #105）。1〜2 本、25% で下向き、回復 40〜100% |
 | `depeg-persist` | `depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らない（issue #106） |
-| `cdp-incident` | Liquity victim（ICR 1.20 の Trove）+ 暴落 + 同じ窓の eUSD デペグと引き抜き。清算・償還・借り手防御の 3 skill（issue #107） |
+| `cdp-incident` | Liquity victim（ICR 1.20 の Trove）+ 暴落 + 同じ窓の eUSD デペグと引き抜き。清算・償還・借り手防御の 3 skill（issue #107）。暴落は 1 本・下落固定、回復 40〜100% |
 | `launch` | run 途中に 2〜3 の新トークンが USDC の薄いプールに上場し、トークンごとに需要の波が来るか来ない（dud）かをシードが決める。鐘の時点の保有は 0（issue #29） |
 
 `cex-drift` と `informed-flow` は **run 全体設定ではなく窓イベント**（`cexDrift` / `flowTrend`）で表現する。実測（seed 101 / 360 ブロック / プール乖離の平均 bps）:

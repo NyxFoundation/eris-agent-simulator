@@ -87,14 +87,20 @@ flow:
 
 stress:
   # Give ranges, not values (the seed samples them) = suppresses overfitting to a specific path (ADR 0009)
+  #
+  # The crash's trapezoid and how much of the gap recovers are drawn as in crash.yaml. It stays one
+  # crash, always down: the victims are the regime, a second crash would find them liquidated
+  # already, and one that went up breaches nobody. A partial recovery can leave the oracle low
+  # enough that a victim nobody took during the window is still under water after it.
   events:
     - {
         type: crash,
+        recoverFrac: [0.4, 1.0],
         magnitudeRange: [0.12, 0.16],
         windowFrac: [0.3, 0.7],
-        rampBlocks: 3,
-        holdBlocks: 6,
-        decayBlocks: 8,
+        rampBlocks: [2, 4],
+        holdBlocks: [4, 8],
+        decayBlocks: [6, 10],
       }
     # The books thin while the collateral gaps (issue #52), on the crash's own window. This regime is
     # about the lending side, and depth is what decides whether a liquidator can actually unwind the
@@ -106,9 +112,9 @@ stress:
         magnitudeRange: [0.4, 0.6],
         windowFrac: [0.3, 0.7],
         alignWith: crash,
-        rampBlocks: 3,
-        holdBlocks: 6,
-        decayBlocks: 12,
+        rampBlocks: [2, 4],
+        holdBlocks: [6, 10],
+        decayBlocks: [10, 14],
       }
   victimCount: 2
   victimHf0: 1.10
