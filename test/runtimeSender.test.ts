@@ -45,8 +45,9 @@ for (const language of ["typescript", "python"] as const) test(
       value: 0n,
       gas: 21_000n,
       nonce: 0,
+      // maxFeePerGas = tip: this goes through the gateway, which refuses maxFeePerGas above the tip.
       maxFeePerGas: 2_000_000_000n,
-      maxPriorityFeePerGas: 1n,
+      maxPriorityFeePerGas: 2_000_000_000n,
     });
     const events: Record<string, unknown>[] = [];
     const simContext: SimContext = {
