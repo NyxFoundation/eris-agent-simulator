@@ -85,13 +85,18 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 
 エポック境界を、**その直前 `markMedianBlocks` ブロックの median で評価する**（既定 5）。1 ブロックだけプールを押した結果がスコアになるのを防ぐ。窓の大半で成立していなければ効かないので、スプレッドコストを払う往復が「ポジション」に変わる。
 
-**対象は市場価格 stable だけ**で、それで全面をカバーしている。
+**対象は市場由来の価格すべて**（規約 §4.1）。参照価格（base の fair と、それを配る Aave / GMX のオラクル）は市場由来ではないので median しない。保有量は境界ブロックのまま固定し、median を取るのは価格だけ（窓の途中で建玉が変わっても、窓内の別の建玉を評価しない）。各アダプタが自分の市場由来価格を窓の前ブロックで読み直す（`ValuationContext.medianWindow` / `readAt`、名前は `ProtocolAdapter.medianSurfaces`）。
 
-| 対象 | median するか | 理由 |
-|---|---|---|
-| 市場価格 stable（spot・Trove 債務・SP 預入） | **する** | プールの quote が**そのままマーク**であり、取得原価は別の場所にある。プールを動かすとスコアが動く |
-| LP 持分 | しない | 準備金 × 環境の fair price で評価する。プールを押すとエージェントの 2 つのバケツの間で価値が移るだけ |
-| LST | しない | 採点マークは額面（償還レート × WETH fair）でプールを一切読まない |
+| 対象 | median する価格 |
+|---|---|
+| 市場価格 stable（spot・Trove 債務・SP 預入の mid、LP / lending の stable 脚） | 両方向 probe の幾何平均（`stables`） |
+| Uniswap V3 LP | プールの tick。元本は median tick で 2 トークンに分ける。未回収手数料は境界ブロックの tick のまま（手数料は価格でなく、境界で確定した事実） |
+| Balancer BPT / Curve LP | 1 持分あたりの価値（準備金 × 境界の参照価格 ÷ 供給量）。境界の評価額を median / 境界値の比で補正する |
+| LST（venue・Aave 担保の haircut） | 自分サイズでのプール売却 quote（get_dy）。キュー側（額面・待ち）は vault の値なので境界のまま |
+| Liquity | SP 預入の売却 quote（get_dy）と債務の買い戻し quote（get_dx）、いずれも境界のサイズ |
+| Aave 口座 / GMX / SimpleLending | しない（環境の参照価格・オラクルで評価） |
+
+quote が返らなかったブロックは捨てる（0 とも par とも数えない）。履歴が 5 ブロックに満たない境界は、あるブロックだけの median（§4.4.2）。
 
 live 側と sweep 側で同じ窓を使う。実際に median がどれだけ効いたかは `valueSeries.markMedian.maxDeviationBps` に出る。
 
