@@ -14,7 +14,7 @@ one is a reference translation.
 
 ---
 
-**Contents**: [1. The shape of the competition](#1-the-shape-of-the-competition) ([the 11 regimes](#the-11-regimes) / [timeline](#the-competition-timeline) / [what does not happen](#what-does-not-happen-here) / [what you can do](#what-you-can-do-here-examples)) · [2. Setup](#2-setup) · [3. The smallest agent](#3-the-smallest-submittable-agent) · [4. Observations and actions](#4-observations-and-actions) · [5. LLM strategy revision](#5-llm-strategy-revision) · [6. The development loop](#6-the-development-loop-run-read-fix) · [7. The dashboard](#7-reading-your-results-on-the-dashboard) · [8. Reference agents](#8-the-reference-agents) · [9. Practice devnet](#9-the-practice-devnet-optional) · [10. Submitting](#10-submitting) · [11. Ways people break this](#11-ways-people-actually-break-this) · [12. What to read next](#12-what-to-read-next)
+**Contents**: [1. The shape of the competition](#1-the-shape-of-the-competition) ([the blockchain minimum](#the-blockchain-minimum) / [the seven protocols](#the-seven-protocols) / [the 12 regimes](#the-12-regimes) / [timeline](#the-competition-timeline) / [what does not happen](#what-does-not-happen-here) / [what you can do](#what-you-can-do-here-examples)) · [2. Setup](#2-setup) · [3. The smallest agent](#3-the-smallest-submittable-agent) · [4. Observations and actions](#4-observations-and-actions) · [5. LLM strategy revision](#5-llm-strategy-revision) · [6. The development loop](#6-the-development-loop-run-read-fix) · [7. The dashboard](#7-reading-your-results-on-the-dashboard) · [8. Reference agents](#8-the-reference-agents) · [9. Practice devnet](#9-the-practice-devnet-optional) · [10. Submitting](#10-submitting) · [11. Ways people break this](#11-ways-people-actually-break-this) · [12. What to read next](#12-what-to-read-next)
 
 ## 1. The shape of the competition
 
@@ -75,14 +75,195 @@ remember.
 **The code's `epoch` is not the rules' epoch.** The code's `epoch` is the rules' *evaluation
 interval*.
 
+### The blockchain minimum
+
+If you already know this, skip to [the seven protocols](#the-seven-protocols).
+
+The competition is set in on-chain finance (DeFi), but no real money and no public chain are
+involved. There is one chain, run on the organisers' server and shared by everyone, and every agent
+trades on it at the same time. These are the only words the rest of this guide needs.
+
+| Word | What it means here |
+|---|---|
+| chain / block | A single ledger everyone shares. A page (= one block) is appended every 2 seconds, and a written page never changes. The block number is the competition's clock (360 blocks = 12 minutes) |
+| wallet | An account number (an **address**, starting with `0x`) together with the **private key** that signs transactions from it. One per agent. The runtime does the signing and sending |
+| token | An asset on the chain. Balances are entries in the ledger (table below) |
+| transaction (tx) | One instruction, such as "sell 1 WETH into this pool". You sign and send it, and **it only executes when it lands in the next block**. Someone else's transaction can land ahead of yours in between |
+| contract | A program deployed on the chain. Exchanges and lenders are contracts, and anyone can call their functions. **The rules are the code itself, not a legal agreement**: a call that does not meet the code's conditions does not execute |
+| revert | A transaction that fails a contract's condition (insufficient balance, a worse price than you allowed, …) and is undone. No assets move, but you still pay the fee |
+| gas / priority fee | The fee for having a transaction executed, paid in ETH. Here the base fee is 0; you pay only the extra you add to be executed earlier (the priority fee). **Within a block, transactions execute highest priority fee first** |
+| hash | A transaction's ID (a long string starting with `0x`). Whether your transaction made it into a block is checked by this value |
+| nonce | A per-wallet sequence number for transactions. Only one transaction with a given number executes, so sending from the same key in two places makes the numbers collide. The runtime manages it |
+| mempool | Where transactions wait after being sent and before landing in a block |
+| RPC | The endpoint (a URL) for querying the chain and sending transactions to it. The runtime builds your observation for you, so you never need to call it |
+| cheatcode | An anvil-only command that writes chain state directly — balances, the clock and so on. Not available in the competition; strategy code that contains one fails the check (`npm run check:strategy`) |
+| reference price (fair price) | The environment's per-block "outside-world price" of ETH and BTC — the equivalent of a major exchange's quote. Prices on the chain's exchanges do not follow it automatically |
+| bps | Basis point, 0.01%. 30 bps = 0.3% |
+
+The tokens:
+
+| Token | What it is | What you start with | Decimals |
+|---|---|---|---|
+| ETH | The chain's native currency. Gas is paid in it | 100 ETH | 18 |
+| WETH | ETH in the same format as every other token. 1 WETH = 1 ETH, convertible either way at any time (wrap / unwrap). Exchanges trade this one | 8 WETH | 18 |
+| WBTC | A token that moves with the price of BTC | 0.4 WBTC | 8 |
+| USDC | A token treated as worth exactly $1 (a stablecoin). **The scoring unit**; always counted at $1 | 25,000 USDC | 6 |
+| DAI | A stablecoin aiming for $1. Here its price is whatever its pool pays, and it can fall below $1 (regimes `depeg` / `depeg-persist`) | 0 (buy it to hold it) | 18 |
+| eUSD | The stablecoin Liquity (below) issues. Priced by its market | 0 (buy it, or borrow it from Liquity) | 18 |
+| ERLST | The receipt you get for depositing ETH into the LST (below) | 0 (deposit ETH to get it) | 18 |
+
+**Amounts are integers in each token's smallest unit.** The chain has no fractions, so 1 USDC is
+`1000000` (10^6) and 1 WETH is `1000000000000000000` (10^18); "Decimals" in the table is that
+exponent. Action amounts are passed as strings (`amountIn: "500000000"` is 500 USDC), and in
+observation field names a `Wei` suffix means 18 decimals and `Units` means USDC's 6. Mix them up and
+the amount is off by a factor of 10^12.
+
+### The seven protocols
+
+A **protocol** is a financial service built out of contracts; the code calls it a **venue**. There
+are seven, and each is the code of a well-known real DeFi protocol deployed onto this chain (the LST
+alone was written by the organisers). They work exactly like the real ones, but the addresses and
+the money inside are separate, and nothing connects to the outside world.
+
+| Protocol | Real-world analogue | What you can do here | Main actions |
+|---|---|---|---|
+| Uniswap V3 / Balancer v2 / Curve | An exchange that prices itself (AMM) | Swap WETH and WBTC against USDC; provide liquidity | `swap` / `balancerSwap` / `curveSwap` / `stableSwap` / `mintLiquidity` and others |
+| Aave v3 | A lender that takes collateral | Deposit, borrow, liquidate other people's loans | `aaveSupply` / `aaveWithdraw` / `aaveBorrow` / `aaveRepay` |
+| GMX v2 | Margin trading (futures with no expiry) | Bet on ETH and BTC price moves with leverage | `gmxIncrease` / `gmxDecrease` |
+| LST | An interest-bearing receipt for ETH | Deposit ETH for yield; trade the receipt | `lstDeposit` / `lstSwap` / `lstRequestWithdraw` / `lstClaimWithdraw` |
+| Liquity | Issuing a dollar token against ETH collateral | Borrow eUSD, redeem it, underwrite liquidations | `liquityOpenTrove` and 7 others |
+
+All seven are available in the official regimes, except that `depeg` and `depeg-persist` have no
+GMX. Each protocol's state is in `obs.protocols.<name>` (`uniswap` / `balancer` / `curve` / `aave` /
+`gmx` / `lst` / `liquity`); the exact shape of each action is in
+[protocols-and-actions.md](guide/protocols-and-actions.md).
+
+**Prices come from two places.** Almost every way of making money here comes from the gap between
+them.
+
+| Where the price comes from | Where it is used | How it behaves |
+|---|---|---|
+| The ratio of assets inside an exchange | Uniswap / Balancer / Curve (and the LST, eUSD and DAI pools) | Moves with every trade and drifts from the reference price. **A gap stays until someone trades it away** |
+| The environment's reference price (the oracle) | Collateral valuation and liquidation on Aave, GMX and Liquity; valuing ETH and BTC in scoring | No amount of pool trading moves it. It arrives one block late |
+
+#### AMMs (Uniswap V3 / Balancer v2 / Curve) — exchanges that price themselves
+
+An ordinary exchange matches orders: "buy at this price", "sell at that price". An AMM has no order
+book. Instead a **pool** holds two tokens (say WETH and USDC); you put one in and the other comes
+out, and how much comes out is a formula of the ratio between the two balances.
+
+- **The bigger the trade, the worse the price.** Selling WETH adds WETH to the pool and removes USDC, so each WETH sold is cheaper than the last (price impact, or slippage). The WETH/USDC pools start with about 1,000 WETH + 3M USDC; selling 1 WETH on Uniswap or Balancer fills, before fees, about 0.1% below the pool's price before the trade and leaves the pool's price about 0.2% lower. For 10 WETH it is about 1% and 2%. This thickness of the pool is its **depth**
+- **Every trade pays a fee.** The fee stays in the pool and belongs to whoever provided the liquidity (the **LP**)
+- **Pool prices do not track the reference price by themselves.** The environment's order flow (background buying and selling) pushes pools around, and only traders pull them back. WETH has three exchange prices and a reference price at once, and **taking the gap between them when it is larger than the fees is arbitrage (arb)**. When a trade buys on one exchange and sells on another, each half is a **leg**
+- **You can provide liquidity too** (Uniswap only, `mintLiquidity`). You earn fees, but when the price moves your holdings drift towards the losing side
+
+| | Uniswap V3 | Balancer v2 | Curve (twocrypto-ng) |
+|---|---|---|---|
+| Fee | 0.3% | 0.3% | 0.26–0.45% (higher when prices are volatile) |
+| WETH/USDC depth at the start | about 1,000 WETH + 3M USDC | same | same |
+| WBTC/USDC depth at the start | about 50 WBTC + 3M USDC | same | same |
+| Shape of the formula | LPs choose a price range (concentrated liquidity); the starting liquidity covers every range evenly | 50/50 weighted pool, the same shape as Uniswap at the start | Pulls liquidity towards the current price, so the same depth gives less price impact |
+
+Curve also has three pools for assets that trade at close to 1:1 (stableswap). Their formula barely
+moves near 1:1 and moves sharply once the balance tilts far: USDC/DAI (100k / 100k), eUSD/USDC
+(100k / 100k) and ERLST/WETH (about 100 / 100 WETH). These pools set the market prices of DAI, eUSD
+and ERLST (the actions are `stableSwap`, `liquitySwapEusd` and `lstSwap` respectively).
+
+#### Aave v3 — a lender that takes collateral
+
+A bank deposit and a secured loan in one.
+
+- **Deposit (supply), and borrow another asset against what you deposited (borrow).** For example, deposit 10 WETH and borrow USDC up to a fraction of its value
+- **You can borrow only up to a fraction of your collateral's value (the LTV).** When the collateral falls in value and your **health factor (HF) drops below 1, you get liquidated**: a third party repays part of your debt and takes your collateral at a discount (the liquidation bonus). The liquidator gains and the liquidated account loses. This guide calls a liquidated account a **victim**
+- **Collateral is priced at the reference price**, not at any pool's price
+- **Flash loans**: borrow with no collateral at all, provided you repay within the same transaction (`flash-arb`). Borrowing, using and repaying all happen in one transaction, so you need your own contract
+- **Interest over 12 minutes is practically zero.** The chain's clock runs in real time, so deposits do not grow and debts do not swell. The reason to use Aave is what you do with what you borrow, not the interest
+
+You can deposit WETH, USDC, WBTC and ERLST (ERLST is collateral only: LTV 70%, liquidation
+threshold 75%). Borrowing by itself does not change your asset value: what you borrowed is in your
+wallet and the same amount of debt is subtracted. In the `lending-incident` regime the organisers
+open two borrowers at HF 1.10 and then crash the reference price, which creates liquidations to take
+(`liquidator`). The state is in `obs.protocols.aave`: `healthFactor` / `supplied` / `borrowed` /
+`availableBorrowsBase`.
+
+#### GMX v2 — margin trading (perps)
+
+A way to bet on the price of ETH or BTC without buying any (a perpetual: a future with no expiry).
+
+- **Post margin and hold a position several times its size (leverage).** For example, a 5,000-dollar ETH **long** (gains when the price rises) on 1,000 USDC of margin makes +$50 when ETH rises 1% and −$50 when it falls 1%. A **short** (gains when the price falls) works the same way. Margin is WETH or USDC
+- **The price is the reference price.** That is why offsetting WETH bought on an AMM with a GMX short (a **hedge**) removes your exposure to the reference price and leaves only the AMM's mispricing (`basis-arb`)
+- **Orders execute in two steps.** Your transaction only places the order; the position exists once the environment's keeper processes it in a later block, and the observation shows it later still. **Re-sending the same order before it shows up opens it twice**
+- Every order carries 0.03 ETH as an execution fee (the runtime attaches it); what is not used is refunded when the order executes
+- **Funding**: a fee the crowded side (longs or shorts) pays the other. Here it comes to less than 0.01% of the position over 12 minutes — one cost among several, not a source of income
+
+The state is in `obs.protocols.gmx`: `marketPriceUsd` / `position` (`sizeUsd` / `pnlUsd` /
+`entryPriceUsd`) / `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`.
+
+#### LST — an interest-bearing receipt for ETH
+
+Deposit ETH into the vault (the contract that holds it) and you receive the receipt token ERLST —
+the same design as Lido's wstETH in the real world.
+
+- **The ETH one receipt can be redeemed for (the redemption rate) grows slowly with interest.** The rate is 3% a year, and interest here counts each block as one hour, so one epoch (360 blocks = 15 days' worth) adds about 0.12%
+- **There are two ways to cash out, at two different prices.**
+  - Withdraw from the vault: the full redemption rate, but you join a queue and wait at least 24 blocks — longer the more is queued ahead of you and the more you withdraw (the queue moves about 1 WETH per block)
+  - Sell on Curve's ERLST/WETH pool: immediate, but usually below the redemption rate (the gap is the **discount**)
+- **A withdrawal you cannot collect before the epoch ends counts as 0 in scoring.** Scoring takes the better of "sell into the pool now" and "withdrawals that complete before the end". `obs.blocksRemaining` tells you how many blocks are left
+- You can also lever up: post ERLST on Aave, borrow ETH, deposit it again (`lst-carry`)
+
+The state is in `obs.protocols.lst`: `redemptionRateWeth` (the redemption rate) / `marketPriceWeth`
+(the pool's price) / `discountBps` / `estimatedQueueDelayBlocks` (the wait to withdraw everything you
+hold) / `instantExitWethWei` (what selling into the pool pays right now).
+
+#### Liquity — issuing a dollar token against ETH
+
+Deposit ETH as collateral and borrow newly issued eUSD, a dollar token. The borrowing account is a
+**Trove** (the real Liquity V1 code, unmodified).
+
+- **Your collateral ratio (ICR = collateral value ÷ eUSD borrowed) must stay at 110% or above**; below it, anyone can liquidate you. Collateral is priced at the reference price
+- **Redemption: 1 eUSD can always be exchanged for $1 worth of ETH.** If eUSD trades below $1, buying it and redeeming is profit (the fee is 0.5% or more and rises as redemptions continue). The ETH comes out of **the Trove with the lowest collateral ratio**; from the borrower's side, part of the collateral is bought off them at $1 without asking (`redemption-arb` takes, `trove-manager` defends)
+- **Stability Pool**: deposit eUSD to absorb the debt of liquidated Troves, receiving their ETH collateral at a discount (`sp-underwriter`)
+- **Recovery Mode**: when the system-wide collateral ratio falls below 150%, the liquidation line rises from 110% to the system-wide ratio of that moment. Your line can move even when your own ratio does not
+- Collateral is ETH itself, not WETH, and comes out of the same balance as gas. Post all of it and you cannot pay the gas to close the Trove
+- Borrowing costs a fee of 0.5% or more, and 200 eUSD is added to the debt as a deposit (it pays whoever liquidates you, and comes back if you close the Trove yourself). The minimum loan is in `minNetDebtEusdWei`
+
+At the start there is the organisers' Trove (350 ETH / 350k eUSD, a 300% ratio), the eUSD/USDC pool
+(100k / 100k) and the Stability Pool (125k eUSD). In `cdp-incident` the organisers open two Troves at
+120%, then lower the reference price and sell eUSD below $1 at the same time. The state is in
+`obs.protocols.liquity`: `trove` (`icr` / `liquidationPriceUsd` = the ETH price at which it gets
+liquidated) / `marketPriceUsdc` (eUSD's market price) / `redemptionEdgeBps` / `recoveryMode`.
+
+#### How holdings are valued in scoring
+
+The asset value at the end of an epoch (rules §4.1) counts each kind of holding like this.
+
+| Holding | Counted as |
+|---|---|
+| Token balances | ETH, WETH, WBTC at the reference price; USDC at $1; DAI and eUSD at their pool's market price |
+| Uniswap liquidity | What the position holds at that moment (two tokens) plus uncollected fees |
+| Aave | Collateral − debt; negative when the debt exceeds the collateral |
+| GMX | Margin + unrealised PnL (at the reference price) |
+| LST | The better of "sell into the pool now" and "withdrawals that complete before the end"; a withdrawal completing after the end is 0 |
+| Liquity | A Trove is collateral − the cost of buying back its debt (floored at 0, since you can walk away from the debt by abandoning the collateral). The Stability Pool is the eUSD deposited + the ETH received |
+| Assets inside a contract you deployed | 0 (the environment cannot price them; see "What you can do here") |
+
 ### The 12 regimes
 
 These are the eight kinds rules §3.2 publishes plus `spike` (issue #105), `depeg-persist` (issue #106), `cdp-incident` (issue #107) and `launch` (issue #29); the rules' list needs all four additions. Which epoch is which regime is never announced, but
 **the kinds themselves and their generators are public**: `config/regimes/<name>.yaml`. The public set
 `config/scenarios/public.yaml` is 12 regimes × 5 seeds = 60 scenarios; the non-public set is drawn from
-
 the same family, of which only the perturbation ranges are published (rules §3.3). The numbers in the
 table are the current YAML ranges; where the published values differ, the rules win.
+
+Words the table uses:
+
+- **Window**: the stretch during which an event is on, written as block counts for ramp (building up) → hold (held at full strength) → decay (fading back)
+- **Mean-reverting walk**: a price that moves randomly each block but is pulled back harder the further it strays from its level. A **drift** is a lean in one direction; a **gap** is a sudden move that skips the prices in between
+- **Mid**: the midpoint of what a pool pays to buy and to sell right now; read it as the pool's price
+- **Par**: the price something is supposed to have — $1 for a stablecoin
+- **β**: the part of your PnL that simply follows the whole market up or down. It reflects what you hold and how much, not how well you trade
+- **Dry-run**: simulating a transaction to see its result before sending it
+- Trove, ICR, MCR and redemption are under Liquity; HF, victim and liquidation under Aave; depth under the AMMs ([the seven protocols](#the-seven-protocols))
 
 | # | Regime | What the environment does | Reference agents written for it (§8) |
 |---|---|---|---|
@@ -91,13 +272,13 @@ table are the current YAML ranges; where the published values differ, the rules 
 | 2 | Informed flow `informed-flow` | The environment's order flow leans one way while a window is open (2–3× size, correlation 1.0, 12-block persistence; two windows). Hard to tell from calm | `stat-arb` / `multi-arb` |
 | 3 | Whale `whale` | A single 25–60 WETH order knocks a pool's mid. Four of them, two pinned to Balancer / Curve. The reference price does not move | `venue-arb` / `multi-arb` / `max-profit-arb`. Whoever takes the dislocation first wins it, so bidding priority fee matters |
 | 4 | Lending incident `lending-incident` | The reference price falls 12–16%, in the same window every AMM loses 40–60% of its depth, and two victim accounts opened at HF 1.10 become liquidatable on Aave | `liquidator` (the one liquidating) / `levered-long` (managing not to be the one liquidated) |
-| 5 | Stablecoin depeg `depeg` | The environment sells DAI into the USDC/DAI pool (35–60% of its depth; ramp 12 / hold 36 / decay 45 blocks) and opens a discount. **The only regime without GMX** | `peg-arb`. DAI has no redemption floor, so the question is whether you believe it comes back |
+| 5 | Stablecoin depeg `depeg` | The environment sells DAI into the USDC/DAI pool (35–60% of its depth; ramp 12 / hold 36 / decay 45 blocks) and opens a discount. **No GMX (nor in `depeg-persist`)** | `peg-arb`. DAI has no redemption floor, so the question is whether you believe it comes back |
 | 6 | Crash `crash` | The reference price gaps 15–22% and liquidity is pulled 40–60% in the same window. No victims are opened | Everyone. Arbitrage shrinks in a thin book and leverage crosses its HF. `trove-manager` / `sp-underwriter` handle the same moment on the Liquity side |
 | 7 | New pools `vuln` | Mid-epoch, 4–6 pools appear, twice; 50–70% of them skim assets from any trade above a size (4–8% of the USDC endowment). The bait is a 3–6% discount | `discovery-arb-verify` (dry-runs before taking) / `discovery-arb` (the unverified control) |
 | 8 | Spike `spike` | The reference price gaps 15–22% **up** and liquidity is pulled 40–60% in the same window. Crash's mirror; no victims are opened | Everyone. The one regime where merely holding the basket is rewarded and a hedge or a short pays; the arbitrage runs the other way round from crash, so it needs USDC inventory |
-| 9 | Persistent depeg `depeg-persist` | The environment sells DAI as in `depeg` (35–60% of depth; ramp 12 / hold 36) and then **does not buy it back**: the discount stands through the last scored block, the buy-back comes after scoring | `peg-arb`. In `depeg` waiting for par was right by construction; here whatever was bought on the belief that par returns is marked at the discount. The one regime that separates judging the return from assuming it |
+| 9 | Persistent depeg `depeg-persist` | The environment sells DAI as in `depeg` (35–60% of depth; ramp 12 / hold 36) and then **does not buy it back**: the discount stands through the last scored block, the buy-back comes after scoring | `peg-arb`. In `depeg` waiting for par was right by construction; here whatever was bought on the belief that par returns is valued at the discount at the end. The one regime that separates judging the return from assuming it |
 | 10 | CDP incident `cdp-incident` | The environment opens two Troves at ICR 1.20, the reference price falls 12–16% (depth pulled 40–60% in the same window), and in the same window it sells eUSD into its pool. The Troves cross MCR 1.10 and eUSD trades below par | `sp-underwriter` (absorbs through the Stability Pool and liquidates), `redemption-arb` (buys cheap eUSD and redeems against the victims), `trove-manager` (keeps its own Trove out of the redemption path and above MCR) |
-| 11 | New listings `launch` | Mid-epoch (0.2–0.5) the environment lists 2–3 new tokens at 1.00 USDC in USDC pools (20k–100k USDC a side); they appear on the registry as `uniswapV3Pool` + `erc20` a block later. Per token, independently, a demand wave follows (0.5–2× the pool's USDC bought over a 9-block ramp, held 30, 50–100% sold back over a 30-block decay) or, with 30–50% probability, does not (a dud). Nothing is announced; the ramp's first blocks are the only signal. **Token holdings at the bell are worth zero** (rules §4.1) | `launch-confirm` (enters after consecutive blocks of net buying, exits on net selling) / `launch-sniper` (buys at first sight and sells after a fixed hold — the control) |
+| 11 | New listings `launch` | Mid-epoch (0.2–0.5) the environment lists 2–3 new tokens at 1.00 USDC in USDC pools (20k–100k USDC a side); they appear in the list of new markets (the registry, `obs.registry`) as `uniswapV3Pool` + `erc20` a block later. Per token, independently, a demand wave follows (starting two blocks after the listing, 0.25–1× the pool's USDC bought over a 20-block ramp, held 30, 50–100% sold back over a 30-block decay) or, with 30–50% probability, does not (a dud). Nothing is announced; the ramp's first blocks are the only signal. **Listed tokens still held when the epoch ends are valued at zero** (rules §4.1) | `launch-confirm` (enters after several blocks in a row where buying outweighs selling, exits once selling outweighs buying) / `launch-sniper` (buys at first sight and sells after a fixed hold — the control) |
 
 Three notes.
 
@@ -105,8 +286,8 @@ Three notes.
   the same regime lands in different places under different seeds. The observation does not carry the
   window positions (§4)
 - **Fitting one regime is paid for in the others.** The deviation score absorbs the difference in
-  roughness between regimes, so all eight weigh about equally on the score. A strategy that wins big in
-  `lending-incident` and loses in the other seven places below a steady one. The regime columns of the
+  roughness between regimes, so all 12 weigh about equally on the score. A strategy that wins big in
+  `lending-incident` and loses in the other 11 places below a steady one. The regime columns of the
   standings and the per-regime table on an agent's page show exactly that (§7)
 - **In regime 7, neither "never look" nor "take everything" is optimal** (the note under rules §3.2). Some
   of the pools that appear are honest and the discount is real
@@ -119,7 +300,7 @@ The schedule of rules §1 (Japan Standard Time), with what you do at each stage.
 |---|---|---|
 | 9/1 – 10/24 | Registration period | Join the ASCON channel on the Discord and submit the registration form |
 | 9/23 | The submission period opens. Appendix A's values (epoch length, evaluation interval, k, gas ETH), the inference proxy's model list and the list of permitted exploit targets are published **by this day** (rules §7.1) | Work through §2–§6 of this guide |
-| 9/23 – 10/31 | **Submission period.** Evaluate yourself on the 40 public scenarios and replace your submission **up to 5 times a day**. In the same period the operator's **trial environment** (rules §2.7) is open: the same configuration as the competition, take any transaction you like, but **no standings are posted** and nothing counts | Build → run → fix (§6). Submit the `bundle:agent` zip (§10) |
+| 9/23 – 10/31 | **Submission period.** Evaluate yourself on the 60 public scenarios and replace your submission **up to 5 times a day**. In the same period the operator's **trial environment** (rules §2.7) is open: the same configuration as the competition, take any transaction you like, but **no standings are posted** and nothing counts | Build → run → fix (§6). Submit the `bundle:agent` zip (§10) |
 | 10/31 | **Submission deadline = the agent is frozen.** Nominate up to 2 submissions for final evaluation. The hash of the lottery seed is published | No more code changes |
 | 11/1 – 11/7 | **Live competition.** One epoch is one unit; k of them, the world reinitialised each time, every unit starting at once. Score and cumulative standings update after every epoch | **You operate nothing.** Your agent runs in the operator's container and the only thing that moves is the in-epoch LLM revision. Watch the standings on the dashboard (§7) |
 | 11/8 | Reserve day, for the same-seed re-run of an epoch that failed on the operator's side (rules §4.4.2) | — |
@@ -133,10 +314,11 @@ are dropped. The table at the end of §7 lists it.
 
 ### What does not happen here
 
-The more mainnet experience you have, the more you design around things that this environment does
-not have. None of the following exists here.
+The more mainnet (production public chain) experience you have, the more you design around things
+that this environment does not have. None of the following exists here. **If blockchains are new to
+you, skip this section**: each item is "a problem on mainnet that does not arise here".
 
-- **Reorgs and unconfirmed blocks.** The chain is a single Anvil node on interval mining. A block is
+- **Reorgs (a written block later replaced by different contents) and unconfirmed blocks.** The chain is a single Anvil node on interval mining. A block is
   final the moment it is mined; it does not roll back and a mined transaction does not disappear. The
   world is rebuilt only at the start of an epoch (rules §4.7.1) — that is an initialization, not a reorg
 - **Gas price spikes.** The base fee is pinned at 0. What you pay is the priority fee you choose to
@@ -163,7 +345,7 @@ not have. None of the following exists here.
   `eth_sendTransaction` either — you sign locally
 - **Operator intervention mid-epoch.** During an epoch the environment does exactly this: the
   per-block reference price update, the background order flow, execution of GMX orders, and the
-  events the regime defines (the 8 kinds in rules §3.2). The only other hand on the wheel is the
+  events the 12 regimes define. The only other hand on the wheel is the
   voiding and same-seed re-run of an epoch that failed on the operator's side (rules §4.4.2), and the
   PnL of an epoch that did not finish never reaches the standings
 - **Disqualification or penalties for going bust, timing out or crashing.** Each of those is just a
@@ -175,30 +357,35 @@ not have. None of the following exists here.
 ### What you can do here (examples)
 
 Conversely, things that capital or permissions make hard to try on mainnet are ordinary here. The
-reference agents live in `example/agents/`.
+reference agents live in `example/agents/`. **These are advanced examples; your first agent needs none
+of them.**
 
-- **Deploy your own contracts.** A `rawTx` with `to` omitted is a deployment
+- **Deploy (place on the chain) your own contracts.** A `rawTx` with no recipient (`to` omitted)
+  carrying compiled code (a forge artifact) is a deployment
   (`example/agents/lib/deployContract.ts`; the forge artifacts ship inside the submission zip). An
-  atomic arbitrage across several venues is written as your own contract this way (rules §0.1: a
+  atomic (either everything succeeds or everything is undone) arbitrage across several venues is written as your own contract this way (rules §0.1: a
   bundle guarantees no atomicity). Aave flash loans are enabled (`flash-arb` calls `flashLoanSimple`
   through `rawTx`). **But whatever is still inside your contract when the epoch ends is valued at 0**
   (what the environment cannot price is 0; rules §4.1). Profit that passed through counts in full, so
-  withdraw before the bell
+  withdraw before the epoch ends
 - **Make a market, provide liquidity.** You can create a new Uniswap V3 pool (`createPool`). Adding to
   an existing pool works the same way (`mintLiquidity` / `removeLiquidity` / `collectFees`; see
   `lp-provider`). The environment's order flow never visits a pool you made, so your counterparties are
-  other participants only. The official regimes carry no registry (`obs.registry`), so another
+  other participants only. The official regimes other than `launch` carry no list of new markets (the registry,
+  `obs.registry`), so another
   participant finds your pool only by reading the chain themselves. Permissionless lending
   (`createLendingMarket`) exists only in the verification regime
   (`config/regimes/agent-markets.yaml`)
 - **Deploy a vulnerable contract on purpose, attack someone else's.** Exploiting weaknesses in other
   participants' agents, contracts and the market structure is part of the competition (rules §8; the
   permitted targets are the operator's protocols and other participating units — rules §3.1). See
-  `vault-keeper` (deploys a `LeakyVault` whose `rescue()` was left ungated and puts USDC in it) and
-  `exploit-hunter` (recovers selectors from the bytecode of someone else's unknown contract and drains
-  it atomically). Measured: hunter +9,999.9 / vault-keeper −10,000.2 — the whole 10,000 USDC deposit
-  moved. With no registry in the official regimes, the hunting side scans the chain itself. The
-  environment's own contracts, by contrast, are measured at startup for closed owner gates. Moving
+  `vault-keeper` (deploys a `LeakyVault` whose withdrawal function `rescue()` was left callable by
+  anyone and puts USDC in it) and `exploit-hunter` (recovers function identifiers, or selectors, from
+  the bytecode — the compiled code on the chain — of someone else's unknown contract and drains it in
+  one transaction). Measured: hunter +9,999.9 / vault-keeper −10,000.2 — the whole 10,000 USDC deposit
+  moved. With no registry in the official regimes other than `launch`, the hunting side scans the chain
+  itself. The environment's own contracts, by contrast, are measured at startup to confirm that
+  writes only their owner may make are closed to everyone else. Moving
   assets between your own two submissions is self-dealing and prohibited (rules §8)
 - **Liquidate and redeem other people's positions.** Aave's `liquidationCall` through `rawTx`
   (`liquidator`), Liquity's `liquityLiquidate` and Stability Pool underwriting (`sp-underwriter`),
@@ -210,7 +397,8 @@ reference agents live in `example/agents/`.
   anyone else paid in the most recent block is `obs.competition.maxCompetitorPriorityFeeWei`
 - **Inspect a pool that appears mid-epoch before touching it.** In regime 7 the operator places pools
   during the epoch, some of which skim assets (rules §3.2). `obs.discoveredPools` carries the address,
-  the code hash and a quote. `discovery-arb-verify` dry-runs before taking; `discovery-arb` takes
+  the code hash (a fingerprint of the code: the same code gives the same value), the reserves and a
+  price. `discovery-arb-verify` dry-runs before taking; `discovery-arb` takes
   without checking. Measured: unverified −5,306 / verified +721
 - **Rewrite the strategy while it runs.** As in §5, the LLM revises the code outside the trade path
 
@@ -225,6 +413,13 @@ cp config/example.yaml config/local.yaml   # run config + roster
 cp .env.example .env.local                 # keys and RPC (Anvil's dev keys are fine locally)
 npm run build:contracts                    # forge build PriceFeed + mock oracles (once)
 ```
+
+What the next steps do, first. **anvil** is a test chain that runs on your own machine (it comes with
+Foundry). **Deploying** places the seven protocols' contracts on that chain and writes where they
+landed to `deployments.json`. `gen:local-constants` brings those addresses into the sdk your agent
+uses, and `gen:state-dump` saves the whole chain state right after the deploy (the §6 backtests start
+from that state every time, so you never redeploy). `sim:realtime` is one run of your agents on that
+chain. The keys in `.env.local` can stay as the public test keys anvil ships with when you run locally.
 
 Deploy every venue onto a local anvil (the first run takes a few minutes to fetch the GMX clone).
 
@@ -294,7 +489,8 @@ agents:
     wallet: AUTO
 ```
 
-Now `npm run sim:realtime` spawns your agent. To use an id that differs from the directory name, name
+Now `npm run sim:realtime` spawns your agent. `wallet: AUTO` derives the agent's wallet key from its
+id automatically (the environment hands it the starting capital). To use an id that differs from the directory name, name
 the directory with `dir:` — that is how you run one strategy several times with different parameters.
 
 ### `agent.ts` — the strategy
@@ -309,9 +505,10 @@ export function decide(obs: AgentObservation): AgentAction | null {
 
 That is the whole contract.
 
-- If you return an action, the runtime **validates it before** signing and sending. **Neither kind of
-  failure reaches the chain** (fail-closed). Something malformed enough to fail the schema is logged
-  as `bad_action` in `agents/<id>.jsonl`; something that parses but does not validate is `rejected`
+- If you return an action, the runtime **validates it before** signing and sending, in two stages.
+  Something malformed enough to fail the required format (the schema) is logged as `bad_action` in
+  `agents/<id>.jsonl`; something that parses but does not validate (not enough balance, say) is
+  `rejected`. **Neither kind of failure reaches the chain** (fail-closed: when in doubt, do not send)
 - Returning `null` skips the round. **Doing nothing is a perfectly good answer** — not trading in a
   market with no opportunity is correct
 - Throwing does not break the run: that round is skipped and `decide error:` is logged
@@ -375,7 +572,7 @@ per epoch**.
 ## 4. Observations and actions
 
 `obs` is a **snapshot of confirmed state** that the runtime rebuilds every block. You never hit RPC
-yourself.
+yourself (§1's glossary).
 
 ```ts
 obs.fairPriceUsdcPerWeth        // the reference price the environment publishes (on-chain PriceFeed)
@@ -395,7 +592,8 @@ additional read-only chain queries. There is no `ctx.walletClient`: return an ac
 key races the runtime's nonce and bypasses its `submitted` records. Keep all sends in the runtime.
 Rules §8 define prohibited conduct.
 
-`decide()` runs in a worker thread with a **5-second parent-owned deadline**. Synchronous infinite
+`decide()` runs in a worker thread (a thread separate from the runtime itself) with a **5-second
+deadline owned by the runtime**. Synchronous infinite
 loops and unresolved awaits both produce `decide timeout:`; the result and all queued `ctx.submit`
 actions from that call are discarded. The next decision reloads the selected strategy in a new
 worker. Worker-local variables reset; the parent observation and revision loops, nonce, logs,
@@ -439,7 +637,7 @@ The rules require **every agent to be configured for strategy revision**. The LL
 trading path: every `reviseEveryBlocks`, it looks at the strategy's own track record and its current
 code and decides whether to rewrite it.
 
-Generated code passes a **cheatcode static check → compilation** (evaluating the function expression
+Generated code passes a **static check for cheatcodes (§1's glossary) → compilation** (evaluating the function expression
 is capped at 1 second) before it is installed. **It is not trial-run first.** Once installed, every
 call to `decide` is capped at **5 seconds** (`DECIDE_TIMEOUT_MS`, rules §2.3), the same bound a
 hand-written strategy gets; exceeding it records that round as no action (`decide timeout:`). A revision that fails static checking or compilation is not installed; the failure is recorded and the
@@ -512,7 +710,7 @@ npm run sim:realtime -- --config config/local.yaml --blocks 40
 # 2. Replay one scenario (--seed is required: a scenario is (regime, seed), a regime alone names none)
 npm run backtest -- --regime crash --seed 101 --agents <your roster>
 
-# 3. Run the whole public set and get a standing (40 scenarios × 12 min; run it overnight)
+# 3. Run the whole public set and get a standing (60 scenarios × 12 min ≈ 12 hours; run it overnight)
 npm run backtest -- --scenarios config/scenarios/public.yaml --agents <your roster>
 ```
 
@@ -552,14 +750,15 @@ dashboard (§7). Read backwards and all you learn is "the rank is bad".
 
 ### Reading `agents/<id>.jsonl`
 
-One JSON per line, three kinds of line mixed together.
+One JSON per line, three kinds of line mixed together. The `kind: "mempool"` lines are what the
+runtime recorded before a transaction landed in a block (the mempool stage).
 
 | How to tell the line | Who writes it | What it means |
 |---|---|---|
 | `round` + `action` + `reason` (no `kind`) | your `ctx.log(...)`, or the runtime recording what `decide()` returned | The decision for that block. Put anything you like in `signals` / `state`. **A log without `reason` cannot be read afterwards** — write it from the start |
 | `reason: "decide error: …"` | the runtime | `decide()` threw. No action that block. Guessing the shape of `obs` (§11) is the usual cause |
 | `reason: "decide timeout: …"` | the runtime | Over 5 seconds (rules §2.3). No action. Counted separately from errors |
-| `kind: "mempool"`, `event: "runtime_start"` | the runtime | Started, with `address` / `rpcUrl` / `mode`. **If this line is missing, the pre-flight (RPC, chain id, venue bytecode) failed** |
+| `kind: "mempool"`, `event: "runtime_start"` | the runtime | Started, with `address` / `rpcUrl` / `mode`. **If this line is missing, the pre-flight failed** (can it reach the RPC, does the chain's identifying number — the chain id — match, are the venues' contracts in place) |
 | `kind: "mempool"`, `event: "bad_action"` | the runtime | The returned action failed the schema. Nothing reaches the chain |
 | `kind: "mempool"`, `event: "rejected"` | the runtime | It parsed but failed validation; `reason` says why (a leg with no inventory / priority fee over the cap / `tx gas cap` / `per-block gas budget`). Nothing reaches the chain |
 | `kind: "mempool"`, `event: "submitted"` | the runtime | Signed and sent: `hash` / `nonce` / `priorityFeeWei` / `actionType` / `protocol` / `blockSeen`. **Whether it was mined is a separate question** — match `hash` against `blocks.csv` |
@@ -697,13 +896,13 @@ it works" is the regime whose environment gives the strategy something to do (§
 | Python starting point | `my-arb-py` | The same decisions as `my-arb`, using the generated Python SDK and a revision policy | Uniswap / Balancer / Curve | all | yes |
 | Benchmark | `noop` | Does nothing. In a roster it shows the difference from not moving (the competition's benchmark is this) | — | — | no |
 | Arbitrage | `venue-arb` | Cross-venue WETH arbitrage; takes only gaps above fee + safety margin | the 3 AMMs | calm / whale / cex-drift | yes |
-| Arbitrage | `multi-arb` | Base-agnostic (WBTC too) cross-venue arbitrage; two-leg and single-leg | the 3 AMMs | same | yes |
-| Arbitrage | `stat-arb` | A z-score per base over the gap's own history; bets on mean reversion | AMMs | calm / informed-flow | no |
+| Arbitrage | `multi-arb` | Cross-venue arbitrage on WETH or WBTC alike. Chooses between buying and selling on two exchanges at once (two-leg) and trading only the one venue that strays from the reference price (single-leg) | the 3 AMMs | same | yes |
+| Arbitrage | `stat-arb` | Tracks each asset's gap from the reference price, measures how unusual the current gap is against that history (a z-score) and bets on it closing | AMMs | calm / informed-flow | no |
 | Arbitrage | `max-profit-arb` | Derives a priority-fee ceiling from the expected profit and bids for position in the block | AMMs | whale | no |
 | Arbitrage | `flash-arb` | An Aave flash loan for arbitrage beyond its own capital, in one transaction (`rawTx`) | Aave + AMMs | whale / crash | no |
 | Arbitrage | `basis-arb` | One AMM leg hedged on the GMX perp (spot against futures) | AMMs + GMX | cex-drift | yes |
 | LP | `lp-provider` | Holds a Uniswap V3 position for fees, pulls it when the gap gets large | Uniswap | calm | no |
-| Leverage | `levered-long` | Collateral → borrow leverage on Aave; keeps HF inside a band and repays below it | Aave | cex-drift (direction) / lending-incident, crash (defence) | no |
+| Leverage | `levered-long` | Borrows on Aave against its own holdings to hold more WETH than it was given (leverage); keeps HF inside a chosen range and repays when it drops below | Aave | cex-drift (direction) / lending-incident, crash (defence) | no |
 | Leverage | `lst-carry` | Stakes the LST for yield or trades the redemption-rate / market-price gap. The Aave collateral loop is opt-in via `ERIS_LST_LEVERAGE_TARGET_HF` | LST + Aave | calm | yes |
 | Liquidation | `liquidator` | Aave `liquidationCall`; idle until victims appear. The example of the **`run(ctx)` form** (§3, not submittable) | Aave | lending-incident | no |
 | CDP | `redemption-arb` | Buys eUSD at a discount and redeems it against the riskiest Trove | Liquity + the eUSD pool | when eUSD trades below par; the dedicated verification regime is `config/regimes/liquity.yaml` | yes |
