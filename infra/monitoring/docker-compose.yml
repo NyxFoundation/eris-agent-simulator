@@ -281,6 +281,11 @@ services:
       # (every window still to come), agent decision logs and stderr. Standings stay on -- the
       # practice period posts them (docs/guide/practice-devnet.md "Standings").
       - ERIS_DASHBOARD_AUDIENCE=1
+      # The competitions the picker offers (issue #84 K). runs/ on this box also holds every smoke
+      # and test run, and without a list the public picker shows them under their internal names.
+      # Set it in infra/monitoring/.env to the period's directory once the coordinator has created
+      # it; unset serves everything, as before (infra/devnet/CHECKLIST.md, the production check).
+      - ERIS_DASHBOARD_COMPETITIONS=${ERIS_DASHBOARD_COMPETITIONS:-}
       - HOME=/tmp
     ports: ["127.0.0.1:5174:5174"]
     extra_hosts:

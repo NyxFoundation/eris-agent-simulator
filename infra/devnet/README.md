@@ -48,6 +48,11 @@ and confirm the chain is actually moving, which is the only claim that matters:
 cast block-number --rpc-url http://127.0.0.1:8545   # twice, a few seconds apart
 ```
 
+That is the minimum. Before a period is handed to participants -- and every day it runs -- go through
+[CHECKLIST.md](CHECKLIST.md): a 26-hour rehearsal on a private copy, a one-hour check after the
+production start, and the daily and weekly routine. `block-gaps.mjs` (cadence and dump stalls) and
+`revision-health.mjs` (self-improving agents' revision loops) are its measuring tools.
+
 ## What it needs
 
 | thing | where | note |
