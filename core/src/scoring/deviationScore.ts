@@ -25,6 +25,11 @@
 //
 // Pure: no filesystem, no chain. The producers (backtest matrix, dashboard) hand in P and read back
 // the standings, so a stored competition can always be rescored from its P values alone.
+//
+// `weighting: "equal"` is the practice period's (w_s = 1 for every day; practiceReturn.ts has why).
+// The competition itself is always "linear", which is the default.
+
+export type Weighting = "linear" | "equal";
 
 export type EpochInput = {
   // The scheduled ordinal, 1-based. A re-execution of an invalidated epoch carries the original's.
@@ -81,6 +86,8 @@ export type CompetitionInput = {
   k: number;
   // Time of each agent's final submission, for the third tie-break. Any monotone number (ms).
   submittedAt?: Readonly<Record<string, number>>;
+  // Default "linear" (§4.4.1).
+  weighting?: Weighting;
 };
 
 export type CompetitionResult = {
@@ -113,6 +120,13 @@ export function weightOf(s: number, k: number): number {
   return k === 1 ? 1 : 1 + (0.5 * (s - 1)) / (k - 1);
 }
 
+// The ordinal is checked the same way under either weighting: an ordinal past k is a malformed
+// competition whatever the weights are.
+function weightFor(s: number, k: number, weighting: Weighting): number {
+  const linear = weightOf(s, k);
+  return weighting === "equal" ? 1 : linear;
+}
+
 function mean(values: readonly number[]): number {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
@@ -124,8 +138,12 @@ function populationStd(values: readonly number[], mu: number): number {
   );
 }
 
-export function scoreEpoch(epoch: EpochInput, k: number): EpochResult {
-  const w = weightOf(epoch.s, k);
+export function scoreEpoch(
+  epoch: EpochInput,
+  k: number,
+  weighting: Weighting = "linear",
+): EpochResult {
+  const w = weightFor(epoch.s, k, weighting);
   const benchmarks = new Set(epoch.benchmarkIds ?? []);
   const benchmarkPnl: Record<string, number> = {};
   const population: string[] = [];
@@ -188,7 +206,7 @@ export function scoreCompetition(input: CompetitionInput): CompetitionResult {
             "so hand in one record per ordinal",
         );
       seen.add(e.s);
-      return scoreEpoch(e, k);
+      return scoreEpoch(e, k, input.weighting ?? "linear");
     });
   const S = epochs.filter((e) => e.excluded === undefined).map((e) => e.s);
 
