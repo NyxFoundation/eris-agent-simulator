@@ -29,7 +29,9 @@ the competition
     │                 regime is not announced in advance.
     │
     └ evaluation interval ×29   A 12-block slice. Used for the leaderboard's running
-                                progress. NOT used for scoring.
+                                progress. Scoring (P below) uses only the asset value at
+                                the first and the last boundary; blocks after the last
+                                boundary are not scored.
 ```
 
 > **360 / 12 / 29 are the code's current values.** Appendix A of the rules lists the blocks per
@@ -88,16 +90,16 @@ trades on it at the same time. These are the only words the rest of this guide n
 | chain / block | A single ledger everyone shares. A page (= one block) is appended every 2 seconds, and a written page never changes. The block number is the competition's clock (360 blocks = 12 minutes) |
 | wallet | An account number (an **address**, starting with `0x`) together with the **private key** that signs transactions from it. One per agent. The runtime does the signing and sending |
 | token | An asset on the chain. Balances are entries in the ledger (table below) |
-| transaction (tx) | One instruction, such as "sell 1 WETH into this pool". You sign and send it, and **it only executes when it lands in the next block**. Someone else's transaction can land ahead of yours in between |
-| contract | A program deployed on the chain. Exchanges and lenders are contracts, and anyone can call their functions. **The rules are the code itself, not a legal agreement**: a call that does not meet the code's conditions does not execute |
-| revert | A transaction that fails a contract's condition (insufficient balance, a worse price than you allowed, …) and is undone. No assets move, but you still pay the fee |
-| gas / priority fee | The fee for having a transaction executed, paid in ETH. Here the base fee is 0; you pay only the extra you add to be executed earlier (the priority fee). **Within a block, transactions execute highest priority fee first** |
+| transaction (tx) | One instruction, such as "sell 1 WETH into this pool". You sign and send it, and **it only executes once it is included in a block** (usually the next one; when blocks are busy and your fee is low, a later one). Someone else's transaction can land ahead of yours in between |
+| contract | A program deployed on the chain. Exchanges and lenders are contracts, and anyone can call their functions. **The rules are the code itself, not a legal agreement**: a call that does not meet the code's conditions is undone partway through (a revert) |
+| revert | A transaction that fails a contract's condition (insufficient balance, a worse price than you allowed, …) and is undone. No assets move, but you still pay the fee (the gas used × your priority fee; tiny at the default 0.1 gwei). A transaction already known to fail is stopped by the runtime's simulation before sending and never reaches the chain (logged as `submit_failed`). A revert on chain is one whose conditions broke after it was sent, because of someone else's trade or a price change |
+| gas / priority fee | The fee for having a transaction executed, paid in ETH. Here the base fee is 0; you pay only the extra you add to be executed earlier (the priority fee). **Within a block, transactions execute highest priority fee first** (ties in arrival order; one wallet's transactions in nonce order). The environment's reference-price update is sent at a fee above the participants' cap, so it always comes first in the block |
 | hash | A transaction's ID (a long string starting with `0x`). Whether your transaction made it into a block is checked by this value |
 | nonce | A per-wallet sequence number for transactions. Only one transaction with a given number executes, so sending from the same key in two places makes the numbers collide. The runtime manages it |
 | mempool | Where transactions wait after being sent and before landing in a block |
 | RPC | The endpoint (a URL) for querying the chain and sending transactions to it. The runtime builds your observation for you, so you never need to call it |
-| cheatcode | An anvil-only command that writes chain state directly — balances, the clock and so on. Not available in the competition; strategy code that contains one fails the check (`npm run check:strategy`) |
-| reference price (fair price) | The environment's per-block "outside-world price" of ETH and BTC — the equivalent of a major exchange's quote. Prices on the chain's exchanges do not follow it automatically |
+| cheatcode | A special RPC command that only development nodes such as anvil have (`anvil_*` / `evm_*` / `hardhat_*`) and that writes chain state directly — balances, the clock and so on. Prohibited in the competition; strategy code that contains one fails the check (`npm run check:strategy`) |
+| reference price (fair price) | The environment's per-block "outside-world price" of ETH and BTC — the equivalent of a major exchange's quote. Prices on the chain's exchanges are not pinned to it and drift away from it (explained under the AMMs below) |
 | bps | Basis point, 0.01%. 30 bps = 0.3% |
 
 The tokens:
@@ -105,32 +107,40 @@ The tokens:
 | Token | What it is | What you start with | Decimals |
 |---|---|---|---|
 | ETH | The chain's native currency. Gas is paid in it | 100 ETH | 18 |
-| WETH | ETH in the same format as every other token. 1 WETH = 1 ETH, convertible either way at any time (wrap / unwrap). Exchanges trade this one | 8 WETH | 18 |
+| WETH | ETH in the same format as every other token. 1 WETH = 1 ETH, convertible either way at any time (wrap / unwrap; there is no dedicated action — call the WETH contract's `deposit` / `withdraw` through `rawTx`). Exchanges trade this one | 8 WETH | 18 |
 | WBTC | A token that moves with the price of BTC | 0.4 WBTC | 8 |
 | USDC | A token treated as worth exactly $1 (a stablecoin). **The scoring unit**; always counted at $1 | 25,000 USDC | 6 |
 | DAI | A stablecoin aiming for $1. Here its price is whatever its pool pays, and it can fall below $1 (regimes `depeg` / `depeg-persist`) | 0 (buy it to hold it) | 18 |
 | eUSD | The stablecoin Liquity (below) issues. Priced by its market | 0 (buy it, or borrow it from Liquity) | 18 |
-| ERLST | The receipt you get for depositing ETH into the LST (below) | 0 (deposit ETH to get it) | 18 |
+| ERLST | The receipt you get for depositing WETH into the LST (below) | 0 (deposit WETH, or buy it with `lstSwap`) | 18 |
 
 **Amounts are integers in each token's smallest unit.** The chain has no fractions, so 1 USDC is
 `1000000` (10^6) and 1 WETH is `1000000000000000000` (10^18); "Decimals" in the table is that
 exponent. Action amounts are passed as strings (`amountIn: "500000000"` is 500 USDC), and in
-observation field names a `Wei` suffix means 18 decimals and `Units` means USDC's 6. Mix them up and
-the amount is off by a factor of 10^12.
+observation field names a `Wei` suffix means 18 decimals and `Units` means USDC's 6. The exceptions:
+
+- An amount with no suffix (`amountIn`, `obs.baseBalances`, `aaveSupply`'s `amount`, GMX's `collateralAmount` and so on) is in the token's own decimals
+- A Uniswap LP position's `amountWethWei` / `tokensOwedWethWei` / `uncollectedFeesWethWei` are in WBTC's 8 decimals when the position is in the WBTC/USDC pool
+- GMX's `sizeUsd` / `sizeDeltaUsd` are dollars × 10^30 as an integer, and `acceptablePrice` is dollars × 10^(30 − the token's decimals) (10^12 for ETH, 10^22 for BTC). Other `…Usd` fields such as `pnlUsd` are plain dollars
+- Aave's `healthFactor` is scaled by 10^18 (1.0 is 10^18; with no debt it is the uint256 maximum), and `…Base` fields such as `availableBorrowsBase` are dollars with 8 decimals
+
+Mix them up and the amount is off by a factor of 10^12 between WETH and USDC, 10^2 between WBTC and
+USDC, and 10^10 between WBTC and WETH.
 
 ### The seven protocols
 
 A **protocol** is a financial service built out of contracts; the code calls it a **venue**. There
-are seven, and each is the code of a well-known real DeFi protocol deployed onto this chain (the LST
-alone was written by the organisers). They work exactly like the real ones, but the addresses and
-the money inside are separate, and nothing connects to the outside world.
+are seven, and each is the code of a well-known real DeFi protocol deployed onto this chain. The core
+contracts are the real code, unmodified (the LST alone was written by the organisers). The price
+supply (the oracles) and GMX's order execution (the keeper), however, are run by the organisers, and
+the addresses and the money inside are separate; nothing connects to the outside world.
 
 | Protocol | Real-world analogue | What you can do here | Main actions |
 |---|---|---|---|
-| Uniswap V3 / Balancer v2 / Curve | An exchange that prices itself (AMM) | Swap WETH and WBTC against USDC; provide liquidity | `swap` / `balancerSwap` / `curveSwap` / `stableSwap` / `mintLiquidity` and others |
-| Aave v3 | A lender that takes collateral | Deposit, borrow, liquidate other people's loans | `aaveSupply` / `aaveWithdraw` / `aaveBorrow` / `aaveRepay` |
+| Uniswap V3 / Balancer v2 / Curve | An exchange that prices itself (AMM) | Swap WETH and WBTC against USDC (all three); swap DAI and eUSD against USDC (`stableSwap`); provide liquidity | `swap` / `balancerSwap` / `curveSwap` / `stableSwap` / `mintLiquidity` and others |
+| Aave v3 | A lender that takes collateral | Deposit, borrow, liquidate other people's loans (liquidation is `liquidationCall` through `rawTx`) | `aaveSupply` / `aaveWithdraw` / `aaveBorrow` / `aaveRepay` |
 | GMX v2 | Margin trading (futures with no expiry) | Bet on ETH and BTC price moves with leverage | `gmxIncrease` / `gmxDecrease` |
-| LST | An interest-bearing receipt for ETH | Deposit ETH for yield; trade the receipt | `lstDeposit` / `lstSwap` / `lstRequestWithdraw` / `lstClaimWithdraw` |
+| LST | An interest-bearing receipt for ETH | Deposit WETH for yield; trade the receipt | `lstDeposit` / `lstSwap` / `lstRequestWithdraw` / `lstClaimWithdraw` |
 | Liquity | Issuing a dollar token against ETH collateral | Borrow eUSD, redeem it, underwrite liquidations | `liquityOpenTrove` and 7 others |
 
 All seven are available in the official regimes, except that `depeg` and `depeg-persist` have no
@@ -143,8 +153,8 @@ them.
 
 | Where the price comes from | Where it is used | How it behaves |
 |---|---|---|
-| The ratio of assets inside an exchange | Uniswap / Balancer / Curve (and the LST, eUSD and DAI pools) | Moves with every trade and drifts from the reference price. **A gap stays until someone trades it away** |
-| The environment's reference price (the oracle) | Collateral valuation and liquidation on Aave, GMX and Liquity; valuing ETH and BTC in scoring | No amount of pool trading moves it. It arrives one block late |
+| The ratio of assets inside an exchange | Trading on Uniswap / Balancer / Curve (and the LST, eUSD and DAI pools); valuing DAI, eUSD and ERLST in scoring | Moves with every trade and drifts from the reference price. The environment's order flow pulls part of a gap back, but not necessarily all of it |
+| The environment's reference price (the oracle) | Collateral valuation and liquidation on Aave; fills, margin and liquidation on GMX; collateral valuation, liquidation and redemption on Liquity; valuing ETH and BTC in scoring | No amount of pool trading moves it. It arrives one block late |
 
 #### AMMs (Uniswap V3 / Balancer v2 / Curve) — exchanges that price themselves
 
