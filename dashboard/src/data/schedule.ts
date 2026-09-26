@@ -69,7 +69,7 @@ export async function loadSchedules(
             // The last line of a capped read is usually torn. Nothing else to do with it.
             continue;
           }
-          // Under either name: a run started before issue #140 recorded `intervalBlocks` only.
+          // Under either name: a run started before issue #140 recorded `epochBlocks` only.
           if (event.type === "run_started_realtime")
             intervalBlocks = intervalBlocksOf(event);
           if (event.type === "stress_schedule" && Array.isArray(event.events)) {

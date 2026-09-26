@@ -79,6 +79,11 @@ function scenarioKey(s: { runDir?: string; s?: number }): string {
  * A coordinator started before issue #140 writes the same lines to epochs.jsonl, and the practice
  * period's runs until it restarts; that name is read when the new one is not there.
  */
+// Which of the two names a run's live series answered under, once one has. Probing the new name
+// first on every refresh of a run that only has the old one would 404 once per poll for the life
+// of the practice period's coordinator.
+const liveSeriesFileByRun = new Map<string, string>();
+
 async function loadLiveSeries(
   runId: string,
 ): Promise<
@@ -89,10 +94,19 @@ async function loadLiveSeries(
     fetch(`${base}/${file}`, { cache: "no-cache" })
       .then((r) => (r.ok ? r.text() : null))
       .catch(() => null);
+  const fetchSeries = async (): Promise<string> => {
+    const known = liveSeriesFileByRun.get(runId);
+    if (known) return (await fetchText(known)) ?? "";
+    for (const file of [INTERVALS_FILENAME, LEGACY_INTERVALS_FILENAME]) {
+      const text = await fetchText(file);
+      if (text === null) continue;
+      liveSeriesFileByRun.set(runId, file);
+      return text;
+    }
+    return "";
+  };
   const [intervalsText, head] = await Promise.all([
-    fetchText(INTERVALS_FILENAME).then(
-      async (text) => text ?? (await fetchText(LEGACY_INTERVALS_FILENAME)) ?? "",
-    ),
+    fetchSeries(),
     loadRunHeader(runId),
   ]);
   const boundaries: Record<string, number | null>[] = [];
