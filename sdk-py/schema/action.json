@@ -485,7 +485,8 @@
         "collateral": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^[A-Z0-9]+$"
+          "pattern": "^[A-Z0-9]+$",
+          "description": "collateral token: the market's long token or USDC -- WETH or USDC on the default ETH/USD market, WBTC or USDC on the BTC/USD market (base \"WBTC\")."
         },
         "collateralAmount": {
           "type": "string",
@@ -533,7 +534,8 @@
         "collateral": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^[A-Z0-9]+$"
+          "pattern": "^[A-Z0-9]+$",
+          "description": "collateral token: the market's long token or USDC -- WETH or USDC on the default ETH/USD market, WBTC or USDC on the BTC/USD market (base \"WBTC\")."
         },
         "collateralDeltaAmount": {
           "type": "string",

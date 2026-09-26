@@ -43,10 +43,12 @@ boundary series. Five details are decisions, not formalities:
 - **Ranking at two decimals**, ties broken by the std of the agent's own T series, then its worst
   epoch, then its submission time (§4.6).
 
-`run.markMedianBlocks` (default 5) marks the manipulable surfaces at each boundary with a median
-over the preceding window instead of a single live probe, so a boundary cannot be moved by a trade
-placed on the boundary block. `valueSeries.markMedian` reports which surfaces are covered and the
-largest deviation seen.
+`run.markMedianBlocks` (default 5) marks every market-derived price at each boundary with a median
+over the preceding window instead of a single live read (rules §4.1): the stables' probe, the
+Uniswap LP split tick, Balancer / Curve share prices, the LST pool sale and Liquity's own-size
+quotes. Holdings stay at the boundary block; reference prices (fair, the Aave / GMX oracles) are
+used as they are. `valueSeries.markMedian` reports which surfaces are covered and the largest
+deviation seen for the stables.
 
 ## Where it lands in summary.json
 

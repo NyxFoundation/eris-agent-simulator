@@ -112,6 +112,7 @@ runs/
 | `run_started_realtime` | run の開始。**seed / flowSeed / intervalBlocks / rpcUrl / chainId / chainMode を含む**（`epochBlocks` も同じ値で併記。issue #140 以前の名前）。セグメント時は各セグメント冒頭にも出る |
 | `run_completed` | 完了 |
 | `deployment_check` | デプロイの実測（chainId / checked / missing） |
+| `gmx_funding_check` | ローカルデプロイの GMX 各市場の `FUNDING_INCREASE_FACTOR_PER_SECOND` と `fundingModeled`（ok / enforcement / markets）。funding の無い deploy・state dump（gmx-localhost.patch の a35cf3e 以前）は anvil ではここで停止、リセットしない external（練習 devnet）では警告して続行 |
 | `agents_registered` | ロスター全体（id / address / baseline / description / external） |
 | `agent_external_registered` | 外部参加者の登録（環境は起動しない） |
 | `agent_process_exited` | エージェントプロセスの異常終了 |
@@ -163,12 +164,16 @@ runs/
 | `blockNumber` | |
 | `txIndex` | ブロック内の位置。**0 が最先頭** |
 | `hash` / `from` | |
-| `priorityFeeWei` | **オンチェーンの tx フィールド由来**（自己申告ではない = 事後検査の根拠） |
+| `priorityFeeWei` | **オンチェーンの tx フィールド由来**（自己申告ではない = 事後検査の根拠）。legacy / 0x01 の tx は `gasPrice`（base fee 0 では価格全体が priority fee。以前は 0 になっていて上限検査を素通りした） |
 | `status` | `success` / それ以外（receipt 取得失敗時は `mined`） |
 | `ownerId` / `role` | 帰属（`agent` / `uninformed-flow` / `informed-flow` / `system`） |
 | `actionType` | **環境が送信した tx にのみ存在する**（送信者の意図）。エージェントの tx は `direct` |
 | `bundleId` / `bundleIndex` | バンドル |
 | `method` | **calldata からデコードした関数名**（`sdk/src/methodSelectors.ts`） |
+| `gasUsed` | receipt の実消費ガス（issue #40 T0 のガス予算検査） |
+| `maxFeePerGasWei` | **署名された `maxFeePerGas`**（legacy / 0x01 は `gasPrice`）。anvil がブロック内順序を決めるキーはこちら（[03 §3.1.6](03-market.md)）。`priorityFeeWei` と対で手数料ルール違反（maxFeePerGas > tip）を事後検査する。これより前の run には無い |
+
+列は**末尾に追加する**（`gasUsed`・`maxFeePerGasWei` も）。位置で読む読み手（`BLOCKS_CSV_INDEX`・ダッシュボード・Python スクリプト）が過去の run でもそのまま動くように。
 
 **`method` が `actionType` と別に要る理由**（ADR 0021 §4）：`actionType` は環境が送った tx にしか無い。エージェントのログを join する方式は coordinator がエージェントを起動している間しか成立せず、外部参加者の tx が全部 `direct` になる＝**トラフィックが最も多いところで最も情報が無い**。calldata デコードは全 tx に効く。
 

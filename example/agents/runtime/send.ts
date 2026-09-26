@@ -13,6 +13,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { wethAbi } from "@eris/sdk/abis.js";
 import { parseAction, validateAction } from "@eris/sdk/action.js";
 import { TOKENS } from "@eris/sdk/constants.js";
+import { participantFees } from "@eris/sdk/feeRule.js";
 import { createJsonlAppender } from "./agentLog.js";
 import type { TradeLedger } from "./evidence.js";
 import type { ProtocolAdapter, SimContext } from "@eris/sdk/protocols/types.js";
@@ -148,6 +149,16 @@ export class Sender {
     try {
       const block = await publicClient.getBlock();
       const baseFee = block.baseFeePerGas ?? 0n;
+      // maxFeePerGas = maxPriorityFeePerGas, never more (sdk/src/feeRule.ts). The node orders the
+      // block on maxFeePerGas while the tx pays min(maxFeePerGas, baseFee + tip), so a maxFeePerGas
+      // above the tip would buy position this agent does not pay for -- the gateway refuses such a
+      // tx and postRunCheck flags it. This used to sign baseFee * 2 + tip for headroom, which is the
+      // same thing at base fee 0 and a breach anywhere else. Actions cannot set maxFeePerGas: only
+      // the bid (maxPriorityFeePerGasWei) comes from the agent, and it was validated against the cap.
+      const cap = this.ctx.config.economicGas
+        ? 0n
+        : this.ctx.config.maxPriorityFeeWei;
+      const fees = participantFees(priorityFeeWei, baseFee, cap);
       let gas = tx.gas;
       if (gas === undefined) {
         try {
@@ -156,8 +167,7 @@ export class Sender {
             to: tx.to,
             data: tx.data,
             value: tx.value ?? 0n,
-            maxFeePerGas: baseFee * 2n + priorityFeeWei,
-            maxPriorityFeePerGas: priorityFeeWei,
+            ...fees,
           });
           const bufferBps = BigInt(
             process.env.ERIS_DIRECT_GAS_BUFFER_BPS ?? "13000",
@@ -195,9 +205,7 @@ export class Sender {
         value: tx.value ?? 0n,
         gas,
         nonce,
-        // give headroom to tolerate baseFee fluctuation (the effective tip stays maxPriorityFeePerGas)
-        maxFeePerGas: baseFee * 2n + priorityFeeWei,
-        maxPriorityFeePerGas: priorityFeeWei,
+        ...fees,
       });
       if (gas !== undefined && MAX_AGENT_BLOCK_GAS > 0n) {
         this.gasByRound.set(round, (this.gasByRound.get(round) ?? 0n) + gas);

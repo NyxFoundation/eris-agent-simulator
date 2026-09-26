@@ -78,7 +78,9 @@ effective ← baseFair × overlay.wethMult（ストレスイベントの乗算�
 
 ### 3.1.6 ブロック内の順序
 
-`--order fees`（priority fee 降順）で決まる。既定プロファイルでは環境がエージェント上限より高く積むので、**オラクル更新が txIndex 0、keeper がその直下**に固定される（[02 §2.2](02-runtime.md)）。この前提は `npm run check:ordering -- --live` が実測で検証する（[11](11-invariants.md)）。
+`--order fees` で決まる。**anvil が並べるキーは `maxFeePerGas`**（foundry v1.7.1 `crates/anvil/src/eth/pool/transactions.rs`: `TransactionPriority(tx.max_fee_per_gas())`）で、tip ではない。一方 base fee 0 のチェーンで tx が払うのは min(maxFeePerGas, tip)。**両者が一致するのは maxFeePerGas ≤ maxPriorityFeePerGas のときだけ**なので、参加者の tx にはこれを要求する（手数料ルール、`sdk/src/feeRule.ts`）: 型付き tx は `maxFeePerGas ≤ maxPriorityFeePerGas ≤ 上限`、legacy / 0x01 は `gasPrice ≤ 上限`。RPC ゲートウェイが入口で拒否し、参照ランタイムは両者を等しく署名し、`postRunCheck` が事後に検出する（[11 §11.3](11-invariants.md)）。**このルールが無いと順序は払った額に従わない** — 実測（2026-09-27、anvil 1.7.1 `--order fees --base-fee 0`）で tip 0.1 gwei / maxFeePerGas 7 gwei の tx が、オラクル更新と同じ形の 6/6 gwei の tx より前（txIndex 0）に入り、0.1 gwei/gas しか払わなかった。
+
+既定プロファイルでは環境がエージェント上限より高く積むので、**オラクル更新が txIndex 0、keeper がその直下**に固定される（[02 §2.2](02-runtime.md)）。この前提は `npm run check:ordering -- --live` が実測で検証する（どのフィールドで並べているかも。[10 §10.6](10-operations.md)）。
 
 ## 3.2 orderflow
 

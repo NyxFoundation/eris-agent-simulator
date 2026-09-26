@@ -151,6 +151,7 @@ export class LiveScorer {
         // (issue #38). The post-run path uses toBlock for the same reason -- it is the last moment
         // that exists.
         horizonBlock: blockNumber,
+        medianWindow: this.markMedian.window(blockNumber),
         ...(stablePricesOverride ? { stablePricesOverride } : {}),
       });
       const index = this.boundaries.length;

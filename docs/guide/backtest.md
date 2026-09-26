@@ -229,6 +229,7 @@ agents:
 
 - **`state manifest not found`** — Drop the distribution into `backtest/state/`, or generate it with `npm run gen:state-dump`.
 - **`state dump is missing a venue: gmx`** — The deployment used to generate the dump had no GMX. Re-bake from a full deploy (`cd deployer && npm run deploy -- --keep-fresh`), or narrow it down with `--protocols uniswap,balancer,curve,aave`.
+- **`GMX funding is not modeled on this deployment`** — The state dump was baked before GMX funding was added to the deployer (`deployer/vendor/gmx-localhost.patch`, a35cf3e): every market has `FUNDING_INCREASE_FACTOR_PER_SECOND = 0`, so funding would read 0 on every block. Redeploy with the current deployer on a fresh anvil (`cd deployer && npm run clean:vendors && ./scripts/setup-vendors.sh && npm run deploy -- --keep-fresh`), then re-bake with `npm run gen:state-dump`. The run stops at setup rather than scoring a different economy (`gmx_funding_check` in events.jsonl).
 - **`port 8547 is in use`** — Another backtest / anvil is present. Change it with `--port` (do not use the deployer anvil's 8545).
 - **Fingerprint mismatch log** — It auto-regenerates `constants.local.ts` from the deployments bundled in the manifest and continues (normal behavior). It fails fast only if regeneration still does not match (a wrong combination of state dump and repo version).
 - **Warning that the source commit differs from HEAD** — Harmless if you have not changed the deployer / constants. If you have, re-bake with `npm run gen:state-dump`.

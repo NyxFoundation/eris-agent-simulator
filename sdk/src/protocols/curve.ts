@@ -1,7 +1,12 @@
 import { encodeFunctionData, type Address, type PublicClient } from "viem";
 import { curveStableSwapNgAbi, curveTricryptoAbi, erc20Abi } from "../abis.js";
 import { CURVE, TOKENS, stableBalanceOf } from "../constants.js";
-import { poolShareValueUsdc } from "../valuation.js";
+import {
+  medianPoolShareValueUsdc,
+  poolShareValueUsdc,
+  type PoolReserves,
+} from "../valuation.js";
+import { readAcrossWindow } from "./medianWindow.js";
 import { marketPricedStables, type StableMarket } from "../stables.js";
 import {
   marketFor,
@@ -118,6 +123,40 @@ async function resolveCurvePool(
   const shape = { pool, lpToken, coins };
   shapeCache.set(pool.toLowerCase(), shape);
   return shape;
+}
+
+// The reads a pool share is valued from: every coin's balance, then the LP supply.
+function curveReserveReads(shape: CurvePoolShape) {
+  return [
+    ...shape.coins.map((_, i) => ({
+      address: shape.pool,
+      abi: curveTricryptoAbi,
+      functionName: "balances",
+      args: [BigInt(i)],
+    })),
+    { address: shape.lpToken, abi: erc20Abi, functionName: "totalSupply" },
+  ];
+}
+
+// Decode curveReserveReads(shape) for each shape, laid out back to back from the start of results.
+// A pool with any unreadable balance, or an unreadable supply, decodes to undefined.
+function decodeCurveReserves(
+  shapes: readonly CurvePoolShape[],
+  results: readonly unknown[],
+): Array<PoolReserves | undefined> {
+  let cursor = 0;
+  return shapes.map((shape) => {
+    const balances = results.slice(cursor, cursor + shape.coins.length);
+    const totalSupply = results[cursor + shape.coins.length];
+    cursor += shape.coins.length + 1;
+    if (typeof totalSupply !== "bigint") return undefined;
+    if (balances.some((b) => typeof b !== "bigint")) return undefined;
+    return {
+      tokens: shape.coins,
+      balances: balances as bigint[],
+      totalSupply,
+    };
+  });
 }
 
 // Shapes of every distinct pool across the configured curve markets. Pools that cannot be read are
@@ -495,15 +534,7 @@ export const curveAdapter: ProtocolAdapter = {
     const shapes = await resolveCurvePools(ctx.publicClient);
     if (shapes.length === 0) return empty;
 
-    const reserveReads = shapes.flatMap((shape) => [
-      ...shape.coins.map((_, i) => ({
-        address: shape.pool,
-        abi: curveTricryptoAbi,
-        functionName: "balances",
-        args: [BigInt(i)],
-      })),
-      { address: shape.lpToken, abi: erc20Abi, functionName: "totalSupply" },
-    ]);
+    const reserveReads = shapes.flatMap(curveReserveReads);
     const results = yield [
       ...reserveReads,
       ...ctx.agents.flatMap((a) =>
@@ -516,19 +547,29 @@ export const curveAdapter: ProtocolAdapter = {
       ),
     ];
 
-    let cursor = 0;
-    const reserves = shapes.map((shape) => {
-      const balances = results.slice(cursor, cursor + shape.coins.length);
-      const totalSupply = results[cursor + shape.coins.length];
-      cursor += shape.coins.length + 1;
-      if (typeof totalSupply !== "bigint") return undefined;
-      if (balances.some((b) => typeof b !== "bigint")) return undefined;
-      return {
-        tokens: shape.coins,
-        balances: balances as bigint[],
-        totalSupply,
-      };
-    });
+    const reserves = decodeCurveReserves(shapes, results);
+    const cursor = reserveReads.length;
+
+    // Rules §4.1: at a scoring boundary an LP token is marked at the median share price over the
+    // window (valuation.ts medianPoolShareValueUsdc). Only the pools somebody holds are re-read.
+    const held = shapes.filter(
+      (_shape, s) =>
+        reserves[s] !== undefined &&
+        ctx.agents.some((_a, a) => {
+          const bal = results[cursor + a * shapes.length + s];
+          return typeof bal === "bigint" && bal > 0n;
+        }),
+    );
+    const samples = await readAcrossWindow(
+      ctx,
+      held.flatMap(curveReserveReads),
+    );
+    const windowReserves = new Map(
+      held.map((shape, k) => [
+        shape.pool.toLowerCase(),
+        samples.map((sample) => decodeCurveReserves(held, sample)[k]),
+      ]),
+    );
 
     const fairByBase = ctx.fairByBase();
     const stablePrices = ctx.stablePrices();
@@ -554,7 +595,13 @@ export const curveAdapter: ProtocolAdapter = {
           fairByBase,
           stablePrices,
         );
-        valueUsdc += share.valueUsdc;
+        valueUsdc += medianPoolShareValueUsdc(
+          share.valueUsdc,
+          pool,
+          windowReserves.get(shape.pool.toLowerCase()) ?? [],
+          fairByBase,
+          stablePrices,
+        );
         for (const h of share.unpriced)
           unpriced.push({ ...h, source: "curve-lp" });
       });
@@ -567,6 +614,8 @@ export const curveAdapter: ProtocolAdapter = {
     });
     return out;
   },
+
+  medianSurfaces: ["curve-lp"],
 
   async accountedTokens(publicClient): Promise<Address[]> {
     return (await resolveCurvePools(publicClient)).map((s) => s.lpToken);

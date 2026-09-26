@@ -222,6 +222,16 @@ export function buildManifest(opts: {
         "trade is bounded by your balance and by the depth you are trading into.",
       defaultPriorityFeeWei: config.defaultPriorityFeeWei.toString(),
       maxPriorityFeeWei: config.maxPriorityFeeWei.toString(),
+      // For whoever signs their own transactions (sdk/src/feeRule.ts). The node orders the block on
+      // maxFeePerGas while a tx pays min(maxFeePerGas, tip) at base fee 0, so this is the one rule a
+      // self-signer can break without noticing -- stated here, where the cap it goes with is.
+      feeRule:
+        "Sign maxFeePerGas equal to maxPriorityFeePerGas (never above it), and at most " +
+        (config.economicGas ? "your balance allows" : "maxPriorityFeeWei") +
+        "; a legacy gasPrice counts as both. Blocks are ordered by maxFeePerGas and a transaction " +
+        "pays min(maxFeePerGas, tip), so a maxFeePerGas above the tip would buy position without " +
+        "paying for it. The RPC gateway refuses such a transaction; one sent another way is flagged " +
+        "as a violation after the run.",
     },
     funding: {
       ethWei: config.initialEthWei.toString(),

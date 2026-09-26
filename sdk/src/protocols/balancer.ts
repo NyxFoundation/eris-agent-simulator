@@ -15,7 +15,12 @@ import {
   erc20Abi,
   wethAbi,
 } from "../abis.js";
-import { poolShareValueUsdc } from "../valuation.js";
+import {
+  medianPoolShareValueUsdc,
+  poolShareValueUsdc,
+  type PoolReserves,
+} from "../valuation.js";
+import { readAcrossWindow } from "./medianWindow.js";
 import { BALANCER, stableBalanceOf } from "../constants.js";
 import {
   marketFor,
@@ -218,6 +223,34 @@ export function bptAddressOf(poolId: Hex): Address {
 }
 
 // Distinct pools an agent could hold BPT for, across the configured balancer markets.
+// The two reads a pool share is valued from: reserves (via the vault) and the BPT supply.
+function poolReserveReads({ poolId, bpt }: { poolId: Hex; bpt: Address }) {
+  return [
+    {
+      address: BALANCER.vault,
+      abi: balancerVaultAbi,
+      functionName: "getPoolTokens",
+      args: [poolId],
+    },
+    { address: bpt, abi: erc20Abi, functionName: "totalSupply" },
+  ];
+}
+
+function balancerReserves(
+  poolTokensRaw: unknown,
+  totalSupply: unknown,
+): PoolReserves | undefined {
+  const poolTokens = poolTokensRaw as
+    | readonly [readonly Address[], readonly bigint[], bigint]
+    | undefined;
+  if (!poolTokens || typeof totalSupply !== "bigint") return undefined;
+  return {
+    tokens: [...poolTokens[0]],
+    balances: [...poolTokens[1]],
+    totalSupply,
+  };
+}
+
 export function balancerPools(): Array<{ poolId: Hex; bpt: Address }> {
   const out = new Map<string, { poolId: Hex; bpt: Address }>();
   for (const m of marketsFor("balancer")) {
@@ -548,15 +581,7 @@ export const balancerAdapter: ProtocolAdapter = {
     if (pools.length === 0) return empty;
 
     const results = yield [
-      ...pools.flatMap(({ poolId, bpt }) => [
-        {
-          address: BALANCER.vault,
-          abi: balancerVaultAbi,
-          functionName: "getPoolTokens",
-          args: [poolId],
-        },
-        { address: bpt, abi: erc20Abi, functionName: "totalSupply" },
-      ]),
+      ...pools.flatMap(poolReserveReads),
       ...ctx.agents.flatMap((a) =>
         pools.map(({ bpt }) => ({
           address: bpt,
@@ -569,21 +594,36 @@ export const balancerAdapter: ProtocolAdapter = {
 
     // A pool whose reserves could not be read decodes to undefined, which reports any holding of it
     // rather than marking a wrong number.
-    const reserves = pools.map((_, i) => {
-      const poolTokens = results[i * 2] as
-        readonly [readonly Address[], readonly bigint[], bigint] | undefined;
-      const totalSupply = results[i * 2 + 1];
-      if (!poolTokens || typeof totalSupply !== "bigint") return undefined;
-      return {
-        tokens: [...poolTokens[0]],
-        balances: [...poolTokens[1]],
-        totalSupply,
-      };
-    });
+    const reserves = pools.map((_, i) =>
+      balancerReserves(results[i * 2], results[i * 2 + 1]),
+    );
+    const balancesBase = pools.length * 2;
+
+    // Rules §4.1: at a scoring boundary a BPT is marked at the median share price over the window
+    // (valuation.ts medianPoolShareValueUsdc). Only the pools somebody holds are re-read.
+    const held = pools
+      .map((_, p) => p)
+      .filter(
+        (p) =>
+          reserves[p] !== undefined &&
+          ctx.agents.some((_a, a) => {
+            const bal = results[balancesBase + a * pools.length + p];
+            return typeof bal === "bigint" && bal > 0n;
+          }),
+      );
+    const samples = await readAcrossWindow(
+      ctx,
+      held.flatMap((p) => poolReserveReads(pools[p])),
+    );
+    const windowReserves = new Map(
+      held.map((p, k) => [
+        p,
+        samples.map((sample) => balancerReserves(sample[k * 2], sample[k * 2 + 1])),
+      ]),
+    );
 
     const fairByBase = ctx.fairByBase();
     const stablePrices = ctx.stablePrices();
-    const balancesBase = pools.length * 2;
     const out: Record<string, AgentProtocolValue> = {};
     ctx.agents.forEach((agent, a) => {
       let valueUsdc = 0;
@@ -606,7 +646,13 @@ export const balancerAdapter: ProtocolAdapter = {
           fairByBase,
           stablePrices,
         );
-        valueUsdc += share.valueUsdc;
+        valueUsdc += medianPoolShareValueUsdc(
+          share.valueUsdc,
+          pool,
+          windowReserves.get(p) ?? [],
+          fairByBase,
+          stablePrices,
+        );
         for (const h of share.unpriced)
           unpriced.push({ ...h, source: "balancer-bpt" });
       });
@@ -619,6 +665,8 @@ export const balancerAdapter: ProtocolAdapter = {
     });
     return out;
   },
+
+  medianSurfaces: ["balancer-bpt"],
 
   async accountedTokens(): Promise<Address[]> {
     return balancerPools().map((p) => p.bpt);

@@ -8,6 +8,7 @@ import { formatUnits, type Address } from "viem";
 import { USDC_VARIANTS } from "./constants.js";
 import { tokenInfoByAddress } from "./markets.js";
 import { stablePriceUsdc, type StablePrices } from "./stables.js";
+import { medianOf } from "./protocols/medianWindow.js";
 
 // Stables the run settles in but the token registry does not name. On the Arbitrum fork the registry
 // is WETH/USDC only, while the deep Balancer and Curve pools hold USDC.e and USDT -- so a BPT holder
@@ -121,4 +122,46 @@ export function poolShareValueUsdc(
     valueUsdc += usd;
   }
   return { valueUsdc, unpriced };
+}
+
+// What one raw unit of a pool's LP token is worth: the pool's reserves at the reference prices,
+// divided by its supply. Undefined for a pool with no supply.
+export function poolSharePriceUsdc(
+  reserves: PoolReserves,
+  fairByBase: Record<string, number>,
+  stablePrices?: StablePrices,
+): number | undefined {
+  if (reserves.totalSupply <= 0n) return undefined;
+  const whole = poolShareValueUsdc(
+    reserves,
+    reserves.totalSupply,
+    fairByBase,
+    stablePrices,
+  );
+  return whole.valueUsdc / Number(reserves.totalSupply);
+}
+
+// Rules §4.1 for a pool share: the market-derived price is the share price above. The tokens in
+// the pool are valued at the reference prices (the boundary's), but *how much* of each a share
+// holds is set by trading against the pool, so a one-block push moves it. The boundary's mark is
+// rescaled to the median share price over the window (the boundary's own included); the holding is
+// the boundary's. With no window, no price at the boundary, or a boundary price of zero, the mark
+// is returned unchanged. A window block whose reserves could not be read is dropped.
+export function medianPoolShareValueUsdc(
+  boundaryValueUsdc: number,
+  boundary: PoolReserves,
+  window: ReadonlyArray<PoolReserves | undefined>,
+  fairByBase: Record<string, number>,
+  stablePrices?: StablePrices,
+): number {
+  if (window.length === 0) return boundaryValueUsdc;
+  const own = poolSharePriceUsdc(boundary, fairByBase, stablePrices);
+  if (own === undefined || !(own > 0)) return boundaryValueUsdc;
+  const prices = [own];
+  for (const reserves of window) {
+    if (!reserves) continue;
+    const price = poolSharePriceUsdc(reserves, fairByBase, stablePrices);
+    if (price !== undefined) prices.push(price);
+  }
+  return boundaryValueUsdc * ((medianOf(prices) ?? own) / own);
 }

@@ -746,6 +746,12 @@ export type LiquityObservation = {
   // The Trove a redemption would hit first, and its ICR: the one worth redeeming against, and the
   // one worth liquidating if the price keeps falling.
   riskiestTrove?: { owner: string; icr: number; netDebtEusdWei: string };
+  // Collateral a closed Trove of yours left behind: what a full redemption returned above the debt
+  // it cancelled, or what a Recovery-Mode liquidation capped at 110% of the debt did not seize. It
+  // waits in CollSurplusPool as native ETH until you claim it with BorrowerOperations
+  // .claimCollateral() -- there is no action for it, send it as a rawTx. Scored at the WETH fair
+  // while it waits, since it is yours to claim at any time.
+  collSurplusWei: string;
   // --- your Stability Pool position ---
   spDepositEusdWei: string;
   // ETH already earned from absorbed liquidations, claimable by withdrawing (any amount, including 0).

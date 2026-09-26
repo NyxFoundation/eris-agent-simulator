@@ -74,6 +74,7 @@ function liquity(
     spDepositEusdWei: "0",
     spEthGainWei: "0",
     spLqtyGainWei: "0",
+    collSurplusWei: "0",
     spTotalDepositsEusdWei: (75_000n * WAD).toString(),
     spShareBps: 0,
     ethBalanceWei: WAD.toString(),

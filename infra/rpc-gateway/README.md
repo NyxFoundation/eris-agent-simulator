@@ -33,7 +33,9 @@ this column tells you who called what, when.
 
 ## Config (env)
 
-`PORT` (8546) · `UPSTREAM` (http://127.0.0.1:8545) · `ENV_NAME` (live|test) · `LOG_FILE` · `METRICS_FILE`.
+`PORT` (8546) · `UPSTREAM` (http://127.0.0.1:8545) · `ENV_NAME` (live|test) · `LOG_FILE` · `METRICS_FILE` ·
+`RPC_MAX_TX_GAS` (30000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — the last two are the
+[transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule).
 Runs as the `rpc-gateway-live` service in `infra/monitoring/docker-compose.yml` (host-net,
 `restart: unless-stopped`); `rpc-gateway-test` (compose profile `test`) is ready for a second env.
 
@@ -131,7 +133,7 @@ The `pending` tag is refused on `eth_getBlockByNumber`, `eth_getBlockTransaction
 `eth_getBlockReceipts`. A mixed batch containing a forbidden call is rejected in full before being
 forwarded. Mined block reads and **`eth_getTransactionCount(address, "pending")` remain available**:
 `Sender` seeds its nonce with the latter and must account for already pending submissions.
-`eth_sendRawTransaction` remains available subject to the existing gas cap.
+`eth_sendRawTransaction` remains available subject to the gas cap and the fee rule (below).
 
 `RPC_METHOD_DENY` overrides the default method-deny regex; replacing it is an operator policy
 change and must preserve these bans on participant endpoints. Parameter checks still apply while
@@ -154,3 +156,39 @@ Reproduce the regression against a real Anvil with
 `node --import tsx --test test/rpcGateway.test.ts test/runtimeSender.test.ts`. The sender test also
 submits two actions through the gateway on top of an existing pending transaction, checks consecutive
 nonces and submission records, and mines all three. These tests need Anvil, already installed in CI.
+
+## Transaction checks at entry (gas cap and fee rule)
+
+`eth_sendRawTransaction` is the one write a participant has, so the gateway decodes each signed
+transaction (`txGas.mjs`, a minimal RLP reader — nothing is executed) and refuses, with HTTP 403 and
+JSON-RPC error `-32003`, what would break the competition's rules. A batch is refused whole. A
+transaction whose fields cannot be read (an envelope type other than legacy / `0x01`–`0x04`) is
+refused too: a check that passes what it cannot parse is bypassed by choosing a type it does not know.
+
+| check | refuses | env | counter |
+|---|---|---|---|
+| gas cap (issue #40 T0) | a gas limit above the per-transaction cap | `RPC_MAX_TX_GAS` (30,000,000; 0 disables) | `rpc_gas_denied_total` |
+| fee rule | typed (`0x02`/`0x03`/`0x04`): `maxFeePerGas > maxPriorityFeePerGas`, or `maxPriorityFeePerGas` above the cap. Legacy / `0x01`: `gasPrice` above the cap | `RPC_MAX_PRIORITY_FEE_WEI` (5,000,000,000 = `fees.maxPriorityFeeWei`; 0 disables the cap half only) | `rpc_fee_denied_total` |
+
+**Why the fee rule compares maxFeePerGas with the tip.** Rules §2.6 order a block by the priority fee,
+highest first. anvil `--order fees` sorts its pool on **maxFeePerGas** (foundry v1.7.1,
+`crates/anvil/src/eth/pool/transactions.rs`: `TransactionPriority(tx.max_fee_per_gas())`), and on the
+competition chain (base fee 0) a transaction pays min(maxFeePerGas, maxPriorityFeePerGas) per gas. The
+order and the payment agree only when maxFeePerGas ≤ maxPriorityFeePerGas — then the transaction pays
+exactly its maxFeePerGas. Measured 2026-09-27 on anvil 1.7.1 `--order fees --base-fee 0`, one block each:
+
+| transactions (arrival order) | order in the block | paid per gas |
+|---|---|---|
+| A tip 1 / maxFee 1 gwei · B tip 0.1 / maxFee 3 · C legacy gasPrice 2 | B, C, A (also with arrival reversed) | B 0.1 · C 2 · A 1 gwei |
+| D 6 / 6 gwei (the oracle update's shape) · E tip 0.1 / maxFee 7 | E, D (also under 2 s interval mining) | E 0.1 · D 6 gwei |
+
+So without the check, a self-signed transaction could take txIndex 0 — ahead of the environment's
+oracle update, which the cap exists to keep first — while paying a fifth of the cap. **Sign
+maxFeePerGas equal to maxPriorityFeePerGas.** The reference runtime does (`sdk/src/feeRule.ts`
+`participantFees`); a self-signer who does not is refused here, and a transaction that reaches the node
+another way is flagged after the run from `blocks.csv` (`core/src/postRunCheck.ts`, the authority).
+Under the economic gas profile (ADR 0011 §2) set `RPC_MAX_PRIORITY_FEE_WEI=0`: that retires the cap,
+not the maxFeePerGas half, which has no switch. `npm run check:ordering -- --live` reports which field
+a chain's builder sorts on (run it against the node: its overbid probe is exactly what this refuses).
+
+Reproduce with `node --import tsx --test test/rpcGateway.test.ts`.

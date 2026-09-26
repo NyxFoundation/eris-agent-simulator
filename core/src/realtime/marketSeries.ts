@@ -12,6 +12,7 @@ import type { Address, Hex, PublicClient } from "viem";
 import { parseAbi, zeroAddress } from "viem";
 import {
   balancerQueriesAbi,
+  collSurplusPoolAbi,
   curveTricryptoAbi,
   erc20Abi,
   lstVaultAbi,
@@ -137,6 +138,8 @@ export type LiquityPositionAtEnd = {
   icr: number | null;
   stabilityDepositEusd: number;
   eusdBalance: number;
+  /** A closed Trove's collateral waiting in CollSurplusPool for claimCollateral(). Scored at fair. */
+  collSurplusWeth: number;
 };
 
 export type AaveAccountAtEnd = {
@@ -1470,6 +1473,12 @@ async function readLiquityPositionsAtEnd(opts: {
       functionName: "balanceOf",
       args: [a.address],
     }),
+    surplus: batch.push({
+      address: liquity.collSurplusPool,
+      abi: collSurplusPoolAbi,
+      functionName: "getCollateral",
+      args: [a.address],
+    }),
   }));
   const results = await opts.call(batch.contracts, BigInt(opts.blockNumber));
 
@@ -1483,7 +1492,18 @@ async function readLiquityPositionsAtEnd(opts: {
     const depositEusd =
       typeof deposit === "bigint" ? Number(deposit) / 1e18 : 0;
     const eusd = typeof balance === "bigint" ? Number(balance) / 1e18 : 0;
-    if (debt <= 0 && coll <= 0 && depositEusd <= 0 && eusd <= 0) continue;
+    const surplus = results[entry.surplus];
+    const surplusWeth = typeof surplus === "bigint" ? Number(surplus) / 1e18 : 0;
+    // A borrower whose Trove was fully redeemed or liquidated in Recovery Mode may hold nothing but
+    // the surplus, and it is scored -- so it keeps the row.
+    if (
+      debt <= 0 &&
+      coll <= 0 &&
+      depositEusd <= 0 &&
+      eusd <= 0 &&
+      surplusWeth <= 0
+    )
+      continue;
     out.push({
       agent: entry.agent.id,
       troveDebtEusd: round6(debt),
@@ -1493,6 +1513,7 @@ async function readLiquityPositionsAtEnd(opts: {
       icr: debt > 0 ? round6((coll * opts.fairWeth) / debt) : null,
       stabilityDepositEusd: round6(depositEusd),
       eusdBalance: round6(eusd),
+      collSurplusWeth: round6(surplusWeth),
     });
   }
   return out;
