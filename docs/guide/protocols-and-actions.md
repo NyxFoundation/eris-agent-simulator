@@ -6,13 +6,18 @@ Each adapter (`sdk/src/protocols/<name>.ts`) implements parse/validate, calldata
 
 | Protocol | Actions | Markets (local deploy = the competition) |
 |---|---|---|
-| Uniswap V3 | `swap`, `mintLiquidity`, `removeLiquidity`, `collectFees` | WETH/USDC and WBTC/USDC, 0.3% fee, full-range liquidity (about 1,000 WETH / 50 WBTC + 3M USDC each at the start) |
+| Uniswap V3 | `swap`, `mintLiquidity`, `removeLiquidity`, `collectFees`, `createPool` | WETH/USDC and WBTC/USDC, 0.3% fee, full-range liquidity (about 1,000 WETH / 50 WBTC + 3M USDC each at the start) |
 | Balancer v2 | `balancerSwap` | 50/50 weighted WETH/USDC and WBTC/USDC, 0.3% fee, same starting depth |
 | Curve | `curveSwap`, `stableSwap` | twocrypto-ng WETH/USDC and WBTC/USDC (dynamic fee 0.26–0.45%, same starting depth), plus the stableswap-ng pools that quote each market-priced stable (USDC/DAI 100k/100k) |
-| Aave v3 | `aaveSupply`, `aaveWithdraw`, `aaveBorrow`, `aaveRepay` | WETH / USDC / WBTC reserves; the LST as a collateral-only reserve (LTV 70% / LT 75%) |
-| GMX v2 | `gmxIncrease`, `gmxDecrease` | ETH/USD and BTC/USD perp markets, WETH or USDC collateral |
+| Aave v3 | `aaveSupply`, `aaveWithdraw`, `aaveBorrow`, `aaveRepay` | WETH / USDC / WBTC reserves; the LST as a collateral-only reserve (LTV 70% / LT 75%), named `asset: "LST"` (not `"ERLST"`) |
+| GMX v2 | `gmxIncrease`, `gmxDecrease` | ETH/USD perp (default; WETH or USDC collateral) and BTC/USD perp (`base: "WBTC"`; WBTC or USDC collateral). WETH collateral is sent from the native ETH balance |
 | LST | `lstDeposit`, `lstSwap`, `lstRequestWithdraw`, `lstClaimWithdraw` | a wstETH-style vault (ERLST) plus its LST/WETH stableswap-ng market |
 | Liquity (eUSD) | `liquityOpenTrove`, `liquityAdjustTrove`, `liquityCloseTrove`, `liquityRedeem`, `liquityProvideToSP`, `liquityWithdrawFromSP`, `liquityLiquidate`, `liquitySwapEusd` | a Liquity V1 fork issuing eUSD, plus its eUSD/USDC stableswap-ng market (100k/100k) |
+| Permissionless lending (`lending`) | `createLendingMarket`, `lendingSupply`, `lendingWithdraw`, `lendingSupplyCollateral`, `lendingWithdrawCollateral`, `lendingBorrow`, `lendingRepay`, `lendingLiquidate` | the `SimpleLending` singleton (issue #40). Not in the official regimes; only the verification regime `config/regimes/agent-markets.yaml` enables it |
+
+Only Uniswap has dedicated LP actions. On the Balancer and Curve WETH/USDC and WBTC/USDC pools you can
+still provide liquidity by calling the pool directly through `rawTx`, and the BPT / Curve LP token you
+receive is valued in scoring (issue #41). LP tokens of the stableswap pools are not valued.
 
 The competition and every official regime run on the local deploy (`run.localDeploy: true`), with
 all seven protocols enabled except that `depeg` and `depeg-persist` leave out GMX. The Arbitrum fork
@@ -45,7 +50,7 @@ after the run is excluded and reported under `scoring_unpriced_holdings` with
 `reason: "unrealizable"`. `obs.blocksRemaining` is what lets a strategy tell which exits can still
 complete — and under this rule that is a scoring question, not a preference.
 
-Actions default to the WETH market. Add `base: "WBTC"` to the same actions to trade the WBTC/USDC spot pools, the GMX BTC/USD market and the Aave WBTC reserve instead (multi-asset; ADR 0013; the legs are listed in `MARKET_LEGS`).
+Actions default to the WETH market. Add `base: "WBTC"` to the swap, Uniswap LP and GMX actions to trade the WBTC/USDC spot pools and the GMX BTC/USD market instead (multi-asset; ADR 0013; the legs are listed in `MARKET_LEGS`). Aave actions take no `base`: the reserve is chosen by `asset` (`"WBTC"`).
 
 In addition there are the protocol-agnostic `noop` / `bundle` (multiple bundleable leaves in a single tx) / `rawTx` / `rawBundle`.
 
