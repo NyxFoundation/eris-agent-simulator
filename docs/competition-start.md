@@ -685,7 +685,7 @@ npm run dashboard        # http://localhost:5173
 | 裁定 | `multi-arb` | WETH でも WBTC でも動く venue 間裁定。2 つの取引所で買いと売りを同時に出す（2-leg）か、参照価格からずれた 1 か所だけで取引する（片 leg）かを使い分ける | AMM 3 venue | 同上 | 有 |
 | 裁定 | `stat-arb` | 資産ごとに参照価格からの乖離の履歴を取り、今の乖離が普段よりどれだけ大きいか（z-score）を見て、元に戻る方に賭ける | AMM | calm / informed-flow | 無 |
 | 裁定 | `max-profit-arb` | 期待利益から priority fee の上限を逆算して入札し、ブロック内の位置を買う | AMM | whale | 無 |
-| 裁定 | `flash-arb` | Aave のフラッシュローンで自己資本を超えるサイズの裁定を 1 tx で行う（`rawTx`）。受け取りコントラクトは雛形の設定（`run.flashArb: true`）でしか置かれないので、公式レジームではそのままでは revert する | Aave + AMM | whale / crash（受け取りコントラクトを自分で置いた場合） | 無 |
+| 裁定 | `flash-arb` | Aave のフラッシュローンで自己資本を超えるサイズの裁定を 1 tx で行う（`rawTx`）。受け取りコントラクトは雛形の設定（`run.flashArb: true`）でしか置かれないので、公式レジームではそのままでは revert する | Aave + AMM | whale / crash（自分の受け取りコントラクトを置いて呼び先を変えた場合） | 無 |
 | 裁定 | `basis-arb` | AMM の 1 leg を GMX の perp でヘッジする（現物と先物の乖離） | AMM + GMX | cex-drift | 有 |
 | LP | `lp-provider` | Uniswap V3 に建玉を置いて手数料を集め、乖離が大きいときは引き上げる | Uniswap | calm | 無 |
 | レバレッジ | `levered-long` | 手持ちを Aave の担保にして借り、配られた量より多くの WETH を持つ（レバレッジ）。HF を決めた範囲に保ち、下限を割ったら返済 | Aave | cex-drift（方向が出る）/ lending-incident・crash（守る側） | 無 |
