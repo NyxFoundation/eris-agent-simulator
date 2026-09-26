@@ -175,7 +175,11 @@ The endpoint, chain id and the fork's `FIRST_BLOCK` live in `infra/blockscout/ex
 
 The default profile stacks the oracle above every agent to pin it at txIndex 0, so **on a chain that does not honour fee ordering the environment's price becomes front-runnable**.
 
-**The bids are sent in ascending order**, so arrival order and fee order disagree. A builder that merely preserves arrival order passes a descending probe and fails this one.
+**The bids are sent in ascending order**, so arrival order and fee order disagree. A builder that merely preserves arrival order passes a descending probe and fails this one. The ascending probe signs maxFeePerGas = tip, so it measures fee order and nothing else.
+
+A **key probe** follows and measures *which field* the builder sorts on. Each round it sends an honest bid (tip = maxFeePerGas = 2 gwei) and an overbid (tip 1 gwei, maxFeePerGas 3 gwei), alternating arrival order, and reports `max-fee` / `paid` / `arrival` / `ambiguous` (`core/src/orderingKey.ts`). **anvil is `max-fee`** (the overbid pays less and goes first); there the fee rule (maxFeePerGas ≤ tip: gateway, runtime, `postRunCheck`) is what keeps the order equal to what was paid. The overbid is exactly what the gateway refuses, so run the probe against the node directly.
+
+The no-argument check (`blocks.csv`) annotates an inversion as the earlier sender's fee-rule breach, not the builder's, when the pair was in order by `maxFeePerGasWei`.
 
 ### `npm run stress:rpc`
 

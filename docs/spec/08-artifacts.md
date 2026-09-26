@@ -162,12 +162,16 @@ runs/
 | `blockNumber` | |
 | `txIndex` | ブロック内の位置。**0 が最先頭** |
 | `hash` / `from` | |
-| `priorityFeeWei` | **オンチェーンの tx フィールド由来**（自己申告ではない = 事後検査の根拠） |
+| `priorityFeeWei` | **オンチェーンの tx フィールド由来**（自己申告ではない = 事後検査の根拠）。legacy / 0x01 の tx は `gasPrice`（base fee 0 では価格全体が priority fee。以前は 0 になっていて上限検査を素通りした） |
 | `status` | `success` / それ以外（receipt 取得失敗時は `mined`） |
 | `ownerId` / `role` | 帰属（`agent` / `uninformed-flow` / `informed-flow` / `system`） |
 | `actionType` | **環境が送信した tx にのみ存在する**（送信者の意図）。エージェントの tx は `direct` |
 | `bundleId` / `bundleIndex` | バンドル |
 | `method` | **calldata からデコードした関数名**（`sdk/src/methodSelectors.ts`） |
+| `gasUsed` | receipt の実消費ガス（issue #40 T0 のガス予算検査） |
+| `maxFeePerGasWei` | **署名された `maxFeePerGas`**（legacy / 0x01 は `gasPrice`）。anvil がブロック内順序を決めるキーはこちら（[03 §3.1.6](03-market.md)）。`priorityFeeWei` と対で手数料ルール違反（maxFeePerGas > tip）を事後検査する。これより前の run には無い |
+
+列は**末尾に追加する**（`gasUsed`・`maxFeePerGasWei` も）。位置で読む読み手（`BLOCKS_CSV_INDEX`・ダッシュボード・Python スクリプト）が過去の run でもそのまま動くように。
 
 **`method` が `actionType` と別に要る理由**（ADR 0021 §4）：`actionType` は環境が送った tx にしか無い。エージェントのログを join する方式は coordinator がエージェントを起動している間しか成立せず、外部参加者の tx が全部 `direct` になる＝**トラフィックが最も多いところで最も情報が無い**。calldata デコードは全 tx に効く。
 

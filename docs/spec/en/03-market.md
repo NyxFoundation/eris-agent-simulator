@@ -78,7 +78,9 @@ There are **three write paths**, chosen by profile (`oracles.ts`).
 
 ### 3.1.6 Ordering inside a block
 
-Decided by `--order fees` (descending priority fee). In the default profile the environment bids above every agent cap, which pins **the oracle update at txIndex 0 and the keeper just below it** ([02](02-runtime.md)). `npm run check:ordering -- --live` measures whether that assumption actually holds ([11](11-invariants.md)).
+Decided by `--order fees`. **The key anvil sorts on is `maxFeePerGas`** (foundry v1.7.1 `crates/anvil/src/eth/pool/transactions.rs`: `TransactionPriority(tx.max_fee_per_gas())`), not the tip, while on a base-fee-0 chain a transaction pays min(maxFeePerGas, tip). **The two agree only when maxFeePerGas ≤ maxPriorityFeePerGas**, so participants' transactions are required to satisfy it (the fee rule, `sdk/src/feeRule.ts`): a typed tx needs `maxFeePerGas ≤ maxPriorityFeePerGas ≤ cap`, a legacy / 0x01 tx `gasPrice ≤ cap`. The RPC gateway refuses breaches at entry, the reference runtime signs both fields equal, and `postRunCheck` detects them afterwards ([11 §11.3](11-invariants.md)). **Without the rule the order does not follow what was paid** — measured 2026-09-27 on anvil 1.7.1 `--order fees --base-fee 0`: a tx with tip 0.1 gwei and maxFeePerGas 7 gwei landed at txIndex 0, ahead of a 6/6 gwei tx shaped like the oracle update, paying 0.1 gwei/gas.
+
+In the default profile the environment bids above every agent cap, which pins **the oracle update at txIndex 0 and the keeper just below it** ([02](02-runtime.md)). `npm run check:ordering -- --live` measures whether that assumption actually holds, and which field the builder sorts on ([10 §10.6](10-operations.md)).
 
 ## 3.2 Orderflow
 

@@ -153,7 +153,7 @@ The order matters.
 | Profile | oracle / PriceFeed | keeper | Cap enforced? |
 |---|---|---|---|
 | Default (ADR 0010) | `maxPriorityFee + 1 gwei` → txIndex 0 under `--order fees` | `maxPriorityFee + 0.5 gwei` | Yes (post-hoc) |
-| `economicGas: true` (ADR 0011) | `defaultPriorityFee` (price finalization is a storage write, so the front-run target is gone) | same | **No** (free bidding) |
+| `economicGas: true` (ADR 0011) | `defaultPriorityFee` (price finalization is a storage write, so the front-run target is gone) | same | **No cap** (free bidding); maxFeePerGas ≤ tip still applies ([03 §3.1.6](03-market.md)) |
 
 ## 2.3 Time
 

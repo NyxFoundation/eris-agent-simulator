@@ -67,14 +67,17 @@ The list in [04 §4.9](04-stress-events.md). The coordinator adds venue availabi
 
 ## 11.3 Post-hoc checks
 
-### The fee cap (`core/src/postRunCheck.ts`)
+### The fee rule (`core/src/postRunCheck.ts`)
 
-**With direct sending an agent can bypass the pre-flight check**, so rule enforcement moves to a mechanical inspection of what the chain recorded.
+**With direct sending an agent can bypass the pre-flight check**, so rule enforcement moves to a mechanical inspection of what the chain recorded. The rule itself is `sdk/src/feeRule.ts` ([03 §3.1.6](03-market.md)).
 
-- Rows of `blocks.csv` with `role === "agent"` are scanned for `priorityFeeWei > maxPriorityFeeWei`
-- **The fee comes from the on-chain transaction field**, so it cannot be tampered with
-- Exceeding the cap distorts `--order fees` ordering, so the offending agent is flagged **and the run is invalidated**
-- Under `economicGas` the cap is retired entirely: `violations` is empty and `fee_cap_enforcement_disabled` is emitted
+- Rows of `blocks.csv` with `role === "agent"` are scanned and recorded as violations (`kind`):
+  - `over-cap`: `priorityFeeWei > maxPriorityFeeWei` (a legacy / 0x01 row carries its `gasPrice` there)
+  - `max-fee-above-tip`: `maxFeePerGasWei > priorityFeeWei`. anvil orders on maxFeePerGas and at base fee 0 the tx pays only the tip, so the difference bought **position that was never paid for**. Not checkable on earlier runs, which lack the `maxFeePerGasWei` column
+- **The fees come from the on-chain transaction fields**, so they cannot be tampered with
+- Both distort `--order fees` ordering, so the offending agent is recorded in `rule_violations_detected` and the summary's `violations`, and flagged by the backtest (the verdict is the operator's, rules §8)
+- Under `economicGas` **only the cap half** is retired (checked with cap 0; `fee_cap_enforcement_disabled` is emitted). maxFeePerGas above the tip is a violation in every profile — without it a bid is ordered by a number it does not pay, and the free-bidding auction is not an auction
+- At entry, the RPC gateway refuses the same breaches (403 / `-32003`, `RPC_MAX_PRIORITY_FEE_WEI`; `infra/rpc-gateway/README.md`). The post-hoc check is the authority for transactions sent straight to a node
 
 ### The environment's own reverts (`countRunRevertedTxs`)
 
