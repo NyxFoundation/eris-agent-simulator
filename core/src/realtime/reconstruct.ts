@@ -1042,8 +1042,9 @@ export async function reconstructValueSeries(opts: {
     floorBlock: fromBlock,
   });
   for (const b of blocks) {
-    const isBoundary = boundaryIndex.has(b);
-    const stablePricesOverride = isBoundary ? await markMedian.at(b) : undefined;
+    const stablePricesOverride = boundaryIndex.has(b)
+      ? await markMedian.at(b)
+      : undefined;
     const snapshot = await readValueSnapshotAtBlock({
       publicClient,
       agents,
@@ -1053,7 +1054,7 @@ export async function reconstructValueSeries(opts: {
       blockNumber: b,
       horizonBlock: toBlock,
       refFairByBase,
-      ...(isBoundary ? { medianWindow: markMedian.window(b) } : {}),
+      ...(boundaryIndex.has(b) ? { medianWindow: markMedian.window(b) } : {}),
       ...(stablePricesOverride ? { stablePricesOverride } : {}),
     });
     failedReads += snapshot.failedReads;
