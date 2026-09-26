@@ -962,7 +962,7 @@ export async function grantErc20(
 // makes `funding.ethWei` the wallet's actual native balance (minus the gas of the WETH wrap below,
 // when the roster asks for base inventory) and makes the ERIS_ECONOMIC_GAS lower-bound check in
 // coordinator.ts validate the balance the agent really gets.
-const GAS_BUFFER_WEI = 5_000_000_000_000_000_000n; // 5 ETH
+export const GAS_BUFFER_WEI = 5_000_000_000_000_000_000n; // 5 ETH
 
 export async function fundWallet(
   publicClient: PublicClient,

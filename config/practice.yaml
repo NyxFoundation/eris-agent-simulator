@@ -107,6 +107,11 @@ flow:
   aaveActorSizeSigma: "1.0"
   baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC
+  # Issue #130: refill every flow wallet's token that fell below half its funded amount, every 300
+  # blocks (10 minutes). Funded once, a month of ~12 taker orders a block drains one side until the
+  # balance guards turn the flow one-way -- a market that looks like it is trending. The official
+  # regimes leave this off; their 360 blocks are calibrated on wallets funded once.
+  topUpEveryBlocks: 300
 
 # The LST's economic clock (issue #129). The default counts a block as an hour of staking, which the
 # official 360-block regimes were calibrated on: an epoch is 15 days of yield, ~0.12% at 3%/yr. Over

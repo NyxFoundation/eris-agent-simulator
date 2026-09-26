@@ -17,7 +17,11 @@
  */
 import { createInterface } from "node:readline";
 import { Rng } from "@eris/sdk/rng.js";
-import { buildFlowOrders, type FlowContextWire } from "./logic.js";
+import {
+  buildFlowOrders,
+  type FlowContextWire,
+  type FlowGuardNote,
+} from "./logic.js";
 import { safeStringify } from "@eris/sdk/logger.js";
 
 const flowSeed = Number(process.env.ERIS_FLOW_SEED ?? "1");
@@ -34,8 +38,13 @@ const rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   try {
     const ctx = JSON.parse(line) as FlowContextWire;
-    const orders = buildFlowOrders(rng, ctx);
-    process.stdout.write(`${safeStringify(orders)}\n`);
+    const guards: FlowGuardNote[] = [];
+    const orders = buildFlowOrders(rng, ctx, guards);
+    // Issue #130: when a balance guard changed an order, say so alongside the orders. A block with
+    // none keeps the bare array, so the common line is byte-identical to before.
+    process.stdout.write(
+      `${safeStringify(guards.length > 0 ? { orders, guards, round: ctx.round } : orders)}\n`,
+    );
   } catch (error) {
     process.stderr.write(
       `flow bot error: ${error instanceof Error ? error.message : String(error)}\n`,

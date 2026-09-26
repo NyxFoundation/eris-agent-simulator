@@ -13,6 +13,7 @@ import {
   fundWallet,
   getBalances,
   fundAddress,
+  GAS_BUFFER_WEI,
   isPermissionlesslyMintable,
   makeClients,
   mine,
@@ -190,6 +191,13 @@ import type { LstState } from "@eris/sdk/protocols/lst.js";
 import type { LiquityState } from "@eris/sdk/protocols/liquity.js";
 import { VulnSchedule } from "./vulnEvents.js";
 import { SubmittedLedger } from "./submittedLedger.js";
+import {
+  FLOW_TELEMETRY_BLOCKS,
+  FlowGuardLog,
+  planFlowTopUp,
+  type FlowWalletHoldings,
+} from "./flowWallets.js";
+import type { FlowContextWire } from "../flow/logic.js";
 import {
   deployVulnPools,
   fundVulnPoolsAt,
@@ -1919,6 +1927,98 @@ export async function runRealtimeSimulation(
     // What `agents_ready` measures boot time from (issue #94).
     const agentsSpawnedAt = Date.now();
 
+    // ---- flow wallets over a long period (issue #130): guards, balances, top-ups ----
+    const flowGuardLog = new FlowGuardLog();
+    // The trading flow wallets (`<protocol>:<informed|uninformed>`): the ones the balance guards
+    // protect. The Aave borrower actors and the whale move their balances on purpose and are left out.
+    const tradingFlowWallets = [...flowWalletMap.entries()].filter(([key]) =>
+      /^[a-z]+:(informed|uninformed)$/.test(key),
+    );
+    const flowTelemetryEvery =
+      config.flowTopUpEveryBlocks > 0
+        ? config.flowTopUpEveryBlocks
+        : FLOW_TELEMETRY_BLOCKS;
+    const flowWalletTelemetry = async (
+      bn: number,
+      flowContext: FlowContextWire,
+    ): Promise<void> => {
+      const ethWei = await Promise.all(
+        tradingFlowWallets.map(([, w]) =>
+          publicClient.getBalance({ address: w.address }),
+        ),
+      );
+      const holdings = new Map<string, FlowWalletHoldings>();
+      const wallets: Record<string, unknown> = {};
+      tradingFlowWallets.forEach(([key], i) => {
+        const b = flowContext.flowBalances?.[key];
+        const h: FlowWalletHoldings = {
+          ethWei: ethWei[i],
+          wethWei: BigInt(b?.wethWei ?? "0"),
+          usdcUnits: BigInt(b?.usdcUnits ?? "0"),
+          bases: Object.fromEntries(
+            Object.entries(b?.bases ?? {}).map(([sym, v]) => [sym, BigInt(v)]),
+          ),
+        };
+        holdings.set(key, h);
+        wallets[key] = {
+          ethWei: h.ethWei.toString(),
+          wethWei: h.wethWei.toString(),
+          usdcUnits: h.usdcUnits.toString(),
+          ...(b?.bases ? { bases: b.bases } : {}),
+        };
+      });
+      logger.event({
+        type: "flow_balances",
+        blockNumber: bn,
+        wallets,
+        // How often each balance guard changed an order since the last row, per wallet and base.
+        guardCounts: flowGuardLog.drain(),
+        topUpEveryBlocks: config.flowTopUpEveryBlocks,
+      });
+      if (config.flowTopUpEveryBlocks <= 0) return;
+      const target = {
+        // fundAddress restores native ETH to flowEthWei + its gas buffer whenever it runs.
+        ethWei: config.flowEthWei + GAS_BUFFER_WEI,
+        wethWei: config.flowWethWei,
+        usdcUnits: config.flowUsdcUnits,
+        bases: config.flowBaseAmounts,
+      };
+      for (const [key, w] of tradingFlowWallets) {
+        const plan = planFlowTopUp(holdings.get(key)!, target);
+        if (!plan) continue;
+        try {
+          // Through the same path the setup funded them: a cheatcode grant on anvil, a treasury
+          // transfer of the shortfall on an external chain. Only the tokens below their floor are
+          // passed, so nothing above it is reset. ETH is passed every time on purpose: on anvil
+          // fundAddress *assigns* the native balance, and it only ever falls (gas), so this is a
+          // raise -- passing 0 would set it to the bare gas buffer.
+          await fundAddress(
+            publicClient,
+            walletClient,
+            chain,
+            w.address,
+            config.flowEthWei,
+            plan.wethWei,
+            plan.usdcUnits,
+            plan.bases,
+          );
+          logger.event({
+            type: "flow_wallet_topped_up",
+            blockNumber: bn,
+            wallet: key,
+            refilled: plan.refilled,
+          });
+        } catch (error) {
+          logger.event({
+            type: "flow_wallet_top_up_failed",
+            blockNumber: bn,
+            wallet: key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    };
+
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
       const submitted: Hex[] = [];
@@ -1955,7 +2055,19 @@ export async function runRealtimeSimulation(
       }
       return submitted;
     };
-    flowProcess.onOrders((orders) => void handleFlowOrders(orders));
+    flowProcess.onOrders((orders, guards, round) => {
+      // Issue #130: the first time in a telemetry interval that a balance guard changes a wallet's
+      // order, say so; flow_balances carries the counts for the whole interval.
+      for (const n of flowGuardLog.record(guards))
+        logger.event({
+          type: "flow_guard",
+          blockNumber: round,
+          wallet: `${n.protocol}:${n.kind}`,
+          base: n.base,
+          guard: n.guard,
+        });
+      void handleFlowOrders(orders);
+    });
 
     // ---- write mined-block txs to blocks.csv (attribution by from-address lookup; ADR 0006 §4) ----
     // Removed from the realtime loop and scanned in bulk over all blocks after the run ends (the same "off the
@@ -3003,6 +3115,10 @@ export async function runRealtimeSimulation(
                     stage: "flow_context_queued", sizeMult: schedule.flowTrendAt(blockIndex).sizeMult,
                   });
               }
+              // Issue #130: the flow wallets' balances into the run record (and refilled, when the
+              // config asks), from the balances this context was just built on.
+              if (bn > runStartBlock && (bn - runStartBlock) % flowTelemetryEvery === 0)
+                await flowWalletTelemetry(bn, flowContext);
             }
           };
 

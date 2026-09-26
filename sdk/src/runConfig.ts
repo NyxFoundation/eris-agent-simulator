@@ -155,6 +155,9 @@ const SCHEMA: Record<string, string> = {
   "flow.gmxSizeSigma": "ERIS_GMX_SIZE_SIGMA",
   "flow.aaveActorSizeSigma": "ERIS_AAVE_ACTOR_SIZE_SIGMA",
   "flow.seed": "FLOW_SEED",
+  // Issue #130: top the flow wallets back up every N blocks (0 = never, the default -- the official
+  // regimes are calibrated on wallets funded once). Balances are logged on the same cadence either way.
+  "flow.topUpEveryBlocks": "ERIS_FLOW_TOPUP_EVERY_BLOCKS",
   "flow.botCommand": "FLOW_BOT_COMMAND",
   "flow.botArgs": "FLOW_BOT_ARGS",
   // stress

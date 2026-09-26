@@ -251,6 +251,11 @@ export type SimConfig = {
   // sell side (issue #112: 25k USDC is ~8 WETH at $3,000, and a x3 hold buys ~50 WETH per venue).
   // Default = initialUsdcUnits, so a config that does not set it funds the flow as before.
   flowUsdcUnits: bigint;
+  // Issue #130: every N blocks, refill any flow-wallet balance that has fallen below half its funded
+  // amount back to that amount. 0 (default) = funded once, as the official regimes are calibrated.
+  // A month-long period needs it: ~12 flow txs a block, every one a taker, and any net lean drains
+  // one side until the balance guards turn the flow one-directional.
+  flowTopUpEveryBlocks: number;
   initialWethWei: bigint;
   // ADR 0013: base symbol -> initial distribution amount (token units). WETH equals initialWethWei
   // for compatibility. Additional bases are read from INITIAL_<SYM>_<UNIT> (e.g. INITIAL_WBTC_SATS),
@@ -499,6 +504,7 @@ export function loadConfig(env = process.env): SimConfig {
       env.FLOW_USDC_UNITS,
       bigintEnv(env.INITIAL_USDC_UNITS, 25_000_000_000n),
     ),
+    flowTopUpEveryBlocks: Math.max(0, intEnv(env.ERIS_FLOW_TOPUP_EVERY_BLOCKS, 0)),
     defaultPriorityFeeWei: bigintEnv(
       env.DEFAULT_PRIORITY_FEE_WEI,
       100_000_000n,
