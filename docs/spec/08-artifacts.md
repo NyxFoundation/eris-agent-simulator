@@ -111,7 +111,7 @@ runs/
 | `run_started_realtime` | run の開始。**seed / flowSeed / epochBlocks / rpcUrl / chainId / chainMode を含む**。セグメント時は各セグメント冒頭にも出る |
 | `run_completed` | 完了 |
 | `deployment_check` | デプロイの実測（chainId / checked / missing） |
-| `gmx_funding_check` | ローカルデプロイの GMX 各市場の `FUNDING_INCREASE_FACTOR_PER_SECOND` と `fundingModeled`（ok / markets）。funding の無い deploy・state dump（gmx-localhost.patch の a35cf3e 以前）はここで停止 |
+| `gmx_funding_check` | ローカルデプロイの GMX 各市場の `FUNDING_INCREASE_FACTOR_PER_SECOND` と `fundingModeled`（ok / enforcement / markets）。funding の無い deploy・state dump（gmx-localhost.patch の a35cf3e 以前）は anvil ではここで停止、リセットしない external（練習 devnet）では警告して続行 |
 | `agents_registered` | ロスター全体（id / address / baseline / description / external） |
 | `agent_external_registered` | 外部参加者の登録（環境は起動しない） |
 | `agent_process_exited` | エージェントプロセスの異常終了 |

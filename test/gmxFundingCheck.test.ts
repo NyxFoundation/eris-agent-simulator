@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import type { Address } from "viem";
 import {
   gmxFundingCheck,
+  gmxFundingEnforcement,
   gmxFundingMissingMessage,
   readGmxFundingConfig,
 } from "../core/src/realtime/gmxFunding.js";
@@ -83,6 +84,46 @@ test("a config that cannot be read fails rather than passing as 'could not tell'
     gmxFundingMissingMessage(check),
     /Could not read GMX's funding configuration/,
   );
+});
+
+test("anvil stops on a missing funding config; the never-reset external chain only warns", () => {
+  const unmodeled = gmxFundingCheck([
+    { base: "WETH", market: ETH, fundingIncreaseFactorPerSecond: 0n },
+  ]);
+  const unread = gmxFundingCheck([
+    { base: "WETH", market: ETH, error: "execution reverted" },
+  ]);
+  const modeled = gmxFundingCheck([
+    { base: "WETH", market: ETH, fundingIncreaseFactorPerSecond: PATCHED },
+  ]);
+  // backtest / sim:realtime: the chain is rebuilt from a dump, so re-baking is the fix.
+  assert.equal(gmxFundingEnforcement(unmodeled, "anvil"), "fail");
+  assert.equal(gmxFundingEnforcement(unread, "anvil"), "fail");
+  // Practice devnet: nothing to re-bake mid-period, and stopping would end the period.
+  assert.equal(gmxFundingEnforcement(unmodeled, "external"), "warn");
+  assert.equal(gmxFundingEnforcement(unread, "external"), "warn");
+  // A deployment that models funding passes in both.
+  assert.equal(gmxFundingEnforcement(modeled, "anvil"), "pass");
+  assert.equal(gmxFundingEnforcement(modeled, "external"), "pass");
+});
+
+test("the external-chain message says it continues and names the fix for the next deployment", () => {
+  const check = gmxFundingCheck([
+    { base: "WETH", market: ETH, fundingIncreaseFactorPerSecond: 0n },
+  ]);
+  const external = gmxFundingMissingMessage(check, "external");
+  assert.match(external, /GMX funding is not modeled on this deployment/);
+  assert.match(external, /Continuing anyway/);
+  assert.match(external, /never reset/);
+  assert.match(external, /npm run deploy -- --keep-fresh/);
+  assert.match(external, /gen:local-constants/);
+  // Re-baking a state dump is not a fix for a chain that is not loaded from one.
+  assert.doesNotMatch(external, /gen:state-dump/);
+  // The anvil message (the default) keeps the re-bake instruction and does not claim to continue.
+  const anvil = gmxFundingMissingMessage(check);
+  assert.equal(anvil, gmxFundingMissingMessage(check, "anvil"));
+  assert.match(anvil, /gen:state-dump/);
+  assert.doesNotMatch(anvil, /Continuing anyway/);
 });
 
 test("the reader asks the DataStore for gmxKeys' increase-factor key of every market", async () => {
