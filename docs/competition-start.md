@@ -289,11 +289,11 @@ ETH を担保に預けて、新しく発行されるドル建てのトークン 
 
 逆に、メインネットでは資本や権限の壁があって試しにくいことが、ここでは普通にできます。参照エージェントは `example/agents/` にあります。**この節は上級者向けの例で、最初のエージェントには要りません。**
 
-- **自分のコントラクトをデプロイする（チェーンに置く）。** 宛先（`to`）を省き、コンパイル済みのコード（forge artifact）を載せた `rawTx` がデプロイです（`example/agents/lib/deployContract.ts`。forge artifact は提出 zip に同梱されます）。複数 venue をまたぐ原子的な（atomic = 全部成功するか全部取り消されるかのどちらか）裁定は、これで自分のコントラクトに書きます（規約 §0.1: バンドルは原子性を保証しません）。Aave のフラッシュローンも有効です（`flash-arb` が `flashLoanSimple` を `rawTx` で呼び出します）。**ただし自分のコントラクトの中に残した資産は、エポック終了時に 0 と評価されます**（環境が値付けできないものは 0。規約 §4.1）。通り抜けた利益は満額数えるので、エポックが終わる前に引き出してください
+- **自分のコントラクトをデプロイする（チェーンに置く）。** 宛先（`to`）を省き、コンパイル済みのコード（forge artifact）を載せた `rawTx` がデプロイです（`example/agents/lib/deployContract.ts`。forge artifact は提出 zip に同梱されます）。複数 venue をまたぐ原子的な（atomic = 全部成功するか全部取り消されるかのどちらか）裁定は、これで自分のコントラクトに書きます（規約 §0.1: バンドルは原子性を保証しません）。Aave のフラッシュローンも使えます（受け取るコントラクトは自分で置きます。参照の `flash-arb` の扱いは Aave の節）。**ただし自分のコントラクトの中に残した資産は、エポック終了時に 0 と評価されます**（採点はエージェントのアドレスが直接持つ残高とポジションだけを数えるため。規約に明文は無く、評価コードの規則）。通り抜けた利益は満額数えるので、エポックが終わる前に引き出してください
 - **自分で市場を作る、流動性を出す。** Uniswap V3 の新しいプールを作れます（`createPool`）。既存プールへの LP（`mintLiquidity` / `removeLiquidity` / `collectFees`。参照 `lp-provider`）も同じです。環境の注文フローは自作プールには来ないので、相手は他の参加者だけです。`launch` 以外の公式レジームには新しい市場の一覧（登録簿 `obs.registry`）が無いので、他の参加者があなたのプールを見つけるのは、チェーンを自分で読んだときだけです。許可不要レンディング（`createLendingMarket`）は検証用レジーム（`config/regimes/agent-markets.yaml`）にしかありません
 - **脆弱なコントラクトを意図的に置く、他人のコントラクトを攻める。** 他の参加者のエージェント・コントラクト・市場構造の弱点を突くのは競技の一部です（規約 §8。対象は運営が配置したプロトコルと他の参加単位に限ります = 規約 §3.1）。参照 `vault-keeper`（資金を引き出す関数 `rescue()` に呼び出し制限を付け忘れた `LeakyVault` を置いて USDC を入れる側）と `exploit-hunter`（他人の未知コントラクトのバイトコード = チェーン上のコンパイル済みコードから関数の識別子（selector）を復元し、1 tx で資金を抜く側）。実測は hunter +9,999.9 / vault-keeper −10,000.2 で、預けた 10,000 USDC が丸ごと移りました。`launch` 以外の公式レジームでは登録簿が無いので、見つける側はチェーンを自分で走査します。逆に環境のコントラクトは、所有者（owner）しか呼べない書き込みがきちんと塞がれているか、起動時に実測されます。自分の 2 件の提出の間で資産を移すのは自己取引として禁止です（規約 §8）
 - **他人のポジションを清算・償還する。** Aave の `liquidationCall` を `rawTx` で（`liquidator`）、Liquity の `liquityLiquidate` と Stability Pool の引受（`sp-underwriter`）、eUSD の償還（`liquityRedeem`。`redemption-arb`）
-- **レバレッジを掛ける。** GMX の perp（`gmxIncrease` / `gmxDecrease`。注文は環境の keeper が次ブロック以降に執行します）、Aave の借入、Liquity の Trove、LST を担保にした ETH 借入（`lst-carry`）
+- **レバレッジを掛ける。** GMX の perp（`gmxIncrease` / `gmxDecrease`。注文は環境の keeper が次ブロック以降に執行します）、Aave の借入、Liquity の Trove、ERLST を担保にした WETH 借入（`lst-carry`）
 - **ブロック内の位置を買う。** アクションの `maxPriorityFeePerGasWei` で入札します。直近ブロックで他者が払った最大値は `obs.competition.maxCompetitorPriorityFeeWei` に出ます
 - **途中で現れるプールを検査してから触る。** レジーム 7 では運営がエポックの途中にプールを置き、その一部は資産を差し引きます（規約 §3.2）。`obs.discoveredPools` にアドレス・code hash（コードの指紋。中身が同じなら同じ値）・残高と価格が出ます。`discovery-arb-verify` は dry-run で検証してから取り、`discovery-arb` は検証せずに取ります。実測は無検証 −5,306 / 検証側 +721 です
 - **走行中に戦略を書き換える。** §5 のとおり、LLM が取引経路の外でコードを改訂します
@@ -685,7 +685,7 @@ npm run dashboard        # http://localhost:5173
 | 裁定 | `multi-arb` | WETH でも WBTC でも動く venue 間裁定。2 つの取引所で買いと売りを同時に出す（2-leg）か、参照価格からずれた 1 か所だけで取引する（片 leg）かを使い分ける | AMM 3 venue | 同上 | 有 |
 | 裁定 | `stat-arb` | 資産ごとに参照価格からの乖離の履歴を取り、今の乖離が普段よりどれだけ大きいか（z-score）を見て、元に戻る方に賭ける | AMM | calm / informed-flow | 無 |
 | 裁定 | `max-profit-arb` | 期待利益から priority fee の上限を逆算して入札し、ブロック内の位置を買う | AMM | whale | 無 |
-| 裁定 | `flash-arb` | Aave のフラッシュローンで自己資本を超えるサイズの裁定を 1 tx で行う（`rawTx`） | Aave + AMM | whale / crash | 無 |
+| 裁定 | `flash-arb` | Aave のフラッシュローンで自己資本を超えるサイズの裁定を 1 tx で行う（`rawTx`）。受け取りコントラクトは雛形の設定（`run.flashArb: true`）でしか置かれないので、公式レジームではそのままでは revert する | Aave + AMM | whale / crash（受け取りコントラクトを自分で置いた場合） | 無 |
 | 裁定 | `basis-arb` | AMM の 1 leg を GMX の perp でヘッジする（現物と先物の乖離） | AMM + GMX | cex-drift | 有 |
 | LP | `lp-provider` | Uniswap V3 に建玉を置いて手数料を集め、乖離が大きいときは引き上げる | Uniswap | calm | 無 |
 | レバレッジ | `levered-long` | 手持ちを Aave の担保にして借り、配られた量より多くの WETH を持つ（レバレッジ）。HF を決めた範囲に保ち、下限を割ったら返済 | Aave | cex-drift（方向が出る）/ lending-incident・crash（守る側） | 無 |

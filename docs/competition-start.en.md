@@ -399,9 +399,10 @@ of them.**
   carrying compiled code (a forge artifact) is a deployment
   (`example/agents/lib/deployContract.ts`; the forge artifacts ship inside the submission zip). An
   atomic (either everything succeeds or everything is undone) arbitrage across several venues is written as your own contract this way (rules §0.1: a
-  bundle guarantees no atomicity). Aave flash loans are enabled (`flash-arb` calls `flashLoanSimple`
-  through `rawTx`). **But whatever is still inside your contract when the epoch ends is valued at 0**
-  (what the environment cannot price is 0; rules §4.1). Profit that passed through counts in full, so
+  bundle guarantees no atomicity). Aave flash loans are enabled (you deploy the receiving contract
+  yourself; the Aave section covers the reference `flash-arb`). **But whatever is still inside your
+  contract when the epoch ends is valued at 0** (scoring counts only the balances and positions your
+  agent's own address holds; the rules do not spell this out, it is the scoring code's rule). Profit that passed through counts in full, so
   withdraw before the epoch ends
 - **Make a market, provide liquidity.** You can create a new Uniswap V3 pool (`createPool`). Adding to
   an existing pool works the same way (`mintLiquidity` / `removeLiquidity` / `collectFees`; see
@@ -426,7 +427,7 @@ of them.**
   (`liquidator`), Liquity's `liquityLiquidate` and Stability Pool underwriting (`sp-underwriter`),
   eUSD redemption (`liquityRedeem`; `redemption-arb`)
 - **Use leverage.** GMX perps (`gmxIncrease` / `gmxDecrease`; orders are executed by the environment's
-  keeper from the next block on), Aave borrowing, a Liquity Trove, borrowing ETH against the LST
+  keeper from the next block on), Aave borrowing, a Liquity Trove, borrowing WETH against ERLST
   (`lst-carry`)
 - **Buy your position in the block.** Bid with `maxPriorityFeePerGasWei` on the action. The highest fee
   anyone else paid in the most recent block is `obs.competition.maxCompetitorPriorityFeeWei`
@@ -934,7 +935,7 @@ it works" is the regime whose environment gives the strategy something to do (§
 | Arbitrage | `multi-arb` | Cross-venue arbitrage on WETH or WBTC alike. Chooses between buying and selling on two exchanges at once (two-leg) and trading only the one venue that strays from the reference price (single-leg) | the 3 AMMs | same | yes |
 | Arbitrage | `stat-arb` | Tracks each asset's gap from the reference price, measures how unusual the current gap is against that history (a z-score) and bets on it closing | AMMs | calm / informed-flow | no |
 | Arbitrage | `max-profit-arb` | Derives a priority-fee ceiling from the expected profit and bids for position in the block | AMMs | whale | no |
-| Arbitrage | `flash-arb` | An Aave flash loan for arbitrage beyond its own capital, in one transaction (`rawTx`) | Aave + AMMs | whale / crash | no |
+| Arbitrage | `flash-arb` | An Aave flash loan for arbitrage beyond its own capital, in one transaction (`rawTx`). The receiver contract is deployed only under the example config (`run.flashArb: true`), so in the official regimes it reverts as it stands | Aave + AMMs | whale / crash (once you deploy a receiver yourself) | no |
 | Arbitrage | `basis-arb` | One AMM leg hedged on the GMX perp (spot against futures) | AMMs + GMX | cex-drift | yes |
 | LP | `lp-provider` | Holds a Uniswap V3 position for fees, pulls it when the gap gets large | Uniswap | calm | no |
 | Leverage | `levered-long` | Borrows on Aave against its own holdings to hold more WETH than it was given (leverage); keeps HF inside a chosen range and repays when it drops below | Aave | cex-drift (direction) / lending-incident, crash (defence) | no |
