@@ -396,9 +396,19 @@ export class EventSchedule {
     // schedule of the events around it.
     configs.forEach((c, i) => {
       if (c.alignWith === undefined) return;
-      const anchorIndex = this.events.findIndex(
-        (ev, j) => j !== i && ev.type === c.alignWith,
-      );
+      // The nearest entry of that type *above* this one in the list, else the first below it. With
+      // one anchor in the list that is the same event either way; with several (a practice period
+      // that schedules a crash every week, each with its own pull) each follower pairs with the
+      // anchor written just before it. Taking the first match instead put every pull of the period
+      // on week one's crash.
+      let anchorIndex = -1;
+      for (let j = i - 1; j >= 0; j--)
+        if (this.events[j].type === c.alignWith) {
+          anchorIndex = j;
+          break;
+        }
+      if (anchorIndex < 0)
+        anchorIndex = this.events.findIndex((ev, j) => j > i && ev.type === c.alignWith);
       if (anchorIndex < 0) {
         throw new Error(
           `stress event[${i}] has alignWith: "${c.alignWith}", but no event of that type is configured`,

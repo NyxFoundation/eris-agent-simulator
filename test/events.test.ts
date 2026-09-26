@@ -271,6 +271,36 @@ test("alignWith puts the pull on the crash's window rather than its own draw", (
   assert.ok(aligned.depthMultiplierAt(hold).WETH < 1);
 });
 
+test("with several anchors, each follower pairs with the one written just before it", () => {
+  // A practice period schedules a crash + pull every week. Pairing every pull with the first crash
+  // would stack all of them on week one and leave every later crash with a full book.
+  const week1: [number, number] = [0.1, 0.4];
+  const week2: [number, number] = [0.6, 0.9];
+  const s = new EventSchedule(
+    [
+      { ...FIXED_CRASH, windowFrac: week1 },
+      { ...FIXED_PULL, windowFrac: week1, alignWith: "crash" },
+      { ...FIXED_CRASH, windowFrac: week2 },
+      { ...FIXED_PULL, windowFrac: week2, alignWith: "crash" },
+    ],
+    11,
+    1000,
+  );
+  assert.notEqual(s.events[0].startBlock, s.events[2].startBlock);
+  assert.equal(s.events[1].startBlock, s.events[0].startBlock);
+  assert.equal(s.events[3].startBlock, s.events[2].startBlock);
+});
+
+test("a follower written before its anchor still finds it", () => {
+  // The single-anchor configs never depended on list order; that stays true.
+  const s = new EventSchedule(
+    [{ ...FIXED_PULL, alignWith: "crash" }, FIXED_CRASH],
+    3,
+    40,
+  );
+  assert.equal(s.events[0].startBlock, s.events[1].startBlock);
+});
+
 test("alignWith refuses what it cannot align", () => {
   // Sliding the follower earlier to make it fit would un-align the pair, which is the one thing
   // alignWith exists to guarantee -- so it is a config error, not a silent adjustment.
