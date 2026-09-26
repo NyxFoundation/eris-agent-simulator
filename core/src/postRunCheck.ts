@@ -1,10 +1,11 @@
 // Post-run rule checking (ADR 0006 §5). In direct mode the agent can bypass the
 // pre-flight validateAction check, so rule enforcement moves to a mechanical check
-// of the facts left on chain (blocks.csv). A priority fee over the cap is a
-// market-distorting violation affecting --order fees ordering, so on detection we
-// flag the offending agent and also invalidate that run (evaluate re-runs it).
+// of the facts left on chain (blocks.csv). A priority fee over the cap, or a
+// maxFeePerGas above the tip, is a market-distorting violation affecting --order fees
+// ordering, so on detection we flag the offending agent.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { checkFeeRule, type FeeRuleBreach } from "@eris/sdk/feeRule.js";
 import { BLOCKS_CSV_INDEX } from "./logger.js";
 
 export type FeeViolation = {
@@ -13,10 +14,24 @@ export type FeeViolation = {
   blockNumber: number;
   priorityFeeWei: string;
   maxPriorityFeeWei: string;
+  // Which half of the fee rule (sdk/src/feeRule.ts) the tx broke. A summary.json written before
+  // the maxFeePerGas half existed has no `kind`: every violation in it is over-cap.
+  kind: FeeRuleBreach["kind"];
+  // The signed maxFeePerGas, when blocks.csv recorded it.
+  maxFeePerGasWei?: string;
 };
 
-// Pure function detecting priority fee cap violations from the agent rows of blocks.csv.
-// The fee comes from the on-chain tx field (not self-reported), so it cannot be tampered with.
+// Pure function detecting fee-rule violations from the agent rows of blocks.csv. The fees come
+// from the on-chain tx fields (not self-reported), so they cannot be tampered with.
+//
+// Two halves (sdk/src/feeRule.ts):
+//   over-cap           the tip -- for a legacy tx, the gasPrice -- is above the cap. The oracle
+//                      update is sent at cap + 1 gwei so that nothing an agent bids can precede it.
+//   max-fee-above-tip  maxFeePerGas above the tip. anvil orders on maxFeePerGas and at base fee 0 the
+//                      tx pays only the tip, so the excess bought position that was never paid for
+//                      -- measured ahead of the oracle update while paying 0.1 gwei/gas. Checked
+//                      only where blocks.csv has the maxFeePerGasWei column (older runs cannot be).
+// A cap of 0 disables the first half only (the economic gas profile retires the cap, ADR 0011 §2).
 export function checkFeeViolations(
   blocksCsv: string,
   maxPriorityFeeWei: bigint,
@@ -27,21 +42,35 @@ export function checkFeeViolations(
     if (line.length === 0) continue;
     const cols = line.split(",");
     if (cols[I.role] !== "agent") continue;
-    let fee: bigint;
+    let tip: bigint;
     try {
-      fee = BigInt(cols[I.priorityFeeWei]);
+      tip = BigInt(cols[I.priorityFeeWei]);
     } catch {
       continue;
     }
-    if (fee > maxPriorityFeeWei) {
-      violations.push({
-        ownerId: cols[I.ownerId],
-        hash: cols[I.hash],
-        blockNumber: Number(cols[I.blockNumber]),
-        priorityFeeWei: cols[I.priorityFeeWei],
-        maxPriorityFeeWei: maxPriorityFeeWei.toString(),
-      });
+    let maxFee: bigint | undefined;
+    const rawMaxFee = cols[I.maxFeePerGasWei];
+    if (rawMaxFee !== undefined && rawMaxFee !== "") {
+      try {
+        maxFee = BigInt(rawMaxFee);
+      } catch {
+        maxFee = undefined;
+      }
     }
+    const breach = checkFeeRule(
+      { maxPriorityFeePerGas: tip, maxFeePerGas: maxFee },
+      maxPriorityFeeWei,
+    );
+    if (!breach) continue;
+    violations.push({
+      ownerId: cols[I.ownerId],
+      hash: cols[I.hash],
+      blockNumber: Number(cols[I.blockNumber]),
+      priorityFeeWei: cols[I.priorityFeeWei],
+      maxPriorityFeeWei: maxPriorityFeeWei.toString(),
+      kind: breach.kind,
+      ...(maxFee === undefined ? {} : { maxFeePerGasWei: maxFee.toString() }),
+    });
   }
   return violations;
 }

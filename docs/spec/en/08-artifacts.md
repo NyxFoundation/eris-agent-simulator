@@ -163,12 +163,16 @@ The columns are owned by `BLOCKS_CSV_COLUMNS` (`core/src/logger.ts:8`).
 | `blockNumber` | |
 | `txIndex` | Position in the block. **0 is first** |
 | `hash` / `from` | |
-| `priorityFeeWei` | **From the on-chain transaction field**, not self-reported — which is what makes the post-hoc check meaningful |
+| `priorityFeeWei` | **From the on-chain transaction field**, not self-reported — which is what makes the post-hoc check meaningful. For a legacy / 0x01 tx, its `gasPrice` (at base fee 0 the whole price is the priority fee; it used to record 0 and pass the cap check) |
 | `status` | `success` or otherwise (`mined` when the receipt could not be fetched) |
 | `ownerId` / `role` | Attribution (`agent` / `uninformed-flow` / `informed-flow` / `system`) |
 | `actionType` | **Exists only for transactions the environment sent** (the sender's intent). An agent's transactions read `direct` |
 | `bundleId` / `bundleIndex` | Bundles |
 | `method` | **The function name decoded from calldata** (`sdk/src/methodSelectors.ts`) |
+| `gasUsed` | Gas actually burned, from the receipt (the issue #40 T0 gas budget check) |
+| `maxFeePerGasWei` | **The signed `maxFeePerGas`** (for a legacy / 0x01 tx, its `gasPrice`). This is the key anvil orders the block by ([03 §3.1.6](03-market.md)); read together with `priorityFeeWei` it detects fee-rule breaches (maxFeePerGas above the tip). Absent in earlier runs |
+
+Columns are **appended at the end** (`gasUsed` and `maxFeePerGasWei` too), so readers that go by position (`BLOCKS_CSV_INDEX`, the dashboard, the Python scripts) keep working on older runs.
 
 **Why `method` exists beside `actionType`** (ADR 0021 §4): `actionType` only exists for environment transactions. Joining against agents' self-reported logs works only while the coordinator is the thing starting the agents, so every external participant's transaction reads `direct` — **the least information exactly where the traffic is heaviest**. Calldata decoding works for every transaction.
 

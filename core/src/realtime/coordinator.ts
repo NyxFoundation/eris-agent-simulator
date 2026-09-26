@@ -30,7 +30,11 @@ import {
 } from "@eris/sdk/chain.js";
 import { RUN_START_FILE, writeRunStart } from "@eris/sdk/runStart.js";
 import { spawnSync } from "node:child_process";
-import { RunLogger, type RunArtifactWriter } from "../logger.js";
+import {
+  RunLogger,
+  txFeeColumns,
+  type RunArtifactWriter,
+} from "../logger.js";
 import {
   SegmentedRun,
   segmentAgentRecord,
@@ -2160,8 +2164,9 @@ export async function runRealtimeSimulation(
           txIndex: tx.transactionIndex,
           hash: tx.hash,
           from: tx.from,
-          // the fee's authority is the on-chain tx field (the basis for post-run checks; not self-reported)
-          priorityFeeWei: tx.maxPriorityFeePerGas ?? meta?.priorityFeeWei ?? 0n,
+          // the fee's authority is the on-chain tx fields (the basis for post-run checks; not
+          // self-reported). Both the tip and maxFeePerGas: anvil orders the block on the latter.
+          ...txFeeColumns(tx, meta?.priorityFeeWei),
           status,
           ownerId: owner.ownerId,
           role: owner.role,
@@ -3788,12 +3793,15 @@ export async function runRealtimeSimulation(
       };
     }
 
-    // ---- post-run rule check (ADR 0006 §5): exceeding the fee cap is grounds for invalidating a run ----
+    // ---- post-run rule check (ADR 0006 §5): the fee rule (sdk/src/feeRule.ts) over agent rows ----
     // Under economic gas (ADR 0011 §2), priority-fee cap enforcement is retired (agents bid freely per their
-    // opportunity valuation, and whoever values it higher executes first = realistic priority gas auction) → violations is empty.
-    const violations = config.economicGas
-      ? []
-      : checkRunFeeViolations(logger.runDir, config.maxPriorityFeeWei);
+    // opportunity valuation, and whoever values it higher executes first = realistic priority gas auction),
+    // so the cap half is off (cap 0). The maxFeePerGas <= tip half stays on in every profile: it is what
+    // makes that auction one -- without it a bid is ordered by a number it does not pay.
+    const violations = checkRunFeeViolations(
+      logger.runDir,
+      config.economicGas ? 0n : config.maxPriorityFeeWei,
+    );
 
     // The environment's own shocks must not fail quietly. A whale is submitted through the ordinary
     // relay, so a *submission* error is caught and logged -- but an on-chain revert is not one: the
@@ -3821,10 +3829,18 @@ export async function runRealtimeSimulation(
     if (config.economicGas) {
       logger.event({
         type: "fee_cap_enforcement_disabled",
-        note: "ADR 0011 §2: the economic gas profile does not enforce a priority-fee cap",
+        note:
+          "ADR 0011 §2: the economic gas profile does not enforce a priority-fee cap; " +
+          "maxFeePerGas above the tip is still a violation",
       });
-    } else if (violations.length > 0) {
+    }
+    if (violations.length > 0) {
       logger.event({ type: "rule_violations_detected", violations });
+      const offenders = [...new Set(violations.map((v) => v.ownerId))];
+      console.error(
+        `[rules] ${violations.length} fee-rule violation(s) by ${offenders.join(", ")} ` +
+          "(over the priority-fee cap, or maxFeePerGas above the tip); see rule_violations_detected",
+      );
     }
 
     // Gas budget (issue #40 T0). Checked whatever the fee profile is: the fee cap is about ordering

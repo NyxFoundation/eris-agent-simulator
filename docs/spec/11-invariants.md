@@ -67,14 +67,17 @@
 
 ## 11.3 事後検査
 
-### 手数料上限（`core/src/postRunCheck.ts`）
+### 手数料ルール（`core/src/postRunCheck.ts`）
 
-**direct 送信ではエージェントが事前検証を迂回できる**ので、ルール執行はチェーンに残った事実の機械的検査へ移す。
+**direct 送信ではエージェントが事前検証を迂回できる**ので、ルール執行はチェーンに残った事実の機械的検査へ移す。ルール本体は `sdk/src/feeRule.ts`（[03 §3.1.6](03-market.md)）。
 
-- `blocks.csv` の `role === "agent"` の行を走査し、`priorityFeeWei > maxPriorityFeeWei` を違反として記録する
+- `blocks.csv` の `role === "agent"` の行を走査し、次を違反（`kind`）として記録する
+  - `over-cap`: `priorityFeeWei > maxPriorityFeeWei`（legacy / 0x01 の行は `gasPrice` が入っている）
+  - `max-fee-above-tip`: `maxFeePerGasWei > priorityFeeWei`。anvil は maxFeePerGas で並べ、base fee 0 では tip しか払わないので、差額は**払っていない順位**を買っている。`maxFeePerGasWei` 列の無い過去 run では検査できない
 - **手数料はオンチェーンの tx フィールド由来**なので改竄できない
-- 上限超過は `--order fees` の順序を歪める市場歪曲行為なので、当該エージェントを記録すると同時に **run 自体を無効化する**
-- `economicGas` プロファイルでは上限強制自体が退役しているので `violations` は空になり、`fee_cap_enforcement_disabled` を emit する
+- どちらも `--order fees` の順序を歪める市場歪曲行為なので、当該エージェントを `rule_violations_detected` と summary の `violations` に記録し、backtest ではフラグにする（判断は運営。規約 §8）
+- `economicGas` プロファイルでは**上限の半分だけ**が退役する（上限 0 で検査し、`fee_cap_enforcement_disabled` を emit）。maxFeePerGas > tip は全プロファイルで違反 — これが無いと入札は払わない数字で並ぶので、自由入札のオークションが成り立たない
+- 入口側は RPC ゲートウェイが同じルールで拒否する（403 / `-32003`、`RPC_MAX_PRIORITY_FEE_WEI`。`infra/rpc-gateway/README.md`）。事後検査は、ゲートウェイを通らずノードへ直接送った tx に対する権威
 
 ### 環境自身の revert（`countRunRevertedTxs`）
 

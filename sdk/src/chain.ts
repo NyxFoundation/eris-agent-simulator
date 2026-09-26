@@ -15,6 +15,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { erc20Abi, wethAbi } from "./abis.js";
 import { MULTICALL3, TOKENS } from "./constants.js";
+import { participantFees } from "./feeRule.js";
 import { baseTokens, tokenInfo } from "./markets.js";
 import { isParStable } from "./stables.js";
 import type { BalanceSnapshot, TokenSymbol } from "./types.js";
@@ -652,8 +653,10 @@ export async function sendAndMine(
     to: tx.to,
     data: tx.data,
     value: tx.value ?? 0n,
-    maxFeePerGas: baseFee + 1_000_000_000n,
-    maxPriorityFeePerGas: 1_000_000_000n,
+    // Both fields baseFee + 1 gwei (sdk/src/feeRule.ts). A self-hosted agent grants its venue
+    // approvals through this, through the RPC gateway, which refuses maxFeePerGas above the tip. The
+    // price paid and the order key are what they were (baseFee + 1 gwei); only the tip field moved.
+    ...participantFees(1_000_000_000n, baseFee),
   });
   // On an external chain the sequencer decides when this lands; the wait is the whole mechanism
   // (issue #33 (2)). Every setup path here reads back the state the tx wrote, so returning before

@@ -68,7 +68,8 @@ export function scoresFromSummary(
     const flags: string[] = [];
     if (offenders.has(id))
       flags.push(
-        "priority fee cap violation (rules §8; for the operator to judge)",
+        "priority fee rule violation: over the cap, or maxFeePerGas above the tip " +
+          "(rules §2.6 / §8; for the operator to judge)",
       );
     if (agent.processExitedEarly !== undefined)
       flags.push(`process exited early: ${agent.processExitedEarly}`);
