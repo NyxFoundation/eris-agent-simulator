@@ -73,9 +73,10 @@ once rather than twice. The unit it names is `ascon-devnet.service` (`infra/devn
 
 ## eris-exporter (domain + chain metrics)
 
-`exporter/exporter.py` reads the newest `runs/<id>/` (events.jsonl for flow tx + crashes + round
-lag; each `agents/<id>.jsonl` for that agent's submissions; intervals.jsonl, or epochs.jsonl from a
-coordinator started before issue #140) and probes the chain RPC,
+`exporter/exporter.py` reads the newest `runs/<id>/` -- for a practice period, the segment its
+`current-segment` names, since the period directory itself holds none of these files -- (events.jsonl
+for flow tx + crashes + round lag; each `agents/<id>.jsonl` for that agent's submissions;
+intervals.jsonl, or epochs.jsonl from a coordinator started before issue #140) and probes the chain RPC,
 writing a Prometheus textfile that node-exporter serves (delivering via a shared file avoids scraping
 this host-networked process across the host firewall; host networking is only needed so it can reach
 anvil on 127.0.0.1). Every metric carries an `env="live|test"` label (`ASCON_ENV`). Metrics:

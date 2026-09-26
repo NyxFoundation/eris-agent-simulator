@@ -16,7 +16,24 @@ ENV = os.environ.get("ASCON_ENV", "live")
 
 def latest_run():
     ds = glob.glob(RUNS + "/*/")
-    return max(ds, key=os.path.getmtime).rstrip("/") if ds else None
+    if not ds:
+        return None
+    run = max(ds, key=os.path.getmtime).rstrip("/")
+    # A practice period (ADR 0021 §6) writes runs/<competition>/<segment>/ and names the segment
+    # being written in <competition>/current-segment. The competition directory itself holds no
+    # events.jsonl, so reading it reported 0 tx, 0 agents and interval -1 for the whole period.
+    marker = os.path.join(run, "current-segment")
+    if os.path.exists(marker):
+        try:
+            seg = os.path.join(run, os.path.basename(open(marker).read().strip()))
+            if os.path.isdir(seg):
+                return seg
+        except Exception:
+            pass
+        segs = [d.rstrip("/") for d in glob.glob(run + "/*/")]
+        if segs:
+            return max(segs, key=os.path.getmtime)
+    return run
 
 def rpc(method, params):
     req = urllib.request.Request(RPC, data=json.dumps(
