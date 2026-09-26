@@ -121,15 +121,42 @@ The chain is reachable and has not produced a block in ten minutes. It fires aft
 `ascon_chain_up == 1` guard keeps it quiet when the node itself is gone, because that is the other
 rule's alert and two pages for one fault is how a channel gets muted.
 
+## A month on one anvil (issue #135)
+
+Measured on a 16-vCPU box (anvil 1.8.1) with `config/practice.yaml`'s load — nine resident agents,
+the official flow, every venue — for four hours, beside synthetic runs of up to 20,000 blocks. The
+numbers are in the issue #135 PR; what they decided is in the compose file:
+
+- **Unbounded, anvil keeps every transaction.** Receipt, logs and call trace, ~37 KB each, in memory
+  and in every dump. The practice load grew the dump ~0.9 MB and anvil's memory ~1.7 MB a block.
+- **Mining stops while the dump is written.** `--state-interval 300` dumps every five minutes, and the
+  block interval showed a gap each time: 9 s an hour in, 18 s two hours in, growing with the dump. A
+  month (~1.5M blocks) is a dump of a terabyte, written back to back — a chain that is frozen, not one
+  that is slow.
+- **`--transaction-block-keeper 300 --prune-history 300`** keeps the last ten minutes of transactions
+  and of states. The dump levels off (it did at 1,800 blocks too — at 1.7 GB with a 13 s stall, which
+  is why the window is 300). Every reader is inside ten minutes; an explorer indexer that falls further
+  behind loses what it had not read, and a participant's `eth_call` / `eth_getLogs` / receipt older
+  than ten minutes returns nothing (docs/guide/practice-devnet.md says so).
+- **Not bounded by any flag: block headers.** anvil keeps one for every block, so memory still grows
+  after the plateau. `ascon_anvil_mem_growth` fires when the chain container's six-hour slope reaches
+  80 % of the host within a week — enough warning to schedule a restart (which is a new period) or a
+  bigger box.
+- **No per-block state files on this version.** `~/.foundry/anvil/tmp/anvil-state-*` (6 MB a block on
+  macOS anvil 1.7.1, and the ENOSPC incidents in CLAUDE.md) stayed empty on 1.8.1 under the same load,
+  and `--prune-history` persists no state to disk at all whichever version runs.
+
 ## Overriding the period
 
 Every `run.*` key in the config **wins over the environment** (`sdk/src/runConfig.ts`), which is not
 the precedence most people assume. `ERIS_RUN_BLOCKS=60 npm run sim:realtime -- --config
-config/practice.yaml` runs the full 302,400-block period and silently ignores you. To run a shorter
-one, copy the config and point the unit at the copy:
+config/practice.yaml` runs the full period and silently ignores you. The command line does win: the
+period ends on `run.endsAt` (a date, issue #136), and a one-off `--blocks N` or `--ends-at <date>`
+replaces it for a smoke run. To change the hosted period itself, copy the config and point the unit
+at the copy:
 
 ```sh
-cp config/practice.yaml config/practice-short.yaml   # edit run.blocks, run.segmentHours, …
+cp config/practice.yaml config/practice-short.yaml   # edit run.endsAt, run.segmentHours, …
 ```
 
 Env still works for the keys the config deliberately leaves out — the chain endpoint and the keys,

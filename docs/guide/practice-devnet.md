@@ -128,6 +128,12 @@ CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
 - On the first start the runtime grants its own venue approvals, because an approval is your
   signature and the operator does not hold your key. It skips the ones already in place, so a
   restart costs nothing.
+- **The chain keeps the last ten minutes of history** (300 blocks). Transactions, receipts, logs and
+  state older than that are pruned — unbounded, the chain froze for longer and longer while writing
+  its own backups, and a month of it would not fit anywhere (issue #135). Observations, your own
+  receipts and anything read at the head are unaffected; a strategy that scans `eth_getLogs` from
+  the start of the period, or calls a contract at an old block, gets nothing back. Keep what you need
+  as you see it.
 
 ### 3. Watch
 
