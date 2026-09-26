@@ -103,4 +103,4 @@ read を replica へ分離する経路は実装済みだが、**実際に分離�
 
 - 測定の一次記録：[`docs/scoring-metric-measurements.md`](../scoring-metric-measurements.md)
 - 意思決定の経緯：[`docs/adr/`](../adr/)（ADR 0001–0021）
-- 参加者向けの規則：[ascon.dev/rules](https://ascon.dev/rules)（本 repo の外。用語が本書と異なる — 規約の「エポック」は本書の 1 run、規約の「評価区間」が本書の epoch にあたる）
+- 参加者向けの規則：[ascon.dev/rules](https://ascon.dev/rules)（本 repo の外。用語は本書・コードと同じ — 規約の「エポック」は 1 run（コードの `epoch`）、規約の「評価区間」はコードの `interval`。issue #140 まではコードが評価区間も `epoch` と呼んでいた）

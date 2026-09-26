@@ -28,7 +28,7 @@ src/
   App.tsx           Root component + route table
   navigation.ts     pushState helper
   pages/            HomePage (standings) / ScenarioPage / MarketPage / ExplorerPage / AgentDetailPage
-  components/       Shared UI (Sidebar, the two round bars, competitionUi)
+  components/       Shared UI (Sidebar, the two interval bars RoundCursorBar / RoundsBar, competitionUi)
   data/             Providers, run artifact readers, live-run polling, per-page snapshot hooks
   design-system/    Primitives the pages are composed from
   lib/              Formatting and small shared helpers
@@ -44,8 +44,12 @@ Everything on screen belongs to one hierarchy, normalized at the data layer's
 entry point (`src/data/competition.ts`):
 
 ```
-competition  ⊃  scenario (= one run, "regime#seed")  ⊃  round (= one scoring epoch)
+competition  ⊃  scenario (= one run, "regime#seed")  ⊃  interval (= one evaluation interval)
 ```
+
+The UI says Interval / 評価区間 (Round / ラウンド until issue #140). The code
+keeps its `round` identifiers (`roundCursor`, `RoundsBar`, …): inside
+`dashboard/` they only ever meant the interval.
 
 A competition is a scenario matrix written by `backtest --scenarios`
 (`runs/<id>/matrix.json`); a standalone `sim:realtime` run is wrapped into the
@@ -100,19 +104,23 @@ The LST vault's and the Liquity system's *market-wide* state is not in
 `aaveAccountsAtEnd` — together they are what an agent page's positions table
 shows.
 
-## Rounds
+## Intervals
 
-A round is a **scoring epoch** (ADR 0019), not a run — the unit the score
-(`mean − λ·std` of per-epoch log returns) is actually computed over. The bar at
-the top of every page is the selected run's epoch series
-(`summary.json` → `valueSeries.epochSeries.boundaryBlocks`); clicking a segment
-opens that round's per-agent result, and scopes `/explorer` to its block window.
-A live run has no scored series yet, so the bar lays the rounds out from the
-`epochBlocks` the coordinator records at run start and fills in the results when
-the run completes.
+An interval is the rules' **evaluation interval** (§0.1), not a run: values are
+recorded at each boundary as interim progress, and the score (one P per epoch,
+ADR 0023) reads only the first and last boundary. The bar at the top of every
+page is the selected run's interval series (`summary.json` →
+`valueSeries.intervalSeries.boundaryBlocks`, or `epochSeries` on a run from
+before issue #140 — `intervalSeriesOf` in `core/src/intervalSeries.ts` reads
+either); clicking a segment opens that interval's per-agent result, and scopes
+`/explorer` to its block window. A live run has no scored series yet, so the
+bar lays the intervals out from the `intervalBlocks` (or older `epochBlocks`)
+the coordinator records at run start and fills in the results when the run
+completes. The live tail reads `intervals.jsonl`, or `epochs.jsonl` from a
+coordinator started before the rename.
 
-Selecting a round also scopes `/markets` (every series, stat and table) and
-`/explorer` (blocks and transactions) to that round's block window; the
+Selecting an interval also scopes `/markets` (every series, stat and table) and
+`/explorer` (blocks and transactions) to that interval's block window; the
 end-of-run position tables stay the run's final cross-section and say so.
 
 `src/data/` is split three ways: `runsProvider.ts` builds the page snapshots,

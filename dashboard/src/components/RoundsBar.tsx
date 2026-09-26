@@ -1,8 +1,9 @@
 // The run's rounds. A round is an evaluation interval (rules §0.1): the run's value series is
 // recorded at every boundary and shown as interim progress, while the score itself uses only the
-// first and last boundary (ADR 0023; ADR 0019, which named the series "epochs", scored every
-// round). The bar is the run's own boundary series, not a season of runs: one segment per round,
-// filled by progress, and clicking one opens that round's result.
+// first and last boundary (ADR 0023; ADR 0019, which named these intervals "epochs" -- the name
+// issue #140 retired -- scored every round). The bar is the run's own boundary series, not a
+// season of runs: one segment per round, filled by progress, and clicking one opens that round's
+// result.
 import { useEffect, useState } from "react";
 import {
   REPLAY_SPEEDS,
@@ -24,7 +25,7 @@ import { useScenarioLabel } from "@/data/useScenarioLabel";
 import { t } from "@/i18n/messages";
 import { navigate } from "@/navigation";
 import { formatBps, formatMove, formatPnlUsdc } from "@/lib/format";
-import type { RoundEpoch, RoundInfo } from "@/data/types";
+import type { RoundInterval, RoundInfo } from "@/data/types";
 
 function useNow(intervalMs = 1000): number {
   const [now, setNow] = useState(() => Date.now());
@@ -51,11 +52,11 @@ function formatCountdown(remainingMs: number): string {
  * and was quiet. A round the view does not cover has no count to report at all. Everything else has
  * a number (issue #84 I).
  */
-function formatTxCount(epoch: RoundEpoch): string {
-  if (epoch.status === "upcoming") return t("rounds.txNotStarted");
-  return epoch.txCount === null
+function formatTxCount(interval: RoundInterval): string {
+  if (interval.status === "upcoming") return t("rounds.txNotStarted");
+  return interval.txCount === null
     ? t("rounds.txOutside")
-    : t("rounds.txN", { n: epoch.txCount });
+    : t("rounds.txN", { n: interval.txCount });
 }
 
 const LABEL_STYLE = {
@@ -66,36 +67,36 @@ const LABEL_STYLE = {
 };
 
 function RoundSegment({
-  epoch,
+  interval,
   selected,
   liveFillPercent,
   onSelect,
 }: {
-  epoch: RoundEpoch;
+  interval: RoundInterval;
   selected: boolean;
   liveFillPercent: number;
   onSelect: () => void;
 }) {
   const fillPercent =
-    epoch.status === "done"
+    interval.status === "done"
       ? 100
-      : epoch.status === "live"
+      : interval.status === "live"
         ? liveFillPercent
         : 0;
   const fillColor =
-    epoch.status === "done"
+    interval.status === "done"
       ? "var(--purple-600)"
-      : epoch.status === "live"
+      : interval.status === "live"
         ? "var(--pink-500)"
         : "transparent";
   return (
     <div
       onClick={onSelect}
       title={t("rounds.segmentTitle", {
-        i: epoch.index,
-        from: epoch.fromBlock.toLocaleString("en-US"),
-        to: epoch.toBlock.toLocaleString("en-US"),
-        tx: formatTxCount(epoch),
+        i: interval.index,
+        from: interval.fromBlock.toLocaleString("en-US"),
+        to: interval.toBlock.toLocaleString("en-US"),
+        tx: formatTxCount(interval),
       })}
       style={{
         flex: 1,
@@ -103,7 +104,7 @@ function RoundSegment({
         position: "relative",
         cursor: "pointer",
         background:
-          epoch.status === "upcoming" ? "var(--gray-900)" : "var(--bg-surface)",
+          interval.status === "upcoming" ? "var(--gray-900)" : "var(--bg-surface)",
         boxShadow: selected
           ? "inset 0 3px 0 var(--pink-300), inset 0 0 0 1px var(--pink-300)"
           : "inset 2px 0 0 var(--bg-canvas), inset 3px 0 0 var(--border-strong)",
@@ -120,7 +121,7 @@ function RoundSegment({
           background: fillColor,
         }}
       />
-      {epoch.status === "live" && (
+      {interval.status === "live" && (
         <div
           style={{
             position: "absolute",
@@ -142,15 +143,15 @@ function RoundSegment({
           font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
           letterSpacing: "var(--tracking-wide)",
           color:
-            epoch.status === "upcoming"
+            interval.status === "upcoming"
               ? "var(--text-tertiary)"
               : "var(--gray-50)",
           background:
-            epoch.status === "live" ? "var(--gray-950)" : "transparent",
+            interval.status === "live" ? "var(--gray-950)" : "transparent",
           padding: "1px 3px",
         }}
       >
-        {String(epoch.index).padStart(2, "0")}
+        {String(interval.index).padStart(2, "0")}
       </span>
     </div>
   );
@@ -158,7 +159,7 @@ function RoundSegment({
 
 const RESULT_GRID = "28px minmax(0,1fr) 96px 90px 70px";
 
-function RoundResults({ epoch }: { epoch: RoundEpoch }) {
+function RoundResults({ interval }: { interval: RoundInterval }) {
   // Rules §4.7: a per-round ranking is a standing, so where standings are not posted this panel
   // keeps the round's window, its transaction count and what the environment did, and says why the
   // table is absent instead of printing ranks (issue #84 B).
@@ -188,7 +189,7 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
             color: "var(--text-primary)",
           }}
         >
-          {t("rounds.heading", { i: String(epoch.index).padStart(2, "0") })}
+          {t("rounds.heading", { i: String(interval.index).padStart(2, "0") })}
         </span>
         <span
           style={{
@@ -197,10 +198,10 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
           }}
         >
           {t("rounds.blocks", {
-            from: epoch.fromBlock.toLocaleString("en-US"),
-            to: epoch.toBlock.toLocaleString("en-US"),
+            from: interval.fromBlock.toLocaleString("en-US"),
+            to: interval.toBlock.toLocaleString("en-US"),
           })}{" "}
-          · {formatTxCount(epoch)}
+          · {formatTxCount(interval)}
         </span>
         <span
           onClick={() => {
@@ -237,14 +238,14 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
         >
           {t("home.standingsOff")}
         </span>
-      ) : epoch.results.length === 0 ? (
+      ) : interval.results.length === 0 ? (
         <span
           style={{
             font: "var(--text-sm) var(--font-mono)",
             color: "var(--text-tertiary)",
           }}
         >
-          {epoch.status === "done" ? t("rounds.notScored") : t("rounds.scoredLater")}
+          {interval.status === "done" ? t("rounds.notScored") : t("rounds.scoredLater")}
         </span>
       ) : (
         <div style={{ display: "flex", flexDirection: "column" }}>
@@ -263,7 +264,7 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
             <span style={{ textAlign: "right" }}>{t("rounds.col.logReturn")}</span>
             <span style={{ textAlign: "right" }}>{t("rounds.col.rank")}</span>
           </div>
-          {epoch.results.map((row) => {
+          {interval.results.map((row) => {
             const gainColor =
               row.deltaUsdc > 0
                 ? "var(--success-text)"
@@ -341,10 +342,10 @@ function RoundResults({ epoch }: { epoch: RoundEpoch }) {
         </div>
       )}
 
-      {epoch.events.length > 0 && (
+      {interval.events.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
           <span style={LABEL_STYLE}>{t("rounds.envDid")}</span>
-          {epoch.events.map((e, i) => (
+          {interval.events.map((e, i) => (
             <span
               key={i}
               style={{
@@ -375,13 +376,13 @@ function ReplayControls({
   transport: boolean;
 }) {
   const replay = round.replay;
-  const first = round.epochs[0]?.fromBlock;
-  const last = round.epochs[round.epochs.length - 1]?.toBlock;
+  const first = round.intervals[0]?.fromBlock;
+  const last = round.intervals[round.intervals.length - 1]?.toBlock;
 
   if (!replay) {
     if (!transport) return null;
     // Replay needs a finished run with rounds to walk: a live run is already moving, and a run with
-    // no epoch series has no boundaries to step between.
+    // no interval series has no boundaries to step between.
     if (
       round.status !== "archived" ||
       first === undefined ||
@@ -530,26 +531,26 @@ export function RoundsBar({
   useEffect(() => {
     const stored = getSelectedCompetitionId();
     if (stored !== null && stored !== SINGLE_RUNS) return;
-    setCursorRange(round.epochs.length);
-  }, [round.epochs.length]);
+    setCursorRange(round.intervals.length);
+  }, [round.intervals.length]);
 
   // The live segment fills by chain progress through its own block range, not by wall clock: the
   // bar is a block series, and a stalled chain should show a stalled round.
-  const liveEpoch = round.epochs.find((e) => e.status === "live");
-  const liveFillPercent = liveEpoch
+  const liveInterval = round.intervals.find((e) => e.status === "live");
+  const liveFillPercent = liveInterval
     ? Math.min(
         100,
         Math.max(
           0,
-          ((round.blockNumber - liveEpoch.fromBlock) /
-            Math.max(1, liveEpoch.toBlock - liveEpoch.fromBlock)) *
+          ((round.blockNumber - liveInterval.fromBlock) /
+            Math.max(1, liveInterval.toBlock - liveInterval.fromBlock)) *
             100,
         ),
       )
     : 100;
 
-  const selected = round.epochs.find((e) => e.index === selectedRound) ?? null;
-  const doneCount = round.epochs.filter((e) => e.status === "done").length;
+  const selected = round.intervals.find((e) => e.index === selectedRound) ?? null;
+  const doneCount = round.intervals.filter((e) => e.status === "done").length;
 
   return (
     <div
@@ -559,20 +560,20 @@ export function RoundsBar({
         borderBottom: "1px solid var(--border-subtle)",
       }}
     >
-      {round.epochs.length > 0 ? (
+      {round.intervals.length > 0 ? (
         // A 2016-round live run gives each segment ~0.2px, and the round number inside it — an
         // absolutely positioned 34px label — then reaches past the last segment. The segment
         // clips it, but the strip has to own the clip too, or those few pixels scroll the page.
         <div style={{ display: "flex", width: "100%", overflow: "hidden" }}>
-          {round.epochs.map((epoch) => (
+          {round.intervals.map((interval) => (
             <RoundSegment
-              key={epoch.index}
-              epoch={epoch}
-              selected={epoch.index === selectedRound}
+              key={interval.index}
+              interval={interval}
+              selected={interval.index === selectedRound}
               liveFillPercent={liveFillPercent}
               onSelect={() =>
                 setSelectedRound(
-                  epoch.index === selectedRound ? null : epoch.index,
+                  interval.index === selectedRound ? null : interval.index,
                 )
               }
             />
@@ -617,18 +618,18 @@ export function RoundsBar({
             : running
               ? t("common.live")
               : t("common.finished")}
-          {round.epochs.length > 0 && (
+          {round.intervals.length > 0 && (
             <>
               {" · "}
-              {round.epochBlocks > 0
+              {round.intervalBlocks > 0
                 ? t("rounds.progressBlocks", {
                     done: doneCount,
-                    total: round.epochs.length,
-                    blocks: round.epochBlocks,
+                    total: round.intervals.length,
+                    blocks: round.intervalBlocks,
                   })
                 : t("rounds.progress", {
                     done: doneCount,
-                    total: round.epochs.length,
+                    total: round.intervals.length,
                   })}
             </>
           )}
@@ -653,7 +654,7 @@ export function RoundsBar({
               : t("common.finished")}
         </span>
       </div>
-      {selected && <RoundResults epoch={selected} />}
+      {selected && <RoundResults interval={selected} />}
     </div>
   );
 }

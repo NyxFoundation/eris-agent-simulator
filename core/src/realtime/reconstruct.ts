@@ -19,6 +19,7 @@ import { erc20Abi, poolAbi } from "@eris/sdk/abis.js";
 import { MULTICALL3, TOKENS } from "@eris/sdk/constants.js";
 import { baseTokens, marketsFor, tokenInfo } from "@eris/sdk/markets.js";
 import type { RunLogger } from "../logger.js";
+import type { IntervalSeries } from "../intervalSeries.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
 import {
   decodeStableProbes,
@@ -89,14 +90,14 @@ export type ReconstructionMeta = {
   // Holdings excluded from the value series because they could not be priced (issue #41) or could not
   // be read (issue #44).
   unpricedHoldings: UnpricedHolding[];
-  // The value cross-sections at epoch boundaries (ADR 0019 §1). Absent when the run is shorter than
-  // one epoch or the series is disabled (run.epochBlocks: 0).
+  // The value cross-sections at interval boundaries (ADR 0019 §1). Absent when the run is shorter
+  // than one interval or the series is disabled (run.intervalBlocks: 0).
   //
-  // Raw values, not returns or scores: the metric (floor, log returns, mean - lambda*std) is meant to
-  // stay recomputable from stored data when lambda or the epoch length changes, the same way
-  // standings.json is derived from matrix.json (ADR 0017 §4).
-  epochSeries?: EpochSeries;
-  // How the epoch boundaries were marked (ADR 0019 G7). Absent when nothing was medianed.
+  // Raw values, not returns or scores: the score (P off the first and last boundary, ADR 0023) is
+  // meant to stay recomputable from stored data, the same way standings.json is derived from
+  // matrix.json (ADR 0017 §4).
+  intervalSeries?: IntervalSeries;
+  // How the interval boundaries were marked (ADR 0019 G7). Absent when nothing was medianed.
   markMedian?: MarkMedianMeta;
 };
 
@@ -111,15 +112,7 @@ export type MarkMedianMeta = {
   maxDeviationBps: Record<string, number>;
 };
 
-export type EpochSeries = {
-  epochBlocks: number;
-  // Number of returns the series supports = boundaryBlocks.length - 1.
-  epochs: number;
-  boundaryBlocks: number[];
-  // agent -> value at each boundary, aligned with boundaryBlocks. `null` marks a boundary whose
-  // cross-section did not report that agent, so a gap is never read as a value of zero.
-  valuesByAgent: Record<string, Array<number | null>>;
-};
+export type { IntervalSeries };
 
 // A contract/function whose reads failed during the reconstruction, and how often.
 export type FailedReadTarget = {
@@ -278,7 +271,7 @@ export async function readValueSnapshotAtBlock(opts: {
   // Fixed reference fair for α evaluation (base symbol -> USD). If unspecified, α = total value.
   refFairByBase?: Record<string, number>;
   // Stable prices to value this cross-section at, replacing the ones probed at this block (ADR 0019
-  // G7: epoch boundaries are marked at the median over the blocks before them, so a one-block push
+  // G7: interval boundaries are marked at the median over the blocks before them, so a one-block push
   // into a thin pool does not become the score). The probe at this block still runs -- the caller
   // compares the two to report how far the mark was moved.
   stablePricesOverride?: StablePrices;
@@ -793,29 +786,29 @@ export function scoringBlocks(
   return blocks;
 }
 
-// Blocks the epoch series is sampled at (ADR 0019 §1/§8). E epochs need E+1 boundaries, so the run's
-// start is boundary 0 and the returned array is one longer than the epoch count.
+// Blocks the interval series is sampled at (ADR 0019 §1/§8). N intervals need N+1 boundaries, so the
+// run's start is boundary 0 and the returned array is one longer than the interval count.
 //
-// A trailing partial epoch is dropped rather than scored short: a window shorter than the others
-// produces a smaller log return by construction, which the metric would read as the agent slowing
-// down. Dropping it costs at most `epochBlocks - 1` blocks of a run that was not sized for the epoch
-// length in the first place.
+// A trailing partial interval is dropped rather than recorded short: a window shorter than the
+// others would read as the agent slowing down. Dropping it costs at most `intervalBlocks - 1` blocks
+// of a run that was not sized for the interval length in the first place -- and it is why P is
+// V_K − V_0 at the last *boundary*, not at the run's last block.
 //
 // These are *not* forced to coincide with scoringBlocks: with `scoreEvery > 1` the thinned series can
 // skip a boundary, so the caller reads the union of the two.
-export function epochBoundaryBlocks(
+export function intervalBoundaryBlocks(
   fromBlock: number,
   toBlock: number,
-  epochBlocks: number,
+  intervalBlocks: number,
 ): number[] {
-  const step = Math.floor(epochBlocks);
+  const step = Math.floor(intervalBlocks);
   if (!Number.isFinite(step) || step < 1) return [];
-  const epochs = Math.floor((toBlock - fromBlock) / step);
-  if (epochs < 1) return [];
-  return Array.from({ length: epochs + 1 }, (_, i) => fromBlock + i * step);
+  const intervals = Math.floor((toBlock - fromBlock) / step);
+  if (intervals < 1) return [];
+  return Array.from({ length: intervals + 1 }, (_, i) => fromBlock + i * step);
 }
 
-// G7 (ADR 0019 §5): mark each epoch boundary at the median of the blocks leading up to it, so that
+// G7 (ADR 0019 §5): mark each interval boundary at the median of the blocks leading up to it, so that
 // pushing a pool for one block does not become the score. It has to hold for most of the window to
 // count, which turns a spread-cost round trip into a position.
 //
@@ -922,9 +915,9 @@ export async function reconstructValueSeries(opts: {
   toBlock: number;
   // Read a cross-section only every Nth block (config.scoreEvery). Score-neutral; see scoringBlocks.
   scoreEvery?: number;
-  // Epoch length for the ADR 0019 value series (config.epochBlocks). 0 = do not produce the series.
-  epochBlocks?: number;
-  // G7 window: how many blocks each epoch boundary's manipulable marks are medianed over, the
+  // Interval length for the ADR 0019 value series (config.intervalBlocks). 0 = do not produce it.
+  intervalBlocks?: number;
+  // G7 window: how many blocks each interval boundary's manipulable marks are medianed over, the
   // boundary block included (config.markMedianBlocks). <= 1 marks boundaries live.
   markMedianBlocks?: number;
   // Issue #40: where agent-created contracts are published. Given, the scorer additionally reports
@@ -943,7 +936,7 @@ export async function reconstructValueSeries(opts: {
     fromBlock,
     toBlock,
     scoreEvery = 1,
-    epochBlocks = 0,
+    intervalBlocks = 0,
     markMedianBlocks = 0,
     marketRegistry,
   } = opts;
@@ -995,11 +988,15 @@ export async function reconstructValueSeries(opts: {
   // at another, and collapsing those into one entry would hide half the story.
   const unpricedKey = (h: UnpricedHolding) =>
     `${h.agentId}|${h.source}|${h.token?.toLowerCase() ?? ""}|${h.reason ?? "unpriced"}`;
-  // Epoch boundaries are read even when the rest of the series is thinned: they are the score, the
-  // thinned cross-sections are only the equity curve.
-  const boundaryBlocks = epochBoundaryBlocks(fromBlock, toBlock, epochBlocks);
+  // Interval boundaries are read even when the rest of the series is thinned: they are the score,
+  // the thinned cross-sections are only the equity curve.
+  const boundaryBlocks = intervalBoundaryBlocks(
+    fromBlock,
+    toBlock,
+    intervalBlocks,
+  );
   const boundaryIndex = new Map(boundaryBlocks.map((b, i) => [b, i]));
-  const epochValuesByAgent = new Map<string, Array<number | null>>(
+  const boundaryValuesByAgent = new Map<string, Array<number | null>>(
     agents.map((a) => [
       a.id,
       Array.from({ length: boundaryBlocks.length }, () => null),
@@ -1018,8 +1015,8 @@ export async function reconstructValueSeries(opts: {
       crossSections: blocks.length,
       windowBlocks: toBlock - fromBlock + 1,
     });
-  // G7 (ADR 0019 §5): only the epoch boundaries are medianed. The cross-sections in between are the
-  // equity curve, and smoothing those would hide real intra-epoch moves without protecting any score.
+  // G7 (ADR 0019 §5): only the interval boundaries are medianed. The cross-sections in between are
+  // the equity curve, and smoothing those would hide real moves without protecting any score.
   const markMedian = new MarkMedian({
     publicClient,
     activeStables,
@@ -1054,12 +1051,13 @@ export async function reconstructValueSeries(opts: {
       alphaLast.set(id, alphaValueUsdc);
       scoredLast.set(id, total);
       markedLast.set(id, markedValueUsdc);
-      // ADR 0019 §3: the epoch series is the ordinary live mark, not alphaValueUsdc. Its β removal is
-      // partial (free inventory is held at the reference fair while protocol positions stay live), so
-      // scoring on it would price the same bet differently depending on the instrument.
-      const epochAt = boundaryIndex.get(b);
-      const epochValues = epochValuesByAgent.get(id);
-      if (epochAt !== undefined && epochValues) epochValues[epochAt] = total;
+      // ADR 0019 §3: the interval series is the ordinary live mark, not alphaValueUsdc. Its β removal
+      // is partial (free inventory is held at the reference fair while protocol positions stay
+      // live), so scoring on it would price the same bet differently depending on the instrument.
+      const boundaryAt = boundaryIndex.get(b);
+      const boundaryValues = boundaryValuesByAgent.get(id);
+      if (boundaryAt !== undefined && boundaryValues)
+        boundaryValues[boundaryAt] = total;
       // The observation shape readPerRoundValues reads (inventory.valueUsdc = total value).
       // Do not include protocols (avoids double-counting perRoundValueUsdc). alphaValueUsdc is
       // the fixed-reference fair evaluation (β-removed) and can also be read as a per-round α series.
@@ -1174,23 +1172,23 @@ export async function reconstructValueSeries(opts: {
     );
   }
 
-  const epochSeries: EpochSeries | undefined =
+  const intervalSeries: IntervalSeries | undefined =
     boundaryBlocks.length > 1
       ? {
-          epochBlocks: Math.floor(epochBlocks),
-          epochs: boundaryBlocks.length - 1,
+          intervalBlocks: Math.floor(intervalBlocks),
+          intervals: boundaryBlocks.length - 1,
           boundaryBlocks,
-          valuesByAgent: Object.fromEntries(epochValuesByAgent),
+          valuesByAgent: Object.fromEntries(boundaryValuesByAgent),
         }
       : undefined;
-  if (epochSeries) {
-    const gaps = Object.values(epochSeries.valuesByAgent).reduce(
+  if (intervalSeries) {
+    const gaps = Object.values(intervalSeries.valuesByAgent).reduce(
       (n, series) => n + series.filter((v) => v === null).length,
       0,
     );
     if (gaps > 0)
       console.warn(
-        `[reconstruct] epoch series has ${gaps} missing boundary value(s); ` +
+        `[reconstruct] interval series has ${gaps} missing boundary value(s); ` +
           "a null is a boundary that reported no value, not a value of zero",
       );
   }
@@ -1209,7 +1207,7 @@ export async function reconstructValueSeries(opts: {
     alphaByAgent,
     markedValueByAgent,
     unpricedHoldings,
-    ...(epochSeries ? { epochSeries } : {}),
+    ...(intervalSeries ? { intervalSeries } : {}),
     ...(markMedian.summary() ? { markMedian: markMedian.summary() } : {}),
   };
 }

@@ -38,7 +38,7 @@ Source: `core/src/realtime/coordinator.ts` (`runRealtimeSimulation`, L390–2761
 ### [B] Chain preparation (L491–871)
 
 1. `runId` is an ISO timestamp. With `segmentHours > 0` a `SegmentedRun` writes the artifacts; otherwise a `RunLogger` does.
-2. **`run_started_realtime`** is emitted (L506) with seed / flowSeed / epochBlocks / rpcUrl / chainId / chainMode. **This is the only place the seed is recorded** — a stored run without it cannot say which world it was.
+2. **`run_started_realtime`** is emitted (L506) with seed / flowSeed / intervalBlocks (and `epochBlocks`, its old name, with the same value) / rpcUrl / chainId / chainMode. **This is the only place the seed is recorded** — a stored run without it cannot say which world it was.
 3. Clients are created with `batch: true` (same-tick reads fold into JSON-RPC array batches / Multicall3).
 4. **Reset**: `external` skips it and emits `fork_reset_skipped`; `run.skipReset` also skips; otherwise `resetFork` runs (a full re-fork, or the clean snapshot/revert cross-section locally).
 5. On local deploy and not external, **automine is turned on for setup only** (L563), because the run inherits whatever mining state the deployer's anvil was left in. It goes off again when the competition starts (L1499) — with automine on, one tx is one block and the fee competition breaks.
@@ -53,7 +53,7 @@ Source: `core/src/realtime/coordinator.ts` (`runRealtimeSimulation`, L390–2761
    | flow wallet | `funding.flowEthWei` | `funding.flowWethWei` / `funding.flowBase` | `funding.flowUsdcUnits` (defaults to the agents') |
    | aave actor | same | `flow.aaveMaxWethWei × 6` | `funding.flowUsdcUnits` |
 
-   Agents get no gas buffer because the default buffer would ride the epoch series as **β nobody chose** (ADR 0019 §6). Flow wallets keep theirs — they are machinery, and a dry flow bot removes market activity from everyone.
+   Agents get no gas buffer because the default buffer would ride the interval series as **β nobody chose** (ADR 0019 §6). Flow wallets keep theirs — they are machinery, and a dry flow bot removes market activity from everyone.
    A registered address with no key is funded through `fundAddress` (it gets no approvals, since only the holder can grant them).
    Approvals are collected across venues and sent as one batch (fifteen wallets at eighteen transactions each is nine minutes of setup at a two-second block time).
 
@@ -109,11 +109,11 @@ The order matters.
 
 ### [H] Scoring and artifacts (L2421–2746)
 
-1. Take the **live epoch series** (`LiveScorer.series()`). When segmenting, **cut it to the current segment** — otherwise the last segment inherits the whole period's epochs and everything is counted twice
-2. Score it with `scoreEpochSeriesByAgent` → `epoch_series_scored`
+1. Take the **live interval series** (`LiveScorer.series()`). When segmenting, **cut it to the current segment** — otherwise the last segment inherits the whole period's intervals and everything is counted twice
+2. Score it with `scoreEpochSeriesByAgent` → `interval_series_scored`
 3. **Post-run sweep**: only when `finalBlock - runStartBlock <= 1000`. Otherwise emit `post_run_sweep_skipped` and **skip explicitly** (reading past the node's retention returns zeros, i.e. a complete-looking series with a cliff in it)
 4. If the sweep ran, rebuild `market.json` too (reporting only; its failure never degrades the run)
-5. **`epoch_series_agreement`** — on a run that has both, check that live and swept agree. Same reader, same blocks, same median window, so they should; a divergence means one of them is reading a different world
+5. **`interval_series_agreement`** — on a run that has both, check that live and swept agree. Same reader, same blocks, same median window, so they should; a divergence means one of them is reading a different world
 6. `postRunCheck` inspects fee-cap violations (empty under `economicGas`)
 7. Compute final PnL → `summary.json` → `run_completed`
 
@@ -130,7 +130,7 @@ The order matters.
 | 3 | Fund vuln pools | Pools whose window has opened receive their reserve (cheatcode) |
 | 4 | Point events | `lstSlash` / `whale`, picked up **by range**. Placed before the block's other work, so what an agent observes this block already reflects them |
 | 5 | **Parallel tasks** | Table below |
-| 6 | `liveScorer.onBlock(bn)` | **After** the parallel group, sequentially. It reads the block that just settled, so it cannot race anything, and it reads a cross-section only at epoch boundaries |
+| 6 | `liveScorer.onBlock(bn)` | **After** the parallel group, sequentially. It reads the block that just settled, so it cannot race anything, and it reads a cross-section only at interval boundaries |
 | 7 | `flushBlocks(bn-1)` | Segmenting only. The current block's environment txs are still in flight, hence `bn-1` |
 | 8 | Segment roll check | **After the boundary read**, so a segment ending on a boundary keeps it and the next one carries it as its own boundary 0 |
 | 9 | Emit `round_timing` | Milliseconds per stage |
@@ -162,12 +162,13 @@ The order matters.
 | `run.blockTimeSec` | Block interval (seconds) | 2 |
 | `run.blocks` | End after N blocks | 0 (unbounded) |
 | `run.seconds` | End after N seconds | 20 |
-| `run.epochBlocks` | Blocks per epoch | 12 |
-| `run.epochSeconds` | Seconds per epoch, converted at `blockTimeSec` | 0 (unused) |
+| `run.intervalBlocks` | Blocks per evaluation interval | 12 |
+| `run.intervalSeconds` | Seconds per evaluation interval, converted at `blockTimeSec` | 0 (unused) |
 
-- **Setting both `epochSeconds` and `epochBlocks` throws** (`sdk/src/config.ts:576`). "How long is a round" gets one answer.
+- **Setting both `intervalSeconds` and `intervalBlocks` throws** (`sdk/src/config.ts:674`). "How long is an interval" gets one answer.
+- The names from before issue #140, `run.epochBlocks` / `run.epochSeconds`, are **still read, with a warning** (`run.epochBlocks is now run.intervalBlocks (issue #140)`), until the results are published (December). Setting one key under both its old and its new name throws (`sdk/src/config.ts:659`); seconds beside blocks throws in any mix of old and new names.
 - **A stress run disables the time limit automatically** (L1737). With `stress.events` and `run.blocks > 0`, `run.seconds` becomes 0 so a time limit cannot expire before the crash window opens. The override is recorded as `stress_run_time_limit_disabled`.
-- On external, the **real cadence is measured** and recorded as `external_chain_block_time`. A mismatch with the configured value mis-sizes every epoch.
+- On external, the **real cadence is measured** and recorded as `external_chain_block_time`. A mismatch with the configured value mis-sizes every evaluation interval.
 
 ## 2.4 The world reset unit (`run.resetUnit`)
 
@@ -189,12 +190,12 @@ Enabled by `run.segmentHours > 0` (`core/src/segments.ts`). **The chain stays co
 
 - One segment is an ordinary run directory (same files, same shape), sitting under a competition directory as `<date>-s<NN>/`, indexed by `matrix.json`.
 - The index's `resetUnit` is honestly `continuous`.
-- **Epochs are split exactly** (`segments.ts:228`, `sliceEpochSeries`):
-  - The boundary immediately *before* a segment starts is carried in as its boundary 0 (without it, every segment loses its first epoch)
-  - **A segment that starts on a boundary carries nothing** (carrying would score the same epoch in two segments)
+- **Intervals are split exactly** (`segments.ts:343`, `sliceIntervalSeries`):
+  - The boundary immediately *before* a segment starts is carried in as its boundary 0 (without it, every segment loses its first interval)
+  - **A segment that starts on a boundary carries nothing** (carrying would count the same interval in two segments)
 - A segment's clock starts **when the first block arrives** (`noteFirstBlock`). Setup takes minutes on a real chain, and counting it against the first segment makes day one short.
 - A segment's PnL is taken **from the segment's own endpoints**, not the run's opening balances: in a continuous economy, Tuesday's PnL is what changed on Tuesday.
-- Round count plateaus per segment: 30-minute rounds on 24 h segments settle at **48 rounds per segment**.
+- Interval count plateaus per segment: 30-minute intervals on 24 h segments settle at **48 intervals per segment**.
 
 ## 2.6 How failures are handled
 
@@ -203,7 +204,7 @@ Enabled by `run.segmentHours > 0` (`core/src/segments.ts`). **The chain stays co
 | Calibration / config / deployment mismatch at startup | **Throws before touching the chain** (catalogued in [11](11-invariants.md)) |
 | An exception during block processing | Emits `realtime_block_error`; the loop continues |
 | A single task failing (keeper / oracle / liquidity / depeg / vuln / liquity watch) | Its own `*_failed` event; the run continues |
-| An epoch boundary that cannot be read | **The boundary is not recorded** (never filled with `null`). Emits `epoch_boundary_failed` |
+| An interval boundary that cannot be read | **The boundary is not recorded** (never filled with `null`). Emits `interval_boundary_failed` |
 | Value-series reconstruction failing | `valueSeries.failed: true`, stated explicitly. Other artifacts survive |
 | market.json reconstruction failing | Logged and swallowed (reporting only) |
 | An agent process exiting early | `agent_process_exited` + `summary.agents[].processExitedEarly` |

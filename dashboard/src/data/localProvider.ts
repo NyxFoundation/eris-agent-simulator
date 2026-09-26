@@ -119,8 +119,8 @@ export async function fetchExplorerSnapshot(): Promise<ExplorerSnapshot> {
     round,
     scope: {
       roundIndex: null,
-      fromBlock: round.epochs[0]?.fromBlock ?? 0,
-      toBlock: round.epochs[round.epochs.length - 1]?.toBlock ?? 0,
+      fromBlock: round.intervals[0]?.fromBlock ?? 0,
+      toBlock: round.intervals[round.intervals.length - 1]?.toBlock ?? 0,
     },
     stats,
     blocks: blocks.sort((a, b) => b.number.localeCompare(a.number)),
@@ -183,8 +183,8 @@ export async function fetchMarketSnapshot(
     round,
     scope: {
       roundIndex: null,
-      fromBlock: round.epochs[0]?.fromBlock ?? 0,
-      toBlock: round.epochs[round.epochs.length - 1]?.toBlock ?? 0,
+      fromBlock: round.intervals[0]?.fromBlock ?? 0,
+      toBlock: round.intervals[round.intervals.length - 1]?.toBlock ?? 0,
     },
     leaderboard: agents.sort((a, b) => a.rank - b.rank),
     ...snapshot,
@@ -227,7 +227,7 @@ export async function fetchWorldSnapshot(
     { id: "aave", label: "Aave v3", kind: "lending", color: "#6dd3e0", metric: t("world.metric.utilisation") },
   ];
 
-  const from = round.epochs[0]?.fromBlock ?? 0;
+  const from = round.intervals[0]?.fromBlock ?? 0;
   const to = Math.min(round.blockNumber, from + 240);
   let seed = 101;
   const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
@@ -281,7 +281,7 @@ export async function fetchWorldSnapshot(
   return {
     round,
     standingsThroughRound: Array.from(
-      { length: round.epochs.length + 1 },
+      { length: round.intervals.length + 1 },
       () => [...seedAgents].sort((a, b) => a.rank - b.rank),
     ),
     scope: { roundIndex: null, fromBlock: from, toBlock: to },

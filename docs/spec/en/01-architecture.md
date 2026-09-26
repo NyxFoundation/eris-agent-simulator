@@ -39,7 +39,7 @@ Four kinds of OS process run during a run.
 │ relays the flow bot's orders           │      │ agent.ts: decide / run          │
 │ GMX keeper                             │      │ send.ts: signs and sends        │
 │ injects stress events                  │      │  (manages its own nonce)        │
-│ scores epoch boundaries / post-run     │      └────────────┬───────────────────┘
+│ scores interval boundaries / post-run  │      └────────────┬───────────────────┘
 └───────────────┬────────────────────────┘                   │
                 │  PriceFeed / flow / keeper txs              │ agent txs
                 ▼                                             ▼
@@ -149,7 +149,7 @@ sdk/src/
   constants*.ts       venue addresses (fork: constants.ts / local: constants.local.ts, generated)
 core/src/
   realtime/coordinator.ts   the environment daemon (the whole run lifecycle)
-  realtime/liveScoring.ts   scoring at the epoch boundary as it goes past
+  realtime/liveScoring.ts   scoring at the interval boundary as it goes past
   realtime/reconstruct.ts   post-run value-series reconstruction
   realtime/marketSeries.ts  market.json (reporting only)
   realtime/events.ts        the stress schedule (seed → windows)

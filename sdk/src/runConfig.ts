@@ -93,14 +93,18 @@ const SCHEMA: Record<string, string> = {
   "run.skipReset": "ERIS_SKIP_RESET",
   "run.prewarmBlocks": "ERIS_PREWARM_BLOCKS",
   "run.scoreEvery": "ERIS_SCORE_EVERY",
+  // The evaluation interval (rules §0.1), in blocks or in real time (ADR 0021 §3).
+  "run.intervalBlocks": "ERIS_INTERVAL_BLOCKS",
+  "run.intervalSeconds": "ERIS_INTERVAL_SECONDS",
+  // Their names before issue #140. Still read, with a warning, until the results are published.
   "run.epochBlocks": "ERIS_EPOCH_BLOCKS",
-  "run.epochSeconds": "ERIS_EPOCH_SECONDS", // ADR 0021 §3: a round stated in real time
+  "run.epochSeconds": "ERIS_EPOCH_SECONDS",
   "run.segmentHours": "ERIS_SEGMENT_HOURS", // ADR 0021 §6: hours per output segment (0 = one dir)
   "run.segmentName": "ERIS_SEGMENT_NAME",
   "run.markMedianBlocks": "ERIS_MARK_MEDIAN_BLOCKS",
   // Rules §2.6: the block gas limit the coordinator sets once setup is done (0 = leave the node's).
   "run.blockGasLimit": "ERIS_BLOCK_GAS_LIMIT",
-  // Issue #94: seconds the epoch clock waits for every launched agent's `runtime_start` (0 = no wait).
+  // Issue #94: seconds the run's clock waits for every launched agent's `runtime_start` (0 = no wait).
   "run.agentsReadyTimeoutSec": "ERIS_AGENTS_READY_TIMEOUT_SEC",
   // process | docker: how the coordinator launches each agent (rules §2.3 caps apply only under docker).
   "run.agentSandbox": "ERIS_AGENT_SANDBOX",
@@ -217,6 +221,14 @@ const SECTIONS = [
   "agentMarkets",
 ];
 
+// Keys read under a name they have since lost -> the name to write instead. Accepted, and said so
+// once per load (issue #140: the practice period's config said `epochSeconds` while its coordinator
+// ran, and a coordinator reads its file only on a restart). Removed once the results are published.
+export const RENAMED_KEYS: Record<string, string> = {
+  "run.epochBlocks": "run.intervalBlocks",
+  "run.epochSeconds": "run.intervalSeconds",
+};
+
 function baseEnvName(prefix: string, sym: string, infix?: string): string {
   const unit = unitSuffixFor(tokenInfo(sym).decimals);
   return [prefix, sym, infix, unit].filter(Boolean).join("_");
@@ -228,6 +240,7 @@ function applyDoc(
   source: NodeJS.ProcessEnv,
 ): void {
   const unknown: string[] = [];
+  const renamed: string[] = [];
   for (const [k, v] of Object.entries(doc)) {
     if (k === "agents") continue; // the roster is handled on the environment side (core/src/runConfig.ts)
     if (
@@ -255,6 +268,7 @@ function applyDoc(
               source[baseEnvName(baseDef.prefix, sym, baseDef.infix)] =
                 toEnvString(amt);
         } else if (SCHEMA[path]) {
+          if (RENAMED_KEYS[path]) renamed.push(path);
           const env = SCHEMA[path];
           // FLOW_BOT_ARGS is the only one that is space-separated (config.ts splits on /\s+/).
           source[env] =
@@ -274,6 +288,12 @@ function applyDoc(
   if (unknown.length > 0)
     process.stderr.write(
       `[config] warning: unknown config keys (ignored): ${unknown.join(", ")}. See SCHEMA in sdk/src/runConfig.ts for the schema.\n`,
+    );
+  // The environment says it; an agent process loads the same file and would say it once per agent.
+  if (renamed.length > 0 && process.env.ERIS_AGENT_ID === undefined)
+    process.stderr.write(
+      `[config] warning: ${renamed.map((k) => `${k} is now ${RENAMED_KEYS[k]}`).join("; ")} ` +
+        "(issue #140). The old name is still read until the results are published.\n",
     );
 }
 

@@ -60,8 +60,8 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 | `skipReset` | false | Diagnostic: keep the previous run's fork cache |
 | `prewarmBlocks` | 0 | Warmup blocks before the competition |
 | `scoreEvery` | 1 | Thin the equity curve (**score-neutral**) |
-| `epochBlocks` | 12 | Blocks per epoch |
-| `epochSeconds` | 0 | Seconds per epoch (setting both throws) |
+| `intervalBlocks` | 12 | Blocks per evaluation interval (rules §0.1; interim progress, not the scoring unit) |
+| `intervalSeconds` | 0 | Seconds per evaluation interval (setting both throws). The names from before issue #140, `epochBlocks` / `epochSeconds`, are still read with a warning until the results are published (one key under both names throws) |
 | `segmentHours` | 0 | Hours per output segment (0 = one directory) |
 | `segmentName` | "" | Display name for the whole period |
 | `markMedianBlocks` | 5 | The G7 median window |
@@ -100,7 +100,7 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 
 **The official regimes hand out an ETH/BTC/USDC basket** (8 WETH + 0.4 WBTC + 25k USDC, issue #54). They began as USDC-only (`wethWei: "0"`) to remove opening β (ADR 0017 §4), until it turned out that **the LST vault and the Trove are WETH/ETH denominated, so under USDC-only the sell side of every strategy had no inventory behind it**. The β cancels out of M9 because the benchmark holds the same funding — what USDC-only was protecting was `netPnlUsdc`, a reporting figure.
 
-The only regimes still USDC-only are the **`metric-*`** ones, for a different reason (ADR 0019 §6: an epoch series is a live mark, so handed-out inventory puts the market's volatility into every agent's `std_e`). `scripts/genMetricRegimes.ts` drops `funding.base` along with the WETH when it generates them from the official regimes.
+The only regimes still USDC-only are the **`metric-*`** ones, for a different reason (ADR 0019 §6: an interval series is a live mark, so handed-out inventory puts the market's volatility into every agent's `std_e`). `scripts/genMetricRegimes.ts` drops `funding.base` along with the WETH when it generates them from the official regimes.
 
 The template (`config/example.yaml`) hands out WETH for the same reason — it is for exploring, not for measuring.
 

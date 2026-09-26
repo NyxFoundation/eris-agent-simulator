@@ -29,7 +29,7 @@ ADRs are a history, so overturned text survives in them — ADR 0002 → 0018, t
 | [06 Scoring](06-scoring.md) | Valuation, the boundary series, P and the deviation score T / Score (rules §4.4), matrix standings, the epoch-order lottery |
 | [07 Configuration](07-configuration.md) | The full YAML schema, resolution order, CLI flags, the roster |
 | [08 Artifacts](08-artifacts.md) | Every file under `runs/<id>/` and its fields, the event catalogue |
-| [09 Dashboard](09-dashboard.md) | Information hierarchy, the round cursor, standings display rules |
+| [09 Dashboard](09-dashboard.md) | Information hierarchy, the interval cursor, standings display rules |
 | [10 Operations](10-operations.md) | The commands, the practice devnet, the explorer, state dumps and backtests |
 | [11 Invariants and quality gates](11-invariants.md) | Startup assertions, in-run monitors, post-hoc checks, what the tests hold |
 | [12 Known limits and open questions](12-open-issues.md) | What is uncalibrated, what is undecided, what is structural |

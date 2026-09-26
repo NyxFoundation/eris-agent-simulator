@@ -1,0 +1,156 @@
+{
+  "schema": 2,
+  "createdAt": "2026-09-07T02:52:31.278Z",
+  "sourceCommit": "10a50fc99bae07ad0d1ffd8ed83586120122d3b7",
+  "scenarioSet": "fixture/smoke/plan.yaml",
+  "resetUnit": "scenario",
+  "k": 3,
+  "repeat": 1,
+  "scenariosPlanned": 3,
+  "scenarios": [
+    {
+      "s": 1,
+      "regime": "depeg",
+      "seed": 701,
+      "agents": [
+        {
+          "id": "noop",
+          "pnlUsdc": 23096.289206896385,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": true,
+          "initialValueUsdc": 370207.8097286692,
+          "finalValueUsdc": 370207.8097286692
+        },
+        {
+          "id": "peg-arb",
+          "pnlUsdc": 23131.92203610501,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 35.636532379023265,
+          "alphaUsdc": 35.636543682659976,
+          "baseline": false,
+          "initialValueUsdc": 370207.8097286692,
+          "finalValueUsdc": 370243.4462610482
+        },
+        {
+          "id": "peg-arb-frozen",
+          "pnlUsdc": 23417.17443768395,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 320.8889350362588,
+          "alphaUsdc": 320.8889463430969,
+          "baseline": false,
+          "initialValueUsdc": 370207.8097286692,
+          "finalValueUsdc": 370528.69866370544
+        },
+        {
+          "id": "venue-arb",
+          "pnlUsdc": 23083.647062957578,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 46.71573224966414,
+          "alphaUsdc": 46.896917238947935,
+          "baseline": false,
+          "initialValueUsdc": 370207.8097286692,
+          "finalValueUsdc": 370254.52546091884
+        }
+      ],
+      "runDir": "runs/2026-09-07T02-52-31-293Z"
+    },
+    {
+      "s": 2,
+      "regime": "calm",
+      "seed": 101,
+      "agents": [
+        {
+          "id": "noop",
+          "pnlUsdc": -188.39564304531086,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": true,
+          "initialValueUsdc": 373053.65060511115,
+          "finalValueUsdc": 373053.65060511115
+        },
+        {
+          "id": "peg-arb",
+          "pnlUsdc": -188.39564304531086,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": false,
+          "initialValueUsdc": 373053.65060511115,
+          "finalValueUsdc": 373053.65060511115
+        },
+        {
+          "id": "peg-arb-frozen",
+          "pnlUsdc": -188.39564304531086,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": false,
+          "initialValueUsdc": 373053.65060511115,
+          "finalValueUsdc": 373053.65060511115
+        },
+        {
+          "id": "venue-arb",
+          "pnlUsdc": -43.77665203419747,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 85.29053237382323,
+          "alphaUsdc": 156.8306433125981,
+          "baseline": false,
+          "initialValueUsdc": 373053.65060511115,
+          "finalValueUsdc": 373138.941137485
+        }
+      ],
+      "runDir": "runs/2026-09-07T02-56-57-367Z"
+    },
+    {
+      "s": 3,
+      "regime": "depeg",
+      "seed": 702,
+      "agents": [
+        {
+          "id": "noop",
+          "pnlUsdc": 26122.241399124672,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": true,
+          "initialValueUsdc": 373054.6918363543,
+          "finalValueUsdc": 373054.6918363543
+        },
+        {
+          "id": "peg-arb",
+          "pnlUsdc": 26122.241399124672,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": false,
+          "initialValueUsdc": 373054.6918363543,
+          "finalValueUsdc": 373054.6918363543
+        },
+        {
+          "id": "peg-arb-frozen",
+          "pnlUsdc": 26122.241399124672,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": 0,
+          "alphaUsdc": 0,
+          "baseline": false,
+          "initialValueUsdc": 373054.6918363543,
+          "finalValueUsdc": 373054.6918363543
+        },
+        {
+          "id": "venue-arb",
+          "pnlUsdc": 26099.88134765241,
+          "pnlSource": "epoch-boundaries",
+          "netPnlUsdc": -43.39222716697259,
+          "alphaUsdc": -50.26517015276477,
+          "baseline": false,
+          "initialValueUsdc": 373054.6918363543,
+          "finalValueUsdc": 373011.29960918735
+        }
+      ],
+      "runDir": "runs/2026-09-07T03-01-25-202Z"
+    }
+  ]
+}

@@ -179,7 +179,7 @@ const provider = new JsonRpcProvider(req, 31337);
 
 ## 8. 環境マニフェスト
 
-venue のアドレス・トークンのアドレス・PriceFeed・エポックの刻みは、添付の
+venue のアドレス・トークンのアドレス・PriceFeed・評価区間の長さは、添付の
 `manifest.json` に入っています。アドレスをコードに直接書かず、こちらを読んでください。
 
 ## 9. 困ったとき

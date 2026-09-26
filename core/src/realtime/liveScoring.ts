@@ -1,4 +1,4 @@
-// Scoring at the epoch boundary, as it goes past (ADR 0021 §3).
+// Scoring at the interval boundary, as it goes past (ADR 0021 §3).
 //
 // Scoring used to be a post-run sweep: when the run ended, walk back over its blocks and rebuild
 // every agent's value at each cross-section. That works for a run with an end, and it does not work
@@ -11,14 +11,15 @@
 //   warns when a window outruns that, and the answer was always "make the run shorter". A week-long
 //   chain cannot be made shorter.
 //
-// Reading the boundary *at* the boundary removes both at once, and costs one cross-section per epoch
-// -- one block in twelve at the current calibration, on a loop that already reads every venue every
-// block. The same reader is used (readValueSnapshotAtBlock), at the same block, with the same G7
-// median window, so a boundary scored live and the same boundary scored afterwards produce the same
-// number. That is the property that makes this a replacement rather than a second scoring path.
+// Reading the boundary *at* the boundary removes both at once, and costs one cross-section per
+// interval -- one block in twelve at the current calibration, on a loop that already reads every
+// venue every block. The same reader is used (readValueSnapshotAtBlock), at the same block, with the
+// same G7 median window, so a boundary scored live and the same boundary scored afterwards produce
+// the same number. That is the property that makes this a replacement rather than a second scoring
+// path.
 //
 // It also gives the dashboard the one thing it could not have: standings during the run. Its
-// "through round k" recomputation already exists (it is how replay avoids showing the future); what
+// "through interval k" recomputation already exists (it is how replay avoids showing the future); what
 // was missing was a series to recompute from before the run was over.
 import type { Address, PublicClient } from "viem";
 import type { RunLogger } from "../logger.js";
@@ -26,20 +27,25 @@ import type { ProtocolId } from "@eris/sdk/types.js";
 import {
   MarkMedian,
   readValueSnapshotAtBlock,
-  type EpochSeries,
   type ReconstructionAgent,
 } from "./reconstruct.js";
+import {
+  INTERVAL_EVENTS,
+  INTERVALS_FILENAME,
+  type IntervalSeries,
+  type IntervalSeriesMeta,
+} from "../intervalSeries.js";
 import { LiveMarketSampler, type MarketSeriesRow } from "./marketSeries.js";
 
-// One line per epoch boundary, appended as it is reached. The dashboard tails this the same way it
-// tails events.jsonl; nothing has to wait for summary.json.
-export const EPOCHS_FILENAME = "epochs.jsonl";
+// One line per interval boundary (INTERVALS_FILENAME), appended as it is reached. The dashboard tails
+// it the same way it tails events.jsonl; nothing has to wait for summary.json.
+export { INTERVALS_FILENAME };
 // One line per boundary of venue state, for the same reason (§3: "market series も同様に逐次追記へ").
 // Sampled at the boundaries rather than every block: this is the view artifact, and a week of
 // per-block venue rows is a file nobody can open.
 export const MARKET_LIVE_FILENAME = "market.jsonl";
 
-export type LiveEpochBoundary = {
+export type LiveIntervalBoundary = {
   index: number;
   blockNumber: number;
   fairPriceUsdcPerWeth: number;
@@ -66,7 +72,7 @@ export class LiveScorer {
       priceFeed: Address;
       /** First competition block. Boundary 0 sits on it. */
       runStartBlock: number;
-      epochBlocks: number;
+      intervalBlocks: number;
       markMedianBlocks: number;
       /** Sample the venue-state row at each boundary too. */
       sampleMarket: boolean;
@@ -90,7 +96,7 @@ export class LiveScorer {
   }
 
   get enabled(): boolean {
-    return this.opts.epochBlocks >= 1;
+    return this.opts.intervalBlocks >= 1;
   }
 
   /** Boundaries recorded so far. Two are needed before there is a return to score. */
@@ -122,7 +128,7 @@ export class LiveScorer {
     if (!this.enabled) return;
     while (this.nextBoundary <= blockNumber) {
       const at = this.nextBoundary;
-      this.nextBoundary += this.opts.epochBlocks;
+      this.nextBoundary += this.opts.intervalBlocks;
       await this.scoreBoundary(at);
     }
   }
@@ -156,15 +162,15 @@ export class LiveScorer {
         this.valuesByAgent.get(agent.id)?.push(value);
         values[agent.id] = value;
       }
-      const boundary: LiveEpochBoundary = {
+      const boundary: LiveIntervalBoundary = {
         index,
         blockNumber,
         fairPriceUsdcPerWeth: snapshot.fairPriceUsdcPerWeth,
         values,
         elapsedMs: Date.now() - started,
       };
-      this.opts.logger.append(EPOCHS_FILENAME, boundary);
-      this.opts.logger.event({ type: "epoch_boundary", ...boundary });
+      this.opts.logger.append(INTERVALS_FILENAME, boundary);
+      this.opts.logger.event({ type: INTERVAL_EVENTS.boundary, ...boundary });
 
       if (this.marketSampler) {
         const row = await this.marketSampler.sample(blockNumber);
@@ -177,7 +183,7 @@ export class LiveScorer {
       // stays aligned with the boundaries that were actually read.
       this.failures++;
       this.opts.logger.event({
-        type: "epoch_boundary_failed",
+        type: INTERVAL_EVENTS.boundaryFailed,
         blockNumber,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -185,11 +191,11 @@ export class LiveScorer {
   }
 
   /** The series in the shape summary.json and the metrics tools already read. */
-  series(): EpochSeries | undefined {
+  series(): IntervalSeries | undefined {
     if (this.boundaries.length < 2) return undefined;
     return {
-      epochBlocks: this.opts.epochBlocks,
-      epochs: this.boundaries.length - 1,
+      intervalBlocks: this.opts.intervalBlocks,
+      intervals: this.boundaries.length - 1,
       boundaryBlocks: [...this.boundaries],
       valuesByAgent: Object.fromEntries(
         [...this.valuesByAgent].map(([id, values]) => [id, [...values]]),
@@ -197,18 +203,12 @@ export class LiveScorer {
     };
   }
 
-  meta(): {
-    source: "live-epoch-boundaries";
-    boundaries: number;
-    failedBoundaries: number;
-    epochBlocks: number;
-    markMedianBlocks: number;
-  } {
+  meta(): IntervalSeriesMeta {
     return {
-      source: "live-epoch-boundaries",
+      source: "live-interval-boundaries",
       boundaries: this.boundaries.length,
       failedBoundaries: this.failures,
-      epochBlocks: this.opts.epochBlocks,
+      intervalBlocks: this.opts.intervalBlocks,
       markMedianBlocks: this.opts.markMedianBlocks,
     };
   }

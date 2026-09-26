@@ -48,7 +48,7 @@ Restart=on-failure
 RestartSec=30
 
 # The coordinator installs no SIGTERM handler. A stop is abrupt: events.jsonl / blocks.csv /
-# epochs.jsonl are append-only and survive, summary.json is not written. Stopping ends the period.
+# intervals.jsonl are append-only and survive, summary.json is not written. Stopping ends the period.
 KillSignal=SIGTERM
 TimeoutStopSec=30
 

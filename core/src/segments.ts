@@ -13,10 +13,10 @@
 // not separate worlds -- which is also why `npm run metrics` will not mix them with scenario runs
 // (ADR 0020 §1).
 //
-// The seam that is not free: an epoch boundary that falls inside a segment belongs to it, but the
-// *return* into the first boundary of a segment comes from the last boundary of the one before. So
+// The seam that is not free: an interval boundary that falls inside a segment belongs to it, but the
+// interval that *ends* at a segment's first boundary began at the last boundary of the one before. So
 // each segment's series carries that previous boundary as its own boundary 0. Without it every
-// segment would silently lose its first epoch, which over a week is seven of them.
+// segment would silently lose its first interval, which over a week is seven of them.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { safeStringify } from "@eris/sdk/logger.js";
@@ -334,13 +334,13 @@ export class SegmentedRun implements RunArtifactWriter {
 }
 
 /**
- * The boundaries of one segment, taken out of the whole run's epoch series.
+ * The boundaries of one segment, taken out of the whole run's interval series.
  *
  * The boundary immediately *before* the segment starts is included as its boundary 0. A segment's
- * first epoch is the interval that ends inside it, and its return needs the value at both ends -- so
- * cutting strictly on the segment's own blocks would drop one epoch per segment.
+ * first interval is the one that ends inside it, and its change needs the value at both ends -- so
+ * cutting strictly on the segment's own blocks would drop one interval per segment.
  */
-export function sliceEpochSeries<T>(
+export function sliceIntervalSeries<T>(
   series: { boundaryBlocks: number[]; valuesByAgent: Record<string, T[]> },
   fromBlock: number,
   toBlock: number,
@@ -354,7 +354,7 @@ export function sliceEpochSeries<T>(
   // Only when the segment does not already start *on* a boundary. A roll that lands on one -- the
   // common case, since the check runs right after the boundary read -- already has its opening
   // value, and carrying another would hand the previous segment's last return to this one as well:
-  // the same epoch scored twice, in two different segments.
+  // the same interval counted twice, in two different segments.
   const startsOnBoundary = series.boundaryBlocks[indices[0]] === fromBlock;
   if (carried >= 0 && !startsOnBoundary) indices.unshift(carried);
   return {

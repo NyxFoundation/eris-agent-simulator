@@ -1,0 +1,135 @@
+{
+  "runId": "2026-09-06T09-36-11-544Z",
+  "mode": "backtest",
+  "resetUnit": "scenario",
+  "blockTimeSec": 2,
+  "blocksProcessed": 24,
+  "elapsedMs": 46484,
+  "finalFairPriceUsdcPerWeth": 2971.383070377508,
+  "valueSeries": {
+    "source": "post-run-reconstruction",
+    "granularityBlocks": 1,
+    "fromBlock": 1249,
+    "toBlock": 1271,
+    "blocks": 23,
+    "windowBlocks": 23,
+    "failedReads": 0,
+    "failedReadTargets": [],
+    "elapsedMs": 152,
+    "alphaRefFairUsdcPerWeth": 2965.17191703,
+    "alphaByAgent": {
+      "noop": 0,
+      "venue-arb": 3381.822450033389,
+      "my-arb": 837.4601175654097,
+      "clean-arb": 3994.029993110802
+    },
+    "markedValueByAgent": {},
+    "unpricedHoldings": [],
+    "epochSeries": {
+      "epochBlocks": 12,
+      "epochs": 1,
+      "boundaryBlocks": [
+        1249,
+        1261
+      ],
+      "valuesByAgent": {
+        "noop": [
+          372585.87027385563,
+          369481.6590661642
+        ],
+        "venue-arb": [
+          372585.87027385563,
+          370583.57034909504
+        ],
+        "my-arb": [
+          372585.87027385563,
+          369754.55943754327
+        ],
+        "clean-arb": [
+          372585.87027385563,
+          370545.62945637945
+        ]
+      }
+    },
+    "markMedian": {
+      "windowBlocks": 5,
+      "boundaries": 1,
+      "surfaces": [
+        "stables"
+      ],
+      "maxDeviationBps": {
+        "EUSD": 0,
+        "DAI": 0
+      }
+    },
+    "epochSeriesMeta": {
+      "source": "live-epoch-boundaries",
+      "boundaries": 2,
+      "failedBoundaries": 0,
+      "epochBlocks": 12,
+      "markMedianBlocks": 5
+    }
+  },
+  "violations": [],
+  "agents": [
+    {
+      "id": "noop",
+      "address": "0x242ffbf549cF93eF166b87c730a57638286A4cC6",
+      "baseline": true,
+      "initialValueUsdc": 369887.8555434266,
+      "finalValueUsdc": 369887.8555434266,
+      "netPnlUsdc": 0,
+      "pnlUsdc": -3104.2112076914054,
+      "alphaUsdc": 0,
+      "includedTxCount": 0,
+      "revertCount": 0,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "venue-arb",
+      "address": "0xF58CF68B9A292d57636367d1F460e30563EaA6aC",
+      "baseline": false,
+      "participant": "team-a",
+      "initialValueUsdc": 369887.8555434266,
+      "finalValueUsdc": 373271.31150794186,
+      "netPnlUsdc": 3383.4559645152767,
+      "pnlUsdc": -2002.2999247605912,
+      "alphaUsdc": 3381.822450033389,
+      "includedTxCount": 22,
+      "revertCount": 1,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "my-arb",
+      "address": "0xf5a6844c6efC60B817793299Dbd83AFA3CE2029d",
+      "baseline": false,
+      "participant": "team-a",
+      "initialValueUsdc": 369887.8555434266,
+      "finalValueUsdc": 370691.09836356045,
+      "netPnlUsdc": 803.2428201338626,
+      "pnlUsdc": -2831.310836312361,
+      "alphaUsdc": 837.4601175654097,
+      "includedTxCount": 22,
+      "revertCount": 4,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    },
+    {
+      "id": "clean-arb",
+      "address": "0x223cfc2BBDCdCD43F44f30C98Ac25E629374ce5e",
+      "baseline": false,
+      "participant": "team-b",
+      "initialValueUsdc": 369887.8555434266,
+      "finalValueUsdc": 373870.0905913906,
+      "netPnlUsdc": 3982.23504796403,
+      "pnlUsdc": -2040.2408174761804,
+      "alphaUsdc": 3994.029993110802,
+      "includedTxCount": 32,
+      "revertCount": 1,
+      "unloggedTxCount": 0,
+      "stderrTail": ""
+    }
+  ]
+}

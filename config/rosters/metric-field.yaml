@@ -3,7 +3,7 @@
 # Lifted from config/regimes/b-harness.yaml, which grew this roster while calibrating M9 on a
 # continuous economy (docs/scoring-metric-measurements.md §5.4). ADR 0020 §2 moved the competition to
 # `scenario` mode, so the same field has to be re-measured there: the candidates were compared over a
-# 42-epoch week, and a scenario is a fraction of that.
+# 42-interval week, and a scenario is a fraction of that.
 #
 # Every wallet is AUTO (keccak("auto-wallet:<seed>:<id>")) so the roster is self-contained -- it needs
 # no AGENTn_PRIVATE_KEY on the machine running it, which is what lets it go to a spot box unchanged.

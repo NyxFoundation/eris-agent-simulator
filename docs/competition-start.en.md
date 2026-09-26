@@ -48,7 +48,7 @@ score T  = 50 + 10 × (P − mean over all units) / standard deviation
 final    = weighted mean, later epochs heavier (1.0 at the first, 1.5 at the last)
 ```
 
-So the competition is **"how did you do against everyone else that round", stacked k times**. An
+So the competition is **"how did you do against everyone else that epoch", stacked k times**. An
 unrealised gain in the middle of an epoch is worth nothing; only the value at the end counts. A
 market-wide move is absorbed into everyone's mean, so **you neither gain from a rally nor lose from
 a selloff.**
@@ -63,19 +63,16 @@ One benchmark agent that never moves its capital runs alongside. Every unit runs
 
 > **A local `npm run backtest -- --scenarios` ranks with the same rule as the competition** (one scenario = one epoch, P → deviation score T → the later-weighted average; `standings.json`). What differs is the field: locally the population is your roster, in the competition it is every participant. **Local numbers are for comparing your own versions against each other, not for predicting where you will place.**
 
-### Vocabulary (read this)
+### What the code calls these
 
-**The rules and the code use the same words for different things.** This is the one table to
-remember.
+The code uses the rules' words. An **epoch** is `epoch` in the code too: one run, i.e. one
+`runs/<id>/` with one `summary.json`. An **evaluation interval** is `interval` in the code
+(`valueSeries.intervalSeries` in `summary.json`, `run.intervalBlocks` in the config, 12 blocks by
+default), and the dashboard shows it as "Interval". It is not used for scoring.
 
-| The rules say | The code calls it | What it actually is |
-|---|---|---|
-| epoch | run | one `runs/<id>/` — one `summary.json` |
-| scenario | scenario | `<regime>#<seed>`; regimes are defined in `config/regimes/*.yaml` |
-| evaluation interval | **epoch** / "round" in the dashboard | `valueSeries.epochSeries` in `summary.json`, `run.epochBlocks` (default 12). Not used for scoring |
-
-**The code's `epoch` is not the rules' epoch.** The code's `epoch` is the rules' *evaluation
-interval*.
+The code used to call the evaluation interval an `epoch` as well (issue #140). Until the results
+are published, `summary.json` also carries the same series under its old name, `epochSeries`, and
+the manifest's `round` still has `epochBlocks`. Both mean the evaluation interval.
 
 ### The blockchain minimum
 
@@ -815,7 +812,7 @@ Zero `submitted` and a column of `rejected` is a **size or inventory** problem, 
 (§11). `submitted` lines but `includedTxCount: 0` in `summary.json` means the priority fee was too low to
 get into a block.
 
-**`summary.json`** has one record per agent. Read `pnlUsdc` (P, the final minus initial boundary of `valueSeries.epochSeries`, each at its own marks).
+**`summary.json`** has one record per agent. Read `pnlUsdc` (P, the final minus initial boundary of `valueSeries.intervalSeries` — the value at each evaluation-interval boundary — each at its own marks).
 `initialValueUsdc` / `finalValueUsdc` are both valued at the final marks; their difference is
 `netPnlUsdc`, a different metric that can disagree with P in sign. Also read `includedTxCount` (mined transactions), `revertCount` (mined but reverted — gas paid for
 nothing), `stderrTail` (the last output of a process that died), and the run-level `violations`.
@@ -840,7 +837,7 @@ npm run dashboard        # http://localhost:5173
 
 Pick a competition from **Competition** in the left sidebar (one `--scenarios` run = one competition; a
 single `sim:realtime` run appears as a one-scenario competition). EN / 日本語 switches the language. The
-pages are three layers that follow the ladder **competition › scenario › round**.
+pages are three layers that follow the ladder **competition › scenario › interval**.
 
 ### Standings (`/`)
 
@@ -860,11 +857,11 @@ This is the formula of rules §4.4 and nothing else. The columns:
 - **score by epoch**, above the table — every agent's cumulative score after each completed epoch. The
   last point of each line is the number in the table
 
-The bar across the top is the **rounds** (the rules' evaluation intervals); **click one and the standings
-rewind to that point** ("Standings · through round k"). The rank at round k is not a preview of the final
+The bar across the top is the **intervals** (the rules' evaluation intervals); **click one and the standings
+rewind to that point** ("Standings · through interval k"). The rank at interval k is not a preview of the final
 rank — the arbitrageurs may be leading only because the crash window has not opened yet.
 
-The **scenario list** below the table is one row per world (`regime#seed`): rounds, leader, and the kinds
+The **scenario list** below the table is one row per world (`regime#seed`): intervals, leader, and the kinds
 of environment event. "none scheduled" means no window event in that epoch, not that the regime is calm.
 Click a row to open that world.
 
@@ -872,11 +869,11 @@ Click a row to open that world.
 
 ![scenario](img/dashboard-scenario.en.png)
 
-The board of one world. The bar at the top is that world's rounds; the **block axis** below it walks the
+The board of one world. The bar at the top is that world's intervals; the **block axis** below it walks the
 world block by block (play, single-step, speed). The board reads left to right: **wallets** (each agent's
 account value), **the chain** (the transactions in that block and their priority fees), **contracts**
 (each venue's state: pool price, GMX open interest, Aave utilisation, LST discount, eUSD price). Below:
-the **standings within this world** (through round k), the picked wallet's **agent log** (mined
+the **standings within this world** (through interval k), the picked wallet's **agent log** (mined
 transactions, method and venue), **venue price against fair** (the gap to fair is what arbitrage is made
 of), and **account value at each scored boundary** (you against the field).
 
@@ -900,7 +897,7 @@ places below a steady one is visible in the per-regime rows.
 
 The rank badge at the top right is **the rank within the world (scenario) currently open**; the
 competition rank is the "k of n" in the Standing tab. The other tabs: **Overview** (the account value
-curve and end-of-run positions), **Rounds** (this agent's Δ value / log return / rank per round),
+curve and end-of-run positions), **Intervals** (this agent's Δ value / log return / rank per interval),
 **Positions** (every venue: GMX perps, Aave accounts with HF, LST queues, Trove ICR), **Trade history**,
 **Decision log** (the contents of `agents/<id>.jsonl`).
 
@@ -960,7 +957,7 @@ it works" is the regime whose environment gives the strategy something to do (§
 A chain that does not stop, which you can point your own agent at from your own machine. **It is not
 official scoring** — nothing from the practice period counts toward the standings.
 
-You need the `manifest.json` the operator publishes (RPC, chain id, every venue address, round
+You need the `manifest.json` the operator publishes (RPC, chain id, every venue address, evaluation-interval
 length, action vocabulary, fee defaults, and an explicit statement that **there is no order-size
 cap**) and your own wallet. Your decision log stays **on your machine and
 nowhere else**. Steps are in [practice-devnet.md](guide/practice-devnet.md).
