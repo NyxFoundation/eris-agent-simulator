@@ -188,17 +188,32 @@ ERLST (the actions are `stableSwap`, `liquitySwapEusd` (or `stableSwap` with `st
 A bank deposit and a secured loan in one.
 
 - **Deposit (supply), and borrow another asset against what you deposited (borrow).** For example, deposit 10 WETH and borrow USDC up to a fraction of its value
-- **You can borrow only up to a fraction of your collateral's value (the LTV).** When the collateral falls in value and your **health factor (HF) drops below 1, you get liquidated**: a third party repays part of your debt and takes your collateral at a discount (the liquidation bonus). The liquidator gains and the liquidated account loses. This guide calls a liquidated account a **victim**
-- **Collateral is priced at the reference price**, not at any pool's price
-- **Flash loans**: borrow with no collateral at all, provided you repay within the same transaction (`flash-arb`). Borrowing, using and repaying all happen in one transaction, so you need your own contract
+- **You can borrow only up to a fraction of your collateral's value (the LTV).** Liquidation is judged against a second, slightly higher fraction (the liquidation threshold): the **health factor HF = collateral value × liquidation threshold ÷ debt value**, and once it drops below 1 the position can be liquidated. HF falls when the collateral loses value or the borrowed asset gains it. Borrowing the full LTV against WETH gives HF ≈ 1.03, so a move of about 3% reaches the threshold
+- **In a liquidation** a third party repays up to half of your debt (all of it once HF is 0.95 or lower) and receives collateral worth what it repaid plus the liquidation bonus. The liquidator gains and the liquidated account loses. This guide calls a liquidated account a **victim**. The environment never liquidates anyone; other participants do
+- **Collateral and debt are priced by the environment's oracle**: WETH and WBTC at the reference price, USDC fixed at $1, ERLST at the reference price × the redemption rate. None of it depends on any pool's price
+- **Flash loans**: borrow with no collateral at all, provided you repay the amount plus a 0.05% fee within the same transaction. You need your own contract with the function Aave calls back (`executeOperation`); deploy it with `example/agents/lib/deployContract.ts`. The reference `flash-arb` calls a receiver contract that the environment deploys only under the example config (`run.flashArb: true` in `config/example.yaml`). The official regimes do not deploy it, so there it reverts as it stands
 - **Interest over 12 minutes is practically zero.** The chain's clock runs in real time, so deposits do not grow and debts do not swell. The reason to use Aave is what you do with what you borrow, not the interest
 
-You can deposit WETH, USDC, WBTC and ERLST (ERLST is collateral only: LTV 70%, liquidation
-threshold 75%). Borrowing by itself does not change your asset value: what you borrowed is in your
-wallet and the same amount of debt is subtracted. In the `lending-incident` regime the organisers
-open two borrowers at HF 1.10 and then crash the reference price, which creates liquidations to take
-(`liquidator`). The state is in `obs.protocols.aave`: `healthFactor` / `supplied` / `borrowed` /
-`availableBorrowsBase`.
+You can deposit the four assets below. In actions ERLST is written `"LST"` (`aaveSupply` with
+`asset: "LST"`; the observation's `supplied` / `borrowed` use the key `LST` too).
+
+| Asset | LTV | Liquidation threshold | Liquidation bonus |
+|---|---|---|---|
+| WETH | 80% | 82.5% | 5% |
+| USDC | 80% | 85% | 5% |
+| WBTC | 70% | 75% | 10% |
+| ERLST (`"LST"`) | 70% | 75% | 7.5% |
+
+In practice you can borrow WETH and USDC. WBTC borrowing is enabled, but Aave holds no WBTC at the
+start, so there is nothing to borrow until someone deposits some. ERLST is collateral only and
+cannot be borrowed. Borrowing by itself does not change your asset value: what you borrowed is in
+your wallet and the same amount of debt is subtracted. In the `lending-incident` regime the
+organisers open two borrowers at HF 1.10 and then crash the reference price, which creates
+liquidations to take. Liquidation is not a dedicated action: send Aave's `liquidationCall` through
+`rawTx` (`example/agents/lib/aave-liquidation.ts`). The victims' addresses arrive in the environment
+variable `ERIS_LIQUIDATION_VICTIMS`. The reference `liquidator` is in the `run(ctx)` form, so it
+cannot be submitted as it stands. The state is in `obs.protocols.aave`: `healthFactor` (scaled by
+10^18) / `supplied` / `borrowed` / `availableBorrowsBase` (dollars with 8 decimals).
 
 #### GMX v2 — margin trading (perps)
 
