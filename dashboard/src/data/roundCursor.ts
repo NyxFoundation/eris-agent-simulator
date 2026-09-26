@@ -82,7 +82,7 @@ export function getCursor(): CursorState {
 
 /**
  * Tell the cursor how long the thing in view is — the longest scenario of a competition, or a
- * single run's epoch count when none is selected.
+ * single run's interval count when none is selected.
  *
  * A position that still exists in the new range is kept, so walking from the competition into one of its
  * scenarios lands on the round you were already looking at. A position past the new end is parked

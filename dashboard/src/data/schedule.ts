@@ -10,6 +10,7 @@
 // per-block record (crash / spike / cexDrift / flowTrend change the price walk itself rather than
 // overlaying it), so this is the plan, and "planned" is what it says.
 
+import { intervalBlocksOf } from "@core/intervalSeries";
 import { scenarioRunId, type Competition } from "./competition";
 
 const HEAD_BYTES = 128 * 1024;
@@ -27,7 +28,7 @@ export interface ScenarioSchedule {
   regime: string;
   seed: number | null;
   runId: string;
-  epochBlocks: number;
+  intervalBlocks: number;
   windows: ScheduledWindow[];
 }
 
@@ -57,7 +58,7 @@ export async function loadSchedules(
       const key = s.runDir;
       try {
         const head = await loadHead(runId);
-        let epochBlocks = 0;
+        let intervalBlocks = 0;
         let windows: ScheduledWindow[] = [];
         for (const line of head.split("\n")) {
           if (!line.trim()) continue;
@@ -68,22 +69,23 @@ export async function loadSchedules(
             // The last line of a capped read is usually torn. Nothing else to do with it.
             continue;
           }
+          // Under either name: a run started before issue #140 recorded `intervalBlocks` only.
           if (event.type === "run_started_realtime")
-            epochBlocks = num(event.epochBlocks) ?? 0;
+            intervalBlocks = intervalBlocksOf(event);
           if (event.type === "stress_schedule" && Array.isArray(event.events)) {
             windows = (event.events as Record<string, unknown>[]).flatMap(
               (w) => {
                 const start = num(w.startBlock);
                 const end = num(w.endBlock);
-                if (start === null || end === null || epochBlocks <= 0)
+                if (start === null || end === null || intervalBlocks <= 0)
                   return [];
                 return [
                   {
                     type: String(w.type ?? "event"),
                     // The schedule's blocks are relative to the run's first block, so the round is a
                     // direct division rather than an offset from the first boundary.
-                    fromRound: Math.max(1, Math.ceil(start / epochBlocks)),
-                    toRound: Math.max(1, Math.ceil(end / epochBlocks)),
+                    fromRound: Math.max(1, Math.ceil(start / intervalBlocks)),
+                    toRound: Math.max(1, Math.ceil(end / intervalBlocks)),
                     ...(typeof w.venue === "string" ? { venue: w.venue } : {}),
                     ...(typeof w.stable === "string"
                       ? { stable: w.stable }
@@ -94,10 +96,10 @@ export async function loadSchedules(
             );
           }
         }
-        if (epochBlocks <= 0) return null;
+        if (intervalBlocks <= 0) return null;
         return [
           key,
-          { regime: s.regime, seed: s.seed, runId, epochBlocks, windows },
+          { regime: s.regime, seed: s.seed, runId, intervalBlocks, windows },
         ] as const;
       } catch {
         // A scenario whose events were not collected simply contributes no windows.

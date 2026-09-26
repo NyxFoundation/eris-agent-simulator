@@ -3,8 +3,9 @@
 // Rules the copy follows (the audit that produced them lives in the PR description):
 //   - name things by what the viewer controls and recognizes, never by how the system is built —
 //     no artifact file names, config paths, env keys or ADR numbers outside the learning layer
-//   - one word per concept: competition / scenario / round, standings, live / finished
-//   - every number carries its unit: bps per round, USDC, blocks
+//   - one word per concept: competition / scenario / interval, standings, live / finished
+//     (the interval is the rules' evaluation interval, §0.1; the code calls it a round, issue #140)
+//   - every number carries its unit: bps per interval, USDC, blocks
 //   - empty states say what is true and what it means; errors say what happened and how to fix it
 //
 // `npm run …` commands are allowed only where the viewer genuinely operates the local tooling
@@ -35,7 +36,7 @@ const en = {
   // from its scenario list instead of a dropdown of names).
   "sidebar.world": "Viewing",
   "sidebar.worldOf": "{i} of {n} worlds",
-  "sidebar.worldRounds": "{n} rounds",
+  "sidebar.worldRounds": "{n} intervals",
   "sidebar.worldLeader": "leads: {id}",
   "sidebar.worldEvents": "episodes: {list}",
   "sidebar.worldNoEvents": "no episodes scheduled",
@@ -44,9 +45,9 @@ const en = {
   "sidebar.readOnly": "Read-only view",
   "sidebar.noSignIn": "no sign-in required",
 
-  // ---- round cursor (competition clock) ----
-  "cursor.final": "Final · {n} rounds",
-  "cursor.at": "Round {at} / {max}",
+  // ---- interval cursor (competition clock) ----
+  "cursor.final": "Final · {n} intervals",
+  "cursor.at": "Interval {at} / {max}",
   "cursor.play": "▶ play",
   "cursor.pause": "❚❚ pause",
   "cursor.jumpFinal": "jump to final →",
@@ -54,19 +55,19 @@ const en = {
   "cursor.completeOne": "1 scenario · finished",
   "cursor.running":
     "{running} of {total} still running · {ended} ended earlier",
-  "cursor.atRound": "{n} scenarios @ round {at}",
-  "cursor.atRoundOne": "1 scenario @ round {at}",
+  "cursor.atRound": "{n} scenarios @ interval {at}",
+  "cursor.atRoundOne": "1 scenario @ interval {at}",
 
   // ---- home (competition standings) ----
   "home.stat.scenarios": "scenarios",
   "home.stat.regimes": "regimes",
   "home.stat.agents": "agents",
-  "home.stat.rounds": "rounds",
+  "home.stat.rounds": "intervals",
   "home.stat.recorded": "recorded",
   "home.roundsFinal": "{n} · final",
   "home.roundsAt": "{at} of {n}",
   "home.missingRounds":
-    "{missing} of {total} scenario runs were not collected — they still count toward the ranking, but have no round detail.",
+    "{missing} of {total} scenario runs were not collected — they still count toward the ranking, but have no interval detail.",
   // ADR 0021 §1. Shown on any competition that is not a scenario matrix — the practice devnet runs
   // one continuous world (ADR 0020 §2 puts the official competition in `scenario` mode), so a
   // continuous competition is by construction not the official scoring. Said on the standings
@@ -78,7 +79,7 @@ const en = {
   "home.standingsFinal": "Standings · final",
   // The heading over the §4.7 notice, where there is no result to be final or provisional about.
   "home.standingsTitle": "Standings",
-  "home.standingsThrough": "Standings · through round {at}",
+  "home.standingsThrough": "Standings · through interval {at}",
   "home.subtitlePractice":
     "Score: each day of the period is one epoch. P is the agent's return over the day (end value ÷ start value − 1) rather than its USDC — the world never resets, so starting amounts drift apart, and a return asks what each agent did with what it had. T = 50 + 10 × (P − μ) / σ over the field, and the score is the plain average of T over the days. An agent that starts a day with less than a tenth of the field's median is not placed that day. With equal starts this is exactly the competition's ranking.",
   "home.subtitle":
@@ -107,7 +108,7 @@ const en = {
   "home.scenarios.subtitle":
     "One row per world: a regime drawn at a seed, with whoever leads it and what the environment is scheduled to do there. Click a row to open it. A single scenario is one draw from the distribution, not the result — the standings above are.",
   "home.scenarios.col.scenario": "scenario",
-  "home.scenarios.col.rounds": "rounds",
+  "home.scenarios.col.rounds": "intervals",
   "home.scenarios.col.leader": "leader",
   "home.scenarios.col.events": "environment episodes",
   // "none scheduled" is about the episode schedule, not about the world being quiet: a regime such
@@ -118,17 +119,18 @@ const en = {
   "home.scenarios.roundsAt": "{at} / {n}",
   "home.scenarios.ended": "ended",
   "home.scenarios.endedTitle":
-    "This world ran out of rounds before the cursor. Its last value is its result, so it stays in the standings.",
+    "This world ran out of intervals before the cursor. Its last value is its result, so it stays in the standings.",
   "home.scenarios.noEvents": "none scheduled",
   "home.scenarios.noLeader": "no result yet",
   "home.scenarios.missing":
-    "round detail was not collected for this scenario",
+    "interval detail was not collected for this scenario",
   "home.scenarios.leaderTitle":
-    "leads through the selected round, by P = V_k − V_0 (USDC) — the quantity the epoch's deviation score is taken over",
+    "leads through the selected interval, by P = V_k − V_0 (USDC) — the quantity the epoch's deviation score is taken over",
 
   // ---- how the units nest ----
-  // "Round" means three different things to three different readers: a block, a scoring window, or
-  // a whole run. Saying which one this dashboard means, once, beats disambiguating it per panel.
+  // The interval is easy to mistake for the scoring unit, which is the epoch (one scenario run).
+  // Saying what it is, once, beats disambiguating it per panel. It was called a round until issue
+  // #140, and "round" meant a block, a scoring window or a whole run depending on the reader.
   "units.title": "How this fits together",
   "units.competition": "Competition",
   "units.competitionBody":
@@ -136,9 +138,9 @@ const en = {
   "units.scenario": "Scenario",
   "units.scenarioBody":
     "One world: a regime drawn at a seed, run start to finish. All agents trade it at the same time.",
-  "units.round": "Round",
+  "units.round": "Interval",
   "units.roundBody":
-    "The scoring window — several blocks, not one. Scores, rank moves and environment episodes are all read against it.",
+    "The evaluation interval — several blocks, not one. Values, rank moves and environment episodes are read against it as interim progress; the score uses only the scenario's first and last boundary.",
   "units.block": "Block",
   "units.blockBody":
     "Two seconds, and one chance to act. Transactions inside one are ordered by priority fee.",
@@ -146,7 +148,7 @@ const en = {
   // ---- scenario page ----
   "scenario.fallbackTitle": "Scenario",
   "scenario.seed": "seed {n}",
-  "scenario.roundsBlocks": "{rounds} rounds × {blocks} blocks",
+  "scenario.roundsBlocks": "{rounds} intervals × {blocks} blocks",
   "scenario.standings": "Scenario standings",
   "scenario.info.overview.label": "Overview",
   "scenario.info.environment.label": "Environment",
@@ -169,15 +171,15 @@ const en = {
   "scenario.info.environment.p4":
     "The fair price is distributed on-chain through a price feed and lands one block late for everyone equally — reacting to information a block after it exists is part of the game.",
   "scenario.info.scoring.p1":
-    "Every agent is valued at the same block cross-sections, never at a moment of its own choosing. A scenario run is scored from chain history once it finishes; a practice period, which has no end, is scored at each round boundary as it passes. Both read the same venues at the same blocks, so the two produce the same number.",
+    "Every agent is valued at the same block cross-sections, never at a moment of its own choosing. A scenario run is scored from chain history once it finishes; a practice period, which has no end, is scored at each interval boundary as it passes. Both read the same venues at the same blocks, so the two produce the same number.",
   "scenario.info.scoring.p2":
     "The score is one number per epoch: P = V_K − V_0, the change in total account value over the run (each end at its own 5-block-median marks), standardised over the field as T = 50 + 10 (P − μ) / σ. The benchmark is valued but not in the population.",
   "scenario.info.scoring.p3":
-    "Across epochs the score is a weighted average of T. The competition fixes how many epochs it runs before it starts, and later epochs weigh more — the first counts 1, the last 1.5, rising evenly in between. Equal scores are separated by the spread of the agent's own T values (steadier first), then by its worst epoch, then by submission time. Net PnL and max drawdown come from the same series and are context, not the score; the rounds inside a run are its running progress.",
+    "Across epochs the score is a weighted average of T. The competition fixes how many epochs it runs before it starts, and later epochs weigh more — the first counts 1, the last 1.5, rising evenly in between. Equal scores are separated by the spread of the agent's own T values (steadier first), then by its worst epoch, then by submission time. Net PnL and max drawdown come from the same series and are context, not the score; the intervals inside a run are its running progress.",
   "scenario.info.scoring.p4":
     "Holdings the scorer cannot price are reported, never silently zeroed — a zero that is really a read failure would be indistinguishable from a trading loss.",
   "scenario.info.artifacts.p1":
-    "Everything on these pages is derived from the run's own recorded files: the standings and per-round scores, the reconstructed observations and event stream, every transaction, each agent's own decision log, and the per-venue market series.",
+    "Everything on these pages is derived from the run's own recorded files: the standings and per-interval results, the reconstructed observations and event stream, every transaction, each agent's own decision log, and the per-venue market series.",
   "scenario.info.artifacts.p2":
     "The chain is the source of truth: every numeric series is reconstructed from on-chain reads after the run. Logs supply only reasoning, intent and identity.",
   "scenario.info.artifacts.p3":
@@ -186,16 +188,16 @@ const en = {
     "The local Blockscout explorer (npm run explorer) is the deep-dive tool: when it is running, every transaction, address and block on these pages links into it.",
 
   // ---- rounds bar (one scenario's clock) ----
-  "rounds.segmentTitle": "Round {i} · blocks {from}–{to} · {tx}",
+  "rounds.segmentTitle": "Interval {i} · blocks {from}–{to} · {tx}",
   "rounds.txOutside": "transactions not counted — this view does not cover these blocks",
   "rounds.txNotStarted": "not started",
   "rounds.txN": "{n} tx",
-  "rounds.heading": "Round {i}",
+  "rounds.heading": "Interval {i}",
   "rounds.blocks": "blocks {from}–{to}",
   "rounds.openExplorer": "open in explorer →",
   "rounds.close": "close ✕",
   "rounds.notScored":
-    "this round was not scored — the run has no per-round series",
+    "no result for this interval — the run recorded no interval series",
   "rounds.scoredLater":
     "scored when the run finishes — results are reconstructed from chain history afterwards",
   "rounds.col.agent": "Agent",
@@ -205,7 +207,7 @@ const en = {
   "rounds.bankrupt":
     "asset value at or below zero (bankrupt — no floor, no freeze)",
   "rounds.deltaNote":
-    "Δ value is the raw change in account value, market exposure included — a do-nothing agent still moves with the price. Log return is the same round measured against the do-nothing baseline, and is the series the score averages. Rank is cumulative since the first round; the arrow is its change over this round.",
+    "Δ value is the raw change in account value, market exposure included — a do-nothing agent still moves with the price. Log return is the same change as a log growth rate. Neither is the score, which is one number for the whole epoch. Rank is cumulative since the first interval; the arrow is its change over this interval.",
   "rounds.envDid": "What the environment did",
   "rounds.replayStart": "▶ replay",
   "rounds.replayStartTitle": "Walk this run forward from its first block",
@@ -215,17 +217,17 @@ const en = {
   "rounds.pause": "Pause",
   "rounds.playAgain": "Replay again",
   "rounds.replay": "replay",
-  "rounds.progress": "{done}/{total} rounds",
-  "rounds.progressBlocks": "{done}/{total} rounds × {blocks} blocks",
+  "rounds.progress": "{done}/{total} intervals",
+  "rounds.progressBlocks": "{done}/{total} intervals × {blocks} blocks",
   "rounds.noRounds":
-    "no rounds in this run — it was too short for a single scoring round",
+    "no intervals in this run — it was too short for a single one",
   "rounds.left": "{t} left",
   "rounds.replayPct": "replay {pct}%",
 
   // ---- agent page ----
   "agent.tab.standing": "Standing",
   "agent.tab.overview": "Overview",
-  "agent.tab.rounds": "Rounds",
+  "agent.tab.rounds": "Intervals",
   "agent.tab.positions": "Positions",
   "agent.tab.trades": "Trade history",
   "agent.tab.log": "Decision log",
@@ -250,7 +252,7 @@ const en = {
   "agent.standing.belowFloor":
     "Not placed on {n} day(s): it started them with less than a tenth of the field's median value. A return on that little is decided by fees and rounding, so those days are left out rather than scored.",
   "agent.standing.noSeries":
-    "No round detail for this agent — the scenario runs behind this competition were not collected, so the standing can be shown but not explained.",
+    "No interval detail for this agent — the scenario runs behind this competition were not collected, so the standing can be shown but not explained.",
   "agent.standing.mean":
     "mean T",
   "agent.standing.std":
@@ -296,9 +298,9 @@ const en = {
   "agent.selfHostedLog":
     "This participant runs their agent on their own machine, so its decision log is on that machine and never reaches here. What this page shows about them comes from the chain: their transactions, their positions, and their score.",
   "agent.noRounds":
-    "no scored rounds yet — the per-round series is built when the run finishes",
+    "no interval results yet — the per-interval series is built when the run finishes",
   "agent.roundsNote":
-    "A round is an evaluation interval — the leaderboard's running progress inside an epoch. Log return is the raw change of this agent's account value over the round. The score is one number for the whole epoch (P = V_K − V_0, standardised over the field), not a function of these rounds.",
+    "An interval is the rules' evaluation interval — the leaderboard's running progress inside an epoch. Log return is the raw change of this agent's account value over the interval. The score is one number for the whole epoch (P = V_K − V_0, standardised over the field), not a function of these intervals.",
   "agent.portfolio": "Portfolio value",
   "agent.portfolioRange": "Portfolio value · {from} → {to}",
   "agent.yLabel": "account value (USDC)",
@@ -319,10 +321,10 @@ const en = {
   "market.scope": "Scope",
   "market.wholeRun": "whole run · blocks {from}–{to}",
   "market.runWide":
-    "Whole run · blocks {from}–{to}. This tab is not narrowed by the round you pick: its tables are a single snapshot taken at the run's last block.",
-  "market.roundScope": "Round {i} · blocks {from}–{to}",
+    "Whole run · blocks {from}–{to}. This tab is not narrowed by the interval you pick: its tables are a single snapshot taken at the run's last block.",
+  "market.roundScope": "Interval {i} · blocks {from}–{to}",
   "market.scopeHint":
-    "Pick a round in the bar above and every panel below narrows to that round's blocks.",
+    "Pick an interval in the bar above and every panel below narrows to that interval's blocks.",
   "market.backToRun": "show the whole run →",
   "market.view.arb": "Cross-venue arb",
   "market.view.price": "Fair price",
@@ -364,15 +366,15 @@ const en = {
   "explorer.hint.unknown": "no exact match — filtering the lists below",
   "explorer.open": "open in Blockscout ↗ (enter)",
   "explorer.localOnly": "explorer offline — showing local matches only",
-  "explorer.wholeRun": "Whole run ({n} rounds)",
-  "explorer.roundOption": "Round {i} · blk {from}–{to}",
+  "explorer.wholeRun": "Whole run ({n} intervals)",
+  "explorer.roundOption": "Interval {i} · blk {from}–{to}",
   "explorer.scopeBlocks": "blocks {from}–{to}",
-  "explorer.scopeRound": "round {i} · blocks {from}–{to}",
+  "explorer.scopeRound": "interval {i} · blocks {from}–{to}",
   "explorer.stat.scenario": "Scenario",
   "explorer.stat.latest": "Latest block",
   "explorer.stat.indexed": "Indexed block",
   "explorer.stat.txRun": "Tx this run",
-  "explorer.stat.txRound": "Tx this round",
+  "explorer.stat.txRound": "Tx this interval",
   "explorer.stat.agents": "Active agents",
   "explorer.stat.blockTime": "Avg block time",
   "explorer.blocks": "Blocks",
@@ -432,7 +434,7 @@ const en = {
   "vp.amm.quotesEmpty": "no venue quotes recorded in this run",
   "vp.amm.note": "per-venue depth appears once the run finishes",
   "vp.amm.sampledNote":
-    "Venue series sampled at each round boundary ({n} points, every {every} blocks) while the run was going. Per-transaction volume and the trade markers need the post-run sweep, which a period's closed day does not get.",
+    "Venue series sampled at each interval boundary ({n} points, every {every} blocks) while the run was going. Per-transaction volume and the trade markers need the post-run sweep, which a period's closed day does not get.",
   "vp.amm.swapsTitle": "Agent swaps · {base}",
   "vp.col.block": "Block",
   "vp.col.agent": "Agent",
@@ -585,7 +587,7 @@ const en = {
 
   "vp.scenario.label": "Scenario",
   "vp.scenario.caption":
-    "What the environment did to this run. Its schedule is drawn from the seed before the first block: each episode is a trapezoid — it ramps up, holds, then decays — laid over the fair-price walk. The draw is random but reproducible, so the same seed always replays the same windows. This tab covers the whole run rather than the round you picked, because a scenario is a property of the run.",
+    "What the environment did to this run. Its schedule is drawn from the seed before the first block: each episode is a trapezoid — it ramps up, holds, then decays — laid over the fair-price walk. The draw is random but reproducible, so the same seed always replays the same windows. This tab covers the whole run rather than the interval you picked, because a scenario is a property of the run.",
   "vp.scenario.seed": "Seed",
   "vp.scenario.seedSub":
     "flow seed {flow} · the label for this run's market conditions",
@@ -593,12 +595,12 @@ const en = {
   "vp.scenario.scheduledNone":
     "none — the fair-price walk was the only thing moving",
   "vp.scenario.window": "Run window",
-  "vp.scenario.windowSub": "{blocks} blocks · {rounds} rounds",
+  "vp.scenario.windowSub": "{blocks} blocks · {rounds} intervals",
   "vp.scenario.scheduleTitle":
     "Stress schedule (drawn from the seed at run start)",
   "vp.col.event": "Event",
   "vp.col.windowShape": "Window · ramp/hold/decay",
-  "vp.col.rounds": "Rounds",
+  "vp.col.rounds": "Intervals",
   "vp.col.mag": "Mag",
   "vp.col.outcome": "Outcome",
   "vp.scenario.scheduleEmpty":
@@ -615,7 +617,7 @@ const en = {
   "vp.scenario.venueEventsSub":
     "liquidations, redemptions, slashes and open arb windows",
   "vp.scenario.notableTitle": "What the venues did, in block order",
-  "vp.col.round": "Round",
+  "vp.col.round": "Interval",
   "vp.col.detail": "Detail",
   "vp.scenario.notableEmpty":
     "nothing was liquidated, redeemed or slashed, and no arb window stayed open long enough to be reported",
@@ -745,7 +747,7 @@ const en = {
   "world.at": "Block {block} · {i} / {n}",
   "world.atRange": "Blocks {from}\u2013{to} · {i} / {n}",
   "world.noFrames": "nothing to walk",
-  "world.inRound": "round {n}",
+  "world.inRound": "interval {n}",
   "world.toStart": "back to the first block",
   "world.stepBack": "one block back",
   "world.stepForward": "one block on",
@@ -778,7 +780,7 @@ const en = {
   "world.meta.agents": "{n} agents",
   "world.meta.venues": "{n} venues",
   "world.meta.wholeRun": "blocks {from}\u2013{to}",
-  "world.meta.round": "round {n}",
+  "world.meta.round": "interval {n}",
   "world.meta.grouped": "{n} blocks per step",
   "world.empty":
     "This run recorded no blocks to walk. A run in progress on another machine is read over its files, and the block log is written as it goes \u2014 the board fills in as the blocks arrive.",
@@ -788,13 +790,13 @@ const en = {
   // ---- what the walk-through found: a live competition, a withheld schedule, an unplaced agent,
   // and the lookups a participant needs (issue #84 A/C/D/F/G/L/P/R/T/X2) ----
   "home.status.liveRound":
-    "live · {label} · round {round} of {rounds}",
-  "home.status.liveRoundIn": "next round in {t}",
+    "live · {label} · interval {round} of {rounds}",
+  "home.status.liveRoundIn": "next interval in {t}",
   "home.status.liveBlock": "block {n}",
   "home.status.epochsAllOne": "1 epoch scored",
   "home.roundsSoFar": "{n} · so far",
   "home.standingsSoFar": "Standings · so far",
-  "cursor.soFar": "So far · {n} rounds",
+  "cursor.soFar": "So far · {n} intervals",
   "home.unscoredTitle":
     "In the record for {n} epoch(s) that did not score it: it had no starting value there (it registered part-way through). Rules §4.4.2 leaves such an epoch out of its score rather than counting it as zero.",
   "home.unscoredBadge": "not placed in {n}",
@@ -826,7 +828,7 @@ const en = {
   "agent.rankOf": "Rank {n} of {m}",
   "agent.rankScenario": "rank in this scenario",
   "agent.standingOffBadge": "standings not posted",
-  "agent.standing.throughRound": "through round {at}",
+  "agent.standing.throughRound": "through interval {at}",
   "agent.standing.finalNote": "final result",
   "agent.standing.unscored":
     "Not placed in {n} epoch(s) of this competition: no starting value there, which is what a registration part-way through leaves behind. Those epochs are left out of the score rather than counted as zero (rules §4.4.2).",
@@ -848,7 +850,7 @@ const en = {
   "vp.scenario.scheduledNonePast":
     "no episode has opened yet — later windows are not published while the period runs",
   "vp.scenario.scheduledPast": "windows that have already closed",
-  "vp.scenario.windowRounds": "{rounds} rounds",
+  "vp.scenario.windowRounds": "{rounds} intervals",
   "vp.scenario.scheduleTitlePast": "Episodes that have already closed",
   "vp.scenario.scheduleWithheld":
     "Which episodes this epoch contains is not published while the competition runs (rules §3.3). It is published with the results (rules §7.2).",
@@ -877,7 +879,7 @@ const ja: Record<MessageKey, string> = {
   "sidebar.singleRun": "— 単発 run —",
   "sidebar.world": "見ている世界",
   "sidebar.worldOf": "{n} 世界中 {i} 番目",
-  "sidebar.worldRounds": "{n} ラウンド",
+  "sidebar.worldRounds": "{n} 評価区間",
   "sidebar.worldLeader": "首位 {id}",
   "sidebar.worldEvents": "イベント: {list}",
   "sidebar.worldNoEvents": "イベントの予定なし",
@@ -886,32 +888,32 @@ const ja: Record<MessageKey, string> = {
   "sidebar.readOnly": "閲覧専用ビュー",
   "sidebar.noSignIn": "ログイン不要",
 
-  "cursor.final": "最終 · 全 {n} ラウンド",
-  "cursor.at": "ラウンド {at} / {max}",
+  "cursor.final": "最終 · 全 {n} 評価区間",
+  "cursor.at": "評価区間 {at} / {max}",
   "cursor.play": "▶ 再生",
   "cursor.pause": "❚❚ 一時停止",
   "cursor.jumpFinal": "最終結果へ →",
   "cursor.complete": "{n} シナリオ · 終了",
   "cursor.completeOne": "1 シナリオ · 終了",
   "cursor.running": "{total} 中 {running} が進行中 · {ended} は先に終了",
-  "cursor.atRound": "{n} シナリオ · ラウンド {at}",
-  "cursor.atRoundOne": "1 シナリオ · ラウンド {at}",
+  "cursor.atRound": "{n} シナリオ · 評価区間 {at}",
+  "cursor.atRoundOne": "1 シナリオ · 評価区間 {at}",
 
   "home.stat.scenarios": "シナリオ",
   "home.stat.regimes": "レジーム",
   "home.stat.agents": "エージェント",
-  "home.stat.rounds": "ラウンド",
+  "home.stat.rounds": "評価区間",
   "home.stat.recorded": "実施日",
   "home.roundsFinal": "{n} · 最終",
   "home.roundsAt": "{at} / {n}",
   "home.missingRounds":
-    "{total} 本中 {missing} 本のシナリオ run が未回収です。順位には含まれますが、ラウンド詳細は表示できません。",
+    "{total} 本中 {missing} 本のシナリオ run が未回収です。順位には含まれますが、評価区間の詳細は表示できません。",
   "home.practiceBadge": "練習",
   "home.practiceNote":
     "これは練習順位で、公式採点ではありません。公式競技は提出バンドルをシナリオ行列で再生して別途採点され、ここの結果は一切反映されません。",
   "home.standingsFinal": "順位表 · 最終",
   "home.standingsTitle": "順位表",
-  "home.standingsThrough": "順位表 · ラウンド {at} 時点",
+  "home.standingsThrough": "順位表 · 評価区間 {at} 時点",
   "home.subtitlePractice":
     "スコア: 期間の 1 日を 1 エポックとします。P はその日の USDC 損益ではなくリターン（終値 ÷ 始値 − 1）です。この world はリセットされないので元手が人によってずれていき、リターンにすることで「手持ちで何をしたか」を比べます。T = 50 + 10 × (P − μ) / σ を全員横断で出し、スコアは T の日ごとの単純平均です。その日の始値が場の中央値の 1/10 未満のエージェントは、その日は採点しません。全員の元手が同じなら、本番の順位と完全に一致します。",
   "home.subtitle":
@@ -937,7 +939,7 @@ const ja: Record<MessageKey, string> = {
   "home.scenarios.subtitle":
     "1 行 1 世界。レジームとシードの組、その世界の首位、環境がそこで起こす予定のイベントを並べています。行をクリックすると開きます。1 つのシナリオは分布からの 1 ドローであって結果ではありません — 結果は上の順位表です。",
   "home.scenarios.col.scenario": "シナリオ",
-  "home.scenarios.col.rounds": "ラウンド",
+  "home.scenarios.col.rounds": "評価区間",
   "home.scenarios.col.leader": "首位",
   "home.scenarios.col.events": "環境イベント",
   "home.scenarios.eventsTitle":
@@ -945,12 +947,12 @@ const ja: Record<MessageKey, string> = {
   "home.scenarios.roundsAt": "{at} / {n}",
   "home.scenarios.ended": "終了",
   "home.scenarios.endedTitle":
-    "カーソルより前にラウンドが尽きた世界です。最後の値がその世界の結果なので、順位表には残ります。",
+    "カーソルより前に評価区間が尽きた世界です。最後の値がその世界の結果なので、順位表には残ります。",
   "home.scenarios.noEvents": "予定なし",
   "home.scenarios.noLeader": "結果はまだありません",
-  "home.scenarios.missing": "このシナリオのラウンド詳細は回収されていません",
+  "home.scenarios.missing": "このシナリオの評価区間の詳細は回収されていません",
   "home.scenarios.leaderTitle":
-    "選択中のラウンドまでの首位。P = V_k − V_0（USDC）で判定 — このエポックの偏差値が取られる量",
+    "選択中の評価区間までの首位。P = V_k − V_0（USDC）で判定 — このエポックの偏差値が取られる量",
 
   "units.title": "単位の関係",
   "units.competition": "競技",
@@ -958,16 +960,16 @@ const ja: Record<MessageKey, string> = {
   "units.scenario": "シナリオ",
   "units.scenarioBody":
     "1 つの世界。レジームとシードの組を最初から最後まで走らせたもので、全エージェントが同時に取引します。",
-  "units.round": "ラウンド",
+  "units.round": "評価区間",
   "units.roundBody":
-    "採点の窓で、1 ブロックではなく複数ブロックです。スコアも順位変動も環境イベントも、すべてこの軸で読みます。",
+    "規約の評価区間で、1 ブロックではなく複数ブロックです。資産価値・順位変動・環境イベントを途中経過としてこの軸で読みます。スコアに使うのはシナリオの最初と最後の境界だけです。",
   "units.block": "ブロック",
   "units.blockBody":
     "2 秒であり、1 回の行動機会です。同じブロック内の順序は優先手数料で決まります。",
 
   "scenario.fallbackTitle": "シナリオ",
   "scenario.seed": "シード {n}",
-  "scenario.roundsBlocks": "{rounds} ラウンド × {blocks} ブロック",
+  "scenario.roundsBlocks": "{rounds} 評価区間 × {blocks} ブロック",
   "scenario.standings": "シナリオ内順位",
   "scenario.info.overview.label": "概要",
   "scenario.info.environment.label": "環境",
@@ -990,15 +992,15 @@ const ja: Record<MessageKey, string> = {
   "scenario.info.environment.p4":
     "フェア価格はオンチェーンの価格フィードで配布され、全員に等しく 1 ブロック遅れて届きます — 情報が生まれた 1 ブロック後に反応することはゲームの一部です。",
   "scenario.info.scoring.p1":
-    "全エージェントは同一のブロック断面で評価され、各自が選んだ時点で評価されることはありません。シナリオの run は終了後にチェーン履歴から採点し、終わりのない練習期間はラウンド境界を通過するたびにその場で採点します。どちらも同じ venue を同じブロックで読むので、結果は一致します。",
+    "全エージェントは同一のブロック断面で評価され、各自が選んだ時点で評価されることはありません。シナリオの run は終了後にチェーン履歴から採点し、終わりのない練習期間は評価区間の境界を通過するたびにその場で採点します。どちらも同じ venue を同じブロックで読むので、結果は一致します。",
   "scenario.info.scoring.p2":
     "スコアは 1 エポックにつき 1 つの数字です。P = V_K − V_0（run 全体での総資産価値の変化。両端ともその時点の 5 ブロック中央値マーク）を、場全体で T = 50 + 10 (P − μ) / σ に標準化します。ベンチマークは評価されますが母集団には入りません。",
   "scenario.info.scoring.p3":
-    "エポックをまたぐスコアは T の加重平均です。競技は開始前にエポック数を確定し、後のエポックほど重みが大きくなります（最初が 1、最後が 1.5、その間は等間隔）。同点は、そのエージェント自身の T のばらつき（小さい方が上）、次に最悪エポックの T、次に提出時刻で分けます。純損益と最大ドローダウンは同じ系列から出す参考値で、スコアではありません。run 内のラウンドは途中経過です。",
+    "エポックをまたぐスコアは T の加重平均です。競技は開始前にエポック数を確定し、後のエポックほど重みが大きくなります（最初が 1、最後が 1.5、その間は等間隔）。同点は、そのエージェント自身の T のばらつき（小さい方が上）、次に最悪エポックの T、次に提出時刻で分けます。純損益と最大ドローダウンは同じ系列から出す参考値で、スコアではありません。run 内の評価区間は途中経過です。",
   "scenario.info.scoring.p4":
     "採点者が値付けできない保有は必ず報告され、黙って 0 になることはありません — 読み取り失敗の 0 は取引の損失と見分けが付かなくなるからです。",
   "scenario.info.artifacts.p1":
-    "このページ群の全てが run 自身の記録ファイルから導かれます: 順位とラウンド別スコア、再構成された観測とイベント列、全トランザクション、各エージェント自身の判断ログ、そして venue 別の市場系列です。",
+    "このページ群の全てが run 自身の記録ファイルから導かれます: 順位と評価区間ごとの結果、再構成された観測とイベント列、全トランザクション、各エージェント自身の判断ログ、そして venue 別の市場系列です。",
   "scenario.info.artifacts.p2":
     "真実の出典はチェーンです: 数値系列はすべて run 終了後にオンチェーン読み取りから再構成されます。ログが与えるのは理由・意図・帰属だけです。",
   "scenario.info.artifacts.p3":
@@ -1006,16 +1008,16 @@ const ja: Record<MessageKey, string> = {
   "scenario.info.artifacts.p4":
     "ローカルの Blockscout エクスプローラ（npm run explorer）が深掘り用ツールです。起動していれば、ページ上の全トランザクション・アドレス・ブロックがリンクになります。",
 
-  "rounds.segmentTitle": "ラウンド {i} · ブロック {from}–{to} · {tx}",
+  "rounds.segmentTitle": "評価区間 {i} · ブロック {from}–{to} · {tx}",
   "rounds.txOutside": "tx 数は数えていません — この表示はこれらのブロックを含みません",
   "rounds.txNotStarted": "未開始",
   "rounds.txN": "{n} tx",
-  "rounds.heading": "ラウンド {i}",
+  "rounds.heading": "評価区間 {i}",
   "rounds.blocks": "ブロック {from}–{to}",
   "rounds.openExplorer": "エクスプローラで開く →",
   "rounds.close": "閉じる ✕",
   "rounds.notScored":
-    "このラウンドは採点されていません — この run にはラウンド系列がありません",
+    "この評価区間の結果はありません — この run は評価区間の系列を記録していません",
   "rounds.scoredLater":
     "採点は run 終了後 — 結果はチェーン履歴から再構成されます",
   "rounds.col.agent": "エージェント",
@@ -1025,7 +1027,7 @@ const ja: Record<MessageKey, string> = {
   "rounds.bankrupt":
     "資産価値がゼロ以下（破産。床処理も凍結も無し）",
   "rounds.deltaNote":
-    "Δ資産は市場エクスポージャー込みの生の資産変化で、何もしないエージェントでも価格と一緒に動きます。対数リターンは同じラウンドを「何もしない」ベースライン超過で測ったもので、スコアが平均するのはこちらの系列です。順位は初回ラウンドからの累積、矢印はこのラウンドでの変動です。",
+    "Δ資産は市場エクスポージャー込みの生の資産変化で、何もしないエージェントでも価格と一緒に動きます。対数リターンは同じ変化を対数成長率で表したものです。どちらもスコアではありません（スコアはエポック全体で 1 つの数字です）。順位は最初の評価区間からの累積、矢印はこの評価区間での変動です。",
   "rounds.envDid": "環境が行ったこと",
   "rounds.replayStart": "▶ リプレイ",
   "rounds.replayStartTitle": "最初のブロックからこの run を再生する",
@@ -1035,16 +1037,16 @@ const ja: Record<MessageKey, string> = {
   "rounds.pause": "一時停止",
   "rounds.playAgain": "もう一度再生",
   "rounds.replay": "リプレイ",
-  "rounds.progress": "{done}/{total} ラウンド",
-  "rounds.progressBlocks": "{done}/{total} ラウンド × {blocks} ブロック",
+  "rounds.progress": "{done}/{total} 評価区間",
+  "rounds.progressBlocks": "{done}/{total} 評価区間 × {blocks} ブロック",
   "rounds.noRounds":
-    "この run にはラウンドがありません — 1 採点ラウンド分に満たない長さです",
+    "この run には評価区間がありません — 評価区間 1 つ分に満たない長さです",
   "rounds.left": "残り {t}",
   "rounds.replayPct": "リプレイ {pct}%",
 
   "agent.tab.standing": "総合成績",
   "agent.tab.overview": "概要",
-  "agent.tab.rounds": "ラウンド",
+  "agent.tab.rounds": "評価区間",
   "agent.tab.positions": "建玉",
   "agent.tab.trades": "取引履歴",
   "agent.tab.log": "判断ログ",
@@ -1069,7 +1071,7 @@ const ja: Record<MessageKey, string> = {
   "agent.standing.belowFloor":
     "{n} 日は採点していません: その日の始値が場の中央値の 1/10 未満でした。その程度の元手ではリターンが手数料と端数で決まるので、採点せずに外しています。",
   "agent.standing.noSeries":
-    "このエージェントのラウンド詳細がありません — 競技のシナリオ run が未回収のため、順位は示せても説明はできません。",
+    "このエージェントの評価区間の詳細がありません — 競技のシナリオ run が未回収のため、順位は示せても説明はできません。",
   "agent.standing.mean":
     "T の平均",
   "agent.standing.std":
@@ -1113,9 +1115,9 @@ const ja: Record<MessageKey, string> = {
   "agent.selfHostedLog":
     "この参加者はエージェントを自分のマシンで動かしているため、判断ログはそちらにあり、ここには届きません。このページに出ているのはすべてチェーン由来です（取引・建玉・スコア）。",
   "agent.noRounds":
-    "採点済みラウンドはまだありません — ラウンド系列は run 終了時に作られます",
+    "評価区間の結果はまだありません — 評価区間の系列は run 終了時に作られます",
   "agent.roundsNote":
-    "ラウンドは評価区間で、エポック内でのリーダーボードの途中経過です。対数リターンはそのラウンドでのこのエージェントの総資産価値の変化そのものです。スコアはエポック全体で 1 つの数字（P = V_K − V_0 を場全体で標準化）で、ラウンドの関数ではありません。",
+    "評価区間は規約の評価区間（§0.1）で、エポック内でのリーダーボードの途中経過です。対数リターンはその評価区間でのこのエージェントの総資産価値の変化そのものです。スコアはエポック全体で 1 つの数字（P = V_K − V_0 を場全体で標準化）で、評価区間の関数ではありません。",
   "agent.portfolio": "資産推移",
   "agent.portfolioRange": "資産推移 · {from} → {to}",
   "agent.yLabel": "資産評価額 (USDC)",
@@ -1135,10 +1137,10 @@ const ja: Record<MessageKey, string> = {
   "market.scope": "範囲",
   "market.wholeRun": "run 全体 · ブロック {from}–{to}",
   "market.runWide":
-    "run 全体 · ブロック {from}–{to}。このタブはラウンドで絞り込まれません。表が run の最終ブロック時点の 1 断面だからです。",
-  "market.roundScope": "ラウンド {i} · ブロック {from}–{to}",
+    "run 全体 · ブロック {from}–{to}。このタブは評価区間で絞り込まれません。表が run の最終ブロック時点の 1 断面だからです。",
+  "market.roundScope": "評価区間 {i} · ブロック {from}–{to}",
   "market.scopeHint":
-    "上の帯でラウンドを選ぶと、下のパネルがすべてそのラウンドのブロックに絞られます。",
+    "上の帯で評価区間を選ぶと、下のパネルがすべてその評価区間のブロックに絞られます。",
   "market.backToRun": "run 全体に戻す →",
   "market.view.arb": "venue 間裁定",
   "market.view.price": "フェア価格",
@@ -1175,15 +1177,15 @@ const ja: Record<MessageKey, string> = {
   "explorer.hint.unknown": "完全一致なし — 下の一覧を絞り込み中",
   "explorer.open": "Blockscout で開く ↗ (Enter)",
   "explorer.localOnly": "エクスプローラ停止中 — ローカル一致のみ表示",
-  "explorer.wholeRun": "run 全体（{n} ラウンド）",
-  "explorer.roundOption": "ラウンド {i} · blk {from}–{to}",
+  "explorer.wholeRun": "run 全体（{n} 評価区間）",
+  "explorer.roundOption": "評価区間 {i} · blk {from}–{to}",
   "explorer.scopeBlocks": "ブロック {from}–{to}",
-  "explorer.scopeRound": "ラウンド {i} · ブロック {from}–{to}",
+  "explorer.scopeRound": "評価区間 {i} · ブロック {from}–{to}",
   "explorer.stat.scenario": "シナリオ",
   "explorer.stat.latest": "最新ブロック",
   "explorer.stat.indexed": "索引済みブロック",
   "explorer.stat.txRun": "この run の tx",
-  "explorer.stat.txRound": "このラウンドの tx",
+  "explorer.stat.txRound": "この評価区間の tx",
   "explorer.stat.agents": "稼働エージェント",
   "explorer.stat.blockTime": "平均ブロック時間",
   "explorer.blocks": "ブロック",
@@ -1241,7 +1243,7 @@ const ja: Record<MessageKey, string> = {
   "vp.amm.quotesEmpty": "この run に venue クォートの記録がありません",
   "vp.amm.note": "venue 別の深度は run 終了後に表示されます",
   "vp.amm.sampledNote":
-    "venue の系列は run 中にラウンド境界ごとに記録したサンプルです（{n} 点、{every} ブロックごと）。tx 単位の出来高と取引マーカーは run 終了後の再構成が要るため、期間の閉じた日には出ません。",
+    "venue の系列は run 中に評価区間の境界ごとに記録したサンプルです（{n} 点、{every} ブロックごと）。tx 単位の出来高と取引マーカーは run 終了後の再構成が要るため、期間の閉じた日には出ません。",
   "vp.amm.swapsTitle": "エージェントのスワップ · {base}",
   "vp.col.block": "ブロック",
   "vp.col.agent": "エージェント",
@@ -1394,17 +1396,17 @@ const ja: Record<MessageKey, string> = {
 
   "vp.scenario.label": "シナリオ",
   "vp.scenario.caption":
-    "環境がこの run に対して行ったことです。予定は最初のブロックより前にシードから引かれます。各イベントは台形で、立ち上がり（ramp）・維持（hold）・減衰（decay）の順にフェア価格の上へ重なります。引き方はランダムですが再現可能なので、同じシードは必ず同じ窓を再生します。このタブは選んだラウンドではなく run 全体を表示します。シナリオは run の属性だからです。",
+    "環境がこの run に対して行ったことです。予定は最初のブロックより前にシードから引かれます。各イベントは台形で、立ち上がり（ramp）・維持（hold）・減衰（decay）の順にフェア価格の上へ重なります。引き方はランダムですが再現可能なので、同じシードは必ず同じ窓を再生します。このタブは選んだ評価区間ではなく run 全体を表示します。シナリオは run の属性だからです。",
   "vp.scenario.seed": "シード",
   "vp.scenario.seedSub": "フローシード {flow} · この run の市場条件のラベル",
   "vp.scenario.scheduled": "予定イベント",
   "vp.scenario.scheduledNone": "なし — 動いていたのはフェア価格の walk だけ",
   "vp.scenario.window": "run の範囲",
-  "vp.scenario.windowSub": "{blocks} ブロック · {rounds} ラウンド",
+  "vp.scenario.windowSub": "{blocks} ブロック · {rounds} 評価区間",
   "vp.scenario.scheduleTitle": "ストレス予定（run 開始時にシードから決定）",
   "vp.col.event": "イベント",
   "vp.col.windowShape": "窓 · ramp/hold/decay",
-  "vp.col.rounds": "ラウンド",
+  "vp.col.rounds": "評価区間",
   "vp.col.mag": "強度",
   "vp.col.outcome": "結果",
   "vp.scenario.scheduleEmpty":
@@ -1420,7 +1422,7 @@ const ja: Record<MessageKey, string> = {
   "vp.scenario.venueEvents": "venue イベント",
   "vp.scenario.venueEventsSub": "清算・償還・スラッシュ・開いた裁定窓",
   "vp.scenario.notableTitle": "venue で起きたこと（ブロック順）",
-  "vp.col.round": "ラウンド",
+  "vp.col.round": "評価区間",
   "vp.col.detail": "詳細",
   "vp.scenario.notableEmpty":
     "清算・償還・スラッシュはなく、報告されるほど長く開いた裁定窓もありませんでした",
@@ -1544,7 +1546,7 @@ const ja: Record<MessageKey, string> = {
   "world.at": "ブロック {block} · {i} / {n}",
   "world.atRange": "ブロック {from}〜{to} · {i} / {n}",
   "world.noFrames": "たどるものがありません",
-  "world.inRound": "ラウンド {n}",
+  "world.inRound": "評価区間 {n}",
   "world.toStart": "最初のブロックへ戻る",
   "world.stepBack": "1 ブロック戻る",
   "world.stepForward": "1 ブロック進む",
@@ -1577,7 +1579,7 @@ const ja: Record<MessageKey, string> = {
   "world.meta.agents": "エージェント {n}",
   "world.meta.venues": "venue {n}",
   "world.meta.wholeRun": "ブロック {from}〜{to}",
-  "world.meta.round": "ラウンド {n}",
+  "world.meta.round": "評価区間 {n}",
   "world.meta.grouped": "1 ステップ {n} ブロック",
   "world.empty":
     "この run にはたどれるブロックがありません。別のマシンで進行中の run はファイル越しに読むので、ブロックログは書かれた分だけ届きます。ブロックが届けば盤面も埋まります。",
@@ -1585,13 +1587,13 @@ const ja: Record<MessageKey, string> = {
     "単位の入れ子・環境が何をするか・スコアの計算・データの出所。",
 
   // ---- 参加者ウォークスルーで見つかった点（issue #84 A/C/D/F/G/L/P/R/T/X2）----
-  "home.status.liveRound": "ライブ · {label} · ラウンド {round} / {rounds}",
-  "home.status.liveRoundIn": "次のラウンドまで {t}",
+  "home.status.liveRound": "ライブ · {label} · 評価区間 {round} / {rounds}",
+  "home.status.liveRoundIn": "次の評価区間まで {t}",
   "home.status.liveBlock": "ブロック {n}",
   "home.status.epochsAllOne": "1 エポックを採点済み",
   "home.roundsSoFar": "{n} · ここまで",
   "home.standingsSoFar": "順位表 · ここまで",
-  "cursor.soFar": "ここまで · {n} ラウンド",
+  "cursor.soFar": "ここまで · {n} 評価区間",
   "home.unscoredTitle":
     "{n} 個のエポックに記録はありますが、そこでは採点されていません。開始時点の資産評価額が無いためです（途中から登録された場合にこうなります）。規約 §4.4.2 では、そのエポックは 0 として数えるのではなくスコアから外します。",
   "home.unscoredBadge": "{n} エポックで未採点",
@@ -1619,7 +1621,7 @@ const ja: Record<MessageKey, string> = {
   "agent.rankOf": "{m} 体中 {n} 位",
   "agent.rankScenario": "このシナリオ内の順位",
   "agent.standingOffBadge": "順位は掲示しません",
-  "agent.standing.throughRound": "ラウンド {at} 時点",
+  "agent.standing.throughRound": "評価区間 {at} 時点",
   "agent.standing.finalNote": "最終結果",
   "agent.standing.unscored":
     "この競技の {n} 個のエポックでは採点されていません。そこでは開始時点の資産評価額が無いためで、途中から登録するとこうなります。該当エポックは 0 として数えるのではなくスコアから外します（規約 §4.4.2）。",
@@ -1638,7 +1640,7 @@ const ja: Record<MessageKey, string> = {
   "vp.scenario.scheduledNonePast":
     "まだ開いたイベントはありません。この先の窓は期間中は公開しません",
   "vp.scenario.scheduledPast": "既に閉じた窓",
-  "vp.scenario.windowRounds": "{rounds} ラウンド",
+  "vp.scenario.windowRounds": "{rounds} 評価区間",
   "vp.scenario.scheduleTitlePast": "既に閉じたイベント",
   "vp.scenario.scheduleWithheld":
     "このエポックにどのイベントが含まれるかは、競技中は公開しません（規約 §3.3）。結果発表とともに公開されます（規約 §7.2）。",

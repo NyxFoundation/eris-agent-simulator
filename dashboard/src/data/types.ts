@@ -2,9 +2,11 @@
 // rounds
 //
 // A "round" is an evaluation interval of the rules (§0.1), not a run: the leaderboard's running
-// progress inside an epoch. The score is one number per run (rules §4.4.1: P = V_K − V_0,
-// standardised over the field), so rounds explain a result without being what it is earned in.
-// summary.json's valueSeries.epochSeries carries their boundaries and the per-agent value at each.
+// progress inside an epoch. The UI calls it an interval (issue #140); the code kept "round", which
+// in the dashboard never means anything else. The score is one number per run (rules §4.4.1:
+// P = V_K − V_0, standardised over the field), so rounds explain a result without being what it is
+// earned in. summary.json's valueSeries.intervalSeries carries their boundaries and the per-agent
+// value at each (core/src/intervalSeries.ts reads it under either name).
 
 export interface RoundAgentResult {
   agent: string;
@@ -23,13 +25,13 @@ export interface RoundAgentResult {
   bankrupt: boolean;
 }
 
-export interface RoundEpoch {
+export interface RoundInterval {
   /** 1-based position in the run. */
   index: number;
   fromBlock: number;
   toBlock: number;
   status: "done" | "live" | "upcoming";
-  /** Empty for a round that has not been scored yet (live run, or a run with no epoch series). */
+  /** Empty for a round that has not been scored yet (live run, or a run with no interval series). */
   results: RoundAgentResult[];
   /** Notable events that landed inside this round's block range. */
   events: { time: string; text: string }[];
@@ -57,10 +59,10 @@ export interface RoundInfo {
   startsAt: number;
   endsAt: number;
   blockNumber: number;
-  /** The run's rounds. Empty when the run recorded no epoch series (run.epochBlocks: 0). */
-  epochs: RoundEpoch[];
-  /** Epoch length in blocks, as the run was configured. 0 = no epoch series. */
-  epochBlocks: number;
+  /** The run's rounds. Empty when the run recorded no interval series (run.intervalBlocks: 0). */
+  intervals: RoundInterval[];
+  /** Interval length in blocks, as the run was configured. 0 = no interval series. */
+  intervalBlocks: number;
   /** Set only while this run is being replayed. */
   replay?: ReplayInfo;
 }
@@ -480,7 +482,7 @@ export interface WorldFrame {
   fromBlock: number;
   /** Chain time from the run's first block ("t+42s"). */
   clock: string;
-  /** 1-based round this frame falls in; 0 when the run recorded no epoch series. */
+  /** 1-based round this frame falls in; 0 when the run recorded no interval series. */
   round: number;
   /** Every transaction in the frame, counted. */
   txCount: number;
@@ -504,7 +506,7 @@ export interface WorldFrame {
 }
 
 /**
- * An epoch boundary's scored cross-section: what every agent was worth at that block.
+ * An interval boundary's scored cross-section: what every agent was worth at that block.
  *
  * This is the only account value a run records — nothing is marked between boundaries, and the
  * board says so by holding the last one rather than drawing a line through the gap.

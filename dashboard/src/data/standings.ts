@@ -16,6 +16,11 @@ import {
 } from "@core/scoring/deviationScore";
 import { epochPnlFromSeries } from "@core/scoring/epochPnl";
 import {
+  INTERVALS_FILENAME,
+  LEGACY_INTERVALS_FILENAME,
+  intervalSeriesOf,
+} from "@core/intervalSeries";
+import {
   practiceReturns,
   type PracticeEnds,
 } from "@core/scoring/practiceReturn";
@@ -32,7 +37,7 @@ import { scenarioAgentEnds, scenarioAgentP } from "./scenarioP";
 // ---------------------------------------------------------------------------
 // per-scenario boundary series
 
-/** One scenario's value at every epoch boundary, by agent. Absent when its summary could not load. */
+/** One scenario's value at every interval boundary, by agent. Absent when its summary could not load. */
 export interface ScenarioRounds {
   regime: string;
   seed: number | null;
@@ -63,13 +68,16 @@ function scenarioKey(s: { runDir?: string; s?: number }): string {
 
 /**
  * The boundary series of a run still in progress, off the artifacts the coordinator writes *as*
- * boundaries are read (core/src/realtime/liveScoring.ts): epochs.jsonl, one line per boundary with
+ * boundaries are read (core/src/realtime/liveScoring.ts): intervals.jsonl, one line per boundary with
  * every agent's value. summary.json only exists at the end, and on the practice devnet the end of
  * a segment is midnight -- without this the whole day would be empty until then (ADR 0021 §3 is
  * what makes the values exist live in the first place).
  *
- * A segment's own epochs.jsonl starts at its first boundary, so the epoch that straddles the
+ * A segment's own intervals.jsonl starts at its first boundary, so the interval that straddles the
  * rollover is not in it until the segment closes and summary.json carries the previous boundary in.
+ *
+ * A coordinator started before issue #140 writes the same lines to epochs.jsonl, and the practice
+ * period's runs until it restarts; that name is read when the new one is not there.
  */
 async function loadLiveSeries(
   runId: string,
@@ -77,14 +85,18 @@ async function loadLiveSeries(
   Pick<ScenarioRounds, "valuesByAgent" | "baselineIds" | "addressByAgent">
 > {
   const base = `/runs/${encodeURIComponent(runId)}`;
-  const [epochsText, head] = await Promise.all([
-    fetch(`${base}/epochs.jsonl`, { cache: "no-cache" })
-      .then((r) => (r.ok ? r.text() : ""))
-      .catch(() => ""),
+  const fetchText = (file: string) =>
+    fetch(`${base}/${file}`, { cache: "no-cache" })
+      .then((r) => (r.ok ? r.text() : null))
+      .catch(() => null);
+  const [intervalsText, head] = await Promise.all([
+    fetchText(INTERVALS_FILENAME).then(
+      async (text) => text ?? (await fetchText(LEGACY_INTERVALS_FILENAME)) ?? "",
+    ),
     loadRunHeader(runId),
   ]);
   const boundaries: Record<string, number | null>[] = [];
-  for (const line of epochsText.split("\n")) {
+  for (const line of intervalsText.split("\n")) {
     if (!line.trim()) continue;
     try {
       const row = JSON.parse(line) as {
@@ -164,7 +176,7 @@ export async function loadCompetitionRounds(
         }
         const summary = (await res.json()) as RunSummary;
         const valuesByAgent =
-          summary.valueSeries?.epochSeries?.valuesByAgent ?? {};
+          intervalSeriesOf(summary.valueSeries)?.valuesByAgent ?? {};
         const baselineIds = (summary.agents ?? [])
           .filter((a) => a.baseline)
           .map((a) => a.id);

@@ -13,7 +13,7 @@ import type {
   AgentRoundResult,
   MarketFeedItem,
   RoundAgentResult,
-  RoundEpoch,
+  RoundInterval,
   RoundInfo,
   VenuePanel,
   VenueDepthView,
@@ -22,10 +22,10 @@ import type {
 
 export const ROUND_DURATION_MS = 2 * 3600 * 1000 + 14 * 60 * 1000 + 36 * 1000;
 
-// Eight rounds of twelve blocks — the shape a default sim:realtime run produces (run.epochBlocks
+// Eight rounds of twelve blocks — the shape a default sim:realtime run produces (run.intervalBlocks
 // defaults to 12). Six are scored, one is running, one has not started.
-const SEED_EPOCH_BLOCKS = 12;
-const SEED_EPOCHS = 8;
+const SEED_INTERVAL_BLOCKS = 12;
+const SEED_INTERVALS = 8;
 const SEED_FIRST_BLOCK = 19_442_026;
 
 function seedRoundResults(index: number): RoundAgentResult[] {
@@ -46,15 +46,15 @@ function seedRoundResults(index: number): RoundAgentResult[] {
     .map((row, i) => ({ ...row, rank: i + 1 }));
 }
 
-function seedEpochs(): RoundEpoch[] {
-  return Array.from({ length: SEED_EPOCHS }, (_, i) => {
-    const fromBlock = SEED_FIRST_BLOCK + i * SEED_EPOCH_BLOCKS;
+function seedIntervals(): RoundInterval[] {
+  return Array.from({ length: SEED_INTERVALS }, (_, i) => {
+    const fromBlock = SEED_FIRST_BLOCK + i * SEED_INTERVAL_BLOCKS;
     const status = i < 6 ? "done" : i === 6 ? "live" : "upcoming";
     return {
       index: i + 1,
       fromBlock,
-      toBlock: fromBlock + SEED_EPOCH_BLOCKS,
-      status: status as RoundEpoch["status"],
+      toBlock: fromBlock + SEED_INTERVAL_BLOCKS,
+      status: status as RoundInterval["status"],
       results: status === "done" ? seedRoundResults(i + 1) : [],
       events: [],
       txCount: 40 + ((i * 7) % 23),
@@ -69,9 +69,9 @@ export function createSeedRound(): RoundInfo {
     status: "live",
     startsAt: endsAt - ROUND_DURATION_MS,
     endsAt,
-    blockNumber: SEED_FIRST_BLOCK + 6 * SEED_EPOCH_BLOCKS + 5,
-    epochs: seedEpochs(),
-    epochBlocks: SEED_EPOCH_BLOCKS,
+    blockNumber: SEED_FIRST_BLOCK + 6 * SEED_INTERVAL_BLOCKS + 5,
+    intervals: seedIntervals(),
+    intervalBlocks: SEED_INTERVAL_BLOCKS,
   };
 }
 
@@ -581,7 +581,7 @@ export function buildAgentDetail(standing: AgentStanding): AgentDetail {
     },
   ];
 
-  const rounds: AgentRoundResult[] = seedEpochs()
+  const rounds: AgentRoundResult[] = seedIntervals()
     .filter((e) => e.results.length > 0)
     .map((e) => {
       const result = e.results.find((r) => r.agent === standing.agent);

@@ -513,10 +513,10 @@ export function ExplorerPage() {
           value={selectedRound === null ? "all" : String(selectedRound)}
           options={[
             {
-              label: t("explorer.wholeRun", { n: round.epochs.length }),
+              label: t("explorer.wholeRun", { n: round.intervals.length }),
               value: "all",
             },
-            ...round.epochs.map((e) => ({
+            ...round.intervals.map((e) => ({
               label: t("explorer.roundOption", {
                 i: String(e.index).padStart(2, "0"),
                 from: e.fromBlock.toLocaleString("en-US"),
