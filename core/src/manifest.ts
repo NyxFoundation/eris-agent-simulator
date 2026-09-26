@@ -219,6 +219,14 @@ export function buildManifest(opts: {
       ethWei: config.initialEthWei.toString(),
       wethWei: config.initialWethWei.toString(),
       usdcUnits: config.initialUsdcUnits.toString(),
+      // The rest of the basket (`funding.base`), in the token's own units like usdcUnits -- decimals
+      // are in `tokens`. Without it a participant reading this for "what will I receive" was told
+      // WETH and USDC and then found 0.4 WBTC in the wallet.
+      ...Object.fromEntries(
+        Object.entries(config.initialBaseAmounts)
+          .filter(([symbol, amount]) => symbol !== "WETH" && amount > 0n)
+          .map(([symbol, amount]) => [`${symbol.toLowerCase()}Units`, amount.toString()]),
+      ),
     },
     episodes: {
       kinds: [...kinds].map(([type, count]) => ({ type, count })),

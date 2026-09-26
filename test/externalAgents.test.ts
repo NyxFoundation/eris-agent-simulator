@@ -187,6 +187,22 @@ test("the manifest publishes what a self-hosted agent needs to connect", () => {
   assert.equal(m.participants[0].external, true);
 });
 
+test("the manifest states the whole endowment, the basket's other bases included", () => {
+  const m = buildManifest({
+    config: {
+      ...loadConfig({ ENABLED_PROTOCOLS: "uniswap" }),
+      initialBaseAmounts: { WETH: 8n, WBTC: 40_000_000n },
+      stressEvents: [],
+      vulnEvents: [],
+    },
+    priceFeed: "0x2222222222222222222222222222222222222222",
+    participants: [],
+  });
+  assert.equal(m.funding.wbtcUnits, "40000000");
+  // WETH is already `wethWei`; it is not stated twice.
+  assert.equal("wethUnits" in m.funding, false);
+});
+
 test("the manifest says the standings are practice, in the document itself", () => {
   // Not only on the standings page: this file is what gets pasted into a README, and provenance
   // that travels separately from a ranking is provenance that will be lost (ADR 0021 §1).
