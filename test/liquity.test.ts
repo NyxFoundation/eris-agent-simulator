@@ -500,6 +500,49 @@ test("a Trove that would open under MCR is refused, and under CCR in Recovery Mo
   );
 });
 
+test("an open near MCR is measured against the requested eUSD alone (PINS CURRENT BUG)", () => {
+  // 2 ETH (6,000) against 5,400 eUSD requested is 111% -- over MCR on the request alone. The chain
+  // books 5,400 + the 0.5% borrowing fee (27) + 200 gas compensation = 5,627, i.e. 106.6%, and
+  // reverts. Validation passes it anyway.
+  const nearMcr = {
+    type: "liquityOpenTrove" as const,
+    collateralWethWei: (2n * WAD).toString(),
+    debtEusdWei: (5400n * WAD).toString(),
+  };
+  assert.equal(
+    liquityAdapter.validate(nearMcr, observation(), BALANCES).ok,
+    true,
+  );
+});
+
+test("a debt increase is not checked against the Trove's resulting ICR (PINS CURRENT BUG)", () => {
+  // 2 ETH (6,000) owing 4,200: 143%. Borrowing 1,300 more books 1,300 + 6.5 fee, i.e. 5,506.5 of
+  // debt and 109% -- under MCR, so the chain reverts. Validation does not look.
+  const trove = {
+    status: 1,
+    collWei: (2n * WAD).toString(),
+    debtEusdWei: (4200n * WAD).toString(),
+    netDebtEusdWei: (4000n * WAD).toString(),
+    icr: 6000 / 4200,
+    liquidationPriceUsd: 2310,
+    positionFromRiskiest: 0,
+    redeemedAheadEusdWei: "0",
+    positionKnown: true,
+  };
+  assert.equal(
+    liquityAdapter.validate(
+      {
+        type: "liquityAdjustTrove",
+        debtChangeEusdWei: (1300n * WAD).toString(),
+        isDebtIncrease: true,
+      },
+      observation({ trove }),
+      BALANCES,
+    ).ok,
+    true,
+  );
+});
+
 test("closing needs the eUSD to repay with, which the wallet may not have", () => {
   const trove = {
     status: 1,
