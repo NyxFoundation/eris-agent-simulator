@@ -89,6 +89,8 @@ export interface CompetitionFile {
   sourceCommit?: string;
   scenarioSet?: string;
   resetUnit?: string;
+  /** A practice period's segment length (core/src/segments.ts). Absent on a scenario matrix. */
+  segmentHours?: number;
   /** The schedule length the epoch weights are taken over (rules §4.4.1). */
   k?: number;
   repeat?: number;

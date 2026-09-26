@@ -79,6 +79,8 @@ const en = {
   // The heading over the §4.7 notice, where there is no result to be final or provisional about.
   "home.standingsTitle": "Standings",
   "home.standingsThrough": "Standings · through round {at}",
+  "home.subtitlePractice":
+    "Score: each day of the period is one epoch. P is the agent's return over the day (end value ÷ start value − 1) rather than its USDC — the world never resets, so starting amounts drift apart, and a return asks what each agent did with what it had. T = 50 + 10 × (P − μ) / σ over the field, and the score is the plain average of T over the days. An agent that starts a day with less than a tenth of the field's median is not placed that day. With equal starts this is exactly the competition's ranking.",
   "home.subtitle":
     "Score: each epoch (one scenario run) gives every agent a deviation score T = 50 + 10 × (P − μ) / σ, where P is its USDC profit over the epoch and μ, σ are the field's. The score is the average of T over the epochs, later epochs weighted up to 1.5×. Regime columns are the agent's mean T in that regime. Click a row for the epoch-by-epoch breakdown.",
   "home.col.move": "move",
@@ -243,6 +245,10 @@ const en = {
     "epochs scored",
   "agent.standing.explain":
     "Every epoch this agent was scored in. T is where its profit sat in that epoch's field (50 = the field's mean, ±10 = one standard deviation); the score is the weighted average of T, so a strategy that wins big in one regime and loses in the rest can place below a steady one — the std of T is also the first tie-break.",
+  "agent.standing.explainPractice":
+    "Every day of the period this agent was scored in. P is its return over the day (end value ÷ start value − 1); T is where that return sat in the day's field (50 = the field's mean, ±10 = one standard deviation), and the score is the plain average of T over the days — every day counts the same.",
+  "agent.standing.belowFloor":
+    "Not placed on {n} day(s): it started them with less than a tenth of the field's median value. A return on that little is decided by fees and rounding, so those days are left out rather than scored.",
   "agent.standing.noSeries":
     "No round detail for this agent — the scenario runs behind this competition were not collected, so the standing can be shown but not explained.",
   "agent.standing.mean":
@@ -906,6 +912,8 @@ const ja: Record<MessageKey, string> = {
   "home.standingsFinal": "順位表 · 最終",
   "home.standingsTitle": "順位表",
   "home.standingsThrough": "順位表 · ラウンド {at} 時点",
+  "home.subtitlePractice":
+    "スコア: 期間の 1 日を 1 エポックとします。P はその日の USDC 損益ではなくリターン（終値 ÷ 始値 − 1）です。この world はリセットされないので元手が人によってずれていき、リターンにすることで「手持ちで何をしたか」を比べます。T = 50 + 10 × (P − μ) / σ を全員横断で出し、スコアは T の日ごとの単純平均です。その日の始値が場の中央値の 1/10 未満のエージェントは、その日は採点しません。全員の元手が同じなら、本番の順位と完全に一致します。",
   "home.subtitle":
     "スコア: 各エポック（1 シナリオの run）で、エポック中の USDC 損益 P から偏差値 T = 50 + 10 × (P − μ) / σ を全員横断で出し（μ・σ は場全体）、T をエポック通しで平均した値（後のエポックほど重みが大きく、最大 1.5 倍）。レジーム列はそのレジームでの T の平均。行をクリックするとエポックごとの内訳が見られます。",
   "home.col.move": "変動",
@@ -1056,6 +1064,10 @@ const ja: Record<MessageKey, string> = {
     "採点エポック数",
   "agent.standing.explain":
     "このエージェントが採点された全エポックです。T はそのエポックの場の中での損益の位置（50 = 場の平均、±10 = 標準偏差 1 つ分）。スコアは T の加重平均なので、1 つのレジームで大勝ちして他で負ける戦略は、安定した戦略より下に来ることがあります。T の標準偏差は最初のタイブレークでもあります。",
+  "agent.standing.explainPractice":
+    "このエージェントが採点された期間中の全日です。P はその日のリターン（終値 ÷ 始値 − 1）、T はそのリターンがその日の場の中でどこにあったか（50 = 場の平均、±10 = 標準偏差 1 つ分）。スコアは T の日ごとの単純平均で、どの日も同じ重みです。",
+  "agent.standing.belowFloor":
+    "{n} 日は採点していません: その日の始値が場の中央値の 1/10 未満でした。その程度の元手ではリターンが手数料と端数で決まるので、採点せずに外しています。",
   "agent.standing.noSeries":
     "このエージェントのラウンド詳細がありません — 競技のシナリオ run が未回収のため、順位は示せても説明はできません。",
   "agent.standing.mean":

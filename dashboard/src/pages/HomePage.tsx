@@ -892,9 +892,11 @@ export function HomePage() {
                     : t("home.standingsFinal")
               }
               subtitle={
-                practice
-                  ? `${t("home.practiceNote")} ${t("home.subtitle")}`
-                  : t("home.subtitle")
+                standings?.pnlUnit === "return"
+                  ? `${t("home.practiceNote")} ${t("home.subtitlePractice")}`
+                  : practice
+                    ? `${t("home.practiceNote")} ${t("home.subtitle")}`
+                    : t("home.subtitle")
               }
             >
               <div
