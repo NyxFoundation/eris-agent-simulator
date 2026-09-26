@@ -22,6 +22,14 @@
 // `WETH.withdraw` before the call. The scorer already prices loose native ETH, so this is not a
 // valuation gap -- but it is a gas interaction, and the observation surfaces the remaining headroom.
 //
+// *A closed Trove can leave collateral behind.* A full redemption returns what the collateral held
+// above the debt it cancelled, and a Recovery-Mode liquidation seizes at most 110% of the debt; in
+// both cases the rest waits in CollSurplusPool for the owner to claim with
+// BorrowerOperations.claimCollateral(). There is no action for that call (the venue's action set
+// stays at eight) -- an agent sends it as a `rawTx` to `borrowerOperations`. The observation
+// reports the balance (`collSurplusWei`) and the scorer values it at the WETH fair, because it is
+// native ETH its owner can take at any time; before this it read as zero until claimed.
+//
 // *eUSD is never worth $1 by assumption.* A CDP stablecoin trading at 0.97 marked at 1.00 hands
 // every holder phantom value, which is precisely what makes the redemption arb look profitable
 // before it has been done. eUSD used to be kept out of the token registry to guarantee that, because
@@ -39,6 +47,7 @@ import {
 } from "viem";
 import {
   borrowerOperationsAbi,
+  collSurplusPoolAbi,
   curveStableSwapNgAbi,
   erc20Abi,
   liquityRedemptionHelperAbi,
@@ -946,6 +955,7 @@ async function observe(
     spEthGain,
     spLqtyGain,
     ethBalance,
+    collSurplus,
   ] = await Promise.all([
     read(
       publicClient,
@@ -982,6 +992,9 @@ async function observe(
       [agent],
     ) as Promise<bigint>,
     publicClient.getBalance({ address: agent }),
+    read(publicClient, d.collSurplusPool, collSurplusPoolAbi, "getCollateral", [
+      agent,
+    ]) as Promise<bigint>,
   ]);
 
   const [debt, coll] = entire;
@@ -1044,6 +1057,7 @@ async function observe(
           },
         }
       : {}),
+    collSurplusWei: collSurplus.toString(),
     spDepositEusdWei: spDeposit.toString(),
     spEthGainWei: spEthGain.toString(),
     spLqtyGainWei: spLqtyGain.toString(),
@@ -1369,6 +1383,10 @@ type LiquityHoldings = {
   netDebtEusdWei: bigint;
   spDepositEusdWei: bigint;
   spEthGainWei: bigint;
+  // Collateral a closed Trove left in CollSurplusPool, claimable by this owner. Native ETH, valued
+  // like the Stability Pool's ETH gain. Never overlaps the Trove above: it only exists once the
+  // Trove is closed, and claiming it moves it into the wallet, where the spot sweep counts it.
+  collSurplusWei?: bigint;
 };
 
 /// Price a Liquity position, given what eUSD is worth.
@@ -1393,7 +1411,10 @@ export function liquityPositionValue(input: {
   const { holdings: h, fairPriceUsd, eusdPriceUsdc } = input;
   const longEusd = toFloat(h.spDepositEusdWei);
   const collUsd = toFloat(h.collWei) * fairPriceUsd;
-  const gainUsd = toFloat(h.spEthGainWei) * fairPriceUsd;
+  // ETH owed to the agent outright: the Stability Pool's liquidation gain and a closed Trove's
+  // surplus. Both at the reference price in both marks -- neither exits through a market.
+  const gainUsd =
+    toFloat(h.spEthGainWei + (h.collSurplusWei ?? 0n)) * fairPriceUsd;
   const netDebtEusd = toFloat(h.netDebtEusdWei);
 
   const troveMark = Math.max(0, collUsd - netDebtEusd * eusdPriceUsdc);
@@ -1415,8 +1436,8 @@ function usdcFloat(units: bigint): number {
 /// Historical valuation (issue #41's staged reads).
 ///
 /// Two stages, because the realizable mark depends on sizes the first stage returns:
-///   0. the market's two-sided probe, the gas compensation, and every agent's Trove / Stability Pool
-///      / eUSD position
+///   0. the gas compensation, and every agent's Trove, Stability Pool position and CollSurplusPool
+///      balance
 ///   1. for exactly the agents that hold eUSD or owe it: what their own size would sell for, and
 ///      what buying their debt back would cost
 ///
@@ -1459,20 +1480,31 @@ export async function* liquityValuationRun(
         functionName: "getDepositorETHGain",
         args: [a.address],
       },
+      {
+        address: deployment.collSurplusPool,
+        abi: collSurplusPoolAbi,
+        functionName: "getCollateral",
+        args: [a.address],
+      },
     ]),
   ];
   const results = yield stage0;
 
   const gasCompensation =
     typeof results[0] === "bigint" ? (results[0] as bigint) : 0n;
+  // Agents whose surplus read failed: the rest of the position is still known, so it is valued and
+  // the surplus alone is reported as unknown (issue #44) rather than the whole venue going missing.
+  const surplusUnread = new Set<number>();
   const holdings = ctx.agents.map((_agent, i) => {
-    const base = 1 + i * 3;
+    const base = 1 + i * 4;
     const entire = results[base] as
       readonly [bigint, bigint, bigint, bigint] | undefined;
     const spDeposit = results[base + 1];
     const spGain = results[base + 2];
+    const surplus = results[base + 3];
     if (!entire || typeof spDeposit !== "bigint" || typeof spGain !== "bigint")
       return undefined;
+    if (typeof surplus !== "bigint") surplusUnread.add(i);
     const [debt, coll] = entire;
     return {
       collWei: coll,
@@ -1480,6 +1512,7 @@ export async function* liquityValuationRun(
       netDebtEusdWei: debt > gasCompensation ? debt - gasCompensation : 0n,
       spDepositEusdWei: spDeposit,
       spEthGainWei: spGain,
+      collSurplusWei: typeof surplus === "bigint" ? surplus : 0n,
     } satisfies LiquityHoldings;
   });
 
@@ -1563,6 +1596,13 @@ export async function* liquityValuationRun(
       return;
     }
     const unpriced: UnpricedHoldingDetail[] = [];
+    if (surplusUnread.has(i))
+      unpriced.push({
+        source: "liquity-coll-surplus",
+        amountRaw: "",
+        reason: "read-failed",
+        read: "CollSurplusPool.getCollateral",
+      });
     const exposure = h.spDepositEusdWei + h.netDebtEusdWei;
     if (!marketQuoted && exposure > 0n) {
       // Falling back to par is the least wrong choice -- par is the value the protocol itself
@@ -1619,7 +1659,8 @@ export const liquityAdapter: ProtocolAdapter = {
     const s = state as LiquityState | undefined;
     // The wallet's loose eUSD is not read here: it is registry spot now, swept and priced by the
     // caller (issue #27 (b)). What is left is the Trove and the Stability Pool.
-    const [entire, spDeposit, spGain, gasCompensation] = (await Promise.all([
+    const [entire, spDeposit, spGain, gasCompensation, collSurplus] =
+      (await Promise.all([
       read(
         ctx.publicClient,
         d.troveManager,
@@ -1647,7 +1688,20 @@ export const liquityAdapter: ProtocolAdapter = {
         troveManagerAbi,
         "LUSD_GAS_COMPENSATION",
       ),
-    ])) as [readonly [bigint, bigint, bigint, bigint], bigint, bigint, bigint];
+      read(
+        ctx.publicClient,
+        d.collSurplusPool,
+        collSurplusPoolAbi,
+        "getCollateral",
+        [agent],
+      ),
+    ])) as [
+      readonly [bigint, bigint, bigint, bigint],
+      bigint,
+      bigint,
+      bigint,
+      bigint,
+    ];
     const [debt, coll] = entire;
     const eusdPriceUsdc = s?.marketQuoted ? s.midPriceUsdc : 1;
     return liquityPositionValue({
@@ -1657,6 +1711,7 @@ export const liquityAdapter: ProtocolAdapter = {
         netDebtEusdWei: debt > gasCompensation ? debt - gasCompensation : 0n,
         spDepositEusdWei: spDeposit,
         spEthGainWei: spGain,
+        collSurplusWei: collSurplus,
       },
       fairPriceUsd: fairPrice,
       eusdPriceUsdc,
