@@ -20,7 +20,7 @@
 // Why "deviation score" and not the previous mean − λ·std of log returns (ADR 0019): the market's
 // roughness differs by an order of magnitude between regimes, so summing USDC let the volatile
 // epochs decide everything and the log-return Sharpe needed a λ nobody could calibrate. Standardising
-// each epoch against its own field makes eight regimes count about equally with no free parameter,
+// each epoch against its own field makes every regime count about equally with no free parameter,
 // and bounds any single epoch at 50 ± 10√(n − 1).
 //
 // Pure: no filesystem, no chain. The producers (backtest matrix, dashboard) hand in P and read back

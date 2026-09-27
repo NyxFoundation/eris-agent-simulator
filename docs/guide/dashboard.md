@@ -155,7 +155,8 @@ Compared against the leaderboards of Kaggle, Hyperliquid, Alpha Arena, CTFd and 
 - **A status line** under the title: epochs scored out of the plan, when the table last changed
   (the matrix directory's mtime), whether an epoch is running, and when the next one starts. The
   start comes from the plan's timetable — `npm run competition -- plan … --starts-at <ISO 8601>
-  --every-minutes <N>` stamps every epoch with `startsAt`, and the backtest runner writes the
+  --every-minutes <N>` (or `--ends-at <ISO 8601>`, spreading the k epochs evenly up to it) stamps
+  every epoch with `startsAt`, and the backtest runner writes the
   planned ordinals with their times into `matrix.json` as `schedule` (ordinal and time only; which
   scenario an epoch is stays hidden). Without a timetable the line simply has no "next" part.
 - **Score by epoch**: every agent's cumulative Score after each completed epoch, on one chart. The

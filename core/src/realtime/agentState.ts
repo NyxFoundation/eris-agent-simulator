@@ -43,7 +43,7 @@ export const SNAPSHOT_DIR = ".snapshots";
 /**
  * How many epoch snapshots are kept.
  *
- * One per epoch per agent, each a copy of a directory that may be up to the cap. Over a k = 40
+ * One per epoch per agent, each a copy of a directory that may be up to the cap. Over a k = 60
  * competition with a full roster that is tens of gigabytes of copies of state nobody is going to
  * re-run: §4.4.2 voids an epoch and re-runs it promptly or not at all. Keeping the recent ones is
  * the guarantee; keeping all of them is a disk that fills quietly, halfway through a competition.
