@@ -733,3 +733,49 @@ test("live and swept boundaries agree, and both are the window's median", async 
     setEnabledProtocolIds([]);
   }
 });
+
+test("live and swept series end on the same block when the end is off the interval grid", async () => {
+  // epochExtent.ts: the epoch's end block is the last boundary of both readings. The sweep used to
+  // drop the short final interval while the live scorer never reached it, so the two agreed by both
+  // leaving out the end; now both read it, and the agreement check still compares every boundary.
+  setEnabledProtocolIds(["uniswap"]);
+  try {
+    const publicClient = lpChain();
+    const common = {
+      publicClient,
+      agents: [AGENT],
+      enabledIds: ["uniswap" as const],
+      activeStables: [USDC],
+      priceFeed: "0x00000000000000000000000000000000feed0001" as Address,
+      markMedianBlocks: 5,
+    };
+    const root = mkdtempSync(join(tmpdir(), "eris-median-"));
+    const live = new LiveScorer({
+      ...common,
+      logger: new RunLogger(root, "live"),
+      runStartBlock: 100,
+      endBlock: 110,
+      intervalBlocks: 4,
+      sampleMarket: false,
+    });
+    // A pass told about a head past the end, as a lagging loop's last one is.
+    for (let b = 100; b <= 107; b++) await live.onBlock(b);
+    await live.onBlock(115);
+    const swept = await reconstructValueSeries({
+      ...common,
+      logger: new RunLogger(root, "swept"),
+      fromBlock: 100,
+      toBlock: 110,
+      intervalBlocks: 4,
+    });
+    const liveSeries = live.series();
+    assert.ok(liveSeries && swept.intervalSeries);
+    assert.deepEqual(liveSeries.boundaryBlocks, [100, 104, 108, 110]);
+    assert.deepEqual(swept.intervalSeries.boundaryBlocks, [100, 104, 108, 110]);
+    const agreement = compareIntervalSeries(liveSeries, swept.intervalSeries);
+    assert.equal(agreement.compared, 4);
+    assert.equal(agreement.maxAbsDiffUsdc, 0);
+  } finally {
+    setEnabledProtocolIds([]);
+  }
+});

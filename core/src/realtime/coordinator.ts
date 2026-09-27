@@ -151,6 +151,7 @@ import {
 } from "./gmxFunding.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import { epochPnlFromSeries } from "../scoring/epochPnl.js";
+import { epochEndBlock, intervalCount, loopStep } from "../epochExtent.js";
 import {
   NoArbMonitor,
   noArbFindings,
@@ -554,10 +555,7 @@ export async function runRealtimeSimulation(
   // this is a period or a calibration. But it should not be a surprise -- measured, a week
   // unsegmented is a 435MB events.jsonl, a 221MB blocks.csv and 336 rounds in a single bar.
   if (config.segmentHours === 0 && config.runBlocks > SEGMENT_ADVISORY_BLOCKS) {
-    const rounds =
-      config.intervalBlocks > 0
-        ? Math.floor(config.runBlocks / config.intervalBlocks)
-        : 0;
+    const rounds = intervalCount(config.runBlocks, config.intervalBlocks);
     console.error(
       `[run] WARNING: ${config.runBlocks.toLocaleString("en-US")} blocks into one directory ` +
         `(~${Math.round((config.runBlocks * EVENT_BYTES_PER_BLOCK) / 1e6)}MB of events.jsonl` +
@@ -2394,14 +2392,24 @@ export async function runRealtimeSimulation(
       extraBaseFair[b] = openingFair[b];
       extraAnchor[b] = openingFair[b];
     }
-    let processedBlocks = 0;
+    // Passes of the block handler. Not the run's length: one pass covers every block mined since the
+    // previous one, so a loop that falls behind makes fewer passes than the chain makes blocks. The
+    // run ends on a chain block (endBlock below), never on this count.
+    let loopIterations = 0;
     let processing = false;
+    // The pass in progress, so the run's end waits for it: a wall-clock limit fires between passes
+    // or in the middle of one, and the end block is the last block a *completed* pass processed.
+    let inFlight: Promise<void> = Promise.resolve();
     // Fresh, not viem's 4 s cache: this is what runStartBlock is derived from, and a value from
     // before the flush above would put the flushed blocks inside the run.
     let lastProcessedBlock = Number(
       await publicClient.getBlockNumber({ cacheTime: 0 }),
     );
     const runStartBlock = lastProcessedBlock + 1;
+    // The epoch ends on this chain block (epochExtent.ts): processed, valued as the last boundary,
+    // and the block every agent sees `blocksRemaining === 0` at, counted from the same declared start.
+    // Null for a run bounded only by the wall clock, which ends wherever its last pass got to.
+    const endBlock = epochEndBlock(runStartBlock, config.runBlocks);
     // Issue #117: tell the agents. Their env was built before this block existed, so the run
     // directory (which they already hold as ERIS_RUN_DIR and write their logs to) carries it. An
     // agent that counts `blocksRemaining` from the first block *it* saw charged the backlog flush
@@ -2416,6 +2424,7 @@ export async function runRealtimeSimulation(
       type: "run_start_declared",
       runStartBlock,
       runBlocks: config.runBlocks,
+      ...(endBlock !== null ? { endBlock } : {}),
       file: RUN_START_FILE,
       writtenAt: runStartRecord.writtenAt,
     });
@@ -2432,6 +2441,7 @@ export async function runRealtimeSimulation(
       activeStables: activeStables(),
       priceFeed: priceFeedAddress,
       runStartBlock,
+      endBlock,
       intervalBlocks: config.intervalBlocks,
       markMedianBlocks: config.markMedianBlocks,
       // Venue state at each boundary, so a live viewer has something to draw before market.json
@@ -2813,11 +2823,22 @@ export async function runRealtimeSimulation(
           ? setLongTimeout(finish, effectiveRunSeconds * 1000)
           : undefined;
 
-      const onBlock = async (bn: number): Promise<void> => {
+      const onBlock = async (notifiedBn: number): Promise<void> => {
         if (processing || finished) return;
         processing = true;
+        let settle: () => void = () => {};
+        inFlight = new Promise<void>((resolve) => (settle = resolve));
+        // Clamped to the epoch: a pass told about a head past the end block processes through the
+        // end block and no further, and is the run's last (epochExtent.ts). Every task below reads
+        // [fromBlock, bn], so nothing after the bell is valued, scheduled or observed.
+        const step = loopStep({
+          lastProcessedBlock,
+          notifiedBlock: notifiedBn,
+          endBlock,
+        });
+        const bn = step.block;
         try {
-          const fromBlock = lastProcessedBlock + 1;
+          const fromBlock = step.fromBlock;
           lastProcessedBlock = Math.max(lastProcessedBlock, bn);
 
           // Advance the market one step (RNG updates once per iteration; later parallel tasks share only the values).
@@ -3546,7 +3567,9 @@ export async function runRealtimeSimulation(
           // ADR 0021 §6: cut the output, never the chain. Checked after the boundary read so a
           // segment that ends on one keeps it -- the next segment carries it as its own first
           // boundary, which is what stops each segment losing an interval at the seam.
-          if (bn >= runStartBlock && segments?.dueToRoll())
+          // Not on the last pass: the run's end closes the final segment itself, and a roll on the
+          // end block would open a segment with nothing in it.
+          if (!step.final && bn >= runStartBlock && segments?.dueToRoll())
             await rollSegment(bn);
 
           const [keeperMs, oracleMs, stateFlowMs] = results;
@@ -3571,6 +3594,8 @@ export async function runRealtimeSimulation(
             type: "round_timing",
             blockNumber: bn,
             blocksCaughtUp: Math.max(0, bn - fromBlock + 1),
+            // The head this pass was told about, when the end block cut it short.
+            ...(notifiedBn !== bn ? { notifiedBlock: notifiedBn } : {}),
             keeperMs,
             oracleMs,
             stateFlowMs,
@@ -3589,9 +3614,7 @@ export async function runRealtimeSimulation(
             totalMs: Date.now() - roundStart,
           });
 
-          processedBlocks++;
-          if (config.runBlocks > 0 && processedBlocks >= config.runBlocks)
-            finish();
+          loopIterations++;
         } catch (error) {
           logger.event({
             type: "realtime_block_error",
@@ -3600,6 +3623,11 @@ export async function runRealtimeSimulation(
           });
         } finally {
           processing = false;
+          settle();
+          // The end block has been processed -- or its pass failed, which does not move the end:
+          // a pass after it would only cover blocks past the bell. A boundary the failed pass did
+          // not reach is read by liveScorer.close() below.
+          if (step.final) finish();
         }
       };
 
@@ -3613,6 +3641,9 @@ export async function runRealtimeSimulation(
       });
     });
 
+    // A wall-clock limit can end the run in the middle of a pass. Let it finish, so the end block
+    // below is one that was actually processed and nothing is still writing when the teardown starts.
+    await inFlight;
     stressAudit.finish();
     const elapsedMs = Date.now() - startTime;
 
@@ -3621,16 +3652,21 @@ export async function runRealtimeSimulation(
     flowProcess.close();
     if (!external) await setIntervalMining(publicClient, 0);
 
-    // The last block anyone competed on, captured *before* the teardowns below. Everything after it
-    // is the environment putting the chain back, and scoring across those blocks would score the
-    // teardown: a depeg restore buys the stable back to par (issue #27), so an agent that never
-    // unwound would be marked at par and holding through the end would cost nothing -- which is
-    // exactly the risk the regime exists to create. Nothing agents did lands after this point,
-    // because they were stopped one line above.
-    // Fresh for the same reason as runStartBlock: viem's cached read can be a block or two old.
-    const finalBlock = Number(
-      await publicClient.getBlockNumber({ cacheTime: 0 }),
-    );
+    // The epoch's last block: the end block on a run with a block budget (the pass loop is clamped to
+    // it), otherwise the last block a completed pass processed. Everything after it is outside the
+    // epoch -- orders the agents sent after the bell, and the environment putting the chain back.
+    // Scoring across the teardown would score it: a depeg restore buys the stable back to par (issue
+    // #27), so an agent that never unwound would be marked at par and holding through the end would
+    // cost nothing -- which is exactly the risk the regime exists to create. The teardowns below are
+    // sent after this block has been mined, so none of them can land on it.
+    //
+    // It used to be the chain head read here, after the agents were stopped. That was up to a pass's
+    // worth of blocks past the last block the loop had processed, and on a loaded host the loop
+    // itself ran up to 72 blocks past the point where the agents had read `blocksRemaining` 0.
+    const finalBlock = lastProcessedBlock;
+    // The last boundary is the end block itself (epochExtent.ts). Read here if the last pass did not
+    // get to it: a wall-clock end off the interval grid, or a final pass that failed before its read.
+    await liveScorer.close(finalBlock);
 
     // ---- liquidity-pull teardown (issue #52): the run can end with a window still open, since the
     // schedule may place it against the last block and the time limit can cut in mid-window. Restore
@@ -4057,7 +4093,12 @@ export async function runRealtimeSimulation(
       // different competitions together.
       resetUnit: config.resetUnit,
       blockTimeSec: config.blockTimeSec,
-      blocksProcessed: processedBlocks,
+      // Chain blocks the epoch covered after its first (= run.blocks when it ended on its block
+      // budget), not passes of the loop: a loop that catches up covers several blocks per pass.
+      blocksProcessed: Math.max(0, finalBlock - runStartBlock),
+      loopIterations,
+      runStartBlock,
+      finalBlock,
       ...(schedule.hasEvents() ? { stressEvents: stressAudit.summaries() } : {}),
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
@@ -4111,7 +4152,8 @@ export async function runRealtimeSimulation(
       );
     logger.event({ type: "run_completed", runId, runDir: logger.runDir });
     console.error(
-      `realtime simulation completed: ${logger.runDir} (${processedBlocks} blocks, ${Math.round(elapsedMs / 1000)}s)`,
+      `realtime simulation completed: ${logger.runDir} (blocks ${runStartBlock}..${finalBlock}, ` +
+        `${loopIterations} passes, ${Math.round(elapsedMs / 1000)}s)`,
     );
   } finally {
     try {

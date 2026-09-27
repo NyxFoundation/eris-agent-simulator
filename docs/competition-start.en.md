@@ -28,13 +28,13 @@ the competition
     │                 A regime is a type of market condition. Which epoch is which
     │                 regime is not announced in advance.
     │
-    └ evaluation interval ×29   A 12-block slice. Used for the leaderboard's running
+    └ evaluation interval ×30   A 12-block slice. Used for the leaderboard's running
                                 progress. Scoring (P below) uses only the asset value at
-                                the first and the last boundary; blocks after the last
-                                boundary are not scored.
+                                the first and the last boundary. The last boundary is the
+                                epoch's final block (where obs.blocksRemaining reads 0).
 ```
 
-> **360 / 12 / 29 are the code's current values.** Appendix A of the rules lists the blocks per
+> **360 / 12 / 30 are the code's current values.** Appendix A of the rules lists the blocks per
 > epoch, the blocks per evaluation interval, `k` and the gas ETH as **published by the start of the
 > submission period (2026-09-23)**. The numbers here come from the official regimes (`blocks: 360`
 > in `config/regimes/*.yaml`) and the sdk default (12-block intervals); where the published values
@@ -237,7 +237,7 @@ token ERLST — the same design as Lido's wstETH in the real world.
 - **There are two ways to cash out, at two different prices.**
   - Withdraw from the vault (request with `lstRequestWithdraw`, wait, then `lstClaimWithdraw`): the full amount, fixed at the redemption rate at the moment you request (no interest accrues while you wait). But you join a queue. The wait is the longer of 24 blocks and the time for the requests ahead of you to clear, plus one block per WETH of your own request, rounded up (32 blocks for 8 WETH even with an empty queue)
   - Sell on Curve's ERLST/WETH pool (`lstSwap`): immediate, but the fee (0.04% and up) and price impact mean you receive less than the redemption rate. When the pool's mid sits below the redemption rate, the gap is the **discount** (`discountBps`). Only participants trade this pool, so the discount opens when someone sells a lot
-- **In scoring, ERLST still in your wallet when the epoch ends counts as what selling all of it into the pool pays at that moment. A withdrawal you requested counts in full if it is claimable by then (you need not have claimed it), and as 0 if it is not.** "The end" here is the last evaluation-interval boundary — with the current values, the block where `obs.blocksRemaining` reads 12, not where it reaches 0
+- **In scoring, ERLST still in your wallet when the epoch ends counts as what selling all of it into the pool pays at that moment. A withdrawal you requested counts in full if it is claimable by then (you need not have claimed it), and as 0 if it is not.** "The end" here is the epoch's final block, the one where `obs.blocksRemaining` reads 0 (it is also the last evaluation-interval boundary). What has landed by that block counts: a transaction sent on seeing `blocksRemaining` 1 can still land on it, and one sent after seeing 0 always lands after the end
 - You can also lever up: post ERLST on Aave, borrow WETH, deposit it into the vault for more ERLST (`lst-carry` does this only when `ERIS_LST_LEVERAGE_TARGET_HF` is set)
 
 The state is in `obs.protocols.lst`: `redemptionRateWeth` (the redemption rate) / `marketPriceWeth`
@@ -266,7 +266,8 @@ redemption fee; the cost of turning ETH back into USDC is not included) / `recov
 #### How holdings are valued in scoring
 
 The scoring code counts the asset value of rules §4.1 for each kind of holding like this. "The end
-of the epoch" is the last evaluation-interval boundary (see the diagram in §1). Marks that come from
+of the epoch" is its final block, where `obs.blocksRemaining` reads 0, which is the last
+evaluation-interval boundary (see the diagram in §1). Marks that come from
 a pool's price (DAI, eUSD, ERLST, Liquity) are the median over the 5 blocks up to and including the
 valuation block (rules §4.1). Rows the rules do not spell out say so.
 

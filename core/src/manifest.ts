@@ -217,7 +217,10 @@ export function buildManifest(opts: {
         "This is the evaluation interval (rules §0.1): every agent's value is recorded at each " +
         "boundary and shown as interim progress. It is not what the score is computed over -- that " +
         "is the epoch, whose first and last boundary give P (in the practice period, one day; see " +
-        "docs/guide/practice-devnet.md, Standings). `epochBlocks` is `intervalBlocks` under its " +
+        "docs/guide/practice-devnet.md, Standings). A run's last boundary is its final block, the " +
+        "one where `blocksRemaining` reads 0 (in the practice period, the period's end rather than " +
+        "each day's); when the run is not a multiple of the interval, the final interval is the " +
+        "remainder. `epochBlocks` is `intervalBlocks` under its " +
         "old name, kept until the results are published.",
     },
     protocols,

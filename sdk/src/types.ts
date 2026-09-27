@@ -912,11 +912,13 @@ export type AgentObservation = {
   // unit-convert base amounts (agents cannot call tokenInfo, so it is passed via the observation).
   baseDecimals?: Record<TokenSymbol, number>;
   markets?: string[];
-  // Blocks left before the run ends, counted from the first block this agent observed (undefined
-  // when the run has no block limit). An exit that takes longer than this cannot complete inside
-  // the run, which is exactly what makes the LST withdrawal queue a decision rather than a
-  // formality (issue #38). Approximate by a block or two: an agent starts observing right around
-  // the first competition block, not before it.
+  // Blocks left before the run ends (undefined when the run has no block limit), counted from the
+  // coordinator's declared first block (run-start.json, issue #117; inferred from the first block
+  // this agent observed when there is none to read). 0 on the epoch's final block -- the bell, and
+  // the last block valued (core/src/epochExtent.ts): a transaction sent on seeing 1 can still land
+  // on it, one sent after seeing 0 lands after the end. An exit that takes longer than this cannot
+  // complete inside the run, which is exactly what makes the LST withdrawal queue a decision rather
+  // than a formality (issue #38).
   blocksRemaining?: number;
   enabledProtocols: ProtocolId[];
   balances: {

@@ -38,7 +38,9 @@ runs/
 | `runId` | run 識別子 |
 | `mode` | `"realtime"` / `"backtest"`（どの入口から来たか） |
 | `resetUnit` | `"continuous"` / `"scenario"`（[02 §2.4](02-runtime.md)） |
-| `blockTimeSec` / `blocksProcessed` / `elapsedMs` | 実行の実測 |
+| `blockTimeSec` / `blocksProcessed` / `elapsedMs` | 実行の実測。`blocksProcessed` はエポックが覆ったチェーンブロック数（`finalBlock − runStartBlock`。ブロック数で終わった run では `run.blocks` と一致） |
+| `runStartBlock` / `finalBlock` | エポックの最初と最後のブロック（最初と最後の境界）。`finalBlock` は `blocksRemaining` が 0 になるブロック（`core/src/epochExtent.ts`） |
+| `loopIterations` | 環境ループのパス数。1 パスが遅れを追いついて複数ブロックを覆うと `blocksProcessed` より小さくなる。以前はこれが `blocksProcessed` として書かれ、run の終わりもこの数で決まっていた |
 | `finalFairPriceUsdcPerWeth` | 最終 fair price |
 | `valueSeries` | 価値系列のメタ（下記） |
 | `agents[].pnlUsdc` / `baseline` | 規約 §4.4.1 の P（境界の両端）と、ベンチマークかどうか（下記） |

@@ -258,9 +258,11 @@ every block — rather than the subject. What an agent trades against is venue s
 series, stats and tables to that interval's blocks, and the header states the window
 (`Interval 03 · blocks 1,296–1,308`, with a link back to the whole run). So "widest cross-venue gap",
 "swap volume", pool depth and the LST redemption rate all answer *for that interval* — the same
-question the interval results answer for the agents. The per-interval volumes add up to less than the
-run's, and should: the scorer drops a trailing partial interval, so the blocks after the last boundary
-belong to no interval.
+question the interval results answer for the agents. The per-interval volumes add up to the
+run's less its first block: an interval is `(fromBlock, toBlock]`, the last boundary is the run's final
+block (where `blocksRemaining` reads 0), and the first block is boundary 0, the state V_0 is read at.
+(Runs recorded before the epoch ended on its final block dropped a trailing partial interval, so the
+blocks after their last boundary belong to no interval.)
 
 The three end-of-run tables are the exception, and say so in their own titles ("at the run's final
 block"): GMX positions, Aave accounts and the venue reserves are a single cross-section taken when

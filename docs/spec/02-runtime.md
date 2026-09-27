@@ -162,7 +162,7 @@
 | ノブ | 意味 | 既定 |
 |---|---|---|
 | `run.blockTimeSec` | ブロック間隔（秒） | 2 |
-| `run.blocks` | ブロック数で終了 | 0（= 無制限） |
+| `run.blocks` | ブロック数で終了。終わりはチェーンのブロック `runStartBlock + run.blocks`（そこまで処理し、最後の境界にする。ループのパス数ではない） | 0（= 無制限） |
 | `run.seconds` | 実時間で終了 | 20 |
 | `run.intervalBlocks` | 1 評価区間のブロック数 | 12 |
 | `run.intervalSeconds` | 1 評価区間の実時間（秒）。`blockTimeSec` で換算 | 0（未使用） |

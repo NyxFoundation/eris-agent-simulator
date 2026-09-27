@@ -71,9 +71,11 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 
 ### 評価区間の境界
 
-`intervalBoundaryBlocks(fromBlock, toBlock, intervalBlocks)`。E 区間には E+1 個の境界が要り、run の開始が境界 0 になる。
+`intervalBoundaryBlocks(fromBlock, toBlock, intervalBlocks)`（`core/src/epochExtent.ts`）。E 区間には E+1 個の境界が要り、run の開始が境界 0 になる。
 
-**末尾の端数区間は落とす。** 他より短い窓は構造的に小さい log return を生み、指標はそれを「エージェントが減速した」と読んでしまう。
+**エポックはチェーンのブロック番号で決まる。** 終わりは `runStartBlock + runBlocks` で、このブロックは処理され、最後の境界（V_K）になり、全エージェントの `blocksRemaining` が 0 になるブロック（鐘）でもある。360 ブロックなら 30 区間。コーディネータのループはこのブロックで clamp されるので、遅れたループ（1 パスで複数ブロックを追いつく `round_timing.blocksCaughtUp`）もエポックを伸ばしも縮めもしない。以前はループのパス数で終わっていたため、負荷の高いホストでは鐘の 72 ブロック後まで走り、遅れなくても最後の境界は `runStartBlock + 348`（29 区間）だった。
+
+**`runBlocks` が区間長の倍数でないとき、最後の区間は端数になる。** 格子（`runStartBlock + k·intervalBlocks`）は保ち、終わりのブロックが短い最終区間を閉じる。以前は端数区間を落としていたが、それは区間ごとの log return を平均していた頃（ADR 0019）の理由で、P が最初と最後の境界しか読まない今は、落とすと V_K が終わりより前で読まれるだけになる。
 
 `--score-every N` は equity curve の間引きで、`fromBlock` と `toBlock` は必ず含む。**スコアは不変**（α は最初と最後の横断面しか使わない）。
 
