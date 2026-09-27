@@ -60,7 +60,8 @@ example/  ──►  sdk/  ◄──  core/  ──►  runs/<id>/  ◄──  d
 | `ERIS_AGENT_ID` / `ERIS_AGENT_DIR` | 自分の id と戦略ディレクトリ |
 | `ERIS_RPC_URL` / `ERIS_AGENT_ADDRESS` / `ERIS_AGENT_PRIVATE_KEY` | 接続先と自分の鍵 |
 | `ERIS_PRICE_FEED_ADDRESS` | fair price の配信先 |
-| `ERIS_RUN_ID` / `ERIS_RUN_DIR` / `REPORT_DIR` | ログ出力先 |
+| `ERIS_RUN_ID` / `ERIS_RUN_DIR` / `REPORT_DIR` | ログ出力先（docker の image モードでは `ERIS_RUN_DIR` は自分の view ディレクトリ） |
+| `ERIS_CONFIG` / `ERIS_AGENT_VIEW_DIR` | エージェント用 config（`runs/<id>/agent-view/<id>/config.yaml`。seed なし）と、それと `run-start.json` を置く view ディレクトリ（`core/src/realtime/agentView.ts`） |
 | `ERIS_RUN_BLOCKS` | 環境が解決した run のブロック予算（CLI 上書きを子に伝えるため明示的に渡す） |
 | ロスターの `env:` / 環境注入の extraEnv | 戦略パラメータ、victim アドレス、vuln factory など |
 
@@ -76,6 +77,8 @@ example/  ──►  sdk/  ◄──  core/  ──►  runs/<id>/  ◄──  d
 | pending tx / txpool | mempool を覗く front-run を構造的に不可能にする |
 | 未確定ブロックの状態 | 観測は確定済み状態のみ |
 | ストレスイベントのスケジュール | 窓の位置は seed 由来の非公開情報（環境マニフェストにも入らない。[10](10-operations.md)） |
+| run の seed と環境側の設定 | エージェント用 config はランタイムが読むフィールドだけ（seed・stress・flow・vuln・funding・ロスターを含まない。`core/src/realtime/agentView.ts`）。seed を名前に持つ env も子へ渡さない |
+| coordinator の記録・他エージェントのログ | docker の image モードのコンテナに mount するのは自分の view ディレクトリ（読取専用）と自分のログファイルだけ（`infra/docker-agent/run-agent.sh`）。bind-mount モードと `process` サンドボックスは隔離境界ではない |
 | 環境の admin / keeper 鍵 | オラクルを書き換えられてしまう |
 
 一方、**渡るもの**のうち誤解されやすいもの：
