@@ -78,7 +78,8 @@ Built by `observationFor` (`sdk/src/observation.ts`). The point is that **the en
 | `runId` / `round` / `blockNumber` / `agentAddress` | Identity. `round` is **the absolute chain block number** |
 | `fairPriceUsdcPerWeth` / `oraclePrices` | The fair price (one block late) |
 | `fairPricesUsd` / `baseBalances` / `baseDecimals` / `markets` | Multi-asset. In a WETH-only run these agree with the legacy fields |
-| `blocksRemaining` | Blocks left until the epoch's final block, counted from the start block the coordinator declared (`run-start.json`, issue #117), and **0 on the final block (the bell)**. Inferred from the first block this agent observed when the declaration cannot be read. Undefined when the run has no block limit |
+| `blocksRemaining` | Blocks left until the epoch's final block, counted from the start block the coordinator declared (`run-start.json`, issue #117), and **0 on the final block (the bell)**. Inferred from the first block this agent observed when the declaration cannot be read. Undefined when the run has no block limit. A self-hosted agent (ADR 0021) counts from the manifest's `period`, not its own config |
+| `dayBlocksRemaining` | Blocks left in the day being scored, **on a practice period only** (a continuous world cut into days, each one epoch; ADR 0021 §6). Computed from the agent's clock against the period's day grid (`sdk/src/periodClock.ts`), never more than `blocksRemaining`. Undefined in every other run |
 | `enabledProtocols` | The venues this run turned on |
 | `discoveredPools` | Pools the environment placed mid-epoch (rules §3.2 regime 7, ADR 0014): address / token0 / token1 / decimals / feeBps / createdAtBlock / reserves / implied price / codehash. **Whether a pool is rigged is not disclosed** (inspecting it is the participant's call). Undefined in a run without the factory |
 | `balances` | `ethWei` / `wethWei` / `usdcUnits` / `stables{}` |
@@ -256,7 +257,7 @@ ADR 0021 §2. A registered entry the environment never starts.
 - **`command` / `args` / `dir` / `env` are refused rather than ignored** — silently dropping them produces a roster that reads as if the operator were running the agent
 - Funding, transaction attribution, scoring and rule checks are **all address-based**, so a key is only needed to *start* something — which an external entry is not
 - **The decision log lives on the participant's machine.** The dashboard hides the decision-log tab for external agents and says so; an empty panel is a different claim ("this agent thought nothing")
-- `bot.ts` can read the RPC URL and PriceFeed address from `ERIS_MANIFEST` (the two things the environment cannot inject). **If the manifest is unreadable it refuses to start** — falling back to env would point the agent at whatever chain happened to be in the shell, trading on a node nobody is scoring
+- `bot.ts` can read the RPC URL and PriceFeed address from `ERIS_MANIFEST` (the two things the environment cannot inject), and the run's length from its `period`, which wins over the run length in any config file (`blocksRemaining` / `dayBlocksRemaining`). **If the manifest is unreadable it refuses to start** — falling back to env would point the agent at whatever chain happened to be in the shell, trading on a node nobody is scoring
 - A self-hosted agent **grants its own venue approvals** (`ensureVenueApprovals`), skipping any that are already in place so restarts do not eat the endowment
 
 ## 5.10 Submission

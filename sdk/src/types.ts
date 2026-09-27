@@ -919,7 +919,17 @@ export type AgentObservation = {
   // on it, one sent after seeing 0 lands after the end. An exit that takes longer than this cannot
   // complete inside the run, which is exactly what makes the LST withdrawal queue a decision rather
   // than a formality (issue #38).
+  // A self-hosted agent (ADR 0021) counts it from the manifest's `period` instead of its own
+  // config (sdk/src/periodClock.ts).
   blocksRemaining?: number;
+  // Blocks left in the day being scored, on a practice period (a continuous world cut into days,
+  // each scored as one epoch -- ADR 0021 §6). Absent otherwise: a scenario epoch or a single run is
+  // one epoch, and blocksRemaining already is its end. Computed from this machine's clock against
+  // the period's day grid (day k ends at the period's start + (k + 1) x the day's hours), so it is
+  // off by a block or two and by however far this clock disagrees with the operator's; never more
+  // than blocksRemaining, since the last day ends with the run. Absent, too, when the start of the
+  // period's clock is not known (a manifest built before the period began).
+  dayBlocksRemaining?: number;
   enabledProtocols: ProtocolId[];
   balances: {
     ethWei: string;

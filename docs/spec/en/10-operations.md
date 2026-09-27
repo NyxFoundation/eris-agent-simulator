@@ -23,7 +23,7 @@ Source: the `scripts` block of `package.json`.
 | `npm run gen:local-constants` | `deployments.json` → `sdk/src/constants.local.ts` |
 | `npm run gen:state-dump` | A distributable state dump plus manifest, from the running deployer anvil |
 | `npm run gen:method-selectors` | The selector → function-name table, from venue ABIs |
-| `npm run manifest` | The environment manifest (`--participant <id>` prints one key to stdout) |
+| `npm run manifest` | The environment manifest (`--participant <id>` prints one key to stdout; the handout for a running period is `--from-run runs/<period>`) |
 | `npm run bundle:agent <id>` | The submission zip |
 
 ### Analysis and viewing
@@ -126,7 +126,7 @@ The competition is scored from submitted bundles replayed over a scenario matrix
 3. Switch the address overlay: DEPLOYMENTS_JSON=<path> npm run gen:local-constants
 4. Build the roster (a registration list) from config/practice.yaml
 5. npm run sim:realtime -- --config config/practice.yaml --chain-mode external
-6. npm run manifest to distribute the environment manifest (keys individually, via --participant <id>)
+6. npm run manifest -- --from-run runs/<period> to distribute the environment manifest (keys individually, via --participant <id>)
 7. npm run dashboard:serve to host the dashboard
 ```
 

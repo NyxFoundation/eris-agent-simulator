@@ -248,6 +248,7 @@ runs/
 | `status` | `{scored: false, label: "practice", note}` — **順位の出自が順位と別々に流通しないよう文書自体に書く** |
 | `chain` | `rpcUrl` / `readRpcUrl` / `chainId` / `chainMode` / `blockTimeSec` |
 | `round` | 評価区間。`intervalBlocks` / `approxSeconds` / `markMedianBlocks` / `scoreEvery`（ブロックと分の**両方**を出す）。`epochBlocks` は `intervalBlocks` の旧名で、結果発表まで同じ値で残す |
+| `period` | run の長さと採点日の格子（`sdk/src/periodClock.ts`）: `endsAt` / `blocks`（`startBlock` から数える）/ `seconds` / `startBlock` / `startedAt` / `dayHours`。`startBlock` と `startedAt` は coordinator が run の開始を宣言した後の版にだけ入る。自己ホストの runtime はこれを設定ファイルの run 長より優先する |
 | `protocols` / `actions` | 有効な venue と、その venue のアクション語彙 |
 | `contracts` | **有効な venue のアドレスのみ** + `priceFeed` + `stableMarkets` |
 | `tokens` | symbol → `{address, decimals, kind}` |

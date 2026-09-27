@@ -3,8 +3,8 @@
 // A participant on the practice devnet runs their agent on their own machine. Nothing hands them a
 // coordinator's env any more -- no ERIS_RUN_DIR, no injected PriceFeed address, no roster spawn. So
 // everything the runtime used to receive over that channel has to be publishable instead, and this
-// is that document: where the chain is, what is deployed on it, what a round is, what the limits
-// are, and which addresses are competing.
+// is that document: where the chain is, what is deployed on it, what a round is, how long the run
+// is, what the limits are, and which addresses are competing.
 //
 // Two rules shape what goes in it.
 //
@@ -32,6 +32,7 @@ import {
 } from "@eris/sdk/constants.js";
 import { ACTION_TYPES_BY_PROTOCOL } from "@eris/sdk/action.js";
 import { baseTokens, stableTokens } from "@eris/sdk/markets.js";
+import { type ManifestPeriod, scoredDayHours } from "@eris/sdk/periodClock.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
 import type { RealtimeConfig } from "./config.js";
 import { resolveAnchor } from "./realtime/events.js";
@@ -94,6 +95,13 @@ export type EnvironmentManifest = {
     scoreEvery: number;
     note: string;
   };
+  /**
+   * How long the run is, and where each scored day ends -- for a runtime nobody spawned. Without it
+   * a self-hosted agent took the run's length from whatever config it loaded, which with none was
+   * a 20-second run: `blocksRemaining` read 0 for the rest of the period. The arithmetic is
+   * sdk/src/periodClock.ts.
+   */
+  period: ManifestPeriod;
   protocols: ProtocolId[];
   actions: Partial<Record<ProtocolId, readonly string[]>>;
   contracts: Record<string, unknown>;
@@ -145,6 +153,13 @@ export function buildManifest(opts: {
   marketRegistry?: string;
   lending?: string;
   marketRegistryFromBlock?: number;
+  /**
+   * The run's first block and the instant its clock started, once the coordinator has declared
+   * them. Absent from a manifest built from the config alone (`npm run manifest` before the period
+   * has started), which can then state the end date but not where the block count or the day grid
+   * begins.
+   */
+  periodStart?: { block: number; startedAtMs: number };
 }): EnvironmentManifest {
   const { config, participants } = opts;
   const protocols = config.enabledProtocols;
@@ -222,6 +237,29 @@ export function buildManifest(opts: {
         "each day's); when the run is not a multiple of the interval, the final interval is the " +
         "remainder. `epochBlocks` is `intervalBlocks` under its " +
         "old name, kept until the results are published.",
+    },
+    period: {
+      endsAt: config.runEndsAt,
+      // A date converts to blocks when the run starts. Before that the only honest block count is
+      // none: config.runBlocks here is the date converted at whenever this file was written, which
+      // is not what the environment will stop on.
+      ...(config.runEndsAt === null || opts.periodStart
+        ? { blocks: config.runBlocks }
+        : {}),
+      seconds: config.runSeconds,
+      ...(opts.periodStart
+        ? {
+            startBlock: opts.periodStart.block,
+            startedAt: new Date(opts.periodStart.startedAtMs).toISOString(),
+          }
+        : {}),
+      dayHours: scoredDayHours(config),
+      note:
+        "The run ends after `blocks` blocks counted from `startBlock`; `endsAt` is the date that " +
+        "count was converted from, and the fallback while the run has not started. `seconds` is a " +
+        "ceiling: a run with episodes stops on its block count. When `dayHours` > 0 the standings " +
+        "score each day as one epoch, and day k ends at `startedAt` + (k + 1) x `dayHours` on the " +
+        "wall clock. The runtime turns these into `blocksRemaining` and `dayBlocksRemaining`.",
     },
     protocols,
     actions: Object.fromEntries(

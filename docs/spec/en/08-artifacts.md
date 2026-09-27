@@ -248,6 +248,7 @@ The only document handed to self-hosted participants (ADR 0021 §2). Built by `b
 | `status` | `{scored: false, label: "practice", note}` — **stated in the document so a ranking's provenance does not travel separately from the ranking** |
 | `chain` | `rpcUrl` / `readRpcUrl` / `chainId` / `chainMode` / `blockTimeSec` |
 | `round` | The evaluation interval: `intervalBlocks` / `approxSeconds` / `markMedianBlocks` / `scoreEvery` (**both blocks and minutes**). `epochBlocks` is `intervalBlocks` under its old name, kept with the same value until the results are published |
+| `period` | The run's length and the scored-day grid (`sdk/src/periodClock.ts`): `endsAt` / `blocks` (counted from `startBlock`) / `seconds` / `startBlock` / `startedAt` / `dayHours`. `startBlock` and `startedAt` are only in the version written after the coordinator declares the run's start. A self-hosted runtime takes this over any config file's run length |
 | `protocols` / `actions` | The enabled venues and their action vocabulary |
 | `contracts` | **Only the enabled venues' addresses**, plus `priceFeed` and `stableMarkets` |
 | `tokens` | symbol → `{address, decimals, kind}` |

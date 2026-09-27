@@ -23,7 +23,7 @@
 | `npm run gen:local-constants` | `deployments.json` → `sdk/src/constants.local.ts` |
 | `npm run gen:state-dump` | 稼働中の deployer anvil から配布用 state dump + manifest |
 | `npm run gen:method-selectors` | venue ABI から selector→関数名テーブル |
-| `npm run manifest` | 環境マニフェスト（`--participant <id>` で個別の鍵を stdout に） |
+| `npm run manifest` | 環境マニフェスト（`--participant <id>` で個別の鍵を stdout に。走っている期間の配布物は `--from-run runs/<period>`） |
 | `npm run bundle:agent <id>` | 提出用 zip |
 
 ### 分析・観測
@@ -126,7 +126,7 @@ ADR 0021。**止まらないチェーン + 自己ホスト参加者。**
 3. DEPLOYMENTS_JSON=<path> npm run gen:local-constants でアドレス overlay を切り替える
 4. config/practice.yaml をもとにロスター（登録リスト）を作る
 5. npm run sim:realtime -- --config config/practice.yaml --chain-mode external
-6. npm run manifest で環境マニフェストを配る（鍵は --participant <id> で個別に stdout）
+6. npm run manifest -- --from-run runs/<period> で環境マニフェストを配る（鍵は --participant <id> で個別に stdout）
 7. npm run dashboard:serve でダッシュボードをホストする
 ```
 

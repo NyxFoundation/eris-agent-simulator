@@ -290,6 +290,18 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - **セグメントを切るたびに `stress_schedule` も再発行する**（`run_started_realtime` / `agents_registered` /
   manifest と同じ扱い。ADR 0021 §6）。以前は 2 日目以降の全セグメントが「予定なし」に見えた。ディスク上の記録は
   窓込みで完全（規約 §7.2 の監査用）。**未来の窓を公開側から隠すのは runs API（dashboard 側の audience mode）の仕事**
+- **自己ホスト agent の run 長はマニフェストの `period` が決める**（`endsAt` / `startBlock` からの `blocks` /
+  `seconds` / `startedAt` / `dayHours`。式は `sdk/src/periodClock.ts`、優先順位は `example/agents/runtime/runClock.ts`）。
+  以前はマニフェストに run 長が無く、ガイドのコマンド（`ERIS_CONFIG` 無し）では env 既定の「ブロック上限なし・20 秒」になり、
+  `blocksRemaining` が起動 20 秒後から期間の 5 週間ずっと 0 だった。今は YAML の run 長にも env 既定にも**明示 override で**勝つ
+  （YAML の source は secret env しか取り込まないので env では届かない。`run.blocks` / `run.endsAt` は片方を空にする）。
+  `ERIS_CONFIG` は**設定されたときだけ**読む（`config/local.yaml` は拾わない。雛形は GMX 無し・LST 1 時間/block で
+  devnet と別の世界）ので、参加者は `ERIS_CONFIG=config/practice.yaml`。**`dayBlocksRemaining`**（練習期間 =
+  continuous かつ `segmentHours > 0` のときだけ）は採点中の 1 日の残りで、参加者の時計から計算する。そのため
+  **セグメントは `startedAt + (k+1) × segmentHours` の固定格子で切る**（以前は前回 roll の `segmentHours` 後で、
+  roll が遅れた分だけ日がずれていった）。coordinator は run の開始を宣言した時点でマニフェストを書き直し、
+  run-start.json にも `startedAt` を載せる。**配布用マニフェストは `npm run manifest -- --from-run runs/<period>`**
+  （config だけから作ると PriceFeed も期間の開始も入らず、agent は起動できない）
 - **判断ログは参加者のマシンにしか無い**。dashboard は agent ページの判断ログタブを external では**出さず**、
   そう書く（空パネルは「このエージェントは何も考えなかった」という別の主張になる）。送信フィードは「何名が
   ここに出ないか」を明示する。**submitted-but-not-included は諦める**（運営が動かしていない agent では元々検証不能）
@@ -458,7 +470,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - `/explorer` は Blockscout の接続状態を明示し（indexed 高さ併記 / 落ちていれば起動コマンド）、
     検索が tx hash・block・address・**agent 名**（→ wallet address。Blockscout は名前を知らない）を
     解決して deep link する。Blockscout が無くてもローカル一覧のフィルタとしては効く
-- `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/評価区間の長さ（`round.intervalBlocks`。旧名 `epochBlocks` を結果発表まで併記）/action 語彙/limits/登録アドレス）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
+- `npm run manifest` — **環境マニフェスト**を書く（ADR 0021 §2。自己ホスト参加者に配る唯一の資料 = RPC/chainId/全 venue アドレス/PriceFeed/評価区間の長さ（`round.intervalBlocks`。旧名 `epochBlocks` を結果発表まで併記）/run の長さと採点日の格子（`period`）/action 語彙/limits/登録アドレス）。**走っている期間の配布物は `--from-run runs/<period>`**（coordinator の manifest.json に `--public-rpc` を差す。config だけからだと PriceFeed も期間の開始も無い）。**鍵は入らない**（coordinator が run ディレクトリに書き、dashboard がそれを HTTP で配る＝入れたら公開）。個別の鍵は `--participant <id>` で **stdout にだけ**出す。**ストレスイベントは種類と件数だけ**で窓は入らない（§1。resolved schedule ではなく config のイベント列から作るので構造的に漏れない）
 - `npm run check:ordering -- --live` — **ビルダーが手数料順に並べるかを自分で入札して測る**（#35 の load-bearing assumption）。既定プロファイルは oracle を全員より高く積んで txIndex 0 に置くので、順序が守られないチェーンでは環境の価格が front-run 可能になる。**入札は昇順に送る**ので到着順と手数料順が逆になり、到着順を保つだけのビルダーは降順プローブなら通ってこれで落ちる。引数なしは従来どおり blocks.csv の事後検査。
   **anvil が並べるキーは tip ではなく maxFeePerGas**（1.7.1 で実測。base fee 0 で払うのは min(maxFee, tip)）なので、
   tip 0.1 / maxFee 7 gwei の tx が 6 gwei のオラクルより前に入って 0.1 しか払わなかった。**`maxFeePerGas ≤ tip ≤ 上限`**

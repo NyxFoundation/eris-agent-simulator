@@ -27,8 +27,10 @@
 #   into a refusal with the work item that replaces it named (issue #33).
 #
 # Hand participants their credentials one at a time:
-#   npm run manifest -- --config config/practice.yaml                    # the public manifest
+#   npm run manifest -- --config config/practice.yaml --public-rpc <url> --from-run runs/<period>
+#                                                                        # the public manifest
 #   npm run manifest -- --config config/practice.yaml --participant <id> # their address (+ key)
+# A self-hosted agent runs with ERIS_CONFIG=config/practice.yaml; its run length is the manifest's.
 
 run:
   seed: 1
