@@ -67,6 +67,9 @@
         "blocksRemaining": {
           "type": "number"
         },
+        "dayBlocksRemaining": {
+          "type": "number"
+        },
         "enabledProtocols": {
           "type": "array",
           "items": {

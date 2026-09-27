@@ -29,6 +29,10 @@
  * Environment variables (passed by the environment; the ADR 0006 contract is unchanged):
  *   ERIS_AGENT_ID / ERIS_AGENT_DIR / ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL /
  *   ERIS_PRICE_FEED_ADDRESS / ERIS_RUN_ID / ERIS_RUN_DIR / ERIS_CONFIG
+ *
+ * Self-hosted (ADR 0021 §2), ERIS_MANIFEST names the environment manifest instead, and supplies
+ * the RPC URL, the PriceFeed, the chain and the run's length. ERIS_CONFIG is read only when set;
+ * with none the config is the built-in defaults, and the run length is the manifest's either way.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -45,6 +49,10 @@ import { GMX_MARKETS } from "@eris/sdk/constants.js";
 import { baseTokens, gmxMarketAddresses } from "@eris/sdk/markets.js";
 import type { FlowWallet, SimContext } from "@eris/sdk/protocols/types.js";
 import { initProtocols } from "@eris/sdk/protocols/registry.js";
+import {
+  type ManifestPeriod,
+  parseManifestPeriod,
+} from "@eris/sdk/periodClock.js";
 import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { loadYamlConfig } from "@eris/sdk/runConfig.js";
 import { Rng } from "@eris/sdk/rng.js";
@@ -77,6 +85,7 @@ import { createMempoolLog, type MempoolLog, Sender } from "./send.js";
 import { AgentStateStore, capBytesFromEnv, STATE_DIR_ENV } from "./state.js";
 import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
+import { manifestRunOverrides } from "./runClock.js";
 import { readOnlyClient } from "./readOnlyClient.js";
 import { StrategyRunner } from "./strategyRunner.js";
 import { PyBridge } from "./pyBridge.js";
@@ -85,13 +94,26 @@ import type { StrategySource } from "./strategyProtocol.js";
 // Backend for the revision call when neither prompt.md nor the roster names one.
 const DEFAULT_IMPROVE_MODEL = "gpt-oss:120b";
 
-// The published environment manifest (ADR 0021 §2), when running self-hosted. Only the two fields
-// the runtime cannot otherwise learn are read from it; everything else still comes from the config
-// file, which participants have a copy of.
+// The published environment manifest (ADR 0021 §2), when running self-hosted. What is read from it:
+// where the chain is (RPC URL, chain id, address table), the per-run contracts, and how long the
+// run is (`period`). Everything else comes from the config file ERIS_CONFIG names -- for the
+// practice devnet, the operator's own config/practice.yaml, which is committed -- or, with none, from
+// the built-in defaults. No file is picked up unasked: a participant's config/local.yaml describes
+// their local test world (the template has no GMX and an hour-long LST block), not this chain.
 type Manifest = {
   // chainId and localDeploy are applied to the env by bot.ts before this file loads; they are
   // read again here only to say, on a mismatch, where the value that won came from.
-  chain?: { rpcUrl?: string; chainId?: number; localDeploy?: boolean };
+  chain?: {
+    rpcUrl?: string;
+    chainId?: number;
+    localDeploy?: boolean;
+    blockTimeSec?: number;
+  };
+  // The operator's statement of the run's length and day grid (sdk/src/periodClock.ts). Wins over
+  // the config's run length, which is either the participant's own or a 20-second default.
+  period?: unknown;
+  // The venues the run turned on, compared against the loaded config's on start.
+  protocols?: string[];
   contracts?: {
     priceFeed?: string;
     // Issue #40: the discovery registry, the permissionless lending singleton, and the block the
@@ -183,11 +205,49 @@ async function main(): Promise<void> {
   const runId =
     process.env.ERIS_RUN_ID ?? (runDir ? runDir.split("/").at(-1)! : "direct");
 
+  // Self-hosted: the manifest's run length. Refused when malformed rather than read around -- the
+  // fallback is the config's run length, which is the failure the section exists to remove.
+  let period: ManifestPeriod | null = null;
+  try {
+    period = parseManifestPeriod(manifest?.period);
+  } catch (err) {
+    process.stderr.write(
+      `[bot] ERIS_MANIFEST=${process.env.ERIS_MANIFEST}: ${err instanceof Error ? err.message : err}\n`,
+    );
+    process.exit(1);
+  }
+  if (manifest && !period)
+    process.stderr.write(
+      "[bot] the manifest has no `period` (it predates the section), so the run's length comes " +
+        "from the config: blocksRemaining may not match the run. Ask the operator for a current " +
+        "manifest.\n",
+    );
+  const runOverrides = period
+    ? manifestRunOverrides(period, manifest?.chain?.blockTimeSec)
+    : {};
+
   // ADR 0013: the coordinator passes the YAML config path via ERIS_CONFIG. Rebuild config from
-  // the same YAML (single source of config). If absent, read from env (standalone launch).
-  const config = process.env.ERIS_CONFIG
-    ? loadYamlConfig(process.env.ERIS_CONFIG).config
-    : loadConfig();
+  // the same YAML (single source of config). If absent, read from env (standalone launch). A
+  // self-hosted agent's run length is the manifest's either way: passed as overrides, because a
+  // YAML's source holds only the file and the secret env keys, and plain env would not reach it.
+  const loadedConfig = process.env.ERIS_CONFIG
+    ? loadYamlConfig(process.env.ERIS_CONFIG, runOverrides).config
+    : loadConfig({ ...process.env, ...runOverrides });
+  const config =
+    period?.endsAt != null
+      ? { ...loadedConfig, runEndsAt: new Date(period.endsAt).toISOString() }
+      : loadedConfig;
+  if (
+    manifest?.protocols &&
+    [...manifest.protocols].sort().join(",") !==
+      [...config.enabledProtocols].sort().join(",")
+  )
+    process.stderr.write(
+      `[bot] the manifest's venues (${manifest.protocols.join(", ")}) differ from this config's ` +
+        `(${config.enabledProtocols.join(", ")}${process.env.ERIS_CONFIG ? `, ${process.env.ERIS_CONFIG}` : ", the built-in default: no ERIS_CONFIG"}). ` +
+        "The agent observes and trades only the second list. On the practice devnet, " +
+        "ERIS_CONFIG=config/practice.yaml is the period's own configuration.\n",
+    );
   const adapters = initProtocols(config.enabledProtocols);
   // ADR 0013: bases other than WETH (WBTC etc.). Empty under the fork default = fully legacy behavior.
   const extraBaseSymbols = baseTokens()
@@ -345,6 +405,9 @@ async function main(): Promise<void> {
       : {}),
     // Issue #117: the coordinator declares the run's first block here once it knows it.
     ...(runDir ? { runDir } : {}),
+    // Self-hosted: the manifest is that declaration. ERIS_RUN_BLOCKS, the coordinator's channel,
+    // still wins when set -- env over the manifest, as for every other value it carries.
+    ...(period && process.env.ERIS_RUN_BLOCKS === undefined ? { period } : {}),
   });
 
   // ---- resolve the agent module (1 agent = 1 directory) ----
