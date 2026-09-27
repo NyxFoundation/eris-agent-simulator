@@ -27,6 +27,10 @@ on:
       # only pin individual functions. This job is the only thing that puts the scorer in front of
       # real venue state across all five venues. #44 changed the scorer and skipped this job.
       - "core/src/realtime/reconstruct.ts"
+      # What a launched agent is handed (its config and view directory). Every backtest's agents
+      # read it, so a mistake there is a run where no agent can observe anything.
+      - "core/src/realtime/agentView.ts"
+      - "core/src/realtime/agentProcess.ts"
       - "sdk/src/valuation.ts"
       - "sdk/src/protocols/**"
       - ".github/workflows/deploy-backtest.yml"
@@ -156,6 +160,26 @@ jobs:
               for (const a of sc.agents)
                 if (!("netPnlUsdc" in a) || !("alphaUsdc" in a))
                   throw new Error(`${sc.regime}#${sc.seed} ${a.id} is missing a metric`);
+            // Each agent read its own config (core/src/realtime/agentView.ts), not the scenario's
+            // effective regime: no seed, none of the environment-only sections, and the run-start
+            // declaration beside it.
+            const { existsSync } = require("node:fs");
+            const { parse } = require("yaml");
+            for (const sc of m.scenarios) {
+              const views = `${sc.runDir}/agent-view`;
+              const ids = readdirSync(views);
+              if (ids.length !== sc.agents.length)
+                throw new Error(`${sc.runDir}: ${ids.length} agent views for ${sc.agents.length} agents`);
+              for (const id of ids) {
+                const text = readFileSync(`${views}/${id}/config.yaml`, "utf8");
+                if (/seed/i.test(text)) throw new Error(`${views}/${id}/config.yaml mentions a seed`);
+                const doc = parse(text);
+                for (const key of ["stress", "vuln", "market", "flow", "funding", "agents"])
+                  if (key in doc) throw new Error(`${views}/${id}/config.yaml carries ${key}`);
+                if (!existsSync(`${views}/${id}/run-start.json`))
+                  throw new Error(`${views}/${id} has no run-start.json`);
+              }
+            }
             console.log(`matrix ok: ${m.scenarios.length} scenarios, ${s.agents.length} ranked`);
           '
 

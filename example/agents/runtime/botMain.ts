@@ -29,6 +29,8 @@
  * Environment variables (passed by the environment; the ADR 0006 contract is unchanged):
  *   ERIS_AGENT_ID / ERIS_AGENT_DIR / ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL /
  *   ERIS_PRICE_FEED_ADDRESS / ERIS_RUN_ID / ERIS_RUN_DIR / ERIS_CONFIG
+ * ERIS_CONFIG is the agent's config (runs/<id>/agent-view/<agentId>/config.yaml), which carries no
+ * seed; ERIS_RUN_DIR holds run-start.json and, for a containerised agent, is its view directory.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -183,8 +185,10 @@ async function main(): Promise<void> {
   const runId =
     process.env.ERIS_RUN_ID ?? (runDir ? runDir.split("/").at(-1)! : "direct");
 
-  // ADR 0013: the coordinator passes the YAML config path via ERIS_CONFIG. Rebuild config from
-  // the same YAML (single source of config). If absent, read from env (standalone launch).
+  // ADR 0013: the coordinator passes a YAML config path via ERIS_CONFIG -- the agent's own file,
+  // with the fields the runtime reads as the coordinator resolved them (core/src/realtime/
+  // agentView.ts), not the coordinator's config. A self-hosted agent points it at its copy of the
+  // regime file. If absent, read from env (standalone launch).
   const config = process.env.ERIS_CONFIG
     ? loadYamlConfig(process.env.ERIS_CONFIG).config
     : loadConfig();
@@ -231,7 +235,10 @@ async function main(): Promise<void> {
     walletClient,
     chain,
     config,
-    rng: new Rng(config.seed),
+    // Not the run's seed: the agent's config carries none (core/src/realtime/agentView.ts), and a
+    // seed is the environment's. Something stable per agent instead, for anything that wants a
+    // reproducible stream of its own.
+    rng: new Rng(Number.parseInt(address.slice(-8), 16)),
     adminPk: privateKey,
     keeperPk: privateKey,
     oracle: { aaveAggregators: {} },

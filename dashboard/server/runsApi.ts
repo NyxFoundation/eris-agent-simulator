@@ -274,6 +274,9 @@ export function redactEventLine(
     }
     case "stress_calibration_warning":
     case "vulnerability_exploited":
+    // The operator's note that agent containers ran without network isolation: for whoever runs
+    // the box, not for the audience.
+    case "agent_sandbox_warning":
       return null;
     case "pool_created": {
       const {

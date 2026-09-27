@@ -19,6 +19,7 @@ async function envOfChild(
   parentEnv: Record<string, string>,
   spec: Partial<AgentSpec> = {},
   extraEnv?: Record<string, string>,
+  options: ConstructorParameters<typeof RealtimeAgentProcess>[8] = {},
 ): Promise<Record<string, string>> {
   const saved = new Map<string, string | undefined>();
   for (const [k, v] of Object.entries(parentEnv)) {
@@ -45,6 +46,7 @@ async function envOfChild(
       "example/agents",
       0,
       extraEnv,
+      options,
     );
     await new Promise<void>((resolve) => {
       const done = () => resolve();
@@ -81,8 +83,9 @@ test("the parent's ERIS_AGENT_PRIVATE_KEY is not inherited over the injected one
 });
 
 test("the runtime's own ERIS_* namespace still passes through", async () => {
-  const env = await envOfChild({ ERIS_CONFIG: "config/local.yaml" });
-  assert.equal(env.ERIS_CONFIG, "config/local.yaml");
+  const env = await envOfChild({ ERIS_AGENT_NET: "host", ERIS_LOCAL_DEPLOY: "1" });
+  assert.equal(env.ERIS_AGENT_NET, "host");
+  assert.equal(env.ERIS_LOCAL_DEPLOY, "1");
   assert.equal(env.ERIS_RPC_URL, "http://127.0.0.1:8545");
   assert.equal(env.ERIS_AGENT_ID, "probe");
   assert.equal(env.ERIS_RUN_ID, "probe-run");
@@ -122,4 +125,36 @@ test("environment injected for every agent still arrives (stress victims, ADR 00
     { ERIS_LIQUIDATION_VICTIMS: "0xvictim" },
   );
   assert.equal(env.ERIS_LIQUIDATION_VICTIMS, "0xvictim");
+});
+
+// The coordinator's config file carries the run seed (and a backtest names it after its regime and
+// seed). An agent reads its own config instead (core/src/realtime/agentView.ts).
+test("an agent gets its own config, never the coordinator's", async () => {
+  const coordinatorConfig = "backtest/state/.effective-crash-101.yaml";
+  const inherited = await envOfChild({ ERIS_CONFIG: coordinatorConfig });
+  assert.equal(inherited.ERIS_CONFIG, undefined);
+
+  const own = await envOfChild(
+    { ERIS_CONFIG: coordinatorConfig },
+    // A roster entry cannot point it elsewhere either.
+    { env: { ERIS_CONFIG: "somewhere-else.yaml" } },
+    undefined,
+    { configPath: "/runs/r/agent-view/probe/config.yaml", viewDir: "/runs/r/agent-view/probe" },
+  );
+  assert.equal(own.ERIS_CONFIG, "/runs/r/agent-view/probe/config.yaml");
+  assert.equal(own.ERIS_AGENT_VIEW_DIR, "/runs/r/agent-view/probe");
+});
+
+test("seeds in the operator's environment are not handed to an agent", async () => {
+  const env = await envOfChild({
+    ERIS_PRACTICE_SEED: "123456",
+    ERIS_FLOW_SEED: "654321",
+    ERIS_SOMETHING_SEED: "1",
+    // Not a seed: a strategy parameter that happens to contain the word.
+    ERIS_LAUNCHER_SEED_BPS: "3000",
+  });
+  assert.equal(env.ERIS_PRACTICE_SEED, undefined);
+  assert.equal(env.ERIS_FLOW_SEED, undefined);
+  assert.equal(env.ERIS_SOMETHING_SEED, undefined);
+  assert.equal(env.ERIS_LAUNCHER_SEED_BPS, "3000");
 });
