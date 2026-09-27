@@ -160,9 +160,9 @@ jobs:
               for (const a of sc.agents)
                 if (!("netPnlUsdc" in a) || !("alphaUsdc" in a))
                   throw new Error(`${sc.regime}#${sc.seed} ${a.id} is missing a metric`);
-            // Each agent read its own config (core/src/realtime/agentView.ts), not the scenario's
-            // effective regime: no seed, none of the environment-only sections, and the run-start
-            // declaration beside it.
+            // Each agent read its own config (core/src/realtime/agentView.ts), not the effective
+            // regime of the scenario: no seed, none of the environment-only sections, and the
+            // run-start declaration beside it.
             const { existsSync } = require("node:fs");
             const { parse } = require("yaml");
             for (const sc of m.scenarios) {
