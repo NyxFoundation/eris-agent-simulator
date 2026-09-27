@@ -22,9 +22,9 @@ export const WHALE_WALLET_KEY = "whale:uninformed";
 // whale fail on balance -- silently turning the regime into `calm` for the rest of that seed.
 //
 // Cumulative, not the largest single order: sizing on the max looks sufficient only because buys and
-// sells replenish each other, and a seed that draws every whale on the same side (p ~ 1/8 for the
-// four in config/regimes/whale.yaml) spends more than any single order. That is exactly the tail the
-// headroom is supposed to cover.
+// sells replenish each other, and a seed that draws every whale on the same side (p ~ 1/4 to 1/16
+// for the three to five config/regimes/whale.yaml draws) spends more than any single order. That is
+// exactly the tail the headroom is supposed to cover.
 const WHALE_FUNDING_HEADROOM = 2n;
 
 const SWAP_TYPE = {

@@ -115,13 +115,16 @@ stress:
     # NOT RE-MEASURED: the published calibration (seed 701: 89.5bps peak, peg-arb +139.6,
     # peg-arb-eager +195.7) was taken at 120 blocks. The ramp now takes 12 blocks instead of 4, so
     # there is more time to act inside it; re-run before treating those numbers as current.
+    #
+    # Each segment's length is drawn around those values (ramp 9-15, hold 28-44), as in depeg.yaml:
+    # the ramp no longer tells an agent the block the hold ends on.
     - {
         type: depeg,
         stable: DAI,
         magnitudeRange: [0.35, 0.6],
         windowFrac: [0.25, 0.6],
-        rampBlocks: 12,
-        holdBlocks: 36,
+        rampBlocks: [9, 15],
+        holdBlocks: [28, 44],
         decayBlocks: 0, # persist: no decay -- the level holds to the last scoring block
         persist: true,
       }

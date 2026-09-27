@@ -86,28 +86,27 @@ flow:
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
 stress:
-  # Ranges, not values: the seed samples both the size and the block (ADR 0009). The windows are
-  # disjoint so the four prints land spread out rather than clustering into one shock.
+  # Ranges, not values: the seed samples the size, the block, the side and the book (ADR 0009).
+  #
+  # The number of prints is drawn too (3-5). This used to be four entries in four fixed bands, two
+  # on uniswap, then balancer, then curve -- so the first print told an agent that three more were
+  # coming, roughly when, and on which venue. One entry with a count spreads 3-5 prints uniformly
+  # over the placements that fit, at least 15 blocks apart so two of them do not merge into one
+  # larger shock, each on a venue the seed picks.
   #
   # The magnitude is WETH and is meaningful only against the pool's depth (events.ts says so):
   # 25-60 WETH is 2.5-6 % of a 1,000 WETH full-range side. Issue #79 left spot depth at 1,000 WETH
   # + 3M USDC per venue and left this range alone; if depth ever changes, scale the range with it
   # so a print stays 2.5-6 % of a side rather than a fixed number of WETH.
   events:
-    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.10, 0.25] }
     - {
         type: whale,
+        count: [3, 5],
+        minGapBlocks: 15,
         magnitudeRange: [25, 60],
-        windowFrac: [0.3, 0.45],
-        venue: balancer,
+        windowFrac: [0.10, 0.85],
+        venue: random,
       }
-    - {
-        type: whale,
-        magnitudeRange: [25, 60],
-        windowFrac: [0.5, 0.65],
-        venue: curve,
-      }
-    - { type: whale, magnitudeRange: [25, 60], windowFrac: [0.7, 0.85] }
 
 agents:
   - id: noop

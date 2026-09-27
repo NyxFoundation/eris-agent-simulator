@@ -97,8 +97,8 @@ flow:
 stress:
   events:
     # One window per epoch, drawn from [0.2, 0.5] of the run: early enough that a wave's decay and
-    # an agent's exit both fit before the last scored block (window = 9 + 30 + 30 = 69 blocks; the
-    # latest start is block 180 of 360, leaving ~110 blocks after the window closes).
+    # an agent's exit both fit before the last scored block (the latest start is block 180 of 360;
+    # the window's length is below).
     #
     # Per token, independently: the USDC side seeded (the token side is the same number of tokens
     # at 1.00 USDC), the wave as a multiple of that USDC side, the dud coin, and the share of what
@@ -113,8 +113,13 @@ stress:
     # Now the ramp starts two blocks after the listing (core TOKEN_LAUNCH_LEAD_BLOCKS: listing +
     # registry publication) and a block of the ramp is at most 1/20 of the USDC side, about +10%
     # on the price (full range, equal sides: (1 + x)^2 - 1) at the top of the range and +2.5% at
-    # the bottom. The window is 2 + 20 + 30 + 30 = 82 blocks; the latest start is block 180, so it
-    # closes by 262 with ~100 blocks left for exits.
+    # the bottom. The window was 2 + 20 + 30 + 30 = 82 blocks.
+    #
+    # Each segment's length is now drawn (ramp 20-26, hold 24-36, decay 28-36), so the listing no
+    # longer gives away the block the sell-back starts on. The ramp only lengthens: a shorter one
+    # would put more than 1/20 of the USDC side into a block and bring back the reverts above. The
+    # longest window is 2 + 26 + 36 + 36 = 100 blocks; the latest start is block 180, so it closes
+    # by 280 with ~80 blocks left for exits.
     - {
         type: tokenLaunch,
         windowFrac: [0.2, 0.5],
@@ -123,9 +128,9 @@ stress:
         waveUsdcMult: [0.25, 1.0],
         dudProb: [0.3, 0.5],
         sellBackFrac: [0.5, 1.0],
-        rampBlocks: 20,
-        holdBlocks: 30,
-        decayBlocks: 30,
+        rampBlocks: [20, 26],
+        holdBlocks: [24, 36],
+        decayBlocks: [28, 36],
       }
 
 agentMarkets:

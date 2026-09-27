@@ -99,23 +99,26 @@ flow:
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
 stress:
+  # The trapezoids and how much of the crash recovers are drawn as in crash.yaml; it stays one crash,
+  # always down, for the same reason as lending-incident (the victims are the regime).
   events:
     - {
         type: crash,
+        recoverFrac: [0.4, 1.0],
         magnitudeRange: [0.12, 0.16],
         windowFrac: [0.3, 0.7],
-        rampBlocks: 3,
-        holdBlocks: 6,
-        decayBlocks: 8,
+        rampBlocks: [2, 4],
+        holdBlocks: [4, 8],
+        decayBlocks: [6, 10],
       }
     - {
         type: liquidityPull,
         magnitudeRange: [0.4, 0.6],
         windowFrac: [0.3, 0.7],
         alignWith: crash,
-        rampBlocks: 3,
-        holdBlocks: 6,
-        decayBlocks: 12,
+        rampBlocks: [2, 4],
+        holdBlocks: [6, 10],
+        decayBlocks: [10, 14],
       }
     # The peg breaks in the same window the collateral does: the environment (the deployer, which
     # holds the genesis Trove's eUSD) sells 65-85 % of the pool's seeded eUSD depth and buys it
@@ -128,9 +131,9 @@ stress:
         magnitudeRange: [0.65, 0.85],
         windowFrac: [0.3, 0.7],
         alignWith: crash,
-        rampBlocks: 4,
-        holdBlocks: 20,
-        decayBlocks: 12,
+        rampBlocks: [3, 5],
+        holdBlocks: [16, 24],
+        decayBlocks: [10, 14],
       }
   # Two Troves at ICR 1.20 with 5 WETH each (issue #107). A 12 % crash takes them to 1.056, under
   # MCR 1.10; the coordinator warns at setup if a drawn crash could not.

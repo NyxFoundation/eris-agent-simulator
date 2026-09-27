@@ -47,7 +47,10 @@ export class StressAudit {
     blockIndex: number,
     accept: (event: ResolvedStressEvent) => boolean,
   ): ResolvedStressEvent[] {
-    return this.events.filter(event => accept(event) && stressEnvelope(event, blockIndex) > 0);
+    // Inside the window only: a shock that recovered part of its gap leaves a residual on every
+    // block after it (recoverFrac), and that is the price the run now has, not an application.
+    return this.events.filter(event => accept(event) && blockIndex < event.endBlock &&
+      stressEnvelope(event, blockIndex) > 0);
   }
 
   price(

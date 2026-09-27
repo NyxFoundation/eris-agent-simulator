@@ -1101,6 +1101,10 @@ type ScheduledEvent = {
   holdBlocks?: number;
   decayBlocks?: number;
   endBlock?: number;
+  // crash / spike: the configured type when the seed turned the shock the other way, and the share
+  // of the gap the decay closed (absent = all of it).
+  flippedFrom?: string;
+  recoverFrac?: number;
 };
 
 // Only the event families the coordinator really emits per firing block. crash / spike / cexDrift /
@@ -1266,7 +1270,15 @@ export function buildScenarioPanel(
             to: Number(lastFired.blockNumber).toLocaleString("en-US"),
           })}${ended ? ` · ${ended}` : ""}`;
     return [
-      cell(str(event.type), "link"),
+      cell(
+        event.flippedFrom
+          ? t("vp.scenario.flipped", {
+              type: str(event.type),
+              from: event.flippedFrom,
+            })
+          : str(event.type),
+        "link",
+      ),
       // The trapezoid's shape rides with its window: ramp/hold/decay is what the window is made of,
       // not a separate fact, and as its own column it did not fit beside the rest.
       cell(
@@ -1274,7 +1286,13 @@ export function buildScenarioPanel(
       ),
       cell(roundsSpanned(intervals, from, to)),
       cell(
-        `${(num(event.magnitude) * 100).toFixed(1)}%`,
+        `${(num(event.magnitude) * 100).toFixed(1)}%${
+          event.recoverFrac !== undefined
+            ? ` · ${t("vp.scenario.recovered", {
+                pct: (event.recoverFrac * 100).toFixed(0),
+              })}`
+            : ""
+        }`,
         num(event.magnitude) > 0 ? "warn" : "neutral",
       ),
       cell(

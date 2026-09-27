@@ -100,12 +100,14 @@ jobs:
       # this deployment's WeightedPool does not implement ALL_TOKENS_IN_FOR_EXACT_BPT_OUT, and that
       # class of mismatch is invisible until a real pool refuses the call.
       #
-      # 80 blocks, not the 12 used above: the pull's trapezoid is 21 blocks and its start is drawn
-      # from windowFrac's upper bound (0.7), so a shorter run cannot hold the window and fails fast
-      # rather than silently mis-composing the pair (see EventSchedule's alignWith check).
+      # 120 blocks, not the 12 used above: the regime draws up to two gaps, each with a pull of up
+      # to 28 blocks and 20 blocks of spacing after it, and every start has to fall inside
+      # windowFrac [0.25, 0.7] -- 48 blocks of placement inside 0.45 of the run, so anything under
+      # ~107 blocks fails fast at startup rather than silently dropping a gap or mis-composing a
+      # pair (see EventSchedule's placement and alignWith checks).
       - name: Replay the crash regime (liquidity pull across all three venues)
         run: |
-          npm run backtest -- --regime crash --seed 606 --blocks 80 --agent-sandbox process
+          npm run backtest -- --regime crash --seed 606 --blocks 120 --agent-sandbox process
           node -e '
             const { readdirSync, readFileSync } = require("node:fs");
             const dir = readdirSync("runs").filter((d) => /^\d{4}-/.test(d)).sort().at(-1);

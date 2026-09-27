@@ -90,7 +90,7 @@ flow:
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
 stress:
-  # The drift is three episodes rather than a run-wide setting (issue #56).
+  # The drift is episodes rather than a run-wide setting (issue #56).
   #
   # Held run-wide, this regime broke at its own length. Measured at 360 blocks with drift 0.0015 and
   # kappa 0.004: the fair price ran from 3,000 to 4,037 (+34.6%) and the pool sat a mean 1,055bps --
@@ -107,37 +107,24 @@ stress:
   # 0.0015, and mean reversion multiplied by 0.15-0.3 against the old 0.2 (kappa 0.004 over the
   # default 0.02). The direction is left to the seed -- a published regime whose drift is always up
   # is memorisable.
+  #
+  # How many episodes, how long each one runs and which of them reprice are drawn as well. This used
+  # to be exactly three, in three fixed bands, and only the middle one repriced -- so an agent that
+  # counted to two knew which move would stay. Now 2-4 episodes spread over the run at least 10
+  # blocks apart, each 30-54 blocks long, each repricing with probability 0.35 (about one per run,
+  # as before, but some runs have none and some have several).
   events:
     - {
         type: cexDrift,
+        count: [2, 4],
+        minGapBlocks: 10,
         magnitudeRange: [0.001, 0.002],
         kappaMultRange: [0.15, 0.3],
-        windowFrac: [0.1, 0.25],
-        rampBlocks: 6,
-        holdBlocks: 24,
-        decayBlocks: 12,
-      }
-    # The middle one is a repricing: the walk's anchor moves with it, so the level it reaches is
-    # still there afterwards. Without one of these every price move in the run is temporary by
-    # construction, and "will it come back" has a known answer.
-    - {
-        type: cexDrift,
-        magnitudeRange: [0.001, 0.002],
-        kappaMultRange: [0.15, 0.3],
-        repriceAnchor: true,
-        windowFrac: [0.4, 0.55],
-        rampBlocks: 6,
-        holdBlocks: 24,
-        decayBlocks: 12,
-      }
-    - {
-        type: cexDrift,
-        magnitudeRange: [0.001, 0.002],
-        kappaMultRange: [0.15, 0.3],
-        windowFrac: [0.7, 0.85],
-        rampBlocks: 6,
-        holdBlocks: 24,
-        decayBlocks: 12,
+        repriceAnchorProb: 0.35,
+        windowFrac: [0.1, 0.85],
+        rampBlocks: [4, 8],
+        holdBlocks: [18, 30],
+        decayBlocks: [8, 16],
       }
 
 agents:
