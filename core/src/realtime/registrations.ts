@@ -13,6 +13,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import type { Address } from "viem";
+import type { AgentSpec } from "@eris/sdk/types.js";
 
 export type Registration = {
   id: string;
@@ -153,6 +154,42 @@ export function diffRegistrations(
     added.push(entry);
   }
   return { added, ignored };
+}
+
+/**
+ * The registrations already on file when the run starts, as roster entries.
+ *
+ * Read only by the loop, an entry is registered after the first interval boundary has been read:
+ * the loop polls after `liveScorer.onBlock`, and `addAgent` fills every boundary already read with
+ * null. The first segment then has no V_0 for it and leaves it unscored -- and after a restart that
+ * is every participant, because a restart is a new competition and all of them are on file. Folded
+ * into the roster instead, they take the setup path of an `external: true` + `address` entry:
+ * funded before mining starts and valued from boundary 0. The loop's first poll then finds them
+ * registered (same id, same address) and does nothing.
+ *
+ * Only the entries `diffRegistrations` would add against the roster's ids and explicit addresses.
+ * Anything it would ignore stays in the file for that first poll, which reports it the way it
+ * always has (`registration_ignored`) -- this runs before the run has a log to write to.
+ */
+export function startupRegistrations(
+  entries: readonly Registration[],
+  roster: readonly AgentSpec[],
+): AgentSpec[] {
+  const { added } = diffRegistrations(entries, {
+    ids: new Set(roster.map((a) => a.id)),
+    addresses: new Map(
+      roster
+        .filter((a) => a.address !== undefined)
+        .map((a) => [String(a.address).toLowerCase(), a.id]),
+    ),
+  });
+  return added.map((reg) => ({
+    id: reg.id,
+    external: true,
+    address: reg.address,
+    ...(reg.participant !== undefined ? { participant: reg.participant } : {}),
+    ...(reg.description !== undefined ? { description: reg.description } : {}),
+  }));
 }
 
 export type RegistrationsRead =

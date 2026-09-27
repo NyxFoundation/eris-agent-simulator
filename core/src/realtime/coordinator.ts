@@ -136,6 +136,7 @@ import { LiveScorer } from "./liveScoring.js";
 import {
   diffRegistrations,
   RegistrationsWatcher,
+  startupRegistrations,
   type Registration,
 } from "./registrations.js";
 import {
@@ -671,8 +672,30 @@ export async function runRealtimeSimulation(
     await setAutomine(publicClient, true);
   }
 
+  // Registrations already on file join the roster here, before setup funds anyone, so they are
+  // valued from the first interval boundary like any roster entry. Left to the loop, they register
+  // after that boundary and go unscored on the first day -- every participant, after a restart
+  // (registrations.ts, startupRegistrations). A file that is missing or malformed right now is the
+  // loop's to report: its first poll reads the same file and records what is wrong with it.
+  let onFile: AgentSpec[] = [];
+  if (config.registrationsFile) {
+    try {
+      const read = new RegistrationsWatcher(config.registrationsFile).read();
+      if (read.kind === "changed")
+        onFile = startupRegistrations(read.entries, agentSpecs);
+    } catch {
+      onFile = [];
+    }
+    logger.event({
+      type: "registrations_read_at_start",
+      path: config.registrationsFile,
+      added: onFile.map((a) => a.id),
+    });
+  }
+  const rosterSpecs = [...agentSpecs, ...onFile];
+
   // ---- agent wallets (processes start after setup completes; agentSpecs is already resolved from YAML/env) ----
-  const agentRuntimes: RealtimeAgentRuntime[] = agentSpecs.map((spec) => {
+  const agentRuntimes: RealtimeAgentRuntime[] = rosterSpecs.map((spec) => {
     // An entry registered by address has no key here at all; one registered by wallet still does,
     // even when external, because a practice devnet that issues funded keys is a legitimate way to
     // run one (the manifest hands the key to that participant).
