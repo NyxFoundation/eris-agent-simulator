@@ -79,6 +79,7 @@ type AgentContext = {
 | `fairPriceUsdcPerWeth` / `oraclePrices` | fair price（1 ブロック遅れ） |
 | `fairPricesUsd` / `baseBalances` / `baseDecimals` / `markets` | マルチアセット。WETH のみの run では既存フィールドと一致する |
 | `blocksRemaining` | **このエージェントが最初に観測したブロックから数えた**残りブロック数。run に上限が無ければ undefined |
+| `dayBlocksRemaining` | 採点中の 1 日の残りブロック数。**練習期間のみ**（1 つの world を日で切り、各日を 1 エポックとする。ADR 0021 §6）。エージェントの時計と期間の日の格子（`sdk/src/periodClock.ts`）から計算し、`blocksRemaining` を超えない。それ以外の run では undefined |
 | `enabledProtocols` | この run で有効な venue |
 | `discoveredPools` | 環境がエポック途中に配置したプール（規約 §3.2 レジーム 7、ADR 0014）: address / token0 / token1 / decimals / feeBps / createdAtBlock / reserves / 含意価格 / codehash。**rigged かどうかは出さない**（検査は参加者の判断）。factory の無い run では undefined |
 | `balances` | `ethWei` / `wethWei` / `usdcUnits` / `stables{}` |
@@ -256,7 +257,7 @@ ADR 0021 §2。環境がプロセスを起動しない登録エントリ。
 - **`command` / `args` / `dir` / `env` は黙殺せず拒否する**（黙って落とすと「運営が動かしている」ように読めるロスターになる）
 - 資金配布・tx の帰属・採点・ルール検査は**すべてアドレス基準**なので、鍵は「起動する」ためだけに必要 = 外部エントリには要らない
 - **判断ログは参加者のマシンにしか無い。** ダッシュボードは agent ページの判断ログタブを external では出さず、そう書く（空パネルは「このエージェントは何も考えなかった」という別の主張になる）
-- `bot.ts` は `ERIS_MANIFEST` から RPC URL と PriceFeed アドレスを読める（環境が注入できない 2 つ）。マニフェストが読めなければ**起動を拒否する**（env にフォールバックすると、シェルにたまたま入っていたチェーンで誰にも採点されない取引をすることになる）
+- `bot.ts` は `ERIS_MANIFEST` から RPC URL と PriceFeed アドレスを読める（環境が注入できない 2 つ）。run の長さもマニフェストの `period` から読み、設定ファイルの run 長より優先する（`blocksRemaining` / `dayBlocksRemaining`）。マニフェストが読めなければ**起動を拒否する**（env にフォールバックすると、シェルにたまたま入っていたチェーンで誰にも採点されない取引をすることになる）
 - 自己ホストのエージェントは**自分で venue approve を出す**（`ensureVenueApprovals`）。既に十分な allowance があればスキップするので、再起動しても endowment を削らない
 
 ## 5.10 提出

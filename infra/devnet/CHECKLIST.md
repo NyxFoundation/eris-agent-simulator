@@ -156,8 +156,7 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
   while true; do ssh -N -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
     -L 8546:127.0.0.1:8546 -L 5174:127.0.0.1:5174 <A>; sleep 5; done &
   ```
-- [ ] マニフェスト（A で作って B に置く）:
-  `npm run manifest -- --config config/practice.yaml --public-rpc http://127.0.0.1:8546`
+- [ ] マニフェストはここでは作らない。coordinator の起動後に A で作る（1.3）
 - [ ] 鍵を 7 本作る（[practice-devnet §1](../../docs/guide/practice-devnet.md#1-create-a-wallet-and-register-its-address)
   の viem ワンライナー）。アドレスを A の `config/registrations.yaml` に書く（`ops-late` は 3h 後まで書かない）
 - [ ] Ollama が答えるか、時間も測る（API 経由の LLM 呼び出しは 60 秒で timeout）:
@@ -180,6 +179,8 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 - [ ] agent ごとの env ファイル `ops-agents/<id>.env`（`ops-late` は `ops-agents-late/` に分けておく）:
   ```sh
   ERIS_MANIFEST=./manifest.json
+  # venue と LST の時計は期間の設定から（run の長さはマニフェストが常に優先）
+  ERIS_CONFIG=config/practice.yaml
   ERIS_AGENT_ID=ops-venue-p
   ERIS_AGENT_DIR=example/agents/venue-arb
   ERIS_AGENT_PRIVATE_KEY=0x…
@@ -198,7 +199,16 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 ### 1.3 起動直後（T+0〜1h）
 
 A で `systemctl --user enable --now ascon-devnet`、登録が取り込まれたのを見てから（下の 3 つ目）、
-B で agent を起動する:
+A でマニフェストを作って B に置き、B で agent を起動する。マニフェストは走っている期間のもの
+（`--from-run`）でないと PriceFeed も期間の開始ブロックも入らず、agent は起動できない:
+
+```sh
+# A
+npm run manifest -- --config config/practice.yaml --public-rpc http://127.0.0.1:8546 --from-run runs/<period>
+```
+
+```sh
+# B
 
 ```sh
 mkdir -p ops-logs
