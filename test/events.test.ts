@@ -1062,3 +1062,33 @@ test("a schedule without variation keys is the one it always was", () => {
   assert.equal(b.startBlock, 156);
   assert.equal(b.magnitude, 0.15917842744849622);
 });
+
+// Before the event list went into the hash, crash#s and spike#s drew the same numbers (their lists
+// differ only in the type), so they opened on the same block with the same size and recovery and
+// flipped together; depeg / depeg-persist and lending-incident / cdp-incident paired the same way.
+test("regimes that differ only in a type or a flag draw independently for the same seed", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { parse } = await import("yaml");
+  const load = (name: string) =>
+    parseStressEvents(
+      JSON.stringify((parse(readFileSync(`config/regimes/${name}.yaml`, "utf8")) as { stress: { events: unknown[] } }).stress.events),
+    );
+  for (const [a, b] of [["crash", "spike"], ["depeg", "depeg-persist"], ["lending-incident", "cdp-incident"]] as const) {
+    const ca = load(a);
+    const cb = load(b);
+    let sameStart = 0;
+    let sameMagnitude = 0;
+    for (const seed of SEEDS) {
+      const ea = new EventSchedule(ca, seed, 360).events[0];
+      const eb = new EventSchedule(cb, seed, 360).events[0];
+      if (ea.startBlock === eb.startBlock) sameStart++;
+      if (ea.magnitude === eb.magnitude) sameMagnitude++;
+    }
+    assert.equal(sameMagnitude, 0, `${a} / ${b}: identical magnitudes on ${sameMagnitude} seeds`);
+    assert.ok(sameStart < 20, `${a} / ${b}: same first block on ${sameStart}/200 seeds`);
+  }
+  // Field order is not content: the same list written in another order is the same schedule.
+  const cfg: StressEventConfig = { type: "crash", count: [1, 2], magnitudeRange: [0.1, 0.2], windowFrac: [0.2, 0.6], rampBlocks: [2, 4], holdBlocks: 4, decayBlocks: 6 };
+  const reordered = { decayBlocks: 6, holdBlocks: 4, rampBlocks: [2, 4], windowFrac: [0.2, 0.6], magnitudeRange: [0.1, 0.2], count: [1, 2], type: "crash" } as StressEventConfig;
+  assert.deepEqual(new EventSchedule([reordered], 7, 360).events, new EventSchedule([cfg], 7, 360).events);
+});

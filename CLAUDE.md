@@ -530,7 +530,8 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   `rampBlocks` 等の `[min, max]` / `flipProb`（crash・spike。解決済みは `type: spike, flippedFrom: crash`。victim のあるレジームでは使わない）/
   `recoverFrac`（crash・spike。戻らない分は run 終了まで残る = 「急変に逆張りして窓で手仕舞う」の構造的正解を消す。**練習期間では使わない**。残差が複利になる）/
   `venue: random`（whale）/ `repriceAnchorProb`（cexDrift）。公式 10 本に適用済み（calm・vuln は無変更。lending-incident / cdp-incident は暴落 1 本・下落固定で、形と回復だけ）。
-  **これらを 1 つでも使うスケジュールは seed を fmix32 でハッシュする**。`Rng` は LCG で初回出力が近い seed 間でほぼ動かず、
+  **これらを 1 つでも使うスケジュールは seed とイベント列（FNV-1a）を fmix32 でハッシュする**（イベント列を混ぜないと crash#s と spike#s、depeg と depeg-persist、
+  lending-incident と cdp-incident が同じ draw を引き、同じブロックに開いて反転も連動していた）。`Rng` は LCG で初回出力が近い seed 間でほぼ動かず、
   公開 seed 101〜505 の 5 本すべてで最初のイベントの magnitude がレンジ下位 1/4 だった。使わない config（`practice.yaml` 等）は
   生の seed のままバイト互換（24 config × 300 seed で旧実装と一致を確認）。**公式レジームの実現値は全部変わった**ので、それ以前の matrix とは比べられない
 - `stress.victimCount`(既定 0=無効) / `stress.victimHf0`(既定 1.10) / `stress.victimWethWei`(victim 1 体の supply)。**較正の連動**: 建てるには `HF0 ≳ LT/(0.97·LTV)`（実測 Arbitrum WETH の LT=0.84/LTV=0.80 で ≈1.08。これ未満は borrow が LTV 縁に張り付くため fail-fast）。割るには crash magnitude `m > (HF0−1)/HF0`（HF0=1.10 なら m>9.1% → 例の [0.12,0.16] で確実に割れる）。breach 不能な設定は `stress_calibration_warning` を emit。borrow がサイレント revert したら setup で fail-fast(debt 検証)

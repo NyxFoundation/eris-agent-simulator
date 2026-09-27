@@ -156,6 +156,7 @@ The official regimes used to leave only the magnitude and the start to the seed.
 
 - **A `count` that cannot fit is refused at startup whatever the seed** (checked at the longest draws, so no config fails only on unlucky seeds)
 - **A schedule that uses any of these keys hashes the seed (murmur3 fmix32) before the Rng.** The Rng is an LCG whose **first output barely moves between nearby seeds** (seeds Δ apart start a·Δ/2³² apart; seeds 1-200 fit in ~10% of [0, 1)). Measured: on all five published seeds 101-505 the first event's magnitude drew from the bottom quarter of its range (u = 0.09-0.25; a crash of 15.6-16.8% out of [15%, 22%], five times). A schedule that uses none of them keeps the raw seed, **byte for byte**, so a running practice period's windows do not move on an upgrade
+- **The hash takes the event list as well as the seed (FNV-1a over sorted keys).** With the seed alone, regimes whose lists differ only in a type or a flag drew the same numbers: crash#s and spike#s opened on the same block with the same size and recovery and flipped together (on the published seeds 4 of 6 crash gaps flipped up, so spike mostly fell), and depeg / depeg-persist and lending-incident / cdp-incident paired the same way. The hidden set gives every regime the same seed list, so an agent carrying state across epochs could match a shock's first block against one it had already watched. The cost: editing any value in a regime reshuffles all of its draws
 
 ## 4.7 The two flags that do not restore
 

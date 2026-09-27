@@ -228,6 +228,13 @@ times out of five, in every regime (a crash of 15.6-16.8% out of [15%, 22%]). A 
 none of them keeps the raw seed, byte for byte, so a running practice period's windows do not move
 on an upgrade.
 
+The hash takes the event list as well as the seed. With the seed alone, regimes whose lists differ
+only in a type or a flag drew the same numbers: `crash#s` and `spike#s` opened on the same block
+with the same size and recovery and flipped together, and `depeg` / `depeg-persist` and
+`lending-incident` / `cdp-incident` paired the same way. The hidden set gives every regime the same
+seed list, so an agent carrying state across epochs could recognise a shock by its first block.
+The cost: editing any value in a regime reshuffles all of its draws.
+
 Every one of these is validated at parse time and **rejected rather than ignored** when it does not
 apply to the type — an option silently dropped is a regime that logs itself and then does something
 else.

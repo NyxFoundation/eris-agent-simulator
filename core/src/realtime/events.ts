@@ -378,8 +378,22 @@ export class EventSchedule {
     // repriceAnchorProb) is a new schedule anyway, so it takes a hashed seed. One that uses none
     // keeps the raw one, byte for byte -- the practice period's windows are a function of its
     // secret seed, and an upgrade must not move them.
+    //
+    // The hash also takes the event list itself. With the seed alone, two regimes whose lists
+    // differ only in a type or a flag drew the same numbers for the same seed: crash#s and spike#s
+    // opened on the same block with the same size and recovery and flipped together (so on the
+    // published seeds, where 4 of 6 crash gaps flipped up, the spike regime mostly fell), and
+    // depeg / depeg-persist and lending-incident / cdp-incident paired the same way. The hidden set
+    // gives every regime the same seed list, so an agent carrying state across epochs could match a
+    // shock's first block against one it had already watched play out. Mixing the list in makes
+    // each regime's draws its own; the price of it is that editing any value in a regime reshuffles
+    // all of its draws, which a changed regime does anyway.
     const salted = (seed ^ STRESS_SEED_SALT) >>> 0;
-    const rng = new Rng(configs.some(usesVariation) ? mix32(salted) : salted);
+    const rng = new Rng(
+      configs.some(usesVariation)
+        ? mix32(salted ^ configDigest(configs))
+        : salted,
+    );
     // First pass: every draw, in list order. How many draws an entry makes is a function of the
     // config alone -- a count draws its maximum number of windows, not the number it landed on -- so
     // one entry's outcome never shifts the schedule of the entries after it.
@@ -757,6 +771,29 @@ function usesVariation(c: StressEventConfig): boolean {
     c.venue === "random" ||
     c.repriceAnchorProb !== undefined
   );
+}
+
+// FNV-1a over the event list written with sorted keys, so the digest is a property of what the
+// list says rather than of the order its fields happened to be written in.
+function configDigest(configs: StressEventConfig[]): number {
+  const canonical = (v: unknown): unknown =>
+    Array.isArray(v)
+      ? v.map(canonical)
+      : v !== null && typeof v === "object"
+        ? Object.fromEntries(
+            Object.keys(v as Record<string, unknown>)
+              .filter((k) => (v as Record<string, unknown>)[k] !== undefined)
+              .sort()
+              .map((k) => [k, canonical((v as Record<string, unknown>)[k])]),
+          )
+        : v;
+  const text = JSON.stringify(canonical(configs));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
 }
 
 // murmur3's 32-bit finalizer: every input bit reaches every output bit, so seeds 1 apart start
