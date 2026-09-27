@@ -28,15 +28,17 @@ per-base の上書きは `market.baseVolatility` / `baseKappa` / `baseDrift`（`
 
 **乱数生成器は LCG**（`state = (1664525·state + 1013904223) mod 2³²`）で、`gaussian()` は Box-Muller、`lognormal(mean, σ)` は `μ = ln(mean) − σ²/2` として期待値を `mean` に一致させる、`poisson(λ)` は Knuth 法。
 
+**run の seed から Rng を作るのは必ず `Rng.fromSeed(seed, salt)`**（= `new Rng(fmix32(seed ^ salt))`、文字列 salt は FNV-1a。`sdk/src/rng.ts`）。消費者ごとに salt が違う（価格 `price:<symbol>` / flow `flow` / prewarm `prewarm` / agent runtime `agent-runtime` / LST `LSTY` / vuln `VULN`）。`new Rng(seed)` をそのまま使うと、LCG なので Δ 違いの seed の初回値が a·Δ/2³² しか離れず（seed 1〜200 は全部 [0.236, 0.314)）、以降の各 draw も「Δ 先の seed の同じ draw + 定数 mod 1」になる。salt を XOR するだけでも近い seed は近いまま。実測（修正前）: WETH の最初のショックは seed 1〜200 の全部で −21〜−15bps、WBTC は全部 +29〜+37bps、vuln の最初のイベントの poolCount [4, 6] は全部 4、LST の最初の APY は [100, 900] のうち 513〜592bps。さらに `flow.seed` の既定は run seed なので、**flow bot は価格パスと同じ系列を引いていた**（calm の flow は 1 ラウンド 24 draw 以上 = AMM + GMX だけで数えた下限 なので、遅くとも 16 ラウンド目までに run 全体の 360 ショックを順に消費していた）。数字は `scripts/measureSeedCorrelation.ts`。**2026-09-27 以前の run とは同じ seed でも realization が違う**。ストレススケジュールは例外で、§4 のばらつきキーを使わない限り生の seed のまま（練習期間の窓を動かさないため）
+
 ### 3.1.2 なぜ平均回帰なのか
 
 幾何ランダムウォーク＋ドリフトだと **seed ごとにトレンドが乗り、その累積方向性エクスポージャ（β）が PnL を支配して「ランダム取引 ≈ 賢い裁定」になる**（`rng.ts:59-64`、ADR 0003）。平均回帰にして anchor へ引き戻すと run 終了時に価格が出発点近くへ戻り、方向からは儲からなくなる。残るのは「プールと fair の乖離を読む」裁定スキル（α）だけになる。
 
 ### 3.1.3 マルチアセット
 
-base ごとに**独立した Rng** を持つ（`rng.ts:135` `priceRngForAsset`）。WETH は salt 0 = `Rng(seed)` そのもの（既存 run の WETH 価格パスとバイト互換）、他の base は symbol 由来の決定論的 salt で独立系列になる。
+base ごとに**独立した Rng** を持つ（`priceRngForAsset` = `Rng.fromSeed(seed, "price:<symbol>")`）。WETH も他の base と同じ導出（以前は salt 0 = `Rng(seed)` そのもので、既存 run とのバイト互換のためだったが、上の相関のため捨てた）。
 
-**アセット間相関は 0**（v1）。相関を入れるには共有 Rng に統合する必要があり、それは WETH の消費列を変えて後方互換を壊すので既定では行っていない。
+**アセット間相関は 0**（v1）。相関を入れるには共有 Rng に統合する必要があり、そうすると base を足すたびに WETH の消費列が動くので既定では行っていない。
 
 ### 3.1.4 base 価格と effective 価格の分離
 
@@ -89,7 +91,7 @@ effective ← baseFair × overlay.wethMult（ストレスイベントの乗算�
 flow bot は**独立プロセス**（`core/src/flow/market-maker.ts`）で、生成ロジックは純関数（`core/src/flow/logic.ts`）。
 
 - **bot は RPC を一切触らない。** coordinator が毎ブロック context を stdin へ push し、bot が stdout へ書いた注文行を coordinator が flow ウォレットで署名して mempool へ中継する。
-- bot は自前の `Rng(flow.seed)` で決定論的に動く。呼び出し順は coordinator が渡す protocol 順（既定 `uniswap, balancer, curve, gmx, aave`）。
+- bot は自前の `flowRng(flow.seed)`（= `Rng.fromSeed(flow.seed, "flow")`。価格パスとは別系列）で決定論的に動く。呼び出し順は coordinator が渡す protocol 順（既定 `uniswap, balancer, curve, gmx, aave`）。
 - Aave の reserve 状態は環境が読んで context に載せる（bot は読めないため）。
 
 ### 3.2.2 AMM フロー（uniswap / balancer / curve）
@@ -102,7 +104,7 @@ flow bot は**独立プロセス**（`core/src/flow/market-maker.ts`）で、生
 |---|---|---|
 | 到着数 | `Poisson(λ)`。λ=0 なら固定 `uninformedCount` 件 | λ = 0.45 |
 | サイズ | `lognormal(mean = max×0.5, σ)` を `[2%, clampMult×100%]` に clamp。λ=0 なら `max/20 .. max` の一様 | σ = 1.5、clampMult = 3（公式 regime は 10） |
-| 方向 | `persistBlocks > 1` なら `floor(round/persistBlocks)` の窓ごとに `trendBit(flowSeed, window, venue)` で固定。それ以外は毎回 `rng.bool()` | persist = 1 |
+| 方向 | `persistBlocks > 1` なら `floor(round/persistBlocks)` の窓ごとに `trendBit(flowSeed, window, venue)` で固定（seed を tag ごとの key へハッシュしてから窓を混ぜる。以前は `seed ^ (window+1)` を混ぜていたので seed 100 と 101 が隣の窓を入れ替えただけの同じ方向列になり、1 違いの seed はビットの 56.8% が一致した）。それ以外は毎回 `rng.bool()` | persist = 1 |
 | 相関 | `trendCorrelation` の確率で venue 個別のビットではなく**市場共通のビット**に従う | 0 |
 | priority fee | `default + [1,50) × 10⁶ wei` | |
 

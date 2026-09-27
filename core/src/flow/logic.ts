@@ -5,18 +5,27 @@
 // never touch the RPC. The coordinator still owns flow wallets and tx submission; the bot only decides
 // "which orders to place".
 //
-// Determinism: the bot has its own Rng(flowSeed) and calls the functions here in the protocols order
+// Determinism: the bot has its own Rng (flowRng(flowSeed)) and calls the functions here in the protocols order
 // the coordinator passes (= enabledAdapters order; the default is config.ALL_PROTOCOLS's
 // uniswap, balancer, curve, gmx, aave, with gmx before aave).
 // To keep the RNG consumption order identical to the original buildFlowIntents, the logic is ported
 // verbatim from the old adapters.
-import { Rng } from "@eris/sdk/rng.js";
+import { fnv1a32, mix32, Rng } from "@eris/sdk/rng.js";
 import type { LeafAction, ProtocolId, TokenSymbol } from "@eris/sdk/types.js";
 import type { FlowKind, FlowOrder } from "@eris/sdk/protocols/types.js";
 import { tokenInfo } from "@eris/sdk/markets.js";
 
 // Decimals of the accounting quote (USDC-equivalent). Used for the digit gap in base->quote conversion.
 const QUOTE_DECIMALS = tokenInfo("USDC").decimals;
+
+// The flow bot's shared stream. Salted and hashed rather than `Rng(flowSeed)`: flow.seed defaults
+// to the run seed, and the price path was `Rng(seed)` too, so the bot drew the very numbers the
+// fair price walked on -- by round 16 it had drawn all 360 of the run's price shocks, in order. And an
+// unhashed LCG seed starts nearby seeds in the same place: the first draw (the first round's
+// uniswap arrival count) came out 0 on every seed from 1 to 200.
+export function flowRng(flowSeed: number): Rng {
+  return Rng.fromSeed(flowSeed, "flow");
+}
 
 const FLOW_SLIPPAGE_BPS = 100;
 
@@ -282,26 +291,29 @@ function capUsdc(amount: bigint, balance: FlowBalance | null): bigint {
 // direction is a pure function of the block window -- the same on every published seed and on every
 // unpublished one, which makes the whole regime memorizable.
 //
-// Two bugs this replaces, both found in review:
+// Bugs this has had, all measured:
 //   - The mixing step used float `*`, and (2^32 * 2^24) exceeds 2^53, so the product's low bits were
-//     rounded away and `% 2` was pinned. Measured: "uniswap" and "balancer" returned an even hash in
-//     *every* window, i.e. a permanent one-way bias rather than a trend. Math.imul keeps 32-bit
-//     arithmetic exact.
+//     rounded away and `% 2` was pinned. "uniswap" and "balancer" returned an even hash in *every*
+//     window, i.e. a permanent one-way bias rather than a trend. Math.imul keeps 32-bit arithmetic
+//     exact.
 //   - Reading the parity of an FNV accumulator is not enough even when the arithmetic is exact: the
 //     low bit stays tied to the window's parity, so every tag alternated on a perfect 1-block clock.
-//     Rng is an LCG, and `bool()` reads the high bit, which is the well-distributed end. Measured
-//     over 200 seeds x 50 windows: p(1)=0.504, flip rate 0.481 (0.5 = no autocorrelation).
-function hashTag(tag: string): number {
-  let h = 0x81_1c_9d_c5;
-  for (let c = 0; c < tag.length; c++)
-    h = Math.imul(h ^ tag.charCodeAt(c), 0x01_00_01_93) >>> 0;
-  return h >>> 0;
+//   - The key was `imul(flowSeed ^ (window + 1), prime) ^ tag`, which merges the seed and the window
+//     before hashing: 100 ^ (w + 1) = 101 ^ ((w + 1) ^ 1), so seeds 100 and 101 drew the same
+//     directions with each pair of windows swapped, and any two seeds whose XOR is below the run's
+//     window count shared directions outright. Seeds 1 apart agreed on 56.8% of their bits, not 50%.
+//
+// Now the seed is hashed into a key per tag first and the window is mixed in after, so a window
+// never stands in for a seed, and two windows of one key never alias (w ^ key differs). Measured
+// over 200 seeds x 50 windows x 4 tags: p(1) = 0.501, flip rate 0.500 (0.5 = no autocorrelation).
+// trendRng is also the follow draw's stream, under its own tag.
+export function trendRng(flowSeed: number, window: number, tag: string): Rng {
+  const key = mix32((flowSeed ^ 0x54_52_4e_44) >>> 0) ^ fnv1a32(tag); // "TRND"
+  return Rng.fromSeed(window, key);
 }
 
-function trendBit(flowSeed: number, window: number, tag: string): boolean {
-  const h =
-    (Math.imul(flowSeed ^ (window + 1), 0x01_00_01_93) ^ hashTag(tag)) >>> 0;
-  return new Rng(h).bool();
+export function trendBit(flowSeed: number, window: number, tag: string): boolean {
+  return trendRng(flowSeed, window, tag).bool();
 }
 
 // AMM (uniswap/balancer/curve) flow. uninformed noise + informed (pull price toward fair).
@@ -391,10 +403,8 @@ export function buildAmmFlow(
       // The follow draw is its own stream, so it neither consumes the shared rng nor correlates with
       // the direction it is choosing between.
       const follow =
-        new Rng(
-          Math.imul(trendSeed ^ (window + 1), 0x27_22_0a_95) ^
-            hashTag(`${protocol}|corr`),
-        ).next() < trendCorrelation;
+        trendRng(trendSeed, window, `${protocol}|corr`).next() <
+        trendCorrelation;
       const up = follow ? trendBit(trendSeed, window, "market") : venueUp;
       trendTokenIn = up ? "USDC" : base;
     } else {
