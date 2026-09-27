@@ -44,6 +44,9 @@ export type EpochPlan = {
 /** A timetable for the plan: the first epoch's start and the spacing between starts. */
 export type Timetable = { startsAt: string; everyMinutes: number };
 
+/** A window to spread the k epochs over: the first starts at `startsAt`, the week ends at `endsAt`. */
+export type TimetableWindow = { startsAt: string; endsAt: string };
+
 export type CompetitionPlan = {
   schema: 1;
   k: number;
@@ -172,10 +175,34 @@ export function withTimetable(
     throw new Error(
       `timetable.everyMinutes must be positive: ${timetable.everyMinutes}`,
     );
+  // Rounded to the millisecond: a spacing from spreadOver need not be a whole number of minutes.
   return epochs.map((e) => ({
     ...e,
     startsAt: new Date(
-      start + (e.s - 1) * timetable.everyMinutes * 60_000,
+      start + Math.round((e.s - 1) * timetable.everyMinutes * 60_000),
     ).toISOString(),
   }));
+}
+
+/**
+ * The timetable that spreads k epochs evenly over a window (ADR 0026): k equal slots of
+ * (endsAt − startsAt) / k, each epoch starting at the head of its slot. So the last one starts one
+ * slot before `endsAt` and has the same slot as every other epoch to finish in -- the live week
+ * (168 h) at k = 60 is an epoch every 168 minutes; from 00:00 JST on 11/1 the last one starts at
+ * 21:12 JST on 11/7.
+ */
+export function spreadOver(window: TimetableWindow, k: number): Timetable {
+  const start = Date.parse(window.startsAt);
+  const end = Date.parse(window.endsAt);
+  if (Number.isNaN(start))
+    throw new Error(`the window's start is not a date: ${window.startsAt}`);
+  if (Number.isNaN(end))
+    throw new Error(`the window's end is not a date: ${window.endsAt}`);
+  if (!(end > start))
+    throw new Error(
+      `the window ends (${window.endsAt}) at or before it starts (${window.startsAt})`,
+    );
+  if (!Number.isInteger(k) || k < 1)
+    throw new Error(`k must be a positive integer (got ${k})`);
+  return { startsAt: window.startsAt, everyMinutes: (end - start) / k / 60_000 };
 }

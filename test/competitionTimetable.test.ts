@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   buildPlan,
   commitmentOf,
+  spreadOver,
   withTimetable,
 } from "../core/src/competition/schedule.js";
 
@@ -53,5 +54,48 @@ test("a bad timetable is refused", () => {
       startsAt: "2026-11-01T09:00:00Z",
       everyMinutes: 0,
     }),
+  );
+});
+
+test("--ends-at spreads k epochs evenly: the live week at k = 60 is one every 168 minutes", () => {
+  const timetable = spreadOver(
+    { startsAt: "2026-11-01T00:00:00+09:00", endsAt: "2026-11-08T00:00:00+09:00" },
+    60,
+  );
+  assert.equal(timetable.everyMinutes, 168);
+  const epochs = withTimetable(
+    [...Array(60).keys()].map((i) => ({ s: i + 1, regime: "calm", seed: i })),
+    timetable,
+  );
+  // 00:00 JST on 11/1 is 15:00Z the day before; the last epoch starts one slot before the end, so
+  // it has the same 168 minutes as every other to finish in.
+  assert.equal(epochs[0].startsAt, "2026-10-31T15:00:00.000Z");
+  assert.equal(epochs[1].startsAt, "2026-10-31T17:48:00.000Z");
+  assert.equal(epochs[59].startsAt, "2026-11-07T12:12:00.000Z"); // 21:12 JST on 11/7
+});
+
+test("a spacing that is not a whole minute is rounded to the millisecond, not drifted", () => {
+  // 7 epochs over one hour: 8.571… minutes each.
+  const epochs = withTimetable(
+    [...Array(7).keys()].map((i) => ({ s: i + 1, regime: "calm", seed: i })),
+    spreadOver({ startsAt: "2026-11-01T00:00:00Z", endsAt: "2026-11-01T01:00:00Z" }, 7),
+  );
+  assert.equal(epochs[6].startsAt, "2026-11-01T00:51:25.714Z");
+  const gaps = epochs.slice(1).map((e, i) => Date.parse(e.startsAt!) - Date.parse(epochs[i].startsAt!));
+  assert.ok(gaps.every((g) => Math.abs(g - 3_600_000 / 7) <= 1));
+});
+
+test("a window that ends before it starts, or a bad k, is refused", () => {
+  assert.throws(() =>
+    spreadOver({ startsAt: "2026-11-08T00:00:00Z", endsAt: "2026-11-01T00:00:00Z" }, 60),
+  );
+  assert.throws(() =>
+    spreadOver({ startsAt: "2026-11-01T00:00:00Z", endsAt: "2026-11-01T00:00:00Z" }, 60),
+  );
+  assert.throws(() =>
+    spreadOver({ startsAt: "2026-11-01T00:00:00Z", endsAt: "not a date" }, 60),
+  );
+  assert.throws(() =>
+    spreadOver({ startsAt: "2026-11-01T00:00:00Z", endsAt: "2026-11-08T00:00:00Z" }, 0),
   );
 });
