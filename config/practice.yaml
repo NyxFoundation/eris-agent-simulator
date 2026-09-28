@@ -27,8 +27,11 @@
 #   into a refusal with the work item that replaces it named (issue #33).
 #
 # Hand participants their credentials one at a time:
-#   npm run manifest -- --config config/practice.yaml                    # the public manifest
 #   npm run manifest -- --config config/practice.yaml --participant <id> # their address (+ key)
+# The manifest itself comes from the running period: the coordinator writes it into each segment and
+# the dashboard serves it at <dashboard>/runs/manifest.json. It names the chain as participants reach
+# it once ERIS_PUBLIC_RPC_URL is set in the box's .env.local -- not here, since this file is public
+# and the rehearsal box and the hosted one publish different hosts (issue #156).
 
 run:
   seed: 1

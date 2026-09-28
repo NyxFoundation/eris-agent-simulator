@@ -179,8 +179,15 @@ const provider = new JsonRpcProvider(req, 31337);
 
 ## 8. 環境マニフェスト
 
-venue のアドレス・トークンのアドレス・PriceFeed・評価区間の長さは、添付の
-`manifest.json` に入っています。アドレスをコードに直接書かず、こちらを読んでください。
+venue のアドレス・トークンのアドレス・PriceFeed・評価区間の長さは `manifest.json` に入っています。
+アドレスをコードに直接書かず、こちらを読んでください。ダッシュボードから取得できます:
+
+```bash
+curl -fsS -o manifest.json https://ascon-dash.nyx.foundation/runs/manifest.json
+```
+
+**試行環境が再起動したら取り直してください**（Discord で告知します）。PriceFeed などは起動のたびに
+デプロイし直すので、古いファイルのままだと存在しないコントラクトを読みに行きます。
 
 ## 9. 困ったとき
 
@@ -191,5 +198,6 @@ venue のアドレス・トークンのアドレス・PriceFeed・評価区間�
 | `403 method not permitted` | §6 の表。そのメソッドは意図的に塞いでいます |
 | `429` | レート上限。間隔を空けてください |
 | 残高が0 | §4 のアドレスを Discord に投稿済みか。投稿済みで反映がなければ、アドレスを添えてご連絡ください |
+| `missing env (… ERIS_PRICE_FEED_ADDRESS …)` で止まる | `manifest.json` を §8 の URL から取り直す（`contracts.priceFeed` が入っていないファイルを読んでいます） |
 
 ご不明な点は <連絡先> までお願いします。

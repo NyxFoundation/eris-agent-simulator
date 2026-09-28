@@ -41,7 +41,12 @@ import {
   segmentIndexAgent,
   sliceIntervalSeries,
 } from "../segments.js";
-import { buildManifest, MANIFEST_FILENAME } from "../manifest.js";
+import {
+  buildManifest,
+  isLoopbackUrl,
+  MANIFEST_FILENAME,
+  publishedRpc,
+} from "../manifest.js";
 import { methodNameForCalldata } from "@eris/sdk/methodSelectors.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
 import {
@@ -1446,7 +1451,30 @@ export async function runRealtimeSimulation(
     //                      (ADR 0021 §2). Written once the PriceFeed exists, because that address is
     //                      the one piece a participant cannot look up anywhere else. No keys, no
     //                      stress timings -- see core/src/manifest.ts.
+    // Issue #156: the manifest in the run directory is the one the dashboard serves to participants,
+    // and before run.publicRpcUrl it always named this process's own rpcUrl -- on the hosted box the
+    // loopback anvil, so a participant's agent dialled its own machine. Said once, when it matters:
+    // a run that expects agents from outside (an external roster entry or a registrations file).
+    let loopbackManifestWarned = false;
     const publishRoster = (): void => {
+      const published = publishedRpc(config);
+      if (
+        !loopbackManifestWarned &&
+        isLoopbackUrl(published.rpcUrl) &&
+        (config.registrationsFile !== undefined ||
+          agentRuntimes.some((a) => a.external))
+      ) {
+        loopbackManifestWarned = true;
+        logger.event({
+          type: "manifest_rpc_loopback_warning",
+          rpcUrl: published.rpcUrl,
+          note: "manifest.json names a loopback address, which on a participant's machine is their own. Set ERIS_PUBLIC_RPC_URL (or run.publicRpcUrl) to the gateway participants dial.",
+        });
+        console.warn(
+          `[manifest] WARNING: manifest.json publishes chain.rpcUrl=${published.rpcUrl}, a loopback address, ` +
+            "to agents that run elsewhere. Set ERIS_PUBLIC_RPC_URL in .env.local (issue #156).",
+        );
+      }
       logger.event({
         type: "agents_registered",
         agents: agentRuntimes.map((a) => ({

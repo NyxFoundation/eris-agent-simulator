@@ -156,8 +156,9 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
   while true; do ssh -N -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
     -L 8546:127.0.0.1:8546 -L 5174:127.0.0.1:5174 <A>; sleep 5; done &
   ```
-- [ ] マニフェスト（A で作って B に置く）:
-  `npm run manifest -- --config config/practice.yaml --public-rpc http://127.0.0.1:8546`
+- [ ] A の `.env.local` に `ERIS_PUBLIC_RPC_URL=http://127.0.0.1:8546` を書く（B がトンネル越しに繋ぐ
+  URL。run ディレクトリの `manifest.json` がこれを名乗る。issue #156）。マニフェストは期間が始まってから
+  B で取る（1.3）。`npm run manifest` の出力は使わない（PriceFeed が入っていない）
 - [ ] 鍵を 7 本作る（[practice-devnet §1](../../docs/guide/practice-devnet.md#1-create-a-wallet-and-register-its-address)
   の viem ワンライナー）。アドレスを A の `config/registrations.yaml` に書く（`ops-late` は 3h 後まで書かない）
 - [ ] Ollama が答えるか、時間も測る（API 経由の LLM 呼び出しは 60 秒で timeout）:
@@ -198,9 +199,10 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 ### 1.3 起動直後（T+0〜1h）
 
 A で `systemctl --user enable --now ascon-devnet`、登録が取り込まれたのを見てから（下の 3 つ目）、
-B で agent を起動する:
+B でマニフェストを取って agent を起動する:
 
 ```sh
+curl -fsS -o manifest.json http://127.0.0.1:5174/runs/manifest.json
 mkdir -p ops-logs
 for f in ops-agents/*.env; do id=$(basename "$f" .env)
   ( set -a; . "$f"; set +a; nohup node --import tsx example/agents/runtime/bot.ts > "ops-logs/$id.out" 2>&1 & )
@@ -216,6 +218,8 @@ done
 - [ ] **環境**: `agent_external_registered` が 6 件（`registrations_reloaded` も出ている）。
   B から各アドレスの `eth_getBalance` が 0 でない
 - [ ] **環境**: `initial_endowment` の `ratio` が 2 以下 → 記録: `ratio=`
+- [ ] **環境**: B の `manifest.json` の `chain.rpcUrl` が `http://127.0.0.1:8546`、`contracts.priceFeed` がある。
+  リハーサルでは公開 URL がトンネルの loopback なので `manifest_rpc_loopback_warning` が 1 件出るのは想定どおり
 - [ ] **環境**: `envfail "$P"/*/events.jsonl` が何も出さない
 - [ ] **参加者役 agent**: 開始時の 6 体の `ops-logs/<id>.out` に起動エラーが無く、`ops-logs/agents/<id>.jsonl`
   に `runtime_start` がある（無いのは preflight で落ちたということ）
@@ -336,12 +340,15 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   を書き、dashboard コンテナを上げ直す（公開 picker に smoke run を出さない。issue #84 K）
 - [ ] カナリアを登録する（`id: ops-canary`、`participant: operator`、登録ファイルへ追記。初回だけ。
   2 回目以降の再起動では登録ファイルに残っている）
+- [ ] box の `.env.local` に `ERIS_PUBLIC_RPC_URL=https://ascon-rpc.nyx.foundation/` がある（無いと
+  公開される `manifest.json` が box の loopback を名乗り、参加者の agent が自分のマシンに繋ぎに行く。
+  issue #156）。coordinator の起動前に書く
 - [ ] カナリアを box の**外**で動かす。小さな on-demand EC2（t3.small 程度）に常駐させる。checkout は box と
-  同じ commit、`sdk/src/constants.local.ts` は box からコピー、マニフェストは
-  `--public-rpc https://ascon-rpc.nyx.foundation/` で作る。env ファイルは 1.2 の形に
+  同じ commit、`sdk/src/constants.local.ts` は box からコピー、マニフェストは参加者と同じく
+  `curl -fsS -o manifest.json https://ascon-dash.nyx.foundation/runs/manifest.json` で取る。env ファイルは 1.2 の形に
   `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` を足したもの（単一引用符はそのままでよい。systemd の
-  EnvironmentFile も引用符を解釈する）。再起動のたびに `constants.local.ts` とマニフェストを作り直して
-  unit を再起動する（チェーンのリセットで nonce と approve が消える）:
+  EnvironmentFile も引用符を解釈する）。再起動のたびに `constants.local.ts` とマニフェストを取り直して
+  unit を再起動する（チェーンのリセットで nonce と approve が消え、PriceFeed のアドレスも変わる）:
   ```ini
   # ~/.config/systemd/user/ascon-canary.service（loginctl enable-linger も要る）
   [Service]
@@ -366,6 +373,9 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 - [ ] **環境**: 登録ファイルの全員に `agent_external_registered` が出て、`registration_failed` が 0。
   最初の境界（`intervals.jsonl` の 1 行目）に全員の値がある（= 初日から採点される）→ 記録: 件数
 - [ ] **環境**: 最初の 2 つの `interval_boundary` が出て、`interval_boundary_failed` が 0
+- [ ] **環境**: `https://ascon-dash.nyx.foundation/runs/manifest.json` の `chain.rpcUrl` が
+  `https://ascon-rpc.nyx.foundation/`、`contracts.priceFeed` が今の期間のもの。`manifest_rpc_loopback_warning`
+  が 0 件
 - [ ] **参加者役 agent**: `hourly ops-canary` に着弾がある
 - [ ] **ダッシュボード**（`https://ascon-dash.nyx.foundation`）: 漏れの検査（1.7）を全部通る。
   **目視**: picker に今の期間だけが出る、ブロックと評価区間が進む、カナリアの tx がメソッド名付きで出る、

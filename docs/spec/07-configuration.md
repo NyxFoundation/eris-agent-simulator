@@ -75,6 +75,7 @@ RPC URL や chain id が秘密情報側にあるのは、**それらが regime �
 | `agentsConfig` | `config/example.yaml` | インライン `agents:` が無いときのロスターファイル |
 | `agentsDir` | `example/agents` | ディレクトリ規約のルート |
 | `readRpcUrl` | `rpcUrl` と同じ | read を replica へ分離する（`ERIS_READ_RPC_URL`） |
+| `publicRpcUrl` | なし | run ディレクトリの `manifest.json` が名乗る RPC（`ERIS_PUBLIC_RPC_URL`。参加者が繋ぐ gateway。未設定なら `rpcUrl` のまま。issue #156） |
 
 ### `market`（fair price の OU）
 

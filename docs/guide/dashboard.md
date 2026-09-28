@@ -388,6 +388,12 @@ With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
   as the matrix was incomplete — which is the entire competition. The standings still say the
   competition is in progress; that comes from the plan's epoch count, not from finding a live run
 
+`/runs/manifest.json` is the environment manifest a self-hosted participant starts an agent from:
+the newest **live** admitted run's `manifest.json`, else the newest admitted run's (issue #156). On
+the hosted practice box that is the period's current segment, so one fixed URL stays right across the
+daily segments and across a restart, which deploys a new PriceFeed. The coordinator writes the public
+RPC into it when `ERIS_PUBLIC_RPC_URL` is set (`docs/guide/practice-devnet.md`, "For the operator").
+
 `/runs/mode.json` reports the switches, and the pages say what is absent rather than rendering it
 empty: the decision-log tab and the mempool feed are replaced by a sentence (for operator-run agents
 too — in the live week nothing is `external`, and the withholding is the audience switch's, not the
