@@ -2,6 +2,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { agentToken } from "../inference/proxy.js";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  EPOCH_COUNT_ENV,
+  EPOCH_INDEX_ENV,
+  type EpochOrdinal,
+  epochOrdinalEnv,
+} from "@eris/sdk/epoch.js";
 import type { AgentSpec } from "@eris/sdk/types.js";
 import { AGENT_STATE_DIR_ENV } from "./agentState.js";
 import { AGENT_VIEW_DIR_ENV } from "./agentView.js";
@@ -121,11 +127,14 @@ export class RealtimeAgentProcess {
     // `configPath` / `viewDir` are the agent's own config file and view directory (agentView.ts).
     // The coordinator always passes both; without `configPath` the child gets no ERIS_CONFIG at
     // all rather than the coordinator's file.
+    //
+    // `epoch` is which epoch of the schedule this run is (issue #167), when it is one.
     options: {
       sandbox?: "process" | "docker";
       stateDir?: string;
       configPath?: string;
       viewDir?: string;
+      epoch?: EpochOrdinal;
     } = {},
   ) {
     // The child is participant code that the operator executes, so its environment is BUILT rather
@@ -186,6 +195,13 @@ export class RealtimeAgentProcess {
     else delete childEnv.ERIS_CONFIG;
     if (options.viewDir !== undefined)
       childEnv[AGENT_VIEW_DIR_ENV] = options.viewDir;
+    // Which epoch this is: the environment's to say, so after spec.env too. Cleared when the run
+    // has none, so an ordinal left in the operator's shell does not reach an agent of a run that is
+    // not an epoch (a single run, the practice period).
+    delete childEnv[EPOCH_INDEX_ENV];
+    delete childEnv[EPOCH_COUNT_ENV];
+    if (options.epoch !== undefined)
+      Object.assign(childEnv, epochOrdinalEnv(options.epoch));
 
     let command: string;
     let args: string[];

@@ -1,5 +1,6 @@
 import type { Address, Hex } from "viem";
 import type { DiscoveredPool } from "./discoveredPools.js";
+import type { EpochOrdinal } from "./epoch.js";
 
 // Keys of the token registry (TOKENS in src/markets.ts). Made a string by stripping the literal union
 // (so adding a token is just adding a constant. ADR 0013). Actual existence is managed in TOKENS.
@@ -930,6 +931,15 @@ export type AgentObservation = {
   // than blocksRemaining, since the last day ends with the run. Absent, too, when the start of the
   // period's clock is not known (a manifest built before the period began).
   dayBlocksRemaining?: number;
+  // Which epoch of the competition this is (issue #167): `index` is the scheduled ordinal s,
+  // 1-based, and `count` the schedule's length k (rules §4.4.1). The epoch's weight follows from
+  // them -- 1 + 0.5 (s - 1) / (k - 1) -- and nothing else does: the regime and the seed stay
+  // withheld. Every epoch restarts the agent from the same state, so without this only an agent
+  // that counted its own starts could tell early from late. A re-run or resumed epoch keeps its
+  // original s. Present in a scenario matrix only; absent in a single run, a single-regime
+  // backtest and the practice period. The same values arrive in env as ERIS_EPOCH_INDEX /
+  // ERIS_EPOCH_COUNT (sdk/src/epoch.ts), for a runtime of your own.
+  epoch?: EpochOrdinal;
   enabledProtocols: ProtocolId[];
   balances: {
     ethWei: string;

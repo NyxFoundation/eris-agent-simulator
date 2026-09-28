@@ -9,6 +9,17 @@
 // helper that could be tested in isolation.
 import test from "node:test";
 import assert from "node:assert/strict";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join, resolve } from "node:path";
 import { RealtimeAgentProcess } from "../core/src/realtime/agentProcess.js";
 import type { AgentSpec } from "../sdk/src/types.js";
 
@@ -166,4 +177,93 @@ test("the scenario key's file and commitment are not handed to an agent (ADR 002
   });
   assert.equal(env.ERIS_SCENARIO_KEY_FILE, undefined);
   assert.equal(env.ERIS_SCENARIO_KEY_COMMITMENT, undefined);
+});
+
+// Issue #167: which epoch of the schedule a run is, handed to every agent of a scenario matrix.
+test("the epoch ordinal reaches the agent, and only the environment sets it", async () => {
+  const env = await envOfChild(
+    // A stale ordinal in the operator's shell, and a roster entry naming its own: neither wins.
+    { ERIS_EPOCH_INDEX: "9", ERIS_EPOCH_COUNT: "9" },
+    { env: { ERIS_EPOCH_INDEX: "1" } },
+    undefined,
+    { epoch: { index: 3, count: 40 } },
+  );
+  assert.equal(env.ERIS_EPOCH_INDEX, "3");
+  assert.equal(env.ERIS_EPOCH_COUNT, "40");
+});
+
+test("a run that is not an epoch of a matrix hands no ordinal on, even one left in the operator's shell", async () => {
+  const env = await envOfChild({ ERIS_EPOCH_INDEX: "9", ERIS_EPOCH_COUNT: "9" });
+  assert.equal(env.ERIS_EPOCH_INDEX, undefined);
+  assert.equal(env.ERIS_EPOCH_COUNT, undefined);
+});
+
+// The docker sandbox (infra/docker-agent/run-agent.sh) forwards the ERIS_* names the coordinator set
+// into the container. Driven end to end with a stub `docker` on PATH that records what `docker run`
+// was given, so no daemon is needed.
+test("the epoch ordinal reaches a containerised agent too", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-epoch-docker-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const capture = join(dir, "docker-run.json");
+  writeFileSync(
+    join(bin, "docker"),
+    `#!${process.execPath}\nconst a = process.argv.slice(2);\n` +
+      `if (a[0] === "run") require("node:fs").writeFileSync(process.env.ERIS_TEST_CAPTURE, JSON.stringify({ args: a, ` +
+      `index: process.env.ERIS_EPOCH_INDEX, count: process.env.ERIS_EPOCH_COUNT }));\n`,
+  );
+  chmodSync(join(bin, "docker"), 0o700);
+  const runDir = join(dir, "runs", "2026-09-28T00-00-00-000Z");
+  const viewDir = join(runDir, "agent-view", "noop");
+  mkdirSync(viewDir, { recursive: true });
+  writeFileSync(join(viewDir, "config.yaml"), "run:\n  blocks: 12\n");
+
+  const saved = { PATH: process.env.PATH, ERIS_TEST_CAPTURE: process.env.ERIS_TEST_CAPTURE, ERIS_AGENT_IMAGE: process.env.ERIS_AGENT_IMAGE };
+  process.env.PATH = bin + delimiter + (process.env.PATH ?? "");
+  process.env.ERIS_TEST_CAPTURE = capture;
+  process.env.ERIS_AGENT_IMAGE = "eris-agent:probe";
+  try {
+    const proc = new RealtimeAgentProcess(
+      { id: "noop", wallet: "AGENT0_PRIVATE_KEY" } as AgentSpec,
+      "http://127.0.0.1:8545",
+      "0x0000000000000000000000000000000000000001",
+      runDir,
+      {
+        privateKey: "0xagentkey",
+        priceFeedAddress: "0x0000000000000000000000000000000000000002",
+        runId: "probe-run",
+      },
+      resolve("example/agents"),
+      0,
+      undefined,
+      {
+        sandbox: "docker",
+        configPath: join(viewDir, "config.yaml"),
+        viewDir,
+        epoch: { index: 7, count: 40 },
+      },
+    );
+    await new Promise<void>((done) => {
+      proc.onExit = () => done();
+      setTimeout(done, 10_000);
+    });
+    assert.ok(existsSync(capture), `docker run was never reached: ${proc.getStderr()}`);
+    const { args, index, count } = JSON.parse(readFileSync(capture, "utf8")) as {
+      args: string[];
+      index?: string;
+      count?: string;
+    };
+    const forwarded = args.filter((_, i) => args[i - 1] === "-e");
+    assert.ok(forwarded.includes("ERIS_EPOCH_INDEX"), JSON.stringify(forwarded));
+    assert.ok(forwarded.includes("ERIS_EPOCH_COUNT"));
+    // `-e NAME` takes the value from the wrapper's environment, which is the one the class built.
+    assert.equal(index, "7");
+    assert.equal(count, "40");
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 });
