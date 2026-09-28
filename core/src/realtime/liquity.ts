@@ -97,7 +97,9 @@ export async function setupLiquity(
     throw new Error(
       `the Liquity oracle adapter (${LIQUITY.priceFeed}) is owned by ${operator}, but this run's ` +
         `admin key is ${admin}, so the venue cannot be pointed at this run's PriceFeed. It would ` +
-        "mark every Trove against the price baked in at deploy time (deployer/contracts/LiquityPriceFeedAdapter.sol).",
+        "mark every Trove against the price baked in at deploy time (deployer/contracts/LiquityPriceFeedAdapter.sol). " +
+        "The operator is fixed when the venues are deployed: redeploy with ADMIN_ADDRESS set to this " +
+        "admin key's address (deployer/src/config.ts), or run with the key the chain was deployed for.",
     );
   }
   await sendAndMine(

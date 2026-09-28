@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import { startAnvil, stopAnvil, anvilManagedHere } from "./anvil.js";
-import { MANAGE_ANVIL } from "./config.js";
+import { MANAGE_ANVIL, adminAddress } from "./config.js";
 import { reset, flush, getRegistry } from "./registry.js";
 import { deployTokens } from "./tokens.js";
 import { info, ok } from "./util.js";
@@ -67,6 +67,11 @@ async function main() {
         .map((s) => s.trim()) as ProtocolName[])
     : ALL;
   const seed: boolean = opts.seed !== false;
+
+  // Before anything is deployed: a secret MNEMONIC without ADMIN_ADDRESS fails here, not after
+  // Aave, GMX and Curve are already on the chain (config.ts, `resolveAdminAddress`).
+  if (targets.includes("lst") || targets.includes("liquity"))
+    info(`venue operator (the runs' admin key): ${adminAddress()}`);
 
   if (opts.keepFresh) reset();
 

@@ -14,17 +14,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  keccak256,
   parseEther,
   parseUnits,
-  toBytes,
   type Abi,
   type Address,
   type Hex,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { accounts, deployerWallet, publicClient } from "../clients.js";
-import { anvilChain } from "../config.js";
+import { adminAddress, anvilChain } from "../config.js";
 import { approve } from "../erc20.js";
 import { getRegistry, setProtocol, token } from "../registry.js";
 import { ROOT, assert, info, loadForgeArtifact, ok, waitTx } from "../util.js";
@@ -140,13 +137,6 @@ async function call(
   await waitTx(hash);
 }
 
-/// The simulation's admin account, derived the same way sdk/src/config.ts derives it. It owns the
-/// oracle adapter so a run can repoint it at the PriceFeed it just deployed, without holding the
-/// deployer key (same arrangement as the LST vault, issue #38).
-function envOperatorAddress(): Address {
-  return privateKeyToAccount(keccak256(toBytes("eris-role:admin"))).address;
-}
-
 export async function deployLiquityVenue({ seed }: { seed: boolean }) {
   info("Deploying Liquity V1 (CDP stablecoin venue, eUSD)");
 
@@ -211,7 +201,7 @@ export async function deployLiquityVenue({ seed }: { seed: boolean }) {
   const priceFeedHash = await deployerWallet.deployContract({
     abi: priceFeedArtifact.abi,
     bytecode: priceFeedArtifact.bytecode,
-    args: [envOperatorAddress(), parseEther(GENESIS_PRICE_USD.toString())],
+    args: [adminAddress(), parseEther(GENESIS_PRICE_USD.toString())],
     account: dep,
     chain: anvilChain,
   });

@@ -1,6 +1,14 @@
 import { validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
-import { defineChain } from "viem";
+import {
+  defineChain,
+  getAddress,
+  isAddress,
+  keccak256,
+  toBytes,
+  type Address,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import "dotenv/config";
 
 export const RPC_URL = process.env.RPC_URL ?? "http://127.0.0.1:8545";
@@ -48,6 +56,49 @@ export const MNEMONIC = normalizeMnemonic(
 // A deploy onto a chain that anyone can reach should say so once, loudly, rather than leave it to
 // be discovered from anvil's banner.
 export const MNEMONIC_IS_DEFAULT = MNEMONIC === DEFAULT_MNEMONIC;
+
+// The environment's admin account: the address of the poc's ADMIN_PRIVATE_KEY, which operates the two
+// venues a run has to rewire without the deployer key -- the Liquity oracle adapter (repointed at each
+// run's PriceFeed; its operator is immutable, since Liquity renounces ownership once wired) and the
+// LST vault (the economic clock). The deploy needs only the address, so that is what it takes.
+//
+// Unset, it is the poc's default admin (`keccak256("eris-role:admin")`, sdk/src/config.ts), which
+// anyone can compute from the repository. That is right next to the public mnemonic and wrong next
+// to a secret one: a deploy that keeps the rest of the chain's keys private would still hand the
+// oracle Liquity marks every Trove against, and the vault's rate, to a public key -- and the deployed
+// operator cannot be changed afterwards, so a run with its own admin key refuses to start instead.
+// Hence a secret MNEMONIC requires ADMIN_ADDRESS (or `ADMIN_ADDRESS=default` to say so).
+export const DEFAULT_ADMIN_ADDRESS: Address = privateKeyToAccount(
+  keccak256(toBytes("eris-role:admin")),
+).address;
+
+export function resolveAdminAddress(
+  raw: string | undefined,
+  mnemonicIsDefault: boolean,
+): Address {
+  const value = raw?.trim();
+  if (value === "default") return DEFAULT_ADMIN_ADDRESS;
+  if (value) {
+    if (!isAddress(value, { strict: false }))
+      throw new Error(
+        `ADMIN_ADDRESS is not an address: ${JSON.stringify(value)}. It is the address of the ` +
+          "ADMIN_PRIVATE_KEY the runs on this chain will use (or `default`).",
+      );
+    return getAddress(value);
+  }
+  if (mnemonicIsDefault) return DEFAULT_ADMIN_ADDRESS;
+  throw new Error(
+    "MNEMONIC is secret but ADMIN_ADDRESS is unset, so the Liquity oracle adapter and the LST " +
+      `vault would be operated by the public default admin (${DEFAULT_ADMIN_ADDRESS}) -- for ` +
+      "good: the adapter's operator is immutable. Set ADMIN_ADDRESS to the address of the " +
+      "ADMIN_PRIVATE_KEY the runs will use, or ADMIN_ADDRESS=default to keep the public one.",
+  );
+}
+
+/** The admin address this deploy hands the venue operators to. Throws before anything is deployed. */
+export function adminAddress(): Address {
+  return resolveAdminAddress(process.env.ADMIN_ADDRESS, MNEMONIC_IS_DEFAULT);
+}
 
 // Whether the deployer manages the anvil process lifecycle (start through stop) itself.
 export const MANAGE_ANVIL =
