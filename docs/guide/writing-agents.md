@@ -230,7 +230,7 @@ for (const view of marketViews(obs)) {
    where fair moves a lot each block, execution based on a stale fair steps the wrong way. It's safer to confirm the
    "persistence" of the gap with `history` before moving
 3. **Read balances rather than assuming the funding.** Official regimes start with 8 WETH, 0.4 WBTC,
-   25,000 USDC and 100 ETH for gas (also scored). Custom configs can still be USDC-only, and trades
+   25,000 USDC and 1 ETH for gas (also scored; the runtime refills gas from your WETH if you run low). Custom configs can still be USDC-only, and trades
    consume inventory. Decide direction after checking `obs.balances` and `obs.baseBalances`.
 4. **Use `obs.limits` for the fee/slippage defaults; size the trade yourself** (there is no size cap in `limits`). Fee overruns are rejected by validation, wasting that round
 

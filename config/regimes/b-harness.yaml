@@ -15,9 +15,9 @@
 # keeps the run inside anvil's ~1,050 block history retention, so the existing post-run
 # reconstruction still works.
 #
-# Funding is the §6 distribution, and this file is the only place it lives. The 7 official regimes
-# keep their 100 ETH + 25k, because they are the participants' practice harness and changing their
-# funding would break comparison with every stored matrix. Measured on depeg#701: under the old
+# Funding is the §6 distribution. The official regimes used to keep 100 ETH + 25k (they were the
+# participants' practice harness, and changing their funding broke comparison with every stored
+# matrix); since 2026-09-28 they hand out 1 ETH of gas as well, with the basket on top. Measured on depeg#701: under the old
 # distribution all four agents' std_e agreed to within 1.1% (they were all just ETH's volatility) and
 # noop scored -1.963e-3; under this one the spread is 199.9% and noop comes back to -6.18e-5.
 #
