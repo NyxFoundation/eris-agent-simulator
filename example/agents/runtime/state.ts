@@ -3,7 +3,7 @@
  *
  * Every epoch used to start the agent from `agent.ts` as version 0. In-run self-improvement
  * (ADR 0018) was therefore worth at most the remainder of a 360-block epoch and was thrown away
- * forty times over a k = 40 competition. This is the other half of that: a directory only this
+ * sixty times over a k = 60 competition. This is the other half of that: a directory only this
  * agent's container sees, mounted at a fixed path, created empty at the start of the competition
  * and surviving every epoch.
  *

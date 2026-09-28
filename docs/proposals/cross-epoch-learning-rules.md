@@ -76,7 +76,7 @@ npm run agent-state -- restore --root runs/state --run <the voided epoch's run i
 It refuses loudly when an agent in that epoch has no snapshot, rather than putting some agents back
 and letting the others re-run with the state of the attempt being thrown away. The most recent
 snapshots are kept (`ERIS_AGENT_STATE_SNAPSHOTS`, default 8); older ones are pruned, because one
-copy of a 64 MiB directory per agent per epoch is tens of gigabytes over a k = 40 competition and
+copy of a 64 MiB directory per agent per epoch is tens of gigabytes over a k = 60 competition and
 §4.4.2 voids an epoch and re-runs it promptly or not at all.
 
 ### Appendix A — 定数
@@ -98,7 +98,7 @@ disk is everybody's failed epoch.
 
 ## §7 — the schedule-inference exposure, decided
 
-k = 40 epochs over 8 regimes at equal count (§3.3) means five of each. An agent that remembers which
+k = 60 epochs over 12 regimes at equal count (§3.3) means five of each. An agent that remembers which
 regimes it has already seen knows, late in the competition, which regimes remain — not their order.
 That is ordinary learning under this proposal, and it also sits close to the letter of the
 prohibited act 「発生スケジュールを特定しようとする行為」.
@@ -137,10 +137,10 @@ weight `w_s` (1 → 1.5) already says late epochs are where learning is supposed
   and `--agent-state-root` carries state in the order the file lists. Given a `{regimes, seeds}`
   cross-product that order groups a regime's seeds together, and carrying state across five
   consecutive `depeg` epochs is a friendlier experiment than carrying it across a schedule that
-  returns to `depeg` every eighth epoch. Generate the plan and replay that instead:
+  returns to `depeg` every twelfth epoch on average. Generate the plan and replay that instead:
 
   ```bash
-  npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 40 --out plan.yaml
+  npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 60 --out plan.yaml
   npm run backtest -- --scenarios plan.yaml --agent-state-root runs/state
   ```
 
