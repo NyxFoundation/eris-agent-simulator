@@ -60,7 +60,8 @@ The contract is **env, on-chain state, and `runs/<id>/agents/<id>.jsonl` — not
 | `ERIS_AGENT_ID` / `ERIS_AGENT_DIR` | Its id and its strategy directory |
 | `ERIS_RPC_URL` / `ERIS_AGENT_ADDRESS` / `ERIS_AGENT_PRIVATE_KEY` | Where the chain is and who it is |
 | `ERIS_PRICE_FEED_ADDRESS` | Where the fair price is published |
-| `ERIS_RUN_ID` / `ERIS_RUN_DIR` / `REPORT_DIR` | Where to log |
+| `ERIS_RUN_ID` / `ERIS_RUN_DIR` / `REPORT_DIR` | Where to log (in docker image mode, `ERIS_RUN_DIR` is the agent's own view directory) |
+| `ERIS_CONFIG` / `ERIS_AGENT_VIEW_DIR` | The agent config (`runs/<id>/agent-view/<id>/config.yaml`, no seed) and the view directory that holds it and `run-start.json` (`core/src/realtime/agentView.ts`) |
 | `ERIS_RUN_BLOCKS` | The run's block budget as the environment resolved it (passed explicitly so a CLI override reaches the child) |
 | The roster's `env:` and the environment's extraEnv | Strategy parameters, victim addresses, the vuln factory |
 
@@ -76,6 +77,8 @@ What an agent is **not** given is the centre of the design.
 | Pending transactions / the txpool | Makes mempool front-running structurally impossible |
 | Unfinalized state | Observations are of finalized state only |
 | The stress schedule | Window positions are seed-derived and private (they are not in the manifest either — [10](10-operations.md)) |
+| The run's seed and the environment's settings | The agent config holds only the fields the runtime reads (no seed, stress, flow, vuln, funding or roster; `core/src/realtime/agentView.ts`), and env names carrying a seed are not passed to the child |
+| The coordinator's records and other agents' logs | A docker image-mode container mounts only its own view directory (read-only) and its own log files (`infra/docker-agent/run-agent.sh`). Bind-mount mode and the `process` sandbox are not isolation boundaries |
 | The environment's admin / keeper keys | They can rewrite the oracles |
 
 Three things that *are* given, and are easy to misread:

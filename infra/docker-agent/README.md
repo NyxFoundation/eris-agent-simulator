@@ -90,9 +90,12 @@ sweep any survivors: `npm run agent:reap`.
 `ERIS_AGENT_ID` must be the same `<id>`, or you get a confusing "image not found". It has two modes:
 
 - **image (default)** — the per-team image; the coordinator's absolute host paths are remapped onto
-  the image's `/eris`, and the config file + the agent's log directory are mounted in.
+  the image's `/eris`, and only the agent's view directory and its own log files are mounted in
+  (below).
 - **bind-mount** (`ERIS_AGENT_BINDMOUNT=1`) — stock `node:24` with the repo bind-mounted at its own
-  host path; no build, for iterating on runtime code.
+  host path; no build, for iterating on runtime code. The whole repository and run directory are
+  visible from inside, so this mode is for the operator's own agents and is **not an isolation
+  boundary**. Neither is `--agent-sandbox process`, which runs agents as host processes.
 
 Caps: `ERIS_DOCKER_MEM` (default `4g`), `ERIS_DOCKER_CPUS` (default `2`) — the budget the
 competition rules promise a participant. The headroom is nominal rather than reserved: the 100-
@@ -104,25 +107,51 @@ The official regimes set `run.agentSandbox: docker`, so `npm run backtest` launc
 `run-agent.sh` (the coordinator records `agent_sandbox` in events.jsonl either way). Image mode expects
 `eris-agent:<id>`; `ERIS_AGENT_BINDMOUNT=1` runs the stock node image over a bind mount instead. Without
 docker at all, pass `--agent-sandbox process` — no caps, and the event says so. Every `ERIS_*` variable
-the coordinator sets is forwarded into the container; inference API keys are forwarded only when no
-inference proxy (`ERIS_INFERENCE_BASE_URL`) is named.
+the coordinator sets is forwarded into the container, except the host paths the wrapper maps itself;
+the coordinator does not hand an agent its own config file or any env name carrying a seed
+(`core/src/realtime/agentProcess.ts`). Inference API keys are forwarded only when no inference proxy
+(`ERIS_INFERENCE_BASE_URL`) is named.
 
-## What is writable inside the container (issue #77)
+## What an agent container sees (image mode)
 
-The rootfs is read-only. Three things are not:
+For every agent it launches, the coordinator prepares a view directory,
+`runs/<id>/agent-view/<agentId>/` (`core/src/realtime/agentView.ts`):
 
-| path | what it is |
+| file | what it is |
 |---|---|
-| `/tmp` | tmpfs, 512 MiB, per container, gone at exit |
-| the run's log directory | where `runs/<id>/agents/<agentId>.jsonl` is written |
-| `/eris/state` | the agent's persistent area, when the run provides one |
+| `config.yaml` | the agent's config: the fields the runtime reads (run length, block time, venues, fees, gas budget, …) as this run resolved them. No seed, no stress / flow / vuln / funding section, no roster |
+| `run-start.json` | the run's first block and block budget (`sdk/src/runStart.ts`), written once counting starts |
 
-The log mount used to be the whole of `runs/`, which is every run of every epoch. Two consequences
-nobody had asked for: an agent could read another epoch's `events.jsonl`, and it could keep state
-anywhere under it — cross-epoch carry-over through the one mount that was meant for logs. It is now
-the run the agent is actually in (or, when the period is segmented and the current-segment pointer
-lives one level up, the competition directory — the narrowest mount that still lets a segment roll
-work).
+`run-agent.sh` then mounts, and nothing else of the run:
+
+| path in the container | from the host | mode |
+|---|---|---|
+| `/eris/run` (= `ERIS_RUN_DIR`) | `runs/<id>/agent-view/<agentId>/` | read-only |
+| `/eris/run/agents/<agentId>.jsonl` | `runs/<id>/agents/<agentId>.jsonl` | read-write |
+| `/eris/run/agents/<agentId>.llm.jsonl` | the same file under `runs/<id>/agents/`, only with `ERIS_IMPROVE_LOG_CALLS=1` | read-write |
+| `/eris/run/disclosures` | `runs/<id>/disclosures/`, only when the run publishes any (ADR 0014) | read-only |
+| `/eris/state` | the agent's persistent area, when the run provides one (below) | read-write |
+| `/tmp` | tmpfs, 512 MiB, per container, gone at exit | read-write |
+
+`ERIS_CONFIG` inside is `/eris/run/config.yaml`. The rootfs is read-only.
+
+The log files are mounted file by file, so they are the host's own `runs/<id>/agents/<agentId>.jsonl`:
+the dashboard (live tail included), the agents-ready wait and the post-run checks read them where
+they always did. The wrapper creates the empty log and its mountpoint in the view directory before
+the container starts, because a mountpoint inside a read-only mount has to exist beforehand.
+
+History: the log mount used to be the whole of `runs/` (every run of every epoch), then the run the
+agent was in (issue #77). Both held more than an agent needs — the coordinator's `events.jsonl`,
+`summary.json` and `market.json`, and every other agent's decision log and transcript.
+
+Two cases still mount a directory:
+
+- **a segmented period** (ADR 0021 §6): the run directory rolls underneath a running agent, so the
+  competition directory is mounted, which shows the period's earlier segments. Only the practice
+  devnet runs segmented and its participants self-host; the coordinator records
+  `agent_sandbox_warning` when it launches docker agents into one.
+- **no `ERIS_AGENT_VIEW_DIR`**: `run-agent.sh` started by something other than this repo's
+  coordinator gets the run directory, as before.
 
 `ERIS_AGENT_STATE_DIR` is the persistent area. The coordinator creates one per agent under
 `ERIS_AGENT_STATE_ROOT` and passes the path; `run-agent.sh` mounts it at `/eris/state` in image mode
@@ -132,12 +161,23 @@ does not ask for it.
 
 ## Isolation caveat (egress)
 
-Containers join `ERIS_AGENT_NET` (default `host`, sharing the host network) — **with the default,
-nothing is contained.** `ERIS_AGENT_ISOLATE=1` gives each agent its own network with the RPC gateway
-as the hub ([ISOLATION.md](ISOLATION.md)); `ERIS_AGENT_INTERNAL=1` creates that network without a route
-out and `ERIS_INFERENCE_HUB` attaches the inference proxy to it, which is how rules §2.3's "no direct
-external connection" holds in the competition. Deps are resolved at build time precisely so run time
-needs no outbound access.
+Containers join `ERIS_AGENT_NET` (default `host`, sharing the host network; the default bridge on
+macOS) — **with the default, nothing is contained**: an agent can reach services on the host directly,
+not only the RPC endpoint it was given. `ERIS_AGENT_ISOLATE=1` gives each agent its own network with
+the RPC gateway as the hub ([ISOLATION.md](ISOLATION.md)); `ERIS_AGENT_INTERNAL=1` creates that
+network without a route out and `ERIS_INFERENCE_HUB` attaches the inference proxy to it, which is how
+rules §2.3's "no direct external connection" holds in the competition. Deps are resolved at build time
+precisely so run time needs no outbound access.
+
+The coordinator does not refuse to start without isolation (local checks and the operator's own
+reference field run on host networking), but it says so: an `agent_sandbox_warning` event in
+`events.jsonl` naming the agents and what they lack (shared network / open egress / bind-mount /
+segmented period), and a banner on stderr at startup and again when the run completes. The live week
+runs with `ERIS_AGENT_ISOLATE=1`, `ERIS_AGENT_INTERNAL=1`, `ERIS_AGENT_RPC_URL` pointing at the RPC
+gateway, and `ERIS_INFERENCE_HUB` + `ERIS_INFERENCE_BASE_URL` for the inference proxy
+([ISOLATION.md](ISOLATION.md)). No banner means every docker agent the coordinator launched ran in
+image mode on a per-agent network without a route out; where each one points its RPC and inference
+traffic is still the operator's to set.
 
 ## Env contract (two silent traps)
 
