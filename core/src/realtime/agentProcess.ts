@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AgentSpec } from "@eris/sdk/types.js";
 import { AGENT_STATE_DIR_ENV } from "./agentState.js";
+import { AGENT_VIEW_DIR_ENV } from "./agentView.js";
 
 // How long a stopped agent gets to exit before it is killed outright. Short: by the time close() is
 // called the run is over and scored, and every extra second is one the environment spends waiting
@@ -50,6 +51,23 @@ const OS_PASSTHROUGH = new Set([
   "USERPROFILE",
 ]);
 
+// ERIS_* names from the operator's environment that are the environment's, not the agent's.
+//   ERIS_CONFIG            the coordinator's own config file. The agent gets its own
+//                          (options.configPath, agentView.ts), which carries no seed.
+//   ERIS_PRACTICE_SEED     the practice period's seed, which systemd hands the coordinator.
+//   ERIS_FLOW_SEED         the flow bot's seed (set on the flow process, never on this one).
+// Any other ERIS_*_SEED is held back the same way: a seed is never something an agent needs.
+const ENVIRONMENT_ONLY_ERIS = new Set([
+  "ERIS_AGENT_PRIVATE_KEY",
+  "ERIS_INFERENCE_SECRET",
+  "ERIS_CONFIG",
+  "ERIS_PRACTICE_SEED",
+  "ERIS_FLOW_SEED",
+]);
+export function isEnvironmentOnlyEnv(name: string): boolean {
+  return ENVIRONMENT_ONLY_ERIS.has(name) || /^ERIS_(?:[A-Z0-9]+_)*SEED$/.test(name);
+}
+
 // Inference credentials and endpoints (example/agents/runtime/llm.ts). Not secrets belonging to
 // other participants -- these are the operator's own defaults, overridable per agent by the roster.
 const INFERENCE_ENV = [
@@ -93,9 +111,15 @@ export class RealtimeAgentProcess {
     // It rides in the same options object as the sandbox because it is the same decision: what the
     // environment gives this agent to run in. Absent means this run does not persist, which is
     // every path that existed before it.
+    //
+    // `configPath` / `viewDir` are the agent's own config file and view directory (agentView.ts).
+    // The coordinator always passes both; without `configPath` the child gets no ERIS_CONFIG at
+    // all rather than the coordinator's file.
     options: {
       sandbox?: "process" | "docker";
       stateDir?: string;
+      configPath?: string;
+      viewDir?: string;
     } = {},
   ) {
     // The child is participant code that the operator executes, so its environment is BUILT rather
@@ -112,12 +136,8 @@ export class RealtimeAgentProcess {
       // ERIS_* is the runtime's own namespace. The private key is excluded because it is per-agent
       // and injected below -- inheriting the parent's would be the leak this list exists to stop.
       // ERIS_INFERENCE_SECRET is the operator's: the child gets a token derived from it below.
-      if (
-        k.startsWith("ERIS_") &&
-        k !== "ERIS_AGENT_PRIVATE_KEY" &&
-        k !== "ERIS_INFERENCE_SECRET"
-      )
-        childEnv[k] = v;
+      // ERIS_CONFIG and the seeds are the environment's (ENVIRONMENT_ONLY_ERIS above).
+      if (k.startsWith("ERIS_") && !isEnvironmentOnlyEnv(k)) childEnv[k] = v;
       else if (OS_PASSTHROUGH.has(k)) childEnv[k] = v;
     }
     // Inference credentials are forwarded as a DEFAULT, so a single-operator local run keeps working
@@ -155,6 +175,11 @@ export class RealtimeAgentProcess {
     // environment's decision, and a roster that names its own would be pointing at somebody else's.
     if (options.stateDir !== undefined)
       childEnv[AGENT_STATE_DIR_ENV] = options.stateDir;
+    // Also after spec.env: which config an agent reads is the environment's decision too.
+    if (options.configPath !== undefined) childEnv.ERIS_CONFIG = options.configPath;
+    else delete childEnv.ERIS_CONFIG;
+    if (options.viewDir !== undefined)
+      childEnv[AGENT_VIEW_DIR_ENV] = options.viewDir;
 
     let command: string;
     let args: string[];

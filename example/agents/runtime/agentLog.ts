@@ -18,7 +18,13 @@
  * Note: when not running under the coordinator (ERIS_RUN_DIR unset) the log is a no-op.
  *       A log write failure never stops strategy execution (it is swallowed).
  */
-import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import { safeStringify } from "@eris/sdk/logger.js";
 import type { AgentLogEntry } from "@eris/sdk/agent.js";
@@ -59,8 +65,8 @@ export function createJsonlAppender(
     return currentDir;
   };
   const ready = new Set<string>();
-  // Anti-abuse (4.12): runs/ is bind-mounted writable into the agent container, so an agent that
-  // logs huge or unbounded output could fill the host disk (DoS). Cap the per-agent log file size
+  // Anti-abuse (4.12): the agent's log files are bind-mounted writable into its container, so an
+  // agent that logs huge or unbounded output could fill the host disk (DoS). Cap the per-agent log file size
   // and the per-entry size. Once the file cap is hit we write one final notice and go silent; a
   // single oversized entry is replaced by a truncation notice. Both bounds are env-overridable.
   // Parse a byte limit: finite, non-negative; otherwise fall back to the default (so a bad/NaN/
@@ -78,7 +84,10 @@ export function createJsonlAppender(
     try {
       const dir = join(resolveDir(), "agents");
       if (!ready.has(dir)) {
-        mkdirSync(dir, { recursive: true });
+        // Only when missing: in a container the run directory is a read-only view with this
+        // agent's own log files mounted into it (infra/docker-agent/run-agent.sh), and a mkdir
+        // that failed there would take every later line with it (the catch below is silent).
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         ready.add(dir);
       }
       const file = join(dir, `${agentId}${suffix}.jsonl`);

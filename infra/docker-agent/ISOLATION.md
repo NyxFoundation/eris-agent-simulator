@@ -7,6 +7,29 @@ creates the per-agent network `--internal` and the operator's inference proxy jo
 (`ERIS_INFERENCE_HUB`; `core/src/inference/proxy.ts`). The NAT-egress variant below (2026-09-04, own LLM)
 stays as the verified fallback when `ERIS_AGENT_INTERNAL` is unset.
 
+## What the live week sets, and what happens without it
+
+The competition's agent containers run with all of:
+
+| setting | effect |
+|---|---|
+| `run.agentSandbox: docker` (every `config/regimes/*.yaml`) | agents go through `run-agent.sh` at all |
+| `ERIS_AGENT_ISOLATE=1` | one docker network per agent, joined only by the hub(s) below |
+| `ERIS_AGENT_INTERNAL=1` | that network is `--internal`: no route out |
+| `ERIS_AGENT_RPC_URL=http://<rpc-gateway>:8546` | agents reach the chain through the gateway (the coordinator keeps its own `ANVIL_RPC_URL`) |
+| `ERIS_INFERENCE_HUB=<proxy container>` + `ERIS_INFERENCE_BASE_URL=<proxy URL>` | inference goes through the operator's proxy on the same network |
+
+Without `ERIS_AGENT_ISOLATE=1` a container shares a network with the host (`host`, or the default
+bridge on macOS) and can reach services on this host directly, not only the RPC endpoint it was
+given. The coordinator does not refuse to start in that case — local checks and the operator's
+reference field run that way — but it records an `agent_sandbox_warning` event (which agents, and
+whether the gap is a shared network, open egress, bind-mount mode or a segmented period's directory
+mount) and prints a banner on stderr at startup and again when the run completes. The hosted
+dashboard does not serve that event to the audience.
+
+What a container can read of the run itself is covered in [README.md](README.md) ("What an agent
+container sees").
+
 ## Verified mechanism (no sudo, no firewall)
 
 **Per-agent network + multi-homed anvil.** Each agent runs on its OWN docker bridge network `ag-<id>`
@@ -30,7 +53,8 @@ anvil; the **per-agent-network approach is preferred because it needs no firewal
 
 - `run-agent.sh`: `ERIS_AGENT_ISOLATE=1` → creates `ag-<ERIS_AGENT_ID>`, connects the anvil container
   (`ERIS_ANVIL_CONTAINER`, default `ascon-anvil`) to it, and runs the agent on `--network ag-<id>`.
-  Egress and caps (stage-1 hardening) are unchanged. Default (unset) stays `--network host`.
+  Egress and caps (stage-1 hardening) are unchanged. Default (unset) stays `--network host`, and the
+  coordinator warns (above).
 - `reap.sh`: after a run, removes `ag-*` networks that have no agent container left (disconnects anvil,
   removes the network). Idempotent.
 

@@ -274,6 +274,9 @@ export function redactEventLine(
     }
     case "stress_calibration_warning":
     case "vulnerability_exploited":
+    // The operator's note that agent containers ran without network isolation: for whoever runs
+    // the box, not for the audience.
+    case "agent_sandbox_warning":
       return null;
     case "pool_created": {
       const {
@@ -398,7 +401,7 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
    * A scenario matrix's *running* epoch is therefore not served until it completes, because it is a
    * sibling directory that nothing yet connects to the matrix -- `matrix.json` gains the entry when
    * the scenario finishes (core/src/cli/backtest.ts flushes after each one). Admitting "whatever is
-   * live" instead would admit every live directory under runs/, since a 40-epoch matrix is
+   * live" instead would admit every live directory under runs/, since a 60-epoch matrix is
    * incomplete for the entire competition. A practice period is unaffected: its current segment
    * lives inside the period's own directory, so it is admitted by containment and the live view
    * works exactly as before.

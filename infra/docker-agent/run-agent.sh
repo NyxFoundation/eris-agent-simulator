@@ -7,10 +7,13 @@
 #
 # Two modes:
 #   image (default)  -- the per-team image eris-agent:<id> (infra/docker-agent/Dockerfile.base +
-#                       Dockerfile.team). Only the dynamic bits (config, runs dir) are mounted, and
-#                       the coordinator's absolute host paths are remapped onto the image's /eris.
+#                       Dockerfile.team). Only what the agent needs of the run is mounted: its view
+#                       directory (its config and run-start.json, read-only) and its own log files.
+#                       Host paths are remapped onto the image's /eris.
 #   bind-mount       -- ERIS_AGENT_BINDMOUNT=1: stock node:24 with the repo bind-mounted at its own
 #                       host path (no build; handy for iterating on runtime code on the same host).
+#                       The whole repository and run directory are visible: this mode is for the
+#                       operator's own agents and is NOT an isolation boundary.
 #
 # Caps default to what the competition rules promise a participant: 4 GiB / 2 vCPU
 # (ERIS_DOCKER_MEM / ERIS_DOCKER_CPUS). --memory-swap is pinned to --memory so the limit is a hard
@@ -134,7 +137,9 @@ while IFS= read -r name; do
     # ERIS_AGENT_STATE_DIR is a host path too (issue #77): the image maps it to /eris/state and the
     # bind mount keeps it where it is, so each mode sets it itself alongside the mount rather than
     # forwarding a path that does not exist inside the image.
-    ERIS_RUN_DIR|ERIS_AGENT_DIR|ERIS_CONFIG|ERIS_REPO|ERIS_AGENT_STATE_DIR|ERIS_PYTHON) ;;
+    # ERIS_AGENT_VIEW_DIR is the host path of the agent's view directory, which image mode mounts
+    # as the container's run directory; the path itself means nothing inside.
+    ERIS_RUN_DIR|ERIS_AGENT_DIR|ERIS_CONFIG|ERIS_REPO|ERIS_AGENT_STATE_DIR|ERIS_PYTHON|ERIS_AGENT_VIEW_DIR) ;;
     *) COMMON_ENV+=( -e "$name" ) ;;
   esac
 done < <(compgen -e | grep '^ERIS_' || true)
@@ -144,20 +149,19 @@ if [ -z "${ERIS_INFERENCE_BASE_URL:-}" ]; then
   COMMON_ENV+=( -e OLLAMA_API_KEY -e ANTHROPIC_API_KEY -e OPENAI_API_KEY -e OPENAI_BASE_URL )
 fi
 
-# The narrowest directory the agent still needs write access to (issue #77).
+# What of the run an agent container sees (image mode; see "Image mode" below for the layout).
 #
-# It used to be the whole of `runs/`, which is every run of every epoch: an agent could read another
-# epoch's events.jsonl, and could keep its own state anywhere under it -- a carry-over path nobody
-# designed, through the one mount that was meant for logs. Narrow it to the run the agent is
-# actually in, and give persistence its own directory.
+# The mount used to be the whole of `runs/`, then the run the agent was in (issue #77). Both held
+# more than an agent needs -- the coordinator's own records and every other agent's logs -- so image
+# mode now mounts the agent's view directory (core/src/realtime/agentView.ts) plus its own log files.
 #
-# When the period is segmented (ADR 0021 §6) the run directory rolls underneath a running agent and
-# the pointer file naming the current segment lives one level up, so the competition directory is
-# the narrowest mount that still works -- which means a segmented period *does* let an agent read
-# the earlier segments of that period. That is a knowing trade: the alternative is a segment roll
-# that writes into a directory the container cannot see, and the only thing that runs segmented is
-# the practice devnet, which participants self-host anyway (ADR 0021). The live competition is one
-# coordinator per epoch and takes the branch below.
+# Two cases keep a directory mount, the run directory ($LOG_HOST):
+#   - a segmented period (ADR 0021 §6): the run directory rolls underneath a running agent and the
+#     pointer naming the current segment lives one level up, so the competition directory is the
+#     narrowest mount that follows a roll -- and it shows the earlier segments of the period. Only
+#     the practice devnet runs segmented, and its participants self-host (ADR 0021); the
+#     coordinator records `agent_sandbox_warning` when it launches docker agents into one.
+#   - no ERIS_AGENT_VIEW_DIR, i.e. a launcher other than this repo's coordinator.
 # The coordinator passes ERIS_RUN_DIR verbatim from the config's reportDir, which every regime
 # writes RELATIVE (`reportDir: ./runs`), and the process launches from the repo root. Resolve both
 # run-dir variables against $REPO before they reach a mount or a remap: docker -v refuses a relative
@@ -256,9 +260,8 @@ remap() { printf '%s' "${1/$REPO//eris}"; }
 # build.sh team <id>, the ERIS_AGENT_DIR basename, and ERIS_AGENT_ID must all be the same <id>.
 # Override with ERIS_AGENT_IMAGE.
 IMG="${ERIS_AGENT_IMAGE:-eris-agent:$(basename "${ERIS_AGENT_DIR:?ERIS_AGENT_DIR is required in image mode (set it in the roster env)}")}"
-MOUNTS=( -v "$LOG_HOST:$(remap "$LOG_HOST")" )
-ENVS=( -e "ERIS_RUN_DIR=$(remap "${ERIS_RUN_DIR:-$REPO/runs}")" )
-[ -n "${ERIS_RUN_DIR_POINTER:-}" ] && ENVS+=( -e "ERIS_RUN_DIR_POINTER=$(remap "$ERIS_RUN_DIR_POINTER")" )
+MOUNTS=()
+ENVS=()
 # Issue #77: one directory per agent, at a fixed path inside the container so a participant's
 # runtime can hard-code it. It is the only writable place that outlives the epoch.
 if [ -n "${ERIS_AGENT_STATE_DIR:-}" ]; then
@@ -267,9 +270,56 @@ if [ -n "${ERIS_AGENT_STATE_DIR:-}" ]; then
   ENVS+=( -e "ERIS_AGENT_STATE_DIR=/eris/state" )
 fi
 [ -n "${ERIS_AGENT_DIR:-}" ] && ENVS+=( -e "ERIS_AGENT_DIR=$(remap "$ERIS_AGENT_DIR")" )
-# The config is generated at run time and may not be baked in the image; mount the file in. The
-# coordinator passes ERIS_CONFIG verbatim from --config, which is usually RELATIVE -- resolve it
-# against $REPO first, because docker -v requires an absolute source path.
+
+VIEW_HOST="${ERIS_AGENT_VIEW_DIR:-}"
+case "$VIEW_HOST" in
+  ""|/*) ;;
+  *) VIEW_HOST="$REPO/$VIEW_HOST" ;;
+esac
+if [ -n "$VIEW_HOST" ] && [ -n "${ERIS_RUN_DIR:-}" ] && [ -z "${ERIS_RUN_DIR_POINTER:-}" ]; then
+  # The container's run directory is /eris/run:
+  #
+  #   /eris/run                      <- runs/<id>/agent-view/<agentId>/   read-only (config.yaml,
+  #                                     run-start.json -- written there by the coordinator)
+  #   /eris/run/agents/<id>.jsonl    <- runs/<id>/agents/<id>.jsonl       read-write, this agent's log
+  #   /eris/run/agents/<id>.llm.jsonl                                      the same, when
+  #                                     ERIS_IMPROVE_LOG_CALLS=1
+  #   /eris/run/disclosures          <- runs/<id>/disclosures/            read-only, when the run
+  #                                     publishes any (ADR 0014)
+  #
+  # The log files are the host's own, so runs/<id>/agents/<id>.jsonl is where the dashboard, the
+  # agents-ready wait and the post-run checks read it, live, as before. A mountpoint inside a
+  # read-only mount has to exist beforehand, hence the empty placeholders in the view directory.
+  case "$ERIS_AGENT_ID" in
+    *[/:,]*|.|..) echo "run-agent: agent id '$ERIS_AGENT_ID' cannot be used in a mount path" >&2; exit 2 ;;
+  esac
+  CT_RUN=/eris/run
+  mkdir -p "$ERIS_RUN_DIR/agents" "$VIEW_HOST/agents"
+  MOUNTS+=( -v "$VIEW_HOST:$CT_RUN:ro" )
+  own_log() {
+    touch "$ERIS_RUN_DIR/agents/$1" "$VIEW_HOST/agents/$1"
+    MOUNTS+=( -v "$ERIS_RUN_DIR/agents/$1:$CT_RUN/agents/$1" )
+  }
+  own_log "$ERIS_AGENT_ID.jsonl"
+  if [ "${ERIS_IMPROVE_LOG_CALLS:-0}" = "1" ]; then own_log "$ERIS_AGENT_ID.llm.jsonl"; fi
+  if [ -d "$ERIS_RUN_DIR/disclosures" ]; then
+    mkdir -p "$VIEW_HOST/disclosures"
+    MOUNTS+=( -v "$ERIS_RUN_DIR/disclosures:$CT_RUN/disclosures:ro" )
+  fi
+  ENVS+=( -e "ERIS_RUN_DIR=$CT_RUN" )
+  if [ -f "$VIEW_HOST/config.yaml" ]; then
+    ENVS+=( -e "ERIS_CONFIG=$CT_RUN/config.yaml" )
+    unset ERIS_CONFIG
+  fi
+else
+  # The directory mount (the two cases at the top of this file).
+  MOUNTS+=( -v "$LOG_HOST:$(remap "$LOG_HOST")" )
+  ENVS+=( -e "ERIS_RUN_DIR=$(remap "${ERIS_RUN_DIR:-$REPO/runs}")" )
+  [ -n "${ERIS_RUN_DIR_POINTER:-}" ] && ENVS+=( -e "ERIS_RUN_DIR_POINTER=$(remap "$ERIS_RUN_DIR_POINTER")" )
+fi
+# A config the view did not already provide is mounted on its own. It is generated at run time and
+# may not be baked in the image. ERIS_CONFIG may be RELATIVE -- resolve it against $REPO first,
+# because docker -v requires an absolute source path.
 if [ -n "${ERIS_CONFIG:-}" ]; then
   case "$ERIS_CONFIG" in
     /*) CFG_HOST="$ERIS_CONFIG" ;;

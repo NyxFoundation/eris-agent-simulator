@@ -92,6 +92,11 @@ run:
 funding:
   wethWei: "8000000000000000000" # 8 WETH
   base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
+  # Gas ETH: rules §4.2 grant it on top of the basket and count it in asset value; the published
+  # amount is 1 ETH. Measured spend is <= 0.005 ETH per agent per epoch, and the runtime's gas manager
+  # refills from the agent's own WETH if a run ever outlasts it. (Unset, it used to be 100 ETH -- four
+  # times the basket -- and that gas money's price was most of every agent's P.)
+  ethWei: "1000000000000000000" # 1 ETH
   usdcUnits: "25000000000" # 25k USDC
   flowWethWei: "150000000000000000000" # 150 WETH per flow wallet (issue #112)
   flowUsdcUnits: "450000000000" # 450,000 USDC per flow wallet

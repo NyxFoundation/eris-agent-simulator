@@ -71,7 +71,7 @@ Source: `core/src/realtime/coordinator.ts` (`runRealtimeSimulation`, L390–2761
 | 8 | Deploy vuln pools (ADR 0014) | Funding happens when each window opens |
 | 9 | Emit `agents_registered` | id / address / baseline / external |
 | 10 | **Write the environment manifest** | Holds no keys → [10](10-operations.md) |
-| 11 | Prewarm (`run.prewarmBlocks > 0`) | A short flow-bot-only loop that warms anvil's working set. It does not consume the price series (separate Rng). Afterwards every base's fair is re-read and re-written to the PriceFeed (the values written at deploy predate the warmup's trading) |
+| 11 | Prewarm (`run.prewarmBlocks > 0`) | A short flow-bot-only loop that warms anvil's working set. It does not consume the price series (a stream of its own, `Rng.fromSeed(seed, "prewarm")`; it used to be `Rng(seed)`, which replayed the main series' first shocks). Afterwards every base's fair is re-read and re-written to the PriceFeed (the values written at deploy predate the warmup's trading) |
 | 12 | LST setup | Aligns the economic clock and verifies the rate-oracle wiring (>200bps divergence fails fast) |
 | 13 | Liquity setup | Points the permanent oracle adapter at this run's PriceFeed. Opening in Recovery Mode or on a depegged pool fails fast |
 | 14 | Check for deployer-key collisions | liquidityPull and depeg trade as the deployer account (below) |

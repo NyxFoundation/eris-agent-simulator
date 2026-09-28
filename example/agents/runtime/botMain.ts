@@ -29,6 +29,8 @@
  * Environment variables (passed by the environment; the ADR 0006 contract is unchanged):
  *   ERIS_AGENT_ID / ERIS_AGENT_DIR / ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL /
  *   ERIS_PRICE_FEED_ADDRESS / ERIS_RUN_ID / ERIS_RUN_DIR / ERIS_CONFIG
+ * ERIS_CONFIG is the agent's config (runs/<id>/agent-view/<agentId>/config.yaml), which carries no
+ * seed; ERIS_RUN_DIR holds run-start.json and, for a containerised agent, is its view directory.
  *
  * Self-hosted (ADR 0021 §2), ERIS_MANIFEST names the environment manifest instead, and supplies
  * the RPC URL, the PriceFeed, the chain and the run's length. ERIS_CONFIG is read only when set;
@@ -226,10 +228,12 @@ async function main(): Promise<void> {
     ? manifestRunOverrides(period, manifest?.chain?.blockTimeSec)
     : {};
 
-  // ADR 0013: the coordinator passes the YAML config path via ERIS_CONFIG. Rebuild config from
-  // the same YAML (single source of config). If absent, read from env (standalone launch). A
-  // self-hosted agent's run length is the manifest's either way: passed as overrides, because a
-  // YAML's source holds only the file and the secret env keys, and plain env would not reach it.
+  // ADR 0013: the coordinator passes a YAML config path via ERIS_CONFIG -- the agent's own file,
+  // with the fields the runtime reads as the coordinator resolved them (core/src/realtime/
+  // agentView.ts), not the coordinator's config. A self-hosted agent points it at its copy of the
+  // regime file. If absent, read from env (standalone launch). A self-hosted agent's run length is
+  // the manifest's either way: passed as overrides, because a YAML's source holds only the file and
+  // the secret env keys, and plain env would not reach it.
   const loadedConfig = process.env.ERIS_CONFIG
     ? loadYamlConfig(process.env.ERIS_CONFIG, runOverrides).config
     : loadConfig({ ...process.env, ...runOverrides });
@@ -291,7 +295,10 @@ async function main(): Promise<void> {
     walletClient,
     chain,
     config,
-    rng: new Rng(config.seed),
+    // Not the run's seed: the agent's config carries none (core/src/realtime/agentView.ts), and a
+    // seed is the environment's. Something stable per agent instead, for anything that wants a
+    // reproducible stream of its own.
+    rng: new Rng(Number.parseInt(address.slice(-8), 16)),
     adminPk: privateKey,
     keeperPk: privateKey,
     oracle: { aaveAggregators: {} },
@@ -656,7 +663,7 @@ async function main(): Promise<void> {
         snap.observation.inventory?.valueUsdc ?? null,
         marketHistory.at(bn),
       );
-      // gas manager: after the observation is settled, check the ETH balance and if low enqueue a refill tx (economicGas only).
+      // gas manager: after the observation is settled, check the ETH balance and if low enqueue a refill tx (every run).
       void sender.maybeRefillGas(
         bn,
         snap.balances,
