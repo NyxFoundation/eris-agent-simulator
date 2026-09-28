@@ -13,14 +13,14 @@ building a feel for the market before the competition runs.
 ### What a good practice standing does — and does not — tell you
 
 The configuration is the competition's (rules §2.7): the same seven venues, the same basket, the same
-flow, and every kind of episode the official regimes run, every week. Doing well here means your agent
+flow, and every kind of episode the official regimes run, every day. Doing well here means your agent
 works, and that it had an edge **in this field, in the situations this period produced**. It does not
 mean it will place the same way in the competition, for reasons no configuration can remove:
 
 | | here | in the competition |
 |---|---|---|
 | the world | one, for the whole period — inventory, positions and drawdowns carry over | reset every epoch; every agent starts from the same basket |
-| the situations | a few episodes a week in a mostly calm market; no victims, no mid-epoch pools | each epoch is one regime, drawn in equal numbers — including the ones this period cannot hold |
+| the situations | one of every kind of episode a day in an otherwise calm market; no victims, no mid-epoch pools | each epoch is one regime, drawn in equal numbers — including the ones this period cannot hold |
 | the field | whoever is practising, plus the operator's reference agents | every submission; an arbitrage shared by more agents pays each of them less |
 | where your code runs | your machine | the operator's container (2 vCPU / 4 GiB, 5 s per `decide`) |
 
@@ -487,10 +487,22 @@ A period ends on a **date**: `run.endsAt` (ISO 8601, with a time zone). `config/
 states `2026-10-31T23:59:59+09:00`, the end of the trial in rules §2.7; the live week starts the next
 day. The coordinator converts the date into the blocks that remain at `blockTimeSec` when it starts
 and records both in `run_started_realtime` (`runEndsAt`, `runBlocks`). A restart — which is a new
-competition — therefore ends on the same day with fewer blocks, and the episode windows spread over
-the time that remains (issue #136). Stated as a block count instead, the period used to end 42 days
-after whenever the coordinator started: a start on 9/23 ran into the live week, and every restart
-got a fresh 42 days.
+competition — therefore ends on the same day with fewer blocks (issue #136). Stated as a block count
+instead, the period used to end 42 days after whenever the coordinator started: a start on 9/23 ran
+into the live week, and every restart got a fresh 42 days.
+
+**The episode list is written for a start.** Each day of the period holds one of every kind of
+episode, and each episode's window is a fraction of the run, measured from the moment the coordinator
+starts. So before every (re)start the list is regenerated for that start, and merged like any other
+change (the box's checkout follows `main`, and an edited tracked file on it stops the dashboard
+build):
+
+```bash
+npm run gen:practice-episodes -- --start 2026-10-01T10:00:00+09:00   # rewrites config/practice.yaml
+```
+
+A coordinator that starts within 1.5 hours of the planned time still puts exactly one of each kind in
+every day (`core/src/practiceEpisodes.ts`, `test/practiceEpisodes.test.ts`); further off, regenerate.
 
 It is still a length, not a wall-clock limit on an open-ended run: an episode's window is placed as a
 fraction of the run's length (ADR 0009), so a run with no length has nowhere to put one and fails at

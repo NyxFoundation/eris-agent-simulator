@@ -258,7 +258,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   判定は `isPracticePeriod`（`resetUnit: continuous` かつ `segmentHours > 0`）で、**単発の `sim:realtime` run は
   従来どおり USDC**（全員同じ配布なので同じ順位になる）
 - **`config/practice.yaml` は競技環境と同等**（規約 §2.7）: 7 venue・バスケット配布・公式レジームの flow 較正・
-  毎週 7 種のエピソード（6 週 × crash/spike（各 pull 付き）/cexDrift/flowTrend/whale×2/DAI depeg/eusdDepeg = 60 件）。
+  毎日 10 個のエピソード（crash/spike（各 pull 付き）/cexDrift/flowTrend/whale×2/DAI depeg/eusdDepeg）。`npm run gen:practice-episodes -- --start <起動時刻>` が日数分を生成する（`windowFrac` は run の割合なので、**再起動の直前に作り直して PR でマージ**。起動が ±1.5h ずれても各日に 1 つずつ = `core/src/practiceEpisodes.ts`）。
   入れられないのは victim・vuln・`persist`・`repriceAnchor`（1 world だと 6 週間残る/複利になる）。複数の crash に
   pull を揃えるため、`alignWith` は**リスト上で直前の同種イベント**に揃う（以前は最初の 1 個に全部揃っていた）
 - **seed は公開 config に置かない**。価格 walk・flow・全イベント窓は seed の純関数なので、`seed: 1` が公開されて
