@@ -311,7 +311,13 @@ services:
       - PORT=5174
       - ERIS_RUNS_DIR=/eris/runs
       - ERIS_DASHBOARD_DIST=/eris/dashboard/dist
-      - ERIS_BLOCKSCOUT_URL=http://host.docker.internal:4000
+      # Where the server's /blockscout forwarder reads the explorer's API (the browser probes it
+      # same-origin; dashboard/server/explorerProxy.ts passes only GET /api/v2/* to this origin).
+      # Blockscout's backend sits on the chain network (infra/blockscout), so the dashboard joins it
+      # below. host.docker.internal:4000 never answered: the explorer publishes on the host's
+      # loopback only. The links themselves point at VITE_BLOCKSCOUT_URL, fixed at build time
+      # (infra/dashboard/README.md, "Explorer links").
+      - ERIS_BLOCKSCOUT_URL=${ERIS_BLOCKSCOUT_URL:-http://eris-explorer-backend:4000}
       # Everyone who opens this is a participant (rules §2.7), not the operator. Without it the runs
       # API serves the operator's view: the resolved stress schedule of the period that is running
       # (every window still to come), agent decision logs and stderr. Standings stay on -- the
@@ -324,6 +330,7 @@ services:
       - ERIS_DASHBOARD_COMPETITIONS=${ERIS_DASHBOARD_COMPETITIONS:-}
       - HOME=/tmp
     ports: ["127.0.0.1:5174:5174"]
+    networks: [default, ascon-chain]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     tmpfs:

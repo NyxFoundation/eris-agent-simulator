@@ -407,7 +407,8 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   cAdvisor はここでコンテナを 1 つも識別できなかった。issue #157）。`ascon_dashboard_public_up` が 1
 - [ ] **ダッシュボード**（`https://ascon-dash.nyx.foundation`）: 漏れの検査（1.7）を全部通る。
   **目視**: picker に今の期間だけが出る、ブロックと評価区間が進む、カナリアの tx がメソッド名付きで出る、
-  「Find your agent」がアドレスで引ける
+  「Find your agent」がアドレスで引ける、tx・ブロックに explorer のリンクが付き `https://ascon-explorer.nyx.foundation`
+  を開く（「Block-explorer links are unavailable」なら [infra/dashboard](../dashboard/README.md#explorer-links) の 2 設定）
 - [ ] 判定: 全部通れば go。落ちたら 0 章の表どおり
 
 ---
