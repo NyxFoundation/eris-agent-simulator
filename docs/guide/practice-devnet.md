@@ -386,6 +386,16 @@ and passes it to anvil, and when the variable is unset it says so on the contain
 (`WARNING: ANVIL_MNEMONIC is unset …`). After a rotation, check `docker logs ascon-anvil` for that
 line before anything else.
 
+The other two role keys are public by default as well: `keeper` executes GMX orders, and `setup`
+owns the market registry when `agentMarkets` is on. Make all three for the period (`cast wallet new`)
+and set them in `.env.local` as above; the coordinator gives admin and keeper their gas itself.
+
+When participants can send to the chain — a `run.registrationsFile`, or an `external` roster entry —
+the coordinator refuses to start while any of these is public (setup only when the market registry
+runs), or while the venues' admin is one of anvil's test accounts (a dump deployed on the default
+mnemonic), and names which (`core/src/realtime/roleKeyGuard.ts`). A private rehearsal on the default
+dump says so with `ERIS_ALLOW_PUBLIC_ROLE_KEYS=1`, and the run records `public_role_keys_allowed`.
+
 ### Registering a participant
 
 A roster entry is a registration, not a launch instruction:
