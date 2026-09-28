@@ -56,7 +56,9 @@ const OS_PASSTHROUGH = new Set([
 //                          (options.configPath, agentView.ts), which carries no seed.
 //   ERIS_PRACTICE_SEED     the practice period's seed, which systemd hands the coordinator.
 //   ERIS_FLOW_SEED         the flow bot's seed (set on the flow process, never on this one).
-// Any other ERIS_*_SEED is held back the same way: a seed is never something an agent needs.
+//   ERIS_SCENARIO_KEY_*    the scenario key's file and commitment (ADR 0027, core/src/scenarioKey.ts).
+// Any other ERIS_*_SEED is held back the same way: a seed is never something an agent needs, and
+// neither is anything under ERIS_SCENARIO_KEY.
 const ENVIRONMENT_ONLY_ERIS = new Set([
   "ERIS_AGENT_PRIVATE_KEY",
   "ERIS_INFERENCE_SECRET",
@@ -65,7 +67,11 @@ const ENVIRONMENT_ONLY_ERIS = new Set([
   "ERIS_FLOW_SEED",
 ]);
 export function isEnvironmentOnlyEnv(name: string): boolean {
-  return ENVIRONMENT_ONLY_ERIS.has(name) || /^ERIS_(?:[A-Z0-9]+_)*SEED$/.test(name);
+  return (
+    ENVIRONMENT_ONLY_ERIS.has(name) ||
+    /^ERIS_(?:[A-Z0-9]+_)*SEED$/.test(name) ||
+    name.startsWith("ERIS_SCENARIO_KEY")
+  );
 }
 
 // Inference credentials and endpoints (example/agents/runtime/llm.ts). Not secrets belonging to
