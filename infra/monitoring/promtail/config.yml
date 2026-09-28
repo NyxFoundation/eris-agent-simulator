@@ -9,7 +9,9 @@ scrape_configs:
   - job_name: ascon-agents
     static_configs:
       - targets: [localhost]
-        labels: { job: ascon-agents, __path__: /runs/*/agents/*.jsonl }
+        # `**`: a practice period writes runs/<period>/<segment>/agents/, one level deeper than a
+        # single run, and the one-level glob picked none of it up (issue #159).
+        labels: { job: ascon-agents, __path__: "/runs/**/agents/*.jsonl" }
   - job_name: ascon-rpc
     static_configs:
       - targets: [localhost]

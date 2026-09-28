@@ -16,7 +16,7 @@
 // is also why the environment manifest carries no keys (core/src/manifest.ts) and why nothing that
 // should stay private is written into a run directory.
 import { createServer, request as httpRequest } from "node:http";
-import { existsSync, createReadStream, statSync } from "node:fs";
+import { existsSync, createReadStream, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { competitionsFromEnv, createRunsApi, modeFromEnv } from "./runsApi.js";
@@ -80,6 +80,23 @@ function distFile(urlPath: string): string | null {
 
 const server = createServer((req, res) => {
   const [urlPath, query] = (req.url ?? "/").split("?");
+
+  // What the exporter probes (issue #159), and what an outside check can. Not the SPA fallback: that
+  // answers 200 with index.html for any path, so a probe of an arbitrary URL proved only that node
+  // was running. This also proves the one thing every page needs, that runs/ can be listed.
+  if (urlPath === "/healthz") {
+    let ok = true;
+    try {
+      readdirSync(RUNS);
+    } catch {
+      ok = false;
+    }
+    res.statusCode = ok ? 200 : 503;
+    res.setHeader("content-type", "application/json");
+    res.setHeader("cache-control", "no-store");
+    res.end(JSON.stringify({ ok }));
+    return;
+  }
 
   if (urlPath.startsWith("/runs")) {
     const rest = urlPath.slice("/runs".length) || "/";

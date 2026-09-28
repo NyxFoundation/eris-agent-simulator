@@ -57,7 +57,7 @@ S="$P/$(cat "$P/current-segment")"
 
 # 環境の失敗: 1 行も出なければ合格
 envfail() { sed -nE 's/^\{"ts":"[^"]*","type":"([a-z0-9_]+)".*/\1/p' "$@" \
-  | grep -E '(_failed|_stuck|_reverted|_incomplete|_exhausted|_capped)$|^(realtime_block_error|agent_process_exited)$' \
+  | grep -E '(_failed|_stuck|_reverted|_incomplete|_exhausted|_capped)$|^(realtime_block_error|agent_process_exited|flow_process_exited)$' \
   | sort | uniq -c; }
 
 # 市場の警告: 件数を記録する
@@ -77,8 +77,8 @@ hourly() { awk -F, -v id="${1:-ops-canary}" 'FNR>1 {
 
 - **チェーンの判定**は `node infra/devnet/block-gaps.mjs --rpc <RPC> --from <開始ブロック>`。
   全ブロックのタイムスタンプを読み、平均間隔と「5 分窓ごとの最大間隔の伸び」を PASS / FAIL で出す
-  （exporter の `ascon_block_interval_seconds` は 10 秒に 1 回の標本なので、ダンプ中の数秒の停止を
-  ほとんど取りこぼす）。
+  （exporter の `ascon_block_interval_max_seconds` は取りこぼさなくなったが、判定の平均間隔と伸びの
+  回帰はこのツールだけが出す。アラート `ascon_block_stall_growing` は伸びだけを見る）。
 - **自己改訂型の判定**は `node infra/devnet/revision-health.mjs <ERIS_RUN_DIR>/agents`。agent を
   動かしたマシンで実行する（判断ログは参加者側にしかない）。
 - `hourly` の最初と最後の行は端数の時間なので、判定から外す。
@@ -223,6 +223,12 @@ done
   agent の id、role が `agent`）
 - [ ] **参加者役 agent**: 自己改訂型 4 体に最初の `revision …` 行がある（60 ブロック ≈ 2 分後から）。
   プロキシ経由の 2 体は `ops-inference/<id>.jsonl` に行があり、直結の 2 体には無い
+- [ ] **監視**（A の Grafana → Explore）: 次のクエリが**それぞれ系列を返す**。`noDataState: OK` のルールは
+  何も見ていなくても緑なので、ここで確かめるしかない（issue #157 はこれで 26h 気づかなかった）:
+  `ascon_container_memory_working_set_bytes{name="ascon-anvil"}` / `ascon_containers_observed`（1 以上）/
+  `ascon_flow_tx_recent`（0 より大きい）/ `ascon_block_interval_max_seconds` / `ascon_dashboard_up`（1）/
+  `ascon_canary_seconds_since_tx{agent="ops-canary"}`（カナリアの登録後）/ `rpc_upstream_up`。
+  Alerting 画面で `Container memory not measured` が Normal
 - [ ] **ダッシュボード**（B のトンネル経由の `http://127.0.0.1:5174`）: `/runs/mode.json` が audience、
   `/runs/index.json` に期間が live で出る、盤面のブロック高が進む。
   **目視**: picker に期間が出て、評価区間のバーが進む
@@ -239,7 +245,8 @@ done
 - [ ] Grafana（A の `:3000`）の Alerting で firing が 0 → 記録: firing があれば名前と時刻
 - [ ] `envfail "$P"/*/events.jsonl` が何も出さない
 - [ ] `hourly`: 端数を除く全時間で system-blocks ≥ 1,700 / flow-tx > 0 / canary-tx ≥ 1。
-  flow bot のプロセスが落ちてもイベントは出ないので、flow-tx の列が唯一の検出手段
+  flow bot のプロセスが落ちると `flow_process_exited` が出て、`ascon_env_failure` と `ascon_flow_stopped`
+  が発火する（issue #159）。ここでは列の値で二重に確かめる
 - [ ] B: `pgrep -fa runtime/bot.ts | wc -l` が 7（途中登録の後）、プロキシが `/healthz` に答える
 - [ ] 資源の記録（伸び方を本番の 1 か月に外挿するため）:
   ```sh
@@ -334,6 +341,8 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   同時に上げ直す（古い exporter は `intervals.jsonl` を読めない）→ `systemctl --user start ascon-devnet`
 - [ ] 期間ディレクトリができたら `infra/monitoring/.env` に `ERIS_DASHBOARD_COMPETITIONS=<期間 id>`
   を書き、dashboard コンテナを上げ直す（公開 picker に smoke run を出さない。issue #84 K）
+- [ ] `infra/monitoring/.env` に `ASCON_DASHBOARD_PUBLIC_URL=https://ascon-dash.nyx.foundation/healthz` を
+  書き、eris-exporter コンテナを上げ直す（トンネル越しの外形監視。`ascon_dashboard_public_down`）
 - [ ] カナリアを登録する（`id: ops-canary`、`participant: operator`、登録ファイルへ追記。初回だけ。
   2 回目以降の再起動では登録ファイルに残っている）
 - [ ] カナリアを box の**外**で動かす。小さな on-demand EC2（t3.small 程度）に常駐させる。checkout は box と
@@ -367,6 +376,8 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   最初の境界（`intervals.jsonl` の 1 行目）に全員の値がある（= 初日から採点される）→ 記録: 件数
 - [ ] **環境**: 最初の 2 つの `interval_boundary` が出て、`interval_boundary_failed` が 0
 - [ ] **参加者役 agent**: `hourly ops-canary` に着弾がある
+- [ ] **監視**: 1.3 の「監視」と同じクエリが本番 box でも系列を返す（本番 box は containerd image store で、
+  cAdvisor はここでコンテナを 1 つも識別できなかった。issue #157）。`ascon_dashboard_public_up` が 1
 - [ ] **ダッシュボード**（`https://ascon-dash.nyx.foundation`）: 漏れの検査（1.7）を全部通る。
   **目視**: picker に今の期間だけが出る、ブロックと評価区間が進む、カナリアの tx がメソッド名付きで出る、
   「Find your agent」がアドレスで引ける
@@ -380,32 +391,39 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 
 - [ ] 新しい日のディレクトリがあり、`events.jsonl` の先頭に `run_started_realtime`（`previousSegment` 付き）/
   `agents_registered` / `stress_schedule`、`manifest.json` がある。前日に `summary.json` がある
-- [ ] 前日分で `envfail "$P/<前日>/events.jsonl"` が何も出さない
-- [ ] 前日分の `hourly` で canary-tx ≥ 1 / flow-tx > 0 / system-blocks ≥ 1,700（全時間）
+- [ ] 前日分の `hourly` で system-blocks ≥ 1,700（全時間）。平均間隔の遅れはアラートにしていない
+  （環境の失敗・flow の停止・カナリアの停止はアラートになった。下の表）
 - [ ] 公開ビューが新しい日に移り、前日の順位が出ている（目視）
 - [ ] `journalctl --user -u eris-dashboard-sync --since yesterday` にビルドがあった日は、漏れの検査（1.7）
   をもう一度通す（ダッシュボードは main に追従していて、merge のたびに公開ページが変わる）
 
 **毎週**
 
-- [ ] anvil のメモリ: `ascon_anvil_mem_growth` が firing でない。`docker stats` の値を記録し、先週との差を見る
+- [ ] anvil のメモリ: fleet ダッシュボードの「Chain (ascon-anvil) memory vs host」の値を記録し、先週との差を
+  見る（1 週間先に 8 割を超える見込みなら `ascon_anvil_mem_growth` が知らせる。系列が消えたら
+  `ascon_container_metrics_missing`）
 - [ ] ディスク: `df -h /`、`du -sh "$P"`、ダンプのサイズ → 記録
 - [ ] LST: 最新の `lst_block` の `rewardRunwayBlocks` が null か、期間の残りブロック以上
   （尽きると `apyBps` が 0 になる。issue #129）
 - [ ] flow bot の財布: 1 週間分で `flow_wallet_topped_up` が出ている（補充が回っている）。最新の
   `flow_balances` を記録する（issue #130）
-- [ ] チェーン: 直近 24h で `block-gaps.mjs` が 2 行とも PASS
+- [ ] チェーン: 直近 24h で `block-gaps.mjs` が 2 行とも PASS（伸びは `ascon_block_stall_growing` も見ている。
+  平均間隔はこれだけ）
 
-**アラートにする予定の項目**（別 PR。入ったら手動の項目から外す）
+**アラートにした項目**（issue #157 / #159。手動の項目からは外した。ルールは
+`infra/monitoring/grafana/provisioning/alerting/rules.yml`、指標は [infra/monitoring](../monitoring/README.md)）
 
-| 項目 | 今の検出手段 | 予定 |
+| 項目 | 以前の検出手段 | アラート |
 |---|---|---|
-| 環境の失敗 | `envfail`（手動） | exporter が件数を出し、`increase > 0` で通知 |
-| flow bot の停止 | `hourly` の flow-tx（手動） | flow tx の増加が止まったら通知（プロセス終了のイベントも足す） |
-| カナリアの停止 | `hourly` の canary-tx（手動） | カナリアの tx が 1h 増えなければ通知 |
-| ダンプ停止の伸び | `block-gaps.mjs`（手動） | ブロック間隔の最大値を exporter が窓ごとに出す |
-| gateway の異常 | なし | `rpc_upstream_up` / 拒否数の急増で通知 |
-| ダッシュボードの停止 | なし | health エンドポイント + 外形監視 |
+| 環境の失敗 | `envfail`（手動） | `ascon_env_failure`（直近 10 分に 1 件でも。`agent_process_exited` は `ascon_agent_crash`） |
+| 注文 1 件の送信失敗 | `envfail` に混ざっていた | `ascon_tx_submit_failures`（直近 10 分の flow 注文の 1% 超かつ 5 件以上。1 件では鳴らさない） |
+| flow bot の停止 | `hourly` の flow-tx（手動） | `ascon_flow_stopped`（10 分間 0 件）+ `flow_process_exited` → `ascon_env_failure` |
+| カナリアの停止 | `hourly` の canary-tx（手動） | `ascon_canary_stopped`（1h 着弾なし。登録されていなければ系列が無く鳴らない） |
+| ダンプ停止の伸び | `block-gaps.mjs`（手動） | `ascon_block_stall_growing`（直近 1h の最長間隔が 6h 前の同じ 1h より 2 秒超長い） |
+| gateway の異常 | なし | `ascon_gateway_upstream_down` / `ascon_gateway_key_denials` |
+| ダッシュボードの停止 | 目視 | `ascon_dashboard_down`（`/healthz`）/ `ascon_dashboard_public_down`（トンネル越し） |
+| anvil のメモリ・agent の OOM | 見ていなかった（cAdvisor が系列を出さず、両ルールが無データ = 緑。issue #157） | `ascon_anvil_mem_growth` / `ascon_container_mem_high` を exporter の系列に。系列の欠落は `ascon_container_metrics_missing` |
+| セグメント配下の agent ログ | Loki に入っていなかった（promtail の glob が 1 階層） | —（`/runs/**/agents/*.jsonl` で取り込む） |
 
 ---
 
@@ -413,9 +431,6 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 
 - **Eris の runtime で `X-ASCON-Key` を送る方法が、参加者向けの文書に無かった**。runtime が送るのは CF の
   2 ヘッダと `ERIS_RPC_HEADERS`（JSON）だけ（`sdk/src/chain.ts`）。ガイド §3 に追記した
-- exporter は環境の失敗イベントを 1 つも出さない。flow bot のプロセスが落ちてもイベントが出ない。
-  promtail の glob（`/runs/*/agents/*.jsonl`）は 1 階層なので、セグメント配下の agent ログを拾えない
-- ダッシュボードに health エンドポイントが無い。gateway の指標にアラートが無い
 - coordinator は SIGTERM を扱わないので、手で止めたセグメントには `summary.json` が無い
   （[README](README.md#stopping)）
 - 推論プロキシは拒否（401 / 403 / 429）を記録しない。プロキシ経由の失敗は agent 側の
