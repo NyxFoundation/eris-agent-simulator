@@ -231,7 +231,8 @@ async function main(): Promise<void> {
     walletClient,
     chain,
     config,
-    rng: new Rng(config.seed),
+    // Its own stream. `Rng(config.seed)` was the environment's WETH price stream, draw for draw.
+    rng: Rng.fromSeed(config.seed, "agent-runtime"),
     adminPk: privateKey,
     keeperPk: privateKey,
     oracle: { aaveAggregators: {} },

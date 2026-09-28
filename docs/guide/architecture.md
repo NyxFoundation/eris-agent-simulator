@@ -27,7 +27,7 @@ flowchart TB
   subgraph ENV["Environment process — core/src/realtime/coordinator.ts (daemon + scorer)"]
     direction TB
     E1["anvil lifecycle (fork / local setup, interval mining)"]
-    E2["fair price Rng(seed) → PriceFeed / oracle update tx every block"]
+    E2["fair price Rng.fromSeed(seed) → PriceFeed / oracle update tx every block"]
     E3["flow bot orders (move the market)"]
     E4["GMX keeper (order execution)"]
     E5["scoring: post-run value-series reconstruction from historical blocks"]

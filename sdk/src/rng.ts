@@ -1,8 +1,43 @@
+// murmur3's 32-bit finalizer: every input bit reaches every output bit, so inputs 1 apart come out
+// unrelated. A bijection on 32 bits, so it never merges two seeds into one stream.
+export function mix32(x: number): number {
+  let h = x >>> 0;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+// FNV-1a over a string: how a named salt becomes a number.
+export function fnv1a32(text: string): number {
+  let h = 0x81_1c_9d_c5;
+  for (let i = 0; i < text.length; i++)
+    h = Math.imul(h ^ text.charCodeAt(i), 0x01_00_01_93);
+  return h >>> 0;
+}
+
 export class Rng {
   private state: number;
 
+  // The raw state, used as given. A caller holding a run seed wants `Rng.fromSeed` instead: this
+  // constructor is for a key that is already hashed (an FNV digest of an actor key, say).
   constructor(seed: number) {
     this.state = seed >>> 0;
+  }
+
+  // The Rng a consumer derives from a run seed: `mix32(seed ^ salt)`, with a string salt hashed by
+  // FNV-1a. Every consumer names its own salt, so no two of them share a stream.
+  //
+  // Why not `new Rng(seed)`: this is an LCG, so seeds Δ apart start a·Δ/2³² apart -- the whole of
+  // seeds 1-200 opened inside [0.236, 0.314), and every later draw kept a fixed offset from the same
+  // draw of the seed Δ away (step-by-step correlation 0.998, 0.505, -0.295, 0.786, ... for Δ = 1).
+  // XORing a constant salt in does not help: it keeps nearby seeds nearby. The hash does.
+  // scripts/measureSeedCorrelation.ts has the numbers per consumer.
+  static fromSeed(seed: number, salt: number | string = 0): Rng {
+    const s = typeof salt === "string" ? fnv1a32(salt) : salt >>> 0;
+    return new Rng(mix32((seed ^ s) >>> 0));
   }
 
   next(): number {
@@ -117,23 +152,13 @@ export function nextFairPrice(
   return Math.max(100, current * (1 + p.drift + revert + shock));
 }
 
-// Salt that separates the price RNG per asset (ADR 0013). WETH is salt 0 = Rng(seed) itself
-// (byte-identical to the existing run's WETH price path). Other bases get an independent path from a
-// deterministic symbol-derived salt. An independent Rng per asset = 0 inter-asset correlation (v1). To
-// add correlation you would consolidate onto a shared Rng, but that changes WETH's consumption
-// sequence (breaking backward compatibility), so it is not done by default.
-function assetPriceSalt(symbol: string): number {
-  if (symbol === "WETH") return 0;
-  let h = 0x9e_37_79_b9;
-  for (let i = 0; i < symbol.length; i++) {
-    h = (Math.imul(h ^ symbol.charCodeAt(i), 0x01_00_01_93) >>> 0) >>> 0;
-  }
-  return h >>> 0;
-}
-
-// Price-only Rng for a base symbol. WETH is Rng(seed) (same as before). Other bases are independent via a derived seed.
+// The price path's Rng for one base (ADR 0013): its own stream per symbol, so adding a base never
+// moves another's path, and inter-asset correlation is 0 (v1). To add correlation you would draw
+// every base from one shared Rng. WETH goes through the same derivation as every other base; it used
+// to be `Rng(seed)` itself, which at volatility 0.004 put its first shock in [-21, -15] bps on every
+// seed from 1 to 200 (and WBTC's, from a symbol salt XORed in, in [+29, +37] bps).
 export function priceRngForAsset(seed: number, symbol: string): Rng {
-  return new Rng((seed ^ assetPriceSalt(symbol)) >>> 0);
+  return Rng.fromSeed(seed, `price:${symbol}`);
 }
 
 export type MultiAssetPriceState = Record<string, number>;

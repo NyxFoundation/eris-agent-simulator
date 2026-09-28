@@ -847,6 +847,8 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
 
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 
+**seed から Rng を作るのは `Rng.fromSeed(seed, salt)`**（`sdk/src/rng.ts`。fmix32(seed ^ salt)、消費者ごとに salt: 価格 `price:<symbol>` / flow / prewarm / agent runtime / LST / vuln）。`new Rng(seed)` は LCG なので近い seed が近い乱数列を引き、salt を XOR するだけでも近いまま。修正前の実測: seed 1〜200 の全部で WETH の最初のショックが −21〜−15bps（WBTC は +29〜+37bps）、vuln の最初の poolCount [4, 6] が 4、LST の最初の APY が 513〜592bps。しかも `flow.seed` の既定が run seed なので **flow bot は価格パスと同じ系列を引いていた**（`scripts/measureSeedCorrelation.ts`）。`new Rng(x)` は既にハッシュ済みの key（FNV の actor key 等）専用。**2026-09-27 以前の run とは同じ seed でも realization が違う**。例外はストレススケジュールで、ばらつきキー（`count` 等）を使わないものは生の seed のまま（練習期間の窓を動かさないため）
+
 ## アーキテクチャ（環境とエージェント実行の分離。ADR 0006 / ADR 0015）
 
 ```
