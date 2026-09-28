@@ -16,7 +16,7 @@ clicking through a portal during an incident.**
 
 | file | role | vendor-specific? |
 |---|---|---|
-| `bootstrap.sh` | docker, foundry (stable), node 22, checkout, `.env`, systemd unit, cleanup cron | no |
+| `bootstrap.sh` | docker, foundry (stable), node 22, checkout, the host paths compose mounts, `.env`, the coordinator's systemd **user** unit (+ linger), cleanup cron | no |
 | `cloud-init.yaml` | first boot: user, SSH hardening, then calls `bootstrap.sh` | no |
 | `terraform/` | orders the machine and passes `cloud-init.yaml` as user-data | **yes** (Cherry Servers) |
 
@@ -97,6 +97,20 @@ deployer/vendor/aave/node_modules
 deployer/vendor/liquity-src
 deployer/vendor/curve
 ```
+
+**Compose must not be the first to touch a bind source.** Docker creates a missing one itself, as
+`root:root 755`. `runs/` is written by the coordinator, which runs as `ascon`, so on a fresh box the
+first start died with `EACCES: permission denied, mkdir 'runs/<id>'` and the unit spent its three
+starts in 90 seconds (issue #158). `bootstrap.sh` therefore creates every directory the compose file
+mounts — `runs/`, `ascon-logs/rpc`, and the gateway's key directory (`ASCON_KEYS_DIR`, defaulting to
+`~/ascon-participant-tokens`, which is where `infra/access/issue-key.sh` writes) — as `ascon`, and
+hands back any that compose already created as root.
+
+**The coordinator is a user unit.** `bootstrap.sh` links `infra/devnet/ascon-devnet.service` into
+`~ascon/.config/systemd/user/` and enables linger, which is the layout `infra/devnet/README.md`,
+`infra/devnet/CHECKLIST.md` and the stall alert all address with `systemctl --user`. An earlier
+version installed it as a system unit, where every one of those commands silently named a unit that
+did not exist; a re-run removes that system unit unless it is running the period.
 
 **Step 2 is not optional and the stack will not paper over it.** `anvil-state-init` refuses to start
 when `backtest/state/venues-state.json` is missing or is a directory. That guard exists because

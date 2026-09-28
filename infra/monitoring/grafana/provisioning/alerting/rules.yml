@@ -75,7 +75,12 @@ groups:
               #
               # `> 0` on the denominator drops anything without a cap rather than dividing by it.
               # `by (name)` keeps the container name, so the alert says which agent.
-              expr: "max by (name) (container_memory_working_set_bytes{container_label_eris_role=\"agent\"} / (container_spec_memory_limit_bytes{container_label_eris_role=\"agent\"} > 0)) * 100"
+              #
+              # From eris-exporter, not cAdvisor (issue #157): under Docker's containerd image store
+              # cAdvisor exports no per-container series, so this read nothing -- and no data is OK.
+              # No data stays OK here on purpose: a practice period runs no agent containers at all.
+              # That the reader itself works is ascon_container_metrics_missing's job.
+              expr: "max by (name) (ascon_container_memory_working_set_bytes{eris_role=\"agent\"} / (ascon_container_memory_limit_bytes{eris_role=\"agent\"} > 0)) * 100"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -194,7 +199,9 @@ groups:
             datasourceUid: prometheus
             model:
               refId: A
-              expr: "100 * max(predict_linear(container_memory_working_set_bytes{name=\"ascon-anvil\"}[6h], 7 * 86400)) / max(node_memory_MemTotal_bytes)"
+              # eris-exporter's series (issue #157): cAdvisor's had no `name` on the practice box, so
+              # this evaluated to no data -- OK -- for the whole rehearsal while anvil grew 0.11 GiB/h.
+              expr: "100 * max(predict_linear(ascon_container_memory_working_set_bytes{name=\"ascon-anvil\"}[6h], 7 * 86400)) / max(node_memory_MemTotal_bytes)"
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -209,3 +216,312 @@ groups:
         labels: { severity: warning, kind: memory }
         annotations:
           summary: "ascon-anvil's memory, at its 6-hour slope, reaches {{ $values.A.Value | printf \"%.0f\" }}% of the host within 7 days (issue #135: block headers are not bounded by any anvil flag)"
+
+      # A rule whose query returns nothing is green (noDataState: OK), so it cannot report its own
+      # blindness -- which is how both memory rules above watched nothing for a whole rehearsal
+      # (issue #157). The chain container always runs where this stack runs, so its memory series
+      # missing means the container reader is broken, not that there is nothing to read. Guarded on
+      # the exporter answering at all: an exporter that is down is ascon_chain_down's alert (its
+      # noDataState is Alerting), and one fault should page once.
+      - uid: ascon_container_metrics_missing
+        title: Container memory not measured
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: "absent(ascon_container_memory_working_set_bytes{name=\"ascon-anvil\"}) and on() (count(ascon_chain_up) > 0)"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        labels: { severity: warning, kind: memory }
+        annotations:
+          summary: "eris-exporter reports no memory for the ascon-anvil container, so the anvil-growth and agent-OOM alerts are watching nothing. Check `ascon_containers_observed` and the exporter's /host/cgroup and /host/docker-containers mounts (issue #157)"
+
+      # The routine checks of infra/devnet/CHECKLIST.md §3, as alerts (issue #159). Each reads a
+      # `*_recent` gauge -- events whose own timestamp is in the last 10 minutes -- rather than
+      # increase() of a counter: a counter series that first appears non-zero (the first failure of
+      # its kind, or one already in the file when the exporter restarted) has no earlier sample, and
+      # increase() reads it as 0.
+      #
+      # Environment failures: an environment function that did not do its job (CHECKLIST `envfail`:
+      # *_failed / _stuck / _reverted / _incomplete / _exhausted / _capped, realtime_block_error,
+      # flow_process_exited). Two are left to other rules: agent_process_exited has ascon_agent_crash,
+      # and tx_submit_failed -- one flow order that failed to send -- is not the exporter's failure
+      # type at all but a rate (below).
+      - uid: ascon_env_failure
+        title: Environment failure
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: "max by (type) (ascon_env_failures_recent{type!=\"agent_process_exited\"})"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        labels: { severity: critical, kind: environment }
+        annotations:
+          summary: "environment failure `{{ $labels.type }}` ({{ $values.A.Value }} in the last 10 min) — read it in events.jsonl of the current segment (`envfail` in infra/devnet/CHECKLIST.md)"
+
+      # Per-order send failures, as a rate. The rehearsal (#148) saw 1 in 358,970 over 22 h -- a
+      # nonce race, fixed in #155 -- which is not worth a page; a failing sender is. At ~270 flow
+      # sends a minute, 1 % of ten minutes is ~27 failures; the floor of 5 keeps a quiet chain from
+      # paging on one.
+      - uid: ascon_tx_submit_failures
+        title: Flow orders failing to send
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: "100 * (ascon_tx_submit_failed_recent / clamp_min(ascon_flow_tx_recent + ascon_tx_submit_failed_recent, 1)) and (ascon_tx_submit_failed_recent >= 5)"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [1] }
+        labels: { severity: warning, kind: environment }
+        annotations:
+          summary: "{{ $values.A.Value | printf \"%.1f\" }}% of the flow's orders in the last 10 min failed to send (`tx_submit_failed` in events.jsonl)"
+
+      # The flow bot is the market. When its process died nothing was written anywhere (it now writes
+      # flow_process_exited, which ascon_env_failure pages on); this also catches a bot that is alive
+      # and sends nothing. Guarded on blocks being produced: a stalled chain is ascon_devnet_stalled.
+      - uid: ascon_flow_stopped
+        title: Flow bot sent nothing for 10 minutes
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: "(ascon_flow_tx_recent < bool 1) and on(env) (delta(ascon_chain_block_number[10m]) >= 1)"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        labels: { severity: critical, kind: environment }
+        annotations:
+          summary: "blocks are being produced but the flow bot has sent no order in 10 minutes — look for flow_process_exited in events.jsonl and at `journalctl --user -u ascon-devnet`"
+
+      # The canary (CHECKLIST 2.2) is a registered agent run outside the box, as a participant would.
+      # It trades every few minutes, so an hour without a landed transaction means the path a
+      # participant uses -- tunnel, gateway, key, chain -- is broken somewhere. Absent until the canary
+      # is registered in the running period.
+      - uid: ascon_canary_stopped
+        title: Canary has not landed a transaction in an hour
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-rpc
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "ascon_canary_seconds_since_tx", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [3600] }
+        labels: { severity: warning, kind: participant-path }
+        annotations:
+          summary: "canary {{ $labels.agent }} has landed no transaction for {{ $values.A.Value | printf \"%.0f\" }} s — check its host (`systemctl --user status ascon-canary`), then the gateway and the tunnel"
+
+      # anvil stops mining while it writes its state dump (every 5 minutes). Bounded history
+      # (--transaction-block-keeper / --prune-history, issue #135) keeps that stop flat; unbounded, it
+      # grew 9 s -> 18 s in two hours. So the alert is on the trend: the longest interval of the last
+      # hour against the same hour six hours earlier. Timestamps are whole seconds, hence 2 s of slack.
+      - uid: ascon_block_stall_growing
+        title: Block-production stalls are growing
+        condition: C
+        for: 30m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-rpc
+        data:
+          - refId: A
+            relativeTimeRange: { from: 3600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: "max_over_time(ascon_block_interval_max_seconds[1h]) - max_over_time(ascon_block_interval_max_seconds[1h] offset 6h)"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [2] }
+        labels: { severity: warning, kind: chain }
+        annotations:
+          summary: "the longest block interval of the last hour is {{ $values.A.Value | printf \"%.0f\" }} s longer than six hours ago — anvil's dump stall is growing (issue #135); confirm with `node infra/devnet/block-gaps.mjs`"
+
+      # The gateway is what participants reach; anvil being up (ascon_chain_up, read on loopback) says
+      # nothing about the gateway reaching it. rpc_upstream_up is the gateway's own view of its last
+      # upstream call. Guarded on the chain being up, which is the other rule's fault.
+      - uid: ascon_gateway_upstream_down
+        title: RPC gateway cannot reach the chain
+        condition: C
+        for: 1m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-rpc
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: "(min(rpc_upstream_up{env=\"live\"}) < bool 1) and on() (max(ascon_chain_up) == 1)"
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        labels: { severity: critical, kind: gateway }
+        annotations:
+          summary: "rpc-gateway-live's last upstream call failed while anvil answers on loopback — participants get 502 (`docker logs ascon-rpc-gateway-live`)"
+
+      # A jump in key denials: a participant locked out (a revoked or mistyped key retried in a loop),
+      # or the keys file not loading and everyone locked out. Either way someone cannot trade.
+      - uid: ascon_gateway_key_denials
+        title: RPC gateway refusing keys
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-rpc
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "sum(increase(rpc_key_denied_total{env=\"live\"}[10m]))", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [200] }
+        labels: { severity: warning, kind: gateway }
+        annotations:
+          summary: "the gateway refused {{ $values.A.Value | printf \"%.0f\" }} requests for a missing or unknown X-ASCON-Key in 10 min — check `rpc_keys_loaded` and the gateway log for the caller"
+
+      - uid: ascon_dashboard_down
+        title: Dashboard not answering
+        condition: C
+        for: 2m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "ascon_dashboard_up", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+        labels: { severity: critical, kind: dashboard }
+        annotations:
+          summary: "the dashboard's /healthz on :5174 does not answer 200 (`docker logs ascon-dashboard`)"
+
+      # The same page as participants reach it, through the tunnel. Only when ASCON_DASHBOARD_PUBLIC_URL
+      # is set on the exporter; the local probe passing while this fails is the tunnel.
+      - uid: ascon_dashboard_public_down
+        title: Dashboard unreachable from outside
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: ascon-fleet
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model: { refId: A, expr: "ascon_dashboard_public_up", instant: true, intervalMs: 1000, maxDataPoints: 43200 }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+        labels: { severity: warning, kind: dashboard }
+        annotations:
+          summary: "the public dashboard URL does not answer 200 from the box — if ascon_dashboard_up is 1, it is the tunnel (`systemctl status cloudflared`)"

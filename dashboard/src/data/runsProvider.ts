@@ -17,6 +17,7 @@
 //                events.jsonl (lst_block / liquity_block) and are read from there.
 
 import { scoreEpoch } from "@core/scoring/deviationScore";
+import { intervalBoundaryBlocks } from "@core/epochExtent";
 import {
   intervalBlocksOf,
   intervalSeriesOf,
@@ -405,13 +406,19 @@ function buildIntervals(
   // however much has been evicted, and the whole round axis slides with it (the header read
   // "round 14 of 20" on a segment sitting at its twentieth).
   const start = run.live?.firstBlock ?? firstEventBlock(run);
-  if (!(intervalBlocks >= 1) || !(runBlocks >= intervalBlocks) || start === null)
-    return [];
-  const count = Math.floor(runBlocks / intervalBlocks);
+  if (!(intervalBlocks >= 1) || !(runBlocks >= 1) || start === null) return [];
+  // The boundaries the live scorer reads (core/src/epochExtent.ts): the interval grid from the
+  // first block, and the end block -- start + runBlocks, where blocksRemaining reads 0 -- as the
+  // last, closing a short final round when the run is not a multiple of the interval. This used to
+  // lay out floor(runBlocks / intervalBlocks) rounds, the ones the scorer then read.
+  const planned = intervalBoundaryBlocks(
+    start,
+    start + runBlocks,
+    intervalBlocks,
+  );
   const height = chainHeight ?? lastBlock(run);
-  return Array.from({ length: count }, (_, i) => {
-    const fromBlock = start + i * intervalBlocks;
-    const toBlock = fromBlock + intervalBlocks;
+  return planned.slice(1).map((toBlock, i) => {
+    const fromBlock = planned[i];
     const status =
       height >= toBlock
         ? ("done" as const)

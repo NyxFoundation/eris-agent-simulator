@@ -393,6 +393,15 @@ test("redactEventLine: past windows for a continuous world, nothing for a scenar
   assert.equal(redactEventLine("not json", past(1)), "not json");
 });
 
+test("redactEventLine: the operator's agent sandbox warning is not served to the audience", () => {
+  const line = JSON.stringify({
+    type: "agent_sandbox_warning",
+    sharedNetwork: [{ id: "a", network: "host" }],
+  });
+  assert.equal(redactEventLine(line, { kind: "none" }), null);
+  assert.equal(redactEventLine(line, { kind: "past", currentBlock: 10 }), null);
+});
+
 
 // A hosted box keeps every smoke and test run its operator ever made under runs/, and the picker
 // offered all of them to participants under their internal names. The allowlist is the server's

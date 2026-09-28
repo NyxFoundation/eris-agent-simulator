@@ -155,7 +155,8 @@ Compared against the leaderboards of Kaggle, Hyperliquid, Alpha Arena, CTFd and 
 - **A status line** under the title: epochs scored out of the plan, when the table last changed
   (the matrix directory's mtime), whether an epoch is running, and when the next one starts. The
   start comes from the plan's timetable — `npm run competition -- plan … --starts-at <ISO 8601>
-  --every-minutes <N>` stamps every epoch with `startsAt`, and the backtest runner writes the
+  --every-minutes <N>` (or `--ends-at <ISO 8601>`, spreading the k epochs evenly up to it) stamps
+  every epoch with `startsAt`, and the backtest runner writes the
   planned ordinals with their times into `matrix.json` as `schedule` (ordinal and time only; which
   scenario an epoch is stays hidden). Without a timetable the line simply has no "next" part.
 - **Score by epoch**: every agent's cumulative Score after each completed epoch, on one chart. The
@@ -258,9 +259,11 @@ every block — rather than the subject. What an agent trades against is venue s
 series, stats and tables to that interval's blocks, and the header states the window
 (`Interval 03 · blocks 1,296–1,308`, with a link back to the whole run). So "widest cross-venue gap",
 "swap volume", pool depth and the LST redemption rate all answer *for that interval* — the same
-question the interval results answer for the agents. The per-interval volumes add up to less than the
-run's, and should: the scorer drops a trailing partial interval, so the blocks after the last boundary
-belong to no interval.
+question the interval results answer for the agents. The per-interval volumes add up to the
+run's less its first block: an interval is `(fromBlock, toBlock]`, the last boundary is the run's final
+block (where `blocksRemaining` reads 0), and the first block is boundary 0, the state V_0 is read at.
+(Runs recorded before the epoch ended on its final block dropped a trailing partial interval, so the
+blocks after their last boundary belong to no interval.)
 
 The three end-of-run tables are the exception, and say so in their own titles ("at the run's final
 block"): GMX positions, Aave accounts and the venue reserves are a single cross-section taken when
@@ -360,8 +363,8 @@ With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
   own reasoning and their not-yet-included bids, §2.6), raw LLM exchanges (`*.llm.jsonl`) and
   `disclosures/` return 404
 - rewrites `events.jsonl` line by line: `seed` / `flowSeed` leave `run_started_realtime`, the
-  `stress_calibration_warning` (it names crash magnitudes) and `vulnerability_exploited` (regime-7
-  ground truth) lines go, `pool_created` loses `rigged` / `rugBps` / `rugThresholdUnits` /
+  `stress_calibration_warning` (it names crash magnitudes), `vulnerability_exploited` (regime-7
+  ground truth) and `agent_sandbox_warning` (the operator's note on agent container isolation) lines go, `pool_created` loses `rigged` / `rugBps` / `rugThresholdUnits` /
   `baitBps`, any `stderrTail` goes, and `stress_schedule` depends on what the run is: for a
   **continuous** world (a practice period) it keeps only the windows that have **already closed** by
   the run's current block (read off the end of `blocks.csv`) — past windows happened to everyone,

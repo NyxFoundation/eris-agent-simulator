@@ -38,7 +38,9 @@ runs/
 | `runId` | Run identifier |
 | `mode` | `"realtime"` / `"backtest"` (which entry point produced it) |
 | `resetUnit` | `"continuous"` / `"scenario"` ([02 §2.4](02-runtime.md)) |
-| `blockTimeSec` / `blocksProcessed` / `elapsedMs` | Measured execution |
+| `blockTimeSec` / `blocksProcessed` / `elapsedMs` | Measured execution. `blocksProcessed` is the chain blocks the epoch covered (`finalBlock − runStartBlock`; equal to `run.blocks` on a run that ended on its block budget) |
+| `runStartBlock` / `finalBlock` | The epoch's first and last block (its first and last boundary). `finalBlock` is where `blocksRemaining` reads 0 (`core/src/epochExtent.ts`) |
+| `loopIterations` | Passes of the environment loop. Smaller than `blocksProcessed` when a pass catches up several blocks. This used to be written as `blocksProcessed`, and the run ended on this count |
 | `finalFairPriceUsdcPerWeth` | The final fair price |
 | `valueSeries` | Value-series metadata (below) |
 | `agents[].pnlUsdc` / `baseline` | P of rules §4.4.1 (the two ends of the boundary series) and whether the agent is the benchmark (below) |
@@ -246,6 +248,7 @@ The only document handed to self-hosted participants (ADR 0021 §2). Built by `b
 | `status` | `{scored: false, label: "practice", note}` — **stated in the document so a ranking's provenance does not travel separately from the ranking** |
 | `chain` | `rpcUrl` / `readRpcUrl` / `chainId` / `chainMode` / `blockTimeSec` |
 | `round` | The evaluation interval: `intervalBlocks` / `approxSeconds` / `markMedianBlocks` / `scoreEvery` (**both blocks and minutes**). `epochBlocks` is `intervalBlocks` under its old name, kept with the same value until the results are published |
+| `period` | The run's length and the scored-day grid (`sdk/src/periodClock.ts`): `endsAt` / `blocks` (counted from `startBlock`) / `seconds` / `startBlock` / `startedAt` / `dayHours`. `startBlock` and `startedAt` are only in the version written after the coordinator declares the run's start. A self-hosted runtime takes this over any config file's run length |
 | `protocols` / `actions` | The enabled venues and their action vocabulary |
 | `contracts` | **Only the enabled venues' addresses**, plus `priceFeed` and `stableMarkets` |
 | `tokens` | symbol → `{address, decimals, kind}` |

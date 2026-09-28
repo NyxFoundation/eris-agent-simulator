@@ -27,6 +27,11 @@ services:
       - ascon-textfile:/textfile:ro
     ports: ["127.0.0.1:9100:9100"]
 
+  # Blind on the practice box (issue #157): under Docker's containerd image store it cannot identify
+  # a container -- it looks for the read-write layer under image/<driver>/layerdb, which that store
+  # does not write -- so it exports no per-container series at all. Nothing reads its container series
+  # any more; the container memory/CPU that the alerts and the fleet panels use comes from
+  # eris-exporter, which reads the cgroup tree directly.
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     container_name: ascon-cadvisor
@@ -109,10 +114,23 @@ services:
       - ASCON_RPC=http://127.0.0.1:8545
       - ASCON_ENV=live
       - ASCON_TEXTFILE=/textfile/ascon.prom
+      # The canary's agent id(s), whose silence pages after an hour (issue #159). A canary that is not
+      # registered in the running period has no series, so a box without one does not page about it.
+      - ASCON_CANARY_IDS=${ASCON_CANARY_IDS:-ops-canary}
+      - ASCON_DASHBOARD_URL=http://127.0.0.1:5174/healthz
+      # The same dashboard through the tunnel, as participants reach it. Unset = not probed.
+      - ASCON_DASHBOARD_PUBLIC_URL=${ASCON_DASHBOARD_PUBLIC_URL:-}
+      - ASCON_CGROUP_ROOT=/host/cgroup
+      - ASCON_DOCKER_CONTAINERS=/host/docker-containers
     volumes:
       - ./exporter:/app:ro
       - ${ERIS_ROOT:?set ERIS_ROOT in infra/monitoring/.env}/runs:/runs:ro
       - ascon-textfile:/textfile
+      # Container memory and CPU without cAdvisor (issue #157): the cgroup v2 tree for the numbers,
+      # Docker's per-container config.v2.json for the name and the eris.role label. Read-only, and
+      # not the Docker socket -- that would hand this process the daemon.
+      - /sys/fs/cgroup:/host/cgroup:ro
+      - /var/lib/docker/containers:/host/docker-containers:ro
 
   # One-shot. Two jobs, both of which anvil cannot do for itself because it runs as uid 1000:
   #   1. a named volume is created root-owned, so anvil could not write its dump into it;
@@ -170,6 +188,10 @@ services:
       - ascon-chain-state:/chainstate
     # anvil's dump can take a while once the practice chain has grown; do not SIGKILL through it.
     stop_grace_period: 120s
+    # The mnemonic the dev accounts come from (see the command below). From infra/monitoring/.env,
+    # which is gitignored; keep it 0600.
+    environment:
+      - ANVIL_MNEMONIC=${ANVIL_MNEMONIC:-}
     entrypoint: ["sh", "-c"]
     command:
       - |
@@ -199,11 +221,25 @@ services:
         # indexer that falls more than 10 minutes behind loses the transactions it has not read.
         # Not bounded by any flag: block headers, which anvil keeps for every block. The
         # ascon_anvil_mem_growth alert watches the slope that leaves (infra/devnet/README.md).
+        #
+        # The dev accounts come from a mnemonic. Unset, that is anvil's public test mnemonic, whose
+        # keys anyone can read off anvil's banner: fine for a chain nobody else can send to, not for
+        # one behind the gateway, which relays eth_sendRawTransaction (docs/guide/practice-devnet.md,
+        # "The chain's own keys"). It has to be the mnemonic the state dump was deployed with -- the
+        # dump fixes which addresses hold the venues' roles. Passed through the positional
+        # parameters so a phrase with spaces stays one argument; like any argument it is visible in
+        # the host's process list, i.e. to whoever has a shell on the box.
+        set --
+        if [ -n "$${ANVIL_MNEMONIC:-}" ]; then
+          set -- --mnemonic "$$ANVIL_MNEMONIC"
+        else
+          echo "WARNING: ANVIL_MNEMONIC is unset: the dev accounts are anvil's PUBLIC test mnemonic"
+        fi
         anvil --host 0.0.0.0 --port 8545 --code-size-limit 50000 --base-fee 0 \
               --gas-limit 320000000 --accounts 10 --balance 1000000 \
               --load-state /chainstate/state.json --dump-state /chainstate/state.json \
               --state-interval 300 \
-              --transaction-block-keeper 300 --prune-history 300 &
+              --transaction-block-keeper 300 --prune-history 300 "$$@" &
         ANVILPID=$$!
         # PID 1 here is this shell. Without the trap, SIGTERM stops the shell, anvil is orphaned and
         # then SIGKILLed, and the dump is never written (verified A/B: no trap -> 0 bytes + orphan;

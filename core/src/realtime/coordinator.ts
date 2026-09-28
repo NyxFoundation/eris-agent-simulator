@@ -29,6 +29,18 @@ import {
   waitForMiningToSettle,
 } from "@eris/sdk/chain.js";
 import { RUN_START_FILE, writeRunStart } from "@eris/sdk/runStart.js";
+import {
+  AGENT_CONFIG_FIELDS,
+  AGENT_CONFIG_FILE,
+  AGENT_VIEW_DIR,
+  agentNetworkPosture,
+  agentSandboxBanner,
+  agentSandboxWarning,
+  agentViewDir,
+  prepareAgentView,
+  renderAgentConfig,
+  type AgentSandboxWarning,
+} from "./agentView.js";
 import { spawnSync } from "node:child_process";
 import {
   RunLogger,
@@ -114,6 +126,11 @@ import {
 import { waitForAgentsReady } from "./agentsReady.js";
 import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
+import {
+  ensureScenarioKey,
+  scenarioKeyChildEnv,
+  scenarioKeyRecord,
+} from "../scenarioKey.js";
 import { StressAudit } from "./stressAudit.js";
 import {
   deployPriceFeed,
@@ -138,6 +155,7 @@ import {
 } from "./marketRegistry.js";
 import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { LiveScorer } from "./liveScoring.js";
+import { KeyedSerial } from "./keyedSerial.js";
 import {
   diffRegistrations,
   RegistrationsWatcher,
@@ -156,6 +174,7 @@ import {
 } from "./gmxFunding.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import { epochPnlFromSeries } from "../scoring/epochPnl.js";
+import { epochEndBlock, intervalCount, loopStep } from "../epochExtent.js";
 import {
   NoArbMonitor,
   noArbFindings,
@@ -503,6 +522,11 @@ export async function runRealtimeSimulation(
   } = resolveRunInputs(argv, overrides);
   if (configPath) process.env.ERIS_CONFIG = configPath;
 
+  // ADR 0027: the key every scenario stream is drawn under. Installed before anything draws. The
+  // backtest runner installs its --scenario-key first; a plain run reads ERIS_SCENARIO_KEY_FILE,
+  // and with neither it is the public key.
+  const scenarioKey = ensureScenarioKey();
+
   // ADR 0020 §1 fail-fast. `resetUnit: scenario` describes a world per (regime, seed), and only the
   // scenario-matrix runner produces those -- it is the caller that resets between runs, not anything
   // in here. Reaching this from a plain config file would run one continuous world and then stamp
@@ -560,10 +584,7 @@ export async function runRealtimeSimulation(
   // this is a period or a calibration. But it should not be a surprise -- measured, a week
   // unsegmented is a 435MB events.jsonl, a 221MB blocks.csv and 336 rounds in a single bar.
   if (config.segmentHours === 0 && config.runBlocks > SEGMENT_ADVISORY_BLOCKS) {
-    const rounds =
-      config.intervalBlocks > 0
-        ? Math.floor(config.runBlocks / config.intervalBlocks)
-        : 0;
+    const rounds = intervalCount(config.runBlocks, config.intervalBlocks);
     console.error(
       `[run] WARNING: ${config.runBlocks.toLocaleString("en-US")} blocks into one directory ` +
         `(~${Math.round((config.runBlocks * EVENT_BYTES_PER_BLOCK) / 1e6)}MB of events.jsonl` +
@@ -626,6 +647,9 @@ export async function runRealtimeSimulation(
     // which world it was -- which is the one thing needed to replay it.
     seed: config.seed,
     flowSeed: config.flowSeed,
+    // ADR 0027: which key the seed was realized under -- the public one, or the commitment to a
+    // secret one. The seed alone no longer names the world.
+    scenarioKey: scenarioKeyRecord(scenarioKey),
     // ADR 0021 §4: the endpoint the world is on, recorded by the environment. The dashboard's live
     // mode used to discover it from an agent's `runtime_start` log line, which stops working the
     // moment the agents are somebody else's processes on somebody else's machine. Reads go to
@@ -721,6 +745,10 @@ export async function runRealtimeSimulation(
     };
   });
   const agentById = new Map(agentRuntimes.map((a) => [a.id, a]));
+  // A launched agent's id names its view directory (agentView.ts). Refused here, before setup,
+  // rather than at spawn after minutes of it.
+  for (const a of agentRuntimes)
+    if (!a.external && a.privateKey) agentViewDir(logger.runDir, a.id);
 
   // ---- flow-bot process (realtime). Pushes context every block to move the market ----
   // flow is the environment-side market mechanism, so it stays as relay (ADR 0006 "undecided").
@@ -729,7 +757,18 @@ export async function runRealtimeSimulation(
     config.flowBotArgs,
     config.flowSeed,
     logger.runDir,
+    scenarioKeyChildEnv(scenarioKey),
   );
+  // Issue #159: the bot is the environment's market, and it used to die without a word -- the
+  // exporter counts this as an environment failure and the flow-stopped alert follows.
+  flowProcess.onExit = (info) => {
+    logger.event({
+      type: "flow_process_exited",
+      ...info,
+      stderrTail: flowProcess.getStderr().slice(-2000),
+    });
+    console.error(`[flow] ${info.reason}`);
+  };
 
   // ---- flow wallets (per protocol/kind; used by submitIntent / ctx for selection) ----
   const flowWalletMap = new Map<string, FlowWallet>();
@@ -1456,6 +1495,38 @@ export async function runRealtimeSimulation(
     // loopback anvil, so a participant's agent dialled its own machine. Said once, when it matters:
     // a run that expects agents from outside (an external roster entry or a registrations file).
     let loopbackManifestWarned = false;
+    //
+    // The manifest is written a second time once the run's first block is declared, because that is
+    // when the period's clock starts: the block the run's length counts from and the instant the day
+    // grid is cut from, both of which a self-hosted runtime needs (sdk/src/periodClock.ts).
+    let periodStart: { block: number; startedAtMs: number } | undefined;
+    const publishManifest = (): void => {
+      logger.artifact(
+        MANIFEST_FILENAME,
+        buildManifest({
+          config,
+          priceFeed: priceFeedAddress,
+          ...(marketRegistry
+            ? {
+                marketRegistry: marketRegistry.address,
+                lending: marketRegistry.lending,
+                marketRegistryFromBlock: marketRegistry.deployBlock,
+              }
+            : {}),
+          ...(periodStart ? { periodStart } : {}),
+          participants: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            external: a.external,
+            baseline: a.spec.baseline ?? false,
+            description: a.spec.description,
+            ...(a.spec.participant !== undefined
+              ? { participant: a.spec.participant }
+              : {}),
+          })),
+        }),
+      );
+    };
     const publishRoster = (): void => {
       const published = publishedRpc(config);
       if (
@@ -1492,30 +1563,7 @@ export async function runRealtimeSimulation(
             : {}),
         })),
       });
-      logger.artifact(
-        MANIFEST_FILENAME,
-        buildManifest({
-          config,
-          priceFeed: priceFeedAddress,
-          ...(marketRegistry
-            ? {
-                marketRegistry: marketRegistry.address,
-                lending: marketRegistry.lending,
-                marketRegistryFromBlock: marketRegistry.deployBlock,
-              }
-            : {}),
-          participants: agentRuntimes.map((a) => ({
-            id: a.id,
-            address: a.address,
-            external: a.external,
-            baseline: a.spec.baseline ?? false,
-            description: a.spec.description,
-            ...(a.spec.participant !== undefined
-              ? { participant: a.spec.participant }
-              : {}),
-          })),
-        }),
-      );
+      publishManifest();
     };
     publishRoster();
 
@@ -1925,6 +1973,9 @@ export async function runRealtimeSimulation(
     }
 
     // ---- launch agent processes (ADR 0015 §5: uniformly runtime/bot.ts; pass the private key and PriceFeed via env) ----
+    let sandboxWarning: AgentSandboxWarning | null = null;
+    // Each launched agent's view directory (agentView.ts), where run-start.json is also written.
+    const agentViewDirs: string[] = [];
     // Under `docker` every agent goes through infra/docker-agent/run-agent.sh, the one path that
     // applies the rules §2.3 caps. Checked once here rather than discovered per agent: a missing
     // docker would otherwise surface as N `spawn error` early exits that read like agent bugs.
@@ -1944,28 +1995,58 @@ export async function runRealtimeSimulation(
             "without docker pass --agent-sandbox process (backtest) or set run.agentSandbox: process; " +
             "with docker but no per-agent image, set ERIS_AGENT_BINDMOUNT=1 (infra/docker-agent/README.md)",
         );
+      const posture = agentNetworkPosture(process.env);
       logger.event({
         type: "agent_sandbox",
         sandbox: "docker",
         dockerServerVersion: probe.stdout.trim(),
         memory: process.env.ERIS_DOCKER_MEM ?? "4g",
         cpus: process.env.ERIS_DOCKER_CPUS ?? "2",
-        network:
-          process.env.ERIS_AGENT_ISOLATE === "1"
-            ? "per-agent (ERIS_AGENT_ISOLATE)"
-            : (process.env.ERIS_AGENT_NET ?? "host"),
-        egress:
-          process.env.ERIS_AGENT_INTERNAL === "1"
-            ? "closed (--internal)"
-            : "open",
+        network: posture.isolated
+          ? "per-agent (ERIS_AGENT_ISOLATE)"
+          : posture.network,
+        egress: posture.egress === "closed" ? "closed (--internal)" : "open",
       });
+      // Not fatal: local checks and the operator's own reference field run on host networking. But
+      // an agent on a shared network can reach this host's services directly, so a scored run
+      // without isolation has to say so where nobody can scroll past it -- here, and again at the
+      // end. Read per agent, because the switches can sit in a roster entry's env as well.
+      sandboxWarning = agentSandboxWarning(
+        agentRuntimes
+          .filter(
+            (a) =>
+              !a.external && a.privateKey !== null && a.spec.command === undefined,
+          )
+          .map((a) => ({ id: a.id, env: { ...process.env, ...(a.spec.env ?? {}) } })),
+        { segmented: segments !== null },
+      );
+      if (sandboxWarning) {
+        logger.event({
+          type: "agent_sandbox_warning",
+          ...sandboxWarning,
+          liveWeek:
+            "ERIS_AGENT_ISOLATE=1 + ERIS_AGENT_INTERNAL=1, agents pointed at the RPC gateway " +
+            "(infra/docker-agent/ISOLATION.md)",
+        });
+        console.error(agentSandboxBanner(sandboxWarning));
+      }
     } else {
       logger.event({
         type: "agent_sandbox",
         sandbox: "process",
-        note: "agents run as plain child processes: no CPU/memory caps and no egress control (rules §2.3 are not enforced here)",
+        note:
+          "agents run as plain child processes: no CPU/memory caps, no egress control and the " +
+          "operator's filesystem (rules §2.3 are not enforced here, and this is not an isolation boundary)",
       });
     }
+    // What every launched agent is handed instead of the coordinator's config (agentView.ts): the
+    // same file for all of them, one copy per view directory.
+    const agentConfigText = renderAgentConfig(config);
+    logger.event({
+      type: "agent_config",
+      file: `${AGENT_VIEW_DIR}/<agentId>/${AGENT_CONFIG_FILE}`,
+      fields: [...AGENT_CONFIG_FIELDS],
+    });
     const agentStateRoot = agentStateRootFromEnv();
     for (const agent of agentRuntimes) {
       if (agent.external || !agent.privateKey) {
@@ -1987,6 +2068,8 @@ export async function runRealtimeSimulation(
       const stateDir = agentStateRoot
         ? prepareAgentState(agentStateRoot, agent.id, runId)
         : undefined;
+      const view = prepareAgentView(logger.runDir, agent.id, agentConfigText);
+      agentViewDirs.push(view.dir);
       if (stateDir)
         logger.event({
           type: "agent_state_dir",
@@ -2002,7 +2085,12 @@ export async function runRealtimeSimulation(
         config.agentsDir,
         config.runBlocks,
         agentExtraEnv,
-        { sandbox: config.agentSandbox, ...(stateDir ? { stateDir } : {}) },
+        {
+          sandbox: config.agentSandbox,
+          configPath: view.configPath,
+          viewDir: view.dir,
+          ...(stateDir ? { stateDir } : {}),
+        },
       );
       // An agent that dies mid-run silently stops trading, which reads in summary.json exactly like
       // an agent that chose not to trade. Record it so the two can be told apart.
@@ -2116,12 +2204,19 @@ export async function runRealtimeSimulation(
     };
 
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
+    // Batches are relayed fire-and-forget (below), so one that outlasts the block overlaps the next,
+    // and two sends from one wallet then resolve the same pending nonce: the later is refused as
+    // `replacement transaction underpriced` and its order is lost (issue #148). Sequential per
+    // wallet, concurrent across wallets.
+    const flowSendSerial = new KeyedSerial();
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
       const submitted: Hex[] = [];
       const intents = flowOrdersToIntents(ctx, orders);
       for (const intent of intents) {
         try {
-          const hashes = await submitIntent(ctx, intent, latestStateById);
+          const hashes = await flowSendSerial.run(intent.ownerId, () =>
+            submitIntent(ctx, intent, latestStateById),
+          );
           submitted.push(...hashes);
           for (const hash of hashes) {
             submittedByHash.record(hash.toLowerCase(), {
@@ -2426,14 +2521,28 @@ export async function runRealtimeSimulation(
       extraBaseFair[b] = openingFair[b];
       extraAnchor[b] = openingFair[b];
     }
-    let processedBlocks = 0;
+    // Passes of the block handler. Not the run's length: one pass covers every block mined since the
+    // previous one, so a loop that falls behind makes fewer passes than the chain makes blocks. The
+    // run ends on a chain block (endBlock below), never on this count.
+    let loopIterations = 0;
     let processing = false;
+    // The pass in progress, so the run's end waits for it: a wall-clock limit fires between passes
+    // or in the middle of one, and the end block is the last block a *completed* pass processed.
+    let inFlight: Promise<void> = Promise.resolve();
     // Fresh, not viem's 4 s cache: this is what runStartBlock is derived from, and a value from
     // before the flush above would put the flushed blocks inside the run.
     let lastProcessedBlock = Number(
       await publicClient.getBlockNumber({ cacheTime: 0 }),
     );
     const runStartBlock = lastProcessedBlock + 1;
+    // The epoch ends on this chain block (epochExtent.ts): processed, valued as the last boundary,
+    // and the block every agent sees `blocksRemaining === 0` at, counted from the same declared start.
+    // Null for a run bounded only by the wall clock, which ends wherever its last pass got to.
+    const endBlock = epochEndBlock(runStartBlock, config.runBlocks);
+    // One instant for everything that starts the period's clock: run-start.json, the segment grid
+    // and the manifest all carry it, so a runtime's day end and the coordinator's roll are computed
+    // from the same number rather than from three Date.now() calls a few milliseconds apart.
+    const runStartedAtMs = Date.now();
     // Issue #117: tell the agents. Their env was built before this block existed, so the run
     // directory (which they already hold as ERIS_RUN_DIR and write their logs to) carries it. An
     // agent that counts `blocksRemaining` from the first block *it* saw charged the backlog flush
@@ -2443,12 +2552,25 @@ export async function runRealtimeSimulation(
     const runStartRecord = writeRunStart(logger.runDir, {
       runStartBlock,
       runBlocks: config.runBlocks,
+      startedAtMs: runStartedAtMs,
     });
+    // And into each agent's view directory, which is the run directory a containerised agent sees.
+    // Same instant as the run directory's copy, so a containerised agent's day end matches.
+    for (const dir of agentViewDirs)
+      writeRunStart(dir, {
+        runStartBlock,
+        runBlocks: config.runBlocks,
+        startedAtMs: runStartedAtMs,
+      });
     logger.event({
       type: "run_start_declared",
       runStartBlock,
       runBlocks: config.runBlocks,
+      ...(endBlock !== null ? { endBlock } : {}),
       file: RUN_START_FILE,
+      // The origin of the day grid when segmenting (ADR 0021 §6): day k ends at this + (k + 1) x
+      // run.segmentHours.
+      startedAt: runStartRecord.startedAt,
       writtenAt: runStartRecord.writtenAt,
     });
 
@@ -2464,6 +2586,7 @@ export async function runRealtimeSimulation(
       activeStables: activeStables(),
       priceFeed: priceFeedAddress,
       runStartBlock,
+      endBlock,
       intervalBlocks: config.intervalBlocks,
       markMedianBlocks: config.markMedianBlocks,
       // Venue state at each boundary, so a live viewer has something to draw before market.json
@@ -2471,7 +2594,9 @@ export async function runRealtimeSimulation(
       // enough for that to be the richer artifact.
       sampleMarket: true,
     });
-    if (segments) segments.noteFirstBlock(runStartBlock);
+    if (segments) segments.noteFirstBlock(runStartBlock, runStartedAtMs);
+    periodStart = { block: runStartBlock, startedAtMs: runStartedAtMs };
+    publishManifest();
 
     // ---- registrations that arrive mid-period (ADR 0021 §2, rules §2.7) ----
     // The trial devnet runs for weeks and participants register throughout. Restarting the
@@ -2706,6 +2831,7 @@ export async function runRealtimeSimulation(
         scoreEvery: config.scoreEvery,
         seed: config.seed,
         flowSeed: config.flowSeed,
+        scenarioKey: scenarioKeyRecord(scenarioKey),
         rpcUrl: config.readRpcUrl,
         // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
         // hosted dashboard's public view reads it before summary.json exists, to decide how much of
@@ -2845,11 +2971,22 @@ export async function runRealtimeSimulation(
           ? setLongTimeout(finish, effectiveRunSeconds * 1000)
           : undefined;
 
-      const onBlock = async (bn: number): Promise<void> => {
+      const onBlock = async (notifiedBn: number): Promise<void> => {
         if (processing || finished) return;
         processing = true;
+        let settle: () => void = () => {};
+        inFlight = new Promise<void>((resolve) => (settle = resolve));
+        // Clamped to the epoch: a pass told about a head past the end block processes through the
+        // end block and no further, and is the run's last (epochExtent.ts). Every task below reads
+        // [fromBlock, bn], so nothing after the bell is valued, scheduled or observed.
+        const step = loopStep({
+          lastProcessedBlock,
+          notifiedBlock: notifiedBn,
+          endBlock,
+        });
+        const bn = step.block;
         try {
-          const fromBlock = lastProcessedBlock + 1;
+          const fromBlock = step.fromBlock;
           lastProcessedBlock = Math.max(lastProcessedBlock, bn);
 
           // Advance the market one step (RNG updates once per iteration; later parallel tasks share only the values).
@@ -3578,7 +3715,9 @@ export async function runRealtimeSimulation(
           // ADR 0021 §6: cut the output, never the chain. Checked after the boundary read so a
           // segment that ends on one keeps it -- the next segment carries it as its own first
           // boundary, which is what stops each segment losing an interval at the seam.
-          if (bn >= runStartBlock && segments?.dueToRoll())
+          // Not on the last pass: the run's end closes the final segment itself, and a roll on the
+          // end block would open a segment with nothing in it.
+          if (!step.final && bn >= runStartBlock && segments?.dueToRoll())
             await rollSegment(bn);
 
           const [keeperMs, oracleMs, stateFlowMs] = results;
@@ -3603,6 +3742,8 @@ export async function runRealtimeSimulation(
             type: "round_timing",
             blockNumber: bn,
             blocksCaughtUp: Math.max(0, bn - fromBlock + 1),
+            // The head this pass was told about, when the end block cut it short.
+            ...(notifiedBn !== bn ? { notifiedBlock: notifiedBn } : {}),
             keeperMs,
             oracleMs,
             stateFlowMs,
@@ -3621,9 +3762,7 @@ export async function runRealtimeSimulation(
             totalMs: Date.now() - roundStart,
           });
 
-          processedBlocks++;
-          if (config.runBlocks > 0 && processedBlocks >= config.runBlocks)
-            finish();
+          loopIterations++;
         } catch (error) {
           logger.event({
             type: "realtime_block_error",
@@ -3632,6 +3771,11 @@ export async function runRealtimeSimulation(
           });
         } finally {
           processing = false;
+          settle();
+          // The end block has been processed -- or its pass failed, which does not move the end:
+          // a pass after it would only cover blocks past the bell. A boundary the failed pass did
+          // not reach is read by liveScorer.close() below.
+          if (step.final) finish();
         }
       };
 
@@ -3645,6 +3789,9 @@ export async function runRealtimeSimulation(
       });
     });
 
+    // A wall-clock limit can end the run in the middle of a pass. Let it finish, so the end block
+    // below is one that was actually processed and nothing is still writing when the teardown starts.
+    await inFlight;
     stressAudit.finish();
     const elapsedMs = Date.now() - startTime;
 
@@ -3653,16 +3800,21 @@ export async function runRealtimeSimulation(
     flowProcess.close();
     if (!external) await setIntervalMining(publicClient, 0);
 
-    // The last block anyone competed on, captured *before* the teardowns below. Everything after it
-    // is the environment putting the chain back, and scoring across those blocks would score the
-    // teardown: a depeg restore buys the stable back to par (issue #27), so an agent that never
-    // unwound would be marked at par and holding through the end would cost nothing -- which is
-    // exactly the risk the regime exists to create. Nothing agents did lands after this point,
-    // because they were stopped one line above.
-    // Fresh for the same reason as runStartBlock: viem's cached read can be a block or two old.
-    const finalBlock = Number(
-      await publicClient.getBlockNumber({ cacheTime: 0 }),
-    );
+    // The epoch's last block: the end block on a run with a block budget (the pass loop is clamped to
+    // it), otherwise the last block a completed pass processed. Everything after it is outside the
+    // epoch -- orders the agents sent after the bell, and the environment putting the chain back.
+    // Scoring across the teardown would score it: a depeg restore buys the stable back to par (issue
+    // #27), so an agent that never unwound would be marked at par and holding through the end would
+    // cost nothing -- which is exactly the risk the regime exists to create. The teardowns below are
+    // sent after this block has been mined, so none of them can land on it.
+    //
+    // It used to be the chain head read here, after the agents were stopped. That was up to a pass's
+    // worth of blocks past the last block the loop had processed, and on a loaded host the loop
+    // itself ran up to 72 blocks past the point where the agents had read `blocksRemaining` 0.
+    const finalBlock = lastProcessedBlock;
+    // The last boundary is the end block itself (epochExtent.ts). Read here if the last pass did not
+    // get to it: a wall-clock end off the interval grid, or a final pass that failed before its read.
+    await liveScorer.close(finalBlock);
 
     // ---- liquidity-pull teardown (issue #52): the run can end with a window still open, since the
     // schedule may place it against the last block and the time limit can cut in mid-window. Restore
@@ -4089,7 +4241,12 @@ export async function runRealtimeSimulation(
       // different competitions together.
       resetUnit: config.resetUnit,
       blockTimeSec: config.blockTimeSec,
-      blocksProcessed: processedBlocks,
+      // Chain blocks the epoch covered after its first (= run.blocks when it ended on its block
+      // budget), not passes of the loop: a loop that catches up covers several blocks per pass.
+      blocksProcessed: Math.max(0, finalBlock - runStartBlock),
+      loopIterations,
+      runStartBlock,
+      finalBlock,
       ...(schedule.hasEvents() ? { stressEvents: stressAudit.summaries() } : {}),
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
@@ -4143,8 +4300,11 @@ export async function runRealtimeSimulation(
       );
     logger.event({ type: "run_completed", runId, runDir: logger.runDir });
     console.error(
-      `realtime simulation completed: ${logger.runDir} (${processedBlocks} blocks, ${Math.round(elapsedMs / 1000)}s)`,
+      `realtime simulation completed: ${logger.runDir} (blocks ${runStartBlock}..${finalBlock}, ` +
+        `${loopIterations} passes, ${Math.round(elapsedMs / 1000)}s)`,
     );
+    // Repeated, because the startup copy has scrolled out of sight by now.
+    if (sandboxWarning) console.error(agentSandboxBanner(sandboxWarning));
   } finally {
     try {
       if (config.chainMode !== "external")

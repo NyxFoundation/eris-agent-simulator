@@ -38,7 +38,9 @@ runs/
 | `runId` | run 識別子 |
 | `mode` | `"realtime"` / `"backtest"`（どの入口から来たか） |
 | `resetUnit` | `"continuous"` / `"scenario"`（[02 §2.4](02-runtime.md)） |
-| `blockTimeSec` / `blocksProcessed` / `elapsedMs` | 実行の実測 |
+| `blockTimeSec` / `blocksProcessed` / `elapsedMs` | 実行の実測。`blocksProcessed` はエポックが覆ったチェーンブロック数（`finalBlock − runStartBlock`。ブロック数で終わった run では `run.blocks` と一致） |
+| `runStartBlock` / `finalBlock` | エポックの最初と最後のブロック（最初と最後の境界）。`finalBlock` は `blocksRemaining` が 0 になるブロック（`core/src/epochExtent.ts`） |
+| `loopIterations` | 環境ループのパス数。1 パスが遅れを追いついて複数ブロックを覆うと `blocksProcessed` より小さくなる。以前はこれが `blocksProcessed` として書かれ、run の終わりもこの数で決まっていた |
 | `finalFairPriceUsdcPerWeth` | 最終 fair price |
 | `valueSeries` | 価値系列のメタ（下記） |
 | `agents[].pnlUsdc` / `baseline` | 規約 §4.4.1 の P（境界の両端）と、ベンチマークかどうか（下記） |
@@ -246,6 +248,7 @@ runs/
 | `status` | `{scored: false, label: "practice", note}` — **順位の出自が順位と別々に流通しないよう文書自体に書く** |
 | `chain` | `rpcUrl` / `readRpcUrl` / `chainId` / `chainMode` / `blockTimeSec` |
 | `round` | 評価区間。`intervalBlocks` / `approxSeconds` / `markMedianBlocks` / `scoreEvery`（ブロックと分の**両方**を出す）。`epochBlocks` は `intervalBlocks` の旧名で、結果発表まで同じ値で残す |
+| `period` | run の長さと採点日の格子（`sdk/src/periodClock.ts`）: `endsAt` / `blocks`（`startBlock` から数える）/ `seconds` / `startBlock` / `startedAt` / `dayHours`。`startBlock` と `startedAt` は coordinator が run の開始を宣言した後の版にだけ入る。自己ホストの runtime はこれを設定ファイルの run 長より優先する |
 | `protocols` / `actions` | 有効な venue と、その venue のアクション語彙 |
 | `contracts` | **有効な venue のアドレスのみ** + `priceFeed` + `stableMarkets` |
 | `tokens` | symbol → `{address, decimals, kind}` |

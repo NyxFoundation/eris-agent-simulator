@@ -130,16 +130,18 @@ $EDITOR config/registrations.yaml        # on the box: ~/workspace/eris-agent-si
 # 2. issue their service token
 infra/access/issue-token.sh alice        # -> ~/ascon-participant-tokens/alice.env (0600)
 
-# 3. build the handout manifest — --public-rpc or it names *their* loopback
+# 3. build the handout manifest — --public-rpc or it names *their* loopback, --from-run or it has
+#    no PriceFeed and no period start (the running period's own manifest; see docs/guide/practice-devnet.md)
 npm run manifest -- --config config/practice.yaml \
-  --public-rpc https://ascon-rpc.nyx.foundation/ --out ~/ascon-handout/manifest.json
+  --public-rpc https://ascon-rpc.nyx.foundation/ --from-run runs/<period> \
+  --out ~/ascon-handout/manifest.json
 ```
 
 Hand over `alice.env` + `manifest.json`. They use them as:
 
 ```sh
 set -a; . alice.env; set +a                 # CF_ACCESS_CLIENT_ID / _SECRET
-ERIS_MANIFEST=manifest.json node --import tsx example/agents/runtime/bot.ts
+ERIS_MANIFEST=manifest.json ERIS_CONFIG=config/practice.yaml node --import tsx example/agents/runtime/bot.ts
 ```
 
 ### Confirm it took, rather than assuming

@@ -94,26 +94,65 @@ grep -q 'FOUNDRY_LINT_LINT_ON_BUILD' "${HOME_DIR}/.bashrc" 2>/dev/null || \
 log "checkout"
 sudo -u "$ASCON_USER" -H bash -lc "
   set -e
-  mkdir -p '${HOME_DIR}/workspace' '${ASCON_LOGS}/rpc'
+  mkdir -p '${HOME_DIR}/workspace'
   [ -d '${ERIS_ROOT}/.git' ] || git clone --depth 50 '${ERIS_REPO}' '${ERIS_ROOT}'
   cd '${ERIS_ROOT}' && git fetch --depth 50 origin '${ERIS_REF}' && git checkout '${ERIS_REF}' && git pull --ff-only
 "
 
+log "host paths the compose stack bind-mounts"
+# Every directory infra/monitoring/docker-compose.yml bind-mounts from the host, created here as the
+# service user. Docker creates a missing bind source itself, as root:root 755, and each of these is
+# written by something that runs as ${ASCON_USER}:
+#   runs/                     the coordinator (promtail and eris-exporter mount it read-only). Left
+#                             to compose, the first start died with `EACCES: mkdir 'runs/<id>'` and
+#                             the unit spent its three starts in 90 s (issue #158)
+#   ascon-logs/rpc            the gateways' call logs
+#   ascon-participant-tokens  infra/access/issue-key.sh's default output, which the live gateway
+#                             mounts as ASCON_KEYS_DIR. 0700: the handout CSV lands beside the digests
+# venues-state.json is the one bind source not created here, on purpose: compose refuses to invent
+# it (create_host_path: false) and anvil-state-init says what to run instead.
+ASCON_KEYS_DIR="${HOME_DIR}/ascon-participant-tokens"
+sudo -u "$ASCON_USER" mkdir -p "${ERIS_ROOT}/runs" "${ASCON_LOGS}/rpc" "${ASCON_KEYS_DIR}"
+chmod 700 "${ASCON_KEYS_DIR}"
+# On a box where compose already ran, these exist as root. Hand them back rather than leave the trap.
+chown "${ASCON_USER}:${ASCON_USER}" "${ERIS_ROOT}/runs" "${ASCON_LOGS}" "${ASCON_LOGS}/rpc" "${ASCON_KEYS_DIR}"
+
 log "infra/monitoring/.env"
 # These used to be hard-coded to /home/gohan in docker-compose.yml, which is what tied the stack to
-# one box. Compose now fails loudly if they are unset.
-sudo -u "$ASCON_USER" tee "${ERIS_ROOT}/infra/monitoring/.env" >/dev/null <<ENVEOF
-ERIS_ROOT=${ERIS_ROOT}
-ASCON_LOGS=${ASCON_LOGS}
-ENVEOF
+# one box. Compose now fails loudly if they are unset. Only missing keys are added: the operator
+# writes more into this file later (ERIS_DASHBOARD_COMPETITIONS, a different ASCON_KEYS_DIR), and a
+# re-run of this script must not take those back.
+MON_ENV="${ERIS_ROOT}/infra/monitoring/.env"
+sudo -u "$ASCON_USER" touch "$MON_ENV"
+for kv in "ERIS_ROOT=${ERIS_ROOT}" "ASCON_LOGS=${ASCON_LOGS}" "ASCON_KEYS_DIR=${ASCON_KEYS_DIR}"; do
+  grep -q "^${kv%%=*}=" "$MON_ENV" || echo "$kv" | sudo -u "$ASCON_USER" tee -a "$MON_ENV" >/dev/null
+done
 
-log "systemd units"
-sed -e "s#%h/workspace/eris-agent-simulator#${ERIS_ROOT}#g" \
-    -e "s#^Environment=PATH=.*#Environment=PATH=${HOME_DIR}/.foundry/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin#" \
-    "${ERIS_ROOT}/infra/devnet/ascon-devnet.service" > /etc/systemd/system/ascon-devnet.service
-sed -i "s#^\(\[Service\]\)#\1\nUser=${ASCON_USER}#" /etc/systemd/system/ascon-devnet.service
-sed -i "s#^WantedBy=default.target#WantedBy=multi-user.target#" /etc/systemd/system/ascon-devnet.service
-systemctl daemon-reload
+log "systemd user unit"
+# A user unit, as infra/devnet/README.md installs it and as every `systemctl --user` command in the
+# docs, the checklist and the stall alert addresses. This used to install a *system* unit instead,
+# so on a bootstrapped box each of those commands talked to a unit that did not exist, and a drop-in
+# under ~/.config/systemd/user/ascon-devnet.service.d/ was never read (issue #158).
+#
+# Linked unchanged: WorkingDirectory, PATH and ExecStartPre are all under %h, which is ${HOME_DIR}.
+if [ -f /etc/systemd/system/ascon-devnet.service ]; then
+  if systemctl is-active --quiet ascon-devnet.service; then
+    # Stopping it ends the period (infra/devnet/README.md). That is an operator's call, not a script's.
+    echo "WARNING: the system unit an earlier bootstrap installed is running the period; left as it is." >&2
+    echo "         Move to the user unit at the next planned restart: stop it, then re-run this script." >&2
+  else
+    systemctl disable ascon-devnet.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/ascon-devnet.service
+    systemctl daemon-reload
+  fi
+fi
+sudo -u "$ASCON_USER" mkdir -p "${HOME_DIR}/.config/systemd/user"
+sudo -u "$ASCON_USER" ln -sf "${ERIS_ROOT}/infra/devnet/ascon-devnet.service" \
+  "${HOME_DIR}/.config/systemd/user/ascon-devnet.service"
+# User units die with the last session unless the user lingers, and the box is headless.
+loginctl enable-linger "$ASCON_USER"
+# Picks the link up now if the user manager is already running; otherwise it reads it when it starts.
+systemctl --user -M "${ASCON_USER}@" daemon-reload 2>/dev/null || true
 # not enabled here: the period starts when an operator starts it, not when the box boots.
 
 log "cron: anvil tmp cleanup"

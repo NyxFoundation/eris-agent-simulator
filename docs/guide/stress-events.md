@@ -220,15 +220,12 @@ USDC the wave paid, USDC it took back).
 | `flipProb: p` | `crash` `spike` | The seed turns the shock the other way with probability `p`; the resolved event reads `type: spike, flippedFrom: crash`. The regime keeps its lean; its name no longer says which side to stand on. Leave it unset where victims are configured (an upward crash breaches nobody; the coordinator warns when no crash resolves) |
 | `recoverFrac: [min, max]` | `crash` `spike` | Share of the gap the decay closes; the rest stays to the end of the run. Without it every gap heals on a fixed clock and "fade any move, close it when the window does" is right by construction -- the hole `persist` closed for depeg. **Not for a continuous economy**: a residual there stays for weeks and compounds with the next one (the same reason `persist` and `repriceAnchor` stay out of `config/practice.yaml`) |
 
-**The seed is hashed once a schedule asks it for more.** A schedule that uses any of `count`, a
-drawn trapezoid, `flipProb`, `recoverFrac`, `venue: random` or `repriceAnchorProb` seeds its Rng
-from a hashed seed. The Rng is an LCG whose *first* output barely moves between nearby seeds: on the
-published seeds 101-505 the first event's magnitude drew from the bottom quarter of its range five
-times out of five, in every regime (a crash of 15.6-16.8% out of [15%, 22%]). A schedule that uses
-none of them keeps the raw seed, byte for byte, so a running practice period's windows do not move
-on an upgrade.
+**Schedules draw from keyed streams (ADR 0027).** The scenario key decides the draws; the seed
+and a salt only name the stream. A schedule that uses any of `count`, a drawn trapezoid,
+`flipProb`, `recoverFrac`, `venue: random` or `repriceAnchorProb` also mixes its event list into the
+salt; one that uses none draws from the stream of the seed alone.
 
-The hash takes the event list as well as the seed. With the seed alone, regimes whose lists differ
+The salt takes the event list as well as the seed. With the seed alone, regimes whose lists differ
 only in a type or a flag drew the same numbers: `crash#s` and `spike#s` opened on the same block
 with the same size and recovery and flipped together, and `depeg` / `depeg-persist` and
 `lending-incident` / `cdp-incident` paired the same way. The hidden set gives every regime the same

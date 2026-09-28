@@ -17,6 +17,12 @@ eris-dashboard-sync.timer     rebuilds the hosted dashboard           (infra/das
 
 ## Install (once, on the box that hosts it)
 
+On a box provisioned with [infra/provision/bootstrap.sh](../provision/bootstrap.sh) the link and the
+linger below are already in place, and so is `runs/` (owned by the service user — left to compose it
+is created as root and the first start dies with `EACCES`); what is left is the seed and
+`enable --now`. The unit is a **user** unit everywhere, which is what every `systemctl --user` below
+and in [CHECKLIST.md](CHECKLIST.md) addresses.
+
 ```sh
 # The period's seed. Not the one in config/practice.yaml: that file is public, and the price walk, the
 # flow and every event window follow from the seed, so the committed one publishes all of them. Draw
@@ -24,6 +30,13 @@ eris-dashboard-sync.timer     rebuilds the hosted dashboard           (infra/das
 # start without it.
 echo "ERIS_PRACTICE_SEED=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')" > ~/workspace/eris-agent-simulator/.env.practice
 chmod 600 ~/workspace/eris-agent-simulator/.env.practice
+
+# The period's scenario key (ADR 0027): the seed names the world, the key realizes it. Generate it
+# on this box, keep it off the repo, back it up, and publish only the commitment keygen prints. The
+# unit refuses to start without it.
+mkdir -p ~/.eris-secrets && chmod 700 ~/.eris-secrets
+(cd ~/workspace/eris-agent-simulator && npm run -s competition -- keygen ~/.eris-secrets/practice-scenario-key.yaml)
+echo "ERIS_SCENARIO_KEY_FILE=$HOME/.eris-secrets/practice-scenario-key.yaml" >> ~/workspace/eris-agent-simulator/.env.practice
 
 mkdir -p ~/.config/systemd/user
 ln -sf ~/workspace/eris-agent-simulator/infra/devnet/ascon-devnet.service ~/.config/systemd/user/
@@ -63,6 +76,7 @@ production start, and the daily and weekly routine. `block-gaps.mjs` (cadence an
 | `ERIS_PUBLIC_RPC_URL` | `.env.local` | the gateway participants dial (`https://ascon-rpc.nyx.foundation/`). The `manifest.json` the dashboard serves at `/runs/manifest.json` names it; unset, it names `ANVIL_RPC_URL` — this box's loopback — and every self-hosted agent dials its own machine (issue #156) |
 | the period | `config/practice.yaml` | the roster, the episodes, the evaluation-interval length (`intervalSeconds`) |
 | the seed | `.env.practice` (`ERIS_PRACTICE_SEED=`) | **gitignored; the unit will not start without it.** Publish it after the period (rules §7.2) |
+| the scenario key | `.env.practice` (`ERIS_SCENARIO_KEY_FILE=`, a file from `competition -- keygen`) | **outside the repo; the unit will not start without it.** The run records only its commitment (ADR 0027) |
 | venue state | `backtest/state/venues-state.json` | **gitignored, and the chain container mounts it** |
 
 `.env.local` is read in-process (`core/src/cli/bootstrapEnv.ts`) relative to the working directory,
@@ -127,6 +141,12 @@ The chain is reachable and has not produced a block in ten minutes. It fires aft
 `ascon_chain_up == 1` guard keeps it quiet when the node itself is gone, because that is the other
 rule's alert and two pages for one fault is how a channel gets muted.
 
+The rest of what the daily check used to read by hand is also an alert now (issue #159): an
+environment failure in `events.jsonl`, the flow bot stopping (its process exit is now an event,
+`flow_process_exited`), the canary going quiet for an hour, dump stalls growing, the gateway losing the
+chain or refusing keys, and the dashboard not answering. The table at the end of
+[CHECKLIST.md](CHECKLIST.md) §3 lists them against the manual lines they replaced.
+
 ## A month on one anvil (issue #135)
 
 Measured on a 16-vCPU box (anvil 1.8.1) with `config/practice.yaml`'s load — nine resident agents,
@@ -147,7 +167,9 @@ numbers are in the issue #135 PR; what they decided is in the compose file:
 - **Not bounded by any flag: block headers.** anvil keeps one for every block, so memory still grows
   after the plateau. `ascon_anvil_mem_growth` fires when the chain container's six-hour slope reaches
   80 % of the host within a week — enough warning to schedule a restart (which is a new period) or a
-  bigger box.
+  bigger box. It reads eris-exporter's `ascon_container_memory_working_set_bytes`: the practice box runs
+  Docker's containerd image store, under which cAdvisor exports no per-container series, so until
+  issue #157 this rule was evaluating no data — green — while the rehearsal's anvil grew 0.11 GiB/h.
 - **No per-block state files on this version.** `~/.foundry/anvil/tmp/anvil-state-*` (6 MB a block on
   macOS anvil 1.7.1, and the ENOSPC incidents in CLAUDE.md) stayed empty on 1.8.1 under the same load,
   and `--prune-history` persists no state to disk at all whichever version runs.
@@ -263,7 +285,7 @@ hung process and a stray flow bot per scenario is a hundred of each by the end.
 Until the root cause is fixed, bound it and sweep afterwards:
 
 ```sh
-timeout 3h npm run backtest -- --scenarios plan.yaml --port 8547
+timeout 3h npm run backtest -- --scenarios plan.yaml --scenario-key <key.yaml|public> --port 8547
 pkill -f 'core/src/flow/market-maker'      # the children that keep it open
 ```
 
@@ -283,7 +305,9 @@ block 1222 and scenario 2 started at 1163. Nothing but a revert does that.
 ```sh
 export PATH="$HOME/.foundry/bin:$PATH"     # anvil is not on a non-interactive PATH
 export ERIS_AGENT_BINDMOUNT=1              # see below — without it most of the field cannot start
-timeout 5h npm run backtest -- --scenarios <plan.yaml> --port 8547
+# A plan (epochs:) refuses to start without its scenario key (ADR 0027): the operator's key file for
+# the live week, `public` for a rehearsal on the public key.
+timeout 5h npm run backtest -- --scenarios <plan.yaml> --scenario-key <key.yaml|public> --port 8547
 ```
 
 ### Four ways this run produces a green result that means nothing

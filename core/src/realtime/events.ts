@@ -370,29 +370,26 @@ export class EventSchedule {
     const anchorOf = configs.map((c, i) => resolveAnchor(configs, i));
     // An Rng independent of the price main path and flow. The same SEED deterministically yields the same schedule.
     //
-    // The Rng is an LCG, and its *first* output barely moves between nearby seeds: seeds Δ apart
-    // start a·Δ/2³² apart, so seeds 1-200 all land inside ~10% of [0, 1). Measured on the published
-    // seeds 101-505: the first event's magnitude drew u = 0.09-0.25 on all five, in every regime
-    // (a crash of 15.6-16.8% out of [15%, 22%], five times). A schedule that uses any of the
-    // variation keys (count, drawn trapezoids, flipProb, recoverFrac, venue: random,
-    // repriceAnchorProb) is a new schedule anyway, so it takes a hashed seed. One that uses none
-    // keeps the raw one, byte for byte -- the practice period's windows are a function of its
-    // secret seed, and an upgrade must not move them.
     //
-    // The hash also takes the event list itself. With the seed alone, two regimes whose lists
-    // differ only in a type or a flag drew the same numbers for the same seed: crash#s and spike#s
-    // opened on the same block with the same size and recovery and flipped together (so on the
-    // published seeds, where 4 of 6 crash gaps flipped up, the spike regime mostly fell), and
-    // depeg / depeg-persist and lending-incident / cdp-incident paired the same way. The hidden set
-    // gives every regime the same seed list, so an agent carrying state across epochs could match a
-    // shock's first block against one it had already watched play out. Mixing the list in makes
-    // each regime's draws its own; the price of it is that editing any value in a regime reshuffles
-    // all of its draws, which a changed regime does anyway.
-    const salted = (seed ^ STRESS_SEED_SALT) >>> 0;
-    const rng = new Rng(
+    // A keyed stream (ADR 0027): the scenario key decides the draws, and (seed, salt) only names
+    // the stream. A schedule that uses any of the variation keys (count, drawn trapezoids,
+    // flipProb, recoverFrac, venue: random, repriceAnchorProb) also takes the event list into the
+    // salt. With the seed alone, two regimes whose lists differ only in a type or a flag drew the
+    // same numbers for the same seed: crash#s and spike#s opened on the same block with the same
+    // size and recovery and flipped together, and depeg / depeg-persist and lending-incident /
+    // cdp-incident paired the same way. The hidden set gives every regime the same seed list, so an
+    // agent carrying state across epochs could match a shock's first block against one it had
+    // already watched play out. Mixing the list in makes each regime's draws its own; the price of
+    // it is that editing any value in a regime reshuffles all of its draws, which a changed regime
+    // does anyway. Every official regime with stress events uses a variation key. A list without
+    // them keeps the stream of the seed alone, so its entries draw the same whatever else the list
+    // holds (before ADR 0027 that was to keep the practice period's windows byte for byte; the key
+    // moves every realization now).
+    const rng = Rng.fromSeed(
+      seed,
       configs.some(usesVariation)
-        ? mix32(salted ^ configDigest(configs))
-        : salted,
+        ? (STRESS_SEED_SALT ^ configDigest(configs)) >>> 0
+        : STRESS_SEED_SALT,
     );
     // First pass: every draw, in list order. How many draws an entry makes is a function of the
     // config alone -- a count draws its maximum number of windows, not the number it landed on -- so
@@ -793,18 +790,6 @@ function configDigest(configs: StressEventConfig[]): number {
     h ^= text.charCodeAt(i);
     h = Math.imul(h, 0x01000193);
   }
-  return h >>> 0;
-}
-
-// murmur3's 32-bit finalizer: every input bit reaches every output bit, so seeds 1 apart start
-// the Rng in unrelated places.
-function mix32(x: number): number {
-  let h = x >>> 0;
-  h ^= h >>> 16;
-  h = Math.imul(h, 0x85ebca6b);
-  h ^= h >>> 13;
-  h = Math.imul(h, 0xc2b2ae35);
-  h ^= h >>> 16;
   return h >>> 0;
 }
 

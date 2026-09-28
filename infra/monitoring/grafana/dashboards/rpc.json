@@ -81,7 +81,10 @@
       "gridPos": { "h": 6, "w": 10, "x": 4, "y": 18 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "s" } },
-      "targets": [ { "refId": "A", "expr": "ascon_block_interval_seconds{env=~\"$env\"}", "legendFormat": "{{env}}" } ]
+      "targets": [
+        { "refId": "A", "expr": "ascon_block_interval_seconds{env=~\"$env\"}", "legendFormat": "{{env}} newest" },
+        { "refId": "B", "expr": "ascon_block_interval_max_seconds{env=~\"$env\"}", "legendFormat": "{{env}} longest in the last minute" }
+      ]
     },
     {
       "type": "timeseries", "title": "Tx per block",

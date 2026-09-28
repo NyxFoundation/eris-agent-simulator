@@ -388,15 +388,14 @@ export type SimConfig = {
 
 export function loadConfig(env = process.env): SimConfig {
   const anvilPort = env.ANVIL_PORT ?? "8545";
-  // Under economization (ADR 0011), squeeze the endowment to make gas a real cost. If INITIAL_ETH_WEI
-  // is unset, default to a modest placeholder (3 ETH) (makes gas a meaningful cost against opportunity
-  // value while the runtime gas manager + lower-bound validation prevent running out of gas). The final
-  // value is decided by calibration measurement (ADR "not yet decided"). The default 0010 profile
-  // (economicGas=false) stays at 100 ETH unchanged.
+  // Gas ETH: 1 ETH, in every mode (rules §4.2 grant it on top of the basket and count it in asset
+  // value). It used to be 100 ETH unless economicGas was on -- four times the basket, so the price of
+  // gas money nobody trades was most of every agent's P, and it was spendable capital the published
+  // initial capital does not mention. Measured spend is <= 0.005 ETH per agent per 360-block epoch
+  // (0.1 gwei tips, <= 434 txs); a longer run refills from its own WETH through the runtime's gas
+  // manager (example/agents/runtime/send.ts), which is what a run that outlasts 1 ETH relies on.
   const economicGas = env.ERIS_ECONOMIC_GAS === "1";
-  const initialEthWeiDefault = economicGas
-    ? 3_000_000_000_000_000_000n
-    : 100_000_000_000_000_000_000n;
+  const initialEthWeiDefault = 1_000_000_000_000_000_000n;
   // Existing WETH env value (read once here for compatibility and reused for the per-base map's WETH entry).
   const initialWethWei = bigintEnv(
     env.INITIAL_WETH_WEI,

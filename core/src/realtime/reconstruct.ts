@@ -20,6 +20,7 @@ import { MULTICALL3, TOKENS } from "@eris/sdk/constants.js";
 import { baseTokens, marketsFor, tokenInfo } from "@eris/sdk/markets.js";
 import type { RunLogger } from "../logger.js";
 import type { IntervalSeries } from "../intervalSeries.js";
+import { intervalBoundaryBlocks } from "../epochExtent.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
 import {
   decodeStableProbes,
@@ -793,27 +794,21 @@ export function scoringBlocks(
   return blocks;
 }
 
-// Blocks the interval series is sampled at (ADR 0019 §1/§8). N intervals need N+1 boundaries, so the
-// run's start is boundary 0 and the returned array is one longer than the interval count.
+// Blocks the interval series is sampled at (ADR 0019 §1/§8): the run's first block, every
+// `intervalBlocks` after it, and `toBlock` -- the epoch's end -- as the last one, closing a shorter
+// final interval when the window is not a multiple of the interval length (epochExtent.ts). The
+// live scorer walks the same sequence, which is what lets `interval_series_agreement` compare the
+// two block for block.
 //
-// A trailing partial interval is dropped rather than recorded short: a window shorter than the
-// others would read as the agent slowing down. Dropping it costs at most `intervalBlocks - 1` blocks
-// of a run that was not sized for the interval length in the first place -- and it is why P is
-// V_K − V_0 at the last *boundary*, not at the run's last block.
+// It used to drop a trailing partial interval instead, so V_K was read at the last grid boundary
+// rather than at the run's last block -- and since the loop never processed the block that closes
+// the final interval, a 360-block run was scored over its first 348 blocks. The score reads only the
+// first and the last boundary (ADR 0023), so a short final interval is not the distortion it was
+// under ADR 0019, when the per-interval returns were averaged.
 //
 // These are *not* forced to coincide with scoringBlocks: with `scoreEvery > 1` the thinned series can
 // skip a boundary, so the caller reads the union of the two.
-export function intervalBoundaryBlocks(
-  fromBlock: number,
-  toBlock: number,
-  intervalBlocks: number,
-): number[] {
-  const step = Math.floor(intervalBlocks);
-  if (!Number.isFinite(step) || step < 1) return [];
-  const intervals = Math.floor((toBlock - fromBlock) / step);
-  if (intervals < 1) return [];
-  return Array.from({ length: intervals + 1 }, (_, i) => fromBlock + i * step);
-}
+export { intervalBoundaryBlocks };
 
 // G7 (ADR 0019 §5) / rules §4.1: mark each interval boundary at the median of the blocks leading up
 // to it, so that pushing a pool for one block does not become the score. It has to hold for most of

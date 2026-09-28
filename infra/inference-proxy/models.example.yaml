@@ -10,8 +10,15 @@
 #
 # `upstreamModel` lets the published name differ from the provider's (pin a dated snapshot behind a
 # stable name, so the list does not change when the provider rotates aliases).
+#
+# upstreamTimeoutMs    a call that is not streamed, request to last byte. 300000 (5 min) is also the
+#                      most it can be: Node's fetch stops waiting for response headers at 300 s.
+# streamIdleTimeoutMs  a streamed call: the longest silence, before the first chunk or between two.
+#                      No total -- the epoch ends it. Defaults to upstreamTimeoutMs.
+# maxStreamBytes       a streamed call's size, past which it is cut (default 33554432 = 32 MiB).
 maxCallsPerMinute: 30
-upstreamTimeoutMs: 120000
+upstreamTimeoutMs: 300000
+streamIdleTimeoutMs: 300000
 models:
   - name: gpt-4o-mini
     provider: openai

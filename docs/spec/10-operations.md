@@ -23,7 +23,7 @@
 | `npm run gen:local-constants` | `deployments.json` → `sdk/src/constants.local.ts` |
 | `npm run gen:state-dump` | 稼働中の deployer anvil から配布用 state dump + manifest |
 | `npm run gen:method-selectors` | venue ABI から selector→関数名テーブル |
-| `npm run manifest` | 環境マニフェスト（`--participant <id>` で個別の鍵を stdout に） |
+| `npm run manifest` | 環境マニフェスト（`--participant <id>` で個別の鍵を stdout に。走っている期間の配布物は `--from-run runs/<period>`） |
 | `npm run bundle:agent <id>` | 提出用 zip |
 
 ### 分析・観測
@@ -103,7 +103,7 @@ npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [opti
 | **シナリオ = (regime, seed)** | regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。省略を「黙って既定 seed」にはしない |
 | `--regime` と `--scenarios` は排他 | `--seed` は `--scenarios` に適用できない（セットが seed を供給する） |
 | `--config` は使えない | backtest では **regime YAML that itself is the run config** |
-| **override は実効 regime YAML に書き出される** | coordinator だけに効かせるとエージェントが観測で死ぬ。`--agents` のロスターも同様に伝播する |
+| **override は実効 regime YAML に書き出される** | coordinator はそれで走り、エージェントには coordinator が解決済みの値から書くエージェント用 config（seed なし。[07](07-configuration.md)）で届く。coordinator だけに効かせるとエージェントが観測で死ぬ |
 | `--score-every N` | 採点断面の間引き。**スコアは不変**、equity curve が粗くなるだけ |
 
 `--scenarios` は `{regimes, seeds}` の直積をシナリオ間 snapshot/revert で 1 つの anvil 上に再生し、`runs/matrix-<id>/matrix.json` と `standings.json` を書く（[08 §8.9](08-artifacts.md)）。
@@ -126,7 +126,7 @@ ADR 0021。**止まらないチェーン + 自己ホスト参加者。**
 3. DEPLOYMENTS_JSON=<path> npm run gen:local-constants でアドレス overlay を切り替える
 4. config/practice.yaml をもとにロスター（登録リスト）を作る
 5. npm run sim:realtime -- --config config/practice.yaml --chain-mode external
-6. npm run manifest で環境マニフェストを配る（鍵は --participant <id> で個別に stdout）
+6. npm run manifest -- --from-run runs/<period> で環境マニフェストを配る（鍵は --participant <id> で個別に stdout）
 7. npm run dashboard:serve でダッシュボードをホストする
 ```
 

@@ -71,9 +71,11 @@ All four are reported in `summary.json`'s `valueSeries.unpricedHoldings`. **A ze
 
 ### Interval boundaries
 
-`intervalBoundaryBlocks(fromBlock, toBlock, intervalBlocks)`. E intervals need E+1 boundaries, and the run's start is boundary 0.
+`intervalBoundaryBlocks(fromBlock, toBlock, intervalBlocks)` (`core/src/epochExtent.ts`). E intervals need E+1 boundaries, and the run's start is boundary 0.
 
-**A trailing partial interval is dropped rather than scored short.** A shorter window produces a smaller log return by construction, which the metric would read as the agent slowing down.
+**The epoch is defined on chain block numbers.** It ends at `runStartBlock + runBlocks`: that block is processed, it is the last boundary (V_K), and it is the block where every agent's `blocksRemaining` reads 0 (the bell). 360 blocks are 30 intervals. The coordinator's loop is clamped to that block, so a loop that falls behind (one pass catching up several blocks, `round_timing.blocksCaughtUp`) neither lengthens nor shortens the epoch. It used to end after a count of loop passes, which on a loaded host ran up to 72 blocks past the bell, and even without lag the last boundary was `runStartBlock + 348` (29 intervals).
+
+**When `runBlocks` is not a multiple of the interval, the final interval is the remainder.** The grid (`runStartBlock + k·intervalBlocks`) is kept and the end block closes a short final interval. The remainder used to be dropped; that reason belonged to ADR 0019, when per-interval log returns were averaged. With P read off the first and last boundary only, dropping it just reads V_K before the end.
 
 `--score-every N` thins the equity curve but always includes `fromBlock` and `toBlock`. **The score is unchanged** (α uses only the first and last cross-section).
 
@@ -141,6 +143,8 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = the valid epochs 
 
 `core/src/competition/schedule.ts`. From the hidden set (regime → seeds) and the lottery seed it derives the epoch sequence, **every regime the same number of times**: SHA-256 in counter mode, unbiased integers by rejection, Fisher-Yates. The lottery seed decides only the order (and, where a regime has spare seeds, the choice among them). Both files are committed to as the sha256 of their canonical JSON (`npm run competition -- commit <file>`) and published in full after the results.
 
+**The timetable is outside the commitment** (logistics, never scored). `plan --starts-at <ISO> --every-minutes <N>` or `--ends-at <ISO>` (k epochs spread evenly over the window; the 168-hour live week at k = 60 is one every 168 minutes) stamps each epoch with `startsAt`, and `backtest --follow-schedule` waits for it before starting each epoch (a start already past runs at once and reports how late; composes with `--resume`). [ADR 0026](../../adr/0026-live-week-schedule.md).
+
 ## 6.6 Standings display rules (dashboard)
 
 - `dashboard/src/data/standings.ts` **imports** `@core/scoring/deviationScore` (two implementations of one ranking leave no way to tell which is real when the CLI and the screen disagree)
@@ -155,7 +159,7 @@ Details in [09](09-dashboard.md).
 
 | Question | Status |
 |---|---|
-| **The value of k** | Published in Appendix A before the submission period opens. Recommended 40 (8 regimes × 5) |
+| **The value of k** | Published in Appendix A before the submission period opens. [ADR 0026](../../adr/0026-live-week-schedule.md) proposes 60 (12 regimes × 5). The old recommendation, 40 (8 × 5), is not a multiple of 12 and `deriveSchedule` refuses it |
 | **The actual hidden set and lottery seed** | Generating them and publishing the commitments is operator work (`npm run competition -- commit`) |
 
 → [12 Known limits and open questions](12-open-issues.md)

@@ -25,6 +25,9 @@ export class RealtimeFlowProcess {
     args: string[],
     flowSeed: number,
     runDir: string,
+    // ADR 0027: the scenario key's file and commitment (core/src/scenarioKey.ts). The flow bot draws
+    // its orders from keyed streams, so it has to draw under the coordinator's key.
+    scenarioKeyEnv: Record<string, string> = {},
   ) {
     this.child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -34,6 +37,7 @@ export class RealtimeFlowProcess {
         NODE_ENV: process.env.NODE_ENV ?? "development",
         ERIS_FLOW_SEED: String(flowSeed),
         ERIS_RUN_DIR: runDir,
+        ...scenarioKeyEnv,
       },
     });
 
@@ -61,14 +65,33 @@ export class RealtimeFlowProcess {
     this.child.on("error", (err) => {
       this.alive = false;
       this.stderr += `flow bot process error: ${err.message}\n`;
+      this.onExit?.({ reason: `spawn error: ${err.message}` });
     });
-    this.child.on("exit", () => {
+    this.child.on("exit", (code, signal) => {
+      const wasAlive = this.alive;
       this.alive = false;
+      // close() at the end of the run is not news; the bot going on its own is.
+      if (wasAlive && !this.stopped)
+        this.onExit?.({
+          code: code ?? undefined,
+          signal: signal ?? undefined,
+          reason:
+            "exited before the run ended" +
+            (code !== null ? ` (code ${code})` : "") +
+            (signal !== null ? ` (signal ${signal})` : ""),
+        });
     });
     this.child.stdin.on("error", () => {
       this.alive = false;
     });
   }
+
+  /// Notified once when the bot dies on its own (issue #159). Without it the market simply stops
+  /// moving: `pushContext` returns false from then on, nothing is written anywhere, and the only trace
+  /// was the flow column of blocks.csv going to zero.
+  onExit?: (info: { code?: number; signal?: string; reason: string }) => void;
+
+  private stopped = false;
 
   onOrders(handler: FlowOrdersHandler): void {
     this.handler = handler;
@@ -90,6 +113,7 @@ export class RealtimeFlowProcess {
   }
 
   close(): void {
+    this.stopped = true;
     this.child.kill();
   }
 

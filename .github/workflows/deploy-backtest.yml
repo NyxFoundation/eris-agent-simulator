@@ -27,8 +27,17 @@ on:
       # only pin individual functions. This job is the only thing that puts the scorer in front of
       # real venue state across all five venues. #44 changed the scorer and skipped this job.
       - "core/src/realtime/reconstruct.ts"
+      # What a launched agent is handed (its config and view directory). Every backtest's agents
+      # read it, so a mistake there is a run where no agent can observe anything.
+      - "core/src/realtime/agentView.ts"
+      - "core/src/realtime/agentProcess.ts"
       - "sdk/src/valuation.ts"
       - "sdk/src/protocols/**"
+      # The scenario key (ADR 0027): every stream the scenario draws from, and the flow bot that has
+      # to draw under the coordinator's key or exit.
+      - "sdk/src/rng.ts"
+      - "core/src/scenarioKey.ts"
+      - "core/src/flow/market-maker.ts"
       - ".github/workflows/deploy-backtest.yml"
 
 concurrency:
@@ -150,12 +159,35 @@ jobs:
             if (failed.length) throw new Error(`scenarios produced no result: ${JSON.stringify(failed)}`);
             if (m.scenarios.length !== 2) throw new Error(`expected 2 scenarios, got ${m.scenarios.length}`);
             if (!s.agents?.length) throw new Error("standings ranked nobody");
+            // ADR 0027: the matrix says which key realized it (the public one here).
+            if (m.scenarioKey?.source !== "public" || !/^sha256:[0-9a-f]{64}$/.test(m.scenarioKey.commitment ?? ""))
+              throw new Error(`matrix.json does not record its scenario key: ${JSON.stringify(m.scenarioKey)}`);
             // Both metrics must survive into the matrix, since the scoring rule is expected to
             // change and matrix.json is what makes a finished run re-scorable (ADR 0017 §4).
             for (const sc of m.scenarios)
               for (const a of sc.agents)
                 if (!("netPnlUsdc" in a) || !("alphaUsdc" in a))
                   throw new Error(`${sc.regime}#${sc.seed} ${a.id} is missing a metric`);
+            // Each agent read its own config (core/src/realtime/agentView.ts), not the effective
+            // regime of the scenario: no seed, none of the environment-only sections, and the
+            // run-start declaration beside it.
+            const { existsSync } = require("node:fs");
+            const { parse } = require("yaml");
+            for (const sc of m.scenarios) {
+              const views = `${sc.runDir}/agent-view`;
+              const ids = readdirSync(views);
+              if (ids.length !== sc.agents.length)
+                throw new Error(`${sc.runDir}: ${ids.length} agent views for ${sc.agents.length} agents`);
+              for (const id of ids) {
+                const text = readFileSync(`${views}/${id}/config.yaml`, "utf8");
+                if (/seed/i.test(text)) throw new Error(`${views}/${id}/config.yaml mentions a seed`);
+                const doc = parse(text);
+                for (const key of ["stress", "vuln", "market", "flow", "funding", "agents"])
+                  if (key in doc) throw new Error(`${views}/${id}/config.yaml carries ${key}`);
+                if (!existsSync(`${views}/${id}/run-start.json`))
+                  throw new Error(`${views}/${id} has no run-start.json`);
+              }
+            }
             console.log(`matrix ok: ${m.scenarios.length} scenarios, ${s.agents.length} ranked`);
           '
 
@@ -183,6 +215,47 @@ jobs:
             if (problems.length) throw new Error(`unhealthy run ${id}: ${problems.join(", ")}`);
             console.log(`run ${id} ok: ${s.agents.length} agents, ${s.blocksProcessed} blocks, failedReads 0`);
           '
+
+      # --follow-schedule (ADR 0026): the runner waits for each epoch's planned start instead of
+      # running the plan back to back, which is how one process runs the live week. The wait itself
+      # is unit-tested (test/backtestTimetable.test.ts); this is the loop around it, on a real anvil.
+      # One epoch planned 90 s ahead must be waited for -- the log says so and the run directory,
+      # named when the run begins, is no earlier than planned -- and a --resume of the finished
+      # matrix must skip it without waiting. After the health check, which reads the latest run.
+      - name: Follow a plan's timetable
+        run: |
+          set -o pipefail
+          start=$(node -e 'console.log(new Date(Date.now() + 90000).toISOString())')
+          cat > "$RUNNER_TEMP/ci-plan.yaml" <<YAML
+          k: 1
+          epochs:
+            - { s: 1, regime: calm, seed: 101, startsAt: "$start" }
+          YAML
+          before=$(ls -d runs/matrix-* 2>/dev/null | sort | tail -1 || true)
+          # A plan is the live-week form and refuses to start without a key (ADR 0027); CI runs it
+          # under the public key on purpose.
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule --scenario-key public \
+            --blocks 12 --seconds 90 --agent-sandbox process 2>&1 | tee "$RUNNER_TEMP/follow.log"
+          grep -q "waiting .* for its planned start $start" "$RUNNER_TEMP/follow.log"
+          dir=$(ls -d runs/matrix-* | sort | tail -1)
+          if [ "$dir" = "$before" ]; then echo "no new matrix directory"; exit 1; fi
+          START="$start" DIR="$dir" node -e '
+            const { readFileSync } = require("node:fs");
+            const m = JSON.parse(readFileSync(`${process.env.DIR}/matrix.json`, "utf8"));
+            const sc = m.scenarios?.[0];
+            if (!sc?.agents?.length) throw new Error(`the planned epoch produced no result: ${JSON.stringify(sc)}`);
+            if (sc.startsAt !== process.env.START) throw new Error(`startsAt ${sc.startsAt} != ${process.env.START}`);
+            // runs/<ISO timestamp with : and . replaced by ->, taken when the run begins
+            const id = sc.runDir.split("/").pop();
+            const began = Date.parse(id.replace(/^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "$1:$2:$3.$4Z"));
+            if (Number.isNaN(began)) throw new Error(`cannot read a start time from ${sc.runDir}`);
+            if (began < Date.parse(process.env.START)) throw new Error(`the epoch began at ${id}, before its planned ${process.env.START}`);
+            console.log(`followed: planned ${process.env.START}, began ${new Date(began).toISOString()}`);
+          '
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule --resume "$dir" --scenario-key public \
+            --blocks 12 --seconds 90 --agent-sandbox process 2>&1 | tee "$RUNNER_TEMP/resume.log"
+          grep -q "skipping s=1" "$RUNNER_TEMP/resume.log"
+          if grep -q "waiting" "$RUNNER_TEMP/resume.log"; then echo "a resume waited for a complete epoch"; exit 1; fi
 
       - name: Upload the run and deploy logs
         if: always()

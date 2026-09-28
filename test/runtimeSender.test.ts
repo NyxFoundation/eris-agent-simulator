@@ -277,3 +277,37 @@ test("the runtime signs maxFeePerGas equal to the tip, and no action field can r
     ["submitted", "submitted", "submitted"],
   );
 });
+
+// The gas manager runs in every mode now. It used to be economicGas-only, because every other run
+// handed out 100 ETH; at the 1 ETH endowment a run that trades for weeks (the practice period) spends
+// more than that, and the refill from the agent's own WETH is what keeps it sending.
+test("the gas manager refills from the agent's WETH with economicGas off, and only when low", async () => {
+  const sent: { to?: string; data?: string }[] = [];
+  const config = { ...loadConfig(), economicGas: false };
+  const ctx = {
+    config,
+    publicClient: {
+      getBlock: async () => ({ baseFeePerGas: 0n }),
+      getTransactionCount: async () => 0,
+      estimateGas: async () => 30_000n,
+    },
+    walletClient: {
+      sendTransaction: async (tx: { to?: string; data?: string }) => {
+        sent.push({ to: tx.to, data: tx.data });
+        return `0x${String(sent.length).padStart(64, "0")}`;
+      },
+    },
+  } as unknown as SimContext;
+  const events: Record<string, unknown>[] = [];
+  const sender = new Sender({ ctx, adapters: [], privateKey: generatePrivateKey(), logMempool: (e) => events.push(e) });
+  const oneWeth = 1_000_000_000_000_000_000n;
+  // Plenty of ETH: nothing is sent.
+  await sender.maybeRefillGas(10, { ethWei: oneWeth, wethWei: oneWeth, usdcUnits: 0n } as BalanceSnapshot, 3000, new Map());
+  await delay(50);
+  assert.equal(sent.length, 0);
+  // Down to nothing: one WETH.withdraw to the WETH contract.
+  await sender.maybeRefillGas(20, { ethWei: 0n, wethWei: oneWeth, usdcUnits: 0n } as BalanceSnapshot, 3000, new Map());
+  await until(() => sent.length === 1);
+  assert.match(sent[0].data ?? "", /^0x2e1a7d4d/, "WETH.withdraw(uint256)");
+  assert.ok(events.some((e) => e.actionType === "gasRefillUnwrap"));
+});

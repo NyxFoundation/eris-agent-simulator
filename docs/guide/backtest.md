@@ -147,6 +147,36 @@ npm run backtest -- --scenarios plan.yaml --agents field.yaml --resume runs/matr
   epoch, and whether the ones after it stand is the organizer's call. A matrix run before these
   checkpoints existed cannot be resumed under a state root; it says so and stops.
 
+### Following the plan's timetable (`--follow-schedule`)
+
+A plan can say when each epoch starts (`npm run competition -- plan … --starts-at <ISO 8601>` with
+`--every-minutes <N>`, or `--ends-at <ISO 8601>` to spread the k epochs evenly over a window). By
+default the runner only records those times — `matrix.json`'s `schedule`, the dashboard's "next
+epoch starts at" — and runs the epochs back to back. `--follow-schedule` waits for each start
+instead, so one unattended process runs the live week (ADR 0026):
+
+```bash
+npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 60 \
+  --starts-at 2026-11-01T00:00:00+09:00 --ends-at 2026-11-08T00:00:00+09:00 --out plan.yaml   # one every 168 min
+npm run backtest -- --scenarios plan.yaml --agents field.yaml --follow-schedule \
+  --scenario-key <secret-dir>/scenario-key.yaml   # ADR 0027: a plan refuses to start without a key
+```
+
+- Before each epoch it runs, the runner prints what it is waiting for (`s=5 crash#…: waiting 2h 31m
+  for its planned start …`). A start that has already passed is not waited for: the epoch starts at
+  once and the line says how late. Nothing is re-flowed — a late epoch does not push the ones after
+  it, each still waits for its own time.
+- **It composes with `--resume`.** Complete epochs are skipped before the clock is looked at, so a
+  restart after a stop runs the missed and failed epochs at once and then waits for the next one.
+  That is also how an epoch voided mid-week (§4.4.2) is re-run inside the idle part of a slot:
+  stop the waiting process and start it again with `--resume`.
+- It is refused before anvil starts when the set has no timetable, when some epoch has no
+  `startsAt`, or when the starts are not in list order (the runner takes epochs in list order). Only
+  with `--scenarios`.
+- A slot shorter than an epoch's wall time (360 blocks = 12 min of block time plus setup and
+  reconstruction) makes every epoch after it late. The runner reports it; the plan is where it is
+  fixed.
+
 ## Repetition and reproducibility
 
 - **The environment (initial state + market conditions) is perfectly identical every time**: each launch builds a fresh anvil from the same state dump, and between scenarios (and between the runs of `--repeat N`) it returns to the clean cross-section via `evm_snapshot`/`evm_revert` (no victim leftovers).
@@ -214,7 +244,9 @@ agents:
 | `--scenarios <path>` | Replay a whole set (regimes x seeds) and write `matrix.json` + `standings.json`. Mutually exclusive with `--regime` |
 | `--scenarios <path>` (plan form) | `{k, epochs: [{s, regime, seed}]}` from `npm run competition -- plan`; replayed in order with those ordinals |
 | `--agents <roster>` | Swap the regime's default agents with a roster file (YAML/JSON) |
-| `--resume <matrix-dir>` | Continue a stored `runs/matrix-<id>/` instead of opening a new one: complete scenarios are skipped, missing and failed ones run, the artifacts are rewritten in place. Refused when `scenarioSet` / `k` / `resetUnit` / `repeat` / `--agent-state-root` differ. `--scenarios` only |
+| `--resume <matrix-dir>` | Continue a stored `runs/matrix-<id>/` instead of opening a new one: complete scenarios are skipped, missing and failed ones run, the artifacts are rewritten in place. Refused when `scenarioSet` / `k` / `resetUnit` / `repeat` / `--agent-state-root` / the scenario key differ. `--scenarios` only |
+| `--scenario-key <file\|public>` | The key every scenario is realized under (ADR 0027): a key file from `npm run competition -- keygen`, or `public`. Default `ERIS_SCENARIO_KEY_FILE`, else the public key `SHA-256("eris-public-v1")`. **Required for a plan (`epochs:`)**, the live-week form. `matrix.json` records `scenarioKey: {source, commitment}` |
+| `--follow-schedule` | Wait for each epoch's planned `startsAt` before running it instead of running the epochs back to back (ADR 0026). A start already past runs at once and reports how late. Composes with `--resume`. Refused when the plan has no timetable, an epoch lacks one, or the starts are out of list order. `--scenarios` only |
 | `--agent-state-root <dir>` | Carry each agent's persistent state across the scenarios, in list order (issue #77). Off by default. Checkpoints the root after every completed scenario so a resume can restore the right starting point |
 | `--repeat <N>` | Repeat each scenario N times (default 1). A calibration diagnostic; standings take the median |
 | `--port <N>` | Port for the backtest-dedicated anvil (default 8547; use a different port for parallel runs) |
@@ -223,7 +255,7 @@ agents:
 | `--score-every <N>` | Reconstruct the value cross-section every Nth block instead of every block. Score-neutral (only the first and last cross-sections reach `summary.json`); it just coarsens the equity curve in `events.jsonl` |
 | `--blocks` / `--seconds` / `--protocols` / `--economic-gas` | One-shot override of regime values (for smoke tests) |
 
-> Run overrides are written out as an "effective regime YAML" that both the coordinator and the agent processes read, so they read the same settings (applying it only to the coordinator would kill the agents on observation).
+> Run overrides are written out as an "effective regime YAML" that the coordinator runs from. The agents it launches do not read that file: each gets its own config, `runs/<id>/agent-view/<agentId>/config.yaml`, which the coordinator writes from the values it resolved — the fields the agent runtime reads (run length, block time, venues, fees, …), overrides included, and no seed (`core/src/realtime/agentView.ts`). So an override still reaches the agents (applying it only to the coordinator would kill them on observation).
 
 ## Troubleshooting
 

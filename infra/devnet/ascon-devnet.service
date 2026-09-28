@@ -21,7 +21,8 @@ WorkingDirectory=%h/workspace/eris-agent-simulator
 # systemd gives no login shell, so PATH has to be stated. Both layouts are listed because this unit
 # has to serve the NixOS box it was written on and the Ubuntu box it now runs on: `~/.foundry/bin`
 # is where foundryup puts anvil/cast, the nix paths are inert on Ubuntu and vice versa.
-# infra/provision/bootstrap.sh rewrites this line when it installs the unit.
+# infra/provision/bootstrap.sh links this file unchanged into ~/.config/systemd/user/: every path in
+# it is under %h, and it is a user unit on every box (issue #158).
 Environment=PATH=%h/.foundry/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # The chain is a container that may still be starting at boot. Waiting here rather than failing
@@ -38,6 +39,10 @@ ExecStartPre=%h/workspace/eris-agent-simulator/infra/devnet/wait-for-chain.sh
 # wrong.
 EnvironmentFile=%h/workspace/eris-agent-simulator/.env.practice
 ExecStartPre=/bin/sh -c 'test -n "$$ERIS_PRACTICE_SEED" || { echo "ERIS_PRACTICE_SEED is empty in .env.practice: refusing to start the period on the committed seed" >&2; exit 1; }'
+# The scenario key (ADR 0027), from the same file: ERIS_SCENARIO_KEY_FILE=<path to a key file from
+# `npm run competition -- keygen`>. The coordinator reads it from the environment. Without it the
+# period would be realized under the public key, so a missing or unreadable file fails the start.
+ExecStartPre=/bin/sh -c 'test -n "$$ERIS_SCENARIO_KEY_FILE" && test -r "$$ERIS_SCENARIO_KEY_FILE" || { echo "ERIS_SCENARIO_KEY_FILE is missing or unreadable in .env.practice: refusing to start the period under the public scenario key" >&2; exit 1; }'
 
 # The config is the period. Every `run.*` key in it WINS over the environment (sdk/src/runConfig.ts),
 # so overriding the block count or the report directory from here silently does nothing — copy the

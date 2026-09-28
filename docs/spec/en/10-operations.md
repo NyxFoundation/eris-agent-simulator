@@ -23,7 +23,7 @@ Source: the `scripts` block of `package.json`.
 | `npm run gen:local-constants` | `deployments.json` → `sdk/src/constants.local.ts` |
 | `npm run gen:state-dump` | A distributable state dump plus manifest, from the running deployer anvil |
 | `npm run gen:method-selectors` | The selector → function-name table, from venue ABIs |
-| `npm run manifest` | The environment manifest (`--participant <id>` prints one key to stdout) |
+| `npm run manifest` | The environment manifest (`--participant <id>` prints one key to stdout; the handout for a running period is `--from-run runs/<period>`) |
 | `npm run bundle:agent <id>` | The submission zip |
 
 ### Analysis and viewing
@@ -103,7 +103,7 @@ npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [opti
 | **A scenario is (regime, seed)** | Regime YAMLs carry no seed, so `--seed` is required (ADR 0017 §1). Omitting it does not silently mean "the default seed" |
 | `--regime` and `--scenarios` are exclusive | `--seed` does not apply to `--scenarios` (the set supplies the seeds) |
 | `--config` is not accepted | In a backtest **the regime YAML is the run config** |
-| **Overrides are written into the effective regime YAML** | Applying them only to the coordinator kills the agents on observation. The `--agents` roster propagates the same way |
+| **Overrides are written into the effective regime YAML** | The coordinator runs from it; agents get them through the agent config the coordinator writes from its resolved values (no seed; [07](07-configuration.md)). Applying them only to the coordinator kills the agents on observation |
 | `--score-every N` | Thins the scoring cross-sections. **The score is unchanged**; only the equity curve gets coarser |
 
 `--scenarios` replays the cartesian product on one anvil with snapshot/revert between scenarios, writing `runs/matrix-<id>/matrix.json` and `standings.json` ([08 §8.9](08-artifacts.md)).
@@ -126,7 +126,7 @@ The competition is scored from submitted bundles replayed over a scenario matrix
 3. Switch the address overlay: DEPLOYMENTS_JSON=<path> npm run gen:local-constants
 4. Build the roster (a registration list) from config/practice.yaml
 5. npm run sim:realtime -- --config config/practice.yaml --chain-mode external
-6. npm run manifest to distribute the environment manifest (keys individually, via --participant <id>)
+6. npm run manifest -- --from-run runs/<period> to distribute the environment manifest (keys individually, via --participant <id>)
 7. npm run dashboard:serve to host the dashboard
 ```
 

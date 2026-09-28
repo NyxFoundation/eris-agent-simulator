@@ -912,12 +912,24 @@ export type AgentObservation = {
   // unit-convert base amounts (agents cannot call tokenInfo, so it is passed via the observation).
   baseDecimals?: Record<TokenSymbol, number>;
   markets?: string[];
-  // Blocks left before the run ends, counted from the first block this agent observed (undefined
-  // when the run has no block limit). An exit that takes longer than this cannot complete inside
-  // the run, which is exactly what makes the LST withdrawal queue a decision rather than a
-  // formality (issue #38). Approximate by a block or two: an agent starts observing right around
-  // the first competition block, not before it.
+  // Blocks left before the run ends (undefined when the run has no block limit), counted from the
+  // coordinator's declared first block (run-start.json, issue #117; inferred from the first block
+  // this agent observed when there is none to read). 0 on the epoch's final block -- the bell, and
+  // the last block valued (core/src/epochExtent.ts): a transaction sent on seeing 1 can still land
+  // on it, one sent after seeing 0 lands after the end. An exit that takes longer than this cannot
+  // complete inside the run, which is exactly what makes the LST withdrawal queue a decision rather
+  // than a formality (issue #38).
+  // A self-hosted agent (ADR 0021) counts it from the manifest's `period` instead of its own
+  // config (sdk/src/periodClock.ts).
   blocksRemaining?: number;
+  // Blocks left in the day being scored, on a practice period (a continuous world cut into days,
+  // each scored as one epoch -- ADR 0021 §6). Absent otherwise: a scenario epoch or a single run is
+  // one epoch, and blocksRemaining already is its end. Computed from this machine's clock against
+  // the period's day grid (day k ends at the period's start + (k + 1) x the day's hours), so it is
+  // off by a block or two and by however far this clock disagrees with the operator's; never more
+  // than blocksRemaining, since the last day ends with the run. Absent, too, when the start of the
+  // period's clock is not known (a manifest built before the period began).
+  dayBlocksRemaining?: number;
   enabledProtocols: ProtocolId[];
   balances: {
     ethWei: string;

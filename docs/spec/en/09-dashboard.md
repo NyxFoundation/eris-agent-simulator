@@ -91,7 +91,7 @@ The ranking is **recomputed over the first k intervals** (it never reads the fin
 
 ### When scenarios have different lengths
 
-In full-8h, depeg runs 9 intervals and the others 29. **A scenario past its last interval is treated as a world that ended and stays in the ranking** (removing it would move the field for a reason that is not a result). The band says `30 of 35 still running · 5 ended earlier`.
+In full-8h (recorded while the last interval went unscored), depeg runs 9 intervals and the others 29. **A scenario past its last interval is treated as a world that ended and stays in the ranking** (removing it would move the field for a reason that is not a result). The band says `30 of 35 still running · 5 ended earlier`.
 
 ### net PnL cannot be scoped to an interval
 
@@ -143,7 +143,7 @@ Panels are scoped to the selected interval. **`scopeRunToBlocks` (`runsProvider.
 
 **The exception is the end-of-run cross-section tables** (GMX positions / Aave accounts / reserves), which are a single snapshot at the end and say "at the run's final block" in the title. When an agent genuinely ended flat, the panel says so in prose — "no venue position open at the final block; this agent ended flat, or the run predates per-venue position tracking".
 
-**Per-interval volumes summing to less than the whole run is correct**: the scorer drops the trailing partial interval, so blocks after the last boundary belong to no interval.
+**Per-interval volumes differ from the whole run only by its first block**: an interval is `(fromBlock, toBlock]` and the last boundary is the run's final block (where `blocksRemaining` reads 0; `core/src/epochExtent.ts`), so every block after boundary 0 (the run's first block, the state V_0 is read at) belongs to exactly one interval. The scorer used to drop a trailing partial interval, which left the blocks after the last boundary in none.
 
 ### The interval bar (`RoundsBar`)
 

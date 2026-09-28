@@ -73,6 +73,7 @@ function scorerFixture(opts: {
   valueAt: (block: number) => number;
   failAt?: Set<number>;
   runStartBlock?: number;
+  endBlock?: number | null;
 }) {
   const runStartBlock = opts.runStartBlock ?? 100;
   return new LiveScorer({
@@ -83,6 +84,7 @@ function scorerFixture(opts: {
     activeStables: [TOKENS.USDC.address],
     priceFeed: "0x3333333333333333333333333333333333333333",
     runStartBlock,
+    ...(opts.endBlock !== undefined ? { endBlock: opts.endBlock } : {}),
     intervalBlocks: 4,
     markMedianBlocks: 0,
     sampleMarket: false,
@@ -113,6 +115,68 @@ test("a boundary inside a skipped block is still scored", async () => {
   await scorer.onBlock(100);
   await scorer.onBlock(111); // 104 and 108 went past unobserved
   assert.deepEqual(scorer.series()?.boundaryBlocks, [100, 104, 108]);
+});
+
+test("the end block is the last boundary, off the grid or on it", async () => {
+  // epochExtent.ts: the epoch ends at runStartBlock + runBlocks, and that block is where V_K is read.
+  // 10 blocks at 4 per interval: two full intervals and a short third one closed by the end.
+  const root = tmp();
+  const scorer = scorerFixture({
+    runDir: root,
+    valueAt: (b) => b,
+    endBlock: 110,
+  });
+  for (let b = 100; b <= 120; b++) await scorer.onBlock(b);
+  const series = scorer.series();
+  assert.deepEqual(series?.boundaryBlocks, [100, 104, 108, 110]);
+  assert.equal(series?.intervals, 3);
+  assert.deepEqual(series?.valuesByAgent.a, [100, 104, 108, 110]);
+});
+
+test("a lagging loop reads the boundaries it skipped, and none past the end", async () => {
+  // The measured failure: a pass told about a head 14 blocks on. Grid boundaries inside the jump are
+  // still read (historical reads at their own blocks); the ones beyond the end are not.
+  const root = tmp();
+  const scorer = scorerFixture({
+    runDir: root,
+    valueAt: (b) => b,
+    endBlock: 112,
+  });
+  await scorer.onBlock(100);
+  await scorer.onBlock(126);
+  assert.deepEqual(scorer.series()?.boundaryBlocks, [100, 104, 108, 112]);
+});
+
+test("close() gives a wall-clock run its last boundary at the block it ended on", async () => {
+  // No block budget: the end is wherever the last pass got to, and it is a boundary like any other.
+  const root = tmp();
+  const scorer = scorerFixture({ runDir: root, valueAt: (b) => b });
+  for (let b = 100; b <= 106; b++) await scorer.onBlock(b);
+  assert.deepEqual(scorer.series()?.boundaryBlocks, [100, 104]);
+  await scorer.close(106);
+  assert.deepEqual(scorer.series()?.boundaryBlocks, [100, 104, 106]);
+  await scorer.close(106);
+  await scorer.onBlock(108);
+  assert.deepEqual(
+    scorer.series()?.boundaryBlocks,
+    [100, 104, 106],
+    "idempotent, and nothing after the end",
+  );
+});
+
+test("close() reads the end block when the final pass did not", async () => {
+  // A final pass that threw before its boundary read: the end is still the end.
+  const root = tmp();
+  const scorer = scorerFixture({
+    runDir: root,
+    valueAt: (b) => b,
+    endBlock: 112,
+  });
+  for (let b = 100; b <= 111; b++) await scorer.onBlock(b);
+  await scorer.close(112);
+  assert.deepEqual(scorer.series()?.boundaryBlocks, [100, 104, 108, 112]);
+  await scorer.close(112);
+  assert.equal(scorer.count, 4, "no boundary is read twice");
 });
 
 test("a boundary that could not be read is dropped, never filled in", async () => {

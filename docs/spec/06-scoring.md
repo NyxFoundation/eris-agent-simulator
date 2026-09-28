@@ -71,9 +71,11 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 
 ### 評価区間の境界
 
-`intervalBoundaryBlocks(fromBlock, toBlock, intervalBlocks)`。E 区間には E+1 個の境界が要り、run の開始が境界 0 になる。
+`intervalBoundaryBlocks(fromBlock, toBlock, intervalBlocks)`（`core/src/epochExtent.ts`）。E 区間には E+1 個の境界が要り、run の開始が境界 0 になる。
 
-**末尾の端数区間は落とす。** 他より短い窓は構造的に小さい log return を生み、指標はそれを「エージェントが減速した」と読んでしまう。
+**エポックはチェーンのブロック番号で決まる。** 終わりは `runStartBlock + runBlocks` で、このブロックは処理され、最後の境界（V_K）になり、全エージェントの `blocksRemaining` が 0 になるブロック（鐘）でもある。360 ブロックなら 30 区間。コーディネータのループはこのブロックで clamp されるので、遅れたループ（1 パスで複数ブロックを追いつく `round_timing.blocksCaughtUp`）もエポックを伸ばしも縮めもしない。以前はループのパス数で終わっていたため、負荷の高いホストでは鐘の 72 ブロック後まで走り、遅れなくても最後の境界は `runStartBlock + 348`（29 区間）だった。
+
+**`runBlocks` が区間長の倍数でないとき、最後の区間は端数になる。** 格子（`runStartBlock + k·intervalBlocks`）は保ち、終わりのブロックが短い最終区間を閉じる。以前は端数区間を落としていたが、それは区間ごとの log return を平均していた頃（ADR 0019）の理由で、P が最初と最後の境界しか読まない今は、落とすと V_K が終わりより前で読まれるだけになる。
 
 `--score-every N` は equity curve の間引きで、`fromBlock` と `toBlock` は必ず含む。**スコアは不変**（α は最初と最後の横断面しか使わない）。
 
@@ -141,6 +143,8 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = 有効かつ σ_s
 
 `core/src/competition/schedule.ts`。非公開 seed 集合（regime → seeds）と抽選 seed から、**各レジーム等回数**でエポック列を導出する。SHA-256 のカウンタモード + 棄却法 + Fisher-Yates で、抽選 seed が決めるのは順序（と余剰 seed の選択）だけ。両ファイルは正規化 JSON の sha256 で commit し（`npm run competition -- commit <file>`）、結果発表後に原本を公開する。
 
+**時刻表は commit の外**（運用であって採点に入らない）。`plan --starts-at <ISO> --every-minutes <N>` か `--ends-at <ISO>`（k 本を窓に均等配置。ライブ週 168 時間・k = 60 なら 168 分おき）で各エポックに `startsAt` を付け、`backtest --follow-schedule` がそれを待ってから各エポックを始める（過ぎていれば即開始して遅れを出す。`--resume` と併用可）。[ADR 0026](../adr/0026-live-week-schedule.md)。
+
 ## 6.6 順位表の表示規則（ダッシュボード）
 
 - `dashboard/src/data/standings.ts` は `@core/scoring/deviationScore` を **import する**（2 箇所に置くと CLI と画面で順位が食い違ったときどちらが本物か分からなくなる）
@@ -155,7 +159,7 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = 有効かつ σ_s
 
 | 論点 | 状態 |
 |---|---|
-| **k の値** | 付録A で提出期間の開始までに公表。推奨 40（8 レジーム × 5） |
+| **k の値** | 付録A で提出期間の開始までに公表。[ADR 0026](../adr/0026-live-week-schedule.md) が 60（12 レジーム × 5）を提案。旧推奨の 40（8 × 5）は 12 の倍数でないので `deriveSchedule` が拒否する |
 | **非公開 seed / 抽選 seed の実物** | 生成と commit の公表は運営作業（`npm run competition -- commit`） |
 
 → [12 既知の制約・未決事項](12-open-issues.md)

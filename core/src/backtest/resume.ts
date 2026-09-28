@@ -37,6 +37,8 @@ export type StoredMatrix = {
   scenarios?: ScenarioResult[];
   /** The --agent-state-root the matrix was run with, if any (issue #77). */
   agentStateRoot?: string;
+  /** The scenario key the matrix was realized under (ADR 0027). Absent before the key existed. */
+  scenarioKey?: { source?: string; commitment?: string };
 };
 
 /**
@@ -83,6 +85,8 @@ export type ResumeTarget = {
   repeat: number;
   agentStateRoot?: string;
   rosterFingerprint?: string;
+  /** Commitment of the scenario key this invocation runs under (core/src/scenarioKey.ts). */
+  scenarioKeyCommitment?: string;
 };
 
 /**
@@ -134,12 +138,26 @@ export function assertResumable(
       `roster: stored ${stored.rosterFingerprint.slice(0, 19)}…, now ` +
         `${current.rosterFingerprint.slice(0, 19)}… (a different field)`,
     );
+  // ADR 0027: the key decides every scenario's realization, so epochs run under two keys are two
+  // competitions even on the same seeds. A matrix written before the key existed was realized by
+  // the unkeyed generator, which no key reproduces.
+  if (current.scenarioKeyCommitment !== undefined) {
+    const storedKey = stored.scenarioKey?.commitment;
+    if (storedKey === undefined)
+      problems.push(
+        "scenarioKey: the stored matrix predates the scenario key (ADR 0027), so no key reproduces its epochs",
+      );
+    else if (storedKey !== current.scenarioKeyCommitment)
+      problems.push(
+        `scenarioKey: stored ${storedKey.slice(0, 19)}…, now ${current.scenarioKeyCommitment.slice(0, 19)}…`,
+      );
+  }
   if (problems.length > 0)
     throw new Error(
       `--resume: the stored matrix is a different competition (${problems.join("; ")}). ` +
         "A resumed run has to continue the same scenario set with the same k, reset unit, " +
-        "repeat, agent state root and roster, or its standings would average two competitions " +
-        "(rules §4.4.1 / §4.7.1)",
+        "repeat, agent state root, roster and scenario key, or its standings would average two " +
+        "competitions (rules §4.4.1 / §4.7.1)",
     );
 }
 

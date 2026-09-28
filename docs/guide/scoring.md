@@ -28,11 +28,21 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s      S = valid epochs with �
 ```
 
 `core/src/scoring/deviationScore.ts` is the whole implementation; `epochPnl.ts` reads P off the
-boundary series. Five details are decisions, not formalities:
+boundary series. Six details are decisions, not formalities:
 
 - **One number per epoch.** An epoch is one run (360 blocks). The 12-block evaluation intervals inside
   it (`interval` in the code, "Interval" on the dashboard) are the leaderboard's running progress;
   the score reads only the first and last boundary.
+- **The epoch ends on a chain block.** It starts at the coordinator's declared `runStartBlock`
+  (`run-start.json`) and ends at `runStartBlock + runBlocks`: that block is processed, it is the last
+  boundary (V_K), and it is where every agent's `obs.blocksRemaining` reads 0. A 360-block epoch is
+  30 intervals. When `run.blocks` is not a multiple of the interval, the grid is kept and the final
+  interval is the remainder, closed by the end block. The coordinator's loop is clamped to that
+  block, so a loop that falls behind neither lengthens nor shortens the epoch
+  (`core/src/epochExtent.ts`). Runs recorded before this was fixed ended after `runBlocks` loop
+  passes instead -- on a loaded host that ran the chain up to 72 blocks past the bell -- and their
+  last boundary was one interval short of the end (block 348 of 360, 29 intervals), so P from those
+  runs is not comparable with P from later ones.
 - **No floor, no freeze.** An agent that ends at or below zero counts at its negative value
   (§4.4.2), and one whose process died is scored on the positions it left behind (§2.3). Both are
   reported as `flags` next to the number; neither is a disqualification.
@@ -76,14 +86,22 @@ product and explicit for a plan:
 
 ```bash
 npm run competition -- commit config/competition/hidden-set.yaml      # publish this hash (§7.1)
-npm run competition -- plan --hidden hidden-set.yaml --lottery lottery.yaml --k 40 --out plan.yaml
+npm run competition -- plan --hidden hidden-set.yaml --lottery lottery.yaml --k 60 --out plan.yaml
 npm run backtest -- --scenarios plan.yaml --agents <roster>           # replays the k epochs in order
 ```
 
 The plan is derived from the lottery seed (`core/src/competition/schedule.ts`): every regime k / R
 times, the order decided by nobody (rules §3.3). Both input files are committed to before use and
 published after the results, and the derivation is plain SHA-256 + Fisher-Yates so anyone can
-reproduce it.
+reproduce it. k has to be a multiple of the regime count (12 official regimes, so the old k = 40 is
+refused); ADR 0026 proposes k = 60, five of each.
+
+For the live week the plan also says when each epoch starts. `--starts-at <ISO 8601> --ends-at
+<ISO 8601>` spreads the k epochs evenly over the window (the week at k = 60: one every 168
+minutes; `--every-minutes <N>` gives the spacing directly), and `backtest --follow-schedule` waits
+for each start instead of running the epochs back to back, so one process runs the week
+(ADR 0026, [Backtesting](backtest.md#following-the-plans-timetable---follow-schedule)). The
+timetable is logistics: it is not in the commitment and nothing scores on it.
 
 `standings.json` is a derivative: it recomputes from `matrix.json` alone, and `matrix.json` stores
 `runDir` relative to the poc root, so a matrix collected off a remote box reads from wherever the
@@ -106,7 +124,7 @@ scenario out of a set that rebuilt the world per (regime, seed)** — the field 
 | | |
 |---|---|
 | **Decided** | Shared cross-sections at the interval boundaries (ADR 0006 / 0021). The deviation score with a linear 1 → 1.5 weight and no free parameter (rules §4.4, ADR 0022). The benchmark out of the population. No floor, no freeze, no disqualification. The epoch order from the lottery seed. Every venue scored at recoverable value (issue #40 axiom 3). |
-| **Open** | The value of k (Appendix A; 40 recommended). The actual hidden set and lottery seed. |
+| **Open** | The values Appendix A publishes — k, the blocks per epoch and the gas ETH (ADR 0026 proposes k = 60 = 12 regimes × 5, 360 blocks, 3 ETH). The actual hidden set and lottery seed. |
 
 Measured results from the metric selection that preceded this rule are kept for the record in
 [docs/scoring-metric-measurements.md](../scoring-metric-measurements.md); they are superseded.

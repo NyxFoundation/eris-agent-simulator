@@ -6,6 +6,7 @@ import {
   withOuOverride,
   type StressEventConfig,
 } from "../core/src/realtime/events.js";
+import { resetScenarioKey, setScenarioKey } from "@eris/sdk/rng.js";
 
 // A single crash whose trapezoid is fixed regardless of seed via fixed magnitude/window (min==max).
 const FIXED_CRASH: StressEventConfig = {
@@ -1051,16 +1052,26 @@ test("with variation keys, nearby seeds spread the first draw over its whole ran
   assert.ok(Math.max(...pub) - Math.min(...pub) > 0.3, `published seeds ${pub.map((x) => x.toFixed(2)).join(" ")}`);
 });
 
-test("a schedule without variation keys is the one it always was", () => {
-  // Pinned from the implementation before the keys existed: the practice period's windows are a
-  // function of its seed, and must not move on an upgrade.
+// ADR 0027: the schedule is realized under the scenario key. Pinned for the public key (the public
+// set reproduces from the repo); any other key moves every window.
+test("a schedule is realized under the scenario key", () => {
   const cfg: StressEventConfig = { type: "crash", magnitudeRange: [0.15, 0.22], windowFrac: [0.25, 0.7], rampBlocks: 3, holdBlocks: 6, decayBlocks: 8 };
   const a = new EventSchedule([cfg], 101, 360).events[0];
-  assert.equal(a.startBlock, 159);
-  assert.equal(a.magnitude, 0.15649268912849948);
+  assert.equal(a.startBlock, 109);
+  assert.equal(a.magnitude, 0.20436155734955377);
   const b = new EventSchedule([cfg], 202, 360).events[0];
-  assert.equal(b.startBlock, 156);
-  assert.equal(b.magnitude, 0.15917842744849622);
+  assert.equal(b.startBlock, 210);
+  assert.equal(b.magnitude, 0.21395847185008726);
+
+  const underPublic = SEEDS.map((s) => new EventSchedule([cfg], s, 360).events[0].magnitude);
+  try {
+    setScenarioKey("22".repeat(32));
+    const underOther = SEEDS.map((s) => new EventSchedule([cfg], s, 360).events[0].magnitude);
+    underOther.forEach((m, i) => assert.notEqual(m, underPublic[i], `seed ${SEEDS[i]}`));
+  } finally {
+    resetScenarioKey();
+  }
+  assert.equal(new EventSchedule([cfg], 101, 360).events[0].startBlock, 109);
 });
 
 // Before the event list went into the hash, crash#s and spike#s drew the same numbers (their lists
