@@ -20,6 +20,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { safeStringify } from "@eris/sdk/logger.js";
+import { nextDayBoundaryMs } from "@eris/sdk/periodClock.js";
 import {
   RunLogger,
   type BlockRowInput,
@@ -141,6 +142,13 @@ export class SegmentedRun implements RunArtifactWriter {
   private segment = 0;
   private segmentStartedAtMs: number;
   private segmentStartBlock = 0;
+  // The day grid. A segment is due at periodStartedAt + (k + 1) x hours -- not `hours` after the
+  // previous roll, which landed at the first block processed after its due time and so started each
+  // day a little late: over a five-week period the days drifted by the sum of those lags, and a
+  // self-hosted agent computing the day's end from the published origin (sdk/src/periodClock.ts)
+  // would have been off by all of them.
+  private periodStartedAtMs: number | null = null;
+  private nextRollAtMs = Number.POSITIVE_INFINITY;
   // The directory's name, fixed when the directory is created. Derived from the start time once and
   // then held: the start time moves when the first block arrives (see noteFirstBlock), and a name
   // recomputed after that would stop matching the directory on disk the moment a period's setup
@@ -246,28 +254,42 @@ export class SegmentedRun implements RunArtifactWriter {
    * first segment's window makes the first day short; long enough setup rolled a segment before the
    * run had a block at all, leaving an empty directory whose index entry claimed to span 607..606.
    */
-  noteFirstBlock(blockNumber: number): void {
+  noteFirstBlock(blockNumber: number, atMs: number = Date.now()): void {
     if (this.segmentStartBlock !== 0) return;
     this.segmentStartBlock = blockNumber;
-    this.segmentStartedAtMs = Date.now();
+    this.segmentStartedAtMs = atMs;
+    this.periodStartedAtMs = atMs;
+    this.nextRollAtMs = nextDayBoundaryMs(atMs, this.opts.hours, atMs);
     this.writeIndex();
+  }
+
+  /** The origin of the day grid, once the first block is known (published in the manifest). */
+  get periodStartedAt(): number | null {
+    return this.periodStartedAtMs;
   }
 
   dueToRoll(nowMs = Date.now()): boolean {
     // Never before the run has a block: a segment with no blocks in it is not a day of the period.
     if (this.segmentStartBlock === 0) return false;
-    return nowMs - this.segmentStartedAtMs >= this.opts.hours * 3_600_000;
+    return nowMs >= this.nextRollAtMs;
   }
 
   /**
    * Close the current segment and open the next. The caller writes the closing segment's summary
    * first (it owns the scoring), and gets back the new segment's directory.
    */
-  roll(atBlock: number, agents: unknown[]): string {
+  roll(atBlock: number, agents: unknown[], nowMs: number = Date.now()): string {
     this.closeIndexEntry(atBlock, agents);
     this.segment++;
-    this.segmentStartedAtMs = Date.now();
+    this.segmentStartedAtMs = nowMs;
     this.segmentStartBlock = atBlock;
+    // The next point on the grid after this roll. A loop that stalled past several points rolls
+    // once and lands on the next one, rather than cutting a run of one-block days to catch up.
+    this.nextRollAtMs = nextDayBoundaryMs(
+      this.periodStartedAtMs ?? this.segmentStartedAtMs,
+      this.opts.hours,
+      this.segmentStartedAtMs,
+    );
     this.segmentDirId = this.newSegmentId();
     this.logger = new RunLogger(this.competitionDir, this.segmentDirId);
     this.writeIndex();

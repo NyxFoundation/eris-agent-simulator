@@ -514,6 +514,7 @@ class AgentObservation(BaseModel):
     base_decimals: dict[str, float] | None = Field(None, alias='baseDecimals')
     markets: list[str] | None = None
     blocks_remaining: float | None = Field(None, alias='blocksRemaining')
+    day_blocks_remaining: float | None = Field(None, alias='dayBlocksRemaining')
     enabled_protocols: list[
         Literal[
             'uniswap', 'balancer', 'curve', 'gmx', 'aave', 'lst', 'liquity', 'lending'

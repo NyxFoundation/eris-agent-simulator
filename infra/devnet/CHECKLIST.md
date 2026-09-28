@@ -114,6 +114,8 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 
 **seed と長さは本番と別**: `.env.practice` は新しく引く（同じ seed だと、リハーサルの成果物から本番の
 窓が逆算できる）。長さは `--blocks 46800`（2 秒 × 46,800 = 26h。24h で切替 1 回 + 2 日目 2h）。
+エピソードは 26h 用に作り直す（`npm run gen:practice-episodes -- --hours 26`。1 日目に 10 種類が 1 つずつ入り、
+2 日目は 2h しかないので入らない）。作り直さないと、期間全体の分が 26h に詰め込まれる。
 2 日目を 2h 取るのは、途中登録の agent が 2 日目に採点されるところまで見るため（採点は翌日の最初の
 境界から、順位には境界 2 つ = 約 1h で入る）。
 
@@ -131,6 +133,7 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 - [ ] 参加者キーを発行し、gateway に読ませる:
   `infra/access/issue-key.sh --generate 8` → `infra/monitoring/.env` の `ASCON_KEYS_DIR`
 - [ ] seed: [README](README.md#install-once-on-the-box-that-hosts-it) のとおり `.env.practice` を作る
+- [ ] エピソードを 26h 用に作り直す: `npm run gen:practice-episodes -- --hours 26`
 - [ ] 長さの上書き（unit の drop-in）:
   ```sh
   mkdir -p ~/.config/systemd/user/ascon-devnet.service.d
@@ -156,8 +159,7 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
   while true; do ssh -N -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
     -L 8546:127.0.0.1:8546 -L 5174:127.0.0.1:5174 <A>; sleep 5; done &
   ```
-- [ ] マニフェスト（A で作って B に置く）:
-  `npm run manifest -- --config config/practice.yaml --public-rpc http://127.0.0.1:8546`
+- [ ] マニフェストはここでは作らない。coordinator の起動後に A で作る（1.3）
 - [ ] 鍵を 7 本作る（[practice-devnet §1](../../docs/guide/practice-devnet.md#1-create-a-wallet-and-register-its-address)
   の viem ワンライナー）。アドレスを A の `config/registrations.yaml` に書く（`ops-late` は 3h 後まで書かない）
 - [ ] Ollama が答えるか、時間も測る（API 経由の LLM 呼び出しは 60 秒で timeout）:
@@ -180,6 +182,8 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 - [ ] agent ごとの env ファイル `ops-agents/<id>.env`（`ops-late` は `ops-agents-late/` に分けておく）:
   ```sh
   ERIS_MANIFEST=./manifest.json
+  # venue と LST の時計は期間の設定から（run の長さはマニフェストが常に優先）
+  ERIS_CONFIG=config/practice.yaml
   ERIS_AGENT_ID=ops-venue-p
   ERIS_AGENT_DIR=example/agents/venue-arb
   ERIS_AGENT_PRIVATE_KEY=0x…
@@ -198,7 +202,16 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 ### 1.3 起動直後（T+0〜1h）
 
 A で `systemctl --user enable --now ascon-devnet`、登録が取り込まれたのを見てから（下の 3 つ目）、
-B で agent を起動する:
+A でマニフェストを作って B に置き、B で agent を起動する。マニフェストは走っている期間のもの
+（`--from-run`）でないと PriceFeed も期間の開始ブロックも入らず、agent は起動できない:
+
+```sh
+# A
+npm run manifest -- --config config/practice.yaml --public-rpc http://127.0.0.1:8546 --from-run runs/<period>
+```
+
+```sh
+# B
 
 ```sh
 mkdir -p ops-logs
@@ -328,6 +341,10 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 - [ ] deploy 鍵が公開テスト鍵でない: `grep AclAdmin sdk/src/constants.local.ts` が
   `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`（anvil の account 0）**ではない**（issue #74）
 - [ ] 新しい seed を引く（新しい competition なので。[README](README.md#install-once-on-the-box-that-hosts-it)）
+- [ ] エピソードを起動予定時刻で作り直し、PR にしてマージしておく:
+  `npm run gen:practice-episodes -- --start <起動予定時刻（タイムゾーン付き）>`。box の上で直接書き換えない
+  （checkout は main に追従していて、追跡ファイルが変わると sync timer がビルドを止める）。起動は予定の
+  ±1.5h 以内に行う。ずれたら作り直す
 - [ ] **coordinator を止めてから**チェーンを触る（動いたまま volume を消すと、何も出さずに固まる。
   [README](README.md#resetting-the-chain-under-a-running-coordinator-wedges-it-silently)）:
   `systemctl --user stop ascon-devnet` → compose を新しい commit で上げ直す → exporter コンテナも

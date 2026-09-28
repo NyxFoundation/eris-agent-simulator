@@ -13,14 +13,14 @@ building a feel for the market before the competition runs.
 ### What a good practice standing does — and does not — tell you
 
 The configuration is the competition's (rules §2.7): the same seven venues, the same basket, the same
-flow, and every kind of episode the official regimes run, every week. Doing well here means your agent
+flow, and every kind of episode the official regimes run, every day. Doing well here means your agent
 works, and that it had an edge **in this field, in the situations this period produced**. It does not
 mean it will place the same way in the competition, for reasons no configuration can remove:
 
 | | here | in the competition |
 |---|---|---|
 | the world | one, for the whole period — inventory, positions and drawdowns carry over | reset every epoch; every agent starts from the same basket |
-| the situations | a few episodes a week in a mostly calm market; no victims, no mid-epoch pools | each epoch is one regime, drawn in equal numbers — including the ones this period cannot hold |
+| the situations | one of every kind of episode a day in an otherwise calm market; no victims, no mid-epoch pools | each epoch is one regime, drawn in equal numbers — including the ones this period cannot hold |
 | the field | whoever is practising, plus the operator's reference agents | every submission; an arbitrage shared by more agents pays each of them less |
 | where your code runs | your machine | the operator's container (2 vCPU / 4 GiB, 5 s per `decide`) |
 
@@ -136,14 +136,16 @@ A non-zero `result` is your ETH. The dashboard's "Find your agent" takes the add
 ### 2. Read the manifest
 
 `manifest.json` is published by the operator and also written into every run directory. It carries
-where the chain is, what is deployed on it, how long an evaluation interval is, what the limits are,
-and which addresses are registered.
+where the chain is, what is deployed on it, how long an evaluation interval is, how long the period
+is and where each day ends, what the limits are, and which addresses are registered.
 
 ```jsonc
 {
   "status": { "scored": false, "label": "practice", "note": "…not the official scoring…" },
   "chain":  { "rpcUrl": "…", "chainId": 42069, "blockTimeSec": 2 },
   "round":  { "intervalBlocks": 900, "epochBlocks": 900, "approxSeconds": 1800 },
+  "period": { "endsAt": "2026-10-31T14:59:59.000Z", "blocks": 1488969, "startBlock": 1234,
+              "startedAt": "2026-09-28T01:00:00.000Z", "seconds": 3628800, "dayHours": 24 },
   "protocols": ["uniswap", "balancer", "curve", "gmx", "aave", "lst", "liquity"],
   "actions": { "uniswap": ["swap", "mintLiquidity", …], … },
   "contracts": { "priceFeed": "0x…", "uniswap": {…}, … },
@@ -154,6 +156,13 @@ and which addresses are registered.
 `round` is the evaluation interval — interim progress, not what the score is taken over.
 `epochBlocks` is `intervalBlocks` under its name before issue #140, kept with the same value until
 the results are published; read `intervalBlocks`.
+
+`period` is how long the run is, for a runtime nobody spawned. The run ends `blocks` blocks after
+`startBlock`; `endsAt` is the date that count was converted from. `dayHours` is the length of a scored
+day ([Standings](#standings)): day k ends at `startedAt` + (k + 1) × `dayHours`, on the wall clock.
+The runtime turns these into `blocksRemaining` and `dayBlocksRemaining` (step 3). `startBlock` and
+`startedAt` exist once the period has started, so a manifest built before then has the date and not
+the rest — ask for the running period's.
 
 `episodes` is deliberately partial. The **kinds** of shock the period contains and **how many** are
 published; **when each window opens is not** (ADR 0021 §1). Read the chain to know whether one is
@@ -170,6 +179,7 @@ used to inject:
 
 ```bash
 ERIS_MANIFEST=./manifest.json \
+ERIS_CONFIG=config/practice.yaml \
 ERIS_AGENT_ID=alice \
 ERIS_AGENT_DIR=example/agents/my-strategy \
 ERIS_AGENT_PRIVATE_KEY=0x… \
@@ -184,12 +194,22 @@ ERIS_RPC_HEADERS='{"X-ASCON-Key":"…"}' \
   from `ERIS_RPC_HEADERS`, a JSON object (`sdk/src/chain.ts`). Without the key the gateway answers
   every call with `missing or unknown X-ASCON-Key`. Keep the single quotes: without them the shell
   strips the double quotes, and what is left is not JSON.
-- `ERIS_MANIFEST` supplies the RPC URL, the PriceFeed address, the chain id and which address table
-  to use. Those last two are applied before anything else loads, because the address table is chosen
-  at import time — so the command above is enough on its own, and setting `CHAIN_ID` or
+- `ERIS_MANIFEST` supplies the RPC URL, the PriceFeed address, the chain id, which address table
+  to use, and the period's length. The chain id and the address table are applied before anything
+  else loads, because the address table is chosen at import time — setting `CHAIN_ID` or
   `ERIS_LOCAL_DEPLOY` in your shell overrides the manifest rather than the other way round.
-  Everything else still comes from your config file (`ERIS_CONFIG`, defaulting to
-  `config/local.yaml`).
+- **The run's length is the manifest's, never your config's.** `blocksRemaining` counts down to the
+  end of the period, and `dayBlocksRemaining` to the end of the day being scored — each day is one
+  epoch of the practice standings ([Standings](#standings)). Both come from the manifest's `period`,
+  whatever your config file says (a copy of `config/example.yaml` says 100 blocks) and whether or not
+  you name one. `dayBlocksRemaining` is computed from your machine's clock against the day's end, so
+  keep the clock synced: a clock that is off by 10 seconds moves it by 5 blocks. The runtime prints
+  where its count came from on the first block.
+- `ERIS_CONFIG` is read only when you set it; nothing is picked up from `config/local.yaml` unasked.
+  Name `config/practice.yaml`, the period's own configuration: it sets the venues the agent observes
+  and trades (all seven) and the LST's economic clock its `apyBps` is computed on. Without it the
+  runtime's defaults are five venues and an hour-long LST block, and it says so at startup when the
+  venues differ from the manifest's.
 - `ERIS_RUN_DIR` is **your** directory. Your decision log lands there and nowhere else — the
   dashboard cannot show it, and says so rather than rendering an empty panel.
 - On the first start the runtime grants its own venue approvals, because an approval is your
@@ -262,13 +282,18 @@ npm run stress:rpc -- --agents 30 --seconds 60 --write   # issue #36: does the r
 # 3. the period — in the foreground while you watch it start
 npm run sim:realtime -- --config config/practice.yaml
 
-# 4. hand out credentials, one participant at a time
-npm run manifest -- --config config/practice.yaml
+# 4. hand out the manifest and credentials, once the period has started
+npm run manifest -- --config config/practice.yaml --public-rpc <gateway URL> --from-run runs/<period>
 npm run manifest -- --config config/practice.yaml --participant alice
 
 # 5. serve the dashboard
 npm run dashboard:build && npm run dashboard:serve     # :5174
 ```
+
+Step 4's manifest is the coordinator's own (`--from-run` takes the competition directory and
+follows `current-segment`), with the public RPC put in place of the coordinator's. Built from the
+config alone it has no PriceFeed address and no period start — both exist only once the coordinator
+has started — so an agent cannot start from it, and the command says so.
 
 A period runs for a week, so step 3 does not stay in a terminal. On the box that hosts it, run the
 coordinator under systemd instead — `infra/devnet/` has the unit, what it needs, why a restart
@@ -462,10 +487,22 @@ A period ends on a **date**: `run.endsAt` (ISO 8601, with a time zone). `config/
 states `2026-10-31T23:59:59+09:00`, the end of the trial in rules §2.7; the live week starts the next
 day. The coordinator converts the date into the blocks that remain at `blockTimeSec` when it starts
 and records both in `run_started_realtime` (`runEndsAt`, `runBlocks`). A restart — which is a new
-competition — therefore ends on the same day with fewer blocks, and the episode windows spread over
-the time that remains (issue #136). Stated as a block count instead, the period used to end 42 days
-after whenever the coordinator started: a start on 9/23 ran into the live week, and every restart
-got a fresh 42 days.
+competition — therefore ends on the same day with fewer blocks (issue #136). Stated as a block count
+instead, the period used to end 42 days after whenever the coordinator started: a start on 9/23 ran
+into the live week, and every restart got a fresh 42 days.
+
+**The episode list is written for a start.** Each day of the period holds one of every kind of
+episode, and each episode's window is a fraction of the run, measured from the moment the coordinator
+starts. So before every (re)start the list is regenerated for that start, and merged like any other
+change (the box's checkout follows `main`, and an edited tracked file on it stops the dashboard
+build):
+
+```bash
+npm run gen:practice-episodes -- --start 2026-10-01T10:00:00+09:00   # rewrites config/practice.yaml
+```
+
+A coordinator that starts within 1.5 hours of the planned time still puts exactly one of each kind in
+every day (`core/src/practiceEpisodes.ts`, `test/practiceEpisodes.test.ts`); further off, regenerate.
 
 It is still a length, not a wall-clock limit on an open-ended run: an episode's window is placed as a
 fraction of the run's length (ADR 0009), so a run with no length has nowhere to put one and fails at
@@ -506,6 +543,13 @@ is one epoch of the practice score (its return, [Standings](#standings)), so dai
 epoch per day whatever each day's interval count. Cutting the period differently changes that
 weighting — it does not change a single interval's return, which is placed on a fixed grid from the run's first block and is entirely
 independent of where the cuts fall.
+
+The cuts are on a fixed wall-clock grid too: segment k closes at the first block the coordinator
+processes at or after `startedAt` + (k + 1) × `run.segmentHours`, where `startedAt` is the moment the
+run's first block was declared. They used to be `segmentHours` after the previous cut, which itself
+landed a block or a flush late, so every day started a little later than the one before. The grid's
+origin is published as the manifest's `period.startedAt`, which is how a self-hosted agent's
+`dayBlocksRemaining` agrees with the cut (to within the two clocks and a block).
 
 ### How many intervals a period has
 
