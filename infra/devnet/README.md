@@ -17,6 +17,12 @@ eris-dashboard-sync.timer     rebuilds the hosted dashboard           (infra/das
 
 ## Install (once, on the box that hosts it)
 
+On a box provisioned with [infra/provision/bootstrap.sh](../provision/bootstrap.sh) the link and the
+linger below are already in place, and so is `runs/` (owned by the service user — left to compose it
+is created as root and the first start dies with `EACCES`); what is left is the seed and
+`enable --now`. The unit is a **user** unit everywhere, which is what every `systemctl --user` below
+and in [CHECKLIST.md](CHECKLIST.md) addresses.
+
 ```sh
 # The period's seed. Not the one in config/practice.yaml: that file is public, and the price walk, the
 # flow and every event window follow from the seed, so the committed one publishes all of them. Draw

@@ -21,7 +21,8 @@ WorkingDirectory=%h/workspace/eris-agent-simulator
 # systemd gives no login shell, so PATH has to be stated. Both layouts are listed because this unit
 # has to serve the NixOS box it was written on and the Ubuntu box it now runs on: `~/.foundry/bin`
 # is where foundryup puts anvil/cast, the nix paths are inert on Ubuntu and vice versa.
-# infra/provision/bootstrap.sh rewrites this line when it installs the unit.
+# infra/provision/bootstrap.sh links this file unchanged into ~/.config/systemd/user/: every path in
+# it is under %h, and it is a user unit on every box (issue #158).
 Environment=PATH=%h/.foundry/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # The chain is a container that may still be starting at boot. Waiting here rather than failing
