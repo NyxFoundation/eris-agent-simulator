@@ -20,6 +20,7 @@ import { existsSync, createReadStream, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { competitionsFromEnv, createRunsApi, modeFromEnv } from "./runsApi.js";
+import { explorerTarget } from "./explorerProxy.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DIST =
@@ -107,10 +108,17 @@ const server = createServer((req, res) => {
   }
 
   if (urlPath.startsWith("/blockscout")) {
-    const target = new URL(
-      urlPath.slice("/blockscout".length) + (query ? `?${query}` : ""),
+    const target = explorerTarget(
+      urlPath.slice("/blockscout".length),
+      query,
+      req.method,
       BLOCKSCOUT,
     );
+    if (!target) {
+      res.statusCode = 400;
+      res.end();
+      return;
+    }
     const upstream = httpRequest(
       target,
       { method: req.method, headers: { ...req.headers, host: target.host } },
