@@ -170,6 +170,10 @@ services:
       - ascon-chain-state:/chainstate
     # anvil's dump can take a while once the practice chain has grown; do not SIGKILL through it.
     stop_grace_period: 120s
+    # The mnemonic the dev accounts come from (see the command below). From infra/monitoring/.env,
+    # which is gitignored; keep it 0600.
+    environment:
+      - ANVIL_MNEMONIC=${ANVIL_MNEMONIC:-}
     entrypoint: ["sh", "-c"]
     command:
       - |
@@ -199,11 +203,25 @@ services:
         # indexer that falls more than 10 minutes behind loses the transactions it has not read.
         # Not bounded by any flag: block headers, which anvil keeps for every block. The
         # ascon_anvil_mem_growth alert watches the slope that leaves (infra/devnet/README.md).
+        #
+        # The dev accounts come from a mnemonic. Unset, that is anvil's public test mnemonic, whose
+        # keys anyone can read off anvil's banner: fine for a chain nobody else can send to, not for
+        # one behind the gateway, which relays eth_sendRawTransaction (docs/guide/practice-devnet.md,
+        # "The chain's own keys"). It has to be the mnemonic the state dump was deployed with -- the
+        # dump fixes which addresses hold the venues' roles. Passed through the positional
+        # parameters so a phrase with spaces stays one argument; like any argument it is visible in
+        # the host's process list, i.e. to whoever has a shell on the box.
+        set --
+        if [ -n "$${ANVIL_MNEMONIC:-}" ]; then
+          set -- --mnemonic "$$ANVIL_MNEMONIC"
+        else
+          echo "WARNING: ANVIL_MNEMONIC is unset: the dev accounts are anvil's PUBLIC test mnemonic"
+        fi
         anvil --host 0.0.0.0 --port 8545 --code-size-limit 50000 --base-fee 0 \
               --gas-limit 320000000 --accounts 10 --balance 1000000 \
               --load-state /chainstate/state.json --dump-state /chainstate/state.json \
               --state-interval 300 \
-              --transaction-block-keeper 300 --prune-history 300 &
+              --transaction-block-keeper 300 --prune-history 300 "$$@" &
         ANVILPID=$$!
         # PID 1 here is this shell. Without the trap, SIGTERM stops the shell, anvil is orphaned and
         # then SIGKILLed, and the dump is never written (verified A/B: no trap -> 0 bytes + orphan;
