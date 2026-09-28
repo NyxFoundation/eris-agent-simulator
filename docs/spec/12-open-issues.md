@@ -49,7 +49,7 @@ USDC 建てでは LST 保有戦略が構造的に β で不利になる（実測
 
 ### アセット間相関は 0
 
-per-base の Rng が完全に独立している（`sdk/src/rng.ts:120-124`）。相関を入れるには共有 Rng へ統合する必要があり、それは WETH の消費列を変えて後方互換を壊すので**既定では行っていない**。
+per-base の Rng が完全に独立している（`sdk/src/rng.ts` `priceRngForAsset`）。相関を入れるには共有 Rng へ統合する必要があり、そうすると base を足すたびに WETH の消費列が動くので**既定では行っていない**。
 
 ### `economicGas` は external チェーンで使えない
 

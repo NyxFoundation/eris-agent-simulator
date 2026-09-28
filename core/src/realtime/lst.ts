@@ -22,8 +22,10 @@ import type { RunLogger } from "../logger.js";
 const ACCRUE_GAS = 200_000n;
 
 // Salt for the APY Rng, so resampling the yield never disturbs the price path's or the flow's
-// consumption sequence (same discipline as the stress overlay's STRS salt).
-const LST_SEED_SALT = 0x4c_53_54_59; // "LSTY"
+// consumption sequence (same discipline as the stress overlay's STRS salt). Hashed with the seed
+// (Rng.fromSeed), not just XORed in: XOR keeps nearby seeds nearby, and the first APY drew
+// 513-592 bps out of [100, 900] on every seed from 1 to 200.
+export const LST_SEED_SALT = 0x4c_53_54_59; // "LSTY"
 
 // A discount this large right after setup means the pool is not tracking the vault's redemption
 // rate -- almost always an unwired rate oracle, which hands every agent the same risk-free arb
@@ -60,7 +62,7 @@ export class ApySchedule {
     stepBlocks: number,
     initialBps: number,
   ) {
-    this.rng = new Rng((seed ^ LST_SEED_SALT) >>> 0);
+    this.rng = Rng.fromSeed(seed, LST_SEED_SALT);
     this.range = range;
     this.stepBlocks = Math.max(1, stepBlocks);
     this.currentBps = initialBps;

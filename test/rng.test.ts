@@ -40,18 +40,24 @@ test("fair price mean-reverts toward the anchor", () => {
   assert.ok(Math.abs(fromLow - anchor) < anchor * 0.1, `fromLow=${fromLow}`);
 });
 
-test("priceRngForAsset(seed,'WETH') equals Rng(seed) — WETH byte compatibility", () => {
-  // WETH's price Rng uses derived salt 0, so it exactly matches Rng(seed) (preserves existing run paths).
+// This used to pin priceRngForAsset(seed, "WETH") === Rng(seed), to keep the WETH path byte-identical
+// to runs from before the multi-asset change. That compatibility was given up on purpose: Rng(seed)
+// started every seed from 1 to 200 inside [0.236, 0.314), so every run opened with a 15-21 bps
+// fall (see test/rngSeeds.test.ts). WETH now derives its stream like every other base.
+test("priceRngForAsset(seed,'WETH') is the hashed stream, not Rng(seed)", () => {
   const seed = 12345;
-  const direct = new Rng(seed);
   const viaWeth = priceRngForAsset(seed, "WETH");
-  for (let i = 0; i < 5; i++) assert.equal(viaWeth.next(), direct.next());
+  const hashed = Rng.fromSeed(seed, "price:WETH");
+  const raw = new Rng(seed);
+  const a = Array.from({ length: 5 }, () => viaWeth.next());
+  assert.deepEqual(a, Array.from({ length: 5 }, () => hashed.next()));
+  assert.notDeepEqual(a, Array.from({ length: 5 }, () => raw.next()));
 });
 
 test("adding WBTC leaves the WETH price path byte-identical (independent per-asset Rng)", () => {
   const seed = 99;
-  // legacy: advance WETH alone by 4 steps with Rng(seed).
-  const solo = new Rng(seed);
+  // WETH alone, 4 steps on its own price stream (Rng(seed) before the seed was hashed).
+  const solo = priceRngForAsset(seed, "WETH");
   const wethSolo: number[] = [];
   let p = 3000;
   for (let i = 0; i < 4; i++) {
