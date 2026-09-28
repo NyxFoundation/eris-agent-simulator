@@ -34,7 +34,7 @@ Layered on top:
 secret env  <  YAML  <  CLI flags  <  programmatic overrides
 ```
 
-`ERIS_CONFIG` propagates to child processes, so **an agent rebuilds its config from the same YAML** — the environment and the agent see the same configuration cross-section, which is why this loader lives in the sdk.
+An agent the coordinator launches does not read the coordinator's config file. The coordinator writes an **agent config** from the values it resolved (`runs/<id>/agent-view/<agentId>/config.yaml`: the fields the runtime reads, with no seed and no stress / flow / vuln / funding section or roster; `core/src/realtime/agentView.ts`) and passes its path as `ERIS_CONFIG`. The agent reads it with the same loader, so **the environment and the agent see the same values** — which is why this loader lives in the sdk. One-off CLI overrides reach the agents the same way.
 
 ## 7.3 The schema
 
@@ -178,7 +178,7 @@ One-off overrides (`CLI_ALIAS`, `core/src/runConfig.ts:147`).
 
 Parsed as `--key value`, `--key=value`, or a bare `--flag` (which means `"1"`).
 
-**backtest's `--agents` is written into the effective regime YAML and reaches the agent processes.** Applying it only to the coordinator kills the agents on observation.
+**backtest's overrides (`--agents`, `--blocks`, `--protocols`, …) are written into the effective regime YAML, which the coordinator runs from.** They reach the agents through the agent config above (applying them only to the coordinator kills the agents on observation). The roster and the seed are not in the agent config.
 
 ## 7.5 The roster
 

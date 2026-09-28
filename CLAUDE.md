@@ -333,14 +333,17 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run gen:local-constants` — deployments.json → `sdk/src/constants.local.ts` 生成（同梱 `deployer/` のローカルデプロイ出力を読む）
 - `npm run gen:state-dump` — 稼働中の deployer anvil から配布用 state dump + manifest（生成元コミット・deployments 同梱・fingerprint）を `backtest/state/` へ生成（ADR 0016。dump 前に `.local-snapshot` のクリーン断面へ revert し、constants.local.ts も同じ deployments から再生成）
 - **anvil はブロックごとの state を `~/.foundry/anvil/tmp/anvil-state-*/` に ~2 MB ずつ書く**（`--load-state` の run で実測: 360 ブロック run 1 本で 3,600 ファイル ≈ 7 GB、プロセス終了後も残る）。2026-09-10 にこれが 61 GB 溜まってディスクが満杯になり、run が `ENOSPC` で落ちた。run の後は `rm -rf ~/.foundry/anvil/tmp/anvil-state-*`（動いている anvil が無いとき）。本番 box でも同じ。**macOS の anvil 1.7.1 では 1 ブロック ~6 MB（2026-09-26 再測定）、Linux の 1.8.1 では同じ負荷で 1 ファイルも書かなかった**（issue #135）。`--prune-history` を付ければ版に関係なくディスクには書かない
-- `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出されて agent プロセスにも伝播**（coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
+- `npm run backtest -- --regime <name> --seed <N>` — シナリオ 1 本を再生（ADR 0016 Phase 0 = B1 実時間再生）。state dump をロードした専用 anvil（既定 port 8547）で `config/regimes/<name>.yaml` + seed を再生する。**シナリオ = (regime, seed)** で regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。`--agents <roster>`（regime 既定ロスターの差し替え）/ `--protocols`/`--blocks`/`--score-every` 等の一回上書き。**override は実効 regime YAML に書き出され coordinator はそれで走る。agent には届くが、その YAML ではなく coordinator が解決済みの値から書く agent 用 config 経由**（下の「agent が見るもの」。coordinator だけに効かせると agent が観測で死ぬ）。fingerprint 不一致は manifest 同梱 deployments から constants を自動再生成、genesis 不一致は fail-fast
 - `npm run backtest -- --scenarios config/scenarios/public.yaml` — シナリオ行列を 1 つの anvil 上で全部再生し順位を出す（ADR 0017）。`{regimes, seeds}` の直積（実行順が回次 s）か、`{k, epochs: [{s, regime, seed}]}` の順序付きプラン（`npm run competition -- plan` の出力）を受ける。シナリオ間は snapshot/revert。`runs/matrix-<id>/matrix.json`（schema 2: シナリオ × agent の P = `pnlUsdc` / `pnlSource` / `netPnlUsdc` / `alphaUsdc` / 端点 / `baseline` / `flags`）と `standings.json`（`computeStandings` の出力）を書く。順位は派生物で matrix.json から再計算できる。`--repeat N`（較正の診断用。採点は 1 回が既定。P の中央値の repeat を採る）
   - **`--resume <matrix-dir>` で同じ行列を続ける**（規約 §4.7.1。ライブ週の k エポックは複数回の起動にまたがる）。
     格納済みの `agents` を持つシナリオは skip（`skipping s=…, already complete`）、無い・`error` のものだけ再実行し、
     `matrix.json` / `standings.json` を**同じディレクトリに**回次順で書き直す（`createdAt` は初回のまま、`resumedAt` を追加）。
     `scenarioSet` / `k` / `resetUnit` / `repeat` が違えば fail-fast、同じパスで中身が変わったセットも回次単位で拒否
     （`core/src/backtest/resume.ts`）。summary.json → AgentScore の変換は `core/src/backtest/scenarioScores.ts` に分離
-  - **公式レジームは `agentSandbox: docker`**（規約 §2.3 の 2 vCPU / 4 GiB は `infra/docker-agent/run-agent.sh` でしか掛からない）。docker が無ければ `--agent-sandbox process`（無制限。`agent_sandbox` イベントにそう出る）。綴り間違いは fail-fast
+  - **公式レジームは `agentSandbox: docker`**（規約 §2.3 の 2 vCPU / 4 GiB は `infra/docker-agent/run-agent.sh` でしか掛からない）。docker が無ければ `--agent-sandbox process`（無制限。`agent_sandbox` イベントにそう出る）。綴り間違いは fail-fast。
+    docker でも `ERIS_AGENT_ISOLATE=1` + `ERIS_AGENT_INTERNAL=1` が無い agent は host のサービスへ直接届くので、coordinator は
+    **止めずに警告する**（`agent_sandbox_warning` イベント + 起動時と完走時の stderr バナー。audience には配信しない）。
+    ライブ週の設定は `infra/docker-agent/ISOLATION.md` 冒頭
   - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
   - **5 ブロック中央値は市場由来の全マークに掛かる**（規約 §4.1。以前は stable の probe だけで、LP・LST・Liquity は
     境界 1 点だった）。対象は各アダプタが `medianSurfaces` で宣言し（uniswap-lp の tick / balancer・curve の持分価格 /
@@ -890,6 +893,23 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
 runtime/send.ts が同じファイルに mempool 活動（`kind:"mempool"`: submitted / submit_failed /
 rejected）を自己申告で追記する（coordinator が submitted を数えられなくなる穴を塞ぐ。ADR 0006 §5）。
 出力先は coordinator が渡す env `ERIS_RUN_DIR` / `ERIS_AGENT_ID` で決まる。run 後の診断はこれを一次情報にする。
+
+### agent が見るもの（`core/src/realtime/agentView.ts`）
+
+coordinator は起動する agent ごとに `runs/<id>/agent-view/<agentId>/` を作り、`config.yaml`（agent 用 config）と
+`run-start.json` を置く。**agent 用 config は allowlist**（`AGENT_CONFIG_FIELDS` = run 長・blockTime・venue・fee・LST 時計・
+gas 予算など、ランタイムが読むフィールドを coordinator の解決済み値で）で、**seed・stress・flow・vuln・market・funding・
+ロスターを含まない**。`ERIS_CONFIG` はこのファイルを指し、coordinator 自身の config（backtest の
+`.effective-<regime>-<seed>.yaml`）は渡さない。名前に seed を持つ env（`ERIS_PRACTICE_SEED` 等）も子へ渡さない。
+agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimConfig` にフィールドを足したら
+`test/agentView.test.ts` がどちら側かを決めさせる。
+- **docker の image モードで mount するのは view ディレクトリ（読取専用、`/eris/run` = `ERIS_RUN_DIR`）と自分のログ
+  ファイルだけ**（`agents/<id>.jsonl`、`ERIS_IMPROVE_LOG_CALLS=1` なら `.llm.jsonl`、vuln run は `disclosures/` 読取専用）。
+  ログはファイル単位の bind mount なので、host 側は従来どおり `runs/<id>/agents/<id>.jsonl`（dashboard の live tail・
+  agents-ready・post-run check は無変更）。ro mount の中の mountpoint は事前に要るので wrapper が空ファイルを作る
+- **例外 2 つはディレクトリ mount のまま**: segmented period（segment が回るので期間ディレクトリ。警告に出る）と
+  `ERIS_AGENT_VIEW_DIR` の無い起動
+- **bind-mount モードと `--agent-sandbox process` は隔離境界ではない**（repo / host のファイルが全部見える）
 自己改善型は `ERIS_IMPROVE_LOG_CALLS: "1"`（ロスターの env）で LLM との生の対話（system 全文・送信
 messages・生応答・エラー）を `agents/<agentId>.llm.jsonl` に残せる（opt-in。プロンプト調整の一次情報）。
 

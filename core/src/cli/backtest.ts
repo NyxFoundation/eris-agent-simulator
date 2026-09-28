@@ -376,12 +376,11 @@ async function main(): Promise<void> {
   );
 
   // ---- Lightweight regime read + applying one-off overrides (the effective regime) ----
-  // Run overrides (--protocols, etc.) aren't enough via the coordinator's cliOverrides alone: the
-  // agent process reads the ERIS_CONFIG YAML directly, so we write out an "effective regime YAML" with
-  // the overrides merged in, making the coordinator and agent read the same config (otherwise the agent
-  // tries to observe a venue not in the state and dies on a zero-address read). The --agents roster is
-  // baked into the effective YAML's inline agents for the same reason (don't add a priority branch to
-  // core's roster resolution).
+  // The regime file + this scenario's seed + the one-off overrides (--protocols, etc.), written out as
+  // one "effective regime YAML" that the coordinator runs from. The --agents roster is baked into its
+  // inline agents (don't add a priority branch to core's roster resolution). This file is the
+  // coordinator's: the agents it launches get their own config, derived from what the coordinator
+  // resolved (core/src/realtime/agentView.ts), which carries the overrides and no seed.
   type RegimeDoc = {
     run?: Record<string, unknown> & {
       seed?: number;
@@ -426,9 +425,10 @@ async function main(): Promise<void> {
     rosterAgents = roster.agents;
   }
 
-  // The effective regime is always written now, because the seed is no longer in the regime file and
-  // has to reach the agent processes too: they read the ERIS_CONFIG YAML directly, so an override
-  // that only reaches the coordinator leaves the agent observing a different world (ADR 0016 §2).
+  // The effective regime is always written now, because the seed is no longer in the regime file
+  // (ADR 0017 §1). Overrides reach the agents through the agent config the coordinator writes from
+  // this run's resolved values, so an override cannot leave an agent observing a different world
+  // (ADR 0016 §2).
   const regimeDocs = new Map<string, RegimeDoc>();
   const rosterOf = (doc: RegimeDoc): string[] => {
     const agents = (rosterAgents ?? doc.agents) as
@@ -770,8 +770,9 @@ async function main(): Promise<void> {
         );
       }
       const expectedAgents = rosterOf(loadRegimeDoc(scenario));
-      // Have both the coordinator and the agent processes read this scenario's effective regime.
-      process.env.ERIS_CONFIG = effectivePathFor(scenario);
+      // The coordinator reads this scenario's effective regime (passed as --config below). The
+      // agents are handed their own config by the coordinator, not this file.
+      const effectivePath = effectivePathFor(scenario);
 
       const perRepeat: AgentScore[][] = [];
       const runDirs: string[] = [];
@@ -808,7 +809,7 @@ async function main(): Promise<void> {
             // the only thing allowed to declare the mode. A single --regime replay stays `continuous`
             // -- it is one world, whatever the snapshot/revert around it does for the *next* scenario.
             ...(matrixMode ? { ERIS_RESET_UNIT: "scenario" } : {}),
-          }, [process.execPath, "sim-realtime", "--config", effectivePathFor(scenario)]);
+          }, [process.execPath, "sim-realtime", "--config", effectivePath]);
           runDirs.push(runDir);
           const summary = readRunSummary(runDir);
           if (summary) {

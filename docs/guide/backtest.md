@@ -223,7 +223,7 @@ agents:
 | `--score-every <N>` | Reconstruct the value cross-section every Nth block instead of every block. Score-neutral (only the first and last cross-sections reach `summary.json`); it just coarsens the equity curve in `events.jsonl` |
 | `--blocks` / `--seconds` / `--protocols` / `--economic-gas` | One-shot override of regime values (for smoke tests) |
 
-> Run overrides are written out as an "effective regime YAML" that both the coordinator and the agent processes read, so they read the same settings (applying it only to the coordinator would kill the agents on observation).
+> Run overrides are written out as an "effective regime YAML" that the coordinator runs from. The agents it launches do not read that file: each gets its own config, `runs/<id>/agent-view/<agentId>/config.yaml`, which the coordinator writes from the values it resolved — the fields the agent runtime reads (run length, block time, venues, fees, …), overrides included, and no seed (`core/src/realtime/agentView.ts`). So an override still reaches the agents (applying it only to the coordinator would kill them on observation).
 
 ## Troubleshooting
 

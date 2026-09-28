@@ -360,8 +360,8 @@ With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
   own reasoning and their not-yet-included bids, §2.6), raw LLM exchanges (`*.llm.jsonl`) and
   `disclosures/` return 404
 - rewrites `events.jsonl` line by line: `seed` / `flowSeed` leave `run_started_realtime`, the
-  `stress_calibration_warning` (it names crash magnitudes) and `vulnerability_exploited` (regime-7
-  ground truth) lines go, `pool_created` loses `rigged` / `rugBps` / `rugThresholdUnits` /
+  `stress_calibration_warning` (it names crash magnitudes), `vulnerability_exploited` (regime-7
+  ground truth) and `agent_sandbox_warning` (the operator's note on agent container isolation) lines go, `pool_created` loses `rigged` / `rugBps` / `rugThresholdUnits` /
   `baitBps`, any `stderrTail` goes, and `stress_schedule` depends on what the run is: for a
   **continuous** world (a practice period) it keeps only the windows that have **already closed** by
   the run's current block (read off the end of `blocks.csv`) — past windows happened to everyone,

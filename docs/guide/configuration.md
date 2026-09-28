@@ -95,4 +95,4 @@ Without editing the YAML, you can override values per run (CLI flags take highes
 
 > **How `--agents` behaves**: `sim:realtime` resolves the roster in the order "inline `agents:` > `run.agentsConfig` / `--agents` > default," so in a config with an inline roster (like `config/local.yaml`) `--agents` has no effect (edit the YAML's `agents:` instead). `npm run backtest`'s `--agents` is a separate mechanism that bakes the roster into the effective regime YAML, so it always replaces the roster even if the regime has an inline one ([Backtest](backtest.md)).
 
-> `npm run backtest` is a separate entry point with its own dedicated flags `--regime` / `--repeat` / `--state` / `--port` etc. (overrides propagate to the agent processes too, as the "effective regime YAML"). See [Backtest](backtest.md).
+> `npm run backtest` is a separate entry point with its own dedicated flags `--regime` / `--repeat` / `--state` / `--port` etc. (the coordinator runs from an "effective regime YAML" with the overrides merged in, and the agents it launches get their own config written from the values it resolved). See [Backtest](backtest.md).
