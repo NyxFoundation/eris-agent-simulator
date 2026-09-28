@@ -114,6 +114,8 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 
 **seed と長さは本番と別**: `.env.practice` は新しく引く（同じ seed だと、リハーサルの成果物から本番の
 窓が逆算できる）。長さは `--blocks 46800`（2 秒 × 46,800 = 26h。24h で切替 1 回 + 2 日目 2h）。
+エピソードは 26h 用に作り直す（`npm run gen:practice-episodes -- --hours 26`。1 日目に 10 種類が 1 つずつ入り、
+2 日目は 2h しかないので入らない）。作り直さないと、期間全体の分が 26h に詰め込まれる。
 2 日目を 2h 取るのは、途中登録の agent が 2 日目に採点されるところまで見るため（採点は翌日の最初の
 境界から、順位には境界 2 つ = 約 1h で入る）。
 
@@ -131,6 +133,7 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 - [ ] 参加者キーを発行し、gateway に読ませる:
   `infra/access/issue-key.sh --generate 8` → `infra/monitoring/.env` の `ASCON_KEYS_DIR`
 - [ ] seed: [README](README.md#install-once-on-the-box-that-hosts-it) のとおり `.env.practice` を作る
+- [ ] エピソードを 26h 用に作り直す: `npm run gen:practice-episodes -- --hours 26`
 - [ ] 長さの上書き（unit の drop-in）:
   ```sh
   mkdir -p ~/.config/systemd/user/ascon-devnet.service.d
@@ -328,6 +331,10 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 - [ ] deploy 鍵が公開テスト鍵でない: `grep AclAdmin sdk/src/constants.local.ts` が
   `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`（anvil の account 0）**ではない**（issue #74）
 - [ ] 新しい seed を引く（新しい competition なので。[README](README.md#install-once-on-the-box-that-hosts-it)）
+- [ ] エピソードを起動予定時刻で作り直し、PR にしてマージしておく:
+  `npm run gen:practice-episodes -- --start <起動予定時刻（タイムゾーン付き）>`。box の上で直接書き換えない
+  （checkout は main に追従していて、追跡ファイルが変わると sync timer がビルドを止める）。起動は予定の
+  ±1.5h 以内に行う。ずれたら作り直す
 - [ ] **coordinator を止めてから**チェーンを触る（動いたまま volume を消すと、何も出さずに固まる。
   [README](README.md#resetting-the-chain-under-a-running-coordinator-wedges-it-silently)）:
   `systemctl --user stop ascon-devnet` → compose を新しい commit で上げ直す → exporter コンテナも
