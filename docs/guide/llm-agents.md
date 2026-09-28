@@ -311,7 +311,10 @@ contextTokens: 65536       # Ollama's num_ctx                          (env ERIS
 ```
 
 A value above what the model allows is refused by the service, and that is logged as a failed
-revision. The subscription CLIs (`codex`, `claude-cli`) choose their own and ignore both.
+revision. The subscription CLIs (`codex`, `claude-cli`) choose their own and ignore both. On the
+OpenAI-compatible family the cap goes out as `max_completion_tokens`, OpenAI's current name (its
+o-series refuses the old `max_tokens`); a compatible server that only knows `max_tokens` ignores it
+without an error, so the reply is then bounded by that server's own default.
 
 > **Why 16,000 and not 2,048.** The Anthropic cap was 2,048 until issue #168 — a value from when a
 > call returned one trading action. A strategy longer than that was cut mid-code, failed to parse,
@@ -338,6 +341,11 @@ waits for a call that is not streamed — the reference runtime does not stream.
 fits at ordinary speeds; a much higher cap may not finish inside it, and a call cut by the timeout
 has still been paid for (rules §2.5). A client of your own can stream through the proxy instead,
 which is bounded by silence rather than by length (`infra/inference-proxy/README.md`).
+
+Five minutes is longer than the default cadence (60 blocks at 2 s is two minutes). A revision
+opportunity that falls while the previous call is still running is skipped — the cadence moves on
+rather than queueing a second call — and the agent log says so:
+`llm call from block N still running: the revision due at block M is skipped`.
 
 **These are the reference runtime's, and it ships inside your submission zip:** a submission gets
 them when it is re-bundled with this SDK.

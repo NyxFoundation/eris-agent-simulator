@@ -939,9 +939,24 @@ async function main(): Promise<void> {
     };
 
     let revising = false;
+    // The block the call in flight was made on, for the line below.
+    let revisingSince = 0;
     const maybeRevise = async (block: number): Promise<void> => {
-      if (revising) return;
+      if (revising) {
+        // Said, because it is otherwise invisible: an opportunity that falls while the previous call
+        // is still running is dropped, and the cadence moves on. A call may take five minutes
+        // (llm.ts), longer than 60 blocks at 2 s. Not a `revision <kind>` reason: nothing was decided.
+        agentLog({
+          round: block,
+          reason:
+            `llm call from block ${revisingSince} still running: the revision due at block ` +
+            `${block} is skipped`,
+          state: { model },
+        });
+        return;
+      }
       revising = true;
+      revisingSince = block;
       try {
         // Nothing is judged here. Whether a revision helped, and whether to undo it, is the model's
         // call -- an automatic revert needs a threshold and there is no defensible one (ADR 0018 §5).

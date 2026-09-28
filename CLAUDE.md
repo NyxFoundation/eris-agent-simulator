@@ -56,7 +56,9 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
 client に timeout を持たせて SDK の見積もり拒否は外してある）と **Ollama の `num_ctx` 32,768**（未指定だと
 非公開のサービス既定になり、はみ出しは**黙って捨てられる**）。上限で止まった応答は使わず
 `revision failed: output truncated at N tokens (...)`、Ollama で文脈が窓を超えたら `llm input truncated: ...`
-を agent ログに出す。呼び出し 1 回の待ちは既定 5 分（`ERIS_LLM_CALL_TIMEOUT_MS`。旧 60 秒）。
+を agent ログに出す。呼び出し 1 回の待ちは既定 5 分（`ERIS_LLM_CALL_TIMEOUT_MS`。旧 60 秒）で、既定の改訂間隔
+（60 ブロック = 2 分）より長いので、前の呼び出しが走っている間に来た改訂機会は**飛ばして** `llm call from block N
+still running: …` と記録する（以前は無言で飛んでいた）。
 
 改訂プロンプトは**その run で有効な venue の action 名を列挙する**（`ACTION_TYPES_BY_PROTOCOL`。
 `sdk/src/action.ts` が単一の出典で、`test/actionVocabulary.test.ts` が改名・削除を検出）。渡さないと
