@@ -270,7 +270,7 @@ hung process and a stray flow bot per scenario is a hundred of each by the end.
 Until the root cause is fixed, bound it and sweep afterwards:
 
 ```sh
-timeout 3h npm run backtest -- --scenarios plan.yaml --port 8547
+timeout 3h npm run backtest -- --scenarios plan.yaml --scenario-key <key.yaml|public> --port 8547
 pkill -f 'core/src/flow/market-maker'      # the children that keep it open
 ```
 
@@ -290,7 +290,9 @@ block 1222 and scenario 2 started at 1163. Nothing but a revert does that.
 ```sh
 export PATH="$HOME/.foundry/bin:$PATH"     # anvil is not on a non-interactive PATH
 export ERIS_AGENT_BINDMOUNT=1              # see below — without it most of the field cannot start
-timeout 5h npm run backtest -- --scenarios <plan.yaml> --port 8547
+# A plan (epochs:) refuses to start without its scenario key (ADR 0027): the operator's key file for
+# the live week, `public` for a rehearsal on the public key.
+timeout 5h npm run backtest -- --scenarios <plan.yaml> --scenario-key <key.yaml|public> --port 8547
 ```
 
 ### Four ways this run produces a green result that means nothing

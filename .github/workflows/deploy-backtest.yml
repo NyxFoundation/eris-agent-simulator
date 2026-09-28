@@ -232,7 +232,9 @@ jobs:
             - { s: 1, regime: calm, seed: 101, startsAt: "$start" }
           YAML
           before=$(ls -d runs/matrix-* 2>/dev/null | sort | tail -1 || true)
-          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule \
+          # A plan is the live-week form and refuses to start without a key (ADR 0027); CI runs it
+          # under the public key on purpose.
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule --scenario-key public \
             --blocks 12 --seconds 90 --agent-sandbox process 2>&1 | tee "$RUNNER_TEMP/follow.log"
           grep -q "waiting .* for its planned start $start" "$RUNNER_TEMP/follow.log"
           dir=$(ls -d runs/matrix-* | sort | tail -1)
@@ -250,7 +252,7 @@ jobs:
             if (began < Date.parse(process.env.START)) throw new Error(`the epoch began at ${id}, before its planned ${process.env.START}`);
             console.log(`followed: planned ${process.env.START}, began ${new Date(began).toISOString()}`);
           '
-          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule --resume "$dir" \
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule --resume "$dir" --scenario-key public \
             --blocks 12 --seconds 90 --agent-sandbox process 2>&1 | tee "$RUNNER_TEMP/resume.log"
           grep -q "skipping s=1" "$RUNNER_TEMP/resume.log"
           if grep -q "waiting" "$RUNNER_TEMP/resume.log"; then echo "a resume waited for a complete epoch"; exit 1; fi
