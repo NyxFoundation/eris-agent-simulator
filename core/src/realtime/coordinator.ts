@@ -133,6 +133,7 @@ import {
 } from "./marketRegistry.js";
 import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { LiveScorer } from "./liveScoring.js";
+import { KeyedSerial } from "./keyedSerial.js";
 import {
   diffRegistrations,
   RegistrationsWatcher,
@@ -2088,12 +2089,19 @@ export async function runRealtimeSimulation(
     };
 
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
+    // Batches are relayed fire-and-forget (below), so one that outlasts the block overlaps the next,
+    // and two sends from one wallet then resolve the same pending nonce: the later is refused as
+    // `replacement transaction underpriced` and its order is lost (issue #148). Sequential per
+    // wallet, concurrent across wallets.
+    const flowSendSerial = new KeyedSerial();
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
       const submitted: Hex[] = [];
       const intents = flowOrdersToIntents(ctx, orders);
       for (const intent of intents) {
         try {
-          const hashes = await submitIntent(ctx, intent, latestStateById);
+          const hashes = await flowSendSerial.run(intent.ownerId, () =>
+            submitIntent(ctx, intent, latestStateById),
+          );
           submitted.push(...hashes);
           for (const hash of hashes) {
             submittedByHash.record(hash.toLowerCase(), {
