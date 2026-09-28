@@ -26,6 +26,12 @@ export type RunStart = {
   runStartBlock: number;
   /** The resolved block budget, the same number the agent has in ERIS_RUN_BLOCKS (0 = unbounded). */
   runBlocks: number;
+  /**
+   * When the run's clock started (UTC ISO 8601): the origin of a practice period's day grid
+   * (sdk/src/periodClock.ts). The same instant the coordinator's segments are cut from, which is why
+   * it is passed in rather than read off `writtenAt`. Absent in a file from before it existed.
+   */
+  startedAt?: string;
   writtenAt: string;
 };
 
@@ -36,12 +42,15 @@ export function runStartPath(runDir: string): string {
 /** Write atomically (rename), so a reader never sees a half-written file. */
 export function writeRunStart(
   runDir: string,
-  start: { runStartBlock: number; runBlocks: number },
+  start: { runStartBlock: number; runBlocks: number; startedAtMs?: number },
 ): RunStart {
   const record: RunStart = {
     schema: 1,
     runStartBlock: start.runStartBlock,
     runBlocks: start.runBlocks,
+    ...(start.startedAtMs !== undefined
+      ? { startedAt: new Date(start.startedAtMs).toISOString() }
+      : {}),
     writtenAt: new Date().toISOString(),
   };
   const path = runStartPath(runDir);
@@ -66,7 +75,10 @@ export function readRunStart(runDir: string | undefined): RunStart | null {
       parsed.schema !== 1 ||
       typeof parsed.runStartBlock !== "number" ||
       !Number.isInteger(parsed.runStartBlock) ||
-      typeof parsed.runBlocks !== "number"
+      typeof parsed.runBlocks !== "number" ||
+      (parsed.startedAt !== undefined &&
+        (typeof parsed.startedAt !== "string" ||
+          !Number.isFinite(Date.parse(parsed.startedAt))))
     )
       return null;
     return parsed as RunStart;

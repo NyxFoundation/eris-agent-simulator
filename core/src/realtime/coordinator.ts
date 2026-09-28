@@ -1463,6 +1463,38 @@ export async function runRealtimeSimulation(
     //                      (ADR 0021 §2). Written once the PriceFeed exists, because that address is
     //                      the one piece a participant cannot look up anywhere else. No keys, no
     //                      stress timings -- see core/src/manifest.ts.
+    //
+    // The manifest is written a second time once the run's first block is declared, because that is
+    // when the period's clock starts: the block the run's length counts from and the instant the day
+    // grid is cut from, both of which a self-hosted runtime needs (sdk/src/periodClock.ts).
+    let periodStart: { block: number; startedAtMs: number } | undefined;
+    const publishManifest = (): void => {
+      logger.artifact(
+        MANIFEST_FILENAME,
+        buildManifest({
+          config,
+          priceFeed: priceFeedAddress,
+          ...(marketRegistry
+            ? {
+                marketRegistry: marketRegistry.address,
+                lending: marketRegistry.lending,
+                marketRegistryFromBlock: marketRegistry.deployBlock,
+              }
+            : {}),
+          ...(periodStart ? { periodStart } : {}),
+          participants: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            external: a.external,
+            baseline: a.spec.baseline ?? false,
+            description: a.spec.description,
+            ...(a.spec.participant !== undefined
+              ? { participant: a.spec.participant }
+              : {}),
+          })),
+        }),
+      );
+    };
     const publishRoster = (): void => {
       logger.event({
         type: "agents_registered",
@@ -1481,30 +1513,7 @@ export async function runRealtimeSimulation(
             : {}),
         })),
       });
-      logger.artifact(
-        MANIFEST_FILENAME,
-        buildManifest({
-          config,
-          priceFeed: priceFeedAddress,
-          ...(marketRegistry
-            ? {
-                marketRegistry: marketRegistry.address,
-                lending: marketRegistry.lending,
-                marketRegistryFromBlock: marketRegistry.deployBlock,
-              }
-            : {}),
-          participants: agentRuntimes.map((a) => ({
-            id: a.id,
-            address: a.address,
-            external: a.external,
-            baseline: a.spec.baseline ?? false,
-            description: a.spec.description,
-            ...(a.spec.participant !== undefined
-              ? { participant: a.spec.participant }
-              : {}),
-          })),
-        }),
-      );
+      publishManifest();
     };
     publishRoster();
 
@@ -2470,6 +2479,10 @@ export async function runRealtimeSimulation(
       await publicClient.getBlockNumber({ cacheTime: 0 }),
     );
     const runStartBlock = lastProcessedBlock + 1;
+    // One instant for everything that starts the period's clock: run-start.json, the segment grid
+    // and the manifest all carry it, so a runtime's day end and the coordinator's roll are computed
+    // from the same number rather than from three Date.now() calls a few milliseconds apart.
+    const runStartedAtMs = Date.now();
     // Issue #117: tell the agents. Their env was built before this block existed, so the run
     // directory (which they already hold as ERIS_RUN_DIR and write their logs to) carries it. An
     // agent that counts `blocksRemaining` from the first block *it* saw charged the backlog flush
@@ -2479,15 +2492,24 @@ export async function runRealtimeSimulation(
     const runStartRecord = writeRunStart(logger.runDir, {
       runStartBlock,
       runBlocks: config.runBlocks,
+      startedAtMs: runStartedAtMs,
     });
     // And into each agent's view directory, which is the run directory a containerised agent sees.
+    // Same instant as the run directory's copy, so a containerised agent's day end matches.
     for (const dir of agentViewDirs)
-      writeRunStart(dir, { runStartBlock, runBlocks: config.runBlocks });
+      writeRunStart(dir, {
+        runStartBlock,
+        runBlocks: config.runBlocks,
+        startedAtMs: runStartedAtMs,
+      });
     logger.event({
       type: "run_start_declared",
       runStartBlock,
       runBlocks: config.runBlocks,
       file: RUN_START_FILE,
+      // The origin of the day grid when segmenting (ADR 0021 §6): day k ends at this + (k + 1) x
+      // run.segmentHours.
+      startedAt: runStartRecord.startedAt,
       writtenAt: runStartRecord.writtenAt,
     });
 
@@ -2510,7 +2532,9 @@ export async function runRealtimeSimulation(
       // enough for that to be the richer artifact.
       sampleMarket: true,
     });
-    if (segments) segments.noteFirstBlock(runStartBlock);
+    if (segments) segments.noteFirstBlock(runStartBlock, runStartedAtMs);
+    periodStart = { block: runStartBlock, startedAtMs: runStartedAtMs };
+    publishManifest();
 
     // ---- registrations that arrive mid-period (ADR 0021 §2, rules §2.7) ----
     // The trial devnet runs for weeks and participants register throughout. Restarting the
