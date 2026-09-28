@@ -33,6 +33,27 @@ loginctl enable-linger "$USER"
 Check it: `systemctl --user list-timers eris-dashboard-sync.timer`, and
 `journalctl --user -u eris-dashboard-sync -n 30` for what the last few runs did.
 
+## Explorer links
+
+Transactions, blocks and addresses link into Blockscout (`ascon-explorer.nyx.foundation`) when the
+dashboard can see it. Two settings, in two places:
+
+| what | where | on the hosted box |
+|---|---|---|
+| where the **links** point (the browser opens it) | `VITE_BLOCKSCOUT_URL`, read by `vite build` | `dashboard/.env.production.local` (gitignored): `VITE_BLOCKSCOUT_URL=https://ascon-explorer.nyx.foundation` |
+| where the **server** checks the explorer is up | `ERIS_BLOCKSCOUT_URL` | the compose default, `http://eris-explorer-backend:4000` |
+
+The first is compiled into the bundle, so it has to be there before the build: without it the
+bundle links to `http://localhost:3100`, the local-dev explorer, which on a participant's machine is
+nothing. After adding it, rebuild once (the sync only builds when `main` moves):
+
+```sh
+rm -f dashboard/dist/.built-at && systemctl --user start eris-dashboard-sync.service
+```
+
+If the server cannot reach the explorer, the dashboard hides the links and says so ("Block-explorer
+links are unavailable") — which is also what a missing explorer looks like.
+
 ## What it refuses to do
 
 It fast-forwards and builds, and stops short of anything that would decide something on its own:
