@@ -535,6 +535,11 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 > 環境として売買する stress（`liquidityPull` / `depeg` / `eusdDepeg`）は deployer から送るので `.env.local` に
 > `DEPLOYER_PRIVATE_KEY`（既定 = anvil account 0）。**既に起動している anvil の第 1 アカウントが `MNEMONIC` の派生と
 > 違えば deploy は起動時に落ちる**（既定 mnemonic の deploy で秘密チェーンを上書きする逆向きも同じ穴）。
+> **coordinator 自身の鍵も同じ**: `admin`（PriceFeed の owner・Aave aggregator の書き手）/ `keeper` / `setup` の既定は
+> anvil の公開鍵か `keccak256("eris-role:<role>")`（公開コードから計算できる）。参加者が送れるチェーン（登録ファイル
+> か external のロスター）では、この 3 本（setup は agentMarkets が有効なときだけ）と deployer のどれかが公開鍵、または venue の管理者が anvil のテスト
+> アカウントなら**起動時に拒否**する（`core/src/realtime/roleKeyGuard.ts`）。非公開のリハーサルだけ
+> `ERIS_ALLOW_PUBLIC_ROLE_KEYS=1`（`public_role_keys_allowed` が記録される）。
 > hardhat 側 2 本（`vendor/aave/hardhat.config.js` と `gmx-localhost.patch` の localhost）も同じ `MNEMONIC` から
 > accounts を引く（既定の `accounts: "remote"` はノードが unlock している鍵で署名するので、この 2 venue だけ
 > 別の owner になる）。patch を更新したら `npm run clean:vendors && ./scripts/setup-vendors.sh`。

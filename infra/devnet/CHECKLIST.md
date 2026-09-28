@@ -130,6 +130,8 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
   2〜4（`npm ci`、`setup-vendors.sh`、deploy、`npm run gen:state-dump`、`docker compose up -d`）。
   `grafana/secret.env` に **Slack トークンは入れない**（本番チャンネルに流さない。アラートは Grafana の
   Alerting 画面で見る）
+- [ ] `.env.local` に `ERIS_ALLOW_PUBLIC_ROLE_KEYS=1` を書く（手元の dump は既定の mnemonic で deploy されているので、
+  coordinator は参加者が送れるチェーンでは起動を拒否する。非公開のリハーサルだけ。本番では書かない）
 - [ ] 参加者キーを発行し、gateway に読ませる:
   `infra/access/issue-key.sh --generate 8` → `infra/monitoring/.env` の `ASCON_KEYS_DIR`
 - [ ] seed: [README](README.md#install-once-on-the-box-that-hosts-it) のとおり `.env.practice` を作る
@@ -347,6 +349,9 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 - [ ] deploy 鍵が公開テスト鍵でない: `grep AclAdmin sdk/src/constants.local.ts` が
   `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`（anvil の account 0）**ではない**（issue #74）
 - [ ] 新しい seed を引く（新しい competition なので。[README](README.md#install-once-on-the-box-that-hosts-it)）
+- [ ] 環境の鍵: 秘密の mnemonic で deploy した dump を使い、`infra/monitoring/.env` に `ANVIL_MNEMONIC`、`.env.local` に
+  `DEPLOYER_PRIVATE_KEY`（その 0 番）と、この期間のために作った `ADMIN_PRIVATE_KEY` / `KEEPER_PRIVATE_KEY` /
+  `SETUP_PRIVATE_KEY` がある。`ERIS_ALLOW_PUBLIC_ROLE_KEYS` は**無い**（公開鍵のままなら coordinator が起動を拒否する）
 - [ ] エピソードを起動予定時刻で作り直し、PR にしてマージしておく:
   `npm run gen:practice-episodes -- --start <起動予定時刻（タイムゾーン付き）>`。box の上で直接書き換えない
   （checkout は main に追従していて、追跡ファイルが変わると sync timer がビルドを止める）。起動は予定の

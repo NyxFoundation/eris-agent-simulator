@@ -92,7 +92,7 @@ import {
   updateOraclesMempool,
   writeAaveOraclesStorage,
 } from "@eris/sdk/protocols/oracles.js";
-import { GMX_MARKETS, TOKENS } from "@eris/sdk/constants.js";
+import { AAVE, GMX_MARKETS, TOKENS } from "@eris/sdk/constants.js";
 import {
   baseTokens,
   gmxMarketAddresses,
@@ -161,6 +161,7 @@ import {
 import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { LiveScorer } from "./liveScoring.js";
 import { KeyedSerial } from "./keyedSerial.js";
+import { checkRoleKeys, refusalMessage } from "./roleKeyGuard.js";
 import {
   diffRegistrations,
   RegistrationsWatcher,
@@ -560,6 +561,29 @@ export async function runRealtimeSimulation(
         `(resetUnit: scenario); this run is ${config.resetUnit}`,
     );
 
+  // ---- the environment's own keys, on a chain participants can send to ----
+  // Before anything touches the chain: a period opened on public keys is one anyone with a gateway
+  // key can re-price (roleKeyGuard.ts has which key does what).
+  const roleKeyVerdict = checkRoleKeys({
+    keys: {
+      admin: config.privateKeys.admin,
+      keeper: config.privateKeys.keeper,
+      setup: config.privateKeys.setup,
+      deployer: config.privateKeys.deployer,
+    },
+    use: { marketRegistry: config.agentMarkets },
+    venueAdmin: config.enabledProtocols.includes("aave") ? AAVE.AclAdmin : undefined,
+    registrationsFile: config.registrationsFile,
+    agents: agentSpecs,
+    allowPublic: process.env.ERIS_ALLOW_PUBLIC_ROLE_KEYS === "1",
+  });
+  if (roleKeyVerdict.kind === "refused")
+    throw new Error(refusalMessage(roleKeyVerdict.exposed));
+  if (roleKeyVerdict.kind === "allowed")
+    console.error(
+      `[keys] WARNING: ERIS_ALLOW_PUBLIC_ROLE_KEYS=1 -- running a chain participants can send to on public keys: ${roleKeyVerdict.exposed.join("; ")}`,
+    );
+
   // ---- chain mode (issue #33 / ADR 0021 §7) ----
   // Installed before anything touches the chain, so a cheatcode reached for on an external chain
   // throws at the call rather than returning an RPC error some catch swallows.
@@ -685,6 +709,13 @@ export async function runRealtimeSimulation(
     // same `s` matrix.json carries; public, since it gives away the epoch's weight and nothing else.
     ...(epochOrdinal ? { epoch: epochOrdinal } : {}),
   });
+
+  if (roleKeyVerdict.kind === "allowed")
+    logger.event({
+      type: "public_role_keys_allowed",
+      exposed: roleKeyVerdict.exposed,
+      note: "ERIS_ALLOW_PUBLIC_ROLE_KEYS=1: a private rehearsal only; anyone who can send to this chain can sign with these",
+    });
 
   // batch=true: automatically aggregate same-tick reads (parallel receipt fetches, readState, etc.) into
   // JSON-RPC array batches / Multicall3, cutting the environment loop's round-trip count.
