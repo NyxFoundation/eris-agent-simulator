@@ -345,14 +345,26 @@ public, so any path that reaches the chain reaches it.
 ```bash
 # on the box that owns the chain, with the mnemonic never written into the repository
 cd deployer
-MNEMONIC="$(cat ~/.ascon-secret-mnemonic)" npm run deploy -- --keep-fresh
+MNEMONIC="$(cat ~/.ascon-secret-mnemonic)" \
+ADMIN_ADDRESS=0x…                    # the address of the ADMIN_PRIVATE_KEY the runs will use
+  npm run deploy -- --keep-fresh
 cd ..
 npm run gen:local-constants          # every address is CREATE(deployer, nonce), so all of them moved
 npm run gen:state-dump               # the dump the chain is restarted from
 
-# .env.local, for the stress events that trade as the environment
-#   DEPLOYER_PRIVATE_KEY=0x…         (index 0 of that mnemonic)
+# .env.local
+#   DEPLOYER_PRIVATE_KEY=0x…         (index 0 of that mnemonic: the stress events trade as it)
+#   ADMIN_PRIVATE_KEY=0x…            (the key behind ADMIN_ADDRESS)
+#   KEEPER_PRIVATE_KEY=0x…  SETUP_PRIVATE_KEY=0x…   (keys made for this chain)
 ```
+
+The coordinator's own keys have public defaults too (`keccak256("eris-role:<role>")`, or an anvil
+test key), and the admin one writes the PriceFeed every value in the standings is marked at. Two
+venues are operated by it without the deployer key — the Liquity oracle adapter, which a run
+repoints at its PriceFeed, and the LST vault — and the adapter's operator is immutable, so the deploy
+has to be told which address that is: `ADMIN_ADDRESS`. With a secret `MNEMONIC` and no
+`ADMIN_ADDRESS` the deploy refuses to start (`ADMIN_ADDRESS=default` keeps the public one on
+purpose), and a run whose admin key is not the deployed operator refuses at `setupLiquity`.
 
 Restart the chain from the new dump **with the same mnemonic** — `--load-state` restores the
 contracts, but the dev accounts still come from the mnemonic anvil was started with, and the

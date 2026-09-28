@@ -1,17 +1,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  keccak256,
   parseUnits,
-  toBytes,
   toFunctionSelector,
   type Abi,
   type Address,
   type Hex,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { accounts, deployerWallet, publicClient } from "../clients.js";
-import { anvilChain } from "../config.js";
+import { adminAddress, anvilChain } from "../config.js";
 import { approve } from "../erc20.js";
 import { getRegistry, setProtocol, token } from "../registry.js";
 import { registerLstReserve } from "./aave-v3.js";
@@ -98,13 +95,6 @@ export function rewardRatePerBlockRay(
   );
 }
 
-/// The simulation's admin account, derived the same way sdk/src/config.ts derives it
-/// (`keccak256("eris-role:admin")`). Registering it as an operator lets the environment retune the
-/// economic clock per run without redeploying or holding the deployer key.
-function envOperatorAddress(): Address {
-  return privateKeyToAccount(keccak256(toBytes("eris-role:admin"))).address;
-}
-
 export async function deployLst({ seed }: { seed: boolean }) {
   info(
     "Deploying the LST venue (wstETH-style vault + LST/WETH secondary market)",
@@ -122,7 +112,7 @@ export async function deployLst({ seed }: { seed: boolean }) {
     bytecode: vaultArtifact.bytecode,
     args: [
       weth,
-      envOperatorAddress(),
+      adminAddress(),
       ratePerBlockRay,
       WITHDRAWAL_DELAY_BLOCKS,
     ],
