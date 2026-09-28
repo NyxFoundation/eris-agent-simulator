@@ -131,7 +131,7 @@ Once you bake a state dump from a deployed anvil, you can **replay official regi
 npm run gen:state-dump                                # bake once from the running deployer anvil
 npm run backtest -- --regime calm --seed 101         # one scenario (regime + seed)
 npm run backtest -- --scenarios config/scenarios/public.yaml   # the whole public set + standings
-npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 40 --out plan.yaml   # the epoch order (rules §3.3)
+npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 60 --out plan.yaml   # the epoch order (rules §3.3)
 ```
 
 For details, see [Backtesting](docs/guide/backtest.md) and [Scoring](docs/guide/scoring.md).
@@ -153,7 +153,7 @@ Both run through the same observation, validation and signing path. See [Python 
 
 | Document | Contents |
 |---|---|
-| **[Getting Started](docs/competition-start.en.md)** / **[日本語](docs/competition-start.md)** | **Start here if you are entering the competition.** The shape of an epoch, the 8 regimes and the timeline, what the code calls the rules' units, setup, the smallest submittable agent, the run-read-fix loop, how to read the dashboard, the reference agents, and how to submit |
+| **[Getting Started](docs/competition-start.en.md)** / **[日本語](docs/competition-start.md)** | **Start here if you are entering the competition.** The shape of an epoch, the 12 regimes and the timeline, what the code calls the rules' units, setup, the smallest submittable agent, the run-read-fix loop, how to read the dashboard, the reference agents, and how to submit |
 | [Local Realtime Simulation](docs/guide/local-deploy.md) | Setup: prerequisites, steps, and troubleshooting for non-fork local deploy mode |
 | [Writing Agents](docs/guide/writing-agents.md) | Agent authoring tutorial: minimal agent → reading observations → actions → logging → verification → submission |
 | [Backtesting](docs/guide/backtest.md) | Replaying state dump + official regimes, iterating with `--repeat`, sparring, what is and isn't measurable |

@@ -292,7 +292,7 @@ test("clampMemory bounds the note where it is set, not only where it is written"
 });
 
 test("snapshots are pruned, so a competition of them cannot fill the disk", () => {
-  // One copy of a 64 MiB directory per agent per epoch is tens of gigabytes over k = 40, and §4.4.2
+  // One copy of a 64 MiB directory per agent per epoch is tens of gigabytes over k = 60, and §4.4.2
   // voids an epoch and re-runs it promptly or not at all.
   // Run ids are what the coordinator names them by (ISO timestamps with the punctuation replaced);
   // only those are pruned, see the labelled-checkpoint test below.

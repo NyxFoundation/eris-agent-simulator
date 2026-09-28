@@ -103,7 +103,7 @@ npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [opti
 | **A scenario is (regime, seed)** | Regime YAMLs carry no seed, so `--seed` is required (ADR 0017 §1). Omitting it does not silently mean "the default seed" |
 | `--regime` and `--scenarios` are exclusive | `--seed` does not apply to `--scenarios` (the set supplies the seeds) |
 | `--config` is not accepted | In a backtest **the regime YAML is the run config** |
-| **Overrides are written into the effective regime YAML** | Applying them only to the coordinator kills the agents on observation. The `--agents` roster propagates the same way |
+| **Overrides are written into the effective regime YAML** | The coordinator runs from it; agents get them through the agent config the coordinator writes from its resolved values (no seed; [07](07-configuration.md)). Applying them only to the coordinator kills the agents on observation |
 | `--score-every N` | Thins the scoring cross-sections. **The score is unchanged**; only the equity curve gets coarser |
 
 `--scenarios` replays the cartesian product on one anvil with snapshot/revert between scenarios, writing `runs/matrix-<id>/matrix.json` and `standings.json` ([08 §8.9](08-artifacts.md)).

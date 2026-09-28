@@ -73,7 +73,7 @@
 | 8 | vuln pool デプロイ（ADR 0014） | 資金投入は窓が開くブロックで行う |
 | 9 | `agents_registered` emit | id / address / baseline / external |
 | 10 | **環境マニフェスト書き出し** | 鍵は入らない。→ [10](10-operations.md) |
-| 11 | prewarm（`run.prewarmBlocks > 0`） | flow bot だけの短いループで anvil の working set を温める。価格の主系列は消費しない（別 Rng）。終わったら全 base の fair を読み直して PriceFeed にも書き直す（deploy 時の値は暖機前の価格） |
+| 11 | prewarm（`run.prewarmBlocks > 0`） | flow bot だけの短いループで anvil の working set を温める。価格の主系列は消費しない（別系列 = `Rng.fromSeed(seed, "prewarm")`。以前は同じ seed の `Rng(seed)` で、主系列の最初のショックをそのまま再生していた）。終わったら全 base の fair を読み直して PriceFeed にも書き直す（deploy 時の値は暖機前の価格） |
 | 12 | LST setup | 経済クロックの整合 + rate oracle 配線の検証（乖離 200bps 超で fail-fast） |
 | 13 | Liquity setup | オラクルアダプタを今回の PriceFeed に差し替え。Recovery Mode 開幕・デペグ済みチェーンは fail-fast |
 | 14 | deployer 鍵の衝突検査 | liquidityPull / depeg が deployer 口座で取引するため（下記） |

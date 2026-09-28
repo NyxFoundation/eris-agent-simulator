@@ -16,9 +16,9 @@
  *   - Generation order follows the protocols array passed by the coordinator (= enabledAdapters order).
  */
 import { createInterface } from "node:readline";
-import { Rng } from "@eris/sdk/rng.js";
 import {
   buildFlowOrders,
+  flowRng,
   type FlowContextWire,
   type FlowGuardNote,
 } from "./logic.js";
@@ -32,7 +32,7 @@ if (!Number.isFinite(flowSeed)) {
   process.exit(1);
 }
 
-const rng = new Rng(flowSeed);
+const rng = flowRng(flowSeed);
 const rl = createInterface({ input: process.stdin });
 
 rl.on("line", (line) => {

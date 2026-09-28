@@ -1,6 +1,8 @@
 // The epoch schedule of rules §3.3 (ADR 0023): a pure function of (hidden set, lottery seed, k).
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { parse as parseYaml } from "yaml";
 import {
   buildPlan,
   canonicalJson,
@@ -82,4 +84,23 @@ test("buildPlan carries both commitments beside the epochs", () => {
   assert.equal(plan.hiddenSetCommitment, commitmentOf(hidden));
   assert.equal(plan.lotterySeedCommitment, commitmentOf({ lotterySeed: "seed-A", salt: "s" }));
   assert.equal(plan.epochs.length, 8);
+});
+
+test("the example hidden set has the shape k = 60 needs: the twelve official regimes, five seeds each (ADR 0026)", () => {
+  // The official set is config/scenarios/public.yaml's regime list; k has to be a multiple of its
+  // length, and the old k = 40 (eight regimes x 5) no longer is. The committed hidden set is not in
+  // the repository, so this pins the example's shape, which is what an operator copies.
+  const official = (
+    parseYaml(readFileSync("config/scenarios/public.yaml", "utf8")) as { regimes: string[] }
+  ).regimes;
+  const example = parseYaml(
+    readFileSync("config/competition/hidden-set.example.yaml", "utf8"),
+  ) as HiddenSet;
+  assert.equal(official.length, 12);
+  assert.deepEqual(Object.keys(example.regimes).sort(), [...official].sort());
+  const plan = deriveSchedule(example, "example", 60);
+  assert.equal(plan.length, 60);
+  for (const regime of official)
+    assert.equal(plan.filter((e) => e.regime === regime).length, 5, regime);
+  assert.throws(() => deriveSchedule(example, "example", 40), /not a multiple of the 12 regimes/);
 });

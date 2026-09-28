@@ -61,6 +61,11 @@ funding:
   # behind it, so half of each strategy was structurally dead (issue #54).
   wethWei: "8000000000000000000" # 8 WETH
   base: { WBTC: "40000000" } # 0.4 WBTC (8 decimals)
+  # Gas ETH: rules §4.2 grant it on top of the basket and count it in asset value; the published
+  # amount is 1 ETH. Measured spend is <= 0.005 ETH per agent per epoch, and the runtime's gas manager
+  # refills from the agent's own WETH if a run ever outlasts it. (Unset, it used to be 100 ETH -- four
+  # times the basket -- and that gas money's price was most of every agent's P.)
+  ethWei: "1000000000000000000" # 1 ETH
   # The flow wallets' own inventory, sized so a flowTrend hold can be delivered rather than declared
   # (issue #112). A x3 lean held for 30 blocks is ~26 WETH of one-way flow per venue wallet
   # (0.5 WETH mean x 3 x 0.45 arrivals/block x 38 effective blocks; ~51 WETH before issue #79 halved

@@ -103,7 +103,7 @@ npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [opti
 | **シナリオ = (regime, seed)** | regime YAML は seed を持たないので `--seed` は必須（ADR 0017 §1）。省略を「黙って既定 seed」にはしない |
 | `--regime` と `--scenarios` は排他 | `--seed` は `--scenarios` に適用できない（セットが seed を供給する） |
 | `--config` は使えない | backtest では **regime YAML that itself is the run config** |
-| **override は実効 regime YAML に書き出される** | coordinator だけに効かせるとエージェントが観測で死ぬ。`--agents` のロスターも同様に伝播する |
+| **override は実効 regime YAML に書き出される** | coordinator はそれで走り、エージェントには coordinator が解決済みの値から書くエージェント用 config（seed なし。[07](07-configuration.md)）で届く。coordinator だけに効かせるとエージェントが観測で死ぬ |
 | `--score-every N` | 採点断面の間引き。**スコアは不変**、equity curve が粗くなるだけ |
 
 `--scenarios` は `{regimes, seeds}` の直積をシナリオ間 snapshot/revert で 1 つの anvil 上に再生し、`runs/matrix-<id>/matrix.json` と `standings.json` を書く（[08 §8.9](08-artifacts.md)）。

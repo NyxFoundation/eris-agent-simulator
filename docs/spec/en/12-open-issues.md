@@ -49,7 +49,7 @@ The value that sets epochs per scenario in `scenario` mode — **undecided, incl
 
 ### Cross-asset correlation is zero
 
-Per-base Rngs are fully independent (`sdk/src/rng.ts:120-124`). Adding correlation means consolidating onto a shared Rng, which changes WETH's consumption sequence and breaks backward compatibility, so **it is not done by default**.
+Per-base Rngs are fully independent (`sdk/src/rng.ts`, `priceRngForAsset`). Adding correlation means consolidating onto a shared Rng, which would move WETH's consumption sequence every time a base is added, so **it is not done by default**.
 
 ### `economicGas` cannot run on an external chain
 

@@ -29,6 +29,18 @@ import {
   waitForMiningToSettle,
 } from "@eris/sdk/chain.js";
 import { RUN_START_FILE, writeRunStart } from "@eris/sdk/runStart.js";
+import {
+  AGENT_CONFIG_FIELDS,
+  AGENT_CONFIG_FILE,
+  AGENT_VIEW_DIR,
+  agentNetworkPosture,
+  agentSandboxBanner,
+  agentSandboxWarning,
+  agentViewDir,
+  prepareAgentView,
+  renderAgentConfig,
+  type AgentSandboxWarning,
+} from "./agentView.js";
 import { spawnSync } from "node:child_process";
 import {
   RunLogger,
@@ -133,6 +145,7 @@ import {
 } from "./marketRegistry.js";
 import { setLendingSingleton } from "@eris/sdk/protocols/lending.js";
 import { LiveScorer } from "./liveScoring.js";
+import { KeyedSerial } from "./keyedSerial.js";
 import {
   diffRegistrations,
   RegistrationsWatcher,
@@ -344,7 +357,8 @@ async function assertTokensNotMintable(
 // Before the competition starts (= off the clock), run a short market loop with only the flow bot to make anvil
 // fetch and warm the protocols' working set (pool ticks, reserves, gmx, etc.). This keeps the competition
 // phase's mining from hitting upstream cold fetches (the anvil bottleneck mitigation of ADR 0006 Risks). It does
-// not resetFork, and the market moves only slightly (~blocks). The price main path is not consumed (a separate Rng).
+// not resetFork, and the market moves only slightly (~blocks). The price main path is not consumed: the warm-up walks
+// on a stream of its own (it used to be `Rng(seed)`, the main path's own stream, so it replayed the run's first shocks).
 // Note: the competition uses RealtimeFlowProcess (push), but warmup is outside interval mining so it uses the
 // synchronous FlowProcess (request/response).
 async function prewarmWorkingSet(
@@ -362,7 +376,7 @@ async function prewarmWorkingSet(
     runDir,
   );
   try {
-    const warmRng = new Rng(ctx.config.seed);
+    const warmRng = Rng.fromSeed(ctx.config.seed, "prewarm");
     let warmPrice = startPrice;
     for (let i = 1; i <= blocks; i++) {
       warmPrice = nextFairPrice(
@@ -715,6 +729,10 @@ export async function runRealtimeSimulation(
     };
   });
   const agentById = new Map(agentRuntimes.map((a) => [a.id, a]));
+  // A launched agent's id names its view directory (agentView.ts). Refused here, before setup,
+  // rather than at spawn after minutes of it.
+  for (const a of agentRuntimes)
+    if (!a.external && a.privateKey) agentViewDir(logger.runDir, a.id);
 
   // ---- flow-bot process (realtime). Pushes context every block to move the market ----
   // flow is the environment-side market mechanism, so it stays as relay (ADR 0006 "undecided").
@@ -792,7 +810,10 @@ export async function runRealtimeSimulation(
 
   const adminPk = config.privateKeys.admin;
   const keeperPk = config.privateKeys.keeper;
-  const rng = new Rng(config.seed);
+  // The WETH price path. Derived like every other base's (`priceRngForAsset` hashes the seed), and
+  // distinct from the flow bot's stream, which used to be this very stream: flow.seed defaults to
+  // the run seed, and both were `Rng(seed)`.
+  const rng = priceRngForAsset(config.seed, "WETH");
   const ctx: SimContext = {
     publicClient,
     walletClient,
@@ -1902,6 +1923,9 @@ export async function runRealtimeSimulation(
     }
 
     // ---- launch agent processes (ADR 0015 §5: uniformly runtime/bot.ts; pass the private key and PriceFeed via env) ----
+    let sandboxWarning: AgentSandboxWarning | null = null;
+    // Each launched agent's view directory (agentView.ts), where run-start.json is also written.
+    const agentViewDirs: string[] = [];
     // Under `docker` every agent goes through infra/docker-agent/run-agent.sh, the one path that
     // applies the rules §2.3 caps. Checked once here rather than discovered per agent: a missing
     // docker would otherwise surface as N `spawn error` early exits that read like agent bugs.
@@ -1921,28 +1945,58 @@ export async function runRealtimeSimulation(
             "without docker pass --agent-sandbox process (backtest) or set run.agentSandbox: process; " +
             "with docker but no per-agent image, set ERIS_AGENT_BINDMOUNT=1 (infra/docker-agent/README.md)",
         );
+      const posture = agentNetworkPosture(process.env);
       logger.event({
         type: "agent_sandbox",
         sandbox: "docker",
         dockerServerVersion: probe.stdout.trim(),
         memory: process.env.ERIS_DOCKER_MEM ?? "4g",
         cpus: process.env.ERIS_DOCKER_CPUS ?? "2",
-        network:
-          process.env.ERIS_AGENT_ISOLATE === "1"
-            ? "per-agent (ERIS_AGENT_ISOLATE)"
-            : (process.env.ERIS_AGENT_NET ?? "host"),
-        egress:
-          process.env.ERIS_AGENT_INTERNAL === "1"
-            ? "closed (--internal)"
-            : "open",
+        network: posture.isolated
+          ? "per-agent (ERIS_AGENT_ISOLATE)"
+          : posture.network,
+        egress: posture.egress === "closed" ? "closed (--internal)" : "open",
       });
+      // Not fatal: local checks and the operator's own reference field run on host networking. But
+      // an agent on a shared network can reach this host's services directly, so a scored run
+      // without isolation has to say so where nobody can scroll past it -- here, and again at the
+      // end. Read per agent, because the switches can sit in a roster entry's env as well.
+      sandboxWarning = agentSandboxWarning(
+        agentRuntimes
+          .filter(
+            (a) =>
+              !a.external && a.privateKey !== null && a.spec.command === undefined,
+          )
+          .map((a) => ({ id: a.id, env: { ...process.env, ...(a.spec.env ?? {}) } })),
+        { segmented: segments !== null },
+      );
+      if (sandboxWarning) {
+        logger.event({
+          type: "agent_sandbox_warning",
+          ...sandboxWarning,
+          liveWeek:
+            "ERIS_AGENT_ISOLATE=1 + ERIS_AGENT_INTERNAL=1, agents pointed at the RPC gateway " +
+            "(infra/docker-agent/ISOLATION.md)",
+        });
+        console.error(agentSandboxBanner(sandboxWarning));
+      }
     } else {
       logger.event({
         type: "agent_sandbox",
         sandbox: "process",
-        note: "agents run as plain child processes: no CPU/memory caps and no egress control (rules §2.3 are not enforced here)",
+        note:
+          "agents run as plain child processes: no CPU/memory caps, no egress control and the " +
+          "operator's filesystem (rules §2.3 are not enforced here, and this is not an isolation boundary)",
       });
     }
+    // What every launched agent is handed instead of the coordinator's config (agentView.ts): the
+    // same file for all of them, one copy per view directory.
+    const agentConfigText = renderAgentConfig(config);
+    logger.event({
+      type: "agent_config",
+      file: `${AGENT_VIEW_DIR}/<agentId>/${AGENT_CONFIG_FILE}`,
+      fields: [...AGENT_CONFIG_FIELDS],
+    });
     const agentStateRoot = agentStateRootFromEnv();
     for (const agent of agentRuntimes) {
       if (agent.external || !agent.privateKey) {
@@ -1964,6 +2018,8 @@ export async function runRealtimeSimulation(
       const stateDir = agentStateRoot
         ? prepareAgentState(agentStateRoot, agent.id, runId)
         : undefined;
+      const view = prepareAgentView(logger.runDir, agent.id, agentConfigText);
+      agentViewDirs.push(view.dir);
       if (stateDir)
         logger.event({
           type: "agent_state_dir",
@@ -1979,7 +2035,12 @@ export async function runRealtimeSimulation(
         config.agentsDir,
         config.runBlocks,
         agentExtraEnv,
-        { sandbox: config.agentSandbox, ...(stateDir ? { stateDir } : {}) },
+        {
+          sandbox: config.agentSandbox,
+          configPath: view.configPath,
+          viewDir: view.dir,
+          ...(stateDir ? { stateDir } : {}),
+        },
       );
       // An agent that dies mid-run silently stops trading, which reads in summary.json exactly like
       // an agent that chose not to trade. Record it so the two can be told apart.
@@ -2093,12 +2154,19 @@ export async function runRealtimeSimulation(
     };
 
     // ---- flow order handler: relay the bot's orders to the mempool via the flow wallets ----
+    // Batches are relayed fire-and-forget (below), so one that outlasts the block overlaps the next,
+    // and two sends from one wallet then resolve the same pending nonce: the later is refused as
+    // `replacement transaction underpriced` and its order is lost (issue #148). Sequential per
+    // wallet, concurrent across wallets.
+    const flowSendSerial = new KeyedSerial();
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
       const submitted: Hex[] = [];
       const intents = flowOrdersToIntents(ctx, orders);
       for (const intent of intents) {
         try {
-          const hashes = await submitIntent(ctx, intent, latestStateById);
+          const hashes = await flowSendSerial.run(intent.ownerId, () =>
+            submitIntent(ctx, intent, latestStateById),
+          );
           submitted.push(...hashes);
           for (const hash of hashes) {
             submittedByHash.record(hash.toLowerCase(), {
@@ -2426,6 +2494,14 @@ export async function runRealtimeSimulation(
       runBlocks: config.runBlocks,
       startedAtMs: runStartedAtMs,
     });
+    // And into each agent's view directory, which is the run directory a containerised agent sees.
+    // Same instant as the run directory's copy, so a containerised agent's day end matches.
+    for (const dir of agentViewDirs)
+      writeRunStart(dir, {
+        runStartBlock,
+        runBlocks: config.runBlocks,
+        startedAtMs: runStartedAtMs,
+      });
     logger.event({
       type: "run_start_declared",
       runStartBlock,
@@ -4132,6 +4208,8 @@ export async function runRealtimeSimulation(
     console.error(
       `realtime simulation completed: ${logger.runDir} (${processedBlocks} blocks, ${Math.round(elapsedMs / 1000)}s)`,
     );
+    // Repeated, because the startup copy has scrolled out of sight by now.
+    if (sandboxWarning) console.error(agentSandboxBanner(sandboxWarning));
   } finally {
     try {
       if (config.chainMode !== "external")

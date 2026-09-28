@@ -178,7 +178,7 @@ Assembled from config into the observation by `observationFor` (`sdk/src/observa
 
 **Why the self-report exists**: with direct sending, the coordinator cannot count transactions that were submitted but never included. That gap is what the log closes (ADR 0006 §5).
 
-Under `economicGas`, a **gas manager** runs (`maybeRefillGas`): when the ETH balance drops below a threshold it queues a refill, then waits three blocks (for the transaction to land and the balance to reflect it).
+A **gas manager** runs in every run (`maybeRefillGas`; it used to be `economicGas`-only, until the gas endowment became 1 ETH in every mode): when the ETH balance drops below a threshold it queues a refill, then waits three blocks (for the transaction to land and the balance to reflect it).
 
 ## 5.7 Self-improvement (ADR 0018)
 

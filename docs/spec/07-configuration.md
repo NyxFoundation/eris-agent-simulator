@@ -34,7 +34,7 @@ RPC URL や chain id が秘密情報側にあるのは、**それらが regime �
 秘密情報 env  <  YAML  <  CLI フラグ  <  プログラム的 override
 ```
 
-`ERIS_CONFIG` は子プロセスへ伝播するので、**エージェントプロセスは同じ YAML から config を再構築する**（環境とエージェントが同じ設定断面を見る = このローダが sdk にある理由）。
+coordinator が起動するエージェントは coordinator の config ファイルを読まない。coordinator が解決済みの値から**エージェント用 config**（`runs/<id>/agent-view/<agentId>/config.yaml`。ランタイムが読むフィールドだけで、seed も stress / flow / vuln / funding / ロスターも含まない。`core/src/realtime/agentView.ts`）を書き、`ERIS_CONFIG` でその path を渡す。エージェントはそれを同じローダで読むので、**環境とエージェントは同じ値を見る**（このローダが sdk にある理由）。CLI の一回上書きもこの経路でエージェントに届く。
 
 ## 7.3 スキーマ
 
@@ -89,7 +89,7 @@ RPC URL や chain id が秘密情報側にあるのは、**それらが regime �
 
 | キー | 既定 | |
 |---|---|---|
-| `ethWei` | 100 ETH（`economicGas` 時 3 ETH） | エージェントの native 残高（**ガスバッファなし**） |
+| `ethWei` | 1 ETH（全モード共通。公式レジームと練習期間は YAML に明記） | エージェントの native 残高（**ガスバッファなし**） |
 | `wethWei` | 10 WETH | 初期 WETH |
 | `usdcUnits` | 25,000 USDC | 初期 USDC |
 | `base` | `{WETH: wethWei}` | 追加 base の初期在庫 |
@@ -178,7 +178,7 @@ USDC-only を維持しているのは **`metric-*` レジームだけ**で、こ
 
 パース形式は `--key value` / `--key=value` / `--flag`（値なしは `"1"`）。
 
-**backtest の `--agents` は実効 regime YAML に書き出されてエージェントプロセスにも伝播する。** coordinator だけに効かせるとエージェントが観測で死ぬ。
+**backtest の override（`--agents` / `--blocks` / `--protocols` 等）は実効 regime YAML に書き出され、coordinator はそれで走る。** エージェントには上のエージェント用 config 経由で届く（coordinator だけに効かせるとエージェントが観測で死ぬ）。ロスターと seed はエージェント用 config に入らない。
 
 ## 7.5 ロスター
 
