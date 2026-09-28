@@ -754,6 +754,16 @@ export async function runRealtimeSimulation(
     logger.runDir,
     scenarioKeyChildEnv(scenarioKey),
   );
+  // Issue #159: the bot is the environment's market, and it used to die without a word -- the
+  // exporter counts this as an environment failure and the flow-stopped alert follows.
+  flowProcess.onExit = (info) => {
+    logger.event({
+      type: "flow_process_exited",
+      ...info,
+      stderrTail: flowProcess.getStderr().slice(-2000),
+    });
+    console.error(`[flow] ${info.reason}`);
+  };
 
   // ---- flow wallets (per protocol/kind; used by submitIntent / ctx for selection) ----
   const flowWalletMap = new Map<string, FlowWallet>();

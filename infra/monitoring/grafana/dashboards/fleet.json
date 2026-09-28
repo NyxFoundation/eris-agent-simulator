@@ -100,7 +100,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(container_cpu_usage_seconds_total{container_label_eris_role=\"agent\"}[1m])",
+          "expr": "rate(ascon_container_cpu_seconds_total{eris_role=\"agent\"}[1m])",
           "legendFormat": "{{name}}"
         }
       ]
@@ -131,7 +131,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "container_memory_working_set_bytes{container_label_eris_role=\"agent\"} / 1048576",
+          "expr": "ascon_container_memory_working_set_bytes{eris_role=\"agent\"} / 1048576",
           "legendFormat": "{{name}}"
         }
       ]
@@ -153,7 +153,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(container_last_seen{container_label_eris_role=\"agent\"})",
+          "expr": "count(ascon_container_memory_working_set_bytes{eris_role=\"agent\"}) or vector(0)",
           "legendFormat": "containers"
         }
       ]
@@ -195,6 +195,45 @@
           },
           "expr": "ascon_round_lag",
           "legendFormat": "round lag"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Chain (ascon-anvil) memory vs host (GiB)",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "ascon_container_memory_working_set_bytes{name=\"ascon-anvil\"} / 1073741824",
+          "legendFormat": "ascon-anvil"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(node_memory_MemTotal_bytes) / 1073741824",
+          "legendFormat": "host total"
         }
       ]
     }

@@ -27,6 +27,11 @@ services:
       - ascon-textfile:/textfile:ro
     ports: ["127.0.0.1:9100:9100"]
 
+  # Blind on the practice box (issue #157): under Docker's containerd image store it cannot identify
+  # a container -- it looks for the read-write layer under image/<driver>/layerdb, which that store
+  # does not write -- so it exports no per-container series at all. Nothing reads its container series
+  # any more; the container memory/CPU that the alerts and the fleet panels use comes from
+  # eris-exporter, which reads the cgroup tree directly.
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     container_name: ascon-cadvisor
@@ -109,10 +114,23 @@ services:
       - ASCON_RPC=http://127.0.0.1:8545
       - ASCON_ENV=live
       - ASCON_TEXTFILE=/textfile/ascon.prom
+      # The canary's agent id(s), whose silence pages after an hour (issue #159). A canary that is not
+      # registered in the running period has no series, so a box without one does not page about it.
+      - ASCON_CANARY_IDS=${ASCON_CANARY_IDS:-ops-canary}
+      - ASCON_DASHBOARD_URL=http://127.0.0.1:5174/healthz
+      # The same dashboard through the tunnel, as participants reach it. Unset = not probed.
+      - ASCON_DASHBOARD_PUBLIC_URL=${ASCON_DASHBOARD_PUBLIC_URL:-}
+      - ASCON_CGROUP_ROOT=/host/cgroup
+      - ASCON_DOCKER_CONTAINERS=/host/docker-containers
     volumes:
       - ./exporter:/app:ro
       - ${ERIS_ROOT:?set ERIS_ROOT in infra/monitoring/.env}/runs:/runs:ro
       - ascon-textfile:/textfile
+      # Container memory and CPU without cAdvisor (issue #157): the cgroup v2 tree for the numbers,
+      # Docker's per-container config.v2.json for the name and the eris.role label. Read-only, and
+      # not the Docker socket -- that would hand this process the daemon.
+      - /sys/fs/cgroup:/host/cgroup:ro
+      - /var/lib/docker/containers:/host/docker-containers:ro
 
   # One-shot. Two jobs, both of which anvil cannot do for itself because it runs as uid 1000:
   #   1. a named volume is created root-owned, so anvil could not write its dump into it;

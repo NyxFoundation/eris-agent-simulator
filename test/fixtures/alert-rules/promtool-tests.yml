@@ -1,0 +1,142 @@
+rule_files: [rules.generated.yml]
+evaluation_interval: 1m
+tests:
+  # flow stopped: flow recent drops to 0 at 20m while blocks keep coming
+  - interval: 1m
+    input_series:
+      - series: 'ascon_flow_tx_recent{env="live",job="node"}'
+        values: '2700x19 0x30'
+      - series: 'ascon_chain_block_number{env="live",job="node"}'
+        values: '0+30x50'
+      - series: 'ascon_chain_up{env="live",job="node"}'
+        values: '1x50'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: ascon_flow_stopped
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: ascon_flow_stopped
+        exp_alerts:
+          - exp_labels: { env: live, job: node }
+  # flow stopped does NOT fire when the chain itself stalled (that is ascon_devnet_stalled)
+  - interval: 1m
+    input_series:
+      - series: 'ascon_flow_tx_recent{env="live",job="node"}'
+        values: '0x40'
+      - series: 'ascon_chain_block_number{env="live",job="node"}'
+        values: '500x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ascon_flow_stopped
+        exp_alerts: []
+  # send failures: 1 in 2700 is quiet; 60 in 2700 pages
+  - interval: 1m
+    input_series:
+      - series: 'ascon_tx_submit_failed_recent{env="live",job="node"}'
+        values: '1x10 60x20'
+      - series: 'ascon_flow_tx_recent{env="live",job="node"}'
+        values: '2700x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ascon_tx_submit_failures
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ascon_tx_submit_failures
+        exp_alerts:
+          - exp_labels: { env: live, job: node }
+  # 3 failures out of 100 is 3% but under the floor of 5
+  - interval: 1m
+    input_series:
+      - series: 'ascon_tx_submit_failed_recent{env="live",job="node"}'
+        values: '3x20'
+      - series: 'ascon_flow_tx_recent{env="live",job="node"}'
+        values: '100x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ascon_tx_submit_failures
+        exp_alerts: []
+  # env failure: by type, agent_process_exited excluded
+  - interval: 1m
+    input_series:
+      - series: 'ascon_env_failures_recent{env="live",job="node",type="interval_boundary_failed"}'
+        values: '0x5 1x5'
+      - series: 'ascon_env_failures_recent{env="live",job="node",type="agent_process_exited"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ascon_env_failure
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ascon_env_failure
+        exp_alerts:
+          - exp_labels: { type: interval_boundary_failed }
+  # container metrics missing: exporter alive (chain_up present), anvil series absent
+  - interval: 1m
+    input_series:
+      - series: 'ascon_chain_up{env="live",job="node"}'
+        values: '1x30'
+      - series: 'ascon_container_memory_working_set_bytes{env="live",job="node",name="ascon-anvil"}'
+        values: '5e9x5'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ascon_container_metrics_missing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ascon_container_metrics_missing
+        exp_alerts:
+          - exp_labels: { name: ascon-anvil }
+  # ... but an exporter that is down entirely is ascon_chain_down's page, not this one
+  - interval: 1m
+    input_series:
+      - series: 'node_load1{job="node"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ascon_container_metrics_missing
+        exp_alerts: []
+  # canary
+  - interval: 1m
+    input_series:
+      - series: 'ascon_canary_seconds_since_tx{env="live",job="node",agent="ops-canary"}'
+        values: '100+60x80'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ascon_canary_stopped
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: ascon_canary_stopped
+        exp_alerts:
+          - exp_labels: { env: live, job: node, agent: ops-canary }
+  # block stalls: flat at 13 s for 8 h is quiet; 13 -> 18 over 6 h pages
+  - interval: 5m
+    input_series:
+      - series: 'ascon_block_interval_max_seconds{env="live",job="node"}'
+        values: '13x100'
+    alert_rule_test:
+      - eval_time: 8h
+        alertname: ascon_block_stall_growing
+        exp_alerts: []
+  - interval: 5m
+    input_series:
+      - series: 'ascon_block_interval_max_seconds{env="live",job="node"}'
+        values: '13x72 18x30'
+    alert_rule_test:
+      - eval_time: 8h
+        alertname: ascon_block_stall_growing
+        exp_alerts:
+          - exp_labels: { env: live, job: node }
+  # gateway upstream down while anvil answers
+  - interval: 1m
+    input_series:
+      - series: 'rpc_upstream_up{env="live",job="node"}'
+        values: '1x5 0x10'
+      - series: 'ascon_chain_up{env="live",job="node"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ascon_gateway_upstream_down
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: ascon_gateway_upstream_down
+        exp_alerts:
+          - exp_labels: {}
