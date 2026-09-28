@@ -109,6 +109,11 @@ import {
 import { waitForAgentsReady } from "./agentsReady.js";
 import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
+import {
+  ensureScenarioKey,
+  scenarioKeyChildEnv,
+  scenarioKeyRecord,
+} from "../scenarioKey.js";
 import { StressAudit } from "./stressAudit.js";
 import {
   deployPriceFeed,
@@ -498,6 +503,11 @@ export async function runRealtimeSimulation(
   } = resolveRunInputs(argv, overrides);
   if (configPath) process.env.ERIS_CONFIG = configPath;
 
+  // ADR 0027: the key every scenario stream is drawn under. Installed before anything draws. The
+  // backtest runner installs its --scenario-key first; a plain run reads ERIS_SCENARIO_KEY_FILE,
+  // and with neither it is the public key.
+  const scenarioKey = ensureScenarioKey();
+
   // ADR 0020 §1 fail-fast. `resetUnit: scenario` describes a world per (regime, seed), and only the
   // scenario-matrix runner produces those -- it is the caller that resets between runs, not anything
   // in here. Reaching this from a plain config file would run one continuous world and then stamp
@@ -621,6 +631,9 @@ export async function runRealtimeSimulation(
     // which world it was -- which is the one thing needed to replay it.
     seed: config.seed,
     flowSeed: config.flowSeed,
+    // ADR 0027: which key the seed was realized under -- the public one, or the commitment to a
+    // secret one. The seed alone no longer names the world.
+    scenarioKey: scenarioKeyRecord(scenarioKey),
     // ADR 0021 §4: the endpoint the world is on, recorded by the environment. The dashboard's live
     // mode used to discover it from an agent's `runtime_start` log line, which stops working the
     // moment the agents are somebody else's processes on somebody else's machine. Reads go to
@@ -724,6 +737,7 @@ export async function runRealtimeSimulation(
     config.flowBotArgs,
     config.flowSeed,
     logger.runDir,
+    scenarioKeyChildEnv(scenarioKey),
   );
 
   // ---- flow wallets (per protocol/kind; used by submitIntent / ctx for selection) ----
@@ -2678,6 +2692,7 @@ export async function runRealtimeSimulation(
         scoreEvery: config.scoreEvery,
         seed: config.seed,
         flowSeed: config.flowSeed,
+        scenarioKey: scenarioKeyRecord(scenarioKey),
         rpcUrl: config.readRpcUrl,
         // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
         // hosted dashboard's public view reads it before summary.json exists, to decide how much of

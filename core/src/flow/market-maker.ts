@@ -7,6 +7,8 @@
  *
  * Environment variables:
  *   ERIS_FLOW_SEED  seed for the deterministic RNG (coordinator derives it from the run seed)
+ *   ERIS_SCENARIO_KEY_FILE / ERIS_SCENARIO_KEY_COMMITMENT  the scenario key to draw under and the
+ *                   commitment it must match (ADR 0027; empty path = the public key)
  *
  * Design:
  *   - Never touches the RPC (same separation principle as agents). All needed market state
@@ -23,11 +25,23 @@ import {
   type FlowGuardNote,
 } from "./logic.js";
 import { safeStringify } from "@eris/sdk/logger.js";
+import { installChildScenarioKey } from "../scenarioKey.js";
 
 const flowSeed = Number(process.env.ERIS_FLOW_SEED ?? "1");
 if (!Number.isFinite(flowSeed)) {
   process.stderr.write(
     `invalid ERIS_FLOW_SEED: ${process.env.ERIS_FLOW_SEED}\n`,
+  );
+  process.exit(1);
+}
+
+// ADR 0027: draw under the coordinator's scenario key. A mismatch exits rather than trading on a
+// stream the coordinator did not mean.
+try {
+  installChildScenarioKey();
+} catch (error) {
+  process.stderr.write(
+    `${error instanceof Error ? error.message : String(error)}\n`,
   );
   process.exit(1);
 }

@@ -38,6 +38,10 @@ ExecStartPre=%h/workspace/eris-agent-simulator/infra/devnet/wait-for-chain.sh
 # wrong.
 EnvironmentFile=%h/workspace/eris-agent-simulator/.env.practice
 ExecStartPre=/bin/sh -c 'test -n "$$ERIS_PRACTICE_SEED" || { echo "ERIS_PRACTICE_SEED is empty in .env.practice: refusing to start the period on the committed seed" >&2; exit 1; }'
+# The scenario key (ADR 0027), from the same file: ERIS_SCENARIO_KEY_FILE=<path to a key file from
+# `npm run competition -- keygen`>. The coordinator reads it from the environment. Without it the
+# period would be realized under the public key, so a missing or unreadable file fails the start.
+ExecStartPre=/bin/sh -c 'test -n "$$ERIS_SCENARIO_KEY_FILE" && test -r "$$ERIS_SCENARIO_KEY_FILE" || { echo "ERIS_SCENARIO_KEY_FILE is missing or unreadable in .env.practice: refusing to start the period under the public scenario key" >&2; exit 1; }'
 
 # The config is the period. Every `run.*` key in it WINS over the environment (sdk/src/runConfig.ts),
 # so overriding the block count or the report directory from here silently does nothing — copy the

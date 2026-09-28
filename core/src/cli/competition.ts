@@ -9,9 +9,14 @@
 //       --scenarios plan.yaml` replays in order. Also prints both commitments so the plan can be
 //       checked against what was published.
 //
+//   npm run competition -- keygen <out.yaml>
+//       write a new secret scenario key (ADR 0027) to <out.yaml> (mode 0600; refuses to overwrite) and
+//       print its commitment. Only the commitment leaves the operator's machine until the results.
+//
 // File shapes (YAML or JSON):
 //   hidden set    { regimes: { calm: [..seeds..], crash: [...], ... }, salt?: "<random>" }
 //   lottery seed  { lotterySeed: "<secret string>", salt?: "<random>" }
+//   scenario key  { scenarioKey: "<64 lowercase hex>" }
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -22,9 +27,11 @@ import {
   type LotterySeed,
 } from "../competition/schedule.js";
 import { parseFlags } from "../backtest/shared.js";
+import { writeNewScenarioKeyFile } from "../scenarioKey.js";
 
 const USAGE = `usage:
   npm run competition -- commit <file>
+  npm run competition -- keygen <out.yaml>
   npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k <N> [--out <plan.yaml>]
       [--starts-at <ISO 8601> --every-minutes <N>]   stamp each epoch with its intended start (the dashboard shows the next one)`;
 
@@ -41,6 +48,12 @@ function main(): void {
     const file = args[1];
     if (!file) throw new Error(USAGE);
     console.log(commitmentOf(readDoc(file)));
+    return;
+  }
+  if (sub === "keygen") {
+    const file = args[1];
+    if (!file) throw new Error(USAGE);
+    console.log(writeNewScenarioKeyFile(file));
     return;
   }
   if (sub === "plan") {

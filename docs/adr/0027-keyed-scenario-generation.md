@@ -2,8 +2,8 @@
 
 ## Status
 
-Proposed（2026-09-27）。実装は本 ADR の承認後。規約（ascon-web `content/legal/rules.md`）の §3.3・§4.4.3・§7.1・§7.2
-の改定を伴う。
+Accepted（2026-09-28）。同じ PR で実装した。規約（ascon-web `content/legal/rules.md`）の §3.3・§4.4.3・§7.1・§7.2
+の改定を伴う（別 PR）。
 
 ## Context
 
@@ -87,7 +87,36 @@ u_i = PRF(K, streamId, i)      // 例: HMAC-SHA256(K, streamId || i) の先頭 5
   バックアップを取る
 - (a) が成り立つのは、エージェントに渡る情報の整理（別 PR）と本 ADR の両方がそろったとき
 
-## 未決
+## 決定した未決事項（2026-09-28）
 
-- K のハッシュを公表する日（提出締切の 10/31 より前であること）
-- 公開鍵の具体値
+- **K のハッシュは実装のマージ直後に公表する**（10 月上旬）。提出締切 10/31 より前という条件のうち最も早い日で、
+  問題があっても締切までに公表し直せる
+- **公開鍵は `SHA-256("eris-public-v1")`**（`ab26c748…bb72f`。`sdk/src/rng.ts` の `PUBLIC_SCENARIO_KEY_HEX`、
+  コミットメントは `sha256:5940f4fc…30d8e0`）
+
+## 実装
+
+- `sdk/src/rng.ts`: `Rng.fromSeed(seed, salt)` が鍵付きストリームを返す。1 ブロック =
+  `HMAC-SHA256(K, "eris-rng/v1" || seed(u32) || salt(u32) || counter(u64))` を 8 バイトずつ 53 bit の [0, 1) に写す。
+  `new Rng(x)`（LCG）は鍵と無関係な用途（agent 側の `ctx.rng`・actor のサイズ）に残る。ストリームは作られた時点の鍵を持つ
+- 鍵を通るもの: 価格の walk（全 base）・prewarm・flow bot（`flowRng` / `trendRng`）・stress のスケジュール
+  （variation キーを使う列はイベント列も salt に混ぜる = #145 の規則を維持）・LST の APY・vuln のスケジュール
+- `core/src/scenarioKey.ts`: 鍵ファイルは `{ scenarioKey: <64 hex> }` の 1 フィールドだけ（他のフィールドがあると
+  同じ鍵に 2 つのコミットメントができるので拒否）。コミットメントは `npm run competition -- commit <file>` と同じ値
+- 渡し方: `npm run backtest -- --scenario-key <file|public>`、または `ERIS_SCENARIO_KEY_FILE`（`sim:realtime` と
+  練習期間の systemd）。どちらも無ければ公開鍵。**順序付きプラン（ライブ週の形）は鍵の指定が無いと起動しない**
+  （公開鍵で黙って走るのを防ぐ。意図して公開鍵で回すときは `--scenario-key public`）
+- coordinator は flow bot にファイルパスとコミットメントを渡し、flow bot は一致しなければ exit する。agent には渡さない
+- 記録: `run_started_realtime.scenarioKey` と `matrix.json` の `scenarioKey`（`{ source, commitment }`）。
+  `--resume` は鍵が違う、または鍵の記録が無い（本 ADR 以前の）matrix を拒否する
+- K の生成: `npm run competition -- keygen <out.yaml>`（mode 0600・上書き拒否・コミットメントだけを出力）。
+  **運営のマシンで実行する**
+
+## 運用手順
+
+1. 運営マシンで `npm run competition -- keygen <secret-dir>/scenario-key.yaml` を実行し、出力されたコミットメントを公表する。
+   ファイルはバックアップする（**失うと評価を再現できない**）
+2. ライブ週: `npm run backtest -- --scenarios <plan.yaml> --scenario-key <secret-dir>/scenario-key.yaml …`。
+   `matrix.json` の `scenarioKey.commitment` が公表値と一致することを確認する
+3. 結果発表後: 鍵ファイルを公開する。誰でも `competition commit` で公表値と照合し、`--scenario-key` で再現できる
+4. 練習期間: 別の鍵を同じ手順で作り、`.env.practice` に `ERIS_SCENARIO_KEY_FILE=<path>` を足して次の再起動から適用する
