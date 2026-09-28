@@ -216,6 +216,45 @@ jobs:
             console.log(`run ${id} ok: ${s.agents.length} agents, ${s.blocksProcessed} blocks, failedReads 0`);
           '
 
+      # --follow-schedule (ADR 0026): the runner waits for each epoch's planned start instead of
+      # running the plan back to back, which is how one process runs the live week. The wait itself
+      # is unit-tested (test/backtestTimetable.test.ts); this is the loop around it, on a real anvil.
+      # One epoch planned 90 s ahead must be waited for -- the log says so and the run directory,
+      # named when the run begins, is no earlier than planned -- and a --resume of the finished
+      # matrix must skip it without waiting. After the health check, which reads the latest run.
+      - name: Follow a plan's timetable
+        run: |
+          set -o pipefail
+          start=$(node -e 'console.log(new Date(Date.now() + 90000).toISOString())')
+          cat > "$RUNNER_TEMP/ci-plan.yaml" <<YAML
+          k: 1
+          epochs:
+            - { s: 1, regime: calm, seed: 101, startsAt: "$start" }
+          YAML
+          before=$(ls -d runs/matrix-* 2>/dev/null | sort | tail -1 || true)
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule \
+            --blocks 12 --seconds 90 --agent-sandbox process 2>&1 | tee "$RUNNER_TEMP/follow.log"
+          grep -q "waiting .* for its planned start $start" "$RUNNER_TEMP/follow.log"
+          dir=$(ls -d runs/matrix-* | sort | tail -1)
+          if [ "$dir" = "$before" ]; then echo "no new matrix directory"; exit 1; fi
+          START="$start" DIR="$dir" node -e '
+            const { readFileSync } = require("node:fs");
+            const m = JSON.parse(readFileSync(`${process.env.DIR}/matrix.json`, "utf8"));
+            const sc = m.scenarios?.[0];
+            if (!sc?.agents?.length) throw new Error(`the planned epoch produced no result: ${JSON.stringify(sc)}`);
+            if (sc.startsAt !== process.env.START) throw new Error(`startsAt ${sc.startsAt} != ${process.env.START}`);
+            // runs/<ISO timestamp with : and . replaced by ->, taken when the run begins
+            const id = sc.runDir.split("/").pop();
+            const began = Date.parse(id.replace(/^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "$1:$2:$3.$4Z"));
+            if (Number.isNaN(began)) throw new Error(`cannot read a start time from ${sc.runDir}`);
+            if (began < Date.parse(process.env.START)) throw new Error(`the epoch began at ${id}, before its planned ${process.env.START}`);
+            console.log(`followed: planned ${process.env.START}, began ${new Date(began).toISOString()}`);
+          '
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule --resume "$dir" \
+            --blocks 12 --seconds 90 --agent-sandbox process 2>&1 | tee "$RUNNER_TEMP/resume.log"
+          grep -q "skipping s=1" "$RUNNER_TEMP/resume.log"
+          if grep -q "waiting" "$RUNNER_TEMP/resume.log"; then echo "a resume waited for a complete epoch"; exit 1; fi
+
       - name: Upload the run and deploy logs
         if: always()
         uses: actions/upload-artifact@v4

@@ -600,7 +600,7 @@ async function main(): Promise<void> {
         snap.observation.inventory?.valueUsdc ?? null,
         marketHistory.at(bn),
       );
-      // gas manager: after the observation is settled, check the ETH balance and if low enqueue a refill tx (economicGas only).
+      // gas manager: after the observation is settled, check the ETH balance and if low enqueue a refill tx (every run).
       void sender.maybeRefillGas(
         bn,
         snap.balances,

@@ -401,7 +401,7 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
    * A scenario matrix's *running* epoch is therefore not served until it completes, because it is a
    * sibling directory that nothing yet connects to the matrix -- `matrix.json` gains the entry when
    * the scenario finishes (core/src/cli/backtest.ts flushes after each one). Admitting "whatever is
-   * live" instead would admit every live directory under runs/, since a 40-epoch matrix is
+   * live" instead would admit every live directory under runs/, since a 60-epoch matrix is
    * incomplete for the entire competition. A practice period is unaffected: its current segment
    * lives inside the period's own directory, so it is admitted by containment and the live view
    * works exactly as before.
