@@ -89,7 +89,7 @@ coordinator が起動するエージェントは coordinator の config ファ�
 
 | キー | 既定 | |
 |---|---|---|
-| `ethWei` | 100 ETH（`economicGas` 時 3 ETH） | エージェントの native 残高（**ガスバッファなし**） |
+| `ethWei` | 1 ETH（全モード共通。公式レジームと練習期間は YAML に明記） | エージェントの native 残高（**ガスバッファなし**） |
 | `wethWei` | 10 WETH | 初期 WETH |
 | `usdcUnits` | 25,000 USDC | 初期 USDC |
 | `base` | `{WETH: wethWei}` | 追加 base の初期在庫 |

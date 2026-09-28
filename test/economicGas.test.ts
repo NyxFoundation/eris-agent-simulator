@@ -38,13 +38,13 @@ test("config: ERIS_ECONOMIC_GAS=1 sets economicGas (default false)", () => {
   assert.equal(loadConfig({ ERIS_ECONOMIC_GAS: "0" }).economicGas, false);
 });
 
-test("config: economicGas shrinks the endowment to a modest placeholder (ADR 0011 §2)", () => {
-  // default (0010) stays at 100 ETH
-  assert.equal(loadConfig({}).initialEthWei, 100_000_000_000_000_000_000n);
-  // economic mode uses a placeholder (3 ETH), smaller than 0010 to make gas a real cost
+test("config: the gas endowment defaults to 1 ETH in every mode (rules §4.2)", () => {
+  // It was 100 ETH outside economicGas, which made unchosen gas money most of every agent's P.
+  assert.equal(loadConfig({}).initialEthWei, 1_000_000_000_000_000_000n);
+  // Economic mode no longer has its own placeholder; 1 ETH clears its 0.5 ETH floor.
   const eco = loadConfig({ ERIS_ECONOMIC_GAS: "1" }).initialEthWei;
-  assert.equal(eco, 3_000_000_000_000_000_000n);
-  assert.ok(eco < 100_000_000_000_000_000_000n);
+  assert.equal(eco, 1_000_000_000_000_000_000n);
+  assert.ok(eco >= 500_000_000_000_000_000n);
   // an explicit INITIAL_ETH_WEI takes precedence even in economic mode (overrides the calibrated value)
   assert.equal(
     loadConfig({

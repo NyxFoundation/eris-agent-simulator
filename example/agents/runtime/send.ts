@@ -5,7 +5,7 @@
  * - self-report mempool activity (submitted / submit_failed / rejected) to runs/<id>/agents/<id>.jsonl
  *   (ADR 0006 §5; closes the gap where the coordinator can't count submitted)
  * - competition signal (ADR 0011): self-derive your recent tx's ordering/outcome and the highest competitor bid in the latest block
- * - gas manager (ADR 0011 §4; economicGas only): when the ETH balance drops below the threshold, auto-refill via WETH unwrap /
+ * - gas manager (ADR 0011 §4; every run): when the ETH balance drops below the threshold, auto-refill via WETH unwrap /
  *   USDC->WETH swap
  */
 import { encodeFunctionData, type Address, type Hex } from "viem";
@@ -336,8 +336,10 @@ export class Sender {
     }
   }
 
-  // ---- gas manager (ADR 0011 §4; economicGas profile only) ----
-  // A tight endowment makes naive strategies silently run out of gas. When the ETH balance drops below
+  // ---- gas manager (ADR 0011 §4; every run) ----
+  // A tight endowment makes naive strategies silently run out of gas. It used to run only under
+  // economicGas, because every other run handed out 100 ETH; the endowment is 1 ETH everywhere now, and
+  // a practice period that trades for weeks spends more than that. When the ETH balance drops below
   // "at least N txs' worth", auto-refill via WETH->ETH unwrap (zero slippage), and when WETH is also
   // exhausted, bridge with a USDC->WETH swap (uniswap; slippage = the real-world treasury management
   // cost). The WETH obtained is converted to ETH by next block's unwrap.
@@ -348,7 +350,6 @@ export class Sender {
     stateById: Map<ProtocolId, unknown>,
   ): Promise<void> {
     const config = this.ctx.config;
-    if (!config.economicGas) return;
     if (bn - this.lastGasRefillBlock < GAS_REFILL_COOLDOWN_BLOCKS) return;
     let baseFee: bigint;
     try {

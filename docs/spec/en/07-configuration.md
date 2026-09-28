@@ -89,7 +89,7 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 
 | Key | Default | |
 |---|---|---|
-| `ethWei` | 100 ETH (3 ETH under `economicGas`) | An agent's native balance (**no gas buffer**) |
+| `ethWei` | 1 ETH (every mode; the official regimes and the practice period state it in their YAML) | An agent's native balance (**no gas buffer**) |
 | `wethWei` | 10 WETH | Opening WETH |
 | `usdcUnits` | 25,000 USDC | Opening USDC |
 | `base` | `{WETH: wethWei}` | Opening inventory for other bases |
