@@ -1,14 +1,14 @@
-# ADR 0026: ライブ競技週の編成 — k = 60・1 エポック 360 ブロック・ガス用 ETH 3・時刻表どおりの実行
+# ADR 0026: ライブ競技週の編成 — k = 60・1 エポック 360 ブロック・ガス用 ETH 1・時刻表どおりの実行
 
 ## Status
 
 Proposed（2026-09-27）。**運営が確定させる値**は §1〜§4 の 4 つ（k = 60 が commit 済みの非公開セットで成立するか、
-360 ブロック、3 ETH、週への均等配置）。確定したら規約付録 A に公表する（ascon-web 側の別 PR）。
+360 ブロック、1 ETH、週への均等配置）。確定したら規約付録 A に公表する（ascon-web 側の別 PR）。
+**ガス用 ETH は 2026-09-28 に運営が 1 ETH で確定した**（当初案は 3 ETH）。実施は PR #160。
 
 **実装済み（同日、この ADR と同じ PR）**: `npm run backtest -- --scenarios <plan> --follow-schedule`（各エポックの
 `startsAt` まで待ってから始める。`core/src/backtest/timetable.ts`）と `npm run competition -- plan … --ends-at <ISO>`
-（k 本を窓に均等配置する。`spreadOver` in `core/src/competition/schedule.ts`）。**未実施**: 公式レジーム 12 本の
-`funding.ethWei` を 3 ETH にする変更（本 PR はレジーム YAML を触らない。§3）。
+（k 本を窓に均等配置する。`spreadOver` in `core/src/competition/schedule.ts`）。ガス用 ETH の変更は本 PR ではなく PR #160（§3）。
 
 ## Context
 
@@ -64,14 +64,15 @@ sdk の既定（`sdk/src/config.ts`: economicGas が false なら 100 ETH）が�
   `markMedianBlocks: 5`）はこの長さで測ってあり、参加者が 9/23 から調整している公開セットもこの長さ
 - 付録 A の残りの値のうち評価区間は 12 ブロック（sdk 既定。1 エポック 29 区間）で、本 ADR は動かさない
 
-### 3. ガス用 ETH 3 ETH / agent（ベンチマークも同額）
+### 3. ガス用 ETH 1 ETH / agent（ベンチマークも同額）
 
-- 実測消費（≤ 0.005 ETH / agent・エポック）の 600 倍。ADR 0011 の economic-gas 既定と同じ値
-- ETH 建てのエクスポージャは 108 ETH（100 + 8 WETH）から 11 ETH（3 + 8）になり、ガス用 ETH が P を支配しなくなる。
+- 運営が 2026-09-28 に確定（当初案の 3 ETH から変更）。実測消費（≤ 0.005 ETH / agent・エポック）の 200 倍
+- ETH 建てのエクスポージャは 108 ETH（100 + 8 WETH）から 9 ETH（1 + 8）になり、ガス用 ETH が P を支配しなくなる。
   ベンチマークにも同額を配る（§4.3「同一の初期資本とガス用 ETH」）ので相殺の構造は変わらない
-- **実施は公式レジーム 12 本の `funding.ethWei: "3000000000000000000"`**。本 PR はレジーム YAML を触らない
-  （PR #145 はこの判断を「要決定」として残してマージされた）。変えると過去の matrix の P とは比較できない
-  （全員に共通の ETH の β が 1/33 になる）
+- **実施は PR #160**: 公式レジーム 12 本と `config/practice.yaml` の `funding.ethWei: "1000000000000000000"`、sdk の
+  既定を全モード 1 ETH（100 ETH の既定は廃止）、ランタイムのガスマネージャを全 run で有効化（練習期間は 5 週間走るので
+  1 ETH では足りなくなり、自分の WETH から補充する）。変えると過去の matrix の P とは比較できない
+  （全員に共通の ETH の β が 1/100 になる）
 - `economicGas` は false のまま（ガスを経済コストにするかは別の判断。ADR 0011）
 
 ### 4. エポックを週に均等に広げ、runner が時刻表どおりに走らせる
