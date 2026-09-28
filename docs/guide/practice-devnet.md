@@ -346,6 +346,12 @@ A dump baked before the rotation is a default-mnemonic chain in a file: reloadin
 public deployer back in charge of every venue, whatever mnemonic the node was started with.
 Rotate the two together.
 
+On the hosted box the chain is the `ascon-anvil` service of `infra/monitoring`, not a bare command.
+It reads the mnemonic from `ANVIL_MNEMONIC` in `infra/monitoring/.env` (gitignored; keep it `0600`)
+and passes it to anvil, and when the variable is unset it says so on the container's first log line
+(`WARNING: ANVIL_MNEMONIC is unset …`). After a rotation, check `docker logs ascon-anvil` for that
+line before anything else.
+
 ### Registering a participant
 
 A roster entry is a registration, not a launch instruction:
