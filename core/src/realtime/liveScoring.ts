@@ -36,6 +36,7 @@ import {
   type IntervalSeriesMeta,
 } from "../intervalSeries.js";
 import { LiveMarketSampler, type MarketSeriesRow } from "./marketSeries.js";
+import { nextIntervalBoundary } from "../epochExtent.js";
 
 // One line per interval boundary (INTERVALS_FILENAME), appended as it is reached. The dashboard tails
 // it the same way it tails events.jsonl; nothing has to wait for summary.json.
@@ -59,7 +60,12 @@ export class LiveScorer {
   private readonly valuesByAgent = new Map<string, Array<number | null>>();
   private readonly markMedian: MarkMedian;
   private readonly marketSampler: LiveMarketSampler | null;
-  private nextBoundary: number;
+  // The epoch's last block (epochExtent.ts): always a boundary, and nothing after it is one. Null
+  // until known on a run with no block budget, which learns it from close().
+  private endBlock: number | null;
+  // The last boundary attempted (read or failed), or null before the first. The next one is derived
+  // from it rather than stored, so that learning the end late re-clamps it.
+  private lastAttempted: number | null = null;
   private failures = 0;
 
   constructor(
@@ -72,6 +78,13 @@ export class LiveScorer {
       priceFeed: Address;
       /** First competition block. Boundary 0 sits on it. */
       runStartBlock: number;
+      /**
+       * The epoch's end block, runStartBlock + runBlocks (epochExtent.ts), when the run has a block
+       * budget. It is the last boundary even off the interval grid, and no boundary is read past it
+       * however far the notified head has run ahead. Omit for a run bounded only by the wall clock;
+       * close() supplies the end when it comes.
+       */
+      endBlock?: number | null;
       intervalBlocks: number;
       markMedianBlocks: number;
       /** Sample the venue-state row at each boundary too. */
@@ -79,7 +92,7 @@ export class LiveScorer {
     },
   ) {
     for (const a of opts.agents) this.valuesByAgent.set(a.id, []);
-    this.nextBoundary = opts.runStartBlock;
+    this.endBlock = opts.endBlock ?? null;
     this.markMedian = new MarkMedian({
       publicClient: opts.publicClient,
       activeStables: opts.activeStables,
@@ -120,17 +133,46 @@ export class LiveScorer {
     );
   }
 
+  // The next boundary to read, or null when the end has been read.
+  private pendingBoundary(): number | null {
+    if (this.lastAttempted === null)
+      return this.endBlock !== null && this.opts.runStartBlock > this.endBlock
+        ? null
+        : this.opts.runStartBlock;
+    return nextIntervalBoundary(
+      this.lastAttempted,
+      this.opts.intervalBlocks,
+      this.endBlock,
+    );
+  }
+
   // Called once per processed block. Catches up rather than matching an index exactly: the
   // coordinator's block handler skips notifications while it is busy, and a boundary that fell in a
   // skipped block would otherwise be lost -- the same failure that once swallowed a whole stress
-  // event (pointEventsAt).
+  // event (pointEventsAt). Never reads past the end block, whatever block it is told about.
   async onBlock(blockNumber: number): Promise<void> {
     if (!this.enabled) return;
-    while (this.nextBoundary <= blockNumber) {
-      const at = this.nextBoundary;
-      this.nextBoundary += this.opts.intervalBlocks;
+    for (
+      let at = this.pendingBoundary();
+      at !== null && at <= blockNumber;
+      at = this.pendingBoundary()
+    ) {
+      this.lastAttempted = at;
       await this.scoreBoundary(at);
     }
+  }
+
+  /**
+   * The run is over at `finalBlock`: read every boundary still due through it, and `finalBlock`
+   * itself as the last one. On a run with a block budget the end was known from the start and this
+   * only catches a final pass that failed before its boundary read; on a run cut by the wall clock
+   * it is where the epoch's last boundary comes from. Idempotent.
+   */
+  async close(finalBlock: number): Promise<void> {
+    if (!this.enabled) return;
+    if (this.endBlock === null || finalBlock < this.endBlock)
+      this.endBlock = finalBlock;
+    await this.onBlock(finalBlock);
   }
 
   private async scoreBoundary(blockNumber: number): Promise<void> {

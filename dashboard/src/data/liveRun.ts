@@ -219,6 +219,13 @@ class LiveRunState {
    * of 20" on a segment sitting at its twentieth.
    */
   private firstBlockSeen: number | null = null;
+  /**
+   * The first block the coordinator declared (`run_start_declared`, issue #117), which is what the
+   * epoch's end and every interval boundary are counted from. Preferred over the first block seen:
+   * the loop's first pass is often on the block before it (emitOnBegin), which slid the whole round
+   * axis one block early.
+   */
+  private declaredStartBlock: number | null = null;
   /** blocks.csv rows, oldest first, capped at BLOCK_ROW_LIMIT (the newest are kept). */
   private csvRows: BlockRow[] = [];
   /** The first block blocks.csv covered, kept even after the row that carried it was capped off. */
@@ -271,6 +278,10 @@ class LiveRunState {
           // starting the agents — on the practice devnet they are other people's processes on other
           // people's machines, and no line of theirs reaches here.
           if (typeof event.rpcUrl === "string") this.meta.rpcUrl = event.rpcUrl;
+          break;
+        case "run_start_declared":
+          if (typeof event.runStartBlock === "number")
+            this.declaredStartBlock = event.runStartBlock;
           break;
         case "price_feed_deployed":
           if (typeof event.address === "string")
@@ -633,7 +644,10 @@ class LiveRunState {
       live: {
         chainHeight: chainHeight ?? (filesHeight > 0 ? filesHeight : null),
         firstBlock:
-          this.firstBlockSeen ?? blockRows[0]?.blockNumber ?? null,
+          this.declaredStartBlock ??
+          this.firstBlockSeen ??
+          blockRows[0]?.blockNumber ??
+          null,
         blocksFrom,
         indexerHeight,
         fairSamples: this.fairSamples,

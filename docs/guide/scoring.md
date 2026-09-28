@@ -28,11 +28,21 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s      S = valid epochs with �
 ```
 
 `core/src/scoring/deviationScore.ts` is the whole implementation; `epochPnl.ts` reads P off the
-boundary series. Five details are decisions, not formalities:
+boundary series. Six details are decisions, not formalities:
 
 - **One number per epoch.** An epoch is one run (360 blocks). The 12-block evaluation intervals inside
   it (`interval` in the code, "Interval" on the dashboard) are the leaderboard's running progress;
   the score reads only the first and last boundary.
+- **The epoch ends on a chain block.** It starts at the coordinator's declared `runStartBlock`
+  (`run-start.json`) and ends at `runStartBlock + runBlocks`: that block is processed, it is the last
+  boundary (V_K), and it is where every agent's `obs.blocksRemaining` reads 0. A 360-block epoch is
+  30 intervals. When `run.blocks` is not a multiple of the interval, the grid is kept and the final
+  interval is the remainder, closed by the end block. The coordinator's loop is clamped to that
+  block, so a loop that falls behind neither lengthens nor shortens the epoch
+  (`core/src/epochExtent.ts`). Runs recorded before this was fixed ended after `runBlocks` loop
+  passes instead -- on a loaded host that ran the chain up to 72 blocks past the bell -- and their
+  last boundary was one interval short of the end (block 348 of 360, 29 intervals), so P from those
+  runs is not comparable with P from later ones.
 - **No floor, no freeze.** An agent that ends at or below zero counts at its negative value
   (§4.4.2), and one whose process died is scored on the positions it left behind (§2.3). Both are
   reported as `flags` next to the number; neither is a disqualification.

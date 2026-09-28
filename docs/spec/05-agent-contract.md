@@ -78,7 +78,7 @@ type AgentContext = {
 | `runId` / `round` / `blockNumber` / `agentAddress` | 同定情報。`round` は**絶対チェーンブロック番号** |
 | `fairPriceUsdcPerWeth` / `oraclePrices` | fair price（1 ブロック遅れ） |
 | `fairPricesUsd` / `baseBalances` / `baseDecimals` / `markets` | マルチアセット。WETH のみの run では既存フィールドと一致する |
-| `blocksRemaining` | **このエージェントが最初に観測したブロックから数えた**残りブロック数。run に上限が無ければ undefined |
+| `blocksRemaining` | エポックの最終ブロックまでの残りブロック数。コーディネータが宣言した開始ブロック（`run-start.json`、issue #117）から数え、**最終ブロック（鐘）で 0**。宣言が読めないときは最初に観測したブロックから推定する。run に上限が無ければ undefined。自己ホストのエージェント（ADR 0021）は自分の config ではなく manifest の `period` から数える |
 | `dayBlocksRemaining` | 採点中の 1 日の残りブロック数。**練習期間のみ**（1 つの world を日で切り、各日を 1 エポックとする。ADR 0021 §6）。エージェントの時計と期間の日の格子（`sdk/src/periodClock.ts`）から計算し、`blocksRemaining` を超えない。それ以外の run では undefined |
 | `enabledProtocols` | この run で有効な venue |
 | `discoveredPools` | 環境がエポック途中に配置したプール（規約 §3.2 レジーム 7、ADR 0014）: address / token0 / token1 / decimals / feeBps / createdAtBlock / reserves / 含意価格 / codehash。**rigged かどうかは出さない**（検査は参加者の判断）。factory の無い run では undefined |
@@ -93,7 +93,7 @@ type AgentContext = {
 
 - **`usdcUnits` は native USDC だけ**（issue #27）。これは*予算*であって評価額ではない。以前は全 active stable の合計だったが、USDT は USDC プールで使えないので**どこでも使えない額**を表示していた。ウォレットの価値は `inventory.valueUsdc`
 - **`balances.stables[sym].marketQuoted: false` は「市場が答えなかったので par を仮置きした」**。`priceUsdc: 1` を「ペグが保たれている」と読んではいけない
-- **`blocksRemaining` は 1〜2 ブロックの誤差を含む**。エージェントは競技開始ブロックのあたりから観測を始めるので、それより前ではない。LST の出金キューを「形式ではなく判断」にしているのがこの値（run 内に終わらない exit は完了できない）
+- **`blocksRemaining` が 0 のブロックがエポックの最後の評価対象**（`runStartBlock + runBlocks`。最後の境界 V_K。`core/src/epochExtent.ts`）。1 を見て送った取引はまだそのブロックに入り得るが、0 を見てから送った取引は終了後に着地する。宣言から数えるときは誤差が無く、最初に観測したブロックから推定するときだけ 1〜2 ブロックずれる。LST の出金キューを「形式ではなく判断」にしているのがこの値（run 内に終わらない exit は完了できない）
 - LST の `discountBps` は `marketQuoted` を確認してから使う（quote が返らなければ 0 であって「100% ディスカウント」ではない）
 - Liquity の `trove.positionKnown: false` のとき `positionFromRiskiest` と `redeemedAheadEusdWei` は無意味
 

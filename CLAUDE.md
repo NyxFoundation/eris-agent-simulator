@@ -403,7 +403,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     カーソルは competition 全体を張る = **評価区間 k では 35 シナリオが各自の評価区間 k にいる**。再生は
     カーソルを進めるだけで、独立した「リプレイモード」ではない
     - **順位は "through interval k"**（先頭 k 評価区間で再計算。完走結果を読まない）+ 評価区間 k−1 からの移動
-    - **シナリオ長は揃っていない**（full-8h では depeg が 9、他は 29）。最終評価区間を過ぎた
+    - **シナリオ長は揃っていない**（full-8h では depeg が 9、他は 29。最終区間を採点していなかった頃の記録）。最終評価区間を過ぎた
       シナリオは**世界が終了した**扱いで順位に残す（除くと「結果でない理由」で場が動く）。
       帯に `30 of 35 still running · 5 ended earlier` と出す
     - **net PnL は評価区間で絞れない**（両端を run 最終価格で評価するので評価区間 k の値が存在しない）。
@@ -464,8 +464,8 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - **パネルは選択中の評価区間にスコープされる**（`scopeRunToRound` が run 自体を窓で絞るので、
     ビルダー側に第 2 の経路を作らない）。ヘッダに窓を明示し、全体に戻すリンクを出す。
     **例外は run 終端の 3 表**（GMX 建玉 / Aave 口座 / reserve）で、これは run 終了時の 1 断面なので
-    タイトルに "at the run's final block" と書く。評価区間別 volume の合計が run 全体より小さいのは
-    正しい（scorer が末尾の端数区間を落とすため、最終境界より後のブロックはどの評価区間にも属さない）
+    タイトルに "at the run's final block" と書く。評価区間別 volume の合計が run 全体と違うのは
+    最初のブロック（境界 0）の分だけ（評価区間は `(from, to]` で、最終境界は run の最終ブロック）
   - **agent の建玉は全 venue 分が `market.json` に入る**（`gmxPositionsAtEnd` / `aaveAccountsAtEnd` /
     `lstPositionsAtEnd` / `liquityPositionsAtEnd`）。**以前は GMX だけを見ていたので、run 中ずっと
     ステークや借入だけしていた agent は空表になり「壊れている」と見分けがつかなかった**。表は perp 形
@@ -887,6 +887,15 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   切った後・interval mining の前に、起動した全 agent の `runtime_start` を `run.agentsReadyTimeoutSec`
   （既定 60 秒、0 = 待たない）まで待ち `agents_ready` に ready/late/exited を残す。実測 docker 32 体で
   `runtime_start` は +86〜99 秒なので、その検証では上げる。外部参加者は待たない
+- **エポックはチェーンのブロック番号で終わる**（`core/src/epochExtent.ts`）。終わりは
+  `runStartBlock + runBlocks` で、そのブロックは処理され、**最後の境界（V_K）**になり、全 agent の
+  `blocksRemaining` が 0 になる（鐘）。ループの各パスはこのブロックで clamp され（`loopStep`）、
+  それを越えて評価・スケジュール・観測しない。360 ブロックなら 30 評価区間。`runBlocks` が区間長の倍数で
+  なければ格子は保ち、最終区間は端数（終わりのブロックが閉じる）。**以前はループのパス数で終わっていた**ので、
+  追いつきパス（`round_timing.blocksCaughtUp`）のある負荷の高いホストでは chain が鐘の 72 ブロック後まで
+  走り（crash#101: 360 パスで 432 ブロック）、遅れなくても最後の境界は +348 で 29 区間しか採点していなかった。
+  **採点窓は 348 → 360 ブロックに伸びたので、それ以前の run の P とは比較できない**。
+  summary.json の `blocksProcessed` はチェーンブロック数（`finalBlock − runStartBlock`）、パス数は `loopIterations`
 - **採点は run 後再構成**（`core/src/realtime/reconstruct.ts`）: blockNumber 指定の Multicall3 で全 agent 同一断面の
   価値系列を events.jsonl に observation 形で書く（`runs/<id>/summary.json` に集計）。
   resetFork で歴史が消えるため**次 run の前に必ず再構成を終える**（anvil の保持深度 ~1,050 ブロックに注意）。

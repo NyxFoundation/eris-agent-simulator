@@ -5,8 +5,8 @@
 // advances the cursor; it is not a separate "replay" mode, because replay, round selection and a
 // live head are the same act of putting a position on this axis.
 //
-// Scenarios are not all the same length (the depeg regime runs 9 rounds against everyone else's
-// 29). Past a scenario's last round its world has ended and its result is final, so it stays in the
+// Scenarios are not all the same length (in full-8h the depeg regime ran 9 rounds against everyone
+// else's 29). Past a scenario's last round its world has ended and its result is final, so it stays in the
 // standings — dropping it would move the field for a reason that is not a result — and the bar says
 // how many are in that state instead of leaving the change unexplained.
 

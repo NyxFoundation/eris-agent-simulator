@@ -160,7 +160,7 @@ The order matters.
 | Knob | Meaning | Default |
 |---|---|---|
 | `run.blockTimeSec` | Block interval (seconds) | 2 |
-| `run.blocks` | End after N blocks | 0 (unbounded) |
+| `run.blocks` | End after N blocks: at chain block `runStartBlock + run.blocks`, which is processed and is the last boundary (not after N loop passes) | 0 (unbounded) |
 | `run.seconds` | End after N seconds | 20 |
 | `run.intervalBlocks` | Blocks per evaluation interval | 12 |
 | `run.intervalSeconds` | Seconds per evaluation interval, converted at `blockTimeSec` | 0 (unused) |

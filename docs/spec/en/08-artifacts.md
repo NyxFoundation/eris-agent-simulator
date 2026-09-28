@@ -38,7 +38,9 @@ runs/
 | `runId` | Run identifier |
 | `mode` | `"realtime"` / `"backtest"` (which entry point produced it) |
 | `resetUnit` | `"continuous"` / `"scenario"` ([02 §2.4](02-runtime.md)) |
-| `blockTimeSec` / `blocksProcessed` / `elapsedMs` | Measured execution |
+| `blockTimeSec` / `blocksProcessed` / `elapsedMs` | Measured execution. `blocksProcessed` is the chain blocks the epoch covered (`finalBlock − runStartBlock`; equal to `run.blocks` on a run that ended on its block budget) |
+| `runStartBlock` / `finalBlock` | The epoch's first and last block (its first and last boundary). `finalBlock` is where `blocksRemaining` reads 0 (`core/src/epochExtent.ts`) |
+| `loopIterations` | Passes of the environment loop. Smaller than `blocksProcessed` when a pass catches up several blocks. This used to be written as `blocksProcessed`, and the run ended on this count |
 | `finalFairPriceUsdcPerWeth` | The final fair price |
 | `valueSeries` | Value-series metadata (below) |
 | `agents[].pnlUsdc` / `baseline` | P of rules §4.4.1 (the two ends of the boundary series) and whether the agent is the benchmark (below) |

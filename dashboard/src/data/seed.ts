@@ -22,8 +22,8 @@ import type {
 
 export const ROUND_DURATION_MS = 2 * 3600 * 1000 + 14 * 60 * 1000 + 36 * 1000;
 
-// Eight rounds of twelve blocks — the shape a default sim:realtime run produces (run.intervalBlocks
-// defaults to 12). Six are scored, one is running, one has not started.
+// Eight rounds of twelve blocks (run.intervalBlocks defaults to 12). Six are scored, one is running,
+// one has not started.
 const SEED_INTERVAL_BLOCKS = 12;
 const SEED_INTERVALS = 8;
 const SEED_FIRST_BLOCK = 19_442_026;

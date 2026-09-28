@@ -78,7 +78,7 @@ Built by `observationFor` (`sdk/src/observation.ts`). The point is that **the en
 | `runId` / `round` / `blockNumber` / `agentAddress` | Identity. `round` is **the absolute chain block number** |
 | `fairPriceUsdcPerWeth` / `oraclePrices` | The fair price (one block late) |
 | `fairPricesUsd` / `baseBalances` / `baseDecimals` / `markets` | Multi-asset. In a WETH-only run these agree with the legacy fields |
-| `blocksRemaining` | Blocks left, **counted from the first block this agent observed**. Undefined when the run has no block limit |
+| `blocksRemaining` | Blocks left until the epoch's final block, counted from the start block the coordinator declared (`run-start.json`, issue #117), and **0 on the final block (the bell)**. Inferred from the first block this agent observed when the declaration cannot be read. Undefined when the run has no block limit. A self-hosted agent (ADR 0021) counts from the manifest's `period`, not its own config |
 | `dayBlocksRemaining` | Blocks left in the day being scored, **on a practice period only** (a continuous world cut into days, each one epoch; ADR 0021 §6). Computed from the agent's clock against the period's day grid (`sdk/src/periodClock.ts`), never more than `blocksRemaining`. Undefined in every other run |
 | `enabledProtocols` | The venues this run turned on |
 | `discoveredPools` | Pools the environment placed mid-epoch (rules §3.2 regime 7, ADR 0014): address / token0 / token1 / decimals / feeBps / createdAtBlock / reserves / implied price / codehash. **Whether a pool is rigged is not disclosed** (inspecting it is the participant's call). Undefined in a run without the factory |
@@ -93,7 +93,7 @@ Built by `observationFor` (`sdk/src/observation.ts`). The point is that **the en
 
 - **`usdcUnits` is native USDC only** (issue #27). It is a *budget*, not a valuation. It used to be every active stable summed, which **could not be spent anywhere** — USDT is not accepted in a USDC pool. What the wallet is worth is `inventory.valueUsdc`
 - **`balances.stables[sym].marketQuoted: false` means "no market answered, so par was assumed".** Do not read `priceUsdc: 1` as "the peg is holding"
-- **`blocksRemaining` carries a block or two of error.** An agent starts observing right around the first competition block, not before it. This value is what makes the LST withdrawal queue a decision rather than a formality (an exit that cannot finish inside the run is not an exit)
+- **The block where `blocksRemaining` reads 0 is the last one the epoch values** (`runStartBlock + runBlocks`, the last boundary V_K; `core/src/epochExtent.ts`). A transaction sent on seeing 1 can still land on it; one sent after seeing 0 lands after the end. Counted from the declaration it is exact; only the inferred count is a block or two off. This value is what makes the LST withdrawal queue a decision rather than a formality (an exit that cannot finish inside the run is not an exit)
 - Check `marketQuoted` before acting on the LST's `discountBps` (no quote means 0, not "a 100% discount")
 - When Liquity's `trove.positionKnown` is false, `positionFromRiskiest` and `redeemedAheadEusdWei` are meaningless
 
