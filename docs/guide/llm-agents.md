@@ -283,6 +283,15 @@ the proxy, which holds the upstream keys, enforces the published model list and 
 exchange for replay (`infra/inference-proxy/README.md`). The CLI providers are a local-development
 convenience: an agent container has no `codex` or `claude` binary and no network to log in with.
 
+**How long a call may wait there.** A call that is not streamed waits at most **5 minutes** for the
+whole answer — the proxy's bound, and also Node's: its fetch stops waiting for response headers at
+300 s, and a non-streamed answer has none until it is complete. The reference runtime does not
+stream, so this is its bound. A client of your own may stream instead (`"stream": true`, or Ollama's
+default): the proxy relays the answer chunk by chunk and cuts it only after a silence of the same
+length — before the first chunk or between two — so a long answer that keeps coming is never cut.
+The epoch is the total: when it ends your agent is stopped, and the proxy aborts any request it left
+open, so you do not pay for tokens nobody will read.
+
 **Latency no longer bounds the strategy.** Under prompt mode a slow backend meant a slow trader; now
 it only means fewer revision opportunities, and the strategy trades at full speed throughout. A
 backend failure is recorded and the strategy continues unchanged, so a run without an API key still

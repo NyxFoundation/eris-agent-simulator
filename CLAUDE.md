@@ -45,7 +45,11 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
   `openai:<m>` / `gpt-*` は OpenAI 互換 chat completions。**本番は運営の推論プロキシ経由**
   （`ERIS_INFERENCE_BASE_URL` + agent ごとの `ERIS_INFERENCE_TOKEN` = HMAC(ERIS_INFERENCE_SECRET, agentId)。
   agent は鍵を持たない。`npm run inference-proxy`、`core/src/inference/proxy.ts`、規約 §2.3/§2.5。
-  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）
+  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）。
+  **ストリーミングは拒否せず逐次中継する**（issue #166。SSE / Ollama の NDJSON。1 呼び出し 1 記録で全文を残し
+  replay も同じ content-type で返す）。待ち時間は非ストリームが `upstreamTimeoutMs`（既定 5 分。Node の fetch が
+  応答ヘッダを 300 秒で諦めるので実質の上限もここ）、ストリームは**無音**の `streamIdleTimeoutMs` だけで総時間は
+  エポックが決める。**agent が接続を切ったら上流も abort する**（トークン代は参加者持ち = 規約 §2.5）
 - `ERIS_IMPROVE_LOG_CALLS: "1"` — 改訂の生のやり取りを `agents/<id>.llm.jsonl` に残す（既定 off）
 
 改訂プロンプトは**その run で有効な venue の action 名を列挙する**（`ACTION_TYPES_BY_PROTOCOL`。
