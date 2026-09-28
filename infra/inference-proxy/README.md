@@ -33,17 +33,40 @@ routes the Ollama, OpenAI-compatible and Anthropic providers through the base UR
 | missing or wrong `x-eris-agent` + bearer token (when a secret is set) | 401 |
 | `model` not in the list, or on the wrong provider's path | 403 with the allowed names |
 | a stored/previous reference: OpenAI `previous_response_id` `prompt` `store` `metadata` `file_ids` `attachments` `tools` `tool_resources`; Anthropic `container` `mcp_servers` `tools` | 403 naming the key |
-| `stream: true` | 400 (exchanges are recorded whole) |
 | more than `maxCallsPerMinute` per agent | 429 |
+
+## Waiting, and streaming (issue #166)
+
+Streaming is relayed, not refused. A response the provider streams — SSE on `/v1/chat/completions` and
+`/v1/messages` with `"stream": true`, NDJSON on `/api/chat` (Ollama streams unless the body says
+`"stream": false`) — reaches the agent chunk by chunk under the provider's status and `content-type`.
+
+| call | how long the proxy waits | set by |
+|---|---|---|
+| not streamed | the whole answer: `upstreamTimeoutMs`, default 300000 (5 min). Higher values do not help: Node's fetch gives up after 300 s without response headers, and a non-streamed answer's headers arrive only once it is complete | operator (`models.yaml`) |
+| streamed | silence only: `streamIdleTimeoutMs` without a byte, before the first or between any two chunks (default: `upstreamTimeoutMs`). No total — the epoch is one: when it ends the agent is stopped and its connection closes | operator (`models.yaml`) |
+
+**An agent that stops waiting stops the generation.** When the agent's connection closes before the
+answer is complete — its own timeout, or the epoch ending — the proxy aborts the upstream request,
+streamed or not. The participant pays for the tokens (rules §2.5). The record says so
+(`"error": "client disconnected"`; status 499 when no answer had started).
+
+The operator caps neither input nor output tokens: the body is forwarded as written, so the limits are
+the model's and the service's, plus whatever the agent's client asks for.
 
 ## Recording and replay (rules §2.4)
 
 One JSON line per call under `<record>/<agentId>.jsonl`: `seq` (per agent, retries included), path,
-model, the request body as the agent sent it, the upstream status and response, duration. Replaying
-an evaluation is `--replay <that dir>`: the proxy serves the recorded responses back in order and
-never calls a provider, so a non-deterministic model gives a deterministic re-run. A run that asks
-for more calls than were recorded gets 409 at the first missing one, which is a difference worth
-knowing about rather than a silent divergence.
+model, the request body as the agent sent it, the upstream status, `contentType` and response,
+duration. Replaying an evaluation is `--replay <that dir>`: the proxy serves the recorded responses
+back in order and never calls a provider, so a non-deterministic model gives a deterministic re-run.
+A run that asks for more calls than were recorded gets 409 at the first missing one, which is a
+difference worth knowing about rather than a silent divergence.
+
+A streamed call is still **one** record, written when the stream ends: `"stream": true` and the whole
+stream as text in `response` (the SSE events or NDJSON lines as sent). Replay serves it back under the
+recorded content type. A stream that broke off — it went quiet, or the agent left — is recorded with
+what had arrived and an `error`, and replays the same way: that text, then the connection is cut.
 
 ## Network
 

@@ -22,35 +22,51 @@ const config = loadProxyConfig({
   ],
 });
 
-type Seen = { url: string; headers: Record<string, string>; body: Record<string, unknown> };
+type Seen = {
+  url: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+  signal?: AbortSignal;
+};
+
+// What the upstream answers. The default is a whole JSON answer; the streaming tests bring their own.
+type Upstream = (seen: Seen) => Response | Promise<Response>;
+
+const jsonAnswer: Upstream = () =>
+  new Response(JSON.stringify({ choices: [{ message: { content: "{\"ok\":true}" } }] }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 
 async function withProxy<T>(
-  opts: Partial<ProxyOptions>,
+  opts: Partial<ProxyOptions> & { upstream?: Upstream },
   fn: (base: string, seen: Seen[]) => Promise<T>,
 ): Promise<T> {
+  const { upstream = jsonAnswer, ...proxyOpts } = opts;
   const seen: Seen[] = [];
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-    seen.push({
+    const call: Seen = {
       url: String(url),
       headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)),
       body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
-    });
-    return new Response(JSON.stringify({ choices: [{ message: { content: "{\"ok\":true}" } }] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+      ...(init?.signal ? { signal: init.signal } : {}),
+    };
+    seen.push(call);
+    return upstream(call);
   }) as typeof fetch;
   const server = createInferenceProxy({
     config,
     fetchImpl,
     env: { UP_KEY: "sk-upstream", ANT_KEY: "sk-ant" },
-    ...opts,
+    ...proxyOpts,
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
     return await fn(base, seen);
   } finally {
+    // A test that walked away from a response leaves its socket open; close() would wait it out.
+    server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));
   }
 }
@@ -81,7 +97,7 @@ test("a model outside the list, or on the wrong provider's path, is refused with
   });
 });
 
-test("stored or previous references and streaming are refused, naming the key", async () => {
+test("stored or previous references are refused, naming the key", async () => {
   await withProxy({}, async (base) => {
     const r = await post(base, "/v1/chat/completions", {
       model: "gpt-x",
@@ -93,10 +109,6 @@ test("stored or previous references and streaming are refused, naming the key", 
     assert.equal(
       (await post(base, "/v1/messages", { model: "claude-y", messages: [], container: "c1" })).status,
       403,
-    );
-    assert.equal(
-      (await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [], stream: true })).status,
-      400,
     );
   });
 });
@@ -161,4 +173,267 @@ test("the per-agent rate limit is a sliding minute", async () => {
     t += 61_000;
     assert.equal((await post(base, "/v1/chat/completions", { model: "gpt-x", messages: [] }, h)).status, 200);
   });
+});
+
+// ---- streaming (issue #166) ----
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// An upstream stream the test drives: each chunk is sent after its gate opens (a gate that never
+// opens is an upstream that goes quiet), and the stream errors when the proxy aborts the request --
+// what undici does to a real response body.
+function streamed(
+  seen: Seen,
+  contentType: string,
+  chunks: Array<{ text: string; after?: Promise<unknown> }>,
+  opts: { close?: boolean } = {},
+): Response {
+  const enc = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      seen.signal?.addEventListener("abort", () => controller.error(seen.signal?.reason));
+      try {
+        for (const c of chunks) {
+          if (c.after) await c.after;
+          controller.enqueue(enc.encode(c.text));
+        }
+        if (opts.close !== false) controller.close();
+      } catch {
+        // Already errored by the abort above.
+      }
+    },
+  });
+  return new Response(body, { status: 200, headers: { "content-type": contentType } });
+}
+
+// A promise and its resolver: a gate the test opens.
+function gate(): { open: () => void; opened: Promise<void> } {
+  let open!: () => void;
+  const opened = new Promise<void>((r) => (open = r));
+  return { open, opened };
+}
+
+async function readChunk(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  const { value, done } = await reader.read();
+  assert.equal(done, false);
+  return new TextDecoder().decode(value);
+}
+
+async function waitFor(cond: () => boolean, what: string, ms = 2_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > until) assert.fail(`timed out waiting for ${what}`);
+    await sleep(10);
+  }
+}
+
+const recorded = (dir: string, agent: string) =>
+  existsSync(join(dir, `${agent}.jsonl`))
+    ? readFileSync(join(dir, `${agent}.jsonl`), "utf8").trim().split("\n").map((l) => JSON.parse(l))
+    : [];
+
+const unlimited = { ...config, maxCallsPerMinute: 0 };
+
+const STREAM_CASES = [
+  {
+    provider: "ollama",
+    path: "/api/chat",
+    // No `stream` at all: Ollama's default is to stream, and the proxy relays it as the NDJSON it is
+    // rather than handing a client that never asked for a stream one text blob.
+    body: { model: "local-z", messages: [{ role: "user", content: "hi" }] },
+    contentType: "application/x-ndjson",
+    chunks: [
+      '{"message":{"role":"assistant","content":"{\\"ok\\""},"done":false}\n',
+      '{"message":{"role":"assistant","content":":true}"},"done":true,"done_reason":"stop"}\n',
+    ],
+  },
+  {
+    provider: "openai",
+    path: "/v1/chat/completions",
+    body: { model: "gpt-x", stream: true, messages: [{ role: "user", content: "hi" }] },
+    contentType: "text/event-stream; charset=utf-8",
+    chunks: [
+      'data: {"choices":[{"delta":{"content":"{\\"ok\\""}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":":true}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    ],
+  },
+  {
+    provider: "anthropic",
+    path: "/v1/messages",
+    body: { model: "claude-y", stream: true, max_tokens: 64, messages: [{ role: "user", content: "hi" }] },
+    contentType: "text/event-stream; charset=utf-8",
+    chunks: [
+      'event: message_start\ndata: {"type":"message_start"}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ],
+  },
+] as const;
+
+for (const c of STREAM_CASES) {
+  test(`${c.provider}: a streamed answer is relayed chunk by chunk under the upstream's status and content type`, { timeout: 10_000 }, async () => {
+    // The upstream holds the second chunk until the agent has read the first. A proxy that buffered
+    // the answer would deadlock here instead of passing.
+    const second = gate();
+    await withProxy(
+      {
+        config: unlimited,
+        upstream: (seen) =>
+          streamed(seen, c.contentType, [
+            { text: c.chunks[0] },
+            { text: c.chunks[1], after: second.opened },
+          ]),
+      },
+      async (base) => {
+        const r = await post(base, c.path, c.body, { "x-eris-agent": "alice" });
+        assert.equal(r.status, 200);
+        assert.equal(r.headers.get("content-type"), c.contentType);
+        const reader = r.body!.getReader();
+        const first = await readChunk(reader);
+        assert.equal(first, c.chunks[0]);
+        second.open();
+        let rest = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          rest += new TextDecoder().decode(value);
+        }
+        assert.equal(first + rest, c.chunks.join(""));
+      },
+    );
+  });
+}
+
+test("a streamed call is recorded as one record with its text and content type, and replays as the same stream", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-stream-"));
+  const sse = STREAM_CASES[1];
+  const whole = sse.chunks.join("");
+  await withProxy(
+    { recordDir: dir, config: unlimited, upstream: (seen) => streamed(seen, sse.contentType, sse.chunks.map((text) => ({ text }))) },
+    async (base) => {
+      const r = await post(base, sse.path, sse.body, { "x-eris-agent": "alice" });
+      assert.equal(await r.text(), whole);
+      await waitFor(() => recorded(dir, "alice").length === 1, "the record");
+      const [rec] = recorded(dir, "alice");
+      assert.equal(rec.seq, 1);
+      assert.equal(rec.status, 200);
+      assert.equal(rec.stream, true);
+      assert.equal(rec.contentType, sse.contentType);
+      assert.equal(rec.response, whole, "the whole stream, not its first chunk");
+      assert.equal(rec.error, undefined);
+      assert.deepEqual(rec.request, sse.body);
+    },
+  );
+  await withProxy({ replayDir: dir, config: unlimited }, async (base, seen) => {
+    const r = await post(base, sse.path, sse.body, { "x-eris-agent": "alice" });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("content-type"), sse.contentType);
+    assert.equal(await r.text(), whole);
+    assert.equal(seen.length, 0, "replay never calls an upstream");
+  });
+});
+
+test("a streamed call is cut by silence, not by its length", { timeout: 10_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-idle-"));
+  // Both bounds are 150 ms. The first stream runs well past that in total and is never quiet for
+  // that long; the second sends one chunk and goes quiet.
+  const quick = { ...unlimited, upstreamTimeoutMs: 150, streamIdleTimeoutMs: 150 };
+  const sse = STREAM_CASES[1];
+  let call = 0;
+  await withProxy(
+    {
+      recordDir: dir,
+      config: quick,
+      upstream: (seen) =>
+        ++call === 1
+          ? streamed(
+              seen,
+              sse.contentType,
+              Array.from({ length: 6 }, (_, i) => ({ text: `data: ${i}\n\n`, after: sleep(60 * (i + 1)) })),
+            )
+          : streamed(seen, sse.contentType, [{ text: "data: 0\n\n" }], { close: false }),
+    },
+    async (base) => {
+      const long = await post(base, sse.path, sse.body, { "x-eris-agent": "alice" });
+      assert.equal(await long.text(), Array.from({ length: 6 }, (_, i) => `data: ${i}\n\n`).join(""));
+
+      const stalled = await post(base, sse.path, sse.body, { "x-eris-agent": "alice" });
+      assert.equal(stalled.status, 200);
+      const reader = stalled.body!.getReader();
+      assert.equal(await readChunk(reader), "data: 0\n\n");
+      // The cut arrives as a broken stream -- the only way left once the headers are out.
+      await assert.rejects(reader.read());
+
+      await waitFor(() => recorded(dir, "alice").length === 2, "both records");
+      const [ok, cut] = recorded(dir, "alice");
+      assert.equal(ok.error, undefined);
+      assert.match(cut.error, /went quiet for 150 ms/);
+      assert.equal(cut.stream, true);
+      assert.equal(cut.response, "data: 0\n\n", "what had arrived is kept");
+    },
+  );
+  // Replay breaks off at the same place.
+  await withProxy({ replayDir: dir, config: quick }, async (base) => {
+    await (await post(base, sse.path, sse.body, { "x-eris-agent": "alice" })).text();
+    const r = await post(base, sse.path, sse.body, { "x-eris-agent": "alice" });
+    const reader = r.body!.getReader();
+    assert.equal(await readChunk(reader), "data: 0\n\n");
+    await assert.rejects(reader.read());
+  });
+});
+
+test("an agent that stops waiting aborts the upstream request, streamed or not", { timeout: 10_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-leave-"));
+  const sse = STREAM_CASES[1];
+  await withProxy(
+    {
+      recordDir: dir,
+      config: unlimited,
+      upstream: (seen) =>
+        seen.body.stream === true
+          ? streamed(seen, sse.contentType, [{ text: "data: 0\n\n" }], { close: false })
+          : // A whole answer that is never ready: it ends only when the request is aborted.
+            new Promise<Response>((_, reject) =>
+              seen.signal?.addEventListener("abort", () => reject(seen.signal?.reason)),
+            ),
+    },
+    async (base, seen) => {
+      const streaming = new AbortController();
+      const r = await fetch(`${base}${sse.path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-eris-agent": "alice" },
+        body: JSON.stringify(sse.body),
+        signal: streaming.signal,
+      });
+      assert.equal(await readChunk(r.body!.getReader()), "data: 0\n\n");
+      streaming.abort();
+      await waitFor(() => seen[0].signal?.aborted === true, "the streamed upstream request to be aborted");
+
+      const waiting = new AbortController();
+      const pending = fetch(`${base}${sse.path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-eris-agent": "alice" },
+        body: JSON.stringify({ ...sse.body, stream: false }),
+        signal: waiting.signal,
+      }).catch(() => undefined);
+      await waitFor(() => seen.length === 2, "the second call to reach the upstream");
+      waiting.abort();
+      await pending;
+      await waitFor(() => seen[1].signal?.aborted === true, "the whole-answer upstream request to be aborted");
+
+      await waitFor(() => recorded(dir, "alice").length === 2, "both records");
+      const [s, w] = recorded(dir, "alice");
+      assert.equal(s.error, "client disconnected");
+      assert.equal(s.response, "data: 0\n\n");
+      assert.equal(w.error, "client disconnected");
+      assert.equal(w.status, 499);
+    },
+  );
+});
+
+test("the proxy's timeouts default to the five-minute wait and are validated", () => {
+  const d = loadProxyConfig({ models: config.models });
+  assert.equal(d.upstreamTimeoutMs, 300_000);
+  assert.equal(d.streamIdleTimeoutMs, 300_000, "idle defaults to the non-streamed bound");
+  assert.equal(loadProxyConfig({ models: config.models, upstreamTimeoutMs: 90_000 }).streamIdleTimeoutMs, 90_000);
+  assert.throws(() => loadProxyConfig({ models: config.models, streamIdleTimeoutMs: 0 }), /streamIdleTimeoutMs/);
 });

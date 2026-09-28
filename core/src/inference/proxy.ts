@@ -22,6 +22,16 @@
 //
 // The request body is forwarded as the agent wrote it (model name aside). Rebuilding it would fight
 // the self-improvement design, where the model's brief is the agent's own prompt.md (ADR 0018).
+//
+// Streaming (issue #166). A streamed response (SSE from the OpenAI-compatible and Anthropic paths,
+// NDJSON from Ollama) is relayed chunk by chunk as it arrives, under the upstream's status and
+// content type, and recorded as one record once it ends: the whole text, with its content type, so
+// a replay serves back the same stream. It used to be refused, and that capped every call at one
+// wait for a whole answer -- which Node's fetch cuts at 300 s of waiting for response headers, and a
+// non-streamed answer's headers arrive only when the answer is complete. A streamed call is bounded
+// by silence instead (`streamIdleTimeoutMs`, re-armed on every chunk), and in total by the epoch:
+// when the agent is stopped its connection closes, and a client that goes away aborts the upstream
+// request, since the participant pays for the tokens (rules §2.5).
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -48,9 +58,18 @@ export type ProxyConfig = {
   models: ModelEntry[];
   // Per agent, sliding minute. 0 / absent = unlimited.
   maxCallsPerMinute?: number;
-  // Upstream timeout per call.
+  // A call that is not streamed: the whole wait, request to last byte. Values above 300,000 do not
+  // lengthen it: Node's fetch gives up after 300 s without response headers, and a non-streamed
+  // answer's headers arrive only once the whole answer is ready.
   upstreamTimeoutMs?: number;
+  // A streamed call: the longest silence allowed -- before the first byte, and between chunks. There
+  // is no total; the epoch is one. Defaults to upstreamTimeoutMs, so a streamed call is never cut
+  // sooner than the same call not streamed would be.
+  streamIdleTimeoutMs?: number;
 };
+
+// The wait participants are told a call may take (issue #166): five minutes.
+export const DEFAULT_UPSTREAM_TIMEOUT_MS = 300_000;
 
 export type ProxyOptions = {
   config: ProxyConfig;
@@ -74,10 +93,29 @@ export type RecordedCall = {
   durationMs: number;
   status: number;
   request: unknown;
+  // For a streamed call, the whole stream as text (SSE events or NDJSON lines, as sent).
   response: unknown;
+  // The upstream's content type. Replay serves the response back under it.
+  contentType?: string;
+  // The response was relayed as a stream rather than read whole.
+  stream?: boolean;
   error?: string;
   replayed?: boolean;
 };
+
+// Client closed the request (nginx's code): the agent stopped waiting before an answer existed.
+const CLIENT_CLOSED = 499;
+
+const STREAM_CONTENT_TYPE = /^\s*(text\/event-stream|application\/x-ndjson)\b/i;
+function isStreamContentType(contentType: string | undefined): boolean {
+  return contentType !== undefined && STREAM_CONTENT_TYPE.test(contentType);
+}
+
+// Whether the agent asked for a stream, which decides how its wait is timed before a byte arrives.
+// Ollama's /api/chat streams unless told `stream: false`; the other two only when told `stream: true`.
+function asksForStream(provider: Provider, body: Record<string, unknown>): boolean {
+  return provider === "ollama" ? body.stream !== false : body.stream === true;
+}
 
 const PATHS: Record<string, Provider> = {
   "/api/chat": "ollama",
@@ -125,10 +163,17 @@ export function loadProxyConfig(doc: unknown): ProxyConfig {
     if (typeof m.upstream !== "string" || !/^https?:\/\//.test(m.upstream))
       throw new Error(`model ${m.name}: upstream must be an http(s) URL`);
   }
+  for (const key of ["upstreamTimeoutMs", "streamIdleTimeoutMs"] as const) {
+    const v = d[key];
+    if (v !== undefined && !(Number.isFinite(v) && v > 0))
+      throw new Error(`${key} must be a positive number of milliseconds`);
+  }
+  const upstreamTimeoutMs = d.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
   return {
     models: d.models,
     maxCallsPerMinute: d.maxCallsPerMinute ?? 0,
-    upstreamTimeoutMs: d.upstreamTimeoutMs ?? 120_000,
+    upstreamTimeoutMs,
+    streamIdleTimeoutMs: d.streamIdleTimeoutMs ?? upstreamTimeoutMs,
   };
 }
 
@@ -150,10 +195,32 @@ function readJsonBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-function send(res: http.ServerResponse, status: number, body: unknown): void {
+function send(
+  res: http.ServerResponse,
+  status: number,
+  body: unknown,
+  contentType = "application/json",
+): void {
   const text = typeof body === "string" ? body : JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json" });
+  res.writeHead(status, { "content-type": contentType });
   res.end(text);
+}
+
+// Serve a recorded stream back as the agent saw it: whole, or -- when it broke off (it went quiet,
+// or the agent itself left) -- cut after what had arrived, so the replayed call fails the same way.
+function replayStream(res: http.ServerResponse, rec: RecordedCall): void {
+  res.writeHead(rec.status, {
+    "content-type": rec.contentType ?? "text/event-stream",
+    "cache-control": "no-cache",
+  });
+  const text = typeof rec.response === "string" ? rec.response : "";
+  if (rec.error === undefined) {
+    res.end(text);
+    return;
+  }
+  res.flushHeaders();
+  if (text === "") res.destroy();
+  else res.write(text, () => res.destroy());
 }
 
 class Replay {
@@ -259,10 +326,6 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
           "previous response, tools, a container); send the whole conversation in the body instead",
         rejected,
       });
-    if (body.stream === true)
-      return send(res, 400, {
-        error: "streaming is not supported: every exchange is recorded whole (rules §2.4)",
-      });
 
     // ---- rate limit ----
     const limit = config.maxCallsPerMinute ?? 0;
@@ -292,7 +355,8 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
           error: `replay exhausted for ${who}: no recorded response for call #${n}`,
         });
       record({ ...rec, ts: new Date(started).toISOString(), replayed: true });
-      return send(res, rec.status, rec.response);
+      if (rec.stream) return replayStream(res, rec);
+      return send(res, rec.status, rec.response, rec.contentType);
     }
 
     // ---- forward ----
@@ -312,26 +376,91 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     } else if (key) headers.authorization = `Bearer ${key}`;
     const forwarded = { ...body, model: entry.upstreamModel ?? entry.name };
 
+    // ---- how long to wait ----
+    // One abort for everything that ends the call early: the timer below, and the agent going away.
+    // Whichever comes first names the reason, so the record says which it was.
+    const totalMs = config.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
+    const idleMs = config.streamIdleTimeoutMs ?? totalMs;
+    const upstreamAbort = new AbortController();
+    let stopReason: string | undefined;
+    const stop = (reason: string): void => {
+      if (stopReason !== undefined) return;
+      stopReason = reason;
+      upstreamAbort.abort(new Error(reason));
+    };
+    let timer: NodeJS.Timeout | undefined;
+    const arm = (ms: number, reason: string): void => {
+      clearTimeout(timer);
+      timer = setTimeout(() => stop(reason), ms);
+    };
+    if (asksForStream(provider, body)) arm(idleMs, `upstream sent nothing for ${idleMs} ms`);
+    else arm(totalMs, `upstream timed out after ${totalMs} ms`);
+    // The participant pays for the tokens (rules §2.5), so an agent that stops waiting -- its own
+    // timeout, or the epoch ending and the agent being stopped -- stops the generation as well.
+    res.on("close", () => {
+      if (!res.writableFinished) stop("client disconnected");
+    });
+
     let status = 502;
     let response: unknown = null;
+    let contentType: string | undefined;
+    let relayed = false;
     let error: string | undefined;
     try {
       const r = await fetchImpl(target, {
         method: "POST",
         headers,
         body: JSON.stringify(forwarded),
-        signal: AbortSignal.timeout(config.upstreamTimeoutMs ?? 120_000),
+        signal: upstreamAbort.signal,
       });
       status = r.status;
-      const text = await r.text();
-      try {
-        response = JSON.parse(text);
-      } catch {
-        response = text;
+      contentType = r.headers.get("content-type") ?? undefined;
+      if (r.body && isStreamContentType(contentType)) {
+        // Chunk by chunk as it arrives. Every chunk re-arms the idle timer: an answer that keeps
+        // coming is never cut however long it runs, and one that stalls is.
+        relayed = true;
+        res.writeHead(status, { "content-type": contentType as string, "cache-control": "no-cache" });
+        res.flushHeaders();
+        const decoder = new TextDecoder();
+        let text = "";
+        try {
+          const reader = r.body.getReader();
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            arm(idleMs, `upstream stream went quiet for ${idleMs} ms`);
+            text += decoder.decode(value, { stream: true });
+            if (!res.destroyed) res.write(value);
+          }
+          text += decoder.decode();
+        } finally {
+          // Kept when the stream breaks off too: what the agent had already received is part of
+          // what happened, and replay serves it back before breaking off the same way.
+          response = text;
+        }
+      } else {
+        const text = await r.text();
+        try {
+          response = JSON.parse(text);
+        } catch {
+          response = text;
+        }
       }
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-      response = { error: `upstream failed: ${error}` };
+      error = stopReason ?? (e instanceof Error ? e.message : String(e));
+      if (!relayed) {
+        response = { error: `upstream failed: ${error}` };
+        contentType = undefined;
+        if (stopReason === "client disconnected") status = CLIENT_CLOSED;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    if (relayed) {
+      // Headers are out, so a failure can no longer be a status: the stream is cut instead, which
+      // is how the agent's client learns it is incomplete.
+      if (error === undefined) res.end();
+      else res.destroy();
     }
     record({
       ts: new Date(started).toISOString(),
@@ -344,8 +473,11 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
       status,
       request: body,
       response,
+      ...(contentType ? { contentType } : {}),
+      ...(relayed ? { stream: true } : {}),
       ...(error ? { error } : {}),
     });
-    return send(res, status, response);
+    if (relayed) return;
+    return send(res, status, response, contentType);
   });
 }
