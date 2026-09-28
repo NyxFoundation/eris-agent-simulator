@@ -263,7 +263,8 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   pull を揃えるため、`alignWith` は**リスト上で直前の同種イベント**に揃う（以前は最初の 1 個に全部揃っていた）
 - **seed は公開 config に置かない**。価格 walk・flow・全イベント窓は seed の純関数なので、`seed: 1` が公開されて
   いると crash のブロックを誰でも計算できる。hosted period は `.env.practice`（gitignore）の `ERIS_PRACTICE_SEED`
-  を systemd が `--seed` に渡し、無ければ起動しない
+  を systemd が `--seed` に渡し、無ければ起動しない。**期間の scenario key も同じ**（ADR 0027）: `.env.practice` の
+  `ERIS_SCENARIO_KEY_FILE`（`npm run competition -- keygen` で作った鍵ファイルのパス）が無い・読めないと起動しない
 - **ロスターは登録リストであって起動リストではない**。`external: true` + `address`（参加者が鍵を持つ。**運営が
   作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env`
   は**黙殺せず拒否**する（黙って落とすと「運営が動かしている」ように読めるロスターになる）。
@@ -546,10 +547,9 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   `rampBlocks` 等の `[min, max]` / `flipProb`（crash・spike。解決済みは `type: spike, flippedFrom: crash`。victim のあるレジームでは使わない）/
   `recoverFrac`（crash・spike。戻らない分は run 終了まで残る = 「急変に逆張りして窓で手仕舞う」の構造的正解を消す。**練習期間では使わない**。残差が複利になる）/
   `venue: random`（whale）/ `repriceAnchorProb`（cexDrift）。公式 10 本に適用済み（calm・vuln は無変更。lending-incident / cdp-incident は暴落 1 本・下落固定で、形と回復だけ）。
-  **これらを 1 つでも使うスケジュールは seed とイベント列（FNV-1a）を fmix32 でハッシュする**（イベント列を混ぜないと crash#s と spike#s、depeg と depeg-persist、
-  lending-incident と cdp-incident が同じ draw を引き、同じブロックに開いて反転も連動していた）。`Rng` は LCG で初回出力が近い seed 間でほぼ動かず、
-  公開 seed 101〜505 の 5 本すべてで最初のイベントの magnitude がレンジ下位 1/4 だった。使わない config（`practice.yaml` 等）は
-  生の seed のままバイト互換（24 config × 300 seed で旧実装と一致を確認）。**公式レジームの実現値は全部変わった**ので、それ以前の matrix とは比べられない
+  **これらを 1 つでも使うスケジュールはイベント列（FNV-1a）も stream の salt に混ぜる**（イベント列を混ぜないと crash#s と spike#s、depeg と depeg-persist、
+  lending-incident と cdp-incident が同じ draw を引き、同じブロックに開いて反転も連動していた）。使わない config は seed だけの stream。
+  **公式レジームの実現値は全部変わった**ので、それ以前の matrix とは比べられない（ADR 0027 の鍵付きストリームで、もう一度全部変わった）
 - `stress.victimCount`(既定 0=無効) / `stress.victimHf0`(既定 1.10) / `stress.victimWethWei`(victim 1 体の supply)。**較正の連動**: 建てるには `HF0 ≳ LT/(0.97·LTV)`（実測 Arbitrum WETH の LT=0.84/LTV=0.80 で ≈1.08。これ未満は borrow が LTV 縁に張り付くため fail-fast）。割るには crash magnitude `m > (HF0−1)/HF0`（HF0=1.10 なら m>9.1% → 例の [0.12,0.16] で確実に割れる）。breach 不能な設定は `stress_calibration_warning` を emit。borrow がサイレント revert したら setup で fail-fast(debt 検証)
 - **victim を建てるには fresh state 必須**（soft-reset だと前 run の victim ポジが残留して HF が壊れる。未満は fail-fast）: fork は full re-fork（`ARB_RPC_URL` 設定 + `ERIS_SKIP_RESET` 不可）、ローカルデプロイは resetFork の snapshot/revert クリーン断面で満たす（ADR 0016。backtest で実証済み）。ローカルでは victim を建てる前に Aave オラクルを初期 fair price へ較正する（fork の「オラクル≈実勢≈fair0」が成立しないため。coordinator が自動実行）
 - stress run（events かつ `ERIS_RUN_BLOCKS>0`）は**時間制限を自動無効化**しブロック数で終了する（`ERIS_RUN_SECONDS` が先に切れて crash 窓へ到達しない事故を回避。override は `stress_run_time_limit_disabled` で記録）
@@ -863,7 +863,7 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
 
 実時間化（ADR 0005）の前提: **SEED(=regime) は市場条件のラベル**で価格パスは再現可能だが、tx タイミング/着順は非決定 → 同一 regime でも結果はぶれる。run 長は `ERIS_RUN_BLOCKS` 固定で揃える。run の比較が要るときは同一 config を複数回回してサンプルを貯め、`runs/<id>/summary.json` を集計する（旧 evaluate/gate は撤去済み）。
 
-**seed から Rng を作るのは `Rng.fromSeed(seed, salt)`**（`sdk/src/rng.ts`。fmix32(seed ^ salt)、消費者ごとに salt: 価格 `price:<symbol>` / flow / prewarm / agent runtime / LST / vuln）。`new Rng(seed)` は LCG なので近い seed が近い乱数列を引き、salt を XOR するだけでも近いまま。修正前の実測: seed 1〜200 の全部で WETH の最初のショックが −21〜−15bps（WBTC は +29〜+37bps）、vuln の最初の poolCount [4, 6] が 4、LST の最初の APY が 513〜592bps。しかも `flow.seed` の既定が run seed なので **flow bot は価格パスと同じ系列を引いていた**（`scripts/measureSeedCorrelation.ts`）。`new Rng(x)` は既にハッシュ済みの key（FNV の actor key 等）専用。**2026-09-27 以前の run とは同じ seed でも realization が違う**。例外はストレススケジュールで、ばらつきキー（`count` 等）を使わないものは生の seed のまま（練習期間の窓を動かさないため）
+**seed から Rng を作るのは `Rng.fromSeed(seed, salt)`**（`sdk/src/rng.ts`。消費者ごとに salt: 価格 `price:<symbol>` / flow / prewarm / LST / vuln / stress）。**ADR 0027 でこれは鍵付きストリーム**（HMAC-SHA256(K, seed ‖ salt ‖ counter)）になり、**seed はシナリオの名前、K が realization を決める**。K は公開セットでは公開鍵 `SHA-256("eris-public-v1")`（`PUBLIC_SCENARIO_KEY_HEX`）、ライブ週と練習期間は運営の秘密鍵（`core/src/scenarioKey.ts`。鍵ファイル `{scenarioKey: <64 hex>}`、`npm run competition -- keygen <out>` で生成、コミットメントは `competition commit` と同じ値）。渡し方は `npm run backtest -- --scenario-key <file|public>` か `ERIS_SCENARIO_KEY_FILE`、無ければ公開鍵。**順序付きプラン（ライブ週の形）は鍵の指定が無いと起動しない**。coordinator は flow bot にパスとコミットメントを渡し（不一致なら flow bot は exit）、agent には渡さない。`run_started_realtime` と `matrix.json` に `scenarioKey: {source, commitment}` が載り、`--resume` は鍵が違う・記録の無い matrix を拒否する。`new Rng(x)`（LCG）はシナリオと無関係な用途（agent の `ctx.rng`・actor のサイズ）専用。#150 以前の `new Rng(seed)` は近い seed が近い乱数列を引いていた（`scripts/measureSeedCorrelation.ts`）。**2026-09-28 以前の run とは同じ seed でも realization が違う**
 
 ## アーキテクチャ（環境とエージェント実行の分離。ADR 0006 / ADR 0015）
 

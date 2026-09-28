@@ -25,6 +25,9 @@ export class RealtimeFlowProcess {
     args: string[],
     flowSeed: number,
     runDir: string,
+    // ADR 0027: the scenario key's file and commitment (core/src/scenarioKey.ts). The flow bot draws
+    // its orders from keyed streams, so it has to draw under the coordinator's key.
+    scenarioKeyEnv: Record<string, string> = {},
   ) {
     this.child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -34,6 +37,7 @@ export class RealtimeFlowProcess {
         NODE_ENV: process.env.NODE_ENV ?? "development",
         ERIS_FLOW_SEED: String(flowSeed),
         ERIS_RUN_DIR: runDir,
+        ...scenarioKeyEnv,
       },
     });
 

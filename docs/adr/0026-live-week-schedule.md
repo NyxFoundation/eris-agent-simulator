@@ -80,7 +80,8 @@ sdk の既定（`sdk/src/config.ts`: economicGas が false なら 100 ETH）が�
 ```bash
 npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 60 \
   --starts-at 2026-11-01T00:00:00+09:00 --ends-at 2026-11-08T00:00:00+09:00 --out plan.yaml
-npm run backtest -- --scenarios plan.yaml --agents <field.yaml> --follow-schedule
+npm run backtest -- --scenarios plan.yaml --agents <field.yaml> --follow-schedule \
+  --scenario-key <secret-dir>/scenario-key.yaml   # ADR 0027。順序付きプランは鍵の指定が無いと起動しない
 ```
 
 - `--ends-at` は窓を k 等分し、各エポックを枠の先頭に置く（`spreadOver`）。168 時間 ÷ 60 = **168 分おき**、最後の

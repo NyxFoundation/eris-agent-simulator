@@ -1,3 +1,5 @@
+import { createHash, createHmac } from "node:crypto";
+
 // murmur3's 32-bit finalizer: every input bit reaches every output bit, so inputs 1 apart come out
 // unrelated. A bijection on 32 bits, so it never merges two seeds into one stream.
 export function mix32(x: number): number {
@@ -35,9 +37,13 @@ export class Rng {
   // draw of the seed Δ away (step-by-step correlation 0.998, 0.505, -0.295, 0.786, ... for Δ = 1).
   // XORing a constant salt in does not help: it keeps nearby seeds nearby. The hash does.
   // scripts/measureSeedCorrelation.ts has the numbers per consumer.
+  //
+  // Since ADR 0027 the stream is keyed: draws come from HMAC-SHA256 under the scenario key (see
+  // `setScenarioKey`), with (seed, salt) as the stream id. The seed names the scenario; the key
+  // decides its realization.
   static fromSeed(seed: number, salt: number | string = 0): Rng {
     const s = typeof salt === "string" ? fnv1a32(salt) : salt >>> 0;
-    return new Rng(mix32((seed ^ s) >>> 0));
+    return new KeyedRng(scenarioKey, seed >>> 0, s);
   }
 
   next(): number {
@@ -82,6 +88,74 @@ export class Rng {
       p *= this.next();
     } while (p > l);
     return k - 1;
+  }
+}
+
+// ---- The scenario key (ADR 0027) ----
+//
+// Every stream a scenario is drawn from (`Rng.fromSeed`) is keyed. The public set uses the public
+// key below, so anyone can reproduce it; the live week uses an operator secret, installed by the
+// environment's processes before they draw anything (core/src/scenarioKey.ts). A process that never
+// installs one -- an agent, a test -- draws under the public key.
+
+// SHA-256("eris-public-v1").
+export const PUBLIC_SCENARIO_KEY_HEX = createHash("sha256")
+  .update("eris-public-v1")
+  .digest("hex");
+
+const KEY_HEX = /^[0-9a-f]{64}$/;
+
+let scenarioKey: Buffer = Buffer.from(PUBLIC_SCENARIO_KEY_HEX, "hex");
+
+// Install the key for every stream constructed after this call. 32 bytes as lowercase hex.
+export function setScenarioKey(hex: string): void {
+  if (!KEY_HEX.test(hex))
+    throw new Error("scenario key must be 64 lowercase hex characters (32 bytes)");
+  scenarioKey = Buffer.from(hex, "hex");
+}
+
+// Back to the public key (tests).
+export function resetScenarioKey(): void {
+  scenarioKey = Buffer.from(PUBLIC_SCENARIO_KEY_HEX, "hex");
+}
+
+const STREAM_DOMAIN = Buffer.from("eris-rng/v1", "utf8");
+const TWO_POW_21 = 0x20_00_00;
+const TWO_POW_53 = 2 ** 53;
+
+// HMAC-SHA256 in counter mode: block i = HMAC(K, domain || seed || salt || i), read 8 bytes at a
+// time as a 53-bit fraction in [0, 1). The API is Rng's; only the source of `next()` differs.
+class KeyedRng extends Rng {
+  private readonly key: Buffer;
+  private readonly id: Buffer;
+  private block: Buffer = Buffer.alloc(0);
+  private offset = 0;
+  private counter = 0n;
+
+  constructor(key: Buffer, seed: number, salt: number) {
+    super(0);
+    this.key = key;
+    this.id = Buffer.alloc(STREAM_DOMAIN.length + 8);
+    STREAM_DOMAIN.copy(this.id, 0);
+    this.id.writeUInt32BE(seed >>> 0, STREAM_DOMAIN.length);
+    this.id.writeUInt32BE(salt >>> 0, STREAM_DOMAIN.length + 4);
+  }
+
+  override next(): number {
+    if (this.offset + 8 > this.block.length) {
+      const counter = Buffer.alloc(8);
+      counter.writeBigUInt64BE(this.counter);
+      this.counter += 1n;
+      this.block = createHmac("sha256", this.key)
+        .update(this.id)
+        .update(counter)
+        .digest();
+      this.offset = 0;
+    }
+    const hi = this.block.readUInt32BE(this.offset);
+    const lo = this.block.readUInt32BE(this.offset + 4) >>> 11;
+    this.offset += 8;
+    return (hi * TWO_POW_21 + lo) / TWO_POW_53;
   }
 }
 

@@ -6,7 +6,15 @@
 // deliberately keeps its legacy path.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fnv1a32, mix32, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
+import {
+  fnv1a32,
+  mix32,
+  priceRngForAsset,
+  PUBLIC_SCENARIO_KEY_HEX,
+  resetScenarioKey,
+  Rng,
+  setScenarioKey,
+} from "@eris/sdk/rng.js";
 import { flowRng, trendBit, trendRng } from "../core/src/flow/logic.js";
 import { ApySchedule, LST_SEED_SALT } from "../core/src/realtime/lst.js";
 import { VulnSchedule, VULN_SEED_SALT, type VulnEventConfig } from "../core/src/realtime/vulnEvents.js";
@@ -47,11 +55,54 @@ test("mix32 is murmur3's fmix32 and fnv1a32 is FNV-1a (known vectors)", () => {
   assert.equal(fnv1a32("foobar"), 0xbf9cf968);
 });
 
-test("Rng.fromSeed is mix32(seed ^ salt), with a string salt hashed by FNV-1a", () => {
-  // Pinned: the practice period and every official scenario's realization is a function of this.
-  assert.equal(Rng.fromSeed(7, 0x1234).next(), new Rng(mix32(7 ^ 0x1234)).next());
-  assert.equal(Rng.fromSeed(7, "x").next(), new Rng(mix32(7 ^ fnv1a32("x"))).next());
-  assert.equal(priceRngForAsset(101, "WETH").next(), 0.34036932955496013);
+// ADR 0027: every stream is drawn under the scenario key. The public key is pinned so the public
+// set reproduces from the repo; any other key realizes every stream differently.
+test("Rng.fromSeed draws under the scenario key: pinned for the public key, moved by any other", () => {
+  assert.equal(
+    PUBLIC_SCENARIO_KEY_HEX,
+    "ab26c748cad6482660b875ff722513e0954f626b609a5f224540f28328abb72f", // sha256("eris-public-v1")
+  );
+  assert.equal(priceRngForAsset(101, "WETH").next(), 0.4385114416500189);
+  // Same key, seed and salt: the same stream. The seed and the salt each name another.
+  const a = Rng.fromSeed(7, "x");
+  const b = Rng.fromSeed(7, "x");
+  for (let i = 0; i < 10; i++) assert.equal(a.next(), b.next());
+  assert.notEqual(Rng.fromSeed(7, "x").next(), Rng.fromSeed(7, "y").next());
+  assert.notEqual(Rng.fromSeed(7, "x").next(), Rng.fromSeed(8, "x").next());
+  // A numeric salt and the string that hashes to it are one stream (fnv1a32 names string salts).
+  assert.equal(Rng.fromSeed(7, "x").next(), Rng.fromSeed(7, fnv1a32("x")).next());
+
+  const underPublic = NEAR.map((s) => priceRngForAsset(s, "WETH").next());
+  const before = Rng.fromSeed(1, "held");
+  try {
+    setScenarioKey("11".repeat(32));
+    const underOther = NEAR.map((s) => priceRngForAsset(s, "WETH").next());
+    underOther.forEach((u, i) => assert.notEqual(u, underPublic[i], `seed ${NEAR[i]}`));
+    // A stream keeps the key it was constructed under.
+    const publicAgain = (() => {
+      resetScenarioKey();
+      const r = Rng.fromSeed(1, "held");
+      setScenarioKey("11".repeat(32));
+      return r;
+    })();
+    assert.equal(before.next(), publicAgain.next());
+  } finally {
+    resetScenarioKey();
+  }
+  assert.equal(priceRngForAsset(101, "WETH").next(), 0.4385114416500189);
+  assert.throws(() => setScenarioKey("AB".repeat(32)), /64 lowercase hex/);
+  assert.throws(() => setScenarioKey("ab".repeat(31)), /64 lowercase hex/);
+});
+
+test("a keyed stream's draws fill [0, 1) evenly", () => {
+  const r = Rng.fromSeed(101, "uniformity");
+  const deciles = new Array(10).fill(0);
+  for (let i = 0; i < 20_000; i++) {
+    const u = r.next();
+    assert.ok(u >= 0 && u < 1, `draw ${i}: ${u}`);
+    deciles[Math.floor(u * 10)]++;
+  }
+  for (const n of deciles) assert.ok(n > 1_800 && n < 2_200, `deciles ${deciles.join(" ")}`);
 });
 
 test("the price path's first shock is not decided by how small the seed is", () => {

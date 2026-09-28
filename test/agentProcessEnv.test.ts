@@ -158,3 +158,12 @@ test("seeds in the operator's environment are not handed to an agent", async () 
   assert.equal(env.ERIS_SOMETHING_SEED, undefined);
   assert.equal(env.ERIS_LAUNCHER_SEED_BPS, "3000");
 });
+
+test("the scenario key's file and commitment are not handed to an agent (ADR 0027)", async () => {
+  const env = await envOfChild({
+    ERIS_SCENARIO_KEY_FILE: "/secrets/practice-scenario-key.yaml",
+    ERIS_SCENARIO_KEY_COMMITMENT: "sha256:00",
+  });
+  assert.equal(env.ERIS_SCENARIO_KEY_FILE, undefined);
+  assert.equal(env.ERIS_SCENARIO_KEY_COMMITMENT, undefined);
+});

@@ -33,6 +33,11 @@ on:
       - "core/src/realtime/agentProcess.ts"
       - "sdk/src/valuation.ts"
       - "sdk/src/protocols/**"
+      # The scenario key (ADR 0027): every stream the scenario draws from, and the flow bot that has
+      # to draw under the coordinator's key or exit.
+      - "sdk/src/rng.ts"
+      - "core/src/scenarioKey.ts"
+      - "core/src/flow/market-maker.ts"
       - ".github/workflows/deploy-backtest.yml"
 
 concurrency:
@@ -154,6 +159,9 @@ jobs:
             if (failed.length) throw new Error(`scenarios produced no result: ${JSON.stringify(failed)}`);
             if (m.scenarios.length !== 2) throw new Error(`expected 2 scenarios, got ${m.scenarios.length}`);
             if (!s.agents?.length) throw new Error("standings ranked nobody");
+            // ADR 0027: the matrix says which key realized it (the public one here).
+            if (m.scenarioKey?.source !== "public" || !/^sha256:[0-9a-f]{64}$/.test(m.scenarioKey.commitment ?? ""))
+              throw new Error(`matrix.json does not record its scenario key: ${JSON.stringify(m.scenarioKey)}`);
             // Both metrics must survive into the matrix, since the scoring rule is expected to
             // change and matrix.json is what makes a finished run re-scorable (ADR 0017 §4).
             for (const sc of m.scenarios)
@@ -224,7 +232,9 @@ jobs:
             - { s: 1, regime: calm, seed: 101, startsAt: "$start" }
           YAML
           before=$(ls -d runs/matrix-* 2>/dev/null | sort | tail -1 || true)
-          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule \
+          # A plan is the live-week form and refuses to start without a key (ADR 0027); CI runs it
+          # under the public key on purpose.
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule --scenario-key public \
             --blocks 12 --seconds 90 --agent-sandbox process 2>&1 | tee "$RUNNER_TEMP/follow.log"
           grep -q "waiting .* for its planned start $start" "$RUNNER_TEMP/follow.log"
           dir=$(ls -d runs/matrix-* | sort | tail -1)
@@ -242,7 +252,7 @@ jobs:
             if (began < Date.parse(process.env.START)) throw new Error(`the epoch began at ${id}, before its planned ${process.env.START}`);
             console.log(`followed: planned ${process.env.START}, began ${new Date(began).toISOString()}`);
           '
-          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule --resume "$dir" \
+          npm run backtest -- --scenarios "$RUNNER_TEMP/ci-plan.yaml" --follow-schedule --resume "$dir" --scenario-key public \
             --blocks 12 --seconds 90 --agent-sandbox process 2>&1 | tee "$RUNNER_TEMP/resume.log"
           grep -q "skipping s=1" "$RUNNER_TEMP/resume.log"
           if grep -q "waiting" "$RUNNER_TEMP/resume.log"; then echo "a resume waited for a complete epoch"; exit 1; fi

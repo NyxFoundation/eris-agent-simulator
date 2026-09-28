@@ -42,6 +42,12 @@ import {
   type ScenarioResult,
 } from "../backtest/standings.js";
 import {
+  installScenarioKey,
+  resolveScenarioKey,
+  SCENARIO_KEY_FILE_ENV,
+  scenarioKeyRecord,
+} from "../scenarioKey.js";
+import {
   foldRepeats,
   readRunSummary,
   scenarioFlags,
@@ -98,6 +104,11 @@ const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --s
                          agent-state-root differ. With --agent-state-root, each re-run starts from the
                          state the latest complete ordinal before it ended with (checkpoints under
                          <root>/.snapshots/end-s<N>), not from whatever ran last
+  --scenario-key <file|public>
+                         the key every scenario is realized under (ADR 0027): a key file
+                         (npm run competition -- keygen) or "public". Default: ERIS_SCENARIO_KEY_FILE, else the
+                         public key. Required for an ordered plan (the live-week form), so the live week cannot
+                         silently run under the public key
   --follow-schedule      wait for each epoch's planned start (the plan's startsAt, from npm run competition --
                          plan --starts-at … --every-minutes|--ends-at) instead of running the epochs back to
                          back, so one unattended process runs the live week (ADR 0026). An epoch whose start
@@ -169,7 +180,7 @@ type Scenario = {
 function loadScenarioSet(
   root: string,
   path: string,
-): { scenarios: Scenario[]; k: number } {
+): { scenarios: Scenario[]; k: number; plan: boolean } {
   const abs = resolve(root, path);
   if (!existsSync(abs))
     throw new Error(`scenario set not found: ${abs} (--scenarios)`);
@@ -248,7 +259,7 @@ function loadScenarioSet(
     throw new Error(
       `${abs}: "k" must be an integer >= the largest ordinal (${maxS}); got ${String(doc?.k)}`,
     );
-  return { scenarios: out, k: k as number };
+  return { scenarios: out, k: k as number, plan: Array.isArray(doc?.epochs) };
 }
 
 async function main(): Promise<void> {
@@ -325,8 +336,9 @@ async function main(): Promise<void> {
     );
   let scenarios: Scenario[];
   let k = 1;
+  let plan = false;
   if (matrixMode) {
-    ({ scenarios, k } = loadScenarioSet(ROOT, flags.scenarios));
+    ({ scenarios, k, plan } = loadScenarioSet(ROOT, flags.scenarios));
     // Before anvil starts, like every other check on the set: a plan the runner cannot follow
     // should fail now, not after the first epoch.
     if (followSchedule) assertFollowable(scenarios);
@@ -351,6 +363,26 @@ async function main(): Promise<void> {
       },
     ];
   }
+
+  // ---- The scenario key (ADR 0027) ----
+  // Installed here, before any scenario draws; the embedded coordinator finds it installed. An
+  // ordered plan is the live-week form, and the live week runs under the operator's secret key: a
+  // plan with no key named anywhere is refused rather than realized under the public one.
+  if (
+    plan &&
+    flags["scenario-key"] === undefined &&
+    !process.env[SCENARIO_KEY_FILE_ENV]
+  )
+    throw new Error(
+      "an ordered plan (epochs:) is the live-week form: name its scenario key with " +
+        "--scenario-key <file> (npm run competition -- keygen), or --scenario-key public to run " +
+        "it under the public key on purpose (ADR 0027)",
+    );
+  const scenarioKey = resolveScenarioKey(flags["scenario-key"]);
+  installScenarioKey(scenarioKey);
+  console.error(
+    `[backtest] scenario key: ${scenarioKey.source} ${scenarioKey.commitment}`,
+  );
 
   // ---- Validate the state manifest + sync constants (done before importing the coordinator) ----
   const { manifest, statePath } = readStateManifest(stateDirAbs);
@@ -630,6 +662,7 @@ async function main(): Promise<void> {
           repeat,
           ...(agentStateRoot !== undefined ? { agentStateRoot } : {}),
           rosterFingerprint: fieldFingerprint,
+          scenarioKeyCommitment: scenarioKey.commitment,
         },
         (p) => resolve(ROOT, p),
       );
@@ -706,6 +739,9 @@ async function main(): Promise<void> {
             repeat,
             // The field, so a --resume on a different roster is refused (issue #102).
             rosterFingerprint: fieldFingerprint,
+            // ADR 0027: the key the scenarios were realized under (public, or the commitment to the
+            // operator's secret). Reproducing the matrix needs it; a --resume under another is refused.
+            scenarioKey: scenarioKeyRecord(scenarioKey),
             // Complete only once every scenario has run; until then this is a partial matrix.
             scenariosPlanned: scenarios.length,
             // The plan's timetable, for the epochs not run yet: the dashboard's "next epoch starts

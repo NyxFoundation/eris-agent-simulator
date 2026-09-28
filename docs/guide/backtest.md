@@ -158,7 +158,8 @@ instead, so one unattended process runs the live week (ADR 0026):
 ```bash
 npm run competition -- plan --hidden hidden.yaml --lottery lottery.yaml --k 60 \
   --starts-at 2026-11-01T00:00:00+09:00 --ends-at 2026-11-08T00:00:00+09:00 --out plan.yaml   # one every 168 min
-npm run backtest -- --scenarios plan.yaml --agents field.yaml --follow-schedule
+npm run backtest -- --scenarios plan.yaml --agents field.yaml --follow-schedule \
+  --scenario-key <secret-dir>/scenario-key.yaml   # ADR 0027: a plan refuses to start without a key
 ```
 
 - Before each epoch it runs, the runner prints what it is waiting for (`s=5 crash#…: waiting 2h 31m
@@ -243,7 +244,8 @@ agents:
 | `--scenarios <path>` | Replay a whole set (regimes x seeds) and write `matrix.json` + `standings.json`. Mutually exclusive with `--regime` |
 | `--scenarios <path>` (plan form) | `{k, epochs: [{s, regime, seed}]}` from `npm run competition -- plan`; replayed in order with those ordinals |
 | `--agents <roster>` | Swap the regime's default agents with a roster file (YAML/JSON) |
-| `--resume <matrix-dir>` | Continue a stored `runs/matrix-<id>/` instead of opening a new one: complete scenarios are skipped, missing and failed ones run, the artifacts are rewritten in place. Refused when `scenarioSet` / `k` / `resetUnit` / `repeat` / `--agent-state-root` differ. `--scenarios` only |
+| `--resume <matrix-dir>` | Continue a stored `runs/matrix-<id>/` instead of opening a new one: complete scenarios are skipped, missing and failed ones run, the artifacts are rewritten in place. Refused when `scenarioSet` / `k` / `resetUnit` / `repeat` / `--agent-state-root` / the scenario key differ. `--scenarios` only |
+| `--scenario-key <file\|public>` | The key every scenario is realized under (ADR 0027): a key file from `npm run competition -- keygen`, or `public`. Default `ERIS_SCENARIO_KEY_FILE`, else the public key `SHA-256("eris-public-v1")`. **Required for a plan (`epochs:`)**, the live-week form. `matrix.json` records `scenarioKey: {source, commitment}` |
 | `--follow-schedule` | Wait for each epoch's planned `startsAt` before running it instead of running the epochs back to back (ADR 0026). A start already past runs at once and reports how late. Composes with `--resume`. Refused when the plan has no timetable, an epoch lacks one, or the starts are out of list order. `--scenarios` only |
 | `--agent-state-root <dir>` | Carry each agent's persistent state across the scenarios, in list order (issue #77). Off by default. Checkpoints the root after every completed scenario so a resume can restore the right starting point |
 | `--repeat <N>` | Repeat each scenario N times (default 1). A calibration diagnostic; standings take the median |

@@ -25,6 +25,13 @@ eris-dashboard-sync.timer     rebuilds the hosted dashboard           (infra/das
 echo "ERIS_PRACTICE_SEED=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')" > ~/workspace/eris-agent-simulator/.env.practice
 chmod 600 ~/workspace/eris-agent-simulator/.env.practice
 
+# The period's scenario key (ADR 0027): the seed names the world, the key realizes it. Generate it
+# on this box, keep it off the repo, back it up, and publish only the commitment keygen prints. The
+# unit refuses to start without it.
+mkdir -p ~/.eris-secrets && chmod 700 ~/.eris-secrets
+(cd ~/workspace/eris-agent-simulator && npm run -s competition -- keygen ~/.eris-secrets/practice-scenario-key.yaml)
+echo "ERIS_SCENARIO_KEY_FILE=$HOME/.eris-secrets/practice-scenario-key.yaml" >> ~/workspace/eris-agent-simulator/.env.practice
+
 mkdir -p ~/.config/systemd/user
 ln -sf ~/workspace/eris-agent-simulator/infra/devnet/ascon-devnet.service ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -62,6 +69,7 @@ production start, and the daily and weekly routine. `block-gaps.mjs` (cadence an
 | `TREASURY_PRIVATE_KEY` | `.env.local` | only on a real chain; on anvil the endowment is a cheatcode |
 | the period | `config/practice.yaml` | the roster, the episodes, the evaluation-interval length (`intervalSeconds`) |
 | the seed | `.env.practice` (`ERIS_PRACTICE_SEED=`) | **gitignored; the unit will not start without it.** Publish it after the period (rules §7.2) |
+| the scenario key | `.env.practice` (`ERIS_SCENARIO_KEY_FILE=`, a file from `competition -- keygen`) | **outside the repo; the unit will not start without it.** The run records only its commitment (ADR 0027) |
 | venue state | `backtest/state/venues-state.json` | **gitignored, and the chain container mounts it** |
 
 `.env.local` is read in-process (`core/src/cli/bootstrapEnv.ts`) relative to the working directory,
@@ -262,7 +270,7 @@ hung process and a stray flow bot per scenario is a hundred of each by the end.
 Until the root cause is fixed, bound it and sweep afterwards:
 
 ```sh
-timeout 3h npm run backtest -- --scenarios plan.yaml --port 8547
+timeout 3h npm run backtest -- --scenarios plan.yaml --scenario-key <key.yaml|public> --port 8547
 pkill -f 'core/src/flow/market-maker'      # the children that keep it open
 ```
 
@@ -282,7 +290,9 @@ block 1222 and scenario 2 started at 1163. Nothing but a revert does that.
 ```sh
 export PATH="$HOME/.foundry/bin:$PATH"     # anvil is not on a non-interactive PATH
 export ERIS_AGENT_BINDMOUNT=1              # see below — without it most of the field cannot start
-timeout 5h npm run backtest -- --scenarios <plan.yaml> --port 8547
+# A plan (epochs:) refuses to start without its scenario key (ADR 0027): the operator's key file for
+# the live week, `public` for a rehearsal on the public key.
+timeout 5h npm run backtest -- --scenarios <plan.yaml> --scenario-key <key.yaml|public> --port 8547
 ```
 
 ### Four ways this run produces a green result that means nothing
