@@ -71,7 +71,7 @@ import {
   TradeLedger,
   marketMoveUsdc,
 } from "./evidence.js";
-import { callLlm } from "./llm.js";
+import { callLlmWithUsage } from "./llm.js";
 import {
   buildRevisionContext,
   buildRevisionSystem,
@@ -80,6 +80,7 @@ import {
   improvePolicyState,
   loadImproveAgent,
   parseRevision,
+  revisionFailedReason,
   type RevisionOutcome,
   type StrategyVersion,
 } from "./improve.js";
@@ -944,9 +945,24 @@ async function main(): Promise<void> {
     };
 
     let revising = false;
+    // The block the call in flight was made on, for the line below.
+    let revisingSince = 0;
     const maybeRevise = async (block: number): Promise<void> => {
-      if (revising) return;
+      if (revising) {
+        // Said, because it is otherwise invisible: an opportunity that falls while the previous call
+        // is still running is dropped, and the cadence moves on. A call may take five minutes
+        // (llm.ts), longer than 60 blocks at 2 s. Not a `revision <kind>` reason: nothing was decided.
+        agentLog({
+          round: block,
+          reason:
+            `llm call from block ${revisingSince} still running: the revision due at block ` +
+            `${block} is skipped`,
+          state: { model },
+        });
+        return;
+      }
       revising = true;
+      revisingSince = block;
       try {
         // Nothing is judged here. Whether a revision helped, and whether to undo it, is the model's
         // call -- an automatic revert needs a threshold and there is no defensible one (ADR 0018 §5).
@@ -993,11 +1009,14 @@ async function main(): Promise<void> {
         });
         let raw: string;
         try {
-          raw = await callLlm({
+          const reply = await callLlmWithUsage({
             model,
             system,
             messages: [{ role: "user", content: context }],
+            maxOutputTokens: improveAgent.maxOutputTokens,
+            contextTokens: improveAgent.contextTokens,
           });
+          raw = reply.text;
           llmLog?.({
             kind: "revision_call",
             block,
@@ -1005,7 +1024,13 @@ async function main(): Promise<void> {
             system,
             context,
             raw,
+            ...(reply.usage ? { usage: reply.usage } : {}),
           });
+          // In the agent log, not only the opt-in call log: a revision the model wrote from half a
+          // context looks like any other revision, and the fix (contextTokens) is the participant's.
+          // Not a `revision <kind>` reason: those are outcomes, and this call may still have one.
+          for (const warning of reply.warnings)
+            agentLog({ round: block, reason: `llm ${warning}`, state: { model } });
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
           llmLog?.({
@@ -1126,10 +1151,7 @@ async function main(): Promise<void> {
         );
       } catch (error) {
         record(
-          {
-            kind: "rejected",
-            reason: `revision failed: ${error instanceof Error ? error.message : String(error)}`,
-          },
+          { kind: "rejected", reason: revisionFailedReason(error) },
           block,
         );
       } finally {

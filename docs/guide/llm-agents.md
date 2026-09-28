@@ -23,6 +23,8 @@ name: my-arb                      # required
 description: cross-venue arb that widens its margin under adverse selection   # required
 reviseEveryBlocks: 60             # blocks between revision opportunities (optional; default 60)
 model: gpt-oss:120b               # optional ("claude..." = Anthropic API, "codex[:m]" / "claude-cli[:m]" = subscription CLIs)
+maxOutputTokens: 16000            # optional: the reply's cap (see "Limits on a revision call")
+contextTokens: 32768              # optional: Ollama's context window, num_ctx
 ---
 # When to change the strategy, on what evidence, and what to change
 
@@ -272,9 +274,9 @@ The provider is selected by the frontmatter `model` name:
 | `codex` / `codex:<model>` | Codex CLI (spawns `codex exec` in a read-only sandbox) | ChatGPT subscription (`codex login`; **no API key**) |
 | `claude-cli` / `claude-cli:<model>` | Claude Code CLI (spawns `claude -p` with all built-in tools disallowed) | Claude subscription (Claude Code OAuth login; **no API key**) |
 
-The per-call timeout is `ERIS_LLM_CALL_TIMEOUT_MS` (default 60000; the CLI providers default to
-120000 because each call pays process startup). Put the secret API keys in `.env.local`
-([Configuration](configuration.md)).
+The per-call timeout is `ERIS_LLM_CALL_TIMEOUT_MS` (default 300000 — five minutes, for every
+provider; it was 60000, and 120000 for the CLIs, while a call returned one action). Put the secret
+API keys in `.env.local` ([Configuration](configuration.md)).
 
 **In the competition there is no key in the agent at all.** The coordinator sets
 `ERIS_INFERENCE_BASE_URL` (the operator's inference proxy, rules §2.3 / §2.5) and a per-agent
@@ -296,6 +298,66 @@ open, so you do not pay for tokens nobody will read.
 it only means fewer revision opportunities, and the strategy trades at full speed throughout. A
 backend failure is recorded and the strategy continues unchanged, so a run without an API key still
 completes — you just get no revisions.
+
+## Limits on a revision call
+
+**The operator caps neither input nor output.** The inference proxy forwards your request body as
+written, so what bounds a revision call is the model, the service, and what your runtime sends. A
+revision's reply is the **whole strategy source**, and the context is ~10k tokens today, so the
+defaults matter. The reference runtime sends:
+
+| family | reply | context |
+|---|---|---|
+| Ollama | `num_predict` only if you set one (otherwise Ollama generates until the model stops) | `num_ctx` **32,768** unless you set one. Explicit because the service's own default is unpublished and can change — and **Ollama drops what does not fit without an error**. The window holds the reply as well as the prompt |
+| OpenAI-compatible | `max_completion_tokens` only if you set one (otherwise the model's maximum) | the model's |
+| Anthropic | `max_tokens` **16,000** unless you set one (the API requires a value) | the model's |
+
+Set them in the frontmatter, or with the roster's env (the frontmatter wins):
+
+```yaml
+maxOutputTokens: 24000     # the reply's cap, for every HTTP family   (env ERIS_LLM_MAX_OUTPUT_TOKENS)
+contextTokens: 65536       # Ollama's num_ctx                          (env ERIS_LLM_CONTEXT_TOKENS)
+```
+
+A value above what the model allows is refused by the service, and that is logged as a failed
+revision. The subscription CLIs (`codex`, `claude-cli`) choose their own and ignore both. On the
+OpenAI-compatible family the cap goes out as `max_completion_tokens`, OpenAI's current name (its
+o-series refuses the old `max_tokens`); a compatible server that only knows `max_tokens` ignores it
+without an error, so the reply is then bounded by that server's own default.
+
+> **Why 16,000 and not 2,048.** The Anthropic cap was 2,048 until issue #168 — a value from when a
+> call returned one trading action. A strategy longer than that was cut mid-code, failed to parse,
+> and was logged like any other rejected revision. 16,000 fits a strategy with room to spare and is
+> inside what the Anthropic SDK accepts without streaming (it estimates 10 minutes at ~21,333).
+
+### Checking a call was not cut
+
+- **Output.** A reply that stopped at its cap — Anthropic `stop_reason: "max_tokens"`, OpenAI
+  `finish_reason: "length"`, Ollama `done_reason: "length"` — is not used. The agent log says so
+  instead of reporting a parse or compile error:
+  `revision failed: output truncated at 16000 tokens (anthropic stop_reason "max_tokens"): raise maxOutputTokens in prompt.md, or ask for a shorter reply`.
+- **Input.** Only Ollama truncates silently. When the prompt is larger than `num_ctx` (estimated at
+  four characters a token, which undercounts code, so the warning comes late rather than falsely),
+  the agent log gets a line beginning `llm input truncated:` and the reply is still used. With
+  `ERIS_IMPROVE_LOG_CALLS: "1"`, every call in `<agentId>.llm.jsonl` carries `usage`; for Ollama
+  `inputTokens` is its `prompt_eval_count`, and a count far below the size of what you sent is worth
+  a look (a reused prompt cache lowers it too).
+
+### How long a call may wait
+
+**Five minutes.** That is `ERIS_LLM_CALL_TIMEOUT_MS`'s default, and the most the operator's proxy
+waits for a call that is not streamed — the reference runtime does not stream. A 16,000-token reply
+fits at ordinary speeds; a much higher cap may not finish inside it, and a call cut by the timeout
+has still been paid for (rules §2.5). A client of your own can stream through the proxy instead,
+which is bounded by silence rather than by length (`infra/inference-proxy/README.md`).
+
+Five minutes is longer than the default cadence (60 blocks at 2 s is two minutes). A revision
+opportunity that falls while the previous call is still running is skipped — the cadence moves on
+rather than queueing a second call — and the agent log says so:
+`llm call from block N still running: the revision due at block M is skipped`.
+
+**These are the reference runtime's, and it ships inside your submission zip:** a submission gets
+them when it is re-bundled with this SDK.
 
 ## Running on a Codex / Claude Code subscription (no API key)
 
