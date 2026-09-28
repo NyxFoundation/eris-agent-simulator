@@ -81,9 +81,19 @@ function fakeChain(
   );
 }
 
+// `/public/healthz` is the same dashboard as seen through the Cloudflare tunnel, which answers urllib's
+// default User-Agent with 403 (and curl or a browser with 200).
 function fakeDashboard(): Promise<{ url: string; server: Server }> {
   const server = createServer((req, res) => {
-    res.statusCode = req.url === "/healthz" ? 200 : 404;
+    const cloudflareRefuses =
+      req.url === "/public/healthz" &&
+      /^Python-urllib\//.test(req.headers["user-agent"] ?? "");
+    res.statusCode =
+      req.url === "/healthz" || req.url === "/public/healthz"
+        ? cloudflareRefuses
+          ? 403
+          : 200
+        : 404;
     res.end('{"ok":true}');
   });
   return new Promise((r) =>
@@ -225,6 +235,7 @@ async function runExporter(opts: {
   timestamps: Record<number, number>;
   loops: number;
   canaryIds?: string;
+  publicDashboard?: boolean;
 }) {
   const now = Math.floor(Date.now() / 1000);
   const root = fixture(now);
@@ -241,6 +252,14 @@ async function runExporter(opts: {
         ASCON_CGROUP_ROOT: join(root, "cgroup"),
         ASCON_DOCKER_CONTAINERS: join(root, "docker-containers"),
         ASCON_DASHBOARD_URL: dash.url,
+        ...(opts.publicDashboard
+          ? {
+              ASCON_DASHBOARD_PUBLIC_URL: dash.url.replace(
+                "/healthz",
+                "/public/healthz",
+              ),
+            }
+          : {}),
         ASCON_CANARY_IDS: opts.canaryIds ?? "ops-canary",
         ASCON_LOOPS: String(opts.loops),
         ASCON_LOOP_SEC: "0",
@@ -441,5 +460,19 @@ test(
       "only when a public URL is set",
     );
     assert.ok(samples.every((s) => s.labels.env === "live"));
+  },
+);
+
+test(
+  "the public probe names itself, so the tunnel does not refuse it as a bot",
+  { skip: !hasPython },
+  async () => {
+    const { samples } = await runExporter({
+      heads: [100],
+      timestamps: steady,
+      loops: 1,
+      publicDashboard: true,
+    });
+    assert.equal(get(samples, "ascon_dashboard_public_up"), 1);
   },
 );

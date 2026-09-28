@@ -42,6 +42,7 @@ CGROUP_ROOT = os.environ.get("ASCON_CGROUP_ROOT", "/host/cgroup")
 DOCKER_CONTAINERS = os.environ.get("ASCON_DOCKER_CONTAINERS", "/host/docker-containers")
 DASHBOARD_URL = os.environ.get("ASCON_DASHBOARD_URL", "http://127.0.0.1:5174/healthz")
 DASHBOARD_PUBLIC_URL = os.environ.get("ASCON_DASHBOARD_PUBLIC_URL", "")
+PROBE_USER_AGENT = "ascon-exporter/1 (uptime probe)"
 CANARY_IDS = [s.strip() for s in os.environ.get("ASCON_CANARY_IDS", "ops-canary").split(",") if s.strip()]
 RECENT_SEC = int(os.environ.get("ASCON_RECENT_WINDOW_SEC", "600"))
 # How long an interval stays in ascon_block_interval_max_seconds after the block that closed it.
@@ -399,8 +400,12 @@ class Exporter:
 
     @staticmethod
     def probe(url):
+        # Named, because Cloudflare answers urllib's default User-Agent (Python-urllib/3.x) with 403
+        # while curl and browsers get 200: through the tunnel the unnamed probe read a live
+        # dashboard as down.
+        req = urllib.request.Request(url, headers={"User-Agent": PROBE_USER_AGENT})
         try:
-            with urllib.request.urlopen(url, timeout=5) as r:
+            with urllib.request.urlopen(req, timeout=5) as r:
                 return 1 if r.status == 200 else 0
         except Exception:
             return 0
