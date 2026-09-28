@@ -110,6 +110,11 @@ import { FlowProcess, type FlowOrderWire } from "../flowProcess.js";
 import { deployFlashArb, FLASH_ARB_ADDRESS } from "../flashArbDemo.js";
 import { RealtimeAgentProcess } from "./agentProcess.js";
 import {
+  EPOCH_COUNT_ENV,
+  EPOCH_INDEX_ENV,
+  readEpochOrdinal,
+} from "@eris/sdk/epoch.js";
+import {
   deriveLiquityVictims,
   liquityBreachMagnitude,
   LIQUITY_VICTIM_ENV,
@@ -542,6 +547,18 @@ export async function runRealtimeSimulation(
         `(npm run backtest -- --scenarios <path>). A single run has one world, so use ` +
         `resetUnit: continuous for sim:realtime (ADR 0020 §1)`,
     );
+  // Issue #167: which epoch of the schedule this run is, handed to every agent. Like the reset unit,
+  // honoured only as the matrix runner's programmatic override -- an ordinal belongs to a run that
+  // is one epoch of a schedule, and nothing else is.
+  const epochOrdinal = readEpochOrdinal(
+    overrides[EPOCH_INDEX_ENV],
+    overrides[EPOCH_COUNT_ENV],
+  );
+  if (epochOrdinal && config.resetUnit !== "scenario")
+    throw new Error(
+      `an epoch ordinal (${EPOCH_INDEX_ENV}) is set only for one epoch of a scenario matrix ` +
+        `(resetUnit: scenario); this run is ${config.resetUnit}`,
+    );
 
   // ---- chain mode (issue #33 / ADR 0021 §7) ----
   // Installed before anything touches the chain, so a cheatcode reached for on an external chain
@@ -664,6 +681,9 @@ export async function runRealtimeSimulation(
     chainMode: config.chainMode,
     // Rules §2.6. 0 means the node's own limit was left in place.
     blockGasLimit: config.blockGasLimit,
+    // Issue #167: the ordinal the agents were handed (ERIS_EPOCH_INDEX / ERIS_EPOCH_COUNT). The
+    // same `s` matrix.json carries; public, since it gives away the epoch's weight and nothing else.
+    ...(epochOrdinal ? { epoch: epochOrdinal } : {}),
   });
 
   // batch=true: automatically aggregate same-tick reads (parallel receipt fetches, readState, etc.) into
@@ -2090,6 +2110,7 @@ export async function runRealtimeSimulation(
           configPath: view.configPath,
           viewDir: view.dir,
           ...(stateDir ? { stateDir } : {}),
+          ...(epochOrdinal ? { epoch: epochOrdinal } : {}),
         },
       );
       // An agent that dies mid-run silently stops trading, which reads in summary.json exactly like

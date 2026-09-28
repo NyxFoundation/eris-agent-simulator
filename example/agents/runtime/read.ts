@@ -14,6 +14,7 @@ import { observationFor } from "@eris/sdk/observation.js";
 import { PoolDiscovery } from "@eris/sdk/discoveredPools.js";
 import { readFairPrice, readFairPriceFor } from "@eris/sdk/priceFeed.js";
 import { readRunStart } from "@eris/sdk/runStart.js";
+import { type EpochOrdinal, epochOrdinalFromEnv } from "@eris/sdk/epoch.js";
 import {
   dayBlocksRemaining,
   type ManifestPeriod,
@@ -80,6 +81,10 @@ export class Reader {
   // agent-created markets. `observation.registry` is then absent too, rather than empty — "nobody
   // deployed anything" and "this run has no registry" are different facts.
   private readonly registryWatcher: MarketRegistryWatcher | undefined;
+
+  // Issue #167: which epoch of the schedule this run is, when it is one of a scenario matrix
+  // (sdk/src/epoch.ts). Absent otherwise, and then absent from the observation too.
+  private readonly epoch: EpochOrdinal | undefined = readEpochFromEnv();
 
   constructor(opts: {
     ctx: SimContext;
@@ -191,6 +196,7 @@ export class Reader {
     this.firstSeenAtMs ??= Date.now();
     if (this.period) this.observeSelfHostedClock(observation, bn);
     else this.observeCoordinatorClock(observation, bn);
+    this.observeEpoch(observation);
     if (this.discovery) {
       try {
         observation.discoveredPools = await this.discovery.observe(BigInt(bn));
@@ -203,6 +209,11 @@ export class Reader {
       }
     }
     return { observation, balances, stateById, fairPrice };
+  }
+
+  // The same ordinal on every block: it does not change within an epoch.
+  private observeEpoch(observation: AgentObservation): void {
+    if (this.epoch) observation.epoch = { ...this.epoch };
   }
 
   // The coordinator's declaration of the run's first block (issue #117), once it exists. It arrives
@@ -351,5 +362,18 @@ export class Reader {
       observation.blocksRemaining !== undefined
         ? Math.min(day, observation.blocksRemaining)
         : day;
+  }
+}
+
+// Half an ordinal, or a malformed one, is the environment's bug. Said, and left out of the
+// observation, rather than costing the agent its epoch.
+function readEpochFromEnv(): EpochOrdinal | undefined {
+  try {
+    return epochOrdinalFromEnv(process.env);
+  } catch (error) {
+    process.stderr.write(
+      `[read] ${error instanceof Error ? error.message : String(error)}; obs.epoch is left out\n`,
+    );
+    return undefined;
   }
 }

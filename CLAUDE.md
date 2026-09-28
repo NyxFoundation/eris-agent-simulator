@@ -368,6 +368,12 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     `matrix.json` / `standings.json` を**同じディレクトリに**回次順で書き直す（`createdAt` は初回のまま、`resumedAt` を追加）。
     `scenarioSet` / `k` / `resetUnit` / `repeat` が違えば fail-fast、同じパスで中身が変わったセットも回次単位で拒否
     （`core/src/backtest/resume.ts`）。summary.json → AgentScore の変換は `core/src/backtest/scenarioScores.ts` に分離
+  - **agent にはエポック番号を渡す**（issue #167）。env `ERIS_EPOCH_INDEX`（プラン上の s）/ `ERIS_EPOCH_COUNT`（k）と
+    `obs.epoch = {index, count}`（`sdk/src/epoch.ts`）。重み w_s が s で変わるのに、毎エポック同じ初期状態から再起動される
+    agent には今が何本目か知る手段が無かった。s は**この起動で何本目かではなくプランの値**なので `--resume`・再実行・
+    部分リハーサルでも元の s（= 元の重み）。漏れるのは重みだけで regime / seed は伏せたまま。行列以外（`sim:realtime`・
+    単発 `--regime`・練習期間）では env も field も**無い**（1 of 1 ではない）。運営シェルに残った値もロスターの env も
+    agent には届かない（環境が決める値なので spec.env の後に上書き・無ければ削除）。`run_started_realtime.epoch` にも残る
   - **公式レジームは `agentSandbox: docker`**（規約 §2.3 の 2 vCPU / 4 GiB は `infra/docker-agent/run-agent.sh` でしか掛からない）。docker が無ければ `--agent-sandbox process`（無制限。`agent_sandbox` イベントにそう出る）。綴り間違いは fail-fast。
     docker でも `ERIS_AGENT_ISOLATE=1` + `ERIS_AGENT_INTERNAL=1` が無い agent は host のサービスへ直接届くので、coordinator は
     **止めずに警告する**（`agent_sandbox_warning` イベント + 起動時と完走時の stderr バナー。audience には配信しない）。

@@ -81,6 +81,7 @@ import {
   sleep,
   startDelay,
 } from "../backtest/timetable.js";
+import { matrixEpochOverrides } from "../backtest/epochOrdinal.js";
 import {
   AGENT_STATE_ROOT_ENV,
   restoreAllAgentState,
@@ -848,7 +849,9 @@ async function main(): Promise<void> {
             // ADR 0020 §1: the matrix is the only thing that resets the world between runs, so it is
             // the only thing allowed to declare the mode. A single --regime replay stays `continuous`
             // -- it is one world, whatever the snapshot/revert around it does for the *next* scenario.
-            ...(matrixMode ? { ERIS_RESET_UNIT: "scenario" } : {}),
+            // Issue #167: with it, the epoch's scheduled ordinal and the schedule's length, which
+            // reach every agent as ERIS_EPOCH_INDEX / ERIS_EPOCH_COUNT (and obs.epoch).
+            ...(matrixMode ? matrixEpochOverrides(scenario.s, k) : {}),
           }, [process.execPath, "sim-realtime", "--config", effectivePath]);
           runDirs.push(runDir);
           const summary = readRunSummary(runDir);

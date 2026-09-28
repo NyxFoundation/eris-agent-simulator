@@ -87,6 +87,15 @@ class Competition(BaseModel):
     recent_sample_size: float = Field(..., alias='recentSampleSize')
 
 
+class EpochOrdinal(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+        populate_by_name=True,
+    )
+    index: float
+    count: float
+
+
 class Pool(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -515,6 +524,7 @@ class AgentObservation(BaseModel):
     markets: list[str] | None = None
     blocks_remaining: float | None = Field(None, alias='blocksRemaining')
     day_blocks_remaining: float | None = Field(None, alias='dayBlocksRemaining')
+    epoch: EpochOrdinal | None = None
     enabled_protocols: list[
         Literal[
             'uniswap', 'balancer', 'curve', 'gmx', 'aave', 'lst', 'liquity', 'lending'

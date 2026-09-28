@@ -70,6 +70,9 @@
         "dayBlocksRemaining": {
           "type": "number"
         },
+        "epoch": {
+          "$ref": "#/definitions/EpochOrdinal"
+        },
         "enabledProtocols": {
           "type": "array",
           "items": {
@@ -252,6 +255,22 @@
         "history",
         "limits",
         "protocols"
+      ],
+      "additionalProperties": false
+    },
+    "EpochOrdinal": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "number"
+        },
+        "count": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "index",
+        "count"
       ],
       "additionalProperties": false
     },
