@@ -59,8 +59,10 @@ export type ResolvedVulnEvent = {
   pools: ResolvedVulnPool[];
 };
 
-// Salt for a derived seed that does not collide with the price main-path Rng(seed) / flow Rng / stress Rng(0x53545253).
-const VULN_SEED_SALT = 0x56_55_4c_4e; // "VULN"
+// Salt for a derived seed that does not collide with the price path / flow / stress (0x53545253) Rngs.
+// Hashed with the seed (Rng.fromSeed), not just XORed in: XOR keeps nearby seeds nearby, and the
+// first event's poolCount [4, 6] came out 4 on every seed from 1 to 200.
+export const VULN_SEED_SALT = 0x56_55_4c_4e; // "VULN"
 
 // Pure-function deterministic schedule (config + seed + runBlocks + baseSymbols → resolved pools).
 export class VulnSchedule {
@@ -81,7 +83,7 @@ export class VulnSchedule {
     }
     const bases = baseSymbols.length > 0 ? baseSymbols : ["WETH"];
     // An Rng independent of the price main path, flow, and stress. The same SEED deterministically yields the same schedule.
-    const rng = new Rng((seed ^ VULN_SEED_SALT) >>> 0);
+    const rng = Rng.fromSeed(seed, VULN_SEED_SALT);
     let poolIndex = 0;
     this.events = configs.map((c, eventIndex) => {
       // Consumption order (the crux of determinism): poolCount → startFrac → riggedFrac → (per pool) base →

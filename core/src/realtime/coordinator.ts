@@ -344,7 +344,8 @@ async function assertTokensNotMintable(
 // Before the competition starts (= off the clock), run a short market loop with only the flow bot to make anvil
 // fetch and warm the protocols' working set (pool ticks, reserves, gmx, etc.). This keeps the competition
 // phase's mining from hitting upstream cold fetches (the anvil bottleneck mitigation of ADR 0006 Risks). It does
-// not resetFork, and the market moves only slightly (~blocks). The price main path is not consumed (a separate Rng).
+// not resetFork, and the market moves only slightly (~blocks). The price main path is not consumed: the warm-up walks
+// on a stream of its own (it used to be `Rng(seed)`, the main path's own stream, so it replayed the run's first shocks).
 // Note: the competition uses RealtimeFlowProcess (push), but warmup is outside interval mining so it uses the
 // synchronous FlowProcess (request/response).
 async function prewarmWorkingSet(
@@ -362,7 +363,7 @@ async function prewarmWorkingSet(
     runDir,
   );
   try {
-    const warmRng = new Rng(ctx.config.seed);
+    const warmRng = Rng.fromSeed(ctx.config.seed, "prewarm");
     let warmPrice = startPrice;
     for (let i = 1; i <= blocks; i++) {
       warmPrice = nextFairPrice(
@@ -792,7 +793,10 @@ export async function runRealtimeSimulation(
 
   const adminPk = config.privateKeys.admin;
   const keeperPk = config.privateKeys.keeper;
-  const rng = new Rng(config.seed);
+  // The WETH price path. Derived like every other base's (`priceRngForAsset` hashes the seed), and
+  // distinct from the flow bot's stream, which used to be this very stream: flow.seed defaults to
+  // the run seed, and both were `Rng(seed)`.
+  const rng = priceRngForAsset(config.seed, "WETH");
   const ctx: SimContext = {
     publicClient,
     walletClient,

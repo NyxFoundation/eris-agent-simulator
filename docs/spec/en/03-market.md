@@ -28,15 +28,17 @@ Per-base overrides are `market.baseVolatility` / `baseKappa` / `baseDrift`, writ
 
 **The generator is an LCG** (`state = (1664525·state + 1013904223) mod 2³²`). `gaussian()` is Box-Muller, `lognormal(mean, σ)` sets `μ = ln(mean) − σ²/2` so the expectation equals `mean`, and `poisson(λ)` uses Knuth's method.
 
+**An Rng made from the run seed always comes from `Rng.fromSeed(seed, salt)`** (= `new Rng(fmix32(seed ^ salt))`, a string salt hashed by FNV-1a; `sdk/src/rng.ts`). Each consumer has its own salt (price `price:<symbol>` / flow `flow` / prewarm `prewarm` / agent runtime `agent-runtime` / LST `LSTY` / vuln `VULN`). Used raw, `new Rng(seed)` starts seeds Δ apart only a·Δ/2³² apart (seeds 1-200 all in [0.236, 0.314)), and every later draw of seed s+Δ is the same draw of seed s plus a constant mod 1. XORing a salt in keeps nearby seeds nearby too. Measured before the change: on every seed from 1 to 200 the first WETH shock was −21 to −15 bps and the first WBTC shock +29 to +37 bps, the vuln regime's first poolCount [4, 6] was 4, and the LST's first APY was 513-592 bps out of [100, 900]. And since `flow.seed` defaults to the run seed, **the flow bot drew the price path's own stream** (calm's flow draws at least ~24 per round, counting AMM and GMX only, so by round 16 at the latest it had consumed all 360 of the run's shocks, in order). Numbers: `scripts/measureSeedCorrelation.ts`. **Runs from before 2026-09-27 have a different realization for the same seed.** The stress schedule is the exception: unless it uses the §4 variation keys it keeps the raw seed, so the practice period's windows do not move
+
 ### 3.1.2 Why mean reversion
 
 Under a geometric random walk with drift, **each seed picks up a trend, and that cumulative directional exposure (β) dominates PnL, so "random trading ≈ smart arbitrage"** (`rng.ts:59-64`, ADR 0003). Making the process mean-reverting and pulling it back to the anchor returns the price near its start by the end of the run, so direction pays nothing. What is left is the arbitrage skill (α) of reading the gap between the pool and fair.
 
 ### 3.1.3 Multi-asset
 
-Each base has **its own independent Rng** (`rng.ts:135`, `priceRngForAsset`). WETH uses salt 0, i.e. `Rng(seed)` itself (byte-identical to existing runs' WETH path); every other base gets an independent stream from a deterministic symbol-derived salt.
+Each base has **its own independent Rng** (`priceRngForAsset` = `Rng.fromSeed(seed, "price:<symbol>")`). WETH is derived like every other base (it used to be salt 0, i.e. `Rng(seed)` itself, for byte compatibility with older runs; that was given up because of the correlation above).
 
-**Cross-asset correlation is zero** (v1). Adding it means consolidating onto a shared Rng, which changes WETH's consumption sequence and breaks backward compatibility, so it is not done by default.
+**Cross-asset correlation is zero** (v1). Adding it means consolidating onto a shared Rng, which would move WETH's consumption sequence every time a base is added, so it is not done by default.
 
 ### 3.1.4 Base price and effective price
 
@@ -89,7 +91,7 @@ In the default profile the environment bids above every agent cap, which pins **
 The flow bot is an **independent process** (`core/src/flow/market-maker.ts`) whose generation logic is pure (`core/src/flow/logic.ts`).
 
 - **The bot never touches RPC.** The coordinator pushes a context down stdin every block, and relays each order the bot writes to stdout into the mempool, signed by a flow wallet.
-- It runs deterministically off its own `Rng(flow.seed)`, calling the generators in the protocol order the coordinator passes (default `uniswap, balancer, curve, gmx, aave`).
+- It runs deterministically off its own `flowRng(flow.seed)` (= `Rng.fromSeed(flow.seed, "flow")`, a stream distinct from the price path's), calling the generators in the protocol order the coordinator passes (default `uniswap, balancer, curve, gmx, aave`).
 - Aave reserve state is read by the environment and passed in the context (the bot cannot read it).
 
 ### 3.2.2 AMM flow (uniswap / balancer / curve)
@@ -102,7 +104,7 @@ The flow bot is an **independent process** (`core/src/flow/market-maker.ts`) who
 |---|---|---|
 | Arrivals | `Poisson(λ)`; with λ=0, a fixed `uninformedCount` | λ = 0.45 |
 | Size | `lognormal(mean = max×0.5, σ)` clamped to `[2%, clampMult×100%]`; with λ=0, uniform over `max/20 .. max` | σ = 1.5; clampMult = 3 (official regimes: 10) |
-| Direction | With `persistBlocks > 1`, fixed per window of `floor(round/persistBlocks)` by `trendBit(flowSeed, window, venue)`; otherwise `rng.bool()` each time | persist = 1 |
+| Direction | With `persistBlocks > 1`, fixed per window of `floor(round/persistBlocks)` by `trendBit(flowSeed, window, venue)` (the seed is hashed into a key per tag and the window mixed in after; the old `seed ^ (window+1)` made seeds 100 and 101 draw the same directions with adjacent windows swapped, and seeds 1 apart agree on 56.8% of bits); otherwise `rng.bool()` each time | persist = 1 |
 | Correlation | With probability `trendCorrelation`, follow a **market-wide** bit instead of the per-venue one | 0 |
 | Priority fee | `default + [1,50) × 10⁶ wei` | |
 
