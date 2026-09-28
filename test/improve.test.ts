@@ -76,6 +76,24 @@ test("improvePolicyState: the old file name is a refusal, not silence", () => {
   assert.equal(improvePolicyState(dir), "present");
 });
 
+// Issue #168: the operator caps neither the reply nor the context, so the participant sets them.
+test("loadImproveAgent: the participant can set the revision call's token limits", () => {
+  const agent = loadImproveAgent(
+    agentDir(FRONTMATTER.replace("---\n\n", "maxOutputTokens: 24000\ncontextTokens: 65536\n---\n\n")),
+  );
+  assert.equal(agent.maxOutputTokens, 24_000);
+  assert.equal(agent.contextTokens, 65_536);
+  // Unset stays unset, so llm.ts can fall back to the environment and then the family default.
+  const plain = loadImproveAgent(agentDir(FRONTMATTER));
+  assert.equal("maxOutputTokens" in plain, false);
+  assert.equal("contextTokens" in plain, false);
+  for (const bad of ["maxOutputTokens: 0", "maxOutputTokens: 1.5", "contextTokens: lots"])
+    assert.throws(
+      () => loadImproveAgent(agentDir(FRONTMATTER.replace("---\n\n", `${bad}\n---\n\n`))),
+      /must be a positive integer/,
+    );
+});
+
 test("loadImproveAgent: a missing name or bad cadence is an explicit error", () => {
   assert.throws(
     () =>

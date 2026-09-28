@@ -58,6 +58,12 @@ export type ImproveAgent = {
   // it costs no LLM call to evaluate (ADR 0018 §4).
   reviseEveryBlocks: number;
   model?: string;
+  // Limits on the revision call (issue #168). The operator caps neither, so these are the
+  // participant's to set; absent, llm.ts applies the environment's and then the family default.
+  //   maxOutputTokens  the reply's cap (max_tokens / max_completion_tokens / num_predict)
+  //   contextTokens    Ollama's context window (num_ctx), prompt and reply together
+  maxOutputTokens?: number;
+  contextTokens?: number;
   body: string;
 };
 
@@ -172,14 +178,31 @@ export function loadImproveAgent(agentDir: string): ImproveAgent {
     throw new Error(`${path}: language must be python or typescript`);
   if (fm.language !== undefined && fm.language !== inferred)
     throw new Error(`${path}: language does not match the strategy entry point`);
+  const limits: Pick<ImproveAgent, "maxOutputTokens" | "contextTokens"> = {};
+  for (const key of ["maxOutputTokens", "contextTokens"] as const) {
+    if (fm[key] === undefined) continue;
+    const n = Number(fm[key]);
+    if (!Number.isInteger(n) || n <= 0)
+      throw new Error(`${path}: ${key} must be a positive integer (tokens)`);
+    limits[key] = n;
+  }
   return {
     ...(inferred === "python" || fm.language ? { language: inferred } : {}),
     name: fm.name,
     description: fm.description,
     reviseEveryBlocks: Math.floor(declared),
     model: typeof fm.model === "string" ? fm.model : undefined,
+    ...limits,
     body: m[2].trim(),
   };
+}
+
+// How a revision whose call failed is logged. The prefix is what infra/devnet/revision-health.mjs
+// counts as an LLM failure rather than a reply the harness turned down -- and a reply cut at its
+// output cap (llm.ts LlmOutputTruncatedError) belongs here, not among replies that failed to parse
+// or compile, because its fix is a number in prompt.md.
+export function revisionFailedReason(error: unknown): string {
+  return `revision failed: ${error instanceof Error ? error.message : String(error)}`;
 }
 
 export type ParseResult =

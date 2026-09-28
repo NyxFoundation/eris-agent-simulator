@@ -48,6 +48,16 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
   許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）
 - `ERIS_IMPROVE_LOG_CALLS: "1"` — 改訂の生のやり取りを `agents/<id>.llm.jsonl` に残す（既定 off）
 
+**改訂呼び出しの入出力に運営は上限を掛けない**（プロキシは body をそのまま転送）ので、効くのはモデル・サービスと
+参照ランタイム（`runtime/llm.ts`）が送る値（issue #168）。prompt.md の `maxOutputTokens` / `contextTokens`
+（env は `ERIS_LLM_MAX_OUTPUT_TOKENS` / `ERIS_LLM_CONTEXT_TOKENS`、frontmatter が優先）で設定し、既定は
+**Claude の `max_tokens` 16,000**（API が必須にしている唯一の family。旧 2,048 は 1 判断 1 行動を返していた頃の値で、
+戦略全文がコード途中で切れて parse 失敗と同じ見え方で捨てられていた。16,000 は SDK の非ストリーム上限 ~21,333 の内側。
+client に timeout を持たせて SDK の見積もり拒否は外してある）と **Ollama の `num_ctx` 32,768**（未指定だと
+非公開のサービス既定になり、はみ出しは**黙って捨てられる**）。上限で止まった応答は使わず
+`revision failed: output truncated at N tokens (...)`、Ollama で文脈が窓を超えたら `llm input truncated: ...`
+を agent ログに出す。呼び出し 1 回の待ちは既定 5 分（`ERIS_LLM_CALL_TIMEOUT_MS`。旧 60 秒）。
+
 改訂プロンプトは**その run で有効な venue の action 名を列挙する**（`ACTION_TYPES_BY_PROTOCOL`。
 `sdk/src/action.ts` が単一の出典で、`test/actionVocabulary.test.ts` が改名・削除を検出）。渡さないと
 LLM の手掛かりは現在の戦略コードだけになり、**一度も swap したことのない戦略は `swap` の存在を

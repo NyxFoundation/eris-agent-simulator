@@ -23,7 +23,14 @@
  *   ERIS_OLLAMA_API_KEY / OLLAMA_API_KEY  Ollama Cloud Bearer token (not needed locally)
  *   ANTHROPIC_API_KEY     required for the claude family (SDK; ignored by claude-cli)
  *   ERIS_CLAUDE_BIN / ERIS_CODEX_BIN  CLI binary override (default "claude" / "codex")
- *   ERIS_LLM_CALL_TIMEOUT_MS  timeout for one call (default 60000; CLI providers 120000)
+ *   ERIS_LLM_CALL_TIMEOUT_MS  timeout for one call (default 300000: the five minutes a call may
+ *                            wait at the operator's inference proxy)
+ *   ERIS_LLM_MAX_OUTPUT_TOKENS  cap on the reply (prompt.md `maxOutputTokens` wins). Default 16000
+ *                            for the claude family, whose API requires one; the model's own for
+ *                            the ollama and openai families
+ *   ERIS_LLM_CONTEXT_TOKENS  the ollama family's context window, `num_ctx` (prompt.md
+ *                            `contextTokens` wins). Default 32768
+ * The two token limits apply to the HTTP families only; the subscription CLIs set their own.
  */
 import { spawn } from "node:child_process";
 
@@ -37,14 +44,108 @@ export type LlmRequest = {
   jsonSchema?: Record<string, unknown>;
   // false for a free-text response (e.g. prompt revision). Default true = JSON mode.
   json?: boolean;
+  // Limits for this call, from prompt.md. Absent = ERIS_LLM_MAX_OUTPUT_TOKENS /
+  // ERIS_LLM_CONTEXT_TOKENS, then the family's default (resolveLlmLimits).
+  maxOutputTokens?: number;
+  contextTokens?: number;
+};
+
+// What a call returned, with what the service said about it.
+export type LlmReply = {
+  text: string;
+  // Tokens in and out, when the service reported them.
+  usage?: { inputTokens?: number; outputTokens?: number };
+  // What the call got away with but should not have -- today, an Ollama prompt that cannot have
+  // fit its context. The reply is still used; the caller logs these.
+  warnings: string[];
 };
 
 const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/api";
-const CALL_TIMEOUT_MS = Number(process.env.ERIS_LLM_CALL_TIMEOUT_MS ?? "60000");
-// CLI providers pay process startup + a coding-tuned model per call; give them more headroom by default.
-const CLI_CALL_TIMEOUT_MS = Number(
-  process.env.ERIS_LLM_CALL_TIMEOUT_MS ?? "120000",
+// One call's wait: five minutes, the most a call that is not streamed may wait at the operator's
+// inference proxy (issue #166), and so the wait participants are told. It was 60 s (120 s for the
+// CLIs) while a call returned one trading action; a whole strategy source takes minutes.
+export const DEFAULT_CALL_TIMEOUT_MS = 300_000;
+const CALL_TIMEOUT_MS = Number(
+  process.env.ERIS_LLM_CALL_TIMEOUT_MS ?? DEFAULT_CALL_TIMEOUT_MS,
 );
+
+// Anthropic's API requires max_tokens, so for this family the runtime's number *is* the limit. It
+// was 2,048 from when a call returned one trading action (the emit_action tool below). Since
+// ADR 0018 a call returns a whole strategy source, which can be longer; the reply was then cut
+// mid-code and discarded like any other rejected revision (issue #168). 16,000 fits a strategy
+// with room to spare and sits inside the SDK's non-streaming bound (10 minutes at its estimate of
+// 128k tokens an hour, ~21,333 tokens).
+export const DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS = 16_000;
+// Ollama's context window. Without one the service's default applies -- unpublished, liable to
+// change -- and Ollama drops what does not fit without an error. It covers the reply as well as
+// the prompt: a revision context is ~10k tokens today, and the strategy coming back needs room.
+export const DEFAULT_OLLAMA_CONTEXT_TOKENS = 32_768;
+
+export type LlmLimits = { maxOutputTokens?: number; contextTokens?: number };
+
+function positiveInt(raw: string | undefined, name: string): number | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0)
+    throw new Error(`${name} must be a positive integer (got "${raw}")`);
+  return n;
+}
+
+// The limits a call is made with: prompt.md, then the environment. A family default is applied
+// where the call is built, because only there is it known which family needs one.
+export function resolveLlmLimits(
+  req: Pick<LlmRequest, "maxOutputTokens" | "contextTokens">,
+  env: NodeJS.ProcessEnv = process.env,
+): LlmLimits {
+  return {
+    maxOutputTokens:
+      req.maxOutputTokens ??
+      positiveInt(env.ERIS_LLM_MAX_OUTPUT_TOKENS, "ERIS_LLM_MAX_OUTPUT_TOKENS"),
+    contextTokens:
+      req.contextTokens ??
+      positiveInt(env.ERIS_LLM_CONTEXT_TOKENS, "ERIS_LLM_CONTEXT_TOKENS"),
+  };
+}
+
+// The reply reached its output cap and stopped. For a revision that means mid-code, which would
+// then fail to parse or compile and be logged like any rejected revision -- when the fix is a
+// number. So it is its own failure, naming the number.
+export class LlmOutputTruncatedError extends Error {
+  constructor(
+    readonly tokens: number | undefined,
+    readonly signal: string,
+  ) {
+    super(
+      `output truncated at ${tokens ?? "?"} tokens (${signal}): raise maxOutputTokens in ` +
+        "prompt.md, or ask for a shorter reply",
+    );
+    this.name = "LlmOutputTruncatedError";
+  }
+}
+
+// A rough token count with one use: saying when a prompt cannot have fit. Four characters a token
+// undercounts code, so the warning below comes late rather than falsely.
+export function estimatePromptTokens(req: Pick<LlmRequest, "system" | "messages">): number {
+  const chars =
+    req.system.length + req.messages.reduce((n, m) => n + m.content.length, 0);
+  return Math.ceil(chars / 4);
+}
+
+// Ollama truncates a prompt longer than num_ctx and says nothing. Its prompt_eval_count cannot say
+// it either -- a reused KV cache lowers it too -- so the test is the prompt's size against the window.
+export function ollamaInputWarning(
+  estimatedTokens: number,
+  numCtx: number,
+  promptEvalCount: number | undefined,
+): string | undefined {
+  if (estimatedTokens <= numCtx) return undefined;
+  return (
+    `input truncated: the prompt is ~${estimatedTokens} tokens (at 4 characters a token) and ` +
+    `num_ctx is ${numCtx}` +
+    (promptEvalCount !== undefined ? `; Ollama evaluated ${promptEvalCount}` : "") +
+    ". Ollama drops what does not fit without an error: raise contextTokens in prompt.md"
+  );
+}
 
 export type LlmProvider =
   | { kind: "ollama" | "anthropic" | "openai" }
@@ -90,15 +191,24 @@ function openAiModelName(model: string): string {
 
 // A single LLM call. Returns the response text (a JSON string is expected). Parsing/validation is the caller's job (bot.ts).
 export async function callLlm(req: LlmRequest): Promise<string> {
-  const provider = resolveLlmProvider(req.model);
-  if (provider.kind === "codex") return callCodexCli(provider.model, req);
-  if (provider.kind === "claude-cli") return callClaudeCli(provider.model, req);
-  if (provider.kind === "anthropic") return callClaude(req);
-  if (provider.kind === "openai") return callOpenAi(req);
-  return callOllama(req);
+  return (await callLlmWithUsage(req)).text;
 }
 
-async function callOpenAi(req: LlmRequest): Promise<string> {
+// The same call, with what the service reported about it. Throws LlmOutputTruncatedError when the
+// reply hit its output cap.
+export async function callLlmWithUsage(req: LlmRequest): Promise<LlmReply> {
+  const provider = resolveLlmProvider(req.model);
+  if (provider.kind === "codex")
+    return { text: await callCodexCli(provider.model, req), warnings: [] };
+  if (provider.kind === "claude-cli")
+    return { text: await callClaudeCli(provider.model, req), warnings: [] };
+  const limits = resolveLlmLimits(req);
+  if (provider.kind === "anthropic") return callClaude(req, limits);
+  if (provider.kind === "openai") return callOpenAi(req, limits);
+  return callOllama(req, limits);
+}
+
+async function callOpenAi(req: LlmRequest, limits: LlmLimits): Promise<LlmReply> {
   const proxy = inferenceBase();
   const base = proxy
     ? `${proxy}/v1`
@@ -121,20 +231,42 @@ async function callOpenAi(req: LlmRequest): Promise<string> {
       model: openAiModelName(req.model),
       messages: [{ role: "system", content: req.system }, ...req.messages],
       ...(req.json === false ? {} : { response_format: { type: "json_object" } }),
+      // OpenAI's current name for the cap: `max_tokens` is deprecated there and refused by the
+      // o-series. Absent, the model's own maximum applies.
+      ...(limits.maxOutputTokens !== undefined
+        ? { max_completion_tokens: limits.maxOutputTokens }
+        : {}),
     }),
   });
   if (!res.ok)
     throw new Error(`openai chat failed: ${res.status} ${await res.text()}`);
   const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string | null } }>;
+    choices?: Array<{
+      message?: { content?: string | null };
+      finish_reason?: string | null;
+    }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
-  const content = data.choices?.[0]?.message?.content;
+  const choice = data.choices?.[0];
+  if (choice?.finish_reason === "length")
+    throw new LlmOutputTruncatedError(
+      data.usage?.completion_tokens ?? limits.maxOutputTokens,
+      'openai finish_reason "length"',
+    );
+  const content = choice?.message?.content;
   if (typeof content !== "string" || content.trim() === "")
     throw new Error("openai chat returned empty content");
-  return content;
+  return {
+    text: content,
+    usage: {
+      inputTokens: data.usage?.prompt_tokens,
+      outputTokens: data.usage?.completion_tokens,
+    },
+    warnings: [],
+  };
 }
 
-async function callOllama(req: LlmRequest): Promise<string> {
+async function callOllama(req: LlmRequest, limits: LlmLimits): Promise<LlmReply> {
   const proxy = inferenceBase();
   const baseUrl = proxy
     ? `${proxy}/api`
@@ -151,6 +283,7 @@ async function callOllama(req: LlmRequest): Promise<string> {
       process.env.ERIS_OLLAMA_API_KEY ?? process.env.OLLAMA_API_KEY ?? "";
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   }
+  const numCtx = limits.contextTokens ?? DEFAULT_OLLAMA_CONTEXT_TOKENS;
   const res = await fetch(`${baseUrl}/chat`, {
     method: "POST",
     headers,
@@ -160,16 +293,45 @@ async function callOllama(req: LlmRequest): Promise<string> {
       stream: false,
       ...(req.json === false ? {} : { format: "json" }),
       messages: [{ role: "system", content: req.system }, ...req.messages],
+      options: {
+        num_ctx: numCtx,
+        // Absent, Ollama generates until the model stops or the window is full.
+        ...(limits.maxOutputTokens !== undefined
+          ? { num_predict: limits.maxOutputTokens }
+          : {}),
+      },
     }),
   });
   if (!res.ok) {
     throw new Error(`ollama chat failed: ${res.status} ${await res.text()}`);
   }
-  const data = (await res.json()) as { message?: { content?: string } };
+  const data = (await res.json()) as {
+    message?: { content?: string };
+    done_reason?: string;
+    prompt_eval_count?: number;
+    eval_count?: number;
+  };
+  if (data.done_reason === "length")
+    throw new LlmOutputTruncatedError(
+      data.eval_count ?? limits.maxOutputTokens,
+      'ollama done_reason "length"',
+    );
   const content = data.message?.content;
   if (typeof content !== "string" || content.trim() === "")
     throw new Error("ollama chat returned empty content");
-  return content;
+  const inputWarning = ollamaInputWarning(
+    estimatePromptTokens(req),
+    numCtx,
+    data.prompt_eval_count,
+  );
+  return {
+    text: content,
+    usage: {
+      inputTokens: data.prompt_eval_count,
+      outputTokens: data.eval_count,
+    },
+    warnings: inputWarning ? [inputWarning] : [],
+  };
 }
 
 // Memoize the Anthropic client (validation retries call it up to 4 times per cycle).
@@ -177,11 +339,17 @@ let anthropicClient: InstanceType<
   (typeof import("@anthropic-ai/sdk"))["default"]
 > | null = null;
 
-async function callClaude(req: LlmRequest): Promise<string> {
+async function callClaude(req: LlmRequest, limits: LlmLimits): Promise<LlmReply> {
   // The Anthropic SDK is an optional dependency (don't load it in an environment that only uses the ollama family).
   if (!anthropicClient) {
     const { default: Anthropic } = await import("@anthropic-ai/sdk");
     const proxy = inferenceBase();
+    // The client carries this runtime's bound as its own timeout. Without one, the SDK estimates a
+    // non-streamed call's length from max_tokens and refuses anything it expects to pass 10 minutes
+    // (~21,333 tokens; 8,192 for Opus 4 / 4.1) with "Streaming is required" -- a participant raising
+    // maxOutputTokens would meet that instead of the model's own limit. A call cannot outlast
+    // CALL_TIMEOUT_MS either way.
+    //
     // Through the proxy the SDK's x-api-key is meaningless (the proxy attaches the real one); the
     // per-agent bearer token in defaultHeaders is what authenticates. The SDK still insists on a
     // non-empty apiKey, so it gets the token.
@@ -190,15 +358,17 @@ async function callClaude(req: LlmRequest): Promise<string> {
           baseURL: proxy,
           apiKey: process.env.ERIS_INFERENCE_TOKEN ?? "proxy",
           defaultHeaders: proxyHeaders(),
+          timeout: CALL_TIMEOUT_MS,
         })
-      : new Anthropic();
+      : new Anthropic({ timeout: CALL_TIMEOUT_MS });
   }
   const client = anthropicClient;
   const useTool = req.jsonSchema !== undefined;
+  const maxTokens = limits.maxOutputTokens ?? DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS;
   const response = await client.messages.create(
     {
       model: req.model,
-      max_tokens: 2048,
+      max_tokens: maxTokens,
       system: req.system,
       messages: req.messages,
       ...(useTool
@@ -217,16 +387,25 @@ async function callClaude(req: LlmRequest): Promise<string> {
     },
     { timeout: CALL_TIMEOUT_MS },
   );
+  if (response.stop_reason === "max_tokens")
+    throw new LlmOutputTruncatedError(
+      response.usage?.output_tokens ?? maxTokens,
+      'anthropic stop_reason "max_tokens"',
+    );
+  const usage = {
+    inputTokens: response.usage?.input_tokens,
+    outputTokens: response.usage?.output_tokens,
+  };
   if (useTool) {
     const tool = response.content.find((c) => c.type === "tool_use");
     if (!tool || tool.type !== "tool_use")
       throw new Error("claude returned no tool_use block");
-    return JSON.stringify(tool.input);
+    return { text: JSON.stringify(tool.input), usage, warnings: [] };
   }
   const text = response.content.find((c) => c.type === "text");
   if (!text || text.type !== "text")
     throw new Error("claude returned no text block");
-  return text.text;
+  return { text: text.text, usage, warnings: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +596,7 @@ async function callClaudeCli(
     req.system,
     flattenMessages(req.messages),
   );
-  const out = await runCli(bin, args, env, CLI_CALL_TIMEOUT_MS);
+  const out = await runCli(bin, args, env, CALL_TIMEOUT_MS);
   return postProcessCliOutput(bin, out, req);
 }
 
@@ -428,6 +607,6 @@ async function callCodexCli(
   const bin = process.env.ERIS_CODEX_BIN ?? "codex";
   const prompt = `${req.system}\n\n---\n\n${flattenMessages(req.messages)}`;
   const args = buildCodexCliArgs(model, prompt);
-  const out = await runCli(bin, args, { ...process.env }, CLI_CALL_TIMEOUT_MS);
+  const out = await runCli(bin, args, { ...process.env }, CALL_TIMEOUT_MS);
   return postProcessCliOutput(bin, out, req);
 }

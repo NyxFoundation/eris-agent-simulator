@@ -71,7 +71,7 @@ import {
   TradeLedger,
   marketMoveUsdc,
 } from "./evidence.js";
-import { callLlm } from "./llm.js";
+import { callLlmWithUsage } from "./llm.js";
 import {
   buildRevisionContext,
   buildRevisionSystem,
@@ -80,6 +80,7 @@ import {
   improvePolicyState,
   loadImproveAgent,
   parseRevision,
+  revisionFailedReason,
   type RevisionOutcome,
   type StrategyVersion,
 } from "./improve.js";
@@ -987,11 +988,14 @@ async function main(): Promise<void> {
         });
         let raw: string;
         try {
-          raw = await callLlm({
+          const reply = await callLlmWithUsage({
             model,
             system,
             messages: [{ role: "user", content: context }],
+            maxOutputTokens: improveAgent.maxOutputTokens,
+            contextTokens: improveAgent.contextTokens,
           });
+          raw = reply.text;
           llmLog?.({
             kind: "revision_call",
             block,
@@ -999,7 +1003,13 @@ async function main(): Promise<void> {
             system,
             context,
             raw,
+            ...(reply.usage ? { usage: reply.usage } : {}),
           });
+          // In the agent log, not only the opt-in call log: a revision the model wrote from half a
+          // context looks like any other revision, and the fix (contextTokens) is the participant's.
+          // Not a `revision <kind>` reason: those are outcomes, and this call may still have one.
+          for (const warning of reply.warnings)
+            agentLog({ round: block, reason: `llm ${warning}`, state: { model } });
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
           llmLog?.({
@@ -1120,10 +1130,7 @@ async function main(): Promise<void> {
         );
       } catch (error) {
         record(
-          {
-            kind: "rejected",
-            reason: `revision failed: ${error instanceof Error ? error.message : String(error)}`,
-          },
+          { kind: "rejected", reason: revisionFailedReason(error) },
           block,
         );
       } finally {
