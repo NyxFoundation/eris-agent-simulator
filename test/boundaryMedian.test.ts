@@ -70,9 +70,17 @@ const is = (read: ValuationRead, fn: string, address?: Address) =>
 // ---------------------------------------------------------------------------
 
 const UNI_WETH = marketsFor("uniswap").find((m) => m.base === "WETH")!.uniswap!;
-// token0 = WETH (0x5FbD...) < token1 = USDC (0xe7f1...) in the local registry.
-const TICK_LOWER = -201000;
-const TICK_UPPER = -199000;
+// token0 is the lower address, so which of WETH and USDC it is depends on the deployment. The ticks
+// here are written for WETH as token0 (about $2,000 at -200,311) and mirrored when USDC is token0:
+// the same price, the same side of the range.
+const WETH_IS_TOKEN0 = WETH.toLowerCase() < USDC.toLowerCase();
+const orient = (tick: number) => (WETH_IS_TOKEN0 ? tick : -tick);
+const [TOKEN0, TOKEN1] = WETH_IS_TOKEN0 ? [WETH, USDC] : [USDC, WETH];
+const TICK_LOWER = Math.min(orient(-201000), orient(-199000));
+const TICK_UPPER = Math.max(orient(-201000), orient(-199000));
+const USDC_FEE_GROWTH = WETH_IS_TOKEN0
+  ? "feeGrowthGlobal1X128"
+  : "feeGrowthGlobal0X128";
 const LIQUIDITY = 700_000_000_000_000n;
 const TOKEN_ID = 42n;
 
@@ -80,8 +88,8 @@ function uniPosition() {
   return [
     0n,
     "0x0000000000000000000000000000000000000000",
-    WETH,
-    USDC,
+    TOKEN0,
+    TOKEN1,
     UNI_WETH.fee,
     TICK_LOWER,
     TICK_UPPER,
@@ -115,11 +123,12 @@ function principalAt(tick: number): number {
     tickLower: TICK_LOWER,
     tickUpper: TICK_UPPER,
   });
-  return (Number(amount0) / 1e18) * FAIR + Number(amount1) / 1e6;
+  const [weth, usdc] = WETH_IS_TOKEN0 ? [amount0, amount1] : [amount1, amount0];
+  return (Number(weth) / 1e18) * FAIR + Number(usdc) / 1e6;
 }
 
 test("uniswap: an LP position splits at the boundary block's tick", async () => {
-  const tick = -200300;
+  const tick = orient(-200300);
   const { values } = await driveValuation(
     uniswapAdapter.valueAtBlock!(ctx()),
     uniAnswer(tick),
@@ -154,8 +163,8 @@ function windowed(
 }
 
 const WINDOW = [106, 107, 108, 109];
-const TICK_STEADY = -200300;
-const TICK_PUSHED = -199500;
+const TICK_STEADY = orient(-200300);
+const TICK_PUSHED = orient(-199500);
 
 test("uniswap: at a boundary the principal splits at the median tick, not a one-block push", async () => {
   const asked: number[] = [];
@@ -187,18 +196,18 @@ test("uniswap: a move held across most of the window does move the split", async
 
 test("uniswap: uncollected fees stay at the boundary block's tick", async () => {
   // Fee growth only counts inside the range at the tick the pool actually has. With the window
-  // above the range the median split is all USDC, but the fees were earned in range at the boundary
-  // and are still owed.
-  const above = -198000; // > TICK_UPPER
+  // outside the range on its USDC side the median split is all USDC, but the fees were earned in
+  // range at the boundary and are still owed.
+  const above = orient(-198000); // past the range on the all-USDC side
   const feeUsdc = 100n * USDC_UNIT;
-  const global1 = (feeUsdc << 128n) / LIQUIDITY;
+  const globalUsdc = (feeUsdc << 128n) / LIQUIDITY;
   const withFees = (tick: number) => (read: ValuationRead) =>
-    is(read, "feeGrowthGlobal1X128") ? global1 : uniAnswer(tick)(read);
+    is(read, USDC_FEE_GROWTH) ? globalUsdc : uniAnswer(tick)(read);
   const { values } = await driveValuation(
     uniswapAdapter.valueAtBlock!(ctx(windowed(WINDOW, () => withFees(above)))),
     withFees(TICK_STEADY),
   );
-  const fees = Number((global1 * LIQUIDITY) >> 128n) / 1e6;
+  const fees = Number((globalUsdc * LIQUIDITY) >> 128n) / 1e6;
   assert.ok(fees > 99.99);
   assert.ok(
     Math.abs(values[AGENT.id].valueUsdc - (principalAt(above) + fees)) < 1e-6,
