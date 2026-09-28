@@ -67,6 +67,12 @@ export type SimConfig = {
   // jitters block production. Splitting the two is a config change here and a deployment change
   // there, so the seam exists before the measurement rather than after it.
   readRpcUrl: string;
+  // The URL a participant dials, when it is not the one the coordinator dials (issue #156). On the
+  // box that hosts a period, rpcUrl is the raw anvil on loopback -- right for the coordinator, and
+  // the worst thing to publish: in a participant's hands it names their own machine. The coordinator
+  // writes this into the run directory's manifest.json (which the dashboard serves) in place of
+  // rpcUrl / readRpcUrl, and uses it for nothing else. Undefined = publish rpcUrl as it is.
+  publicRpcUrl?: string;
   chainId: number;
   // issue #33 / ADR 0021 §7. Set from `run.chainMode`; the coordinator installs it into the sdk's
   // chain module (setChainMode) so every cheatcode entry point can refuse rather than fail silently.
@@ -403,6 +409,10 @@ export function loadConfig(env = process.env): SimConfig {
       env.ERIS_READ_RPC_URL && env.ERIS_READ_RPC_URL.trim() !== ""
         ? env.ERIS_READ_RPC_URL.trim()
         : rpcUrl,
+    publicRpcUrl:
+      env.ERIS_PUBLIC_RPC_URL && env.ERIS_PUBLIC_RPC_URL.trim() !== ""
+        ? env.ERIS_PUBLIC_RPC_URL.trim()
+        : undefined,
     chainId: intEnv(env.CHAIN_ID, CHAIN_ID),
     chainMode: chainModeEnv(env.ERIS_CHAIN_MODE),
     treasuryPrivateKey:

@@ -119,6 +119,32 @@ export type EnvironmentManifest = {
   participants: ManifestParticipant[];
 };
 
+/** A URL only reachable from the machine that is serving it. */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    const h = new URL(url).hostname;
+    return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The chain endpoints a manifest publishes (issue #156). A manifest is by definition read on someone
+ * else's machine, so it names `run.publicRpcUrl` when the run has one -- the coordinator's own
+ * rpcUrl on the box that hosts a period is its loopback anvil, which in a participant's hands names
+ * their machine and bypasses the gateway that refuses cheatcodes.
+ */
+export function publishedRpc(config: {
+  rpcUrl: string;
+  readRpcUrl: string;
+  publicRpcUrl?: string;
+}): { rpcUrl: string; readRpcUrl: string } {
+  return config.publicRpcUrl
+    ? { rpcUrl: config.publicRpcUrl, readRpcUrl: config.publicRpcUrl }
+    : { rpcUrl: config.rpcUrl, readRpcUrl: config.readRpcUrl };
+}
+
 // Only the venues this run turned on. A participant reading an address for a venue that is not
 // enabled would build against something the environment will not price or accept actions for.
 function contractsFor(protocols: ProtocolId[]): Record<string, unknown> {
@@ -210,8 +236,7 @@ export function buildManifest(opts: {
         "nothing here feeds into it.",
     },
     chain: {
-      rpcUrl: config.rpcUrl,
-      readRpcUrl: config.readRpcUrl,
+      ...publishedRpc(config),
       chainId: config.chainId,
       chainMode: config.chainMode,
       localDeploy: config.localDeploy,

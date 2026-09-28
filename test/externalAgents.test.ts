@@ -7,8 +7,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { validateAgentsFile } from "../core/src/config.js";
-import { buildManifest } from "../core/src/manifest.js";
+import { buildManifest, isLoopbackUrl } from "../core/src/manifest.js";
 import { loadConfig } from "@eris/sdk/config.js";
+import { buildSource } from "@eris/sdk/runConfig.js";
 import { parseStressEvents } from "../core/src/realtime/events.js";
 
 const roster = (agents: unknown[]) => ({ agents });
@@ -238,4 +239,63 @@ test("the manifest carries no key material", () => {
   // a key would arrive in rather than about the shape of the string.
   assert.equal(/privateKey|PRIVATE_KEY|secret|mnemonic/i.test(text), false);
   assert.ok(words.length <= 1, "unexpected 32-byte values in the manifest");
+});
+
+test("the manifest names the public RPC, not the coordinator's loopback, when one is set (issue #156)", () => {
+  const base = {
+    ...loadConfig({
+      ENABLED_PROTOCOLS: "uniswap",
+      ANVIL_RPC_URL: "http://127.0.0.1:8545",
+    }),
+    stressEvents: [],
+    vulnEvents: [],
+  };
+  const local = buildManifest({ config: base, participants: [] });
+  // Unset, nothing changes: a local run publishes the URL it runs on.
+  assert.equal(local.chain.rpcUrl, "http://127.0.0.1:8545");
+  assert.equal(isLoopbackUrl(local.chain.rpcUrl), true);
+
+  const hosted = buildManifest({
+    config: { ...base, publicRpcUrl: "https://rpc.example.org/" },
+    priceFeed: "0x2222222222222222222222222222222222222222",
+    participants: [],
+  });
+  assert.equal(hosted.chain.rpcUrl, "https://rpc.example.org/");
+  // readRpcUrl too: a participant who split reads would otherwise read from the operator's replica
+  // address, which is as unreachable as the loopback.
+  assert.equal(hosted.chain.readRpcUrl, "https://rpc.example.org/");
+  assert.equal(isLoopbackUrl(hosted.chain.rpcUrl), false);
+  // The per-run address the handout could never carry is in the same document.
+  assert.equal(
+    hosted.contracts.priceFeed,
+    "0x2222222222222222222222222222222222222222",
+  );
+});
+
+test("run.publicRpcUrl and ERIS_PUBLIC_RPC_URL both set it, and blank means unset", () => {
+  assert.equal(loadConfig({}).publicRpcUrl, undefined);
+  assert.equal(loadConfig({ ERIS_PUBLIC_RPC_URL: "  " }).publicRpcUrl, undefined);
+  assert.equal(
+    loadConfig({ ERIS_PUBLIC_RPC_URL: "https://rpc.example.org/" }).publicRpcUrl,
+    "https://rpc.example.org/",
+  );
+  assert.equal(
+    loadConfig(buildSource({ run: { publicRpcUrl: "https://yaml.example.org/" } }))
+      .publicRpcUrl,
+    "https://yaml.example.org/",
+  );
+  // It moves only what is published: the coordinator still dials its own rpcUrl.
+  const c = loadConfig({
+    ANVIL_RPC_URL: "http://127.0.0.1:8545",
+    ERIS_PUBLIC_RPC_URL: "https://rpc.example.org/",
+  });
+  assert.equal(c.rpcUrl, "http://127.0.0.1:8545");
+  assert.equal(c.readRpcUrl, "http://127.0.0.1:8545");
+});
+
+test("isLoopbackUrl", () => {
+  for (const u of ["http://127.0.0.1:8545", "http://localhost:8546/", "http://[::1]:8545"])
+    assert.equal(isLoopbackUrl(u), true, u);
+  for (const u of ["https://ascon-rpc.nyx.foundation/", "http://10.0.0.5:8545", "not a url"])
+    assert.equal(isLoopbackUrl(u), false, u);
 });

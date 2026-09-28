@@ -2,6 +2,7 @@
 //
 //   /runs/index.json                 run dirs, newest first; `live: true` marks one in progress
 //   /runs/mode.json                  how this server is configured to show them (audience / standings)
+//   /runs/manifest.json              the environment manifest of the run to connect to (issue #156)
 //   /runs/<id>/<artifact>            the artifact file itself
 //   /runs/<id>/tail/<file>?offset=N  incremental tail of a jsonl/csv artifact (live mode)
 //
@@ -454,6 +455,23 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     return entries;
   }
 
+  /**
+   * The manifest a self-hosted participant starts an agent from (issue #156): the newest live run's,
+   * else the newest run's that has one, among the runs this server admits. On the hosted box that is
+   * the practice period's current segment. A fixed URL, because the file it resolves to moves -- a
+   * new segment every day, a new competition (and a new PriceFeed) at every restart -- and the guide
+   * has to be able to name one command that fetches the right file.
+   */
+  function currentManifest(): string | null {
+    const withManifest = index().filter(
+      (e) =>
+        e.kind !== "matrix" &&
+        fs.existsSync(path.join(root, e.id, "manifest.json")),
+    );
+    const pick = withManifest.find((e) => e.live) ?? withManifest[0];
+    return pick ? resolveInside(`${pick.id}/manifest.json`) : null;
+  }
+
   /** Whether a file path (relative to runs/) belongs to a run or competition the index admits. */
   function admitsPath(rel: string): boolean {
     if (!allowlist) return true;
@@ -616,6 +634,17 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
   ): boolean {
     if (urlPath === "/index.json") {
       send(req, res, JSON.stringify(index()), "application/json", CACHE_SHORT);
+      return true;
+    }
+    if (urlPath === "/manifest.json") {
+      const file = currentManifest();
+      if (!file) {
+        res.statusCode = 404;
+        res.end();
+        return true;
+      }
+      // Short-lived: registrations rewrite it mid-segment, and a restart replaces it altogether.
+      send(req, res, fs.createReadStream(file), "application/json", CACHE_SHORT);
       return true;
     }
     if (urlPath === "/mode.json") {

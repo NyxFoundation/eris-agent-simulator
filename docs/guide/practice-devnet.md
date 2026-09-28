@@ -133,11 +133,21 @@ A non-zero `result` is your ETH. The dashboard's "Find your agent" takes the add
 - **Starting over** — capital spent, or a strategy you want to measure from a clean slate — is the same:
   a new key, a new id. It is scored from the day after, and the old record stays as it was.
 
-### 2. Read the manifest
+### 2. Fetch and read the manifest
 
-`manifest.json` is published by the operator and also written into every run directory. It carries
-where the chain is, what is deployed on it, how long an evaluation interval is, how long the period
-is and where each day ends, what the limits are, and which addresses are registered.
+`manifest.json` is written by the running period and served by the dashboard at a fixed address:
+
+```bash
+curl -fsS -o manifest.json https://<dashboard>/runs/manifest.json    # ascon-dash.nyx.foundation for the hosted period
+```
+
+**Fetch it again whenever the period restarts.** The PriceFeed and the other per-run contracts are
+deployed when the operator's coordinator starts, so every restart (announced on Discord) changes their
+addresses; a manifest from before it points your agent at contracts that no longer exist. The same
+file is in every run directory the dashboard lists, under `runs/<period>/<day>/manifest.json`.
+
+It carries where the chain is, what is deployed on it, how long an evaluation interval is, how long the
+period is and where each day ends, what the limits are, and which addresses are registered.
 
 ```jsonc
 {
@@ -210,6 +220,14 @@ ERIS_RPC_HEADERS='{"X-ASCON-Key":"…"}' \
   and trades (all seven) and the LST's economic clock its `apyBps` is computed on. Without it the
   runtime's defaults are five venues and an hour-long LST block, and it says so at startup when the
   venues differ from the manifest's.
+- `ERIS_RPC_URL` overrides the manifest's `chain.rpcUrl` — for reaching the same gateway another way
+  (a tunnel, a proxy of your own). `ERIS_PRICE_FEED_ADDRESS` does the same for `contracts.priceFeed`.
+  Neither is needed with the manifest the period serves.
+- If the runtime exits with `missing env (… ERIS_PRICE_FEED_ADDRESS …)`, the manifest has no
+  `contracts.priceFeed`: it was not fetched from the running period (see step 2). If preflight
+  cannot reach `127.0.0.1` or `localhost`, the manifest names a loopback address — the operator's
+  own machine — and the period is missing its public URL; say so on Discord and set `ERIS_RPC_URL`
+  to the RPC endpoint from your connection details meanwhile.
 - `ERIS_RUN_DIR` is **your** directory. Your decision log lands there and nowhere else — the
   dashboard cannot show it, and says so rather than rendering an empty panel.
 - On the first start the runtime grants its own venue approvals, because an approval is your
@@ -274,6 +292,8 @@ leaves no trace anyone but you can verify.
 ```bash
 # 1. a chain, and a treasury account genesis prefunded on it
 #    .env.local:  ANVIL_RPC_URL=… CHAIN_ID=… TREASURY_PRIVATE_KEY=0x…
+#    and the URL participants dial, which is what the served manifest names (issue #156):
+#    .env.local:  ERIS_PUBLIC_RPC_URL=https://ascon-rpc.nyx.foundation/
 
 # 2. before anything else, confirm the two assumptions the design rests on
 npm run check:ordering -- --live --rounds 5      # issue #35: does the builder order by fee, and on which field?
@@ -282,9 +302,11 @@ npm run stress:rpc -- --agents 30 --seconds 60 --write   # issue #36: does the r
 # 3. the period — in the foreground while you watch it start
 npm run sim:realtime -- --config config/practice.yaml
 
-# 4. hand out the manifest and credentials, once the period has started
-npm run manifest -- --config config/practice.yaml --public-rpc <gateway URL> --from-run runs/<period>
+# 4. hand out credentials, one participant at a time (the manifest itself is served; see below)
 npm run manifest -- --config config/practice.yaml --participant alice
+#    (the manifest is not handed out: participants fetch <dashboard>/runs/manifest.json, which
+#     names the gateway once ERIS_PUBLIC_RPC_URL is set. By hand, the same file:
+#     npm run manifest -- --config config/practice.yaml --public-rpc <gateway URL> --from-run runs/<period>)
 
 # 5. serve the dashboard
 npm run dashboard:build && npm run dashboard:serve     # :5174

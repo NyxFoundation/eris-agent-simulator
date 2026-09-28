@@ -199,7 +199,13 @@ async function main(): Promise<void> {
     process.stderr.write(
       "[bot] missing env (ERIS_AGENT_PRIVATE_KEY / ERIS_RPC_URL / ERIS_PRICE_FEED_ADDRESS / ERIS_AGENT_DIR)\n" +
         "      Self-hosted? Point ERIS_MANIFEST at the environment manifest and it supplies the\n" +
-        "      RPC URL and PriceFeed address; the key and the agent directory are yours.\n",
+        "      RPC URL and PriceFeed address; the key and the agent directory are yours.\n" +
+        // Issue #156: `npm run manifest` writes a manifest before any coordinator has deployed a
+        // PriceFeed, and it looked complete; this is the line that says which file to use instead.
+        (manifest && !priceFeed
+          ? "      The manifest you gave has no contracts.priceFeed: it was not written by a running\n" +
+            "      period. Fetch the one the period serves: <dashboard>/runs/manifest.json.\n"
+          : ""),
     );
     process.exit(1);
   }

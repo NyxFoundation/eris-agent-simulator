@@ -75,6 +75,7 @@ Keys are **nested lowercase**, mapped to internal env names by `SCHEMA` (`sdk/sr
 | `agentsConfig` | `config/example.yaml` | Roster file when there is no inline `agents:` |
 | `agentsDir` | `example/agents` | Root of the directory convention |
 | `readRpcUrl` | same as `rpcUrl` | Split reads to a replica (`ERIS_READ_RPC_URL`) |
+| `publicRpcUrl` | unset | The RPC the run directory's `manifest.json` names (`ERIS_PUBLIC_RPC_URL`): the gateway participants dial. Unset = `rpcUrl` as it is (issue #156) |
 
 ### `market` (the fair-price OU)
 

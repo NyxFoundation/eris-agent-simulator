@@ -11,6 +11,14 @@
 // for the coordinator, and the single worst thing to hand a participant: it names *their* loopback,
 // and :8545 is the raw anvil rather than the gateway that refuses cheatcodes. A manifest is by
 // definition read on someone else's machine, so it says the public URL or it says something wrong.
+// The flag overrides `run.publicRpcUrl` / ERIS_PUBLIC_RPC_URL, which is what the coordinator uses
+// for the manifest it writes into the run directory (issue #156).
+//
+// This file is not what a participant starts an agent from. The PriceFeed is deployed when the
+// coordinator starts, so a handout produced before that has no `contracts.priceFeed`, and every
+// restart (a new competition) deploys a new one; the runtime exits without it. The manifest a
+// running period serves -- `<dashboard>/runs/manifest.json` -- has it, and names the public URL once
+// ERIS_PUBLIC_RPC_URL is set on the box. This command is for reading what a config will publish.
 //
 // The split is the whole design. The public manifest is copied into READMEs and served by the
 // dashboard out of the run directory, so anything in it is published; a participant's key is handed
@@ -30,23 +38,15 @@ import { initProtocols } from "@eris/sdk/protocols/registry.js";
 import { privateKeyForWalletName } from "./config.js";
 import {
   buildManifest,
+  isLoopbackUrl,
   type EnvironmentManifest,
   MANIFEST_FILENAME,
   MANIFEST_SCHEMA,
+  publishedRpc,
   type ManifestParticipant,
 } from "./manifest.js";
 import { parseCliFlags, resolveRunInputs } from "./runConfig.js";
 import { CURRENT_SEGMENT_FILE } from "./segments.js";
-
-/** A URL only reachable from the machine that is serving it. */
-function isLoopback(url: string): boolean {
-  try {
-    const h = new URL(url).hostname;
-    return h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]";
-  } catch {
-    return false;
-  }
-}
 
 /**
  * The coordinator's manifest for the run at `dir`: a run (or segment) directory, or a competition
@@ -92,8 +92,9 @@ export function runManifestCli(): void {
   const publicRpc = flags["public-rpc"];
   const config =
     publicRpc && publicRpc !== "1"
-      ? { ...rawConfig, rpcUrl: publicRpc, readRpcUrl: publicRpc }
+      ? { ...rawConfig, publicRpcUrl: publicRpc }
       : rawConfig;
+  const { rpcUrl } = publishedRpc(config);
   // The token and venue registries are protocol-driven, and the manifest publishes both.
   initProtocols(config.enabledProtocols);
 
@@ -123,7 +124,7 @@ export function runManifestCli(): void {
       accountAddress(privateKeyForWalletName(config, spec.wallet, spec.id));
     console.log(`agent id : ${spec.id}`);
     console.log(`address  : ${address}`);
-    console.log(`rpc      : ${config.rpcUrl}`);
+    console.log(`rpc      : ${rpcUrl}`);
     console.log(`chainId  : ${config.chainId}`);
     if (spec.address) {
       // Registered by address: there is no key here, and that is the safer arrangement -- a key the
@@ -163,15 +164,17 @@ export function runManifestCli(): void {
     // participant.
     console.error(
       "[manifest] NOTE: built from the config alone -- no PriceFeed address and no period start " +
-        "(both exist only once the coordinator has started). A self-hosted agent cannot start from " +
-        "this file; for the handout of a running period pass --from-run runs/<period>.",
+        "(both exist only once the coordinator has started, and change at every restart). A " +
+        "self-hosted agent cannot start from this file. Hand participants the manifest the running " +
+        "period serves, <dashboard>/runs/manifest.json (docs/guide/practice-devnet.md §2), or build " +
+        "it by hand with --from-run runs/<period>.",
     );
   }
   // Say it out loud rather than shipping a handout that names the reader's own loopback. Not a
   // hard failure: a participant running the whole thing locally has a legitimately local rpcUrl.
   // Checked on the file being written, which under --from-run is the coordinator's own URL unless
-  // --public-rpc replaced it.
-  if (isLoopback(manifest.chain.rpcUrl))
+  // --public-rpc replaced it (or the coordinator had ERIS_PUBLIC_RPC_URL, issue #156).
+  if (isLoopbackUrl(manifest.chain.rpcUrl))
     console.error(
       `[manifest] WARNING: chain.rpcUrl is ${manifest.chain.rpcUrl} — a loopback address.\n` +
         "[manifest] That is correct for a local run and wrong for anything handed to a participant:\n" +

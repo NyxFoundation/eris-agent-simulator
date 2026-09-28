@@ -73,6 +73,7 @@ production start, and the daily and weekly routine. `block-gaps.mjs` (cadence an
 | a chain | `ANVIL_RPC_URL` in `.env.local` | the `ascon-anvil` container of `infra/monitoring` |
 | `CHAIN_ID` | `.env.local` | must match the node |
 | `TREASURY_PRIVATE_KEY` | `.env.local` | only on a real chain; on anvil the endowment is a cheatcode |
+| `ERIS_PUBLIC_RPC_URL` | `.env.local` | the gateway participants dial (`https://ascon-rpc.nyx.foundation/`). The `manifest.json` the dashboard serves at `/runs/manifest.json` names it; unset, it names `ANVIL_RPC_URL` — this box's loopback — and every self-hosted agent dials its own machine (issue #156) |
 | the period | `config/practice.yaml` | the roster, the episodes, the evaluation-interval length (`intervalSeconds`) |
 | the seed | `.env.practice` (`ERIS_PRACTICE_SEED=`) | **gitignored; the unit will not start without it.** Publish it after the period (rules §7.2) |
 | the scenario key | `.env.practice` (`ERIS_SCENARIO_KEY_FILE=`, a file from `competition -- keygen`) | **outside the repo; the unit will not start without it.** The run records only its commitment (ADR 0027) |

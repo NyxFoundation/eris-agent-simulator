@@ -49,6 +49,8 @@ const CONFIGS = [
 const ENVIRONMENT_ONLY = new Set([
   "rpcUrl", // the agent's endpoint arrives as ERIS_RPC_URL
   "readRpcUrl",
+  // Published in the manifest the coordinator writes (issue #156); the runtime dials what that manifest says.
+  "publicRpcUrl",
   "treasuryPrivateKey",
   "externalRoleEthWei",
   "forkUrl",

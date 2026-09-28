@@ -26,6 +26,10 @@ export const SECRET_ENV_KEYS = [
   // secret in the way a key is, but they are per-deployment rather than per-config, which is the
   // same reason ANVIL_RPC_URL lives here: a committed regime YAML must not name one operator's node.
   "ERIS_READ_RPC_URL",
+  // The public URL the published manifest names (issue #156): the gateway in front of the chain, as
+  // participants reach it. Per-deployment for the same reason -- the rehearsal box and the hosted
+  // one publish different hosts from the same committed config/practice.yaml.
+  "ERIS_PUBLIC_RPC_URL",
   "CHAIN_ID",
   "TREASURY_PRIVATE_KEY",
   "ANTHROPIC_API_KEY",
@@ -88,6 +92,9 @@ const SCHEMA: Record<string, string> = {
   // reason: it belongs to the deployment, not to the regime. Setting it here wins, like every other
   // schema key -- so a committed regime YAML should leave it out and let .env.local name the chain.
   "run.chainId": "CHAIN_ID",
+  // Issue #156: what the published manifest names as the chain (default: the coordinator's own
+  // rpcUrl). Also readable from env, which is where a committed config should leave it.
+  "run.publicRpcUrl": "ERIS_PUBLIC_RPC_URL",
   "run.externalRoleEthWei": "ERIS_EXTERNAL_ROLE_ETH_WEI",
   "run.resetUnit": "ERIS_RESET_UNIT", // continuous | scenario (ADR 0020 §1)
   "run.skipReset": "ERIS_SKIP_RESET",

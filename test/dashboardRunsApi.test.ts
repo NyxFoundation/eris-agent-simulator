@@ -507,3 +507,42 @@ test("modeFromEnv reads the two switches", () => {
     standings: false,
   });
 });
+
+test("/manifest.json is the manifest of the run to connect to, among the admitted ones (issue #156)", async () => {
+  const root = fixtureRuns();
+  // Yesterday's segment (finished) and today's (live) each wrote a manifest; so did an operator's
+  // smoke run outside the period, which is live too.
+  const day0 = join(root, "practice-period", "day0");
+  const day1 = join(root, "practice-period", "day1");
+  mkdirSync(day0, { recursive: true });
+  mkdirSync(day1, { recursive: true });
+  writeFileSync(join(day0, "summary.json"), JSON.stringify({ runId: "day0" }));
+  writeFileSync(join(day0, "manifest.json"), JSON.stringify({ day: 0 }));
+  writeFileSync(join(day1, "events.jsonl"), '{"type":"run_started_realtime"}\n');
+  writeFileSync(join(day1, "manifest.json"), JSON.stringify({ day: 1 }));
+  writeFileSync(
+    join(root, "2026-11-02T10-00-00-000Z", "manifest.json"),
+    JSON.stringify({ day: "smoke" }),
+  );
+  const { get, close } = await serve(root, true, ["practice-period"]);
+  try {
+    const res = await get("/manifest.json");
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.text), { day: 1 }, "the live segment's, not the smoke run's");
+    assert.equal(res.headers.get("content-type"), "application/json");
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("/manifest.json is a 404 when no admitted run has written one", async () => {
+  const root = fixtureRuns();
+  const { get, close } = await serve(root, true, ["matrix-2026-11-01"]);
+  try {
+    assert.equal((await get("/manifest.json")).status, 404);
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
