@@ -44,7 +44,11 @@ Streaming is relayed, not refused. A response the provider streams — SSE on `/
 | call | how long the proxy waits | set by |
 |---|---|---|
 | not streamed | the whole answer: `upstreamTimeoutMs`, default 300000 (5 min). Higher values do not help: Node's fetch gives up after 300 s without response headers, and a non-streamed answer's headers arrive only once it is complete | operator (`models.yaml`) |
-| streamed | silence only: `streamIdleTimeoutMs` without a byte, before the first or between any two chunks (default: `upstreamTimeoutMs`). No total — the epoch is one: when it ends the agent is stopped and its connection closes | operator (`models.yaml`) |
+| streamed | silence only: `streamIdleTimeoutMs` without a byte, before the first or between any two chunks (default: `upstreamTimeoutMs`). No total — the epoch is one: when it ends the agent is stopped and its connection closes. Size: cut past `maxStreamBytes` (default 32 MiB), so one call's record stays finite | operator (`models.yaml`) |
+
+A slow reader is not buffered for: when the agent's connection stops draining, the proxy stops pulling
+from the provider until it does, and an agent that reads nothing for `streamIdleTimeoutMs` is treated
+like a provider that sends nothing.
 
 **An agent that stops waiting stops the generation.** When the agent's connection closes before the
 answer is complete — its own timeout, or the epoch ending — the proxy aborts the upstream request,

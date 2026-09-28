@@ -15,6 +15,7 @@
 #                      most it can be: Node's fetch stops waiting for response headers at 300 s.
 # streamIdleTimeoutMs  a streamed call: the longest silence, before the first chunk or between two.
 #                      No total -- the epoch ends it. Defaults to upstreamTimeoutMs.
+# maxStreamBytes       a streamed call's size, past which it is cut (default 33554432 = 32 MiB).
 maxCallsPerMinute: 30
 upstreamTimeoutMs: 300000
 streamIdleTimeoutMs: 300000

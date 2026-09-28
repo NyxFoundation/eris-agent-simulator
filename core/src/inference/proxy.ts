@@ -66,10 +66,15 @@ export type ProxyConfig = {
   // is no total; the epoch is one. Defaults to upstreamTimeoutMs, so a streamed call is never cut
   // sooner than the same call not streamed would be.
   streamIdleTimeoutMs?: number;
+  // A streamed call's size. With no bound on its length, this is what keeps one call's record (held
+  // whole, written as one line) finite. Defaults to MAX_STREAM_BYTES.
+  maxStreamBytes?: number;
 };
 
 // The wait participants are told a call may take (issue #166): five minutes.
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 300_000;
+// 32 MiB: far beyond any answer a model gives, and eight times the cap on a request body.
+export const MAX_STREAM_BYTES = 32 * 1024 * 1024;
 
 export type ProxyOptions = {
   config: ProxyConfig;
@@ -163,10 +168,10 @@ export function loadProxyConfig(doc: unknown): ProxyConfig {
     if (typeof m.upstream !== "string" || !/^https?:\/\//.test(m.upstream))
       throw new Error(`model ${m.name}: upstream must be an http(s) URL`);
   }
-  for (const key of ["upstreamTimeoutMs", "streamIdleTimeoutMs"] as const) {
+  for (const key of ["upstreamTimeoutMs", "streamIdleTimeoutMs", "maxStreamBytes"] as const) {
     const v = d[key];
     if (v !== undefined && !(Number.isFinite(v) && v > 0))
-      throw new Error(`${key} must be a positive number of milliseconds`);
+      throw new Error(`${key} must be a positive number`);
   }
   const upstreamTimeoutMs = d.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
   return {
@@ -174,6 +179,7 @@ export function loadProxyConfig(doc: unknown): ProxyConfig {
     maxCallsPerMinute: d.maxCallsPerMinute ?? 0,
     upstreamTimeoutMs,
     streamIdleTimeoutMs: d.streamIdleTimeoutMs ?? upstreamTimeoutMs,
+    maxStreamBytes: d.maxStreamBytes ?? MAX_STREAM_BYTES,
   };
 }
 
@@ -381,6 +387,7 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     // Whichever comes first names the reason, so the record says which it was.
     const totalMs = config.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
     const idleMs = config.streamIdleTimeoutMs ?? totalMs;
+    const maxBytes = config.maxStreamBytes ?? MAX_STREAM_BYTES;
     const upstreamAbort = new AbortController();
     let stopReason: string | undefined;
     const stop = (reason: string): void => {
@@ -423,14 +430,38 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
         res.flushHeaders();
         const decoder = new TextDecoder();
         let text = "";
+        let bytes = 0;
         try {
           const reader = r.body.getReader();
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
+            bytes += value.byteLength;
+            if (bytes > maxBytes) {
+              stop(`stream exceeded ${maxBytes} bytes`);
+              throw new Error(stopReason);
+            }
             arm(idleMs, `upstream stream went quiet for ${idleMs} ms`);
             text += decoder.decode(value, { stream: true });
-            if (!res.destroyed) res.write(value);
+            if (!res.destroyed && !res.write(value)) {
+              // The agent reads slower than the model writes. Stop pulling until it catches up
+              // rather than buffering the difference here -- and time the agent while waiting, not
+              // the upstream, which is not the one that went quiet.
+              arm(idleMs, `client stopped reading for ${idleMs} ms`);
+              await new Promise<void>((resume) => {
+                const go = (): void => {
+                  res.off("drain", go);
+                  res.off("close", go);
+                  upstreamAbort.signal.removeEventListener("abort", go);
+                  resume();
+                };
+                res.on("drain", go);
+                res.on("close", go);
+                upstreamAbort.signal.addEventListener("abort", go);
+              });
+              if (stopReason !== undefined) throw new Error(stopReason);
+              arm(idleMs, `upstream stream went quiet for ${idleMs} ms`);
+            }
           }
           text += decoder.decode();
         } finally {
@@ -458,8 +489,10 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     }
     if (relayed) {
       // Headers are out, so a failure can no longer be a status: the stream is cut instead, which
-      // is how the agent's client learns it is incomplete.
+      // is how the agent's client learns it is incomplete. Cut by ending the socket, not destroying
+      // it: a destroy drops what was written and not yet sent, and the record says the agent got it.
       if (error === undefined) res.end();
+      else if (res.socket && !res.socket.destroyed) res.socket.end();
       else res.destroy();
     }
     record({

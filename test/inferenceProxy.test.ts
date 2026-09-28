@@ -430,10 +430,77 @@ test("an agent that stops waiting aborts the upstream request, streamed or not",
   );
 });
 
+test("an agent that reads slowly is not buffered for: the proxy stops pulling from the upstream", { timeout: 20_000 }, async () => {
+  // 400 chunks of 64 KiB (25 MiB), produced only as fast as they are pulled.
+  const CHUNK = 64 * 1024;
+  const TOTAL = 400;
+  let pulled = 0;
+  await withProxy(
+    {
+      config: unlimited,
+      upstream: () =>
+        new Response(
+          new ReadableStream<Uint8Array>(
+            {
+              pull(controller) {
+                if (pulled === TOTAL) return controller.close();
+                pulled++;
+                controller.enqueue(new Uint8Array(CHUNK).fill(0x61));
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    },
+    async (base) => {
+      const r = await post(base, "/v1/chat/completions", { model: "gpt-x", stream: true, messages: [] });
+      // The agent reads nothing for a while. A proxy that ignored backpressure would have pulled all
+      // 25 MiB into memory by now; one that waits for `drain` stops at what the socket holds.
+      await sleep(500);
+      assert.ok(pulled < TOTAL / 2, `pulled ${pulled} of ${TOTAL} chunks while the agent read nothing`);
+      let received = 0;
+      const reader = r.body!.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+      }
+      assert.equal(received, TOTAL * CHUNK, "and all of it arrives once the agent reads");
+    },
+  );
+});
+
+test("a stream past maxStreamBytes is cut, and recorded and replayed with the same cut", { timeout: 10_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-size-"));
+  const small = { ...unlimited, maxStreamBytes: 100 };
+  const chunk = `data: ${"x".repeat(52)}\n\n`; // 60 bytes
+  await withProxy(
+    {
+      recordDir: dir,
+      config: small,
+      upstream: (seen) => streamed(seen, "text/event-stream", [{ text: chunk }, { text: chunk }, { text: chunk }]),
+    },
+    async (base, seen) => {
+      const r = await post(base, "/v1/chat/completions", { model: "gpt-x", stream: true, messages: [] }, { "x-eris-agent": "alice" });
+      const reader = r.body!.getReader();
+      assert.equal(await readChunk(reader), chunk);
+      await assert.rejects(reader.read());
+      await waitFor(() => seen[0].signal?.aborted === true, "the upstream request to be aborted");
+      await waitFor(() => recorded(dir, "alice").length === 1, "the record");
+      const [rec] = recorded(dir, "alice");
+      assert.equal(rec.error, "stream exceeded 100 bytes");
+      assert.equal(rec.response, chunk);
+    },
+  );
+});
+
 test("the proxy's timeouts default to the five-minute wait and are validated", () => {
   const d = loadProxyConfig({ models: config.models });
   assert.equal(d.upstreamTimeoutMs, 300_000);
   assert.equal(d.streamIdleTimeoutMs, 300_000, "idle defaults to the non-streamed bound");
   assert.equal(loadProxyConfig({ models: config.models, upstreamTimeoutMs: 90_000 }).streamIdleTimeoutMs, 90_000);
   assert.throws(() => loadProxyConfig({ models: config.models, streamIdleTimeoutMs: 0 }), /streamIdleTimeoutMs/);
+  assert.equal(d.maxStreamBytes, 32 * 1024 * 1024);
+  assert.throws(() => loadProxyConfig({ models: config.models, maxStreamBytes: -1 }), /maxStreamBytes/);
 });
