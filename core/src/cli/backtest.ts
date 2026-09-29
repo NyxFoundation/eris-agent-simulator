@@ -488,7 +488,9 @@ async function main(): Promise<void> {
     const doc = loadRegimeDoc(scenario);
     const effective: RegimeDoc = {
       ...doc,
-      run: { ...(doc.run ?? {}), ...runOverrides, seed: scenario.seed },
+      // `regime` names the streams with the seed (issue #186): without it every regime run on the
+      // same seed draws the same price path and flow.
+      run: { ...(doc.run ?? {}), ...runOverrides, seed: scenario.seed, regime: scenario.regime },
       ...(rosterAgents !== undefined ? { agents: rosterAgents } : {}),
     };
     const path = join(

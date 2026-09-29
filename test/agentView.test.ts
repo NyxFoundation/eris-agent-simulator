@@ -74,6 +74,7 @@ const ENVIRONMENT_ONLY = new Set([
   "runMode",
   "agentSandbox",
   "resetUnit",
+  "scenarioRegime",
   "prewarmBlocks",
   "ou",
   "scoreEvery",

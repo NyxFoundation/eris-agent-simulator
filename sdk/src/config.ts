@@ -182,6 +182,11 @@ export type SimConfig = {
   // mode produced it, because the two are not comparable (the epoch count per world differs, and
   // lambda is calibrated per mode -- ADR 0020 Negative).
   resetUnit: ResetUnit;
+  // The regime this run realizes (ERIS_SCENARIO_REGIME / `run.regime`; issue #186). Names every
+  // keyed stream alongside the seed, so two regimes with the same seed draw different worlds. The
+  // backtest runner sets it per scenario; empty for a run that is not one of a regime's scenarios.
+  // Environment-only: an agent that read it would know the regime.
+  scenarioRegime: string;
   // Before the competition starts, run a market loop of N blocks with only the flow bot to warm the
   // protocols' working set (ADR 0006 Risks anvil cold-fetch mitigation). The competition-phase mine
   // then avoids hitting upstream fetches. 0 disables it (ERIS_PREWARM_BLOCKS).
@@ -476,6 +481,7 @@ export function loadConfig(env = process.env): SimConfig {
     runMode: env.ERIS_RUN_MODE === "backtest" ? "backtest" : "realtime",
     agentSandbox: agentSandboxEnv(env.ERIS_AGENT_SANDBOX),
     resetUnit: resetUnitEnv(env.ERIS_RESET_UNIT),
+    scenarioRegime: env.ERIS_SCENARIO_REGIME ?? "",
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
