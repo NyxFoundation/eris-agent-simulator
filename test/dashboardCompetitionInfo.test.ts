@@ -2,17 +2,22 @@
 // registration cutoff the header obeys, the prize totals against the rules, and the rules anchors.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   LEADERBOARD_TOTAL_JPY,
   PRIZE_TOTAL_JPY,
   REPORT_TOTAL_JPY,
   SCHEDULE,
+  SUBMISSION_STEPS,
+  guideSectionUrl,
   guideUrl,
   nextMilestone,
   phaseStatus,
   registrationOpen,
   rulesUrl,
+  stepStatus,
+  submissionClosed,
 } from "../dashboard/src/data/competitionInfo.js";
 
 const jst = (iso: string) => Date.parse(`${iso}+09:00`);
@@ -71,4 +76,66 @@ test("rules links use ascon.dev's numbered-heading anchors, in the viewer's lang
   assert.equal(rulesUrl("ja"), "https://ascon.dev/rules");
   assert.match(guideUrl("en"), /docs\/competition-start\.en\.md$/);
   assert.match(guideUrl("ja"), /docs\/competition-start\.md$/);
+});
+
+const step = (key: string) => {
+  const found = SUBMISSION_STEPS.find((s) => s.key === key);
+  assert.ok(found, key);
+  return found;
+};
+
+test("a step with a window says whether it is open and for how many JST days", () => {
+  assert.deepEqual(stepStatus(step("register"), jst("2026-09-29T12:00:00")), {
+    kind: "open",
+    daysLeft: 25,
+  });
+  assert.deepEqual(stepStatus(step("register"), jst("2026-10-24T23:59:00")), {
+    kind: "open",
+    daysLeft: 0,
+  });
+  assert.deepEqual(stepStatus(step("register"), jst("2026-10-25T00:00:00")), {
+    kind: "closed",
+  });
+  assert.deepEqual(stepStatus(step("submit"), jst("2026-09-20T12:00:00")), {
+    kind: "before",
+    day: "2026-09-23",
+  });
+  assert.deepEqual(stepStatus(step("submit"), jst("2026-10-31T23:00:00")), {
+    kind: "open",
+    daysLeft: 0,
+  });
+});
+
+test("the API key form opens with the submission period and has no stated end", () => {
+  assert.deepEqual(stepStatus(step("apiKey"), jst("2026-09-22T23:59:00")), {
+    kind: "before",
+    day: "2026-09-23",
+  });
+  assert.deepEqual(stepStatus(step("apiKey"), jst("2026-11-05T12:00:00")), {
+    kind: "open",
+    daysLeft: null,
+  });
+  assert.equal(stepStatus(step("build"), jst("2026-09-29T12:00:00")), null);
+});
+
+test("the steps collapse once the submission period is over", () => {
+  assert.equal(submissionClosed(jst("2026-10-31T23:59:59")), false);
+  assert.equal(submissionClosed(jst("2026-11-01T00:00:00")), true);
+});
+
+test("step guide links point at the guide's own heading anchors", () => {
+  const zip = step("zip");
+  assert.ok(zip.guide);
+  assert.match(guideSectionUrl("en", zip.guide), /competition-start\.en\.md#10-submitting$/);
+  assert.match(guideSectionUrl("ja", zip.guide), /competition-start\.md#10-提出$/);
+});
+
+test("every step's guide anchor is in the guide's table of contents, in both languages", () => {
+  const ja = readFileSync(new URL("../docs/competition-start.md", import.meta.url), "utf8");
+  const en = readFileSync(new URL("../docs/competition-start.en.md", import.meta.url), "utf8");
+  for (const s of SUBMISSION_STEPS) {
+    if (!s.guide) continue;
+    assert.ok(ja.includes(`(#${s.guide.ja})`), `ja anchor #${s.guide.ja}`);
+    assert.ok(en.includes(`(#${s.guide.en})`), `en anchor #${s.guide.en}`);
+  }
 });

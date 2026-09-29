@@ -220,3 +220,115 @@ export function termsUrl(locale: Locale): string {
 export function guideUrl(locale: Locale): string {
   return `${REPO_URL}/blob/main/docs/competition-start${locale === "en" ? ".en" : ""}.md`;
 }
+
+// ---- how to submit (rules §1, §2.1, §2.2, §2.7; the participant guide) ----
+
+/**
+ * The steps from registering to the freeze, in order. A step with a `window` is open while that
+ * schedule phase is; one with only `from` opens on that day and has no end the rules state. The
+ * dashboard cannot know how far a participant has got, so it never points at "your" step — it says
+ * which steps are open today.
+ */
+export interface SubmissionStep {
+  key:
+    | "register"
+    | "apiKey"
+    | "build"
+    | "test"
+    | "practice"
+    | "zip"
+    | "submit"
+    | "freeze";
+  /** Not needed to submit (the practice environment, §2.7). */
+  optional?: boolean;
+  window?: SchedulePhase["key"];
+  from?: string;
+  /** Heading anchor in docs/competition-start(.en).md. */
+  guide?: { ja: string; en: string; section: string };
+  /** The one command the step is about, shown as is. */
+  command?: string;
+}
+
+export const SUBMISSION_STEPS: SubmissionStep[] = [
+  // §1: joining the ASCON Discord channel and submitting the registration form.
+  { key: "register", window: "registration" },
+  // The inference API key is registered once, on its own form (Participation Terms Art. 8-2 keeps
+  // it apart from everything else); that form accepts keys from the start of the submission period.
+  { key: "apiKey", from: "2026-09-23" },
+  {
+    key: "build",
+    guide: {
+      ja: "3-提出できる最小のエージェント",
+      en: "3-the-smallest-submittable-agent",
+      section: "3",
+    },
+  },
+  {
+    key: "test",
+    guide: {
+      ja: "6-開発の反復-回す読む直す",
+      en: "6-the-development-loop-run-read-fix",
+      section: "6",
+    },
+  },
+  // §2.7: the practice environment runs through the submission period.
+  {
+    key: "practice",
+    optional: true,
+    window: "submission",
+    guide: {
+      ja: "9-練習-devnet任意",
+      en: "9-the-practice-devnet-optional",
+      section: "9",
+    },
+  },
+  {
+    key: "zip",
+    command: "npm run bundle:agent <id>",
+    guide: { ja: "10-提出", en: "10-submitting", section: "10" },
+  },
+  // §2.2: up to five a day, each accepted or not within seconds of sending.
+  { key: "submit", window: "submission" },
+  // §2.2: the one accepted last when the period ends is evaluated; agents are frozen.
+  { key: "freeze" },
+];
+
+export type StepStatus =
+  | { kind: "before"; day: string }
+  | { kind: "open"; daysLeft: number | null }
+  | { kind: "closed" };
+
+/** Whether a step can be done today, and for how many more JST days. Null for a step with no date. */
+export function stepStatus(step: SubmissionStep, nowMs: number): StepStatus | null {
+  if (step.window) {
+    const phase = SCHEDULE.find((p) => p.key === step.window);
+    if (!phase) return null;
+    const status = phaseStatus(phase, nowMs);
+    if (status === "upcoming") return { kind: "before", day: phase.first };
+    if (status === "done") return { kind: "closed" };
+    return {
+      kind: "open",
+      daysLeft: jstDayIndex(jstDayStart(phase.last)) - jstDayIndex(nowMs),
+    };
+  }
+  if (step.from) {
+    return nowMs < jstDayStart(step.from)
+      ? { kind: "before", day: step.from }
+      : { kind: "open", daysLeft: null };
+  }
+  return null;
+}
+
+/** Past the end of the submission period: agents are frozen and the steps are history. */
+export function submissionClosed(nowMs: number): boolean {
+  const submission = SCHEDULE.find((p) => p.key === "submission");
+  return submission !== undefined && phaseStatus(submission, nowMs) === "done";
+}
+
+/** The participant guide at one section, in the viewer's language. */
+export function guideSectionUrl(
+  locale: Locale,
+  guide: NonNullable<SubmissionStep["guide"]>,
+): string {
+  return `${guideUrl(locale)}#${locale === "en" ? guide.en : guide.ja}`;
+}

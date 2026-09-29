@@ -5,11 +5,10 @@
 // a drawer; registration was not linked anywhere. The name is ASCON, the competition's, because
 // that is what a participant arrives looking for (ascon.dev); "Eris" is the simulator underneath.
 //
-// Below `MOBILE` the page links fold into a menu, together with the competition picker from the
-// sidebar. Registration and the language stay on the bar at every width.
+// Below `MOBILE` the page links fold into a menu. Registration and the language stay on the bar at
+// every width.
 
 import { useEffect, useState } from "react";
-import { SidebarPanel } from "@/components/Sidebar";
 import {
   DISCORD_URL,
   REGISTRATION_FORM_URL,
@@ -274,13 +273,7 @@ export function SiteHeader({ activePage }: { activePage?: NavKey }) {
   if (!mobile) {
     return (
       <header style={BAR}>
-        {/* The brand sits over the sidebar column, so the page links start over the page. */}
-        <div
-          style={{
-            width: "calc(var(--sidebar-w) - var(--space-4) - 12px)",
-            flexShrink: 0,
-          }}
-        >
+        <div style={{ flexShrink: 0, marginRight: "12px" }}>
           <Brand />
         </div>
         <nav
@@ -399,7 +392,7 @@ export function SiteHeader({ activePage }: { activePage?: NavKey }) {
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                aria-label={t("sidebar.close")}
+                aria-label={t("picker.close")}
                 style={{
                   width: "34px",
                   height: "34px",
@@ -429,7 +422,6 @@ export function SiteHeader({ activePage }: { activePage?: NavKey }) {
                 />
               ))}
             </nav>
-            <SidebarPanel activePage={activePage} fill={false} />
           </div>
         </>
       )}

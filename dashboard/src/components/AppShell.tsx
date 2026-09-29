@@ -1,13 +1,11 @@
+import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader, type NavKey } from "@/components/SiteHeader";
-import { Sidebar } from "@/components/Sidebar";
-import { useIsMobile } from "@/lib/breakpoints";
 
 /**
- * The frame every page sits in: the header across the top, then the sidebar and the page.
- *
- * Two arrangements. On a wide screen the sidebar (the competition picker) is a column beside the
- * page, under the header. Below `MOBILE` there is no column: the header folds the page links and the
- * picker into its menu, and the page gets the whole width.
+ * The frame every page sits in: the header across the top, the page at full width, a one-line
+ * footer. There is no sidebar (issue #183): the competition picker sits beside the competition's
+ * name on the overview and the standings, and the world switcher in the interval bar on the
+ * scenario-level pages.
  */
 export function AppShell({
   activePage,
@@ -16,7 +14,6 @@ export function AppShell({
   activePage?: NavKey;
   children: React.ReactNode;
 }) {
-  const mobile = useIsMobile();
   return (
     <div
       style={{
@@ -27,19 +24,17 @@ export function AppShell({
       }}
     >
       <SiteHeader activePage={activePage} />
-      <div style={{ flex: 1, display: "flex", alignItems: "stretch", minWidth: 0 }}>
-        {!mobile && <Sidebar activePage={activePage} />}
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
-          {children}
-        </div>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        {children}
       </div>
+      <SiteFooter />
     </div>
   );
 }

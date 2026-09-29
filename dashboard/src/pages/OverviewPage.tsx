@@ -9,6 +9,7 @@
 
 import { useMemo } from "react";
 import { AppShell, PAGE_MAIN } from "@/components/AppShell";
+import { CompetitionPicker } from "@/components/CompetitionPicker";
 import { Panel, toneColor } from "@/components/competitionUi";
 import {
   CONSTRAINTS,
@@ -22,12 +23,18 @@ import {
   PRIZE_SCORE_FLOOR,
   PRIZE_SCORE_FLOOR_FROM_RANK,
   PRIZE_TOTAL_JPY,
+  REGISTRATION_FORM_URL,
   REPO_URL,
   REPORT_PRIZES_JPY,
   REPORT_TOTAL_JPY,
   SCHEDULE,
   SCORING,
   SITE_URL,
+  SUBMISSION_STEPS,
+  guideSectionUrl,
+  stepStatus,
+  submissionClosed,
+  type SubmissionStep,
   guideUrl,
   jstDayStart,
   nextMilestone,
@@ -37,12 +44,13 @@ import {
   type PhaseStatus,
 } from "@/data/competitionInfo";
 import { useMode } from "@/data/mode";
-import { buildStandings } from "@/data/standings";
+import { buildStandings, completedOrdinals } from "@/data/standings";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { useLocale, type Locale } from "@/i18n/locale";
 import { t, type MessageKey } from "@/i18n/messages";
 import {
+  formatClock,
   formatJpy,
   formatJpyShort,
   formatJstDay,
@@ -262,22 +270,225 @@ function SchedulePanel({ now, locale }: { now: number; locale: Locale }) {
   );
 }
 
+// ---- how to submit ----
+
+function stepStatusLabel(step: SubmissionStep, now: number, locale: Locale) {
+  const status = stepStatus(step, now);
+  if (!status) return null;
+  if (status.kind === "before")
+    return { text: t("overview.steps.before", { day: formatJstDay(status.day, locale) }), tone: "var(--text-tertiary)" };
+  if (status.kind === "closed")
+    return { text: t("overview.steps.closed"), tone: "var(--text-disabled)" };
+  const running = step.key === "practice";
+  const text =
+    status.daysLeft === null
+      ? t("overview.steps.openNoEnd")
+      : status.daysLeft <= 0
+        ? t(running ? "overview.steps.runningToday" : "overview.steps.openToday")
+        : status.daysLeft === 1
+          ? t(running ? "overview.steps.runningOne" : "overview.steps.openOne")
+          : t(running ? "overview.steps.running" : "overview.steps.open", {
+              n: status.daysLeft,
+            });
+  return { text, tone: "var(--pink-300)" };
+}
+
+function StepsPanel({ now, locale }: { now: number; locale: Locale }) {
+  const submission = SCHEDULE.find((p) => p.key === "submission");
+  const lastDay = submission ? formatJstDay(submission.last, locale) : "";
+  // Once the period is over the steps are history: one line says so and what it means.
+  if (submissionClosed(now))
+    return (
+      <Panel title={t("overview.steps.title")}>
+        <p
+          style={{
+            margin: 0,
+            padding: "14px 16px",
+            font: "var(--text-sm) var(--font-sans)",
+            color: "var(--text-secondary)",
+            lineHeight: 1.6,
+          }}
+        >
+          {t("overview.steps.closedAll", { day: lastDay })}
+        </p>
+      </Panel>
+    );
+
+  return (
+    <Panel
+      title={t("overview.steps.title")}
+      info={<TipText>{t("overview.steps.tip")}</TipText>}
+    >
+      <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
+        {SUBMISSION_STEPS.map((step, i) => {
+          const status = stepStatusLabel(step, now, locale);
+          const open = stepStatus(step, now)?.kind === "open";
+          const links: { label: string; href: string }[] = [];
+          if (step.guide)
+            links.push({
+              label: t("overview.steps.guide", { n: step.guide.section }),
+              href: guideSectionUrl(locale, step.guide),
+            });
+          if (step.key === "register" && open)
+            links.push({
+              label: t("overview.steps.registrationForm"),
+              href: REGISTRATION_FORM_URL,
+            });
+          if (
+            step.key === "register" ||
+            step.key === "apiKey" ||
+            step.key === "practice" ||
+            step.key === "submit"
+          )
+            links.push({ label: t("overview.steps.discord"), href: DISCORD_URL });
+          return (
+            <li
+              key={step.key}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "26px minmax(0, 1fr)",
+                columnGap: "10px",
+                padding: "11px 16px",
+                borderBottom: "1px solid var(--border-subtle)",
+                opacity: step.optional ? 0.75 : 1,
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  width: "22px",
+                  height: "22px",
+                  borderRadius: "50%",
+                  border: `1px solid ${open ? "var(--pink-500)" : "var(--border-strong)"}`,
+                  color: open ? "var(--pink-300)" : "var(--text-tertiary)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
+                }}
+              >
+                {i + 1}
+              </span>
+              <span
+                style={{ display: "flex", flexDirection: "column", gap: "3px", minWidth: 0 }}
+              >
+                <span
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "baseline",
+                    columnGap: "10px",
+                    rowGap: "2px",
+                  }}
+                >
+                  <span
+                    style={{
+                      font: "var(--weight-semibold) var(--text-sm) var(--font-sans)",
+                      color: "var(--text-primary)",
+                    }}
+                  >
+                    {t(`overview.steps.${step.key}.name` as MessageKey, {
+                      day: lastDay,
+                    })}
+                    {step.optional && (
+                      <span
+                        style={{
+                          marginLeft: "6px",
+                          font: "var(--text-xs) var(--font-mono)",
+                          color: "var(--text-tertiary)",
+                        }}
+                      >
+                        {t("overview.steps.optional")}
+                      </span>
+                    )}
+                  </span>
+                  {status && (
+                    <span
+                      style={{
+                        font: "var(--text-xs) var(--font-mono)",
+                        color: status.tone,
+                      }}
+                    >
+                      {status.text}
+                    </span>
+                  )}
+                </span>
+                <span
+                  style={{
+                    font: "var(--text-xs) var(--font-sans)",
+                    color: "var(--text-secondary)",
+                    lineHeight: 1.55,
+                  }}
+                >
+                  {t(`overview.steps.${step.key}.body` as MessageKey, {
+                    n: CONSTRAINTS.submissionsPerDay,
+                  })}
+                </span>
+                {step.command && (
+                  <code
+                    style={{
+                      alignSelf: "flex-start",
+                      maxWidth: "100%",
+                      overflowX: "auto",
+                      padding: "3px 8px",
+                      borderRadius: "var(--radius-sm)",
+                      background: "var(--bg-sunken)",
+                      border: "1px solid var(--border-subtle)",
+                      font: "var(--text-xs) var(--font-mono)",
+                      color: "var(--text-primary)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {step.command}
+                  </code>
+                )}
+                {links.length > 0 && (
+                  <span
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "4px 12px",
+                      font: "var(--text-xs) var(--font-mono)",
+                    }}
+                  >
+                    {links.map((link) => (
+                      <External key={link.href} href={link.href}>
+                        {link.label} ↗
+                      </External>
+                    ))}
+                  </span>
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </Panel>
+  );
+}
+
 // ---- the three rule cards ----
 
 function RuleCard({
   title,
   gist,
+  definition,
   facts,
   tip,
   locale,
   section,
+  rulesTerm,
 }: {
   title: string;
   gist: string;
+  /** What the gist's own word means, in one line under it. */
+  definition?: string;
   facts: string;
   tip: React.ReactNode;
   locale: Locale;
   section: string;
+  /** The rules' word for what the card calls something else, beside the link. */
+  rulesTerm?: string;
 }) {
   return (
     <section
@@ -314,6 +525,17 @@ function RuleCard({
       >
         {gist}
       </span>
+      {definition && (
+        <span
+          style={{
+            font: "var(--text-sm) var(--font-sans)",
+            color: "var(--text-secondary)",
+            lineHeight: 1.5,
+          }}
+        >
+          {definition}
+        </span>
+      )}
       <span
         style={{
           font: "var(--text-xs) var(--font-mono)",
@@ -324,9 +546,14 @@ function RuleCard({
         {facts}
       </span>
       <span
-        style={{ marginTop: "auto", font: "var(--text-xs) var(--font-mono)" }}
+        style={{
+          marginTop: "auto",
+          font: "var(--text-xs) var(--font-mono)",
+          color: "var(--text-tertiary)",
+        }}
       >
         <RulesLink locale={locale} section={section} />
+        {rulesTerm ? ` · ${rulesTerm}` : null}
       </span>
     </section>
   );
@@ -476,16 +703,24 @@ function TopStandings({ now }: { now: number }) {
   // same switch the standings page obeys. Until the mode is known, nothing is shown, and the
   // competition is not even loaded: on the public box that load is the heaviest thing a visit to
   // the landing page could ask for.
-  return mode.standings ? <TopStandingsTable now={now} /> : null;
+  // The competition picker still has to be reachable when there is no table to put it on.
+  return mode.standings ? (
+    <TopStandingsTable now={now} />
+  ) : (
+    <CompetitionPicker row />
+  );
 }
 
 function TopStandingsTable({ now }: { now: number }) {
   const { data } = useCompetitionSnapshot();
+  const locale = useLocale();
   const standings = useMemo(
     () => (data ? buildStandings(data.competition, data.rounds, null) : null),
     [data],
   );
-  if (!data || !standings) return null;
+  // A competition that did not load (or a single-run choice with no run left) must not take the
+  // only control that can move away from it down with it.
+  if (!data || !standings) return <CompetitionPicker row />;
 
   const practice = data.competition.file.resetUnit === "continuous";
   const resultsDay = SCHEDULE.find((p) => p.key === "results");
@@ -503,9 +738,39 @@ function TopStandingsTable({ now }: { now: number }) {
         : t("overview.top.standings", { n: TOP_N });
   const rows = standings.rows.slice(0, TOP_N);
 
+  // What the number is, how much of the competition it covers, and when it last changed -- the
+  // three things the bare table left the reader to guess.
+  const done = completedOrdinals(data.competition, data.rounds).length;
+  const planned = data.scenariosPlanned;
+  const caption = [
+    practice ? t("overview.top.whatPractice") : t("overview.top.whatOfficial"),
+    practice
+      ? done === 1
+        ? t("overview.top.spanDaysOne")
+        : t("overview.top.spanDays", { n: done })
+      : planned !== null && done < planned
+        ? t("overview.top.spanEpochs", { done, planned })
+        : t("overview.top.spanEpochsAll", { n: done }),
+    data.updatedAtMs !== null
+      ? t("overview.top.updated", { time: formatClock(data.updatedAtMs, locale) })
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const scoredCount = (n: number) =>
+    practice
+      ? n === 1
+        ? t("overview.top.daysOne")
+        : t("overview.top.days", { n })
+      : n === 1
+        ? t("overview.top.epochsOne")
+        : t("overview.top.epochs", { n });
+
   return (
     <Panel
       title={title}
+      subtitle={caption}
+      extra={<CompetitionPicker />}
       info={
         <>
           <TipText>
@@ -533,27 +798,48 @@ function TopStandingsTable({ now }: { now: number }) {
           {t("overview.top.empty")}
         </p>
       ) : (
-        <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
+        <div role="table" aria-label={title}>
+          <div
+            role="row"
+            style={{
+              ...TOP_GRID,
+              padding: "8px 16px",
+              borderBottom: "1px solid var(--border-subtle)",
+              font: "var(--text-xs) var(--font-mono)",
+              color: "var(--text-tertiary)",
+              letterSpacing: "var(--tracking-wide)",
+              textTransform: "uppercase",
+            }}
+          >
+            <span role="columnheader">{t("overview.top.col.rank")}</span>
+            <span role="columnheader">{t("overview.top.col.agent")}</span>
+            <span role="columnheader" style={{ textAlign: "right" }}>
+              {t("overview.top.col.score")}
+            </span>
+            <span role="columnheader" style={{ textAlign: "right" }}>
+              {t("overview.top.col.scored")}
+            </span>
+          </div>
           {rows.map((row) => (
-            <li
+            <div
+              role="row"
               key={row.id}
               className="row-link"
               onClick={() => navigate(`/agent/${encodeURIComponent(row.id)}`)}
               style={{
-                display: "grid",
-                gridTemplateColumns: "32px minmax(0, 1fr) auto",
+                ...TOP_GRID,
                 alignItems: "baseline",
-                gap: "8px",
                 padding: "10px 16px",
                 borderBottom: "1px solid var(--border-subtle)",
                 font: "var(--text-sm) var(--font-mono)",
               }}
             >
-              <span style={{ color: "var(--text-tertiary)" }}>
+              <span role="cell" style={{ color: "var(--text-tertiary)" }}>
                 {row.rank}
                 {row.tied ? "=" : ""}
               </span>
               <span
+                role="cell"
                 style={{
                   color: "var(--text-link)",
                   overflow: "hidden",
@@ -565,20 +851,38 @@ function TopStandingsTable({ now }: { now: number }) {
                 {row.id}
               </span>
               <span
+                role="cell"
                 style={{
+                  textAlign: "right",
                   color: toneColor((row.score ?? 50) - 50),
                   fontWeight: "var(--weight-semibold)" as never,
                 }}
               >
                 {formatScore(row.score)}
               </span>
-            </li>
+              <span
+                role="cell"
+                style={{
+                  textAlign: "right",
+                  font: "var(--text-xs) var(--font-mono)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {scoredCount(row.epochs.length)}
+              </span>
+            </div>
           ))}
-        </ol>
+        </div>
       )}
     </Panel>
   );
 }
+
+const TOP_GRID: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "44px minmax(0, 1fr) 84px 96px",
+  columnGap: "8px",
+};
 
 // ---- links ----
 
@@ -765,6 +1069,8 @@ export function OverviewPage() {
 
         <SchedulePanel now={now} locale={locale} />
 
+        <StepsPanel now={now} locale={locale} />
+
         <div
           style={{
             display: "grid",
@@ -776,6 +1082,11 @@ export function OverviewPage() {
           <RuleCard
             title={t("overview.scoring.title")}
             gist={t("overview.scoring.gist")}
+            definition={t("overview.scoring.definition", {
+              first: SCORING.weightFirst,
+              last: SCORING.weightLast,
+            })}
+            rulesTerm={t("overview.scoring.rulesTerm")}
             facts={t("overview.scoring.facts", {
               k: SCORING.epochs,
               regimes: SCORING.regimes,

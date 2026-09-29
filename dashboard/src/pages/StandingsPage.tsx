@@ -17,6 +17,7 @@ import { FindAgent } from "@/components/FindAgent";
 import { RoundCursorBar } from "@/components/RoundCursorBar";
 import { ScoreRaceChart } from "@/components/ScoreRaceChart";
 import { AppShell, PAGE_MAIN } from "@/components/AppShell";
+import { CompetitionPicker } from "@/components/CompetitionPicker";
 import { MoveCell, Panel, Stat, toneColor } from "@/components/competitionUi";
 import {
   competitionName,
@@ -42,7 +43,7 @@ import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { useLocale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
-import { formatPnlUsdc, formatScore } from "@/lib/format";
+import { formatClock, formatPnlUsdc, formatScore } from "@/lib/format";
 import { useMediaQuery } from "@/lib/useMediaQuery";
 import { MOBILE } from "@/lib/breakpoints";
 import { navigate } from "@/navigation";
@@ -365,25 +366,6 @@ function ScenarioRow({
   );
 }
 
-/**
- * A wall-clock time with its zone. The zone is not decoration: the audience of a hosted dashboard
- * is in several of them, and "updated 06:01 PM" told a reader in another one nothing they could
- * act on (issue #84 N). The date is added whenever it is not today's.
- */
-function clock(ms: number, locale: string): string {
-  const tag = locale === "ja" ? "ja-JP" : "en-US";
-  const d = new Date(ms);
-  const sameDay = new Date().toDateString() === d.toDateString();
-  const time = d.toLocaleTimeString(tag, {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
-  return sameDay
-    ? time
-    : `${d.toLocaleDateString(tag, { month: "numeric", day: "numeric" })} ${time}`;
-}
-
 /** "mm:ss" from now until `ms`, for the countdown to the next round boundary. */
 function countdown(ms: number, nowMs: number): string {
   const total = Math.max(0, Math.round((ms - nowMs) / 1000));
@@ -535,7 +517,7 @@ export function StandingsPage() {
   // exists but has scored nothing yet keeps its landing — the rules, the scenario list and the
   // participant lookup are what a reader needs most before the first result, and dropping the
   // whole page took them away exactly then (issue #84 T).
-  if (error || !data || !standings) return <ScenarioPage />;
+  if (error || !data || !standings) return <ScenarioPage withCompetitionPicker />;
 
   const file = data.competition.file;
   const at = standings.throughRound;
@@ -614,7 +596,7 @@ export function StandingsPage() {
     );
     if (data.updatedAtMs !== null)
       statusParts.push(
-        t("home.status.updated", { time: clock(data.updatedAtMs, locale) }),
+        t("home.status.updated", { time: formatClock(data.updatedAtMs, locale) }),
       );
     // What is running *in this competition*, and where it is. The old line said only that some run
     // somewhere was live, and only while the plan had epochs left — so a practice period, whose
@@ -638,7 +620,7 @@ export function StandingsPage() {
     }
     if (nextStart !== null && (planned === null || done.length < planned))
       statusParts.push(
-        t("home.status.next", { time: clock(nextStart, locale) }),
+        t("home.status.next", { time: formatClock(nextStart, locale) }),
       );
   }
   // More results are coming. Not "the plan has epochs left" alone: a practice period has no plan
@@ -704,6 +686,8 @@ export function StandingsPage() {
             >
               {competitionName(data.competition)}
             </h1>
+            {/* Locally, with more than one competition to choose from; never in the public view. */}
+            <CompetitionPicker />
             {practice && (
               <span style={{ display: "inline-flex", alignItems: "center" }}>
                 <span style={BADGE}>{t("home.practiceBadge")}</span>

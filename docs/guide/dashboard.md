@@ -42,8 +42,9 @@ competition picker makes the selected run the outer unit, read as a competition 
 standings, same interval cursor. The normalization happens once, at the data layer's entry point
 (`src/data/competition.ts`), so every page downstream processes exactly one kind of object.
 
-The sidebar picks a competition, then a scenario inside it (labelled `regime#seed`, not by
-timestamp):
+A competition is picked with the select beside its name on the overview and the standings, and a
+scenario inside it with **change ▾** in the interval bar of the scenario-level pages (labelled
+`regime#seed`, not by timestamp):
 
 | route | level | what it is |
 |---|---|---|
@@ -94,19 +95,42 @@ work for runs recorded before `market.json` grew any of its fields.
 Every page sits under one header (`src/components/SiteHeader.tsx`): the ASCON logo, the five page
 links, **Register** and the language toggle. Register goes straight to the registration form (its "?"
 says to join the #ascon channel on Discord first, rules §1) and is not offered from 10/25 00:00 JST,
-when registration has closed. Below 860px the page links and the competition picker fold into a menu,
-and Register and the language stay on the bar. The sidebar is only the competition picker (plus, on the
-scenario-level pages, the world in view).
+when registration has closed. Below 860px the page links fold into a menu, and Register and the
+language stay on the bar.
+
+**There is no sidebar.** Every page is full width, with a one-line footer (read-only, no sign-in, and
+in the public view a "public view" note with its "?"). The two things the sidebar held moved to where
+they are used:
+
+- **The competition picker** sits beside the competition's name: in the top 5's heading on the
+  Overview, and beside the title on `/standings`. It appears only locally and only when there is a
+  choice — two or more competitions, or one plus runs outside it ("— single run —"). The public view
+  never shows it: the server decides what is published (`ERIS_DASHBOARD_COMPETITIONS`), and the newest
+  competition it serves is the one in view, **ignoring a choice stored in the browser** — otherwise a
+  visitor who picked another competition before would be pinned to it with no control left to move
+  (`effectiveSelectedCompetitionId` in `src/data/competitionSelection.ts`)
+- **The world switcher** ("change ▾") sits beside the world's name in the interval bar on the
+  scenario, markets, explorer and agent pages: where the world sits among the competition's worlds, who
+  leads it, its episodes, and the list to step to a sibling. It also keeps the selected run inside the
+  competition in view
 
 The Overview (`/`) is, top to bottom:
 
 - **Schedule** — the phases of rules §1, which of them is on now, and how many days (JST calendar days,
   by the browser's clock) to the next deadline. ascon.dev is static, so "where we are" can only be said
   here
+- **How to submit** — register → API key → build → try it locally → (optional) the practice environment
+  → the ZIP → submit → the freeze, each a line and a link to the guide's section; only
+  `npm run bundle:agent <id>` is shown as a command. Steps with a window say "open · N days left" /
+  "closed" / "from 9/23" — the dashboard knows the date, not how far a participant has got, so it never
+  points at "your" step. The form URLs are not on the page (Discord #ascon has them). After 10/31 the
+  panel folds into one line
 - **Scoring, Prizes, Submission & limits** — three cards, each showing its gist (for example "one ZIP ·
   replace it up to 5 times a day"), the full statement behind a "?", and a link to that section of the
   rules on ascon.dev
-- **Top 5** of the selected competition, and a link to `/standings`. Its title says what it is: practice
+- **Top 5** of the selected competition — rank, agent, average score, how many days or epochs it was
+  scored on, and a caption saying what the number is, how much it covers and when it changed — and a
+  link to `/standings`. Its title says what it is: practice
   standings during the practice period, "so far" while epochs are still to come, "final" once the
   results date has passed. Not shown where standings are not posted (`standings: false`)
 - **Links** — the participant guide and SDK, the rules and terms, Discord #ascon, and the practice

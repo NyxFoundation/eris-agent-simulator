@@ -21,28 +21,27 @@ const en = {
   "common.live": "live",
   "common.seeAll": "see all →",
 
-  // ---- sidebar ----
+  // ---- navigation and the competition / world pickers ----
   "nav.standings": "Standings",
   "nav.scenario": "Scenario",
   "nav.markets": "Markets",
   "nav.explorer": "Explorer",
   "nav.menu": "Menu",
-  "sidebar.competition": "Competition",
-  "sidebar.scenario": "Scenario",
-  "sidebar.scenarioLive": "Scenario · live",
-  "sidebar.singleRun": "— single run —",
+  "picker.competition": "Competition",
+  "picker.scenario": "Scenario",
+  "picker.singleRun": "— single run —",
   // The world a scenario-level page is on, in the picker's place (the standings page opens worlds
   // from its scenario list instead of a dropdown of names).
-  "sidebar.world": "Viewing",
-  "sidebar.worldOf": "{i} of {n} worlds",
-  "sidebar.worldRounds": "{n} intervals",
-  "sidebar.worldLeader": "leads: {id}",
-  "sidebar.worldEvents": "episodes: {list}",
-  "sidebar.worldNoEvents": "no episodes scheduled",
-  "sidebar.change": "change",
-  "sidebar.close": "close",
-  "sidebar.readOnly": "Read-only view",
-  "sidebar.noSignIn": "no sign-in required",
+  "picker.world": "Viewing",
+  "picker.worldOf": "{i} of {n} worlds",
+  "picker.worldRounds": "{n} intervals",
+  "picker.worldLeader": "leads: {id}",
+  "picker.worldEvents": "episodes: {list}",
+  "picker.worldNoEvents": "no episodes scheduled",
+  "picker.change": "change",
+  "picker.close": "close",
+  "picker.readOnly": "Read-only view",
+  "picker.noSignIn": "no sign-in required",
 
   // ---- interval cursor (competition clock) ----
   "cursor.final": "Final · {n} intervals",
@@ -916,7 +915,7 @@ const en = {
   "overview.scoring.title":
     "Scoring",
   "overview.scoring.gist":
-    "Each epoch's deviation score, averaged with later epochs weighted more",
+    "Highest average score wins",
   "overview.scoring.facts":
     "{k} epochs in the live week ({regimes} regimes × 5) · {blocks} blocks each",
   "overview.scoring.tipEpoch":
@@ -1055,6 +1054,112 @@ const en = {
     "The board: every wallet on the left, the chain in the middle, the venues' contracts on the right. Each transaction is drawn from its sender through the chain to the contract it called. Walk it a block at a time on the block axis below.",
   "scenario.aboutInteract":
     "Pick a wallet on the board to follow its own account of the run; pick an interval in the bar above to narrow this page, Markets and Explorer to its blocks.",
+
+  // ---- "score" in Japanese is 得点 per epoch and 平均得点 for the ranking (issue #183 follow-up) ----
+  "overview.scoring.definition":
+    "score = each epoch's deviation score; later epochs weigh more ({first} → {last}×)",
+  "overview.scoring.rulesTerm":
+    "",
+  "overview.top.col.rank":
+    "#",
+  "overview.top.col.agent":
+    "agent",
+  "overview.top.col.score":
+    "score",
+  "overview.top.col.scored":
+    "scored",
+  "overview.top.days":
+    "{n} days",
+  "overview.top.daysOne":
+    "1 day",
+  "overview.top.epochs":
+    "{n} epochs",
+  "overview.top.epochsOne":
+    "1 epoch",
+  "overview.top.whatPractice":
+    "score = each day's deviation score of the daily return",
+  "overview.top.whatOfficial":
+    "score = each epoch's deviation score, weighted by its order",
+  "overview.top.spanDays":
+    "{n} days",
+  "overview.top.spanDaysOne":
+    "1 day",
+  "overview.top.spanEpochs":
+    "{done} of {planned} epochs",
+  "overview.top.spanEpochsAll":
+    "{n} epochs",
+  "overview.top.updated":
+    "updated {time}",
+  "agent.standing.col.t":
+    "T",
+  "agent.standing.col.w":
+    "w",
+
+  // ---- the overview's submission steps (issue #183 follow-up); the form URLs are announced on Discord ----
+  "overview.steps.title":
+    "How to submit",
+  "overview.steps.tip":
+    "Which steps are open today comes from the date alone: the dashboard does not know how far you have got. The guide sections linked from each step have the commands and the details.",
+  "overview.steps.optional":
+    "optional",
+  "overview.steps.open":
+    "open · {n} days left",
+  "overview.steps.openOne":
+    "open · 1 day left",
+  "overview.steps.openToday":
+    "open · last day today",
+  "overview.steps.openNoEnd":
+    "open",
+  "overview.steps.running":
+    "running · {n} days left",
+  "overview.steps.runningOne":
+    "running · 1 day left",
+  "overview.steps.runningToday":
+    "running · last day today",
+  "overview.steps.before":
+    "from {day}",
+  "overview.steps.closed":
+    "closed",
+  "overview.steps.closedAll":
+    "Submissions closed at the end of {day} (JST). The submission accepted last is the one evaluated, and agents are frozen.",
+  "overview.steps.guide":
+    "guide §{n}",
+  "overview.steps.registrationForm":
+    "registration form",
+  "overview.steps.discord":
+    "Discord #ascon",
+  "overview.steps.register.name":
+    "Register",
+  "overview.steps.register.body":
+    "Join #ascon on Discord first, then each team member sends the registration form.",
+  "overview.steps.apiKey.name":
+    "Register your inference API key",
+  "overview.steps.apiKey.body":
+    "Once, on a separate form; Discord #ascon has the link.",
+  "overview.steps.build.name":
+    "Build your agent",
+  "overview.steps.build.body":
+    "Copy my-arb and start from it.",
+  "overview.steps.test.name":
+    "Try it on your machine",
+  "overview.steps.test.body":
+    "Backtest it on the public scenarios and read its decisions and results.",
+  "overview.steps.practice.name":
+    "Run it in the practice environment",
+  "overview.steps.practice.body":
+    "Run it on your machine against the practice chain. Post its address in Discord #ascon to appear in the practice standings.",
+  "overview.steps.zip.name":
+    "Make the ZIP",
+  "overview.steps.zip.body":
+    "It needs a prompt.md with kind: improve.",
+  "overview.steps.submit.name":
+    "Submit",
+  "overview.steps.submit.body":
+    "Send the ZIP with the submission form (Discord #ascon has the link). Up to {n} a day; an email tells you within seconds whether it was accepted.",
+  "overview.steps.freeze.name":
+    "Frozen at the end of {day}",
+  "overview.steps.freeze.body":
+    "The submission accepted last when the period ends is the one evaluated. Nothing can change after that.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1071,20 +1176,19 @@ const ja: Record<MessageKey, string> = {
   "nav.markets": "マーケット",
   "nav.explorer": "エクスプローラ",
   "nav.menu": "メニュー",
-  "sidebar.competition": "競技",
-  "sidebar.scenario": "シナリオ",
-  "sidebar.scenarioLive": "シナリオ · ライブ",
-  "sidebar.singleRun": "— 単発 run —",
-  "sidebar.world": "見ている世界",
-  "sidebar.worldOf": "{n} 世界中 {i} 番目",
-  "sidebar.worldRounds": "{n} 評価区間",
-  "sidebar.worldLeader": "首位 {id}",
-  "sidebar.worldEvents": "イベント: {list}",
-  "sidebar.worldNoEvents": "イベントの予定なし",
-  "sidebar.change": "変更",
-  "sidebar.close": "閉じる",
-  "sidebar.readOnly": "閲覧専用ビュー",
-  "sidebar.noSignIn": "ログイン不要",
+  "picker.competition": "競技",
+  "picker.scenario": "シナリオ",
+  "picker.singleRun": "— 単発 run —",
+  "picker.world": "見ている世界",
+  "picker.worldOf": "{n} 世界中 {i} 番目",
+  "picker.worldRounds": "{n} 評価区間",
+  "picker.worldLeader": "首位 {id}",
+  "picker.worldEvents": "イベント: {list}",
+  "picker.worldNoEvents": "イベントの予定なし",
+  "picker.change": "変更",
+  "picker.close": "閉じる",
+  "picker.readOnly": "閲覧専用ビュー",
+  "picker.noSignIn": "ログイン不要",
 
   "cursor.final": "最終 · 全 {n} 評価区間",
   "cursor.at": "評価区間 {at} / {max}",
@@ -1113,16 +1217,16 @@ const ja: Record<MessageKey, string> = {
   "home.standingsTitle": "順位表",
   "home.standingsThrough": "順位表 · 評価区間 {at} 時点",
   "home.subtitlePractice":
-    "スコア: 期間の 1 日を 1 エポックとします。P はその日の USDC 損益ではなくリターン（終値 ÷ 始値 − 1）です。この world はリセットされないので元手が人によってずれていき、リターンにすることで「手持ちで何をしたか」を比べます。T = 50 + 10 × (P − μ) / σ を全員横断で出し、スコアは T の日ごとの単純平均です。その日の始値が場の中央値の 1/10 未満のエージェントは、その日は採点しません。全員の元手が同じなら、本番の順位と完全に一致します。",
+    "平均得点: 期間の 1 日を 1 エポックとします。P はその日の USDC 損益ではなくリターン（終値 ÷ 始値 − 1）です。この world はリセットされないので元手が人によってずれていき、リターンにすることで「手持ちで何をしたか」を比べます。その日の得点は偏差値 T = 50 + 10 × (P − μ) / σ（全員横断）で、平均得点は得点の日ごとの単純平均です。その日の始値が場の中央値の 1/10 未満のエージェントは、その日は採点しません。全員の元手が同じなら、本番の順位と完全に一致します。",
   "home.subtitle":
-    "スコア: 各エポック（1 シナリオの run）で、エポック中の USDC 損益 P から偏差値 T = 50 + 10 × (P − μ) / σ を全員横断で出し（μ・σ は場全体）、T をエポック通しで平均した値（後のエポックほど重みが大きく、最大 1.5 倍）。レジーム列はそのレジームでの T の平均。行をクリックするとエポックごとの内訳が見られます。",
+    "平均得点: 各エポック（1 シナリオの run）で、エポック中の USDC 損益 P から得点（偏差値）T = 50 + 10 × (P − μ) / σ を全員横断で出し（μ・σ は場全体）、得点をエポック通しで平均した値です（後のエポックほど重みが大きく、最大 1.5 倍）。レジーム列はそのレジームでの得点の平均。行をクリックするとエポックごとの内訳が見られます。",
   "home.col.move": "変動",
   "home.col.agent": "エージェント",
   "home.col.score":
-    "スコア",
+    "平均得点",
   "home.col.netPnl": "純損益",
   "home.scoreTitle":
-    "採点エポック {n} · タイブレーク: T の標準偏差 {std}、最悪エポックの T {worst}",
+    "採点エポック {n} · タイブレーク: 得点の標準偏差 {std}、最悪エポックの得点 {worst}",
   "home.noteOpens": "{types} の窓が {n} シナリオで開始",
   "home.noteOpensOne": "{types} の窓が 1 シナリオで開始",
   "home.noteOpen": "{n} 個の窓が継続中",
@@ -1148,7 +1252,7 @@ const ja: Record<MessageKey, string> = {
   "home.scenarios.noLeader": "結果はまだありません",
   "home.scenarios.missing": "このシナリオの評価区間の詳細は回収されていません",
   "home.scenarios.leaderTitle":
-    "選択中の評価区間までの首位。P = V_k − V_0（USDC）で判定 — このエポックの偏差値が取られる量",
+    "選択中の評価区間までの首位。P = V_k − V_0（USDC）で判定 — このエポックの得点（偏差値）のもとになる量",
 
   "units.title": "単位の関係",
   "units.competition": "競技",
@@ -1158,7 +1262,7 @@ const ja: Record<MessageKey, string> = {
     "1 つの世界。レジームとシードの組を最初から最後まで走らせたもので、全エージェントが同時に取引します。",
   "units.round": "評価区間",
   "units.roundBody":
-    "規約の評価区間で、1 ブロックではなく複数ブロックです。資産価値・順位変動・環境イベントを途中経過としてこの軸で読みます。スコアに使うのはシナリオの最初と最後の境界だけです。",
+    "規約の評価区間で、1 ブロックではなく複数ブロックです。資産価値・順位変動・環境イベントを途中経過としてこの軸で読みます。得点に使うのはシナリオの最初と最後の境界だけです。",
   "units.block": "ブロック",
   "units.blockBody":
     "2 秒であり、1 回の行動機会です。同じブロック内の順序は優先手数料で決まります。",
@@ -1178,7 +1282,7 @@ const ja: Record<MessageKey, string> = {
   "explorer.about.p2":
     "真実の出典はチェーンです: 数値系列はすべて run 終了後にオンチェーン読み取りから再構成されます。ログが与えるのは理由・意図・帰属だけです。",
   "explorer.about.p3":
-    "run の進行中はログファイルを tail し、チェーンを RPC で読みます — 価格・ブロック・イベントテープ・判断ログはその場で更新されます。スコアと venue 別系列は run 終了と同時に現れます。",
+    "run の進行中はログファイルを tail し、チェーンを RPC で読みます — 価格・ブロック・イベントテープ・判断ログはその場で更新されます。得点と venue 別系列は run 終了と同時に現れます。",
   "explorer.about.p4":
     "ローカルの Blockscout エクスプローラ（npm run explorer）が深掘り用ツールです。起動していれば、ページ上の全トランザクション・アドレス・ブロックがリンクになります。",
 
@@ -1201,7 +1305,7 @@ const ja: Record<MessageKey, string> = {
   "rounds.bankrupt":
     "資産価値がゼロ以下（破産。床処理も凍結も無し）",
   "rounds.deltaNote":
-    "Δ資産は市場エクスポージャー込みの生の資産変化で、何もしないエージェントでも価格と一緒に動きます。対数リターンは同じ変化を対数成長率で表したものです。どちらもスコアではありません（スコアはエポック全体で 1 つの数字です）。順位は最初の評価区間からの累積、矢印はこの評価区間での変動です。",
+    "Δ資産は市場エクスポージャー込みの生の資産変化で、何もしないエージェントでも価格と一緒に動きます。対数リターンは同じ変化を対数成長率で表したものです。どちらも得点ではありません（得点はエポック全体で 1 つの数字です）。順位は最初の評価区間からの累積、矢印はこの評価区間での変動です。",
   "rounds.envDid": "環境が行ったこと",
   "rounds.replayStart": "▶ リプレイ",
   "rounds.replayStartTitle": "最初のブロックからこの run を再生する",
@@ -1226,34 +1330,34 @@ const ja: Record<MessageKey, string> = {
   "agent.tab.log": "判断ログ",
   "agent.back": "← 戻る",
   "agent.stat.score":
-    "T（このエポック）",
+    "得点（このエポック）",
   "agent.stat.pnl": "損益 (USDC)",
   "agent.stat.drawdown": "最大ドローダウン",
   "agent.standing.rank": "順位",
   "agent.standing.rankValue": "{n} 体中 {r} 位",
   "agent.standing.score":
-    "スコア",
+    "平均得点",
   "agent.standing.scoreTitle":
-    "タイブレーク（§4.6）: T の標準偏差 {std}、最悪エポックの T {worst}",
+    "タイブレーク（§4.6）: 得点の標準偏差 {std}、最悪エポックの得点 {worst}",
   "agent.standing.netPnl": "純損益 (USDC)",
   "agent.standing.rounds":
     "採点エポック数",
   "agent.standing.explain":
-    "このエージェントが採点された全エポックです。T はそのエポックの場の中での損益の位置（50 = 場の平均、±10 = 標準偏差 1 つ分）。スコアは T の加重平均なので、1 つのレジームで大勝ちして他で負ける戦略は、安定した戦略より下に来ることがあります。T の標準偏差は最初のタイブレークでもあります。",
+    "このエージェントが採点された全エポックです。得点はそのエポックの場の中での損益の位置を表す偏差値です（50 = 場の平均、±10 = 標準偏差 1 つ分）。平均得点は得点の加重平均なので、1 つのレジームで大勝ちして他で負ける戦略は、安定した戦略より下に来ることがあります。得点の標準偏差は最初のタイブレークでもあります。",
   "agent.standing.explainPractice":
-    "このエージェントが採点された期間中の全日です。P はその日のリターン（終値 ÷ 始値 − 1）、T はそのリターンがその日の場の中でどこにあったか（50 = 場の平均、±10 = 標準偏差 1 つ分）。スコアは T の日ごとの単純平均で、どの日も同じ重みです。",
+    "このエージェントが採点された期間中の全日です。P はその日のリターン（終値 ÷ 始値 − 1）、得点はそのリターンがその日の場の中でどこにあったかを表す偏差値です（50 = 場の平均、±10 = 標準偏差 1 つ分）。平均得点は得点の日ごとの単純平均で、どの日も同じ重みです。",
   "agent.standing.belowFloor":
     "{n} 日は採点していません: その日の始値が場の中央値の 1/10 未満でした。その程度の元手ではリターンが手数料と端数で決まるので、採点せずに外しています。",
   "agent.standing.noSeries":
     "このエージェントの評価区間の詳細がありません — 競技のシナリオ run が未回収のため、順位は示せても説明はできません。",
   "agent.standing.mean":
-    "T の平均",
+    "得点の平均",
   "agent.standing.std":
-    "T の標準偏差（タイブレーク 1）",
+    "得点の標準偏差（タイブレーク 1）",
   "agent.standing.scoreLine":
-    "スコア（Σ w·T / Σ w）",
+    "平均得点（Σ w·得点 / Σ w）",
   "agent.standing.worst":
-    "最悪エポックの T（タイブレーク 2）",
+    "最悪エポックの得点（タイブレーク 2）",
   "agent.standing.byRegime": "レジーム別",
   "agent.standing.byEpoch":
     "エポック別",
@@ -1263,9 +1367,9 @@ const ja: Record<MessageKey, string> = {
   "agent.standing.col.rounds":
     "エポック",
   "agent.standing.col.mean":
-    "T の平均",
+    "得点の平均",
   "agent.standing.col.std":
-    "T の標準偏差",
+    "得点の標準偏差",
   "agent.standing.bankrupt":
     "{n} シナリオで資産価値がゼロ以下で終了（破産。規約 §4.5 により床処理なし、負の値がそのまま算入）: {list}",
   "agent.standing.bankruptOne":
@@ -1287,11 +1391,11 @@ const ja: Record<MessageKey, string> = {
   "agent.decisionLive": "判断ログ — ライブ ↓",
   "agent.selfHosted": "自己ホスト参加者",
   "agent.selfHostedLog":
-    "この参加者はエージェントを自分のマシンで動かしているため、判断ログはそちらにあり、ここには届きません。このページに出ているのはすべてチェーン由来です（取引・建玉・スコア）。",
+    "この参加者はエージェントを自分のマシンで動かしているため、判断ログはそちらにあり、ここには届きません。このページに出ているのはすべてチェーン由来です（取引・建玉・得点）。",
   "agent.noRounds":
     "評価区間の結果はまだありません — 評価区間の系列は run 終了時に作られます",
   "agent.roundsNote":
-    "評価区間は規約の評価区間（§0.1）で、エポック内でのリーダーボードの途中経過です。対数リターンはその評価区間でのこのエージェントの総資産価値の変化そのものです。スコアはエポック全体で 1 つの数字（P = V_K − V_0 を場全体で標準化）で、評価区間の関数ではありません。",
+    "評価区間は規約の評価区間（§0.1）で、エポック内でのリーダーボードの途中経過です。対数リターンはその評価区間でのこのエージェントの総資産価値の変化そのものです。得点はエポック全体で 1 つの数字（P = V_K − V_0 を場全体で標準化）で、評価区間の関数ではありません。",
   "agent.portfolio": "資産推移",
   "agent.portfolioRange": "資産推移 · {from} → {to}",
   "agent.yLabel": "資産評価額 (USDC)",
@@ -1395,7 +1499,8 @@ const ja: Record<MessageKey, string> = {
   "tape.trove": "トローブ清算 ({borrower})",
   "tape.redemption": "eUSD を ETH に償還 (blk {block})",
   "tape.arbWindow": "{base} {buy}→{sell} に差が発生",
-  "tape.runCompleted": "run 終了、スコア再構成完了",
+  "tape.runCompleted":
+    "run 終了、得点の再構成完了",
 
   "vp.amm.label": "AMM",
   "vp.amm.caption":
@@ -1662,7 +1767,7 @@ const ja: Record<MessageKey, string> = {
   "home.view.agents": "エージェント",
   "home.view.participants": "参加単位",
   "home.participantsNote":
-    "参加単位: 同じ参加単位で登録されたエージェントを 1 行にまとめ、高い方のスコアで並べます。各行に採点されたエージェントを示します。",
+    "参加単位: 同じ参加単位で登録されたエージェントを 1 行にまとめ、高い方の平均得点で並べます。各行に採点されたエージェントを示します。",
   "home.col.participant": "参加単位",
   "home.col.countedAgent": "採点 agent",
   "home.col.agents": "エージェント",
@@ -1685,15 +1790,17 @@ const ja: Record<MessageKey, string> = {
   "home.status.updated": "最終更新 {time}",
   "home.status.next": "次のエポックは {time} 開始予定",
   "home.status.live": "エポックを実行中",
-  "home.chart.title": "エポックごとのスコア",
+  "home.chart.title":
+    "平均得点の推移",
   "home.chart.subtitle":
-    "完走したエポックごとの累積スコア。表と同じ数字をエポック単位で再生したもので、上位 {n} 体を色付き、他は灰色で描きます。50 が場の平均です。名前をクリックすると追跡します。",
+    "完走したエポックごとの平均得点（そのエポックまでの累積）。表と同じ数字をエポック単位で再生したもので、上位 {n} 体を色付き、他は灰色で描きます。50 が場の平均です。名前をクリックすると追跡します。",
   "home.chart.mean": "場の平均",
   "home.chart.empty": "2 エポック採点されるとグラフが出ます。",
   "home.chart.legend": "上位 {n}",
   "home.col.delta": "Δ",
   "home.col.form": "フォーム",
-  "home.formTitle": "エポックごとの T（古い順）— {n} 本採点、直近 {latest}",
+  "home.formTitle":
+    "エポックごとの得点（古い順）— {n} 本採点、直近 {latest}",
   "home.col.txs": "tx",
   "home.col.reverts": "revert",
   "home.details": "詳細",
@@ -1770,7 +1877,7 @@ const ja: Record<MessageKey, string> = {
   "home.standingsSoFar": "順位表 · ここまで",
   "cursor.soFar": "ここまで · {n} 評価区間",
   "home.unscoredTitle":
-    "{n} 個のエポックに記録はありますが、そこでは採点されていません。開始時点の資産評価額が無いためです（途中から登録された場合にこうなります）。規約 §4.4.2 では、そのエポックは 0 として数えるのではなくスコアから外します。",
+    "{n} 個のエポックに記録はありますが、そこでは採点されていません。開始時点の資産評価額が無いためです（途中から登録された場合にこうなります）。規約 §4.4.2 では、そのエポックは 0 として数えるのではなく平均得点から外します。",
   "home.unscoredBadge": "{n} エポックで未採点",
 
   "home.noStandings.title": "順位はまだありません",
@@ -1798,7 +1905,7 @@ const ja: Record<MessageKey, string> = {
   "agent.standing.throughRound": "評価区間 {at} 時点",
   "agent.standing.finalNote": "最終結果",
   "agent.standing.unscored":
-    "この競技の {n} 個のエポックでは採点されていません。そこでは開始時点の資産評価額が無いためで、途中から登録するとこうなります。該当エポックは 0 として数えるのではなくスコアから外します（規約 §4.4.2）。",
+    "この競技の {n} 個のエポックでは採点されていません。そこでは開始時点の資産評価額が無いためで、途中から登録するとこうなります。該当エポックは 0 として数えるのではなく平均得点から外します（規約 §4.4.2）。",
   "agent.unscoredHere":
     "この run はこのエージェントを採点していません。run の最初の境界時点の評価額が無く、その区間の損益を計算できないためです。取引と建玉は下に出ています。",
 
@@ -1905,7 +2012,7 @@ const ja: Record<MessageKey, string> = {
   "overview.scoring.title":
     "評価",
   "overview.scoring.gist":
-    "エポックごとの偏差値を、回次で重みを付けて平均",
+    "平均得点が高いほうが勝ち",
   "overview.scoring.facts":
     "ライブ週に {k} エポック（{regimes} レジーム × 5）· 1 エポック {blocks} ブロック",
   "overview.scoring.tipEpoch":
@@ -1913,13 +2020,13 @@ const ja: Record<MessageKey, string> = {
   "overview.scoring.tipP":
     "P はそのエポックでの総資産価値の変化（USDC）です。最後のブロックの資産価値から、最初のブロックの資産価値を引いたもの。",
   "overview.scoring.tipT":
-    "T は、P をそのエポックの全体の中に位置付けた偏差値です。μ・σ はそのエポックの全エージェントの P の平均と母集団標準偏差で、ベンチマークは含みません。50 が全体の平均、10 ポイントが標準偏差 1 つ分です。",
+    "得点 T は、P をそのエポックの全体の中に位置付けた偏差値です。μ・σ はそのエポックの全エージェントの P の平均と母集団標準偏差で、ベンチマークは含みません。50 が全体の平均、10 ポイントが標準偏差 1 つ分です。",
   "overview.scoring.tipW":
-    "スコアは T の加重平均です。重みは最初のエポックの {first} から最後のエポックの {last} まで均等に増えるので、週の終盤まで順位が動く余地があります。",
+    "平均得点は得点の加重平均です。重みは最初のエポックの {first} から最後のエポックの {last} まで均等に増えるので、週の終盤まで順位が動く余地があります。",
   "overview.scoring.tipTies":
-    "スコアは小数第 2 位で順位を決めます。同点のときは ① 自分の T の標準偏差が小さい方 ② 最も悪いエポックの T が大きい方 ③ 最終提出が早い方、の順です。",
+    "平均得点は小数第 2 位で順位を決めます。同点のときは ① 自分の得点の標準偏差が小さい方 ② 最も悪いエポックの得点が大きい方 ③ 最終提出が早い方、の順です。",
   "overview.scoring.tipBankrupt":
-    "資産を失っても失格ではありません。資産価値がゼロ以下でも、床を設けずにそのまま偏差値に入ります。",
+    "資産を失っても失格ではありません。資産価値がゼロ以下でも、床を設けずにそのまま得点（偏差値）に入ります。",
   "overview.scoring.tipSameBlocks":
     "全エージェントを同じブロックで評価します。エージェントが選んだ時点で評価されることはありません。価格を付けられない保有は、黙って 0 にせず報告します。",
   "overview.scoring.tipPractice":
@@ -1935,7 +2042,7 @@ const ja: Record<MessageKey, string> = {
   "overview.prize.rank":
     "{n} 位",
   "overview.prize.tipFloor":
-    "{from} 位以下の入賞は、最終スコアが {floor} を上回ること（通算で全エージェントの平均を上回ること）が条件です。",
+    "{from} 位以下の入賞は、最終的な平均得点が {floor} を上回ること（通算で全エージェントの平均を上回ること）が条件です。",
   "overview.prize.tipReport":
     "レポートトラック（{total}）: {list}。エージェントを提出した参加単位は、順位を問わず応募できます。",
   "overview.prize.award":
@@ -1979,7 +2086,7 @@ const ja: Record<MessageKey, string> = {
   "overview.top.tipPractice":
     "試行環境の練習順位です。1 日ごとに、各エージェントの日次リターンで採点しています。公式の採点ではなく、順位の評価には算入しません（規約 §2.7）。",
   "overview.top.tipOfficial":
-    "競技の順位です。これまでに採点したエポックの偏差値を、回次の重みで平均したスコアで並べています。審査期間を経て、結果発表で確定します。",
+    "競技の順位です。これまでに採点したエポックの得点（偏差値）を、回次の重みで平均した平均得点で並べています。審査期間を経て、結果発表で確定します。",
   "overview.top.tipScore":
     "エージェントをクリックすると、エポックごとの内訳が見られます。",
   "overview.top.all":
@@ -2017,11 +2124,11 @@ const ja: Record<MessageKey, string> = {
 
   // ---- 順位表パネルの「？」（以前は列見出しのツールチップ） ----
   "home.info.columns":
-    "Δ は直前に完了したエポックからの順位の変化です（上のバーをスクラブしている間は直前の評価区間から）。フォームはエポックごとの T を古い順に並べた線で、点線が 50、横の数字は採点されたエポック数です。レジーム列はそのレジームでの T の平均で、スコアの説明であって別の順位ではありません。",
+    "Δ は直前に完了したエポックからの順位の変化です（上のバーをスクラブしている間は直前の評価区間から）。フォームはエポックごとの得点を古い順に並べた線で、点線が 50、横の数字は採点されたエポック数です。レジーム列はそのレジームでの得点の平均で、平均得点の説明であって別の順位ではありません。",
   "home.info.notes":
     "注記は記録された事実（プロセスの停止など）で、減点ではありません（規約 §4.4.2）。一覧はホバーするか、エージェントのページで見られます。",
   "home.info.netPnl":
-    "純損益（USDC）は両端を run 最終時点の価格で評価するため、run の終わりにしか存在しません。スクラブ中は完走時の値を灰色で表示します。参考値であってスコアではありません。",
+    "純損益（USDC）は両端を run 最終時点の価格で評価するため、run の終わりにしか存在しません。スクラブ中は完走時の値を灰色で表示します。参考値であって得点ではありません。",
   "home.info.details":
     "「詳細」で 2 列を足します。採点されたシナリオ全体で取り込まれたトランザクション数と、そのうち revert した数です。",
   "home.info.pin":
@@ -2044,6 +2151,112 @@ const ja: Record<MessageKey, string> = {
     "盤面: 左に全ウォレット、中央にチェーン、右に各 venue のコントラクト。トランザクションは送信元からチェーンを通って、呼び出したコントラクトへ描かれます。下のブロック軸で 1 ブロックずつ進められます。",
   "scenario.aboutInteract":
     "盤面のウォレットを選ぶと、そのエージェント自身の判断の記録を追えます。上の帯で評価区間を選ぶと、このページとマーケット・エクスプローラがその区間のブロックに絞られます。",
+
+  // ---- 1 エポック分は「得点」、順位を決める加重平均は「平均得点」（issue #183 の続き） ----
+  "overview.scoring.definition":
+    "得点 = エポックごとの偏差値。後のエポックほど重く（{first} → {last} 倍）",
+  "overview.scoring.rulesTerm":
+    "規約では「スコア」",
+  "overview.top.col.rank":
+    "順位",
+  "overview.top.col.agent":
+    "エージェント",
+  "overview.top.col.score":
+    "平均得点",
+  "overview.top.col.scored":
+    "採点数",
+  "overview.top.days":
+    "{n} 日",
+  "overview.top.daysOne":
+    "1 日",
+  "overview.top.epochs":
+    "{n} エポック",
+  "overview.top.epochsOne":
+    "1 エポック",
+  "overview.top.whatPractice":
+    "得点 = 日次リターンの偏差値",
+  "overview.top.whatOfficial":
+    "得点 = エポックの偏差値（回次で加重平均）",
+  "overview.top.spanDays":
+    "{n} 日分",
+  "overview.top.spanDaysOne":
+    "1 日分",
+  "overview.top.spanEpochs":
+    "{done} / {planned} エポック",
+  "overview.top.spanEpochsAll":
+    "{n} エポック",
+  "overview.top.updated":
+    "{time} 更新",
+  "agent.standing.col.t":
+    "得点",
+  "agent.standing.col.w":
+    "重み",
+
+  // ---- 概要の提出の手順（issue #183 の続き）。フォームの URL は Discord で案内 ----
+  "overview.steps.title":
+    "提出の手順",
+  "overview.steps.tip":
+    "どの段が受付中かは、日付だけで判定しています。どこまで進んだかはダッシュボードには分かりません。各段のコマンドと詳しい説明は、リンク先のガイドの節にあります。",
+  "overview.steps.optional":
+    "任意",
+  "overview.steps.open":
+    "受付中 · あと {n} 日",
+  "overview.steps.openOne":
+    "受付中 · あと 1 日",
+  "overview.steps.openToday":
+    "受付中 · 今日まで",
+  "overview.steps.openNoEnd":
+    "受付中",
+  "overview.steps.running":
+    "稼働中 · あと {n} 日",
+  "overview.steps.runningOne":
+    "稼働中 · あと 1 日",
+  "overview.steps.runningToday":
+    "稼働中 · 今日まで",
+  "overview.steps.before":
+    "{day} から",
+  "overview.steps.closed":
+    "締切済み",
+  "overview.steps.closedAll":
+    "提出は {day}（日本時間）の終わりで締め切りました。最後に受理された提出が評価対象で、エージェントは凍結されています。",
+  "overview.steps.guide":
+    "ガイド §{n}",
+  "overview.steps.registrationForm":
+    "参加登録フォーム",
+  "overview.steps.discord":
+    "Discord #ascon",
+  "overview.steps.register.name":
+    "参加登録",
+  "overview.steps.register.body":
+    "先に Discord の #ascon に参加してから、チームの各メンバーが登録フォームを送ります。",
+  "overview.steps.apiKey.name":
+    "推論の API キーを登録",
+  "overview.steps.apiKey.body":
+    "別のフォームで 1 回だけ。フォームの案内は Discord #ascon にあります。",
+  "overview.steps.build.name":
+    "エージェントを作る",
+  "overview.steps.build.body":
+    "my-arb を複製して始めます。",
+  "overview.steps.test.name":
+    "手元で確かめる",
+  "overview.steps.test.body":
+    "公開シナリオで backtest して、判断と結果を読みます。",
+  "overview.steps.practice.name":
+    "練習環境で動かす",
+  "overview.steps.practice.body":
+    "自分のマシンから練習環境のチェーンにつなぎます。Discord #ascon にアドレスを投稿すると、練習順位に載ります。",
+  "overview.steps.zip.name":
+    "ZIP を作る",
+  "overview.steps.zip.body":
+    "kind: improve 付きの prompt.md が必要です。",
+  "overview.steps.submit.name":
+    "提出する",
+  "overview.steps.submit.body":
+    "提出フォームで ZIP を送ります（フォームの案内は Discord #ascon）。1 日 {n} 回まで。受理・不受理は数秒後にメールで届きます。",
+  "overview.steps.freeze.name":
+    "{day} の終わりで凍結",
+  "overview.steps.freeze.body":
+    "期間の終了時点で最後に受理された 1 件が評価対象です。以後は変更できません。",
 };
 
 const MESSAGES: Record<"en" | "ja", Record<MessageKey, string>> = { en, ja };

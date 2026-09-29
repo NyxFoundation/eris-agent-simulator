@@ -14,7 +14,7 @@ import {
   stopReplay,
 } from "@/data/replay";
 import {
-  getSelectedCompetitionId,
+  effectiveSelectedCompetitionId,
   SINGLE_RUNS,
 } from "@/data/competitionSelection";
 import { setCursorRange } from "@/data/roundCursor";
@@ -22,6 +22,7 @@ import { setSelectedRound, useSelectedRound } from "@/data/roundSelection";
 import { runDisplayName } from "@/data/competition";
 import { useMode } from "@/data/mode";
 import { useScenarioLabel } from "@/data/useScenarioLabel";
+import { WorldSwitcher } from "@/components/WorldSwitcher";
 import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { t } from "@/i18n/messages";
 import { navigate } from "@/navigation";
@@ -528,11 +529,13 @@ export function RoundsBar({
   // meaningful against a length. A competition owns the range while one is selected -- its longest
   // scenario -- so a standalone run only claims it when nothing longer is in view. Without this,
   // seeking on a run opened outside a competition would clamp every round to 1.
+  // Re-run once the mode is known: until then a stored competition counts as absent.
+  const mode = useMode();
   useEffect(() => {
-    const stored = getSelectedCompetitionId();
+    const stored = effectiveSelectedCompetitionId();
     if (stored !== null && stored !== SINGLE_RUNS) return;
     setCursorRange(round.intervals.length);
-  }, [round.intervals.length]);
+  }, [round.intervals.length, mode.known, mode.audience]);
 
   // The live segment fills by chain progress through its own block range, not by wall clock: the
   // bar is a block series, and a stalled chain should show a stalled round.
@@ -612,7 +615,9 @@ export function RoundsBar({
             textTransform: "uppercase",
           }}
         >
-          {worldName} ·{" "}
+          {worldName}{" "}
+          {/* Step to another world of the same competition without leaving the page. */}
+          <WorldSwitcher /> ·{" "}
           {round.replay
             ? t("rounds.replay")
             : running

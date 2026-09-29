@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
 import { AppShell } from "@/components/AppShell";
+import { CompetitionPicker } from "@/components/CompetitionPicker";
 import { WorldMap } from "@/components/WorldMap";
 import { AgentLogPanel, WorldCharts } from "@/components/WorldPanels";
 import { WorldTimeline, type WorldSpeed } from "@/components/WorldTimeline";
@@ -67,28 +68,42 @@ interface Handover {
   atEnd: boolean;
 }
 
-function Centered({ text, tone }: { text: string; tone?: string }) {
+/** A loading or failure message, inside the shell so the header's way out is still there. */
+function Centered({
+  text,
+  tone,
+  children,
+}: {
+  text: string;
+  tone?: string;
+  children?: React.ReactNode;
+}) {
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        textAlign: "center",
-        padding: "var(--space-8) var(--page-pad-x)",
-        background: "var(--bg-canvas)",
-      }}
-    >
-      <span
+    <AppShell activePage="scenario">
+      <div
         style={{
-          font: "var(--text-sm) var(--font-mono)",
-          color: tone ?? "var(--text-tertiary)",
+          flex: 1,
+          minHeight: "50vh",
+          display: "flex",
+          flexDirection: "column",
+          gap: "14px",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          padding: "var(--space-8) var(--page-pad-x)",
         }}
       >
-        {text}
-      </span>
-    </div>
+        <span
+          style={{
+            font: "var(--text-sm) var(--font-mono)",
+            color: tone ?? "var(--text-tertiary)",
+          }}
+        >
+          {text}
+        </span>
+        {children}
+      </div>
+    </AppShell>
   );
 }
 
@@ -278,7 +293,13 @@ function ScenarioStandings({
   );
 }
 
-export function ScenarioPage() {
+export function ScenarioPage({
+  withCompetitionPicker = false,
+}: {
+  /** The standings page landed here because its competition could not be read: offer the way to
+   * another one. */
+  withCompetitionPicker?: boolean;
+} = {}) {
   const { data, loading, error } = useWorldSnapshot();
   const scenario = useScenarioLabel();
   const mode = useMode();
@@ -402,7 +423,9 @@ export function ScenarioPage() {
           detail: error ? `: ${error.message}` : "",
         })}
         tone="var(--danger-text)"
-      />
+      >
+        {withCompetitionPicker && <CompetitionPicker />}
+      </Centered>
     );
 
   const { round } = data;
@@ -458,6 +481,7 @@ export function ScenarioPage() {
           {"  ›  "}
           {t("units.scenario")}
         </a>
+        {withCompetitionPicker && <CompetitionPicker />}
         {/* The scenario names itself (regime#seed, or a practice period's day). */}
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <h1

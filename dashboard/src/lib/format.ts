@@ -107,3 +107,22 @@ export function formatJpyShort(amount: number, locale: string): string {
     return `${(amount / 10_000).toLocaleString("en-US")}万円`;
   return formatJpy(amount, locale);
 }
+
+/**
+ * A wall-clock time with its zone. The zone is not decoration: the audience of a hosted dashboard
+ * is in several of them, and "updated 06:01 PM" told a reader in another one nothing they could
+ * act on (issue #84 N). The date is added whenever it is not today's.
+ */
+export function formatClock(ms: number, locale: string): string {
+  const tag = locale === "ja" ? "ja-JP" : "en-US";
+  const d = new Date(ms);
+  const sameDay = new Date().toDateString() === d.toDateString();
+  const time = d.toLocaleTimeString(tag, {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+  return sameDay
+    ? time
+    : `${d.toLocaleDateString(tag, { month: "numeric", day: "numeric" })} ${time}`;
+}

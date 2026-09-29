@@ -545,8 +545,12 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                   <span style={{ textAlign: "right" }}>
                     {standing.pnlUnit === "return" ? "P (%)" : "P (USDC)"}
                   </span>
-                  <span style={{ textAlign: "right" }}>T</span>
-                  <span style={{ textAlign: "right" }}>w</span>
+                  <span style={{ textAlign: "right" }}>
+                    {t("agent.standing.col.t")}
+                  </span>
+                  <span style={{ textAlign: "right" }}>
+                    {t("agent.standing.col.w")}
+                  </span>
                 </div>
                 {d.epochs.map((e) => (
                   <div
