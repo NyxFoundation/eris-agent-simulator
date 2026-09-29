@@ -10,7 +10,7 @@ import {
   withTimetable,
 } from "../core/src/competition/schedule.js";
 
-const hidden = { regimes: { calm: [1, 2], whale: [3, 4] } };
+const hidden = { regimes: { calm: [1, 2, 3, 4], whale: [5, 6, 7, 8] } };
 const lottery = { lotterySeed: "test-seed" };
 
 test("withTimetable stamps each epoch with start + (s − 1) × spacing", () => {
