@@ -63,13 +63,17 @@ export function publicRoleKeys(
 
 /**
  * Whether anyone besides the environment can send transactions to this chain: a registrations file,
- * or a roster entry run by a participant.
+ * a roster entry run by a participant, or the live week (liveWeek.ts), where every roster entry is a
+ * participant's submitted code that the environment launches itself -- none of them `external`, all
+ * of them sending through the gateway.
  */
 export function participantsCanSend(opts: {
   registrationsFile?: string;
   agents: ReadonlyArray<{ external?: boolean }>;
+  liveWeek?: boolean;
 }): boolean {
   return (
+    opts.liveWeek === true ||
     Boolean(opts.registrationsFile) ||
     opts.agents.some((a) => a.external === true)
   );
@@ -90,6 +94,7 @@ export function checkRoleKeys(opts: {
   venueAdmin?: Address;
   registrationsFile?: string;
   agents: ReadonlyArray<{ external?: boolean }>;
+  liveWeek?: boolean;
   allowPublic: boolean;
 }): RoleKeyVerdict {
   if (!participantsCanSend(opts)) return { kind: "ok" };

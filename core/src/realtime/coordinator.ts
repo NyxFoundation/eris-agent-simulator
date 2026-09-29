@@ -163,6 +163,12 @@ import { LiveScorer } from "./liveScoring.js";
 import { KeyedSerial } from "./keyedSerial.js";
 import { checkRoleKeys, refusalMessage } from "./roleKeyGuard.js";
 import {
+  LIVE_WEEK_OVERRIDE,
+  LiveWeekRefusal,
+  liveWeekRefusals,
+} from "./liveWeek.js";
+import type { RealtimeConfig } from "../config.js";
+import {
   diffRegistrations,
   RegistrationsWatcher,
   startupRegistrations,
@@ -510,6 +516,41 @@ const EVENT_BYTES_PER_BLOCK = 1_400;
 // comfortably shorter than a period.
 const SEGMENT_ADVISORY_BLOCKS = 20_000;
 
+export { LIVE_WEEK_OVERRIDE, isLiveWeekRefusal } from "./liveWeek.js";
+
+function assertLiveWeekPosture(
+  config: RealtimeConfig,
+  agents: AgentSpec[],
+): void {
+  const reasons = liveWeekRefusals({
+    keys: {
+      admin: config.privateKeys.admin,
+      keeper: config.privateKeys.keeper,
+      setup: config.privateKeys.setup,
+      deployer: config.privateKeys.deployer,
+    },
+    use: { marketRegistry: config.agentMarkets },
+    venueAdmin: config.enabledProtocols.includes("aave") ? AAVE.AclAdmin : undefined,
+    sandbox: config.agentSandbox,
+    agents,
+    env: process.env,
+  });
+  if (reasons.length > 0) throw new LiveWeekRefusal(reasons);
+}
+
+/**
+ * The live week's posture for one effective config, checked by the matrix runner before it waits for
+ * the first epoch: with --follow-schedule that start can be hours away, and a week that cannot start
+ * should say so when the operator launches it, not when the first epoch is due.
+ */
+export function preflightLiveWeek(
+  overrides: Record<string, string | number | boolean>,
+  argv: string[],
+): void {
+  const { config, agents } = resolveRunInputs(argv, overrides);
+  assertLiveWeekPosture(config, agents);
+}
+
 export async function runRealtimeSimulation(
   // Evaluation tools inject per-regime SEED etc. programmatically (without mutating env).
   overrides: Record<string, string | number | boolean> = {},
@@ -583,6 +624,17 @@ export async function runRealtimeSimulation(
     console.error(
       `[keys] WARNING: ERIS_ALLOW_PUBLIC_ROLE_KEYS=1 -- running a chain participants can send to on public keys: ${roleKeyVerdict.exposed.join("; ")}`,
     );
+
+  // ---- the live week (liveWeek.ts) ----
+  // Honoured only as the matrix runner's override, like the reset unit: the runner is what knows this
+  // run is one epoch of the plan under the secret key. Here, before anything touches the chain, as a
+  // second line behind the runner's own preflight.
+  if (overrides[LIVE_WEEK_OVERRIDE] === "1") {
+    assertLiveWeekPosture(config, agentSpecs);
+    console.error(
+      "[live-week] posture checked: environment keys private, every agent in an isolated container",
+    );
+  }
 
   // ---- chain mode (issue #33 / ADR 0021 §7) ----
   // Installed before anything touches the chain, so a cheatcode reached for on an external chain

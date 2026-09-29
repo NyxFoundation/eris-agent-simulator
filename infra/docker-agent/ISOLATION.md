@@ -21,11 +21,19 @@ The competition's agent containers run with all of:
 
 Without `ERIS_AGENT_ISOLATE=1` a container shares a network with the host (`host`, or the default
 bridge on macOS) and can reach services on this host directly, not only the RPC endpoint it was
-given. The coordinator does not refuse to start in that case — local checks and the operator's
-reference field run that way — but it records an `agent_sandbox_warning` event (which agents, and
-whether the gap is a shared network, open egress, bind-mount mode or a segmented period's directory
-mount) and prints a banner on stderr at startup and again when the run completes. The hosted
-dashboard does not serve that event to the audience.
+given — anvil included, past the gateway that refuses `anvil_*` / `evm_*`. Outside the live week the
+coordinator does not refuse to start in that case — local checks and the operator's reference field
+run that way — but it records an `agent_sandbox_warning` event (which agents, and whether the gap is
+a shared network, open egress, bind-mount mode or a segmented period's directory mount) and prints a
+banner on stderr at startup and again when the run completes. The hosted dashboard does not serve
+that event to the audience.
+
+**In the live week the same gaps are refused** (`core/src/realtime/liveWeek.ts`), together with
+`agentSandbox: process`, `command`/`args` roster entries and public environment keys. The live week
+is an ordered plan run under a scenario key file (`npm run backtest -- --scenarios plan.yaml
+--scenario-key <file>`); the runner checks before it waits for the first epoch and stops the week
+rather than recording an excluded epoch. A rehearsal of the plan without isolation runs with
+`--scenario-key public`.
 
 What a container can read of the run itself is covered in [README.md](README.md) ("What an agent
 container sees").
