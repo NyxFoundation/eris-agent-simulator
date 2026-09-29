@@ -31,6 +31,7 @@ function fixtureRuns(): string {
       runId: "r",
       seed: 4242,
       flowSeed: 7,
+      scenarioRegime: "crash",
       rpcUrl: "http://127.0.0.1:8545",
       epochBlocks: 12,
     },
@@ -277,6 +278,8 @@ test("audience mode strips seeds, future windows, rigged ground truth and stderr
       const started = events.find((e) => e.type === "run_started_realtime")!;
       assert.equal(started.seed, undefined);
       assert.equal(started.flowSeed, undefined);
+      // #187: the regime the streams are named by is the epoch's regime (rules §3.3).
+      assert.equal(started.scenarioRegime, undefined);
       assert.equal(started.rpcUrl, "http://127.0.0.1:8545");
       const schedule = events.find((e) => e.type === "stress_schedule")!;
       const windows = schedule.events as { type: string }[];
