@@ -27,8 +27,8 @@ src/
   main.tsx          React mount
   App.tsx           Root component + route table
   navigation.ts     pushState helper
-  pages/            HomePage (standings) / ScenarioPage / MarketPage / ExplorerPage / AgentDetailPage
-  components/       Shared UI (Sidebar, the two interval bars RoundCursorBar / RoundsBar, competitionUi)
+  pages/            OverviewPage (/) / StandingsPage / ScenarioPage / MarketPage / ExplorerPage / AgentDetailPage
+  components/       Shared UI (SiteHeader, Sidebar, the two interval bars RoundCursorBar / RoundsBar, competitionUi)
   data/             Providers, run artifact readers, live-run polling, per-page snapshot hooks
   design-system/    Primitives the pages are composed from
   lib/              Formatting and small shared helpers

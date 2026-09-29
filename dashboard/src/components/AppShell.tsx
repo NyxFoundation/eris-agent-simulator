@@ -1,19 +1,19 @@
-import { Sidebar, type SidebarNavKey } from "@/components/Sidebar";
+import { SiteHeader, type NavKey } from "@/components/SiteHeader";
+import { Sidebar } from "@/components/Sidebar";
 import { useIsMobile } from "@/lib/breakpoints";
 
 /**
- * The frame every page sits in: navigation, then the page.
+ * The frame every page sits in: the header across the top, then the sidebar and the page.
  *
- * Each page used to open with the same twelve lines of flex and then render `<Sidebar/>` itself, so
- * the arrangement was stated five times and could only ever be a row. It is one component now
- * because it has to be two arrangements: a row with the sidebar as a column, and — below `MOBILE` —
- * a column with the sidebar as a top bar above the page.
+ * Two arrangements. On a wide screen the sidebar (the competition picker) is a column beside the
+ * page, under the header. Below `MOBILE` there is no column: the header folds the page links and the
+ * picker into its menu, and the page gets the whole width.
  */
 export function AppShell({
   activePage,
   children,
 }: {
-  activePage?: SidebarNavKey;
+  activePage?: NavKey;
   children: React.ReactNode;
 }) {
   const mobile = useIsMobile();
@@ -22,21 +22,23 @@ export function AppShell({
       style={{
         minHeight: "100vh",
         display: "flex",
-        flexDirection: mobile ? "column" : "row",
-        alignItems: "stretch",
+        flexDirection: "column",
         background: "var(--bg-canvas)",
       }}
     >
-      <Sidebar activePage={activePage} />
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {children}
+      <SiteHeader activePage={activePage} />
+      <div style={{ flex: 1, display: "flex", alignItems: "stretch", minWidth: 0 }}>
+        {!mobile && <Sidebar activePage={activePage} />}
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {children}
+        </div>
       </div>
     </div>
   );

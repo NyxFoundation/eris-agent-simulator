@@ -2,16 +2,21 @@
 // standing section of an agent page. One copy of "how a standing is formatted" keeps the two from
 // disagreeing about what an agent scored.
 
+import { InfoTip } from "@/design-system/InfoTip";
 import { formatBps } from "@/lib/format";
 
 export function Panel({
   title,
   subtitle,
+  info,
   action,
   children,
 }: {
   title: string;
+  /** A short line under the title. Explanations go in `info`, not here. */
   subtitle?: string;
+  /** What the panel shows and how to read it, behind a "?" beside the title. */
+  info?: React.ReactNode;
   /** A link rendered on the header's right. */
   action?: { label: string; onClick: () => void };
   children: React.ReactNode;
@@ -47,6 +52,9 @@ export function Panel({
         >
           <span
             style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
               font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
               letterSpacing: "var(--tracking-widest)",
               textTransform: "uppercase",
@@ -54,6 +62,7 @@ export function Panel({
             }}
           >
             {title}
+            {info && <InfoTip label={title}>{info}</InfoTip>}
           </span>
           {subtitle && (
             <span

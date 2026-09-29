@@ -26,6 +26,7 @@ import { useMode } from "@/data/mode";
 import { getReplay, replayHeadFor, seekReplay, startReplay } from "@/data/replay";
 import { useScenarioLabel } from "@/data/useScenarioLabel";
 import { useWorldSnapshot } from "@/data/useWorldSnapshot";
+import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { t } from "@/i18n/messages";
 import { formatScore } from "@/lib/format";
 import { navigate } from "@/navigation";
@@ -124,12 +125,24 @@ function ScenarioStandings({
         borderRight: "1px solid var(--border-subtle)",
       }}
     >
-      <span style={PANEL_TITLE}>
+      <span
+        style={{
+          ...PANEL_TITLE,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "2px",
+        }}
+      >
         {!shown
           ? t("home.standingsTitle")
           : closedRounds > 0
             ? t("home.standingsThrough", { at: closedRounds })
             : t("scenario.standings")}
+        {shown && (
+          <InfoTip label={t("scenario.standings")}>
+            <TipText>{t("scenario.standingsAbout")}</TipText>
+          </InfoTip>
+        )}
       </span>
       <div
         style={{
@@ -181,10 +194,7 @@ function ScenarioStandings({
             >
               <span style={COLUMN_LABEL}>{t("rounds.col.rank")}</span>
               <span style={COLUMN_LABEL}>{t("home.col.agent")}</span>
-              <span
-                title={t("agent.standing.score")}
-                style={{ ...COLUMN_LABEL, textAlign: "right" }}
-              >
+              <span style={{ ...COLUMN_LABEL, textAlign: "right" }}>
                 {t("home.col.score")}
               </span>
             </div>
@@ -432,7 +442,7 @@ export function ScenarioPage() {
             standings otherwise looks like a page in its own right, and "round 14" on it reads as
             a round of the competition rather than of this one world. */}
         <a
-          onClick={() => navigate("/")}
+          onClick={() => navigate("/standings")}
           style={{
             font: "var(--text-xs) var(--font-mono)",
             letterSpacing: "var(--tracking-wide)",
@@ -449,17 +459,26 @@ export function ScenarioPage() {
           {t("units.scenario")}
         </a>
         {/* The scenario names itself (regime#seed, or a practice period's day). */}
-        <h1
-          title={round.runId}
-          style={{
-            margin: 0,
-            font: "var(--weight-bold) 21px var(--font-sans)",
-            letterSpacing: "var(--tracking-tight)",
-            color: "var(--text-primary)",
-          }}
-        >
-          {scenario.name?.replace(/^full-/, "") ?? t("scenario.fallbackTitle")}
-        </h1>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <h1
+            style={{
+              margin: 0,
+              font: "var(--weight-bold) 21px var(--font-sans)",
+              letterSpacing: "var(--tracking-tight)",
+              color: "var(--text-primary)",
+            }}
+          >
+            {/* The raw run id stays one hover away, on the name. */}
+            <span title={round.runId}>
+              {scenario.name?.replace(/^full-/, "") ?? t("scenario.fallbackTitle")}
+            </span>
+          </h1>
+          <InfoTip label={t("units.scenario")} title={t("units.scenario")}>
+            <TipText>{t("units.scenarioBody")}</TipText>
+            <TipText>{t("scenario.aboutBoard")}</TipText>
+            <TipText>{t("scenario.aboutInteract")}</TipText>
+          </InfoTip>
+        </div>
         <span
           style={{
             font: "var(--text-sm) var(--font-mono)",

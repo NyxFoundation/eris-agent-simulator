@@ -839,10 +839,22 @@ npm run dashboard        # http://localhost:5173
 ```
 
 Pick a competition from **Competition** in the left sidebar (one `--scenarios` run = one competition; a
-single `sim:realtime` run appears as a one-scenario competition). EN / 日本語 switches the language. The
-pages are three layers that follow the ladder **competition › scenario › interval**.
+single `sim:realtime` run appears as a one-scenario competition). The button at the top right switches the
+language. The pages are three layers that follow the ladder **competition › scenario › interval**. **The
+explanations sit behind the ? beside each heading** (click to open; click again or press Esc to close).
 
-### Standings (`/`)
+### Overview (`/`)
+
+![overview](img/dashboard-overview.en.png)
+
+The front page summarises the competition itself: the **schedule** (which period it is now and how many
+days to the next deadline — Japan time, judged by your browser's clock), three cards for **scoring, prizes
+and submission & limits** (the gist on the card, the full statement behind the ?, and a link to the
+authoritative rules on ascon.dev), the **top 5** of the selected competition, and the **links** (this guide,
+the rules, Discord, and the practice environment's RPC, explorer and environment manifest). **Register** at
+the top right opens the registration form, and disappears when registration closes (Oct 24).
+
+### Standings (`/standings`)
 
 ![standings](img/dashboard-standings.en.png)
 
@@ -898,9 +910,9 @@ epoch** (s / scenario / P / T / w); **by regime** (epochs / mean T / std of T).
 liquidation it is below the field's mean. Why a strategy that wins big in one regime and loses in the rest
 places below a steady one is visible in the per-regime rows.
 
-The rank badge at the top right is **the rank within the world (scenario) currently open**; the
-competition rank is the "k of n" in the Standing tab. The other tabs: **Overview** (the account value
-curve and end-of-run positions), **Intervals** (this agent's Δ value / log return / rank per interval),
+The rank badge at the top right is **the competition rank** (the same "k of n" as in the Standing tab); the
+rank within the world (scenario) currently open is on the **Overview** tab. The other tabs: **Overview**
+(the account value curve, end-of-run positions and the rank in this scenario), **Intervals** (this agent's Δ value / log return / rank per interval),
 **Positions** (every venue: GMX perps, Aave accounts with HF, LST queues, Trove ICR), **Trade history**,
 **Decision log** (the contents of `agents/<id>.jsonl`).
 

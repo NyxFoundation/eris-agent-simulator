@@ -16,7 +16,8 @@
   /* Gutters shrink on a phone, where 32px of padding is a twelfth of the screen. */
   --page-pad-x: clamp(14px, 2.4vw, 32px);
   --page-pad-top: clamp(18px, 2vw, 32px);
-  --topbar-h: 56px;
+  /* The header (SiteHeader). Sticky bars inside a page sit below it, at `top: var(--header-h)`. */
+  --header-h: 56px;
 }
 
 /* Laptops and small desktops: the historical layout, unchanged. */

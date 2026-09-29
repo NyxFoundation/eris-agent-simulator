@@ -24,17 +24,26 @@ The UI calls the evaluation interval "Interval" / 「評価区間」 ("Round" / 
 
 | Path | Page |
 |---|---|
-| `/` | Standings (the competition) — **the default landing** |
+| `/` | Overview (the schedule, the rules in brief, the top 5, the links) — **the default landing** (issue #183) |
+| `/standings` | Standings (the competition's table and its scenario list) |
 | `/scenario` | One scenario in detail |
 | `/agent/<id>` | Agent detail |
 | `/markets` | Venue state (scenario level) |
 | `/explorer` | Blocks and transactions (scenario level) |
 
-**Why `/` is the competition**: one scenario is a single draw from a distribution, not a result (`config/scenarios/public.yaml`: "the published seeds are five draws from it, **not the target**"). Landing there would show the unit you must not read first.
+**Why the landing is not one scenario**: one scenario is a single draw from a distribution, not a result (`config/scenarios/public.yaml`: "the published seeds are five draws from it, **not the target**"). Landing there would show the unit you must not read first. The landing is what a participant needs to know about the competition first (the Overview); the ranking is its top 5 there, and `/standings` one click away.
+
+### Header, Overview and the "?" (issue #183)
+
+- **Header** (`components/SiteHeader.tsx`, on every page, sticky): the ASCON logo (→ `/`), the nav (Overview / Standings / Scenario / Markets / Explorer), **Register** (straight to the Google Form, with a "?" saying to join Discord #ascon first; **not shown from 10/25 00:00 JST**) and the language toggle. At 860px and below the nav and the competition picker fold into a menu; Register and the toggle stay on the bar. The sidebar holds only the competition picker (and, on scenario-level pages, the world in view). Sticky bars inside a page sit at `top: var(--header-h)`
+- **Overview** (`pages/OverviewPage.tsx`): the schedule ("now" and the JST calendar days to the next deadline, by the browser's clock) / three cards for scoring, prizes, and submission & limits (the gist always shown, the full statement behind a "?", a link to the section of the rules on ascon.dev) / the top 5 (not shown when `standings: false`; practice standings during the practice period, "Standings" for a finished competition before the results date, "Final" after it) / the links
+- **The rules' values live in one file, `data/competitionInfo.ts`**, each citing its section of ascon-web `content/legal/rules.md`. When the rules change, this is the file to change; the wording is `overview.*` in `i18n/messages.ts`
+- **The "?"** (`design-system/InfoTip.tsx`): explanations go here, and only headings and numbers stay on screen. It opens on click, tap or the keyboard (Enter / Space toggle; Esc closes and returns focus to the button), a press outside closes it, and one is open at a time. The panel is `position: fixed`, so a table that scrolls sideways does not clip it. `Panel`'s `info` prop is the entry point. **A native `title=` is not used for explanation** (it never shows on a phone and cannot be reached from the keyboard) — it remains only for what is not an explanation, such as the full text of a truncated name or a data readout
+- The old InfoTabs (Overview / Environment / Scoring / Data) are dismantled: Scoring → the Overview's scoring card; Overview and Environment → the "?" where they apply (the Overview heading, the scenario list); Data (`npm run explorer` and other operator material) → a "?" on `/explorer` that the public view does not show
 
 `/markets` and `/explorer` stay at the scenario level because venue state and a block range only mean anything inside one world.
 
-**Removed routes**: `/standings` and `/leaderboard` (duplicated the in-scenario ranking), `/archive` (a relic that was never reached), `/run` (an alias).
+**Removed routes**: `/leaderboard` (duplicated the in-scenario ranking), `/archive` (a relic that was never reached), `/run` (an alias). `/standings` was removed once and came back in issue #183, as the table's own page when `/` became the Overview.
 
 ## 9.2 The interval cursor (the UI's clock)
 
@@ -77,7 +86,7 @@ The z is kept out of the table because **a unitless z cannot answer "by how much
 
 ### The `practice` badge
 
-Shown permanently when `competition.file.resetUnit === "continuous"` (`HomePage.tsx:142`). ADR 0020 §2 puts the official competition in `scenario` mode, so **a continuous competition is by construction not the official scoring**.
+Shown permanently when `competition.file.resetUnit === "continuous"` (`StandingsPage.tsx`). ADR 0020 §2 puts the official competition in `scenario` mode, so **a continuous competition is by construction not the official scoring**.
 
 **The test is "is it continuous", not "is it not scenario"** — `matrix.json` files written before ADR 0020 have no such field, and those were the official shape. Getting it wrong in that direction is the same kind of error.
 
@@ -123,7 +132,7 @@ This block     transactions / reverts / agents trading / what the environment di
 
 **The header names the scenario itself.** It used to be the ERIS wordmark, which made every scenario look like the application's front page and said nothing about which of the 35 worlds was on screen.
 
-**Implementation vocabulary (file names, ADR numbers) may appear only in the InfoTabs** (§9.10).
+**Implementation vocabulary (file names, ADR numbers) may appear only in the operator's "?"** (§9.10).
 
 ### Putting environment events on the interval axis (`dashboard/src/data/schedule.ts`)
 
@@ -239,13 +248,13 @@ Archived carries *more* information than live (`market.json`, the scored interva
 
 ## 9.10 i18n
 
-`dashboard/src/i18n/` (a locale store and a full message dictionary, `messages.ts`). Toggled in the sidebar, persisted in localStorage, defaulting to the browser language.
+`dashboard/src/i18n/` (a locale store and a full message dictionary, `messages.ts`). Toggled in the header, persisted in localStorage, defaulting to the browser language. `<html lang>` follows it.
 
 **The data-layer builders call `t()` too** (`venuePanels`, and the tape and position tables in `runsProvider`), so `useSnapshot` includes the locale in its key and rebuilds the snapshot on a language change.
 
 Wording rules:
 
-- Implementation vocabulary (file names, ADR numbers) appears **only in the learning layer** (the scenario page's Info tabs)
+- Implementation vocabulary (file names, ADR numbers) appears **only in the operator's "?"** (where `/explorer`'s data comes from; not shown in the public view)
 - Units are always attached (bps, USDC)
 - The state words are **live and finished**, and only those two
 - `npm run` commands appear only in a local-operations context, such as starting the explorer

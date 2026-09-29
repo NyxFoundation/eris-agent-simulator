@@ -22,6 +22,7 @@ import { setSelectedRound, useSelectedRound } from "@/data/roundSelection";
 import { runDisplayName } from "@/data/competition";
 import { useMode } from "@/data/mode";
 import { useScenarioLabel } from "@/data/useScenarioLabel";
+import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { t } from "@/i18n/messages";
 import { navigate } from "@/navigation";
 import { formatBps, formatMove, formatPnlUsdc } from "@/lib/format";
@@ -259,7 +260,14 @@ function RoundResults({ interval }: { interval: RoundInterval }) {
             }}
           >
             <span>#</span>
-            <span>{t("rounds.col.agent")}</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+              {t("rounds.col.agent")}
+              {/* What the three numbers are, and are not: none of them is the score. */}
+              <InfoTip label={t("rounds.heading", { i: String(interval.index).padStart(2, "0") })}>
+                <TipText>{t("rounds.deltaNote")}</TipText>
+                <TipText>{`✱ — ${t("rounds.bankrupt")}`}</TipText>
+              </InfoTip>
+            </span>
             <span style={{ textAlign: "right" }}>{t("rounds.col.delta")}</span>
             <span style={{ textAlign: "right" }}>{t("rounds.col.logReturn")}</span>
             <span style={{ textAlign: "right" }}>{t("rounds.col.rank")}</span>
@@ -305,7 +313,8 @@ function RoundResults({ interval }: { interval: RoundInterval }) {
                   {row.agent}
                   {row.bankrupt && (
                     <span
-                      title={t("rounds.bankrupt")}
+                      role="img"
+                      aria-label={t("rounds.bankrupt")}
                       style={{ color: "var(--danger-text)" }}
                     >
                       {" "}
@@ -330,15 +339,6 @@ function RoundResults({ interval }: { interval: RoundInterval }) {
               </div>
             );
           })}
-          <span
-            style={{
-              marginTop: "8px",
-              font: "10px var(--font-mono)",
-              color: "var(--text-tertiary)",
-            }}
-          >
-            {t("rounds.deltaNote")}
-          </span>
         </div>
       )}
 

@@ -14,6 +14,7 @@
 
 import { useMemo, useState } from "react";
 import { Panel } from "@/components/competitionUi";
+import { TipText } from "@/design-system/InfoTip";
 import { t } from "@/i18n/messages";
 import { navigate } from "@/navigation";
 
@@ -77,7 +78,10 @@ export function FindAgent({
   };
 
   return (
-    <Panel title={t("home.find.title")} subtitle={t("home.find.subtitle")}>
+    <Panel
+      title={t("home.find.title")}
+      info={<TipText>{t("home.find.subtitle")}</TipText>}
+    >
       <div
         style={{
           display: "flex",

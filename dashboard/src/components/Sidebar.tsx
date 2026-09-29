@@ -21,9 +21,8 @@ import {
 import { setSelectedRound } from "@/data/roundSelection";
 import { setSelectedRunId, useSelectedRunId } from "@/data/runSelection";
 import { Select } from "@/design-system/Select";
-import { setLocale, useLocale, type Locale } from "@/i18n/locale";
+import { useLocale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
-import { navigate } from "@/navigation";
 import { useMode } from "@/data/mode";
 import { isHiddenScenario } from "@/data/competition";
 import { useCursor } from "@/data/roundCursor";
@@ -31,9 +30,7 @@ import { buildScenarioList } from "@/data/scenarioList";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
 import { toneColor } from "@/components/competitionUi";
 import { formatPnlUsdc } from "@/lib/format";
-import { useIsMobile } from "@/lib/breakpoints";
-
-export type SidebarNavKey = "home" | "scenario" | "explorer" | "markets";
+import type { NavKey } from "@/components/SiteHeader";
 
 /**
  * Two-level picker: competition, then scenario (one world inside it).
@@ -81,7 +78,7 @@ function PickerBlock({
     <div
       style={{
         padding: "var(--space-4)",
-        borderTop: "1px solid var(--border-subtle)",
+        borderBottom: "1px solid var(--border-subtle)",
         display: "flex",
         flexDirection: "column",
         gap: "6px",
@@ -102,7 +99,7 @@ function PickerBlock({
   );
 }
 
-function Picker({ activePage }: { activePage?: SidebarNavKey }) {
+function Picker({ activePage }: { activePage?: NavKey }) {
   const selectedRun = useSelectedRunId();
   const locale = useLocale();
   const [entries, setEntries] = useState<RunIndexEntry[] | null>(null);
@@ -285,9 +282,10 @@ function Picker({ activePage }: { activePage?: SidebarNavKey }) {
       )}
       {/* Inside a competition the standings page opens a world from its scenario list -- the
           list has the leader and the episodes, a dropdown of names has neither -- so no second
-          selector here. The scenario-level pages show the world they are on, and let a reader step
-          to a sibling from that spot. Outside a competition (single runs) the run picker stays. */}
-      {inCompetition && activePage !== "home" && (
+          selector here, nor on the overview. The scenario-level pages show the world they are on,
+          and let a reader step to a sibling from that spot. Outside a competition (single runs) the
+          run picker stays. */}
+      {inCompetition && activePage !== "standings" && activePage !== "overview" && (
         <WorldBlock
           competition={
             competitionValue
@@ -374,7 +372,7 @@ function WorldBlock({
     whiteSpace: "nowrap",
   };
   return (
-    <div style={{ borderTop: "1px solid var(--border-subtle)" }}>
+    <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
       <div
         style={{
           padding: "var(--space-4)",
@@ -585,158 +583,28 @@ function ModeBadge() {
   );
 }
 
-function LanguageToggle() {
-  const locale = useLocale();
-  const options: { value: Locale; label: string }[] = [
-    { value: "en", label: "EN" },
-    { value: "ja", label: "日本語" },
-  ];
-  return (
-    <div style={{ display: "flex", gap: "4px" }}>
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          onClick={() => setLocale(o.value)}
-          style={{
-            border: "1px solid var(--border-subtle)",
-            borderRadius: "var(--radius-sm)",
-            background:
-              o.value === locale ? "var(--bg-surface-raised)" : "transparent",
-            color:
-              o.value === locale
-                ? "var(--text-primary)"
-                : "var(--text-tertiary)",
-            font: "var(--text-xs) var(--font-mono)",
-            padding: "3px 9px",
-            cursor: "pointer",
-          }}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/** The brand block: 26px mark plus the wordmark, sized to whichever bar it sits in. */
-function Brand({ height }: { height: string }) {
-  return (
-    <div
-      style={{
-        height,
-        flexShrink: 0,
-        display: "flex",
-        alignItems: "center",
-        gap: "10px",
-        padding: "0 var(--space-4)",
-        cursor: "pointer",
-      }}
-      onClick={() => navigate("/")}
-    >
-      <span
-        style={{
-          width: "26px",
-          height: "26px",
-          borderRadius: "7px",
-          background: "var(--accent-primary)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "var(--text-on-accent)",
-          font: "var(--weight-bold) 13px var(--font-sans)",
-          flexShrink: 0,
-        }}
-      >
-        E
-      </span>
-      <span
-        style={{
-          font: "var(--weight-bold) var(--text-base) var(--font-sans)",
-          letterSpacing: "var(--tracking-tight)",
-          textTransform: "uppercase",
-        }}
-      >
-        Eris
-      </span>
-    </div>
-  );
-}
-
-type NavItem = { key: SidebarNavKey; label: string; path: string };
-
-function NavList({
-  nav,
-  activePage,
-  onNavigate,
-}: {
-  nav: NavItem[];
-  activePage?: SidebarNavKey;
-  onNavigate?: () => void;
-}) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column" }}>
-      {nav.map((item) => {
-        const isActive = item.key === activePage;
-        return (
-          <div
-            key={item.path}
-            onClick={
-              isActive
-                ? onNavigate
-                : () => {
-                    navigate(item.path);
-                    onNavigate?.();
-                  }
-            }
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              height: "52px",
-              padding: "0 var(--space-4)",
-              background: isActive ? "var(--pink-500)" : "transparent",
-              borderBottom: "1px solid var(--border-subtle)",
-              borderLeft: `3px solid ${isActive ? "var(--gray-950)" : "transparent"}`,
-              color: isActive ? "var(--gray-950)" : "var(--text-secondary)",
-              font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-              letterSpacing: "var(--tracking-widest)",
-              textTransform: "uppercase",
-              cursor: isActive && !onNavigate ? "default" : "pointer",
-            }}
-          >
-            <span>{item.label}</span>
-            {isActive && <span>/</span>}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** Picker + language + the read-only note: everything below the nav, in either arrangement. */
-function SidebarFooter({
+/** The picker and the read-only note: the whole sidebar, and the lower half of the phone menu. */
+export function SidebarPanel({
   activePage,
   fill,
 }: {
-  activePage?: SidebarNavKey;
+  activePage?: NavKey;
   fill: boolean;
 }) {
+  // Read so the picker labels re-render when the language changes.
+  useLocale();
   return (
     <>
-      <div style={fill ? { marginTop: "auto" } : undefined}>
-        {!isSeedProvider && <Picker activePage={activePage} />}
-      </div>
+      {!isSeedProvider && <Picker activePage={activePage} />}
       <div
         style={{
           padding: "var(--space-4)",
-          borderTop: "1px solid var(--border-subtle)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "8px",
+          // Pushed to the foot of the column; in the phone menu it follows the blocks directly,
+          // whose own bottom border already separates it.
+          borderTop: fill ? "1px solid var(--border-subtle)" : undefined,
+          marginTop: fill ? "auto" : undefined,
         }}
       >
-        <LanguageToggle />
         <span
           style={{
             font: "var(--text-xs) var(--font-mono)",
@@ -752,225 +620,28 @@ function SidebarFooter({
 }
 
 /**
- * The navigation, in the two shapes a screen can ask for.
- *
- * Wide: the column it has always been — 212px, sticky, its own scroll.
- *
- * Narrow (≤860px, `MOBILE`): a 56px top bar with the brand, the current page's name and a menu
- * button, and the column itself as a drawer over a scrim. A 212px column on a 390px phone left the
- * page 178px to render a standings table in, which is why every route scrolled sideways; the drawer
- * gives the content the whole width back.
+ * The column beside the page on a wide screen: which competition (and, on a scenario-level page,
+ * which world) is in view. Navigation, the language and registration are in the header
+ * (SiteHeader); below `MOBILE` there is no column, and this content moves into the header's menu.
  */
-export function Sidebar({ activePage }: { activePage?: SidebarNavKey }) {
-  // Read so the whole sidebar re-renders (nav labels, picker labels) when the language changes.
-  useLocale();
-  const mobile = useIsMobile();
-  const [open, setOpen] = useState(false);
-
-  // In seed-provider mode there are no competitions, so "/" renders the scenario view.
-  const nav: NavItem[] = isSeedProvider
-    ? [
-        { key: "home", label: t("nav.top"), path: "/" },
-        { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
-        { key: "markets", label: t("nav.markets"), path: "/markets" },
-      ]
-    : [
-        { key: "home", label: t("nav.standings"), path: "/" },
-        { key: "scenario", label: t("nav.scenario"), path: "/scenario" },
-        { key: "markets", label: t("nav.markets"), path: "/markets" },
-        { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
-      ];
-
-  // Growing the window past the breakpoint while the drawer is open would otherwise leave the
-  // scrim over a sidebar that is a column again.
-  useEffect(() => {
-    if (!mobile) setOpen(false);
-  }, [mobile]);
-
-  // Escape closes it, and the page behind it does not scroll while it is up.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prev;
-    };
-  }, [open]);
-
-  if (!mobile) {
-    return (
-      <div
-        style={{
-          width: "var(--sidebar-w)",
-          flexShrink: 0,
-          borderRight: "1px solid var(--border-subtle)",
-          background: "var(--bg-sunken)",
-          display: "flex",
-          flexDirection: "column",
-          position: "sticky",
-          top: 0,
-          alignSelf: "flex-start",
-          height: "100vh",
-          overflowY: "auto",
-        }}
-      >
-        <div style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-          <Brand height="76px" />
-        </div>
-        <NavList nav={nav} activePage={activePage} />
-        <SidebarFooter activePage={activePage} fill />
-      </div>
-    );
-  }
-
-  const current = nav.find((n) => n.key === activePage);
-
+export function Sidebar({ activePage }: { activePage?: NavKey }) {
   return (
-    <>
-      <div
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 30,
-          height: "var(--topbar-h)",
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: "8px",
-          borderBottom: "1px solid var(--border-subtle)",
-          background: "var(--bg-sunken)",
-        }}
-      >
-        <Brand height="var(--topbar-h)" />
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            textAlign: "right",
-            font: "var(--text-xs) var(--font-mono)",
-            color: "var(--text-tertiary)",
-            letterSpacing: "var(--tracking-wide)",
-            textTransform: "uppercase",
-          }}
-        >
-          {current?.label}
-        </span>
-        <button
-          type="button"
-          aria-label={t("nav.menu")}
-          aria-expanded={open}
-          onClick={() => setOpen(true)}
-          style={{
-            flexShrink: 0,
-            margin: "0 var(--space-4) 0 0",
-            height: "34px",
-            padding: "0 12px",
-            display: "flex",
-            alignItems: "center",
-            gap: "7px",
-            border: "1px solid var(--border-default)",
-            borderRadius: "var(--radius-sm)",
-            background: "var(--bg-surface-raised)",
-            color: "var(--text-primary)",
-            font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-            letterSpacing: "var(--tracking-wide)",
-            textTransform: "uppercase",
-            cursor: "pointer",
-          }}
-        >
-          <span
-            aria-hidden
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "3px",
-              width: "13px",
-            }}
-          >
-            <span style={BURGER_BAR} />
-            <span style={BURGER_BAR} />
-            <span style={BURGER_BAR} />
-          </span>
-          {t("nav.menu")}
-        </button>
-      </div>
-
-      {open && (
-        <>
-          <div className="nav-scrim" onClick={() => setOpen(false)} />
-          <div
-            className="nav-drawer"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("nav.menu")}
-            style={{
-              position: "fixed",
-              top: 0,
-              left: 0,
-              bottom: 0,
-              zIndex: 41,
-              width: "min(286px, 86vw)",
-              background: "var(--bg-sunken)",
-              borderRight: "1px solid var(--border-subtle)",
-              display: "flex",
-              flexDirection: "column",
-              overflowY: "auto",
-              overscrollBehavior: "contain",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                borderBottom: "1px solid var(--border-subtle)",
-              }}
-            >
-              <Brand height="var(--topbar-h)" />
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                aria-label={t("sidebar.close")}
-                style={{
-                  margin: "0 var(--space-3) 0 0",
-                  width: "34px",
-                  height: "34px",
-                  border: "1px solid var(--border-subtle)",
-                  borderRadius: "var(--radius-sm)",
-                  background: "transparent",
-                  color: "var(--text-secondary)",
-                  font: "var(--text-base) var(--font-mono)",
-                  lineHeight: 1,
-                  cursor: "pointer",
-                }}
-              >
-                ×
-              </button>
-            </div>
-            <NavList
-              nav={nav}
-              activePage={activePage}
-              onNavigate={() => setOpen(false)}
-            />
-            <SidebarFooter activePage={activePage} fill={false} />
-          </div>
-        </>
-      )}
-    </>
+    <div
+      style={{
+        width: "var(--sidebar-w)",
+        flexShrink: 0,
+        borderRight: "1px solid var(--border-subtle)",
+        background: "var(--bg-sunken)",
+        display: "flex",
+        flexDirection: "column",
+        position: "sticky",
+        top: "var(--header-h)",
+        alignSelf: "flex-start",
+        height: "calc(100vh - var(--header-h))",
+        overflowY: "auto",
+      }}
+    >
+      <SidebarPanel activePage={activePage} fill />
+    </div>
   );
 }
-
-const BURGER_BAR: React.CSSProperties = {
-  height: "1.5px",
-  background: "currentColor",
-  borderRadius: "1px",
-};

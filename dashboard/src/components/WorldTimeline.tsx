@@ -118,7 +118,7 @@ export function WorldTimeline({
         borderBottom: "1px solid var(--border-subtle)",
         background: "var(--bg-sunken)",
         position: "sticky",
-        top: 0,
+        top: "var(--header-h)",
         zIndex: 5,
       }}
     >
