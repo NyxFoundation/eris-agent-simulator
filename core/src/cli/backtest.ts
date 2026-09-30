@@ -384,6 +384,14 @@ async function main(): Promise<void> {
   console.error(
     `[backtest] scenario key: ${scenarioKey.source} ${scenarioKey.commitment}`,
   );
+  // The same form the key check above reads, and the same way out: a plan under a key file is the
+  // live week, and its posture is refused rather than warned about (core/src/realtime/liveWeek.ts).
+  const liveWeek = plan && scenarioKey.source === "file";
+  if (liveWeek)
+    console.error(
+      "[backtest] live week: an ordered plan under a key file. Public environment keys and " +
+        "unisolated agents are refused (core/src/realtime/liveWeek.ts)",
+    );
 
   // ---- Validate the state manifest + sync constants (done before importing the coordinator) ----
   const { manifest, statePath } = readStateManifest(stateDirAbs);
@@ -628,8 +636,36 @@ async function main(): Promise<void> {
 
     process.env.ERIS_LOCAL_DEPLOY = "1";
     // Evaluate after the constants sync (dynamically, since static imports are hoisted; same as sim-realtime.ts).
-    const { runRealtimeSimulation } =
-      await import("../realtime/coordinator.js");
+    const {
+      runRealtimeSimulation,
+      preflightLiveWeek,
+      LIVE_WEEK_OVERRIDE,
+      isLiveWeekRefusal,
+    } = await import("../realtime/coordinator.js");
+    // The coordinator's own overrides for every epoch of this matrix, bar the per-epoch ordinal.
+    const runOverridesFor = (): Record<string, string> => ({
+      ANVIL_RPC_URL: rpcUrl,
+      // Guarantee config.localDeploy even for an arbitrary regime file (one that forgot to write run.localDeploy).
+      ERIS_LOCAL_DEPLOY: "1",
+      ERIS_LOCAL_SNAPSHOT_FILE: snapshotFile,
+      ERIS_RUN_MODE: "backtest",
+      ...(liveWeek ? { [LIVE_WEEK_OVERRIDE]: "1" } : {}),
+    });
+    // Before the first wait (--follow-schedule may sit hours before epoch 1) and once per regime: the
+    // posture reads the regime's roster and sandbox, which differ between regimes only without --agents.
+    if (liveWeek) {
+      const checked = new Set<string>();
+      for (const scenario of scenarios) {
+        if (checked.has(scenario.regimePath)) continue;
+        checked.add(scenario.regimePath);
+        preflightLiveWeek(runOverridesFor(), [
+          process.execPath,
+          "sim-realtime",
+          "--config",
+          effectivePathFor(scenario),
+        ]);
+      }
+    }
 
     // ---- The scenario matrix ----
     // One long-lived anvil; every scenario is snapshot -> run -> reconstruct -> revert (ADR 0017 §3).
@@ -841,11 +877,7 @@ async function main(): Promise<void> {
         );
         try {
           const { runDir } = await runRealtimeSimulation({
-            ANVIL_RPC_URL: rpcUrl,
-            // Guarantee config.localDeploy even for an arbitrary regime file (one that forgot to write run.localDeploy).
-            ERIS_LOCAL_DEPLOY: "1",
-            ERIS_LOCAL_SNAPSHOT_FILE: snapshotFile,
-            ERIS_RUN_MODE: "backtest",
+            ...runOverridesFor(),
             // ADR 0020 §1: the matrix is the only thing that resets the world between runs, so it is
             // the only thing allowed to declare the mode. A single --regime replay stays `continuous`
             // -- it is one world, whatever the snapshot/revert around it does for the *next* scenario.
@@ -863,6 +895,9 @@ async function main(): Promise<void> {
             console.error(`[backtest] warning: ${lastError}`);
           }
         } catch (error) {
+          // Except the live week's posture: recording it as an excluded epoch would run the next
+          // epoch into the same refusal, and the one after, until the week had no epochs left.
+          if (isLiveWeekRefusal(error)) throw error;
           // One scenario blowing up must not abandon the rest of the matrix. It is recorded as an
           // excluded scenario, which keeps it out of the aggregation instead of scoring everyone
           // zero for an environment failure (ADR 0017 §4).

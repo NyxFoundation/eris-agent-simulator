@@ -378,6 +378,14 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     docker でも `ERIS_AGENT_ISOLATE=1` + `ERIS_AGENT_INTERNAL=1` が無い agent は host のサービスへ直接届くので、coordinator は
     **止めずに警告する**（`agent_sandbox_warning` イベント + 起動時と完走時の stderr バナー。audience には配信しない）。
     ライブ週の設定は `infra/docker-agent/ISOLATION.md` 冒頭
+  - **鍵ファイル付きの順序付きプラン（= ライブ週）では、警告止まりだった 2 つを拒否にする**（`core/src/realtime/liveWeek.ts`）。
+    運営の鍵（admin/keeper/setup/deployer、または Aave admin が anvil のテストアカウント = 既定 mnemonic の dump）が
+    公開鍵 / `agentSandbox: process` / `command` の agent / `ERIS_AGENT_ISOLATE=1` + `ERIS_AGENT_INTERNAL=1` の無い
+    docker agent / bind-mount。以前は `roleKeyGuard` が「参加者が送れるチェーン」を登録ファイルか `external` でしか
+    判定せず、運営が起動する本番エポックはどちらも持たないので素通りしていた。隔離も警告だけで、host network の
+    agent はゲートウェイを通らず anvil の cheatcode に届く。規約 §3.1 の一覧が「禁止」と書くものを「届かない」に
+    するのはこの 2 つ。最初の待機の前にレジームごとに検査し、拒否は除外エポックにせず週ごと止める。
+    `ERIS_ALLOW_PUBLIC_ROLE_KEYS` は効かない。リハーサルは `--scenario-key public`
   - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
   - **5 ブロック中央値は市場由来の全マークに掛かる**（規約 §4.1。以前は stable の probe だけで、LP・LST・Liquity は
     境界 1 点だった）。対象は各アダプタが `medianSurfaces` で宣言し（uniswap-lp の tick / balancer・curve の持分価格 /
