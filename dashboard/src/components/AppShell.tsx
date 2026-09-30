@@ -1,33 +1,29 @@
-import { Sidebar, type SidebarNavKey } from "@/components/Sidebar";
-import { useIsMobile } from "@/lib/breakpoints";
+import { SiteFooter } from "@/components/SiteFooter";
+import { SiteHeader, type NavKey } from "@/components/SiteHeader";
 
 /**
- * The frame every page sits in: navigation, then the page.
- *
- * Each page used to open with the same twelve lines of flex and then render `<Sidebar/>` itself, so
- * the arrangement was stated five times and could only ever be a row. It is one component now
- * because it has to be two arrangements: a row with the sidebar as a column, and — below `MOBILE` —
- * a column with the sidebar as a top bar above the page.
+ * The frame every page sits in: the header across the top, the page at full width, a one-line
+ * footer. There is no sidebar (issue #183): the competition picker sits beside the competition's
+ * name on the overview and the standings, and the world switcher in the interval bar on the
+ * scenario-level pages.
  */
 export function AppShell({
   activePage,
   children,
 }: {
-  activePage?: SidebarNavKey;
+  activePage?: NavKey;
   children: React.ReactNode;
 }) {
-  const mobile = useIsMobile();
   return (
     <div
       style={{
         minHeight: "100vh",
         display: "flex",
-        flexDirection: mobile ? "column" : "row",
-        alignItems: "stretch",
+        flexDirection: "column",
         background: "var(--bg-canvas)",
       }}
     >
-      <Sidebar activePage={activePage} />
+      <SiteHeader activePage={activePage} />
       <div
         style={{
           flex: 1,
@@ -38,6 +34,7 @@ export function AppShell({
       >
         {children}
       </div>
+      <SiteFooter />
     </div>
   );
 }

@@ -399,20 +399,20 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - **7 本とも全 venue（`lst` / `liquity` 含む）をデプロイし、配布は ETH/BTC/USDC バスケット**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）に**ガス用 1 ETH**（2026-09-28。規約 §4.2 の公表値で、公式レジームと `practice.yaml` に明記。sdk の既定も全モード 1 ETH。以前の既定 100 ETH はバスケットの 4 倍で、その値動きが P の大半を占めていた。ガスマネージャは全 run で動き、足りなくなれば自分の WETH から補充する）。**flow wallet には 0.5 WBTC も配る**（`funding.flowBase`。issue #99）— 以前は flow の財布に WBTC が無く、しかも `flow/logic.ts` の売り側ガードが全 base で `wethWei` を見ていたので、WBTC の売り注文が残高 0 に対して送られて informed 行の 27〜38% が revert し、WBTC プールが fair の +110bps に張り付いていた。ガードは base ごとの残高（`flowBalances[*].bases`）を読むようになった。WETH は従来どおり flow が買って調達する（1,012/1,012 成功の実測があるので触らない）。以前は 5 venue・USDC-only 版と `full-*` の 7 venue 版が並立していたが、**5 venue 版は撤去した**（「競技とは何か」に 2 つ目の答えを残さないため）。`full-8h` / `full-boxA` は `public.yaml` と同内容になったので統合済み。`config/regimes/{lst,liquity,liquity-crash}.yaml` は venue 単体検証用として競技セット外に残る。USDC-only を保つのは `metric-*` だけで、理由は別（ADR 0019 §6。`genMetricRegimes.ts` が `funding.base` ごと落とす）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
 - `npm run explorer` — sim anvil を索引するローカル Blockscout（issue #31。stock イメージ pin、`infra/blockscout/`）。UI は http://localhost:3100。**チェーンをリセットしたら `npm run explorer:reset`**（resetFork/snapshot-revert の巻き戻しに indexer は追従できないので DB を消して再索引するのが正規のライフサイクル）。`npm run explorer:tag` が最新 run の `summary.json` から agent アドレスに名前タグを付ける（reset で消えるので run ごと）。接続先・chain id・fork 用 `FIRST_BLOCK` は `infra/blockscout/explorer.env`
-- `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
+- `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。`runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
   - **選択は `competition ⊃ scenario ⊃ interval`**（UI から "matrix" という語は消した。ディスク上の
     `matrix.json` は core の出力なのでそのまま）。UI 表示は「評価区間」/ "Interval"（issue #140 までは
     「ラウンド」/ "Round"）。dashboard のコード内の識別子（`roundCursor` / `RoundsBar` / `round`）は round のままで、
-    `dashboard/` の中では常に評価区間を指す。既定の着地点は competition = `/` の順位表。
-    1 シナリオは分布からの 1 ドローであって結果ではない（`config/scenarios/public.yaml`:
+    `dashboard/` の中では常に評価区間を指す。既定の着地点は `/` = **Overview**（issue #183。下の項目）で、
+    競技の順位表は `/standings`。着地点を 1 シナリオにしないのは、1 シナリオは分布からの 1 ドローであって結果ではない（`config/scenarios/public.yaml`:
     "the published seeds are five draws from it, **not the target**"）ので、そこを既定にすると
     「読んではいけない単位」を最初に見せることになる。picker は competition →（`regime#seed` 表示の）
     scenario の順。**「competition に属さない run」という第 2 のモデルは無い** — `sim:realtime` の
     1 run は「1 シナリオの競技」で、picker の **— single run —** はその run を外側の単位にする
     （`competitionFromRun`。データ層の入口 1 箇所で正規化し、以降のページは 1 種類の型しか見ない）。
-    **ルートは `/`（= Standings）と `/scenario` の 2 本 + `/agent/<id>`**。参加者向けに整理した際
-    `/standings`・`/leaderboard`（scenario 内順位と重複）・`/archive`（未到達の seed 遺物）・
-    `/run` エイリアスは削除した。`/markets` と `/explorer` は 1 world の中でしか意味を持たないので
+    **ルートは `/`（= Overview）・`/standings`・`/scenario` + `/agent/<id>`**。参加者向けに整理した際
+    `/leaderboard`（scenario 内順位と重複）・`/archive`（未到達の seed 遺物）・`/run` エイリアスは削除した
+    （`/standings` も一度消したが、#183 で `/` を Overview にしたときに順位表の置き場所として戻した）。`/markets` と `/explorer` は 1 world の中でしか意味を持たないので
     scenario 層のまま。**`/scenario` は world の盤面そのもの**（2026-09-07。旧 `/world` タブを統合し、`/world` は
     `/scenario` に着地する）: RoundsBar（replay transport 無し）+ ブロック軸 + 盤面 + シナリオ内順位 / Agent Log /
     venue 価格・口座価値の履歴。ブロック軸の head はページのローカル状態で、**途中で離れるときだけ replay head に
@@ -420,13 +420,37 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     replay で clamp せず、順位パネルは head 時点で閉じた評価区間までの順位（`standingsThroughRound`）。旧 top-page
     snapshot（ティッカー・テープ・ブロックプレビュー）は削除。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
     書かれるので結果がまだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
-  - **トップページ（`/`）が「この競技とは何か」を全部持つ**。順位表の下に 3 つ:
-    **シナリオ一覧**（1 行 1 世界 = `regime#seed` / 評価区間の数 / 首位 / 環境イベント種別。行クリックで開く。
-    `dashboard/src/data/scenarioList.ts`）、**単位の梯子**（競技 › シナリオ › 評価区間 › ブロック）、
-    **Info タブ**（overview / environment / scoring / data = `components/InfoTabs.tsx`）。
-    3 つとも以前は「まずシナリオを 1 つ選ばないと読めない」位置にあった。特に Info タブは
-    35 世界のうち 1 つの末尾にあったので、**「シナリオとは何か」の説明がシナリオを開かないと読めず、
-    しかもその世界固有の説明に読めた**。イベント列の空欄は「予定なし」であって「calm」ではない
+  - **ヘッダ + Overview（`/`）が参加者の入口**（issue #183）。**ヘッダ**（`components/SiteHeader.tsx`、全ページ・sticky）:
+    ASCON ロゴ / ナビ 5 本 / **参加登録**（Google Form 直結、？ に「先に Discord #ascon」、**10/25 00:00 JST 以降は出さない**）/
+    日英トグル。860px 以下はナビをメニューに畳む（参加登録とトグルはバーに残る）。ページ内の sticky バーは
+    `top: var(--header-h)`。**Overview** は上から
+    日程（ブラウザの時計で「開催中」と次の締切までの JST 暦日数。ascon.dev は静的なので「今ここ」はここにしか出せない）/
+    **提出の手順**（参加登録 → API キー → 作る → 手元で確かめる →（任意）練習環境 → ZIP → 提出 → 凍結。期間のある段に
+    「受付中 · あと N 日」等。参加者の進み具合は分からないので「あなたの段」は指さない。提出・API キーのフォーム URL は
+    載せず Discord 案内。10/31 以降は 1 行に畳む）/ 評価・賞金・提出と制約の 3 カード（要点を常時表示、全文は ？、
+    ascon.dev の規約の節へリンク）/ 上位 5 名（順位・エージェント・平均得点・採点数 + 何の数字か・何日分・更新時刻の 1 行。
+    `standings: false` では出さない。完走済みでも結果発表日（12/7）前は「最終」と名乗らない — 参加者の手元の
+    backtest も同じ形だから）/ リンク集。**規約の値は `dashboard/src/data/competitionInfo.ts` 1 ファイル**
+    （各値に ascon-web `content/legal/rules.md` の節番号）で、規約改定時はここだけ直す（文言は `messages.ts` の `overview.*`）
+  - **サイドバーは無い**（全モード・全ページ全幅 + 1 行のフッタ）。**競技セレクト**（`components/CompetitionPicker.tsx`）は
+    概要の上位 5 名の見出しと `/standings` の競技名の横で、**手元で選択肢があるときだけ**（競技 2 つ以上、または
+    1 つ + 競技外の run）。**公開ビューでは出さず、ブラウザに保存された選択も無視して最新の競技を出す**
+    （`effectiveSelectedCompetitionId`。無視しないと、以前別の競技を選んだ閲覧者が戻れないまま固定される）。
+    世界の切替（`components/WorldSwitcher.tsx`、「変更 ▾」）は scenario 層のページの評価区間バーの世界名の横で、
+    選択中の run を今の競技の中に保つ役も持つ
+  - **日本語 UI の呼び方**: エポック（練習期間は 1 日）ごとの偏差値 = **得点**、順位を決めるその加重平均 = **平均得点**
+    （規約の「スコア」は平均得点。評価カードに「規約では『スコア』」と添える）。英語は score のまま
+  - **説明文は ？（`design-system/InfoTip.tsx`）に入れ、見出しと数字だけを常時表示する**（全ページ）。
+    クリック/タップ/キーボード（Enter・Space で開閉、Esc で閉じてボタンへ戻る）、外側を押すと閉じる、1 度に 1 つ、
+    `position: fixed` なので横スクロールする表の中でも切れない。`Panel` の `info` prop が入口。**ネイティブの `title=` は
+    説明に使わない**（スマホで出ない・キーボードで届かない）— 切り詰めた名前の全文やデータの読み値だけに残す。
+    空状態の文（「なぜ何も無いか」）は ？ に入れない（入れるとパネルが空に見える）
+  - **`/standings`** は順位表 + Find your agent + **シナリオ一覧**（1 行 1 世界 = `regime#seed` / 評価区間の数 /
+    首位 / 環境イベント種別。行クリックで開く。`dashboard/src/data/scenarioList.ts`）。**単位の梯子**（競技 › シナリオ ›
+    評価区間 › ブロック）はタイトル横の ？。旧 **InfoTabs は解体**: 採点 → Overview の評価カード、概要・環境 →
+    該当箇所の ？（Overview の見出し・シナリオ一覧）、データ（`npm run explorer` など運営者向け）→ `/explorer` の ？ で
+    公開ビューでは出さない。以前は「シナリオとは何か」の説明が 35 世界の 1 つの末尾にあり、その世界固有の説明に
+    読めた。イベント列の空欄は「予定なし」であって「calm」ではない
     （cex-drift は窓を開けず run 全体を曲げるし、窓化以前の run はそもそも schedule を持たない）
   - **評価区間は UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
     途中経過の価値も順位変動も環境イベントも評価区間単位なので、全ビューはこの軸に対して読む。
@@ -456,11 +480,11 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     （`dashboard/src/data/competition.ts` の `competitionName`。h1 に `full-8h`、picker に
     `full-8h · 8/29`、生の ID は tooltip）。シナリオは常に `regime#seed`（表示では `full-` 接頭辞を
     剥がす）。**runs/ ディレクトリの通し番号「Run N」は全廃**（開発機ローカルの座標で参加者に無意味）
-  - **UI は日英対応**（`dashboard/src/i18n/` = locale ストア + 全文言辞書 `messages.ts`。サイドバーの
-    トグルで切替、localStorage 永続、既定はブラウザ言語）。**データ層のビルダー（venuePanels /
+  - **UI は日英対応**（`dashboard/src/i18n/` = locale ストア + 全文言辞書 `messages.ts`。ヘッダの
+    トグルで切替、localStorage 永続、既定はブラウザ言語、`<html lang>` も追従）。**データ層のビルダー（venuePanels /
     runsProvider の tape・建玉表）も `t()` を呼ぶ**ため、useSnapshot が key に locale を含めて
     言語切替でスナップショットを再構築する。文言の規律: 実装語彙（ファイル名・ADR 番号）は
-    学習層（scenario ページの Info タブ）以外に出さない / 単位は必ず添える（bps・USDC）/
+    運営者向けの ？（`/explorer` のデータの出所。公開ビューでは出さない）以外に出さない / 単位は必ず添える（bps・USDC）/
     状態語は live・finished の 2 語 / `npm run` コマンドは explorer 起動などローカル運用文脈のみ
   - **順位の理由は agent ページの Standing タブ**（順位表の行クリックで飛ぶ既定タブ）。その agent が採点された
     全エポック（s / シナリオ / P / T / w）、T の平均・標準偏差・最悪値（= §4.6 のタイブレーク）、T の分布、

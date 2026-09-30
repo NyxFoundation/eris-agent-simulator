@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
-import { HomePage } from "@/pages/HomePage";
+import { OverviewPage } from "@/pages/OverviewPage";
+import { StandingsPage } from "@/pages/StandingsPage";
 import { ExplorerPage } from "@/pages/ExplorerPage";
 import { MarketPage } from "@/pages/MarketPage";
 import { AgentDetailPage } from "@/pages/AgentDetailPage";
 import { ScenarioPage } from "@/pages/ScenarioPage";
+import { useLocale } from "@/i18n/locale";
 
 export default function App() {
   const [pathname, setPathname] = useState(() => window.location.pathname);
+  const locale = useLocale();
+
+  // Screen readers and the browser's own translation offer read the page's language from here.
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
 
   useEffect(() => {
     const onPopState = () => setPathname(window.location.pathname);
@@ -28,10 +36,12 @@ export default function App() {
     return <AgentDetailPage agentId={decodeURIComponent(agentMatch[1])} />;
   if (pathname === "/explorer") return <ExplorerPage />;
   if (pathname === "/markets") return <MarketPage />;
-  // The three levels, as two routes plus the agent pages: "/" is the competition (its standings),
-  // "/scenario" is one world inside it, shown as a board of its agents walked block by block.
-  // Markets and Explorer stay at the scenario level, because a venue's state and a block range
-  // only mean anything inside one world.
+  // "/" is the overview a participant lands on: the schedule, the rules in brief, the top of the
+  // table and where everything else lives. The three levels below it, as two routes plus the agent
+  // pages: "/standings" is the competition, "/scenario" is one world inside it, shown as a board of
+  // its agents walked block by block. Markets and Explorer stay at the scenario level, because a
+  // venue's state and a block range only mean anything inside one world.
+  if (pathname === "/standings") return <StandingsPage />;
   if (pathname === "/scenario" || pathname === "/world") return <ScenarioPage />;
-  return <HomePage />;
+  return <OverviewPage />;
 }

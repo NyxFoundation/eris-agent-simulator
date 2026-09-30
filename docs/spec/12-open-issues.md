@@ -96,7 +96,7 @@ read を replica へ分離する経路は実装済みだが、**実際に分離�
 | 旧形式 `prompt.md`（毎判断プロンプト）19 個 | `f42fd2a` で削除。**git 履歴と旧 bundle には残る**ので `kind: improve` マーカーで区別する |
 | `directShim` / `relay` / stdin-stdout プロトコル | 退役（`ERIS_AGENT_DIRECT_TX` も） |
 | 評価・採点・可視化コマンド（`sim` / `evaluate` / `gate` / `discrimination` / `leaderboard` / `stress-report`） | 撤去 |
-| ダッシュボードの `/standings`・`/leaderboard`・`/archive`・`/run` | 削除（[09 §9.1](09-dashboard.md)） |
+| ダッシュボードの `/leaderboard`・`/archive`・`/run` | 削除（[09 §9.1](09-dashboard.md)。`/standings` は issue #183 で順位表の置き場所として戻した） |
 | env からの config 読み取り | 廃止。設定されていると警告する |
 
 ## 12.6 参照

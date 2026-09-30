@@ -27,8 +27,8 @@ src/
   main.tsx          React mount
   App.tsx           Root component + route table
   navigation.ts     pushState helper
-  pages/            HomePage (standings) / ScenarioPage / MarketPage / ExplorerPage / AgentDetailPage
-  components/       Shared UI (Sidebar, the two interval bars RoundCursorBar / RoundsBar, competitionUi)
+  pages/            OverviewPage (/) / StandingsPage / ScenarioPage / MarketPage / ExplorerPage / AgentDetailPage
+  components/       Shared UI (SiteHeader / SiteFooter, CompetitionPicker, WorldSwitcher, the two interval bars RoundCursorBar / RoundsBar, competitionUi)
   data/             Providers, run artifact readers, live-run polling, per-page snapshot hooks
   design-system/    Primitives the pages are composed from
   lib/              Formatting and small shared helpers
@@ -54,15 +54,14 @@ keeps its `round` identifiers (`roundCursor`, `RoundsBar`, …): inside
 A competition is a scenario matrix written by `backtest --scenarios`
 (`runs/<id>/matrix.json`); a standalone `sim:realtime` run is wrapped into the
 same shape as a competition of one scenario (`competitionFromRun`), so every
-page processes exactly one kind of object. The sidebar picks a competition,
-then a scenario inside it; `/` is the competition's standings under the fixed
-rule. The score column shows the score itself (regime-equal mean of
-per-scenario `mean − λ·std`, ×10⁴ so it does not round to zero, no unit
-suffix); the rank order is the official
-aggregation (per-scenario z-scores averaged per regime), whose value sits in
-the score cell's tooltip. Re-scoring under other rules is `npm run metrics`'s
-job. A standings row opens the agent's page, whose Standing tab explains the
-place (pooled rounds, per-regime split).
+page processes exactly one kind of object. `/` is the overview (schedule,
+submission steps, the rules in brief, the top 5); `/standings` is the
+competition's table under the rules' deviation-score formula (rules §4.4,
+imported from `core/src/scoring/deviationScore.ts`). There is no sidebar: the
+competition picker sits beside the competition's name on those two pages
+(locally, when there is more than one to choose; never in the public view), and
+the world switcher sits in the interval bar of the scenario-level pages. A
+standings row opens the agent's page, whose Standing tab explains the place.
 
 Everything on screen is a display name, never a storage id: a competition is
 its scenario set and date ("full-8h · 8/29", derived in
@@ -72,7 +71,7 @@ id stays one hover away. There is no serial "Run N" anywhere.
 ## Language
 
 Every user-visible string lives in `src/i18n/messages.ts`, in English and
-Japanese; the sidebar's toggle switches the language (persisted per browser,
+Japanese; the header's toggle switches the language (persisted per browser,
 defaulting to the browser language). Data-layer builders call `t()` too, so
 snapshots are keyed by locale and rebuild on switch.
 

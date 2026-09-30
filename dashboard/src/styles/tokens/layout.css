@@ -11,12 +11,12 @@
  * step is deliberately smaller than the screen.
  */
 :root {
-  --sidebar-w: 212px;
   --page-max: 1180px;
   /* Gutters shrink on a phone, where 32px of padding is a twelfth of the screen. */
   --page-pad-x: clamp(14px, 2.4vw, 32px);
   --page-pad-top: clamp(18px, 2vw, 32px);
-  --topbar-h: 56px;
+  /* The header (SiteHeader). Sticky bars inside a page sit below it, at `top: var(--header-h)`. */
+  --header-h: 56px;
 }
 
 /* Laptops and small desktops: the historical layout, unchanged. */
@@ -26,12 +26,6 @@
 }
 @media (min-width: 2200px) {
   :root { --page-max: 1840px; }
-}
-
-/* Below this the sidebar stops being a column and becomes a top bar with a drawer; see
-   `src/lib/breakpoints.ts`, which holds the same number for the JS side. */
-@media (max-width: 860px) {
-  :root { --sidebar-w: 0px; }
 }
 
 /* The drawer, and the scrim behind it. Inline styles cannot express a transition on mount, and the
