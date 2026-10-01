@@ -844,6 +844,8 @@ const en = {
     "Dashboard pages",
   "header.register":
     "Register",
+  "header.submit":
+    "Submit",
   "header.registerTipTitle":
     "Before you register",
   "header.registerTipDiscord":
@@ -1943,6 +1945,8 @@ const ja: Record<MessageKey, string> = {
     "ダッシュボードのページ",
   "header.register":
     "参加登録",
+  "header.submit":
+    "提出",
   "header.registerTipTitle":
     "参加登録の前に",
   "header.registerTipDiscord":

@@ -856,7 +856,8 @@ submission & limits** (the gist on the card, the full statement behind the ?, an
 authoritative rules on ascon.dev), the **top 5** of the selected competition (with how many days or
 epochs each was scored on), and the **links** (this guide, the rules, Discord, and the practice
 environment's RPC, explorer and environment manifest). **Register** at the top right opens the
-registration form, and disappears when registration closes (Oct 24).
+registration form, and disappears when registration closes (Oct 24). **Submit**, right of it, opens the
+submission form, and is there only during the submission period (Sep 23 – Oct 31).
 
 ### Standings (`/standings`)
 

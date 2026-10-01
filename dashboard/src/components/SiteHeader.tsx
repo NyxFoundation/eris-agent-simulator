@@ -13,7 +13,9 @@ import {
   DISCORD_URL,
   REGISTRATION_FORM_URL,
   SCHEDULE,
+  SUBMISSION_FORM_URL,
   registrationOpen,
+  submissionOpen,
   rulesUrl,
 } from "@/data/competitionInfo";
 import { isSeedProvider } from "@/data/provider";
@@ -21,6 +23,7 @@ import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { setLocale, useLocale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
 import { useIsMobile } from "@/lib/breakpoints";
+import { useMediaQuery } from "@/lib/useMediaQuery";
 import { formatJstDay } from "@/lib/format";
 import { useNow } from "@/lib/useNow";
 import { navigate } from "@/navigation";
@@ -29,6 +32,9 @@ export type NavKey =
   "overview" | "standings" | "scenario" | "markets" | "explorer";
 
 type NavItem = { key: NavKey; label: string; path: string };
+
+/** Up to the widest phones (430px): too narrow for the wordmark beside both forms and the toggle. */
+const PHONE = "(max-width: 430px)";
 
 function navItems(): NavItem[] {
   return [
@@ -60,7 +66,7 @@ function inAppClick(path: string, after?: () => void) {
   };
 }
 
-function Brand() {
+function Brand({ wordmark = true }: { wordmark?: boolean }) {
   return (
     <a
       href="/"
@@ -82,14 +88,16 @@ function Brand() {
         height={26}
         style={{ display: "block" }}
       />
-      <span
-        style={{
-          font: "var(--weight-bold) var(--text-md) var(--font-sans)",
-          letterSpacing: "0.04em",
-        }}
-      >
-        ASCON
-      </span>
+      {wordmark && (
+        <span
+          style={{
+            font: "var(--weight-bold) var(--text-md) var(--font-sans)",
+            letterSpacing: "0.04em",
+          }}
+        >
+          ASCON
+        </span>
+      )}
     </a>
   );
 }
@@ -150,6 +158,39 @@ function RegisterButton({ compact }: { compact: boolean }) {
         </TipText>
       </InfoTip>
     </span>
+  );
+}
+
+/**
+ * "Submit", right of "Register": the agent submission form, while it takes submissions (9/23–10/31
+ * JST). Outlined rather than filled, so the two read as two different forms. After 10/24 it is the
+ * only one left on the bar.
+ */
+function SubmitButton({ compact }: { compact: boolean }) {
+  const now = useNow();
+  if (!submissionOpen(now)) return null;
+  return (
+    <a
+      href={SUBMISSION_FORM_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        height: "32px",
+        boxSizing: "border-box",
+        padding: compact ? "0 11px" : "0 15px",
+        borderRadius: "var(--radius-full)",
+        border: "1px solid var(--pink-500)",
+        color: "var(--pink-300)",
+        font: "var(--weight-semibold) var(--text-sm) var(--font-sans)",
+        textDecoration: "none",
+        whiteSpace: "nowrap",
+        flexShrink: 0,
+      }}
+    >
+      {t("header.submit")}
+    </a>
   );
 }
 
@@ -246,6 +287,7 @@ export function SiteHeader({ activePage }: { activePage?: NavKey }) {
   // Read so every label re-renders when the language changes.
   useLocale();
   const mobile = useIsMobile();
+  const phone = useMediaQuery(PHONE);
   const [open, setOpen] = useState(false);
   const nav = navItems();
 
@@ -298,6 +340,7 @@ export function SiteHeader({ activePage }: { activePage?: NavKey }) {
           }}
         >
           <RegisterButton compact={false} />
+          <SubmitButton compact={false} />
           <LanguageToggle />
         </div>
       </header>
@@ -306,17 +349,26 @@ export function SiteHeader({ activePage }: { activePage?: NavKey }) {
 
   return (
     <>
-      <header style={{ ...BAR, gap: "8px", padding: "0 10px 0 14px" }}>
-        <Brand />
+      <header
+        style={{
+          ...BAR,
+          gap: phone ? "6px" : "8px",
+          padding: phone ? "0 8px 0 10px" : "0 10px 0 14px",
+        }}
+      >
+        {/* On a phone the bar holds Register, Submit, the language and the menu; the wordmark
+            gives way first (the mark still links home, and says so to a screen reader). */}
+        <Brand wordmark={!phone} />
         <div
           style={{
             marginLeft: "auto",
             display: "flex",
             alignItems: "center",
-            gap: "6px",
+            gap: phone ? "4px" : "6px",
           }}
         >
           <RegisterButton compact />
+          <SubmitButton compact />
           <LanguageToggle />
           <button
             type="button"

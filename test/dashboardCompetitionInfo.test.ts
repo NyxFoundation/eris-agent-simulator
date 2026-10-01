@@ -18,6 +18,7 @@ import {
   rulesUrl,
   stepStatus,
   submissionClosed,
+  submissionOpen,
 } from "../dashboard/src/data/competitionInfo.js";
 
 const jst = (iso: string) => Date.parse(`${iso}+09:00`);
@@ -138,4 +139,11 @@ test("every step's guide anchor is in the guide's table of contents, in both lan
     assert.ok(ja.includes(`(#${s.guide.ja})`), `ja anchor #${s.guide.ja}`);
     assert.ok(en.includes(`(#${s.guide.en})`), `en anchor #${s.guide.en}`);
   }
+});
+
+test("the header's Submit is offered from 9/23 00:00 JST through the end of 10/31", () => {
+  assert.equal(submissionOpen(jst("2026-09-22T23:59:59")), false);
+  assert.equal(submissionOpen(jst("2026-09-23T00:00:00")), true);
+  assert.equal(submissionOpen(jst("2026-10-31T23:59:59")), true);
+  assert.equal(submissionOpen(jst("2026-11-01T00:00:00")), false);
 });

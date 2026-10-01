@@ -93,10 +93,12 @@ work for runs recorded before `market.json` grew any of its fields.
 ### The header, the Overview and the "?"
 
 Every page sits under one header (`src/components/SiteHeader.tsx`): the ASCON logo, the five page
-links, **Register** and the language toggle. Register goes straight to the registration form (its "?"
-says to join the #ascon channel on Discord first, rules §1) and is not offered from 10/25 00:00 JST,
-when registration has closed. Below 860px the page links fold into a menu, and Register and the
-language stay on the bar.
+links, **Register**, **Submit** and the language toggle. Register goes straight to the registration
+form (its "?" says to join the #ascon channel on Discord first, rules §1) and is not offered from 10/25
+00:00 JST, when registration has closed. Submit, right of it, goes straight to the agent submission
+form and is shown only while that form takes submissions (9/23–10/31 JST); it is outlined, so the two
+read as two different forms. Below 860px the page links fold into a menu, and Register, Submit and the
+language stay on the bar; at 430px and below the logo drops its wordmark so they fit.
 
 **There is no sidebar.** Every page is full width, with a one-line footer (read-only, no sign-in, and
 in the public view a "public view" note with its "?"). The two things the sidebar held moved to where

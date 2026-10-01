@@ -324,6 +324,12 @@ export function stepStatus(step: SubmissionStep, nowMs: number): StepStatus | nu
   return null;
 }
 
+/** Within the submission period (rules §1: 9/23–10/31 JST), when the submission form takes ZIPs. */
+export function submissionOpen(nowMs: number): boolean {
+  const submission = SCHEDULE.find((p) => p.key === "submission");
+  return submission !== undefined && phaseStatus(submission, nowMs) === "now";
+}
+
 /** Past the end of the submission period: agents are frozen and the steps are history. */
 export function submissionClosed(nowMs: number): boolean {
   const submission = SCHEDULE.find((p) => p.key === "submission");
