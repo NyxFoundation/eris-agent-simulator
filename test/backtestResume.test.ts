@@ -16,6 +16,7 @@ import {
   stateLabelBefore,
 } from "../core/src/backtest/resume.js";
 import type { ScenarioResult } from "../core/src/backtest/standings.js";
+import { SCENARIO_STREAMS } from "../sdk/src/rng.js";
 
 const plan = [
   { s: 1, regime: "calm", seed: 101 },
@@ -223,4 +224,47 @@ test("a stored matrix run on a different field is refused; one that predates the
   assert.doesNotThrow(() =>
     assertResumable({ ...stored, rosterFingerprint: undefined }, current),
   );
+});
+
+// Issue #186: the regime now names every stream, so the same key and seed draw another world. A
+// matrix written before (no scenarioStreams) or under another naming is two worlds ranked as one.
+test("assertResumable: a matrix realized under another stream naming is refused", () => {
+  const current = {
+    scenarioSet: "config/scenarios/public.yaml",
+    k: 40,
+    resetUnit: "scenario",
+    repeat: 1,
+    scenarioStreams: SCENARIO_STREAMS,
+  };
+  const stored = {
+    schema: 2,
+    scenarioSet: "config/scenarios/public.yaml",
+    k: 40,
+    resetUnit: "scenario",
+    repeat: 1,
+  };
+  assert.doesNotThrow(() =>
+    assertResumable({ ...stored, scenarioStreams: SCENARIO_STREAMS }, current),
+  );
+  assert.throws(
+    () => assertResumable(stored, current),
+    /predates regime-named streams \(issue #186\).*Start a new matrix without --resume/,
+  );
+  assert.throws(
+    () => assertResumable({ ...stored, scenarioStreams: "regime-v0" }, current),
+    /scenarioStreams: stored regime-v0, now regime-v1/,
+  );
+});
+
+test("readStoredMatrix keeps the recorded stream naming", () => {
+  const dir = mkdtempSync(join(tmpdir(), "matrix-streams-"));
+  try {
+    writeFileSync(
+      join(dir, "matrix.json"),
+      JSON.stringify({ schema: 2, scenarios: [], scenarioStreams: SCENARIO_STREAMS }),
+    );
+    assert.equal(readStoredMatrix(dir).scenarioStreams, "regime-v1");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

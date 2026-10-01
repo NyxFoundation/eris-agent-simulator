@@ -10,7 +10,9 @@ import {
   Rng,
   setScenarioRegime,
 } from "../sdk/src/rng.js";
+import { join } from "node:path";
 import { isEnvironmentOnlyEnv } from "../core/src/realtime/agentProcess.js";
+import { regimeName, resolveRegimePath } from "../core/src/backtest/shared.js";
 import {
   installChildScenarioKey,
   PUBLIC_SCENARIO_KEY,
@@ -62,4 +64,18 @@ test("the flow bot takes the regime from the coordinator with the key", () => {
 
 test("an agent never gets the regime", () => {
   assert.equal(isEnvironmentOnlyEnv(SCENARIO_REGIME_ENV), true);
+});
+
+// Review of #187: a single --regime used the file's basename while a set or plan used the string as
+// written, so `config/regimes/calm.yaml` and `calm` named two streams. Every path now takes the name.
+test("a regime spelled as a name or as a path is one regime name", () => {
+  const root = process.cwd();
+  const names = [
+    "calm",
+    "config/regimes/calm.yaml",
+    "./config/regimes/calm.yaml",
+    join(root, "config/regimes/calm.yaml"),
+  ].map((r) => regimeName(resolveRegimePath(root, r)));
+  assert.deepEqual(names, ["calm", "calm", "calm", "calm"]);
+  assert.equal(regimeName("/x/y/crash.yml"), "crash");
 });

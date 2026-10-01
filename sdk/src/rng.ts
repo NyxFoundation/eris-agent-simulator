@@ -133,6 +133,12 @@ export function resetScenarioKey(): void {
 // regime alongside the key (core/src/scenarioKey.ts); agents never get it.
 let scenarioRegime = "";
 
+// The version of the stream naming above, recorded in matrix.json and run_started_realtime. A
+// --resume refuses a matrix with another (or none: written before #186, realized without the
+// regime), because its stored epochs and the ones run now would be draws from two different worlds
+// under the same key. Bump it whenever the stream id changes again.
+export const SCENARIO_STREAMS = "regime-v1";
+
 export function setScenarioRegime(name: string): void {
   scenarioRegime = name;
 }

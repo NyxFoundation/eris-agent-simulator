@@ -76,6 +76,7 @@ import {
   nextFairPrice,
   priceRngForAsset,
   Rng,
+  SCENARIO_STREAMS,
   setScenarioRegime,
 } from "@eris/sdk/rng.js";
 import type {
@@ -700,6 +701,8 @@ export async function runRealtimeSimulation(
     scenarioKey: scenarioKeyRecord(scenarioKey),
     // Issue #186: the regime the streams were named by (empty = none, the pre-#186 streams).
     scenarioRegime: config.scenarioRegime,
+    // ...and the version of that naming (sdk/src/rng.ts), so a stored run says which streams drew it.
+    scenarioStreams: SCENARIO_STREAMS,
     // ADR 0021 §4: the endpoint the world is on, recorded by the environment. The dashboard's live
     // mode used to discover it from an agent's `runtime_start` log line, which stops working the
     // moment the agents are somebody else's processes on somebody else's machine. Reads go to
@@ -2893,6 +2896,7 @@ export async function runRealtimeSimulation(
         seed: config.seed,
         flowSeed: config.flowSeed,
         scenarioKey: scenarioKeyRecord(scenarioKey),
+        scenarioStreams: SCENARIO_STREAMS,
         rpcUrl: config.readRpcUrl,
         // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
         // hosted dashboard's public view reads it before summary.json exists, to decide how much of

@@ -33,7 +33,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   computeStandings,
@@ -70,6 +70,7 @@ import {
   parseFlags,
   readConstantsFingerprint,
   readStateManifest,
+  regimeName,
   resolveRegimePath,
   rpc,
   STATE_DIR_DEFAULT,
@@ -82,6 +83,7 @@ import {
   startDelay,
 } from "../backtest/timetable.js";
 import { matrixEpochOverrides } from "../backtest/epochOrdinal.js";
+import { SCENARIO_STREAMS } from "@eris/sdk/rng.js";
 import {
   AGENT_STATE_ROOT_ENV,
   restoreAllAgentState,
@@ -216,11 +218,12 @@ function loadScenarioSet(
         throw new Error(
           `${abs}: epochs[${i}].startsAt must be an ISO 8601 date`,
         );
+      const regimePath = resolveRegimePath(root, e.regime);
       out.push({
         s: s as number,
-        regime: e.regime,
+        regime: regimeName(regimePath),
         seed: e.seed as number,
-        regimePath: resolveRegimePath(root, e.regime),
+        regimePath,
         ...(typeof e.startsAt === "string" ? { startsAt: e.startsAt } : {}),
       });
     });
@@ -245,7 +248,7 @@ function loadScenarioSet(
           throw new Error(`${abs}: every entry of "seeds" must be an integer`);
         out.push({
           s: out.length + 1,
-          regime,
+          regime: regimeName(regimePath),
           seed: seed as number,
           regimePath,
         });
@@ -358,7 +361,7 @@ async function main(): Promise<void> {
     scenarios = [
       {
         s: 1,
-        regime: basename(regimePath).replace(/\.ya?ml$/, ""),
+        regime: regimeName(regimePath),
         seed,
         regimePath,
       },
@@ -666,6 +669,7 @@ async function main(): Promise<void> {
           ...(agentStateRoot !== undefined ? { agentStateRoot } : {}),
           rosterFingerprint: fieldFingerprint,
           scenarioKeyCommitment: scenarioKey.commitment,
+          scenarioStreams: SCENARIO_STREAMS,
         },
         (p) => resolve(ROOT, p),
       );
@@ -745,6 +749,9 @@ async function main(): Promise<void> {
             // ADR 0027: the key the scenarios were realized under (public, or the commitment to the
             // operator's secret). Reproducing the matrix needs it; a --resume under another is refused.
             scenarioKey: scenarioKeyRecord(scenarioKey),
+            // Issue #186: how the streams were named (the regime with the seed). A --resume under
+            // another naming is refused: the same key and seed would draw another world.
+            scenarioStreams: SCENARIO_STREAMS,
             // Complete only once every scenario has run; until then this is a partial matrix.
             scenariosPlanned: scenarios.length,
             // The plan's timetable, for the epochs not run yet: the dashboard's "next epoch starts
