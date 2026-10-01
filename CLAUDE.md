@@ -561,10 +561,14 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 > 共有 reserve しか使わないが Pool は同じで、**Aave の採点 `getUserAccountData` は全 reserve を合計する**ので、
 > 放置すると faucet のトークンを supply するだけで P が増え、それを担保に共有 USDC/WETH も借りられた（実測）。
 > deployer は `PERMISSIONED_FAUCET=true` で deploy し、`closeVendorTestMarket` が Faucet を owner 限定にして
-> 8 reserve を `setReserveActive(false)`（供給が残っていれば freeze して警告）。**稼働中のチェーンは
-> `cd deployer && RPC_URL=<node> npm run close:aave-vendor`**（冪等。freeze しか出来なかったら exit 2）。
+> 8 reserve を `setReserveActive(false)`。**Aave が無効化を許すのは aToken も `accruedToTreasury` も 0 のときだけ**で、
+> 一度でも借りられた reserve は全員が返済・引出しても treasury の利息の取り分が残り、**永久に無効化できない**。
+> その場合は freeze して「treasury の残りのみ」と報告し、参加者の供給・債務が残っていれば freeze + 警告。
+> **稼働中のチェーンは `cd deployer && RPC_URL=<node> npm run close:aave-vendor`**（冪等。参加者の残高が残れば
+> exit 2、tx 自体が失敗した reserve があれば exit 1。1 本の失敗で後続を止めない）。
 > coordinator はローカルデプロイ + aave の run で `Pool.getReservesList()` を列挙し、registry + LST 以外の
-> **active な reserve が 1 本でもあれば全 chainMode で起動時に落ちる**（`aave_reserve_check`。
+> **active な reserve が 1 本でもあれば全 chainMode で起動時に落ちる**。例外は freeze 済みで参加者の aToken
+> （treasury 保有分を除く）も債務も 0 のものだけ（`aave_reserve_check`。
 > `core/src/realtime/aaveReserveGuard.ts`）。**これ以前の state dump は全部これで落ちる**ので `npm run gen:state-dump` で焼き直す。
 
 > **deploy 鍵は `MNEMONIC`**（既定は anvil の**公開**テスト mnemonic。issue #74）。index 0 の deployer は Aave の
