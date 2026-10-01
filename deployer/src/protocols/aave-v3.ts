@@ -50,7 +50,16 @@ export async function deployAaveV3({ seed }: { seed: boolean }) {
       // MNEMONIC: vendor/aave/hardhat.config.js derives its accounts from it, so every Aave role
       // (deployer / aclAdmin / poolAdmin) lands on the same account this process signs with
       // (issue #74). Explicit rather than inherited, because this is the normalized form.
-      env: { ...process.env, MARKET_NAME: "Aave", RPC_URL, MNEMONIC },
+      // PERMISSIONED_FAUCET: @aave/deploy-v3 reads it in helpers/env.js and defaults to false, which
+      // deploys a Faucet anyone can mint 10,000 of each test token from (issue #190). Explicit
+      // here so the default is never what decides it; closeVendorTestMarket() checks the result.
+      env: {
+        ...process.env,
+        MARKET_NAME: "Aave",
+        RPC_URL,
+        MNEMONIC,
+        PERMISSIONED_FAUCET: "true",
+      },
       stdio: ["ignore", "inherit", "inherit"],
     },
   );
@@ -94,6 +103,9 @@ export async function deployAaveV3({ seed }: { seed: boolean }) {
   // Aave deploy-v3 creates reserves with its own test tokens, so post-deploy we
   // separately stand up reserves for the shared tokens usable across protocols.
   await registerSharedReserves();
+
+  // After the shared reserves have cloned their parameters from these, before anything is seeded.
+  await closeVendorTestMarket();
 
   if (seed) {
     await seedSharedSupplyBorrow();
@@ -471,6 +483,213 @@ export async function registerLstReserve(
     `LTV ${Number(LST_LTV) / 100}% / LT ${Number(LST_LIQUIDATION_THRESHOLD) / 100}% / collateral only`,
   );
   return { aggregator, aToken: toks[0], variableDebtToken: toks[2] };
+}
+
+// ---------------------------------------------------------------------------
+// Aave's own test market (issue #190)
+// ---------------------------------------------------------------------------
+
+// The reserves @aave/deploy-v3 lists for MARKET_NAME=Aave, each on a test token its Faucet mints.
+// Enumerated from the deployment files rather than from TOKEN_KEYS, which records only five of the
+// eight: AAVE / LINK / EURS exist on chain and in vendor/aave/deployments, and nowhere else.
+function vendorTestTokens(): { key: string; address: Address }[] {
+  const suffix = "-TestnetMintableERC20-Aave.json";
+  return readdirSync(DEPLOYMENTS)
+    .filter((f) => f.endsWith(suffix))
+    .map((f) => {
+      const key = f.slice(0, -suffix.length);
+      return { key, address: readDeployment(f.slice(0, -5)).address };
+    });
+}
+
+const RESERVE_CONFIG_ABI = [
+  {
+    type: "function",
+    name: "getReserveConfigurationData",
+    stateMutability: "view",
+    inputs: [{ type: "address" }],
+    outputs: [
+      { name: "decimals", type: "uint256" },
+      { name: "ltv", type: "uint256" },
+      { name: "liquidationThreshold", type: "uint256" },
+      { name: "liquidationBonus", type: "uint256" },
+      { name: "reserveFactor", type: "uint256" },
+      { name: "usageAsCollateralEnabled", type: "bool" },
+      { name: "borrowingEnabled", type: "bool" },
+      { name: "stableBorrowRateEnabled", type: "bool" },
+      { name: "isActive", type: "bool" },
+      { name: "isFrozen", type: "bool" },
+    ],
+  },
+  {
+    type: "function",
+    name: "getReserveTokensAddresses",
+    stateMutability: "view",
+    inputs: [{ type: "address" }],
+    outputs: [{ type: "address" }, { type: "address" }, { type: "address" }],
+  },
+] as const satisfies Abi;
+
+const TOTAL_SUPPLY_ABI = [
+  {
+    type: "function",
+    name: "totalSupply",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+] as const satisfies Abi;
+
+export type VendorReserveOutcome = {
+  key: string;
+  asset: Address;
+  // "deactivated" = setReserveActive(false) went through (no supply, no debt).
+  // "frozen" = something is supplied or borrowed, so it cannot be deactivated; new supply and
+  //            borrow are stopped but the existing balance still counts in getUserAccountData.
+  // "already-inactive" / "not-listed" = nothing to do.
+  status: "deactivated" | "frozen" | "already-inactive" | "not-listed";
+  supplied?: string;
+  debt?: string;
+};
+
+/**
+ * Take Aave's own test market out of the competition (issue #190).
+ *
+ * @aave/deploy-v3 lists eight reserves on test tokens (fixed-price MockAggregators: WETH $4,000,
+ * WBTC $60,000, ...) and deploys a Faucet that, unpermissioned, gives anyone 10,000 of each per
+ * call. The environment never uses those reserves -- every agent, flow actor and victim works on
+ * the shared reserves registered above -- but they sit in the same Pool, and that is enough:
+ * getUserAccountData sums every reserve, so supplying faucet tokens is score (the Aave adapter
+ * marks collateral minus debt) and collateral to borrow the real shared USDC/WETH against.
+ *
+ * Two layers, because each closes a different half:
+ *   - Faucet.setPermissioned(true): only the owner (the deployer) can mint. The deployer's own
+ *     faucetMint keeps working.
+ *   - setReserveActive(false) on each vendor reserve: closes the Pool to those tokens however they
+ *     were obtained, including any minted before the Faucet was closed. Possible only while a
+ *     reserve holds no supply and no debt; one that does is frozen instead and reported, because
+ *     what it already holds keeps counting and deciding that is not this function's call.
+ *
+ * Idempotent, so it also serves a chain that is already running (`npm run close:aave-vendor`).
+ */
+export async function closeVendorTestMarket(): Promise<VendorReserveOutcome[]> {
+  const faucet = readDeployment("Faucet-Aave");
+  const permissioned = (await publicClient.readContract({
+    address: faucet.address,
+    abi: faucet.abi,
+    functionName: "isPermissioned",
+  })) as boolean;
+  if (!permissioned) {
+    const h = await deployerWallet.writeContract({
+      address: faucet.address,
+      abi: faucet.abi,
+      functionName: "setPermissioned",
+      args: [true],
+      account: dep,
+      chain: anvilChain,
+    });
+    await waitTx(h);
+  }
+  assert(
+    (await publicClient.readContract({
+      address: faucet.address,
+      abi: faucet.abi,
+      functionName: "isPermissioned",
+    })) === true,
+    "Aave Faucet is still permissionless after setPermissioned(true)",
+  );
+  ok("Aave Faucet", permissioned ? "already permissioned" : "permissioned");
+
+  const configuratorAddr = readDeployment(
+    "PoolConfigurator-Proxy-Aave",
+  ).address;
+  const configuratorAbi = readDeployment("PoolConfigurator-Implementation").abi;
+  const pdpAddr = readDeployment("PoolDataProvider-Aave").address;
+  const { pool } = aave();
+  const listed = new Set(
+    (
+      (await publicClient.readContract({
+        address: pool,
+        abi: poolImplAbi(),
+        functionName: "getReservesList",
+      })) as readonly Address[]
+    ).map((a) => a.toLowerCase()),
+  );
+
+  const outcomes: VendorReserveOutcome[] = [];
+  for (const { key, address: asset } of vendorTestTokens()) {
+    if (!listed.has(asset.toLowerCase())) {
+      outcomes.push({ key, asset, status: "not-listed" });
+      continue;
+    }
+    const cfg = await publicClient.readContract({
+      address: pdpAddr,
+      abi: RESERVE_CONFIG_ABI,
+      functionName: "getReserveConfigurationData",
+      args: [asset],
+    });
+    if (!cfg[8]) {
+      outcomes.push({ key, asset, status: "already-inactive" });
+      continue;
+    }
+    const [aToken, stableDebt, variableDebt] = await publicClient.readContract({
+      address: pdpAddr,
+      abi: RESERVE_CONFIG_ABI,
+      functionName: "getReserveTokensAddresses",
+      args: [asset],
+    });
+    const [supplied, sDebt, vDebt] = await Promise.all(
+      [aToken, stableDebt, variableDebt].map((t) =>
+        publicClient.readContract({
+          address: t,
+          abi: TOTAL_SUPPLY_ABI,
+          functionName: "totalSupply",
+        }),
+      ),
+    );
+    const debt = sDebt + vDebt;
+    const empty = supplied === 0n && debt === 0n;
+    const h = await deployerWallet.writeContract({
+      address: configuratorAddr,
+      abi: configuratorAbi,
+      functionName: empty ? "setReserveActive" : "setReserveFreeze",
+      args: [asset, !empty],
+      account: dep,
+      chain: anvilChain,
+    });
+    await waitTx(h);
+    outcomes.push(
+      empty
+        ? { key, asset, status: "deactivated" }
+        : {
+            key,
+            asset,
+            status: "frozen",
+            supplied: supplied.toString(),
+            debt: debt.toString(),
+          },
+    );
+  }
+
+  const by = (s: VendorReserveOutcome["status"]) =>
+    outcomes.filter((o) => o.status === s).map((o) => o.key);
+  ok(
+    "Aave vendor reserves",
+    `deactivated [${by("deactivated").join(", ")}] already inactive [${by("already-inactive").join(", ")}]`,
+  );
+  const frozen = outcomes.filter((o) => o.status === "frozen");
+  if (frozen.length > 0)
+    console.warn(
+      "[aave] WARNING: these vendor reserves hold supply or debt, so they were frozen rather than " +
+        "deactivated. What is already in them still counts in getUserAccountData (and so in the " +
+        "score); find who supplied it before the run goes on (issue #190):\n" +
+        frozen
+          .map(
+            (o) => `  - ${o.key} ${o.asset}: aToken supply ${o.supplied}, debt ${o.debt}`,
+          )
+          .join("\n"),
+    );
+  return outcomes;
 }
 
 /** Mint test tokens to the deployer via the Faucet */

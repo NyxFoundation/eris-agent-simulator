@@ -9,6 +9,7 @@
     "anvil": "tsx src/anvil-cli.ts",
     "build:contracts": "forge build",
     "clean:vendors": "./scripts/clean-vendors.sh",
+    "close:aave-vendor": "tsx src/close-aave-vendor-market.ts",
     "deploy": "tsx src/index.ts",
     "test:e2e": "vitest run",
     "test:unit": "vitest run test/unit",
