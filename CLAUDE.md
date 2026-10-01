@@ -782,6 +782,12 @@ ours なのは 2 つだけ（core は無改変）:
   - **登録は毎ブロック上限つき・環境負担**（`agentMarkets.registrationsPerBlock`、既定 8）。あふれは
     次ブロックへ繰り越し、factory 由来を先に。**書き込みは admin ではなく setup 鍵**（oracle 更新が
     毎ブロック admin から出ているので、同じ鍵に 2 送信者を置くと nonce を奪い合う）
+  - **読み手は `all()` を呼ばない**（`count()` + `entriesFrom` を 256 件ずつ。`sdk/src/marketRegistry.ts`）。
+    `all()` のガスは件数に比例し（cold storage で 1,500 件 ~29.5M、**1,600 件で 30M の call 上限を超えて out of gas**）、
+    件数は誰でも安く積める（`createMarket` は permissionless、環境は毎ブロック 8 件登録 = 200 ブロック）。以前は全 agent の
+    観測が毎ブロック `all()` を読んでいたので、そこを超えると**全員の観測が毎ブロック失敗**した。watcher は追記専用の
+    リストを一度だけ読んで保持し、毎ブロックは新規分だけ読む。読取に失敗しても観測全体は落とさず、前回の section に
+    `registry.error` を付けて返す
   - 発見は **factory ログ + `to === null` の top-level CREATE スキャン**。**内部 CREATE は取りこぼす**
     （対称なので受容。誰にも見えないものは誰も釣れない）。ERC-20 判定は name/symbol/decimals の
     static call ヒューリスティック
