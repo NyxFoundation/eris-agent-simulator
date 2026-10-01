@@ -110,8 +110,8 @@ export async function startGateway(
     UPSTREAM: upstream,
     RPC_FILTER: "1",
     RPC_RATE_REFILL: "0",
-    RPC_METHOD_ALLOW: "^(eth_|net_|web3_)",
-    // Use the production default deny policy, regardless of the developer's shell.
+    // Use the production default allow and deny policies, regardless of the developer's shell.
+    RPC_METHOD_ALLOW: undefined,
     RPC_METHOD_DENY: undefined,
     // And the production fee cap (5 gwei), whatever the shell exports.
     RPC_MAX_PRIORITY_FEE_WEI: undefined,

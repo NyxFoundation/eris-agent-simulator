@@ -101,19 +101,50 @@ const weight = (m) => (m && HEAVY.test(m) ? HEAVY_WEIGHT : 1);
 // setStorageAt, impersonate, snapshot...), debug_/trace_ control+trace, txpool_ (mempool spying),
 // miner_/admin_/personal_. The operator hits anvil directly (not the gateway) for setup, so its
 // cheatcodes still work. Set RPC_FILTER=0 to disable (e.g. an internal all-access gateway).
-const METHOD_ALLOW = new RegExp(process.env.RPC_METHOD_ALLOW ?? "^(eth_|net_|web3_)");
+// The default is an explicit list, not a namespace prefix: a prefix passes every method the node
+// adds under eth_ later, and anvil already has eth_ methods that act without a signature (it
+// accepts eth_sendUnsignedTransaction from any `from`, unlocked or not). A method participants
+// need and this list lacks is refused, which shows up as a 403 the first time; one it should not
+// have passed shows up as nothing. RPC_METHOD_ALLOW (a regex) still replaces the list.
+const ALLOWED_METHODS = new Set([
+  "web3_clientVersion", "net_version", "net_listening",
+  "eth_chainId", "eth_blockNumber", "eth_syncing", "eth_gasPrice", "eth_maxPriorityFeePerGas",
+  "eth_feeHistory", "eth_blobBaseFee",
+  "eth_getBalance", "eth_getCode", "eth_getStorageAt", "eth_getTransactionCount", "eth_getProof",
+  "eth_call", "eth_estimateGas", "eth_createAccessList",
+  "eth_getBlockByNumber", "eth_getBlockByHash",
+  "eth_getBlockTransactionCountByNumber", "eth_getBlockTransactionCountByHash",
+  "eth_getTransactionByHash", "eth_getRawTransactionByHash",
+  "eth_getTransactionByBlockNumberAndIndex", "eth_getTransactionByBlockHashAndIndex",
+  "eth_getRawTransactionByBlockNumberAndIndex", "eth_getRawTransactionByBlockHashAndIndex",
+  "eth_getTransactionReceipt", "eth_getBlockReceipts",
+  "eth_getLogs", "eth_newFilter", "eth_newBlockFilter", "eth_uninstallFilter",
+  "eth_sendRawTransaction",
+]);
+const METHOD_ALLOW = process.env.RPC_METHOD_ALLOW
+  ? new RegExp(process.env.RPC_METHOD_ALLOW)
+  : { test: (m) => ALLOWED_METHODS.has(m) };
 // Deny-list checked even for eth_* (allow-list is namespace-level, this is method-level): block the
 // methods that ride on the node's own/unlocked accounts. anvil boots deterministic prefunded UNLOCKED
 // accounts, so eth_sendTransaction/eth_accounts/eth_sign* would let a caller move funds without signing.
 // Participants must sign locally and use eth_sendRawTransaction. Set RPC_METHOD_DENY to override.
 const METHOD_DENY = new RegExp(process.env.RPC_METHOD_DENY ?? "^(eth_accounts|eth_sendTransaction|eth_sign|eth_pendingTransactions$|eth_newPendingTransactionFilter$|eth_getFilterChanges$|eth_getFilterLogs$|eth_subscribe$)");
-// Block enumeration is another view of the pool. Do not ban the tag globally: the sender needs
-// eth_getTransactionCount(address, "pending") to allocate a nonce after earlier submissions.
-const PENDING_BLOCK_METHODS = new Set([
-  "eth_getBlockByNumber", "eth_getBlockTransactionCountByNumber",
-  "eth_getTransactionByBlockNumberAndIndex", "eth_getRawTransactionByBlockNumberAndIndex",
-  "eth_getBlockReceipts",
-]);
+// The `pending` tag is a view of the pool wherever it appears, not only in block enumeration:
+// anvil executes eth_call / eth_getBalance / eth_getStorageAt ... at "pending" against a block built
+// from the pool, so a state read there shows unmined transactions (the oracle update included). The
+// one exception is eth_getTransactionCount(address, "pending"), which the sender needs to allocate a
+// nonce after earlier submissions. The tag is matched in any position and inside objects (eth_getLogs
+// / eth_newFilter take it as fromBlock/toBlock), case-insensitively.
+const PENDING_TAG_EXEMPT = new Set(["eth_getTransactionCount"]);
+function mentionsPending(v) {
+  if (typeof v === "string") return v.toLowerCase() === "pending";
+  if (Array.isArray(v)) return v.some(mentionsPending);
+  if (v && typeof v === "object") return Object.values(v).some(mentionsPending);
+  return false;
+}
+// Every method that submits a signed transaction. The gas cap and the fee rule read all of them, so a
+// variant admitted later (or through RPC_METHOD_ALLOW) cannot skip both checks.
+const RAW_SEND_METHODS = new Set(["eth_sendRawTransaction", "eth_sendRawTransactionSync"]);
 const FILTER_METHODS = (process.env.RPC_FILTER ?? "1") !== "0";
 let methodDenied = 0;
 // ---- per-tx gas cap (issue #40 T0) ----
@@ -141,7 +172,7 @@ function overCapGas(parsed) {
   if (MAX_TX_GAS <= 0n) return null;
   const calls = Array.isArray(parsed) ? parsed : [parsed];
   for (const c of calls) {
-    if (!c || c.method !== "eth_sendRawTransaction") continue;
+    if (!c || !RAW_SEND_METHODS.has(c.method)) continue;
     const raw = Array.isArray(c.params) ? c.params[0] : undefined;
     if (typeof raw !== "string") return "unreadable";
     const gas = txGasLimit(raw);
@@ -172,7 +203,7 @@ let feeDenied = 0;
 function feeViolation(parsed) {
   const calls = Array.isArray(parsed) ? parsed : [parsed];
   for (const c of calls) {
-    if (!c || c.method !== "eth_sendRawTransaction") continue;
+    if (!c || !RAW_SEND_METHODS.has(c.method)) continue;
     const raw = Array.isArray(c.params) ? c.params[0] : undefined;
     const fees = typeof raw === "string" ? txFees(raw) : null;
     if (fees === null)
@@ -303,7 +334,7 @@ const server = http.createServer((req, res) => {
       const calls = isBatch ? parsed : [parsed];
       const bad = calls.find((c) => c && c.method && (
         !METHOD_ALLOW.test(c.method) || METHOD_DENY.test(c.method) ||
-        (PENDING_BLOCK_METHODS.has(c.method) && c.params?.[0] === "pending")
+        (!PENDING_TAG_EXEMPT.has(c.method) && mentionsPending(c.params))
       ))?.method;
       if (bad) {
         methodDenied++;

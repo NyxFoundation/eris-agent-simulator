@@ -101,7 +101,14 @@ cheatcodes still work.
 | env | default | meaning |
 |---|---|---|
 | `RPC_FILTER` | 1 | enable the method allowlist (0 disables — internal all-access gateway) |
-| `RPC_METHOD_ALLOW` | `^(eth_\|net_\|web3_)` | regex of permitted method prefixes |
+| `RPC_METHOD_ALLOW` | *(explicit list in `gateway.mjs`)* | regex that replaces the built-in list of permitted methods |
+
+The built-in list (`ALLOWED_METHODS`) names each standard read, the filter calls for mined logs and
+blocks, and `eth_sendRawTransaction`. It used to be the prefix `^(eth_|net_|web3_)`, which passed every
+`eth_` method the node has unless the deny regex named it. anvil has `eth_` methods that act without a
+signature: `eth_sendUnsignedTransaction` is accepted from any `from`, unlocked or not. And
+`eth_sendRawTransactionSync` skipped the gas cap and the fee rule, which read only
+`eth_sendRawTransaction`. Both checks now read every raw-send method, whichever list is in force.
 
 Denied methods get HTTP 403 + a JSON-RPC error and are counted in `rpc_method_denied_total`. Verified:
 `anvil_setBalance`/`evm_mine`/`hardhat_setBalance`/`txpool_content`/`debug_traceTransaction` → 403,
@@ -128,9 +135,11 @@ The default filter keeps the priority-fee auction sealed at this RPC boundary. I
 another connection; otherwise an existing pending filter would bypass the creation ban. Use
 `eth_getLogs` for mined logs and `eth_blockNumber` for block polling.
 
-The `pending` tag is refused on `eth_getBlockByNumber`, `eth_getBlockTransactionCountByNumber`,
-`eth_getTransactionByBlockNumberAndIndex`, `eth_getRawTransactionByBlockNumberAndIndex`, and
-`eth_getBlockReceipts`. A mixed batch containing a forbidden call is rejected in full before being
+The `pending` tag is refused in **any parameter position and inside objects** (case-insensitive), on
+every method but `eth_getTransactionCount`. It used to be refused only as `params[0]` of the five
+block-enumeration methods, but anvil executes a state read at `pending` (`eth_call`, `eth_getBalance`,
+`eth_getStorageAt`, `eth_estimateGas`, ...) against a block built from the pool, so those reads showed
+unmined transactions, including the oracle update. A mixed batch containing a forbidden call is rejected in full before being
 forwarded. Mined block reads and **`eth_getTransactionCount(address, "pending")` remain available**:
 `Sender` seeds its nonce with the latter and must account for already pending submissions.
 `eth_sendRawTransaction` remains available subject to the gas cap and the fee rule (below).

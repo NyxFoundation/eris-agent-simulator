@@ -251,3 +251,72 @@ test(
     assert.deepEqual(block.transactions.length, 3);
   },
 );
+
+// ---------------------------------------------------------------------------
+// The allowlist names methods; the pending tag is refused wherever it appears
+// ---------------------------------------------------------------------------
+//
+// The allowlist used to be the prefix ^(eth_|net_|web3_), so every eth_ method the node has passed
+// unless the deny regex named it. anvil accepts eth_sendUnsignedTransaction from any `from` without a
+// signature or impersonation, and eth_sendRawTransactionSync skipped the gas cap and the fee rule
+// (both read only eth_sendRawTransaction). The pending tag was refused only as params[0] of five
+// block-enumeration methods, while a state read at "pending" executes against the pool.
+
+test(
+  "gateway refuses methods outside the explicit list and the pending tag in any position",
+  { timeout: 20_000 },
+  async (t) => {
+    const upstream = await startAnvil(t);
+    const gateway = await startGateway(t, upstream);
+    const someone = "0x00000000000000000000000000000000DeaDBeef";
+    await rpc(upstream, "anvil_setBalance", [someone, "0xde0b6b3a7640000"]);
+    const dest = "0x0000000000000000000000000000000000001234";
+
+    const denied: [string, unknown[]][] = [
+      [
+        "eth_sendUnsignedTransaction",
+        [{ from: someone, to: dest, value: "0x1", gas: "0x5208", gasPrice: "0x1" }],
+      ],
+      ["eth_sendRawTransactionSync", ["0x00"]],
+      ["eth_fillTransaction", [{ from: someone, to: dest }]],
+      ["eth_simulateV1", [{ blockStateCalls: [] }, "latest"]],
+      ["eth_call", [{ to: dest, data: "0x" }, "pending"]],
+      ["eth_call", [{ to: dest, data: "0x" }, "Pending"]],
+      ["eth_getBalance", [dest, "pending"]],
+      ["eth_getStorageAt", [dest, "0x0", "pending"]],
+      ["eth_getCode", [dest, "pending"]],
+      ["eth_estimateGas", [{ to: dest }, "pending"]],
+      ["eth_getLogs", [{ fromBlock: "latest", toBlock: "pending" }]],
+      ["eth_newFilter", [{ fromBlock: "pending" }]],
+    ];
+    for (const [method, params] of denied) {
+      const reply = await rpc(gateway, method, params);
+      assert.equal(reply.status, 403, `${method} ${JSON.stringify(params)}`);
+      assert.equal(reply.body.error?.code, -32601, method);
+    }
+    // Nothing reached the pool: the unsigned send was refused before anvil saw it.
+    assert.equal(
+      (await rpc(upstream, "eth_getTransactionCount", [someone, "pending"])).body.result,
+      "0x0",
+    );
+
+    // The reads participants rely on still pass, at latest and at a number.
+    for (const [method, params] of [
+      ["eth_getBalance", [dest, "latest"]],
+      ["eth_call", [{ to: dest, data: "0x" }, "latest"]],
+      ["eth_getLogs", [{ fromBlock: "0x0", toBlock: "latest" }]],
+      ["eth_getTransactionCount", [someone, "pending"]],
+      ["eth_feeHistory", ["0x1", "latest", []]],
+    ] as [string, unknown[]][]) {
+      const reply = await rpc(gateway, method, params);
+      assert.equal(reply.status, 200, `${method} ${JSON.stringify(params)}`);
+    }
+
+    // An operator-supplied regex still replaces the list.
+    const wide = await startGateway(t, upstream, { RPC_METHOD_ALLOW: "^(eth_|net_|web3_)" });
+    assert.equal(
+      (await rpc(wide, "eth_simulateV1", [{ blockStateCalls: [] }, "latest"])).status,
+      200,
+    );
+  },
+);
