@@ -16,6 +16,12 @@
 # and lib/; those are the operator's, step 1 has already proved they are byte-identical to this
 # repo's, and copying a participant's copy over the operator's is how a tampered runtime would get
 # in through the back door after passing the front one.
+#
+# Step 2 also re-scans what `unzip` actually wrote, because the scan in step 1 reads the archive
+# with Python's zipfile and the extraction uses Info-ZIP. They disagree on symlinks (zipfile writes
+# the link target as a small text file; unzip makes a real link that the copy then follows into
+# another team's directory) and can disagree on malformed archives. Accepting what was scanned
+# rather than what was extracted is how a submission smuggles in code nobody looked at.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 REPO="$PWD"
@@ -33,6 +39,12 @@ python3 infra/submission/scan-submission.py "$ZIP" || { echo "REJECTED by scan �
 step "2/4 extract the participant's agent directory"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 unzip -q "$ZIP" -d "$TMP" || { echo "unzip failed" >&2; exit 1; }
+# Only regular files and directories. A symlink here would be followed by the copy below (macOS
+# `cp -r` dereferences) or by the image build, pulling in files from outside the submission.
+ODD=$(find "$TMP" ! -type f ! -type d)
+[ -z "$ODD" ] || { echo "REJECTED: bundle contains symlinks or special files:" >&2; echo "$ODD" | sed "s|^$TMP/|  |" >&2; exit 1; }
+python3 infra/submission/scan-submission.py "$TMP" >/dev/null \
+  || { python3 infra/submission/scan-submission.py "$TMP" >&2; echo "REJECTED by scan of the extracted tree" >&2; exit 1; }
 # The agent dir is the one under agents/ that is neither runtime nor lib.
 SRC=""
 for d in "$TMP"/agents/*/; do
@@ -44,7 +56,8 @@ done
 [ -f "$SRC/agent.ts" ]  || { echo "$(basename "$SRC") has no agent.ts" >&2; exit 1; }
 [ -f "$SRC/prompt.md" ] || { echo "$(basename "$SRC") has no prompt.md (rules §2.5)" >&2; exit 1; }
 [ -e "$DEST" ] && { echo "$DEST already exists — remove it first if this is a resubmission" >&2; exit 1; }
-mkdir -p "$DEST" && cp -r "$SRC". "$DEST"/
+mkdir -p "$DEST" && cp -RP "$SRC". "$DEST"/
+[ -z "$(find "$DEST" ! -type f ! -type d)" ] || { echo "non-regular file appeared in $DEST" >&2; rm -rf "$DEST"; exit 1; }
 echo "  $(basename "$SRC") -> $DEST  ($(find "$DEST" -type f | wc -l) files)"
 
 step "3/4 check:strategy"

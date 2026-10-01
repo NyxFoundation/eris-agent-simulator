@@ -112,3 +112,37 @@ The eight failures were `Execution reverted with reason: Slippage.` — the agen
 `slippageBps: 30`, and its own `prompt.md` names that as the first thing to look at if fills are
 being rejected. That is a strategy result, not a pipeline defect, and it is what a working
 submission path is supposed to surface.
+
+## Symlinks and the two zip readers (fixed 2026-10-02)
+
+The scan read the archive with Python's `zipfile`; extraction used Info-ZIP `unzip`. They disagree
+on symlinks: `zipfile` writes a link entry out as a small text file holding the target path, so
+the body scan saw harmless text, while `unzip` made a real link and macOS `cp -r` followed it.
+Reproduced: a bundle whose agent directory held `stolen -> <repo>/example/agents/team-victim`
+scanned `0 BLOCK -> ACCEPT`, and `example/agents/team-evil/stolen/agent.ts` was the victim's
+strategy, copied for real and headed into the attacker's image.
+
+Now:
+
+| where | what |
+|---|---|
+| scan, zip input | a symlink or special-file entry (from the mode bits in `external_attr`) is **BLOCK** |
+| scan, directory input | a symlinked file or directory is **BLOCK** (never followed) |
+| accept, after `unzip` | anything under the extracted tree that is not a regular file or directory → reject |
+| accept, after `unzip` | the **extracted tree** is scanned again, so what is accepted is what was scanned, not what Python thought the zip held |
+| accept, copy | `cp -RP` (never dereference), then the destination is checked for non-regular files again |
+
+## Team dependencies are fetched without running team code (fixed 2026-10-02)
+
+The image build ran a team's `npm install` / `pip install` on the operator host with network.
+Lifecycle scripts of *dependencies* (the scan only looked at the team's own `package.json` hooks)
+and `setup.py` of any sdist executed there. `infra/docker-agent/Dockerfile.team` now fetches in a
+stage that runs only the package managers (`npm ci --ignore-scripts`, `pip download
+--only-binary=:all: --require-hashes`) and installs under `RUN --network=none`.
+
+That only holds if every byte comes from the public registry by name and version, so the scan
+**BLOCKs**: non-registry npm sources (git / URL / `file:` / `link:` / `user/repo`) outside the
+bundle root's own `package.json`; a lockfile entry resolving outside `registry.npmjs.org` or
+without `integrity`; a `package.json` with dependencies and no `package-lock.json`;
+`.npmrc` / `.yarnrc` / `pip.conf`; and any `requirements.txt` line that is not
+`name==version --hash=sha256:…`.
