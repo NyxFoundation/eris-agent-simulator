@@ -2,8 +2,8 @@
 //
 // The vendor deploy lists eight test-token reserves next to the shared ones, and the Aave score
 // sums every reserve in the Pool. These pin the rule the coordinator refuses a run on: an active
-// reserve outside the registry (+ the LST) is a finding whether or not it is frozen, and an
-// inactive one is not.
+// reserve outside the registry (+ the LST) is a finding unless it is frozen with nothing left in it
+// but the treasury's interest residue, and an inactive one is not.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Address } from "viem";
@@ -29,6 +29,8 @@ const reserve = (
   frozen: false,
   ltvBps: 8000,
   liquidationThresholdBps: 8250,
+  participantSupply: 0n,
+  debt: 0n,
   ...over,
 });
 
@@ -53,13 +55,32 @@ test("an active vendor reserve is stray", () => {
   );
 });
 
-test("frozen is still stray: what is already supplied keeps counting", () => {
+test("frozen is still stray while a participant supplies or borrows there", () => {
   const stray = strayAaveReserves(
-    [reserve(VENDOR_WETH, { frozen: true })],
+    [
+      reserve(VENDOR_WETH, { frozen: true, participantSupply: 10n ** 19n }),
+      reserve(VENDOR_USDC, { frozen: true, debt: 1n }),
+    ],
     ours,
   );
-  assert.equal(stray.length, 1);
-  assert.match(strayAaveReservesMessage(stray), /frozen/);
+  assert.deepEqual(
+    stray.map((r) => r.asset),
+    [VENDOR_WETH, VENDOR_USDC],
+  );
+  assert.match(strayAaveReservesMessage(stray), /participants still hold/);
+});
+
+test("frozen with only the treasury's interest residue is closed, not stray", () => {
+  // Aave never lets a reserve that was borrowed from be deactivated (accruedToTreasury stays
+  // non-zero after everyone leaves), so this is the end state of a used chain.
+  assert.deepEqual(
+    strayAaveReserves([reserve(VENDOR_USDC, { frozen: true })], ours),
+    [],
+  );
+});
+
+test("unfrozen is stray even when nothing is in it yet", () => {
+  assert.equal(strayAaveReserves([reserve(VENDOR_USDC)], ours).length, 1);
 });
 
 test("an inactive vendor reserve is not stray (what the deployer leaves)", () => {

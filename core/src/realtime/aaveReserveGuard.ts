@@ -14,11 +14,14 @@
 // tokens are dangerous but which reserves are ours, and that set is short: the token registry plus
 // the LST share token (listed as collateral, deliberately kept out of the registry).
 //
-// "Active" is the finding, frozen or not. Freezing stops new supply and borrow, but a frozen reserve
-// that already holds supply keeps counting in getUserAccountData -- which is exactly the state the
-// deployer leaves when it could not deactivate a reserve somebody had already used. That is a
-// decision for the operator (who supplied it, and what it means for the period's scores), not
-// something a run should start on top of.
+// An active reserve is a finding unless it is frozen *and* no participant holds anything in it.
+// Freezing stops new supply and borrow, but a frozen reserve somebody still supplies keeps counting
+// in getUserAccountData -- the state the deployer leaves when it could not deactivate a reserve that
+// had been used. That is a decision for the operator (who supplied it, and what it means for the
+// period's scores), not something a run should start on top of. What is left when everyone has
+// repaid and withdrawn is the treasury's cut of the interest, which Aave never lets a reserve be
+// deactivated over and which nobody but the treasury holds; a frozen reserve with only that in it
+// is closed, and refusing it would leave a used chain with no state it could ever start from.
 //
 // Every chain mode, unlike gmxFundingEnforcement: here a running chain has a fix that is not a
 // re-bake (`cd deployer && npm run close:aave-vendor`), so stopping does not strand anyone.
@@ -32,6 +35,12 @@ const poolAbi = parseAbi([
 ]);
 const dataProviderAbi = parseAbi([
   "function getReserveConfigurationData(address asset) view returns (uint256 decimals, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus, uint256 reserveFactor, bool usageAsCollateralEnabled, bool borrowingEnabled, bool stableBorrowRateEnabled, bool isActive, bool isFrozen)",
+  "function getReserveTokensAddresses(address asset) view returns (address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress)",
+]);
+const tokenAbi = parseAbi([
+  "function totalSupply() view returns (uint256)",
+  "function balanceOf(address) view returns (uint256)",
+  "function RESERVE_TREASURY_ADDRESS() view returns (address)",
 ]);
 
 export type AaveReserveState = {
@@ -40,6 +49,9 @@ export type AaveReserveState = {
   frozen: boolean;
   ltvBps: number;
   liquidationThresholdBps: number;
+  // aTokens held by anyone but the reserve's treasury, and total debt. Raw units.
+  participantSupply: bigint;
+  debt: bigint;
 };
 
 // The reserves the environment owns: every registry token, plus the LST share token.
@@ -56,7 +68,12 @@ export function strayAaveReserves(
   reserves: AaveReserveState[],
   ours: Set<string>,
 ): AaveReserveState[] {
-  return reserves.filter((r) => r.active && !ours.has(r.asset.toLowerCase()));
+  return reserves.filter(
+    (r) =>
+      r.active &&
+      !ours.has(r.asset.toLowerCase()) &&
+      !(r.frozen && r.participantSupply === 0n && r.debt === 0n),
+  );
 }
 
 export async function readAaveReserves(
@@ -75,12 +92,38 @@ export async function readAaveReserves(
         functionName: "getReserveConfigurationData",
         args: [asset],
       });
+      const [aToken, stableDebt, variableDebt] = await publicClient.readContract({
+        address: AAVE.PoolDataProvider,
+        abi: dataProviderAbi,
+        functionName: "getReserveTokensAddresses",
+        args: [asset],
+      });
+      const supply = (token: Address) =>
+        publicClient.readContract({ address: token, abi: tokenAbi, functionName: "totalSupply" });
+      const treasury = await publicClient.readContract({
+        address: aToken,
+        abi: tokenAbi,
+        functionName: "RESERVE_TREASURY_ADDRESS",
+      });
+      const [supplied, treasurySupply, sDebt, vDebt] = await Promise.all([
+        supply(aToken),
+        publicClient.readContract({
+          address: aToken,
+          abi: tokenAbi,
+          functionName: "balanceOf",
+          args: [treasury],
+        }),
+        supply(stableDebt),
+        supply(variableDebt),
+      ]);
       return {
         asset,
         active: cfg[8],
         frozen: cfg[9],
         ltvBps: Number(cfg[1]),
         liquidationThresholdBps: Number(cfg[2]),
+        participantSupply: supplied - treasurySupply,
+        debt: sDebt + vDebt,
       };
     }),
   );
@@ -90,7 +133,10 @@ export function strayAaveReservesMessage(stray: AaveReserveState[]): string {
   const lines = stray.map(
     (r) =>
       `  - ${r.asset} (LTV ${r.ltvBps / 100}% / LT ${r.liquidationThresholdBps / 100}%` +
-      `${r.frozen ? ", frozen -- something is already supplied or borrowed there" : ""})`,
+      (r.frozen
+        ? `, frozen -- participants still hold ${r.participantSupply} aTokens / ${r.debt} debt there`
+        : "") +
+      ")",
   );
   return (
     "[aave] the Pool lists active reserves the environment does not own:\n" +

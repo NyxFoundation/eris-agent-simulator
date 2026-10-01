@@ -538,18 +538,73 @@ const TOTAL_SUPPLY_ABI = [
     inputs: [],
     outputs: [{ type: "uint256" }],
   },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "RESERVE_TREASURY_ADDRESS",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+] as const satisfies Abi;
+
+// PoolDataProvider.getReserveData: the second field is the treasury's share of interest that has
+// accrued but not yet been minted to it as aTokens (scaled). PoolConfigurator._checkNoSuppliers
+// requires it to be zero alongside the aToken supply before setReserveActive(false) will go through.
+const RESERVE_DATA_ABI = [
+  {
+    type: "function",
+    name: "getReserveData",
+    stateMutability: "view",
+    inputs: [{ type: "address" }],
+    outputs: [
+      { name: "unbacked", type: "uint256" },
+      { name: "accruedToTreasuryScaled", type: "uint256" },
+      { name: "totalAToken", type: "uint256" },
+      { name: "totalStableDebt", type: "uint256" },
+      { name: "totalVariableDebt", type: "uint256" },
+      { name: "liquidityRate", type: "uint256" },
+      { name: "variableBorrowRate", type: "uint256" },
+      { name: "stableBorrowRate", type: "uint256" },
+      { name: "averageStableBorrowRate", type: "uint256" },
+      { name: "liquidityIndex", type: "uint256" },
+      { name: "variableBorrowIndex", type: "uint256" },
+      { name: "lastUpdateTimestamp", type: "uint40" },
+    ],
+  },
 ] as const satisfies Abi;
 
 export type VendorReserveOutcome = {
   key: string;
   asset: Address;
-  // "deactivated" = setReserveActive(false) went through (no supply, no debt).
-  // "frozen" = something is supplied or borrowed, so it cannot be deactivated; new supply and
-  //            borrow are stopped but the existing balance still counts in getUserAccountData.
+  // "deactivated" = setReserveActive(false) went through: no aTokens, no debt, nothing accrued to
+  //                 the treasury (Aave's own precondition, PoolConfigurator._checkNoSuppliers).
+  // "frozen-treasury-only" = only the treasury's share of past interest is left (accrued, or minted
+  //                 to it as aTokens), which Aave will not let a reserve be deactivated over and
+  //                 nobody but the treasury can ever clear. No participant holds anything and
+  //                 freezing stops new supply and borrow, so this is a closed reserve.
+  // "frozen" = a participant still supplies or borrows here. New supply and borrow are stopped,
+  //            but what they hold keeps counting in getUserAccountData. Needs a decision.
+  // "failed" = the freeze/deactivate transaction itself reverted (reason in `error`).
   // "already-inactive" / "not-listed" = nothing to do.
-  status: "deactivated" | "frozen" | "already-inactive" | "not-listed";
-  supplied?: string;
+  status:
+    | "deactivated"
+    | "frozen-treasury-only"
+    | "frozen"
+    | "failed"
+    | "already-inactive"
+    | "not-listed";
+  participantSupply?: string;
+  treasurySupply?: string;
+  accruedToTreasuryScaled?: string;
   debt?: string;
+  error?: string;
 };
 
 /**
@@ -566,9 +621,12 @@ export type VendorReserveOutcome = {
  *   - Faucet.setPermissioned(true): only the owner (the deployer) can mint. The deployer's own
  *     faucetMint keeps working.
  *   - setReserveActive(false) on each vendor reserve: closes the Pool to those tokens however they
- *     were obtained, including any minted before the Faucet was closed. Possible only while a
- *     reserve holds no supply and no debt; one that does is frozen instead and reported, because
- *     what it already holds keeps counting and deciding that is not this function's call.
+ *     were obtained, including any minted before the Faucet was closed. Aave allows it only while
+ *     the reserve has no aTokens *and* nothing accrued to the treasury -- a reserve that was ever
+ *     borrowed from keeps the treasury's cut of the interest after everyone has repaid and left.
+ *     Anything else is frozen instead: harmless when the residue is the treasury's alone, reported
+ *     when a participant still holds something, because that keeps counting and deciding it is not
+ *     this function's call.
  *
  * Idempotent, so it also serves a chain that is already running (`npm run close:aave-vendor`).
  */
@@ -638,35 +696,72 @@ export async function closeVendorTestMarket(): Promise<VendorReserveOutcome[]> {
       functionName: "getReserveTokensAddresses",
       args: [asset],
     });
-    const [supplied, sDebt, vDebt] = await Promise.all(
-      [aToken, stableDebt, variableDebt].map((t) =>
-        publicClient.readContract({
-          address: t,
-          abi: TOTAL_SUPPLY_ABI,
-          functionName: "totalSupply",
-        }),
-      ),
-    );
-    const debt = sDebt + vDebt;
-    const empty = supplied === 0n && debt === 0n;
-    const h = await deployerWallet.writeContract({
-      address: configuratorAddr,
-      abi: configuratorAbi,
-      functionName: empty ? "setReserveActive" : "setReserveFreeze",
-      args: [asset, !empty],
-      account: dep,
-      chain: anvilChain,
+    const read = (address: Address, functionName: "totalSupply") =>
+      publicClient.readContract({ address, abi: TOTAL_SUPPLY_ABI, functionName });
+    const treasury = await publicClient.readContract({
+      address: aToken,
+      abi: TOTAL_SUPPLY_ABI,
+      functionName: "RESERVE_TREASURY_ADDRESS",
     });
-    await waitTx(h);
+    const [supplied, treasurySupply, sDebt, vDebt, reserveData] = await Promise.all([
+      read(aToken, "totalSupply"),
+      publicClient.readContract({
+        address: aToken,
+        abi: TOTAL_SUPPLY_ABI,
+        functionName: "balanceOf",
+        args: [treasury],
+      }),
+      read(stableDebt, "totalSupply"),
+      read(variableDebt, "totalSupply"),
+      publicClient.readContract({
+        address: pdpAddr,
+        abi: RESERVE_DATA_ABI,
+        functionName: "getReserveData",
+        args: [asset],
+      }),
+    ]);
+    const debt = sDebt + vDebt;
+    const accrued = reserveData[1];
+    const participantSupply = supplied - treasurySupply;
+    // Aave's precondition for deactivation, exactly: no aTokens at all and nothing accrued to the
+    // treasury. Debt implies aTokens, but it is checked too rather than relied on.
+    const deactivatable = supplied === 0n && accrued === 0n && debt === 0n;
+    const detail = {
+      participantSupply: participantSupply.toString(),
+      treasurySupply: treasurySupply.toString(),
+      accruedToTreasuryScaled: accrued.toString(),
+      debt: debt.toString(),
+    };
+    try {
+      const h = await deployerWallet.writeContract({
+        address: configuratorAddr,
+        abi: configuratorAbi,
+        functionName: deactivatable ? "setReserveActive" : "setReserveFreeze",
+        args: [asset, !deactivatable],
+        account: dep,
+        chain: anvilChain,
+      });
+      await waitTx(h);
+    } catch (e) {
+      // One reserve that will not close must not leave the ones after it open.
+      outcomes.push({
+        key,
+        asset,
+        status: "failed",
+        ...detail,
+        error: (e instanceof Error ? e.message : String(e)).split("\n")[0],
+      });
+      continue;
+    }
     outcomes.push(
-      empty
+      deactivatable
         ? { key, asset, status: "deactivated" }
         : {
             key,
             asset,
-            status: "frozen",
-            supplied: supplied.toString(),
-            debt: debt.toString(),
+            status:
+              participantSupply === 0n && debt === 0n ? "frozen-treasury-only" : "frozen",
+            ...detail,
           },
     );
   }
@@ -675,19 +770,29 @@ export async function closeVendorTestMarket(): Promise<VendorReserveOutcome[]> {
     outcomes.filter((o) => o.status === s).map((o) => o.key);
   ok(
     "Aave vendor reserves",
-    `deactivated [${by("deactivated").join(", ")}] already inactive [${by("already-inactive").join(", ")}]`,
+    `deactivated [${by("deactivated").join(", ")}] ` +
+      `frozen, treasury residue only [${by("frozen-treasury-only").join(", ")}] ` +
+      `already inactive [${by("already-inactive").join(", ")}]`,
   );
   const frozen = outcomes.filter((o) => o.status === "frozen");
   if (frozen.length > 0)
     console.warn(
-      "[aave] WARNING: these vendor reserves hold supply or debt, so they were frozen rather than " +
-        "deactivated. What is already in them still counts in getUserAccountData (and so in the " +
-        "score); find who supplied it before the run goes on (issue #190):\n" +
+      "[aave] WARNING: participants still supply or borrow on these vendor reserves, so they were " +
+        "frozen rather than deactivated. What they hold still counts in getUserAccountData (and so " +
+        "in the score), and the coordinator will refuse to start until it is gone; find who " +
+        "supplied it (issue #190):\n" +
         frozen
           .map(
-            (o) => `  - ${o.key} ${o.asset}: aToken supply ${o.supplied}, debt ${o.debt}`,
+            (o) =>
+              `  - ${o.key} ${o.asset}: participant aTokens ${o.participantSupply}, debt ${o.debt}`,
           )
           .join("\n"),
+    );
+  const failed = outcomes.filter((o) => o.status === "failed");
+  if (failed.length > 0)
+    console.error(
+      "[aave] ERROR: could not freeze or deactivate these vendor reserves; they are still open:\n" +
+        failed.map((o) => `  - ${o.key} ${o.asset}: ${o.error}`).join("\n"),
     );
   return outcomes;
 }

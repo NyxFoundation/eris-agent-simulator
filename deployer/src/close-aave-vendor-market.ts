@@ -7,9 +7,18 @@
 //
 //   cd deployer && RPC_URL=http://<node>:8545 npm run close:aave-vendor
 //
-// Exits 2 when a reserve could only be frozen: it already holds supply or debt, which keeps counting.
+// Exit codes: 1 when a reserve could not be frozen or deactivated at all (it is still open);
+// 2 when one could only be frozen because a participant still supplies or borrows there (it keeps
+// counting); 0 otherwise -- including a reserve frozen over the treasury's interest residue alone,
+// which Aave never lets anyone deactivate and which no participant holds.
 import { closeVendorTestMarket } from "./protocols/aave-v3.js";
 
 const outcomes = await closeVendorTestMarket();
 console.log(JSON.stringify(outcomes, null, 2));
-process.exit(outcomes.some((o) => o.status === "frozen") ? 2 : 0);
+process.exit(
+  outcomes.some((o) => o.status === "failed")
+    ? 1
+    : outcomes.some((o) => o.status === "frozen")
+      ? 2
+      : 0,
+);
