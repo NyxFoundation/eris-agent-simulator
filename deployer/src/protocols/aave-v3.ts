@@ -50,7 +50,17 @@ export async function deployAaveV3({ seed }: { seed: boolean }) {
       // MNEMONIC: vendor/aave/hardhat.config.js derives its accounts from it, so every Aave role
       // (deployer / aclAdmin / poolAdmin) lands on the same account this process signs with
       // (issue #74). Explicit rather than inherited, because this is the normalized form.
-      env: { ...process.env, MARKET_NAME: "Aave", RPC_URL, MNEMONIC },
+      // PERMISSIONED_FAUCET (issue #190): the vendor Faucet mints the market's own test tokens, which
+      // are reserves -- collateral -- next to the shared ones. @aave/deploy-v3 deploys it open by
+      // default, which hands anyone free collateral to borrow the competition's WETH/USDC against.
+      // Permissioned, only its owner mints, and the owner is the deployer that seeds through faucetMint.
+      env: {
+        ...process.env,
+        MARKET_NAME: "Aave",
+        RPC_URL,
+        MNEMONIC,
+        PERMISSIONED_FAUCET: "true",
+      },
       stdio: ["ignore", "inherit", "inherit"],
     },
   );
@@ -72,6 +82,17 @@ export async function deployAaveV3({ seed }: { seed: boolean }) {
     aclManager: readDeployment("ACLManager-Aave").address,
     faucet: readDeployment("Faucet-Aave").address,
   };
+  // Read back rather than trusted: a flag the vendor stops honouring would ship the hole silently.
+  const faucetPermissioned = await publicClient.readContract({
+    address: core.faucet,
+    abi: readDeployment("Faucet-Aave").abi,
+    functionName: "isPermissioned",
+  });
+  assert(
+    faucetPermissioned === true,
+    `the Aave Faucet (${core.faucet}) was deployed permissionless: anyone could mint the test ` +
+      "reserves' tokens and borrow the shared ones against them (issue #190)",
+  );
 
   // test token + aToken addresses
   const tokens: Record<string, Address> = {};

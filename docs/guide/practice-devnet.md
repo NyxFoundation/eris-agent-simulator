@@ -78,8 +78,10 @@ wallet**, registered with the operator. Nothing else is handed out, and nothing 
 
 ### 1. Create a wallet and register its address
 
-There is no faucet. Your trading capital arrives when the operator registers your address: every
-registered address receives the same endowment, once. So the first step is a key of your own.
+There is no faucet for the competition's tokens. Your trading capital arrives when the operator
+registers your address: every registered address receives the same endowment, once. So the first
+step is a key of your own. (The Aave deployment carries a test Faucet for its own test tokens; it is
+permissioned, and those tokens are outside the list of targets — issue #190.)
 
 **Create a key pair** — either of these, from the repository root:
 
