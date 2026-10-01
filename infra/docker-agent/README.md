@@ -21,13 +21,16 @@ layer is shared on disk, so 100 team images cost ~one base plus small per-team d
 > **Build-time supply chain:** no team-controlled code runs while a team image is built.
 > `Dockerfile.team` fetches deps in a stage where only the package managers run
 > (`npm ci --ignore-scripts`, `pip download --only-binary=:all: --require-hashes`, registry fixed on
-> the command line), then installs the wheels with `--no-index` under `RUN --network=none`.
+> the command line), then installs the wheels with `--no-index` under `RUN --network=none`. There is
+> no `pip check` after the install: it would start a Python with the team's wheels on site-packages,
+> and a `.pth` in one of them would execute (`python3 -S` is not a way out — it drops pip itself).
 > Before this, `npm install` / `pip install` ran on the networked builder and a dependency's
 > postinstall or an sdist's `setup.py` executed with whatever the operator host's network reached.
 > The cost to teams: a `package.json` with dependencies needs a `package-lock.json`; npm packages
 > that need install scripts (native addons) do not work; Python deps must be `name==version
 > --hash=sha256:…` with a wheel for the builder's platform. `scan-submission.py` rejects anything
-> else (non-registry sources, `.npmrc` / `pip.conf`, option lines in `requirements.txt`) at the door.
+> else (non-registry sources, `.npmrc` / `pip.conf`, `npm-shrinkwrap.json`, lockfiles older than v2,
+> option lines in `requirements.txt`) at the door.
 
 ```bash
 npm run agent:build              # base (once)

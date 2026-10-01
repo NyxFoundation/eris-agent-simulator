@@ -104,23 +104,37 @@ def scan_package_json(path, text, has_lock):
     # never copied by accept-submission.sh; only a package.json inside the agent is installed.
     bundle_root = path.replace(os.sep, "/") == "package.json"
     for d, v in deps.items():
-        if isinstance(v, str) and re.match(r"(git|https?|file|link|npm:|github:|[\w.-]+/[\w.-]+$|\.\.?/|/)", v):
+        if isinstance(v, str) and re.match(r"(git|https?|file|link|npm:|github:|bitbucket:|gist:|[\w.-]+/[\w.-]+$|\.\.?/|/)", v):
             add("WARN" if bundle_root else "BLOCK", path, f"non-registry dependency '{d}': {v}")
     if deps and not bundle_root and not has_lock:
         add("BLOCK", path, "package.json declares dependencies but has no package-lock.json beside it (the team build runs `npm ci`)")
     if len(deps) > 60: add("WARN", path, f"large dependency set ({len(deps)})")
 
 def scan_package_lock(path, text):
+    """Every installed package must come from the public registry with an integrity hash. Only the
+    v2/v3 `packages` map lists every entry with its source; a v1 lock keeps them under a nested
+    `dependencies` tree this does not walk, so it would pass with nothing checked. Require v2+.
+    An entry without `resolved` is not "fine by default": npm fills the gap from whatever the
+    registry/spec says at install time, so it is BLOCK too. Exempt: the root (""), and entries
+    `inBundle` (their bytes ship inside a parent tarball that is itself integrity-checked)."""
     try: lock = json.loads(text)
     except Exception: return add("BLOCK", path, "package-lock.json does not parse")
-    for name, ent in (lock.get("packages") or {}).items():
-        if not name or not isinstance(ent, dict): continue
+    if not isinstance(lock, dict): return add("BLOCK", path, "package-lock.json is not a JSON object")
+    ver = lock.get("lockfileVersion")
+    pkgs = lock.get("packages")
+    if not isinstance(ver, int) or ver < 2 or not isinstance(pkgs, dict):
+        return add("BLOCK", path, f"lockfileVersion {ver!r} without a `packages` map (need v2/v3; regenerate with npm >= 7)")
+    for name, ent in pkgs.items():
+        if not name: continue
+        if not isinstance(ent, dict):
+            add("BLOCK", path, f"'{name}' entry is not an object"); continue
         if ent.get("link"):
             add("BLOCK", path, f"'{name}' is a local link, not a registry package"); continue
+        if ent.get("inBundle"): continue
         res = ent.get("resolved")
-        if res is not None and not (isinstance(res, str) and res.startswith(NPM_REGISTRY)):
-            add("BLOCK", path, f"'{name}' resolves outside {NPM_REGISTRY}: {str(res)[:80]}")
-        elif res is not None and not ent.get("integrity"):
+        if not (isinstance(res, str) and res.startswith(NPM_REGISTRY)):
+            add("BLOCK", path, f"'{name}' does not resolve to {NPM_REGISTRY}: {str(res)[:80]}")
+        elif not ent.get("integrity"):
             add("BLOCK", path, f"'{name}' has no integrity hash")
 
 REQ_LINE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?==[A-Za-z0-9.!+_-]+(\s*;[^#]*)?((\s+--hash=sha256:[0-9a-f]{64})+)$")
@@ -196,6 +210,11 @@ def walk_dir(root):
             if sz > MAX_FILE_MB * 1024 * 1024: add("WARN", rel, f"large file ({sz//1024//1024} MB)")
             if fn in REGISTRY_CONFIG_FILES:
                 add("BLOCK", rel, "package-manager config file (would redirect where team dependencies are fetched from)")
+            elif fn == "npm-shrinkwrap.json" and "node_modules" not in rel:
+                # `npm ci` prefers npm-shrinkwrap.json over package-lock.json, so a benign lock next
+                # to a shrinkwrap would be the one scanned and the other the one installed. Blocked
+                # rather than scanned: there is no reason for an agent to ship one.
+                add("BLOCK", rel, "npm-shrinkwrap.json (npm ci would install from it instead of package-lock.json; ship package-lock.json only)")
             elif fn == "package.json":
                 scan_package_json(rel, open(fp, errors="ignore").read(), os.path.isfile(os.path.join(dp, "package-lock.json")))
             elif fn == "package-lock.json" and "node_modules" not in rel:

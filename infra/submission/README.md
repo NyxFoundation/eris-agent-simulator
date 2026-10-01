@@ -142,7 +142,27 @@ stage that runs only the package managers (`npm ci --ignore-scripts`, `pip downl
 
 That only holds if every byte comes from the public registry by name and version, so the scan
 **BLOCKs**: non-registry npm sources (git / URL / `file:` / `link:` / `user/repo`) outside the
-bundle root's own `package.json`; a lockfile entry resolving outside `registry.npmjs.org` or
-without `integrity`; a `package.json` with dependencies and no `package-lock.json`;
-`.npmrc` / `.yarnrc` / `pip.conf`; and any `requirements.txt` line that is not
-`name==version --hash=sha256:…`.
+bundle root's own `package.json` (`bitbucket:` / `gist:` included since the PR #200 review); a
+`package.json` with dependencies and no `package-lock.json`; `.npmrc` / `.yarnrc` / `pip.conf`; and
+any `requirements.txt` line that is not `name==version --hash=sha256:…`.
+
+The lockfile is held to what `npm ci` will actually read (PR #200 review):
+
+| | |
+|---|---|
+| `npm-shrinkwrap.json` anywhere outside `node_modules/` | **BLOCK** (`Dockerfile.team` refuses it too). `npm ci` prefers it over `package-lock.json`, so a clean lock beside a hostile shrinkwrap was the one scanned while the other was installed. Blocked rather than scanned: an agent has no reason to ship one |
+| `lockfileVersion` < 2, or no `packages` map | **BLOCK**. A v1 lock keeps its tree under `dependencies`, which the check never walked — it passed with zero entries checked |
+| any `packages` entry other than the root `""` | must have `resolved` starting `https://registry.npmjs.org/` **and** an `integrity`. A missing `resolved` used to pass |
+| `link: true` | **BLOCK** (a local path, not a registry package) |
+| `inBundle: true` | exempt — its bytes ship inside a parent tarball that is itself registry-resolved and integrity-checked |
+
+No team code runs at build time, `pip check` included: it was removed from `Dockerfile.team`
+because it starts a Python with the team's wheels on site-packages, so a `.pth` in one of them
+would execute. `python3 -S -m pip check` does not work (`No module named pip` on the base image —
+`-S` drops site-packages, where pip lives). `pip install`'s resolver already fails on a missing or
+conflicting requirement among the packages it installs; what is lost is the check against
+packages that were already in the base image.
+
+Regression tests: `test/submissionScan.test.ts` (zip and directory symlinks, shrinkwrap, v1 lock,
+missing `resolved` / `integrity`, git / URL `resolved`, non-registry specs, `requirements.txt`
+lines, and a clean accept case).
