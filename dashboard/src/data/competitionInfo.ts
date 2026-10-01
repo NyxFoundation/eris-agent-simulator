@@ -189,6 +189,11 @@ export const CONSTRAINTS = {
 export const SITE_URL = "https://ascon.dev";
 /** ascon-web `src/links.ts` REGISTRATION_FORM_URL. */
 export const REGISTRATION_FORM_URL = "https://forms.gle/PWhktsUMmic2FbYm8";
+/**
+ * The agent submission form (rules §2.1–§2.2; ascon-web `ops/submission-form/`). Open 9/23–10/31;
+ * it takes a ZIP upload, so it asks the sender to sign in with a Google account.
+ */
+export const SUBMISSION_FORM_URL = "https://forms.gle/97bxYQvh43GVAS4z9";
 /** ascon-web `src/links.ts` DISCORD_URL. Questions, and practice registrations (post an address). */
 export const DISCORD_URL = "https://discord.gg/QusaeRK4Ea";
 export const REPO_URL = "https://github.com/NyxFoundation/eris-agent-simulator";

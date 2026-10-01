@@ -123,7 +123,8 @@ The Overview (`/`) is, top to bottom:
   → the ZIP → submit → the freeze, each a line and a link to the guide's section; only
   `npm run bundle:agent <id>` is shown as a command. Steps with a window say "open · N days left" /
   "closed" / "from 9/23" — the dashboard knows the date, not how far a participant has got, so it never
-  points at "your" step. The form URLs are not on the page (Discord #ascon has them). After 10/31 the
+  points at "your" step. The submission form is linked from its step while it is open
+  (`SUBMISSION_FORM_URL`); the API-key form is not on the page (Discord #ascon has it). After 10/31 the
   panel folds into one line
 - **Scoring, Prizes, Submission & limits** — three cards, each showing its gist (for example "one ZIP ·
   replace it up to 5 times a day"), the full statement behind a "?", and a link to that section of the
