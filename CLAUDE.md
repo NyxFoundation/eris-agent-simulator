@@ -565,7 +565,14 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 > 一度でも借りられた reserve は全員が返済・引出しても treasury の利息の取り分が残り、**永久に無効化できない**。
 > その場合は freeze して「treasury の残りのみ」と報告し、参加者の供給・債務が残っていれば freeze + 警告。
 > **稼働中のチェーンは `cd deployer && RPC_URL=<node> npm run close:aave-vendor`**（冪等。参加者の残高が残れば
-> exit 2、tx 自体が失敗した reserve があれば exit 1。1 本の失敗で後続を止めない）。
+> exit 2、tx 自体が失敗した reserve があれば exit 1。1 本の失敗で後続を止めない）。閉じる対象は coordinator と同じく
+> `getReservesList()` − (deployments.json の全 token + LST)（`deployer/src/protocols/aave-reserves.ts`。以前は vendor の
+> deployment ファイルから列挙し、別 deploy のファイルを読むと「全部 not-listed」で exit 0 だった）。共有 reserve が
+> Pool に無ければ deployments.json が別チェーンのものなので何も送らずに落ちる（共有 reserve まで閉じないため）。
+> **ローカルの anvil では `.local-snapshot` より上に送った close は次の `sim:realtime` / `gen:state-dump` が巻き戻す**
+> （resetFork が close 前の断面へ revert する）。ファイルがこのチェーンを指していれば closer は何も送らず exit 1 で、
+> `npm run close:aave-vendor -- --revert-local-snapshot` が「pin へ revert → close → 取り直して書き戻す」
+> （直前 run の残りは捨てる = 次の run も捨てる）。pin の無いチェーン（練習 devnet）は revert しない。
 > coordinator はローカルデプロイ + aave の run で `Pool.getReservesList()` を列挙し、registry + LST 以外の
 > **active な reserve が 1 本でもあれば全 chainMode で起動時に落ちる**。例外は freeze 済みで参加者の aToken
 > （treasury 保有分を除く）も債務も 0 のものだけ（`aave_reserve_check`。

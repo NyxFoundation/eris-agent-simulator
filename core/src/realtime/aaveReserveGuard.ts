@@ -24,7 +24,10 @@
 // is closed, and refusing it would leave a used chain with no state it could ever start from.
 //
 // Every chain mode, unlike gmxFundingEnforcement: here a running chain has a fix that is not a
-// re-bake (`cd deployer && npm run close:aave-vendor`), so stopping does not strand anyone.
+// re-bake (`cd deployer && npm run close:aave-vendor`), so stopping does not strand anyone. On a
+// local anvil that fix has to land in the `.local-snapshot` cross-section, not on top of it, or the
+// reset at the start of the next run undoes it (`--revert-local-snapshot`; the closer refuses to
+// send anything there without it).
 import type { Address, PublicClient } from "viem";
 import { parseAbi } from "viem";
 import { AAVE, LST } from "@eris/sdk/constants.js";
@@ -146,8 +149,13 @@ export function strayAaveReservesMessage(stray: AaveReserveState[]): string {
     "test tokens (minted by the vendor Faucet) and have them counted as value, or borrow the shared " +
     "USDC/WETH against them.\n" +
     "Fix: on a local deploy, redeploy (`cd deployer && npm run deploy -- --keep-fresh`, then " +
-    "`npm run gen:local-constants` / `npm run gen:state-dump`). On a chain that is already running, " +
-    "`cd deployer && RPC_URL=<node> npm run close:aave-vendor`. A reserve it can only freeze already " +
-    "holds somebody's supply: find out whose before going on."
+    "`npm run gen:local-constants` / `npm run gen:state-dump`), or close them in place with " +
+    "`cd deployer && npm run close:aave-vendor -- --revert-local-snapshot`. A close sent on top of " +
+    "a local anvil without that flag is undone here: this run starts by reverting to " +
+    "`.local-snapshot`, taken before the close (the closer refuses in that case; deleting " +
+    "`.local-snapshot` first also works, and makes the chain as it is the base). On a chain that " +
+    "is already running and never reset (the practice devnet), " +
+    "`cd deployer && RPC_URL=<node> npm run close:aave-vendor`. A reserve it can only freeze " +
+    "already holds somebody's supply: find out whose before going on."
   );
 }

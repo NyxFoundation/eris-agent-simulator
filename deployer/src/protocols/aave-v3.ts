@@ -6,6 +6,7 @@ import { accounts, deployerWallet, publicClient } from "../clients.js";
 import { anvilChain, MNEMONIC, RPC_URL } from "../config.js";
 import { ROOT, waitTx, ok, info, assert } from "../util.js";
 import { setProtocol, getRegistry } from "../registry.js";
+import { vendorReserves } from "./aave-reserves.js";
 
 const dep = accounts.deployer;
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
@@ -489,9 +490,10 @@ export async function registerLstReserve(
 // Aave's own test market (issue #190)
 // ---------------------------------------------------------------------------
 
-// The reserves @aave/deploy-v3 lists for MARKET_NAME=Aave, each on a test token its Faucet mints.
-// Enumerated from the deployment files rather than from TOKEN_KEYS, which records only five of the
-// eight: AAVE / LINK / EURS exist on chain and in vendor/aave/deployments, and nowhere else.
+// The test tokens @aave/deploy-v3 lists for MARKET_NAME=Aave, each minted by its Faucet. Read from
+// the deployment files rather than from TOKEN_KEYS, which records only five of the eight: AAVE /
+// LINK / EURS exist on chain and in vendor/aave/deployments, and nowhere else. Used only to name
+// what the closer acts on; *which* reserves it acts on comes from the Pool (./aave-reserves.ts).
 function vendorTestTokens(): { key: string; address: Address }[] {
   const suffix = "-TestnetMintableERC20-Aave.json";
   return readdirSync(DEPLOYMENTS)
@@ -592,14 +594,13 @@ export type VendorReserveOutcome = {
   // "frozen" = a participant still supplies or borrows here. New supply and borrow are stopped,
   //            but what they hold keeps counting in getUserAccountData. Needs a decision.
   // "failed" = the freeze/deactivate transaction itself reverted (reason in `error`).
-  // "already-inactive" / "not-listed" = nothing to do.
+  // "already-inactive" = nothing to do.
   status:
     | "deactivated"
     | "frozen-treasury-only"
     | "frozen"
     | "failed"
-    | "already-inactive"
-    | "not-listed";
+    | "already-inactive";
   participantSupply?: string;
   treasurySupply?: string;
   accruedToTreasuryScaled?: string;
@@ -631,6 +632,18 @@ export type VendorReserveOutcome = {
  * Idempotent, so it also serves a chain that is already running (`npm run close:aave-vendor`).
  */
 export async function closeVendorTestMarket(): Promise<VendorReserveOutcome[]> {
+  // Decided first: vendorReserves refuses a deployments.json that is not this chain's before the
+  // Faucet or any reserve is touched.
+  const listed = (await publicClient.readContract({
+    address: aave().pool,
+    abi: poolImplAbi(),
+    functionName: "getReservesList",
+  })) as readonly Address[];
+  const vendorKeys = new Map(
+    vendorTestTokens().map(({ key, address }) => [address.toLowerCase(), key]),
+  );
+  const targets = vendorReserves(listed, getRegistry(), SHARED_RESERVE_KEYS, vendorKeys);
+
   const faucet = readDeployment("Faucet-Aave");
   const permissioned = (await publicClient.readContract({
     address: faucet.address,
@@ -663,23 +676,8 @@ export async function closeVendorTestMarket(): Promise<VendorReserveOutcome[]> {
   ).address;
   const configuratorAbi = readDeployment("PoolConfigurator-Implementation").abi;
   const pdpAddr = readDeployment("PoolDataProvider-Aave").address;
-  const { pool } = aave();
-  const listed = new Set(
-    (
-      (await publicClient.readContract({
-        address: pool,
-        abi: poolImplAbi(),
-        functionName: "getReservesList",
-      })) as readonly Address[]
-    ).map((a) => a.toLowerCase()),
-  );
-
   const outcomes: VendorReserveOutcome[] = [];
-  for (const { key, address: asset } of vendorTestTokens()) {
-    if (!listed.has(asset.toLowerCase())) {
-      outcomes.push({ key, asset, status: "not-listed" });
-      continue;
-    }
+  for (const { key, asset } of targets) {
     const cfg = await publicClient.readContract({
       address: pdpAddr,
       abi: RESERVE_CONFIG_ABI,
