@@ -1126,6 +1126,8 @@ const en = {
     "guide §{n}",
   "overview.steps.registrationForm":
     "registration form",
+  "overview.steps.submissionForm":
+    "submission form",
   "overview.steps.discord":
     "Discord #ascon",
   "overview.steps.register.name":
@@ -1155,7 +1157,7 @@ const en = {
   "overview.steps.submit.name":
     "Submit",
   "overview.steps.submit.body":
-    "Send the ZIP with the submission form (Discord #ascon has the link). Up to {n} a day; an email tells you within seconds whether it was accepted.",
+    "Send the ZIP with the submission form (sign in with a Google account). Up to {n} a day; an email tells you within seconds whether it was accepted.",
   "overview.steps.freeze.name":
     "Frozen at the end of {day}",
   "overview.steps.freeze.body":
@@ -2223,6 +2225,8 @@ const ja: Record<MessageKey, string> = {
     "ガイド §{n}",
   "overview.steps.registrationForm":
     "参加登録フォーム",
+  "overview.steps.submissionForm":
+    "提出フォーム",
   "overview.steps.discord":
     "Discord #ascon",
   "overview.steps.register.name":
@@ -2252,7 +2256,7 @@ const ja: Record<MessageKey, string> = {
   "overview.steps.submit.name":
     "提出する",
   "overview.steps.submit.body":
-    "提出フォームで ZIP を送ります（フォームの案内は Discord #ascon）。1 日 {n} 回まで。受理・不受理は数秒後にメールで届きます。",
+    "提出フォームで ZIP を送ります（Google アカウントでのログインが必要です）。1 日 {n} 回まで。受理・不受理は数秒後にメールで届きます。",
   "overview.steps.freeze.name":
     "{day} の終わりで凍結",
   "overview.steps.freeze.body":

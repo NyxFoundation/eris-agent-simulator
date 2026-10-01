@@ -1024,11 +1024,12 @@ swapping out of it) and reaches the coordinator as an early exit with code 137. 
 indistinguishable from a record of choosing not to trade**, so check before you submit. Details in
 [infra/docker-agent/README.md](../infra/docker-agent/README.md).
 
-**How to send it**: the ZIP goes through the organizer's **submission form** (Discord #ascon has the
-link). Your inference service API key is registered **once, on a separate form**. A few seconds after
-you send, an email tells you whether the submission was **accepted** and how many replacements you have
-left that day. A submission that fails the formal requirements (the ZIP opens; `prompt.md`'s frontmatter
-has `kind: improve`, `name` and `description`; and so on) is not accepted and does not count.
+**How to send it**: the ZIP goes through the organizer's **[submission
+form](https://forms.gle/97bxYQvh43GVAS4z9)** (sign in with a Google account). Your inference service API
+key is registered **once, on a separate form**. A few seconds after you send, an email tells you whether
+the submission was **accepted** and how many replacements you have left that day. A submission that fails
+the formal requirements (the ZIP opens; `prompt.md`'s frontmatter has `kind: improve`, `name` and
+`description`; and so on) is not accepted and does not count.
 
 During the submission period you may **replace your submission up to 5 times a day** (days start at
 00:00 JST; the time the form received it is what counts). **The one evaluated is the submission accepted
