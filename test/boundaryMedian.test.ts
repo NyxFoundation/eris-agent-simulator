@@ -706,6 +706,105 @@ test("live and swept boundaries agree, and both split the LP at the boundary blo
   }
 });
 
+// A chain where the agent holds LST shares the queue cannot free in the run, so the realizable mark
+// is the pool sale -- a surface the window re-reads. Every interval boundary block has the sale
+// pushed to SALE_PUSHED; between them it rises a little each block, so a five-block window is two
+// pushed boundaries above three distinct rising values and the median names one block: the one just
+// before the boundary. A window one block short, shifted, or missing lands on a different value. `quotedAt` records the blocks the
+// pool was quoted at, so a test can see which blocks each reading actually read.
+const lstSaleAt = (b: number) =>
+  b % 4 === 0 ? SALE_PUSHED : SALE_STEADY + BigInt(b) * (WAD / 1000n);
+
+function lstChain(quotedAt: number[]) {
+  const saleAt = lstSaleAt;
+  const answer = (c: ValuationRead, block: number): unknown => {
+    if (c.functionName === "latestAnswer") return toPriceFeedAnswer(FAIR);
+    if (c.functionName === "answerOf") return 0n;
+    if (c.functionName === "getEthBalance") return 0n;
+    if (c.functionName === "balanceOf") return 0n;
+    if (is(c, "get_dy", LST!.pool)) quotedAt.push(block);
+    return lstAnswer(saleAt(block))(c);
+  };
+  return {
+    multicall: async ({
+      contracts,
+      blockNumber,
+    }: {
+      contracts: ValuationRead[];
+      blockNumber: bigint;
+    }) =>
+      contracts.map((c) => {
+        const result = answer(c, Number(blockNumber));
+        return result === undefined
+          ? { status: "failure" as const }
+          : { status: "success" as const, result };
+      }),
+    readContract: async (c: ValuationRead & { blockNumber?: bigint }) =>
+      answer(c, Number(c.blockNumber ?? 0n)),
+    getLogs: async () => [],
+  } as never;
+}
+
+test("live and swept boundaries agree when a surface re-reads the window", async () => {
+  // The LP test above only reaches the boundary-only path now that LP declares no surface. This one
+  // drives a windowed re-read (LST's `lst-pool-sale`) through both readings: if the live scorer and
+  // the sweep handed the adapter different windows, one of them would see the pushed boundary quote
+  // as the median and the agreement check would fail.
+  setEnabledProtocolIds(["lst"]);
+  try {
+    const liveQuoted: number[] = [];
+    const sweptQuoted: number[] = [];
+    const common = {
+      agents: [AGENT],
+      enabledIds: ["lst" as const],
+      activeStables: [USDC],
+      priceFeed: "0x00000000000000000000000000000000feed0001" as Address,
+      markMedianBlocks: 5,
+    };
+    const root = mkdtempSync(join(tmpdir(), "eris-median-"));
+    const live = new LiveScorer({
+      ...common,
+      publicClient: lstChain(liveQuoted),
+      logger: new RunLogger(root, "live"),
+      runStartBlock: 100,
+      intervalBlocks: 4,
+      sampleMarket: false,
+    });
+    for (let b = 100; b <= 112; b++) await live.onBlock(b);
+    const swept = await reconstructValueSeries({
+      ...common,
+      publicClient: lstChain(sweptQuoted),
+      logger: new RunLogger(root, "swept"),
+      fromBlock: 100,
+      toBlock: 112,
+      intervalBlocks: 4,
+    });
+    const liveSeries = live.series();
+    assert.ok(liveSeries && swept.intervalSeries);
+    assert.deepEqual(liveSeries.boundaryBlocks, [100, 104, 108, 112]);
+    // Both readings quoted the pool across every boundary's window, not only at the boundary.
+    for (const quoted of [liveQuoted, sweptQuoted])
+      for (let b = 100; b <= 111; b++)
+        assert.ok(quoted.includes(b), `block ${b} was not quoted`);
+    const agreement = compareIntervalSeries(liveSeries, swept.intervalSeries);
+    assert.equal(agreement.compared, 4);
+    assert.equal(agreement.maxAbsDiffUsdc, 0);
+    // The first boundary has no window and keeps its own pushed quote; every later one marks the
+    // block before it (two pushed boundaries above three rising blocks).
+    liveSeries.valuesByAgent[AGENT.id].forEach((v, i) => {
+      const block = liveSeries.boundaryBlocks[i];
+      const sale = i === 0 ? SALE_PUSHED : lstSaleAt(block - 1);
+      assert.ok(
+        Math.abs((v ?? 0) - (Number(sale) / 1e18) * FAIR) < 1e-6,
+        `boundary ${block}: ${v}`,
+      );
+    });
+    assert.deepEqual(swept.markMedian?.surfaces, ["lst-pool-sale"]);
+  } finally {
+    setEnabledProtocolIds([]);
+  }
+});
+
 test("live and swept series end on the same block when the end is off the interval grid", async () => {
   // epochExtent.ts: the epoch's end block is the last boundary of both readings. The sweep used to
   // drop the short final interval while the live scorer never reached it, so the two agreed by both
