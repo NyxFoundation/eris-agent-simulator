@@ -25,6 +25,7 @@ import {
   PRIZE_TOTAL_JPY,
   REGISTRATION_FORM_URL,
   REPO_URL,
+  SUBMISSION_FORM_URL,
   REPORT_PRIZES_JPY,
   REPORT_TOTAL_JPY,
   SCHEDULE,
@@ -334,11 +335,16 @@ function StepsPanel({ now, locale }: { now: number; locale: Locale }) {
               label: t("overview.steps.registrationForm"),
               href: REGISTRATION_FORM_URL,
             });
+          // Offered only while it takes submissions; before 9/23 the step says when it opens.
+          if (step.key === "submit" && open)
+            links.push({
+              label: t("overview.steps.submissionForm"),
+              href: SUBMISSION_FORM_URL,
+            });
           if (
             step.key === "register" ||
             step.key === "apiKey" ||
-            step.key === "practice" ||
-            step.key === "submit"
+            step.key === "practice"
           )
             links.push({ label: t("overview.steps.discord"), href: DISCORD_URL });
           return (
