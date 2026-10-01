@@ -546,3 +546,33 @@ test("/manifest.json is a 404 when no admitted run has written one", async () =>
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a '..' in the path cannot step from an admitted competition into a run outside it", async () => {
+  const root = fixtureRuns();
+  // The live epoch 2026-11-02 is in no matrix.json yet, so the allowlist withholds it. Encoded
+  // slashes, because fetch (like a browser) would resolve a literal "/../" before sending.
+  const escape = "matrix-2026-11-01%2F..%2F2026-11-02T10-00-00-000Z";
+  for (const audience of [true, false]) {
+    const { get, close } = await serve(root, audience, ["matrix-2026-11-01"]);
+    try {
+      assert.equal((await get("/2026-11-02T10-00-00-000Z/events.jsonl")).status, 404);
+      assert.equal((await get(`/${escape}%2Fevents.jsonl`)).status, 404, `audience=${audience}`);
+      assert.equal(
+        (await get(`/${escape}/tail/events.jsonl?offset=0`)).status,
+        404,
+        `audience=${audience}`,
+      );
+      // Climbing out of runs/ altogether is refused before any allowlist question.
+      assert.equal((await get("/..%2F..%2Fetc%2Fpasswd")).status, 403);
+      // A '..' that stays inside an admitted run still resolves to it.
+      assert.equal(
+        (await get("/2026-11-01T10-00-00-000Z%2Fagents%2F..%2Fmarket.json")).status,
+        200,
+        `audience=${audience}`,
+      );
+    } finally {
+      await close();
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
+});

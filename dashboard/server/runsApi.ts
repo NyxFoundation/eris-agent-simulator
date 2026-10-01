@@ -299,6 +299,18 @@ export function redactEventLine(
   }
 }
 
+/**
+ * A request path relative to runs/, with "." and ".." resolved, or null when it climbs out. Every
+ * check on a request reads this one string: the allowlist and audience checks are prefix/segment
+ * matches, and run against the raw path they passed "comp/../other-run/x" (it starts with "comp/")
+ * while the file served was other-run's.
+ */
+function normalizeRel(rel: string): string | null {
+  const clean = path.posix.normalize(rel.replace(/^\/+/, ""));
+  if (clean === ".." || clean.startsWith("../") || path.posix.isAbsolute(clean)) return null;
+  return clean;
+}
+
 export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
   const root = path.resolve(runsDir);
   const mode: DashboardMode = {
@@ -662,9 +674,16 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     // on the last "/tail/" rather than on the first path segment.
     const tailAt = urlPath.lastIndexOf("/tail/");
     if (tailAt > 0) {
-      const rel = `${decodeURIComponent(urlPath.slice(1, tailAt))}/${decodeURIComponent(
-        urlPath.slice(tailAt + "/tail/".length),
-      )}`;
+      const rel = normalizeRel(
+        `${decodeURIComponent(urlPath.slice(1, tailAt))}/${decodeURIComponent(
+          urlPath.slice(tailAt + "/tail/".length),
+        )}`,
+      );
+      if (rel === null) {
+        res.statusCode = 403;
+        res.end();
+        return true;
+      }
       const file = resolveInside(rel);
       const admitted = admitsPath(rel);
       if (
@@ -744,9 +763,9 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
       return true;
     }
 
-    const rel = decodeURIComponent(urlPath.replace(/^\//, ""));
-    const file = resolveInside(rel);
-    if (!file) {
+    const rel = normalizeRel(decodeURIComponent(urlPath.replace(/^\//, "")));
+    const file = rel === null ? null : resolveInside(rel);
+    if (rel === null || !file) {
       res.statusCode = 403;
       res.end();
       return true;
