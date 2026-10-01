@@ -166,38 +166,31 @@ const WINDOW = [106, 107, 108, 109];
 const TICK_STEADY = orient(-200300);
 const TICK_PUSHED = orient(-199500);
 
-test("uniswap: at a boundary the principal splits at the median tick, not a one-block push", async () => {
+// The split is the holding, not a price, so §4.1's window does not reach it: the median tick paired
+// with the boundary's liquidity marks tokens the position does not hold. The case that made it a
+// hole: an owner alone in a pool pushes it for three of the five blocks and puts it back before the
+// bell. The swaps net out between their wallet and their position, and the median tick then marked
+// the same liquidity at the pushed split -- worth more at fair than what a burn returns.
+test("uniswap: at a boundary the principal splits at the boundary block's tick, even after a window held off it", async () => {
   const asked: number[] = [];
+  const tickAt = (b: number) => (b >= 107 ? TICK_PUSHED : TICK_STEADY);
   const { values } = await driveValuation(
     uniswapAdapter.valueAtBlock!(
-      ctx(windowed(WINDOW, () => uniAnswer(TICK_STEADY), asked)),
+      ctx(windowed(WINDOW, (b) => uniAnswer(tickAt(b)), asked)),
     ),
-    uniAnswer(TICK_PUSHED),
+    uniAnswer(TICK_STEADY),
   );
   assert.ok(
     Math.abs(values[AGENT.id].valueUsdc - principalAt(TICK_STEADY)) < 1e-6,
   );
-  assert.notEqual(principalAt(TICK_STEADY), principalAt(TICK_PUSHED));
-  assert.deepEqual(asked, WINDOW);
-});
-
-test("uniswap: a move held across most of the window does move the split", async () => {
-  const tickAt = (b: number) => (b >= 108 ? TICK_PUSHED : TICK_STEADY);
-  const { values } = await driveValuation(
-    uniswapAdapter.valueAtBlock!(
-      ctx(windowed(WINDOW, (b) => uniAnswer(tickAt(b)))),
-    ),
-    uniAnswer(TICK_PUSHED),
-  );
   assert.ok(
-    Math.abs(values[AGENT.id].valueUsdc - principalAt(TICK_PUSHED)) < 1e-6,
+    principalAt(TICK_PUSHED) > principalAt(TICK_STEADY),
+    "the pushed split is the larger mark, which is what made the median worth gaming",
   );
+  assert.deepEqual(asked, [], "the window is not read");
 });
 
-test("uniswap: uncollected fees stay at the boundary block's tick", async () => {
-  // Fee growth only counts inside the range at the tick the pool actually has. With the window
-  // outside the range on its USDC side the median split is all USDC, but the fees were earned in
-  // range at the boundary and are still owed.
+test("uniswap: principal and uncollected fees both use the boundary block's tick", async () => {
   const above = orient(-198000); // past the range on the all-USDC side
   const feeUsdc = 100n * USDC_UNIT;
   const globalUsdc = (feeUsdc << 128n) / LIQUIDITY;
@@ -210,7 +203,8 @@ test("uniswap: uncollected fees stay at the boundary block's tick", async () => 
   const fees = Number((globalUsdc * LIQUIDITY) >> 128n) / 1e6;
   assert.ok(fees > 99.99);
   assert.ok(
-    Math.abs(values[AGENT.id].valueUsdc - (principalAt(above) + fees)) < 1e-6,
+    Math.abs(values[AGENT.id].valueUsdc - (principalAt(TICK_STEADY) + fees)) <
+      1e-6,
   );
 });
 
@@ -326,65 +320,36 @@ const STEADY_POOL = { weth: 100n * WAD, usdc: 50_000n * USDC_UNIT, supply: 1_000
 // Somebody bought 10 WETH out of the pool in the boundary block: at the reference price the share
 // is worth less (1% of 90 WETH + 55,000 USDC = 2,350 against 2,500).
 const PUSHED_POOL = { weth: 90n * WAD, usdc: 55_000n * USDC_UNIT, supply: 1_000n * WAD };
-// A proportional join doubles reserves and supply alike: the share price does not move.
-const JOINED_POOL = { weth: 200n * WAD, usdc: 100_000n * USDC_UNIT, supply: 2_000n * WAD };
 
-test("balancer: at a boundary a BPT is marked at the median share price, not a one-block push", async () => {
+// A pool share is a holding too: the boundary's balance of the boundary's reserves. Pairing it with
+// the share price over the window marked a pool pushed for most of the window and put back above
+// what a proportional exit returns (pushing any pool off fair raises its value at fair prices).
+test("balancer: at a boundary a BPT is its share of the boundary block's reserves, the window unread", async () => {
   const asked: number[] = [];
   const { values } = await driveValuation(
     balancerAdapter.valueAtBlock!(
-      ctx(windowed(WINDOW, () => balancerAnswer(STEADY_POOL), asked)),
-    ),
-    balancerAnswer(PUSHED_POOL),
-  );
-  assert.ok(Math.abs(values[AGENT.id].valueUsdc - 2_500) < 1e-9);
-  assert.deepEqual(asked, WINDOW);
-});
-
-test("balancer: the median is over the share price, so joins and exits in the window do not move it", async () => {
-  const { values } = await driveValuation(
-    balancerAdapter.valueAtBlock!(
-      ctx(windowed(WINDOW, (b) => balancerAnswer(b < 108 ? JOINED_POOL : STEADY_POOL))),
+      ctx(windowed(WINDOW, () => balancerAnswer(PUSHED_POOL), asked)),
     ),
     balancerAnswer(STEADY_POOL),
   );
   assert.ok(Math.abs(values[AGENT.id].valueUsdc - 2_500) < 1e-9);
+  assert.deepEqual(asked, []);
 });
 
-test("curve: at a boundary an LP token is marked at the median share price", async () => {
+test("curve: at a boundary an LP token is its share of the boundary block's reserves, the window unread", async () => {
+  const asked: number[] = [];
   const { values } = await driveValuation(
     curveAdapter.valueAtBlock!(
       ctx({
         publicClient: curveClient,
-        ...windowed(WINDOW, () => curveAnswer(STEADY_POOL)),
+        ...windowed(WINDOW, () => curveAnswer(PUSHED_POOL), asked),
       }),
     ),
     curveAnswer(PUSHED_POOL),
   );
-  assert.ok(Math.abs(values[AGENT.id].valueUsdc - 2_500) < 1e-9);
-});
-
-test("pool shares: a held move is the price, and an unreadable window block is dropped", async () => {
-  // Three of five blocks at the pushed composition: that is the market now.
-  const held = await driveValuation(
-    balancerAdapter.valueAtBlock!(
-      ctx(windowed(WINDOW, (b) => balancerAnswer(b >= 108 ? PUSHED_POOL : STEADY_POOL))),
-    ),
-    balancerAnswer(PUSHED_POOL),
-  );
-  assert.ok(Math.abs(held.values[AGENT.id].valueUsdc - 2_350) < 1e-9);
-  // Two window blocks unreadable, two steady: the median of {pushed, steady, steady} is steady.
-  const gappy = await driveValuation(
-    balancerAdapter.valueAtBlock!(
-      ctx(
-        windowed(WINDOW, (b) =>
-          b < 108 ? () => undefined : balancerAnswer(STEADY_POOL),
-        ),
-      ),
-    ),
-    balancerAnswer(PUSHED_POOL),
-  );
-  assert.ok(Math.abs(gappy.values[AGENT.id].valueUsdc - 2_500) < 1e-9);
+  // 1% of 90 WETH + 55,000 USDC at the reference price.
+  assert.ok(Math.abs(values[AGENT.id].valueUsdc - 2_350) < 1e-9);
+  assert.deepEqual(asked, []);
 });
 
 // ---------------------------------------------------------------------------
@@ -595,9 +560,8 @@ test("the window: every boundary gets one, stables or not", async () => {
     // venues re-read their own market-derived prices at.
     assert.equal(await median.at(BOUNDARY), undefined);
     assert.deepEqual(median.window(BOUNDARY), [106, 107, 108, 109]);
+    // LP and pool shares are holdings, not prices, and declare no surface.
     assert.deepEqual(median.summary()?.surfaces, [
-      "uniswap-lp",
-      "balancer-bpt",
       "lst-pool-sale",
       "liquity-own-size-quotes",
       "aave-lst-collateral",
@@ -619,11 +583,7 @@ test("the window: the stables' probe is medianed alongside the venue surfaces", 
     });
     const prices = await median.at(BOUNDARY);
     assert.ok(prices);
-    assert.deepEqual(median.summary()?.surfaces, [
-      "stables",
-      "uniswap-lp",
-      "curve-lp",
-    ]);
+    assert.deepEqual(median.summary()?.surfaces, ["stables"]);
   } finally {
     setEnabledProtocolIds([]);
   }
@@ -662,9 +622,8 @@ const { mkdtempSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
-// A chain where the agent holds one LP position and every interval boundary block carries a push the
-// pool does not keep: the tick is TICK_PUSHED on each boundary after the first and TICK_STEADY
-// everywhere else.
+// A chain where the agent holds one LP position and every interval boundary block after the first
+// has the pool at TICK_PUSHED, TICK_STEADY everywhere else.
 function lpChain() {
   const tickAt = (b: number) =>
     b > 100 && b % 4 === 0 ? TICK_PUSHED : TICK_STEADY;
@@ -700,7 +659,7 @@ function lpChain() {
   } as never;
 }
 
-test("live and swept boundaries agree, and both are the window's median", async () => {
+test("live and swept boundaries agree, and both split the LP at the boundary block's tick", async () => {
   setEnabledProtocolIds(["uniswap"]);
   try {
     const publicClient = lpChain();
@@ -734,10 +693,14 @@ test("live and swept boundaries agree, and both are the window's median", async 
     const agreement = compareIntervalSeries(liveSeries, swept.intervalSeries);
     assert.equal(agreement.compared, 4);
     assert.equal(agreement.maxAbsDiffUsdc, 0);
-    // No boundary took the push.
-    for (const v of liveSeries.valuesByAgent[AGENT.id])
-      assert.ok(Math.abs((v ?? 0) - principalAt(TICK_STEADY)) < 1e-6);
-    assert.deepEqual(swept.markMedian?.surfaces, ["uniswap-lp"]);
+    // The LP split is the holding at the boundary, so each boundary reads its own tick.
+    liveSeries.valuesByAgent[AGENT.id].forEach((v, i) =>
+      assert.ok(
+        Math.abs((v ?? 0) - principalAt(i === 0 ? TICK_STEADY : TICK_PUSHED)) <
+          1e-6,
+      ),
+    );
+    assert.deepEqual(swept.markMedian?.surfaces, []);
   } finally {
     setEnabledProtocolIds([]);
   }

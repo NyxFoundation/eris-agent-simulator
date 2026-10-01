@@ -814,12 +814,13 @@ export { intervalBoundaryBlocks };
 // to it, so that pushing a pool for one block does not become the score. It has to hold for most of
 // the window to count, which turns a spread-cost round trip into a position.
 //
-// The rule covers every market-derived price, not only the ones worth pushing. It used to cover the
-// stables' probe alone, on the argument that the other pool reads (LP composition, the LST pool
-// sale) only move value between an agent's own two buckets. That is an argument about incentives;
-// §4.1 is a valuation rule, and it names no exception. So the scope is now every mark a venue reads
-// off a market, each venue deciding what its market-derived price is (ProtocolAdapter
-// .medianSurfaces, ValuationContext.medianWindow):
+// The rule covers every market-derived price, not only the ones worth pushing, each venue deciding
+// what its market-derived price is (ProtocolAdapter.medianSurfaces, ValuationContext.medianWindow).
+// An LP's composition is not one: how a Uniswap position splits into its two tokens, or a Balancer /
+// Curve share's slice of the reserves, is the holding itself (what a withdrawal in that block
+// returns), so it is read at the boundary like any other holding. Medianing it once paired the
+// boundary's liquidity with an earlier split, and a pool its owner alone provides, pushed for most
+// of the window and put back before the bell, was marked above anything the owner held:
 //
 //   stables          the two-sided probe (spot registry stables, and through ctx.stablePrices()
 //                    the Liquity mid and every stable leg an LP or lending mark prices)

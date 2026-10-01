@@ -2,11 +2,9 @@ import { encodeFunctionData, type Address, type PublicClient } from "viem";
 import { curveStableSwapNgAbi, curveTricryptoAbi, erc20Abi } from "../abis.js";
 import { CURVE, TOKENS, stableBalanceOf } from "../constants.js";
 import {
-  medianPoolShareValueUsdc,
   poolShareValueUsdc,
   type PoolReserves,
 } from "../valuation.js";
-import { readAcrossWindow } from "./medianWindow.js";
 import { marketPricedStables, type StableMarket } from "../stables.js";
 import {
   marketFor,
@@ -550,27 +548,7 @@ export const curveAdapter: ProtocolAdapter = {
     const reserves = decodeCurveReserves(shapes, results);
     const cursor = reserveReads.length;
 
-    // Rules §4.1: at a scoring boundary an LP token is marked at the median share price over the
-    // window (valuation.ts medianPoolShareValueUsdc). Only the pools somebody holds are re-read.
-    const held = shapes.filter(
-      (_shape, s) =>
-        reserves[s] !== undefined &&
-        ctx.agents.some((_a, a) => {
-          const bal = results[cursor + a * shapes.length + s];
-          return typeof bal === "bigint" && bal > 0n;
-        }),
-    );
-    const samples = await readAcrossWindow(
-      ctx,
-      held.flatMap(curveReserveReads),
-    );
-    const windowReserves = new Map(
-      held.map((shape, k) => [
-        shape.pool.toLowerCase(),
-        samples.map((sample) => decodeCurveReserves(held, sample)[k]),
-      ]),
-    );
-
+    // No median here, for the same reason as balancer's BPT: the share is a holding, not a price.
     const fairByBase = ctx.fairByBase();
     const stablePrices = ctx.stablePrices();
     const out: Record<string, AgentProtocolValue> = {};
@@ -595,13 +573,7 @@ export const curveAdapter: ProtocolAdapter = {
           fairByBase,
           stablePrices,
         );
-        valueUsdc += medianPoolShareValueUsdc(
-          share.valueUsdc,
-          pool,
-          windowReserves.get(shape.pool.toLowerCase()) ?? [],
-          fairByBase,
-          stablePrices,
-        );
+        valueUsdc += share.valueUsdc;
         for (const h of share.unpriced)
           unpriced.push({ ...h, source: "curve-lp" });
       });
@@ -614,8 +586,6 @@ export const curveAdapter: ProtocolAdapter = {
     });
     return out;
   },
-
-  medianSurfaces: ["curve-lp"],
 
   async accountedTokens(publicClient): Promise<Address[]> {
     return (await resolveCurvePools(publicClient)).map((s) => s.lpToken);

@@ -16,11 +16,9 @@ import {
   wethAbi,
 } from "../abis.js";
 import {
-  medianPoolShareValueUsdc,
   poolShareValueUsdc,
   type PoolReserves,
 } from "../valuation.js";
-import { readAcrossWindow } from "./medianWindow.js";
 import { BALANCER, stableBalanceOf } from "../constants.js";
 import {
   marketFor,
@@ -599,29 +597,11 @@ export const balancerAdapter: ProtocolAdapter = {
     );
     const balancesBase = pools.length * 2;
 
-    // Rules §4.1: at a scoring boundary a BPT is marked at the median share price over the window
-    // (valuation.ts medianPoolShareValueUsdc). Only the pools somebody holds are re-read.
-    const held = pools
-      .map((_, p) => p)
-      .filter(
-        (p) =>
-          reserves[p] !== undefined &&
-          ctx.agents.some((_a, a) => {
-            const bal = results[balancesBase + a * pools.length + p];
-            return typeof bal === "bigint" && bal > 0n;
-          }),
-      );
-    const samples = await readAcrossWindow(
-      ctx,
-      held.flatMap((p) => poolReserveReads(pools[p])),
-    );
-    const windowReserves = new Map(
-      held.map((p, k) => [
-        p,
-        samples.map((sample) => balancerReserves(sample[k * 2], sample[k * 2 + 1])),
-      ]),
-    );
-
+    // No median here (rules §4.1 is for prices): a share is its slice of this block's reserves, the
+    // tokens a proportional exit in this block returns, valued at the reference prices like the
+    // wallet's own. Re-weighting it by the share price over the window paired the boundary's balance
+    // with earlier reserves, which a pool pushed off fair for most of the window and put back before
+    // the bell marked above anything the holder could withdraw (see uniswap's LP split).
     const fairByBase = ctx.fairByBase();
     const stablePrices = ctx.stablePrices();
     const out: Record<string, AgentProtocolValue> = {};
@@ -646,13 +626,7 @@ export const balancerAdapter: ProtocolAdapter = {
           fairByBase,
           stablePrices,
         );
-        valueUsdc += medianPoolShareValueUsdc(
-          share.valueUsdc,
-          pool,
-          windowReserves.get(p) ?? [],
-          fairByBase,
-          stablePrices,
-        );
+        valueUsdc += share.valueUsdc;
         for (const h of share.unpriced)
           unpriced.push({ ...h, source: "balancer-bpt" });
       });
@@ -665,8 +639,6 @@ export const balancerAdapter: ProtocolAdapter = {
     });
     return out;
   },
-
-  medianSurfaces: ["balancer-bpt"],
 
   async accountedTokens(): Promise<Address[]> {
     return balancerPools().map((p) => p.bpt);
