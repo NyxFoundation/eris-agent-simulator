@@ -136,17 +136,49 @@ const METHOD_DENY = new RegExp(process.env.RPC_METHOD_DENY ?? "^(eth_accounts|et
 // nonce after earlier submissions. The tag is matched in any position and inside objects (eth_getLogs
 // / eth_newFilter take it as fromBlock/toBlock), case-insensitively.
 const PENDING_TAG_EXEMPT = new Set(["eth_getTransactionCount"]);
-function mentionsPending(v) {
-  if (typeof v === "string") return v.toLowerCase() === "pending";
-  if (Array.isArray(v)) return v.some(mentionsPending);
-  if (v && typeof v === "object") return Object.values(v).some(mentionsPending);
+// The walk is iterative and bounded. It used to recurse, and ~6,000 nested arrays (a 12KB body) ran
+// the stack out inside req.on("end"), where nothing caught it: one authenticated request killed the
+// gateway every participant shares. No standard method nests deeper than a handful of levels
+// (eth_getLogs topics, eth_call state overrides), so a body past either limit is refused rather than
+// inspected -- fail closed, like the gas cap: a check that gives up must not forward what it skipped.
+const MAX_PARAM_DEPTH = Number(process.env.RPC_MAX_PARAM_DEPTH ?? "64");
+const MAX_PARAM_NODES = Number(process.env.RPC_MAX_PARAM_NODES ?? "100000");
+// true when `match` accepts some string in v, false when none does, null when v exceeds the limits.
+function someString(v, match) {
+  const stack = [v, 0];
+  let nodes = 0;
+  while (stack.length) {
+    const depth = stack.pop();
+    const x = stack.pop();
+    if (++nodes > MAX_PARAM_NODES || depth > MAX_PARAM_DEPTH) return null;
+    if (typeof x === "string") { if (match(x)) return true; continue; }
+    if (x && typeof x === "object") for (const c of Array.isArray(x) ? x : Object.values(x)) stack.push(c, depth + 1);
+  }
   return false;
+}
+const isPending = (s) => s.toLowerCase() === "pending";
+// A block parameter left out is not "latest" everywhere. anvil runs eth_estimateGas without one
+// against the pending block (measured, anvil 1.5.1 / --no-mining: a reverting contract deployed in
+// the pool made `eth_estimateGas [{to}]` revert while `[{to}, "latest"]` returned 0x5208), so the
+// string check above never sees the tag and gas use or a conditional revert reads the pool. viem's
+// estimateGas sends exactly that form. eth_call and eth_createAccessList default to latest, measured
+// the same way. The gateway writes the tag in rather than refusing the call, because refusing would
+// break every client's default; the reference runtime no longer relies on pending estimation
+// (example/agents/runtime/send.ts, dependent legs).
+const BLOCK_PARAM_INDEX = { eth_estimateGas: 1 };
+function defaultBlockTag(c) {
+  const i = BLOCK_PARAM_INDEX[c?.method];
+  if (i === undefined || !Array.isArray(c.params) || c.params.length < i) return false;
+  if (c.params[i] !== undefined && c.params[i] !== null) return false;
+  c.params[i] = "latest";
+  return true;
 }
 // Every method that submits a signed transaction. The gas cap and the fee rule read all of them, so a
 // variant admitted later (or through RPC_METHOD_ALLOW) cannot skip both checks.
 const RAW_SEND_METHODS = new Set(["eth_sendRawTransaction", "eth_sendRawTransactionSync"]);
 const FILTER_METHODS = (process.env.RPC_FILTER ?? "1") !== "0";
 let methodDenied = 0;
+let paramsDenied = 0;   // bodies past MAX_PARAM_DEPTH / MAX_PARAM_NODES
 // ---- per-tx gas cap (issue #40 T0) ----
 // Rules §5 caps how MANY transactions an agent may put in a block, not how much gas each one burns.
 // That is enough while every transaction is a swap; it stops being enough once agents deploy their
@@ -266,6 +298,7 @@ function metricsText() {
   o += `# TYPE rpc_gas_denied_total counter\nrpc_gas_denied_total{${L}} ${gasDenied}\n`;
   o += `# TYPE rpc_fee_denied_total counter\nrpc_fee_denied_total{${L}} ${feeDenied}\n`;
   o += `# TYPE rpc_method_denied_total counter\nrpc_method_denied_total{${L}} ${methodDenied}\n`;
+  o += `# TYPE rpc_params_denied_total counter\nrpc_params_denied_total{${L}} ${paramsDenied}\n`;
   o += `# TYPE rpc_key_denied_total counter\nrpc_key_denied_total{${L}} ${keyDenied}\n`;
   o += `# TYPE rpc_keys_loaded gauge\nrpc_keys_loaded{${L}} ${keyMap.size}\n`;
   return o;
@@ -306,90 +339,116 @@ const server = http.createServer((req, res) => {
 
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
+  // A client that resets mid-body emits "error" on the request; unhandled, that also ends the process.
+  req.on("error", () => {});
   req.on("end", () => {
-    const bodyBuf = Buffer.concat(chunks);
-    let parsed, isBatch = false, methods = [];
-    try { parsed = JSON.parse(bodyBuf.toString("utf8")); } catch { parsed = null; }
-    if (Array.isArray(parsed)) { isBatch = true; methods = parsed.map((x) => x && x.method).filter(Boolean); observeBatch(parsed.length); }
-    else if (parsed && parsed.method) { methods = [parsed.method]; }
-    const label = isBatch ? "_batch" : methodLabel(methods[0]);
-    // Cloudflare Access consumes CF-Access-Client-Id for auth and does not forward it; it passes the
-    // verified identity in the Cf-Access-Jwt-Assertion JWT. We only read it for logging (Access already
-    // verified the signature), so a plain base64url decode of the payload is enough.
-    const client = clientFromReq(req);
-    const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "";
-
-    // No valid key, no chain. Checked before the allowlist so an unauthenticated caller cannot use
-    // the difference between "method not permitted" and "rate limited" to map the gateway.
-    if (KEYS_FILE && !client) {
-      keyDenied++;
-      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "key_denied", ip });
-      res.writeHead(403, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null),
-        error: { code: -32001, message: "missing or unknown X-ASCON-Key" } }));
+    // Nothing a request carries may end the process: an exception here used to propagate out of the
+    // event handler uncaught, taking every in-flight request down with it.
+    try { handle(req, res, chunks); }
+    catch (e) {
+      process.stderr.write("request handler error: " + (e && e.stack || e) + "\n");
+      if (!res.headersSent) { res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32603, message: "gateway internal error" } })); }
+      else res.destroy();
     }
-
-    // method allowlist (4.22): reject cheatcodes / privileged methods before anvil is touched
-    if (FILTER_METHODS && methods.length) {
-      const calls = isBatch ? parsed : [parsed];
-      const bad = calls.find((c) => c && c.method && (
-        !METHOD_ALLOW.test(c.method) || METHOD_DENY.test(c.method) ||
-        (!PENDING_TAG_EXEMPT.has(c.method) && mentionsPending(c.params))
-      ))?.method;
-      if (bad) {
-        methodDenied++;
-        logline({ ts: new Date().toISOString(), env: ENV_NAME, method: bad, status: "method_denied", client, ip });
-        res.writeHead(403, { "content-type": "application/json" });
-        return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed.id ?? null), error: { code: -32601, message: `method not permitted: ${bad}` } }));
-      }
-    }
-
-    // per-tx gas cap (issue #40 T0) -> refuse before the transaction can starve a block
-    const overCap = overCapGas(parsed);
-    if (overCap !== null) {
-      gasDenied++;
-      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: "eth_sendRawTransaction", status: "gas_denied", gas: String(overCap), limit: String(MAX_TX_GAS), client, ip });
-      const message = overCap === "unreadable"
-        ? `could not read the transaction's gas limit; refusing it (the per-transaction cap is ${MAX_TX_GAS})`
-        : `transaction gas limit ${overCap} exceeds the per-transaction cap ${MAX_TX_GAS}`;
-      res.writeHead(403, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32003, message } }));
-    }
-
-    // fee rule -> refuse a transaction whose order key would exceed what it pays (or the cap)
-    const badFee = feeViolation(parsed);
-    if (badFee !== null) {
-      feeDenied++;
-      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: "eth_sendRawTransaction", status: "fee_denied", kind: badFee.kind, cap: String(MAX_PRIORITY_FEE), client, ip });
-      res.writeHead(403, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null), error: { code: -32003, message: badFee.message } }));
-    }
-
-    // per-client rate limit (heavy EVM-executing reads cost more) -> 429 before touching anvil
-    const cost = (methods.length ? methods : [label]).reduce((s, m) => s + weight(m), 0) || 1;
-    if (!allow(client || ip || "anon", cost)) {
-      rateLimited++;
-      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "rate_limited", client, ip });
-      res.writeHead(429, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32005, message: "rate limited" } }));
-    }
-
-    inFlight++;
-    forward(bodyBuf, (err, status, upBody, dur) => {
-      inFlight--;
-      let st = "ok";
-      if (err || status >= 500) st = "upstream_error";
-      else { try { const j = JSON.parse(upBody.toString("utf8")); if (Array.isArray(j) ? j.some((x) => x && x.error) : (j && j.error)) st = "rpc_error"; } catch { st = "bad_response"; } }
-      // count each sub-method (so per-method rate is right); time by the request-level label
-      const counted = methods.length ? methods.map(methodLabel) : [label];   // malformed -> _unknown
-      for (const m of counted) reqTotal.set(`${m}|${st}`, (reqTotal.get(`${m}|${st}`) || 0) + 1);
-      observe(label, st, dur);
-      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, methods: methods.length > 1 ? methods : undefined, batch: isBatch ? methods.length : undefined, dur_ms: +(dur * 1000).toFixed(1), status: st, http: status, client, ip });
-      res.writeHead(err ? 502 : status, { "content-type": "application/json" });
-      res.end(upBody);
-    });
   });
 });
+
+function handle(req, res, chunks) {
+  let bodyBuf = Buffer.concat(chunks);
+  let parsed, isBatch = false, methods = [];
+  try { parsed = JSON.parse(bodyBuf.toString("utf8")); } catch { parsed = null; }
+  if (Array.isArray(parsed)) { isBatch = true; methods = parsed.map((x) => x && x.method).filter(Boolean); observeBatch(parsed.length); }
+  else if (parsed && parsed.method) { methods = [parsed.method]; }
+  const label = isBatch ? "_batch" : methodLabel(methods[0]);
+  // Cloudflare Access consumes CF-Access-Client-Id for auth and does not forward it; it passes the
+  // verified identity in the Cf-Access-Jwt-Assertion JWT. We only read it for logging (Access already
+  // verified the signature), so a plain base64url decode of the payload is enough.
+  const client = clientFromReq(req);
+  const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "";
+
+  // No valid key, no chain. Checked before the allowlist so an unauthenticated caller cannot use
+  // the difference between "method not permitted" and "rate limited" to map the gateway.
+  if (KEYS_FILE && !client) {
+    keyDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "key_denied", ip });
+    res.writeHead(403, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null),
+      error: { code: -32001, message: "missing or unknown X-ASCON-Key" } }));
+  }
+
+  // Bound the shape before any check walks it (see someString). Applies with RPC_FILTER=0 as well:
+  // the limits are far above anything a standard method sends.
+  if (parsed !== null && someString(parsed, () => false) === null) {
+    paramsDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "params_denied", client, ip });
+    res.writeHead(400, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: null,
+      error: { code: -32600, message: `request nests deeper than ${MAX_PARAM_DEPTH} levels or has more than ${MAX_PARAM_NODES} values` } }));
+  }
+
+  // method allowlist (4.22): reject cheatcodes / privileged methods before anvil is touched
+  if (FILTER_METHODS && methods.length) {
+    const calls = isBatch ? parsed : [parsed];
+    const bad = calls.find((c) => c && c.method && (
+      !METHOD_ALLOW.test(c.method) || METHOD_DENY.test(c.method) ||
+      (!PENDING_TAG_EXEMPT.has(c.method) && someString(c.params, isPending) !== false)
+    ))?.method;
+    if (bad) {
+      methodDenied++;
+      logline({ ts: new Date().toISOString(), env: ENV_NAME, method: bad, status: "method_denied", client, ip });
+      res.writeHead(403, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed.id ?? null), error: { code: -32601, message: `method not permitted: ${bad}` } }));
+    }
+    // An omitted block parameter that the node would read as pending becomes "latest" (above).
+    // Re-serialized only when something changed, so every other body is forwarded byte for byte.
+    if (calls.map(defaultBlockTag).some(Boolean)) bodyBuf = Buffer.from(JSON.stringify(parsed));
+  }
+
+  // per-tx gas cap (issue #40 T0) -> refuse before the transaction can starve a block
+  const overCap = overCapGas(parsed);
+  if (overCap !== null) {
+    gasDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: "eth_sendRawTransaction", status: "gas_denied", gas: String(overCap), limit: String(MAX_TX_GAS), client, ip });
+    const message = overCap === "unreadable"
+      ? `could not read the transaction's gas limit; refusing it (the per-transaction cap is ${MAX_TX_GAS})`
+      : `transaction gas limit ${overCap} exceeds the per-transaction cap ${MAX_TX_GAS}`;
+    res.writeHead(403, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32003, message } }));
+  }
+
+  // fee rule -> refuse a transaction whose order key would exceed what it pays (or the cap)
+  const badFee = feeViolation(parsed);
+  if (badFee !== null) {
+    feeDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: "eth_sendRawTransaction", status: "fee_denied", kind: badFee.kind, cap: String(MAX_PRIORITY_FEE), client, ip });
+    res.writeHead(403, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null), error: { code: -32003, message: badFee.message } }));
+  }
+
+  // per-client rate limit (heavy EVM-executing reads cost more) -> 429 before touching anvil
+  const cost = (methods.length ? methods : [label]).reduce((s, m) => s + weight(m), 0) || 1;
+  if (!allow(client || ip || "anon", cost)) {
+    rateLimited++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "rate_limited", client, ip });
+    res.writeHead(429, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32005, message: "rate limited" } }));
+  }
+
+  inFlight++;
+  forward(bodyBuf, (err, status, upBody, dur) => {
+    inFlight--;
+    let st = "ok";
+    if (err || status >= 500) st = "upstream_error";
+    else { try { const j = JSON.parse(upBody.toString("utf8")); if (Array.isArray(j) ? j.some((x) => x && x.error) : (j && j.error)) st = "rpc_error"; } catch { st = "bad_response"; } }
+    // count each sub-method (so per-method rate is right); time by the request-level label
+    const counted = methods.length ? methods.map(methodLabel) : [label];   // malformed -> _unknown
+    for (const m of counted) reqTotal.set(`${m}|${st}`, (reqTotal.get(`${m}|${st}`) || 0) + 1);
+    observe(label, st, dur);
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, methods: methods.length > 1 ? methods : undefined, batch: isBatch ? methods.length : undefined, dur_ms: +(dur * 1000).toFixed(1), status: st, http: status, client, ip });
+    res.writeHead(err ? 502 : status, { "content-type": "application/json" });
+    res.end(upBody);
+  });
+}
 
 server.listen(PORT, () => process.stdout.write(`rpc-gateway env=${ENV_NAME} :${PORT} -> ${UPSTREAM.href}${METRICS_FILE ? " textfile=" + METRICS_FILE : ""}\n`));
 
