@@ -22,11 +22,17 @@
 // the identity on a fresh world. The one asymmetry is a gain made before the bell, which is not
 // counted: the epoch's clock had not started. Every later boundary is measured as before.
 //
-// Pure, and shared by the live scorer and the post-run sweep so that `interval_series_agreement`
-// still compares the same rule applied to the same block.
-import { valueUsdc } from "@eris/sdk/pnl.js";
-import type { StablePrices } from "@eris/sdk/stables.js";
-import type { BalanceSnapshot } from "@eris/sdk/types.js";
+// Shared by the live scorer and the post-run sweep so that `interval_series_agreement` still
+// compares the same rule applied to the same block. The endowment reaches this already valued at
+// the boundary's marks (reconstruct.ts endowmentValueAt, the one place both readers price it).
+//
+// Pure, and it has to stay so: core/src/backtest/scenarioScores.ts imports this for the V_0 flags,
+// and the backtest CLI imports scenarioScores.ts *before* it sets ERIS_LOCAL_DEPLOY and loads the
+// coordinator (backtest.ts: "dependency-light"). sdk/src/constants.ts fixes the address overlay at
+// import time, so a value import of the sdk from here -- the first version imported valueUsdc --
+// froze the fork registry for the whole process, and every scenario died at setup with
+// `markets: unknown token symbol "WBTC"` (CI run 36989637551). test/cliImportsBeforeEnv.test.ts
+// walks the CLI's static imports so that this cannot come back.
 
 /** Which side of the floor V_0 came from. Recorded beside P so a reader can tell. */
 export type V0Source = "endowment" | "measured";
@@ -41,31 +47,19 @@ export type FirstBoundaryV0 = {
   endowmentUsdc?: number;
 };
 
-/** The marks of one cross-section, as readValueSnapshotAtBlock reports them. */
-export type BoundaryMarks = {
-  fairByBase: Record<string, number>;
-  stablePrices?: StablePrices;
-};
-
 /**
  * V_0 for one agent at the epoch's first boundary.
  *
- * `measuredUsdc` is the agent's value read off the chain at that block, `endowment` the balances
- * the environment handed it at funding (undefined for an agent it did not fund, such as one
- * registered mid-period and first seen at a later boundary).
+ * `measuredUsdc` is the agent's value read off the chain at that block; `endowmentUsdc` is what
+ * the environment handed it at funding, valued at that same block's marks (undefined for an agent
+ * it did not fund, such as one registered mid-period and first seen at a later boundary).
  */
 export function firstBoundaryV0(
   measuredUsdc: number | null,
-  endowment: BalanceSnapshot | undefined,
-  marks: BoundaryMarks,
+  endowmentUsdc: number | undefined,
 ): FirstBoundaryV0 {
-  if (!endowment)
+  if (endowmentUsdc === undefined || !Number.isFinite(endowmentUsdc))
     return { valueUsdc: measuredUsdc, source: "measured", measuredUsdc };
-  const endowmentUsdc = valueUsdc(
-    endowment,
-    marks.fairByBase,
-    marks.stablePrices,
-  );
   const measured =
     typeof measuredUsdc === "number" && Number.isFinite(measuredUsdc)
       ? measuredUsdc

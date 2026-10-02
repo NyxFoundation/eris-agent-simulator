@@ -217,6 +217,17 @@ export type ValueSnapshot = {
   unpriced: UnpricedHolding[];
 };
 
+// The endowment at a cross-section's marks (issue #207): the free-inventory valuation the
+// cross-section itself applies to what the chain holds, applied to what the environment funded
+// instead. The one place both readers -- the live scorer and the sweep -- price it, so V_0 is
+// floored at the same number whichever of them reads the boundary.
+export function endowmentValueAt(
+  endowment: BalanceSnapshot,
+  marks: Pick<ValueSnapshot, "fairByBase" | "stablePrices">,
+): number {
+  return valueUsdc(endowment, marks.fairByBase, marks.stablePrices);
+}
+
 // The adapters behind the run's enabled protocol ids. Adding a venue means registering an adapter,
 // not editing this file (issue #41).
 function adaptersForIds(ids: ProtocolId[]): ProtocolAdapter[] {
@@ -1086,16 +1097,24 @@ export async function reconstructValueSeries(opts: {
       const endowment = endowmentByAgent.get(id);
       const v0 =
         b === fromBlock
-          ? firstBoundaryV0(total, endowment, snapshot).valueUsdc ?? total
+          ? (firstBoundaryV0(
+              total,
+              endowment ? endowmentValueAt(endowment, snapshot) : undefined,
+            ).valueUsdc ?? total)
           : total;
       if (!alphaFirst.has(id))
         alphaFirst.set(
           id,
           b === fromBlock
-            ? (firstBoundaryV0(alphaValueUsdc, endowment, {
-                fairByBase: refFairByBase,
-                stablePrices: snapshot.stablePrices,
-              }).valueUsdc ?? alphaValueUsdc)
+            ? (firstBoundaryV0(
+                alphaValueUsdc,
+                endowment
+                  ? endowmentValueAt(endowment, {
+                      fairByBase: refFairByBase,
+                      stablePrices: snapshot.stablePrices,
+                    })
+                  : undefined,
+              ).valueUsdc ?? alphaValueUsdc)
             : alphaValueUsdc,
         );
       alphaLast.set(id, alphaValueUsdc);

@@ -26,6 +26,7 @@ import type { RunLogger } from "../logger.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
 import {
   MarkMedian,
+  endowmentValueAt,
   readValueSnapshotAtBlock,
   type ReconstructionAgent,
 } from "./reconstruct.js";
@@ -224,7 +225,12 @@ export class LiveScorer {
         const value = first
           ? first.record(
               agent.id,
-              firstBoundaryV0(measured, agent.endowment, snapshot),
+              firstBoundaryV0(
+                measured,
+                agent.endowment
+                  ? endowmentValueAt(agent.endowment, snapshot)
+                  : undefined,
+              ),
             )
           : measured;
         this.valuesByAgent.get(agent.id)?.push(value);
