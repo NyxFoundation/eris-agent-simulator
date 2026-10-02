@@ -54,7 +54,9 @@ boundary series. Six details are decisions, not formalities:
   epoch, then its submission time (§4.6).
 
 `run.markMedianBlocks` (default 5) marks every market-derived price at each boundary with a median
-over the preceding window instead of a single live read (rules §4.1): the stables' probe, the
+over the preceding window instead of a single live read (rules §4.1): the stables' probe and each
+agent's own-size sale of its stables (wallet and venues summed; a large holding is not marked at the
+$1,000 probe's mid), the
 Uniswap LP split tick, Balancer / Curve share prices, the LST pool sale and Liquity's own-size
 quotes. Holdings stay at the boundary block; reference prices (fair, the Aave / GMX oracles) are
 used as they are. `valueSeries.markMedian` reports which surfaces are covered and the largest

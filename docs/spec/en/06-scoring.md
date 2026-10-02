@@ -91,11 +91,12 @@ Each interval boundary is valued at **the median over the preceding `markMedianB
 
 | Surface | The price that is medianed |
 |---|---|
-| Market-priced stables (spot, the Trove-debt and SP-deposit mid, stable legs of LP and lending marks) | The geometric mean of the two-sided probe (`stables`) |
+| The market-priced stables' mid (the Trove debt's face, every venue's face mark) | The geometric mean of the two-sided $1,000 probe (`stables`) |
+| Market-priced stables held and owed (spot, the SP deposit, stable legs of LP and lending marks) | Each agent's units summed across every venue and sold at **its own size** (get_dy), what is owed bought back at its own size (get_dx) (`stables-own-size`). Marked at mid × units, a stable bought up in a thin pool and held through the bell counts at a price it does not sell for (70k USDC into the 100k/100k, A=100 DAI pool: the probe reads 1.05, 69,090 DAI is 72,532 at the mid and sells for 69,986). Summed, because a holding split between the wallet and an LP is otherwise two sales each first in line, worth more split than whole |
 | Uniswap V3 LP | The pool's tick. Principal splits into the two tokens at the median tick; uncollected fees stay at the boundary tick (fees are not a price, they are what the boundary owes) |
 | Balancer BPT / Curve LP | The value of one share (reserves at the boundary's reference prices ÷ supply). The boundary mark is rescaled by median ÷ boundary share price |
 | LST (the venue and Aave's collateral haircut) | The pool sale at the holder's own size (get_dy). The queue side (par, the wait) is the vault's and stays at the boundary |
-| Liquity | The Stability Pool deposit's sale (get_dy) and the debt's buyback (get_dx), both at the boundary's sizes |
+| Liquity | The debt's buyback (get_dx), at the boundary's size. The SP deposit is eUSD held and is sold in the row above |
 | Aave accounts / GMX / SimpleLending | Not medianed (marked at the environment's reference prices and oracles) |
 
 A block that did not quote is dropped (counted neither as zero nor as par). A boundary with fewer than five blocks of history uses the median of those there are (§4.4.2).

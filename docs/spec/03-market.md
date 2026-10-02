@@ -216,6 +216,7 @@ WETH 以外の base は `flow.baseMax` が共通上限となる。任意の `flo
 「stable = $1」という断定を外した機構（issue #27、`sdk/src/stables.ts`）。
 
 - 価格は**両側の executable probe の幾何平均** `sqrt(sell × buy)`。片側だけだと売り側に張り付いて過小評価する
+- **採点はその価格 × 枚数ではない**。probe は $1,000 の取引なので、大きな保有を mid で数えると売れない値段になる。採点は agent ごとに財布と全 venue の枚数を合算し、自分サイズの売却 quote（債務は買い戻し quote）の 5 ブロック中央値で評価する（`core/src/realtime/reconstruct.ts` の `ownSizeStableAdjustments`。仕様は 06-scoring の G7）。mid は観測・face mark・quote が返らないときの fallback（`mid-fallback` として報告）
 - quote が返らなければ **par に落として `par-fallback` として報告**する。黙って par が最悪で、黙って 0 は「100% ディスカウント = 無限の裁定」に読めてもっと悪い
 - **USDC は numéraire で $1 固定**。全 metric が USDC 建てなので、ここを浮かせると過去 run の数字の意味が変わる
 - `obs.balances.stables[<symbol>].marketQuoted: false` は「市場が答えなかったので par を仮置きした」であり、**`priceUsdc: 1` を「ペグが保たれている」と読んではいけない**

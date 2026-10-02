@@ -518,7 +518,7 @@ function liquityAnswer(q: { depositSale: bigint; debtBuyback: bigint }) {
   };
 }
 
-test("liquity: the realizable mark uses the boundary block's own-size quotes", async () => {
+test("liquity: the realizable mark uses the boundary block's own-size buyback", async () => {
   const { values } = await driveValuation(
     liquityValuationRun(LIQUITY!, ctx()),
     liquityAnswer({
@@ -527,15 +527,16 @@ test("liquity: the realizable mark uses the boundary block's own-size quotes", a
     }),
   );
   const v = values[AGENT.id];
-  // Trove 3 ETH (6,000) less a 4,040 USDC buyback, plus the deposit sold for 990.
-  assert.ok(Math.abs(v.liquidatableValueUsdc - (6_000 - 4_040 + 990)) < 1e-6);
-  // The face mark prices both legs at the mid (par here).
+  // Trove 3 ETH (6,000) less a 4,040 USDC buyback, plus the deposit at the mid (par here): the
+  // deposit is eUSD the agent holds, sold by the scorer with the rest of its eUSD at its own size.
+  assert.ok(Math.abs(v.liquidatableValueUsdc - (6_000 - 4_040 + 1_000)) < 1e-6);
+  // The face mark prices both legs at the mid.
   assert.ok(Math.abs(v.valueUsdc - (6_000 - 4_000 + 1_000)) < 1e-6);
 });
 
-test("liquity: at a boundary both own-size quotes are medians over the window", async () => {
-  // In the boundary block eUSD was bid up for the deposit's sale and offered down for the debt's
-  // buyback -- both flattering the position. Before it: 980 and 4,080.
+test("liquity: at a boundary the debt's own-size buyback is the median over the window", async () => {
+  // In the boundary block eUSD was offered down for the debt's buyback, flattering the position.
+  // Before it: 4,080.
   const steady = liquityAnswer({
     depositSale: 980n * USDC_UNIT,
     debtBuyback: 4_080n * USDC_UNIT,
@@ -558,13 +559,13 @@ test("liquity: at a boundary both own-size quotes are medians over the window", 
     }),
   );
   const v = values[AGENT.id];
-  assert.ok(Math.abs(v.liquidatableValueUsdc - (6_000 - 4_080 + 980)) < 1e-6);
+  assert.ok(Math.abs(v.liquidatableValueUsdc - (6_000 - 4_080 + 1_000)) < 1e-6);
   // The face mark is the mid, which reaches this adapter already medianed (ctx.stablePrices()).
   assert.ok(Math.abs(v.valueUsdc - (6_000 - 4_000 + 1_000)) < 1e-6);
-  // The boundary's sizes, re-quoted: one sale and one buyback per window block.
+  // The boundary's debt, re-quoted once per window block; the deposit is not quoted here.
   assert.deepEqual(
-    asked.map((r) => r.functionName).sort(),
-    [...WINDOW.map(() => "get_dx"), ...WINDOW.map(() => "get_dy")],
+    asked.map((r) => r.functionName),
+    WINDOW.map(() => "get_dx"),
   );
 });
 
@@ -621,6 +622,7 @@ test("the window: the stables' probe is medianed alongside the venue surfaces", 
     assert.ok(prices);
     assert.deepEqual(median.summary()?.surfaces, [
       "stables",
+      "stables-own-size",
       "uniswap-lp",
       "curve-lp",
     ]);
