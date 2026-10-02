@@ -561,6 +561,32 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 
 > **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
 
+> **Aave 自前のテスト market は閉じてある**（issue #190）。`@aave/deploy-v3` は自前のテストトークンで 8 reserve
+> （WETH $4,000 / WBTC $60,000 等の固定価格）と、既定で誰でも 1 回 10,000 枚 mint できる `Faucet` を作る。競技は
+> 共有 reserve しか使わないが Pool は同じで、**Aave の採点 `getUserAccountData` は全 reserve を合計する**ので、
+> 放置すると faucet のトークンを supply するだけで P が増え、それを担保に共有 USDC/WETH も借りられた（実測）。
+> deployer は `PERMISSIONED_FAUCET=true` で deploy し、`closeVendorTestMarket` が Faucet を owner 限定にして
+> 8 reserve を `setReserveActive(false)`。**Aave が無効化を許すのは aToken も `accruedToTreasury` も 0 のときだけ**で、
+> 一度でも借りられた reserve は全員が返済・引出しても treasury の利息の取り分が残り、**永久に無効化できない**。
+> その場合は freeze して「treasury の残りのみ」と報告し、参加者の供給・債務が残っていれば freeze + 警告。
+> **稼働中のチェーンは `cd deployer && RPC_URL=<node> npm run close:aave-vendor`**（冪等。参加者の残高が残れば
+> exit 2、tx 自体が失敗した reserve があれば exit 1。1 本の失敗で後続を止めない）。閉じる対象は coordinator と同じく
+> `getReservesList()` − (deployments.json の全 token + LST)（`deployer/src/protocols/aave-reserves.ts`。以前は vendor の
+> deployment ファイルから列挙し、別 deploy のファイルを読むと「全部 not-listed」で exit 0 だった）。共有 reserve が
+> Pool に無ければ deployments.json が別チェーンのものなので何も送らずに落ちる（共有 reserve まで閉じないため）。
+> **ローカルの anvil では `.local-snapshot` より上に送った close は次の `sim:realtime` / `gen:state-dump` が巻き戻す**
+> （resetFork が close 前の断面へ revert する）。ファイルがこのチェーンを指していれば closer は何も送らず exit 1 で、
+> `npm run close:aave-vendor -- --revert-local-snapshot` が「pin へ revert → close → 取り直して書き戻す」
+> （直前 run の残りは捨てる = 次の run も捨てる）。pin の無いチェーン（`chainMode: external`）は revert しない。
+> **練習 devnet には pin がある** — unit は `sim:realtime --config config/practice.yaml` を `localDeploy: true` で
+> 起動し `localSnapshotFile` の既定が `.local-snapshot` なので、coordinator は他のローカル run と同じく
+> resetFork の snapshot/revert を通る。期間の途中で `--revert-local-snapshot` を打つと**その期間が巻き戻る**
+> （pin は参加者が取引した全ブロックより前）。devnet では coordinator を止めて pin を**削除**し、close して再起動する。
+> coordinator はローカルデプロイ + aave の run で `Pool.getReservesList()` を列挙し、registry + LST 以外の
+> **active な reserve が 1 本でもあれば全 chainMode で起動時に落ちる**。例外は freeze 済みで参加者の aToken
+> （treasury 保有分を除く）も債務も 0 のものだけ（`aave_reserve_check`。
+> `core/src/realtime/aaveReserveGuard.ts`）。**これ以前の state dump は全部これで落ちる**ので `npm run gen:state-dump` で焼き直す。
+
 > **deploy 鍵は `MNEMONIC`**（既定は anvil の**公開**テスト mnemonic。issue #74）。index 0 の deployer は Aave の
 > POOL_ADMIN・GMX の CONFIG_KEEPER・LST vault の owner・seed した LP 全部・genesis Trove の余剰 eUSD を持ち、
 > しかも全アドレスが `CREATE(deployer, nonce)`。**参加者が tx を送れるチェーンでこの既定を使ってはいけない**
