@@ -305,6 +305,19 @@ export function redactEventLine(
  * matches, and run against the raw path they passed "comp/../other-run/x" (it starts with "comp/")
  * while the file served was other-run's.
  */
+/**
+ * decodeURIComponent, or null when the path is not valid percent-encoding. A malformed escape
+ * ("/runs/%") makes it throw, and the throw left the request handler: one unauthenticated request
+ * ended the hosted process every viewer shares (issue #203).
+ */
+function decodeComponent(s: string): string | null {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
+}
+
 function normalizeRel(rel: string): string | null {
   const clean = path.posix.normalize(rel.replace(/^\/+/, ""));
   if (clean === ".." || clean.startsWith("../") || path.posix.isAbsolute(clean)) return null;
@@ -674,11 +687,14 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     // on the last "/tail/" rather than on the first path segment.
     const tailAt = urlPath.lastIndexOf("/tail/");
     if (tailAt > 0) {
-      const rel = normalizeRel(
-        `${decodeURIComponent(urlPath.slice(1, tailAt))}/${decodeURIComponent(
-          urlPath.slice(tailAt + "/tail/".length),
-        )}`,
-      );
+      const head = decodeComponent(urlPath.slice(1, tailAt));
+      const name = decodeComponent(urlPath.slice(tailAt + "/tail/".length));
+      if (head === null || name === null) {
+        res.statusCode = 400;
+        res.end();
+        return true;
+      }
+      const rel = normalizeRel(`${head}/${name}`);
       if (rel === null) {
         res.statusCode = 403;
         res.end();
@@ -763,7 +779,13 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
       return true;
     }
 
-    const rel = normalizeRel(decodeURIComponent(urlPath.replace(/^\//, "")));
+    const decoded = decodeComponent(urlPath.replace(/^\//, ""));
+    if (decoded === null) {
+      res.statusCode = 400;
+      res.end();
+      return true;
+    }
+    const rel = normalizeRel(decoded);
     const file = rel === null ? null : resolveInside(rel);
     if (rel === null || !file) {
       res.statusCode = 403;

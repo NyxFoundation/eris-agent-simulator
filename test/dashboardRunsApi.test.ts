@@ -576,3 +576,21 @@ test("a '..' in the path cannot step from an admitted competition into a run out
   }
   rmSync(root, { recursive: true, force: true });
 });
+
+test("a malformed percent-escape answers 400 and the server keeps serving", async () => {
+  const root = fixtureRuns();
+  const { get, close } = await serve(root, true, ["matrix-2026-11-01"]);
+  try {
+    // decodeURIComponent throws on these. The throw used to leave the request handler, which ends
+    // the hosted process every viewer shares (issue #203).
+    for (const bad of ["/%", "/%E0%A4%A", "/matrix-2026-11-01%2F%ZZ"]) {
+      assert.equal((await get(bad)).status, 400, bad);
+    }
+    assert.equal((await get("/%/tail/events.jsonl?offset=0")).status, 400);
+    // Still answering afterwards: the point of the guard.
+    assert.equal((await get("/index.json")).status, 200);
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
