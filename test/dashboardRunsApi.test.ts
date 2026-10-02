@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -593,4 +593,35 @@ test("a malformed percent-escape answers 400 and the server keeps serving", asyn
     await close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a symlink inside an admitted competition does not serve a run outside the allowlist", async () => {
+  const root = fixtureRuns();
+  // resolveInside follows the link (that is what stops a link from serving the rest of the disk),
+  // so the allowlist has to read where the file actually is, not where the request pointed (#202).
+  symlinkSync(
+    join(root, "2026-11-02T10-00-00-000Z"),
+    join(root, "matrix-2026-11-01", "link"),
+    "dir",
+  );
+  for (const audience of [true, false]) {
+    const { get, close } = await serve(root, audience, ["matrix-2026-11-01"]);
+    try {
+      assert.equal(
+        (await get("/matrix-2026-11-01/link/events.jsonl")).status,
+        404,
+        `audience=${audience}`,
+      );
+      assert.equal(
+        (await get("/matrix-2026-11-01/link/tail/events.jsonl?offset=0")).status,
+        404,
+        `audience=${audience}`,
+      );
+      // The admitted run's own files still come back.
+      assert.equal((await get("/2026-11-01T10-00-00-000Z/market.json")).status, 200);
+    } finally {
+      await close();
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
 });

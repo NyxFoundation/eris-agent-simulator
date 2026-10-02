@@ -353,6 +353,20 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
   }
 
   /**
+   * The runs/-relative path of a file `resolveInside` returned. Every check on a request reads this
+   * rather than the path the request asked for: `resolveInside` follows symlinks (that is what keeps
+   * a link from serving the rest of the disk), so a link inside an admitted competition used to point
+   * at a run outside the allowlist while the allowlist saw only the asking path (issue #202).
+   */
+  function relOf(file: string): string {
+    try {
+      return path.relative(fs.realpathSync(root), file);
+    } catch {
+      return path.relative(root, file);
+    }
+  }
+
+  /**
    * A directory is a run when it holds a summary.json, or fresh artifacts still being appended to.
    * A competition directory holds neither: it holds matrix.json, and its scenarios (or segments) are
    * separate run dirs beside it. Both go in the same index, tagged, because the picker offers both —
@@ -701,11 +715,12 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
         return true;
       }
       const file = resolveInside(rel);
-      const admitted = admitsPath(rel);
+      const checked = file === null ? rel : relOf(file);
+      const admitted = admitsPath(checked);
       if (
         !file ||
         !/\.(jsonl|csv)$/.test(file) ||
-        (mode.audience && !audienceAllows(rel)) ||
+        (mode.audience && !audienceAllows(checked)) ||
         !admitted
       ) {
         res.statusCode = mode.audience || !admitted ? 404 : 403;
@@ -792,7 +807,8 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
       res.end();
       return true;
     }
-    if ((mode.audience && !audienceAllows(rel)) || !admitsPath(rel)) {
+    const checked = relOf(file);
+    if ((mode.audience && !audienceAllows(checked)) || !admitsPath(checked)) {
       // 404, not 403: for the audience an unpublished file does not exist, and a different status
       // for "exists but withheld" would confirm what is there to withhold. The same for a run
       // outside the allowlist: it is not on this server as far as a reader can tell.
