@@ -135,6 +135,19 @@ For every agent it launches, the coordinator prepares a view directory,
 
 `ERIS_CONFIG` inside is `/eris/run/config.yaml`. The rootfs is read-only.
 
+Of those, `/eris/state` and the two log files are the writable places that outlive the container,
+and neither mount carries a size limit of its own — the 64 MiB caps in `state.ts` / `agentLog.ts` are
+the reference runtime's self-limits, which a submitted runtime bypasses with one `writeFileSync`.
+What bounds them is the coordinator (issue #214 item 1): every `run.agentDiskCheckEveryBlocks`
+blocks it measures each launched agent's state directory and log files, warns once past 80% of
+`run.agentStateQuotaBytes` / `run.agentLogQuotaBytes` (`agent_disk_usage_warning`) and **stops the
+agent** past either (`agent_disk_quota_exceeded`; the run continues, `summary.json` says why). A
+filesystem quota on the host is the stronger line and is provisioned by the operator, not by this
+wrapper — see `infra/devnet/CHECKLIST.md` §5 for XFS project quota, a loop device, or a tmpfs at the
+state root. A size-capped tmpfs *inside* the container was considered and not added: the state has
+to outlive the container (that is the whole point of #77), and `docker cp` cannot seed or drain a
+container's tmpfs, so an in-container tmpfs would silently turn persistence off.
+
 The log files are mounted file by file, so they are the host's own `runs/<id>/agents/<agentId>.jsonl`:
 the dashboard (live tail included), the agents-ready wait and the post-run checks read them where
 they always did. The wrapper creates the empty log and its mountpoint in the view directory before

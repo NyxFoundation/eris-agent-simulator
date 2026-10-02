@@ -129,7 +129,12 @@ import {
   type LiquityVictimTrove,
 } from "../liquityVictims.js";
 import { waitForAgentsReady } from "./agentsReady.js";
-import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
+import {
+  agentStateRootFromEnv,
+  DEFAULT_STATE_SNAPSHOT_LIMITS,
+  prepareAgentState,
+} from "./agentState.js";
+import { AgentDiskWatch, agentLogFiles } from "./agentDisk.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
 import {
   ensureScenarioKey,
@@ -467,6 +472,9 @@ type RealtimeAgentRuntime = {
   // grepping events.jsonl. It does not change the score -- rules §2.3 / §4.4.2 value a stopped agent
   // on what it left behind -- but the standings carry it as a flag next to the number.
   exitedEarly?: string;
+  // The per-agent state directory this run gave it (issue #77), when it did; what the disk watch
+  // measures (issue #214).
+  stateDir?: string;
 };
 
 // Who a mined transaction is attributed to in blocks.csv. `external` is a sender the run does not
@@ -2171,9 +2179,17 @@ export async function runRealtimeSimulation(
       // participant made uncopyable (issue #214 item 2) is not a failure of the environment: it is
       // set aside, the agent starts this epoch empty, and the record says so.
       const prepared = agentStateRoot
-        ? prepareAgentState(agentStateRoot, agent.id, runId)
+        ? prepareAgentState(agentStateRoot, agent.id, runId, {
+            ...DEFAULT_STATE_SNAPSHOT_LIMITS,
+            // One number for "how much state": the snapshot copies at most what the watch below
+            // lets the agent hold. 0 (quota off) keeps the module default for the copy.
+            ...(config.agentStateQuotaBytes > 0
+              ? { maxBytes: config.agentStateQuotaBytes }
+              : {}),
+          })
         : undefined;
       const stateDir = prepared?.dir;
+      agent.stateDir = stateDir;
       const view = prepareAgentView(logger.runDir, agent.id, agentConfigText);
       agentViewDirs.push(view.dir);
       if (prepared) {
@@ -2235,6 +2251,79 @@ export async function runRealtimeSimulation(
     }
     // What `agents_ready` measures boot time from (issue #94).
     const agentsSpawnedAt = Date.now();
+
+    // ---- what each agent writes to the host (issue #214 item 1) ----
+    // Measured every `run.agentDiskCheckEveryBlocks` blocks for every agent this coordinator
+    // launched and still runs: its state directory and its log files. Past a quota the agent is
+    // stopped the way a crashed one ends -- the run goes on, the agent is valued on what it left
+    // behind (rules §2.3 / §4.4.2), and summary.json says why it stopped. The runtime's own 64 MiB
+    // self-limits do not bind a submitted runtime; this does.
+    const diskWatch = new AgentDiskWatch({
+      stateBytes: config.agentStateQuotaBytes,
+      logBytes: config.agentLogQuotaBytes,
+    });
+    const diskWatchTick = (bn: number): void => {
+      const targets = agentRuntimes
+        .filter(
+          (a) =>
+            a.process !== null &&
+            a.exitedEarly === undefined &&
+            a.process.isAlive(),
+        )
+        .map((a) => ({
+          id: a.id,
+          ...(a.stateDir !== undefined ? { stateDir: a.stateDir } : {}),
+          logFiles: agentLogFiles(logger.runDir, a.id),
+        }));
+      for (const outcome of diskWatch.tick(targets)) {
+        if (outcome.report === "none") continue;
+        const agent = agentRuntimes.find((a) => a.id === outcome.id);
+        if (!agent) continue;
+        const usage = {
+          stateBytes: outcome.sample.stateBytes,
+          logBytes: outcome.sample.logBytes,
+          ...(outcome.sample.stateUsage
+            ? {
+                stateEntries: outcome.sample.stateUsage.entries,
+                stateWalkTruncated: outcome.sample.stateUsage.truncated,
+              }
+            : {}),
+          quota: {
+            stateBytes: config.agentStateQuotaBytes,
+            logBytes: config.agentLogQuotaBytes,
+          },
+        };
+        if (outcome.report === "warning") {
+          logger.event({
+            type: "agent_disk_usage_warning",
+            blockNumber: bn,
+            agentId: agent.id,
+            findings: outcome.verdict.findings,
+            ...usage,
+          });
+          console.error(
+            `[agent] ${agent.id}: ${outcome.verdict.findings.join("; ")}`,
+          );
+          continue;
+        }
+        const reason = `stopped by the environment: disk quota exceeded (${outcome.verdict.findings.join("; ")})`;
+        logger.event({
+          type: "agent_disk_quota_exceeded",
+          blockNumber: bn,
+          agentId: agent.id,
+          findings: outcome.verdict.findings,
+          ...usage,
+          note:
+            "the agent process is stopped; the run continues and the agent is valued on what it " +
+            "left behind (rules §2.3 / §4.4.2). Its files are left in place for the operator",
+        });
+        console.error(`[agent] ${agent.id} ${reason}`);
+        // close() marks the process as stopped on purpose, so onExit will not fire: the reason is
+        // recorded here, where summary.json's processExitedEarly reads it.
+        agent.exitedEarly = reason;
+        agent.process?.close();
+      }
+    };
 
     // ---- flow wallets over a long period (issue #130): guards, balances, top-ups ----
     const flowGuardLog = new FlowGuardLog();
@@ -3826,6 +3915,14 @@ export async function runRealtimeSimulation(
           // finds an entry funds it (cheatcode on anvil, treasury transfer -- a few blocks -- on an
           // external chain), which the loop absorbs the way it absorbs any slow block: by catching up.
           await pollRegistrations(bn);
+
+          // Issue #214 item 1: a bounded stat of what each agent has written, one block in N.
+          // Synchronous and after the block's work, like the boundary read above.
+          if (
+            config.agentDiskCheckEveryBlocks > 0 &&
+            bn % config.agentDiskCheckEveryBlocks === 0
+          )
+            diskWatchTick(bn);
 
           // Only while segmenting: keep blocks.csv within a block of the head, so a roll is a
           // boundary rather than a bulk scan of a whole day stalling the environment loop. A run

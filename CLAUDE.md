@@ -353,6 +353,24 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   セグメントを切ると期間全体が 1 本になり、1 週間で 336 区間・events.jsonl 435MB・blocks.csv 221MB
   （実測 1.4KB/block・0.7KB/block からの外挿）。**11 時間相当を超える非セグメント run は起動時に警告**する
 
+### 参加者コードを動かす側の境界（issue #214。公式競技 = `agentSandbox: docker` 前提）
+
+- **書込量**: agent が書けてコンテナより長生きするのは state dir（`/eris/state`）と自分のログ 2 本だけだが、
+  どちらの mount にも容量上限が無く、`state.ts` / `agentLog.ts` の 64 MiB は参照ランタイムの自己制限（提出コードは
+  `writeFileSync` で素通り）。coordinator が `run.agentDiskCheckEveryBlocks`（既定 15）ごとに両方を stat し、
+  `run.agentStateQuotaBytes` / `run.agentLogQuotaBytes`（既定 256 MiB）の 80% で `agent_disk_usage_warning`（1 回）、
+  超過で **agent を止める**（`agent_disk_quota_exceeded`。run は続き、summary の `processExitedEarly` に理由）。
+  `core/src/realtime/agentDisk.ts`。ホスト側 quota（XFS pquota / loop device / tmpfs）は `infra/devnet/CHECKLIST.md` §5
+  で運営が provision する。**コンテナ内 tmpfs は入れていない**（state はコンテナより長生きしなければならず、
+  `docker cp` は tmpfs を seed/drain できないので、黙って永続化が切れる）
+- **state snapshot**: エポック開始の `cpSync` は参加者が作ったディレクトリを coordinator の起動経路で読む。
+  実測（2026-10-02, Node 23.5 / APFS）: FIFO が 1 本あると `ERR_INTERNAL_ASSERTION` で**投げる**（ハングはしない）、
+  1 GiB の sparse file は filter 付きでも 1 GiB 実体コピーされる。よって `validateStateDir`（lstat 走査・通常ファイルと
+  ディレクトリのみ・20,000 entries・16 階層・見かけサイズ ≤ state quota）を通ったものだけ `regularEntriesOnly` filter で
+  コピーし、落ちたディレクトリは**読まずに rename**（`<id>.refused-<runId>`）して agent は空で起動
+  （`agent_state_snapshot_skipped`。永続化はそこから続く = 直す手段が agent に無いため）。行列の checkpoint も同じ検査で、
+  落ちた agent は checkpoint から外して stderr に名指し（`core/src/realtime/dirUsage.ts` / `agentState.ts`）
+
 ## 実行コマンド
 
 - `npm run anvil` — 別ターミナルで Anvil フォークを起動（sim:realtime の前提。ローカルデプロイモードでは不要）

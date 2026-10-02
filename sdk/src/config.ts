@@ -234,6 +234,16 @@ export type SimConfig = {
   // bound (2026-09-07). Measured on an 8-core Mac with 32 docker agents the field takes 86-99 s,
   // so a local check of that size raises it; the production box is faster. 0 disables the wait.
   agentsReadyTimeoutSec: number;
+  // What an agent may write to the host, held by the coordinator (issue #214 item 1): the state
+  // directory (`run.agentStateQuotaBytes`) and its log files (`run.agentLogQuotaBytes`), measured
+  // every `run.agentDiskCheckEveryBlocks` blocks; past a quota the agent process is stopped and
+  // `agent_disk_quota_exceeded` is recorded. Above the runtime's own 64 MiB self-limits on purpose:
+  // those are what a well-behaved agent holds itself to, these are where the environment steps in.
+  // The state quota is also the apparent-size cap of the epoch-start snapshot (agentState.ts).
+  // 0 for a quota disables that check; 0 for the interval disables the watch.
+  agentStateQuotaBytes: number;
+  agentLogQuotaBytes: number;
+  agentDiskCheckEveryBlocks: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -487,6 +497,18 @@ export function loadConfig(env = process.env): SimConfig {
     agentsReadyTimeoutSec: Math.max(
       0,
       intEnv(env.ERIS_AGENTS_READY_TIMEOUT_SEC, 60),
+    ),
+    agentStateQuotaBytes: Math.max(
+      0,
+      intEnv(env.ERIS_AGENT_STATE_QUOTA_BYTES, 256 * 1024 * 1024),
+    ),
+    agentLogQuotaBytes: Math.max(
+      0,
+      intEnv(env.ERIS_AGENT_LOG_QUOTA_BYTES, 256 * 1024 * 1024),
+    ),
+    agentDiskCheckEveryBlocks: Math.max(
+      0,
+      intEnv(env.ERIS_AGENT_DISK_CHECK_EVERY_BLOCKS, 15),
     ),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",
