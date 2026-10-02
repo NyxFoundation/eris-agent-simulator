@@ -20,6 +20,19 @@ Calibration: all 24 `example/agents/*` accept (0 BLOCK); a sample agent using ch
 fs writes + a cheatcode + a postinstall hook is rejected (4 BLOCK). Not a sandbox and not exhaustive —
 the runtime container is the real boundary; this rejects the obvious stuff early.
 
+### What the cheatcode rule cannot see (issue #216)
+
+The cheatcode rule, like `npm run check:strategy` (`sdk/src/strategyStaticCheck.ts`), is a line-level
+regex. A method name assembled at runtime — `["anvil", "setBalance"].join("_")` — contains no `anvil_`
+to match and passes both. That is a limit of any line check, so the gate is one layer of three, not the
+boundary: the runtime's read-only client and the RPC gateway refuse the assembled name when it is
+*sent*, and the post-run audit reads what landed in `blocks.csv`. The scanner files a **WARN** for the
+cheap shapes of such assembly (a cheatcode namespace as a bare string, a computed `method:`, character
+codes / base64) and `check:strategy` prints the same as `hint` lines without failing; neither list is
+complete (`"anv" + "il_setBalance"` matches nothing), which is why they report rather than reject. An
+operator who sees the WARN reads the file. Calibration 2026-10-02: 35 `example/agents/*` directories,
+0 of these WARNs; the assembled sample above, 1.
+
 
 ## Operator-shipped code inside a bundle (fixed 2026-09-17)
 

@@ -973,7 +973,11 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   resetFork で歴史が消えるため**次 run の前に必ず再構成を終える**（anvil の保持深度 ~1,050 ブロックに注意）。
 - **ルール執行は事後検出**（`core/src/postRunCheck.ts`）: blocks.csv（fee はチェーン上の tx フィールド由来）から
   fee 上限超過を検査し違反 run を `violations` に記録。入口側は `npm run check:strategy`
-  （cheatcode 静的検査）で戦略コードを通す。
+  （cheatcode 静的検査）で戦略コードを通す。**静的検査は行単位の正規表現で、実行時に組み立てた名前
+  （`["anvil","setBalance"].join("_")`）は通る**（issue #216 (5)。`scan-submission.py` も同じ）。入口は入口で、
+  組み立てた名前は読取専用クライアントとゲートウェイが送信時に拒み、事後監査が blocks.csv で読む。
+  `findAssembledCheatcodeHints` が組み立ての安い形（namespace だけの文字列・リテラルでない `method:`・
+  文字コード）を **hint / WARN として報告するだけ**で、網羅は主張しない（`"anv" + "il_…"` は見えない）
 - **orderflow は独立プロセス**（relay のまま = 環境側の市場機構）。生成ロジックは `core/src/flow/logic.ts`（純粋関数）、
   bot 本体は `core/src/flow/market-maker.ts`。bot は自前 `Rng(ERIS_FLOW_SEED)` で決定論的に動く。
   aave flow の reserve は環境が `readAaveFlowReserves` で読んで渡す。

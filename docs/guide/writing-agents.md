@@ -287,5 +287,11 @@ npm run check:strategy        # static cheatcode check (entry gate)
 npm run bundle:agent my-strategy   # submission zip (runtime + sdk + lib + target agent + artifacts)
 ```
 
+`check:strategy` is a line-level pattern match and an entrance gate, not proof: a cheatcode name
+assembled at runtime (`["anvil", "setBalance"].join("_")`) passes it. It is refused anyway — the
+runtime's read-only client and the operator's RPC gateway reject the assembled name when it is sent,
+and the post-run audit reads what landed in `blocks.csv`. The gate prints `hint` lines for the cheap
+shapes of such assembly (a namespace as a bare string, a computed `method:`); they do not fail it.
+
 The bundled strategies in `example/agents/` (noop = minimal form / arb-bot = a model with a decision log / multi-arb =
 multi-asset cross-venue / liquidator = self-driven) are all usable as readable working examples.
