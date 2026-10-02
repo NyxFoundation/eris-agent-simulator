@@ -16,8 +16,10 @@ import {
   wethAbi,
 } from "../abis.js";
 import {
+  mergeStableUnits,
   poolShareValueUsdc,
   type PoolReserves,
+  type StableUnits,
 } from "../valuation.js";
 import { BALANCER, stableBalanceOf } from "../constants.js";
 import {
@@ -607,6 +609,7 @@ export const balancerAdapter: ProtocolAdapter = {
     const out: Record<string, AgentProtocolValue> = {};
     ctx.agents.forEach((agent, a) => {
       let valueUsdc = 0;
+      const stableLongs: StableUnits = {};
       const unpriced: UnpricedHoldingDetail[] = [];
       pools.forEach(({ bpt }, p) => {
         const balance = results[balancesBase + a * pools.length + p];
@@ -627,6 +630,7 @@ export const balancerAdapter: ProtocolAdapter = {
           stablePrices,
         );
         valueUsdc += share.valueUsdc;
+        mergeStableUnits(stableLongs, share.stableUnits);
         for (const h of share.unpriced)
           unpriced.push({ ...h, source: "balancer-bpt" });
       });
@@ -635,6 +639,7 @@ export const balancerAdapter: ProtocolAdapter = {
         // Proportional exit is fee-free on a weighted pool, so the share is already realizable.
         liquidatableValueUsdc: valueUsdc,
         unpriced,
+        ...(Object.keys(stableLongs).length > 0 ? { stableLongs } : {}),
       };
     });
     return out;

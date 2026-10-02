@@ -732,7 +732,8 @@ ours なのは 2 つだけ（core は無改変）:
   「レジストリが stable を $1 で値付ける」だけで、それが消えたため。今は**市場価格 stable**（下の節）で、
   価格の所有者は共通 probe = `sdk/src/stables.ts`。**spot の eUSD 残高は scorer の spot 掃引が値付け、
   liquity アダプタは値付けない**（二重計上の回避）。アダプタに残るのは Trove と Stability Pool で、
-  realizable は自分サイズの get_dy、債務は get_dx で買い戻しコスト。gas compensation 200 eUSD は
+  債務は get_dx で買い戻しコスト。SP 預入の eUSD は**財布の eUSD と合算して scorer が売る**（`stableLongs`。
+  別々に自分サイズで quote すると「それぞれ最初に売る」2 回の売却になり、財布で押し上げた分だけ預入が高く見えた）。gas compensation 200 eUSD は
   借り手の負債ではないので差し引く。ICR<100% の Trove は 0 で clamp（担保を捨てて歩き去れる = CDP の
   実際の性質）
 - **担保は native ETH**（core が `msg.value` で受ける）。action 側は WETH wei 建てで、`buildTxs` が
@@ -919,6 +920,14 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
    両側とも固定 notional なので**1 stage で済み**、採点断面の 1 multicall に相乗りできる。
    quote が返らなければ **par に落として `par-fallback` で報告**（黙って par が最悪、黙って 0 は
    「100% ディスカウント = 無限の裁定」に読めてもっと悪い）
+4. **採点は自分サイズで売った額**（規約 §4.1 の「実効価格」を保有量で測る）— probe は $1,000 の取引なので、
+   mid × 枚数だと薄いプールで買い占めて持ち続けた stable が売れない値段で数えられた（100k/100k・A=100 の DAI
+   プールに 70k USDC で probe 1.05、69,090 DAI が mid で 72,532・売れば 69,986。DAI は配られず背景フローも
+   取引しないので売り戻す人がおらず、5 ブロック中央値も効かない）。scorer（`ownSizeStableAdjustments`）が
+   agent ごとに財布 + 各 venue が申告した枚数（`AgentProtocolValue.stableLongs` / `stableShorts` = Uniswap・
+   Balancer・Curve の stable 脚、SimpleLending の供給・担保と債務、Liquity の SP 預入）を合算し、get_dy（債務は
+   get_dx）の窓中央値で評価し直す。face mark（`markedValueUsdc`）は mid のまま。quote が返らなければ mid の
+   まま `mid-fallback` で報告。Liquity の Trove 債務は従来どおりアダプタ自身の get_dx
 
 - **USDC は numéraire で $1 固定**（issue #27 "Settled"）。全 metric が USDC 建てなので、ここを
   浮かせると過去 run の数字の意味が変わる。`marketPricedStables()` は USDC の leg を無視する

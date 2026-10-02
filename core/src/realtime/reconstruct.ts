@@ -14,14 +14,16 @@
 // Issue #41: this file no longer knows which venues exist. It reads prices and free inventory and
 // drives each enabled adapter's staged valuation; adding a venue means registering an adapter.
 import type { Address, PublicClient } from "viem";
-import { parseAbi, parseAbiItem } from "viem";
-import { erc20Abi, poolAbi } from "@eris/sdk/abis.js";
+import { formatUnits, parseAbi, parseAbiItem } from "viem";
+import { curveStableSwapNgAbi, erc20Abi, poolAbi } from "@eris/sdk/abis.js";
 import { MULTICALL3, TOKENS } from "@eris/sdk/constants.js";
 import { baseTokens, marketsFor, tokenInfo } from "@eris/sdk/markets.js";
 import type { RunLogger } from "../logger.js";
 import type { IntervalSeries } from "../intervalSeries.js";
 import { intervalBoundaryBlocks } from "../epochExtent.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
+import { medianBigint } from "@eris/sdk/protocols/medianWindow.js";
+import { mergeStableUnits, type StableUnits } from "@eris/sdk/valuation.js";
 import {
   decodeStableProbes,
   marketPricedStables,
@@ -454,6 +456,34 @@ export async function readValueSnapshotAtBlock(opts: {
   const unquotedStables = new Map<string, StableMarket>(
     stablePrices.unquoted.map((m) => [m.token.toLowerCase(), m]),
   );
+  // Rules §4.1: a market-priced stable is worth what the holder's own size would sell for (and one
+  // owed, what buying it back would cost), not the $1,000 probe's mid times the size. Each agent's
+  // whole amount -- the wallet's plus every venue's (AgentProtocolValue.stableLongs/Shorts) -- is
+  // quoted as one trade, medianed over the window like every market-derived price.
+  const ownSize = await ownSizeStableAdjustments({
+    call,
+    blockNumber,
+    window: opts.medianWindow ?? [],
+    markets: stableMarkets.filter(
+      (m) => !unquotedStables.has(m.token.toLowerCase()),
+    ),
+    stablePrices,
+    units: agents.map((agent, i) => {
+      const longs: StableUnits = {};
+      const shorts: StableUnits = {};
+      const spotStart = spotBase + i * spotLayout.length;
+      spotLayout.forEach((read, k) => {
+        const raw = headResults[spotStart + k];
+        if (read.kind === "stable" && typeof raw === "bigint" && raw > 0n)
+          mergeStableUnits(longs, { [read.token.toLowerCase()]: raw });
+      });
+      for (const byAgent of protocolValues.values()) {
+        mergeStableUnits(longs, byAgent[agent.id]?.stableLongs);
+        mergeStableUnits(shorts, byAgent[agent.id]?.stableShorts);
+      }
+      return { longs, shorts };
+    }),
+  });
   agents.forEach((agent, i) => {
     const spotStart = spotBase + i * spotLayout.length;
     let ethWei = 0n;
@@ -523,7 +553,8 @@ export async function readValueSnapshotAtBlock(opts: {
     let total = valueUsdc(balance, fairByBase, stablePrices);
     let alphaTotal = valueUsdc(balance, refFairByBase, stablePrices);
     // The face mark, kept only to report where it sits above the scored value. Free inventory is
-    // realizable by definition, so the two start equal and only the venues separate them.
+    // realizable at it, except a market-priced stable held at a size its pool does not absorb at
+    // the mid (ownSize below); otherwise only the venues separate the two.
     let markedTotal = valueUsdc(balance, fairByBase, stablePrices);
     // **Venue positions are scored at recoverable value, not at par** (issue #40 axiom 3, extended
     // to every venue). Which is a change: until now the scored series took `valueUsdc`, the face
@@ -540,6 +571,25 @@ export async function readValueSnapshotAtBlock(opts: {
     // For the environment's own venues recoverable is *usually* par — real collateral, environment
     // oracles — so this moves nothing in a calm run. Where it moves, it moves for a reason, and the
     // face mark is reported alongside so the gap is legible rather than silent.
+    // The re-mark of the agent's stables at their own size (zero when it holds none). Live in both
+    // the scored and the α total, for the reason the stable leg is (above); the face mark keeps the
+    // mid, so markedValueUsdc shows how far the size moved it.
+    total += ownSize.adjustments[i];
+    alphaTotal += ownSize.adjustments[i];
+    for (const f of ownSize.fallbacks) {
+      if (f.agentIndex !== i) continue;
+      unpriced.push({
+        agentId: agent.id,
+        source: `own-size-${f.market.symbol}${f.side === "short" ? "-debt" : ""}`,
+        token: f.market.token,
+        amountRaw: f.amount.toString(),
+        reason: "mid-fallback",
+        read:
+          f.side === "long"
+            ? "CurveStableSwapNG.get_dy"
+            : "CurveStableSwapNG.get_dx",
+      });
+    }
     for (const [id, byAgent] of protocolValues) {
       const value = byAgent[agent.id];
       if (!value) continue;
@@ -583,6 +633,83 @@ function spotSource(read: SpotRead): string {
   if (read.kind === "eth") return "spot-eth";
   if (read.kind === "base") return `spot-${read.symbol}`;
   return "spot-stable";
+}
+
+// One agent's market-priced stables, re-marked from the probe's mid to their own size. A long is
+// what selling the whole amount into its market returns (get_dy), a short what buying it back costs
+// (get_dx); the adjustment is that minus the mid times the amount, so it is zero for a holding the
+// pool absorbs at the mid and negative for one it does not. Longs and shorts of the same stable are
+// quoted apart rather than netted -- each as its own trade, which errs toward the lower value.
+//
+// Each read is medianed over the boundary block and the window's earlier blocks (rules §4.1), the
+// size held at the boundary's. A read that returns at no block leaves that holding at the mid, and
+// is returned as a fallback for the caller to report.
+export async function ownSizeStableAdjustments(opts: {
+  call: MulticallFn;
+  blockNumber: bigint;
+  window: readonly number[];
+  markets: readonly StableMarket[];
+  stablePrices: StablePrices;
+  units: ReadonlyArray<{ longs: StableUnits; shorts: StableUnits }>;
+}): Promise<{
+  adjustments: number[];
+  fallbacks: Array<{
+    agentIndex: number;
+    market: StableMarket;
+    side: "long" | "short";
+    amount: bigint;
+  }>;
+}> {
+  const adjustments = opts.units.map(() => 0);
+  const targets: Array<{
+    agentIndex: number;
+    market: StableMarket;
+    side: "long" | "short";
+    amount: bigint;
+  }> = [];
+  opts.units.forEach(({ longs, shorts }, agentIndex) => {
+    for (const market of opts.markets) {
+      const key = market.token.toLowerCase();
+      const long = longs[key] ?? 0n;
+      const short = shorts[key] ?? 0n;
+      if (long > 0n) targets.push({ agentIndex, market, side: "long", amount: long });
+      if (short > 0n)
+        targets.push({ agentIndex, market, side: "short", amount: short });
+    }
+  });
+  if (targets.length === 0) return { adjustments, fallbacks: [] };
+
+  const reads: MulticallContract[] = targets.map((t) => ({
+    address: t.market.pool,
+    abi: curveStableSwapNgAbi,
+    functionName: t.side === "long" ? "get_dy" : "get_dx",
+    args:
+      t.side === "long"
+        ? [BigInt(t.market.stableIndex), BigInt(t.market.quoteIndex), t.amount]
+        : [BigInt(t.market.quoteIndex), BigInt(t.market.stableIndex), t.amount],
+  }));
+  const samples = await Promise.all([
+    opts.call(reads, opts.blockNumber),
+    ...opts.window.map((b) => opts.call(reads, BigInt(b))),
+  ]);
+  const usdcDecimals = TOKENS.USDC.decimals;
+  const fallbacks: typeof targets = [];
+  targets.forEach((t, k) => {
+    const quoted = medianBigint(
+      samples
+        .map((sample) => sample[k])
+        .filter((q): q is bigint => typeof q === "bigint"),
+    );
+    if (quoted === undefined) {
+      fallbacks.push(t);
+      return;
+    }
+    const mid = opts.stablePrices.byToken[t.market.token.toLowerCase()] ?? 1;
+    const atMid = Number(formatUnits(t.amount, t.market.decimals)) * mid;
+    const usdc = Number(formatUnits(quoted, usdcDecimals));
+    adjustments[t.agentIndex] += t.side === "long" ? usdc - atMid : atMid - usdc;
+  });
+  return { adjustments, fallbacks };
 }
 
 function fairPriceFailure(blockNumber: number, what: string): string {
@@ -824,6 +951,9 @@ export { intervalBoundaryBlocks };
 //
 //   stables          the two-sided probe (spot registry stables, and through ctx.stablePrices()
 //                    the Liquity mid and every stable leg an LP or lending mark prices)
+//   stables-own-size each agent's whole holding of a market-priced stable, wallet and venues
+//                    together, sold (or bought back, if owed) at its own size: the probe's mid is
+//                    the price of $1,000, and a holding marked at it is worth more than it sells for
 //   venue surfaces   re-read by the adapter at the window's earlier blocks with the position held
 //                    at the boundary -- the median is over the price, never over holdings
 //
@@ -905,7 +1035,7 @@ export class MarkMedian {
       windowBlocks: this.opts.windowBlocks,
       boundaries: this.boundaries,
       surfaces: [
-        ...(this.hasStables() ? ["stables"] : []),
+        ...(this.hasStables() ? ["stables", "stables-own-size"] : []),
         ...enabledProtocolIds()
           .filter(hasAdapter)
           .flatMap((id) => getAdapter(id).medianSurfaces ?? []),
@@ -1170,14 +1300,14 @@ export async function reconstructValueSeries(opts: {
     // par-fallback holdings are counted in the value, at $1, because their market would not quote
     // (issue #27) -- reported for the opposite reason to the others, so they are counted apart.
     const atPar = unpricedHoldings.filter(
-      (h) => h.reason === "par-fallback",
+      (h) => h.reason === "par-fallback" || h.reason === "mid-fallback",
     ).length;
     const excluded = unpricedHoldings.length - atPar;
     console.warn(
       `[reconstruct] ${excluded} holding(s) excluded from agent value ` +
         `(${excluded - unreadable} unpriceable, ${unreadable} unreadable)` +
         (atPar > 0
-          ? `, ${atPar} stable holding(s) marked at par because their market did not quote`
+          ? `, ${atPar} stable holding(s) marked at par or at the probe mid because their market did not quote`
           : "") +
         "; see scoring_unpriced_holdings in events.jsonl — a zero here is not a trading loss, " +
         "and a dollar is not a measurement",

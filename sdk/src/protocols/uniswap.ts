@@ -24,7 +24,13 @@ import {
   tokenInfo,
   type MarketConfig,
 } from "../markets.js";
-import { tokenAmountUsd, type UnpricedAmount } from "../valuation.js";
+import {
+  addStableUnits,
+  mergeStableUnits,
+  tokenAmountUsd,
+  type StableUnits,
+  type UnpricedAmount,
+} from "../valuation.js";
 import type { StablePrices } from "../stables.js";
 import { resolveMarket } from "./marketHelpers.js";
 import type {
@@ -974,6 +980,8 @@ export type LpValuationContext = {
 
 export type LpPositionValuation = {
   valueUsdc: number;
+  // The market-priced stable legs counted in valueUsdc at the probe's mid (valuation.ts StableUnits).
+  stableUnits: StableUnits;
   // Holdings excluded from valueUsdc because they could not be priced. amountRaw is "" when even the
   // amounts are unknown (the pool, and therefore the tick, could not be resolved).
   unpriced: UnpricedAmount[];
@@ -1008,6 +1016,7 @@ export function lpPositionValuation(
   if (tick === undefined) {
     return {
       valueUsdc: 0,
+      stableUnits: {},
       unpriced: [
         { token: token0, amountRaw: "" },
         { token: token1, amountRaw: "" },
@@ -1045,6 +1054,7 @@ export function lpPositionValuation(
   ] as const;
 
   let valueUsdc = 0;
+  const stableUnits: StableUnits = {};
   const unpriced: LpPositionValuation["unpriced"] = [];
   // Suppressing the fee term when a boundary read failed is deliberate (guessing would mis-mark the
   // position), but it still removes value from the mark, so it says so rather than only returning
@@ -1068,8 +1078,9 @@ export function lpPositionValuation(
       continue;
     }
     valueUsdc += usd;
+    addStableUnits(stableUnits, token, amount, ctx.stablePrices);
   }
-  return { valueUsdc, unpriced };
+  return { valueUsdc, unpriced, stableUnits };
 }
 
 // For reconstruct (scoring): resolve the position's market and derive an all-base LP value (WBTC/USDC etc.)
@@ -1632,6 +1643,10 @@ export const uniswapAdapter: ProtocolAdapter = {
       // Burning liquidity returns the position's tokens plus its fees at no cost, so the mark is
       // already what an exit realizes.
       agent.liquidatableValueUsdc += valuation.valueUsdc;
+      if (Object.keys(valuation.stableUnits).length > 0) {
+        agent.stableLongs ??= {};
+        mergeStableUnits(agent.stableLongs, valuation.stableUnits);
+      }
       for (const h of valuation.unpriced)
         agent.unpriced.push({ ...h, source: `uniswap-lp:${tokenIds[j]}` });
     });

@@ -37,10 +37,19 @@ function stableVariantDecimals(token: Address): number | undefined {
 // issuer's mint/burn actually enforces -- but it is an assumption, and the whole point of pricing
 // stables from a market is that this environment stops making it silently.
 //
-// All four are reported — a zero in summary.json must never be mistaken for a trading loss, and
+// "mid-fallback" is counted too: a market-priced stable whose own-size quote did not return at any
+// block of the window, so the holding is marked at the probe's mid instead of at what selling (or
+// buying back) that size would realize. The mid overstates a large holding -- which is why the
+// own-size quote exists -- so the fallback is said out loud.
+//
+// All five are reported — a zero in summary.json must never be mistaken for a trading loss, and
 // neither must a dollar.
 export type ScoringExclusionReason =
-  "unpriced" | "read-failed" | "unrealizable" | "par-fallback";
+  | "unpriced"
+  | "read-failed"
+  | "unrealizable"
+  | "par-fallback"
+  | "mid-fallback";
 
 // A holding left out of a value, and why.
 export type UnpricedAmount = {
@@ -79,6 +88,36 @@ export function tokenAmountUsd(
   return Number(formatUnits(amount, stableDecimals));
 }
 
+// Units of each market-priced stable a mark counted at the probe's mid, keyed by lowercase token.
+// The probe is a $1,000 trade, so the mid is the price of the *first* thousand dollars; a venue that
+// counts a larger amount at it says how much, and the scorer re-marks the agent's whole amount --
+// wallet and every venue together -- at its own-size quote (rules §4.1, the effective price at the
+// holder's size). Summed across venues on purpose: a holding split between the wallet and an LP
+// would otherwise be quoted as two small sales, each first in line, and the split would be worth
+// more than the whole.
+export type StableUnits = Record<string, bigint>;
+
+// Add `amount` of `token` to `units` when it is a market-priced stable (one stablePrices carries a
+// price for, quoted or at the par fallback). Anything else is valued at a price no trade moves --
+// the reference fair, or the numéraire -- and is left alone.
+export function addStableUnits(
+  units: StableUnits,
+  token: Address,
+  amount: bigint,
+  stablePrices?: StablePrices,
+): void {
+  if (amount <= 0n || !stablePrices) return;
+  const key = token.toLowerCase();
+  if (stablePrices.byToken[key] === undefined) return;
+  units[key] = (units[key] ?? 0n) + amount;
+}
+
+export function mergeStableUnits(into: StableUnits, from?: StableUnits): void {
+  if (!from) return;
+  for (const [token, amount] of Object.entries(from))
+    into[token] = (into[token] ?? 0n) + amount;
+}
+
 export type PoolReserves = {
   tokens: Address[];
   balances: bigint[];
@@ -96,9 +135,10 @@ export function poolShareValueUsdc(
   lpBalance: bigint,
   fairByBase: Record<string, number>,
   stablePrices?: StablePrices,
-): { valueUsdc: number; unpriced: UnpricedAmount[] } {
+): { valueUsdc: number; unpriced: UnpricedAmount[]; stableUnits: StableUnits } {
+  const stableUnits: StableUnits = {};
   if (lpBalance <= 0n || reserves.totalSupply <= 0n)
-    return { valueUsdc: 0, unpriced: [] };
+    return { valueUsdc: 0, unpriced: [], stableUnits };
   let valueUsdc = 0;
   const unpriced: UnpricedAmount[] = [];
   for (let i = 0; i < reserves.tokens.length; i++) {
@@ -119,6 +159,7 @@ export function poolShareValueUsdc(
       continue;
     }
     valueUsdc += usd;
+    addStableUnits(stableUnits, reserves.tokens[i], amount, stablePrices);
   }
-  return { valueUsdc, unpriced };
+  return { valueUsdc, unpriced, stableUnits };
 }
