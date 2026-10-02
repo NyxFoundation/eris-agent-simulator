@@ -112,3 +112,57 @@ The eight failures were `Execution reverted with reason: Slippage.` — the agen
 `slippageBps: 30`, and its own `prompt.md` names that as the first thing to look at if fills are
 being rejected. That is a strategy result, not a pipeline defect, and it is what a working
 submission path is supposed to surface.
+
+## Symlinks and the two zip readers (fixed 2026-10-02)
+
+The scan read the archive with Python's `zipfile`; extraction used Info-ZIP `unzip`. They disagree
+on symlinks: `zipfile` writes a link entry out as a small text file holding the target path, so
+the body scan saw harmless text, while `unzip` made a real link and macOS `cp -r` followed it.
+Reproduced: a bundle whose agent directory held `stolen -> <repo>/example/agents/team-victim`
+scanned `0 BLOCK -> ACCEPT`, and `example/agents/team-evil/stolen/agent.ts` was the victim's
+strategy, copied for real and headed into the attacker's image.
+
+Now:
+
+| where | what |
+|---|---|
+| scan, zip input | a symlink or special-file entry (from the mode bits in `external_attr`) is **BLOCK** |
+| scan, directory input | a symlinked file or directory is **BLOCK** (never followed) |
+| accept, after `unzip` | anything under the extracted tree that is not a regular file or directory → reject |
+| accept, after `unzip` | the **extracted tree** is scanned again, so what is accepted is what was scanned, not what Python thought the zip held |
+| accept, copy | `cp -RP` (never dereference), then the destination is checked for non-regular files again |
+
+## Team dependencies are fetched without running team code (fixed 2026-10-02)
+
+The image build ran a team's `npm install` / `pip install` on the operator host with network.
+Lifecycle scripts of *dependencies* (the scan only looked at the team's own `package.json` hooks)
+and `setup.py` of any sdist executed there. `infra/docker-agent/Dockerfile.team` now fetches in a
+stage that runs only the package managers (`npm ci --ignore-scripts`, `pip download
+--only-binary=:all: --require-hashes`) and installs under `RUN --network=none`.
+
+That only holds if every byte comes from the public registry by name and version, so the scan
+**BLOCKs**: non-registry npm sources (git / URL / `file:` / `link:` / `user/repo`) outside the
+bundle root's own `package.json` (`bitbucket:` / `gist:` included since the PR #200 review); a
+`package.json` with dependencies and no `package-lock.json`; `.npmrc` / `.yarnrc` / `pip.conf`; and
+any `requirements.txt` line that is not `name==version --hash=sha256:…`.
+
+The lockfile is held to what `npm ci` will actually read (PR #200 review):
+
+| | |
+|---|---|
+| `npm-shrinkwrap.json` anywhere outside `node_modules/` | **BLOCK** (`Dockerfile.team` refuses it too). `npm ci` prefers it over `package-lock.json`, so a clean lock beside a hostile shrinkwrap was the one scanned while the other was installed. Blocked rather than scanned: an agent has no reason to ship one |
+| `lockfileVersion` < 2, or no `packages` map | **BLOCK**. A v1 lock keeps its tree under `dependencies`, which the check never walked — it passed with zero entries checked |
+| any `packages` entry other than the root `""` | must have `resolved` starting `https://registry.npmjs.org/` **and** an `integrity`. A missing `resolved` used to pass |
+| `link: true` | **BLOCK** (a local path, not a registry package) |
+| `inBundle: true` | exempt — its bytes ship inside a parent tarball that is itself registry-resolved and integrity-checked |
+
+No team code runs at build time, `pip check` included: it was removed from `Dockerfile.team`
+because it starts a Python with the team's wheels on site-packages, so a `.pth` in one of them
+would execute. `python3 -S -m pip check` does not work (`No module named pip` on the base image —
+`-S` drops site-packages, where pip lives). `pip install`'s resolver already fails on a missing or
+conflicting requirement among the packages it installs; what is lost is the check against
+packages that were already in the base image.
+
+Regression tests: `test/submissionScan.test.ts` (zip and directory symlinks, shrinkwrap, v1 lock,
+missing `resolved` / `integrity`, git / URL `resolved`, non-registry specs, `requirements.txt`
+lines, and a clean accept case).
