@@ -12,6 +12,7 @@
 // Env: PORT (8546) UPSTREAM (http://127.0.0.1:8545) ENV_NAME (live) LOG_FILE (append; else stdout)
 //      RPC_KEYS_FILE (per-participant keys; setting it makes X-ASCON-Key mandatory)
 //      RPC_MAX_TX_GAS (30000000) RPC_MAX_PRIORITY_FEE_WEI (5000000000; 0 disables the fee cap only)
+//      RPC_MAX_BODY_BYTES (4194304) largest request body accepted; over it is 413 and the socket closes
 import http from "node:http";
 import { createWriteStream, writeFileSync, renameSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -168,6 +169,59 @@ function overCapGas(parsed) {
 const MAX_PRIORITY_FEE = BigInt(process.env.RPC_MAX_PRIORITY_FEE_WEI ?? "5000000000");
 let feeDenied = 0;
 
+// ---- request body cap (issue #216 (3)) ----
+// The body used to be accumulated without bound before JSON.parse: one authenticated connection could
+// hold the gateway's memory with a stream it never finished. The largest honest bodies are a signed
+// deployment (initcode is capped at 49,152 bytes by EIP-3860, ~100KB as hex) and the runtime's
+// batched Multicall3 reads (hundreds of KB); 4MiB is ~40x those. Both the declared length and the
+// bytes actually received are checked, because a client need not declare or tell the truth.
+const MAX_BODY_BYTES = Number(process.env.RPC_MAX_BODY_BYTES ?? "4194304");
+let bodyDenied = 0;
+
+// ---- unmined transactions stay sealed when read by hash (issue #216 (3)) ----
+// eth_getTransactionByHash / eth_getRawTransactionByHash stay permitted: the receipt poll, explorers
+// and replay tooling read mined transactions through them. But anvil answers them for pool entries
+// too, so a hash learned some other way (a shared sender, a log line, a guessed nonce) showed an
+// unmined transaction's calldata, fees and signed bytes -- the auction the pending ban seals. The
+// gateway answers `null` for a transaction that has no block yet, the same reply as for a hash it
+// never saw; a mined transaction passes through byte for byte. The raw form carries no block field,
+// so it costs one upstream receipt lookup. Failure to look up seals (fail closed).
+const TX_BY_HASH_METHODS = new Set(["eth_getTransactionByHash", "eth_getRawTransactionByHash"]);
+let pendingSealed = 0;
+
+// Rewrites the upstream reply for the tx-by-hash calls in `parsed`, then hands the body to `cb`.
+// Untouched bodies are passed through as received, so nothing else is re-serialized.
+function sealPending(parsed, upBody, cb) {
+  const calls = Array.isArray(parsed) ? parsed : [parsed];
+  const byId = new Map();
+  for (const c of calls) if (c && TX_BY_HASH_METHODS.has(c.method)) byId.set(String(c.id), c);
+  if (byId.size === 0) return cb(upBody);
+  let reply;
+  try { reply = JSON.parse(upBody.toString("utf8")); } catch { return cb(upBody); }
+  const responses = Array.isArray(reply) ? reply : [reply];
+  let changed = false;
+  const lookups = [];
+  for (const r of responses) {
+    if (!r || r.result === null || r.result === undefined) continue;
+    const c = byId.get(String(r.id));
+    if (!c) continue;
+    if (c.method === "eth_getTransactionByHash") {
+      if (typeof r.result === "object" && r.result.blockNumber === null) { r.result = null; changed = true; pendingSealed++; }
+      continue;
+    }
+    const hash = Array.isArray(c.params) ? c.params[0] : undefined;
+    const probe = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 0, method: "eth_getTransactionReceipt", params: [hash] }));
+    lookups.push(new Promise((resolve) => forward(probe, (err, status, body) => {
+      let mined = false;
+      if (!err && status < 400) { try { const j = JSON.parse(body.toString("utf8")); mined = j && j.result !== null && j.result !== undefined; } catch { /* sealed below */ } }
+      if (!mined) { r.result = null; changed = true; pendingSealed++; }
+      resolve();
+    })));
+  }
+  const done = () => cb(changed ? Buffer.from(JSON.stringify(reply)) : upBody);
+  lookups.length ? Promise.all(lookups).then(done) : done();
+}
+
 // The first submission in a request that breaks the fee rule: { kind, message }, or null.
 function feeViolation(parsed) {
   const calls = Array.isArray(parsed) ? parsed : [parsed];
@@ -234,6 +288,8 @@ function metricsText() {
   o += `# TYPE rpc_ratelimited_total counter\nrpc_ratelimited_total{${L}} ${rateLimited}\n`;
   o += `# TYPE rpc_gas_denied_total counter\nrpc_gas_denied_total{${L}} ${gasDenied}\n`;
   o += `# TYPE rpc_fee_denied_total counter\nrpc_fee_denied_total{${L}} ${feeDenied}\n`;
+  o += `# TYPE rpc_body_denied_total counter\nrpc_body_denied_total{${L}} ${bodyDenied}\n`;
+  o += `# TYPE rpc_pending_sealed_total counter\nrpc_pending_sealed_total{${L}} ${pendingSealed}\n`;
   o += `# TYPE rpc_method_denied_total counter\nrpc_method_denied_total{${L}} ${methodDenied}\n`;
   o += `# TYPE rpc_key_denied_total counter\nrpc_key_denied_total{${L}} ${keyDenied}\n`;
   o += `# TYPE rpc_keys_loaded gauge\nrpc_keys_loaded{${L}} ${keyMap.size}\n`;
@@ -273,9 +329,29 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && (req.url === "/healthz" || req.url === "/")) { res.writeHead(200); return res.end("ok\n"); }
   if (req.method !== "POST") { res.writeHead(405); return res.end("method not allowed\n"); }
 
+  // Body cap: refuse on the declared length before reading, and on the bytes received while reading
+  // (a client need not declare, or declare truthfully). The reply is written before the socket is
+  // closed so the client sees a 413 rather than a reset; the request is not read to its end.
+  const refuseBody = (bytes) => {
+    bodyDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "body_denied", bytes, limit: MAX_BODY_BYTES, ip: req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "" });
+    res.writeHead(413, { "content-type": "application/json", connection: "close" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: `request body exceeds ${MAX_BODY_BYTES} bytes` } }), () => req.destroy());
+  };
+  const declared = Number(req.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return refuseBody(declared);
   const chunks = [];
-  req.on("data", (c) => chunks.push(c));
+  let received = 0, tooLarge = false;
+  req.on("data", (c) => {
+    if (tooLarge) return;
+    received += c.length;
+    if (received > MAX_BODY_BYTES) { tooLarge = true; chunks.length = 0; return refuseBody(received); }
+    chunks.push(c);
+  });
+  // A client that resets mid-body emits "error" on the request; unhandled, that ends the process.
+  req.on("error", () => {});
   req.on("end", () => {
+    if (tooLarge) return;
     const bodyBuf = Buffer.concat(chunks);
     let parsed, isBatch = false, methods = [];
     try { parsed = JSON.parse(bodyBuf.toString("utf8")); } catch { parsed = null; }
@@ -344,7 +420,7 @@ const server = http.createServer((req, res) => {
     }
 
     inFlight++;
-    forward(bodyBuf, (err, status, upBody, dur) => {
+    forward(bodyBuf, (err, status, rawBody, dur) => sealPending(parsed, rawBody, (upBody) => {
       inFlight--;
       let st = "ok";
       if (err || status >= 500) st = "upstream_error";
@@ -356,7 +432,7 @@ const server = http.createServer((req, res) => {
       logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, methods: methods.length > 1 ? methods : undefined, batch: isBatch ? methods.length : undefined, dur_ms: +(dur * 1000).toFixed(1), status: st, http: status, client, ip });
       res.writeHead(err ? 502 : status, { "content-type": "application/json" });
       res.end(upBody);
-    });
+    }));
   });
 });
 

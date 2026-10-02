@@ -35,7 +35,8 @@ this column tells you who called what, when.
 
 `PORT` (8546) · `UPSTREAM` (http://127.0.0.1:8545) · `ENV_NAME` (live|test) · `LOG_FILE` · `METRICS_FILE` ·
 `RPC_MAX_TX_GAS` (30000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — the last two are the
-[transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule).
+[transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule) · `RPC_MAX_BODY_BYTES` (4194304) —
+the [body cap](#request-body-cap).
 Runs as the `rpc-gateway-live` service in `infra/monitoring/docker-compose.yml` (host-net,
 `restart: unless-stopped`); `rpc-gateway-test` (compose profile `test`) is ready for a second env.
 
@@ -135,6 +136,16 @@ forwarded. Mined block reads and **`eth_getTransactionCount(address, "pending")`
 `Sender` seeds its nonce with the latter and must account for already pending submissions.
 `eth_sendRawTransaction` remains available subject to the gas cap and the fee rule (below).
 
+**Reads by hash** (`eth_getTransactionByHash`, `eth_getRawTransactionByHash`) stay permitted — the
+receipt poll, explorers and replay tooling read mined transactions through them — but a transaction
+that has no block yet is answered as `null`, the same reply as for a hash the node never saw (issue
+#216). anvil answers both methods for pool entries, so a hash learned some other way (a shared sender,
+a log line, a guessed nonce) used to show an unmined transaction's calldata, fees and signed bytes. A
+mined transaction passes through byte for byte. The raw form carries no block field, so it costs one
+upstream `eth_getTransactionReceipt`; a lookup that fails seals. Counted in `rpc_pending_sealed_total`.
+`eth_getTransactionReceipt` itself is unchanged: `null` while pending, which is what
+`example/agents/runtime/send.ts` polls on.
+
 `RPC_METHOD_DENY` overrides the default method-deny regex; replacing it is an operator policy
 change and must preserve these bans on participant endpoints. Parameter checks still apply while
 `RPC_FILTER=1`. `RPC_FILTER=0` is an internal all-access endpoint. Direct access to the upstream node
@@ -156,6 +167,18 @@ Reproduce the regression against a real Anvil with
 `node --import tsx --test test/rpcGateway.test.ts test/runtimeSender.test.ts`. The sender test also
 submits two actions through the gateway on top of an existing pending transaction, checks consecutive
 nonces and submission records, and mines all three. These tests need Anvil, already installed in CI.
+
+## Request body cap
+
+The body used to be accumulated without bound before `JSON.parse`, so one authenticated connection
+could hold the gateway's memory with a stream it never finished (issue #216). `RPC_MAX_BODY_BYTES`
+(default 4 MiB) bounds it: a declared `content-length` over the cap is refused before the body is read,
+and bytes received past the cap (chunked, or a declaration that lied) stop the read. Either way the
+client gets HTTP 413 with JSON-RPC error `-32600`, the socket is closed after the reply is flushed, and
+`rpc_body_denied_total` counts it. The largest honest bodies are a signed deployment (initcode is capped
+at 49,152 bytes by EIP-3860, ~100 KB as hex) and the runtime's batched Multicall3 reads (hundreds of
+KB); 4 MiB is ~40× those. Reproduce with
+`node --import tsx --test test/rpcGatewayBody.test.ts` (a fake upstream; no anvil needed).
 
 ## Transaction checks at entry (gas cap and fee rule)
 
