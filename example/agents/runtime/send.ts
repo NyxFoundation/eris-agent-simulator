@@ -68,6 +68,17 @@ const MAX_TX_GAS = BigInt(process.env.ERIS_MAX_TX_GAS ?? "30000000"); // = the b
 const MAX_AGENT_BLOCK_GAS = BigInt(
   process.env.ERIS_MAX_AGENT_BLOCK_GAS ?? "30000000",
 ); // one agent may not take more than a block's worth of gas in one block
+// The gas limit of a transaction whose estimate failed while this agent still has transactions of its
+// own unmined (approve -> swap, WETH.withdraw -> openTrove, the legs of a bundle, a submit followed by
+// a returned action). Estimation reads the latest block: the gateway writes "latest" into an
+// eth_estimateGas that omits the block, because anvil would otherwise run it against the pool
+// (infra/rpc-gateway/gateway.mjs). Against latest the later leg reverts -- the allowance or the ETH it
+// needs is still pending -- so the leg goes out with this fixed limit instead of being dropped. It is
+// inside both budgets (per-tx and per-block 30M) and counts against the per-block one like any other
+// limit; unused gas is not charged. Adapters that know their cost set `gas` themselves (GMX).
+const DEPENDENT_TX_GAS = BigInt(
+  process.env.ERIS_DEPENDENT_TX_GAS ?? "2000000",
+);
 
 export class Sender {
   private readonly ctx: SimContext;
@@ -118,6 +129,26 @@ export class Sender {
       });
     }
     return this.nextNonce++;
+  }
+
+  // Whether a transaction of this agent is submitted but not yet mined: the next nonce it would use
+  // is ahead of the latest block's count. Read only on the estimate-failure path.
+  private async hasOwnPending(): Promise<boolean> {
+    try {
+      const next =
+        this.nextNonce ??
+        (await this.ctx.publicClient.getTransactionCount({
+          address: this.address,
+          blockTag: "pending",
+        }));
+      const mined = await this.ctx.publicClient.getTransactionCount({
+        address: this.address,
+        blockTag: "latest",
+      });
+      return next > mined;
+    } catch {
+      return false;
+    }
   }
 
   private enqueueSend(task: () => Promise<void>): void {
@@ -175,7 +206,11 @@ export class Sender {
           const buffered = (estimated * bufferBps + 9_999n) / 10_000n;
           gas = buffered > estimated + 50_000n ? buffered : estimated + 50_000n;
         } catch {
-          // Let viem/anvil surface the original simulation failure below.
+          // A failure with nothing of ours pending is the transaction's own: leave gas unset and let
+          // viem/anvil surface the simulation failure below (nothing is sent, no nonce is spent). With
+          // our own transactions still in the pool, the failure may only be that latest has not seen
+          // them yet, which a pending-state estimate used to hide -- send with the fixed limit.
+          if (await this.hasOwnPending()) gas = DEPENDENT_TX_GAS;
         }
       }
       if (gas !== undefined && gas > MAX_TX_GAS) {
