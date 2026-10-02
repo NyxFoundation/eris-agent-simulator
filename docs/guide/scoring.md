@@ -99,11 +99,14 @@ npm run competition -- plan --hidden hidden-set.yaml --lottery lottery.yaml --k 
 npm run backtest -- --scenarios plan.yaml --agents <roster>           # replays the k epochs in order
 ```
 
-The plan is derived from the lottery seed (`core/src/competition/schedule.ts`): every regime k / R
-times, the order decided by nobody (rules §3.3). Both input files are committed to before use and
+The plan is derived from the lottery seed (`core/src/competition/schedule.ts`): each epoch's regime
+is drawn independently and uniformly, decided by nobody (rules §3.3). Independent rather than "each
+regime k / R times, shuffled", because with equal counts an agent that carries state across epochs
+could count the regimes it had seen and know which were left (issue #186). Both input files are committed to before use and
 published after the results, and the derivation is plain SHA-256 + Fisher-Yates so anyone can
-reproduce it. k has to be a multiple of the regime count (12 official regimes, so the old k = 40 is
-refused); ADR 0026 proposes k = 60, five of each.
+reproduce it. The hidden set needs at least k seeds per regime, since any regime can be drawn every
+time. ADR 0026 proposes k = 60: five of each on average, 5 ± 2.1, and some regime is missing
+altogether 6.4% of the time.
 
 For the live week the plan also says when each epoch starts. `--starts-at <ISO 8601> --ends-at
 <ISO 8601>` spreads the k epochs evenly over the window (the week at k = 60: one every 168

@@ -141,7 +141,7 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = the valid epochs 
 
 ### The epoch order and its commitments (rules §3.3 / §7)
 
-`core/src/competition/schedule.ts`. From the hidden set (regime → seeds) and the lottery seed it derives the epoch sequence, **every regime the same number of times**: SHA-256 in counter mode, unbiased integers by rejection, Fisher-Yates. The lottery seed decides only the order (and, where a regime has spare seeds, the choice among them). Both files are committed to as the sha256 of their canonical JSON (`npm run competition -- commit <file>`) and published in full after the results.
+`core/src/competition/schedule.ts`. From the hidden set (regime → seeds) and the lottery seed it derives the epoch sequence, **drawing each epoch's regime independently and uniformly** (issue #186: with equal counts, an agent carrying state across epochs could count the regimes it had seen and infer the rest). Each regime's seeds are put in lottery order and taken from the front each time the regime is drawn. SHA-256 in counter mode, unbiased integers by rejection, Fisher-Yates. Both files are committed to as the sha256 of their canonical JSON (`npm run competition -- commit <file>`) and published in full after the results.
 
 **The timetable is outside the commitment** (logistics, never scored). `plan --starts-at <ISO> --every-minutes <N>` or `--ends-at <ISO>` (k epochs spread evenly over the window; the 168-hour live week at k = 60 is one every 168 minutes) stamps each epoch with `startsAt`, and `backtest --follow-schedule` waits for it before starting each epoch (a start already past runs at once and reports how late; composes with `--resume`). [ADR 0026](../../adr/0026-live-week-schedule.md).
 
@@ -159,7 +159,7 @@ Details in [09](09-dashboard.md).
 
 | Question | Status |
 |---|---|
-| **The value of k** | Published in Appendix A before the submission period opens. [ADR 0026](../../adr/0026-live-week-schedule.md) proposes 60 (12 regimes × 5). The old recommendation, 40 (8 × 5), is not a multiple of 12 and `deriveSchedule` refuses it |
+| **The value of k** | Published in Appendix A before the submission period opens. [ADR 0026](../../adr/0026-live-week-schedule.md) proposes 60. Each epoch's regime is drawn independently and uniformly (issue #186), so k need not be a multiple of anything, and the hidden set holds at least k seeds per regime |
 | **The actual hidden set and lottery seed** | Generating them and publishing the commitments is operator work (`npm run competition -- commit`) |
 
 → [12 Known limits and open questions](12-open-issues.md)

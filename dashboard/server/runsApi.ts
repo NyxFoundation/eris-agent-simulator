@@ -249,7 +249,9 @@ export function redactEventLine(
   }
   switch (event.type) {
     case "run_started_realtime": {
-      const { seed: _s, flowSeed: _f, ...rest } = event;
+      // `scenarioRegime` (#187) names the epoch's regime, which rules §3.3 does not publish. The
+      // record on disk keeps it (§7 audit and replay); only what is served drops it.
+      const { seed: _s, flowSeed: _f, scenarioRegime: _r, ...rest } = event;
       return JSON.stringify(rest);
     }
     case "stress_schedule": {

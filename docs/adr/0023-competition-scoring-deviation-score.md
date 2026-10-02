@@ -65,7 +65,8 @@ ADR 0017 §4 の「失格は最下位より 1 標準偏差下」は退役。
   `{k, epochs: [{s, regime, seed}]}` の順序付きプランの両方を受ける。`matrix.json` は schema 2
   （per-agent `pnlUsdc` / `pnlSource` / `baseline` / `flags`、`k`）、`standings.json` は `computeStandings` の出力
 - **エポック順序は抽選 seed から導出**（`deriveSchedule`）。SHA-256 のカウンタモード + 棄却法 + Fisher-Yates で、
-  レジームは等回数、順序（と余剰 seed の選択）だけが seed に依る。非公開 seed 集合と抽選 seed は正規化 JSON の
+  レジームは等回数、順序（と余剰 seed の選択）だけが seed に依る（**issue #186 で変更**: エポックごとにレジームを
+  独立・一様に引く。等回数だと既出レジームを数えて残りを推測できたため）。非公開 seed 集合と抽選 seed は正規化 JSON の
   sha256 で commit し（`npm run competition -- commit`）、結果発表後に原本を公開する（§7.1 / §7.2）
 - **dashboard は core の同じモジュールを import する**。順位のロジックを 2 箇所に置かない
 

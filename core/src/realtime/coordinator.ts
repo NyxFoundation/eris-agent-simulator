@@ -72,7 +72,13 @@ import {
   countRunRevertedTxs,
   reconcileRunAgentTxs,
 } from "../postRunCheck.js";
-import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
+import {
+  nextFairPrice,
+  priceRngForAsset,
+  Rng,
+  SCENARIO_STREAMS,
+  setScenarioRegime,
+} from "@eris/sdk/rng.js";
 import type {
   AgentObservation,
   AgentSpec,
@@ -579,6 +585,8 @@ export async function runRealtimeSimulation(
   // backtest runner installs its --scenario-key first; a plain run reads ERIS_SCENARIO_KEY_FILE,
   // and with neither it is the public key.
   const scenarioKey = ensureScenarioKey();
+  // Issue #186: the regime names the streams too, so calm#101 and crash#101 are different worlds.
+  setScenarioRegime(config.scenarioRegime);
 
   // ADR 0020 §1 fail-fast. `resetUnit: scenario` describes a world per (regime, seed), and only the
   // scenario-matrix runner produces those -- it is the caller that resets between runs, not anything
@@ -749,6 +757,10 @@ export async function runRealtimeSimulation(
     // ADR 0027: which key the seed was realized under -- the public one, or the commitment to a
     // secret one. The seed alone no longer names the world.
     scenarioKey: scenarioKeyRecord(scenarioKey),
+    // Issue #186: the regime the streams were named by (empty = none, the pre-#186 streams).
+    scenarioRegime: config.scenarioRegime,
+    // ...and the version of that naming (sdk/src/rng.ts), so a stored run says which streams drew it.
+    scenarioStreams: SCENARIO_STREAMS,
     // ADR 0021 §4: the endpoint the world is on, recorded by the environment. The dashboard's live
     // mode used to discover it from an agent's `runtime_start` log line, which stops working the
     // moment the agents are somebody else's processes on somebody else's machine. Reads go to
@@ -866,7 +878,7 @@ export async function runRealtimeSimulation(
     config.flowBotArgs,
     config.flowSeed,
     logger.runDir,
-    scenarioKeyChildEnv(scenarioKey),
+    scenarioKeyChildEnv(scenarioKey, config.scenarioRegime),
   );
   // Issue #159: the bot is the environment's market, and it used to die without a word -- the
   // exporter counts this as an environment failure and the flow-stopped alert follows.
@@ -2956,6 +2968,7 @@ export async function runRealtimeSimulation(
         seed: config.seed,
         flowSeed: config.flowSeed,
         scenarioKey: scenarioKeyRecord(scenarioKey),
+        scenarioStreams: SCENARIO_STREAMS,
         rpcUrl: config.readRpcUrl,
         // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
         // hosted dashboard's public view reads it before summary.json exists, to decide how much of

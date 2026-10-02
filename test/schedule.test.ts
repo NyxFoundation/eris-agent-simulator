@@ -11,12 +11,13 @@ import {
   type HiddenSet,
 } from "../core/src/competition/schedule.js";
 
+const seeds = (base: number, n: number) => [...Array(n).keys()].map((i) => base + i);
 const hidden: HiddenSet = {
   regimes: {
-    calm: [1, 2, 3],
-    crash: [11, 12, 13],
-    depeg: [21, 22, 23],
-    whale: [31, 32, 33],
+    calm: seeds(100, 12),
+    crash: seeds(200, 12),
+    depeg: seeds(300, 12),
+    whale: seeds(400, 12),
   },
   salt: "x",
 };
@@ -27,46 +28,55 @@ test("deterministic: the same inputs give the same schedule, byte for byte", () 
   assert.deepEqual(a, b);
 });
 
-test("every regime appears k / R times, ordinals run 1..k, seeds come from the hidden set", () => {
+test("ordinals run 1..k, seeds come from the drawn regime's hidden set, no (regime, seed) twice", () => {
   const plan = deriveSchedule(hidden, "seed-A", 12);
   assert.equal(plan.length, 12);
   assert.deepEqual(plan.map((e) => e.s), [...Array(12).keys()].map((i) => i + 1));
-  const counts = new Map<string, number>();
-  for (const e of plan) {
-    counts.set(e.regime, (counts.get(e.regime) ?? 0) + 1);
+  for (const e of plan)
     assert.ok(hidden.regimes[e.regime].includes(e.seed), `${e.regime}#${e.seed}`);
-  }
-  assert.deepEqual([...counts.values()], [3, 3, 3, 3]);
-  // No (regime, seed) twice when each regime has exactly k / R seeds.
   assert.equal(new Set(plan.map((e) => `${e.regime}#${e.seed}`)).size, 12);
 });
 
-test("the lottery seed decides the order, not the multiset (when every regime has exactly k / R seeds)", () => {
-  const a = deriveSchedule(hidden, "seed-A", 12);
-  const b = deriveSchedule(hidden, "seed-B", 12);
-  const key = (p: typeof a) => p.map((e) => `${e.regime}#${e.seed}`).sort();
-  assert.deepEqual(key(a), key(b));
-  assert.notDeepEqual(
-    a.map((e) => `${e.regime}#${e.seed}`),
-    b.map((e) => `${e.regime}#${e.seed}`),
+test("regimes are drawn independently: counts are not forced equal (issue #186)", () => {
+  // Under the old equal-count shuffle every one of these plans would be [3, 3, 3, 3]. Independent
+  // draws give that exact split in about 2% of plans, so 50 lottery seeds all hitting it is not
+  // something that happens by chance.
+  const splits = [...Array(50).keys()].map((i) => {
+    const counts = new Map<string, number>();
+    for (const e of deriveSchedule(hidden, `seed-${i}`, 12))
+      counts.set(e.regime, (counts.get(e.regime) ?? 0) + 1);
+    return Object.keys(hidden.regimes).map((r) => counts.get(r) ?? 0).join(",");
+  });
+  assert.ok(splits.some((c) => c !== "3,3,3,3"), splits.join(" | "));
+});
+
+test("the draw is uniform over regimes", () => {
+  // 12 regimes x 60 epochs x 200 lottery seeds = 12,000 draws, 1,000 expected per regime. A
+  // chi-square over 11 degrees of freedom above 31.3 has probability 0.001 under uniformity.
+  const regimes = Object.fromEntries(
+    [...Array(12).keys()].map((r) => [`r${String(r).padStart(2, "0")}`, seeds(r * 1000, 60)]),
   );
+  const counts = new Map<string, number>();
+  for (let i = 0; i < 200; i++)
+    for (const e of deriveSchedule({ regimes }, `uniform-${i}`, 60))
+      counts.set(e.regime, (counts.get(e.regime) ?? 0) + 1);
+  const expected = 1000;
+  const chi2 = Object.keys(regimes).reduce(
+    (sum, r) => sum + ((counts.get(r) ?? 0) - expected) ** 2 / expected,
+    0,
+  );
+  assert.ok(chi2 < 31.3, `chi-square ${chi2.toFixed(1)}`);
 });
 
-test("a regime with more hidden seeds than it needs has its seeds chosen by the lottery too", () => {
-  const wide: HiddenSet = { regimes: { calm: [1, 2, 3, 4, 5, 6], crash: [11, 12, 13, 14, 15, 16] } };
-  const a = deriveSchedule(wide, "seed-A", 4);
-  assert.equal(a.filter((e) => e.regime === "calm").length, 2);
-  assert.equal(a.filter((e) => e.regime === "crash").length, 2);
-});
-
-test("k not divisible by the regime count, too few seeds, and repeated seeds are refused", () => {
-  assert.throws(() => deriveSchedule(hidden, "s", 10), /not a multiple/);
-  assert.throws(() => deriveSchedule(hidden, "s", 16), /needs 4/);
+test("too few seeds for k, repeated seeds and an empty lottery seed are refused; any k is allowed", () => {
+  assert.throws(() => deriveSchedule(hidden, "s", 13), /needs 13/);
   assert.throws(
     () => deriveSchedule({ regimes: { calm: [1, 1] } }, "s", 2),
     /repeat/,
   );
   assert.throws(() => deriveSchedule(hidden, "", 4), /empty/);
+  // No longer a multiple of the regime count.
+  assert.equal(deriveSchedule(hidden, "s", 7).length, 7);
 });
 
 test("the commitment is over canonical JSON: key order and formatting do not change it", () => {
@@ -86,9 +96,9 @@ test("buildPlan carries both commitments beside the epochs", () => {
   assert.equal(plan.epochs.length, 8);
 });
 
-test("the example hidden set has the shape k = 60 needs: the twelve official regimes, five seeds each (ADR 0026)", () => {
-  // The official set is config/scenarios/public.yaml's regime list; k has to be a multiple of its
-  // length, and the old k = 40 (eight regimes x 5) no longer is. The committed hidden set is not in
+test("the example hidden set has the shape k = 60 needs: the twelve official regimes, 60 seeds each", () => {
+  // The official set is config/scenarios/public.yaml's regime list. Each epoch draws its regime
+  // independently, so every regime needs k seeds (issue #186). The committed hidden set is not in
   // the repository, so this pins the example's shape, which is what an operator copies.
   const official = (
     parseYaml(readFileSync("config/scenarios/public.yaml", "utf8")) as { regimes: string[] }
@@ -100,7 +110,6 @@ test("the example hidden set has the shape k = 60 needs: the twelve official reg
   assert.deepEqual(Object.keys(example.regimes).sort(), [...official].sort());
   const plan = deriveSchedule(example, "example", 60);
   assert.equal(plan.length, 60);
-  for (const regime of official)
-    assert.equal(plan.filter((e) => e.regime === regime).length, 5, regime);
-  assert.throws(() => deriveSchedule(example, "example", 40), /not a multiple of the 12 regimes/);
+  assert.ok(plan.every((e) => official.includes(e.regime)));
+  assert.throws(() => deriveSchedule(example, "example", 61), /needs 61/);
 });

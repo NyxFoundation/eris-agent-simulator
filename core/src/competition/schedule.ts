@@ -6,10 +6,17 @@
 //                      is published before the submission period opens (§7.1).
 //   the lottery seed   one secret string. Its hash is published when the submission period closes.
 //
-// From the two, `deriveSchedule` fixes which hidden scenario each of the k epochs replays and in what
-// order: every regime appears k / R times, and the lottery seed decides only the order (and, when a
-// regime has more hidden seeds than it needs, which of them are used). Nobody chooses which regime
-// lands late, where the weight w_s is largest (§3.3's rationale).
+// From the two, `deriveSchedule` fixes which hidden scenario each of the k epochs replays: each
+// epoch's regime is drawn independently and uniformly from the R regimes, and its seed is the next
+// unused one of that regime's hidden seeds in lottery order. Nobody chooses which regime lands late,
+// where the weight w_s is largest (§3.3's rationale).
+//
+// Independent, not "every regime k / R times in shuffled order" (issue #186). That was drawing
+// without replacement: an agent that carries state across epochs (#77) and can tell regimes apart
+// counts what it has seen and knows what is left -- the last epoch, the heaviest, is fixed by the
+// 59 before it. With independent draws the past says nothing about the next epoch. The price is
+// that regime counts are not equal: at k = 60 a regime appears 5 ± 2.1 times, and some regime is
+// missing altogether 6.4% of the time (0.035% at k = 120).
 //
 // The derivation is deliberately plain so a third party can reproduce it from the two revealed
 // files and this source: SHA-256 as a counter-mode stream, unbiased integers by rejection, and a
@@ -18,7 +25,8 @@
 import { createHash } from "node:crypto";
 
 export type HiddenSet = {
-  // regime name -> hidden seeds, at least k / R per regime. Disjoint from the public set.
+  // regime name -> hidden seeds, at least k per regime (every epoch could draw the same regime).
+  // Disjoint from the public set.
   regimes: Record<string, number[]>;
   // Optional random salt, so the commitment cannot be brute-forced from a small seed space.
   salt?: string;
@@ -119,32 +127,37 @@ export function deriveSchedule(
   if (regimes.length === 0) throw new Error("the hidden set names no regimes");
   if (!Number.isInteger(k) || k < 1)
     throw new Error(`k must be a positive integer (got ${k})`);
-  if (k % regimes.length !== 0)
-    throw new Error(
-      `k = ${k} is not a multiple of the ${regimes.length} regimes: rules §3.3 require every regime ` +
-        "to appear the same number of times",
-    );
   if (typeof lotterySeed !== "string" || lotterySeed.length === 0)
     throw new Error("the lottery seed is empty");
-  const per = k / regimes.length;
-  const stream = new HashStream(lotterySeed);
-  // One draw per regime, in name order, then one draw for the epoch order. Fixed sequence, so the
-  // result is a function of (hidden set, lottery seed, k) and nothing else.
-  const pool: Array<{ regime: string; seed: number }> = [];
+  // Every regime needs k seeds, because every epoch could draw it. Checked up front rather than
+  // when a regime runs dry: the lottery seed is committed to before the plan is derived, so a plan
+  // that fails for this lottery seed could only be fixed by choosing another one -- which is the
+  // choice §3.3 takes away from the organizer.
   for (const regime of regimes) {
     const seeds = hidden.regimes[regime];
     if (!Array.isArray(seeds) || seeds.some((s) => !Number.isInteger(s)))
       throw new Error(`hidden seeds for ${regime} must be integers`);
     if (new Set(seeds).size !== seeds.length)
       throw new Error(`hidden seeds for ${regime} repeat`);
-    if (seeds.length < per)
+    if (seeds.length < k)
       throw new Error(
-        `regime ${regime} has ${seeds.length} hidden seed(s) but needs ${per} for k = ${k}`,
+        `regime ${regime} has ${seeds.length} hidden seed(s) but needs ${k} for k = ${k}: ` +
+          "each epoch draws its regime independently, so any regime can be drawn every time",
       );
-    const chosen = stream.shuffle(seeds).slice(0, per);
-    for (const seed of chosen) pool.push({ regime, seed });
   }
-  return stream.shuffle(pool).map((e, i) => ({ s: i + 1, ...e }));
+  const stream = new HashStream(lotterySeed);
+  // One shuffle per regime, in name order, then one draw per epoch. Fixed sequence, so the result
+  // is a function of (hidden set, lottery seed, k) and nothing else.
+  const order = new Map(regimes.map((r) => [r, stream.shuffle(hidden.regimes[r])]));
+  const used = new Map(regimes.map((r) => [r, 0]));
+  const epochs: EpochPlan[] = [];
+  for (let s = 1; s <= k; s++) {
+    const regime = regimes[stream.uniformInt(regimes.length)];
+    const i = used.get(regime)!;
+    used.set(regime, i + 1);
+    epochs.push({ s, regime, seed: order.get(regime)![i] });
+  }
+  return epochs;
 }
 
 export function buildPlan(
