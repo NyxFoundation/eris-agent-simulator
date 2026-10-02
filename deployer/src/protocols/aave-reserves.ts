@@ -34,6 +34,18 @@ export function vendorReserves(
   vendorKeys: ReadonlyMap<string, string>,
 ): { key: string; asset: Address }[] {
   const listedSet = new Set(listed.map((a) => a.toLowerCase()));
+  // The registry has to describe this deploy at all. A shared key it does not carry is ordinary (a
+  // deploy without WBTC), but carrying *none* of them is not: `missing` then came out empty, nothing
+  // threw, `ours` was the empty set, and every reserve the Pool lists -- the shared ones included --
+  // became a target to freeze. deployments.json is gitignored, so an empty or absent one is reachable
+  // by moving the repository to another box, or by a deploy that stopped before it wrote.
+  if (!sharedKeys.some((k) => reg.tokens[k]))
+    throw new Error(
+      `[aave] deployments.json records none of the shared reserves (${sharedKeys.join(", ")}), so it ` +
+        "does not describe this Pool. Nothing was sent: with no reserve recognized as ours, every " +
+        "reserve the Pool lists would be closed, the shared ones included. Re-run the deploy, or " +
+        "point at the deployments.json this chain was deployed from.",
+    );
   const missing = sharedKeys.filter(
     (k) => reg.tokens[k] && !listedSet.has(reg.tokens[k].toLowerCase()),
   );

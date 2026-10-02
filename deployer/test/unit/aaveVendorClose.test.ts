@@ -42,6 +42,17 @@ const vendorKeys = new Map([
 const SHARED = ["WETH", "USDC", "WBTC"];
 
 describe("vendorReserves", () => {
+  it("refuses a registry that recognizes no shared reserve, rather than targeting them all", () => {
+    // The empty case used to pass every check: `missing` was empty because the filter started at
+    // `reg.tokens[k]`, so `ours` was empty and the shared reserves were returned as vendor ones.
+    for (const tokens of [{}, { LINK: VENDOR_LINK }]) {
+      expect(() =>
+        vendorReserves([SHARED_WETH, SHARED_USDC, VENDOR_WETH], { tokens }, SHARED, vendorKeys),
+      ).toThrow(/records none of the shared reserves/);
+    }
+  });
+
+
   it("is every listed reserve but the registry tokens and the LST, whatever the case", () => {
     expect(environmentReserveAssets(reg)).toEqual(
       new Set([SHARED_WETH, SHARED_USDC, SHARED_DAI, LST_SHARE].map((a) => a.toLowerCase())),
