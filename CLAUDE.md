@@ -865,7 +865,14 @@ gas は全部 pin する = `eth_estimateGas` は今の state で失敗する）�
   Swap ログの純フロー / QuoterV2 / **exact approve + exactInputSingle の rawBundle**。登録 `swap` action は
   market set の外に届かない）。参照 agent は `launch-sniper`（見た瞬間に買い固定ホールド）と
   `launch-confirm`（連続 N ブロックの純買いで入り純売りで出る）。`full-field.yaml` に frozen で入っている
-  （vuln の教訓: 読める agent が居ない regime は何も測れない）
+  （vuln の教訓: 読める agent が居ない regime は何も測れない）。**`launchPools` は環境の上場の形をしたプールだけ返す**
+  （issue #216 (4)。以前は USDC × 未登録トークンの registry プールを全部返し、参加者が自作プールを置けば frozen の
+  参照 agent 2 体が買って μ/σ が動いた）: トークン自身の `erc20` エントリがあり、プール作成者がそのトークンを
+  deploy し、登録後にコードが動いておらず、`launchTokenCodehash`（repo の `AgentERC20` artifact を `to` 無しの
+  `eth_call` で走らせた runtime code の keccak。artifact が無ければ null = 形だけで判定し agent ログに 1 回残す）
+  が取れていれば codehash も一致するもの。launch wallet のアドレスは観測にもマニフェストにも無い（seed 由来で、
+  公開すると窓の前に上場数が漏れる）ので作成者照合はできない。**同じ bytecode を同じ鍵から deploy した参加者の
+  プールは通る**（固定供給・owner 無しの同種トークンで、リスクは価格だけ = 戦略の判断に委ねる）
 - **実測（seed 101, 2026-09-12, main + PR #81 の burst 吸収を手元適用）**は PR #29 の本文。**main の anvil backlog
   burst（PR #81 で修正中）がある環境では最初の ~200 ブロックが 1 秒で流れて窓ごと飛ぶ**。この regime だけの
   問題ではなく windowFrac を持つ全イベントが同じ目に遭う
