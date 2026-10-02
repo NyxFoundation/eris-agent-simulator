@@ -45,7 +45,13 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
   `openai:<m>` / `gpt-*` は OpenAI 互換 chat completions。**本番は運営の推論プロキシ経由**
   （`ERIS_INFERENCE_BASE_URL` + agent ごとの `ERIS_INFERENCE_TOKEN` = HMAC(ERIS_INFERENCE_SECRET, agentId)。
   agent は鍵を持たない。`npm run inference-proxy`、`core/src/inference/proxy.ts`、規約 §2.3/§2.5。
-  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）。
+  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）。**記録の失敗でプロキシは落ちない**
+  （issue #215。以前は `appendFileSync` の失敗が async ハンドラの未処理 rejection になって exit 1 = 全員の改訂が
+  止まった）。書けなかった記録は stderr に agent ごと 1 行 + `/healthz` の `recording.failures`、呼び出しは通す。
+  記録量は `maxRecordBytesPerAgent`（既定 256 MiB）/ `maxRecordBytesTotal`（既定 8 GiB、プロセス単位）で頭打ち
+  （1 call の記録は request 4 MiB + 応答 32 MiB まであり得て、30 call/分なら 1 agent で ~1 GiB/分）。超えたら
+  **記録だけ止めて呼び出しは通し**、その agent のファイル末尾に `event: "recording_capped"` の 1 行を残す
+  （replay はこの行を飛ばし、以後は 409）。無制限は設定できない。
   **ストリーミングは拒否せず逐次中継する**（issue #166。SSE / Ollama の NDJSON。1 呼び出し 1 記録で全文を残し
   replay も同じ content-type で返す）。待ち時間は非ストリームが `upstreamTimeoutMs`（既定 5 分。Node の fetch が
   応答ヘッダを 300 秒で諦めるので実質の上限もここ）、ストリームは**無音**の `streamIdleTimeoutMs` だけで総時間は

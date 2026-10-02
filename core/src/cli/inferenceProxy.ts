@@ -10,6 +10,16 @@ import { parse as parseYaml } from "yaml";
 import { parseFlags } from "../backtest/shared.js";
 import { createInferenceProxy, loadProxyConfig } from "../inference/proxy.js";
 
+// This process is every agent's only path to a model (rules §2.3), so it does not exit over one
+// call's failure (issue #215). The server wraps each request so a thrown handler is that call's 500;
+// this is the last resort for a rejection nobody caught. It is logged and the proxy keeps serving.
+process.on("unhandledRejection", (reason) => {
+  console.error(
+    `[inference-proxy] unhandled rejection (still serving): ` +
+      (reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)),
+  );
+});
+
 const flags = parseFlags(process.argv);
 if (!flags.models) {
   console.error(
@@ -29,10 +39,26 @@ const server = createInferenceProxy({
   ...(flags.record ? { recordDir: resolve(process.cwd(), flags.record) } : {}),
   ...(flags.replay ? { replayDir: resolve(process.cwd(), flags.replay) } : {}),
 });
+// A server error is a listen failure (the port is taken, the address is not ours): there is nothing
+// to serve, so say what happened and exit rather than throw a stack.
+server.on("error", (error) => {
+  console.error(`[inference-proxy] cannot listen on ${host}:${port}: ${error.message}`);
+  process.exit(1);
+});
+const mib = (n: number) => `${Math.round(n / (1024 * 1024))} MiB`;
 server.listen(port, host, () => {
+  const address = server.address();
+  const bound = typeof address === "object" && address ? address.port : port;
   console.error(
-    `[inference-proxy] listening on http://${host}:${port} ` +
+    `[inference-proxy] listening on http://${host}:${bound} ` +
       `(${config.models.length} model(s); auth ${secret ? "on" : "OFF — set ERIS_INFERENCE_SECRET"}; ` +
-      `${flags.replay ? `REPLAY from ${flags.replay}` : flags.record ? `recording to ${flags.record}` : "not recording"})`,
+      `${
+        flags.replay
+          ? `REPLAY from ${flags.replay}`
+          : flags.record
+            ? `recording to ${flags.record}, at most ${mib(config.maxRecordBytesPerAgent!)} per agent ` +
+              `and ${mib(config.maxRecordBytesTotal!)} in all`
+            : "not recording"
+      })`,
   );
 });

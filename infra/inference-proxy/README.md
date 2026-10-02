@@ -72,6 +72,27 @@ stream as text in `response` (the SSE events or NDJSON lines as sent). Replay se
 recorded content type. A stream that broke off — it went quiet, or the agent left — is recorded with
 what had arrived and an `error`, and replays the same way: that text, then the connection is cut.
 
+**The record is bounded, and its failure is not the proxy's** (issue #215). This proxy is the only
+outbound path an agent has, so a record that cannot be written (a full disk, a permission) costs that
+record and never the call: the call is served, one line goes to stderr per agent per distinct error
+(`record for <agent> not written (the call was served): ENOSPC ...`), and `GET /healthz` counts it
+(`recording.failures`). One call's record is bounded only by the request (4 MiB) and the response
+(`maxStreamBytes`), so at `maxCallsPerMinute` 30 one agent could write about a gibibyte a minute;
+two cumulative caps stop *recording*, not serving:
+
+| cap (`models.yaml`) | default | past it |
+|---|---|---|
+| `maxRecordBytesPerAgent` | 268435456 (256 MiB) | that agent's calls are served and no longer recorded |
+| `maxRecordBytesTotal` | 8589934592 (8 GiB), per proxy process | every agent's calls are served and no longer recorded |
+
+Neither can be unlimited. When an agent's recording stops, its file ends with one line that says so —
+`{"event":"recording_capped","scope":"agent"|"total","recordedBytes":…,"cap":…,"seq":<first unrecorded call>}`
+— and stderr says it once. Replay skips that line and answers 409 at the first call it has no record
+for, the same honest divergence as a run that asks for more calls than were recorded. `/healthz` reports
+`recording: {enabled, bytes, calls, failures, cappedAgents, totalCapped}` and `handlerErrors` (a request
+the proxy itself failed on: that call got a 500, the process stayed up). The counters are the process's:
+a restart starts them from zero, against the same files.
+
 ## Network
 
 Each agent runs on its own docker network with the RPC gateway as the hub (`ERIS_AGENT_ISOLATE=1`,

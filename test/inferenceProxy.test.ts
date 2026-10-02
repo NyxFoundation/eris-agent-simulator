@@ -2,7 +2,7 @@
 // keys that stay on this side, and a record that replays.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -503,4 +503,141 @@ test("the proxy's timeouts default to the five-minute wait and are validated", (
   assert.throws(() => loadProxyConfig({ models: config.models, streamIdleTimeoutMs: 0 }), /streamIdleTimeoutMs/);
   assert.equal(d.maxStreamBytes, 32 * 1024 * 1024);
   assert.throws(() => loadProxyConfig({ models: config.models, maxStreamBytes: -1 }), /maxStreamBytes/);
+});
+
+// ---- the record is bounded, and its failure is not the proxy's (issue #215) ----
+
+// A request whose record is a known size, so a cap can be set in records rather than guessed.
+const bigBody = (content: string) => ({ model: "gpt-x", messages: [{ role: "user", content }] });
+const KIB = "x".repeat(1024);
+
+test("a record that cannot be written is reported and counted; the call is served and the next one too", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-nowrite-"));
+  // alice's file is a directory, so every append to it fails (EISDIR) the way a full disk fails
+  // every append (ENOSPC): the same message each time.
+  mkdirSync(join(dir, "alice.jsonl"));
+  const lines: string[] = [];
+  await withProxy({ recordDir: dir, config: unlimited, log: (l) => lines.push(l) }, async (base, seen) => {
+    const h = { "x-eris-agent": "alice" };
+    assert.equal((await post(base, "/v1/chat/completions", bigBody("1"), h)).status, 200);
+    assert.equal((await post(base, "/v1/chat/completions", bigBody("2"), h)).status, 200);
+    assert.equal(seen.length, 2, "both calls reached the upstream");
+    // Said once per agent for the same failure; counted every time.
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /record for alice not written \(the call was served\): EISDIR/);
+    const health = (await (await fetch(`${base}/healthz`)).json()) as { ok: boolean; recording: { failures: number; calls: number } };
+    assert.equal(health.ok, true);
+    assert.equal(health.recording.failures, 2);
+    assert.equal(health.recording.calls, 0);
+    // Another agent's record is unaffected.
+    await post(base, "/v1/chat/completions", bigBody("3"), { "x-eris-agent": "bob" });
+    assert.equal(recorded(dir, "bob").length, 1);
+  });
+});
+
+test("recording stops at the agent's cap with a note in its file; its calls still pass and others still record", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-cap-"));
+  // One record is a little over 1 KiB (the body plus ~300 bytes of envelope); 2.75 KiB holds two.
+  const config = { ...unlimited, maxRecordBytesPerAgent: 2816 };
+  const lines: string[] = [];
+  await withProxy({ recordDir: dir, config, log: (l) => lines.push(l) }, async (base, seen) => {
+    const h = { "x-eris-agent": "alice" };
+    for (let i = 1; i <= 4; i++)
+      assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), h)).status, 200, `call ${i}`);
+    assert.equal(seen.length, 4, "every call reached the upstream");
+    const file = recorded(dir, "alice");
+    assert.deepEqual(file.map((l) => l.seq), [1, 2, 3], "two records and the note");
+    assert.equal(file[2].event, "recording_capped");
+    assert.equal(file[2].scope, "agent");
+    assert.equal(file[2].cap, 2816);
+    assert.ok(file[2].recordedBytes > 2048 && file[2].recordedBytes <= 2816, `recordedBytes ${file[2].recordedBytes}`);
+    assert.equal(file[2].response, undefined, "the note is not a call");
+    // Said once, when it happened; the fourth call added nothing.
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /recording stopped for alice at call #3: its 2816 bytes \(maxRecordBytesPerAgent\) are used up; its calls are still served/);
+    // bob has his own cap.
+    await post(base, "/v1/chat/completions", bigBody(KIB), { "x-eris-agent": "bob" });
+    assert.equal(recorded(dir, "bob").length, 1);
+    const health = (await (await fetch(`${base}/healthz`)).json()) as { recording: { calls: number; cappedAgents: number; totalCapped: boolean } };
+    assert.equal(health.recording.calls, 3);
+    assert.equal(health.recording.cappedAgents, 1);
+    assert.equal(health.recording.totalCapped, false);
+  });
+  // Replay skips the note and serves the two recorded calls, then 409 like any run that asks for
+  // more calls than were recorded.
+  await withProxy({ replayDir: dir, config }, async (base, seen) => {
+    const h = { "x-eris-agent": "alice" };
+    assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), h)).status, 200);
+    assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), h)).status, 200);
+    assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), h)).status, 409);
+    assert.equal(seen.length, 0);
+  });
+});
+
+test("the proxy's total cap stops recording for everyone, each file ending with the note", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-total-"));
+  const config = { ...unlimited, maxRecordBytesTotal: 2816 };
+  const lines: string[] = [];
+  await withProxy({ recordDir: dir, config, log: (l) => lines.push(l) }, async (base, seen) => {
+    const alice = { "x-eris-agent": "alice" };
+    const bob = { "x-eris-agent": "bob" };
+    await post(base, "/v1/chat/completions", bigBody(KIB), alice);
+    await post(base, "/v1/chat/completions", bigBody(KIB), alice);
+    // The third record of any agent crosses the proxy's total.
+    assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), bob)).status, 200);
+    assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), alice)).status, 200);
+    assert.equal(seen.length, 4);
+    const a = recorded(dir, "alice");
+    const b = recorded(dir, "bob");
+    assert.deepEqual(a.map((l) => l.event ?? "call"), ["call", "call", "recording_capped"]);
+    assert.deepEqual(b.map((l) => l.event ?? "call"), ["recording_capped"]);
+    assert.equal(a[2].scope, "total");
+    assert.equal(a[2].seq, 3);
+    assert.equal(b[0].scope, "total");
+    assert.equal(b[0].seq, 1);
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /recording stopped for bob at call #1: the proxy's 2816 bytes \(maxRecordBytesTotal\)/);
+    const health = (await (await fetch(`${base}/healthz`)).json()) as { recording: { cappedAgents: number; totalCapped: boolean } };
+    assert.equal(health.recording.totalCapped, true);
+    assert.equal(health.recording.cappedAgents, 2);
+  });
+});
+
+test("a handler that throws is that call's 500, not the process's exit, and the next call is served", async () => {
+  // A clock that breaks once stands in for any bug on the request path.
+  let broken = true;
+  const lines: string[] = [];
+  await withProxy(
+    {
+      config: unlimited,
+      log: (l) => lines.push(l),
+      now: () => {
+        if (broken) {
+          broken = false;
+          throw new Error("clock broke");
+        }
+        return Date.now();
+      },
+    },
+    async (base) => {
+      const h = { "x-eris-agent": "alice" };
+      const r = await post(base, "/v1/chat/completions", bigBody("1"), h);
+      assert.equal(r.status, 500);
+      assert.deepEqual(await r.json(), { error: "proxy internal error" });
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /POST \/v1\/chat\/completions from alice failed in the proxy: Error: clock broke/);
+      assert.equal((await post(base, "/v1/chat/completions", bigBody("2"), h)).status, 200);
+      const health = (await (await fetch(`${base}/healthz`)).json()) as { handlerErrors: number };
+      assert.equal(health.handlerErrors, 1);
+    },
+  );
+});
+
+test("the record caps default to 256 MiB per agent and 8 GiB in all, and cannot be unlimited", () => {
+  const d = loadProxyConfig({ models: config.models });
+  assert.equal(d.maxRecordBytesPerAgent, 256 * 1024 * 1024);
+  assert.equal(d.maxRecordBytesTotal, 8 * 1024 * 1024 * 1024);
+  assert.equal(loadProxyConfig({ models: config.models, maxRecordBytesPerAgent: 1024 }).maxRecordBytesPerAgent, 1024);
+  assert.throws(() => loadProxyConfig({ models: config.models, maxRecordBytesPerAgent: 0 }), /maxRecordBytesPerAgent/);
+  assert.throws(() => loadProxyConfig({ models: config.models, maxRecordBytesTotal: -1 }), /maxRecordBytesTotal/);
 });

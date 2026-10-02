@@ -20,6 +20,16 @@
 //                              because it replays these). `replayDir` serves them back in order
 //                              without touching an upstream.
 //
+// The record is bounded and its failure is not the proxy's (issue #215). This proxy is the only
+// outbound path an agent has in the official competition, so a disk that fills or a write that
+// fails must cost the record, never the call: a record that cannot be written is reported on stderr
+// and counted on /healthz, and the call is served regardless. One call's record is bounded only by
+// the request (4 MiB) and the response (`maxStreamBytes`), so at `maxCallsPerMinute` 30 one agent
+// could write about a gibibyte a minute; `maxRecordBytesPerAgent` and `maxRecordBytesTotal` stop
+// recording -- not serving -- past a cumulative size, and the agent's file ends with a line that says
+// so (`event: "recording_capped"`), which replay skips before it answers 409 at the first call it
+// has no record for.
+//
 // The request body is forwarded as the agent wrote it (model name aside). Rebuilding it would fight
 // the self-improvement design, where the model's brief is the agent's own prompt.md (ADR 0018).
 //
@@ -69,12 +79,23 @@ export type ProxyConfig = {
   // A streamed call's size. With no bound on its length, this is what keeps one call's record (held
   // whole, written as one line) finite. Defaults to MAX_STREAM_BYTES.
   maxStreamBytes?: number;
+  // Cumulative size of what is written under recordDir, per agent and for the whole proxy process,
+  // past which that agent's (or everyone's) calls are still served but no longer recorded. Defaults
+  // to MAX_RECORD_BYTES_PER_AGENT / MAX_RECORD_BYTES_TOTAL; neither can be unlimited.
+  maxRecordBytesPerAgent?: number;
+  maxRecordBytesTotal?: number;
 };
 
 // The wait participants are told a call may take (issue #166): five minutes.
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 300_000;
 // 32 MiB: far beyond any answer a model gives, and eight times the cap on a request body.
 export const MAX_STREAM_BYTES = 32 * 1024 * 1024;
+// 256 MiB per agent: at the reference runtime's ~10k-token context and a whole-strategy reply, a
+// record is tens of KiB, so this is thousands of revisions -- a week of them at the default cadence.
+// 8 GiB for the process: a field of a few hundred agents at that size, on a disk the operator sized
+// for it. Both are ceilings on an accident, not budgets to fill.
+export const MAX_RECORD_BYTES_PER_AGENT = 256 * 1024 * 1024;
+export const MAX_RECORD_BYTES_TOTAL = 8 * 1024 * 1024 * 1024;
 
 export type ProxyOptions = {
   config: ProxyConfig;
@@ -85,6 +106,9 @@ export type ProxyOptions = {
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
+  // Where what an agent cannot see is reported: a record that was not written, a cap reached, a
+  // handler that threw. Defaults to this process's stderr.
+  log?: (line: string) => void;
 };
 
 export type RecordedCall = {
@@ -106,6 +130,33 @@ export type RecordedCall = {
   stream?: boolean;
   error?: string;
   replayed?: boolean;
+};
+
+// The line that ends an agent's file when recording stops for it (issue #215). Every call after it
+// was served and not recorded. Replay skips it, then answers 409 at the first call it has no record
+// for -- the same honest divergence as a run that asks for more calls than were recorded.
+export type RecordingNote = {
+  ts: string;
+  agentId: string;
+  event: "recording_capped";
+  // "agent": this agent's own cap. "total": the proxy's, reached by everyone together.
+  scope: "agent" | "total";
+  recordedBytes: number;
+  cap: number;
+  // The first call that went unrecorded.
+  seq: number;
+};
+
+// What /healthz reports about the record. No per-agent breakdown: /healthz is unauthenticated, and
+// one agent's revision cadence is not another's business.
+export type RecordingStats = {
+  enabled: boolean;
+  bytes: number;
+  calls: number;
+  // Records that could not be written (the calls were served).
+  failures: number;
+  cappedAgents: number;
+  totalCapped: boolean;
 };
 
 // Client closed the request (nginx's code): the agent stopped waiting before an answer existed.
@@ -168,7 +219,13 @@ export function loadProxyConfig(doc: unknown): ProxyConfig {
     if (typeof m.upstream !== "string" || !/^https?:\/\//.test(m.upstream))
       throw new Error(`model ${m.name}: upstream must be an http(s) URL`);
   }
-  for (const key of ["upstreamTimeoutMs", "streamIdleTimeoutMs", "maxStreamBytes"] as const) {
+  for (const key of [
+    "upstreamTimeoutMs",
+    "streamIdleTimeoutMs",
+    "maxStreamBytes",
+    "maxRecordBytesPerAgent",
+    "maxRecordBytesTotal",
+  ] as const) {
     const v = d[key];
     if (v !== undefined && !(Number.isFinite(v) && v > 0))
       throw new Error(`${key} must be a positive number`);
@@ -180,6 +237,8 @@ export function loadProxyConfig(doc: unknown): ProxyConfig {
     upstreamTimeoutMs,
     streamIdleTimeoutMs: d.streamIdleTimeoutMs ?? upstreamTimeoutMs,
     maxStreamBytes: d.maxStreamBytes ?? MAX_STREAM_BYTES,
+    maxRecordBytesPerAgent: d.maxRecordBytesPerAgent ?? MAX_RECORD_BYTES_PER_AGENT,
+    maxRecordBytesTotal: d.maxRecordBytesTotal ?? MAX_RECORD_BYTES_TOTAL,
   };
 }
 
@@ -240,7 +299,10 @@ class Replay {
         ? readFileSync(path, "utf8")
             .split("\n")
             .filter((l) => l.length > 0)
-            .map((l) => JSON.parse(l) as RecordedCall)
+            .map((l) => JSON.parse(l) as RecordedCall | RecordingNote)
+            // The note that ends a capped file is not a call. What follows it in the live run was
+            // never recorded, so the queue ends there and the next call gets 409.
+            .filter((r): r is RecordedCall => !("event" in r))
         : [];
       this.queues.set(agentId, q);
     }
@@ -257,20 +319,101 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
   const replay = opts.replayDir ? new Replay(opts.replayDir) : null;
   const seq = new Map<string, number>();
   const recent = new Map<string, number[]>();
+  const log =
+    opts.log ?? ((line: string): void => void process.stderr.write(`${line}\n`));
   if (opts.recordDir) mkdirSync(opts.recordDir, { recursive: true });
 
-  const record = (entry: RecordedCall): void => {
-    if (!opts.recordDir) return;
-    appendFileSync(
-      join(opts.recordDir, `${entry.agentId}.jsonl`),
-      `${JSON.stringify(entry)}\n`,
+  // ---- the record (issue #215) ----
+  // Bytes written per agent and in all, over this process's life; which agents are no longer
+  // recorded; and what went wrong, counted for /healthz and said once on stderr.
+  const perAgentCap = config.maxRecordBytesPerAgent ?? MAX_RECORD_BYTES_PER_AGENT;
+  const totalCap = config.maxRecordBytesTotal ?? MAX_RECORD_BYTES_TOTAL;
+  const recordedBytes = new Map<string, number>();
+  const capped = new Set<string>();
+  const lastFailure = new Map<string, string>();
+  let totalBytes = 0;
+  let totalCapped = false;
+  let recordedCalls = 0;
+  let recordFailures = 0;
+  let handlerErrors = 0;
+  const stats = (): RecordingStats => ({
+    enabled: opts.recordDir !== undefined,
+    bytes: totalBytes,
+    calls: recordedCalls,
+    failures: recordFailures,
+    cappedAgents: capped.size,
+    totalCapped,
+  });
+
+  // The one place a record touches the disk. A failure is this call's record lost, reported and
+  // counted; it is never the proxy's exit (it used to be: an async handler's throw is an unhandled
+  // rejection, and Node exits on those). A full disk fails every call the same way, so stderr gets
+  // one line per agent per distinct message and the count lives on /healthz.
+  const append = (agentId: string, line: string): boolean => {
+    try {
+      appendFileSync(join(opts.recordDir!, `${agentId}.jsonl`), line);
+      return true;
+    } catch (error) {
+      recordFailures++;
+      const message = error instanceof Error ? error.message : String(error);
+      if (lastFailure.get(agentId) !== message) {
+        lastFailure.set(agentId, message);
+        log(
+          `[inference-proxy] record for ${agentId} not written (the call was served): ${message}`,
+        );
+      }
+      return false;
+    }
+  };
+
+  // Stop recording an agent and say so, in its file and on stderr. The note's own bytes are not
+  // counted: it is one bounded line per agent, and it is the line that explains the gap after it.
+  const stopRecording = (agentId: string, scope: RecordingNote["scope"], seq: number): void => {
+    capped.add(agentId);
+    const note: RecordingNote = {
+      ts: new Date(now()).toISOString(),
+      agentId,
+      event: "recording_capped",
+      scope,
+      recordedBytes: scope === "agent" ? (recordedBytes.get(agentId) ?? 0) : totalBytes,
+      cap: scope === "agent" ? perAgentCap : totalCap,
+      seq,
+    };
+    append(agentId, `${JSON.stringify(note)}\n`);
+    log(
+      `[inference-proxy] recording stopped for ${agentId} at call #${seq}: ` +
+        (scope === "agent"
+          ? `its ${perAgentCap} bytes (maxRecordBytesPerAgent) are used up`
+          : `the proxy's ${totalCap} bytes (maxRecordBytesTotal) are used up`) +
+        `; its calls are still served`,
     );
   };
 
-  return http.createServer(async (req, res) => {
+  const record = (entry: RecordedCall): void => {
+    if (!opts.recordDir) return;
+    if (capped.has(entry.agentId)) return;
+    const line = `${JSON.stringify(entry)}\n`;
+    const bytes = Buffer.byteLength(line);
+    if (totalCapped || totalBytes + bytes > totalCap) {
+      totalCapped = true;
+      stopRecording(entry.agentId, "total", entry.seq);
+      return;
+    }
+    const mine = recordedBytes.get(entry.agentId) ?? 0;
+    if (mine + bytes > perAgentCap) {
+      stopRecording(entry.agentId, "agent", entry.seq);
+      return;
+    }
+    if (!append(entry.agentId, line)) return;
+    recordedBytes.set(entry.agentId, mine + bytes);
+    totalBytes += bytes;
+    recordedCalls++;
+  };
+
+  const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? "/", "http://proxy");
     if (req.method === "GET" && url.pathname === "/healthz")
-      return send(res, 200, { ok: true });
+      return send(res, 200, { ok: true, recording: stats(), handlerErrors });
     if (req.method === "GET" && url.pathname === "/v1/models")
       return send(res, 200, {
         object: "list",
@@ -512,5 +655,20 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     });
     if (relayed) return;
     return send(res, status, response, contentType);
+  };
+
+  return http.createServer((req, res) => {
+    handle(req, res).catch((error: unknown) => {
+      // A bug on one call is that call's 500, not an unhandled rejection that takes the process --
+      // and with it every agent's only path to a model -- down.
+      handlerErrors++;
+      log(
+        `[inference-proxy] ${req.method ?? "?"} ${req.url ?? "?"} from ` +
+          `${String(req.headers["x-eris-agent"] ?? "anonymous")} failed in the proxy: ` +
+          (error instanceof Error ? (error.stack ?? error.message) : String(error)),
+      );
+      if (!res.headersSent) send(res, 500, { error: "proxy internal error" });
+      else res.destroy();
+    });
   });
 }

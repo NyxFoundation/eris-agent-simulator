@@ -16,6 +16,11 @@
 # streamIdleTimeoutMs  a streamed call: the longest silence, before the first chunk or between two.
 #                      No total -- the epoch ends it. Defaults to upstreamTimeoutMs.
 # maxStreamBytes       a streamed call's size, past which it is cut (default 33554432 = 32 MiB).
+# maxRecordBytesPerAgent / maxRecordBytesTotal
+#                      what --record may write for one agent / for this proxy process, cumulative
+#                      (defaults 268435456 = 256 MiB / 8589934592 = 8 GiB). Past either, calls are
+#                      still served and no longer recorded; the agent's file ends with a line saying
+#                      so (issue #215). Neither can be unlimited.
 maxCallsPerMinute: 30
 upstreamTimeoutMs: 300000
 streamIdleTimeoutMs: 300000
