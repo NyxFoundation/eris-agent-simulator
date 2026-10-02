@@ -16,6 +16,7 @@ import { StateChart } from "@/components/StateChart";
 import { Select } from "@/design-system/Select";
 import { Sparkline } from "@/design-system/Sparkline";
 import { Tabs } from "@/design-system/Tabs";
+import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { setSelectedRound } from "@/data/roundSelection";
 import { navigate } from "@/navigation";
 import { t } from "@/i18n/messages";
@@ -121,10 +122,7 @@ function LeaderboardMiniRow({ row }: { row: AgentStanding }) {
       >
         {row.agent}
       </span>
-      <span
-        style={{ textAlign: "right", color: pnlColor }}
-        title={row.netPnlUsdc === null ? t("home.netPnlUnscored") : undefined}
-      >
+      <span style={{ textAlign: "right", color: pnlColor }}>
         {row.netPnlUsdc === null ? "—" : formatPnlUsdc(row.netPnlUsdc)}
       </span>
     </div>
@@ -350,18 +348,6 @@ function PanelBody({
         minWidth: 0,
       }}
     >
-      <p
-        style={{
-          margin: 0,
-          maxWidth: "84ch",
-          font: "var(--text-sm) var(--font-sans)",
-          lineHeight: 1.6,
-          color: "var(--text-secondary)",
-        }}
-      >
-        {panel.caption}
-      </p>
-
       {panel.note && (
         <div
           style={{
@@ -576,7 +562,21 @@ export function MarketPage() {
           flexWrap: "wrap",
         }}
       >
-        <span style={SECTION_LABEL_STYLE}>{t("market.scope")}</span>
+        <span
+          style={{
+            ...SECTION_LABEL_STYLE,
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "2px",
+          }}
+        >
+          {t("market.scope")}
+          <InfoTip label={t("market.scope")}>
+            <TipText>
+              {panel?.runWide ? t("market.runWideNote") : t("market.scopeHint")}
+            </TipText>
+          </InfoTip>
+        </span>
         <span
           style={{
             font: "var(--text-xs) var(--font-mono)",
@@ -587,7 +587,7 @@ export function MarketPage() {
           }}
         >
           {panel?.runWide
-            ? t("market.runWide", {
+            ? t("market.wholeRun", {
                 from:
                   round.intervals[0]?.fromBlock.toLocaleString("en-US") ?? "—",
                 to: round.blockNumber.toLocaleString("en-US"),
@@ -603,16 +603,7 @@ export function MarketPage() {
                   to: scope.toBlock.toLocaleString("en-US"),
                 })}
         </span>
-        {scope.roundIndex === null || panel?.runWide ? (
-          <span
-            style={{
-              font: "var(--text-xs) var(--font-mono)",
-              color: "var(--text-tertiary)",
-            }}
-          >
-            {t("market.scopeHint")}
-          </span>
-        ) : (
+        {scope.roundIndex === null || panel?.runWide ? null : (
           <span
             onClick={() => setSelectedRound(null)}
             style={{
@@ -641,12 +632,27 @@ export function MarketPage() {
         <div
           style={{ display: "flex", flexDirection: "column", minWidth: 0 }}
         >
-          <div style={{ padding: "0 20px" }}>
-            <Tabs
-              tabs={panels.map((p) => ({ label: p.label, value: p.id }))}
-              value={panel?.id ?? ""}
-              onChange={setPanelId}
-            />
+          <div
+            style={{
+              padding: "0 20px",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Tabs
+                tabs={panels.map((p) => ({ label: p.label, value: p.id }))}
+                value={panel?.id ?? ""}
+                onChange={setPanelId}
+              />
+            </div>
+            {/* How to read the venue on the open tab. */}
+            {panel && (
+              <InfoTip label={panel.label} title={panel.label} width={420}>
+                <TipText>{panel.caption}</TipText>
+              </InfoTip>
+            )}
           </div>
 
           {panel ? (
@@ -702,13 +708,21 @@ export function MarketPage() {
                         <span
                           style={{
                             marginLeft: "auto",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "2px",
                             font: "11px var(--font-mono)",
                             color: "var(--text-tertiary)",
                           }}
                         >
-                          {t("market.arbLegend", {
-                            n: arbitrage.thresholdBps,
-                          })}
+                          {t("market.arbLegendLabel")}
+                          <InfoTip label={t("market.arbLegendLabel")}>
+                            <TipText>
+                              {t("market.arbLegend", {
+                                n: arbitrage.thresholdBps,
+                              })}
+                            </TipText>
+                          </InfoTip>
                         </span>
                       </div>
                       <ArbitrageChart data={arbitrage} height={380} />
@@ -763,7 +777,21 @@ export function MarketPage() {
               padding: "14px 16px 10px",
             }}
           >
-            <span style={SECTION_LABEL_STYLE}>{t("market.standings")}</span>
+            <span
+              style={{
+                ...SECTION_LABEL_STYLE,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "2px",
+              }}
+            >
+              {t("market.standings")}
+              {mode.standings && (
+                <InfoTip label={t("market.standings")}>
+                  <TipText>{t("market.standingsAbout")}</TipText>
+                </InfoTip>
+              )}
+            </span>
             {/* Rules §4.7: the trial environment posts no standings, this preview included. */}
             {!mode.standings && (
               <span
@@ -788,9 +816,33 @@ export function MarketPage() {
               marginTop: "12px",
             }}
           >
-            <span style={SECTION_LABEL_STYLE}>{t("market.submissions")}</span>
             {/* The feed is submitted-but-not-yet-included, with the bid on it (#69). The server
-                does not serve the self-reports in audience mode, and the panel says why. */}
+                does not serve the self-reports in audience mode, and the "?" says why. */}
+            <span
+              style={{
+                ...SECTION_LABEL_STYLE,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "2px",
+              }}
+            >
+              {t("market.submissions")}
+              <InfoTip label={t("market.submissions")}>
+                <TipText>{t("market.submissionsAbout")}</TipText>
+                {mode.audience && (
+                  <TipText>{t("market.submissionsAudience")}</TipText>
+                )}
+                {!mode.audience && feedSelfHosted > 0 && (
+                  <TipText>
+                    {t("market.submissionsSelfHosted", {
+                      count: String(feedSelfHosted),
+                    })}
+                  </TipText>
+                )}
+              </InfoTip>
+            </span>
+            {/* Absent, said on the panel itself: an empty feed would otherwise read as "nobody is
+                bidding". */}
             {mode.audience && (
               <p
                 style={{
@@ -800,21 +852,7 @@ export function MarketPage() {
                   color: "var(--text-tertiary)",
                 }}
               >
-                {t("market.submissionsAudience")}
-              </p>
-            )}
-            {!mode.audience && feedSelfHosted > 0 && (
-              <p
-                style={{
-                  margin: "6px 0 0",
-                  font: "11px var(--font-mono)",
-                  lineHeight: 1.5,
-                  color: "var(--text-tertiary)",
-                }}
-              >
-                {t("market.submissionsSelfHosted", {
-                  count: String(feedSelfHosted),
-                })}
+                {t("market.submissionsHidden")}
               </p>
             )}
           </div>

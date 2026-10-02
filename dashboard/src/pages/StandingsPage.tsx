@@ -1,21 +1,23 @@
-// The home: the competition standings, as a leaderboard people come back to.
+// The competition standings, as a leaderboard people come back to (/standings; "/" is the
+// overview, which shows the top of this table).
 //
 // One table, under the one rule the competition is scored by (rules §4.4): per epoch a deviation
 // score T over the field, across epochs a weighted average of T. Around it, the things a returning
 // reader needs before the numbers: how far the competition has got and when it moves next (§4.7.1),
 // the shape of the race so far (score by epoch), and the change since the last epoch beside each
-// rank. The explanation of the units and the environment is one click away rather than in the
-// scroll path -- a first-time reader opens it, a daily reader never sees it.
+// rank. Every explanation -- what the columns mean, how the units nest, what a scenario is -- sits
+// behind a "?" beside the thing it explains rather than in the scroll path: a first-time reader
+// opens it, a daily reader never sees it.
 //
 // Everything obeys the round cursor: scrubbing the bar replays the competition round by round, and
 // the Δ column switches from "since the previous epoch" to "since the previous round" while it does.
 
 import { useEffect, useMemo, useState } from "react";
-import { InfoTabs } from "@/components/InfoTabs";
 import { FindAgent } from "@/components/FindAgent";
 import { RoundCursorBar } from "@/components/RoundCursorBar";
 import { ScoreRaceChart } from "@/components/ScoreRaceChart";
 import { AppShell, PAGE_MAIN } from "@/components/AppShell";
+import { CompetitionPicker } from "@/components/CompetitionPicker";
 import { MoveCell, Panel, Stat, toneColor } from "@/components/competitionUi";
 import {
   competitionName,
@@ -38,9 +40,10 @@ import { setCursorRange, useCursor } from "@/data/roundCursor";
 import { setSelectedRound } from "@/data/roundSelection";
 import { getSelectedRunId, setSelectedRunId } from "@/data/runSelection";
 import { useCompetitionSnapshot } from "@/data/useCompetitionSnapshot";
+import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { useLocale } from "@/i18n/locale";
 import { t } from "@/i18n/messages";
-import { formatPnlUsdc, formatScore } from "@/lib/format";
+import { formatClock, formatPnlUsdc, formatScore } from "@/lib/format";
 import { useMediaQuery } from "@/lib/useMediaQuery";
 import { MOBILE } from "@/lib/breakpoints";
 import { navigate } from "@/navigation";
@@ -125,26 +128,9 @@ function UnitLadder() {
     { label: t("units.block"), body: t("units.blockBody") },
   ];
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
-        gap: "1px",
-        background: "var(--border-subtle)",
-      }}
-    >
+    <>
       {rungs.map((rung, i) => (
-        <div
-          key={rung.label}
-          style={{
-            background: "var(--bg-surface)",
-            padding: "11px 14px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "4px",
-            minWidth: 0,
-          }}
-        >
+        <TipText key={rung.label}>
           <span
             style={{
               font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
@@ -159,18 +145,11 @@ function UnitLadder() {
             )}
             {rung.label}
           </span>
-          <span
-            style={{
-              font: "var(--text-xs) var(--font-sans)",
-              color: "var(--text-tertiary)",
-              lineHeight: 1.55,
-            }}
-          >
-            {rung.body}
-          </span>
-        </div>
+          {" — "}
+          {rung.body}
+        </TipText>
       ))}
-    </div>
+    </>
   );
 }
 
@@ -295,13 +274,6 @@ function ScenarioRow({
               ? "var(--text-disabled)"
               : "var(--text-secondary)",
         }}
-        title={
-          row.runId === null
-            ? t("home.scenarios.failedTitle")
-            : row.ended
-              ? t("home.scenarios.endedTitle")
-              : undefined
-        }
       >
         {row.runId === null
           ? "—"
@@ -317,7 +289,6 @@ function ScenarioRow({
         <span style={{ color: "var(--text-disabled)" }}>—</span>
       ) : row.leader ? (
         <span
-          title={t("home.scenarios.leaderTitle")}
           style={{
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -360,10 +331,7 @@ function ScenarioRow({
         }}
       >
         {row.runId === null ? (
-          <span
-            style={{ color: "var(--text-disabled)" }}
-            title={t("home.scenarios.failedTitle")}
-          >
+          <span style={{ color: "var(--text-disabled)" }}>
             {t("home.scenarios.failed", {
               reason: row.error ?? t("home.scenarios.noLeader"),
             })}
@@ -398,25 +366,6 @@ function ScenarioRow({
   );
 }
 
-/**
- * A wall-clock time with its zone. The zone is not decoration: the audience of a hosted dashboard
- * is in several of them, and "updated 06:01 PM" told a reader in another one nothing they could
- * act on (issue #84 N). The date is added whenever it is not today's.
- */
-function clock(ms: number, locale: string): string {
-  const tag = locale === "ja" ? "ja-JP" : "en-US";
-  const d = new Date(ms);
-  const sameDay = new Date().toDateString() === d.toDateString();
-  const time = d.toLocaleTimeString(tag, {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
-  return sameDay
-    ? time
-    : `${d.toLocaleDateString(tag, { month: "numeric", day: "numeric" })} ${time}`;
-}
-
 /** "mm:ss" from now until `ms`, for the countdown to the next round boundary. */
 function countdown(ms: number, nowMs: number): string {
   const total = Math.max(0, Math.round((ms - nowMs) / 1000));
@@ -438,7 +387,7 @@ function Countdown({ at }: { at: number }) {
   return <>{t("home.status.liveRoundIn", { t: countdown(at, now) })}</>;
 }
 
-export function HomePage() {
+export function StandingsPage() {
   const { data, loading, error } = useCompetitionSnapshot();
   const cursor = useCursor();
   const locale = useLocale();
@@ -545,21 +494,22 @@ export function HomePage() {
 
   if (loading) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          textAlign: "center",
-          padding: "var(--space-8) var(--page-pad-x)",
-          background: "var(--bg-canvas)",
-          font: "var(--text-sm) var(--font-mono)",
-          color: "var(--text-tertiary)",
-        }}
-      >
-        {t("common.loading")}
-      </div>
+      <AppShell activePage="standings">
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            textAlign: "center",
+            padding: "var(--space-8) var(--page-pad-x)",
+            font: "var(--text-sm) var(--font-mono)",
+            color: "var(--text-tertiary)",
+          }}
+        >
+          {t("common.loading")}
+        </div>
+      </AppShell>
     );
   }
 
@@ -567,7 +517,7 @@ export function HomePage() {
   // exists but has scored nothing yet keeps its landing — the rules, the scenario list and the
   // participant lookup are what a reader needs most before the first result, and dropping the
   // whole page took them away exactly then (issue #84 T).
-  if (error || !data || !standings) return <ScenarioPage />;
+  if (error || !data || !standings) return <ScenarioPage withCompetitionPicker />;
 
   const file = data.competition.file;
   const at = standings.throughRound;
@@ -646,7 +596,7 @@ export function HomePage() {
     );
     if (data.updatedAtMs !== null)
       statusParts.push(
-        t("home.status.updated", { time: clock(data.updatedAtMs, locale) }),
+        t("home.status.updated", { time: formatClock(data.updatedAtMs, locale) }),
       );
     // What is running *in this competition*, and where it is. The old line said only that some run
     // somewhere was live, and only while the plan had epochs left — so a practice period, whose
@@ -670,7 +620,7 @@ export function HomePage() {
     }
     if (nextStart !== null && (planned === null || done.length < planned))
       statusParts.push(
-        t("home.status.next", { time: clock(nextStart, locale) }),
+        t("home.status.next", { time: formatClock(nextStart, locale) }),
       );
   }
   // More results are coming. Not "the plan has epochs left" alone: a practice period has no plan
@@ -698,7 +648,7 @@ export function HomePage() {
     : 480 + regimes.length * 74 + (hasFlags ? 60 : 0) + (details ? 136 : 0);
 
   return (
-    <AppShell activePage="home">
+    <AppShell activePage="standings">
       <RoundCursorBar
         cursor={cursor}
         scenarioCount={file.scenarios.length}
@@ -736,14 +686,45 @@ export function HomePage() {
             >
               {competitionName(data.competition)}
             </h1>
+            {/* Locally, with more than one competition to choose from; never in the public view. */}
+            <CompetitionPicker />
             {practice && (
-              <span title={t("home.practiceNote")} style={BADGE}>
-                {t("home.practiceBadge")}
+              <span style={{ display: "inline-flex", alignItems: "center" }}>
+                <span style={BADGE}>{t("home.practiceBadge")}</span>
+                <InfoTip label={t("home.practiceBadge")}>
+                  <TipText>{t("home.practiceNote")}</TipText>
+                </InfoTip>
               </span>
             )}
-            {/* The label only: the paragraph below this header is where the public view is
-                explained, and saying it in three places at once said it in none (issue #84 M). */}
-            {mode.audience && <span style={BADGE}>{t("mode.audienceBadge")}</span>}
+            {/* Said once, behind the badge; saying it in three places at once said it in none
+                (issue #84 M). */}
+            {mode.audience && (
+              <span style={{ display: "inline-flex", alignItems: "center" }}>
+                <span style={BADGE}>{t("mode.audienceBadge")}</span>
+                <InfoTip label={t("mode.audienceBadge")}>
+                  <TipText>{t("mode.audienceNote")}</TipText>
+                </InfoTip>
+              </span>
+            )}
+            {/* How competition, scenario, interval and block nest -- the one thing a reader needs
+                before "rank moved at interval 14" means anything. */}
+            <span
+              style={{
+                marginLeft: "auto",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "2px",
+                font: "var(--text-xs) var(--font-mono)",
+                color: "var(--text-tertiary)",
+                letterSpacing: "var(--tracking-wide)",
+                textTransform: "uppercase",
+              }}
+            >
+              {t("units.title")}
+              <InfoTip label={t("units.title")} title={t("units.title")}>
+                <UnitLadder />
+              </InfoTip>
+            </span>
           </div>
           {statusParts.length > 0 && (
             <p
@@ -799,16 +780,6 @@ export function HomePage() {
               <Stat label={t("home.stat.recorded")} value={recordedAt} />
             )}
           </div>
-          {mode.audience && (
-            <span
-              style={{
-                font: "var(--text-xs) var(--font-sans)",
-                color: "var(--text-tertiary)",
-              }}
-            >
-              {t("mode.audienceNote")}
-            </span>
-          )}
           {data.missingRounds > 0 && (
             <span
               style={{
@@ -870,9 +841,13 @@ export function HomePage() {
             {race && (
               <Panel
                 title={t("home.chart.title")}
-                subtitle={t("home.chart.subtitle", {
-                  n: Math.min(10, race.order.length),
-                })}
+                info={
+                  <TipText>
+                    {t("home.chart.subtitle", {
+                      n: Math.min(10, race.order.length),
+                    })}
+                  </TipText>
+                }
               >
                 <div style={{ padding: "12px 12px 0" }}>
                   <ScoreRaceChart
@@ -892,12 +867,23 @@ export function HomePage() {
                     ? t("home.standingsSoFar")
                     : t("home.standingsFinal")
               }
-              subtitle={
-                standings?.pnlUnit === "return"
-                  ? `${t("home.practiceNote")} ${t("home.subtitlePractice")}`
-                  : practice
-                    ? `${t("home.practiceNote")} ${t("home.subtitle")}`
-                    : t("home.subtitle")
+              info={
+                <>
+                  {practice && <TipText>{t("home.practiceNote")}</TipText>}
+                  <TipText>
+                    {standings.pnlUnit === "return"
+                      ? t("home.subtitlePractice")
+                      : t("home.subtitle")}
+                  </TipText>
+                  <TipText>{t("home.info.columns")}</TipText>
+                  {hasFlags && <TipText>{t("home.info.notes")}</TipText>}
+                  {!narrow && <TipText>{t("home.info.netPnl")}</TipText>}
+                  {hasActivity && <TipText>{t("home.info.details")}</TipText>}
+                  {hasParticipants && (
+                    <TipText>{t("home.participantsNote")}</TipText>
+                  )}
+                  <TipText>{t("home.info.pin")}</TipText>
+                </>
               }
             >
               <div
@@ -952,7 +938,7 @@ export function HomePage() {
                   <button
                     type="button"
                     onClick={() => setDetails((v) => !v)}
-                    title={t("home.txsTitle")}
+                    aria-pressed={details}
                     style={{
                       ...VIEW_BUTTON,
                       ...(details ? VIEW_BUTTON_ACTIVE : {}),
@@ -985,18 +971,6 @@ export function HomePage() {
                   {`${visibleCount} / ${filteredCount}`}
                 </span>
               </div>
-              {showingParticipants && (
-                <p
-                  style={{
-                    margin: 0,
-                    padding: "8px 16px 0",
-                    font: "var(--text-xs) var(--font-sans)",
-                    color: "var(--text-tertiary)",
-                  }}
-                >
-                  {t("home.participantsNote")}
-                </p>
-              )}
               <div
                 style={{
                   overflowX: "auto",
@@ -1102,10 +1076,7 @@ export function HomePage() {
                       }}
                     >
                       <span>#</span>
-                      <span
-                        style={{ textAlign: "center" }}
-                        title={scrubbing ? undefined : t("home.deltaTitle")}
-                      >
+                      <span style={{ textAlign: "center" }}>
                         {scrubbing ? t("home.col.move") : t("home.col.delta")}
                       </span>
                       <span>{t("home.col.agent")}</span>
@@ -1133,25 +1104,16 @@ export function HomePage() {
                       )}
                       {details && hasActivity && (
                         <>
-                          <span
-                            style={{ textAlign: "right" }}
-                            title={t("home.txsTitle")}
-                          >
+                          <span style={{ textAlign: "right" }}>
                             {t("home.col.txs")}
                           </span>
-                          <span
-                            style={{ textAlign: "right" }}
-                            title={t("home.txsTitle")}
-                          >
+                          <span style={{ textAlign: "right" }}>
                             {t("home.col.reverts")}
                           </span>
                         </>
                       )}
                       {!narrow && (
-                        <span
-                          style={{ textAlign: "right" }}
-                          title={t("home.netPnlTitle")}
-                        >
+                        <span style={{ textAlign: "right" }}>
                           {t("home.col.netPnl")}
                         </span>
                       )}
@@ -1291,9 +1253,6 @@ export function HomePage() {
                               is shown dimmed rather than under a round label. */}
                           {!narrow && (
                             <span
-                              title={
-                                scrubbing ? t("home.netPnlScrub") : undefined
-                              }
                               style={{
                                 textAlign: "right",
                                 font: "var(--text-xs) var(--font-mono)",
@@ -1362,10 +1321,22 @@ export function HomePage() {
         {/* Choosing a world to look at, from the list rather than from a dropdown of names. */}
         <Panel
           title={t("home.scenarios.title")}
-          subtitle={
-            mode.audience
-              ? `${t("home.scenarios.subtitle")} ${t("home.scenarios.audienceEvents")}`
-              : t("home.scenarios.subtitle")
+          info={
+            <>
+              <TipText>{t("home.scenarios.subtitle")}</TipText>
+              <TipText>{t("home.scenarios.aboutSeed")}</TipText>
+              <TipText>{t("home.scenarios.aboutRegimes")}</TipText>
+              <TipText>{t("home.scenarios.eventsTitle")}</TipText>
+              <TipText>{t("home.scenarios.aboutEpisodes")}</TipText>
+              {mode.audience && (
+                <TipText>{t("home.scenarios.audienceEvents")}</TipText>
+              )}
+              {mode.standings && (
+                <TipText>{t("home.scenarios.leaderTitle")}</TipText>
+              )}
+              <TipText>{t("home.scenarios.endedTitle")}</TipText>
+              <TipText>{t("home.scenarios.failedTitle")}</TipText>
+            </>
           }
         >
           <div style={{ overflowX: "auto" }}>
@@ -1388,9 +1359,7 @@ export function HomePage() {
                 <span>
                   {mode.standings ? t("home.scenarios.col.leader") : ""}
                 </span>
-                <span title={t("home.scenarios.eventsTitle")}>
-                  {t("home.scenarios.col.events")}
-                </span>
+                <span>{t("home.scenarios.col.events")}</span>
               </div>
               {scenarioRows.map((row) => (
                 <ScenarioRow
@@ -1404,61 +1373,6 @@ export function HomePage() {
           </div>
         </Panel>
 
-        {/* The explanation of what a competition is — the units, the environment, the scoring,
-            the data. Folded, because a reader who comes back every epoch has read it, and a
-            first-time reader is told exactly where it is. */}
-        <details
-          style={{
-            border: "1px solid var(--border-subtle)",
-            borderRadius: "var(--radius-sm)",
-            background: "var(--bg-surface)",
-          }}
-        >
-          <summary
-            style={{
-              cursor: "pointer",
-              padding: "13px 16px",
-              display: "flex",
-              flexDirection: "column",
-              gap: "3px",
-              listStyle: "none",
-            }}
-          >
-            <span
-              style={{
-                font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
-                letterSpacing: "var(--tracking-widest)",
-                textTransform: "uppercase",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {t("home.about")}
-            </span>
-            <span
-              style={{
-                font: "var(--text-xs) var(--font-sans)",
-                color: "var(--text-tertiary)",
-                lineHeight: 1.5,
-              }}
-            >
-              {t("home.aboutHint")}
-            </span>
-          </summary>
-          <div
-            style={{
-              borderTop: "1px solid var(--border-subtle)",
-              padding: "16px",
-              display: "flex",
-              flexDirection: "column",
-              gap: "18px",
-            }}
-          >
-            <Panel title={t("units.title")}>
-              <UnitLadder />
-            </Panel>
-            <InfoTabs />
-          </div>
-        </details>
       </main>
     </AppShell>
   );

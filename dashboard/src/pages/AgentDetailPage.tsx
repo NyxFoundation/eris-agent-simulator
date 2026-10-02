@@ -6,6 +6,7 @@ import { Stat, toneColor } from "@/components/competitionUi";
 import { Badge } from "@/design-system/Badge";
 import { StatCard } from "@/design-system/StatCard";
 import { Tabs } from "@/design-system/Tabs";
+import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { StateChart } from "@/components/StateChart";
 import { LogStream } from "@/design-system/LogStream";
 import {
@@ -407,13 +408,7 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
           label={t("agent.standing.netPnl")}
           value={formatPnlUsdc(standing.netPnlUsdc)}
         />
-        <div
-          title={
-            standing.epochsUnscored > 0
-              ? t("home.unscoredTitle", { n: standing.epochsUnscored })
-              : undefined
-          }
-        >
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "2px" }}>
           <Stat
             label={t("agent.standing.rounds")}
             value={
@@ -425,6 +420,13 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
             }
             caps={standing.epochsUnscored === 0}
           />
+          {standing.epochsUnscored > 0 && (
+            <InfoTip label={t("agent.standing.rounds")}>
+              <TipText>
+                {t("home.unscoredTitle", { n: standing.epochsUnscored })}
+              </TipText>
+            </InfoTip>
+          )}
         </div>
       </div>
 
@@ -432,6 +434,9 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
           to. Without it the numbers here and the row that was clicked look like a contradiction. */}
       <span
         style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "2px",
           font: "var(--text-xs) var(--font-mono)",
           color: "var(--text-tertiary)",
         }}
@@ -439,6 +444,15 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
         {standing.throughRound === null
           ? t("agent.standing.finalNote")
           : t("agent.standing.throughRound", { at: standing.throughRound })}
+        <InfoTip label={t("agent.tab.standing")}>
+          <TipText>
+            {t(
+              standing.pnlUnit === "return"
+                ? "agent.standing.explainPractice"
+                : "agent.standing.explain",
+            )}
+          </TipText>
+        </InfoTip>
       </span>
 
       {standing.epochsUnscored > 0 && (
@@ -477,22 +491,6 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
         </span>
       ) : (
         <>
-          <p
-            style={{
-              margin: 0,
-              font: "var(--text-xs) var(--font-sans)",
-              color: "var(--text-tertiary)",
-              lineHeight: 1.6,
-              maxWidth: "78ch",
-            }}
-          >
-            {t(
-              standing.pnlUnit === "return"
-                ? "agent.standing.explainPractice"
-                : "agent.standing.explain",
-            )}
-          </p>
-
           <div
             style={{
               display: "grid",
@@ -547,8 +545,12 @@ function StandingTab({ standing }: { standing: CompetitionStanding }) {
                   <span style={{ textAlign: "right" }}>
                     {standing.pnlUnit === "return" ? "P (%)" : "P (USDC)"}
                   </span>
-                  <span style={{ textAlign: "right" }}>T</span>
-                  <span style={{ textAlign: "right" }}>w</span>
+                  <span style={{ textAlign: "right" }}>
+                    {t("agent.standing.col.t")}
+                  </span>
+                  <span style={{ textAlign: "right" }}>
+                    {t("agent.standing.col.w")}
+                  </span>
                 </div>
                 {d.epochs.map((e) => (
                   <div
@@ -902,8 +904,11 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
               different number and sits with the scenario's own figures below (issue #84 F). */}
           <span style={{ marginLeft: "auto" }}>
             {!mode.standings ? (
-              <span title={t("home.standingsOff")}>
+              <span style={{ display: "inline-flex", alignItems: "center" }}>
                 <Badge tone="neutral">{t("agent.standingOffBadge")}</Badge>
+                <InfoTip label={t("agent.standingOffBadge")}>
+                  <TipText>{t("home.standingsOff")}</TipText>
+                </InfoTip>
               </span>
             ) : standing ? (
               <Badge tone="success">
@@ -1159,7 +1164,12 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                 borderBottom: "1px solid var(--border-subtle)",
               }}
             >
-              <span>{t("agent.tab.rounds")}</span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "2px" }}>
+                {t("agent.tab.rounds")}
+                <InfoTip label={t("agent.tab.rounds")}>
+                  <TipText>{t("agent.roundsNote")}</TipText>
+                </InfoTip>
+              </span>
               <span>{t("agent.trades.col.block")}</span>
               <span style={{ textAlign: "right" }}>Tx</span>
               <span style={{ textAlign: "right" }}>
@@ -1248,15 +1258,6 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
                 </div>
               );
             })}
-            <div
-              style={{
-                padding: "10px 16px",
-                font: "10px var(--font-mono)",
-                color: "var(--text-tertiary)",
-              }}
-            >
-              {t("agent.roundsNote")}
-            </div>
           </div>
         )}
 

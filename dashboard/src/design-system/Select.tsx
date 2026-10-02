@@ -17,8 +17,14 @@ export function Select({
   onChange,
   disabled = false,
   style,
+  ariaLabel,
+  compact = false,
 }: {
   label?: string;
+  /** The accessible name when there is no visible label. */
+  ariaLabel?: string;
+  /** A shorter control, for a select that sits inline beside a heading. */
+  compact?: boolean;
   value?: string;
   options: SelectOption[];
   onChange?: ChangeEventHandler<HTMLSelectElement>;
@@ -46,14 +52,15 @@ export function Select({
         value={value}
         onChange={onChange}
         disabled={disabled}
+        aria-label={ariaLabel}
         style={{
-          height: "38px",
+          height: compact ? "30px" : "38px",
           borderRadius: "var(--radius-md)",
           border: "1px solid var(--border-default)",
           background: "var(--bg-sunken)",
           color: "var(--text-primary)",
           padding: "0 10px",
-          fontSize: "var(--text-base)",
+          fontSize: compact ? "var(--text-sm)" : "var(--text-base)",
           fontFamily: "var(--font-sans)",
           opacity: disabled ? 0.5 : 1,
           width: "100%",

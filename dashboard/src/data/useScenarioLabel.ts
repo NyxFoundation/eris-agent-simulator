@@ -19,6 +19,7 @@ import {
   resolveCompetitionId,
   useSelectedCompetitionId,
 } from "./competitionSelection";
+import { loadMode, useMode } from "./mode";
 import { listRuns } from "./runArtifacts";
 import { useSelectedRunId } from "./runSelection";
 
@@ -35,6 +36,9 @@ const EMPTY: ScenarioLabel = { name: null, competition: null, seed: null };
 export function useScenarioLabel(): ScenarioLabel {
   const runId = useSelectedRunId();
   const competitionId = useSelectedCompetitionId();
+  // Whether a stored competition choice counts depends on the mode, so an answer that arrives late
+  // (a retried /runs/mode.json) recomputes the label.
+  const mode = useMode();
   const [label, setLabel] = useState<ScenarioLabel>(EMPTY);
 
   useEffect(() => {
@@ -43,7 +47,9 @@ export function useScenarioLabel(): ScenarioLabel {
       setLabel(EMPTY);
       return;
     }
-    listRuns()
+    // The mode decides whether a stored competition choice counts (competitionSelection.ts).
+    loadMode()
+      .then(() => listRuns())
       .then((index) => {
         const id = resolveCompetitionId(index);
         if (!id) throw new Error("no competition");
@@ -74,7 +80,7 @@ export function useScenarioLabel(): ScenarioLabel {
     return () => {
       cancelled = true;
     };
-  }, [runId, competitionId]);
+  }, [runId, competitionId, mode.known, mode.audience]);
 
   return label;
 }

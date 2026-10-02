@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RoundsBar } from "@/components/RoundsBar";
 import { AppShell } from "@/components/AppShell";
+import { CompetitionPicker } from "@/components/CompetitionPicker";
 import { WorldMap } from "@/components/WorldMap";
 import { AgentLogPanel, WorldCharts } from "@/components/WorldPanels";
 import { WorldTimeline, type WorldSpeed } from "@/components/WorldTimeline";
@@ -26,6 +27,7 @@ import { useMode } from "@/data/mode";
 import { getReplay, replayHeadFor, seekReplay, startReplay } from "@/data/replay";
 import { useScenarioLabel } from "@/data/useScenarioLabel";
 import { useWorldSnapshot } from "@/data/useWorldSnapshot";
+import { InfoTip, TipText } from "@/design-system/InfoTip";
 import { t } from "@/i18n/messages";
 import { formatScore } from "@/lib/format";
 import { navigate } from "@/navigation";
@@ -66,28 +68,42 @@ interface Handover {
   atEnd: boolean;
 }
 
-function Centered({ text, tone }: { text: string; tone?: string }) {
+/** A loading or failure message, inside the shell so the header's way out is still there. */
+function Centered({
+  text,
+  tone,
+  children,
+}: {
+  text: string;
+  tone?: string;
+  children?: React.ReactNode;
+}) {
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        textAlign: "center",
-        padding: "var(--space-8) var(--page-pad-x)",
-        background: "var(--bg-canvas)",
-      }}
-    >
-      <span
+    <AppShell activePage="scenario">
+      <div
         style={{
-          font: "var(--text-sm) var(--font-mono)",
-          color: tone ?? "var(--text-tertiary)",
+          flex: 1,
+          minHeight: "50vh",
+          display: "flex",
+          flexDirection: "column",
+          gap: "14px",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          padding: "var(--space-8) var(--page-pad-x)",
         }}
       >
-        {text}
-      </span>
-    </div>
+        <span
+          style={{
+            font: "var(--text-sm) var(--font-mono)",
+            color: tone ?? "var(--text-tertiary)",
+          }}
+        >
+          {text}
+        </span>
+        {children}
+      </div>
+    </AppShell>
   );
 }
 
@@ -124,12 +140,24 @@ function ScenarioStandings({
         borderRight: "1px solid var(--border-subtle)",
       }}
     >
-      <span style={PANEL_TITLE}>
+      <span
+        style={{
+          ...PANEL_TITLE,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "2px",
+        }}
+      >
         {!shown
           ? t("home.standingsTitle")
           : closedRounds > 0
             ? t("home.standingsThrough", { at: closedRounds })
             : t("scenario.standings")}
+        {shown && (
+          <InfoTip label={t("scenario.standings")}>
+            <TipText>{t("scenario.standingsAbout")}</TipText>
+          </InfoTip>
+        )}
       </span>
       <div
         style={{
@@ -181,10 +209,7 @@ function ScenarioStandings({
             >
               <span style={COLUMN_LABEL}>{t("rounds.col.rank")}</span>
               <span style={COLUMN_LABEL}>{t("home.col.agent")}</span>
-              <span
-                title={t("agent.standing.score")}
-                style={{ ...COLUMN_LABEL, textAlign: "right" }}
-              >
+              <span style={{ ...COLUMN_LABEL, textAlign: "right" }}>
                 {t("home.col.score")}
               </span>
             </div>
@@ -268,7 +293,13 @@ function ScenarioStandings({
   );
 }
 
-export function ScenarioPage() {
+export function ScenarioPage({
+  withCompetitionPicker = false,
+}: {
+  /** The standings page landed here because its competition could not be read: offer the way to
+   * another one. */
+  withCompetitionPicker?: boolean;
+} = {}) {
   const { data, loading, error } = useWorldSnapshot();
   const scenario = useScenarioLabel();
   const mode = useMode();
@@ -392,7 +423,9 @@ export function ScenarioPage() {
           detail: error ? `: ${error.message}` : "",
         })}
         tone="var(--danger-text)"
-      />
+      >
+        {withCompetitionPicker && <CompetitionPicker />}
+      </Centered>
     );
 
   const { round } = data;
@@ -432,7 +465,7 @@ export function ScenarioPage() {
             standings otherwise looks like a page in its own right, and "round 14" on it reads as
             a round of the competition rather than of this one world. */}
         <a
-          onClick={() => navigate("/")}
+          onClick={() => navigate("/standings")}
           style={{
             font: "var(--text-xs) var(--font-mono)",
             letterSpacing: "var(--tracking-wide)",
@@ -448,18 +481,28 @@ export function ScenarioPage() {
           {"  ›  "}
           {t("units.scenario")}
         </a>
+        {withCompetitionPicker && <CompetitionPicker />}
         {/* The scenario names itself (regime#seed, or a practice period's day). */}
-        <h1
-          title={round.runId}
-          style={{
-            margin: 0,
-            font: "var(--weight-bold) 21px var(--font-sans)",
-            letterSpacing: "var(--tracking-tight)",
-            color: "var(--text-primary)",
-          }}
-        >
-          {scenario.name?.replace(/^full-/, "") ?? t("scenario.fallbackTitle")}
-        </h1>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <h1
+            style={{
+              margin: 0,
+              font: "var(--weight-bold) 21px var(--font-sans)",
+              letterSpacing: "var(--tracking-tight)",
+              color: "var(--text-primary)",
+            }}
+          >
+            {/* The raw run id stays one hover away, on the name. */}
+            <span title={round.runId}>
+              {scenario.name?.replace(/^full-/, "") ?? t("scenario.fallbackTitle")}
+            </span>
+          </h1>
+          <InfoTip label={t("units.scenario")} title={t("units.scenario")}>
+            <TipText>{t("units.scenarioBody")}</TipText>
+            <TipText>{t("scenario.aboutBoard")}</TipText>
+            <TipText>{t("scenario.aboutInteract")}</TipText>
+          </InfoTip>
+        </div>
         <span
           style={{
             font: "var(--text-sm) var(--font-mono)",

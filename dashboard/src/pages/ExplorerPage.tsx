@@ -12,6 +12,7 @@ import { AppShell, PAGE_MAIN } from "@/components/AppShell";
 import { useIsMobile } from "@/lib/breakpoints";
 import { Input } from "@/design-system/Input";
 import { Select } from "@/design-system/Select";
+import { InfoTip, TipText } from "@/design-system/InfoTip";
 import {
   blockscoutAddressUrl,
   blockscoutBlockUrl,
@@ -374,12 +375,28 @@ export function ExplorerPage() {
       >
         <span
           style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "6px",
             font: "var(--weight-bold) var(--text-2xl) var(--font-sans)",
             color: "var(--text-primary)",
             letterSpacing: "var(--tracking-tight)",
           }}
         >
           {t("explorer.title")}
+          <InfoTip label={t("explorer.title")} title={t("explorer.title")}>
+            <TipText>{t("explorer.aboutPage")}</TipText>
+            {/* Where the numbers come from, and the local explorer's commands: for whoever runs
+                this dashboard over their own runs/, not for the public view (issue #183). */}
+            {!mode.audience && (
+              <>
+                <TipText>{t("explorer.about.p1")}</TipText>
+                <TipText>{t("explorer.about.p2")}</TipText>
+                <TipText>{t("explorer.about.p3")}</TipText>
+                <TipText>{t("explorer.about.p4")}</TipText>
+              </>
+            )}
+          </InfoTip>
         </span>
 
         {/* Connection state. The dashboard reads run artifacts; Blockscout indexes the same

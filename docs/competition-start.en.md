@@ -274,12 +274,12 @@ valuation block (rules §4.1). Rows the rules do not spell out say so.
 
 | Holding | Counted as |
 |---|---|
-| Token balances | ETH, WETH, WBTC at the reference price; USDC at $1. DAI and eUSD at the geometric mean of the pool's sell and buy quotes ($1 when no quote comes back). ERLST: see the LST row. Any other token (LQTY, the `launch` listings and so on) is 0 (rules §4.1) |
+| Token balances | ETH, WETH, WBTC at the reference price; USDC at $1. DAI and eUSD at what selling everything you hold of it into its pool pays, quoted as one sale together with what the AMM, Liquity and lending rows below hold of it (when that quote does not come back, the geometric mean of $1,000 sell and buy quotes; failing that, $1). ERLST: see the LST row. Any other token (LQTY, the `launch` listings and so on) is 0 (rules §4.1) |
 | AMM liquidity | A Uniswap position is what it holds at that moment (two tokens) plus uncollected fees. LP tokens of the Balancer and Curve WETH/USDC and WBTC/USDC pools are your share of what the pool holds (stableswap LP tokens are 0) |
 | Aave | Collateral − debt at Aave's oracle prices; negative when the debt exceeds the collateral. ERLST collateral is re-counted like the LST row, at what selling it into the pool pays (capped at its value at the redemption rate) |
 | GMX | Margin + unrealised PnL from the price move (at the reference price). Accrued funding is not deducted. An order not yet executed counts as 0, its margin and execution fee included (an order placed just before the end is one) |
 | LST | ERLST in your wallet is what selling all of it into the pool pays at that moment. A requested withdrawal counts in full if it is claimable by then (you need not have claimed it), and as 0 if not (the rules do not spell this out; it is the scoring code's rule) |
-| Liquity | A Trove is its collateral (at the reference price) minus the cost of buying back its net debt (the debt without the 200 eUSD deposit) in the pool now, floored at 0 since you can walk away from the debt by abandoning the collateral. Surplus collateral left over from a redemption or liquidation counts at the reference price. The Stability Pool is what selling your eUSD balance after absorbed liquidations pays in the pool now, plus the ETH not yet withdrawn. LQTY is 0. Rules §4.1 does not name CDPs; this is the scoring code's rule |
+| Liquity | A Trove is its collateral (at the reference price) minus the cost of buying back its net debt (the debt without the 200 eUSD deposit) in the pool now, floored at 0 since you can walk away from the debt by abandoning the collateral. Surplus collateral left over from a redemption or liquidation counts at the reference price. The Stability Pool is your eUSD balance after absorbed liquidations, counted as part of one sale with your wallet's eUSD (the token-balance row), plus the ETH not yet withdrawn. LQTY is 0. Rules §4.1 does not name CDPs; this is the scoring code's rule |
 | Assets inside a contract you deployed | 0. Scoring counts only the balances and positions your agent's own address holds, so a contract's contents are not counted even when they are WETH. Profit that passed through counts in full (the rules do not spell this out; it is the scoring code's rule) |
 
 ### The 12 regimes
@@ -838,11 +838,28 @@ distribution cannot tell you which one worked.
 npm run dashboard        # http://localhost:5173
 ```
 
-Pick a competition from **Competition** in the left sidebar (one `--scenarios` run = one competition; a
-single `sim:realtime` run appears as a one-scenario competition). EN / 日本語 switches the language. The
-pages are three layers that follow the ladder **competition › scenario › interval**.
+When `runs/` holds more than one competition, pick one with the select beside the competition's name on
+the overview's top 5 and on the standings (one `--scenarios` run = one competition; a single
+`sim:realtime` run is a one-scenario competition, under "— single run —" in the same select). The
+dashboard the organizer hosts has no such select and always shows the newest competition. The button at
+the top right switches the language. The pages are three layers that follow the ladder **competition › scenario › interval**. **The
+explanations sit behind the ? beside each heading** (click to open; click again or press Esc to close).
 
-### Standings (`/`)
+### Overview (`/`)
+
+![overview](img/dashboard-overview.en.png)
+
+The front page summarises the competition itself: the **schedule** (which period it is now and how many
+days to the next deadline — Japan time, judged by your browser's clock), **how to submit** (the steps
+from registering to the freeze, and which of them are open today), three cards for **scoring, prizes and
+submission & limits** (the gist on the card, the full statement behind the ?, and a link to the
+authoritative rules on ascon.dev), the **top 5** of the selected competition (with how many days or
+epochs each was scored on), and the **links** (this guide, the rules, Discord, and the practice
+environment's RPC, explorer and environment manifest). **Register** at the top right opens the
+registration form, and disappears when registration closes (Oct 24). **Submit**, right of it, opens the
+submission form, and is there only during the submission period (Sep 23 – Oct 31).
+
+### Standings (`/standings`)
 
 ![standings](img/dashboard-standings.en.png)
 
@@ -872,8 +889,9 @@ Click a row to open that world.
 
 ![scenario](img/dashboard-scenario.en.png)
 
-The board of one world. The bar at the top is that world's intervals; the **block axis** below it walks the
-world block by block (play, single-step, speed). The board reads left to right: **wallets** (each agent's
+The board of one world. The bar at the top is that world's intervals, and **change ▾** beside the
+world's name steps to another world of the same competition (on the markets, explorer and agent pages
+too). The **block axis** below it walks the world block by block (play, single-step, speed). The board reads left to right: **wallets** (each agent's
 account value), **the chain** (the transactions in that block and their priority fees), **contracts**
 (each venue's state: pool price, GMX open interest, Aave utilisation, LST discount, eUSD price). Below:
 the **standings within this world** (through interval k), the picked wallet's **agent log** (mined
@@ -898,9 +916,9 @@ epoch** (s / scenario / P / T / w); **by regime** (epochs / mean T / std of T).
 liquidation it is below the field's mean. Why a strategy that wins big in one regime and loses in the rest
 places below a steady one is visible in the per-regime rows.
 
-The rank badge at the top right is **the rank within the world (scenario) currently open**; the
-competition rank is the "k of n" in the Standing tab. The other tabs: **Overview** (the account value
-curve and end-of-run positions), **Intervals** (this agent's Δ value / log return / rank per interval),
+The rank badge at the top right is **the competition rank** (the same "k of n" as in the Standing tab); the
+rank within the world (scenario) currently open is on the **Overview** tab. The other tabs: **Overview**
+(the account value curve, end-of-run positions and the rank in this scenario), **Intervals** (this agent's Δ value / log return / rank per interval),
 **Positions** (every venue: GMX perps, Aave accounts with HF, LST queues, Trove ICR), **Trade history**,
 **Decision log** (the contents of `agents/<id>.jsonl`).
 
@@ -1007,10 +1025,17 @@ swapping out of it) and reaches the coordinator as an early exit with code 137. 
 indistinguishable from a record of choosing not to trade**, so check before you submit. Details in
 [infra/docker-agent/README.md](../infra/docker-agent/README.md).
 
-During the submission period you may **replace your submission up to 5 times a day** and **nominate
-up to 2 submissions** for final evaluation. With two, each is evaluated independently against the
-non-public set and **the higher score** becomes your final score. When the submission period closes
-your agent is frozen, and only the in-epoch LLM revision keeps running.
+**How to send it**: the ZIP goes through the organizer's **[submission
+form](https://forms.gle/97bxYQvh43GVAS4z9)** (sign in with a Google account). Your inference service API
+key is registered **once, on a separate form**. A few seconds after you send, an email tells you whether
+the submission was **accepted** and how many replacements you have left that day. A submission that fails
+the formal requirements (the ZIP opens; `prompt.md`'s frontmatter has `kind: improve`, `name` and
+`description`; and so on) is not accepted and does not count.
+
+During the submission period you may **replace your submission up to 5 times a day** (days start at
+00:00 JST; the time the form received it is what counts). **The one evaluated is the submission accepted
+last when the period ends**, and one agent is run per participating unit (rules §2.2). When the
+submission period closes your agent is frozen, and only the in-epoch LLM revision keeps running.
 
 ---
 

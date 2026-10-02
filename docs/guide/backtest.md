@@ -173,6 +173,13 @@ npm run backtest -- --scenarios plan.yaml --agents field.yaml --follow-schedule 
 - It is refused before anvil starts when the set has no timetable, when some epoch has no
   `startsAt`, or when the starts are not in list order (the runner takes epochs in list order). Only
   with `--scenarios`.
+- **A plan under a key file is the live week, and its posture is refused rather than warned about**
+  (`core/src/realtime/liveWeek.ts`): public environment keys (admin / keeper / setup / deployer, or a
+  state dump whose Aave admin is an anvil test account), `agentSandbox: process`, `command`/`args`
+  roster entries, and docker agents without `ERIS_AGENT_ISOLATE=1` + `ERIS_AGENT_INTERNAL=1` or in
+  bind-mount mode. Checked once per regime before the first wait, and again by each epoch; a refusal
+  stops the week instead of becoming an excluded epoch. `ERIS_ALLOW_PUBLIC_ROLE_KEYS` does not apply.
+  Rehearse the plan with `--scenario-key public`, which is not the live week.
 - A slot shorter than an epoch's wall time (360 blocks = 12 min of block time plus setup and
   reconstruction) makes every epoch after it late. The runner reports it; the plan is where it is
   fixed.

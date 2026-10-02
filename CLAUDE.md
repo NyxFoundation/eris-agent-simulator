@@ -378,11 +378,23 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     docker でも `ERIS_AGENT_ISOLATE=1` + `ERIS_AGENT_INTERNAL=1` が無い agent は host のサービスへ直接届くので、coordinator は
     **止めずに警告する**（`agent_sandbox_warning` イベント + 起動時と完走時の stderr バナー。audience には配信しない）。
     ライブ週の設定は `infra/docker-agent/ISOLATION.md` 冒頭
+  - **鍵ファイル付きの順序付きプラン（= ライブ週）では、警告止まりだった 2 つを拒否にする**（`core/src/realtime/liveWeek.ts`）。
+    運営の鍵（admin/keeper/setup/deployer、または Aave admin が anvil のテストアカウント = 既定 mnemonic の dump）が
+    公開鍵 / `agentSandbox: process` / `command` の agent / `ERIS_AGENT_ISOLATE=1` + `ERIS_AGENT_INTERNAL=1` の無い
+    docker agent / bind-mount。以前は `roleKeyGuard` が「参加者が送れるチェーン」を登録ファイルか `external` でしか
+    判定せず、運営が起動する本番エポックはどちらも持たないので素通りしていた。隔離も警告だけで、host network の
+    agent はゲートウェイを通らず anvil の cheatcode に届く。規約 §3.1 の一覧が「禁止」と書くものを「届かない」に
+    するのはこの 2 つ。最初の待機の前にレジームごとに検査し、拒否は除外エポックにせず週ごと止める。
+    `ERIS_ALLOW_PUBLIC_ROLE_KEYS` は効かない。リハーサルは `--scenario-key public`
   - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
   - **5 ブロック中央値は市場由来の全マークに掛かる**（規約 §4.1。以前は stable の probe だけで、LP・LST・Liquity は
-    境界 1 点だった）。対象は各アダプタが `medianSurfaces` で宣言し（uniswap-lp の tick / balancer・curve の持分価格 /
-    LST のプール売却 quote / Liquity の自分サイズ quote）、summary の `markMedian.surfaces` に出る。**保有量は境界で固定し
-    価格だけ中央値**。参照価格（fair と、それを配る Aave・GMX のオラクル）は市場由来ではないので対象外
+    境界 1 点だった）。対象は各アダプタが `medianSurfaces` で宣言し（LST のプール売却 quote /
+    Liquity の自分サイズ quote / Aave の LST 担保 haircut）、summary の `markMedian.surfaces` に出る。**保有量は境界で固定し
+    価格だけ中央値**。参照価格（fair と、それを配る Aave・GMX のオラクル）は市場由来ではないので対象外。
+    **LP の分割比（Uniswap の tick・Balancer/Curve の持分あたり準備金）は保有量の側**で、境界ブロックの値を使う。
+    #144 で一度中央値にしたが、自分しか LP のいないプールを窓の 3 ブロックだけずらして境界前に戻すと、同じ流動性が
+    ずらした側の分割で評価され、預けた額の数十 % が架空の価値になった（fair からずれたプールの持分は fair で評価すると
+    必ず大きい）。境界ブロックの分割なら同じブロックの swap は財布と LP で相殺される
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 60`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジームはエポックごとに独立・一様（issue #186）。`--starts-at <ISO> --every-minutes <N>`（または `--ends-at <ISO>` で窓に均等配置）で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出し、`backtest --follow-schedule` がその時刻を待って各エポックを始める。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 10/31 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
   - **ライブ週の編成は [ADR 0026](docs/adr/0026-live-week-schedule.md)（Proposed）**: k = 60（レジームはエポックごとに i.i.d. 一様に引く = issue #186。平均 5 回 ± 2.1、どれかが 0 回になる確率 6.4%）・1 エポック 360 ブロック・ガス用 ETH 3（ベンチマークも同額。公式レジームの `funding.ethWei` は別変更）・168 時間に 168 分おきで均等配置し `--follow-schedule` の 1 プロセスで走らせる。**60 エポックはブロック時間で 12 時間 = 週の 7%**。週を埋めるなら「360 ブロックのままエポックを増やす（非公開 seed の追加 commit が要る）」が推奨で、エポックを伸ばすのは全 12 レジームの再較正になる（ADR の §5）
   - **公式レジーム（12 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）/ `launch`（run 途中に 2〜3 の新トークンが環境の Uniswap V3 factory 経由で USDC の薄いプールに上場し、トークンごとに需要の波が来るか dud かをシードが決める。鐘の時点の保有は 0 = ADR 0022 公理 2。issue #29。下の「新規トークンの上場」節）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選はエポックごとにレジームを独立・一様に引く**（`schedule.ts`、issue #186。以前は各レジーム k/R 回をシャッフルしていたが、それだと状態を引き継ぐ agent が既出レジームを数えて残りを推測できた）。非公開セットは**各レジーム k 本以上**の seed が要る（全エポックが同じレジームを引きうる）。**乱数ストリームはレジーム名でも分かれる**（`run.regime` → `setScenarioRegime`、flow bot へは `ERIS_SCENARIO_REGIME`。issue #186。以前は同じ seed の calm と crash が同じ価格ショック・フローを引いていた。backtest が自動で書く。agent には渡さない）
@@ -391,20 +403,20 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - **7 本とも全 venue（`lst` / `liquity` 含む）をデプロイし、配布は ETH/BTC/USDC バスケット**（8 WETH + 0.4 WBTC + 25k USDC。issue #54）に**ガス用 1 ETH**（2026-09-28。規約 §4.2 の公表値で、公式レジームと `practice.yaml` に明記。sdk の既定も全モード 1 ETH。以前の既定 100 ETH はバスケットの 4 倍で、その値動きが P の大半を占めていた。ガスマネージャは全 run で動き、足りなくなれば自分の WETH から補充する）。**flow wallet には 0.5 WBTC も配る**（`funding.flowBase`。issue #99）— 以前は flow の財布に WBTC が無く、しかも `flow/logic.ts` の売り側ガードが全 base で `wethWei` を見ていたので、WBTC の売り注文が残高 0 に対して送られて informed 行の 27〜38% が revert し、WBTC プールが fair の +110bps に張り付いていた。ガードは base ごとの残高（`flowBalances[*].bases`）を読むようになった。WETH は従来どおり flow が買って調達する（1,012/1,012 成功の実測があるので触らない）。以前は 5 venue・USDC-only 版と `full-*` の 7 venue 版が並立していたが、**5 venue 版は撤去した**（「競技とは何か」に 2 つ目の答えを残さないため）。`full-8h` / `full-boxA` は `public.yaml` と同内容になったので統合済み。`config/regimes/{lst,liquity,liquity-crash}.yaml` は venue 単体検証用として競技セット外に残る。USDC-only を保つのは `metric-*` だけで、理由は別（ADR 0019 §6。`genMetricRegimes.ts` が `funding.base` ごと落とす）
   - `--score-every N` は採点断面の間引き。成績は初期/最終断面しか使わない（`alphaByAgent = alphaLast − alphaFirst`）ので**スコアは不変**、equity curve が粗くなるだけ
 - `npm run explorer` — sim anvil を索引するローカル Blockscout（issue #31。stock イメージ pin、`infra/blockscout/`）。UI は http://localhost:3100。**チェーンをリセットしたら `npm run explorer:reset`**（resetFork/snapshot-revert の巻き戻しに indexer は追従できないので DB を消して再索引するのが正規のライフサイクル）。`npm run explorer:tag` が最新 run の `summary.json` から agent アドレスに名前タグを付ける（reset で消えるので run ごと）。接続先・chain id・fork 用 `FIRST_BLOCK` は `infra/blockscout/explorer.env`
-- `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。サイドバーの picker で `runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
+- `npm run dashboard` — run を描画する web UI（`dashboard/` workspace = issue #63。Vite dev サーバー http://localhost:5173）。`runs/<id>/` を選び、`summary.json` / `events.jsonl` / `blocks.csv` / `agents/*.jsonl` / `market.json` から全ビューを構成する。**実行中の run は `● (live)` として現れ観戦できる**（events/agent jsonl の tail + agent ログの `runtime_start` から発見した anvil RPC の現ブロック読取。採点・venue 系列は完走時に自動で archived 表示へ切り替わる）。Blockscout が起動していれば tx/block/address が deep link になり indexer 高さも併記される（落ちていればリンクだけ消える）。UI 開発用の seed データは `VITE_DATA_PROVIDER=seed`
   - **選択は `competition ⊃ scenario ⊃ interval`**（UI から "matrix" という語は消した。ディスク上の
     `matrix.json` は core の出力なのでそのまま）。UI 表示は「評価区間」/ "Interval"（issue #140 までは
     「ラウンド」/ "Round"）。dashboard のコード内の識別子（`roundCursor` / `RoundsBar` / `round`）は round のままで、
-    `dashboard/` の中では常に評価区間を指す。既定の着地点は competition = `/` の順位表。
-    1 シナリオは分布からの 1 ドローであって結果ではない（`config/scenarios/public.yaml`:
+    `dashboard/` の中では常に評価区間を指す。既定の着地点は `/` = **Overview**（issue #183。下の項目）で、
+    競技の順位表は `/standings`。着地点を 1 シナリオにしないのは、1 シナリオは分布からの 1 ドローであって結果ではない（`config/scenarios/public.yaml`:
     "the published seeds are five draws from it, **not the target**"）ので、そこを既定にすると
     「読んではいけない単位」を最初に見せることになる。picker は competition →（`regime#seed` 表示の）
     scenario の順。**「competition に属さない run」という第 2 のモデルは無い** — `sim:realtime` の
     1 run は「1 シナリオの競技」で、picker の **— single run —** はその run を外側の単位にする
     （`competitionFromRun`。データ層の入口 1 箇所で正規化し、以降のページは 1 種類の型しか見ない）。
-    **ルートは `/`（= Standings）と `/scenario` の 2 本 + `/agent/<id>`**。参加者向けに整理した際
-    `/standings`・`/leaderboard`（scenario 内順位と重複）・`/archive`（未到達の seed 遺物）・
-    `/run` エイリアスは削除した。`/markets` と `/explorer` は 1 world の中でしか意味を持たないので
+    **ルートは `/`（= Overview）・`/standings`・`/scenario` + `/agent/<id>`**。参加者向けに整理した際
+    `/leaderboard`（scenario 内順位と重複）・`/archive`（未到達の seed 遺物）・`/run` エイリアスは削除した
+    （`/standings` も一度消したが、#183 で `/` を Overview にしたときに順位表の置き場所として戻した）。`/markets` と `/explorer` は 1 world の中でしか意味を持たないので
     scenario 層のまま。**`/scenario` は world の盤面そのもの**（2026-09-07。旧 `/world` タブを統合し、`/world` は
     `/scenario` に着地する）: RoundsBar（replay transport 無し）+ ブロック軸 + 盤面 + シナリオ内順位 / Agent Log /
     venue 価格・口座価値の履歴。ブロック軸の head はページのローカル状態で、**途中で離れるときだけ replay head に
@@ -412,13 +424,38 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     replay で clamp せず、順位パネルは head 時点で閉じた評価区間までの順位（`standingsThroughRound`）。旧 top-page
     snapshot（ティッカー・テープ・ブロックプレビュー）は削除。**順位が存在しない 2 ケースはそう言う**: live run（`summary.json` は完走時に
     書かれるので結果がまだ無い）と seed プロバイダ（フィクスチャ）。どちらも scenario ビューに着地する
-  - **トップページ（`/`）が「この競技とは何か」を全部持つ**。順位表の下に 3 つ:
-    **シナリオ一覧**（1 行 1 世界 = `regime#seed` / 評価区間の数 / 首位 / 環境イベント種別。行クリックで開く。
-    `dashboard/src/data/scenarioList.ts`）、**単位の梯子**（競技 › シナリオ › 評価区間 › ブロック）、
-    **Info タブ**（overview / environment / scoring / data = `components/InfoTabs.tsx`）。
-    3 つとも以前は「まずシナリオを 1 つ選ばないと読めない」位置にあった。特に Info タブは
-    35 世界のうち 1 つの末尾にあったので、**「シナリオとは何か」の説明がシナリオを開かないと読めず、
-    しかもその世界固有の説明に読めた**。イベント列の空欄は「予定なし」であって「calm」ではない
+  - **ヘッダ + Overview（`/`）が参加者の入口**（issue #183）。**ヘッダ**（`components/SiteHeader.tsx`、全ページ・sticky）:
+    ASCON ロゴ / ナビ 5 本 / **参加登録**（Google Form 直結、？ に「先に Discord #ascon」、**10/25 00:00 JST 以降は出さない**）/
+    その右に **提出**（エージェント提出フォーム直結、**提出期間 9/23〜10/31 だけ**。430px 以下はロゴのワードマークを省く）/
+    日英トグル。860px 以下はナビをメニューに畳む（参加登録とトグルはバーに残る）。ページ内の sticky バーは
+    `top: var(--header-h)`。**Overview** は上から
+    日程（ブラウザの時計で「開催中」と次の締切までの JST 暦日数。ascon.dev は静的なので「今ここ」はここにしか出せない）/
+    **提出の手順**（参加登録 → API キー → 作る → 手元で確かめる →（任意）練習環境 → ZIP → 提出 → 凍結。期間のある段に
+    「受付中 · あと N 日」等。参加者の進み具合は分からないので「あなたの段」は指さない。提出フォームは受付期間中だけ直接リンク
+    （`SUBMISSION_FORM_URL`）、API キーのフォームは載せず Discord 案内。10/31 以降は 1 行に畳む）/ 評価・賞金・提出と制約の 3 カード（要点を常時表示、全文は ？、
+    ascon.dev の規約の節へリンク）/ 上位 5 名（順位・エージェント・平均得点・採点数 + 何の数字か・何日分・更新時刻の 1 行。
+    `standings: false` では出さない。完走済みでも結果発表日（12/7）前は「最終」と名乗らない — 参加者の手元の
+    backtest も同じ形だから）/ リンク集。**規約の値は `dashboard/src/data/competitionInfo.ts` 1 ファイル**
+    （各値に ascon-web `content/legal/rules.md` の節番号）で、規約改定時はここだけ直す（文言は `messages.ts` の `overview.*`）
+  - **サイドバーは無い**（全モード・全ページ全幅 + 1 行のフッタ）。**競技セレクト**（`components/CompetitionPicker.tsx`）は
+    概要の上位 5 名の見出しと `/standings` の競技名の横で、**手元で選択肢があるときだけ**（競技 2 つ以上、または
+    1 つ + 競技外の run）。**公開ビューでは出さず、ブラウザに保存された選択も無視して最新の競技を出す**
+    （`effectiveSelectedCompetitionId`。無視しないと、以前別の競技を選んだ閲覧者が戻れないまま固定される）。
+    世界の切替（`components/WorldSwitcher.tsx`、「変更 ▾」）は scenario 層のページの評価区間バーの世界名の横で、
+    選択中の run を今の競技の中に保つ役も持つ
+  - **日本語 UI の呼び方**: エポック（練習期間は 1 日）ごとの偏差値 = **得点**、順位を決めるその加重平均 = **平均得点**
+    （規約の「スコア」は平均得点。評価カードに「規約では『スコア』」と添える）。英語は score のまま
+  - **説明文は ？（`design-system/InfoTip.tsx`）に入れ、見出しと数字だけを常時表示する**（全ページ）。
+    クリック/タップ/キーボード（Enter・Space で開閉、Esc で閉じてボタンへ戻る）、外側を押すと閉じる、1 度に 1 つ、
+    `position: fixed` なので横スクロールする表の中でも切れない。`Panel` の `info` prop が入口。**ネイティブの `title=` は
+    説明に使わない**（スマホで出ない・キーボードで届かない）— 切り詰めた名前の全文やデータの読み値だけに残す。
+    空状態の文（「なぜ何も無いか」）は ？ に入れない（入れるとパネルが空に見える）
+  - **`/standings`** は順位表 + Find your agent + **シナリオ一覧**（1 行 1 世界 = `regime#seed` / 評価区間の数 /
+    首位 / 環境イベント種別。行クリックで開く。`dashboard/src/data/scenarioList.ts`）。**単位の梯子**（競技 › シナリオ ›
+    評価区間 › ブロック）はタイトル横の ？。旧 **InfoTabs は解体**: 採点 → Overview の評価カード、概要・環境 →
+    該当箇所の ？（Overview の見出し・シナリオ一覧）、データ（`npm run explorer` など運営者向け）→ `/explorer` の ？ で
+    公開ビューでは出さない。以前は「シナリオとは何か」の説明が 35 世界の 1 つの末尾にあり、その世界固有の説明に
+    読めた。イベント列の空欄は「予定なし」であって「calm」ではない
     （cex-drift は窓を開けず run 全体を曲げるし、窓化以前の run はそもそも schedule を持たない）
   - **評価区間は UI の時計**（`dashboard/src/data/roundCursor.ts` に位置が 1 つだけ存在する）。
     途中経過の価値も順位変動も環境イベントも評価区間単位なので、全ビューはこの軸に対して読む。
@@ -448,11 +485,11 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     （`dashboard/src/data/competition.ts` の `competitionName`。h1 に `full-8h`、picker に
     `full-8h · 8/29`、生の ID は tooltip）。シナリオは常に `regime#seed`（表示では `full-` 接頭辞を
     剥がす）。**runs/ ディレクトリの通し番号「Run N」は全廃**（開発機ローカルの座標で参加者に無意味）
-  - **UI は日英対応**（`dashboard/src/i18n/` = locale ストア + 全文言辞書 `messages.ts`。サイドバーの
-    トグルで切替、localStorage 永続、既定はブラウザ言語）。**データ層のビルダー（venuePanels /
+  - **UI は日英対応**（`dashboard/src/i18n/` = locale ストア + 全文言辞書 `messages.ts`。ヘッダの
+    トグルで切替、localStorage 永続、既定はブラウザ言語、`<html lang>` も追従）。**データ層のビルダー（venuePanels /
     runsProvider の tape・建玉表）も `t()` を呼ぶ**ため、useSnapshot が key に locale を含めて
     言語切替でスナップショットを再構築する。文言の規律: 実装語彙（ファイル名・ADR 番号）は
-    学習層（scenario ページの Info タブ）以外に出さない / 単位は必ず添える（bps・USDC）/
+    運営者向けの ？（`/explorer` のデータの出所。公開ビューでは出さない）以外に出さない / 単位は必ず添える（bps・USDC）/
     状態語は live・finished の 2 語 / `npm run` コマンドは explorer 起動などローカル運用文脈のみ
   - **順位の理由は agent ページの Standing タブ**（順位表の行クリックで飛ぶ既定タブ）。その agent が採点された
     全エポック（s / シナリオ / P / T / w）、T の平均・標準偏差・最悪値（= §4.6 のタイブレーク）、T の分布、
@@ -523,6 +560,32 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）。**`kind: improve` の prompt.md が無いディレクトリは拒否**（規約 §2.5 が全提出 agent に戦略改訂を要求する。起動時ではなく提出物の段で止めるのは、example の 17 agent が prompt.md 無しの教材だから）
 
 > **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
+
+> **Aave 自前のテスト market は閉じてある**（issue #190）。`@aave/deploy-v3` は自前のテストトークンで 8 reserve
+> （WETH $4,000 / WBTC $60,000 等の固定価格）と、既定で誰でも 1 回 10,000 枚 mint できる `Faucet` を作る。競技は
+> 共有 reserve しか使わないが Pool は同じで、**Aave の採点 `getUserAccountData` は全 reserve を合計する**ので、
+> 放置すると faucet のトークンを supply するだけで P が増え、それを担保に共有 USDC/WETH も借りられた（実測）。
+> deployer は `PERMISSIONED_FAUCET=true` で deploy し、`closeVendorTestMarket` が Faucet を owner 限定にして
+> 8 reserve を `setReserveActive(false)`。**Aave が無効化を許すのは aToken も `accruedToTreasury` も 0 のときだけ**で、
+> 一度でも借りられた reserve は全員が返済・引出しても treasury の利息の取り分が残り、**永久に無効化できない**。
+> その場合は freeze して「treasury の残りのみ」と報告し、参加者の供給・債務が残っていれば freeze + 警告。
+> **稼働中のチェーンは `cd deployer && RPC_URL=<node> npm run close:aave-vendor`**（冪等。参加者の残高が残れば
+> exit 2、tx 自体が失敗した reserve があれば exit 1。1 本の失敗で後続を止めない）。閉じる対象は coordinator と同じく
+> `getReservesList()` − (deployments.json の全 token + LST)（`deployer/src/protocols/aave-reserves.ts`。以前は vendor の
+> deployment ファイルから列挙し、別 deploy のファイルを読むと「全部 not-listed」で exit 0 だった）。共有 reserve が
+> Pool に無ければ deployments.json が別チェーンのものなので何も送らずに落ちる（共有 reserve まで閉じないため）。
+> **ローカルの anvil では `.local-snapshot` より上に送った close は次の `sim:realtime` / `gen:state-dump` が巻き戻す**
+> （resetFork が close 前の断面へ revert する）。ファイルがこのチェーンを指していれば closer は何も送らず exit 1 で、
+> `npm run close:aave-vendor -- --revert-local-snapshot` が「pin へ revert → close → 取り直して書き戻す」
+> （直前 run の残りは捨てる = 次の run も捨てる）。pin の無いチェーン（`chainMode: external`）は revert しない。
+> **練習 devnet には pin がある** — unit は `sim:realtime --config config/practice.yaml` を `localDeploy: true` で
+> 起動し `localSnapshotFile` の既定が `.local-snapshot` なので、coordinator は他のローカル run と同じく
+> resetFork の snapshot/revert を通る。期間の途中で `--revert-local-snapshot` を打つと**その期間が巻き戻る**
+> （pin は参加者が取引した全ブロックより前）。devnet では coordinator を止めて pin を**削除**し、close して再起動する。
+> coordinator はローカルデプロイ + aave の run で `Pool.getReservesList()` を列挙し、registry + LST 以外の
+> **active な reserve が 1 本でもあれば全 chainMode で起動時に落ちる**。例外は freeze 済みで参加者の aToken
+> （treasury 保有分を除く）も債務も 0 のものだけ（`aave_reserve_check`。
+> `core/src/realtime/aaveReserveGuard.ts`）。**これ以前の state dump は全部これで落ちる**ので `npm run gen:state-dump` で焼き直す。
 
 > **deploy 鍵は `MNEMONIC`**（既定は anvil の**公開**テスト mnemonic。issue #74）。index 0 の deployer は Aave の
 > POOL_ADMIN・GMX の CONFIG_KEEPER・LST vault の owner・seed した LP 全部・genesis Trove の余剰 eUSD を持ち、
@@ -669,7 +732,8 @@ ours なのは 2 つだけ（core は無改変）:
   「レジストリが stable を $1 で値付ける」だけで、それが消えたため。今は**市場価格 stable**（下の節）で、
   価格の所有者は共通 probe = `sdk/src/stables.ts`。**spot の eUSD 残高は scorer の spot 掃引が値付け、
   liquity アダプタは値付けない**（二重計上の回避）。アダプタに残るのは Trove と Stability Pool で、
-  realizable は自分サイズの get_dy、債務は get_dx で買い戻しコスト。gas compensation 200 eUSD は
+  債務は get_dx で買い戻しコスト。SP 預入の eUSD は**財布の eUSD と合算して scorer が売る**（`stableLongs`。
+  別々に自分サイズで quote すると「それぞれ最初に売る」2 回の売却になり、財布で押し上げた分だけ預入が高く見えた）。gas compensation 200 eUSD は
   借り手の負債ではないので差し引く。ICR<100% の Trove は 0 で clamp（担保を捨てて歩き去れる = CDP の
   実際の性質）
 - **担保は native ETH**（core が `msg.value` で受ける）。action 側は WETH wei 建てで、`buildTxs` が
@@ -749,6 +813,12 @@ ours なのは 2 つだけ（core は無改変）:
   - **登録は毎ブロック上限つき・環境負担**（`agentMarkets.registrationsPerBlock`、既定 8）。あふれは
     次ブロックへ繰り越し、factory 由来を先に。**書き込みは admin ではなく setup 鍵**（oracle 更新が
     毎ブロック admin から出ているので、同じ鍵に 2 送信者を置くと nonce を奪い合う）
+  - **読み手は `all()` を呼ばない**（`count()` + `entriesFrom` を 256 件ずつ。`sdk/src/marketRegistry.ts`）。
+    `all()` のガスは件数に比例し（cold storage で 1,500 件 ~29.5M、**1,600 件で 30M の call 上限を超えて out of gas**）、
+    件数は誰でも安く積める（`createMarket` は permissionless、環境は毎ブロック 8 件登録 = 200 ブロック）。以前は全 agent の
+    観測が毎ブロック `all()` を読んでいたので、そこを超えると**全員の観測が毎ブロック失敗**した。watcher は追記専用の
+    リストを一度だけ読んで保持し、毎ブロックは新規分だけ読む。読取に失敗しても観測全体は落とさず、前回の section に
+    `registry.error` を付けて返す
   - 発見は **factory ログ + `to === null` の top-level CREATE スキャン**。**内部 CREATE は取りこぼす**
     （対称なので受容。誰にも見えないものは誰も釣れない）。ERC-20 判定は name/symbol/decimals の
     static call ヒューリスティック
@@ -850,6 +920,14 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
    両側とも固定 notional なので**1 stage で済み**、採点断面の 1 multicall に相乗りできる。
    quote が返らなければ **par に落として `par-fallback` で報告**（黙って par が最悪、黙って 0 は
    「100% ディスカウント = 無限の裁定」に読めてもっと悪い）
+4. **採点は自分サイズで売った額**（規約 §4.1 の「実効価格」を保有量で測る）— probe は $1,000 の取引なので、
+   mid × 枚数だと薄いプールで買い占めて持ち続けた stable が売れない値段で数えられた（100k/100k・A=100 の DAI
+   プールに 70k USDC で probe 1.05、69,090 DAI が mid で 72,532・売れば 69,986。DAI は配られず背景フローも
+   取引しないので売り戻す人がおらず、5 ブロック中央値も効かない）。scorer（`ownSizeStableAdjustments`）が
+   agent ごとに財布 + 各 venue が申告した枚数（`AgentProtocolValue.stableLongs` / `stableShorts` = Uniswap・
+   Balancer・Curve の stable 脚、SimpleLending の供給・担保と債務、Liquity の SP 預入）を合算し、get_dy（債務は
+   get_dx）の窓中央値で評価し直す。face mark（`markedValueUsdc`）は mid のまま。quote が返らなければ mid の
+   まま `mid-fallback` で報告。Liquity の Trove 債務は従来どおりアダプタ自身の get_dx
 
 - **USDC は numéraire で $1 固定**（issue #27 "Settled"）。全 metric が USDC 建てなので、ここを
   浮かせると過去 run の数字の意味が変わる。`marketPricedStables()` は USDC の leg を無視する

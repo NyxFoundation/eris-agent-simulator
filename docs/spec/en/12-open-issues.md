@@ -96,7 +96,7 @@ These are not open questions. They are decisions.
 | The 19 old-format `prompt.md` files (per-decision prompts) | Deleted in `f42fd2a`. **They survive in git history and in older bundles**, which is why the `kind: improve` marker exists |
 | `directShim` / `relay` / the stdin-stdout protocols | Retired (along with `ERIS_AGENT_DIRECT_TX`) |
 | The evaluation and visualization commands (`sim` / `evaluate` / `gate` / `discrimination` / `leaderboard` / `stress-report`) | Removed |
-| The dashboard's `/standings`, `/leaderboard`, `/archive`, `/run` | Removed ([09 §9.1](09-dashboard.md)) |
+| The dashboard's `/leaderboard`, `/archive`, `/run` | Removed ([09 §9.1](09-dashboard.md); `/standings` came back in issue #183 as the table's page) |
 | Reading configuration from env | Retired; a stale variable now warns |
 
 ## 12.6 References

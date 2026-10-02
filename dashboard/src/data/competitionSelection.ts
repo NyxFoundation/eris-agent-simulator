@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { getMode } from "./mode";
 
 // The outer half of the two-level selection: competition contains scenario (one run), which
 // contains round (one evaluation interval, interim progress). The scenario selection stays in
@@ -51,8 +52,19 @@ export function useSelectedCompetitionId(): string | null {
 }
 
 /**
+ * The stored choice, as far as it may count. The public view has no competition picker (issue
+ * #183): a choice stored on an earlier visit would otherwise pin the page to an old competition
+ * with no control left to move it, so there the choice is ignored and the newest competition the
+ * server offers is the one in view. Until the mode is known it counts as the public view.
+ */
+export function effectiveSelectedCompetitionId(): string | null {
+  return getMode().audience ? null : getSelectedCompetitionId();
+}
+
+/**
  * The competition actually in view: the stored choice, or the newest one on disk when nothing has
- * been chosen yet. `null` means the outer unit is a single run.
+ * been chosen yet (always the newest in the public view). `null` means the outer unit is a single
+ * run.
  *
  * One resolver, used by the picker, the standings loader and the scenario title alike — three
  * places deciding "which competition" independently is three chances to disagree.
@@ -60,7 +72,7 @@ export function useSelectedCompetitionId(): string | null {
 export function resolveCompetitionId(
   index: { id: string; kind?: "matrix" }[],
 ): string | null {
-  const stored = getSelectedCompetitionId();
+  const stored = effectiveSelectedCompetitionId();
   if (stored === SINGLE_RUNS) return null;
   const competitions = index.filter((e) => e.kind === "matrix");
   if (stored && competitions.some((m) => m.id === stored)) return stored;

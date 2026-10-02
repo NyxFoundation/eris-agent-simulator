@@ -2,16 +2,24 @@
 // standing section of an agent page. One copy of "how a standing is formatted" keeps the two from
 // disagreeing about what an agent scored.
 
+import { InfoTip } from "@/design-system/InfoTip";
 import { formatBps } from "@/lib/format";
 
 export function Panel({
   title,
   subtitle,
+  info,
+  extra,
   action,
   children,
 }: {
   title: string;
+  /** A short line under the title. Explanations go in `info`, not here. */
   subtitle?: string;
+  /** What the panel shows and how to read it, behind a "?" beside the title. */
+  info?: React.ReactNode;
+  /** Controls on the header's right (a select), before the action link. */
+  extra?: React.ReactNode;
   /** A link rendered on the header's right. */
   action?: { label: string; onClick: () => void };
   children: React.ReactNode;
@@ -34,7 +42,10 @@ export function Panel({
           display: "flex",
           alignItems: "flex-start",
           justifyContent: "space-between",
-          gap: "12px",
+          // Controls on the right drop under the title on a phone rather than squeezing it into a
+          // column one character wide.
+          flexWrap: "wrap",
+          gap: "8px 12px",
         }}
       >
         <div
@@ -43,10 +54,14 @@ export function Panel({
             flexDirection: "column",
             gap: "3px",
             minWidth: 0,
+            flex: "1 1 240px",
           }}
         >
           <span
             style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "4px",
               font: "var(--weight-semibold) var(--text-xs) var(--font-mono)",
               letterSpacing: "var(--tracking-widest)",
               textTransform: "uppercase",
@@ -54,6 +69,7 @@ export function Panel({
             }}
           >
             {title}
+            {info && <InfoTip label={title}>{info}</InfoTip>}
           </span>
           {subtitle && (
             <span
@@ -71,22 +87,35 @@ export function Panel({
             </span>
           )}
         </div>
-        {action && (
-          <button
-            type="button"
-            onClick={action.onClick}
+        {(extra || action) && (
+          <span
             style={{
-              border: "none",
-              background: "transparent",
-              color: "var(--text-link)",
-              font: "var(--text-xs) var(--font-mono)",
-              cursor: "pointer",
-              padding: 0,
-              whiteSpace: "nowrap",
+              display: "flex",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "8px 12px",
+              maxWidth: "100%",
             }}
           >
-            {action.label}
-          </button>
+            {extra}
+            {action && (
+              <button
+                type="button"
+                onClick={action.onClick}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--text-link)",
+                  font: "var(--text-xs) var(--font-mono)",
+                  cursor: "pointer",
+                  padding: 0,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {action.label}
+              </button>
+            )}
+          </span>
         )}
       </header>
       {children}

@@ -24,17 +24,28 @@ UI は評価区間を「評価区間」/ "Interval" と表示する（issue #140
 
 | パス | ページ |
 |---|---|
-| `/` | Standings（competition の順位表）= **既定の着地点** |
+| `/` | Overview（日程・規約の要約・上位 5 名・リンク集）= **既定の着地点**（issue #183） |
+| `/standings` | Standings（competition の順位表 + シナリオ一覧） |
 | `/scenario` | 1 シナリオの詳細 |
 | `/agent/<id>` | エージェント詳細 |
 | `/markets` | venue の状態（scenario 層） |
 | `/explorer` | ブロック/tx 探索（scenario 層） |
 
-**`/` を competition にしている理由**：1 シナリオは分布からの 1 ドローであって結果ではない（`config/scenarios/public.yaml`: "the published seeds are five draws from it, **not the target**"）。そこを既定にすると「読んではいけない単位」を最初に見せることになる。
+**着地点を 1 シナリオにしない理由**：1 シナリオは分布からの 1 ドローであって結果ではない（`config/scenarios/public.yaml`: "the published seeds are five draws from it, **not the target**"）。そこを既定にすると「読んではいけない単位」を最初に見せることになる。着地点は参加者が大会について最初に知るべきこと（Overview）で、順位はその中の上位 5 名と、1 クリック先の `/standings`。
+
+### ヘッダ・Overview・？（issue #183）
+
+- **ヘッダ**（`components/SiteHeader.tsx`、全ページ共通・sticky）: ASCON ロゴ（→ `/`）、ナビ（Overview / Standings / Scenario / Markets / Explorer）、**参加登録**（Google Form 直結。？ に「先に Discord #ascon へ」。**10/25 00:00 JST 以降は出さない**）、その右に**提出**（エージェント提出フォーム直結。**提出期間 9/23〜10/31 だけ**出す。枠線だけのボタンで参加登録と見分ける）、日英トグル。430px 以下はロゴのワードマークを省いて 2 つのボタンを収める。860px 以下はナビをメニューに畳み、参加登録とトグルはバーに残す。ページ内の sticky なバーは `top: var(--header-h)`
+- **サイドバーは無い**（全モード・全ページで全幅）。フッタに「閲覧専用 · ログイン不要」（公開ビューでは「公開ビュー ？」も）。**競技セレクト**（`components/CompetitionPicker.tsx`）は概要の上位 5 名の見出しと `/standings` の競技名の横で、**手元で選択肢があるときだけ**（競技が 2 つ以上、または 1 つ + 競技外の run =「— 単発 run —」）。**公開ビューでは出さず、ブラウザに保存された選択も無視して最新の競技を出す**（`effectiveSelectedCompetitionId`。無視しないと、以前別の競技を選んだ閲覧者が動かす手段のないまま古い競技に固定される）。**世界の切替**（`components/WorldSwitcher.tsx`、「変更 ▾」）は scenario 層のページ（シナリオ・マーケット・エクスプローラ・エージェント）の評価区間バーの世界名の横で、選択中の run を今の競技の中に保つ役もする
+- **Overview**（`pages/OverviewPage.tsx`）: 日程（ブラウザの時計で「開催中」と次の締切までの JST 暦日数）/ **提出の手順**（参加登録 → API キー → 作る → 手元で確かめる →（任意）練習環境 → ZIP → 提出 → 凍結。各段は 1 行 + ガイドの節へのリンク、コマンドは `bundle:agent` だけ。期間のある段に「受付中 · あと N 日」「締切済み」「9/23 から」。参加者の進み具合は分からないので「あなたの段」は指さない。提出フォームは受付期間中だけ直接リンク（`SUBMISSION_FORM_URL`）、API キーのフォームは載せず Discord 案内。10/31 以降は 1 行に畳む）/ 評価・賞金・提出と制約の 3 カード（要点を常時表示、全文は ？、ascon.dev の規約の節へリンク）/ 上位 5 名（順位・エージェント・平均得点・採点数と、何の数字か・何日分／何エポック分・更新時刻の 1 行。`standings: false` では出さない。練習期間は練習順位、完走済みで結果発表前は「順位」、結果発表後は「最終結果」）/ リンク集
+- **呼び方**（日本語 UI）: エポック（練習期間は 1 日）ごとの偏差値 = **得点**、順位を決めるその加重平均 = **平均得点**。規約の「スコア」は平均得点のこと（評価カードに 1 行添える）。英語は score のまま
+- **規約の値は `data/competitionInfo.ts` 1 ファイル**（各値に ascon-web `content/legal/rules.md` の節番号）。規約改定時はここだけ直す。文言は `i18n/messages.ts` の `overview.*`
+- **？**（`design-system/InfoTip.tsx`）: 説明はここに入れ、見出しと数字だけを常時表示する。クリック/タップ/キーボード（Enter・Space で開閉、Esc で閉じてボタンへ戻る）で開き、外側を押すと閉じる。1 度に 1 つ。パネルは `position: fixed` なので横スクロールする表の中でも切れない。`Panel` の `info` prop が入口。**ネイティブの `title=` は説明に使わない**（スマホで出ない・キーボードで届かない）— 切り詰めた名前の全文やデータの読み値など説明でないものだけ残す
+- 旧 InfoTabs（概要 / 環境 / 採点 / データ）は解体: 採点 → Overview の評価カード、概要・環境 → 該当箇所の ？（Overview の見出し・シナリオ一覧）、データ（`npm run explorer` など運営者向け）→ `/explorer` の ？ で公開ビューでは出さない
 
 `/markets` と `/explorer` が scenario 層に留まるのは、venue の状態とブロック範囲が 1 つの world の中でしか意味を持たないため。
 
-**削除済みのルート**：`/standings`・`/leaderboard`（scenario 内順位と重複）・`/archive`（未到達の遺物）・`/run`（エイリアス）。
+**削除済みのルート**：`/leaderboard`（scenario 内順位と重複）・`/archive`（未到達の遺物）・`/run`（エイリアス）。`/standings` は一度削除したが、issue #183 で `/` を Overview にしたときに順位表の置き場所として戻した。
 
 ## 9.2 評価区間カーソル（UI の時計）
 
@@ -77,7 +88,7 @@ z を表に出さないのは、**無単位の z が「どれだけ差がある�
 
 ### `practice` バッジ
 
-`competition.file.resetUnit === "continuous"` のとき常設する（`HomePage.tsx:142`）。ADR 0020 §2 が公式競技を `scenario` モードに置いたので、**continuous な competition は構造的に公式採点ではない**。
+`competition.file.resetUnit === "continuous"` のとき常設する（`StandingsPage.tsx`）。ADR 0020 §2 が公式競技を `scenario` モードに置いたので、**continuous な competition は構造的に公式採点ではない**。
 
 **「scenario でない」ではなく「continuous である」で判定する** — ADR 0020 以前の `matrix.json` は当該フィールドを持たず、あれは公式形だった。逆向きに間違えて practice と貼るのは同じ種類の誤りになる。
 
@@ -123,7 +134,7 @@ This block     取引数 / revert / 取引した agent 数 / その場で環境�
 
 **header がシナリオ自身を名乗る**。以前はここが ERIS のワードマークで、35 の world のどれが画面に出ているのかを何も言わずに全シナリオがアプリの表紙のように見えていた。
 
-**実装語彙（ファイル名・ADR 番号）を出してよいのは InfoTabs だけ**（§9.10）。
+**実装語彙（ファイル名・ADR 番号）を出してよいのは運営者向けの ？ だけ**（§9.10）。
 
 ### 環境イベントの評価区間への変換（`dashboard/src/data/schedule.ts`）
 
@@ -239,13 +250,13 @@ archived は live より情報が多い（`market.json`・採点済みの評価�
 
 ## 9.10 i18n
 
-`dashboard/src/i18n/`（locale ストア + 全文言辞書 `messages.ts`）。サイドバーのトグルで切替、localStorage 永続、既定はブラウザ言語。
+`dashboard/src/i18n/`（locale ストア + 全文言辞書 `messages.ts`）。ヘッダのトグルで切替、localStorage 永続、既定はブラウザ言語。`<html lang>` も追従する。
 
 **データ層のビルダー（`venuePanels` / `runsProvider` の tape・建玉表）も `t()` を呼ぶ**ため、`useSnapshot` が key に locale を含めて言語切替でスナップショットを再構築する。
 
 文言の規律：
 
-- 実装語彙（ファイル名・ADR 番号）は**学習層（scenario ページの Info タブ）以外に出さない**
+- 実装語彙（ファイル名・ADR 番号）は**運営者向けの ？（`/explorer` のデータの出所。公開ビューでは出さない）以外に出さない**
 - 単位は必ず添える（bps・USDC）
 - 状態語は **live・finished の 2 語**
 - `npm run` コマンドは explorer 起動などローカル運用文脈のみ

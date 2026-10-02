@@ -75,3 +75,54 @@ export function formatCompactUsd(value: number): string {
   if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(2)}K`;
   return `${sign}$${abs.toFixed(0)}`;
 }
+
+/** A JST calendar day ("2026-10-24") as the schedule prints it: "10/24" / "Oct 24". */
+export function formatJstDay(day: string, locale: string): string {
+  return new Date(`${day}T00:00:00+09:00`).toLocaleDateString(
+    locale === "ja" ? "ja-JP" : "en-US",
+    { month: locale === "ja" ? "numeric" : "short", day: "numeric", timeZone: "Asia/Tokyo" },
+  );
+}
+
+/** Two JST days as one span: "9/1 – 10/24" / "Sep 1 – Oct 24", and in English the month said once
+ * when both ends share it ("Nov 1 – 7"). */
+export function formatJstRange(first: string, last: string, locale: string): string {
+  if (first === last) return formatJstDay(first, locale);
+  const end =
+    locale !== "ja" && first.slice(0, 7) === last.slice(0, 7)
+      ? String(Number(last.slice(8, 10)))
+      : formatJstDay(last, locale);
+  return `${formatJstDay(first, locale)} – ${end}`;
+}
+
+/** Yen in full: "1,000,000円" / "¥1,000,000". */
+export function formatJpy(amount: number, locale: string): string {
+  const n = amount.toLocaleString("en-US");
+  return locale === "ja" ? `${n}円` : `¥${n}`;
+}
+
+/** Yen as a headline reads it: "500万円" in Japanese, the full figure otherwise. */
+export function formatJpyShort(amount: number, locale: string): string {
+  if (locale === "ja" && amount % 10_000 === 0)
+    return `${(amount / 10_000).toLocaleString("en-US")}万円`;
+  return formatJpy(amount, locale);
+}
+
+/**
+ * A wall-clock time with its zone. The zone is not decoration: the audience of a hosted dashboard
+ * is in several of them, and "updated 06:01 PM" told a reader in another one nothing they could
+ * act on (issue #84 N). The date is added whenever it is not today's.
+ */
+export function formatClock(ms: number, locale: string): string {
+  const tag = locale === "ja" ? "ja-JP" : "en-US";
+  const d = new Date(ms);
+  const sameDay = new Date().toDateString() === d.toDateString();
+  const time = d.toLocaleTimeString(tag, {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+  return sameDay
+    ? time
+    : `${d.toLocaleDateString(tag, { month: "numeric", day: "numeric" })} ${time}`;
+}

@@ -26,8 +26,10 @@ The UI calls the third level **Interval** / 「評価区間」 (it said Round / 
 The dashboard's code keeps its `round` identifiers (`roundCursor`, `RoundsBar`): inside
 `dashboard/` they only ever meant the interval.
 
-**The landing page is the competition's standings**, because that is the unit the competition is
-scored on (ADR 0020). One scenario is a single draw from a regime's distribution, and
+**The landing page is the Overview** (issue #183): what a participant needs before any number — the
+schedule, the rules in brief, the top of the table, and where everything else lives. The next level is
+**the competition's standings** (`/standings`), not a scenario, because the competition is the unit
+that is scored (ADR 0020). One scenario is a single draw from a regime's distribution, and
 `config/scenarios/public.yaml` says what to do with it: *"Generalizing across the distribution is the
 thing being measured; the published seeds are five draws from it, not the target."* Opening on one
 scenario invites exactly the reading that sentence warns against — in the 35-scenario `full-8h`
@@ -40,12 +42,14 @@ competition picker makes the selected run the outer unit, read as a competition 
 standings, same interval cursor. The normalization happens once, at the data layer's entry point
 (`src/data/competition.ts`), so every page downstream processes exactly one kind of object.
 
-The sidebar picks a competition, then a scenario inside it (labelled `regime#seed`, not by
-timestamp):
+A competition is picked with the select beside its name on the overview and the standings, and a
+scenario inside it with **change ▾** in the interval bar of the scenario-level pages (labelled
+`regime#seed`, not by timestamp):
 
 | route | level | what it is |
 |---|---|---|
-| `/` | competition | **Standings** — ranked by the competition rule; the score column shows the score itself (×10⁴, no unit suffix), plus one reference net-PnL column. A row opens the agent's page |
+| `/` | — | **Overview** — the schedule, the scoring / prizes / submission cards, the top 5 of the selected competition, the links (below) |
+| `/standings` | competition | **Standings** — ranked by the competition rule; the score column shows the score itself (×10⁴, no unit suffix), plus one reference net-PnL column. A row opens the agent's page |
 | `/scenario` | scenario | one world as a board walked block by block: its wallets, the chain, its contracts, with the ranking inside it, the picked agent's log and the venue/balance history beside it. Titled by what it is a draw of (`full-crash#303`), not by when the file was written |
 | `/markets`, `/explorer` | scenario | venue state and blocks — they only mean anything inside one world |
 | `/agent/<id>` | both | the agent's competition standing (its **Standing** tab) and its scenario-level detail |
@@ -58,7 +62,7 @@ Two more things participants see, because they are participants: **names, not st
 competition is its scenario set and date ("full-8h · 8/29"), a scenario is `regime#seed`, the yaml
 path and the timestamped directory live in tooltips, and nothing is numbered "Run N" over the local
 runs/ directory — and **two languages**: every string lives in `dashboard/src/i18n/messages.ts` in
-English and Japanese, switched from the sidebar and persisted per browser.
+English and Japanese, switched from the header and persisted per browser.
 
 Two cases have no standings, and say so rather than inventing them: a **live** run — `summary.json`
 is written at the end, so its results do not exist yet — and seed-provider mode, which serves
@@ -85,6 +89,65 @@ Two venues are *not* in `market.json`: the LST vault and the Liquity system. The
 emits their whole state every block (`lst_block` / `liquity_block` in `events.jsonl`), so the
 dashboard reads it from there rather than reconstructing it twice — which also means those panels
 work for runs recorded before `market.json` grew any of its fields.
+
+### The header, the Overview and the "?"
+
+Every page sits under one header (`src/components/SiteHeader.tsx`): the ASCON logo, the five page
+links, **Register**, **Submit** and the language toggle. Register goes straight to the registration
+form (its "?" says to join the #ascon channel on Discord first, rules §1) and is not offered from 10/25
+00:00 JST, when registration has closed. Submit, right of it, goes straight to the agent submission
+form and is shown only while that form takes submissions (9/23–10/31 JST); it is outlined, so the two
+read as two different forms. Below 860px the page links fold into a menu, and Register, Submit and the
+language stay on the bar; at 430px and below the logo drops its wordmark so they fit.
+
+**There is no sidebar.** Every page is full width, with a one-line footer (read-only, no sign-in, and
+in the public view a "public view" note with its "?"). The two things the sidebar held moved to where
+they are used:
+
+- **The competition picker** sits beside the competition's name: in the top 5's heading on the
+  Overview, and beside the title on `/standings`. It appears only locally and only when there is a
+  choice — two or more competitions, or one plus runs outside it ("— single run —"). The public view
+  never shows it: the server decides what is published (`ERIS_DASHBOARD_COMPETITIONS`), and the newest
+  competition it serves is the one in view, **ignoring a choice stored in the browser** — otherwise a
+  visitor who picked another competition before would be pinned to it with no control left to move
+  (`effectiveSelectedCompetitionId` in `src/data/competitionSelection.ts`)
+- **The world switcher** ("change ▾") sits beside the world's name in the interval bar on the
+  scenario, markets, explorer and agent pages: where the world sits among the competition's worlds, who
+  leads it, its episodes, and the list to step to a sibling. It also keeps the selected run inside the
+  competition in view
+
+The Overview (`/`) is, top to bottom:
+
+- **Schedule** — the phases of rules §1, which of them is on now, and how many days (JST calendar days,
+  by the browser's clock) to the next deadline. ascon.dev is static, so "where we are" can only be said
+  here
+- **How to submit** — register → API key → build → try it locally → (optional) the practice environment
+  → the ZIP → submit → the freeze, each a line and a link to the guide's section; only
+  `npm run bundle:agent <id>` is shown as a command. Steps with a window say "open · N days left" /
+  "closed" / "from 9/23" — the dashboard knows the date, not how far a participant has got, so it never
+  points at "your" step. The submission form is linked from its step while it is open
+  (`SUBMISSION_FORM_URL`); the API-key form is not on the page (Discord #ascon has it). After 10/31 the
+  panel folds into one line
+- **Scoring, Prizes, Submission & limits** — three cards, each showing its gist (for example "one ZIP ·
+  replace it up to 5 times a day"), the full statement behind a "?", and a link to that section of the
+  rules on ascon.dev
+- **Top 5** of the selected competition — rank, agent, average score, how many days or epochs it was
+  scored on, and a caption saying what the number is, how much it covers and when it changed — and a
+  link to `/standings`. Its title says what it is: practice
+  standings during the practice period, "so far" while epochs are still to come, "final" once the
+  results date has passed. Not shown where standings are not posted (`standings: false`)
+- **Links** — the participant guide and SDK, the rules and terms, Discord #ascon, and the practice
+  environment's RPC, explorer and environment manifest
+
+The values on the cards — dates, prizes, limits — are copied from the rules into one file,
+`src/data/competitionInfo.ts`, which cites the section each comes from. When the rules change, that file
+changes; the wording around the values is `overview.*` in `messages.ts`.
+
+**Explanations sit behind a "?"** (`src/design-system/InfoTip.tsx`), on every page: headings and numbers
+stay on screen, and what they mean is one tap away. It opens on click, tap or the keyboard, closes on
+Escape or a press outside, and one is open at a time. A native `title=` tooltip is not used to explain
+anything — it never appears on a phone and cannot be reached from the keyboard — and remains only for
+what is not an explanation, such as the full text of a truncated name.
 
 ### The interval cursor
 
@@ -172,8 +235,10 @@ Compared against the leaderboards of Kaggle, Hyperliquid, Alpha Arena, CTFd and 
   There is no sign-in, so "mine" is the viewer's choice.
 - **Details**: included transactions and reverts per agent, summed over the scored scenarios, behind
   a switch — activity, never a second ranking.
-- **About this competition** folds the unit ladder and the Overview / Environment / Scoring / Data
-  tabs under the scenario list. A first-time reader opens it; a daily reader never scrolls past it.
+- **How this fits together**, beside the title, is the unit ladder (competition › scenario › interval
+  › block) behind a "?". What the Info tabs used to explain lives where it applies: scoring on the
+  Overview's scoring card, the environment on the scenario list's "?", and the data's provenance (with
+  the local explorer's commands) on the Explorer's "?", which the public view does not show.
 - Under 720px the regime, form and net-PnL columns are dropped and the tables lose their minimum
   widths, so the page reads on a phone.
 
@@ -428,8 +493,8 @@ standings table, the scenario list's leader column, the per-run rankings on `/sc
 `/markets`, the interval bar's per-interval ranking, and on an agent's page its Standing tab, its rank
 badge, its deviation score and the rank column of its Intervals tab (the page opens on Overview
 instead). The venue state, the episode history, the transactions and the explorer stay — and so does
-the participant lookup on the landing page, which is how someone reaches their own agent when there
-is no table to click.
+the participant lookup on the standings page, which is how someone reaches their own agent when there
+is no table to click. The Overview drops its top 5 under the same switch.
 
 Switching the flags off after the results are announced is the §7.2 publication: the same
 directories, served whole.
