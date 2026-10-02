@@ -92,6 +92,16 @@ contract SimpleLending {
     mapping(bytes32 => mapping(address => Position)) public position;
     mapping(bytes32 => MarketParams) public marketParams;
     bytes32[] private _marketIds;
+    /// Which markets each address has ever entered (issue #212 / #216). Appended on the first
+    /// supply / supplyCollateral / borrow of each (market, user) pair -- the only three calls that
+    /// give `msg.sender` a position -- and never shortened, because a position that went back to
+    /// zero in a market somebody entered is still theirs to read. It exists so that a valuer can
+    /// find one address's positions without walking `_marketIds`, whose length is anybody's choice:
+    /// `createMarket` is permissionless and costs its caller nothing but gas, so a scorer that took
+    /// the newest N of that list could be made to lose an older position behind N empty markets.
+    /// The length of `_userMarketIds[user]` is bounded by what `user` itself did.
+    mapping(address => bytes32[]) private _userMarketIds;
+    mapping(bytes32 => mapping(address => bool)) private _entered;
 
     uint256 private _locked;
 
@@ -177,8 +187,45 @@ contract SimpleLending {
         return _marketIds[index];
     }
 
+    /// @notice The whole list. Its gas grows with a length anyone can extend, so an `eth_call` of
+    ///         it stops answering past a few thousand markets (the same shape as
+    ///         `MarketRegistry.all()`); readers page with `marketCount` + `marketIdAt` instead. Kept
+    ///         for callers that already depend on it.
     function marketIds() external view returns (bytes32[] memory) {
         return _marketIds;
+    }
+
+    /// @notice How many markets `user` has ever entered.
+    function userMarketCount(address user) external view returns (uint256) {
+        return _userMarketIds[user].length;
+    }
+
+    function userMarketIdAt(address user, uint256 index) external view returns (bytes32) {
+        return _userMarketIds[user][index];
+    }
+
+    /// @notice A page of the markets `user` has ever entered, oldest first, and the total so the
+    ///         caller knows whether the page is all of them. `start` past the end is an empty page.
+    function userMarketIdsFrom(
+        address user,
+        uint256 start,
+        uint256 limit
+    ) external view returns (bytes32[] memory ids, uint256 total) {
+        bytes32[] storage all = _userMarketIds[user];
+        total = all.length;
+        if (start >= total) return (new bytes32[](0), total);
+        uint256 end = total - start < limit ? total : start + limit;
+        ids = new bytes32[](end - start);
+        for (uint256 i = start; i < end; i++) ids[i - start] = all[i];
+    }
+
+    /// First entry of `user` into market `id`: one SSTORE for the flag and one push, then a single
+    /// SLOAD on every later call. Only the three calls that create a position call this; a
+    /// liquidation changes somebody else's position but never opens one.
+    function _noteEntry(bytes32 id, address user) internal {
+        if (_entered[id][user]) return;
+        _entered[id][user] = true;
+        _userMarketIds[user].push(id);
     }
 
     // ---------------------------------------------------------------------
@@ -193,6 +240,7 @@ contract SimpleLending {
         if (assets == 0) revert ZeroAmount();
         Market storage m = market[id];
         shares = _toSharesDown(assets, m.totalSupplyAssets, m.totalSupplyShares);
+        _noteEntry(id, msg.sender);
         position[id][msg.sender].supplyShares += shares;
         m.totalSupplyShares += uint128(shares);
         m.totalSupplyAssets += uint128(assets);
@@ -247,6 +295,7 @@ contract SimpleLending {
         bytes32 id = idOf(params);
         if (market[id].lastUpdate == 0) revert MarketNotCreated();
         if (assets == 0) revert ZeroAmount();
+        _noteEntry(id, msg.sender);
         position[id][msg.sender].collateral += uint128(assets);
         market[id].totalCollateralAssets += uint128(assets);
         _pullToken(params.collateralToken, msg.sender, assets);
@@ -274,6 +323,7 @@ contract SimpleLending {
         if (assets == 0) revert ZeroAmount();
         Market storage m = market[id];
         shares = _toSharesUp(assets, m.totalBorrowAssets, m.totalBorrowShares);
+        _noteEntry(id, msg.sender);
         position[id][msg.sender].borrowShares += uint128(shares);
         m.totalBorrowShares += uint128(shares);
         m.totalBorrowAssets += uint128(assets);

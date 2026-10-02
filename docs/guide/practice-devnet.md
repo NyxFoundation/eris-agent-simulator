@@ -474,6 +474,13 @@ sender address as the owner and the role `external`: `method` still comes from t
 scores or rule-checks them, and the row answers "did my transaction land?" for a participant who has
 not yet appeared in the roster.
 
+One exception (issue #212): an address that a registered agent's wallet funded -- with ETH, with a
+token the run prices, or by deploying it -- is that agent's, transitively. Its transactions are
+recorded under the agent (role `agent`, the funder in `derivedFrom`), count in the agent's gas budget
+per block, and show up in the unlogged-transaction reconciliation, because the agent's runtime never
+signed them. `summary.json` lists them under `agents[].derivedSenders`. Sending from a second wallet
+does not take a transaction out of the checks; it adds a flag next to the score for the operator.
+
 ### Switching between a local node and the devnet
 
 A run's target has two axes, set in different places, and both have to move together:

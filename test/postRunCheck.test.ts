@@ -152,11 +152,12 @@ test("txFeeColumns: typed txs record both on-chain fields; a tx with neither fal
   assert.deepEqual(txFeeColumns({}, 42n), { priorityFeeWei: 42n });
 });
 
-test("blocks.csv: maxFeePerGasWei is appended last, so every existing column keeps its index", () => {
+test("blocks.csv: every column is appended after the ones before it, so every existing index is kept", () => {
   assert.equal(BLOCKS_CSV_INDEX.priorityFeeWei, 5);
   assert.equal(BLOCKS_CSV_INDEX.method, 12);
   assert.equal(BLOCKS_CSV_INDEX.gasUsed, 13);
-  assert.equal(BLOCKS_CSV_INDEX.maxFeePerGasWei, BLOCKS_CSV_COLUMNS.length - 1);
+  assert.equal(BLOCKS_CSV_INDEX.maxFeePerGasWei, 14);
+  assert.equal(BLOCKS_CSV_INDEX.derivedFrom, BLOCKS_CSV_COLUMNS.length - 1);
   const root = mkdtempSync(join(tmpdir(), "eris-blocks-"));
   const logger = new RunLogger(root, "run");
   logger.blockRow({
@@ -182,6 +183,7 @@ test("blocks.csv: maxFeePerGasWei is appended last, so every existing column kee
   assert.equal(cols.length, BLOCKS_CSV_COLUMNS.length);
   assert.equal(cols[BLOCKS_CSV_INDEX.priorityFeeWei], "100000000");
   assert.equal(cols[BLOCKS_CSV_INDEX.maxFeePerGasWei], "7000000000");
+  assert.equal(cols[BLOCKS_CSV_INDEX.derivedFrom], "");
   assert.deepEqual(
     checkFeeViolations(text, MAX).map((v) => v.kind),
     ["max-fee-above-tip"],

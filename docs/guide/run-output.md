@@ -8,7 +8,7 @@ Each run generates a `runs/<run_id>/` directory. The dedicated evaluation, scori
 |---|---|
 | `summary.json` | per-agent initial / final value, netPnl, alpha, included/revert tx counts, `valueSeries.failedReads`, `violations` |
 | `events.jsonl` | event stream (observation, stress, liquidation, etc.); the primary source for scoring |
-| `blocks.csv` | per-block tx records (fee comes from the on-chain tx field) |
+| `blocks.csv` | per-block tx records (fee comes from the on-chain tx field). A row whose sender is an address an agent's wallet funded carries the agent's `ownerId` / `role` and names the funder in the last column, `derivedFrom` (issue #212) |
 | `market.json` | post-run market series (issue #63 Phase 2): per-block per-venue executable quotes + pool depth, GMX OI/funding, Aave reserve totals, market-priced stable quotes (`stables[symbol]`, with `quoted: false` marking a par fallback rather than an observed peg), multi-asset fair prices, per-agent end-of-run positions on every venue (`gmxPositionsAtEnd` / `aaveAccountsAtEnd` / `lstPositionsAtEnd` / `liquityPositionsAtEnd`), and decoded per-tx USD notionals. Derived from historical reads after the run (zero live-loop cost); feeds the `dashboard/` workspace. Reporting only — never an input to scoring |
 | `agents/<id>.jsonl` | each agent's self-reported log (decision `reason` / `signals` / `state`, plus mempool activity appended by runtime/send.ts as `kind:"mempool"`: submitted / submit_failed / rejected) |
 | `agents/<id>.llm.jsonl` | raw strategy-revision exchange for a self-improving agent (opt-in via `ERIS_IMPROVE_LOG_CALLS=1`; system prompt, sent context, response, errors; see [Self-improving agents](llm-agents.md)). Revision *outcomes* are in `agents/<id>.jsonl` |
@@ -32,6 +32,7 @@ npm run check:strategy -- <file>          # static cheatcode check of strategy c
 | `agents[].alphaUsdc` | β-removed PnL relative to the fair price at fill time (look here for skill comparison) |
 | `agents[].netPnlUsdc` | `finalValueUsdc − initialValueUsdc` |
 | `agents[].includedTxCount` / `revertCount` | number of included / reverted txs |
+| `agents[].derivedSenders` | addresses this agent's wallet funded (ETH, a priced token, or a contract it created, transitively) that then sent transactions; those are attributed to the agent in `blocks.csv` and in every post-run check. Absent when there were none. Also in `events.jsonl` as `derived_senders` and in a matrix's `flags` (issue #212) |
 | `agents[].stderrTail` | tail of the agent process's stderr (for crash diagnosis) |
 | `agents[].pnlUsdc` / `baseline` | P of rules §4.4.1 (V_K − V_0 off the first and last interval boundary, each end at its own marks) and whether the agent is the benchmark ([Scoring](scoring.md)) |
 | `valueSeries.intervalSeries` | the evaluation-interval boundary values every score above is computed from (`intervalBlocks` / `boundaryBlocks` / `valuesByAgent`, `null` = a boundary that did not report). Also written as `epochSeries` (with `epochBlocks`), its name before issue #140, until the results are published |

@@ -303,7 +303,15 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   「系列はあるが P が作れない」は「系列が無い」とは別**）
 - **未登録の送信者も blocks.csv に残す**（role `external`、ownerId = 送信者アドレス小文字）。以前は
   「run の外の tx」として捨てていたが、試行環境ではそれが参加者の tx そのもので、「自分の tx は載ったか」に
-  答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外
+  答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外。
+  **ただし agent のウォレットが資金を渡した先からの tx は agent の行**（issue #212。`core/src/realtime/derivedSenders.ts`）:
+  ETH 送金・価格のある token の Transfer・自分が deploy したコントラクトを推移的に追い、そこから出た tx は
+  role `agent` + ownerId = その agent、末尾列 `derivedFrom` に資金元。以前は第 2 EOA から出すだけで fee 上限・
+  ガス予算（per-agent-per-block の合計はゲートウェイでは見えない）・未ログ検査の全部を外れた。3 検査は
+  `external` 行も derived map で読む（資金が着く前に tip 0 で送った行の分）。summary の `agents[].derivedSenders`・
+  `derived_senders` イベント・matrix の `flags` に出る。**追わないもの**: 他人の tx が allowance で agent の token を
+  引いた場合（追うと誰にでも違反を着せられる）、価格の無い token の Transfer（偽 token の log は何とでも言える）、
+  call 内部の ETH 転送（trace が要る）。判定は運営（規約 §8）
 - **セグメントを切るたびに `stress_schedule` も再発行する**（`run_started_realtime` / `agents_registered` /
   manifest と同じ扱い。ADR 0021 §6）。以前は 2 日目以降の全セグメントが「予定なし」に見えた。ディスク上の記録は
   窓込みで完全（規約 §7.2 の監査用）。**未来の窓を公開側から隠すのは runs API（dashboard 側の audience mode）の仕事**
@@ -798,6 +806,17 @@ ours なのは 2 つだけ（core は無改変）:
     ICR<100% clamp と同じ規則）。**市場自身のオラクルは清算だけを決め、マークは書かない**
   - **金利は装飾**。エポック 12 分で 3%/年は 0.00007%。効く餌は**レバレッジ（高 LLTV）と清算ボーナス**で、
     貸出の罠の被害者は**借り手か清算人**であって供給側ではない。IRM は正直にそう書いて同梱
+  - **建玉はコントラクトの per-user index から読む。市場一覧の切り出しでは読まない**（issue #212 / #216 項目 1）。
+    `marketIds()` のガスは件数に比例し（~1,500 件で 30M の call 上限）、しかも採点は**最新 512 件に切ってから**
+    空市場を除いていたので、被害者の市場より新しい空市場を 512 件作ると（1 件 ~17 万 gas = 1 ブロックの予算で
+    ~170 件）建玉が評価から消え、警告も出なかった。今は `supply`/`supplyCollateral`/`borrow` が `(market, user)` の
+    初回に `_userMarketIds[user]` へ追記し（建玉を作る呼び出しはこの 3 つだけ。清算は他人の建玉を減らすだけ）、
+    採点（`valueAtBlock` / `valueUsdc`）は agent ごとに `userMarketIdsFrom` を 1 回読む。伸ばせるのは本人だけなので
+    `USER_MARKET_LIMIT`（128）は自分の建玉しか切らず、超過は `lending-unscanned`、読めなかった市場・建玉は
+    `lending-market:` / `lending-position:` の `read-failed` で `scoring_unpriced_holdings` に出る。観測は
+    `marketCount` + `marketIdAt` を 256 件ずつ新しい順に 512 件まで歩き、**自分の市場は窓から落ちても index から戻す**。
+    SDK の ABI に `marketIds` は無い（`test/lendingMarketIndex.test.ts`）。コントラクトは run ごとに `out/` から
+    deploy するので state dump は無関係で、`forge build` だけ要る
 - **アクション**: `createPool`（uniswap 所有。NPM の `createAndInitializePoolIfNecessary`）/
   `createLendingMarket` + `lendingSupply`/`Withdraw`/`SupplyCollateral`/`WithdrawCollateral`/`Borrow`/
   `Repay`/`Liquidate`（lending 所有）。**デプロイは `to` を省いた `rawTx`** — ランタイム経由なので

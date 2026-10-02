@@ -21,6 +21,9 @@ export type AgentSummary = {
   finalValueUsdc?: number;
   processExitedEarly?: string;
   unloggedTxCount?: number;
+  // Issue #212: addresses the agent's wallet funded that then sent transactions, attributed to the
+  // agent by the coordinator (absent when there were none).
+  derivedSenders?: Array<{ address: string; txCount: number }>;
 };
 
 export type RunSummary = {
@@ -78,6 +81,13 @@ export function scoresFromSummary(
       flags.push(
         `${agent.unloggedTxCount} on-chain tx(s) absent from the agent's submitted log`,
       );
+    if ((agent.derivedSenders?.length ?? 0) > 0) {
+      const txs = agent.derivedSenders!.reduce((n, d) => n + d.txCount, 0);
+      flags.push(
+        `${txs} on-chain tx(s) sent from ${agent.derivedSenders!.length} address(es) the agent's ` +
+          "wallet funded (attributed to the agent; rules §8, for the operator to judge)",
+      );
+    }
     // P off the epoch's two boundaries when the run recorded it; a run from before that field marks
     // both ends at the final prices, which differs by a per-run constant and is said so.
     const pnl: Pick<AgentScore, "pnlUsdc" | "pnlSource"> =
