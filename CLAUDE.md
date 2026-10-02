@@ -572,7 +572,11 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 > **ローカルの anvil では `.local-snapshot` より上に送った close は次の `sim:realtime` / `gen:state-dump` が巻き戻す**
 > （resetFork が close 前の断面へ revert する）。ファイルがこのチェーンを指していれば closer は何も送らず exit 1 で、
 > `npm run close:aave-vendor -- --revert-local-snapshot` が「pin へ revert → close → 取り直して書き戻す」
-> （直前 run の残りは捨てる = 次の run も捨てる）。pin の無いチェーン（練習 devnet）は revert しない。
+> （直前 run の残りは捨てる = 次の run も捨てる）。pin の無いチェーン（`chainMode: external`）は revert しない。
+> **練習 devnet には pin がある** — unit は `sim:realtime --config config/practice.yaml` を `localDeploy: true` で
+> 起動し `localSnapshotFile` の既定が `.local-snapshot` なので、coordinator は他のローカル run と同じく
+> resetFork の snapshot/revert を通る。期間の途中で `--revert-local-snapshot` を打つと**その期間が巻き戻る**
+> （pin は参加者が取引した全ブロックより前）。devnet では coordinator を止めて pin を**削除**し、close して再起動する。
 > coordinator はローカルデプロイ + aave の run で `Pool.getReservesList()` を列挙し、registry + LST 以外の
 > **active な reserve が 1 本でもあれば全 chainMode で起動時に落ちる**。例外は freeze 済みで参加者の aToken
 > （treasury 保有分を除く）も債務も 0 のものだけ（`aave_reserve_check`。

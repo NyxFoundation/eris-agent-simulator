@@ -150,7 +150,9 @@ export function strayAaveReservesMessage(stray: AaveReserveState[]): string {
     "USDC/WETH against them.\n" +
     "Fix: on a local deploy, redeploy (`cd deployer && npm run deploy -- --keep-fresh`, then " +
     "`npm run gen:local-constants` / `npm run gen:state-dump`), or close them in place with " +
-    "`cd deployer && npm run close:aave-vendor -- --revert-local-snapshot`. A close sent on top of " +
+    "`cd deployer && npm run close:aave-vendor -- --revert-local-snapshot` on a chain whose pin " +
+    "predates nothing you want to keep, or stop the coordinator and delete `.local-snapshot` first " +
+    "on a devnet that is mid-period (reverting there throws the period away). A close sent on top of " +
     "a local anvil without that flag is undone here: this run starts by reverting to " +
     "`.local-snapshot`, taken before the close (the closer refuses in that case; deleting " +
     "`.local-snapshot` first also works, and makes the chain as it is the base). On a chain that " +

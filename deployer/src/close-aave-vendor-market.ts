@@ -19,8 +19,16 @@
 // reverts to the pin (discarding whatever the last run left -- the next run would discard it too),
 // closes there, and re-pins, so the closed state is the clean cross-section from then on. The other
 // way out is to delete `.local-snapshot` (the current state becomes the base) or to redeploy. A
-// chain without a pin -- the practice devnet, any `chainMode: external` node -- is never reverted.
-// A non-default `run.localSnapshotFile` is passed as ERIS_LOCAL_SNAPSHOT_FILE.
+// chain without a pin -- any `chainMode: external` node -- is never reverted. A non-default
+// `run.localSnapshotFile` is passed as ERIS_LOCAL_SNAPSHOT_FILE.
+//
+// **The practice devnet has a pin.** Its unit runs `sim:realtime --config config/practice.yaml`
+// with `localDeploy: true` and no `chainMode: external`, and `localSnapshotFile` defaults to
+// `.local-snapshot` (sdk/src/config.ts), so the coordinator goes through resetFork's
+// snapshot/revert like any local run. On a devnet that is mid-period, `--revert-local-snapshot`
+// therefore throws the period away: the pin predates every block participants have traded.
+// There, stop the coordinator, DELETE the pin, close, and restart (the restart is a new period
+// either way -- docs/guide/practice-devnet.md).
 //
 // Exit codes: 1 when a reserve could not be frozen or deactivated at all (it is still open), or the
 // local pin was left in place; 2 when one could only be frozen because a participant still supplies
