@@ -217,6 +217,17 @@ The directory is yours beyond that. Write whatever your runtime wants in it, wit
 (`ERIS_AGENT_STATE_CAP_BYTES`, 64 MiB total). Running out never stops the agent: persistence turns
 itself off, says so in the agent log, and the strategy keeps trading.
 
+What the environment does with the directory is **copy it**, once at the start of every epoch (the
+snapshot a voided epoch is re-run from, rules §4.4.2). It copies only what can be copied safely
+(issue #214): regular files in regular directories, at most 20,000 entries, 16 levels deep, and no
+more than the host quota (`run.agentStateQuotaBytes`, 256 MiB) *as a copy would write it* — a
+sparse file counts at its apparent size. A directory that fails that check is **moved aside unread**
+(`<state dir>.refused-<run id>`, kept for the operator), the agent starts that epoch from an empty
+directory, and the run records `agent_state_snapshot_skipped` with the reason. Persistence
+continues from the empty directory, because an agent whose directory had been refused for good
+would have no way to repair it. Named pipes, sockets, device nodes and symlinks are what trip it;
+nothing the reference runtime writes does.
+
 ### What the model sees differently
 
 Two lines are added to the revision context when state is being carried:

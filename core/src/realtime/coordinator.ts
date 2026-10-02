@@ -2167,18 +2167,39 @@ export async function runRealtimeSimulation(
       // Issue #77: the per-agent area that survives epochs, plus the snapshot this epoch started
       // from. Absent unless a root is configured, which keeps every existing run byte-identical.
       // A failure here is fatal rather than silent: an agent that was promised its memory and
-      // silently started from agent.ts is scored as if it had chosen to forget.
-      const stateDir = agentStateRoot
+      // silently started from agent.ts is scored as if it had chosen to forget. A directory the
+      // participant made uncopyable (issue #214 item 2) is not a failure of the environment: it is
+      // set aside, the agent starts this epoch empty, and the record says so.
+      const prepared = agentStateRoot
         ? prepareAgentState(agentStateRoot, agent.id, runId)
         : undefined;
+      const stateDir = prepared?.dir;
       const view = prepareAgentView(logger.runDir, agent.id, agentConfigText);
       agentViewDirs.push(view.dir);
-      if (stateDir)
+      if (prepared) {
+        if (prepared.refused) {
+          logger.event({
+            type: "agent_state_snapshot_skipped",
+            agentId: agent.id,
+            reason: prepared.refused.reason,
+            movedTo: prepared.refused.refusedTo,
+            note:
+              "the state directory the agent left behind could not be copied; it was moved aside " +
+              "unread and the agent starts this epoch from an empty one",
+          });
+          console.error(
+            `[agent] ${agent.id}: state directory refused (${prepared.refused.reason}); ` +
+              `moved to ${prepared.refused.refusedTo}, starting empty`,
+          );
+        }
         logger.event({
           type: "agent_state_dir",
           agentId: agent.id,
-          dir: stateDir,
+          dir: prepared.dir,
+          bytes: prepared.usage.apparentBytes,
+          entries: prepared.usage.entries,
         });
+      }
       agent.process = new RealtimeAgentProcess(
         agent.spec,
         config.rpcUrl,

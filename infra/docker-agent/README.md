@@ -159,6 +159,19 @@ and at its own host path in bind-mount mode. `ERIS_AGENT_STATE_CAP_BYTES` (defau
 cap the runtime enforces on itself. Absent means this run does not persist, which is every run that
 does not ask for it.
 
+The coordinator copies that directory at the start of every epoch (the §4.4.2 snapshot), and the
+directory is participant-written, so the copy does not trust it (issue #214 item 2;
+`core/src/realtime/agentState.ts` `validateStateDir`). Measured 2026-10-02 on Node 23.5 / APFS:
+`fs.cpSync` over a tree holding one FIFO throws `ERR_INTERNAL_ASSERTION` (it does not hang), after
+first materialising a 1 GiB sparse file as 1 GiB of real bytes — and a regular-files-only `filter`
+still materialises the sparse file. So before the copy the directory is walked with `lstat`,
+bounded (20,000 entries, 16 levels), and refused if it holds anything but regular files and
+directories or if its apparent size is past `run.agentStateQuotaBytes`. A refused directory is
+**renamed** to `<agentId>.refused-<runId>` (nothing in it is read), the agent gets an empty one, and
+`events.jsonl` carries `agent_state_snapshot_skipped` with the reason. The same validation guards
+the matrix runner's checkpoints (`<root>/.snapshots/end-s<N>`): an agent that fails it is left out of
+the checkpoint and named on stderr.
+
 ## Isolation caveat (egress)
 
 Containers join `ERIS_AGENT_NET` (default `host`, sharing the host network; the default bridge on
