@@ -26,6 +26,10 @@ import {
   swapRouterAbi,
 } from "@eris/sdk/abis.js";
 import { TOKENS, UNISWAP } from "@eris/sdk/constants.js";
+import {
+  readUntrusted,
+  UNTRUSTED_SIMULATION_GAS,
+} from "@eris/sdk/untrustedRead.js";
 
 const DEADLINE_FAR_FUTURE = BigInt(2 ** 32 - 1);
 
@@ -172,20 +176,32 @@ export async function poolFlow(
   return { usdcInUnits, usdcOutUnits, swaps: logs.length };
 }
 
+/**
+ * The agent's balance of the launch token. The token is whoever listed it compiled it (the
+ * environment's `AgentERC20` for an official launch, a participant's for anything else in the
+ * registry), so the read is gas-capped and `undefined` when the token does not answer -- a token
+ * whose balance cannot be read cannot be sold this block either (issue #213).
+ */
 export async function tokenBalance(
   client: PublicClient,
   token: Address,
   holder: Address,
-): Promise<bigint> {
-  return (await client.readContract({
+): Promise<bigint | undefined> {
+  const read = await readUntrusted(client, {
     address: token,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [holder],
-  })) as bigint;
+  });
+  return typeof read.value === "bigint" ? read.value : undefined;
 }
 
-/** The router's quote for an exact-input swap through the pool's fee tier. */
+/**
+ * The router's quote for an exact-input swap through the pool's fee tier. The quoter and the pool
+ * are the environment's, but the swap executes the launch token's `transfer` inside the pool, so
+ * the simulation carries a gas cap: a quote that needs more than a real swap would is not a trade
+ * worth sending (issue #213).
+ */
 export async function quoteLaunch(
   client: PublicClient,
   args: { tokenIn: Address; tokenOut: Address; fee: number; amountIn: bigint },
@@ -203,6 +219,7 @@ export async function quoteLaunch(
         sqrtPriceLimitX96: 0n,
       },
     ],
+    gas: UNTRUSTED_SIMULATION_GAS,
   });
   return sim.result[0];
 }

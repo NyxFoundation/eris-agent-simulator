@@ -16,8 +16,8 @@ import {
   type Hex,
   type PublicClient,
 } from "viem";
-import { MULTICALL3 } from "./constants.js";
 import type { RegistryEntryObservation, RegistryKind } from "./types.js";
+import { readUntrustedBatch } from "./untrustedRead.js";
 
 // Mirrors MarketRegistry.Kind. Index order is the on-chain enum's, so a change here without a change
 // there silently re-labels every entry.
@@ -255,7 +255,10 @@ export async function readCodehashes(
   return out;
 }
 
-/// Who can move each oracle. Undefined for an address that does not answer `owner()`.
+/// Who can move each oracle. Undefined for an address that does not answer `owner()` -- and the
+/// oracle is participant code, so the read is gas-capped and one call per address, never a
+/// multicall (issue #213; `untrustedRead.ts` has the rules). An oracle that runs out of gas
+/// answering is one nobody can read, which is reported the same way as one with no `owner()`.
 export async function readOracleOwners(
   publicClient: PublicClient,
   oracles: readonly Address[],
@@ -264,20 +267,18 @@ export async function readOracleOwners(
     (o) => o !== ZERO_ADDRESS,
   ) as Address[];
   if (unique.length === 0) return {};
-  const results = (await publicClient.multicall({
-    contracts: unique.map((address) => ({
+  const results = await readUntrustedBatch(
+    publicClient,
+    unique.map((address) => ({
       address,
       abi: ownableAbi,
       functionName: "owner",
-    })) as never,
-    multicallAddress: MULTICALL3,
-    allowFailure: true,
-  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+    })),
+  );
   const out: Record<string, Address> = {};
   unique.forEach((address, i) => {
     const r = results[i];
-    if (r.status === "success" && typeof r.result === "string")
-      out[address.toLowerCase()] = r.result as Address;
+    if (typeof r.value === "string") out[address.toLowerCase()] = r.value as Address;
   });
   return out;
 }

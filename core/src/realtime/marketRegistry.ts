@@ -30,12 +30,17 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { isExternalChain, mine, sendNoMine } from "@eris/sdk/chain.js";
 import { readForgeArtifact } from "@eris/sdk/forge.js";
-import { MULTICALL3 } from "@eris/sdk/constants.js";
 import {
   marketRegistryAbi,
   registryKindIndex,
   ZERO_ADDRESS,
 } from "@eris/sdk/marketRegistry.js";
+import {
+  readUntrustedBatch,
+  UNTRUSTED_READ_GAS,
+  UNTRUSTED_READ_TIMEOUT_MS,
+  type UntrustedReadFailure,
+} from "@eris/sdk/untrustedRead.js";
 import { simpleLendingAbi } from "@eris/sdk/protocols/lending.js";
 import { uniswapFactory } from "@eris/sdk/protocols/uniswap.js";
 import { uniswapV3FactoryEventsAbi } from "@eris/sdk/abis.js";
@@ -91,6 +96,9 @@ export type MarketRegistryRuntime = {
   // (market|extra) pairs already discovered, so a re-scan of an overlapping range does not queue
   // the same contract twice.
   seen: Set<string>;
+  // Addresses whose ERC-20 probe could not be answered (out of gas / timeout / transport error),
+  // already reported as `agent_market_read_failed`. Once per address, not once per block.
+  readFailuresReported: Set<string>;
   perBlockCap: number;
 };
 
@@ -165,6 +173,7 @@ export async function deployAgentMarketVenues(
     registrarAddress,
     pending: [],
     seen: new Set(),
+    readFailuresReported: new Set(),
     perBlockCap,
   };
 }
@@ -328,14 +337,41 @@ export async function sweepMarkets(
       !runtime.seen.has(entryKey(c.address, ZERO_BYTES32)),
   );
   if (fresh.length > 0) {
-    const kinds = await classifyContracts(
+    const classified = await classifyContracts(
       publicClient,
       fresh.map((c) => c.address),
     );
     for (let i = 0; i < fresh.length; i++) {
+      const failure = classified[i].failure;
+      // The probe ran the contract's own code and the contract did not answer within the cap (or
+      // the node did not answer in time). The entry is still published, as `unknown`: the contract
+      // exists and anyone scanning for it would find it. Said once per address -- the registry
+      // records the kind once, so the misclassification is permanent and worth a line, and an
+      // ordinary revert (a vault asked `name()`) is not news and is not reported.
+      if (
+        failure &&
+        !runtime.readFailuresReported.has(fresh[i].address.toLowerCase())
+      ) {
+        runtime.readFailuresReported.add(fresh[i].address.toLowerCase());
+        logger.event({
+          type: "agent_market_read_failed",
+          address: fresh[i].address,
+          creator: fresh[i].creator,
+          functionName: failure.functionName,
+          reason: failure.failure,
+          message: failure.message,
+          gas: Number(UNTRUSTED_READ_GAS),
+          timeoutMs: UNTRUSTED_READ_TIMEOUT_MS,
+          blockNumber: toBlock,
+          note:
+            "the ERC-20 probe (name/symbol/decimals) ran this contract's code under the untrusted-read " +
+            "gas cap and got no answer; it is registered as `unknown`. A contract that cannot be " +
+            "read under the cap cannot be read by any agent either (issue #213).",
+        });
+      }
       found.push({
         market: fresh[i].address,
-        kind: kinds[i],
+        kind: classified[i].kind,
         creator: fresh[i].creator,
         token0: ZERO_ADDRESS,
         token1: ZERO_ADDRESS,
@@ -482,34 +518,61 @@ async function codehashOf(
   }
 }
 
-// ERC-20 or not. Three static calls per candidate through one multicall; a contract that answers
-// all three is called an erc20 and everything else is `unknown`. Deliberately a heuristic: the
-// alternative (only record a token once a known factory pairs it) hides a token until somebody
-// makes a market in it, which is exactly when it is too late to look at it.
+export type ClassifiedContract = {
+  kind: RegistryKind;
+  // Set when a probe got no answer for a reason other than the contract declining (`revert`):
+  // out of gas under the cap, the node's deadline, or a transport error. The first such probe
+  // wins; `name` is asked first.
+  failure?: {
+    functionName: string;
+    failure: UntrustedReadFailure;
+    message: string;
+  };
+};
+
+// ERC-20 or not. Three gas-capped `eth_call`s per candidate (the candidate's own code runs here,
+// so never a multicall -- issue #213 and `untrustedRead.ts`); a contract that answers all three is
+// called an erc20 and everything else is `unknown`. Deliberately a heuristic: the alternative
+// (only record a token once a known factory pairs it) hides a token until somebody makes a market
+// in it, which is exactly when it is too late to look at it.
 export async function classifyContracts(
   publicClient: PublicClient,
   addresses: readonly Address[],
-): Promise<RegistryKind[]> {
+  opts: { timeoutMs?: number } = {},
+): Promise<ClassifiedContract[]> {
   if (addresses.length === 0) return [];
-  let results: Array<{ status: "success" | "failure"; result?: unknown }>;
-  try {
-    results = (await publicClient.multicall({
-      contracts: addresses.flatMap((address) => [
-        { address, abi: erc20ProbeAbi, functionName: "name" },
-        { address, abi: erc20ProbeAbi, functionName: "symbol" },
-        { address, abi: erc20ProbeAbi, functionName: "decimals" },
-      ]) as never,
-      multicallAddress: MULTICALL3,
-      allowFailure: true,
-    })) as Array<{ status: "success" | "failure"; result?: unknown }>;
-  } catch {
-    return addresses.map(() => "unknown" as RegistryKind);
-  }
+  const probes = ["name", "symbol", "decimals"] as const;
+  const results = await readUntrustedBatch(
+    publicClient,
+    addresses.flatMap((address) =>
+      probes.map((functionName) => ({
+        address,
+        abi: erc20ProbeAbi,
+        functionName,
+      })),
+    ),
+    opts,
+  );
   return addresses.map((_, i) => {
-    const ok =
-      results[i * 3]?.status === "success" &&
-      results[i * 3 + 1]?.status === "success" &&
-      results[i * 3 + 2]?.status === "success";
-    return ok ? ("erc20" as RegistryKind) : ("unknown" as RegistryKind);
+    const three = probes.map((name, j) => ({
+      functionName: name,
+      result: results[i * 3 + j],
+    }));
+    const ok = three.every((p) => p.result.value !== undefined);
+    const failed = three.find(
+      (p) => p.result.failure !== undefined && p.result.failure !== "revert",
+    );
+    return {
+      kind: ok ? ("erc20" as RegistryKind) : ("unknown" as RegistryKind),
+      ...(failed && failed.result.failure !== undefined
+        ? {
+            failure: {
+              functionName: failed.functionName,
+              failure: failed.result.failure,
+              message: failed.result.message,
+            },
+          }
+        : {}),
+    };
   });
 }

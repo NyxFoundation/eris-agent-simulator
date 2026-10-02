@@ -97,6 +97,26 @@ issue #40 T0。**この文書は capability の definition of done の一部**�
 権威は**チェーンに着地したもの**＝ run 後検査。ゲートウェイが先に落とすのは、
 検査が見える頃には飢えたブロックがもう過ぎているからにすぎない。
 
+### 3.1 書き込みではなく read 側（issue #213）
+
+上の 3 層は **tx** の話で、`eth_call` は通らない。ところが環境と全 agent は参加者製コントラクトの
+コードを `eth_call` で**実行**している — lending 市場の oracle の `price()` / `owner()`、registry
+エントリの `owner()`、coordinator の ERC-20 判定（`name` / `symbol` / `decimals`）、launch token の
+`balanceOf` と見積り。`gas` を付けない `eth_call` はノード既定＝ブロックガスリミット（30M）で走るので、
+無限ループを 1 つ置けば**読む側全員が毎ブロック**その分を払う（実測 anvil 1.7.1: keccak ループ 1 回
+~280 ms。32 体が同じ oracle を読めば 1 ブロック分を超える）。
+
+| 層 | 何を見るか | 挙動 |
+|---|---|---|
+| sdk / core の read（`sdk/src/untrustedRead.ts`） | 参加者由来アドレスへの `eth_call` | `gas: 200,000`（`SimpleLending.EXTERNAL_CALL_GAS` と同値）を明示。1 アドレス 1 call、Multicall3 には入れない。batch に 1 秒の期限 |
+| 読めなかった値 | out of gas / revert / timeout | **欠落**（`price` / `oracleOwner` が無い）。0 ではない |
+| coordinator の判定 | 答えなかった新規コントラクト | `unknown` として登録し `agent_market_read_failed` をアドレスごとに 1 回 |
+
+Multicall3 に入れないのは aggregate が内側の CALL に残りの 63/64 を渡すから: 罠が 1 つ先頭にあると、
+同じ batch の正直な oracle まで欠落する（実測: `[loop, honest]` で honest は生き残るが、残りガスは 1/64）。
+コントラクト側の staticcall 上限（singleton の `_price` / `_borrowRate`）はこの read 側の上限と**同じ数字**で、
+`test/untrustedRead.test.ts` が一致を検査する。
+
 ## 4. エージェント同士の攻撃面（＝競技の一部。塞がない）
 
 規約 §8 が明示的に認めている側。ここに列挙するのは「塞ぐため」ではなく
