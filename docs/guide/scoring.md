@@ -69,6 +69,7 @@ deviation seen for the stables.
 | `agents[].baseline` | `true` for the benchmark — valued, shown, never in the population |
 | `agents[].netPnlUsdc` | `finalValueUsdc − initialValueUsdc`, both ends at the final marks. A per-run constant away from P when everyone starts with the same basket |
 | `agents[].unloggedTxCount` | included transactions the agent's own runtime never reported sending (a flag, rules §8) |
+| `agents[].rosterTransfers` | flagged value movements between this agent and another registered address — any amount within one `participant` unit, above `run.rosterTransferFlagBps` across units (a flag, rules §8; issue #208). The score is unchanged; the open rules question (collapse a unit into one population member, or make σ robust) is #186 / ADR 0023 |
 | `valueSeries.intervalSeries` | `intervalBlocks` / `intervals` / `boundaryBlocks` / `valuesByAgent` (`null` = a boundary that did not report, never a zero). Until the results are published the same series is also written as `epochSeries` (`epochBlocks` / `epochs`), its name before issue #140 |
 | `valueSeries.markMedian` | `windowBlocks` / `surfaces` / `maxDeviationBps` per stable |
 | `valueSeries.alphaByAgent` | β-removed PnL per agent (`alphaUsdc` is the last minus the first) — context, not the score |

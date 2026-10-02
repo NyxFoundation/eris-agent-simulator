@@ -43,6 +43,13 @@ export const BLOCKS_CSV_COLUMNS = [
   // that pay more (measured 2026-09-27: ahead of the oracle update's 6/6 gwei, paying 0.1 gwei/gas),
   // and `priorityFeeWei` alone cannot show it. postRunCheck reads the pair (sdk/src/feeRule.ts).
   "maxFeePerGasWei",
+  // Issue #208: the tx's own `to` and `value`, so value carried between two registered addresses can
+  // be read off this file after the run (core/src/rosterTransfers.ts) the way the fee and gas
+  // columns are -- from the chain's record, not from anything the agent reports. `to` is empty for
+  // a deployment. Appended last, so every positional reader keeps working on older runs, which
+  // simply have no ETH-transfer check.
+  "to",
+  "valueWei",
 ] as const;
 
 export const BLOCKS_CSV_INDEX = Object.fromEntries(
@@ -76,6 +83,8 @@ export type BlockRowInput = {
   method?: string;
   gasUsed?: bigint;
   maxFeePerGasWei?: bigint;
+  to?: string;
+  valueWei?: bigint;
 };
 
 // The two fee columns of a mined transaction, from its own on-chain fields (not self-reported).
@@ -126,7 +135,7 @@ export class RunLogger implements RunArtifactWriter {
   blockRow(row: BlockRowInput): void {
     appendFileSync(
       join(this.runDir, "blocks.csv"),
-      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""},${row.gasUsed?.toString() ?? ""},${row.maxFeePerGasWei?.toString() ?? ""}\n`,
+      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""},${row.gasUsed?.toString() ?? ""},${row.maxFeePerGasWei?.toString() ?? ""},${row.to ?? ""},${row.valueWei?.toString() ?? ""}\n`,
     );
   }
 

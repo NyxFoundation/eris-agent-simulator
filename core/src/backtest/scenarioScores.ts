@@ -6,6 +6,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentScore } from "./standings.js";
+import {
+  rosterTransferFlag,
+  type RosterTransfer,
+} from "../rosterTransfers.js";
 
 export type AgentSummary = {
   id: string;
@@ -21,6 +25,9 @@ export type AgentSummary = {
   finalValueUsdc?: number;
   processExitedEarly?: string;
   unloggedTxCount?: number;
+  // Issue #208 / rules §8: flagged value movements between this agent and another registered
+  // address (coordinator; absent when there were none, and on runs recorded before the check).
+  rosterTransfers?: RosterTransfer[];
 };
 
 export type RunSummary = {
@@ -78,6 +85,11 @@ export function scoresFromSummary(
       flags.push(
         `${agent.unloggedTxCount} on-chain tx(s) absent from the agent's submitted log`,
       );
+    // One line per flagged movement, from either side (issue #208): the sibling that received is
+    // as much a party to §8 as the one that sent, and a stranger over the threshold is a fact the
+    // operator reads next to both numbers.
+    for (const t of agent.rosterTransfers ?? [])
+      flags.push(rosterTransferFlag(t, id));
     // P off the epoch's two boundaries when the run recorded it; a run from before that field marks
     // both ends at the final prices, which differs by a per-run constant and is said so.
     const pnl: Pick<AgentScore, "pnlUsdc" | "pnlSource"> =

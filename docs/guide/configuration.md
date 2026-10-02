@@ -43,6 +43,7 @@ unknown key rather than being silently applied.
 | `run.markMedianBlocks` | 5 | Window over which manipulable marks are taken as a median at each boundary, so a boundary cannot be moved by a trade placed on the boundary block |
 | `run.scoreEvery` | 1 | Reconstruct the value cross-section every Nth block. Score-neutral — it only coarsens the equity curve |
 | `run.resetUnit` | `continuous` | Whether this run is one world or one scenario out of a set. **Only the scenario-matrix runner may declare `scenario`**: writing it here and running `sim:realtime` fails fast at startup (ADR 0020 §1) |
+| `run.rosterTransferFlagBps` | 100 | Post-run check of value moved between registered addresses (issue #208, rules §8): a movement between two *different* participant units is flagged when it exceeds this share of the pair's smaller endowment (1% ≈ 760 USDC on the official basket); between two submissions of the same unit any amount is flagged. `0` flags every priced cross-unit movement. A report in `summary.json` / the matrix `flags`; the score is unchanged |
 
 See [Scoring](scoring.md) for what these produce and how to rescore a stored run under a different
 metric.

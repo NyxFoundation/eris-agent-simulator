@@ -144,6 +144,12 @@ export type SimConfig = {
   // shape as the priority-fee cap; the RPC gateway refuses over-cap transactions up front.
   maxTxGas: bigint;
   maxAgentBlockGas: bigint;
+  // Issue #208 / rules §8: value moved between two registered addresses of *different* participant
+  // units is flagged in the post-run check only when it exceeds this share (bps) of the pair's
+  // smaller endowment; between two submissions of the same unit any amount is flagged. 0 flags
+  // every priced cross-unit movement. Detection is post-run over blocks.csv and the run window's
+  // Transfer / lending logs (core/src/rosterTransfers.ts); nothing changes the score.
+  rosterTransferFlagBps: number;
   // Flash arb demo (GitHub #3). With ERIS_FLASH_ARB=1 the coordinator deploys the FlashArb contract
   // and makes it available to the flash-arb agent. Requires uniswap+balancer+aave enabled. Default off.
   flashArbDemo: boolean;
@@ -465,6 +471,9 @@ export function loadConfig(env = process.env): SimConfig {
     // 2026-09-06 -- inclusion is the priority-fee auction -- so the gas budget is what stops one agent
     // from starving the block.
     maxAgentBlockGas: bigintEnv(env.ERIS_MAX_AGENT_BLOCK_GAS, 30_000_000n),
+    // 1% of the smaller endowment of the pair (~760 USDC on the official basket, 250 on a USDC-only
+    // regime): below it a cross-unit movement is recorded but not flagged.
+    rosterTransferFlagBps: intEnv(env.ERIS_ROSTER_TRANSFER_FLAG_BPS, 100),
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
     // Real-time mode settings.
     blockTimeSec,
