@@ -63,6 +63,21 @@ function fixtureRuns(): string {
       stderrTail: "OOM",
     },
     { type: "stress_liquidation", blockNumber: 140, victim: "0xdef" },
+    // Window 0 (crash, 130..147) has closed by block 200; window 1 (whale, 400..401) has not.
+    { type: "stress_event_applied", eventIndex: 0, eventType: "crash", blockNumber: 135 },
+    { type: "stress_event_applied", eventIndex: 1, eventType: "whale", blockNumber: 199 },
+    { type: "stress_event_summary", eventIndex: 0, eventType: "crash", status: "observed" },
+    { type: "stress_event_summary", eventIndex: 1, eventType: "whale", status: "observed" },
+    {
+      type: "stress_token_launch_setup",
+      launches: [
+        { eventIndex: 0, index: 0, symbol: "T0", startBlock: 30, endBlock: 47 },
+        { eventIndex: 1, index: 0, symbol: "T1", startBlock: 300, endBlock: 301 },
+      ],
+    },
+    { type: "stress_token_launch_funded", eventIndex: 1, index: 0, waveUsdcUnits: "0" },
+    { type: "stress_whale_funded", address: "0xw", usdcUnits: "1", events: 1 },
+    { type: "stress_whale", blockNumber: 400, magnitude: 12 },
   ];
   writeFileSync(
     join(run, "events.jsonl"),
@@ -83,6 +98,7 @@ function fixtureRuns(): string {
       seed: 4242,
       flowSeed: 7,
       resetUnit: "continuous",
+      stressEvents: [{ eventIndex: 0, eventType: "crash", status: "observed" }],
       agents: [
         {
           id: "a1",
@@ -293,7 +309,22 @@ test("audience mode strips seeds, future windows, rigged ground truth and stderr
       assert.equal(exited.stderrTail, undefined);
       assert.equal(exited.code, 137);
       assert.ok(types.includes("stress_liquidation"), "realized events stay");
+      // Every other stress event follows the schedule's rule: its window must have closed.
+      const indexes = (type: string) =>
+        events.filter((e) => e.type === type).map((e) => e.eventIndex);
+      assert.deepEqual(indexes("stress_event_applied"), [0], "the open whale's next price is not served");
+      assert.deepEqual(indexes("stress_event_summary"), [0]);
+      assert.deepEqual(indexes("stress_token_launch_funded"), [], "dud-or-not of a future launch");
+      const launch = events.find((e) => e.type === "stress_token_launch_setup")!;
+      assert.deepEqual(
+        (launch.launches as { symbol: string }[]).map((l) => l.symbol),
+        ["T0"],
+      );
+      assert.ok(!types.includes("stress_whale_funded"), "a plan with no window of its own");
+      assert.ok(!types.includes("stress_whale"), "not mined yet");
     }
+    const summary = JSON.parse((await get(`/${run}/summary.json`)).text);
+    assert.equal(summary.stressEvents, undefined, "the per-window audit names every window's kind");
     // A scenario matrix's epoch: the window closed at block 147 and the run is at 300, and still
     // nothing of the plan is served -- its kind would name the regime (rules §3.3).
     const epoch = await get("/2026-11-02T10-00-00-000Z/events.jsonl");
@@ -302,7 +333,11 @@ test("audience mode strips seeds, future windows, rigged ground truth and stderr
       .filter((l) => l.trim())
       .map((l) => (JSON.parse(l) as { type: string }).type);
     assert.ok(!epochTypes.includes("stress_schedule"), "no schedule for a scenario epoch");
-    assert.ok(epochTypes.includes("stress_liquidation"));
+    // Nor any other stress event: a victim liquidation, a whale, a token launch each name a regime.
+    assert.ok(
+      !epochTypes.some((t) => t.startsWith("stress_")),
+      `no stress events for a scenario epoch: ${epochTypes.join(",")}`,
+    );
     assert.ok(!epoch.text.includes('"seed"'));
   } finally {
     await close();
@@ -391,6 +426,34 @@ test("redactEventLine: past windows for a continuous world, nothing for a scenar
   assert.ok(redactEventLine(line, past(147))?.includes('"crash"'));
   assert.equal(redactEventLine(line, { kind: "none" }), null, "a scenario epoch: never");
   assert.equal(redactEventLine("not json", past(1)), "not json");
+});
+
+test("redactEventLine: a stress event is served once its window has closed", () => {
+  const windows = [
+    { start: 130, end: 147 },
+    { start: 180, end: 220 },
+  ];
+  const past = (currentBlock: number | null, w: typeof windows | null = windows) =>
+    ({ kind: "past", currentBlock, windows: w }) as const;
+  const applied = (eventIndex: number, blockNumber: number) =>
+    JSON.stringify({ type: "stress_event_applied", eventIndex, blockNumber });
+  // Written when the oracle tx is sent: at block 200 the applied price for 201 is in the file.
+  assert.equal(redactEventLine(applied(1, 201), past(200)), null);
+  assert.equal(redactEventLine(applied(1, 201), past(220))?.includes('"eventIndex":1'), true);
+  assert.ok(redactEventLine(applied(0, 140), past(200)));
+  assert.equal(redactEventLine(applied(7, 140), past(200)), null, "an index the schedule lacks");
+  assert.equal(redactEventLine(applied(0, 140), past(200, null)), null, "no schedule: no attribution");
+  assert.equal(redactEventLine(applied(0, 140), { kind: "none" }), null);
+
+  const block = (blockNumber: number) =>
+    JSON.stringify({ type: "stress_victim_hf", blockNumber, healthFactor: "0.98" });
+  assert.equal(redactEventLine(block(190), past(200)), null, "inside a window that is still open");
+  assert.ok(redactEventLine(block(140), past(200)), "inside a closed window");
+  assert.ok(redactEventLine(block(160), past(200)), "between windows, already mined");
+  assert.equal(redactEventLine(block(205), past(200)), null, "not mined yet");
+
+  const plan = JSON.stringify({ type: "stress_liquidity_pull_setup", owner: "0x1", venues: ["uniswap"] });
+  assert.equal(redactEventLine(plan, past(10_000)), null, "plan/setup events are never served");
 });
 
 test("redactEventLine: the operator's agent sandbox warning is not served to the audience", () => {

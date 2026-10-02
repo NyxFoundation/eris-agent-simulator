@@ -437,13 +437,24 @@ With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
   matrix it is dropped entirely, because even a closed window's kind ("crash", "whale") names the
   regime §3.3 does not announce. The run's kind is read from `summary.json`, or from
   `run_started_realtime` while the run is live; a run that states neither is treated as a scenario
+- applies the same rule to **every other `stress_*` event**. A scenario epoch serves none of them —
+  a victim liquidation, a whale, a token launch, an applied overlay each name the regime as surely
+  as the schedule does. A continuous world serves one only once the window it belongs to has closed:
+  by its `eventIndex` (`stress_event_applied` / `_summary`, the token-launch events), by its
+  `blockNumber` (mined, and not inside a window that is still open: whale swaps, liquidations,
+  pulls), and the token-launch plan keeps only its closed launches. Events with neither — setup,
+  funding, teardown, stuck/reverted — describe the plan or the operator's machinery and are never
+  served. Before this, `stress_event_applied` (written when the oracle tx is *sent*) gave a live
+  tail the next block's price, `stress_event_summary` named every window's kind, and
+  `stress_token_launch_setup` / `_funded` listed future windows and which launches were duds
 - rewrites `matrix.json` / `standings.json` of a **scenario** matrix so every scenario is
   `regime: "hidden"`, `seed: null` — the pages call it "epoch s" (§3.3: an epoch's scenario is not
   announced, and with equal regime counts the ones already run would give away the rest). A practice
   period (`resetUnit: continuous`) keeps its day labels: days are not scenarios. **Null, not 0**: a
   withheld seed, a segment's placeholder and a real seed 0 are three different things, and printing
   `seed 0` claimed a draw nobody made
-- drops `seed` / `flowSeed` and each agent's `stderrTail` from `summary.json`
+- drops `seed` / `flowSeed`, `stressEvents` (the per-window audit: every window's kind) and each
+  agent's `stderrTail` from `summary.json`
 - **serves only the competitions `ERIS_DASHBOARD_COMPETITIONS` lists**, when it is set: a
   comma-separated list of directories under `runs/`. What belongs to one is what its `matrix.json`
   names and what its directory contains — never what happens to be running. Applies to the index,

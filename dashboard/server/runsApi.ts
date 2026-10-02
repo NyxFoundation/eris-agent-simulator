@@ -23,7 +23,12 @@
 //   - events.jsonl: the seeds (§3.3, §7.2), the calibration warning (it names crash magnitudes), the
 //     ground truth of regime-7 pools (§3.2: whether a pool is rigged is the participant's to find
 //     out), a participant's stderr, and the *future* half of the stress schedule are stripped. Past
-//     windows stay: they already happened to everyone
+//     windows stay: they already happened to everyone. The same rule covers every other `stress_*`
+//     event, not just the schedule: a scenario epoch serves none of them (each one names its
+//     regime -- `stress_whale`, `stress_token_launch`, `stress_event_summary`), and a continuous
+//     world serves one only once the window it belongs to has closed. `stress_event_applied` is
+//     written when the oracle tx is *sent*, so a live tail of it read the next block's price, and
+//     `stress_token_launch_setup` / `_funded` listed future windows and which launches were duds
 //   - matrix.json / standings.json / summary.json: regime becomes "hidden" and seed null while the
 //     competition is a scenario matrix (§3.3: the scenario of an epoch is not announced; equal
 //     regime counts would let the remaining ones be inferred). A practice period's segments are not
@@ -55,6 +60,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // briefly dropped off the index mid-teardown would flip the dashboard to the neighboring run and
 // strand it there (the live refresh loop stops with the run it lost).
 const LIVE_FRESHNESS_MS = 120_000;
+
+// How far into events.jsonl to look for the stress schedule (written before the first block).
+const SCHEDULE_HEAD_BYTES = 4 * 1024 * 1024;
 
 // Chunk cap for a tail request: a first tail of a large log would otherwise buffer the whole file
 // in memory at once. The client keeps polling with the returned offset until it catches up.
@@ -204,9 +212,17 @@ function redactStandings(file: Json): Json {
   };
 }
 
-/** summary.json: the seeds, and a participant's stderr (their process, their words). */
+/**
+ * summary.json: the seeds, the per-window stress audit (`stressEvents` names every window's kind,
+ * which is the regime), and a participant's stderr (their process, their words).
+ */
 function redactSummary(file: Json): Json {
-  const { seed: _seed, flowSeed: _flowSeed, ...rest } = file;
+  const {
+    seed: _seed,
+    flowSeed: _flowSeed,
+    stressEvents: _stressEvents,
+    ...rest
+  } = file;
   if (Array.isArray(rest.agents)) {
     rest.agents = (rest.agents as Json[]).map((a) => {
       const { stderrTail: _stderr, ...agent } = a;
@@ -227,13 +243,72 @@ const REDACTED_JSON: Record<string, (file: Json) => Json> = {
  * run has reached (null when unknown), which decides how much of the stress schedule is history.
  */
 export type SchedulePolicy =
-  /** Keep windows that have closed by `currentBlock` (a practice period: the past is public). */
-  | { kind: "past"; currentBlock: number | null }
+  /**
+   * Keep windows that have closed by `currentBlock` (a practice period: the past is public).
+   * `windows` are the schedule's windows in absolute blocks, indexed like `eventIndex`; null when
+   * the file has no schedule line (then no stress event is attributable, and none is served).
+   */
+  | {
+      kind: "past";
+      currentBlock: number | null;
+      windows?: ReadonlyArray<{ start: number; end: number }> | null;
+    }
   /**
    * Drop the schedule entirely: the run is one epoch of a scenario matrix, and even a closed
    * window's kind ("crash", "whale") names the regime rules §3.3 does not announce.
    */
   | { kind: "none" };
+
+/** Absolute windows of a `stress_schedule` event, indexed like the `eventIndex` the others carry. */
+export function scheduleWindows(
+  event: Json,
+): Array<{ start: number; end: number }> | null {
+  if (!Array.isArray(event.events)) return null;
+  const base = typeof event.runStartBlock === "number" ? event.runStartBlock : 0;
+  return (event.events as Json[]).map((w) => ({
+    start: base + (typeof w.startBlock === "number" ? w.startBlock : 0),
+    // A window without an end is never "closed": withhold rather than guess.
+    end:
+      typeof w.endBlock === "number"
+        ? base + w.endBlock
+        : Number.POSITIVE_INFINITY,
+  }));
+}
+
+/**
+ * A `stress_*` event other than the schedule. Served only when everything it says is about a window
+ * that has closed -- the schedule's own rule, applied to the events that report on it.
+ */
+function redactStressEvent(event: Json, policy: SchedulePolicy): string | null {
+  if (policy.kind === "none") return null;
+  const { currentBlock } = policy;
+  const windows = policy.windows ?? null;
+  if (currentBlock === null || windows === null) return null;
+  const closed = (i: unknown) =>
+    typeof i === "number" && i >= 0 && i < windows.length && windows[i].end <= currentBlock;
+
+  // One window's event: its window decides.
+  if ("eventIndex" in event) return closed(event.eventIndex) ? JSON.stringify(event) : null;
+  // The token-launch plan lists every launch with its window: keep the ones that are over.
+  if (Array.isArray(event.launches)) {
+    const past = (event.launches as Json[]).filter((l) => closed(l.eventIndex));
+    if (past.length === 0) return null;
+    return JSON.stringify({ ...event, launches: past, redacted: "future windows" });
+  }
+  // A block's event (a whale swap, a liquidation, a pull): mined, and not inside a window that is
+  // still open -- while it is open, the event is the window's magnitude and timing, ahead of the
+  // price series.
+  if (typeof event.blockNumber === "number") {
+    const b = event.blockNumber;
+    if (b > currentBlock) return null;
+    const insideOpen = windows.some((w) => w.start <= b && b <= w.end && w.end > currentBlock);
+    return insideOpen ? null : JSON.stringify(event);
+  }
+  // Neither: setup, funding, teardown and stuck/reverted diagnostics. They describe the plan (how
+  // many whales, what the victims are, how much liquidity will be pulled) or the operator's
+  // machinery, never something an audience could not have seen on chain.
+  return null;
+}
 
 export function redactEventLine(
   line: string,
@@ -274,6 +349,7 @@ export function redactEventLine(
       });
     }
     case "stress_calibration_warning":
+      return null;
     case "vulnerability_exploited":
     // The operator's note that agent containers ran without network isolation: for whoever runs
     // the box, not for the audience.
@@ -290,6 +366,8 @@ export function redactEventLine(
       return JSON.stringify(rest);
     }
     default: {
+      if (typeof event.type === "string" && event.type.startsWith("stress_"))
+        return redactStressEvent(event, policy);
       if ("stderrTail" in event) {
         const { stderrTail: _e, ...rest } = event;
         return JSON.stringify(rest);
@@ -561,8 +639,49 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
       }
     }
     return resetUnit === "continuous"
-      ? { kind: "past", currentBlock: currentBlockOf(file) }
+      ? {
+          kind: "past",
+          currentBlock: currentBlockOf(file),
+          windows: windowsOf(path.join(dir, "events.jsonl")),
+        }
       : { kind: "none" };
+  }
+
+  // The schedule never changes within a file, so it is read once per file -- but only once it has
+  // been found: a live run writes it a moment after starting, and caching "none yet" would withhold
+  // that run's stress events for good.
+  const windowsCache = new Map<string, Array<{ start: number; end: number }>>();
+  /** The stress schedule's absolute windows, from the head of an events.jsonl; null if not (yet) there. */
+  function windowsOf(
+    eventsFile: string,
+  ): Array<{ start: number; end: number }> | null {
+    const hit = windowsCache.get(eventsFile);
+    if (hit) return hit;
+    let fd: number | null = null;
+    try {
+      fd = fs.openSync(eventsFile, "r");
+      // Written before the first block, so within the head; a period's schedule of a few hundred
+      // windows is ~100KB, hence the generous cap.
+      const buf = Buffer.alloc(SCHEDULE_HEAD_BYTES);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      for (const line of buf.subarray(0, n).toString("utf8").split("\n")) {
+        if (!line.includes('"stress_schedule"')) continue;
+        try {
+          const event = JSON.parse(line) as Json;
+          if (event.type !== "stress_schedule") continue;
+          const windows = scheduleWindows(event);
+          if (windows) windowsCache.set(eventsFile, windows);
+          return windows;
+        } catch {
+          return null; // the line is still being written
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      if (fd !== null) fs.closeSync(fd);
+    }
   }
 
   function acceptsGzip(req: IncomingMessage): boolean {
