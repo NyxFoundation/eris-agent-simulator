@@ -92,11 +92,10 @@ Each interval boundary is valued at **the median over the preceding `markMedianB
 | Surface | The price that is medianed |
 |---|---|
 | Market-priced stables (spot, the Trove-debt and SP-deposit mid, stable legs of LP and lending marks) | The geometric mean of the two-sided probe (`stables`) |
-| Uniswap V3 LP | The pool's tick. Principal splits into the two tokens at the median tick; uncollected fees stay at the boundary tick (fees are not a price, they are what the boundary owes) |
-| Balancer BPT / Curve LP | The value of one share (reserves at the boundary's reference prices ÷ supply). The boundary mark is rescaled by median ÷ boundary share price |
 | LST (the venue and Aave's collateral haircut) | The pool sale at the holder's own size (get_dy). The queue side (par, the wait) is the vault's and stays at the boundary |
 | Liquity | The Stability Pool deposit's sale (get_dy) and the debt's buyback (get_dx), both at the boundary's sizes |
 | Aave accounts / GMX / SimpleLending | Not medianed (marked at the environment's reference prices and oracles) |
+| Uniswap V3 LP / Balancer BPT / Curve LP | Not medianed. How an LP splits into its two tokens (the tick), and a share's slice of the reserves, are **holdings, not prices** — the tokens a withdrawal in that block returns — so the boundary block's are valued at the reference prices. A median split applied to the boundary's liquidity values tokens the position does not hold: an owner alone in a pool pushes it off fair for three of the window's five blocks and puts it back before the bell; the swaps net out between their wallet and their position, yet the position was marked at the pushed split (a share of a pool off fair is always worth more at fair prices). At the boundary block's own split, a swap in that block nets out between wallet and position and the mark does not move (stable legs share the `stables` median with the wallet) |
 
 A block that did not quote is dropped (counted neither as zero nor as par). A boundary with fewer than five blocks of history uses the median of those there are (§4.4.2).
 

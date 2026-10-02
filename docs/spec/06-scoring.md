@@ -92,11 +92,10 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 | 対象 | median する価格 |
 |---|---|
 | 市場価格 stable（spot・Trove 債務・SP 預入の mid、LP / lending の stable 脚） | 両方向 probe の幾何平均（`stables`） |
-| Uniswap V3 LP | プールの tick。元本は median tick で 2 トークンに分ける。未回収手数料は境界ブロックの tick のまま（手数料は価格でなく、境界で確定した事実） |
-| Balancer BPT / Curve LP | 1 持分あたりの価値（準備金 × 境界の参照価格 ÷ 供給量）。境界の評価額を median / 境界値の比で補正する |
 | LST（venue・Aave 担保の haircut） | 自分サイズでのプール売却 quote（get_dy）。キュー側（額面・待ち）は vault の値なので境界のまま |
 | Liquity | SP 預入の売却 quote（get_dy）と債務の買い戻し quote（get_dx）、いずれも境界のサイズ |
 | Aave 口座 / GMX / SimpleLending | しない（環境の参照価格・オラクルで評価） |
+| Uniswap V3 LP / Balancer BPT / Curve LP | しない。LP の 2 トークンへの分割（tick）と持分あたりの準備金は**価格ではなく保有量**（そのブロックで引き出せば返ってくる枚数）なので、境界ブロックの値を参照価格で評価する。中央値の分割比を境界の流動性に掛けると、持っていない枚数を評価する: 自分しか LP のいないプールを窓の 5 ブロック中 3 ブロックだけ fair からずらし、境界の前に戻すと、往復の swap は財布と自分の LP の間で相殺されるのに、LP はずらした側の分割で評価される（fair からずれたプールの持分は fair で評価すると必ず大きい）。境界ブロックの値なら、同じブロックの swap は財布と LP で相殺されて評価は動かない（stable 脚の価格は上の `stables` の median を財布と共有する） |
 
 quote が返らなかったブロックは捨てる（0 とも par とも数えない）。履歴が 5 ブロックに満たない境界は、あるブロックだけの median（§4.4.2）。
 
