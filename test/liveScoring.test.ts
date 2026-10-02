@@ -266,3 +266,140 @@ test("the comparator only compares boundaries both series hold", () => {
   assert.equal(r.compared, 2);
   assert.equal(r.maxAbsDiffUsdc, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #207: the first boundary is V_0, and there the measured value is floored at the endowment.
+// ---------------------------------------------------------------------------
+
+// The fake above answers USDC = valueAt(block) for every agent; an endowment of N USDC is a snapshot
+// the scorer values at par, so the floor is easy to read off.
+function usdcEndowment(usdc: number) {
+  const units = BigInt(usdc) * 10n ** 6n;
+  return {
+    ethWei: 0n,
+    wethWei: 0n,
+    usdcUnits: units,
+    bases: { WETH: 0n },
+    stables: { [TOKENS.USDC.address.toLowerCase()]: units },
+  };
+}
+
+function flooredFixture(opts: {
+  runDir: string;
+  valueAt: (block: number) => number;
+  endowments: Record<string, number | undefined>;
+}) {
+  return new LiveScorer({
+    publicClient: fakeClient(opts),
+    logger: new RunLogger(opts.runDir, "run"),
+    agents: AGENTS.map((a) => ({
+      ...a,
+      ...(opts.endowments[a.id] !== undefined
+        ? { endowment: usdcEndowment(opts.endowments[a.id] as number) }
+        : {}),
+    })),
+    enabledIds: [],
+    activeStables: [TOKENS.USDC.address],
+    priceFeed: "0x3333333333333333333333333333333333333333",
+    runStartBlock: 100,
+    intervalBlocks: 4,
+    markMedianBlocks: 0,
+    sampleMarket: false,
+  });
+}
+
+test("the first boundary is floored at the endowment; every later one is measured", async () => {
+  // Both agents show 30 on the chain at block 100 (a parked 70 of a 100 endowment, say), and 104
+  // thereafter. `a` was funded with 100 and `b` is unknown to the environment.
+  const root = tmp();
+  const scorer = flooredFixture({
+    runDir: root,
+    valueAt: (b) => (b === 100 ? 30 : b),
+    endowments: { a: 100, b: undefined },
+  });
+  for (let b = 100; b <= 108; b++) await scorer.onBlock(b);
+  const series = scorer.series();
+  assert.deepEqual(series?.valuesByAgent.a, [100, 104, 108]);
+  assert.deepEqual(series?.valuesByAgent.b, [30, 104, 108]);
+  assert.equal(scorer.firstBoundaryBlock, 100);
+  assert.deepEqual(scorer.firstBoundary("a"), {
+    valueUsdc: 100,
+    source: "endowment",
+    measuredUsdc: 30,
+    endowmentUsdc: 100,
+  });
+  assert.equal(scorer.firstBoundary("b")?.source, "measured");
+
+  // The row a live reader tails says the same: V_0 as used, and what the chain showed.
+  const rows = readFileSync(join(root, "run", INTERVALS_FILENAME), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert.equal(rows[0].values.a, 100);
+  assert.deepEqual(rows[0].v0SourceByAgent, { a: "endowment", b: "measured" });
+  assert.deepEqual(rows[0].v0MeasuredByAgent, { a: 30, b: 30 });
+  assert.deepEqual(rows[0].v0EndowmentByAgent, { a: 100 });
+  assert.equal(rows[1].v0SourceByAgent, undefined, "only the first boundary says so");
+});
+
+test("a chain that shows more than the endowment at the first boundary keeps it", async () => {
+  const root = tmp();
+  const scorer = flooredFixture({
+    runDir: root,
+    valueAt: () => 130,
+    endowments: { a: 100, b: 100 },
+  });
+  await scorer.onBlock(100);
+  await scorer.onBlock(104);
+  assert.deepEqual(scorer.series()?.valuesByAgent.a, [130, 130]);
+  assert.equal(scorer.firstBoundary("a")?.source, "measured");
+  assert.equal(scorer.firstBoundary("a")?.endowmentUsdc, 100);
+});
+
+test("the sweep floors the same boundary at the same endowment, so the two series agree", async () => {
+  // compareIntervalSeries is what the coordinator reports; here the sweep is the one reader with
+  // the endowment applied, against a live series built the same way.
+  const { reconstructValueSeries } = await import(
+    "../core/src/realtime/reconstruct.js"
+  );
+  const root = tmp();
+  const valueAt = (b: number) => (b === 100 ? 30 : b);
+  const live = flooredFixture({
+    runDir: root,
+    valueAt,
+    endowments: { a: 100, b: undefined },
+  });
+  for (let b = 100; b <= 108; b++) await live.onBlock(b);
+  // The sweep also reads the reference fair for alpha and scans Transfer logs for unaccounted
+  // tokens; the fixture above answers multicalls only.
+  const sweepClient = {
+    ...(fakeClient({ valueAt }) as unknown as Record<string, unknown>),
+    readContract: async ({ functionName }: { functionName: string }) =>
+      functionName === "latestAnswer" ? 3000n * 10n ** 8n : 0n,
+    getLogs: async () => [],
+  } as never;
+  const swept = await reconstructValueSeries({
+    publicClient: sweepClient,
+    logger: new RunLogger(root, "sweep"),
+    agents: AGENTS.map((a) => ({
+      ...a,
+      ...(a.id === "a" ? { endowment: usdcEndowment(100) } : {}),
+    })),
+    enabledIds: [],
+    activeStables: [TOKENS.USDC.address],
+    priceFeed: "0x3333333333333333333333333333333333333333",
+    fromBlock: 100,
+    toBlock: 108,
+    scoreEvery: 4,
+    intervalBlocks: 4,
+    markMedianBlocks: 0,
+  });
+  assert.deepEqual(swept.intervalSeries?.valuesByAgent.a, [100, 104, 108]);
+  assert.deepEqual(swept.intervalSeries?.valuesByAgent.b, [30, 104, 108]);
+  const agreement = compareIntervalSeries(live.series()!, swept.intervalSeries!);
+  assert.equal(agreement.compared, 6);
+  assert.equal(agreement.maxAbsDiffUsdc, 0);
+  // Alpha's first cross-section is floored too: a parked basket is not β-removed skill.
+  assert.equal(swept.alphaByAgent.a, 8);
+  assert.equal(swept.alphaByAgent.b, 78);
+});

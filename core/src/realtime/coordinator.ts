@@ -186,6 +186,7 @@ import {
 } from "./gmxFunding.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import { epochPnlFromSeries } from "../scoring/epochPnl.js";
+import type { FirstBoundaryV0, V0Source } from "../scoring/endowmentV0.js";
 import { epochEndBlock, intervalCount, loopStep } from "../epochExtent.js";
 import {
   NoArbMonitor,
@@ -2685,7 +2686,12 @@ export async function runRealtimeSimulation(
     const liveScorer = new LiveScorer({
       publicClient,
       logger,
-      agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+      // With what each was funded: V_0 at the first boundary is floored at it (issue #207).
+      agents: agentRuntimes.map((a) => ({
+        id: a.id,
+        address: a.address,
+        endowment: a.initial,
+      })),
       enabledIds,
       activeStables: activeStables(),
       priceFeed: priceFeedAddress,
@@ -2698,6 +2704,53 @@ export async function runRealtimeSimulation(
       // enough for that to be the richer artifact.
       sampleMarket: true,
     });
+    // Issue #207: how V_0 was derived, for the record beside P. The endowment floor is applied at
+    // the period's first boundary only, so a series that opens there reads the live scorer's
+    // record for the agent; a segment that opens on a carried boundary, and an agent that was not
+    // at the first boundary, are `measured`. Nothing is said for an agent with no V_0 (no P).
+    type SeriesLike = Pick<IntervalSeries, "boundaryBlocks" | "valuesByAgent">;
+    const v0FirstOf = (
+      agentId: string,
+      series: SeriesLike | undefined,
+    ): FirstBoundaryV0 | undefined =>
+      series && series.boundaryBlocks[0] === liveScorer.firstBoundaryBlock
+        ? liveScorer.firstBoundary(agentId)
+        : undefined;
+    const v0SourceFor = (
+      agentId: string,
+      series: SeriesLike | undefined,
+    ): V0Source | undefined => {
+      const v0 = series?.valuesByAgent[agentId]?.[0];
+      if (typeof v0 !== "number") return undefined;
+      return v0FirstOf(agentId, series)?.source ?? "measured";
+    };
+    const v0FieldsFor = (
+      agentId: string,
+      series: SeriesLike | undefined,
+    ): {
+      v0Source?: V0Source;
+      v0Usdc?: number;
+      v0MeasuredUsdc?: number;
+      v0EndowmentUsdc?: number;
+    } => {
+      const v0 = series?.valuesByAgent[agentId]?.[0];
+      if (typeof v0 !== "number") return {};
+      const first = v0FirstOf(agentId, series);
+      return {
+        v0Source: first?.source ?? "measured",
+        v0Usdc: v0,
+        ...(first
+          ? {
+              ...(first.measuredUsdc !== null
+                ? { v0MeasuredUsdc: first.measuredUsdc }
+                : {}),
+              ...(first.endowmentUsdc !== undefined
+                ? { v0EndowmentUsdc: first.endowmentUsdc }
+                : {}),
+            }
+          : { v0MeasuredUsdc: v0 }),
+      };
+    };
     if (segments) segments.noteFirstBlock(runStartBlock, runStartedAtMs);
     periodStart = { block: runStartBlock, startedAtMs: runStartedAtMs };
     publishManifest();
@@ -2753,7 +2806,11 @@ export async function runRealtimeSimulation(
         ownerId: reg.id,
         role: "agent",
       });
-      liveScorer.addAgent({ id: runtime.id, address: runtime.address });
+      liveScorer.addAgent({
+        id: runtime.id,
+        address: runtime.address,
+        endowment: runtime.initial,
+      });
       logger.event({
         type: "agent_external_registered",
         agentId: runtime.id,
@@ -2883,6 +2940,7 @@ export async function runRealtimeSimulation(
             revertCount: a.reverted,
           },
           pnl,
+          v0SourceFor(a.id, sliced),
         );
       });
       logger.summary({
@@ -4043,7 +4101,12 @@ export async function runRealtimeSimulation(
         const meta = await reconstructValueSeries({
           publicClient,
           logger,
-          agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+          // The same endowments the live scorer floored V_0 at, so the two series agree there too.
+          agents: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            endowment: a.initial,
+          })),
           enabledIds,
           activeStables: activeStables(),
           priceFeed: priceFeedAddress,
@@ -4305,6 +4368,8 @@ export async function runRealtimeSimulation(
                 : {}),
             }
           : {}),
+        // Issue #207: how the V_0 behind pnlUsdc was derived, and the numbers to check it against.
+        ...v0FieldsFor(agent.id, liveIntervalSeries),
         // alphaUsdc: β-removed PnL versus fair at execution (the trade's take; equivalent to the amm-challenge
         // edge; ADR 0015 Notes). netPnlUsdc is the gross total including price drift β, so look at this for skill
         // comparison. undefined when reconstruction did not run (finalBlock<runStartBlock).
@@ -4398,6 +4463,7 @@ export async function runRealtimeSimulation(
                 revertCount: a.revertCount,
               },
               pnl,
+              v0SourceFor(a.id, liveIntervalSeries),
             ),
           );
         }),

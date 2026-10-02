@@ -53,6 +53,29 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s      S = 有効かつ σ_s >
 - **順位は小数第 2 位**（第 3 位を四捨五入）。同点は T の母標準偏差が小さい → 最悪エポックの T が大きい → 最終提出が
   早い、の順。それでも同じなら同着で次の順位は繰り下がる
 
+### V_0 は配布額を下限にする（Amendment 1、2026-10-02、issue #207）
+
+**当初この ADR は V_0 を「最初の境界で読んだチェーン状態」としていた。**agent プロセスは最初の競技ブロックが
+存在する前から動いている（場が揃うまでエポックの時計を待つため = issue #94）ので、その状態は agent が
+作れる: 起動直後に配布バスケットを第 2 EOA か自作コントラクトへ出し、運用中に戻せば P = V_K − V_0 が
+配布額（約 73k USDC）ぶん膨らむ。正直な戦略の P が ±200 の calm では桁違いになる。spawn と automine の
+順序を入れ替えても塞がらない（automine 中は tx が即採掘される）ので、**定義で直す**。
+
+- **V_0 = max(配布額, 実測)**。配布額は funding 直後の残高（`agent.initial`）を**その境界のマーク**
+  （PriceFeed の fair と stable の中央値 = 実測と同じ価格）で評価した値。価格側は従来どおりで、
+  保有側だけが agent に下げられない数になる（`core/src/scoring/endowmentV0.ts`）
+- **置き換えではなく下限**なのは連続経済のため。練習 devnet の coordinator 再起動は EOA を代入で再配布
+  するが venue の建玉は残る。それは環境が見える価値で agent の仕業ではないので、無視すると建玉を持つ全員に
+  初日の偽の利益が出る。fresh world では恒等。鐘の前の利益だけは数えない（時計が始まっていない）
+- 2 境界目以降は従来どおり実測。live scorer と事後 sweep の両方が同じ規則を同じブロックに当てるので
+  `interval_series_agreement` は変わらない。α の最初の断面も同じ下限
+- **記録**: `summary.json` の `agents[].v0Source`（`endowment` / `measured`）/ `v0Usdc` / `v0MeasuredUsdc` /
+  `v0EndowmentUsdc`、`intervals.jsonl` 先頭行の `v0*ByAgent`、乖離が許容（0.1%）を超えた agent は
+  `interval_v0_endowment_gap`。`matrix.json` の `flags` に実測と配布の乖離（既知の経路）と、`pnlUsdc − netPnlUsdc`
+  の場の定数からの外れ（2%。未知の経路）を出す。flags は P を変えない
+- **T は不変**。全員同じ配布なら定数差（上の「`netPnlUsdc` とは場全体で定数差」と同じ議論）で、実測 V_0 を
+  使う理由が無かった
+
 ### 失格・凍結は無い
 
 プロセスの異常終了、fee cap 違反、submitted ログに無い tx は `flags` として結果の横に出るだけで、P を変えない。

@@ -6,6 +6,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentScore } from "./standings.js";
+import {
+  v0GapBeyondTolerance,
+  type V0Source,
+} from "../scoring/endowmentV0.js";
 
 export type AgentSummary = {
   id: string;
@@ -15,6 +19,12 @@ export type AgentSummary = {
   // Rules §4.4.1's P, off the interval series' first and last boundary (coordinator; absent on a
   // run recorded before it).
   pnlUsdc?: number;
+  // How V_0 behind pnlUsdc was derived, and the three numbers behind that (issue #207): V_0 as P
+  // used it, the chain state at the first boundary, the endowment at that boundary's marks.
+  v0Source?: V0Source;
+  v0Usdc?: number;
+  v0MeasuredUsdc?: number;
+  v0EndowmentUsdc?: number;
   alphaUsdc?: number;
   netPnlUsdc?: number;
   initialValueUsdc?: number;
@@ -22,6 +32,58 @@ export type AgentSummary = {
   processExitedEarly?: string;
   unloggedTxCount?: number;
 };
+
+// pnlUsdc − netPnlUsdc is a constant across a field that started with the same basket: P marks V_0
+// at the first boundary and netPnlUsdc marks the same endowment at the final prices, so the two
+// differ by endowment × (final − opening fair) for everyone -- plus what the two readers disagree
+// by at V_K (the boundary's 5-block median against the last block's fair, on whatever the agent
+// holds then). An agent whose difference sits off the field's constant had a V_0 that was not its
+// endowment, by whatever path (issue #207): the direct check below covers the one path that is
+// known, this covers the ones that are not. The tolerance is for the V_K noise: 2% of the basket is
+// ~1,500 USDC, an order above what three blocks of fair drift move a full basket by in a stress
+// tail, and an order below the endowment that the attack moves.
+export const PNL_GAP_TOLERANCE_FRAC = 0.02;
+export const PNL_GAP_TOLERANCE_USDC = 100;
+// Fewer agents than this and the median is not a field constant, it is one agent's number.
+const PNL_GAP_MIN_FIELD = 3;
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// The field's constant and its tolerance, or undefined when the field is too small to have one.
+function pnlGapReference(
+  agents: readonly AgentSummary[],
+): { medianGap: number; tolerance: number } | undefined {
+  const gaps: number[] = [];
+  const scales: number[] = [];
+  for (const a of agents) {
+    if (
+      typeof a.pnlUsdc !== "number" ||
+      typeof a.netPnlUsdc !== "number" ||
+      !Number.isFinite(a.pnlUsdc) ||
+      !Number.isFinite(a.netPnlUsdc)
+    )
+      continue;
+    gaps.push(a.pnlUsdc - a.netPnlUsdc);
+    const scale = a.v0EndowmentUsdc ?? a.initialValueUsdc ?? a.v0Usdc;
+    if (typeof scale === "number" && Number.isFinite(scale))
+      scales.push(Math.abs(scale));
+  }
+  if (gaps.length < PNL_GAP_MIN_FIELD) return undefined;
+  const scale = scales.length > 0 ? median(scales) : 0;
+  return {
+    medianGap: median(gaps),
+    tolerance: Math.max(PNL_GAP_TOLERANCE_USDC, scale * PNL_GAP_TOLERANCE_FRAC),
+  };
+}
+
+const usdc = (n: number): string =>
+  n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
 export type RunSummary = {
   runDir: string;
@@ -62,6 +124,7 @@ export function scoresFromSummary(
   const reported = new Map(summary.agents.map((a) => [a.id, a]));
   const ids =
     expectedAgentIds.length > 0 ? expectedAgentIds : [...reported.keys()];
+  const gapReference = pnlGapReference(summary.agents);
   return ids.map((id) => {
     const agent = reported.get(id);
     if (!agent)
@@ -78,6 +141,44 @@ export function scoresFromSummary(
       flags.push(
         `${agent.unloggedTxCount} on-chain tx(s) absent from the agent's submitted log`,
       );
+    // Issue #207, the known path: what the chain showed at the first boundary against what the
+    // environment had funded, both at that boundary's marks. P is already taken off the floored
+    // V_0 either way; the flag is the operator's cue that the agent acted before the bell.
+    if (
+      typeof agent.v0MeasuredUsdc === "number" &&
+      typeof agent.v0EndowmentUsdc === "number"
+    ) {
+      const gap = v0GapBeyondTolerance(
+        agent.v0MeasuredUsdc,
+        agent.v0EndowmentUsdc,
+      );
+      if (gap !== null)
+        flags.push(
+          gap < 0
+            ? `V_0 measured at the first boundary was ${usdc(-gap)} USDC below the endowment ` +
+                `(${usdc(agent.v0MeasuredUsdc)} vs ${usdc(agent.v0EndowmentUsdc)}): value left the ` +
+                "account before the epoch's first boundary; V_0 was taken at the endowment (issue #207)"
+            : `V_0 measured at the first boundary was ${usdc(gap)} USDC above the endowment ` +
+                `(${usdc(agent.v0MeasuredUsdc)} vs ${usdc(agent.v0EndowmentUsdc)}): value the ` +
+                "environment did not fund was there before the epoch's first boundary; V_0 was taken " +
+                "as measured (issue #207)",
+        );
+    }
+    // Issue #207, any other path: the field's pnlUsdc − netPnlUsdc constant (see pnlGapReference).
+    if (
+      gapReference &&
+      typeof agent.pnlUsdc === "number" &&
+      typeof agent.netPnlUsdc === "number"
+    ) {
+      const gap = agent.pnlUsdc - agent.netPnlUsdc;
+      const off = gap - gapReference.medianGap;
+      if (Math.abs(off) > gapReference.tolerance)
+        flags.push(
+          `pnlUsdc − netPnlUsdc is ${usdc(Math.abs(off))} USDC off the field's constant ` +
+            `(${usdc(gap)} vs median ${usdc(gapReference.medianGap)}): V_0 and the endowment ` +
+            "diverged by some path (issue #207)",
+        );
+    }
     // P off the epoch's two boundaries when the run recorded it; a run from before that field marks
     // both ends at the final prices, which differs by a per-run constant and is said so.
     const pnl: Pick<AgentScore, "pnlUsdc" | "pnlSource"> =
@@ -90,6 +191,7 @@ export function scoresFromSummary(
     return {
       id,
       ...pnl,
+      ...(agent.v0Source !== undefined ? { v0Source: agent.v0Source } : {}),
       netPnlUsdc: agent.netPnlUsdc,
       alphaUsdc: agent.alphaUsdc,
       baseline: agent.baseline ?? false,
