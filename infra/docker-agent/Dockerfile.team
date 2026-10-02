@@ -1,18 +1,59 @@
 # Per-team image: the shared runtime base + ONLY this team's agent code (and its own deps).
 # No other team's strategy is present. Build via infra/docker-agent/build.sh team <agent-id>.
+#
+# Team dependencies are resolved without running anything the team wrote on a networked builder.
+# The old single stage ran `npm install` / `pip install` with network on the operator host, so a
+# dependency's postinstall or an sdist's setup.py executed with whatever that network reaches.
+#
+#   deps   -- has network, but only the package managers run, on manifests: `npm ci --ignore-scripts`
+#             (lock-pinned, no lifecycle scripts) and `pip download --only-binary=:all:
+#             --require-hashes` (wheels only, so no setup.py). scan-submission.py has already
+#             rejected non-registry sources, .npmrc / pip.conf / npm-shrinkwrap.json and unpinned
+#             requirements.
+#   final  -- installs the fetched wheels with `--no-index` under `RUN --network=none` (BuildKit).
+#             Installing a wheel copies files; nothing the team wrote executes at build time. There
+#             is deliberately no `pip check` afterwards: it starts a Python whose site-packages now
+#             holds the team's wheels, so a `.pth` in one of them would run (and `python3 -S` drops
+#             pip itself from sys.path, measured on the base image). The resolver in `pip install`
+#             already fails on a missing or conflicting requirement among the packages it installs.
+#
+# A package.json without a lock installs nothing rather than failing the build: `npm ci` refuses to
+# run without one, and a manifest that declares no dependencies (a bare {"type":"module"}) has
+# nothing to install. A manifest that *does* declare dependencies without a lock is a BLOCK in the
+# scan, so it never reaches here.
+# What this costs teams: a package.json with dependencies needs a package-lock.json beside it; npm
+# packages that need their install script (native addons) do not work; Python deps must be
+# hash-pinned and have a wheel for the builder's platform.
 ARG BASE=eris-agent-base:local
-FROM ${BASE}
+
+FROM ${BASE} AS deps
 ARG AGENT_ID
 # Guard: an empty AGENT_ID would make the COPY below pull in the whole agents dir (every team).
 RUN test -n "$AGENT_ID" || { echo "AGENT_ID build-arg is required (use build.sh team <id>)"; exit 1; }
+COPY example/agents/${AGENT_ID}/ /src/
+RUN set -eu; mkdir -p /out/node_modules /out/wheels; cd /src; \
+    for f in .npmrc .yarnrc .yarnrc.yml pip.conf pip.ini npm-shrinkwrap.json; do \
+      if [ -e "$f" ]; then echo "refusing $f in the team directory" >&2; exit 1; fi; \
+    done; \
+    if [ -f package.json ] && [ -f package-lock.json ]; then \
+      npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/; \
+      if [ -d node_modules ]; then rm -rf /out/node_modules && mv node_modules /out/; fi; \
+    fi; \
+    if [ -f requirements.txt ]; then \
+      python3 -m pip download --isolated --no-cache-dir --only-binary=:all: --require-hashes \
+        --index-url https://pypi.org/simple -r requirements.txt -d /out/wheels; \
+    fi
+
+FROM ${BASE}
+ARG AGENT_ID
+RUN test -n "$AGENT_ID" || { echo "AGENT_ID build-arg is required (use build.sh team <id>)"; exit 1; }
 COPY example/agents/${AGENT_ID}/ /eris/example/agents/${AGENT_ID}/
-# A team may ship its own package.json; resolve its deps at build time (run-time egress should be
-# blocked by the operator's network policy). Build teams' images in a throwaway sandbox -- npm runs
-# their postinstall scripts.
-RUN if [ -f "/eris/example/agents/${AGENT_ID}/package.json" ]; then \
-      cd "/eris/example/agents/${AGENT_ID}" && npm install --no-audit --no-fund; \
-    fi
-RUN if [ -f "/eris/example/agents/${AGENT_ID}/requirements.txt" ]; then \
-      cd "/eris/example/agents/${AGENT_ID}" && \
-      python3 -m pip install --no-cache-dir -r requirements.txt && python3 -m pip check; \
-    fi
+COPY --from=deps /out/ /tmp/team-deps/
+RUN --network=none set -eu; cd "/eris/example/agents/${AGENT_ID}"; \
+    rm -rf node_modules; \
+    if [ -n "$(ls -A /tmp/team-deps/node_modules)" ]; then mv /tmp/team-deps/node_modules node_modules; fi; \
+    if [ -f requirements.txt ]; then \
+      python3 -m pip install --isolated --no-cache-dir --no-index --find-links /tmp/team-deps/wheels \
+        --only-binary=:all: --require-hashes -r requirements.txt; \
+    fi; \
+    rm -rf /tmp/team-deps

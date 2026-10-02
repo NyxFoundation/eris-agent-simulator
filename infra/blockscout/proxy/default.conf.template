@@ -10,7 +10,22 @@ server {
     server_name  localhost;
     proxy_http_version 1.1;
 
+    # The explorer is published without authentication (infra/cloudflared/config.yml) and reads the
+    # node directly rather than through the RPC gateway. Two of Blockscout's endpoints forward a
+    # caller's own JSON-RPC method to that node: /api/eth-rpc, and the etherscan-compatible
+    # /api?module=proxy (eth_call, eth_sendRawTransaction, eth_getCode, eth_getStorageAt...). Left
+    # open they are a second RPC entrance that none of the gateway's rules reach -- no X-ASCON-Key,
+    # no method allowlist, no per-transaction gas cap, no fee rule, no rate limit. Refused here, in
+    # front of the backend, because this file is the boundary that is actually published. Everything
+    # else, /api/v2 included (read-only, served from the indexed database), is unchanged.
+    location = /api/eth-rpc {
+        return 403;
+    }
+
     location ~ ^/(api(?!-docs$)|socket|sitemap.xml|auth/auth0|auth/auth0/callback|auth/logout) {
+        if ($arg_module = "proxy") {
+            return 403;
+        }
         proxy_pass            ${BACK_PROXY_PASS};
         proxy_http_version    1.1;
         proxy_set_header      Host "$host";

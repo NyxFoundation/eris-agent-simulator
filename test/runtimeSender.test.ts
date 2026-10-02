@@ -13,7 +13,7 @@ import type { AgentObservation, BalanceSnapshot } from "@eris/sdk/types.js";
 import { Sender } from "../example/agents/runtime/send.js";
 import { StrategyRunner } from "../example/agents/runtime/strategyRunner.js";
 import { PyBridge } from "../example/agents/runtime/pyBridge.js";
-import { rpc, startAnvil, startGateway } from "./helpers/localRpc.js";
+import { LATCH_CODE, rpc, startAnvil, startGateway } from "./helpers/localRpc.js";
 
 async function until(predicate: () => boolean) {
   for (let i = 0; i < 100; i++) {
@@ -311,3 +311,54 @@ test("the gas manager refills from the agent's WETH with economicGas off, and on
   assert.match(sent[0].data ?? "", /^0x2e1a7d4d/, "WETH.withdraw(uint256)");
   assert.ok(events.some((e) => e.actionType === "gasRefillUnwrap"));
 });
+
+// The gateway estimates at latest (an omitted block tag used to read the pool), so a leg that needs
+// an earlier leg of the same agent -- approve -> swap -- fails its estimate while the earlier one is
+// still pending. The runtime sends such a leg with a fixed limit; a failure with nothing of its own
+// pending is still the transaction's own and nothing is sent.
+test(
+  "a bundle leg that depends on an earlier pending leg is sent through a latest-only gateway",
+  { timeout: 20_000 },
+  async (t) => {
+    const upstream = await startAnvil(t);
+    const rpcUrl = await startGateway(t, upstream);
+    const privateKey = generatePrivateKey();
+    const account = privateKeyToAccount(privateKey);
+    await rpc(upstream, "anvil_setBalance", [account.address, "0x3635c9adc5dea00000"]);
+    const latch = "0x0000000000000000000000000000000000001a7c";
+    await rpc(upstream, "anvil_setCode", [latch, LATCH_CODE]);
+    const config = { ...loadConfig(), chainId: 31337 };
+    const clients = makeClients(rpcUrl, config.chainId);
+    const events: Record<string, unknown>[] = [];
+    const sender = new Sender({
+      ctx: { ...clients, config } as unknown as SimContext,
+      adapters: [],
+      privateKey,
+      logMempool: (e) => events.push(e),
+    });
+    const observation = {
+      round: 1,
+      runId: "test",
+      limits: { defaultPriorityFeePerGasWei: "1", maxPriorityFeePerGasWei: "1000" },
+    } as AgentObservation;
+    const submit = (raw: Record<string, unknown>) =>
+      sender.submit(raw as never, observation, {} as BalanceSnapshot, new Map());
+
+    // Alone, the probe reverts at latest and nothing of ours is pending: not sent.
+    submit({ type: "rawTx", tx: { to: latch, data: "0x" } });
+    await until(() => events.length === 1);
+    assert.equal(events[0].event, "submit_failed");
+
+    // Behind the leg that opens the latch: sent with the fixed limit, and both succeed once mined.
+    submit({ type: "rawBundle", txs: [{ to: latch, data: "0x01" }, { to: latch, data: "0x" }] });
+    await until(() => events.length === 3);
+    assert.deepEqual(events.slice(1).map((e) => e.event), ["submitted", "submitted"]);
+    await rpc(upstream, "evm_mine");
+    for (const e of events.slice(1)) {
+      const receipt = await clients.publicClient.getTransactionReceipt({ hash: e.hash as `0x${string}` });
+      assert.equal(receipt.status, "success");
+    }
+    const second = await clients.publicClient.getTransaction({ hash: events[2].hash as `0x${string}` });
+    assert.equal(second.gas, 2_000_000n);
+  },
+);

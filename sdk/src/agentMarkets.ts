@@ -24,8 +24,9 @@ import {
   entryObservation,
   readCodehashes,
   readOracleOwners,
-  readRegistryEntries,
+  readRegistryEntriesFrom,
   ZERO_ADDRESS,
+  type RegistryEntry,
 } from "./marketRegistry.js";
 import type {
   RegistryObservation,
@@ -282,6 +283,11 @@ export class MarketRegistryWatcher {
   private readonly ledger = new StrandedLedger();
   private readonly markets = new Set<string>();
   private scannedThroughBlock: number | null = null;
+  // The registry is append-only and an entry never changes after it is written, so every entry is
+  // read once and kept. Re-reading the whole list each block made the per-block cost grow with a
+  // length anyone can inflate, until the read ran out of gas and every observation failed.
+  private readonly known: RegistryEntry[] = [];
+  private lastGood: RegistryObservation | undefined;
 
   constructor(
     private readonly registry: Address,
@@ -293,15 +299,53 @@ export class MarketRegistryWatcher {
     private readonly pricedTokens: ReadonlySet<string>,
   ) {}
 
+  /// Never throws. A registry read that fails must not take the rest of the observation with it --
+  /// the venues are still there to trade -- so the last good section comes back with `error` set
+  /// (or an empty one, if there has never been a good read).
   async observe(
     publicClient: PublicClient,
     blockNumber: number,
   ): Promise<RegistryObservation> {
-    const all = await readRegistryEntries(publicClient, this.registry);
+    try {
+      this.lastGood = await this.read(publicClient, blockNumber);
+      return this.lastGood;
+    } catch (err) {
+      const error = err instanceof Error ? err.message.split("\n")[0] : String(err);
+      return {
+        ...(this.lastGood ?? {
+          address: this.registry,
+          entries: [],
+          allowances: [],
+          strandedUnknown: [],
+          dropped: 0,
+        }),
+        error,
+      };
+    }
+  }
+
+  private async read(
+    publicClient: PublicClient,
+    blockNumber: number,
+  ): Promise<RegistryObservation> {
+    const { count, entries: fresh } = await readRegistryEntriesFrom(
+      publicClient,
+      this.registry,
+      this.known.length,
+      BigInt(blockNumber),
+    );
+    // Shorter than what we hold: the chain went back (a snapshot revert). Start over.
+    if (count < this.known.length) {
+      this.known.length = 0;
+      this.markets.clear();
+      return this.read(publicClient, blockNumber);
+    }
+    this.known.push(...fresh);
+    const all = this.known;
     // Every entry feeds the ledger's market set -- an omitted entry would make a real deposit look
     // like it went nowhere -- but only a bounded, newest-first slice is read back per block and
     // carried in the observation.
-    for (const e of all) this.markets.add(e.market.toLowerCase());
+    for (const e of fresh) this.markets.add(e.market.toLowerCase());
     const entries = all.slice(-REGISTRY_OBSERVATION_LIMIT).reverse();
     const droppedEntries = all.length - entries.length;
 

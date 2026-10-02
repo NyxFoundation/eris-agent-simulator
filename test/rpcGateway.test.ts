@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { rpc, startAnvil, startGateway } from "./helpers/localRpc.js";
+import { LATCH_CODE, rpc, startAnvil, startGateway } from "./helpers/localRpc.js";
 import { feeRuleViolation, txFees } from "../infra/rpc-gateway/txGas.mjs";
 
 test(
@@ -249,5 +249,138 @@ test(
     const block = (await rpc(upstream, "eth_getBlockByNumber", ["latest", false])).body
       .result as { transactions: string[] };
     assert.deepEqual(block.transactions.length, 3);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// The allowlist names methods; the pending tag is refused wherever it appears
+// ---------------------------------------------------------------------------
+//
+// The allowlist used to be the prefix ^(eth_|net_|web3_), so every eth_ method the node has passed
+// unless the deny regex named it. anvil accepts eth_sendUnsignedTransaction from any `from` without a
+// signature or impersonation, and eth_sendRawTransactionSync skipped the gas cap and the fee rule
+// (both read only eth_sendRawTransaction). The pending tag was refused only as params[0] of five
+// block-enumeration methods, while a state read at "pending" executes against the pool.
+
+test(
+  "gateway refuses methods outside the explicit list and the pending tag in any position",
+  { timeout: 20_000 },
+  async (t) => {
+    const upstream = await startAnvil(t);
+    const gateway = await startGateway(t, upstream);
+    const someone = "0x00000000000000000000000000000000DeaDBeef";
+    await rpc(upstream, "anvil_setBalance", [someone, "0xde0b6b3a7640000"]);
+    const dest = "0x0000000000000000000000000000000000001234";
+
+    const denied: [string, unknown[]][] = [
+      [
+        "eth_sendUnsignedTransaction",
+        [{ from: someone, to: dest, value: "0x1", gas: "0x5208", gasPrice: "0x1" }],
+      ],
+      ["eth_sendRawTransactionSync", ["0x00"]],
+      ["eth_fillTransaction", [{ from: someone, to: dest }]],
+      ["eth_simulateV1", [{ blockStateCalls: [] }, "latest"]],
+      ["eth_call", [{ to: dest, data: "0x" }, "pending"]],
+      ["eth_call", [{ to: dest, data: "0x" }, "Pending"]],
+      ["eth_getBalance", [dest, "pending"]],
+      ["eth_getStorageAt", [dest, "0x0", "pending"]],
+      ["eth_getCode", [dest, "pending"]],
+      ["eth_estimateGas", [{ to: dest }, "pending"]],
+      ["eth_getLogs", [{ fromBlock: "latest", toBlock: "pending" }]],
+      ["eth_newFilter", [{ fromBlock: "pending" }]],
+    ];
+    for (const [method, params] of denied) {
+      const reply = await rpc(gateway, method, params);
+      assert.equal(reply.status, 403, `${method} ${JSON.stringify(params)}`);
+      assert.equal(reply.body.error?.code, -32601, method);
+    }
+    // Nothing reached the pool: the unsigned send was refused before anvil saw it.
+    assert.equal(
+      (await rpc(upstream, "eth_getTransactionCount", [someone, "pending"])).body.result,
+      "0x0",
+    );
+
+    // The reads participants rely on still pass, at latest and at a number.
+    for (const [method, params] of [
+      ["eth_getBalance", [dest, "latest"]],
+      ["eth_call", [{ to: dest, data: "0x" }, "latest"]],
+      ["eth_getLogs", [{ fromBlock: "0x0", toBlock: "latest" }]],
+      ["eth_getTransactionCount", [someone, "pending"]],
+      ["eth_feeHistory", ["0x1", "latest", []]],
+    ] as [string, unknown[]][]) {
+      const reply = await rpc(gateway, method, params);
+      assert.equal(reply.status, 200, `${method} ${JSON.stringify(params)}`);
+    }
+
+    // An operator-supplied regex still replaces the list.
+    const wide = await startGateway(t, upstream, { RPC_METHOD_ALLOW: "^(eth_|net_|web3_)" });
+    assert.equal(
+      (await rpc(wide, "eth_simulateV1", [{ blockStateCalls: [] }, "latest"])).status,
+      200,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A request cannot end the process; an omitted block tag is not a pending read
+// ---------------------------------------------------------------------------
+//
+// The pending check recursed, and ~6,000 nested arrays (12KB) ran the stack out inside the request
+// handler, uncaught: one request killed the shared gateway. And anvil runs eth_estimateGas without a
+// block parameter against the pool, which the string check could not see.
+
+test(
+  "gateway refuses a deeply nested body without dying, and estimates gas at latest when the tag is omitted",
+  { timeout: 20_000 },
+  async (t) => {
+    const upstream = await startAnvil(t);
+    const gateway = await startGateway(t, upstream);
+
+    const depth = 6_000;
+    const nested = "[".repeat(depth) + "]".repeat(depth);
+    const deep = await fetch(gateway, {
+      method: "POST",
+      body: `{"jsonrpc":"2.0","id":1,"method":"eth_call","params":${nested}}`,
+    });
+    assert.equal(deep.status, 400);
+    assert.equal(((await deep.json()) as { error?: { code: number } }).error?.code, -32600);
+    // Also inside a batch, and on a method the pending check exempts.
+    const deepBatch = await fetch(gateway, {
+      method: "POST",
+      body: `[{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionCount","params":${nested}}]`,
+    });
+    assert.equal(deepBatch.status, 400);
+    // Still serving.
+    assert.equal((await rpc(gateway, "eth_chainId")).status, 200);
+    const metrics = await (await fetch(`${gateway}/metrics`)).text();
+    assert.match(metrics, /rpc_params_denied_total\{[^}]+\} 2/);
+    // A realistic shape (eth_getLogs topics) is far inside the limits.
+    assert.equal(
+      (await rpc(gateway, "eth_getLogs", [{ fromBlock: "0x0", toBlock: "latest", topics: [[null]] }])).status,
+      200,
+    );
+
+    // The pool holds the call that opens the latch; latest does not.
+    const LATCH = "0x0000000000000000000000000000000000001a7c";
+    await rpc(upstream, "anvil_setCode", [LATCH, LATCH_CODE]);
+    const accounts = (await rpc(upstream, "eth_accounts")).body.result as string[];
+    await rpc(upstream, "eth_sendTransaction", [
+      { from: accounts[0], to: LATCH, data: "0x01", gas: "0x186a0" },
+    ]);
+    const probe = { from: accounts[1], to: LATCH, data: "0x" };
+    // Direct to anvil: the omitted tag reads the pool (this is what the gateway closes).
+    assert.equal(typeof (await rpc(upstream, "eth_estimateGas", [probe])).body.result, "string");
+    // Through the gateway: the same call is evaluated at latest, where the latch is shut.
+    for (const params of [[probe], [probe, null]]) {
+      const reply = await rpc(gateway, "eth_estimateGas", params);
+      assert.equal(reply.status, 200);
+      assert.match(reply.body.error?.message ?? "", /revert/i, JSON.stringify(params));
+    }
+    assert.match(
+      (await rpc(gateway, "eth_estimateGas", [probe, "latest"])).body.error?.message ?? "",
+      /revert/i,
+    );
+    await rpc(upstream, "evm_mine");
+    assert.equal(typeof (await rpc(gateway, "eth_estimateGas", [probe])).body.result, "string");
   },
 );

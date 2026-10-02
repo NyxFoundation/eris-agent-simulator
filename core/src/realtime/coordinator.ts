@@ -184,6 +184,12 @@ import {
   gmxFundingMissingMessage,
   readGmxFundingConfig,
 } from "./gmxFunding.js";
+import {
+  environmentReserveAssets,
+  readAaveReserves,
+  strayAaveReserves,
+  strayAaveReservesMessage,
+} from "./aaveReserveGuard.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import { epochPnlFromSeries } from "../scoring/epochPnl.js";
 import { epochEndBlock, intervalCount, loopStep } from "../epochExtent.js";
@@ -1059,6 +1065,20 @@ export async function runRealtimeSimulation(
         : gmxFundingMissingMessage(funding, config.chainMode);
       if (enforcement === "fail") throw new Error(message);
       if (enforcement === "warn") console.warn(`[gmx] WARNING: ${message}`);
+    }
+
+    // And does the Aave Pool hold only reserves the environment owns? The Aave score sums every
+    // reserve, so an active vendor test-token reserve is free score (issue #190). Local deploys only:
+    // a fork's Pool is Arbitrum's, whose reserves are real assets nobody mints for free.
+    if (config.localDeploy && enabledIds.includes("aave")) {
+      const reserves = await readAaveReserves(publicClient);
+      const stray = strayAaveReserves(reserves, environmentReserveAssets());
+      logger.event({
+        type: "aave_reserve_check",
+        reserves: reserves.length,
+        stray,
+      });
+      if (stray.length > 0) throw new Error(strayAaveReservesMessage(stray));
     }
 
     // Then, on a chain participants can reach, a token anyone can mint makes the endowment

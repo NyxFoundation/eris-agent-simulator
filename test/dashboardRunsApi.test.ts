@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -545,4 +545,83 @@ test("/manifest.json is a 404 when no admitted run has written one", async () =>
     await close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a '..' in the path cannot step from an admitted competition into a run outside it", async () => {
+  const root = fixtureRuns();
+  // The live epoch 2026-11-02 is in no matrix.json yet, so the allowlist withholds it. Encoded
+  // slashes, because fetch (like a browser) would resolve a literal "/../" before sending.
+  const escape = "matrix-2026-11-01%2F..%2F2026-11-02T10-00-00-000Z";
+  for (const audience of [true, false]) {
+    const { get, close } = await serve(root, audience, ["matrix-2026-11-01"]);
+    try {
+      assert.equal((await get("/2026-11-02T10-00-00-000Z/events.jsonl")).status, 404);
+      assert.equal((await get(`/${escape}%2Fevents.jsonl`)).status, 404, `audience=${audience}`);
+      assert.equal(
+        (await get(`/${escape}/tail/events.jsonl?offset=0`)).status,
+        404,
+        `audience=${audience}`,
+      );
+      // Climbing out of runs/ altogether is refused before any allowlist question.
+      assert.equal((await get("/..%2F..%2Fetc%2Fpasswd")).status, 403);
+      // A '..' that stays inside an admitted run still resolves to it.
+      assert.equal(
+        (await get("/2026-11-01T10-00-00-000Z%2Fagents%2F..%2Fmarket.json")).status,
+        200,
+        `audience=${audience}`,
+      );
+    } finally {
+      await close();
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a malformed percent-escape answers 400 and the server keeps serving", async () => {
+  const root = fixtureRuns();
+  const { get, close } = await serve(root, true, ["matrix-2026-11-01"]);
+  try {
+    // decodeURIComponent throws on these. The throw used to leave the request handler, which ends
+    // the hosted process every viewer shares (issue #203).
+    for (const bad of ["/%", "/%E0%A4%A", "/matrix-2026-11-01%2F%ZZ"]) {
+      assert.equal((await get(bad)).status, 400, bad);
+    }
+    assert.equal((await get("/%/tail/events.jsonl?offset=0")).status, 400);
+    // Still answering afterwards: the point of the guard.
+    assert.equal((await get("/index.json")).status, 200);
+  } finally {
+    await close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a symlink inside an admitted competition does not serve a run outside the allowlist", async () => {
+  const root = fixtureRuns();
+  // resolveInside follows the link (that is what stops a link from serving the rest of the disk),
+  // so the allowlist has to read where the file actually is, not where the request pointed (#202).
+  symlinkSync(
+    join(root, "2026-11-02T10-00-00-000Z"),
+    join(root, "matrix-2026-11-01", "link"),
+    "dir",
+  );
+  for (const audience of [true, false]) {
+    const { get, close } = await serve(root, audience, ["matrix-2026-11-01"]);
+    try {
+      assert.equal(
+        (await get("/matrix-2026-11-01/link/events.jsonl")).status,
+        404,
+        `audience=${audience}`,
+      );
+      assert.equal(
+        (await get("/matrix-2026-11-01/link/tail/events.jsonl?offset=0")).status,
+        404,
+        `audience=${audience}`,
+      );
+      // The admitted run's own files still come back.
+      assert.equal((await get("/2026-11-01T10-00-00-000Z/market.json")).status, 200);
+    } finally {
+      await close();
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
 });
