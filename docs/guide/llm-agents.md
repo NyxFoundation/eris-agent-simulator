@@ -130,7 +130,12 @@ Two design choices worth knowing, because a participant replacing the runtime in
 `ctx.publicClient` is handed to `decide()` **and** to generated executors — the vm sandbox removes
 ambient capability (`require`, `process`, `fetch`), not the trading interface, so generated code can
 read the chain exactly as your hand-written strategy can. Reads through it are ordinary RPC and are
-not cheatcodes.
+not cheatcodes. The sandbox is its own realm: the observation and the context are copied into it and
+every read's result is copied back, so generated code holds no object of the runtime's (there is no
+`obs.constructor.constructor("return process")` route to `process.env`). And the worker the strategy
+runs in — generated or hand-written, TypeScript or Python — carries no secret in its environment:
+not the wallet key, not the inference token, not an API key (`runtime/strategyEnv.ts`). Signing and
+the revision call are the parent's; the strategy parameters from your roster's `env` still arrive.
 
 **Do the reading in the runtime, not inside `decide()`.** Every decision runs in a worker under
 `DECIDE_TIMEOUT_MS` (5,000 ms, `runtime/strategyRunner.ts`; rules §2.3), for both shipped and generated

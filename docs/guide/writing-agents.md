@@ -71,7 +71,12 @@ cloned (including bigint); the worker's `latestObservation()` returns that call'
 
 The worker is reused on normal blocks, preserving module variables. On timeout/failure or revision
 replacement, it reloads the selected source and resets worker-local variables. The parent retains
-nonce, logs, revision history and persisted state. `onObservation()` is for self-driven `run(ctx)`
+nonce, logs, revision history and persisted state. The worker's `process.env` is the parent's less
+every credential (`runtime/strategyEnv.ts`): `ERIS_AGENT_PRIVATE_KEY`, `ERIS_INFERENCE_TOKEN`,
+`ERIS_LLM_*`, anything ending in `_API_KEY` / `_TOKEN` / `_SECRET` / `_PRIVATE_KEY` is absent there,
+while the parameters your roster's `env` sets (`ERIS_ARB_SAFETY_BPS`, ...) arrive as before. A
+strategy signs nothing and calls no model, so it has no use for them; the same filter applies to a
+Python strategy's process. `onObservation()` is for self-driven `run(ctx)`
 agents; a `decide()` strategy receives observations through its arguments. Self-driven agents keep
 their existing process lifecycle and immediate `ctx.submit()` behavior.
 

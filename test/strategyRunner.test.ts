@@ -330,3 +330,57 @@ test(
     });
   },
 );
+
+// Issue #215: the worker's environment is the strategy's, not the parent's. The wallet key and the
+// inference token are the parent's business (send.ts signs, the improvement loop calls the model);
+// the strategy's own parameters from the roster must still arrive.
+test("the worker sees the strategy's parameters but not the parent's secrets", async (t) => {
+  const names = [
+    "ERIS_AGENT_PRIVATE_KEY",
+    "ERIS_INFERENCE_TOKEN",
+    "OPENAI_API_KEY",
+    "ERIS_ARB_SAFETY_BPS",
+    "STAT_ARB_Z_ENTER",
+    "CF_ACCESS_CLIENT_SECRET",
+  ] as const;
+  const before = Object.fromEntries(names.map((n) => [n, process.env[n]]));
+  process.env.ERIS_AGENT_PRIVATE_KEY = "0xdeadbeef";
+  process.env.ERIS_INFERENCE_TOKEN = "hmac-token";
+  process.env.OPENAI_API_KEY = "sk-test";
+  process.env.ERIS_ARB_SAFETY_BPS = "150";
+  process.env.STAT_ARB_Z_ENTER = "1.5";
+  process.env.CF_ACCESS_CLIENT_SECRET = "cf-secret";
+  t.after(() => {
+    for (const n of names) {
+      if (before[n] === undefined) delete process.env[n];
+      else process.env[n] = before[n];
+    }
+  });
+  const { runner } = fixture(
+    t,
+    `const safety = Number(process.env.ERIS_ARB_SAFETY_BPS ?? "100");
+     export function decide() {
+       return {
+         type: 'noop',
+         safety,
+         z: process.env.STAT_ARB_Z_ENTER ?? null,
+         key: process.env.ERIS_AGENT_PRIVATE_KEY ?? null,
+         token: process.env.ERIS_INFERENCE_TOKEN ?? null,
+         apiKey: process.env.OPENAI_API_KEY ?? null,
+         cf: process.env.CF_ACCESS_CLIENT_SECRET ?? null,
+         path: typeof process.env.PATH,
+       };
+     }`,
+    1000,
+  );
+  assert.deepEqual((await runner.decide(obs(1))).action, {
+    type: "noop",
+    safety: 150,
+    z: "1.5",
+    key: null,
+    token: null,
+    apiKey: null,
+    cf: "cf-secret",
+    path: "string",
+  });
+});
