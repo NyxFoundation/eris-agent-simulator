@@ -191,6 +191,11 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   で執行 tx ごと revert し（GMX はキャンセルせず、keeper は再試行しない）証拠金と 0.03 ETH が OrderVault に残って 0 評価だった。
   価格を渡すトークンは `setupGlobal` が全市場から作る 1 本（`ctx.gmx.oracleTokens`）を keeper・provider 登録・毎ブロックの
   mock 書き込みが共有する。**証拠金は市場の long token か USDC**（ETH 市場 = WETH/USDC、BTC 市場 = WBTC/USDC）
+- **keeper の `executeOrder` が申告する gas は `GMX_KEEPER_EXECUTE_GAS` = 6,000,000**（issue #216 (2)。以前は 15,000,000 固定で、
+  keeper の fee は参加者上限より上なので注文 2 件で 30M ブロックを丸ごと申告していた）。blocks.csv の `gasUsed` を
+  35 run・49,498 件で実測: min 1.15M / p50 2.38M / p99 2.60M / max 2.79M。GMX は申告から 1M（error handling 分）を
+  引いて約定に渡し、general プロファイルなら 3.9M + 1M を先に要求するので、6M は両プロファイルで通り約定に最大値の
+  1.8 倍残る。`afterMine` の `opts.executeGas` で上書き可。**anvil が収容判定に申告値を使うか実使用量を使うかは未実測**
 - **observation にも出る**（issue #78）。`protocols.gmx` の `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`
   （正 = long が short に払う）/ `fundingModeled`、建玉があれば `position.fundingOwedUsd`。
   以前は「チェーン上にも market.json にもあるのに、どの agent からも見えない」状態だった。
