@@ -1156,6 +1156,9 @@
         },
         "dropped": {
           "type": "number"
+        },
+        "error": {
+          "type": "string"
         }
       },
       "required": [

@@ -388,9 +388,13 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     `ERIS_ALLOW_PUBLIC_ROLE_KEYS` は効かない。リハーサルは `--scenario-key public`
   - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
   - **5 ブロック中央値は市場由来の全マークに掛かる**（規約 §4.1。以前は stable の probe だけで、LP・LST・Liquity は
-    境界 1 点だった）。対象は各アダプタが `medianSurfaces` で宣言し（uniswap-lp の tick / balancer・curve の持分価格 /
-    LST のプール売却 quote / Liquity の自分サイズ quote）、summary の `markMedian.surfaces` に出る。**保有量は境界で固定し
-    価格だけ中央値**。参照価格（fair と、それを配る Aave・GMX のオラクル）は市場由来ではないので対象外
+    境界 1 点だった）。対象は各アダプタが `medianSurfaces` で宣言し（LST のプール売却 quote /
+    Liquity の自分サイズ quote / Aave の LST 担保 haircut）、summary の `markMedian.surfaces` に出る。**保有量は境界で固定し
+    価格だけ中央値**。参照価格（fair と、それを配る Aave・GMX のオラクル）は市場由来ではないので対象外。
+    **LP の分割比（Uniswap の tick・Balancer/Curve の持分あたり準備金）は保有量の側**で、境界ブロックの値を使う。
+    #144 で一度中央値にしたが、自分しか LP のいないプールを窓の 3 ブロックだけずらして境界前に戻すと、同じ流動性が
+    ずらした側の分割で評価され、預けた額の数十 % が架空の価値になった（fair からずれたプールの持分は fair で評価すると
+    必ず大きい）。境界ブロックの分割なら同じブロックの swap は財布と LP で相殺される
   - **エポック順序は抽選 seed から導出**（`npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k 60`。`core/src/competition/schedule.ts` = SHA-256 カウンタ + 棄却法 + Fisher-Yates、レジーム等回数、seed が決めるのは順序だけ。`--starts-at <ISO> --every-minutes <N>`（または `--ends-at <ISO>` で窓に均等配置）で各エポックに `startsAt` を付けると matrix.json の `schedule` 経由で dashboard が「次のエポック開始予定」を出し、`backtest --follow-schedule` がその時刻を待って各エポックを始める。コミットメントには入らない）。`npm run competition -- commit <file>` が正規化 JSON の sha256 を出す（非公開 seed は 9/23 前、抽選 seed は 10/31 に公表。原本は結果発表後）。形は `config/competition/*.example.yaml`
   - **ライブ週の編成は [ADR 0026](docs/adr/0026-live-week-schedule.md)（Proposed）**: k = 60（12 レジーム × 5。旧推奨 40 = 8 × 5 は 12 の倍数でなく `deriveSchedule` が拒否）・1 エポック 360 ブロック・ガス用 ETH 3（ベンチマークも同額。公式レジームの `funding.ethWei` は別変更）・168 時間に 168 分おきで均等配置し `--follow-schedule` の 1 プロセスで走らせる。**60 エポックはブロック時間で 12 時間 = 週の 7%**。週を埋めるなら「360 ブロックのままエポックを増やす（非公開 seed の追加 commit が要る）」が推奨で、エポックを伸ばすのは全 12 レジームの再較正になる（ADR の §5）
   - **公式レジーム（12 本）**: `calm` / `cex-drift` / `informed-flow` / `whale`（単発大口の点イベント）/ `lending-incident`（暴落 + victim + 清算 + 同じ窓の引き抜き）/ `crash`（価格ギャップ + 同じ窓での引き抜き。3 venue が同時に薄くなる）/ `depeg`（レジストリの stable が $1 でなくなる。issue #27）/ `vuln`（run 途中にプールが湧き過半が rigged。ADR 0014）/ `spike`（crash の鏡像 = 上方向のギャップ + 同じ窓の引き抜き。バスケットを持っているだけの側が報われる唯一のレジーム。issue #105）/ `depeg-persist`（`depeg` の `persist: true` 版。ディスカウントが最終採点ブロックまで戻らず、買い戻しは teardown。「戻ると信じて持つ」が構造で勝てない唯一のレジーム。issue #106）/ `cdp-incident`（Liquity victim = ICR 1.20 の Trove 2 本 + 12〜16% 暴落 + 同じ窓の `eusdDepeg` と引き抜き。清算・償還・借り手防御の 3 skill。issue #107。victim は `core/src/liquityVictims.ts`、`stress.liquityVictimCount` / `liquityVictimIcr` / `liquityVictimCollWethWei`、`stress_liquity_*` イベント）/ `launch`（run 途中に 2〜3 の新トークンが環境の Uniswap V3 factory 経由で USDC の薄いプールに上場し、トークンごとに需要の波が来るか dud かをシードが決める。鐘の時点の保有は 0 = ADR 0022 公理 2。issue #29。下の「新規トークンの上場」節）。**Liquity の 14 日 bootstrap 期間**: deployer は deploy 時に warp するが、state dump を新しい anvil に `--load-state` すると時計が実時間に戻って期間内に逆戻りし、**全 backtest run で `liquityRedeem` が revert していた**（実測: redemption-arb が 8 ブロック連続で redeem を決めて全部 `Redemptions are not allowed during bootstrap phase`）。`setupLiquity` が期間内なら `evm_increaseTime` で飛ばす（`liquity_bootstrap_warped`）。**抽選は k をレジーム数の倍数に要求する**（`schedule.ts`）ので、本数を変えたら k も変える
@@ -556,6 +560,32 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - `npm run bundle:agent <id>` — 提出用 zip（runtime + sdk + lib + 対象 agent。ADR 0015 §7）。**`kind: improve` の prompt.md が無いディレクトリは拒否**（規約 §2.5 が全提出 agent に戦略改訂を要求する。起動時ではなく提出物の段で止めるのは、example の 17 agent が prompt.md 無しの教材だから）
 
 > **deployer は本 repo 同梱**（`deployer/`。旧 `../eris-app-deployer` を統合）。全 protocol を空の anvil へ deploy する自己完結のサブパッケージ（独自の `package.json` / `foundry.toml`）。初回のみ `cd deployer && npm install && forge build && cp .env.example .env && ./scripts/setup-vendors.sh`。以降は `cd deployer && npm run deploy -- --keep-fresh` で anvil 起動＋全 venue deploy。**焼き直すときは anvil ごと立て直す**（`--keep-fresh` が消すのは deployments.json だけ。全 venue の seed で deployer アカウントは 100 万 ETH のうち ~99.9 万を使うので、同じ anvil に 2 回目を流すと WETH の wrap で `insufficient funds` で落ちる）。`vendor/` の重いクローン（gmx-src/curve-src/twocrypto-src）は git 管理外で `setup-vendors.sh` が再現する。
+
+> **Aave 自前のテスト market は閉じてある**（issue #190）。`@aave/deploy-v3` は自前のテストトークンで 8 reserve
+> （WETH $4,000 / WBTC $60,000 等の固定価格）と、既定で誰でも 1 回 10,000 枚 mint できる `Faucet` を作る。競技は
+> 共有 reserve しか使わないが Pool は同じで、**Aave の採点 `getUserAccountData` は全 reserve を合計する**ので、
+> 放置すると faucet のトークンを supply するだけで P が増え、それを担保に共有 USDC/WETH も借りられた（実測）。
+> deployer は `PERMISSIONED_FAUCET=true` で deploy し、`closeVendorTestMarket` が Faucet を owner 限定にして
+> 8 reserve を `setReserveActive(false)`。**Aave が無効化を許すのは aToken も `accruedToTreasury` も 0 のときだけ**で、
+> 一度でも借りられた reserve は全員が返済・引出しても treasury の利息の取り分が残り、**永久に無効化できない**。
+> その場合は freeze して「treasury の残りのみ」と報告し、参加者の供給・債務が残っていれば freeze + 警告。
+> **稼働中のチェーンは `cd deployer && RPC_URL=<node> npm run close:aave-vendor`**（冪等。参加者の残高が残れば
+> exit 2、tx 自体が失敗した reserve があれば exit 1。1 本の失敗で後続を止めない）。閉じる対象は coordinator と同じく
+> `getReservesList()` − (deployments.json の全 token + LST)（`deployer/src/protocols/aave-reserves.ts`。以前は vendor の
+> deployment ファイルから列挙し、別 deploy のファイルを読むと「全部 not-listed」で exit 0 だった）。共有 reserve が
+> Pool に無ければ deployments.json が別チェーンのものなので何も送らずに落ちる（共有 reserve まで閉じないため）。
+> **ローカルの anvil では `.local-snapshot` より上に送った close は次の `sim:realtime` / `gen:state-dump` が巻き戻す**
+> （resetFork が close 前の断面へ revert する）。ファイルがこのチェーンを指していれば closer は何も送らず exit 1 で、
+> `npm run close:aave-vendor -- --revert-local-snapshot` が「pin へ revert → close → 取り直して書き戻す」
+> （直前 run の残りは捨てる = 次の run も捨てる）。pin の無いチェーン（`chainMode: external`）は revert しない。
+> **練習 devnet には pin がある** — unit は `sim:realtime --config config/practice.yaml` を `localDeploy: true` で
+> 起動し `localSnapshotFile` の既定が `.local-snapshot` なので、coordinator は他のローカル run と同じく
+> resetFork の snapshot/revert を通る。期間の途中で `--revert-local-snapshot` を打つと**その期間が巻き戻る**
+> （pin は参加者が取引した全ブロックより前）。devnet では coordinator を止めて pin を**削除**し、close して再起動する。
+> coordinator はローカルデプロイ + aave の run で `Pool.getReservesList()` を列挙し、registry + LST 以外の
+> **active な reserve が 1 本でもあれば全 chainMode で起動時に落ちる**。例外は freeze 済みで参加者の aToken
+> （treasury 保有分を除く）も債務も 0 のものだけ（`aave_reserve_check`。
+> `core/src/realtime/aaveReserveGuard.ts`）。**これ以前の state dump は全部これで落ちる**ので `npm run gen:state-dump` で焼き直す。
 
 > **deploy 鍵は `MNEMONIC`**（既定は anvil の**公開**テスト mnemonic。issue #74）。index 0 の deployer は Aave の
 > POOL_ADMIN・GMX の CONFIG_KEEPER・LST vault の owner・seed した LP 全部・genesis Trove の余剰 eUSD を持ち、
@@ -783,6 +813,12 @@ ours なのは 2 つだけ（core は無改変）:
   - **登録は毎ブロック上限つき・環境負担**（`agentMarkets.registrationsPerBlock`、既定 8）。あふれは
     次ブロックへ繰り越し、factory 由来を先に。**書き込みは admin ではなく setup 鍵**（oracle 更新が
     毎ブロック admin から出ているので、同じ鍵に 2 送信者を置くと nonce を奪い合う）
+  - **読み手は `all()` を呼ばない**（`count()` + `entriesFrom` を 256 件ずつ。`sdk/src/marketRegistry.ts`）。
+    `all()` のガスは件数に比例し（cold storage で 1,500 件 ~29.5M、**1,600 件で 30M の call 上限を超えて out of gas**）、
+    件数は誰でも安く積める（`createMarket` は permissionless、環境は毎ブロック 8 件登録 = 200 ブロック）。以前は全 agent の
+    観測が毎ブロック `all()` を読んでいたので、そこを超えると**全員の観測が毎ブロック失敗**した。watcher は追記専用の
+    リストを一度だけ読んで保持し、毎ブロックは新規分だけ読む。読取に失敗しても観測全体は落とさず、前回の section に
+    `registry.error` を付けて返す
   - 発見は **factory ログ + `to === null` の top-level CREATE スキャン**。**内部 CREATE は取りこぼす**
     （対称なので受容。誰にも見えないものは誰も釣れない）。ERC-20 判定は name/symbol/decimals の
     static call ヒューリスティック

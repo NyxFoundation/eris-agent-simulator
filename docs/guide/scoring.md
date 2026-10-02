@@ -54,13 +54,20 @@ boundary series. Six details are decisions, not formalities:
   epoch, then its submission time (§4.6).
 
 `run.markMedianBlocks` (default 5) marks every market-derived price at each boundary with a median
-over the preceding window instead of a single live read (rules §4.1): the stables' probe and each
-agent's own-size sale of its stables (wallet and venues summed; a large holding is not marked at the
-$1,000 probe's mid), the
-Uniswap LP split tick, Balancer / Curve share prices, the LST pool sale and Liquity's own-size
-quotes. Holdings stay at the boundary block; reference prices (fair, the Aave / GMX oracles) are
-used as they are. `valueSeries.markMedian` reports which surfaces are covered and the largest
-deviation seen for the stables.
+over the preceding window instead of a single live read (rules §4.1): the stables' probe, each agent's
+own-size sale of its stables (wallet and venues summed, so a large holding is not marked at the
+$1,000 probe's mid), the LST pool sale and Liquity's own-size quotes. Reference prices (fair, the Aave / GMX oracles) are used as
+they are. `valueSeries.markMedian` reports which surfaces are covered and the largest deviation seen
+for the stables.
+
+**An LP position is a holding, not a price.** How it splits into its two tokens (the Uniswap V3
+tick) and what share of the reserves one unit owns (Balancer / Curve) are the tokens a withdrawal in
+that block would return, so they are read at the boundary block and valued at the reference prices.
+Pairing a median split with the boundary's liquidity valued tokens the position did not hold: an
+owner alone in a pool could push it off fair for three of the window's five blocks and put it back
+before the bell, netting the swaps out between their wallet and their position while the position
+was still marked at the pushed split. At the boundary block's own split, a swap in that block moves
+between wallet and position and the mark does not move.
 
 ## Where it lands in summary.json
 
