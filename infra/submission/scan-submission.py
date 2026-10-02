@@ -104,7 +104,17 @@ def scan_package_json(path, text, has_lock):
     # never copied by accept-submission.sh; only a package.json inside the agent is installed.
     bundle_root = path.replace(os.sep, "/") == "package.json"
     for d, v in deps.items():
-        if isinstance(v, str) and re.match(r"(git|https?|file|link|npm:|github:|bitbucket:|gist:|[\w.-]+/[\w.-]+$|\.\.?/|/)", v):
+        # A deny-list on the spec. The shorthand forms are the easy ones to get wrong: "user/repo"
+        # ended at $, so "user/repo#main" and "user/repo#semver:^1" matched nothing and passed as if
+        # they named a registry version. npm resolves both by talking to the host in the spec, which
+        # is an outbound connection from the operator's builder to an address the participant chose.
+        # workspace:/portal: are pnpm/yarn protocols that npm would not install but should not pass
+        # a check whose claim is "every byte comes from the public registry by name and version".
+        if isinstance(v, str) and re.match(
+            r"(git|https?|ftps?|ssh|file|link|portal|workspace|npm:|github:|bitbucket:|gist:"
+            r"|[\w.-]+/[\w.-]+([#@/].*)?$|\.\.?/|/)",
+            v,
+        ):
             add("WARN" if bundle_root else "BLOCK", path, f"non-registry dependency '{d}': {v}")
     if deps and not bundle_root and not has_lock:
         add("BLOCK", path, "package.json declares dependencies but has no package-lock.json beside it (the team build runs `npm ci`)")
@@ -220,7 +230,10 @@ def walk_dir(root):
             elif fn == "package-lock.json" and "node_modules" not in rel:
                 scan_package_lock(rel, open(fp, errors="ignore").read())
             elif fn == "requirements.txt":
-                scan_requirements(rel, open(fp, errors="ignore").read())
+                # utf-8-sig: a BOM is part of the first line otherwise, so "six==1.16.0 --hash=..."
+                # read as "\ufeffsix==..." and failed the pinned-form check with a message that looked
+                # identical to the line it rejected. pip itself accepts a BOM.
+                scan_requirements(rel, open(fp, encoding="utf-8-sig", errors="ignore").read())
             elif low.endswith(SOURCE_EXT):
                 add("INFO", rel, "Solidity source (contracts in a submission are permitted; what bounds them is the gas budget, rules §2.6)")
             elif low.endswith(".json") and "node_modules" not in rel and scan_forge_artifact(rel, open(fp, errors="ignore").read()):

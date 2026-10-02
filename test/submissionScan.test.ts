@@ -197,3 +197,51 @@ test("requirements.txt accepts only hash-pinned registry lines", (t) => {
     assert.equal(blocks(scan(dir)).length === 0, accepted, line);
   }
 });
+
+test("a GitHub shorthand with a ref is a non-registry dependency", (t) => {
+  // "user/repo" ended at $, so a ref after it matched nothing and the spec passed as if it named a
+  // registry version. npm resolves these by talking to the host in the spec, which is an outbound
+  // connection from the operator's builder to an address the participant chose.
+  for (const spec of [
+    "isaacs/nopt#v7.2.0",
+    "user/repo#main",
+    "user/repo#semver:^1",
+    "workspace:*",
+    "portal:../x",
+  ]) {
+    const dir = fixtureDir(t, {
+      [`${AGENT}/package.json`]: JSON.stringify({ dependencies: { dep: spec } }),
+    });
+    assert.ok(
+      blocks(scan(dir)).some((b) => b.includes("non-registry dependency")),
+      `${spec} was not reported as non-registry`,
+    );
+  }
+});
+
+test("a registry range with a lock beside it is not called non-registry", (t) => {
+  const dir = fixtureDir(t, {
+    [`${AGENT}/package.json`]: JSON.stringify({ dependencies: { nopt: "^7.2.0" } }),
+    [`${AGENT}/package-lock.json`]: JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": {},
+        "node_modules/nopt": {
+          version: "7.2.0",
+          resolved: "https://registry.npmjs.org/nopt/-/nopt-7.2.0.tgz",
+          integrity: "sha512-x",
+        },
+      },
+    }),
+  });
+  assert.deepEqual(blocks(scan(dir)), []);
+});
+
+test("a UTF-8 BOM does not make a hash-pinned requirements.txt look unpinned", (t) => {
+  // The BOM was part of the first line, so the pinned form check saw "\ufeffsix==1.16.0" and
+  // rejected it with a message that looked identical to the line it rejected. pip accepts a BOM.
+  const pinned =
+    "six==1.16.0 --hash=sha256:8abb2f1d86890a2dfb989f9a77cfcfd3e47c2a354b01111771326f8aa26e0254\n";
+  const dir = fixtureDir(t, { [`${AGENT}/requirements.txt`]: `\ufeff${pinned}` });
+  assert.deepEqual(blocks(scan(dir)), []);
+});

@@ -53,7 +53,13 @@ for d in "$TMP"/agents/*/; do
   SRC="$d"
 done
 [ -n "$SRC" ] || { echo "no agent directory found under agents/ in the bundle" >&2; exit 1; }
-[ -f "$SRC/agent.ts" ]  || { echo "$(basename "$SRC") has no agent.ts" >&2; exit 1; }
+# TypeScript or Python (ADR 0025): bundleAgent makes the two entry points exclusive, so a Python
+# submission carries strategy.py and no agent.ts. Requiring agent.ts rejected every Python bundle the
+# documented path tells participants to build.
+if   [ -f "$SRC/agent.ts" ];    then ENTRY=agent.ts
+elif [ -f "$SRC/strategy.py" ]; then ENTRY=strategy.py
+else echo "$(basename "$SRC") has neither agent.ts nor strategy.py" >&2; exit 1
+fi
 [ -f "$SRC/prompt.md" ] || { echo "$(basename "$SRC") has no prompt.md (rules §2.5)" >&2; exit 1; }
 [ -e "$DEST" ] && { echo "$DEST already exists — remove it first if this is a resubmission" >&2; exit 1; }
 mkdir -p "$DEST" && cp -RP "$SRC". "$DEST"/
@@ -61,7 +67,13 @@ mkdir -p "$DEST" && cp -RP "$SRC". "$DEST"/
 echo "  $(basename "$SRC") -> $DEST  ($(find "$DEST" -type f | wc -l) files)"
 
 step "3/4 check:strategy"
-npx tsx scripts/checkStrategyCode.ts "$DEST"/*.ts 2>&1 | tail -3
+# The static check reads the strategy's source whichever language it is in; the glob has to follow
+# the entry point, because "$DEST"/*.ts does not expand for a Python submission.
+case "$ENTRY" in
+  agent.ts)    STRATEGY_FILES=("$DEST"/*.ts) ;;
+  strategy.py) STRATEGY_FILES=("$DEST"/*.py) ;;
+esac
+npx tsx scripts/checkStrategyCode.ts "${STRATEGY_FILES[@]}" 2>&1 | tail -3
 [ "${PIPESTATUS[0]}" = 0 ] || { echo "check:strategy found issues — see above" >&2; rm -rf "$DEST"; exit 1; }
 
 step "4/4 build eris-agent:$TEAM"
