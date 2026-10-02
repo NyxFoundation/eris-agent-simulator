@@ -380,6 +380,13 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `Sender` の `guard` hook）: 宛先は bundled 定数表の venue/token + PriceFeed/registry/lending + registry entry のみ、
   deploy 不可、`transfer`/`transferFrom`/`setApprovalForAll` 不可、`approve`/`permit` の spender は venue か verified
   entry のみ、ETH 送付は venue のみ。手書き version 0 は無制限。vm intrinsics と worker env は #215 側
+- **隔離は宣言でなく実測**: `run-agent.sh` は `docker network inspect -f '{{.Internal}}'` を読み返し、前回 run が別設定で
+  残した `ag-<id>` は detach して作り直す。create 失敗・hub 未接続は `|| true` せず exit 3（coordinator には
+  `agent_process_exited` + stderr で残る）。coordinator は agents-ready 後（遅い agent は周期 tick で）コンテナを
+  `docker inspect` し `agent_network_measured` を記録、自分の `ag-<id>` に居ない / 他ネットワークにも居る /
+  `ERIS_AGENT_INTERNAL=1` 宣言なのに internal でない agent は**止める**（`agent_network_mismatch`。
+  `core/src/realtime/agentNetwork.ts`）。`infra/devnet/docker-compose.sim.yml` に `ERIS_AGENT_INTERNAL=1` と
+  `ERIS_INFERENCE_HUB` / `ERIS_INFERENCE_BASE_URL` を追加（repo 唯一の live 設定なのに egress が開いていた）
 
 ## 実行コマンド
 

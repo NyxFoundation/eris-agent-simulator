@@ -135,6 +135,7 @@ import {
   prepareAgentState,
 } from "./agentState.js";
 import { AgentDiskWatch, agentLogFiles } from "./agentDisk.js";
+import { measureAgentNetworks, networkMismatches } from "./agentNetwork.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
 import {
   ensureScenarioKey,
@@ -2252,6 +2253,72 @@ export async function runRealtimeSimulation(
     // What `agents_ready` measures boot time from (issue #94).
     const agentsSpawnedAt = Date.now();
 
+    // ---- the network each docker agent is actually on (issue #214 item 4) ----
+    // `agent_sandbox` above records the posture the env declares; this records what docker says
+    // once the containers exist, and stops a container that is not where its posture says. Measured
+    // after the agents-ready wait (the containers of the ready agents exist by then) and again on
+    // the periodic tick for any that were still booting. A measurement is two `docker inspect`
+    // calls per agent, once.
+    const networkPending = new Set<string>(
+      config.agentSandbox === "docker"
+        ? agentRuntimes
+            .filter((a) => a.process !== null && a.spec.command === undefined)
+            .map((a) => a.id)
+        : [],
+    );
+    const dockerRun = (args: string[]) => {
+      const r = spawnSync("docker", args, { encoding: "utf8" });
+      return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+    };
+    const checkAgentNetworks = (when: "agents_ready" | "block", bn?: number): void => {
+      const byId = (id: string) => agentRuntimes.find((a) => a.id === id);
+      const ids = [...networkPending].filter((id) => {
+        const a = byId(id);
+        if (!a || a.exitedEarly !== undefined || !(a.process?.isAlive() ?? false)) {
+          networkPending.delete(id);
+          return false;
+        }
+        return true;
+      });
+      if (ids.length === 0) return;
+      const facts = measureAgentNetworks(ids, dockerRun);
+      for (const f of facts) if (f.measured) networkPending.delete(f.id);
+      const mismatches = networkMismatches(facts, (id) =>
+        agentNetworkPosture({ ...process.env, ...(byId(id)?.spec.env ?? {}) }),
+      );
+      logger.event({
+        type: "agent_network_measured",
+        when,
+        ...(bn !== undefined ? { blockNumber: bn } : {}),
+        agents: facts.map((f) => ({
+          id: f.id,
+          container: f.container,
+          measured: f.measured,
+          networks: f.networks,
+          ...(f.error !== undefined ? { error: f.error } : {}),
+        })),
+        unmeasured: facts.filter((f) => !f.measured).map((f) => f.id),
+        mismatches,
+      });
+      for (const m of mismatches) {
+        const agent = byId(m.id);
+        if (!agent || agent.exitedEarly !== undefined) continue;
+        const reason = `stopped by the environment: network posture mismatch (${m.detail})`;
+        logger.event({
+          type: "agent_network_mismatch",
+          agentId: m.id,
+          kind: m.kind,
+          detail: m.detail,
+          note:
+            "the container is not on the network its launch declared; it is stopped rather than " +
+            "run where it can reach what the posture says it cannot (infra/docker-agent/ISOLATION.md)",
+        });
+        console.error(`[agent] ${m.id} ${reason}`);
+        agent.exitedEarly = reason;
+        agent.process?.close();
+      }
+    };
+
     // ---- what each agent writes to the host (issue #214 item 1) ----
     // Measured every `run.agentDiskCheckEveryBlocks` blocks for every agent this coordinator
     // launched and still runs: its state directory and its log files. Past a quota the agent is
@@ -2650,6 +2717,8 @@ export async function runRealtimeSimulation(
         );
       }
     }
+    // Issue #214 item 4: now that the containers exist, where are they actually?
+    checkAgentNetworks("agents_ready");
     if (external) {
       // The sequencer has been producing blocks the whole time; there is no phase change to make.
       // What the environment does have to know is the real cadence, because the block loop's
@@ -3921,8 +3990,11 @@ export async function runRealtimeSimulation(
           if (
             config.agentDiskCheckEveryBlocks > 0 &&
             bn % config.agentDiskCheckEveryBlocks === 0
-          )
+          ) {
             diskWatchTick(bn);
+            // Agents whose container was not up at the agents-ready wait (issue #214 item 4).
+            checkAgentNetworks("block", bn);
+          }
 
           // Only while segmenting: keep blocks.csv within a block of the head, so a roll is a
           // boundary rather than a bulk scan of a whole day stalling the environment loop. A run

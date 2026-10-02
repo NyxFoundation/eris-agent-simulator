@@ -195,6 +195,13 @@ network without a route out and `ERIS_INFERENCE_HUB` attaches the inference prox
 rules §2.3's "no direct external connection" holds in the competition. Deps are resolved at build time
 precisely so run time needs no outbound access.
 
+Whether the container ended up where those switches say is read back rather than assumed (issue
+#214 item 4): `run-agent.sh` inspects the network's `Internal` flag and recreates a leftover
+`ag-<id>` with the wrong one, exits on a create or hub-attach failure instead of `|| true`, and the
+coordinator inspects each container once it is up, records `agent_network_measured`, and stops one
+whose networks do not match its launch (`agent_network_mismatch`). `infra/devnet/docker-compose.sim.yml`
+sets `ERIS_AGENT_INTERNAL=1` and names the inference proxy (`ERIS_INFERENCE_HUB`), which it did not.
+
 The coordinator does not refuse to start without isolation (local checks and the operator's own
 reference field run on host networking), but it says so: an `agent_sandbox_warning` event in
 `events.jsonl` naming the agents and what they lack (shared network / open egress / bind-mount /
