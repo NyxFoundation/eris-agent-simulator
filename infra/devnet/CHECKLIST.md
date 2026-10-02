@@ -123,8 +123,10 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 
 **A（box）**
 
-- [ ] commit を固定する。`git rev-parse HEAD` → 記録: `commit=`。A には sync timer
-  （`eris-dashboard-sync`）を入れない（入れると 26h の途中で commit が動く）
+- [ ] commit を固定する。`git rev-parse HEAD` → 記録: `commit=`。A に sync timer
+  （`eris-dashboard-sync`）を入れるなら `infra/dashboard/sync.env` に `ERIS_SYNC_REF=<その commit>` を書く
+  （`infra/dashboard/sync-main.sh promote <commit>`）。`ERIS_SYNC_FOLLOW_BRANCH` は書かない
+  （書くと 26h の途中で commit が動く。issue #211）
 - [ ] `npm run dashboard:build`（compose は `dashboard/dist` を配信するだけで、ビルドはしない）
 - [ ] 本番 box と同じ手順で立てる: [infra/provision](../provision/README.md) の "Order of operations"
   2〜4（`npm ci`、`setup-vendors.sh`、deploy、`npm run gen:state-dump`、`docker compose up -d`）。
@@ -423,7 +425,9 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   （環境の失敗・flow の停止・カナリアの停止はアラートになった。下の表）
 - [ ] 公開ビューが新しい日に移り、前日の順位が出ている（目視）
 - [ ] `journalctl --user -u eris-dashboard-sync --since yesterday` にビルドがあった日は、漏れの検査（1.7）
-  をもう一度通す（ダッシュボードは main に追従していて、merge のたびに公開ページが変わる）
+  をもう一度通す（ビルドが起きるのは `sync-main.sh promote` で ref を動かした日だけ。journal に
+  `FOLLOWING` が出ていたら誰かが `ERIS_SYNC_FOLLOW_BRANCH` を入れていて、merge のたびに公開ページが
+  変わる状態 = issue #211 の元の形。`infra/dashboard/README.md`）
 
 **毎週**
 

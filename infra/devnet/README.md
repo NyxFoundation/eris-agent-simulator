@@ -12,7 +12,7 @@ was a foreground command in a document. This directory is the unit that runs it.
 docker compose up -d          the chain, the gateway, the monitoring  (infra/monitoring)
 cloudflared                   publishes :8546 and :3000               (infra/cloudflared)
 ascon-devnet.service          ← drives the chain                      (here)
-eris-dashboard-sync.timer     rebuilds the hosted dashboard           (infra/dashboard)
+eris-dashboard-sync.timer     rebuilds the hosted dashboard at its pin (infra/dashboard)
 ```
 
 ## Install (once, on the box that hosts it)
