@@ -76,6 +76,12 @@ export class Sender {
   readonly address: Address;
   private readonly logMempool: MempoolLog;
   private readonly ledger: TradeLedger | undefined;
+  private readonly guard:
+    | ((
+        action: AgentAction,
+        observation: AgentObservation,
+      ) => { ok: true } | { ok: false; reason: string })
+    | undefined;
 
   // ---- self-managed nonce + serialized sending ----
   private nextNonce: number | null = null;
@@ -101,6 +107,13 @@ export class Sender {
     // asked for the trade; without the join here, "included two blocks late" and "reverted on the
     // slippage bound" reach the revision loop as the same swap.
     ledger?: TradeLedger;
+    // Issue #214 item 3: a check the caller puts between parsing and validation, for what it knows
+    // and this class does not -- which version of the strategy proposed the action. A refusal is
+    // logged as `rejected` like any validation failure, so the revision loop sees it too.
+    guard?: (
+      action: AgentAction,
+      observation: AgentObservation,
+    ) => { ok: true } | { ok: false; reason: string };
   }) {
     this.ctx = opts.ctx;
     this.adapters = opts.adapters;
@@ -108,6 +121,7 @@ export class Sender {
     this.address = this.account.address;
     this.logMempool = opts.logMempool;
     this.ledger = opts.ledger;
+    this.guard = opts.guard;
   }
 
   private async allocNonce(): Promise<number> {
@@ -263,6 +277,17 @@ export class Sender {
       this.logMempool({
         event: "rejected",
         reason: "no observation yet",
+        action,
+      });
+      return;
+    }
+    const guarded = this.guard?.(action, observation);
+    if (guarded && !guarded.ok) {
+      this.logMempool({
+        event: "rejected",
+        reason: guarded.reason,
+        actionType: action.type,
+        blockSeen: observation.round,
         action,
       });
       return;
