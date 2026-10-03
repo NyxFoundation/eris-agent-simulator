@@ -153,7 +153,7 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   最大 $10k = perp は spot の 1 桁上）。whale・Aave actor は据え置き（whale は「プール深度に対する割合」の規則を
   値の隣に書いた）
 - **deployer 側（`npm run gen:state-dump` で焼き直し必須）**: GM pool 200 WETH + 600k → **1,500 WETH + 4.5M USDC**
-  （spot 比 0.2× → 1.5×。Arbitrum 実測 1.7×。impact factor 0 なので約定は不変、OI/pool = funding skew が小さくなる）/
+  （spot 比 0.2× → 1.5×。Arbitrum 実測 1.7×。OI/pool = funding skew が小さくなる。impact factor は Arbitrum の値をそのまま写したので、この pool でも約定はほぼ不変）/
   Aave shared seed 9k USDC + 10 WETH → **5M USDC + 2,000 WETH**（Base の 20× は採らない。12 分のエポックで
   利用率と金利カーブは効かず、agent 規模の借入が空リザーブに当たらない深さがあれば足りる）/
   Stability Pool 50k → **125k eUSD** + genesis Trove **350 ETH / 350k eUSD**（上の Liquity 節）。
@@ -181,6 +181,20 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   読み側（`marketSeries.ts`）は `savedFundingFactorPerSecond` を読むが、これは**適応 funding 経路の保存値**で、
   `fundingIncreaseFactorPerSecond == 0` だと MarketUtils が早期 return して**永久に 0**。適応 funding を
   有効にすると読んでいるキーがそのまま埋まる
+- **手数料・price impact・borrowing・最大レバレッジも同じ穴だった**（同じ patch）。upstream の hardhat 設定は
+  `positionFeeFactor*` / `*PositionImpactFactor` / borrowing 系を書かず、`minCollateralFactor` は 1%。
+  つまり**サイズにコストが掛からない 100 倍の先物を fair で約定**していて、fair の予測可能な動き（OU の平均回帰の
+  中心が開始価格）が全部、配布額の何倍もの期待値になった。今は Arbitrum の ETH/BTC 市場の値を**そのまま写す**
+  （position fee 0.04% / 0.06%、impact 9e-11 / 3e-11・指数 2 / 1・上限 0.5% / 0.4%、borrowing は
+  `borrowingRateConfig_LowerMax_WithHigherOptimal`）。impact は Arbitrum の OI に合わせた係数なので、この pool では
+  $1M の偏りで ~0.9bps しか効かない（**効くのは fee**。深度に合わせて盛るのは較正の仕事として見送った）。
+  レバレッジは**建てるとき 10%（10 倍）・清算 5%** で、Arbitrum の 0.5〜1% より意図的に厳しい
+  （12 分のエポックでは 100 倍の賭けを止めるものが清算しか無い）。`basis-arb` の往復コスト既定は 0 → 12bps。
+  **採点は「今閉じたら残る額」**（`positionExitValueUsd`。Reader の `getAccountPositionInfoList` を fair で引き、
+  証拠金 + 基準 PnL + 決済時と建玉時に繰り延べた impact − 決済手数料・未払い borrowing・funding + 受け取る funding）。
+  建玉時の手数料は証拠金から既に引かれているので、額面（証拠金 + PnL）のままだと**鐘の後まで持ち越した建玉は手数料を
+  半分しか払わない**ことになった。額面は `valueUsdc`（= `markedValueUsdc`）に残る。読取に失敗したら額面で数えて
+  `read-failed` を報告し、価格の付かない市場に建玉がある agent は読まない（Reader が revert する）
 - **値を盛らないこと**。盛ると perp だけ Aave の借入金利と違う時計で回る（LST の APY で一度やった失敗）。
   よって**レートは実物・符号も偏り追随**だが、**数百ブロックで積む額は小さい**（Aave の利息と同じ理由。EVM 時間は warp しない）
 - **これ以前に焼いた state dump は旧設定を持つ**ので、そこからの replay は今も 0 を返す。
