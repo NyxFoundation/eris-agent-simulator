@@ -829,7 +829,10 @@ ours なのは 2 つだけ（core は無改変）:
   batching で 1 HTTP）+ batch ごとの期限 `UNTRUSTED_READ_TIMEOUT_MS` = 1 秒。**読めなかった値は欠落**
   （`price` / `oracleOwner` が無い。0 ではない = 0 価格は全借り手を清算可能に、0 owner は「誰も動かせない」に読める）。
   coordinator は答えなかったアドレスを `unknown` として登録し `agent_market_read_failed`（out-of-gas / timeout /
-  error。revert は「token でない」の通常回答なので出さない）を**アドレスごとに 1 回**出す。singleton 経由の
+  error。revert は「token でない」の通常回答なので出さない）を**アドレスごとに 1 回**出す。ただし timeout / error は
+  ノードが答えなかっただけでコントラクトの答えではないので、**次の sweep で再判定**し（`CLASSIFY_ATTEMPTS` = 3 回まで。
+  `seen` にはまだ入れない）、1 sweep の判定は `MAX_CLASSIFY_PER_SWEEP` = 64 件まで（残りは繰り越し。期限は batch 全体で
+  1 つなので、CREATE を大量に積んだブロックで同じブロックの正直な token まで `unknown` に固定されていた）。singleton 経由の
   `isHealthy` / `expectedPosition` はコントラクト側の staticcall 上限で既に守られているので multicall のまま
 - 参照 agent は 6 体: `market-launcher`（正直な作成者。immutable オラクルで作って鐘の前に withdraw）/
   `market-taker`（利用者。`oracleOwner` を読んでから入る）/ `trap-launcher`（自分が握るオラクルで

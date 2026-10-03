@@ -728,7 +728,9 @@ export async function observeLending(
         lif.status === "success" && typeof lif.result === "bigint"
           ? lif.result.toString()
           : "0",
-      price: (state.priceById[id] ?? 0n).toString(),
+      ...(state.priceById[id] !== undefined
+        ? { price: state.priceById[id].toString() }
+        : {}),
       supplyAssets: (p[0] ?? 0n).toString(),
       borrowAssets: (p[1] ?? 0n).toString(),
       collateral: (p[2] ?? 0n).toString(),

@@ -867,7 +867,9 @@ export type LendingPositionObservation = {
   liquidationIncentiveFactor: string;
   // Collateral units per loan-token unit, 1e36-scaled and decimal-adjusted, as the market's own
   // oracle reports it. If the creator owns the oracle, this number is whatever they want it to be.
-  price: string;
+  // Absent when the oracle did not answer under the untrusted-read gas cap (issue #213) -- never
+  // "0", which would read as a real (and absurd) price.
+  price?: string;
   supplyAssets: string;
   borrowAssets: string;
   collateral: string;

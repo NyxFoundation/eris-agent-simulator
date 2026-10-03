@@ -16,9 +16,11 @@ import {
   UNTRUSTED_SIMULATION_GAS,
 } from "../sdk/src/untrustedRead.js";
 import { readOracleOwners } from "../sdk/src/marketRegistry.js";
-import { readLendingState } from "../sdk/src/protocols/lending.js";
+import { observeLending, readLendingState } from "../sdk/src/protocols/lending.js";
 import type { SimContext } from "../sdk/src/protocols/types.js";
 import {
+  CLASSIFY_ATTEMPTS,
+  MAX_CLASSIFY_PER_SWEEP,
   classifyContracts,
   sweepMarkets,
   type MarketRegistryRuntime,
@@ -237,6 +239,10 @@ test("readLendingState: the singleton reads are the venue's, the oracle reads ar
             (c as { args?: unknown[] }).args?.[0] === idTrap;
           return [HONEST, HONEST, trap ? TRAP : HONEST, HONEST, 9n * 10n ** 17n];
         }
+        // observeLending's per-agent reads on the singleton.
+        if (c.functionName === "expectedPosition") return [0n, 0n, 0n];
+        if (c.functionName === "isHealthy") return true;
+        if (c.functionName === "liquidationIncentiveFactor") return 10n ** 18n;
         return new Error(`unexpected ${c.functionName}`);
       }),
   });
@@ -258,6 +264,15 @@ test("readLendingState: the singleton reads are the venue's, the oracle reads ar
   assert.ok(state.marketIds.includes(idTrap));
   assert.ok(!(idTrap in state.priceById));
   assert.ok(!(idTrap in state.oracleOwnerById));
+
+  // And the agent sees the same: the honest market's price, the trap's market with no price field
+  // at all -- not "0", which a strategy would read as a price.
+  const obs = await observeLending(ctx, state, AGENT);
+  const byId = new Map(obs?.markets.map((m) => [m.marketId, m]));
+  assert.equal(byId.get(idHonest)?.price, (3_000n * 10n ** 36n).toString());
+  assert.ok(byId.has(idTrap));
+  assert.ok(!("price" in (byId.get(idTrap) ?? {})));
+  assert.equal(byId.get(idTrap)?.oracleOwner, undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -332,6 +347,7 @@ test("sweepMarkets: an unreadable contract is published as unknown and reported 
     pending: [],
     seen: new Set(),
     readFailuresReported: new Set(),
+    classifyQueue: [],
     perBlockCap: 8,
   };
   const events: Array<Record<string, unknown>> = [];
@@ -360,6 +376,108 @@ test("sweepMarkets: an unreadable contract is published as unknown and reported 
   await sweepMarkets(ctx, runtime, 10, 10, new Set(), logger);
   assert.equal(events.filter((e) => e.type === "agent_market_read_failed").length, 1);
   assert.equal(runtime.pending.length, 2);
+});
+
+function sweepFixture(opts: {
+  creator: Address;
+  nonces: number[];
+  behaviour: (address: string, functionName: string) => unknown;
+  recorded: Recorded[];
+}) {
+  const base = fakeClient({ recorded: opts.recorded, behaviour: opts.behaviour });
+  let scanned = false;
+  const client = Object.assign(base, {
+    getLogs: async () => [],
+    getCode: async () => "0x6000",
+    // The CREATEs are in the first block scanned and nowhere after, so a contract that is probed
+    // again on a later sweep can only have come from the queue.
+    getBlock: async () => {
+      const transactions = scanned
+        ? []
+        : opts.nonces.map((nonce) => ({ to: null, from: opts.creator, nonce }));
+      scanned = true;
+      return { transactions };
+    },
+  });
+  const runtime: MarketRegistryRuntime = {
+    address: "0x0000000000000000000000000000000000000111",
+    deployBlock: 1,
+    lending: SINGLETON,
+    uniswapFactory: undefined,
+    registrarPk: `0x${"1".repeat(64)}`,
+    registrarAddress: AGENT,
+    pending: [],
+    seen: new Set(),
+    readFailuresReported: new Set(),
+    classifyQueue: [],
+    perBlockCap: 8,
+  };
+  const events: Array<Record<string, unknown>> = [];
+  const logger = { event: (e: Record<string, unknown>) => events.push(e) } as unknown as RunLogger;
+  const ctx = { publicClient: client } as unknown as SimContext;
+  return { runtime, events, logger, ctx };
+}
+
+test("sweepMarkets: a probe the node did not answer is retried, not registered as unknown", async () => {
+  const CREATOR = "0x00000000000000000000000000000000000000f7" as Address;
+  const token = getContractAddress({ from: CREATOR, nonce: 1n });
+  let nodeDown = true;
+  const recorded: Recorded[] = [];
+  const { runtime, events, logger, ctx } = sweepFixture({
+    creator: CREATOR,
+    nonces: [1],
+    recorded,
+    behaviour: (_address, functionName) =>
+      nodeDown ? new Error("fetch failed") : functionName === "decimals" ? 18 : "TOKEN",
+  });
+  await sweepMarkets(ctx, runtime, 10, 10, new Set(), logger);
+  assert.equal(runtime.pending.length, 0, "nothing is published on a transport failure");
+  assert.equal(runtime.classifyQueue.length, 1);
+  assert.equal(events.filter((e) => e.type === "agent_market_read_failed").length, 0);
+
+  nodeDown = false;
+  await sweepMarkets(ctx, runtime, 11, 11, new Set(), logger);
+  assert.deepEqual(
+    runtime.pending.map((e) => [e.market.toLowerCase(), e.kind]),
+    [[token.toLowerCase(), "erc20"]],
+  );
+  assert.equal(runtime.classifyQueue.length, 0);
+});
+
+test("sweepMarkets: a node that never answers is published as unknown after the last attempt", async () => {
+  const CREATOR = "0x00000000000000000000000000000000000000f8" as Address;
+  const { runtime, events, logger, ctx } = sweepFixture({
+    creator: CREATOR,
+    nonces: [1],
+    recorded: [],
+    behaviour: () => new Error("fetch failed"),
+  });
+  for (let b = 10; b < 10 + CLASSIFY_ATTEMPTS; b++)
+    await sweepMarkets(ctx, runtime, b, b, new Set(), logger);
+  assert.deepEqual(runtime.pending.map((e) => e.kind), ["unknown"]);
+  assert.equal(runtime.classifyQueue.length, 0);
+  const failed = events.filter((e) => e.type === "agent_market_read_failed");
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].reason, "error");
+});
+
+test("sweepMarkets: one sweep probes at most MAX_CLASSIFY_PER_SWEEP contracts; the rest carry", async () => {
+  const CREATOR = "0x00000000000000000000000000000000000000f9" as Address;
+  const n = MAX_CLASSIFY_PER_SWEEP + 5;
+  const recorded: Recorded[] = [];
+  const { runtime, logger, ctx } = sweepFixture({
+    creator: CREATOR,
+    nonces: Array.from({ length: n }, (_, i) => i),
+    recorded,
+    behaviour: (_address, functionName) => (functionName === "decimals" ? 18 : "TOKEN"),
+  });
+  await sweepMarkets(ctx, runtime, 10, 10, new Set(), logger);
+  assert.equal(recorded.length, MAX_CLASSIFY_PER_SWEEP * 3);
+  assert.equal(runtime.pending.length, MAX_CLASSIFY_PER_SWEEP);
+  assert.equal(runtime.classifyQueue.length, 5);
+  await sweepMarkets(ctx, runtime, 11, 11, new Set(), logger);
+  assert.equal(runtime.pending.length, n);
+  assert.equal(runtime.classifyQueue.length, 0);
 });
 
 // ---------------------------------------------------------------------------

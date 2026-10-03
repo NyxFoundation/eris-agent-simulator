@@ -110,7 +110,7 @@ issue #40 T0。**この文書は capability の definition of done の一部**�
 |---|---|---|
 | sdk / core の read（`sdk/src/untrustedRead.ts`） | 参加者由来アドレスへの `eth_call` | `gas: 200,000`（`SimpleLending.EXTERNAL_CALL_GAS` と同値）を明示。1 アドレス 1 call、Multicall3 には入れない。batch に 1 秒の期限 |
 | 読めなかった値 | out of gas / revert / timeout | **欠落**（`price` / `oracleOwner` が無い）。0 ではない |
-| coordinator の判定 | 答えなかった新規コントラクト | `unknown` として登録し `agent_market_read_failed` をアドレスごとに 1 回 |
+| coordinator の判定 | 答えなかった新規コントラクト | `unknown` として登録し `agent_market_read_failed` をアドレスごとに 1 回（timeout / transport error は 3 sweep まで再判定。1 sweep 64 件まで） |
 
 Multicall3 に入れないのは aggregate が内側の CALL に残りの 63/64 を渡すから: 罠が 1 つ先頭にあると、
 同じ batch の正直な oracle まで欠落する（実測: `[loop, honest]` で honest は生き残るが、残りガスは 1/64）。

@@ -83,6 +83,16 @@ export type PendingEntry = {
 // to make a contract permanently invisible without anybody noticing.
 export const MAX_PENDING_ENTRIES = 2048;
 
+// How many new contracts one sweep probes. The probes share one deadline (`readUntrustedBatch`), and
+// CREATE is cheap enough that a single block can carry hundreds: unbounded, a deploy-spam block
+// spends the whole deadline every tick and every contract in it -- an honest token deployed alongside
+// included -- comes back `timeout`. The rest wait for the next sweep (issue #213 review).
+export const MAX_CLASSIFY_PER_SWEEP = 64;
+// A probe the *node* did not answer (`timeout` / transport `error`) says nothing about the contract,
+// so it is tried again on later sweeps before the contract is published as `unknown`. Out of gas and
+// revert are the contract's own answer and are final.
+export const CLASSIFY_ATTEMPTS = 3;
+
 export type MarketRegistryRuntime = {
   address: Address;
   deployBlock: number;
@@ -99,6 +109,10 @@ export type MarketRegistryRuntime = {
   // Addresses whose ERC-20 probe could not be answered (out of gas / timeout / transport error),
   // already reported as `agent_market_read_failed`. Once per address, not once per block.
   readFailuresReported: Set<string>;
+  // Contracts found by the CREATE scan that are waiting to be probed: the overflow past
+  // MAX_CLASSIFY_PER_SWEEP, and the ones whose probe the node did not answer (CLASSIFY_ATTEMPTS).
+  // Not yet in `seen`, so nothing about them is permanent until they are published.
+  classifyQueue: Array<{ address: Address; creator: Address; attempts: number }>;
   perBlockCap: number;
 };
 
@@ -174,6 +188,7 @@ export async function deployAgentMarketVenues(
     pending: [],
     seen: new Set(),
     readFailuresReported: new Set(),
+    classifyQueue: [],
     perBlockCap,
   };
 }
@@ -331,11 +346,35 @@ export async function sweepMarkets(
     }
   }
 
-  const fresh = created.filter(
-    (c) =>
-      !environmentAddresses.has(c.address.toLowerCase()) &&
-      !runtime.seen.has(entryKey(c.address, ZERO_BYTES32)),
+  const queued = new Set(
+    runtime.classifyQueue.map((c) => c.address.toLowerCase()),
   );
+  const candidates = [
+    ...runtime.classifyQueue,
+    ...created
+      .filter(
+        (c) =>
+          !environmentAddresses.has(c.address.toLowerCase()) &&
+          !runtime.seen.has(entryKey(c.address, ZERO_BYTES32)) &&
+          !queued.has(c.address.toLowerCase()),
+      )
+      .map((c) => ({ ...c, attempts: 0 })),
+  ];
+  const fresh = candidates.slice(0, MAX_CLASSIFY_PER_SWEEP);
+  runtime.classifyQueue = candidates.slice(MAX_CLASSIFY_PER_SWEEP);
+  if (runtime.classifyQueue.length > MAX_PENDING_ENTRIES) {
+    const dropped = runtime.classifyQueue.length - MAX_PENDING_ENTRIES;
+    runtime.classifyQueue = runtime.classifyQueue.slice(0, MAX_PENDING_ENTRIES);
+    logger.event({
+      type: "market_registration_dropped",
+      dropped,
+      backlog: MAX_PENDING_ENTRIES,
+      stage: "classify",
+      note:
+        "the backlog of contracts waiting for the ERC-20 probe exceeded its ceiling; the newest " +
+        "will not be published. They are still on chain and findable by anyone who scans for them.",
+    });
+  }
   if (fresh.length > 0) {
     const classified = await classifyContracts(
       publicClient,
@@ -343,6 +382,20 @@ export async function sweepMarkets(
     );
     for (let i = 0; i < fresh.length; i++) {
       const failure = classified[i].failure;
+      // The node, not the contract, failed to answer: try again on a later sweep rather than
+      // registering a kind that the registry then holds for good.
+      if (
+        failure &&
+        (failure.failure === "timeout" || failure.failure === "error") &&
+        fresh[i].attempts + 1 < CLASSIFY_ATTEMPTS
+      ) {
+        runtime.classifyQueue.push({
+          address: fresh[i].address,
+          creator: fresh[i].creator,
+          attempts: fresh[i].attempts + 1,
+        });
+        continue;
+      }
       // The probe ran the contract's own code and the contract did not answer within the cap (or
       // the node did not answer in time). The entry is still published, as `unknown`: the contract
       // exists and anyone scanning for it would find it. Said once per address -- the registry
