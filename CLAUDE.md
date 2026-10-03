@@ -335,6 +335,11 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   書き手は `core/src/segments.ts` の `segmentAgentRecord` / `segmentIndexAgent`、読み手は
   `dashboard/src/data/scenarioP.ts` の 1 本（**境界系列が agent を持つならそれが答え、
   「系列はあるが P が作れない」は「系列が無い」とは別**）
+- **参加者の登録は Discord の `/faucet` でも受け付ける**（`infra/discord-faucet/`。box 上の systemd ユーザーユニット）。
+  `register.sh` と同じ手順（検査 → 控え → `config/registrations.yaml` に追記 → `events.jsonl` で coordinator の判定 →
+  チェーンの残高）を box の中で行うので SSH も新しい入口も要らない。使えるのは参加者ロールを持つ人だけで、ロールは
+  参加登録スプレッドシートの Discord ユーザー名と定期的に同期する（規約 §2.7。付与のみで剥奪はしない）。
+  **1 アカウント 1 体**（`~/.local/state/ascon-faucet/claims.json`）。2 体目と同じ参加単位の紐付けは運営が `register.sh` で行う
 - **未登録の送信者も blocks.csv に残す**（role `external`、ownerId = 送信者アドレス小文字）。以前は
   「run の外の tx」として捨てていたが、試行環境ではそれが参加者の tx そのもので、「自分の tx は載ったか」に
   答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外
