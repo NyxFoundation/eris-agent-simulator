@@ -4,7 +4,8 @@
 # incomparable: `total` averages only the regimes an agent appeared in, so an agent present in one is
 # ranked on a fraction of the evidence against a differently sized z-pool (backtest warns about this).
 #
-# Every wallet is AUTO (keccak("auto-wallet:<seed>:<id>")), so the roster is self-contained and needs
+# Every wallet is AUTO (a key the environment makes from its own secret, core/src/walletKeys.ts), so
+# the roster is self-contained and needs
 # no AGENTn_PRIVATE_KEY on the box running it.
 #
 # Funding comes from the regime, not from here, and since issue #54 it is an ETH/BTC/USDC basket

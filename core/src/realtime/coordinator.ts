@@ -1,10 +1,14 @@
 import {
-  keccak256,
-  stringToBytes,
   type Address,
   type Hex,
   type PublicClient,
 } from "viem";
+import {
+  environmentKey,
+  WALLET_SECRET_FILE_ENV,
+  walletKeysRecord,
+  walletSecret,
+} from "../walletKeys.js";
 import { privateKeyForWalletName } from "../config.js";
 import { resolveRunInputs } from "../runConfig.js";
 import {
@@ -587,6 +591,13 @@ export async function runRealtimeSimulation(
   const scenarioKey = ensureScenarioKey();
   // Issue #186: the regime names the streams too, so calm#101 and crash#101 are different worlds.
   setScenarioRegime(config.scenarioRegime);
+  // Issue #189: the secret the wallet keys are derived from, resolved before any key is. It must not
+  // be the scenario key: that one is published after the results, and every key would be with it.
+  if (walletSecret().hex === scenarioKey.hex)
+    throw new Error(
+      `${WALLET_SECRET_FILE_ENV} holds the scenario key. The scenario key is published after the ` +
+        "results (ADR 0027 §3); the wallet secret never is. Make one with `npm run competition -- wallet-keygen`",
+    );
 
   // ADR 0020 §1 fail-fast. `resetUnit: scenario` describes a world per (regime, seed), and only the
   // scenario-matrix runner produces those -- it is the caller that resets between runs, not anything
@@ -757,6 +768,9 @@ export async function runRealtimeSimulation(
     // ADR 0027: which key the seed was realized under -- the public one, or the commitment to a
     // secret one. The seed alone no longer names the world.
     scenarioKey: scenarioKeyRecord(scenarioKey),
+    // Issue #189: where the environment's wallet keys came from -- a secret made by this process, or
+    // the practice period's file. Never the secret or a hash of it.
+    walletKeys: walletKeysRecord(),
     // Issue #186: the regime the streams were named by (empty = none, the pre-#186 streams).
     scenarioRegime: config.scenarioRegime,
     // ...and the version of that naming (sdk/src/rng.ts), so a stored run says which streams drew it.
@@ -896,7 +910,7 @@ export async function runRealtimeSimulation(
   for (const id of enabledIds) {
     for (const kind of ["informed", "uninformed"] as FlowKind[]) {
       const key = `${id}:${kind}`;
-      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
         id: `flow-${key}`,
         address: accountAddress(privateKey),
@@ -909,7 +923,7 @@ export async function runRealtimeSimulation(
   if (enabledIds.includes("aave")) {
     for (let i = 0; i < config.aaveFlowActorCount; i++) {
       const key = `aave:actor${i}`;
-      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
         id: `flow-${key}`,
         address: accountAddress(privateKey),
@@ -934,7 +948,7 @@ export async function runRealtimeSimulation(
   const whaleEvents = schedule.events.filter((e) => e.type === "whale");
   if (whaleEvents.length > 0) {
     const key = WHALE_WALLET_KEY;
-    const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+    const privateKey = environmentKey("flow", key);
     flowWalletMap.set(key, {
       id: `flow-${key}`,
       address: accountAddress(privateKey),
@@ -947,7 +961,7 @@ export async function runRealtimeSimulation(
   const launchEndowments = tokenLaunchEndowments(schedule);
   for (const e of launchEndowments) {
     for (const key of [e.launchKey, e.waveKey]) {
-      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
         id: `flow-${key}`,
         address: accountAddress(privateKey),
@@ -1342,12 +1356,9 @@ export async function runRealtimeSimulation(
       });
     }
 
-    // ---- stress victims (ADR 0009 §4): build seed-derived victims that make liquidation possible ----
+    // ---- stress victims (ADR 0009 §4): build victims that make liquidation possible ----
     // Victims are not included in agentRuntimes = not scored (a profit source for the liquidator agent).
-    const stressVictims: StressVictim[] = deriveStressVictims(
-      config.seed,
-      config.stressVictimCount,
-    );
+    const stressVictims: StressVictim[] = deriveStressVictims(config.stressVictimCount);
     let victimEnv: Record<string, string> | undefined;
     // Minimum victim HF right after setup (excluding the debt-free sentinel). Used for the crash calibration warning (§2).
     let minVictimHf0: number | null = null;
@@ -1766,10 +1777,7 @@ export async function runRealtimeSimulation(
     // Opened here, after the venue's oracle points at this run's PriceFeed, so the ICR they land
     // at is the one the chain computes. Not scored; the crash liquidates them (the Stability Pool's
     // work) and the eUSD depeg redeems against them (redemption arb's work).
-    const liquityVictims: LiquityVictim[] = deriveLiquityVictims(
-      config.seed,
-      config.stressLiquityVictimCount,
-    );
+    const liquityVictims: LiquityVictim[] = deriveLiquityVictims(config.stressLiquityVictimCount);
     let minLiquityVictimIcr0: number | null = null;
     let liquityVictimMcr: number | null = null;
     // Issue #59: when the regime declares the TCR it wants at the crash bottom, the cohort's
@@ -2975,6 +2983,7 @@ export async function runRealtimeSimulation(
         seed: config.seed,
         flowSeed: config.flowSeed,
         scenarioKey: scenarioKeyRecord(scenarioKey),
+        walletKeys: walletKeysRecord(),
         scenarioStreams: SCENARIO_STREAMS,
         rpcUrl: config.readRpcUrl,
         // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
