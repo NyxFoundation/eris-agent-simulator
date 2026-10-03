@@ -232,10 +232,18 @@ build_in_container() {
   for nm in node_modules core/node_modules sdk/node_modules; do
     if [ -d "$REPO/$nm" ]; then mounts+=( -v "$REPO/$nm:/build/$nm:ro" ); fi
   done
+  # Refused rather than skipped when it is absent. The only reason dashboard/node_modules exists is
+  # that the root asks for @types/node ^24 and the dashboard for ^26, so npm cannot hoist it; raise
+  # the root to ^26 and it disappears. Then the nearest node_modules to dashboard/vite.config.ts is
+  # the root one, which is mounted read-only, and the build goes back to the failure this copy
+  # exists to avoid -- silently, because `if [ -d ]` alone would just not copy. A build that cannot
+  # be done correctly should say so, not produce a stale dist for five minutes at a time.
   if [ -d "$REPO/dashboard/node_modules" ]; then
     cp -a "$REPO/dashboard/node_modules" "$WORK/dashboard/node_modules" ||
       die "could not copy dashboard/node_modules into the build export"
     rm -rf "$WORK/dashboard/node_modules/.vite-temp" "$WORK/dashboard/node_modules/.vite"
+  else
+    die "$REPO/dashboard/node_modules is missing. The container build needs a writable node_modules next to dashboard/vite.config.ts, because \`vite build\` writes the bundled config into its .vite-temp; with only the read-only root one in reach the build fails at config load. Run \`npm ci\` on the box (it creates this directory while the root and the dashboard disagree on @types/node), or build with ERIS_SYNC_BUILD=host."
   fi
 
   # Same hardening as infra/docker-agent/run-agent.sh where it applies: non-root, no privilege
