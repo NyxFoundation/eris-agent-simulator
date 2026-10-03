@@ -1,5 +1,8 @@
-// Uniswap V3 TickMath / LiquidityAmounts, ported to TypeScript for the liquidityPull stress event
-// (issue #52).
+// Uniswap V3 TickMath / LiquidityAmounts, ported to TypeScript. Two consumers: the liquidityPull
+// stress event (issue #52, below) and the LP valuation in protocols/uniswap.ts, which splits a
+// position's liquidity at slot0's exact sqrtPriceX96 with these functions (a float split at the
+// integer tick let a one-tick range at an absurd price mark ~$2,300 as ~$10^16). Lives in the sdk
+// because both the scorer and the agent-side observation use it.
 //
 // Why this exists: `decreaseLiquidity` takes a liquidity amount, but `increaseLiquidity` takes token
 // amounts and derives the liquidity from them. Putting back exactly the depth that was withdrawn
