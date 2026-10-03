@@ -134,6 +134,9 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
   coordinator は参加者が送れるチェーンでは起動を拒否する。非公開のリハーサルだけ。本番では書かない）
 - [ ] 参加者キーを発行し、gateway に読ませる:
   `infra/access/issue-key.sh --generate 8` → `infra/monitoring/.env` の `ASCON_KEYS_DIR`
+- [ ] 各キーに送信アドレスを紐付ける: `infra/access/issue-key.sh --bind team-001 0x…`（登録したアドレス）。
+  **紐付けの無いキーは読めるが送れない**（gateway が署名者を復元し、キーに紐付いたアドレス以外の
+  `eth_sendRawTransaction` を 403 にする。`--list` で確認）
 - [ ] seed: [README](README.md#install-once-on-the-box-that-hosts-it) のとおり `.env.practice` を作る
 - [ ] エピソードを 26h 用に作り直す: `npm run gen:practice-episodes -- --hours 26`
 - [ ] 長さの上書き（unit の drop-in）:

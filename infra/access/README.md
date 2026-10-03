@@ -34,6 +34,24 @@ Point the gateway at the digest map (`ASCON_KEYS_FILE` in `infra/monitoring/.env
 makes `X-ASCON-Key` mandatory — there is no separate enable flag, because a flag is a thing to
 forget and the cost of forgetting it is an open chain.
 
+### A key sends only from its bound addresses
+
+The gateway used to check the key and never who signed: any participant could submit a transaction
+signed by any private key they knew (one derived from a public seed, issue #189, or one of anvil's
+public test accounts) and trade as that address. `eth_sendRawTransaction` now recovers the signer and
+refuses, 403 `-32003`, one that is not bound to the caller's key:
+
+```sh
+infra/access/issue-key.sh --bind team-007 0x…      # the address they registered
+infra/access/issue-key.sh --unbind team-007 [0x…]  # drop one, or all of them
+infra/access/issue-key.sh --list                   # shows "sends from:" per key
+```
+
+A key with **no** binding reads but cannot send. An address can be bound to one key only. The
+binding lives in the same `rpc-keys.json` (`"senders": {"team-007": ["0x…"]}`), so it reloads with
+the keys. **Bind every participant's address before deploying this gateway version** -- until then
+their submissions are refused. `RPC_SENDER_CHECK=0` disables the check (internal gateways only).
+
 ### The four checks that mean it is working
 
 ```
@@ -129,6 +147,10 @@ $EDITOR config/registrations.yaml        # on the box: ~/workspace/eris-agent-si
 
 # 2. issue their service token
 infra/access/issue-token.sh alice        # -> ~/ascon-participant-tokens/alice.env (0600)
+
+# 2b. bind their X-ASCON-Key to the address from step 1 -- a key with no binding can read, but
+#     every eth_sendRawTransaction is 403 (the gateway recovers the signer; see above)
+infra/access/issue-key.sh --bind team-NNN 0x…   # the gateway re-reads within 15 s
 
 # 3. build the handout manifest — --public-rpc or it names *their* loopback, --from-run or it has
 #    no PriceFeed and no period start (the running period's own manifest; see docs/guide/practice-devnet.md)

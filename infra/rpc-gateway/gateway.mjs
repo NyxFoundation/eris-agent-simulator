@@ -12,12 +12,14 @@
 // Env: PORT (8546) UPSTREAM (http://127.0.0.1:8545) ENV_NAME (live) LOG_FILE (append; else stdout)
 //      RPC_KEYS_FILE (per-participant keys; setting it makes X-ASCON-Key mandatory)
 //      RPC_MAX_TX_GAS (30000000) RPC_MAX_PRIORITY_FEE_WEI (5000000000; 0 disables the fee cap only)
+//      RPC_SENDER_CHECK (1 with RPC_KEYS_FILE; 0 lets a key send from any address -- internal use only)
 import http from "node:http";
 import { createWriteStream, writeFileSync, renameSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { URL } from "node:url";
 
 import { feeRuleViolation, txFees, txGasLimit } from "./txGas.mjs";
+import { txSender } from "./txSender.mjs";
 
 const PORT = Number(process.env.PORT || 8546);
 const UPSTREAM = new URL(process.env.UPSTREAM || "http://127.0.0.1:8545");
@@ -59,8 +61,18 @@ let inFlight = 0, upstreamUp = 1;
 // unknown key must not quietly become an IP-keyed bucket with access to the chain.
 //
 // The file is re-read when its mtime changes, so revoking is a file edit, not a restart.
+//
+// The same file binds each participant id to the addresses it may SEND from:
+// `"senders": {"<participant id>": ["0x…", …]}` (issue-key.sh --bind). A key used to be enough to
+// submit a transaction signed by any key at all, so a participant who learned someone else's key --
+// derived from a public seed (issue #189), or one of anvil's public test accounts -- could trade as
+// them through this gateway. Now eth_sendRawTransaction recovers the signer and refuses (403) one
+// that is not bound to the caller's key. A key with no binding can read but not send. The
+// environment's own wallets never come through here (they talk to anvil directly), so this check
+// cannot touch them. RPC_SENDER_CHECK=0 turns it off for an internal gateway.
 const KEYS_FILE = process.env.RPC_KEYS_FILE || "";
 let keyMap = new Map();          // sha256(key) hex -> participant id
+let senderMap = new Map();       // participant id -> Set of lowercase 0x addresses
 let keysMtime = 0;
 let keyDenied = 0;
 
@@ -71,9 +83,22 @@ function loadKeys(reason) {
     if (st.mtimeMs === keysMtime) return;
     const doc = JSON.parse(readFileSync(KEYS_FILE, "utf8"));
     const next = new Map(Object.entries(doc.keys || {}));
+    const senders = new Map();
+    let badSenders = 0;
+    for (const [id, addrs] of Object.entries(doc.senders || {})) {
+      const set = new Set();
+      for (const a of Array.isArray(addrs) ? addrs : [addrs]) {
+        // A malformed entry is dropped, not fatal: it can only make its own participant unable to
+        // send, which they will report, whereas rejecting the file would freeze every revocation.
+        if (typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a)) set.add(a.toLowerCase()); else badSenders++;
+      }
+      senders.set(id, set);
+    }
     keysMtime = st.mtimeMs;
     keyMap = next;
-    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "keys_loaded", count: keyMap.size, reason });
+    senderMap = senders;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "keys_loaded", count: keyMap.size,
+      senders: [...senderMap.values()].reduce((n, s) => n + s.size, 0), badSenders: badSenders || undefined, reason });
   } catch (e) {
     // Keep serving with the keys already in memory. A truncated write (an operator mid-edit) must
     // not lock every participant out; a genuinely broken file surfaces as this line repeating.
@@ -246,6 +271,30 @@ function feeViolation(parsed) {
   return null;
 }
 
+// ---- sender check: a key sends only from the addresses bound to it (see KEYS_FILE above) ----
+const SENDER_CHECK = !!KEYS_FILE && (process.env.RPC_SENDER_CHECK ?? "1") !== "0";
+let senderDenied = 0;
+
+// The first submission in a request whose signer is not bound to `client`: { from, message }, or
+// null. Fails closed like the gas cap: a signer that cannot be recovered is refused.
+function senderViolation(parsed, client) {
+  if (!SENDER_CHECK) return null;
+  const allowed = senderMap.get(client);
+  const calls = Array.isArray(parsed) ? parsed : [parsed];
+  for (const c of calls) {
+    if (!c || !RAW_SEND_METHODS.has(c.method)) continue;
+    const raw = Array.isArray(c.params) ? c.params[0] : undefined;
+    const from = txSender(raw);
+    if (from === null)
+      return { from: "unreadable", message: "could not recover the transaction's signer; refusing it" };
+    if (!allowed || allowed.size === 0)
+      return { from, message: `no sending address is bound to this X-ASCON-Key; ask the operator to bind the address you registered` };
+    if (!allowed.has(from))
+      return { from, message: `signer ${from} is not an address bound to this X-ASCON-Key` };
+  }
+  return null;
+}
+
 const buckets = new Map();                                          // client -> {tokens, last}
 let rateLimited = 0;
 function allow(client, cost) {
@@ -300,6 +349,7 @@ function metricsText() {
   o += `# TYPE rpc_method_denied_total counter\nrpc_method_denied_total{${L}} ${methodDenied}\n`;
   o += `# TYPE rpc_params_denied_total counter\nrpc_params_denied_total{${L}} ${paramsDenied}\n`;
   o += `# TYPE rpc_key_denied_total counter\nrpc_key_denied_total{${L}} ${keyDenied}\n`;
+  o += `# TYPE rpc_sender_denied_total counter\nrpc_sender_denied_total{${L}} ${senderDenied}\n`;
   o += `# TYPE rpc_keys_loaded gauge\nrpc_keys_loaded{${L}} ${keyMap.size}\n`;
   return o;
 }
@@ -432,6 +482,17 @@ function handle(req, res, chunks) {
     logline({ ts: new Date().toISOString(), env: ENV_NAME, method: label, status: "rate_limited", client, ip });
     res.writeHead(429, { "content-type": "application/json" });
     return res.end(JSON.stringify({ jsonrpc: "2.0", id: (!isBatch && parsed && parsed.id) || null, error: { code: -32005, message: "rate limited" } }));
+  }
+
+  // sender check -> refuse a transaction signed by an address not bound to the caller's key. After
+  // the rate limit on purpose: recovering a signer is the one check here that costs real CPU (~1 ms),
+  // so a refused submission still spends the caller's tokens rather than the gateway's time for free.
+  const badSender = senderViolation(parsed, client);
+  if (badSender !== null) {
+    senderDenied++;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, method: "eth_sendRawTransaction", status: "sender_denied", from: badSender.from, client, ip });
+    res.writeHead(403, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ jsonrpc: "2.0", id: isBatch ? null : (parsed?.id ?? null), error: { code: -32003, message: badSender.message } }));
   }
 
   inFlight++;

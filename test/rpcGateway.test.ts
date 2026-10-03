@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { LATCH_CODE, rpc, startAnvil, startGateway } from "./helpers/localRpc.js";
 import { feeRuleViolation, txFees } from "../infra/rpc-gateway/txGas.mjs";
+import { keccak256 as keccakOf, txSender } from "../infra/rpc-gateway/txSender.mjs";
 
 test(
   "gateway seals pending transactions while preserving nonce seeding and mined reads",
@@ -382,5 +383,127 @@ test(
     );
     await rpc(upstream, "evm_mine");
     assert.equal(typeof (await rpc(gateway, "eth_estimateGas", [probe])).body.result, "string");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A key sends only from the addresses bound to it
+// ---------------------------------------------------------------------------
+//
+// The gateway checked the key, the method, the gas limit and the fees, and never who signed. So a
+// participant with a valid key could submit a transaction signed by any key they knew -- a key
+// derived from a public seed (issue #189), or one of anvil's public test accounts -- and trade as
+// that address. eth_sendRawTransaction now recovers the signer and refuses one not bound to the key.
+
+test("txSender recovers the signer of every envelope, and nothing from what it cannot read", async () => {
+  const { keccak256 } = await import("viem");
+  const { generatePrivateKey, privateKeyToAccount } = await import("viem/accounts");
+  const { randomBytes } = await import("node:crypto");
+  for (const n of [0, 1, 135, 136, 137, 1000]) {
+    const d = randomBytes(n);
+    assert.equal("0x" + keccakOf(d).toString("hex"), keccak256(d), `keccak of ${n} bytes`);
+  }
+  const account = privateKeyToAccount(generatePrivateKey());
+  const base = {
+    to: "0x0000000000000000000000000000000000000001",
+    value: 7n,
+    gas: 21_000n,
+    nonce: 3,
+    data: "0x" + "ab".repeat(200),
+  };
+  const txs: Record<string, unknown>[] = [
+    { ...base, type: "legacy", gasPrice: GWEI },   // pre-EIP-155 (v = 27/28)
+    { ...base, type: "legacy", gasPrice: GWEI, chainId: 31337 },
+    { ...base, type: "eip2930", gasPrice: GWEI, chainId: 42161, accessList: [{ address: base.to, storageKeys: ["0x" + "00".repeat(31) + "01"] }] },
+    { ...base, type: "eip1559", maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI, chainId: 31337 },
+    { ...base, type: "eip4844", maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI, maxFeePerBlobGas: 1n, chainId: 31337, blobVersionedHashes: ["0x01" + "00".repeat(31)] },
+    {
+      ...base, type: "eip7702", maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI, chainId: 31337,
+      authorizationList: [await account.signAuthorization({ chainId: 31337, nonce: 0, contractAddress: "0x0000000000000000000000000000000000000003" } as never)],
+    },
+  ];
+  for (const tx of txs) {
+    const raw = await account.signTransaction(tx as never);
+    assert.equal(txSender(raw), account.address.toLowerCase(), String(tx.type) + (tx.chainId ? "" : " pre-155"));
+    // A flipped byte inside the signed fields is a different signer, never the same one.
+    const tampered = raw.slice(0, 20) + (raw[20] === "0" ? "1" : "0") + raw.slice(21);
+    assert.notEqual(txSender(tampered), account.address.toLowerCase(), `${String(tx.type)} tampered`);
+  }
+  for (const junk of ["", "0x", "0x00", "0x05c0", "0x02c0", "0xc0", "zz", "0x02f8"]) assert.equal(txSender(junk), null, junk);
+});
+
+test(
+  "gateway refuses a raw tx signed by an address not bound to the caller's key",
+  { timeout: 20_000 },
+  async (t) => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createHash } = await import("node:crypto");
+    const { privateKeyToAccount } = await import("viem/accounts");
+    const OTHER = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a" as const;
+    const mine = privateKeyToAccount(KEY).address;
+    const theirs = privateKeyToAccount(OTHER).address;
+    const keyA = "ascon_test_key_alpha_0123456789";
+    const keyB = "ascon_test_key_bravo_0123456789";
+    const sha = (k: string) => createHash("sha256").update(k).digest("hex");
+    const keysFile = join(mkdtempSync(join(tmpdir(), "gw-keys-")), "rpc-keys.json");
+    writeFileSync(keysFile, JSON.stringify({
+      keys: { [sha(keyA)]: "team-001", [sha(keyB)]: "team-002" },
+      // team-002 has no binding: it may read, not send. The junk entry is dropped, not fatal.
+      senders: { "team-001": [mine, "not-an-address"] },
+    }));
+
+    const upstream = await startAnvil(t);
+    for (const a of [mine, theirs]) await rpc(upstream, "anvil_setBalance", [a, "0x3635c9adc5dea00000"]);
+    const gateway = await startGateway(t, upstream, { RPC_KEYS_FILE: keysFile }, { "x-ascon-key": keyA });
+    const as = (key: string) => ({ "x-ascon-key": key });
+    const fees = { type: "eip1559", maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI };
+    const sign = (pk: `0x${string}`, nonce: number) =>
+      privateKeyToAccount(pk).signTransaction({
+        to: "0x0000000000000000000000000000000000000001", value: 0n, gas: 21_000n, chainId: 31337, nonce, ...fees,
+      } as never);
+    const send = async (key: string, raw: string) => rpc(gateway, "eth_sendRawTransaction", [raw], as(key));
+
+    // Someone else's key, through my credential: refused before anvil sees it.
+    const spoof = await send(keyA, await sign(OTHER, 0));
+    assert.equal(spoof.status, 403);
+    assert.equal(spoof.body.error?.code, -32003);
+    assert.match(spoof.body.error?.message ?? "", new RegExp(`signer ${theirs.toLowerCase()} is not an address bound`));
+    assert.equal((await rpc(upstream, "eth_getTransactionCount", [theirs, "pending"])).body.result, "0x0");
+    // Also inside a batch.
+    const batch = await fetch(gateway, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...as(keyA) },
+      body: JSON.stringify([
+        { jsonrpc: "2.0", id: 1, method: "eth_sendRawTransaction", params: [await sign(KEY, 0)] },
+        { jsonrpc: "2.0", id: 2, method: "eth_sendRawTransaction", params: [await sign(OTHER, 0)] },
+      ]),
+    });
+    assert.equal(batch.status, 403);
+    // A key with no binding reads but does not send -- not even from an address nobody else holds.
+    assert.equal((await rpc(gateway, "eth_blockNumber", [], as(keyB))).status, 200);
+    const unbound = await send(keyB, await sign(OTHER, 0));
+    assert.equal(unbound.status, 403);
+    assert.match(unbound.body.error?.message ?? "", /no sending address is bound/);
+    // An unreadable submission is refused, not forwarded (by the gas cap, which reads it first).
+    assert.equal((await send(keyA, "0x05c0")).status, 403);
+
+    // My own address, through my key: forwarded.
+    const ok = await send(keyA, await sign(KEY, 0));
+    assert.equal(ok.status, 200);
+    assert.equal(typeof ok.body.result, "string");
+
+    const metrics = await (await fetch(`${gateway}/metrics`, { headers: as(keyA) })).text();
+    assert.match(metrics, /rpc_sender_denied_total\{[^}]+\} 3/);
+
+    // RPC_SENDER_CHECK=0 (an internal gateway) lets a key send from anywhere.
+    const open = await startGateway(t, upstream, { RPC_KEYS_FILE: keysFile, RPC_SENDER_CHECK: "0" }, as(keyB));
+    assert.equal((await rpc(open, "eth_sendRawTransaction", [await sign(OTHER, 0)], as(keyB))).status, 200);
+
+    await rpc(upstream, "evm_mine");
+    const block = (await rpc(upstream, "eth_getBlockByNumber", ["latest", false])).body
+      .result as { transactions: string[] };
+    assert.equal(block.transactions.length, 2);
   },
 );

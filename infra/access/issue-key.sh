@@ -4,7 +4,13 @@
 #   ./issue-key.sh --generate 120 [--out <keys.json>]   mint N keys + the gateway's lookup file
 #   ./issue-key.sh --add 380                            mint N more, keeping every existing key
 #   ./issue-key.sh --revoke team-007                    drop one (the gateway re-reads within 15 s)
+#   ./issue-key.sh --bind team-007 0xAbC…               let that key send from that address
+#   ./issue-key.sh --unbind team-007 [0xAbC…]           drop one binding (or all of the key's)
 #   ./issue-key.sh --list
+#
+# A key can READ with no binding, but eth_sendRawTransaction is refused (403) unless the signer is
+# an address bound to the key -- otherwise any participant could send as any address whose private
+# key they happened to know. Bind the address the participant registered (config/registrations.yaml).
 #
 # Why not Cloudflare Access service tokens: they cap at 50 per account. Measured 2026-09-21 — with
 # 50 in existence the 51st create fails `org_has_exceeded_allowed_token_count`, and revoking one
@@ -24,7 +30,7 @@ PREFIX="${ASCON_KEY_PREFIX:-team}"
 sha() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
 die() { echo "error: $*" >&2; exit 1; }
 
-case "${1:-}" in ""|-h|--help) sed -n '2,20p' "$0"; exit 0;; esac
+case "${1:-}" in ""|-h|--help) sed -n '2,26p' "$0"; exit 0;; esac
 # --out is accepted anywhere, not only first: an option that silently does nothing when it is in
 # the "wrong" place writes live credentials to a path the operator did not choose.
 ARGS=()
@@ -42,8 +48,9 @@ case "${1:-}" in
 import json,sys
 d=json.load(open('$OUT'))
 k=d.get('keys',{})
+s=d.get('senders',{})
 print(f'{len(k)} keys in $OUT')
-for h,i in sorted(k.items(), key=lambda kv: kv[1]): print(f'  {i:16} sha256={h[:16]}…')"
+for h,i in sorted(k.items(), key=lambda kv: kv[1]): print(f'  {i:16} sha256={h[:16]}…  sends from: ' + (', '.join(s.get(i,[])) or '(none: read-only)'))"
     exit $? ;;
   --revoke)
     [ -n "${2:-}" ] || die "usage: $0 --revoke <participant-id>"
@@ -55,9 +62,43 @@ d=json.load(open(path)); k=d.get("keys",{})
 hit=[h for h,i in k.items() if i==pid]
 if not hit: sys.exit(f"no key for {pid}")
 for h in hit: del k[h]
+d.get("senders",{}).pop(pid, None)
 json.dump(d, open(path,"w"), indent=1, ensure_ascii=False)
 print(f"revoked {pid} ({len(hit)} key(s)); the gateway re-reads within 15 s")
 PY
+    exit $? ;;
+  --bind|--unbind)
+    [ -n "${2:-}" ] || die "usage: $0 $1 <participant-id> <address>"
+    [ "$1" = --unbind ] || [ -n "${3:-}" ] || die "usage: $0 --bind <participant-id> <address>"
+    [ -f "$OUT" ] || die "no keys file at $OUT"
+    python3 - "$OUT" "$1" "$2" "${3:-}" <<'BINDPY'
+import json, re, sys
+path, op, pid, addr = sys.argv[1:5]
+d = json.load(open(path))
+if pid not in d.get("keys", {}).values(): sys.exit(f"no key for {pid}")
+senders = d.setdefault("senders", {})
+mine = senders.get(pid, [])
+if op == "--bind":
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", addr): sys.exit(f"not an address: {addr}")
+    addr = addr.lower()
+    # One address, one key: the gateway attributes and rate-limits by key, so an address two keys
+    # could send from would be traded by whichever of them holds its private key.
+    other = [i for i, a in senders.items() if i != pid and addr in a]
+    if other: sys.exit(f"{addr} is already bound to {other[0]}; --unbind it there first")
+    if addr not in mine: mine.append(addr)
+    senders[pid] = mine
+else:
+    if addr:
+        addr = addr.lower()
+        if addr not in mine: sys.exit(f"{addr} is not bound to {pid}")
+        mine.remove(addr)
+    else:
+        mine = []
+    if mine: senders[pid] = mine
+    else: senders.pop(pid, None)
+json.dump(d, open(path, "w"), indent=1, ensure_ascii=False)
+print(f"{pid} sends from: {', '.join(senders.get(pid, [])) or '(none: read-only)'}; the gateway re-reads within 15 s")
+BINDPY
     exit $? ;;
   --add)
     N="${2:?usage: $0 --add <count>}"

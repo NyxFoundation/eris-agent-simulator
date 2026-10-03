@@ -17,10 +17,15 @@ export async function freePort(): Promise<number> {
   return address.port;
 }
 
-export async function rpc(url: string, method: string, params: unknown[] = []) {
+export async function rpc(
+  url: string,
+  method: string,
+  params: unknown[] = [],
+  headers: Record<string, string> = {},
+) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify({ jsonrpc: "2.0", id: 0, method, params }),
     signal: AbortSignal.timeout(2000),
   });
@@ -40,6 +45,7 @@ async function start(
   args: string[],
   url: string,
   env = process.env,
+  headers: Record<string, string> = {},
 ) {
   const child = spawn(command, args, {
     env,
@@ -62,7 +68,7 @@ async function start(
     if (child.exitCode !== null)
       throw new Error(`${command} exited: ${output}`);
     try {
-      const reply = await rpc(url, "eth_chainId");
+      const reply = await rpc(url, "eth_chainId", [], headers);
       if (reply.status === 200 && reply.body.result) return child;
     } catch (e) {
       if (!(e instanceof TypeError) && !(e instanceof DOMException)) throw e;
@@ -101,6 +107,8 @@ export async function startGateway(
   t: TestContext,
   upstream: string,
   overrides: NodeJS.ProcessEnv = {},
+  // Sent with the readiness probe: a gateway with RPC_KEYS_FILE answers 403 without a key.
+  headers: Record<string, string> = {},
 ) {
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
@@ -115,10 +123,13 @@ export async function startGateway(
     RPC_METHOD_DENY: undefined,
     // And the production fee cap (5 gwei), whatever the shell exports.
     RPC_MAX_PRIORITY_FEE_WEI: undefined,
+    // No keys (so no sender check) unless a test passes them.
+    RPC_KEYS_FILE: undefined,
+    RPC_SENDER_CHECK: undefined,
     LOG_FILE: "",
     METRICS_FILE: "",
     ...overrides,
-  });
+  }, headers);
   return url;
 }
 

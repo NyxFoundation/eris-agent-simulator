@@ -36,7 +36,8 @@ this column tells you who called what, when.
 `PORT` (8546) · `UPSTREAM` (http://127.0.0.1:8545) · `ENV_NAME` (live|test) · `LOG_FILE` · `METRICS_FILE` ·
 `RPC_MAX_TX_GAS` (30000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — these two are the
 [transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule) ·
-`RPC_MAX_PARAM_DEPTH` (64) · `RPC_MAX_PARAM_NODES` (100000) — the [request shape limit](#request-shape-limit).
+`RPC_MAX_PARAM_DEPTH` (64) · `RPC_MAX_PARAM_NODES` (100000) — the [request shape limit](#request-shape-limit) ·
+`RPC_KEYS_FILE` · `RPC_SENDER_CHECK` (1) — the [sender check](#sender-check-a-key-sends-only-from-its-bound-addresses).
 Runs as the `rpc-gateway-live` service in `infra/monitoring/docker-compose.yml` (host-net,
 `restart: unless-stopped`); `rpc-gateway-test` (compose profile `test`) is ready for a second env.
 
@@ -222,5 +223,27 @@ another way is flagged after the run from `blocks.csv` (`core/src/postRunCheck.t
 Under the economic gas profile (ADR 0011 §2) set `RPC_MAX_PRIORITY_FEE_WEI=0`: that retires the cap,
 not the maxFeePerGas half, which has no switch. `npm run check:ordering -- --live` reports which field
 a chain's builder sorts on (run it against the node: its overbid probe is exactly what this refuses).
+
+Reproduce with `node --import tsx --test test/rpcGateway.test.ts`.
+
+## Sender check: a key sends only from its bound addresses
+
+With `RPC_KEYS_FILE` set, every `eth_sendRawTransaction` (and `eth_sendRawTransactionSync`) has its
+signer recovered (`txSender.mjs`: keccak-256 and secp256k1 recovery in BigInt, ~1 ms per transaction,
+because Node's crypto has neither) and is refused with HTTP 403 + JSON-RPC `-32003` unless the signer is
+an address bound to the caller's key. A batch is refused whole. A signature that cannot be recovered is
+refused (fail closed, like the gas cap). Counted in `rpc_sender_denied_total`; the log line carries the
+recovered `from`.
+
+Before this, the key said *who* was calling and nothing tied that to *what they signed*: a participant
+with a valid key could send a transaction signed by any private key they knew -- one derived from a
+public seed (issue #189) or one of anvil's public test accounts -- and trade as that address.
+
+The binding is in the keys file, `"senders": {"<participant id>": ["0x…"]}`, written by
+`infra/access/issue-key.sh --bind <id> <address>` and reloaded with the keys (15 s). A key with no
+binding can read but not send. The check runs **after** the rate limit, so a refused submission still
+costs the caller's tokens. The environment's own wallets (oracle, keeper, flow, setup) talk to anvil
+directly and never pass through here. Without `RPC_KEYS_FILE` there is no identity to bind and the check
+is off; `RPC_SENDER_CHECK=0` turns it off with keys (an internal gateway).
 
 Reproduce with `node --import tsx --test test/rpcGateway.test.ts`.

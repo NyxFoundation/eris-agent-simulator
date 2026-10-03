@@ -196,6 +196,7 @@ curl -fsS -o manifest.json https://ascon-dash.nyx.foundation/runs/manifest.json
 | 症状 | 確認すること |
 |---|---|
 | `403` / `missing or unknown X-ASCON-Key` | キーの綴り。発行直後なら1分ほど待つ |
+| `403` / `signer 0x… is not an address bound to this X-ASCON-Key` / `no sending address is bound` | 送信できるのは登録したアドレスで署名した取引だけです。署名鍵が §4 で投稿したアドレスのものか確認し、違えば登録アドレスを添えてご連絡ください |
 | `403`（HTMLが返る） | `CF-Access-*` の2つが付いているか |
 | `403 method not permitted` | §6 の表。そのメソッドは意図的に塞いでいます |
 | `429` | レート上限。間隔を空けてください |
