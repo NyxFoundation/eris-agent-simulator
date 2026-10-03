@@ -140,7 +140,7 @@ For every agent it launches, the coordinator prepares a view directory,
 | `/eris/run` (= `ERIS_RUN_DIR`) | `runs/<id>/agent-view/<agentId>/` | read-only |
 | `/eris/run/agents/<agentId>.jsonl` | `runs/<id>/agents/<agentId>.jsonl` | read-write |
 | `/eris/run/agents/<agentId>.llm.jsonl` | the same file under `runs/<id>/agents/`, only with `ERIS_IMPROVE_LOG_CALLS=1` | read-write |
-| `/eris/run/disclosures` | `runs/<id>/disclosures/`, only when the run publishes any (ADR 0014) | read-only |
+| `/eris/run/disclosures` | `runs/<id>/disclosures/`, in every run (empty until a vuln pool appears, so its presence does not name the regime; ADR 0014 Amendment 2) | read-only |
 | `/eris/state` | the agent's persistent area, when the run provides one (below) | read-write |
 | `/tmp` | tmpfs, 512 MiB, per container, gone at exit | read-write |
 

@@ -16,6 +16,7 @@ import { resolve } from "node:path";
 import {
   createPublicClient,
   createWalletClient,
+  encodeDeployData,
   http,
   type Abi,
   type Address,
@@ -127,24 +128,29 @@ test("ADR 0014 vuln pools: skim / honest / dry-run detection (requires anvil)", 
     const erc20 = artifact("MockERC20").abi;
     const base = await deploy("MockERC20", ["Wrapped Ether", "WETH", 18]);
     const usdc = await deploy("MockERC20", ["USD Coin", "USDC", 6]);
-    const factory = await deploy("VulnPoolFactory", []);
+    const factory = await deploy("VulnPoolFactory", [account.address]);
     const factoryAbi = artifact("VulnPoolFactory").abi;
 
     const feeBps = 30;
     const rugThreshold = 1_000_000_000n; // 1,000 USDC (6 decimals)
     const rugBps = 5000; // 50% skim
 
-    // createSimplePool / createRiggedPool (obtain the pool address from PoolCreated)
+    // Both kinds through the one entry point, createPool(initCode) (obtain the pool address from PoolCreated).
+    // The creating calldata used to name the kind (createSimplePool / createRiggedPool) and carry the skim
+    // parameters as plain arguments; now it is the init code, i.e. what getCode shows once the pool exists.
+    const createInputs: Hex[] = [];
     const createPool = async (
-      fn: string,
+      name: string,
       args: unknown[],
     ): Promise<Address> => {
+      const { abi, bytecode } = artifact(name);
       const hash = await wallet.writeContract({
         address: factory,
         abi: factoryAbi,
-        functionName: fn,
-        args: args as never,
+        functionName: "createPool",
+        args: [encodeDeployData({ abi, bytecode, args } as never)] as never,
       });
+      createInputs.push((await pub.getTransaction({ hash })).input);
       const rc = await pub.waitForTransactionReceipt({ hash });
       // PoolCreated(pool indexed, token0 indexed, token1 indexed, feeBps)
       const log = rc.logs.find(
@@ -153,14 +159,33 @@ test("ADR 0014 vuln pools: skim / honest / dry-run detection (requires anvil)", 
       if (!log) throw new Error("no PoolCreated log");
       return `0x${log.topics[1]!.slice(26)}` as Address;
     };
-    const simple = await createPool("createSimplePool", [base, usdc, feeBps]);
-    const rigged = await createPool("createRiggedPool", [
+    const simple = await createPool("SimpleAMM", [base, usdc, feeBps]);
+    const rigged = await createPool("RiggedAMM", [
       base,
       usdc,
       feeBps,
       rugThreshold,
       rugBps,
     ]);
+    assert.equal(
+      createInputs[0].slice(0, 10),
+      createInputs[1].slice(0, 10),
+      "both kinds are created through the same selector",
+    );
+    // Only the owner creates.
+    const other = privateKeyToAccount(
+      "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+    );
+    await assert.rejects(
+      pub.simulateContract({
+        address: factory,
+        abi: factoryAbi,
+        functionName: "createPool",
+        args: ["0x"] as never,
+        account: other,
+      }),
+      /not owner/,
+    );
 
     // load identical reserves into both pools (price 3000; deep, so slippage is minimal).
     const reserveBase = 1000n * 10n ** 18n; // 1000 WETH

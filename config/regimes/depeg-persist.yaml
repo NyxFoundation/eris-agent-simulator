@@ -38,7 +38,9 @@ run:
   seconds: 1800 # a stress run ends by block count (ADR 0009); must stay well above 360 x 2 = 720s
   blockTimeSec: 2 # fixed to the regime (ADR 0016 §2)
   # curve is not optional: it owns the stableSwap action, which is the only way to trade the pair.
-  protocols: [uniswap, balancer, curve, aave, lst, liquity]
+  # gmx was missing here and in depeg alone: an epoch whose observation had no GMX section was one
+  # of the two depeg regimes, readable at the first block (test/regimeStartInvariance.test.ts).
+  protocols: [uniswap, balancer, curve, gmx, aave, lst, liquity]
   economicGas: false
   localDeploy: true # the DAI/USDC pool is one the deployer seeded; a fork has no such thing
   reportDir: ./runs
@@ -133,6 +135,16 @@ stress:
         decayBlocks: 0, # persist: no decay -- the level holds to the last scoring block
         persist: true,
       }
+
+# On in every official regime, not only `launch`: the agent's config carries this section and the
+# runtime is handed the registry's address, so a regime that left it off would be told apart from
+# `launch` at the first block (and a participant could probe it by deploying a token and watching
+# whether it gets listed). Same values as launch.yaml; test/regimeStartInvariance.test.ts holds them equal.
+agentMarkets:
+  enabled: true
+  registrationsPerBlock: 8
+  maxTxGas: "30000000"
+  maxAgentBlockGas: "30000000"
 
 agents:
   - id: noop

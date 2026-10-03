@@ -288,7 +288,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `ERIS_SCENARIO_KEY_FILE`（`npm run competition -- keygen` で作った鍵ファイルのパス）が無い・読めないと起動しない。
   **財布の秘密も同じ**（issue #189）: `ERIS_WALLET_SECRET_FILE`（`npm run competition -- wallet-keygen`）が無いと起動しない
 - **環境が作る財布の鍵は seed から作らない**（issue #189。`core/src/walletKeys.ts`）。AUTO agent・flow / whale /
-  launch・Aave / Liquity victim・check:ordering / stress:rpc のプローブは全部 `environmentKey(kind, id)` =
+  launch・Aave / Liquity victim・vuln プールの owner（`vuln-pools`）・check:ordering / stress:rpc のプローブは全部 `environmentKey(kind, id)` =
   `HMAC-SHA256(secret, ["eris-wallet/v1", kind, id])`。以前は `keccak("auto-wallet:<seed>:<id>")` 等で、自分の AUTO 鍵から
   seed を総当たりで逆算でき、そこから他の agent・環境ウォレットの鍵が全部計算できた（ゲートウェイは送信者を検査しない）。
   secret は**既定でプロセスごとの乱数**（どこにも書かない。run・同一プロセスの行列内では同じアドレス、次のプロセスで変わる）、
@@ -1093,11 +1093,23 @@ gas 予算など、ランタイムが読むフィールドを coordinator の解
 agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimConfig` にフィールドを足したら
 `test/agentView.test.ts` がどちら側かを決めさせる。
 - **docker の image モードで mount するのは view ディレクトリ（読取専用、`/eris/run` = `ERIS_RUN_DIR`）と自分のログ
-  ファイルだけ**（`agents/<id>.jsonl`、`ERIS_IMPROVE_LOG_CALLS=1` なら `.llm.jsonl`、vuln run は `disclosures/` 読取専用）。
+  ファイルだけ**（`agents/<id>.jsonl`、`ERIS_IMPROVE_LOG_CALLS=1` なら `.llm.jsonl`、`disclosures/` 読取専用 = 全 run）。
   ログはファイル単位の bind mount なので、host 側は従来どおり `runs/<id>/agents/<id>.jsonl`（dashboard の live tail・
   agents-ready・post-run check は無変更）。ro mount の中の mountpoint は事前に要るので wrapper が空ファイルを作る
 - **例外 2 つはディレクトリ mount のまま**: segmented period（segment が回るので期間ディレクトリ。警告に出る）と
   `ERIS_AGENT_VIEW_DIR` の無い起動
+- **開始時に見えるものはレジームで変えない**（`test/regimeStartInvariance.test.ts`）。agent は最初の価格が動く前に
+  config と env を読むので、レジームごとに違うものはレジームを名指す。以前は 4 本が開始時に分かった（registry の
+  アドレス = launch / vuln factory = vuln / victim の一覧 = lending-incident・cdp-incident。後ろ 2 本は「暴落が来る」
+  なので block 0 で USDC に替えれば勝てた）。さらに depeg と depeg-persist だけ `run.protocols` に gmx が無く、
+  観測に GMX 節が無ければ depeg 系と分かった（このテストで発見して追加）。今は **公式 12 本すべて `agentMarkets.enabled: true`**、
+  **vuln factory・その owner（`vuln-pools` 財布、全 run で同額のガス）・`disclosures/`・`ERIS_VULN_*` は全 run**（プールは窓で
+  `createPool(initCode)` 1 本で deploy = ADR 0014 Amendment 2。以前は setup で全部 deploy し、作成 selector が正解を名指していた）。
+  agent に渡す追加 env の形は `core/src/realtime/agentEnv.ts` が config から決め、coordinator は起動前に照合して違えば落ちる。
+  **victim の一覧（`ERIS_LIQUIDATION_VICTIMS` / `ERIS_LIQUITY_VICTIMS`）だけは既知の例外**: env を消しても victim は block 0 から
+  チェーン上に見える（Aave の HF 1.10 の借り手、`SortedTroves.getLast()` の ICR 1.20）ので、塞ぐには全レジームに victim を
+  置く（デコイ）必要があり、レジームの意味が変わるので別に決める。もう 1 つの既知の穴は vuln プールのソースが公開 repo に
+  あること（bytecode の骨格で照合できる）
 - **bind-mount モードと `--agent-sandbox process` は隔離境界ではない**（repo / host のファイルが全部見える）
 自己改善型は `ERIS_IMPROVE_LOG_CALLS: "1"`（ロスターの env）で LLM との生の対話（system 全文・送信
 messages・生応答・エラー）を `agents/<agentId>.llm.jsonl` に残せる（opt-in。プロンプト調整の一次情報）。
