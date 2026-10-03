@@ -1,4 +1,5 @@
 import {
+  erc20Abi,
   keccak256,
   stringToBytes,
   type Address,
@@ -103,6 +104,7 @@ import {
   baseTokens,
   gmxMarketAddresses,
   tokenInfo,
+  tokenRegistry,
 } from "@eris/sdk/markets.js";
 import {
   buildFlowContext,
@@ -185,6 +187,7 @@ import {
   LIVE_WEEK_OVERRIDE,
   LiveWeekRefusal,
   liveWeekRefusals,
+  publicAccountRefusal,
 } from "./liveWeek.js";
 import type { RealtimeConfig } from "../config.js";
 import {
@@ -1136,6 +1139,15 @@ export async function runRealtimeSimulation(
     } else {
       await setEthBalance(publicClient, accountAddress(adminPk), GAS_ONLY_WEI);
       await setEthBalance(publicClient, accountAddress(keeperPk), GAS_ONLY_WEI);
+      // The registrar's gas, which it used to get from anvil's genesis allocation (SETUP_PRIVATE_KEY
+      // defaults to anvil account 9). The backtest anvil starts with no genesis accounts, so the
+      // environment funds every key it signs with, like admin and keeper above.
+      if (config.agentMarkets)
+        await setEthBalance(
+          publicClient,
+          accountAddress(config.privateKeys.setup),
+          GAS_ONLY_WEI,
+        );
     }
     for (const adapter of adapters) {
       if (adapter.setupGlobal) await adapter.setupGlobal(ctx);
@@ -2194,6 +2206,24 @@ export async function runRealtimeSimulation(
           "agents run as plain child processes: no CPU/memory caps, no egress control and the " +
           "operator's filesystem (rules §2.3 are not enforced here, and this is not an isolation boundary)",
       });
+    }
+    // The live week's one check that reads the chain (liveWeek.ts): after funding, before any agent
+    // starts. Every epoch, because each one starts from the reverted snapshot.
+    if (overrides[LIVE_WEEK_OVERRIDE] === "1") {
+      const refusal = await publicAccountRefusal(
+        {
+          eth: (address) => publicClient.getBalance({ address }),
+          erc20: (token, address) =>
+            publicClient.readContract({
+              address: token,
+              abi: erc20Abi,
+              functionName: "balanceOf",
+              args: [address],
+            }),
+        },
+        Object.values(tokenRegistry()),
+      );
+      if (refusal) throw new LiveWeekRefusal([refusal]);
     }
     // What every launched agent is handed instead of the coordinator's config (agentView.ts): the
     // same file for all of them, one copy per view directory.
