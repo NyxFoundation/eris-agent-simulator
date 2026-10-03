@@ -1014,10 +1014,16 @@ const en = {
     "Participant guide",
   "overview.links.updatesDoc":
     "Environment updates",
-  "updates.toc":
-    "On this page",
-  "updates.source":
-    "This page is docs/competition-updates.md in the repository. Open it there.",
+  "updates.title":
+    "Environment updates",
+  "updates.lede":
+    "The participant guide always describes the current environment. These entries are the diff, newest first, for anyone who has already read it.",
+  "updates.empty":
+    "No updates yet.",
+  "updates.backToIndex":
+    "All updates",
+  "updates.notFound":
+    "No update with that date",
   "nav.updates":
     "Updates",
   "overview.links.repo":
@@ -2129,10 +2135,16 @@ const ja: Record<MessageKey, string> = {
     "参加者ガイド",
   "overview.links.updatesDoc":
     "環境の更新履歴",
-  "updates.toc":
-    "このページの見出し",
-  "updates.source":
-    "このページの本文は、リポジトリの docs/competition-updates.md です。元のファイルを開く。",
+  "updates.title":
+    "環境の更新履歴",
+  "updates.lede":
+    "参加者ガイドは常に最新の環境を書いています。ここは、すでにガイドを読んだ方のための差分を、新しい順に並べたものです。",
+  "updates.empty":
+    "まだ更新はありません。",
+  "updates.backToIndex":
+    "更新履歴の一覧",
+  "updates.notFound":
+    "その日付の更新はありません",
   "nav.updates":
     "更新履歴",
   "overview.links.repo":

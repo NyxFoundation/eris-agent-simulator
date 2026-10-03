@@ -6,7 +6,8 @@
 // environment. So the test renders the real file and asserts that nothing is left as markup.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   headings,
@@ -17,8 +18,16 @@ import {
   type Inline,
 } from "../dashboard/src/data/markdownDoc.js";
 
-const docs = (name: string): string =>
-  readFileSync(fileURLToPath(new URL(`../docs/${name}`, import.meta.url)), "utf8");
+const UPDATES = fileURLToPath(new URL("../docs/updates", import.meta.url));
+
+/** Every dated entry in docs/updates/, which is what the dashboard enumerates. */
+function entryFiles(): string[] {
+  return readdirSync(UPDATES)
+    .filter((f) => /^\d{4}-\d{2}-\d{2}(\.en)?\.md$/.test(f))
+    .sort();
+}
+
+const docs = (name: string): string => readFileSync(join(UPDATES, name), "utf8");
 
 function plain(nodes: Inline[]): string {
   return nodes
@@ -85,7 +94,7 @@ test("a table, a fenced block and a list each parse as themselves", () => {
   assert.equal((blocks[3] as Extract<Block, { kind: "list" }>).ordered, true);
 });
 
-for (const name of ["competition-updates.md", "competition-updates.en.md"]) {
+for (const name of entryFiles()) {
   test(`${name} renders with no markup left as text`, () => {
     const src = docs(name);
     const blocks = parseMarkdown(src);
@@ -109,25 +118,41 @@ for (const name of ["competition-updates.md", "competition-updates.en.md"]) {
         return false;
       }
       if (inFence) return false;
+      // Top-level prose only. An indented line continues a list item, which the parser folds into
+      // that item rather than into a paragraph.
       return (
-        l.trim().length > 0 &&
         !l.startsWith("#") &&
         !l.trimStart().startsWith("|") &&
-        !/^\s*[-*\d]/.test(l)
+        !/^\s*[-*\d]/.test(l) &&
+        !/^\s+\S/.test(l)
       );
     });
-    assert.ok(prose.length > 5, "the fixture should have prose to check");
-    for (const line of prose.slice(0, 40)) {
-      const stripped = plain(parseInline(line.trim()));
+    // By paragraph, not by line: the English document is hard-wrapped, so a `**` span can open on
+    // one line and close on the next, and a line on its own is not something the renderer ever sees.
+    const paragraphs: string[] = [];
+    let current: string[] = [];
+    for (const line of prose) {
+      if (line.trim().length === 0) {
+        if (current.length > 0) paragraphs.push(current.join(" "));
+        current = [];
+      } else current.push(line.trim());
+    }
+    if (current.length > 0) paragraphs.push(current.join(" "));
+
+    assert.ok(paragraphs.length > 5, "the fixture should have prose to check");
+    for (const para of paragraphs.slice(0, 30)) {
+      const stripped = plain(parseInline(para));
       assert.ok(out.includes(stripped), `missing from the page: ${stripped.slice(0, 60)}`);
     }
 
     // The dated entries carry the page's table of contents, and their anchors have to be distinct.
-    const h2 = headings(blocks).filter((h) => h.level === 2);
-    assert.ok(h2.length >= 1, "no dated entry found");
-    const slugs = h2.map((h) => slug(h.text));
-    assert.equal(new Set(slugs).size, slugs.length, "two entries share an anchor");
-    assert.ok(slugs.every((x) => x.length > 0), "an entry has an empty anchor");
+    // Each entry file carries one `#` title and its sections below it; the anchors have to be
+    // distinct so a link can point into a section.
+    const hs = headings(blocks);
+    assert.equal(hs.filter((h) => h.level === 1).length, 1, "an entry has one title");
+    const slugs = hs.map((h) => slug(h.text));
+    assert.equal(new Set(slugs).size, slugs.length, "two headings share an anchor");
+    assert.ok(slugs.every((x) => x.length > 0), "a heading has an empty anchor");
   });
 }
 
@@ -144,16 +169,16 @@ test("the real document renders to HTML with its tables, lists and code intact",
   const { MarkdownView } = await import("../dashboard/src/components/markdownView.js");
   const { createElement } = await import("react");
 
-  const blocks = parseMarkdown(docs("competition-updates.md"));
+  const blocks = parseMarkdown(docs("2026-10-05.md"));
   const html = renderToStaticMarkup(createElement(MarkdownView, { blocks }));
 
   // The structures, not the styling: each one is a thing the subset has to produce.
-  for (const tag of ["<table", "<thead", "<tbody", "<td", "<ol", "<ul", "<li", "<pre", "<code", "<strong", "<h2"]) {
+  for (const tag of ["<table", "<tbody", "<td", "<ol", "<ul", "<li", "<pre", "<code", "<strong", "<h2"]) {
     assert.ok(html.includes(tag), `no ${tag} in the rendered page`);
   }
   // A heading carries its anchor, so a link into a section works.
-  const h2 = headings(blocks).filter((h) => h.level === 2);
-  assert.ok(html.includes(`id="${slug(h2[0].text)}"`), "a dated entry has no anchor");
+  const h1 = headings(blocks).filter((h) => h.level === 1);
+  assert.ok(html.includes(`id="${slug(h1[0].text)}"`), "the entry title has no anchor");
   // Content that must survive escaping and nesting: a measured number inside a table cell, and a
   // command inside a fenced block under a numbered list.
   assert.ok(html.includes("687,584.67"), "a measured figure is missing");

@@ -8,7 +8,7 @@ The rules themselves live at [ascon.dev/rules](https://ascon.dev/rules) and are 
 them; the Japanese text governs. Where this guide and the rules disagree, the rules win. This guide
 only covers how to build. The [Japanese version](competition-start.md) governs this guide too; this
 one is a reference translation. This guide always describes the current environment; **if you have
-read it already, the [environment updates](competition-updates.en.md) page carries the diff.**
+read it already, the [environment updates](updates/README.en.md) page carries the diff.**
 
 **You need**: Node.js 20 or newer, [Foundry](https://book.getfoundry.sh/getting-started/installation)
 (`forge` and `anvil`), `git`, and `zip` (used to build the submission archive).
@@ -1076,7 +1076,7 @@ scored. A position you cannot close is valued as a position you cannot close.
 | Document | Contents |
 |---|---|
 | [ascon.dev/rules](https://ascon.dev/rules) | **the rules themselves** (the only source) |
-| [competition-updates.en.md](competition-updates.en.md) | environment updates (the diff against this guide) |
+| [updates/](updates/README.en.md) | environment updates (the diff against this guide, one file per entry) |
 | [writing-agents.md](guide/writing-agents.md) | strategy authoring in depth; every field of `obs` |
 | [protocols-and-actions.md](guide/protocols-and-actions.md) | the action catalogue per venue |
 | [llm-agents.md](guide/llm-agents.md) | how self-improvement works and how to configure a backend |

@@ -233,7 +233,7 @@ export function guideUrl(locale: Locale): string {
  * Markdown page, and a second copy of a notice is a second thing to keep correct.
  */
 export function updatesUrl(locale: Locale): string {
-  return `${REPO_URL}/blob/main/docs/competition-updates${locale === "en" ? ".en" : ""}.md`;
+  return `${REPO_URL}/blob/main/docs/updates/README${locale === "en" ? ".en" : ""}.md`;
 }
 
 // ---- how to submit (rules §1, §2.1, §2.2, §2.7; the participant guide) ----

@@ -4,7 +4,7 @@
 
 **最初のエージェントを提出できる形にするまでの一直線。** §2〜§3 で 30 分あれば動くところまで行きます。§6 以降は開発中に何度も戻ってくる場所です。
 
-規則そのものは [ascon.dev/rules](https://ascon.dev/rules) が唯一の出典です。本書と食い違ったら規約が優先します。本書は「どう作るか」だけを書きます。本書は日本語が正文で、[英語版](competition-start.en.md)は参考訳です。本書は常に最新の環境を書いています。**すでに読んだ方は、[環境の更新履歴](competition-updates.md)で差分だけを追えます。**
+規則そのものは [ascon.dev/rules](https://ascon.dev/rules) が唯一の出典です。本書と食い違ったら規約が優先します。本書は「どう作るか」だけを書きます。本書は日本語が正文で、[英語版](competition-start.en.md)は参考訳です。本書は常に最新の環境を書いています。**すでに読んだ方は、[環境の更新履歴](updates/README.md)で差分だけを追えます。**
 
 **必要なもの**: Node.js 20 以上 / [Foundry](https://book.getfoundry.sh/getting-started/installation)（`forge` と `anvil`）/ `git` / `zip`（提出 zip の作成に使います）。
 
@@ -771,7 +771,7 @@ npm run agent:selftest -- my-strategy       # 同じ上限で短い run を回�
 | 文書 | 内容 |
 |---|---|
 | [ascon.dev/rules](https://ascon.dev/rules) | **規則そのもの**（唯一の出典） |
-| [competition-updates.md](competition-updates.md) | 環境の更新履歴（本書との差分） |
+| [updates/](updates/README.md) | 環境の更新履歴（本書との差分。1 件 1 ファイル） |
 | [writing-agents.md](guide/writing-agents.md) | 戦略の書き方の詳細・`obs` の全フィールド |
 | [protocols-and-actions.md](guide/protocols-and-actions.md) | venue ごとのアクション一覧 |
 | [llm-agents.md](guide/llm-agents.md) | 自己改善の仕組みとバックエンド設定 |

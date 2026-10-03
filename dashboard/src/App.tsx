@@ -44,6 +44,9 @@ export default function App() {
   // venue's state and a block range only mean anything inside one world.
   // "/updates" is the environment's update history: the guide describes the current environment,
   // so a participant who read it last week needs the diff, and needs it where they already are.
+  // The index lists the dated entries; "/updates/<YYYY-MM-DD>" is one of them.
+  const updateMatch = pathname.match(/^\/updates\/(\d{4}-\d{2}-\d{2})$/);
+  if (updateMatch) return <UpdatesPage entrySlug={updateMatch[1]} />;
   if (pathname === "/updates") return <UpdatesPage />;
   if (pathname === "/standings") return <StandingsPage />;
   if (pathname === "/scenario" || pathname === "/world") return <ScenarioPage />;
