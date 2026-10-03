@@ -13,17 +13,16 @@ import { deriveStressVictims } from "../core/src/stressVictims.js";
 
 const WAD = 10n ** 18n;
 
-test("the cohort is a function of (seed, index) and never collides with the Aave cohort", () => {
-  const a = deriveLiquityVictims(101, 2);
-  const b = deriveLiquityVictims(101, 2);
+test("the cohort is stable within a process and never collides with the Aave cohort", () => {
+  const a = deriveLiquityVictims(2);
+  const b = deriveLiquityVictims(2);
   assert.deepEqual(a, b);
   assert.equal(a.length, 2);
   assert.deepEqual(a.map((v) => v.id), ["liquity-victim-0", "liquity-victim-1"]);
   assert.notEqual(a[0].address, a[1].address);
-  assert.notEqual(deriveLiquityVictims(202, 1)[0].address, a[0].address);
-  const aave = deriveStressVictims(101, 2).map((v) => v.address.toLowerCase());
+  const aave = deriveStressVictims(2).map((v) => v.address.toLowerCase());
   for (const v of a) assert.ok(!aave.includes(v.address.toLowerCase()));
-  assert.deepEqual(deriveLiquityVictims(101, 0), []);
+  assert.deepEqual(deriveLiquityVictims(0), []);
 });
 
 test("victimDebtForIcr sizes the request so the composite debt lands on ICR₀", () => {

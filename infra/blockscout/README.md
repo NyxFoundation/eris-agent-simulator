@@ -74,14 +74,30 @@ add RPC load to the anvil that is also serving every agent's observe loop).
 
 **The explorer is not a second RPC entrance.** It reads the node directly (`ETHEREUM_JSONRPC_HTTP_URL`
 points at anvil, not at the RPC gateway on :8546), because indexing needs methods the gateway refuses.
-That is fine for reading, and it would not be fine for writing: two Blockscout endpoints forward a
-caller's own JSON-RPC method to that node — `/api/eth-rpc`, and the etherscan-compatible
-`/api?module=proxy` (`eth_call`, `eth_sendRawTransaction`, `eth_getCode`, `eth_getStorageAt`, …). The
-explorer is published without authentication, so those two would hand anyone a path around every rule
-the gateway enforces: the per-participant key, the method allowlist, the per-transaction gas cap, the
-fee rule and the rate limit. `proxy/default.conf.template` answers both with 403 in front of the
-backend, and `API_V1_WRITE_METHODS_DISABLED=true` says the same from inside. `/api/v2`, which the
-dashboard and the explorer's own UI use, is read-only over the indexed database and is untouched.
+That is fine for reading, and it would not be fine for writing: Blockscout's v1 API forwards a
+caller's own JSON-RPC to that node — `eth-rpc` (mounted at both `/api/eth-rpc` and `/api/v1/eth-rpc`,
+either with a trailing slash) and the etherscan-compatible `?module=proxy` (`eth_sendRawTransaction`,
+`eth_call`, `eth_getBlockByNumber("pending")` = the unmined transactions, …). The explorer is published
+without authentication, so those would hand anyone a path around every rule the gateway enforces: the
+per-participant key, the method allowlist, the per-transaction gas cap, the fee rule and the rate limit —
+and a view of everyone else's pending orders. `proxy/default.conf.template` therefore treats `/api` as an
+**allowlist**: `/api/v2/`, which the dashboard and the explorer's own UI use and which is read-only over
+the indexed database, is passed; every other `/api` path is a 403. (It used to refuse only
+`= /api/eth-rpc` and `module=proxy`, and `/api/v1/eth-rpc` and `/api/eth-rpc/` both reached the node.)
+**The backend cannot say the same from inside**: `API_V1_READ_METHODS_DISABLED` /
+`API_V1_WRITE_METHODS_DISABLED` are compile-time settings, so the published image ignores them at runtime
+(measured on 9.0.2 — with both `true`, `/api/v1/eth-rpc` still relayed a raw transaction). The nginx
+proxy is the only boundary; never expose the backend container except through it.
+The frontend is a second way past it: its `/node-api/proxy/<path>` forwards any method and body to the
+origin named in an `x-endpoint` header, so `x-endpoint: http://backend:4000` reached `/api/v1/eth-rpc`
+from inside the compose network (a raw transaction landed in the txpool). The browser only uses that
+route with `NEXT_PUBLIC_USE_NEXT_JS_PROXY`, which is not set here, so the template refuses it too —
+case-insensitively, like `/api`, because Next.js routes `/NODE-API/proxy` and `/API/...` the same.
+**Deploying a change to the template needs a proxy restart.** compose does not look inside the bind-mounted
+`proxy/`, so a plain `docker compose up -d` leaves the proxy serving its old config (measured; this is how the
+published explorer still answered `/api/eth-rpc` after the refusal was merged). `explorer.sh up` restarts the
+proxy every time and then fails unless `/api/eth-rpc`, `/api/v1/eth-rpc` and `/node-api/proxy` answer 403;
+`explorer.sh check` runs only that check, e.g. on the live box after a deploy.
 
 **Egress**: the only outbound dependency is contract verification through Blockscout's
 hosted eth-bytecode-db, which names canonical bytecode (Uniswap V3, Aave, …) without a

@@ -1,4 +1,4 @@
-// The seed-derived victim cohort that makes liquidation possible (ADR 0009 §4).
+// The victim cohort that makes liquidation possible (ADR 0009 §4).
 //
 // It replaced a single fixed-key victim driven by ERIS_LIQUIDATION_DEMO, which shocked the Aave
 // oracle directly from a configured round. That predecessor was removed once the realtime path
@@ -7,11 +7,10 @@
 // overwrite an oracle behind the price series.
 import {
   encodeFunctionData,
-  keccak256,
-  stringToBytes,
   type Address,
   type Hex,
 } from "viem";
+import { environmentKey } from "./walletKeys.js";
 import { accountAddress, fundWallet, sendAndMine } from "@eris/sdk/chain.js";
 import { AAVE, TOKENS } from "@eris/sdk/constants.js";
 import { aavePoolAbi } from "@eris/sdk/protocols/aave.js";
@@ -32,16 +31,12 @@ const VARIABLE_RATE = 2n;
 
 export type StressVictim = { id: string; privateKey: Hex; address: Address };
 
-// Derive the victim cohort from seed-derived keys (deterministically reproducible per regime. addresses are fixed by seed).
-export function deriveStressVictims(
-  seed: number,
-  count: number,
-): StressVictim[] {
+// The victim cohort's keys come from the environment's wallet secret (walletKeys.ts, issue #189):
+// a key a participant can compute is a position a participant can unwind before the crash.
+export function deriveStressVictims(count: number): StressVictim[] {
   const victims: StressVictim[] = [];
   for (let i = 0; i < count; i++) {
-    const privateKey = keccak256(
-      stringToBytes(`eris-stress-victim:${seed}:${i}`),
-    );
+    const privateKey = environmentKey("stress-victim", i);
     victims.push({
       id: `victim-${i}`,
       privateKey,

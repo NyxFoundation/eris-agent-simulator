@@ -1,10 +1,11 @@
 [Unit]
-Description=Check origin/main for the hosted Eris dashboard
+Description=Check the pinned commit for the hosted Eris dashboard
 
 [Timer]
-# Five minutes is the interval a push should be visible within, and the check is one `git fetch`
-# when nothing moved. Persistent so a box that was asleep at the boundary catches up on wake rather
-# than waiting for the next tick.
+# Five minutes is the interval a promotion (or, in the opt-in following mode, a push) should be
+# visible within. The check is one `git fetch` when nothing moved, and nothing at all while the box
+# is held with no ref pinned. Persistent so a box that was asleep at the boundary catches up on wake
+# rather than waiting for the next tick.
 OnBootSec=2min
 OnUnitActiveSec=5min
 Persistent=true

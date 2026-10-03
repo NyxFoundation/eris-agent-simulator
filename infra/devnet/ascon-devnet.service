@@ -43,6 +43,12 @@ ExecStartPre=/bin/sh -c 'test -n "$$ERIS_PRACTICE_SEED" || { echo "ERIS_PRACTICE
 # `npm run competition -- keygen`>. The coordinator reads it from the environment. Without it the
 # period would be realized under the public key, so a missing or unreadable file fails the start.
 ExecStartPre=/bin/sh -c 'test -n "$$ERIS_SCENARIO_KEY_FILE" && test -r "$$ERIS_SCENARIO_KEY_FILE" || { echo "ERIS_SCENARIO_KEY_FILE is missing or unreadable in .env.practice: refusing to start the period under the public scenario key" >&2; exit 1; }'
+# The wallet secret (issue #189, core/src/walletKeys.ts), from the same file:
+# ERIS_WALLET_SECRET_FILE=<path to a file from `npm run competition -- wallet-keygen`>. Every AUTO
+# agent's key, every flow wallet's and every key handed to a participant is derived from it. Without
+# it each start draws a new random secret: nothing leaks, but the resident agents and flow wallets
+# move to new addresses and the keys participants were given stop working. So it fails the start.
+ExecStartPre=/bin/sh -c 'test -n "$$ERIS_WALLET_SECRET_FILE" && test -r "$$ERIS_WALLET_SECRET_FILE" || { echo "ERIS_WALLET_SECRET_FILE is missing or unreadable in .env.practice: refusing to start the period on new wallets" >&2; exit 1; }'
 
 # The config is the period. Every `run.*` key in it WINS over the environment (sdk/src/runConfig.ts),
 # so overriding the block count or the report directory from here silently does nothing — copy the

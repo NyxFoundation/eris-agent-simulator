@@ -90,6 +90,11 @@ export function scenarioId(regime: string, seed: number): string {
   return `${regime}#${seed}`;
 }
 
+// The prefix an agent's flag carries in standings.json: which epoch raised it, by ordinal.
+export function epochFlagPrefix(s: number): string {
+  return `s=${s}: `;
+}
+
 export function computeStandings(
   results: ScenarioResult[],
   k: number,
@@ -121,7 +126,10 @@ export function computeStandings(
         participantByAgent.set(a.id, a.participant);
       for (const f of a.flags ?? []) {
         const list = flagsByAgent.get(a.id) ?? [];
-        list.push(`${scenarioId(r.regime, r.seed)}: ${f}`);
+        // Keyed by the ordinal, not by `regime#seed`: standings.json is served to the audience during
+        // the live week, where the epochs' regime/seed are hidden (rules §3.3), and any agent can raise
+        // a flag (exit before the bell). `epochs[]` maps s back to the scenario for the operator.
+        list.push(`${epochFlagPrefix(r.s)}${f}`);
         flagsByAgent.set(a.id, list);
       }
       if (a.baseline && a.pnlUsdc !== undefined) {

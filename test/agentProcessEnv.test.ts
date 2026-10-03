@@ -195,6 +195,13 @@ test("the scenario key's file and commitment are not handed to an agent (ADR 002
   assert.equal(env.ERIS_SCENARIO_KEY_COMMITMENT, undefined);
 });
 
+test("the wallet secret's file is not handed to an agent (issue #189)", async () => {
+  const env = await envOfChild({
+    ERIS_WALLET_SECRET_FILE: "/secrets/practice-wallet-secret.yaml",
+  });
+  assert.equal(env.ERIS_WALLET_SECRET_FILE, undefined);
+});
+
 // Issue #167: which epoch of the schedule a run is, handed to every agent of a scenario matrix.
 test("the epoch ordinal reaches the agent, and only the environment sets it", async () => {
   const env = await envOfChild(

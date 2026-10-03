@@ -1,10 +1,15 @@
 import {
-  keccak256,
-  stringToBytes,
+  erc20Abi,
   type Address,
   type Hex,
   type PublicClient,
 } from "viem";
+import {
+  environmentKey,
+  WALLET_SECRET_FILE_ENV,
+  walletKeysRecord,
+  walletSecret,
+} from "../walletKeys.js";
 import { privateKeyForWalletName } from "../config.js";
 import { resolveRunInputs } from "../runConfig.js";
 import {
@@ -103,6 +108,7 @@ import {
   baseTokens,
   gmxMarketAddresses,
   tokenInfo,
+  tokenRegistry,
 } from "@eris/sdk/markets.js";
 import {
   buildFlowContext,
@@ -185,6 +191,7 @@ import {
   LIVE_WEEK_OVERRIDE,
   LiveWeekRefusal,
   liveWeekRefusals,
+  publicAccountRefusal,
 } from "./liveWeek.js";
 import type { RealtimeConfig } from "../config.js";
 import {
@@ -604,6 +611,13 @@ export async function runRealtimeSimulation(
   const scenarioKey = ensureScenarioKey();
   // Issue #186: the regime names the streams too, so calm#101 and crash#101 are different worlds.
   setScenarioRegime(config.scenarioRegime);
+  // Issue #189: the secret the wallet keys are derived from, resolved before any key is. It must not
+  // be the scenario key: that one is published after the results, and every key would be with it.
+  if (walletSecret().hex === scenarioKey.hex)
+    throw new Error(
+      `${WALLET_SECRET_FILE_ENV} holds the scenario key. The scenario key is published after the ` +
+        "results (ADR 0027 §3); the wallet secret never is. Make one with `npm run competition -- wallet-keygen`",
+    );
 
   // ADR 0020 §1 fail-fast. `resetUnit: scenario` describes a world per (regime, seed), and only the
   // scenario-matrix runner produces those -- it is the caller that resets between runs, not anything
@@ -774,6 +788,9 @@ export async function runRealtimeSimulation(
     // ADR 0027: which key the seed was realized under -- the public one, or the commitment to a
     // secret one. The seed alone no longer names the world.
     scenarioKey: scenarioKeyRecord(scenarioKey),
+    // Issue #189: where the environment's wallet keys came from -- a secret made by this process, or
+    // the practice period's file. Never the secret or a hash of it.
+    walletKeys: walletKeysRecord(),
     // Issue #186: the regime the streams were named by (empty = none, the pre-#186 streams).
     scenarioRegime: config.scenarioRegime,
     // ...and the version of that naming (sdk/src/rng.ts), so a stored run says which streams drew it.
@@ -913,7 +930,7 @@ export async function runRealtimeSimulation(
   for (const id of enabledIds) {
     for (const kind of ["informed", "uninformed"] as FlowKind[]) {
       const key = `${id}:${kind}`;
-      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
         id: `flow-${key}`,
         address: accountAddress(privateKey),
@@ -926,7 +943,7 @@ export async function runRealtimeSimulation(
   if (enabledIds.includes("aave")) {
     for (let i = 0; i < config.aaveFlowActorCount; i++) {
       const key = `aave:actor${i}`;
-      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
         id: `flow-${key}`,
         address: accountAddress(privateKey),
@@ -951,7 +968,7 @@ export async function runRealtimeSimulation(
   const whaleEvents = schedule.events.filter((e) => e.type === "whale");
   if (whaleEvents.length > 0) {
     const key = WHALE_WALLET_KEY;
-    const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+    const privateKey = environmentKey("flow", key);
     flowWalletMap.set(key, {
       id: `flow-${key}`,
       address: accountAddress(privateKey),
@@ -964,7 +981,7 @@ export async function runRealtimeSimulation(
   const launchEndowments = tokenLaunchEndowments(schedule);
   for (const e of launchEndowments) {
     for (const key of [e.launchKey, e.waveKey]) {
-      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
         id: `flow-${key}`,
         address: accountAddress(privateKey),
@@ -1136,6 +1153,15 @@ export async function runRealtimeSimulation(
     } else {
       await setEthBalance(publicClient, accountAddress(adminPk), GAS_ONLY_WEI);
       await setEthBalance(publicClient, accountAddress(keeperPk), GAS_ONLY_WEI);
+      // The registrar's gas, which it used to get from anvil's genesis allocation (SETUP_PRIVATE_KEY
+      // defaults to anvil account 9). The backtest anvil starts with no genesis accounts, so the
+      // environment funds every key it signs with, like admin and keeper above.
+      if (config.agentMarkets)
+        await setEthBalance(
+          publicClient,
+          accountAddress(config.privateKeys.setup),
+          GAS_ONLY_WEI,
+        );
     }
     for (const adapter of adapters) {
       if (adapter.setupGlobal) await adapter.setupGlobal(ctx);
@@ -1359,12 +1385,9 @@ export async function runRealtimeSimulation(
       });
     }
 
-    // ---- stress victims (ADR 0009 §4): build seed-derived victims that make liquidation possible ----
+    // ---- stress victims (ADR 0009 §4): build victims that make liquidation possible ----
     // Victims are not included in agentRuntimes = not scored (a profit source for the liquidator agent).
-    const stressVictims: StressVictim[] = deriveStressVictims(
-      config.seed,
-      config.stressVictimCount,
-    );
+    const stressVictims: StressVictim[] = deriveStressVictims(config.stressVictimCount);
     let victimEnv: Record<string, string> | undefined;
     // Minimum victim HF right after setup (excluding the debt-free sentinel). Used for the crash calibration warning (§2).
     let minVictimHf0: number | null = null;
@@ -1783,10 +1806,7 @@ export async function runRealtimeSimulation(
     // Opened here, after the venue's oracle points at this run's PriceFeed, so the ICR they land
     // at is the one the chain computes. Not scored; the crash liquidates them (the Stability Pool's
     // work) and the eUSD depeg redeems against them (redemption arb's work).
-    const liquityVictims: LiquityVictim[] = deriveLiquityVictims(
-      config.seed,
-      config.stressLiquityVictimCount,
-    );
+    const liquityVictims: LiquityVictim[] = deriveLiquityVictims(config.stressLiquityVictimCount);
     let minLiquityVictimIcr0: number | null = null;
     let liquityVictimMcr: number | null = null;
     // Issue #59: when the regime declares the TCR it wants at the crash bottom, the cohort's
@@ -2194,6 +2214,24 @@ export async function runRealtimeSimulation(
           "agents run as plain child processes: no CPU/memory caps, no egress control and the " +
           "operator's filesystem (rules §2.3 are not enforced here, and this is not an isolation boundary)",
       });
+    }
+    // The live week's one check that reads the chain (liveWeek.ts): after funding, before any agent
+    // starts. Every epoch, because each one starts from the reverted snapshot.
+    if (overrides[LIVE_WEEK_OVERRIDE] === "1") {
+      const refusal = await publicAccountRefusal(
+        {
+          eth: (address) => publicClient.getBalance({ address }),
+          erc20: (token, address) =>
+            publicClient.readContract({
+              address: token,
+              abi: erc20Abi,
+              functionName: "balanceOf",
+              args: [address],
+            }),
+        },
+        Object.values(tokenRegistry()),
+      );
+      if (refusal) throw new LiveWeekRefusal([refusal]);
     }
     // What every launched agent is handed instead of the coordinator's config (agentView.ts): the
     // same file for all of them, one copy per view directory.
@@ -3312,6 +3350,7 @@ export async function runRealtimeSimulation(
         seed: config.seed,
         flowSeed: config.flowSeed,
         scenarioKey: scenarioKeyRecord(scenarioKey),
+        walletKeys: walletKeysRecord(),
         scenarioStreams: SCENARIO_STREAMS,
         rpcUrl: config.readRpcUrl,
         // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The

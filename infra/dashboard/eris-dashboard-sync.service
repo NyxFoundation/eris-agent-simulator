@@ -1,11 +1,16 @@
 [Unit]
-Description=Rebuild the hosted Eris dashboard from origin/main
+Description=Rebuild the hosted Eris dashboard at the pinned commit (infra/dashboard/sync.env)
 After=network-online.target
 
 [Service]
 Type=oneshot
 WorkingDirectory=%h/workspace/eris-agent-simulator
+# Which commit, and where the build runs, come from infra/dashboard/sync.env -- read by the script
+# itself, not by EnvironmentFile=, so a hand run and a timer run read the same file the same way.
+# Without that file the box is held at HEAD; `infra/dashboard/sync-main.sh promote <tag|sha>`
+# writes it (issue #211).
 ExecStart=%h/workspace/eris-agent-simulator/infra/dashboard/sync-main.sh
-# The build is short (a Vite bundle, a couple of hundred ms) but npm start-up is not; a run that
-# hangs must not sit on the box until the next one.
+# The build is short (a Vite bundle, a couple of hundred ms) but npm start-up is not, and the first
+# container build pulls node:24-bookworm-slim; a run that hangs must not sit on the box until the
+# next one.
 TimeoutStartSec=600

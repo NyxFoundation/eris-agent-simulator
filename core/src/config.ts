@@ -4,7 +4,8 @@
 //   - the agent roster (AgentSpec validation, wallet resolution) is the environment's job, so it lives here
 import { readFileSync, existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
-import { keccak256, stringToBytes, type Hex } from "viem";
+import { type Hex } from "viem";
+import { environmentKey } from "./walletKeys.js";
 import { loadConfig, unitSuffixFor, type SimConfig } from "@eris/sdk/config.js";
 import type { AgentSpec, AgentsFile } from "@eris/sdk/types.js";
 import type { StressEventConfig } from "./realtime/events.js";
@@ -72,14 +73,10 @@ export function privateKeyForWalletName(
     case "AGENT6_PRIVATE_KEY":
       return config.privateKeys.agent6;
     case "AUTO":
-      return deriveAutoPrivateKey(config.seed, agentId);
+      return environmentKey("agent", agentId);
     default:
       throw new Error(`Unsupported wallet binding: ${wallet}`);
   }
-}
-
-function deriveAutoPrivateKey(seed: number, agentId: string): Hex {
-  return keccak256(stringToBytes(`auto-wallet:${seed}:${agentId}`));
 }
 
 // Directory convention (ADR 0015 §6): when command is omitted, id points to <agentsDir>/<id>/.

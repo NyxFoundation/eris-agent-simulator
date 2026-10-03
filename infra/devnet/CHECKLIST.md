@@ -123,8 +123,10 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
 
 **A（box）**
 
-- [ ] commit を固定する。`git rev-parse HEAD` → 記録: `commit=`。A には sync timer
-  （`eris-dashboard-sync`）を入れない（入れると 26h の途中で commit が動く）
+- [ ] commit を固定する。`git rev-parse HEAD` → 記録: `commit=`。A に sync timer
+  （`eris-dashboard-sync`）を入れるなら `infra/dashboard/sync.env` に `ERIS_SYNC_REF=<その commit>` を書く
+  （`infra/dashboard/sync-main.sh promote <commit>`）。`ERIS_SYNC_FOLLOW_BRANCH` は書かない
+  （書くと 26h の途中で commit が動く。issue #211）
 - [ ] `npm run dashboard:build`（compose は `dashboard/dist` を配信するだけで、ビルドはしない）
 - [ ] 本番 box と同じ手順で立てる: [infra/provision](../provision/README.md) の "Order of operations"
   2〜4（`npm ci`、`setup-vendors.sh`、deploy、`npm run gen:state-dump`、`docker compose up -d`）。
@@ -344,25 +346,31 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
 ### 2.2 手順
 
 - [ ] box の checkout が、リハーサルの commit と同じか、そこからの差分がダッシュボードと文書だけである:
-  `git fetch && git diff --stat <commit>..origin/main`。box の checkout は sync timer が 5 分ごとに
-  `origin/main` へ fast-forward するので（[infra/dashboard](../dashboard/README.md)）、`git checkout <commit>`
-  で固定しても戻される。走っている coordinator は起動時のコードのままだが、unit が再起動すればその時点の
-  main で起動する。差分に `core/` `sdk/` `example/` `infra/monitoring/` `config/` が入っていたら、
-  その差分でリハーサルをやり直す
+  `git fetch && git diff --stat <commit>..origin/main`。**checkout は `sync.env` の `ERIS_SYNC_REF` に
+  固定されていて、main にマージしても動かない**（issue #211。[infra/dashboard](../dashboard/README.md)）。
+  動かすのは `infra/dashboard/sync-main.sh promote <tag|sha>` だけで、手で `git checkout` しても次の
+  tick で pin の commit に戻る（5 分ごとに `origin/main` へ fast-forward するのは
+  `ERIS_SYNC_FOLLOW_BRANCH` を入れたときだけ＝既定ではない）。走っている coordinator は起動時のコードの
+  ままなので、unit を再起動すると**その時点の checkout = pin の commit**で起動する。差分に `core/` `sdk/`
+  `example/` `infra/monitoring/` `config/` が入っていたら、その差分でリハーサルをやり直す
 - [ ] deploy 鍵が公開テスト鍵でない: `grep AclAdmin sdk/src/constants.local.ts` が
   `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266`（anvil の account 0）**ではない**（issue #74）
 - [ ] 新しい seed を引く（新しい competition なので。[README](README.md#install-once-on-the-box-that-hosts-it)）
 - [ ] 環境の鍵: 秘密の mnemonic で deploy した dump を使い、`infra/monitoring/.env` に `ANVIL_MNEMONIC`、`.env.local` に
   `DEPLOYER_PRIVATE_KEY`（その 0 番）と、この期間のために作った `ADMIN_PRIVATE_KEY` / `KEEPER_PRIVATE_KEY` /
   `SETUP_PRIVATE_KEY` がある。`ERIS_ALLOW_PUBLIC_ROLE_KEYS` は**無い**（公開鍵のままなら coordinator が起動を拒否する）
-- [ ] エピソードを起動予定時刻で作り直し、PR にしてマージしておく:
-  `npm run gen:practice-episodes -- --start <起動予定時刻（タイムゾーン付き）>`。box の上で直接書き換えない
-  （checkout は main に追従していて、追跡ファイルが変わると sync timer がビルドを止める）。起動は予定の
-  ±1.5h 以内に行う。ずれたら作り直す
+- [ ] エピソードを起動予定時刻で作り直し、PR にしてマージし、**box に promote する**:
+  `npm run gen:practice-episodes -- --start <起動予定時刻（タイムゾーン付き）>` → マージ → box で
+  `infra/dashboard/sync-main.sh promote <マージ commit>`。**マージだけでは box に届かない**（pin で
+  止まっているため）。promote を忘れて再起動すると、coordinator は同じ checkout から
+  `config/practice.yaml` を読むので **pin 時点の古いエピソード表**で走り、起動時には何も言わない。
+  box の上で直接書き換えない（追跡ファイルが変わると sync timer がビルドを止めるので、公開ページが
+  最後にビルドした版で凍る）。起動は予定の ±1.5h 以内に行う。ずれたら作り直す
 - [ ] **coordinator を止めてから**チェーンを触る（動いたまま volume を消すと、何も出さずに固まる。
   [README](README.md#resetting-the-chain-under-a-running-coordinator-wedges-it-silently)）:
-  `systemctl --user stop ascon-devnet` → compose を新しい commit で上げ直す → exporter コンテナも
-  同時に上げ直す（古い exporter は `intervals.jsonl` を読めない）→ `systemctl --user start ascon-devnet`
+  `systemctl --user stop ascon-devnet` → compose を新しい commit で上げ直す（promote が済んでいること。
+  `git -C <checkout> log -1 --format=%H` で実測する）→ exporter コンテナも同時に上げ直す
+  （古い exporter は `intervals.jsonl` を読めない）→ `systemctl --user start ascon-devnet`
 - [ ] 期間ディレクトリができたら `infra/monitoring/.env` に `ERIS_DASHBOARD_COMPETITIONS=<期間 id>`
   を書き、dashboard コンテナを上げ直す（公開 picker に smoke run を出さない。issue #84 K）
 - [ ] `infra/monitoring/.env` に `ASCON_DASHBOARD_PUBLIC_URL=https://ascon-dash.nyx.foundation/healthz` を
@@ -426,7 +434,20 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   （環境の失敗・flow の停止・カナリアの停止はアラートになった。下の表）
 - [ ] 公開ビューが新しい日に移り、前日の順位が出ている（目視）
 - [ ] `journalctl --user -u eris-dashboard-sync --since yesterday` にビルドがあった日は、漏れの検査（1.7）
-  をもう一度通す（ダッシュボードは main に追従していて、merge のたびに公開ページが変わる）
+  をもう一度通す（ビルドが起きるのは `sync-main.sh promote` で ref を動かした日だけ。journal に
+  `FOLLOWING` が出ていたら誰かが `ERIS_SYNC_FOLLOW_BRANCH` を入れていて、merge のたびに公開ページが
+  変わる状態 = issue #211 の元の形。`infra/dashboard/README.md`）
+- [ ] **配信中の commit と pin の距離**（[infra/dashboard](../dashboard/README.md#is-the-box-serving-what-was-promoted)）:
+  `curl -s https://ascon-dash.nyx.foundation/healthz` の `commit` が `sync.env` の `ERIS_SYNC_REF`
+  と一致し、`builtSinceStart` が false（true なら bundle だけが進んでいて、`dashboard/server/` を
+  触った変更＝公開判定はまだ生きていない →
+  `cd infra/monitoring && docker compose restart ascon-dashboard`）。pin が `origin/main` から
+  何 commit 遅れているかを記録する: box で
+  `git fetch --quiet origin main && git rev-list --count HEAD..origin/main`。
+  **遅れ自体は正常**（pin は意図して止めてある）。見分けるのは**止まり方が 2 つある**ことで、
+  意図した pin と、`clean_tree` が追跡ファイルの変更を見つけて exit 0 で降りている状態は
+  journal の見かけが同じ（後者なら `git status` が dirty。box で `npm run gen:local-constants` を
+  回して `sdk/src/constants.local.ts` が変わると起きる。アラートは鳴らない）
 
 **毎週**
 

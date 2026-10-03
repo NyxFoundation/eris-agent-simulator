@@ -22,13 +22,12 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   encodeFunctionData,
-  keccak256,
   parseAbi,
-  stringToBytes,
   type Address,
   type Hex,
   type PublicClient,
 } from "viem";
+import { environmentKey } from "./walletKeys.js";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   accountAddress,
@@ -96,7 +95,7 @@ const writeClients = makeClients(config.rpcUrl, config.chainId);
 // The addresses being read are synthetic. Balance reads cost the node the same whether the account
 // holds anything, and inventing them keeps the tool runnable against a chain with no run on it.
 const probeAgents: Address[] = Array.from({ length: agents }, (_, i) =>
-  accountAddress(keccak256(stringToBytes(`rpc-stress:${i}`))),
+  accountAddress(environmentKey("rpc-stress", i)),
 );
 
 const tokens: Address[] = [
@@ -352,7 +351,7 @@ async function main(): Promise<void> {
 
   // Long enough to hold several blocks whatever the cadence. A window that catches one transition
   // reports a jitter of zero over a sample of one, which is worse than reporting nothing.
-  const writerKey = keccak256(stringToBytes("rpc-stress-writer"));
+  const writerKey = environmentKey("rpc-stress-writer", 0);
   if (withWrites) {
     // Through the run's own funding path, so this works in both chain modes. Without it every send
     // reverts on balance and the tx stream is a stream of nothing -- which the first version of this

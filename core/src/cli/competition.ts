@@ -13,6 +13,10 @@
 //       its intended start. --ends-at spreads the k epochs evenly over the window (ADR 0026: the
 //       live week at k = 60 is one every 168 minutes). `backtest --follow-schedule` waits for them.
 //
+//   npm run competition -- wallet-keygen <out.yaml>
+//       write a new wallet secret (issue #189, core/src/walletKeys.ts) to <out.yaml> (mode 0600;
+//       refuses to overwrite). The practice period's ERIS_WALLET_SECRET_FILE. Never published, so
+//       nothing is printed.
 //   npm run competition -- keygen <out.yaml>
 //       write a new secret scenario key (ADR 0027) to <out.yaml> (mode 0600; refuses to overwrite) and
 //       print its commitment. Only the commitment leaves the operator's machine until the results.
@@ -21,6 +25,7 @@
 //   hidden set    { regimes: { calm: [..seeds..], crash: [...], ... }, salt?: "<random>" }
 //   lottery seed  { lotterySeed: "<secret string>", salt?: "<random>" }
 //   scenario key  { scenarioKey: "<64 lowercase hex>" }
+//   wallet secret { walletSecret: "<64 lowercase hex>" }
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -34,10 +39,12 @@ import {
 } from "../competition/schedule.js";
 import { parseFlags } from "../backtest/shared.js";
 import { writeNewScenarioKeyFile } from "../scenarioKey.js";
+import { writeNewWalletSecretFile } from "../walletKeys.js";
 
 const USAGE = `usage:
   npm run competition -- commit <file>
   npm run competition -- keygen <out.yaml>
+  npm run competition -- wallet-keygen <out.yaml>
   npm run competition -- plan --hidden <hidden.yaml> --lottery <lottery.yaml> --k <N> [--out <plan.yaml>]
       [--starts-at <ISO 8601> (--every-minutes <N> | --ends-at <ISO 8601>)]
           stamp each epoch with its intended start (the dashboard shows the next one, and
@@ -67,6 +74,13 @@ function main(): void {
     const file = args[1];
     if (!file) throw new Error(USAGE);
     console.log(writeNewScenarioKeyFile(file));
+    return;
+  }
+  if (sub === "wallet-keygen") {
+    const file = args[1];
+    if (!file) throw new Error(USAGE);
+    writeNewWalletSecretFile(file);
+    console.error(`wrote ${file} (mode 0600). Keep it off the repo and never publish it.`);
     return;
   }
   if (sub === "plan") {
