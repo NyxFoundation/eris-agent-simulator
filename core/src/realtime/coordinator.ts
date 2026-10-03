@@ -78,6 +78,11 @@ import {
   reconcileRunAgentTxs,
 } from "../postRunCheck.js";
 import {
+  rosterPricingFromMarks,
+  scanRosterTransfers,
+  type RosterTransferScan,
+} from "./rosterTransferScan.js";
+import {
   nextFairPrice,
   priceRngForAsset,
   Rng,
@@ -103,7 +108,7 @@ import {
   updateOraclesMempool,
   writeAaveOraclesStorage,
 } from "@eris/sdk/protocols/oracles.js";
-import { AAVE, GMX_MARKETS, TOKENS } from "@eris/sdk/constants.js";
+import { AAVE, GMX_MARKETS, LST, TOKENS } from "@eris/sdk/constants.js";
 import {
   baseTokens,
   gmxMarketAddresses,
@@ -121,6 +126,7 @@ import {
 import { FlowProcess, type FlowOrderWire } from "../flowProcess.js";
 import { deployFlashArb, FLASH_ARB_ADDRESS } from "../flashArbDemo.js";
 import { RealtimeAgentProcess } from "./agentProcess.js";
+import { DerivedSenderLedger } from "./derivedSenders.js";
 import {
   EPOCH_COUNT_ENV,
   EPOCH_INDEX_ENV,
@@ -149,6 +155,7 @@ import {
 import { AgentDiskWatch, agentLogFiles } from "./agentDisk.js";
 import { measureAgentNetworks, networkMismatches } from "./agentNetwork.js";
 import { createAgentStopper } from "./agentStop.js";
+import { environmentSignerOwners } from "./environmentSigners.js";
 import {
   createDockerRunner,
   DOCKER_CALL_TIMEOUT_MS,
@@ -210,6 +217,11 @@ import {
   gmxFundingMissingMessage,
   readGmxFundingConfig,
 } from "./gmxFunding.js";
+import {
+  gmxCallbackCheck,
+  gmxCallbackOpenMessage,
+  readGmxCallbackLimits,
+} from "./gmxCallbacks.js";
 import {
   environmentReserveAssets,
   readAaveReserves,
@@ -1038,20 +1050,37 @@ export async function runRealtimeSimulation(
       role: flowRole(key),
     });
   }
-  ownerByAddress.set(accountAddress(adminPk).toLowerCase(), {
-    ownerId: "oracle",
-    role: "system",
-  });
-  ownerByAddress.set(accountAddress(keeperPk).toLowerCase(), {
-    ownerId: "keeper",
-    role: "system",
-  });
+  // Every account the environment signs with, setup and deployer included. They matter for
+  // `isKnown` below as much as for the labels: an address the environment already owns is never a
+  // sender an agent's wallet derived (environmentSigners.ts).
+  for (const [address, owner] of environmentSignerOwners(config.privateKeys))
+    ownerByAddress.set(address, owner);
+  // The vuln factory's owner is a per-run environment wallet, not one of the role keys, so it is
+  // named here (issue #236).
   ownerByAddress.set(vulnPoolWallet.address.toLowerCase(), {
     ownerId: "vuln-pools",
     role: "system",
   });
   // Read once, at the blocks.csv flush, and swept there too (issue #134).
   const submittedByHash = new SubmittedLedger<SubmittedMeta>();
+  // Issue #212: addresses an agent's wallet funded -- ETH, a priced token, a contract it created,
+  // transitively -- so a transaction sent from a second EOA is the agent's in blocks.csv and in every
+  // post-run check, instead of an `external` row nothing looks at. Fed by logBlock, in block order.
+  const derivedSenders = new DerivedSenderLedger({
+    agentOf: (address) => {
+      const owner = ownerByAddress.get(address);
+      return owner?.role === "agent" ? owner.ownerId : undefined;
+    },
+    isKnown: (address) => ownerByAddress.has(address),
+    // Only the tokens the run prices: a Transfer log from any other contract is whatever its author
+    // wanted it to say.
+    trackedTokens: () =>
+      new Set([
+        ...baseTokens().map((t) => t.address.toLowerCase()),
+        ...activeStables().map((a) => a.toLowerCase()),
+        ...(LST ? [LST.lstToken.toLowerCase()] : []),
+      ]),
+  });
 
   // Top an environment wallet up to a target native balance from the treasury (issue #33 (1)).
   // "Up to", not "by": the practice devnet funds the same admin and keeper on every segment, and
@@ -1119,6 +1148,18 @@ export async function runRealtimeSimulation(
         : gmxFundingMissingMessage(funding, config.chainMode);
       if (enforcement === "fail") throw new Error(message);
       if (enforcement === "warn") console.warn(`[gmx] WARNING: ${message}`);
+    }
+
+    // Does this deploy give participant code gas inside the keeper's transaction (order callbacks, a
+    // contract receiver's receive())? Recorded, not enforced: the keeper refuses callback orders on
+    // every chain (gmxKeeperRefusal); the patch also closes the receiver's gas (gmxCallbacks.ts).
+    if (config.localDeploy && enabledIds.includes("gmx")) {
+      const callbacks = gmxCallbackCheck(
+        await readGmxCallbackLimits(publicClient),
+      );
+      logger.event({ type: "gmx_callback_check", ...callbacks });
+      if (!callbacks.closedAtDeploy)
+        console.warn(`[gmx] WARNING: ${gmxCallbackOpenMessage(callbacks)}`);
     }
 
     // And does the Aave Pool hold only reserves the environment owns? The Aave score sums every
@@ -2774,15 +2815,25 @@ export async function runRealtimeSimulation(
             return {
               status: receipt.status as string,
               gasUsed: receipt.gasUsed as bigint | undefined,
+              // For the derived-sender ledger (issue #212): what this transaction handed out.
+              logs: receipt.logs,
+              contractAddress: receipt.contractAddress ?? null,
             };
           } catch {
-            return { status: "mined", gasUsed: undefined }; // fallback when receipt fetch fails
+            // fallback when receipt fetch fails
+            return {
+              status: "mined",
+              gasUsed: undefined,
+              logs: [],
+              contractAddress: null,
+            };
           }
         }),
       );
       const statuses = receipts.map((r) => r.status);
       txs.forEach((tx, i) => {
         const meta = submittedByHash.take(tx.hash);
+        const from = tx.from.toLowerCase();
         // A sender the run does not know is recorded, not dropped (ADR 0021 §2, rules §2.7). On the
         // trial devnet these are exactly the participants' transactions: whoever sends before their
         // registration is read, or without registering at all. Dropping the row made them invisible
@@ -2790,11 +2841,19 @@ export async function runRealtimeSimulation(
         // nothing, and the operator could not tell an empty chain from an unregistered field. The
         // owner is the address itself under role `external`; nothing here scores or rule-checks it
         // (postRunCheck reads `agent` rows only), and `method` still comes from the calldata.
+        //
+        // Unless the sender is an address an agent's wallet funded (issue #212): then the row is
+        // the agent's, role `agent`, with `derivedFrom` saying which address funded the sender, so
+        // the fee, gas and unlogged-tx checks read it like any other transaction of that agent.
+        const derived =
+          meta === undefined && !ownerByAddress.has(from)
+            ? derivedSenders.senderOf(from)
+            : undefined;
         const owner: TxOwner = meta ??
-          ownerByAddress.get(tx.from.toLowerCase()) ?? {
-            ownerId: tx.from.toLowerCase(),
-            role: "external",
-          };
+          ownerByAddress.get(from) ??
+          (derived
+            ? { ownerId: derived.ownerId, role: "agent" }
+            : { ownerId: from, role: "external" });
         const status = statuses[i];
         if (owner.role === "agent") {
           const runtime = agentById.get(owner.ownerId);
@@ -2802,6 +2861,17 @@ export async function runRealtimeSimulation(
             runtime.included++;
             if (status !== "success") runtime.reverted++;
           }
+          derivedSenders.observe(
+            {
+              from,
+              to: tx.to,
+              value: tx.value,
+              blockNumber: b,
+              contractAddress: receipts[i].contractAddress,
+              logs: receipts[i].logs,
+            },
+            owner.ownerId,
+          );
         }
         logger.blockRow({
           round: b,
@@ -2824,6 +2894,10 @@ export async function runRealtimeSimulation(
           ...(receipts[i].gasUsed === undefined
             ? {}
             : { gasUsed: receipts[i].gasUsed }),
+          // Issue #208: the tx's own recipient and value, for the post-run roster-transfer check.
+          to: tx.to ?? "",
+          valueWei: tx.value,
+          ...(derived ? { derivedFrom: derived.fundedBy } : {}),
         });
       });
     };
@@ -3698,6 +3772,17 @@ export async function runRealtimeSimulation(
                   priorityFeeWei: keeperFee,
                   fromBlock: BigInt(fromBlock),
                   toBlock: BigInt(bn),
+                  onOrderRefused: (refusal) =>
+                    logger.event({
+                      type: "keeper_order_refused",
+                      protocol: adapter.id,
+                      blockNumber: bn,
+                      key: refusal.key,
+                      account: refusal.account,
+                      callbackContract: refusal.callbackContract,
+                      callbackGasLimit: refusal.callbackGasLimit.toString(),
+                      reason: refusal.reason,
+                    }),
                 });
               } catch (error) {
                 logger.event({
@@ -4602,9 +4687,35 @@ export async function runRealtimeSimulation(
     // opportunity valuation, and whoever values it higher executes first = realistic priority gas auction),
     // so the cap half is off (cap 0). The maxFeePerGas <= tip half stays on in every profile: it is what
     // makes that auction one -- without it a bid is ordered by a number it does not pay.
+    // Issue #212: senders an agent's wallet funded. Their rows already carry the agent's id (logBlock
+    // attributed them as they were written); the map covers the rows written before the funding was
+    // seen, and the per-agent list is the flag the operator reads (rules §8).
+    const derivedOwners = derivedSenders.ownerByAddress();
+    const derivedByAgent = derivedSenders.byOwner();
+    if (Object.keys(derivedByAgent).length > 0) {
+      logger.event({
+        type: "derived_senders",
+        byAgent: derivedByAgent,
+        note:
+          "transactions sent from addresses the agent's wallet funded (ETH, a priced token, or a " +
+          "contract it created; transitively). Attributed to the agent in blocks.csv (derivedFrom) " +
+          "and in every post-run check; the verdict is the operator's",
+      });
+      console.error(
+        `[post-run] WARNING: transactions from addresses funded by an agent's wallet: ${Object.entries(
+          derivedByAgent,
+        )
+          .map(
+            ([id, list]) =>
+              `${id}: ${list.reduce((n, d) => n + d.txCount, 0)} tx(s) from ${list.length} address(es)`,
+          )
+          .join(", ")}; see derived_senders`,
+      );
+    }
     const violations = checkRunFeeViolations(
       logger.runDir,
       config.economicGas ? 0n : config.maxPriorityFeeWei,
+      derivedOwners,
     );
 
     // The environment's own shocks must not fail quietly. A whale is submitted through the ordinary
@@ -4650,10 +4761,14 @@ export async function runRealtimeSimulation(
     // Gas budget (issue #40 T0). Checked whatever the fee profile is: the fee cap is about ordering
     // and is deliberately unenforced under economic gas, but starving the block is about capacity
     // and is a disqualifying offence either way (rules §6 / §8).
-    const gasViolations = checkRunGasViolations(logger.runDir, {
-      maxTxGas: config.maxTxGas,
-      maxAgentBlockGas: config.maxAgentBlockGas,
-    });
+    const gasViolations = checkRunGasViolations(
+      logger.runDir,
+      {
+        maxTxGas: config.maxTxGas,
+        maxAgentBlockGas: config.maxAgentBlockGas,
+      },
+      derivedOwners,
+    );
     if (gasViolations.length > 0) {
       logger.event({
         type: "gas_budget_violations",
@@ -4679,6 +4794,7 @@ export async function runRealtimeSimulation(
     const unloggedTxs = reconcileRunAgentTxs(
       logger.runDir,
       agentRuntimes.filter((a) => a.process !== null).map((a) => a.id),
+      derivedOwners,
     );
     const unloggedTxCountByAgent: Record<string, number> = {};
     for (const tx of unloggedTxs)
@@ -4727,6 +4843,84 @@ export async function runRealtimeSimulation(
       // At the last competition block, for the same reason the reconstruction stops there.
       BigInt(finalBlock),
     );
+
+    // ---- value moved between registered addresses (issue #208; rules §8) ----
+    // Read off the chain's record after the run, like the fee cap and the gas budget: blocks.csv
+    // for ETH carried by a transaction, the window's Transfer logs for ERC-20, the registry and
+    // the lending singleton for the routed cases. A same-unit movement is flagged at any size, a
+    // cross-unit one above `run.rosterTransferFlagBps` of the pair's smaller endowment; both
+    // sides carry the flag into matrix.json. Nothing here changes P (core/src/rosterTransfers.ts).
+    // The log-based routes need the node's history, so past the sweep limit only blocks.csv is read
+    // and the event says so.
+    let rosterScan: RosterTransferScan | undefined;
+    if (finalBlock >= runStartBlock) {
+      try {
+        rosterScan = await scanRosterTransfers({
+          publicClient,
+          agents: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            ...(a.spec.participant !== undefined
+              ? { participant: a.spec.participant }
+              : {}),
+            initialValueUsdc: valueUsdc(
+              a.initial,
+              finalFairPrices,
+              finalStablePrices,
+            ),
+          })),
+          runDir: logger.runDir,
+          fromBlock: runStartBlock,
+          toBlock: finalBlock,
+          scanLogs: sweepFits,
+          pricing: rosterPricingFromMarks(finalFairPrices, finalStablePrices),
+          thresholdBps: config.rosterTransferFlagBps,
+          ...(marketRegistry
+            ? {
+                lending: marketRegistry.lending,
+                marketRegistry: marketRegistry.address,
+              }
+            : {}),
+        });
+        const flagged = rosterScan.transfers.filter((t) => t.flagged);
+        if (rosterScan.transfers.length > 0 || rosterScan.errors.length > 0) {
+          logger.event({
+            type: "roster_value_transfers",
+            count: rosterScan.transfers.length,
+            flagged: flagged.length,
+            thresholdBps: rosterScan.thresholdBps,
+            sources: rosterScan.sources,
+            ...(rosterScan.errors.length > 0 ? { errors: rosterScan.errors } : {}),
+            transfers: rosterScan.transfers.slice(0, 200),
+            note:
+              "value that moved between two registered addresses (ETH / ERC-20 directly, or " +
+              "through a participant-created contract or lending market). Same participant unit: " +
+              "flagged at any size (rules §8). Different units: flagged above thresholdBps of the " +
+              "pair's smaller endowment. A report for the operator; the score is unchanged",
+          });
+        }
+        if (!sweepFits)
+          logger.event({
+            type: "roster_transfer_logs_skipped",
+            windowBlocks: finalBlock - runStartBlock,
+            note:
+              "the run window is longer than the node retains history for, so only blocks.csv " +
+              "(ETH carried by a transaction) was checked; ERC-20 and routed movements were not",
+          });
+        if (flagged.length > 0)
+          console.error(
+            `[rules] ${flagged.length} value movement(s) between registered addresses flagged ` +
+              `(${[...new Set(flagged.map((t) => `${t.from}->${t.to}`))].join(", ")}); ` +
+              "see roster_value_transfers in events.jsonl and rosterTransfers in summary.json",
+          );
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        logger.event({ type: "roster_transfer_check_failed", error });
+        console.error(`[rules] roster-transfer check unavailable: ${error}`);
+      }
+    }
+    const rosterTransfersByAgent = rosterScan?.byAgent ?? {};
+
     const agentsSummary = [];
     for (const agent of agentRuntimes) {
       const final = await getBalances(publicClient, agent.address);
@@ -4805,6 +4999,17 @@ export async function runRealtimeSimulation(
         ...(agent.process !== null
           ? { unloggedTxCount: unloggedTxCountByAgent[agent.id] ?? 0 }
           : {}),
+        // Flagged value movements this agent is a side of (issue #208; rules §8). Absent when
+        // none: the full list, flagged or not, is the run-level `rosterTransfers` below.
+        ...(rosterTransfersByAgent[agent.id] !== undefined
+          ? { rosterTransfers: rosterTransfersByAgent[agent.id] }
+          : {}),
+        // Issue #212: addresses this agent's wallet funded that then sent transactions. Those are
+        // counted in includedTxCount and checked as the agent's; listed here so the matrix flag and
+        // the operator can see the mechanism behind the numbers. Absent when there were none.
+        ...(derivedByAgent[agent.id]
+          ? { derivedSenders: derivedByAgent[agent.id] }
+          : {}),
         stderrTail: agent.process?.getStderr() ?? "",
       });
     }
@@ -4849,6 +5054,23 @@ export async function runRealtimeSimulation(
       // and a reader counting "violations" across old and new runs must not see the number change
       // meaning (issue #40 T0).
       ...(gasViolations.length > 0 ? { gasViolations } : {}),
+      // Every value movement between registered addresses the check found, flagged or not
+      // (issue #208). Absent when there were none; `rosterTransferCheck` says what was read, so a
+      // run whose window outran the node's history is not mistaken for a clean one.
+      ...(rosterScan && rosterScan.transfers.length > 0
+        ? { rosterTransfers: rosterScan.transfers }
+        : {}),
+      ...(rosterScan
+        ? {
+            rosterTransferCheck: {
+              thresholdBps: rosterScan.thresholdBps,
+              sources: rosterScan.sources,
+              ...(rosterScan.errors.length > 0
+                ? { errors: rosterScan.errors }
+                : {}),
+            },
+          }
+        : {}),
       agents: agentsSummary,
     });
     // The last segment closes with the same index entry every other one got, so a period that ended

@@ -261,7 +261,7 @@ class LendingPositionObservation(BaseModel):
     irm: str
     lltv: str
     liquidation_incentive_factor: str = Field(..., alias='liquidationIncentiveFactor')
-    price: str
+    price: str | None = None
     supply_assets: str = Field(..., alias='supplyAssets')
     borrow_assets: str = Field(..., alias='borrowAssets')
     collateral: str
@@ -386,6 +386,10 @@ class LiquityObservation(BaseModel):
     sp_deposit_eusd_wei: str = Field(..., alias='spDepositEusdWei')
     sp_eth_gain_wei: str = Field(..., alias='spEthGainWei')
     sp_lqty_gain_wei: str = Field(..., alias='spLqtyGainWei')
+    lqty_balance_wei: str = Field(..., alias='lqtyBalanceWei')
+    lqty_staked_wei: str = Field(..., alias='lqtyStakedWei')
+    staking_eth_gain_wei: str = Field(..., alias='stakingEthGainWei')
+    staking_eusd_gain_wei: str = Field(..., alias='stakingEusdGainWei')
     sp_total_deposits_eusd_wei: str = Field(..., alias='spTotalDepositsEusdWei')
     sp_share_bps: float = Field(..., alias='spShareBps')
     eth_balance_wei: str = Field(..., alias='ethBalanceWei')

@@ -159,6 +159,14 @@ test("the keeper hands executeOrder a price for every oracle token, WBTC include
         },
       ],
       getBlock: async () => ({ baseFeePerGas: 0n }),
+      // Reader.getOrder: an ordinary order (no callback), which the keeper executes.
+      readContract: async () => ({
+        addresses: {
+          account: getAddress(`0x${"a1".repeat(20)}`),
+          callbackContract: zeroAddress,
+        },
+        numbers: { callbackGasLimit: 0n },
+      }),
     },
     walletClient: {
       sendTransaction: async (tx: { to: Address; data: Hex }) => {
@@ -404,16 +412,52 @@ test("a WBTC-collateral BTC position is valued at the WBTC fair price, not as 1e
     ...LAYOUTS.map((l) => l.props),
     ...LAYOUTS.map(() => 0n), // no GM balances
   ];
-  const done = await run.next(stage1 as never);
+  const second = await run.next(stage1 as never);
+  assert.equal(second.done, false);
+  // stage 2 = the exit-value read for the one agent holding positions. The reader is handed a price
+  // for every market, WBTC's included, and answers per position.
+  const reads = second.value as unknown as Array<{
+    functionName: string;
+    args: readonly unknown[];
+  }>;
+  assert.deepEqual(
+    reads.map((r) => r.functionName),
+    ["getAccountPositionInfoList"],
+  );
+  assert.deepEqual(reads[0].args[3], [MARKETS.WETH, MARKETS.WBTC]);
+  const info = (p: ReturnType<typeof position>, costAmount: bigint) => ({
+    position: p,
+    fees: {
+      funding: { claimableLongTokenAmount: 0n, claimableShortTokenAmount: 0n },
+      totalCostAmount: costAmount,
+    },
+    executionPriceResult: { totalImpactUsd: 0n },
+    basePnlUsd: 100n * 10n ** 30n,
+  });
+  const done = await run.next([
+    [
+      // The closing fee, in collateral token: 0.06% of $6,000 = $3.60.
+      info(position(WBTC, 5_000_000n), 5_902n), // 0.00005902 WBTC = $3.60 at 61,000
+      info(position(USDC, 2000n * 10n ** 6n), 3_600_000n),
+    ],
+  ] as never);
   assert.equal(done.done, true);
   const value = (
-    done.value as Record<string, { valueUsdc: number; unpriced: unknown[] }>
+    done.value as Record<
+      string,
+      { valueUsdc: number; liquidatableValueUsdc: number; unpriced: unknown[] }
+    >
   ).a;
   // PnL of each: 0.1 WBTC x (61,000 - 60,000) = 100.
   const expected = 0.05 * 61_000 + 100 + 2000 + 100;
   assert.ok(
     Math.abs(value.valueUsdc - expected) < 1e-6,
     `${value.valueUsdc} vs ${expected}`,
+  );
+  const exit = expected - (5_902 / 1e8) * 61_000 - 3.6;
+  assert.ok(
+    Math.abs(value.liquidatableValueUsdc - exit) < 1e-6,
+    `${value.liquidatableValueUsdc} vs ${exit}`,
   );
   assert.deepEqual(value.unpriced, []);
 });

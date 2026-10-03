@@ -275,16 +275,136 @@ export type Executor = (
 export type CompileResult =
   { ok: true; executor: Executor } | { ok: false; reason: string };
 
+// What runs inside the vm context, evaluated there once per compile (issue #215). The context is
+// created empty, so these are the context's own functions and the objects they build have the
+// context's prototypes. That is the whole point: a host object reachable from generated code is a
+// host realm reachable from it (`obs.constructor.constructor("return process")()` is the host's
+// Function constructor evaluating in the host realm -- `process.env`, and with it whatever the
+// worker's environment holds). So what goes in is copied, what comes back is copied, and host
+// functions are only ever called from behind a function of this realm.
+const EXECUTOR_BRIDGE = `(() => {
+  const tag = (v) => Object.prototype.toString.call(v);
+  // Deep copy of plain data into this realm. Functions are dropped: an observation carries none,
+  // and a host function in the copy would be the escape the copy exists to prevent.
+  const copyIn = (v, seen = new Map()) => {
+    if (v === null || typeof v !== "object") return typeof v === "function" ? undefined : v;
+    const hit = seen.get(v);
+    if (hit !== undefined) return hit;
+    if (Array.isArray(v)) {
+      const out = [];
+      seen.set(v, out);
+      for (const x of v) out.push(copyIn(x, seen));
+      return out;
+    }
+    switch (tag(v)) {
+      case "[object Date]":
+        return new Date(v.getTime());
+      case "[object Error]": {
+        const out = new Error(String(v.message));
+        seen.set(v, out);
+        out.name = String(v.name);
+        for (const k of Object.keys(v)) out[k] = copyIn(v[k], seen);
+        return out;
+      }
+      case "[object Map]": {
+        const out = new Map();
+        seen.set(v, out);
+        for (const [k, x] of v) out.set(copyIn(k, seen), copyIn(x, seen));
+        return out;
+      }
+      case "[object Set]": {
+        const out = new Set();
+        seen.set(v, out);
+        for (const x of v) out.add(copyIn(x, seen));
+        return out;
+      }
+      case "[object Uint8Array]":
+        return new Uint8Array(v);
+    }
+    const out = {};
+    seen.set(v, out);
+    for (const k of Object.keys(v)) out[k] = copyIn(v[k], seen);
+    return out;
+  };
+  // A host function called from here: what it returns, throws, or settles to is this realm's.
+  const call = (fn, args) => {
+    try {
+      return copyIn(fn(...args));
+    } catch (e) {
+      throw copyIn(e);
+    }
+  };
+  const callAsync = (fn, args) =>
+    new Promise((resolve, reject) => {
+      let pending;
+      try {
+        pending = fn(...args);
+      } catch (e) {
+        reject(copyIn(e));
+        return;
+      }
+      Promise.resolve(pending).then((v) => resolve(copyIn(v)), (e) => reject(copyIn(e)));
+    });
+  // The read-only client: every method call goes to the host client and its result comes back
+  // copied. A property that is not a function (chain, batch) is copied; one the client does not
+  // have is absent here too -- \`then\` in particular, or this would be a thenable.
+  const wrapClient = (host) =>
+    new Proxy({}, {
+      get(_, key) {
+        const v = host[key];
+        return typeof v === "function"
+          ? (...args) => callAsync((...a) => v.apply(host, a), args)
+          : copyIn(v);
+      },
+      has(_, key) {
+        return key in host;
+      },
+    });
+  const wrapContext = (host) => ({
+    agentId: host.agentId,
+    address: host.address,
+    config: copyIn(host.config),
+    publicClient: wrapClient(host.publicClient),
+    latestObservation: () => call(() => host.latestObservation(), []),
+    onObservation: (cb) => call((f) => host.onObservation(f), [cb]),
+    submit: (action) => call((a) => host.submit(a), [action]),
+    log: (entry) => call((e) => host.log(e), [entry]),
+  });
+  return { copyIn, wrapContext };
+})()`;
+
+type ExecutorBridge = {
+  copyIn<T>(value: T): T;
+  wrapContext(host: AgentContext): AgentContext;
+};
+
+// A value the generated code built, brought into this realm before anyone downstream touches it.
+// Actions, log entries and submissions are plain data by contract, so a structural clone loses
+// nothing; anything unclonable was not valid in the first place.
+function toHostRealm<T>(what: string, value: T): T {
+  try {
+    return structuredClone(value);
+  } catch (error) {
+    throw new Error(
+      `${what} is not plain data: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 // Compile generated source into a callable inside a vm context.
 //
 // Be clear about what this does and does not contain. The vm removes *ambient* capability: there is
-// no require, no process, no fs, no fetch in scope. It does not sandbox the agent from the chain,
-// because `ctx` is passed in and carries a read-only publicClient and submit() -- generated code can trade
-// exactly as freely as the hand-written strategy it replaces. That is intentional (it is the same
-// capability, not an escalation), but it means the vm is a guard against a model reaching for
-// something outside the trading interface, not a containment boundary. The cheatcode check below is
-// the part that addresses intent, and it is what stops generated code from calling the privileged
-// RPCs that a participant's own code is also forbidden from calling.
+// no require, no process, no fs, no fetch in scope, and since issue #215 nothing of this realm in
+// the context's either -- the context is created empty, the observation and the context are copied
+// into it, and what a read returns is copied on the way back (EXECUTOR_BRIDGE above). It does not
+// sandbox the agent from the chain, because `ctx` is passed in and carries a read-only publicClient
+// and submit() -- generated code can trade exactly as freely as the hand-written strategy it
+// replaces. That is intentional (it is the same capability, not an escalation), but it means the
+// vm is a guard against a model reaching for something outside the trading interface, not a
+// containment boundary (ADR 0024): the worker it runs in also carries no secret in its environment
+// (strategyEnv.ts), so that an escape nobody has thought of finds nothing to take. The cheatcode
+// check below is the part that addresses intent, and it is what stops generated code from calling
+// the privileged RPCs that a participant's own code is also forbidden from calling.
 export function compileExecutor(source: string): CompileResult {
   const findings = findCheatcodeUsage(source);
   if (findings.length > 0)
@@ -302,47 +422,41 @@ export function compileExecutor(source: string): CompileResult {
     // emit a complete module keeps the contract small and means there is no import syntax to parse.
     const wrapped = `(async function decide(obs, ctx) {\n${source}\n})`;
     const script = new Script(wrapped, { filename: "generated-executor.js" });
-    // Only what a strategy legitimately needs. No require, no process, no fs.
-    const sandbox = createContext({
-      Math,
-      JSON,
-      Number,
-      String,
-      Boolean,
-      Array,
-      Object,
-      BigInt,
-      Map,
-      Set,
-      isFinite,
-      isNaN,
-      parseFloat,
-      parseInt,
-    });
+    // Empty: the context's own Math, JSON, Object, Array, BigInt, Map, Set and the rest are what a
+    // strategy legitimately needs, and they are the context's. The host's used to be handed in
+    // here, and `Object.constructor("return process")()` was the host's Function constructor.
+    // Empty *and without a prototype*: the object handed to createContext is a host object that
+    // the context's global proxy consults first, prototype chain included, so with a plain `{}`
+    // `this.constructor` at the top of the strategy is the host's Object and
+    // `this.constructor.constructor("return process")()` is the host's process.
+    const sandbox = createContext(Object.create(null));
+    const bridge = new Script(EXECUTOR_BRIDGE, {
+      filename: "executor-bridge.js",
+    }).runInContext(sandbox) as ExecutorBridge;
     const fn = script.runInContext(sandbox, { timeout: 1000 }) as Executor;
     if (typeof fn !== "function")
       return { ok: false, reason: "compiled value is not a function" };
 
-    // Bring the action back into this realm before anyone downstream touches it. An object built
+    // Both directions cross the realm boundary as copies. In: the observation and the context
+    // (EXECUTOR_BRIDGE). Out: the action, and what the strategy logs or submits -- an object built
     // inside the vm has that context's Object.prototype, so it is not `instanceof Object` here and
-    // deep-equality against a host object fails -- exactly the kind of difference that shows up far
-    // from its cause, in validation or logging, rather than at the boundary. Actions are plain data
-    // by contract, so a structural clone loses nothing; anything unclonable was not a valid action.
+    // deep-equality against a host object fails, exactly the kind of difference that shows up far
+    // from its cause, in validation or logging, rather than at the boundary.
     //
     // Standalone callers still get the async timeout. Production calls execute in a worker with
     // the same parent-owned deadline, which can also terminate synchronous loops and callbacks.
     const normalized: Executor = async (obs, ctx) => {
-      const result = await withDecideTimeout(fn(obs, ctx), obs.round);
+      const hostFacing: AgentContext = {
+        ...ctx,
+        submit: (action) => ctx.submit(toHostRealm("a submitted action", action)),
+        log: (entry) => ctx.log(toHostRealm("a log entry", entry)),
+      };
+      const result = await withDecideTimeout(
+        fn(bridge.copyIn(obs), bridge.wrapContext(hostFacing)),
+        obs.round,
+      );
       if (result === null || result === undefined) return null;
-      try {
-        return structuredClone(result);
-      } catch (error) {
-        throw new Error(
-          `executor returned a value that is not plain data: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+      return toHostRealm("the executor's return value", result);
     };
     return { ok: true, executor: normalized };
   } catch (error) {

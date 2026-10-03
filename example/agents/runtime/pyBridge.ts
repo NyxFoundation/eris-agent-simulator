@@ -18,6 +18,7 @@ import type {
   StrategyResult,
   StrategySource,
 } from "./strategyProtocol.js";
+import { strategyEnv } from "./strategyEnv.js";
 
 type Decision = {
   action: StrategyResult;
@@ -93,7 +94,7 @@ export class PyBridge {
             killSignal: "SIGKILL",
             maxBuffer: 64 * 1024,
             env: {
-              ...process.env,
+              ...strategyEnv(),
               PYTHONPYCACHEPREFIX: join(this.revisions!, "cache"),
             },
           },
@@ -134,12 +135,12 @@ export class PyBridge {
     const child = spawn(this.python, ["-u", path], {
       cwd: this.context.agentDir ?? dirname(path),
       detached: process.platform !== "win32",
+      // The strategy's environment, not the parent's (strategyEnv.ts, issue #215): no wallet key,
+      // no inference token, no API key. This is an API boundary, not a hostile-code sandbox.
       env: {
-        ...process.env,
+        ...strategyEnv(),
         PYTHONDONTWRITEBYTECODE: "1",
         PYTHONUNBUFFERED: "1",
-        // No key in the reference Python API. This is an API boundary, not a hostile-code sandbox.
-        ERIS_AGENT_PRIVATE_KEY: "",
         PYTHONPATH: [
           sdk,
           this.context.agentDir ?? dirname(path),

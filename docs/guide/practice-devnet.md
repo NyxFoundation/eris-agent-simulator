@@ -480,6 +480,13 @@ sender address as the owner and the role `external`: `method` still comes from t
 scores or rule-checks them, and the row answers "did my transaction land?" for a participant who has
 not yet appeared in the roster.
 
+One exception (issue #212): an address that a registered agent's wallet funded -- with ETH, with a
+token the run prices, or by deploying it -- is that agent's, transitively. Its transactions are
+recorded under the agent (role `agent`, the funder in `derivedFrom`), count in the agent's gas budget
+per block, and show up in the unlogged-transaction reconciliation, because the agent's runtime never
+signed them. `summary.json` lists them under `agents[].derivedSenders`. Sending from a second wallet
+does not take a transaction out of the checks; it adds a flag next to the score for the operator.
+
 ### Switching between a local node and the devnet
 
 A run's target has two axes, set in different places, and both have to move together:
@@ -549,13 +556,23 @@ into the live week, and every restart got a fresh 42 days.
 
 **The episode list is written for a start.** Each day of the period holds one of every kind of
 episode, and each episode's window is a fraction of the run, measured from the moment the coordinator
-starts. So before every (re)start the list is regenerated for that start, and merged like any other
-change (the box's checkout follows `main`, and an edited tracked file on it stops the dashboard
-build):
+starts. So before every (re)start the list is regenerated for that start, merged like any other
+change, and then **promoted onto the box** — which is a third step, not a consequence of the second:
 
 ```bash
 npm run gen:practice-episodes -- --start 2026-10-01T10:00:00+09:00   # rewrites config/practice.yaml
+# merge it, then on the box, before the coordinator is restarted:
+infra/dashboard/sync-main.sh promote <tag|sha>                       # moves the checkout to it
 ```
+
+The box's checkout is **pinned**, not following `main` (issue #211,
+[infra/dashboard](../../infra/dashboard/README.md)): a merge changes nothing there until a ref is
+promoted. The coordinator reads `config/practice.yaml` out of that same checkout, so a restart
+without the promotion starts on **the pinned commit's episode table** — windows measured from the
+start it was generated for, which is the thing the regeneration exists to avoid, and nothing says so
+at startup. `git -C <checkout> log -1 --format=%H` is what is actually there. Editing the file on the
+box instead is worse than it looks: a modified tracked file stops the dashboard build (the sync
+refuses to build a dirty tree), so the public page then freezes at whatever it last built.
 
 A coordinator that starts within 1.5 hours of the planned time still puts exactly one of each kind in
 every day (`core/src/practiceEpisodes.ts`, `test/practiceEpisodes.test.ts`); further off, regenerate.

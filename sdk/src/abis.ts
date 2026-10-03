@@ -239,6 +239,18 @@ export const stabilityPoolAbi = parseAbi([
   "function getETH() view returns (uint256)",
 ]);
 
+// LQTY staking: takes every borrowing fee (eUSD) and redemption fee (ETH), split over the LQTY
+// staked. The environment stakes the bounty allocation at deploy (deployer/src/protocols/liquity.ts
+// stakeEnvironmentLqty); an agent's pending gains are claimed with `unstake(0)` (rawTx).
+export const lqtyStakingAbi = parseAbi([
+  "function stake(uint256 amount)",
+  "function unstake(uint256 amount)",
+  "function stakes(address user) view returns (uint256)",
+  "function totalLQTYStaked() view returns (uint256)",
+  "function getPendingETHGain(address user) view returns (uint256)",
+  "function getPendingLUSDGain(address user) view returns (uint256)",
+]);
+
 // Where a closed Trove's leftover collateral waits for its owner (after a full redemption, or a
 // Recovery-Mode liquidation capped at 110% of the debt). Claimed through
 // BorrowerOperations.claimCollateral(), which has no action of its own -- agents send it as rawTx.

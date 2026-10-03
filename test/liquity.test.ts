@@ -257,6 +257,12 @@ function eusdUnquoted(): StablePrices {
   };
 }
 
+const STAKING_READS = new Set([
+  "stakes",
+  "getPendingETHGain",
+  "getPendingLUSDGain",
+]);
+
 // Drive the generator with canned stage results, recording what each stage asked for.
 async function drive(
   ctx: ValuationContext,
@@ -270,6 +276,16 @@ async function drive(
   while (!step.done) {
     asked.push(step.value);
     const reply = stages[i]?.(step.value) ?? step.value.map(() => undefined);
+    // The LQTY staking reads ride at the end of stage 0. Tests that are not about staking answer
+    // only the position reads; their staking reads read as nothing staked and nothing pending.
+    if (i === 0)
+      step.value.forEach((r, k) => {
+        if (
+          k >= reply.length &&
+          STAKING_READS.has((r as { functionName: string }).functionName)
+        )
+          reply[k] = 0n;
+      });
     i += 1;
     step = await run.next(reply);
   }
@@ -301,8 +317,8 @@ test("the historical mark prices eUSD off the registry and the Trove off the fai
   );
   // Stage 0 asks for four reads per agent (Trove, SP deposit, SP gain, CollSurplusPool) plus the one
   // global. The market probe is gone: the wallet's eUSD is registry spot and its price comes off ctx
-  // (issue #27 (b)).
-  assert.equal(asked[0].length, 5);
+  // (issue #27 (b)). Then three LQTY staking reads per agent (stake, pending ETH, pending eUSD).
+  assert.equal(asked[0].length, 5 + 3);
   const v = values[AGENT.id];
   // Trove 6000 - 4000 x 0.99, plus a 1,000 eUSD deposit at 0.99.
   assert.equal(Math.round(v.valueUsdc), Math.round(6000 - 3960 + 990));
@@ -463,6 +479,10 @@ function observation(
     spDepositEusdWei: "0",
     spEthGainWei: "0",
     spLqtyGainWei: "0",
+    lqtyBalanceWei: "0",
+    lqtyStakedWei: "0",
+    stakingEthGainWei: "0",
+    stakingEusdGainWei: "0",
     collSurplusWei: "0",
     spTotalDepositsEusdWei: (50_000n * WAD).toString(),
     spShareBps: 0,
@@ -815,4 +835,65 @@ test("the venue accounts for eUSD and deliberately leaves LQTY visible", async (
     accounted?.some((t) => t.toLowerCase() === DEPLOYMENT.lqtyToken),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// LQTY staking: the fee share is owed outright; the stake itself has no market
+// ---------------------------------------------------------------------------
+
+test("pending LQTY staking gains are valued like the Stability Pool's, and the stake is reported", async () => {
+  const LQTY = 30n * WAD;
+  const { values } = await drive(
+    context({ stablePrices: () => eusdAt(0.99) }),
+    [
+      () => [
+        GAS_COMPENSATION,
+        entire(0n, 0n),
+        0n,
+        0n,
+        0n,
+        // stake, pending ETH (a redemption fee share), pending eUSD (a borrowing fee share)
+        LQTY,
+        WAD / 10n,
+        50n * WAD,
+      ],
+    ],
+  );
+  const v = values[AGENT.id];
+  // 0.1 ETH at the fair price, 50 eUSD at the market's mid.
+  assert.equal(Math.round(v.valueUsdc * 100), Math.round((300 + 50 * 0.99) * 100));
+  // The eUSD gain is eUSD the agent holds, so the scorer re-marks it at size with the rest.
+  assert.deepEqual(v.stableLongs, { [DEPLOYMENT.eusd.toLowerCase()]: 50n * WAD });
+  assert.deepEqual(v.unpriced, [
+    {
+      token: DEPLOYMENT.lqtyToken,
+      amountRaw: LQTY.toString(),
+      source: "liquity-lqty-staking",
+      reason: "unpriced",
+    },
+  ]);
+});
+
+test("a failed staking read is reported, not read as nothing staked", async () => {
+  const { values } = await drive(context(), [
+    () => [GAS_COMPENSATION, entire(0n, 0n), 1000n * WAD, 0n, 0n, undefined, 0n, 0n],
+  ]);
+  const v = values[AGENT.id];
+  // The rest of the position is still valued.
+  assert.equal(Math.round(v.valueUsdc), 1000);
+  assert.equal(v.unpriced.length, 1);
+  assert.equal(v.unpriced[0].reason, "read-failed");
+  assert.equal(v.unpriced[0].source, "liquity-lqty-staking");
+});
+
+test("an unstaked agent asks for staking reads but reports nothing", async () => {
+  const { asked, values } = await drive(context(), [
+    () => [GAS_COMPENSATION, entire(0n, 0n), 0n, 0n, 0n, 0n, 0n, 0n],
+  ]);
+  assert.deepEqual(
+    asked[0].slice(5).map((r) => (r as { functionName: string }).functionName),
+    ["stakes", "getPendingETHGain", "getPendingLUSDGain"],
+  );
+  assert.equal(values[AGENT.id].valueUsdc, 0);
+  assert.deepEqual(values[AGENT.id].unpriced, []);
 });

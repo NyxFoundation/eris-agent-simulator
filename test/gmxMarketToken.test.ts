@@ -203,12 +203,26 @@ function perp(
 test("a perp in a configured market is valued at its base's fair price", () => {
   // 1 WETH long entered at $3,000 with 1,000 USDC collateral, marked at $3,000: PnL 0.
   const position = perp(MARKET, 3000n * FLOAT, 10n ** 18n, 1000n * 10n ** 6n);
-  return drive([() => [[position], [], marketProps, 0n, 0n]]).then(
-    ({ values }) => {
-      assert.ok(Math.abs(values.holder.valueUsdc - 1000) < 1e-6);
-      assert.deepEqual(values.holder.unpriced, []);
-    },
-  );
+  return drive([
+    () => [[position], [], marketProps, 0n, 0n],
+    () => [
+      [
+        {
+          position,
+          fees: {
+            funding: { claimableLongTokenAmount: 0n, claimableShortTokenAmount: 0n },
+            totalCostAmount: 0n,
+          },
+          executionPriceResult: { totalImpactUsd: 0n },
+          basePnlUsd: 0n,
+        },
+      ],
+    ],
+  ]).then(({ values }) => {
+    assert.ok(Math.abs(values.holder.valueUsdc - 1000) < 1e-6);
+    assert.ok(Math.abs(values.holder.liquidatableValueUsdc - 1000) < 1e-6);
+    assert.deepEqual(values.holder.unpriced, []);
+  });
 });
 
 test("a perp in an unconfigured market is reported, not scored at zero (#41)", async () => {
@@ -253,4 +267,75 @@ test("a perp whose base has no fair price is reported, not scored at zero", asyn
       source: "gmx-position",
     },
   ]);
+});
+
+// A perp is scored at what closing it would leave (ADR 0022 Amendment 1), not its face. The deploy
+// charges a position fee to close, and the open fee is already out of the collateral, so a face
+// mark charged a position held through the bell half the fees of one that was closed.
+const position = {
+  addresses: {
+    account: AGENTS[0].address,
+    market: MARKET,
+    collateralToken: TOKENS.USDC.address,
+  },
+  numbers: {
+    sizeInUsd: 30_000n * 10n ** 30n,
+    sizeInTokens: 10n ** 19n, // 10 WETH at a $3,000 entry
+    collateralAmount: 3_000n * 10n ** 6n,
+    fundingFeeAmountPerSize: 0n,
+  },
+  flags: { isLong: true },
+};
+const exitInfo = (over: {
+  cost?: bigint;
+  impact?: bigint;
+  claimableLong?: bigint;
+  claimableShort?: bigint;
+}) => ({
+  position,
+  fees: {
+    funding: {
+      claimableLongTokenAmount: over.claimableLong ?? 0n,
+      claimableShortTokenAmount: over.claimableShort ?? 0n,
+    },
+    totalCostAmount: over.cost ?? 0n,
+  },
+  executionPriceResult: { totalImpactUsd: over.impact ?? 0n },
+  basePnlUsd: 0n,
+});
+const withPosition = () => [[position], [], marketProps, 0n, 0n];
+
+test("an open perp is scored net of what closing it costs; its face stays valueUsdc", async () => {
+  const { values, asked } = await drive([
+    withPosition,
+    () => [
+      [
+        exitInfo({
+          cost: 18n * 10n ** 6n, // the 0.06% closing fee on $30,000, in USDC
+          impact: -(2n * 10n ** 30n), // $2 of impact, deferred at open and charged at close
+          claimableLong: 10n ** 15n, // 0.001 WETH of funding owed to the position
+        }),
+      ],
+    ],
+  ]);
+  const reads = asked[1] as Array<{ functionName: string; args: unknown[] }>;
+  // Only the holder is read, and no GM price is asked for when nobody holds GM.
+  assert.deepEqual(
+    reads.map((r) => r.functionName),
+    ["getAccountPositionInfoList"],
+  );
+  assert.equal(reads[0].args[2], AGENTS[0].address);
+  assert.equal(values.holder.valueUsdc, 3_000);
+  assert.ok(
+    Math.abs(values.holder.liquidatableValueUsdc - (3_000 - 18 - 2 + 3)) < 1e-9,
+    String(values.holder.liquidatableValueUsdc),
+  );
+  assert.deepEqual(values.holder.unpriced, []);
+});
+
+test("a failed exit read marks the position at face and says so", async () => {
+  const { values } = await drive([withPosition, () => [undefined]]);
+  assert.equal(values.holder.liquidatableValueUsdc, 3_000);
+  assert.equal(values.holder.unpriced.length, 1);
+  assert.equal(values.holder.unpriced[0].reason, "read-failed");
 });

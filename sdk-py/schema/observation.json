@@ -929,6 +929,18 @@
         "spLqtyGainWei": {
           "type": "string"
         },
+        "lqtyBalanceWei": {
+          "type": "string"
+        },
+        "lqtyStakedWei": {
+          "type": "string"
+        },
+        "stakingEthGainWei": {
+          "type": "string"
+        },
+        "stakingEusdGainWei": {
+          "type": "string"
+        },
         "spTotalDepositsEusdWei": {
           "type": "string"
         },
@@ -965,6 +977,10 @@
         "spDepositEusdWei",
         "spEthGainWei",
         "spLqtyGainWei",
+        "lqtyBalanceWei",
+        "lqtyStakedWei",
+        "stakingEthGainWei",
+        "stakingEusdGainWei",
         "spTotalDepositsEusdWei",
         "spShareBps",
         "ethBalanceWei",
@@ -1096,7 +1112,6 @@
         "irm",
         "lltv",
         "liquidationIncentiveFactor",
-        "price",
         "supplyAssets",
         "borrowAssets",
         "collateral",

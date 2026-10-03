@@ -45,7 +45,13 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
   `openai:<m>` / `gpt-*` は OpenAI 互換 chat completions。**本番は運営の推論プロキシ経由**
   （`ERIS_INFERENCE_BASE_URL` + agent ごとの `ERIS_INFERENCE_TOKEN` = HMAC(ERIS_INFERENCE_SECRET, agentId)。
   agent は鍵を持たない。`npm run inference-proxy`、`core/src/inference/proxy.ts`、規約 §2.3/§2.5。
-  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）。
+  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）。**記録の失敗でプロキシは落ちない**
+  （issue #215。以前は `appendFileSync` の失敗が async ハンドラの未処理 rejection になって exit 1 = 全員の改訂が
+  止まった）。書けなかった記録は stderr に agent ごと 1 行 + `/healthz` の `recording.failures`、呼び出しは通す。
+  記録量は `maxRecordBytesPerAgent`（既定 256 MiB）/ `maxRecordBytesTotal`（既定 8 GiB、プロセス単位）で頭打ち
+  （1 call の記録は request 4 MiB + 応答 32 MiB まであり得て、30 call/分なら 1 agent で ~1 GiB/分）。超えたら
+  **記録だけ止めて呼び出しは通し**、その agent のファイル末尾に `event: "recording_capped"` の 1 行を残す
+  （replay はこの行を飛ばし、以後は 409）。無制限は設定できない。
   **ストリーミングは拒否せず逐次中継する**（issue #166。SSE / Ollama の NDJSON。1 呼び出し 1 記録で全文を残し
   replay も同じ content-type で返す）。待ち時間は非ストリームが `upstreamTimeoutMs`（既定 5 分。Node の fetch が
   応答ヘッダを 300 秒で諦めるので実質の上限もここ）、ストリームは**無音**の `streamIdleTimeoutMs` だけで総時間は
@@ -71,10 +77,22 @@ LLM の手掛かりは現在の戦略コードだけになり、**一度も swap
 `docs/scoring-metric-measurements.md` §5.8）。「持っていないことは何もしない理由にならない」も明記する。
 改訂は `{notes, executorTs}` か `{notes, revertTo: <version>}` を返し、`executorTs: null` は
 「今の戦略を維持」。生成コードは **cheatcode 静的検査 → vm コンパイル**（関数式の *評価* に 1 秒
-= `runInContext(..., {timeout: 1000})`）を通ってから設置される。**設置前に試運転はしない** — vm の
+= `runInContext(..., {timeout: 1000})`）を通ってから設置される。**vm のコンテキストは空で作る**
+（issue #215。`createContext(Object.create(null))`。以前はホストの `Object` / `JSON` / `Math` を渡していて
+`Object.constructor("return process")()` でホスト realm に出られ、worker の `process.env` から鍵が読めた。
+プロトタイプ無しなのは、`{}` だと `this.constructor` がホストの `Object` になるため）。obs / ctx はコンテキスト
+realm へ**コピーして**渡し、`publicClient` の読取結果も戻りでコピーする（`EXECUTOR_BRIDGE`）。生成コードから
+辿れるホストのオブジェクトを無くす層であって、ADR 0024 の「封じ込め境界ではない」は変わらない。
+**設置前に試運転はしない** — vm の
 timeout は式の評価しか覆わないので、無限ループする本体は評価を通ってしまう。だから設置後、
 `decide` を **worker thread** で実行し、親スレッドが呼び出しごとに 5 秒を計測する
 （`DECIDE_TIMEOUT_MS` = 規約 §2.3、`runtime/strategyRunner.ts` / `decideTimeout.ts`）。
+**worker の env は親の env から秘密を落としたもの**（`runtime/strategyEnv.ts`。Python の子プロセスも同じ）:
+`ERIS_AGENT_PRIVATE_KEY` / `ERIS_INFERENCE_TOKEN` / `ERIS_LLM_*` / `*_API_KEY` / `*_TOKEN` / `*_PRIVATE_KEY` 等は
+届かず、ロスター `env` の戦略パラメータ（`ERIS_ARB_SAFETY_BPS` も `STAT_ARB_Z_ENTER` も）は届く。
+署名は親の send.ts、改訂呼び出しも親なので worker に鍵の用途は無い。残すのは読取 transport 自身の
+`CF_ACCESS_CLIENT_*` / `ERIS_RPC_HEADERS`（worker は自前の client で読むので、落とすとゲートウェイ越しの
+自己ホスト agent が読めなくなる）。
 **手書き・生成済みの両戦略に同じ上限**がかかり、await が返らない場合も同期の無限ループも
 `decide timeout:` として記録し、その判断の送信予約と返り値を捨てる。次の判断は同じ選択中の戦略を
 新しい worker にロードする。worker 内の変数は初期化されるが、親の観測・改訂ループ、nonce、ログ、
@@ -153,7 +171,7 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   最大 $10k = perp は spot の 1 桁上）。whale・Aave actor は据え置き（whale は「プール深度に対する割合」の規則を
   値の隣に書いた）
 - **deployer 側（`npm run gen:state-dump` で焼き直し必須）**: GM pool 200 WETH + 600k → **1,500 WETH + 4.5M USDC**
-  （spot 比 0.2× → 1.5×。Arbitrum 実測 1.7×。impact factor 0 なので約定は不変、OI/pool = funding skew が小さくなる）/
+  （spot 比 0.2× → 1.5×。Arbitrum 実測 1.7×。OI/pool = funding skew が小さくなる。impact factor は Arbitrum の値をそのまま写したので、この pool でも約定はほぼ不変）/
   Aave shared seed 9k USDC + 10 WETH → **5M USDC + 2,000 WETH**（Base の 20× は採らない。12 分のエポックで
   利用率と金利カーブは効かず、agent 規模の借入が空リザーブに当たらない深さがあれば足りる）/
   Stability Pool 50k → **125k eUSD** + genesis Trove **350 ETH / 350k eUSD**（上の Liquity 節）。
@@ -181,6 +199,31 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   読み側（`marketSeries.ts`）は `savedFundingFactorPerSecond` を読むが、これは**適応 funding 経路の保存値**で、
   `fundingIncreaseFactorPerSecond == 0` だと MarketUtils が早期 return して**永久に 0**。適応 funding を
   有効にすると読んでいるキーがそのまま埋まる
+- **手数料・price impact・borrowing・最大レバレッジも同じ穴だった**（同じ patch）。upstream の hardhat 設定は
+  `positionFeeFactor*` / `*PositionImpactFactor` / borrowing 系を書かず、`minCollateralFactor` は 1%。
+  つまり**サイズにコストが掛からない 100 倍の先物を fair で約定**していて、fair の予測可能な動き（OU の平均回帰の
+  中心が開始価格）が全部、配布額の何倍もの期待値になった。今は Arbitrum の ETH/BTC 市場の値を**そのまま写す**
+  （position fee 0.04% / 0.06%、impact 9e-11 / 3e-11・指数 2 / 1・上限 0.5% / 0.4%、borrowing は
+  `borrowingRateConfig_LowerMax_WithHigherOptimal`）。impact は Arbitrum の OI に合わせた係数なので、この pool では
+  $1M の偏りで ~0.9bps しか効かない（**効くのは fee**。深度に合わせて盛るのは較正の仕事として見送った）。
+  レバレッジは**建てるとき 5%（20 倍）・清算 1%**。**これが GMX が受け付ける上限**で
+  （`ConfigUtils.validateRange` が MIN_COLLATERAL_FACTOR > 5% と _FOR_LIQUIDATION > 1% を revert する。
+  10% / 5% を入れたら deploy が落ちた）、Arbitrum の 0.5〜1% よりは厳しい。
+  **swap も同じ**: keeper は `OrderCreated` を種類を問わず全部執行するので、`rawTx` の `MarketSwap` 注文が
+  fair・手数料 0・impact 0 で通り、AMM-vs-fair の裁定が片側の AMM 手数料で済んでいた。swap fee 0.05% / 0.07%、
+  swap impact 3e-10 / 2e-10・指数 2（Arbitrum の値）を入れた。GM の deposit / withdraw は keeper が拾わないので執行されない。
+  **清算 keeper がある**（`liquidatePositions`。以前は注文を執行するだけで**清算は一度も起きず**、crash を 20 倍の逆張りで
+  抜けても建玉が生き残った）。毎ブロック DataStore の `POSITION_LIST` から全建玉（参加者も背景フローも）を読み、
+  `Reader.isPositionLiquidatable` を注文 keeper と同じ fair で判定して `LiquidationHandler.executeLiquidation` を送る。
+  1 ブロック 2 件まで（各 6M gas を宣言するので、連鎖で参加者のブロックを埋めない）、送った建玉は 3 ブロック再送しない。
+  **採点は床なしのまま**: 清算が無い状態で床を 0 にすると、1 agent が 20 倍のロングとショートを両方持てば負け側が 0 で
+  止まるタダのストラドルになる。清算があれば負けは証拠金 1% 付近で止まる。**指値・ストップ注文は今も執行されない**
+  （keeper は新しい `OrderCreated` しか見ない。SDK のアクションは成行のみ）`basis-arb` の往復コスト既定は 0 → 12bps。
+  **採点は「今閉じたら残る額」**（`positionExitValueUsd`。Reader の `getAccountPositionInfoList` を fair で引き、
+  証拠金 + 基準 PnL + 決済時と建玉時に繰り延べた impact − 決済手数料・未払い borrowing・funding + 受け取る funding）。
+  建玉時の手数料は証拠金から既に引かれているので、額面（証拠金 + PnL）のままだと**鐘の後まで持ち越した建玉は手数料を
+  半分しか払わない**ことになった。額面は `valueUsdc`（= `markedValueUsdc`）に残る。読取に失敗したら額面で数えて
+  `read-failed` を報告し、価格の付かない市場に建玉がある agent は読まない（Reader が revert する）
 - **値を盛らないこと**。盛ると perp だけ Aave の借入金利と違う時計で回る（LST の APY で一度やった失敗）。
   よって**レートは実物・符号も偏り追随**だが、**数百ブロックで積む額は小さい**（Aave の利息と同じ理由。EVM 時間は warp しない）
 - **これ以前に焼いた state dump は旧設定を持つ**ので、そこからの replay は今も 0 を返す。
@@ -196,6 +239,21 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   35 run・49,498 件で実測: min 1.15M / p50 2.38M / p99 2.60M / max 2.79M。GMX は申告から 1M（error handling 分）を
   引いて約定に渡し、general プロファイルなら 3.9M + 1M を先に要求するので、6M は両プロファイルで通り約定に最大値の
   1.8 倍残る。`afterMine` の `opts.executeGas` で上書き可。**anvil が収容判定に申告値を使うか実使用量を使うかは未実測**
+- **keeper は参加者のコールバックを実行しない**。GMX は注文の `callbackContract` を `executeOrder` の中で呼び
+  （`afterOrderExecution` / `afterOrderCancellation` は注文の `callbackGasLimit`、`refundExecutionFee` は DataStore の
+  別上限）、keeper の tx はオラクルの直下・全参加者より上に並ぶ。以前は keeper がログの key を読まずに全部実行していたので、
+  コールバック付きの注文 = **作成者のコードを次ブロックの先頭で、keeper の手数料・gas・帰属で**動かせた（前ブロックの
+  AMM 乖離を先取りし、最低実行手数料 0 なのでコールバックから次の注文を出して毎ブロック続く）。2 層で塞ぐ:
+  keeper が実行前に `Reader.getOrder` を読み、`callbackContract != 0` か読めない注文は実行しない
+  （`gmxKeeperRefusal`、`keeper_order_refused` イベント。アドレスだけで判定 = GMX はコードの有無を実行時に見るので
+  CREATE2 の未デプロイ先も拒否）。patch は `maxCallbackGasLimit` と `refundExecutionFeeGasLimit` を 0 にし、
+  `createOrder` が `MaxCallbackGasLimitExceeded` で revert する（**片方だけでは refund 側の 200k が残る**）。
+  3 本目の口は**注文の `receiver` への native ETH 送付**（実行手数料の返金・unwrap した出力）で、コントラクトなら
+  `receive()` が `nativeTokenTransferGasLimit`（upstream 50k）で keeper の tx 内で動く。patch はこれも 0 にする
+  （ETH 付き CALL には EVM が 2,300 を足すので `transfer()` と同じ。SSTORE 不可、足りないコントラクトには GMX が WETH で
+  払い直す。EOA は無影響。実測: 50k では receive() がストレージを書き、0 では書けずに WETH で届いた）。
+  起動時に 3 つを読んで `gmx_callback_check` に記録するが**落とさない**（callback は keeper 側で既に塞がっており、古い dump
+  での差は注文が作成時に revert するか OrderVault に残るかと、receiver の 50k gas = swap 1 回に足りない量だけ。警告で焼き直しを促す）
 - **observation にも出る**（issue #78）。`protocols.gmx` の `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`
   （正 = long が short に払う）/ `fundingModeled`、建玉があれば `position.fundingOwedUsd`。
   以前は「チェーン上にも market.json にもあるのに、どの agent からも見えない」状態だった。
@@ -317,9 +375,27 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   書き手は `core/src/segments.ts` の `segmentAgentRecord` / `segmentIndexAgent`、読み手は
   `dashboard/src/data/scenarioP.ts` の 1 本（**境界系列が agent を持つならそれが答え、
   「系列はあるが P が作れない」は「系列が無い」とは別**）
+- **参加者の登録は Discord の `/faucet` でも受け付ける**（`infra/discord-faucet/`。box 上の systemd ユーザーユニット）。
+  `register.sh` と同じ手順（検査 → 控え → `config/registrations.yaml` に追記 → `events.jsonl` で coordinator の判定 →
+  チェーンの残高）を box の中で行うので SSH も新しい入口も要らない。使えるのは参加者ロールを持つ人だけで、ロールは
+  参加登録スプレッドシートの Discord ユーザー名と定期的に同期する（規約 §2.7。付与のみで剥奪はしない）。
+  **1 アカウント 1 体**（`~/.local/state/ascon-faucet/claims.json`）。2 体目と同じ参加単位の紐付けは運営が `register.sh` で行う
 - **未登録の送信者も blocks.csv に残す**（role `external`、ownerId = 送信者アドレス小文字）。以前は
   「run の外の tx」として捨てていたが、試行環境ではそれが参加者の tx そのもので、「自分の tx は載ったか」に
-  答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外
+  答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外。
+  **ただし agent のウォレットが資金を渡した先からの tx は agent の行**（issue #212。`core/src/realtime/derivedSenders.ts`）:
+  ETH 送金・価格のある token の Transfer・自分が deploy したコントラクトを推移的に追い、そこから出た tx は
+  role `agent` + ownerId = その agent、末尾列 `derivedFrom` に資金元。以前は第 2 EOA から出すだけで fee 上限・
+  ガス予算（per-agent-per-block の合計はゲートウェイでは見えない）・未ログ検査の全部を外れた。3 検査は
+  `external` 行も derived map で読む（資金が着く前に tip 0 で送った行の分）。summary の `agents[].derivedSenders`・
+  `derived_senders` イベント・matrix の `flags` に出る。**追わないもの**: 他人の tx が allowance で agent の token を
+  引いた場合（追うと誰にでも違反を着せられる）、価格の無い token の Transfer（偽 token の log は何とでも言える）、
+  call 内部の ETH 転送（trace が要る）。判定は運営（規約 §8）。
+  **環境自身の鍵 4 本（admin / keeper / setup / deployer）は既知側に載せる**（`core/src/realtime/environmentSigners.ts`。
+  `roleKeyGuard` の `RoleKeys` と同じ 4 本に型で縛ってある）。載せないと二重に間違う — 環境の tx が `external` 行に
+  なり、しかも agent が 1 回送金するだけで**その鍵が送った全部**がその agent の行になる（setup ならレジストリ登録、
+  deployer なら `depeg` / `liquidityPull` の売買）。depeg / pull が有効な run は後から deployer 行を機構名で上書きする
+  （こちらが具体的なので正しい）。この 4 本は下限
 - **セグメントを切るたびに `stress_schedule` も再発行する**（`run_started_realtime` / `agents_registered` /
   manifest と同じ扱い。ADR 0021 §6）。以前は 2 日目以降の全セグメントが「予定なし」に見えた。ディスク上の記録は
   窓込みで完全（規約 §7.2 の監査用）。**未来の窓を公開側から隠すのは runs API（dashboard 側の audience mode）の仕事**
@@ -832,6 +908,15 @@ ours なのは 2 つだけ（core は無改変）:
   で環境が deployer の eUSD を SP に入れる。genesis を下げないのは償還順序と SP 相対深度を全レジームで壊すから。
   手数料カーブの希釈（供給に反比例）は不可避で、この regime の償還較正は別に測る。sp-underwriter は RM 帯でも
   清算する分岐を持つ（SP が全額吸収できる Trove だけ）
+- **環境が LQTY を 200 万ステークしている**（`stakeEnvironmentLqty`。bounty 枠を mnemonic index 100 の staker に
+  mint してそのままステーク）。LQTYStaking は借入手数料（eUSD）と償還手数料（ETH）をステーク量で按分するが、
+  multisig 枠は 1 年ステーク不可・残りは SP の emission なので、**放置すると SP で数 LQTY を得た最初の agent が
+  以降の全手数料を取り、自分の償還・借入も実質無料**になっていた。ステーク量 0 の間の手数料は元々コントラクトに
+  宙に浮いていたので、お金の流れは変わらず持ち主ができただけ。staker の鍵は deployer と同じ秘密（公開 mnemonic の
+  deploy は role-key guard が deployer 側で拒否）。**ステークが 100 万未満の deployment は起動時に落ちる**
+  （`lqtyStakeProblem`。これ以前の state dump は全部焼き直し）。agent 自身のステークの未請求手数料は採点に入り
+  （SP の ETH gain と同じ扱い。eUSD は stableLongs）、ステーク中の LQTY は `liquity-lqty-staking` で unpriced 報告。
+  観測は `lqtyBalanceWei` / `lqtyStakedWei` / `stakingEthGainWei` / `stakingEusdGainWei`
 - **LQTY は意図どおり「値付けしないが見える」**: SP 預入で LQTY gain が付き、run 後に
   `scoring_unpriced_holdings` に `erc20-unaccounted` として 61.3 LQTY が報告された（黙って 0 にしていない）
 - 設定例は `config/liquity.yaml`、レジームは `config/regimes/liquity.yaml`（α 側）と
@@ -881,11 +966,33 @@ ours なのは 2 つだけ（core は無改変）:
     Verifier の仕事は `owner()` を読むこと。`ConfigurableOracle`（owner あり＝罠）と
     `PriceFeedOracle`（owner なし・immutable＝正直）を両方同梱してあるので、
     「オラクルが動かせるか」は本物の識別子になる
-  - **採点は回収可能額**（`backedFraction`）。供給側は「残っている loan token ＋ **環境価格**で見た担保」
-    への持分、借り手側は `max(0, 担保 − 債務)` で**床は 0**（担保を捨てて歩き去れる＝Liquity の
-    ICR<100% clamp と同じ規則）。**市場自身のオラクルは清算だけを決め、マークは書かない**
+  - **採点は回収可能額**（`backedFraction`）。供給側は「残っている loan token ＋ **借り手ごとの**
+    `min(その借り手自身の担保の環境価格, その借り手の債務)` の合計」への持分（`recoverableDebt`）、
+    借り手側は `max(0, 担保 − 債務)` で**床は 0**（担保を捨てて歩き去れる＝Liquity の
+    ICR<100% clamp と同じ規則）。**市場自身のオラクルは清算だけを決め、マークは書かない**。
+    **市場全体の担保合計で相殺してはいけない** — 清算が差し押さえられるのはその借り手の担保だけなので、
+    以前の規則では 1 体の余剰担保（債務 0 で預けた担保）が本人の資産と他人の焦げ付きの裏付けとに
+    二重に数えられ、同じ参加者の 2 体で約 +27k の架空利益が出た（監査 M1）。借り手は
+    コントラクトの `borrowerPositionsFrom`（今債務を持つアドレスの一覧。swap-and-pop）から読み、
+    1 市場 `BORROWER_SCAN_LIMIT`（1,024）を超えた分の債務は回収 0 として数える（安全側）。
+    **借り手の一覧を読むのは「誰かの index に載っていて、かつ債務がある市場」だけ**（下の per-user index
+    と組み合わせる。供給していない市場の裏付けは自分の評価額を変えないので読まない）
   - **金利は装飾**。エポック 12 分で 3%/年は 0.00007%。効く餌は**レバレッジ（高 LLTV）と清算ボーナス**で、
     貸出の罠の被害者は**借り手か清算人**であって供給側ではない。IRM は正直にそう書いて同梱
+  - **建玉はコントラクトの per-user index から読む。市場一覧の切り出しでは読まない**（issue #212 / #216 項目 1）。
+    `marketIds()` のガスは件数に比例し（~1,500 件で 30M の call 上限）、しかも採点は**最新 512 件に切ってから**
+    空市場を除いていたので、被害者の市場より新しい空市場を 512 件作ると（1 件 ~17 万 gas = 1 ブロックの予算で
+    ~170 件）建玉が評価から消え、警告も出なかった。今は `supply`/`supplyCollateral`/`borrow` が `(market, user)` の
+    初回に `_userMarketIds[user]` へ追記し（建玉を作る呼び出しはこの 3 つだけ。清算は他人の建玉を減らすだけ）、
+    採点（`valueAtBlock` / `valueUsdc`）は agent ごとに `userMarketIdsFrom` を 1 回読む。伸ばせるのは本人だけなので
+    `USER_MARKET_LIMIT`（128）は自分の建玉しか切らず、超過は `lending-unscanned`、読めなかった市場・建玉は
+    `lending-market:` / `lending-position:` の `read-failed` で `scoring_unpriced_holdings` に出る。観測は
+    `marketCount` + `marketIdAt` を 256 件ずつ新しい順に 512 件まで歩き、**自分の市場は窓から落ちても index から戻す**。
+    SDK の ABI に `marketIds` は無い（`test/lendingMarketIndex.test.ts`）。コントラクトは run ごとに `out/` から
+    deploy するので state dump は無関係で、`forge build` だけ要る。**その `out/` が古いと静かに壊れる**ので
+    deploy の前に ABI を実測する（`assertArtifactHasFunctions`。`userMarketIdsFrom` / `userMarketCount` /
+    `expectedPosition` が無ければ `npm run build:contracts` を名指しして落ちる）。黙って通すと per-user index の
+    読取が空で返り、**全 lending 建玉が 0 のまま run は採点も順位も出す**
 - **アクション**: `createPool`（uniswap 所有。NPM の `createAndInitializePoolIfNecessary`）/
   `createLendingMarket` + `lendingSupply`/`Withdraw`/`SupplyCollateral`/`WithdrawCollateral`/`Borrow`/
   `Repay`/`Liquidate`（lending 所有）。**デプロイは `to` を省いた `rawTx`** — ランタイム経由なので
@@ -905,6 +1012,23 @@ ours なのは 2 つだけ（core は無改変）:
 - **環境はエージェント製市場に手を出さない。**`noArb` は有効アダプタの state（= `MARKET_LEGS`）しか
   読まないので構造的に対象外で、`test/agentCreatedMarkets.test.ts` がその境界を検査する。
   帰結: **罠を仕掛ける者は他のエージェントからしか収穫できない**
+- **参加者製コードを実行する read は gas 上限付き**（issue #213。`sdk/src/untrustedRead.ts` が単一の出典、
+  `UNTRUSTED_READ_GAS` = 200,000 = `SimpleLending.EXTERNAL_CALL_GAS` と同じ値で `test/untrustedRead.test.ts`
+  が一致を検査）。対象は lending 市場の oracle `price()` / `owner()`（観測・採点・清算の approve 見積り）、
+  registry エントリの `owner()`、coordinator の ERC-20 判定（`name`/`symbol`/`decimals`）、launch token の
+  `balanceOf` と QuoterV2 経由の見積り（pool の swap 内で token の `transfer` が走る。こちらは
+  `UNTRUSTED_SIMULATION_GAS` = 2M）。**`gas` を付けないと `eth_call` はブロックガスリミット（30M）で走る**ので、
+  ループするコントラクト 1 つで読む側全員が毎ブロック巻き込まれる（実測 anvil 1.7.1: keccak ループ 1 回
+  ~280ms → 上限付き ~3ms）。**Multicall3 には入れない** — aggregate は内側の CALL に残りの 63/64 を渡すので、
+  1 つの罠が同じ batch の後続（正直な oracle）まで欠落させる。1 アドレス 1 `eth_call`（transport の JSON-RPC
+  batching で 1 HTTP）+ batch ごとの期限 `UNTRUSTED_READ_TIMEOUT_MS` = 1 秒。**読めなかった値は欠落**
+  （`price` / `oracleOwner` が無い。0 ではない = 0 価格は全借り手を清算可能に、0 owner は「誰も動かせない」に読める）。
+  coordinator は答えなかったアドレスを `unknown` として登録し `agent_market_read_failed`（out-of-gas / timeout /
+  error。revert は「token でない」の通常回答なので出さない）を**アドレスごとに 1 回**出す。ただし timeout / error は
+  ノードが答えなかっただけでコントラクトの答えではないので、**次の sweep で再判定**し（`CLASSIFY_ATTEMPTS` = 3 回まで。
+  `seen` にはまだ入れない）、1 sweep の判定は `MAX_CLASSIFY_PER_SWEEP` = 64 件まで（残りは繰り越し。期限は batch 全体で
+  1 つなので、CREATE を大量に積んだブロックで同じブロックの正直な token まで `unknown` に固定されていた）。singleton 経由の
+  `isHealthy` / `expectedPosition` はコントラクト側の staticcall 上限で既に守られているので multicall のまま
 - 参照 agent は 6 体: `market-launcher`（正直な作成者。immutable オラクルで作って鐘の前に withdraw）/
   `market-taker`（利用者。`oracleOwner` を読んでから入る）/ `trap-launcher`（自分が握るオラクルで
   90% LLTV の市場を作り、供給された分を借り出す）/ **`vault-keeper`**（正直だがバグ持ちの作成者。
@@ -1069,6 +1193,18 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   組み立てた名前は読取専用クライアントとゲートウェイが送信時に拒み、事後監査が blocks.csv で読む。
   `findAssembledCheatcodeHints` が組み立ての安い形（namespace だけの文字列・リテラルでない `method:`・
   文字コード）を **hint / WARN として報告するだけ**で、網羅は主張しない（`"anv" + "il_…"` は見えない）
+- **登録アドレス間の価値移転も事後検出**（issue #208 / 規約 §8。`core/src/rosterTransfers.ts` が純粋ロジック、
+  `core/src/realtime/rosterTransferScan.ts` がチェーン読取）。`rawTx` は `to` も `value` も任意なので取引経路では
+  塞がず、run 後に blocks.csv の **`to` / `valueWei` 列**（末尾に追加。tx 自身のフィールド）で ETH、run 窓の
+  Transfer ログで ERC-20、レジストリの**参加者が作った**エントリと SimpleLending の position イベントで
+  「同じコントラクト / 同じ貸出市場で対向した」経路（contract / lending / liquidation）を拾う。
+  **同一 `participant` の 2 体は額に関係なく flag**、異参加者間は `run.rosterTransferFlagBps`（既定 100 = 対の
+  小さい方の V_0 の 1%）超で flag。判定ではなく報告で **P は変えない**: summary.json の `rosterTransfers`
+  （全件）と agent ごとの `rosterTransfers`（flag 分。両側に載る）、events.jsonl の `roster_value_transfers`、
+  matrix.json の `flags`（`scenarioScores.ts`）に出る。**見えないもの**: コントラクト内部の ETH 移動
+  （trace を取らない）、環境 venue を挟んだ対向（通常の取引）、履歴保持深度を超えた窓のログ経路
+  （`roster_transfer_logs_skipped`。練習期間は最終セグメントだけ = 他の事後検査と同じ）。1 参加単位を
+  1 母集団メンバーに畳むか σ をロバストにするかは規約側の未決（#186 / ADR 0023）
 - **orderflow は独立プロセス**（relay のまま = 環境側の市場機構）。生成ロジックは `core/src/flow/logic.ts`（純粋関数）、
   bot 本体は `core/src/flow/market-maker.ts`。bot は自前 `Rng(ERIS_FLOW_SEED)` で決定論的に動く。
   aave flow の reserve は環境が `readAaveFlowReserves` で読んで渡す。

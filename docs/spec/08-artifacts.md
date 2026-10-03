@@ -45,6 +45,7 @@ runs/
 | `valueSeries` | 価値系列のメタ（下記） |
 | `agents[].pnlUsdc` / `baseline` | 規約 §4.4.1 の P（境界の両端）と、ベンチマークかどうか（下記） |
 | `violations` | 事後ルール検査の違反 |
+| `rosterTransfers` / `rosterTransferCheck` | **登録アドレス間の価値移転**（issue #208 / 規約 §8）。全件（flag の有無つき）と、何を読んだか（`sources`: blocks.csv / Transfer ログ / lending ログ / registry、`thresholdBps`、`errors`）。読めなかった経路がある run を「無し」と読まないため |
 | `agents[]` | エージェントごとの集計（下記） |
 | `segment` / `fromBlock` / `toBlock` | セグメント run のみ |
 
@@ -60,6 +61,7 @@ runs/
 | `processExitedEarly` | プロセスが run 終了前に消えた理由。**採点は変えない**（規約 §2.3 / §4.4.2: 残したポジションで他と同じく評価）。行列では `flags` として横に出る |
 | `includedTxCount` / `revertCount` | 取り込まれた tx 数 / うち revert した数 |
 | `unloggedTxCount` | 取り込まれたのに agent 自身の `submitted` ログに無い tx 数（規約 §8 の人為的介入の事後検出。coordinator が起動した agent のみ。判定ではなく報告 — 送信直後のクラッシュでも同じ痕跡が出る） |
+| `rosterTransfers` | この agent が片側になった **flag 付きの価値移転**（issue #208 / 規約 §8。両側に同じレコードが載る）。`route`（`eth` / `erc20` / `contract` / `lending` / `liquidation`）・`from` / `to`（agent id）・`sameParticipant`・`token` / `amount` / `valueUsdc`（最終マークで評価。値付け不能なら `null`）・`count`・`via`（コントラクト or market id）・`reason`（`same-participant` / `over-threshold` / `unpriced`）。同一参加単位は額に関係なく、異参加者間は `run.rosterTransferFlagBps` 超で flag。**採点は変えない**（行列では `flags`） |
 | `stderrTail` | エージェントプロセスの stderr 末尾（クラッシュ診断用） |
 
 **初期値と最終値は同じ価格で評価する**（最終ブロックの fair prices と stable prices）。`netPnlUsdc` は差分なので、両端を別のマークで評価するとペグの歴史全体がそのエージェントの PnL として記帳されてしまう。
@@ -140,6 +142,8 @@ runs/
 | `market_series_reconstructed` / `market_series_reconstruction_failed` | market.json |
 | `rule_violations_detected` | 事後ルール検査 |
 | `unlogged_agent_txs` | agent の `submitted` ログに無い on-chain tx（件数・agent 別・先頭 200 件） |
+| `roster_value_transfers` | 登録アドレス間の価値移転（issue #208。全件・先頭 200 件・flag 数・閾値・読めた `sources`）。見つからなければ出ない |
+| `roster_transfer_logs_skipped` / `roster_transfer_check_failed` | 窓が履歴保持深度を超えてログ経路（ERC-20 / contract / lending）を読めなかった / 検査自体が失敗した。どちらも「移転無し」ではない |
 
 ### ストレス / venue
 
@@ -174,8 +178,9 @@ runs/
 | `method` | **calldata からデコードした関数名**（`sdk/src/methodSelectors.ts`） |
 | `gasUsed` | receipt の実消費ガス（issue #40 T0 のガス予算検査） |
 | `maxFeePerGasWei` | **署名された `maxFeePerGas`**（legacy / 0x01 は `gasPrice`）。anvil がブロック内順序を決めるキーはこちら（[03 §3.1.6](03-market.md)）。`priorityFeeWei` と対で手数料ルール違反（maxFeePerGas > tip）を事後検査する。これより前の run には無い |
+| `to` / `valueWei` | **tx 自身の宛先と value**（issue #208）。登録アドレス間の ETH 移転を事後検査する（`core/src/rosterTransfers.ts`）。deploy は `to` が空。これより前の run には無く、その run の ETH 経路は「未計測」 |
 
-列は**末尾に追加する**（`gasUsed`・`maxFeePerGasWei` も）。位置で読む読み手（`BLOCKS_CSV_INDEX`・ダッシュボード・Python スクリプト）が過去の run でもそのまま動くように。
+列は**末尾に追加する**（`gasUsed`・`maxFeePerGasWei`・`to` / `valueWei` も）。位置で読む読み手（`BLOCKS_CSV_INDEX`・ダッシュボード・Python スクリプト）が過去の run でもそのまま動くように。
 
 **`method` が `actionType` と別に要る理由**（ADR 0021 §4）：`actionType` は環境が送った tx にしか無い。エージェントのログを join する方式は coordinator がエージェントを起動している間しか成立せず、外部参加者の tx が全部 `direct` になる＝**トラフィックが最も多いところで最も情報が無い**。calldata デコードは全 tx に効く。
 

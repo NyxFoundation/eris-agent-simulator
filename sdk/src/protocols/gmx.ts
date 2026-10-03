@@ -280,6 +280,169 @@ const exchangeRouterAbi = [
   },
 ] as const;
 
+// Order.Props as Reader.getOrder returns it (gmx-synthetics contracts/order/Order.sol). Only the
+// addresses are read (gmxKeeperRefusal); the rest is declared so the tuple decodes.
+const orderPropsComponents = [
+  {
+    name: "addresses",
+    type: "tuple",
+    components: [
+      { name: "account", type: "address" },
+      { name: "receiver", type: "address" },
+      { name: "cancellationReceiver", type: "address" },
+      { name: "callbackContract", type: "address" },
+      { name: "uiFeeReceiver", type: "address" },
+      { name: "market", type: "address" },
+      { name: "initialCollateralToken", type: "address" },
+      { name: "swapPath", type: "address[]" },
+    ],
+  },
+  {
+    name: "numbers",
+    type: "tuple",
+    components: [
+      { name: "orderType", type: "uint8" },
+      { name: "decreasePositionSwapType", type: "uint8" },
+      { name: "sizeDeltaUsd", type: "uint256" },
+      { name: "initialCollateralDeltaAmount", type: "uint256" },
+      { name: "triggerPrice", type: "uint256" },
+      { name: "acceptablePrice", type: "uint256" },
+      { name: "executionFee", type: "uint256" },
+      { name: "callbackGasLimit", type: "uint256" },
+      { name: "minOutputAmount", type: "uint256" },
+      { name: "updatedAtTime", type: "uint256" },
+      { name: "validFromTime", type: "uint256" },
+      { name: "srcChainId", type: "uint256" },
+    ],
+  },
+  {
+    name: "flags",
+    type: "tuple",
+    components: [
+      { name: "isLong", type: "bool" },
+      { name: "shouldUnwrapNativeToken", type: "bool" },
+      { name: "isFrozen", type: "bool" },
+      { name: "autoCancel", type: "bool" },
+    ],
+  },
+  { name: "_dataList", type: "bytes32[]" },
+] as const;
+
+const readerGetOrderAbi = [
+  {
+    type: "function",
+    name: "getOrder",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "key", type: "bytes32" },
+    ],
+    outputs: [{ type: "tuple", components: orderPropsComponents }],
+  },
+] as const;
+
+/** What the keeper needs to know about an order before it executes it. */
+export type GmxKeeperOrder = {
+  account: Address;
+  callbackContract: Address;
+  callbackGasLimit: bigint;
+};
+
+/** An order the keeper read and did not execute, and why. */
+export type GmxKeeperRefusal = GmxKeeperOrder & { key: Hex; reason: string };
+
+/**
+ * Why the keeper must not execute this order, or null if it may.
+ *
+ * GMX calls an order's callbackContract inside executeOrder (afterOrderExecution /
+ * afterOrderCancellation with the order's callbackGasLimit, refundExecutionFee with the DataStore's
+ * own limit). The keeper's transaction is placed just under the oracle's, above every participant
+ * (coordinator `keeperFee`), so a callback is the creator's code at the top of the next block: it
+ * could take the previous block's AMM dislocation before anyone else, under the keeper's fee and gas
+ * rather than the creator's (the fee cap, the per-agent gas budget and blocks.csv attribution all
+ * read the transaction's sender), and -- the minimum execution fee being 0 on this deploy -- create
+ * the next order from inside the callback and run again every block.
+ *
+ * Refused on the address alone, not on whether it has code: GMX checks for code at execution time,
+ * so a CREATE2 address with nothing deployed yet is a callback the moment the creator deploys it.
+ * The patched deploy (deployer/vendor/gmx-localhost.patch) also zeroes both callback gas limits, so
+ * on a current deploy such an order cannot be created; this is the half that holds on a chain baked
+ * before that (core/src/realtime/gmxCallbacks.ts reports which one a run is on).
+ */
+export function gmxKeeperRefusal(order: GmxKeeperOrder): string | null {
+  if (order.callbackContract !== zeroAddress)
+    return (
+      `order sets callbackContract ${order.callbackContract} ` +
+      `(callbackGasLimit ${order.callbackGasLimit}); the keeper does not run participant callbacks`
+    );
+  return null;
+}
+
+/**
+ * The keys the keeper may execute, in order. Each order is read before it is executed; one that
+ * cannot be read is not executed either (fail closed: it is usually an order already cancelled or
+ * executed, which executeOrder would revert on anyway, and otherwise an order whose callback the
+ * keeper cannot rule out).
+ */
+async function keeperExecutableKeys(
+  ctx: SimContext,
+  keys: readonly Hex[],
+  onRefused?: (refusal: GmxKeeperRefusal) => void,
+): Promise<Hex[]> {
+  const report = (refusal: GmxKeeperRefusal): void => {
+    if (onRefused) onRefused(refusal);
+    else
+      console.error(
+        `gmx keeper refused order ${refusal.key}: ${refusal.reason}`,
+      );
+  };
+  const reads = await Promise.all(
+    keys.map(async (key) => {
+      try {
+        const order = await ctx.publicClient.readContract({
+          address: GMX.Reader,
+          abi: readerGetOrderAbi,
+          functionName: "getOrder",
+          args: [GMX.DataStore, key],
+        });
+        return { key, order };
+      } catch (error) {
+        return {
+          key,
+          error:
+            error instanceof Error
+              ? error.message.split("\n")[0]
+              : String(error),
+        };
+      }
+    }),
+  );
+  const out: Hex[] = [];
+  for (const r of reads) {
+    if (!("order" in r) || r.order === undefined) {
+      report({
+        key: r.key,
+        account: zeroAddress,
+        callbackContract: zeroAddress,
+        callbackGasLimit: 0n,
+        reason: `order could not be read: ${r.error}`,
+      });
+      continue;
+    }
+    const order: GmxKeeperOrder = {
+      account: r.order.addresses.account,
+      callbackContract: r.order.addresses.callbackContract,
+      callbackGasLimit: r.order.numbers.callbackGasLimit,
+    };
+    // Reader.getOrder returns an empty struct for a key with no order (already executed or cancelled).
+    if (order.account === zeroAddress) continue;
+    const reason = gmxKeeperRefusal(order);
+    if (reason) report({ key: r.key, ...order, reason });
+    else out.push(r.key);
+  }
+  return out;
+}
+
 const setPricesParamsComponent = {
   name: "oracleParams",
   type: "tuple",
@@ -295,6 +458,46 @@ const orderHandlerAbi = [
     name: "executeOrder",
     stateMutability: "nonpayable",
     inputs: [{ name: "key", type: "bytes32" }, setPricesParamsComponent],
+    outputs: [],
+  },
+] as const;
+
+// Position enumeration for the liquidation keeper: every open position's key is in
+// DataStore's POSITION_LIST set, whoever holds it.
+const POSITION_LIST = hashString("POSITION_LIST");
+const dataStoreSetAbi = [
+  {
+    type: "function",
+    name: "getBytes32Count",
+    stateMutability: "view",
+    inputs: [{ name: "setKey", type: "bytes32" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getBytes32ValuesAt",
+    stateMutability: "view",
+    inputs: [
+      { name: "setKey", type: "bytes32" },
+      { name: "start", type: "uint256" },
+      { name: "end", type: "uint256" },
+    ],
+    outputs: [{ type: "bytes32[]" }],
+  },
+] as const;
+
+const liquidationHandlerAbi = [
+  {
+    type: "function",
+    name: "executeLiquidation",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "account", type: "address" },
+      { name: "market", type: "address" },
+      { name: "collateralToken", type: "address" },
+      { name: "isLong", type: "bool" },
+      setPricesParamsComponent,
+    ],
     outputs: [],
   },
 ] as const;
@@ -360,6 +563,122 @@ const marketPoolValueInfoComponents = [
   { name: "lentImpactPoolAmount", type: "uint256" },
 ] as const;
 
+// ReaderPositionUtils.PositionInfo, for what closing a position would realize. Mirrors
+// gmx-synthetics (PositionPricingUtils.PositionFees, ReaderPricingUtils.ExecutionPriceResult); the
+// field order is the ABI, the names are for reading.
+const positionInfoComponents = [
+  { name: "positionKey", type: "bytes32" },
+  { name: "position", type: "tuple", components: positionPropsComponents },
+  {
+    name: "fees",
+    type: "tuple",
+    components: [
+      {
+        name: "referral",
+        type: "tuple",
+        components: [
+          { name: "referralCode", type: "bytes32" },
+          { name: "affiliate", type: "address" },
+          { name: "trader", type: "address" },
+          { name: "totalRebateFactor", type: "uint256" },
+          { name: "affiliateRewardFactor", type: "uint256" },
+          { name: "adjustedAffiliateRewardFactor", type: "uint256" },
+          { name: "traderDiscountFactor", type: "uint256" },
+          { name: "totalRebateAmount", type: "uint256" },
+          { name: "traderDiscountAmount", type: "uint256" },
+          { name: "affiliateRewardAmount", type: "uint256" },
+        ],
+      },
+      {
+        name: "pro",
+        type: "tuple",
+        components: [
+          { name: "traderTier", type: "uint256" },
+          { name: "traderDiscountFactor", type: "uint256" },
+          { name: "traderDiscountAmount", type: "uint256" },
+        ],
+      },
+      {
+        name: "funding",
+        type: "tuple",
+        components: [
+          { name: "fundingFeeAmount", type: "uint256" },
+          { name: "claimableLongTokenAmount", type: "uint256" },
+          { name: "claimableShortTokenAmount", type: "uint256" },
+          { name: "latestFundingFeeAmountPerSize", type: "uint256" },
+          { name: "latestLongTokenClaimableFundingAmountPerSize", type: "uint256" },
+          { name: "latestShortTokenClaimableFundingAmountPerSize", type: "uint256" },
+        ],
+      },
+      {
+        name: "borrowing",
+        type: "tuple",
+        components: [
+          { name: "borrowingFeeUsd", type: "uint256" },
+          { name: "borrowingFeeAmount", type: "uint256" },
+          { name: "borrowingFeeReceiverFactor", type: "uint256" },
+          { name: "borrowingFeeAmountForFeeReceiver", type: "uint256" },
+        ],
+      },
+      {
+        name: "ui",
+        type: "tuple",
+        components: [
+          { name: "uiFeeReceiver", type: "address" },
+          { name: "uiFeeReceiverFactor", type: "uint256" },
+          { name: "uiFeeAmount", type: "uint256" },
+        ],
+      },
+      {
+        name: "liquidation",
+        type: "tuple",
+        components: [
+          { name: "liquidationFeeUsd", type: "uint256" },
+          { name: "liquidationFeeAmount", type: "uint256" },
+          { name: "liquidationFeeReceiverFactor", type: "uint256" },
+          { name: "liquidationFeeAmountForFeeReceiver", type: "uint256" },
+        ],
+      },
+      {
+        name: "collateralTokenPrice",
+        type: "tuple",
+        components: pricePropsComponents,
+      },
+      { name: "positionFeeFactor", type: "uint256" },
+      { name: "protocolFeeAmount", type: "uint256" },
+      { name: "positionFeeReceiverFactor", type: "uint256" },
+      { name: "feeReceiverAmount", type: "uint256" },
+      { name: "feeAmountForPool", type: "uint256" },
+      { name: "positionFeeAmountForPool", type: "uint256" },
+      { name: "positionFeeAmount", type: "uint256" },
+      { name: "totalCostAmountExcludingFunding", type: "uint256" },
+      { name: "totalCostAmount", type: "uint256" },
+      { name: "totalDiscountAmount", type: "uint256" },
+    ],
+  },
+  {
+    name: "executionPriceResult",
+    type: "tuple",
+    components: [
+      { name: "priceImpactUsd", type: "int256" },
+      { name: "executionPrice", type: "uint256" },
+      { name: "balanceWasImproved", type: "bool" },
+      { name: "proportionalPendingImpactUsd", type: "int256" },
+      { name: "totalImpactUsd", type: "int256" },
+      { name: "priceImpactDiffUsd", type: "uint256" },
+    ],
+  },
+  { name: "basePnlUsd", type: "int256" },
+  { name: "uncappedBasePnlUsd", type: "int256" },
+  { name: "pnlAfterPriceImpactUsd", type: "int256" },
+] as const;
+
+const marketPricesComponents = [
+  { name: "indexTokenPrice", type: "tuple", components: pricePropsComponents },
+  { name: "longTokenPrice", type: "tuple", components: pricePropsComponents },
+  { name: "shortTokenPrice", type: "tuple", components: pricePropsComponents },
+] as const;
+
 // Keys.MAX_PNL_FACTOR_FOR_WITHDRAWALS. Withdrawals (not deposits) is the right cap for marking a
 // holding: it is the factor an exit would actually be subject to.
 const MAX_PNL_FACTOR_FOR_WITHDRAWALS = hashString(
@@ -418,6 +737,62 @@ const readerAbi = [
       { name: "end", type: "uint256" },
     ],
     outputs: [{ type: "tuple[]", components: positionPropsComponents }],
+  },
+  {
+    type: "function",
+    name: "getPosition",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "key", type: "bytes32" },
+    ],
+    outputs: [{ type: "tuple", components: positionPropsComponents }],
+  },
+  {
+    type: "function",
+    name: "isPositionLiquidatable",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "referralStorage", type: "address" },
+      { name: "positionKey", type: "bytes32" },
+      { name: "market", type: "tuple", components: marketPropsComponents },
+      { name: "prices", type: "tuple", components: marketPricesComponents },
+      { name: "shouldValidateMinCollateralUsd", type: "bool" },
+      { name: "forLiquidation", type: "bool" },
+    ],
+    outputs: [
+      { type: "bool" },
+      { type: "string" },
+      {
+        type: "tuple",
+        components: [
+          { name: "remainingCollateralUsd", type: "int256" },
+          { name: "minCollateralUsd", type: "int256" },
+          { name: "minCollateralUsdForLeverage", type: "int256" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "getAccountPositionInfoList",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "referralStorage", type: "address" },
+      { name: "account", type: "address" },
+      { name: "markets", type: "address[]" },
+      {
+        name: "marketPrices",
+        type: "tuple[]",
+        components: marketPricesComponents,
+      },
+      { name: "uiFeeReceiver", type: "address" },
+      { name: "start", type: "uint256" },
+      { name: "end", type: "uint256" },
+    ],
+    outputs: [{ type: "tuple[]", components: positionInfoComponents }],
   },
 ] as const;
 
@@ -1134,6 +1509,67 @@ async function readPositionFundingOwed(
   return out;
 }
 
+// What Reader.getAccountPositionInfoList returns per position, narrowed to what the exit value reads.
+type PositionInfo = {
+  position: Position;
+  fees: {
+    funding: {
+      claimableLongTokenAmount: bigint;
+      claimableShortTokenAmount: bigint;
+    };
+    totalCostAmount: bigint;
+  };
+  executionPriceResult: { totalImpactUsd: bigint };
+  basePnlUsd: bigint;
+};
+
+/**
+ * What closing the whole position at this block would leave the account, in USD.
+ *
+ * valueUsdc's collateral + PnL is the position's face, and it was the realizable value as long as the
+ * deploy charged nothing to close. It now does (deployer/vendor/gmx-localhost.patch carries
+ * arbitrum's position fees), and the opening fee is already out of the collateral -- so a face mark
+ * charged a position that was closed both fees and one held through the bell only one. The reader
+ * prices the full decrease the way DecreasePositionUtils would:
+ *
+ *   collateral + basePnl (capped by maxPnlFactorForTraders, as on exit)
+ *   + totalImpact (the closing impact plus the impact deferred at open, capped by the max factor)
+ *   - totalCost (position fee + pending borrowing + pending funding, in collateral token)
+ *   + funding the position is owed (claimable in the market's long and short token)
+ *
+ * Undefined when the collateral or a claimable token cannot be priced.
+ */
+function positionExitValueUsd(
+  info: PositionInfo,
+  fairByBase: Record<string, number>,
+  market: MarketProps | undefined,
+): number | undefined {
+  const p = info.position;
+  if (p.numbers.sizeInUsd === 0n) return 0;
+  const unit = collateralUnit(
+    p.addresses.collateralToken,
+    (symbol) => fairByBase[symbol],
+  );
+  if (!unit) return undefined;
+  const collateral = p.numbers.collateralAmount - info.fees.totalCostAmount;
+  let value =
+    (Number(collateral) / 10 ** unit.decimals) * unit.usd +
+    Number(info.basePnlUsd) / FLOAT_PRECISION_NUM +
+    Number(info.executionPriceResult.totalImpactUsd) / FLOAT_PRECISION_NUM;
+  const claimable: Array<[Address | undefined, bigint]> = [
+    [market?.longToken, info.fees.funding.claimableLongTokenAmount],
+    [market?.shortToken, info.fees.funding.claimableShortTokenAmount],
+  ];
+  for (const [token, amount] of claimable) {
+    if (amount === 0n) continue;
+    if (!token) return undefined;
+    const u = collateralUnit(token, (symbol) => fairByBase[symbol]);
+    if (!u) return undefined;
+    value += (Number(amount) / 10 ** u.decimals) * u.usd;
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Historical-block reconstruction (ADR 0006 §4): the read descriptor used by the blockNumber-pinned
 // multicall, plus a pure function that derives position value from its result using the same formula as valueUsdc.
@@ -1245,6 +1681,199 @@ function gmxTokenPrice(
   return { min: price, max: price };
 }
 
+// ---------------------------------------------------------------------------
+// Liquidation keeper
+//
+// GMX liquidates nobody by itself: LiquidationHandler.executeLiquidation is a keeper call, and the
+// environment's keeper only ever executed orders. So no position was ever liquidated -- a 20x
+// contrarian bet through a crash survived to the bell however far it went under, and was scored at
+// its (unfloored) value there. Real keepers watch every position; this one checks every open
+// position each block against the price the order keeper hands executeOrder (the run's fair price
+// through the mock provider), the same check LiquidationUtils makes on chain.
+// ---------------------------------------------------------------------------
+
+// Liquidations per block. Each declares GMX_KEEPER_EXECUTE_GAS like an order fill; the cap keeps a
+// cascade from declaring the whole block ahead of the participants. The rest go next block.
+const MAX_LIQUIDATIONS_PER_BLOCK = 2;
+// A liquidation sent at block B lands at B+1 at the earliest, and the next pass may run before it
+// does. Not re-sending a key for this many blocks keeps the keeper from paying for a duplicate
+// that would only revert.
+const LIQUIDATION_RESEND_BLOCKS = 3n;
+const liquidationSentAt = new Map<string, bigint>();
+
+type LiquidatablePosition = {
+  key: Hex;
+  account: Address;
+  market: Address;
+  collateralToken: Address;
+  isLong: boolean;
+  reason: string;
+};
+
+/**
+ * Every open position GMX would liquidate at the given prices, any account's: participants' and
+ * the background flow's alike, as a real keeper would. Read-only; a failed read means no
+ * liquidation this pass, never a guess.
+ */
+export async function gmxLiquidatablePositions(
+  publicClient: PublicClient,
+  fairByBase: Record<string, number>,
+): Promise<LiquidatablePosition[]> {
+  const count = (await publicClient.readContract({
+    address: GMX.DataStore,
+    abi: dataStoreSetAbi,
+    functionName: "getBytes32Count",
+    args: [POSITION_LIST],
+  })) as bigint;
+  if (count === 0n) return [];
+  const keys = (await publicClient.readContract({
+    address: GMX.DataStore,
+    abi: dataStoreSetAbi,
+    functionName: "getBytes32ValuesAt",
+    args: [POSITION_LIST, 0n, count],
+  })) as readonly Hex[];
+
+  const positions = (await publicClient.multicall({
+    contracts: keys.map((key) => ({
+      address: GMX.Reader,
+      abi: readerAbi,
+      functionName: "getPosition",
+      args: [GMX.DataStore, key],
+    })) as never,
+    allowFailure: true,
+  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+
+  const open: Array<{ key: Hex; position: Position }> = [];
+  positions.forEach((r, i) => {
+    if (r.status !== "success") return;
+    const position = r.result as Position;
+    if (position.numbers.sizeInUsd > 0n) open.push({ key: keys[i], position });
+  });
+  if (open.length === 0) return [];
+
+  const props = await resolveMarketProps(publicClient, [
+    ...new Set(open.map((o) => o.position.addresses.market)),
+  ]);
+  const checks: Array<{ key: Hex; position: Position }> = [];
+  const contracts: unknown[] = [];
+  for (const o of open) {
+    const market = props.get(o.position.addresses.market.toLowerCase());
+    if (!market) continue;
+    const index = gmxTokenPrice(market.indexToken, fairByBase);
+    const long = gmxTokenPrice(market.longToken, fairByBase);
+    const short = gmxTokenPrice(market.shortToken, fairByBase);
+    if (!index || !long || !short) continue;
+    checks.push(o);
+    contracts.push({
+      address: GMX.Reader,
+      abi: readerAbi,
+      functionName: "isPositionLiquidatable",
+      args: [
+        GMX.DataStore,
+        zeroAddress,
+        o.key,
+        market,
+        { indexTokenPrice: index, longTokenPrice: long, shortTokenPrice: short },
+        true,
+        true,
+      ],
+    });
+  }
+  if (checks.length === 0) return [];
+  const verdicts = (await publicClient.multicall({
+    contracts: contracts as never,
+    allowFailure: true,
+  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+
+  const out: LiquidatablePosition[] = [];
+  verdicts.forEach((r, i) => {
+    if (r.status !== "success") return;
+    const [liquidatable, reason] = r.result as readonly [boolean, string];
+    if (!liquidatable) return;
+    const { key, position } = checks[i];
+    out.push({
+      key,
+      account: position.addresses.account,
+      market: position.addresses.market,
+      collateralToken: position.addresses.collateralToken,
+      isLong: position.flags.isLong,
+      reason,
+    });
+  });
+  return out;
+}
+
+async function liquidatePositions(
+  ctx: SimContext,
+  keeper: ReturnType<typeof privateKeyToAccount>,
+  oracleParams: ReturnType<typeof gmxKeeperOracleParams>,
+  opts: {
+    noMine?: boolean;
+    fee: bigint;
+    executeGas: bigint;
+    block: bigint;
+  },
+): Promise<void> {
+  const fairByBase = { ...(ctx.fairPrices ?? {}) };
+  let found: LiquidatablePosition[];
+  try {
+    found = await gmxLiquidatablePositions(ctx.publicClient, fairByBase);
+  } catch (error) {
+    console.error(
+      `gmx liquidation scan failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  let sent = 0;
+  for (const p of found) {
+    if (sent >= MAX_LIQUIDATIONS_PER_BLOCK) break;
+    const last = liquidationSentAt.get(p.key);
+    if (last !== undefined && opts.block - last < LIQUIDATION_RESEND_BLOCKS)
+      continue;
+    const data = encodeFunctionData({
+      abi: liquidationHandlerAbi,
+      functionName: "executeLiquidation",
+      args: [p.account, p.market, p.collateralToken, p.isLong, oracleParams],
+    });
+    try {
+      if (opts.noMine) {
+        const block = await ctx.publicClient.getBlock();
+        await ctx.walletClient.sendTransaction({
+          account: keeper,
+          chain: ctx.chain,
+          to: GMX.LiquidationHandler,
+          data,
+          gas: opts.executeGas,
+          maxFeePerGas: (block.baseFeePerGas ?? 0n) + opts.fee,
+          maxPriorityFeePerGas: opts.fee,
+        });
+      } else {
+        const block = await ctx.publicClient.getBlock();
+        const hash = await ctx.walletClient.sendTransaction({
+          account: keeper,
+          chain: ctx.chain,
+          to: GMX.LiquidationHandler,
+          data,
+          gas: opts.executeGas,
+          maxFeePerGas: (block.baseFeePerGas ?? 0n) + 1_000_000_000n,
+          maxPriorityFeePerGas: 1_000_000_000n,
+        });
+        if (!isExternalChain()) await mine(ctx.publicClient);
+        await ctx.publicClient.waitForTransactionReceipt({ hash });
+      }
+      liquidationSentAt.set(p.key, opts.block);
+      sent += 1;
+      console.error(
+        `gmx liquidation sent: account=${p.account} market=${p.market} isLong=${p.isLong} reason=${p.reason}`,
+      );
+    } catch (error) {
+      console.error(
+        `gmx liquidation failed: account=${p.account} ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+
 export const gmxAdapter: ProtocolAdapter = {
   id: "gmx",
   stableToken: TOKENS.USDC.address,
@@ -1333,6 +1962,8 @@ export const gmxAdapter: ProtocolAdapter = {
       blockNumber?: bigint;
       fromBlock?: bigint;
       toBlock?: bigint;
+      // Told about every order the keeper read and did not execute (gmxKeeperRefusal), or could not read.
+      onOrderRefused?: (refusal: GmxKeeperRefusal) => void;
     },
   ): Promise<void> {
     if (!ctx.gmx.mockProvider) return;
@@ -1356,6 +1987,12 @@ export const gmxAdapter: ProtocolAdapter = {
       )
       .map((l) => l.topics[2] as Hex);
     if (keys.length === 0) return;
+    const executable = await keeperExecutableKeys(
+      ctx,
+      keys,
+      opts?.onOrderRefused,
+    );
+    if (executable.length === 0) return;
 
     const keeper = privateKeyToAccount(ctx.keeperPk);
     // Every token any configured market needs, not just the order's own: GMX reverts the whole
@@ -1363,7 +2000,7 @@ export const gmxAdapter: ProtocolAdapter = {
     const oracleParams = gmxKeeperOracleParams(ctx);
     const fee = opts?.priorityFeeWei ?? 1_000_000_000n;
     const executeGas = opts?.executeGas ?? GMX_KEEPER_EXECUTE_GAS;
-    for (const key of keys) {
+    for (const key of executable) {
       try {
         if (opts?.noMine) {
           // realtime: neither mine nor increaseTime. Just place it in the next block
@@ -1451,6 +2088,13 @@ export const gmxAdapter: ProtocolAdapter = {
         if (!opts?.noMine && !isExternalChain()) await mine(ctx.publicClient);
       }
     }
+
+    await liquidatePositions(ctx, keeper, oracleParams, {
+      noMine: opts?.noMine,
+      fee,
+      executeGas,
+      block: toBlock,
+    });
   },
 
   async valueUsdc(ctx, agent, _state, fairPrice): Promise<number> {
@@ -1513,58 +2157,139 @@ export const gmxAdapter: ProtocolAdapter = {
       markets.some((_m, i) => (gmBalance(a, i) ?? 0n) > 0n),
     );
 
+    // Price.Props for each market's index/long/short token, by market index. Absent means the
+    // market could not be priced; both the GM mark and the position exit read need it.
+    const pricesByMarket = markets.map((_marketToken, i) => {
+      const props = stage1[marketBase + i] as MarketProps | undefined;
+      if (!props) return undefined;
+      const index = gmxTokenPrice(props.indexToken, fairByBase);
+      const long = gmxTokenPrice(props.longToken, fairByBase);
+      const short = gmxTokenPrice(props.shortToken, fairByBase);
+      if (!index || !long || !short) return undefined;
+      return { props, index, long, short };
+    });
+
+    const reads: Array<{
+      address: Address;
+      abi: unknown;
+      functionName: string;
+      args: readonly unknown[];
+    }> = [];
+
     // USD per whole GM token, by market index. Absent means the market could not be priced.
     const gmUsd: Array<number | undefined> = markets.map(() => undefined);
+    const gmLayout: Array<{ marketIndex: number; read: number }> = [];
     if (anyHolder) {
-      const layout: number[] = [];
-      const reads: Array<{
-        address: Address;
-        abi: unknown;
-        functionName: string;
-        args: readonly unknown[];
-      }> = [];
-      markets.forEach((_marketToken, i) => {
-        const props = stage1[marketBase + i] as MarketProps | undefined;
-        if (!props) return;
-        const index = gmxTokenPrice(props.indexToken, fairByBase);
-        const long = gmxTokenPrice(props.longToken, fairByBase);
-        const short = gmxTokenPrice(props.shortToken, fairByBase);
-        if (!index || !long || !short) return;
-        layout.push(i);
+      pricesByMarket.forEach((m, i) => {
+        if (!m) return;
+        gmLayout.push({ marketIndex: i, read: reads.length });
         reads.push({
           address: GMX.Reader,
           abi: readerAbi,
           functionName: "getMarketTokenPrice",
           args: [
             GMX.DataStore,
-            props,
-            index,
-            long,
-            short,
+            m.props,
+            m.index,
+            m.long,
+            m.short,
             MAX_PNL_FACTOR_FOR_WITHDRAWALS,
             // Mark at the minimum price: this is what an exit would realize.
             false,
           ],
         });
       });
-      if (reads.length > 0) {
-        const priced = yield reads as never;
-        layout.forEach((marketIndex, k) => {
-          const result = priced[k] as readonly [bigint, unknown] | undefined;
-          if (!result) return;
-          // int256 USD per GM token with 30 decimals. A non-positive price means the pool is
-          // underwater; the holding is worth nothing rather than negative.
-          gmUsd[marketIndex] = Math.max(0, Number(result[0]) / 1e30);
-        });
-      }
     }
+
+    // What closing each open position would realize, for every agent holding one. The reader
+    // reverts on a position in a market it was not given a price for, so an agent with any such
+    // position is not read: perpValueUsd already reports that position, and the rest stay at face.
+    const pricedMarkets: Address[] = [];
+    const pricedMarketPrices: unknown[] = [];
+    pricesByMarket.forEach((m, i) => {
+      if (!m) return;
+      pricedMarkets.push(markets[i]);
+      pricedMarketPrices.push({
+        indexTokenPrice: m.index,
+        longTokenPrice: m.long,
+        shortTokenPrice: m.short,
+      });
+    });
+    const exitRead = new Map<number, number>(); // agent index -> read index
+    ctx.agents.forEach((agent, a) => {
+      const positions = stage1[a] as readonly Position[] | undefined;
+      const open = positions?.filter((p) => p.numbers.sizeInUsd > 0n) ?? [];
+      if (open.length === 0) return;
+      const priced = new Set(pricedMarkets.map((m) => m.toLowerCase()));
+      if (!open.every((p) => priced.has(p.addresses.market.toLowerCase())))
+        return;
+      exitRead.set(a, reads.length);
+      reads.push({
+        address: GMX.Reader,
+        abi: readerAbi,
+        functionName: "getAccountPositionInfoList",
+        args: [
+          GMX.DataStore,
+          // No referral storage: a referral discount only lowers the fee, so this never overstates.
+          zeroAddress,
+          agent.address,
+          pricedMarkets,
+          pricedMarketPrices,
+          zeroAddress,
+          0n,
+          50n,
+        ],
+      });
+    });
+
+    const stage2 = reads.length > 0 ? ((yield reads as never) as unknown[]) : [];
+    for (const { marketIndex, read } of gmLayout) {
+      const result = stage2[read] as readonly [bigint, unknown] | undefined;
+      if (!result) continue;
+      // int256 USD per GM token with 30 decimals. A non-positive price means the pool is
+      // underwater; the holding is worth nothing rather than negative.
+      gmUsd[marketIndex] = Math.max(0, Number(result[0]) / 1e30);
+    }
+    const marketProps = new Map(
+      pricesByMarket.flatMap((m) =>
+        m ? [[m.props.marketToken.toLowerCase(), m.props] as const] : [],
+      ),
+    );
 
     const out: Record<string, AgentProtocolValue> = {};
     ctx.agents.forEach((agent, a) => {
       const positions = stage1[a] as readonly Position[] | undefined;
       const perp = perpValueUsd(positions, fairByBase);
+      // The face mark (collateral + PnL) stays valueUsdc; the score reads the exit value.
       let valueUsdc = perp.valueUsdc;
+      let liquidatableValueUsdc = perp.valueUsdc;
       const unpriced: UnpricedHoldingDetail[] = [...perp.unpriced];
+      const read = exitRead.get(a);
+      if (read !== undefined) {
+        const infos = stage2[read] as readonly PositionInfo[] | undefined;
+        if (infos) {
+          liquidatableValueUsdc = 0;
+          for (const info of infos) {
+            const market = info.position.addresses.market.toLowerCase();
+            // A position perpValueUsd could not price is already reported there.
+            const exit = positionExitValueUsd(
+              info,
+              fairByBase,
+              marketProps.get(market),
+            );
+            liquidatableValueUsdc += exit ?? 0;
+          }
+        } else {
+          // Marked at face rather than dropped: the position exists and its face is known, only
+          // the cost of leaving it is not.
+          unpriced.push({
+            source: "gmx-position",
+            amountRaw: "",
+            reason: "read-failed",
+            read: "GmxReader.getAccountPositionInfoList (exit value; marked at face)",
+          });
+        }
+      }
       // An account with no perps decodes to an empty array, so undefined means the read failed.
       // Both value at zero, which is why the two have to be told apart (issue #44).
       if (!positions)
@@ -1597,11 +2322,13 @@ export const gmxAdapter: ProtocolAdapter = {
           return;
         }
         // GM tokens are 18-decimal ERC-20s.
-        valueUsdc += (Number(balance) / 1e18) * usdPerToken;
+        const gm = (Number(balance) / 1e18) * usdPerToken;
+        valueUsdc += gm;
+        liquidatableValueUsdc += gm;
       });
       out[agent.id] = {
         valueUsdc,
-        liquidatableValueUsdc: valueUsdc,
+        liquidatableValueUsdc,
         unpriced,
       };
     });
