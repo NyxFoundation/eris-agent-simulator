@@ -227,6 +227,15 @@ export interface ProtocolAdapter {
       blockNumber?: bigint;
       fromBlock?: bigint;
       toBlock?: bigint;
+      // A keeper that read an order and declined to execute it says so here (gmx: an order with a
+      // participant callback). Without it the adapter writes to stderr.
+      onOrderRefused?: (refusal: {
+        key: string;
+        account: string;
+        callbackContract: string;
+        callbackGasLimit: bigint;
+        reason: string;
+      }) => void;
     },
   ): Promise<void>;
 

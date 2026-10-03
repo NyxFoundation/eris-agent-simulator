@@ -216,9 +216,27 @@ function redactMatrix(file: Json): Json {
   };
 }
 
-/** standings.json carries regime/seed per epoch too. */
+// A flag line written before the standings keyed flags by ordinal: `<regime>#<seed>: <fact>`.
+const SCENARIO_FLAG_PREFIX = /^([^\s:#]+)#(-?\d+): /;
+
+/**
+ * standings.json carries regime/seed per epoch too, and -- in files written before the flags were
+ * keyed by ordinal -- at the head of every per-agent flag line. Any agent can raise a flag (exit
+ * before the bell), so leaving those lines alone published a hidden epoch's `regime#seed` at will.
+ * A prefix naming a known epoch becomes its ordinal; one that names none is dropped to `s=?`.
+ */
 function redactStandings(file: Json): Json {
   if (!Array.isArray(file.epochs)) return file;
+  const ordinalOf = new Map<string, unknown>();
+  for (const e of file.epochs as Json[])
+    ordinalOf.set(`${String(e.regime)}#${String(e.seed)}`, e.s);
+  const redactFlag = (f: unknown): unknown =>
+    typeof f === "string"
+      ? f.replace(SCENARIO_FLAG_PREFIX, (_m, regime: string, seed: string) => {
+          const s = ordinalOf.get(`${regime}#${seed}`);
+          return `s=${typeof s === "number" ? s : "?"}: `;
+        })
+      : f;
   return {
     ...file,
     epochs: (file.epochs as Json[]).map((e) => ({
@@ -226,6 +244,15 @@ function redactStandings(file: Json): Json {
       regime: HIDDEN_REGIME,
       seed: null,
     })),
+    ...(Array.isArray(file.agents)
+      ? {
+          agents: (file.agents as Json[]).map((a) =>
+            Array.isArray(a.flags)
+              ? { ...a, flags: (a.flags as unknown[]).map(redactFlag) }
+              : a,
+          ),
+        }
+      : {}),
   };
 }
 
@@ -234,15 +261,21 @@ function redactStandings(file: Json): Json {
  * which is the regime), and a participant's stderr (their process, their words).
  */
 function redactSummary(file: Json): Json {
+  // rosterTransfers (issue #208) names which participant moved what to which other participant.
+  // It is a recorded fact for the operator to judge under rules §8, not a finding -- nothing in it
+  // has been adjudicated, and the same movement can be a trade or self-dealing depending on who
+  // owns both ends. Published during the week it would read as an accusation the audience cannot
+  // check, about people who cannot answer. The run-level list and the per-agent one both go.
   const {
     seed: _seed,
     flowSeed: _flowSeed,
+    rosterTransfers: _rosterTransfers,
     stressEvents: _stressEvents,
     ...rest
   } = file;
   if (Array.isArray(rest.agents)) {
     rest.agents = (rest.agents as Json[]).map((a) => {
-      const { stderrTail: _stderr, ...agent } = a;
+      const { stderrTail: _stderr, rosterTransfers: _agentTransfers, ...agent } = a;
       return agent;
     });
   }

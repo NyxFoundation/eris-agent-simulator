@@ -31,6 +31,7 @@ const { lstValuationRun } = await import("@eris/sdk/protocols/lst.js");
 const { aaveAdapter } = await import("@eris/sdk/protocols/aave.js");
 const { liquityValuationRun } = await import("@eris/sdk/protocols/liquity.js");
 const { MarkMedian } = await import("../core/src/realtime/reconstruct.js");
+const { getSqrtRatioAtTick } = await import("@eris/sdk/tickMath.js");
 type ValuationContext = import("@eris/sdk/protocols/types.js").ValuationContext;
 type ValuationRead = import("@eris/sdk/protocols/types.js").ValuationRead;
 
@@ -104,8 +105,9 @@ function uniPosition() {
 // A pool with no fee growth, so the mark is principal alone and what moves it is the tick.
 function uniAnswer(tick: number) {
   return (read: ValuationRead): unknown => {
-    if (is(read, "slot0", UNI_WETH.pool)) return [0n, tick, 0, 0, 0, 0, true];
-    if (is(read, "slot0")) return [0n, 0, 0, 0, 0, 0, true];
+    if (is(read, "slot0", UNI_WETH.pool))
+      return [getSqrtRatioAtTick(tick), tick, 0, 0, 0, 0, true];
+    if (is(read, "slot0")) return [getSqrtRatioAtTick(0), 0, 0, 0, 0, 0, true];
     if (is(read, "balanceOf")) return 1n;
     if (is(read, "tokenOfOwnerByIndex")) return TOKEN_ID;
     if (is(read, "positions")) return uniPosition();
@@ -119,7 +121,7 @@ function uniAnswer(tick: number) {
 function principalAt(tick: number): number {
   const { amount0, amount1 } = liquidityToTokenAmounts({
     liquidity: LIQUIDITY,
-    tick,
+    sqrtPriceX96: getSqrtRatioAtTick(tick),
     tickLower: TICK_LOWER,
     tickUpper: TICK_UPPER,
   });
@@ -140,7 +142,12 @@ test("uniswap: an LP position splits at the boundary block's tick", async () => 
   assert.deepEqual(v.unpriced, []);
   // Same answer as the primitive, fed the same tick.
   const direct = lpPositionValuation(uniPosition() as never, {
-    tickByPool: { [UNI_WETH.pool.toLowerCase()]: tick },
+    slot0ByPool: {
+      [UNI_WETH.pool.toLowerCase()]: {
+        tick,
+        sqrtPriceX96: getSqrtRatioAtTick(tick),
+      },
+    },
     fairByBase: { WETH: FAIR },
   });
   assert.ok(Math.abs(v.valueUsdc - direct.valueUsdc) < 1e-6);
@@ -477,6 +484,9 @@ function liquityAnswer(q: { depositSale: bigint; debtBuyback: bigint }) {
     if (is(read, "getCompoundedLUSDDeposit")) return 1_000n * WAD;
     if (is(read, "getDepositorETHGain")) return 0n;
     if (is(read, "getCollateral")) return 0n;
+    if (is(read, "stakes")) return 0n;
+    if (is(read, "getPendingETHGain")) return 0n;
+    if (is(read, "getPendingLUSDGain")) return 0n;
     if (is(read, "get_dy")) return q.depositSale;
     if (is(read, "get_dx")) return q.debtBuyback;
     return undefined;
@@ -636,8 +646,8 @@ function lpChain() {
     if (c.functionName === "balanceOf") return 0n;
     if (c.functionName === "slot0")
       return is(c, "slot0", UNI_WETH.pool)
-        ? [0n, tickAt(block), 0, 0, 0, 0, true]
-        : [0n, 0, 0, 0, 0, 0, true];
+        ? [getSqrtRatioAtTick(tickAt(block)), tickAt(block), 0, 0, 0, 0, true]
+        : [getSqrtRatioAtTick(0), 0, 0, 0, 0, 0, true];
     return uniAnswer(tickAt(block))(c);
   };
   return {

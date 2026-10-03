@@ -1,4 +1,4 @@
-// The seed-derived Liquity victim cohort (issue #107): the CDP counterpart of ADR 0009's Aave
+// The Liquity victim cohort (issue #107): the CDP counterpart of ADR 0009's Aave
 // victims (core/src/stressVictims.ts).
 //
 // Why it exists: the CDP venue is deployed in every official regime and nothing in the set gives it
@@ -14,11 +14,10 @@
 // would sit in the sorted list at an ICR nobody configured.
 import {
   encodeFunctionData,
-  keccak256,
-  stringToBytes,
   type Address,
   type Hex,
 } from "viem";
+import { environmentKey } from "./walletKeys.js";
 import { stabilityPoolAbi, troveManagerAbi } from "@eris/sdk/abis.js";
 import { accountAddress, fundWallet, sendAndMine } from "@eris/sdk/chain.js";
 import { LIQUITY } from "@eris/sdk/constants.js";
@@ -29,17 +28,12 @@ const WAD = 10n ** 18n;
 
 export type LiquityVictim = { id: string; privateKey: Hex; address: Address };
 
-// Deterministic per (seed, index), on a salt of its own so the addresses never coincide with the
-// Aave cohort's (`eris-stress-victim:`) or any flow wallet.
-export function deriveLiquityVictims(
-  seed: number,
-  count: number,
-): LiquityVictim[] {
+// From the environment's wallet secret (walletKeys.ts, issue #189), under a kind of its own so the
+// addresses never coincide with the Aave cohort's or any flow wallet.
+export function deriveLiquityVictims(count: number): LiquityVictim[] {
   const victims: LiquityVictim[] = [];
   for (let i = 0; i < count; i++) {
-    const privateKey = keccak256(
-      stringToBytes(`eris-liquity-victim:${seed}:${i}`),
-    );
+    const privateKey = environmentKey("liquity-victim", i);
     victims.push({
       id: `liquity-victim-${i}`,
       privateKey,

@@ -37,7 +37,8 @@ this column tells you who called what, when.
 `RPC_MAX_TX_GAS` (30000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — these two are the
 [transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule) ·
 `RPC_MAX_PARAM_DEPTH` (64) · `RPC_MAX_PARAM_NODES` (100000) — the [request shape limit](#request-shape-limit) ·
-`RPC_KEYS_FILE` · `RPC_SENDERS_FILE` · `RPC_SENDER_CHECK` (1) — the [sender check](#sender-check-a-key-sends-only-from-its-bound-addresses).
+`RPC_KEYS_FILE` · `RPC_SENDERS_FILE` · `RPC_SENDER_CHECK` (1) — the [sender check](#sender-check-a-key-sends-only-from-its-bound-addresses) ·
+`RPC_MAX_BODY_BYTES` (4194304) — the [body cap](#request-body-cap).
 Runs as the `rpc-gateway-live` service in `infra/monitoring/docker-compose.yml` (host-net,
 `restart: unless-stopped`); `rpc-gateway-test` (compose profile `test`) is ready for a second env.
 
@@ -158,6 +159,16 @@ has transactions of its own pending, and drops it as before when it has none. Mi
 `Sender` seeds its nonce with the latter and must account for already pending submissions.
 `eth_sendRawTransaction` remains available subject to the gas cap and the fee rule (below).
 
+**Reads by hash** (`eth_getTransactionByHash`, `eth_getRawTransactionByHash`) stay on the allowlist — the
+receipt poll, explorers and replay tooling read mined transactions through them — but a transaction
+that has no block yet is answered as `null`, the same reply as for a hash the node never saw (issue
+#216). anvil answers both methods for pool entries, so a hash learned some other way (a shared sender,
+a log line, a guessed nonce) used to show an unmined transaction's calldata, fees and signed bytes. A
+mined transaction passes through byte for byte. The raw form carries no block field, so it costs one
+upstream `eth_getTransactionReceipt`; a lookup that fails seals. Counted in `rpc_pending_sealed_total`.
+`eth_getTransactionReceipt` itself is unchanged: `null` while pending, which is what
+`example/agents/runtime/send.ts` polls on.
+
 `RPC_METHOD_DENY` overrides the default method-deny regex; replacing it is an operator policy
 change and must preserve these bans on participant endpoints. Parameter checks still apply while
 `RPC_FILTER=1`. `RPC_FILTER=0` is an internal all-access endpoint. Direct access to the upstream node
@@ -189,6 +200,18 @@ HTTP 400 + JSON-RPC `-32600`, counted in `rpc_params_denied_total`. The pending 
 process every participant shares. Standard methods nest a handful of levels (`eth_getLogs` topics,
 `eth_call` state overrides). The handler is also wrapped so an unexpected exception answers 500
 (`-32603`) instead of ending the process. The limit applies with `RPC_FILTER=0` too.
+
+### Request body cap
+
+The body used to be accumulated without bound before `JSON.parse`, so one authenticated connection
+could hold the gateway's memory with a stream it never finished (issue #216). `RPC_MAX_BODY_BYTES`
+(default 4 MiB) bounds it, beside the shape limit above: a declared `content-length` over the cap is
+refused before the body is read, and bytes received past the cap (chunked, or a declaration that lied)
+stop the read. Either way the client gets HTTP 413 with JSON-RPC error `-32600`, the socket is closed
+after the reply is flushed, and `rpc_body_denied_total` counts it. The largest honest bodies are a signed
+deployment (initcode is capped at 49,152 bytes by EIP-3860, ~100 KB as hex) and the runtime's batched
+Multicall3 reads (hundreds of KB); 4 MiB is ~40× those. Reproduce with
+`node --import tsx --test test/rpcGatewayBody.test.ts` (a fake upstream; no anvil needed).
 
 ## Transaction checks at entry (gas cap and fee rule)
 

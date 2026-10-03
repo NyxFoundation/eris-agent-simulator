@@ -69,6 +69,16 @@ export interface SummaryAgent {
   /** P of rules §4.4.1 — V_K − V_0 off the epoch's two boundaries, each end at its own marks. Absent on
    * a run recorded before the coordinator wrote it, and on an agent the run did not place. */
   pnlUsdc?: number;
+  /**
+   * How V_0 was derived (issue #207): `endowment` = floored at what the environment funded, valued
+   * at the first boundary's marks; `measured` = the chain state at that boundary stood above it, or
+   * the boundary was a carried one. Absent on a run recorded before the field.
+   */
+  v0Source?: "endowment" | "measured";
+  /** V_0 as P used it, the chain state at the first boundary, and the endowment at its marks. */
+  v0Usdc?: number;
+  v0MeasuredUsdc?: number;
+  v0EndowmentUsdc?: number;
   /** Written by the segment writer (core/src/segments.ts): false = in the record, not placed. */
   scored?: boolean;
   unscoredReason?: string;

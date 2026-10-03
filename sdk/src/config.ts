@@ -144,6 +144,12 @@ export type SimConfig = {
   // shape as the priority-fee cap; the RPC gateway refuses over-cap transactions up front.
   maxTxGas: bigint;
   maxAgentBlockGas: bigint;
+  // Issue #208 / rules §8: value moved between two registered addresses of *different* participant
+  // units is flagged in the post-run check only when it exceeds this share (bps) of the pair's
+  // smaller endowment; between two submissions of the same unit any amount is flagged. 0 flags
+  // every priced cross-unit movement. Detection is post-run over blocks.csv and the run window's
+  // Transfer / lending logs (core/src/rosterTransfers.ts); nothing changes the score.
+  rosterTransferFlagBps: number;
   // Flash arb demo (GitHub #3). With ERIS_FLASH_ARB=1 the coordinator deploys the FlashArb contract
   // and makes it available to the flash-arb agent. Requires uniswap+balancer+aave enabled. Default off.
   flashArbDemo: boolean;
@@ -239,6 +245,16 @@ export type SimConfig = {
   // bound (2026-09-07). Measured on an 8-core Mac with 32 docker agents the field takes 86-99 s,
   // so a local check of that size raises it; the production box is faster. 0 disables the wait.
   agentsReadyTimeoutSec: number;
+  // What an agent may write to the host, held by the coordinator (issue #214 item 1): the state
+  // directory (`run.agentStateQuotaBytes`) and its log files (`run.agentLogQuotaBytes`), measured
+  // every `run.agentDiskCheckEveryBlocks` blocks; past a quota the agent process is stopped and
+  // `agent_disk_quota_exceeded` is recorded. Above the runtime's own 64 MiB self-limits on purpose:
+  // those are what a well-behaved agent holds itself to, these are where the environment steps in.
+  // The state quota is also the apparent-size cap of the epoch-start snapshot (agentState.ts).
+  // 0 for a quota disables that check; 0 for the interval disables the watch.
+  agentStateQuotaBytes: number;
+  agentLogQuotaBytes: number;
+  agentDiskCheckEveryBlocks: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -474,6 +490,9 @@ export function loadConfig(env = process.env): SimConfig {
     // 2026-09-06 -- inclusion is the priority-fee auction -- so the gas budget is what stops one agent
     // from starving the block.
     maxAgentBlockGas: bigintEnv(env.ERIS_MAX_AGENT_BLOCK_GAS, 30_000_000n),
+    // 1% of the smaller endowment of the pair (~760 USDC on the official basket, 250 on a USDC-only
+    // regime): below it a cross-unit movement is recorded but not flagged.
+    rosterTransferFlagBps: intEnv(env.ERIS_ROSTER_TRANSFER_FLAG_BPS, 100),
     flashArbDemo: env.ERIS_FLASH_ARB === "1",
     // Real-time mode settings.
     blockTimeSec,
@@ -497,6 +516,18 @@ export function loadConfig(env = process.env): SimConfig {
     agentsReadyTimeoutSec: Math.max(
       0,
       intEnv(env.ERIS_AGENTS_READY_TIMEOUT_SEC, 60),
+    ),
+    agentStateQuotaBytes: Math.max(
+      0,
+      intEnv(env.ERIS_AGENT_STATE_QUOTA_BYTES, 256 * 1024 * 1024),
+    ),
+    agentLogQuotaBytes: Math.max(
+      0,
+      intEnv(env.ERIS_AGENT_LOG_QUOTA_BYTES, 256 * 1024 * 1024),
+    ),
+    agentDiskCheckEveryBlocks: Math.max(
+      0,
+      intEnv(env.ERIS_AGENT_DISK_CHECK_EVERY_BLOCKS, 15),
     ),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",

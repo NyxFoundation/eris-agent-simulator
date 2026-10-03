@@ -120,6 +120,9 @@ export const ACCOUNT_INDEX = {
   deployer: 0,
   keeper: 1,
   trader: 2,
+  // Holds the environment's LQTY stake (deployLiquityVenue). Outside anvil's ten prefunded accounts
+  // so that no roster key on the default mnemonic (AGENTn_PRIVATE_KEY) is also the staker.
+  lqtyStaker: 100,
 } as const;
 
 // Shared mock token specs. Shared by Uniswap / Balancer / Curve / GMX.

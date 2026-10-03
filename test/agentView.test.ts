@@ -67,6 +67,8 @@ const ENVIRONMENT_ONLY = new Set([
   "vulnPoolFeeBps",
   "vulnLlm", // distributed as ERIS_VULN_LLM
   "agentMarketsPerBlockCap",
+  // Issue #208: the post-run roster-transfer flag threshold; the agent runtime never reads it.
+  "rosterTransferFlagBps",
   "flashArbDemo",
   "runEndsAt", // converted into runBlocks, which the agent config carries
   "skipReset",
@@ -83,6 +85,9 @@ const ENVIRONMENT_ONLY = new Set([
   "markMedianBlocks",
   "blockGasLimit",
   "agentsReadyTimeoutSec",
+  "agentStateQuotaBytes", // held by the coordinator (issue #214); the runtime's own cap is ERIS_AGENT_STATE_CAP_BYTES
+  "agentLogQuotaBytes",
+  "agentDiskCheckEveryBlocks",
   "seed",
   "runDirRoot",
   "agentTimeoutMs",

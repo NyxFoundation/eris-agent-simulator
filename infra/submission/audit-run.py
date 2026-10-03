@@ -12,8 +12,14 @@ WARN signals (exit 0 — for manual review, not auto-invalidation):
   - revert spam:   an agent's tx revert rate is high (resource abuse).
   - collusion:     a pair of agents repeatedly make opposing swaps in the same round (wash/collusion
                    heuristic). NOT proof — legit arbitrage also trades against the flow; it points a
-                   reviewer at pairs to inspect. Full inter-team detection needs the registration
-                   team->wallet map + net value-flow, which live outside a single run's artifacts.
+                   reviewer at pairs to inspect. It reads only the agents' self-reported `swap`
+                   actions. Direct ETH / ERC-20 transfers between registered addresses, and
+                   counterparty routes through participant-created contracts or lending markets, are
+                   detected by the coordinator after the run (core/src/rosterTransfers.ts, issue
+                   #208) and surfaced here from summary.json's `rosterTransfers`:
+  - roster-transfer: a flagged value movement between two registered addresses (same participant
+                   unit at any size; different units above run.rosterTransferFlagBps). Same status:
+                   a fact for review, not a verdict.
 
 Usage: audit-run.py <run_dir> [--revert-warn 0.5] [--collusion-warn 0.6] [--json]
 """
@@ -105,6 +111,30 @@ def check_collusion(run_dir, warn):
     return out
 
 
+def check_roster_transfers(run_dir):
+    # The coordinator's own post-run detection (issue #208); this only reads what it wrote, so a run
+    # from before the check (no `rosterTransfers` in summary.json) yields nothing rather than a
+    # re-implementation that would disagree with it.
+    p = os.path.join(run_dir, "summary.json")
+    if not os.path.exists(p):
+        return []
+    try:
+        summary = json.load(open(p))
+    except Exception:
+        return []
+    out = []
+    for t in summary.get("rosterTransfers") or []:
+        if not t.get("flagged"):
+            continue
+        value = f"{t['valueUsdc']:.2f} USDC" if t.get("valueUsdc") is not None else f"{t.get('amount') or t.get('amountRaw')} {t.get('token')} (unpriced)"
+        via = f" via {t['viaKind']} {t['via']}" if t.get("via") else ""
+        out.append(
+            f"roster-transfer: '{t['from']}' -> '{t['to']}' {value} ({t['route']}{via}, "
+            f"{t['count']} movement(s), {t.get('reason')}) — review under rules §8"
+        )
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir")
@@ -115,7 +145,8 @@ def main():
 
     rows = load_blocks(a.run_dir)
     hard = check_priority_fee(rows)
-    warn = check_revert(rows, a.revert_warn) + check_collusion(a.run_dir, a.collusion_warn)
+    warn = (check_revert(rows, a.revert_warn) + check_collusion(a.run_dir, a.collusion_warn)
+            + check_roster_transfers(a.run_dir))
 
     if a.json:
         print(json.dumps({"run": a.run_dir, "hard": hard, "warn": warn,

@@ -30,7 +30,8 @@
 // what keeps the order equal to what was paid -- the probe says whether that rule is load-bearing.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { keccak256, stringToBytes, type Address, type Hex } from "viem";
+import { type Address, type Hex } from "viem";
+import { environmentKey } from "../walletKeys.js";
 import { privateKeyToAccount } from "viem/accounts";
 import { bootstrapCliEnv } from "./bootstrapEnv.js";
 import {
@@ -109,7 +110,7 @@ async function runLiveProbe(): Promise<void> {
   // Independent senders, because one account's txs are ordered by nonce whatever the builder does:
   // a single-sender probe cannot tell fee ordering from nonce ordering.
   const keys: Hex[] = Array.from({ length: senders }, (_, i) =>
-    keccak256(stringToBytes(`ordering-probe:${config.seed}:${i}`)),
+    environmentKey("ordering-probe", i),
   );
   const addresses = keys.map(accountAddress);
 

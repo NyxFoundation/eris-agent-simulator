@@ -1,10 +1,15 @@
 import {
-  keccak256,
-  stringToBytes,
+  erc20Abi,
   type Address,
   type Hex,
   type PublicClient,
 } from "viem";
+import {
+  environmentKey,
+  WALLET_SECRET_FILE_ENV,
+  walletKeysRecord,
+  walletSecret,
+} from "../walletKeys.js";
 import { privateKeyForWalletName } from "../config.js";
 import { resolveRunInputs } from "../runConfig.js";
 import {
@@ -73,6 +78,11 @@ import {
   reconcileRunAgentTxs,
 } from "../postRunCheck.js";
 import {
+  rosterPricingFromMarks,
+  scanRosterTransfers,
+  type RosterTransferScan,
+} from "./rosterTransferScan.js";
+import {
   nextFairPrice,
   priceRngForAsset,
   Rng,
@@ -98,11 +108,12 @@ import {
   updateOraclesMempool,
   writeAaveOraclesStorage,
 } from "@eris/sdk/protocols/oracles.js";
-import { AAVE, GMX_MARKETS, TOKENS } from "@eris/sdk/constants.js";
+import { AAVE, GMX_MARKETS, LST, TOKENS } from "@eris/sdk/constants.js";
 import {
   baseTokens,
   gmxMarketAddresses,
   tokenInfo,
+  tokenRegistry,
 } from "@eris/sdk/markets.js";
 import {
   buildFlowContext,
@@ -115,6 +126,7 @@ import {
 import { FlowProcess, type FlowOrderWire } from "../flowProcess.js";
 import { deployFlashArb, FLASH_ARB_ADDRESS } from "../flashArbDemo.js";
 import { RealtimeAgentProcess } from "./agentProcess.js";
+import { DerivedSenderLedger } from "./derivedSenders.js";
 import {
   EPOCH_COUNT_ENV,
   EPOCH_INDEX_ENV,
@@ -135,7 +147,21 @@ import {
   type LiquityVictimTrove,
 } from "../liquityVictims.js";
 import { waitForAgentsReady } from "./agentsReady.js";
-import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
+import {
+  agentStateRootFromEnv,
+  DEFAULT_STATE_SNAPSHOT_LIMITS,
+  prepareAgentState,
+} from "./agentState.js";
+import { AgentDiskWatch, agentLogFiles } from "./agentDisk.js";
+import { measureAgentNetworks, networkMismatches } from "./agentNetwork.js";
+import { createAgentStopper } from "./agentStop.js";
+import { environmentSignerOwners } from "./environmentSigners.js";
+import {
+  createDockerRunner,
+  DOCKER_CALL_TIMEOUT_MS,
+  PROBE_ATTEMPTS,
+  ProbeBudget,
+} from "./dockerCli.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
 import {
   ensureScenarioKey,
@@ -172,6 +198,7 @@ import {
   LIVE_WEEK_OVERRIDE,
   LiveWeekRefusal,
   liveWeekRefusals,
+  publicAccountRefusal,
 } from "./liveWeek.js";
 import type { RealtimeConfig } from "../config.js";
 import {
@@ -192,6 +219,11 @@ import {
   readGmxFundingConfig,
 } from "./gmxFunding.js";
 import {
+  gmxCallbackCheck,
+  gmxCallbackOpenMessage,
+  readGmxCallbackLimits,
+} from "./gmxCallbacks.js";
+import {
   environmentReserveAssets,
   readAaveReserves,
   strayAaveReserves,
@@ -199,6 +231,7 @@ import {
 } from "./aaveReserveGuard.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import { epochPnlFromSeries } from "../scoring/epochPnl.js";
+import type { FirstBoundaryV0, V0Source } from "../scoring/endowmentV0.js";
 import { epochEndBlock, intervalCount, loopStep } from "../epochExtent.js";
 import {
   NoArbMonitor,
@@ -480,6 +513,9 @@ type RealtimeAgentRuntime = {
   // grepping events.jsonl. It does not change the score -- rules §2.3 / §4.4.2 value a stopped agent
   // on what it left behind -- but the standings carry it as a flag next to the number.
   exitedEarly?: string;
+  // The per-agent state directory this run gave it (issue #77), when it did; what the disk watch
+  // measures (issue #214).
+  stateDir?: string;
 };
 
 // Who a mined transaction is attributed to in blocks.csv. `external` is a sender the run does not
@@ -588,6 +624,13 @@ export async function runRealtimeSimulation(
   const scenarioKey = ensureScenarioKey();
   // Issue #186: the regime names the streams too, so calm#101 and crash#101 are different worlds.
   setScenarioRegime(config.scenarioRegime);
+  // Issue #189: the secret the wallet keys are derived from, resolved before any key is. It must not
+  // be the scenario key: that one is published after the results, and every key would be with it.
+  if (walletSecret().hex === scenarioKey.hex)
+    throw new Error(
+      `${WALLET_SECRET_FILE_ENV} holds the scenario key. The scenario key is published after the ` +
+        "results (ADR 0027 §3); the wallet secret never is. Make one with `npm run competition -- wallet-keygen`",
+    );
 
   // ADR 0020 §1 fail-fast. `resetUnit: scenario` describes a world per (regime, seed), and only the
   // scenario-matrix runner produces those -- it is the caller that resets between runs, not anything
@@ -758,6 +801,9 @@ export async function runRealtimeSimulation(
     // ADR 0027: which key the seed was realized under -- the public one, or the commitment to a
     // secret one. The seed alone no longer names the world.
     scenarioKey: scenarioKeyRecord(scenarioKey),
+    // Issue #189: where the environment's wallet keys came from -- a secret made by this process, or
+    // the practice period's file. Never the secret or a hash of it.
+    walletKeys: walletKeysRecord(),
     // Issue #186: the regime the streams were named by (empty = none, the pre-#186 streams).
     scenarioRegime: config.scenarioRegime,
     // ...and the version of that naming (sdk/src/rng.ts), so a stored run says which streams drew it.
@@ -897,7 +943,7 @@ export async function runRealtimeSimulation(
   for (const id of enabledIds) {
     for (const kind of ["informed", "uninformed"] as FlowKind[]) {
       const key = `${id}:${kind}`;
-      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
         id: `flow-${key}`,
         address: accountAddress(privateKey),
@@ -910,7 +956,7 @@ export async function runRealtimeSimulation(
   if (enabledIds.includes("aave")) {
     for (let i = 0; i < config.aaveFlowActorCount; i++) {
       const key = `aave:actor${i}`;
-      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
         id: `flow-${key}`,
         address: accountAddress(privateKey),
@@ -935,7 +981,7 @@ export async function runRealtimeSimulation(
   const whaleEvents = schedule.events.filter((e) => e.type === "whale");
   if (whaleEvents.length > 0) {
     const key = WHALE_WALLET_KEY;
-    const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+    const privateKey = environmentKey("flow", key);
     flowWalletMap.set(key, {
       id: `flow-${key}`,
       address: accountAddress(privateKey),
@@ -948,7 +994,7 @@ export async function runRealtimeSimulation(
   const launchEndowments = tokenLaunchEndowments(schedule);
   for (const e of launchEndowments) {
     for (const key of [e.launchKey, e.waveKey]) {
-      const privateKey = keccak256(stringToBytes(`flow:${config.seed}:${key}`));
+      const privateKey = environmentKey("flow", key);
       flowWalletMap.set(key, {
         id: `flow-${key}`,
         address: accountAddress(privateKey),
@@ -1001,16 +1047,31 @@ export async function runRealtimeSimulation(
       role: flowRole(key),
     });
   }
-  ownerByAddress.set(accountAddress(adminPk).toLowerCase(), {
-    ownerId: "oracle",
-    role: "system",
-  });
-  ownerByAddress.set(accountAddress(keeperPk).toLowerCase(), {
-    ownerId: "keeper",
-    role: "system",
-  });
+  // Every account the environment signs with, setup and deployer included. They matter for
+  // `isKnown` below as much as for the labels: an address the environment already owns is never a
+  // sender an agent's wallet derived (environmentSigners.ts).
+  for (const [address, owner] of environmentSignerOwners(config.privateKeys))
+    ownerByAddress.set(address, owner);
   // Read once, at the blocks.csv flush, and swept there too (issue #134).
   const submittedByHash = new SubmittedLedger<SubmittedMeta>();
+  // Issue #212: addresses an agent's wallet funded -- ETH, a priced token, a contract it created,
+  // transitively -- so a transaction sent from a second EOA is the agent's in blocks.csv and in every
+  // post-run check, instead of an `external` row nothing looks at. Fed by logBlock, in block order.
+  const derivedSenders = new DerivedSenderLedger({
+    agentOf: (address) => {
+      const owner = ownerByAddress.get(address);
+      return owner?.role === "agent" ? owner.ownerId : undefined;
+    },
+    isKnown: (address) => ownerByAddress.has(address),
+    // Only the tokens the run prices: a Transfer log from any other contract is whatever its author
+    // wanted it to say.
+    trackedTokens: () =>
+      new Set([
+        ...baseTokens().map((t) => t.address.toLowerCase()),
+        ...activeStables().map((a) => a.toLowerCase()),
+        ...(LST ? [LST.lstToken.toLowerCase()] : []),
+      ]),
+  });
 
   // Top an environment wallet up to a target native balance from the treasury (issue #33 (1)).
   // "Up to", not "by": the practice devnet funds the same admin and keeper on every segment, and
@@ -1080,6 +1141,18 @@ export async function runRealtimeSimulation(
       if (enforcement === "warn") console.warn(`[gmx] WARNING: ${message}`);
     }
 
+    // Does this deploy give participant code gas inside the keeper's transaction (order callbacks, a
+    // contract receiver's receive())? Recorded, not enforced: the keeper refuses callback orders on
+    // every chain (gmxKeeperRefusal); the patch also closes the receiver's gas (gmxCallbacks.ts).
+    if (config.localDeploy && enabledIds.includes("gmx")) {
+      const callbacks = gmxCallbackCheck(
+        await readGmxCallbackLimits(publicClient),
+      );
+      logger.event({ type: "gmx_callback_check", ...callbacks });
+      if (!callbacks.closedAtDeploy)
+        console.warn(`[gmx] WARNING: ${gmxCallbackOpenMessage(callbacks)}`);
+    }
+
     // And does the Aave Pool hold only reserves the environment owns? The Aave score sums every
     // reserve, so an active vendor test-token reserve is free score (issue #190). Local deploys only:
     // a fork's Pool is Arbitrum's, whose reserves are real assets nobody mints for free.
@@ -1120,6 +1193,15 @@ export async function runRealtimeSimulation(
     } else {
       await setEthBalance(publicClient, accountAddress(adminPk), GAS_ONLY_WEI);
       await setEthBalance(publicClient, accountAddress(keeperPk), GAS_ONLY_WEI);
+      // The registrar's gas, which it used to get from anvil's genesis allocation (SETUP_PRIVATE_KEY
+      // defaults to anvil account 9). The backtest anvil starts with no genesis accounts, so the
+      // environment funds every key it signs with, like admin and keeper above.
+      if (config.agentMarkets)
+        await setEthBalance(
+          publicClient,
+          accountAddress(config.privateKeys.setup),
+          GAS_ONLY_WEI,
+        );
     }
     for (const adapter of adapters) {
       if (adapter.setupGlobal) await adapter.setupGlobal(ctx);
@@ -1343,12 +1425,9 @@ export async function runRealtimeSimulation(
       });
     }
 
-    // ---- stress victims (ADR 0009 §4): build seed-derived victims that make liquidation possible ----
+    // ---- stress victims (ADR 0009 §4): build victims that make liquidation possible ----
     // Victims are not included in agentRuntimes = not scored (a profit source for the liquidator agent).
-    const stressVictims: StressVictim[] = deriveStressVictims(
-      config.seed,
-      config.stressVictimCount,
-    );
+    const stressVictims: StressVictim[] = deriveStressVictims(config.stressVictimCount);
     let victimEnv: Record<string, string> | undefined;
     // Minimum victim HF right after setup (excluding the debt-free sentinel). Used for the crash calibration warning (§2).
     let minVictimHf0: number | null = null;
@@ -1797,10 +1876,7 @@ export async function runRealtimeSimulation(
     // Opened here, after the venue's oracle points at this run's PriceFeed, so the ICR they land
     // at is the one the chain computes. Not scored; the crash liquidates them (the Stability Pool's
     // work) and the eUSD depeg redeems against them (redemption arb's work).
-    const liquityVictims: LiquityVictim[] = deriveLiquityVictims(
-      config.seed,
-      config.stressLiquityVictimCount,
-    );
+    const liquityVictims: LiquityVictim[] = deriveLiquityVictims(config.stressLiquityVictimCount);
     let minLiquityVictimIcr0: number | null = null;
     let liquityVictimMcr: number | null = null;
     // Issue #59: when the regime declares the TCR it wants at the crash bottom, the cohort's
@@ -2146,11 +2222,15 @@ export async function runRealtimeSimulation(
     // applies the rules §2.3 caps. Checked once here rather than discovered per agent: a missing
     // docker would otherwise surface as N `spawn error` early exits that read like agent bugs.
     if (config.agentSandbox === "docker") {
+      // Bounded like every other docker call (issue #223): a daemon that accepts the connection and
+      // then says nothing used to hang the start of the run with nothing on stdout saying why.
       const probe = spawnSync(
         "docker",
         ["version", "--format", "{{.Server.Version}}"],
         {
           encoding: "utf8",
+          timeout: DOCKER_CALL_TIMEOUT_MS,
+          killSignal: "SIGKILL",
         },
       );
       if (probe.status !== 0)
@@ -2205,6 +2285,24 @@ export async function runRealtimeSimulation(
           "operator's filesystem (rules §2.3 are not enforced here, and this is not an isolation boundary)",
       });
     }
+    // The live week's one check that reads the chain (liveWeek.ts): after funding, before any agent
+    // starts. Every epoch, because each one starts from the reverted snapshot.
+    if (overrides[LIVE_WEEK_OVERRIDE] === "1") {
+      const refusal = await publicAccountRefusal(
+        {
+          eth: (address) => publicClient.getBalance({ address }),
+          erc20: (token, address) =>
+            publicClient.readContract({
+              address: token,
+              abi: erc20Abi,
+              functionName: "balanceOf",
+              args: [address],
+            }),
+        },
+        Object.values(tokenRegistry()),
+      );
+      if (refusal) throw new LiveWeekRefusal([refusal]);
+    }
     // What every launched agent is handed instead of the coordinator's config (agentView.ts): the
     // same file for all of them, one copy per view directory.
     const agentConfigText = renderAgentConfig(config);
@@ -2230,18 +2328,47 @@ export async function runRealtimeSimulation(
       // Issue #77: the per-agent area that survives epochs, plus the snapshot this epoch started
       // from. Absent unless a root is configured, which keeps every existing run byte-identical.
       // A failure here is fatal rather than silent: an agent that was promised its memory and
-      // silently started from agent.ts is scored as if it had chosen to forget.
-      const stateDir = agentStateRoot
-        ? prepareAgentState(agentStateRoot, agent.id, runId)
+      // silently started from agent.ts is scored as if it had chosen to forget. A directory the
+      // participant made uncopyable (issue #214 item 2) is not a failure of the environment: it is
+      // set aside, the agent starts this epoch empty, and the record says so.
+      const prepared = agentStateRoot
+        ? prepareAgentState(agentStateRoot, agent.id, runId, {
+            ...DEFAULT_STATE_SNAPSHOT_LIMITS,
+            // One number for "how much state": the snapshot copies at most what the watch below
+            // lets the agent hold. 0 (quota off) keeps the module default for the copy.
+            ...(config.agentStateQuotaBytes > 0
+              ? { maxBytes: config.agentStateQuotaBytes }
+              : {}),
+          })
         : undefined;
+      const stateDir = prepared?.dir;
+      agent.stateDir = stateDir;
       const view = prepareAgentView(logger.runDir, agent.id, agentConfigText);
       agentViewDirs.push(view.dir);
-      if (stateDir)
+      if (prepared) {
+        if (prepared.refused) {
+          logger.event({
+            type: "agent_state_snapshot_skipped",
+            agentId: agent.id,
+            reason: prepared.refused.reason,
+            movedTo: prepared.refused.refusedTo,
+            note:
+              "the state directory the agent left behind could not be copied; it was moved aside " +
+              "unread and the agent starts this epoch from an empty one",
+          });
+          console.error(
+            `[agent] ${agent.id}: state directory refused (${prepared.refused.reason}); ` +
+              `moved to ${prepared.refused.refusedTo}, starting empty`,
+          );
+        }
         logger.event({
           type: "agent_state_dir",
           agentId: agent.id,
-          dir: stateDir,
+          dir: prepared.dir,
+          bytes: prepared.usage.apparentBytes,
+          entries: prepared.usage.entries,
         });
+      }
       agent.process = new RealtimeAgentProcess(
         agent.spec,
         config.rpcUrl,
@@ -2277,6 +2404,234 @@ export async function runRealtimeSimulation(
     }
     // What `agents_ready` measures boot time from (issue #94).
     const agentsSpawnedAt = Date.now();
+
+    // ---- the network each docker agent is actually on (issue #214 item 4) ----
+    // `agent_sandbox` above records the posture the env declares; this records what docker says
+    // once the containers exist, and stops a container that is not where its posture says. Measured
+    // after the agents-ready wait (the containers of the ready agents exist by then) and again on
+    // the periodic tick for any that were still booting. A measurement is two `docker inspect`
+    // calls per agent, once.
+    const networkPending = new Set<string>(
+      config.agentSandbox === "docker"
+        ? agentRuntimes
+            .filter((a) => a.process !== null && a.spec.command === undefined)
+            .map((a) => a.id)
+        : [],
+    );
+    // Every docker call this loop makes has a deadline (issue #223). These run synchronously on the
+    // environment's own thread -- 32 agents x 2 calls at the agents-ready wait, and again every
+    // `agentDiskCheckEveryBlocks` blocks for whatever is still pending -- so an unbounded `spawnSync`
+    // on a daemon this process does not control is an unbounded stop of the oracle write, the keeper
+    // and the flow. A call that misses its deadline reads as unmeasured, not as an answer.
+    const dockerRun = createDockerRunner();
+    // And a container docker will never describe is asked about a fixed number of times. Before this
+    // an inspect that always failed kept the agent in `networkPending` for the whole run, writing the
+    // same event every interval and never concluding anything.
+    const networkProbes = new ProbeBudget();
+    const checkAgentNetworks = (when: "agents_ready" | "block", bn?: number): void => {
+      const byId = (id: string) => agentRuntimes.find((a) => a.id === id);
+      const ids = [...networkPending].filter((id) => {
+        const a = byId(id);
+        if (!a || a.exitedEarly !== undefined || !(a.process?.isAlive() ?? false)) {
+          networkPending.delete(id);
+          return false;
+        }
+        return true;
+      });
+      if (ids.length === 0) return;
+      const facts = measureAgentNetworks(ids, dockerRun);
+      const gaveUp: string[] = [];
+      for (const f of facts) {
+        if (f.measured) {
+          networkPending.delete(f.id);
+          networkProbes.forget(f.id);
+          continue;
+        }
+        if (!networkProbes.failed(f.id)) continue;
+        // Spent. Recorded once, as the fact it is: this container's posture was never verified.
+        networkPending.delete(f.id);
+        gaveUp.push(f.id);
+        logger.event({
+          type: "agent_network_unverified",
+          agentId: f.id,
+          container: f.container,
+          attempts: networkProbes.count(f.id),
+          ...(f.error !== undefined ? { error: f.error } : {}),
+          note:
+            `docker would not say which networks this container is on after ${PROBE_ATTEMPTS} ` +
+            "attempts; the coordinator stops asking. The run continues and this agent's network " +
+            "posture is unverified -- which is not the same as verified-and-wrong, and not the " +
+            "same as nothing being written down (infra/docker-agent/ISOLATION.md)",
+        });
+        console.error(
+          `[agent] ${f.id}: network posture unverified (${f.error ?? "docker did not answer"})`,
+        );
+      }
+      const mismatches = networkMismatches(facts, (id) =>
+        agentNetworkPosture({ ...process.env, ...(byId(id)?.spec.env ?? {}) }),
+      );
+      logger.event({
+        type: "agent_network_measured",
+        when,
+        ...(bn !== undefined ? { blockNumber: bn } : {}),
+        agents: facts.map((f) => ({
+          id: f.id,
+          container: f.container,
+          measured: f.measured,
+          networks: f.networks,
+          ...(f.error !== undefined ? { error: f.error } : {}),
+        })),
+        unmeasured: facts.filter((f) => !f.measured).map((f) => f.id),
+        ...(gaveUp.length > 0 ? { unverified: gaveUp } : {}),
+        mismatches,
+      });
+      for (const m of mismatches) {
+        const agent = byId(m.id);
+        if (!agent || agent.exitedEarly !== undefined) continue;
+        const reason = `stopped by the environment: network posture mismatch (${m.detail})`;
+        logger.event({
+          type: "agent_network_mismatch",
+          agentId: m.id,
+          kind: m.kind,
+          detail: m.detail,
+          note:
+            "the container is not on the network its launch declared; it is stopped rather than " +
+            "run where it can reach what the posture says it cannot (infra/docker-agent/ISOLATION.md)",
+        });
+        console.error(`[agent] ${m.id} ${reason}`);
+        // Through stopAgent, so the container goes too: a container on the wrong network that is
+        // only disconnected from its client is still on the wrong network (issue #223).
+        agentStopper.stop(agent, reason, `network posture mismatch (${m.kind})`);
+      }
+    };
+
+    // ---- stopping an agent for real (issue #223) ----
+    // `close()` stops the process this coordinator spawned; under the docker sandbox the container
+    // outlives it. `agentStop.ts` is the stop that reaches the container, with the removal read back.
+    const agentStopper = createAgentStopper({
+      sandbox: config.agentSandbox,
+      docker: dockerRun,
+      event: (event) => logger.event(event),
+    });
+
+    // ---- what each agent writes to the host (issue #214 item 1) ----
+    // Measured every `run.agentDiskCheckEveryBlocks` blocks for every agent this coordinator
+    // launched and still runs: its state directory and its log files. Past a quota the agent is
+    // stopped the way a crashed one ends -- the run goes on, the agent is valued on what it left
+    // behind (rules §2.3 / §4.4.2), and summary.json says why it stopped. The runtime's own 64 MiB
+    // self-limits do not bind a submitted runtime; this does.
+    //
+    // A tick measures what fits in its budget and the next resumes where it stopped (issue #223): a
+    // directory of 20,000 one-byte files is within every quota and costs 101 ms to walk, so walking
+    // the whole field on one tick was 3+ seconds of synchronous work in a loop that owes the chain a
+    // block every two. `agent_disk_sweep` says how long a pass over the field takes, in blocks.
+    const diskWatch = new AgentDiskWatch({
+      stateBytes: config.agentStateQuotaBytes,
+      logBytes: config.agentLogQuotaBytes,
+    });
+    // Agents this watch stopped. They stay in the rotation -- `stopped` is read back from the files,
+    // because the process the coordinator killed is not necessarily what was writing them.
+    const diskStopped = new Set<string>();
+    let sweepTicksReported = -1;
+    const diskWatchTick = (bn: number): void => {
+      const targets = agentRuntimes
+        .filter(
+          (a) =>
+            a.process !== null &&
+            (diskStopped.has(a.id) ||
+              (a.exitedEarly === undefined && a.process.isAlive())),
+        )
+        .map((a) => ({
+          id: a.id,
+          ...(a.stateDir !== undefined ? { stateDir: a.stateDir } : {}),
+          logFiles: agentLogFiles(logger.runDir, a.id),
+        }));
+      const tick = diskWatch.tick(targets);
+      // Once, and again whenever the cycle length changes: on an honest field a pass is one tick, and
+      // the operator needs to see it when it is not (32 expensive agents is 32 ticks = 480 blocks).
+      if (tick.sweep !== undefined && tick.sweep.ticks !== sweepTicksReported) {
+        sweepTicksReported = tick.sweep.ticks;
+        logger.event({
+          type: "agent_disk_sweep",
+          blockNumber: bn,
+          agents: tick.rotation,
+          ticks: tick.sweep.ticks,
+          blocks: tick.sweep.ticks * config.agentDiskCheckEveryBlocks,
+          elapsedMs: Math.round(tick.elapsedMs),
+          note:
+            "one pass over the field. A tick measures what fits in its budget and the next resumes " +
+            "where it stopped, so this is how long a quota takes to be noticed",
+        });
+      }
+      for (const outcome of tick.outcomes) {
+        if (outcome.report === "none") continue;
+        const agent = agentRuntimes.find((a) => a.id === outcome.id);
+        if (!agent) continue;
+        const usage = {
+          stateBytes: outcome.sample.stateBytes,
+          logBytes: outcome.sample.logBytes,
+          ...(outcome.sample.stateUsage
+            ? {
+                stateEntries: outcome.sample.stateUsage.entries,
+                stateWalkTruncated: outcome.sample.stateUsage.truncated,
+              }
+            : {}),
+          quota: {
+            stateBytes: config.agentStateQuotaBytes,
+            logBytes: config.agentLogQuotaBytes,
+          },
+        };
+        if (outcome.report === "warning") {
+          logger.event({
+            type: "agent_disk_usage_warning",
+            blockNumber: bn,
+            agentId: agent.id,
+            findings: outcome.verdict.findings,
+            ...usage,
+          });
+          console.error(
+            `[agent] ${agent.id}: ${outcome.verdict.findings.join("; ")}`,
+          );
+          continue;
+        }
+        if (outcome.report === "still-writing") {
+          // The stop did not reach whatever is writing. Under docker that is the container, which
+          // outlived the client the coordinator killed; the removal is the only thing left to try.
+          logger.event({
+            type: "agent_disk_write_after_stop",
+            blockNumber: bn,
+            agentId: agent.id,
+            grewBytes: outcome.grewBytes ?? 0,
+            ...usage,
+            note:
+              "this agent was already stopped for a quota and its files have grown since. The " +
+              "process the coordinator spawned is gone, so something it started is not: the " +
+              "container is removed (issue #223)",
+          });
+          console.error(
+            `[agent] ${agent.id} is still writing ${outcome.grewBytes ?? 0} bytes after being stopped`,
+          );
+          agentStopper.escalate(agent.id, "still writing after being stopped");
+          continue;
+        }
+        const reason = `stopped by the environment: disk quota exceeded (${outcome.verdict.findings.join("; ")})`;
+        logger.event({
+          type: "agent_disk_quota_exceeded",
+          blockNumber: bn,
+          agentId: agent.id,
+          findings: outcome.verdict.findings,
+          ...usage,
+          note:
+            "the agent process is stopped and its container removed; the run continues and the " +
+            "agent is valued on what it left behind (rules §2.3 / §4.4.2). Its files are left in " +
+            "place for the operator",
+        });
+        console.error(`[agent] ${agent.id} ${reason}`);
+        // Kept in the rotation: whether the writing actually stopped is measured, not assumed.
+        diskStopped.add(agent.id);
+        agentStopper.stop(agent, reason, "disk quota exceeded");
+      }
+    };
 
     // ---- flow wallets over a long period (issue #130): guards, balances, top-ups ----
     const flowGuardLog = new FlowGuardLog();
@@ -2460,15 +2815,25 @@ export async function runRealtimeSimulation(
             return {
               status: receipt.status as string,
               gasUsed: receipt.gasUsed as bigint | undefined,
+              // For the derived-sender ledger (issue #212): what this transaction handed out.
+              logs: receipt.logs,
+              contractAddress: receipt.contractAddress ?? null,
             };
           } catch {
-            return { status: "mined", gasUsed: undefined }; // fallback when receipt fetch fails
+            // fallback when receipt fetch fails
+            return {
+              status: "mined",
+              gasUsed: undefined,
+              logs: [],
+              contractAddress: null,
+            };
           }
         }),
       );
       const statuses = receipts.map((r) => r.status);
       txs.forEach((tx, i) => {
         const meta = submittedByHash.take(tx.hash);
+        const from = tx.from.toLowerCase();
         // A sender the run does not know is recorded, not dropped (ADR 0021 §2, rules §2.7). On the
         // trial devnet these are exactly the participants' transactions: whoever sends before their
         // registration is read, or without registering at all. Dropping the row made them invisible
@@ -2476,11 +2841,19 @@ export async function runRealtimeSimulation(
         // nothing, and the operator could not tell an empty chain from an unregistered field. The
         // owner is the address itself under role `external`; nothing here scores or rule-checks it
         // (postRunCheck reads `agent` rows only), and `method` still comes from the calldata.
+        //
+        // Unless the sender is an address an agent's wallet funded (issue #212): then the row is
+        // the agent's, role `agent`, with `derivedFrom` saying which address funded the sender, so
+        // the fee, gas and unlogged-tx checks read it like any other transaction of that agent.
+        const derived =
+          meta === undefined && !ownerByAddress.has(from)
+            ? derivedSenders.senderOf(from)
+            : undefined;
         const owner: TxOwner = meta ??
-          ownerByAddress.get(tx.from.toLowerCase()) ?? {
-            ownerId: tx.from.toLowerCase(),
-            role: "external",
-          };
+          ownerByAddress.get(from) ??
+          (derived
+            ? { ownerId: derived.ownerId, role: "agent" }
+            : { ownerId: from, role: "external" });
         const status = statuses[i];
         if (owner.role === "agent") {
           const runtime = agentById.get(owner.ownerId);
@@ -2488,6 +2861,17 @@ export async function runRealtimeSimulation(
             runtime.included++;
             if (status !== "success") runtime.reverted++;
           }
+          derivedSenders.observe(
+            {
+              from,
+              to: tx.to,
+              value: tx.value,
+              blockNumber: b,
+              contractAddress: receipts[i].contractAddress,
+              logs: receipts[i].logs,
+            },
+            owner.ownerId,
+          );
         }
         logger.blockRow({
           round: b,
@@ -2510,6 +2894,10 @@ export async function runRealtimeSimulation(
           ...(receipts[i].gasUsed === undefined
             ? {}
             : { gasUsed: receipts[i].gasUsed }),
+          // Issue #208: the tx's own recipient and value, for the post-run roster-transfer check.
+          to: tx.to ?? "",
+          valueWei: tx.value,
+          ...(derived ? { derivedFrom: derived.fundedBy } : {}),
         });
       });
     };
@@ -2610,6 +2998,8 @@ export async function runRealtimeSimulation(
         );
       }
     }
+    // Issue #214 item 4: now that the containers exist, where are they actually?
+    checkAgentNetworks("agents_ready");
     if (external) {
       // The sequencer has been producing blocks the whole time; there is no phase change to make.
       // What the environment does have to know is the real cadence, because the block loop's
@@ -2755,7 +3145,12 @@ export async function runRealtimeSimulation(
     const liveScorer = new LiveScorer({
       publicClient,
       logger,
-      agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+      // With what each was funded: V_0 at the first boundary is floored at it (issue #207).
+      agents: agentRuntimes.map((a) => ({
+        id: a.id,
+        address: a.address,
+        endowment: a.initial,
+      })),
       enabledIds,
       activeStables: activeStables(),
       priceFeed: priceFeedAddress,
@@ -2768,6 +3163,53 @@ export async function runRealtimeSimulation(
       // enough for that to be the richer artifact.
       sampleMarket: true,
     });
+    // Issue #207: how V_0 was derived, for the record beside P. The endowment floor is applied at
+    // the period's first boundary only, so a series that opens there reads the live scorer's
+    // record for the agent; a segment that opens on a carried boundary, and an agent that was not
+    // at the first boundary, are `measured`. Nothing is said for an agent with no V_0 (no P).
+    type SeriesLike = Pick<IntervalSeries, "boundaryBlocks" | "valuesByAgent">;
+    const v0FirstOf = (
+      agentId: string,
+      series: SeriesLike | undefined,
+    ): FirstBoundaryV0 | undefined =>
+      series && series.boundaryBlocks[0] === liveScorer.firstBoundaryBlock
+        ? liveScorer.firstBoundary(agentId)
+        : undefined;
+    const v0SourceFor = (
+      agentId: string,
+      series: SeriesLike | undefined,
+    ): V0Source | undefined => {
+      const v0 = series?.valuesByAgent[agentId]?.[0];
+      if (typeof v0 !== "number") return undefined;
+      return v0FirstOf(agentId, series)?.source ?? "measured";
+    };
+    const v0FieldsFor = (
+      agentId: string,
+      series: SeriesLike | undefined,
+    ): {
+      v0Source?: V0Source;
+      v0Usdc?: number;
+      v0MeasuredUsdc?: number;
+      v0EndowmentUsdc?: number;
+    } => {
+      const v0 = series?.valuesByAgent[agentId]?.[0];
+      if (typeof v0 !== "number") return {};
+      const first = v0FirstOf(agentId, series);
+      return {
+        v0Source: first?.source ?? "measured",
+        v0Usdc: v0,
+        ...(first
+          ? {
+              ...(first.measuredUsdc !== null
+                ? { v0MeasuredUsdc: first.measuredUsdc }
+                : {}),
+              ...(first.endowmentUsdc !== undefined
+                ? { v0EndowmentUsdc: first.endowmentUsdc }
+                : {}),
+            }
+          : { v0MeasuredUsdc: v0 }),
+      };
+    };
     if (segments) segments.noteFirstBlock(runStartBlock, runStartedAtMs);
     periodStart = { block: runStartBlock, startedAtMs: runStartedAtMs };
     publishManifest();
@@ -2823,7 +3265,11 @@ export async function runRealtimeSimulation(
         ownerId: reg.id,
         role: "agent",
       });
-      liveScorer.addAgent({ id: runtime.id, address: runtime.address });
+      liveScorer.addAgent({
+        id: runtime.id,
+        address: runtime.address,
+        endowment: runtime.initial,
+      });
       logger.event({
         type: "agent_external_registered",
         agentId: runtime.id,
@@ -2953,6 +3399,7 @@ export async function runRealtimeSimulation(
             revertCount: a.reverted,
           },
           pnl,
+          v0SourceFor(a.id, sliced),
         );
       });
       logger.summary({
@@ -3006,6 +3453,7 @@ export async function runRealtimeSimulation(
         seed: config.seed,
         flowSeed: config.flowSeed,
         scenarioKey: scenarioKeyRecord(scenarioKey),
+        walletKeys: walletKeysRecord(),
         scenarioStreams: SCENARIO_STREAMS,
         rpcUrl: config.readRpcUrl,
         // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
@@ -3316,6 +3764,17 @@ export async function runRealtimeSimulation(
                   priorityFeeWei: keeperFee,
                   fromBlock: BigInt(fromBlock),
                   toBlock: BigInt(bn),
+                  onOrderRefused: (refusal) =>
+                    logger.event({
+                      type: "keeper_order_refused",
+                      protocol: adapter.id,
+                      blockNumber: bn,
+                      key: refusal.key,
+                      account: refusal.account,
+                      callbackContract: refusal.callbackContract,
+                      callbackGasLimit: refusal.callbackGasLimit.toString(),
+                      reason: refusal.reason,
+                    }),
                 });
               } catch (error) {
                 logger.event({
@@ -3879,6 +4338,17 @@ export async function runRealtimeSimulation(
           // external chain), which the loop absorbs the way it absorbs any slow block: by catching up.
           await pollRegistrations(bn);
 
+          // Issue #214 item 1: a bounded stat of what each agent has written, one block in N.
+          // Synchronous and after the block's work, like the boundary read above.
+          if (
+            config.agentDiskCheckEveryBlocks > 0 &&
+            bn % config.agentDiskCheckEveryBlocks === 0
+          ) {
+            diskWatchTick(bn);
+            // Agents whose container was not up at the agents-ready wait (issue #214 item 4).
+            checkAgentNetworks("block", bn);
+          }
+
           // Only while segmenting: keep blocks.csv within a block of the head, so a roll is a
           // boundary rather than a bulk scan of a whole day stalling the environment loop. A run
           // with an end keeps the single pass at the end, byte-identical to before.
@@ -4116,7 +4586,12 @@ export async function runRealtimeSimulation(
         const meta = await reconstructValueSeries({
           publicClient,
           logger,
-          agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+          // The same endowments the live scorer floored V_0 at, so the two series agree there too.
+          agents: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            endowment: a.initial,
+          })),
           enabledIds,
           activeStables: activeStables(),
           priceFeed: priceFeedAddress,
@@ -4205,9 +4680,35 @@ export async function runRealtimeSimulation(
     // opportunity valuation, and whoever values it higher executes first = realistic priority gas auction),
     // so the cap half is off (cap 0). The maxFeePerGas <= tip half stays on in every profile: it is what
     // makes that auction one -- without it a bid is ordered by a number it does not pay.
+    // Issue #212: senders an agent's wallet funded. Their rows already carry the agent's id (logBlock
+    // attributed them as they were written); the map covers the rows written before the funding was
+    // seen, and the per-agent list is the flag the operator reads (rules §8).
+    const derivedOwners = derivedSenders.ownerByAddress();
+    const derivedByAgent = derivedSenders.byOwner();
+    if (Object.keys(derivedByAgent).length > 0) {
+      logger.event({
+        type: "derived_senders",
+        byAgent: derivedByAgent,
+        note:
+          "transactions sent from addresses the agent's wallet funded (ETH, a priced token, or a " +
+          "contract it created; transitively). Attributed to the agent in blocks.csv (derivedFrom) " +
+          "and in every post-run check; the verdict is the operator's",
+      });
+      console.error(
+        `[post-run] WARNING: transactions from addresses funded by an agent's wallet: ${Object.entries(
+          derivedByAgent,
+        )
+          .map(
+            ([id, list]) =>
+              `${id}: ${list.reduce((n, d) => n + d.txCount, 0)} tx(s) from ${list.length} address(es)`,
+          )
+          .join(", ")}; see derived_senders`,
+      );
+    }
     const violations = checkRunFeeViolations(
       logger.runDir,
       config.economicGas ? 0n : config.maxPriorityFeeWei,
+      derivedOwners,
     );
 
     // The environment's own shocks must not fail quietly. A whale is submitted through the ordinary
@@ -4253,10 +4754,14 @@ export async function runRealtimeSimulation(
     // Gas budget (issue #40 T0). Checked whatever the fee profile is: the fee cap is about ordering
     // and is deliberately unenforced under economic gas, but starving the block is about capacity
     // and is a disqualifying offence either way (rules §6 / §8).
-    const gasViolations = checkRunGasViolations(logger.runDir, {
-      maxTxGas: config.maxTxGas,
-      maxAgentBlockGas: config.maxAgentBlockGas,
-    });
+    const gasViolations = checkRunGasViolations(
+      logger.runDir,
+      {
+        maxTxGas: config.maxTxGas,
+        maxAgentBlockGas: config.maxAgentBlockGas,
+      },
+      derivedOwners,
+    );
     if (gasViolations.length > 0) {
       logger.event({
         type: "gas_budget_violations",
@@ -4282,6 +4787,7 @@ export async function runRealtimeSimulation(
     const unloggedTxs = reconcileRunAgentTxs(
       logger.runDir,
       agentRuntimes.filter((a) => a.process !== null).map((a) => a.id),
+      derivedOwners,
     );
     const unloggedTxCountByAgent: Record<string, number> = {};
     for (const tx of unloggedTxs)
@@ -4330,6 +4836,84 @@ export async function runRealtimeSimulation(
       // At the last competition block, for the same reason the reconstruction stops there.
       BigInt(finalBlock),
     );
+
+    // ---- value moved between registered addresses (issue #208; rules §8) ----
+    // Read off the chain's record after the run, like the fee cap and the gas budget: blocks.csv
+    // for ETH carried by a transaction, the window's Transfer logs for ERC-20, the registry and
+    // the lending singleton for the routed cases. A same-unit movement is flagged at any size, a
+    // cross-unit one above `run.rosterTransferFlagBps` of the pair's smaller endowment; both
+    // sides carry the flag into matrix.json. Nothing here changes P (core/src/rosterTransfers.ts).
+    // The log-based routes need the node's history, so past the sweep limit only blocks.csv is read
+    // and the event says so.
+    let rosterScan: RosterTransferScan | undefined;
+    if (finalBlock >= runStartBlock) {
+      try {
+        rosterScan = await scanRosterTransfers({
+          publicClient,
+          agents: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            ...(a.spec.participant !== undefined
+              ? { participant: a.spec.participant }
+              : {}),
+            initialValueUsdc: valueUsdc(
+              a.initial,
+              finalFairPrices,
+              finalStablePrices,
+            ),
+          })),
+          runDir: logger.runDir,
+          fromBlock: runStartBlock,
+          toBlock: finalBlock,
+          scanLogs: sweepFits,
+          pricing: rosterPricingFromMarks(finalFairPrices, finalStablePrices),
+          thresholdBps: config.rosterTransferFlagBps,
+          ...(marketRegistry
+            ? {
+                lending: marketRegistry.lending,
+                marketRegistry: marketRegistry.address,
+              }
+            : {}),
+        });
+        const flagged = rosterScan.transfers.filter((t) => t.flagged);
+        if (rosterScan.transfers.length > 0 || rosterScan.errors.length > 0) {
+          logger.event({
+            type: "roster_value_transfers",
+            count: rosterScan.transfers.length,
+            flagged: flagged.length,
+            thresholdBps: rosterScan.thresholdBps,
+            sources: rosterScan.sources,
+            ...(rosterScan.errors.length > 0 ? { errors: rosterScan.errors } : {}),
+            transfers: rosterScan.transfers.slice(0, 200),
+            note:
+              "value that moved between two registered addresses (ETH / ERC-20 directly, or " +
+              "through a participant-created contract or lending market). Same participant unit: " +
+              "flagged at any size (rules §8). Different units: flagged above thresholdBps of the " +
+              "pair's smaller endowment. A report for the operator; the score is unchanged",
+          });
+        }
+        if (!sweepFits)
+          logger.event({
+            type: "roster_transfer_logs_skipped",
+            windowBlocks: finalBlock - runStartBlock,
+            note:
+              "the run window is longer than the node retains history for, so only blocks.csv " +
+              "(ETH carried by a transaction) was checked; ERC-20 and routed movements were not",
+          });
+        if (flagged.length > 0)
+          console.error(
+            `[rules] ${flagged.length} value movement(s) between registered addresses flagged ` +
+              `(${[...new Set(flagged.map((t) => `${t.from}->${t.to}`))].join(", ")}); ` +
+              "see roster_value_transfers in events.jsonl and rosterTransfers in summary.json",
+          );
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        logger.event({ type: "roster_transfer_check_failed", error });
+        console.error(`[rules] roster-transfer check unavailable: ${error}`);
+      }
+    }
+    const rosterTransfersByAgent = rosterScan?.byAgent ?? {};
+
     const agentsSummary = [];
     for (const agent of agentRuntimes) {
       const final = await getBalances(publicClient, agent.address);
@@ -4378,6 +4962,8 @@ export async function runRealtimeSimulation(
                 : {}),
             }
           : {}),
+        // Issue #207: how the V_0 behind pnlUsdc was derived, and the numbers to check it against.
+        ...v0FieldsFor(agent.id, liveIntervalSeries),
         // alphaUsdc: β-removed PnL versus fair at execution (the trade's take; equivalent to the amm-challenge
         // edge; ADR 0015 Notes). netPnlUsdc is the gross total including price drift β, so look at this for skill
         // comparison. undefined when reconstruction did not run (finalBlock<runStartBlock).
@@ -4406,6 +4992,17 @@ export async function runRealtimeSimulation(
         ...(agent.process !== null
           ? { unloggedTxCount: unloggedTxCountByAgent[agent.id] ?? 0 }
           : {}),
+        // Flagged value movements this agent is a side of (issue #208; rules §8). Absent when
+        // none: the full list, flagged or not, is the run-level `rosterTransfers` below.
+        ...(rosterTransfersByAgent[agent.id] !== undefined
+          ? { rosterTransfers: rosterTransfersByAgent[agent.id] }
+          : {}),
+        // Issue #212: addresses this agent's wallet funded that then sent transactions. Those are
+        // counted in includedTxCount and checked as the agent's; listed here so the matrix flag and
+        // the operator can see the mechanism behind the numbers. Absent when there were none.
+        ...(derivedByAgent[agent.id]
+          ? { derivedSenders: derivedByAgent[agent.id] }
+          : {}),
         stderrTail: agent.process?.getStderr() ?? "",
       });
     }
@@ -4424,6 +5021,22 @@ export async function runRealtimeSimulation(
       loopIterations,
       runStartBlock,
       finalBlock,
+      // V_0 with no endowment floor under it (issue #207). Present only when the run's first block
+      // was not the boundary V_0 came off, which is the one case the floor does not apply -- and
+      // the case that is otherwise invisible, since every agent's v0Source then reads "measured",
+      // exactly as it does for a segment that carried a boundary over. In summary.json rather than
+      // only in events.jsonl because scenarioScores reads this file, and the flag that names the
+      // attack cannot fire without the endowment V_0 the floor produces.
+      ...(liveIntervalSeries &&
+      liveScorer.firstBoundaryBlock !== runStartBlock &&
+      liveIntervalSeries.boundaryBlocks.length > 0
+        ? {
+            v0FloorSkipped: {
+              boundaryBlock: liveIntervalSeries.boundaryBlocks[0],
+              runStartBlock,
+            },
+          }
+        : {}),
       ...(schedule.hasEvents() ? { stressEvents: stressAudit.summaries() } : {}),
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
@@ -4434,6 +5047,23 @@ export async function runRealtimeSimulation(
       // and a reader counting "violations" across old and new runs must not see the number change
       // meaning (issue #40 T0).
       ...(gasViolations.length > 0 ? { gasViolations } : {}),
+      // Every value movement between registered addresses the check found, flagged or not
+      // (issue #208). Absent when there were none; `rosterTransferCheck` says what was read, so a
+      // run whose window outran the node's history is not mistaken for a clean one.
+      ...(rosterScan && rosterScan.transfers.length > 0
+        ? { rosterTransfers: rosterScan.transfers }
+        : {}),
+      ...(rosterScan
+        ? {
+            rosterTransferCheck: {
+              thresholdBps: rosterScan.thresholdBps,
+              sources: rosterScan.sources,
+              ...(rosterScan.errors.length > 0
+                ? { errors: rosterScan.errors }
+                : {}),
+            },
+          }
+        : {}),
       agents: agentsSummary,
     });
     // The last segment closes with the same index entry every other one got, so a period that ended
@@ -4471,6 +5101,7 @@ export async function runRealtimeSimulation(
                 revertCount: a.revertCount,
               },
               pnl,
+              v0SourceFor(a.id, liveIntervalSeries),
             ),
           );
         }),

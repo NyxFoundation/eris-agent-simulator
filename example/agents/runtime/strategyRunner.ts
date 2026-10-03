@@ -8,6 +8,7 @@ import {
   STRATEGY_BACKOFF_MAX_BLOCKS,
   STRATEGY_STARTUP_TIMEOUT_MS,
 } from "./decideTimeout.js";
+import { strategyEnv } from "./strategyEnv.js";
 import type {
   StrategyContext,
   StrategyMetadata,
@@ -85,6 +86,10 @@ export class StrategyRunner {
       new URL("./strategyWorker.mjs", import.meta.url),
       {
         workerData: { source: this.source, context: this.context },
+        // The strategy's environment, not the parent's: no wallet key, no inference token, no API
+        // key (strategyEnv.ts, issue #215). The worker signs nothing and calls no model; what it
+        // needs -- the RPC URL, the agent id, its own parameters -- is in workerData or stays.
+        env: strategyEnv(),
       },
     );
     let resolveReady!: (metadata: StrategyMetadata) => void;

@@ -67,7 +67,7 @@ codehash + LLM 監査、`discovery-arb` / `discovery-arb-verify` の対）。**�
 | 数字 | 持ち主 | なぜそこか |
 |---|---|---|
 | 未知コントラクトに残した既知トークン | `sdk/src/agentMarkets.ts` の `StrandedLedger` | Transfer ログの**ネット**。残高ではない（プールの 1,000 USDC は LP 保有者のものなので、預けた側にも計上すると二重になる） |
-| 貸出ポジションの回収可能額 | `sdk/src/protocols/lending.ts` の `backedFraction` | idle な loan token ＋ **環境価格**で見た担保。市場自身のオラクルは清算だけを決め、マークは一切書かない |
+| 貸出ポジションの回収可能額 | `sdk/src/protocols/lending.ts` の `backedFraction` / `recoverableDebt` | idle な loan token ＋ **借り手ごとの** min(自分の担保を**環境価格**で見た額, 自分の債務) の合計（市場全体の担保合計ではない。清算は借り手自身の担保しか取れないため。監査 M1）。市場自身のオラクルは清算だけを決め、マークは一切書かない |
 | 借り手のポジション | 同上、`max(0, 担保 − 債務)` | 担保が債務より安ければ担保を捨てて歩き去れる。Liquity アダプタが ICR<100% の Trove に対して既に適用している規則と同じ |
 | ガス予算違反 | `core/src/postRunCheck.ts` の `checkGasViolations` | receipt 由来の `gasUsed`（blocks.csv 最終列）。自己申告ではない |
 

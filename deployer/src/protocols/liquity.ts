@@ -20,13 +20,19 @@ import {
   type Address,
   type Hex,
 } from "viem";
-import { accounts, deployerWallet, publicClient } from "../clients.js";
+import {
+  accounts,
+  deployerWallet,
+  publicClient,
+  walletFor,
+} from "../clients.js";
 import { adminAddress, anvilChain } from "../config.js";
 import { approve } from "../erc20.js";
 import { getRegistry, setProtocol, token } from "../registry.js";
 import { ROOT, assert, info, loadForgeArtifact, ok, waitTx } from "../util.js";
 
 const dep = accounts.deployer;
+const staker = accounts.lqtyStaker;
 const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 
 // ---------------------------------------------------------------------------
@@ -37,6 +43,10 @@ const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 /// The run's own oracle takes over from the first block; this only has to be right enough that the
 /// starting Trove is not already near liquidation.
 const GENESIS_PRICE_USD = 3000n;
+// The whole bounty allocation (LQTYToken mints 2M to it). An agent earns tens to hundreds of LQTY in
+// an epoch from the Stability Pool, so its share of the fees stays below ~0.01%.
+const ENV_LQTY_STAKE = parseEther("2000000");
+const STAKER_GAS_WEI = parseEther("1");
 
 /// The genesis Trove. Deliberately over-collateralized: it is not a participant, and it exists to
 /// mint the eUSD that seeds the market. At 300% it is also the *last* Trove redemptions would
@@ -181,7 +191,11 @@ export async function deployLiquityVenue({ seed }: { seed: boolean }) {
     communityIssuance,
     lqtyStaking,
     lockupContractFactory,
-    dep.address, // bounty
+    // The bounty allocation (2M) is the environment's LQTY stake; see stakeEnvironmentLqty. It has to
+    // be this one: the multisig allocation cannot be staked for a year (LQTYToken refuses the
+    // multisig as a staking sender), and the lp-rewards one stays with the deployer, so the bounty
+    // address is the only allocation that can be placed at an address that is free to stake.
+    staker.address, // bounty
     dep.address, // lp rewards
     dep.address, // multisig
   ]);
@@ -289,6 +303,10 @@ export async function deployLiquityVenue({ seed }: { seed: boolean }) {
   ]);
   ok("wiring", "core + LQTY connected");
 
+  // Before the genesis Trove, so its borrowing fee already has a staker to go to instead of
+  // stranding in LQTYStaking.
+  await stakeEnvironmentLqty({ lqtyToken, lqtyStaking });
+
   // Periphery: computes a redemption's hints inside the transaction that uses them. Liquity checks
   // a partial redemption against a hint derived from the *execution* price, and this environment
   // moves the oracle every block, so hints computed off-chain are stale by construction and every
@@ -323,6 +341,7 @@ export async function deployLiquityVenue({ seed }: { seed: boolean }) {
     eusd,
     lqtyToken,
     lqtyStaking,
+    lqtyStaker: staker.address,
     communityIssuance,
   });
 
@@ -341,6 +360,68 @@ export async function deployLiquityVenue({ seed }: { seed: boolean }) {
 /// the peg has somewhere to trade, and a slice into the Stability Pool so the first liquidation has
 /// something to absorb it. Both are the environment's, not a participant's -- the deployer account
 /// is excluded from scoring the same way the ADR 0009 stress victims are.
+/// The environment stakes LQTY so that no agent can collect Liquity's fees.
+///
+/// LQTYStaking splits every borrowing fee (eUSD) and redemption fee (ETH) pro rata over the LQTY
+/// staked at that moment. Nobody else can stake here: the multisig allocation is locked for a year
+/// and the rest of the supply is the Stability Pool's emission. Left at zero, the first agent to
+/// stake a few LQTY earned from the Stability Pool (30 LQTY over 360 blocks measured on
+/// cdp-incident#101) took 100% of every fee paid after that -- the other agents' borrowing and
+/// redemption fees, and its own back, which made its own redemptions nearly free. With 2M staked by
+/// the environment an agent's share is its LQTY over 2M, the share an outside staker base dilutes it
+/// to on Liquity itself. Fees go where they went before (into LQTYStaking, stranded while nothing was
+/// staked); the stake only gives them an owner who is not a participant.
+///
+/// The staker is a mnemonic account, so its key is as secret as the deployer's (issue #74): whoever
+/// holds it can `unstake` and collect everything. A deployment on the public mnemonic is refused for
+/// a participant-facing chain by the coordinator's role-key guard through the deployer's key.
+async function stakeEnvironmentLqty(addrs: {
+  lqtyToken: Address;
+  lqtyStaking: Address;
+}) {
+  info("Liquity: staking the environment's LQTY");
+  const balance = (await publicClient.readContract({
+    address: addrs.lqtyToken,
+    abi: liquityArtifact("LQTYToken").abi,
+    functionName: "balanceOf",
+    args: [staker.address],
+  })) as bigint;
+  assert(
+    balance >= ENV_LQTY_STAKE,
+    `the LQTY staker ${staker.address} holds ${balance} LQTY, less than the ${ENV_LQTY_STAKE} it stakes`,
+  );
+  // Gas for one transaction. Outside anvil's prefunded accounts, so the deployer pays it.
+  const ethBalance = await publicClient.getBalance({ address: staker.address });
+  if (ethBalance < STAKER_GAS_WEI) {
+    const hash = await deployerWallet.sendTransaction({
+      to: staker.address,
+      value: STAKER_GAS_WEI - ethBalance,
+      account: dep,
+      chain: anvilChain,
+    });
+    await waitTx(hash);
+  }
+  const hash = await walletFor(staker).writeContract({
+    address: addrs.lqtyStaking,
+    abi: liquityArtifact("LQTYStaking").abi,
+    functionName: "stake",
+    args: [ENV_LQTY_STAKE],
+    account: staker,
+    chain: anvilChain,
+  });
+  await waitTx(hash);
+  const total = (await publicClient.readContract({
+    address: addrs.lqtyStaking,
+    abi: liquityArtifact("LQTYStaking").abi,
+    functionName: "totalLQTYStaked",
+  })) as bigint;
+  assert(
+    total >= ENV_LQTY_STAKE,
+    `LQTYStaking.totalLQTYStaked is ${total} after the environment's stake of ${ENV_LQTY_STAKE}`,
+  );
+  ok("LQTY stake", `${ENV_LQTY_STAKE / 10n ** 18n} LQTY by ${staker.address}`);
+}
+
 async function seedLiquity(addrs: {
   borrowerOperations: Address;
   stabilityPool: Address;

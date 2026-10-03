@@ -6,6 +6,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentScore } from "./standings.js";
+import {
+  rosterTransferFlag,
+  type RosterTransfer,
+} from "../rosterTransfers.js";
+import {
+  v0GapBeyondTolerance,
+  type V0Source,
+} from "../scoring/endowmentV0.js";
 
 export type AgentSummary = {
   id: string;
@@ -15,19 +23,61 @@ export type AgentSummary = {
   // Rules §4.4.1's P, off the interval series' first and last boundary (coordinator; absent on a
   // run recorded before it).
   pnlUsdc?: number;
+  // How V_0 behind pnlUsdc was derived, and the three numbers behind that (issue #207): V_0 as P
+  // used it, the chain state at the first boundary, the endowment at that boundary's marks.
+  v0Source?: V0Source;
+  v0Usdc?: number;
+  v0MeasuredUsdc?: number;
+  v0EndowmentUsdc?: number;
   alphaUsdc?: number;
   netPnlUsdc?: number;
   initialValueUsdc?: number;
   finalValueUsdc?: number;
   processExitedEarly?: string;
   unloggedTxCount?: number;
+  // Issue #208 / rules §8: flagged value movements between this agent and another registered
+  // address (coordinator; absent when there were none, and on runs recorded before the check).
+  rosterTransfers?: RosterTransfer[];
+  // Issue #212: addresses the agent's wallet funded that then sent transactions, attributed to the
+  // agent by the coordinator (absent when there were none).
+  derivedSenders?: Array<{ address: string; txCount: number }>;
 };
+
+// There is no second detector off `pnlUsdc − netPnlUsdc`. The idea was that the difference is a
+// field constant -- P marks V_0 at the first boundary, netPnlUsdc marks the same endowment at the
+// final prices -- so an agent sitting off it had a V_0 that was not its endowment by some path the
+// direct check below does not name. The premise is false. The two numbers read different
+// valuations: netPnlUsdc sums `adapter.valueUsdc` (the face mark) at the last block, while P sums
+// `liquidatableValueUsdc` off the boundary series (ADR 0022 Amendment 1). Every position whose two
+// marks differ -- an LST share against its par, a Trove, a lending position, an LP, a
+// market-priced stable at the holder's own size against the probe's mid -- separates them by its
+// own haircut, which is the normal state of anything that is not pure spot.
+//
+// Two bands were tried. A fixed 2% of the basket flagged the depeg field's own arbitrageur (2,546
+// USDC against a 1,520 band) every run. Taking the band from the field's median absolute deviation
+// held only where haircut holders are a majority: measured on the real module, adding one spot
+// agent to a 3-of-6 field put the flag back on three honest agents, and a 25-agent roster needs
+// more than 13 haircut holders before the band moves at all. A flag that is on for honest play is
+// worse than no flag -- it is read as an accusation, and the operator learns to ignore the field.
+//
+// What names the attack is the check below: the chain's V_0 at the first boundary against what the
+// environment funded, both at that boundary's marks. It reads one agent's own numbers and does not
+// depend on the field. `interval_v0_floor_skipped` covers the one epoch where that check cannot
+// fire because the floor was never applied.
+
+const usdc = (n: number): string =>
+  n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
 export type RunSummary = {
   runDir: string;
   blocksProcessed?: number;
   agents: AgentSummary[];
   violations: Array<{ ownerId?: string }>;
+  // Set when the run's first block was not read, so V_0 carries no endowment floor (issue #207).
+  // An epoch-wide fact, not an agent's, and it has to be said per agent anyway: the operator reads
+  // flags beside a score, and without the floor the per-agent check that names the attack has no
+  // endowment V_0 to compare against.
+  v0FloorSkipped?: { boundaryBlock?: number; runStartBlock?: number };
 };
 
 export function readRunSummary(runDir: string): RunSummary | undefined {
@@ -72,12 +122,61 @@ export function scoresFromSummary(
         "priority fee rule violation: over the cap, or maxFeePerGas above the tip " +
           "(rules §2.6 / §8; for the operator to judge)",
       );
+    if (summary.v0FloorSkipped) {
+      const { boundaryBlock: at, runStartBlock: want } = summary.v0FloorSkipped;
+      flags.push(
+        `V_0 has no endowment floor in this epoch: the run's first block (${want ?? "?"}) was not ` +
+          `read, so V_0 is the measured value at block ${at ?? "?"} (issue #207). A value moved out ` +
+          "before that block counts as this agent's PnL, and the check that would name it has no " +
+          "endowment V_0 to compare against",
+      );
+    }
     if (agent.processExitedEarly !== undefined)
       flags.push(`process exited early: ${agent.processExitedEarly}`);
     if ((agent.unloggedTxCount ?? 0) > 0)
       flags.push(
         `${agent.unloggedTxCount} on-chain tx(s) absent from the agent's submitted log`,
       );
+    // One line per flagged movement (issue #208). Both ends where both chose it: two submissions of
+    // one unit paying each other, or a transfer over the threshold, which takes a real position to
+    // make. The sender alone where the far end could not have refused -- an ERC-20 transfer needs no
+    // consent, and the scorer prices neither an LST share in a wallet nor a launch token, so one wei
+    // of either would otherwise let anyone write a §8 line into anyone's record.
+    for (const t of agent.rosterTransfers ?? []) {
+      if (t.flagSide === "sender" && t.from !== id) continue;
+      flags.push(rosterTransferFlag(t, id));
+    }
+    if ((agent.derivedSenders?.length ?? 0) > 0) {
+      const txs = agent.derivedSenders!.reduce((n, d) => n + d.txCount, 0);
+      flags.push(
+        `${txs} on-chain tx(s) sent from ${agent.derivedSenders!.length} address(es) the agent's ` +
+          "wallet funded (attributed to the agent; rules §8, for the operator to judge)",
+      );
+    }
+    // Issue #207, the known path: what the chain showed at the first boundary against what the
+    // environment had funded, both at that boundary's marks. P is already taken off the floored
+    // V_0 either way; the flag is the operator's cue that the agent acted before the bell.
+    if (
+      typeof agent.v0MeasuredUsdc === "number" &&
+      typeof agent.v0EndowmentUsdc === "number"
+    ) {
+      const gap = v0GapBeyondTolerance(
+        agent.v0MeasuredUsdc,
+        agent.v0EndowmentUsdc,
+      );
+      if (gap !== null)
+        flags.push(
+          gap < 0
+            ? `V_0 measured at the first boundary was ${usdc(-gap)} USDC below the endowment ` +
+                `(${usdc(agent.v0MeasuredUsdc)} vs ${usdc(agent.v0EndowmentUsdc)}): the holdings at the ` +
+                "first boundary were worth less than the endowment (moved out, or spent on trades that " +
+                "landed before the bell); V_0 was taken at the endowment (issue #207)"
+            : `V_0 measured at the first boundary was ${usdc(gap)} USDC above the endowment ` +
+                `(${usdc(agent.v0MeasuredUsdc)} vs ${usdc(agent.v0EndowmentUsdc)}): value the ` +
+                "environment did not fund was there before the epoch's first boundary; V_0 was taken " +
+                "as measured (issue #207)",
+        );
+    }
     // P off the epoch's two boundaries when the run recorded it; a run from before that field marks
     // both ends at the final prices, which differs by a per-run constant and is said so.
     const pnl: Pick<AgentScore, "pnlUsdc" | "pnlSource"> =
@@ -90,6 +189,7 @@ export function scoresFromSummary(
     return {
       id,
       ...pnl,
+      ...(agent.v0Source !== undefined ? { v0Source: agent.v0Source } : {}),
       netPnlUsdc: agent.netPnlUsdc,
       alphaUsdc: agent.alphaUsdc,
       baseline: agent.baseline ?? false,

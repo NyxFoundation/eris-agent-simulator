@@ -102,6 +102,10 @@ export type StateManifest = {
   deploymentsFingerprint: string;
   // The full deployer/deployments/deployments.json embedded.
   deployments: Record<string, unknown>;
+  // anvil's public test accounts the dump carries, measured from it (roleKeyGuard.ts
+  // publicTestAccountsInDump). Empty for a dump deployed from a secret mnemonic; absent in a
+  // manifest written before the field existed. The live week refuses both non-empty and absent.
+  publicTestAccounts?: Array<{ address: string; balanceWei: string; nonce: number }>;
 };
 
 // Canonical JSON independent of key order (stabilizes the fingerprint input).
@@ -151,6 +155,8 @@ export function validateStateManifest(
     fail(
       `deploymentsFingerprint mismatch (manifest ${m.deploymentsFingerprint} != computed ${fp})`,
     );
+  if (m.publicTestAccounts !== undefined && !Array.isArray(m.publicTestAccounts))
+    fail("publicTestAccounts is not an array");
   return m as StateManifest;
 }
 

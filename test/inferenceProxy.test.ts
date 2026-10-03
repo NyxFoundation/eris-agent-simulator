@@ -2,7 +2,8 @@
 // keys that stay on this side, and a record that replays.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -82,7 +83,13 @@ test("only the three inference paths exist; everything else is 404", async () =>
   await withProxy({}, async (base) => {
     assert.equal((await post(base, "/v1/files", { model: "gpt-x" })).status, 404);
     assert.equal((await post(base, "/v1/responses", { model: "gpt-x" })).status, 404);
-    assert.equal((await fetch(`${base}/healthz`)).status, 200);
+    const health = await fetch(`${base}/healthz`);
+    assert.equal(health.status, 200);
+    // Liveness and nothing else: this proxy sits on every agent's network, so a count of calls or of
+    // capped agents here would be one participant reading another's revision cadence (issue #218).
+    assert.deepEqual(await health.json(), { ok: true });
+    // And the stats path does not exist unless the operator gave it a token.
+    assert.equal((await fetch(`${base}/admin/recording`)).status, 404);
     const models = (await (await fetch(`${base}/v1/models`)).json()) as { data: { id: string }[] };
     assert.deepEqual(models.data.map((m) => m.id), ["gpt-x", "claude-y", "local-z"]);
   });
@@ -233,6 +240,27 @@ const recorded = (dir: string, agent: string) =>
     : [];
 
 const unlimited = { ...config, maxCallsPerMinute: 0 };
+
+// The recording stats moved off /healthz onto the operator's own path (issue #218).
+const STATS_TOKEN = "operator-stats-token";
+type Stats = {
+  ok: boolean;
+  handlerErrors: number;
+  recording: {
+    enabled: boolean;
+    bytes: number;
+    calls: number;
+    failures: number;
+    cappedAgents: number;
+    totalCapped: boolean;
+    truncatedCalls: number;
+    truncatedBytes: number;
+  };
+};
+const statsOf = async (base: string, token = STATS_TOKEN): Promise<Stats> =>
+  (await (
+    await fetch(`${base}/admin/recording`, { headers: { authorization: `Bearer ${token}` } })
+  ).json()) as Stats;
 
 const STREAM_CASES = [
   {
@@ -503,4 +531,242 @@ test("the proxy's timeouts default to the five-minute wait and are validated", (
   assert.throws(() => loadProxyConfig({ models: config.models, streamIdleTimeoutMs: 0 }), /streamIdleTimeoutMs/);
   assert.equal(d.maxStreamBytes, 32 * 1024 * 1024);
   assert.throws(() => loadProxyConfig({ models: config.models, maxStreamBytes: -1 }), /maxStreamBytes/);
+});
+
+// ---- the record is bounded, and its failure is not the proxy's (issue #215) ----
+
+// A request whose record is a known size, so a cap can be set in records rather than guessed.
+const bigBody = (content: string) => ({ model: "gpt-x", messages: [{ role: "user", content }] });
+const KIB = "x".repeat(1024);
+
+test("a record that cannot be written is reported and counted; the call is served and the next one too", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-nowrite-"));
+  // alice's file is a directory, so every append to it fails (EISDIR) the way a full disk fails
+  // every append (ENOSPC): the same message each time.
+  mkdirSync(join(dir, "alice.jsonl"));
+  const lines: string[] = [];
+  await withProxy({ recordDir: dir, config: unlimited, statsToken: STATS_TOKEN, log: (l) => lines.push(l) }, async (base, seen) => {
+    const h = { "x-eris-agent": "alice" };
+    assert.equal((await post(base, "/v1/chat/completions", bigBody("1"), h)).status, 200);
+    assert.equal((await post(base, "/v1/chat/completions", bigBody("2"), h)).status, 200);
+    assert.equal(seen.length, 2, "both calls reached the upstream");
+    // Said once per agent for the same failure; counted every time.
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /record for alice not written \(the call was served\): EISDIR/);
+    const health = await statsOf(base);
+    assert.equal(health.ok, true);
+    assert.equal(health.recording.failures, 2);
+    assert.equal(health.recording.calls, 0);
+    // Another agent's record is unaffected.
+    await post(base, "/v1/chat/completions", bigBody("3"), { "x-eris-agent": "bob" });
+    assert.equal(recorded(dir, "bob").length, 1);
+  });
+});
+
+test("recording stops at the agent's cap with a note in its file; its calls still pass and others still record", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-cap-"));
+  // One record is a little over 1 KiB (the body plus ~300 bytes of envelope); 2.75 KiB holds two.
+  const config = { ...unlimited, maxRecordBytesPerAgent: 2816 };
+  const lines: string[] = [];
+  await withProxy({ recordDir: dir, config, statsToken: STATS_TOKEN, log: (l) => lines.push(l) }, async (base, seen) => {
+    const h = { "x-eris-agent": "alice" };
+    for (let i = 1; i <= 4; i++)
+      assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), h)).status, 200, `call ${i}`);
+    assert.equal(seen.length, 4, "every call reached the upstream");
+    const file = recorded(dir, "alice");
+    assert.deepEqual(file.map((l) => l.seq), [1, 2, 3, 3, 4], "two records, the note, then a stub per call");
+    assert.equal(file[2].event, "recording_capped");
+    assert.equal(file[2].scope, "agent");
+    assert.equal(file[2].cap, 2816);
+    assert.ok(file[2].recordedBytes > 2048 && file[2].recordedBytes <= 2816, `recordedBytes ${file[2].recordedBytes}`);
+    assert.equal(file[2].response, undefined, "the note is not a call");
+    // The call that reached the cap, and the one after it, still leave a line (issue #218).
+    assert.deepEqual(file.slice(3).map((l) => l.truncated), [true, true]);
+    assert.deepEqual(file.slice(3).map((l) => l.status), [200, 200]);
+    assert.deepEqual(file.slice(3).map((l) => l.path), ["/v1/chat/completions", "/v1/chat/completions"]);
+    assert.deepEqual(file.slice(3).map((l) => l.model), ["gpt-x", "gpt-x"]);
+    assert.equal(file[3].response, undefined, "the stub keeps no body");
+    assert.equal(file[3].request, undefined, "the stub keeps no body");
+    // Said once, when it happened; the fourth call added nothing.
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /recording stopped for alice at call #3: its 2816 bytes \(maxRecordBytesPerAgent\) are used up; its calls are still served/);
+    // bob has his own cap.
+    await post(base, "/v1/chat/completions", bigBody(KIB), { "x-eris-agent": "bob" });
+    assert.equal(recorded(dir, "bob").length, 1);
+    const health = await statsOf(base);
+    assert.equal(health.recording.calls, 3);
+    assert.equal(health.recording.cappedAgents, 1);
+    assert.equal(health.recording.totalCapped, false);
+    assert.equal(health.recording.truncatedCalls, 2);
+  });
+  // Replay skips the note and serves the two recorded calls, then 409 like any run that asks for
+  // more calls than were recorded.
+  await withProxy({ replayDir: dir, config }, async (base, seen) => {
+    const h = { "x-eris-agent": "alice" };
+    assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), h)).status, 200);
+    assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), h)).status, 200);
+    // Call 3 has a stub, not a record: replay stops at it and says the body is what is missing,
+    // rather than handing it call 4's answer (issue #218).
+    const third = await post(base, "/v1/chat/completions", bigBody(KIB), h);
+    assert.equal(third.status, 409);
+    const body = (await third.json()) as { error: string; truncated: boolean; seq: number; requestSha256: string };
+    assert.equal(body.truncated, true);
+    assert.equal(body.seq, 3);
+    assert.match(body.error, /no body for call #3 of alice: recording was capped/);
+    assert.equal(body.requestSha256, recorded(dir, "alice")[3].requestSha256);
+    // Call 4 has a stub as well, so the queue is still lined up with the live run's numbering.
+    const fourth = await post(base, "/v1/chat/completions", bigBody(KIB), h);
+    assert.equal(fourth.status, 409);
+    assert.equal(((await fourth.json()) as { seq: number }).seq, 4);
+    assert.equal(seen.length, 0);
+  });
+});
+
+test("the proxy's total cap stops recording for everyone, each file ending with the note", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-total-"));
+  const config = { ...unlimited, maxRecordBytesTotal: 2816 };
+  const lines: string[] = [];
+  await withProxy({ recordDir: dir, config, statsToken: STATS_TOKEN, log: (l) => lines.push(l) }, async (base, seen) => {
+    const alice = { "x-eris-agent": "alice" };
+    const bob = { "x-eris-agent": "bob" };
+    await post(base, "/v1/chat/completions", bigBody(KIB), alice);
+    await post(base, "/v1/chat/completions", bigBody(KIB), alice);
+    // The third record of any agent crosses the proxy's total.
+    assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), bob)).status, 200);
+    assert.equal((await post(base, "/v1/chat/completions", bigBody(KIB), alice)).status, 200);
+    assert.equal(seen.length, 4);
+    const a = recorded(dir, "alice");
+    const b = recorded(dir, "bob");
+    // The shared ceiling costs the rest of the field their bodies, not their calls: bob's one call
+    // and alice's fourth are still there as stubs (issue #218).
+    assert.deepEqual(a.map((l) => l.event ?? (l.truncated ? "stub" : "call")), ["call", "call", "recording_capped", "stub"]);
+    assert.deepEqual(b.map((l) => l.event ?? (l.truncated ? "stub" : "call")), ["recording_capped", "stub"]);
+    assert.deepEqual(b[1].seq, 1);
+    assert.equal(a[2].scope, "total");
+    assert.equal(a[2].seq, 3);
+    assert.equal(b[0].scope, "total");
+    assert.equal(b[0].seq, 1);
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /recording stopped for bob at call #1: the proxy's 2816 bytes \(maxRecordBytesTotal\)/);
+    const health = await statsOf(base);
+    assert.equal(health.recording.totalCapped, true);
+    assert.equal(health.recording.cappedAgents, 2);
+    assert.equal(health.recording.truncatedCalls, 2, "bob's only call and alice's third");
+  });
+});
+
+test("past the cap a call still leaves a bounded stub: padding a request cannot buy silence", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-stub-"));
+  const config = { ...unlimited, maxRecordBytesPerAgent: 2816 };
+  await withProxy({ recordDir: dir, config, statsToken: STATS_TOKEN }, async (base, seen) => {
+    const h = { "x-eris-agent": "alice" };
+    // Two calls use the cap up. This is where §2.4's audit used to be for sale: 4 MiB of messages 64
+    // times is the 256 MiB default -- two minutes at maxCallsPerMinute 30 -- and every revision after
+    // it was served with nothing written at all.
+    for (let i = 1; i <= 2; i++) await post(base, "/v1/chat/completions", bigBody(KIB), h);
+    const padded = bigBody("p".repeat(200 * 1024));
+    assert.equal((await post(base, "/v1/chat/completions", padded, h)).status, 200, "the call is served");
+    assert.equal(seen.length, 3, "what the cap drops is the body of the record, never the call");
+    const file = recorded(dir, "alice");
+    const stub = file.at(-1);
+    // Who called, when, on what, with which model, and how it ended: enough to say that this
+    // revision happened, which is what the audit is for.
+    assert.equal(stub.truncated, true);
+    assert.equal(stub.seq, 3);
+    assert.equal(stub.agentId, "alice");
+    assert.equal(stub.path, "/v1/chat/completions");
+    assert.equal(stub.model, "gpt-x");
+    assert.equal(stub.provider, "openai");
+    assert.equal(stub.status, 200);
+    assert.match(stub.ts, /^\d{4}-\d\d-\d\dT.*Z$/);
+    assert.equal(stub.request, undefined, "the body is what the cap takes");
+    assert.equal(stub.response, undefined, "the body is what the cap takes");
+    // The bodies are pinned without being kept, so a participant's own copy is checked by digest.
+    assert.equal(stub.requestBytes, Buffer.byteLength(JSON.stringify(padded)));
+    assert.equal(stub.requestSha256, createHash("sha256").update(JSON.stringify(padded)).digest("hex"));
+    const answer = { choices: [{ message: { content: "{\"ok\":true}" } }] };
+    assert.equal(stub.responseSha256, createHash("sha256").update(JSON.stringify(answer)).digest("hex"));
+    // And the line's own size does not follow the request's: 200 KiB in, a few hundred bytes out, so
+    // the cap still cuts the write rate by orders of magnitude without cutting the evidence.
+    const line = readFileSync(join(dir, "alice.jsonl"), "utf8").trim().split("\n").at(-1)!;
+    assert.ok(stub.requestBytes > 200 * 1024, `requestBytes ${stub.requestBytes}`);
+    assert.ok(Buffer.byteLength(line) < 512, `the stub is bounded: ${Buffer.byteLength(line)} bytes`);
+    assert.equal((await statsOf(base)).recording.truncatedBytes, Buffer.byteLength(line) + 1);
+  });
+});
+
+test("the recording stats are the operator's, not the field's: /healthz says only that it is alive", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "eris-proxy-stats-"));
+  // Without a token the stats do not exist as a path at all, so the surface an agent sees is `{ok}`.
+  await withProxy({ recordDir: dir, config: unlimited }, async (base) => {
+    assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true });
+    assert.equal((await fetch(`${base}/admin/recording`)).status, 404);
+    assert.equal(
+      (await fetch(`${base}/admin/recording`, { headers: { authorization: `Bearer ${STATS_TOKEN}` } })).status,
+      404,
+    );
+  });
+  // With one, /healthz still says only that, and the counts take the operator's own token. An agent
+  // cannot use its own: it holds an HMAC of its id, and this proxy sits on its network -- which is
+  // how an agent with no route out reaches a model, and why nothing here may be readable by one.
+  await withProxy(
+    { recordDir: dir, config: unlimited, secret: "s3cret", statsToken: STATS_TOKEN },
+    async (base) => {
+      const mine = agentToken("s3cret", "alice");
+      await post(base, "/v1/chat/completions", bigBody("1"), {
+        "x-eris-agent": "alice",
+        authorization: `Bearer ${mine}`,
+      });
+      assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true });
+      assert.equal((await fetch(`${base}/admin/recording`)).status, 401);
+      assert.equal(
+        (await fetch(`${base}/admin/recording`, { headers: { authorization: `Bearer ${mine}` } })).status,
+        401,
+      );
+      const stats = await statsOf(base);
+      assert.equal(stats.recording.enabled, true);
+      assert.equal(stats.recording.calls, 1);
+      assert.equal(stats.recording.truncatedCalls, 0);
+      assert.equal(stats.handlerErrors, 0);
+    },
+  );
+});
+
+test("a handler that throws is that call's 500, not the process's exit, and the next call is served", async () => {
+  // A clock that breaks once stands in for any bug on the request path.
+  let broken = true;
+  const lines: string[] = [];
+  await withProxy(
+    {
+      config: unlimited,
+      statsToken: STATS_TOKEN,
+      log: (l) => lines.push(l),
+      now: () => {
+        if (broken) {
+          broken = false;
+          throw new Error("clock broke");
+        }
+        return Date.now();
+      },
+    },
+    async (base) => {
+      const h = { "x-eris-agent": "alice" };
+      const r = await post(base, "/v1/chat/completions", bigBody("1"), h);
+      assert.equal(r.status, 500);
+      assert.deepEqual(await r.json(), { error: "proxy internal error" });
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /POST \/v1\/chat\/completions from alice failed in the proxy: Error: clock broke/);
+      assert.equal((await post(base, "/v1/chat/completions", bigBody("2"), h)).status, 200);
+      assert.equal((await statsOf(base)).handlerErrors, 1);
+    },
+  );
+});
+
+test("the record caps default to 256 MiB per agent and 8 GiB in all, and cannot be unlimited", () => {
+  const d = loadProxyConfig({ models: config.models });
+  assert.equal(d.maxRecordBytesPerAgent, 256 * 1024 * 1024);
+  assert.equal(d.maxRecordBytesTotal, 8 * 1024 * 1024 * 1024);
+  assert.equal(loadProxyConfig({ models: config.models, maxRecordBytesPerAgent: 1024 }).maxRecordBytesPerAgent, 1024);
+  assert.throws(() => loadProxyConfig({ models: config.models, maxRecordBytesPerAgent: 0 }), /maxRecordBytesPerAgent/);
+  assert.throws(() => loadProxyConfig({ models: config.models, maxRecordBytesTotal: -1 }), /maxRecordBytesTotal/);
 });

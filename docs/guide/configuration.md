@@ -43,9 +43,18 @@ unknown key rather than being silently applied.
 | `run.markMedianBlocks` | 5 | Window over which manipulable marks are taken as a median at each boundary, so a boundary cannot be moved by a trade placed on the boundary block |
 | `run.scoreEvery` | 1 | Reconstruct the value cross-section every Nth block. Score-neutral — it only coarsens the equity curve |
 | `run.resetUnit` | `continuous` | Whether this run is one world or one scenario out of a set. **Only the scenario-matrix runner may declare `scenario`**: writing it here and running `sim:realtime` fails fast at startup (ADR 0020 §1) |
+| `run.rosterTransferFlagBps` | 100 | Post-run check of value moved between registered addresses (issue #208, rules §8): a movement between two *different* participant units is flagged when it exceeds this share of the pair's smaller endowment (1% ≈ 760 USDC on the official basket); between two submissions of the same unit any amount is flagged. `0` flags every priced cross-unit movement. A report in `summary.json` / the matrix `flags`; the score is unchanged |
 
 See [Scoring](scoring.md) for what these produce and how to rescore a stored run under a different
 metric.
+
+### What an agent may write to the host (keys in `run`, issue #214)
+
+| key | default | what it does |
+|---|---|---|
+| `run.agentStateQuotaBytes` | 268435456 (256 MiB) | Bytes an agent's state directory (`ERIS_AGENT_STATE_DIR`, issue #77) may hold on the host, measured by the coordinator; also the apparent-size cap of the epoch-start snapshot. `0` disables the check. The runtime's own `ERIS_AGENT_STATE_CAP_BYTES` (64 MiB) is a self-limit and does not bind a submitted runtime |
+| `run.agentLogQuotaBytes` | 268435456 (256 MiB) | The same for the agent's log files (`agents/<id>.jsonl`, `agents/<id>.llm.jsonl`) together |
+| `run.agentDiskCheckEveryBlocks` | 15 | How often the coordinator measures both (blocks). Past 80% of a quota the agent is named once in `agent_disk_usage_warning`; past a quota the agent process is stopped, `agent_disk_quota_exceeded` is recorded and `summary.json` carries the reason as `processExitedEarly`. `0` turns the watch off |
 
 ## Roster (convention-based resolution, ADR 0015)
 
@@ -58,7 +67,7 @@ agents:
     description: WETH-only cross-venue arbitrage
   - id: multi-arb-wide         # multiple instances of the same strategy point at the real directory via dir
     dir: multi-arb
-    wallet: AUTO               # AUTO is derived from the seed (no cap on named slots)
+    wallet: AUTO               # AUTO: the environment makes the key (no cap on named slots)
     env: { ERIS_ARB_SAFETY_BPS: "150" }   # strategy parameter passed to the agent process
 ```
 
@@ -69,7 +78,7 @@ agents:
 | key | required | description |
 |---|---|---|
 | `id` | ✓ | The agent's identifier. Points at `example/agents/<id>/` (log output goes to `runs/<run_id>/agents/<id>.jsonl`) |
-| `wallet` | ✓ | `AGENT0_PRIVATE_KEY`–`AGENT6_PRIVATE_KEY` (the name of the env var carrying the private key; put it in `.env.local`; locally it falls back to an Anvil dev key even if unset) or `AUTO` (derived from the seed). A named wallet cannot be duplicated within the same roster |
+| `wallet` | ✓ | `AGENT0_PRIVATE_KEY`–`AGENT6_PRIVATE_KEY` (the name of the env var carrying the private key; put it in `.env.local`; locally it falls back to an Anvil dev key even if unset) or `AUTO` (made by the environment from a secret of its own — random per process, or `ERIS_WALLET_SECRET_FILE` for the practice period; never from the seed, issue #189). A named wallet cannot be duplicated within the same roster |
 | `dir` | | Override for the real directory (when lining up multiple instances of the same strategy under different ids) |
 | `baseline` | | `true` treats it as a zero-skill baseline (noop / random) |
 | `description` | | Human-readable description |

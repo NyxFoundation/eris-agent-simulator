@@ -44,7 +44,8 @@ import type {
   ValuationContext,
   ValuationRun,
 } from "@eris/sdk/protocols/types.js";
-import type { ProtocolId } from "@eris/sdk/types.js";
+import type { BalanceSnapshot, ProtocolId } from "@eris/sdk/types.js";
+import { firstBoundaryV0 } from "../scoring/endowmentV0.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
 import {
@@ -63,7 +64,15 @@ const multicall3Abi = parseAbi([
   "function getEthBalance(address addr) view returns (uint256)",
 ]);
 
-export type ReconstructionAgent = { id: string; address: Address };
+export type ReconstructionAgent = {
+  id: string;
+  address: Address;
+  // What the environment handed the agent at funding (`agent.initial`), when it did. V_0 at the
+  // epoch's first boundary is floored at this, valued at that boundary's marks (issue #207;
+  // scoring/endowmentV0.ts). Absent for an agent the environment did not fund before the series
+  // began, which is then measured at every boundary.
+  endowment?: BalanceSnapshot;
+};
 
 export type ReconstructionMeta = {
   source: "post-run-reconstruction";
@@ -196,6 +205,12 @@ export type UnpricedHolding = UnpricedHoldingDetail & { agentId: string };
 export type ValueSnapshot = {
   blockNumber: number;
   fairPriceUsdcPerWeth: number;
+  // The marks this cross-section was valued at: every base's fair as the PriceFeed carried it at
+  // this block, and the stables' prices (the median override when the caller passed one). Exposed
+  // so a caller can value something *else* at the same marks -- the endowment at the first
+  // boundary (issue #207) -- without a second read.
+  fairByBase: Record<string, number>;
+  stablePrices: StablePrices;
   // Pool price (from slot0) only when Uniswap is enabled. null if disabled.
   poolPriceUsdcPerWeth: number | null;
   failedReads: number;
@@ -203,6 +218,17 @@ export type ValueSnapshot = {
   values: AgentValueSnapshot[];
   unpriced: UnpricedHolding[];
 };
+
+// The endowment at a cross-section's marks (issue #207): the free-inventory valuation the
+// cross-section itself applies to what the chain holds, applied to what the environment funded
+// instead. The one place both readers -- the live scorer and the sweep -- price it, so V_0 is
+// floored at the same number whichever of them reads the boundary.
+export function endowmentValueAt(
+  endowment: BalanceSnapshot,
+  marks: Pick<ValueSnapshot, "fairByBase" | "stablePrices">,
+): number {
+  return valueUsdc(endowment, marks.fairByBase, marks.stablePrices);
+}
 
 // The adapters behind the run's enabled protocol ids. Adding a venue means registering an adapter,
 // not editing this file (issue #41).
@@ -615,6 +641,8 @@ export async function readValueSnapshotAtBlock(opts: {
   return {
     blockNumber: opts.blockNumber,
     fairPriceUsdcPerWeth: fairPrice,
+    fairByBase,
+    stablePrices,
     poolPriceUsdcPerWeth,
     failedReads,
     failedReadTargets: [...failedReadTargets.values()],
@@ -1117,6 +1145,9 @@ export async function reconstructValueSeries(opts: {
 
   const alphaFirst = new Map<string, number>();
   const alphaLast = new Map<string, number>();
+  const endowmentByAgent = new Map(
+    agents.flatMap((a) => (a.endowment ? [[a.id, a.endowment] as const] : [])),
+  );
   // Realizable value at the run's last cross-section, and the mark from that same cross-section to
   // compare it against (issue #38). Reported alongside the mark rather than replacing it.
   const scoredLast = new Map<string, number>();
@@ -1189,7 +1220,34 @@ export async function reconstructValueSeries(opts: {
       alphaValueUsdc,
       markedValueUsdc,
     } of snapshot.values) {
-      if (!alphaFirst.has(id)) alphaFirst.set(id, alphaValueUsdc);
+      // The first cross-section is the epoch's first boundary (blocks starts at fromBlock), and
+      // there V_0 is floored at the endowment (issue #207; scoring/endowmentV0.ts) -- the same rule
+      // the live scorer applies at its first boundary, so the two series still agree block for
+      // block. The equity curve below keeps the measured value: a basket that left before the bell
+      // and came back is a real move, and the curve is where a reader sees it.
+      const endowment = endowmentByAgent.get(id);
+      const v0 =
+        b === fromBlock
+          ? (firstBoundaryV0(
+              total,
+              endowment ? endowmentValueAt(endowment, snapshot) : undefined,
+            ).valueUsdc ?? total)
+          : total;
+      if (!alphaFirst.has(id))
+        alphaFirst.set(
+          id,
+          b === fromBlock
+            ? (firstBoundaryV0(
+                alphaValueUsdc,
+                endowment
+                  ? endowmentValueAt(endowment, {
+                      fairByBase: refFairByBase,
+                      stablePrices: snapshot.stablePrices,
+                    })
+                  : undefined,
+              ).valueUsdc ?? alphaValueUsdc)
+            : alphaValueUsdc,
+        );
       alphaLast.set(id, alphaValueUsdc);
       scoredLast.set(id, total);
       markedLast.set(id, markedValueUsdc);
@@ -1199,7 +1257,7 @@ export async function reconstructValueSeries(opts: {
       const boundaryAt = boundaryIndex.get(b);
       const boundaryValues = boundaryValuesByAgent.get(id);
       if (boundaryAt !== undefined && boundaryValues)
-        boundaryValues[boundaryAt] = total;
+        boundaryValues[boundaryAt] = v0;
       // The observation shape readPerRoundValues reads (inventory.valueUsdc = total value).
       // Do not include protocols (avoids double-counting perRoundValueUsdc). alphaValueUsdc is
       // the fixed-reference fair evaluation (β-removed) and can also be read as a per-round α series.

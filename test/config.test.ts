@@ -8,6 +8,10 @@ import {
   loadConfig,
   privateKeyForWalletName,
 } from "../core/src/config.js";
+import {
+  installWalletSecret,
+  resetWalletSecret,
+} from "../core/src/walletKeys.js";
 
 test("loadConfig falls back to valid Anvil private keys for empty env values", () => {
   const config = loadConfig({
@@ -70,17 +74,23 @@ test("loadAgents rejects reused named wallets", () => {
   assert.throws(() => loadAgents(path), /reuses named wallet/);
 });
 
-test("AUTO wallet derives a deterministic key per (seed, agentId)", () => {
-  const config = loadConfig({ SEED: "42" });
-  const a = privateKeyForWalletName(config, "AUTO", "agent-x");
-  const b = privateKeyForWalletName(config, "AUTO", "agent-x");
-  const c = privateKeyForWalletName(config, "AUTO", "agent-y");
-  const configOtherSeed = loadConfig({ SEED: "43" });
-  const d = privateKeyForWalletName(configOtherSeed, "AUTO", "agent-x");
-  assert.equal(a, b, "same seed+id → same key");
-  assert.notEqual(a, c, "different id → different key");
-  assert.notEqual(a, d, "different seed → different key");
-  assert.match(a, /^0x[0-9a-f]{64}$/i);
+test("AUTO wallet keys come from the wallet secret, not the seed (issue #189)", () => {
+  installWalletSecret({ source: "random", hex: "11".repeat(32) });
+  try {
+    const config = loadConfig({ SEED: "42" });
+    const a = privateKeyForWalletName(config, "AUTO", "agent-x");
+    const b = privateKeyForWalletName(config, "AUTO", "agent-x");
+    const c = privateKeyForWalletName(config, "AUTO", "agent-y");
+    const d = privateKeyForWalletName(loadConfig({ SEED: "43" }), "AUTO", "agent-x");
+    assert.equal(a, b, "same secret+id → same key");
+    assert.notEqual(a, c, "different id → different key");
+    assert.equal(a, d, "the seed is not an input");
+    installWalletSecret({ source: "random", hex: "22".repeat(32) });
+    assert.notEqual(privateKeyForWalletName(config, "AUTO", "agent-x"), a, "different secret → different key");
+    assert.match(a, /^0x[0-9a-f]{64}$/i);
+  } finally {
+    resetWalletSecret();
+  }
 });
 
 test("loadAgents allows multiple AUTO agents with distinct ids", () => {

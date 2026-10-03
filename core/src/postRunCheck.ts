@@ -8,6 +8,25 @@ import { join } from "node:path";
 import { checkFeeRule, type FeeRuleBreach } from "@eris/sdk/feeRule.js";
 import { BLOCKS_CSV_INDEX } from "./logger.js";
 
+// Issue #212: senders attributed to an agent after some of their rows were written. The coordinator
+// records a derived sender's rows under the agent once it has seen the funding, but a transaction the
+// address sent *before* the funding landed (a zero-fee transaction needs no ETH) went in as
+// `external`. Built over the whole run, this map lets every check read those rows as the agent's
+// too: lowercase sender address -> agent id.
+export type DerivedOwners = ReadonlyMap<string, string>;
+
+// The agent a blocks.csv row belongs to, or undefined for an environment or unknown sender.
+function agentRowOwner(
+  cols: string[],
+  derived?: DerivedOwners,
+): string | undefined {
+  const I = BLOCKS_CSV_INDEX;
+  if (cols[I.role] === "agent") return cols[I.ownerId];
+  if (cols[I.role] === "external" && derived)
+    return derived.get((cols[I.from] ?? "").toLowerCase());
+  return undefined;
+}
+
 export type FeeViolation = {
   ownerId: string;
   hash: string;
@@ -35,13 +54,15 @@ export type FeeViolation = {
 export function checkFeeViolations(
   blocksCsv: string,
   maxPriorityFeeWei: bigint,
+  derived?: DerivedOwners,
 ): FeeViolation[] {
   const I = BLOCKS_CSV_INDEX;
   const violations: FeeViolation[] = [];
   for (const line of blocksCsv.split("\n").slice(1)) {
     if (line.length === 0) continue;
     const cols = line.split(",");
-    if (cols[I.role] !== "agent") continue;
+    const ownerId = agentRowOwner(cols, derived);
+    if (ownerId === undefined) continue;
     let tip: bigint;
     try {
       tip = BigInt(cols[I.priorityFeeWei]);
@@ -63,7 +84,7 @@ export function checkFeeViolations(
     );
     if (!breach) continue;
     violations.push({
-      ownerId: cols[I.ownerId],
+      ownerId,
       hash: cols[I.hash],
       blockNumber: Number(cols[I.blockNumber]),
       priorityFeeWei: cols[I.priorityFeeWei],
@@ -78,10 +99,15 @@ export function checkFeeViolations(
 export function checkRunFeeViolations(
   runDir: string,
   maxPriorityFeeWei: bigint,
+  derived?: DerivedOwners,
 ): FeeViolation[] {
   const path = join(runDir, "blocks.csv");
   if (!existsSync(path)) return [];
-  return checkFeeViolations(readFileSync(path, "utf8"), maxPriorityFeeWei);
+  return checkFeeViolations(
+    readFileSync(path, "utf8"),
+    maxPriorityFeeWei,
+    derived,
+  );
 }
 
 // Gas-budget violations (issue #40 T0).
@@ -113,15 +139,19 @@ export type GasViolation = {
 export function checkGasViolations(
   blocksCsv: string,
   limits: { maxTxGas: bigint; maxAgentBlockGas: bigint },
+  derived?: DerivedOwners,
 ): GasViolation[] {
   const I = BLOCKS_CSV_INDEX;
   const violations: GasViolation[] = [];
   // (ownerId, blockNumber) -> gas. Built in one pass so the per-block totals do not need a second.
+  // A derived sender's gas lands in its agent's total: that sum is the one check the gateway cannot
+  // do per sender (issue #212).
   const perBlock = new Map<string, { ownerId: string; block: number; gas: bigint }>();
   for (const line of blocksCsv.split("\n").slice(1)) {
     if (line.length === 0) continue;
     const cols = line.split(",");
-    if (cols[I.role] !== "agent") continue;
+    const ownerId = agentRowOwner(cols, derived);
+    if (ownerId === undefined) continue;
     const raw = cols[I.gasUsed];
     // Runs recorded before the column existed have no gas to check. Silently skipping them is
     // right: the alternative is reading "" as zero and reporting a clean bill of health for a run
@@ -134,7 +164,6 @@ export function checkGasViolations(
       continue;
     }
     const blockNumber = Number(cols[I.blockNumber]);
-    const ownerId = cols[I.ownerId];
     if (limits.maxTxGas > 0n && gas > limits.maxTxGas) {
       violations.push({
         ownerId,
@@ -169,10 +198,11 @@ export function checkGasViolations(
 export function checkRunGasViolations(
   runDir: string,
   limits: { maxTxGas: bigint; maxAgentBlockGas: bigint },
+  derived?: DerivedOwners,
 ): GasViolation[] {
   const path = join(runDir, "blocks.csv");
   if (!existsSync(path)) return [];
-  return checkGasViolations(readFileSync(path, "utf8"), limits);
+  return checkGasViolations(readFileSync(path, "utf8"), limits, derived);
 }
 
 // Environment-owned transactions that reverted, by owner (ADR 0017 regime 3).
@@ -230,19 +260,23 @@ export type UnloggedAgentTx = {
 export function findUnloggedAgentTxs(
   blocksCsv: string,
   submittedByOwner: ReadonlyMap<string, ReadonlySet<string>>,
+  derived?: DerivedOwners,
 ): UnloggedAgentTx[] {
   const I = BLOCKS_CSV_INDEX;
   const found: UnloggedAgentTx[] = [];
   for (const line of blocksCsv.split("\n").slice(1)) {
     if (line.length === 0) continue;
     const cols = line.split(",");
-    if (cols[I.role] !== "agent") continue;
-    const submitted = submittedByOwner.get(cols[I.ownerId]);
+    // A derived sender's transaction is the agent's and its runtime never logged it (the runtime
+    // only signs with the registered key), so it lands here by construction (issue #212).
+    const ownerId = agentRowOwner(cols, derived);
+    if (ownerId === undefined) continue;
+    const submitted = submittedByOwner.get(ownerId);
     if (submitted === undefined) continue;
     const hash = cols[I.hash].toLowerCase();
     if (submitted.has(hash)) continue;
     found.push({
-      ownerId: cols[I.ownerId],
+      ownerId,
       hash,
       blockNumber: Number(cols[I.blockNumber]),
     });
@@ -275,11 +309,16 @@ export function readSubmittedHashes(runDir: string, agentId: string): Set<string
 export function reconcileRunAgentTxs(
   runDir: string,
   agentIds: readonly string[],
+  derived?: DerivedOwners,
 ): UnloggedAgentTx[] {
   const path = join(runDir, "blocks.csv");
   if (!existsSync(path)) return [];
   const submittedByOwner = new Map<string, Set<string>>();
   for (const id of agentIds)
     submittedByOwner.set(id, readSubmittedHashes(runDir, id));
-  return findUnloggedAgentTxs(readFileSync(path, "utf8"), submittedByOwner);
+  return findUnloggedAgentTxs(
+    readFileSync(path, "utf8"),
+    submittedByOwner,
+    derived,
+  );
 }

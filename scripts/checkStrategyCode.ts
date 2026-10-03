@@ -5,9 +5,13 @@
 //   tsx scripts/checkStrategyCode.ts [files...]   # when omitted, all strategy code under example/agents/*/
 //
 // Output: findings JSON to stdout, a human-readable summary to stderr. Exit code: PASS=0 / findings=2 / error=1.
+// `hints` (issue #216 (5): shapes an assembled cheatcode name takes) are printed and written to the
+// JSON but never change the exit code; the line check is an entrance gate, and the runtime refusal
+// and the post-run audit are the layers that see an assembled name.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
+  findAssembledCheatcodeHints,
   findCheatcodeUsage,
   type StaticCheckFinding,
 } from "@eris/sdk/strategyStaticCheck.js";
@@ -38,14 +42,31 @@ function main(): void {
   const files = process.argv.slice(2);
   const targets = files.length > 0 ? files : defaultTargets();
   const results: Array<{ file: string; findings: StaticCheckFinding[] }> = [];
+  const hints: Array<{ file: string; findings: StaticCheckFinding[] }> = [];
   for (const file of targets) {
-    const findings = findCheatcodeUsage(readFileSync(file, "utf8"));
+    const source = readFileSync(file, "utf8");
+    const findings = findCheatcodeUsage(source);
     if (findings.length > 0) results.push({ file, findings });
+    const hinted = findAssembledCheatcodeHints(source);
+    if (hinted.length > 0) hints.push({ file, findings: hinted });
   }
 
   process.stdout.write(
-    `${JSON.stringify({ pass: results.length === 0, checkedFiles: targets.length, results }, null, 2)}\n`,
+    `${JSON.stringify({ pass: results.length === 0, checkedFiles: targets.length, results, hints }, null, 2)}\n`,
   );
+  for (const h of hints) {
+    for (const f of h.findings) {
+      console.error(
+        `[static-check] hint ${h.file}:${f.line} ${f.rule}: \`${f.match}\``,
+      );
+    }
+  }
+  if (hints.length > 0) {
+    console.error(
+      "[static-check] hints do not fail the gate: a cheatcode name assembled at runtime is refused by the " +
+        "read-only client and the gateway when sent, and read from blocks.csv afterwards. Look at them.",
+    );
+  }
   if (results.length === 0) {
     console.error(`[static-check] PASS (${targets.length} files)`);
     // Issue #40 T6: deployment used to be neither allowed nor forbidden in writing, which meant a

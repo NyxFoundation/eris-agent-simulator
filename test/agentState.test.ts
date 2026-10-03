@@ -8,12 +8,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  closeSync,
   existsSync,
+  ftruncateSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -28,11 +35,13 @@ import {
 } from "../example/agents/runtime/state.js";
 import { compileExecutor } from "../example/agents/runtime/improve.js";
 import {
+  DEFAULT_STATE_SNAPSHOT_LIMITS,
   prepareAgentState,
   restoreAgentState,
   restoreAllAgentState,
   snapshotAllAgentState,
   SNAPSHOT_DIR,
+  validateStateDir,
 } from "../core/src/realtime/agentState.js";
 
 function tmp(): string {
@@ -154,7 +163,7 @@ test("prepareAgentState: the snapshot is what the epoch started with, not what i
   // Rules §4.4.2 re-runs a voided epoch with the same seed. A re-run that inherits the state the
   // first attempt *finished* with is a different experiment.
   const root = tmp();
-  const dir = prepareAgentState(root, "venue-arb", "epoch-7");
+  const dir = prepareAgentState(root, "venue-arb", "epoch-7").dir;
   writeFileSync(join(dir, VERSIONS_FILE), "before");
   // Second call, same epoch: the first attempt's ending state must not become the snapshot.
   prepareAgentState(root, "venue-arb", "epoch-7");
@@ -191,8 +200,8 @@ test("repeats of one scenario each start from the same state, or they are not re
   // `backtest --repeat N` exists to show how far a scenario moves run to run. With state carrying,
   // repeat 2 starting from what repeat 1 left behind measures a sequence and reports it as a spread.
   const root = tmp();
-  const alice = prepareAgentState(root, "venue-arb", "epoch-1");
-  const bob = prepareAgentState(root, "peg-arb", "epoch-1");
+  const alice = prepareAgentState(root, "venue-arb", "epoch-1").dir;
+  const bob = prepareAgentState(root, "peg-arb", "epoch-1").dir;
   writeFileSync(join(alice, VERSIONS_FILE), "carried in");
   writeFileSync(join(bob, VERSIONS_FILE), "carried in");
 
@@ -204,7 +213,7 @@ test("repeats of one scenario each start from the same state, or they are not re
 
   // An agent that only appeared during the repeat is removed by the restore, not left behind as a
   // ninth agent nobody ran.
-  const late = prepareAgentState(root, "my-arb", "epoch-1");
+  const late = prepareAgentState(root, "my-arb", "epoch-1").dir;
   writeFileSync(join(late, VERSIONS_FILE), "appeared later");
   restoreAllAgentState(root, "repeat-base-calm-101");
   assert.equal(existsSync(join(late, VERSIONS_FILE)), false);
@@ -212,7 +221,7 @@ test("repeats of one scenario each start from the same state, or they are not re
 
 test("restoreAllAgentState: a label that was never snapshotted says so rather than wiping the root", () => {
   const root = tmp();
-  const dir = prepareAgentState(root, "venue-arb", "epoch-1");
+  const dir = prepareAgentState(root, "venue-arb", "epoch-1").dir;
   writeFileSync(join(dir, VERSIONS_FILE), "kept");
   assert.equal(restoreAllAgentState(root, "no-such-label"), false);
   assert.equal(readFileSync(join(dir, VERSIONS_FILE), "utf8"), "kept");
@@ -327,7 +336,7 @@ test("a restore leaves no half-copied directory behind under its own name", () =
   // fails halfway leaves nothing at all. The staging directories are not agents either -- copying
   // one into the next snapshot would make it one.
   const root = tmp();
-  const dir = prepareAgentState(root, "venue-arb", "epoch-1");
+  const dir = prepareAgentState(root, "venue-arb", "epoch-1").dir;
   writeFileSync(join(dir, VERSIONS_FILE), "start of epoch 1");
   prepareAgentState(root, "venue-arb", "epoch-2");
   writeFileSync(join(dir, VERSIONS_FILE), "end of epoch 2");
@@ -337,4 +346,121 @@ test("a restore leaves no half-copied directory behind under its own name", () =
     readdirSync(root).filter((n) => n !== SNAPSHOT_DIR),
     ["venue-arb"],
   );
+});
+
+// ---- the snapshot does not trust the directory it copies (issue #214 item 2) ----
+//
+// Measured 2026-10-02 (Node 23.5, APFS): cpSync over a tree with one FIFO threw
+// ERR_INTERNAL_ASSERTION after first copying a 1 GiB sparse file as 1 GiB of real bytes, and the
+// regular-files-only filter still materialised the sparse file. The validation below is what keeps
+// a participant's state directory from stopping the next epoch for everyone.
+
+const limits = { ...DEFAULT_STATE_SNAPSHOT_LIMITS, maxBytes: 1024 * 1024 };
+const canMkfifo = process.platform !== "win32";
+
+test("validateStateDir: regular files in regular directories pass", () => {
+  const dir = tmp();
+  mkdirSync(join(dir, "notes"), { recursive: true });
+  writeFileSync(join(dir, VERSIONS_FILE), "{}");
+  writeFileSync(join(dir, "notes", "a.txt"), "x".repeat(100));
+  const verdict = validateStateDir(dir, limits);
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.usage.entries, 3);
+  assert.equal(verdict.usage.apparentBytes, 102);
+  assert.equal(verdict.usage.irregularCount, 0);
+});
+
+test("validateStateDir: a named pipe is refused, not opened", { skip: !canMkfifo }, () => {
+  const dir = tmp();
+  mkdirSync(join(dir, "sub"));
+  execSync(`mkfifo "${join(dir, "sub", "pipe")}"`);
+  const verdict = validateStateDir(dir, limits);
+  assert.equal(verdict.ok, false);
+  assert.ok(verdict.ok === false);
+  assert.match(verdict.reason, /sub\/pipe: fifo/);
+});
+
+test("validateStateDir: a symlink is refused, whatever it points at", () => {
+  const dir = tmp();
+  symlinkSync("/etc", join(dir, "out"));
+  const verdict = validateStateDir(dir, limits);
+  assert.ok(verdict.ok === false);
+  assert.match(verdict.reason, /out: symlink/);
+  // lstat, not stat: the link itself is the finding, and nothing under /etc was walked.
+  assert.equal(verdict.usage.entries, 1);
+});
+
+test("validateStateDir: a sparse file is measured by what a copy would write", () => {
+  const dir = tmp();
+  const fd = openSync(join(dir, "huge.bin"), "w");
+  ftruncateSync(fd, 4 * 1024 * 1024);
+  closeSync(fd);
+  const verdict = validateStateDir(dir, limits);
+  assert.ok(verdict.ok === false);
+  assert.match(verdict.reason, /4194304 bytes to copy, cap 1048576/);
+  assert.equal(verdict.usage.apparentBytes, 4 * 1024 * 1024);
+  // The allocation is reported beside it, because "sparse" is the explanation.
+  assert.ok(verdict.usage.allocatedBytes <= verdict.usage.apparentBytes);
+});
+
+test("validateStateDir: too many entries or too deep a tree stops the walk and refuses", () => {
+  const wide = tmp();
+  for (let i = 0; i < 12; i++) writeFileSync(join(wide, `f${i}`), "");
+  const many = validateStateDir(wide, { ...limits, maxEntries: 10 });
+  assert.ok(many.ok === false);
+  assert.match(many.reason, /more than 10 entries/);
+  assert.equal(many.usage.truncated, true);
+
+  const deep = tmp();
+  mkdirSync(join(deep, "a", "b", "c", "d"), { recursive: true });
+  const nested = validateStateDir(deep, { ...limits, maxDepth: 2 });
+  assert.ok(nested.ok === false);
+  assert.match(nested.reason, /deeper than 2 levels/);
+});
+
+test("prepareAgentState: a refused directory is set aside unread and the agent starts empty", { skip: !canMkfifo }, () => {
+  const root = tmp();
+  const first = prepareAgentState(root, "venue-arb", "epoch-1", limits);
+  assert.equal(first.refused, undefined);
+  writeFileSync(join(first.dir, VERSIONS_FILE), "carried");
+  execSync(`mkfifo "${join(first.dir, "pipe")}"`);
+
+  const second = prepareAgentState(root, "venue-arb", "epoch-2", limits);
+  assert.ok(second.refused);
+  assert.match(second.refused.reason, /pipe: fifo/);
+  assert.equal(second.dir, first.dir);
+  // The old contents were moved, not copied: the pipe is still a pipe under the new name, and the
+  // agent's directory is empty.
+  assert.equal(second.refused.refusedTo, `${first.dir}.refused-epoch-2`);
+  assert.equal(lstatSync(join(second.refused.refusedTo, "pipe")).isFIFO(), true);
+  assert.deepEqual(readdirSync(second.dir), []);
+  // The snapshot of epoch 2 is the empty start, which is what a §4.4.2 re-run of it must inherit.
+  assert.deepEqual(readdirSync(join(root, SNAPSHOT_DIR, "epoch-2", "venue-arb")), []);
+  // The set-aside directory is not an agent: a checkpoint of the root does not try to copy it.
+  assert.deepEqual(snapshotAllAgentState(root, "after", limits), []);
+  assert.deepEqual(readdirSync(join(root, SNAPSHOT_DIR, "after")), ["venue-arb"]);
+  // Persistence continues: the next epoch snapshots what epoch 2 wrote into the fresh directory.
+  writeFileSync(join(second.dir, VERSIONS_FILE), "written in epoch 2");
+  const third = prepareAgentState(root, "venue-arb", "epoch-3", limits);
+  assert.equal(third.refused, undefined);
+  assert.equal(
+    readFileSync(join(root, SNAPSHOT_DIR, "epoch-3", "venue-arb", VERSIONS_FILE), "utf8"),
+    "written in epoch 2",
+  );
+});
+
+test("snapshotAllAgentState: an agent whose directory cannot be copied is left out and named", { skip: !canMkfifo }, () => {
+  const root = tmp();
+  const ok = prepareAgentState(root, "peg-arb", "epoch-1", limits).dir;
+  const bad = prepareAgentState(root, "venue-arb", "epoch-1", limits).dir;
+  writeFileSync(join(ok, VERSIONS_FILE), "fine");
+  execSync(`mkfifo "${join(bad, "pipe")}"`);
+  const skipped = snapshotAllAgentState(root, "end-s1", limits);
+  assert.deepEqual(skipped.map((s) => s.agentId), ["venue-arb"]);
+  assert.match(skipped[0].reason, /pipe: fifo/);
+  assert.deepEqual(readdirSync(join(root, SNAPSHOT_DIR, "end-s1")), ["peg-arb"]);
+  // Restoring that label puts the skipped agent back to nothing, which is the honest result.
+  assert.equal(restoreAllAgentState(root, "end-s1"), true);
+  assert.equal(existsSync(bad), false);
+  assert.equal(readFileSync(join(ok, VERSIONS_FILE), "utf8"), "fine");
 });

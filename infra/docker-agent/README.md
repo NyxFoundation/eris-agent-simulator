@@ -146,6 +146,19 @@ For every agent it launches, the coordinator prepares a view directory,
 
 `ERIS_CONFIG` inside is `/eris/run/config.yaml`. The rootfs is read-only.
 
+Of those, `/eris/state` and the two log files are the writable places that outlive the container,
+and neither mount carries a size limit of its own — the 64 MiB caps in `state.ts` / `agentLog.ts` are
+the reference runtime's self-limits, which a submitted runtime bypasses with one `writeFileSync`.
+What bounds them is the coordinator (issue #214 item 1): every `run.agentDiskCheckEveryBlocks`
+blocks it measures each launched agent's state directory and log files, warns once past 80% of
+`run.agentStateQuotaBytes` / `run.agentLogQuotaBytes` (`agent_disk_usage_warning`) and **stops the
+agent** past either (`agent_disk_quota_exceeded`; the run continues, `summary.json` says why). A
+filesystem quota on the host is the stronger line and is provisioned by the operator, not by this
+wrapper — see `infra/devnet/CHECKLIST.md` §5 for XFS project quota, a loop device, or a tmpfs at the
+state root. A size-capped tmpfs *inside* the container was considered and not added: the state has
+to outlive the container (that is the whole point of #77), and `docker cp` cannot seed or drain a
+container's tmpfs, so an in-container tmpfs would silently turn persistence off.
+
 The log files are mounted file by file, so they are the host's own `runs/<id>/agents/<agentId>.jsonl`:
 the dashboard (live tail included), the agents-ready wait and the post-run checks read them where
 they always did. The wrapper creates the empty log and its mountpoint in the view directory before
@@ -170,6 +183,19 @@ and at its own host path in bind-mount mode. `ERIS_AGENT_STATE_CAP_BYTES` (defau
 cap the runtime enforces on itself. Absent means this run does not persist, which is every run that
 does not ask for it.
 
+The coordinator copies that directory at the start of every epoch (the §4.4.2 snapshot), and the
+directory is participant-written, so the copy does not trust it (issue #214 item 2;
+`core/src/realtime/agentState.ts` `validateStateDir`). Measured 2026-10-02 on Node 23.5 / APFS:
+`fs.cpSync` over a tree holding one FIFO throws `ERR_INTERNAL_ASSERTION` (it does not hang), after
+first materialising a 1 GiB sparse file as 1 GiB of real bytes — and a regular-files-only `filter`
+still materialises the sparse file. So before the copy the directory is walked with `lstat`,
+bounded (20,000 entries, 16 levels), and refused if it holds anything but regular files and
+directories or if its apparent size is past `run.agentStateQuotaBytes`. A refused directory is
+**renamed** to `<agentId>.refused-<runId>` (nothing in it is read), the agent gets an empty one, and
+`events.jsonl` carries `agent_state_snapshot_skipped` with the reason. The same validation guards
+the matrix runner's checkpoints (`<root>/.snapshots/end-s<N>`): an agent that fails it is left out of
+the checkpoint and named on stderr.
+
 ## Isolation caveat (egress)
 
 Containers join `ERIS_AGENT_NET` (default `host`, sharing the host network; the default bridge on
@@ -179,6 +205,13 @@ the RPC gateway as the hub ([ISOLATION.md](ISOLATION.md)); `ERIS_AGENT_INTERNAL=
 network without a route out and `ERIS_INFERENCE_HUB` attaches the inference proxy to it, which is how
 rules §2.3's "no direct external connection" holds in the competition. Deps are resolved at build time
 precisely so run time needs no outbound access.
+
+Whether the container ended up where those switches say is read back rather than assumed (issue
+#214 item 4): `run-agent.sh` inspects the network's `Internal` flag and recreates a leftover
+`ag-<id>` with the wrong one, exits on a create or hub-attach failure instead of `|| true`, and the
+coordinator inspects each container once it is up, records `agent_network_measured`, and stops one
+whose networks do not match its launch (`agent_network_mismatch`). `infra/devnet/docker-compose.sim.yml`
+sets `ERIS_AGENT_INTERNAL=1` and names the inference proxy (`ERIS_INFERENCE_HUB`), which it did not.
 
 The coordinator does not refuse to start without isolation (local checks and the operator's own
 reference field run on host networking), but it says so: an `agent_sandbox_warning` event in

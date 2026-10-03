@@ -71,7 +71,12 @@ cloned (including bigint); the worker's `latestObservation()` returns that call'
 
 The worker is reused on normal blocks, preserving module variables. On timeout/failure or revision
 replacement, it reloads the selected source and resets worker-local variables. The parent retains
-nonce, logs, revision history and persisted state. `onObservation()` is for self-driven `run(ctx)`
+nonce, logs, revision history and persisted state. The worker's `process.env` is the parent's less
+every credential (`runtime/strategyEnv.ts`): `ERIS_AGENT_PRIVATE_KEY`, `ERIS_INFERENCE_TOKEN`,
+`ERIS_LLM_*`, anything ending in `_API_KEY` / `_TOKEN` / `_SECRET` / `_PRIVATE_KEY` is absent there,
+while the parameters your roster's `env` sets (`ERIS_ARB_SAFETY_BPS`, ...) arrive as before. A
+strategy signs nothing and calls no model, so it has no use for them; the same filter applies to a
+Python strategy's process. `onObservation()` is for self-driven `run(ctx)`
 agents; a `decide()` strategy receives observations through its arguments. Self-driven agents keep
 their existing process lifecycle and immediate `ctx.submit()` behavior.
 
@@ -243,6 +248,10 @@ bytecode, so it goes through the runtime like every other transaction — sharin
 the per-block transaction cap and the gas budget. Signing your own deploys instead puts a second
 sender on your key, and two senders on one key race on the nonce.
 
+This applies to the strategy *you* wrote. A strategy the revision model installed in its place
+(a self-improving agent's version 1 and up) may not deploy, and may send raw calldata only to
+addresses the run knows — see [LLM agents](llm-agents.md#what-the-model-is-shown-is-a-record-and-where-a-revised-strategy-may-send-raw-calldata).
+
 ```ts
 import { deployAction, currentNonce, findDeployedContracts } from "../lib/deployContract.js";
 
@@ -286,6 +295,12 @@ npm run build:contracts       # only if your agent deploys its own contracts
 npm run check:strategy        # static cheatcode check (entry gate)
 npm run bundle:agent my-strategy   # submission zip (runtime + sdk + lib + target agent + artifacts)
 ```
+
+`check:strategy` is a line-level pattern match and an entrance gate, not proof: a cheatcode name
+assembled at runtime (`["anvil", "setBalance"].join("_")`) passes it. It is refused anyway — the
+runtime's read-only client and the operator's RPC gateway reject the assembled name when it is sent,
+and the post-run audit reads what landed in `blocks.csv`. The gate prints `hint` lines for the cheap
+shapes of such assembly (a namespace as a bare string, a computed `method:`); they do not fail it.
 
 The bundled strategies in `example/agents/` (noop = minimal form / arb-bot = a model with a decision log / multi-arb =
 multi-asset cross-venue / liquidator = self-driven) are all usable as readable working examples.

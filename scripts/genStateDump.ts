@@ -31,6 +31,10 @@ import {
   STATE_FILE_NAME,
   type StateManifest,
 } from "../core/src/backtest/shared.js";
+import {
+  publicTestAccountsInDump,
+  type DumpedPublicAccount,
+} from "../core/src/realtime/roleKeyGuard.js";
 import { makeClients, resetFork } from "../sdk/src/chain.js";
 import { generateLocalConstants } from "./genLocalConstants.js";
 
@@ -113,11 +117,15 @@ async function main(): Promise<void> {
   // ---- dump (hex-gzip -> plain JSON. --load-state only accepts plain JSON) ----
   const hex = await rpc<string>(rpcUrl, "anvil_dumpState");
   const stateJson = gunzipSync(Buffer.from(hex.slice(2), "hex"));
+  let publicTestAccounts: DumpedPublicAccount[];
   {
     // Only run the consistency check and discard the parsed result (the dump is several MB+; do not keep the tree).
     const state = JSON.parse(stateJson.toString()) as {
-      accounts?: Record<string, unknown>;
+      accounts?: Record<string, { balance?: unknown; nonce?: unknown }>;
     };
+    // Recorded so the live week can refuse the dump by name (liveWeek.ts stateDumpRefusal): these
+    // accounts' keys are in anvil's banner, and the gateway relays a transaction from any sender.
+    publicTestAccounts = publicTestAccountsInDump(state.accounts ?? {});
     const wethLower = deployments.tokens.WETH.toLowerCase();
     const hasWeth = Object.keys(state.accounts ?? {}).some(
       (a) => a.toLowerCase() === wethLower,
@@ -147,6 +155,7 @@ async function main(): Promise<void> {
     stateFile: STATE_FILE_NAME,
     deploymentsFingerprint: deploymentsFingerprint(deployments),
     deployments: deployments as unknown as Record<string, unknown>,
+    publicTestAccounts,
   };
   const manifestPath = join(outDir, MANIFEST_FILE_NAME);
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -165,6 +174,12 @@ async function main(): Promise<void> {
     `  commit=${manifest.sourceCommit.slice(0, 12)} chainId=${manifest.chainId} genesis=${genesis.hash.slice(0, 12)}…`,
   );
   console.log(`  fingerprint=${manifest.deploymentsFingerprint.slice(0, 20)}…`);
+  if (publicTestAccounts.length > 0)
+    console.log(
+      `  WARNING: the dump carries ${publicTestAccounts.length} of anvil's public test accounts ` +
+        "(deployed from the default mnemonic). Fine for local runs; the live week refuses it. " +
+        'For the live week: cd deployer && MNEMONIC="$(cat <secret>)" npm run deploy -- --keep-fresh, then regenerate',
+    );
   console.log(`  run: npm run backtest -- --regime calm --seed 101`);
 }
 

@@ -48,6 +48,7 @@ import {
 import {
   borrowerOperationsAbi,
   collSurplusPoolAbi,
+  lqtyStakingAbi,
   curveStableSwapNgAbi,
   erc20Abi,
   liquityRedemptionHelperAbi,
@@ -957,6 +958,10 @@ async function observe(
     spLqtyGain,
     ethBalance,
     collSurplus,
+    lqtyBalance,
+    lqtyStaked,
+    stakingEthGain,
+    stakingEusdGain,
   ] = await Promise.all([
     read(
       publicClient,
@@ -994,6 +999,18 @@ async function observe(
     ) as Promise<bigint>,
     publicClient.getBalance({ address: agent }),
     read(publicClient, d.collSurplusPool, collSurplusPoolAbi, "getCollateral", [
+      agent,
+    ]) as Promise<bigint>,
+    read(publicClient, d.lqtyToken, erc20Abi, "balanceOf", [
+      agent,
+    ]) as Promise<bigint>,
+    read(publicClient, d.lqtyStaking, lqtyStakingAbi, "stakes", [
+      agent,
+    ]) as Promise<bigint>,
+    read(publicClient, d.lqtyStaking, lqtyStakingAbi, "getPendingETHGain", [
+      agent,
+    ]) as Promise<bigint>,
+    read(publicClient, d.lqtyStaking, lqtyStakingAbi, "getPendingLUSDGain", [
       agent,
     ]) as Promise<bigint>,
   ]);
@@ -1062,6 +1079,10 @@ async function observe(
     spDepositEusdWei: spDeposit.toString(),
     spEthGainWei: spEthGain.toString(),
     spLqtyGainWei: spLqtyGain.toString(),
+    lqtyBalanceWei: lqtyBalance.toString(),
+    lqtyStakedWei: lqtyStaked.toString(),
+    stakingEthGainWei: stakingEthGain.toString(),
+    stakingEusdGainWei: stakingEusdGain.toString(),
     spTotalDepositsEusdWei: state.spTotalDepositsEusdWei.toString(),
     spShareBps,
     ethBalanceWei: ethBalance.toString(),
@@ -1388,6 +1409,11 @@ type LiquityHoldings = {
   // like the Stability Pool's ETH gain. Never overlaps the Trove above: it only exists once the
   // Trove is closed, and claiming it moves it into the wallet, where the spot sweep counts it.
   collSurplusWei?: bigint;
+  // LQTYStaking's pending fee share: redemption fees in native ETH and borrowing fees in eUSD, both
+  // claimable at any time with `unstake(0)`. Owed outright like the Stability Pool's gain, so marked
+  // the same way. Negligible beside the environment's 2M stake unless an agent out-stakes it.
+  stakingEthGainWei?: bigint;
+  stakingEusdGainWei?: bigint;
 };
 
 /// Price a Liquity position, given what eUSD is worth.
@@ -1410,12 +1436,14 @@ export function liquityPositionValue(input: {
   debtBuybackUsdc?: number;
 }): { valueUsdc: number; liquidatableValueUsdc: number } {
   const { holdings: h, fairPriceUsd, eusdPriceUsdc } = input;
-  const longEusd = toFloat(h.spDepositEusdWei);
+  const longEusd = toFloat(h.spDepositEusdWei + (h.stakingEusdGainWei ?? 0n));
   const collUsd = toFloat(h.collWei) * fairPriceUsd;
   // ETH owed to the agent outright: the Stability Pool's liquidation gain and a closed Trove's
   // surplus. Both at the reference price in both marks -- neither exits through a market.
   const gainUsd =
-    toFloat(h.spEthGainWei + (h.collSurplusWei ?? 0n)) * fairPriceUsd;
+    toFloat(
+      h.spEthGainWei + (h.collSurplusWei ?? 0n) + (h.stakingEthGainWei ?? 0n),
+    ) * fairPriceUsd;
   const netDebtEusd = toFloat(h.netDebtEusdWei);
 
   const troveMark = Math.max(0, collUsd - netDebtEusd * eusdPriceUsdc);
@@ -1489,14 +1517,51 @@ export async function* liquityValuationRun(
         args: [a.address],
       },
     ]),
+    // LQTY staking, after every agent's four reads so their positions do not move. Three per agent:
+    // the stake (LQTY, unpriced -- reported) and the two pending fee gains (valued).
+    ...(deployment.lqtyStaking
+      ? ctx.agents.flatMap((a) =>
+          (["stakes", "getPendingETHGain", "getPendingLUSDGain"] as const).map(
+            (functionName): ValuationRead => ({
+              address: deployment.lqtyStaking,
+              abi: lqtyStakingAbi,
+              functionName,
+              args: [a.address],
+            }),
+          ),
+        )
+      : []),
   ];
   const results = yield stage0;
+  const stakingBase = 1 + ctx.agents.length * 4;
 
   const gasCompensation =
     typeof results[0] === "bigint" ? (results[0] as bigint) : 0n;
   // Agents whose surplus read failed: the rest of the position is still known, so it is valued and
   // the surplus alone is reported as unknown (issue #44) rather than the whole venue going missing.
   const surplusUnread = new Set<number>();
+  // The same for LQTY staking: the gains are left out and the read is named.
+  const stakingUnread = new Set<number>();
+  const stakedLqty = new Map<number, bigint>();
+  const stakingAt = (i: number) => {
+    if (!deployment.lqtyStaking) return {};
+    const base = stakingBase + i * 3;
+    const [stake, ethGain, eusdGain] = [
+      results[base],
+      results[base + 1],
+      results[base + 2],
+    ];
+    if (
+      typeof stake !== "bigint" ||
+      typeof ethGain !== "bigint" ||
+      typeof eusdGain !== "bigint"
+    ) {
+      stakingUnread.add(i);
+      return {};
+    }
+    if (stake > 0n) stakedLqty.set(i, stake);
+    return { stakingEthGainWei: ethGain, stakingEusdGainWei: eusdGain };
+  };
   const holdings = ctx.agents.map((_agent, i) => {
     const base = 1 + i * 4;
     const entire = results[base] as
@@ -1515,6 +1580,7 @@ export async function* liquityValuationRun(
       spDepositEusdWei: spDeposit,
       spEthGainWei: spGain,
       collSurplusWei: typeof surplus === "bigint" ? surplus : 0n,
+      ...stakingAt(i),
     } satisfies LiquityHoldings;
   });
 
@@ -1595,7 +1661,25 @@ export async function* liquityValuationRun(
         reason: "read-failed",
         read: "CollSurplusPool.getCollateral",
       });
-    const exposure = h.spDepositEusdWei + h.netDebtEusdWei;
+    if (stakingUnread.has(i))
+      unpriced.push({
+        source: "liquity-lqty-staking",
+        amountRaw: "",
+        reason: "read-failed",
+        read: "LQTYStaking.stakes / getPendingETHGain / getPendingLUSDGain",
+      });
+    // Staked LQTY has no market here, like the LQTY in a wallet (which the spot sweep reports). Left
+    // out of the value either way; reported so a stake does not vanish from the record.
+    const staked = stakedLqty.get(i);
+    if (staked !== undefined)
+      unpriced.push({
+        token: deployment.lqtyToken,
+        amountRaw: staked.toString(),
+        source: "liquity-lqty-staking",
+        reason: "unpriced",
+      });
+    const stakingEusd = h.stakingEusdGainWei ?? 0n;
+    const exposure = h.spDepositEusdWei + stakingEusd + h.netDebtEusdWei;
     if (!marketQuoted && exposure > 0n) {
       // Falling back to par is the least wrong choice -- par is the value the protocol itself
       // enforces through redemption -- but it is exactly the assumption this venue must not make
@@ -1622,7 +1706,7 @@ export async function* liquityValuationRun(
       addStableUnits(
         stableLongs,
         deployment.eusd,
-        h.spDepositEusdWei,
+        h.spDepositEusdWei + stakingEusd,
         stablePrices,
       );
     out[agent.id] = {
@@ -1664,8 +1748,15 @@ export const liquityAdapter: ProtocolAdapter = {
     const s = state as LiquityState | undefined;
     // The wallet's loose eUSD is not read here: it is registry spot now, swept and priced by the
     // caller (issue #27 (b)). What is left is the Trove and the Stability Pool.
-    const [entire, spDeposit, spGain, gasCompensation, collSurplus] =
-      (await Promise.all([
+    const [
+      entire,
+      spDeposit,
+      spGain,
+      gasCompensation,
+      collSurplus,
+      stakingEthGain,
+      stakingEusdGain,
+    ] = (await Promise.all([
       read(
         ctx.publicClient,
         d.troveManager,
@@ -1700,8 +1791,16 @@ export const liquityAdapter: ProtocolAdapter = {
         "getCollateral",
         [agent],
       ),
+      read(ctx.publicClient, d.lqtyStaking, lqtyStakingAbi, "getPendingETHGain", [
+        agent,
+      ]),
+      read(ctx.publicClient, d.lqtyStaking, lqtyStakingAbi, "getPendingLUSDGain", [
+        agent,
+      ]),
     ])) as [
       readonly [bigint, bigint, bigint, bigint],
+      bigint,
+      bigint,
       bigint,
       bigint,
       bigint,
@@ -1717,6 +1816,8 @@ export const liquityAdapter: ProtocolAdapter = {
         spDepositEusdWei: spDeposit,
         spEthGainWei: spGain,
         collSurplusWei: collSurplus,
+        stakingEthGainWei: stakingEthGain,
+        stakingEusdGainWei: stakingEusdGain,
       },
       fairPriceUsd: fairPrice,
       eusdPriceUsdc,
