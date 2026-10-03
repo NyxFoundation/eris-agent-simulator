@@ -193,7 +193,14 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   10% / 5% を入れたら deploy が落ちた）、Arbitrum の 0.5〜1% よりは厳しい。
   **swap も同じ**: keeper は `OrderCreated` を種類を問わず全部執行するので、`rawTx` の `MarketSwap` 注文が
   fair・手数料 0・impact 0 で通り、AMM-vs-fair の裁定が片側の AMM 手数料で済んでいた。swap fee 0.05% / 0.07%、
-  swap impact 3e-10 / 2e-10・指数 2（Arbitrum の値）を入れた。GM の deposit / withdraw は keeper が拾わないので執行されない`basis-arb` の往復コスト既定は 0 → 12bps。
+  swap impact 3e-10 / 2e-10・指数 2（Arbitrum の値）を入れた。GM の deposit / withdraw は keeper が拾わないので執行されない。
+  **清算 keeper がある**（`liquidatePositions`。以前は注文を執行するだけで**清算は一度も起きず**、crash を 20 倍の逆張りで
+  抜けても建玉が生き残った）。毎ブロック DataStore の `POSITION_LIST` から全建玉（参加者も背景フローも）を読み、
+  `Reader.isPositionLiquidatable` を注文 keeper と同じ fair で判定して `LiquidationHandler.executeLiquidation` を送る。
+  1 ブロック 2 件まで（各 6M gas を宣言するので、連鎖で参加者のブロックを埋めない）、送った建玉は 3 ブロック再送しない。
+  **採点は床なしのまま**: 清算が無い状態で床を 0 にすると、1 agent が 20 倍のロングとショートを両方持てば負け側が 0 で
+  止まるタダのストラドルになる。清算があれば負けは証拠金 1% 付近で止まる。**指値・ストップ注文は今も執行されない**
+  （keeper は新しい `OrderCreated` しか見ない。SDK のアクションは成行のみ）`basis-arb` の往復コスト既定は 0 → 12bps。
   **採点は「今閉じたら残る額」**（`positionExitValueUsd`。Reader の `getAccountPositionInfoList` を fair で引き、
   証拠金 + 基準 PnL + 決済時と建玉時に繰り延べた impact − 決済手数料・未払い borrowing・funding + 受け取る funding）。
   建玉時の手数料は証拠金から既に引かれているので、額面（証拠金 + PnL）のままだと**鐘の後まで持ち越した建玉は手数料を
