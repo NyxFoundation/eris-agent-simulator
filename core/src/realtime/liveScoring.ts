@@ -227,6 +227,22 @@ export class LiveScorer {
         index === 0 && blockNumber === this.opts.runStartBlock
           ? this.firstBoundaryDetail()
           : null;
+      // V_0 with no floor under it. Said once, because nothing else says it: `v0Source` is
+      // "measured" for every agent either way, which is what a carried-over segment looks like too,
+      // and the flag that names issue #207's attack needs `v0EndowmentUsdc` -- which only the floor
+      // produces. So the one epoch where the floor is absent would otherwise read as the ordinary
+      // case. Agents can reach this: the read at a boundary fails as a whole (issue #196), and they
+      // trade before the first block by construction (#207).
+      if (index === 0 && blockNumber !== this.opts.runStartBlock) {
+        this.opts.logger.event({
+          type: INTERVAL_EVENTS.v0FloorSkipped,
+          boundaryBlock: blockNumber,
+          runStartBlock: this.opts.runStartBlock,
+          note:
+            "the run's first block was not read, so V_0 is measured with no endowment floor " +
+            "(issue #207): a value moved out before the first block it was read at counts as PnL",
+        });
+      }
       for (const agent of this.opts.agents) {
         const measured = byId.get(agent.id) ?? null;
         const value = first

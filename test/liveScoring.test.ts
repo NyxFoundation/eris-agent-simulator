@@ -379,6 +379,18 @@ test("when the run's first boundary could not be read, no later boundary is floo
     .split("\n")
     .map((l) => JSON.parse(l));
   assert.equal(rows[0].v0SourceByAgent, undefined);
+  // And it says so. Without this line the epoch is indistinguishable from an ordinary one: every
+  // agent's v0Source comes out "measured", which is also what a carried-over segment looks like,
+  // and the flag that names issue #207's attack needs the endowment V_0 the floor would have
+  // produced. So the one epoch with no floor would read as the normal case.
+  const events = readFileSync(join(root, "run", "events.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  const skipped = events.filter((e) => e.type === "interval_v0_floor_skipped");
+  assert.equal(skipped.length, 1, "said once");
+  assert.equal(skipped[0].boundaryBlock, 104);
+  assert.equal(skipped[0].runStartBlock, 100);
 });
 
 test("the sweep floors the same boundary at the same endowment, so the two series agree", async () => {
