@@ -61,10 +61,10 @@ contract SimpleLending {
         uint128 totalBorrowAssets;
         uint128 totalBorrowShares;
         uint128 lastUpdate;
-        // Aggregate collateral posted across every borrower. Not needed by any of the math below —
-        // it exists so the scorer can mark a supply position at *recoverable* value without
-        // enumerating borrowers (issue #40 axiom 3). What backs the outstanding debt is the whole
-        // question when the collateral is a token the creator minted.
+        // Aggregate collateral posted across every position, debt or not. Not needed by any of the
+        // math below, and **not** what backs the debt: a liquidation seizes only the borrower's own
+        // collateral, so another position's surplus backs nothing a supplier can recover. The scorer
+        // reads the per-borrower positions (`borrowerPositionsFrom`) for that.
         uint128 totalCollateralAssets;
     }
 
@@ -102,6 +102,15 @@ contract SimpleLending {
     /// The length of `_userMarketIds[user]` is bounded by what `user` itself did.
     mapping(address => bytes32[]) private _userMarketIds;
     mapping(bytes32 => mapping(address => bool)) private _entered;
+    /// The addresses holding debt in each market, unordered. A supply position is worth what the
+    /// borrowers can be made to repay, and that is a per-borrower quantity: min(own collateral, own
+    /// debt), summed. Netting the market's collateral against its debt instead let one position's
+    /// surplus collateral "back" another position's unbacked debt -- two addresses of one
+    /// participant fabricated ~27k that way. Kept to *current* debtors (swap-and-pop on reaching
+    /// zero) so its length is what is actually owed, not every address that ever borrowed.
+    mapping(bytes32 => address[]) private _borrowers;
+    /// 1-based index into `_borrowers[id]`; 0 = not a debtor.
+    mapping(bytes32 => mapping(address => uint256)) private _borrowerIndex;
 
     uint256 private _locked;
 
@@ -329,6 +338,7 @@ contract SimpleLending {
         m.totalBorrowAssets += uint128(assets);
         if (!_isHealthy(id, params, msg.sender)) revert InsufficientCollateral();
         if (m.totalBorrowAssets > m.totalSupplyAssets) revert InsufficientLiquidity();
+        _syncBorrower(id, msg.sender);
         _pushToken(params.loanToken, msg.sender, assets);
         emit Borrow(id, msg.sender, assets, shares);
     }
@@ -360,6 +370,7 @@ contract SimpleLending {
         m.totalBorrowAssets = m.totalBorrowAssets > uint128(assets)
             ? m.totalBorrowAssets - uint128(assets)
             : 0;
+        _syncBorrower(id, msg.sender);
         _pullToken(params.loanToken, msg.sender, assets);
         emit Repay(id, msg.sender, assets, shares);
     }
@@ -381,6 +392,7 @@ contract SimpleLending {
         m.totalBorrowAssets = m.totalBorrowAssets > uint128(assets)
             ? m.totalBorrowAssets - uint128(assets)
             : 0;
+        _syncBorrower(id, msg.sender);
         _pullToken(params.loanToken, msg.sender, assets);
         emit Repay(id, msg.sender, assets, shares);
     }
@@ -436,6 +448,7 @@ contract SimpleLending {
             m.totalSupplyAssets -= uint128(badDebtAssets);
             p.borrowShares = 0;
         }
+        _syncBorrower(id, borrower);
 
         _pushToken(params.collateralToken, msg.sender, seizedAssets);
         _pullToken(params.loanToken, msg.sender, repaidAssets);
@@ -466,6 +479,49 @@ contract SimpleLending {
         collateral = p.collateral;
     }
 
+    /// @notice How many addresses currently hold debt in market `id`.
+    function borrowerCount(bytes32 id) external view returns (uint256) {
+        return _borrowers[id].length;
+    }
+
+    /// @notice A page of the current debtors of a market with each one's accrued debt and posted
+    ///         collateral, and the total count so the caller knows whether it has them all. What a
+    ///         supplier can recover is per borrower -- min(that borrower's collateral, its debt) --
+    ///         so a valuer needs exactly these three columns. The order is unstable (swap-and-pop),
+    ///         so read every page at one block. `start` past the end is an empty page.
+    function borrowerPositionsFrom(
+        MarketParams memory params,
+        uint256 start,
+        uint256 limit
+    )
+        external
+        view
+        returns (
+            address[] memory borrowers,
+            uint256[] memory borrowAssets,
+            uint256[] memory collateral,
+            uint256 total
+        )
+    {
+        bytes32 id = idOf(params);
+        address[] storage all = _borrowers[id];
+        total = all.length;
+        if (start >= total) return (borrowers, borrowAssets, collateral, total);
+        uint256 end = total - start < limit ? total : start + limit;
+        Market memory m = market[id];
+        (, uint256 borrowTotal) = _accruedTotals(m, params);
+        borrowers = new address[](end - start);
+        borrowAssets = new uint256[](end - start);
+        collateral = new uint256[](end - start);
+        for (uint256 i = start; i < end; i++) {
+            address user = all[i];
+            Position memory p = position[id][user];
+            borrowers[i - start] = user;
+            borrowAssets[i - start] = _toAssetsUp(p.borrowShares, borrowTotal, m.totalBorrowShares);
+            collateral[i - start] = p.collateral;
+        }
+    }
+
     function expectedMarket(
         MarketParams memory params
     ) external view returns (uint256 supplyAssets, uint256 borrowAssets) {
@@ -487,6 +543,24 @@ contract SimpleLending {
     // ---------------------------------------------------------------------
     // internals
     // ---------------------------------------------------------------------
+
+    /// @dev Keep `_borrowers[id]` equal to the set of addresses with debt. Called after every write
+    ///      that changes a position's borrow shares.
+    function _syncBorrower(bytes32 id, address user) internal {
+        bool owes = position[id][user].borrowShares > 0;
+        uint256 index = _borrowerIndex[id][user];
+        if (owes && index == 0) {
+            _borrowers[id].push(user);
+            _borrowerIndex[id][user] = _borrowers[id].length;
+        } else if (!owes && index != 0) {
+            address[] storage list = _borrowers[id];
+            address last = list[list.length - 1];
+            list[index - 1] = last;
+            _borrowerIndex[id][last] = index;
+            list.pop();
+            _borrowerIndex[id][user] = 0;
+        }
+    }
 
     /// @dev Interest accrues in real time and is therefore decorative at this epoch length: an epoch
     ///      is 360 blocks x 2s = 12 minutes, and 3%/yr over 12 minutes is 0.00007%. The IRM ships

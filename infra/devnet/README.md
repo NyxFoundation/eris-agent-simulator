@@ -12,7 +12,7 @@ was a foreground command in a document. This directory is the unit that runs it.
 docker compose up -d          the chain, the gateway, the monitoring  (infra/monitoring)
 cloudflared                   publishes :8546 and :3000               (infra/cloudflared)
 ascon-devnet.service          ← drives the chain                      (here)
-eris-dashboard-sync.timer     rebuilds the hosted dashboard           (infra/dashboard)
+eris-dashboard-sync.timer     rebuilds the hosted dashboard at its pin (infra/dashboard)
 ```
 
 ## Install (once, on the box that hosts it)
@@ -37,6 +37,13 @@ chmod 600 ~/workspace/eris-agent-simulator/.env.practice
 mkdir -p ~/.eris-secrets && chmod 700 ~/.eris-secrets
 (cd ~/workspace/eris-agent-simulator && npm run -s competition -- keygen ~/.eris-secrets/practice-scenario-key.yaml)
 echo "ERIS_SCENARIO_KEY_FILE=$HOME/.eris-secrets/practice-scenario-key.yaml" >> ~/workspace/eris-agent-simulator/.env.practice
+
+# The period's wallet secret (issue #189): every AUTO agent's, flow wallet's and handed-out key is
+# derived from it, so a coordinator restart comes back to the same wallets. Back it up and NEVER
+# publish it -- not even after the period (unlike the seed and the scenario key, nothing reproduces
+# from it). The unit refuses to start without it.
+(cd ~/workspace/eris-agent-simulator && npm run -s competition -- wallet-keygen ~/.eris-secrets/practice-wallet-secret.yaml)
+echo "ERIS_WALLET_SECRET_FILE=$HOME/.eris-secrets/practice-wallet-secret.yaml" >> ~/workspace/eris-agent-simulator/.env.practice
 
 mkdir -p ~/.config/systemd/user
 ln -sf ~/workspace/eris-agent-simulator/infra/devnet/ascon-devnet.service ~/.config/systemd/user/
@@ -77,6 +84,7 @@ production start, and the daily and weekly routine. `block-gaps.mjs` (cadence an
 | the period | `config/practice.yaml` | the roster, the episodes, the evaluation-interval length (`intervalSeconds`) |
 | the seed | `.env.practice` (`ERIS_PRACTICE_SEED=`) | **gitignored; the unit will not start without it.** Publish it after the period (rules §7.2) |
 | the scenario key | `.env.practice` (`ERIS_SCENARIO_KEY_FILE=`, a file from `competition -- keygen`) | **outside the repo; the unit will not start without it.** The run records only its commitment (ADR 0027) |
+| the wallet secret | `.env.practice` (`ERIS_WALLET_SECRET_FILE=`, a file from `competition -- wallet-keygen`) | **outside the repo; the unit will not start without it. Never published**, not even after the period. Changing it moves every AUTO agent and flow wallet to a new address (issue #189) |
 | venue state | `backtest/state/venues-state.json` | **gitignored, and the chain container mounts it** |
 
 `.env.local` is read in-process (`core/src/cli/bootstrapEnv.ts`) relative to the working directory,

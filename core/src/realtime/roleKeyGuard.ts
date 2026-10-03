@@ -48,6 +48,30 @@ export function publicTestAddresses(): Set<string> {
   );
 }
 
+/** A public test account as a state dump records it: present with ETH, or having signed (nonce > 0). */
+export type DumpedPublicAccount = { address: string; balanceWei: string; nonce: number };
+
+/**
+ * The public test accounts a state dump (`anvil_dumpState`'s `accounts`) carries. A nonce above 0 is
+ * an account that signed on the chain the dump came from -- the deployer of a dump made from the
+ * default mnemonic. Measured from the dump rather than recorded from MNEMONIC, which genStateDump
+ * never sees.
+ */
+export function publicTestAccountsInDump(
+  accounts: Record<string, { balance?: unknown; nonce?: unknown }>,
+): DumpedPublicAccount[] {
+  const known = publicTestAddresses();
+  const found: DumpedPublicAccount[] = [];
+  for (const [address, account] of Object.entries(accounts)) {
+    if (!known.has(address.toLowerCase())) continue;
+    const balanceWei = BigInt(String(account.balance ?? 0));
+    const nonce = Number(BigInt(String(account.nonce ?? 0)));
+    if (balanceWei > 0n || nonce > 0)
+      found.push({ address: address.toLowerCase(), balanceWei: balanceWei.toString(), nonce });
+  }
+  return found.sort((a, b) => (a.address < b.address ? -1 : 1));
+}
+
 /** Which of the environment's keys anyone can know, by role name. */
 export function publicRoleKeys(
   keys: RoleKeys,

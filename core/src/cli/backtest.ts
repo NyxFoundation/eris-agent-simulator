@@ -610,10 +610,13 @@ async function main(): Promise<void> {
       "0",
       "--gas-limit",
       "30000000",
+      // No genesis accounts. anvil's default ten come from the public mnemonic -- their keys are in
+      // its banner -- and the gateway relays a transaction from any sender, so 1,000,000 ETH each
+      // was 1,000,000 ETH any participant could transfer to their own wallet, every epoch. The
+      // environment funds every key it signs with itself (coordinator setup); the deployer's balance
+      // is in the dump.
       "--accounts",
-      "10",
-      "--balance",
-      "1000000",
+      "0",
       "--order",
       "fees",
       "--load-state",
@@ -681,6 +684,32 @@ async function main(): Promise<void> {
           effectivePathFor(scenario),
         ]);
       }
+      // The loaded state, before the snapshot every epoch reverts to. The coordinator reads the
+      // same balances again after each epoch's funding.
+      const { publicAccountRefusal, stateDumpRefusal, LiveWeekRefusal } =
+        await import("../realtime/liveWeek.js");
+      const { tokenRegistry } = await import("@eris/sdk/markets.js");
+      const refusals = [
+        stateDumpRefusal(manifest),
+        await publicAccountRefusal(
+          {
+            eth: async (address) =>
+              BigInt(await rpc<string>(rpcUrl, "eth_getBalance", [address, "latest"])),
+            // balanceOf(address): selector 0x70a08231 + the address left-padded to 32 bytes.
+            erc20: async (token, address) => {
+              const word = await rpc<string>(rpcUrl, "eth_call", [
+                { to: token, data: `0x70a08231${address.slice(2).toLowerCase().padStart(64, "0")}` },
+                "latest",
+              ]);
+              if (word === "0x")
+                throw new Error(`registry token ${token} has no code on the loaded state`);
+              return BigInt(word);
+            },
+          },
+          Object.values(tokenRegistry()),
+        ),
+      ].filter((r): r is string => r !== undefined);
+      if (refusals.length > 0) throw new LiveWeekRefusal(refusals);
     }
 
     // ---- The scenario matrix ----

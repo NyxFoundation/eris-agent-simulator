@@ -153,7 +153,7 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   最大 $10k = perp は spot の 1 桁上）。whale・Aave actor は据え置き（whale は「プール深度に対する割合」の規則を
   値の隣に書いた）
 - **deployer 側（`npm run gen:state-dump` で焼き直し必須）**: GM pool 200 WETH + 600k → **1,500 WETH + 4.5M USDC**
-  （spot 比 0.2× → 1.5×。Arbitrum 実測 1.7×。impact factor 0 なので約定は不変、OI/pool = funding skew が小さくなる）/
+  （spot 比 0.2× → 1.5×。Arbitrum 実測 1.7×。OI/pool = funding skew が小さくなる。impact factor は Arbitrum の値をそのまま写したので、この pool でも約定はほぼ不変）/
   Aave shared seed 9k USDC + 10 WETH → **5M USDC + 2,000 WETH**（Base の 20× は採らない。12 分のエポックで
   利用率と金利カーブは効かず、agent 規模の借入が空リザーブに当たらない深さがあれば足りる）/
   Stability Pool 50k → **125k eUSD** + genesis Trove **350 ETH / 350k eUSD**（上の Liquity 節）。
@@ -181,6 +181,24 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   読み側（`marketSeries.ts`）は `savedFundingFactorPerSecond` を読むが、これは**適応 funding 経路の保存値**で、
   `fundingIncreaseFactorPerSecond == 0` だと MarketUtils が早期 return して**永久に 0**。適応 funding を
   有効にすると読んでいるキーがそのまま埋まる
+- **手数料・price impact・borrowing・最大レバレッジも同じ穴だった**（同じ patch）。upstream の hardhat 設定は
+  `positionFeeFactor*` / `*PositionImpactFactor` / borrowing 系を書かず、`minCollateralFactor` は 1%。
+  つまり**サイズにコストが掛からない 100 倍の先物を fair で約定**していて、fair の予測可能な動き（OU の平均回帰の
+  中心が開始価格）が全部、配布額の何倍もの期待値になった。今は Arbitrum の ETH/BTC 市場の値を**そのまま写す**
+  （position fee 0.04% / 0.06%、impact 9e-11 / 3e-11・指数 2 / 1・上限 0.5% / 0.4%、borrowing は
+  `borrowingRateConfig_LowerMax_WithHigherOptimal`）。impact は Arbitrum の OI に合わせた係数なので、この pool では
+  $1M の偏りで ~0.9bps しか効かない（**効くのは fee**。深度に合わせて盛るのは較正の仕事として見送った）。
+  レバレッジは**建てるとき 5%（20 倍）・清算 1%**。**これが GMX が受け付ける上限**で
+  （`ConfigUtils.validateRange` が MIN_COLLATERAL_FACTOR > 5% と _FOR_LIQUIDATION > 1% を revert する。
+  10% / 5% を入れたら deploy が落ちた）、Arbitrum の 0.5〜1% よりは厳しい。
+  **swap も同じ**: keeper は `OrderCreated` を種類を問わず全部執行するので、`rawTx` の `MarketSwap` 注文が
+  fair・手数料 0・impact 0 で通り、AMM-vs-fair の裁定が片側の AMM 手数料で済んでいた。swap fee 0.05% / 0.07%、
+  swap impact 3e-10 / 2e-10・指数 2（Arbitrum の値）を入れた。GM の deposit / withdraw は keeper が拾わないので執行されない`basis-arb` の往復コスト既定は 0 → 12bps。
+  **採点は「今閉じたら残る額」**（`positionExitValueUsd`。Reader の `getAccountPositionInfoList` を fair で引き、
+  証拠金 + 基準 PnL + 決済時と建玉時に繰り延べた impact − 決済手数料・未払い borrowing・funding + 受け取る funding）。
+  建玉時の手数料は証拠金から既に引かれているので、額面（証拠金 + PnL）のままだと**鐘の後まで持ち越した建玉は手数料を
+  半分しか払わない**ことになった。額面は `valueUsdc`（= `markedValueUsdc`）に残る。読取に失敗したら額面で数えて
+  `read-failed` を報告し、価格の付かない市場に建玉がある agent は読まない（Reader が revert する）
 - **値を盛らないこと**。盛ると perp だけ Aave の借入金利と違う時計で回る（LST の APY で一度やった失敗）。
   よって**レートは実物・符号も偏り追随**だが、**数百ブロックで積む額は小さい**（Aave の利息と同じ理由。EVM 時間は warp しない）
 - **これ以前に焼いた state dump は旧設定を持つ**ので、そこからの replay は今も 0 を返す。
@@ -285,7 +303,18 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
 - **seed は公開 config に置かない**。価格 walk・flow・全イベント窓は seed の純関数なので、`seed: 1` が公開されて
   いると crash のブロックを誰でも計算できる。hosted period は `.env.practice`（gitignore）の `ERIS_PRACTICE_SEED`
   を systemd が `--seed` に渡し、無ければ起動しない。**期間の scenario key も同じ**（ADR 0027）: `.env.practice` の
-  `ERIS_SCENARIO_KEY_FILE`（`npm run competition -- keygen` で作った鍵ファイルのパス）が無い・読めないと起動しない
+  `ERIS_SCENARIO_KEY_FILE`（`npm run competition -- keygen` で作った鍵ファイルのパス）が無い・読めないと起動しない。
+  **財布の秘密も同じ**（issue #189）: `ERIS_WALLET_SECRET_FILE`（`npm run competition -- wallet-keygen`）が無いと起動しない
+- **環境が作る財布の鍵は seed から作らない**（issue #189。`core/src/walletKeys.ts`）。AUTO agent・flow / whale /
+  launch・Aave / Liquity victim・check:ordering / stress:rpc のプローブは全部 `environmentKey(kind, id)` =
+  `HMAC-SHA256(secret, ["eris-wallet/v1", kind, id])`。以前は `keccak("auto-wallet:<seed>:<id>")` 等で、自分の AUTO 鍵から
+  seed を総当たりで逆算でき、そこから他の agent・環境ウォレットの鍵が全部計算できた（ゲートウェイは送信者を検査しない）。
+  secret は**既定でプロセスごとの乱数**（どこにも書かない。run・同一プロセスの行列内では同じアドレス、次のプロセスで変わる）、
+  練習期間だけ `ERIS_WALLET_SECRET_FILE`（再起動しても同じ財布に戻るため）。**scenario key とは別物**で、同じ値なら起動時に落とす
+  （scenario key は結果発表後に公開するので、それから導出すると全部の鍵が公開される）。財布の秘密は**結果発表後も公開しない**
+  （再現に要らない: ADR 0027 (c) が再現するのはシナリオと、アドレスで読む採点だけ）。agent の env には渡さない
+  （`ERIS_WALLET_SECRET*` は環境専用）。`npm run manifest -- --participant` は AUTO の鍵を出すのにこのファイルが要り、
+  無ければ拒否する（config だけの manifest では AUTO の `address` が欠落する）。`run_started_realtime.walletKeys` が出所を記録
 - **ロスターは登録リストであって起動リストではない**。`external: true` + `address`（参加者が鍵を持つ。**運営が
   作った鍵は運営が持っている鍵**なのでこちらを推奨）/ `wallet`（運営が発行して渡す）。`command`/`args`/`dir`/`env`
   は**黙殺せず拒否**する（黙って落とすと「運営が動かしている」ように読めるロスターになる）。
@@ -434,7 +463,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - **鍵ファイル付きの順序付きプラン（= ライブ週）では、警告止まりだった 2 つを拒否にする**（`core/src/realtime/liveWeek.ts`）。
     運営の鍵（admin/keeper/setup/deployer、または Aave admin が anvil のテストアカウント = 既定 mnemonic の dump）が
     公開鍵 / `agentSandbox: process` / `command` の agent / `ERIS_AGENT_ISOLATE=1` + `ERIS_AGENT_INTERNAL=1` の無い
-    docker agent / bind-mount。以前は `roleKeyGuard` が「参加者が送れるチェーン」を登録ファイルか `external` でしか
+    docker agent / bind-mount / **anvil の公開テストアカウントに ETH が残っているチェーン**（鍵は anvil のバナーに出ていて、ゲートウェイは送信者を見ないので、誰でも自分の財布へ送金して P を足せた。backtest の anvil は以前 `--accounts 10 --balance 1000000` で毎エポック 1,000,000 ETH ずつ持たせていた。今は `--accounts 0` で、残高（ETH + レジストリの全トークン。base fee 0 なので ETH 0 でもトークンは送れる）は起動時と各エポックの funding 後・agent 起動前に実測する = `publicAccountRefusal`。**既定 mnemonic で焼いた dump は state 自体に公開アカウントを持つ**ので、`gen:state-dump` が dump から実測して manifest の `publicTestAccounts` に書き、ライブ週は空でない・フィールドが無い manifest を拒否する = `stateDumpRefusal`。直すには秘密 `MNEMONIC` で deploy し直して焼く）。以前は `roleKeyGuard` が「参加者が送れるチェーン」を登録ファイルか `external` でしか
     判定せず、運営が起動する本番エポックはどちらも持たないので素通りしていた。隔離も警告だけで、host network の
     agent はゲートウェイを通らず anvil の cheatcode に届く。規約 §3.1 の一覧が「禁止」と書くものを「届かない」に
     するのはこの 2 つ。最初の待機の前にレジームごとに検査し、拒否は除外エポックにせず週ごと止める。
@@ -883,9 +912,17 @@ ours なのは 2 つだけ（core は無改変）:
     Verifier の仕事は `owner()` を読むこと。`ConfigurableOracle`（owner あり＝罠）と
     `PriceFeedOracle`（owner なし・immutable＝正直）を両方同梱してあるので、
     「オラクルが動かせるか」は本物の識別子になる
-  - **採点は回収可能額**（`backedFraction`）。供給側は「残っている loan token ＋ **環境価格**で見た担保」
-    への持分、借り手側は `max(0, 担保 − 債務)` で**床は 0**（担保を捨てて歩き去れる＝Liquity の
-    ICR<100% clamp と同じ規則）。**市場自身のオラクルは清算だけを決め、マークは書かない**
+  - **採点は回収可能額**（`backedFraction`）。供給側は「残っている loan token ＋ **借り手ごとの**
+    `min(その借り手自身の担保の環境価格, その借り手の債務)` の合計」への持分（`recoverableDebt`）、
+    借り手側は `max(0, 担保 − 債務)` で**床は 0**（担保を捨てて歩き去れる＝Liquity の
+    ICR<100% clamp と同じ規則）。**市場自身のオラクルは清算だけを決め、マークは書かない**。
+    **市場全体の担保合計で相殺してはいけない** — 清算が差し押さえられるのはその借り手の担保だけなので、
+    以前の規則では 1 体の余剰担保（債務 0 で預けた担保）が本人の資産と他人の焦げ付きの裏付けとに
+    二重に数えられ、同じ参加者の 2 体で約 +27k の架空利益が出た（監査 M1）。借り手は
+    コントラクトの `borrowerPositionsFrom`（今債務を持つアドレスの一覧。swap-and-pop）から読み、
+    1 市場 `BORROWER_SCAN_LIMIT`（1,024）を超えた分の債務は回収 0 として数える（安全側）。
+    **借り手の一覧を読むのは「誰かの index に載っていて、かつ債務がある市場」だけ**（下の per-user index
+    と組み合わせる。供給していない市場の裏付けは自分の評価額を変えないので読まない）
   - **金利は装飾**。エポック 12 分で 3%/年は 0.00007%。効く餌は**レバレッジ（高 LLTV）と清算ボーナス**で、
     貸出の罠の被害者は**借り手か清算人**であって供給側ではない。IRM は正直にそう書いて同梱
   - **建玉はコントラクトの per-user index から読む。市場一覧の切り出しでは読まない**（issue #212 / #216 項目 1）。

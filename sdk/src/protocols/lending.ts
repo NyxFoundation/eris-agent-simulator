@@ -97,6 +97,15 @@ export const LENDING_ID_PAGE_SIZE = 256;
 // any strategy's footprint and keeps a cross-section at one page per agent.
 export const USER_MARKET_LIMIT = 128;
 
+// Borrower reads, per market. What a supplier can recover is a per-borrower sum, so valuing a supply
+// position reads the market's current debtors (`borrowerPositionsFrom`). One page is one eth_call
+// with a loop of `BORROWER_PAGE` positions (~6k gas each), well inside the call gas cap. The count
+// is not the supplier's choice -- anyone can open a dust debt -- so it is capped like the market
+// scan, and debt held by borrowers past the cap counts as unrecovered: the conservative side, and a
+// side a dust-debt spammer can only move by the dust it borrowed.
+export const BORROWER_PAGE = 256;
+export const BORROWER_SCAN_LIMIT = 1024;
+
 // A market with nothing in it cannot hold anybody's position -- supply, borrow and collateral are
 // all zero, so every position in it is zero by construction. That is what makes dropping them exact
 // rather than a heuristic, and it is what collapses a spam attack of N empty markets to no
@@ -311,6 +320,32 @@ export const simpleLendingAbi = [
       { name: "supplyShares", type: "uint256" },
       { name: "borrowShares", type: "uint128" },
       { name: "collateral", type: "uint128" },
+    ],
+  },
+  {
+    type: "function",
+    name: "borrowerPositionsFrom",
+    stateMutability: "view",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        components: [
+          { name: "loanToken", type: "address" },
+          { name: "collateralToken", type: "address" },
+          { name: "oracle", type: "address" },
+          { name: "irm", type: "address" },
+          { name: "lltv", type: "uint256" },
+        ],
+      },
+      { name: "start", type: "uint256" },
+      { name: "limit", type: "uint256" },
+    ],
+    outputs: [
+      { name: "borrowers", type: "address[]" },
+      { name: "borrowAssets", type: "uint256[]" },
+      { name: "collateral", type: "uint256[]" },
+      { name: "total", type: "uint256" },
     ],
   },
   {
@@ -1195,11 +1230,11 @@ type MarketValuation = {
 };
 
 // Fraction of a market's supply that is actually backed, in 1e18 fixed point. The loan tokens still
-// in the contract, plus the environment-priced collateral standing behind the debt — never the
-// market's own oracle, which the creator may control.
+// in the contract, plus the part of the debt the borrowers can be made to repay (`recoverableDebt`)
+// — never the market's own oracle, which the creator may control.
 export function backedFraction(
   totals: MarketTotals,
-  collateralValueInLoanUnits: bigint,
+  recoveredDebtInLoanUnits: bigint,
 ): bigint {
   if (totals.totalSupplyAssets === 0n) return WAD;
   const idle =
@@ -1207,41 +1242,86 @@ export function backedFraction(
       ? totals.totalSupplyAssets - totals.totalBorrowAssets
       : 0n;
   const recoveredDebt =
-    collateralValueInLoanUnits < totals.totalBorrowAssets
-      ? collateralValueInLoanUnits
+    recoveredDebtInLoanUnits < totals.totalBorrowAssets
+      ? recoveredDebtInLoanUnits
       : totals.totalBorrowAssets;
   const backed = idle + recoveredDebt;
   const fraction = (backed * WAD) / totals.totalSupplyAssets;
   return fraction > WAD ? WAD : fraction;
 }
 
-// The collateral pile in loan-token units, valued the environment's way, folded into the backed
-// fraction. `undefined` collateral value means the collateral token is one the environment does not
-// price — which is the honest answer for a token the market's creator minted, and the reason the
-// drain reads as a transfer.
-function marketBackedFraction(
-  m: MarketValuation,
+export type BorrowerPosition = { borrowAssets: bigint; collateral: bigint };
+
+// What the suppliers can recover of a market's debt: per borrower, the smaller of its debt and its
+// own collateral valued the environment's way, summed. Per borrower because that is what a
+// liquidation can reach -- `liquidate` seizes `position[borrower].collateral` and nothing else.
+// Netting the market's *total* collateral against its total debt (the rule before this) counted
+// one position's surplus twice: once as its holder's equity (collateral minus its own debt) and
+// again as backing for somebody else's unbacked loan. Two addresses of one participant turned that
+// into ~27k of value nobody held: one supplies and parks debt-free collateral, the other borrows
+// the supply against an inflated oracle and walks.
+//
+// `collateralInLoanUnits` returns undefined for a collateral token the environment does not price,
+// which recovers nothing.
+export function recoverableDebt(
+  borrowers: readonly BorrowerPosition[],
+  collateralInLoanUnits: (collateral: bigint) => bigint | undefined,
+): bigint {
+  let recovered = 0n;
+  for (const b of borrowers) {
+    if (b.borrowAssets === 0n) continue;
+    const value = collateralInLoanUnits(b.collateral) ?? 0n;
+    recovered += value < b.borrowAssets ? value : b.borrowAssets;
+  }
+  return recovered;
+}
+
+// A collateral amount in loan-token units at the environment's prices, through a 1e18 probe of the
+// loan token so the two decimals cancel. Undefined when either side is unpriced.
+function collateralToLoanUnits(
+  params: MarketParams,
   fairByBase: Record<string, number>,
   stablePrices?: Parameters<typeof tokenAmountUsd>[3],
-): bigint {
-  const collateralUsd = tokenAmountUsd(
-    m.params.collateralToken,
-    m.totals.totalCollateralAssets,
-    fairByBase,
-    stablePrices,
-  );
-  const loanUnitUsd = tokenAmountUsd(
-    m.params.loanToken,
-    WAD,
-    fairByBase,
-    stablePrices,
-  );
-  // loan-token units per USD, derived from a 1e18 probe so decimals cancel.
-  const collateralInLoanUnits =
-    collateralUsd !== undefined && loanUnitUsd !== undefined && loanUnitUsd > 0
-      ? BigInt(Math.floor((collateralUsd / loanUnitUsd) * 1e18))
-      : 0n;
-  return backedFraction(m.totals, collateralInLoanUnits);
+): (collateral: bigint) => bigint | undefined {
+  const loanUnitUsd = tokenAmountUsd(params.loanToken, WAD, fairByBase, stablePrices);
+  return (collateral) => {
+    if (collateral === 0n) return 0n;
+    const usd = tokenAmountUsd(params.collateralToken, collateral, fairByBase, stablePrices);
+    if (usd === undefined || loanUnitUsd === undefined || loanUnitUsd <= 0) return undefined;
+    return BigInt(Math.floor((usd / loanUnitUsd) * 1e18));
+  };
+}
+
+function borrowerPageRead(
+  singleton: Address,
+  params: MarketParams,
+  start: number,
+): ValuationRead {
+  return {
+    address: singleton,
+    abi: simpleLendingAbi,
+    functionName: "borrowerPositionsFrom",
+    args: [paramsTuple(params), BigInt(start), BigInt(BORROWER_PAGE)],
+  };
+}
+
+// One `borrowerPositionsFrom` result as positions plus the market's debtor count. A failed read is
+// no borrowers, which recovers nothing -- the supplier is marked down rather than up.
+function decodeBorrowerPage(
+  raw: unknown,
+): { positions: BorrowerPosition[]; total: number } {
+  if (!Array.isArray(raw)) return { positions: [], total: 0 };
+  const [, debts, collateral, total] = raw as [
+    readonly Address[],
+    readonly bigint[],
+    readonly bigint[],
+    bigint,
+  ];
+  const positions = (debts ?? []).map((d, i) => ({
+    borrowAssets: d,
+    collateral: collateral?.[i] ?? 0n,
+  }));
+  return { positions, total: Number(total ?? 0n) };
 }
 
 // One agent's position in one market, under the rule above: the supply side pro-rata on what backs
@@ -1423,12 +1503,40 @@ async function* lendingValuationRun(
     }
   }
   if (pairs.length === 0) return out;
-  const positionResults = (yield pairs.map(({ agent, m }) => ({
-    address: singleton,
-    abi: simpleLendingAbi,
-    functionName: "expectedPosition",
-    args: [paramsTuple(m.params), agent.address],
-  })) as ValuationRead[]) as unknown[];
+
+  // In the same stage, the first page of each indebted market's borrowers. Every borrower, whether
+  // on the roster or not, because what backs a supply position is whoever owes it.
+  const indebted = [...new Set(pairs.map(({ m }) => m))].filter(
+    (m) => m.totals.totalBorrowAssets > 0n,
+  );
+  const stage3 = (yield [
+    ...pairs.map(({ agent, m }) => ({
+      address: singleton,
+      abi: simpleLendingAbi,
+      functionName: "expectedPosition",
+      args: [paramsTuple(m.params), agent.address],
+    })),
+    ...indebted.map((m) => borrowerPageRead(singleton, m.params, 0)),
+  ] as ValuationRead[]) as unknown[];
+  const positionResults = stage3.slice(0, pairs.length);
+  const borrowersById = new Map<string, BorrowerPosition[]>();
+  const borrowerTotalById = new Map<string, number>();
+  indebted.forEach((m, i) => {
+    const page = decodeBorrowerPage(stage3[pairs.length + i]);
+    borrowersById.set(m.id, page.positions);
+    borrowerTotalById.set(m.id, page.total);
+  });
+  // Further pages, one stage each, up to the cap. Rare: a market with more than a page of debtors.
+  for (let start = BORROWER_PAGE; start < BORROWER_SCAN_LIMIT; start += BORROWER_PAGE) {
+    const more = indebted.filter((m) => (borrowerTotalById.get(m.id) ?? 0) > start);
+    if (more.length === 0) break;
+    const pages = (yield more.map((m) =>
+      borrowerPageRead(singleton, m.params, start),
+    ) as ValuationRead[]) as unknown[];
+    more.forEach((m, i) => {
+      borrowersById.get(m.id)?.push(...decodeBorrowerPage(pages[i]).positions);
+    });
+  }
 
   const fairByBase = ctx.fairByBase();
   const stablePrices = ctx.stablePrices();
@@ -1449,7 +1557,16 @@ async function* lendingValuationRun(
     if (supplyAssets === 0n && borrowAssets === 0n && collateral === 0n) return;
     let fraction = fractionById.get(m.id);
     if (fraction === undefined) {
-      fraction = marketBackedFraction(m, fairByBase, stablePrices);
+      // Each borrower's own collateral against its own debt, summed -- not the market's totals
+      // netted, which counted one position's surplus collateral as backing for another's
+      // unbacked loan (origin/main, issue #216 (2)).
+      fraction = backedFraction(
+        m.totals,
+        recoverableDebt(
+          borrowersById.get(m.id) ?? [],
+          collateralToLoanUnits(m.params, fairByBase, stablePrices),
+        ),
+      );
       fractionById.set(m.id, fraction);
     }
     const { usd, unpriced, longs, shorts } = positionValue(
@@ -1477,7 +1594,7 @@ async function* lendingValuationRun(
 
 // One agent's value in this venue at the current block, for the end-of-run PnL path.
 //
-// Same rule as the historical valuation above, through the same `marketBackedFraction` /
+// Same rule as the historical valuation above, through the same `recoverableDebt` /
 // `positionValue`, and the same source of markets: the agent's own index, never a slice of the
 // whole list. What differs is only the batching -- the staged generator exists to merge reads across
 // agents and blocks, and this path has one agent and one block.
@@ -1520,12 +1637,51 @@ export async function liveLendingValueUsdc(
     return 0;
   }
 
+  // The borrowers behind every market this agent supplies into, read the same way as the
+  // historical path so the two marks agree.
+  // Indexed by `markets`, the same order `positions` came back in -- not by `ids`, which still
+  // holds the empty markets the filter above dropped.
+  const borrowersById = new Map<string, BorrowerPosition[]>();
+  for (const [i, m] of markets.entries()) {
+    const raw = positions[i];
+    if (raw.status !== "success" || !Array.isArray(raw.result)) continue;
+    if (m.totals.totalBorrowAssets === 0n) continue;
+    // Not a supplier here: what backs the market changes nothing about this position's value.
+    if ((raw.result as bigint[])[0] === 0n) continue;
+    const list: BorrowerPosition[] = [];
+    for (let start = 0; start < BORROWER_SCAN_LIMIT; start += BORROWER_PAGE) {
+      let page: { positions: BorrowerPosition[]; total: number };
+      try {
+        page = decodeBorrowerPage(
+          await ctx.publicClient.readContract({
+            address: singleton,
+            abi: simpleLendingAbi,
+            functionName: "borrowerPositionsFrom",
+            args: [paramsTuple(m.params), BigInt(start), BigInt(BORROWER_PAGE)],
+          }),
+        );
+      } catch {
+        break;
+      }
+      list.push(...page.positions);
+      if (page.total <= start + BORROWER_PAGE) break;
+    }
+    borrowersById.set(m.id, list);
+  }
+
   let total = 0;
   markets.forEach((m, i) => {
     const raw = positions[i];
     if (raw.status !== "success" || !Array.isArray(raw.result)) return;
     const position = raw.result as unknown as readonly [bigint, bigint, bigint];
-    total += positionValue(m, marketBackedFraction(m, fairByBase), position, fairByBase).usd;
+    const fraction = backedFraction(
+      m.totals,
+      recoverableDebt(
+        borrowersById.get(m.id) ?? [],
+        collateralToLoanUnits(m.params, fairByBase),
+      ),
+    );
+    total += positionValue(m, fraction, position, fairByBase).usd;
   });
   return total;
 }

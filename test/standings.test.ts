@@ -67,7 +67,7 @@ test("a stopped agent keeps its P and its flags; it is not disqualified", () => 
   );
   const crashed = s.agents.find((a) => a.id === "crashed")!;
   assert.equal(crashed.score, 40);
-  assert.deepEqual(crashed.flags, ["calm#1: process exited early: code 137"]);
+  assert.deepEqual(crashed.flags, ["s=1: process exited early: code 137"]);
 });
 
 test("an agent without a P for an epoch was not placed in it and is scored on the rest", () => {

@@ -34,8 +34,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountAddress } from "@eris/sdk/chain.js";
 import { safeStringify } from "@eris/sdk/logger.js";
+import type { AgentSpec } from "@eris/sdk/types.js";
 import { initProtocols } from "@eris/sdk/protocols/registry.js";
 import { privateKeyForWalletName } from "./config.js";
+import { WALLET_SECRET_FILE_ENV, walletSecret } from "./walletKeys.js";
 import {
   buildManifest,
   isLoopbackUrl,
@@ -98,11 +100,21 @@ export function runManifestCli(): void {
   // The token and venue registries are protocol-driven, and the manifest publishes both.
   initProtocols(config.enabledProtocols);
 
+  // Issue #189: an AUTO key is derived from the wallet secret. Without ERIS_WALLET_SECRET_FILE this
+  // process has a random secret of its own, so the key it would compute belongs to no run.
+  const keyKnown = (spec: AgentSpec): boolean =>
+    spec.wallet !== "AUTO" || walletSecret().source === "file";
   const participants: ManifestParticipant[] = agents.map((spec) => ({
     id: spec.id,
-    address:
-      spec.address ??
-      accountAddress(privateKeyForWalletName(config, spec.wallet, spec.id)),
+    ...(spec.address
+      ? { address: spec.address }
+      : keyKnown(spec)
+        ? {
+            address: accountAddress(
+              privateKeyForWalletName(config, spec.wallet, spec.id),
+            ),
+          }
+        : {}),
     external: spec.external === true,
     baseline: spec.baseline ?? false,
     description: spec.description,
@@ -116,6 +128,14 @@ export function runManifestCli(): void {
     if (!spec) {
       console.error(
         `no agent "${flags.participant}" in the roster (have: ${agents.map((a) => a.id).join(", ")})`,
+      );
+      process.exit(1);
+    }
+    if (!spec.address && !keyKnown(spec)) {
+      console.error(
+        `"${spec.id}" is wallet: AUTO, whose key is derived from the wallet secret (issue #189). ` +
+          `Set ${WALLET_SECRET_FILE_ENV} to the file the running coordinator uses; without it this ` +
+          "would print a key no run has.",
       );
       process.exit(1);
     }

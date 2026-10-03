@@ -8,9 +8,13 @@ import {
   LiveWeekRefusal,
   isLiveWeekRefusal,
   liveWeekRefusals,
+  publicAccountRefusal,
+  stateDumpRefusal,
 } from "../core/src/realtime/liveWeek.js";
 import {
   participantsCanSend,
+  publicTestAccountsInDump,
+  publicTestAddresses,
   type RoleKeys,
 } from "../core/src/realtime/roleKeyGuard.js";
 
@@ -113,4 +117,82 @@ test("the runner tells the refusal from an epoch that failed", () => {
   assert.equal(isLiveWeekRefusal(new LiveWeekRefusal(["x"])), true);
   assert.equal(isLiveWeekRefusal(new Error("epoch failed")), false);
   assert.match(new LiveWeekRefusal(["x"]).message, /--scenario-key public/);
+});
+
+const USDC = {
+  symbol: "USDC",
+  address: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512" as Address,
+  decimals: 6,
+};
+const isAnvil0 = (address: Address): boolean =>
+  address.toLowerCase() === ANVIL_0.toLowerCase();
+
+test("anvil's public test accounts must be empty: their keys sign a transfer into any wallet", async () => {
+  const read: string[] = [];
+  const empty = await publicAccountRefusal(
+    {
+      eth: async (address) => {
+        read.push(address.toLowerCase());
+        return 0n;
+      },
+      erc20: async () => 0n,
+    },
+    [USDC],
+  );
+  assert.equal(empty, undefined);
+  assert.deepEqual(new Set(read), publicTestAddresses());
+
+  // What `--accounts 10 --balance 1000000` left on the backtest anvil, and what a dump deployed
+  // from the default mnemonic carries in its state.
+  const refusal = await publicAccountRefusal(
+    { eth: async (a) => (isAnvil0(a) ? 10n ** 24n : 0n), erc20: async () => 0n },
+    [USDC],
+  );
+  assert.ok(refusal);
+  assert.match(refusal, new RegExp(ANVIL_0.toLowerCase()));
+  assert.match(refusal, /1000000 ETH/);
+  assert.match(refusal, /--accounts 0/);
+});
+
+test("tokens without ETH are refused too: the backtest chain runs at base fee 0", async () => {
+  const refusal = await publicAccountRefusal(
+    {
+      eth: async () => 0n,
+      erc20: async (token, a) => (token === USDC.address && isAnvil0(a) ? 25_000_000_000n : 0n),
+    },
+    [USDC],
+  );
+  assert.ok(refusal);
+  assert.match(refusal, /25000 USDC/);
+});
+
+test("a state dump is refused by its manifest when it carries public accounts, or does not say", () => {
+  assert.equal(stateDumpRefusal({ publicTestAccounts: [] }), undefined);
+  assert.match(stateDumpRefusal({}) ?? "", /does not say/);
+  const deployed = stateDumpRefusal({
+    publicTestAccounts: [
+      { address: ANVIL_0.toLowerCase(), balanceWei: (10n ** 21n).toString(), nonce: 412 },
+    ],
+  });
+  assert.match(deployed ?? "", /default mnemonic/);
+  assert.match(deployed ?? "", /1000 ETH/);
+  assert.match(deployed ?? "", /MNEMONIC=/);
+});
+
+test("the dump measurement finds public accounts that hold ETH or signed, and nothing else", () => {
+  const stranger = privateKeyToAccount(generatePrivateKey()).address;
+  const found = publicTestAccountsInDump({
+    [ANVIL_0]: { balance: "0x3635c9adc5dea00000", nonce: "0x19c" },
+    "0x70997970C51812dc3A010C7d01b50e0d17dc79C8": { balance: "0x0", nonce: "0" },
+    "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC": { balance: "0xd3c21bcecceda1000000", nonce: 0 },
+    [stranger]: { balance: "0xffff", nonce: "3" },
+  });
+  assert.deepEqual(found, [
+    {
+      address: "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+      balanceWei: (10n ** 24n).toString(),
+      nonce: 0,
+    },
+    { address: ANVIL_0.toLowerCase(), balanceWei: (10n ** 21n).toString(), nonce: 412 },
+  ]);
 });

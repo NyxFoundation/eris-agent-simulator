@@ -174,7 +174,20 @@ function fixtureRuns(): string {
   );
   writeFileSync(
     join(matrix, "standings.json"),
-    JSON.stringify({ k: 40, epochs: [{ s: 3, regime: "crash", seed: 4242 }] }),
+    JSON.stringify({
+      k: 40,
+      epochs: [{ s: 3, regime: "crash", seed: 4242 }],
+      // Flag lines as written before they were keyed by ordinal: the scenario at the head.
+      agents: [
+        {
+          id: "a1",
+          flags: [
+            "crash#4242: process exited early: 137",
+            "calm#7: process exited early: 1",
+          ],
+        },
+      ],
+    }),
   );
 
   // A practice period: segments keep their labels (they are days, not scenarios).
@@ -381,6 +394,12 @@ test("audience mode hides regime and seed of a scenario matrix but not a practic
     );
     assert.equal(standings.epochs[0].regime, "hidden");
     assert.equal(standings.epochs[0].seed, null);
+    // Any agent can raise a flag, so the flag lines must not name the scenario either.
+    assert.deepEqual(standings.agents[0].flags, [
+      "s=3: process exited early: 137",
+      "s=?: process exited early: 1",
+    ]);
+    assert.doesNotMatch(JSON.stringify(standings), /crash|4242|calm#7/);
     const period = JSON.parse((await get("/practice-period/matrix.json")).text);
     assert.equal(period.scenarios[0].label, "2026-09-25");
     assert.equal(period.scenarios[0].regime, "segment");

@@ -42,7 +42,12 @@ export const MANIFEST_FILENAME = "manifest.json";
 
 export type ManifestParticipant = {
   id: string;
-  address: string;
+  /**
+   * Absent only in a manifest built from the config alone for a `wallet: AUTO` entry without
+   * ERIS_WALLET_SECRET_FILE: that key is made when the run starts (issue #189), so no address exists
+   * yet. A running period's manifest always has it.
+   */
+  address?: string;
   /** True when the participant runs the agent themselves (ADR 0021 §2). */
   external: boolean;
   /** ADR 0019 §2's benchmark entry, whose returns every score is measured as excess over. */
