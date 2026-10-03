@@ -147,6 +147,7 @@ import {
   type LiquityVictimTrove,
 } from "../liquityVictims.js";
 import { waitForAgentsReady } from "./agentsReady.js";
+import { epochNonceFloor, raiseNonces } from "./nonceFloor.js";
 import {
   agentStateRootFromEnv,
   DEFAULT_STATE_SNAPSHOT_LIMITS,
@@ -1051,6 +1052,26 @@ export async function runRealtimeSimulation(
   // sender an agent's wallet derived (environmentSigners.ts).
   for (const [address, owner] of environmentSignerOwners(config.privateKeys))
     ownerByAddress.set(address, owner);
+
+  // ---- every known signer starts above any nonce an earlier epoch used (nonceFloor.ts) ----
+  // The reset above put the nonces back to the snapshot's, and the keys are the ones the last epoch
+  // signed with, so the last epoch's transactions would be valid again for whoever kept them. Before
+  // funding: the agents' venue approvals and every setup transaction after this sign above the floor.
+  // The victims are derived here from the same counts setup uses (pure), since they sign at setup.
+  if (!external && !config.skipReset) {
+    const report = await raiseNonces(
+      publicClient,
+      [
+        ...agentRuntimes.map((a) => a.address),
+        ...[...flowWalletMap.values()].map((w) => w.address),
+        ...[...environmentSignerOwners(config.privateKeys).keys()].map((a) => a as Address),
+        ...deriveStressVictims(config.stressVictimCount).map((v) => v.address),
+        ...deriveLiquityVictims(config.stressLiquityVictimCount).map((v) => v.address),
+      ],
+      epochNonceFloor(),
+    );
+    logger.event({ type: "epoch_nonce_floor", ...report });
+  }
   // Read once, at the blocks.csv flush, and swept there too (issue #134).
   const submittedByHash = new SubmittedLedger<SubmittedMeta>();
   // Issue #212: addresses an agent's wallet funded -- ETH, a priced token, a contract it created,

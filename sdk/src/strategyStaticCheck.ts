@@ -23,7 +23,7 @@ const CHEAT_PATTERNS: Array<{ rule: string; regex: RegExp }> = [
   {
     rule: "privileged chain.ts helper (environment-only)",
     regex:
-      /\b(setEthBalance|dealErc20|impersonate|stopImpersonate|sendAsImpersonated|setIntervalMining|setAutomine|resetFork)\b/,
+      /\b(setEthBalance|dealErc20|impersonate|stopImpersonate|sendAsImpersonated|setIntervalMining|setAutomine|setNonce|resetFork)\b/,
   },
 ];
 
