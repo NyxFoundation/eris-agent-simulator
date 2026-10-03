@@ -218,6 +218,11 @@ import {
   readGmxFundingConfig,
 } from "./gmxFunding.js";
 import {
+  gmxCallbackCheck,
+  gmxCallbackOpenMessage,
+  readGmxCallbackLimits,
+} from "./gmxCallbacks.js";
+import {
   environmentReserveAssets,
   readAaveReserves,
   strayAaveReserves,
@@ -1133,6 +1138,18 @@ export async function runRealtimeSimulation(
         : gmxFundingMissingMessage(funding, config.chainMode);
       if (enforcement === "fail") throw new Error(message);
       if (enforcement === "warn") console.warn(`[gmx] WARNING: ${message}`);
+    }
+
+    // Does this deploy give participant code gas inside the keeper's transaction (order callbacks, a
+    // contract receiver's receive())? Recorded, not enforced: the keeper refuses callback orders on
+    // every chain (gmxKeeperRefusal); the patch also closes the receiver's gas (gmxCallbacks.ts).
+    if (config.localDeploy && enabledIds.includes("gmx")) {
+      const callbacks = gmxCallbackCheck(
+        await readGmxCallbackLimits(publicClient),
+      );
+      logger.event({ type: "gmx_callback_check", ...callbacks });
+      if (!callbacks.closedAtDeploy)
+        console.warn(`[gmx] WARNING: ${gmxCallbackOpenMessage(callbacks)}`);
     }
 
     // And does the Aave Pool hold only reserves the environment owns? The Aave score sums every
@@ -3716,6 +3733,17 @@ export async function runRealtimeSimulation(
                   priorityFeeWei: keeperFee,
                   fromBlock: BigInt(fromBlock),
                   toBlock: BigInt(bn),
+                  onOrderRefused: (refusal) =>
+                    logger.event({
+                      type: "keeper_order_refused",
+                      protocol: adapter.id,
+                      blockNumber: bn,
+                      key: refusal.key,
+                      account: refusal.account,
+                      callbackContract: refusal.callbackContract,
+                      callbackGasLimit: refusal.callbackGasLimit.toString(),
+                      reason: refusal.reason,
+                    }),
                 });
               } catch (error) {
                 logger.event({

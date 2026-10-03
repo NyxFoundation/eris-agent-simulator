@@ -11,7 +11,7 @@ index 5044d49..19ce7db 100644
        gmx: "0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a",
        esGmx: "0xf42Ae1D54fd613C9bb14810b0588FaAa09a426cA",
 diff --git a/config/general.ts b/config/general.ts
-index e58afec..b473bf8 100644
+index e58afec..326be05 100644
 --- a/config/general.ts
 +++ b/config/general.ts
 @@ -3,7 +3,7 @@ import { HardhatRuntimeEnvironment } from "hardhat/types";
@@ -23,6 +23,48 @@ index e58afec..b473bf8 100644
      // Note that this is only for the hardhat config, the config for all
      // other networks is separate from this
      return {
+@@ -17,7 +17,16 @@ export default async function ({ network }: HardhatRuntimeEnvironment) {
+       minHandleExecutionErrorGas: 1_200_000,
+       minHandleExecutionErrorGasToForward: 1_000_000,
+       minAdditionalGasForExecution: 1_000_000,
+-      refundExecutionFeeGasLimit: 200_000,
++      // No callbacks. The keeper (sdk/src/protocols/gmx.ts afterMine) executes every OrderCreated
++      // with a fee just under the oracle's, so a callback contract on an order ran the creator's
++      // code inside the keeper's transaction at the top of the next block -- ahead of every agent,
++      // under the keeper's fee and gas, attributed to the keeper in blocks.csv, and free to create
++      // the next order and re-arm itself (minimum execution fee is 0 here). Two hooks, two keys:
++      // afterOrderExecution/Cancellation get the order's callbackGasLimit, capped by
++      // maxCallbackGasLimit (0 makes createOrder revert MaxCallbackGasLimitExceeded for any
++      // non-zero limit); refundExecutionFee gets refundExecutionFeeGasLimit regardless of the
++      // order's limit, so it needs its own 0. Upstream: 200_000 / 2_000_000.
++      refundExecutionFeeGasLimit: 0,
+ 
+       depositGasLimit: 0,
+       withdrawalGasLimit: 0,
+@@ -40,7 +49,13 @@ export default async function ({ network }: HardhatRuntimeEnvironment) {
+       glvShiftGasLimit: 0,
+ 
+       tokenTransferGasLimit: 200_000,
+-      nativeTokenTransferGasLimit: 50_000,
++      // The third hook, for the same reason as refundExecutionFeeGasLimit above: GMX sends native ETH (the
++      // execution-fee refund, unwrapped outputs) to an order's receiver with this much gas, inside
++      // the keeper's executeOrder, so a contract receiver ran its receive() at the top of the block.
++      // 0 leaves the 2,300 stipend EVM adds to any call with value -- what Solidity's transfer()
++      // gives: no SSTORE (EIP-2200), so an EOA is paid as before and a contract that needs more fails
++      // the send, which TokenUtils.sendNativeToken answers by paying WETH instead. Upstream: 50_000.
++      nativeTokenTransferGasLimit: 0,
+ 
+       setTraderReferralCodeGasLimit: 200_000,
+       registerCodeGasLimit: 200_000,
+@@ -56,7 +71,7 @@ export default async function ({ network }: HardhatRuntimeEnvironment) {
+       requestExpirationTime: 300,
+ 
+       maxSwapPathLength: 5,
+-      maxCallbackGasLimit: 2_000_000,
++      maxCallbackGasLimit: 0, // see refundExecutionFeeGasLimit above
+       minCollateralUsd: decimalToFloat(1),
+ 
+       minPositionSizeUsd: decimalToFloat(1),
 diff --git a/config/layerZero.ts b/config/layerZero.ts
 index 3d0be7c..ebefff4 100644
 --- a/config/layerZero.ts
