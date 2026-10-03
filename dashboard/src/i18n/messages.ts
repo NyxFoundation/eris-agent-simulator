@@ -1012,6 +1012,20 @@ const en = {
     "How to build an agent, test it on your own machine, and submit it.",
   "overview.links.guideDoc":
     "Participant guide",
+  "overview.links.updatesDoc":
+    "Environment updates",
+  "updates.title":
+    "Environment updates",
+  "updates.lede":
+    "The participant guide always describes the current environment. These entries are the diff, newest first, for anyone who has already read it.",
+  "updates.empty":
+    "No updates yet.",
+  "updates.backToIndex":
+    "All updates",
+  "updates.notFound":
+    "No update with that date",
+  "nav.updates":
+    "Updates",
   "overview.links.repo":
     "SDK repository (GitHub)",
   "overview.links.rules":
@@ -2119,6 +2133,20 @@ const ja: Record<MessageKey, string> = {
     "エージェントの作り方、手元での試し方、提出の方法。",
   "overview.links.guideDoc":
     "参加者ガイド",
+  "overview.links.updatesDoc":
+    "環境の更新履歴",
+  "updates.title":
+    "環境の更新履歴",
+  "updates.lede":
+    "参加者ガイドは常に最新の環境を書いています。ここは、すでにガイドを読んだ方のための差分を、新しい順に並べたものです。",
+  "updates.empty":
+    "まだ更新はありません。",
+  "updates.backToIndex":
+    "更新履歴の一覧",
+  "updates.notFound":
+    "その日付の更新はありません",
+  "nav.updates":
+    "更新履歴",
   "overview.links.repo":
     "SDK のリポジトリ（GitHub）",
   "overview.links.rules":
