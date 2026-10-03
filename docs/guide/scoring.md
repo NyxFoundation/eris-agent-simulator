@@ -50,16 +50,26 @@ boundary series. Seven details are decisions, not formalities:
   shown for reference (§4.3) but does not move μ or σ.
 - **σ = 0 and invalid epochs leave S for everyone**, and the other weights stay where the schedule
   put them: w_s depends on the scheduled ordinal, not on how many epochs actually ran.
-- **V_0 is floored at the endowment.** The agent process is started before the epoch's first block
+- **V_0 starts from the endowment.** The agent process is started before the epoch's first block
   exists, so that every agent is watching when it opens -- and nothing stops it from sending
   transactions before that block. The chain state at the first boundary is therefore partly the
   agent's doing, and a V_0 read off it could be lowered by parking the basket where the scorer cannot
-  see it and bringing it back during the epoch (issue #207). V_0 is `max(endowment, measured)`: what
-  the environment funded (`agent.initial`), valued at the first boundary's own marks -- the same
-  fair and stable prices the measured value uses -- or the chain state at that boundary where it
-  stands higher (positions carried into a continuous period). Every later boundary is measured as
-  before, and the live scorer and the post-run sweep apply the same rule, so
-  `interval_series_agreement` still compares like with like. `agents[].v0Source` says which side
+  see it and bringing it back during the epoch (issue #207). The endowment is what the environment
+  funded (`agent.initial`), valued at the first boundary's own marks -- the same fair and stable
+  prices the measured value uses. **Which rule applies depends on `resetUnit`:**
+  - `scenario` (the official matrix and `npm run backtest`): **V_0 is the endowment, full stop.**
+    A world built fresh for the epoch has nothing carried into it, so value above the endowment at
+    the first boundary can only come from a transaction sent before the bell -- possibly a gift.
+    Believing it would let anyone raise somebody else's V_0: send them an LP NFT of a pool paired
+    with your own token before the first boundary, pull the liquidity during the epoch, and their
+    P drops by the gift while yours is absorbed by your own floor (ERC-721 transfers are outside
+    the roster-transfer scan).
+  - `continuous` (the practice period, a single `sim:realtime` run): V_0 is
+    `max(endowment, measured)` -- the chain state at that boundary counts where it stands higher,
+    because positions carried across a restart are the agent's own.
+
+  Every later boundary is measured as before, and the live scorer and the post-run sweep apply
+  the same rule, so `interval_series_agreement` still compares like with like. `agents[].v0Source` says which side
   V_0 came from, with `v0Usdc` / `v0MeasuredUsdc` / `v0EndowmentUsdc` beside it; a matrix flags an
   agent whose measured V_0 sits more than 0.1% off its endowment. Where the run's first block was
   not read at all, V_0 has no floor under it and `interval_v0_floor_skipped` says so -- that flag
@@ -91,7 +101,7 @@ between wallet and position and the mark does not move.
 | `agents[].pnlUsdc` | P for this run: V_K − V_0 off the first and last interval boundary (`pnlFinalBoundaryIndex` when the last boundary did not report and an earlier one was used) |
 | `agents[].baseline` | `true` for the benchmark — valued, shown, never in the population |
 | `agents[].netPnlUsdc` | `finalValueUsdc − initialValueUsdc`, both ends at the final marks. A per-run constant away from P when everyone starts with the same basket |
-| `agents[].v0Source` / `v0Usdc` / `v0MeasuredUsdc` / `v0EndowmentUsdc` | how the V_0 behind `pnlUsdc` was derived (issue #207): `endowment` = floored at what the environment funded, valued at the first boundary's marks; `measured` = the chain state there stood above it, or the series opened on a carried boundary. The three numbers are V_0 as used, the chain state at the first boundary, and the endowment at its marks |
+| `agents[].v0Source` / `v0Usdc` / `v0MeasuredUsdc` / `v0EndowmentUsdc` | how the V_0 behind `pnlUsdc` was derived (issue #207): `endowment` = what the environment funded, valued at the first boundary's marks (always, in a `scenario` run); `measured` = the chain state there stood above it in a `continuous` run, or the series opened on a carried boundary. The three numbers are V_0 as used, the chain state at the first boundary, and the endowment at its marks |
 | `agents[].unloggedTxCount` | included transactions the agent's own runtime never reported sending (a flag, rules §8) |
 | `agents[].rosterTransfers` | flagged value movements between this agent and another registered address — any amount within one `participant` unit, above `run.rosterTransferFlagBps` across units (a flag, rules §8; issue #208). The score is unchanged; the open rules question (collapse a unit into one population member, or make σ robust) is #186 / ADR 0023 |
 | `valueSeries.intervalSeries` | `intervalBlocks` / `intervals` / `boundaryBlocks` / `valuesByAgent` (`null` = a boundary that did not report, never a zero). Until the results are published the same series is also written as `epochSeries` (`epochBlocks` / `epochs`), its name before issue #140 |
