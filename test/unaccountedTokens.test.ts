@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import type { Address } from "viem";
 import { findUnaccountedTokens } from "../core/src/realtime/reconstruct.js";
 import { TOKENS, UNISWAP } from "@eris/sdk/constants.js";
+import { UNTRUSTED_READ_GAS } from "../sdk/src/untrustedRead.js";
 
 const AGENT = "0x00000000000000000000000000000000000a9e17" as Address;
 const UNKNOWN = "0x00000000000000000000000000000000000000ff" as Address;
@@ -25,23 +26,43 @@ const erc721Log = (address: Address) => ({
   topics: [TOPIC, TOPIC, TOPIC, TOPIC],
 });
 
+// What anvil answers through viem for a call that runs out of gas under the cap (measured in
+// test/untrustedRead.test.ts), and for a plain revert.
+function outOfGasError(): Error {
+  return Object.assign(new Error("An internal error was received."), {
+    name: "ContractFunctionExecutionError",
+    details: "EVM error OutOfGas",
+  });
+}
+function revertError(): Error {
+  return Object.assign(new Error("The contract function reverted."), {
+    name: "ContractFunctionExecutionError",
+    details: "execution reverted",
+  });
+}
+
+type Read = { address: string; functionName: string; gas?: bigint };
+
 function fakeClient(opts: {
   logs: Array<{ address: Address; topics: `0x${string}`[] }>;
-  balances: Record<string, bigint | "fail">;
+  balances: Record<string, bigint | "fail" | "out-of-gas">;
 }) {
-  const calls: { multicallContracts: unknown[][] } = { multicallContracts: [] };
+  const calls: { reads: Read[]; multicalls: number } = { reads: [], multicalls: 0 };
   const client = {
     async getLogs() {
       return opts.logs;
     },
-    async multicall({ contracts }: { contracts: Array<{ address: Address }> }) {
-      calls.multicallContracts.push(contracts);
-      return contracts.map((c) => {
-        const value = opts.balances[c.address.toLowerCase()];
-        return value === "fail" || value === undefined
-          ? { status: "failure" as const }
-          : { status: "success" as const, result: value };
-      });
+    // Each token is participant code, so each balance is its own gas-capped eth_call (#213).
+    async readContract(args: Read) {
+      calls.reads.push({ address: args.address, functionName: args.functionName, gas: args.gas });
+      const value = opts.balances[args.address.toLowerCase()];
+      if (value === "out-of-gas") throw outOfGasError();
+      if (value === "fail" || value === undefined) throw revertError();
+      return value;
+    },
+    async multicall() {
+      calls.multicalls += 1;
+      throw new Error("a read of participant code never rides a Multicall3 aggregate (#213)");
     },
   };
   return { client, calls };
@@ -127,7 +148,7 @@ test("findUnaccountedTokens reads each token once per agent", async () => {
     publicClient: client as never,
   });
   assert.equal(found.length, 1);
-  assert.equal(calls.multicallContracts[0].length, 1);
+  assert.equal(calls.reads.length, 1);
 });
 
 test("findUnaccountedTokens survives a log-scan failure", async () => {
@@ -136,7 +157,7 @@ test("findUnaccountedTokens survives a log-scan failure", async () => {
     async getLogs() {
       throw new Error("getLogs unsupported");
     },
-    async multicall() {
+    async readContract() {
       throw new Error("should not be reached");
     },
   };
@@ -145,4 +166,27 @@ test("findUnaccountedTokens survives a log-scan failure", async () => {
     publicClient: client as never,
   });
   assert.deepEqual(found, []);
+});
+
+test("one balanceOf that burns the gas cap does not take the sweep down (ascon-web#18 E1)", async () => {
+  // Before: one Multicall3 aggregate for every (agent, token) pair, so a token whose balanceOf
+  // loops until out of gas failed the aggregate, and with it the scoring reconstruction of every
+  // agent. Now each read is its own capped call, and only that token goes unreported.
+  const { client, calls } = fakeClient({
+    logs: [erc20Log(UNKNOWN), erc20Log(OTHER)],
+    balances: { [UNKNOWN.toLowerCase()]: "out-of-gas", [OTHER.toLowerCase()]: 5n },
+  });
+  const found = await findUnaccountedTokens({
+    ...base,
+    publicClient: client as never,
+  });
+  assert.deepEqual(found, [
+    { agentId: "a1", source: "erc20-unaccounted", token: OTHER, amountRaw: "5" },
+  ]);
+  assert.equal(calls.multicalls, 0, "never through Multicall3");
+  assert.equal(calls.reads.length, 2);
+  for (const read of calls.reads) {
+    assert.equal(read.functionName, "balanceOf");
+    assert.equal(read.gas, UNTRUSTED_READ_GAS, "every read of participant code carries the cap");
+  }
 });

@@ -49,6 +49,10 @@ import { firstBoundaryV0, type V0Rule } from "../scoring/endowmentV0.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
 import {
+  readUntrustedBatch,
+  type UntrustedReadResult,
+} from "@eris/sdk/untrustedRead.js";
+import {
   allocateToBalances,
   fetchAgentTransfers,
   readHeldBalances,
@@ -804,23 +808,34 @@ export async function findUnaccountedTokens(opts: {
   }
   if (pairs.length === 0) return [];
 
-  const balances = (await publicClient.multicall({
-    contracts: pairs.map(({ agent, token }) => ({
-      address: token,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [agent.address],
-    })) as never,
-    blockNumber: BigInt(toBlock),
-    multicallAddress: MULTICALL3,
-    allowFailure: true,
-  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+  // Every token here is participant code: all that is known about it is that it emitted a
+  // Transfer. So each balance is one gas-capped `eth_call` under a deadline (issue #213,
+  // sdk/src/untrustedRead.ts), never a Multicall3 aggregate -- one `balanceOf` that burns the gas
+  // takes the whole aggregate down, and this sweep runs inside the scoring reconstruction, which
+  // then fails for every agent (ascon-web#18 E1). A read that fails is a holding not reported,
+  // which is the pre-#41 silent zero for that one token.
+  let balances: UntrustedReadResult[];
+  try {
+    balances = await readUntrustedBatch(
+      publicClient,
+      pairs.map(({ agent, token }) => ({
+        address: token,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [agent.address],
+      })),
+      { blockNumber: BigInt(toBlock) },
+    );
+  } catch {
+    return []; // best effort; never fail a run's scoring over a diagnostic
+  }
 
   const out: UnpricedHolding[] = [];
   pairs.forEach(({ agent, token }, i) => {
     const balance = balances[i];
-    if (balance.status !== "success") return;
-    const amount = balance.result as bigint;
+    if (!balance || balance.failure !== undefined) return;
+    if (typeof balance.value !== "bigint") return;
+    const amount = balance.value;
     if (amount <= 0n) return;
     out.push({
       agentId: agent.id,
