@@ -850,6 +850,15 @@ ours なのは 2 つだけ（core は無改変）:
   で環境が deployer の eUSD を SP に入れる。genesis を下げないのは償還順序と SP 相対深度を全レジームで壊すから。
   手数料カーブの希釈（供給に反比例）は不可避で、この regime の償還較正は別に測る。sp-underwriter は RM 帯でも
   清算する分岐を持つ（SP が全額吸収できる Trove だけ）
+- **環境が LQTY を 200 万ステークしている**（`stakeEnvironmentLqty`。bounty 枠を mnemonic index 100 の staker に
+  mint してそのままステーク）。LQTYStaking は借入手数料（eUSD）と償還手数料（ETH）をステーク量で按分するが、
+  multisig 枠は 1 年ステーク不可・残りは SP の emission なので、**放置すると SP で数 LQTY を得た最初の agent が
+  以降の全手数料を取り、自分の償還・借入も実質無料**になっていた。ステーク量 0 の間の手数料は元々コントラクトに
+  宙に浮いていたので、お金の流れは変わらず持ち主ができただけ。staker の鍵は deployer と同じ秘密（公開 mnemonic の
+  deploy は role-key guard が deployer 側で拒否）。**ステークが 100 万未満の deployment は起動時に落ちる**
+  （`lqtyStakeProblem`。これ以前の state dump は全部焼き直し）。agent 自身のステークの未請求手数料は採点に入り
+  （SP の ETH gain と同じ扱い。eUSD は stableLongs）、ステーク中の LQTY は `liquity-lqty-staking` で unpriced 報告。
+  観測は `lqtyBalanceWei` / `lqtyStakedWei` / `stakingEthGainWei` / `stakingEusdGainWei`
 - **LQTY は意図どおり「値付けしないが見える」**: SP 預入で LQTY gain が付き、run 後に
   `scoring_unpriced_holdings` に `erc20-unaccounted` として 61.3 LQTY が報告された（黙って 0 にしていない）
 - 設定例は `config/liquity.yaml`、レジームは `config/regimes/liquity.yaml`（α 側）と

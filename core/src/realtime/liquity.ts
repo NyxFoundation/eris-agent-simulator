@@ -16,7 +16,7 @@
 // coordinator drops block notifications while it is busy, so a state that is re-derived every block
 // costs a block of lag where a one-shot would strand the pool.
 import { encodeFunctionData, parseAbi, type Address, type Hex } from "viem";
-import { troveManagerAbi } from "@eris/sdk/abis.js";
+import { lqtyStakingAbi, troveManagerAbi } from "@eris/sdk/abis.js";
 import {
   accountAddress,
   increaseTime,
@@ -48,6 +48,27 @@ const ORACLE_TOLERANCE_BPS = 100;
 // depegged). Either way the redemption arb would open as a freebie for whoever looks first.
 export const LIQUITY_STARTUP_WARN_BPS = 25;
 export const LIQUITY_STARTUP_FAIL_BPS = 200;
+
+// The environment's LQTY stake (2M at deploy). Below this the fees have no owner but whoever stakes
+// first, which is an agent that earned a few LQTY from the Stability Pool.
+export const MIN_ENV_LQTY_STAKE_WEI = 1_000_000n * 10n ** 18n;
+
+/// Refuse a deployment whose LQTYStaking has no environment stake. LQTYStaking splits every
+/// borrowing and redemption fee over the LQTY staked at that moment, and nobody but the environment
+/// can stake in quantity (the multisig allocation is locked for a year, the rest is the Stability
+/// Pool's emission). With nothing staked, an agent staking a handful of SP-earned LQTY takes 100% of
+/// every later fee -- the other agents', and its own back. Every state dump baked before the
+/// deployer staked (stakeEnvironmentLqty) is one of these.
+export function lqtyStakeProblem(totalStakedWei: bigint): string | undefined {
+  if (totalStakedWei >= MIN_ENV_LQTY_STAKE_WEI) return undefined;
+  return (
+    `LQTYStaking holds ${totalStakedWei / 10n ** 18n} LQTY staked, below the environment's ` +
+    `${MIN_ENV_LQTY_STAKE_WEI / 10n ** 18n}: the first agent to stake a few LQTY from the Stability ` +
+    "Pool would collect every borrowing and redemption fee of the run. The deployment predates the " +
+    "environment's stake; redeploy (`cd deployer && npm run deploy -- --keep-fresh`, then " +
+    "`npm run gen:local-constants` and `npm run gen:state-dump`)."
+  );
+}
 
 export type LiquityRuntime = {
   troveManager: Address;
@@ -142,6 +163,14 @@ export async function setupLiquity(
 
   await skipBootstrapPeriod(ctx, logger);
 
+  const lqtyStakedWei = (await ctx.publicClient.readContract({
+    address: LIQUITY.lqtyStaking,
+    abi: lqtyStakingAbi,
+    functionName: "totalLQTYStaked",
+  })) as bigint;
+  const stakeProblem = lqtyStakeProblem(lqtyStakedWei);
+  if (stakeProblem) throw new Error(stakeProblem);
+
   const state = await getLiquityState(ctx, opts.fairPrice);
   logger.event({
     type: "liquity_setup",
@@ -158,6 +187,7 @@ export async function setupLiquity(
     borrowingRateBps: state.borrowingRateBps,
     redemptionRateBps: state.redemptionRateBps,
     stabilityPoolEusdWei: state.spTotalDepositsEusdWei.toString(),
+    lqtyStakedWei: lqtyStakedWei.toString(),
     marketPriceUsdc: state.midPriceUsdc,
     marketQuoted: state.marketQuoted,
     discountBps: state.discountBps,

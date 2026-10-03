@@ -484,6 +484,9 @@ function liquityAnswer(q: { depositSale: bigint; debtBuyback: bigint }) {
     if (is(read, "getCompoundedLUSDDeposit")) return 1_000n * WAD;
     if (is(read, "getDepositorETHGain")) return 0n;
     if (is(read, "getCollateral")) return 0n;
+    if (is(read, "stakes")) return 0n;
+    if (is(read, "getPendingETHGain")) return 0n;
+    if (is(read, "getPendingLUSDGain")) return 0n;
     if (is(read, "get_dy")) return q.depositSale;
     if (is(read, "get_dx")) return q.debtBuyback;
     return undefined;
