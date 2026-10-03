@@ -30,6 +30,7 @@
 import { encodeFunctionData, type Abi, type Address, type PublicClient } from "viem";
 import { erc20Abi } from "../abis.js";
 import { MULTICALL3 } from "../constants.js";
+import { readUntrusted, readUntrustedBatch } from "../untrustedRead.js";
 import {
   addStableUnits,
   tokenAmountUsd,
@@ -639,33 +640,35 @@ export async function readLendingState(
 
   // The market's own price and who can move it. Both are read here rather than in the scorer,
   // because both are things the *agent* needs and neither is allowed to write a mark.
+  //
+  // The oracle is whatever address the creator passed to `createMarket`, so these two reads run
+  // participant code: gas-capped, one `eth_call` each, never in the multicall above (issue #213;
+  // `untrustedRead.ts`). A failed read leaves the id out of `priceById` / `oracleOwnerById` --
+  // the observation then carries no `price` and no `oracleOwner` for that market, which is the
+  // same shape as an oracle with no `owner()` at all, and never a zero.
   const oracles = [...new Set(Object.values(paramsById).map((p) => p.oracle))];
-  const priceReads = (await publicClient.multicall({
-    contracts: [
-      ...oracles.map((address) => ({
-        address,
-        abi: lendingOracleAbi,
-        functionName: "price",
-      })),
-      ...oracles.map((address) => ({
-        address,
-        abi: ownerAbi,
-        functionName: "owner",
-      })),
-    ] as never,
-    multicallAddress: MULTICALL3,
-    allowFailure: true,
-  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+  const priceReads = await readUntrustedBatch(publicClient, [
+    ...oracles.map((address) => ({
+      address,
+      abi: lendingOracleAbi,
+      functionName: "price",
+    })),
+    ...oracles.map((address) => ({
+      address,
+      abi: ownerAbi,
+      functionName: "owner",
+    })),
+  ]);
 
   const priceByOracle: Record<string, bigint> = {};
   const ownerByOracle: Record<string, Address> = {};
   oracles.forEach((address, i) => {
     const price = priceReads[i];
-    if (price.status === "success" && typeof price.result === "bigint")
-      priceByOracle[address.toLowerCase()] = price.result;
+    if (typeof price.value === "bigint")
+      priceByOracle[address.toLowerCase()] = price.value;
     const owner = priceReads[oracles.length + i];
-    if (owner.status === "success" && typeof owner.result === "string")
-      ownerByOracle[address.toLowerCase()] = owner.result as Address;
+    if (typeof owner.value === "string")
+      ownerByOracle[address.toLowerCase()] = owner.value as Address;
   });
 
   const priceById: Record<string, bigint> = {};
@@ -764,7 +767,9 @@ export async function observeLending(
         lif.status === "success" && typeof lif.result === "bigint"
           ? lif.result.toString()
           : "0",
-      price: (state.priceById[id] ?? 0n).toString(),
+      ...(state.priceById[id] !== undefined
+        ? { price: state.priceById[id].toString() }
+        : {}),
       supplyAssets: (p[0] ?? 0n).toString(),
       borrowAssets: (p[1] ?? 0n).toString(),
       collateral: (p[2] ?? 0n).toString(),
@@ -946,16 +951,16 @@ export async function buildLendingTxs(
   }
 }
 
+// Participant code again (issue #213): gas-capped. Zero on any failure is deliberate *here* and
+// only here -- it sizes an approval, and an approval of zero makes the liquidation revert on chain
+// instead of granting the market's loan token on a price nobody could read.
 async function oraclePrice(ctx: SimContext, oracle: Address): Promise<bigint> {
-  try {
-    return (await ctx.publicClient.readContract({
-      address: oracle,
-      abi: lendingOracleAbi,
-      functionName: "price",
-    })) as bigint;
-  } catch {
-    return 0n;
-  }
+  const read = await readUntrusted(ctx.publicClient, {
+    address: oracle,
+    abi: lendingOracleAbi,
+    functionName: "price",
+  });
+  return typeof read.value === "bigint" ? read.value : 0n;
 }
 
 async function currentDebt(
