@@ -18,8 +18,19 @@ in a prize competition. Per-team images also let a team bring its own dependenci
 build time), and give a pinned artifact (`eris-agent:<id>` digest) for the replay audit. The base
 layer is shared on disk, so 100 team images cost ~one base plus small per-team deltas.
 
-> **Build-time supply chain:** `build.sh team` runs the team's `npm install` and `pip install`
-> (package build/install hooks execute). Build team images in a throwaway/sandboxed builder.
+> **Build-time supply chain:** no team-controlled code runs while a team image is built.
+> `Dockerfile.team` fetches deps in a stage where only the package managers run
+> (`npm ci --ignore-scripts`, `pip download --only-binary=:all: --require-hashes`, registry fixed on
+> the command line), then installs the wheels with `--no-index` under `RUN --network=none`. There is
+> no `pip check` after the install: it would start a Python with the team's wheels on site-packages,
+> and a `.pth` in one of them would execute (`python3 -S` is not a way out — it drops pip itself).
+> Before this, `npm install` / `pip install` ran on the networked builder and a dependency's
+> postinstall or an sdist's `setup.py` executed with whatever the operator host's network reached.
+> The cost to teams: a `package.json` with dependencies needs a `package-lock.json`; npm packages
+> that need install scripts (native addons) do not work; Python deps must be `name==version
+> --hash=sha256:…` with a wheel for the builder's platform. `scan-submission.py` rejects anything
+> else (non-registry sources, `.npmrc` / `pip.conf`, `npm-shrinkwrap.json`, lockfiles older than v2,
+> option lines in `requirements.txt`) at the door.
 
 ```bash
 npm run agent:build              # base (once)
@@ -29,8 +40,8 @@ npm run agent:build -- team foo  # per team (refreshes base, reusing unchanged l
 ## Self-test the memory budget
 
 The shared image includes Python 3.11.16 and the generated `eris` SDK. A Python team ships
-`strategy.py`, `prompt.md` and optionally pinned `requirements.txt`; the team build installs
-requirements before the root filesystem becomes read-only. Revisions are compiled into `/tmp`.
+`strategy.py`, `prompt.md` and optionally a hash-pinned `requirements.txt` (wheels only); the team
+build installs requirements (offline, from wheels fetched in a separate stage) before the root filesystem becomes read-only. Revisions are compiled into `/tmp`.
 Node, Python, NumPy and every other team dependency share the same 4 GiB container cap.
 `npm run agent:selftest -- my-arb-py` exercises this path. Set `ERIS_SELFTEST_CONFIG` to choose a
 short local config; the default uses `config/local.yaml`, or `config/example.yaml` if absent.
@@ -135,6 +146,19 @@ For every agent it launches, the coordinator prepares a view directory,
 
 `ERIS_CONFIG` inside is `/eris/run/config.yaml`. The rootfs is read-only.
 
+Of those, `/eris/state` and the two log files are the writable places that outlive the container,
+and neither mount carries a size limit of its own — the 64 MiB caps in `state.ts` / `agentLog.ts` are
+the reference runtime's self-limits, which a submitted runtime bypasses with one `writeFileSync`.
+What bounds them is the coordinator (issue #214 item 1): every `run.agentDiskCheckEveryBlocks`
+blocks it measures each launched agent's state directory and log files, warns once past 80% of
+`run.agentStateQuotaBytes` / `run.agentLogQuotaBytes` (`agent_disk_usage_warning`) and **stops the
+agent** past either (`agent_disk_quota_exceeded`; the run continues, `summary.json` says why). A
+filesystem quota on the host is the stronger line and is provisioned by the operator, not by this
+wrapper — see `infra/devnet/CHECKLIST.md` §5 for XFS project quota, a loop device, or a tmpfs at the
+state root. A size-capped tmpfs *inside* the container was considered and not added: the state has
+to outlive the container (that is the whole point of #77), and `docker cp` cannot seed or drain a
+container's tmpfs, so an in-container tmpfs would silently turn persistence off.
+
 The log files are mounted file by file, so they are the host's own `runs/<id>/agents/<agentId>.jsonl`:
 the dashboard (live tail included), the agents-ready wait and the post-run checks read them where
 they always did. The wrapper creates the empty log and its mountpoint in the view directory before
@@ -159,6 +183,19 @@ and at its own host path in bind-mount mode. `ERIS_AGENT_STATE_CAP_BYTES` (defau
 cap the runtime enforces on itself. Absent means this run does not persist, which is every run that
 does not ask for it.
 
+The coordinator copies that directory at the start of every epoch (the §4.4.2 snapshot), and the
+directory is participant-written, so the copy does not trust it (issue #214 item 2;
+`core/src/realtime/agentState.ts` `validateStateDir`). Measured 2026-10-02 on Node 23.5 / APFS:
+`fs.cpSync` over a tree holding one FIFO throws `ERR_INTERNAL_ASSERTION` (it does not hang), after
+first materialising a 1 GiB sparse file as 1 GiB of real bytes — and a regular-files-only `filter`
+still materialises the sparse file. So before the copy the directory is walked with `lstat`,
+bounded (20,000 entries, 16 levels), and refused if it holds anything but regular files and
+directories or if its apparent size is past `run.agentStateQuotaBytes`. A refused directory is
+**renamed** to `<agentId>.refused-<runId>` (nothing in it is read), the agent gets an empty one, and
+`events.jsonl` carries `agent_state_snapshot_skipped` with the reason. The same validation guards
+the matrix runner's checkpoints (`<root>/.snapshots/end-s<N>`): an agent that fails it is left out of
+the checkpoint and named on stderr.
+
 ## Isolation caveat (egress)
 
 Containers join `ERIS_AGENT_NET` (default `host`, sharing the host network; the default bridge on
@@ -168,6 +205,13 @@ the RPC gateway as the hub ([ISOLATION.md](ISOLATION.md)); `ERIS_AGENT_INTERNAL=
 network without a route out and `ERIS_INFERENCE_HUB` attaches the inference proxy to it, which is how
 rules §2.3's "no direct external connection" holds in the competition. Deps are resolved at build time
 precisely so run time needs no outbound access.
+
+Whether the container ended up where those switches say is read back rather than assumed (issue
+#214 item 4): `run-agent.sh` inspects the network's `Internal` flag and recreates a leftover
+`ag-<id>` with the wrong one, exits on a create or hub-attach failure instead of `|| true`, and the
+coordinator inspects each container once it is up, records `agent_network_measured`, and stops one
+whose networks do not match its launch (`agent_network_mismatch`). `infra/devnet/docker-compose.sim.yml`
+sets `ERIS_AGENT_INTERNAL=1` and names the inference proxy (`ERIS_INFERENCE_HUB`), which it did not.
 
 The coordinator does not refuse to start without isolation (local checks and the operator's own
 reference field run on host networking), but it says so: an `agent_sandbox_warning` event in

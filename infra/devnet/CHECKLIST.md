@@ -484,3 +484,36 @@ curl -s "$BASE/runs/$SEG/events.jsonl" | node -e '
   （[README](README.md#stopping)）
 - 推論プロキシは拒否（401 / 403 / 429）を記録しない。プロキシ経由の失敗は agent 側の
   `revision failed: …` から数える
+
+## 5. 参加者コードが書ける領域の容量上限（issue #214 item 1）
+
+docker agent が書けてコンテナより長生きするのは `ERIS_AGENT_STATE_ROOT/<id>/`（state）と
+`runs/<id>/agents/<id>.jsonl`・`.llm.jsonl`（ログ）の 2 か所で、どちらの mount にも容量上限が無い。
+`state.ts` / `agentLog.ts` の 64 MiB は**参照ランタイムの自己制限**で、提出コードが `fs.writeFileSync`
+で書けば効かない。ホストが ENOSPC になると coordinator 自身が落ちる（2026-09-10 の `anvil-state` と同じ結末）。
+
+**どの FS でも効く線は coordinator の監視**（`run.agentDiskCheckEveryBlocks` ごとに両方を stat し、
+`run.agentStateQuotaBytes` / `run.agentLogQuotaBytes` 超で agent を止める = `agent_disk_quota_exceeded`）。
+その外側にホスト側の quota を置くなら次のいずれか（どれも root。wrapper は何も provision しない）:
+
+- **XFS project quota**（`runs/` と state root が XFS のとき。ディレクトリ単位で上限が掛かり、agent からは見えない）
+  ```bash
+  # 一度だけ: マウントオプションに pquota を足して再マウント（/etc/fstab の該当行に ,pquota）
+  echo "10:/srv/eris/state" >> /etc/projects && echo "eris-state:10" >> /etc/projid
+  xfs_quota -x -c 'project -s eris-state' -c 'limit -p bhard=32g eris-state' /srv
+  xfs_quota -x -c 'report -p' /srv        # 残量の確認（定常点検に入れる）
+  ```
+- **loop device**（FS を選ばない。state root を固定サイズのイメージに置く）
+  ```bash
+  fallocate -l 32G /srv/eris/state.img && mkfs.ext4 -q /srv/eris/state.img
+  mount -o loop,noexec,nosuid /srv/eris/state.img /srv/eris/state   # /etc/fstab にも
+  ```
+  満杯になると agent の書き込みだけが ENOSPC になり、coordinator の `runs/` は無傷
+- **tmpfs を state root に**（期間を跨いで残らなくてよい検証用。再起動で消える）
+  ```bash
+  mount -t tmpfs -o size=8g,mode=0750 tmpfs /srv/eris/state
+  ```
+
+`runs/` 側（ログ）は coordinator 自身の `events.jsonl` / `blocks.csv` と同じディスクなので、quota を
+掛けるなら state と同じ方法で `runs/` を別ボリュームにする。ログだけを分けることは mount の形
+（ファイル単位の bind）上できない。

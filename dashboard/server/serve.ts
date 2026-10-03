@@ -15,7 +15,12 @@
 // That is the intent — a practice period's artifacts are what participants come to look at — but it
 // is also why the environment manifest carries no keys (core/src/manifest.ts) and why nothing that
 // should stay private is written into a run directory.
-import { createServer, request as httpRequest } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import {
   existsSync,
   createReadStream,
@@ -109,7 +114,15 @@ const handleRuns = createRunsApi(RUNS, {
 // Resolve a request path inside dist/, or null. Same realpath discipline as the runs API: a symlink
 // under dist/ must not become a way to read the rest of the disk.
 function distFile(urlPath: string): string | null {
-  const rel = decodeURIComponent(urlPath.replace(/^\//, "")) || "index.html";
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(urlPath.replace(/^\//, ""));
+  } catch {
+    // Not valid percent-encoding, so it names no file. It used to throw out of the handler and end
+    // the process (issue #203).
+    return null;
+  }
+  const rel = decoded || "index.html";
   const resolved = path.resolve(DIST, rel);
   if (resolved !== DIST && !resolved.startsWith(DIST + path.sep)) return null;
   try {
@@ -120,6 +133,19 @@ function distFile(urlPath: string): string | null {
 }
 
 const server = createServer((req, res) => {
+  // One request must not be able to end the process. Anything unexpected inside answers 500: the
+  // hosted dashboard is public and unauthenticated, so a throw that escapes here is a denial of
+  // service for every viewer (issue #203).
+  try {
+    handle(req, res);
+  } catch (err) {
+    console.error("[dashboard] request failed", err);
+    if (!res.headersSent) res.statusCode = 500;
+    res.end();
+  }
+});
+
+function handle(req: IncomingMessage, res: ServerResponse): void {
   const [urlPath, query] = (req.url ?? "/").split("?");
 
   // What the exporter probes (issue #159), and what an outside check can. Not the SPA fallback: that
@@ -210,7 +236,7 @@ const server = createServer((req, res) => {
       : "no-cache",
   );
   createReadStream(target).pipe(res);
-});
+}
 
 server.listen(PORT, () => {
   console.error(

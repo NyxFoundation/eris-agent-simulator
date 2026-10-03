@@ -155,6 +155,13 @@ export type AgentProtocolValue = {
   // invalidate comparison with every past run.
   liquidatableValueUsdc: number;
   unpriced: UnpricedHoldingDetail[];
+  // Market-priced stables counted in liquidatableValueUsdc at the probe's mid (ctx.stablePrices()):
+  // held (`stableLongs`) and owed (`stableShorts`), in raw units keyed by lowercase token. The scorer
+  // sums each agent's across the wallet and every venue and re-marks the total at its own-size quote
+  // -- a sale for what is held, a buyback for what is owed (valuation.ts StableUnits). A venue that
+  // already marks a stable leg at its own size (Liquity's Trove debt) leaves it out.
+  stableLongs?: Record<string, bigint>;
+  stableShorts?: Record<string, bigint>;
 };
 
 // Yields the reads it wants for a stage, receives that stage's results, and finally returns each

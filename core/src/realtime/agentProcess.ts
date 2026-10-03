@@ -63,6 +63,8 @@ const OS_PASSTHROUGH = new Set([
 //   ERIS_PRACTICE_SEED     the practice period's seed, which systemd hands the coordinator.
 //   ERIS_FLOW_SEED         the flow bot's seed (set on the flow process, never on this one).
 //   ERIS_SCENARIO_KEY_*    the scenario key's file and commitment (ADR 0027, core/src/scenarioKey.ts).
+//   ERIS_SCENARIO_REGIME   the regime the scenario streams are named by (issue #186). Knowing it is
+//                          knowing the regime, which rules §3.2 does not announce.
 // Any other ERIS_*_SEED is held back the same way: a seed is never something an agent needs, and
 // neither is anything under ERIS_SCENARIO_KEY.
 const ENVIRONMENT_ONLY_ERIS = new Set([
@@ -71,6 +73,7 @@ const ENVIRONMENT_ONLY_ERIS = new Set([
   "ERIS_CONFIG",
   "ERIS_PRACTICE_SEED",
   "ERIS_FLOW_SEED",
+  "ERIS_SCENARIO_REGIME",
 ]);
 export function isEnvironmentOnlyEnv(name: string): boolean {
   return (

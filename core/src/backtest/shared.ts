@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 export const STATE_DIR_DEFAULT = "backtest/state";
 export const STATE_FILE_NAME = "venues-state.json";
@@ -214,6 +214,13 @@ export function missingVenues(
     const key = VENUE_TO_DEPLOYMENT_KEY[p];
     return key === undefined || !deployed[key];
   });
+}
+
+// The regime's name: the resolved file's basename without .yaml/.yml. A scenario's regime label --
+// and the stream id it feeds (issue #186) -- is this, never the string the set or the flag happened
+// to spell it with, so `config/regimes/calm.yaml` and `calm` are one regime and draw one world.
+export function regimeName(regimePath: string): string {
+  return basename(regimePath).replace(/\.ya?ml$/, "");
 }
 
 // Resolve --regime: a path form (contains / or ends in .yaml/.yml) is used as-is, a name looks up

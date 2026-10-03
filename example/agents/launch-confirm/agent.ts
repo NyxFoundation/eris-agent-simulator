@@ -21,6 +21,7 @@ import {
   bpsOf,
   launchPoolState,
   launchPools,
+  launchTokenCodehash,
   numberEnv,
   poolFee,
   poolFlow,
@@ -61,6 +62,8 @@ type Watch = {
 };
 
 const watches = new Map<string, Watch>();
+// Logged once: without the AgentERC20 artifact the launch filter runs on the listing's shape alone.
+let shapeOnlyNoted = false;
 
 export async function decide(
   obs: AgentObservation,
@@ -75,7 +78,17 @@ export async function decide(
       : Number.POSITIVE_INFINITY;
 
   // ---- register every launch pool the registry shows ----
-  for (const pool of launchPools(obs)) {
+  // Only the environment's listings (lib/launchSwap.ts): a pool anyone else set up is not a launch.
+  const tokenCodehash = await launchTokenCodehash(ctx.publicClient);
+  if (tokenCodehash === null && !shapeOnlyNoted) {
+    shapeOnlyNoted = true;
+    ctx.log({
+      round: obs.round,
+      reason:
+        "AgentERC20 artifact or node unavailable: launch pools are matched by listing shape only",
+    });
+  }
+  for (const pool of launchPools(obs, { tokenCodehash })) {
     if (pool.mine) continue;
     const key = pool.pool.toLowerCase();
     if (watches.has(key)) continue;

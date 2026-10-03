@@ -216,6 +216,7 @@ Collateral is native ETH (the forked core takes `msg.value`). Actions are denomi
 The mechanism that removed the assertion "a stable is a dollar" (issue #27, `sdk/src/stables.ts`).
 
 - The price is **the geometric mean of a two-sided executable probe**, `sqrt(sell × buy)`. One side alone sticks to the sell side and understates
+- **The score is not that price × units.** The probe is a $1,000 trade, so a large holding marked at the mid counts at a price it does not sell for. Scoring sums each agent's units across the wallet and every venue and marks them at the median over 5 blocks of the own-size sale (the buyback, for what is owed) (`ownSizeStableAdjustments` in `core/src/realtime/reconstruct.ts`; the spec is G7 in 06-scoring). The mid stays for the observation, the face mark, and as the fallback when the quote does not return (reported as `mid-fallback`)
 - If no quote comes back, it **falls back to par and is reported as `par-fallback`**. Silently using par is bad; silently using zero reads as "a 100% discount, i.e. unbounded arbitrage" and is worse
 - **USDC is the numéraire at $1.** Every metric is denominated in USDC, so floating it would change what past runs' numbers mean
 - `obs.balances.stables[sym].marketQuoted: false` means "no market answered, so par was assumed". **Do not read `priceUsdc: 1` as "the peg held"**

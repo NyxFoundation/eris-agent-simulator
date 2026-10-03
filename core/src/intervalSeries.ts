@@ -58,6 +58,11 @@ export const INTERVAL_EVENTS = {
   boundaryFailed: "interval_boundary_failed",
   seriesScored: "interval_series_scored",
   seriesAgreement: "interval_series_agreement",
+  // The run's first block was not read, so V_0 is a measured value with no endowment floor under it
+  // (issue #207). Its own event because the absence is otherwise invisible: `v0Source` comes out
+  // "measured" for every agent, which is also what a segment that carried a boundary over looks
+  // like, and the flag that names the attack needs `v0EndowmentUsdc` to fire at all.
+  v0FloorSkipped: "interval_v0_floor_skipped",
 } as const;
 export const LEGACY_INTERVAL_EVENTS = {
   boundary: "epoch_boundary",
