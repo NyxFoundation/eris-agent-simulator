@@ -26,6 +26,7 @@ import type { RunLogger } from "../logger.js";
 import type { ProtocolId } from "@eris/sdk/types.js";
 import {
   MarkMedian,
+  endowmentValueAt,
   readValueSnapshotAtBlock,
   type ReconstructionAgent,
 } from "./reconstruct.js";
@@ -37,6 +38,12 @@ import {
 } from "../intervalSeries.js";
 import { LiveMarketSampler, type MarketSeriesRow } from "./marketSeries.js";
 import { nextIntervalBoundary } from "../epochExtent.js";
+import {
+  firstBoundaryV0,
+  v0GapBeyondTolerance,
+  type FirstBoundaryV0,
+  type V0Source,
+} from "../scoring/endowmentV0.js";
 
 // One line per interval boundary (INTERVALS_FILENAME), appended as it is reached. The dashboard tails
 // it the same way it tails events.jsonl; nothing has to wait for summary.json.
@@ -53,6 +60,12 @@ export type LiveIntervalBoundary = {
   /** agent id -> live mark at this boundary. Null where the cross-section did not report one. */
   values: Record<string, number | null>;
   elapsedMs: number;
+  // On the first boundary only (issue #207): which side of the endowment floor each agent's V_0
+  // came from, what the chain actually showed there, and the endowment at this boundary's marks.
+  // `values` above already carries the floored V_0; these are what a reader needs to check it.
+  v0SourceByAgent?: Record<string, V0Source>;
+  v0MeasuredByAgent?: Record<string, number | null>;
+  v0EndowmentByAgent?: Record<string, number>;
 };
 
 export class LiveScorer {
@@ -67,6 +80,10 @@ export class LiveScorer {
   // from it rather than stored, so that learning the end late re-clamps it.
   private lastAttempted: number | null = null;
   private failures = 0;
+  // What the first boundary decided for each agent (issue #207), kept so summary.json can say how
+  // V_0 was derived next to P. Keyed by agent; the block it was read at is firstBoundaryBlock.
+  private readonly firstBoundaryByAgent = new Map<string, FirstBoundaryV0>();
+  private firstBoundaryBlockNumber: number | null = null;
 
   constructor(
     private readonly opts: {
@@ -200,18 +217,58 @@ export class LiveScorer {
       this.boundaries.push(blockNumber);
       const values: Record<string, number | null> = {};
       const byId = new Map(snapshot.values.map((v) => [v.id, v.valueUsdc]));
+      // The first boundary is V_0, and there the measured value is floored at the endowment
+      // (issue #207; scoring/endowmentV0.ts). Every later boundary is the measured value.
+      // The floor belongs to the run's first block, not to whichever boundary happened to be read
+      // first: if that read failed, the next boundary is a measured value like any other. Flooring
+      // it would count a first-interval loss and drop a first-interval gain, and the sweep (which
+      // floors only fromBlock) would disagree with it.
+      const first =
+        index === 0 && blockNumber === this.opts.runStartBlock
+          ? this.firstBoundaryDetail()
+          : null;
+      // V_0 with no floor under it. Said once, because nothing else says it: `v0Source` is
+      // "measured" for every agent either way, which is what a carried-over segment looks like too,
+      // and the flag that names issue #207's attack needs `v0EndowmentUsdc` -- which only the floor
+      // produces. So the one epoch where the floor is absent would otherwise read as the ordinary
+      // case. Agents can reach this: the read at a boundary fails as a whole (issue #196), and they
+      // trade before the first block by construction (#207).
+      if (index === 0 && blockNumber !== this.opts.runStartBlock) {
+        this.opts.logger.event({
+          type: INTERVAL_EVENTS.v0FloorSkipped,
+          boundaryBlock: blockNumber,
+          runStartBlock: this.opts.runStartBlock,
+          note:
+            "the run's first block was not read, so V_0 is measured with no endowment floor " +
+            "(issue #207): a value moved out before the first block it was read at counts as PnL",
+        });
+      }
       for (const agent of this.opts.agents) {
-        const value = byId.get(agent.id) ?? null;
+        const measured = byId.get(agent.id) ?? null;
+        const value = first
+          ? first.record(
+              agent.id,
+              firstBoundaryV0(
+                measured,
+                agent.endowment
+                  ? endowmentValueAt(agent.endowment, snapshot)
+                  : undefined,
+              ),
+            )
+          : measured;
         this.valuesByAgent.get(agent.id)?.push(value);
         values[agent.id] = value;
       }
+      if (first) this.firstBoundaryBlockNumber = blockNumber;
       const boundary: LiveIntervalBoundary = {
         index,
         blockNumber,
         fairPriceUsdcPerWeth: snapshot.fairPriceUsdcPerWeth,
         values,
         elapsedMs: Date.now() - started,
+        ...(first ? first.fields() : {}),
       };
+      if (first) first.warn(blockNumber);
       this.opts.logger.append(INTERVALS_FILENAME, boundary);
       this.opts.logger.event({ type: INTERVAL_EVENTS.boundary, ...boundary });
 
@@ -231,6 +288,70 @@ export class LiveScorer {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /** The block the first boundary was read at, or null before it was. */
+  get firstBoundaryBlock(): number | null {
+    return this.firstBoundaryBlockNumber;
+  }
+
+  /** How V_0 was derived for this agent at the first boundary; undefined if it was not there. */
+  firstBoundary(agentId: string): FirstBoundaryV0 | undefined {
+    return this.firstBoundaryByAgent.get(agentId);
+  }
+
+  // The bookkeeping of the first boundary, kept out of scoreBoundary so the per-boundary loop
+  // stays the same shape for every boundary.
+  private firstBoundaryDetail() {
+    const sources: Record<string, V0Source> = {};
+    const measured: Record<string, number | null> = {};
+    const endowments: Record<string, number> = {};
+    const gaps: Array<{ agentId: string; gap: number }> = [];
+    return {
+      record: (agentId: string, v0: FirstBoundaryV0): number | null => {
+        this.firstBoundaryByAgent.set(agentId, v0);
+        sources[agentId] = v0.source;
+        measured[agentId] = v0.measuredUsdc;
+        if (v0.endowmentUsdc !== undefined) {
+          endowments[agentId] = v0.endowmentUsdc;
+          if (v0.measuredUsdc !== null) {
+            const gap = v0GapBeyondTolerance(
+              v0.measuredUsdc,
+              v0.endowmentUsdc,
+            );
+            if (gap !== null) gaps.push({ agentId, gap });
+          }
+        }
+        return v0.valueUsdc;
+      },
+      fields: () => ({
+        v0SourceByAgent: sources,
+        v0MeasuredByAgent: measured,
+        v0EndowmentByAgent: endowments,
+      }),
+      // Said at the moment it is seen, not only in summary.json: an operator watching the run
+      // should learn that a basket left before the bell while the epoch is still on.
+      warn: (blockNumber: number) => {
+        if (gaps.length === 0) return;
+        this.opts.logger.event({
+          type: "interval_v0_endowment_gap",
+          blockNumber,
+          agents: gaps,
+          note:
+            "measured − endowment at the first boundary, beyond tolerance. Negative: the holdings at the " +
+            "first boundary were worth less than the endowment (moved out, or spent on trades that landed " +
+            "before the bell) and V_0 was taken at the endowment. Positive: " +
+            "value the environment did not fund was there, and V_0 was taken as measured (issue #207)",
+        });
+        const said = gaps.map(
+          ({ agentId, gap }) =>
+            `${agentId} ${gap >= 0 ? "+" : ""}${gap.toFixed(0)} USDC vs endowment`,
+        );
+        console.error(
+          `[scoring] V_0 at block ${blockNumber}: ${said.join(", ")}`,
+        );
+      },
+    };
   }
 
   /** The series in the shape summary.json and the metrics tools already read. */

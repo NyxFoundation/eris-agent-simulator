@@ -27,7 +27,7 @@ import { BALANCER, UNISWAP } from "@eris/sdk/constants.js";
 import { marketsFor, tokenInfo, type MarketConfig } from "@eris/sdk/markets.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
 import type { TokenSymbol } from "@eris/sdk/types.js";
-import { getAmountsForLiquidity, getSqrtRatioAtTick } from "./tickMath.js";
+import { getAmountsForLiquidity, getSqrtRatioAtTick } from "@eris/sdk/tickMath.js";
 
 export type PullVenue = "uniswap" | "balancer" | "curve";
 

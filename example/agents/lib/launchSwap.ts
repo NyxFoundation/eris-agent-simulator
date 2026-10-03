@@ -12,7 +12,9 @@
 // created a block ago is by definition outside that set. Same shape as discoveryAgent's
 // approve-then-swap, against the environment's router instead of a bespoke AMM.
 import {
+  encodeDeployData,
   encodeFunctionData,
+  keccak256,
   parseAbi,
   type Address,
   type Hex,
@@ -26,6 +28,7 @@ import {
   swapRouterAbi,
 } from "@eris/sdk/abis.js";
 import { TOKENS, UNISWAP } from "@eris/sdk/constants.js";
+import { readForgeArtifact } from "@eris/sdk/forge.js";
 
 const DEADLINE_FAR_FUTURE = BigInt(2 ** 32 - 1);
 
@@ -42,6 +45,15 @@ export type LaunchPool = {
   // True when this agent created it (the registry's one-block head start is the creator's).
   mine: boolean;
   registeredAtBlock: number;
+  // From the token's own `erc20` registry entry: the code it runs at registration.
+  tokenCodehash: Hex;
+};
+
+export type LaunchPoolFilter = {
+  // keccak256 of the runtime code the environment's launch token has (`launchTokenCodehash`).
+  // When given, a pool whose token runs any other code is not a launch pool. `null` means the
+  // expected hash could not be computed (no artifact, no node): the shape checks still apply.
+  tokenCodehash?: Hex | null;
 };
 
 // The addresses the run prices. A pool between two of these is an ordinary market; a pool between
@@ -50,12 +62,43 @@ function knownTokens(): Set<string> {
   return new Set(Object.values(TOKENS).map((t) => t.address.toLowerCase()));
 }
 
-/** Every registry pool that pairs USDC with a token the run does not price, oldest first. */
-export function launchPools(obs: AgentObservation): LaunchPool[] {
+/**
+ * The registry pools that look like the environment's launches, oldest first.
+ *
+ * Anyone can create a USDC pool for a token of their own, and the registry publishes it exactly as
+ * it publishes the environment's (issue #216 (4)). The frozen reference agents in `full-field.yaml`
+ * used to buy every such pool, so a participant could set one up and harvest them -- and through
+ * them move the field's mean and spread. Nothing in the observation names the environment's launch
+ * wallets (they are drawn from the hidden seed; publishing them would publish the count of launches
+ * ahead of the windows), so the filter is on what the listing itself must look like:
+ *
+ *   1. the token has its own `erc20` entry, and the pool's creator deployed it (the environment
+ *      deploys the token and creates the pool from one key in one block);
+ *   2. the token's code is the environment's `AgentERC20` (fixed supply, no owner, no minter, no
+ *      hook), when the caller could compute that hash (`launchTokenCodehash`);
+ *   3. the code has not changed since registration.
+ *
+ * What this does not do: a participant who deploys that same bytecode from the key that creates the
+ * pool passes, and that is accepted -- such a token is the same kind of thing as a launch, with the
+ * same one risk (its price), so trading it is the strategy's call, not this module's. What it keeps
+ * out is every token with other code (a transfer hook, a blacklist, a fee, a mint) and every pool
+ * whose creator did not deploy the token. Until the token's entry is published (it can trail the
+ * pool's by a block under the per-block registration cap) the pool is not a launch yet.
+ */
+export function launchPools(
+  obs: AgentObservation,
+  filter: LaunchPoolFilter = {},
+): LaunchPool[] {
   const usdc = TOKENS.USDC.address.toLowerCase();
   const known = knownTokens();
+  const entries = obs.registry?.entries ?? [];
+  const tokenEntries = new Map(
+    entries
+      .filter((e) => e.kind === "erc20")
+      .map((e) => [e.market.toLowerCase(), e] as const),
+  );
   const out: LaunchPool[] = [];
-  for (const e of obs.registry?.entries ?? []) {
+  for (const e of entries) {
     if (e.kind !== "uniswapV3Pool" || !e.token0 || !e.token1) continue;
     const t0 = e.token0.toLowerCase();
     const t1 = e.token1.toLowerCase();
@@ -68,6 +111,21 @@ export function launchPools(obs: AgentObservation): LaunchPool[] {
       tokenIsToken0 = true;
     }
     if (!token) continue;
+    const tokenEntry = tokenEntries.get(token.toLowerCase());
+    if (!tokenEntry) continue;
+    if (tokenEntry.creator.toLowerCase() !== e.creator.toLowerCase()) continue;
+    if (
+      tokenEntry.codehashNow !== undefined &&
+      tokenEntry.codehashNow.toLowerCase() !==
+        tokenEntry.codehashAtRegistration.toLowerCase()
+    )
+      continue;
+    if (
+      filter.tokenCodehash &&
+      tokenEntry.codehashAtRegistration.toLowerCase() !==
+        filter.tokenCodehash.toLowerCase()
+    )
+      continue;
     out.push({
       pool: e.market as Address,
       token: token as Address,
@@ -75,9 +133,53 @@ export function launchPools(obs: AgentObservation): LaunchPool[] {
       creator: e.creator as Address,
       mine: e.mine,
       registeredAtBlock: Number(e.registeredAtBlock),
+      tokenCodehash: tokenEntry.codehashAtRegistration as Hex,
     });
   }
   return out.sort((a, b) => a.registeredAtBlock - b.registeredAtBlock);
+}
+
+// The environment lists 18-decimal tokens (core/src/realtime/tokenLaunch.ts LAUNCH_TOKEN_DECIMALS).
+// `decimals` is an immutable in AgentERC20, so it is part of the runtime code and of its hash.
+const LAUNCH_TOKEN_DECIMALS = 18;
+let launchTokenCodehashPromise: Promise<Hex | null> | undefined;
+
+/**
+ * keccak256 of the runtime code an environment launch token runs, for `launchPools`'s filter.
+ *
+ * Computed once per process from the repository's own `AgentERC20` artifact: the creation code is
+ * run through `eth_call` with no `to`, which returns the code CREATE would have stored, immutables
+ * filled in. The node that lists the environment's tokens is the node answering, so the hash is the
+ * registry's `codehashAtRegistration` for them, whatever the compiler did. `null` when the artifact
+ * is not on disk (a bundle carries only the artifacts of the contracts its agent deploys) or the
+ * call failed; a failure is retried on the next call rather than cached.
+ */
+export function launchTokenCodehash(client: PublicClient): Promise<Hex | null> {
+  if (!launchTokenCodehashPromise) {
+    launchTokenCodehashPromise = (async () => {
+      let artifact: ReturnType<typeof readForgeArtifact>;
+      try {
+        artifact = readForgeArtifact("AgentERC20");
+      } catch {
+        return null;
+      }
+      try {
+        const { data } = await client.call({
+          data: encodeDeployData({
+            abi: artifact.abi,
+            bytecode: artifact.bytecode,
+            args: ["", "", LAUNCH_TOKEN_DECIMALS, 0n],
+          }),
+        });
+        if (!data || data === "0x") return null;
+        return keccak256(data);
+      } catch {
+        launchTokenCodehashPromise = undefined;
+        return null;
+      }
+    })();
+  }
+  return launchTokenCodehashPromise;
 }
 
 export async function poolFee(

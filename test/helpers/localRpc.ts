@@ -110,8 +110,8 @@ export async function startGateway(
     UPSTREAM: upstream,
     RPC_FILTER: "1",
     RPC_RATE_REFILL: "0",
-    RPC_METHOD_ALLOW: "^(eth_|net_|web3_)",
-    // Use the production default deny policy, regardless of the developer's shell.
+    // Use the production default allow and deny policies, regardless of the developer's shell.
+    RPC_METHOD_ALLOW: undefined,
     RPC_METHOD_DENY: undefined,
     // And the production fee cap (5 gwei), whatever the shell exports.
     RPC_MAX_PRIORITY_FEE_WEI: undefined,
@@ -121,3 +121,9 @@ export async function startGateway(
   });
   return url;
 }
+
+// Runtime code that reverts on empty calldata until a call with any calldata has set slot 0. A
+// probe whose outcome depends on whether a pending transaction is visible:
+//   CALLDATASIZE ISZERO PUSH1 0x0b JUMPI  PUSH1 1 PUSH1 0 SSTORE STOP
+//   JUMPDEST PUSH1 0 SLOAD PUSH1 0x17 JUMPI  PUSH1 0 PUSH1 0 REVERT  JUMPDEST STOP
+export const LATCH_CODE = "0x3615600b576001600055005b60005460175760006000fd5b00";

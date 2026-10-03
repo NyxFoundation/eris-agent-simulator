@@ -91,12 +91,12 @@ Each interval boundary is valued at **the median over the preceding `markMedianB
 
 | Surface | The price that is medianed |
 |---|---|
-| Market-priced stables (spot, the Trove-debt and SP-deposit mid, stable legs of LP and lending marks) | The geometric mean of the two-sided probe (`stables`) |
-| Uniswap V3 LP | The pool's tick. Principal splits into the two tokens at the median tick; uncollected fees stay at the boundary tick (fees are not a price, they are what the boundary owes) |
-| Balancer BPT / Curve LP | The value of one share (reserves at the boundary's reference prices ÷ supply). The boundary mark is rescaled by median ÷ boundary share price |
+| The market-priced stables' mid (the Trove debt's face, every venue's face mark) | The geometric mean of the two-sided $1,000 probe (`stables`) |
+| Market-priced stables held and owed (spot, the SP deposit, stable legs of LP and lending marks) | Each agent's units summed across every venue and sold at **its own size** (get_dy), what is owed bought back at its own size (get_dx) (`stables-own-size`). Marked at mid × units, a stable bought up in a thin pool and held through the bell counts at a price it does not sell for (70k USDC into the 100k/100k, A=100 DAI pool: the probe reads 1.05, 69,090 DAI is 72,532 at the mid and sells for 69,986). Summed, because a holding split between the wallet and an LP is otherwise two sales each first in line, worth more split than whole |
 | LST (the venue and Aave's collateral haircut) | The pool sale at the holder's own size (get_dy). The queue side (par, the wait) is the vault's and stays at the boundary |
-| Liquity | The Stability Pool deposit's sale (get_dy) and the debt's buyback (get_dx), both at the boundary's sizes |
+| Liquity | The debt's buyback (get_dx), at the boundary's size. The SP deposit is eUSD held and is sold in the row above |
 | Aave accounts / GMX / SimpleLending | Not medianed (marked at the environment's reference prices and oracles) |
+| Uniswap V3 LP / Balancer BPT / Curve LP | Not medianed. How an LP splits into its two tokens (the tick), and a share's slice of the reserves, are **holdings, not prices** — the tokens a withdrawal in that block returns — so the boundary block's are valued at the reference prices. A median split applied to the boundary's liquidity values tokens the position does not hold: an owner alone in a pool pushes it off fair for three of the window's five blocks and puts it back before the bell; the swaps net out between their wallet and their position, yet the position was marked at the pushed split (a share of a pool off fair is always worth more at fair prices). At the boundary block's own split, a swap in that block nets out between wallet and position and the mark does not move (stable legs are sold together with the wallet's in the `stables-own-size` row above) |
 
 A block that did not quote is dropped (counted neither as zero nor as par). A boundary with fewer than five blocks of history uses the median of those there are (§4.4.2).
 
@@ -141,7 +141,7 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = the valid epochs 
 
 ### The epoch order and its commitments (rules §3.3 / §7)
 
-`core/src/competition/schedule.ts`. From the hidden set (regime → seeds) and the lottery seed it derives the epoch sequence, **every regime the same number of times**: SHA-256 in counter mode, unbiased integers by rejection, Fisher-Yates. The lottery seed decides only the order (and, where a regime has spare seeds, the choice among them). Both files are committed to as the sha256 of their canonical JSON (`npm run competition -- commit <file>`) and published in full after the results.
+`core/src/competition/schedule.ts`. From the hidden set (regime → seeds) and the lottery seed it derives the epoch sequence, **drawing each epoch's regime independently and uniformly** (issue #186: with equal counts, an agent carrying state across epochs could count the regimes it had seen and infer the rest). Each regime's seeds are put in lottery order and taken from the front each time the regime is drawn. SHA-256 in counter mode, unbiased integers by rejection, Fisher-Yates. Both files are committed to as the sha256 of their canonical JSON (`npm run competition -- commit <file>`) and published in full after the results.
 
 **The timetable is outside the commitment** (logistics, never scored). `plan --starts-at <ISO> --every-minutes <N>` or `--ends-at <ISO>` (k epochs spread evenly over the window; the 168-hour live week at k = 60 is one every 168 minutes) stamps each epoch with `startsAt`, and `backtest --follow-schedule` waits for it before starting each epoch (a start already past runs at once and reports how late; composes with `--resume`). [ADR 0026](../../adr/0026-live-week-schedule.md).
 
@@ -159,7 +159,7 @@ Details in [09](09-dashboard.md).
 
 | Question | Status |
 |---|---|
-| **The value of k** | Published in Appendix A before the submission period opens. [ADR 0026](../../adr/0026-live-week-schedule.md) proposes 60 (12 regimes × 5). The old recommendation, 40 (8 × 5), is not a multiple of 12 and `deriveSchedule` refuses it |
+| **The value of k** | Published in Appendix A before the submission period opens. [ADR 0026](../../adr/0026-live-week-schedule.md) proposes 60. Each epoch's regime is drawn independently and uniformly (issue #186), so k need not be a multiple of anything, and the hidden set holds at least k seeds per regime |
 | **The actual hidden set and lottery seed** | Generating them and publishing the commitments is operator work (`npm run competition -- commit`) |
 
 → [12 Known limits and open questions](12-open-issues.md)

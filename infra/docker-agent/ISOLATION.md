@@ -59,10 +59,19 @@ anvil; the **per-agent-network approach is preferred because it needs no firewal
 
 ## How the code supports it
 
-- `run-agent.sh`: `ERIS_AGENT_ISOLATE=1` → creates `ag-<ERIS_AGENT_ID>`, connects the anvil container
-  (`ERIS_ANVIL_CONTAINER`, default `ascon-anvil`) to it, and runs the agent on `--network ag-<id>`.
+- `run-agent.sh`: `ERIS_AGENT_ISOLATE=1` → creates `ag-<ERIS_AGENT_ID>`, connects the hub container
+  (`ERIS_AGENT_HUB`, default `ascon-rpc-gateway-live`) to it, and runs the agent on `--network ag-<id>`.
   Egress and caps (stage-1 hardening) are unchanged. Default (unset) stays `--network host`, and the
   coordinator warns (above).
+  **Measured, not declared** (issue #214 item 4): the script reads the network's `Internal` flag back
+  (`docker network inspect -f '{{.Internal}}'`). An `ag-<id>` left by an earlier run with the other
+  setting is detached and recreated; a create that fails is `exit 3` with docker's message (it used
+  to be `|| true`, and the 28th agent on default address pools surfaced as `network not found` at
+  `docker run`); a hub that did not attach is `exit 3` too. The coordinator then inspects each
+  container once it is up (`core/src/realtime/agentNetwork.ts`, after the agents-ready wait and on
+  the periodic tick for late ones), records `agent_network_measured`, and **stops** a container that
+  is not on its own network, is on a second one, or whose network has a route out while
+  `ERIS_AGENT_INTERNAL=1` was declared (`agent_network_mismatch`; `summary.json` carries the reason).
 - `reap.sh`: after a run, removes `ag-*` networks that have no agent container left (disconnects anvil,
   removes the network). Idempotent.
 
@@ -120,7 +129,7 @@ spending their three-tx allowance.
 
 | # | needed | what happens without it |
 |---|---|---|
-| 1 | `default-address-pools` widened in `/etc/docker/daemon.json` | **the 28th agent onward cannot start.** Docker's default pools yield ~27 networks and `ERIS_AGENT_ISOLATE=1` takes one per agent. `run-agent.sh` swallows the create error (`2>&1 \|\| true`), so what surfaces is `docker run ... network ag-<id> not found` |
+| 1 | `default-address-pools` widened in `/etc/docker/daemon.json` | **the 28th agent onward cannot start.** Docker's default pools yield ~27 networks and `ERIS_AGENT_ISOLATE=1` takes one per agent. `run-agent.sh` now exits on the create error with docker's message (it used to swallow it, and what surfaced was `docker run ... network ag-<id> not found`); the coordinator records the exit as `agent_process_exited` with the script's stderr |
 | 2 | `run.agentSandbox: docker` **in the config** | agents run as plain host processes: no CPU/memory caps, no egress control, rules §2.3 unenforced, and `ERIS_AGENT_ISOLATE` has nothing to act on. `config/example.yaml` and `config/practice.yaml` do not set it (every `config/regimes/*.yaml` does), and `ERIS_AGENT_SANDBOX` is one of the retired env knobs the loader ignores |
 | 3 | the agent's `ERIS_RPC_URL` pointing at the hub | inside a per-agent network `127.0.0.1` is the container. The bot refuses to run chainless and exits 1 — deliberately, because a silent 0-tx run looks identical to an agent that sat still |
 | 4 | a chain at the venues snapshot | `flashArb: true` deploys at a deterministic address, so a chain that has already been used fails setup with `FlashArb address mismatch`. **A live run cannot be started on a chain that has been running** — which also constrains the "move to the cloud under load" escape hatch in 競技規約 §2.6.1 |

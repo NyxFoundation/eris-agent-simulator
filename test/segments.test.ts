@@ -102,3 +102,32 @@ test("rolling writes a competition index whose entries are contiguous and unique
   for (const dir of dirs)
     assert.ok(existsSync(join(root, dir.split("/").slice(1).join("/"))));
 });
+
+test("a segment record says how its V_0 was derived (issue #207), and the index keeps it", async () => {
+  const { segmentAgentRecord, segmentIndexAgent } = await import(
+    "../core/src/segments.js"
+  );
+  const identity = {
+    id: "a",
+    address: "0x1111111111111111111111111111111111111111",
+    baseline: false,
+    includedTxCount: 3,
+    revertCount: 0,
+  };
+  const pnl = { pnlUsdc: 5, initialValueUsdc: 100, finalValueUsdc: 105 };
+  const first = segmentAgentRecord(identity, pnl, "endowment");
+  assert.equal(first.scored, true);
+  assert.equal((first as { v0Source?: string }).v0Source, "endowment");
+  assert.equal(segmentIndexAgent(first).v0Source, "endowment");
+  // A later segment opens on a carried boundary: measured, as every boundary after the first is.
+  const later = segmentAgentRecord(identity, pnl, "measured");
+  assert.equal((later as { v0Source?: string }).v0Source, "measured");
+  // Not placed: nothing to say about a V_0 that does not exist.
+  const unplaced = segmentAgentRecord(identity, null, "endowment");
+  assert.equal(unplaced.scored, false);
+  assert.equal("v0Source" in unplaced, false);
+  // Absent stays absent (a writer that did not know the field).
+  const unknown = segmentAgentRecord(identity, pnl);
+  assert.equal("v0Source" in unknown, false);
+  assert.equal("v0Source" in segmentIndexAgent(unknown), false);
+});
