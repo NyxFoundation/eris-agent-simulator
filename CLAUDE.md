@@ -191,6 +191,11 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   で執行 tx ごと revert し（GMX はキャンセルせず、keeper は再試行しない）証拠金と 0.03 ETH が OrderVault に残って 0 評価だった。
   価格を渡すトークンは `setupGlobal` が全市場から作る 1 本（`ctx.gmx.oracleTokens`）を keeper・provider 登録・毎ブロックの
   mock 書き込みが共有する。**証拠金は市場の long token か USDC**（ETH 市場 = WETH/USDC、BTC 市場 = WBTC/USDC）
+- **keeper の `executeOrder` が申告する gas は `GMX_KEEPER_EXECUTE_GAS` = 6,000,000**（issue #216 (2)。以前は 15,000,000 固定で、
+  keeper の fee は参加者上限より上なので注文 2 件で 30M ブロックを丸ごと申告していた）。blocks.csv の `gasUsed` を
+  35 run・49,498 件で実測: min 1.15M / p50 2.38M / p99 2.60M / max 2.79M。GMX は申告から 1M（error handling 分）を
+  引いて約定に渡し、general プロファイルなら 3.9M + 1M を先に要求するので、6M は両プロファイルで通り約定に最大値の
+  1.8 倍残る。`afterMine` の `opts.executeGas` で上書き可。**anvil が収容判定に申告値を使うか実使用量を使うかは未実測**
 - **observation にも出る**（issue #78）。`protocols.gmx` の `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`
   （正 = long が short に払う）/ `fundingModeled`、建玉があれば `position.fundingOwedUsd`。
   以前は「チェーン上にも market.json にもあるのに、どの agent からも見えない」状態だった。
@@ -897,7 +902,14 @@ gas は全部 pin する = `eth_estimateGas` は今の state で失敗する）�
   Swap ログの純フロー / QuoterV2 / **exact approve + exactInputSingle の rawBundle**。登録 `swap` action は
   market set の外に届かない）。参照 agent は `launch-sniper`（見た瞬間に買い固定ホールド）と
   `launch-confirm`（連続 N ブロックの純買いで入り純売りで出る）。`full-field.yaml` に frozen で入っている
-  （vuln の教訓: 読める agent が居ない regime は何も測れない）
+  （vuln の教訓: 読める agent が居ない regime は何も測れない）。**`launchPools` は環境の上場の形をしたプールだけ返す**
+  （issue #216 (4)。以前は USDC × 未登録トークンの registry プールを全部返し、参加者が自作プールを置けば frozen の
+  参照 agent 2 体が買って μ/σ が動いた）: トークン自身の `erc20` エントリがあり、プール作成者がそのトークンを
+  deploy し、登録後にコードが動いておらず、`launchTokenCodehash`（repo の `AgentERC20` artifact を `to` 無しの
+  `eth_call` で走らせた runtime code の keccak。artifact が無ければ null = 形だけで判定し agent ログに 1 回残す）
+  が取れていれば codehash も一致するもの。launch wallet のアドレスは観測にもマニフェストにも無い（seed 由来で、
+  公開すると窓の前に上場数が漏れる）ので作成者照合はできない。**同じ bytecode を同じ鍵から deploy した参加者の
+  プールは通る**（固定供給・owner 無しの同種トークンで、リスクは価格だけ = 戦略の判断に委ねる）
 - **実測（seed 101, 2026-09-12, main + PR #81 の burst 吸収を手元適用）**は PR #29 の本文。**main の anvil backlog
   burst（PR #81 で修正中）がある環境では最初の ~200 ブロックが 1 秒で流れて窓ごと飛ぶ**。この regime だけの
   問題ではなく windowFrac を持つ全イベントが同じ目に遭う
@@ -1006,7 +1018,11 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   resetFork で歴史が消えるため**次 run の前に必ず再構成を終える**（anvil の保持深度 ~1,050 ブロックに注意）。
 - **ルール執行は事後検出**（`core/src/postRunCheck.ts`）: blocks.csv（fee はチェーン上の tx フィールド由来）から
   fee 上限超過を検査し違反 run を `violations` に記録。入口側は `npm run check:strategy`
-  （cheatcode 静的検査）で戦略コードを通す。
+  （cheatcode 静的検査）で戦略コードを通す。**静的検査は行単位の正規表現で、実行時に組み立てた名前
+  （`["anvil","setBalance"].join("_")`）は通る**（issue #216 (5)。`scan-submission.py` も同じ）。入口は入口で、
+  組み立てた名前は読取専用クライアントとゲートウェイが送信時に拒み、事後監査が blocks.csv で読む。
+  `findAssembledCheatcodeHints` が組み立ての安い形（namespace だけの文字列・リテラルでない `method:`・
+  文字コード）を **hint / WARN として報告するだけ**で、網羅は主張しない（`"anv" + "il_…"` は見えない）
 - **orderflow は独立プロセス**（relay のまま = 環境側の市場機構）。生成ロジックは `core/src/flow/logic.ts`（純粋関数）、
   bot 本体は `core/src/flow/market-maker.ts`。bot は自前 `Rng(ERIS_FLOW_SEED)` で決定論的に動く。
   aave flow の reserve は環境が `readAaveFlowReserves` で読んで渡す。
