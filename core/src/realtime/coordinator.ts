@@ -72,7 +72,13 @@ import {
   countRunRevertedTxs,
   reconcileRunAgentTxs,
 } from "../postRunCheck.js";
-import { nextFairPrice, priceRngForAsset, Rng } from "@eris/sdk/rng.js";
+import {
+  nextFairPrice,
+  priceRngForAsset,
+  Rng,
+  SCENARIO_STREAMS,
+  setScenarioRegime,
+} from "@eris/sdk/rng.js";
 import type {
   AgentObservation,
   AgentSpec,
@@ -130,7 +136,21 @@ import {
   type LiquityVictimTrove,
 } from "../liquityVictims.js";
 import { waitForAgentsReady } from "./agentsReady.js";
-import { agentStateRootFromEnv, prepareAgentState } from "./agentState.js";
+import {
+  agentStateRootFromEnv,
+  DEFAULT_STATE_SNAPSHOT_LIMITS,
+  prepareAgentState,
+} from "./agentState.js";
+import { AgentDiskWatch, agentLogFiles } from "./agentDisk.js";
+import { measureAgentNetworks, networkMismatches } from "./agentNetwork.js";
+import { createAgentStopper } from "./agentStop.js";
+import { environmentSignerOwners } from "./environmentSigners.js";
+import {
+  createDockerRunner,
+  DOCKER_CALL_TIMEOUT_MS,
+  PROBE_ATTEMPTS,
+  ProbeBudget,
+} from "./dockerCli.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
 import {
   ensureScenarioKey,
@@ -185,8 +205,15 @@ import {
   gmxFundingMissingMessage,
   readGmxFundingConfig,
 } from "./gmxFunding.js";
+import {
+  environmentReserveAssets,
+  readAaveReserves,
+  strayAaveReserves,
+  strayAaveReservesMessage,
+} from "./aaveReserveGuard.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import { epochPnlFromSeries } from "../scoring/epochPnl.js";
+import type { FirstBoundaryV0, V0Source } from "../scoring/endowmentV0.js";
 import { epochEndBlock, intervalCount, loopStep } from "../epochExtent.js";
 import {
   NoArbMonitor,
@@ -468,6 +495,9 @@ type RealtimeAgentRuntime = {
   // grepping events.jsonl. It does not change the score -- rules §2.3 / §4.4.2 value a stopped agent
   // on what it left behind -- but the standings carry it as a flag next to the number.
   exitedEarly?: string;
+  // The per-agent state directory this run gave it (issue #77), when it did; what the disk watch
+  // measures (issue #214).
+  stateDir?: string;
 };
 
 // Who a mined transaction is attributed to in blocks.csv. `external` is a sender the run does not
@@ -574,6 +604,8 @@ export async function runRealtimeSimulation(
   // backtest runner installs its --scenario-key first; a plain run reads ERIS_SCENARIO_KEY_FILE,
   // and with neither it is the public key.
   const scenarioKey = ensureScenarioKey();
+  // Issue #186: the regime names the streams too, so calm#101 and crash#101 are different worlds.
+  setScenarioRegime(config.scenarioRegime);
 
   // ADR 0020 §1 fail-fast. `resetUnit: scenario` describes a world per (regime, seed), and only the
   // scenario-matrix runner produces those -- it is the caller that resets between runs, not anything
@@ -744,6 +776,10 @@ export async function runRealtimeSimulation(
     // ADR 0027: which key the seed was realized under -- the public one, or the commitment to a
     // secret one. The seed alone no longer names the world.
     scenarioKey: scenarioKeyRecord(scenarioKey),
+    // Issue #186: the regime the streams were named by (empty = none, the pre-#186 streams).
+    scenarioRegime: config.scenarioRegime,
+    // ...and the version of that naming (sdk/src/rng.ts), so a stored run says which streams drew it.
+    scenarioStreams: SCENARIO_STREAMS,
     // ADR 0021 §4: the endpoint the world is on, recorded by the environment. The dashboard's live
     // mode used to discover it from an agent's `runtime_start` log line, which stops working the
     // moment the agents are somebody else's processes on somebody else's machine. Reads go to
@@ -861,7 +897,7 @@ export async function runRealtimeSimulation(
     config.flowBotArgs,
     config.flowSeed,
     logger.runDir,
-    scenarioKeyChildEnv(scenarioKey),
+    scenarioKeyChildEnv(scenarioKey, config.scenarioRegime),
   );
   // Issue #159: the bot is the environment's market, and it used to die without a word -- the
   // exporter counts this as an environment failure and the flow-stopped alert follows.
@@ -983,14 +1019,11 @@ export async function runRealtimeSimulation(
       role: flowRole(key),
     });
   }
-  ownerByAddress.set(accountAddress(adminPk).toLowerCase(), {
-    ownerId: "oracle",
-    role: "system",
-  });
-  ownerByAddress.set(accountAddress(keeperPk).toLowerCase(), {
-    ownerId: "keeper",
-    role: "system",
-  });
+  // Every account the environment signs with, setup and deployer included. They matter for
+  // `isKnown` below as much as for the labels: an address the environment already owns is never a
+  // sender an agent's wallet derived (environmentSigners.ts).
+  for (const [address, owner] of environmentSignerOwners(config.privateKeys))
+    ownerByAddress.set(address, owner);
   // Read once, at the blocks.csv flush, and swept there too (issue #134).
   const submittedByHash = new SubmittedLedger<SubmittedMeta>();
   // Issue #212: addresses an agent's wallet funded -- ETH, a priced token, a contract it created,
@@ -1078,6 +1111,20 @@ export async function runRealtimeSimulation(
         : gmxFundingMissingMessage(funding, config.chainMode);
       if (enforcement === "fail") throw new Error(message);
       if (enforcement === "warn") console.warn(`[gmx] WARNING: ${message}`);
+    }
+
+    // And does the Aave Pool hold only reserves the environment owns? The Aave score sums every
+    // reserve, so an active vendor test-token reserve is free score (issue #190). Local deploys only:
+    // a fork's Pool is Arbitrum's, whose reserves are real assets nobody mints for free.
+    if (config.localDeploy && enabledIds.includes("aave")) {
+      const reserves = await readAaveReserves(publicClient);
+      const stray = strayAaveReserves(reserves, environmentReserveAssets());
+      logger.event({
+        type: "aave_reserve_check",
+        reserves: reserves.length,
+        stray,
+      });
+      if (stray.length > 0) throw new Error(strayAaveReservesMessage(stray));
     }
 
     // Then, on a chain participants can reach, a token anyone can mint makes the endowment
@@ -2102,11 +2149,15 @@ export async function runRealtimeSimulation(
     // applies the rules §2.3 caps. Checked once here rather than discovered per agent: a missing
     // docker would otherwise surface as N `spawn error` early exits that read like agent bugs.
     if (config.agentSandbox === "docker") {
+      // Bounded like every other docker call (issue #223): a daemon that accepts the connection and
+      // then says nothing used to hang the start of the run with nothing on stdout saying why.
       const probe = spawnSync(
         "docker",
         ["version", "--format", "{{.Server.Version}}"],
         {
           encoding: "utf8",
+          timeout: DOCKER_CALL_TIMEOUT_MS,
+          killSignal: "SIGKILL",
         },
       );
       if (probe.status !== 0)
@@ -2186,18 +2237,47 @@ export async function runRealtimeSimulation(
       // Issue #77: the per-agent area that survives epochs, plus the snapshot this epoch started
       // from. Absent unless a root is configured, which keeps every existing run byte-identical.
       // A failure here is fatal rather than silent: an agent that was promised its memory and
-      // silently started from agent.ts is scored as if it had chosen to forget.
-      const stateDir = agentStateRoot
-        ? prepareAgentState(agentStateRoot, agent.id, runId)
+      // silently started from agent.ts is scored as if it had chosen to forget. A directory the
+      // participant made uncopyable (issue #214 item 2) is not a failure of the environment: it is
+      // set aside, the agent starts this epoch empty, and the record says so.
+      const prepared = agentStateRoot
+        ? prepareAgentState(agentStateRoot, agent.id, runId, {
+            ...DEFAULT_STATE_SNAPSHOT_LIMITS,
+            // One number for "how much state": the snapshot copies at most what the watch below
+            // lets the agent hold. 0 (quota off) keeps the module default for the copy.
+            ...(config.agentStateQuotaBytes > 0
+              ? { maxBytes: config.agentStateQuotaBytes }
+              : {}),
+          })
         : undefined;
+      const stateDir = prepared?.dir;
+      agent.stateDir = stateDir;
       const view = prepareAgentView(logger.runDir, agent.id, agentConfigText);
       agentViewDirs.push(view.dir);
-      if (stateDir)
+      if (prepared) {
+        if (prepared.refused) {
+          logger.event({
+            type: "agent_state_snapshot_skipped",
+            agentId: agent.id,
+            reason: prepared.refused.reason,
+            movedTo: prepared.refused.refusedTo,
+            note:
+              "the state directory the agent left behind could not be copied; it was moved aside " +
+              "unread and the agent starts this epoch from an empty one",
+          });
+          console.error(
+            `[agent] ${agent.id}: state directory refused (${prepared.refused.reason}); ` +
+              `moved to ${prepared.refused.refusedTo}, starting empty`,
+          );
+        }
         logger.event({
           type: "agent_state_dir",
           agentId: agent.id,
-          dir: stateDir,
+          dir: prepared.dir,
+          bytes: prepared.usage.apparentBytes,
+          entries: prepared.usage.entries,
         });
+      }
       agent.process = new RealtimeAgentProcess(
         agent.spec,
         config.rpcUrl,
@@ -2233,6 +2313,234 @@ export async function runRealtimeSimulation(
     }
     // What `agents_ready` measures boot time from (issue #94).
     const agentsSpawnedAt = Date.now();
+
+    // ---- the network each docker agent is actually on (issue #214 item 4) ----
+    // `agent_sandbox` above records the posture the env declares; this records what docker says
+    // once the containers exist, and stops a container that is not where its posture says. Measured
+    // after the agents-ready wait (the containers of the ready agents exist by then) and again on
+    // the periodic tick for any that were still booting. A measurement is two `docker inspect`
+    // calls per agent, once.
+    const networkPending = new Set<string>(
+      config.agentSandbox === "docker"
+        ? agentRuntimes
+            .filter((a) => a.process !== null && a.spec.command === undefined)
+            .map((a) => a.id)
+        : [],
+    );
+    // Every docker call this loop makes has a deadline (issue #223). These run synchronously on the
+    // environment's own thread -- 32 agents x 2 calls at the agents-ready wait, and again every
+    // `agentDiskCheckEveryBlocks` blocks for whatever is still pending -- so an unbounded `spawnSync`
+    // on a daemon this process does not control is an unbounded stop of the oracle write, the keeper
+    // and the flow. A call that misses its deadline reads as unmeasured, not as an answer.
+    const dockerRun = createDockerRunner();
+    // And a container docker will never describe is asked about a fixed number of times. Before this
+    // an inspect that always failed kept the agent in `networkPending` for the whole run, writing the
+    // same event every interval and never concluding anything.
+    const networkProbes = new ProbeBudget();
+    const checkAgentNetworks = (when: "agents_ready" | "block", bn?: number): void => {
+      const byId = (id: string) => agentRuntimes.find((a) => a.id === id);
+      const ids = [...networkPending].filter((id) => {
+        const a = byId(id);
+        if (!a || a.exitedEarly !== undefined || !(a.process?.isAlive() ?? false)) {
+          networkPending.delete(id);
+          return false;
+        }
+        return true;
+      });
+      if (ids.length === 0) return;
+      const facts = measureAgentNetworks(ids, dockerRun);
+      const gaveUp: string[] = [];
+      for (const f of facts) {
+        if (f.measured) {
+          networkPending.delete(f.id);
+          networkProbes.forget(f.id);
+          continue;
+        }
+        if (!networkProbes.failed(f.id)) continue;
+        // Spent. Recorded once, as the fact it is: this container's posture was never verified.
+        networkPending.delete(f.id);
+        gaveUp.push(f.id);
+        logger.event({
+          type: "agent_network_unverified",
+          agentId: f.id,
+          container: f.container,
+          attempts: networkProbes.count(f.id),
+          ...(f.error !== undefined ? { error: f.error } : {}),
+          note:
+            `docker would not say which networks this container is on after ${PROBE_ATTEMPTS} ` +
+            "attempts; the coordinator stops asking. The run continues and this agent's network " +
+            "posture is unverified -- which is not the same as verified-and-wrong, and not the " +
+            "same as nothing being written down (infra/docker-agent/ISOLATION.md)",
+        });
+        console.error(
+          `[agent] ${f.id}: network posture unverified (${f.error ?? "docker did not answer"})`,
+        );
+      }
+      const mismatches = networkMismatches(facts, (id) =>
+        agentNetworkPosture({ ...process.env, ...(byId(id)?.spec.env ?? {}) }),
+      );
+      logger.event({
+        type: "agent_network_measured",
+        when,
+        ...(bn !== undefined ? { blockNumber: bn } : {}),
+        agents: facts.map((f) => ({
+          id: f.id,
+          container: f.container,
+          measured: f.measured,
+          networks: f.networks,
+          ...(f.error !== undefined ? { error: f.error } : {}),
+        })),
+        unmeasured: facts.filter((f) => !f.measured).map((f) => f.id),
+        ...(gaveUp.length > 0 ? { unverified: gaveUp } : {}),
+        mismatches,
+      });
+      for (const m of mismatches) {
+        const agent = byId(m.id);
+        if (!agent || agent.exitedEarly !== undefined) continue;
+        const reason = `stopped by the environment: network posture mismatch (${m.detail})`;
+        logger.event({
+          type: "agent_network_mismatch",
+          agentId: m.id,
+          kind: m.kind,
+          detail: m.detail,
+          note:
+            "the container is not on the network its launch declared; it is stopped rather than " +
+            "run where it can reach what the posture says it cannot (infra/docker-agent/ISOLATION.md)",
+        });
+        console.error(`[agent] ${m.id} ${reason}`);
+        // Through stopAgent, so the container goes too: a container on the wrong network that is
+        // only disconnected from its client is still on the wrong network (issue #223).
+        agentStopper.stop(agent, reason, `network posture mismatch (${m.kind})`);
+      }
+    };
+
+    // ---- stopping an agent for real (issue #223) ----
+    // `close()` stops the process this coordinator spawned; under the docker sandbox the container
+    // outlives it. `agentStop.ts` is the stop that reaches the container, with the removal read back.
+    const agentStopper = createAgentStopper({
+      sandbox: config.agentSandbox,
+      docker: dockerRun,
+      event: (event) => logger.event(event),
+    });
+
+    // ---- what each agent writes to the host (issue #214 item 1) ----
+    // Measured every `run.agentDiskCheckEveryBlocks` blocks for every agent this coordinator
+    // launched and still runs: its state directory and its log files. Past a quota the agent is
+    // stopped the way a crashed one ends -- the run goes on, the agent is valued on what it left
+    // behind (rules §2.3 / §4.4.2), and summary.json says why it stopped. The runtime's own 64 MiB
+    // self-limits do not bind a submitted runtime; this does.
+    //
+    // A tick measures what fits in its budget and the next resumes where it stopped (issue #223): a
+    // directory of 20,000 one-byte files is within every quota and costs 101 ms to walk, so walking
+    // the whole field on one tick was 3+ seconds of synchronous work in a loop that owes the chain a
+    // block every two. `agent_disk_sweep` says how long a pass over the field takes, in blocks.
+    const diskWatch = new AgentDiskWatch({
+      stateBytes: config.agentStateQuotaBytes,
+      logBytes: config.agentLogQuotaBytes,
+    });
+    // Agents this watch stopped. They stay in the rotation -- `stopped` is read back from the files,
+    // because the process the coordinator killed is not necessarily what was writing them.
+    const diskStopped = new Set<string>();
+    let sweepTicksReported = -1;
+    const diskWatchTick = (bn: number): void => {
+      const targets = agentRuntimes
+        .filter(
+          (a) =>
+            a.process !== null &&
+            (diskStopped.has(a.id) ||
+              (a.exitedEarly === undefined && a.process.isAlive())),
+        )
+        .map((a) => ({
+          id: a.id,
+          ...(a.stateDir !== undefined ? { stateDir: a.stateDir } : {}),
+          logFiles: agentLogFiles(logger.runDir, a.id),
+        }));
+      const tick = diskWatch.tick(targets);
+      // Once, and again whenever the cycle length changes: on an honest field a pass is one tick, and
+      // the operator needs to see it when it is not (32 expensive agents is 32 ticks = 480 blocks).
+      if (tick.sweep !== undefined && tick.sweep.ticks !== sweepTicksReported) {
+        sweepTicksReported = tick.sweep.ticks;
+        logger.event({
+          type: "agent_disk_sweep",
+          blockNumber: bn,
+          agents: tick.rotation,
+          ticks: tick.sweep.ticks,
+          blocks: tick.sweep.ticks * config.agentDiskCheckEveryBlocks,
+          elapsedMs: Math.round(tick.elapsedMs),
+          note:
+            "one pass over the field. A tick measures what fits in its budget and the next resumes " +
+            "where it stopped, so this is how long a quota takes to be noticed",
+        });
+      }
+      for (const outcome of tick.outcomes) {
+        if (outcome.report === "none") continue;
+        const agent = agentRuntimes.find((a) => a.id === outcome.id);
+        if (!agent) continue;
+        const usage = {
+          stateBytes: outcome.sample.stateBytes,
+          logBytes: outcome.sample.logBytes,
+          ...(outcome.sample.stateUsage
+            ? {
+                stateEntries: outcome.sample.stateUsage.entries,
+                stateWalkTruncated: outcome.sample.stateUsage.truncated,
+              }
+            : {}),
+          quota: {
+            stateBytes: config.agentStateQuotaBytes,
+            logBytes: config.agentLogQuotaBytes,
+          },
+        };
+        if (outcome.report === "warning") {
+          logger.event({
+            type: "agent_disk_usage_warning",
+            blockNumber: bn,
+            agentId: agent.id,
+            findings: outcome.verdict.findings,
+            ...usage,
+          });
+          console.error(
+            `[agent] ${agent.id}: ${outcome.verdict.findings.join("; ")}`,
+          );
+          continue;
+        }
+        if (outcome.report === "still-writing") {
+          // The stop did not reach whatever is writing. Under docker that is the container, which
+          // outlived the client the coordinator killed; the removal is the only thing left to try.
+          logger.event({
+            type: "agent_disk_write_after_stop",
+            blockNumber: bn,
+            agentId: agent.id,
+            grewBytes: outcome.grewBytes ?? 0,
+            ...usage,
+            note:
+              "this agent was already stopped for a quota and its files have grown since. The " +
+              "process the coordinator spawned is gone, so something it started is not: the " +
+              "container is removed (issue #223)",
+          });
+          console.error(
+            `[agent] ${agent.id} is still writing ${outcome.grewBytes ?? 0} bytes after being stopped`,
+          );
+          agentStopper.escalate(agent.id, "still writing after being stopped");
+          continue;
+        }
+        const reason = `stopped by the environment: disk quota exceeded (${outcome.verdict.findings.join("; ")})`;
+        logger.event({
+          type: "agent_disk_quota_exceeded",
+          blockNumber: bn,
+          agentId: agent.id,
+          findings: outcome.verdict.findings,
+          ...usage,
+          note:
+            "the agent process is stopped and its container removed; the run continues and the " +
+            "agent is valued on what it left behind (rules §2.3 / §4.4.2). Its files are left in " +
+            "place for the operator",
+        });
+        console.error(`[agent] ${agent.id} ${reason}`);
+        // Kept in the rotation: whether the writing actually stopped is measured, not assumed.
+        diskStopped.add(agent.id);
+        agentStopper.stop(agent, reason, "disk quota exceeded");
+      }
+    };
 
     // ---- flow wallets over a long period (issue #130): guards, balances, top-ups ----
     const flowGuardLog = new FlowGuardLog();
@@ -2332,6 +2640,11 @@ export async function runRealtimeSimulation(
     // `replacement transaction underpriced` and its order is lost (issue #148). Sequential per
     // wallet, concurrent across wallets.
     const flowSendSerial = new KeyedSerial();
+    // The newest block the loop has been told about, stamped on each submission as `headBlock`: the
+    // tx can be mined in headBlock + 1 at the earliest. The public dashboard serves a submission
+    // only once the chain is past that (issue #210) -- written at send time, the line otherwise
+    // named a pending tx a block before it was mined.
+    let sendHeadBlock: number | null = null;
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
       const submitted: Hex[] = [];
       const intents = flowOrdersToIntents(ctx, orders);
@@ -2351,6 +2664,7 @@ export async function runRealtimeSimulation(
             logger.event({
               type: "tx_submitted",
               hash,
+              ...(sendHeadBlock !== null ? { headBlock: sendHeadBlock } : {}),
               ownerId: intent.ownerId,
               role: intent.role,
               priorityFeeWei: intent.priorityFeeWei,
@@ -2361,6 +2675,7 @@ export async function runRealtimeSimulation(
         } catch (error) {
           logger.event({
             type: "tx_submit_failed",
+            ...(sendHeadBlock !== null ? { headBlock: sendHeadBlock } : {}),
             ownerId: intent.ownerId,
             actionType: intent.action.type,
             error: error instanceof Error ? error.message : String(error),
@@ -2589,6 +2904,8 @@ export async function runRealtimeSimulation(
         );
       }
     }
+    // Issue #214 item 4: now that the containers exist, where are they actually?
+    checkAgentNetworks("agents_ready");
     if (external) {
       // The sequencer has been producing blocks the whole time; there is no phase change to make.
       // What the environment does have to know is the real cadence, because the block loop's
@@ -2734,7 +3051,12 @@ export async function runRealtimeSimulation(
     const liveScorer = new LiveScorer({
       publicClient,
       logger,
-      agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+      // With what each was funded: V_0 at the first boundary is floored at it (issue #207).
+      agents: agentRuntimes.map((a) => ({
+        id: a.id,
+        address: a.address,
+        endowment: a.initial,
+      })),
       enabledIds,
       activeStables: activeStables(),
       priceFeed: priceFeedAddress,
@@ -2747,6 +3069,53 @@ export async function runRealtimeSimulation(
       // enough for that to be the richer artifact.
       sampleMarket: true,
     });
+    // Issue #207: how V_0 was derived, for the record beside P. The endowment floor is applied at
+    // the period's first boundary only, so a series that opens there reads the live scorer's
+    // record for the agent; a segment that opens on a carried boundary, and an agent that was not
+    // at the first boundary, are `measured`. Nothing is said for an agent with no V_0 (no P).
+    type SeriesLike = Pick<IntervalSeries, "boundaryBlocks" | "valuesByAgent">;
+    const v0FirstOf = (
+      agentId: string,
+      series: SeriesLike | undefined,
+    ): FirstBoundaryV0 | undefined =>
+      series && series.boundaryBlocks[0] === liveScorer.firstBoundaryBlock
+        ? liveScorer.firstBoundary(agentId)
+        : undefined;
+    const v0SourceFor = (
+      agentId: string,
+      series: SeriesLike | undefined,
+    ): V0Source | undefined => {
+      const v0 = series?.valuesByAgent[agentId]?.[0];
+      if (typeof v0 !== "number") return undefined;
+      return v0FirstOf(agentId, series)?.source ?? "measured";
+    };
+    const v0FieldsFor = (
+      agentId: string,
+      series: SeriesLike | undefined,
+    ): {
+      v0Source?: V0Source;
+      v0Usdc?: number;
+      v0MeasuredUsdc?: number;
+      v0EndowmentUsdc?: number;
+    } => {
+      const v0 = series?.valuesByAgent[agentId]?.[0];
+      if (typeof v0 !== "number") return {};
+      const first = v0FirstOf(agentId, series);
+      return {
+        v0Source: first?.source ?? "measured",
+        v0Usdc: v0,
+        ...(first
+          ? {
+              ...(first.measuredUsdc !== null
+                ? { v0MeasuredUsdc: first.measuredUsdc }
+                : {}),
+              ...(first.endowmentUsdc !== undefined
+                ? { v0EndowmentUsdc: first.endowmentUsdc }
+                : {}),
+            }
+          : { v0MeasuredUsdc: v0 }),
+      };
+    };
     if (segments) segments.noteFirstBlock(runStartBlock, runStartedAtMs);
     periodStart = { block: runStartBlock, startedAtMs: runStartedAtMs };
     publishManifest();
@@ -2802,7 +3171,11 @@ export async function runRealtimeSimulation(
         ownerId: reg.id,
         role: "agent",
       });
-      liveScorer.addAgent({ id: runtime.id, address: runtime.address });
+      liveScorer.addAgent({
+        id: runtime.id,
+        address: runtime.address,
+        endowment: runtime.initial,
+      });
       logger.event({
         type: "agent_external_registered",
         agentId: runtime.id,
@@ -2932,6 +3305,7 @@ export async function runRealtimeSimulation(
             revertCount: a.reverted,
           },
           pnl,
+          v0SourceFor(a.id, sliced),
         );
       });
       logger.summary({
@@ -2985,6 +3359,7 @@ export async function runRealtimeSimulation(
         seed: config.seed,
         flowSeed: config.flowSeed,
         scenarioKey: scenarioKeyRecord(scenarioKey),
+        scenarioStreams: SCENARIO_STREAMS,
         rpcUrl: config.readRpcUrl,
         // ADR 0020 §1: whether this run is one epoch of a scenario matrix or a continuous world. The
         // hosted dashboard's public view reads it before summary.json exists, to decide how much of
@@ -3125,6 +3500,8 @@ export async function runRealtimeSimulation(
           : undefined;
 
       const onBlock = async (notifiedBn: number): Promise<void> => {
+        // Before the early return: a head reported while a pass is still running is still the head.
+        sendHeadBlock = Math.max(sendHeadBlock ?? 0, notifiedBn);
         if (processing || finished) return;
         processing = true;
         let settle: () => void = () => {};
@@ -3855,6 +4232,17 @@ export async function runRealtimeSimulation(
           // external chain), which the loop absorbs the way it absorbs any slow block: by catching up.
           await pollRegistrations(bn);
 
+          // Issue #214 item 1: a bounded stat of what each agent has written, one block in N.
+          // Synchronous and after the block's work, like the boundary read above.
+          if (
+            config.agentDiskCheckEveryBlocks > 0 &&
+            bn % config.agentDiskCheckEveryBlocks === 0
+          ) {
+            diskWatchTick(bn);
+            // Agents whose container was not up at the agents-ready wait (issue #214 item 4).
+            checkAgentNetworks("block", bn);
+          }
+
           // Only while segmenting: keep blocks.csv within a block of the head, so a roll is a
           // boundary rather than a bulk scan of a whole day stalling the environment loop. A run
           // with an end keeps the single pass at the end, byte-identical to before.
@@ -4092,7 +4480,12 @@ export async function runRealtimeSimulation(
         const meta = await reconstructValueSeries({
           publicClient,
           logger,
-          agents: agentRuntimes.map((a) => ({ id: a.id, address: a.address })),
+          // The same endowments the live scorer floored V_0 at, so the two series agree there too.
+          agents: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            endowment: a.initial,
+          })),
           enabledIds,
           activeStables: activeStables(),
           priceFeed: priceFeedAddress,
@@ -4385,6 +4778,8 @@ export async function runRealtimeSimulation(
                 : {}),
             }
           : {}),
+        // Issue #207: how the V_0 behind pnlUsdc was derived, and the numbers to check it against.
+        ...v0FieldsFor(agent.id, liveIntervalSeries),
         // alphaUsdc: β-removed PnL versus fair at execution (the trade's take; equivalent to the amm-challenge
         // edge; ADR 0015 Notes). netPnlUsdc is the gross total including price drift β, so look at this for skill
         // comparison. undefined when reconstruction did not run (finalBlock<runStartBlock).
@@ -4437,6 +4832,22 @@ export async function runRealtimeSimulation(
       loopIterations,
       runStartBlock,
       finalBlock,
+      // V_0 with no endowment floor under it (issue #207). Present only when the run's first block
+      // was not the boundary V_0 came off, which is the one case the floor does not apply -- and
+      // the case that is otherwise invisible, since every agent's v0Source then reads "measured",
+      // exactly as it does for a segment that carried a boundary over. In summary.json rather than
+      // only in events.jsonl because scenarioScores reads this file, and the flag that names the
+      // attack cannot fire without the endowment V_0 the floor produces.
+      ...(liveIntervalSeries &&
+      liveScorer.firstBoundaryBlock !== runStartBlock &&
+      liveIntervalSeries.boundaryBlocks.length > 0
+        ? {
+            v0FloorSkipped: {
+              boundaryBlock: liveIntervalSeries.boundaryBlocks[0],
+              runStartBlock,
+            },
+          }
+        : {}),
       ...(schedule.hasEvents() ? { stressEvents: stressAudit.summaries() } : {}),
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
@@ -4484,6 +4895,7 @@ export async function runRealtimeSimulation(
                 revertCount: a.revertCount,
               },
               pnl,
+              v0SourceFor(a.id, liveIntervalSeries),
             ),
           );
         }),

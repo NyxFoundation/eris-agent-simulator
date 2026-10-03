@@ -98,6 +98,10 @@ disk is everybody's failed epoch.
 
 ## §7 — the schedule-inference exposure, decided
 
+> **Superseded by issue #186: (b).** Being able to infer the remaining regimes is itself the problem,
+> so the schedule now draws each epoch's regime independently and the counting has nothing to find.
+> The regime balance is given up for it. The text below is the earlier decision, kept for the record.
+
 k = 60 epochs over 12 regimes at equal count (§3.3) means five of each. An agent that remembers which
 regimes it has already seen knows, late in the competition, which regimes remain — not their order.
 That is ordinary learning under this proposal, and it also sits close to the letter of the

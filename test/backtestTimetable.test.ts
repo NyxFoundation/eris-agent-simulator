@@ -110,7 +110,7 @@ test("a plan without a timetable, with a gap in it, or out of order is refused",
 
 test("the live week's plan is followable end to end, and every wait lands on its slot", () => {
   const regimes = Object.fromEntries(
-    [...Array(12).keys()].map((r) => [`r${r}`, [1, 2, 3, 4, 5]]),
+    [...Array(12).keys()].map((r) => [`r${r}`, [...Array(60).keys()].map((i) => i + 1)]),
   );
   const plan = buildPlan(
     { regimes },

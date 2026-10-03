@@ -30,7 +30,13 @@
 import { encodeFunctionData, type Abi, type Address, type PublicClient } from "viem";
 import { erc20Abi } from "../abis.js";
 import { MULTICALL3 } from "../constants.js";
-import { tokenAmountUsd, type UnpricedAmount } from "../valuation.js";
+import {
+  addStableUnits,
+  mergeStableUnits,
+  tokenAmountUsd,
+  type StableUnits,
+  type UnpricedAmount,
+} from "../valuation.js";
 import type {
   AgentObservation,
   BalanceSnapshot,
@@ -1181,10 +1187,19 @@ function positionValue(
   position: readonly [bigint, bigint, bigint],
   fairByBase: Record<string, number>,
   stablePrices?: Parameters<typeof tokenAmountUsd>[3],
-): { usd: number; unpriced: UnpricedHoldingDetail[] } {
+): {
+  usd: number;
+  unpriced: UnpricedHoldingDetail[];
+  longs: StableUnits;
+  shorts: StableUnits;
+} {
   const [supplyAssets, borrowAssets, collateral] = position;
   let usd = 0;
   const unpriced: UnpricedHoldingDetail[] = [];
+  // A market-priced stable among the legs was counted here at the mid. The scorer re-marks the
+  // holder's whole amount at their own size, so the raw units travel with the value (#205).
+  const longs: StableUnits = {};
+  const shorts: StableUnits = {};
 
   // --- supply side: pro-rata on what actually backs the market ---
   if (supplyAssets > 0n) {
@@ -1204,6 +1219,7 @@ function positionValue(
       });
     } else {
       usd += value;
+      addStableUnits(longs, m.params.loanToken, recoverable, stablePrices);
     }
     // What the marking took away, said out loud. A supply position that shrank because the
     // collateral behind it is worthless must not look like a trading loss.
@@ -1234,7 +1250,13 @@ function positionValue(
       ) ?? 0;
     // Floored, because a borrower whose collateral is worth less than the debt can drop the
     // collateral and walk away. The same rule the Liquity adapter applies below 100% ICR.
-    usd += Math.max(0, (collateralValueUsd ?? 0) - debtUsd);
+    const net = Math.max(0, (collateralValueUsd ?? 0) - debtUsd);
+    usd += net;
+    // Only a position the floor did not zero counted its legs at all.
+    if (net > 0) {
+      addStableUnits(longs, m.params.collateralToken, collateral, stablePrices);
+      addStableUnits(shorts, m.params.loanToken, borrowAssets, stablePrices);
+    }
     if (collateral > 0n && collateralValueUsd === undefined) {
       unpriced.push({
         source: `lending-collateral:${m.id.slice(0, 10)}`,
@@ -1244,7 +1266,7 @@ function positionValue(
       });
     }
   }
-  return { usd, unpriced };
+  return { usd, unpriced, longs, shorts };
 }
 
 function readFailed(source: string, read: string): UnpricedHoldingDetail {
@@ -1364,7 +1386,7 @@ async function* lendingValuationRun(
       fraction = marketBackedFraction(m, fairByBase, stablePrices);
       fractionById.set(m.id, fraction);
     }
-    const { usd, unpriced } = positionValue(
+    const { usd, unpriced, longs, shorts } = positionValue(
       m,
       fraction,
       raw,
@@ -1374,6 +1396,14 @@ async function* lendingValuationRun(
     target.valueUsdc += usd;
     target.liquidatableValueUsdc += usd;
     target.unpriced.push(...unpriced);
+    if (Object.keys(longs).length > 0) {
+      target.stableLongs ??= {};
+      mergeStableUnits(target.stableLongs, longs);
+    }
+    if (Object.keys(shorts).length > 0) {
+      target.stableShorts ??= {};
+      mergeStableUnits(target.stableShorts, shorts);
+    }
   });
 
   return out;

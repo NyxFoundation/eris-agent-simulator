@@ -212,20 +212,58 @@ export function decodeEntries(raw: readonly RawEntry[]): RegistryEntry[] {
   }));
 }
 
-/// Read the whole list. Sized for a competition group (32 participants at a handful of contracts
-/// each); a registry that outgrows one call is a load-test finding, not a normal state.
+/// Entries per `entriesFrom` call. Measured with cold storage (what an `eth_call` sees): 128
+/// entries cost 2.58M gas whatever the list's length, so 256 is ~5M -- a sixth of the 30M call cap.
+export const REGISTRY_PAGE_SIZE = 256;
+
+/// Read entries `[from, count)` in pages, all at one block.
+///
+/// Never `all()`. Its cost grows with the list (cold storage: 20.9M gas at 1,000 entries, ~29.5M
+/// at 1,500, out of gas under the 30M call cap at 1,600), and the list's length is somebody else's
+/// choice: `createMarket` is permissionless and cheap, and the environment registers up to
+/// `registrationsPerBlock` (8) entries a block, so 1,600 is 200 blocks of spam. Every reader that
+/// called `all()` failed on every block after that -- including every agent's observation.
+export async function readRegistryEntriesFrom(
+  publicClient: PublicClient,
+  registry: Address,
+  from: number,
+  blockNumber?: bigint,
+): Promise<{ count: number; entries: RegistryEntry[] }> {
+  // Pin one block so `count` and the pages describe the same list.
+  const at = blockNumber ?? (await publicClient.getBlockNumber());
+  const count = Number(
+    await publicClient.readContract({
+      address: registry,
+      abi: marketRegistryAbi,
+      functionName: "count",
+      blockNumber: at,
+    }),
+  );
+  const starts: number[] = [];
+  for (let s = from; s < count; s += REGISTRY_PAGE_SIZE) starts.push(s);
+  const pages = await Promise.all(
+    starts.map(
+      (start) =>
+        publicClient.readContract({
+          address: registry,
+          abi: marketRegistryAbi,
+          functionName: "entriesFrom",
+          args: [BigInt(start), BigInt(REGISTRY_PAGE_SIZE)],
+          blockNumber: at,
+        }) as Promise<readonly RawEntry[]>,
+    ),
+  );
+  return { count, entries: decodeEntries(pages.flat()) };
+}
+
+/// Read the whole list (paged; see `readRegistryEntriesFrom`).
 export async function readRegistryEntries(
   publicClient: PublicClient,
   registry: Address,
   blockNumber?: bigint,
 ): Promise<RegistryEntry[]> {
-  const raw = (await publicClient.readContract({
-    address: registry,
-    abi: marketRegistryAbi,
-    functionName: "all",
-    ...(blockNumber === undefined ? {} : { blockNumber }),
-  })) as readonly RawEntry[];
-  return decodeEntries(raw);
+  return (await readRegistryEntriesFrom(publicClient, registry, 0, blockNumber))
+    .entries;
 }
 
 /// Current runtime codehash of each entry, so an agent can compare it against the hash the registry

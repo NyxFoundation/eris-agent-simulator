@@ -9,7 +9,7 @@ Exit code 0 = accept (no BLOCK findings), 1 = reject (>=1 BLOCK). WARN/INFO neve
 for the operator to eyeball. Not a sandbox and not exhaustive -- the runtime caps are the real boundary;
 this just rejects the cheap, obvious stuff (zip bombs, native blobs, egress/exec, install hooks, secrets).
 """
-import hashlib
+import hashlib, stat
 import sys, os, re, zipfile, json, tempfile, shutil
 
 MAX_UNZIP_MB = 50
@@ -45,6 +45,12 @@ CODE_RULES = [
      "filesystem writes (disk-fill / tampering)"),
     ("BLOCK", r"anvil_[a-zA-Z]+|hardhat_[a-zA-Z]+|evm_(setBalance|snapshot|revert|mine|setAccountStorage)|setStorageAt|impersonateAccount|setBalance",
      "chain cheatcode / privileged RPC (only valid on the dev chain; forbidden)"),
+    # Issue #216 (5): the rule above is a line-level regex, and a method name assembled at runtime
+    # (`["anvil","setBalance"].join("_")`) contains no `anvil_` to match. The read-only client and the
+    # gateway refuse the assembled name when it is sent, and the post-run audit reads what landed; this
+    # names the cheap shapes of the assembly for the operator. WARN, and not complete by construction.
+    ("WARN", r"[\"'`](anvil|evm|hardhat)_?[\"'`]|\bmethod\s*:\s*(?![\"'`]|string\b|number\b|unknown\b|any\b)[A-Za-z_$(\[]|String\.fromCharCode|\batob\s*\(",
+     "cheatcode name possibly assembled at runtime (namespace as a bare string / computed RPC method / char codes) -- the line check cannot see it; verify against the post-run audit"),
     ("WARN", r"process\.env|process\.mainModule|globalThis\.process",
      "reads process env (may try to exfiltrate operator secrets)"),
     ("WARN", r"require\(\s*['\"]worker_threads|node:worker_threads|new\s+Worker\(",
@@ -82,18 +88,83 @@ def scan_forge_artifact(path, text):
         add("INFO", path, f"forge artifact, {nbytes} bytes of creation bytecode (deployment is permitted; issue #40)")
     return True
 
-def scan_package_json(path, text):
+# --- team dependencies ------------------------------------------------------------------------
+# Dockerfile.team fetches a team's deps in a stage that runs no participant code (npm ci
+# --ignore-scripts, pip download --only-binary) and installs them in a stage with no network. That
+# only holds if every dependency comes from the public registry by name and version: a git/URL/path
+# source, a project-level registry override or a requirements option line all move "where the bytes
+# come from" back into the participant's hands. These are BLOCK, not WARN.
+NPM_REGISTRY = "https://registry.npmjs.org/"
+REGISTRY_CONFIG_FILES = (".npmrc", ".yarnrc", ".yarnrc.yml", "pip.conf", "pip.ini", ".pydistutils.cfg")
+
+def scan_package_json(path, text, has_lock):
     try: pkg = json.loads(text)
-    except Exception: return add("WARN", path, "package.json does not parse")
+    except Exception: return add("BLOCK", path, "package.json does not parse")
     scripts = pkg.get("scripts", {}) or {}
     for hook in ("preinstall", "install", "postinstall", "prepare", "prepublish"):
         if hook in scripts:
             add("BLOCK", path, f"npm '{hook}' lifecycle script (supply-chain execution at build): {scripts[hook][:60]}")
-    deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+    deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {}),
+            **(pkg.get("optionalDependencies") or {})}
+    # The bundle root's package.json is written by bundle:agent (`@eris/sdk: file:./sdk`) and is
+    # never copied by accept-submission.sh; only a package.json inside the agent is installed.
+    bundle_root = path.replace(os.sep, "/") == "package.json"
     for d, v in deps.items():
-        if isinstance(v, str) and re.match(r"(git|https?|file|github:|\.\.?/)", v):
-            add("WARN", path, f"non-registry dependency '{d}': {v}")
+        # A deny-list on the spec. The shorthand forms are the easy ones to get wrong: "user/repo"
+        # ended at $, so "user/repo#main" and "user/repo#semver:^1" matched nothing and passed as if
+        # they named a registry version. npm resolves both by talking to the host in the spec, which
+        # is an outbound connection from the operator's builder to an address the participant chose.
+        # workspace:/portal: are pnpm/yarn protocols that npm would not install but should not pass
+        # a check whose claim is "every byte comes from the public registry by name and version".
+        if isinstance(v, str) and re.match(
+            r"(git|https?|ftps?|ssh|file|link|portal|workspace|npm:|github:|bitbucket:|gist:"
+            r"|[\w.-]+/[\w.-]+([#@/].*)?$|\.\.?/|/)",
+            v,
+        ):
+            add("WARN" if bundle_root else "BLOCK", path, f"non-registry dependency '{d}': {v}")
+    if deps and not bundle_root and not has_lock:
+        add("BLOCK", path, "package.json declares dependencies but has no package-lock.json beside it (the team build runs `npm ci`)")
     if len(deps) > 60: add("WARN", path, f"large dependency set ({len(deps)})")
+
+def scan_package_lock(path, text):
+    """Every installed package must come from the public registry with an integrity hash. Only the
+    v2/v3 `packages` map lists every entry with its source; a v1 lock keeps them under a nested
+    `dependencies` tree this does not walk, so it would pass with nothing checked. Require v2+.
+    An entry without `resolved` is not "fine by default": npm fills the gap from whatever the
+    registry/spec says at install time, so it is BLOCK too. Exempt: the root (""), and entries
+    `inBundle` (their bytes ship inside a parent tarball that is itself integrity-checked)."""
+    try: lock = json.loads(text)
+    except Exception: return add("BLOCK", path, "package-lock.json does not parse")
+    if not isinstance(lock, dict): return add("BLOCK", path, "package-lock.json is not a JSON object")
+    ver = lock.get("lockfileVersion")
+    pkgs = lock.get("packages")
+    if not isinstance(ver, int) or ver < 2 or not isinstance(pkgs, dict):
+        return add("BLOCK", path, f"lockfileVersion {ver!r} without a `packages` map (need v2/v3; regenerate with npm >= 7)")
+    for name, ent in pkgs.items():
+        if not name: continue
+        if not isinstance(ent, dict):
+            add("BLOCK", path, f"'{name}' entry is not an object"); continue
+        if ent.get("link"):
+            add("BLOCK", path, f"'{name}' is a local link, not a registry package"); continue
+        if ent.get("inBundle"): continue
+        res = ent.get("resolved")
+        if not (isinstance(res, str) and res.startswith(NPM_REGISTRY)):
+            add("BLOCK", path, f"'{name}' does not resolve to {NPM_REGISTRY}: {str(res)[:80]}")
+        elif not ent.get("integrity"):
+            add("BLOCK", path, f"'{name}' has no integrity hash")
+
+REQ_LINE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,-]+\])?==[A-Za-z0-9.!+_-]+(\s*;[^#]*)?((\s+--hash=sha256:[0-9a-f]{64})+)$")
+
+def scan_requirements(path, text):
+    """Every requirement is `name==version --hash=sha256:...` and nothing else: no option lines
+    (--index-url / -f / -e / -r / -c ...), no URLs, no paths. The team build installs with
+    --require-hashes --only-binary=:all:, which fails on these anyway; failing here says why."""
+    joined = re.sub(r"\\\n", " ", text)
+    for raw in joined.splitlines():
+        line = re.sub(r"(^|\s)#.*$", "", raw).strip()
+        if not line: continue
+        if not REQ_LINE.match(line):
+            add("BLOCK", path, f"requirement is not a hash-pinned registry release (`name==version --hash=sha256:...`): {line[:80]}")
 
 # --- operator-shipped code inside a submission -------------------------------------------------
 # `npm run bundle:agent` packs the SDK, the runtime and the shared lib alongside the participant's
@@ -134,10 +205,18 @@ def check_vendored(rel, fp):
 
 def walk_dir(root):
     total = 0; nfiles = 0
-    for dp, _, fns in os.walk(root):
+    for dp, dns, fns in os.walk(root):
+        # os.walk lists a symlinked directory under dns and does not descend into it; a symlinked
+        # file is under fns and open() would read through it. Either way the tree being scanned is
+        # not the tree that would be copied, so reject rather than follow.
+        for dn in dns:
+            if os.path.islink(os.path.join(dp, dn)):
+                add("BLOCK", os.path.relpath(os.path.join(dp, dn), root), "symlink in submission (only regular files and directories are accepted)")
         for fn in fns:
             fp = os.path.join(dp, fn); rel = os.path.relpath(fp, root)
             nfiles += 1
+            if os.path.islink(fp) or not os.path.isfile(fp):
+                add("BLOCK", rel, "symlink or special file in submission (only regular files and directories are accepted)"); continue
             try: sz = os.path.getsize(fp)
             except OSError: continue
             total += sz
@@ -145,8 +224,22 @@ def walk_dir(root):
             if check_vendored(rel, fp): continue
             if low.endswith(BINARY_EXT): add("BLOCK", rel, "binary/native artifact in submission")
             if sz > MAX_FILE_MB * 1024 * 1024: add("WARN", rel, f"large file ({sz//1024//1024} MB)")
-            if fn == "package.json":
-                scan_package_json(rel, open(fp, errors="ignore").read())
+            if fn in REGISTRY_CONFIG_FILES:
+                add("BLOCK", rel, "package-manager config file (would redirect where team dependencies are fetched from)")
+            elif fn == "npm-shrinkwrap.json" and "node_modules" not in rel:
+                # `npm ci` prefers npm-shrinkwrap.json over package-lock.json, so a benign lock next
+                # to a shrinkwrap would be the one scanned and the other the one installed. Blocked
+                # rather than scanned: there is no reason for an agent to ship one.
+                add("BLOCK", rel, "npm-shrinkwrap.json (npm ci would install from it instead of package-lock.json; ship package-lock.json only)")
+            elif fn == "package.json":
+                scan_package_json(rel, open(fp, errors="ignore").read(), os.path.isfile(os.path.join(dp, "package-lock.json")))
+            elif fn == "package-lock.json" and "node_modules" not in rel:
+                scan_package_lock(rel, open(fp, errors="ignore").read())
+            elif fn == "requirements.txt":
+                # utf-8-sig: a BOM is part of the first line otherwise, so "six==1.16.0 --hash=..."
+                # read as "\ufeffsix==..." and failed the pinned-form check with a message that looked
+                # identical to the line it rejected. pip itself accepts a BOM.
+                scan_requirements(rel, open(fp, encoding="utf-8-sig", errors="ignore").read())
             elif low.endswith(SOURCE_EXT):
                 add("INFO", rel, "Solidity source (contracts in a submission are permitted; what bounds them is the gas budget, rules §2.6)")
             elif low.endswith(".json") and "node_modules" not in rel and scan_forge_artifact(rel, open(fp, errors="ignore").read()):
@@ -169,6 +262,14 @@ def safe_extract(zf, dest):
     for i in zf.infolist():
         if i.filename.startswith("/") or ".." in i.filename.split("/"):
             add("BLOCK", i.filename, "path traversal / absolute path in archive"); continue
+        # zipfile writes a symlink entry out as a small file holding the target path, so the body
+        # scan below sees harmless text -- while `unzip` (accept-submission.sh) creates a real link
+        # and the copy follows it into another team's directory. Only regular files and
+        # directories may enter.
+        kind = (i.external_attr >> 16) & 0o170000
+        if kind not in (0, stat.S_IFREG, stat.S_IFDIR):
+            what = "symlink" if kind == stat.S_IFLNK else f"special file (mode {kind:o})"
+            add("BLOCK", i.filename, f"{what} in archive (only regular files and directories are accepted)"); continue
         zf.extract(i, dest)
 
 def main():

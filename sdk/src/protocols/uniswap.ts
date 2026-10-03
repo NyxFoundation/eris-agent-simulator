@@ -24,10 +24,20 @@ import {
   tokenInfo,
   type MarketConfig,
 } from "../markets.js";
-import { tokenAmountUsd, type UnpricedAmount } from "../valuation.js";
+import {
+  addStableUnits,
+  mergeStableUnits,
+  tokenAmountUsd,
+  type StableUnits,
+  type UnpricedAmount,
+} from "../valuation.js";
 import type { StablePrices } from "../stables.js";
 import { resolveMarket } from "./marketHelpers.js";
-import { medianOf, readAcrossWindow } from "./medianWindow.js";
+import {
+  getAmount0Delta,
+  getAmount1Delta,
+  getSqrtRatioAtTick,
+} from "../tickMath.js";
 import type {
   AgentObservation,
   BalanceSnapshot,
@@ -43,7 +53,6 @@ import type {
   BuiltTx,
   ProtocolAdapter,
   ValidationResult,
-  ValuationContext,
 } from "./types.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
@@ -52,6 +61,8 @@ type UniswapMarketState = {
   market: MarketConfig;
   priceUsdcPerWeth: number; // base/USD (name kept WETH-compatible; value is this base's price)
   tick: number;
+  // slot0's exact price. The LP split is taken from this, not from `tick` (see PoolSlot0).
+  sqrtPriceX96: bigint;
   tickSpacing: number;
   // In-range depth. Constant for a whole run until the liquidityPull stress event (issue #52)
   // withdraws seeded depth for the length of a window. Undefined when the read failed -- never 0,
@@ -179,6 +190,7 @@ async function getMarketState(
     market,
     priceUsdcPerWeth: poolPriceFromSqrtX96(slot0[0], market),
     tick: Number(slot0[1]),
+    sqrtPriceX96: slot0[0],
     tickSpacing: Number(tickSpacing),
     liquidity: liquidity === undefined ? undefined : BigInt(liquidity),
   };
@@ -383,18 +395,18 @@ export async function getLpPositions(
   owner: Address,
   // base symbol -> fair price (USD). Matches prior behavior when WETH-only.
   fairPriceByBase: Record<string, number>,
-  // pool address (lower) -> tick. If observe passes the already-read tick, the re-read is skipped.
-  knownTickByPool?: Record<string, number>,
+  // pool address (lower) -> slot0. If observe passes the already-read slot0, the re-read is skipped.
+  knownSlot0ByPool?: Record<string, PoolSlot0>,
 ): Promise<LpPositionObservation[]> {
   const markets = marketsFor("uniswap");
-  // Each market's tick (read it if not provided).
-  const tickByPool: Record<string, number> = { ...(knownTickByPool ?? {}) };
+  // Each market's slot0 (read it if not provided).
+  const slot0ByPool: Record<string, PoolSlot0> = { ...(knownSlot0ByPool ?? {}) };
   await Promise.all(
     markets.map(async (m) => {
       const pool = legOf(m).pool.toLowerCase();
-      if (tickByPool[pool] === undefined) {
+      if (slot0ByPool[pool] === undefined) {
         const s = await getMarketState(publicClient, m);
-        tickByPool[pool] = s.tick;
+        slot0ByPool[pool] = { tick: s.tick, sqrtPriceX96: s.sqrtPriceX96 };
       }
     }),
   );
@@ -477,7 +489,7 @@ export async function getLpPositions(
         if (!pool || pool === ZERO_ADDRESS) return;
         poolByKey[key] = pool;
         const slot0 = ticks[i];
-        if (slot0) tickByPool[pool.toLowerCase()] = Number(slot0[1]);
+        if (slot0) slot0ByPool[pool.toLowerCase()] = slot0Of(slot0);
       });
     }
   }
@@ -529,18 +541,18 @@ export async function getLpPositions(
       // other unknown holding is: each leg at the environment's price, or nothing when the
       // environment does not price it (an agent-issued token is worth zero to everyone).
       const resolved = poolByKey[positionPoolKey(token0, token1, fee)];
-      const unknownTick =
-        resolved === undefined ? undefined : tickByPool[resolved.toLowerCase()];
-      if (unknownTick === undefined) continue; // the pool could not be resolved; not "worth zero"
+      const unknownSlot0 =
+        resolved === undefined ? undefined : slot0ByPool[resolved.toLowerCase()];
+      if (unknownSlot0 === undefined) continue; // the pool could not be resolved; not "worth zero"
       const amounts = liquidityToTokenAmounts({
         liquidity,
-        tick: unknownTick,
+        sqrtPriceX96: unknownSlot0.sqrtPriceX96,
         tickLower,
         tickUpper,
       });
       const fees = uncollectedFees({
         liquidity,
-        tick: unknownTick,
+        tick: unknownSlot0.tick,
         tickLower,
         tickUpper,
         feeGrowthInside0LastX128,
@@ -570,16 +582,17 @@ export async function getLpPositions(
     }
     const { baseIsToken0 } = sortedTokensFor(market);
     const pool = legOf(market).pool.toLowerCase();
-    const tick = tickByPool[pool] ?? 0;
+    const slot0 = slot0ByPool[pool];
+    if (slot0 === undefined) continue; // unreadable pool: no split, rather than a guessed one
     const amounts = liquidityToTokenAmounts({
       liquidity,
-      tick,
+      sqrtPriceX96: slot0.sqrtPriceX96,
       tickLower,
       tickUpper,
     });
     const fees = uncollectedFees({
       liquidity,
-      tick,
+      tick: slot0.tick,
       tickLower,
       tickUpper,
       feeGrowthInside0LastX128,
@@ -618,32 +631,50 @@ export async function getLpPositions(
   return positions;
 }
 
+// A pool's slot0 as the LP valuation needs it. The two fields answer different questions and must
+// not be swapped for one another:
+//   - sqrtPriceX96 is the price, and the only thing that decides how liquidity splits into tokens.
+//   - tick is floor(log_1.0001(price)) -- what Tick.getFeeGrowthInside compares range boundaries
+//     against, so it is what the fee-growth term uses, exactly as the pool does.
+// The split used to be taken from the tick, i.e. from the price at the bottom of the current tick.
+// Inside a one-tick range [t, t+1) that reads as "the position is entirely token0" wherever the
+// price actually sits, so a position funded almost entirely in token1 was marked as the same
+// liquidity's worth of token0. In a pool initialised at an absurd price (anyone can create one in an
+// unused fee tier) that conversion multiplies by the gap between pool price and fair price: about
+// $2,300 deposited read as ~$10^16.
+export type PoolSlot0 = { tick: number; sqrtPriceX96: bigint };
+
+export function slot0Of(raw: readonly [bigint, number, ...unknown[]]): PoolSlot0 {
+  return { sqrtPriceX96: raw[0], tick: Number(raw[1]) };
+}
+
+// LiquidityAmounts.getAmountsForLiquidity in exact uint arithmetic, rounded down -- the tokens a
+// burn of this liquidity at this price returns (Pool._modifyPosition rounds a withdrawal down).
 export function liquidityToTokenAmounts(input: {
   liquidity: bigint;
-  tick: number;
+  sqrtPriceX96: bigint;
   tickLower: number;
   tickUpper: number;
 }): { amount0: bigint; amount1: bigint } {
-  const liquidity = Number(input.liquidity);
-  const sqrtLower = Math.pow(1.0001, input.tickLower / 2);
-  const sqrtUpper = Math.pow(1.0001, input.tickUpper / 2);
-  const sqrtCurrent = Math.pow(1.0001, input.tick / 2);
-
-  let amount0 = 0;
-  let amount1 = 0;
-  if (input.tick < input.tickLower) {
-    amount0 = (liquidity * (sqrtUpper - sqrtLower)) / (sqrtUpper * sqrtLower);
-  } else if (input.tick >= input.tickUpper) {
-    amount1 = liquidity * (sqrtUpper - sqrtLower);
-  } else {
-    amount0 =
-      (liquidity * (sqrtUpper - sqrtCurrent)) / (sqrtUpper * sqrtCurrent);
-    amount1 = liquidity * (sqrtCurrent - sqrtLower);
+  const { liquidity, sqrtPriceX96 } = input;
+  if (liquidity <= 0n) return { amount0: 0n, amount1: 0n };
+  const lower = getSqrtRatioAtTick(input.tickLower);
+  const upper = getSqrtRatioAtTick(input.tickUpper);
+  if (sqrtPriceX96 <= lower) {
+    return {
+      amount0: getAmount0Delta(lower, upper, liquidity, false),
+      amount1: 0n,
+    };
   }
-
+  if (sqrtPriceX96 < upper) {
+    return {
+      amount0: getAmount0Delta(sqrtPriceX96, upper, liquidity, false),
+      amount1: getAmount1Delta(lower, sqrtPriceX96, liquidity, false),
+    };
+  }
   return {
-    amount0: BigInt(Math.max(0, Math.floor(amount0))),
-    amount1: BigInt(Math.max(0, Math.floor(amount1))),
+    amount0: 0n,
+    amount1: getAmount1Delta(lower, upper, liquidity, false),
   };
 }
 
@@ -895,7 +926,7 @@ export function lpPositionValueUsdc(
     bigint,
     bigint,
   ],
-  tick: number,
+  slot0: PoolSlot0,
   fairPriceUsdcPerWeth: number,
 ): number {
   const [
@@ -919,7 +950,7 @@ export function lpPositionValueUsdc(
   const { baseIsToken0 } = sortedTokensFor(market);
   const amounts = liquidityToTokenAmounts({
     liquidity,
-    tick,
+    sqrtPriceX96: slot0.sqrtPriceX96,
     tickLower,
     tickUpper,
   });
@@ -960,8 +991,8 @@ export function positionPoolKey(
 }
 
 export type LpValuationContext = {
-  // lowercased pool address -> current tick.
-  tickByPool: Record<string, number>;
+  // lowercased pool address -> current slot0 (price for the split, tick for fee growth).
+  slot0ByPool: Record<string, PoolSlot0>;
   // base symbol -> USD price. Stables do not appear here: they are quoted against USDC, not
   // against a USD fair-price feed, so their prices come from stablePrices (issue #27).
   fairByBase: Record<string, number>;
@@ -972,14 +1003,12 @@ export type LpValuationContext = {
   poolByKey?: Record<string, Address>;
   // Issue #21: pool fee growth keyed by lowercased pool address. Omitted -> fees are not marked.
   feeGrowthByPool?: Record<string, PoolFeeGrowth>;
-  // Rules §4.1: the tick the principal is split at, when it differs from the pool's tick at this
-  // block (the median over the scoring window). Omitted -> tickByPool. Fees always use tickByPool:
-  // fee growth inside the range is only defined against the tick the pool actually has.
-  markTickByPool?: Record<string, number>;
 };
 
 export type LpPositionValuation = {
   valueUsdc: number;
+  // The market-priced stable legs counted in valueUsdc at the probe's mid (valuation.ts StableUnits).
+  stableUnits: StableUnits;
   // Holdings excluded from valueUsdc because they could not be priced. amountRaw is "" when even the
   // amounts are unknown (the pool, and therefore the tick, could not be resolved).
   unpriced: UnpricedAmount[];
@@ -1008,12 +1037,13 @@ export function lpPositionValuation(
     registeredPoolFor(token0, token1, fee) ??
     ctx.poolByKey?.[positionPoolKey(token0, token1, fee)];
   const key = pool?.toLowerCase();
-  const tick = key === undefined ? undefined : ctx.tickByPool[key];
-  // Without a tick the liquidity cannot be split into token amounts. Falling back to tick 0 would
-  // silently mis-value the position (it reads as entirely one-sided), so report it instead.
-  if (tick === undefined) {
+  const slot0 = key === undefined ? undefined : ctx.slot0ByPool[key];
+  // Without slot0 the liquidity cannot be split into token amounts. Falling back to a default price
+  // would silently mis-value the position (it reads as entirely one-sided), so report it instead.
+  if (slot0 === undefined) {
     return {
       valueUsdc: 0,
+      stableUnits: {},
       unpriced: [
         { token: token0, amountRaw: "" },
         { token: token1, amountRaw: "" },
@@ -1021,9 +1051,16 @@ export function lpPositionValuation(
     };
   }
 
+  // The split is at this block's price, also on a scoring boundary: it is not a price but the
+  // holding itself -- the tokens a burn in this block returns. Rules §4.1's median is for prices;
+  // the holding is the boundary's. A median price paired with the boundary's liquidity values tokens
+  // the position does not have: in a pool its owner alone provides, three of five window blocks
+  // pushed and the price put back before the bell marked the same liquidity at the pushed split,
+  // which at fair prices is worth more (the mark is lowest where the pool agrees with fair), for
+  // the cost of the swap fees, which went to the same owner.
   const amounts = liquidityToTokenAmounts({
     liquidity,
-    tick: (key === undefined ? undefined : ctx.markTickByPool?.[key]) ?? tick,
+    sqrtPriceX96: slot0.sqrtPriceX96,
     tickLower,
     tickUpper,
   });
@@ -1031,7 +1068,7 @@ export function lpPositionValuation(
     key === undefined ? undefined : ctx.feeGrowthByPool?.[key];
   const fees = uncollectedFees({
     liquidity,
-    tick,
+    tick: slot0.tick,
     tickLower,
     tickUpper,
     feeGrowthInside0LastX128,
@@ -1044,6 +1081,7 @@ export function lpPositionValuation(
   ] as const;
 
   let valueUsdc = 0;
+  const stableUnits: StableUnits = {};
   const unpriced: LpPositionValuation["unpriced"] = [];
   // Suppressing the fee term when a boundary read failed is deliberate (guessing would mis-mark the
   // position), but it still removes value from the mark, so it says so rather than only returning
@@ -1067,50 +1105,21 @@ export function lpPositionValuation(
       continue;
     }
     valueUsdc += usd;
+    addStableUnits(stableUnits, token, amount, ctx.stablePrices);
   }
-  return { valueUsdc, unpriced };
-}
-
-// The tick each pool's principal is split at on a scoring boundary: the median of the pool's tick
-// over the window (rules §4.1), the boundary's own tick included. Pools whose tick could not be read
-// at the boundary keep no entry -- their positions are already reported as unreadable, and a mark
-// assembled from the earlier blocks alone would value a position the boundary could not see. A
-// window block whose slot0 failed is dropped. Outside a boundary the window is empty and this is
-// tickByPool unchanged.
-async function medianTickByPool(
-  ctx: ValuationContext,
-  pools: Address[],
-  tickByPool: Record<string, number>,
-): Promise<Record<string, number>> {
-  const live = pools.filter((p) => tickByPool[p.toLowerCase()] !== undefined);
-  const samples = await readAcrossWindow(
-    ctx,
-    live.map((pool) => ({ address: pool, abi: poolAbi, functionName: "slot0" })),
-  );
-  if (samples.length === 0) return tickByPool;
-  const out = { ...tickByPool };
-  live.forEach((pool, i) => {
-    const key = pool.toLowerCase();
-    const ticks = [tickByPool[key]];
-    for (const sample of samples) {
-      const slot0 = sample[i] as readonly [bigint, number] | undefined;
-      if (slot0) ticks.push(Number(slot0[1]));
-    }
-    out[key] = medianOf(ticks) ?? tickByPool[key];
-  });
-  return out;
+  return { valueUsdc, unpriced, stableUnits };
 }
 
 // For reconstruct (scoring): resolve the position's market and derive an all-base LP value (WBTC/USDC etc.)
-// using tickByPool and fairByBase. Registered markets only; lpPositionValuation covers the rest.
+// using slot0ByPool and fairByBase. Registered markets only; lpPositionValuation covers the rest.
 export function lpPositionValueUsdcMulti(
   position: Parameters<typeof lpPositionValueUsdc>[0],
-  tickByPool: Record<string, number>,
+  slot0ByPool: Record<string, PoolSlot0>,
   fairByBase: Record<string, number>,
   feeGrowthByPool?: Record<string, PoolFeeGrowth>,
 ): number {
   return lpPositionValuation(position, {
-    tickByPool,
+    slot0ByPool,
     fairByBase,
     feeGrowthByPool,
   }).valueUsdc;
@@ -1363,14 +1372,17 @@ export const uniswapAdapter: ProtocolAdapter = {
   async observe(ctx, state, agent, fairPrice): Promise<UniswapObservation> {
     const s = state as UniswapState;
     const fairByBase = ctx.fairPrices ?? { WETH: fairPrice };
-    const tickByPool: Record<string, number> = {};
+    const slot0ByPool: Record<string, PoolSlot0> = {};
     for (const ms of s.markets)
-      tickByPool[legOf(ms.market).pool.toLowerCase()] = ms.tick;
+      slot0ByPool[legOf(ms.market).pool.toLowerCase()] = {
+        tick: ms.tick,
+        sqrtPriceX96: ms.sqrtPriceX96,
+      };
     const positions = await getLpPositions(
       ctx.publicClient,
       agent,
       fairByBase,
-      tickByPool,
+      slot0ByPool,
     );
     const weth =
       s.markets.find((m) => m.market.base === "WETH") ?? s.markets[0];
@@ -1485,10 +1497,10 @@ export const uniswapAdapter: ProtocolAdapter = {
       })),
     ];
 
-    const tickByPool: Record<string, number> = {};
+    const slot0ByPool: Record<string, PoolSlot0> = {};
     markets.forEach((m, i) => {
       const slot0 = stage1[i] as readonly [bigint, number] | undefined;
-      if (slot0) tickByPool[legOf(m).pool.toLowerCase()] = Number(slot0[1]);
+      if (slot0) slot0ByPool[legOf(m).pool.toLowerCase()] = slot0Of(slot0);
     });
     const owners: Array<{ agentId: string; owner: Address; index: bigint }> =
       [];
@@ -1530,7 +1542,7 @@ export const uniswapAdapter: ProtocolAdapter = {
       args: [tokenId ?? 0n],
     }));
 
-    // Pools outside MARKET_LEGS: resolve through the factory, then read their ticks.
+    // Pools outside MARKET_LEGS: resolve through the factory, then read their slot0.
     const poolByKey: Record<string, Address> = {};
     const wanted = new Map<string, [Address, Address, number]>();
     for (const raw of positions) {
@@ -1564,7 +1576,7 @@ export const uniswapAdapter: ProtocolAdapter = {
           }));
           discovered.forEach((pool, i) => {
             const slot0 = slots[i] as readonly [bigint, number] | undefined;
-            if (slot0) tickByPool[pool.toLowerCase()] = Number(slot0[1]);
+            if (slot0) slot0ByPool[pool.toLowerCase()] = slot0Of(slot0);
           });
         }
       }
@@ -1630,16 +1642,6 @@ export const uniswapAdapter: ProtocolAdapter = {
       }
     }
 
-    // Rules §4.1: the pool's price is the market-derived price in an LP mark -- it decides how the
-    // liquidity splits into the two tokens, which are then valued at the reference prices. So at a
-    // scoring boundary the principal splits at the median tick over the window. Fees are not a
-    // price: what the position has earned is a fact of this block, so they stay at its tick.
-    const markTickByPool = await medianTickByPool(
-      ctx,
-      [...feePools.values()].map((p) => p.address),
-      tickByPool,
-    );
-
     const fairByBase = ctx.fairByBase();
     const stablePrices = ctx.stablePrices();
     const out = unreadableCount(zero());
@@ -1660,25 +1662,26 @@ export const uniswapAdapter: ProtocolAdapter = {
         return;
       }
       const valuation = lpPositionValuation(raw as PositionTuple, {
-        tickByPool,
+        slot0ByPool,
         fairByBase,
         stablePrices,
         poolByKey,
         feeGrowthByPool,
-        markTickByPool,
       });
       const agent = out[agentId];
       agent.valueUsdc += valuation.valueUsdc;
       // Burning liquidity returns the position's tokens plus its fees at no cost, so the mark is
       // already what an exit realizes.
       agent.liquidatableValueUsdc += valuation.valueUsdc;
+      if (Object.keys(valuation.stableUnits).length > 0) {
+        agent.stableLongs ??= {};
+        mergeStableUnits(agent.stableLongs, valuation.stableUnits);
+      }
       for (const h of valuation.unpriced)
         agent.unpriced.push({ ...h, source: `uniswap-lp:${tokenIds[j]}` });
     });
     return out;
   },
-
-  medianSurfaces: ["uniswap-lp"],
 
   // The position manager is an ERC-721 and its positions are valued by valueAtBlock.
   async accountedTokens(): Promise<Address[]> {

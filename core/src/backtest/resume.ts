@@ -39,6 +39,8 @@ export type StoredMatrix = {
   agentStateRoot?: string;
   /** The scenario key the matrix was realized under (ADR 0027). Absent before the key existed. */
   scenarioKey?: { source?: string; commitment?: string };
+  /** How the streams were named (sdk/src/rng.ts SCENARIO_STREAMS). Absent before issue #186. */
+  scenarioStreams?: string;
 };
 
 /**
@@ -87,6 +89,8 @@ export type ResumeTarget = {
   rosterFingerprint?: string;
   /** Commitment of the scenario key this invocation runs under (core/src/scenarioKey.ts). */
   scenarioKeyCommitment?: string;
+  /** The stream naming this invocation draws with (sdk/src/rng.ts SCENARIO_STREAMS). */
+  scenarioStreams?: string;
 };
 
 /**
@@ -152,11 +156,24 @@ export function assertResumable(
         `scenarioKey: stored ${storedKey.slice(0, 19)}…, now ${current.scenarioKeyCommitment.slice(0, 19)}…`,
       );
   }
+  // Issue #186: the same key and seed draw a different world once the regime names the stream. A
+  // matrix without the field was realized by the regime-less streams, which this code no longer
+  // draws, so its stored epochs and the ones run now would be two worlds ranked as one.
+  if (current.scenarioStreams !== undefined && stored.scenarioStreams !== current.scenarioStreams)
+    problems.push(
+      stored.scenarioStreams === undefined
+        ? `scenarioStreams: the stored matrix predates regime-named streams (issue #186), so this ` +
+            `code cannot reproduce its epochs (now ${current.scenarioStreams}). Start a new matrix ` +
+            "without --resume, or finish this one at the commit that wrote it (sourceCommit)"
+        : `scenarioStreams: stored ${stored.scenarioStreams}, now ${current.scenarioStreams}. ` +
+            "Start a new matrix without --resume, or finish this one at the commit that wrote it " +
+            "(sourceCommit)",
+    );
   if (problems.length > 0)
     throw new Error(
       `--resume: the stored matrix is a different competition (${problems.join("; ")}). ` +
         "A resumed run has to continue the same scenario set with the same k, reset unit, " +
-        "repeat, agent state root, roster and scenario key, or its standings would average two " +
+        "repeat, agent state root, roster, scenario key and stream naming, or its standings would average two " +
         "competitions (rules §4.4.1 / §4.7.1)",
     );
 }

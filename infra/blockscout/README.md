@@ -72,6 +72,17 @@ are unaffected. Internal-transaction and pending-transaction fetchers are disabl
 as the official anvil compose does (the former needs `debug_traceBlockByNumber`, and both
 add RPC load to the anvil that is also serving every agent's observe loop).
 
+**The explorer is not a second RPC entrance.** It reads the node directly (`ETHEREUM_JSONRPC_HTTP_URL`
+points at anvil, not at the RPC gateway on :8546), because indexing needs methods the gateway refuses.
+That is fine for reading, and it would not be fine for writing: two Blockscout endpoints forward a
+caller's own JSON-RPC method to that node — `/api/eth-rpc`, and the etherscan-compatible
+`/api?module=proxy` (`eth_call`, `eth_sendRawTransaction`, `eth_getCode`, `eth_getStorageAt`, …). The
+explorer is published without authentication, so those two would hand anyone a path around every rule
+the gateway enforces: the per-participant key, the method allowlist, the per-transaction gas cap, the
+fee rule and the rate limit. `proxy/default.conf.template` answers both with 403 in front of the
+backend, and `API_V1_WRITE_METHODS_DISABLED=true` says the same from inside. `/api/v2`, which the
+dashboard and the explorer's own UI use, is read-only over the indexed database and is untouched.
+
 **Egress**: the only outbound dependency is contract verification through Blockscout's
 hosted eth-bytecode-db, which names canonical bytecode (Uniswap V3, Aave, …) without a
 local verifier. Set `MICROSERVICE_SC_VERIFIER_ENABLED=false` in

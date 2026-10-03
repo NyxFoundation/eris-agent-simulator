@@ -17,7 +17,11 @@ export ERIS_PYTHON="$PWD/.venv/bin/python"
 cp -r example/agents/my-arb-py example/agents/my-python
 ```
 
-Declare additional dependencies, with versions, in `example/agents/my-python/requirements.txt`.
+Declare additional dependencies in `example/agents/my-python/requirements.txt`, each pinned with
+its hash (`numpy==2.1.3 --hash=sha256:…`; `pip-compile --generate-hashes` writes this form). The
+submission build installs **wheels only** and offline, so a package without a wheel for the
+builder's platform, an option line (`--index-url`, `-e`, `-r` …) or a URL/path requirement is
+rejected at submission.
 Install that file in the local venv. `agent:build -- team my-python` installs it at **build time**;
 the running container has a read-only root filesystem. Installing a package is not part of an LLM revision.
 The container wrapper uses its own `python3`, even when `ERIS_PYTHON` points at a host venv.
