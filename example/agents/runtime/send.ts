@@ -63,18 +63,19 @@ const OWN_TX_RING = 64;
 // self-limits to exactly what the post-run check judges by; a participant running self-hosted gets
 // the same defaults. There is no cap on how many transactions an agent puts in a block (rules §2.6,
 // 2026-09-06: inclusion is the priority-fee auction), but once agents deploy their own contracts one
-// expensive call can starve the 30M block for everyone, so gas is budgeted per tx and per block.
-const MAX_TX_GAS = BigInt(process.env.ERIS_MAX_TX_GAS ?? "30000000"); // = the block (rules §2.6)
+// expensive call can starve the 30M block for everyone, so gas is budgeted per tx and per block:
+// 10M each, a third of the block (sdk/src/config.ts says why that number).
+const MAX_TX_GAS = BigInt(process.env.ERIS_MAX_TX_GAS ?? "10000000");
 const MAX_AGENT_BLOCK_GAS = BigInt(
-  process.env.ERIS_MAX_AGENT_BLOCK_GAS ?? "30000000",
-); // one agent may not take more than a block's worth of gas in one block
+  process.env.ERIS_MAX_AGENT_BLOCK_GAS ?? "10000000",
+); // one agent may not take more than a third of the block in one block
 // The gas limit of a transaction whose estimate failed while this agent still has transactions of its
 // own unmined (approve -> swap, WETH.withdraw -> openTrove, the legs of a bundle, a submit followed by
 // a returned action). Estimation reads the latest block: the gateway writes "latest" into an
 // eth_estimateGas that omits the block, because anvil would otherwise run it against the pool
 // (infra/rpc-gateway/gateway.mjs). Against latest the later leg reverts -- the allowance or the ETH it
 // needs is still pending -- so the leg goes out with this fixed limit instead of being dropped. It is
-// inside both budgets (per-tx and per-block 30M) and counts against the per-block one like any other
+// inside both budgets (per-tx and per-block 10M) and counts against the per-block one like any other
 // limit; unused gas is not charged. Adapters that know their cost set `gas` themselves (GMX).
 const DEPENDENT_TX_GAS = BigInt(
   process.env.ERIS_DEPENDENT_TX_GAS ?? "2000000",

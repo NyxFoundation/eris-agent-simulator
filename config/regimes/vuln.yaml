@@ -127,8 +127,8 @@ vuln:
 agentMarkets:
   enabled: true
   registrationsPerBlock: 8
-  maxTxGas: "30000000"
-  maxAgentBlockGas: "30000000"
+  maxTxGas: "10000000"
+  maxAgentBlockGas: "10000000"
 
 agents:
   - id: noop

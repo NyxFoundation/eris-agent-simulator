@@ -43,7 +43,7 @@ if AGENT_MARKETS:
     # values from config/regimes/agent-markets.yaml -- a load test that relaxes the thing it is
     # measuring measures nothing.
     head += ("\nagentMarkets:\n  enabled: true\n  registrationsPerBlock: 8\n"
-             '  maxTxGas: "30000000"\n  maxAgentBlockGas: "90000000"\n')
+             '  maxTxGas: "10000000"\n  maxAgentBlockGas: "10000000"\n')
 
 # run.sh's contract is "each competing agent runs in a memory/CPU-capped container", and that only
 # happens when the CONFIG says so. run.agentSandbox defaults to `process`, config/example.yaml does

@@ -477,15 +477,28 @@ export function loadConfig(env = process.env): SimConfig {
     vulnLlm: env.ERIS_VULN_LLM ?? "0",
     agentMarkets: env.ERIS_AGENT_MARKETS === "1",
     agentMarketsPerBlockCap: intEnv(env.ERIS_AGENT_MARKETS_CAP, 8),
-    // 30,000,000: the number the agent runtime has always self-limited to (send.ts), promoted to
-    // the config so the runtime, the RPC gateway and the post-run check all read one value instead
-    // of three that can drift apart. It is ~10x the heaviest real operation and well under the
-    // 320,000,000 block gas limit the rules fix.
-    maxTxGas: bigintEnv(env.ERIS_MAX_TX_GAS, 30_000_000n),
-    // One block's worth (rules §2.6: a 30M block, no per-agent tx count). There is no count cap since
-    // 2026-09-06 -- inclusion is the priority-fee auction -- so the gas budget is what stops one agent
-    // from starving the block.
-    maxAgentBlockGas: bigintEnv(env.ERIS_MAX_AGENT_BLOCK_GAS, 30_000_000n),
+    // 10,000,000 per transaction and per agent per block. One value read by the runtime (send.ts),
+    // the RPC gateway and the post-run check, so the three cannot drift apart.
+    //
+    // A third of the official epoch's block (30,000,000; core/src/cli/backtest.ts -- the practice
+    // devnet runs 320,000,000, config/practice.yaml). At 30M each, one agent could legitimately
+    // fill the whole block every block: burning 28M gas at a tip just above the background flow's
+    // (0.1-0.2 gwei) costs ~1 ETH over a 360-block epoch and shuts every other participant and the
+    // flow out (the oracle and the keeper bid above the fee cap, so they still land). At 10M it
+    // takes three colluding agents and three times the cost.
+    //
+    // Why 10M and not lower: the heaviest operations an agent has a reason to send are a Uniswap V3
+    // createPool (~4.5-5M, sent with ~6.5M after the runtime's 1.3x estimate buffer) and deploying a
+    // contract at the EIP-170 size of 24KB (~6M, ~8M declared). Everything else measured is under
+    // 1M (31,454 agent transactions in local runs: p99 0.9M, max 0.95M = a GMX order multicall).
+    //
+    // anvil packs blocks by gas used, not by the declared limit (measured on 1.5.1: five
+    // transactions declaring 29M each landed in one 30M block), so the declared limit alone
+    // starves no one; the budget is on what is actually burned.
+    maxTxGas: bigintEnv(env.ERIS_MAX_TX_GAS, 10_000_000n),
+    // Rules §2.6 caps no transaction count since 2026-09-06 -- inclusion is the priority-fee
+    // auction -- so this budget is what stops one agent from starving the block (above).
+    maxAgentBlockGas: bigintEnv(env.ERIS_MAX_AGENT_BLOCK_GAS, 10_000_000n),
     // 1% of the smaller endowment of the pair (~760 USDC on the official basket, 250 on a USDC-only
     // regime): below it a cross-unit movement is recorded but not flagged.
     rosterTransferFlagBps: intEnv(env.ERIS_ROSTER_TRANSFER_FLAG_BPS, 100),
