@@ -85,11 +85,15 @@ export function scoresFromSummary(
       flags.push(
         `${agent.unloggedTxCount} on-chain tx(s) absent from the agent's submitted log`,
       );
-    // One line per flagged movement, from either side (issue #208): the sibling that received is
-    // as much a party to §8 as the one that sent, and a stranger over the threshold is a fact the
-    // operator reads next to both numbers.
-    for (const t of agent.rosterTransfers ?? [])
+    // One line per flagged movement (issue #208). Both ends where both chose it: two submissions of
+    // one unit paying each other, or a transfer over the threshold, which takes a real position to
+    // make. The sender alone where the far end could not have refused -- an ERC-20 transfer needs no
+    // consent, and the scorer prices neither an LST share in a wallet nor a launch token, so one wei
+    // of either would otherwise let anyone write a §8 line into anyone's record.
+    for (const t of agent.rosterTransfers ?? []) {
+      if (t.flagSide === "sender" && t.from !== id) continue;
       flags.push(rosterTransferFlag(t, id));
+    }
     // P off the epoch's two boundaries when the run recorded it; a run from before that field marks
     // both ends at the final prices, which differs by a per-run constant and is said so.
     const pnl: Pick<AgentScore, "pnlUsdc" | "pnlSource"> =

@@ -120,6 +120,14 @@ export type RosterTransferReason =
   | "over-threshold"
   | "unpriced";
 
+/**
+ * Who a flagged movement is charged to. "both" where each end chose it -- two submissions of one
+ * unit paying each other, or a transfer over the threshold, which takes a real position to make.
+ * "sender" where the far end had no say: an ERC-20 transfer cannot be refused, so a flag on the
+ * receiver would be a line anyone could write into anyone's record.
+ */
+export type RosterFlagSide = "both" | "sender";
+
 // What summary.json / events.jsonl carry per (route, from, to, token, via). Plain JSON: amounts are
 // decimal strings so a reader without bigint support can still read it.
 export type RosterTransfer = {
@@ -143,6 +151,8 @@ export type RosterTransfer = {
   viaCreator?: string;
   flagged: boolean;
   reason?: RosterTransferReason;
+  // Absent means "both", the ordinary case.
+  flagSide?: RosterFlagSide;
   thresholdUsdc?: number;
 };
 
@@ -464,11 +474,21 @@ export function summarizeRosterTransfers(opts: {
     const threshold = thresholdUsdc(from, to, opts.thresholdBps);
     let flagged = false;
     let reason: RosterTransferReason | undefined;
+    // Which side carries it into matrix.json. Both, except where the far end could not have
+    // refused (see the unpriced branch).
+    let flagSide: RosterFlagSide = "both";
     if (sameParticipant) {
       flagged = true;
       reason = "same-participant";
     } else if (priced.valueUsdc !== null) {
-      if (priced.valueUsdc >= threshold) {
+      // Only a direct transfer is charged to strangers on size alone. A routed one is a trade:
+      // both ends of a swap through somebody's pool, a supply and a borrow in the same lending
+      // market. Those are what the environment rewards -- taking the other side of a venue a
+      // participant built is named as a skill, and 1% of the endowment is ~760 USDC, which the
+      // reference agents cross in ordinary play. Between two submissions of one unit the route
+      // does not matter (above); between strangers a routed movement is reported and not flagged.
+      const direct = m.route === "eth" || m.route === "erc20";
+      if (direct && priced.valueUsdc >= threshold) {
         flagged = true;
         reason = "over-threshold";
       }
@@ -476,8 +496,15 @@ export function summarizeRosterTransfers(opts: {
       // A direct transfer of something the scorer cannot price cannot be bounded by the threshold
       // either; between strangers it is still a transfer nobody trades through. Routed movements of
       // unknown tokens (a launch token through someone's pool) are reported only.
+      //
+      // The sender's flag only (`flagSide`). A transfer needs no consent from the far end: ERC-20
+      // has no way to refuse one, and the scorer prices neither LST shares in a wallet nor a launch
+      // token, both of which every official regime puts on the chain. One wei of either, sent to
+      // whoever is in front in the standings, would otherwise write a §8 line into their record --
+      // and the record is what the operator reads at the end of the week. Whoever sent it chose to.
       flagged = true;
       reason = "unpriced";
+      flagSide = "sender";
     }
     out.push({
       route: m.route,
@@ -500,6 +527,7 @@ export function summarizeRosterTransfers(opts: {
       ...(m.viaCreator !== undefined ? { viaCreator: m.viaCreator } : {}),
       flagged,
       ...(reason !== undefined ? { reason } : {}),
+      ...(flagged && flagSide !== "both" ? { flagSide } : {}),
       ...(sameParticipant ? {} : { thresholdUsdc: threshold }),
     });
   }
@@ -559,7 +587,12 @@ export function flaggedRosterTransfersByAgent(
   const out: Record<string, RosterTransfer[]> = {};
   for (const t of transfers) {
     if (!t.flagged) continue;
-    for (const id of [t.from, t.to]) (out[id] ??= []).push(t);
+    // `flagSide: "sender"` is charged to one end only: the far end could not have refused it, so
+    // putting it in their record would let anyone write a §8 line into anyone's (see the unpriced
+    // branch of summarizeRosterTransfers). This is the one place that decides whose record a
+    // movement lands in -- summary.json's per-agent list and matrix.json's flags both read it.
+    const sides = t.flagSide === "sender" ? [t.from] : [t.from, t.to];
+    for (const id of sides) (out[id] ??= []).push(t);
   }
   return out;
 }

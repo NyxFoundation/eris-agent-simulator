@@ -270,24 +270,46 @@ test("a token the scorer cannot price: a direct transfer between strangers is fl
   assert.deepEqual(transfers.map((t) => t.valueUsdc), [null, null]);
 });
 
-test("both sides of a flagged transfer carry it, and each side's flag line reads from its own seat", () => {
+test("a flag is charged to both ends when both chose it, and to the sender alone when one could not refuse", () => {
   const transfers = summarizeRosterTransfers({
     movements: [
+      // Same unit, direct: both ends chose it.
       { route: "erc20", from: "team-x-a", to: "team-x-b", token: USDC, amountRaw: 5_000_000_000n, block: 10 },
-      { route: "erc20", from: "solo", to: "team-x-a", token: USDC, amountRaw: 1_000_000n, block: 11 }, // not flagged
+      // Same unit, routed: the route does not matter between two submissions of one unit.
+      { route: "lending", from: "team-x-b", to: "team-x-a", token: USDC, amountRaw: 7_000_000_000n, block: 11, via: "0xm", viaKind: "lendingMarket", viaCreator: "team-x-a" },
+      // Strangers, routed: a trade. Reported, not flagged -- taking the other side of a venue a
+      // participant built is a skill the environment rewards, and 1% of 20,000 is 200 USDC.
       { route: "lending", from: "solo", to: "team-x-b", token: USDC, amountRaw: 9_000_000_000n, block: 12, via: "0xm", viaKind: "lendingMarket", viaCreator: "team-x-b" },
+      // Strangers, direct, unpriced: one wei of something nobody prices. The receiver had no say.
+      { route: "erc20", from: "solo", to: "team-x-a", token: JUNK, amountRaw: 1n, block: 13 },
     ],
     agents,
     pricing,
     thresholdBps: 100,
   });
   const byAgent = flaggedRosterTransfersByAgent(transfers);
-  assert.deepEqual(Object.keys(byAgent).sort(), ["solo", "team-x-a", "team-x-b"]);
-  assert.equal(byAgent["team-x-a"].length, 1);
-  assert.equal(byAgent["team-x-b"].length, 2);
-  assert.equal(byAgent["solo"].length, 1);
 
-  const sibling = byAgent["team-x-a"][0];
+  // The routed cross-unit movement is in the run's list but carries no flag for either end.
+  const routedStranger = transfers.find((t) => t.route === "lending" && t.from === "solo");
+  assert.equal(routedStranger?.flagged, false);
+  assert.equal(routedStranger?.reason, undefined);
+
+  // The dust is flagged, and only against whoever sent it.
+  const dust = transfers.find((t) => t.token === JUNK.toLowerCase() || t.token === JUNK);
+  assert.equal(dust?.flagged, true);
+  assert.equal(dust?.reason, "unpriced");
+  assert.equal(dust?.flagSide, "sender");
+
+  // So the receiver's record says nothing about it: otherwise anyone could write a §8 line into
+  // anyone's record for one wei, and the record is what the operator reads at the end.
+  const sent = byAgent["solo"] ?? [];
+  const received = byAgent["team-x-a"] ?? [];
+  assert.equal(sent.filter((t) => t.reason === "unpriced").length, 1);
+  assert.equal(received.filter((t) => t.reason === "unpriced").length, 0);
+
+  // Both ends of the same-unit transfers, each line read from its own seat.
+  const sibling = byAgent["team-x-a"].find((t) => t.route === "erc20" && t.reason === "same-participant");
+  assert.ok(sibling);
   assert.match(
     rosterTransferFlag(sibling, "team-x-a"),
     /^value moved between registered addresses: sent 5000\.00 USDC to team-x-b in 1 ERC-20 transfer\(s\) -- same participant unit team-x: self-dealing between two submissions \(rules §8; for the operator to judge\)$/,
@@ -296,17 +318,11 @@ test("both sides of a flagged transfer carry it, and each side's flag line reads
     rosterTransferFlag(sibling, "team-x-b"),
     /received 5000\.00 USDC from team-x-a in 1 ERC-20 transfer\(s\)/,
   );
-  const lending = byAgent["solo"][0];
-  assert.match(
-    rosterTransferFlag(lending, "solo"),
-    /supplied 9000\.00 USDC that team-x-b borrowed in lending market 0xm \(created by team-x-b\) -- over the 200\.00 USDC flag threshold/,
-  );
-  assert.match(
-    rosterTransferFlag(lending, "team-x-b"),
-    /borrowed 9000\.00 USDC that solo supplied in lending market 0xm/,
-  );
+  const routedSame = byAgent["team-x-b"].find((t) => t.route === "lending");
+  assert.ok(routedSame);
+  assert.match(rosterTransferFlag(routedSame, "team-x-b"), /supplied 7000\.00 USDC/);
+  assert.match(rosterTransferFlag(routedSame, "team-x-a"), /borrowed/);
 });
-
 test("summary.json's per-agent rosterTransfers become flags beside the score in the matrix record", () => {
   const transfers = summarizeRosterTransfers({
     movements: [

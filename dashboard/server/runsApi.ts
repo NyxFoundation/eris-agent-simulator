@@ -206,10 +206,20 @@ function redactStandings(file: Json): Json {
 
 /** summary.json: the seeds, and a participant's stderr (their process, their words). */
 function redactSummary(file: Json): Json {
-  const { seed: _seed, flowSeed: _flowSeed, ...rest } = file;
+  // rosterTransfers (issue #208) names which participant moved what to which other participant.
+  // It is a recorded fact for the operator to judge under rules §8, not a finding -- nothing in it
+  // has been adjudicated, and the same movement can be a trade or self-dealing depending on who
+  // owns both ends. Published during the week it would read as an accusation the audience cannot
+  // check, about people who cannot answer. The run-level list and the per-agent one both go.
+  const {
+    seed: _seed,
+    flowSeed: _flowSeed,
+    rosterTransfers: _rosterTransfers,
+    ...rest
+  } = file;
   if (Array.isArray(rest.agents)) {
     rest.agents = (rest.agents as Json[]).map((a) => {
-      const { stderrTail: _stderr, ...agent } = a;
+      const { stderrTail: _stderr, rosterTransfers: _agentTransfers, ...agent } = a;
       return agent;
     });
   }

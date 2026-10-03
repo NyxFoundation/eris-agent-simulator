@@ -546,3 +546,45 @@ test("/manifest.json is a 404 when no admitted run has written one", async () =>
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the public view withholds who moved value to whom", async () => {
+  // rosterTransfers (issue #208) is a recorded fact for the operator to judge under rules §8, not
+  // a finding: the same movement is a trade between strangers or self-dealing within one unit
+  // depending on who owns both ends, and nothing in the list has been adjudicated. Served during
+  // the week it reads as an accusation the audience cannot check, about people who cannot answer.
+  const root = fixtureRuns();
+  const run = join(root, "2026-11-01T10-00-00-000Z");
+  const summary = {
+    agents: [
+      {
+        id: "a",
+        pnlUsdc: 1,
+        rosterTransfers: [{ route: "erc20", from: "a", to: "b", flagged: true }],
+      },
+    ],
+    rosterTransfers: [{ route: "erc20", from: "a", to: "b", flagged: true }],
+  };
+  writeFileSync(join(run, "summary.json"), JSON.stringify(summary));
+  try {
+    const pub = await serve(root, true, ["matrix-2026-11-01"]);
+    try {
+      const body = JSON.parse((await pub.get("/2026-11-01T10-00-00-000Z/summary.json")).text);
+      assert.equal("rosterTransfers" in body, false);
+      assert.equal("rosterTransfers" in body.agents[0], false);
+      assert.equal(body.agents[0].pnlUsdc, 1, "the score itself is still served");
+    } finally {
+      await pub.close();
+    }
+    // The operator's own view keeps them: that is who the list is for.
+    const op = await serve(root, false, ["matrix-2026-11-01"]);
+    try {
+      const body = JSON.parse((await op.get("/2026-11-01T10-00-00-000Z/summary.json")).text);
+      assert.equal(body.rosterTransfers.length, 1);
+      assert.equal(body.agents[0].rosterTransfers.length, 1);
+    } finally {
+      await op.close();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
