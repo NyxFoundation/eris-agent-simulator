@@ -145,3 +145,40 @@ test("the field's tolerance is for V_K read noise, and needs a field to be a con
   );
   for (const s of two) assert.equal(s.flags, undefined, `${s.id}: ${s.flags}`);
 });
+
+test("a field carrying haircut positions widens its own band instead of flagging itself", () => {
+  // The two numbers do not read the same valuation: netPnlUsdc sums the face mark at the last
+  // block, P sums what the holding could be realized for off the boundary series. Every position
+  // whose two marks differ -- an LST share against par, a Trove, a lending position, an LP, and a
+  // market-priced stable at the holder's own size against the probe's mid (#205) -- separates them
+  // by its own haircut. A fixed 2% band called that an anomaly: 2,546 USDC on the depeg field that
+  // motivated #205 is outside 1,520 and fires on the arbitrageur doing exactly what the regime
+  // rewards. The band is the field's own dispersion, so the same field absorbs it.
+  const haircut = (id: string, pnl: number, gap: number): AgentSummary => ({
+    ...honest(id, pnl),
+    netPnlUsdc: pnl - 150 - gap,
+    v0Source: "endowment",
+  });
+  const field = [
+    haircut("peg-arb", 300, 2_546),
+    haircut("peg-arb-eager", 260, 2_100),
+    haircut("lst-carry", -200, 1_800),
+    honest("venue-arb", 120),
+    honest("multi-arb", 40),
+    honest("noop", 0),
+  ];
+  const scores = scoresFromSummary(summary(field), []);
+  for (const a of field) assert.deepEqual(flagsOf(scores, a.id), [], a.id);
+
+  // The attack still steps outside a band that wide: the endowment is 73,000, the field's MAD here
+  // is a couple of thousand.
+  const moved: AgentSummary = {
+    ...honest("moved", 50),
+    pnlUsdc: 50 + 70_000,
+    netPnlUsdc: 50 - 150,
+  };
+  const withAttack = scoresFromSummary(summary([...field, moved]), []);
+  assert.equal(flagsOf(withAttack, "moved").length, 1);
+  assert.match(flagsOf(withAttack, "moved")[0], /off the field's constant/);
+  for (const a of field) assert.deepEqual(flagsOf(withAttack, a.id), [], a.id);
+});

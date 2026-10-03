@@ -33,17 +33,32 @@ export type AgentSummary = {
   unloggedTxCount?: number;
 };
 
-// pnlUsdc − netPnlUsdc is a constant across a field that started with the same basket: P marks V_0
-// at the first boundary and netPnlUsdc marks the same endowment at the final prices, so the two
-// differ by endowment × (final − opening fair) for everyone -- plus what the two readers disagree
-// by at V_K (the boundary's 5-block median against the last block's fair, on whatever the agent
-// holds then). An agent whose difference sits off the field's constant had a V_0 that was not its
-// endowment, by whatever path (issue #207): the direct check below covers the one path that is
-// known, this covers the ones that are not. The tolerance is for the V_K noise: 2% of the basket is
-// ~1,500 USDC, an order above what three blocks of fair drift move a full basket by in a stress
-// tail, and an order below the endowment that the attack moves.
+// pnlUsdc − netPnlUsdc is near-constant across a field that started with the same basket: P marks
+// V_0 at the first boundary and netPnlUsdc marks the same endowment at the final prices, so the two
+// differ by endowment × (final − opening fair) for everyone. An agent whose difference sits far off
+// the field's had a V_0 that was not its endowment, by whatever path (issue #207): the direct check
+// below covers the one path that is known, this covers the ones that are not.
+//
+// "Near" is doing work, and the tolerance has to come from the field rather than from a guess. The
+// two numbers do not read the same valuation: netPnlUsdc sums `adapter.valueUsdc` (the face mark)
+// at the last block, while P sums `liquidatableValueUsdc` off the boundary series (what the holding
+// could be realized for, ADR 0022 Amendment 1). Anything whose two marks differ -- an LST share
+// against its par, a Trove, a lending position, an LP, and since #205 a market-priced stable at the
+// holder's own size against the probe's mid -- separates the two by its own haircut. That is a real
+// number about the position, not a sign of anything, and it is the normal state of most strategies
+// that are not pure spot.
+//
+// So the band is the field's own dispersion: the median gap, plus the larger of a fixed floor, a
+// fraction of the basket, and a multiple of the median absolute deviation of the gaps. A field in
+// which several agents carry haircut positions widens its own band and none of them is flagged; an
+// agent that moved its endowment before the bell sits outside a band built from everyone else.
+// This check is the second net either way -- the V_0-against-endowment check below is the one that
+// names the attack, and it does not depend on the field at all.
 export const PNL_GAP_TOLERANCE_FRAC = 0.02;
 export const PNL_GAP_TOLERANCE_USDC = 100;
+// Multiple of the gaps' MAD. 4 sits above the dispersion a mixed field produces on its own and
+// below the endowment-sized step the attack makes.
+export const PNL_GAP_MAD_MULT = 4;
 // Fewer agents than this and the median is not a field constant, it is one agent's number.
 const PNL_GAP_MIN_FIELD = 3;
 
@@ -76,9 +91,17 @@ function pnlGapReference(
   }
   if (gaps.length < PNL_GAP_MIN_FIELD) return undefined;
   const scale = scales.length > 0 ? median(scales) : 0;
+  const medianGap = median(gaps);
+  // Median absolute deviation: the field's own spread, which a mixed field of haircut positions
+  // produces without anybody doing anything wrong.
+  const mad = median(gaps.map((g) => Math.abs(g - medianGap)));
   return {
-    medianGap: median(gaps),
-    tolerance: Math.max(PNL_GAP_TOLERANCE_USDC, scale * PNL_GAP_TOLERANCE_FRAC),
+    medianGap,
+    tolerance: Math.max(
+      PNL_GAP_TOLERANCE_USDC,
+      scale * PNL_GAP_TOLERANCE_FRAC,
+      mad * PNL_GAP_MAD_MULT,
+    ),
   };
 }
 
