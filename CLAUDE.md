@@ -1085,6 +1085,18 @@ phantom value そのもの）。issue #27 でこれを 3 段階で外した:
   組み立てた名前は読取専用クライアントとゲートウェイが送信時に拒み、事後監査が blocks.csv で読む。
   `findAssembledCheatcodeHints` が組み立ての安い形（namespace だけの文字列・リテラルでない `method:`・
   文字コード）を **hint / WARN として報告するだけ**で、網羅は主張しない（`"anv" + "il_…"` は見えない）
+- **登録アドレス間の価値移転も事後検出**（issue #208 / 規約 §8。`core/src/rosterTransfers.ts` が純粋ロジック、
+  `core/src/realtime/rosterTransferScan.ts` がチェーン読取）。`rawTx` は `to` も `value` も任意なので取引経路では
+  塞がず、run 後に blocks.csv の **`to` / `valueWei` 列**（末尾に追加。tx 自身のフィールド）で ETH、run 窓の
+  Transfer ログで ERC-20、レジストリの**参加者が作った**エントリと SimpleLending の position イベントで
+  「同じコントラクト / 同じ貸出市場で対向した」経路（contract / lending / liquidation）を拾う。
+  **同一 `participant` の 2 体は額に関係なく flag**、異参加者間は `run.rosterTransferFlagBps`（既定 100 = 対の
+  小さい方の V_0 の 1%）超で flag。判定ではなく報告で **P は変えない**: summary.json の `rosterTransfers`
+  （全件）と agent ごとの `rosterTransfers`（flag 分。両側に載る）、events.jsonl の `roster_value_transfers`、
+  matrix.json の `flags`（`scenarioScores.ts`）に出る。**見えないもの**: コントラクト内部の ETH 移動
+  （trace を取らない）、環境 venue を挟んだ対向（通常の取引）、履歴保持深度を超えた窓のログ経路
+  （`roster_transfer_logs_skipped`。練習期間は最終セグメントだけ = 他の事後検査と同じ）。1 参加単位を
+  1 母集団メンバーに畳むか σ をロバストにするかは規約側の未決（#186 / ADR 0023）
 - **orderflow は独立プロセス**（relay のまま = 環境側の市場機構）。生成ロジックは `core/src/flow/logic.ts`（純粋関数）、
   bot 本体は `core/src/flow/market-maker.ts`。bot は自前 `Rng(ERIS_FLOW_SEED)` で決定論的に動く。
   aave flow の reserve は環境が `readAaveFlowReserves` で読んで渡す。

@@ -395,6 +395,60 @@ export const simpleLendingAbi = [
       { name: "lltv", type: "uint256", indexed: false },
     ],
   },
+  // The position events, read after the run to pair a market's registered suppliers with its
+  // registered borrowers (issue #208; core/src/rosterTransfers.ts). Shapes mirror SimpleLending.sol.
+  {
+    type: "event",
+    name: "Supply",
+    inputs: [
+      { name: "id", type: "bytes32", indexed: true },
+      { name: "caller", type: "address", indexed: true },
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "shares", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "Withdraw",
+    inputs: [
+      { name: "id", type: "bytes32", indexed: true },
+      { name: "caller", type: "address", indexed: true },
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "shares", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "Borrow",
+    inputs: [
+      { name: "id", type: "bytes32", indexed: true },
+      { name: "caller", type: "address", indexed: true },
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "shares", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "Repay",
+    inputs: [
+      { name: "id", type: "bytes32", indexed: true },
+      { name: "caller", type: "address", indexed: true },
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "shares", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "Liquidate",
+    inputs: [
+      { name: "id", type: "bytes32", indexed: true },
+      { name: "liquidator", type: "address", indexed: true },
+      { name: "borrower", type: "address", indexed: true },
+      { name: "repaidAssets", type: "uint256", indexed: false },
+      { name: "seizedAssets", type: "uint256", indexed: false },
+      { name: "badDebtAssets", type: "uint256", indexed: false },
+    ],
+  },
 ] as const satisfies Abi;
 
 export const lendingOracleAbi = [
