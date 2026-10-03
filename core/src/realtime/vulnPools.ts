@@ -35,7 +35,6 @@ import {
   encodeDeployData,
   encodeFunctionData,
   keccak256,
-  stringToBytes,
   type Abi,
   type Address,
   type Hex,
@@ -45,6 +44,7 @@ import { dealErc20 } from "@eris/sdk/chain.js";
 import { readForgeArtifact } from "@eris/sdk/forge.js";
 import { deployContract } from "@eris/sdk/protocols/deploy.js";
 import type { SimConfig } from "../config.js";
+import { environmentKey } from "../walletKeys.js";
 import type { RunLogger } from "../logger.js";
 import { tokenInfo } from "@eris/sdk/markets.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
@@ -98,9 +98,12 @@ const DEPLOY_ATTEMPTS = 3;
 /** The environment wallet that owns the factory and deploys the pools. */
 export type VulnPoolWallet = { address: Address; privateKey: Hex };
 
-/** The pool wallet's key, derived like the other environment wallets'. One per run, vuln or not. */
-export function vulnPoolWalletFor(seed: number): VulnPoolWallet {
-  const privateKey = keccak256(stringToBytes(`vuln-pools:${seed}`));
+/**
+ * The pool wallet, keyed like every other environment wallet (issue #189): from the wallet secret,
+ * never from the seed. One per run, vuln or not.
+ */
+export function deriveVulnPoolWallet(): VulnPoolWallet {
+  const privateKey = environmentKey("vuln-pools", "owner");
   return { address: privateKeyToAccount(privateKey).address, privateKey };
 }
 

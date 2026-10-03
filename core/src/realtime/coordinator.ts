@@ -288,7 +288,7 @@ import type { FlowContextWire } from "../flow/logic.js";
 import {
   setupVulnFactory,
   stepVulnPools,
-  vulnPoolWalletFor,
+  deriveVulnPoolWallet,
   watchVulnSwaps,
   type VulnRuntime,
 } from "./vulnPools.js";
@@ -995,7 +995,7 @@ export async function runRealtimeSimulation(
   const adminPk = config.privateKeys.admin;
   const keeperPk = config.privateKeys.keeper;
   // Owns the vuln pool factory and deploys its pools at their windows (ADR 0014). Exists in every run.
-  const vulnPoolWallet = vulnPoolWalletFor(config.seed);
+  const vulnPoolWallet = deriveVulnPoolWallet();
   // The WETH price path. Derived like every other base's (`priceRngForAsset` hashes the seed), and
   // distinct from the flow bot's stream, which used to be this very stream: flow.seed defaults to
   // the run seed, and both were `Rng(seed)`.

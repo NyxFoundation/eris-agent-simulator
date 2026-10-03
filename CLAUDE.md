@@ -288,7 +288,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `ERIS_SCENARIO_KEY_FILE`（`npm run competition -- keygen` で作った鍵ファイルのパス）が無い・読めないと起動しない。
   **財布の秘密も同じ**（issue #189）: `ERIS_WALLET_SECRET_FILE`（`npm run competition -- wallet-keygen`）が無いと起動しない
 - **環境が作る財布の鍵は seed から作らない**（issue #189。`core/src/walletKeys.ts`）。AUTO agent・flow / whale /
-  launch・Aave / Liquity victim・check:ordering / stress:rpc のプローブは全部 `environmentKey(kind, id)` =
+  launch・Aave / Liquity victim・vuln プールの owner（`vuln-pools`）・check:ordering / stress:rpc のプローブは全部 `environmentKey(kind, id)` =
   `HMAC-SHA256(secret, ["eris-wallet/v1", kind, id])`。以前は `keccak("auto-wallet:<seed>:<id>")` 等で、自分の AUTO 鍵から
   seed を総当たりで逆算でき、そこから他の agent・環境ウォレットの鍵が全部計算できた（ゲートウェイは送信者を検査しない）。
   secret は**既定でプロセスごとの乱数**（どこにも書かない。run・同一プロセスの行列内では同じアドレス、次のプロセスで変わる）、
