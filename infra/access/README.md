@@ -47,10 +47,19 @@ infra/access/issue-key.sh --unbind team-007 [0x…]  # drop one, or all of them
 infra/access/issue-key.sh --list                   # shows "sends from:" per key
 ```
 
-A key with **no** binding reads but cannot send. An address can be bound to one key only. The
-binding lives in the same `rpc-keys.json` (`"senders": {"team-007": ["0x…"]}`), so it reloads with
-the keys. **Bind every participant's address before deploying this gateway version** -- until then
-their submissions are refused. `RPC_SENDER_CHECK=0` disables the check (internal gateways only).
+Normally nothing is bound by hand. The coordinator writes the registered field to
+`run.sendersFile` (`runs/rpc-senders/senders.json` in `config/practice.yaml`) whenever it changes,
+the gateway reads it (`RPC_SENDERS_FILE`), and matches a registration's `participant` (or its `id`
+without one) to the key's id. So the only rule is: **issue the key under the registration's
+participant name** (`issue-key.sh --issue team-alice`). `--bind` is the fallback for an address the
+registrations do not hold. A key with **no** binding reads but cannot send. An address can be bound
+by hand to one key only. `RPC_SENDER_CHECK=0` disables the check (internal gateways only).
+
+**Before deploying this gateway version on a running period:** keys issued earlier are named
+`team-NNN` while registrations use their own `participant`. For those, either `--bind team-NNN 0x…`
+each registered address, or re-issue under the participant name (`--revoke` + `--issue`). Until
+then their submissions are refused. Also create `runs/rpc-senders/` on the box as the coordinator's
+user before `docker compose up` (otherwise docker creates it root-owned and the write fails).
 
 ### The four checks that mean it is working
 
@@ -148,9 +157,10 @@ $EDITOR config/registrations.yaml        # on the box: ~/workspace/eris-agent-si
 # 2. issue their service token
 infra/access/issue-token.sh alice        # -> ~/ascon-participant-tokens/alice.env (0600)
 
-# 2b. bind their X-ASCON-Key to the address from step 1 -- a key with no binding can read, but
-#     every eth_sendRawTransaction is 403 (the gateway recovers the signer; see above)
-infra/access/issue-key.sh --bind team-NNN 0x…   # the gateway re-reads within 15 s
+# 2b. issue their X-ASCON-Key under the `participant` from step 1 (or the `id` without one). The
+#     coordinator publishes the registered address to the gateway (run.sendersFile), which lets
+#     this key send from it ~1 min later; with a different name every send is 403 (see above)
+infra/access/issue-key.sh --issue team-alice    # the key is the last line of .secrets.csv
 
 # 3. build the handout manifest — --public-rpc or it names *their* loopback, --from-run or it has
 #    no PriceFeed and no period start (the running period's own manifest; see docs/guide/practice-devnet.md)

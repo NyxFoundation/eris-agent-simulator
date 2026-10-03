@@ -12,6 +12,7 @@
 // Env: PORT (8546) UPSTREAM (http://127.0.0.1:8545) ENV_NAME (live) LOG_FILE (append; else stdout)
 //      RPC_KEYS_FILE (per-participant keys; setting it makes X-ASCON-Key mandatory)
 //      RPC_MAX_TX_GAS (30000000) RPC_MAX_PRIORITY_FEE_WEI (5000000000; 0 disables the fee cap only)
+//      RPC_SENDERS_FILE (the coordinator's run.sendersFile: participant id -> addresses it may send from)
 //      RPC_SENDER_CHECK (1 with RPC_KEYS_FILE; 0 lets a key send from any address -- internal use only)
 import http from "node:http";
 import { createWriteStream, writeFileSync, renameSync, readFileSync, statSync } from "node:fs";
@@ -62,17 +63,26 @@ let inFlight = 0, upstreamUp = 1;
 //
 // The file is re-read when its mtime changes, so revoking is a file edit, not a restart.
 //
-// The same file binds each participant id to the addresses it may SEND from:
-// `"senders": {"<participant id>": ["0x…", …]}` (issue-key.sh --bind). A key used to be enough to
+// Each participant id is also bound to the addresses it may SEND from. A key used to be enough to
 // submit a transaction signed by any key at all, so a participant who learned someone else's key --
 // derived from a public seed (issue #189), or one of anvil's public test accounts -- could trade as
 // them through this gateway. Now eth_sendRawTransaction recovers the signer and refuses (403) one
 // that is not bound to the caller's key. A key with no binding can read but not send. The
 // environment's own wallets never come through here (they talk to anvil directly), so this check
 // cannot touch them. RPC_SENDER_CHECK=0 turns it off for an internal gateway.
+//
+// Bindings come from two places and are unioned:
+//   RPC_SENDERS_FILE   written by the coordinator (run.sendersFile) from the registered field, so a
+//                      participant added to config/registrations.yaml can send about a minute later
+//                      with no second edit. Matched on `participant` (or the agent id without one).
+//   RPC_KEYS_FILE      `"senders": {"<id>": ["0x…"]}`, by hand (issue-key.sh --bind): for a gateway
+//                      with no coordinator beside it, or an address the registrations do not hold.
 const KEYS_FILE = process.env.RPC_KEYS_FILE || "";
+const SENDERS_FILE = process.env.RPC_SENDERS_FILE || "";
 let keyMap = new Map();          // sha256(key) hex -> participant id
-let senderMap = new Map();       // participant id -> Set of lowercase 0x addresses
+let manualSenders = new Map();   // participant id -> Set of lowercase 0x addresses (RPC_KEYS_FILE)
+let fieldSenders = new Map();    // the same, from RPC_SENDERS_FILE
+let sendersMtime = 0;
 let keysMtime = 0;
 let keyDenied = 0;
 
@@ -83,30 +93,62 @@ function loadKeys(reason) {
     if (st.mtimeMs === keysMtime) return;
     const doc = JSON.parse(readFileSync(KEYS_FILE, "utf8"));
     const next = new Map(Object.entries(doc.keys || {}));
-    const senders = new Map();
-    let badSenders = 0;
-    for (const [id, addrs] of Object.entries(doc.senders || {})) {
-      const set = new Set();
-      for (const a of Array.isArray(addrs) ? addrs : [addrs]) {
-        // A malformed entry is dropped, not fatal: it can only make its own participant unable to
-        // send, which they will report, whereas rejecting the file would freeze every revocation.
-        if (typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a)) set.add(a.toLowerCase()); else badSenders++;
-      }
-      senders.set(id, set);
-    }
+    const senders = parseSenders(doc.senders);
     keysMtime = st.mtimeMs;
     keyMap = next;
-    senderMap = senders;
+    manualSenders = senders.map;
     logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "keys_loaded", count: keyMap.size,
-      senders: [...senderMap.values()].reduce((n, s) => n + s.size, 0), badSenders: badSenders || undefined, reason });
+      senders: senders.count, badSenders: senders.bad || undefined, reason });
   } catch (e) {
     // Keep serving with the keys already in memory. A truncated write (an operator mid-edit) must
     // not lock every participant out; a genuinely broken file surfaces as this line repeating.
     logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "keys_load_failed", error: String(e && e.message).slice(0, 200) });
   }
 }
+// `{"<id>": ["0x…", …]}` -> Map of lowercase address sets. A malformed address is dropped and
+// counted, not fatal: it can only stop its own participant sending, which they will report, whereas
+// rejecting the file would freeze every other binding (and, in the keys file, every revocation).
+function parseSenders(obj) {
+  const map = new Map();
+  let count = 0, bad = 0;
+  for (const [id, addrs] of Object.entries(obj && typeof obj === "object" ? obj : {})) {
+    const set = new Set();
+    for (const a of Array.isArray(addrs) ? addrs : [addrs]) {
+      if (typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a)) set.add(a.toLowerCase()); else bad++;
+    }
+    map.set(id, set);
+    count += set.size;
+  }
+  return { map, count, bad };
+}
+
+function loadSenders(reason) {
+  if (!SENDERS_FILE) return;
+  try {
+    const st = statSync(SENDERS_FILE);
+    if (st.mtimeMs === sendersMtime) return;
+    const senders = parseSenders(JSON.parse(readFileSync(SENDERS_FILE, "utf8")).senders);
+    sendersMtime = st.mtimeMs;
+    fieldSenders = senders.map;
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "senders_loaded", participants: fieldSenders.size,
+      senders: senders.count, badSenders: senders.bad || undefined, reason });
+  } catch (e) {
+    // Keep the bindings already in memory. A missing file (the coordinator has not started yet) is
+    // logged on every poll until it appears, which is what makes a wrong path visible.
+    logline({ ts: new Date().toISOString(), env: ENV_NAME, status: "senders_load_failed", error: String(e && e.message).slice(0, 200) });
+  }
+}
+
+/** Whether `client` may send a transaction signed by `from` (lowercase). */
+function mayCarry(client, from) {
+  return Boolean(manualSenders.get(client)?.has(from) || fieldSenders.get(client)?.has(from));
+}
+const hasBinding = (client) => (manualSenders.get(client)?.size || 0) + (fieldSenders.get(client)?.size || 0) > 0;
+
 loadKeys("startup");
-if (KEYS_FILE) setInterval(() => loadKeys("reload"), 15_000).unref();
+loadSenders("startup");
+const RELOAD_MS = Number(process.env.RPC_KEYS_RELOAD_MS ?? "15000");   // tests shorten it
+if (KEYS_FILE) setInterval(() => { loadKeys("reload"); loadSenders("reload"); }, RELOAD_MS).unref();
 
 /** The participant id a key maps to, or null. Never returns, logs or compares the key itself. */
 function idForKey(key) {
@@ -279,7 +321,6 @@ let senderDenied = 0;
 // null. Fails closed like the gas cap: a signer that cannot be recovered is refused.
 function senderViolation(parsed, client) {
   if (!SENDER_CHECK) return null;
-  const allowed = senderMap.get(client);
   const calls = Array.isArray(parsed) ? parsed : [parsed];
   for (const c of calls) {
     if (!c || !RAW_SEND_METHODS.has(c.method)) continue;
@@ -287,9 +328,9 @@ function senderViolation(parsed, client) {
     const from = txSender(raw);
     if (from === null)
       return { from: "unreadable", message: "could not recover the transaction's signer; refusing it" };
-    if (!allowed || allowed.size === 0)
+    if (!hasBinding(client))
       return { from, message: `no sending address is bound to this X-ASCON-Key; ask the operator to bind the address you registered` };
-    if (!allowed.has(from))
+    if (!mayCarry(client, from))
       return { from, message: `signer ${from} is not an address bound to this X-ASCON-Key` };
   }
   return null;

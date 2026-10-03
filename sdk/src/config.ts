@@ -249,6 +249,10 @@ export type SimConfig = {
   // the coordinator to pick one up opens a new competition directory, which splits the standings.
   // Same entry shape as an `external: true` + `address` roster entry.
   registrationsFile?: string;
+  // Where the coordinator writes the addresses each participant may send from, for the RPC gateway's
+  // sender check (ERIS_SENDERS_FILE / `run.sendersFile`; undefined = not written). Rewritten whenever
+  // the field changes, so a registration reaches the gateway without anyone binding it by hand.
+  sendersFile?: string;
   // Root of the agent directory convention (ADR 0015 §2/§6). A roster id corresponds to a directory
   // name directly under this, and spawn is always <agentsDir>/runtime/bot.ts (explicit command overrides).
   agentsDir: string;
@@ -501,6 +505,10 @@ export function loadConfig(env = process.env): SimConfig {
     registrationsFile:
       env.ERIS_REGISTRATIONS_FILE && env.ERIS_REGISTRATIONS_FILE.trim() !== ""
         ? env.ERIS_REGISTRATIONS_FILE.trim()
+        : undefined,
+    sendersFile:
+      env.ERIS_SENDERS_FILE && env.ERIS_SENDERS_FILE.trim() !== ""
+        ? env.ERIS_SENDERS_FILE.trim()
         : undefined,
     agentsDir: env.ERIS_AGENTS_DIR ?? "example/agents",
     initialEthWei: bigintEnv(env.INITIAL_ETH_WEI, initialEthWeiDefault),

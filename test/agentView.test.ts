@@ -88,6 +88,7 @@ const ENVIRONMENT_ONLY = new Set([
   "agentTimeoutMs",
   "agentsConfigPath",
   "registrationsFile",
+  "sendersFile",
   "agentsDir",
   "initialEthWei",
   "flowEthWei",

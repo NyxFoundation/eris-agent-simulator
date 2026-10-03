@@ -37,7 +37,7 @@ this column tells you who called what, when.
 `RPC_MAX_TX_GAS` (30000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — these two are the
 [transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule) ·
 `RPC_MAX_PARAM_DEPTH` (64) · `RPC_MAX_PARAM_NODES` (100000) — the [request shape limit](#request-shape-limit) ·
-`RPC_KEYS_FILE` · `RPC_SENDER_CHECK` (1) — the [sender check](#sender-check-a-key-sends-only-from-its-bound-addresses).
+`RPC_KEYS_FILE` · `RPC_SENDERS_FILE` · `RPC_SENDER_CHECK` (1) — the [sender check](#sender-check-a-key-sends-only-from-its-bound-addresses).
 Runs as the `rpc-gateway-live` service in `infra/monitoring/docker-compose.yml` (host-net,
 `restart: unless-stopped`); `rpc-gateway-test` (compose profile `test`) is ready for a second env.
 
@@ -239,9 +239,20 @@ Before this, the key said *who* was calling and nothing tied that to *what they 
 with a valid key could send a transaction signed by any private key they knew -- one derived from a
 public seed (issue #189) or one of anvil's public test accounts -- and trade as that address.
 
-The binding is in the keys file, `"senders": {"<participant id>": ["0x…"]}`, written by
-`infra/access/issue-key.sh --bind <id> <address>` and reloaded with the keys (15 s). A key with no
-binding can read but not send. The check runs **after** the rate limit, so a refused submission still
+**Where the bindings come from.** Two sources, unioned, both reloaded every 15 s:
+
+| source | written by | when to use |
+|---|---|---|
+| `RPC_SENDERS_FILE` | the coordinator (`run.sendersFile`), from the registered field: the startup roster's `external` entries plus every accepted entry of `run.registrationsFile` | always. Registering a participant in `config/registrations.yaml` is the only edit; ~1 min later (coordinator poll ~30 blocks + gateway 15 s) the key can send |
+| `RPC_KEYS_FILE` `"senders"` | by hand, `infra/access/issue-key.sh --bind <id> <address>` | a gateway with no coordinator beside it, or an address the registrations do not hold |
+
+The coordinator's file is keyed by the registration's `participant` (or its `id` when it has none),
+and the gateway matches that against the key's id — so **issue the key under that name**
+(`issue-key.sh --issue team-alice`). One key per participant unit; its agents (`alice`, `alice-2`)
+all send through it. Agents the coordinator runs itself are never listed (they do not use the
+gateway). Neither file needs a restart: no coordinator restart, no chain restart.
+
+A key with no binding can read but not send. The check runs **after** the rate limit, so a refused submission still
 costs the caller's tokens. The environment's own wallets (oracle, keeper, flow, setup) talk to anvil
 directly and never pass through here. Without `RPC_KEYS_FILE` there is no identity to bind and the check
 is off; `RPC_SENDER_CHECK=0` turns it off with keys (an internal gateway).

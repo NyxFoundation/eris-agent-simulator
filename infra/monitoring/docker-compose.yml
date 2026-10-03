@@ -270,8 +270,15 @@ services:
       # credential a 100+ field is gated on cannot be one of them. The file holds sha256 digests
       # only -- no key material ever reaches this container.
       - RPC_KEYS_FILE=/keys/rpc-keys.json
+      # Which address each key may send from, written by the coordinator from the registered field
+      # (run.sendersFile in config/practice.yaml). Without it every key is read-only.
+      - RPC_SENDERS_FILE=/senders/senders.json
     volumes:
       - ../rpc-gateway:/app:ro
+      # The directory, for the same inode reason as /keys below (the coordinator replaces the file by
+      # rename). Create it as the coordinator's user before `up`, or docker creates it root-owned and
+      # the coordinator's write fails (`rpc_senders_write_failed`).
+      - ${ERIS_ROOT:?set ERIS_ROOT in infra/monitoring/.env}/runs/rpc-senders:/senders:ro
       # The DIRECTORY, not the file. A single-file bind mount pins the inode it was created with,
       # so replacing rpc-keys.json on the host (scp, install, mv -- anything that writes a new
       # file rather than truncating in place) leaves the container reading the old one forever.

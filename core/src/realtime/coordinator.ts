@@ -180,6 +180,7 @@ import {
   startupRegistrations,
   type Registration,
 } from "./registrations.js";
+import { sendersDocument, writeSendersFile } from "./senders.js";
 import {
   checkDeployment,
   deploymentMismatchMessage,
@@ -1699,6 +1700,36 @@ export async function runRealtimeSimulation(
         })),
       });
       publishManifest();
+      // The gateway's sender bindings follow the field (senders.ts). A failed write is reported and
+      // the run goes on: the gateway keeps the bindings it last read, so only a participant who
+      // registered since then is affected, and their 403 names the missing binding.
+      if (config.sendersFile) {
+        const doc = sendersDocument(
+          agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            external: a.external,
+            participant: a.spec.participant,
+          })),
+        );
+        try {
+          writeSendersFile(config.sendersFile, doc);
+          logger.event({
+            type: "rpc_senders_written",
+            path: config.sendersFile,
+            participants: Object.keys(doc.senders).length,
+            addresses: Object.values(doc.senders).reduce((n, l) => n + l.length, 0),
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.event({
+            type: "rpc_senders_write_failed",
+            path: config.sendersFile,
+            error: message,
+          });
+          console.error(`[senders] could not write ${config.sendersFile}: ${message}`);
+        }
+      }
     };
     publishRoster();
 

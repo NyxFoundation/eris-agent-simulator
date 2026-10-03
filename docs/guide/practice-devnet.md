@@ -208,8 +208,11 @@ ERIS_RPC_HEADERS='{"X-ASCON-Key":"…"}' \
   strips the double quotes, and what is left is not JSON.
 - The key sends only from the address you registered. The gateway recovers the signer of every
   `eth_sendRawTransaction` and refuses (403, `signer 0x… is not an address bound to this
-  X-ASCON-Key`) one signed by any other key; reads are unaffected. The operator binds it with
-  `infra/access/issue-key.sh --bind <id> <address>`.
+  X-ASCON-Key`) one signed by any other key; reads are unaffected. The binding follows the
+  registration: the coordinator writes the registered field to `run.sendersFile`, and the gateway
+  matches the registration's `participant` (or `id`) to the key's name, so the operator issues the
+  key under that name (`infra/access/issue-key.sh --issue <name>`). A new registration can send
+  about a minute after it is added to `config/registrations.yaml`; nothing restarts.
 - `ERIS_MANIFEST` supplies the RPC URL, the PriceFeed address, the chain id, which address table
   to use, and the period's length. The chain id and the address table are applied before anything
   else loads, because the address table is chosen at import time — setting `CHAIN_ID` or

@@ -134,9 +134,12 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
   coordinator は参加者が送れるチェーンでは起動を拒否する。非公開のリハーサルだけ。本番では書かない）
 - [ ] 参加者キーを発行し、gateway に読ませる:
   `infra/access/issue-key.sh --generate 8` → `infra/monitoring/.env` の `ASCON_KEYS_DIR`
-- [ ] 各キーに送信アドレスを紐付ける: `infra/access/issue-key.sh --bind team-001 0x…`（登録したアドレス）。
-  **紐付けの無いキーは読めるが送れない**（gateway が署名者を復元し、キーに紐付いたアドレス以外の
-  `eth_sendRawTransaction` を 403 にする。`--list` で確認）
+- [ ] 参加者のキーは**登録の `participant`（無ければ `id`）と同じ名前で発行する**:
+  `infra/access/issue-key.sh --issue team-alice`。coordinator が登録済みアドレスを `run.sendersFile`
+  （`runs/rpc-senders/senders.json`）に書き、gateway がキー名で照合して送信を許可する。
+  **名前が違う・登録されていないキーは読めるが送れない**（gateway が署名者を復元し 403）。
+  `docker compose up` の前に coordinator のユーザーで `mkdir -p runs/rpc-senders`（docker に作らせると root 所有で書けない）。
+  登録外のアドレスだけ `--bind <id> 0x…` で手動
 - [ ] seed: [README](README.md#install-once-on-the-box-that-hosts-it) のとおり `.env.practice` を作る
 - [ ] エピソードを 26h 用に作り直す: `npm run gen:practice-episodes -- --hours 26`
 - [ ] 長さの上書き（unit の drop-in）:

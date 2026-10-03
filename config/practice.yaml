@@ -85,6 +85,11 @@ run:
   # duplicate id or address is ignored with a `registration_ignored` event; a malformed file is
   # reported once per edit (`registrations_reload_failed`) and never stops the run.
   registrationsFile: config/registrations.yaml
+  # The field above, written out for the RPC gateway's sender check (RPC_SENDERS_FILE in
+  # infra/monitoring/docker-compose.yml): a key sends only from the addresses registered under its
+  # participant id (`participant`, or the entry's `id` without one), so issue the key under that name
+  # (infra/access/issue-key.sh --issue <name>). Rewritten whenever the field changes.
+  sendersFile: runs/rpc-senders/senders.json
 
 # The official regimes' endowment and flow, copied rather than referenced so a change there is a
 # decision here too. USDC-only was this file's earlier choice ("nothing anybody did not choose shows up

@@ -507,3 +507,65 @@ test(
     assert.equal(block.transactions.length, 2);
   },
 );
+
+test(
+  "gateway binds senders from the coordinator's file, picks up a new registration, and unions hand bindings",
+  { timeout: 20_000 },
+  async (t) => {
+    const { mkdtempSync, writeFileSync, renameSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createHash } = await import("node:crypto");
+    const { privateKeyToAccount } = await import("viem/accounts");
+    const { sendersDocument } = await import("../core/src/realtime/senders.js");
+    const ALICE2 = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a" as const;
+    const BOB = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6" as const;
+    const HAND = "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a" as const;
+    const addr = (pk: `0x${string}`) => privateKeyToAccount(pk).address;
+    const keyAlice = "ascon_test_key_alice_0123456789";
+    const sha = (k: string) => createHash("sha256").update(k).digest("hex");
+    const dir = mkdtempSync(join(tmpdir(), "gw-senders-"));
+    const keysFile = join(dir, "rpc-keys.json");
+    const sendersFile = join(dir, "senders.json");
+    // A hand binding in the keys file (issue-key.sh --bind) for an address the field does not hold.
+    writeFileSync(keysFile, JSON.stringify({ keys: { [sha(keyAlice)]: "team-alice" }, senders: { "team-alice": [addr(HAND)] } }));
+    const write = (agents: Parameters<typeof sendersDocument>[0]) => {
+      writeFileSync(sendersFile + ".tmp", JSON.stringify(sendersDocument(agents)));
+      renameSync(sendersFile + ".tmp", sendersFile);
+    };
+    write([{ id: "alice", address: addr(KEY), external: true, participant: "team-alice" }]);
+
+    const upstream = await startAnvil(t);
+    for (const pk of [KEY, ALICE2, BOB, HAND])
+      await rpc(upstream, "anvil_setBalance", [addr(pk), "0x3635c9adc5dea00000"]);
+    const as = { "x-ascon-key": keyAlice };
+    const gateway = await startGateway(
+      t, upstream, { RPC_KEYS_FILE: keysFile, RPC_SENDERS_FILE: sendersFile, RPC_KEYS_RELOAD_MS: "100" }, as,
+    );
+    const sign = (pk: `0x${string}`) =>
+      privateKeyToAccount(pk).signTransaction({
+        to: "0x0000000000000000000000000000000000000001", value: 0n, gas: 21_000n, chainId: 31337, nonce: 0,
+        type: "eip1559", maxFeePerGas: GWEI, maxPriorityFeePerGas: GWEI,
+      } as never);
+    const send = async (pk: `0x${string}`) => (await rpc(gateway, "eth_sendRawTransaction", [await sign(pk)], as)).status;
+
+    assert.equal(await send(KEY), 200, "registered address, bound by the coordinator");
+    assert.equal(await send(HAND), 200, "bound by hand in the keys file");
+    assert.equal(await send(ALICE2), 403, "not registered yet");
+    assert.equal(await send(BOB), 403, "another participant's address");
+
+    // The team registers a second agent: the coordinator rewrites the file, the gateway re-reads it.
+    write([
+      { id: "alice", address: addr(KEY), external: true, participant: "team-alice" },
+      { id: "alice-2", address: addr(ALICE2), external: true, participant: "team-alice" },
+      { id: "bob", address: addr(BOB), external: true },
+    ]);
+    let status = 0;
+    for (let i = 0; i < 40 && status !== 200; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      status = await send(ALICE2);
+    }
+    assert.equal(status, 200, "a new registration under the same participant can send without a restart");
+    assert.equal(await send(BOB), 403, "bob's address is bound to bob's key, not alice's");
+  },
+);

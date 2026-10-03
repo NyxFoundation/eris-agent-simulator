@@ -3,14 +3,18 @@
 #
 #   ./issue-key.sh --generate 120 [--out <keys.json>]   mint N keys + the gateway's lookup file
 #   ./issue-key.sh --add 380                            mint N more, keeping every existing key
+#   ./issue-key.sh --issue team-alice                   mint one under a chosen id (the registration's
+#                                                       `participant`, or its `id` without one)
 #   ./issue-key.sh --revoke team-007                    drop one (the gateway re-reads within 15 s)
-#   ./issue-key.sh --bind team-007 0xAbC…               let that key send from that address
-#   ./issue-key.sh --unbind team-007 [0xAbC…]           drop one binding (or all of the key's)
+#   ./issue-key.sh --bind team-007 0xAbC…               let that key send from that address, by hand
+#   ./issue-key.sh --unbind team-007 [0xAbC…]           drop a hand binding (or all of the key's)
 #   ./issue-key.sh --list
 #
 # A key can READ with no binding, but eth_sendRawTransaction is refused (403) unless the signer is
 # an address bound to the key -- otherwise any participant could send as any address whose private
-# key they happened to know. Bind the address the participant registered (config/registrations.yaml).
+# key they happened to know. Normally nothing needs binding: the coordinator writes the registered
+# field (run.sendersFile) and the gateway matches it on the key's id, so issue the key with --issue
+# under the registration's `participant`. --bind is for an address the registrations do not hold.
 #
 # Why not Cloudflare Access service tokens: they cap at 50 per account. Measured 2026-09-21 — with
 # 50 in existence the 51st create fails `org_has_exceeded_allowed_token_count`, and revoking one
@@ -30,7 +34,7 @@ PREFIX="${ASCON_KEY_PREFIX:-team}"
 sha() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
 die() { echo "error: $*" >&2; exit 1; }
 
-case "${1:-}" in ""|-h|--help) sed -n '2,26p' "$0"; exit 0;; esac
+case "${1:-}" in ""|-h|--help) sed -n '2,31p' "$0"; exit 0;; esac
 # --out is accepted anywhere, not only first: an option that silently does nothing when it is in
 # the "wrong" place writes live credentials to a path the operator did not choose.
 ARGS=()
@@ -50,7 +54,8 @@ d=json.load(open('$OUT'))
 k=d.get('keys',{})
 s=d.get('senders',{})
 print(f'{len(k)} keys in $OUT')
-for h,i in sorted(k.items(), key=lambda kv: kv[1]): print(f'  {i:16} sha256={h[:16]}…  sends from: ' + (', '.join(s.get(i,[])) or '(none: read-only)'))"
+for h,i in sorted(k.items(), key=lambda kv: kv[1]): print(f'  {i:16} sha256={h[:16]}…  bound by hand: ' + (', '.join(s.get(i,[])) or '-'))
+print('(addresses from the coordinator\'s run.sendersFile are not listed here; they bind by the same id)')"
     exit $? ;;
   --revoke)
     [ -n "${2:-}" ] || die "usage: $0 --revoke <participant-id>"
@@ -67,6 +72,25 @@ json.dump(d, open(path,"w"), indent=1, ensure_ascii=False)
 print(f"revoked {pid} ({len(hit)} key(s)); the gateway re-reads within 15 s")
 PY
     exit $? ;;
+  --issue)
+    ID="${2:?usage: $0 --issue <participant-id>}"
+    echo "$ID" | grep -qE '^[A-Za-z0-9._-]+$' || die "id must be letters, digits, . _ - (it goes into a CSV and a log line)"
+    [ -f "$OUT" ] || die "no keys file at $OUT — use --generate first"
+    umask 077
+    python3 - "$OUT" "$SECRETS" "$ID" <<'ISSUEPY'
+import json, secrets, hashlib, sys, datetime
+out, sec, pid = sys.argv[1:4]
+d = json.load(open(out)); keys = d["keys"]
+# One key per id: the gateway's bucket, log line and sender binding are all keyed on it, so a second
+# key under the same name would be a second credential nobody can revoke separately.
+if pid in keys.values(): sys.exit(f"{pid} already has a key; --revoke it first to rotate")
+key = "ascon_" + secrets.token_urlsafe(32)
+keys[hashlib.sha256(key.encode()).hexdigest()] = pid
+json.dump(d, open(out, "w"), indent=1)
+with open(sec, "a") as f: f.write(",".join((pid, key, datetime.date.today().isoformat())) + "\n")
+print(f"  issued {pid}; the key is the last line of {sec}")
+ISSUEPY
+    rc=$?; [ $rc -eq 0 ] && echo "  the gateway re-reads within 15 s — no restart"; exit $rc ;;
   --bind|--unbind)
     [ -n "${2:-}" ] || die "usage: $0 $1 <participant-id> <address>"
     [ "$1" = --unbind ] || [ -n "${3:-}" ] || die "usage: $0 --bind <participant-id> <address>"
@@ -97,7 +121,7 @@ else:
     if mine: senders[pid] = mine
     else: senders.pop(pid, None)
 json.dump(d, open(path, "w"), indent=1, ensure_ascii=False)
-print(f"{pid} sends from: {', '.join(senders.get(pid, [])) or '(none: read-only)'}; the gateway re-reads within 15 s")
+print(f"{pid} bound by hand: {', '.join(senders.get(pid, [])) or '-'}; the gateway re-reads within 15 s")
 BINDPY
     exit $? ;;
   --add)
