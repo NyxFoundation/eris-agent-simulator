@@ -118,3 +118,31 @@ test("V_K read noise raises no flag: the one detector reads V_0, not the field",
 });
 
 
+
+test("an epoch whose first block was never read says so on every agent", () => {
+  // The floor belongs to the run's first block. When that block was not read, V_0 is the measured
+  // value at whatever boundary came next, and the per-agent check cannot speak: without the floor
+  // there is no v0EndowmentUsdc to compare the chain against, and v0Source reads "measured" for
+  // everyone -- which is also what a segment that carried a boundary over looks like. So the epoch
+  // itself carries the sentence, on each record the operator reads.
+  const field = [honest("a", 100), honest("b", -20), honest("c", 5)].map((a) => ({
+    ...a,
+    v0Source: "measured" as const,
+    v0EndowmentUsdc: undefined,
+    v0MeasuredUsdc: undefined,
+  }));
+  const scores = scoresFromSummary(
+    { ...summary(field), v0FloorSkipped: { boundaryBlock: 104, runStartBlock: 100 } },
+    [],
+  );
+  for (const s of scores) {
+    const flags = flagsOf(scores, s.id);
+    assert.equal(flags.length, 1, `${s.id}: ${flags.join(" | ")}`);
+    assert.match(flags[0], /V_0 has no endowment floor in this epoch/);
+    assert.match(flags[0], /first block \(100\) was not read/);
+    assert.match(flags[0], /measured value at block 104/);
+  }
+  // And an ordinary epoch says nothing.
+  const ordinary = scoresFromSummary(summary([honest("a", 100), honest("b", -20), honest("c", 5)]), []);
+  for (const s of ordinary) assert.deepEqual(flagsOf(ordinary, s.id), []);
+});

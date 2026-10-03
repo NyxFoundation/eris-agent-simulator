@@ -63,6 +63,11 @@ export type RunSummary = {
   blocksProcessed?: number;
   agents: AgentSummary[];
   violations: Array<{ ownerId?: string }>;
+  // Set when the run's first block was not read, so V_0 carries no endowment floor (issue #207).
+  // An epoch-wide fact, not an agent's, and it has to be said per agent anyway: the operator reads
+  // flags beside a score, and without the floor the per-agent check that names the attack has no
+  // endowment V_0 to compare against.
+  v0FloorSkipped?: { boundaryBlock?: number; runStartBlock?: number };
 };
 
 export function readRunSummary(runDir: string): RunSummary | undefined {
@@ -107,6 +112,15 @@ export function scoresFromSummary(
         "priority fee rule violation: over the cap, or maxFeePerGas above the tip " +
           "(rules §2.6 / §8; for the operator to judge)",
       );
+    if (summary.v0FloorSkipped) {
+      const { boundaryBlock: at, runStartBlock: want } = summary.v0FloorSkipped;
+      flags.push(
+        `V_0 has no endowment floor in this epoch: the run's first block (${want ?? "?"}) was not ` +
+          `read, so V_0 is the measured value at block ${at ?? "?"} (issue #207). A value moved out ` +
+          "before that block counts as this agent's PnL, and the check that would name it has no " +
+          "endowment V_0 to compare against",
+      );
+    }
     if (agent.processExitedEarly !== undefined)
       flags.push(`process exited early: ${agent.processExitedEarly}`);
     if ((agent.unloggedTxCount ?? 0) > 0)

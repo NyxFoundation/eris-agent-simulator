@@ -4416,6 +4416,22 @@ export async function runRealtimeSimulation(
       loopIterations,
       runStartBlock,
       finalBlock,
+      // V_0 with no endowment floor under it (issue #207). Present only when the run's first block
+      // was not the boundary V_0 came off, which is the one case the floor does not apply -- and
+      // the case that is otherwise invisible, since every agent's v0Source then reads "measured",
+      // exactly as it does for a segment that carried a boundary over. In summary.json rather than
+      // only in events.jsonl because scenarioScores reads this file, and the flag that names the
+      // attack cannot fire without the endowment V_0 the floor produces.
+      ...(liveIntervalSeries &&
+      liveScorer.firstBoundaryBlock !== runStartBlock &&
+      liveIntervalSeries.boundaryBlocks.length > 0
+        ? {
+            v0FloorSkipped: {
+              boundaryBlock: liveIntervalSeries.boundaryBlocks[0],
+              runStartBlock,
+            },
+          }
+        : {}),
       ...(schedule.hasEvents() ? { stressEvents: stressAudit.summaries() } : {}),
       elapsedMs,
       finalFairPriceUsdcPerWeth: finalFairPrice,
