@@ -54,3 +54,6 @@ bench/results/
 config/_bench.yaml
 cf.env
 cf-service-token.env
+
+# what eris-dashboard-sync builds on this box (infra/dashboard/sync.env.example is the template)
+/infra/dashboard/sync.env
