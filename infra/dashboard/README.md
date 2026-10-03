@@ -13,6 +13,30 @@ So a deploy is a **build**, not a release. `dashboard/server/serve.ts` opens bot
 request and holds no state, which means a rebuilt `dist` is live on the next page load and a run
 that finishes appears in the index within one poll — neither needs the container touched.
 
+**The server's own code is the exception, and it is the half that withholds things.** The container
+runs `node_modules/.bin/tsx dashboard/server/serve.ts` under `restart: unless-stopped`: the process
+compiled that file when it started and keeps serving that version however many times `dist` is
+rebuilt around it. So a change under `dashboard/server/` is not live until the container is
+restarted:
+
+```sh
+cd infra/monitoring && docker compose restart ascon-dashboard
+```
+
+| what changed | live when |
+|---|---|
+| `dashboard/src/**` — the bundle | the next page load after the build |
+| a run's files under `runs/` | the next index poll |
+| `dashboard/server/**` — the runs API, the audience redaction, the competition allowlist, `/healthz` | only after `docker compose restart ascon-dashboard` |
+
+Which way round this goes matters more than it looks, because the public/operator split lives in
+`dashboard/server/runsApi.ts`: issues #198, #202, #203 and #204 were each a fix to what that file
+withholds. Promote one of them, watch the tick log a successful build, and the server is still
+answering with the old rules — something that was supposed to stop being public stays public, and
+the page gives no sign of it. `/healthz` reports the commit the running process started with next to
+the commit the bundle was built from ("Is the box serving what was promoted" below); when those two
+differ, a build has landed since the restart.
+
 That is also why the box drifts: merging to `main` changes nothing on its own, because nobody ran
 the build. `sync-main.sh` is the thing that closes that gap — at the commit the operator chose,
 not at whatever `main` is at the moment (issue #211, below).
@@ -120,6 +144,43 @@ nothing to serve; now the previous bundle keeps serving and the next tick retrie
 everything that user can read in reach. It exists for a box without docker, it is an opt-in, and
 the tick logs it as `building on the HOST`. With docker missing and `host` not set, the tick fails
 (exit 1) and says which of the two to do.
+
+## Is the box serving what was promoted
+
+Every build writes `dashboard/dist/.build-info.json` — the commit and the time — next to the
+`.built-at` stamp the build-skip compares against. `dist/` is served as files and
+`dashboard/server/serve.ts` reads that file per request, so the question is answerable from outside
+the box, without an SSH session:
+
+```sh
+curl -s https://ascon-dash.nyx.foundation/healthz
+curl -s https://ascon-dash.nyx.foundation/.build-info.json   # commit and builtAt, as a static file
+```
+
+| `/healthz` field | what it is |
+|---|---|
+| `ok` | node is up and `runs/` can be listed. Unchanged: `ascon_dashboard_down` alerts on this field, and a stale bundle is not an outage |
+| `commit`, `builtAt` | the commit `dashboard/dist` was built from, and when it was built |
+| `serverCommit`, `serverStartedAt` | what that file said when the serving process started, and when that was |
+| `builtSinceStart` | the two commits differ — a build landed under this process |
+
+Three states that `{"ok":true}` on its own did not distinguish:
+
+- **a promotion that was never made.** `commit` is not the commit that was merged. Merging moves
+  `main`, not this box; the sync is doing exactly what it was told, and the page is older than
+  whoever merged believes. `infra/dashboard/sync-main.sh promote <tag|sha>`
+- **a sync that quietly stopped.** `builtAt` stops moving while `main` does not. The likeliest cause
+  is not a crash: `clean_tree` exits **0** with a single journal line when a tracked file is
+  modified, so running `npm run gen:local-constants` on the box — it rewrites
+  `sdk/src/constants.local.ts`, a tracked file — ends the updates with no failed unit and no alert.
+  `git status` on the box, then `git checkout -- <file>`
+- **server code that is not live yet.** `builtSinceStart: true` says the bundle moved and this
+  process did not. If the build touched `dashboard/server/`, `docker compose restart
+  ascon-dashboard` (the table at the top of this file)
+
+A commit sha is public information — this repo is public — so reporting it discloses nothing a
+reader could not get by cloning. The pin's *name* is deliberately not reported: a tag can say more
+about what the operator is planning than a sha does.
 
 ## Explorer links
 

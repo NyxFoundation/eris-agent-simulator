@@ -118,11 +118,21 @@ unresolvable() {
 #      commit older than the pin would put the pre-#211 script back on the timer, and its next tick
 #      would fast-forward to main and build on the host -- the pin undoing itself
 verify_pin() {
-  local ref="$1" sha="$2"
+  local ref="$1" sha="$2" script
   git merge-base --is-ancestor "$sha" origin/main ||
     die "REFUSED: $ref (${sha:0:12}) is not an ancestor of origin/main. A pin names a commit that went through main; this one did not (or main was rewritten). Not checking out."
-  git show "$sha:infra/dashboard/sync-main.sh" 2>/dev/null | grep -q 'ERIS_SYNC_REF' ||
-    die "REFUSED: $ref (${sha:0:12}) predates the pinned sync (issue #211). Its infra/dashboard/sync-main.sh follows main, and the timer runs the script from the checkout: the tick after this one would undo the pin. Pin a commit that has #211."
+  # Read the blob into a variable rather than piping it into `grep -q`. Under `pipefail` that pipe
+  # refuses the commit whenever grep matches and exits before git has finished writing: git takes
+  # SIGPIPE, the pipeline reports 141, and the operator is told the pin "predates the pinned sync"
+  # -- about a commit that carries it. This file is past the pipe buffer, so the match is in the
+  # first chunk and the rest of the write has nowhere to go; measured 200/200 refusals on a blob of
+  # 200 KB and intermittently on this one. A missing path leaves the variable empty, which is the
+  # same answer for the same reason: no script, no pin.
+  script="$(git show "$sha:infra/dashboard/sync-main.sh" 2>/dev/null || true)"
+  case "$script" in
+    *ERIS_SYNC_REF*) ;;
+    *) die "REFUSED: $ref (${sha:0:12}) predates the pinned sync (issue #211). Its infra/dashboard/sync-main.sh follows main, and the timer runs the script from the checkout: the tick after this one would undo the pin. Pin a commit that has #211." ;;
+  esac
 }
 
 clean_tree() {
@@ -292,6 +302,17 @@ build() {
   esac
   if [ -n "${ERIS_SYNC_DRY_RUN:-}" ]; then return 0; fi
   printf '%s\n' "$head" > "$stamp"
+  # The same commit, plus when it was built, where something outside the box can read it:
+  # dashboard/server/serve.ts reports it on /healthz (alongside the value it read when the serving
+  # process started), and dist/ is served as files, so `curl .../.build-info.json` works too. Without
+  # it a forgotten `promote` and a sync that stopped three days ago look exactly like a box that is
+  # up to date -- `{"ok":true}` either way. The repo is public, so a commit sha discloses nothing
+  # that a reader could not already clone; the pin's *name* is deliberately not written here, since a
+  # tag can say more about the operator's plans than a sha does. `.built-at` stays the file the
+  # build-skip compares against: every tick reads it, the journal names it, and a second source of
+  # truth for "which commit is in dist" is how the two drift.
+  printf '{"commit":"%s","builtAt":"%s"}\n' "$head" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > dashboard/dist/.build-info.json
   say "built dashboard/dist at ${head:0:12}${built:+ (was ${built:0:12})}"
 }
 
