@@ -45,7 +45,7 @@ issue #40 T0。**この文書は capability の definition of done の一部**�
 |---|---|---|
 | `contracts/PriceFeed.sol` | `setPrice` / `setPriceFor` | `require(msg.sender == owner)`、owner は immutable |
 | `contracts/MarketRegistry.sol` | `register` | 同上（registrar のみ） |
-| `contracts/VulnPoolFactory.sol` | `createSimplePool` / `createRiggedPool` | `require(msg.sender == owner)` |
+| `contracts/VulnPoolFactory.sol` | `createPool`（init code を受ける 1 本。ADR 0014 Amendment 2） | `require(msg.sender == owner)`、owner は環境の `vuln-pools` 財布（immutable） |
 | `deployer/contracts/MockLSTVault.sol` | `setRewardRate` / `slash` / `setOperator` / `setWithdrawalDelayBlocks` / `setQueueThroughput` | `onlyOperator` |
 | Aave `PoolConfigurator` | reserve 開設 | `POOL_ADMIN`（＝この環境では deployer）。**これが Aave をエージェントへ開けない理由**であり、`SimpleLending` が存在する理由 |
 

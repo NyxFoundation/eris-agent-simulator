@@ -287,6 +287,7 @@ import { PULL_VENUES } from "./liquidityVenues.js";
 import type { LstState } from "@eris/sdk/protocols/lst.js";
 import type { LiquityState } from "@eris/sdk/protocols/liquity.js";
 import { VulnSchedule } from "./vulnEvents.js";
+import { assertAgentExtraEnvShape } from "./agentEnv.js";
 import { SubmittedLedger } from "./submittedLedger.js";
 import { setLongTimeout } from "./longTimeout.js";
 import {
@@ -297,8 +298,9 @@ import {
 } from "./flowWallets.js";
 import type { FlowContextWire } from "../flow/logic.js";
 import {
-  deployVulnPools,
-  fundVulnPoolsAt,
+  setupVulnFactory,
+  stepVulnPools,
+  deriveVulnPoolWallet,
   watchVulnSwaps,
   type VulnRuntime,
 } from "./vulnPools.js";
@@ -1004,6 +1006,8 @@ export async function runRealtimeSimulation(
 
   const adminPk = config.privateKeys.admin;
   const keeperPk = config.privateKeys.keeper;
+  // Owns the vuln pool factory and deploys its pools at their windows (ADR 0014). Exists in every run.
+  const vulnPoolWallet = deriveVulnPoolWallet();
   // The WETH price path. Derived like every other base's (`priceRngForAsset` hashes the seed), and
   // distinct from the flow bot's stream, which used to be this very stream: flow.seed defaults to
   // the run seed, and both were `Rng(seed)`.
@@ -1051,6 +1055,12 @@ export async function runRealtimeSimulation(
   // sender an agent's wallet derived (environmentSigners.ts).
   for (const [address, owner] of environmentSignerOwners(config.privateKeys))
     ownerByAddress.set(address, owner);
+  // The vuln factory's owner is a per-run environment wallet, not one of the role keys, so it is
+  // named here (issue #236).
+  ownerByAddress.set(vulnPoolWallet.address.toLowerCase(), {
+    ownerId: "vuln-pools",
+    role: "system",
+  });
   // Read once, at the blocks.csv flush, and swept there too (issue #134).
   const submittedByHash = new SubmittedLedger<SubmittedMeta>();
   // Issue #212: addresses an agent's wallet funded -- ETH, a priced token, a contract it created,
@@ -1573,6 +1583,7 @@ export async function runRealtimeSimulation(
           accountAddress(config.privateKeys.keeper).toLowerCase(),
           "the keeper wallet",
         ],
+        [vulnPoolWallet.address.toLowerCase(), "the vuln pool wallet"],
         ...[...flowWalletMap.values()].map(
           (w) => [w.address.toLowerCase(), `flow wallet ${w.id}`] as const,
         ),
@@ -1638,8 +1649,10 @@ export async function runRealtimeSimulation(
       logger.event({ type: "flash_arb_deployed", address: FLASH_ARB_ADDRESS });
     }
 
-    // ---- vulnerability-appearance events (ADR 0014): deploy the factory + all pools (a mix of honest/rigged) in
-    // setup and issue disclosures. Funding (appearance) happens at each pool's window (the mining loop below).
+    // ---- vulnerability-appearance events (ADR 0014): the factory, in *every* run. Pools are deployed through it
+    // at their windows (the mining loop below), so nothing about a vuln run is on-chain or in disclosures/
+    // before the first window opens -- and since the factory, its funded owner, the disclosures/ directory and
+    // the env below are the same in every run, an agent cannot tell a vuln run from any other at the start.
     // The schedule is SEED-derived and pure. Pools are not included in agentRuntimes = not scored (outside the
     // victims/verifiers).
     const vulnSchedule = new VulnSchedule(
@@ -1648,19 +1661,35 @@ export async function runRealtimeSimulation(
       config.runBlocks,
       baseTokens().map((t) => t.symbol),
     );
-    let vulnRuntime: VulnRuntime | null = null;
-    let vulnEnv: Record<string, string> | undefined;
-    if (vulnSchedule.hasEvents()) {
-      vulnRuntime = await deployVulnPools(ctx, vulnSchedule, config, logger);
-      // The agent subscribes to the factory and builds a pool graph (§3). fromBlock narrows the getLogs range
-      // (scans only from the factory onward even with the fork's huge block numbers). disclosures are referenced via ERIS_RUN_DIR.
-      vulnEnv = {
-        ERIS_VULN_FACTORY: vulnRuntime.factory,
-        ERIS_VULN_FROM_BLOCK: vulnRuntime.factoryDeployBlock.toString(),
-        ERIS_VULN_LLM: config.vulnLlm,
-      };
-    }
+    // Funded with the same gas in every run: the factory's owner() is public, so an owner funded only in
+    // vuln runs would name the regime by its balance.
+    await fundWallet(
+      publicClient,
+      walletClient,
+      chain,
+      vulnPoolWallet.privateKey,
+      config.flowEthWei,
+      0n,
+      0n,
+    );
+    const vulnRuntime: VulnRuntime = await setupVulnFactory(
+      ctx,
+      vulnSchedule,
+      config,
+      vulnPoolWallet,
+      logger.runDir,
+      logger,
+    );
+    const vulnPoolsActive = vulnRuntime.pools.length > 0;
+    // The agent subscribes to the factory and builds a pool graph (§3). fromBlock narrows the getLogs range
+    // (scans only from the factory onward even with the fork's huge block numbers). disclosures are referenced via ERIS_RUN_DIR.
+    const vulnEnv: Record<string, string> = {
+      ERIS_VULN_FACTORY: vulnRuntime.factory,
+      ERIS_VULN_FROM_BLOCK: vulnRuntime.factoryDeployBlock.toString(),
+      ERIS_VULN_LLM: config.vulnLlm,
+    };
     // Merge the stress victim env (ADR 0009) and vuln env (ADR 0014) into a single extra env for distribution.
+    // Its shape is fixed by the config (agentEnv.ts) and checked before any agent is launched.
     // ERIS_RUN_DIR is fixed when the process starts; the segment it names is not (ADR 0021 sec 6).
     // Hand the child the pointer so its log follows the roll instead of piling into segment 0.
     const segmentEnv = segments
@@ -2280,6 +2309,8 @@ export async function runRealtimeSimulation(
       file: `${AGENT_VIEW_DIR}/<agentId>/${AGENT_CONFIG_FILE}`,
       fields: [...AGENT_CONFIG_FIELDS],
     });
+    // Same keys in every regime but the documented exceptions (core/src/realtime/agentEnv.ts).
+    assertAgentExtraEnvShape(config, agentExtraEnv, { segmented: Boolean(segments) });
     const agentStateRoot = agentStateRootFromEnv();
     for (const agent of agentRuntimes) {
       if (agent.external || !agent.privateKey) {
@@ -3631,20 +3662,28 @@ export async function runRealtimeSimulation(
               fair: fairPrices[base],
             }, { stage, hashes });
 
-          // Fund vulnerability pools (ADR 0014): burn reserve into the pools that entered their window (cheatcode;
-          // no mine needed), making the bait-laden opportunity appear on this block. Done synchronously after
-          // fairPrices is finalized and before other tasks so the reserve ratio reflects fair (rare processing, window blocks only).
-          if (vulnRuntime) {
+          // Vulnerability pools (ADR 0014): deploy the pools whose window opened, and fund the ones whose deploy
+          // has landed (cheatcode; no mine needed), making the bait-laden opportunity appear on this block. Done
+          // synchronously after fairPrices is finalized and before other tasks so the reserve ratio reflects fair.
+          if (vulnPoolsActive) {
             try {
-              await fundVulnPoolsAt(
+              const sent = await stepVulnPools(
                 ctx,
                 vulnRuntime,
                 blockIndex,
                 bn,
                 fairPrices,
                 config,
+                { priorityFeeWei: oracleFee },
                 logger,
               );
+              for (const hash of sent)
+                submittedByHash.record(hash.toLowerCase(), {
+                  ownerId: "vuln-pools",
+                  role: "system",
+                  priorityFeeWei: oracleFee,
+                  actionType: "vulnPoolDeploy",
+                });
             } catch (error) {
               logger.event({
                 type: "vuln_fund_failed",
@@ -4077,7 +4116,6 @@ export async function runRealtimeSimulation(
           // and emit vulnerability_exploited / safe_pool_captured.
           // Run only during a vuln run (do not add a per-block getLogs to the default run).
           const vulnTask = async (): Promise<void> => {
-            if (!vulnRuntime) return;
             try {
               await watchVulnSwaps(ctx, vulnRuntime, fromBlock, bn, logger);
             } catch (error) {
@@ -4279,7 +4317,7 @@ export async function runRealtimeSimulation(
           ];
           if (stressVictims.length > 0) tasks.push(timed(victimTask));
           if (liquityVictims.length > 0) tasks.push(timed(liquityVictimTask));
-          if (vulnRuntime) tasks.push(timed(vulnTask));
+          if (vulnPoolsActive) tasks.push(timed(vulnTask));
           if (marketRegistry) tasks.push(timed(registryTask));
           // One task for both, actually rather than by comment. Every one of these sends from the
           // deployer key, and `sendNoMine` resolves the nonce per call -- two of them in the same
@@ -4342,7 +4380,7 @@ export async function runRealtimeSimulation(
             stressVictims.length > 0 ? results[taskIdx++] : undefined;
           const liquityVictimMs =
             liquityVictims.length > 0 ? results[taskIdx++] : undefined;
-          const vulnMs = vulnRuntime ? results[taskIdx++] : undefined;
+          const vulnMs = vulnPoolsActive ? results[taskIdx++] : undefined;
           const registryMs = marketRegistry ? results[taskIdx++] : undefined;
           // One measurement now that both share a task; reported under both names so the existing
           // round_timing readers keep working.
