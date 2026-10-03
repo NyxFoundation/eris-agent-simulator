@@ -270,7 +270,7 @@ Three things follow from the rules rather than from the code:
   `MarketRegistry` and makes no claim about it. Under the round-trip rule (rules §4.1) **value left
   inside a contract the environment cannot value is worth zero at the epoch's final block** — your
   own contract included. Profit taken *through* it counts in full.
-- **Gas is capped** at 30,000,000 per transaction and 30,000,000 per agent per block (rules §2.6).
+- **Gas is capped** at 10,000,000 per transaction and 10,000,000 per agent per block (rules §2.6) -- a third of the 30,000,000 block, so no one agent can fill it.
   The gateway refuses an over-cap transaction up front; exceeding it is a §8 offence, because a
   contract that eats the block starves the environment's price update as well as your rivals.
 - **The bundle carries the artifacts.** `bundle:agent` scans your `.ts` for the contract names you

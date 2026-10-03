@@ -61,10 +61,10 @@ agentMarkets:
   # write is paid by the environment, so without a cap a deploy-spam agent inflates that cost
   # without bound. The overflow carries into the next block, factory-made kinds first.
   registrationsPerBlock: 8
-  # The gas budget (issue #40 T0). Rules §5 caps how many transactions an agent may put in a block,
-  # not their gas; once agents deploy their own contracts one expensive call can starve the block.
-  maxTxGas: "30000000"
-  maxAgentBlockGas: "90000000"
+  # The gas budget (issue #40 T0): 10M per transaction and per agent per block, a third of the
+  # 30M block, so no single agent can fill it (sdk/src/config.ts says why that number).
+  maxTxGas: "10000000"
+  maxAgentBlockGas: "10000000"
 
 agents:
   - id: noop

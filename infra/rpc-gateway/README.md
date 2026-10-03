@@ -34,7 +34,7 @@ this column tells you who called what, when.
 ## Config (env)
 
 `PORT` (8546) · `UPSTREAM` (http://127.0.0.1:8545) · `ENV_NAME` (live|test) · `LOG_FILE` · `METRICS_FILE` ·
-`RPC_MAX_TX_GAS` (30000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — these two are the
+`RPC_MAX_TX_GAS` (10000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — these two are the
 [transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule) ·
 `RPC_MAX_PARAM_DEPTH` (64) · `RPC_MAX_PARAM_NODES` (100000) — the [request shape limit](#request-shape-limit) ·
 `RPC_MAX_BODY_BYTES` (4194304) — the [body cap](#request-body-cap).
@@ -222,7 +222,7 @@ refused too: a check that passes what it cannot parse is bypassed by choosing a 
 
 | check | refuses | env | counter |
 |---|---|---|---|
-| gas cap (issue #40 T0) | a gas limit above the per-transaction cap | `RPC_MAX_TX_GAS` (30,000,000; 0 disables) | `rpc_gas_denied_total` |
+| gas cap (issue #40 T0) | a gas limit above the per-transaction cap | `RPC_MAX_TX_GAS` (10,000,000; 0 disables) | `rpc_gas_denied_total` |
 | fee rule | typed (`0x02`/`0x03`/`0x04`): `maxFeePerGas > maxPriorityFeePerGas`, or `maxPriorityFeePerGas` above the cap. Legacy / `0x01`: `gasPrice` above the cap | `RPC_MAX_PRIORITY_FEE_WEI` (5,000,000,000 = `fees.maxPriorityFeeWei`; 0 disables the cap half only) | `rpc_fee_denied_total` |
 
 **Why the fee rule compares maxFeePerGas with the tip.** Rules §2.6 order a block by the priority fee,
