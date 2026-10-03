@@ -850,6 +850,9 @@ export type RegistryObservation = {
   // is somebody's choice; one observation carries a bounded, newest-first slice of it, and the
   // number dropped is reported rather than left to be inferred from a list that looks complete.
   dropped: number;
+  // Present only when this block's registry read failed. The rest of the section is then the last
+  // good read (or empty, if there never was one), not this block's state.
+  error?: string;
 };
 
 // Your side of one market on the permissionless lending singleton (issue #40 T4).

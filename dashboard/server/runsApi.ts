@@ -491,7 +491,9 @@ export function redactEvent(
     cursor.lastBlock = Math.max(cursor.lastBlock ?? 0, event.blockNumber);
   switch (type) {
     case "run_started_realtime": {
-      const { seed: _s, flowSeed: _f, ...rest } = event;
+      // `scenarioRegime` (#187) names the epoch's regime, which rules §3.3 does not publish. The
+      // record on disk keeps it (§7 audit and replay); only what is served drops it.
+      const { seed: _s, flowSeed: _f, scenarioRegime: _r, ...rest } = event;
       return JSON.stringify(rest);
     }
     case "stress_schedule": {
@@ -556,6 +558,31 @@ export function redactBlocksRow(line: string): string {
   return cols.join(",");
 }
 
+/**
+ * A request path relative to runs/, with "." and ".." resolved, or null when it climbs out. Every
+ * check on a request reads this one string: the allowlist and audience checks are prefix/segment
+ * matches, and run against the raw path they passed "comp/../other-run/x" (it starts with "comp/")
+ * while the file served was other-run's.
+ */
+/**
+ * decodeURIComponent, or null when the path is not valid percent-encoding. A malformed escape
+ * ("/runs/%") makes it throw, and the throw left the request handler: one unauthenticated request
+ * ended the hosted process every viewer shares (issue #203).
+ */
+function decodeComponent(s: string): string | null {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRel(rel: string): string | null {
+  const clean = path.posix.normalize(rel.replace(/^\/+/, ""));
+  if (clean === ".." || clean.startsWith("../") || path.posix.isAbsolute(clean)) return null;
+  return clean;
+}
+
 export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
   const root = path.resolve(runsDir);
   const mode: DashboardMode = {
@@ -581,6 +608,20 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     } catch {
       // nonexistent path: keep the prefix-checked resolution so callers can 404 on stat
       return resolved;
+    }
+  }
+
+  /**
+   * The runs/-relative path of a file `resolveInside` returned. Every check on a request reads this
+   * rather than the path the request asked for: `resolveInside` follows symlinks (that is what keeps
+   * a link from serving the rest of the disk), so a link inside an admitted competition used to point
+   * at a run outside the allowlist while the allowlist saw only the asking path (issue #202).
+   */
+  function relOf(file: string): string {
+    try {
+      return path.relative(fs.realpathSync(root), file);
+    } catch {
+      return path.relative(root, file);
     }
   }
 
@@ -1025,15 +1066,26 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     // on the last "/tail/" rather than on the first path segment.
     const tailAt = urlPath.lastIndexOf("/tail/");
     if (tailAt > 0) {
-      const rel = `${decodeURIComponent(urlPath.slice(1, tailAt))}/${decodeURIComponent(
-        urlPath.slice(tailAt + "/tail/".length),
-      )}`;
+      const head = decodeComponent(urlPath.slice(1, tailAt));
+      const name = decodeComponent(urlPath.slice(tailAt + "/tail/".length));
+      if (head === null || name === null) {
+        res.statusCode = 400;
+        res.end();
+        return true;
+      }
+      const rel = normalizeRel(`${head}/${name}`);
+      if (rel === null) {
+        res.statusCode = 403;
+        res.end();
+        return true;
+      }
       const file = resolveInside(rel);
-      const admitted = admitsPath(rel);
+      const checked = file === null ? rel : relOf(file);
+      const admitted = admitsPath(checked);
       if (
         !file ||
         !/\.(jsonl|csv)$/.test(file) ||
-        (mode.audience && !audienceAllows(rel)) ||
+        (mode.audience && !audienceAllows(checked)) ||
         !admitted
       ) {
         res.statusCode = mode.audience || !admitted ? 404 : 403;
@@ -1136,14 +1188,21 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
       return true;
     }
 
-    const rel = decodeURIComponent(urlPath.replace(/^\//, ""));
-    const file = resolveInside(rel);
-    if (!file) {
+    const decoded = decodeComponent(urlPath.replace(/^\//, ""));
+    if (decoded === null) {
+      res.statusCode = 400;
+      res.end();
+      return true;
+    }
+    const rel = normalizeRel(decoded);
+    const file = rel === null ? null : resolveInside(rel);
+    if (rel === null || !file) {
       res.statusCode = 403;
       res.end();
       return true;
     }
-    if ((mode.audience && !audienceAllows(rel)) || !admitsPath(rel)) {
+    const checked = relOf(file);
+    if ((mode.audience && !audienceAllows(checked)) || !admitsPath(checked)) {
       // 404, not 403: for the audience an unpublished file does not exist, and a different status
       // for "exists but withheld" would confirm what is there to withhold. The same for a run
       // outside the allowlist: it is not on this server as far as a reader can tell.

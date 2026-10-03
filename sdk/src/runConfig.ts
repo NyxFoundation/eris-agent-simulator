@@ -97,6 +97,7 @@ const SCHEMA: Record<string, string> = {
   "run.publicRpcUrl": "ERIS_PUBLIC_RPC_URL",
   "run.externalRoleEthWei": "ERIS_EXTERNAL_ROLE_ETH_WEI",
   "run.resetUnit": "ERIS_RESET_UNIT", // continuous | scenario (ADR 0020 §1)
+  "run.regime": "ERIS_SCENARIO_REGIME", // names the scenario streams with the seed (issue #186)
   "run.skipReset": "ERIS_SKIP_RESET",
   "run.prewarmBlocks": "ERIS_PREWARM_BLOCKS",
   "run.scoreEvery": "ERIS_SCORE_EVERY",

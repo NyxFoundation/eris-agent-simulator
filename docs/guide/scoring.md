@@ -54,11 +54,20 @@ boundary series. Six details are decisions, not formalities:
   epoch, then its submission time (§4.6).
 
 `run.markMedianBlocks` (default 5) marks every market-derived price at each boundary with a median
-over the preceding window instead of a single live read (rules §4.1): the stables' probe, the
-Uniswap LP split tick, Balancer / Curve share prices, the LST pool sale and Liquity's own-size
-quotes. Holdings stay at the boundary block; reference prices (fair, the Aave / GMX oracles) are
-used as they are. `valueSeries.markMedian` reports which surfaces are covered and the largest
-deviation seen for the stables.
+over the preceding window instead of a single live read (rules §4.1): the stables' probe, each agent's
+own-size sale of its stables (wallet and venues summed, so a large holding is not marked at the
+$1,000 probe's mid), the LST pool sale and Liquity's own-size quotes. Reference prices (fair, the Aave / GMX oracles) are used as
+they are. `valueSeries.markMedian` reports which surfaces are covered and the largest deviation seen
+for the stables.
+
+**An LP position is a holding, not a price.** How it splits into its two tokens (the Uniswap V3
+tick) and what share of the reserves one unit owns (Balancer / Curve) are the tokens a withdrawal in
+that block would return, so they are read at the boundary block and valued at the reference prices.
+Pairing a median split with the boundary's liquidity valued tokens the position did not hold: an
+owner alone in a pool could push it off fair for three of the window's five blocks and put it back
+before the bell, netting the swaps out between their wallet and their position while the position
+was still marked at the pushed split. At the boundary block's own split, a swap in that block moves
+between wallet and position and the mark does not move.
 
 ## Where it lands in summary.json
 
@@ -90,11 +99,14 @@ npm run competition -- plan --hidden hidden-set.yaml --lottery lottery.yaml --k 
 npm run backtest -- --scenarios plan.yaml --agents <roster>           # replays the k epochs in order
 ```
 
-The plan is derived from the lottery seed (`core/src/competition/schedule.ts`): every regime k / R
-times, the order decided by nobody (rules §3.3). Both input files are committed to before use and
+The plan is derived from the lottery seed (`core/src/competition/schedule.ts`): each epoch's regime
+is drawn independently and uniformly, decided by nobody (rules §3.3). Independent rather than "each
+regime k / R times, shuffled", because with equal counts an agent that carries state across epochs
+could count the regimes it had seen and know which were left (issue #186). Both input files are committed to before use and
 published after the results, and the derivation is plain SHA-256 + Fisher-Yates so anyone can
-reproduce it. k has to be a multiple of the regime count (12 official regimes, so the old k = 40 is
-refused); ADR 0026 proposes k = 60, five of each.
+reproduce it. The hidden set needs at least k seeds per regime, since any regime can be drawn every
+time. ADR 0026 proposes k = 60: five of each on average, 5 ± 2.1, and some regime is missing
+altogether 6.4% of the time.
 
 For the live week the plan also says when each epoch starts. `--starts-at <ISO 8601> --ends-at
 <ISO 8601>` spreads the k epochs evenly over the window (the week at k = 60: one every 168

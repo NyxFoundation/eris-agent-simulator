@@ -91,12 +91,12 @@ LP トークンは**プールの準備金に対する比例持分**で値付け�
 
 | 対象 | median する価格 |
 |---|---|
-| 市場価格 stable（spot・Trove 債務・SP 預入の mid、LP / lending の stable 脚） | 両方向 probe の幾何平均（`stables`） |
-| Uniswap V3 LP | プールの tick。元本は median tick で 2 トークンに分ける。未回収手数料は境界ブロックの tick のまま（手数料は価格でなく、境界で確定した事実） |
-| Balancer BPT / Curve LP | 1 持分あたりの価値（準備金 × 境界の参照価格 ÷ 供給量）。境界の評価額を median / 境界値の比で補正する |
+| 市場価格 stable の mid（Trove 債務の face・各 venue の face mark） | 両方向 probe（$1,000）の幾何平均（`stables`） |
+| 市場価格 stable の保有と債務（spot・SP 預入・LP / lending の stable 脚） | agent ごとに全 venue の枚数を合算した**自分サイズ**の売却 quote（get_dy）、債務は買い戻し quote（get_dx）（`stables-own-size`）。mid × 枚数で評価すると、薄いプールで買い占めて持ち続けた stable が売れない値段で数えられる（100k/100k・A=100 の DAI プールで 70k USDC 分買うと probe は 1.05、69,090 DAI は mid で 72,532、売れば 69,986）。合算するのは、財布と LP に分けると「それぞれ最初に売る」2 回の売却になり、分けた方が高く評価されるため |
 | LST（venue・Aave 担保の haircut） | 自分サイズでのプール売却 quote（get_dy）。キュー側（額面・待ち）は vault の値なので境界のまま |
-| Liquity | SP 預入の売却 quote（get_dy）と債務の買い戻し quote（get_dx）、いずれも境界のサイズ |
+| Liquity | 債務の買い戻し quote（get_dx）、境界のサイズ。SP 預入は eUSD の保有として上の行で売る |
 | Aave 口座 / GMX / SimpleLending | しない（環境の参照価格・オラクルで評価） |
+| Uniswap V3 LP / Balancer BPT / Curve LP | しない。LP の 2 トークンへの分割（tick）と持分あたりの準備金は**価格ではなく保有量**（そのブロックで引き出せば返ってくる枚数）なので、境界ブロックの値を参照価格で評価する。中央値の分割比を境界の流動性に掛けると、持っていない枚数を評価する: 自分しか LP のいないプールを窓の 5 ブロック中 3 ブロックだけ fair からずらし、境界の前に戻すと、往復の swap は財布と自分の LP の間で相殺されるのに、LP はずらした側の分割で評価される（fair からずれたプールの持分は fair で評価すると必ず大きい）。境界ブロックの値なら、同じブロックの swap は財布と LP で相殺されて評価は動かない（stable 脚は上の `stables-own-size` の行で財布の分と合算して売る） |
 
 quote が返らなかったブロックは捨てる（0 とも par とも数えない）。履歴が 5 ブロックに満たない境界は、あるブロックだけの median（§4.4.2）。
 
@@ -141,7 +141,7 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = 有効かつ σ_s
 
 ### エポック順序と commit（規約 §3.3 / §7）
 
-`core/src/competition/schedule.ts`。非公開 seed 集合（regime → seeds）と抽選 seed から、**各レジーム等回数**でエポック列を導出する。SHA-256 のカウンタモード + 棄却法 + Fisher-Yates で、抽選 seed が決めるのは順序（と余剰 seed の選択）だけ。両ファイルは正規化 JSON の sha256 で commit し（`npm run competition -- commit <file>`）、結果発表後に原本を公開する。
+`core/src/competition/schedule.ts`。非公開 seed 集合（regime → seeds）と抽選 seed から、**エポックごとにレジームを独立・一様に引いて**エポック列を導出する（issue #186。等回数だと、状態を引き継ぐ agent が既出レジームを数えて残りを推測できた）。seed は各レジームの seed を抽選順に並べ、引かれるたびに先頭から取る。SHA-256 のカウンタモード + 棄却法 + Fisher-Yates。両ファイルは正規化 JSON の sha256 で commit し（`npm run competition -- commit <file>`）、結果発表後に原本を公開する。
 
 **時刻表は commit の外**（運用であって採点に入らない）。`plan --starts-at <ISO> --every-minutes <N>` か `--ends-at <ISO>`（k 本を窓に均等配置。ライブ週 168 時間・k = 60 なら 168 分おき）で各エポックに `startsAt` を付け、`backtest --follow-schedule` がそれを待ってから各エポックを始める（過ぎていれば即開始して遅れを出す。`--resume` と併用可）。[ADR 0026](../adr/0026-live-week-schedule.md)。
 
@@ -159,7 +159,7 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s        S = 有効かつ σ_s
 
 | 論点 | 状態 |
 |---|---|
-| **k の値** | 付録A で提出期間の開始までに公表。[ADR 0026](../adr/0026-live-week-schedule.md) が 60（12 レジーム × 5）を提案。旧推奨の 40（8 × 5）は 12 の倍数でないので `deriveSchedule` が拒否する |
+| **k の値** | 付録A で提出期間の開始までに公表。[ADR 0026](../adr/0026-live-week-schedule.md) が 60 を提案。レジームはエポックごとに独立・一様に引く（issue #186）ので、k に倍数の制約は無く、非公開セットは各レジーム k 本以上の seed を持つ |
 | **非公開 seed / 抽選 seed の実物** | 生成と commit の公表は運営作業（`npm run competition -- commit`） |
 
 → [12 既知の制約・未決事項](12-open-issues.md)
