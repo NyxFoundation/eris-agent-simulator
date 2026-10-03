@@ -38,6 +38,9 @@ export type AgentSummary = {
   // Issue #208 / rules §8: flagged value movements between this agent and another registered
   // address (coordinator; absent when there were none, and on runs recorded before the check).
   rosterTransfers?: RosterTransfer[];
+  // Issue #212: addresses the agent's wallet funded that then sent transactions, attributed to the
+  // agent by the coordinator (absent when there were none).
+  derivedSenders?: Array<{ address: string; txCount: number }>;
 };
 
 // There is no second detector off `pnlUsdc − netPnlUsdc`. The idea was that the difference is a
@@ -142,6 +145,13 @@ export function scoresFromSummary(
     for (const t of agent.rosterTransfers ?? []) {
       if (t.flagSide === "sender" && t.from !== id) continue;
       flags.push(rosterTransferFlag(t, id));
+    }
+    if ((agent.derivedSenders?.length ?? 0) > 0) {
+      const txs = agent.derivedSenders!.reduce((n, d) => n + d.txCount, 0);
+      flags.push(
+        `${txs} on-chain tx(s) sent from ${agent.derivedSenders!.length} address(es) the agent's ` +
+          "wallet funded (attributed to the agent; rules §8, for the operator to judge)",
+      );
     }
     // Issue #207, the known path: what the chain showed at the first boundary against what the
     // environment had funded, both at that boundary's marks. P is already taken off the floored

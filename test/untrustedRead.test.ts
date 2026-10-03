@@ -226,13 +226,16 @@ test("readLendingState: the singleton reads are the venue's, the oracle reads ar
   const client = fakeClient({
     recorded,
     behaviour: (address, functionName) => {
-      if (address === SINGLETON && functionName === "marketIds")
-        return [idHonest, idTrap];
+      // The ids come from the per-user-safe pair, not from a whole-list getter (issue #212).
+      if (address === SINGLETON && functionName === "marketCount") return 2n;
       if (address === TRAP) return outOfGasError();
       return functionName === "price" ? 3_000n * 10n ** 36n : AGENT;
     },
     multicall: (contracts) =>
       contracts.map((c) => {
+        // Newest first: index 1 is the market created second.
+        if (c.functionName === "marketIdAt")
+          return (c as { args?: unknown[] }).args?.[0] === 1n ? idTrap : idHonest;
         if (c.functionName === "market") return [1n, 1n, 0n, 0n, 1n, 0n];
         if (c.functionName === "marketParams") {
           const trap =

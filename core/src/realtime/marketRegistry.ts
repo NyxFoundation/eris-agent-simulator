@@ -131,6 +131,26 @@ function entryKey(market: string, extra: string): string {
   return `${market.toLowerCase()}|${extra.toLowerCase()}`;
 }
 
+// Fail before the deploy, naming the rebuild, when `out/` predates a change to the contract.
+export function assertArtifactHasFunctions(
+  name: string,
+  required: string[],
+  outDir?: string,
+): void {
+  const { abi } = readForgeArtifact(name, outDir);
+  const have = new Set(
+    abi
+      .filter((e): e is Extract<typeof e, { type: "function" }> => e.type === "function")
+      .map((e) => e.name),
+  );
+  const missing = required.filter((f) => !have.has(f));
+  if (missing.length > 0)
+    throw new Error(
+      `forge artifact for ${name} is stale: it declares no ${missing.join(", ")}. ` +
+        "Run `npm run build:contracts` (or set ERIS_FORGE_OUT).",
+    );
+}
+
 async function deployFrom(
   ctx: SimContext,
   pk: Hex,
@@ -166,6 +186,15 @@ export async function deployAgentMarketVenues(
   // Owner-gated writes: the registry's owner is whoever deployed it, so the registrar must be the
   // deployer. An agent that could write here could publish a `verified` entry for its own trap.
   const address = await deployFrom(ctx, registrarPk, "MarketRegistry");
+  // The singleton is deployed from whatever `out/` holds, so a stale artifact deploys a contract
+  // the valuation cannot read. It would not fail loudly: the per-user index read would come back
+  // empty and every lending position would be worth zero while the run still scored and ranked.
+  // So the one read the valuation depends on has to be in the ABI before anything is deployed.
+  assertArtifactHasFunctions("SimpleLending", [
+    "userMarketIdsFrom",
+    "userMarketCount",
+    "expectedPosition",
+  ]);
   const lending = await deployFrom(ctx, registrarPk, "SimpleLending");
   const deployBlock = Number(await ctx.publicClient.getBlockNumber());
   const factory = await uniswapFactory(ctx.publicClient);

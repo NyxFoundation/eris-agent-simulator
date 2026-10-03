@@ -50,6 +50,12 @@ export const BLOCKS_CSV_COLUMNS = [
   // simply have no ETH-transfer check.
   "to",
   "valueWei",
+  // Issue #212: for a row whose sender is not the agent's registered wallet but an address that
+  // wallet funded (directly or through other addresses it funded), the address that funded it.
+  // Empty for every other row. The row's ownerId / role are already the agent's, so every reader
+  // keyed on them attributes the transaction to the agent; this column says why. Appended last, so
+  // every reader keyed on BLOCKS_CSV_INDEX keeps working against runs recorded before it existed.
+  "derivedFrom",
 ] as const;
 
 export const BLOCKS_CSV_INDEX = Object.fromEntries(
@@ -85,6 +91,7 @@ export type BlockRowInput = {
   maxFeePerGasWei?: bigint;
   to?: string;
   valueWei?: bigint;
+  derivedFrom?: string;
 };
 
 // The two fee columns of a mined transaction, from its own on-chain fields (not self-reported).
@@ -135,7 +142,7 @@ export class RunLogger implements RunArtifactWriter {
   blockRow(row: BlockRowInput): void {
     appendFileSync(
       join(this.runDir, "blocks.csv"),
-      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""},${row.gasUsed?.toString() ?? ""},${row.maxFeePerGasWei?.toString() ?? ""},${row.to ?? ""},${row.valueWei?.toString() ?? ""}\n`,
+      `${row.round},${row.blockNumber.toString()},${row.txIndex},${row.hash},${row.from},${row.priorityFeeWei.toString()},${row.status},${row.ownerId},${row.role},${row.actionType ?? ""},${row.bundleId ?? ""},${row.bundleIndex ?? ""},${row.method ?? ""},${row.gasUsed?.toString() ?? ""},${row.maxFeePerGasWei?.toString() ?? ""},${row.to ?? ""},${row.valueWei?.toString() ?? ""},${row.derivedFrom ?? ""}\n`,
     );
   }
 

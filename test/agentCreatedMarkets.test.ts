@@ -270,7 +270,7 @@ test("two addresses of one participant cannot fabricate a supply mark (M1)", asy
   // 30,000 -- +30,000 from nowhere. After: the lender's supply recovers only the drainer's dust.
   const { values, seen } = await runLendingValuation(
     [
-      () => [[MARKET_ID]],
+      (reads) => reads.map(() => [[MARKET_ID], 1n]),
       () => [
         PARAMS,
         [usdc(30_000), 0n, usdc(30_000), 0n, 1n, weth(10.001)],
@@ -292,7 +292,7 @@ test("two addresses of one participant cannot fabricate a supply mark (M1)", asy
 test("an honestly collateralized borrower still backs the supply in full", async () => {
   const { values } = await runLendingValuation(
     [
-      () => [[MARKET_ID]],
+      (reads) => reads.map(() => [[MARKET_ID], 1n]),
       () => [PARAMS, [usdc(30_000), 0n, usdc(15_000), 0n, 1n, weth(10)]],
       () => [
         [usdc(30_000), 0n, 0n],
@@ -310,7 +310,7 @@ test("a market with more debtors than a page reads the next page", async () => {
   const total = BigInt(BORROWER_PAGE + 1);
   const { values, seen } = await runLendingValuation(
     [
-      () => [[MARKET_ID]],
+      (reads) => reads.map(() => [[MARKET_ID], 1n]),
       () => [PARAMS, [usdc(30_000), 0n, usdc(30_000), 0n, 1n, weth(20)]],
       // First page: dust debtors with nothing behind them.
       () => [
@@ -332,47 +332,43 @@ test("a market with more debtors than a page reads the next page", async () => {
 });
 
 test("the end-of-run path applies the same per-borrower rule (M1)", async () => {
-  // Same market as the staged test, valued one agent at a time the way netPnlUsdc is.
-  const market = {
-    totalSupplyAssets: usdc(30_000),
-    totalSupplyShares: 0n,
-    totalBorrowAssets: usdc(30_000),
-    totalBorrowShares: 0n,
-    lastUpdate: 1n,
-    totalCollateralAssets: weth(10.001),
-  };
-  const state = {
-    singleton: "0x00000000000000000000000000000000000000aa" as Address,
-    marketIds: [MARKET_ID],
-    paramsById: {
-      [MARKET_ID]: {
-        loanToken: USDC_ADDR,
-        collateralToken: WETH_ADDR,
-        oracle: NOBODY,
-        irm: NOBODY,
-        lltv: 0n,
-      },
-    },
-    totalsById: { [MARKET_ID]: market },
-    priceById: {},
-    oracleOwnerById: {},
-    dropped: 0,
-  };
+  // Same market as the staged test, valued one agent at a time the way netPnlUsdc is. This path
+  // takes no state: it reads the chain itself, starting from the agent's own market index, so a
+  // position behind newer markets is still in the number (issue #212).
+  const SINGLETON = "0x00000000000000000000000000000000000000aa" as Address;
+  const MARKET = [usdc(30_000), 0n, usdc(30_000), 0n, 1n, weth(10.001)];
   const pages: unknown[][] = [];
   const ctx = {
+    lending: SINGLETON,
     fairPrices: { WETH: 3000 },
     publicClient: {
-      multicall: async () => [
-        { status: "success", result: [usdc(30_000), 0n, weth(10)] },
-      ],
-      readContract: async (req: { args: readonly unknown[] }) => {
+      readContract: async (req: {
+        functionName: string;
+        args: readonly unknown[];
+      }) => {
+        // The one market this agent has ever entered, from its own index.
+        if (req.functionName === "userMarketIdsFrom") return [[MARKET_ID], 1n];
         pages.push([...req.args]);
+        // One debtor: the whole supply borrowed against 0.001 WETH of collateral.
         return [[DRAINER.address], [usdc(30_000)], [weth(0.001)], 1n];
       },
+      multicall: async (req: {
+        contracts: Array<{ functionName: string }>;
+      }) =>
+        req.contracts.map((c) => ({
+          status: "success",
+          result:
+            c.functionName === "marketParams"
+              ? PARAMS
+              : c.functionName === "market"
+                ? MARKET
+                : [usdc(30_000), 0n, weth(10)],
+        })),
     },
   };
-  const value = await liveLendingValueUsdc(ctx as never, LENDER.address, state, 3000);
-  assert.equal(pages.length, 1);
+  const value = await liveLendingValueUsdc(ctx as never, LENDER.address, 3000);
+  assert.equal(pages.length, 1, "one borrower page for the market it supplies into");
+  // $3 of recoverable supply (the debtor's collateral) plus its own 10 WETH of collateral.
   assert.ok(Math.abs(value - 30_003) < 0.01, `${value}`);
 });
 

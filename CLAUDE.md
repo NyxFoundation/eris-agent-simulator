@@ -367,7 +367,20 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   **1 アカウント 1 体**（`~/.local/state/ascon-faucet/claims.json`）。2 体目と同じ参加単位の紐付けは運営が `register.sh` で行う
 - **未登録の送信者も blocks.csv に残す**（role `external`、ownerId = 送信者アドレス小文字）。以前は
   「run の外の tx」として捨てていたが、試行環境ではそれが参加者の tx そのもので、「自分の tx は載ったか」に
-  答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外
+  答える唯一の成果物から消えていた。`method` は calldata から。採点・規則検査は `agent` 行しか読まないので対象外。
+  **ただし agent のウォレットが資金を渡した先からの tx は agent の行**（issue #212。`core/src/realtime/derivedSenders.ts`）:
+  ETH 送金・価格のある token の Transfer・自分が deploy したコントラクトを推移的に追い、そこから出た tx は
+  role `agent` + ownerId = その agent、末尾列 `derivedFrom` に資金元。以前は第 2 EOA から出すだけで fee 上限・
+  ガス予算（per-agent-per-block の合計はゲートウェイでは見えない）・未ログ検査の全部を外れた。3 検査は
+  `external` 行も derived map で読む（資金が着く前に tip 0 で送った行の分）。summary の `agents[].derivedSenders`・
+  `derived_senders` イベント・matrix の `flags` に出る。**追わないもの**: 他人の tx が allowance で agent の token を
+  引いた場合（追うと誰にでも違反を着せられる）、価格の無い token の Transfer（偽 token の log は何とでも言える）、
+  call 内部の ETH 転送（trace が要る）。判定は運営（規約 §8）。
+  **環境自身の鍵 4 本（admin / keeper / setup / deployer）は既知側に載せる**（`core/src/realtime/environmentSigners.ts`。
+  `roleKeyGuard` の `RoleKeys` と同じ 4 本に型で縛ってある）。載せないと二重に間違う — 環境の tx が `external` 行に
+  なり、しかも agent が 1 回送金するだけで**その鍵が送った全部**がその agent の行になる（setup ならレジストリ登録、
+  deployer なら `depeg` / `liquidityPull` の売買）。depeg / pull が有効な run は後から deployer 行を機構名で上書きする
+  （こちらが具体的なので正しい）。この 4 本は下限
 - **セグメントを切るたびに `stress_schedule` も再発行する**（`run_started_realtime` / `agents_registered` /
   manifest と同じ扱い。ADR 0021 §6）。以前は 2 日目以降の全セグメントが「予定なし」に見えた。ディスク上の記録は
   窓込みで完全（規約 §7.2 の監査用）。**未来の窓を公開側から隠すのは runs API（dashboard 側の audience mode）の仕事**
@@ -946,9 +959,25 @@ ours なのは 2 つだけ（core は無改変）:
     以前の規則では 1 体の余剰担保（債務 0 で預けた担保）が本人の資産と他人の焦げ付きの裏付けとに
     二重に数えられ、同じ参加者の 2 体で約 +27k の架空利益が出た（監査 M1）。借り手は
     コントラクトの `borrowerPositionsFrom`（今債務を持つアドレスの一覧。swap-and-pop）から読み、
-    1 市場 `BORROWER_SCAN_LIMIT`（1,024）を超えた分の債務は回収 0 として数える（安全側）
+    1 市場 `BORROWER_SCAN_LIMIT`（1,024）を超えた分の債務は回収 0 として数える（安全側）。
+    **借り手の一覧を読むのは「誰かの index に載っていて、かつ債務がある市場」だけ**（下の per-user index
+    と組み合わせる。供給していない市場の裏付けは自分の評価額を変えないので読まない）
   - **金利は装飾**。エポック 12 分で 3%/年は 0.00007%。効く餌は**レバレッジ（高 LLTV）と清算ボーナス**で、
     貸出の罠の被害者は**借り手か清算人**であって供給側ではない。IRM は正直にそう書いて同梱
+  - **建玉はコントラクトの per-user index から読む。市場一覧の切り出しでは読まない**（issue #212 / #216 項目 1）。
+    `marketIds()` のガスは件数に比例し（~1,500 件で 30M の call 上限）、しかも採点は**最新 512 件に切ってから**
+    空市場を除いていたので、被害者の市場より新しい空市場を 512 件作ると（1 件 ~17 万 gas = 1 ブロックの予算で
+    ~170 件）建玉が評価から消え、警告も出なかった。今は `supply`/`supplyCollateral`/`borrow` が `(market, user)` の
+    初回に `_userMarketIds[user]` へ追記し（建玉を作る呼び出しはこの 3 つだけ。清算は他人の建玉を減らすだけ）、
+    採点（`valueAtBlock` / `valueUsdc`）は agent ごとに `userMarketIdsFrom` を 1 回読む。伸ばせるのは本人だけなので
+    `USER_MARKET_LIMIT`（128）は自分の建玉しか切らず、超過は `lending-unscanned`、読めなかった市場・建玉は
+    `lending-market:` / `lending-position:` の `read-failed` で `scoring_unpriced_holdings` に出る。観測は
+    `marketCount` + `marketIdAt` を 256 件ずつ新しい順に 512 件まで歩き、**自分の市場は窓から落ちても index から戻す**。
+    SDK の ABI に `marketIds` は無い（`test/lendingMarketIndex.test.ts`）。コントラクトは run ごとに `out/` から
+    deploy するので state dump は無関係で、`forge build` だけ要る。**その `out/` が古いと静かに壊れる**ので
+    deploy の前に ABI を実測する（`assertArtifactHasFunctions`。`userMarketIdsFrom` / `userMarketCount` /
+    `expectedPosition` が無ければ `npm run build:contracts` を名指しして落ちる）。黙って通すと per-user index の
+    読取が空で返り、**全 lending 建玉が 0 のまま run は採点も順位も出す**
 - **アクション**: `createPool`（uniswap 所有。NPM の `createAndInitializePoolIfNecessary`）/
   `createLendingMarket` + `lendingSupply`/`Withdraw`/`SupplyCollateral`/`WithdrawCollateral`/`Borrow`/
   `Repay`/`Liquidate`（lending 所有）。**デプロイは `to` を省いた `rawTx`** — ランタイム経由なので
