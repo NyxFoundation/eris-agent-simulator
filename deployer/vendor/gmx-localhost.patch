@@ -11,7 +11,7 @@ index 5044d49..19ce7db 100644
        gmx: "0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a",
        esGmx: "0xf42Ae1D54fd613C9bb14810b0588FaAa09a426cA",
 diff --git a/config/general.ts b/config/general.ts
-index e58afec..ca784c5 100644
+index e58afec..326be05 100644
 --- a/config/general.ts
 +++ b/config/general.ts
 @@ -3,7 +3,7 @@ import { HardhatRuntimeEnvironment } from "hardhat/types";
@@ -41,7 +41,22 @@ index e58afec..ca784c5 100644
  
        depositGasLimit: 0,
        withdrawalGasLimit: 0,
-@@ -56,7 +65,7 @@ export default async function ({ network }: HardhatRuntimeEnvironment) {
+@@ -40,7 +49,13 @@ export default async function ({ network }: HardhatRuntimeEnvironment) {
+       glvShiftGasLimit: 0,
+ 
+       tokenTransferGasLimit: 200_000,
+-      nativeTokenTransferGasLimit: 50_000,
++      // The third hook, for the same reason as refundExecutionFeeGasLimit above: GMX sends native ETH (the
++      // execution-fee refund, unwrapped outputs) to an order's receiver with this much gas, inside
++      // the keeper's executeOrder, so a contract receiver ran its receive() at the top of the block.
++      // 0 leaves the 2,300 stipend EVM adds to any call with value -- what Solidity's transfer()
++      // gives: no SSTORE (EIP-2200), so an EOA is paid as before and a contract that needs more fails
++      // the send, which TokenUtils.sendNativeToken answers by paying WETH instead. Upstream: 50_000.
++      nativeTokenTransferGasLimit: 0,
+ 
+       setTraderReferralCodeGasLimit: 200_000,
+       registerCodeGasLimit: 200_000,
+@@ -56,7 +71,7 @@ export default async function ({ network }: HardhatRuntimeEnvironment) {
        requestExpirationTime: 300,
  
        maxSwapPathLength: 5,

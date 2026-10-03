@@ -1118,8 +1118,9 @@ export async function runRealtimeSimulation(
       if (enforcement === "warn") console.warn(`[gmx] WARNING: ${message}`);
     }
 
-    // Can a GMX order carry a callback on this deploy? Recorded, not enforced: the keeper refuses
-    // such orders on every chain (gmxKeeperRefusal), the patch only also refuses them at createOrder.
+    // Does this deploy give participant code gas inside the keeper's transaction (order callbacks, a
+    // contract receiver's receive())? Recorded, not enforced: the keeper refuses callback orders on
+    // every chain (gmxKeeperRefusal); the patch also closes the receiver's gas (gmxCallbacks.ts).
     if (config.localDeploy && enabledIds.includes("gmx")) {
       const callbacks = gmxCallbackCheck(
         await readGmxCallbackLimits(publicClient),

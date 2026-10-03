@@ -1,4 +1,4 @@
-// The keeper does not run participant callbacks.
+// The keeper runs no participant code: no order callbacks, and (patched deploy) no receiver gas.
 //
 // GMX calls an order's callbackContract inside executeOrder, and the keeper's transaction sits just
 // under the oracle's and above every participant. An order with a callback was therefore the
@@ -195,27 +195,37 @@ test("the keeper executes only the orders without a callback, and reports the re
   assert.match(refused[1].reason, /could not be read: rpc timeout$/);
 });
 
-test("the startup check calls a deploy closed only when both callback limits read 0", () => {
-  assert.equal(
-    gmxCallbackCheck({
-      maxCallbackGasLimit: 0n,
-      refundExecutionFeeGasLimit: 0n,
-    }).closedAtDeploy,
-    true,
-  );
-  // Upstream's hardhat profile: both hooks open.
+test("the startup check calls a deploy closed only when all three limits read 0", () => {
+  const closed = {
+    maxCallbackGasLimit: 0n,
+    refundExecutionFeeGasLimit: 0n,
+    nativeTokenTransferGasLimit: 0n,
+  };
+  assert.equal(gmxCallbackCheck(closed).closedAtDeploy, true);
+  // Upstream's hardhat profile: every hook open.
   const upstream = gmxCallbackCheck({
     maxCallbackGasLimit: 2_000_000n,
     refundExecutionFeeGasLimit: 200_000n,
+    nativeTokenTransferGasLimit: 50_000n,
   });
   assert.equal(upstream.closedAtDeploy, false);
-  assert.match(gmxCallbackOpenMessage(upstream), /2000000.*200000/);
-  // Zeroing only maxCallbackGasLimit leaves refundExecutionFee its own 200k.
+  assert.match(gmxCallbackOpenMessage(upstream), /2000000.*200000.*50000/);
+  // Each limit is its own hook: zeroing maxCallbackGasLimit leaves refundExecutionFee its 200k, and
+  // both leave a contract receiver its receive() with 50k.
   assert.equal(
-    gmxCallbackCheck({
-      maxCallbackGasLimit: 0n,
-      refundExecutionFeeGasLimit: 200_000n,
-    }).closedAtDeploy,
+    gmxCallbackCheck({ ...closed, refundExecutionFeeGasLimit: 200_000n })
+      .closedAtDeploy,
+    false,
+  );
+  assert.equal(
+    gmxCallbackCheck({ ...closed, nativeTokenTransferGasLimit: 50_000n })
+      .closedAtDeploy,
+    false,
+  );
+  // A limit that was not read is not a 0.
+  assert.equal(
+    gmxCallbackCheck({ ...closed, nativeTokenTransferGasLimit: undefined })
+      .closedAtDeploy,
     false,
   );
   const unread = gmxCallbackCheck({ error: "boom" });
@@ -223,11 +233,12 @@ test("the startup check calls a deploy closed only when both callback limits rea
   assert.match(gmxCallbackOpenMessage(unread), /could not be read \(boom\)/);
 });
 
-test("the deploy patch zeroes both callback gas limits in the localhost profile", () => {
+test("the deploy patch zeroes all three gas limits in the localhost profile", () => {
   const patch = readFileSync(
     new URL("../deployer/vendor/gmx-localhost.patch", import.meta.url),
     "utf8",
   );
   assert.match(patch, /^\+\s+refundExecutionFeeGasLimit: 0,/m);
   assert.match(patch, /^\+\s+maxCallbackGasLimit: 0,/m);
+  assert.match(patch, /^\+\s+nativeTokenTransferGasLimit: 0,/m);
 });
