@@ -381,7 +381,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   - **鍵ファイル付きの順序付きプラン（= ライブ週）では、警告止まりだった 2 つを拒否にする**（`core/src/realtime/liveWeek.ts`）。
     運営の鍵（admin/keeper/setup/deployer、または Aave admin が anvil のテストアカウント = 既定 mnemonic の dump）が
     公開鍵 / `agentSandbox: process` / `command` の agent / `ERIS_AGENT_ISOLATE=1` + `ERIS_AGENT_INTERNAL=1` の無い
-    docker agent / bind-mount / **anvil の公開テストアカウントに ETH が残っているチェーン**（鍵は anvil のバナーに出ていて、ゲートウェイは送信者を見ないので、誰でも自分の財布へ送金して P を足せた。backtest の anvil は以前 `--accounts 10 --balance 1000000` で毎エポック 1,000,000 ETH ずつ持たせていた。今は `--accounts 0` で、残高は起動時と各エポックの funding 後・agent 起動前に実測する = `publicAccountRefusal`）。以前は `roleKeyGuard` が「参加者が送れるチェーン」を登録ファイルか `external` でしか
+    docker agent / bind-mount / **anvil の公開テストアカウントに ETH が残っているチェーン**（鍵は anvil のバナーに出ていて、ゲートウェイは送信者を見ないので、誰でも自分の財布へ送金して P を足せた。backtest の anvil は以前 `--accounts 10 --balance 1000000` で毎エポック 1,000,000 ETH ずつ持たせていた。今は `--accounts 0` で、残高（ETH + レジストリの全トークン。base fee 0 なので ETH 0 でもトークンは送れる）は起動時と各エポックの funding 後・agent 起動前に実測する = `publicAccountRefusal`。**既定 mnemonic で焼いた dump は state 自体に公開アカウントを持つ**ので、`gen:state-dump` が dump から実測して manifest の `publicTestAccounts` に書き、ライブ週は空でない・フィールドが無い manifest を拒否する = `stateDumpRefusal`。直すには秘密 `MNEMONIC` で deploy し直して焼く）。以前は `roleKeyGuard` が「参加者が送れるチェーン」を登録ファイルか `external` でしか
     判定せず、運営が起動する本番エポックはどちらも持たないので素通りしていた。隔離も警告だけで、host network の
     agent はゲートウェイを通らず anvil の cheatcode に届く。規約 §3.1 の一覧が「禁止」と書くものを「届かない」に
     するのはこの 2 つ。最初の待機の前にレジームごとに検査し、拒否は除外エポックにせず週ごと止める。

@@ -675,13 +675,30 @@ async function main(): Promise<void> {
       }
       // The loaded state, before the snapshot every epoch reverts to. The coordinator reads the
       // same balances again after each epoch's funding.
-      const { publicAccountRefusal, LiveWeekRefusal } = await import(
-        "../realtime/liveWeek.js"
-      );
-      const refusal = await publicAccountRefusal(async (address) =>
-        BigInt(await rpc<string>(rpcUrl, "eth_getBalance", [address, "latest"])),
-      );
-      if (refusal) throw new LiveWeekRefusal([refusal]);
+      const { publicAccountRefusal, stateDumpRefusal, LiveWeekRefusal } =
+        await import("../realtime/liveWeek.js");
+      const { tokenRegistry } = await import("@eris/sdk/markets.js");
+      const refusals = [
+        stateDumpRefusal(manifest),
+        await publicAccountRefusal(
+          {
+            eth: async (address) =>
+              BigInt(await rpc<string>(rpcUrl, "eth_getBalance", [address, "latest"])),
+            // balanceOf(address): selector 0x70a08231 + the address left-padded to 32 bytes.
+            erc20: async (token, address) => {
+              const word = await rpc<string>(rpcUrl, "eth_call", [
+                { to: token, data: `0x70a08231${address.slice(2).toLowerCase().padStart(64, "0")}` },
+                "latest",
+              ]);
+              if (word === "0x")
+                throw new Error(`registry token ${token} has no code on the loaded state`);
+              return BigInt(word);
+            },
+          },
+          Object.values(tokenRegistry()),
+        ),
+      ].filter((r): r is string => r !== undefined);
+      if (refusals.length > 0) throw new LiveWeekRefusal(refusals);
     }
 
     // ---- The scenario matrix ----

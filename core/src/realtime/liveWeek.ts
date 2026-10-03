@@ -26,7 +26,7 @@
 // So in the live week all three become refusals. The live week is recognised the way the backtest runner
 // already recognises it for the scenario key (ADR 0027): an ordered plan realised under a key file.
 // A rehearsal of the plan runs with --scenario-key public, which is not the live week.
-import { formatEther, type Address } from "viem";
+import { formatEther, formatUnits, type Address } from "viem";
 import type { AgentSpec } from "@eris/sdk/types.js";
 import { agentSandboxWarning } from "./agentView.js";
 import {
@@ -125,23 +125,68 @@ export function liveWeekRefusals(opts: {
   return reasons;
 }
 
+/** What the chain check reads: native ETH, and one ERC-20 balance. Both at latest. */
+export type PublicAccountReader = {
+  eth: (address: Address) => Promise<bigint>;
+  erc20: (token: Address, address: Address) => Promise<bigint>;
+};
+
 /**
- * The refusal for anvil's public test accounts holding ETH on the chain the live week runs on, or
- * undefined when every one of them is empty. `balanceOf` reads the chain (eth_getBalance at latest).
+ * The refusal for anvil's public test accounts holding anything on the chain the live week runs on,
+ * or undefined when every one of them is empty. ETH and every registry token: the backtest chain runs
+ * at base fee 0, so an account with tokens and no ETH can still be emptied by a zero-priced transfer.
+ * What this does not read is venue positions (LP shares, Aave supply, Troves) -- a dump whose deployer
+ * holds those is the default-mnemonic dump, which stateDumpRefusal refuses by its manifest.
  */
 export async function publicAccountRefusal(
-  balanceOf: (address: Address) => Promise<bigint>,
+  read: PublicAccountReader,
+  tokens: ReadonlyArray<{ symbol: string; address: Address; decimals: number }>,
 ): Promise<string | undefined> {
   const funded: string[] = [];
   for (const address of publicTestAddresses()) {
-    const wei = await balanceOf(address as Address);
-    if (wei > 0n) funded.push(`${address} (${formatEther(wei)} ETH)`);
+    const held: string[] = [];
+    const wei = await read.eth(address as Address);
+    if (wei > 0n) held.push(`${formatEther(wei)} ETH`);
+    for (const token of tokens) {
+      const units = await read.erc20(token.address, address as Address);
+      if (units > 0n) held.push(`${formatUnits(units, token.decimals)} ${token.symbol}`);
+    }
+    if (held.length > 0) funded.push(`${address} (${held.join(", ")})`);
   }
   if (funded.length === 0) return undefined;
   return (
-    `anvil's public test accounts hold ETH, and their keys are in anvil's banner: ` +
-    `${funded.join(", ")}. Any participant can sign a transfer from them to their own wallet. ` +
+    `anvil's public test accounts hold funds, and their keys are in anvil's banner: ` +
+    `${funded.join("; ")}. Any participant can sign a transfer from them to their own wallet. ` +
     "Start the chain with --accounts 0 and load a state dump deployed from the secret mnemonic"
   );
 }
 
+/**
+ * The refusal for a state dump that carries anvil's public test accounts, from its manifest
+ * (genStateDump.ts measures them), or undefined for one deployed from a secret mnemonic. A manifest
+ * without the field predates the measurement and is refused too: the week should not run on a dump
+ * nobody checked.
+ */
+export function stateDumpRefusal(manifest: {
+  publicTestAccounts?: ReadonlyArray<{ address: string; balanceWei: string; nonce: number }>;
+}): string | undefined {
+  const regenerate =
+    'Deploy from the secret mnemonic (cd deployer && MNEMONIC="$(cat <secret>)" npm run deploy -- ' +
+    "--keep-fresh), then npm run gen:local-constants and npm run gen:state-dump";
+  if (manifest.publicTestAccounts === undefined)
+    return (
+      "the state dump's manifest does not say whether it carries anvil's public test accounts " +
+      `(written before gen:state-dump measured them). ${regenerate}`
+    );
+  if (manifest.publicTestAccounts.length === 0) return undefined;
+  const signed = manifest.publicTestAccounts.filter((a) => a.nonce > 0);
+  return (
+    `the state dump carries ${manifest.publicTestAccounts.length} of anvil's public test accounts` +
+    (signed.length > 0
+      ? `, and ${signed.map((a) => a.address).join(", ")} signed on the chain it came from ` +
+        "(it was deployed from the default mnemonic, so the venues' admin keys are public too)"
+      : "") +
+    `: ${manifest.publicTestAccounts.map((a) => `${a.address} (${formatEther(BigInt(a.balanceWei))} ETH)`).join(", ")}. ` +
+    regenerate
+  );
+}

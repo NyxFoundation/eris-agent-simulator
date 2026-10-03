@@ -1,4 +1,5 @@
 import {
+  erc20Abi,
   keccak256,
   stringToBytes,
   type Address,
@@ -103,6 +104,7 @@ import {
   baseTokens,
   gmxMarketAddresses,
   tokenInfo,
+  tokenRegistry,
 } from "@eris/sdk/markets.js";
 import {
   buildFlowContext,
@@ -2187,8 +2189,18 @@ export async function runRealtimeSimulation(
     // The live week's one check that reads the chain (liveWeek.ts): after funding, before any agent
     // starts. Every epoch, because each one starts from the reverted snapshot.
     if (overrides[LIVE_WEEK_OVERRIDE] === "1") {
-      const refusal = await publicAccountRefusal((address) =>
-        publicClient.getBalance({ address }),
+      const refusal = await publicAccountRefusal(
+        {
+          eth: (address) => publicClient.getBalance({ address }),
+          erc20: (token, address) =>
+            publicClient.readContract({
+              address: token,
+              abi: erc20Abi,
+              functionName: "balanceOf",
+              args: [address],
+            }),
+        },
+        Object.values(tokenRegistry()),
       );
       if (refusal) throw new LiveWeekRefusal([refusal]);
     }
