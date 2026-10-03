@@ -220,10 +220,23 @@ build_in_container() {
   git archive --format=tar "$head" | tar -xf - -C "$WORK"
   if [ -f dashboard/.env.production.local ]; then cp dashboard/.env.production.local "$WORK/dashboard/"; fi
 
+  # dashboard/node_modules is copied, not mounted read-only: `vite build` bundles vite.config.ts and
+  # writes the bundle into `.vite-temp` inside the *nearest* node_modules, which for
+  # dashboard/vite.config.ts is dashboard/node_modules. Vite falls back to another directory only
+  # when creating `.vite-temp` is refused; where the directory already exists -- which is the state
+  # of a box that has built in place before -- the write itself throws and the config never loads.
+  # It is ~7 MB here (nested only because the root asks for @types/node 24 and the dashboard for
+  # 26). `.vite-temp` / `.vite` are dropped from the copy so no stale bundle is reused. The root
+  # node_modules stays read-only: it is large and nothing writes into it.
   mounts=( -v "$WORK:/build" )
-  for nm in node_modules dashboard/node_modules core/node_modules sdk/node_modules; do
+  for nm in node_modules core/node_modules sdk/node_modules; do
     if [ -d "$REPO/$nm" ]; then mounts+=( -v "$REPO/$nm:/build/$nm:ro" ); fi
   done
+  if [ -d "$REPO/dashboard/node_modules" ]; then
+    cp -a "$REPO/dashboard/node_modules" "$WORK/dashboard/node_modules" ||
+      die "could not copy dashboard/node_modules into the build export"
+    rm -rf "$WORK/dashboard/node_modules/.vite-temp" "$WORK/dashboard/node_modules/.vite"
+  fi
 
   # Same hardening as infra/docker-agent/run-agent.sh where it applies: non-root, no privilege
   # escalation, read-only rootfs with a tmpfs /tmp (npm's cache and logs go there via HOME), a pid
@@ -234,7 +247,7 @@ build_in_container() {
         --pids-limit "${ERIS_SYNC_BUILD_PIDS:-512}" --label eris.role=dashboard-build
         -e HOME=/tmp -e CI=1 -e npm_config_update_notifier=false
         "${mounts[@]}" -w /build "$image" npm run dashboard:build )
-  say "building ${head:0:12} in $image (--network none, export of the commit + node_modules:ro, nothing else mounted)"
+  say "building ${head:0:12} in $image (--network none, export of the commit + the root node_modules:ro, nothing else mounted)"
   if [ -n "${ERIS_SYNC_DRY_RUN:-}" ]; then
     say "dry run: would run: ${cmd[*]}"
     return 0
