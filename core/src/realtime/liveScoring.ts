@@ -40,6 +40,7 @@ import { LiveMarketSampler, type MarketSeriesRow } from "./marketSeries.js";
 import { nextIntervalBoundary } from "../epochExtent.js";
 import {
   firstBoundaryV0,
+  type V0Rule,
   v0GapBeyondTolerance,
   type FirstBoundaryV0,
   type V0Source,
@@ -106,6 +107,8 @@ export class LiveScorer {
       markMedianBlocks: number;
       /** Sample the venue-state row at each boundary too. */
       sampleMarket: boolean;
+      /** How V_0 treats a measured value above the endowment (endowmentV0.ts). Default floor. */
+      v0Rule?: V0Rule;
     },
   ) {
     for (const a of opts.agents) this.valuesByAgent.set(a.id, []);
@@ -253,6 +256,7 @@ export class LiveScorer {
                 agent.endowment
                   ? endowmentValueAt(agent.endowment, snapshot)
                   : undefined,
+                this.opts.v0Rule,
               ),
             )
           : measured;

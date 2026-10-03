@@ -230,7 +230,11 @@ import {
 } from "./aaveReserveGuard.js";
 import { marketSeriesMeta, reconstructMarketSeries } from "./marketSeries.js";
 import { epochPnlFromSeries } from "../scoring/epochPnl.js";
-import type { FirstBoundaryV0, V0Source } from "../scoring/endowmentV0.js";
+import {
+  v0RuleFor,
+  type FirstBoundaryV0,
+  type V0Source,
+} from "../scoring/endowmentV0.js";
 import { epochEndBlock, intervalCount, loopStep } from "../epochExtent.js";
 import {
   NoArbMonitor,
@@ -3131,6 +3135,10 @@ export async function runRealtimeSimulation(
       // exists. Off when the post-run reconstruction will cover it anyway *and* the run is short
       // enough for that to be the richer artifact.
       sampleMarket: true,
+      // A scenario's world is fresh, so V_0 is the endowment exactly: value above it at the first
+      // boundary can only be a pre-bell gift, and a gift taken back mid-epoch must not count
+      // against the agent it was given to (endowmentV0.ts).
+      v0Rule: v0RuleFor(config.resetUnit),
     });
     // Issue #207: how V_0 was derived, for the record beside P. The endowment floor is applied at
     // the period's first boundary only, so a series that opens there reads the live scorer's
@@ -4570,6 +4578,7 @@ export async function runRealtimeSimulation(
           intervalBlocks: config.intervalBlocks,
           markMedianBlocks: config.markMedianBlocks,
           ...(marketRegistry ? { marketRegistry: marketRegistry.address } : {}),
+          v0Rule: v0RuleFor(config.resetUnit),
         });
         valueSeries = meta;
         alphaByAgent = meta.alphaByAgent;

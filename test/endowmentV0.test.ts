@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   firstBoundaryV0,
   v0GapBeyondTolerance,
+  v0RuleFor,
   V0_GAP_TOLERANCE_FRAC,
   V0_GAP_TOLERANCE_USDC,
 } from "../core/src/scoring/endowmentV0.js";
@@ -113,4 +114,45 @@ test("the gap tolerance covers gas and an early trade's spread, not a parked bas
   // A small endowment has the absolute floor, so a dollar of gas is never a finding.
   assert.equal(v0GapBeyondTolerance(100 - 9, 100), null);
   assert.equal(v0GapBeyondTolerance(100 - 11, 100), -11);
+});
+
+// The gift attack on the floor's upper side: before the bell, an attacker hands the victim an LP
+// NFT on a pool of its own token worth W, raising the victim's measured V_0 by W; during the epoch
+// it sells its token into that pool and takes W back. A world built fresh for the epoch has no
+// carried positions, so there the endowment is V_0 exactly.
+test("pinned: value above the endowment at the first boundary does not raise V_0", () => {
+  const W = 30_000;
+  const v0 = firstBoundaryV0(ENDOWMENT_AT_3000 + W, ENDOWMENT_AT_3000, "pinned");
+  assert.equal(v0.valueUsdc, ENDOWMENT_AT_3000);
+  assert.equal(v0.source, "endowment");
+  assert.equal(v0.measuredUsdc, ENDOWMENT_AT_3000 + W, "the gift is still on the record");
+  // Drained back to the endowment by the bell, the victim's P is 0, not −W.
+  assert.equal(ENDOWMENT_AT_3000 - v0.valueUsdc!, 0);
+  assert.equal(
+    v0GapBeyondTolerance(v0.measuredUsdc!, v0.endowmentUsdc!),
+    W,
+    "and the gap is reported",
+  );
+});
+
+test("pinned: the lower side behaves as the floor did", () => {
+  assert.deepEqual(
+    firstBoundaryV0(2_000, ENDOWMENT_AT_3000, "pinned"),
+    firstBoundaryV0(2_000, ENDOWMENT_AT_3000, "floor"),
+  );
+  assert.deepEqual(firstBoundaryV0(40_000, undefined, "pinned"), {
+    valueUsdc: 40_000,
+    source: "measured",
+    measuredUsdc: 40_000,
+  });
+});
+
+test("a scenario pins V_0; a continuous chain keeps the floor for carried positions", () => {
+  assert.equal(v0RuleFor("scenario"), "pinned");
+  assert.equal(v0RuleFor("continuous"), "floor");
+  // The default stays the floor, so a caller that names no rule behaves as before.
+  assert.equal(
+    firstBoundaryV0(ENDOWMENT_AT_3000 + 1_000, ENDOWMENT_AT_3000).valueUsdc,
+    ENDOWMENT_AT_3000 + 1_000,
+  );
 });
