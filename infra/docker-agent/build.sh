@@ -25,7 +25,8 @@ case "${1:-base}" in
     # A team pins its base at build time. Checking only that the tag exists left the runtime
     # stale after git pull; rebuilding consults the actual source, including uncommitted fixes.
     build_base
-    docker build -f infra/docker-agent/Dockerfile.team \
+    # BuildKit: Dockerfile.team installs with `RUN --network=none` (the legacy builder rejects it).
+    DOCKER_BUILDKIT=1 docker build -f infra/docker-agent/Dockerfile.team \
       --build-arg BASE="$BASE" --build-arg AGENT_ID="$id" -t "eris-agent:$id" . ;;
   *)
     echo "usage: build.sh base | build.sh team <agent-id>" >&2; exit 1 ;;

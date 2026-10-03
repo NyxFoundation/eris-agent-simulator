@@ -21,6 +21,7 @@ import {
   applySlippage,
   bpsOf,
   launchPools,
+  launchTokenCodehash,
   numberEnv,
   poolFee,
   quoteLaunch,
@@ -56,6 +57,8 @@ type Position = {
 };
 
 const positions = new Map<string, Position>();
+// Logged once: without the AgentERC20 artifact the launch filter runs on the listing's shape alone.
+let shapeOnlyNoted = false;
 
 export async function decide(
   obs: AgentObservation,
@@ -64,7 +67,17 @@ export async function decide(
   const block = Number(obs.blockNumber);
   const fee = obs.limits.defaultPriorityFeePerGasWei;
   const self = ctx.address as Address;
-  const pools = launchPools(obs).filter((p) => !p.mine);
+  // Only the environment's listings (lib/launchSwap.ts): a pool anyone else set up is not a launch.
+  const tokenCodehash = await launchTokenCodehash(ctx.publicClient);
+  if (tokenCodehash === null && !shapeOnlyNoted) {
+    shapeOnlyNoted = true;
+    ctx.log({
+      round: obs.round,
+      reason:
+        "AgentERC20 artifact or node unavailable: launch pools are matched by listing shape only",
+    });
+  }
+  const pools = launchPools(obs, { tokenCodehash }).filter((p) => !p.mine);
   const remaining =
     EXIT_BEFORE_END_BLOCKS > 0
       ? (obs.blocksRemaining ?? Number.POSITIVE_INFINITY)

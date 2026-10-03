@@ -43,7 +43,7 @@ export class Rng {
   // decides its realization.
   static fromSeed(seed: number, salt: number | string = 0): Rng {
     const s = typeof salt === "string" ? fnv1a32(salt) : salt >>> 0;
-    return new KeyedRng(scenarioKey, seed >>> 0, s);
+    return new KeyedRng(scenarioKey, seed >>> 0, s, scenarioRegime);
   }
 
   next(): number {
@@ -119,6 +119,34 @@ export function resetScenarioKey(): void {
   scenarioKey = Buffer.from(PUBLIC_SCENARIO_KEY_HEX, "hex");
 }
 
+// ---- The scenario's regime (issue #186) ----
+//
+// A scenario is (regime, seed), but the streams were named by (seed, salt) alone, so two regimes
+// drew the same numbers for the same seed: calm#101 and crash#101 had the same price shocks and the
+// same flow, differing only where their configs differ. Only the stress schedule mixed its event
+// list in (core/src/realtime/events.ts). The hidden set gives every regime the same seed list, so
+// an agent carrying state across epochs could recognise a path it had already watched, under a
+// different regime. The regime now names every stream too.
+//
+// Empty (the default) is the stream id of before, byte for byte: a run that names no regime --
+// sim:realtime, a test -- draws exactly what it drew. The environment's processes install the
+// regime alongside the key (core/src/scenarioKey.ts); agents never get it.
+let scenarioRegime = "";
+
+// The version of the stream naming above, recorded in matrix.json and run_started_realtime. A
+// --resume refuses a matrix with another (or none: written before #186, realized without the
+// regime), because its stored epochs and the ones run now would be draws from two different worlds
+// under the same key. Bump it whenever the stream id changes again.
+export const SCENARIO_STREAMS = "regime-v1";
+
+export function setScenarioRegime(name: string): void {
+  scenarioRegime = name;
+}
+
+export function resetScenarioRegime(): void {
+  scenarioRegime = "";
+}
+
 const STREAM_DOMAIN = Buffer.from("eris-rng/v1", "utf8");
 const TWO_POW_21 = 0x20_00_00;
 const TWO_POW_53 = 2 ** 53;
@@ -132,13 +160,21 @@ class KeyedRng extends Rng {
   private offset = 0;
   private counter = 0n;
 
-  constructor(key: Buffer, seed: number, salt: number) {
+  constructor(key: Buffer, seed: number, salt: number, regime = "") {
     super(0);
     this.key = key;
-    this.id = Buffer.alloc(STREAM_DOMAIN.length + 8);
+    // domain || seed || salt, then -- only when a regime is named -- its length and UTF-8 bytes.
+    // Length-prefixed so no regime name can be a prefix-collision of another.
+    const name = Buffer.from(regime, "utf8");
+    const base = STREAM_DOMAIN.length + 8;
+    this.id = Buffer.alloc(base + (name.length > 0 ? 4 + name.length : 0));
     STREAM_DOMAIN.copy(this.id, 0);
     this.id.writeUInt32BE(seed >>> 0, STREAM_DOMAIN.length);
     this.id.writeUInt32BE(salt >>> 0, STREAM_DOMAIN.length + 4);
+    if (name.length > 0) {
+      this.id.writeUInt32BE(name.length, base);
+      name.copy(this.id, base + 4);
+    }
   }
 
   override next(): number {

@@ -182,6 +182,11 @@ export type SimConfig = {
   // mode produced it, because the two are not comparable (the epoch count per world differs, and
   // lambda is calibrated per mode -- ADR 0020 Negative).
   resetUnit: ResetUnit;
+  // The regime this run realizes (ERIS_SCENARIO_REGIME / `run.regime`; issue #186). Names every
+  // keyed stream alongside the seed, so two regimes with the same seed draw different worlds. The
+  // backtest runner sets it per scenario; empty for a run that is not one of a regime's scenarios.
+  // Environment-only: an agent that read it would know the regime.
+  scenarioRegime: string;
   // Before the competition starts, run a market loop of N blocks with only the flow bot to warm the
   // protocols' working set (ADR 0006 Risks anvil cold-fetch mitigation). The competition-phase mine
   // then avoids hitting upstream fetches. 0 disables it (ERIS_PREWARM_BLOCKS).
@@ -234,6 +239,16 @@ export type SimConfig = {
   // bound (2026-09-07). Measured on an 8-core Mac with 32 docker agents the field takes 86-99 s,
   // so a local check of that size raises it; the production box is faster. 0 disables the wait.
   agentsReadyTimeoutSec: number;
+  // What an agent may write to the host, held by the coordinator (issue #214 item 1): the state
+  // directory (`run.agentStateQuotaBytes`) and its log files (`run.agentLogQuotaBytes`), measured
+  // every `run.agentDiskCheckEveryBlocks` blocks; past a quota the agent process is stopped and
+  // `agent_disk_quota_exceeded` is recorded. Above the runtime's own 64 MiB self-limits on purpose:
+  // those are what a well-behaved agent holds itself to, these are where the environment steps in.
+  // The state quota is also the apparent-size cap of the epoch-start snapshot (agentState.ts).
+  // 0 for a quota disables that check; 0 for the interval disables the watch.
+  agentStateQuotaBytes: number;
+  agentLogQuotaBytes: number;
+  agentDiskCheckEveryBlocks: number;
   seed: number;
   runDirRoot: string;
   agentTimeoutMs: number;
@@ -476,6 +491,7 @@ export function loadConfig(env = process.env): SimConfig {
     runMode: env.ERIS_RUN_MODE === "backtest" ? "backtest" : "realtime",
     agentSandbox: agentSandboxEnv(env.ERIS_AGENT_SANDBOX),
     resetUnit: resetUnitEnv(env.ERIS_RESET_UNIT),
+    scenarioRegime: env.ERIS_SCENARIO_REGIME ?? "",
     prewarmBlocks: intEnv(env.ERIS_PREWARM_BLOCKS, 0),
     ou: readOuParams(env),
     scoreEvery: Math.max(1, intEnv(env.ERIS_SCORE_EVERY, 1)),
@@ -487,6 +503,18 @@ export function loadConfig(env = process.env): SimConfig {
     agentsReadyTimeoutSec: Math.max(
       0,
       intEnv(env.ERIS_AGENTS_READY_TIMEOUT_SEC, 60),
+    ),
+    agentStateQuotaBytes: Math.max(
+      0,
+      intEnv(env.ERIS_AGENT_STATE_QUOTA_BYTES, 256 * 1024 * 1024),
+    ),
+    agentLogQuotaBytes: Math.max(
+      0,
+      intEnv(env.ERIS_AGENT_LOG_QUOTA_BYTES, 256 * 1024 * 1024),
+    ),
+    agentDiskCheckEveryBlocks: Math.max(
+      0,
+      intEnv(env.ERIS_AGENT_DISK_CHECK_EVERY_BLOCKS, 15),
     ),
     seed: intEnv(env.SEED, 1),
     runDirRoot: env.REPORT_DIR ?? "./runs",

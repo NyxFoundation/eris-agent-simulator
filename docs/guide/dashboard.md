@@ -427,23 +427,66 @@ With `ERIS_DASHBOARD_AUDIENCE=1` the runs API (`dashboard/server/runsApi.ts`):
   coordinator started earlier still writes), `manifest.json`. Decision logs (`agents/*.jsonl` — a participant's
   own reasoning and their not-yet-included bids, §2.6), raw LLM exchanges (`*.llm.jsonl`) and
   `disclosures/` return 404
-- rewrites `events.jsonl` line by line: `seed` / `flowSeed` leave `run_started_realtime`, the
-  `stress_calibration_warning` (it names crash magnitudes), `vulnerability_exploited` (regime-7
-  ground truth) and `agent_sandbox_warning` (the operator's note on agent container isolation) lines go, `pool_created` loses `rigged` / `rugBps` / `rugThresholdUnits` /
-  `baitBps`, any `stderrTail` goes, and `stress_schedule` depends on what the run is: for a
+- serves `events.jsonl` from an **allowlist of event types** (issue #210; `AUDIENCE_EVENTS` in
+  `runsApi.ts`): a type that is not on it is not served, including any type a writer adds later,
+  and so is a line that is not JSON. On it are the types a page reads that are history when written
+  and true of every regime — the run header (`run_started_realtime`, without `seed` / `flowSeed`),
+  `run_start_declared`, `price_feed_deployed`, `agents_registered`, `round_timing`,
+  `run_completed`, the interval boundaries, the reconstructed `observation`s, `lst_setup` /
+  `lst_block` / `lst_apy_changed`, `liquity_block`, `keeper_failed`, `no_arb_persistent_warning`.
+  Three more are served for a continuous world only: `liquity_liquidation`, `liquity_redemption`,
+  `lst_slash` — on-chain facts there, but in a scenario epoch only some regimes produce them, so
+  their presence names one. Everything else is dropped: the vuln regime's pool lifecycle
+  (`pool_created` carried the rigged flag; `vulnerability_disclosed`, `safe_pool_captured`,
+  `vuln_factory_deployed`, `vulnerability_exploited`), the agent-market registry, setup and
+  calibration audits, the flow wallets' telemetry, process exits (a participant's stderr), the
+  sandbox note, the post-run scoring audits. No page reads them
+- holds the environment's own submissions (`tx_submitted` / `tx_submit_failed`) **until they have
+  been mined**. They are written when a flow or whale tx is *sent*, so a live tail used to name a
+  pending tx — hash, sender, fee — a block before it landed, which the gateway's refusal to show
+  pending txs is there to prevent. Each line carries `headBlock` (the newest block the coordinator
+  knew of when it sent; lines from an older coordinator are dated by the block-processing line in
+  front of them, one block more cautiously) and is served once the chain is two blocks past it, by
+  `blocks.csv` or the coordinator's own `round_timing`; a finished run serves all of them. A tail
+  **stops in front of a held line** and returns its offset, so the next poll reads it again: it is
+  delayed (about two blocks, and what follows it waits behind it), never skipped. In a scenario
+  epoch the sender ids that exist only in some regimes — the whale's and the token launches'
+  wallets (`flow-whale…`, `flow-launch…` → `flow`), and system senders other than the oracle and
+  the keeper (a liquidity pull, a depeg seller, the market registry → `system`) — are collapsed, in
+  these lines and in `blocks.csv` (whole file and tail) alike. A continuous world's `blocks.csv` is
+  served as written
+- within that list: `stress_calibration_warning` (it names crash magnitudes) goes, any
+  `stderrTail` goes, and `stress_schedule` depends on what the run is: for a
   **continuous** world (a practice period) it keeps only the windows that have **already closed** by
   the run's current block (read off the end of `blocks.csv`) — past windows happened to everyone,
   future ones are what the manifest withholds (ADR 0021 §1); for one epoch of a **scenario**
   matrix it is dropped entirely, because even a closed window's kind ("crash", "whale") names the
   regime §3.3 does not announce. The run's kind is read from `summary.json`, or from
   `run_started_realtime` while the run is live; a run that states neither is treated as a scenario
+- applies the same rule to **every other `stress_*` event**. A scenario epoch serves none of them —
+  a victim liquidation, a whale, a token launch, an applied overlay each name the regime as surely
+  as the schedule does. A continuous world serves one only once the window it belongs to has closed:
+  by its `eventIndex` (`stress_event_applied` / `_summary`, the token-launch events), by its
+  `blockNumber` (mined, and not inside a window that is still open: whale swaps, liquidations,
+  pulls), and the token-launch plan keeps only its closed launches. Events with neither — setup,
+  funding, teardown, stuck/reverted — describe the plan or the operator's machinery and are never
+  served. Before this, `stress_event_applied` (written when the oracle tx is *sent*) gave a live
+  tail the next block's price, `stress_event_summary` named every window's kind, and
+  `stress_token_launch_setup` / `_funded` listed future windows and which launches were duds
+- the pages say what they did not get rather than drawing it as "nothing": in a scenario epoch the
+  Lending / Stablecoin / LST tables of liquidations, redemptions and slashes, and the Scenario
+  tab's venue-event list, read "not published while the competition runs" instead of "none"; on a
+  live continuous run, a stress firing inside a window that is still open is not served, and a
+  tail has passed it by the time the window closes, so the Scenario tab shows "not shown live —
+  reload" for a closed window with no firing record instead of "never fired"
 - rewrites `matrix.json` / `standings.json` of a **scenario** matrix so every scenario is
   `regime: "hidden"`, `seed: null` — the pages call it "epoch s" (§3.3: an epoch's scenario is not
   announced, and with equal regime counts the ones already run would give away the rest). A practice
   period (`resetUnit: continuous`) keeps its day labels: days are not scenarios. **Null, not 0**: a
   withheld seed, a segment's placeholder and a real seed 0 are three different things, and printing
   `seed 0` claimed a draw nobody made
-- drops `seed` / `flowSeed` and each agent's `stderrTail` from `summary.json`
+- drops `seed` / `flowSeed`, `stressEvents` (the per-window audit: every window's kind) and each
+  agent's `stderrTail` from `summary.json`
 - **serves only the competitions `ERIS_DASHBOARD_COMPETITIONS` lists**, when it is set: a
   comma-separated list of directories under `runs/`. What belongs to one is what its `matrix.json`
   names and what its directory contains — never what happens to be running. Applies to the index,

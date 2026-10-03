@@ -475,6 +475,7 @@ class RegistryObservation(BaseModel):
         ..., alias='strandedUnknown'
     )
     dropped: float
+    error: str | None = None
 
 
 class GmxObservation(BaseModel):

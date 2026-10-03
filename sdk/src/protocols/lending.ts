@@ -31,7 +31,11 @@ import { encodeFunctionData, type Abi, type Address, type PublicClient } from "v
 import { erc20Abi } from "../abis.js";
 import { MULTICALL3 } from "../constants.js";
 import { readUntrusted, readUntrustedBatch } from "../untrustedRead.js";
-import { tokenAmountUsd, type UnpricedAmount } from "../valuation.js";
+import {
+  addStableUnits,
+  tokenAmountUsd,
+  type UnpricedAmount,
+} from "../valuation.js";
 import type {
   AgentObservation,
   BalanceSnapshot,
@@ -1099,6 +1103,13 @@ async function* lendingValuationRun(
         } else {
           target.valueUsdc += usd;
           target.liquidatableValueUsdc += usd;
+          target.stableLongs ??= {};
+          addStableUnits(
+            target.stableLongs,
+            m.params.loanToken,
+            recoverable,
+            stablePrices,
+          );
         }
         // What the marking took away, said out loud. A supply position that shrank because the
         // collateral behind it is worthless must not look like a trading loss.
@@ -1133,6 +1144,24 @@ async function* lendingValuationRun(
         const net = Math.max(0, collateralValueUsd - debtUsd);
         target.valueUsdc += net;
         target.liquidatableValueUsdc += net;
+        // Only a position the floor did not zero counted its legs at all; a stable among them was
+        // counted at the mid, and is re-marked at the holder's size with the rest of their stables.
+        if (net > 0) {
+          target.stableLongs ??= {};
+          target.stableShorts ??= {};
+          addStableUnits(
+            target.stableLongs,
+            m.params.collateralToken,
+            collateral,
+            stablePrices,
+          );
+          addStableUnits(
+            target.stableShorts,
+            m.params.loanToken,
+            borrowAssets,
+            stablePrices,
+          );
+        }
         if (
           collateral > 0n &&
           tokenAmountUsd(

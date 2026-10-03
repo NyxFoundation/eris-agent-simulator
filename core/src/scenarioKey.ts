@@ -13,11 +13,17 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { PUBLIC_SCENARIO_KEY_HEX, setScenarioKey } from "@eris/sdk/rng.js";
+import {
+  PUBLIC_SCENARIO_KEY_HEX,
+  setScenarioKey,
+  setScenarioRegime,
+} from "@eris/sdk/rng.js";
 import { commitmentOf } from "./competition/schedule.js";
 
 export const SCENARIO_KEY_FILE_ENV = "ERIS_SCENARIO_KEY_FILE";
 export const SCENARIO_KEY_COMMITMENT_ENV = "ERIS_SCENARIO_KEY_COMMITMENT";
+// The regime the streams are named by (issue #186). Travels with the key to the flow bot.
+export const SCENARIO_REGIME_ENV = "ERIS_SCENARIO_REGIME";
 
 export type ScenarioKeyRecord = {
   source: "public" | "file";
@@ -107,10 +113,12 @@ export function scenarioKeyRecord(key: LoadedScenarioKey): ScenarioKeyRecord {
 // was meant to draw under the public key.
 export function scenarioKeyChildEnv(
   key: LoadedScenarioKey,
+  regime = "",
 ): Record<string, string> {
   return {
     [SCENARIO_KEY_FILE_ENV]: key.source === "file" ? (key.path as string) : "",
     [SCENARIO_KEY_COMMITMENT_ENV]: key.commitment,
+    [SCENARIO_REGIME_ENV]: regime,
   };
 }
 
@@ -124,6 +132,7 @@ export function installChildScenarioKey(
     throw new Error(
       `scenario key mismatch: the coordinator expects ${expected}, this process loaded ${key.commitment}`,
     );
+  setScenarioRegime(env[SCENARIO_REGIME_ENV] ?? "");
   return installScenarioKey(key);
 }
 

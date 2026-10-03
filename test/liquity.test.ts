@@ -294,8 +294,9 @@ test("the historical mark prices eUSD off the registry and the Trove off the fai
         0n,
         0n,
       ],
-      // stage 1: own-size quotes for the deposit and for buying the debt back
-      () => [990n * USDC, 3960n * USDC],
+      // stage 1: the own-size quote for buying the debt back. The deposit is eUSD the agent holds,
+      // sold by the scorer together with the rest of its eUSD, so it is not quoted here.
+      () => [3960n * USDC],
     ],
   );
   // Stage 0 asks for four reads per agent (Trove, SP deposit, SP gain, CollSurplusPool) plus the one
@@ -310,6 +311,12 @@ test("the historical mark prices eUSD off the registry and the Trove off the fai
     Math.round(6000 - 3960 + 990),
   );
   assert.equal(v.unpriced.length, 0);
+  assert.equal(asked[1].length, 1);
+  assert.equal((asked[1][0] as { functionName: string }).functionName, "get_dx");
+  // The deposit is handed over at its size, counted above at the mid.
+  assert.deepEqual(v.stableLongs, {
+    [DEPLOYMENT.eusd.toLowerCase()]: 1000n * WAD,
+  });
 });
 
 test("the wallet's eUSD is left to the registry, so nothing counts it twice", async () => {
