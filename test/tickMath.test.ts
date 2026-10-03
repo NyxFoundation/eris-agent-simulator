@@ -6,7 +6,7 @@ import {
   getSqrtRatioAtTick,
   MAX_TICK,
   MIN_TICK,
-} from "../core/src/realtime/tickMath.js";
+} from "@eris/sdk/tickMath.js";
 
 // The liquidityPull stress event (issue #52) restores depth through increaseLiquidity, which takes
 // token amounts and derives the liquidity from them. If this arithmetic is off, the decay leg puts

@@ -45,6 +45,12 @@ CODE_RULES = [
      "filesystem writes (disk-fill / tampering)"),
     ("BLOCK", r"anvil_[a-zA-Z]+|hardhat_[a-zA-Z]+|evm_(setBalance|snapshot|revert|mine|setAccountStorage)|setStorageAt|impersonateAccount|setBalance",
      "chain cheatcode / privileged RPC (only valid on the dev chain; forbidden)"),
+    # Issue #216 (5): the rule above is a line-level regex, and a method name assembled at runtime
+    # (`["anvil","setBalance"].join("_")`) contains no `anvil_` to match. The read-only client and the
+    # gateway refuse the assembled name when it is sent, and the post-run audit reads what landed; this
+    # names the cheap shapes of the assembly for the operator. WARN, and not complete by construction.
+    ("WARN", r"[\"'`](anvil|evm|hardhat)_?[\"'`]|\bmethod\s*:\s*(?![\"'`]|string\b|number\b|unknown\b|any\b)[A-Za-z_$(\[]|String\.fromCharCode|\batob\s*\(",
+     "cheatcode name possibly assembled at runtime (namespace as a bare string / computed RPC method / char codes) -- the line check cannot see it; verify against the post-run audit"),
     ("WARN", r"process\.env|process\.mainModule|globalThis\.process",
      "reads process env (may try to exfiltrate operator secrets)"),
     ("WARN", r"require\(\s*['\"]worker_threads|node:worker_threads|new\s+Worker\(",

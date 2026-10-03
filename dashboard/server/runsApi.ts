@@ -216,9 +216,27 @@ function redactMatrix(file: Json): Json {
   };
 }
 
-/** standings.json carries regime/seed per epoch too. */
+// A flag line written before the standings keyed flags by ordinal: `<regime>#<seed>: <fact>`.
+const SCENARIO_FLAG_PREFIX = /^([^\s:#]+)#(-?\d+): /;
+
+/**
+ * standings.json carries regime/seed per epoch too, and -- in files written before the flags were
+ * keyed by ordinal -- at the head of every per-agent flag line. Any agent can raise a flag (exit
+ * before the bell), so leaving those lines alone published a hidden epoch's `regime#seed` at will.
+ * A prefix naming a known epoch becomes its ordinal; one that names none is dropped to `s=?`.
+ */
 function redactStandings(file: Json): Json {
   if (!Array.isArray(file.epochs)) return file;
+  const ordinalOf = new Map<string, unknown>();
+  for (const e of file.epochs as Json[])
+    ordinalOf.set(`${String(e.regime)}#${String(e.seed)}`, e.s);
+  const redactFlag = (f: unknown): unknown =>
+    typeof f === "string"
+      ? f.replace(SCENARIO_FLAG_PREFIX, (_m, regime: string, seed: string) => {
+          const s = ordinalOf.get(`${regime}#${seed}`);
+          return `s=${typeof s === "number" ? s : "?"}: `;
+        })
+      : f;
   return {
     ...file,
     epochs: (file.epochs as Json[]).map((e) => ({
@@ -226,6 +244,15 @@ function redactStandings(file: Json): Json {
       regime: HIDDEN_REGIME,
       seed: null,
     })),
+    ...(Array.isArray(file.agents)
+      ? {
+          agents: (file.agents as Json[]).map((a) =>
+            Array.isArray(a.flags)
+              ? { ...a, flags: (a.flags as unknown[]).map(redactFlag) }
+              : a,
+          ),
+        }
+      : {}),
   };
 }
 

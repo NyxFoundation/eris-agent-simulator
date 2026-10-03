@@ -92,6 +92,17 @@ import {
 
 const ROOT = process.cwd(); // npm scripts run at the repo root
 
+// A checkpoint of the state root leaves out an agent directory that cannot be copied (issue #214
+// item 2: a pipe, a symlink, a sparse file past the cap). Said on stderr at the time, because a
+// later restore of that label puts the agent back to nothing and the reason has to be findable.
+function checkpointAgentState(root: string, label: string): void {
+  for (const { agentId, reason } of snapshotAllAgentState(root, label))
+    console.error(
+      `[backtest] state checkpoint ${label}: ${agentId} left out (${reason}); a restore of this ` +
+        "label starts that agent empty",
+    );
+}
+
 const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [options]
   --regime <name|path>   config/regimes/<name>.yaml (or a YAML path). requires --seed
   --seed <N>             the scenario's seed. regimes no longer carry one (ADR 0017 §1)
@@ -599,10 +610,13 @@ async function main(): Promise<void> {
       "0",
       "--gas-limit",
       "30000000",
+      // No genesis accounts. anvil's default ten come from the public mnemonic -- their keys are in
+      // its banner -- and the gateway relays a transaction from any sender, so 1,000,000 ETH each
+      // was 1,000,000 ETH any participant could transfer to their own wallet, every epoch. The
+      // environment funds every key it signs with itself (coordinator setup); the deployer's balance
+      // is in the dump.
       "--accounts",
-      "10",
-      "--balance",
-      "1000000",
+      "0",
       "--order",
       "fees",
       "--load-state",
@@ -670,6 +684,32 @@ async function main(): Promise<void> {
           effectivePathFor(scenario),
         ]);
       }
+      // The loaded state, before the snapshot every epoch reverts to. The coordinator reads the
+      // same balances again after each epoch's funding.
+      const { publicAccountRefusal, stateDumpRefusal, LiveWeekRefusal } =
+        await import("../realtime/liveWeek.js");
+      const { tokenRegistry } = await import("@eris/sdk/markets.js");
+      const refusals = [
+        stateDumpRefusal(manifest),
+        await publicAccountRefusal(
+          {
+            eth: async (address) =>
+              BigInt(await rpc<string>(rpcUrl, "eth_getBalance", [address, "latest"])),
+            // balanceOf(address): selector 0x70a08231 + the address left-padded to 32 bytes.
+            erc20: async (token, address) => {
+              const word = await rpc<string>(rpcUrl, "eth_call", [
+                { to: token, data: `0x70a08231${address.slice(2).toLowerCase().padStart(64, "0")}` },
+                "latest",
+              ]);
+              if (word === "0x")
+                throw new Error(`registry token ${token} has no code on the loaded state`);
+              return BigInt(word);
+            },
+          },
+          Object.values(tokenRegistry()),
+        ),
+      ].filter((r): r is string => r !== undefined);
+      if (refusals.length > 0) throw new LiveWeekRefusal(refusals);
     }
 
     // ---- The scenario matrix ----
@@ -817,7 +857,7 @@ async function main(): Promise<void> {
     // last (backtest/resume.ts). A fresh matrix records its empty starting point; a resumed one
     // puts the root back to the end of the latest complete ordinal before each re-run.
     if (agentStateRoot !== undefined && matrixMode && !resumeDir)
-      snapshotAllAgentState(agentStateRoot, STATE_LABEL_INITIAL);
+      checkpointAgentState(agentStateRoot, STATE_LABEL_INITIAL);
     let index = 0;
     for (const scenario of scenarios) {
       index++;
@@ -872,7 +912,7 @@ async function main(): Promise<void> {
       const repeatLabel = `repeat-base-s${scenario.s}`;
       for (let i = 0; i < repeat; i++) {
         if (agentStateRoot !== undefined && repeat > 1) {
-          if (i === 0) snapshotAllAgentState(agentStateRoot, repeatLabel);
+          if (i === 0) checkpointAgentState(agentStateRoot, repeatLabel);
           else if (!restoreAllAgentState(agentStateRoot, repeatLabel))
             // A repeat that silently kept the previous repeat's state would report a sequence as
             // a spread, which is the one thing the flag must not do.
@@ -916,7 +956,7 @@ async function main(): Promise<void> {
       }
       if (agentStateRoot !== undefined && matrixMode && perRepeat.length > 0) {
         // The checkpoint a resume restores before the ordinal after this one.
-        snapshotAllAgentState(agentStateRoot, stateLabelAfter(scenario.s));
+        checkpointAgentState(agentStateRoot, stateLabelAfter(scenario.s));
         complete.add(scenario.s);
       }
       repeatsByScenario.push(perRepeat);

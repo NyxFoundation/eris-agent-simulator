@@ -33,6 +33,12 @@ import {
   utimesSync,
 } from "node:fs";
 import { join } from "node:path";
+import {
+  measureTree,
+  regularEntriesOnly,
+  type TreeLimits,
+  type TreeUsage,
+} from "./dirUsage.js";
 
 /** Where the per-agent directories live. Set by `backtest --agent-state-root` or by the operator. */
 export const AGENT_STATE_ROOT_ENV = "ERIS_AGENT_STATE_ROOT";
@@ -53,6 +59,63 @@ export const SNAPSHOTS_KEPT = Number(process.env.ERIS_AGENT_STATE_SNAPSHOTS ?? 8
 /** The env var the agent runtime reads (`example/agents/runtime/state.ts`). */
 export const AGENT_STATE_DIR_ENV = "ERIS_AGENT_STATE_DIR";
 
+/**
+ * What a state directory may hold for the environment to copy it (issue #214 item 2).
+ *
+ * The directory is participant-written, and the epoch-start snapshot copies it on the coordinator's
+ * startup path. Measured 2026-10-02 (Node 23.5, APFS): `cpSync` over a tree with one FIFO throws
+ * ERR_INTERNAL_ASSERTION -- so without this check a named pipe in one agent's state stops the next
+ * epoch for everyone -- and a sparse file of 1 GiB apparent size is copied as 1 GiB of real bytes,
+ * by the filtered copy as well as the plain one. Hence a cap on the *apparent* size, a cap on the
+ * entry count (each entry is an lstat and a copy), a depth cap, and regular files and directories
+ * only. `maxBytes` defaults to the host quota (`run.agentStateQuotaBytes`), which is also what the
+ * per-block watch holds the directory to (agentDisk.ts).
+ */
+export type StateDirLimits = TreeLimits & { maxBytes: number };
+
+export const DEFAULT_STATE_SNAPSHOT_LIMITS: StateDirLimits = {
+  maxBytes: 256 * 1024 * 1024,
+  maxEntries: 20_000,
+  maxDepth: 16,
+};
+
+export type StateDirVerdict =
+  | { ok: true; usage: TreeUsage }
+  | { ok: false; reason: string; usage: TreeUsage };
+
+/** Whether `dir` is something the environment will copy. Never throws. */
+export function validateStateDir(
+  dir: string,
+  limits: StateDirLimits = DEFAULT_STATE_SNAPSHOT_LIMITS,
+): StateDirVerdict {
+  const usage = measureTree(dir, limits);
+  const reasons: string[] = [];
+  if (usage.error !== undefined) reasons.push(`unreadable: ${usage.error}`);
+  if (usage.irregularCount > 0)
+    reasons.push(
+      `${usage.irregularCount} entr${usage.irregularCount === 1 ? "y" : "ies"} that ` +
+        `${usage.irregularCount === 1 ? "is" : "are"} not a regular file or directory (` +
+        usage.irregular.map((e) => `${e.path}: ${e.kind}`).join(", ") +
+        (usage.irregularCount > usage.irregular.length ? ", ..." : "") +
+        ")",
+    );
+  if (usage.truncated)
+    reasons.push(
+      `more than ${limits.maxEntries} entries or deeper than ${limits.maxDepth} levels ` +
+        `(stopped at ${usage.entries} entries, depth ${usage.depth})`,
+    );
+  if (usage.apparentBytes > limits.maxBytes)
+    reasons.push(
+      `${usage.apparentBytes} bytes to copy, cap ${limits.maxBytes}` +
+        (usage.allocatedBytes < usage.apparentBytes
+          ? ` (${usage.allocatedBytes} allocated on disk: sparse)`
+          : ""),
+    );
+  return reasons.length === 0
+    ? { ok: true, usage }
+    : { ok: false, reason: reasons.join("; "), usage };
+}
+
 // An agent id reaches this from the roster, and it is joined onto a path. A traversal here would
 // let a roster entry name a directory outside the root -- including, on a shared box, another
 // participant's. Ids are directory names by ADR 0015 §6, so this refuses rather than sanitizes:
@@ -69,21 +132,53 @@ export function agentStateRootFromEnv(env = process.env): string | undefined {
   return root && root.trim() !== "" ? root : undefined;
 }
 
+/** What `prepareAgentState` hands the coordinator. */
+export type PreparedAgentState = {
+  /** The directory the agent is given: its own, or a fresh one when its own was refused. */
+  dir: string;
+  usage: TreeUsage;
+  /**
+   * Set when the directory the agent left behind failed `validateStateDir`. It was moved aside to
+   * `refusedTo` (a rename, so nothing in it was read or copied), the agent starts this epoch from an
+   * empty directory, and the snapshot is of that empty start. Persistence continues from here: an
+   * agent whose directory had been refused for good would have no way to repair it, since the only
+   * access it has is through the directory itself.
+   */
+  refused?: { reason: string; refusedTo: string };
+};
+
 /**
  * The directory this agent gets for this epoch, with the epoch-start snapshot already taken.
  *
  * The snapshot is taken *before* the agent starts, so it holds what the epoch began with. Restoring
  * it (`restoreAgentState`) is what makes a §4.4.2 re-run a re-run.
+ *
+ * The directory is validated before anything copies it (issue #214 item 2; `StateDirLimits`). A
+ * refusal is the participant's doing, so it is not fatal to the run: the directory is set aside
+ * and the agent starts empty, with `refused` on the result for the coordinator to record.
  */
 export function prepareAgentState(
   root: string,
   agentId: string,
   runId: string,
-): string {
+  limits: StateDirLimits = DEFAULT_STATE_SNAPSHOT_LIMITS,
+): PreparedAgentState {
   assertPathSegment(agentId);
   assertPathSegment(runId);
   const dir = join(root, agentId);
   mkdirSync(dir, { recursive: true });
+  let verdict = validateStateDir(dir, limits);
+  let refused: PreparedAgentState["refused"];
+  if (!verdict.ok) {
+    // A rename, never a read: the whole point is that this tree is not safe to walk at copy speed.
+    let refusedTo = `${dir}.refused-${runId}`;
+    for (let n = 2; existsSync(refusedTo); n++)
+      refusedTo = `${dir}.refused-${runId}-${n}`;
+    renameSync(dir, refusedTo);
+    mkdirSync(dir, { recursive: true });
+    refused = { reason: verdict.reason, refusedTo };
+    verdict = validateStateDir(dir, limits);
+  }
   const snapshot = join(root, SNAPSHOT_DIR, runId, agentId);
   // A second attempt at the same runId must not overwrite the snapshot with the state the first
   // attempt left behind -- that is precisely the state a re-run must not inherit.
@@ -94,11 +189,13 @@ export function prepareAgentState(
     // `existsSync` check above and be restored as if it were the epoch's starting state.
     const staging = `${snapshot}.partial`;
     rmSync(staging, { recursive: true, force: true });
-    cpSync(dir, staging, { recursive: true });
+    // The filter is the second line behind the validation above, for whatever appears between the
+    // two: a symlink or a pipe is skipped rather than followed or opened.
+    cpSync(dir, staging, { recursive: true, filter: regularEntriesOnly });
     renameSync(staging, snapshot);
   }
   pruneSnapshots(root);
-  return dir;
+  return { dir, usage: verdict.usage, ...(refused ? { refused } : {}) };
 }
 
 // A snapshot directory named by a run id, as prepareAgentState writes them. Run ids are ISO
@@ -170,7 +267,7 @@ function swapIn(from: string, dir: string): void {
   const outgoing = `${dir}.outgoing`;
   rmSync(staging, { recursive: true, force: true });
   rmSync(outgoing, { recursive: true, force: true });
-  cpSync(from, staging, { recursive: true });
+  cpSync(from, staging, { recursive: true, filter: regularEntriesOnly });
   if (existsSync(dir)) renameSync(dir, outgoing);
   renameSync(staging, dir);
   rmSync(outgoing, { recursive: true, force: true });
@@ -188,14 +285,33 @@ function swapIn(from: string, dir: string): void {
  * Cost: one copy of the whole root per label. At 64 MiB an agent that is a rounding error next to
  * the state dump, and the labels are the operator's to delete.
  */
-export function snapshotAllAgentState(root: string, label: string): void {
+export function snapshotAllAgentState(
+  root: string,
+  label: string,
+  limits: StateDirLimits = DEFAULT_STATE_SNAPSHOT_LIMITS,
+): Array<{ agentId: string; reason: string }> {
   assertPathSegment(label);
   const target = join(root, SNAPSHOT_DIR, label);
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
-  for (const agentId of agentDirs(root))
-    cpSync(join(root, agentId), join(target, agentId), { recursive: true });
+  // An agent directory that fails validation is left out of the checkpoint rather than copied
+  // (issue #214 item 2): the copy is what the validation exists to prevent. The caller records who
+  // was skipped; a later restore of this label puts that agent back to *nothing*, which is the
+  // honest result of a checkpoint that could not include it.
+  const skipped: Array<{ agentId: string; reason: string }> = [];
+  for (const agentId of agentDirs(root)) {
+    const verdict = validateStateDir(join(root, agentId), limits);
+    if (!verdict.ok) {
+      skipped.push({ agentId, reason: verdict.reason });
+      continue;
+    }
+    cpSync(join(root, agentId), join(target, agentId), {
+      recursive: true,
+      filter: regularEntriesOnly,
+    });
+  }
   utimesSync(target, new Date(), new Date());
+  return skipped;
 }
 
 export function restoreAllAgentState(root: string, label: string): boolean {
@@ -225,7 +341,10 @@ function agentDirs(root: string): string[] {
         // Left over from a restore that was killed mid-swap. Not an agent, and copying one into a
         // snapshot would make it one on the next restore.
         !e.name.endsWith(".restoring") &&
-        !e.name.endsWith(".outgoing"),
+        !e.name.endsWith(".outgoing") &&
+        // Set aside by prepareAgentState because it could not be copied (issue #214). Kept for the
+        // operator to look at; not an agent, and not something a checkpoint should try to copy.
+        !/\.refused-/.test(e.name),
     )
     .map((e) => e.name);
 }

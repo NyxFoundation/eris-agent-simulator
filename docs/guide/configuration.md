@@ -47,6 +47,14 @@ unknown key rather than being silently applied.
 See [Scoring](scoring.md) for what these produce and how to rescore a stored run under a different
 metric.
 
+### What an agent may write to the host (keys in `run`, issue #214)
+
+| key | default | what it does |
+|---|---|---|
+| `run.agentStateQuotaBytes` | 268435456 (256 MiB) | Bytes an agent's state directory (`ERIS_AGENT_STATE_DIR`, issue #77) may hold on the host, measured by the coordinator; also the apparent-size cap of the epoch-start snapshot. `0` disables the check. The runtime's own `ERIS_AGENT_STATE_CAP_BYTES` (64 MiB) is a self-limit and does not bind a submitted runtime |
+| `run.agentLogQuotaBytes` | 268435456 (256 MiB) | The same for the agent's log files (`agents/<id>.jsonl`, `agents/<id>.llm.jsonl`) together |
+| `run.agentDiskCheckEveryBlocks` | 15 | How often the coordinator measures both (blocks). Past 80% of a quota the agent is named once in `agent_disk_usage_warning`; past a quota the agent process is stopped, `agent_disk_quota_exceeded` is recorded and `summary.json` carries the reason as `processExitedEarly`. `0` turns the watch off |
+
 ## Roster (convention-based resolution, ADR 0015)
 
 A roster `id` points at the `example/agents/<id>/` directory, and spawning is always handled by `runtime/bot.ts`. The basic form is the 2 lines `{ id, wallet }`:

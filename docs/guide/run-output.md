@@ -34,6 +34,7 @@ npm run check:strategy -- <file>          # static cheatcode check of strategy c
 | `agents[].includedTxCount` / `revertCount` | number of included / reverted txs |
 | `agents[].stderrTail` | tail of the agent process's stderr (for crash diagnosis) |
 | `agents[].pnlUsdc` / `baseline` | P of rules §4.4.1 (V_K − V_0 off the first and last interval boundary, each end at its own marks) and whether the agent is the benchmark ([Scoring](scoring.md)) |
+| `agents[].v0Source` / `v0Usdc` / `v0MeasuredUsdc` / `v0EndowmentUsdc` | how P's V_0 was derived (issue #207): `endowment` when it was floored at what the environment funded (valued at the first boundary's marks), `measured` when the chain state there stood above it or the series opened on a carried boundary; V_0 as used, the chain state at the first boundary, the endowment at its marks |
 | `valueSeries.intervalSeries` | the evaluation-interval boundary values every score above is computed from (`intervalBlocks` / `boundaryBlocks` / `valuesByAgent`, `null` = a boundary that did not report). Also written as `epochSeries` (with `epochBlocks`), its name before issue #140, until the results are published |
 | `valueSeries.markMedian` | which manipulable marks were medianed at the boundaries, and the largest deviation seen |
 | `valueSeries.alphaByAgent` / `markedValueByAgent` | the β-removed series, and the **face mark** where a venue carried a position above what it could have realized. The scored value is the recoverable one (issue #40 axiom 3), so an entry here is the number that was *not* used |

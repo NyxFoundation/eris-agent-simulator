@@ -83,6 +83,9 @@ const ENVIRONMENT_ONLY = new Set([
   "markMedianBlocks",
   "blockGasLimit",
   "agentsReadyTimeoutSec",
+  "agentStateQuotaBytes", // held by the coordinator (issue #214); the runtime's own cap is ERIS_AGENT_STATE_CAP_BYTES
+  "agentLogQuotaBytes",
+  "agentDiskCheckEveryBlocks",
   "seed",
   "runDirRoot",
   "agentTimeoutMs",
