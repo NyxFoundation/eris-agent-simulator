@@ -104,7 +104,7 @@ const DEFAULT_IMPROVE_MODEL = "gpt-oss:120b";
 // run is (`period`). Everything else comes from the config file ERIS_CONFIG names -- for the
 // practice devnet, the operator's own config/practice.yaml, which is committed -- or, with none, from
 // the built-in defaults. No file is picked up unasked: a participant's config/local.yaml describes
-// their local test world (the template has no GMX and an hour-long LST block), not this chain.
+// their local test world (the template has no GMX), not this chain.
 type Manifest = {
   // chainId and localDeploy are applied to the env by bot.ts before this file loads; they are
   // read again here only to say, on a mismatch, where the value that won came from.

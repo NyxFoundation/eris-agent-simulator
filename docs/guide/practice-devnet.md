@@ -219,9 +219,8 @@ ERIS_RPC_HEADERS='{"X-ASCON-Key":"…"}' \
   where its count came from on the first block.
 - `ERIS_CONFIG` is read only when you set it; nothing is picked up from `config/local.yaml` unasked.
   Name `config/practice.yaml`, the period's own configuration: it sets the venues the agent observes
-  and trades (all seven) and the LST's economic clock its `apyBps` is computed on. Without it the
-  runtime's defaults are five venues and an hour-long LST block, and it says so at startup when the
-  venues differ from the manifest's.
+  and trades (all seven). Without it the runtime's default is five venues, and it says so at startup
+  when the venues differ from the manifest's.
 - `ERIS_RPC_URL` overrides the manifest's `chain.rpcUrl` — for reaching the same gateway another way
   (a tunnel, a proxy of your own). `ERIS_PRICE_FEED_ADDRESS` does the same for `contracts.priceFeed`.
   Neither is needed with the manifest the period serves.
@@ -586,14 +585,13 @@ not). `seconds` stays a generous ceiling rather than the stop condition. `run.bl
 `run.endsAt` together are refused; for a short smoke run of the practice config, `--blocks N` on the
 command line replaces the date.
 
-**The length bounds the LST venue.** The vault pays yield out of a fixed reward reserve (50 WETH in
-the state dump), and the default economic clock counts a block as an hour of staking — the clock the
-360-block official regimes are calibrated on. Over a month-long period that is over a century of
-yield, and the reserve ran dry after ~3.3 days (issue #129). `config/practice.yaml` sets
-`lst.simulatedSecondsPerBlock: 30`, which keeps one scoring day at the same 15 days of yield as one
-official epoch and needs ~4.4 WETH for the whole period on the seeded pool: the reserve lasts the
-period with up to ~1,000 WETH staked. If participants stake more, the reserve runs out early, and the
-venue says so rather than going quiet: `apyBps` / `yieldPerBlockBps` drop to 0,
+**The LST pays yield on the chain's clock.** The vault pays out of a fixed reward reserve (50 WETH in
+the state dump), one block's worth at a time, and a block counts as `run.blockTimeSec` seconds of
+staking — the same clock Aave's interest and GMX funding run on (ADR 0028). A day of the period is a
+day of 3%/yr, ~0.8bps, and the reserve outlasts the period at any plausible stake. (The default used
+to be an hour a block: over a month-long period that is over a century of yield, and the reserve ran
+dry after ~3.3 days, issue #129.) Should the reserve still run out, the venue says so rather than
+going quiet: `apyBps` / `yieldPerBlockBps` drop to 0,
 `rewardRunwayBlocks` (the blocks the reserve still pays) counts down to it in every observation, the
 run records `lst_reward_reserve_exhausted`, and `lst_setup` records whether the reserve covered the
 run at the start (`reserveCoversRun`).

@@ -177,7 +177,7 @@ WETH 以外の base は `flow.baseMax` が共通上限となる。任意の `flo
 | `redemptionRateWeth` | vault が負う par | 出金キュー待ち |
 | `marketPriceWeth` | プールが今払う額 | 即時（ディスカウント付き） |
 
-観測は両方に加えて `discountBps` / `yieldPerBlockBps` / キュー長 / **自分のサイズでの実効待ちブロック数**（`estimatedQueueDelayBlocks`）を別々に出す。利回りは EVM 時間ではなく**経済クロック**（`lst.simulatedSecondsPerBlock`、既定 1 block = 1 時間・3%/yr）で進む。
+観測は両方に加えて `discountBps` / `yieldPerBlockBps` / キュー長 / **自分のサイズでの実効待ちブロック数**（`estimatedQueueDelayBlocks`）を別々に出す。利回りはブロックごとに積まれ、1 ブロックを `lst.simulatedSecondsPerBlock` 秒分と数える（既定は `run.blockTimeSec` = Aave・GMX と同じ時計、3%/yr。ADR 0028）。以前の既定 1 block = 1 時間は、利回りが Aave の借入コストの 1,800 倍の速さで積まれる無リスクの利鞘だった。
 
 プールの rate oracle 配線（`stEthPerToken()` を asset_type=1 で登録）が必須で、未配線だとレート上昇が**全員に開かれた無リスク裁定**になる。deploy 時 assert + 起動時 `lst_setup` で乖離 200bps 超なら fail-fast する。
 

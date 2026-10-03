@@ -361,9 +361,10 @@ export type SimConfig = {
   // Balancer/Curve retain the shared base cap, matching their WETH leg semantics.
   baseInformedFlowMax: Record<string, bigint>;
   // ---- LST venue (issue #38) ----
-  // Yield runs on a compressed *economic* clock rather than EVM time: one block stands for this
-  // many seconds of staking. EVM time is deliberately not warped for it (that would also move
-  // Aave's accrual and GMX funding).
+  // Seconds of staking one block stands for. Defaults to blockTimeSec, i.e. the same clock Aave's
+  // accrual and GMX funding run on (ADR 0028). A larger value compresses the LST's yield relative
+  // to those venues; config/regimes/lst.yaml does that on purpose for the venue's own tests, and
+  // no official regime does (it made the yield a risk-free spread over Aave's borrow rate).
   lstSimulatedSecondsPerBlock: number;
   // Target APY in bps on that clock. Kept the same order as the Aave WETH supply rate on purpose:
   // a 1000x-speed LST would make every other venue irrelevant.
@@ -648,11 +649,13 @@ export function loadConfig(env = process.env): SimConfig {
     // WETH flow keeps using uninformed/balancer/curve FlowMaxWethWei (not listed here).
     baseFlowMax: readBaseAmounts(env, "FLOW_MAX", { WETH: 0n }),
     baseInformedFlowMax: readBaseAmounts(env, "FLOW_INFORMED_MAX", {}, undefined, "omit"),
-    // LST venue (issue #38). The defaults mirror what the deployer bakes into the state dump, so a
-    // run that says nothing about lst behaves exactly as deployed.
+    // LST venue (issue #38). The yield clock defaults to the chain's own clock (ADR 0028): Aave's
+    // borrow rate and GMX funding accrue on EVM time, and a faster LST clock made "stake at block 0,
+    // loop through Aave" a risk-free spread every run. The deployer still bakes 3600 into the state
+    // dump; the coordinator retunes the vault at setup (core/src/realtime/lst.ts).
     lstSimulatedSecondsPerBlock: Math.max(
       0,
-      intEnv(env.ERIS_LST_SIMULATED_SECONDS_PER_BLOCK, 3600),
+      intEnv(env.ERIS_LST_SIMULATED_SECONDS_PER_BLOCK, blockTimeSec),
     ),
     lstApyBps: Math.max(0, intEnv(env.ERIS_LST_APY_BPS, 300)),
     lstApyRangeBps: parseBpsRange(
