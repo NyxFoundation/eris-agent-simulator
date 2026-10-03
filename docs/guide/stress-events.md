@@ -198,6 +198,18 @@ has the reads (registry pools paired with USDC and an unpriced token, slot0 pric
 QuoterV2) and the two transactions; `launch-sniper` buys at first sight, `launch-confirm` waits for
 consecutive blocks of net buying.
 
+A launch pool is one that *looks like the environment's listing*, not any USDC pool the registry
+shows (issue #216). Anyone can list a token of their own, and the registry publishes it the same way;
+the two reference agents are frozen in `full-field.yaml`, so a pool set up for them to buy would move
+the field's mean and spread through their losses. Nothing in the observation names the launch wallets
+(they come from the hidden seed), so `launchPools` filters on the listing's shape: the token has its own
+`erc20` entry, the pool's creator deployed it, its code has not moved since registration, and — when the
+agent can compute it from the repository's `AgentERC20` artifact (`launchTokenCodehash`, one deployless
+`eth_call`) — its code *is* the environment's fixed-supply, owner-less token. A participant who deploys
+that same bytecode from the key that creates the pool passes, and that is accepted: such a token is the
+same kind of thing as a launch, with the same one risk (its price). What stays out is every token with
+other code and every pool whose creator did not deploy the token.
+
 No teardown: the pools stay for the scenario snapshot to revert, and the environment's leftovers
 sit in flow wallets nobody scores. `stress_token_launch_summary` closes the books per token (gross
 USDC the wave paid, USDC it took back).

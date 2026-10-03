@@ -106,6 +106,14 @@ u_i = PRF(K, streamId, i)      // 例: HMAC-SHA256(K, streamId || i) の先頭 5
 - 渡し方: `npm run backtest -- --scenario-key <file|public>`、または `ERIS_SCENARIO_KEY_FILE`（`sim:realtime` と
   練習期間の systemd）。どちらも無ければ公開鍵。**順序付きプラン（ライブ週の形）は鍵の指定が無いと起動しない**
   （公開鍵で黙って走るのを防ぐ。意図して公開鍵で回すときは `--scenario-key public`）
+- **レジーム名もストリームの名前に入る**（issue #186 で追加）。`streamId` は
+  `"eris-rng/v1" || seed || salt || len(regime)(u32) || regime(UTF-8)`（レジームが空なら従来どおり末尾なし）。
+  それまでは stress のスケジュールだけがイベント列を salt に混ぜており、価格の walk・flow・LST・vuln・prewarm は
+  (seed, salt) だけで決まっていたので、**同じ seed の calm と crash が同じ価格ショックと同じフローを引いていた**。
+  非公開セットは全レジームに同じ seed 列を持たせるので、状態を引き継ぐ agent が別レジームで見た経路を照合できた。
+  backtest が実効 regime YAML に `run.regime` を書き、coordinator が `setScenarioRegime` で入れ、flow bot には鍵と一緒に
+  `ERIS_SCENARIO_REGIME` で渡す（agent には渡さない）。`sim:realtime` のようにレジームを名乗らない run は従来と同じ値を引く。
+  記録は `run_started_realtime.scenarioRegime`
 - coordinator は flow bot にファイルパスとコミットメントを渡し、flow bot は一致しなければ exit する。agent には渡さない
 - 記録: `run_started_realtime.scenarioKey` と `matrix.json` の `scenarioKey`（`{ source, commitment }`）。
   `--resume` は鍵が違う、または鍵の記録が無い（本 ADR 以前の）matrix を拒否する

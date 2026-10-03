@@ -61,6 +61,16 @@ import { deployContract } from "./deploy.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
 export const EXECUTION_FEE = 30_000_000_000_000_000n; // 0.03 ETH
+// The gas limit the keeper declares on `executeOrder` (issue #216 (2)). Measured from the `gasUsed`
+// column of blocks.csv for every keeper transaction in 35 local runs (2026-09-06..27, WETH and WBTC
+// markets, 49,498 executions): min 1.15M / p50 2.38M / p99 2.60M / max 2.79M. GMX refuses to execute
+// unless the declared gas covers its own estimate (`increaseOrderGasLimit`: 0 in the hardhat profile,
+// 3.9M in the general one) plus `minAdditionalGasForExecution` (1M), and forwards declared minus
+// `minHandleExecutionErrorGasToForward` (1M) to the fill; 6M satisfies both profiles and leaves the
+// fill 1.8x the largest one measured. It used to be 15M: two keeper orders then declared the whole
+// 30M block (`run.blockGasLimit`) ahead of every participant, the keeper's fee sitting above the
+// participant cap. Whether anvil admits by declared limit or by gas used was not measured.
+export const GMX_KEEPER_EXECUTE_GAS = 6_000_000n;
 const ORDER_TYPE = { MarketIncrease: 2, MarketDecrease: 4 } as const;
 const DECREASE_SWAP_NO_SWAP = 0;
 const FLOAT_PRECISION = 10n ** 30n;
@@ -1318,6 +1328,8 @@ export const gmxAdapter: ProtocolAdapter = {
     opts?: {
       noMine?: boolean;
       priorityFeeWei?: bigint;
+      // Declared gas limit per executeOrder; GMX_KEEPER_EXECUTE_GAS unless a caller measured otherwise.
+      executeGas?: bigint;
       blockNumber?: bigint;
       fromBlock?: bigint;
       toBlock?: bigint;
@@ -1350,6 +1362,7 @@ export const gmxAdapter: ProtocolAdapter = {
     // execute on a missing price rather than cancelling, and nothing retries it (gmxOracleTokens).
     const oracleParams = gmxKeeperOracleParams(ctx);
     const fee = opts?.priorityFeeWei ?? 1_000_000_000n;
+    const executeGas = opts?.executeGas ?? GMX_KEEPER_EXECUTE_GAS;
     for (const key of keys) {
       try {
         if (opts?.noMine) {
@@ -1366,7 +1379,7 @@ export const gmxAdapter: ProtocolAdapter = {
               functionName: "executeOrder",
               args: [key, oracleParams],
             }),
-            gas: 15_000_000n,
+            gas: executeGas,
             maxFeePerGas: baseFee + fee,
             maxPriorityFeePerGas: fee,
           });
@@ -1421,7 +1434,7 @@ export const gmxAdapter: ProtocolAdapter = {
             functionName: "executeOrder",
             args: [key, oracleParams],
           }),
-          gas: 15_000_000n,
+          gas: executeGas,
           maxFeePerGas: baseFee + 1_000_000_000n,
           maxPriorityFeePerGas: 1_000_000_000n,
         });

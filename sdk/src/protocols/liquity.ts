@@ -93,6 +93,7 @@ import type {
 import { approveTx } from "./uniswap.js";
 import { medianQuotes, readAcrossWindow } from "./medianWindow.js";
 import { readStablePrices, stablePriceUsdc } from "../stables.js";
+import { addStableUnits, type StableUnits } from "../valuation.js";
 
 const DECIMAL_INTEGER = /^[0-9]+$/;
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
@@ -1438,8 +1439,9 @@ function usdcFloat(units: bigint): number {
 /// Two stages, because the realizable mark depends on sizes the first stage returns:
 ///   0. the gas compensation, and every agent's Trove, Stability Pool position and CollSurplusPool
 ///      balance
-///   1. for exactly the agents that hold eUSD or owe it: what their own size would sell for, and
-///      what buying their debt back would cost
+///   1. for exactly the agents that owe eUSD: what buying their debt back would cost. eUSD held in
+///      the Stability Pool is marked at the mid and handed to the scorer (stableLongs), which sells
+///      it together with the agent's other eUSD
 ///
 /// Takes the deployment explicitly rather than reading the module constant, so the marking rules can
 /// be exercised without a deployed venue.
@@ -1530,21 +1532,16 @@ export async function* liquityValuationRun(
     );
   const eusdPriceUsdc = stablePriceUsdc(stablePrices, deployment.eusd);
 
-  // Own-size quotes, for exactly the agents whose position has a size worth quoting.
-  const longTargets: number[] = [];
+  // Own-size buyback quotes, for exactly the agents who owe eUSD. The Stability Pool deposit is not
+  // quoted here: it is eUSD the agent holds, and the scorer sells it together with the wallet's and
+  // any LP's (stableLongs below). Quoted here on its own it was a second sale first in line, so
+  // pushing the pool with wallet eUSD lifted the deposit's mark by the push.
   const debtTargets: number[] = [];
   holdings.forEach((h, i) => {
     if (!h) return;
-    if (h.spDepositEusdWei > 0n) longTargets.push(i);
     if (h.netDebtEusdWei > 0n) debtTargets.push(i);
   });
   const quoteReads: ValuationRead[] = [
-    ...longTargets.map((i): ValuationRead => ({
-      address: pool,
-      abi: curveStableSwapNgAbi,
-      functionName: "get_dy",
-      args: [eusdIndex, usdcIndex, holdings[i]!.spDepositEusdWei],
-    })),
     ...debtTargets.map((i): ValuationRead => ({
       address: pool,
       abi: curveStableSwapNgAbi,
@@ -1558,19 +1555,14 @@ export async function* liquityValuationRun(
   let quotes: unknown[] = [];
   if (hasMarket && quoteReads.length > 0) {
     quotes = yield quoteReads;
-    // Rules §4.1: both own-size quotes are market-derived prices. At a scoring boundary each is the
-    // median of the same quote (the boundary's sizes) over the window; blocks that did not quote
+    // Rules §4.1: the own-size quote is a market-derived price. At a scoring boundary it is the
+    // median of the same quote (the boundary's size) over the window; blocks that did not quote
     // are dropped. The mid above already comes medianed through ctx.stablePrices().
     quotes = medianQuotes(quotes, await readAcrossWindow(ctx, quoteReads));
   }
-  const longExitByIndex = new Map<number, number>();
-  longTargets.forEach((agentIndex, k) => {
-    const q = quotes[k];
-    if (typeof q === "bigint") longExitByIndex.set(agentIndex, usdcFloat(q));
-  });
   const debtCostByIndex = new Map<number, number>();
   debtTargets.forEach((agentIndex, k) => {
-    const q = quotes[longTargets.length + k];
+    const q = quotes[k];
     if (typeof q === "bigint") debtCostByIndex.set(agentIndex, usdcFloat(q));
   });
 
@@ -1621,10 +1613,23 @@ export async function* liquityValuationRun(
       holdings: h,
       fairPriceUsd: fairWeth,
       eusdPriceUsdc,
-      longExitUsdc: longExitByIndex.get(i),
       debtBuybackUsdc: debtCostByIndex.get(i),
     });
-    out[agent.id] = { ...value, unpriced };
+    // Counted at the mid above; re-marked by the scorer at the agent's whole eUSD size. Without a
+    // market the mid is par and there is no size to quote, so nothing is handed over.
+    const stableLongs: StableUnits = {};
+    if (marketQuoted)
+      addStableUnits(
+        stableLongs,
+        deployment.eusd,
+        h.spDepositEusdWei,
+        stablePrices,
+      );
+    out[agent.id] = {
+      ...value,
+      unpriced,
+      ...(Object.keys(stableLongs).length > 0 ? { stableLongs } : {}),
+    };
   });
   return out;
 }

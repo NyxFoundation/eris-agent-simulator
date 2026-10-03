@@ -534,7 +534,7 @@ function buildLendingPanel(run: LoadedRun): VenuePanel {
       // Aave base units are 8-decimal USD.
       cell(formatUsd((fromWei(e.remainingDebtBase, 8) ?? 0) as number)),
     ]),
-    empty: t("vp.lending.liquidationsEmpty"),
+    empty: venueEventsEmpty(run, t("vp.lending.liquidationsEmpty")),
   });
 
   const accounts = market?.aaveAccountsAtEnd ?? [];
@@ -739,7 +739,7 @@ function buildStablePanel(run: LoadedRun): VenuePanel {
           cell((fromWei(e.ethSentWei) ?? 0).toFixed(4)),
           cell((fromWei(e.ethFeeWei) ?? 0).toFixed(4), "down"),
         ]),
-      empty: t("vp.stable.redemptionsEmpty"),
+      empty: venueEventsEmpty(run, t("vp.stable.redemptionsEmpty"), false),
     });
 
     const troveLiquidations = blockSeriesOf(run, "liquity_liquidation");
@@ -948,7 +948,7 @@ function buildLstPanel(run: LoadedRun): VenuePanel {
       cell(`${num(e.bps).toFixed(0)}bps`, "down"),
       cell(formatBps(num(e.discountBps))),
     ]),
-    empty: t("vp.lst.slashEmpty"),
+    empty: venueEventsEmpty(run, t("vp.lst.slashEmpty"), false),
   });
 
   const apyChanges = eventsOfType(run.events, "lst_apy_changed");
@@ -1170,6 +1170,43 @@ function scheduleDisclosure(run: LoadedRun): "full" | "past" | "withheld" {
   return resetUnit === "continuous" ? "past" : "withheld";
 }
 
+/**
+ * Whether the run's record of what the environment and the venues *did* -- stress firings, victim
+ * liquidations, Trove liquidations, redemptions, slashes -- is all here. The server withholds it from
+ * the audience the way it withholds the plan (server/runsApi.ts): none of it for a scenario epoch,
+ * where any one of them names the regime; and for a continuous world, a firing inside a window that
+ * is still open, which a live tail has already passed by the time the window closes -- so a live
+ * page never receives it, and only a reload after the window closes does. An empty table in either
+ * case is not "nothing happened", and says so.
+ */
+function venueEventDisclosure(run: LoadedRun): "full" | "withheld" | "notLive" {
+  const schedule = scheduleDisclosure(run);
+  if (schedule === "withheld") return "withheld";
+  if (schedule === "past" && run.live !== undefined) return "notLive";
+  return "full";
+}
+
+/**
+ * An empty-table line for a venue-event table, honest about what the server did not send. `stress`
+ * says whether the table's rows are stress firings (held until their window closes, so lost to a
+ * live tail) or venue facts the server sends a continuous world as they happen.
+ */
+function venueEventsEmpty(
+  run: LoadedRun,
+  otherwise: string,
+  stress = true,
+): string {
+  const disclosure = venueEventDisclosure(run);
+  switch (disclosure === "notLive" && !stress ? "full" : disclosure) {
+    case "withheld":
+      return t("vp.withheld.scenarioEvents");
+    case "notLive":
+      return t("vp.withheld.liveEvents");
+    default:
+      return otherwise;
+  }
+}
+
 export function buildScenarioPanel(
   run: LoadedRun,
   intervals: { index: number; fromBlock: number; toBlock: number }[],
@@ -1260,9 +1297,15 @@ export function buildScenarioPanel(
         : unrecorded || fired.length === 0
           ? ""
           : t("vp.scenario.leftInPlace");
+    // A live public page never receives a closed window's firings (venueEventDisclosure), so "never
+    // fired" would be the page's claim, not the run's.
+    const firingNotLive =
+      !unrecorded && fired.length === 0 && venueEventDisclosure(run) === "notLive";
     const outcome = unrecorded
       ? unrecorded
-      : fired.length === 0
+      : firingNotLive
+        ? t("vp.scenario.firingNotLive")
+        : fired.length === 0
         ? t("vp.scenario.neverFired")
         : `${t("vp.scenario.firedBlocks", {
             n: fired.length,
@@ -1301,7 +1344,7 @@ export function buildScenarioPanel(
           ? "down"
           : restored
             ? "up"
-            : !unrecorded && fired.length === 0
+            : !unrecorded && fired.length === 0 && !firingNotLive
               ? "down"
               : "neutral",
       ),
@@ -1409,7 +1452,7 @@ export function buildScenarioPanel(
       cell(n.kind, n.tone ?? "neutral"),
       cell(n.text),
     ]),
-    empty: t("vp.scenario.notableEmpty"),
+    empty: venueEventsEmpty(run, t("vp.scenario.notableEmpty")),
   });
 
   return {

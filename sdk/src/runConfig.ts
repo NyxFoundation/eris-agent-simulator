@@ -97,6 +97,7 @@ const SCHEMA: Record<string, string> = {
   "run.publicRpcUrl": "ERIS_PUBLIC_RPC_URL",
   "run.externalRoleEthWei": "ERIS_EXTERNAL_ROLE_ETH_WEI",
   "run.resetUnit": "ERIS_RESET_UNIT", // continuous | scenario (ADR 0020 §1)
+  "run.regime": "ERIS_SCENARIO_REGIME", // names the scenario streams with the seed (issue #186)
   "run.skipReset": "ERIS_SKIP_RESET",
   "run.prewarmBlocks": "ERIS_PREWARM_BLOCKS",
   "run.scoreEvery": "ERIS_SCORE_EVERY",
@@ -118,6 +119,11 @@ const SCHEMA: Record<string, string> = {
   "run.rosterTransferFlagBps": "ERIS_ROSTER_TRANSFER_FLAG_BPS",
   // process | docker: how the coordinator launches each agent (rules §2.3 caps apply only under docker).
   "run.agentSandbox": "ERIS_AGENT_SANDBOX",
+  // Issue #214: what an agent may write to the host (state directory / log files, bytes) and how
+  // often the coordinator measures it (blocks; 0 = never). Past a quota the agent is stopped.
+  "run.agentStateQuotaBytes": "ERIS_AGENT_STATE_QUOTA_BYTES",
+  "run.agentLogQuotaBytes": "ERIS_AGENT_LOG_QUOTA_BYTES",
+  "run.agentDiskCheckEveryBlocks": "ERIS_AGENT_DISK_CHECK_EVERY_BLOCKS",
   "run.reportDir": "REPORT_DIR",
   "run.flashArb": "ERIS_FLASH_ARB",
   "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",

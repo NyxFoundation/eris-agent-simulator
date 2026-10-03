@@ -33,7 +33,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   computeStandings,
@@ -70,6 +70,7 @@ import {
   parseFlags,
   readConstantsFingerprint,
   readStateManifest,
+  regimeName,
   resolveRegimePath,
   rpc,
   STATE_DIR_DEFAULT,
@@ -82,6 +83,7 @@ import {
   startDelay,
 } from "../backtest/timetable.js";
 import { matrixEpochOverrides } from "../backtest/epochOrdinal.js";
+import { SCENARIO_STREAMS } from "@eris/sdk/rng.js";
 import {
   AGENT_STATE_ROOT_ENV,
   restoreAllAgentState,
@@ -89,6 +91,17 @@ import {
 } from "../realtime/agentState.js";
 
 const ROOT = process.cwd(); // npm scripts run at the repo root
+
+// A checkpoint of the state root leaves out an agent directory that cannot be copied (issue #214
+// item 2: a pipe, a symlink, a sparse file past the cap). Said on stderr at the time, because a
+// later restore of that label puts the agent back to nothing and the reason has to be findable.
+function checkpointAgentState(root: string, label: string): void {
+  for (const { agentId, reason } of snapshotAllAgentState(root, label))
+    console.error(
+      `[backtest] state checkpoint ${label}: ${agentId} left out (${reason}); a restore of this ` +
+        "label starts that agent empty",
+    );
+}
 
 const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [options]
   --regime <name|path>   config/regimes/<name>.yaml (or a YAML path). requires --seed
@@ -216,11 +229,12 @@ function loadScenarioSet(
         throw new Error(
           `${abs}: epochs[${i}].startsAt must be an ISO 8601 date`,
         );
+      const regimePath = resolveRegimePath(root, e.regime);
       out.push({
         s: s as number,
-        regime: e.regime,
+        regime: regimeName(regimePath),
         seed: e.seed as number,
-        regimePath: resolveRegimePath(root, e.regime),
+        regimePath,
         ...(typeof e.startsAt === "string" ? { startsAt: e.startsAt } : {}),
       });
     });
@@ -245,7 +259,7 @@ function loadScenarioSet(
           throw new Error(`${abs}: every entry of "seeds" must be an integer`);
         out.push({
           s: out.length + 1,
-          regime,
+          regime: regimeName(regimePath),
           seed: seed as number,
           regimePath,
         });
@@ -358,7 +372,7 @@ async function main(): Promise<void> {
     scenarios = [
       {
         s: 1,
-        regime: basename(regimePath).replace(/\.ya?ml$/, ""),
+        regime: regimeName(regimePath),
         seed,
         regimePath,
       },
@@ -496,7 +510,9 @@ async function main(): Promise<void> {
     const doc = loadRegimeDoc(scenario);
     const effective: RegimeDoc = {
       ...doc,
-      run: { ...(doc.run ?? {}), ...runOverrides, seed: scenario.seed },
+      // `regime` names the streams with the seed (issue #186): without it every regime run on the
+      // same seed draws the same price path and flow.
+      run: { ...(doc.run ?? {}), ...runOverrides, seed: scenario.seed, regime: scenario.regime },
       ...(rosterAgents !== undefined ? { agents: rosterAgents } : {}),
     };
     const path = join(
@@ -700,6 +716,7 @@ async function main(): Promise<void> {
           ...(agentStateRoot !== undefined ? { agentStateRoot } : {}),
           rosterFingerprint: fieldFingerprint,
           scenarioKeyCommitment: scenarioKey.commitment,
+          scenarioStreams: SCENARIO_STREAMS,
         },
         (p) => resolve(ROOT, p),
       );
@@ -779,6 +796,9 @@ async function main(): Promise<void> {
             // ADR 0027: the key the scenarios were realized under (public, or the commitment to the
             // operator's secret). Reproducing the matrix needs it; a --resume under another is refused.
             scenarioKey: scenarioKeyRecord(scenarioKey),
+            // Issue #186: how the streams were named (the regime with the seed). A --resume under
+            // another naming is refused: the same key and seed would draw another world.
+            scenarioStreams: SCENARIO_STREAMS,
             // Complete only once every scenario has run; until then this is a partial matrix.
             scenariosPlanned: scenarios.length,
             // The plan's timetable, for the epochs not run yet: the dashboard's "next epoch starts
@@ -808,7 +828,7 @@ async function main(): Promise<void> {
     // last (backtest/resume.ts). A fresh matrix records its empty starting point; a resumed one
     // puts the root back to the end of the latest complete ordinal before each re-run.
     if (agentStateRoot !== undefined && matrixMode && !resumeDir)
-      snapshotAllAgentState(agentStateRoot, STATE_LABEL_INITIAL);
+      checkpointAgentState(agentStateRoot, STATE_LABEL_INITIAL);
     let index = 0;
     for (const scenario of scenarios) {
       index++;
@@ -863,7 +883,7 @@ async function main(): Promise<void> {
       const repeatLabel = `repeat-base-s${scenario.s}`;
       for (let i = 0; i < repeat; i++) {
         if (agentStateRoot !== undefined && repeat > 1) {
-          if (i === 0) snapshotAllAgentState(agentStateRoot, repeatLabel);
+          if (i === 0) checkpointAgentState(agentStateRoot, repeatLabel);
           else if (!restoreAllAgentState(agentStateRoot, repeatLabel))
             // A repeat that silently kept the previous repeat's state would report a sequence as
             // a spread, which is the one thing the flag must not do.
@@ -907,7 +927,7 @@ async function main(): Promise<void> {
       }
       if (agentStateRoot !== undefined && matrixMode && perRepeat.length > 0) {
         // The checkpoint a resume restores before the ordinal after this one.
-        snapshotAllAgentState(agentStateRoot, stateLabelAfter(scenario.s));
+        checkpointAgentState(agentStateRoot, stateLabelAfter(scenario.s));
         complete.add(scenario.s);
       }
       repeatsByScenario.push(perRepeat);

@@ -14,14 +14,16 @@
 // Issue #41: this file no longer knows which venues exist. It reads prices and free inventory and
 // drives each enabled adapter's staged valuation; adding a venue means registering an adapter.
 import type { Address, PublicClient } from "viem";
-import { parseAbi, parseAbiItem } from "viem";
-import { erc20Abi, poolAbi } from "@eris/sdk/abis.js";
+import { formatUnits, parseAbi, parseAbiItem } from "viem";
+import { curveStableSwapNgAbi, erc20Abi, poolAbi } from "@eris/sdk/abis.js";
 import { MULTICALL3, TOKENS } from "@eris/sdk/constants.js";
 import { baseTokens, marketsFor, tokenInfo } from "@eris/sdk/markets.js";
 import type { RunLogger } from "../logger.js";
 import type { IntervalSeries } from "../intervalSeries.js";
 import { intervalBoundaryBlocks } from "../epochExtent.js";
 import { valueUsdc } from "@eris/sdk/pnl.js";
+import { medianBigint } from "@eris/sdk/protocols/medianWindow.js";
+import { mergeStableUnits, type StableUnits } from "@eris/sdk/valuation.js";
 import {
   decodeStableProbes,
   marketPricedStables,
@@ -42,7 +44,8 @@ import type {
   ValuationContext,
   ValuationRun,
 } from "@eris/sdk/protocols/types.js";
-import type { ProtocolId } from "@eris/sdk/types.js";
+import type { BalanceSnapshot, ProtocolId } from "@eris/sdk/types.js";
+import { firstBoundaryV0 } from "../scoring/endowmentV0.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
 import {
@@ -61,7 +64,15 @@ const multicall3Abi = parseAbi([
   "function getEthBalance(address addr) view returns (uint256)",
 ]);
 
-export type ReconstructionAgent = { id: string; address: Address };
+export type ReconstructionAgent = {
+  id: string;
+  address: Address;
+  // What the environment handed the agent at funding (`agent.initial`), when it did. V_0 at the
+  // epoch's first boundary is floored at this, valued at that boundary's marks (issue #207;
+  // scoring/endowmentV0.ts). Absent for an agent the environment did not fund before the series
+  // began, which is then measured at every boundary.
+  endowment?: BalanceSnapshot;
+};
 
 export type ReconstructionMeta = {
   source: "post-run-reconstruction";
@@ -194,6 +205,12 @@ export type UnpricedHolding = UnpricedHoldingDetail & { agentId: string };
 export type ValueSnapshot = {
   blockNumber: number;
   fairPriceUsdcPerWeth: number;
+  // The marks this cross-section was valued at: every base's fair as the PriceFeed carried it at
+  // this block, and the stables' prices (the median override when the caller passed one). Exposed
+  // so a caller can value something *else* at the same marks -- the endowment at the first
+  // boundary (issue #207) -- without a second read.
+  fairByBase: Record<string, number>;
+  stablePrices: StablePrices;
   // Pool price (from slot0) only when Uniswap is enabled. null if disabled.
   poolPriceUsdcPerWeth: number | null;
   failedReads: number;
@@ -201,6 +218,17 @@ export type ValueSnapshot = {
   values: AgentValueSnapshot[];
   unpriced: UnpricedHolding[];
 };
+
+// The endowment at a cross-section's marks (issue #207): the free-inventory valuation the
+// cross-section itself applies to what the chain holds, applied to what the environment funded
+// instead. The one place both readers -- the live scorer and the sweep -- price it, so V_0 is
+// floored at the same number whichever of them reads the boundary.
+export function endowmentValueAt(
+  endowment: BalanceSnapshot,
+  marks: Pick<ValueSnapshot, "fairByBase" | "stablePrices">,
+): number {
+  return valueUsdc(endowment, marks.fairByBase, marks.stablePrices);
+}
 
 // The adapters behind the run's enabled protocol ids. Adding a venue means registering an adapter,
 // not editing this file (issue #41).
@@ -454,6 +482,34 @@ export async function readValueSnapshotAtBlock(opts: {
   const unquotedStables = new Map<string, StableMarket>(
     stablePrices.unquoted.map((m) => [m.token.toLowerCase(), m]),
   );
+  // Rules §4.1: a market-priced stable is worth what the holder's own size would sell for (and one
+  // owed, what buying it back would cost), not the $1,000 probe's mid times the size. Each agent's
+  // whole amount -- the wallet's plus every venue's (AgentProtocolValue.stableLongs/Shorts) -- is
+  // quoted as one trade, medianed over the window like every market-derived price.
+  const ownSize = await ownSizeStableAdjustments({
+    call,
+    blockNumber,
+    window: opts.medianWindow ?? [],
+    markets: stableMarkets.filter(
+      (m) => !unquotedStables.has(m.token.toLowerCase()),
+    ),
+    stablePrices,
+    units: agents.map((agent, i) => {
+      const longs: StableUnits = {};
+      const shorts: StableUnits = {};
+      const spotStart = spotBase + i * spotLayout.length;
+      spotLayout.forEach((read, k) => {
+        const raw = headResults[spotStart + k];
+        if (read.kind === "stable" && typeof raw === "bigint" && raw > 0n)
+          mergeStableUnits(longs, { [read.token.toLowerCase()]: raw });
+      });
+      for (const byAgent of protocolValues.values()) {
+        mergeStableUnits(longs, byAgent[agent.id]?.stableLongs);
+        mergeStableUnits(shorts, byAgent[agent.id]?.stableShorts);
+      }
+      return { longs, shorts };
+    }),
+  });
   agents.forEach((agent, i) => {
     const spotStart = spotBase + i * spotLayout.length;
     let ethWei = 0n;
@@ -523,7 +579,8 @@ export async function readValueSnapshotAtBlock(opts: {
     let total = valueUsdc(balance, fairByBase, stablePrices);
     let alphaTotal = valueUsdc(balance, refFairByBase, stablePrices);
     // The face mark, kept only to report where it sits above the scored value. Free inventory is
-    // realizable by definition, so the two start equal and only the venues separate them.
+    // realizable at it, except a market-priced stable held at a size its pool does not absorb at
+    // the mid (ownSize below); otherwise only the venues separate the two.
     let markedTotal = valueUsdc(balance, fairByBase, stablePrices);
     // **Venue positions are scored at recoverable value, not at par** (issue #40 axiom 3, extended
     // to every venue). Which is a change: until now the scored series took `valueUsdc`, the face
@@ -540,6 +597,25 @@ export async function readValueSnapshotAtBlock(opts: {
     // For the environment's own venues recoverable is *usually* par — real collateral, environment
     // oracles — so this moves nothing in a calm run. Where it moves, it moves for a reason, and the
     // face mark is reported alongside so the gap is legible rather than silent.
+    // The re-mark of the agent's stables at their own size (zero when it holds none). Live in both
+    // the scored and the α total, for the reason the stable leg is (above); the face mark keeps the
+    // mid, so markedValueUsdc shows how far the size moved it.
+    total += ownSize.adjustments[i];
+    alphaTotal += ownSize.adjustments[i];
+    for (const f of ownSize.fallbacks) {
+      if (f.agentIndex !== i) continue;
+      unpriced.push({
+        agentId: agent.id,
+        source: `own-size-${f.market.symbol}${f.side === "short" ? "-debt" : ""}`,
+        token: f.market.token,
+        amountRaw: f.amount.toString(),
+        reason: "mid-fallback",
+        read:
+          f.side === "long"
+            ? "CurveStableSwapNG.get_dy"
+            : "CurveStableSwapNG.get_dx",
+      });
+    }
     for (const [id, byAgent] of protocolValues) {
       const value = byAgent[agent.id];
       if (!value) continue;
@@ -565,6 +641,8 @@ export async function readValueSnapshotAtBlock(opts: {
   return {
     blockNumber: opts.blockNumber,
     fairPriceUsdcPerWeth: fairPrice,
+    fairByBase,
+    stablePrices,
     poolPriceUsdcPerWeth,
     failedReads,
     failedReadTargets: [...failedReadTargets.values()],
@@ -583,6 +661,83 @@ function spotSource(read: SpotRead): string {
   if (read.kind === "eth") return "spot-eth";
   if (read.kind === "base") return `spot-${read.symbol}`;
   return "spot-stable";
+}
+
+// One agent's market-priced stables, re-marked from the probe's mid to their own size. A long is
+// what selling the whole amount into its market returns (get_dy), a short what buying it back costs
+// (get_dx); the adjustment is that minus the mid times the amount, so it is zero for a holding the
+// pool absorbs at the mid and negative for one it does not. Longs and shorts of the same stable are
+// quoted apart rather than netted -- each as its own trade, which errs toward the lower value.
+//
+// Each read is medianed over the boundary block and the window's earlier blocks (rules §4.1), the
+// size held at the boundary's. A read that returns at no block leaves that holding at the mid, and
+// is returned as a fallback for the caller to report.
+export async function ownSizeStableAdjustments(opts: {
+  call: MulticallFn;
+  blockNumber: bigint;
+  window: readonly number[];
+  markets: readonly StableMarket[];
+  stablePrices: StablePrices;
+  units: ReadonlyArray<{ longs: StableUnits; shorts: StableUnits }>;
+}): Promise<{
+  adjustments: number[];
+  fallbacks: Array<{
+    agentIndex: number;
+    market: StableMarket;
+    side: "long" | "short";
+    amount: bigint;
+  }>;
+}> {
+  const adjustments = opts.units.map(() => 0);
+  const targets: Array<{
+    agentIndex: number;
+    market: StableMarket;
+    side: "long" | "short";
+    amount: bigint;
+  }> = [];
+  opts.units.forEach(({ longs, shorts }, agentIndex) => {
+    for (const market of opts.markets) {
+      const key = market.token.toLowerCase();
+      const long = longs[key] ?? 0n;
+      const short = shorts[key] ?? 0n;
+      if (long > 0n) targets.push({ agentIndex, market, side: "long", amount: long });
+      if (short > 0n)
+        targets.push({ agentIndex, market, side: "short", amount: short });
+    }
+  });
+  if (targets.length === 0) return { adjustments, fallbacks: [] };
+
+  const reads: MulticallContract[] = targets.map((t) => ({
+    address: t.market.pool,
+    abi: curveStableSwapNgAbi,
+    functionName: t.side === "long" ? "get_dy" : "get_dx",
+    args:
+      t.side === "long"
+        ? [BigInt(t.market.stableIndex), BigInt(t.market.quoteIndex), t.amount]
+        : [BigInt(t.market.quoteIndex), BigInt(t.market.stableIndex), t.amount],
+  }));
+  const samples = await Promise.all([
+    opts.call(reads, opts.blockNumber),
+    ...opts.window.map((b) => opts.call(reads, BigInt(b))),
+  ]);
+  const usdcDecimals = TOKENS.USDC.decimals;
+  const fallbacks: typeof targets = [];
+  targets.forEach((t, k) => {
+    const quoted = medianBigint(
+      samples
+        .map((sample) => sample[k])
+        .filter((q): q is bigint => typeof q === "bigint"),
+    );
+    if (quoted === undefined) {
+      fallbacks.push(t);
+      return;
+    }
+    const mid = opts.stablePrices.byToken[t.market.token.toLowerCase()] ?? 1;
+    const atMid = Number(formatUnits(t.amount, t.market.decimals)) * mid;
+    const usdc = Number(formatUnits(quoted, usdcDecimals));
+    adjustments[t.agentIndex] += t.side === "long" ? usdc - atMid : atMid - usdc;
+  });
+  return { adjustments, fallbacks };
 }
 
 function fairPriceFailure(blockNumber: number, what: string): string {
@@ -814,15 +969,19 @@ export { intervalBoundaryBlocks };
 // to it, so that pushing a pool for one block does not become the score. It has to hold for most of
 // the window to count, which turns a spread-cost round trip into a position.
 //
-// The rule covers every market-derived price, not only the ones worth pushing. It used to cover the
-// stables' probe alone, on the argument that the other pool reads (LP composition, the LST pool
-// sale) only move value between an agent's own two buckets. That is an argument about incentives;
-// §4.1 is a valuation rule, and it names no exception. So the scope is now every mark a venue reads
-// off a market, each venue deciding what its market-derived price is (ProtocolAdapter
-// .medianSurfaces, ValuationContext.medianWindow):
+// The rule covers every market-derived price, not only the ones worth pushing, each venue deciding
+// what its market-derived price is (ProtocolAdapter.medianSurfaces, ValuationContext.medianWindow).
+// An LP's composition is not one: how a Uniswap position splits into its two tokens, or a Balancer /
+// Curve share's slice of the reserves, is the holding itself (what a withdrawal in that block
+// returns), so it is read at the boundary like any other holding. Medianing it once paired the
+// boundary's liquidity with an earlier split, and a pool its owner alone provides, pushed for most
+// of the window and put back before the bell, was marked above anything the owner held:
 //
 //   stables          the two-sided probe (spot registry stables, and through ctx.stablePrices()
 //                    the Liquity mid and every stable leg an LP or lending mark prices)
+//   stables-own-size each agent's whole holding of a market-priced stable, wallet and venues
+//                    together, sold (or bought back, if owed) at its own size: the probe's mid is
+//                    the price of $1,000, and a holding marked at it is worth more than it sells for
 //   venue surfaces   re-read by the adapter at the window's earlier blocks with the position held
 //                    at the boundary -- the median is over the price, never over holdings
 //
@@ -904,7 +1063,7 @@ export class MarkMedian {
       windowBlocks: this.opts.windowBlocks,
       boundaries: this.boundaries,
       surfaces: [
-        ...(this.hasStables() ? ["stables"] : []),
+        ...(this.hasStables() ? ["stables", "stables-own-size"] : []),
         ...enabledProtocolIds()
           .filter(hasAdapter)
           .flatMap((id) => getAdapter(id).medianSurfaces ?? []),
@@ -986,6 +1145,9 @@ export async function reconstructValueSeries(opts: {
 
   const alphaFirst = new Map<string, number>();
   const alphaLast = new Map<string, number>();
+  const endowmentByAgent = new Map(
+    agents.flatMap((a) => (a.endowment ? [[a.id, a.endowment] as const] : [])),
+  );
   // Realizable value at the run's last cross-section, and the mark from that same cross-section to
   // compare it against (issue #38). Reported alongside the mark rather than replacing it.
   const scoredLast = new Map<string, number>();
@@ -1058,7 +1220,34 @@ export async function reconstructValueSeries(opts: {
       alphaValueUsdc,
       markedValueUsdc,
     } of snapshot.values) {
-      if (!alphaFirst.has(id)) alphaFirst.set(id, alphaValueUsdc);
+      // The first cross-section is the epoch's first boundary (blocks starts at fromBlock), and
+      // there V_0 is floored at the endowment (issue #207; scoring/endowmentV0.ts) -- the same rule
+      // the live scorer applies at its first boundary, so the two series still agree block for
+      // block. The equity curve below keeps the measured value: a basket that left before the bell
+      // and came back is a real move, and the curve is where a reader sees it.
+      const endowment = endowmentByAgent.get(id);
+      const v0 =
+        b === fromBlock
+          ? (firstBoundaryV0(
+              total,
+              endowment ? endowmentValueAt(endowment, snapshot) : undefined,
+            ).valueUsdc ?? total)
+          : total;
+      if (!alphaFirst.has(id))
+        alphaFirst.set(
+          id,
+          b === fromBlock
+            ? (firstBoundaryV0(
+                alphaValueUsdc,
+                endowment
+                  ? endowmentValueAt(endowment, {
+                      fairByBase: refFairByBase,
+                      stablePrices: snapshot.stablePrices,
+                    })
+                  : undefined,
+              ).valueUsdc ?? alphaValueUsdc)
+            : alphaValueUsdc,
+        );
       alphaLast.set(id, alphaValueUsdc);
       scoredLast.set(id, total);
       markedLast.set(id, markedValueUsdc);
@@ -1068,7 +1257,7 @@ export async function reconstructValueSeries(opts: {
       const boundaryAt = boundaryIndex.get(b);
       const boundaryValues = boundaryValuesByAgent.get(id);
       if (boundaryAt !== undefined && boundaryValues)
-        boundaryValues[boundaryAt] = total;
+        boundaryValues[boundaryAt] = v0;
       // The observation shape readPerRoundValues reads (inventory.valueUsdc = total value).
       // Do not include protocols (avoids double-counting perRoundValueUsdc). alphaValueUsdc is
       // the fixed-reference fair evaluation (β-removed) and can also be read as a per-round α series.
@@ -1169,14 +1358,14 @@ export async function reconstructValueSeries(opts: {
     // par-fallback holdings are counted in the value, at $1, because their market would not quote
     // (issue #27) -- reported for the opposite reason to the others, so they are counted apart.
     const atPar = unpricedHoldings.filter(
-      (h) => h.reason === "par-fallback",
+      (h) => h.reason === "par-fallback" || h.reason === "mid-fallback",
     ).length;
     const excluded = unpricedHoldings.length - atPar;
     console.warn(
       `[reconstruct] ${excluded} holding(s) excluded from agent value ` +
         `(${excluded - unreadable} unpriceable, ${unreadable} unreadable)` +
         (atPar > 0
-          ? `, ${atPar} stable holding(s) marked at par because their market did not quote`
+          ? `, ${atPar} stable holding(s) marked at par or at the probe mid because their market did not quote`
           : "") +
         "; see scoring_unpriced_holdings in events.jsonl — a zero here is not a trading loss, " +
         "and a dollar is not a measurement",

@@ -48,10 +48,11 @@ test("poolShareValueUsdc is zero for an empty holding or an empty pool", () => {
   assert.deepEqual(poolShareValueUsdc(RESERVES, 0n, FAIR), {
     valueUsdc: 0,
     unpriced: [],
+    stableUnits: {},
   });
   assert.deepEqual(
     poolShareValueUsdc({ ...RESERVES, totalSupply: 0n }, 10n ** 18n, FAIR),
-    { valueUsdc: 0, unpriced: [] },
+    { valueUsdc: 0, unpriced: [], stableUnits: {} },
   );
 });
 

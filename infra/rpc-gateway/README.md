@@ -34,8 +34,10 @@ this column tells you who called what, when.
 ## Config (env)
 
 `PORT` (8546) · `UPSTREAM` (http://127.0.0.1:8545) · `ENV_NAME` (live|test) · `LOG_FILE` · `METRICS_FILE` ·
-`RPC_MAX_TX_GAS` (30000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — the last two are the
-[transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule).
+`RPC_MAX_TX_GAS` (30000000) · `RPC_MAX_PRIORITY_FEE_WEI` (5000000000) — these two are the
+[transaction checks](#transaction-checks-at-entry-gas-cap-and-fee-rule) ·
+`RPC_MAX_PARAM_DEPTH` (64) · `RPC_MAX_PARAM_NODES` (100000) — the [request shape limit](#request-shape-limit) ·
+`RPC_MAX_BODY_BYTES` (4194304) — the [body cap](#request-body-cap).
 Runs as the `rpc-gateway-live` service in `infra/monitoring/docker-compose.yml` (host-net,
 `restart: unless-stopped`); `rpc-gateway-test` (compose profile `test`) is ready for a second env.
 
@@ -101,7 +103,14 @@ cheatcodes still work.
 | env | default | meaning |
 |---|---|---|
 | `RPC_FILTER` | 1 | enable the method allowlist (0 disables — internal all-access gateway) |
-| `RPC_METHOD_ALLOW` | `^(eth_\|net_\|web3_)` | regex of permitted method prefixes |
+| `RPC_METHOD_ALLOW` | *(explicit list in `gateway.mjs`)* | regex that replaces the built-in list of permitted methods |
+
+The built-in list (`ALLOWED_METHODS`) names each standard read, the filter calls for mined logs and
+blocks, and `eth_sendRawTransaction`. It used to be the prefix `^(eth_|net_|web3_)`, which passed every
+`eth_` method the node has unless the deny regex named it. anvil has `eth_` methods that act without a
+signature: `eth_sendUnsignedTransaction` is accepted from any `from`, unlocked or not. And
+`eth_sendRawTransactionSync` skipped the gas cap and the fee rule, which read only
+`eth_sendRawTransaction`. Both checks now read every raw-send method, whichever list is in force.
 
 Denied methods get HTTP 403 + a JSON-RPC error and are counted in `rpc_method_denied_total`. Verified:
 `anvil_setBalance`/`evm_mine`/`hardhat_setBalance`/`txpool_content`/`debug_traceTransaction` → 403,
@@ -128,12 +137,36 @@ The default filter keeps the priority-fee auction sealed at this RPC boundary. I
 another connection; otherwise an existing pending filter would bypass the creation ban. Use
 `eth_getLogs` for mined logs and `eth_blockNumber` for block polling.
 
-The `pending` tag is refused on `eth_getBlockByNumber`, `eth_getBlockTransactionCountByNumber`,
-`eth_getTransactionByBlockNumberAndIndex`, `eth_getRawTransactionByBlockNumberAndIndex`, and
-`eth_getBlockReceipts`. A mixed batch containing a forbidden call is rejected in full before being
-forwarded. Mined block reads and **`eth_getTransactionCount(address, "pending")` remain available**:
+The `pending` tag is refused in **any parameter position and inside objects** (case-insensitive), on
+every method but `eth_getTransactionCount`. It used to be refused only as `params[0]` of the five
+block-enumeration methods, but anvil executes a state read at `pending` (`eth_call`, `eth_getBalance`,
+`eth_getStorageAt`, `eth_estimateGas`, ...) against a block built from the pool, so those reads showed
+unmined transactions, including the oracle update. A mixed batch containing a forbidden call is rejected in full before being
+forwarded.
+
+An **omitted block parameter** is the same leak without the string: anvil runs `eth_estimateGas`
+without one against the pending block (measured, anvil 1.5.1, `--no-mining`: with a reverting contract
+deployed in the pool, `eth_estimateGas [{to}]` reverted while `[{to}, "latest"]` returned `0x5208`), and
+viem's `estimateGas` sends exactly `[request]`. The gateway writes `"latest"` into an `eth_estimateGas`
+whose block parameter is missing or `null` rather than refusing it, so client defaults keep working.
+`eth_call` and `eth_createAccessList` default to latest on anvil (measured the same way) and are
+forwarded unchanged. The consequence for senders: **a gas estimate never sees your own pending
+transactions either**, so a leg that needs an earlier one (approve → swap) fails its estimate while the
+earlier leg is unmined. The reference runtime (`example/agents/runtime/send.ts`) sends such a leg with
+a fixed limit (`ERIS_DEPENDENT_TX_GAS`, 2,000,000, inside the 30M per-tx and per-block budgets) when it
+has transactions of its own pending, and drops it as before when it has none. Mined block reads and **`eth_getTransactionCount(address, "pending")` remain available**:
 `Sender` seeds its nonce with the latter and must account for already pending submissions.
 `eth_sendRawTransaction` remains available subject to the gas cap and the fee rule (below).
+
+**Reads by hash** (`eth_getTransactionByHash`, `eth_getRawTransactionByHash`) stay on the allowlist — the
+receipt poll, explorers and replay tooling read mined transactions through them — but a transaction
+that has no block yet is answered as `null`, the same reply as for a hash the node never saw (issue
+#216). anvil answers both methods for pool entries, so a hash learned some other way (a shared sender,
+a log line, a guessed nonce) used to show an unmined transaction's calldata, fees and signed bytes. A
+mined transaction passes through byte for byte. The raw form carries no block field, so it costs one
+upstream `eth_getTransactionReceipt`; a lookup that fails seals. Counted in `rpc_pending_sealed_total`.
+`eth_getTransactionReceipt` itself is unchanged: `null` while pending, which is what
+`example/agents/runtime/send.ts` polls on.
 
 `RPC_METHOD_DENY` overrides the default method-deny regex; replacing it is an operator policy
 change and must preserve these bans on participant endpoints. Parameter checks still apply while
@@ -156,6 +189,28 @@ Reproduce the regression against a real Anvil with
 `node --import tsx --test test/rpcGateway.test.ts test/runtimeSender.test.ts`. The sender test also
 submits two actions through the gateway on top of an existing pending transaction, checks consecutive
 nonces and submission records, and mines all three. These tests need Anvil, already installed in CI.
+
+### Request shape limit
+
+Every request is walked iteratively before any check reads it, and one nesting deeper than
+`RPC_MAX_PARAM_DEPTH` (64) or holding more than `RPC_MAX_PARAM_NODES` (100,000) values is refused with
+HTTP 400 + JSON-RPC `-32600`, counted in `rpc_params_denied_total`. The pending check used to recurse:
+~6,000 nested arrays (a 12KB body) ran the stack out inside the request handler, uncaught, and ended the
+process every participant shares. Standard methods nest a handful of levels (`eth_getLogs` topics,
+`eth_call` state overrides). The handler is also wrapped so an unexpected exception answers 500
+(`-32603`) instead of ending the process. The limit applies with `RPC_FILTER=0` too.
+
+### Request body cap
+
+The body used to be accumulated without bound before `JSON.parse`, so one authenticated connection
+could hold the gateway's memory with a stream it never finished (issue #216). `RPC_MAX_BODY_BYTES`
+(default 4 MiB) bounds it, beside the shape limit above: a declared `content-length` over the cap is
+refused before the body is read, and bytes received past the cap (chunked, or a declaration that lied)
+stop the read. Either way the client gets HTTP 413 with JSON-RPC error `-32600`, the socket is closed
+after the reply is flushed, and `rpc_body_denied_total` counts it. The largest honest bodies are a signed
+deployment (initcode is capped at 49,152 bytes by EIP-3860, ~100 KB as hex) and the runtime's batched
+Multicall3 reads (hundreds of KB); 4 MiB is ~40× those. Reproduce with
+`node --import tsx --test test/rpcGatewayBody.test.ts` (a fake upstream; no anvil needed).
 
 ## Transaction checks at entry (gas cap and fee rule)
 

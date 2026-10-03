@@ -27,14 +27,64 @@ const CHEAT_PATTERNS: Array<{ rule: string; regex: RegExp }> = [
   },
 ];
 
-export function findCheatcodeUsage(source: string): StaticCheckFinding[] {
+function scan(
+  source: string,
+  patterns: Array<{ rule: string; regex: RegExp }>,
+): StaticCheckFinding[] {
   const findings: StaticCheckFinding[] = [];
   const lines = source.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    for (const { rule, regex } of CHEAT_PATTERNS) {
+    for (const { rule, regex } of patterns) {
       const match = lines[i].match(regex);
       if (match) findings.push({ line: i + 1, match: match[0], rule });
     }
   }
   return findings;
+}
+
+/**
+ * The gate: a line that names a cheatcode or a privileged helper. A finding here fails
+ * `npm run check:strategy` and rejects an LLM-written revision.
+ *
+ * What it cannot see (issue #216 (5)): a method name assembled at runtime.
+ * `["anvil", "setBalance"].join("_")` contains no `anvil_` and passes. That is a limit of any
+ * line-level check, and it is why the gate is one of three layers rather than the boundary: the
+ * runtime's read-only client and the gateway refuse the assembled name when it is *sent*, and the
+ * post-run audit reads what landed. `findAssembledCheatcodeHints` names the cheap shapes of that
+ * assembly for a reviewer; it is reported, not enforced.
+ */
+export function findCheatcodeUsage(source: string): StaticCheckFinding[] {
+  return scan(source, CHEAT_PATTERNS);
+}
+
+// Shapes a runtime-assembled cheatcode name tends to take. Each is a hint, not a verdict: the first
+// fires on a log message that happens to quote "anvil", the third on any computed RPC method. And the
+// list is not complete -- `"anv" + "il_setBalance"` matches none of them. That is the point of
+// keeping these out of the gate: a pattern list that claimed to close the hole would be the hole.
+const HINT_PATTERNS: Array<{ rule: string; regex: RegExp }> = [
+  {
+    rule: "cheatcode namespace as a string on its own (assembled method name?)",
+    regex: /["'`](?:anvil|evm|hardhat)_?["'`]/,
+  },
+  {
+    rule: "RPC method name that is not a string literal",
+    // `method: m`, `method: names[i]`, `method: f()` -- but not `method: "eth_call"`, and not a
+    // type annotation (`method: string`).
+    regex: /\bmethod\s*:\s*(?!["'`]|string\b|number\b|unknown\b|any\b)[A-Za-z_$(\[]/,
+  },
+  {
+    rule: "string built from character codes or base64",
+    regex: /String\.fromCharCode|\batob\s*\(|from\([^)]*,\s*["'`]base64["'`]\)/,
+  },
+];
+
+/**
+ * Hints that a cheatcode name may be assembled rather than written (issue #216 (5)). Never fails
+ * the gate: `scripts/checkStrategyCode.ts` prints them for the operator and the submission scanner
+ * files them as WARN. Incomplete by construction; see HINT_PATTERNS.
+ */
+export function findAssembledCheatcodeHints(
+  source: string,
+): StaticCheckFinding[] {
+  return scan(source, HINT_PATTERNS);
 }

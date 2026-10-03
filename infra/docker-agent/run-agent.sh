@@ -28,7 +28,9 @@
 #
 # NOTE on isolation: the default --network host shares the host network, so nothing is contained.
 # ERIS_AGENT_ISOLATE=1 gives each agent its own network with the RPC gateway as the hub, and
-# ERIS_AGENT_INTERNAL=1 makes that network egress-free (see below and ISOLATION.md).
+# ERIS_AGENT_INTERNAL=1 makes that network egress-free (see below and ISOLATION.md). The network's
+# flag is read back after setup and the coordinator inspects the container once it is up, so
+# "isolated" is what docker reports, not what the env said.
 #
 # Cleanup: this execs `docker run --rm`, which removes the container on graceful exit (the client
 # forwards SIGTERM/SIGINT). The coordinator may SIGKILL this wrapper at run end (uncatchable, and
@@ -52,18 +54,66 @@ NAME="eris-${ERIS_AGENT_ID:?ERIS_AGENT_ID is required (set by the coordinator)}"
 #                         on the network too -- name its container in ERIS_INFERENCE_HUB and point
 #                         ERIS_INFERENCE_BASE_URL at it. Unset = NAT egress (the 2026-09-04 own-LLM
 #                         variant, kept as the verified fallback).
+#
+# Measured, not declared (issue #214 item 4). This used to be `docker network create ... || true`,
+# which silently reused an `ag-<id>` left behind by an earlier run -- created without --internal if
+# that run had no ERIS_AGENT_INTERNAL -- and swallowed a create failure (the 28th agent on default
+# address pools: ISOLATION.md). The coordinator's posture check reads only the env, so both passed
+# as "isolated". Now the network's Internal flag is inspected and the network recreated when it is
+# not what this run asks for; a create that fails is an exit, and the coordinator records it as
+# an early exit with this script's stderr. The coordinator then inspects the running container
+# (core/src/realtime/agentNetwork.ts) and stops one that is not where its posture says.
 if [ "${ERIS_AGENT_ISOLATE:-0}" = "1" ]; then
   HUB_CT="${ERIS_AGENT_HUB:-ascon-rpc-gateway-live}"
   ISONET="ag-${ERIS_AGENT_ID}"
-  if [ "${ERIS_AGENT_INTERNAL:-0}" = "1" ]; then
-    docker network create --internal "$ISONET" >/dev/null 2>&1 || true
-  else
-    docker network create "$ISONET" >/dev/null 2>&1 || true
+  if [ "${ERIS_AGENT_INTERNAL:-0}" = "1" ]; then WANT_INTERNAL=true; else WANT_INTERNAL=false; fi
+  net_internal() { docker network inspect -f '{{.Internal}}' "$ISONET" 2>/dev/null; }
+  net_members() { docker network inspect -f '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' "$ISONET" 2>/dev/null; }
+  create_net() {
+    local flags=() out
+    [ "$WANT_INTERNAL" = true ] && flags+=( --internal )
+    if ! out=$(docker network create "${flags[@]}" "$ISONET" 2>&1); then
+      echo "run-agent: could not create network $ISONET (internal=$WANT_INTERNAL): $out" >&2
+      echo "run-agent: if this is 'could not find an available, non-overlapping IPv4 address pool', widen default-address-pools (ISOLATION.md)" >&2
+      exit 3
+    fi
+  }
+  have=$(net_internal) || have=""
+  if [ -z "$have" ]; then
+    create_net
+  elif [ "$have" != "$WANT_INTERNAL" ]; then
+    # Left by a run with the other setting. Detach whatever is still on it (the hub, a survivor
+    # reap.sh has not swept) and recreate it as asked, rather than run this agent on it.
+    echo "run-agent: network $ISONET exists with internal=$have, this run wants $WANT_INTERNAL; recreating" >&2
+    while IFS= read -r member; do
+      [ -n "$member" ] || continue
+      docker network disconnect -f "$ISONET" "$member" >/dev/null 2>&1 || true
+    done < <(net_members)
+    if ! out=$(docker network rm "$ISONET" 2>&1); then
+      echo "run-agent: could not remove network $ISONET to recreate it: $out (run infra/docker-agent/reap.sh)" >&2
+      exit 3
+    fi
+    create_net
   fi
-  docker network connect "$ISONET" "$HUB_CT" >/dev/null 2>&1 || true   # idempotent; hub multi-homes
-  if [ -n "${ERIS_INFERENCE_HUB:-}" ]; then
-    docker network connect "$ISONET" "$ERIS_INFERENCE_HUB" >/dev/null 2>&1 || true
+  # Verify what was asked for, whichever branch ran: the create succeeded but the flag is read
+  # back, not assumed.
+  have=$(net_internal) || have=""
+  if [ "$have" != "$WANT_INTERNAL" ]; then
+    echo "run-agent: network $ISONET reads internal=${have:-missing} after setup, wanted $WANT_INTERNAL" >&2
+    exit 3
   fi
+  # The hub(s) multi-home into every agent network. `connect` fails when already connected (fine)
+  # and when the hub container is not running (not fine): the agent would start with no way to the
+  # chain. So the membership is read back rather than the connect's exit code trusted.
+  connect_hub() {
+    docker network connect "$ISONET" "$1" >/dev/null 2>&1 || true
+    if ! net_members | grep -qx -- "$1"; then
+      echo "run-agent: hub container $1 is not attached to $ISONET (is it running?)" >&2
+      exit 3
+    fi
+  }
+  connect_hub "$HUB_CT"
+  if [ -n "${ERIS_INFERENCE_HUB:-}" ]; then connect_hub "$ERIS_INFERENCE_HUB"; fi
   export ERIS_AGENT_NET="$ISONET"
 fi
 

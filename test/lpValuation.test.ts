@@ -22,6 +22,10 @@ import {
   uncollectedFees,
 } from "@eris/sdk/protocols/uniswap.js";
 import { TOKENS, UNISWAP } from "@eris/sdk/constants.js";
+import {
+  getLiquidityForAmounts,
+  getSqrtRatioAtTick,
+} from "@eris/sdk/tickMath.js";
 
 // Arbitrum fork defaults (MARKET_LEGS registers uniswap WETH/USDC @ fee 500 only).
 const WETH = TOKENS.WETH.address;
@@ -67,14 +71,19 @@ function position(overrides: {
   ] as PositionTuple;
 }
 
-const tickByPool = { [POOL]: TICK_IN_RANGE };
+// slot0 at the bottom of a tick, as a test fixture: the price is exactly 1.0001^tick.
+function at(tick: number) {
+  return { tick, sqrtPriceX96: getSqrtRatioAtTick(tick) };
+}
+
+const slot0ByPool = { [POOL]: at(TICK_IN_RANGE) };
 const fairByBase = { WETH: FAIR_WETH };
 
 // Independent expectation: principal is token1 (USDC) + token0 (WETH) marked at the fair price.
 function expectedPrincipalUsdc(tick: number): number {
   const { amount0, amount1 } = liquidityToTokenAmounts({
     liquidity: LIQUIDITY,
-    tick,
+    sqrtPriceX96: getSqrtRatioAtTick(tick),
     tickLower: TICK_LOWER,
     tickUpper: TICK_UPPER,
   });
@@ -82,7 +91,7 @@ function expectedPrincipalUsdc(tick: number): number {
 }
 
 test("lpPositionValueUsdcMulti values an in-range position in a registered market", () => {
-  const value = lpPositionValueUsdcMulti(position({}), tickByPool, fairByBase);
+  const value = lpPositionValueUsdcMulti(position({}), slot0ByPool, fairByBase);
   // Sanity band independent of the implementation: ~1.04 WETH + ~1000 USDC at $2000.
   assert.ok(
     value > 2500 && value < 3700,
@@ -94,37 +103,37 @@ test("lpPositionValueUsdcMulti values an in-range position in a registered marke
 test("lpPositionValueUsdcMulti adds tokensOwed on top of principal", () => {
   const owed = lpPositionValueUsdcMulti(
     position({ tokensOwed0: 10n ** 17n, tokensOwed1: 25_000_000n }), // 0.1 WETH + 25 USDC
-    tickByPool,
+    slot0ByPool,
     fairByBase,
   );
-  const bare = lpPositionValueUsdcMulti(position({}), tickByPool, fairByBase);
+  const bare = lpPositionValueUsdcMulti(position({}), slot0ByPool, fairByBase);
   assert.ok(Math.abs(owed - bare - (0.1 * FAIR_WETH + 25)) < 1e-6);
 });
 
 test("lpPositionValueUsdcMulti values an out-of-range position on one side only", () => {
   // Pool has moved above the range: the position is entirely token1 (USDC).
-  const aboveTick = { [POOL]: TICK_UPPER + 500 };
+  const aboveTick = { [POOL]: at(TICK_UPPER + 500) };
   const value = lpPositionValueUsdcMulti(position({}), aboveTick, fairByBase);
   assert.ok(Math.abs(value - expectedPrincipalUsdc(TICK_UPPER + 500)) < 1e-6);
   const { amount0 } = liquidityToTokenAmounts({
     liquidity: LIQUIDITY,
-    tick: TICK_UPPER + 500,
+    sqrtPriceX96: getSqrtRatioAtTick(TICK_UPPER + 500),
     tickLower: TICK_LOWER,
     tickUpper: TICK_UPPER,
   });
   assert.equal(amount0, 0n, "above range holds no token0");
 
   // Pool has moved below the range: entirely token0 (WETH).
-  const belowTick = { [POOL]: TICK_LOWER - 500 };
+  const belowTick = { [POOL]: at(TICK_LOWER - 500) };
   const below = lpPositionValueUsdcMulti(position({}), belowTick, fairByBase);
   assert.ok(Math.abs(below - expectedPrincipalUsdc(TICK_LOWER - 500)) < 1e-6);
 });
 
-test("lpPositionValuation reports a position whose pool tick is unknown rather than marking it", () => {
+test("lpPositionValuation reports a position whose pool slot0 is unknown rather than marking it", () => {
   // tick 0 is far above the WETH/USDC range, so a tick-0 fallback would read as all-USDC — a silent
   // mis-mark. Without a tick the amounts are unknowable, so the position is reported instead.
   const valuation = lpPositionValuation(position({}), {
-    tickByPool: {},
+    slot0ByPool: {},
     fairByBase,
   });
   assert.equal(valuation.valueUsdc, 0);
@@ -140,7 +149,7 @@ test("lpPositionValuation values a position in an unregistered pool (#41)", () =
   // through the factory. It must be worth the same as the registered-market position.
   const otherPool = "0x00000000000000000000000000000000000dead01" as Address;
   const valuation = lpPositionValuation(position({ fee: 3000 }), {
-    tickByPool: { [otherPool.toLowerCase()]: TICK_IN_RANGE },
+    slot0ByPool: { [otherPool.toLowerCase()]: at(TICK_IN_RANGE) },
     fairByBase,
     poolByKey: { [positionPoolKey(WETH, USDC, 3000)]: otherPool },
   });
@@ -158,14 +167,14 @@ test("lpPositionValuation prices the known side and reports the unknown one (#41
   const valuation = lpPositionValuation(
     position({ token1: unknownToken, fee: 3000 }),
     {
-      tickByPool: { [pool.toLowerCase()]: TICK_IN_RANGE },
+      slot0ByPool: { [pool.toLowerCase()]: at(TICK_IN_RANGE) },
       fairByBase,
       poolByKey: { [positionPoolKey(WETH, unknownToken, 3000)]: pool },
     },
   );
   const { amount0, amount1 } = liquidityToTokenAmounts({
     liquidity: LIQUIDITY,
-    tick: TICK_IN_RANGE,
+    sqrtPriceX96: getSqrtRatioAtTick(TICK_IN_RANGE),
     tickLower: TICK_LOWER,
     tickUpper: TICK_UPPER,
   });
@@ -181,9 +190,109 @@ test("lpPositionValueUsdcMulti still returns zero for a pool it cannot resolve",
   // The registered-market wrapper has no factory lookup, so an unregistered pool has no tick and
   // values to zero. Only reconstruct (which resolves pools) sees the #41 fix.
   assert.equal(
-    lpPositionValueUsdcMulti(position({ fee: 3000 }), tickByPool, fairByBase),
+    lpPositionValueUsdcMulti(position({ fee: 3000 }), slot0ByPool, fairByBase),
     0,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The split follows slot0's price, not its tick
+//
+// The split used to be taken from the integer tick, i.e. from the price at the bottom of the current
+// tick. In a one-tick range [t, t+1) that marks the position as entirely token0 wherever the price
+// sits in the tick. Anyone can create a pool in an unused fee tier at any price, so funding such a
+// range in token1 at an absurd price and having it marked as the same liquidity's worth of token0
+// turned ~$2,300 into ~$10^16.
+// ---------------------------------------------------------------------------
+
+test("a one-tick range at an absurd pool price is worth what was deposited, not the tick's bottom split", () => {
+  const tick = -500000; // 1 WETH ~ 2e-22 USDC units: nowhere near fair
+  const lower = getSqrtRatioAtTick(tick);
+  const upper = getSqrtRatioAtTick(tick + 1);
+  const sqrtPriceX96 = upper - 1n; // top of the tick: the position is (almost) all token1
+  const deposit1 = 1_800_000_000n; // 1,800 USDC
+  const liquidity = getLiquidityForAmounts(
+    sqrtPriceX96,
+    lower,
+    upper,
+    10n ** 40n,
+    deposit1,
+  );
+  const otherPool = "0x00000000000000000000000000000000000dead03" as Address;
+  const valuation = lpPositionValuation(
+    position({ fee: 100, tickLower: tick, tickUpper: tick + 1, liquidity }),
+    {
+      slot0ByPool: { [otherPool.toLowerCase()]: { tick, sqrtPriceX96 } },
+      fairByBase,
+      poolByKey: { [positionPoolKey(WETH, USDC, 100)]: otherPool },
+    },
+  );
+  const { amount0, amount1 } = liquidityToTokenAmounts({
+    liquidity,
+    sqrtPriceX96,
+    tickLower: tick,
+    tickUpper: tick + 1,
+  });
+  // What a burn returns is no more than what went in.
+  assert.ok(amount1 <= deposit1);
+  const deposited =
+    Number(deposit1) / 1e6 + (Number(amount0) / 1e18) * FAIR_WETH;
+  assert.ok(
+    valuation.valueUsdc <= deposited + 1e-6,
+    `marked ${valuation.valueUsdc} for ~${deposited} deposited`,
+  );
+  assert.ok(valuation.valueUsdc > 1_799);
+});
+
+test("within one tick the split moves with sqrtPriceX96", () => {
+  const tick = TICK_IN_RANGE;
+  const lower = getSqrtRatioAtTick(tick);
+  const upper = getSqrtRatioAtTick(tick + 1);
+  const split = (sqrtPriceX96: bigint) =>
+    liquidityToTokenAmounts({
+      liquidity: LIQUIDITY,
+      sqrtPriceX96,
+      tickLower: tick,
+      tickUpper: tick + 1,
+    });
+  const bottom = split(lower);
+  const middle = split((lower + upper) / 2n);
+  const top = split(upper - 1n);
+  assert.equal(bottom.amount1, 0n);
+  assert.ok(middle.amount0 > 0n && middle.amount1 > 0n);
+  assert.ok(top.amount0 < middle.amount0 && top.amount1 > middle.amount1);
+  // All three are the same pool tick, so a tick-based split could not tell them apart.
+  const marks = [lower, (lower + upper) / 2n, upper - 1n].map(
+    (sqrtPriceX96) =>
+      lpPositionValueUsdcMulti(
+        position({ tickLower: tick, tickUpper: tick + 1 }),
+        { [POOL]: { tick, sqrtPriceX96 } },
+        fairByBase,
+      ),
+  );
+  assert.equal(new Set(marks).size, 3);
+});
+
+test("liquidityToTokenAmounts rounds down, so a burn never reads as returning more than a mint took", () => {
+  const lower = getSqrtRatioAtTick(TICK_LOWER);
+  const upper = getSqrtRatioAtTick(TICK_UPPER);
+  const sqrtPriceX96 = getSqrtRatioAtTick(TICK_IN_RANGE) + 123_456_789n;
+  const amount0 = 10n ** 18n;
+  const amount1 = 2_000_000_000n;
+  const liquidity = getLiquidityForAmounts(
+    sqrtPriceX96,
+    lower,
+    upper,
+    amount0,
+    amount1,
+  );
+  const back = liquidityToTokenAmounts({
+    liquidity,
+    sqrtPriceX96,
+    tickLower: TICK_LOWER,
+    tickUpper: TICK_UPPER,
+  });
+  assert.ok(back.amount0 <= amount0 && back.amount1 <= amount1);
 });
 
 // ---------------------------------------------------------------------------
@@ -317,7 +426,7 @@ test("lpPositionValueUsdcMulti includes uncollected fees when pool fee growth is
   const delta1 = (30_000_000n * Q128) / LIQUIDITY; // 30 USDC
   const withFees = lpPositionValueUsdcMulti(
     position({}),
-    tickByPool,
+    slot0ByPool,
     fairByBase,
     {
       [POOL]: {
@@ -327,7 +436,7 @@ test("lpPositionValueUsdcMulti includes uncollected fees when pool fee growth is
       },
     },
   );
-  const bare = lpPositionValueUsdcMulti(position({}), tickByPool, fairByBase);
+  const bare = lpPositionValueUsdcMulti(position({}), slot0ByPool, fairByBase);
   assert.ok(Math.abs(withFees - bare - (0.05 * FAIR_WETH + 30)) < 1e-3);
 });
 
@@ -346,13 +455,13 @@ test("lpPositionValueUsdcMulti nets out the position's own fee checkpoint (#21)"
   };
   const fresh = lpPositionValueUsdcMulti(
     position({}),
-    tickByPool,
+    slot0ByPool,
     fairByBase,
     feeGrowth,
   );
   const halfCollected = lpPositionValueUsdcMulti(
     position({ feeGrowthInside0LastX128: delta / 2n }),
-    tickByPool,
+    slot0ByPool,
     fairByBase,
     feeGrowth,
   );
@@ -364,15 +473,15 @@ test("lpPositionValueUsdcMulti leaves fees unmarked when no pool fee growth is s
   // than guessing, so callers that cannot batch the extra reads degrade to the pre-#21 number.
   const accrued = lpPositionValueUsdcMulti(
     position({ feeGrowthInside0LastX128: 12_345_678_901_234_567_890n }),
-    tickByPool,
+    slot0ByPool,
     fairByBase,
   );
-  const fresh = lpPositionValueUsdcMulti(position({}), tickByPool, fairByBase);
+  const fresh = lpPositionValueUsdcMulti(position({}), slot0ByPool, fairByBase);
   assert.equal(accrued, fresh);
 });
 
 test("lpPositionValueUsdc (single-price variant) matches the multi variant for WETH", () => {
-  const single = lpPositionValueUsdc(position({}), TICK_IN_RANGE, FAIR_WETH);
-  const multi = lpPositionValueUsdcMulti(position({}), tickByPool, fairByBase);
+  const single = lpPositionValueUsdc(position({}), at(TICK_IN_RANGE), FAIR_WETH);
+  const multi = lpPositionValueUsdcMulti(position({}), slot0ByPool, fairByBase);
   assert.ok(Math.abs(single - multi) < 1e-9);
 });
