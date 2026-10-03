@@ -7,7 +7,8 @@
 The rules themselves live at [ascon.dev/rules](https://ascon.dev/rules) and are the only source for
 them; the Japanese text governs. Where this guide and the rules disagree, the rules win. This guide
 only covers how to build. The [Japanese version](competition-start.md) governs this guide too; this
-one is a reference translation.
+one is a reference translation. This guide always describes the current environment; **if you have
+read it already, the [environment updates](competition-updates.en.md) page carries the diff.**
 
 **You need**: Node.js 20 or newer, [Foundry](https://book.getfoundry.sh/getting-started/installation)
 (`forge` and `anvil`), `git`, and `zip` (used to build the submission archive).
@@ -279,7 +280,7 @@ valuation block (rules §4.1). Rows the rules do not spell out say so.
 | Token balances | ETH, WETH, WBTC at the reference price; USDC at $1. DAI and eUSD at what selling everything you hold of it into its pool pays, quoted as one sale together with what the AMM, Liquity and lending rows below hold of it (when that quote does not come back, the geometric mean of $1,000 sell and buy quotes; failing that, $1). ERLST: see the LST row. Any other token (LQTY, the `launch` listings and so on) is 0 (rules §4.1) |
 | AMM liquidity | A Uniswap position is what it holds at that moment (two tokens) plus uncollected fees. LP tokens of the Balancer and Curve WETH/USDC and WBTC/USDC pools are your share of what the pool holds (stableswap LP tokens are 0) |
 | Aave | Collateral − debt at Aave's oracle prices; negative when the debt exceeds the collateral. ERLST collateral is re-counted like the LST row, at what selling it into the pool pays (capped at its value at the redemption rate) |
-| GMX | Margin + unrealised PnL from the price move (at the reference price). Accrued funding is not deducted. An order not yet executed counts as 0, its margin and execution fee included (an order placed just before the end is one) |
+| GMX | **What the position would leave if you closed it now**: margin + unrealised PnL from the price move (at the reference price), less the settlement fee, the unpaid funding and the unpaid borrowing fee. A $10,000 position comes to about $4 under its face value. **The observation's `position.pnlUsd` is still the face value**, so adding up your account from the observation reads high by that much. An order not yet executed counts as 0, its margin and execution fee included (an order placed just before the end is one) |
 | LST | ERLST in your wallet is what selling all of it into the pool pays at that moment. A requested withdrawal counts in full if it is claimable by then (you need not have claimed it), and as 0 if not (the rules do not spell this out; it is the scoring code's rule) |
 | Liquity | A Trove is its collateral (at the reference price) minus the cost of buying back its net debt (the debt without the 200 eUSD deposit) in the pool now, floored at 0 since you can walk away from the debt by abandoning the collateral. Surplus collateral left over from a redemption or liquidation counts at the reference price. The Stability Pool is your eUSD balance after absorbed liquidations, counted as part of one sale with your wallet's eUSD (the token-balance row), plus the ETH not yet withdrawn. Unclaimed LQTY staking fees count too (ETH at the reference price, eUSD as above). LQTY itself, in the wallet or staked, is 0. The environment stakes 2M LQTY, so a stake earns roughly its size over 2M of the fees. Rules §4.1 does not name CDPs; this is the scoring code's rule |
 | Assets inside a contract you deployed | 0. Scoring counts only the balances and positions your agent's own address holds, so a contract's contents are not counted even when they are WETH. Profit that passed through counts in full (the rules do not spell this out; it is the scoring code's rule) |
@@ -364,9 +365,14 @@ you, skip this section**: each item is "a problem on mainnet that does not arise
 - **An edge from arriving first.** Order within a block is by priority fee, highest first (rules §2.6;
   Anvil runs with `--order fees`). A faster line or an earlier call wins nothing — if you want the
   position, bid for it
-- **Enumerating pending orders through RPC.** With `RPC_FILTER=1`, the participant gateway refuses
-  pending transaction lists/filters and block, transaction and receipt reads with the `pending` tag.
-  `eth_getTransactionCount(address, "pending")` remains available for sender nonce management.
+- **Reading pending orders through RPC.** With `RPC_FILTER=1`, the participant gateway **answers 403
+  to the `pending` tag in any argument** -- not only block and transaction reads, but the target block
+  of `eth_call` and `eth_getBalance`, and `fromBlock` / `toBlock` inside an `eth_getLogs` object. One
+  such call in a batch rejects the whole batch. **The single exception is
+  `eth_getTransactionCount(address, "pending")`**, which a sender needs to manage its nonce.
+  `eth_getTransactionByHash` returns `null` for an unmined transaction, and an `eth_estimateGas` with
+  no block is rewritten to `latest` -- so **it no longer sees your own unmined transactions**, and
+  estimating a swap in the same block as its approve reverts.
   See the [gateway policy and measurements](../infra/rpc-gateway/README.md). This applies at the
   gateway; local runs pointed directly at Anvil do not get this filter.
 - **Rewriting the reference price or an oracle.** `PriceFeed`, the Aave aggregators and the GMX oracle
@@ -376,9 +382,9 @@ you, skip this section**: each item is "a problem on mainnet that does not arise
   follow (they come from the environment's price). Assets marked from a market — stablecoins, the LST,
   eUSD — can be moved, but the mark is the median over the previous 5 blocks (rules §4.1), and trading
   to distort a mark is a prohibited act (rules §8)
-- **Direct manipulation of chain state.** The RPC gateway answers 403 to every method outside `eth_` /
-  `net_` / `web3_` (`anvil_*` / `evm_*` / `hardhat_*` / `txpool_*` / `debug_*`;
-  `infra/rpc-gateway/README.md`). There is no way to write a balance or a storage slot, and no
+- **Direct manipulation of chain state.** The RPC gateway answers 403 to every method outside the 30
+  it permits (`anvil_*` / `evm_*` / `hardhat_*` / `txpool_*` / `debug_*`, and **an `eth_` method is
+  refused too if it is not on the list**; the list is in `infra/rpc-gateway/README.md`). There is no way to write a balance or a storage slot, and no
   `eth_sendTransaction` either — you sign locally
 - **Operator intervention mid-epoch.** During an epoch the environment does exactly this: the
   per-block reference price update, the background order flow, execution of GMX orders, and the
@@ -1070,6 +1076,7 @@ scored. A position you cannot close is valued as a position you cannot close.
 | Document | Contents |
 |---|---|
 | [ascon.dev/rules](https://ascon.dev/rules) | **the rules themselves** (the only source) |
+| [competition-updates.en.md](competition-updates.en.md) | environment updates (the diff against this guide) |
 | [writing-agents.md](guide/writing-agents.md) | strategy authoring in depth; every field of `obs` |
 | [protocols-and-actions.md](guide/protocols-and-actions.md) | the action catalogue per venue |
 | [llm-agents.md](guide/llm-agents.md) | how self-improvement works and how to configure a backend |

@@ -1,0 +1,112 @@
+# Environment updates
+
+The [starter guide](competition-start.en.md) always describes the current environment. This page lists
+the updates, newest first, so that **somebody who has already read the guide can follow the diff**
+instead of re-reading it.
+
+The rules themselves are at [ascon.dev/rules](https://ascon.dev/rules), the only source. Where this
+page and the rules disagree, the rules win.
+
+This is a reference translation; the [Japanese page](competition-updates.md) is authoritative.
+
+---
+
+## 2026-10-05 The practice environment was rebuilt, and the competition environment changed
+
+The practice environment was rebuilt. The practice standings reset at that point, and every venue
+address changed, so fetch the manifest again. The RPC URL and the chain ID did not change, and
+registrations carried over.
+
+### Three changes that stop code from working
+
+| | Change | What to do |
+|---|---|---|
+| 1 | **The `pending` tag answers 403** in any argument, not only in block and transaction reads: the target block of `eth_call` and `eth_getBalance`, and `fromBlock` / `toBlock` inside an `eth_getLogs` object. One such call in a batch rejects the whole batch. The single exception is `eth_getTransactionCount`, which a sender needs for its nonce. An `eth_estimateGas` with no block is rewritten to `latest`, so **it no longer sees your own unmined transactions** | Drop `blockTag: "pending"`. Use `eth_getLogs` for mined logs and `eth_getTransactionReceipt` to confirm inclusion. Estimating a swap in the same block as its approve reverts |
+| 2 | **GMX executes market orders only.** The keeper tries once, in the block after the order was created, and it does not call an order's `callbackContract` | A limit or stop order is never executed. Use market orders |
+| 3 | **An environment variable whose name ends in `PRIVATE_KEY` / `SECRET` / `API_KEY` / `ACCESS_KEY` / `TOKEN` / `AUTH` / `PASSWORD` / `CREDENTIAL(S)` / `MNEMONIC` does not reach `decide()`.** This applies to a hand-written `decide()` too | Rename any strategy parameter with such a name. `MY_STRATEGY_TOKEN` does not arrive; `ERIS_LAUNCH_TOKEN_BPS` does. A self-driving `run(ctx)` is unchanged |
+
+### Economics and scoring
+
+| | Change | Effect |
+|---|---|---|
+| 4 | **GMX charges a position fee**: 0.04% of the size on the side that narrows the long/short skew, 0.06% on the side that widens it. These are the values the real GMX uses on Arbitrum. Swap orders cost 0.05% and 0.07% | 8 to 12bps for a round trip. **A strategy that assumed no cost will take arbitrage that loses money** |
+| 5 | **Leverage is capped at 20x**: opening requires margin of at least 5% of the size. An order over the cap is cancelled when the keeper executes it | No position is created and none appears in the observation, so a strategy that assumes the order worked keeps running flat |
+| 6 | **A position is liquidated when its margin falls below 1% of its size.** The environment's keeper checks every position every block, at the reference price | A strategy that opens against a sharp move at maximum leverage and waits for the bounce no longer survives it |
+| 7 | **GMX is scored at what the position would leave if closed now**, less the settlement fee, the unpaid funding and the unpaid borrowing fee | A $10,000 position comes to about $4 under its face value. **The observation's `position.pnlUsd` is still the face value**, so adding up your account from the observation reads high by that much |
+| 8 | Aave's free collateral is gone. See the apology below | Collateral is the funded basket and whatever you earn by trading |
+| 9 | **An agent's gas budget is 10,000,000 gas**, per transaction and per block (it was 30,000,000). The RPC gateway answers 403 over it | Measured, 99% of an agent's transactions use under 0.9M, so an ordinary strategy is unaffected |
+| 10 | **Scoring moved to realisable value in four places.** DAI and eUSD are valued at what selling your whole holding at once would fetch; an LP position's composition is read at the scoring boundary block; a lender's backing is counted per borrower; and acting before an epoch's first scoring block no longer pays | Your numbers move if you hold any of these. For DAI and eUSD, a holding worth more than about $1,000 always comes out lower, because the curve is convex and the average fill falls below the mid. **The observation's `priceUsdc` is still the mid**, so it does not match the scored value |
+| 11 | **Value moved between registered addresses is recorded after the run** (rules §8), through five routes: ETH transfers, ERC-20 transfers, a contract a participant created, a lending market a participant created, and liquidations. **A transaction sent from a second EOA counts as yours** | **Your score does not change.** It is a record for the operator to judge. Addresses your wallet funded are followed transitively, and transactions from them are subject to the fee rule, the gas budget and the unlogged-transaction check |
+| 12 | The block explorer is read-only | If you used its hostname as a JSON-RPC endpoint, switch to the RPC URL. Browsing blocks, transactions and addresses, and the deep links, are unchanged |
+| 13 | The submission bundle's accepted shape changed (only if you are submitting) | A lock file is required, dependencies come from the registry and are pinned by hash, and an npm package that needs an install script (a native addon) cannot be used. Python dependencies need hashes and wheels. `strategy.py` is now accepted |
+
+### About Aave's free collateral (an apology)
+
+Aave's vendor test market was left active in the practice environment. Its faucet gave anybody 10,000
+tokens once, and those tokens could be supplied to Aave as collateral. Scoring sums the collateral in
+the whole account, so collateral nobody was funded with counted towards asset value.
+
+Measured, it was used: 687,584.67 test USDC and 10,090.001 test WETH were supplied, with nothing
+borrowed against them. The rebuilt environment deactivates that market and restricts the faucet to the
+operator.
+
+Those affected were contacted individually. **This is not treated as a rules violation.** The hole was
+the environment's, and a practice period is partly there to find such things. Reporting it would have
+been treated the same way.
+
+Practice standings are measured as a daily return (the day's profit over the day's opening value), so
+inflated capital worked against that measure. Nobody's standing was unfairly raised by it.
+
+### Why it was rebuilt
+
+On the chain started on 9/28 the environment daemon could not be restarted. A change that puts the
+recipient of Liquity's fees in the operator's hands added a startup check, and a running chain cannot
+satisfy it: under LQTY's own rules, the account holding the allocation cannot stake it for a year.
+
+The Aave item above cannot be closed on a running chain either. While a participant's position remains
+in one of those reserves, the startup check still refuses the chain, and the operator cannot clear
+somebody else's position.
+
+There was no route other than rebuilding, and the standings reset follows from that.
+
+### After the update
+
+1. **Fetch the manifest again** and re-read the venue addresses. If you read them from the manifest at
+   runtime, restarting is enough.
+2. **If you run backtests locally, rebuild your environment.** Without it, a run with Liquity enabled
+   will not start.
+   ```bash
+   cd deployer && npm run clean:vendors && ./scripts/setup-vendors.sh
+   cd deployer && npm run deploy -- --keep-fresh
+   npm run gen:local-constants && npm run gen:state-dump && npm run build:contracts
+   ```
+   `clean:vendors` is required if you already have the vendor trees: applying the new settings over
+   the old ones stops.
+3. **If your strategy uses GMX, revisit its costs and the leverage cap.**
+
+### Comparing with earlier results
+
+**They are not comparable.** Fees arrived, the way collateral is made changed, and scoring changed in
+four places.
+
+Local backtests are not comparable either: the same `regime#seed` is now a different world, because
+the regime went into the random-stream naming. A `--resume` onto an older matrix is refused at
+startup. If you want a comparison, take it again with the current code.
+
+### For whoever runs into them
+
+- A read that runs participant-deployed code is capped at 200,000 gas per call (2,000,000 for a
+  simulation of a trade). Over the cap the value is absent, not zero. That is why a lending market's
+  `price` and a registry entry's `oracleOwner` can be missing. Reads you make yourself through
+  `ctx.publicClient` are not capped.
+- The state directory and the logs are capped at 256 MiB each. At 80% a warning is logged once; over
+  the cap the agent's process is stopped (the run is not: you are scored on the value of what you
+  left behind). A named pipe or socket in the state directory makes that epoch start from an empty one.
+- Self-improving agents (`prompt.md`): generated code runs in its own realm; chain-derived text in the
+  revision prompt is cut at 200 characters and framed; and a `rawTx` from a strategy the model
+  installed (version 1 and later) may only address the environment's venues and registry entries, with
+  no deploys and no `transfer` family. **The `agent.ts` you wrote (version 0) is unrestricted.**
+- `npm run backtest`'s Anvil no longer has the public mnemonic's test accounts (`--accounts 0`).
+  `npm run sim:realtime` and `npm run anvil` are unchanged.
+- With `wallet: AUTO` in a roster, addresses change from run to run. `ctx.rng` is derived from the
+  address, so a strategy that uses randomness behaves differently each run.
