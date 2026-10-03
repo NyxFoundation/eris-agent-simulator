@@ -93,6 +93,11 @@ origin named in an `x-endpoint` header, so `x-endpoint: http://backend:4000` rea
 from inside the compose network (a raw transaction landed in the txpool). The browser only uses that
 route with `NEXT_PUBLIC_USE_NEXT_JS_PROXY`, which is not set here, so the template refuses it too —
 case-insensitively, like `/api`, because Next.js routes `/NODE-API/proxy` and `/API/...` the same.
+**Deploying a change to the template needs a proxy restart.** compose does not look inside the bind-mounted
+`proxy/`, so a plain `docker compose up -d` leaves the proxy serving its old config (measured; this is how the
+published explorer still answered `/api/eth-rpc` after the refusal was merged). `explorer.sh up` restarts the
+proxy every time and then fails unless `/api/eth-rpc`, `/api/v1/eth-rpc` and `/node-api/proxy` answer 403;
+`explorer.sh check` runs only that check, e.g. on the live box after a deploy.
 
 **Egress**: the only outbound dependency is contract verification through Blockscout's
 hosted eth-bytecode-db, which names canonical bytecode (Uniswap V3, Aave, …) without a
