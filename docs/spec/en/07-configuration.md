@@ -222,7 +222,11 @@ agents:
 | external | Carries `command` / `args` / `dir` / `env` (**refused, not ignored**) |
 | env | Non-string keys or values |
 
-`AUTO` derives a key deterministically as `keccak256("auto-wallet:<seed>:<agentId>")`.
+`AUTO` derives a key from the environment's secret as `HMAC-SHA256(secret, ["eris-wallet/v1", "agent", agentId])` (issue #189).
+The secret is random per process and never written anywhere, except in the practice period, which reads
+`ERIS_WALLET_SECRET_FILE` so a restart comes back to the same keys (never published). **It is never derived from
+the seed**: an agent holding its own key could search seeds until one reproduced it, and then compute every other
+agent's key and every environment wallet's.
 
 **With no roster file present**, the default is `noop` / `random` / `simple-rule`.
 

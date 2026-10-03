@@ -304,8 +304,12 @@ npm run stress:rpc -- --agents 30 --seconds 60 --write   # issue #36: does the r
 # 3. the period — in the foreground while you watch it start
 npm run sim:realtime -- --config config/practice.yaml
 
-# 4. hand out credentials, one participant at a time (the manifest itself is served; see below)
-npm run manifest -- --config config/practice.yaml --participant alice
+# 4. hand out credentials, one participant at a time (the manifest itself is served; see below).
+#    A `wallet: AUTO` key is derived from the period's wallet secret (issue #189), so this needs the
+#    same ERIS_WALLET_SECRET_FILE the coordinator runs with (.env.practice); without it the command
+#    refuses rather than print a key no run has
+ERIS_WALLET_SECRET_FILE=~/.eris-secrets/practice-wallet-secret.yaml \
+  npm run manifest -- --config config/practice.yaml --participant alice
 #    (the manifest is not handed out: participants fetch <dashboard>/runs/manifest.json, which
 #     names the gateway once ERIS_PUBLIC_RPC_URL is set. By hand, the same file:
 #     npm run manifest -- --config config/practice.yaml --public-rpc <gateway URL> --from-run runs/<period>)

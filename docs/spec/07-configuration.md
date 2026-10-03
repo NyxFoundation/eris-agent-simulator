@@ -222,7 +222,10 @@ agents:
 | external | `command` / `args` / `dir` / `env` を持つ（**黙殺せず拒否**） |
 | env | 文字列以外のキー・値 |
 
-`AUTO` の鍵は `keccak256("auto-wallet:<seed>:<agentId>")` で決定論的に導出する。
+`AUTO` の鍵は環境の秘密から `HMAC-SHA256(secret, ["eris-wallet/v1", "agent", agentId])` で導出する（issue #189）。
+secret は既定ではプロセス起動時の乱数（どこにも書かない）、練習期間だけ `ERIS_WALLET_SECRET_FILE` のファイル
+（再起動しても同じ鍵に戻るため。公開しない）。**seed からは導出しない** — 自分の鍵から seed を総当たりで逆算し、
+他の agent と環境ウォレットの鍵を計算できたため。
 
 **ロスターファイルが存在しない場合の既定**は `noop` / `random` / `simple-rule` の 3 体。
 

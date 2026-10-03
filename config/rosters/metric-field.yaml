@@ -5,7 +5,8 @@
 # `scenario` mode, so the same field has to be re-measured there: the candidates were compared over a
 # 42-interval week, and a scenario is a fraction of that.
 #
-# Every wallet is AUTO (keccak("auto-wallet:<seed>:<id>")) so the roster is self-contained -- it needs
+# Every wallet is AUTO (a key the environment makes from its own secret, core/src/walletKeys.ts) so
+# the roster is self-contained -- it needs
 # no AGENTn_PRIVATE_KEY on the machine running it, which is what lets it go to a spot box unchanged.
 #
 # Run: npm run backtest -- --scenarios <set> --agents config/rosters/metric-field.yaml
