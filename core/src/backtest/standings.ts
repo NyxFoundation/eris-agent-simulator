@@ -8,6 +8,7 @@
 // Pure. No filesystem, no chain. The CLI collects summaries and hands them here, so the standings
 // can be recomputed from a stored matrix.json without re-running anything (ADR 0017 §4).
 
+import type { V0Source } from "../scoring/endowmentV0.js";
 import {
   scoreCompetition,
   type AgentResult,
@@ -25,6 +26,9 @@ export type AgentScore = {
   // Absent when the agent was not placed in the epoch: it is then not in the population.
   pnlUsdc?: number;
   pnlSource?: PnlSource;
+  // How V_0 behind P was derived (issue #207): `endowment` when it was floored at what the
+  // environment funded, `measured` when the chain state at the first boundary stood above it.
+  v0Source?: V0Source;
   netPnlUsdc?: number;
   alphaUsdc?: number;
   initialValueUsdc?: number;

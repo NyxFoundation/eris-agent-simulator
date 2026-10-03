@@ -27,6 +27,7 @@ import {
   type RunArtifactWriter,
 } from "./logger.js";
 import type { EpochPnl } from "./scoring/epochPnl.js";
+import type { V0Source } from "./scoring/endowmentV0.js";
 
 /** What every agent's record in a segment carries, scored or not. */
 export type SegmentAgentIdentity = {
@@ -49,6 +50,11 @@ export type SegmentAgentRecord = SegmentAgentIdentity &
         netPnlUsdc: number;
         /** P of rules §4.4.1 -- V_K − V_0 over this segment's boundaries. */
         pnlUsdc: number;
+        /**
+         * How V_0 was derived (issue #207): `endowment` on the period's first boundary, where it is
+         * floored at what the environment funded; `measured` on every carried boundary after it.
+         */
+        v0Source?: V0Source;
       }
     | {
         scored: false;
@@ -75,6 +81,7 @@ export function segmentAgentRecord(
     EpochPnl,
     "pnlUsdc" | "initialValueUsdc" | "finalValueUsdc"
   > | null,
+  v0Source?: V0Source,
 ): SegmentAgentRecord {
   if (!pnl)
     return {
@@ -91,6 +98,7 @@ export function segmentAgentRecord(
     finalValueUsdc: pnl.finalValueUsdc,
     netPnlUsdc: pnl.pnlUsdc,
     pnlUsdc: pnl.pnlUsdc,
+    ...(v0Source !== undefined ? { v0Source } : {}),
   };
 }
 
@@ -116,6 +124,7 @@ export function segmentIndexAgent(
     pnlUsdc: a.pnlUsdc,
     initialValueUsdc: a.initialValueUsdc,
     finalValueUsdc: a.finalValueUsdc,
+    ...(a.v0Source !== undefined ? { v0Source: a.v0Source } : {}),
   };
 }
 
