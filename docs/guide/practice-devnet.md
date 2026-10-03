@@ -289,6 +289,32 @@ leaves no trace anyone but you can verify.
 
 ## For the operator
 
+### Before taking a running period down
+
+A venue change can leave a startup check that the running chain no longer satisfies, and finding
+that out by restarting is the expensive way: the coordinator refuses, and the only way forward may
+be a redeploy, which opens a new competition directory and resets the period's standings.
+
+```bash
+ERIS_LOCAL_DEPLOY=1 npm run check:chain-readiness -- --rpc http://127.0.0.1:8545
+```
+
+It reads. It sends nothing and needs no key, and it calls the same functions the coordinator calls
+at startup, so a PASS here is that check passing rather than something resembling it. Exit 0 means
+a coordinator can start on the chain, 1 that a check refuses it, 2 that the probe could not read.
+
+Two checks can refuse a chain that predates the change that introduced them:
+
+| check | fixable on the running chain? |
+|---|---|
+| Aave's vendor test market is closed (issue #190) | **Usually.** `cd deployer && RPC_URL=<node> npm run close:aave-vendor`. Not when a participant still holds a position in one of those reserves: a frozen reserve passes only when nobody but the treasury is left in it, and the operator cannot clear somebody else's position |
+| The environment holds an LQTY stake (issue #240) | **No.** `LQTYToken` refuses the multisig as a staking sender for a year, and on a deployment that predates this the multisig is the deployer — the account that holds the LQTY. A redeploy is the only route |
+
+GMX's fee, leverage, impact, borrowing and funding settings are not startup checks, so a chain
+carrying the old ones starts and runs. They are all in GMX `Config`'s `allowedBaseKeys`, so the
+config keeper can write the competition's values on a running chain; the probe says so rather than
+reading every market's keys.
+
 ### Running a period
 
 ```bash

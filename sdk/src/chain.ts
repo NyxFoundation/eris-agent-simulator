@@ -273,6 +273,21 @@ export async function setEthBalance(
   } as AnvilRequest);
 }
 
+export async function setNonce(
+  publicClient: PublicClient,
+  address: Address,
+  nonce: number,
+): Promise<void> {
+  requireDevNode(
+    "setNonce",
+    "a real chain is not rewound, so a nonce it has used is never valid again",
+  );
+  await publicClient.request({
+    method: "anvil_setNonce",
+    params: [address, `0x${nonce.toString(16)}`],
+  } as AnvilRequest);
+}
+
 export async function impersonate(
   publicClient: PublicClient,
   address: Address,
