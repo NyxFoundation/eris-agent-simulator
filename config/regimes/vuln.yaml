@@ -120,6 +120,16 @@ vuln:
       rugBps: [3000, 6000]
       rugThresholdFrac: [0.04, 0.08]
 
+# On in every official regime, not only `launch`: the agent's config carries this section and the
+# runtime is handed the registry's address, so a regime that left it off would be told apart from
+# `launch` at the first block (and a participant could probe it by deploying a token and watching
+# whether it gets listed). Same values as launch.yaml; test/regimeStartInvariance.test.ts holds them equal.
+agentMarkets:
+  enabled: true
+  registrationsPerBlock: 8
+  maxTxGas: "30000000"
+  maxAgentBlockGas: "30000000"
+
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY

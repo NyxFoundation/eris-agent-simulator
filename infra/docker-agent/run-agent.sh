@@ -334,8 +334,9 @@ if [ -n "$VIEW_HOST" ] && [ -n "${ERIS_RUN_DIR:-}" ] && [ -z "${ERIS_RUN_DIR_POI
   #   /eris/run/agents/<id>.jsonl    <- runs/<id>/agents/<id>.jsonl       read-write, this agent's log
   #   /eris/run/agents/<id>.llm.jsonl                                      the same, when
   #                                     ERIS_IMPROVE_LOG_CALLS=1
-  #   /eris/run/disclosures          <- runs/<id>/disclosures/            read-only, when the run
-  #                                     publishes any (ADR 0014)
+  #   /eris/run/disclosures          <- runs/<id>/disclosures/            read-only. The coordinator
+  #                                     creates it in every run, so its presence does not name the
+  #                                     vuln regime; it fills only as pools appear (ADR 0014 Amd. 2)
   #
   # The log files are the host's own, so runs/<id>/agents/<id>.jsonl is where the dashboard, the
   # agents-ready wait and the post-run checks read it, live, as before. A mountpoint inside a
