@@ -14,10 +14,16 @@ import {
   type StrandedFlow,
 } from "../sdk/src/agentMarkets.js";
 import {
+  BORROWER_PAGE,
   backedFraction,
   lendingAdapter,
+  lendingSingleton,
+  liveLendingValueUsdc,
   marketIsEmpty,
+  recoverableDebt,
+  setLendingSingleton,
 } from "../sdk/src/protocols/lending.js";
+import { TOKENS } from "../sdk/src/constants.js";
 import {
   registryKindIndex,
   registryKindOf,
@@ -178,6 +184,196 @@ test("half-backed debt marks the supplier at half", () => {
     5_000n,
   );
   assert.equal(fraction, WAD / 2n);
+});
+
+test("one borrower's surplus collateral does not back another borrower's debt", () => {
+  // The M1 finding. A posts 10 WETH with no debt; B borrows 30,000 against dust. Netted at the
+  // market level the 10 WETH "covers" B's debt, but a liquidation of B seizes only B's dust -- A's
+  // WETH is A's, withdrawable at will, and already counted as A's equity.
+  const toLoan = (c: bigint) => c * 3n; // 1 collateral unit = 3 loan units
+  assert.equal(
+    recoverableDebt(
+      [
+        { borrowAssets: 0n, collateral: 10_000n }, // A: surplus, no debt
+        { borrowAssets: 30_000n, collateral: 1n }, // B: the unbacked loan
+      ],
+      toLoan,
+    ),
+    3n,
+  );
+});
+
+test("recoverable debt is capped per borrower, and unpriced collateral recovers nothing", () => {
+  const toLoan = (c: bigint) => c;
+  assert.equal(
+    recoverableDebt(
+      [
+        { borrowAssets: 100n, collateral: 500n }, // over-collateralized: recovers its debt, no more
+        { borrowAssets: 100n, collateral: 40n }, // under: recovers its collateral
+      ],
+      toLoan,
+    ),
+    140n,
+  );
+  assert.equal(
+    recoverableDebt([{ borrowAssets: 100n, collateral: 500n }], () => undefined),
+    0n,
+  );
+});
+
+// Drive the staged valuation with canned reads: the shape the scorer sees, without a chain.
+async function runLendingValuation(
+  stages: Array<(reads: Array<{ functionName: string; args?: readonly unknown[] }>) => unknown[]>,
+  agents: Array<{ id: string; address: Address }>,
+) {
+  const previous = lendingSingleton();
+  setLendingSingleton("0x00000000000000000000000000000000000000aa" as Address);
+  try {
+    const run = lendingAdapter.valueAtBlock!({
+      publicClient: undefined as never,
+      blockNumber: 1,
+      horizonBlock: 1,
+      agents,
+      activeStables: [],
+      fairByBase: () => ({ WETH: 3000 }),
+      stablePrices: () => ({ byToken: {}, unquoted: [], quotes: [] }),
+    });
+    let step = await run.next();
+    const seen: string[][] = [];
+    for (const stage of stages) {
+      if (step.done) break;
+      const reads = step.value as Array<{ functionName: string; args?: readonly unknown[] }>;
+      seen.push(reads.map((r) => r.functionName));
+      step = await run.next(stage(reads));
+    }
+    assert.ok(step.done, "valuation asked for more stages than the test supplied");
+    return { values: step.value, seen };
+  } finally {
+    setLendingSingleton(previous);
+  }
+}
+
+const USDC_ADDR = TOKENS.USDC.address;
+const WETH_ADDR = TOKENS.WETH.address;
+const MARKET_ID = `0x${"11".repeat(32)}` as const;
+const NOBODY = "0x0000000000000000000000000000000000000000" as Address;
+const PARAMS = [USDC_ADDR, WETH_ADDR, NOBODY, NOBODY, 0n];
+const LENDER = { id: "lender", address: "0x00000000000000000000000000000000000000a1" as Address };
+const DRAINER = { id: "drainer", address: "0x00000000000000000000000000000000000000b2" as Address };
+const usdc = (n: number) => BigInt(n) * 10n ** 6n;
+const weth = (n: number) => BigInt(Math.round(n * 1e6)) * 10n ** 12n;
+
+test("two addresses of one participant cannot fabricate a supply mark (M1)", async () => {
+  // Lender supplies 30,000 USDC and parks 10 WETH ($30,000) with no debt. Drainer borrows the
+  // 30,000 against 0.001 WETH through an oracle the market trusts and the environment does not.
+  // Before: the market's 10.001 WETH "backed" the debt, the lender read 60,000 and the drainer kept
+  // 30,000 -- +30,000 from nowhere. After: the lender's supply recovers only the drainer's dust.
+  const { values, seen } = await runLendingValuation(
+    [
+      () => [[MARKET_ID]],
+      () => [
+        PARAMS,
+        [usdc(30_000), 0n, usdc(30_000), 0n, 1n, weth(10.001)],
+      ],
+      () => [
+        [usdc(30_000), 0n, weth(10)], // lender
+        [0n, usdc(30_000), weth(0.001)], // drainer
+        [[DRAINER.address], [usdc(30_000)], [weth(0.001)], 1n],
+      ],
+    ],
+    [LENDER, DRAINER],
+  );
+  assert.deepEqual(seen[2], ["expectedPosition", "expectedPosition", "borrowerPositionsFrom"]);
+  // 10 WETH of own collateral + the 3 USDC the drainer's dust can repay.
+  assert.ok(Math.abs(values.lender.valueUsdc - 30_003) < 0.01, `${values.lender.valueUsdc}`);
+  assert.equal(values.drainer.valueUsdc, 0);
+});
+
+test("an honestly collateralized borrower still backs the supply in full", async () => {
+  const { values } = await runLendingValuation(
+    [
+      () => [[MARKET_ID]],
+      () => [PARAMS, [usdc(30_000), 0n, usdc(15_000), 0n, 1n, weth(10)]],
+      () => [
+        [usdc(30_000), 0n, 0n],
+        [0n, usdc(15_000), weth(10)],
+        [[DRAINER.address], [usdc(15_000)], [weth(10)], 1n],
+      ],
+    ],
+    [LENDER, DRAINER],
+  );
+  assert.ok(Math.abs(values.lender.valueUsdc - 30_000) < 0.01, `${values.lender.valueUsdc}`);
+  assert.ok(Math.abs(values.drainer.valueUsdc - 15_000) < 0.01, `${values.drainer.valueUsdc}`);
+});
+
+test("a market with more debtors than a page reads the next page", async () => {
+  const total = BigInt(BORROWER_PAGE + 1);
+  const { values, seen } = await runLendingValuation(
+    [
+      () => [[MARKET_ID]],
+      () => [PARAMS, [usdc(30_000), 0n, usdc(30_000), 0n, 1n, weth(20)]],
+      // First page: dust debtors with nothing behind them.
+      () => [
+        [usdc(30_000), 0n, 0n],
+        [0n, 0n, 0n],
+        [[DRAINER.address], [1n], [0n], total],
+      ],
+      // Second page: the real borrower, fully collateralized.
+      (reads) => {
+        assert.equal(reads[0].args?.[1], BigInt(BORROWER_PAGE));
+        const outsider = "0x00000000000000000000000000000000000000c3" as Address;
+        return [[[outsider], [usdc(30_000) - 1n], [weth(20)], total]];
+      },
+    ],
+    [LENDER, DRAINER],
+  );
+  assert.deepEqual(seen[3], ["borrowerPositionsFrom"]);
+  assert.ok(Math.abs(values.lender.valueUsdc - 30_000) < 0.01, `${values.lender.valueUsdc}`);
+});
+
+test("the end-of-run path applies the same per-borrower rule (M1)", async () => {
+  // Same market as the staged test, valued one agent at a time the way netPnlUsdc is.
+  const market = {
+    totalSupplyAssets: usdc(30_000),
+    totalSupplyShares: 0n,
+    totalBorrowAssets: usdc(30_000),
+    totalBorrowShares: 0n,
+    lastUpdate: 1n,
+    totalCollateralAssets: weth(10.001),
+  };
+  const state = {
+    singleton: "0x00000000000000000000000000000000000000aa" as Address,
+    marketIds: [MARKET_ID],
+    paramsById: {
+      [MARKET_ID]: {
+        loanToken: USDC_ADDR,
+        collateralToken: WETH_ADDR,
+        oracle: NOBODY,
+        irm: NOBODY,
+        lltv: 0n,
+      },
+    },
+    totalsById: { [MARKET_ID]: market },
+    priceById: {},
+    oracleOwnerById: {},
+    dropped: 0,
+  };
+  const pages: unknown[][] = [];
+  const ctx = {
+    fairPrices: { WETH: 3000 },
+    publicClient: {
+      multicall: async () => [
+        { status: "success", result: [usdc(30_000), 0n, weth(10)] },
+      ],
+      readContract: async (req: { args: readonly unknown[] }) => {
+        pages.push([...req.args]);
+        return [[DRAINER.address], [usdc(30_000)], [weth(0.001)], 1n];
+      },
+    },
+  };
+  const value = await liveLendingValueUsdc(ctx as never, LENDER.address, state, 3000);
+  assert.equal(pages.length, 1);
+  assert.ok(Math.abs(value - 30_003) < 0.01, `${value}`);
 });
 
 // ---------------------------------------------------------------------------
