@@ -2,15 +2,14 @@
 //
 // The coordinator writes, per agent, how V_0 was derived (`v0Source`) and the numbers behind it:
 // the V_0 P used, the chain state at the first boundary, the endowment at that boundary's marks.
-// scoresFromSummary turns a gap between the last two into a flag (the path the issue names), and a
-// pnlUsdc − netPnlUsdc that sits off the field's constant into another (any path it does not).
-// Neither changes P: flags are for the operator to read, not for the arithmetic.
+// scoresFromSummary turns a gap between the last two into a flag -- the path the issue names, read
+// off one agent's own numbers. It does not change P: flags are for the operator to read, not for
+// the arithmetic. A second detector off pnlUsdc − netPnlUsdc was tried and removed; scenarioScores
+// says why.
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
   scoresFromSummary,
-  PNL_GAP_TOLERANCE_FRAC,
-  PNL_GAP_TOLERANCE_USDC,
   type AgentSummary,
   type RunSummary,
 } from "../core/src/backtest/scenarioScores.js";
@@ -100,85 +99,22 @@ test("a run recorded before the field has no V_0 numbers and raises no V_0 flag"
   assert.equal(scores[0].v0Source, undefined);
 });
 
-test("pnlUsdc − netPnlUsdc off the field's constant is flagged, whatever moved it", () => {
-  // The same attack seen through the other detector: a V_0 that is 70k too low makes P 70k too
-  // high while netPnlUsdc (off the endowment) is honest, so this agent's difference sits 70k off
-  // the field's. Nothing here reads the v0* fields.
-  const bypass: AgentSummary = {
-    id: "bypass",
-    pnlUsdc: 50 + 70_000,
-    netPnlUsdc: 50 - 150,
-    initialValueUsdc: BASKET + 150,
-    finalValueUsdc: BASKET + 150 + 50,
-  };
-  const scores = scoresFromSummary(
-    summary([bypass, honest("a", 100), honest("b", -20), honest("c", 5)]),
-    [],
-  );
-  const flags = flagsOf(scores, "bypass");
-  assert.equal(flags.length, 1, flags.join("\n"));
-  assert.match(
-    flags[0],
-    /^pnlUsdc − netPnlUsdc is 70,000 USDC off the field's constant \(70,150 vs median 150\)/,
-  );
-  for (const id of ["a", "b", "c"]) assert.equal(flagsOf(scores, id).length, 0);
-});
-
-test("the field's tolerance is for V_K read noise, and needs a field to be a constant", () => {
-  // 2% of the basket: three blocks of fair drift on a full basket in a stress tail stays inside it.
-  assert.equal(PNL_GAP_TOLERANCE_FRAC, 0.02);
-  assert.equal(PNL_GAP_TOLERANCE_USDC, 100);
-  const within = scoresFromSummary(
-    summary([honest("a", 100, 900), honest("b", -20, -900), honest("c", 5), honest("d", 1)]),
-    [],
-  );
-  for (const s of within) assert.equal(s.flags, undefined, `${s.id}: ${s.flags}`);
-  const beyond = scoresFromSummary(
-    summary([honest("a", 100, 2_000), honest("b", -20), honest("c", 5), honest("d", 1)]),
-    [],
-  );
-  assert.equal(flagsOf(beyond, "a").length, 1);
-  // Two agents: a median of two numbers is not a field constant, so nothing is said.
-  const two = scoresFromSummary(
-    summary([honest("a", 100, 5_000), honest("b", -20)]),
-    [],
-  );
+test("V_K read noise raises no flag: the one detector reads V_0, not the field", () => {
+  // The field-constant detector is gone (see scenarioScores.ts): netPnlUsdc and P read different
+  // valuations, so the difference is not a constant for anything but pure spot, and both bands
+  // tried flagged honest play. What remains compares one agent's measured V_0 against its own
+  // endowment, so noise at V_K -- however large, and whatever the rest of the field holds -- says
+  // nothing about V_0 and raises nothing.
+  for (const noise of [900, -900, 2_000, 50_000]) {
+    const scores = scoresFromSummary(
+      summary([honest("a", 100, noise), honest("b", -20), honest("c", 5), honest("d", 1)]),
+      [],
+    );
+    for (const s of scores) assert.equal(s.flags, undefined, `noise ${noise}, ${s.id}`);
+  }
+  // And a field of two, which has no median to speak of, is no different.
+  const two = scoresFromSummary(summary([honest("a", 100, 5_000), honest("b", -20)]), []);
   for (const s of two) assert.equal(s.flags, undefined, `${s.id}: ${s.flags}`);
 });
 
-test("a field carrying haircut positions widens its own band instead of flagging itself", () => {
-  // The two numbers do not read the same valuation: netPnlUsdc sums the face mark at the last
-  // block, P sums what the holding could be realized for off the boundary series. Every position
-  // whose two marks differ -- an LST share against par, a Trove, a lending position, an LP, and a
-  // market-priced stable at the holder's own size against the probe's mid (#205) -- separates them
-  // by its own haircut. A fixed 2% band called that an anomaly: 2,546 USDC on the depeg field that
-  // motivated #205 is outside 1,520 and fires on the arbitrageur doing exactly what the regime
-  // rewards. The band is the field's own dispersion, so the same field absorbs it.
-  const haircut = (id: string, pnl: number, gap: number): AgentSummary => ({
-    ...honest(id, pnl),
-    netPnlUsdc: pnl - 150 - gap,
-    v0Source: "endowment",
-  });
-  const field = [
-    haircut("peg-arb", 300, 2_546),
-    haircut("peg-arb-eager", 260, 2_100),
-    haircut("lst-carry", -200, 1_800),
-    honest("venue-arb", 120),
-    honest("multi-arb", 40),
-    honest("noop", 0),
-  ];
-  const scores = scoresFromSummary(summary(field), []);
-  for (const a of field) assert.deepEqual(flagsOf(scores, a.id), [], a.id);
 
-  // The attack still steps outside a band that wide: the endowment is 73,000, the field's MAD here
-  // is a couple of thousand.
-  const moved: AgentSummary = {
-    ...honest("moved", 50),
-    pnlUsdc: 50 + 70_000,
-    netPnlUsdc: 50 - 150,
-  };
-  const withAttack = scoresFromSummary(summary([...field, moved]), []);
-  assert.equal(flagsOf(withAttack, "moved").length, 1);
-  assert.match(flagsOf(withAttack, "moved")[0], /off the field's constant/);
-  for (const a of field) assert.deepEqual(flagsOf(withAttack, a.id), [], a.id);
-});

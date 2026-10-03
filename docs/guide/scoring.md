@@ -61,8 +61,9 @@ boundary series. Seven details are decisions, not formalities:
   before, and the live scorer and the post-run sweep apply the same rule, so
   `interval_series_agreement` still compares like with like. `agents[].v0Source` says which side
   V_0 came from, with `v0Usdc` / `v0MeasuredUsdc` / `v0EndowmentUsdc` beside it; a matrix flags an
-  agent whose measured V_0 sits more than 0.1% off its endowment, and one whose
-  `pnlUsdc − netPnlUsdc` sits more than 2% of the basket off the field's constant.
+  agent whose measured V_0 sits more than 0.1% off its endowment. Where the run's first block was
+  not read at all, V_0 has no floor under it and `interval_v0_floor_skipped` says so -- that flag
+  cannot fire without the endowment V_0 the floor produces.
 - **Ranking at two decimals**, ties broken by the std of the agent's own T series, then its worst
   epoch, then its submission time (§4.6).
 

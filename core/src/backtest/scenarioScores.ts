@@ -33,77 +33,27 @@ export type AgentSummary = {
   unloggedTxCount?: number;
 };
 
-// pnlUsdc − netPnlUsdc is near-constant across a field that started with the same basket: P marks
-// V_0 at the first boundary and netPnlUsdc marks the same endowment at the final prices, so the two
-// differ by endowment × (final − opening fair) for everyone. An agent whose difference sits far off
-// the field's had a V_0 that was not its endowment, by whatever path (issue #207): the direct check
-// below covers the one path that is known, this covers the ones that are not.
+// There is no second detector off `pnlUsdc − netPnlUsdc`. The idea was that the difference is a
+// field constant -- P marks V_0 at the first boundary, netPnlUsdc marks the same endowment at the
+// final prices -- so an agent sitting off it had a V_0 that was not its endowment by some path the
+// direct check below does not name. The premise is false. The two numbers read different
+// valuations: netPnlUsdc sums `adapter.valueUsdc` (the face mark) at the last block, while P sums
+// `liquidatableValueUsdc` off the boundary series (ADR 0022 Amendment 1). Every position whose two
+// marks differ -- an LST share against its par, a Trove, a lending position, an LP, a
+// market-priced stable at the holder's own size against the probe's mid -- separates them by its
+// own haircut, which is the normal state of anything that is not pure spot.
 //
-// "Near" is doing work, and the tolerance has to come from the field rather than from a guess. The
-// two numbers do not read the same valuation: netPnlUsdc sums `adapter.valueUsdc` (the face mark)
-// at the last block, while P sums `liquidatableValueUsdc` off the boundary series (what the holding
-// could be realized for, ADR 0022 Amendment 1). Anything whose two marks differ -- an LST share
-// against its par, a Trove, a lending position, an LP, and since #205 a market-priced stable at the
-// holder's own size against the probe's mid -- separates the two by its own haircut. That is a real
-// number about the position, not a sign of anything, and it is the normal state of most strategies
-// that are not pure spot.
+// Two bands were tried. A fixed 2% of the basket flagged the depeg field's own arbitrageur (2,546
+// USDC against a 1,520 band) every run. Taking the band from the field's median absolute deviation
+// held only where haircut holders are a majority: measured on the real module, adding one spot
+// agent to a 3-of-6 field put the flag back on three honest agents, and a 25-agent roster needs
+// more than 13 haircut holders before the band moves at all. A flag that is on for honest play is
+// worse than no flag -- it is read as an accusation, and the operator learns to ignore the field.
 //
-// So the band is the field's own dispersion: the median gap, plus the larger of a fixed floor, a
-// fraction of the basket, and a multiple of the median absolute deviation of the gaps. A field in
-// which several agents carry haircut positions widens its own band and none of them is flagged; an
-// agent that moved its endowment before the bell sits outside a band built from everyone else.
-// This check is the second net either way -- the V_0-against-endowment check below is the one that
-// names the attack, and it does not depend on the field at all.
-export const PNL_GAP_TOLERANCE_FRAC = 0.02;
-export const PNL_GAP_TOLERANCE_USDC = 100;
-// Multiple of the gaps' MAD. 4 sits above the dispersion a mixed field produces on its own and
-// below the endowment-sized step the attack makes.
-export const PNL_GAP_MAD_MULT = 4;
-// Fewer agents than this and the median is not a field constant, it is one agent's number.
-const PNL_GAP_MIN_FIELD = 3;
-
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1
-    ? sorted[mid]
-    : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-// The field's constant and its tolerance, or undefined when the field is too small to have one.
-function pnlGapReference(
-  agents: readonly AgentSummary[],
-): { medianGap: number; tolerance: number } | undefined {
-  const gaps: number[] = [];
-  const scales: number[] = [];
-  for (const a of agents) {
-    if (
-      typeof a.pnlUsdc !== "number" ||
-      typeof a.netPnlUsdc !== "number" ||
-      !Number.isFinite(a.pnlUsdc) ||
-      !Number.isFinite(a.netPnlUsdc)
-    )
-      continue;
-    gaps.push(a.pnlUsdc - a.netPnlUsdc);
-    const scale = a.v0EndowmentUsdc ?? a.initialValueUsdc ?? a.v0Usdc;
-    if (typeof scale === "number" && Number.isFinite(scale))
-      scales.push(Math.abs(scale));
-  }
-  if (gaps.length < PNL_GAP_MIN_FIELD) return undefined;
-  const scale = scales.length > 0 ? median(scales) : 0;
-  const medianGap = median(gaps);
-  // Median absolute deviation: the field's own spread, which a mixed field of haircut positions
-  // produces without anybody doing anything wrong.
-  const mad = median(gaps.map((g) => Math.abs(g - medianGap)));
-  return {
-    medianGap,
-    tolerance: Math.max(
-      PNL_GAP_TOLERANCE_USDC,
-      scale * PNL_GAP_TOLERANCE_FRAC,
-      mad * PNL_GAP_MAD_MULT,
-    ),
-  };
-}
+// What names the attack is the check below: the chain's V_0 at the first boundary against what the
+// environment funded, both at that boundary's marks. It reads one agent's own numbers and does not
+// depend on the field. `interval_v0_floor_skipped` covers the one epoch where that check cannot
+// fire because the floor was never applied.
 
 const usdc = (n: number): string =>
   n.toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -147,7 +97,6 @@ export function scoresFromSummary(
   const reported = new Map(summary.agents.map((a) => [a.id, a]));
   const ids =
     expectedAgentIds.length > 0 ? expectedAgentIds : [...reported.keys()];
-  const gapReference = pnlGapReference(summary.agents);
   return ids.map((id) => {
     const agent = reported.get(id);
     if (!agent)
@@ -186,21 +135,6 @@ export function scoresFromSummary(
                 `(${usdc(agent.v0MeasuredUsdc)} vs ${usdc(agent.v0EndowmentUsdc)}): value the ` +
                 "environment did not fund was there before the epoch's first boundary; V_0 was taken " +
                 "as measured (issue #207)",
-        );
-    }
-    // Issue #207, any other path: the field's pnlUsdc − netPnlUsdc constant (see pnlGapReference).
-    if (
-      gapReference &&
-      typeof agent.pnlUsdc === "number" &&
-      typeof agent.netPnlUsdc === "number"
-    ) {
-      const gap = agent.pnlUsdc - agent.netPnlUsdc;
-      const off = gap - gapReference.medianGap;
-      if (Math.abs(off) > gapReference.tolerance)
-        flags.push(
-          `pnlUsdc − netPnlUsdc is ${usdc(Math.abs(off))} USDC off the field's constant ` +
-            `(${usdc(gap)} vs median ${usdc(gapReference.medianGap)}): V_0 and the endowment ` +
-            "diverged by some path (issue #207)",
         );
     }
     // P off the epoch's two boundaries when the run recorded it; a run from before that field marks

@@ -71,8 +71,9 @@ Score(a)  = Σ_{s∈S} w_s T(a, s) / Σ_{s∈S} w_s      S = 有効かつ σ_s >
   `interval_series_agreement` は変わらない。α の最初の断面も同じ下限
 - **記録**: `summary.json` の `agents[].v0Source`（`endowment` / `measured`）/ `v0Usdc` / `v0MeasuredUsdc` /
   `v0EndowmentUsdc`、`intervals.jsonl` 先頭行の `v0*ByAgent`、乖離が許容（0.1%）を超えた agent は
-  `interval_v0_endowment_gap`。`matrix.json` の `flags` に実測と配布の乖離（既知の経路）と、`pnlUsdc − netPnlUsdc`
-  の場の定数からの外れ（2%。未知の経路）を出す。flags は P を変えない
+  `interval_v0_endowment_gap`。`matrix.json` の `flags` に実測と配布の乖離（0.1%）を出す。flags は P を変えない。
+  **`pnlUsdc − netPnlUsdc` の場の定数からの外れは検出器にしない** — 2 つは別の評価を読む（netPnlUsdc は額面、
+  P は換金可能額）ので差は純 spot 以外では定数にならず、固定 2% も中央絶対偏差ベースの帯も正直な戦略に立った
 - **T は不変**。全員同じ配布なら定数差（上の「`netPnlUsdc` とは場全体で定数差」と同じ議論）で、実測 V_0 を
   使う理由が無かった
 
