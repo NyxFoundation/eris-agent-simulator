@@ -32,7 +32,7 @@
  *
  * Env:
  *   ERIS_BASIS_EDGE_BPS          safety margin over the modelled cost (default 15)
- *   ERIS_BASIS_GMX_COST_BPS      GMX round trip (default 0 -- measured: no fee or impact factor)
+ *   ERIS_BASIS_GMX_COST_BPS      GMX round trip (default 12 = the 0.06% position fee, both sides)
  *   ERIS_BASIS_ORDER_COST_ETH    ETH kept per order after the execution-fee refund (default 0.0001)
  *   ERIS_BASIS_MIN_SIZE_BPS      floor on the budget fraction a leg takes (default 1000 = 10%)
  *   ERIS_BASIS_MAX_SIZE_BPS      ceiling on it (default 5000 = 50%)
@@ -53,11 +53,13 @@ import { marketViews, type MarketView } from "../lib/markets.js";
 
 // Safety margin on top of the *measured* costs below, for what the cost model does not name.
 const SAFETY_BPS = Number(process.env.ERIS_BASIS_EDGE_BPS ?? "15");
-// The GMX round trip, in bps of notional. Read off the chain rather than assumed: POSITION_FEE_FACTOR
-// and POSITION_IMPACT_FACTOR are 0 in the DataStore, so opening and closing the perp costs nothing
-// but the execution fee, which is priced separately because it is flat. (FUNDING_FACTOR is no
-// longer 0 -- it is priced per block by fundingCarryBpsPerBlock, not here, because it is a rate.)
-const GMX_ROUNDTRIP_BPS = Number(process.env.ERIS_BASIS_GMX_COST_BPS ?? "0");
+// The GMX round trip, in bps of notional. The deploy carries arbitrum's position fees: 0.04% for an
+// order that narrows the long/short skew, 0.06% for one that widens it. Charged at the higher rate
+// on both sides because the hedge cannot know which side of the skew it will land on. Price impact
+// at this deploy's sizes is well under a bp and is left to the safety margin; the execution fee is
+// priced separately because it is flat. (Funding is priced per block by fundingCarryBpsPerBlock,
+// not here, because it is a rate.)
+const GMX_ROUNDTRIP_BPS = Number(process.env.ERIS_BASIS_GMX_COST_BPS ?? "12");
 // What one GMX order actually costs, in ETH. The order carries a 0.03 ETH execution fee, but
 // GasUtils.payExecutionFee pays the keeper only its gas and refunds the remainder, so almost none
 // of it is spent. Measured by differencing agents inside one run rather than assumed: an agent
@@ -241,7 +243,7 @@ const BLOCK_SECONDS = Number(process.env.ERIS_BASIS_BLOCK_SECONDS ?? "2");
  * The AMM fee and impact are already inside `quoteOf` (it returns executable prices), so adding
  * them here would double count. What is left is the perp side and the delay:
  *
- *   - the GMX round trip (measured 0 -- no fee factor, no impact factor)
+ *   - the GMX round trip (the position fee on both legs; see GMX_ROUNDTRIP_BPS)
  *   - the execution fee, flat per order, so its bps depend on how big the leg is
  *   - the keeper delay: the hedge lands about two blocks after the AMM leg, and the fair price
  *     moves in between. Estimated from the run's own recent fair prices rather than assumed, so a
