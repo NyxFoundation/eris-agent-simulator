@@ -1014,6 +1014,12 @@ const en = {
     "Participant guide",
   "overview.links.updatesDoc":
     "Environment updates",
+  "updates.toc":
+    "On this page",
+  "updates.source":
+    "This page is docs/competition-updates.md in the repository. Open it there.",
+  "nav.updates":
+    "Updates",
   "overview.links.repo":
     "SDK repository (GitHub)",
   "overview.links.rules":
@@ -2123,6 +2129,12 @@ const ja: Record<MessageKey, string> = {
     "参加者ガイド",
   "overview.links.updatesDoc":
     "環境の更新履歴",
+  "updates.toc":
+    "このページの見出し",
+  "updates.source":
+    "このページの本文は、リポジトリの docs/competition-updates.md です。元のファイルを開く。",
+  "nav.updates":
+    "更新履歴",
   "overview.links.repo":
     "SDK のリポジトリ（GitHub）",
   "overview.links.rules":

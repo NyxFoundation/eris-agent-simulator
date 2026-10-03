@@ -29,7 +29,12 @@ import { useNow } from "@/lib/useNow";
 import { navigate } from "@/navigation";
 
 export type NavKey =
-  "overview" | "standings" | "scenario" | "markets" | "explorer";
+  | "overview"
+  | "standings"
+  | "scenario"
+  | "markets"
+  | "explorer"
+  | "updates";
 
 type NavItem = { key: NavKey; label: string; path: string };
 
@@ -52,6 +57,9 @@ function navItems(): NavItem[] {
     { key: "scenario", label: t("nav.scenario"), path: "/scenario" },
     { key: "markets", label: t("nav.markets"), path: "/markets" },
     { key: "explorer", label: t("nav.explorer"), path: "/explorer" },
+    // Last, because it is read once after a change rather than every visit -- but in the nav,
+    // because a participant who missed the announcement has nowhere else to find the diff.
+    { key: "updates", label: t("nav.updates"), path: "/updates" },
   ];
 }
 
