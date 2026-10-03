@@ -1012,6 +1012,8 @@ const en = {
     "How to build an agent, test it on your own machine, and submit it.",
   "overview.links.guideDoc":
     "Participant guide",
+  "overview.links.updatesDoc":
+    "Environment updates",
   "overview.links.repo":
     "SDK repository (GitHub)",
   "overview.links.rules":
@@ -2119,6 +2121,8 @@ const ja: Record<MessageKey, string> = {
     "エージェントの作り方、手元での試し方、提出の方法。",
   "overview.links.guideDoc":
     "参加者ガイド",
+  "overview.links.updatesDoc":
+    "環境の更新履歴",
   "overview.links.repo":
     "SDK のリポジトリ（GitHub）",
   "overview.links.rules":

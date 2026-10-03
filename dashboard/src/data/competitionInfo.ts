@@ -226,6 +226,16 @@ export function guideUrl(locale: Locale): string {
   return `${REPO_URL}/blob/main/docs/competition-start${locale === "en" ? ".en" : ""}.md`;
 }
 
+/**
+ * The environment's update history, in the viewer's language. The guide always describes the current
+ * environment, so somebody who read it last week has no way to see what moved; this page is that
+ * diff. Served from the repository like the guide rather than rendered here: the dashboard has no
+ * Markdown page, and a second copy of a notice is a second thing to keep correct.
+ */
+export function updatesUrl(locale: Locale): string {
+  return `${REPO_URL}/blob/main/docs/competition-updates${locale === "en" ? ".en" : ""}.md`;
+}
+
 // ---- how to submit (rules §1, §2.1, §2.2, §2.7; the participant guide) ----
 
 /**
