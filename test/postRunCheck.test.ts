@@ -156,7 +156,10 @@ test("blocks.csv: maxFeePerGasWei is appended last, so every existing column kee
   assert.equal(BLOCKS_CSV_INDEX.priorityFeeWei, 5);
   assert.equal(BLOCKS_CSV_INDEX.method, 12);
   assert.equal(BLOCKS_CSV_INDEX.gasUsed, 13);
-  assert.equal(BLOCKS_CSV_INDEX.maxFeePerGasWei, BLOCKS_CSV_COLUMNS.length - 1);
+  // Appended-last columns, in order: the fee column (this test), then issue #208's `to` / `valueWei`.
+  assert.equal(BLOCKS_CSV_INDEX.maxFeePerGasWei, BLOCKS_CSV_COLUMNS.length - 3);
+  assert.equal(BLOCKS_CSV_INDEX.to, BLOCKS_CSV_COLUMNS.length - 2);
+  assert.equal(BLOCKS_CSV_INDEX.valueWei, BLOCKS_CSV_COLUMNS.length - 1);
   const root = mkdtempSync(join(tmpdir(), "eris-blocks-"));
   const logger = new RunLogger(root, "run");
   logger.blockRow({
@@ -182,6 +185,9 @@ test("blocks.csv: maxFeePerGasWei is appended last, so every existing column kee
   assert.equal(cols.length, BLOCKS_CSV_COLUMNS.length);
   assert.equal(cols[BLOCKS_CSV_INDEX.priorityFeeWei], "100000000");
   assert.equal(cols[BLOCKS_CSV_INDEX.maxFeePerGasWei], "7000000000");
+  // No recipient / value given: empty, never "0" (a run before the columns is "not measured").
+  assert.equal(cols[BLOCKS_CSV_INDEX.to], "");
+  assert.equal(cols[BLOCKS_CSV_INDEX.valueWei], "");
   assert.deepEqual(
     checkFeeViolations(text, MAX).map((v) => v.kind),
     ["max-fee-above-tip"],

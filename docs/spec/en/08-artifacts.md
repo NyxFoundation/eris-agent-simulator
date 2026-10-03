@@ -45,6 +45,7 @@ runs/
 | `valueSeries` | Value-series metadata (below) |
 | `agents[].pnlUsdc` / `baseline` | P of rules §4.4.1 (the two ends of the boundary series) and whether the agent is the benchmark (below) |
 | `violations` | Post-hoc rule violations |
+| `rosterTransfers` / `rosterTransferCheck` | **Value moved between registered addresses** (issue #208 / rules §8): every movement found, flagged or not, and what was read (`sources`: blocks.csv / Transfer logs / lending logs / registry, `thresholdBps`, `errors`) -- so a run whose log routes could not be read is not mistaken for a clean one |
 | `agents[]` | Per-agent aggregates (below) |
 | `segment` / `fromBlock` / `toBlock` | Segmented runs only |
 
@@ -60,6 +61,7 @@ runs/
 | `processExitedEarly` | Why the process went away before the run ended. **Does not change the score** (rules §2.3 / §4.4.2: valued on what it left behind, like everyone else); the matrix carries it as a flag |
 | `includedTxCount` / `revertCount` | Transactions included / of those, reverted |
 | `unloggedTxCount` | Included transactions absent from the agent's own `submitted` log (post-hoc detection of the human intervention rules §8 forbids; only for agents the coordinator started; a report, not a verdict -- a crash between send and log leaves the same mark) |
+| `rosterTransfers` | The **flagged value movements** this agent is a side of (issue #208 / rules §8; both sides carry the same record). `route` (`eth` / `erc20` / `contract` / `lending` / `liquidation`), `from` / `to` (agent ids), `sameParticipant`, `token` / `amount` / `valueUsdc` (at the final marks; `null` when unpriceable), `count`, `via` (contract or market id), `reason` (`same-participant` / `over-threshold` / `unpriced`). Same participant unit: flagged at any size; different units: above `run.rosterTransferFlagBps`. **Does not change the score** (the matrix carries it as `flags`) |
 | `stderrTail` | Tail of the agent process's stderr (crash diagnosis) |
 
 **Both ends are priced at the same marks** (the final block's fair prices and stable prices). `netPnlUsdc` is a difference, and pricing the two ends off different marks would book a peg's whole history as this agent's PnL.
@@ -140,6 +142,8 @@ One event per line, each carrying an ISO `ts`. The catalogue below is what the c
 | `market_series_reconstructed` / `market_series_reconstruction_failed` | market.json |
 | `rule_violations_detected` | Post-hoc rule checks |
 | `unlogged_agent_txs` | On-chain agent txs absent from the agent's `submitted` log (count, per agent, first 200) |
+| `roster_value_transfers` | Value moved between registered addresses (issue #208: every movement, first 200, flagged count, threshold, the `sources` read). Absent when none was found |
+| `roster_transfer_logs_skipped` / `roster_transfer_check_failed` | The window outran the node's history so the log routes (ERC-20 / contract / lending) were not read / the check itself failed. Neither means "no transfers" |
 
 ### Stress and venues
 
@@ -174,8 +178,9 @@ The columns are owned by `BLOCKS_CSV_COLUMNS` (`core/src/logger.ts:8`).
 | `method` | **The function name decoded from calldata** (`sdk/src/methodSelectors.ts`) |
 | `gasUsed` | Gas actually burned, from the receipt (the issue #40 T0 gas budget check) |
 | `maxFeePerGasWei` | **The signed `maxFeePerGas`** (for a legacy / 0x01 tx, its `gasPrice`). This is the key anvil orders the block by ([03 §3.1.6](03-market.md)); read together with `priorityFeeWei` it detects fee-rule breaches (maxFeePerGas above the tip). Absent in earlier runs |
+| `to` / `valueWei` | **The tx's own recipient and value** (issue #208), for the post-hoc check of ETH moved between registered addresses (`core/src/rosterTransfers.ts`). `to` is empty for a deployment. Absent in earlier runs, whose ETH route is then "not measured" |
 
-Columns are **appended at the end** (`gasUsed` and `maxFeePerGasWei` too), so readers that go by position (`BLOCKS_CSV_INDEX`, the dashboard, the Python scripts) keep working on older runs.
+Columns are **appended at the end** (`gasUsed`, `maxFeePerGasWei` and `to` / `valueWei` too), so readers that go by position (`BLOCKS_CSV_INDEX`, the dashboard, the Python scripts) keep working on older runs.
 
 **Why `method` exists beside `actionType`** (ADR 0021 §4): `actionType` only exists for environment transactions. Joining against agents' self-reported logs works only while the coordinator is the thing starting the agents, so every external participant's transaction reads `direct` — **the least information exactly where the traffic is heaviest**. Calldata decoding works for every transaction.
 

@@ -41,6 +41,7 @@ npm run check:strategy -- <file>          # static cheatcode check of strategy c
 | `valueSeries.unpricedHoldings` | holdings the scorer could not price, reported rather than silently zeroed |
 | `valueSeries.failedReads` | number of cross-sections that could not be read during value reconstruction (`0` if healthy) |
 | `violations` | violations from the post-run rule checks (fee limit overruns, etc.) |
+| `rosterTransfers` / `agents[].rosterTransfers` | value moved between two registered addresses (ETH or ERC-20 directly, or through a participant-created contract / lending market), read off blocks.csv and the run window's logs after the run (issue #208, rules §8). The run-level list is everything found; the per-agent list is what was flagged — any amount between two submissions of the same `participant`, or above `run.rosterTransferFlagBps` of the pair's smaller endowment between different units. A report for the operator; P is unchanged. `rosterTransferCheck.sources` says which inputs could be read |
 
 Everything the score is derived from is stored: P per agent and the boundary series behind it. The
 score itself (T, Score) needs the field, so it lives in a matrix's `standings.json` and on the
