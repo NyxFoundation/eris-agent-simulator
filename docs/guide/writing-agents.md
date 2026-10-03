@@ -243,6 +243,10 @@ bytecode, so it goes through the runtime like every other transaction — sharin
 the per-block transaction cap and the gas budget. Signing your own deploys instead puts a second
 sender on your key, and two senders on one key race on the nonce.
 
+This applies to the strategy *you* wrote. A strategy the revision model installed in its place
+(a self-improving agent's version 1 and up) may not deploy, and may send raw calldata only to
+addresses the run knows — see [LLM agents](llm-agents.md#what-the-model-is-shown-is-a-record-and-where-a-revised-strategy-may-send-raw-calldata).
+
 ```ts
 import { deployAction, currentNonce, findDeployedContracts } from "../lib/deployContract.js";
 

@@ -83,8 +83,10 @@ import {
   revisionFailedReason,
   type RevisionOutcome,
   type StrategyVersion,
+  sanitizeUntrusted,
 } from "./improve.js";
 import { createMempoolLog, type MempoolLog, Sender } from "./send.js";
+import { checkRevisedRawTx, rawTxAllowlist } from "./rawTxGuard.js";
 import { AgentStateStore, capBytesFromEnv, STATE_DIR_ENV } from "./state.js";
 import { preflightChain } from "./preflight.js";
 import { Reader } from "./read.js";
@@ -394,15 +396,35 @@ async function main(): Promise<void> {
       entry.actionType !== undefined
         ? String(entry.actionType)
         : ((entry.action as { type?: string } | undefined)?.type ?? "action");
-    const why = String(entry.reason ?? entry.error ?? event);
+    // Bounded at the ring (issue #214 item 3): a revert reason is text another participant's
+    // contract wrote, and the ring is what the revision context is built from.
+    const why = sanitizeUntrusted(String(entry.reason ?? entry.error ?? event));
     rememberDecision({ round, reason: `${event} (${what}): ${why}` });
   };
+  // Which version of the strategy is deciding: 0 is the one the participant shipped, anything
+  // above it was written by the model (ADR 0018). Set by the improvement loop below; read by the
+  // sender's guard, which restricts where a model-written strategy may send raw calldata
+  // (rawTxGuard.ts, issue #214 item 3). The shipped strategy is unrestricted, as before.
+  let runningVersion = 0;
   const sender = new Sender({
     ctx: simCtx,
     adapters,
     privateKey,
     logMempool: logMempoolWithRejections,
     ledger: tradeLedger,
+    guard: (action, observation) => {
+      if (runningVersion === 0) return { ok: true };
+      const verdict = checkRevisedRawTx(
+        action,
+        rawTxAllowlist({
+          observation,
+          runContracts: [priceFeed, marketRegistry, lending],
+        }),
+      );
+      return verdict.ok
+        ? verdict
+        : { ok: false, reason: `revised strategy v${runningVersion}: ${verdict.reason}` };
+    },
   });
   // The scorer's valuation context has no SimContext, and the improve loop's sandbox runs the same
   // adapters -- so the singleton is published module-side too, exactly as the coordinator does it.
@@ -872,6 +894,7 @@ async function main(): Promise<void> {
       // model would be the harness making a judgment ADR 0018 §5 says it must not make.
       if (newest !== undefined && resumed.version === newest.version) {
         active = resumed;
+        runningVersion = resumed.version;
         strategy.setSource(resumed.executor);
       }
       agentLog({
@@ -1094,6 +1117,7 @@ async function main(): Promise<void> {
           strategy.setSource(target.executor);
           versions.push(reinstalled);
           active = reinstalled;
+          runningVersion = reinstalled.version;
           if (parsed.revision.memory !== null) memory = parsed.revision.memory;
           persist();
           valueAtRevision = value;
@@ -1138,6 +1162,7 @@ async function main(): Promise<void> {
         strategy.setSource(installed.executor);
         versions.push(installed);
         active = installed;
+        runningVersion = installed.version;
         if (parsed.revision.memory !== null) memory = parsed.revision.memory;
         persist();
         valueAtRevision = value;

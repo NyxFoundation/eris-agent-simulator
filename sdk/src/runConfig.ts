@@ -116,6 +116,11 @@ const SCHEMA: Record<string, string> = {
   "run.agentsReadyTimeoutSec": "ERIS_AGENTS_READY_TIMEOUT_SEC",
   // process | docker: how the coordinator launches each agent (rules §2.3 caps apply only under docker).
   "run.agentSandbox": "ERIS_AGENT_SANDBOX",
+  // Issue #214: what an agent may write to the host (state directory / log files, bytes) and how
+  // often the coordinator measures it (blocks; 0 = never). Past a quota the agent is stopped.
+  "run.agentStateQuotaBytes": "ERIS_AGENT_STATE_QUOTA_BYTES",
+  "run.agentLogQuotaBytes": "ERIS_AGENT_LOG_QUOTA_BYTES",
+  "run.agentDiskCheckEveryBlocks": "ERIS_AGENT_DISK_CHECK_EVERY_BLOCKS",
   "run.reportDir": "REPORT_DIR",
   "run.flashArb": "ERIS_FLASH_ARB",
   "run.localSnapshotFile": "ERIS_LOCAL_SNAPSHOT_FILE",

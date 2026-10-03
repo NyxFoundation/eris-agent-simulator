@@ -92,6 +92,17 @@ import {
 
 const ROOT = process.cwd(); // npm scripts run at the repo root
 
+// A checkpoint of the state root leaves out an agent directory that cannot be copied (issue #214
+// item 2: a pipe, a symlink, a sparse file past the cap). Said on stderr at the time, because a
+// later restore of that label puts the agent back to nothing and the reason has to be findable.
+function checkpointAgentState(root: string, label: string): void {
+  for (const { agentId, reason } of snapshotAllAgentState(root, label))
+    console.error(
+      `[backtest] state checkpoint ${label}: ${agentId} left out (${reason}); a restore of this ` +
+        "label starts that agent empty",
+    );
+}
+
 const USAGE = `usage: npm run backtest -- (--regime <name|path> --seed <N> | --scenarios <path>) [options]
   --regime <name|path>   config/regimes/<name>.yaml (or a YAML path). requires --seed
   --seed <N>             the scenario's seed. regimes no longer carry one (ADR 0017 §1)
@@ -817,7 +828,7 @@ async function main(): Promise<void> {
     // last (backtest/resume.ts). A fresh matrix records its empty starting point; a resumed one
     // puts the root back to the end of the latest complete ordinal before each re-run.
     if (agentStateRoot !== undefined && matrixMode && !resumeDir)
-      snapshotAllAgentState(agentStateRoot, STATE_LABEL_INITIAL);
+      checkpointAgentState(agentStateRoot, STATE_LABEL_INITIAL);
     let index = 0;
     for (const scenario of scenarios) {
       index++;
@@ -872,7 +883,7 @@ async function main(): Promise<void> {
       const repeatLabel = `repeat-base-s${scenario.s}`;
       for (let i = 0; i < repeat; i++) {
         if (agentStateRoot !== undefined && repeat > 1) {
-          if (i === 0) snapshotAllAgentState(agentStateRoot, repeatLabel);
+          if (i === 0) checkpointAgentState(agentStateRoot, repeatLabel);
           else if (!restoreAllAgentState(agentStateRoot, repeatLabel))
             // A repeat that silently kept the previous repeat's state would report a sequence as
             // a spread, which is the one thing the flag must not do.
@@ -916,7 +927,7 @@ async function main(): Promise<void> {
       }
       if (agentStateRoot !== undefined && matrixMode && perRepeat.length > 0) {
         // The checkpoint a resume restores before the ordinal after this one.
-        snapshotAllAgentState(agentStateRoot, stateLabelAfter(scenario.s));
+        checkpointAgentState(agentStateRoot, stateLabelAfter(scenario.s));
         complete.add(scenario.s);
       }
       repeatsByScenario.push(perRepeat);
