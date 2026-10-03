@@ -758,6 +758,16 @@ export type LiquityObservation = {
   // ETH already earned from absorbed liquidations, claimable by withdrawing (any amount, including 0).
   spEthGainWei: string;
   spLqtyGainWei: string;
+  // --- your LQTY ---
+  // LQTY has no market in this environment and is not scored. Staking it (LQTYStaking.stake, rawTx)
+  // earns a share of every borrowing fee (eUSD) and redemption fee (ETH) pro rata to the LQTY
+  // staked -- and the environment has 2M staked, so a few hundred LQTY earn a few hundredths of a
+  // percent. The pending gains are scored (ETH at the fair price, eUSD at its market) and claimed
+  // with `unstake(0)`; the staked LQTY itself is not.
+  lqtyBalanceWei: string;
+  lqtyStakedWei: string;
+  stakingEthGainWei: string;
+  stakingEusdGainWei: string;
   spTotalDepositsEusdWei: string;
   // Your share of the pool in bps, which is your share of the next liquidation's collateral.
   spShareBps: number;

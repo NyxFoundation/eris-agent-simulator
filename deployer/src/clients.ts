@@ -21,6 +21,9 @@ export const accounts = {
   }),
   keeper: mnemonicToAccount(MNEMONIC, { addressIndex: ACCOUNT_INDEX.keeper }),
   trader: mnemonicToAccount(MNEMONIC, { addressIndex: ACCOUNT_INDEX.trader }),
+  lqtyStaker: mnemonicToAccount(MNEMONIC, {
+    addressIndex: ACCOUNT_INDEX.lqtyStaker,
+  }),
 };
 
 export const publicClient: PublicClient = createPublicClient({
