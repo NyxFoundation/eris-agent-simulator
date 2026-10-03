@@ -179,8 +179,9 @@ export function scoresFromSummary(
         flags.push(
           gap < 0
             ? `V_0 measured at the first boundary was ${usdc(-gap)} USDC below the endowment ` +
-                `(${usdc(agent.v0MeasuredUsdc)} vs ${usdc(agent.v0EndowmentUsdc)}): value left the ` +
-                "account before the epoch's first boundary; V_0 was taken at the endowment (issue #207)"
+                `(${usdc(agent.v0MeasuredUsdc)} vs ${usdc(agent.v0EndowmentUsdc)}): the holdings at the ` +
+                "first boundary were worth less than the endowment (moved out, or spent on trades that " +
+                "landed before the bell); V_0 was taken at the endowment (issue #207)"
             : `V_0 measured at the first boundary was ${usdc(gap)} USDC above the endowment ` +
                 `(${usdc(agent.v0MeasuredUsdc)} vs ${usdc(agent.v0EndowmentUsdc)}): value the ` +
                 "environment did not fund was there before the epoch's first boundary; V_0 was taken " +

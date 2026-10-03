@@ -288,6 +288,7 @@ function flooredFixture(opts: {
   runDir: string;
   valueAt: (block: number) => number;
   endowments: Record<string, number | undefined>;
+  failAt?: Set<number>;
 }) {
   return new LiveScorer({
     publicClient: fakeClient(opts),
@@ -354,6 +355,30 @@ test("a chain that shows more than the endowment at the first boundary keeps it"
   assert.deepEqual(scorer.series()?.valuesByAgent.a, [130, 130]);
   assert.equal(scorer.firstBoundary("a")?.source, "measured");
   assert.equal(scorer.firstBoundary("a")?.endowmentUsdc, 100);
+});
+
+test("when the run's first boundary could not be read, no later boundary is floored", async () => {
+  // Block 100 fails, so 104 is the first boundary the scorer holds. It is not V_0 in the sense of
+  // issue #207 -- the sweep floors only fromBlock -- and flooring it would make a first-interval
+  // loss count (V_0 raised to the endowment) while a first-interval gain vanished.
+  const root = tmp();
+  const scorer = flooredFixture({
+    runDir: root,
+    valueAt: (b) => (b === 104 ? 30 : b),
+    endowments: { a: 100, b: 100 },
+    failAt: new Set([100]),
+  });
+  for (let b = 100; b <= 108; b++) await scorer.onBlock(b);
+  const series = scorer.series();
+  assert.deepEqual(series?.boundaryBlocks, [104, 108]);
+  assert.deepEqual(series?.valuesByAgent.a, [30, 108]);
+  assert.equal(scorer.firstBoundaryBlock, null);
+  assert.equal(scorer.firstBoundary("a"), undefined);
+  const rows = readFileSync(join(root, "run", INTERVALS_FILENAME), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert.equal(rows[0].v0SourceByAgent, undefined);
 });
 
 test("the sweep floors the same boundary at the same endowment, so the two series agree", async () => {

@@ -219,7 +219,14 @@ export class LiveScorer {
       const byId = new Map(snapshot.values.map((v) => [v.id, v.valueUsdc]));
       // The first boundary is V_0, and there the measured value is floored at the endowment
       // (issue #207; scoring/endowmentV0.ts). Every later boundary is the measured value.
-      const first = index === 0 ? this.firstBoundaryDetail() : null;
+      // The floor belongs to the run's first block, not to whichever boundary happened to be read
+      // first: if that read failed, the next boundary is a measured value like any other. Flooring
+      // it would count a first-interval loss and drop a first-interval gain, and the sweep (which
+      // floors only fromBlock) would disagree with it.
+      const first =
+        index === 0 && blockNumber === this.opts.runStartBlock
+          ? this.firstBoundaryDetail()
+          : null;
       for (const agent of this.opts.agents) {
         const measured = byId.get(agent.id) ?? null;
         const value = first
@@ -315,8 +322,9 @@ export class LiveScorer {
           blockNumber,
           agents: gaps,
           note:
-            "measured − endowment at the first boundary, beyond tolerance. Negative: value left the " +
-            "account before the epoch's first boundary and V_0 was taken at the endowment. Positive: " +
+            "measured − endowment at the first boundary, beyond tolerance. Negative: the holdings at the " +
+            "first boundary were worth less than the endowment (moved out, or spent on trades that landed " +
+            "before the bell) and V_0 was taken at the endowment. Positive: " +
             "value the environment did not fund was there, and V_0 was taken as measured (issue #207)",
         });
         const said = gaps.map(
