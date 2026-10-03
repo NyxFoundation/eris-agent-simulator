@@ -214,6 +214,18 @@ Aave seed 9k USDC・SP 50k）。CLAUDE.md と `docs/scoring-metric-measurements.
   35 run・49,498 件で実測: min 1.15M / p50 2.38M / p99 2.60M / max 2.79M。GMX は申告から 1M（error handling 分）を
   引いて約定に渡し、general プロファイルなら 3.9M + 1M を先に要求するので、6M は両プロファイルで通り約定に最大値の
   1.8 倍残る。`afterMine` の `opts.executeGas` で上書き可。**anvil が収容判定に申告値を使うか実使用量を使うかは未実測**
+- **keeper は参加者のコールバックを実行しない**。GMX は注文の `callbackContract` を `executeOrder` の中で呼び
+  （`afterOrderExecution` / `afterOrderCancellation` は注文の `callbackGasLimit`、`refundExecutionFee` は DataStore の
+  別上限）、keeper の tx はオラクルの直下・全参加者より上に並ぶ。以前は keeper がログの key を読まずに全部実行していたので、
+  コールバック付きの注文 = **作成者のコードを次ブロックの先頭で、keeper の手数料・gas・帰属で**動かせた（前ブロックの
+  AMM 乖離を先取りし、最低実行手数料 0 なのでコールバックから次の注文を出して毎ブロック続く）。2 層で塞ぐ:
+  keeper が実行前に `Reader.getOrder` を読み、`callbackContract != 0` か読めない注文は実行しない
+  （`gmxKeeperRefusal`、`keeper_order_refused` イベント。アドレスだけで判定 = GMX はコードの有無を実行時に見るので
+  CREATE2 の未デプロイ先も拒否）。patch は `maxCallbackGasLimit` と `refundExecutionFeeGasLimit` を 0 にし、
+  `createOrder` が `MaxCallbackGasLimitExceeded` で revert する（**片方だけでは refund 側の 200k が残る**）。
+  起動時に両方を読んで `gmx_callback_check` に記録するが**落とさない**（keeper 側で既に塞がっており、古い dump での差は
+  注文が作成時に revert するか OrderVault に残って作成者が cancel するかだけ）。残る口は `receiver` への native ETH 送付の
+  50k gas（swap 1 回に足りない）
 - **observation にも出る**（issue #78）。`protocols.gmx` の `longOiUsd` / `shortOiUsd` / `fundingPerHourBps`
   （正 = long が short に払う）/ `fundingModeled`、建玉があれば `position.fundingOwedUsd`。
   以前は「チェーン上にも market.json にもあるのに、どの agent からも見えない」状態だった。

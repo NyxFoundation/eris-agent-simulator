@@ -28,6 +28,17 @@ const FUNDING_INCREASE_FACTOR_PER_SECOND = hashString(
 );
 const FUNDING_FEE_AMOUNT_PER_SIZE = hashString("FUNDING_FEE_AMOUNT_PER_SIZE");
 
+// Callback gas: how much of a participant's own code GMX runs inside the keeper's executeOrder
+// (gmxKeeperRefusal in gmx.ts; core/src/realtime/gmxCallbacks.ts). Plain base keys, not per market.
+/** Keys.MAX_CALLBACK_GAS_LIMIT: the cap createOrder checks an order's callbackGasLimit against. */
+export const GMX_MAX_CALLBACK_GAS_LIMIT_KEY = hashString(
+  "MAX_CALLBACK_GAS_LIMIT",
+);
+/** Keys.REFUND_EXECUTION_FEE_GAS_LIMIT: gas for the refundExecutionFee callback, independent of the order's. */
+export const GMX_REFUND_EXECUTION_FEE_GAS_LIMIT_KEY = hashString(
+  "REFUND_EXECUTION_FEE_GAS_LIMIT",
+);
+
 /** Keys.openInterestKey: open interest in USD (30 decimals), per (market, collateral, side). */
 export function gmxOpenInterestKey(
   market: Address,

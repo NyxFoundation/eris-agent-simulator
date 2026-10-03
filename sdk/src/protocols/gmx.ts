@@ -280,6 +280,169 @@ const exchangeRouterAbi = [
   },
 ] as const;
 
+// Order.Props as Reader.getOrder returns it (gmx-synthetics contracts/order/Order.sol). Only the
+// addresses are read (gmxKeeperRefusal); the rest is declared so the tuple decodes.
+const orderPropsComponents = [
+  {
+    name: "addresses",
+    type: "tuple",
+    components: [
+      { name: "account", type: "address" },
+      { name: "receiver", type: "address" },
+      { name: "cancellationReceiver", type: "address" },
+      { name: "callbackContract", type: "address" },
+      { name: "uiFeeReceiver", type: "address" },
+      { name: "market", type: "address" },
+      { name: "initialCollateralToken", type: "address" },
+      { name: "swapPath", type: "address[]" },
+    ],
+  },
+  {
+    name: "numbers",
+    type: "tuple",
+    components: [
+      { name: "orderType", type: "uint8" },
+      { name: "decreasePositionSwapType", type: "uint8" },
+      { name: "sizeDeltaUsd", type: "uint256" },
+      { name: "initialCollateralDeltaAmount", type: "uint256" },
+      { name: "triggerPrice", type: "uint256" },
+      { name: "acceptablePrice", type: "uint256" },
+      { name: "executionFee", type: "uint256" },
+      { name: "callbackGasLimit", type: "uint256" },
+      { name: "minOutputAmount", type: "uint256" },
+      { name: "updatedAtTime", type: "uint256" },
+      { name: "validFromTime", type: "uint256" },
+      { name: "srcChainId", type: "uint256" },
+    ],
+  },
+  {
+    name: "flags",
+    type: "tuple",
+    components: [
+      { name: "isLong", type: "bool" },
+      { name: "shouldUnwrapNativeToken", type: "bool" },
+      { name: "isFrozen", type: "bool" },
+      { name: "autoCancel", type: "bool" },
+    ],
+  },
+  { name: "_dataList", type: "bytes32[]" },
+] as const;
+
+const readerGetOrderAbi = [
+  {
+    type: "function",
+    name: "getOrder",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "key", type: "bytes32" },
+    ],
+    outputs: [{ type: "tuple", components: orderPropsComponents }],
+  },
+] as const;
+
+/** What the keeper needs to know about an order before it executes it. */
+export type GmxKeeperOrder = {
+  account: Address;
+  callbackContract: Address;
+  callbackGasLimit: bigint;
+};
+
+/** An order the keeper read and did not execute, and why. */
+export type GmxKeeperRefusal = GmxKeeperOrder & { key: Hex; reason: string };
+
+/**
+ * Why the keeper must not execute this order, or null if it may.
+ *
+ * GMX calls an order's callbackContract inside executeOrder (afterOrderExecution /
+ * afterOrderCancellation with the order's callbackGasLimit, refundExecutionFee with the DataStore's
+ * own limit). The keeper's transaction is placed just under the oracle's, above every participant
+ * (coordinator `keeperFee`), so a callback is the creator's code at the top of the next block: it
+ * could take the previous block's AMM dislocation before anyone else, under the keeper's fee and gas
+ * rather than the creator's (the fee cap, the per-agent gas budget and blocks.csv attribution all
+ * read the transaction's sender), and -- the minimum execution fee being 0 on this deploy -- create
+ * the next order from inside the callback and run again every block.
+ *
+ * Refused on the address alone, not on whether it has code: GMX checks for code at execution time,
+ * so a CREATE2 address with nothing deployed yet is a callback the moment the creator deploys it.
+ * The patched deploy (deployer/vendor/gmx-localhost.patch) also zeroes both callback gas limits, so
+ * on a current deploy such an order cannot be created; this is the half that holds on a chain baked
+ * before that (core/src/realtime/gmxCallbacks.ts reports which one a run is on).
+ */
+export function gmxKeeperRefusal(order: GmxKeeperOrder): string | null {
+  if (order.callbackContract !== zeroAddress)
+    return (
+      `order sets callbackContract ${order.callbackContract} ` +
+      `(callbackGasLimit ${order.callbackGasLimit}); the keeper does not run participant callbacks`
+    );
+  return null;
+}
+
+/**
+ * The keys the keeper may execute, in order. Each order is read before it is executed; one that
+ * cannot be read is not executed either (fail closed: it is usually an order already cancelled or
+ * executed, which executeOrder would revert on anyway, and otherwise an order whose callback the
+ * keeper cannot rule out).
+ */
+async function keeperExecutableKeys(
+  ctx: SimContext,
+  keys: readonly Hex[],
+  onRefused?: (refusal: GmxKeeperRefusal) => void,
+): Promise<Hex[]> {
+  const report = (refusal: GmxKeeperRefusal): void => {
+    if (onRefused) onRefused(refusal);
+    else
+      console.error(
+        `gmx keeper refused order ${refusal.key}: ${refusal.reason}`,
+      );
+  };
+  const reads = await Promise.all(
+    keys.map(async (key) => {
+      try {
+        const order = await ctx.publicClient.readContract({
+          address: GMX.Reader,
+          abi: readerGetOrderAbi,
+          functionName: "getOrder",
+          args: [GMX.DataStore, key],
+        });
+        return { key, order };
+      } catch (error) {
+        return {
+          key,
+          error:
+            error instanceof Error
+              ? error.message.split("\n")[0]
+              : String(error),
+        };
+      }
+    }),
+  );
+  const out: Hex[] = [];
+  for (const r of reads) {
+    if (!("order" in r) || r.order === undefined) {
+      report({
+        key: r.key,
+        account: zeroAddress,
+        callbackContract: zeroAddress,
+        callbackGasLimit: 0n,
+        reason: `order could not be read: ${r.error}`,
+      });
+      continue;
+    }
+    const order: GmxKeeperOrder = {
+      account: r.order.addresses.account,
+      callbackContract: r.order.addresses.callbackContract,
+      callbackGasLimit: r.order.numbers.callbackGasLimit,
+    };
+    // Reader.getOrder returns an empty struct for a key with no order (already executed or cancelled).
+    if (order.account === zeroAddress) continue;
+    const reason = gmxKeeperRefusal(order);
+    if (reason) report({ key: r.key, ...order, reason });
+    else out.push(r.key);
+  }
+  return out;
+}
+
 const setPricesParamsComponent = {
   name: "oracleParams",
   type: "tuple",
@@ -1530,6 +1693,8 @@ export const gmxAdapter: ProtocolAdapter = {
       blockNumber?: bigint;
       fromBlock?: bigint;
       toBlock?: bigint;
+      // Told about every order the keeper read and did not execute (gmxKeeperRefusal), or could not read.
+      onOrderRefused?: (refusal: GmxKeeperRefusal) => void;
     },
   ): Promise<void> {
     if (!ctx.gmx.mockProvider) return;
@@ -1553,6 +1718,12 @@ export const gmxAdapter: ProtocolAdapter = {
       )
       .map((l) => l.topics[2] as Hex);
     if (keys.length === 0) return;
+    const executable = await keeperExecutableKeys(
+      ctx,
+      keys,
+      opts?.onOrderRefused,
+    );
+    if (executable.length === 0) return;
 
     const keeper = privateKeyToAccount(ctx.keeperPk);
     // Every token any configured market needs, not just the order's own: GMX reverts the whole
@@ -1560,7 +1731,7 @@ export const gmxAdapter: ProtocolAdapter = {
     const oracleParams = gmxKeeperOracleParams(ctx);
     const fee = opts?.priorityFeeWei ?? 1_000_000_000n;
     const executeGas = opts?.executeGas ?? GMX_KEEPER_EXECUTE_GAS;
-    for (const key of keys) {
+    for (const key of executable) {
       try {
         if (opts?.noMine) {
           // realtime: neither mine nor increaseTime. Just place it in the next block

@@ -159,6 +159,14 @@ test("the keeper hands executeOrder a price for every oracle token, WBTC include
         },
       ],
       getBlock: async () => ({ baseFeePerGas: 0n }),
+      // Reader.getOrder: an ordinary order (no callback), which the keeper executes.
+      readContract: async () => ({
+        addresses: {
+          account: getAddress(`0x${"a1".repeat(20)}`),
+          callbackContract: zeroAddress,
+        },
+        numbers: { callbackGasLimit: 0n },
+      }),
     },
     walletClient: {
       sendTransaction: async (tx: { to: Address; data: Hex }) => {
