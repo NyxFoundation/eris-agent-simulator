@@ -11,21 +11,47 @@ server {
     proxy_http_version 1.1;
 
     # The explorer is published without authentication (infra/cloudflared/config.yml) and reads the
-    # node directly rather than through the RPC gateway. Two of Blockscout's endpoints forward a
-    # caller's own JSON-RPC method to that node: /api/eth-rpc, and the etherscan-compatible
-    # /api?module=proxy (eth_call, eth_sendRawTransaction, eth_getCode, eth_getStorageAt...). Left
-    # open they are a second RPC entrance that none of the gateway's rules reach -- no X-ASCON-Key,
-    # no method allowlist, no per-transaction gas cap, no fee rule, no rate limit. Refused here, in
-    # front of the backend, because this file is the boundary that is actually published. Everything
-    # else, /api/v2 included (read-only, served from the indexed database), is unchanged.
-    location = /api/eth-rpc {
+    # node directly rather than through the RPC gateway. Blockscout's v1 API forwards a caller's own
+    # JSON-RPC to that node -- eth-rpc (mounted at /api/eth-rpc AND /api/v1/eth-rpc, either with a
+    # trailing slash) and the etherscan-compatible ?module=proxy (eth_sendRawTransaction, eth_call,
+    # eth_getBlockByNumber("pending") = the unmined txs, ...). Open, that is a second RPC entrance
+    # that none of the gateway's rules reach -- no X-ASCON-Key, no method allowlist, no
+    # per-transaction gas cap, no fee rule, no rate limit (H5: both reproduced end to end).
+    #
+    # So /api is an allowlist: /api/v2/ (read-only, served from the indexed database -- what the
+    # explorer UI and the dashboard use) is passed, every other /api path is refused. An earlier
+    # blocklist matched only `= /api/eth-rpc` and `$arg_module = "proxy"`: /api/v1/eth-rpc and
+    # /api/eth-rpc/ reached the node (reproduced), and $arg_module reads neither a percent-encoded
+    # value, nor the last of a repeated key (Plug's choice), nor a form body. The backend cannot
+    # answer this from inside: API_V1_READ_METHODS_DISABLED
+    # and API_V1_WRITE_METHODS_DISABLED are compile-time settings, so the published image ignores
+    # them at runtime (measured on 9.0.2). This file is the only boundary.
+    #
+    # The frontend is the other way in. Its /node-api/proxy/<path> forwards any method and body to
+    # whatever origin the caller names in an `x-endpoint` header -- `x-endpoint: http://backend:4000`
+    # reaches /api/v1/eth-rpc from inside, past everything above (reproduced: a raw transaction
+    # landed in the txpool). The browser only uses it with NEXT_PUBLIC_USE_NEXT_JS_PROXY, which this
+    # compose does not set. Next.js routes case-insensitively, so both refusals are `~*`: /API/... and
+    # /NODE-API/proxy would otherwise fall through to `location /` and the frontend.
+    location ~* ^/node-api/proxy {
+        return 403;
+    }
+    location ^~ /api/v2/ {
+        proxy_pass            ${BACK_PROXY_PASS};
+        proxy_http_version    1.1;
+        proxy_set_header      Host "$host";
+        proxy_set_header      X-Real-IP "$remote_addr";
+        proxy_set_header      X-Forwarded-For "$proxy_add_x_forwarded_for";
+        proxy_set_header      X-Forwarded-Proto "$scheme";
+        proxy_set_header      Upgrade "$http_upgrade";
+        proxy_set_header      Connection $connection_upgrade;
+        proxy_cache_bypass    $http_upgrade;
+    }
+    location ~* ^/api(?!-docs$) {
         return 403;
     }
 
-    location ~ ^/(api(?!-docs$)|socket|sitemap.xml|auth/auth0|auth/auth0/callback|auth/logout) {
-        if ($arg_module = "proxy") {
-            return 403;
-        }
+    location ~ ^/(socket|sitemap.xml|auth/auth0|auth/auth0/callback|auth/logout) {
         proxy_pass            ${BACK_PROXY_PASS};
         proxy_http_version    1.1;
         proxy_set_header      Host "$host";
