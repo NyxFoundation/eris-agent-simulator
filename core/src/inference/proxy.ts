@@ -23,12 +23,21 @@
 // The record is bounded and its failure is not the proxy's (issue #215). This proxy is the only
 // outbound path an agent has in the official competition, so a disk that fills or a write that
 // fails must cost the record, never the call: a record that cannot be written is reported on stderr
-// and counted on /healthz, and the call is served regardless. One call's record is bounded only by
-// the request (4 MiB) and the response (`maxStreamBytes`), so at `maxCallsPerMinute` 30 one agent
-// could write about a gibibyte a minute; `maxRecordBytesPerAgent` and `maxRecordBytesTotal` stop
-// recording -- not serving -- past a cumulative size, and the agent's file ends with a line that says
-// so (`event: "recording_capped"`), which replay skips before it answers 409 at the first call it
-// has no record for.
+// and counted, and the call is served regardless. One call's record is bounded only by the request
+// (4 MiB) and the response (`maxStreamBytes`), so at `maxCallsPerMinute` 30 one agent could write
+// about a gibibyte a minute; `maxRecordBytesPerAgent` and `maxRecordBytesTotal` stop recording the
+// bodies -- not serving -- past a cumulative size, and the agent's file gets a line that says so
+// (`event: "recording_capped"`).
+//
+// Past that cap a call still leaves a line (issue #218). Writing nothing there had put §2.4's audit
+// up for sale: 4 MiB of messages 64 times is the 256 MiB per-agent default -- two minutes at
+// `maxCallsPerMinute` 30 -- and every revision after it was served with no trace that it happened.
+// "My calls are not in the record" is not something padding may buy. So the cap drops the bodies and
+// not the call: a stub of fixed size keeps when, which path, which model, the status, and each body's
+// length and sha256 (`truncated: true`), which is what it takes to say that a call was made and to
+// check a kept copy against it. A stub is ~400 bytes against a 4 MiB record, so the cap still cuts
+// the write rate by four orders of magnitude; what it no longer cuts is the evidence. Replay reads
+// stubs too and answers 409 at one, rather than serving the next call's answer in its place.
 //
 // The request body is forwarded as the agent wrote it (model name aside). Rebuilding it would fight
 // the self-improvement design, where the model's brief is the agent's own prompt.md (ADR 0018).
@@ -43,7 +52,7 @@
 // when the agent is stopped its connection closes, and a client that goes away aborts the upstream
 // request, since the participant pays for the tokens (rules §2.5).
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
@@ -92,8 +101,12 @@ export const DEFAULT_UPSTREAM_TIMEOUT_MS = 300_000;
 export const MAX_STREAM_BYTES = 32 * 1024 * 1024;
 // 256 MiB per agent: at the reference runtime's ~10k-token context and a whole-strategy reply, a
 // record is tens of KiB, so this is thousands of revisions -- a week of them at the default cadence.
-// 8 GiB for the process: a field of a few hundred agents at that size, on a disk the operator sized
-// for it. Both are ceilings on an accident, not budgets to fill.
+// 8 GiB for the process: a few hundred agents at the tens of MiB a week of revising actually costs
+// one. It is not the per-agent ceiling times a field -- 8 GiB is 32 agents at 256 MiB -- so the first
+// 32 agents to reach their own ceiling spend everyone's: an operator who wants the per-agent cap to
+// be the only one that ever binds sets the total to it times the size of the field. What the shared
+// ceiling costs the rest is their bodies, not their calls, which keep leaving stubs (issue #218).
+// Both are ceilings on an accident, not budgets to fill.
 export const MAX_RECORD_BYTES_PER_AGENT = 256 * 1024 * 1024;
 export const MAX_RECORD_BYTES_TOTAL = 8 * 1024 * 1024 * 1024;
 
@@ -109,6 +122,9 @@ export type ProxyOptions = {
   // Where what an agent cannot see is reported: a record that was not written, a cap reached, a
   // handler that threw. Defaults to this process's stderr.
   log?: (line: string) => void;
+  // The operator's token for GET /admin/recording. Absent = that path does not exist. It is not an
+  // agent token and must not be derived from `secret`: agents hold HMAC(secret, their own id).
+  statsToken?: string;
 };
 
 export type RecordedCall = {
@@ -147,8 +163,38 @@ export type RecordingNote = {
   seq: number;
 };
 
-// What /healthz reports about the record. No per-agent breakdown: /healthz is unauthenticated, and
-// one agent's revision cadence is not another's business.
+// What a call leaves once recording is capped for its agent (issue #218): the same identity and
+// outcome a record has, with each body replaced by its length and digest. Keeping nothing here would
+// have let an agent pad requests until the cap and then revise unrecorded, so the cap takes the
+// bodies and leaves the fact. The digests are of the JSON the record would have held (`JSON.stringify`
+// of its `request` / `response` field), so a kept copy is checked against a stub exactly as it would
+// be against a full record. Every field is bounded, so the line's size does not follow the request's.
+export type TruncatedCall = {
+  ts: string;
+  agentId: string;
+  seq: number;
+  path: string;
+  model: string;
+  provider: Provider;
+  durationMs: number;
+  status: number;
+  // The discriminator: this line records that a call happened, not what was said.
+  truncated: true;
+  requestBytes: number;
+  requestSha256: string;
+  responseBytes: number;
+  responseSha256: string;
+  contentType?: string;
+  stream?: boolean;
+  error?: string;
+  replayed?: boolean;
+};
+
+// What the recording stats say. They are not on /healthz (issue #218): this proxy joins every agent's
+// network -- that is what lets an agent with no route out reach a model -- so every agent can reach
+// every unauthenticated path on it, and `calls` or `cappedAgents` there reads out how often the rest
+// of the field is revising. They sit behind the operator's own token instead. No per-agent breakdown
+// even there: the operator has the files.
 export type RecordingStats = {
   enabled: boolean;
   bytes: number;
@@ -157,6 +203,9 @@ export type RecordingStats = {
   failures: number;
   cappedAgents: number;
   totalCapped: boolean;
+  // Calls kept as a stub because recording was capped, and what those stubs cost.
+  truncatedCalls: number;
+  truncatedBytes: number;
 };
 
 // Client closed the request (nginx's code): the agent stopped waiting before an answer existed.
@@ -199,6 +248,10 @@ const REJECTED_KEYS: Record<Provider, string[]> = {
 
 export function agentToken(secret: string, agentId: string): string {
   return createHmac("sha256", secret).update(agentId).digest("hex");
+}
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
 }
 
 function safeEqual(a: string, b: string): boolean {
@@ -289,9 +342,9 @@ function replayStream(res: http.ServerResponse, rec: RecordedCall): void {
 }
 
 class Replay {
-  private readonly queues = new Map<string, RecordedCall[]>();
+  private readonly queues = new Map<string, (RecordedCall | TruncatedCall)[]>();
   constructor(private readonly dir: string) {}
-  next(agentId: string): RecordedCall | undefined {
+  next(agentId: string): RecordedCall | TruncatedCall | undefined {
     let q = this.queues.get(agentId);
     if (!q) {
       const path = join(this.dir, `${agentId}.jsonl`);
@@ -299,10 +352,11 @@ class Replay {
         ? readFileSync(path, "utf8")
             .split("\n")
             .filter((l) => l.length > 0)
-            .map((l) => JSON.parse(l) as RecordedCall | RecordingNote)
-            // The note that ends a capped file is not a call. What follows it in the live run was
-            // never recorded, so the queue ends there and the next call gets 409.
-            .filter((r): r is RecordedCall => !("event" in r))
+            .map((l) => JSON.parse(l) as RecordedCall | RecordingNote | TruncatedCall)
+            // The note marking where the bodies stopped is not a call; the stubs after it are. They
+            // stay in the queue so the call numbers keep lining up with the live run's, and each one
+            // answers 409 instead of letting a later call's answer stand in for one not kept.
+            .filter((r): r is RecordedCall | TruncatedCall => !("event" in r))
         : [];
       this.queues.set(agentId, q);
     }
@@ -336,6 +390,8 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
   let recordedCalls = 0;
   let recordFailures = 0;
   let handlerErrors = 0;
+  let truncatedCalls = 0;
+  let truncatedBytes = 0;
   const stats = (): RecordingStats => ({
     enabled: opts.recordDir !== undefined,
     bytes: totalBytes,
@@ -343,6 +399,8 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     failures: recordFailures,
     cappedAgents: capped.size,
     totalCapped,
+    truncatedCalls,
+    truncatedBytes,
   });
 
   // The one place a record touches the disk. A failure is this call's record lost, reported and
@@ -389,20 +447,57 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
     );
   };
 
+  // What a call leaves once the bodies have stopped (issue #218). Every field is bounded, so no
+  // request makes this line longer, and the ~400 bytes it costs is what §2.4 needs to say that this
+  // agent made this call at this time against this model, and to check a kept copy of it by digest.
+  const appendStub = (entry: RecordedCall): void => {
+    // The same text the record's own `request` / `response` field would have held, so a full line and
+    // a stub are verified against a kept copy the same way.
+    const request = JSON.stringify(entry.request ?? null);
+    const response = JSON.stringify(entry.response ?? null);
+    const stub: TruncatedCall = {
+      ts: entry.ts,
+      agentId: entry.agentId,
+      seq: entry.seq,
+      path: entry.path,
+      model: entry.model,
+      provider: entry.provider,
+      durationMs: entry.durationMs,
+      status: entry.status,
+      truncated: true,
+      requestBytes: Buffer.byteLength(request),
+      requestSha256: sha256(request),
+      responseBytes: Buffer.byteLength(response),
+      responseSha256: sha256(response),
+      ...(entry.contentType ? { contentType: entry.contentType } : {}),
+      ...(entry.stream ? { stream: true } : {}),
+      ...(entry.error ? { error: entry.error } : {}),
+      ...(entry.replayed ? { replayed: true } : {}),
+    };
+    const line = `${JSON.stringify(stub)}\n`;
+    if (!append(entry.agentId, line)) return;
+    truncatedBytes += Buffer.byteLength(line);
+    truncatedCalls++;
+  };
+
   const record = (entry: RecordedCall): void => {
     if (!opts.recordDir) return;
-    if (capped.has(entry.agentId)) return;
+    // Past a cap the bodies stop and the stub takes over -- including for the very call that reached
+    // the cap, which would otherwise be the one call with no trace at all. The stubs' own bytes are
+    // not counted against either cap: a cap on them would reopen, one level down, the hole they
+    // close, and they cannot be grown on purpose.
+    if (capped.has(entry.agentId)) return appendStub(entry);
     const line = `${JSON.stringify(entry)}\n`;
     const bytes = Buffer.byteLength(line);
     if (totalCapped || totalBytes + bytes > totalCap) {
       totalCapped = true;
       stopRecording(entry.agentId, "total", entry.seq);
-      return;
+      return appendStub(entry);
     }
     const mine = recordedBytes.get(entry.agentId) ?? 0;
     if (mine + bytes > perAgentCap) {
       stopRecording(entry.agentId, "agent", entry.seq);
-      return;
+      return appendStub(entry);
     }
     if (!append(entry.agentId, line)) return;
     recordedBytes.set(entry.agentId, mine + bytes);
@@ -412,8 +507,21 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
 
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? "/", "http://proxy");
-    if (req.method === "GET" && url.pathname === "/healthz")
+    // Liveness, and only that (issue #218). Every agent can reach this proxy, so anything counted
+    // here is counted for the whole field to read.
+    if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { ok: true });
+    // The recording stats, for whoever runs the proxy. Behind the operator's own token, and absent
+    // that token the path does not exist at all, so the default surface an agent sees is `{ok}`.
+    if (req.method === "GET" && url.pathname === "/admin/recording") {
+      if (!opts.statsToken) return send(res, 404, { error: "path not allowed" });
+      const auth = req.headers.authorization ?? "";
+      const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+      if (!token || !safeEqual(token, opts.statsToken))
+        return send(res, 401, {
+          error: "unauthorized: the operator's stats token is required (ERIS_INFERENCE_STATS_TOKEN)",
+        });
       return send(res, 200, { ok: true, recording: stats(), handlerErrors });
+    }
     if (req.method === "GET" && url.pathname === "/v1/models")
       return send(res, 200, {
         object: "list",
@@ -502,6 +610,22 @@ export function createInferenceProxy(opts: ProxyOptions): http.Server {
       if (!rec)
         return send(res, 409, {
           error: `replay exhausted for ${who}: no recorded response for call #${n}`,
+        });
+      // The record has this call but not its text: it was made after recording was capped. Serving
+      // the next recorded answer in its place would make the whole replay quietly wrong, so it stops
+      // here and hands over what the record does hold.
+      if ("truncated" in rec)
+        return send(res, 409, {
+          error:
+            `replay has no body for call #${n} of ${who}: recording was capped before it, so the ` +
+            `record keeps its size and digest and not its text`,
+          truncated: true,
+          seq: rec.seq,
+          status: rec.status,
+          requestBytes: rec.requestBytes,
+          requestSha256: rec.requestSha256,
+          responseBytes: rec.responseBytes,
+          responseSha256: rec.responseSha256,
         });
       record({ ...rec, ts: new Date(started).toISOString(), replayed: true });
       if (rec.stream) return replayStream(res, rec);

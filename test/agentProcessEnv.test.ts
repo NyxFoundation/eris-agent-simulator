@@ -170,6 +170,22 @@ test("seeds in the operator's environment are not handed to an agent", async () 
   assert.equal(env.ERIS_LAUNCHER_SEED_BPS, "3000");
 });
 
+test("the inference proxy's stats token is not handed to an agent (issue #218)", async () => {
+  const env = await envOfChild({
+    ERIS_INFERENCE_SECRET: "the operator's",
+    ERIS_INFERENCE_STATS_TOKEN: "opens /admin/recording",
+    // Not a credential: the endpoint every agent is told to call.
+    ERIS_INFERENCE_BASE_URL: "http://ascon-inference-proxy:8790",
+  });
+  assert.equal(env.ERIS_INFERENCE_SECRET, undefined);
+  // The proxy joins every agent's network, so this token is what keeps one participant from reading
+  // how often the rest of the field revises.
+  assert.equal(env.ERIS_INFERENCE_STATS_TOKEN, undefined);
+  assert.equal(env.ERIS_INFERENCE_BASE_URL, "http://ascon-inference-proxy:8790");
+  // Its own token, derived from the secret, still arrives.
+  assert.equal(typeof env.ERIS_INFERENCE_TOKEN, "string");
+});
+
 test("the scenario key's file and commitment are not handed to an agent (ADR 0027)", async () => {
   const env = await envOfChild({
     ERIS_SCENARIO_KEY_FILE: "/secrets/practice-scenario-key.yaml",

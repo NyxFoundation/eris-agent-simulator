@@ -63,11 +63,16 @@ const OS_PASSTHROUGH = new Set([
 //   ERIS_PRACTICE_SEED     the practice period's seed, which systemd hands the coordinator.
 //   ERIS_FLOW_SEED         the flow bot's seed (set on the flow process, never on this one).
 //   ERIS_SCENARIO_KEY_*    the scenario key's file and commitment (ADR 0027, core/src/scenarioKey.ts).
+//   ERIS_INFERENCE_STATS_TOKEN  opens the proxy's /admin/recording, which counts the whole field's
+//                          calls and which agents have been capped (issue #218). The proxy is on
+//                          every agent's network by design, so this is the only thing keeping those
+//                          counts out of an agent's reach.
 // Any other ERIS_*_SEED is held back the same way: a seed is never something an agent needs, and
 // neither is anything under ERIS_SCENARIO_KEY.
 const ENVIRONMENT_ONLY_ERIS = new Set([
   "ERIS_AGENT_PRIVATE_KEY",
   "ERIS_INFERENCE_SECRET",
+  "ERIS_INFERENCE_STATS_TOKEN",
   "ERIS_CONFIG",
   "ERIS_PRACTICE_SEED",
   "ERIS_FLOW_SEED",

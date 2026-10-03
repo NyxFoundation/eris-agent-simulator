@@ -1,6 +1,8 @@
 // The proxy process survives a record it cannot write (issue #215). The unit tests cover the server;
 // this one runs the CLI as the operator does, because the failure was the process exiting with code
-// 1 on an unhandled rejection, and only the process can show it no longer does.
+// 1 on an unhandled rejection, and only the process can show it no longer does. It also checks, from
+// outside, where the record's counters live: ERIS_INFERENCE_STATS_TOKEN opens them and nothing else
+// does, because every agent can reach this proxy (issue #218).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -8,6 +10,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+
+const STATS_TOKEN = "operator-stats-token";
 
 test("the CLI keeps serving after a record write fails, and says so on stderr", { timeout: 60_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "eris-proxy-cli-"));
@@ -23,7 +27,11 @@ test("the CLI keeps serving after a record write fails, and says so on stderr", 
   const child = spawn(
     process.execPath,
     ["--import", "tsx", "core/src/cli/inferenceProxy.ts", "--models", models, "--listen", "127.0.0.1:0", "--record", record],
-    { cwd: resolve(import.meta.dirname, ".."), stdio: ["ignore", "ignore", "pipe"] },
+    {
+      cwd: resolve(import.meta.dirname, ".."),
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { ...process.env, ERIS_INFERENCE_STATS_TOKEN: STATS_TOKEN },
+    },
   );
   let stderr = "";
   child.stderr.setEncoding("utf8");
@@ -51,7 +59,15 @@ test("the CLI keeps serving after a record write fails, and says so on stderr", 
   assert.equal(child.exitCode, null, `the proxy exited:\n${stderr}`);
   assert.match(stderr, /record for alice not written \(the call was served\): EISDIR/);
   assert.equal((await call()).status, 502, "and the next call too");
-  const health = (await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()) as { recording: { failures: number } };
+  // /healthz is liveness only: an agent reading `failures` or `calls` there is reading the rest of
+  // the field's activity off the one host it is allowed to talk to.
+  assert.match(stderr, /stats at GET \/admin\/recording/);
+  const base = `http://127.0.0.1:${port}`;
+  assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { ok: true });
+  assert.equal((await fetch(`${base}/admin/recording`)).status, 401);
+  const health = (await (
+    await fetch(`${base}/admin/recording`, { headers: { authorization: `Bearer ${STATS_TOKEN}` } })
+  ).json()) as { recording: { failures: number } };
   assert.equal(health.recording.failures, 2);
   child.kill("SIGTERM");
   await exited;

@@ -15,6 +15,7 @@ agent container ──(internal docker network)──▶ inference-proxy :8790 �
 ```bash
 cp infra/inference-proxy/models.example.yaml infra/inference-proxy/models.yaml   # edit the list
 export ERIS_INFERENCE_SECRET="$(openssl rand -hex 32)"      # shared with the coordinator
+export ERIS_INFERENCE_STATS_TOKEN="$(openssl rand -hex 32)" # yours only: opens GET /admin/recording
 export OPENAI_API_KEY=... ANTHROPIC_API_KEY=... OLLAMA_API_KEY=...
 npm run inference-proxy -- --models infra/inference-proxy/models.yaml --listen 0.0.0.0:8790 \
     --record runs/<competition>/inference
@@ -30,6 +31,7 @@ routes the Ollama, OpenAI-compatible and Anthropic providers through the base UR
 | check | response |
 |---|---|
 | path other than `/api/chat`, `/v1/chat/completions`, `/v1/messages` (`GET /v1/models`, `/healthz` read-only) | 404 |
+| `GET /admin/recording` without the operator's token, or at all when `ERIS_INFERENCE_STATS_TOKEN` is unset | 401 / 404 |
 | missing or wrong `x-eris-agent` + bearer token (when a secret is set) | 401 |
 | `model` not in the list, or on the wrong provider's path | 403 with the allowed names |
 | a stored/previous reference: OpenAI `previous_response_id` `prompt` `store` `metadata` `file_ids` `attachments` `tools` `tool_resources`; Anthropic `container` `mcp_servers` `tools` | 403 naming the key |
@@ -75,23 +77,55 @@ what had arrived and an `error`, and replays the same way: that text, then the c
 **The record is bounded, and its failure is not the proxy's** (issue #215). This proxy is the only
 outbound path an agent has, so a record that cannot be written (a full disk, a permission) costs that
 record and never the call: the call is served, one line goes to stderr per agent per distinct error
-(`record for <agent> not written (the call was served): ENOSPC ...`), and `GET /healthz` counts it
-(`recording.failures`). One call's record is bounded only by the request (4 MiB) and the response
-(`maxStreamBytes`), so at `maxCallsPerMinute` 30 one agent could write about a gibibyte a minute;
-two cumulative caps stop *recording*, not serving:
+(`record for <agent> not written (the call was served): ENOSPC ...`), and the count is on the stats
+path below (`recording.failures`). One call's record is bounded only by the request (4 MiB) and the
+response (`maxStreamBytes`), so at `maxCallsPerMinute` 30 one agent could write about a gibibyte a
+minute; two cumulative caps stop recording *the bodies*, and never serving:
 
 | cap (`models.yaml`) | default | past it |
 |---|---|---|
-| `maxRecordBytesPerAgent` | 268435456 (256 MiB) | that agent's calls are served and no longer recorded |
-| `maxRecordBytesTotal` | 8589934592 (8 GiB), per proxy process | every agent's calls are served and no longer recorded |
+| `maxRecordBytesPerAgent` | 268435456 (256 MiB) | that agent's calls are served, and recorded as stubs |
+| `maxRecordBytesTotal` | 8589934592 (8 GiB), per proxy process | every agent's calls are served, and recorded as stubs |
 
-Neither can be unlimited. When an agent's recording stops, its file ends with one line that says so —
-`{"event":"recording_capped","scope":"agent"|"total","recordedBytes":…,"cap":…,"seq":<first unrecorded call>}`
-— and stderr says it once. Replay skips that line and answers 409 at the first call it has no record
-for, the same honest divergence as a run that asks for more calls than were recorded. `/healthz` reports
-`recording: {enabled, bytes, calls, failures, cappedAgents, totalCapped}` and `handlerErrors` (a request
-the proxy itself failed on: that call got a 500, the process stayed up). The counters are the process's:
-a restart starts them from zero, against the same files.
+Neither can be unlimited. 8 GiB is **not** the per-agent cap times a field: it is 32 agents at 256 MiB,
+and it is sized for what a week of revising actually costs one agent (tens of MiB) across a few hundred
+of them. The first 32 to reach their own ceiling therefore spend everyone's, so an operator who wants
+the per-agent cap to be the only one that ever binds sets the total to it times the size of the field.
+
+**Past a cap the call still leaves a line** (issue #218). Writing nothing there put §2.4's audit up for
+sale: 4 MiB of messages 64 times is the 256 MiB default — two minutes at `maxCallsPerMinute` 30 — and
+every revision after it was served with no trace that it had happened. So the cap takes the bodies and
+leaves the fact. When recording stops for an agent its file gets one line saying so —
+`{"event":"recording_capped","scope":"agent"|"total","recordedBytes":…,"cap":…,"seq":<first call past it>}`,
+also said once on stderr — and every call from then on, that one included, is written as a stub:
+
+```json
+{"ts":"…","agentId":"alice","seq":37,"path":"/v1/chat/completions","model":"gpt-x","provider":"openai",
+ "durationMs":4120,"status":200,"truncated":true,
+ "requestBytes":4194108,"requestSha256":"…","responseBytes":8213,"responseSha256":"…"}
+```
+
+Every field is bounded, so a padded request does not make a longer line: ~400 bytes against a 4 MiB
+record, which still cuts the write rate by four orders of magnitude without cutting the evidence that
+the call was made. The digests are of the JSON the full record would have held in `request` /
+`response`, so a participant's kept copy is checked against a stub exactly as against a full line.
+Replay reads stubs too, and answers **409 at one** — `{"error":"replay has no body for call #37 …",
+"truncated":true,"seq":37,"requestSha256":…}` — rather than letting a later call's answer stand in for
+one that was not kept. A run that asks for more calls than were recorded still gets 409 at the first
+missing one. The stubs' own bytes are not counted against either cap: a cap on them would reopen, one
+level down, the hole they close.
+
+**The counters are the operator's, not the field's** (issue #218). `GET /healthz` answers `{"ok":true}`
+and nothing else, because this proxy joins every agent's network — that is what lets an agent with no
+route out reach a model — so every agent can read every unauthenticated path on it, and `calls` or
+`cappedAgents` there is one participant reading how often the rest are revising. `GET /admin/recording`
+with `Authorization: Bearer $ERIS_INFERENCE_STATS_TOKEN` reports
+`recording: {enabled, bytes, calls, failures, cappedAgents, totalCapped, truncatedCalls, truncatedBytes}`
+and `handlerErrors` (a request the proxy itself failed on: that call got a 500, the process stayed up).
+That token is the operator's alone — it is never handed to an agent, must differ from
+`ERIS_INFERENCE_SECRET` (the proxy refuses to start otherwise), and an agent's own token does not open
+the path. Unset it and the path does not exist. The counters are the process's: a restart starts them
+from zero, against the same files.
 
 ## Network
 

@@ -4,6 +4,12 @@
 // this process's environment turns per-agent authentication on; the coordinator, started with the
 // same secret, hands each agent its token. Upstream API keys are read from the variables the model
 // list names (OPENAI_API_KEY, ANTHROPIC_API_KEY, OLLAMA_API_KEY, ...) -- here, never in an agent.
+//
+// ERIS_INFERENCE_STATS_TOKEN opens GET /admin/recording, which reports what the record has cost so
+// far. It is the operator's own token: it is not handed to any agent and must not be the inference
+// secret, because every agent can reach this proxy and the counts there are a reading of how often
+// the rest of the field is revising (issue #218). Unset, the path does not exist and /healthz
+// answers `{"ok":true}` and nothing else.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -33,9 +39,19 @@ const config = loadProxyConfig(
 const [host, portText] = (flags.listen ?? "127.0.0.1:8790").split(":");
 const port = Number(portText ?? "8790");
 const secret = process.env.ERIS_INFERENCE_SECRET;
+const statsToken = process.env.ERIS_INFERENCE_STATS_TOKEN;
+// One value for both would hand the stats to anything holding the secret and make a typo in the
+// operator's monitoring a forged agent token.
+if (statsToken && secret && statsToken === secret) {
+  console.error(
+    "[inference-proxy] ERIS_INFERENCE_STATS_TOKEN must differ from ERIS_INFERENCE_SECRET",
+  );
+  process.exit(1);
+}
 const server = createInferenceProxy({
   config,
   ...(secret ? { secret } : {}),
+  ...(statsToken ? { statsToken } : {}),
   ...(flags.record ? { recordDir: resolve(process.cwd(), flags.record) } : {}),
   ...(flags.replay ? { replayDir: resolve(process.cwd(), flags.replay) } : {}),
 });
@@ -52,6 +68,7 @@ server.listen(port, host, () => {
   console.error(
     `[inference-proxy] listening on http://${host}:${bound} ` +
       `(${config.models.length} model(s); auth ${secret ? "on" : "OFF — set ERIS_INFERENCE_SECRET"}; ` +
+      `stats ${statsToken ? "at GET /admin/recording" : "off — set ERIS_INFERENCE_STATS_TOKEN"}; ` +
       `${
         flags.replay
           ? `REPLAY from ${flags.replay}`
