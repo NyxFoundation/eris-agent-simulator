@@ -8,9 +8,11 @@ import {
   LiveWeekRefusal,
   isLiveWeekRefusal,
   liveWeekRefusals,
+  publicAccountRefusal,
 } from "../core/src/realtime/liveWeek.js";
 import {
   participantsCanSend,
+  publicTestAddresses,
   type RoleKeys,
 } from "../core/src/realtime/roleKeyGuard.js";
 
@@ -113,4 +115,24 @@ test("the runner tells the refusal from an epoch that failed", () => {
   assert.equal(isLiveWeekRefusal(new LiveWeekRefusal(["x"])), true);
   assert.equal(isLiveWeekRefusal(new Error("epoch failed")), false);
   assert.match(new LiveWeekRefusal(["x"]).message, /--scenario-key public/);
+});
+
+test("anvil's public test accounts must be empty: their keys sign a transfer into any wallet", async () => {
+  const read: string[] = [];
+  const empty = await publicAccountRefusal(async (address) => {
+    read.push(address.toLowerCase());
+    return 0n;
+  });
+  assert.equal(empty, undefined);
+  assert.deepEqual(new Set(read), publicTestAddresses());
+
+  // What `--accounts 10 --balance 1000000` left on the backtest anvil, and what a dump deployed
+  // from the default mnemonic carries in its state.
+  const refusal = await publicAccountRefusal(async (address) =>
+    address.toLowerCase() === ANVIL_0.toLowerCase() ? 10n ** 24n : 0n,
+  );
+  assert.ok(refusal);
+  assert.match(refusal, new RegExp(ANVIL_0.toLowerCase()));
+  assert.match(refusal, /1000000 ETH/);
+  assert.match(refusal, /--accounts 0/);
 });

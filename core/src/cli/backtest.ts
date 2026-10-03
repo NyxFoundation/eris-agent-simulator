@@ -599,10 +599,13 @@ async function main(): Promise<void> {
       "0",
       "--gas-limit",
       "30000000",
+      // No genesis accounts. anvil's default ten come from the public mnemonic -- their keys are in
+      // its banner -- and the gateway relays a transaction from any sender, so 1,000,000 ETH each
+      // was 1,000,000 ETH any participant could transfer to their own wallet, every epoch. The
+      // environment funds every key it signs with itself (coordinator setup); the deployer's balance
+      // is in the dump.
       "--accounts",
-      "10",
-      "--balance",
-      "1000000",
+      "0",
       "--order",
       "fees",
       "--load-state",
@@ -670,6 +673,15 @@ async function main(): Promise<void> {
           effectivePathFor(scenario),
         ]);
       }
+      // The loaded state, before the snapshot every epoch reverts to. The coordinator reads the
+      // same balances again after each epoch's funding.
+      const { publicAccountRefusal, LiveWeekRefusal } = await import(
+        "../realtime/liveWeek.js"
+      );
+      const refusal = await publicAccountRefusal(async (address) =>
+        BigInt(await rpc<string>(rpcUrl, "eth_getBalance", [address, "latest"])),
+      );
+      if (refusal) throw new LiveWeekRefusal([refusal]);
     }
 
     // ---- The scenario matrix ----

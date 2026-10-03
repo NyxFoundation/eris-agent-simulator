@@ -15,14 +15,26 @@
 //     ERIS_AGENT_ISOLATE=1 + ERIS_AGENT_INTERNAL=1 a container shares the host's network and reaches
 //     anvil directly, past the gateway that refuses `anvil_*` / `evm_*`. That was a banner, which is
 //     right for local runs and the reference field and wrong for the week that is scored.
+//   - anvil's public test accounts. Their keys are printed in anvil's banner and the gateway relays
+//     eth_sendRawTransaction from any sender it can verify a signature for, so whatever those ten
+//     addresses hold, every participant holds: one transfer to the agent's own wallet adds it to V_K,
+//     and the epoch's revert puts it back for the next one. The backtest anvil used to create them
+//     with 1,000,000 ETH each (`--accounts 10 --balance 1000000`); it now creates none, and a dump
+//     deployed from the default mnemonic carries them in the state itself. No key here signs for
+//     them, so the check is on the chain: their balances, read before any agent starts.
 //
-// So in the live week both become refusals. The live week is recognised the way the backtest runner
+// So in the live week all three become refusals. The live week is recognised the way the backtest runner
 // already recognises it for the scenario key (ADR 0027): an ordered plan realised under a key file.
 // A rehearsal of the plan runs with --scenario-key public, which is not the live week.
-import type { Address } from "viem";
+import { formatEther, type Address } from "viem";
 import type { AgentSpec } from "@eris/sdk/types.js";
 import { agentSandboxWarning } from "./agentView.js";
-import { checkRoleKeys, type RoleKeys, type RoleKeyUse } from "./roleKeyGuard.js";
+import {
+  checkRoleKeys,
+  publicTestAddresses,
+  type RoleKeys,
+  type RoleKeyUse,
+} from "./roleKeyGuard.js";
 
 /** The matrix runner's override that marks one epoch as the live week's (honoured from nowhere else). */
 export const LIVE_WEEK_OVERRIDE = "ERIS_LIVE_WEEK";
@@ -112,3 +124,24 @@ export function liveWeekRefusals(opts: {
   }
   return reasons;
 }
+
+/**
+ * The refusal for anvil's public test accounts holding ETH on the chain the live week runs on, or
+ * undefined when every one of them is empty. `balanceOf` reads the chain (eth_getBalance at latest).
+ */
+export async function publicAccountRefusal(
+  balanceOf: (address: Address) => Promise<bigint>,
+): Promise<string | undefined> {
+  const funded: string[] = [];
+  for (const address of publicTestAddresses()) {
+    const wei = await balanceOf(address as Address);
+    if (wei > 0n) funded.push(`${address} (${formatEther(wei)} ETH)`);
+  }
+  if (funded.length === 0) return undefined;
+  return (
+    `anvil's public test accounts hold ETH, and their keys are in anvil's banner: ` +
+    `${funded.join(", ")}. Any participant can sign a transfer from them to their own wallet. ` +
+    "Start the chain with --accounts 0 and load a state dump deployed from the secret mnemonic"
+  );
+}
+
