@@ -87,6 +87,8 @@ export async function decide(
   for (const pos of positions.values()) {
     if (pos.done) continue;
     const held = await tokenBalance(ctx.publicClient, pos.pool.token, self);
+    // Could not read (gas-capped, issue #213): nothing to size a sale from this block.
+    if (held === undefined) continue;
     if (held === 0n) {
       if (pos.exiting) pos.done = true;
       continue;

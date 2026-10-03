@@ -921,6 +921,23 @@ ours なのは 2 つだけ（core は無改変）:
 - **環境はエージェント製市場に手を出さない。**`noArb` は有効アダプタの state（= `MARKET_LEGS`）しか
   読まないので構造的に対象外で、`test/agentCreatedMarkets.test.ts` がその境界を検査する。
   帰結: **罠を仕掛ける者は他のエージェントからしか収穫できない**
+- **参加者製コードを実行する read は gas 上限付き**（issue #213。`sdk/src/untrustedRead.ts` が単一の出典、
+  `UNTRUSTED_READ_GAS` = 200,000 = `SimpleLending.EXTERNAL_CALL_GAS` と同じ値で `test/untrustedRead.test.ts`
+  が一致を検査）。対象は lending 市場の oracle `price()` / `owner()`（観測・採点・清算の approve 見積り）、
+  registry エントリの `owner()`、coordinator の ERC-20 判定（`name`/`symbol`/`decimals`）、launch token の
+  `balanceOf` と QuoterV2 経由の見積り（pool の swap 内で token の `transfer` が走る。こちらは
+  `UNTRUSTED_SIMULATION_GAS` = 2M）。**`gas` を付けないと `eth_call` はブロックガスリミット（30M）で走る**ので、
+  ループするコントラクト 1 つで読む側全員が毎ブロック巻き込まれる（実測 anvil 1.7.1: keccak ループ 1 回
+  ~280ms → 上限付き ~3ms）。**Multicall3 には入れない** — aggregate は内側の CALL に残りの 63/64 を渡すので、
+  1 つの罠が同じ batch の後続（正直な oracle）まで欠落させる。1 アドレス 1 `eth_call`（transport の JSON-RPC
+  batching で 1 HTTP）+ batch ごとの期限 `UNTRUSTED_READ_TIMEOUT_MS` = 1 秒。**読めなかった値は欠落**
+  （`price` / `oracleOwner` が無い。0 ではない = 0 価格は全借り手を清算可能に、0 owner は「誰も動かせない」に読める）。
+  coordinator は答えなかったアドレスを `unknown` として登録し `agent_market_read_failed`（out-of-gas / timeout /
+  error。revert は「token でない」の通常回答なので出さない）を**アドレスごとに 1 回**出す。ただし timeout / error は
+  ノードが答えなかっただけでコントラクトの答えではないので、**次の sweep で再判定**し（`CLASSIFY_ATTEMPTS` = 3 回まで。
+  `seen` にはまだ入れない）、1 sweep の判定は `MAX_CLASSIFY_PER_SWEEP` = 64 件まで（残りは繰り越し。期限は batch 全体で
+  1 つなので、CREATE を大量に積んだブロックで同じブロックの正直な token まで `unknown` に固定されていた）。singleton 経由の
+  `isHealthy` / `expectedPosition` はコントラクト側の staticcall 上限で既に守られているので multicall のまま
 - 参照 agent は 6 体: `market-launcher`（正直な作成者。immutable オラクルで作って鐘の前に withdraw）/
   `market-taker`（利用者。`oracleOwner` を読んでから入る）/ `trap-launcher`（自分が握るオラクルで
   90% LLTV の市場を作り、供給された分を借り出す）/ **`vault-keeper`**（正直だがバグ持ちの作成者。
