@@ -2,18 +2,28 @@
 //
 // Encapsulates the responsibilities of the environment daemon called from the coordinator (the agent-side
 // discovery/verification is separated into examples/agents/lib/poolDiscovery.ts / verifyContract.ts):
-//   1. deployVulnPools  : in the setup phase, deploy the factory + all pools (a mix of honest/rigged) and
-//                         issue disclosures/<addr>.json (source+codehash).
-//   2. fundVulnPoolsAt  : at each pool's window (startBlock), fund via cheatcode (burn bait into the reserve)
-//                         and emit pool_created / vulnerability_disclosed into events.jsonl.
+//   1. setupVulnFactory : in the setup phase of *every* run, deploy the factory (owned by the pool wallet)
+//                         and create the disclosures/ directory. Nothing else.
+//   2. stepVulnPools    : at each pool's window, deploy it through the factory; once the deploy lands,
+//                         issue disclosures/<addr>.json (source+codehash), fund it via cheatcode (burn bait
+//                         into the reserve) and emit pool_created / vulnerability_disclosed into events.jsonl.
 //   3. watchVulnSwaps   : every block, scan each pool's Swap logs and emit, as ground-truth, rigged hits
 //                         (vulnerability_exploited) / safe pool executions (safe_pool_captured).
 //
 // Design decisions:
-//   - Do the deploy robustly in setup (before interval mining; auto-mine/sendAndMine) and only "spring up" the
-//     funding via a window cheatcode. Injecting the deploy itself during interval mining would race with mining
-//     (unlike keeper/oracle, a CREATE requires receipt finalization). Before funding, a pool has reserve=0 and
-//     does not look like an opportunity, so the "appearance" as seen by agents coincides with the window funding.
+//   - Nothing about a vuln run is visible before its window. The pools used to be deployed at setup
+//     through createSimplePool / createRiggedPool: from block 0 anyone could count them, read their
+//     addresses, audit them at leisure, and read the answer off the creating transaction's selector
+//     (with the skim threshold and fraction as plain arguments). Now the factory and the disclosures/
+//     directory exist in every run, vuln or not, its owner is funded identically in every run, and a
+//     pool is created at its window by `createPool(initCode)` -- calldata that says no more than the
+//     pool's bytecode does once it exists.
+//   - The deploy is sent at the window's block and lands in the next one; funding follows when the
+//     receipt is in. So a pool appears one block later than its window index, with reserve 0 in its
+//     first block (it does not look like an opportunity until funded, as before).
+//   - The pool wallet is its own key: the oracle sends from admin every block and the registrar from
+//     setup, and two senders on one key race on the nonce. Gas is pinned, because a batch of creates
+//     from one key in one block cannot be estimated against the state before the first lands.
 //   - The codehash depends on the runtime bytecode with immutable values baked in, so it cannot be computed from
 //     the artifact. After deploy, finalize it per-instance via eth_getCode(address) → keccak256 (the agent side
 //     matches it with the same computation; ADR 0014 §5).
@@ -22,15 +32,19 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   decodeEventLog,
+  encodeDeployData,
   encodeFunctionData,
   keccak256,
   type Abi,
   type Address,
   type Hex,
 } from "viem";
-import { dealErc20, sendAndMine } from "@eris/sdk/chain.js";
+import { privateKeyToAccount } from "viem/accounts";
+import { dealErc20 } from "@eris/sdk/chain.js";
+import { readForgeArtifact } from "@eris/sdk/forge.js";
 import { deployContract } from "@eris/sdk/protocols/deploy.js";
 import type { SimConfig } from "../config.js";
+import { environmentKey } from "../walletKeys.js";
 import type { RunLogger } from "../logger.js";
 import { tokenInfo } from "@eris/sdk/markets.js";
 import type { SimContext } from "@eris/sdk/protocols/types.js";
@@ -42,26 +56,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const vulnFactoryAbi = [
   {
     type: "function",
-    name: "createSimplePool",
+    name: "createPool",
     stateMutability: "nonpayable",
-    inputs: [
-      { name: "token0", type: "address" },
-      { name: "token1", type: "address" },
-      { name: "feeBps", type: "uint24" },
-    ],
-    outputs: [{ type: "address" }],
-  },
-  {
-    type: "function",
-    name: "createRiggedPool",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "token0", type: "address" },
-      { name: "token1", type: "address" },
-      { name: "feeBps", type: "uint24" },
-      { name: "rugThreshold", type: "uint256" },
-      { name: "rugBps", type: "uint24" },
-    ],
+    inputs: [{ name: "initCode", type: "bytes" }],
     outputs: [{ type: "address" }],
   },
   {
@@ -90,13 +87,38 @@ export const vulnAmmSwapAbi = [
   },
 ] as const satisfies Abi;
 
+// Gas pinned on each createPool (a pool deploy is well under 1M; the margin is for the factory's
+// read-back calls and the allPools push).
+const GAS_CREATE_POOL = 3_000_000n;
+// Blocks to wait for a submitted deploy before treating it as lost.
+const PENDING_TIMEOUT_BLOCKS = 3;
+// How many times a deploy that reverted or was lost is retried before the pool is given up on.
+const DEPLOY_ATTEMPTS = 3;
+
+/** The environment wallet that owns the factory and deploys the pools. */
+export type VulnPoolWallet = { address: Address; privateKey: Hex };
+
+/**
+ * The pool wallet, keyed like every other environment wallet (issue #189): from the wallet secret,
+ * never from the seed. One per run, vuln or not.
+ */
+export function deriveVulnPoolWallet(): VulnPoolWallet {
+  const privateKey = environmentKey("vuln-pools", "owner");
+  return { address: privateKeyToAccount(privateKey).address, privateKey };
+}
+
 export type VulnPoolRuntime = {
-  pool: Address;
   meta: ResolvedVulnPool;
   token0: Address; // base
   token1: Address; // USDC (quote)
   rugThresholdUnits: bigint; // rigged skim threshold (denominated in tokenIn=USDC; 0 for safe)
-  codehash: Hex;
+  // pending: before its window / deploying: createPool sent / deployed: on-chain, not yet funded /
+  // funded: live (or given up on funding) / failed: the deploy never landed.
+  phase: "pending" | "deploying" | "deployed" | "funded" | "failed";
+  deploy?: { hash: Hex; blockIndex: number };
+  attempts: number;
+  pool?: Address;
+  codehash?: Hex;
   funded: boolean;
 };
 
@@ -104,6 +126,7 @@ export type VulnRuntime = {
   factory: Address;
   factoryDeployBlock: bigint;
   disclosuresDir: string;
+  owner: VulnPoolWallet;
   pools: VulnPoolRuntime[];
 };
 
@@ -136,84 +159,66 @@ function rugThresholdUnits(config: SimConfig, frac: number): bigint {
   return (config.initialUsdcUnits * scaled) / 1_000_000n;
 }
 
-// setup: deploy the factory + all pools and issue disclosures (funding is done at the window).
-export async function deployVulnPools(
+// setup (every run): deploy the factory owned by the pool wallet and create the disclosures/ directory.
+// Pools come later, one by one at their windows (stepVulnPools). A run with no vuln events ends up with an
+// empty factory and an empty directory -- indistinguishable, before a window, from a run that has them.
+export async function setupVulnFactory(
   ctx: SimContext,
   schedule: VulnSchedule,
   config: SimConfig,
+  owner: VulnPoolWallet,
+  runDir: string,
   logger: RunLogger,
 ): Promise<VulnRuntime> {
-  const { publicClient, walletClient, chain, adminPk } = ctx;
-  const factory = await deployContract(ctx, "VulnPoolFactory", []);
-  const factoryDeployBlock = await publicClient.getBlockNumber();
+  const factory = await deployContract(ctx, "VulnPoolFactory", [owner.address]);
+  const factoryDeployBlock = await ctx.publicClient.getBlockNumber();
   logger.event({
     type: "vuln_factory_deployed",
     address: factory,
+    owner: owner.address,
     deployBlock: factoryDeployBlock.toString(),
   });
 
-  const disclosuresDir = join(logger.runDir, "disclosures");
+  const disclosuresDir = join(runDir, "disclosures");
   mkdirSync(disclosuresDir, { recursive: true });
 
   const usdc = tokenInfo("USDC").address;
-  const feeBps = config.vulnPoolFeeBps;
-  const pools: VulnPoolRuntime[] = [];
-
-  for (const meta of schedule.pools()) {
-    const base = tokenInfo(meta.base).address;
-    const threshold = meta.rigged
+  const pools: VulnPoolRuntime[] = schedule.pools().map((meta) => ({
+    meta,
+    token0: tokenInfo(meta.base).address,
+    token1: usdc,
+    rugThresholdUnits: meta.rigged
       ? rugThresholdUnits(config, meta.rugThresholdFrac)
-      : 0n;
-    const data = meta.rigged
-      ? encodeFunctionData({
-          abi: vulnFactoryAbi,
-          functionName: "createRiggedPool",
-          args: [base, usdc, feeBps, threshold, meta.rugBps],
-        })
-      : encodeFunctionData({
-          abi: vulnFactoryAbi,
-          functionName: "createSimplePool",
-          args: [base, usdc, feeBps],
-        });
-    const hash = await sendAndMine(publicClient, walletClient, chain, adminPk, {
-      to: factory,
-      data,
-    });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash });
-    const pool = extractPoolAddress(receipt.logs, factory);
-    if (!pool) throw new Error(`vuln pool #${meta.poolIndex} deploy failed`);
-
-    // per-instance codehash (runtime bytecode after immutables are baked in; ADR 0014 §5).
-    const code = (await publicClient.getCode({ address: pool })) ?? "0x";
-    const codehash = keccak256(code as Hex);
-
-    // disclosure record (equivalent to a production explorer; the agent matches the codehash via eth_getCode).
-    // The source is neutralized (comments stripped, contract name unified to LiquidityPool) = rigged/safe cannot
-    // be told apart without reading the swap logic. The ground-truth (rigged) is held only on the events.jsonl side.
-    const disclosure = {
-      address: pool,
-      sourceCode: sanitizedSource(meta.rigged ? "RiggedAMM" : "SimpleAMM"),
-      contractName: "LiquidityPool",
-      compiler: "0.8.20",
-      codehash,
-    };
-    writeFileSync(
-      join(disclosuresDir, `${pool.toLowerCase()}.json`),
-      `${JSON.stringify(disclosure, null, 2)}\n`,
-    );
-
-    pools.push({
-      pool,
-      meta,
-      token0: base,
-      token1: usdc,
-      rugThresholdUnits: threshold,
-      codehash,
-      funded: false,
-    });
+      : 0n,
+    phase: "pending" as const,
+    attempts: 0,
+    funded: false,
+  }));
+  // Read the artifacts once here so a missing build fails at setup, not on the window's block.
+  if (pools.length > 0) {
+    readForgeArtifact("SimpleAMM");
+    readForgeArtifact("RiggedAMM");
   }
+  return { factory, factoryDeployBlock, disclosuresDir, owner, pools };
+}
 
-  return { factory, factoryDeployBlock, disclosuresDir, pools };
+// The pool's init code: the contract's creation bytecode plus its constructor arguments. Both kinds
+// go through the same factory entry point, so this is the only place the kind is decided.
+function poolInitCode(p: VulnPoolRuntime, feeBps: number): Hex {
+  if (p.meta.rigged) {
+    const { abi, bytecode } = readForgeArtifact("RiggedAMM");
+    return encodeDeployData({
+      abi,
+      bytecode,
+      args: [p.token0, p.token1, feeBps, p.rugThresholdUnits, p.meta.rugBps],
+    } as never);
+  }
+  const { abi, bytecode } = readForgeArtifact("SimpleAMM");
+  return encodeDeployData({
+    abi,
+    bytecode,
+    args: [p.token0, p.token1, feeBps],
+  } as never);
 }
 
 function extractPoolAddress(
@@ -238,11 +243,177 @@ function extractPoolAddress(
   return undefined;
 }
 
-// window: burn reserve into the pools that "spring up" at this blockIndex (cheatcode), making the bait-laden
-// opportunity appear. fair is per-base (fairByBase). Emits pool_created / vulnerability_disclosed.
-export async function fundVulnPoolsAt(
+/**
+ * One block of the vuln schedule: settle the deploys sent earlier (disclose and fund the ones that
+ * landed), then send a createPool for every pool whose window has opened. Returns the hashes it sent,
+ * for blocks.csv attribution.
+ *
+ * Window matching is ">=" rather than exact: if the coordinator's onBlock drops a block that arrived
+ * while processing, the window block's blockIndex can be skipped (a pool must not wait forever).
+ */
+export async function stepVulnPools(
   ctx: SimContext,
   runtime: VulnRuntime,
+  blockIndex: number,
+  blockNumber: number,
+  fairByBase: Record<string, number>,
+  config: SimConfig,
+  opts: { priorityFeeWei: bigint },
+  logger: RunLogger,
+): Promise<Hex[]> {
+  for (const p of runtime.pools) {
+    if (p.phase === "deploying")
+      await settleDeploy(ctx, runtime, p, blockIndex, logger);
+    // Funding failures are isolated per pool (fundPool catches), so one pool's dealErc20 failure does
+    // not drag down the others; an unfunded pool is retried on the next block.
+    if (p.phase === "deployed")
+      await fundPool(
+        ctx,
+        p,
+        blockIndex,
+        blockNumber,
+        fairByBase,
+        config,
+        logger,
+      );
+  }
+  const due = runtime.pools.filter(
+    (p) => p.phase === "pending" && p.meta.startBlock <= blockIndex,
+  );
+  if (due.length === 0) return [];
+  return sendDeploys(ctx, runtime, due, blockIndex, config, opts, logger);
+}
+
+async function sendDeploys(
+  ctx: SimContext,
+  runtime: VulnRuntime,
+  due: VulnPoolRuntime[],
+  blockIndex: number,
+  config: SimConfig,
+  opts: { priorityFeeWei: bigint },
+  logger: RunLogger,
+): Promise<Hex[]> {
+  const account = privateKeyToAccount(runtime.owner.privateKey);
+  let nonce = await ctx.publicClient.getTransactionCount({
+    address: account.address,
+    blockTag: "pending",
+  });
+  const block = await ctx.publicClient.getBlock();
+  const baseFee = block.baseFeePerGas ?? 0n;
+  const hashes: Hex[] = [];
+  for (const p of due) {
+    p.attempts++;
+    try {
+      const hash = await ctx.walletClient.sendTransaction({
+        account,
+        chain: ctx.chain,
+        to: runtime.factory,
+        data: encodeFunctionData({
+          abi: vulnFactoryAbi,
+          functionName: "createPool",
+          args: [poolInitCode(p, config.vulnPoolFeeBps)],
+        }),
+        gas: GAS_CREATE_POOL,
+        nonce: nonce++,
+        maxFeePerGas: baseFee + opts.priorityFeeWei,
+        maxPriorityFeePerGas: opts.priorityFeeWei,
+      });
+      p.deploy = { hash, blockIndex };
+      p.phase = "deploying";
+      hashes.push(hash);
+    } catch (error) {
+      // Not sent, so the nonce was not used: hand it to the next pool.
+      nonce--;
+      logger.event({
+        type: "vuln_deploy_failed",
+        poolIndex: p.meta.poolIndex,
+        base: p.meta.base,
+        blockIndex,
+        attempt: p.attempts,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (p.attempts >= DEPLOY_ATTEMPTS) p.phase = "failed";
+    }
+  }
+  return hashes;
+}
+
+async function settleDeploy(
+  ctx: SimContext,
+  runtime: VulnRuntime,
+  p: VulnPoolRuntime,
+  blockIndex: number,
+  logger: RunLogger,
+): Promise<void> {
+  const deploy = p.deploy;
+  if (!deploy) {
+    p.phase = "pending";
+    return;
+  }
+  let receipt: Awaited<
+    ReturnType<typeof ctx.publicClient.getTransactionReceipt>
+  > | null = null;
+  try {
+    receipt = await ctx.publicClient.getTransactionReceipt({
+      hash: deploy.hash,
+    });
+  } catch {
+    receipt = null;
+  }
+  const pool =
+    receipt?.status === "success"
+      ? extractPoolAddress(receipt.logs, runtime.factory)
+      : undefined;
+  if (
+    receipt === null &&
+    blockIndex - deploy.blockIndex < PENDING_TIMEOUT_BLOCKS
+  )
+    return;
+  if (!pool) {
+    logger.event({
+      type: "vuln_deploy_failed",
+      poolIndex: p.meta.poolIndex,
+      base: p.meta.base,
+      blockIndex,
+      attempt: p.attempts,
+      hash: deploy.hash,
+      error:
+        receipt === null ? "deploy not mined in time" : "createPool reverted",
+    });
+    p.deploy = undefined;
+    p.phase = p.attempts >= DEPLOY_ATTEMPTS ? "failed" : "pending";
+    return;
+  }
+  // per-instance codehash (runtime bytecode after immutables are baked in; ADR 0014 §5).
+  const code = (await ctx.publicClient.getCode({ address: pool })) ?? "0x";
+  const codehash = keccak256(code as Hex);
+  // disclosure record (equivalent to a production explorer; the agent matches the codehash via eth_getCode).
+  // The source is neutralized (comments stripped, contract name unified to LiquidityPool) = rigged/safe cannot
+  // be told apart without reading the swap logic. The ground-truth (rigged) is held only on the events.jsonl side.
+  // Written when the pool exists, not at setup: a disclosure is the pool's existence, and the directory is
+  // readable by every agent from block 0.
+  const disclosure = {
+    address: pool,
+    sourceCode: sanitizedSource(p.meta.rigged ? "RiggedAMM" : "SimpleAMM"),
+    contractName: "LiquidityPool",
+    compiler: "0.8.20",
+    codehash,
+  };
+  writeFileSync(
+    join(runtime.disclosuresDir, `${pool.toLowerCase()}.json`),
+    `${JSON.stringify(disclosure, null, 2)}\n`,
+  );
+  p.pool = pool;
+  p.codehash = codehash;
+  p.deploy = undefined;
+  p.phase = "deployed";
+}
+
+// Burn reserve into a deployed pool (cheatcode; no mine needed), making the bait-laden opportunity appear on
+// this block. fair is per-base (fairByBase). Emits pool_created / vulnerability_disclosed.
+async function fundPool(
+  ctx: SimContext,
+  p: VulnPoolRuntime,
   blockIndex: number,
   blockNumber: number,
   fairByBase: Record<string, number>,
@@ -250,87 +421,81 @@ export async function fundVulnPoolsAt(
   logger: RunLogger,
 ): Promise<void> {
   const { publicClient } = ctx;
-  for (const p of runtime.pools) {
-    // Fund exactly once at the first processed block at or after startBlock (funded latch). It uses ">=" rather
-    // than an exact match because if the coordinator's onBlock drops a block that arrived while processing, the
-    // window block's blockIndex can be skipped (prevents that pool from being funded forever).
-    if (p.funded || p.meta.startBlock > blockIndex) continue;
-    // Isolate exceptions per pool (so one pool's dealErc20 failure does not drag down other pools' funding at the
-    // same blockIndex). startBlock is shared within an event, so multiple pools cluster on the same block.
-    try {
-      const fair = fairByBase[p.meta.base];
-      if (!fair || fair <= 0) {
-        // In practice fairPrices includes all bases so this is not hit, but avoid a silent disappearance and leave a diagnostic.
-        logger.event({
-          type: "vuln_fund_skipped",
-          pool: p.pool,
-          base: p.meta.base,
-          reason: "fair price missing or non-positive",
-          blockIndex,
-        });
-        p.funded = true; // fair is unchanged within the same block even on retry. Latch to avoid an infinite loop.
-        continue;
-      }
-      const baseDec = tokenInfo(p.meta.base).decimals;
-      const baseUnit = 10n ** BigInt(baseDec);
-      // reserve: on the base side, stack liquidity-equivalent (denominated in USDC). On the quote side, stack at
-      // the ratio that makes base look baitBps cheaper than fair (poolPrice = fair·(1−bait)) → the agent can buy
-      // "cheap base".
-      const priceScaled = BigInt(Math.round(fair * 1_000_000));
-      // baitBps is already limited to <=9000 at parse time, but double-guard by confirming baitFactor>0.
-      const baitFactor = Math.max(0.01, 1 - p.meta.baitBps / 10_000);
-      const poolPriceScaled = BigInt(Math.round(fair * baitFactor * 1_000_000));
-      if (priceScaled <= 0n || poolPriceScaled <= 0n) {
-        p.funded = true;
-        continue;
-      }
-      const reserveBaseWei =
-        (config.vulnPoolLiquidityUsdcUnits * baseUnit) / priceScaled;
-      const reserveQuoteUnits = (reserveBaseWei * poolPriceScaled) / baseUnit;
-
-      await dealErc20(publicClient, p.token0, p.pool, reserveBaseWei);
-      await dealErc20(publicClient, p.token1, p.pool, reserveQuoteUnits);
-      p.funded = true;
-
-      const impliedPrice = fair * baitFactor;
-      // ground-truth (for scoring): includes rigged / rug parameters.
+  const pool = p.pool as Address;
+  try {
+    const fair = fairByBase[p.meta.base];
+    if (!fair || fair <= 0) {
+      // In practice fairPrices includes all bases so this is not hit, but avoid a silent disappearance and leave a diagnostic.
       logger.event({
-        type: "pool_created",
-        pool: p.pool,
+        type: "vuln_fund_skipped",
+        pool,
         base: p.meta.base,
-        quote: "USDC",
-        rigged: p.meta.rigged,
-        feeBps: config.vulnPoolFeeBps,
-        baitBps: p.meta.baitBps,
-        rugBps: p.meta.rigged ? p.meta.rugBps : 0,
-        rugThresholdUnits: p.rugThresholdUnits.toString(),
-        eventIndex: p.meta.eventIndex,
-        blockNumber,
+        reason: "fair price missing or non-positive",
         blockIndex,
       });
-      // Disclosure (the agent does an on-demand lookup of disclosures/<addr>.json; this is the appearance record).
-      logger.event({
-        type: "vulnerability_disclosed",
-        pool: p.pool,
-        base: p.meta.base,
-        codehash: p.codehash,
-        reserveBaseWei: reserveBaseWei.toString(),
-        reserveQuoteUnits: reserveQuoteUnits.toString(),
-        impliedPrice,
-        fair,
-        baitBps: p.meta.baitBps,
-        blockNumber,
-        blockIndex,
-      });
-    } catch (error) {
-      logger.event({
-        type: "vuln_fund_failed",
-        pool: p.pool,
-        base: p.meta.base,
-        blockIndex,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      p.phase = "funded"; // fair is unchanged within the same block even on retry. Latch to avoid an infinite loop.
+      return;
     }
+    const baseDec = tokenInfo(p.meta.base).decimals;
+    const baseUnit = 10n ** BigInt(baseDec);
+    // reserve: on the base side, stack liquidity-equivalent (denominated in USDC). On the quote side, stack at
+    // the ratio that makes base look baitBps cheaper than fair (poolPrice = fair·(1−bait)) → the agent can buy
+    // "cheap base".
+    const priceScaled = BigInt(Math.round(fair * 1_000_000));
+    // baitBps is already limited to <=9000 at parse time, but double-guard by confirming baitFactor>0.
+    const baitFactor = Math.max(0.01, 1 - p.meta.baitBps / 10_000);
+    const poolPriceScaled = BigInt(Math.round(fair * baitFactor * 1_000_000));
+    if (priceScaled <= 0n || poolPriceScaled <= 0n) {
+      p.phase = "funded";
+      return;
+    }
+    const reserveBaseWei =
+      (config.vulnPoolLiquidityUsdcUnits * baseUnit) / priceScaled;
+    const reserveQuoteUnits = (reserveBaseWei * poolPriceScaled) / baseUnit;
+
+    await dealErc20(publicClient, p.token0, pool, reserveBaseWei);
+    await dealErc20(publicClient, p.token1, pool, reserveQuoteUnits);
+    p.funded = true;
+    p.phase = "funded";
+
+    const impliedPrice = fair * baitFactor;
+    // ground-truth (for scoring): includes rigged / rug parameters.
+    logger.event({
+      type: "pool_created",
+      pool: p.pool,
+      base: p.meta.base,
+      quote: "USDC",
+      rigged: p.meta.rigged,
+      feeBps: config.vulnPoolFeeBps,
+      baitBps: p.meta.baitBps,
+      rugBps: p.meta.rigged ? p.meta.rugBps : 0,
+      rugThresholdUnits: p.rugThresholdUnits.toString(),
+      eventIndex: p.meta.eventIndex,
+      blockNumber,
+      blockIndex,
+    });
+    // Disclosure (the agent does an on-demand lookup of disclosures/<addr>.json; this is the appearance record).
+    logger.event({
+      type: "vulnerability_disclosed",
+      pool: p.pool,
+      base: p.meta.base,
+      codehash: p.codehash,
+      reserveBaseWei: reserveBaseWei.toString(),
+      reserveQuoteUnits: reserveQuoteUnits.toString(),
+      impliedPrice,
+      fair,
+      baitBps: p.meta.baitBps,
+      blockNumber,
+      blockIndex,
+    });
+  } catch (error) {
+    logger.event({
+      type: "vuln_fund_failed",
+      pool: p.pool,
+      base: p.meta.base,
+      blockIndex,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -345,7 +510,10 @@ export async function watchVulnSwaps(
 ): Promise<void> {
   if (fromBlock > toBlock) return;
   const { publicClient } = ctx;
-  const funded = runtime.pools.filter((p) => p.funded);
+  const funded = runtime.pools.filter(
+    (p): p is VulnPoolRuntime & { pool: Address } =>
+      p.funded && p.pool !== undefined,
+  );
   if (funded.length === 0) return;
   const byAddress = new Map(funded.map((p) => [p.pool.toLowerCase(), p]));
   const logs = await publicClient.getLogs({

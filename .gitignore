@@ -23,7 +23,7 @@ config/*.yaml
 runs/
 cache/
 out/
-node_modules/
+node_modules
 __pycache__/
 *.pyc
 .venv/

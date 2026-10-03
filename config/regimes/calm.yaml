@@ -91,6 +91,16 @@ flow:
   baseMax: { WBTC: "5000000" } # 0.05 BTC (8 decimals)
   baseInformedMax: { WBTC: "10000000" } # 0.1 BTC: matches the 2 WETH Uniswap informed cap
 
+# On in every official regime, not only `launch`: the agent's config carries this section and the
+# runtime is handed the registry's address, so a regime that left it off would be told apart from
+# `launch` at the first block (and a participant could probe it by deploying a token and watching
+# whether it gets listed). Same values as launch.yaml; test/regimeStartInvariance.test.ts holds them equal.
+agentMarkets:
+  enabled: true
+  registrationsPerBlock: 8
+  maxTxGas: "10000000"
+  maxAgentBlockGas: "10000000"
+
 agents:
   - id: noop
     wallet: AGENT1_PRIVATE_KEY

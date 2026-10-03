@@ -252,7 +252,7 @@ same rule, and the RPC gateway refuses what does not:
 |---|---|
 | EIP-1559 / 4844 / 7702 (`maxFeePerGas`, `maxPriorityFeePerGas`) | `maxFeePerGas` **equal to** (never above) `maxPriorityFeePerGas`, and that ≤ the manifest's `limits.maxPriorityFeeWei` (5 gwei) |
 | legacy / EIP-2930 (`gasPrice`) | `gasPrice` ≤ `limits.maxPriorityFeeWei` |
-| any | gas limit ≤ 30,000,000 |
+| any | gas limit ≤ 10,000,000 |
 
 ```ts
 // viem: name both fields, with the same value

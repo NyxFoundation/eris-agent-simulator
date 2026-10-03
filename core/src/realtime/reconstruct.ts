@@ -45,7 +45,7 @@ import type {
   ValuationRun,
 } from "@eris/sdk/protocols/types.js";
 import type { BalanceSnapshot, ProtocolId } from "@eris/sdk/types.js";
-import { firstBoundaryV0 } from "../scoring/endowmentV0.js";
+import { firstBoundaryV0, type V0Rule } from "../scoring/endowmentV0.js";
 import { fromPriceFeedAnswer, priceFeedAbi } from "./priceFeed.js";
 import { readRegistryEntries } from "@eris/sdk/marketRegistry.js";
 import {
@@ -1094,6 +1094,9 @@ export async function reconstructValueSeries(opts: {
   // the value series -- an EOA sweep does not see them and no adapter claims them -- and the whole
   // point of reporting them is that a zero must never be mistaken for a trading loss.
   marketRegistry?: Address;
+  // How V_0 treats a measured value above the endowment (scoring/endowmentV0.ts): the live
+  // scorer's rule, so the two series still agree at the first boundary. Default floor.
+  v0Rule?: V0Rule;
 }): Promise<ReconstructionMeta> {
   const {
     publicClient,
@@ -1108,6 +1111,7 @@ export async function reconstructValueSeries(opts: {
     intervalBlocks = 0,
     markMedianBlocks = 0,
     marketRegistry,
+    v0Rule,
   } = opts;
   const started = Date.now();
   let failedReads = 0;
@@ -1231,6 +1235,7 @@ export async function reconstructValueSeries(opts: {
           ? (firstBoundaryV0(
               total,
               endowment ? endowmentValueAt(endowment, snapshot) : undefined,
+              v0Rule,
             ).valueUsdc ?? total)
           : total;
       if (!alphaFirst.has(id))
@@ -1245,6 +1250,7 @@ export async function reconstructValueSeries(opts: {
                       stablePrices: snapshot.stablePrices,
                     })
                   : undefined,
+                v0Rule,
               ).valueUsdc ?? alphaValueUsdc)
             : alphaValueUsdc,
         );

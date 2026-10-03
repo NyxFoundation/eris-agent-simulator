@@ -11,7 +11,7 @@
 //
 // Env: PORT (8546) UPSTREAM (http://127.0.0.1:8545) ENV_NAME (live) LOG_FILE (append; else stdout)
 //      RPC_KEYS_FILE (per-participant keys; setting it makes X-ASCON-Key mandatory)
-//      RPC_MAX_TX_GAS (30000000) RPC_MAX_PRIORITY_FEE_WEI (5000000000; 0 disables the fee cap only)
+//      RPC_MAX_TX_GAS (10000000) RPC_MAX_PRIORITY_FEE_WEI (5000000000; 0 disables the fee cap only)
 //      RPC_MAX_BODY_BYTES (4194304) largest request body accepted; over it is 413 and the socket closes
 import http from "node:http";
 import { createWriteStream, writeFileSync, renameSync, readFileSync, statSync } from "node:fs";
@@ -191,7 +191,7 @@ let paramsDenied = 0;   // bodies past MAX_PARAM_DEPTH / MAX_PARAM_NODES
 // anything and without trusting the sender. Refusing up front is strictly better than detecting
 // afterwards: by the time blocks.csv shows it, the block it starved is gone. The post-run check in
 // core/src/postRunCheck.ts stays as the authority (a self-hosted participant can bypass a gateway).
-const MAX_TX_GAS = BigInt(process.env.RPC_MAX_TX_GAS ?? "30000000");   // 0 disables. Same number as SimConfig.maxTxGas / ERIS_MAX_TX_GAS
+const MAX_TX_GAS = BigInt(process.env.RPC_MAX_TX_GAS ?? "10000000");   // 0 disables. Same number as SimConfig.maxTxGas / ERIS_MAX_TX_GAS
 let gasDenied = 0;
 
 // The over-cap transaction in a request, if any. Returns its gas limit; null when everything is fine.

@@ -18,6 +18,7 @@ import {
 import { compareIntervalSeries } from "../core/src/realtime/coordinator.js";
 import { RunLogger } from "../core/src/logger.js";
 import type { IntervalSeries } from "../core/src/intervalSeries.js";
+import type { V0Rule } from "../core/src/scoring/endowmentV0.js";
 import { TOKENS } from "@eris/sdk/constants.js";
 
 const AGENTS = [
@@ -289,6 +290,7 @@ function flooredFixture(opts: {
   valueAt: (block: number) => number;
   endowments: Record<string, number | undefined>;
   failAt?: Set<number>;
+  v0Rule?: V0Rule;
 }) {
   return new LiveScorer({
     publicClient: fakeClient(opts),
@@ -306,6 +308,7 @@ function flooredFixture(opts: {
     intervalBlocks: 4,
     markMedianBlocks: 0,
     sampleMarket: false,
+    ...(opts.v0Rule ? { v0Rule: opts.v0Rule } : {}),
   });
 }
 
@@ -355,6 +358,31 @@ test("a chain that shows more than the endowment at the first boundary keeps it"
   assert.deepEqual(scorer.series()?.valuesByAgent.a, [130, 130]);
   assert.equal(scorer.firstBoundary("a")?.source, "measured");
   assert.equal(scorer.firstBoundary("a")?.endowmentUsdc, 100);
+});
+
+test("a scenario pins V_0 to the endowment: a gift before the bell is not subtracted", async () => {
+  // The gift attack on the floor: someone hands `a` an LP worth 30 before boundary 0 and drains it
+  // during the epoch. Floored, V_0 = 130 and P = 100 − 130 = −30 for doing nothing. Pinned, V_0 is
+  // the 100 the environment gave, and the gift nets out.
+  const root = tmp();
+  const scorer = flooredFixture({
+    runDir: root,
+    valueAt: (b) => (b === 100 ? 130 : 100),
+    endowments: { a: 100, b: undefined },
+    v0Rule: "pinned",
+  });
+  for (let b = 100; b <= 108; b++) await scorer.onBlock(b);
+  const series = scorer.series();
+  assert.deepEqual(series?.valuesByAgent.a, [100, 100, 100]);
+  assert.deepEqual(scorer.firstBoundary("a"), {
+    valueUsdc: 100,
+    source: "endowment",
+    measuredUsdc: 130,
+    endowmentUsdc: 100,
+  });
+  // An agent the environment did not fund has nothing to pin to: measured, as under the floor.
+  assert.deepEqual(series?.valuesByAgent.b, [130, 100, 100]);
+  assert.equal(scorer.firstBoundary("b")?.source, "measured");
 });
 
 test("when the run's first boundary could not be read, no later boundary is floored", async () => {
@@ -439,4 +467,47 @@ test("the sweep floors the same boundary at the same endowment, so the two serie
   // Alpha's first cross-section is floored too: a parked basket is not β-removed skill.
   assert.equal(swept.alphaByAgent.a, 8);
   assert.equal(swept.alphaByAgent.b, 78);
+});
+
+test("the sweep pins the same boundary when the live scorer does, so the two still agree", async () => {
+  const { reconstructValueSeries } = await import(
+    "../core/src/realtime/reconstruct.js"
+  );
+  const root = tmp();
+  const valueAt = (b: number) => (b === 100 ? 130 : b);
+  const live = flooredFixture({
+    runDir: root,
+    valueAt,
+    endowments: { a: 100, b: undefined },
+    v0Rule: "pinned",
+  });
+  for (let b = 100; b <= 108; b++) await live.onBlock(b);
+  const sweepClient = {
+    ...(fakeClient({ valueAt }) as unknown as Record<string, unknown>),
+    readContract: async ({ functionName }: { functionName: string }) =>
+      functionName === "latestAnswer" ? 3000n * 10n ** 8n : 0n,
+    getLogs: async () => [],
+  } as never;
+  const swept = await reconstructValueSeries({
+    publicClient: sweepClient,
+    logger: new RunLogger(root, "sweep"),
+    agents: AGENTS.map((a) => ({
+      ...a,
+      ...(a.id === "a" ? { endowment: usdcEndowment(100) } : {}),
+    })),
+    enabledIds: [],
+    activeStables: [TOKENS.USDC.address],
+    priceFeed: "0x3333333333333333333333333333333333333333",
+    fromBlock: 100,
+    toBlock: 108,
+    scoreEvery: 4,
+    intervalBlocks: 4,
+    markMedianBlocks: 0,
+    v0Rule: "pinned",
+  });
+  assert.deepEqual(swept.intervalSeries?.valuesByAgent.a, [100, 104, 108]);
+  const agreement = compareIntervalSeries(live.series()!, swept.intervalSeries!);
+  assert.equal(agreement.maxAbsDiffUsdc, 0);
+  // Alpha's first cross-section is pinned the same way.
+  assert.equal(swept.alphaByAgent.a, 8);
 });

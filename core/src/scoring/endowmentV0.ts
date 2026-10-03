@@ -22,6 +22,18 @@
 // the identity on a fresh world. The one asymmetry is a gain made before the bell, which is not
 // counted: the epoch's clock had not started. Every later boundary is measured as before.
 //
+// Pinned rather than floored when the run is one scenario of a matrix (`resetUnit: scenario`). The
+// floor's upper side reads value the agent holds above its endowment, and in a world built fresh for
+// the epoch nothing put it there but a transaction sent before the bell -- possibly someone else's.
+// An attacker can hand the victim an LP NFT on a pool of its own token before boundary 0 (an EOA
+// cannot refuse an ERC-721), inflating the victim's V_0 by W; during the epoch it sells its token
+// into that pool and takes the W back. Under the floor the victim's P is about −W for doing
+// nothing, and the attacker's own pre-bell spend of W is absorbed by its floor, so its P is about 0:
+// a free −W on a competitor, in a field scored relative to itself. Pinned, the gift is part of the
+// epoch -- +W at the first boundary is no longer subtracted, −W when it is drained -- and nets out.
+// The carried positions the upper side exists for only occur on a continuous chain, which keeps
+// the floor. The measured value is still recorded beside V_0, and the matrix flags the gap.
+//
 // Shared by the live scorer and the post-run sweep so that `interval_series_agreement` still
 // compares the same rule applied to the same block. The endowment reaches this already valued at
 // the boundary's marks (reconstruct.ts endowmentValueAt, the one place both readers price it).
@@ -36,6 +48,19 @@
 
 /** Which side of the floor V_0 came from. Recorded beside P so a reader can tell. */
 export type V0Source = "endowment" | "measured";
+
+/**
+ * How V_0 relates the endowment to the chain. `floor`: max(endowment, measured), for a continuous
+ * chain where positions carried across a restart are the agent's. `pinned`: the endowment alone,
+ * for a world built fresh for the epoch (`resetUnit: scenario`), where value above the endowment at
+ * the first boundary can only be a pre-bell transaction -- possibly a gift meant to be taken back.
+ */
+export type V0Rule = "floor" | "pinned";
+
+/** The V_0 rule a run's reset unit calls for. */
+export function v0RuleFor(resetUnit: "continuous" | "scenario"): V0Rule {
+  return resetUnit === "scenario" ? "pinned" : "floor";
+}
 
 export type FirstBoundaryV0 = {
   /** V_0 as the series carries it: max(endowment, measured). Null when neither was available. */
@@ -53,10 +78,12 @@ export type FirstBoundaryV0 = {
  * `measuredUsdc` is the agent's value read off the chain at that block; `endowmentUsdc` is what
  * the environment handed it at funding, valued at that same block's marks (undefined for an agent
  * it did not fund, such as one registered mid-period and first seen at a later boundary).
+ * `rule` decides whether a measured value above the endowment counts (see V0Rule).
  */
 export function firstBoundaryV0(
   measuredUsdc: number | null,
   endowmentUsdc: number | undefined,
+  rule: V0Rule = "floor",
 ): FirstBoundaryV0 {
   if (endowmentUsdc === undefined || !Number.isFinite(endowmentUsdc))
     return { valueUsdc: measuredUsdc, source: "measured", measuredUsdc };
@@ -66,8 +93,8 @@ export function firstBoundaryV0(
       : null;
   // The chain showing more than the endowment is value the environment can see and did not give
   // (positions carried into a continuous period): it counts. Showing less is the case this exists
-  // for, and the endowment stands.
-  if (measured !== null && measured > endowmentUsdc)
+  // for, and the endowment stands. Pinned, the chain showing more is not believed either.
+  if (rule === "floor" && measured !== null && measured > endowmentUsdc)
     return {
       valueUsdc: measured,
       source: "measured",

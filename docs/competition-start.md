@@ -462,7 +462,7 @@ obs.limits                      // priority fee の既定値と上限、slippage
 
 | どこから来るか | 何が制限されるか | 破るとどうなるか |
 |---|---|---|
-| ランタイム（送信前に検証する） | アクションの形と中身（schema・在庫の無い側の leg）、priority fee（`obs.limits.maxPriorityFeePerGasWei`）、**ガス**（tx 1 本 30,000,000 gas、1 エージェント 1 ブロック合計 30,000,000 gas） | 送信前に**拒否**され、`agents/<id>.jsonl` に `rejected` が理由付きで残る（ガスは `tx gas cap` / `per-block gas budget`）。チェーンには届かない |
+| ランタイム（送信前に検証する） | アクションの形と中身（schema・在庫の無い側の leg）、priority fee（`obs.limits.maxPriorityFeePerGasWei`）、**ガス**（tx 1 本 10,000,000 gas、1 エージェント 1 ブロック合計 10,000,000 gas） | 送信前に**拒否**され、`agents/<id>.jsonl` に `rejected` が理由付きで残る（ガスは `tx gas cap` / `per-block gas budget`）。チェーンには届かない |
 | 規約 §2.3・§2.6（運営が課す） | 判断ごと **5,000 ミリ秒**、**2 vCPU / メモリ 4 GB**（§2.3）。**1 ブロックあたりの tx 本数に上限は無い**（§2.6。ブロックに入るかは priority fee のオークションで決まり、ブロックのガスリミットは 30,000,000） | タイムアウトはそのブロックが行動なし、異常終了はエポックの残りが行動なし（再起動しない）。**`obs.limits` には出ません** |
 
 送信前の検証と判断の 5 秒上限はランタイムが実施します。CPU・メモリの割当内で動く設計は参加者の責任です。

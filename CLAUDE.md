@@ -346,7 +346,7 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   `ERIS_SCENARIO_KEY_FILE`（`npm run competition -- keygen` で作った鍵ファイルのパス）が無い・読めないと起動しない。
   **財布の秘密も同じ**（issue #189）: `ERIS_WALLET_SECRET_FILE`（`npm run competition -- wallet-keygen`）が無いと起動しない
 - **環境が作る財布の鍵は seed から作らない**（issue #189。`core/src/walletKeys.ts`）。AUTO agent・flow / whale /
-  launch・Aave / Liquity victim・check:ordering / stress:rpc のプローブは全部 `environmentKey(kind, id)` =
+  launch・Aave / Liquity victim・vuln プールの owner（`vuln-pools`）・check:ordering / stress:rpc のプローブは全部 `environmentKey(kind, id)` =
   `HMAC-SHA256(secret, ["eris-wallet/v1", kind, id])`。以前は `keccak("auto-wallet:<seed>:<id>")` 等で、自分の AUTO 鍵から
   seed を総当たりで逆算でき、そこから他の agent・環境ウォレットの鍵が全部計算できた（ゲートウェイは送信者を検査しない）。
   secret は**既定でプロセスごとの乱数**（どこにも書かない。run・同一プロセスの行列内では同じアドレス、次のプロセスで変わる）、
@@ -520,10 +520,10 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
     実測（anvil 1.7）: 運営の前エポックのオラクル更新を先に入れると採掘され、coordinator 自身の同 nonce の更新は
     `replacement transaction underpriced` で拒否される（オラクルの手数料は毎エポック同じ定数）。床は
     `Date.now() × 1000` で、プロセスをまたぐ `--resume` と除外エポックの再実行でも前の nonce より上になる。
-    対象は agent・flow 財布・運営鍵 4 本・victim。reset した run（`!external && !skipReset`）だけ、funding の前に掛ける。
+    対象は agent・flow 財布・運営鍵 4 本・victim・vuln factory の owner 財布。reset した run（`!external && !skipReset`）だけ、funding の前に掛ける。
     PR #230 の gateway の送信者検査は X-ASCON-Key で呼び出し元を識別するが、運営が起動する agent はキーを送らないので
     ライブ週のこの穴は塞がない
-  - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`。**V_0 は配布額を下限にする** = issue #207: agent プロセスは最初の競技ブロックより前から動いていて tx を送れるので、境界 0 のチェーン状態は agent が下げられた（第 2 EOA や自作コントラクトへ退避して運用中に戻すと P が配布額ぶん膨らむ）。`core/src/scoring/endowmentV0.ts` が `agent.initial` をその境界のマークで評価し `max(配布, 実測)` を V_0 にする。live scorer と事後 sweep が同じ規則なので `interval_series_agreement` は変わらない。実測が上回る分（練習期間の再起動で持ち越した建玉）はそのまま数える。`summary.json` の `agents[].v0Source`（`endowment` / `measured`）/ `v0Usdc` / `v0MeasuredUsdc` / `v0EndowmentUsdc`、`intervals.jsonl` の先頭行、`interval_v0_endowment_gap` イベントに記録。matrix は実測が配布から 0.1% 超ずれた agent を `flags` に出す。**`pnlUsdc − netPnlUsdc` の場の定数からの外れは検出器にしない** — netPnlUsdc は額面、P は換金可能額なので差は純 spot 以外で定数にならない。最初のブロックが読めず床が掛からなかったエポックは `interval_v0_floor_skipped`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
+  - **採点は規約 §4.4 の偏差値方式**（ADR 0023。`core/src/scoring/deviationScore.ts`）。1 シナリオ = 1 エポックで、P = V_K − V_0（境界系列の両端、5 ブロック中央値マーク。`epochPnl.ts`。**V_0 は配布額を下限にする** = issue #207: agent プロセスは最初の競技ブロックより前から動いていて tx を送れるので、境界 0 のチェーン状態は agent が下げられた（第 2 EOA や自作コントラクトへ退避して運用中に戻すと P が配布額ぶん膨らむ）。`core/src/scoring/endowmentV0.ts` が `agent.initial` をその境界のマークで評価し `max(配布, 実測)` を V_0 にする。**ただし `resetUnit: scenario`（本番の行列）では配布額に固定する**（`v0RuleFor`。上側を信じると「贈り物」攻撃が通る: 開始前に自作トークンとの LP NFT を被害者へ送って V_0 を W 膨らませ、競技中に抜けば被害者 P ≈ −W・攻撃者は自分の床に吸収されて P ≈ 0。ERC-721 は `rosterTransfers` の対象外。fresh world には持ち越しの建玉が無いので上側は要らない。max は continuous だけ）。live scorer と事後 sweep が同じ規則なので `interval_series_agreement` は変わらない。実測が上回る分（練習期間の再起動で持ち越した建玉）はそのまま数える。`summary.json` の `agents[].v0Source`（`endowment` / `measured`）/ `v0Usdc` / `v0MeasuredUsdc` / `v0EndowmentUsdc`、`intervals.jsonl` の先頭行、`interval_v0_endowment_gap` イベントに記録。matrix は実測が配布から 0.1% 超ずれた agent を `flags` に出す。**`pnlUsdc − netPnlUsdc` の場の定数からの外れは検出器にしない** — netPnlUsdc は額面、P は換金可能額なので差は純 spot 以外で定数にならない。最初のブロックが読めず床が掛からなかったエポックは `interval_v0_floor_skipped`）→ 全員横断で T = 50 + 10 (P − μ) / σ（ベンチマーク除外、破産は負のまま、床も凍結も無し）→ w_s（回次に線形 1 → 1.5）で加重平均。σ = 0 と summary の無いシナリオは全員について S から外し他の重みは動かさない。順位は小数第 2 位、同点は T の標準偏差 → 最悪エポック → 提出時刻。**失格は無い**（プロセス死亡・fee cap 違反・未ログ tx は `flags`）。**`--metric` と `npm run metrics`、M9 / λ / aggregate / `epochScores` は削除済み**
   - **5 ブロック中央値は市場由来の全マークに掛かる**（規約 §4.1。以前は stable の probe だけで、LP・LST・Liquity は
     境界 1 点だった）。対象は各アダプタが `medianSurfaces` で宣言し（LST のプール売却 quote /
     Liquity の自分サイズ quote / Aave の LST 担保 haircut）、summary の `markMedian.surfaces` に出る。**保有量は境界で固定し
@@ -1010,7 +1010,12 @@ ours なのは 2 つだけ（core は無改変）:
   ヘルパは `example/agents/lib/deployContract.ts`
 - **承認は必要額ちょうど**（`exactApproveTx`）。無制限 approve で抜くコントラクトは規約の範囲内なので、
   参照ランタイム自身がその穴になってはいけない。observation は registry エントリへの未消化 allowance を出す
-- **ガス予算（T0）**: **per-tx 30,000,000 / per-agent-per-block 30,000,000**（2026-09-06 の決定。90M から下げた）。
+- **ガス予算（T0）**: **per-tx 10,000,000 / per-agent-per-block 10,000,000**（2026-10-03。30M / 30M から下げた。
+  30M だと 1 体がブロック全体を正当に使えた = 背景フローの tip（0.1〜0.2 gwei）の少し上で 28M を燃やすと 360 ブロックで
+  ~1 ETH、他の参加者と背景フローを毎ブロック締め出せた。10M は正当な最重量 = Uniswap V3 の `createPool`（~5M、申告 ~6.5M）と
+  24KB の deploy（申告 ~8M）が通る値。local run の agent tx 31,454 件は p99 0.9M・最大 0.95M。
+  **anvil は申告 gas ではなく実使用量でブロックに詰める**（1.5.1 で実測: 申告 29M × 5 本が 30M のブロックに全部入った）ので、
+  申告だけで占有はできない。本番の anvil の版では未実測）。
   規約 §2.6 は tx の**本数**を縛らないので、自分で書いた高価なコードへの 1 呼び出しでブロックを飢えさせられる —
   他参加者だけでなく**環境のオラクル更新**も。1 つの数字を 3 か所が読む（ゲートウェイが RLP で
   gas limit を読んで **403 入口拒否** / ランタイムが自己制限 / run 後に blocks.csv の `gasUsed` 列で検出）
@@ -1239,11 +1244,23 @@ gas 予算など、ランタイムが読むフィールドを coordinator の解
 agent 側の `ctx.rng` は address 由来（run の seed ではない）。`SimConfig` にフィールドを足したら
 `test/agentView.test.ts` がどちら側かを決めさせる。
 - **docker の image モードで mount するのは view ディレクトリ（読取専用、`/eris/run` = `ERIS_RUN_DIR`）と自分のログ
-  ファイルだけ**（`agents/<id>.jsonl`、`ERIS_IMPROVE_LOG_CALLS=1` なら `.llm.jsonl`、vuln run は `disclosures/` 読取専用）。
+  ファイルだけ**（`agents/<id>.jsonl`、`ERIS_IMPROVE_LOG_CALLS=1` なら `.llm.jsonl`、`disclosures/` 読取専用 = 全 run）。
   ログはファイル単位の bind mount なので、host 側は従来どおり `runs/<id>/agents/<id>.jsonl`（dashboard の live tail・
   agents-ready・post-run check は無変更）。ro mount の中の mountpoint は事前に要るので wrapper が空ファイルを作る
 - **例外 2 つはディレクトリ mount のまま**: segmented period（segment が回るので期間ディレクトリ。警告に出る）と
   `ERIS_AGENT_VIEW_DIR` の無い起動
+- **開始時に見えるものはレジームで変えない**（`test/regimeStartInvariance.test.ts`）。agent は最初の価格が動く前に
+  config と env を読むので、レジームごとに違うものはレジームを名指す。以前は 4 本が開始時に分かった（registry の
+  アドレス = launch / vuln factory = vuln / victim の一覧 = lending-incident・cdp-incident。後ろ 2 本は「暴落が来る」
+  なので block 0 で USDC に替えれば勝てた）。さらに depeg と depeg-persist だけ `run.protocols` に gmx が無く、
+  観測に GMX 節が無ければ depeg 系と分かった（このテストで発見して追加）。今は **公式 12 本すべて `agentMarkets.enabled: true`**、
+  **vuln factory・その owner（`vuln-pools` 財布、全 run で同額のガス）・`disclosures/`・`ERIS_VULN_*` は全 run**（プールは窓で
+  `createPool(initCode)` 1 本で deploy = ADR 0014 Amendment 2。以前は setup で全部 deploy し、作成 selector が正解を名指していた）。
+  agent に渡す追加 env の形は `core/src/realtime/agentEnv.ts` が config から決め、coordinator は起動前に照合して違えば落ちる。
+  **victim の一覧（`ERIS_LIQUIDATION_VICTIMS` / `ERIS_LIQUITY_VICTIMS`）だけは既知の例外**: env を消しても victim は block 0 から
+  チェーン上に見える（Aave の HF 1.10 の借り手、`SortedTroves.getLast()` の ICR 1.20）ので、塞ぐには全レジームに victim を
+  置く（デコイ）必要があり、レジームの意味が変わるので別に決める。もう 1 つの既知の穴は vuln プールのソースが公開 repo に
+  あること（bytecode の骨格で照合できる）
 - **bind-mount モードと `--agent-sandbox process` は隔離境界ではない**（repo / host のファイルが全部見える）
 自己改善型は `ERIS_IMPROVE_LOG_CALLS: "1"`（ロスターの env）で LLM との生の対話（system 全文・送信
 messages・生応答・エラー）を `agents/<agentId>.llm.jsonl` に残せる（opt-in。プロンプト調整の一次情報）。

@@ -45,7 +45,7 @@ issue #40 T0。**この文書は capability の definition of done の一部**�
 |---|---|---|
 | `contracts/PriceFeed.sol` | `setPrice` / `setPriceFor` | `require(msg.sender == owner)`、owner は immutable |
 | `contracts/MarketRegistry.sol` | `register` | 同上（registrar のみ） |
-| `contracts/VulnPoolFactory.sol` | `createSimplePool` / `createRiggedPool` | `require(msg.sender == owner)` |
+| `contracts/VulnPoolFactory.sol` | `createPool`（init code を受ける 1 本。ADR 0014 Amendment 2） | `require(msg.sender == owner)`、owner は環境の `vuln-pools` 財布（immutable） |
 | `deployer/contracts/MockLSTVault.sol` | `setRewardRate` / `slash` / `setOperator` / `setWithdrawalDelayBlocks` / `setQueueThroughput` | `onlyOperator` |
 | Aave `PoolConfigurator` | reserve 開設 | `POOL_ADMIN`（＝この環境では deployer）。**これが Aave をエージェントへ開けない理由**であり、`SimpleLending` が存在する理由 |
 
@@ -90,8 +90,12 @@ issue #40 T0。**この文書は capability の definition of done の一部**�
 | エージェントランタイム | `estimateGas` の結果と 1 ブロック内の累計 | 送らずに `rejected` を mempool ログへ。`ERIS_MAX_TX_GAS` / `ERIS_MAX_AGENT_BLOCK_GAS` |
 | run 後検査 | blocks.csv の `gasUsed`（receipt 由来） | per-tx と per-agent-per-block を `gas_budget_violations` に記録 |
 
-既定値: **per-tx 30,000,000 / per-agent-per-block 90,000,000**（= 本数上限 3 × per-tx）。
-ブロックガスリミットの 90/320 なので、1 体が枠を使い切っても環境の書き込みと他者の余地は残る。
+既定値: **per-tx 10,000,000 / per-agent-per-block 10,000,000**（2026-10-03。以前は 30M / 90M → 30M / 30M）。
+公式エポックのブロック（30,000,000）の 1/3 なので、1 体が枠を使い切っても他者の余地は残る。30M / 30M のときは
+1 体がブロック全体を正当に使えた（背景フローの tip の少し上で 28M を燃やすと、エポックあたり ~1 ETH で他の参加者と
+背景フローを締め出せた。環境のオラクル・keeper は fee 上限より上で入るので落ちない）。10M は正当な最重量
+（Uniswap V3 の `createPool` ~5M、24KB の deploy ~6M。ランタイムの見積もりバッファ込みで ~8M まで）が通る値。
+anvil は申告 gas ではなく実使用量でブロックに詰める（1.5.1 で実測）ので、申告 gas だけでは占有できない。
 
 **ゲートウェイは境界ではなく最初の壁**である。自己ホスト参加者はノードへ直接送れるので、
 権威は**チェーンに着地したもの**＝ run 後検査。ゲートウェイが先に落とすのは、
