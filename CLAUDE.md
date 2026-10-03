@@ -45,7 +45,13 @@ prompt.md は**起動時に fail-fast**（黙って読むと、取引指示が�
   `openai:<m>` / `gpt-*` は OpenAI 互換 chat completions。**本番は運営の推論プロキシ経由**
   （`ERIS_INFERENCE_BASE_URL` + agent ごとの `ERIS_INFERENCE_TOKEN` = HMAC(ERIS_INFERENCE_SECRET, agentId)。
   agent は鍵を持たない。`npm run inference-proxy`、`core/src/inference/proxy.ts`、規約 §2.3/§2.5。
-  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）。
+  許可パス 3 本・モデル一覧・保存済み参照の拒否・全記録と `--replay`）。**記録の失敗でプロキシは落ちない**
+  （issue #215。以前は `appendFileSync` の失敗が async ハンドラの未処理 rejection になって exit 1 = 全員の改訂が
+  止まった）。書けなかった記録は stderr に agent ごと 1 行 + `/healthz` の `recording.failures`、呼び出しは通す。
+  記録量は `maxRecordBytesPerAgent`（既定 256 MiB）/ `maxRecordBytesTotal`（既定 8 GiB、プロセス単位）で頭打ち
+  （1 call の記録は request 4 MiB + 応答 32 MiB まであり得て、30 call/分なら 1 agent で ~1 GiB/分）。超えたら
+  **記録だけ止めて呼び出しは通し**、その agent のファイル末尾に `event: "recording_capped"` の 1 行を残す
+  （replay はこの行を飛ばし、以後は 409）。無制限は設定できない。
   **ストリーミングは拒否せず逐次中継する**（issue #166。SSE / Ollama の NDJSON。1 呼び出し 1 記録で全文を残し
   replay も同じ content-type で返す）。待ち時間は非ストリームが `upstreamTimeoutMs`（既定 5 分。Node の fetch が
   応答ヘッダを 300 秒で諦めるので実質の上限もここ）、ストリームは**無音**の `streamIdleTimeoutMs` だけで総時間は
@@ -71,10 +77,22 @@ LLM の手掛かりは現在の戦略コードだけになり、**一度も swap
 `docs/scoring-metric-measurements.md` §5.8）。「持っていないことは何もしない理由にならない」も明記する。
 改訂は `{notes, executorTs}` か `{notes, revertTo: <version>}` を返し、`executorTs: null` は
 「今の戦略を維持」。生成コードは **cheatcode 静的検査 → vm コンパイル**（関数式の *評価* に 1 秒
-= `runInContext(..., {timeout: 1000})`）を通ってから設置される。**設置前に試運転はしない** — vm の
+= `runInContext(..., {timeout: 1000})`）を通ってから設置される。**vm のコンテキストは空で作る**
+（issue #215。`createContext(Object.create(null))`。以前はホストの `Object` / `JSON` / `Math` を渡していて
+`Object.constructor("return process")()` でホスト realm に出られ、worker の `process.env` から鍵が読めた。
+プロトタイプ無しなのは、`{}` だと `this.constructor` がホストの `Object` になるため）。obs / ctx はコンテキスト
+realm へ**コピーして**渡し、`publicClient` の読取結果も戻りでコピーする（`EXECUTOR_BRIDGE`）。生成コードから
+辿れるホストのオブジェクトを無くす層であって、ADR 0024 の「封じ込め境界ではない」は変わらない。
+**設置前に試運転はしない** — vm の
 timeout は式の評価しか覆わないので、無限ループする本体は評価を通ってしまう。だから設置後、
 `decide` を **worker thread** で実行し、親スレッドが呼び出しごとに 5 秒を計測する
 （`DECIDE_TIMEOUT_MS` = 規約 §2.3、`runtime/strategyRunner.ts` / `decideTimeout.ts`）。
+**worker の env は親の env から秘密を落としたもの**（`runtime/strategyEnv.ts`。Python の子プロセスも同じ）:
+`ERIS_AGENT_PRIVATE_KEY` / `ERIS_INFERENCE_TOKEN` / `ERIS_LLM_*` / `*_API_KEY` / `*_TOKEN` / `*_PRIVATE_KEY` 等は
+届かず、ロスター `env` の戦略パラメータ（`ERIS_ARB_SAFETY_BPS` も `STAT_ARB_Z_ENTER` も）は届く。
+署名は親の send.ts、改訂呼び出しも親なので worker に鍵の用途は無い。残すのは読取 transport 自身の
+`CF_ACCESS_CLIENT_*` / `ERIS_RPC_HEADERS`（worker は自前の client で読むので、落とすとゲートウェイ越しの
+自己ホスト agent が読めなくなる）。
 **手書き・生成済みの両戦略に同じ上限**がかかり、await が返らない場合も同期の無限ループも
 `decide timeout:` として記録し、その判断の送信予約と返り値を捨てる。次の判断は同じ選択中の戦略を
 新しい worker にロードする。worker 内の変数は初期化されるが、親の観測・改訂ループ、nonce、ログ、

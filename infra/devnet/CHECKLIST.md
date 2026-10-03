@@ -179,9 +179,12 @@ Cloudflare Access の段はリハーサルには無い。本番短縮版で確�
   cp infra/inference-proxy/models.example.yaml infra/inference-proxy/models.yaml
   #  models: を 1 件にする → { name: glm-5.3-flash, provider: ollama, upstream: https://ollama.com/api, apiKeyEnv: OLLAMA_API_KEY }
   export ERIS_INFERENCE_SECRET="$(openssl rand -hex 32)"
+  export ERIS_INFERENCE_STATS_TOKEN="$(openssl rand -hex 32)"   # 運営だけが持つ。秘密と別の値（同じだと起動しない）
   nohup npm run inference-proxy -- --models infra/inference-proxy/models.yaml \
     --listen 127.0.0.1:8790 --record ./ops-inference > ops-proxy.out 2>&1 &
-  curl -s http://127.0.0.1:8790/healthz
+  curl -s http://127.0.0.1:8790/healthz                         # → {"ok":true} だけ（agent もこれを読める）
+  # 記録の消費量・上限到達・stub 件数。agent からは 401（プロキシは全 agent の network に居るので）
+  curl -s -H "Authorization: Bearer $ERIS_INFERENCE_STATS_TOKEN" http://127.0.0.1:8790/admin/recording
   # agent ごとのトークン（通常は coordinator が配るが、外部 agent には配られない）
   node -e 'console.log(require("crypto").createHmac("sha256", process.env.ERIS_INFERENCE_SECRET).update(process.argv[1]).digest("hex"))' ops-venue-p
   ```

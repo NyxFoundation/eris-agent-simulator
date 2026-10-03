@@ -332,6 +332,159 @@ test("buildRevisionSystem: reverting is offered, and said to be manual", () => {
   assert.match(system, /Nothing reverts automatically/);
 });
 
+// ---- the vm realm is its own (issue #215) ----
+
+// A context the escapes below are tried against: host functions, a host config, a client whose
+// reads return host objects and throw host errors, exactly what a worker hands a strategy.
+function hostContext(captured: { logs: unknown[]; submitted: unknown[] }) {
+  const observation = { round: 1, nested: { amount: 123n }, list: [1, 2] };
+  return {
+    agentId: "alice",
+    address: "0x0000000000000000000000000000000000000001",
+    config: { chainId: 31337, nested: { fee: [30] } },
+    publicClient: {
+      chain: { id: 31337 },
+      getBlockNumber: async () => 42n,
+      readContract: async () => ({ reserves: [1n, 2n], ok: true }),
+      multicall: async () => [{ status: "success", result: 7n }],
+      call: async () => {
+        throw new Error("execution reverted");
+      },
+      request: () => {
+        throw new Error("strategy RPC is read-only");
+      },
+    },
+    latestObservation: () => observation,
+    onObservation: () => {
+      throw new Error("onObservation is for run(ctx) agents");
+    },
+    submit: (a: unknown) => captured.submitted.push(a),
+    log: (e: unknown) => captured.logs.push(e),
+  } as never;
+}
+
+test("compileExecutor: no path from generated code reaches the host realm's process", async () => {
+  // Every door the previous context left open, and the ones a copy of the arguments closes. Each
+  // either evaluates `process` in the vm's own realm (ReferenceError) or never gets a host Function
+  // constructor to evaluate it with.
+  const escapes = [
+    `return Object.constructor("return process")();`,
+    `return Function("return process")();`,
+    `return this.constructor.constructor("return process")();`,
+    `return globalThis.constructor.constructor("return process")();`,
+    `return this.__proto__.constructor.constructor("return process")();`,
+    `return Object.getPrototypeOf(globalThis).constructor.constructor("return process")();`,
+    `return (function () { return this; })().constructor.constructor("return process")();`,
+    `return (async () => {}).constructor("return process")();`,
+    `return Promise.resolve().constructor.constructor("return process")();`,
+    `return obs.constructor.constructor("return process")();`,
+    `return obs.list.constructor.constructor("return process")();`,
+    `return ctx.config.constructor.constructor("return process")();`,
+    `return ctx.config.nested.fee.constructor.constructor("return process")();`,
+    `return ctx.log.constructor("return process")();`,
+    `return ctx.submit.constructor("return process")();`,
+    `return ctx.latestObservation.constructor("return process")();`,
+    `return ctx.latestObservation().constructor.constructor("return process")();`,
+    `return ctx.publicClient.constructor.constructor("return process")();`,
+    `return ctx.publicClient.chain.constructor.constructor("return process")();`,
+    `return ctx.publicClient.getBlockNumber.constructor("return process")();`,
+    `return ctx.publicClient.getBlockNumber().constructor.constructor("return process")();`,
+    `return (await ctx.publicClient.getBlockNumber()).constructor.constructor("return process")();`,
+    `return (await ctx.publicClient.readContract({})).constructor.constructor("return process")();`,
+    `return (await ctx.publicClient.readContract({})).reserves.constructor.constructor("return process")();`,
+    `return (await ctx.publicClient.multicall({}))[0].constructor.constructor("return process")();`,
+    `try { await ctx.publicClient.call({}); } catch (e) { return e.constructor.constructor("return process")(); }`,
+    `try { await ctx.publicClient.request({}); } catch (e) { return e.constructor.constructor("return process")(); }`,
+    `try { ctx.onObservation(() => {}); } catch (e) { return e.constructor.constructor("return process")(); }`,
+    `try { ctx.submit({ f: () => {} }); } catch (e) { return e.constructor.constructor("return process")(); }`,
+  ];
+  const captured = { logs: [], submitted: [] };
+  for (const source of escapes) {
+    const r = compileExecutor(source);
+    assert.ok(r.ok, `${source}: ${r.ok ? "" : r.reason}`);
+    await assert.rejects(
+      async () => await r.executor({ round: 1, nested: { amount: 1n }, list: [1] } as never, hostContext(captured)),
+      (e: unknown) => {
+        const message = String((e as { message?: string })?.message ?? e);
+        assert.match(message, /process is not defined/, `${source} -> ${message}`);
+        return true;
+      },
+    );
+  }
+});
+
+test("compileExecutor: the strategy still reads, logs, submits and sees its data in its own realm", async () => {
+  const captured = { logs: [] as unknown[], submitted: [] as unknown[] };
+  const r = compileExecutor(`
+    ctx.log({ round: obs.round, reason: "hi", signals: { n: 1 } });
+    ctx.submit({ type: "noop", amount: obs.nested.amount });
+    const block = await ctx.publicClient.getBlockNumber();
+    const read = await ctx.publicClient.readContract({ abi: [], functionName: "x" });
+    const many = await ctx.publicClient.multicall({ contracts: [] });
+    let reverted = null;
+    try { await ctx.publicClient.call({}); } catch (e) { reverted = { name: e.name, message: e.message, isError: e instanceof Error }; }
+    return {
+      type: "noop",
+      block,
+      read,
+      many,
+      reverted,
+      isArray: Array.isArray(obs.list) && obs.list instanceof Array,
+      isObject: obs.nested instanceof Object,
+      latestRound: ctx.latestObservation().round,
+      id: ctx.agentId,
+      chainId: ctx.config.chainId,
+      clientChain: ctx.publicClient.chain.id,
+      hasThen: "then" in ctx.publicClient,
+      json: JSON.stringify(obs.list),
+      sum: obs.nested.amount + 1n,
+    };
+  `);
+  assert.ok(r.ok, r.ok ? "" : r.reason);
+  const action = await r.executor(
+    { round: 3, nested: { amount: 123n }, list: [1, 2] } as never,
+    hostContext(captured),
+  );
+  assert.deepEqual(action, {
+    type: "noop",
+    block: 42n,
+    read: { reserves: [1n, 2n], ok: true },
+    many: [{ status: "success", result: 7n }],
+    reverted: { name: "Error", message: "execution reverted", isError: true },
+    isArray: true,
+    isObject: true,
+    latestRound: 1,
+    id: "alice",
+    chainId: 31337,
+    clientChain: 31337,
+    hasThen: false,
+    json: "[1,2]",
+    sum: 124n,
+  });
+  // What the strategy logged and submitted arrives in this realm, as plain data.
+  assert.deepEqual(captured.logs, [{ round: 3, reason: "hi", signals: { n: 1 } }]);
+  assert.deepEqual(captured.submitted, [{ type: "noop", amount: 123n }]);
+  assert.ok(captured.submitted[0] instanceof Object, "submitted action is a host-realm object");
+});
+
+test("compileExecutor: the system prompt's 'no process, no network' is what the vm has", async () => {
+  // The prompt makes a claim about the sandbox; this is the claim, checked against the sandbox.
+  const agent = loadImproveAgent(agentDir(FRONTMATTER));
+  assert.match(buildRevisionSystem(agent, "return null;"), /no process, no network/);
+  for (const source of [
+    `return typeof process;`,
+    `return typeof fetch;`,
+    `return typeof require;`,
+    `return typeof globalThis.process;`,
+    `return typeof setTimeout;`,
+  ]) {
+    const r = compileExecutor(source);
+    assert.ok(r.ok);
+    const v = await r.executor({ round: 1 } as never, hostContext({ logs: [], submitted: [] }));
+    assert.equal(v, "undefined", source);
+  }
+});
+
 // ---- chain-derived text is data, not instructions (issue #214 item 3) ----
 
 test("sanitizeUntrusted: bounds the text and escapes its line structure", () => {
