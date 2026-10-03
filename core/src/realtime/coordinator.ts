@@ -136,6 +136,13 @@ import {
 } from "./agentState.js";
 import { AgentDiskWatch, agentLogFiles } from "./agentDisk.js";
 import { measureAgentNetworks, networkMismatches } from "./agentNetwork.js";
+import { createAgentStopper } from "./agentStop.js";
+import {
+  createDockerRunner,
+  DOCKER_CALL_TIMEOUT_MS,
+  PROBE_ATTEMPTS,
+  ProbeBudget,
+} from "./dockerCli.js";
 import { RealtimeFlowProcess } from "./flowProcess.js";
 import {
   ensureScenarioKey,
@@ -2092,11 +2099,15 @@ export async function runRealtimeSimulation(
     // applies the rules §2.3 caps. Checked once here rather than discovered per agent: a missing
     // docker would otherwise surface as N `spawn error` early exits that read like agent bugs.
     if (config.agentSandbox === "docker") {
+      // Bounded like every other docker call (issue #223): a daemon that accepts the connection and
+      // then says nothing used to hang the start of the run with nothing on stdout saying why.
       const probe = spawnSync(
         "docker",
         ["version", "--format", "{{.Server.Version}}"],
         {
           encoding: "utf8",
+          timeout: DOCKER_CALL_TIMEOUT_MS,
+          killSignal: "SIGKILL",
         },
       );
       if (probe.status !== 0)
@@ -2266,10 +2277,16 @@ export async function runRealtimeSimulation(
             .map((a) => a.id)
         : [],
     );
-    const dockerRun = (args: string[]) => {
-      const r = spawnSync("docker", args, { encoding: "utf8" });
-      return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
-    };
+    // Every docker call this loop makes has a deadline (issue #223). These run synchronously on the
+    // environment's own thread -- 32 agents x 2 calls at the agents-ready wait, and again every
+    // `agentDiskCheckEveryBlocks` blocks for whatever is still pending -- so an unbounded `spawnSync`
+    // on a daemon this process does not control is an unbounded stop of the oracle write, the keeper
+    // and the flow. A call that misses its deadline reads as unmeasured, not as an answer.
+    const dockerRun = createDockerRunner();
+    // And a container docker will never describe is asked about a fixed number of times. Before this
+    // an inspect that always failed kept the agent in `networkPending` for the whole run, writing the
+    // same event every interval and never concluding anything.
+    const networkProbes = new ProbeBudget();
     const checkAgentNetworks = (when: "agents_ready" | "block", bn?: number): void => {
       const byId = (id: string) => agentRuntimes.find((a) => a.id === id);
       const ids = [...networkPending].filter((id) => {
@@ -2282,7 +2299,33 @@ export async function runRealtimeSimulation(
       });
       if (ids.length === 0) return;
       const facts = measureAgentNetworks(ids, dockerRun);
-      for (const f of facts) if (f.measured) networkPending.delete(f.id);
+      const gaveUp: string[] = [];
+      for (const f of facts) {
+        if (f.measured) {
+          networkPending.delete(f.id);
+          networkProbes.forget(f.id);
+          continue;
+        }
+        if (!networkProbes.failed(f.id)) continue;
+        // Spent. Recorded once, as the fact it is: this container's posture was never verified.
+        networkPending.delete(f.id);
+        gaveUp.push(f.id);
+        logger.event({
+          type: "agent_network_unverified",
+          agentId: f.id,
+          container: f.container,
+          attempts: networkProbes.count(f.id),
+          ...(f.error !== undefined ? { error: f.error } : {}),
+          note:
+            `docker would not say which networks this container is on after ${PROBE_ATTEMPTS} ` +
+            "attempts; the coordinator stops asking. The run continues and this agent's network " +
+            "posture is unverified -- which is not the same as verified-and-wrong, and not the " +
+            "same as nothing being written down (infra/docker-agent/ISOLATION.md)",
+        });
+        console.error(
+          `[agent] ${f.id}: network posture unverified (${f.error ?? "docker did not answer"})`,
+        );
+      }
       const mismatches = networkMismatches(facts, (id) =>
         agentNetworkPosture({ ...process.env, ...(byId(id)?.spec.env ?? {}) }),
       );
@@ -2298,6 +2341,7 @@ export async function runRealtimeSimulation(
           ...(f.error !== undefined ? { error: f.error } : {}),
         })),
         unmeasured: facts.filter((f) => !f.measured).map((f) => f.id),
+        ...(gaveUp.length > 0 ? { unverified: gaveUp } : {}),
         mismatches,
       });
       for (const m of mismatches) {
@@ -2314,10 +2358,20 @@ export async function runRealtimeSimulation(
             "run where it can reach what the posture says it cannot (infra/docker-agent/ISOLATION.md)",
         });
         console.error(`[agent] ${m.id} ${reason}`);
-        agent.exitedEarly = reason;
-        agent.process?.close();
+        // Through stopAgent, so the container goes too: a container on the wrong network that is
+        // only disconnected from its client is still on the wrong network (issue #223).
+        agentStopper.stop(agent, reason, `network posture mismatch (${m.kind})`);
       }
     };
+
+    // ---- stopping an agent for real (issue #223) ----
+    // `close()` stops the process this coordinator spawned; under the docker sandbox the container
+    // outlives it. `agentStop.ts` is the stop that reaches the container, with the removal read back.
+    const agentStopper = createAgentStopper({
+      sandbox: config.agentSandbox,
+      docker: dockerRun,
+      event: (event) => logger.event(event),
+    });
 
     // ---- what each agent writes to the host (issue #214 item 1) ----
     // Measured every `run.agentDiskCheckEveryBlocks` blocks for every agent this coordinator
@@ -2325,24 +2379,50 @@ export async function runRealtimeSimulation(
     // stopped the way a crashed one ends -- the run goes on, the agent is valued on what it left
     // behind (rules §2.3 / §4.4.2), and summary.json says why it stopped. The runtime's own 64 MiB
     // self-limits do not bind a submitted runtime; this does.
+    //
+    // A tick measures what fits in its budget and the next resumes where it stopped (issue #223): a
+    // directory of 20,000 one-byte files is within every quota and costs 101 ms to walk, so walking
+    // the whole field on one tick was 3+ seconds of synchronous work in a loop that owes the chain a
+    // block every two. `agent_disk_sweep` says how long a pass over the field takes, in blocks.
     const diskWatch = new AgentDiskWatch({
       stateBytes: config.agentStateQuotaBytes,
       logBytes: config.agentLogQuotaBytes,
     });
+    // Agents this watch stopped. They stay in the rotation -- `stopped` is read back from the files,
+    // because the process the coordinator killed is not necessarily what was writing them.
+    const diskStopped = new Set<string>();
+    let sweepTicksReported = -1;
     const diskWatchTick = (bn: number): void => {
       const targets = agentRuntimes
         .filter(
           (a) =>
             a.process !== null &&
-            a.exitedEarly === undefined &&
-            a.process.isAlive(),
+            (diskStopped.has(a.id) ||
+              (a.exitedEarly === undefined && a.process.isAlive())),
         )
         .map((a) => ({
           id: a.id,
           ...(a.stateDir !== undefined ? { stateDir: a.stateDir } : {}),
           logFiles: agentLogFiles(logger.runDir, a.id),
         }));
-      for (const outcome of diskWatch.tick(targets)) {
+      const tick = diskWatch.tick(targets);
+      // Once, and again whenever the cycle length changes: on an honest field a pass is one tick, and
+      // the operator needs to see it when it is not (32 expensive agents is 32 ticks = 480 blocks).
+      if (tick.sweep !== undefined && tick.sweep.ticks !== sweepTicksReported) {
+        sweepTicksReported = tick.sweep.ticks;
+        logger.event({
+          type: "agent_disk_sweep",
+          blockNumber: bn,
+          agents: tick.rotation,
+          ticks: tick.sweep.ticks,
+          blocks: tick.sweep.ticks * config.agentDiskCheckEveryBlocks,
+          elapsedMs: Math.round(tick.elapsedMs),
+          note:
+            "one pass over the field. A tick measures what fits in its budget and the next resumes " +
+            "where it stopped, so this is how long a quota takes to be noticed",
+        });
+      }
+      for (const outcome of tick.outcomes) {
         if (outcome.report === "none") continue;
         const agent = agentRuntimes.find((a) => a.id === outcome.id);
         if (!agent) continue;
@@ -2373,6 +2453,26 @@ export async function runRealtimeSimulation(
           );
           continue;
         }
+        if (outcome.report === "still-writing") {
+          // The stop did not reach whatever is writing. Under docker that is the container, which
+          // outlived the client the coordinator killed; the removal is the only thing left to try.
+          logger.event({
+            type: "agent_disk_write_after_stop",
+            blockNumber: bn,
+            agentId: agent.id,
+            grewBytes: outcome.grewBytes ?? 0,
+            ...usage,
+            note:
+              "this agent was already stopped for a quota and its files have grown since. The " +
+              "process the coordinator spawned is gone, so something it started is not: the " +
+              "container is removed (issue #223)",
+          });
+          console.error(
+            `[agent] ${agent.id} is still writing ${outcome.grewBytes ?? 0} bytes after being stopped`,
+          );
+          agentStopper.escalate(agent.id, "still writing after being stopped");
+          continue;
+        }
         const reason = `stopped by the environment: disk quota exceeded (${outcome.verdict.findings.join("; ")})`;
         logger.event({
           type: "agent_disk_quota_exceeded",
@@ -2381,14 +2481,14 @@ export async function runRealtimeSimulation(
           findings: outcome.verdict.findings,
           ...usage,
           note:
-            "the agent process is stopped; the run continues and the agent is valued on what it " +
-            "left behind (rules §2.3 / §4.4.2). Its files are left in place for the operator",
+            "the agent process is stopped and its container removed; the run continues and the " +
+            "agent is valued on what it left behind (rules §2.3 / §4.4.2). Its files are left in " +
+            "place for the operator",
         });
         console.error(`[agent] ${agent.id} ${reason}`);
-        // close() marks the process as stopped on purpose, so onExit will not fire: the reason is
-        // recorded here, where summary.json's processExitedEarly reads it.
-        agent.exitedEarly = reason;
-        agent.process?.close();
+        // Kept in the rotation: whether the writing actually stopped is measured, not assumed.
+        diskStopped.add(agent.id);
+        agentStopper.stop(agent, reason, "disk quota exceeded");
       }
     };
 

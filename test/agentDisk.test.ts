@@ -20,6 +20,7 @@ import {
   agentLogFiles,
   diskVerdict,
   measureAgentDisk,
+  STOPPED_GROWTH_SLACK_BYTES,
   type AgentDiskSample,
 } from "../core/src/realtime/agentDisk.js";
 
@@ -120,7 +121,8 @@ test("AgentDiskWatch: a warning is one event per crossing, and an exceeded agent
     { id: "a", logFiles: [] },
     { id: "b", logFiles: [] },
   ];
-  const reports = () => watch.tick(targets).map((o) => `${o.id}:${o.report}`);
+  const reports = () =>
+    watch.tick(targets).outcomes.map((o) => `${o.id}:${o.report}`);
   assert.deepEqual(reports(), ["a:none", "b:none"]);
   bytes.set("a", 85 * MiB);
   assert.deepEqual(reports(), ["a:warning", "b:none"]);
@@ -131,8 +133,126 @@ test("AgentDiskWatch: a warning is one event per crossing, and an exceeded agent
   assert.deepEqual(reports(), ["a:none", "b:none"]);
   bytes.set("a", 85 * MiB);
   assert.deepEqual(reports(), ["a:warning", "b:none"]);
-  // Past the quota: reported once, then the agent is no longer measured (the caller stopped it).
+  // Past the quota: reported once. It stays in the rotation (issue #223) and is silent while its
+  // files are not growing -- "stopped" is read back, not assumed.
   bytes.set("b", 101 * MiB);
   assert.deepEqual(reports(), ["a:none", "b:exceeded"]);
-  assert.deepEqual(reports(), ["a:none"]);
+  assert.deepEqual(reports(), ["a:none", "b:none"]);
+});
+
+test("AgentDiskWatch: one tick measures what its budget allows, and the next resumes (issue #223)", () => {
+  // DISK_WALK_LIMITS *admits* 20,000 entries and diskVerdict only warns about a truncated walk, so an
+  // agent sitting on 20,001 one-byte files is walked in full on every tick for the rest of the run.
+  // Measured 2026-10-03: 101 ms a walk (245 ms on the reviewer's box), so 32 agents of that shape was
+  // 3-8 s of synchronous work inside a loop that owes the chain a block every two seconds.
+  const targets = Array.from({ length: 32 }, (_, i) => ({
+    id: `a${i}`,
+    logFiles: [],
+  }));
+  let clock = 0;
+  const watch = new AgentDiskWatch(
+    quota,
+    () => {
+      clock += 101;
+      return sample({ stateBytes: MiB });
+    },
+    { budgetMs: 200, now: () => clock },
+  );
+  const first = watch.tick(targets);
+  assert.equal(first.rotation, 32);
+  assert.deepEqual(
+    first.outcomes.map((o) => o.id),
+    ["a0", "a1"],
+  );
+  assert.ok(
+    first.elapsedMs <= 200 + 101,
+    `a tick cost ${first.elapsedMs} ms: the budget plus the one walk that overran it is the bound`,
+  );
+  assert.equal(first.sweep, undefined, "a pass over this field is not one tick");
+  // The next tick continues where this one stopped rather than starting the field over.
+  assert.deepEqual(
+    watch.tick(targets).outcomes.map((o) => o.id),
+    ["a2", "a3"],
+  );
+  let ticks = 2;
+  for (;;) {
+    const tick = watch.tick(targets);
+    ticks++;
+    if (tick.sweep !== undefined) {
+      assert.equal(tick.sweep.ticks, 16, "the pass is reported with its own length");
+      break;
+    }
+    assert.ok(ticks < 64, "the pass never closed");
+  }
+  assert.equal(ticks, 16, "32 agents at 2 a tick");
+});
+
+test("AgentDiskWatch: an honest field is still swept in a single tick", () => {
+  // The budget must not slow the ordinary case down: a quota is noticed as fast as it was before.
+  let clock = 0;
+  const watch = new AgentDiskWatch(
+    quota,
+    () => {
+      clock += 1;
+      return sample();
+    },
+    { budgetMs: 200, now: () => clock },
+  );
+  const tick = watch.tick(
+    Array.from({ length: 32 }, (_, i) => ({ id: `a${i}`, logFiles: [] })),
+  );
+  assert.equal(tick.outcomes.length, 32);
+  assert.deepEqual(tick.sweep, { ticks: 1 });
+});
+
+test("AgentDiskWatch: two real expensive directories are split across ticks (issue #223)", () => {
+  // The same thing off a real disk and a real clock, so the budget is held against the measurement
+  // this actually guards and not only against an injected one.
+  const dirs = [tmp(), tmp()];
+  for (const dir of dirs)
+    for (let i = 0; i < 2_000; i++) writeFileSync(join(dir, `f${i}`), "x");
+  const targets = dirs.map((stateDir, i) => ({
+    id: `a${i}`,
+    stateDir,
+    logFiles: [],
+  }));
+  const watch = new AgentDiskWatch(quota, undefined, { budgetMs: 1 });
+  const first = watch.tick(targets);
+  assert.deepEqual(
+    first.outcomes.map((o) => o.id),
+    ["a0"],
+  );
+  assert.equal(first.outcomes[0].sample.stateUsage?.entries, 2_000);
+  const second = watch.tick(targets);
+  assert.deepEqual(
+    second.outcomes.map((o) => o.id),
+    ["a1"],
+  );
+  assert.deepEqual(second.sweep, { ticks: 2 });
+});
+
+test("AgentDiskWatch: a stopped agent that keeps writing is reported, not forgotten (issue #223)", () => {
+  // close() reaches the process the coordinator spawned. Under the docker sandbox that is the
+  // `docker run` client, and the container outlives it -- so a runtime holding SIGTERM keeps writing
+  // to the disk the quota exists to protect. Before this the id was dropped from the rotation at the
+  // moment it was stopped, and nothing looked at that directory again.
+  let bytes = 101 * MiB;
+  const watch = new AgentDiskWatch(quota, () => sample({ stateBytes: bytes }));
+  const targets = [{ id: "b", logFiles: [] }];
+  const report = () => watch.tick(targets).outcomes[0];
+  assert.equal(report().report, "exceeded");
+  // A last flush from a runtime that did stop is not a container that outlived its stop.
+  bytes += STOPPED_GROWTH_SLACK_BYTES - 1;
+  assert.equal(report().report, "none");
+  bytes += 40 * MiB;
+  const growing = report();
+  assert.equal(growing.report, "still-writing");
+  assert.ok(
+    (growing.grewBytes ?? 0) >= 40 * MiB,
+    `grew ${growing.grewBytes} bytes`,
+  );
+  // Re-based: the next report is about growth since this one, not since the stop.
+  assert.equal(report().report, "none");
+  bytes += 40 * MiB;
+  assert.equal(report().report, "still-writing");
 });

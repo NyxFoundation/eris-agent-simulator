@@ -14,6 +14,11 @@
  * device, a tmpfs at the state root) is the stronger line and is the operator's to provision
  * (infra/devnet/CHECKLIST.md); this watch is the one that works on any filesystem.
  *
+ * Measuring is itself work a participant can make expensive, and stopping is something that can fail
+ * (issue #223). So the field is swept across ticks under a time budget (`DISK_TICK_BUDGET_MS`), and a
+ * stopped agent keeps being measured until its files stop growing (`STOPPED_GROWTH_SLACK_BYTES`) --
+ * a quota the environment detects but does not enforce is only an event in a log.
+ *
  * Pure decision (`diskVerdict`) kept apart from the measurement (`measureAgentDisk`), so the rule
  * is testable without a disk and the measurement without a coordinator.
  */
@@ -134,45 +139,151 @@ export type DiskWatchOutcome = {
   id: string;
   sample: AgentDiskSample;
   verdict: DiskVerdict;
-  /** `warning` is reported the first time an agent crosses the fraction, not on every tick. */
-  report: "none" | "warning" | "exceeded";
+  /**
+   * What the caller should record and do.
+   *
+   * `warning` is reported the first time an agent crosses the fraction, not on every tick.
+   * `still-writing` is an agent *already* stopped for a quota whose files have grown since: whatever
+   * is writing them did not stop when the process the coordinator spawned did, and the caller has to
+   * escalate past that process.
+   */
+  report: "none" | "warning" | "exceeded" | "still-writing";
+  /** For `still-writing`: bytes added since this agent was last accounted for. */
+  grewBytes?: number;
+};
+
+export type DiskTick = {
+  /** One entry per agent *measured* this tick, which is not every agent in the rotation. */
+  outcomes: DiskWatchOutcome[];
+  /** Agents in the rotation this tick. */
+  rotation: number;
+  /** What the measurements cost, in milliseconds. */
+  elapsedMs: number;
+  /** Set when this tick closed a pass over the whole rotation, and in how many ticks. */
+  sweep?: { ticks: number };
 };
 
 /**
- * The per-tick driver: measures every target, remembers who has been warned so a warning is one
- * event per crossing rather than one per tick, and hands back what the caller should record and
- * whom it should stop. Stopping is the caller's (it owns the processes).
+ * How long one tick may spend measuring before it stops and the next one resumes where it stopped.
+ *
+ * `DISK_WALK_LIMITS.maxEntries` bounds one walk, but 20,000 entries is *allowed*, and `diskVerdict`
+ * only warns about a truncated walk -- so an agent sitting on 20,001 one-byte files is walked in full
+ * on every tick for the rest of the run. Measured 2026-10-03 (APFS, warm cache): 101 ms for a
+ * 20,000-entry directory, and the reviewer's box 245 ms. Thirty-two agents of that shape is 3-8
+ * seconds of synchronous work inside a loop that owes the chain a block every two seconds, and the
+ * oracle write, the GMX keeper and the flow all wait behind it. A quota does not stop this: one byte
+ * per file is enough.
+ *
+ * So the field is swept across ticks. The cost of a tick is the budget plus the one walk that
+ * overran it -- a walk's cost is not knowable before doing it, and at least one agent is measured per
+ * tick or nothing is ever measured at all. A field of honest agents (a handful of state files each)
+ * still measures in a single tick, so the quota is noticed as quickly as it was before; it is only a
+ * field built to be expensive that takes several.
+ */
+export const DISK_TICK_BUDGET_MS = 200;
+
+/**
+ * Growth past which a stopped agent's files are read as "something is still writing them".
+ *
+ * Not zero: a runtime that does stop on SIGTERM may flush a last line to its log, and the host-side
+ * file is the one being measured. A few kilobytes of flush is not a container that outlived its
+ * stop; a container that is still trading writes far more than this between ticks.
+ */
+export const STOPPED_GROWTH_SLACK_BYTES = 64 * 1024;
+
+const totalBytes = (sample: AgentDiskSample): number =>
+  (sample.stateBytes ?? 0) + sample.logBytes;
+
+/**
+ * The per-tick driver: measures part of the field, remembers who has been warned so a warning is one
+ * event per crossing rather than one per tick, and hands back what the caller should record and whom
+ * it should stop. Stopping is the caller's (it owns the processes and the containers).
+ *
+ * Two things the caller has to know. **A tick measures what fits in its budget**, resuming next tick
+ * where it stopped, so `outcomes` covers part of the rotation and `sweep` says when a pass closed.
+ * And **an agent stopped for a quota stays in the rotation**: `close()` reaches the process the
+ * coordinator spawned, which under the docker sandbox is the `docker run` client rather than the
+ * container, so whether the writing stopped is something to measure and not to assume. It is
+ * reported as `still-writing` while it grows, which is what the caller escalates on.
  */
 export class AgentDiskWatch {
   private readonly warned = new Set<string>();
-  private readonly stopped = new Set<string>();
+  /** Agents stopped for a quota, and what they held when they were last accounted for. */
+  private readonly stopped = new Map<string, number>();
+  /** Ids still owed a measurement in the pass now open: the rotation's position. */
+  private pending = new Set<string>();
+  /** Ticks the open pass has taken so far. */
+  private ticks = 0;
+  private readonly budgetMs: number;
+  private readonly now: () => number;
 
   constructor(
     private readonly quota: DiskQuota,
     private readonly measure: (t: DiskWatchTarget) => AgentDiskSample = (t) =>
       measureAgentDisk({ stateDir: t.stateDir, logFiles: t.logFiles }),
-  ) {}
+    opts: { budgetMs?: number; now?: () => number } = {},
+  ) {
+    this.budgetMs = opts.budgetMs ?? DISK_TICK_BUDGET_MS;
+    this.now = opts.now ?? (() => Date.now());
+  }
 
-  tick(targets: ReadonlyArray<DiskWatchTarget>): DiskWatchOutcome[] {
-    const out: DiskWatchOutcome[] = [];
-    for (const target of targets) {
-      if (this.stopped.has(target.id)) continue;
-      const sample = this.measure(target);
-      const verdict = diskVerdict(sample, this.quota);
-      let report: DiskWatchOutcome["report"] = "none";
-      if (verdict.level === "exceeded") {
-        this.stopped.add(target.id);
-        report = "exceeded";
-      } else if (verdict.level === "warning") {
-        if (!this.warned.has(target.id)) {
-          this.warned.add(target.id);
-          report = "warning";
-        }
-      } else {
-        this.warned.delete(target.id);
-      }
-      out.push({ id: target.id, sample, verdict, report });
+  tick(targets: ReadonlyArray<DiskWatchTarget>): DiskTick {
+    const ids = new Set(targets.map((t) => t.id));
+    // An agent that left the field is no longer owed a measurement, and must not hold a pass open.
+    for (const id of this.pending) if (!ids.has(id)) this.pending.delete(id);
+    if (ids.size === 0) {
+      this.pending.clear();
+      this.ticks = 0;
+      return { outcomes: [], rotation: 0, elapsedMs: 0 };
     }
-    return out;
+    if (this.pending.size === 0) {
+      for (const id of ids) this.pending.add(id);
+      this.ticks = 0;
+    }
+    this.ticks++;
+    const started = this.now();
+    const outcomes: DiskWatchOutcome[] = [];
+    for (const target of targets) {
+      if (!this.pending.has(target.id)) continue;
+      // After the first, so a budget smaller than one walk still makes progress.
+      if (outcomes.length > 0 && this.now() - started >= this.budgetMs) break;
+      this.pending.delete(target.id);
+      outcomes.push(this.judge(target));
+    }
+    const elapsedMs = this.now() - started;
+    return {
+      outcomes,
+      rotation: ids.size,
+      elapsedMs,
+      ...(this.pending.size === 0 ? { sweep: { ticks: this.ticks } } : {}),
+    };
+  }
+
+  private judge(target: DiskWatchTarget): DiskWatchOutcome {
+    const sample = this.measure(target);
+    const verdict = diskVerdict(sample, this.quota);
+    const stoppedAt = this.stopped.get(target.id);
+    if (stoppedAt !== undefined) {
+      // Already stopped. The question is no longer whether it is over a quota -- it is -- but
+      // whether the stop reached what was writing.
+      const grewBytes = totalBytes(sample) - stoppedAt;
+      if (grewBytes <= STOPPED_GROWTH_SLACK_BYTES)
+        return { id: target.id, sample, verdict, report: "none" };
+      // Re-based, so the next report is about growth since this one rather than since the stop.
+      this.stopped.set(target.id, totalBytes(sample));
+      return { id: target.id, sample, verdict, report: "still-writing", grewBytes };
+    }
+    if (verdict.level === "exceeded") {
+      this.stopped.set(target.id, totalBytes(sample));
+      return { id: target.id, sample, verdict, report: "exceeded" };
+    }
+    if (verdict.level === "warning") {
+      if (this.warned.has(target.id))
+        return { id: target.id, sample, verdict, report: "none" };
+      this.warned.add(target.id);
+      return { id: target.id, sample, verdict, report: "warning" };
+    }
+    this.warned.delete(target.id);
+    return { id: target.id, sample, verdict, report: "none" };
   }
 }
