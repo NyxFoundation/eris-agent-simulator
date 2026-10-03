@@ -830,6 +830,12 @@ const en = {
     "Which episodes this epoch contains is not published while the competition runs (rules §3.3). It is published with the results (rules §7.2).",
   "vp.scenario.scheduleEmptyPast":
     "no episode of this period has closed yet — one that is open now, or still to come, is not listed",
+  "vp.scenario.firingNotLive":
+    "not shown live — what fires inside a window is sent once it closes; reload the page to see it",
+  "vp.withheld.scenarioEvents":
+    "not published while the competition runs (rules §3.3): whether anything was liquidated, redeemed or slashed in an epoch names its scenario. Published with the results (rules §7.2) — this is not a claim that nothing happened",
+  "vp.withheld.liveEvents":
+    "the live view does not receive what happened inside an episode's window: it is sent once the window closes, so reload the page to see the windows that have closed since",
 
   // ---- the header and the overview page (issue #183); values from data/competitionInfo.ts ----
   "tip.about":
@@ -1931,6 +1937,12 @@ const ja: Record<MessageKey, string> = {
     "このエポックにどのイベントが含まれるかは、競技中は公開しません（規約 §3.3）。結果発表とともに公開されます（規約 §7.2）。",
   "vp.scenario.scheduleEmptyPast":
     "この期間ではまだ閉じたイベントがありません。現在開いている窓やこれからの窓は一覧に出ません",
+  "vp.scenario.firingNotLive":
+    "ライブ表示では未取得です。窓の中の発火は窓が閉じてから配信されるので、ページを再読み込みすると表示されます",
+  "vp.withheld.scenarioEvents":
+    "競技中は公開しません（規約 §3.3）。エポックの中で清算・償還・スラッシュがあったかどうかはそのシナリオを示すためです。結果発表とともに公開されます（規約 §7.2）。何も起きなかったという意味ではありません",
+  "vp.withheld.liveEvents":
+    "ライブ表示はイベントの窓の中で起きたことを受け取りません。窓が閉じてから配信されるので、その後に閉じた窓の記録はページを再読み込みすると表示されます",
 
   // ---- ヘッダと概要ページ（issue #183）。値は data/competitionInfo.ts ----
   "tip.about":

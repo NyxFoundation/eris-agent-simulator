@@ -29,6 +29,12 @@
 //     world serves one only once the window it belongs to has closed. `stress_event_applied` is
 //     written when the oracle tx is *sent*, so a live tail of it read the next block's price, and
 //     `stress_token_launch_setup` / `_funded` listed future windows and which launches were duds
+//     All of this sits inside an allowlist of event types (`AUDIENCE_EVENTS`, issue #210): a type
+//     nobody has put on it is not served. The environment's own submissions (`tx_submitted`) are on
+//     it but held until mined -- written at send time, they named a pending tx a block early -- and
+//     a tail stops in front of a held line instead of skipping it
+//   - blocks.csv: for a scenario epoch, the senders that exist only in some regimes (the whale's,
+//     the token launches', a liquidity pull's) are collapsed to their class (`scenarioOwner`)
 //   - matrix.json / standings.json / summary.json: regime becomes "hidden" and seed null while the
 //     competition is a scenario matrix (§3.3: the scenario of an epoch is not announced; equal
 //     regime counts would let the remaining ones be inferred). A practice period's segments are not
@@ -49,6 +55,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Transform } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import { createGzip } from "node:zlib";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -72,6 +79,10 @@ const TAIL_CHUNK_BYTES = 4 * 1024 * 1024;
 // polling it every few seconds is the same walk repeated for the same answer, so it is held for a
 // moment. Short enough that a run appearing or going live shows up within a poll interval.
 const INDEX_CACHE_MS = 3_000;
+
+// Bytes of events.jsonl read back from a point to find the newest block the coordinator had
+// processed by then (it writes several lines per block, a few hundred bytes each).
+const HEAD_LOOKBACK_BYTES = 64 * 1024;
 
 // Bytes read off the end of blocks.csv to learn the current block of a live run. A row is ~150
 // bytes; this is dozens of rows, which is plenty to find one complete line.
@@ -179,6 +190,12 @@ function audienceAllows(rel: string): boolean {
 
 type Json = Record<string, unknown>;
 
+function maxOrNull(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.max(a, b);
+}
+
 /** Whether a competition index describes scenarios (hide regime/seed) or a period's segments (keep). */
 function hidesScenarios(file: Json): boolean {
   return file.resetUnit !== "continuous";
@@ -239,8 +256,12 @@ const REDACTED_JSON: Record<string, (file: Json) => Json> = {
 };
 
 /**
- * One events.jsonl line for the audience, or null to drop it. `currentBlock` is the chain height the
- * run has reached (null when unknown), which decides how much of the stress schedule is history.
+ * How one events.jsonl (or blocks.csv) is redacted for the audience. `currentBlock` is the chain
+ * height the run's blocks.csv has reached (null when unknown), which decides how much of the stress
+ * schedule is history. `chainHeight` is the best evidence of how far the chain has been mined --
+ * blocks.csv and the coordinator's own `round_timing` lines, Infinity once the run has finished --
+ * and decides when an environment tx's submission may be shown (see TX_MINED_MARGIN). Unset = null:
+ * nothing is known to be mined, and every submission is held.
  */
 export type SchedulePolicy =
   /**
@@ -252,12 +273,13 @@ export type SchedulePolicy =
       kind: "past";
       currentBlock: number | null;
       windows?: ReadonlyArray<{ start: number; end: number }> | null;
+      chainHeight?: number | null;
     }
   /**
    * Drop the schedule entirely: the run is one epoch of a scenario matrix, and even a closed
    * window's kind ("crash", "whale") names the regime rules §3.3 does not announce.
    */
-  | { kind: "none" };
+  | { kind: "none"; chainHeight?: number | null };
 
 /** Absolute windows of a `stress_schedule` event, indexed like the `eventIndex` the others carry. */
 export function scheduleWindows(
@@ -310,19 +332,164 @@ function redactStressEvent(event: Json, policy: SchedulePolicy): string | null {
   return null;
 }
 
-export function redactEventLine(
+/**
+ * The event types the audience is served, and how. **An allowlist** (issue #210): a type not named
+ * here is not served, including every type a future writer adds. The list used to be the other way
+ * round -- everything was served except what had been named -- and each round of review found
+ * another line that leaked: the stress events (#204), then the environment's own submissions
+ * (`tx_submitted`, written when a flow or whale tx is *sent*, so a live tail read its hash one block
+ * before it was mined and the gateway's refusal to show pending txs was moot), then the regime
+ * names on non-`stress_` events. A new event now has to be argued onto the list, not off it.
+ *
+ * What is on it is what a page reads (dashboard/src: liveRun.ts, runsProvider.ts, venuePanels.ts,
+ * schedule.ts, runArtifacts.ts) and is history by the time it is written:
+ *   keep        written about a block that has already been mined, and true of every regime
+ *   tx          the environment's submissions: only once mined (TX_MINED_MARGIN), and in a scenario
+ *               epoch with a regime-naming owner collapsed (`scenarioOwner`)
+ *   continuous  on-chain facts that only some regimes produce (a Trove liquidation or a redemption
+ *               happens in cdp-incident, a slash only where lstSlash is scheduled): served for a
+ *               continuous world, where they are history; dropped for a scenario epoch, where their
+ *               presence names the regime (rules §3.3)
+ * Stress events (`stress_*`) follow the schedule's rule above, and the schedule its own.
+ *
+ * Deliberately not on it, though written: the vuln regime's pool lifecycle (`pool_created`,
+ * `vulnerability_disclosed`, `safe_pool_captured`, `vuln_factory_deployed`,
+ * `vulnerability_exploited`: they name the regime, and `pool_created` carried the rigged flag), the
+ * agent-market registry (`market_*`: only the launch regime turns it on), setup and calibration
+ * audits (`initial_endowment`, `owner_guard_audit`, `no_arb_startup`, `deployment_check`, ...), the
+ * flow wallets' own telemetry (`flow_balances`, `flow_guard`, `flow_wallet_*`: the environment's
+ * inventory), process exits and sandbox notes (a participant's stderr, the operator's isolation),
+ * and the post-run scoring audits. No page reads any of them, so dropping them changes nothing a
+ * reader sees; serving them is a decision that has to be made when a page starts to.
+ */
+const AUDIENCE_EVENTS: Record<string, "keep" | "tx" | "continuous"> = {
+  // The run's header (seed and flowSeed removed below), the roster and the clock.
+  run_started_realtime: "keep",
+  run_start_declared: "keep",
+  price_feed_deployed: "keep",
+  agents_registered: "keep",
+  round_timing: "keep",
+  run_completed: "keep",
+  // The interval series, under its name and under the one before issue #140.
+  interval_boundary: "keep",
+  epoch_boundary: "keep",
+  // The reconstructed value series (written after the run).
+  observation: "keep",
+  // Venue state per block, and the venue's own failures and arb windows: every regime has them.
+  lst_setup: "keep",
+  lst_block: "keep",
+  lst_apy_changed: "keep",
+  liquity_block: "keep",
+  keeper_failed: "keep",
+  no_arb_persistent_warning: "keep",
+  tx_submitted: "tx",
+  tx_submit_failed: "tx",
+  liquity_liquidation: "continuous",
+  liquity_redemption: "continuous",
+  lst_slash: "continuous",
+};
+
+/**
+ * Blocks past the coordinator's head at send time before a submission is shown. A tx sent while the
+ * head was H can be mined in H+1 at the earliest; the second block absorbs the two ways it can be
+ * later without the coordinator knowing -- a block mined in the moment between the head being
+ * reported and the tx being sent, and a tx that reached the node after H+1's cut. It costs the
+ * public live view about two blocks of delay on these lines (and, in a tail, on what follows them).
+ */
+export const TX_MINED_MARGIN = 2;
+
+/** Event types written about the block the coordinator is processing: evidence of its head. */
+const HEAD_EVIDENCE = new Set([
+  "round_timing",
+  "lst_block",
+  "liquity_block",
+  "interval_boundary",
+  "epoch_boundary",
+]);
+
+/** A line the audience may see later but not yet: a tail stops in front of it and serves it again. */
+export const HOLD: unique symbol = Symbol("hold");
+
+/**
+ * What a redaction pass has seen so far in the file: the newest block a head-evidence line named,
+ * which dates a submission written by a coordinator from before `headBlock` existed. `lookback`
+ * finds it before the first line of a tail chunk.
+ */
+export type RedactionCursor = {
+  lastBlock: number | null;
+  lookback?: () => number | null;
+};
+
+/**
+ * Background flow is one wallet per venue and side, in every regime. The whale's wallet and the
+ * token-launch wallets exist only in the regimes that have them, and the environment's system
+ * senders other than the oracle and the keeper (a liquidity pull, a depeg seller, the market
+ * registry) likewise -- so in a scenario epoch their owner id is the regime's name, and the audience
+ * gets the class instead. Continuous worlds keep the name: the tx is on chain by then, from an
+ * address anyone watching the chain has already seen do the same thing.
+ */
+export function scenarioOwner(ownerId: string, role: string): string {
+  // `tx_submit_failed` carries no role; an agent's id can start with anything, so with a role only
+  // a flow role qualifies.
+  if ((role === "" || role.endsWith("-flow")) && /^flow-(whale|launch)/.test(ownerId))
+    return "flow";
+  if (role === "system" && ownerId !== "oracle" && ownerId !== "keeper")
+    return "system";
+  return ownerId;
+}
+
+function redactTxEvent(
+  event: Json,
+  policy: SchedulePolicy,
+  cursor: RedactionCursor,
+): string | typeof HOLD {
+  let head: number | null =
+    typeof event.headBlock === "number" ? event.headBlock : null;
+  if (head === null) {
+    // Written by a coordinator from before `headBlock`: dated by the newest block-processing line
+    // in front of it. That block was the head at the latest, or the one after it if the tx went out
+    // during the next block's pass -- so +1, which is the conservative side.
+    if (cursor.lastBlock === null && cursor.lookback)
+      cursor.lastBlock = cursor.lookback();
+    if (cursor.lastBlock !== null) head = cursor.lastBlock + 1;
+  }
+  const height = policy.chainHeight ?? null;
+  if (height === null) return HOLD;
+  if (height !== Number.POSITIVE_INFINITY) {
+    if (head === null || height < head + TX_MINED_MARGIN) return HOLD;
+  }
+  if (policy.kind === "none" && typeof event.ownerId === "string")
+    return JSON.stringify({
+      ...event,
+      ownerId: scenarioOwner(
+        event.ownerId,
+        typeof event.role === "string" ? event.role : "",
+      ),
+    });
+  return JSON.stringify(event);
+}
+
+/**
+ * One events.jsonl line for the audience: the line to serve, null to drop it, or HOLD when it may be
+ * served later (an environment submission not yet mined). `cursor` carries what the pass has seen
+ * of the file so far; a fresh one is fine for a line on its own.
+ */
+export function redactEvent(
   line: string,
   policy: SchedulePolicy,
-): string | null {
+  cursor: RedactionCursor = { lastBlock: null },
+): string | null | typeof HOLD {
   let event: Json;
   try {
     event = JSON.parse(line) as Json;
   } catch {
-    // Not an event (a torn or foreign line). Nothing to redact and nothing to reveal: keep it as the
-    // client would have seen it.
-    return line;
+    // Not an event (a torn or foreign line): it cannot be inspected, so it is not served.
+    return null;
   }
-  switch (event.type) {
+  const type = typeof event.type === "string" ? event.type : "";
+  if (HEAD_EVIDENCE.has(type) && typeof event.blockNumber === "number")
+    cursor.lastBlock = Math.max(cursor.lastBlock ?? 0, event.blockNumber);
+  switch (type) {
     case "run_started_realtime": {
       const { seed: _s, flowSeed: _f, ...rest } = event;
       return JSON.stringify(rest);
@@ -348,33 +515,45 @@ export function redactEventLine(
         redacted: "future windows",
       });
     }
+    // It names crash magnitudes; on the list of stress events below anyway, but said outright.
     case "stress_calibration_warning":
       return null;
-    case "vulnerability_exploited":
-    // The operator's note that agent containers ran without network isolation: for whoever runs
-    // the box, not for the audience.
-    case "agent_sandbox_warning":
-      return null;
-    case "pool_created": {
-      const {
-        rigged: _r,
-        rugBps: _rb,
-        rugThresholdUnits: _rt,
-        baitBps: _bb,
-        ...rest
-      } = event;
-      return JSON.stringify(rest);
-    }
-    default: {
-      if (typeof event.type === "string" && event.type.startsWith("stress_"))
-        return redactStressEvent(event, policy);
-      if ("stderrTail" in event) {
-        const { stderrTail: _e, ...rest } = event;
-        return JSON.stringify(rest);
-      }
-      return line;
-    }
   }
+  if (type.startsWith("stress_")) return redactStressEvent(event, policy);
+  const rule = AUDIENCE_EVENTS[type];
+  if (rule === undefined) return null;
+  if (rule === "tx") return redactTxEvent(event, policy, cursor);
+  if (rule === "continuous" && policy.kind === "none") return null;
+  if ("stderrTail" in event) {
+    const { stderrTail: _e, ...rest } = event;
+    return JSON.stringify(rest);
+  }
+  return line;
+}
+
+/** `redactEvent` for a reader that cannot come back for a held line: held is dropped. */
+export function redactEventLine(
+  line: string,
+  policy: SchedulePolicy,
+  cursor?: RedactionCursor,
+): string | null {
+  const out = redactEvent(line, policy, cursor);
+  return out === HOLD ? null : out;
+}
+
+// blocks.csv columns (core/src/logger.ts BLOCKS_CSV_COLUMNS; new columns are only ever appended).
+const BLOCKS_OWNER_COL = 7;
+const BLOCKS_ROLE_COL = 8;
+
+/** One blocks.csv row for the audience of a scenario epoch: a regime-naming owner collapsed. */
+export function redactBlocksRow(line: string): string {
+  const cols = line.split(",");
+  if (cols.length <= BLOCKS_ROLE_COL) return line;
+  const owner = cols[BLOCKS_OWNER_COL];
+  const collapsed = scenarioOwner(owner, cols[BLOCKS_ROLE_COL]);
+  if (collapsed === owner) return line;
+  cols[BLOCKS_OWNER_COL] = collapsed;
+  return cols.join(",");
 }
 
 export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
@@ -615,10 +794,12 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
   function schedulePolicyOf(file: string): SchedulePolicy {
     const dir = path.dirname(file);
     let resetUnit: string | undefined;
+    let finished = false;
     try {
       const summary = JSON.parse(
         fs.readFileSync(path.join(dir, "summary.json"), "utf8"),
       ) as Json;
+      finished = true;
       if (typeof summary.resetUnit === "string") resetUnit = summary.resetUnit;
     } catch {
       // no summary yet (live), or unreadable: fall through to the events header
@@ -638,13 +819,50 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
         // no events file either
       }
     }
+    const currentBlock = currentBlockOf(file);
+    const eventsFile = path.join(dir, "events.jsonl");
+    // Mined as far as either record says. blocks.csv alone is not enough: a run that is not
+    // segmented writes it in one pass at the end, so for its whole life it says nothing.
+    const chainHeight = finished
+      ? Number.POSITIVE_INFINITY
+      : maxOrNull(currentBlock, headBlockBefore(eventsFile, null));
     return resetUnit === "continuous"
       ? {
           kind: "past",
-          currentBlock: currentBlockOf(file),
-          windows: windowsOf(path.join(dir, "events.jsonl")),
+          currentBlock,
+          windows: windowsOf(eventsFile),
+          chainHeight,
         }
-      : { kind: "none" };
+      : { kind: "none", chainHeight };
+  }
+
+  /**
+   * The newest block a head-evidence line (`round_timing`, a venue's per-block state, an interval
+   * boundary) names in the 64KB of events.jsonl before `end` (null = the end of the file). Every
+   * block writes several of them, so the window always holds one once the run is under way.
+   */
+  function headBlockBefore(eventsFile: string, end: number | null): number | null {
+    let fd: number | null = null;
+    try {
+      const size = end ?? fs.statSync(eventsFile).size;
+      const start = Math.max(0, size - HEAD_LOOKBACK_BYTES);
+      if (size <= start) return null;
+      fd = fs.openSync(eventsFile, "r");
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      let best: number | null = null;
+      for (const line of buf.toString("utf8").split("\n")) {
+        const type = /"type":"([a-z_]+)"/.exec(line)?.[1];
+        if (!type || !HEAD_EVIDENCE.has(type)) continue;
+        const block = /"blockNumber":(\d+)/.exec(line)?.[1];
+        if (block !== undefined) best = maxOrNull(best, Number(block));
+      }
+      return best;
+    } catch {
+      return null;
+    } finally {
+      if (fd !== null) fs.closeSync(fd);
+    }
   }
 
   // The schedule never changes within a file, so it is read once per file -- but only once it has
@@ -714,31 +932,57 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
     else body.pipe(res);
   }
 
-  /** events.jsonl for the audience: the file, line by line, through the redaction. */
-  function redactedEventsStream(file: string): NodeJS.ReadableStream {
-    const policy = schedulePolicyOf(file);
+  /** A file for the audience, line by line through `redact` (null drops the line). */
+  function redactedLinesStream(
+    file: string,
+    redact: (line: string) => string | null,
+  ): NodeJS.ReadableStream {
     let carry = "";
+    // A multi-byte character can straddle two chunks; the decoder holds its first half back.
+    const decoder = new StringDecoder("utf8");
     const transform = new Transform({
       transform(chunk: Buffer, _enc, cb) {
-        const text = carry + chunk.toString("utf8");
+        const text = carry + decoder.write(chunk);
         const lines = text.split("\n");
         carry = lines.pop() ?? "";
         const out: string[] = [];
         for (const line of lines) {
           if (!line.trim()) continue;
-          const kept = redactEventLine(line, policy);
+          const kept = redact(line);
           if (kept !== null) out.push(kept);
         }
         cb(null, out.length > 0 ? `${out.join("\n")}\n` : "");
       },
       flush(cb) {
-        if (carry.trim()) {
-          const kept = redactEventLine(carry, policy);
+        const rest = carry + decoder.end();
+        if (rest.trim()) {
+          const kept = redact(rest);
           cb(null, kept !== null ? `${kept}\n` : "");
         } else cb(null, "");
       },
     });
     return fs.createReadStream(file).pipe(transform);
+  }
+
+  /**
+   * events.jsonl for the audience, through the redaction. A line held for later (a submission not
+   * yet mined) is dropped here: a whole-file reader does not come back for it. The dashboard reads
+   * whole files only for finished runs, where nothing is held; a live run is read by the tail.
+   */
+  function redactedEventsStream(file: string): NodeJS.ReadableStream {
+    const policy = schedulePolicyOf(file);
+    const cursor: RedactionCursor = { lastBlock: null };
+    return redactedLinesStream(file, (line) =>
+      redactEventLine(line, policy, cursor),
+    );
+  }
+
+  /**
+   * blocks.csv for the audience, when the run is a scenario epoch: the regime-naming owners
+   * collapsed (`scenarioOwner`). Null for a continuous world, which is served as written.
+   */
+  function blocksRedactionOf(file: string): ((line: string) => string) | null {
+    return schedulePolicyOf(file).kind === "none" ? redactBlocksRow : null;
   }
 
   /**
@@ -808,6 +1052,10 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
       );
       const redactEvents =
         mode.audience && path.basename(file) === "events.jsonl";
+      const redactBlocks =
+        mode.audience && path.basename(file) === "blocks.csv"
+          ? blocksRedactionOf(file)
+          : null;
       fs.stat(file, (err, stat) => {
         res.setHeader("content-type", "application/json");
         res.setHeader("cache-control", CACHE_NONE);
@@ -826,7 +1074,7 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
           .on("data", (c) => chunks.push(c as Buffer))
           .on("end", () => {
             const raw = Buffer.concat(chunks);
-            if (!redactEvents) {
+            if (!redactEvents && !redactBlocks) {
               res.end(
                 JSON.stringify({ offset: end + 1, text: raw.toString("utf8") }),
               );
@@ -839,19 +1087,44 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
               res.end(JSON.stringify({ offset: start, text: "" }));
               return;
             }
+            if (redactBlocks) {
+              const rows = raw.subarray(0, cut).toString("utf8").split("\n");
+              res.end(
+                JSON.stringify({
+                  offset: start + cut + 1,
+                  text: `${rows.map(redactBlocks).join("\n")}\n`,
+                }),
+              );
+              return;
+            }
             const policy = schedulePolicyOf(file);
+            const cursor: RedactionCursor = {
+              lastBlock: null,
+              lookback: () => headBlockBefore(file, start),
+            };
             const kept: string[] = [];
-            for (const line of raw
-              .subarray(0, cut)
-              .toString("utf8")
-              .split("\n")) {
-              if (!line.trim()) continue;
-              const out = redactEventLine(line, policy);
-              if (out !== null) kept.push(out);
+            // Walked by byte offset, so that a held line can be the next request's start: the tail
+            // stops in front of it (and of everything after it -- the stream is ordered) and the
+            // client asks again from there. Skipping it instead would lose it for good.
+            let next = start + cut + 1;
+            let from = 0;
+            while (from < cut) {
+              const nl = raw.indexOf(0x0a, from);
+              const stop = nl < 0 || nl > cut ? cut : nl;
+              const line = raw.subarray(from, stop).toString("utf8");
+              if (line.trim()) {
+                const out = redactEvent(line, policy, cursor);
+                if (out === HOLD) {
+                  next = start + from;
+                  break;
+                }
+                if (out !== null) kept.push(out);
+              }
+              from = stop + 1;
             }
             res.end(
               JSON.stringify({
-                offset: start + cut + 1,
+                offset: next,
                 text: kept.length > 0 ? `${kept.join("\n")}\n` : "",
               }),
             );
@@ -893,6 +1166,12 @@ export function createRunsApi(runsDir: string, options: RunsApiOptions = {}) {
 
     if (mode.audience && base === "events.jsonl") {
       send(req, res, redactedEventsStream(file), contentType, cache);
+      return true;
+    }
+    const blocksRedact =
+      mode.audience && base === "blocks.csv" ? blocksRedactionOf(file) : null;
+    if (blocksRedact) {
+      send(req, res, redactedLinesStream(file, blocksRedact), contentType, cache);
       return true;
     }
     if (mode.audience && REDACTED_JSON[base]) {

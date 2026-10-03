@@ -2313,6 +2313,11 @@ export async function runRealtimeSimulation(
     // `replacement transaction underpriced` and its order is lost (issue #148). Sequential per
     // wallet, concurrent across wallets.
     const flowSendSerial = new KeyedSerial();
+    // The newest block the loop has been told about, stamped on each submission as `headBlock`: the
+    // tx can be mined in headBlock + 1 at the earliest. The public dashboard serves a submission
+    // only once the chain is past that (issue #210) -- written at send time, the line otherwise
+    // named a pending tx a block before it was mined.
+    let sendHeadBlock: number | null = null;
     const handleFlowOrders = async (orders: FlowOrderWire[]): Promise<Hex[]> => {
       const submitted: Hex[] = [];
       const intents = flowOrdersToIntents(ctx, orders);
@@ -2332,6 +2337,7 @@ export async function runRealtimeSimulation(
             logger.event({
               type: "tx_submitted",
               hash,
+              ...(sendHeadBlock !== null ? { headBlock: sendHeadBlock } : {}),
               ownerId: intent.ownerId,
               role: intent.role,
               priorityFeeWei: intent.priorityFeeWei,
@@ -2342,6 +2348,7 @@ export async function runRealtimeSimulation(
         } catch (error) {
           logger.event({
             type: "tx_submit_failed",
+            ...(sendHeadBlock !== null ? { headBlock: sendHeadBlock } : {}),
             ownerId: intent.ownerId,
             actionType: intent.action.type,
             error: error instanceof Error ? error.message : String(error),
@@ -3076,6 +3083,8 @@ export async function runRealtimeSimulation(
           : undefined;
 
       const onBlock = async (notifiedBn: number): Promise<void> => {
+        // Before the early return: a head reported while a pass is still running is still the head.
+        sendHeadBlock = Math.max(sendHeadBlock ?? 0, notifiedBn);
         if (processing || finished) return;
         processing = true;
         let settle: () => void = () => {};
