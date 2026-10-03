@@ -433,8 +433,8 @@ devnet）を指す。cheatcode 関数はそのまま残り、external では**�
   上限は `setTimeout` の 32bit を超えて 1ms に化けていた（イベント無しの run が 0 ブロックで終了）→ `setLongTimeout`。
   ②**背景フローの財布は補充する**（`flow.topUpEveryBlocks`、練習は 300。公式は 0 = 1 回配り）。実測で
   1 財布の在庫が 1 日に元の数倍揺れ、合計価値は 1 日 1 割強減る。`flow_balances` / `flow_guard` /
-  `flow_wallet_topped_up` が記録。③**LST の経済クロックは 30 秒/ブロック**（既定 1 時間だと 35 日が 170 年分、
-  原資 50 WETH が 3.3 日で尽きた）。尽きたら観測の `apyBps` は 0、`lst_reward_reserve_exhausted`。
+  `flow_wallet_topped_up` が記録。③**LST の利回りはチェーンの時計**（ADR 0028。旧既定 1 時間/ブロックだと 35 日が 170 年分で
+  原資 50 WETH が 3.3 日で尽き、#129 で 30 秒/ブロックにしていた）。尽きたら観測の `apyBps` は 0、`lst_reward_reserve_exhausted`。
   ④**coordinator の送信記録は flush で消す**（`SubmittedLedger`。以前は 1 日 ~200MB 増えた。soak で 180MB 一定）。
   ⑤**練習チェーンの anvil は `--transaction-block-keeper 300 --prune-history 300`**。無いと全 tx（1 件 ~37KB、
   レシート・トレース込み）をメモリとダンプに持ち続け、**5 分ごとのダンプの間ブロック生成が止まる**（2 時間で
@@ -794,8 +794,11 @@ OU の base price はそのまま進め、その上に **SEED 由来でランダ
   ローカルデプロイでないと起動時 fail-fast。**`config/example.yaml` の既定ロスターに入っている**
   （`cd deployer && npm run deploy -- --keep-fresh` → `npm run gen:local-constants` → `npm run sim:realtime`）。
   LST 単独で見たいときは競合参加者と較正ノブを明示した `config/lst.yaml`
-- **利回りは EVM 時間でなく経済クロック**（`lst.simulatedSecondsPerBlock` / `lst.apyBps`。既定 1 block=1h・3%/yr
-  = Aave WETH supply と同オーダー。速すぎると他 venue が無意味になる）。原資は事前投入 reward reserve に上限され、
+- **利回りはブロックごとに積むが、時計は Aave・GMX と同じ EVM 時間**（ADR 0028。`lst.simulatedSecondsPerBlock`
+  の既定は `run.blockTimeSec`、`lst.apyBps` 既定 3%/yr）。**以前の既定は 1 block = 1 時間**で、公式 12 本でも
+  1 エポック = 15 日分 = 12.3bps の利回りが Aave の借入コスト（EVM 時間で ~0）に対して無リスクで付き、
+  「block 0 で全額ステーク + Aave でループ」が恒久最適だった。今は 1 エポック ~0.007bps でガス未満。
+  `config/lst.yaml` / `config/regimes/lst.yaml`（venue 単体検証、公式セット外）は 3600 を明示して圧縮したまま。原資は事前投入 reward reserve に上限され、
   `accrueRewards()` は permissionless（額はブロック数の純関数なので誰が叩いても同じ）。coordinator は毎ブロック
   oracle tx と**同じ admin nonce の直列**で叩く（並列にすると nonce 衝突でレートが凍る）
 - **プールの rate oracle 配線が要**（`stEthPerToken()` を asset_type=1 で登録）。未配線だとレート上昇が全員に開かれた

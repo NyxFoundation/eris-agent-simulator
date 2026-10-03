@@ -54,8 +54,11 @@ funding:
 
 # LST venue calibration (issue #38).
 #
-# Yield runs on a compressed *economic* clock rather than EVM time — warping time would also move
-# Aave's accrual and GMX funding. One block stands for simulatedSecondsPerBlock seconds of staking.
+# One block stands for simulatedSecondsPerBlock seconds of staking. The default is run.blockTimeSec
+# -- the clock Aave's accrual and GMX funding run on -- and every official regime keeps it (ADR 0028).
+# This file compresses it to an hour a block on purpose, to make the venue's yield visible in a short
+# test run. That is a different world from the official one: here the yield outruns Aave's borrow
+# rate 1,800x, so staking and looping through Aave is a spread only phase 2 below keeps honest.
 #
 # apyBps is deliberately the same order as the Aave WETH supply rate: a 1000x-speed LST would make
 # every other venue irrelevant. At the defaults below (3%/yr on a one-hour-per-block clock) an
