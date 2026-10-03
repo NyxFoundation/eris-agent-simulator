@@ -261,7 +261,7 @@ class LendingPositionObservation(BaseModel):
     irm: str
     lltv: str
     liquidation_incentive_factor: str = Field(..., alias='liquidationIncentiveFactor')
-    price: str
+    price: str | None = None
     supply_assets: str = Field(..., alias='supplyAssets')
     borrow_assets: str = Field(..., alias='borrowAssets')
     collateral: str

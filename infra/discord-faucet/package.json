@@ -1,0 +1,17 @@
+{
+  "name": "ascon-discord-faucet",
+  "private": true,
+  "description": "Discord bot that registers and funds participants on the ASCON practice devnet",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/bot.mjs",
+    "test": "node --test test/lib.test.mjs test/devnet.test.mjs"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "yaml": "^2.9.0"
+  }
+}

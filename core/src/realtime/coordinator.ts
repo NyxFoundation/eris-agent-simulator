@@ -78,6 +78,11 @@ import {
   reconcileRunAgentTxs,
 } from "../postRunCheck.js";
 import {
+  rosterPricingFromMarks,
+  scanRosterTransfers,
+  type RosterTransferScan,
+} from "./rosterTransferScan.js";
+import {
   nextFairPrice,
   priceRngForAsset,
   Rng,
@@ -2812,6 +2817,9 @@ export async function runRealtimeSimulation(
           ...(receipts[i].gasUsed === undefined
             ? {}
             : { gasUsed: receipts[i].gasUsed }),
+          // Issue #208: the tx's own recipient and value, for the post-run roster-transfer check.
+          to: tx.to ?? "",
+          valueWei: tx.value,
         });
       });
     };
@@ -4719,6 +4727,84 @@ export async function runRealtimeSimulation(
       // At the last competition block, for the same reason the reconstruction stops there.
       BigInt(finalBlock),
     );
+
+    // ---- value moved between registered addresses (issue #208; rules §8) ----
+    // Read off the chain's record after the run, like the fee cap and the gas budget: blocks.csv
+    // for ETH carried by a transaction, the window's Transfer logs for ERC-20, the registry and
+    // the lending singleton for the routed cases. A same-unit movement is flagged at any size, a
+    // cross-unit one above `run.rosterTransferFlagBps` of the pair's smaller endowment; both
+    // sides carry the flag into matrix.json. Nothing here changes P (core/src/rosterTransfers.ts).
+    // The log-based routes need the node's history, so past the sweep limit only blocks.csv is read
+    // and the event says so.
+    let rosterScan: RosterTransferScan | undefined;
+    if (finalBlock >= runStartBlock) {
+      try {
+        rosterScan = await scanRosterTransfers({
+          publicClient,
+          agents: agentRuntimes.map((a) => ({
+            id: a.id,
+            address: a.address,
+            ...(a.spec.participant !== undefined
+              ? { participant: a.spec.participant }
+              : {}),
+            initialValueUsdc: valueUsdc(
+              a.initial,
+              finalFairPrices,
+              finalStablePrices,
+            ),
+          })),
+          runDir: logger.runDir,
+          fromBlock: runStartBlock,
+          toBlock: finalBlock,
+          scanLogs: sweepFits,
+          pricing: rosterPricingFromMarks(finalFairPrices, finalStablePrices),
+          thresholdBps: config.rosterTransferFlagBps,
+          ...(marketRegistry
+            ? {
+                lending: marketRegistry.lending,
+                marketRegistry: marketRegistry.address,
+              }
+            : {}),
+        });
+        const flagged = rosterScan.transfers.filter((t) => t.flagged);
+        if (rosterScan.transfers.length > 0 || rosterScan.errors.length > 0) {
+          logger.event({
+            type: "roster_value_transfers",
+            count: rosterScan.transfers.length,
+            flagged: flagged.length,
+            thresholdBps: rosterScan.thresholdBps,
+            sources: rosterScan.sources,
+            ...(rosterScan.errors.length > 0 ? { errors: rosterScan.errors } : {}),
+            transfers: rosterScan.transfers.slice(0, 200),
+            note:
+              "value that moved between two registered addresses (ETH / ERC-20 directly, or " +
+              "through a participant-created contract or lending market). Same participant unit: " +
+              "flagged at any size (rules §8). Different units: flagged above thresholdBps of the " +
+              "pair's smaller endowment. A report for the operator; the score is unchanged",
+          });
+        }
+        if (!sweepFits)
+          logger.event({
+            type: "roster_transfer_logs_skipped",
+            windowBlocks: finalBlock - runStartBlock,
+            note:
+              "the run window is longer than the node retains history for, so only blocks.csv " +
+              "(ETH carried by a transaction) was checked; ERC-20 and routed movements were not",
+          });
+        if (flagged.length > 0)
+          console.error(
+            `[rules] ${flagged.length} value movement(s) between registered addresses flagged ` +
+              `(${[...new Set(flagged.map((t) => `${t.from}->${t.to}`))].join(", ")}); ` +
+              "see roster_value_transfers in events.jsonl and rosterTransfers in summary.json",
+          );
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        logger.event({ type: "roster_transfer_check_failed", error });
+        console.error(`[rules] roster-transfer check unavailable: ${error}`);
+      }
+    }
+    const rosterTransfersByAgent = rosterScan?.byAgent ?? {};
+
     const agentsSummary = [];
     for (const agent of agentRuntimes) {
       const final = await getBalances(publicClient, agent.address);
@@ -4797,6 +4883,11 @@ export async function runRealtimeSimulation(
         ...(agent.process !== null
           ? { unloggedTxCount: unloggedTxCountByAgent[agent.id] ?? 0 }
           : {}),
+        // Flagged value movements this agent is a side of (issue #208; rules §8). Absent when
+        // none: the full list, flagged or not, is the run-level `rosterTransfers` below.
+        ...(rosterTransfersByAgent[agent.id] !== undefined
+          ? { rosterTransfers: rosterTransfersByAgent[agent.id] }
+          : {}),
         stderrTail: agent.process?.getStderr() ?? "",
       });
     }
@@ -4841,6 +4932,23 @@ export async function runRealtimeSimulation(
       // and a reader counting "violations" across old and new runs must not see the number change
       // meaning (issue #40 T0).
       ...(gasViolations.length > 0 ? { gasViolations } : {}),
+      // Every value movement between registered addresses the check found, flagged or not
+      // (issue #208). Absent when there were none; `rosterTransferCheck` says what was read, so a
+      // run whose window outran the node's history is not mistaken for a clean one.
+      ...(rosterScan && rosterScan.transfers.length > 0
+        ? { rosterTransfers: rosterScan.transfers }
+        : {}),
+      ...(rosterScan
+        ? {
+            rosterTransferCheck: {
+              thresholdBps: rosterScan.thresholdBps,
+              sources: rosterScan.sources,
+              ...(rosterScan.errors.length > 0
+                ? { errors: rosterScan.errors }
+                : {}),
+            },
+          }
+        : {}),
       agents: agentsSummary,
     });
     // The last segment closes with the same index entry every other one got, so a period that ended

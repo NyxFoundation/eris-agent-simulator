@@ -21,7 +21,13 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { existsSync, createReadStream, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  createReadStream,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { competitionsFromEnv, createRunsApi, modeFromEnv } from "./runsApi.js";
@@ -58,6 +64,40 @@ if (!existsSync(path.join(DIST, "index.html"))) {
   );
   process.exit(1);
 }
+
+// Which commit is being served. infra/dashboard/sync-main.sh writes dist/.build-info.json on every
+// build, inside the directory it describes so it cannot outlive it. Read per request: the sync swaps
+// dist/ under a running server, and catching exactly that is the point.
+type BuildInfo = { commit: string | null; builtAt: string | null };
+
+function readBuildInfo(): BuildInfo {
+  const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+  try {
+    const parsed = JSON.parse(
+      readFileSync(path.join(DIST, ".build-info.json"), "utf8"),
+    ) as Record<string, unknown>;
+    return { commit: str(parsed.commit), builtAt: str(parsed.builtAt) };
+  } catch {
+    // A dist from before this file existed, or one built by `npm run dashboard:build` with no sync
+    // involved. .built-at holds the commit and nothing else; past that there is nothing to report,
+    // and null says so where a guess would read as a fact.
+    try {
+      const at = readFileSync(path.join(DIST, ".built-at"), "utf8").trim();
+      return { commit: str(at), builtAt: null };
+    } catch {
+      return { commit: null, builtAt: null };
+    }
+  }
+}
+
+// What this process started alongside. `tsx dashboard/server/serve.ts` compiles this file once, at
+// startup, and the container is `restart: unless-stopped` -- so a build that lands afterwards
+// replaces the bundle and leaves this code as it was. When the two commits below differ, a promotion
+// has reached the box since the restart, and whatever it changed under dashboard/server/ (the runs
+// API's redaction, the competition allowlist) is not live yet: `docker compose restart
+// ascon-dashboard`. See infra/dashboard/README.md, "a deploy is a build".
+const SERVER_STARTED_AT = new Date().toISOString();
+const SERVER_COMMIT = readBuildInfo().commit;
 
 // ERIS_DASHBOARD_AUDIENCE=1 for anyone who is not the operator (the trial period and the live
 // week are both public, 2026-09-06); ERIS_DASHBOARD_STANDINGS=0 for the trial environment, which
@@ -118,10 +158,27 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
     } catch {
       ok = false;
     }
+    const info = readBuildInfo();
     res.statusCode = ok ? 200 : 503;
     res.setHeader("content-type", "application/json");
     res.setHeader("cache-control", "no-store");
-    res.end(JSON.stringify({ ok }));
+    // `ok` keeps its meaning -- node is up and runs/ can be listed -- because
+    // ascon_dashboard_down alerts on it, and a stale bundle is not an outage. The commits are
+    // reported, not judged: builtSinceStart is the fact (a build landed under this process), and
+    // whether that needs a restart depends on what the build changed.
+    res.end(
+      JSON.stringify({
+        ok,
+        commit: info.commit,
+        builtAt: info.builtAt,
+        serverStartedAt: SERVER_STARTED_AT,
+        serverCommit: SERVER_COMMIT,
+        builtSinceStart:
+          info.commit !== null &&
+          SERVER_COMMIT !== null &&
+          info.commit !== SERVER_COMMIT,
+      }),
+    );
     return;
   }
 
@@ -186,6 +243,7 @@ server.listen(PORT, () => {
     `[dashboard] serving ${DIST} on http://localhost:${PORT}\n` +
       `[dashboard]   runs:       ${RUNS}\n` +
       `[dashboard]   blockscout: ${BLOCKSCOUT} (optional)\n` +
+      `[dashboard]   bundle:     ${SERVER_COMMIT ?? "no dist/.build-info.json (built outside the sync)"}\n` +
       `[dashboard]   mode:       ${MODE.audience ? "audience (public view: scenarios, upcoming windows, decision logs and pending bids withheld)" : "operator (everything under runs/ is served)"}` +
       `${MODE.standings ? "" : ", standings not posted (rules §4.7)"}\n` +
       `[dashboard]   competitions: ${COMPETITIONS ? COMPETITIONS.join(", ") : "all under runs/ (set ERIS_DASHBOARD_COMPETITIONS to restrict)"}`,

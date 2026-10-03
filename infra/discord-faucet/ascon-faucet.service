@@ -1,0 +1,28 @@
+# The practice devnet's faucet bot (infra/discord-faucet/README.md). A user unit, like
+# ascon-devnet.service, because it writes the same config/registrations.yaml as the same user.
+#
+#   ln -sf ~/workspace/eris-agent-simulator/infra/discord-faucet/ascon-faucet.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now ascon-faucet
+[Unit]
+Description=ASCON practice devnet faucet bot (Discord)
+Documentation=https://github.com/NyxFoundation/eris-agent-simulator/blob/main/infra/discord-faucet/README.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/eris-agent-simulator/infra/discord-faucet
+Environment=PATH=%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Secrets live outside the repository: the bot token and the service-account key path.
+EnvironmentFile=%h/.config/ascon-faucet.env
+ExecStart=/usr/bin/env node src/bot.mjs
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ascon-faucet
+
+[Install]
+WantedBy=default.target

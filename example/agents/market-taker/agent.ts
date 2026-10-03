@@ -97,6 +97,9 @@ export async function decide(
     // Already in it. Borrowing against posted collateral is the second step, and only up to a
     // fraction of what the market would allow.
     if (BigInt(market.collateral) > 0n && BigInt(market.borrowAssets) === 0n) {
+      // No price means the market's oracle did not answer this block: there is nothing to size a
+      // borrow against, so wait rather than read it as zero.
+      if (market.price === undefined) continue;
       const capacity = collateralInLoanUnits(
         BigInt(market.collateral),
         BigInt(market.price),

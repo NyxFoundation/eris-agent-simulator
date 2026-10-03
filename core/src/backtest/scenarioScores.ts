@@ -7,6 +7,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentScore } from "./standings.js";
 import {
+  rosterTransferFlag,
+  type RosterTransfer,
+} from "../rosterTransfers.js";
+import {
   v0GapBeyondTolerance,
   type V0Source,
 } from "../scoring/endowmentV0.js";
@@ -31,6 +35,9 @@ export type AgentSummary = {
   finalValueUsdc?: number;
   processExitedEarly?: string;
   unloggedTxCount?: number;
+  // Issue #208 / rules §8: flagged value movements between this agent and another registered
+  // address (coordinator; absent when there were none, and on runs recorded before the check).
+  rosterTransfers?: RosterTransfer[];
 };
 
 // There is no second detector off `pnlUsdc − netPnlUsdc`. The idea was that the difference is a
@@ -127,6 +134,15 @@ export function scoresFromSummary(
       flags.push(
         `${agent.unloggedTxCount} on-chain tx(s) absent from the agent's submitted log`,
       );
+    // One line per flagged movement (issue #208). Both ends where both chose it: two submissions of
+    // one unit paying each other, or a transfer over the threshold, which takes a real position to
+    // make. The sender alone where the far end could not have refused -- an ERC-20 transfer needs no
+    // consent, and the scorer prices neither an LST share in a wallet nor a launch token, so one wei
+    // of either would otherwise let anyone write a §8 line into anyone's record.
+    for (const t of agent.rosterTransfers ?? []) {
+      if (t.flagSide === "sender" && t.from !== id) continue;
+      flags.push(rosterTransferFlag(t, id));
+    }
     // Issue #207, the known path: what the chain showed at the first boundary against what the
     // environment had funded, both at that boundary's marks. P is already taken off the floored
     // V_0 either way; the flag is the operator's cue that the agent acted before the bell.
