@@ -299,6 +299,46 @@ const orderHandlerAbi = [
   },
 ] as const;
 
+// Position enumeration for the liquidation keeper: every open position's key is in
+// DataStore's POSITION_LIST set, whoever holds it.
+const POSITION_LIST = hashString("POSITION_LIST");
+const dataStoreSetAbi = [
+  {
+    type: "function",
+    name: "getBytes32Count",
+    stateMutability: "view",
+    inputs: [{ name: "setKey", type: "bytes32" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getBytes32ValuesAt",
+    stateMutability: "view",
+    inputs: [
+      { name: "setKey", type: "bytes32" },
+      { name: "start", type: "uint256" },
+      { name: "end", type: "uint256" },
+    ],
+    outputs: [{ type: "bytes32[]" }],
+  },
+] as const;
+
+const liquidationHandlerAbi = [
+  {
+    type: "function",
+    name: "executeLiquidation",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "account", type: "address" },
+      { name: "market", type: "address" },
+      { name: "collateralToken", type: "address" },
+      { name: "isLong", type: "bool" },
+      setPricesParamsComponent,
+    ],
+    outputs: [],
+  },
+] as const;
+
 const positionPropsComponents = [
   {
     name: "addresses",
@@ -534,6 +574,42 @@ const readerAbi = [
       { name: "end", type: "uint256" },
     ],
     outputs: [{ type: "tuple[]", components: positionPropsComponents }],
+  },
+  {
+    type: "function",
+    name: "getPosition",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "key", type: "bytes32" },
+    ],
+    outputs: [{ type: "tuple", components: positionPropsComponents }],
+  },
+  {
+    type: "function",
+    name: "isPositionLiquidatable",
+    stateMutability: "view",
+    inputs: [
+      { name: "dataStore", type: "address" },
+      { name: "referralStorage", type: "address" },
+      { name: "positionKey", type: "bytes32" },
+      { name: "market", type: "tuple", components: marketPropsComponents },
+      { name: "prices", type: "tuple", components: marketPricesComponents },
+      { name: "shouldValidateMinCollateralUsd", type: "bool" },
+      { name: "forLiquidation", type: "bool" },
+    ],
+    outputs: [
+      { type: "bool" },
+      { type: "string" },
+      {
+        type: "tuple",
+        components: [
+          { name: "remainingCollateralUsd", type: "int256" },
+          { name: "minCollateralUsd", type: "int256" },
+          { name: "minCollateralUsdForLeverage", type: "int256" },
+        ],
+      },
+    ],
   },
   {
     type: "function",
@@ -1442,6 +1518,199 @@ function gmxTokenPrice(
   return { min: price, max: price };
 }
 
+// ---------------------------------------------------------------------------
+// Liquidation keeper
+//
+// GMX liquidates nobody by itself: LiquidationHandler.executeLiquidation is a keeper call, and the
+// environment's keeper only ever executed orders. So no position was ever liquidated -- a 20x
+// contrarian bet through a crash survived to the bell however far it went under, and was scored at
+// its (unfloored) value there. Real keepers watch every position; this one checks every open
+// position each block against the price the order keeper hands executeOrder (the run's fair price
+// through the mock provider), the same check LiquidationUtils makes on chain.
+// ---------------------------------------------------------------------------
+
+// Liquidations per block. Each declares GMX_KEEPER_EXECUTE_GAS like an order fill; the cap keeps a
+// cascade from declaring the whole block ahead of the participants. The rest go next block.
+const MAX_LIQUIDATIONS_PER_BLOCK = 2;
+// A liquidation sent at block B lands at B+1 at the earliest, and the next pass may run before it
+// does. Not re-sending a key for this many blocks keeps the keeper from paying for a duplicate
+// that would only revert.
+const LIQUIDATION_RESEND_BLOCKS = 3n;
+const liquidationSentAt = new Map<string, bigint>();
+
+type LiquidatablePosition = {
+  key: Hex;
+  account: Address;
+  market: Address;
+  collateralToken: Address;
+  isLong: boolean;
+  reason: string;
+};
+
+/**
+ * Every open position GMX would liquidate at the given prices, any account's: participants' and
+ * the background flow's alike, as a real keeper would. Read-only; a failed read means no
+ * liquidation this pass, never a guess.
+ */
+export async function gmxLiquidatablePositions(
+  publicClient: PublicClient,
+  fairByBase: Record<string, number>,
+): Promise<LiquidatablePosition[]> {
+  const count = (await publicClient.readContract({
+    address: GMX.DataStore,
+    abi: dataStoreSetAbi,
+    functionName: "getBytes32Count",
+    args: [POSITION_LIST],
+  })) as bigint;
+  if (count === 0n) return [];
+  const keys = (await publicClient.readContract({
+    address: GMX.DataStore,
+    abi: dataStoreSetAbi,
+    functionName: "getBytes32ValuesAt",
+    args: [POSITION_LIST, 0n, count],
+  })) as readonly Hex[];
+
+  const positions = (await publicClient.multicall({
+    contracts: keys.map((key) => ({
+      address: GMX.Reader,
+      abi: readerAbi,
+      functionName: "getPosition",
+      args: [GMX.DataStore, key],
+    })) as never,
+    allowFailure: true,
+  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+
+  const open: Array<{ key: Hex; position: Position }> = [];
+  positions.forEach((r, i) => {
+    if (r.status !== "success") return;
+    const position = r.result as Position;
+    if (position.numbers.sizeInUsd > 0n) open.push({ key: keys[i], position });
+  });
+  if (open.length === 0) return [];
+
+  const props = await resolveMarketProps(publicClient, [
+    ...new Set(open.map((o) => o.position.addresses.market)),
+  ]);
+  const checks: Array<{ key: Hex; position: Position }> = [];
+  const contracts: unknown[] = [];
+  for (const o of open) {
+    const market = props.get(o.position.addresses.market.toLowerCase());
+    if (!market) continue;
+    const index = gmxTokenPrice(market.indexToken, fairByBase);
+    const long = gmxTokenPrice(market.longToken, fairByBase);
+    const short = gmxTokenPrice(market.shortToken, fairByBase);
+    if (!index || !long || !short) continue;
+    checks.push(o);
+    contracts.push({
+      address: GMX.Reader,
+      abi: readerAbi,
+      functionName: "isPositionLiquidatable",
+      args: [
+        GMX.DataStore,
+        zeroAddress,
+        o.key,
+        market,
+        { indexTokenPrice: index, longTokenPrice: long, shortTokenPrice: short },
+        true,
+        true,
+      ],
+    });
+  }
+  if (checks.length === 0) return [];
+  const verdicts = (await publicClient.multicall({
+    contracts: contracts as never,
+    allowFailure: true,
+  })) as Array<{ status: "success" | "failure"; result?: unknown }>;
+
+  const out: LiquidatablePosition[] = [];
+  verdicts.forEach((r, i) => {
+    if (r.status !== "success") return;
+    const [liquidatable, reason] = r.result as readonly [boolean, string];
+    if (!liquidatable) return;
+    const { key, position } = checks[i];
+    out.push({
+      key,
+      account: position.addresses.account,
+      market: position.addresses.market,
+      collateralToken: position.addresses.collateralToken,
+      isLong: position.flags.isLong,
+      reason,
+    });
+  });
+  return out;
+}
+
+async function liquidatePositions(
+  ctx: SimContext,
+  keeper: ReturnType<typeof privateKeyToAccount>,
+  oracleParams: ReturnType<typeof gmxKeeperOracleParams>,
+  opts: {
+    noMine?: boolean;
+    fee: bigint;
+    executeGas: bigint;
+    block: bigint;
+  },
+): Promise<void> {
+  const fairByBase = { ...(ctx.fairPrices ?? {}) };
+  let found: LiquidatablePosition[];
+  try {
+    found = await gmxLiquidatablePositions(ctx.publicClient, fairByBase);
+  } catch (error) {
+    console.error(
+      `gmx liquidation scan failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  let sent = 0;
+  for (const p of found) {
+    if (sent >= MAX_LIQUIDATIONS_PER_BLOCK) break;
+    const last = liquidationSentAt.get(p.key);
+    if (last !== undefined && opts.block - last < LIQUIDATION_RESEND_BLOCKS)
+      continue;
+    const data = encodeFunctionData({
+      abi: liquidationHandlerAbi,
+      functionName: "executeLiquidation",
+      args: [p.account, p.market, p.collateralToken, p.isLong, oracleParams],
+    });
+    try {
+      if (opts.noMine) {
+        const block = await ctx.publicClient.getBlock();
+        await ctx.walletClient.sendTransaction({
+          account: keeper,
+          chain: ctx.chain,
+          to: GMX.LiquidationHandler,
+          data,
+          gas: opts.executeGas,
+          maxFeePerGas: (block.baseFeePerGas ?? 0n) + opts.fee,
+          maxPriorityFeePerGas: opts.fee,
+        });
+      } else {
+        const block = await ctx.publicClient.getBlock();
+        const hash = await ctx.walletClient.sendTransaction({
+          account: keeper,
+          chain: ctx.chain,
+          to: GMX.LiquidationHandler,
+          data,
+          gas: opts.executeGas,
+          maxFeePerGas: (block.baseFeePerGas ?? 0n) + 1_000_000_000n,
+          maxPriorityFeePerGas: 1_000_000_000n,
+        });
+        if (!isExternalChain()) await mine(ctx.publicClient);
+        await ctx.publicClient.waitForTransactionReceipt({ hash });
+      }
+      liquidationSentAt.set(p.key, opts.block);
+      sent += 1;
+      console.error(
+        `gmx liquidation sent: account=${p.account} market=${p.market} isLong=${p.isLong} reason=${p.reason}`,
+      );
+    } catch (error) {
+      console.error(
+        `gmx liquidation failed: account=${p.account} ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+
 export const gmxAdapter: ProtocolAdapter = {
   id: "gmx",
   stableToken: TOKENS.USDC.address,
@@ -1552,8 +1821,6 @@ export const gmxAdapter: ProtocolAdapter = {
             ORDER_CREATED_HASH.toLowerCase() && l.topics[2],
       )
       .map((l) => l.topics[2] as Hex);
-    if (keys.length === 0) return;
-
     const keeper = privateKeyToAccount(ctx.keeperPk);
     // Every token any configured market needs, not just the order's own: GMX reverts the whole
     // execute on a missing price rather than cancelling, and nothing retries it (gmxOracleTokens).
@@ -1648,6 +1915,13 @@ export const gmxAdapter: ProtocolAdapter = {
         if (!opts?.noMine && !isExternalChain()) await mine(ctx.publicClient);
       }
     }
+
+    await liquidatePositions(ctx, keeper, oracleParams, {
+      noMine: opts?.noMine,
+      fee,
+      executeGas,
+      block: toBlock,
+    });
   },
 
   async valueUsdc(ctx, agent, _state, fairPrice): Promise<number> {
