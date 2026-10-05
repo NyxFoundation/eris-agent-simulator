@@ -1031,11 +1031,13 @@ const en = {
   "overview.links.rules":
     "Rules",
   "overview.links.rulesBody":
-    "The authoritative text on the schedule, scoring, prizes and what is allowed. This page only summarises it.",
+    "The authoritative text on the schedule, scoring, prizes and what is allowed, and the list of what an attack may be aimed at. This page only summarises it.",
   "overview.links.rulesDoc":
     "Competition rules",
   "overview.links.termsDoc":
     "Participation terms",
+  "overview.links.scopeDoc":
+    "Targets open to exploitation (the §3.1 list)",
   "overview.links.discord":
     "Discord #ascon",
   "overview.links.discordBody":
@@ -2152,11 +2154,13 @@ const ja: Record<MessageKey, string> = {
   "overview.links.rules":
     "規約",
   "overview.links.rulesBody":
-    "日程・採点・賞金・禁止事項の正本です。このページはその要約にすぎません。",
+    "日程・採点・賞金・禁止事項の正本と、弱点を突く行為が認められる対象の一覧です。このページはその要約にすぎません。",
   "overview.links.rulesDoc":
     "競技規約",
   "overview.links.termsDoc":
     "参加規約",
+  "overview.links.scopeDoc":
+    "弱点を突く行為が認められる対象の一覧（§3.1）",
   "overview.links.discord":
     "Discord #ascon",
   "overview.links.discordBody":
