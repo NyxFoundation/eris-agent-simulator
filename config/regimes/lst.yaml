@@ -34,7 +34,7 @@ funding:
 # queue congests, and a slash can cut the redemption rate mid-run. See config/lst.yaml for the
 # reasoning behind each number.
 lst:
-  simulatedSecondsPerBlock: 3600
+  simulatedSecondsPerBlock: 3600 # compressed on purpose for this venue test; official regimes use blockTimeSec (ADR 0028)
   apyBps: 300
   withdrawalDelayBlocks: 20
   maxDepositWethWei: "5000000000000000000"

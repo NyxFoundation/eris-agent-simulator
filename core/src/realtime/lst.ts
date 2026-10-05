@@ -1,9 +1,10 @@
 // LST venue: the environment's side of the clock (issue #38).
 //
-// Yield does not come from EVM time. Warping time would also move Aave's rate accrual and GMX
-// funding, so the vault runs on its own compressed *economic* clock instead: one block stands for
-// `lst.simulatedSecondsPerBlock` seconds of staking, and the target APY is deliberately the same
-// order as Aave's WETH supply rate -- a 1000x-speed LST would make every other venue irrelevant.
+// Yield does not come from EVM time directly: the vault accrues per block, one block standing for
+// `lst.simulatedSecondsPerBlock` seconds of staking. That defaults to run.blockTimeSec, so the
+// LST runs on the same clock as Aave's rate accrual and GMX funding (ADR 0028). It used to default
+// to an hour a block, which paid 1,800x Aave's borrow cost per block and made "stake everything at
+// block 0, loop through Aave" a risk-free spread in every official regime.
 //
 // Everything else about the venue is deployed (the vault and its pool are baked into the ADR 0016
 // state dump for backtest fingerprinting). Only the per-block accrual and the phase-2 slash belong

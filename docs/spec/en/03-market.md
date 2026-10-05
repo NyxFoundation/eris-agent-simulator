@@ -177,7 +177,7 @@ Enabled through `run.protocols`. `ProtocolId` has seven values (`sdk/src/types.t
 | `redemptionRateWeth` | The par the vault owes | The withdrawal queue |
 | `marketPriceWeth` | What the pool pays right now | Instantly, at a discount |
 
-The observation reports both, plus `discountBps` / `yieldPerBlockBps` / the queue length / **the effective wait at your own size** (`estimatedQueueDelayBlocks`). Yield accrues on an **economic clock** (`lst.simulatedSecondsPerBlock`, default one block = one hour at 3%/yr), not on EVM time.
+The observation reports both, plus `discountBps` / `yieldPerBlockBps` / the queue length / **the effective wait at your own size** (`estimatedQueueDelayBlocks`). Yield accrues per block, each block counting as `lst.simulatedSecondsPerBlock` seconds of staking (default `run.blockTimeSec` — the clock Aave and GMX run on — at 3%/yr; ADR 0028). The old default of one hour a block accrued 1,800x faster than Aave's borrow cost, a risk-free spread.
 
 The pool's rate-oracle wiring (`stEthPerToken()` registered with asset_type=1) is mandatory: unwired, a rising rate is **a risk-free arbitrage open to everybody**. There is an assert at deploy time and a `lst_setup` check at startup that fails fast above 200bps of divergence.
 
