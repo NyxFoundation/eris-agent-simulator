@@ -182,6 +182,28 @@ export function headings(blocks: Block[]): Array<{ level: number; text: string }
     .map((b) => ({ level: b.level, text: text(b.inline) }));
 }
 
+/**
+ * A leading `---` block of `key: value` lines, the way docs/qa/ names a topic's genre. Split off
+ * rather than parsed: to parseMarkdown the block would be a rule and a paragraph of its own text,
+ * and the page would show "genre: scope" above the title.
+ */
+export function splitFrontmatter(src: string): {
+  meta: Record<string, string>;
+  body: string;
+} {
+  const text = src.replace(/\r\n/g, "\n");
+  if (!text.startsWith("---\n")) return { meta: {}, body: text };
+  const end = text.indexOf("\n---", 4);
+  if (end < 0) return { meta: {}, body: text };
+  const meta: Record<string, string> = {};
+  for (const line of text.slice(4, end).split("\n")) {
+    const m = line.match(/^([A-Za-z][\w-]*):\s*(.*)$/);
+    if (m) meta[m[1]] = m[2].trim();
+  }
+  const after = text.indexOf("\n", end + 1);
+  return { meta, body: after < 0 ? "" : text.slice(after + 1) };
+}
+
 /** A stable id for a heading, so a link can point at a section of the page. */
 export function slug(text: string): string {
   return text

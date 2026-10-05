@@ -1034,6 +1034,10 @@ const en = {
     "Answers to the questions participants ask most, written from the rules and the list of targets. The pages on ascon.dev are the authority; where this page and they disagree, they win.",
   "qa.empty":
     "Nothing here yet.",
+  "qa.contents":
+    "Questions",
+  "qa.genre.other":
+    "Other",
   "overview.links.repo":
     "SDK repository (GitHub)",
   "overview.links.rules":
@@ -2165,6 +2169,10 @@ const ja: Record<MessageKey, string> = {
     "参加者からよくある質問への答えを、規約と対象の一覧から書いたものです。正本は ascon.dev の各ページで、ここと食い違ったらそちらが優先します。",
   "qa.empty":
     "まだ項目はありません。",
+  "qa.contents":
+    "質問の一覧",
+  "qa.genre.other":
+    "その他",
   "overview.links.repo":
     "SDK のリポジトリ（GitHub）",
   "overview.links.rules":

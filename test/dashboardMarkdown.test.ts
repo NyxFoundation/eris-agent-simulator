@@ -14,6 +14,7 @@ import {
   parseInline,
   parseMarkdown,
   slug,
+  splitFrontmatter,
   type Block,
   type Inline,
 } from "../dashboard/src/data/markdownDoc.js";
@@ -35,6 +36,13 @@ function entryFiles(): Array<{ dir: string; name: string }> {
 }
 
 const docs = (dir: string, name: string): string => readFileSync(join(dir, name), "utf8");
+
+/** docs/qa/genres.json: every topic's frontmatter has to name one of these. */
+const genreKeys = new Set(
+  (JSON.parse(readFileSync(join(QA, "genres.json"), "utf8")) as Array<{ key: string }>).map(
+    (g) => g.key,
+  ),
+);
 
 function plain(nodes: Inline[]): string {
   return nodes
@@ -103,7 +111,14 @@ test("a table, a fenced block and a list each parse as themselves", () => {
 
 for (const { dir, name } of entryFiles()) {
   test(`${name} renders with no markup left as text`, () => {
-    const src = docs(dir, name);
+    // The page renders the body; the frontmatter (a Q&A topic's genre) never reaches the parser.
+    const { meta, body: src } = splitFrontmatter(docs(dir, name));
+    if (dir === QA) {
+      assert.ok(
+        meta.genre !== undefined && genreKeys.has(meta.genre),
+        `a Q&A topic names a genre from genres.json (got ${JSON.stringify(meta.genre)})`,
+      );
+    }
     const blocks = parseMarkdown(src);
     const out = rendered(blocks);
 
@@ -160,6 +175,24 @@ for (const { dir, name } of entryFiles()) {
     const slugs = hs.map((h) => slug(h.text));
     assert.equal(new Set(slugs).size, slugs.length, "two headings share an anchor");
     assert.ok(slugs.every((x) => x.length > 0), "a heading has an empty anchor");
+  });
+}
+
+// The Q&A is one page, so a question's anchor has to be distinct across every topic of a language,
+// not only inside its own file: the contents list links to it.
+for (const locale of ["ja", "en"]) {
+  test(`the ${locale} Q&A has no two questions with the same anchor`, () => {
+    const seen = new Map<string, string>();
+    for (const { dir, name } of entryFiles()) {
+      if (dir !== QA) continue;
+      if ((name.endsWith(".en.md") ? "en" : "ja") !== locale) continue;
+      const { body } = splitFrontmatter(docs(dir, name));
+      for (const h of headings(parseMarkdown(body)).filter((x) => x.level === 2)) {
+        const id = slug(h.text);
+        assert.ok(!seen.has(id), `${name} and ${seen.get(id)} share the anchor "${id}"`);
+        seen.set(id, name);
+      }
+    }
   });
 }
 

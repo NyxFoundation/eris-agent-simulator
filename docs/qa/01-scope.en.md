@@ -1,3 +1,6 @@
+---
+genre: scope
+---
 # The scope of exploitation
 
 This page sums up the list of targets open to exploitation (Competition Rules §3.1, Participation

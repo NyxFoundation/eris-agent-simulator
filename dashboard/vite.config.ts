@@ -9,6 +9,7 @@ import {
   createRunsApi,
   modeFromEnv,
 } from "./server/runsApi";
+import { splitFrontmatter } from "./src/data/markdownDoc";
 
 const RUNS_DIR = fileURLToPath(new URL("../runs", import.meta.url));
 
@@ -58,8 +59,10 @@ function docsPlugin(opts: {
   entry: RegExp;
   /** The entry's id from its file name, the same for the two languages. */
   slugOf: (file: string) => string;
+  /** A JSON file in the directory exported from the module under this name (the Q&A's genres). */
+  index?: { name: string; file: string };
 }): Plugin {
-  const { name, id: ID, dir, entry, slugOf } = opts;
+  const { name, id: ID, dir, entry, slugOf, index } = opts;
   return {
     name,
     resolveId(id) {
@@ -71,13 +74,18 @@ function docsPlugin(opts: {
       const entries = files.map((f) => {
         const locale = f.endsWith(".en.md") ? "en" : "ja";
         this.addWatchFile(join(dir, f));
-        return {
-          slug: slugOf(f),
-          locale,
-          text: readFileSync(join(dir, f), "utf8"),
-        };
+        // The frontmatter (a topic's genre) travels as `meta`; the body is what the page renders.
+        const { meta, body } = splitFrontmatter(
+          readFileSync(join(dir, f), "utf8"),
+        );
+        return { slug: slugOf(f), locale, meta, text: body };
       });
-      return `export default ${JSON.stringify(entries)};`;
+      let out = `export default ${JSON.stringify(entries)};`;
+      if (index) {
+        this.addWatchFile(index.file);
+        out += `\nexport const ${index.name} = ${readFileSync(index.file, "utf8")};`;
+      }
+      return out;
     },
     configureServer(server) {
       // A new file in the directory is a new entry, and the module that lists them has to be told.
@@ -101,15 +109,21 @@ const updatesPlugin = (): Plugin =>
     slugOf: (f) => f.slice(0, 10),
   });
 
-/** `docs/qa/`: `<NN>-<name>.md` is a topic. The page shows them in file order. */
-const qaPlugin = (): Plugin =>
-  docsPlugin({
+/**
+ * `docs/qa/`: `<NN>-<name>.md` is a topic, its frontmatter names its genre, and `genres.json` is
+ * the genres in display order. The page groups topics by genre, in file order within one.
+ */
+const qaPlugin = (): Plugin => {
+  const dir = fileURLToPath(new URL("../docs/qa", import.meta.url));
+  return docsPlugin({
     name: "eris-qa",
     id: "virtual:eris-qa",
-    dir: fileURLToPath(new URL("../docs/qa", import.meta.url)),
+    dir,
     entry: /^\d{2}-[a-z0-9-]+(\.en)?\.md$/,
     slugOf: (f) => f.replace(/(\.en)?\.md$/, ""),
+    index: { name: "genres", file: join(dir, "genres.json") },
   });
+};
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), runsPlugin(), updatesPlugin(), qaPlugin()],
