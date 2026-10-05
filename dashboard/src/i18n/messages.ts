@@ -1026,6 +1026,14 @@ const en = {
     "No update with that date",
   "nav.updates":
     "Updates",
+  "nav.qa":
+    "Q&A",
+  "qa.title":
+    "Q&A",
+  "qa.lede":
+    "Answers to the questions participants ask most, written from the rules and the list of targets. The pages on ascon.dev are the authority; where this page and they disagree, they win.",
+  "qa.empty":
+    "Nothing here yet.",
   "overview.links.repo":
     "SDK repository (GitHub)",
   "overview.links.rules":
@@ -2149,6 +2157,14 @@ const ja: Record<MessageKey, string> = {
     "その日付の更新はありません",
   "nav.updates":
     "更新履歴",
+  "nav.qa":
+    "Q&A",
+  "qa.title":
+    "Q&A",
+  "qa.lede":
+    "参加者からよくある質問への答えを、規約と対象の一覧から書いたものです。正本は ascon.dev の各ページで、ここと食い違ったらそちらが優先します。",
+  "qa.empty":
+    "まだ項目はありません。",
   "overview.links.repo":
     "SDK のリポジトリ（GitHub）",
   "overview.links.rules":
