@@ -1627,14 +1627,20 @@ export async function runRealtimeSimulation(
             "senders on one key race on the nonce (issue #40 T0). Give the registrar an address " +
             "nothing else in the run uses, or run with agentMarkets.enabled: false.",
         );
+      // The lending singleton goes up only where the lending adapter scores it: `lending` in
+      // run.protocols. Deployed everywhere agentMarkets is on, it stood open in every official
+      // regime (none includes `lending`) as a venue the rules do not list, callable, labelled
+      // `verified` by the registry, and worth nothing at the bell (ADR 0022) -- which the scope
+      // list could only describe, not resolve (ascon-web#18, 2026-10-05).
       marketRegistry = await deployAgentMarketVenues(
         ctx,
         registrarPk,
         config.agentMarketsPerBlockCap,
         logger,
+        enabledIds.includes("lending"),
       );
       ctx.marketRegistry = marketRegistry.address;
-      ctx.lending = marketRegistry.lending;
+      if (marketRegistry.lending) ctx.lending = marketRegistry.lending;
       // The scorer's valuation context has no SimContext, so the singleton reaches it here.
       setLendingSingleton(marketRegistry.lending);
     } else if (enabledIds.includes("lending")) {
@@ -1778,7 +1784,9 @@ export async function runRealtimeSimulation(
           ...(marketRegistry
             ? {
                 marketRegistry: marketRegistry.address,
-                lending: marketRegistry.lending,
+                ...(marketRegistry.lending
+                  ? { lending: marketRegistry.lending }
+                  : {}),
                 marketRegistryFromBlock: marketRegistry.deployBlock,
               }
             : {}),
@@ -4908,7 +4916,9 @@ export async function runRealtimeSimulation(
           thresholdBps: config.rosterTransferFlagBps,
           ...(marketRegistry
             ? {
-                lending: marketRegistry.lending,
+                ...(marketRegistry.lending
+                  ? { lending: marketRegistry.lending }
+                  : {}),
                 marketRegistry: marketRegistry.address,
               }
             : {}),

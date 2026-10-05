@@ -972,6 +972,10 @@ ours なのは 2 つだけ（core は無改変）:
     （対称なので受容。誰にも見えないものは誰も釣れない）。ERC-20 判定は name/symbol/decimals の
     static call ヒューリスティック
 - **`SimpleLending.sol` = 許可不要の貸出シングルトン**（Morpho Blue 風。`ProtocolId: "lending"`）。
+  **配置されるのは `run.protocols` に `lending` がある run だけ**（2026-10-05、ascon-web#18）。以前は agentMarkets が
+  on なら無条件に配置していたので、公式 12 レジーム全部に「規約 §3.1 に無く、呼べて、registry が `verified` と
+  表示し、鐘の時点で 0 に数える venue」が立っていた。公式レジームは 1 本も `lending` を持たない（`agent-markets.yaml`
+  だけ）。manifest の `lending` と `market_registry_deployed.lending` は未配置なら無い / `null`
   市場は `(loanToken, collateralToken, oracle, irm, lltv)` で `createMarket` は誰でも呼べる。
   **Aave にできないのはここ** — reserve を開くのは `PoolConfigurator` で `POOL_ADMIN` 専用だから、
   Aave をエージェントへ開くには admin を渡すしかない

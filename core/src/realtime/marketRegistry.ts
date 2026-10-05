@@ -96,7 +96,14 @@ export const CLASSIFY_ATTEMPTS = 3;
 export type MarketRegistryRuntime = {
   address: Address;
   deployBlock: number;
-  lending: Address;
+  /**
+   * The permissionless lending singleton, deployed only when the run's protocols include `lending`
+   * -- that is, only where the lending adapter scores what goes into it. In a run without it the
+   * contract would be callable and worth nothing at the bell (ADR 0022), and the registry would
+   * label markets on it `verified`: a venue the rules do not list, standing open. No official
+   * regime includes `lending`; `config/regimes/agent-markets.yaml` does.
+   */
+  lending?: Address;
   uniswapFactory?: Address;
   registrarPk: Hex;
   registrarAddress: Address;
@@ -181,27 +188,33 @@ export async function deployAgentMarketVenues(
   registrarPk: Hex,
   perBlockCap: number,
   logger: RunLogger,
+  /** Whether the run's protocols include `lending`; the singleton is deployed only then. */
+  withLending: boolean,
 ): Promise<MarketRegistryRuntime> {
   const registrarAddress = privateKeyToAccount(registrarPk).address;
   // Owner-gated writes: the registry's owner is whoever deployed it, so the registrar must be the
   // deployer. An agent that could write here could publish a `verified` entry for its own trap.
   const address = await deployFrom(ctx, registrarPk, "MarketRegistry");
-  // The singleton is deployed from whatever `out/` holds, so a stale artifact deploys a contract
-  // the valuation cannot read. It would not fail loudly: the per-user index read would come back
-  // empty and every lending position would be worth zero while the run still scored and ranked.
-  // So the one read the valuation depends on has to be in the ABI before anything is deployed.
-  assertArtifactHasFunctions("SimpleLending", [
-    "userMarketIdsFrom",
-    "userMarketCount",
-    "expectedPosition",
-  ]);
-  const lending = await deployFrom(ctx, registrarPk, "SimpleLending");
+  let lending: Address | undefined;
+  if (withLending) {
+    // The singleton is deployed from whatever `out/` holds, so a stale artifact deploys a contract
+    // the valuation cannot read. It would not fail loudly: the per-user index read would come back
+    // empty and every lending position would be worth zero while the run still scored and ranked.
+    // So the one read the valuation depends on has to be in the ABI before anything is deployed.
+    assertArtifactHasFunctions("SimpleLending", [
+      "userMarketIdsFrom",
+      "userMarketCount",
+      "expectedPosition",
+    ]);
+    lending = await deployFrom(ctx, registrarPk, "SimpleLending");
+  }
   const deployBlock = Number(await ctx.publicClient.getBlockNumber());
   const factory = await uniswapFactory(ctx.publicClient);
   logger.event({
     type: "market_registry_deployed",
     address,
-    lending,
+    // null = this run has no lending venue, which is every run without `lending` in its protocols.
+    lending: lending ?? null,
     registrar: registrarAddress,
     uniswapFactory: factory ?? null,
     perBlockCap,
@@ -295,57 +308,62 @@ export async function sweepMarkets(
   }
 
   // ---- the lending singleton's own CreateMarket ----
-  try {
-    const logs = await publicClient.getLogs({
-      address: runtime.lending,
-      event: simpleLendingAbi.find(
-        (e) => e.type === "event" && e.name === "CreateMarket",
-      ) as never,
-      fromBlock: BigInt(fromBlock),
-      toBlock: BigInt(toBlock),
-    });
-    for (const raw of logs as unknown[]) {
-      const log = raw as { topics: readonly Hex[]; data: Hex };
-      const decoded = decodeEventLog({
-        abi: simpleLendingAbi,
-        topics: log.topics as [Hex, ...Hex[]],
-        data: log.data,
+  //
+  // Only where the singleton was deployed (runtime.lending). A run whose protocols do not include
+  // `lending` has none, and nothing on this path is published for it.
+  const lending = runtime.lending;
+  if (lending !== undefined) {
+    try {
+      const logs = await publicClient.getLogs({
+        address: lending,
+        event: simpleLendingAbi.find(
+          (e) => e.type === "event" && e.name === "CreateMarket",
+        ) as never,
+        fromBlock: BigInt(fromBlock),
+        toBlock: BigInt(toBlock),
       });
-      if (decoded.eventName !== "CreateMarket") continue;
-      const a = decoded.args as unknown as {
-        id: Hex;
-        creator: Address;
-        loanToken: Address;
-        collateralToken: Address;
-        oracle: Address;
-      };
-      found.push({
-        // Every market on the singleton lives at the singleton's address; `extra` is what tells them
-        // apart, and the registry's dedup key is the pair.
-        market: runtime.lending,
-        kind: "lendingMarket",
-        creator: a.creator,
-        token0: a.loanToken,
-        token1: a.collateralToken,
-        oracle: a.oracle,
-        codehash: await codehash(runtime.lending),
-        // Verified: the singleton is environment-owned canonical code with readable parameters.
-        // The oracle it points at is emphatically not covered by that.
-        verified: true,
-        extra: a.id,
-        seenAtBlock: toBlock,
+      for (const raw of logs as unknown[]) {
+        const log = raw as { topics: readonly Hex[]; data: Hex };
+        const decoded = decodeEventLog({
+          abi: simpleLendingAbi,
+          topics: log.topics as [Hex, ...Hex[]],
+          data: log.data,
+        });
+        if (decoded.eventName !== "CreateMarket") continue;
+        const a = decoded.args as unknown as {
+          id: Hex;
+          creator: Address;
+          loanToken: Address;
+          collateralToken: Address;
+          oracle: Address;
+        };
+        found.push({
+          // Every market on the singleton lives at the singleton's address; `extra` is what tells them
+          // apart, and the registry's dedup key is the pair.
+          market: lending,
+          kind: "lendingMarket",
+          creator: a.creator,
+          token0: a.loanToken,
+          token1: a.collateralToken,
+          oracle: a.oracle,
+          codehash: await codehash(lending),
+          // Verified: the singleton is environment-owned canonical code with readable parameters.
+          // The oracle it points at is emphatically not covered by that.
+          verified: true,
+          extra: a.id,
+          seenAtBlock: toBlock,
+        });
+      }
+    } catch (error) {
+      logger.event({
+        type: "market_sweep_failed",
+        source: "simpleLending",
+        fromBlock,
+        toBlock,
+        error: error instanceof Error ? error.message : String(error),
       });
     }
-  } catch (error) {
-    logger.event({
-      type: "market_sweep_failed",
-      source: "simpleLending",
-      fromBlock,
-      toBlock,
-      error: error instanceof Error ? error.message : String(error),
-    });
   }
-
   // ---- top-level CREATE: scan each block's transactions for `to === null` ----
   // No receipt fetch: the address is derived from (from, nonce), which the transaction itself
   // carries. CREATE / CREATE2 from inside a contract is invisible here, and is accepted.

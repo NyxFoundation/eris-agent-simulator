@@ -318,6 +318,53 @@ test("classifyContracts: a node that does not answer is `timeout`, within the de
   assert.equal(k.failure?.failure, "timeout");
 });
 
+test("sweepMarkets: a run without the lending singleton scans no CreateMarket and publishes no lending market", async () => {
+  // The singleton is deployed only where `lending` is in the run's protocols (no official regime).
+  // Without it the sweep must not read the address it would have had, and nothing of kind
+  // `lendingMarket` can reach the registry -- the venue the rules do not list stays absent.
+  const CREATOR = "0x00000000000000000000000000000000000000f7" as Address;
+  const recorded: Recorded[] = [];
+  const base = fakeClient({
+    recorded,
+    behaviour: (_address, functionName) => (functionName === "decimals" ? 18 : "TOKEN"),
+  });
+  const logsRequested: string[] = [];
+  const client = Object.assign(base, {
+    getLogs: async (req: { address?: string }) => {
+      logsRequested.push(String(req.address ?? ""));
+      return [];
+    },
+    getCode: async () => "0x6000",
+    getBlock: async () => ({ transactions: [{ to: null, from: CREATOR, nonce: 3 }] }),
+  });
+  const runtime: MarketRegistryRuntime = {
+    address: "0x0000000000000000000000000000000000000111",
+    deployBlock: 1,
+    uniswapFactory: undefined,
+    registrarPk: `0x${"1".repeat(64)}`,
+    registrarAddress: AGENT,
+    pending: [],
+    seen: new Set(),
+    readFailuresReported: new Set(),
+    classifyQueue: [],
+    perBlockCap: 8,
+  };
+  const logger = { event: () => undefined } as unknown as RunLogger;
+  const ctx = { publicClient: client } as unknown as SimContext;
+
+  await sweepMarkets(ctx, runtime, 10, 10, new Set(), logger);
+  assert.ok(
+    !logsRequested.some((a) => a.toLowerCase() === SINGLETON.toLowerCase()),
+    "the sweep asked the chain for CreateMarket logs of a singleton that was never deployed",
+  );
+  assert.ok(
+    runtime.pending.every((e) => e.kind !== "lendingMarket"),
+    "a lending market reached the registry in a run with no lending venue",
+  );
+  // The CREATE scan still runs: the contract the creator deployed is found as before.
+  assert.equal(runtime.pending.length, 1);
+});
+
 test("sweepMarkets: an unreadable contract is published as unknown and reported once", async () => {
   const CREATOR = "0x00000000000000000000000000000000000000f6" as Address;
   const trapAddr = getContractAddress({ from: CREATOR, nonce: 7n });
