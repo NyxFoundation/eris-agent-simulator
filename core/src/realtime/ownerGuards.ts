@@ -280,15 +280,37 @@ export async function auditOwnerGuards(
           : {}),
       });
     } catch (error) {
-      findings.push({
-        label: probe.label,
-        address: probe.address,
-        status: "guarded",
-        detail: shortRevert(error),
-      });
+      // Only a revert is evidence of a guard. A timeout, a transport failure or a malformed call
+      // says nothing either way, and recording it as "guarded" turned a slow RPC into a passed
+      // audit. It goes in as unreachable, which the fatal path treats like unprotected.
+      if (probeErrorIsRevert(error)) {
+        findings.push({
+          label: probe.label,
+          address: probe.address,
+          status: "guarded",
+          detail: shortRevert(error),
+        });
+      } else {
+        findings.push({
+          label: probe.label,
+          address: probe.address,
+          status: "unreachable",
+          detail: `probe did not complete: ${shortRevert(error)}`,
+        });
+      }
     }
   }
   return findings;
+}
+
+/**
+ * Whether a failed probe failed because the contract reverted. viem wraps a revert from `eth_call`
+ * in a message that names it (`execution reverted`, `reverted with reason`, `Execution reverted for
+ * an unknown reason`); a timeout or an HTTP failure never does.
+ */
+export function probeErrorIsRevert(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /revert/i.test(message);
 }
 
 function shortRevert(error: unknown): string {
@@ -335,7 +357,8 @@ export function guardFailureMessage(findings: GuardFinding[]): string {
     "Refusing to start a run in which agents can send arbitrary transactions (issue #40 T0): an " +
     "unguarded price setter is not a market to trade against, it is a switch that decides every " +
     "borrower's liquidation, and in blocks.csv it is indistinguishable from the environment's own " +
-    "oracle write. Fix the contract, or run with `agentMarkets.enabled: false`, which restores the " +
+    "oracle write. Fix the contract, or run with `agentMarkets.enabled: false` and no external participant " +
+    "(no `run.registrationsFile`, no `external: true` roster entry), which restores the " +
     "condition under which this was harmless: no participant sends transactions the environment " +
     "did not build.\n" +
     "See docs/threat-model-agent-markets.md."
