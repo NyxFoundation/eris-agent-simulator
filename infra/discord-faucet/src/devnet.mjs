@@ -22,14 +22,29 @@ export function readRegistrations(repoDir) {
   return doc;
 }
 
-/** The segment being written now: infra/monitoring/.env names the period, the period names the segment. */
+/**
+ * The segment being written now. infra/monitoring/.env lists every period the dashboard serves, in no
+ * promised order -- after the 10/5 cutover the finished period stayed first -- so the running one is
+ * the period whose current segment's events.jsonl was written last.
+ */
 export function currentSegmentDir(repoDir) {
   const env = readFileSync(join(repoDir, "infra/monitoring/.env"), "utf8");
   const m = /^ERIS_DASHBOARD_COMPETITIONS=(.*)$/m.exec(env);
-  const period = m?.[1].split(",")[0].trim();
-  if (!period) throw new Error("cannot find the running period (ERIS_DASHBOARD_COMPETITIONS is empty)");
-  const pointer = join(repoDir, "runs", period, "current-segment");
-  return { period, segmentDir: resolve(repoDir, readFileSync(pointer, "utf8").trim()) };
+  const listed = (m?.[1] ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+  let best = null;
+  for (const period of listed) {
+    let segmentDir;
+    let mtime;
+    try {
+      segmentDir = resolve(repoDir, readFileSync(join(repoDir, "runs", period, "current-segment"), "utf8").trim());
+      mtime = statSync(join(segmentDir, "events.jsonl")).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (!best || mtime > best.mtime) best = { period, segmentDir, mtime };
+  }
+  if (!best) throw new Error(`cannot find the running period (ERIS_DASHBOARD_COMPETITIONS=${listed.join(",")})`);
+  return { period: best.period, segmentDir: best.segmentDir };
 }
 
 /**

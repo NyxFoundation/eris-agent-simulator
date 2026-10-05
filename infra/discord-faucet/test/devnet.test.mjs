@@ -1,7 +1,7 @@
 // The box side against a temporary directory shaped like the repository on the box, and a fake RPC.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +41,20 @@ function fakeRepo() {
 test("the current segment is found the way register.sh finds it", () => {
   const { repo, seg } = fakeRepo();
   assert.deepEqual(currentSegmentDir(repo), { period: PERIOD, segmentDir: seg });
+});
+
+test("with two periods listed, the running one is the one still being written", () => {
+  const { repo, seg } = fakeRepo();
+  // A newer period listed second, as the env read after the 10/5 cutover.
+  const NEW = "2026-10-05T13-03-18-334Z";
+  const newSeg = join(repo, "runs", NEW, "2026-10-05-s00");
+  mkdirSync(newSeg, { recursive: true });
+  writeFileSync(join(repo, "runs", NEW, "current-segment"), `runs/${NEW}/2026-10-05-s00\n`);
+  writeFileSync(join(newSeg, "events.jsonl"), "{}\n");
+  writeFileSync(join(repo, "infra/monitoring/.env"), `ERIS_DASHBOARD_COMPETITIONS=${PERIOD},${NEW}\n`);
+  const old = new Date("2026-10-05T12:00:00Z");
+  utimesSync(join(seg, "events.jsonl"), old, old);
+  assert.deepEqual(currentSegmentDir(repo), { period: NEW, segmentDir: newSeg });
 });
 
 test("an entry is appended after a backup, and parses", () => {
