@@ -982,6 +982,7 @@ function LinksPanel({ locale }: { locale: Locale }) {
           body={t("overview.links.guideBody")}
           links={[
             { label: t("overview.links.guideDoc"), href: guideUrl(locale) },
+            { label: t("overview.links.updatesDoc"), href: "/updates" },
             { label: t("overview.links.repo"), href: REPO_URL },
           ]}
         />
