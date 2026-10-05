@@ -2239,9 +2239,17 @@ export async function runRealtimeSimulation(
         // agent-created markets the same hole exists and has no reachable exploit -- the only
         // senders are wallets the environment derives -- so it is reported and the run continues,
         // which is what keeps every pre-existing regime running unchanged.
-        if (config.agentMarkets) throw new Error(message);
+        // ... and when participants hold their own keys. A registrations file or an
+        // `external: true` roster entry means wallets the environment did not derive send
+        // transactions, agent-created markets or not; the practice devnet runs exactly this way.
+        const participantsSendTransactions =
+          config.registrationsFile !== undefined ||
+          agentRuntimes.some((a) => a.external);
+        if (config.agentMarkets || participantsSendTransactions) {
+          throw new Error(message);
+        }
         console.warn(
-          `${message}\n(not fatal: agentMarkets is off in this run)`,
+          `${message}\n(not fatal: agentMarkets is off and no participant holds a key in this run)`,
         );
       }
     }
