@@ -1,0 +1,22 @@
+[
+  {
+    "key": "scope",
+    "ja": "攻撃の範囲",
+    "en": "Scope of exploitation"
+  },
+  {
+    "key": "scoring",
+    "ja": "採点と順位",
+    "en": "Scoring and standings"
+  },
+  {
+    "key": "environment",
+    "ja": "環境と接続",
+    "en": "Environment and connecting"
+  },
+  {
+    "key": "submission",
+    "ja": "提出",
+    "en": "Submission"
+  }
+]

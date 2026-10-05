@@ -221,6 +221,15 @@ export function termsUrl(locale: Locale): string {
   return sitePath(locale, "terms");
 }
 
+/**
+ * The list of targets open to exploitation (rules §3.1, terms Art. 14(2)): which contracts, agents
+ * and interfaces an attack may be aimed at, and what is excluded. Published on ascon.dev as its own
+ * page (`content/legal/scope.md`), so it is linked rather than copied here, like the rules.
+ */
+export function scopeUrl(locale: Locale): string {
+  return sitePath(locale, "scope");
+}
+
 /** The participant guide (build, test, submit), in the viewer's language. */
 export function guideUrl(locale: Locale): string {
   return `${REPO_URL}/blob/main/docs/competition-start${locale === "en" ? ".en" : ""}.md`;

@@ -6,6 +6,7 @@ import { MarketPage } from "@/pages/MarketPage";
 import { AgentDetailPage } from "@/pages/AgentDetailPage";
 import { ScenarioPage } from "@/pages/ScenarioPage";
 import { UpdatesPage } from "@/pages/UpdatesPage";
+import { QaPage } from "@/pages/QaPage";
 import { useLocale } from "@/i18n/locale";
 
 export default function App() {
@@ -48,6 +49,9 @@ export default function App() {
   const updateMatch = pathname.match(/^\/updates\/(\d{4}-\d{2}-\d{2})$/);
   if (updateMatch) return <UpdatesPage entrySlug={updateMatch[1]} />;
   if (pathname === "/updates") return <UpdatesPage />;
+  // "/qa" answers the questions participants ask most (docs/qa/), the first being how far an attack
+  // may go: the list on ascon.dev is the authority, and this page is the reading of it.
+  if (pathname === "/qa") return <QaPage />;
   if (pathname === "/standings") return <StandingsPage />;
   if (pathname === "/scenario" || pathname === "/world") return <ScenarioPage />;
   return <OverviewPage />;

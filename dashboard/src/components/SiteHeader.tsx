@@ -34,7 +34,8 @@ export type NavKey =
   | "scenario"
   | "markets"
   | "explorer"
-  | "updates";
+  | "updates"
+  | "qa";
 
 type NavItem = { key: NavKey; label: string; path: string };
 
@@ -60,6 +61,9 @@ function navItems(): NavItem[] {
     // Last, because it is read once after a change rather than every visit -- but in the nav,
     // because a participant who missed the announcement has nowhere else to find the diff.
     { key: "updates", label: t("nav.updates"), path: "/updates" },
+    // The questions participants ask most, the first being how far an attack may go. Next to the
+    // updates because both are read once, when the question comes up, rather than every visit.
+    { key: "qa", label: t("nav.qa"), path: "/qa" },
   ];
 }
 

@@ -14,20 +14,35 @@ import {
   parseInline,
   parseMarkdown,
   slug,
+  splitFrontmatter,
   type Block,
   type Inline,
 } from "../dashboard/src/data/markdownDoc.js";
 
 const UPDATES = fileURLToPath(new URL("../docs/updates", import.meta.url));
+const QA = fileURLToPath(new URL("../docs/qa", import.meta.url));
 
-/** Every dated entry in docs/updates/, which is what the dashboard enumerates. */
-function entryFiles(): string[] {
-  return readdirSync(UPDATES)
+/** Every dated entry in docs/updates/ and every topic in docs/qa/, which is what the dashboard enumerates. */
+function entryFiles(): Array<{ dir: string; name: string }> {
+  const updates = readdirSync(UPDATES)
     .filter((f) => /^\d{4}-\d{2}-\d{2}(\.en)?\.md$/.test(f))
-    .sort();
+    .sort()
+    .map((name) => ({ dir: UPDATES, name }));
+  const qa = readdirSync(QA)
+    .filter((f) => /^\d{2}-[a-z0-9-]+(\.en)?\.md$/.test(f))
+    .sort()
+    .map((name) => ({ dir: QA, name }));
+  return [...updates, ...qa];
 }
 
-const docs = (name: string): string => readFileSync(join(UPDATES, name), "utf8");
+const docs = (dir: string, name: string): string => readFileSync(join(dir, name), "utf8");
+
+/** docs/qa/genres.json: every topic's frontmatter has to name one of these. */
+const genreKeys = new Set(
+  (JSON.parse(readFileSync(join(QA, "genres.json"), "utf8")) as Array<{ key: string }>).map(
+    (g) => g.key,
+  ),
+);
 
 function plain(nodes: Inline[]): string {
   return nodes
@@ -94,9 +109,16 @@ test("a table, a fenced block and a list each parse as themselves", () => {
   assert.equal((blocks[3] as Extract<Block, { kind: "list" }>).ordered, true);
 });
 
-for (const name of entryFiles()) {
+for (const { dir, name } of entryFiles()) {
   test(`${name} renders with no markup left as text`, () => {
-    const src = docs(name);
+    // The page renders the body; the frontmatter (a Q&A topic's genre) never reaches the parser.
+    const { meta, body: src } = splitFrontmatter(docs(dir, name));
+    if (dir === QA) {
+      assert.ok(
+        meta.genre !== undefined && genreKeys.has(meta.genre),
+        `a Q&A topic names a genre from genres.json (got ${JSON.stringify(meta.genre)})`,
+      );
+    }
     const blocks = parseMarkdown(src);
     const out = rendered(blocks);
 
@@ -156,6 +178,24 @@ for (const name of entryFiles()) {
   });
 }
 
+// The Q&A is one page, so a question's anchor has to be distinct across every topic of a language,
+// not only inside its own file: the contents list links to it.
+for (const locale of ["ja", "en"]) {
+  test(`the ${locale} Q&A has no two questions with the same anchor`, () => {
+    const seen = new Map<string, string>();
+    for (const { dir, name } of entryFiles()) {
+      if (dir !== QA) continue;
+      if ((name.endsWith(".en.md") ? "en" : "ja") !== locale) continue;
+      const { body } = splitFrontmatter(docs(dir, name));
+      for (const h of headings(parseMarkdown(body)).filter((x) => x.level === 2)) {
+        const id = slug(h.text);
+        assert.ok(!seen.has(id), `${name} and ${seen.get(id)} share the anchor "${id}"`);
+        seen.set(id, name);
+      }
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // The page itself, rendered to HTML
 // ---------------------------------------------------------------------------
@@ -169,7 +209,7 @@ test("the real document renders to HTML with its tables, lists and code intact",
   const { MarkdownView } = await import("../dashboard/src/components/markdownView.js");
   const { createElement } = await import("react");
 
-  const blocks = parseMarkdown(docs("2026-10-05.md"));
+  const blocks = parseMarkdown(docs(UPDATES, "2026-10-05.md"));
   const html = renderToStaticMarkup(createElement(MarkdownView, { blocks }));
 
   // The structures, not the styling: each one is a thing the subset has to produce.
