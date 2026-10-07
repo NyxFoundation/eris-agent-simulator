@@ -347,7 +347,9 @@ const EXECUTOR_BRIDGE = `(() => {
     });
   // The read-only client: every method call goes to the host client and its result comes back
   // copied. A property that is not a function (chain, batch) is copied; one the client does not
-  // have is absent here too -- \`then\` in particular, or this would be a thenable.
+  // have is absent here too -- \`then\` in particular, or this would be a thenable. The arguments
+  // go out as they are and the host side copies them (hostReadClient below): copying them here
+  // would build the copy with this realm's functions, which is no protection against this realm.
   const wrapClient = (host) =>
     new Proxy({}, {
       get(_, key) {
@@ -366,7 +368,9 @@ const EXECUTOR_BRIDGE = `(() => {
     config: copyIn(host.config),
     publicClient: wrapClient(host.publicClient),
     latestObservation: () => call(() => host.latestObservation(), []),
-    onObservation: (cb) => call((f) => host.onObservation(f), [cb]),
+    // The host calls back into a function of this realm, never the strategy's own: the callback
+    // would otherwise be handed a host observation, and its constructor is the host's.
+    onObservation: (cb) => call((f) => host.onObservation(f), [(o) => { cb(copyIn(o)); }]),
     submit: (action) => call((a) => host.submit(a), [action]),
     log: (entry) => call((e) => host.log(e), [entry]),
   });
@@ -389,6 +393,24 @@ function toHostRealm<T>(what: string, value: T): T {
       `${what} is not plain data: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+// The client the bridge calls, with what the strategy passes it copied into this realm first. The
+// arguments are the strategy's objects, and viem calls methods on them: `abi.filter(cb)` in
+// getAbiItem runs whatever the strategy put at `abi.filter`, handing it viem's callback -- a function
+// of this realm, and `cb.constructor("return process")()` is this realm's process. A structural
+// clone keeps what a read legitimately carries (bigint args, byte arrays) and throws on a function,
+// so a strategy that passes one gets a rejected read rather than a read with the function dropped.
+function hostReadClient(client: AgentContext["publicClient"]): AgentContext["publicClient"] {
+  if (typeof client !== "object" || client === null) return client;
+  return new Proxy(client, {
+    get(target, key) {
+      const v = Reflect.get(target, key, target);
+      if (typeof v !== "function") return v;
+      return (...args: unknown[]) =>
+        Reflect.apply(v, target, toHostRealm(`the arguments to publicClient.${String(key)}`, args));
+    },
+  });
 }
 
 // Compile generated source into a callable inside a vm context.
@@ -448,6 +470,7 @@ export function compileExecutor(source: string): CompileResult {
     const normalized: Executor = async (obs, ctx) => {
       const hostFacing: AgentContext = {
         ...ctx,
+        publicClient: hostReadClient(ctx.publicClient),
         submit: (action) => ctx.submit(toHostRealm("a submitted action", action)),
         log: (entry) => ctx.log(toHostRealm("a log entry", entry)),
       };
