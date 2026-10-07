@@ -282,6 +282,7 @@ import {
   setupLiquity,
   type LiquityRuntime,
 } from "./liquity.js";
+import { alignClockToState } from "./stateClock.js";
 import {
   reconcileStableDepeg,
   restoreStableDepeg,
@@ -874,6 +875,9 @@ export async function runRealtimeSimulation(
   // which starts with --no-mining; turn it back OFF at competition start to make the fee competition work = see below).
   if (config.localDeploy && !external) {
     await setAutomine(publicClient, true);
+    // Before the first setup transaction is mined: a state loaded from a dump is on a warped clock
+    // that this node's next block is behind (stateClock.ts, issue #263).
+    await alignClockToState(publicClient, logger);
   }
 
   // Registrations already on file join the roster here, before setup funds anyone, so they are
