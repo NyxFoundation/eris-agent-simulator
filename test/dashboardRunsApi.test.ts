@@ -25,6 +25,7 @@ import {
   createRunsApi,
   HOLD,
   modeFromEnv,
+  queryByteCount,
   redactBlocksRow,
   redactEvent,
   redactEventLine,
@@ -759,6 +760,55 @@ test("operator mode serves every file and tail byte for byte", async () => {
   }
 });
 
+
+// `?offset=0.5` reached createReadStream as `start: 0.5`, which throws synchronously in the stat
+// callback: one unauthenticated request ended the server, audience mode included. Every malformed
+// count has to come back as an ordinary answer at a whole-number offset, and the server has to be
+// still standing for the next request.
+test("a malformed offset or limit is an ordinary tail answer, not a dead server", async () => {
+  assert.equal(queryByteCount("0.5", 0), 0);
+  assert.equal(queryByteCount("7.9", 0), 7);
+  assert.equal(queryByteCount("-1", 0), 0);
+  assert.equal(queryByteCount("abc", 3), 3);
+  assert.equal(queryByteCount("NaN", 3), 3);
+  assert.equal(queryByteCount(null, 3), 3);
+  assert.equal(queryByteCount("1e300", 0), Number.MAX_SAFE_INTEGER);
+  assert.equal(queryByteCount("Infinity", 0), Number.MAX_SAFE_INTEGER);
+
+  const root = fixtureRuns();
+  const run = "2026-11-01T10-00-00-000Z";
+  const size = readFileSync(join(root, run, "events.jsonl")).length;
+  for (const audience of [true, false]) {
+    const { get, close } = await serve(root, audience);
+    try {
+      const cases: Array<[string, (offset: number) => boolean]> = [
+        ["offset=0.5", (o) => o > 0],
+        ["offset=0.5&limit=0.5", (o) => o > 0],
+        ["offset=0&limit=0.5", (o) => o > 0],
+        ["offset=3.7&limit=2.2", (o) => o >= 3],
+        ["offset=-1", (o) => o > 0],
+        ["offset=NaN", (o) => o > 0],
+        ["offset=abc", (o) => o > 0],
+        ["limit=-5", (o) => o > 0],
+        ["offset=1e300", (o) => o === size],
+        ["offset=Infinity", (o) => o === size],
+      ];
+      for (const [q, ok] of cases) {
+        const res = await get(`/${run}/tail/events.jsonl?${q}`);
+        assert.equal(res.status, 200, `${q} (audience ${audience})`);
+        const body = JSON.parse(res.text) as { offset: number; text: string };
+        assert.ok(Number.isSafeInteger(body.offset), `${q}: offset ${body.offset}`);
+        assert.ok(body.offset <= size, `${q}: offset within the file`);
+        assert.ok(ok(body.offset), `${q}: offset ${body.offset} (audience ${audience})`);
+      }
+      // Still serving after all of the above.
+      assert.equal((await get(`/${run}/tail/events.jsonl?offset=0`)).status, 200);
+    } finally {
+      await close();
+    }
+  }
+  rmSync(root, { recursive: true, force: true });
+});
 
 // A hosted box keeps every smoke and test run its operator ever made under runs/, and the picker
 // offered all of them to participants under their internal names. The allowlist is the server's
